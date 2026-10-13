@@ -1451,6 +1451,57 @@ test('an extension action that finishes after switching tools leaves the new too
   } finally { await page.close() }
 })
 
+// 同一处的另一半：操作没跑完就换了工具，跑完才落下来的失败不能挂到新工具下面，换回原来那个工具再看到它。
+test('an extension action that fails after switching tools shows its failure under the tool it ran for', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      let fail = null
+      window.failHeld = (message) => fail?.(message)
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        items: [{
+          provider, kind: 'mcp', id: `${provider}-link`, name: `${provider}-link`, description: '本机测试连接',
+          installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
+          source: { kind: 'npm', locator: `${provider}-package`, reference: null },
+          update: { state: 'up-to-date', reason: '', checkedAt: null },
+          operations: { install: false, uninstall: true, enable: true, disable: true, update: false },
+        }],
+      })
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
+      window.xingmang.mutateProviderExtension = () => new Promise((resolve, reject) => {
+        fail = (message) => { fail = null; reject(new Error(message)) }
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    const failure = mcp.getByRole('alert').filter({ hasText: 'claude-link 没能停用' })
+    await mcp.getByTestId('mcp-row-claude-link').waitFor()
+    // 在 Claude Code 下停用连接，没跑完就换到 Gemini CLI，这时它失败了。
+    await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
+    await expect(mcp.getByTestId('mcp-add')).toBeDisabled()
+    await mcp.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await mcp.getByTestId('mcp-row-gemini-link').waitFor()
+    await page.evaluate(() => window.failHeld('claude-link 没能停用'))
+    await expect(mcp.getByTestId('mcp-add')).toBeEnabled()
+    assert.equal(await failure.count(), 0)
+    // 换回 Claude Code 才看到；再换走照旧清掉，回来也不再出来。
+    await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
+    await mcp.getByTestId('mcp-row-claude-link').waitFor()
+    await expect(failure).toBeVisible()
+    await mcp.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await mcp.getByTestId('mcp-row-gemini-link').waitFor()
+    assert.equal(await failure.count(), 0)
+    await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
+    await mcp.getByTestId('mcp-row-claude-link').waitFor()
+    assert.equal(await failure.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 停在记录页、窗口回到前面时也重读，离上次读不到半分钟不读，窗口藏着时不读。时钟停着，等的那一下在测试这边等。
 test('the records page reads again when the window comes back after half a minute, but not sooner and not while hidden', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1', true)

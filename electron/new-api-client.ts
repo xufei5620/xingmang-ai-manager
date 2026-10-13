@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
+import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
 import type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
 export type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
@@ -1091,6 +1093,8 @@ interface NewApiRawResponse {
   ok: boolean
   payload: unknown
   headers: Headers
+  /** 走的线路、状态码、请求编号：读回应时出的错挂上它，日志记得出服务器回了什么（request-diagnostics.ts）。 */
+  diagnostics: RequestDiagnostics
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1208,6 +1212,8 @@ async function performRequestOnce(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), ctx.timeoutMs)
   timeout.unref?.()
+  // 连回应都没拿到时只有按线路发请求那一层挂在原始失败上的线路，换成下面的中文错误时带过去。
+  let diagnostics: RequestDiagnostics | null = null
   try {
     const response = await ctx.fetchImpl(url, {
       method: init.method,
@@ -1226,6 +1232,7 @@ async function performRequestOnce(
       redirect: 'manual',
       signal: controller.signal,
     })
+    diagnostics = responseDiagnostics(response)
     if (response.url) {
       const responseOrigin = safeOrigin(response.url)
       if (responseOrigin !== ctx.origin) {
@@ -1252,15 +1259,16 @@ async function performRequestOnce(
         payload = null
       }
     }
-    return { status: response.status, ok: response.ok, payload, headers: response.headers }
+    return { status: response.status, ok: response.ok, payload, headers: response.headers, diagnostics }
   } catch (error) {
+    noteRequestDiagnostics(error, diagnostics)
     if (error instanceof NewApiNetworkError) throw error
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new NewApiNetworkError('timeout', `${label}请求超时`)
+      throw carryRequestDiagnostics(error, new NewApiNetworkError('timeout', `${label}请求超时`))
     }
     // 认不出来的失败按原样抛：上游自己写的中文错误比一句猜出来的「网络问题」有用。
     const reason = classifyNetworkFailure(error)
-    if (reason) throw new NewApiNetworkError(reason, `${label}请求失败`)
+    if (reason) throw carryRequestDiagnostics(error, new NewApiNetworkError(reason, `${label}请求失败`))
     throw error
   } finally {
     clearTimeout(timeout)
@@ -1281,10 +1289,31 @@ function assertServiceAvailable(raw: NewApiRawResponse, detail: string): void {
   }
 }
 
+/** 读回应时出的错（服务回了错误、格式不对）都挂上这一次的线路、状态码和请求编号，再往外抛。 */
+function withRequestDiagnostics<T>(raw: NewApiRawResponse, read: () => T): T {
+  try {
+    return read()
+  } catch (error) {
+    noteRequestDiagnostics(error, raw.diagnostics)
+    throw error
+  }
+}
+
+// 服务器说的那句给人看的话：rc.43 起 message 一律是英文，带着 message_key 的换成
+// 上游自己的中文（new-api-messages.ts）；认不出的 key、老版本服务器照旧用 message。
+// 只用来上屏和记日志；按原话判断是哪种失败的地方（登录被拒、两步验证）仍看英文原句。
+function displayServerMessage(envelope: Record<string, unknown> | null, fallback: string): string {
+  return (envelope && resolveChineseServerMessage(envelope)) ?? fallback
+}
+
 function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
+  return withRequestDiagnostics(raw, () => readEnvelope(raw, label, secrets))
+}
+
+function readEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(serverMessage, secrets)
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
@@ -1396,9 +1425,13 @@ function unwrapTwoFactorLoginEnvelope(raw: NewApiRawResponse, secrets: readonly 
  * shape cannot weaken validation for account, billing, or key calls.
  */
 function unwrapPublicNotice(raw: NewApiRawResponse): unknown {
+  return withRequestDiagnostics(raw, () => readPublicNotice(raw))
+}
+
+function readPublicNotice(raw: NewApiRawResponse): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(serverMessage, [])
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), [])
   if (raw.status === 401) throw new NewApiAuthenticationError(detail || '公告读取未授权')
   assertServiceAvailable(raw, detail)
   if (!raw.ok) throw new Error(detail || `公告读取失败，服务返回 HTTP ${raw.status}`)
@@ -1431,10 +1464,18 @@ function unwrapLegacyBusinessEnvelope(
   label: string,
   secrets: readonly string[],
 ): LegacyBusinessEnvelope {
+  return withRequestDiagnostics(raw, () => readLegacyBusinessEnvelope(raw, label, secrets))
+}
+
+function readLegacyBusinessEnvelope(
+  raw: NewApiRawResponse,
+  label: string,
+  secrets: readonly string[],
+): LegacyBusinessEnvelope {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const message = envelope && typeof envelope.message === 'string' ? envelope.message : ''
   const dataMessage = envelope && typeof envelope.data === 'string' ? envelope.data : ''
-  const detail = sanitizeUpstreamMessage(message === 'error' ? dataMessage : message, secrets)
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, message === 'error' ? dataMessage : message), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
@@ -2961,11 +3002,16 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     try { raw = await performRequest(ctx, loginPath, { method: 'POST', body }, '账号登录') }
     catch (error) { assertAuthAttempt(attempt, owner); throw error }
     assertAuthAttempt(attempt, owner)
-    const data = parseLoginResponseData(unwrapLoginEnvelope(raw, [password, ...(input.turnstileToken ? [input.turnstileToken] : [])]))
+    const data = withRequestDiagnostics(raw, () => (
+      parseLoginResponseData(unwrapLoginEnvelope(raw, [password, ...(input.turnstileToken ? [input.turnstileToken] : [])]))
+    ))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
     // Strip accessToken before it ever leaves the main process (I3/I13).
-    return { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    const result = { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    // 登上了也记走的哪条线路：同一个人先在直连上登不上、换 CF 登上了，客服要分得出来（三线路 7b）。
+    noteRequestDiagnostics(result, raw.diagnostics)
+    return result
   }
 
   // POST /api/user/login/2fa (rc.24 router/api-router.go:74, CriticalRateLimit,
@@ -2981,10 +3027,12 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     try { raw = await performRequest(ctx, loginTwoFactorPath, { method: 'POST', body }, '两步验证登录') }
     catch (error) { assertAuthAttempt(attempt, owner); throw error }
     assertAuthAttempt(attempt, owner)
-    const data = parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken]))
+    const data = withRequestDiagnostics(raw, () => parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken])))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
-    return { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    const result = { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    noteRequestDiagnostics(result, raw.diagnostics)
+    return result
   }
 
   const logout = (): void => {

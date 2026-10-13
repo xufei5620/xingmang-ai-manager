@@ -52,6 +52,7 @@ import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 
 function registerAckResponse(): Response {
   // RECON never confirmed a response shape for /api/user/register beyond the
@@ -923,6 +924,69 @@ describe('login failures', () => {
     await client.login({ username: 'tester', password: 'x', turnstileToken: 'ts-token' })
     const [, init] = fetchImpl.mock.calls[0]
     expect(JSON.parse(String(init?.body))).toMatchObject({ turnstile: 'ts-token' })
+  })
+})
+
+// 客户说登不上时，日志要记得出这一次走的哪条线路、服务器回了什么、服务端拿什么查（三线路 7b）。
+describe('request diagnostics for the log', () => {
+  const requestId = '20261013163012345678abcdEFGH'
+  // 按线路发请求的那一层（relay-line-fetch.ts）在回应和失败上挂走的哪条线路，这里只模拟它挂的那一下。
+  function onLine(line: 'direct' | 'primary', answer: () => Response | Error): ReturnType<typeof vi.fn<NewApiFetch>> {
+    return vi.fn<NewApiFetch>(async () => {
+      const value = answer()
+      noteRequestDiagnostics(value, { line })
+      if (value instanceof Error) throw value
+      return value
+    })
+  }
+
+  it('tells which line a rejected login went over, what came back and the request id', async () => {
+    const fetchImpl = onLine('direct', () => jsonResponse(
+      { success: false, message: 'user.username_or_password_error', data: null },
+      { headers: { 'X-Oneapi-Request-Id': requestId } },
+    ))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiLoginRejectedError)
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct', status: 200, requestId })
+  })
+
+  it('keeps the line on a login that never got an answer', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => new Error('net::ERR_CONNECTION_RESET')) })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct' })
+
+    const timedOut = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('primary', () => new DOMException('aborted', 'AbortError')) })
+    expect(requestDiagnosticsOf(await timedOut.login({ username: 'tester', password: 'x' }).catch((reason: unknown) => reason)))
+      .toEqual({ line: 'primary' })
+  })
+
+  it('marks a refused redirect and a portal page with what came back too', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => new Response('<html>portal</html>', { status: 200 })) })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((reason: unknown) => reason)
+    expect(error).toMatchObject({ reason: 'intercepted' })
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct', status: 200 })
+  })
+
+  it('records the line a login and a second step went through when they succeed, without touching the result', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('primary', () => loginResponse()) })
+    const result = await client.login({ username: 'tester', password: 'x' })
+    expect(requestDiagnosticsOf(result)).toEqual({ line: 'primary', status: 200 })
+    expect(Object.keys(result)).toEqual(['account', 'accessExpiresAt'])
+
+    const second = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => loginResponse()) })
+    expect(requestDiagnosticsOf(await second.completeTwoFactorLogin({ flowToken: 'private-flow-token', code: '123456' })))
+      .toEqual({ line: 'direct', status: 200 })
+  })
+
+  it('marks an ordinary account request the service turned down', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: false, message: '无权进行此操作', data: null }, { headers: { 'X-Oneapi-Request-Id': requestId } }))
+    const error = await client.getProfile().catch((reason: unknown) => reason)
+    expect((error as Error).message).toContain('无权进行此操作')
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 200, requestId })
   })
 })
 
@@ -3668,6 +3732,105 @@ describe('network hardening (I10)', () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(withUrl(statusResponse(), `${testBaseUrl}/api/status`))
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
     await expect(client.getStatus()).resolves.toMatchObject({ version: 'v1.0.0-rc.22-solov1' })
+  })
+})
+
+// From v1.0.0-rc.43 new-api answers console calls in English whatever language
+// the request states, and adds message_key / message_params for its web console
+// to translate (common/message.go).
+function englishFailureResponse(message: string, extra: Record<string, unknown> = {}): Response {
+  return jsonResponse({ success: false, message, message_key: message, ...extra })
+}
+
+describe('rc.43+ English console messages', () => {
+  const registration = {
+    username: 'new-user',
+    email: 'new-user@example.com',
+    password: 'correct horse battery staple',
+    verificationCode: '123456',
+  }
+
+  it.each([
+    ['Username already exists or has been deleted', '用户名已存在，或已注销'],
+    ['Email address is already in use', '邮箱地址已被占用'],
+    ['Verification code is incorrect or has expired', '验证码错误或已过期'],
+    ['Email verification is enabled, please enter email address and verification code', '管理员开启了邮箱验证，请输入邮箱地址和验证码'],
+  ])('shows "%s" in the Chinese that rc.42 and earlier sent', async (english, chinese) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse(english))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.register(registration).catch((reason: unknown) => reason)
+    expect((error as Error).message).toBe(chinese)
+    // The login box's own table reads it exactly as it read the old Chinese.
+    expect(matchAccountErrorMessage(error)).not.toBeNull()
+    expect(matchAccountErrorMessage(error)).toBe(matchAccountErrorMessage(chinese))
+  })
+
+  it('fills in the numbers of a payment-endpoint failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      message: 'error',
+      data: 'Top-up amount cannot exceed 10000',
+      message_key: 'Top-up amount cannot exceed {{max}}',
+      message_params: { max: 10000 },
+    }))
+    await expect(client.quoteTopupAmount({ amount: 20000 })).rejects.toThrow(/^充值数量不能大于 10000$/)
+  })
+
+  it('keeps an English sentence it has no Chinese for instead of swallowing it', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse('A rule this client has never seen'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.register(registration)).rejects.toThrow(/^A rule this client has never seen$/)
+  })
+
+  it('still redacts a secret the server echoes inside message_params', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(englishFailureResponse('Transfer failed test-access-token-abc', {
+      message_key: 'Transfer failed {{error}}',
+      message_params: { error: 'test-access-token-abc' },
+    }))
+    const error = await client.transferAffiliateQuota({ quota: 100_000 }).catch((reason: unknown) => reason)
+    expect((error as Error).message).toMatch(/^划转失败 /)
+    expect((error as Error).message).toContain('[REDACTED]')
+    expect((error as Error).message).not.toContain('test-access-token-abc')
+  })
+
+  it('still recognises rejected credentials by the English sentence', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse('Username or password is incorrect, or user has been banned'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.login({ username: 'tester', password: 'x' })).rejects.toBeInstanceOf(NewApiLoginRejectedError)
+  })
+
+  // controller/secure_verification.go writeSecurityOperationError: a code plus
+  // a fixed English sentence, which is also its message_key.
+  it.each([
+    ['TWOFA_CODE_INVALID', 'The authenticator code is incorrect.', twoFactorInvalidCodeMessage],
+    ['SECURITY_VERIFICATION_LOCKED', 'Two-factor authentication is temporarily locked.', twoFactorRateLimitedMessage],
+  ] as const)('still explains a %s second step in its own words', async (code, english, expected) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse(english, { code }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.completeTwoFactorLogin({ flowToken: 'flow', code: '123456' })).rejects.toThrow(expected)
+  })
+
+  // middleware/secure_verification.go securityProofError: 403, a code and a
+  // bare English sentence with no message_key. rc.40 said it in Chinese.
+  it('says a security-proof refusal in Chinese although it carries no message_key', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: false,
+      code: 'SECURITY_PROOF_REQUIRED',
+      message: 'Additional verification required',
+    }, { status: 403 }))
+    await expect(client.changePassword({ originalPassword: 'old12345', newPassword: 'new12345' }))
+      .rejects.toThrow(/^需要进一步验证$/)
+  })
+
+  it('still ends the second step when the flow has expired', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse('Verification flow expired', { code: 'AUTH_FLOW_INVALID' }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.completeTwoFactorLogin({ flowToken: 'flow', code: '123456' })).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
   })
 })
 

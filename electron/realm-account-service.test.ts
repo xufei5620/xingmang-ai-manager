@@ -6,6 +6,7 @@ import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backe
 import type { NewApiLoginInput, NewApiSessionState } from './new-api-client'
 import { NewApiLoginRejectedError, NewApiNetworkError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError } from './new-api-client'
 import { savedAccountId } from './saved-accounts'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -207,6 +208,31 @@ describe('realm account service', () => {
     expect(await f.service.latestLoginHint()).toMatchObject({ identifier: login.username })
     // One challenge, one login: the flow is gone once it has been used.
     await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+  })
+  // 登录日志要记这一次走的哪条线路（三线路 7b）：账号客户端挂在结果上的诊断，换成带站点的新对象时跟着带过去。
+  it('passes the line a login and its second step went through on to the result it hands back', async () => {
+    const f = fixture()
+    const service = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+      const created = f.options.createClient(siteId, callback)
+      const login = created.client.login.bind(created.client)
+      const complete = created.client.completeTwoFactorLogin!.bind(created.client)
+      created.client.login = async (input) => {
+        const result = await login(input)
+        noteRequestDiagnostics(result, { line: 'direct', status: 200, requestId: 'req-realm-1' })
+        return result
+      }
+      created.client.completeTwoFactorLogin = async (input) => {
+        const result = await complete(input)
+        noteRequestDiagnostics(result, { line: 'primary', status: 200 })
+        return result
+      }
+      return created
+    } })
+    const signedIn = await service.login(login)
+    expect(signedIn.siteId).toBe('solov')
+    expect(requestDiagnosticsOf(signedIn)).toEqual({ line: 'direct', status: 200, requestId: 'req-realm-1' })
+    await expect(service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    expect(requestDiagnosticsOf(await service.completeTwoFactorLogin('123456'))).toEqual({ line: 'primary', status: 200 })
   })
   it('asks for the password again when no challenge is waiting or the server expired it', async () => {
     const f = fixture()
@@ -1251,6 +1277,91 @@ describe('realm account re-login of the same account (#476)', () => {
     await expect(f.service.login({ ...login, password: 'bad' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
     expect(liveSignOuts(f)).toEqual([])
     expect(savedSignOuts(f)).toEqual([])
+  })
+})
+
+describe('realm account removal of a saved account', () => {
+  function savedSignOuts(f: ReturnType<typeof fixture>): RealmSavedAccount[] {
+    return f.clients.flatMap((entry) => entry.savedSessionsEnded)
+  }
+  function liveSignOuts(f: ReturnType<typeof fixture>): Array<string | null> {
+    return f.clients.flatMap((entry) => entry.serverSessionsEnded)
+  }
+
+  it('revokes the removed account\'s stored session on the server and leaves the signed-in one alone', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    const signedIn = f.clients.length
+    await f.service.removeSavedAccount(summaries[0].id)
+    expect(savedSignOuts(f)).toEqual([saved('solov', '7', 'test-original')])
+    // A detached client of the removed account's own site sends it; nothing
+    // is restored into it and no live session is touched.
+    const sender = f.clients[f.clients.length - 1]
+    expect(f.clients).toHaveLength(signedIn + 1)
+    expect(sender.siteId).toBe('solov')
+    expect(sender.savedSessionsEnded).toHaveLength(1)
+    expect(sender.restore).not.toHaveBeenCalled()
+    expect(sender.client.getSessionState().authenticated).toBe(false)
+    expect(liveSignOuts(f)).toEqual([])
+    expect(f.service.getSiteId()).toBe('solov-api')
+    expect(f.service.client.getSessionState().authenticated).toBe(true)
+    expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
+  })
+
+  it('removes the account even when the server sign-out fails or never answers', async () => {
+    for (const outcome of ['reject', 'hang', 'throw'] as const) {
+      const f = fixture()
+      await f.service.login(login)
+      await f.service.login({ ...login, username: '8' })
+      const summaries = await f.service.listSavedAccounts()
+      const createClient = f.options.createClient
+      f.options.createClient = (siteId, callback) => {
+        const created = createClient(siteId, callback)
+        return { ...created, endSavedSession: () => {
+          if (outcome === 'throw') throw new Error('network down')
+          return outcome === 'reject' ? Promise.reject(new Error('network down')) : new Promise<void>(() => undefined)
+        } }
+      }
+      await expect(f.service.removeSavedAccount(summaries[0].id)).resolves.toBeUndefined()
+      expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
+      expect(f.service.client.getSessionState().account?.userId).toBe(8)
+    }
+  })
+
+  it('revokes nothing when the account is not actually removed', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, username: '8' })
+    const summaries = await f.service.listSavedAccounts()
+    // The signed-in account is refused outright.
+    await expect(f.service.removeSavedAccount(summaries[1].id)).rejects.toMatchObject({ code: 'BUSY' })
+    // A removal that cannot be written keeps the account usable, so its
+    // server session must stay valid too.
+    f.fail(true)
+    await expect(f.service.removeSavedAccount(summaries[0].id)).rejects.toMatchObject({ code: 'STORAGE' })
+    f.fail(false)
+    expect(savedSignOuts(f)).toEqual([])
+    expect(liveSignOuts(f)).toEqual([])
+    expect(await f.service.listSavedAccounts()).toHaveLength(2)
+    await expect(f.service.switchSavedAccount(summaries[0].id)).resolves.toMatchObject({ authenticated: true })
+  })
+
+  it('sends nothing for a backend that has no way to end a stored session', async () => {
+    const f = fixture()
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    await f.service.login(login)
+    const summaries = await f.service.listSavedAccounts()
+    const createClient = f.options.createClient
+    f.options.createClient = (siteId, callback) => {
+      const { endSavedSession: _omitted, ...created } = createClient(siteId, callback)
+      return created
+    }
+    await expect(f.service.removeSavedAccount(summaries[0].id)).resolves.toBeUndefined()
+    expect(savedSignOuts(f)).toEqual([])
+    expect(liveSignOuts(f)).toEqual([])
+    expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
   })
 })
 

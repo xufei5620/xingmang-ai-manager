@@ -314,6 +314,7 @@ import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
+import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
 import { createExternalClientSnapshotCache } from './external-client-snapshot-cache'
@@ -2251,6 +2252,56 @@ export async function resolveCliInstallRelease(
   return release
 }
 
+/**
+ * npm 12 起依赖的安装脚本默认不跑，要按包放行；npm 11 及更早只认「不许跑」，放行名单对它们
+ * 不起作用，照旧全跑。所以这里只列离了安装脚本就装不全、或装出来会变样的包，npm 12 下其余的
+ * 照样挡着：Gemini 带的 node-pty 是现场编译，Gemini 先用自带预编译的 @lydell/node-pty，
+ * 用不着它。主程序包钉死在这次要装的版本上；npm 按下载地址认包名和版本，不信包里自报的。
+ */
+export function buildCliInstallScriptAllowlist(provider: ProviderId, version: string): string[] {
+  switch (provider) {
+    case 'claude':
+    case 'grok':
+      // postinstall 把平台主程序放进 bin/（Claude）或解到 ~/.grok/bin（Grok）。不跑的话
+      // Claude 只剩一个 500 字节的占位脚本，Grok 什么都没装上。
+      return [`${cliCatalog[provider].packageName}@${version}`]
+    case 'gemini':
+      // keytar 的安装脚本只是把包里带的预编译文件拷进 build/Release。不跑的话 Gemini 退回
+      // 把凭据存成文件（0.62.0 的 FileKeychain），原先存进系统钥匙串的它就读不到了。
+      return ['@github/keytar']
+    case 'codex':
+      return []
+  }
+}
+
+export interface CliResolutionManifest {
+  name: string
+  version: string
+  private: true
+  dependencies: Record<string, string>
+  allowScripts?: Record<string, boolean>
+}
+
+/**
+ * 解析依赖图、下载校验，以及 Grok 的正式安装都在放这份清单的目录里跑。Grok 那一步是
+ * `npm ci` 不是全局安装，npm 12 不许在命令行放行安装脚本（报 EALLOWSCRIPTS），只认清单里的
+ * allowScripts；其余三家全局安装时 npm 不读这份清单，放行写在命令行上。
+ */
+export function buildCliResolutionManifest(provider: ProviderId, version: string): CliResolutionManifest {
+  const manifest: CliResolutionManifest = {
+    name: 'xingmang-cli-resolution',
+    version: '1.0.0',
+    private: true,
+    dependencies: { [cliCatalog[provider].packageName]: version },
+  }
+  if (provider === 'grok') {
+    manifest.allowScripts = Object.fromEntries(
+      buildCliInstallScriptAllowlist(provider, version).map((spec) => [spec, true]),
+    )
+  }
+  return manifest
+}
+
 export function buildCliMaintenancePlan(
   provider: ProviderId,
   npmExecutable: string | null,
@@ -2286,6 +2337,7 @@ export function buildCliMaintenancePlan(
       windowsPackageManager: 'npm',
     }
   }
+  const allowedScripts = verifiedLifecycleScripts ? buildCliInstallScriptAllowlist(provider, version) : []
   return {
     kind: 'npm-install',
     executable: npmExecutable,
@@ -2294,6 +2346,7 @@ export function buildCliMaintenancePlan(
       '--global',
       ...(npmPrefix ? [`--prefix=${npmPrefix}`] : []),
       ...(!verifiedLifecycleScripts ? ['--ignore-scripts'] : []),
+      ...(allowedScripts.length > 0 ? [`--allow-scripts=${allowedScripts.join(',')}`] : []),
       '--omit=dev',
       '--package-lock=false',
       `${cliCatalog[provider].packageName}@${version}`,
@@ -4907,12 +4960,11 @@ export function createSystemService(
         const manifestPath = path.join(directory, 'package.json')
         const handle = await fs.promises.open(manifestPath, 'wx', 0o600)
         try {
-          await handle.writeFile(`${JSON.stringify({
-            name: 'xingmang-cli-resolution',
-            version: '1.0.0',
-            private: true,
-            dependencies: { [definition.packageName]: trustedRelease.version },
-          }, null, 2)}\n`, 'utf8')
+          await handle.writeFile(`${JSON.stringify(
+            buildCliResolutionManifest(provider, trustedRelease.version),
+            null,
+            2,
+          )}\n`, 'utf8')
           await handle.sync()
         } finally {
           await handle.close()
@@ -6347,6 +6399,8 @@ export function createSystemService(
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
+    // 写 Key 前查模型没过时，日志要记得出走的哪条线路、服务器回了什么（request-diagnostics.ts）。
+    let diagnostics: RequestDiagnostics | null = null
     try {
       const relayFetch = (options.routed ? serviceOptions.relayRoutedFetch : undefined) ?? serviceOptions.relayFetch ?? fetch
       const response = await relayFetch(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
@@ -6355,6 +6409,7 @@ export function createSystemService(
         redirect: 'error',
         signal: controller.signal,
       })
+      diagnostics = responseDiagnostics(response)
       const body = await readBoundedResponseText(response, maximumModelResponseBytes, '模型接口')
       if (!response.ok) {
         // 维护、网关错误、防护层验证页：写入 Key 与 AI 对话都经过这一步，按「服务
@@ -6394,8 +6449,9 @@ export function createSystemService(
       })
       return [...models]
     } catch (error) {
+      noteRequestDiagnostics(error, diagnostics)
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('模型查询超时，请检查网络后重试')
+        throw carryRequestDiagnostics(error, new Error('模型查询超时，请检查网络后重试'))
       }
       throw error
     } finally {
