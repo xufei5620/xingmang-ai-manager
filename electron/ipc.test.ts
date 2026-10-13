@@ -187,6 +187,7 @@ function accountServiceStub(): NewApiClientService {
     revokeLoginSession: vi.fn() as never,
     revokeOtherLoginSessions: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
+    issueCodexStartupTicket: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
     getPersistableSession: vi.fn(() => null),
     getSessionRevision: vi.fn(() => 0),

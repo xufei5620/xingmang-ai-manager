@@ -4,6 +4,7 @@ import { externalToolIds } from './external-client-contract'
 import {
   buildFeedbackEnvironmentLines,
   buildFeedbackRuntimeLines,
+  buildFeedbackToolRouteCertificateLines,
   pickFeedbackRuntimeSnapshot,
   resolveFeedbackRelayRoute,
   resolveFeedbackToolRoute,
@@ -408,5 +409,38 @@ describe('resolveFeedbackToolRoute', () => {
   it('prints the tool line under the connection line in the report', () => {
     const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'darwin', executionMode: null, relayRoute: '自动（这次用的是 CF 线路）', toolRoute: '洛杉矶', appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
     expect(lines[lines.indexOf('连接线路: 自动（这次用的是 CF 线路）') + 1]).toBe('工具线路: 洛杉矶')
+  })
+})
+
+describe('buildFeedbackToolRouteCertificateLines', () => {
+  const fingerprint256 = Array.from({ length: 32 }, () => 'AB').join(':')
+  // RFC 5737 documentation addresses only.
+  const failure = {
+    line: 'direct' as const,
+    at: Date.parse('2026-10-13T08:00:00.000Z'),
+    label: 'normal' as const,
+    certificates: [
+      { address: '192.0.2.10', issuer: 'CN=Some Firewall CA, O=Firewall', subject: 'CN=xm-direct.solov.cc', fingerprint256, verifyError: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' },
+      { address: '192.0.2.11', issuer: '', subject: '', fingerprint256, verifyError: null },
+    ],
+  }
+
+  it('gives support the issuer, fingerprint and address to compare with the real certificate', () => {
+    expect(buildFeedbackToolRouteCertificateLines(failure)).toEqual([
+      '工具线路证书没过: 洛杉矶，2026-10-13T08:00:00.000Z，标签 normal（解析到的是星芒的地址）',
+      `收到的证书 1: 连 192.0.2.10，颁发者 CN=Some Firewall CA, O=Firewall，证书名 CN=xm-direct.solov.cc，SHA-256 ${fingerprint256}，Node 校验 UNABLE_TO_GET_ISSUER_CERT_LOCALLY`,
+      `收到的证书 2: 连 192.0.2.11，颁发者 （空），证书名 （空），SHA-256 ${fingerprint256}，Node 校验 通过`,
+    ])
+    const { label: _label, ...unlabelled } = failure
+    expect(buildFeedbackToolRouteCertificateLines({ ...unlabelled, line: 'primary' })[0]).toBe('工具线路证书没过: CF，2026-10-13T08:00:00.000Z')
+    expect(buildFeedbackToolRouteCertificateLines({ ...failure, certificates: [] })).toEqual([])
+    expect(buildFeedbackToolRouteCertificateLines(null)).toEqual([])
+  })
+
+  it('prints them right under the tool line', () => {
+    const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'win32', executionMode: null, toolRoute: '洛杉矶', toolRouteCertificate: failure, appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
+    const at = lines.indexOf('工具线路: 洛杉矶')
+    expect(lines[at + 1]).toMatch(/^工具线路证书没过: 洛杉矶/)
+    expect(lines[at + 2]).toMatch(/^收到的证书 1: 连 192\.0\.2\.10/)
   })
 })

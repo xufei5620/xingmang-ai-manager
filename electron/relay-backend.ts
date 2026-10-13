@@ -48,6 +48,7 @@ import type {
   NewApiChangePasswordInput,
   NewApiChangePasswordResult,
   NewApiCliKeyResult,
+  NewApiCodexStartupTicket,
   NewApiLoginInput,
   NewApiTwoFactorLoginInput,
   NewApiLoginResult,
@@ -179,6 +180,11 @@ export interface RelayBackendClient {
   getActiveSiteId?(): 'solov' | 'solov-api'
   /** Main-only exact lookup. The input secret must never be sent to an account endpoint or returned in a DTO. */
   identifyKey?(secret: string): Promise<{ id: number; name: string; group: string } | null>
+  /**
+   * Main-only: a short-lived pass for the Codex startup tunnel (codex-desktop-startup-route.ts).
+   * Never crosses IPC or reaches a log. Backends whose site runs no tunnel service omit it.
+   */
+  issueCodexStartupTicket?(): Promise<NewApiCodexStartupTicket>
 
   /** ipc.ts: account:get-status */
   getStatus(): Promise<NewApiAccountStatus>

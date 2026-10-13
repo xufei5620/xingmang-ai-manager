@@ -53,7 +53,7 @@ export function buildPowerShellPinnedModuleImportStatement(modules: readonly str
 }
 
 /**
- * What every Authenticode check (Node.js, Python, WorkBuddy, native CLIs)
+ * What every Authenticode check (Node.js, Python, Claude Desktop, native CLIs)
  * calls into: Get-AuthenticodeSignature and the ConvertTo-Json that reports it.
  */
 export const authenticodeSignatureModules = ['Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Utility'] as const

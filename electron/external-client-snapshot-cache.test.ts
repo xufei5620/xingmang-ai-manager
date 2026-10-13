@@ -34,7 +34,8 @@ function client(tool: ExternalClientStatus['tool'], overrides: Partial<ExternalC
 
 function clients(): ExternalClientStatus[] {
   return [
-    client('workbuddy', { running: true }),
+    // Windows 上 WorkBuddy 这一行总带着腾讯官网（客户自己下载），落盘再读回来也得认。
+    client('workbuddy', { running: true, installSupported: false, officialDownloadUrl: externalClientOfficialDownloadUrls.workbuddy }),
     client('claudeDesktop', { configurationReady: true, officialDownloadUrl: externalClientOfficialDownloadUrls.claudeDesktop }),
     client('opencode', { installed: false, version: null, path: null, installDirectory: null, configured: false, model: null, configurationSource: 'missing', officialDownloadUrl: null }),
   ]
