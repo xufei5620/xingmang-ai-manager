@@ -49,8 +49,10 @@ import { isInstallCancelledError } from './install-cancellation'
 import {
   configureManagedClis,
   syncManagedCliKeySummary,
+  type ManagedCliConfigurationOutcome,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
+import { requestDiagnosticsOf } from './request-diagnostics'
 import { relayRoutePreferenceAllowed, relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
@@ -1656,8 +1658,6 @@ const quietIpcSuccessChannels = new Set([
   // reason to keep both fully out of the runtime log.
   'account:get-remembered-login',
   'account:set-remembered-login',
-  // The input is a live one-time code (or a single-use backup code).
-  'account:submit-two-factor-code',
   'chat:list-groups',
   'chat:prepare-group',
   'chat:start',
@@ -1668,6 +1668,17 @@ const quietIpcSuccessChannels = new Set([
   'chat:asset-menu',
   'chat:pick-images',
   'chat:paste-image',
+])
+
+// Channels whose *input* is a secret but whose success is still worth a line
+// in the log. recordSuccess hands the formatters below an empty argument list
+// for these, so the input cannot reach the log by construction rather than by
+// every formatter happening to ignore it (I13). The two-factor code is a live
+// one-time code (or a single-use backup code); it used to be fully quiet,
+// which left a "我输了验证码还是登不上" ticket without even a sign of whether
+// the second step went through (三线路 7b).
+const secretInputIpcChannels = new Set([
+  'account:submit-two-factor-code',
 ])
 
 const quietIpcFailureChannels = new Set([
@@ -1796,6 +1807,10 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.siteId = result.siteId
     detail.status = result.status
   }
+  // 登录、两步验证登上了也记走的哪条线路（request-diagnostics.ts）：同一个人先在直连上登不上、换到 CF
+  // 登上了，客服要分得出来（三线路 7b）。只有挂着诊断的结果才有这一项。
+  const request = requestDiagnosticsOf(result)
+  if (request) detail.request = request
   return detail
 }
 
@@ -1880,12 +1895,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const polling = pollingIpcChannels.has(channel)
         const recovered = polling && failedPollingChannels.delete(channel)
         const routinePoll = polling && !recovered && durationMs < SLOW_POLLING_SUCCESS_MS
+        const loggedArgs = secretInputIpcChannels.has(channel) ? [] : args
         options.runtimeLog.log(
           routinePoll ? 'debug' : ipcSuccessLevel(channel),
           'ipc',
           channel,
-          ipcSuccessMessage(channel, args, result),
-          { ...ipcLogDetail(channel, args, result, durationMs), ...(recovered ? { recovered: true } : {}) },
+          ipcSuccessMessage(channel, loggedArgs, result),
+          { ...ipcLogDetail(channel, loggedArgs, result, durationMs), ...(recovered ? { recovered: true } : {}) },
         )
       }
       const recordFailure = (error: unknown) => {
@@ -1899,11 +1915,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         // 同理：加速那条线把失败收成一句话，日志里看不出是临时目录、辅助进程
         // 还是本机账本。归类由主进程自己给出，单列一个字段便于按原因检索。
         const accelerationReason = accelerationFailureReason(error)
+        // 账号请求失败时这一次走的线路、服务器回的状态码和请求编号（三线路 7b）：客户说「登不上」，
+        // 客服拿请求编号就能请服务端查到这一次，不用再从前后几行日志里猜。
+        const request = requestDiagnosticsOf(error)
         options.runtimeLog.log('error', 'ipc', channel, `${label}失败：${reason || '未知错误'}`, {
           durationMs: Date.now() - startedAt,
           error,
           ...(networkFailure ? { networkFailure } : {}),
           ...(accelerationReason ? { accelerationReason } : {}),
+          ...(request ? { request } : {}),
         })
       }
       const senderUrl = event.senderFrame?.url ?? event.sender.getURL()
@@ -1980,6 +2000,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   const replacementSlot = (userId: number, provider: ProviderId): string => (
     `${accountService.getActiveSiteId?.() ?? 'solov'}:${userId}:${provider}`
   )
+  // 写 Key（account:configure-managed-clis，以及切到当前账号）时没配上的工具是当结果交回界面的，写 Key
+  // 的通道成功时又不记日志，所以以前一个字都不进日志：客户说「Key 配不上」，客服只看得到首页那句兜底话
+  // （0.2.18 真机 19 号第 6 条）。这里每个没配上的工具记一条：哪家、原话、走的线路、服务器回的状态码和
+  // 请求编号。原话是给客户看的那句，签 Key、查模型两处都已去掉 Key 和令牌；写配置失败的原话可能带配置
+  // 文件的绝对路径，进日志前把主目录换掉（I13）。
+  const logManagedCliFailures = (outcome: ManagedCliConfigurationOutcome): void => {
+    const home = options.providerRoots?.userHome ?? os.homedir()
+    for (const entry of outcome.failed) {
+      const request = requestDiagnosticsOf(entry)
+      options.runtimeLog.log('warn', 'account', 'managed-cli.key-failed',
+        `${cliCatalog[entry.provider].name} 的 Key 没配上：${redactHomeDirectory(entry.message, home)}`, {
+          provider: entry.provider,
+          ...(entry.serviceUnavailable ? { serviceUnavailable: true } : {}),
+          ...(request ? { request } : {}),
+        })
+    }
+  }
   // explicit：用户亲手点的「重新写入 Key」「再换一次」。只有这一种能越过读坏的记录。
   const provisioningAccountService = (explicit: boolean): Parameters<typeof configureManagedClis>[0] => ({
     getSessionState: accountService.getSessionState.bind(accountService),
@@ -2314,6 +2351,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const outcome = await configureManagedClis(
           automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, mode, 'explicit',
         )
+        logManagedCliFailures(outcome)
         if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()
         if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
         if (!outcome.configured.includes(id)) throw new Error('工具没有返回配置写入结果')
@@ -3571,7 +3609,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.managedCliKeys,
       parsed.mode,
       parsed.intent,
-    )
+    ).then((outcome) => {
+      logManagedCliFailures(outcome)
+      return outcome
+    })
     if (parsed.mode !== 'reset') return configure()
     return (async () => {
       for (const provider of parsed.providers) await backupBeforeReset(provider)

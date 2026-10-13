@@ -52,6 +52,7 @@ import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 
 function registerAckResponse(): Response {
   // RECON never confirmed a response shape for /api/user/register beyond the
@@ -923,6 +924,69 @@ describe('login failures', () => {
     await client.login({ username: 'tester', password: 'x', turnstileToken: 'ts-token' })
     const [, init] = fetchImpl.mock.calls[0]
     expect(JSON.parse(String(init?.body))).toMatchObject({ turnstile: 'ts-token' })
+  })
+})
+
+// 客户说登不上时，日志要记得出这一次走的哪条线路、服务器回了什么、服务端拿什么查（三线路 7b）。
+describe('request diagnostics for the log', () => {
+  const requestId = '20261013163012345678abcdEFGH'
+  // 按线路发请求的那一层（relay-line-fetch.ts）在回应和失败上挂走的哪条线路，这里只模拟它挂的那一下。
+  function onLine(line: 'direct' | 'primary', answer: () => Response | Error): ReturnType<typeof vi.fn<NewApiFetch>> {
+    return vi.fn<NewApiFetch>(async () => {
+      const value = answer()
+      noteRequestDiagnostics(value, { line })
+      if (value instanceof Error) throw value
+      return value
+    })
+  }
+
+  it('tells which line a rejected login went over, what came back and the request id', async () => {
+    const fetchImpl = onLine('direct', () => jsonResponse(
+      { success: false, message: 'user.username_or_password_error', data: null },
+      { headers: { 'X-Oneapi-Request-Id': requestId } },
+    ))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiLoginRejectedError)
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct', status: 200, requestId })
+  })
+
+  it('keeps the line on a login that never got an answer', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => new Error('net::ERR_CONNECTION_RESET')) })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct' })
+
+    const timedOut = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('primary', () => new DOMException('aborted', 'AbortError')) })
+    expect(requestDiagnosticsOf(await timedOut.login({ username: 'tester', password: 'x' }).catch((reason: unknown) => reason)))
+      .toEqual({ line: 'primary' })
+  })
+
+  it('marks a refused redirect and a portal page with what came back too', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => new Response('<html>portal</html>', { status: 200 })) })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((reason: unknown) => reason)
+    expect(error).toMatchObject({ reason: 'intercepted' })
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct', status: 200 })
+  })
+
+  it('records the line a login and a second step went through when they succeed, without touching the result', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('primary', () => loginResponse()) })
+    const result = await client.login({ username: 'tester', password: 'x' })
+    expect(requestDiagnosticsOf(result)).toEqual({ line: 'primary', status: 200 })
+    expect(Object.keys(result)).toEqual(['account', 'accessExpiresAt'])
+
+    const second = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => loginResponse()) })
+    expect(requestDiagnosticsOf(await second.completeTwoFactorLogin({ flowToken: 'private-flow-token', code: '123456' })))
+      .toEqual({ line: 'direct', status: 200 })
+  })
+
+  it('marks an ordinary account request the service turned down', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: false, message: '无权进行此操作', data: null }, { headers: { 'X-Oneapi-Request-Id': requestId } }))
+    const error = await client.getProfile().catch((reason: unknown) => reason)
+    expect((error as Error).message).toContain('无权进行此操作')
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 200, requestId })
   })
 })
 

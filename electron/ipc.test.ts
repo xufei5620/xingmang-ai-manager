@@ -20,6 +20,7 @@ import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
+import { noteRequestDiagnostics } from './request-diagnostics'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -2844,6 +2845,38 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), { code: '123456' })).rejects.toThrow('验证码格式错误')
     expect(completeTwoFactorLogin).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('123456')
+  })
+
+  // 三线路 7b：客户说登不上时，日志要记得出这一次走的哪条线路、服务器回了什么、服务端拿什么去查。
+  it('records the line, status and request id of a failed login', async () => {
+    const rejection = new Error('账号或密码错误，请检查后重试')
+    noteRequestDiagnostics(rejection, { line: 'direct', status: 200, requestId: 'req-login-1' })
+    const login = vi.fn(async () => { throw rejection })
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
+    await expect(electronMocks.handlers.get('account:login')!(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' }))
+      .rejects.toThrow()
+    expect(runtimeLog.log).toHaveBeenCalledWith('error', 'ipc', 'account:login', expect.stringContaining('失败'),
+      expect.objectContaining({ request: { line: 'direct', status: 200, requestId: 'req-login-1' } }))
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('fixture-password')
+  })
+
+  it('records the line a login and a second step went through when they succeed, never the code itself', async () => {
+    const signedIn = { account: { userId: 7 }, siteId: 'solov' }
+    noteRequestDiagnostics(signedIn, { line: 'primary', status: 200, requestId: 'req-login-2' })
+    const login = vi.fn(async () => signedIn)
+    const completeTwoFactorLogin = vi.fn(async () => signedIn)
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {
+      realmAccounts: { login, completeTwoFactorLogin } as never,
+    })
+    await electronMocks.handlers.get('account:login')!(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })
+    await electronMocks.handlers.get('account:submit-two-factor-code')!(trustedEvent(), '654321')
+    for (const channel of ['account:login', 'account:submit-two-factor-code']) {
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', channel, expect.stringContaining('完成'),
+        expect.objectContaining({ request: { line: 'primary', status: 200, requestId: 'req-login-2' } }))
+    }
+    const logged = JSON.stringify(runtimeLog.log.mock.calls)
+    expect(logged).not.toContain('654321')
+    expect(logged).not.toContain('fixture-password')
   })
 
   it('reads remembered credentials only from the last successful identity without exposing its backend', async () => {
@@ -7390,6 +7423,50 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
       expect(accountService.provisionCliKey).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+
+    // 写 Key 没配上是当结果交回界面的，以前一个字都不进日志（0.2.18 真机 19 号第 6 条）。
+    it('logs each tool whose key did not get configured, with the request that failed and no home path', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      const keyRejected = new Error('令牌分组已被禁用')
+      noteRequestDiagnostics(keyRejected, { line: 'direct', status: 200, requestId: 'req-key-1' })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => {
+        if (input?.name === managedCliKeyProfiles.codex.keyName) throw keyRejected
+        return { id: 1, name: input?.name ?? 'managed-key', key: `sk-internal-${input?.name ?? 'default'}` }
+      })
+      const modelsRejected = new Error('模型查询失败，服务返回 403')
+      noteRequestDiagnostics(modelsRejected, { line: 'primary', status: 403, cfRay: '8f1a2b3c4d5e6f70-LAX' })
+      vi.mocked(service.fetchAvailableModels).mockImplementation(async (key) => {
+        if (key.endsWith(managedCliKeyProfiles.claude.keyName)) throw modelsRejected
+        return ['gemini-3-pro']
+      })
+      vi.mocked(service.saveConfig).mockRejectedValue(new Error(`写入 ${path.join(os.homedir(), '.gemini', 'settings.json')} 失败`))
+      const { runtimeLog } = register(service, 'C:\\app-data\\logs', undefined, accountService)
+
+      const result = await electronMocks.handlers.get('account:configure-managed-clis')!(trustedEvent(), {
+        providers: ['codex', 'claude', 'gemini'],
+        preferredModels: {},
+      })
+
+      expect(result).toMatchObject({ configured: [], failed: [{ provider: 'codex' }, { provider: 'claude' }, { provider: 'gemini' }] })
+      const failures = runtimeLog.log.mock.calls.filter((call) => call[2] === 'managed-cli.key-failed')
+      expect(failures).toEqual([
+        ['warn', 'account', 'managed-cli.key-failed', 'Codex CLI 的 Key 没配上：令牌分组已被禁用',
+          { provider: 'codex', request: { line: 'direct', status: 200, requestId: 'req-key-1' } }],
+        ['warn', 'account', 'managed-cli.key-failed', 'Claude Code 的 Key 没配上：模型查询失败，服务返回 403',
+          { provider: 'claude', request: { line: 'primary', status: 403, cfRay: '8f1a2b3c4d5e6f70-LAX' } }],
+        ['warn', 'account', 'managed-cli.key-failed', expect.stringContaining('Gemini CLI 的 Key 没配上：写入 '), { provider: 'gemini' }],
+      ])
+      const logged = JSON.stringify(runtimeLog.log.mock.calls)
+      expect(logged).not.toContain(JSON.stringify(os.homedir()).slice(1, -1))
+      expect(logged).not.toContain('sk-internal-')
+      // 结果照旧只有给界面的那几项，诊断不跟着跨进程。
+      expect(Object.keys((result as { failed: object[] }).failed[0])).toEqual(['provider', 'message'])
     })
 
     it('rejects unknown save modes before provisioning or writing config', () => {

@@ -25,6 +25,7 @@
  */
 import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, type NetworkFailureReason } from './network-failure'
 import { relayEndpointForUrl, relayEndpointOrigin, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { noteRequestDiagnostics } from './request-diagnostics'
 import { watchResponseBody } from './response-body-watch'
 
 export interface RelayLineRouter {
@@ -190,6 +191,21 @@ async function discard(response: Response): Promise<void> {
 }
 
 /**
+ * 交出去的回应、抛出去的失败都挂上这一次实际走的线路（request-diagnostics.ts）：客户说登不上、Key 配不上时，
+ * 日志按它记走的是直连还是默认线路（三线路 7b）。served 在请求结束时才读，中途退回默认线路改了它也算数。
+ */
+async function onServedLine(served: { line?: RelayEndpointId }, send: () => Promise<Response>): Promise<Response> {
+  try {
+    const response = await send()
+    noteRequestDiagnostics(response, served)
+    return response
+  } catch (error) {
+    noteRequestDiagnostics(error, served)
+    throw error
+  }
+}
+
+/**
  * 星芒自己的请求用的 fetch：认得出的星芒地址按这个站这会儿的线路换掉 origin，别的地址原样
  * 交给 base。base 是 proxy-bypass.ts 的 relayFetch / accountFetch，所以换完线路以后照旧
  * 按代理那边的分流走。
@@ -202,10 +218,12 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     const requested = requestUrl(input)
     const endpoint = requested === null ? null : relayEndpointForUrl(requested)
     if (requested === null || !endpoint) return base(input, init)
-    return routed(requested, endpoint.siteId, init)
+    const served: { line?: RelayEndpointId } = {}
+    return onServedLine(served, () => routed(requested, endpoint.siteId, init, served))
   }
-  async function routed(requested: string, siteId: RelayRouteSiteId, init: RequestInit | undefined): Promise<Response> {
+  async function routed(requested: string, siteId: RelayRouteSiteId, init: RequestInit | undefined, served: { line?: RelayEndpointId }): Promise<Response> {
     const route = router.route(siteId)
+    served.line = route.line
     const sent = onLine(requested, siteId, route.line)
     // 正文是流的发出去就没了，没法重发：照旧走这条线路，不退回。
     const replayable = !(init?.body instanceof ReadableStream)
@@ -220,6 +238,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     }
     async function fallBack(reason: string): Promise<Response> {
       const primary = onLine(requested, siteId, 'primary')
+      served.line = 'primary'
       log('info', 'relay.line.fallback', '直连这次没走通，改走默认线路重发', { siteId, from: 'direct', to: 'primary', reason, method, path })
       return asRequested(await base(primary, init), primary, requested)
     }
@@ -315,8 +334,18 @@ export function createRelayObservedFetch(
   return async (input, init) => {
     const requested = requestUrl(input)
     const endpoint = requested === null ? null : relayEndpointForUrl(requested)
-    const report = endpoint ? reporterFor(endpoint) : null
-    if (requested === null || !endpoint || !report) return base(input, init)
+    if (requested === null || !endpoint) return base(input, init)
+    // 这里不换地址，打到哪个地址就是哪条线路。
+    return onServedLine({ line: endpoint.endpointId }, () => observed(input, init, requested, endpoint))
+  }
+  async function observed(
+    input: string | URL | Request,
+    init: RequestInit | undefined,
+    requested: string,
+    endpoint: { siteId: RelayRouteSiteId; endpointId: RelayEndpointId },
+  ): Promise<Response> {
+    const report = reporterFor(endpoint)
+    if (!report) return base(input, init)
     let response: Response
     try {
       response = await base(input, init)
