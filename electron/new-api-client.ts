@@ -2457,6 +2457,13 @@ function isOriginalPasswordRejected(raw: NewApiRawResponse): boolean {
     && typeof envelope.code === 'string' && originalPasswordRejectedCodes.has(envelope.code)
 }
 
+function unwrapPasswordChangeEnvelope(raw: NewApiRawResponse, secrets: readonly string[]): unknown {
+  return withRequestDiagnostics(raw, () => {
+    if (isOriginalPasswordRejected(raw)) throw new Error(originalPasswordRejectedMessage)
+    return readEnvelope(raw, '修改密码', secrets)
+  })
+}
+
 // Captures every Set-Cookie the server sent, stripped down to bare
 // "name=value" pairs (attributes like Path/HttpOnly/SameSite dropped). The
 // main process has no browser cookie jar (RECON 坑3), so this is the only
@@ -3647,8 +3654,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         },
         '修改密码',
       )
-      if (isOriginalPasswordRejected(verified)) throw new Error(originalPasswordRejectedMessage)
-      const proofToken = parseSecurityProofToken(unwrapEnvelope(verified, '修改密码', [originalPassword, current.accessToken]))
+      const proofToken = parseSecurityProofToken(unwrapPasswordChangeEnvelope(verified, [originalPassword, current.accessToken]))
       const raw = await performRequest(
         ctx,
         selfPath,
@@ -3659,8 +3665,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         },
         '修改密码',
       )
-      if (isOriginalPasswordRejected(raw)) throw new Error(originalPasswordRejectedMessage)
-      const data = unwrapEnvelope(raw, '修改密码', [originalPassword, newPassword, current.accessToken, ...(proofToken ? [proofToken] : [])])
+      const data = unwrapPasswordChangeEnvelope(raw, [originalPassword, newPassword, current.accessToken, ...(proofToken ? [proofToken] : [])])
       const bundle = parseChangePasswordResponseData(data)
       // Optimistic in-place swap so the very next authenticated call in this
       // same session does not spuriously 401 against the now-superseded old

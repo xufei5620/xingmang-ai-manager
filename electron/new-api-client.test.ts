@@ -3097,7 +3097,10 @@ describe('changePassword', () => {
     const failure = client.changePassword({ originalPassword: 'wrong-password', newPassword: 'new-password-2' })
 
     await expect(failure).rejects.toThrow(/^原密码错误$/)
-    await expect(failure.catch((error: unknown) => matchAccountErrorMessage(error))).resolves.toBe('原密码错误，请重新输入')
+    const error = await failure.catch((reason: unknown) => reason)
+    expect(matchAccountErrorMessage(error)).toBe('原密码错误，请重新输入')
+    // The log still names what the server answered (三线路 7b).
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 200 })
     expect(requestsTo(server.fetchImpl, '/api/user/self', 'PUT')).toHaveLength(0)
     expect(server.password()).toBe('old-password-1')
   })
