@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict')
 const http = require('node:http')
-const { copyFile, mkdir, mkdtemp, writeFile, rm, symlink } = require('node:fs/promises')
+const { copyFile, mkdir, mkdtemp, realpath, writeFile, rm, symlink } = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
@@ -323,7 +323,9 @@ const generatePath = path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-a
  * origin in config.json never reaches DNS or a real backend.
  */
 async function runGenerate(config, respond, args) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'xingmang-image-generate-'))
+  // generate.mjs only runs main() when argv[1] matches its own resolved URL, and
+  // macOS tmpdir sits behind the /var -> /private/var symlink.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'xingmang-image-generate-')))
   const requests = []
   const httpServer = http.createServer((req, res) => {
     const chunks = []
