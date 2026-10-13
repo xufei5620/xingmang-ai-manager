@@ -247,7 +247,7 @@ const nonSiteExternalUrlAllowlist = [
   'https://www.python.org/downloads/',
   // 首页运行环境行的「下载 Git」按钮只在 Windows 出现，落点就是这一条（I12 全等匹配）。
   gitWindowsDownloadUrl,
-  // 缺少系统 winget 时首页 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
+  // 首页 WorkBuddy 一行，以及缺少系统 winget 时 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
