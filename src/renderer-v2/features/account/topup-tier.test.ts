@@ -79,7 +79,7 @@ describe('isQuotableAmount', () => {
 })
 
 describe('sameTopupInfo', () => {
-  const running = { amountOptions: [10, 20], discounts: { 20: 0.8 }, minTopup: 1 }
+  const running: { amountOptions: number[]; discounts: Record<string, number>; minTopup: number } = { amountOptions: [10, 20], discounts: { 20: 0.8 }, minTopup: 1 }
 
   it('keeps the offers on screen when a fresh read says the same thing', () => {
     expect(sameTopupInfo(running, { amountOptions: [10, 20], discounts: { 20: 0.8 }, minTopup: 1 })).toBe(true)
