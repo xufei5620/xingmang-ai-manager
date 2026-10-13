@@ -3579,6 +3579,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         baseUrl: new URL(service.getConfig(false).providers.codex.baseUrl).origin,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
         syncImageMcp: options.xingmangAiSkill.syncImageMcp,
+        fetchAvailableModels: (apiKey) => service.fetchAvailableModels(apiKey),
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)

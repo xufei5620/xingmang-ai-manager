@@ -48,14 +48,18 @@ async function readSkillConfig(skillRoot) {
   if (keys.length === 0) {
     fail('config.json 里还没有 API Key。请先登录星芒AI管理工具，工具会写入 Codex Key，并在可用时补上生图分组 Key。')
   }
-  return { keys, baseUrl }
+  // 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型挑一个写进 model；没有就用 gpt-image-2。
+  const configuredModel = typeof parsed.model === 'string' ? parsed.model.trim() : ''
+  const model = isGptImage(configuredModel) ? configuredModel : DEFAULT_MODEL
+  return { keys, baseUrl, model }
 }
 
 function parseArgs(argv) {
   const options = {
     prompt: '',
     out: '',
-    model: DEFAULT_MODEL,
+    // 没点名就留空，读到配置后用星芒挑好的那个。
+    model: '',
     size: '1024x1024',
     quality: DEFAULT_QUALITY,
     edit: false,
@@ -101,7 +105,7 @@ function printUsage() {
     '用法：node generate.mjs --prompt "描述" --out ./out.png [选项]',
     '',
     '选项：',
-    '  --model     默认 gpt-image-2',
+    '  --model     默认用星芒挑好的 OpenAI 图片模型，没有时 gpt-image-2',
     '  --size      默认 1024x1024；gpt-image-2 宽高须为 16 的倍数',
     '  --quality   low|medium|high，仅 gpt-image，默认 low',
     '  --edit      图生图，需同时给 --image',
@@ -136,19 +140,12 @@ function parseSize(size) {
 }
 
 function isGptImage2(model) {
-  return /^gpt-image-2(?:-|$)/i.test(model)
+  return /^gpt-image-2(?:[.-]|$)/i.test(model)
 }
 
+// 本技能只用 OpenAI 的 gpt-image 系列。
 function isGptImage(model) {
-  return /^gpt-image-/i.test(model)
-}
-
-function isJimeng(model) {
-  return /jimeng/i.test(model)
-}
-
-function isGeminiImage(model) {
-  return /^gemini-3\.1-flash-image$/i.test(model)
+  return /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i.test(model)
 }
 
 function guessMime(filePath) {
@@ -169,30 +166,6 @@ function extensionForBytes(bytes) {
     return '.webp'
   }
   return '.png'
-}
-
-function aspectRatioForSize(width, height) {
-  const pairs = [
-    [1, 1], [4, 3], [3, 4], [16, 9], [9, 16], [3, 2], [2, 3], [5, 4], [4, 5], [21, 9],
-  ]
-  const target = width / height
-  let best = '1:1'
-  let bestDelta = Number.POSITIVE_INFINITY
-  for (const [a, b] of pairs) {
-    const delta = Math.abs(a / b - target)
-    if (delta < bestDelta) {
-      best = `${a}:${b}`
-      bestDelta = delta
-    }
-  }
-  return best
-}
-
-function imageSizeLabel(width, height) {
-  const longEdge = Math.max(width, height)
-  if (longEdge >= 3000) return '4K'
-  if (longEdge >= 1800) return '2K'
-  return '1K'
 }
 
 function redactUpstream(text) {
@@ -223,9 +196,11 @@ async function readResponseLimited(response) {
 }
 
 class GenerateError extends Error {
-  constructor(message, retryable = false) {
+  constructor(message, retryable = false, upstream = false) {
     super(message)
     this.retryable = retryable
+    // 中转明确回了错误（不是连不上、超时）：自动挑的新模型这样失败时，换回 gpt-image-2 再试。
+    this.upstream = upstream
   }
 }
 
@@ -310,12 +285,6 @@ function extractImagePayload(payload) {
     return { kind: 'url', value: first.url }
   }
 
-  const content = payload?.choices?.[0]?.message?.content
-  if (typeof content === 'string') {
-    const match = content.match(/data:(image\/(?:png|jpeg|jpg|webp));base64,([A-Za-z0-9+/=]+)/i)
-    if (match) return { kind: 'b64', value: match[2] }
-  }
-
   const message = typeof payload.error === 'string'
     ? payload.error
     : payload.error?.message || payload.message || '上游没有返回图片'
@@ -345,38 +314,14 @@ async function downloadImage(url) {
   return readResponseLimited(response)
 }
 
-function buildGenerationBody(options, size) {
-  if (isGeminiImage(options.model)) {
-    return {
-      model: options.model,
-      messages: [{ role: 'user', content: options.prompt }],
-      stream: false,
-      extra_body: {
-        google: {
-          image_config: {
-            aspect_ratio: aspectRatioForSize(size.width, size.height),
-            image_size: imageSizeLabel(size.width, size.height),
-          },
-        },
-      },
-    }
-  }
-  if (isJimeng(options.model)) {
-    return {
-      model: options.model,
-      prompt: options.prompt,
-      n: 1,
-      extra_fields: { width: size.width, height: size.height },
-    }
-  }
-  const body = {
-    model: options.model,
+function buildGenerationBody(options, model, size) {
+  return {
+    model,
     prompt: options.prompt,
     n: 1,
     size: size.text,
+    quality: options.quality,
   }
-  if (isGptImage(options.model)) body.quality = options.quality
-  return body
 }
 
 async function main() {
@@ -386,27 +331,30 @@ async function main() {
   const config = await readSkillConfig(skillRootFromScript())
   const baseUrl = config.baseUrl
   if (options.edit && !options.image) fail('图生图需要 --image')
-  if (options.edit && isGeminiImage(options.model)) fail('gemini-3.1-flash-image 不支持图生图')
+  if (options.model && !isGptImage(options.model)) fail('图片模型不在允许列表中')
+  // 没点名、或点的就是星芒挑好的那个：站上新开的模型这次没画出来（还没定价、渠道没好），
+  // 自动换回 gpt-image-2 再试一次。点名要别的就只用它。
+  const requested = options.model || config.model
+  const models = requested === config.model ? [...new Set([requested, DEFAULT_MODEL])] : [requested]
 
   const origin = assertHttpsOrigin(baseUrl)
   const size = parseSize(options.size)
-  if (isGptImage2(options.model) && (size.width % 16 !== 0 || size.height % 16 !== 0)) {
+  if (models.some(isGptImage2) && (size.width % 16 !== 0 || size.height % 16 !== 0)) {
     fail('gpt-image-2 的宽高必须是 16 的倍数')
   }
 
-  async function generateWithKey(apiKey) {
+  async function generateWithKey(model, apiKey) {
     let result
     if (options.edit) {
       const fields = {
-        model: options.model,
+        model,
         prompt: options.prompt,
+        size: size.text,
+        quality: options.quality,
       }
-      if (!isJimeng(options.model)) fields.size = size.text
-      if (isGptImage(options.model)) fields.quality = options.quality
       result = await postMultipart(origin, '/v1/images/edits', apiKey, fields, options.image)
     } else {
-      const pathname = isGeminiImage(options.model) ? '/v1/chat/completions' : '/v1/images/generations'
-      result = await postJson(origin, pathname, apiKey, buildGenerationBody(options, size))
+      result = await postJson(origin, '/v1/images/generations', apiKey, buildGenerationBody(options, model, size))
     }
 
     if (result.status < 200 || result.status >= 300) {
@@ -421,6 +369,7 @@ async function main() {
       throw new GenerateError(
         redactUpstream(message),
         [401, 403, 429, 503].includes(result.status),
+        true,
       )
     }
 
@@ -431,20 +380,26 @@ async function main() {
   }
 
   let bytes
+  let usedModel
   let lastError
-  for (let index = 0; index < config.keys.length; index += 1) {
-    const entry = config.keys[index]
-    try {
-      bytes = await generateWithKey(entry.apiKey)
-      break
-    } catch (error) {
-      lastError = error instanceof Error ? error : new GenerateError('生成失败')
-      const retryable = error instanceof GenerateError && error.retryable
-      const hasFallback = index < config.keys.length - 1
-      if (!retryable || !hasFallback) fail(lastError.message)
-      process.stderr.write('Codex Key 未能出图，已改用生图分组 Key。\n')
+  for (const model of models) {
+    for (let index = 0; index < config.keys.length; index += 1) {
+      const entry = config.keys[index]
+      try {
+        bytes = await generateWithKey(model, entry.apiKey)
+        usedModel = model
+        break
+      } catch (error) {
+        lastError = error instanceof Error ? error : new GenerateError('生成失败')
+        const retryable = error instanceof GenerateError && error.retryable
+        if (!retryable || index === config.keys.length - 1) break
+        process.stderr.write('Codex Key 未能出图，已改用生图分组 Key。\n')
+      }
     }
+    if (bytes || !(lastError instanceof GenerateError) || !lastError.upstream) break
   }
+  if (!bytes) fail(lastError ? lastError.message : '生成失败')
+  if (usedModel !== requested) process.stderr.write(`${requested} 没能出图，已改用 ${usedModel}。\n`)
 
   const outputPath = path.resolve(options.out)
   const finalPath = path.extname(outputPath)

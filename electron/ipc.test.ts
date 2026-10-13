@@ -1163,6 +1163,7 @@ describe('registerIpcHandlers', () => {
       name: input?.name ?? 'key',
       key: 'sk-ipc-must-not-return-this-secret-key',
     }))
+    vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-image-2', 'gpt-image-2.5-flare'])
     const cached = providerIds.map((provider, index) => ({
       id: index + 1,
       provider,
@@ -1195,6 +1196,9 @@ describe('registerIpcHandlers', () => {
       expect(JSON.stringify(summary)).not.toContain('sk-ipc-must-not-return-this-secret-key')
       const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
       expect(fs.readFileSync(configPath, 'utf8')).toContain('sk-ipc-must-not-return-this-secret-key')
+      // The image tool draws with the newest OpenAI model the account's own key can list.
+      expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-ipc-must-not-return-this-secret-key')
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe('gpt-image-2.5-flare')
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }

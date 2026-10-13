@@ -22,9 +22,8 @@ description: >-
 |---|---|
 | Base URL | `config.json` 的 `baseUrl`，默认 `https://xm.solov.cc` |
 | 文生图 | `POST /v1/images/generations` |
-| Gemini 生图 | `POST /v1/chat/completions`（`gemini-3.1-flash-image` 不要走 Images API） |
 | 图生图 | `POST /v1/images/edits`（只接受 multipart，字段名 `image` 或 `image[]`） |
-| 默认模型 | `gpt-image-2` |
+| 默认模型 | 不传 `--model`：用星芒按当前账号挑好的 OpenAI 图片模型，没有时 `gpt-image-2` |
 | 默认画质 | `low`（要海报/小字再升 `high`） |
 | 超时 | ≥ 300 秒 |
 
@@ -36,21 +35,9 @@ description: >-
 node "<本技能目录>/scripts/generate.mjs" --prompt "一只橙色猫咪坐在窗台上，电影感光线" --out "./xingmang-cat.png"
 ```
 
-常用参数：`--model gpt-image-2`、`--size 1024x1024`（gpt-image-2 宽高必须是 16 的倍数）、`--quality low|medium|high`。
+常用参数：`--size 1024x1024`（gpt-image-2 系列宽高必须是 16 的倍数）、`--quality low|medium|high`。
 
 用户要 16:9 时直接传 `--size 1536x864`（或 `1280x720`），不要生成后再量像素。
-
-Gemini：
-
-```bash
-node "<本技能目录>/scripts/generate.mjs" --model gemini-3.1-flash-image --prompt "极简线性图标，透明底" --out "./icon.png"
-```
-
-即梦：
-
-```bash
-node "<本技能目录>/scripts/generate.mjs" --model jimeng_high_aes_general_v21_L --prompt "国风山水海报" --out "./poster.png"
-```
 
 图生图：
 
@@ -62,12 +49,7 @@ node "<本技能目录>/scripts/generate.mjs" --edit --image "./ref.png" --promp
 
 ## 模型怎么选
 
-| 场景 | 模型 |
-|---|---|
-| 默认 / 最稳 | `gpt-image-2` |
-| 中文海报、便宜快 | `jimeng_high_aes_general_v21_L` |
-| Gemini 出图 | `gemini-3.1-flash-image` |
-| 不要用 | `gpt-image-1.5`（生产 403） |
+只用 OpenAI 的 gpt-image 系列。一般不要传 `--model`：脚本和画图工具会用星芒按当前账号挑好的那个（站上开了 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`），新模型这次没画出来会自动换回 `gpt-image-2`。不要用 `gpt-image-1.5`（生产 403）。
 
 一次只出 1 张。文字密集必须 `quality=high`。不要传 `response_format`。
 
