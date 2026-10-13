@@ -60,6 +60,7 @@ import {
   shouldAutoRepairCliHooks,
   externalCliInstallRefusal,
   buildCliMaintenancePlan,
+  buildCliResolutionManifest,
   buildCliToolStatusFromSettled,
   buildDarwinCliLaunchPlan,
   buildDarwinTrustedVerificationRunner,
@@ -3630,6 +3631,7 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
    */
   function grokCommands(fixture: GrokFixture, installedBytes: () => Buffer) {
     const calls: Array<{ executable: string; argv: readonly string[] }> = []
+    const lifecycleManifests: unknown[] = []
     const runCommand = vi.fn(async (
       spec: { executable: string; argv: readonly string[] },
       options: { cwd?: string } = {},
@@ -3674,6 +3676,9 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
         }))
         fs.writeFileSync(path.join(platformPackage, 'bin', 'grok.br'), zlib.brotliCompressSync(fixture.binary))
       } else if (spec.argv[0] === 'ci') {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        lifecycleManifests.push(JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')))
         const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
         fs.mkdirSync(bin, { recursive: true })
         fs.writeFileSync(path.join(bin, `grok-${fixture.version}`), installedBytes(), { mode: 0o755 })
@@ -3691,12 +3696,12 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
         durationMs: 1,
       }
     })
-    return { runCommand, calls }
+    return { runCommand, calls, lifecycleManifests }
   }
 
   it('installs Grok with the lifecycle run, checks it byte for byte and never asks x.ai', async () => {
     const fixture = grokFixture()
-    const { runCommand, calls } = grokCommands(fixture, () => fixture.binary)
+    const { runCommand, calls, lifecycleManifests } = grokCommands(fixture, () => fixture.binary)
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
       new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
@@ -3713,6 +3718,10 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
     expect(npmRuns.map((call) => call.argv.includes('--ignore-scripts'))).toEqual([true, false])
     // The lifecycle run installs the resolved lock in place: no global install, no prefix.
     expect(npmRuns[1].argv.some((argument) => argument === '--global' || argument.startsWith('--prefix='))).toBe(false)
+    // npm 12 skips the postinstall that writes ~/.grok/bin unless the manifest allows exactly this release.
+    expect(lifecycleManifests).toEqual([
+      expect.objectContaining({ allowScripts: { [`@xai-official/grok@${fixture.version}`]: true } }),
+    ])
     expect(calls).toContainEqual({ executable: path.join(bin, `grok-${fixture.version}`), argv: ['--version'] })
   })
 
@@ -6001,6 +6010,50 @@ describe('CLI latest version state', () => {
       true,
       'darwin',
     )).toThrow('macOS 用户级 npm 前缀')
+  })
+
+  // npm 12 起依赖的安装脚本默认不跑，要按包放行；npm 11 及更早对放行名单视而不见，照旧全跑。
+  it('lets npm run only the install scripts each CLI cannot work without', () => {
+    const prefix = '/Users/tester/.local/share/XingMangAI/Cli/npm'
+    expect(buildCliMaintenancePlan('claude', '/usr/local/bin/npm', prefix, '2.1.291', true, 'darwin').argv).toEqual([
+      'install',
+      '--global',
+      `--prefix=${prefix}`,
+      '--allow-scripts=@anthropic-ai/claude-code@2.1.291',
+      '--omit=dev',
+      '--package-lock=false',
+      '@anthropic-ai/claude-code@2.1.291',
+    ])
+    // keytar only copies its bundled prebuilt binary; node-pty would compile from source
+    // and Gemini prefers the prebuilt @lydell/node-pty anyway.
+    expect(buildCliMaintenancePlan('gemini', '/usr/local/bin/npm', prefix, '0.62.0', true, 'darwin').argv)
+      .toContain('--allow-scripts=@github/keytar')
+    const codexPlan = buildCliMaintenancePlan('codex', '/usr/local/bin/npm', prefix, '0.160.1', true, 'darwin')
+    expect(codexPlan.argv.some((argument) => argument.startsWith('--allow-scripts'))).toBe(false)
+
+    // Scripts that have not passed the integrity check stay off whatever the npm version.
+    const unverified = buildCliMaintenancePlan('claude', '/usr/local/bin/npm', prefix, '2.1.291', false, 'darwin')
+    expect(unverified.argv).toContain('--ignore-scripts')
+    expect(unverified.argv.some((argument) => argument.startsWith('--allow-scripts'))).toBe(false)
+
+    // Grok installs with `npm ci`, where npm 12 rejects --allow-scripts (EALLOWSCRIPTS) and
+    // only reads the allowScripts field of the manifest in that directory.
+    const grokPlan = buildCliMaintenancePlan('grok', '/usr/local/bin/npm', null, '1.0.46', true, 'darwin')
+    expect(grokPlan.argv.some((argument) => argument.startsWith('--allow-scripts'))).toBe(false)
+    expect(buildCliResolutionManifest('grok', '1.0.46')).toEqual({
+      name: 'xingmang-cli-resolution',
+      version: '1.0.0',
+      private: true,
+      dependencies: { '@xai-official/grok': '1.0.46' },
+      allowScripts: { '@xai-official/grok@1.0.46': true },
+    })
+    // npm never reads the manifest during a global install, so the other three carry none.
+    expect(buildCliResolutionManifest('claude', '2.1.291')).toEqual({
+      name: 'xingmang-cli-resolution',
+      version: '1.0.0',
+      private: true,
+      dependencies: { '@anthropic-ai/claude-code': '2.1.291' },
+    })
   })
 
   it('builds source-owned uninstall plans without deleting shared prefixes', () => {
