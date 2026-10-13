@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chineseServerMessages, resolveChineseServerMessage } from './new-api-messages'
+import { chineseServerMessages, keylessChineseServerMessages, resolveChineseServerMessage } from './new-api-messages'
 
 function placeholders(text: string): string[] {
   return [...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((match) => match[1]).sort()
@@ -50,6 +50,38 @@ describe('resolveChineseServerMessage', () => {
     expect(resolveChineseServerMessage({ message_key: key, message_params: [10000] })).toBeNull()
   })
 
+  it('leaves alone the sentences rc.40 already answered in English, so they read as they do today', () => {
+    expect(resolveChineseServerMessage({
+      message: 'Current password is incorrect.',
+      message_key: 'Current password is incorrect.',
+    })).toBeNull()
+    expect(resolveChineseServerMessage({
+      message: 'This email address is already in use.',
+      message_key: 'This email address is already in use.',
+    })).toBeNull()
+  })
+
+  it('says the send-code rate limit the way rc.40 did, so the login box still reads it as a rate limit', () => {
+    expect(resolveChineseServerMessage({
+      message: 'Please wait before requesting another verification code.',
+      message_key: 'Please wait before requesting another verification code.',
+    })).toBe('发送过于频繁，请稍后再试')
+  })
+
+  it('translates the keyless security-proof sentences only when no key is present', () => {
+    expect(resolveChineseServerMessage({
+      success: false,
+      code: 'SECURITY_PROOF_REQUIRED',
+      message: 'Additional verification required',
+    })).toBe('需要进一步验证')
+    expect(resolveChineseServerMessage({ message: '需要安全验证', code: 'SECURITY_PROOF_REQUIRED' })).toBeNull()
+    expect(resolveChineseServerMessage({ message: 'constructor' })).toBeNull()
+    expect(resolveChineseServerMessage({
+      message: 'Additional verification required',
+      message_key: 'Something else',
+    })).toBeNull()
+  })
+
   it('ignores a key inherited from Object.prototype', () => {
     expect(resolveChineseServerMessage({ message_key: 'constructor' })).toBeNull()
     expect(resolveChineseServerMessage({
@@ -67,7 +99,7 @@ describe('chineseServerMessages', () => {
   })
 
   it('maps every key to a Chinese sentence', () => {
-    for (const [english, chinese] of chineseServerMessages) {
+    for (const [english, chinese] of [...chineseServerMessages, ...keylessChineseServerMessages]) {
       expect(chinese, english).toMatch(/[一-鿿]/)
       expect(chinese).not.toBe(english)
     }

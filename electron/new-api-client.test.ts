@@ -3749,6 +3749,20 @@ describe('rc.43+ English console messages', () => {
     await expect(client.completeTwoFactorLogin({ flowToken: 'flow', code: '123456' })).rejects.toThrow(expected)
   })
 
+  // middleware/secure_verification.go securityProofError: 403, a code and a
+  // bare English sentence with no message_key. rc.40 said it in Chinese.
+  it('says a security-proof refusal in Chinese although it carries no message_key', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: false,
+      code: 'SECURITY_PROOF_REQUIRED',
+      message: 'Additional verification required',
+    }, { status: 403 }))
+    await expect(client.changePassword({ originalPassword: 'old12345', newPassword: 'new12345' }))
+      .rejects.toThrow(/^需要进一步验证$/)
+  })
+
   it('still ends the second step when the flow has expired', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse('Verification flow expired', { code: 'AUTH_FLOW_INVALID' }))
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
