@@ -2963,6 +2963,69 @@ describe('updateKey', () => {
   })
 })
 
+// POST /api/verify's success envelope on rc.40 (service/security_verification.go
+// SecurityProof, written by controller/secure_verification.go UniversalVerify).
+function proofResponse(proofToken = 'proof-token-1'): Response {
+  return jsonResponse({
+    success: true,
+    message: '',
+    data: { proof_token: proofToken, expires_at: 1_790_000_000, method: 'password', scope: 'account.password.change' },
+  })
+}
+
+// A password change as rc.40 -- the version xm.solov.cc runs since 2026-10 --
+// handles it, from controller/user.go UpdateSelf, middleware/
+// secure_verification.go RequireSecurityProof, controller/secure_verification.go
+// UniversalVerify + writeSecurityOperationError and service/
+// security_verification.go: POST /api/verify trades the current password for a
+// one-time proof, and PUT /api/user/self refuses to change anything without it
+// in X-Security-Proof. An account with two-factor login may only prove itself
+// with that second factor, never with its password.
+function rc40PasswordServer(options: { password: string; twoFactor?: boolean }) {
+  let password = options.password
+  let issued = 0
+  const unspent = new Set<string>()
+  const fetchImpl = vi.fn<NewApiFetch>(async (input, init = {}) => {
+    const pathname = new URL(String(input)).pathname
+    const headers = (init.headers ?? {}) as Record<string, string>
+    const body = JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>
+    if (pathname === '/api/verify' && init.method === 'POST') {
+      if (body.scope !== 'account.password.change') {
+        return jsonResponse({ success: false, code: 'SECURITY_PROOF_SCOPE_MISMATCH', message: 'Verification does not match this action.' })
+      }
+      if (body.method !== 'password' || options.twoFactor) {
+        return jsonResponse({ success: false, code: 'SECURITY_PROOF_METHOD_MISMATCH', message: 'This verification method is not allowed for this action.' })
+      }
+      if (body.password !== password) {
+        return jsonResponse({ success: false, code: 'SECURITY_VERIFICATION_FAILED', message: 'Verification failed. Please try again.' })
+      }
+      issued += 1
+      unspent.add(`proof-${issued}`)
+      return proofResponse(`proof-${issued}`)
+    }
+    if (pathname === '/api/user/self' && init.method === 'PUT') {
+      const proof = headers['X-Security-Proof']
+      if (!proof) return jsonResponse({ success: false, code: 'SECURITY_PROOF_REQUIRED', message: '需要安全验证' }, { status: 403 })
+      if (!unspent.delete(proof)) return jsonResponse({ success: false, code: 'SECURITY_PROOF_INVALID', message: '安全验证状态无效' }, { status: 403 })
+      if (body.original_password !== password) {
+        return jsonResponse({ success: false, code: 'CURRENT_PASSWORD_INVALID', message: 'Current password is incorrect.' })
+      }
+      password = String(body.password)
+      return jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'rotated-access-token', token_type: 'Bearer', access_expires_at: null, session: {}, has_password: true, notification_warning: false },
+      })
+    }
+    throw new Error(`Unexpected rc.40 fixture request: ${init.method ?? 'GET'} ${pathname}`)
+  })
+  return { fetchImpl, password: () => password }
+}
+
+function requestsTo(fetchImpl: ReturnType<typeof vi.fn<NewApiFetch>>, pathname: string, method: string) {
+  return fetchImpl.mock.calls.filter(([url, init]) => new URL(String(url)).pathname === pathname && init?.method === method)
+}
+
 describe('changePassword', () => {
   it('requires login before it can be called', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
@@ -2983,32 +3046,101 @@ describe('changePassword', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  it('sends PUT /api/user/self with password and original_password', async () => {
+  it('changes the password on an rc.40 server, which refuses a change that carries no security proof', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .resolves.toEqual({ changed: true })
+
+    expect(server.password()).toBe('new-password-2')
+  })
+
+  it('proves the original password through POST /api/verify, then spends that proof on PUT /api/user/self', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+
+    const [[verifyUrl, verifyInit], [changeUrl, changeInit]] = server.fetchImpl.mock.calls
+    expect(String(verifyUrl)).toBe(`${testBaseUrl}/api/verify`)
+    expect(verifyInit?.method).toBe('POST')
+    expect(JSON.parse(String(verifyInit?.body))).toEqual({ method: 'password', scope: 'account.password.change', password: 'old-password-1' })
+    expect((verifyInit?.headers as Record<string, string>).Authorization).toBe('Bearer test-access-token-abc')
+    expect(String(changeUrl)).toBe(`${testBaseUrl}/api/user/self`)
+    expect(changeInit?.method).toBe('PUT')
+    expect(JSON.parse(String(changeInit?.body))).toEqual({ password: 'new-password-2', original_password: 'old-password-1' })
+    const changeHeaders = changeInit?.headers as Record<string, string>
+    expect(changeHeaders['X-Security-Proof']).toBe('proof-1')
+    expect(changeHeaders.Authorization).toBe('Bearer test-access-token-abc')
+    expect(server.fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks for a fresh proof every time, since rc.40 accepts each one only once', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+    await client.changePassword({ originalPassword: 'new-password-2', newPassword: 'new-password-3' })
+
+    expect(server.password()).toBe('new-password-3')
+    expect(requestsTo(server.fetchImpl, '/api/verify', 'POST')).toHaveLength(2)
+    const proofs = requestsTo(server.fetchImpl, '/api/user/self', 'PUT')
+      .map(([, init]) => (init?.headers as Record<string, string>)['X-Security-Proof'])
+    expect(proofs).toEqual(['proof-1', 'proof-2'])
+  })
+
+  it('says the original password is wrong when the security check turns it down, without sending the new one', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    const failure = client.changePassword({ originalPassword: 'wrong-password', newPassword: 'new-password-2' })
+
+    await expect(failure).rejects.toThrow(/^原密码错误$/)
+    const error = await failure.catch((reason: unknown) => reason)
+    expect(matchAccountErrorMessage(error)).toBe('原密码错误，请重新输入')
+    // The log still names what the server answered (三线路 7b).
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 200 })
+    expect(requestsTo(server.fetchImpl, '/api/user/self', 'PUT')).toHaveLength(0)
+    expect(server.password()).toBe('old-password-1')
+  })
+
+  it('also reads CURRENT_PASSWORD_INVALID from the change itself as a wrong original password', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
-    fetchImpl.mockResolvedValueOnce(jsonResponse({
-      success: true,
-      message: '',
-      data: {
-        access_token: 'rotated-access-token',
-        token_type: 'Bearer',
-        access_expires_at: '2026-08-10T02:00:00.000Z',
-        session: {},
-      },
-    }))
+    fetchImpl.mockResolvedValueOnce(proofResponse())
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: false, code: 'CURRENT_PASSWORD_INVALID', message: 'Current password is incorrect.' }))
 
-    const result = await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .rejects.toThrow(/^原密码错误$/)
+  })
 
-    expect(result).toEqual({ changed: true })
-    const [url, init] = fetchImpl.mock.calls[0]
-    expect(String(url)).toBe(`${testBaseUrl}/api/user/self`)
-    expect(init?.method).toBe('PUT')
-    expect(JSON.parse(String(init?.body))).toEqual({ password: 'new-password-2', original_password: 'old-password-1' })
+  it('passes on the refusal for an account that must verify with its second factor, without sending the change', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1', twoFactor: true })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .rejects.toThrow('This verification method is not allowed for this action.')
+    expect(requestsTo(server.fetchImpl, '/api/user/self', 'PUT')).toHaveLength(0)
+    expect(server.password()).toBe('old-password-1')
+  })
+
+  it('leaves the server to refuse the change when the security check hands back no proof', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+    server.fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .rejects.toThrow(/^需要安全验证$/)
+    const [[, changeInit]] = requestsTo(server.fetchImpl, '/api/user/self', 'PUT')
+    expect(changeInit?.headers).not.toHaveProperty('X-Security-Proof')
+    expect(server.password()).toBe('old-password-1')
   })
 
   it('adopts the fresh access token in place so the very next call uses it without a re-login', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({
       success: true,
       message: '',
@@ -3019,14 +3151,16 @@ describe('changePassword', () => {
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userDetailData() }))
     await client.getProfile()
 
-    const [, init] = fetchImpl.mock.calls[1]
+    const [, init] = fetchImpl.mock.calls[2]
     const headers = init?.headers as Record<string, string>
     expect(headers.Authorization).toBe('Bearer rotated-access-token')
+    expect(headers).not.toHaveProperty('X-Security-Proof')
   })
 
   it('still resolves successfully when the response carries no usable bundle, without touching the existing access token', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
 
     await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
@@ -3034,26 +3168,29 @@ describe('changePassword', () => {
 
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userDetailData() }))
     await client.getProfile()
-    const [, init] = fetchImpl.mock.calls[1]
+    const [, init] = fetchImpl.mock.calls[2]
     const headers = init?.headers as Record<string, string>
     expect(headers.Authorization).toBe('Bearer test-access-token-abc')
   })
 
-  it('surfaces the server-reported failure message for a wrong original password', async () => {
+  it('surfaces the server-reported failure message from the change itself', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
     fetchImpl.mockResolvedValueOnce(failureResponse('原密码错误'))
 
     await expect(client.changePassword({ originalPassword: 'wrong-password', newPassword: 'new-password-2' }))
       .rejects.toThrow('原密码错误')
   })
 
-  it('redacts both plaintext passwords from an echoed failure message (I13)', async () => {
+  it('redacts both plaintext passwords and the proof from an echoed failure message (I13)', async () => {
     const originalPassword = 'super-secret-original-pw'
     const newPassword = 'super-secret-new-pw'
+    const proofToken = 'super-secret-proof-token'
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
-    fetchImpl.mockResolvedValueOnce(failureResponse(`rejected: ${originalPassword} / ${newPassword} invalid`))
+    fetchImpl.mockResolvedValueOnce(proofResponse(proofToken))
+    fetchImpl.mockResolvedValueOnce(failureResponse(`rejected: ${originalPassword} / ${newPassword} / ${proofToken} invalid`))
 
     let message = ''
     try {
@@ -3064,6 +3201,19 @@ describe('changePassword', () => {
     expect(message).toContain('[REDACTED]')
     expect(message).not.toContain(originalPassword)
     expect(message).not.toContain(newPassword)
+    expect(message).not.toContain(proofToken)
+  })
+
+  it('redacts the original password from an echoed security-check failure (I13)', async () => {
+    const originalPassword = 'super-secret-original-pw'
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse(`check rejected: ${originalPassword}`))
+
+    const failure = client.changePassword({ originalPassword, newPassword: 'new-password-2' })
+
+    await expect(failure).rejects.toThrow('[REDACTED]')
+    await expect(failure).rejects.not.toThrow(originalPassword)
   })
 
   it('clears the session and throws a typed error on a 401 response', async () => {
@@ -3818,6 +3968,7 @@ describe('rc.43+ English console messages', () => {
   it('says a security-proof refusal in Chinese although it carries no message_key', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({
       success: false,
       code: 'SECURITY_PROOF_REQUIRED',

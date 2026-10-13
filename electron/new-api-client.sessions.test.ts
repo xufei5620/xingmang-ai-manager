@@ -27,6 +27,8 @@ function harness(timeoutMs = 1000, options: Pick<NewApiClientOptions, 'onCredent
     if (pathname === '/api/user/auth/refresh') return refreshResponse(Number(headers.Cookie.match(/cookie-(\d+)/)?.[1] ?? 0))
     if (pathname === '/api/status') return response({ quota_per_unit: 500000, quota_display_type: 'USD', usd_exchange_rate: 1 })
     if (pathname === '/api/user/self') return response(user(Number(headers['New-Api-User'])))
+    // rc.40: a password change first trades the current password for a one-time proof.
+    if (pathname === '/api/verify') return response({ proof_token: 'fixture-proof', expires_at: 1_790_000_000, method: 'password', scope: 'account.password.change' })
     throw new Error(`Unexpected fixture request: ${pathname}`)
   })
   const onSessionChange = vi.fn()
