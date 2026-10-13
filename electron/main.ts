@@ -1620,9 +1620,12 @@ if (!hasSingleInstanceLock) {
         parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
       ),
       // Codex 的官方插件目录由本软件替它下载（codex-plugin-catalog.ts），与装 CLI
-      // 同一条下载通道，也同样临时借加速线路。
+      // 同一条下载通道。先从星芒存储桶下，没走通才去 GitHub，那时才临时借加速线路。
       downloadFetch,
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
+      codexCatalogBucket: {
+        onFallback: (detail) => runtimeLog.log('warn', 'install', 'codex-plugin-catalog.bucket-fallback', 'Codex 插件目录存储桶这一路没走通，改从 GitHub 下', { detail }),
+      },
     })
     let latestDiagnostics: DiagnosticsReport | null = null
     // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走直连没查通时它改查默认线路，并把失败报过来。

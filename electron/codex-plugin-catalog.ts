@@ -6,6 +6,8 @@ import { promisify } from 'node:util'
 import { readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
 import { readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseBytes } from './bounded-response'
+import { downloadCodexPluginCatalogFromBucket, type CodexPluginCatalogBucketOptions } from './codex-plugin-catalog-bucket'
+import type { DesktopBucketOptions } from './desktop-package-bucket'
 import { assertNoReparseComponents, assertSafeDataFile, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
@@ -17,9 +19,10 @@ import { assertNoReparseComponents, assertSafeDataFile, removeSafeDataFile, writ
  * 用 API Key（也就是接中转）登录时 Codex 读的是快照里的 api_marketplace.json，
  * 市场名 `openai-api-curated`，沙箱实测 49 个插件，装得上。
  *
- * 所以这里替 Codex 把第一份快照放好：走本软件的下载通道（能用下载加速，等待也
- * 放宽），落到 Codex 自己会读的位置、用它自己的布局。之后 Codex 自己同步成功会
- * 原地换新；同步失败时它看到本地已有快照，就继续用这一份，不会删掉。
+ * 所以这里替 Codex 把第一份快照放好：先从星芒存储桶下同一个提交的压缩包
+ * （codex-plugin-catalog-bucket.ts，国内直连），没走通再走本软件的下载通道去 GitHub
+ * （能用下载加速，等待也放宽），落到 Codex 自己会读的位置、用它自己的布局。之后 Codex
+ * 自己同步成功会原地换新；同步失败时它看到本地已有快照，就继续用这一份，不会删掉。
  *
  * 只在快照不存在时写，从不覆盖一份完整的快照——那是 Codex 自己的状态。
  */
@@ -566,6 +569,61 @@ export interface EnsureCodexPluginCatalogOptions {
   codexHome: string
   fetch: typeof fetch
   timeoutMs?: number
+  /** 先从星芒存储桶下（codex-plugin-catalog-bucket.ts）；缺省不试，直接去 GitHub。 */
+  bucket?: DesktopBucketOptions & { download?: CodexPluginCatalogBucketOptions }
+  /** 去 GitHub 之前借一条下载线路，下完就还；桶那一路走通了就不借。缺省 = 不借。 */
+  acquireGitHubRoute?: () => Promise<{ release(): Promise<void> }>
+}
+
+async function decodeCatalogArchive(compressed: Buffer): Promise<CodexPluginCatalogArchive> {
+  let tar: Buffer
+  try {
+    tar = await gunzip(compressed, { maxOutputLength: maximumExtractedBytes + maximumEntries * 1024 })
+  } catch {
+    throw new Error(incompleteCatalogMessage)
+  }
+  return parseCodexPluginCatalogTar(tar)
+}
+
+/**
+ * 桶里那份和 GitHub 那份用同一套规矩核；另外压缩包自己写的提交号必须和桶里清单写的一样，
+ * 免得把清单说的那一版之外的东西当成它落盘。
+ */
+async function readCatalogFromBucket(
+  fetchImplementation: typeof fetch,
+  options: CodexPluginCatalogBucketOptions | undefined,
+): Promise<CodexPluginCatalogArchive> {
+  const { commit, compressed } = await downloadCodexPluginCatalogFromBucket(fetchImplementation, options)
+  const archive = await decodeCatalogArchive(compressed)
+  if (archive.commit !== commit) throw new Error('存储桶里的插件目录和清单写的提交号对不上')
+  return archive
+}
+
+async function downloadCatalogArchive(options: EnsureCodexPluginCatalogOptions): Promise<CodexPluginCatalogArchive> {
+  if (options.bucket) {
+    try {
+      return await readCatalogFromBucket(options.fetch, options.bucket.download)
+    } catch (error) {
+      // 客户看不出换了路：原因只进运行日志，界面照旧是 GitHub 那一路的说法。
+      const detail = error instanceof Error ? error.message : String(error)
+      options.bucket.onFallback?.(`codex-plugin-catalog：${detail || '存储桶这一路没走通'}`)
+    }
+  }
+  // 借不到线路就按直连下载：加速是加分项，不能变成下载的前置条件。
+  const route = options.acquireGitHubRoute ? await options.acquireGitHubRoute().catch(() => null) : null
+  let compressed: Buffer
+  try {
+    compressed = await fetchCatalogArchive(
+      options.fetch,
+      AbortSignal.timeout(options.timeoutMs ?? CODEX_PLUGIN_CATALOG_TIMEOUT_MS),
+    )
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('安全上限')) throw new Error(incompleteCatalogMessage)
+    throw new Error(codexPluginCatalogNetworkMessage)
+  } finally {
+    await route?.release().catch(() => undefined)
+  }
+  return decodeCatalogArchive(compressed)
 }
 
 export type EnsureCodexPluginCatalogResult = 'present' | 'downloaded'
@@ -584,24 +642,7 @@ export async function ensureCodexPluginCatalog(
   const parent = path.dirname(paths.directory)
   // 先清再下：清不掉就不必让客户白等一次二十来 MB 的下载。
   await ensureCatalogBackupCapacity(paths)
-
-  let compressed: Buffer
-  try {
-    compressed = await fetchCatalogArchive(
-      options.fetch,
-      AbortSignal.timeout(options.timeoutMs ?? CODEX_PLUGIN_CATALOG_TIMEOUT_MS),
-    )
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('安全上限')) throw new Error(incompleteCatalogMessage)
-    throw new Error(codexPluginCatalogNetworkMessage)
-  }
-  let tar: Buffer
-  try {
-    tar = await gunzip(compressed, { maxOutputLength: maximumExtractedBytes + maximumEntries * 1024 })
-  } catch {
-    throw new Error(incompleteCatalogMessage)
-  }
-  const archive = parseCodexPluginCatalogTar(tar)
+  const archive = await downloadCatalogArchive(options)
 
   assertNoReparseComponents(parent, 'Codex 插件目录')
   await fs.promises.mkdir(parent, { recursive: true })

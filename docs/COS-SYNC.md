@@ -1,6 +1,6 @@
 # 安装包自动同步到腾讯云 COS
 
-COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude 桌面端的官方离线包有两个用处：教程站下载页的备用下载；星芒一键安装这两个桌面端时先从这里下（yoyo 2026-10-10 定），读不到、对不上、太慢就照旧走原来的路，见下文「星芒客户端怎么用这两份清单」。
+COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude 桌面端的官方离线包有两个用处：教程站下载页的备用下载；星芒一键安装这两个桌面端时先从这里下（yoyo 2026-10-10 定），读不到、对不上、太慢就照旧走原来的路，见下文「星芒客户端怎么用这两份清单」。Codex 官方插件目录也放在这个桶里，只给星芒用：替 Codex 下第一份插件目录时先从这里下（yoyo 2026-10-13 定），见下文「Codex 插件目录」。
 
 教程可见名称使用「Codex 桌面端」，OpenAI 官方包的内部 `chatgpt` 目录、文件名和产品清单标识保持兼容。
 
@@ -15,6 +15,7 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 | 星芒 AI 管理工具 | `publish-release` 正式发布完成后，显式执行 COS 同步 | `xingmang/latest.json` |
 | 官方 ChatGPT 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-chatgpt-official-cos` | `chatgpt/latest.json` |
 | 官方 Claude 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-claude-official-cos` | `xingmang/offline/claude/latest.json` |
+| Codex 官方插件目录（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-codex-plugins-cos` | `xingmang/offline/codex-plugins/latest.json` |
 
 星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流，所以同步写在 `publish-release` 里，是排在 publish 后面的单独作业 `cos-sync`：publish 作业（`release` 环境批准、`update-feed` 串行）成功后才开始；它挂 `cos-sync` 环境，不多一次批准；和手动导入 `sync-published-manager-cos` 共用 `cos-manager-publish` 并发组，因为两边都会写 `xingmang/latest.json`。2026-10-04 以前同步接在 publish 作业末尾，为什么拆出来见下文「网络不稳时」。
 
@@ -52,7 +53,7 @@ Claude 备用文件保存在 `xingmang/offline/claude/<平台>/sha256-<摘要>/`
 ## 1. 准备 COS 上传身份
 
 1. 在腾讯云 CAM 创建专用于安装包同步的子账号，并为其准备 API 访问凭据。
-2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*` 和 `chatgpt/*` 两个前缀执行 GetObject、HeadObject、PutObject，Claude 备用包属于 `xingmang/offline/claude/`。
+2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*` 和 `chatgpt/*` 两个前缀执行 GetObject、HeadObject、PutObject，Claude 备用包属于 `xingmang/offline/claude/`，Codex 插件目录属于 `xingmang/offline/codex-plugins/`。
 3. 把策略关联给该子账号。同步脚本不需要删除文件、修改 ACL、管理存储桶或操作其它云产品的权限。
 4. 存储桶使用标准存储、公有读私有写，版本控制保持关闭。不可变版本目录和 `x-cos-forbid-overwrite` 用于防止包被覆盖；COS 的这项防覆盖头在开启桶版本控制后无效。
 
@@ -150,9 +151,20 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 
 打开 **Actions → sync-claude-official-cos → Run workflow**，分支选 `main`，首次选 `all`。定时与 `all` 覆盖 Windows x64/ARM64 和 Mac 通用 DMG/PKG 四个安装包。也可只重跑 `windows`、`macos`，或精确选择 `windows-x64`、`windows-arm64`、`macos-dmg-universal`、`macos-pkg-universal`；精确选择沿用同一来源、原生验证和完整公共回读流程，平台作业保留索引中的其它已发布平台（包括历史 Linux 条目）。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/claude/latest.json`。沿用现有 `xingmang/*` 的 GetObject、HeadObject、PutObject 权限和 GitHub Secrets，不增加 `claude/*` 授权或创建新密钥。
 
+### Codex 插件目录
+
+Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内常常同步不下来，星芒替它下第一份（`electron/codex-plugin-catalog.ts`）。`sync-codex-plugins-cos` 把这份目录放进桶里：
+
+- 先问 GitHub 接口 `main` 现在是哪个提交（`api.github.com/repos/openai/plugins/commits/main`，带本次运行的只读 `GITHUB_TOKEN`，免得共用机器的匿名额度不够）。和 `latest.json` 里的提交一样、桶里那个文件也还在，就什么都不做。上游一两周才变一次，所以绝大多数运行一分钟内就结束。
+- 变了才下 `codeload.github.com/openai/plugins/tar.gz/<提交号>`（不跟跳转，上限 150 MB），解开核一遍：压缩包自己写的提交号要和接口说的一样；路径不许有 `..`、反斜杠、冒号、Windows 保留名、以点或空格结尾的段，不许只差大小写的重名；`.agents/plugins/marketplace.json`（`openai-curated`）和 `api_marketplace.json`（`openai-api-curated`）两份清单都在、每个插件都有名字和来源。这些和客户端收 GitHub 那份时的规矩一样，客户端会拒的不传上去。核不过时日志里 `stage-failed` 的 `archiveCheck` 写着是哪一条。
+- 压缩包传到 `xingmang/offline/codex-plugins/sha256-<SHA-256>/openai-plugins-<提交号>.tar.gz`（`application/gzip`，不可覆盖），完整回读核过，最后才改 `latest.json`。一次二十来 MB，桶里每变一次多存一份，旧的不删。
+- 在 Ubuntu 机器上跑，不用 Windows/Mac：这份目录没有签名可核。部分插件写着「专有」许可（`docs/RECON-CODEX-PLUGINS.md` 第 2 节），由我们转发，yoyo 2026-10-13 已接受。
+
+打开 **Actions → sync-codex-plugins-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/codex-plugins/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
+
 ### 同步失败报警
 
-两条官方离线包定时同步各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
+三条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
 
 - 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个平台。
 - 之后再失败只更新这条 issue 的正文，不另开；下一次定时同步成功就自动留言「恢复正常更新」并关闭。
@@ -181,7 +193,7 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 **全球加速（可选，要在腾讯云控制台操作）**：
 
 1. 腾讯云控制台 → 对象存储 → 存储桶列表 → `xingmang-downloads-1342302199` → 域名与传输管理 → 全球加速 → 编辑，打开后保存（菜单名以控制台为准）。加速的流量另外计费，以腾讯云价格页为准。
-2. GitHub 仓库 Settings → Secrets and variables → Actions → Variables，新建 `XINGMANG_COS_ACCELERATE`，值填 `true`。四条 COS 工作流都会读它。
+2. GitHub 仓库 Settings → Secrets and variables → Actions → Variables，新建 `XINGMANG_COS_ACCELERATE`，值填 `true`。五条 COS 工作流都会读它。
 3. 打开后只有上传（Init、分块、Complete、Abort、PUT）走 `<桶名>.cos.accelerate.myqcloud.com`；完整回读核对、读 latest 和客户下载仍用原来的上海地址。签名方式、CAM 权限都不变，不用新建密钥。
 
 要关掉，把变量删掉或改回 `false`。没开桶的全球加速就把变量设成 `true`，上传会被拒绝而失败，删掉变量重跑即可（推测：拒绝的具体错误码没有实测过）。加速域名能不能明显提速，只能等下一次真实发版看 `[manager-sync]` 的耗时。
@@ -226,6 +238,8 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 - Codex 更新时，桶里那一版不比本机新（桶是定时同步的，会晚一些）就不下，照旧走商店那几路。
 
 改同步脚本时别改动上面这些字段的写法，改了客户端会全部退回原来的路（装得上，只是慢、费加速流量）。确实要改清单格式时，先改客户端认新旧两种，发版放量以后再改同步。
+
+Codex 插件目录同理（`electron/codex-plugin-catalog-bucket.ts`）：客户在「插件 → 市场 → Codex」点「下载插件目录」时，先读 `xingmang/offline/codex-plugins/latest.json`。认的字段：`schemaVersion` 为 1、`product` 为 `codex-plugin-catalog`；`source` 的 `repository`、`ref`、40 位小写 `commit`；`artifact` 的 `key`（必须正好是上节那个路径）、`url`（桶地址加 `key`）、`bytes`、`sha256`、`contentType`（`application/gzip`）、`verification`（`github-commit-archive-manifests`）。下载按大小和 SHA-256 核，解开以后照 GitHub 那一份的规矩再核一遍，压缩包里的提交号还要和清单一致。读不到、对不上、太慢（过了头半分钟照当时速度还要 2 分钟以上，或者半分钟没收到数据）都悄悄改去 GitHub，原因只写进运行日志（`codex-plugin-catalog.bucket-fallback`）；只有改去 GitHub 时才借下载加速线路。
 
 ## 本次范围
 
