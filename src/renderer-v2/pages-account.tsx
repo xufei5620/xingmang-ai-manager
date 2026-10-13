@@ -56,6 +56,7 @@ import {
   ResultNotice,
   useOperation,
   useRefreshRequest,
+  useReloadWhenShown,
   useResource,
 } from './business-common'
 import {
@@ -89,7 +90,7 @@ import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
 import { buildTopupBonus } from './features/account/topup-bonus'
 import { paymentMethodLabel } from './features/account/payment-method-label'
-import { describeTopupTier, isQuotableAmount, useTopupQuotes } from './features/account/topup-tier'
+import { describeTopupTier, isQuotableAmount, sameTopupInfo, useTopupQuotes } from './features/account/topup-tier'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
 import type { LoginTarget } from './features/auth/api'
@@ -564,6 +565,7 @@ export function AccountPage({
   onSubscriptionPurchased,
   onOpenHelp,
   onOpenHealth,
+  active,
 }: {
   api: V2Bridge
   initialTab?: AccountTab
@@ -595,6 +597,8 @@ export function AccountPage({
   onOpenHelp?: () => void
   /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
   onOpenHealth?: () => void
+  /** 外壳说的「现在显示的是不是这一页」；缺省 = 只按分页算（旧行为）。 */
+  active?: boolean
 }) {
   const pageRef = useRef<HTMLElement>(null)
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
@@ -773,6 +777,7 @@ export function AccountPage({
             openHealth={onOpenHealth}
             presetAmount={rechargeAmount}
             presetRequest={tabRequest}
+            shown={(active ?? true) && activeTab === 'recharge'}
           />
         )
       case 'orders':
@@ -2401,6 +2406,8 @@ function AccountOrders({
     </>
   )
 }
+// 切回充值页时，上次读充值信息不到这么久就不重读（见 AccountRecharge 里的说明）。
+const rechargeReloadAfterMs = 60_000
 function AccountRecharge({
   api,
   balance,
@@ -2415,6 +2422,7 @@ function AccountRecharge({
   openHealth,
   presetAmount,
   presetRequest,
+  shown,
 }: {
   api: V2Bridge
   /** 余额读不到时为 null：卡头不写「当前余额」，充值照常能用。 */
@@ -2432,10 +2440,16 @@ function AccountRecharge({
   openHealth?: () => void
   presetAmount?: number
   presetRequest?: number
+  /** 这一页正摆在客户眼前（个人中心在前台、停在「充值与订阅」）；缺省 = 切回来不重读（旧行为）。 */
+  shown?: boolean
 }) {
   // 充值信息和订阅分开读：订阅那边出错只影响「我的订阅」「选择订阅」两张卡，
   // 读到充值信息就能充值。
-  const loadInfo = useCallback(() => api.getAccountTopupInfo(), [api])
+  const infoReadAt = useRef(0)
+  const loadInfo = useCallback(() => {
+    infoReadAt.current = Date.now()
+    return api.getAccountTopupInfo()
+  }, [api])
   const info = useResource(loadInfo)
   const loadSubscriptions = useCallback(async () => {
     const [plans, subscriptions] = await Promise.all([
@@ -2450,6 +2464,28 @@ function AccountRecharge({
     void subscriptions.reload()
   }
   useRefreshRequest(refreshRequest, reloadAll)
+  // 档位、赠送、订阅价都在后台改，这一页却会一直挂着：切到别的页只是藏起来、不卸载，点关闭
+  // 也只是缩到托盘，客户可能隔几天才回来。所以切回这一页、或者停在这一页的窗口回到前台时
+  // 重读一次，摆着的就是后台现在的样子。一分钟内不重读第二次：每读一次，档位的实付都要
+  // 逐档再试算一遍，来回点几下就会撞上服务端限流。
+  const reloadIfStale = useRef(reloadAll)
+  reloadIfStale.current = () => {
+    if (Date.now() - infoReadAt.current >= rechargeReloadAfterMs) reloadAll()
+  }
+  useReloadWhenShown(shown, () => reloadIfStale.current())
+  const shownRef = useRef(shown)
+  shownRef.current = shown
+  useEffect(() => {
+    function foreground() {
+      if (shownRef.current && document.visibilityState !== 'hidden') reloadIfStale.current()
+    }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    return () => {
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
+    }
+  }, [])
   const operation = useOperation()
   const { offline } = useOnlineStatus()
   const [amount, setAmount] = useState(() => presetAmount ? String(presetAmount) : '10')
@@ -2461,9 +2497,11 @@ function AccountRecharge({
   }, [presetAmount, presetRequest])
   const [method, setMethod] = useState('')
   const [code, setCode] = useState('')
-  const [quote, setQuote] = useState<Awaited<
+  // 报价连同同一时刻读到的折扣一起记：确认框里的「活动赠送」和应付金额出自同一次询问。
+  // 折扣为 null = 这次没读到充值信息，确认框不写赠送。
+  const [quote, setQuote] = useState<(Awaited<
     ReturnType<V2Bridge['quoteAccountTopupAmount']>
-  > | null>(null)
+  > & { discounts: Record<string, number> | null }) | null>(null)
   const [purchase, setPurchase] = useState<Plan | null>(null)
   const [purchaseMethod, setPurchaseMethod] = useState('balance')
   const [redeemOpen, setRedeemOpen] = useState(false)
@@ -2583,7 +2621,7 @@ function AccountRecharge({
     })
   }
   const customTier = customAmount === null ? null : tierView(customAmount)
-  const quoteBonus = quote ? buildTopupBonus(quote.amount, info.data?.discounts) : null
+  const quoteBonus = quote?.discounts ? buildTopupBonus(quote.amount, quote.discounts) : null
   const quoteTopup = () =>
     void operation.execute(
       'quote',
@@ -2591,7 +2629,14 @@ function AccountRecharge({
         if (offline) throw new Error(offlineActionMessage)
         const value = validateTopupAmount(Number(amount), topupMinimum)
         if (!paymentMethod) throw new Error('暂时没有可用的支付渠道。')
-        setQuote(await api.quoteAccountTopupAmount({ amount: value }))
+        // 页面可能摆了很久，活动早就撤了或改了：充值信息和报价一起重新问，确认框写的赠送、
+        // 卡片上的档位都按这一刻的来。充值信息这次没读到就不写赠送，不报一个可能已经没有的赠送。
+        const [fresh, next] = await Promise.all([
+          api.getAccountTopupInfo().catch(() => null),
+          api.quoteAccountTopupAmount({ amount: value }),
+        ])
+        if (fresh && !sameTopupInfo(info.data, fresh)) info.setData(fresh)
+        setQuote({ ...next, discounts: fresh?.discounts ?? null })
       },
       '',
     )

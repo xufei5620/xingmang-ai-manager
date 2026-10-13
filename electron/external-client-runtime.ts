@@ -27,7 +27,6 @@ import { resolveWindowsExplorerExecutable } from './system-shell'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode } from './windows-elevation'
 import { pathWithinWindowsRoot, resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
-import { installWorkBuddyFromOfficial } from './workbuddy-installer'
 
 const tools: readonly ExternalToolId[] = ['workbuddy', 'claudeDesktop', 'opencode']
 const definitions = {
@@ -41,11 +40,10 @@ const maximumProbeBytes = 256 * 1024
 // 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
 // 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
 export const externalClientWingetUnavailableHint = '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测'
+// Windows 上 WorkBuddy 由客户自己去腾讯官网下载（yoyo 2026-10-13），首页那一行的说明。
+const workBuddySelfDownloadHint = '到腾讯官网下载安装，装好后回来重新检测'
 // Windows 上签名不对、Mac 上苹果的签名核对没过，首页那一行说的都是这一句。
 const signatureMismatchMessage = '客户端数字签名无效或签名发布者与官方发布者不一致'
-// winget 自己的软件源坏了：源数据没有（多半是之前那次更新源没下下来），或者下下来的
-// 源数据对不上。两种都出在打开源的时候，那时连客户端的清单都还没读到，安装程序一步没动。
-const wingetSourceDataFailures = [0x8a15000f, 0x8a15003f]
 // 检测脚本最多交回几条读不出来的安装记录（只进运行日志）。
 const maximumRegistryFailures = 10
 // 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
@@ -103,7 +101,6 @@ export interface ExternalClientRuntimeOptions {
   /** 读应用包指纹用的 lstat；测试不碰本机文件。 */
   lstatPath?: (candidate: string) => Promise<BundleEntryStats>
   launchProcess?: (plan: LaunchPlan) => Promise<void>
-  installWorkBuddyFromOfficial?: typeof installWorkBuddyFromOfficial
   installClaudeDesktopFromOfficial?: typeof installClaudeDesktopFromOfficial
   installClaudeDesktopFromBucket?: typeof installClaudeDesktopFromBucket
   /**
@@ -227,27 +224,21 @@ function officialDownloadUrl(tool: ExternalToolId): string | null {
 }
 
 /**
- * 这台电脑没有可信的系统 winget 时各家的出路。WorkBuddy 换腾讯官方安装包，首页灰字
- * 交代一句；Claude Desktop 换 Claude 官网的离线安装包，和有 winget 时一样只给「安装」；
- * 其余没有星芒核对过的官方安装包，只能去官网自己下载。
+ * Windows 上各家怎么装。WorkBuddy 一律让客户去腾讯官网自己下载、装好回来重新检测，星芒只管
+ * 认出来和写配置（yoyo 2026-10-13）：认它看的是卸载记录和腾讯签名，跟谁装的无关。Claude Desktop
+ * 没有可信的系统 winget 时换 Claude 官网的离线安装包，和有 winget 时一样只给「安装」；OpenCode
+ * 没有 winget 就只能去官网自己下载。
  */
-function windowsWithoutWinget(tool: ExternalToolId): { hint: string | null; official: boolean } {
-  if (tool === 'workbuddy') return { hint: '将使用腾讯官方安装包', official: true }
-  if (tool === 'claudeDesktop') return { hint: null, official: true }
-  return { hint: externalClientWingetUnavailableHint, official: false }
+function windowsInstallRoute(tool: ExternalToolId, wingetAvailable: boolean): { hint: string | null; oneClick: boolean } {
+  if (tool === 'workbuddy') return { hint: workBuddySelfDownloadHint, oneClick: false }
+  if (wingetAvailable || tool === 'claudeDesktop') return { hint: null, oneClick: true }
+  return { hint: externalClientWingetUnavailableHint, oneClick: false }
 }
 
 function wingetNetworkFailure(error: unknown): boolean {
   if (!(error instanceof CommandRunnerError) || error.code !== 'EXIT_NON_ZERO' || error.exitCode === null || error.signal) return false
   // WinINet timeout, name resolution, connection and connection-reset failures.
   return [0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(error.exitCode >>> 0)
-}
-
-/** 连不上微软的软件下载源，或者连上了但 winget 自己的软件源坏了：这两种都还没开始装。 */
-function wingetSourceUnavailable(error: unknown): boolean {
-  if (wingetNetworkFailure(error)) return true
-  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO' && error.exitCode !== null && !error.signal
-    && wingetSourceDataFailures.includes(error.exitCode >>> 0)
 }
 
 function wingetCancelled(error: unknown): boolean {
@@ -793,15 +784,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   function status(tool: ExternalToolId, inspection: Inspection, winget: SystemWingetResolution): ExternalClientRuntimeStatus {
     const client = inspection.clients.find((item) => item.tool === tool)
     const platformHint = noInstallHint(tool)
-    const fallback = platform === 'win32' && platformHint === null && !winget.executable ? windowsWithoutWinget(tool) : null
+    const route = platform === 'win32' && platformHint === null ? windowsInstallRoute(tool, Boolean(winget.executable)) : null
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
       running: client?.running ?? false,
-      installSupported: platformHint === null && (platform === 'darwin' || (platform === 'win32' && Boolean(winget.executable || fallback?.official))),
+      installSupported: platformHint === null && (platform === 'darwin' || Boolean(route?.oneClick)),
       launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && !runningAsRoot())),
-      detectionError: inspection.errors[tool] ?? null, installHint: platformHint ?? fallback?.hint ?? null,
-      officialDownloadUrl: fallback && !fallback.official ? officialDownloadUrl(tool) : null,
+      detectionError: inspection.errors[tool] ?? null, installHint: platformHint ?? route?.hint ?? null,
+      officialDownloadUrl: route && !route.oneClick ? officialDownloadUrl(tool) : null,
     }
   }
   function invalidateScan() {
@@ -949,7 +940,6 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         if (!bucketInstalled) cancellation.throwIfCancelled()
         let officialDownloadNeeded = platform === 'win32' && !bucketInstalled && !winget.executable
         let sourceFailure: unknown
-        let installerStarted = false
         let recentOutput = ''
         // The resolver binds winget to Microsoft's protected AppInstaller package.
         // Its WindowsApps ACL is deliberately handled by that resolver, as in
@@ -965,10 +955,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
               timeoutMs: 15 * 60_000, maxOutputBytes: 2 * 1024 * 1024, acceptedExitCodes: [0],
               onOutput: (event) => {
                 const combined = recentOutput + cleanCommandOutput(event.text)
-                if (/installing|starting package install|正在安装|开始.*安装/i.test(combined)) {
-                  installerStarted = true
-                  report('installing', `正在安装 ${definitions[tool].name}`)
-                }
+                if (/installing|starting package install|正在安装|开始.*安装/i.test(combined)) report('installing', `正在安装 ${definitions[tool].name}`)
                 recentOutput = combined.slice(-2048)
               },
             })
@@ -976,36 +963,18 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             // Claude 官网的离线安装包是 MSIX：Windows 的应用部署要么整个装上、要么什么都不留，
             // 前一路装到一半也不会和它打架，所以除了客户自己取消，怎么没装上都换它接着装。
             const claudeFallback = tool === 'claudeDesktop' && !wingetCancelled(error)
-            if (!claudeFallback && (tool !== 'workbuddy' || installerStarted || !wingetSourceUnavailable(error))) throw installationError(wingetFailureMessage(error), error)
+            if (!claudeFallback) throw installationError(wingetFailureMessage(error), error)
             sourceFailure = error
             // 换星芒自己下官方安装包的那一路：下载时又能取消了。
             cancellation.unseal()
             const recheck = status(tool, await inspect(), winget)
-            if (recheck.detectionError) {
-              throw installationError(claudeFallback
-                ? `无法确认当前安装状态：${recheck.detectionError}`
-                : `连不上微软的软件下载源，且无法确认客户端安装状态：${recheck.detectionError}`, error)
-            }
+            if (recheck.detectionError) throw installationError(`无法确认当前安装状态：${recheck.detectionError}`, error)
             officialDownloadNeeded = !recheck.installed
           }
         }
         if (officialDownloadNeeded) cancellation.throwIfCancelled()
+        // 只有 Claude Desktop 有星芒自己下官方安装包的这一路；别家没有 winget 时上面就停在「去官网下载」。
         if (officialDownloadNeeded && tool === 'claudeDesktop') await installClaudeDesktopOnWindows(sourceFailure, report, cancellation)
-        else if (officialDownloadNeeded) {
-          report('downloading', sourceFailure ? '连不上微软的软件下载源，正在切换到腾讯官方下载' : '正在使用腾讯官方安装包')
-          try {
-            await (options.installWorkBuddyFromOfficial ?? installWorkBuddyFromOfficial)({
-              architecture, windowsExecutionMode: options.windowsExecutionMode ?? 'trusted-only', runCommand: execute,
-              onProgress: (event) => report(event.phase, event.message, event.percent),
-              // 下载、核对时点取消就停；腾讯的安装程序跑起来以后不停，见 onInstallStarting。
-              signal: cancellation.signal,
-              onInstallStarting: () => cancellation.seal(installSealReason(tool)),
-            })
-          } catch (error) {
-            if (cancellation.cancelled) throw error
-            throw installationError(`${sourceFailure ? '连不上微软的软件下载源；' : ''}腾讯官方安装未完成：${errorText(error)}`, { winget: sourceFailure, official: error })
-          }
-        }
         report('checking', '正在验证安装结果')
         const after = status(tool, await inspect(), winget)
         if (!after.installed) throw new Error(after.detectionError || '安装命令已结束，但未检测到客户端，请检查安装器结果后重试检测')

@@ -1374,6 +1374,83 @@ test('the extension pages and the maintenance page read again when shown again (
   } finally { await page.close() }
 })
 
+// 逆向报告 B4：在一个工具下改连接、点「重新检测」，等它跑完的工夫换到别的工具，跑完以后不能再照原来那个
+// 工具读一遍、把它的列表和检测结果摆到新工具下面。
+test('an extension action that finishes after switching tools leaves the new tool list on screen (B4)', async () => {
+  const page = await open()
+  const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).map((entry) => entry.args[0]), method)
+  // 落不落那一次多余的读取要等它不再涨才知道，同「已知5」那条。
+  async function settled(method) {
+    let previous = -1
+    let current = (await calls(method)).length
+    while (current !== previous) {
+      previous = current
+      await page.waitForTimeout(150)
+      current = (await calls(method)).length
+    }
+    return calls(method)
+  }
+  try {
+    await page.evaluate(() => {
+      let held = null
+      window.releaseHeld = () => held?.()
+      function hold() {
+        return new Promise((resolve) => { held = () => { held = null; resolve() } })
+      }
+      let holdNextList = false
+      window.holdNextList = () => { holdNextList = true }
+      window.xingmang.listProviderExtensions = async (provider) => {
+        if (holdNextList) {
+          holdNextList = false
+          await hold()
+        }
+        return {
+          provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+          capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+          items: [{
+            provider, kind: 'mcp', id: `${provider}-link`, name: `${provider}-link`, description: '本机测试连接',
+            installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
+            source: { kind: 'npm', locator: `${provider}-package`, reference: null },
+            update: { state: 'up-to-date', reason: '', checkedAt: null },
+            operations: { install: false, uninstall: true, enable: true, disable: true, update: false },
+          }],
+        }
+      }
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
+      window.xingmang.mutateProviderExtension = () => hold()
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    await mcp.getByTestId('mcp-row-claude-link').waitFor()
+    // 在 Claude Code 下停用连接，没跑完就换到 Gemini CLI。
+    await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
+    await expect.poll(async () => (await calls('mutateProviderExtension')).length).toBe(1)
+    await mcp.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await mcp.getByTestId('mcp-row-gemini-link').waitFor()
+    const lists = (await settled('listProviderExtensions')).length
+    await page.evaluate(() => window.releaseHeld())
+    await waitForToast(page, '操作已完成')
+    await expect(mcp.getByTestId('mcp-row-gemini-link')).toBeVisible()
+    assert.equal(await mcp.getByTestId('mcp-row-claude-link').count(), 0)
+    assert.equal((await settled('listProviderExtensions')).length, lists)
+
+    // 在 Gemini CLI 下点「重新检测」，列表还没读回来就换到 Claude Code：检测不再替 Gemini CLI 跑。
+    const health = (await settled('checkProviderMcpHealth')).length
+    await page.evaluate(() => window.holdNextList())
+    await mcp.getByTestId('mcp-health-recheck').click()
+    await expect.poll(async () => (await calls('listProviderExtensions')).length).toBe(lists + 1)
+    await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
+    await mcp.getByTestId('mcp-row-claude-link').waitFor()
+    await page.evaluate(() => window.releaseHeld())
+    assert.deepEqual((await settled('checkProviderMcpHealth')).slice(health), ['claude'])
+    await expect(mcp.getByTestId('mcp-row-claude-link')).toBeVisible()
+    assert.equal(await mcp.getByTestId('mcp-row-gemini-link').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 停在记录页、窗口回到前面时也重读，离上次读不到半分钟不读，窗口藏着时不读。时钟停着，等的那一下在测试这边等。
 test('the records page reads again when the window comes back after half a minute, but not sooner and not while hidden', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1', true)

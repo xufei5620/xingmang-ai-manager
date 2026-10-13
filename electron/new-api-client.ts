@@ -73,6 +73,10 @@ const topupAmountPath = '/api/user/amount'
 const topupPaymentPath = '/api/user/pay'
 const topupOrdersPath = '/api/user/topup/self'
 const redemptionPath = '/api/user/topup'
+// 星芒服务器上「只代取 Codex 启动时那一个请求」的小服务（issue #977）发通行票的地方。它不是 new-api 的
+// 接口：反向代理把 /api/xingmang-tunnel/ 这个前缀转给那个服务；还没部署时这里落到 new-api 自己的 JSON 404。
+const codexStartupTicketPath = '/api/xingmang-tunnel/v1/ticket'
+const codexStartupTicketMaxResponseBytes = 4 * 1024
 const affiliateTransferPath = '/api/user/aff_transfer'
 const subscriptionPlansPath = '/api/subscription/plans'
 const subscriptionSelfPath = '/api/subscription/self'
@@ -243,6 +247,15 @@ export interface NewApiResetPasswordInput {
 export interface NewApiLoginResult {
   account: NewApiAccountProfile
   accessExpiresAt: string | null
+}
+
+/**
+ * Codex 启动通道的通行票（codex-desktop-startup-route.ts）。只在主进程里用，从不跨 IPC、不进日志：
+ * 拿着它的人在有效期内能开那条只通 ab.chatgpt.com 的通道。
+ */
+export interface NewApiCodexStartupTicket {
+  ticket: string
+  expiresInSeconds: number
 }
 
 export interface NewApiSessionState {
@@ -923,6 +936,10 @@ export interface NewApiClientService extends RelayBackendClient {
   revokeLoginSession(sid: string): Promise<NewApiRevokeLoginSessionResult>
   revokeOtherLoginSessions(): Promise<NewApiRevokeOtherLoginSessionsResult>
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
+  // Main-process-only. Asks the xm tunnel service (not new-api) for a pass the
+  // Codex startup tunnel presents; see issueCodexStartupTicket below for why a
+  // refusal there never signs the account out.
+  issueCodexStartupTicket(): Promise<NewApiCodexStartupTicket>
   // Exchanges the captured refresh cookie for a new access_token. Every
   // authenticated call already retries through this same path once on a 401
   // (see withSession below); exposed directly too for a caller that wants to
@@ -2286,6 +2303,19 @@ export function parseLoginResponseData(payload: unknown): NewApiRawLoginData {
     accessExpiresAt: normalizeExpiresAt(payload.access_expires_at),
     account: parseAccountProfile(payload.user),
   }
+}
+
+const codexStartupTicketPattern = /^[A-Za-z0-9_-]{32,128}$/
+
+export function parseCodexStartupTicket(payload: unknown): NewApiCodexStartupTicket {
+  const data = isRecord(payload) ? payload : null
+  const ticket = data && typeof data.ticket === 'string' ? data.ticket : ''
+  const expiresIn = data ? data.expires_in : undefined
+  if (!codexStartupTicketPattern.test(ticket)
+    || typeof expiresIn !== 'number' || !Number.isInteger(expiresIn) || expiresIn < 10 || expiresIn > 600) {
+    throw new Error('Codex 中文启动凭证格式无效')
+  }
+  return { ticket, expiresInSeconds: expiresIn }
 }
 
 export interface NewApiRawRefreshData {
@@ -3752,6 +3782,31 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return true
   }
 
+  // 发票的是星芒服务器上另一个服务，不是 new-api。它回 401 时先当成 access token 过期了（15 分钟一换），
+  // 续一次再试；续过还是 401，就是那个服务自己拒了，照普通失败抛，不走 withSession 那条「再 401 就清掉
+  // 登录」的路：代取服务坏了，只该让 Codex 退回加速，不能连带把客户登出。续期本身被 new-api 拒了照旧
+  // 抛登录失效，但这里也不清登录，留给下一次账号请求按老规矩处理。
+  const issueCodexStartupTicket = async (): Promise<NewApiCodexStartupTicket> => {
+    const label = 'Codex 中文启动凭证'
+    const request = (current: InternalSession): Promise<NewApiRawResponse> => performRequest(
+      ctx,
+      codexStartupTicketPath,
+      // 多发一次只是多一张两分钟就作废的票，可以照读请求那样重发。
+      { method: 'POST', headers: authHeaders(current), maxResponseBytes: codexStartupTicketMaxResponseBytes, idempotent: true },
+      label,
+    )
+    let current = requireSession()
+    let raw = await request(current)
+    assertCurrentOwner(current)
+    if (raw.status === 401) {
+      current = await refreshCurrentSession(current)
+      raw = await request(current)
+      assertCurrentOwner(current)
+    }
+    if (raw.status === 401) throw new Error(`${label}被拒绝`)
+    return parseCodexStartupTicket(unwrapEnvelope(raw, label, [current.accessToken]))
+  }
+
   const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
     if (session) return true
     return switchSession(persisted)
@@ -3801,6 +3856,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     revokeLoginSession,
     revokeOtherLoginSessions,
     provisionCliKey,
+    issueCodexStartupTicket,
     refreshAccessToken,
     getPersistableSession,
     getSessionRevision: () => authAttemptGeneration,

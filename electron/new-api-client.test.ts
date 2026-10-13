@@ -33,6 +33,7 @@ import {
   parseAccountTaskRecord,
   parseChangePasswordResponseData,
   parseCliKeySecret,
+  parseCodexStartupTicket,
   parseLoginResponseData,
   parseLoginSessions,
   parsePaymentForm,
@@ -3210,6 +3211,119 @@ describe('refreshAccessToken', () => {
 
     await expect(client.refreshAccessToken()).rejects.toThrow('没有可用的登录凭据')
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('issueCodexStartupTicket', () => {
+  const issuedTicket = 'a'.repeat(43)
+
+  function ticketResponse(data: unknown = { ticket: issuedTicket, expires_in: 120 }): Response {
+    return jsonResponse({ success: true, message: '', data })
+  }
+
+  function rotatedTokenResponse(): Response {
+    return jsonResponse({ success: true, message: '', data: { access_token: 'rotated-token', access_expires_at: null } })
+  }
+
+  it('posts to the tunnel ticket path with the account auth headers', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(ticketResponse())
+
+    await expect(client.issueCodexStartupTicket()).resolves.toEqual({ ticket: issuedTicket, expiresInSeconds: 120 })
+
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/xingmang-tunnel/v1/ticket`)
+    expect(init?.method).toBe('POST')
+    expect(init?.redirect).toBe('manual')
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer test-access-token-abc')
+    expect(headers['New-Api-User']).toBe('42')
+  })
+
+  it('refreshes an expired access token once and retries', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+      .mockResolvedValueOnce(rotatedTokenResponse())
+      .mockResolvedValueOnce(ticketResponse())
+
+    await expect(client.issueCodexStartupTicket()).resolves.toMatchObject({ ticket: issuedTicket })
+
+    expect(String(fetchImpl.mock.calls[1][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+    expect((fetchImpl.mock.calls[2][1]?.headers as Record<string, string>).Authorization).toBe('Bearer rotated-token')
+  })
+
+  // A broken tunnel service must only send Codex back to acceleration; it can
+  // never be allowed to sign the customer out of the account.
+  it('keeps the account signed in when the tunnel service keeps refusing', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(failureResponse('ticket refused', 401))
+      .mockResolvedValueOnce(rotatedTokenResponse())
+      .mockResolvedValueOnce(failureResponse('ticket refused', 401))
+
+    const error = await client.issueCodexStartupTicket().catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
+    expect((error as Error).message).toBe('Codex 中文启动凭证被拒绝')
+    expect(client.isAuthenticated()).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps the account signed in when the refresh itself is rejected', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(failureResponse('ticket refused', 401))
+      .mockResolvedValueOnce(refreshRejectedResponse())
+
+    await expect(client.issueCodexStartupTicket()).rejects.toThrow()
+    expect(client.isAuthenticated()).toBe(true)
+  })
+
+  it('reports a site without the tunnel service as a plain failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    // What new-api answers for an /api path it does not know.
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ error: { message: 'Invalid URL (POST /api/xingmang-tunnel/v1/ticket)', type: 'invalid_request_error' } }, { status: 404 }))
+
+    await expect(client.issueCodexStartupTicket()).rejects.toThrow('HTTP 404')
+    expect(client.isAuthenticated()).toBe(true)
+  })
+
+  it('rejects a malformed ticket and never calls out when signed out', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(ticketResponse({ ticket: 'short', expires_in: 120 }))
+    await expect(client.issueCodexStartupTicket()).rejects.toThrow('格式无效')
+
+    const signedOut = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: vi.fn<NewApiFetch>() })
+    await expect(signedOut.issueCodexStartupTicket()).rejects.toThrow()
+  })
+})
+
+describe('parseCodexStartupTicket', () => {
+  it('accepts a url-safe ticket with a short bounded lifetime', () => {
+    expect(parseCodexStartupTicket({ ticket: 'A-b_'.repeat(10), expires_in: 600 })).toEqual({ ticket: 'A-b_'.repeat(10), expiresInSeconds: 600 })
+  })
+
+  it.each([
+    null,
+    'ticket',
+    { ticket: 'a'.repeat(31), expires_in: 120 },
+    { ticket: 'a'.repeat(129), expires_in: 120 },
+    { ticket: `${'a'.repeat(40)} x`, expires_in: 120 },
+    { ticket: 'a'.repeat(40), expires_in: 9 },
+    { ticket: 'a'.repeat(40), expires_in: 601 },
+    { ticket: 'a'.repeat(40), expires_in: 12.5 },
+    { ticket: 'a'.repeat(40), expires_in: '120' },
+    { ticket: 'a'.repeat(40) },
+  ])('rejects %#', (payload) => {
+    expect(() => parseCodexStartupTicket(payload)).toThrow('Codex 中文启动凭证格式无效')
   })
 })
 
