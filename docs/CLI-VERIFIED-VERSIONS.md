@@ -327,7 +327,7 @@ Key 走的型号菜单）不用抬。
 |---|---|---|---|
 | Claude Code | `2.1.296`（2026-10-13） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296 的依据见下文 |
 | Codex CLI | `0.162.1`（2026-10-13） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1 的依据见下文 |
-| Gemini CLI | `0.63.0`（2026-10-13） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0、0.63.0 的依据见下文 |
+| Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文 |
 | Grok CLI | `1.0.52`（2026-10-13） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52 各一遍，见下文） |
 
 四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
@@ -589,13 +589,6 @@ bundle：`DEFAULT_MODEL_CONFIGS` 整个对象逐字相同，出网前改名的 `
 上一段补过的改写表不用再动。沙箱实测（同上一段的做法，按 `config-files.ts` 写 `settings.json` 与 `.env`）：
 `gemini -p` 默认发 `gemini-3.8-flash-high`；`-m gemini-3.8-flash`、`-m gemini-3.5-flash-lite`、
 `-m gemini-3.1-flash-lite` 都改发成 `gemini-3.8-flash-high`，Key 走 `x-goog-api-key`。没做的：中转上的真实请求。
-
-**Gemini CLI 0.62.0 → 0.63.0（2026-10-13 补做 10-12 的每周巡检）。** v0.63.0 的 release note 是重试进度提示、
-工具输出封顶与长任务内存、无头环境登录死循环、非交互下自动执行计划这些，没有一条碰到
-`GOOGLE_GEMINI_BASE_URL`、`GEMINI_API_KEY`、`selectedType`、`.env` 或 `modelConfigs`。装上两版对比 bundle：
-`DEFAULT_MODEL_CONFIGS`、`getBackendModelMappings`、bundle 里出现的全部 `gemini-*` 型号名三样都逐字相同，
-`geminiRelayHelperModels` 不用动。沙箱实测（同上，加 `--skip-trust`，否则不受信目录不读 `~/.gemini/.env`，
-0.62.0 一样）：`-m gemini-3.8-flash`、`-m flash-lite` 都按 `customOverrides` 发去配置的型号。没做的：中转上的真实请求。
 
 加第四个工具只需要填上它的 `recommended`，其余代码不用动；要让中转实测也覆盖它，还得在 `scripts/probe-cli-relay.cjs` 的 `probeRunners` 里加一条。
 

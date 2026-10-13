@@ -111,11 +111,11 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   gemini: {
     recommended: {
-      version: '0.63.0',
-      verifiedAt: '2026-10-13',
+      version: '0.62.0',
+      verifiedAt: '2026-10-05',
       verifiedSites: [],
-      note: '当前 npm latest;0.61.0 起不再把名字以 flash 结尾的自选型号换成 gemini-3.5-flash,但会把恰好叫 gemini-3.5-flash / gemini-3-flash / gemini-3.1-flash-lite 的型号改发成 3.8-flash / 3.5-flash-lite;0.63.0 的 DEFAULT_MODEL_CONFIGS、出网改名函数与内置型号名和 0.62.0 逐字相同,修了无头环境登录死循环、长任务里工具输出无上限',
-      userNote: '长时间干活时更省内存，不会再卡在反复登录里',
+      note: '当前 npm latest;0.61.0 起不再把名字以 flash 结尾的自选型号换成 gemini-3.5-flash,但会把恰好叫 gemini-3.5-flash / gemini-3-flash / gemini-3.1-flash-lite 的型号改发成 3.8-flash / 3.5-flash-lite;0.62.0 的 DEFAULT_MODEL_CONFIGS 与出网改名函数和 0.61.0 逐字相同',
+      userNote: '自己选的型号不会再被悄悄换成别的，菜单里新出的几个型号也照样走当前账号',
     },
     blocked: [],
   },
