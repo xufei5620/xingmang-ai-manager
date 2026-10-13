@@ -1241,9 +1241,11 @@ function applyCodexRelayConfig(
   disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
+  // Before base_url is overwritten: only a table that already points at our relay is ours to rename.
+  renameLegacyCodexRelayDisplayName(providerEntry, siteBaseUrl)
   providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
     ? providerEntry.name
-    : providerName
+    : codexRelayDisplayName
   providerEntry.base_url = siteBaseUrl
   // Current Codex accepts only Responses, including for custom model providers.
   // Model names alone cannot establish the relay's protocol compatibility.
@@ -1301,7 +1303,7 @@ function buildCodexRelayConfigTemplate(
     ...notifyLine,
     '',
     `[model_providers.${providerKey}]`,
-    `name = ${tomlString(providerName)}`,
+    `name = ${tomlString(codexRelayDisplayName)}`,
     `base_url = ${tomlString(siteBaseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
@@ -1834,6 +1836,28 @@ function tomlTableKey(value: string): string {
 /** Codex config.toml 里星芒中转用的 model_provider 名。从没配过 Codex 时写这个，不占用官方 OpenAI 表。 */
 export const defaultCodexRelayProvider = 'XingmangAI'
 const reservedCodexProviders: ReadonlySet<string> = new Set(['openai', 'ollama', 'lmstudio'])
+
+/**
+ * The provider's `name` is what Codex Desktop shows in its lower-left picker.
+ * Codex treats exactly "OpenAI" (case-sensitive, base_url ignored) as the
+ * first-party provider: compaction goes through the remote /responses/compact
+ * task and the CLI's /model popup warns that the base URL is overridden.
+ * Only the display name changes; the table key stays defaultCodexRelayProvider
+ * because the resume picker filters earlier chats by that key.
+ *
+ * 2026-10-13 yoyo 选的大写 OpenAI，选之前在星芒中转上实测过命令行和桌面端的长对话压缩，
+ * 星芒账号和历史账号都通。
+ */
+export const codexRelayDisplayName = 'OpenAI'
+// 8-26（#104）到这次之前的模板写的显示名，和表名一样。
+const legacyCodexRelayDisplayName = 'XingmangAI'
+
+/** 只换星芒自己那张表上一字不差的老显示名；客户自己改过的名字、别人写的表都不动。 */
+function renameLegacyCodexRelayDisplayName(entry: Record<string, unknown>, siteBaseUrl: string): void {
+  if (entry.name === legacyCodexRelayDisplayName && isOwnCodexRelayEntry(entry, siteBaseUrl)) {
+    entry.name = codexRelayDisplayName
+  }
+}
 
 function existingCodexProvider(configPath: string, siteBaseUrl: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
@@ -3257,7 +3281,9 @@ export function applyProviderRouteFollow(
 // 当前账号的配置，开机时由 fillRelayTemplateDefaults 补一次缺省项。往下面那几个
 // fill*RelayTemplateDefaults 里加了新的一项，就把这个号加一，否则老客户拿不到。
 // 2：Claude Code 没写权限模式的补「不逐条确认」（2026-10-06）。
-export const relayTemplateRevision = 2
+// 3：Codex 线路显示名老模板的 XingmangAI 换成 OpenAI（2026-10-14）。这一项改的是值不是缺省
+//    键，只认星芒自己那张表上一字不差的老值（renameLegacyCodexRelayDisplayName）。
+export const relayTemplateRevision = 3
 
 /** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
 function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -3266,13 +3292,16 @@ function fillableRecord(parent: Record<string, unknown>, key: string): Record<st
   return isJsonRecord(current) ? current : null
 }
 
-function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, platform: NodeJS.Platform): void {
+function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBaseUrl: string, platform: NodeJS.Platform): void {
   if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
   if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
   if (parsed.analytics === undefined || isJsonRecord(parsed.analytics)) disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
   applyCodexRelayMachineDefaults(parsed, platform)
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  const entry = active && isJsonRecord(parsed.model_providers) ? parsed.model_providers[active] : null
+  if (isJsonRecord(entry)) renameLegacyCodexRelayDisplayName(entry, siteBaseUrl)
 }
 
 function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void {
@@ -3334,7 +3363,7 @@ function relayTemplateDefaultsPlans(
       const parsed = requireToml(snapshots.active, '现有 Codex config.toml')
       if (classifyCodexConfigProfile(parsed, siteBaseUrls.codex) !== 'relay') return []
       const before = cloneTomlRecord(parsed)
-      fillCodexRelayTemplateDefaults(parsed, platform)
+      fillCodexRelayTemplateDefaults(parsed, siteBaseUrls.codex, platform)
       dropEmptyCreatedTables(parsed, before)
       if (JSON.stringify(parsed) === JSON.stringify(before)) return []
       const content = tomlContent(parsed)
@@ -3397,7 +3426,8 @@ export function relayTemplateDefaultsPending(
 
 /**
  * 给一份「当前账号的」配置只补模板里缺的那几项：键缺省才写，用户写过的值（哪怕写的是
- * false）一律不动，Key、服务地址、型号、钩子、状态行这些也都不碰。配置不是指向当前
+ * false）一律不动，Key、服务地址、型号、钩子、状态行这些也都不碰。唯一换值的是 Codex
+ * 线路显示名：只换星芒自己那张表上一字不差的老模板值 XingmangAI（第 3 版）。配置不是指向当前
  * 账号服务的（切回了官方、换了别家）就什么都不做。写入与保存配置同一套两阶段提交、
  * 留 .bak、失败回滚（I9）。返回 null = 这份配置已经齐了，没写任何文件。
  */

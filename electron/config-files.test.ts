@@ -31,6 +31,7 @@ import {
   inspectCodexModelCatalogOnDisk,
   takeBackCodexModelCatalog,
   defaultCodexRelayProvider,
+  codexRelayDisplayName,
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
@@ -608,7 +609,7 @@ describe('native CLI configuration files', () => {
     expect(parsed.approval_policy).toBe('on-request')
     expect(parsed.sandbox_mode).toBe('workspace-write')
     expect(asRecord(parsed.model_providers)?.XingmangAI).toMatchObject({
-      name: 'XingmangAI',
+      name: 'OpenAI',
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
@@ -625,6 +626,62 @@ describe('native CLI configuration files', () => {
     expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(false)
     expect(merged).not.toHaveProperty('model_context_window')
     expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
+  })
+
+  it('renames our own legacy XingmangAI display name during merge and keeps the table key', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    const [, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, [
+      'model_provider = "XingmangAI"',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      `base_url = "${relayProviderBaseUrls('solov', 'direct').codex}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-merge', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    expect(codexRelayDisplayName).toBe('OpenAI')
+    for (const file of [configs.active, configs.relay]) {
+      const parsed = asRecord(TOML.parse(fs.readFileSync(file, 'utf8')))!
+      expect(parsed.model_provider).toBe('XingmangAI')
+      expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.name).toBe('OpenAI')
+    }
+  })
+
+  it.each([
+    ['a name the customer chose', 'XingmangAI', '我的中转', providerBaseUrls.codex],
+    ['the table older releases named OpenAI', 'OpenAI', 'OpenAI', providerBaseUrls.codex],
+    ['a XingmangAI name on a table that pointed somewhere else', 'XingmangAI', 'XingmangAI', 'https://other.example.com/v1'],
+  ])('keeps %s as the Codex display name during merge', (_label, table, name, baseUrl) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      `model_provider = "${table}"`,
+      '',
+      `[model_providers.${table}]`,
+      `name = "${name}"`,
+      `base_url = "${baseUrl}"`,
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-merge', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
+    expect(parsed.model_provider).toBe(table)
+    const provider = asRecord(asRecord(parsed.model_providers)?.[table])
+    expect(provider?.name).toBe(name)
+    expect(provider?.base_url).toBe('https://xm.solov.cc/v1')
   })
 
   it.each(['merge', 'reset'] as const)('keeps non-GPT model IDs on Responses during %s', (mode) => {
@@ -1516,7 +1573,8 @@ describe('native CLI configuration files', () => {
     const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     expect(parsed.model_provider).toBe('mycodex')
     const mycodexProvider = asRecord(asRecord(parsed.model_providers)?.mycodex)
-    expect(mycodexProvider?.name).toBe('mycodex')
+    // Reset writes the template: only the identifier is kept, for the resume list.
+    expect(mycodexProvider?.name).toBe('OpenAI')
     expect(mycodexProvider?.base_url).toBe('https://xm.solov.cc/v1')
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('new-key')
   })
@@ -3768,6 +3826,31 @@ describe('bringing an older account config up to the current template', () => {
     expect(parsed.model).toBe('gpt-5.5')
     expect(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8')).toBe(fs.readFileSync(configPath, 'utf8'))
     expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(false)
+  })
+
+  it('renames our own legacy Codex display name at startup and keeps a name the customer chose', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const fresh = fs.readFileSync(snapshots.active, 'utf8')
+    expect(fresh).toContain('name = "OpenAI"')
+    writeFile(snapshots.active, fresh.replace('name = "OpenAI"', 'name = "XingmangAI"'))
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(true)
+    const result = fillRelayTemplateDefaults('codex', roots, providerBaseUrls)
+
+    expect(result?.backups).toHaveLength(2)
+    for (const file of [snapshots.active, snapshots.relay]) {
+      const parsed = asRecord(TOML.parse(fs.readFileSync(file, 'utf8')))!
+      expect(parsed.model_provider).toBe('XingmangAI')
+      expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.name).toBe('OpenAI')
+    }
+
+    const renamed = fs.readFileSync(snapshots.active, 'utf8')
+    writeFile(snapshots.active, renamed.replace('name = "OpenAI"', 'name = "我的中转"'))
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
   })
 
   it('writes nothing when the config already has every template key', () => {
