@@ -318,13 +318,18 @@ export function filterCodexDesktopCdpTargets(
   return targets.filter((target) => validateCodexDesktopCdpTarget(target, port) !== null)
 }
 
-export function buildCodexDesktopCdpArguments(port: number): string {
+/**
+ * extraArguments 是同一次激活要一起带上的别的启动参数（codex-desktop-startup-route.ts 拼好的那一个），
+ * 由它自己校验过，这里原样接在后面。
+ */
+export function buildCodexDesktopCdpArguments(port: number, extraArguments = ''): string {
   assertCdpPort(port)
   return [
     `--remote-debugging-port=${port}`,
     '--remote-debugging-address=127.0.0.1',
     `--remote-allow-origins=http://127.0.0.1:${port}`,
     '--lang=zh-CN',
+    ...(extraArguments ? [extraArguments] : []),
   ].join(' ')
 }
 
@@ -532,9 +537,10 @@ export async function activateCodexDesktopWithCdp(
   appUserModelId: string,
   port: number,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  extraArguments = '',
 ): Promise<number | null> {
   try {
-    return await activateCodexDesktop(appUserModelId, buildCodexDesktopCdpArguments(port), baseEnv)
+    return await activateCodexDesktop(appUserModelId, buildCodexDesktopCdpArguments(port, extraArguments), baseEnv)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     throw new Error(`Codex Desktop 中文增强启动失败：${message.slice(0, 500)}`, { cause: error })
@@ -552,9 +558,9 @@ export function withCodexDesktopCdpFailureReport(
   activate: typeof activateCodexDesktopWithCdp,
   report: (error: unknown) => void,
 ): typeof activateCodexDesktopWithCdp {
-  return async (appUserModelId, port, baseEnv) => {
+  return async (appUserModelId, port, baseEnv, extraArguments) => {
     try {
-      return await activate(appUserModelId, port, baseEnv)
+      return await activate(appUserModelId, port, baseEnv, extraArguments)
     } catch (error) {
       report(error)
       throw error

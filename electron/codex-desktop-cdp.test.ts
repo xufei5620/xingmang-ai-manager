@@ -186,6 +186,9 @@ describe('Codex Desktop CDP trust boundary', () => {
     expect(buildCodexDesktopCdpArguments(9222)).toBe(
       '--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins=http://127.0.0.1:9222 --lang=zh-CN',
     )
+    expect(buildCodexDesktopCdpArguments(9222, '--host-resolver-rules="MAP ab.chatgpt.com 127.0.0.1:1"')).toBe(
+      '--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins=http://127.0.0.1:9222 --lang=zh-CN --host-resolver-rules="MAP ab.chatgpt.com 127.0.0.1:1"',
+    )
     expect(() => validateCodexDesktopCdpPort(0)).toThrow('端口无效')
     expect(() => validateCodexDesktopCdpPort(65_536)).toThrow('端口无效')
   })

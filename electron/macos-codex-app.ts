@@ -128,6 +128,7 @@ export function buildMacosCodexAppLaunchPlan(
   appPath: string,
   workspace: string,
   codexHome?: string,
+  appArguments: readonly string[] = [],
 ): CommandSpec {
   if (
     !path.posix.isAbsolute(appPath)
@@ -157,6 +158,12 @@ export function buildMacosCodexAppLaunchPlan(
   // the selected config root explicitly rather than relying on inheritance.
   if (codexHome !== undefined) argv.push('--env', `CODEX_HOME=${codexHome}`)
   argv.push(url.href)
+  // open 把 --args 之后的原样交给新拉起的 Codex（codex-desktop-startup-route.ts 拼的启动参数）；Codex
+  // 已经开着时 LaunchServices 只把链接交过去，参数丢掉，和 Windows 一样。
+  if (appArguments.some((argument) => !argument.startsWith('--') || argument.includes('\0') || argument.length > 2_048)) {
+    throw new Error('Codex 桌面端启动参数无效')
+  }
+  if (appArguments.length) argv.push('--args', ...appArguments)
   return { executable: '/usr/bin/open', argv }
 }
 

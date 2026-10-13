@@ -21,9 +21,10 @@ after(async () => {
   await business.stop()
   business.assertNoPageErrors()
 })
-const fixture = async (route) => {
+const fixture = async (route, prepare) => {
   const page = await business.newPage()
   await page.addInitScript(recordToasts)
+  await prepare?.(page)
   // First paint waits on Vite transforming the module graph on demand, which on a
   // cold Windows runner under Defender routinely takes longer than the 5s default
   // the assertions below rely on. Waiting for the mount separately keeps that
@@ -2004,6 +2005,69 @@ test('recharge presets show credited, paid and bonus, and the quote dialog spell
       '活动赠送：4（多送 25%），到账 20',
     )
     await quote.getByText('应付金额：16.00', { exact: false }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('the quote dialog asks for the current promotion instead of the one the page loaded with', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1')
+  try {
+    await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).click()
+    await page.evaluate(() => window.endTopupPromotion())
+    await page.getByTestId('account-recharge-submit').click()
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.getByText('应付金额：20.00', { exact: false }).waitFor()
+    assert.equal(await quote.getByTestId('account-recharge-quote-bonus').count(), 0)
+    // 卡片也跟着这次读到的换掉，不再挂「送 25%」。
+    await page.getByRole('button', { name: '到账 $20，实付 20.00', exact: true }).waitFor()
+    assert.equal(await page.getByText('送 25%', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the recharge page rereads offers when the customer comes back to it, at most once a minute', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1', (next) => next.clock.install())
+  try {
+    const reads = async () => (await calls(page)).filter((call) => call.name === 'get-topup-info').length
+    await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).waitFor()
+    assert.equal(await reads(), 1)
+    await page.evaluate(() => window.endTopupPromotion())
+    // 分页一切过去，重读（如果要读）就在同一次提交里发出去了：等到分页选中再数。
+    const open = async (name) => {
+      await page.getByRole('tab', { name, exact: true }).click()
+      await page.locator('[role="tab"][aria-selected="true"]', { hasText: name }).waitFor()
+    }
+    // 刚读过：来回切一下不再问，免得逐档试算撞上限流。
+    await open('我的订单')
+    await open('充值与订阅')
+    assert.equal(await reads(), 1)
+    assert.equal(await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).count(), 1)
+
+    await page.clock.fastForward(61_000)
+    await open('我的订单')
+    await open('充值与订阅')
+    await page.getByRole('button', { name: '到账 $20，实付 20.00', exact: true }).waitFor()
+    assert.equal(await reads(), 2)
+    assert.equal(await page.getByText('送 25%', { exact: true }).count(), 0)
+
+    // 外壳切到别的页再回来（个人中心整页藏起来过）。
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.setPageActive(false))
+    await page.evaluate(() => window.setPageActive(true))
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, 2)
+
+    // 停在充值页缩到托盘，隔一阵从托盘点开：窗口回到前台也重读。
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, 3)
+
+    // 停在别的分页时窗口回到前台，不替充值页去读（focus 的处理是同步的，派发完就能数）。
+    await open('我的订单')
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    assert.equal(await reads(), 4)
   } finally {
     await page.close()
   }
