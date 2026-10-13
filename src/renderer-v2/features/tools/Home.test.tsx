@@ -1411,6 +1411,28 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     // 没接下载入口的宿主仍是旧行为：点不动的「暂不支持」。
     expect(rowButton(render({}, undefined, { snapshot: windows, externalClients: [opencode] }), 'opencode')).toContain('暂不支持')
   })
+
+  it('sends WorkBuddy customers on Windows to the Tencent website instead of offering an install', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const windows = {
+      ...base,
+      platform: {
+        platform: 'windows', isMac: false, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true },
+      },
+    } as unknown as ToolboxSnapshot
+    // 主进程给的就是这样一行（external-client-runtime.ts 的 windowsInstallRoute）。
+    const workbuddy = {
+      ...macClient, installHint: '到腾讯官网下载安装，装好后回来重新检测', officialDownloadUrl: 'https://www.workbuddy.ai/',
+    } as typeof macClient
+    const markup = render({}, undefined, { snapshot: windows, externalClients: [workbuddy], onOpenExternalDownload: () => undefined })
+    expect(rowButton(markup, 'workbuddy')).toContain('去官网下载')
+    expect(rowButton(markup, 'workbuddy')).not.toContain('disabled')
+    expect(markup).toContain('到腾讯官网下载安装，装好后回来重新检测')
+    expect(markup).not.toContain('将使用腾讯官方安装包')
+    expect(markup).not.toContain('安装指南')
+  })
 })
 
 describe('renderer-v2 home balance for subscription customers', () => {
