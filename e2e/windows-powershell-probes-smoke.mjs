@@ -418,7 +418,6 @@ const {
   windowsRestartStatusScript,
 } = compiled('node-runtime')
 const { installedPythonInspectionScript, pythonInstallerSignatureScript } = compiled('python-runtime')
-const { workBuddyInstallerSignatureScript } = compiled('workbuddy-installer')
 const { nativeCliSignatureScript, nativeCliSignatureTimeoutMs } = compiled('trusted-native-cli')
 const {
   inspectProgramFilesAclAsync,
@@ -560,7 +559,6 @@ const trustedProbes = [
   ['installed Node.js signature', signatureCheckTimeoutMs, async () => signatureStatus(installedNodeSignatureScript, { XINGMANG_NODE_EXE_PATH: process.execPath })],
   ['Python installer signature', signatureCheckTimeoutMs, async () => signatureStatus(pythonInstallerSignatureScript, { XINGMANG_PYTHON_FILE_PATH: process.execPath })],
   ['installed Python check', signatureCheckTimeoutMs, async () => signatureStatus(installedPythonInspectionScript, { XINGMANG_PYTHON_FILE_PATH: process.execPath })],
-  ['WorkBuddy installer signature', signatureCheckTimeoutMs, async () => signatureStatus(workBuddyInstallerSignatureScript, { XINGMANG_WORKBUDDY_INSTALLER: process.execPath })],
   ['native CLI signature', nativeCliSignatureTimeoutMs, async () => {
     const parsed = JSON.parse((await runPowerShell(['-Command', nativeCliSignatureScript], trustedEnv({ XINGMANG_NATIVE_CLI: process.execPath }))).trim())
     assert.ok(parsed.Status)
