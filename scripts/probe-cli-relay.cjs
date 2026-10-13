@@ -133,7 +133,9 @@ function codexProbeConfigText(baseUrl, model) {
     'sandbox_mode = "read-only"',
     '',
     '[model_providers.xingmang]',
-    'name = "xingmang"',
+    // Codex 认官方线路只看 name == "OpenAI"，对上了请求体会变（不再去掉官方专用字段），
+    // 客户装到的显示名就是它（config-files.ts 的 codexRelayDisplayName）。
+    'name = "OpenAI"',
     `base_url = ${JSON.stringify(baseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
