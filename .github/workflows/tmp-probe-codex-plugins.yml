@@ -1,0 +1,28 @@
+# 临时：在 GitHub 的机器上真跑一次插件目录同步（只写内存，不碰桶，开 PR 前删）。
+name: tmp-probe-codex-plugins
+on:
+  push:
+    branches: [claude/codex-plugin-dir-cos-fpraxp]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/tmp-probe-codex-plugins.cjs
+      - name: Raw codeload headers for the record
+        run: |
+          sha=$(curl -fsS -H 'Accept: application/vnd.github.sha' -H "Authorization: Bearer ${{ github.token }}" https://api.github.com/repos/openai/plugins/commits/main)
+          echo "commit $sha"
+          curl -sS -o /tmp/a.tgz -D - "https://codeload.github.com/openai/plugins/tar.gz/$sha" | grep -iv '^set-cookie'
+          ls -l /tmp/a.tgz; sha256sum /tmp/a.tgz
+          curl -sS -o /tmp/b.tgz "https://codeload.github.com/openai/plugins/tar.gz/$sha"; sha256sum /tmp/b.tgz
+          gzip -dc /tmp/a.tgz | head -c 1024 | strings | head -5
+          tar tzf /tmp/a.tgz | head -5; tar tzf /tmp/a.tgz | wc -l
