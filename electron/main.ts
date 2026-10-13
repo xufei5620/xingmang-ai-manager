@@ -2153,6 +2153,7 @@ if (!hasSingleInstanceLock) {
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
         relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
         toolRoute: resolveFeedbackToolRoute(toolRouting, systemService.readStoredConfig().relaySiteId),
+        toolRouteCertificate: toolRouting.resolve(systemService.readStoredConfig().relaySiteId).id === 'solov' ? toolRouteController.certificateFailure() : null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
