@@ -49,6 +49,8 @@ export const XINGMANG_AI_BUNDLED_FILES = [
 export interface XingmangAiSkillConfig {
   baseUrl: string
   group: string
+  /** 画图默认用的 OpenAI 图片模型，登录同步时按当前账号两把 Key 实际能用的挑；缺省 = gpt-image-2。 */
+  model?: string
   keyId?: number
   keyName?: string
   apiKey?: string
@@ -98,6 +100,11 @@ export interface XingmangAiSkillSyncOptions {
   syncImageMcp?: (input: { skillDirectory: string; officialCodex: boolean }) => Promise<string[]>
   /** 第一次登记失败后隔多久自动再试一次；缺省 1.5 秒，测试传 0。 */
   imageMcpRetryDelayMs?: number
+  /**
+   * 查这把 Key 在站上能用哪些模型（GET /v1/models），用来挑画图默认的 OpenAI 图片模型。
+   * 缺省 = 不查，config.json 不写 model，画图照旧用 gpt-image-2。
+   */
+  fetchAvailableModels?: (apiKey: string) => Promise<string[]>
 }
 
 export interface XingmangAiSkillInstallOptions {
@@ -457,6 +464,49 @@ export function selectImageSkillGroup(groups: readonly { name: string }[]): stri
   return null
 }
 
+// 星芒AI 技能和画图工具只用 OpenAI 的图片模型。站上开了新的就用新的，没开就照旧 gpt-image-2；
+// 只按当前账号的 Key 实际查得到的模型挑，不猜。gpt-image-2.5-sunburst 慢、偏精修，不当默认，
+// 要用让 AI 自己点名。
+export const XINGMANG_AI_DEFAULT_IMAGE_MODEL = 'gpt-image-2'
+export const XINGMANG_AI_IMAGE_MODEL_PREFERENCE = ['gpt-image-2.5-flare', XINGMANG_AI_DEFAULT_IMAGE_MODEL] as const
+const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
+
+export function selectXingmangAiImageModel(models: readonly string[]): string {
+  const available = new Set(models.map((model) => model.trim()))
+  return XINGMANG_AI_IMAGE_MODEL_PREFERENCE.find((model) => available.has(model)) ?? XINGMANG_AI_DEFAULT_IMAGE_MODEL
+}
+
+/**
+ * 两把 Key 各查一次，合起来挑：画图脚本先用 Codex Key、被拒再换生图分组 Key，哪把能画都算。
+ * 都没查到（断网、服务器忙）返回 null，config.json 不写 model，画图照旧用 gpt-image-2。
+ */
+async function detectXingmangAiImageModel(
+  fetchAvailableModels: XingmangAiSkillSyncOptions['fetchAvailableModels'],
+  apiKeys: readonly string[],
+): Promise<string | null> {
+  if (!fetchAvailableModels || apiKeys.length === 0) return null
+  const lists = await Promise.all(apiKeys.map((apiKey) => fetchModelsQuietly(fetchAvailableModels, apiKey)))
+  const answered = lists.filter((models): models is string[] => models !== null)
+  return answered.length ? selectXingmangAiImageModel(answered.flat()) : null
+}
+
+async function fetchModelsQuietly(
+  fetchAvailableModels: NonNullable<XingmangAiSkillSyncOptions['fetchAvailableModels']>,
+  apiKey: string,
+): Promise<string[] | null> {
+  try {
+    const models = await fetchAvailableModels(apiKey)
+    return Array.isArray(models) ? models.filter((model): model is string => typeof model === 'string') : null
+  } catch {
+    return null
+  }
+}
+
+function optionalImageModel(value: unknown): string | undefined {
+  const model = typeof value === 'string' ? value.trim() : ''
+  return OPENAI_IMAGE_MODEL_PATTERN.test(model) ? model : undefined
+}
+
 export function parseXingmangAiSkillConfig(raw: unknown): XingmangAiSkillConfig {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('星芒AI Skill 配置格式错误')
@@ -470,6 +520,8 @@ export function parseXingmangAiSkillConfig(raw: unknown): XingmangAiSkillConfig 
   if (!group || group.length > 128 || /[\x00-\x1F\x7F]/.test(group)) {
     throw new Error('星芒AI Skill 分组格式错误')
   }
+  // 认不出的型号丢掉不报错：画图照旧用 gpt-image-2，一份手改过的配置不至于整个读不了。
+  const model = optionalImageModel(record.model)
   const apiKey = optionalSecretKey(record.apiKey, 'API Key')
   const keyId = optionalPositiveId(record.keyId)
   const keyName = optionalShortName(record.keyName)
@@ -483,6 +535,7 @@ export function parseXingmangAiSkillConfig(raw: unknown): XingmangAiSkillConfig 
   return {
     baseUrl,
     group,
+    ...(model ? { model } : {}),
     ...(keyId ? { keyId } : {}),
     ...(keyName ? { keyName } : {}),
     ...(apiKey ? { apiKey } : {}),
@@ -743,9 +796,14 @@ export async function syncXingmangAiSkill(
   }
 
   const group = imageGroup || codexProfile.group
+  const model = await detectXingmangAiImageModel(
+    options.fetchAvailableModels,
+    [codex?.key, image?.key].filter((key): key is string => Boolean(key)),
+  )
   const config: XingmangAiSkillConfig = {
     baseUrl: options.baseUrl ?? XINGMANG_AI_DEFAULT_BASE_URL,
     group,
+    ...(model ? { model } : {}),
     ...(image ? {
       keyId: image.id,
       keyName: image.name,
@@ -781,6 +839,10 @@ export async function syncXingmangAiSkill(
       reason: warnings[0] || '星芒AI Skill 配置未能写入本机',
       ...(warnings.length ? { directoryWarnings: warnings } : {}),
     }
+  }
+  // 只进日志：放在上面那个 reason 之后，免得没写成配置时把真正的原因挤掉。
+  if (options.fetchAvailableModels && !model) {
+    warnings.push(`没查到当前账号能用的图片模型，画图先用 ${XINGMANG_AI_DEFAULT_IMAGE_MODEL}`)
   }
   // 工具读的 config.json 必须是这次真写成功的那一份，所以只从刚写过的目录里挑。
   let imageMcpWarnings: string[] = []
