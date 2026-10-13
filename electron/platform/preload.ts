@@ -15,7 +15,19 @@ const channels = {
   stateChanged: 'xingmang-platform:state-changed',
 } as const
 
-if (process.isMainFrame) {
+// The preload is registered on the whole session, and the infinite-canvas
+// window (plus its sandbox probe) shares the default session with the main
+// window. The canvas runs third-party code (I15), so the bridge only appears
+// on the main window's own documents: the packaged xingmang://app/ origin, or
+// the loopback Vite server `npm run dev` uses. The main-process owner check
+// stays the real gate; this keeps the surface from reaching the canvas at all.
+function isMainWindowDocument(): boolean {
+  const { protocol, hostname } = window.location
+  if (protocol === 'xingmang:') return hostname === 'app'
+  return protocol === 'http:' && (hostname === '127.0.0.1' || hostname === 'localhost')
+}
+
+if (process.isMainFrame && isMainWindowDocument()) {
   const api: XingmangPlatformApi = {
     getState: () => ipcRenderer.invoke(channels.getState),
     setThemePreference: (preference) =>
