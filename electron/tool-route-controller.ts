@@ -20,7 +20,7 @@ import path from 'node:path'
 import { classifyRouteFailure, type LegitimateAddresses, type RouteFailureLabel } from './route-failure-classifier'
 import { routeIncidentActive, routeStatusAllowsHongKong, type RouteStatus } from './route-status-file'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
-import { toolPathFailureCounted, toolPathTlsRejected, type ToolPathFailureKind } from './tool-path-probe'
+import { toolPathFailureCounted, toolPathTlsRejected, type ToolPathCertificate, type ToolPathFailureKind } from './tool-path-probe'
 import type { RelayRouteConclusions } from './relay-route-controller'
 import type { RelayEndpointId, RelayRoutePreference } from './relay-sites'
 
@@ -109,6 +109,20 @@ export interface ToolRouteProbeResult {
   ok: boolean
   kind?: ToolPathFailureKind
   addresses: readonly string[]
+  /** 因为证书没过时，对面实际给的证书（tool-path-probe.ts 读的）。 */
+  certificates?: readonly ToolPathCertificate[]
+}
+
+/**
+ * 这次运行最近一次「证书没过」时对面给的证书，给反馈报告用：客服拿颁发者、指纹跟正版一比，就知道
+ * 是不是路上被换了证书。只在内存里，不落盘；具体 IP 只进反馈报告（需求 5.1.9）。
+ */
+export interface ToolRouteCertificateFailure {
+  line: RelayEndpointId
+  at: number
+  /** 当前线路那一轮探测的失败标签（relay.route.check-failed）；回升时探更高线路那几次不打标签。 */
+  label?: RouteFailureLabel
+  certificates: readonly ToolPathCertificate[]
 }
 
 export interface ToolRouteControllerDependencies {
@@ -134,6 +148,8 @@ export interface ToolRouteController {
   /** 这会儿写进工具配置的线路。 */
   line(): RelayEndpointId
   snapshot(): ToolRouteSnapshot
+  /** 这次运行最近一次证书没过时对面给的证书；没碰到过为 null。 */
+  certificateFailure(): ToolRouteCertificateFailure | null
   /** 开机后在后台查。 */
   start(): void
   /** 唤醒、网络恢复、用户点「重新检测」：马上查一轮当前线路。 */
@@ -237,6 +253,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
   let recoveryBusy = false
   let cancelWatch: (() => void) | null = null
   let cancelRecovery: (() => void) | null = null
+  let certificateFailure: ToolRouteCertificateFailure | null = null
 
   // 开机初值：上次存下的工具线路；没有（升级后第一次运行）就取应用线路存下的星芒账号结论，读不到才用
   // 洛杉矶。应用线路 7 天内因为没通退到 CF 的，给洛杉矶记一次失败，免得刚退下来又被拉回去。
@@ -338,7 +355,13 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
   async function probe(line: RelayEndpointId): Promise<ToolRouteProbeResult> {
     try {
       const result = await dependencies.probe(line)
-      return { ok: result.ok === true, ...(result.kind ? { kind: result.kind } : {}), addresses: [...(result.addresses ?? [])] }
+      const certificates = result.ok === true ? [] : (result.certificates ?? []).map((entry) => ({ ...entry }))
+      // 换线前发出去的探测回来得晚也照记：对面给了什么证书是实打实看到的。
+      if (certificates.length) certificateFailure = { line, at: now(), certificates }
+      return {
+        ok: result.ok === true, ...(result.kind ? { kind: result.kind } : {}), addresses: [...(result.addresses ?? [])],
+        ...(certificates.length ? { certificates } : {}),
+      }
     } catch {
       return { ok: false, kind: 'reset', addresses: [] }
     }
@@ -460,8 +483,11 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     const label = await classify(line, result)
     roundBusy = false
     if (disposed || token !== epoch || round !== active) return
+    if (result.certificates && certificateFailure?.certificates === result.certificates) certificateFailure = { ...certificateFailure, label }
     log('info', 'relay.route.check-failed', '工具线路这次探测没通', {
       line, failures: active.failures, trigger: active.trigger, failure: result.kind, label,
+      // 对面给的证书：颁发者、指纹、Node 怎么判的。连的 IP 不记（需求 5.1.9），只进反馈报告。
+      ...(result.certificates ? { certificates: result.certificates.map(({ issuer, subject, fingerprint256, verifyError }) => ({ issuer, subject, fingerprint256, verifyError })) } : {}),
     })
     if (label === 'hijack') {
       void prepareDowngrade(active, 'hijack', result)
@@ -627,6 +653,9 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
       return current
     },
     snapshot,
+    certificateFailure() {
+      return certificateFailure ? { ...certificateFailure, certificates: certificateFailure.certificates.map((entry) => ({ ...entry })) } : null
+    },
     start() {
       if (!automatic || disposed) return
       beginRound('startup')

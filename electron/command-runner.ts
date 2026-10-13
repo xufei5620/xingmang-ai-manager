@@ -9,7 +9,7 @@ import { darwinCommandPathCandidates } from './macos-platform'
 import { linuxCommandPathCandidates } from './linux-platform'
 import { managedNativeProviderRoot, managedNodeRuntimeBinDirectory, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
-import { redactSecretPatterns } from './redaction-patterns'
+import { credentialArgumentValues, redactSecretPatterns } from './redaction-patterns'
 import {
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
@@ -909,13 +909,20 @@ function errorMessage(code: CommandErrorCode, executable: string, detail?: numbe
   }
 }
 
+// 调用方只认得出自己拼进去的密钥（例如外接工具的环境变量值）。客户自己填的
+// 启动参数里常有 `--token 值` 这种写法，失败时整条命令连同输出都进运行日志和
+// 反馈报告（逆向报告 B1，I13），所以这里按参数名再补一遍。
+function commandSensitiveValues(spec: CommandSpec, options: RunCommandOptions): string[] {
+  return [...(options.sensitiveValues ?? []), ...credentialArgumentValues(spec.argv)]
+}
+
 function immediateError(
   code: CommandErrorCode,
   spec: CommandSpec,
   options: RunCommandOptions,
   message = errorMessage(code, spec.executable),
 ): CommandRunnerError {
-  const sensitiveValues = options.sensitiveValues ?? []
+  const sensitiveValues = commandSensitiveValues(spec, options)
   return new CommandRunnerError(redactCommandText(message, sensitiveValues), {
     code,
     executable: redactCommandText(spec.executable, sensitiveValues),
@@ -1234,7 +1241,7 @@ export async function runCommand(
   }
 
   const acceptedExitCodes = new Set(options.acceptedExitCodes ?? [0])
-  const sensitiveValues = options.sensitiveValues ?? []
+  const sensitiveValues = commandSensitiveValues(spec, options)
   const startedAt = Date.now()
   const processPlatform = dependencies.platform ?? process.platform
   const spawnProcess = dependencies.spawnProcess ?? spawn

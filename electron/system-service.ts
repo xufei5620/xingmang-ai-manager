@@ -61,6 +61,7 @@ import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, gr
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
 import { activateCodexDesktopWithCdp, withCodexDesktopCdpFailureReport } from './codex-desktop-cdp'
+import type { CodexDesktopStartupRoute } from './codex-desktop-startup-route'
 import {
   createCodexDesktopService,
   desktopUpdateFields,
@@ -2699,6 +2700,11 @@ export interface SystemServiceOptions {
    * 见 codex-desktop-acceleration.ts。
    */
   prepareCodexDesktopAcceleration?: () => Promise<void>
+  /**
+   * 拉起 Codex 桌面端之前给它启动时读中文开关的那一下找条路（codex-desktop-startup-route.ts）。给了它
+   * 就由它按需连加速，prepareCodexDesktopAcceleration 不再单独调。缺省 = 旧行为。
+   */
+  prepareCodexDesktopStartupRoute?: (context: { launchArgumentsUsable: boolean }) => Promise<CodexDesktopStartupRoute>
   /** runtime.jsonl sink for steps that are allowed to fail without blocking. */
   runtimeLog?: RuntimeLogLike
   /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */
@@ -5797,6 +5803,7 @@ export function createSystemService(
     downloadFetch,
     reloadDownloadProxyConfig,
     prepareAcceleration: serviceOptions.prepareCodexDesktopAcceleration,
+    prepareStartupRoute: serviceOptions.prepareCodexDesktopStartupRoute,
     assertInstallDiskSpace,
     // 官方包在海外：Mac 上那次下载、Windows 上商店没走通后的官网离线安装包，都和 OpenCode
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。

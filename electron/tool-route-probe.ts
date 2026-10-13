@@ -65,7 +65,10 @@ export function createToolRouteProbe(dependencies: ToolRouteProbeDependencies): 
     const { direct } = results
     if (ok) return { ok: true, addresses: direct.addresses }
     const failed = direct.ok ? worstOf([results.systemProxy, results.environmentProxy].filter((entry): entry is ToolPathResult => entry !== undefined)) : direct
-    return { ok: false, ...(failed?.kind ? { kind: failed.kind } : {}), addresses: direct.addresses }
+    return {
+      ok: false, ...(failed?.kind ? { kind: failed.kind } : {}), addresses: direct.addresses,
+      ...(failed?.certificates?.length ? { certificates: failed.certificates } : {}),
+    }
   }
 
   return async (line) => {

@@ -1916,10 +1916,18 @@ describe('Codex Desktop launch queueing', () => {
 })
 
 describe('Codex Desktop launch acceleration', () => {
-  function darwinLaunchFixture(prepareAcceleration?: () => Promise<void>) {
+  function darwinLaunchFixture(
+    prepareAcceleration?: () => Promise<void>,
+    startup: {
+      running?: boolean
+      prepareStartupRoute?: CodexDesktopServiceOptions['prepareStartupRoute']
+      launchError?: Error
+    } = {},
+  ) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-accel-'))
     temporaryDirectories.push(directory)
     const order: string[] = []
+    const launches: string[][] = []
     const service = createCodexDesktopService({
       // 桌面端只认系统代理，macOS 与 Windows 同理；这里用 macOS 那条路，因为
       // 它不需要 Windows 专用的进程探测就能走到真正的拉起。
@@ -1927,12 +1935,14 @@ describe('Codex Desktop launch acceleration', () => {
       installationQueue: new InstallationQueue(),
       createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
       detectMacosCodexApp: async () => ({
-        app: { path: '/Applications/Codex.app', version: '1.0.0', running: false },
+        app: { path: '/Applications/Codex.app', version: '1.0.0', running: startup.running ?? false },
         detectionFailed: false,
         detectionError: null,
       }),
-      executeCommand: async () => {
+      executeCommand: async (spec) => {
         order.push('launch')
+        launches.push([...spec.argv])
+        if (startup.launchError) throw startup.launchError
         return {
           executable: '/usr/bin/open', argv: [], exitCode: 0, signal: null,
           stdout: '', stderr: '', outputBytes: 0, durationMs: 1,
@@ -1946,8 +1956,9 @@ describe('Codex Desktop launch acceleration', () => {
       ...(prepareAcceleration
         ? { prepareAcceleration: async () => { order.push('accelerate'); await prepareAcceleration() } }
         : {}),
+      ...(startup.prepareStartupRoute ? { prepareStartupRoute: startup.prepareStartupRoute } : {}),
     })
-    return { service, order, target: { isDestroyed: () => false, send: vi.fn() } }
+    return { service, order, launches, target: { isDestroyed: () => false, send: vi.fn() } }
   }
 
   it('connects acceleration before the desktop app is started', async () => {
@@ -1973,6 +1984,61 @@ describe('Codex Desktop launch acceleration', () => {
     await fixture.service.launchCodexDesktop('open', fixture.target)
 
     expect(fixture.order).toEqual(['launch'])
+  })
+
+  it('hands the startup route to a freshly started app instead of connecting acceleration itself', async () => {
+    const release = vi.fn()
+    const prepareStartupRoute = vi.fn(async () => ({
+      kind: 'tunnel' as const,
+      hostResolverRules: 'MAP ab.chatgpt.com 127.0.0.1:43210',
+      release,
+      fallback: async () => undefined,
+    }))
+    const fixture = darwinLaunchFixture(async () => undefined, { prepareStartupRoute })
+
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(prepareStartupRoute).toHaveBeenCalledWith({ launchArgumentsUsable: true })
+    expect(fixture.order).toEqual(['launch'])
+    expect(fixture.launches[0].slice(-2)).toEqual(['--args', '--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1:43210'])
+    expect(release).not.toHaveBeenCalled()
+  })
+
+  it('tells the route that a running app cannot take startup arguments', async () => {
+    const prepareStartupRoute = vi.fn(async () => ({ kind: 'none' as const }))
+    const fixture = darwinLaunchFixture(undefined, { running: true, prepareStartupRoute })
+
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(prepareStartupRoute).toHaveBeenCalledWith({ launchArgumentsUsable: false })
+    expect(fixture.launches[0]).not.toContain('--args')
+  })
+
+  it('still opens without arguments when preparing the route fails', async () => {
+    const fixture = darwinLaunchFixture(undefined, {
+      prepareStartupRoute: async () => { throw new Error('换票失败') },
+    })
+
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(fixture.launches).toHaveLength(1)
+    expect(fixture.launches[0]).not.toContain('--args')
+  })
+
+  it('closes the tunnel when the app could not be opened', async () => {
+    const release = vi.fn()
+    const fixture = darwinLaunchFixture(undefined, {
+      launchError: new Error('open failed'),
+      prepareStartupRoute: async () => ({
+        kind: 'tunnel',
+        hostResolverRules: 'MAP ab.chatgpt.com 127.0.0.1:43210',
+        release,
+        fallback: async () => undefined,
+      }),
+    })
+
+    await expect(fixture.service.launchCodexDesktop('open', fixture.target)).rejects.toThrow('open failed')
+    expect(release).toHaveBeenCalledTimes(1)
   })
 })
 

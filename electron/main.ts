@@ -90,7 +90,7 @@ import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
 import { findExecutable, isTrustedHighIntegrityExecutable, runWithTrustedWindowsProcessEnvironment, trustedCommandEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
-import { createNewApiClient, type NewApiRetryOffProxyFailure } from './new-api-client'
+import { createNewApiClient, type NewApiCodexStartupTicket, type NewApiRetryOffProxyFailure } from './new-api-client'
 import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
@@ -134,7 +134,7 @@ import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relayEndpointOrigin, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
 import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
 import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
@@ -198,6 +198,7 @@ import {
 } from './download-proxy'
 import { createDownloadAccelerationCoordinator } from './download-acceleration'
 import { codexDesktopNeedsAccelerationOnlyAtStartup, createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
+import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator } from './codex-desktop-startup-route'
 import { probeCodexDesktopRunning } from './codex-desktop-service'
 import {
   createSystemService,
@@ -247,7 +248,7 @@ const nonSiteExternalUrlAllowlist = [
   'https://www.python.org/downloads/',
   // 首页运行环境行的「下载 Git」按钮只在 Windows 出现，落点就是这一条（I12 全等匹配）。
   gitWindowsDownloadUrl,
-  // 缺少系统 winget 时首页 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
+  // 首页 WorkBuddy 一行，以及缺少系统 winget 时 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
@@ -1463,8 +1464,33 @@ if (!hasSingleInstanceLock) {
       // 桌面端用的是星芒的 Key：它要加速只为启动时拉中文界面那份配置，之后连着只会
       // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
       // 认不准的也按这种算，等桌面端退出再断。读配置抛错由守护按「一直要」处理。
-      onlyNeededAtStartup: () => codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
-        rootedOptions.system.providerRoots, relayRouting.resolve(systemService.readStoredConfig().relaySiteId).providerBaseUrls)),
+      onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    function codexDesktopUsesStarKeyOnly(): boolean {
+      return codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
+        rootedOptions.system.providerRoots, relayRouting.resolve(systemService.readStoredConfig().relaySiteId).providerBaseUrls))
+    }
+    // Codex 启动时读中文开关的那一下先试着经星芒服务器代取，走不通才照旧连加速（issue #977，
+    // codex-desktop-startup-route.ts）。账号服务建得比这里晚，建好以后才换成真的换票。
+    let issueCodexStartupTicket: () => Promise<NewApiCodexStartupTicket> = () => Promise.reject(new Error('账号服务尚未就绪'))
+    // 通道地址跟账号请求走同一个站、同一套线路：这会儿走的那条在前，另一条留作握不上手时再试。
+    function codexStartupTunnelUrls(): string[] {
+      const lines: RelayEndpointId[] = relayRouting.lines().solov.line === 'direct' ? ['direct', 'primary'] : ['primary', 'direct']
+      return lines.flatMap((line) => {
+        const origin = relayEndpointOrigin('solov', line)
+        const url = origin ? buildCodexStartupTunnelUrl(origin) : null
+        return url ? [url] : []
+      })
+    }
+    const codexDesktopStartupRoute = createCodexDesktopStartupRouteCoordinator({
+      launchArgumentsSupported: process.platform === 'win32' || process.platform === 'darwin',
+      fastFailSupported: process.platform === 'win32',
+      onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
+      issueTicket: () => issueCodexStartupTicket(),
+      tunnelUrls: () => codexStartupTunnelUrls(),
+      ensureAccelerated: () => codexDesktopAcceleration.ensureConnected(),
+      resolveSystemProxy: (url) => resolveSystemProxy(url),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
@@ -1553,7 +1579,7 @@ if (!hasSingleInstanceLock) {
         )
       },
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
-      prepareCodexDesktopAcceleration: async () => { await codexDesktopAcceleration.ensureConnected() },
+      prepareCodexDesktopStartupRoute: (context) => codexDesktopStartupRoute.prepare(context),
     })
     // 星芒账号的工具线路换了：主进程把四个工具配置里的地址定点改过去（xm 三线路 C9）。历史账号照旧
     // 由界面收到应用线路那声以后走同步 Key。只有因为连不上换的（没通、劫持、服务端整体故障）才可能提示
@@ -1620,9 +1646,12 @@ if (!hasSingleInstanceLock) {
         parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
       ),
       // Codex 的官方插件目录由本软件替它下载（codex-plugin-catalog.ts），与装 CLI
-      // 同一条下载通道，也同样临时借加速线路。
+      // 同一条下载通道。先从星芒存储桶下，没走通才去 GitHub，那时才临时借加速线路。
       downloadFetch,
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
+      codexCatalogBucket: {
+        onFallback: (detail) => runtimeLog.log('warn', 'install', 'codex-plugin-catalog.bucket-fallback', 'Codex 插件目录存储桶这一路没走通，改从 GitHub 下', { detail }),
+      },
     })
     let latestDiagnostics: DiagnosticsReport | null = null
     // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走直连没查通时它改查默认线路，并把失败报过来。
@@ -2153,6 +2182,7 @@ if (!hasSingleInstanceLock) {
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
         relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
         toolRoute: resolveFeedbackToolRoute(toolRouting, systemService.readStoredConfig().relaySiteId),
+        toolRouteCertificate: toolRouting.resolve(systemService.readStoredConfig().relaySiteId).id === 'solov' ? toolRouteController.certificateFailure() : null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
@@ -2513,6 +2543,13 @@ if (!hasSingleInstanceLock) {
       },
     })
     readAccountSiteId = () => accounts.getSiteId()
+    // 只有星芒账号的站有代取服务；历史账号的客户端没有这个方法。票只在主进程里用。
+    issueCodexStartupTicket = async () => {
+      if (accounts.getSiteId() !== 'solov') throw new Error('当前账号没有 Codex 中文启动通道')
+      const issue = accounts.client.issueCodexStartupTicket
+      if (!issue) throw new Error('当前账号没有 Codex 中文启动通道')
+      return issue()
+    }
     const accountService = accounts.client
     readBillingAccountScope = () => {
       const state = accountService.getSessionState()
