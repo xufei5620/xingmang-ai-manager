@@ -1317,6 +1317,39 @@ function useMcpHealth(api: V2Bridge, provider: Provider, enabled: boolean) {
   return { report, checking, check }
 }
 
+/**
+ * 扩展页的操作要等工具自己跑完，这期间可以换到别的工具。换过去那一下红条
+ * 已经清了，跑完才落下来的失败却照样挂在页顶，摆到了新工具下面。所以结果记着是哪个工具下点的，只在那个
+ * 工具下面摆出来：换走以后才落下的先收着，换回去再出来。clear() 只清屏上摆着的那条，换工具时清掉的是正
+ * 离开的那个工具的红条，收着的那条不跟着丢；再点一次操作照旧整个换掉。
+ */
+function useToolOperation(provider: Provider) {
+  const operation = useOperation()
+  const [owner, setOwner] = useState(provider)
+  const shown = owner === provider
+  const execute: typeof operation.execute = (name, action, success) =>
+    operation.execute(
+      name,
+      () => {
+        setOwner(provider)
+        return action()
+      },
+      success,
+    )
+  return {
+    ...operation,
+    message: shown ? operation.message : '',
+    revealPath: shown ? operation.revealPath : '',
+    error: shown ? operation.error : '',
+    detail: shown ? operation.detail : '',
+    failed: shown ? operation.failed : '',
+    execute,
+    clear: () => {
+      if (shown) operation.clear()
+    },
+  }
+}
+
 export function ExtensionsPage({
   api,
   kind,
@@ -1393,7 +1426,7 @@ export function ExtensionsPage({
     if (shownProvider.current === provider) await resource.reload()
   }
   const health = useMcpHealth(api, provider, kind === 'mcp')
-  const operation = useOperation()
+  const operation = useToolOperation(provider)
   const [form, setForm] = useState<'add' | 'market' | null>(null)
   const [formName, setFormName] = useState('')
   const [source, setSource] = useState('')
