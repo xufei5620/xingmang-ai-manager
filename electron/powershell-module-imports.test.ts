@@ -40,7 +40,6 @@ import {
   windowsAclProbeModules,
   type WindowsMachinePaths,
 } from './windows-machine-paths'
-import { workBuddyInstallerSignatureScript } from './workbuddy-installer'
 
 const machinePaths: WindowsMachinePaths = {
   systemRoot: 'C:\\Windows',
@@ -90,7 +89,6 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['installed Node.js signature check', installedNodeSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['Python installer signature check', pythonInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['installed Python check', installedPythonInspectionScript, authenticodeSignatureModules, 'pinned'],
-  ['WorkBuddy installer signature check', workBuddyInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['native CLI signature check', nativeCliSignatureScript, authenticodeSignatureModules, 'by-name'],
   ['protected directory ACL read-back', buildProtectedDirectoryAclScript(), protectedDirectoryAclModules, 'by-name'],
   ['Program Files ACL probe', decodeEncodedCommand(buildProgramFilesAclProbe(

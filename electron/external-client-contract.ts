@@ -22,10 +22,12 @@ export interface ExternalClientRuntimeStatus {
 }
 
 /**
- * 缺少系统 winget 时首页「去官网下载」打开的页面。主进程外链白名单逐条收录这几条
- * （I12 全等匹配），所以这里只放完整网址，不拼接。WorkBuddy 有腾讯官方安装包兜底，不在此列。
+ * 首页「去官网下载」打开的页面：WorkBuddy 在 Windows 上一律由客户自己去腾讯官网下载
+ * （yoyo 2026-10-13），另两家是缺少系统 winget 时。主进程外链白名单逐条收录这几条
+ * （I12 全等匹配），所以这里只放完整网址，不拼接。
  */
 export const externalClientOfficialDownloadUrls = {
+  workbuddy: 'https://www.workbuddy.ai/',
   claudeDesktop: claudeDesktopDownloadPageUrl,
   opencode: 'https://opencode.ai/download',
 } as const satisfies Partial<Record<ExternalToolId, string>>
