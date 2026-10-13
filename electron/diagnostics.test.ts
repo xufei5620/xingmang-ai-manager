@@ -435,6 +435,47 @@ describe('diagnostics', () => {
     expect(item?.details?.workspace).toBeUndefined()
   })
 
+  // xm 三线路 C16：客户在 Gemini 里选过「Don't trust」的文件夹，自己开终端时 Gemini 不读当前账号那份设置。
+  it('warns that Gemini ignores the current account in a project folder the user told it not to trust', async () => {
+    const home = fs.realpathSync.native(temporaryHome())
+    const workspace = path.join(home, 'work', 'app')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.mkdirSync(path.join(home, '.gemini'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [workspace]: 'DO_NOT_TRUST' }))
+    const input = dependencies(home)
+    input.platform = process.platform
+    input.workspace = workspace
+    input.claudeManagedDirectory = path.join(home, 'managed')
+
+    const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
+
+    expect(item).toMatchObject({
+      state: 'warn',
+      summary: '在最近打开的项目文件夹里自己开终端运行 Gemini CLI 时不会用当前账号，从本软件打开不受影响',
+      details: { workspace: '~/work/app', count: 1, file1: 'Gemini CLI · ~/.gemini/trustedFolders.json' },
+    })
+  })
+
+  // 星芒打开 Codex 时带 --no-daemon；客户自己敲 codex 时后台服务开着，换线路后旧对话可能还走原来的地址。
+  // 只进导出的报告给客服看，检查页照常通过。
+  it('notes in the report whether the Codex background server starts on its own', async () => {
+    const home = fs.realpathSync.native(temporaryHome())
+    const input = dependencies(home)
+    const codexItem = async () => (await runDiagnostics(input)).items.find((entry) => entry.code === 'PROVIDER_CODEX')
+
+    expect((await codexItem())?.details).not.toHaveProperty('daemonAutoStart')
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '[features]\ndaemon_auto_start = true\n')
+    expect(await codexItem()).toMatchObject({ state: 'pass', details: { daemonAutoStart: '开' } })
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '[features]\ndaemon_auto_start = false\n')
+    expect((await codexItem())?.details?.daemonAutoStart).toBe('关')
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model = "gpt-5.6-sol"\n')
+    expect((await codexItem())?.details?.daemonAutoStart).toBe('没写（0.157 起缺省开）')
+
+    input.inspectProvider = (provider) => ({ ...inspection(provider, home, 'sk-test'), matchesRelay: provider !== 'codex' })
+    expect((await codexItem())?.details).not.toHaveProperty('daemonAutoStart')
+  })
+
   it('rejects failed relay responses and refuses automatic redirects', async () => {
     const home = temporaryHome()
     const fetchImpl = vi.fn(async () => new Response(null, { status: 503 }))

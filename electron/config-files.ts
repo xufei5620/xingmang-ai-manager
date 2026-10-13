@@ -1167,6 +1167,43 @@ export function applyCodexRelayMachineDefaults(
   if (isJsonRecord(windows) && windows.sandbox === undefined) windows.sandbox = 'unelevated'
 }
 
+/**
+ * Codex 的后台服务开没开（xm 三线路 C16）。本软件打开 Codex 时带 --no-daemon，这一项只管
+ * 客户自己在终端里敲 codex：开着时，换线路后半小时内接着聊的旧对话可能还留在后台那份里、
+ * 走原来的地址（#941 第 6 节）。'default' = 两处都没写，0.157.0 起缺省是开。
+ *
+ * 照 rust-v0.160.1 features/src/lib.rs（0.162.1 同）：先看 [features]，再看顶层 profile
+ * 选中的 [profiles.<名>.features]，后者盖过前者；不是 true / false 的值 Codex 根本读不进来，
+ * 当没写。
+ */
+export type CodexDaemonAutoStart = 'on' | 'off' | 'default'
+
+export function codexDaemonAutoStartSetting(parsed: Record<string, unknown>): CodexDaemonAutoStart {
+  const profileName = typeof parsed.profile === 'string' ? parsed.profile : ''
+  const profiles = isJsonRecord(parsed.profiles) ? parsed.profiles : {}
+  const profile = profileName && isJsonRecord(profiles[profileName]) ? profiles[profileName] : {}
+  let setting: CodexDaemonAutoStart = 'default'
+  for (const features of [parsed.features, profile.features]) {
+    if (isJsonRecord(features) && typeof features.daemon_auto_start === 'boolean') {
+      setting = features.daemon_auto_start ? 'on' : 'off'
+    }
+  }
+  return setting
+}
+
+/** 只读不改；没有这份配置、读不了或读不懂时是 null，配置坏没坏由 Codex 那一项自己去说。 */
+export function inspectCodexDaemonAutoStart(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): CodexDaemonAutoStart | null {
+  const configPath = codexConfigSnapshotPaths(normalizeProviderConfigRoots(rootsInput)).active
+  try {
+    const content = readTrustConfigText(configPath, path.dirname(configPath), '现有 Codex config.toml')
+    return content === null ? null : codexDaemonAutoStartSetting(TOML.parse(content))
+  } catch {
+    return null
+  }
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,

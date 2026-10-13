@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
+import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import type { ProviderId } from './catalog'
 
@@ -29,6 +30,11 @@ import type { ProviderId } from './catalog'
  *   ~/.gemini/.env，但本软件打开时注入的环境变量优先，所以只影响用户自己开终端。
  * - Grok：项目里的 .grok/config.toml 只认 MCP / 插件 / 权限几张表，地址与密钥
  *   盖不过，这里不查。
+ *
+ * 2026-10-13 补了 Gemini 的文件夹信任（xm 三线路 C16），照 Gemini CLI 0.62.0 源码，
+ * 沙箱里假 HOME + 本地假接口真跑过：不信任的文件夹里它既不读 ~/.gemini/.env，也不读
+ * 项目里的 .gemini/settings.json，自己开终端报「没有 GEMINI_API_KEY」；从本软件打开时
+ * 注入的环境变量照样生效。
  */
 
 export type WorkspaceOverrideScope = 'project' | 'managed'
@@ -191,6 +197,59 @@ export function geminiSettingsOverrideKeys(text: string, current: CurrentProvide
   return findings
 }
 
+// Gemini 读 settings.json 与 trustedFolders.json 时先去掉注释再 JSON.parse，所以注释照读，
+// 结尾多一个逗号就算坏。
+function parseCommentedJsonRecord(text: string): Record<string, unknown> | null {
+  const errors: ParseError[] = []
+  const parsed: unknown = parseJsonc(text.replace(/^\uFEFF/, ''), errors, { allowTrailingComma: false })
+  return errors.length === 0 && isRecord(parsed) ? parsed : null
+}
+
+/** 用户级 settings.json 里关掉了文件夹信任（security.folderTrust.enabled = false）时，Gemini 信任所有文件夹。 */
+export function geminiFolderTrustEnabled(settingsText: string): boolean {
+  const parsed = parseCommentedJsonRecord(settingsText)
+  const security = parsed && isRecord(parsed.security) ? parsed.security : {}
+  const folderTrust = isRecord(security.folderTrust) ? security.folderTrust : {}
+  return folderTrust.enabled !== false
+}
+
+const geminiTrustLevels: readonly string[] = ['TRUST_FOLDER', 'TRUST_PARENT', 'DO_NOT_TRUST']
+
+/**
+ * Gemini CLI 信不信任这个文件夹：没有哪条规则管到它时是 null，交互界面第一次进来会先问一句，
+ * 不算问题。照 0.62.0 core/src/utils/trust.ts 的 isPathTrusted：一条规则管它自己和下面所有
+ * 文件夹（TRUST_PARENT 管的是它的上一层），几条都管到时听路径最长的那条；Windows 与 macOS
+ * 不分大小写（Gemini 自己往文件里写的就是全小写、正斜杠）。它比之前还会把两边换成真实位置，
+ * 这里只按字面比，经过联接的文件夹可能比不上。读不懂、有它不认的取值时也是 null：Gemini
+ * 碰上那种文件直接报错退出，轮不到读 .env。
+ */
+export function geminiFolderTrust(text: string, folder: string, platform: NodeJS.Platform): boolean | null {
+  const parsed = parseCommentedJsonRecord(text)
+  if (!parsed) return null
+  const api = pathApi(platform)
+  const caseInsensitive = platform === 'win32' || platform === 'darwin'
+  const key = (value: string) => caseInsensitive ? api.resolve(value).toLowerCase() : api.resolve(value)
+  // 两条写法不同、比起来却是同一个文件夹的规则，Gemini 读进来时后一条盖掉前一条。
+  const rules = new Map<string, string>()
+  for (const [rulePath, level] of Object.entries(parsed)) {
+    if (typeof level !== 'string' || !geminiTrustLevels.includes(level)) return null
+    rules.set(key(rulePath), level)
+  }
+  const location = key(folder)
+  let longest = -1
+  let matched: string | null = null
+  for (const [rulePath, level] of rules) {
+    const effective = level === 'TRUST_PARENT' ? api.dirname(rulePath) : rulePath
+    const relative = api.relative(effective, location)
+    const inside = relative !== '..' && !relative.startsWith(`..${api.sep}`) && !api.isAbsolute(relative)
+    if (inside && rulePath.length > longest) {
+      longest = rulePath.length
+      matched = level
+    }
+  }
+  return matched === null ? null : matched !== 'DO_NOT_TRUST'
+}
+
 function pathApi(platform: NodeJS.Platform): typeof path.posix {
   return platform === 'win32' ? path.win32 : path.posix
 }
@@ -321,8 +380,23 @@ function inspectCodex(workspace: string, context: WorkspaceOverrideContext): Wor
   return results
 }
 
+// 不信任这个文件夹时下面那几样 Gemini 都不读了，自己开终端反正用不上当前账号，只报这一条。
+// 本软件打开 Gemini 时会替没记过的文件夹写上信任（trustManagedWorkspace），客户自己选过
+// 「Don't trust」的不替他改（config-files.ts 的 trustGeminiWorkspaceInTrustedFoldersText）。
+function inspectGeminiFolderTrust(workspace: string, context: WorkspaceOverrideContext): WorkspaceConfigOverride | null {
+  const api = pathApi(context.platform)
+  const settings = readSettingsFile(api.join(context.home, '.gemini', 'settings.json'))
+  if (settings.state === 'read' && !geminiFolderTrustEnabled(settings.text)) return null
+  const file = api.join(context.home, '.gemini', 'trustedFolders.json')
+  const outcome = readSettingsFile(file)
+  if (outcome.state !== 'read' || geminiFolderTrust(outcome.text, workspace, context.platform) !== false) return null
+  return { provider: 'gemini', scope: 'project', file, keys: [], severity: 'blocking', launchUnaffected: true }
+}
+
 function inspectGemini(workspace: string, context: WorkspaceOverrideContext): WorkspaceConfigOverride[] {
   const api = pathApi(context.platform)
+  const untrusted = inspectGeminiFolderTrust(workspace, context)
+  if (untrusted) return [untrusted]
   const results: WorkspaceConfigOverride[] = []
   if (!samePath(workspace, context.home, context.platform)) {
     const settings = inspectFile(
