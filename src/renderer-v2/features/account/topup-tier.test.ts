@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeTopupTier, isQuotableAmount, payableSymbol } from './topup-tier'
+import { describeTopupTier, isQuotableAmount, payableSymbol, sameTopupInfo } from './topup-tier'
 
 describe('describeTopupTier', () => {
   it('shows credited, paid and bonus for a discounted tier', () => {
@@ -75,5 +75,24 @@ describe('isQuotableAmount', () => {
     expect(isQuotableAmount(12.5, 1)).toBe(false)
     expect(isQuotableAmount(Number.NaN, 1)).toBe(false)
     expect(isQuotableAmount(0, 0)).toBe(false)
+  })
+})
+
+describe('sameTopupInfo', () => {
+  const running = { amountOptions: [10, 20], discounts: { 20: 0.8 }, minTopup: 1 }
+
+  it('keeps the offers on screen when a fresh read says the same thing', () => {
+    expect(sameTopupInfo(running, { amountOptions: [10, 20], discounts: { 20: 0.8 }, minTopup: 1 })).toBe(true)
+  })
+
+  it('takes the fresh read once the promotion was withdrawn or changed', () => {
+    expect(sameTopupInfo(running, { ...running, discounts: {} })).toBe(false)
+    expect(sameTopupInfo(running, { ...running, discounts: { 20: 0.9 } })).toBe(false)
+    expect(sameTopupInfo(running, { ...running, amountOptions: [10, 50] })).toBe(false)
+  })
+
+  it('treats nothing on screen yet as different', () => {
+    expect(sameTopupInfo(null, running)).toBe(false)
+    expect(sameTopupInfo(undefined, running)).toBe(false)
   })
 })
