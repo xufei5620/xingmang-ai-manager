@@ -102,6 +102,9 @@ test('the Codex config the probe writes is the one a customer gets', () => {
   // exactly there.
   assert.match(text, /wire_api = "responses"/)
   assert.match(text, /requires_openai_auth = true/)
+  // The transport is part of what the customer gets: WebSocket and plain
+  // streaming take different paths through the relay's front proxy.
+  assert.match(text, /^supports_websockets = false$/m)
   assert.match(text, /model_reasoning_effort = "xhigh"/)
   assert.match(text, /base_url = "https:\/\/relay\.invalid\/v1"/)
   assert.match(text, /^model = "gpt-6-astra"$/m)

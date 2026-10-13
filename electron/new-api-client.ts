@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
@@ -1281,10 +1282,17 @@ function assertServiceAvailable(raw: NewApiRawResponse, detail: string): void {
   }
 }
 
+// 服务器说的那句给人看的话：rc.43 起 message 一律是英文，带着 message_key 的换成
+// 上游自己的中文（new-api-messages.ts）；认不出的 key、老版本服务器照旧用 message。
+// 只用来上屏和记日志；按原话判断是哪种失败的地方（登录被拒、两步验证）仍看英文原句。
+function displayServerMessage(envelope: Record<string, unknown> | null, fallback: string): string {
+  return (envelope && resolveChineseServerMessage(envelope)) ?? fallback
+}
+
 function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(serverMessage, secrets)
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
@@ -1398,7 +1406,7 @@ function unwrapTwoFactorLoginEnvelope(raw: NewApiRawResponse, secrets: readonly 
 function unwrapPublicNotice(raw: NewApiRawResponse): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(serverMessage, [])
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), [])
   if (raw.status === 401) throw new NewApiAuthenticationError(detail || '公告读取未授权')
   assertServiceAvailable(raw, detail)
   if (!raw.ok) throw new Error(detail || `公告读取失败，服务返回 HTTP ${raw.status}`)
@@ -1434,7 +1442,7 @@ function unwrapLegacyBusinessEnvelope(
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const message = envelope && typeof envelope.message === 'string' ? envelope.message : ''
   const dataMessage = envelope && typeof envelope.data === 'string' ? envelope.data : ''
-  const detail = sanitizeUpstreamMessage(message === 'error' ? dataMessage : message, secrets)
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, message === 'error' ? dataMessage : message), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
