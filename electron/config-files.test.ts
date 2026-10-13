@@ -3273,6 +3273,25 @@ describe('workspace trust for the directory the user picked', () => {
     })
   })
 
+  // Gemini 0.62.0 在 macOS 上把键全转小写再写进去，读回来时同一文件夹的两条后一条算数。
+  it('finds the lower-case key Gemini writes on macOS and Windows instead of appending a second one', () => {
+    const declined = JSON.stringify({ '/users/alex/projects/app': 'DO_NOT_TRUST' })
+    const mac = trustGeminiWorkspaceInTrustedFoldersText(declined, '/Users/alex/Projects/App', 'darwin')
+    expect(mac.changed).toBe(false)
+    expect(JSON.parse(mac.content)).toEqual({ '/users/alex/projects/app': 'DO_NOT_TRUST' })
+
+    const windows = JSON.stringify({ 'c:/users/peaker/app': 'DO_NOT_TRUST' })
+    expect(trustGeminiWorkspaceInTrustedFoldersText(windows, 'C:\\Users\\peaker\\app', 'win32').changed).toBe(false)
+
+    // Linux 上 Gemini 分大小写，这是另一个文件夹。
+    const linux = trustGeminiWorkspaceInTrustedFoldersText(declined, '/Users/alex/Projects/App', 'linux')
+    expect(linux.changed).toBe(true)
+    expect(JSON.parse(linux.content)).toEqual({
+      '/users/alex/projects/app': 'DO_NOT_TRUST',
+      '/Users/alex/Projects/App': 'TRUST_FOLDER',
+    })
+  })
+
   it('keeps comments in Gemini trust and context files it adds entries to', () => {
     const trust = trustGeminiWorkspaceInTrustedFoldersText('{\n  // 家里的项目\n  "/home/tester/other": "TRUST_FOLDER"\n}\n', '/home/tester/work')
     expect(trust.changed).toBe(true)

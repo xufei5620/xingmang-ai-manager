@@ -40,13 +40,17 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
   },
   {
     // The server's optional email-domain whitelist / alias restriction, hit on
-    // send-verification. Off by default in new-api and not listed in
-    // docs/RECON-new-api.md, so the exact wording is unverified: matched on the
-    // words both languages share, and only next to "email" -- this table also
-    // backs the app-wide errorMessage, where a bare "whitelist" means a blocked
-    // link. Without it a restricted mailbox falls through to the generic "try
-    // again later", which a retry never fixes.
-    test: /(email|邮箱).*(whitelist|白名单|alias|别名)/i,
+    // send-verification. From rc.40 on (checked against rc.40 and rc.44
+    // service/email_binding.go ErrAccountEmailRestricted) a domain off the
+    // whitelist and a "+" / "." alias both answer HTTP 200 + code
+    // EMAIL_ADDRESS_REJECTED with one fixed English sentence that the server
+    // never translates; the web console's zh.json renders it as the Chinese
+    // matched next to it. The older whitelist / alias wording stays matched
+    // too, and only next to "email" -- this table also backs the app-wide
+    // errorMessage, where a bare "whitelist" means a blocked link. Without it
+    // a restricted mailbox falls through to the generic "try again later",
+    // which a retry never fixes.
+    test: /(email|邮箱).*(whitelist|白名单|alias|别名)|not allowed by the administrator.s email policy|不符合管理员设置的邮箱规则/i,
     friendly: '这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试',
   },
   {
