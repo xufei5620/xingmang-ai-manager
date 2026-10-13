@@ -5,6 +5,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import * as TOML from '@iarna/toml'
 import { classifyNetworkFailure } from './network-failure'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { InstallationQueue } from './installation-queue'
@@ -1839,6 +1840,25 @@ describe('createSystemService', () => {
     const error = await service.fetchAvailableModels('sk-maintenance-probe').catch((cause: unknown) => cause)
     expect(classifyNetworkFailure(error)).toBe('serviceUnavailable')
     expect((error as Error).message).toContain('HTTP 503')
+  })
+
+  // 写 Key 前查模型没过时，日志要记得出服务器回了什么、服务端拿什么查（三线路 7b）。
+  it('marks a failed model query with what the service answered and the request id', async () => {
+    const service = createService()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: '无效的令牌' } }), {
+      status: 401, headers: { 'X-Oneapi-Request-Id': 'req-models-1' },
+    })))
+    const error = await service.fetchAvailableModels('sk-model-probe').catch((cause: unknown) => cause)
+    expect((error as Error).message).toContain('模型查询失败，服务返回 401')
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 401, requestId: 'req-models-1' })
+
+    // 没等到回应时只有按线路发请求那一层挂的线路，换成中文的超时说法时跟着带过去。
+    const aborted = new DOMException('aborted', 'AbortError')
+    noteRequestDiagnostics(aborted, { line: 'direct' })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(aborted))
+    const timedOut = await service.fetchAvailableModels('sk-model-probe', { bypassCache: true }).catch((cause: unknown) => cause)
+    expect((timedOut as Error).message).toBe('模型查询超时，请检查网络后重试')
+    expect(requestDiagnosticsOf(timedOut)).toEqual({ line: 'direct' })
   })
 
   it('redacts echoed API keys and bounds relay error messages', async () => {

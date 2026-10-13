@@ -6,6 +6,7 @@ import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
+import { carryRequestDiagnostics } from './request-diagnostics'
 import type { ConfigSavePayload, SystemService } from './system-service'
 
 export interface ManagedCliKeyStatus {
@@ -214,12 +215,13 @@ async function resolveManagedCliKeys(
         fetchedFromServer = true
       } catch (error) {
         rethrowAccountSessionChange(error)
-        failed.push({
+        // 签 Key 那次请求走的线路、状态码、请求编号跟着这条失败走，写 Key 失败的日志要用（request-diagnostics.ts）。
+        failed.push(carryRequestDiagnostics(error, {
           provider,
           group,
           message: error instanceof Error ? error.message : 'CLI Key 初始化失败',
           ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
-        })
+        }))
       }
     }
 
@@ -301,11 +303,11 @@ export async function configureManagedClis(
     let managedKey = keys.get(provider)
     if (!managedKey) {
       const syncFailure = syncFailures.get(provider)
-      outcome.failed.push({
+      outcome.failed.push(carryRequestDiagnostics(syncFailure, {
         provider,
         message: syncFailure?.message ?? '对应分组 Key 未就绪',
         ...(syncFailure?.serviceUnavailable ? { serviceUnavailable: true } : {}),
-      })
+      }))
       continue
     }
     try {
@@ -364,11 +366,11 @@ export async function configureManagedClis(
       outcome.configured.push(provider)
     } catch (error) {
       rethrowAccountSessionChange(error)
-      outcome.failed.push({
+      outcome.failed.push(carryRequestDiagnostics(error, {
         provider,
         message: error instanceof Error ? error.message : 'CLI 配置失败',
         ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
-      })
+      }))
     }
   }
   return outcome

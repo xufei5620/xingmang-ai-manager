@@ -6,6 +6,7 @@ import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backe
 import type { NewApiLoginInput, NewApiSessionState } from './new-api-client'
 import { NewApiLoginRejectedError, NewApiNetworkError, NewApiTwoFactorExpiredError, NewApiTwoFactorRequiredError } from './new-api-client'
 import { savedAccountId } from './saved-accounts'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -207,6 +208,31 @@ describe('realm account service', () => {
     expect(await f.service.latestLoginHint()).toMatchObject({ identifier: login.username })
     // One challenge, one login: the flow is gone once it has been used.
     await expect(f.service.completeTwoFactorLogin('123456')).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
+  })
+  // 登录日志要记这一次走的哪条线路（三线路 7b）：账号客户端挂在结果上的诊断，换成带站点的新对象时跟着带过去。
+  it('passes the line a login and its second step went through on to the result it hands back', async () => {
+    const f = fixture()
+    const service = createRealmAccountService({ ...f.options, createClient: (siteId, callback) => {
+      const created = f.options.createClient(siteId, callback)
+      const login = created.client.login.bind(created.client)
+      const complete = created.client.completeTwoFactorLogin!.bind(created.client)
+      created.client.login = async (input) => {
+        const result = await login(input)
+        noteRequestDiagnostics(result, { line: 'direct', status: 200, requestId: 'req-realm-1' })
+        return result
+      }
+      created.client.completeTwoFactorLogin = async (input) => {
+        const result = await complete(input)
+        noteRequestDiagnostics(result, { line: 'primary', status: 200 })
+        return result
+      }
+      return created
+    } })
+    const signedIn = await service.login(login)
+    expect(signedIn.siteId).toBe('solov')
+    expect(requestDiagnosticsOf(signedIn)).toEqual({ line: 'direct', status: 200, requestId: 'req-realm-1' })
+    await expect(service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
+    expect(requestDiagnosticsOf(await service.completeTwoFactorLogin('123456'))).toEqual({ line: 'primary', status: 200 })
   })
   it('asks for the password again when no challenge is waiting or the server expired it', async () => {
     const f = fixture()

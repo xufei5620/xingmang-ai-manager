@@ -313,6 +313,7 @@ import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
+import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
 import { createExternalClientSnapshotCache } from './external-client-snapshot-cache'
@@ -6340,6 +6341,8 @@ export function createSystemService(
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
+    // 写 Key 前查模型没过时，日志要记得出走的哪条线路、服务器回了什么（request-diagnostics.ts）。
+    let diagnostics: RequestDiagnostics | null = null
     try {
       const relayFetch = (options.routed ? serviceOptions.relayRoutedFetch : undefined) ?? serviceOptions.relayFetch ?? fetch
       const response = await relayFetch(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
@@ -6348,6 +6351,7 @@ export function createSystemService(
         redirect: 'error',
         signal: controller.signal,
       })
+      diagnostics = responseDiagnostics(response)
       const body = await readBoundedResponseText(response, maximumModelResponseBytes, '模型接口')
       if (!response.ok) {
         // 维护、网关错误、防护层验证页：写入 Key 与 AI 对话都经过这一步，按「服务
@@ -6387,8 +6391,9 @@ export function createSystemService(
       })
       return [...models]
     } catch (error) {
+      noteRequestDiagnostics(error, diagnostics)
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('模型查询超时，请检查网络后重试')
+        throw carryRequestDiagnostics(error, new Error('模型查询超时，请检查网络后重试'))
       }
       throw error
     } finally {
