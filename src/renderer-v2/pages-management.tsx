@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
   Download,
@@ -1384,6 +1384,14 @@ export function ExtensionsPage({
   useReloadWhenShown(active, () => {
     if (!resource.loading) void resource.reload()
   })
+  // 装插件、改连接、重新检测都要等工具自己跑完，这期间可以换到别的工具。换过去那一下页面已经在读新工具的
+  // 列表和连接状态，跑完以后再照原来那个工具读一遍，就把上一个工具的东西摆到了新工具下面（逆向报告 B4）。
+  // 所以跑完先看一眼还是不是那个工具，换走了就不再读，留给新工具自己那一轮。
+  const shownProvider = useRef(provider)
+  useLayoutEffect(() => { shownProvider.current = provider })
+  const reloadList = async () => {
+    if (shownProvider.current === provider) await resource.reload()
+  }
   const health = useMcpHealth(api, provider, kind === 'mcp')
   const operation = useOperation()
   const [form, setForm] = useState<'add' | 'market' | null>(null)
@@ -1444,7 +1452,7 @@ export function ExtensionsPage({
         // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未装」、还给安装按钮。先叫、再读本页：
         // 本页那次读接上 App 刚起的那一轮检测（同「安装卸载」页）。
         onSystemChanged?.()
-        await resource.reload()
+        await reloadList()
       },
       'Python 已经装好了，可以继续添加这条连接',
     )
@@ -1468,7 +1476,7 @@ export function ExtensionsPage({
     if (!allowed) return
     void operation.execute(action, async () => {
       await runExtensionAction(api, item, action, native)
-      await resource.reload()
+      await reloadList()
     })
   }
   const showForm = () => {
@@ -1545,7 +1553,7 @@ export function ExtensionsPage({
           })
         else await submitMcpInstall(api, provider, item.id, item.install, 'user')
         setCurated(null)
-        await resource.reload()
+        await reloadList()
       },
       `${item.name} 已添加，可以在下面的列表里看到`,
     )
@@ -1601,7 +1609,7 @@ export function ExtensionsPage({
             scope: formScope,
           })
         setForm(null)
-        await resource.reload()
+        await reloadList()
       },
       '已添加，列表已更新',
     )
@@ -1630,7 +1638,7 @@ export function ExtensionsPage({
   // 「重新检测」先把列表重新读一遍：在别处加过、删过的连接要先出现在列表里，检测才有对象。
   const recheck = async () => {
     await resource.reload()
-    await health.check()
+    if (shownProvider.current === provider) await health.check()
   }
   // 进页面时替用户自动下的那一次不另弹「已下载」：列表直接出来就是结果。自己点的照旧提示。
   const addOfficialMarketplace = (automatic = false) =>
@@ -1638,7 +1646,7 @@ export function ExtensionsPage({
       'marketplace-ensure',
       async () => {
         await api.ensureProviderMarketplace(provider)
-        await resource.reload()
+        await reloadList()
       },
       automatic
         ? () => null
@@ -2064,7 +2072,7 @@ export function ExtensionsPage({
                                         )
                                       else
                                         await api.loginMcpServer(nativeMcp.name)
-                                      await resource.reload()
+                                      await reloadList()
                                     }),
                                 },
                               ]
@@ -2131,7 +2139,7 @@ export function ExtensionsPage({
                           'market-update',
                           async () => {
                             await api.upgradeMarketplace(market.name)
-                            await resource.reload()
+                            await reloadList()
                           },
                         )
                       }
@@ -2151,7 +2159,7 @@ export function ExtensionsPage({
                               'market-delete',
                               async () => {
                                 await api.removeMarketplace(market.name)
-                                await resource.reload()
+                                await reloadList()
                               },
                             ),
                         },
@@ -2431,7 +2439,7 @@ export function ExtensionsPage({
                         nativeSkillFor(deletion),
                       )
                       setDeletion(null)
-                      await resource.reload()
+                      await reloadList()
                     },
                     '已移除',
                   )
