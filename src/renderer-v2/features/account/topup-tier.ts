@@ -56,6 +56,12 @@ function formatAmount(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2)
 }
 
+// 充值信息是服务端解析出来的纯数据（档位、折扣、渠道），字段次序固定，逐字比较就够。
+// 没变时沿用手上那一份：档位的实付按这一份为界试算，换一份新的就要逐档重算一遍。
+export function sameTopupInfo<T>(previous: T | null | undefined, next: T): boolean {
+  return previous !== null && previous !== undefined && JSON.stringify(previous) === JSON.stringify(next)
+}
+
 export function isQuotableAmount(amount: number, minimum: number): boolean {
   return Number.isSafeInteger(amount) && amount > 0 && amount >= minimum
 }

@@ -60,17 +60,14 @@ function fixture(overrides: ExternalClientRuntimeOptions = {}) {
   const execute = vi.fn<typeof runCommand>(async (spec) => commandResult(spec, spec.executable === powershell ? JSON.stringify(inventory) : ''))
   const launchProcess = vi.fn(async () => undefined)
   const resolveWinget = vi.fn(async () => ({ executable: winget, reason: null }))
-  const officialInstaller = vi.fn<NonNullable<ExternalClientRuntimeOptions['installWorkBuddyFromOfficial']>>(async () => {
-    throw new Error('Unexpected official installer call')
-  })
   const runtime = createExternalClientRuntime({
     platform: 'win32', architecture: 'x64', userHome: 'C:\\Users\\Tester', env: { PATH: 'C:\\Evil', NODE_OPTIONS: '--require evil.cjs' },
     runCommand: execute, resolveMachinePaths: () => machinePaths,
     resolvePowerShellExecutable: () => powershell, resolveExplorerExecutable: () => explorer,
     resolveWingetExecutable: resolveWinget, verifyPath: async (value) => value,
-    launchProcess, installWorkBuddyFromOfficial: officialInstaller, ...overrides,
+    launchProcess, ...overrides,
   })
-  return { runtime, execute, launchProcess, resolveWinget, officialInstaller, setInventory(clients: Record<string, unknown>[], errors: Record<string, string> = {}) { inventory = { clients, errors } } }
+  return { runtime, execute, launchProcess, resolveWinget, setInventory(clients: Record<string, unknown>[], errors: Record<string, string> = {}) { inventory = { clients, errors } } }
 }
 
 describe('external desktop client lifecycle', () => {
@@ -218,7 +215,7 @@ describe('external desktop client lifecycle', () => {
     f.setInventory([candidate('workbuddy'), appx(), candidate('opencode')])
     const statuses = await f.runtime.scan()
     expect(statuses.map((status) => [status.tool, status.installed, status.installSupported, status.launchSupported])).toEqual([
-      ['workbuddy', true, true, true], ['claudeDesktop', true, true, true], ['opencode', true, true, true],
+      ['workbuddy', true, false, true], ['claudeDesktop', true, true, true], ['opencode', true, true, true],
     ])
     expect(statuses[1]).toMatchObject({ version: '2.110.1.0', running: true, detectionError: null })
     expect(f.execute).toHaveBeenCalledOnce()
@@ -237,7 +234,7 @@ describe('external desktop client lifecycle', () => {
   })
 
   it.each([
-    ['workbuddy', 'Tencent.WorkBuddy'], ['claudeDesktop', 'Anthropic.Claude'], ['opencode', 'SST.OpenCodeDesktop'],
+    ['claudeDesktop', 'Anthropic.Claude'], ['opencode', 'SST.OpenCodeDesktop'],
   ] as const)('installs %s with the exact official desktop package and verifies it afterwards', async (tool, packageId) => {
     const f = fixture()
     const progress: ExternalClientInstallProgress[] = []
@@ -269,8 +266,8 @@ describe('external desktop client lifecycle', () => {
       if (spec.executable === winget) throw new Error('winget failed: network unreachable')
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('network unreachable')
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('network unreachable')
+    await expect(f.runtime.install('opencode')).rejects.toThrow('network unreachable')
+    await expect(f.runtime.install('opencode')).rejects.toThrow('network unreachable')
     expect(f.execute.mock.calls.filter(([spec]) => spec.executable === winget)).toHaveLength(2)
   })
 
@@ -342,35 +339,6 @@ describe('external desktop client lifecycle', () => {
     finishWinget.resolve()
     await expect(install).resolves.toMatchObject({ installed: true })
     expect(f.execute.mock.calls.find(([spec]) => spec.executable === winget)?.[1]?.signal).toBeUndefined()
-  })
-
-  it('stops the Tencent download on cancel but not the Tencent installer once it runs', async () => {
-    const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) })
-    const downloading = deferred()
-    f.officialInstaller.mockImplementationOnce(async (options) => {
-      downloading.resolve()
-      await untilAborted(options?.signal)
-    })
-    const cancelled = f.runtime.install('workbuddy')
-    await downloading.promise
-    expect(f.runtime.cancelInstall('workbuddy')).toEqual({ cancelled: true, reason: null })
-    await expect(cancelled).rejects.toThrow('WorkBuddy 安装已取消')
-
-    const installing = deferred()
-    const finish = deferred()
-    f.officialInstaller.mockImplementationOnce(async (options) => {
-      options?.onInstallStarting?.()
-      installing.resolve()
-      await finish.promise
-      f.setInventory([candidate('workbuddy')])
-    })
-    const install = f.runtime.install('workbuddy')
-    await installing.promise
-    expect(f.runtime.cancelInstall('workbuddy')).toEqual({
-      cancelled: false, reason: '正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。',
-    })
-    finish.resolve()
-    await expect(install).resolves.toMatchObject({ installed: true })
   })
 
   it('isolates failing progress observers', async () => {
@@ -596,64 +564,13 @@ describe('external desktop client lifecycle', () => {
     const statuses = await f.runtime.scan()
     expect(statuses[2].installHint).toBe(externalClientWingetUnavailableHint)
     expect(statuses[2].installHint).not.toMatch(/winget|ENOENT|App Installer/i)
-    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, null, 'https://opencode.ai/download'])
+    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual(['https://www.workbuddy.ai/', null, 'https://opencode.ai/download'])
     clock += 10 * 60_000
     await f.runtime.scan({ force: true })
     expect(onWingetUnavailable.mock.calls).toEqual([[reason]])
     reason = '未检测到系统级 Microsoft App Installer 包'
     await f.runtime.scan({ force: true })
     expect(onWingetUnavailable.mock.calls.map(([logged]) => logged)).toEqual([expect.stringContaining('ENOENT'), reason])
-  })
-
-  it.each([0x80072efd, 0x80072efd | 0, 0x80072ee7, 0x80072ee2])('recovers a WorkBuddy source connection failure %s through its official installer and verifies the result', async (exitCode) => {
-    const f = fixture({ windowsExecutionMode: 'same-user' })
-    const progress: ExternalClientInstallProgress[] = []
-    f.execute.mockImplementation(async (spec) => {
-      if (spec.executable === winget) throw wingetError({ exitCode })
-      return commandResult(spec, JSON.stringify({ clients: f.officialInstaller.mock.calls.length ? [candidate('workbuddy')] : [], errors: {} }))
-    })
-    f.officialInstaller.mockImplementation(async (options) => {
-      options?.onProgress?.({ tool: 'workbuddy', phase: 'downloading', message: '正在下载腾讯官方安装包', percent: 42 })
-    })
-    await expect(f.runtime.install('workbuddy', (event) => progress.push(event))).resolves.toMatchObject({ installed: true })
-    expect(f.officialInstaller).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ architecture: 'x64', windowsExecutionMode: 'same-user', runCommand: f.execute }))
-    expect(progress.some((event) => event.message.includes('正在切换到腾讯官方下载'))).toBe(true)
-    expect(progress.some((event) => event.percent === 42)).toBe(true)
-    expect(progress.at(-1)).toMatchObject({ phase: 'completed', percent: 100 })
-    expect(progress.some((event) => event.phase === 'error')).toBe(false)
-  })
-
-  // 第四十四批 B：winget 自己的软件源坏了（源数据没有、对不上）也发生在动手之前，同连不上一样换腾讯官方。
-  it.each([0x8a15000f, 0x8a15000f | 0, 0x8a15003f])('recovers WorkBuddy through its official installer when the winget source itself is broken (%s)', async (exitCode) => {
-    const f = fixture()
-    const progress: ExternalClientInstallProgress[] = []
-    f.execute.mockImplementation(async (spec) => {
-      if (spec.executable === winget) {
-        throw wingetError({
-          exitCode,
-          stdout: "Failed when opening source(s); try the 'source reset' command if the problem persists.\r\nAn unexpected error occurred while executing the command:\r\n0x8a15000f : Data required by the source is missing\r\n",
-        })
-      }
-      return commandResult(spec, JSON.stringify({ clients: f.officialInstaller.mock.calls.length ? [candidate('workbuddy')] : [], errors: {} }))
-    })
-    f.officialInstaller.mockResolvedValue(undefined)
-    await expect(f.runtime.install('workbuddy', (event) => progress.push(event))).resolves.toMatchObject({ installed: true })
-    expect(f.officialInstaller).toHaveBeenCalledOnce()
-    expect(progress.map((event) => event.message)).toContain('连不上微软的软件下载源，正在切换到腾讯官方下载')
-    expect(progress.at(-1)).toMatchObject({ phase: 'completed', percent: 100 })
-  })
-
-  it('leaves WorkBuddy to winget once its installer started, even when winget then reports missing source data', async () => {
-    const f = fixture()
-    f.execute.mockImplementation(async (spec, options) => {
-      if (spec.executable === winget) {
-        options?.onOutput?.({ stream: 'stdout', text: 'Starting package install...' })
-        throw wingetError({ exitCode: 0x8a15000f })
-      }
-      return commandResult(spec, '{"clients":[],"errors":{}}')
-    })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('安装没有完成（错误码 0x8a15000f）')
-    expect(f.officialInstaller).not.toHaveBeenCalled()
   })
 
   it('still reports a broken winget source for OpenCode, which has no other route', async () => {
@@ -663,32 +580,11 @@ describe('external desktop client lifecycle', () => {
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
     await expect(f.runtime.install('opencode')).rejects.toThrow('安装没有完成（错误码 0x8a15000f），请查看运行日志中的安装器输出。')
-    expect(f.officialInstaller).not.toHaveBeenCalled()
   })
 
-  it('uses the official WorkBuddy installer when trusted winget is unavailable', async () => {
-    const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) })
-    expect((await f.runtime.scan())[0]).toMatchObject({ installSupported: true, installHint: '将使用腾讯官方安装包', officialDownloadUrl: null })
-    f.officialInstaller.mockImplementation(async () => { f.setInventory([candidate('workbuddy')]) })
-    await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
-    expect(f.officialInstaller).toHaveBeenCalledOnce()
-    expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
-  })
-
-  it.each([
-    { code: 'ABORTED' }, { code: 'TIMED_OUT' }, { signal: 'SIGTERM' }, { exitCode: 1 }, { exitCode: 0x800704c7 },
-  ] satisfies Partial<CommandErrorDetails>[])('never retries cancellation, timeout, termination or installer failure through another source: %j', async (details) => {
+  it('reports the installer start even when winget splits it across output chunks', async () => {
     const f = fixture()
-    f.execute.mockImplementation(async (spec) => {
-      if (spec.executable === winget) throw wingetError(details)
-      return commandResult(spec, '{"clients":[],"errors":{}}')
-    })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow()
-    expect(f.officialInstaller).not.toHaveBeenCalled()
-  })
-
-  it('does not start a second installer after the first reports starting in split output chunks', async () => {
-    const f = fixture()
+    const progress: ExternalClientInstallProgress[] = []
     f.execute.mockImplementation(async (spec, options) => {
       if (spec.executable === winget) {
         options?.onOutput?.({ stream: 'stdout', text: 'Starting package in' })
@@ -697,12 +593,13 @@ describe('external desktop client lifecycle', () => {
       }
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('连不上微软的软件下载源')
-    expect(f.officialInstaller).not.toHaveBeenCalled()
+    await expect(f.runtime.install('opencode', (event) => progress.push(event))).rejects.toThrow('连不上微软的软件下载源')
+    expect(progress.map((event) => event.phase)).toContain('installing')
   })
 
   it('detects an installer start at the beginning of a large output chunk before retaining its tail', async () => {
     const f = fixture()
+    const progress: ExternalClientInstallProgress[] = []
     f.execute.mockImplementation(async (spec, options) => {
       if (spec.executable === winget) {
         options?.onOutput?.({ stream: 'stdout', text: 'Starting package install...\n' + 'x'.repeat(4096) })
@@ -710,56 +607,45 @@ describe('external desktop client lifecycle', () => {
       }
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('连不上微软的软件下载源')
-    expect(f.officialInstaller).not.toHaveBeenCalled()
+    await expect(f.runtime.install('opencode', (event) => progress.push(event))).rejects.toThrow('连不上微软的软件下载源')
+    expect(progress.map((event) => event.phase)).toContain('installing')
   })
 
-  it.each(['installed', 'unknown'] as const)('rechecks WorkBuddy after source failure and avoids fallback when status is %s', async (state) => {
-    const f = fixture()
-    f.execute.mockImplementation(async (spec) => {
-      if (spec.executable === winget) {
-        f.setInventory(state === 'installed' ? [candidate('workbuddy')] : [], state === 'unknown' ? { workbuddy: '读安装记录失败' } : {})
-        throw wingetError()
-      }
-      return commandResult(spec, JSON.stringify({ clients: f.execute.mock.calls.some(([call]) => call.executable === winget) && state === 'installed' ? [candidate('workbuddy')] : [], errors: f.execute.mock.calls.some(([call]) => call.executable === winget) && state === 'unknown' ? { workbuddy: '读安装记录失败' } : {} }))
-    })
-    if (state === 'installed') await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
-    else await expect(f.runtime.install('workbuddy')).rejects.toThrow('无法确认客户端安装状态')
-    expect(f.officialInstaller).not.toHaveBeenCalled()
-  })
-
-  it('retains both failure causes, shows a useful error and permits a later retry', async () => {
-    const f = fixture()
-    const network = wingetError()
-    const invalidPackage = new Error('SHA-256 校验失败')
-    f.execute.mockImplementation(async (spec) => {
-      if (spec.executable === winget) throw network
-      return commandResult(spec, '{"clients":[],"errors":{}}')
-    })
-    f.officialInstaller.mockRejectedValue(invalidPackage)
-    for (let attempt = 0; attempt < 2; attempt++) {
-      await expect(f.runtime.install('workbuddy')).rejects.toMatchObject({ message: '连不上微软的软件下载源；腾讯官方安装未完成：SHA-256 校验失败', originalError: { winget: network, official: invalidPackage } })
-    }
-    expect(f.officialInstaller).toHaveBeenCalledTimes(2)
-  })
-
-  it('does not mistake an official installer exit for a verified installed client', async () => {
-    const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'missing' }) })
-    f.officialInstaller.mockResolvedValue(undefined)
-    const progress: ExternalClientInstallProgress[] = []
-    await expect(f.runtime.install('workbuddy', (event) => progress.push(event))).rejects.toThrow('未检测到客户端')
-    expect(progress.at(-1)?.phase).toBe('error')
-    expect(progress.some((event) => event.phase === 'completed')).toBe(false)
-  })
-
-  it('explains a source connection failure for other clients without invoking WorkBuddy installation', async () => {
+  it('explains a source connection failure with its error code', async () => {
     const f = fixture()
     f.execute.mockImplementation(async (spec) => {
       if (spec.executable === winget) throw wingetError()
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
     await expect(f.runtime.install('opencode')).rejects.toThrow('连不上微软的软件下载源（错误码 0x80072efd）')
-    expect(f.officialInstaller).not.toHaveBeenCalled()
+  })
+
+  // yoyo 2026-10-13：WorkBuddy 改成客户自己去腾讯官网下载，星芒只管认出来和写配置。
+  it.each([
+    ['with', { executable: winget, reason: null }],
+    ['without', { executable: null, reason: 'Microsoft App Installer missing' }],
+  ] as const)('sends WorkBuddy customers to the Tencent website %s winget and never runs an installer for it', async (_label, resolution) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => { throw new Error('Unexpected download') })
+    const f = fixture({ resolveWingetExecutable: async () => resolution, fetch })
+    expect((await f.runtime.scan())[0]).toMatchObject({
+      tool: 'workbuddy', installed: false, installSupported: false,
+      installHint: '到腾讯官网下载安装，装好后回来重新检测', officialDownloadUrl: 'https://www.workbuddy.ai/',
+    })
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('到腾讯官网下载安装，装好后回来重新检测')
+    expect(f.execute.mock.calls.every(([spec]) => spec.executable === powershell)).toBe(true)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('recognises a WorkBuddy the customer installed themselves, on another drive too', async () => {
+    const f = fixture()
+    const elsewhere = 'D:\\WorkBuddy\\WorkBuddy.exe'
+    f.setInventory([candidate('workbuddy', { path: elsewhere, version: '5.6.0' })])
+    expect((await f.runtime.scan())[0]).toMatchObject({
+      installed: true, version: '5.6.0', path: elsewhere, installDirectory: 'D:\\WorkBuddy', launchSupported: true, detectionError: null,
+    })
+    await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
+    await f.runtime.launch('workbuddy')
+    expect(f.launchProcess).toHaveBeenCalledWith(expect.objectContaining({ executable: explorer, argv: [elsewhere] }))
   })
 
   it('uses the trusted Explorer broker for user applications even in trusted-only mode', async () => {
@@ -872,6 +758,8 @@ describe('external desktop client lifecycle', () => {
     const statuses = await f.runtime.scan()
     expect(statuses.map((status) => status.installSupported)).toEqual([false, true, true])
     expect(statuses[0].installHint).toContain('处理器架构')
+    // 没有对应架构的包，送去官网也装不上：仍旧「暂不支持」，不给下载页。
+    expect(statuses[0].officialDownloadUrl).toBeNull()
   })
 
   it('does not claim official Linux WorkBuddy or Claude Desktop installation support', async () => {
@@ -1261,13 +1149,13 @@ describe('Windows Claude Desktop bucket route', () => {
     expect(f.wingetRan()).toBe(true)
   })
 
-  it('leaves WorkBuddy on its own routes', async () => {
+  it('leaves OpenCode on its own route', async () => {
     const f = bucketFixture()
     f.execute.mockImplementation(async (spec, options) => {
-      if (spec.executable === winget) f.setInventory([candidate('workbuddy')])
+      if (spec.executable === winget) f.setInventory([candidate('opencode')])
       return f.inventoryCommand(spec, options)
     })
-    await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
+    await expect(f.runtime.install('opencode')).resolves.toMatchObject({ installed: true })
     expect(f.claudeBucket).not.toHaveBeenCalled()
   })
 })
