@@ -90,6 +90,9 @@ const subscriptionPaymentPaths = Object.freeze({
   'waffo-pancake': '/api/subscription/waffo-pancake/pay',
 })
 const loginSessionsPath = '/api/user/sessions'
+const securityVerifyPath = '/api/verify'
+// service/security_verification.go VerificationScopePasswordChange.
+const passwordChangeScope = 'account.password.change'
 const legalDocumentPaths = {
   'user-agreement': '/api/user-agreement',
   'privacy-policy': '/api/privacy-policy',
@@ -924,10 +927,13 @@ export interface NewApiClientService extends RelayBackendClient {
   // the key's model limits and group. Verified against the exact
   // v1.0.0-rc.24 tag xm.solov.cc is pinned to.
   updateKey(input: NewApiAccountKeyUpdateInput): Promise<void>
-  // PUT /api/user/self with {password, original_password} -- confirmed
-  // identical between the `main` branch and the exact v1.0.0-rc.24 tag
-  // xm.solov.cc is pinned to (controller/user.go's UpdateSelf handler,
-  // service/auth_session.go's AdvanceCurrentSessionToUserVersion). See
+  // POST /api/verify (the original password for a one-time proof), then
+  // PUT /api/user/self with {password, original_password} and that proof in
+  // X-Security-Proof -- rc.40, which xm.solov.cc runs, refuses the PUT without
+  // it; rc.24 did not ask. Read from v1.0.0-rc.40 and rc.44
+  // (controller/user.go's UpdateSelf handler, middleware/
+  // secure_verification.go's RequireSecurityProof, service/auth_session.go's
+  // AdvanceCurrentSessionToUserVersion). See
   // parseChangePasswordResponseData's own comment for exactly what happens
   // to *this* session afterward (short version: it keeps working, no
   // re-login needed) versus every *other* session (signed out immediately,
@@ -2391,6 +2397,33 @@ export function parseChangePasswordResponseData(payload: unknown): NewApiRawChan
   return { accessToken, accessExpiresAt: normalizeExpiresAt(payload.access_expires_at) }
 }
 
+// POST /api/verify's success data (service/security_verification.go
+// SecurityProof). Only proof_token matters: it is spent on the very next
+// request, and the server accepts it once. Null rather than a thrown error on
+// a missing token: the change then goes out without a proof and the server's
+// own refusal ("需要安全验证") is what the user reads -- the same as before
+// this check existed, with no wording of ours in between.
+function parseSecurityProofToken(payload: unknown): string | null {
+  if (!isRecord(payload)) return null
+  return asString(payload.proof_token, '') || null
+}
+
+// rc.24's own Chinese for a wrong current password (i18n
+// user.original_password_error), which account-errors.ts already turns into
+// "原密码错误，请重新输入". rc.40 says it in English with a code instead, in
+// two places: the security check (SECURITY_VERIFICATION_FAILED -- with the
+// password method a wrong password is its only cause, since xm.solov.cc does
+// not encrypt passwords in transit) and, should the password change between
+// the check and the change, UpdateSelf itself (CURRENT_PASSWORD_INVALID).
+const originalPasswordRejectedMessage = '原密码错误'
+const originalPasswordRejectedCodes = new Set(['SECURITY_VERIFICATION_FAILED', 'CURRENT_PASSWORD_INVALID'])
+
+function isOriginalPasswordRejected(raw: NewApiRawResponse): boolean {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  return envelope !== null && envelope.success !== true
+    && typeof envelope.code === 'string' && originalPasswordRejectedCodes.has(envelope.code)
+}
+
 // Captures every Set-Cookie the server sent, stripped down to bare
 // "name=value" pairs (attributes like Path/HttpOnly/SameSite dropped). The
 // main process has no browser cookie jar (RECON 坑3), so this is the only
@@ -3560,17 +3593,34 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // as parseAccountLoginInput's password field in ipc.ts.
       if (!originalPassword) throw new Error('请输入原密码')
       if (!newPassword) throw new Error('请输入新密码')
+      // rc.40 changes nothing without a one-time proof of the current password
+      // (controller/user.go UpdateSelf -> RequireSecurityProof). An account
+      // with two-factor login may only prove itself with that second factor:
+      // the check turns the password down and its refusal is passed on as is.
+      const verified = await performRequest(
+        ctx,
+        securityVerifyPath,
+        {
+          method: 'POST',
+          body: { method: 'password', scope: passwordChangeScope, password: originalPassword },
+          headers: authHeaders(current),
+        },
+        '修改密码',
+      )
+      if (isOriginalPasswordRejected(verified)) throw new Error(originalPasswordRejectedMessage)
+      const proofToken = parseSecurityProofToken(unwrapEnvelope(verified, '修改密码', [originalPassword, current.accessToken]))
       const raw = await performRequest(
         ctx,
         selfPath,
         {
           method: 'PUT',
           body: { password: newPassword, original_password: originalPassword },
-          headers: authHeaders(current),
+          headers: proofToken ? { ...authHeaders(current), 'X-Security-Proof': proofToken } : authHeaders(current),
         },
         '修改密码',
       )
-      const data = unwrapEnvelope(raw, '修改密码', [originalPassword, newPassword, current.accessToken])
+      if (isOriginalPasswordRejected(raw)) throw new Error(originalPasswordRejectedMessage)
+      const data = unwrapEnvelope(raw, '修改密码', [originalPassword, newPassword, current.accessToken, ...(proofToken ? [proofToken] : [])])
       const bundle = parseChangePasswordResponseData(data)
       // Optimistic in-place swap so the very next authenticated call in this
       // same session does not spuriously 401 against the now-superseded old

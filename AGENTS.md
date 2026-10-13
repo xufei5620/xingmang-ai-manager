@@ -174,7 +174,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 `managed-cli.test.ts` 在非 Windows 平台每跑一次就泄漏若干个。
 
 **T12. 改账号对接 → 端点事实以 `docs/RECON-new-api.md` 为准，别按 new-api 文档想当然。**
-关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层与主进程各有一份密码长度等字面量是**有意重复**（electron 不 import src，同 I6/I7 的理由）。
+关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token（线上 rc.40 起还要先 `POST /api/verify` 换一次性凭证，放进 PUT 的 `X-Security-Proof` 头）、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层与主进程各有一份密码长度等字面量是**有意重复**（electron 不 import src，同 I6/I7 的理由）。
 
 **T13. 画布相关改动 → 分清源码与产物，且认清"执行发生在主进程"。**
 画布**源码**在 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成的**构建产物**，不入 git。改画布行为只改 `canvas-v2/`，**不要**改 `dist-canvas/` 里的产物文件。
