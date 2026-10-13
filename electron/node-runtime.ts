@@ -478,6 +478,19 @@ export function resolveNodeRuntimeNetworkRegion(
  */
 export type NodeRuntimePackageKind = 'windows-msi' | 'darwin-archive'
 
+/**
+ * index.json 里能证明「这一版有这个包」的键，任一个在就算。
+ *
+ * nodejs.org 的 index.json 从来不写 `win-arm64-msi`（2026-10-13 核过全部版本，一个都没有），
+ * 可 v19.9.0 起每一版都发了 node-vX-arm64.msi，SHASUMS256.txt 里也有它。只认 msi 这个键，
+ * ARM 电脑上 winget 没装成时，退到下安装包这一步永远挑不到版本。Windows ARM 的压缩包
+ * 和 MSI 是同一批发的，就拿 `win-arm64-zip` 作证；包到底在不在，后面校验清单和数字签名照查。
+ */
+function nodeReleaseFileKeys(architecture: NodeRuntimeArchitecture, kind: NodeRuntimePackageKind): string[] {
+  if (kind === 'darwin-archive') return [`osx-${architecture}-tar`]
+  return architecture === 'arm64' ? ['win-arm64-msi', 'win-arm64-zip'] : [`win-${architecture}-msi`]
+}
+
 export function nodeRuntimePackageFileName(
   version: string,
   architecture: NodeRuntimeArchitecture,
@@ -497,19 +510,20 @@ export function parseNodeReleaseIndex(
   try {
     const value = JSON.parse(input) as unknown
     if (!Array.isArray(value)) return null
-    const requiredFile = kind === 'darwin-archive' ? `osx-${architecture}-tar` : `win-${architecture}-msi`
+    const fileKeys = nodeReleaseFileKeys(architecture, kind)
     const releases: NodeRuntimeRelease[] = []
     for (const entry of value) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
       const record = entry as Record<string, unknown>
+      const files = record.files
       if (
         typeof record.version !== 'string'
         || !semverParts(record.version)
         || typeof record.lts !== 'string'
         || !record.lts.trim()
-        || !Array.isArray(record.files)
-        || !record.files.every((file) => typeof file === 'string')
-        || !record.files.includes(requiredFile)
+        || !Array.isArray(files)
+        || !files.every((file) => typeof file === 'string')
+        || !fileKeys.some((key) => files.includes(key))
       ) continue
       releases.push({
         version: record.version,

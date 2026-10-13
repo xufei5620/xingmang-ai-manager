@@ -80,6 +80,27 @@ describe('Node.js LTS release parsing', () => {
     })
   })
 
+  it('finds the Windows ARM MSI although nodejs.org never lists win-arm64-msi in index.json', () => {
+    // File keys copied from https://nodejs.org/dist/index.json (2026-10-13). Every release that
+    // lists win-arm64-zip also carries node-vX-arm64.msi in its SHASUMS256.txt.
+    const published = JSON.stringify([
+      { version: 'v26.11.1', lts: false, files: ['win-arm64-7z', 'win-arm64-zip', 'win-x64-7z', 'win-x64-exe', 'win-x64-msi', 'win-x64-zip'] },
+      { version: 'v24.21.0', lts: 'Krypton', files: ['win-arm64-7z', 'win-arm64-zip', 'win-x64-7z', 'win-x64-exe', 'win-x64-msi', 'win-x64-zip'] },
+      { version: 'v18.20.8', lts: 'Hydrogen', files: ['win-x64-7z', 'win-x64-exe', 'win-x64-msi', 'win-x64-zip', 'win-x86-msi'] },
+    ])
+    expect(parseNodeReleaseIndex(published, 'arm64')).toEqual({
+      version: 'v24.21.0',
+      lts: 'Krypton',
+      architecture: 'arm64',
+      fileName: 'node-v24.21.0-arm64.msi',
+    })
+    expect(parseNodeReleaseIndex(published, 'x64')?.fileName).toBe('node-v24.21.0-x64.msi')
+    // A release without any Windows ARM build stays out of reach for ARM.
+    expect(parseNodeReleaseIndex(JSON.stringify([
+      { version: 'v18.20.8', lts: 'Hydrogen', files: ['win-x64-msi', 'win-x64-zip'] },
+    ]), 'arm64')).toBeNull()
+  })
+
   it('rejects malformed, non-array, non-LTS, and unsupported release indexes', () => {
     expect(parseNodeReleaseIndex('{"version":"v22.0.0"}', 'x64')).toBeNull()
     expect(parseNodeReleaseIndex('[{"version":"latest","lts":"Jod","files":["win-x64-msi"]}]', 'x64')).toBeNull()
