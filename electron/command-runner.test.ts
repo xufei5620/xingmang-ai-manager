@@ -260,6 +260,32 @@ describe('secure command runner', () => {
     }
   })
 
+  it('redacts values passed to credential flags from the argv and the echoed output of a failed command', async () => {
+    // The shape of a pasted MCP launch line: nothing here looks like a key,
+    // only the flag names say these are credentials.
+    const token = 'plain-fake-flag-token'
+    const key = 'plain-fake-flag-key'
+    const execution = runCommand(nodeCommand(
+      "process.stderr.write(process.argv.slice(1).join(' ') + '\\n'); process.exit(3)",
+      'some-server', '--token', token, `--key=${key}`, '--verbose',
+    ))
+
+    try {
+      await execution
+      throw new Error('Expected non-zero exit failure')
+    } catch (error) {
+      expect(error).toBeInstanceOf(CommandRunnerError)
+      const structured = (error as CommandRunnerError).toJSON()
+      const serialized = JSON.stringify(structured)
+      expect(serialized).not.toContain(token)
+      expect(serialized).not.toContain(key)
+      expect(structured.argv).toContain('--token')
+      expect(structured.argv).toContain('--key=[REDACTED]')
+      expect(structured.argv).toContain('--verbose')
+      expect(structured.stderr).toContain('some-server --token [REDACTED] --key=[REDACTED] --verbose')
+    }
+  })
+
   it('redacts secrets spelled as JSON object keys', () => {
     const redacted = redactCommandText(JSON.stringify({
       access_token: 'token-value-123456',
@@ -926,6 +952,38 @@ describe('Linux trust boundary', () => {
       await refused(runCommand({ executable: '/usr/bin/env', argv: [`--file=${script}`] }, { trustedOnly: true }))
       await refused(runCommand({ executable: '/usr/bin/true', argv: [] }, { trustedOnly: true, trustedPaths: [script] }))
       await refused(runCommand({ executable: 'bin/true', argv: [] }, { trustedOnly: true }))
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform === 'darwin')('refuses trusted-only commands on macOS instead of only swapping the environment', async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-run-'))
+    let spawned = 0
+    const spawnProcess = (() => {
+      spawned += 1
+      throw new Error('a refused command must not be spawned')
+    }) as unknown as typeof import('node:child_process').spawn
+    try {
+      const script = path.join(scratch, 'payload.sh')
+      fs.writeFileSync(script, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+      const refused = async (promise: Promise<unknown>) => {
+        const error = await promise.then(() => null, (cause: unknown) => cause)
+        expect(error).toBeInstanceOf(CommandRunnerError)
+        expect((error as CommandRunnerError).code).toBe('UNSAFE_COMMAND')
+        expect((error as CommandRunnerError).message).toContain('这台 Mac 上还不能按受信任方式执行命令')
+      }
+      // A SIP-protected system binary is refused too: the flag fails closed rather than
+      // promising checks that darwin does not run.
+      await refused(runCommand({ executable: '/usr/bin/true', argv: [] }, { trustedOnly: true }, { spawnProcess }))
+      await refused(runCommand({ executable: 'true', argv: [] }, { trustedOnly: true, env: process.env }, { spawnProcess }))
+      await refused(runCommand({ executable: script, argv: [] }, { trustedOnly: true }, { spawnProcess }))
+      await refused(runCommand({ executable: '/usr/bin/env', argv: [script] }, { trustedOnly: true }, { spawnProcess }))
+      // trustedPaths are no longer dropped in silence.
+      await refused(runCommand({ executable: '/usr/bin/true', argv: [] }, { trustedOnly: true, trustedPaths: [script] }, { spawnProcess }))
+      expect(spawned).toBe(0)
+      // Without the flag nothing changes.
+      await expect(runCommand({ executable: '/usr/bin/true', argv: [] })).resolves.toMatchObject({ exitCode: 0 })
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true })
     }

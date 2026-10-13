@@ -221,7 +221,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   function endServerSession(handle: RuntimeHandle): void {
     try { void Promise.resolve(handle.client.endServerSession?.()).catch(() => undefined) } catch { /* best effort */ }
   }
-  function endSavedSession(handle: RuntimeHandle, saved: RealmSavedAccount): void {
+  function endSavedSession(handle: RealmAccountClientHandle, saved: RealmSavedAccount): void {
     try { void Promise.resolve(handle.endSavedSession?.(saved)).catch(() => undefined) } catch { /* best effort */ }
   }
   function getPublicClient(siteId: RealmAccountSiteId): RelayBackendClient {
@@ -546,6 +546,11 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     const saved = await findSaved(id)
     if (busy || (active.saved && realmOwnerKey(saved) === realmOwnerKey(active.saved))) throw new RealmAccountError('BUSY')
     await options.vault.forget(saved)
+    // 本机删掉以后，这份凭据再也没人能用来恢复或注销，服务端那次登录就一直挂在「登录设备」
+    // 里，攒到 50 个就登不进了（全面检测 Q11）。所以删成功后拿它注销一次，和重登同一账号覆盖掉
+    // 旧凭据时（#476）是同一个请求。先删本机：本机删不掉就整体失败，账号照旧能切回去。
+    // 注销不等、不报错，删没删成只看本机。用一个不接身份的客户端发，当前登录不受影响。
+    try { endSavedSession(options.createClient(site(accountRealms[saved.realmId].siteId), () => undefined), saved) } catch { /* best effort */ }
   }
 
   // Methods are bound when called, not when a consumer obtains the function.

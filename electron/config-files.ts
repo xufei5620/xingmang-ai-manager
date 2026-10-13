@@ -1167,6 +1167,43 @@ export function applyCodexRelayMachineDefaults(
   if (isJsonRecord(windows) && windows.sandbox === undefined) windows.sandbox = 'unelevated'
 }
 
+/**
+ * Codex 的后台服务开没开（xm 三线路 C16）。本软件打开 Codex 时带 --no-daemon，这一项只管
+ * 客户自己在终端里敲 codex：开着时，换线路后半小时内接着聊的旧对话可能还留在后台那份里、
+ * 走原来的地址（#941 第 6 节）。'default' = 两处都没写，0.157.0 起缺省是开。
+ *
+ * 照 rust-v0.160.1 features/src/lib.rs（0.162.1 同）：先看 [features]，再看顶层 profile
+ * 选中的 [profiles.<名>.features]，后者盖过前者；不是 true / false 的值 Codex 根本读不进来，
+ * 当没写。
+ */
+export type CodexDaemonAutoStart = 'on' | 'off' | 'default'
+
+export function codexDaemonAutoStartSetting(parsed: Record<string, unknown>): CodexDaemonAutoStart {
+  const profileName = typeof parsed.profile === 'string' ? parsed.profile : ''
+  const profiles = isJsonRecord(parsed.profiles) ? parsed.profiles : {}
+  const profile = profileName && isJsonRecord(profiles[profileName]) ? profiles[profileName] : {}
+  let setting: CodexDaemonAutoStart = 'default'
+  for (const features of [parsed.features, profile.features]) {
+    if (isJsonRecord(features) && typeof features.daemon_auto_start === 'boolean') {
+      setting = features.daemon_auto_start ? 'on' : 'off'
+    }
+  }
+  return setting
+}
+
+/** 只读不改；没有这份配置、读不了或读不懂时是 null，配置坏没坏由 Codex 那一项自己去说。 */
+export function inspectCodexDaemonAutoStart(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): CodexDaemonAutoStart | null {
+  const configPath = codexConfigSnapshotPaths(normalizeProviderConfigRoots(rootsInput)).active
+  try {
+    const content = readTrustConfigText(configPath, path.dirname(configPath), '现有 Codex config.toml')
+    return content === null ? null : codexDaemonAutoStartSetting(TOML.parse(content))
+  } catch {
+    return null
+  }
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,
@@ -1212,6 +1249,13 @@ function applyCodexRelayConfig(
   // Model names alone cannot establish the relay's protocol compatibility.
   providerEntry.wire_api = 'responses'
   providerEntry.requires_openai_auth = true
+  // 自定义线路只有写了 supports_websockets = true，Codex 才改走 Responses WebSocket（core/src/client.rs
+  // 的 responses_websocket_enabled，rust-v0.160.1 与 0.162.1 一致，缺省是 false）。走 Cloudflare 的
+  // WebSocket 约两分钟就被掐断，思考久的回答出到一半报「stream closed before response.completed」，
+  // 普通流式不受影响（2026-10-13 服务端按断开时间统计）。把缺省明写出来，上游哪天把自定义线路的缺省
+  // 改成开，客户也不会跟着掉进去。换线路只改 base_url 那一处（tool-route-rewrite.ts），写的时候分不出
+  // 以后会走哪条，所以两条线路都写。用户自己写过就不动。
+  if (providerEntry.supports_websockets === undefined) providerEntry.supports_websockets = false
   // Keep the Desktop permission picker interactive on fresh mirror installs.
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
@@ -1261,6 +1305,7 @@ function buildCodexRelayConfigTemplate(
     `base_url = ${tomlString(siteBaseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
+    'supports_websockets = false',
     '',
     '[features]',
     'goals = true',

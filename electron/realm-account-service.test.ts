@@ -1280,6 +1280,91 @@ describe('realm account re-login of the same account (#476)', () => {
   })
 })
 
+describe('realm account removal of a saved account', () => {
+  function savedSignOuts(f: ReturnType<typeof fixture>): RealmSavedAccount[] {
+    return f.clients.flatMap((entry) => entry.savedSessionsEnded)
+  }
+  function liveSignOuts(f: ReturnType<typeof fixture>): Array<string | null> {
+    return f.clients.flatMap((entry) => entry.serverSessionsEnded)
+  }
+
+  it('revokes the removed account\'s stored session on the server and leaves the signed-in one alone', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    const signedIn = f.clients.length
+    await f.service.removeSavedAccount(summaries[0].id)
+    expect(savedSignOuts(f)).toEqual([saved('solov', '7', 'test-original')])
+    // A detached client of the removed account's own site sends it; nothing
+    // is restored into it and no live session is touched.
+    const sender = f.clients[f.clients.length - 1]
+    expect(f.clients).toHaveLength(signedIn + 1)
+    expect(sender.siteId).toBe('solov')
+    expect(sender.savedSessionsEnded).toHaveLength(1)
+    expect(sender.restore).not.toHaveBeenCalled()
+    expect(sender.client.getSessionState().authenticated).toBe(false)
+    expect(liveSignOuts(f)).toEqual([])
+    expect(f.service.getSiteId()).toBe('solov-api')
+    expect(f.service.client.getSessionState().authenticated).toBe(true)
+    expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
+  })
+
+  it('removes the account even when the server sign-out fails or never answers', async () => {
+    for (const outcome of ['reject', 'hang', 'throw'] as const) {
+      const f = fixture()
+      await f.service.login(login)
+      await f.service.login({ ...login, username: '8' })
+      const summaries = await f.service.listSavedAccounts()
+      const createClient = f.options.createClient
+      f.options.createClient = (siteId, callback) => {
+        const created = createClient(siteId, callback)
+        return { ...created, endSavedSession: () => {
+          if (outcome === 'throw') throw new Error('network down')
+          return outcome === 'reject' ? Promise.reject(new Error('network down')) : new Promise<void>(() => undefined)
+        } }
+      }
+      await expect(f.service.removeSavedAccount(summaries[0].id)).resolves.toBeUndefined()
+      expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
+      expect(f.service.client.getSessionState().account?.userId).toBe(8)
+    }
+  })
+
+  it('revokes nothing when the account is not actually removed', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, username: '8' })
+    const summaries = await f.service.listSavedAccounts()
+    // The signed-in account is refused outright.
+    await expect(f.service.removeSavedAccount(summaries[1].id)).rejects.toMatchObject({ code: 'BUSY' })
+    // A removal that cannot be written keeps the account usable, so its
+    // server session must stay valid too.
+    f.fail(true)
+    await expect(f.service.removeSavedAccount(summaries[0].id)).rejects.toMatchObject({ code: 'STORAGE' })
+    f.fail(false)
+    expect(savedSignOuts(f)).toEqual([])
+    expect(liveSignOuts(f)).toEqual([])
+    expect(await f.service.listSavedAccounts()).toHaveLength(2)
+    await expect(f.service.switchSavedAccount(summaries[0].id)).resolves.toMatchObject({ authenticated: true })
+  })
+
+  it('sends nothing for a backend that has no way to end a stored session', async () => {
+    const f = fixture()
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    await f.service.login(login)
+    const summaries = await f.service.listSavedAccounts()
+    const createClient = f.options.createClient
+    f.options.createClient = (siteId, callback) => {
+      const { endSavedSession: _omitted, ...created } = createClient(siteId, callback)
+      return created
+    }
+    await expect(f.service.removeSavedAccount(summaries[0].id)).resolves.toBeUndefined()
+    expect(savedSignOuts(f)).toEqual([])
+    expect(liveSignOuts(f)).toEqual([])
+    expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
+  })
+})
+
 describe('realm account session-only login (Linux without a keyring)', () => {
   it('signs in and tells the renderer the login will not be remembered', async () => {
     const f = fixture({ vault: createSessionRealmAccountVault() })

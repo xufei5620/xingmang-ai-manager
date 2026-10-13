@@ -32,7 +32,7 @@
 
 ## 新增独立系统能力
 
-`electron/platform/contract.ts` 提供 `window.xingmangPlatform`，通过 Electron 43 `session.registerPreloadScript({ type: 'frame' })` 注册独立 sandbox preload。没有改动原主进程 IPC 契约、原 preload 或 app-settings schema。请求同时校验主窗口 WebContents 身份、mainFrame 身份、当前 URL 与原有 URL 白名单。
+`electron/platform/contract.ts` 提供 `window.xingmangPlatform`，通过 Electron 43 `session.registerPreloadScript({ type: 'frame' })` 注册独立 sandbox preload。没有改动原主进程 IPC 契约、原 preload 或 app-settings schema。请求同时校验主窗口 WebContents 身份、mainFrame 身份、当前 URL 与原有 URL 白名单。这个 preload 注册在整个会话上，无限画布窗口和它的沙箱探测页也共用这个会话，所以 preload 自己只在主窗口的 `xingmang://app/` 和开发用的本机 Vite 地址上暴露桥，画布里拿不到 `window.xingmangPlatform`（审查总表 E-G2）。
 
 - `getState`、`setThemePreference`、`setHighContrast`、`setStartup`：主题跟随系统、高对比、Windows/macOS 正式应用启动项；开发模式不读写开机启动项，macOS 待系统审批与已启用状态分开显示。
 - 偏好单独保存到 `platform-settings.json`，原文件无效或版本不识别时保留原文件并报错，不重置为假成功。

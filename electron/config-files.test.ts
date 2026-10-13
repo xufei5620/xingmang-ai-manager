@@ -23,6 +23,8 @@ import {
   codexChatGptAuthSnapshotName,
   applyCodexRelayMachineDefaults,
   codexConfigSnapshotPaths,
+  codexDaemonAutoStartSetting,
+  inspectCodexDaemonAutoStart,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogPath,
   codexModelCatalogTargetUsable,
@@ -610,6 +612,7 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
+      supports_websockets: false,
     })
     expect(asRecord(parsed.model_providers)?.OpenAI).toBeUndefined()
 
@@ -619,6 +622,7 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('codex', 'sk-merge-first', testModels.codex, 'merge', mergeRoots, {}, providerBaseUrls)
     const merged = asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))!
     expect(merged.model_provider).toBe(defaultCodexRelayProvider)
+    expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(false)
     expect(merged).not.toHaveProperty('model_context_window')
     expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
   })
@@ -1292,6 +1296,40 @@ describe('native CLI configuration files', () => {
     expect(scalar).toEqual({ features: 'off', windows: 'x' })
   })
 
+  // 照 rust-v0.160.1 features/src/lib.rs 的 from_sources：[features] 在先，profile 选中的那张盖过它。
+  it('reads whether the Codex background server starts on its own', () => {
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: false } })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: true } })).toBe('on')
+    expect(codexDaemonAutoStartSetting({})).toBe('default')
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: 'false' } })).toBe('default')
+    expect(codexDaemonAutoStartSetting({ features: 'off' })).toBe('default')
+    const withProfile = {
+      profile: 'work',
+      features: { daemon_auto_start: false },
+      profiles: { work: { features: { daemon_auto_start: true } }, home: { features: { daemon_auto_start: false } } },
+    }
+    expect(codexDaemonAutoStartSetting(withProfile)).toBe('on')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'home' })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'missing' })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'work', profiles: { work: { model: 'x' } } })).toBe('off')
+  })
+
+  it('inspects the Codex background server setting on disk without touching the file', () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    expect(inspectCodexDaemonAutoStart(roots)).toBeNull()
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, '[features]\ndaemon_auto_start = true\n', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBe('on')
+    fs.writeFileSync(configPath, 'model = "x"\n', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBe('default')
+    fs.writeFileSync(configPath, '[features', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBeNull()
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('[features')
+  })
+
   it('writes the Codex sleep and sandbox defaults on both a fresh install and an existing config', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -1556,8 +1594,35 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
+      supports_websockets: false,
       custom_header: 'keep',
     })
+  })
+
+  it.each([true, false])('keeps a user supports_websockets = %s on the relay provider during merge', (choice) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'model_provider = "XingmangAI"',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      `base_url = "${relayProviderBaseUrls('solov', 'direct').codex}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      `supports_websockets = ${choice}`,
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'new-key', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    const provider = asRecord(asRecord(parsed?.model_providers)?.XingmangAI)
+    expect(provider?.base_url).toBe('https://xm.solov.cc/v1')
+    expect(provider?.supports_websockets).toBe(choice)
   })
 
   it('does not select a user custom provider when model_provider is absent', () => {

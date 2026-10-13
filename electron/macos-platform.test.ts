@@ -6,6 +6,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
+import type { CommandSpec } from './command-runner'
 import {
   buildMacosClosedProxyGuard,
   buildMacosTerminalScript,
@@ -378,9 +379,33 @@ describe('macOS terminal launcher', () => {
     const launcherPath = run.mock.calls[0]?.[0].argv[2]
     expect(run).toHaveBeenCalledWith({
       executable: '/usr/bin/open',
-      argv: ['-a', 'Terminal', launcherPath],
+      argv: ['-a', '/System/Applications/Utilities/Terminal.app', launcherPath],
     }, expect.any(Object))
     expect(fs.existsSync(launcherPath)).toBe(false)
+  })
+
+  it('opens the system Terminal by its fixed bundle path, never by name', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-terminal-app-'))
+    temporaryDirectories.push(directory)
+    const run = vi.fn(async (spec: CommandSpec) => {
+      temporaryDirectories.push(path.dirname(spec.argv[2]))
+    })
+
+    await launchMacosTerminal({
+      executable: '/usr/bin/true',
+      argv: [],
+      workspace: directory,
+      env: { HOME: directory, PATH: '/usr/bin' },
+    }, run, () => undefined)
+
+    const [spec] = run.mock.calls[0] ?? []
+    expect(spec?.executable).toBe('/usr/bin/open')
+    expect(spec?.argv.slice(0, 2)).toEqual(['-a', '/System/Applications/Utilities/Terminal.app'])
+    expect(spec?.argv).not.toContain('Terminal')
+  })
+
+  it.runIf(process.platform === 'darwin')('names a Terminal bundle that exists on this Mac', () => {
+    expect(fs.statSync('/System/Applications/Utilities/Terminal.app/Contents/Info.plist').isFile()).toBe(true)
   })
 
   it('writes only the explicit CLI environment and leaves arbitrary secrets off disk', async () => {

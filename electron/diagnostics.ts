@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
-import { inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
+import { inspectCodexDaemonAutoStart, inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type CodexDaemonAutoStart, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
   installMinimumFreeBytes,
@@ -1632,6 +1632,14 @@ function relayRouteChangeDetails(route: DiagnosticsRelayRoute | undefined): Reco
   return { lastRouteChange: describeRelayRouteChange(change, route.primarySite.id), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
 }
 
+// 「Codex 连接设置」导出报告里的一行：换线路后旧对话还走原来的地址时，客服先看它（xm 三线路 C16）。
+// 客户自己设成开的也是一种选择，检查页详情不列这个键，不提醒。
+const codexDaemonAutoStartNames: Readonly<Record<CodexDaemonAutoStart, string>> = {
+  on: '开',
+  off: '关',
+  default: '没写（0.157 起缺省开）',
+}
+
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots, current?: ProviderRelayLine): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = {
     exists: inspection.exists,
@@ -2458,7 +2466,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
         // 「自动」还没定下来时不比：那时工具配置本来就不跟着迁。
         const current = toolRoute?.settled ? { siteId: toolSite.id, line: toolRoute.line, baseUrl: toolSite.providerBaseUrls[provider] } : undefined
-        return providerOutcome(provider, inspection, displayRoots, current)
+        const outcome = providerOutcome(provider, inspection, displayRoots, current)
+        if (provider !== 'codex' || outcome.state !== 'pass') return outcome
+        const daemon = inspectCodexDaemonAutoStart(providerRoots)
+        return daemon ? { ...outcome, details: { ...outcome.details, daemonAutoStart: codexDaemonAutoStartNames[daemon] } } : outcome
       },
     })),
     {

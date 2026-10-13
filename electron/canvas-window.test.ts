@@ -527,6 +527,38 @@ describe('createCanvasWindowController', () => {
     expect(electronMocks.notificationShow).toHaveBeenCalledWith({ title: '生成完成', body: '' })
   })
 
+  it('shows at most one canvas notification every five seconds', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    try {
+      const controller = createCanvasWindowController(controllerOptions())
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostNotifyChannel)!
+
+      expect(handler(trustedEvent(), '生成完成', 'a')).toBe(true)
+      now.mockReturnValue(1_004_999)
+      expect(handler(trustedEvent(), '生成完成', 'b')).toBe(false)
+      now.mockReturnValue(1_005_000)
+      expect(handler(trustedEvent(), '生成完成', 'c')).toBe(true)
+      expect(electronMocks.notificationShow.mock.calls).toEqual([
+        [{ title: '生成完成', body: 'a' }],
+        [{ title: '生成完成', body: 'c' }],
+      ])
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('strips links from canvas notifications and drops one whose title was only a link', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostNotifyChannel)!
+
+    expect(handler(trustedEvent(), 'https://evil.example/login', '余额异常')).toBe(false)
+    expect(electronMocks.notificationShow).not.toHaveBeenCalled()
+    expect(handler(trustedEvent(), '账号提醒', '请打开 https://evil.example/login 或 www.evil.example 处理')).toBe(true)
+    expect(electronMocks.notificationShow).toHaveBeenCalledWith({ title: '账号提醒', body: '请打开  或  处理' })
+  })
+
   it('returns false without throwing when Notification is unsupported on this platform', async () => {
     electronMocks.notificationSupported.mockReturnValue(false)
     const controller = createCanvasWindowController(controllerOptions())
@@ -704,6 +736,25 @@ describe('createCanvasWindowController', () => {
     userId = 7
     controller.setAccountUser(7)
     await expect(electronMocks.handlers.get(canvasHostListRunsChannel)!(trustedEvent())).rejects.toThrow('请先选择或新建')
+  })
+
+  it('counts run starts against the same frequency limit as direct generation', async () => {
+    const canvasRuns = controllerOptions().canvasRuns as unknown as { start: ReturnType<typeof vi.fn> }
+    const controller = createCanvasWindowController(controllerOptions({ canvasRuns: canvasRuns as never }))
+    await controller.open()
+    const startRun = electronMocks.handlers.get(canvasHostStartRunChannel)!
+    const generateImage = electronMocks.handlers.get(canvasHostGenerateImageChannel)!
+    const input = { graph: { nodes: [], edges: [] }, scope: { kind: 'all' } }
+
+    // The window allows 80 paid starts a minute per canvas; a poisoned canvas
+    // must not get an unlimited lane by submitting runs instead.
+    for (let index = 0; index < 79; index += 1) {
+      await expect(startRun(trustedEvent(), input)).resolves.toEqual({ runId: 'run-1', graphRevision: 'revision' })
+    }
+    await expect(generateImage(trustedEvent(), { requestId: 'request-80', prompt: '猫', model: 'image-model', group: 'default' }))
+      .resolves.toEqual([])
+    await expect(startRun(trustedEvent(), input)).rejects.toThrow('生成请求过于频繁')
+    expect(canvasRuns.start).toHaveBeenCalledTimes(79)
   })
 
   it('binds cancel requests and runs to the currently authenticated canvas account', async () => {
@@ -939,11 +990,29 @@ describe('createCanvasWindowController', () => {
       'C:\\Users\\yoyo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\update.cmd',
       '{}',
     )
-    expect(lastSaveDialogPath()).toBe('update.cmd')
+    expect(lastSaveDialogPath()).toBe('update.cmd.xingcanvas')
 
     // The macOS equivalent is a LaunchAgent plist run at the next login.
     await handler(trustedEvent(), '/Users/yoyo/Library/LaunchAgents/com.xingmang.update.plist', '{}')
-    expect(lastSaveDialogPath()).toBe('com.xingmang.update.plist')
+    expect(lastSaveDialogPath()).toBe('com.xingmang.update.plist.xingcanvas')
+  })
+
+  it('pins canvas saves to the project file type the canvas actually writes', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostSaveFileChannel)!
+
+    // The canvas chooses the content too, so a free extension would let it
+    // propose a script the user later double-clicks.
+    await handler(trustedEvent(), 'readme.cmd', '@echo off')
+    const options = electronMocks.showSaveDialog.mock.calls.at(-1)?.at(-1) as SaveDialogOptions | undefined
+    expect(options?.defaultPath).toBe('readme.cmd.xingcanvas')
+    expect(options?.filters).toEqual([{ name: '星芒画布项目', extensions: ['xingcanvas'] }])
+
+    await handler(trustedEvent(), 'xingmang-project.xingcanvas', '{}')
+    expect(lastSaveDialogPath()).toBe('xingmang-project.xingcanvas')
+    await handler(trustedEvent(), '..', '{}')
+    expect(lastSaveDialogPath()).toBe('xingmang-project.xingcanvas')
   })
 
   it('never lets the canvas aim a project export at a startup directory', async () => {
