@@ -610,6 +610,7 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
+      supports_websockets: false,
     })
     expect(asRecord(parsed.model_providers)?.OpenAI).toBeUndefined()
 
@@ -619,6 +620,7 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('codex', 'sk-merge-first', testModels.codex, 'merge', mergeRoots, {}, providerBaseUrls)
     const merged = asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))!
     expect(merged.model_provider).toBe(defaultCodexRelayProvider)
+    expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(false)
     expect(merged).not.toHaveProperty('model_context_window')
     expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
   })
@@ -1556,8 +1558,35 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
+      supports_websockets: false,
       custom_header: 'keep',
     })
+  })
+
+  it.each([true, false])('keeps a user supports_websockets = %s on the relay provider during merge', (choice) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'model_provider = "XingmangAI"',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      `base_url = "${relayProviderBaseUrls('solov', 'direct').codex}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      `supports_websockets = ${choice}`,
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'new-key', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    const provider = asRecord(asRecord(parsed?.model_providers)?.XingmangAI)
+    expect(provider?.base_url).toBe('https://xm.solov.cc/v1')
+    expect(provider?.supports_websockets).toBe(choice)
   })
 
   it('does not select a user custom provider when model_provider is absent', () => {
