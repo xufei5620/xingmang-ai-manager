@@ -49,6 +49,7 @@
 7. **单把 Key 的额度是「剩余」不是「每月上限」**：`remain_quota` 就是这把 Key 还能用掉多少，用完不会自己重置（另一个后端的 `quota` 是总额，适配层写回时会把已用量加上去，对调用方同样呈现为剩余）。个人中心的「每个工具的额度上限」按这个语义做，换算与更新入参统一收口在 `electron/account-key-quota.ts`。
 8. PAT 权限与登录态等同、无独立 scope——不建议长期常驻存储；后台轮询优先短期 access_token + refresh 静默续期（**已拍板并按此方案落地**：`39c9671`，`electron/account-session-store.ts` 存 session token 而非 PAT）。
 9. **登录会话有上限**（rc.24 `service/auth_session.go`、`service/auth_token.go`、`common/constants.go` 核实）：每个账号最多 50 个未过期会话（TTL 30 天），满了登录回 409 `AUTH_SESSION_LIMIT`；24 小时内最多新建 100 个，超了回 429 `AUTH_SESSION_ISSUANCE_LIMIT`；登录路由另有按 IP 的 CriticalRateLimit，回空 body 的 429。网页登录同样受 50 个上限约束，所以客户端退出必须调登出端点（`new-api-client.ts` 的 `endServerSession`），否则会话只能等 30 天过期。
+10. **rc.43 起控制台提示一律回英文**（2026-10-13 对 QuantumNous/new-api rc.42、rc.43、rc.44 tag 源码核实）：rc.42 以前，失败提示要么写死中文，要么按请求语言翻译（Electron 的 `net.fetch` 会按系统语言带 `Accept-Language: zh-CN`，沙箱里实测过），所以中文 Windows 一直拿到中文；rc.43 起 `message` 永远是英文原句，另带 `message_key`（英文模板，也是网页控制台语言包的键）和 `message_params`，翻译挪进网页前端的 `web/src/i18n/locales/zh.json`。星芒在主进程按 `message_key` 换回上游自己的中文（`electron/new-api-messages.ts`），认不出的照旧是英文原句；按原话判断失败种类的地方（登录被拒、两步验证）仍看英文。用量明细的「说明」（`content`）同一版起也改存英文，中文版放在 `other.content_parts`，星芒还没有接。
 
 ## D. 建议鉴权流
 
