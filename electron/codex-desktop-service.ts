@@ -51,6 +51,12 @@ import {
   type InstallCancellationOutcome,
 } from './install-cancellation'
 import { buildMacosCodexAppLaunchPlan, probeMacosCodexRunning, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
+import {
+  formatCodexStartupMacArgument,
+  formatCodexStartupWindowsArgument,
+  noCodexDesktopStartupRoute,
+  type CodexDesktopStartupRoute,
+} from './codex-desktop-startup-route'
 import { installMacosDesktopApp, MacosDesktopInstallError, type MacosDesktopArchitecture } from './macos-desktop-app-installer'
 import { macosDesktopInstallFailedMessage } from './macos-desktop-install-failure'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
@@ -2519,6 +2525,12 @@ export interface CodexDesktopServiceOptions {
    * 实现永不抛错，连不上也必须照常打开（见 codex-desktop-acceleration.ts）。
    */
   prepareAcceleration?: () => Promise<void>
+  /**
+   * 拉起桌面端之前，给它启动时读中文开关的那一个请求找条路（codex-desktop-startup-route.ts）：代取、
+   * 照旧连加速、或者让它立刻失败。给了它就不再单独调 prepareAcceleration，加速由它按需去连。永不抛错；
+   * 缺省 = 旧行为，只连加速、不带启动参数。
+   */
+  prepareStartupRoute?: (context: { launchArgumentsUsable: boolean }) => Promise<CodexDesktopStartupRoute>
   /** 找系统自带的 winget（微软商店那一路用）。缺省 = 校验过包身份与目录的系统解析器。 */
   resolveStoreInstaller?: (signal?: AbortSignal) => Promise<SystemWingetResolution>
   /**
@@ -2610,6 +2622,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     downloadFetch,
     reloadDownloadProxyConfig,
     prepareAcceleration,
+    prepareStartupRoute,
     assertInstallDiskSpace,
     installMacosDesktopApp: installMacosApp = installMacosDesktopApp,
     withDownloadRoute = runWithoutDownloadRoute,
@@ -3719,6 +3732,19 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     catch { /* 加速是加分项，不是「打开」的前置条件。 */ }
   }
 
+  /**
+   * launchArgumentsUsable = 这次会拉起新进程，启动参数生效。没接 prepareStartupRoute 时照旧只连加速。
+   * 出什么错都按「不带参数」打开：这一步同样是加分项。
+   */
+  async function prepareStartupBeforeLaunch(launchArgumentsUsable: boolean): Promise<CodexDesktopStartupRoute> {
+    if (!prepareStartupRoute) {
+      await connectAccelerationBeforeLaunch()
+      return noCodexDesktopStartupRoute
+    }
+    try { return await prepareStartupRoute({ launchArgumentsUsable }) }
+    catch { return noCodexDesktopStartupRoute }
+  }
+
   async function launchCodexDesktopOperation(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
@@ -3749,13 +3775,20 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       } catch {
         throw new Error('工作目录不存在，请重新选择')
       }
-      await connectAccelerationBeforeLaunch()
-      await executeCommand(buildMacosCodexAppLaunchPlan(desktopApp.path, workspace, codexEnv.CODEX_HOME), {
-        cwd: workspace,
-        env: trustedCommandEnvironment(codexEnv),
-        timeoutMs: 10_000,
-        maxOutputBytes: 64 * 1024,
-      })
+      // 已经开着的 Codex 收不到启动参数（LaunchServices 只把链接交过去），那时只照旧连加速。
+      const startupRoute = await prepareStartupBeforeLaunch(!desktopApp.running)
+      const appArguments = startupRoute.kind === 'none' ? [] : [formatCodexStartupMacArgument(startupRoute.hostResolverRules)]
+      try {
+        await executeCommand(buildMacosCodexAppLaunchPlan(desktopApp.path, workspace, codexEnv.CODEX_HOME, appArguments), {
+          cwd: workspace,
+          env: trustedCommandEnvironment(codexEnv),
+          timeoutMs: 10_000,
+          maxOutputBytes: 64 * 1024,
+        })
+      } catch (error) {
+        if (startupRoute.kind === 'tunnel') startupRoute.release()
+        throw error
+      }
       const status = await inspectCodexDesktop()
       if (status.running) sendCodexDesktopStatus(target, 'running', status)
       return { restarted: false, status }
@@ -3777,7 +3810,6 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (!packageFamilyName && mode === 'restart') {
       throw new Error('没能确认要重启的是哪一个 Codex 桌面端，请重新检测后再试')
     }
-    await connectAccelerationBeforeLaunch()
     const workspace = store.read().workspace
     let workspaceUrl: string | null = null
     try {
@@ -3800,6 +3832,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       ? existingProcesses.length > 0
       : (await listCodexDesktopSessionProcessIds(packageFamilyName)).length > 0
     const restarted = mode === 'restart' && existingProcesses.length > 0
+    const needsFreshActivation = mode === 'restart' || !alreadyRunning
+    // 以前在这之前就连加速；改到这里，是因为要先知道这次会不会拉起新进程（启动参数只对新进程生效）。
+    // 重启也在关掉旧窗口之前准备好，免得客户对着一片空白多等。
+    const startupRoute = await prepareStartupBeforeLaunch(needsFreshActivation)
+    const startupArguments = startupRoute.kind === 'none'
+      ? ''
+      : formatCodexStartupWindowsArgument(startupRoute.hostResolverRules)
     const repairPermissionState = async (): Promise<void> => {
       if (!launchOptions.repairPermissionModeVisibility || !codexEnv.CODEX_HOME) return
       try {
@@ -3878,7 +3917,6 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // started with the flag, so keep that PID out of the later reassignment.
     let cdpActivationProcessId: number | null = null
     let activatedViaAppModel = false
-    const needsFreshActivation = mode === 'restart' || !alreadyRunning
     const shouldInjectChinese = Boolean(launchOptions.injectChinese)
       && needsFreshActivation
     let chineseLocale: CodexDesktopLaunchResult['chineseLocale'] = launchOptions.injectChinese
@@ -3890,15 +3928,21 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       try {
         if (shouldInjectChinese) {
           cdpPort = await getAvailableLoopbackPort()
-          activationProcessId = await activateCodexDesktopWithCdp(desktopAppPath, cdpPort)
+          activationProcessId = await activateCodexDesktopWithCdp(desktopAppPath, cdpPort, undefined, startupArguments)
           cdpActivationProcessId = activationProcessId
           // CDP activation starts a fresh Electron process. The official
           // deep link then attaches the configured workspace to that process.
           await launchFresh()
+        } else if (startupArguments) {
+          // Same two-step activation as the CDP path (#976 verified the flag
+          // on this route): the first activation starts the process with the
+          // startup argument, the deep link then attaches the workspace.
+          activationProcessId = await activateCodexDesktop(desktopAppPath, startupArguments)
+          await launchFresh()
         } else {
           await launchFresh()
         }
-        activatedViaAppModel = shouldInjectChinese
+        activatedViaAppModel = shouldInjectChinese || Boolean(startupArguments)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         // CDP activation may be unavailable on a damaged Store registration
@@ -3907,6 +3951,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         console.warn(`[codex-launch] 增强启动不可用，回退普通启动：${message}`)
         cdpPort = null
         cdpActivationProcessId = null
+        // 普通打开带不上启动参数：通道用不上了，补连加速，中文不因为这一下丢掉。
+        if (startupRoute.kind === 'tunnel') await startupRoute.fallback()
         try {
           await launchFresh()
         } catch (fallbackError) {
@@ -3944,6 +3990,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // selected workspace as a File Explorer window.
       cdpPort = null
       cdpActivationProcessId = null
+      // 这一路同样带不上启动参数，理由同上。
+      if (startupRoute.kind === 'tunnel') await startupRoute.fallback()
       try {
         await launchWithExplorer()
         startedProcesses = await waitForCodexDesktopSessionProcesses(

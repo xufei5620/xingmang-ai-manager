@@ -144,6 +144,27 @@ describe('buildMacosCodexAppLaunchPlan', () => {
     expect(url.hash).toBe('')
   })
 
+  it('hands startup arguments to a freshly launched app after --args', () => {
+    const workspace = path.resolve(os.tmpdir(), 'project')
+    const plan = buildMacosCodexAppLaunchPlan('/Applications/Codex.app', workspace, undefined, [
+      '--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1:43210',
+    ])
+
+    expect(plan.argv).toEqual([
+      '-a', '/Applications/Codex.app', expect.any(String),
+      '--args', '--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1:43210',
+    ])
+    expect(new URL(plan.argv[2]).protocol).toBe('codex:')
+  })
+
+  it.each(['', 'codex://threads/new', '-a', '--flag\0value', `--${'x'.repeat(2_048)}`])(
+    'rejects an app argument that is not a plain switch %#',
+    (argument) => {
+      expect(() => buildMacosCodexAppLaunchPlan('/Applications/Codex.app', os.tmpdir(), undefined, [argument]))
+        .toThrow('启动参数无效')
+    },
+  )
+
   it.each([
     '',
     'Codex.app',
