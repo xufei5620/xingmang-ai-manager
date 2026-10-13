@@ -137,6 +137,7 @@ function codexProbeConfigText(baseUrl, model) {
     `base_url = ${JSON.stringify(baseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
+    'supports_websockets = false',
     '',
   ].join('\n')
 }

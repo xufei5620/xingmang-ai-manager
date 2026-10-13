@@ -1249,6 +1249,13 @@ function applyCodexRelayConfig(
   // Model names alone cannot establish the relay's protocol compatibility.
   providerEntry.wire_api = 'responses'
   providerEntry.requires_openai_auth = true
+  // 自定义线路只有写了 supports_websockets = true，Codex 才改走 Responses WebSocket（core/src/client.rs
+  // 的 responses_websocket_enabled，rust-v0.160.1 与 0.162.1 一致，缺省是 false）。走 Cloudflare 的
+  // WebSocket 约两分钟就被掐断，思考久的回答出到一半报「stream closed before response.completed」，
+  // 普通流式不受影响（2026-10-13 服务端按断开时间统计）。把缺省明写出来，上游哪天把自定义线路的缺省
+  // 改成开，客户也不会跟着掉进去。换线路只改 base_url 那一处（tool-route-rewrite.ts），写的时候分不出
+  // 以后会走哪条，所以两条线路都写。用户自己写过就不动。
+  if (providerEntry.supports_websockets === undefined) providerEntry.supports_websockets = false
   // Keep the Desktop permission picker interactive on fresh mirror installs.
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
@@ -1298,6 +1305,7 @@ function buildCodexRelayConfigTemplate(
     `base_url = ${tomlString(siteBaseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
+    'supports_websockets = false',
     '',
     '[features]',
     'goals = true',
