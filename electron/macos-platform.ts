@@ -44,6 +44,11 @@ export type MacosTerminalCleanupScheduler = (
 ) => void
 
 const terminalLauncherCleanupDelayMs = 5 * 60_000
+// `open -a Terminal` hands the name to LaunchServices, whose per-user registry decides
+// which bundle answers to it, so a same-named app could stand in (I14 on macOS, #57).
+// The minimum is macOS 13, where Terminal always lives here on the sealed system
+// volume, so there is no fallback, least of all one back to the name.
+const macosTerminalApplicationPath = '/System/Applications/Utilities/Terminal.app'
 const persistedTerminalEnvironmentKeys = new Set([
   'HOME',
   'PATH',
@@ -309,7 +314,7 @@ export async function launchMacosTerminal(
     launcherIdentity = await captureLauncherIdentity(directory, launcherPath)
     await commandRunner({
       executable: '/usr/bin/open',
-      argv: ['-a', 'Terminal', launcherPath],
+      argv: ['-a', macosTerminalApplicationPath, launcherPath],
     }, {
       cwd: plan.workspace,
     })

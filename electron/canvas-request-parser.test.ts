@@ -12,6 +12,7 @@ import {
   parseCanvasStartRunInput,
   parseCanvasVideoGenerateInput,
   parseCanvasVideoTaskId,
+  canvasNotificationText,
   canvasSaveFileName,
   requiredCanvasString,
   requiredCanvasText,
@@ -354,6 +355,29 @@ describe('canvas request parser', () => {
       graph: { nodes: [node], edges: [] },
       scope: { kind: 'dirty', nodeIds: Array.from({ length: 5_001 }, () => 'a') },
     })).toThrow('节点范围')
+  })
+
+  it('caps the total prompt text one run may hand the main process', () => {
+    // 210 prompts at the 100 000-character per-node limit, each 3 UTF-8 bytes
+    // per character, is about 63 MB: every node passes on its own, but the
+    // request as a whole must not.
+    const largePrompt = '画'.repeat(100_000)
+    const node = (index: number) => ({ id: `n-${index}`, kind: 'prompt', definitionVersion: 1, data: { prompt: largePrompt, model: '' } })
+    expect(() => parseCanvasStartRunInput({
+      graph: { nodes: Array.from({ length: 210 }, (_, index) => node(index)), edges: [] }, scope: { kind: 'all' },
+    })).toThrow('工作流规模超过安全上限')
+    // A workflow the canvas can still save (20 MB) keeps running as before.
+    const accepted = parseCanvasStartRunInput({
+      graph: { nodes: Array.from({ length: 60 }, (_, index) => node(index)), edges: [] }, scope: { kind: 'all' },
+    })
+    expect(accepted.graph.nodes).toHaveLength(60)
+  })
+
+  it('removes spelled-out links from canvas notification text', () => {
+    expect(canvasNotificationText('生成完成')).toBe('生成完成')
+    expect(canvasNotificationText('打开 https://evil.example/a?b=c 查看')).toBe('打开  查看')
+    expect(canvasNotificationText('HTTP://EVIL.EXAMPLE 和 www.evil.example')).toBe('和')
+    expect(canvasNotificationText('ftp://evil.example')).toBe('')
   })
 
   it('keeps an ordinary proposed save name untouched', () => {

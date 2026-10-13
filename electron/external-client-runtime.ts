@@ -737,10 +737,10 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           const info = await verifyPath(path.posix.join(canonical, 'Contents', 'Info.plist'), 'file')
           // `systemOptions()` defaults to trustedOnly for the Windows inventory probe,
           // where it resolves the executable from a trusted system directory and rejects
-          // user-writable argument paths. On POSIX runCommand only swaps the environment
-          // for that flag and drops the path checks silently, so leaving it on here would
-          // advertise a guarantee macOS never gets. Every darwin probe passes the already
-          // sanitized trusted environment explicitly and turns the flag off.
+          // user-writable argument paths. darwin has no such resolution, so runCommand
+          // refuses the flag there rather than run with the path checks dropped. Every
+          // darwin probe passes the already sanitized trusted environment explicitly and
+          // turns the flag off.
           const result = await execute({ executable: '/usr/bin/plutil', argv: ['-convert', 'json', '-o', '-', info] }, { ...systemOptions(), trustedOnly: false })
           const data = record(JSON.parse(result.stdout) as unknown)
           if (definition.bundleId && data.CFBundleIdentifier !== definition.bundleId) throw new Error('应用的 bundle identifier 与官方客户端不一致')

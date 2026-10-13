@@ -126,6 +126,11 @@ test('the alert body names the product, streak, Beijing time, run link and how t
   assert.match(body, /stage-failed/)
   assert.match(body, /自动更新和星芒一键安装都不经过 COS/)
   assert.match(buildAlertBody({ workflowFile: WORKFLOW, product: 'Codex 桌面端', streak: 51, truncated: true, since: 'bad', runNumber: 1, runUrl: 'u', failedJobs: [] }), /至少 \*\*51 次\*\*.*时间未知/)
+  const catalog = readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-codex-plugins-cos.yml' }))
+  const catalogBody = buildAlertBody({ workflowFile: catalog.workflowFile, product: catalog.product, impact: catalog.impact, streak: 2, truncated: false,
+    since: '2026-10-07T23:14:00Z', runNumber: 3, runUrl: 'u', failedJobs: ['sync'] })
+  assert.match(catalogBody, /\*\*影响\*\*：星芒替客户下 Codex 插件目录时，桶里还是上一次同步成功的那一版/)
+  assert.doesNotMatch(catalogBody, /下载按钮/)
   assert.equal(formatBeijingTime('2026-10-10T16:30:00Z'), '2026-10-11 00:30')
 })
 
@@ -171,6 +176,7 @@ test('the GitHub client stays on api.github.com under this repository, refuses r
 test('the environment must name a known sync workflow on github.com', () => {
   assert.equal(readAlertEnvironment(env(failedNeeds)).product, 'Claude 桌面端')
   assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-chatgpt-official-cos.yml' })).product, 'Codex 桌面端')
+  assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-codex-plugins-cos.yml' })).product, 'Codex 插件目录')
   for (const overrides of [{ SYNC_WORKFLOW_FILE: 'quality.yml' }, { SYNC_WORKFLOW_FILE: undefined }, { GITHUB_API_URL: 'https://ghe.example.test/api/v3' },
     { GITHUB_SERVER_URL: 'https://ghe.example.test' }, { GITHUB_REPOSITORY: 'xufei5620/../x' }, { GITHUB_REPOSITORY_OWNER: 'someone-else' },
     { GITHUB_RUN_ID: '0' }, { GITHUB_RUN_ID: '1e3' }, { GITHUB_RUN_NUMBER: '' }]) {
