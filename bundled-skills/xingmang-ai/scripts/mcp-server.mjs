@@ -34,9 +34,11 @@ const ALLOWED_RELAY_ORIGINS = new Set([
 const RETRYABLE_STATUSES = new Set([401, 403, 429, 503])
 
 class ImageError extends Error {
-  constructor(message, retryable = false) {
+  constructor(message, retryable = false, upstream = false) {
     super(message)
     this.retryable = retryable
+    // 中转明确回了错误（不是连不上、超时）：自动挑的新模型这样失败时，换回 gpt-image-2 再试。
+    this.upstream = upstream
   }
 }
 
@@ -99,10 +101,24 @@ async function readConfig() {
     if (value.startsWith('sk-') && !keys.includes(value)) keys.push(value)
   }
   if (keys.length === 0) throw new ImageError('当前账号还没有可以画图的 Key，请打开星芒AI管理工具登录')
-  return { origin, keys }
+  return { origin, keys, model: configuredModel(parsed) }
 }
 
-function schema() {
+// 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型挑一个写进 model；没有或不在白名单里就用 gpt-image-2。
+function configuredModel(parsed) {
+  const model = typeof parsed.model === 'string' ? parsed.model.trim() : ''
+  return ALLOWED_MODELS.has(model) ? model : DEFAULT_MODEL
+}
+
+async function defaultModel() {
+  try {
+    return (await readConfig()).model
+  } catch {
+    return DEFAULT_MODEL
+  }
+}
+
+function schema(model) {
   return {
     type: 'object',
     additionalProperties: false,
@@ -114,7 +130,7 @@ function schema() {
         maxItems: MAX_INPUT_IMAGES,
         description: '改图时填要修改的原图（PNG、JPEG 或 WebP）的完整路径；画新图时不填',
       },
-      model: { type: 'string', enum: [...ALLOWED_MODELS], default: DEFAULT_MODEL },
+      model: { type: 'string', enum: [...ALLOWED_MODELS], default: model },
       size: { type: 'string', description: '例如 1024x1024、1536x1024、1024x1536 或 auto；gpt-image-2 的宽高要是 16 的倍数' },
       quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], default: 'low' },
       background: { type: 'string', enum: ['opaque', 'transparent', 'auto'], default: 'opaque' },
@@ -123,11 +139,11 @@ function schema() {
   }
 }
 
-function toolList() {
+function toolList(model) {
   return [{
     name: 'generate_image',
     description: '用当前星芒账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。结果直接显示在对话里。不要自己写脚本或命令去调图片接口。',
-    inputSchema: schema(),
+    inputSchema: schema(model),
   }]
 }
 
@@ -143,15 +159,11 @@ function parseArguments(argumentsValue) {
   }
   const prompt = textValue(argumentsValue.prompt, '', 32_000)
   if (!prompt) throw new ImageError('图片描述不能为空')
-  const model = textValue(argumentsValue.model, DEFAULT_MODEL, 80)
-  if (!ALLOWED_MODELS.has(model)) throw new ImageError('图片模型不在允许列表中')
+  // 没点名就留空，等读到配置再用星芒挑好的那个。
+  const model = argumentsValue.model === undefined ? undefined : textValue(argumentsValue.model, '', 80)
+  if (model !== undefined && !ALLOWED_MODELS.has(model)) throw new ImageError('图片模型不在允许列表中')
   const size = textValue(argumentsValue.size, '1024x1024', 32)
-  const dimensions = /^(\d{2,5})x(\d{2,5})$/.exec(size)
-  if (size !== 'auto' && !dimensions) throw new ImageError('图片尺寸格式错误')
-  if (dimensions && model.startsWith('gpt-image-2')
-    && (Number(dimensions[1]) % 16 !== 0 || Number(dimensions[2]) % 16 !== 0)) {
-    throw new ImageError('gpt-image-2 的宽高必须是 16 的倍数')
-  }
+  if (size !== 'auto' && !/^(\d{2,5})x(\d{2,5})$/.test(size)) throw new ImageError('图片尺寸格式错误')
   const quality = textValue(argumentsValue.quality, 'low', 16)
   if (!['low', 'medium', 'high', 'auto'].includes(quality)) throw new ImageError('图片质量参数错误')
   const background = textValue(argumentsValue.background, 'opaque', 16)
@@ -164,6 +176,14 @@ function parseArguments(argumentsValue) {
   }
   const images = (imagesValue ?? []).map((entry) => entry.trim())
   return { prompt, model, size, quality, background, images }
+}
+
+function assertSizeFitsModel(size, model) {
+  const dimensions = /^(\d{2,5})x(\d{2,5})$/.exec(size)
+  if (dimensions && model.startsWith('gpt-image-2')
+    && (Number(dimensions[1]) % 16 !== 0 || Number(dimensions[2]) % 16 !== 0)) {
+    throw new ImageError('gpt-image-2 的宽高必须是 16 的倍数')
+  }
 }
 
 function imageMimeType(bytes) {
@@ -283,6 +303,7 @@ async function requestImage(origin, apiKey, input, images) {
     throw new ImageError(
       typeof message === 'string' && message ? redactUpstream(message) : `图片服务返回 HTTP ${response.status}`,
       RETRYABLE_STATUSES.has(response.status),
+      true,
     )
   }
   const encoded = payload?.data?.[0]?.b64_json
@@ -296,22 +317,30 @@ async function requestImage(origin, apiKey, input, images) {
 async function generateImage(argumentsValue) {
   const input = parseArguments(argumentsValue)
   const config = await readConfig()
+  // AI 没点名、或点的就是星芒挑好的那个：站上新开的模型这次没画出来（还没定价、渠道没好），
+  // 自动换回 gpt-image-2 再试一次。点名要别的就只用它，失败原样交回去让 AI 自己换。
+  const requested = input.model ?? config.model
+  const models = requested === config.model ? [...new Set([requested, DEFAULT_MODEL])] : [requested]
+  for (const model of models) assertSizeFitsModel(input.size, model)
   const images = []
   for (const filePath of input.images) images.push(await readInputImage(filePath))
   let lastError = null
-  for (let index = 0; index < config.keys.length; index += 1) {
-    try {
-      const encoded = await requestImage(config.origin, config.keys[index], input, images)
-      return {
-        content: [
-          { type: 'image', data: encoded, mimeType: 'image/png' },
-          { type: 'text', text: images.length ? `已用 ${input.model} 改好图片` : `已用 ${input.model} 画好图片` },
-        ],
+  for (const model of models) {
+    for (let index = 0; index < config.keys.length; index += 1) {
+      try {
+        const encoded = await requestImage(config.origin, config.keys[index], { ...input, model }, images)
+        return {
+          content: [
+            { type: 'image', data: encoded, mimeType: 'image/png' },
+            { type: 'text', text: images.length ? `已用 ${model} 改好图片` : `已用 ${model} 画好图片` },
+          ],
+        }
+      } catch (error) {
+        lastError = error
+        if (!(error instanceof ImageError) || !error.retryable) break
       }
-    } catch (error) {
-      lastError = error
-      if (!(error instanceof ImageError) || !error.retryable) break
     }
+    if (!(lastError instanceof ImageError) || !lastError.upstream) break
   }
   throw lastError ?? new ImageError('画图失败')
 }
@@ -324,10 +353,10 @@ async function handle(message) {
     return resultMessage(message.id, {
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'xingmang-image', version: '1.1.0' },
+      serverInfo: { name: 'xingmang-image', version: '1.2.0' },
     })
   }
-  if (message.method === 'tools/list') return resultMessage(message.id, { tools: toolList() })
+  if (message.method === 'tools/list') return resultMessage(message.id, { tools: toolList(await defaultModel()) })
   if (message.method !== 'tools/call') return errorMessage(message.id, '不支持的图片 MCP 方法')
   if (message.params?.name !== 'generate_image') return errorMessage(message.id, '不支持的图片工具')
   try {
