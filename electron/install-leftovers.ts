@@ -24,6 +24,7 @@ export const userTemporaryLeftoverPrefixes: readonly string[] = [
   'xingmang-node-runtime-',
   'xingmang-git-runtime-',
   'xingmang-python-runtime-',
+  // 0.2.18 及以前星芒自己下 WorkBuddy 安装包时建的；现在不再建，留着清掉老版本落下的。
   'xingmang-workbuddy-',
 ]
 
@@ -36,6 +37,7 @@ export const trustedCacheLeftoverPrefixes: readonly string[] = [
   'node-runtime-',
   'git-runtime-',
   'python-runtime-',
+  // 同上，老版本下 WorkBuddy 安装包落下的。
   'workbuddy-',
 ]
 

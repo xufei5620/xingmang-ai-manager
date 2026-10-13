@@ -43,21 +43,13 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
 
 | 平台 | 一键安装 | 检测与打开 |
 | --- | --- | --- |
-| Windows x64 | 系统 winget 精确安装 `Tencent.WorkBuddy`、`Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行 | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
+| Windows x64 | 系统 winget 精确安装 `Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行；WorkBuddy 不一键安装，按钮「去官网下载」打开 `https://www.workbuddy.ai/` | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
 | Windows arm64 | Claude Desktop 与 OpenCode；WorkBuddy 当前 manifest 没有 arm64 安装项 | 与 Windows x64 相同，按实际安装状态显示能力 |
 | macOS | 当前未实现，需从官网下载并将应用移入 Applications | 检测 `/Applications` 与用户 Applications 内的官方应用、bundle ID 和系统签名评估，通过 LaunchServices 打开 |
 
 安装通过现有队列执行，重复点击不会启动多个安装任务。过程显示“排队 / 检测 / 下载 / 安装 / 验证”状态；只有安装后重新检测到客户端才显示完成。检测 OpenCode Desktop 不会把已安装的 OpenCode CLI 误当桌面版。
 
-Windows x64 WorkBuddy 在受信任的 winget 缺失，或安装器启动前遇到明确的 WinINet 网络错误（包括 `0x80072efd`）时，自动切换到腾讯官方安装包。切换前再次检测，已经安装则跳过；无法确认安装状态时停止。取消、进程超时/终止、签名错误和安装器执行错误不会自动重跑。其他客户端的 winget 网络失败会显示中文原因和错误码。
-
-备用包固定为 WorkBuddy 5.5.6，直接从 `download.codebuddy.cn` 下载。2026-09-18 实测同一官方下载地址存在两份不同的 5.5.6 包：532127544 字节的包匹配微软清单 SHA-256；532166536 字节的包使用另一份有效腾讯证书。两份均已完整下载并经 Windows 验证为 `Valid`、产品 WorkBuddy、版本 5.5.6，精确哈希固定在代码中，未知哈希仍拒绝安装。核验证据见 `artifacts/workbuddy-source-audit-2026-09-18/binary-comparison.json`。
-
-每次下载仍校验完整哈希和腾讯 Authenticode 签名，执行前再次检查文件身份和哈希。下载有 15 分钟超时与 1 GB 上限，拒绝重定向，不接受界面传入的下载地址。用户级 NSIS 参数为 `/S /currentuser`；此固定版本仅用于缺失客户端的备用安装，不承担自动更新。
-
-实际腾讯安装器会自动启动 WorkBuddy。普通用户安装使用验证后的正常用户临时目录和系统工作目录，避免客户端继承即将移除的下载目录；受保护执行模式仍在可信暂存中解压。安装结束只删除本次创建且身份未变的安装包，再移除空目录，保留客户端新建的运行文件，禁止递归清理仍在使用的目录。清理异常单独提示并保留内部诊断，不覆盖安装后的真实检测结果。该追加修正通过文件行为回归测试，未为验证清理而重装现有客户端。
-
-2026-09-18 已实际完成 WorkBuddy 5.5.6 用户级安装：真实 winget 返回 `0x80072efd` 后，自动切换腾讯官方下载，经哈希与签名验证完成安装。独立扫描确认已安装、正在运行、支持打开且无检测错误；开发界面“你的工具”显示版本和配置入口。安装记录见 `artifacts/workbuddy-install-result-2026-09-18.json`。本轮未修改用户模型配置、未调用生产模型。
+2026-10-13 起，Windows 上 WorkBuddy 改成客户自己到腾讯官网下载安装，星芒只管识别和写配置。首页那一行说明「到腾讯官网下载安装，装好后回来重新检测」，按钮「去官网下载」；装好后点「重新检测」，识别仍按卸载记录登记的位置、`WorkBuddy.exe` 与腾讯 Authenticode 签名判断，跟谁装的、装在哪个盘无关。原来的 winget 安装与固定 5.5.6 腾讯安装包兜底（`workbuddy-installer.ts`，两枚 SHA-256）一并删除；那段历史见 `docs/IMPLEMENTATION-PROGRESS-2026-09-17.md`。其他客户端的 winget 网络失败仍显示中文原因和错误码。
 
 2026-09-19 本机只读识别的 Claude 商店版为 2.2553.1.0（9 月 17 日为 2.110.1.0），AUMID 为 `Claude_pzs8sxrjxfjjc!Claude`；本工具此次没有安装或更新 Claude。OpenCode 桌面端仍未安装，也没有在 macOS 上执行安装或启动验收。一键安装路径和启动动作由主进程处理，渲染层不传入任意命令或可执行路径。实际安装包来源、hash、签名证据及读取限制见 [官方安装来源记录](../artifacts/external-client-install-sources.md)。
 
