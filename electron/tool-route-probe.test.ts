@@ -30,6 +30,12 @@ describe('createToolRouteProbe', () => {
     expect(await probe('direct')).toEqual({ ok: false, kind: 'reset', addresses: ['192.0.2.10'] })
   })
 
+  it('passes on the certificates the direct path saw when it failed on them', async () => {
+    const certificates = [{ address: '192.0.2.10', issuer: 'CN=Some Firewall CA', subject: 'CN=xm-direct.solov.cc', fingerprint256: Array.from({ length: 32 }, () => 'AB').join(':'), verifyError: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' }]
+    const probe = createToolRouteProbe({ direct: async () => ({ ok: false, kind: 'certificate', addresses: ['192.0.2.10'], attempts: [], certificates }) })
+    expect(await probe('direct')).toEqual({ ok: false, kind: 'certificate', addresses: ['192.0.2.10'], certificates })
+  })
+
   it('needs every proxy in use to pass when another line passes everywhere', async () => {
     // 系统代理放不过洛杉矶、放得过 CF：工具换到 CF 就都能用，洛杉矶算没通。
     const throughSystemProxy = vi.fn(async (origin: string) => origin === losAngeles ? proxyRefused : proxyPassed)

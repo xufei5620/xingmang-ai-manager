@@ -18,6 +18,7 @@ import type { StaleProxyVariableName } from './stale-proxy-environment'
  * 成功、在同一条连接上 GET /api/status 回 200 且 JSON 里 success 为 true，就算通。证书同时信 Node
  * 自带的根证书和系统根证书：只靠系统根证书才过的照样算通，标成「安全软件接管」（intercepted）。
  * 不起子进程，不改任何设置。照 I10：总时限 10 秒、正文 16KB 上限、不跟重定向、只去本站线路的 origin。
+ * 因为证书没过的，再对那几个地址各握一次手、只读证书（inspectPeerCertificate，另限 3 秒），给反馈报告用。
  *
  * 代理路径（系统代理、HTTPS_PROXY / ALL_PROXY）由调用方拿 Chromium 会话去测（probeToolPathThroughFetch），
  * 这里只负责判结果和挑出要测的代理。
@@ -39,6 +40,21 @@ export interface ToolPathAttempt {
   durationMs: number
 }
 
+/**
+ * 证书没过时，对面实际给的是一张什么证书。服务端 10-13 查过：星芒的证书、证书链、各个入口都没问题，
+ * 中转读不到 SNI 时直接拒绝、一张证书都不发。所以客服拿这里的颁发者和指纹跟正版一比，就分得清是不是
+ * 路上有设备换了证书。正版指纹不写死在这里：证书大约三个月换一次。
+ */
+export interface ToolPathCertificate {
+  /** 连的是哪个地址。只进反馈报告，日志里不记（需求 5.1.9）。 */
+  address: string
+  issuer: string
+  subject: string
+  fingerprint256: string
+  /** Node 校验这张证书时报的错（UNABLE_TO_GET_ISSUER_CERT_LOCALLY 之类）；这次校验过了为 null。 */
+  verifyError: string | null
+}
+
 export interface ToolPathResult {
   ok: boolean
   kind?: ToolPathFailureKind
@@ -47,11 +63,18 @@ export interface ToolPathResult {
   /** 系统解析出来的全部地址，给失败归类用（route-failure-classifier.ts）；日志里不记。 */
   addresses: string[]
   attempts: ToolPathAttempt[]
+  /** 因为证书没过时，各个地址实际给的证书（读不到的不列）。 */
+  certificates?: ToolPathCertificate[]
 }
 
 export const toolPathTimeoutMs = 10_000
 const toolPathStaggerMs = 250
 const maximumStatusBytes = 16 * 1024
+/** 证书没过以后另起一次握手读证书，最多等这么久。 */
+export const toolPathCertificateInspectionTimeoutMs = 3_000
+// 解析出再多地址也只读这么几个：报告里够客服对照了。
+const maximumInspectedAddresses = 3
+const maximumCertificateTextLength = 200
 
 /** 这次失败要不要记进连败次数。 */
 export function toolPathFailureCounted(result: Pick<ToolPathResult, 'ok' | 'kind'>): boolean {
@@ -190,11 +213,95 @@ export function chainEndsOutsideBundledRoots(certificate: PeerCertificate | null
   return current !== null && Boolean(current.fingerprint256) && !bundled.has(current.fingerprint256)
 }
 
+// 证书里的字段是对面随便填的：去掉控制字符、限长，才进日志和报告。
+function certificateText(value: unknown): string {
+  const text = Array.isArray(value) ? value.map(String).join(' / ') : typeof value === 'string' ? value : ''
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').trim().slice(0, maximumCertificateTextLength)
+}
+
+function certificateName(name: unknown): string {
+  if (typeof name !== 'object' || name === null) return ''
+  const fields = name as Record<string, unknown>
+  return (['CN', 'O', 'OU', 'C'] as const)
+    .map((key) => [key, certificateText(fields[key])] as const)
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(', ')
+    .slice(0, maximumCertificateTextLength)
+}
+
+/** 把一次握手读到的证书整理成报告里那几项；读不到指纹的当没读到。 */
+export function describePeerCertificate(address: string, certificate: PeerCertificate | null | undefined, verifyError: unknown): ToolPathCertificate | null {
+  const fingerprint = certificate && typeof certificate.fingerprint256 === 'string' ? certificate.fingerprint256.toUpperCase() : ''
+  if (!/^[0-9A-F]{2}(?::[0-9A-F]{2}){31}$/.test(fingerprint)) return null
+  const code = typeof verifyError === 'string' ? verifyError
+    : typeof verifyError === 'object' && verifyError !== null && 'code' in verifyError ? String((verifyError as { code: unknown }).code)
+      : verifyError ? 'UNKNOWN' : ''
+  return {
+    address,
+    issuer: certificateName(certificate?.issuer),
+    subject: certificateName(certificate?.subject),
+    fingerprint256: fingerprint,
+    verifyError: code ? /^[A-Z0-9_]{1,64}$/.test(code) ? code : certificateText(code) || 'UNKNOWN' : null,
+  }
+}
+
+/** 另起一次握手要连的地方：和探测那次同一个地址、同一个名字、同一份根证书。 */
+export interface ToolPathCertificateTarget {
+  /** 解析出来的 IP 本身，tls.connect 照它的写法认 IPv4 / IPv6。 */
+  address: string
+  port: number
+  servername: string
+  ca: string[]
+}
+
+/**
+ * Reads the certificate a server presents without trusting it, purely for the
+ * feedback report. The probe's own request keeps rejectUnauthorized on, and Node
+ * tears that socket down before the chain can be read, so this is a second,
+ * separate handshake. It turns verification off only so the handshake can
+ * complete: not one byte of application data is written, and the socket is
+ * destroyed the moment the handshake finishes, so nothing ever travels over a
+ * connection this check did not verify. The verdict is recorded from
+ * socket.authorized against the same CA list the probe used.
+ */
+function inspectPeerCertificate(target: ToolPathCertificateTarget, timeoutMs: number): Promise<ToolPathCertificate | null> {
+  return new Promise((resolve) => {
+    let settled = false
+    let socket: TLSSocket | null = null
+    const timer = setTimeout(() => finish(null), timeoutMs)
+    timer.unref?.()
+    function finish(value: ToolPathCertificate | null): void {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket?.destroy()
+      resolve(value)
+    }
+    try {
+      socket = tls.connect({
+        host: target.address, port: target.port, servername: target.servername,
+        ca: target.ca, rejectUnauthorized: false,
+      })
+    } catch {
+      finish(null)
+      return
+    }
+    socket.once('secureConnect', () => {
+      const current = socket
+      finish(current ? describePeerCertificate(target.address, current.getPeerCertificate(false), current.authorized ? null : current.authorizationError) : null)
+    })
+    socket.on('error', () => finish(null))
+  })
+}
+
 export interface ToolPathProbeDependencies {
   /** 缺省 dns.promises.lookup(all)。 */
   lookup?(hostname: string): Promise<{ address: string; family: number }[]>
   /** 缺省 https.request；测试注入用。 */
   request?: typeof https.request
+  /** 证书没过以后读对面给的证书；缺省另起一次 TLS 握手。测试注入用。 */
+  inspectCertificate?(target: ToolPathCertificateTarget): Promise<ToolPathCertificate | null>
   timeoutMs?: number
   staggerMs?: number
 }
@@ -335,10 +442,33 @@ export async function probeToolPathDirect(origin: string, dependencies: ToolPath
       return { ok: true, ...(winner.intercepted ? { intercepted: true } : {}), addresses, attempts }
     }
     const kind = kindPriority.find((entry) => attempts.some((item) => item.kind === entry)) ?? 'timeout'
-    return { ok: false, kind, addresses, attempts }
+    if (kind !== 'certificate') return { ok: false, kind, addresses, attempts }
+    const certificates = await inspectRejectedCertificates(attempts, { ...context, inspect: dependencies.inspectCertificate })
+    return { ok: false, kind, addresses, attempts, ...(certificates.length ? { certificates } : {}) }
   } finally {
     clearTimeout(deadline)
   }
+}
+
+// 证书没过的那几个地址各读一次对面给的证书。读不到、超时都不影响探测结论。
+async function inspectRejectedCertificates(attempts: readonly ToolPathAttempt[], context: Pick<AttemptContext, 'url' | 'ca'> & {
+  inspect?: ToolPathProbeDependencies['inspectCertificate']
+}): Promise<ToolPathCertificate[]> {
+  const rejected = attempts.filter((attempt) => attempt.kind === 'certificate')
+    .filter((attempt, index, all) => all.findIndex((other) => other.address === attempt.address) === index)
+    .slice(0, maximumInspectedAddresses)
+  const inspect = context.inspect ?? ((target: ToolPathCertificateTarget) => inspectPeerCertificate(target, toolPathCertificateInspectionTimeoutMs))
+  const results = await Promise.all(rejected.map(async (attempt) => {
+    try {
+      return await inspect({
+        address: attempt.address, port: Number(context.url.port || 443),
+        servername: context.url.hostname, ca: context.ca,
+      })
+    } catch {
+      return null
+    }
+  }))
+  return results.filter((entry): entry is ToolPathCertificate => entry !== null)
 }
 
 /**
