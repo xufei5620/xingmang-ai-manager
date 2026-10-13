@@ -260,6 +260,32 @@ describe('secure command runner', () => {
     }
   })
 
+  it('redacts values passed to credential flags from the argv and the echoed output of a failed command', async () => {
+    // The shape of a pasted MCP launch line: nothing here looks like a key,
+    // only the flag names say these are credentials.
+    const token = 'plain-fake-flag-token'
+    const key = 'plain-fake-flag-key'
+    const execution = runCommand(nodeCommand(
+      "process.stderr.write(process.argv.slice(1).join(' ') + '\\n'); process.exit(3)",
+      'some-server', '--token', token, `--key=${key}`, '--verbose',
+    ))
+
+    try {
+      await execution
+      throw new Error('Expected non-zero exit failure')
+    } catch (error) {
+      expect(error).toBeInstanceOf(CommandRunnerError)
+      const structured = (error as CommandRunnerError).toJSON()
+      const serialized = JSON.stringify(structured)
+      expect(serialized).not.toContain(token)
+      expect(serialized).not.toContain(key)
+      expect(structured.argv).toContain('--token')
+      expect(structured.argv).toContain('--key=[REDACTED]')
+      expect(structured.argv).toContain('--verbose')
+      expect(structured.stderr).toContain('some-server --token [REDACTED] --key=[REDACTED] --verbose')
+    }
+  })
+
   it('redacts secrets spelled as JSON object keys', () => {
     const redacted = redactCommandText(JSON.stringify({
       access_token: 'token-value-123456',
