@@ -30,7 +30,7 @@ export type RelayToolRouteStatus = NonNullable<AppSettingsV2['relayToolRouteStat
 
 const outageTexts = {
   reset: '你所在的网络掐断了星芒的地址，AI 工具这会儿连不上。可以换个网络（比如手机热点）再试。',
-  certificate: '电脑上的安全软件接管了加密连接，AI 工具这会儿连不上星芒。可以在安全软件里关掉「网页扫描」再试。',
+  certificate: '你所在的网络在拦截星芒的加密连接（把证书换成了别的），AI 工具这会儿连不上。可以换个网络（比如手机热点）再试；公司或学校的网络请找网络管理员。',
   dns: '这台电脑这会儿查不到星芒的地址，AI 工具连不上。可以换个网络再试。',
   // 连不上、等不来回话：和网络掐断一样，换个网络再试。
   unreachable: '你所在的网络掐断了星芒的地址，AI 工具这会儿连不上。可以换个网络（比如手机热点）再试。',

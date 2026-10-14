@@ -209,6 +209,26 @@ describe('account managed Key bootstrap', () => {
     expect(result.networkBlocked).toBe(expected)
   })
 
+  it.each([
+    ['a swapped certificate', networkFailureMessages.tls, true],
+    ['the network being down', networkFailureMessages.offline, undefined],
+  ] as const)('marks a round blocked by %s for the certificate wording only when a certificate was swapped', async (_name, failureMessage, expected) => {
+    const current = config()
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [{ provider: 'claude' as ProviderId, group: 'group', message: `CLI Key 初始化失败：${failureMessage}` }] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [{ provider: 'claude' as ProviderId, message: failureMessage }] })),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(result.networkBlocked).toBe(true)
+    expect(result.networkBlockedByCertificate).toBe(expected)
+  })
+
   it('does not report networkBlocked when a non-network warning rides along with a network failure', async () => {
     const current = config()
     const api: AccountBootstrapBridge = {

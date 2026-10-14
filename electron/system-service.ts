@@ -3528,7 +3528,7 @@ export function createSystemService(
 
   /**
    * npm 报「证书被换掉」时，说清是哪一种（system-certificate-trust.ts）。npm 已经带着
-   * 「也信任这台电脑的证书」去跑、仍然失败的，原文不动，交给渲染层「连接被证书拦截」
+   * 「也信任这台电脑的证书」去跑、仍然失败的，原文不动，交给渲染层「连接被网络拦截」
    * 那条。Node 版本读 PATH 上的 node：npm 就是由它跑起来的。读不出版本就不下结论。
    */
   async function withToolCertificateHint(message: string): Promise<string> {
