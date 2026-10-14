@@ -191,14 +191,43 @@ export const authOfflineMessage = '这台电脑现在没连上网。连上网后
 export const authUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。'
 const authNetworkFallbackMessage = '连不上账号服务，请检查网络后再试一次。'
 
+/** 去掉 IPC 包装（「Error invoking remote method …」和一层层 Error: 前缀），剩下服务端或主进程的原话。 */
+function unwrappedReason(message: string): string {
+  return message.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(\w*Error:\s*)+/, '').trim()
+}
+
 /**
  * 服务端或主进程已经写好的中文原话，去掉 IPC 包装后原样给客户看。只放行纯中文的：
  * 带英文字母的多半是堆栈、地址或错误码，客户看不懂，这时宁可只说「没有成功」。
  */
 function plainChineseReason(message: string): string | null {
-  const text = message.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(\w*Error:\s*)+/, '').trim().replace(/[。.！!，,；;\s]+$/, '')
+  const text = unwrappedReason(message).replace(/[。.！!，,；;\s]+$/, '')
   if (!text || text.length > 80 || /[A-Za-z]/.test(text) || !/[\u4e00-\u9fff]/.test(text)) return null
   return text
+}
+
+export const verificationMailboxMissingMessage = '这个邮箱地址收不到信。请检查有没有写错，或者换一个常用邮箱（如 QQ 邮箱）再试。'
+export const verificationMailNotSentMessage = '验证码邮件没发出去，不是你这边网络的问题。可以换一个常用邮箱（如 QQ 邮箱）再试，还不行请找客服。'
+export const verificationNotSentMessage = '账号服务这次没有正常回应，验证码没有发出去。请点「再试一次」；一直这样的话，点下面的「切换连接线路」换一条线路再试。'
+
+/**
+ * 「获取验证码」时服务器发信那一步失败：new-api 的 SendEmailVerification 把发信邮箱（SMTP）的原话
+ * 原样回来，没有错误码、也不说是哪一步。以前这些话要么落到「稍后重试」，要么被下面的宽正则认错：
+ * 「dial tcp …: i/o timeout」（服务器连不上自己的发信邮箱）被说成客户网络不好，「550 User does not
+ * exist」被服务端那张表里登录的那条说成「用户名或密码错误」。
+ *
+ * 收件人不存在只能按字面猜：5xx 加 user / mailbox / recipient 和 not found / unknown 这类词。
+ * 「550 Mailbox not found or access denied」也是 QQ 系发信邮箱「发件人被限制」时的说法，分不出，
+ * 带 access denied 的就不说成地址写错。限流那几句（421 too many 等）留给后面的「请求太频繁」。
+ */
+function verificationMailFailure(message: string): AuthFailure | null {
+  const text = unwrappedReason(message)
+  if (/429|频繁|too many|rate limit/i.test(text)) return null
+  const mailboxMissing = /no such user|user (does not exist|unknown|not found)|enter a valid email address/i.test(text)
+    || (/^5\d\d\b/.test(text) && /user|mailbox|recipient/i.test(text) && /not found|unknown|invalid|does not exist|no such/i.test(text) && !/access denied/i.test(text))
+  if (mailboxMissing) return { message: verificationMailboxMissingMessage, kind: 'final' }
+  if (/^[45]\d\d\b|\bsmtp\b|dial tcp|\bEOF\b|short response/i.test(text)) return { message: verificationMailNotSentMessage, kind: 'final' }
+  return null
 }
 
 export function authFailure(error: unknown, action: string, online = true): AuthFailure {
@@ -221,6 +250,10 @@ export function authFailure(error: unknown, action: string, online = true): Auth
   if (!online || reason === 'offline') return { message: authOfflineMessage, kind: 'offline' }
   if (reason === 'timeout' || reason === 'refused') return { message: authUnreachableMessage, kind: 'unreachable' }
   if (reason) return { message: networkFailureMessages[reason], kind: 'network' }
+  // 发验证码时服务器发信失败的原话要在服务端那张表之前认：表里登录那条会把「User does not exist」认走。
+  const sendingCode = action === '发送验证码'
+  const mail = sendingCode ? verificationMailFailure(message) : null
+  if (mail) return mail
   // The precise new-api table runs before the heuristics below: those are broad
   // enough to swallow a message whose real cause the server already named. A
   // change-password failure saying the original password is wrong would
@@ -229,13 +262,17 @@ export function authFailure(error: unknown, action: string, online = true): Auth
   if (known) return { message: known.friendly, kind: known.kind ?? 'unknown' }
   if (/429|频繁|too many|rate limit/i.test(message)) return { message: '请求太频繁，请稍等一分钟再试', kind: 'wait' }
   if (/已存在|占用|already exists/i.test(message)) return { message: '用户名或邮箱已被使用，请检查后重试', kind: 'taken' }
-  if (/验证码|verification code/i.test(message)) return { message: '验证码不正确或已过期，请重新获取', kind: 'code' }
+  // 发验证码那一步还没有验证码可错：主进程的「发送邮箱验证码失败，服务返回 HTTP 403」（对面回了一张网页）
+  // 只因为带着「验证码」三个字，以前被说成验证码不对。
+  if (!sendingCode && /验证码|verification code/i.test(message)) return { message: '验证码不正确或已过期，请重新获取', kind: 'code' }
   if (/重置/.test(action) && /token|重置码|expired|过期/i.test(message)) return { message: '重置码已失效，请重新获取邮件', kind: 'code' }
   if (/用户名|密码|credential|password|unauthorized/i.test(message)) return { message: '账号或密码不正确，请检查后重试', kind: 'credentials' }
   if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return { message: authNetworkFallbackMessage, kind: 'unreachable' }
   if (/turnstile|人机/i.test(message)) return { message: '服务端需要完成安全验证，请在浏览器完成后再试', kind: 'final' }
   const plain = plainChineseReason(message)
   if (plain) return { message: `${action}没有成功：${plain}。`, kind: 'unknown' }
+  // 剩下的是直连那头回了别的服务的话（如 Not Found）、本机网络软件弄坏连接这类，换条线路比「稍后重试」管用。
+  if (sendingCode) return { message: verificationNotSentMessage, kind: 'unknown' }
   return { message: `${action}没有成功，输入已保留，请稍后重试`, kind: 'unknown' }
 }
 

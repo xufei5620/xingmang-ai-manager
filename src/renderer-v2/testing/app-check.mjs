@@ -6281,7 +6281,7 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   const page = await open('localeLaunchWarning=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByText('Codex 已打开，但未确认中文界面生效，请在配置中再次启用。', { exact: true }).waitFor()
+    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])
     await clean(page)

@@ -159,7 +159,7 @@ export function officialMarketplaceNotice(
           title: '官方插件目录还没下载',
           body:
             marketplace.reason ||
-            '下载之后这里才会出现可以安装的插件。目录要从国外的网站下载，网络慢时要等一会儿。',
+            '下载之后这里才会出现可以安装的插件，网络慢时要等一会儿。',
           needsAction: true,
           actionLabel: '下载插件目录',
         }

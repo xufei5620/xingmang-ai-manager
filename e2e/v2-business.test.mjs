@@ -1197,7 +1197,7 @@ test('the Codex plugin market downloads the official catalog by itself and lists
     await page.getByRole('button', { name: 'Codex CLI', exact: true }).click()
     await page.getByRole('tab', { name: '市场' }).click()
     // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户开加速后自己再点。
-    await page.getByText(/插件目录要从国外的网站下载/).first().waitFor()
+    await page.getByText(/插件目录没有下载下来/).first().waitFor()
     const notice = page.getByTestId('plugins-official-marketplace')
     await notice.getByText('官方插件目录还没下载').waitFor()
     assert.equal(

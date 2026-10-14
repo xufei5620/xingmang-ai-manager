@@ -569,6 +569,26 @@ export function withCodexDesktopCdpFailureReport(
 }
 
 /**
+ * The same seam for the injection step: when Codex is up but the Chinese patch
+ * could not be confirmed, the launch result only carries a fixed sentence for
+ * the customer, so the underlying reason (no page found, timeout, port owner)
+ * reaches the runtime log through this wrapper instead.
+ */
+export function withCodexDesktopLocaleFailureReport(
+  inject: typeof injectCodexDesktopChineseLocale,
+  report: (error: unknown) => void,
+): typeof injectCodexDesktopChineseLocale {
+  return async (port, options) => {
+    try {
+      return await inject(port, options)
+    } catch (error) {
+      report(error)
+      throw error
+    }
+  }
+}
+
+/**
  * Activates the registered AppX application through the Windows activation
  * manager and returns the PID reported by AppModel.  Unlike the CDP variant,
  * this path does not add browser/debugging flags; it is used for ordinary

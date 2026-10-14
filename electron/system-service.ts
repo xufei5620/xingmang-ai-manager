@@ -60,7 +60,7 @@ import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
 import { isCodexDesktopExecutable } from './codex-desktop'
-import { activateCodexDesktopWithCdp, withCodexDesktopCdpFailureReport } from './codex-desktop-cdp'
+import { activateCodexDesktopWithCdp, injectCodexDesktopChineseLocale, withCodexDesktopCdpFailureReport, withCodexDesktopLocaleFailureReport } from './codex-desktop-cdp'
 import type { CodexDesktopStartupRoute } from './codex-desktop-startup-route'
 import {
   createCodexDesktopService,
@@ -5895,6 +5895,10 @@ export function createSystemService(
     // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
     activateCodexDesktopWithCdp: withCodexDesktopCdpFailureReport(activateCodexDesktopWithCdp, (error) => runtimeLog?.log(
       'warn', 'system', 'codex-desktop.chinese-launch.failed', 'Codex 桌面端中文增强启动没成，改走普通启动', { error },
+    )),
+    // Codex 起来了但中文没核对上：客户只看到一句固定的话，原因（没找到页面、超时、端口归属）记在这一条里。
+    injectCodexDesktopChineseLocale: withCodexDesktopLocaleFailureReport(injectCodexDesktopChineseLocale, (error) => runtimeLog?.log(
+      'warn', 'system', 'codex-desktop.chinese-locale.unverified', 'Codex 桌面端打开了，但中文没核对上', { error },
     )),
   })
 

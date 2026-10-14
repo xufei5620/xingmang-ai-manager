@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type RegistrationDraft } from './state'
+import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -188,6 +188,38 @@ describe('v2 auth recovery boundaries', () => {
   it('says the mailbox is not accepted when the server refuses its domain at send-code time', () => {
     const refused = new Error("Error invoking remote method 'account:send-verification-code': Error: This email address is not allowed by the administrator's email policy.")
     expect(authFailure(refused, '发送验证码')).toEqual({ message: '这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试', kind: 'unknown' })
+  })
+  // 注册发验证码失败/原因核对.md 第七、八节：服务器发信那一步的原话以前落到兜底或被认错。
+  function sendCode(reason: string) {
+    return authFailure(new Error(`Error invoking remote method 'account:send-verification-code': Error: ${reason}`), '发送验证码')
+  }
+  it('says the mailbox cannot receive mail when the mail server rejects the recipient', () => {
+    for (const reason of ['550 User not found: someone@126.com', '550 5.1.1 <someone@126.com>: Recipient address rejected: User unknown', '553 Invalid recipient', 'User does not exist', 'No such user', 'Please enter a valid email address'])
+      expect(sendCode(reason)).toEqual({ message: verificationMailboxMissingMessage, kind: 'final' })
+    // Not "username or password is wrong": the login row of the server table used to win here.
+    expect(sendCode('User does not exist').message).not.toContain('密码')
+    // QQ-style senders use this wording for a restricted sender too, so it must not blame the address.
+    expect(sendCode('550 Mailbox not found or access denied')).toEqual({ message: verificationMailNotSentMessage, kind: 'final' })
+  })
+  it('says the code mail was not sent, not that the customer network failed, when the server cannot send mail', () => {
+    for (const reason of ['554 DT:SPM 163 smtp10, please see http://mail.163.com/help/help_spam_16.htm', '535 Login Fail. Please enter your authorization code to login', 'EOF', 'short response: ', 'SMTP 服务器未配置', 'dial tcp 203.0.113.9:465: i/o timeout'])
+      expect(sendCode(reason)).toEqual({ message: verificationMailNotSentMessage, kind: 'final' })
+  })
+  it('does not call a code wrong before one was ever sent', () => {
+    expect(sendCode('发送邮箱验证码失败，服务返回 HTTP 403')).toEqual({ message: verificationNotSentMessage, kind: 'unknown' })
+    expect(sendCode('Not Found')).toEqual({ message: verificationNotSentMessage, kind: 'unknown' })
+    expect(sendCode('net::ERR_HTTP2_PROTOCOL_ERROR')).toEqual({ message: verificationNotSentMessage, kind: 'unknown' })
+    // The same wording still means a wrong code when the account is being created.
+    expect(authFailure(new Error('验证码错误'), '创建账号').kind).toBe('code')
+  })
+  it('keeps the send-code answers the server table and rate limits already give', () => {
+    expect(sendCode('421 too many connections').kind).toBe('wait')
+    expect(sendCode('发送过于频繁，请等待 20 秒后再试')).toEqual({ message: '请求太频繁，请稍等一分钟再试', kind: 'wait' })
+    expect(sendCode('邮箱地址已被占用').kind).toBe('taken')
+    expect(sendCode('无效的邮箱地址').message).toBe('发送验证码没有成功：无效的邮箱地址。')
+    // Other actions keep their old fallback; only the send-code step points at the line switch.
+    expect(authErrorMessage(new Error('Not Found'), '发送重置邮件')).toBe('发送重置邮件没有成功，输入已保留，请稍后重试')
+    expect(authErrorMessage(new Error('dial tcp 203.0.113.9:465: i/o timeout'), '登录')).toBe('连不上账号服务，请检查网络后再试一次。')
   })
   // 以前 409 落到「请稍后重试」：服务端的设备数满了，重试一万次也登不上。
   it('explains login device and frequency limits instead of asking to try again later', () => {
