@@ -351,7 +351,7 @@ describe('diagnostics', () => {
       }
     })
 
-    it('keeps the direct and default line names for the legacy account', async () => {
+    it('names the legacy account lines by the same entries: default is line 1, direct is line 2', async () => {
       const home = temporaryHome()
       const input = dependencies(home)
       const legacyPrimary = requireRelaySite('solov-api', 'primary')
@@ -1137,7 +1137,7 @@ describe('diagnostics', () => {
     })
 
     // 0.2.19 起历史账号先走线路1（CF）、线路2 备用（yoyo 10-14）：按记下的 from、to 说，新旧两种记录都对。
-    it('describes the historical account moving off and back to line 2, which it now uses first', () => {
+    it('describes the historical account moving off and back to line 1, which it now uses first', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
       expect(describeRelayRouteChange({ from: 'primary', to: 'primary', reason: 'startup', at })).toBe('1月3日 08:00，查到线路1能连上，走线路1')
       expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'health-failed', trigger: 'scheduled', at }))

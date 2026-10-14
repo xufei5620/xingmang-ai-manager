@@ -1583,10 +1583,6 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
 // 入口。下面几处只写进导出的检查报告；检查页的详情不摆（diagnostic-details.ts 不列这几个键）。
 const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '线路1', direct: '线路2' }
 
-function relayLineName(line: RelayEndpointId): string {
-  return relayLineNames[line]
-}
-
 /** 工具配置这会儿该用的那条线路，和那条线路上这个工具的地址。 */
 interface ProviderRelayLine {
   siteId: string
@@ -1609,8 +1605,8 @@ function providerRouteLine(siteId: string, provider: ProviderId, actual: string)
 export function describeRelayRouteChange(change: RelayRouteChange): string {
   const at = new Date(change.at)
   const time = `${at.getMonth() + 1}月${at.getDate()}日 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
-  const from = relayLineName(change.from)
-  const to = relayLineName(change.to)
+  const from = relayLineNames[change.from]
+  const to = relayLineNames[change.to]
   const reason = change.reason === 'recovered'
     ? `${to}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${to}`
     : change.reason === 'health-failed'
@@ -1655,8 +1651,8 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     // 改的。两条线路连的是同一个账号，工具照样能用，所以不算要留意的事（yoyo 10-8：线路的事不要太多提示），
     // 只在导出的报告里写清两边各是哪条；星芒下次跟着线路改配置时会改过来。
     const line = current ? providerRouteLine(current.siteId, provider, inspection.actualBaseUrl) : null
-    if (current && line) details.routeLine = relayLineName(line)
-    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineName(current.line)
+    if (current && line) details.routeLine = relayLineNames[line]
+    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineNames[current.line]
     return { state: 'pass', summary: '已连到当前账号', details }
   }
   if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
