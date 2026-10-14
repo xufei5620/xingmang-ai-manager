@@ -431,21 +431,21 @@ describe('renderer-v2 operation error classification', () => {
   it('classifies the install failures the main process now spells out from npm stderr', () => {
     expect(classifyOperationError('Claude Code 安装失败：国内 npm 镜像：命令执行失败（退出码 1）：node（ENOSPC；nospc ENOSPC: no space left on device, write）')).toBe('diskFull')
     expect(classifyOperationError('Codex CLI 安装失败：国内 npm 镜像：命令执行失败（退出码 1）：node（EPERM；Error: EPERM: operation not permitted, rename）')).toBe('permission')
-    expect(classifyOperationError('Gemini CLI 安装失败：国内 npm 镜像：命令执行失败（退出码 1）：node（ETIMEDOUT；network request to https://registry.npmmirror.com/x failed, reason: connect ETIMEDOUT）')).toBe('downloadTimeout')
+    expect(classifyOperationError('Grok CLI 安装失败：国内 npm 镜像：命令执行失败（退出码 1）：node（ETIMEDOUT；network request to https://registry.npmmirror.com/x failed, reason: connect ETIMEDOUT）')).toBe('downloadTimeout')
     expect(classifyOperationError('Claude Code 安装失败：npm 官方源：下载超时，长时间没有完成，已中止')).toBe('downloadTimeout')
   })
 
   it('names a replaced certificate instead of blaming the network', () => {
     for (const intercepted of [
       'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain',
-      'Gemini CLI 安装失败：unable to get local issuer certificate',
+      'Grok CLI 安装失败：unable to get local issuer certificate',
       '账号接口请求失败：UNABLE_TO_VERIFY_LEAF_SIGNATURE',
       '检查网络时出错：net::ERR_CERT_AUTHORITY_INVALID',
       'DEPTH_ZERO_SELF_SIGNED_CERT',
       // 主进程自己写好的那句中文同样归这一类：两边口径是同一份表，不是各写各的。
       `重新写入 Key 没有完成：${networkFailureMessages.tls}`,
     ]) expect([intercepted, classifyOperationError(intercepted)]).toEqual([intercepted, 'tlsIntercepted'])
-    const hint = presentOperationError('Gemini CLI 安装失败：unable to get local issuer certificate')
+    const hint = presentOperationError('Grok CLI 安装失败：unable to get local issuer certificate')
     expect(hint?.title).toBe('连接被证书拦截')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })

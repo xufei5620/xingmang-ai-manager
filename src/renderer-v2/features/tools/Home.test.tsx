@@ -290,6 +290,22 @@ describe('renderer-v2 home recent resume for tools that are not installed (第�
   it('keeps it while the scan has not come back yet', () => {
     expect(recentResumeOffered([], 'claude')).toBe(true)
   })
+
+  // Gemini CLI 已下线（yoyo 2026-10-14）：装着也不再替它打开，它的旧记录不给「接着聊」。
+  it('never offers it for the retired Gemini CLI, installed or not', () => {
+    expect(recentResumeOffered(presentTools(snapshot(allTools), null), 'gemini')).toBe(false)
+    expect(recentResumeOffered([], 'gemini')).toBe(false)
+  })
+})
+
+describe('renderer-v2 home without the retired Gemini CLI', () => {
+  // 主进程的快照仍按 ProviderId 全集带着 Gemini CLI（装着、配好了），首页一个字都不提它。
+  it('draws no row, button or name for it even when the main process still reports it installed', () => {
+    const markup = render({})
+    expect(markup).not.toContain('tool-row-gemini')
+    expect(markup).not.toContain('tool-gemini-')
+    expect(markup).not.toContain('Gemini')
+  })
 })
 
 // 打开过的目录来自会话记录，只有读到记录之后才有下拉（N7）。静态渲染里
@@ -309,7 +325,7 @@ describe('renderer-v2 home launch button without a remembered directory (N7)', (
   })
 })
 
-// 这个工具还没有会话记录时，用上次在本软件里选过的文件夹，四个工具只问一次。
+// 这个工具还没有会话记录时，用上次在本软件里选过的文件夹，几个工具只问一次。
 describe('renderer-v2 home launch button with a folder picked earlier', () => {
   function withRemembered(rememberedWorkspace: string): string {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })

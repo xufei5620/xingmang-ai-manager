@@ -111,17 +111,17 @@ describe('renderer provider source marker', () => {
   it('ignores invalid data and degrades safely when storage is unavailable', () => {
     const invalid = memoryStorage()
     invalid.values.set(
-      manualSourceMarkerKey('https://xm.solov.cc/v1', 'gemini')!,
+      manualSourceMarkerKey('https://xm.solov.cc/v1', 'grok')!,
       'account',
     )
     expect(
       readManualSourceMarker(
         invalid.storage,
         'https://xm.solov.cc/v1',
-        'gemini',
+        'grok',
       ),
     ).toBe(false)
-    expect(manualSourceMarkerKey('not a relay URL', 'gemini')).toBeNull()
+    expect(manualSourceMarkerKey('not a relay URL', 'grok')).toBeNull()
 
     const unavailable: SourceMarkerStorage = {
       getItem: vi.fn(() => { throw new Error('storage unavailable') }),
@@ -132,14 +132,14 @@ describe('renderer provider source marker', () => {
       readManualSourceMarker(
         unavailable,
         'https://xm.solov.cc/v1',
-        'gemini',
+        'grok',
       ),
     ).toBe(false)
     expect(
       writeManualSourceMarker(
         unavailable,
         'https://xm.solov.cc/v1',
-        'gemini',
+        'grok',
         true,
       ),
     ).toBe(false)
@@ -147,7 +147,7 @@ describe('renderer provider source marker', () => {
       writeManualSourceMarker(
         unavailable,
         'https://xm.solov.cc/v1',
-        'gemini',
+        'grok',
         false,
       ),
     ).toBe(false)

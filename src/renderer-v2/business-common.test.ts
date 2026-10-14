@@ -121,7 +121,7 @@ describe('userFacingErrorMessage', () => {
     )
     expect(userFacingErrorMessage(leak)).toBe("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件。已恢复到切换前的配置。")
     expect(userFacingErrorMessage(new Error('C:\\Users\\Mary Ann Smith\\.codex\\config.toml 写不进去'))).toBe('本地配置文件 写不进去')
-    expect(userFacingErrorMessage(new Error('拒绝写入：C:\\Users\\张 三\\.gemini\\settings.json，请重试'))).toBe('拒绝写入：本地配置文件，请重试')
+    expect(userFacingErrorMessage(new Error('拒绝写入：C:\\Users\\张 三\\.claude\\settings.json，请重试'))).toBe('拒绝写入：本地配置文件，请重试')
     expect(userFacingErrorMessage(new Error('\\\\?\\C:\\Users\\Zhang San\\x.json 打不开'))).toBe('本地配置文件 打不开')
   })
 
@@ -213,7 +213,7 @@ describe('errorMessage', () => {
       "EPERM: operation not permitted, open 'C:\\Users\\yoyo\\.codex\\config.toml'",
       "EPERM: operation not permitted, rename 'C:\\Users\\yoyo\\.codex\\config.toml.tmp' -> 'C:\\Users\\yoyo\\.codex\\config.toml'",
       "EACCES: permission denied, open '/Users/yoyo/.claude/settings.json'",
-      "EBUSY: resource busy or locked, rename 'D:\\Users\\yoyo\\.gemini\\settings.json'",
+      "EBUSY: resource busy or locked, rename 'D:\\Users\\yoyo\\.claude\\settings.json'",
       "ENOENT: no such file or directory, open 'C:\\Users\\张三\\.codex\\auth.json'",
       "EISDIR: illegal operation on a directory, read 'C:\\Users\\张 三\\.grok\\config.toml'",
       "EPERM: operation not permitted, open \"/home/yoyo/.codex/config.toml\"",

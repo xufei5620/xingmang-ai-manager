@@ -6,7 +6,7 @@ describe('key sync failure wording', () => {
     expect(keySyncFailureText('codex', 'fetch failed')).toBe('Codex CLI：连不上星芒服务器')
     // 写 Key 写的是配置文件，不是安装目录（已知29）。
     expect(keySyncFailureText('claude', 'EPERM: operation not permitted')).toBe('Claude Code：写不进配置文件')
-    expect(keySyncFailureText('gemini', 'unexpected token in JSON')).toBe('Gemini CLI：Key 没有写进去，点「重新同步」再试')
+    expect(keySyncFailureText('grok', 'unexpected token in JSON')).toBe('Grok CLI：Key 没有写进去，点「重新同步」再试')
   })
 
   it('keeps Chinese reasons but never shows the home folder path', () => {
@@ -25,8 +25,8 @@ describe('key sync failure wording', () => {
   })
 
   it('masks keys in a Chinese reason it shows as is', () => {
-    const text = keySyncFailureText('gemini', '写入失败，密钥 sk-abcdefghijklmnopqrstuvwxyz0123456789 不对')
-    expect(text.startsWith('Gemini CLI：写入失败')).toBe(true)
+    const text = keySyncFailureText('grok', '写入失败，密钥 sk-abcdefghijklmnopqrstuvwxyz0123456789 不对')
+    expect(text.startsWith('Grok CLI：写入失败')).toBe(true)
     expect(text).not.toContain('abcdefghijklmnopqrstuvwxyz')
   })
 
@@ -43,7 +43,7 @@ describe('key sync failure wording', () => {
   it('turns an unavailable account group into advice the customer can act on', () => {
     expect(keySyncFailureText('claude', '分组不存在、不可用或名称重复，请确认账号可用分组'))
       .toBe('Claude Code：当前账号还不能用，需要的话请联系客服开通')
-    expect(keySyncFailureText('gemini', '当前账号不可使用分组「Gemini-中转/订阅」'))
-      .toBe('Gemini CLI：当前账号还不能用，需要的话请联系客服开通')
+    expect(keySyncFailureText('grok', '当前账号不可使用分组「Grok-中转/订阅」'))
+      .toBe('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
   })
 })

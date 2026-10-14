@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, MaintenancePage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialTopicsFor } from './registry/tutorials'
@@ -22,6 +22,30 @@ describe('paid Codex check in HealthPage', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
     expect(markup).toContain('这一条证明你现在能用')
+  })
+})
+
+// Gemini CLI 下线（yoyo 2026-10-14）：「信任安全证书」只为它从星芒打开时用，主进程那条通道一起撤了，
+// 检查页不再有这颗按钮；检查页、安装卸载页也都不再出现它的名字。
+describe('maintenance pages without the retired Gemini CLI', () => {
+  it('offers no certificate trust button on the health page', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    expect(markup).not.toContain('health-trust-certificates')
+    expect(markup).not.toContain('Gemini')
+  })
+
+  it('draws no row for it on the install page', () => {
+    const markup = renderToStaticMarkup(createElement(MaintenancePage, { api: {} as V2Bridge }))
+    expect(markup).toContain('Claude Code')
+    expect(markup).not.toContain('Gemini')
+    expect(markup).not.toContain('-gemini')
+  })
+
+  // 设置里「快捷键」写的数字跟着这台电脑看得到的工具走，不再写死 1–5。
+  it('numbers the launch shortcut over the tools this computer shows', () => {
+    expect(launchShortcutMeta('win')).toBe('Ctrl / Command + 1–4')
+    expect(launchShortcutMeta('mac')).toBe('Ctrl / Command + 1–4')
+    expect(launchShortcutMeta('linux')).toBe('Ctrl / Command + 1–3')
   })
 })
 
@@ -49,17 +73,17 @@ describe('health page order', () => {
     const ok = { ...base, provider: 'claude' as const, ok: true, layer: 'network' as const, summary: '连接正常' }
     const broken = { ...base, provider: 'codex' as const, ok: false, layer: 'credential' as const, summary: '密钥不对' }
     const service = { ...base, provider: 'grok' as const, ok: false, layer: 'service' as const, summary: '服务在维护' }
-    const unconfigured = { ...base, provider: 'gemini' as const, ok: false, layer: 'unconfigured' as const, summary: '还没配' }
+    const unconfigured = { ...base, provider: 'claude' as const, ok: false, layer: 'unconfigured' as const, summary: '还没配' }
     expect(connectionRowStatus({ result: ok })).toEqual({ label: '正常', tone: 'ok' })
     expect(connectionRowStatus({ result: broken })).toEqual({ label: '有问题', tone: 'bad' })
     expect(connectionRowStatus({ result: service })).toEqual({ label: '有问题', tone: 'warn' })
     expect(connectionRowStatus({ result: unconfigured })).toEqual({ label: '未配置', tone: 'neutral' })
     expect(connectionRowStatus({ result: null })).toEqual({ label: '没测成', tone: 'bad' })
     const rows = [
-      { id: 'claude', result: ok }, { id: 'gemini', result: unconfigured }, { id: 'codex', result: broken },
+      { id: 'claude', result: ok }, { id: 'opencode', result: unconfigured }, { id: 'codex', result: broken },
       { id: 'workbuddy', result: null }, { id: 'grok', result: service },
     ]
-    expect(sortConnectionRows(rows).map((row) => row.id)).toEqual(['codex', 'grok', 'workbuddy', 'gemini', 'claude'])
+    expect(sortConnectionRows(rows).map((row) => row.id)).toEqual(['codex', 'grok', 'workbuddy', 'opencode', 'claude'])
   })
 })
 
@@ -414,7 +438,7 @@ describe('installGuideTopic', () => {
     const title = (id: string) => tutorialTopics.find((entry) => entry.id === id)?.title
     expect(title(installGuideTopic('codexDesktop', 'macos'))).toBe('Mac 上装桌面端')
     expect(title(installGuideTopic('codexDesktop', 'windows'))).toBe('Codex 桌面端怎么安装？')
-    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+    for (const provider of ['claude', 'codex', 'grok'] as const) {
       expect(title(installGuideTopic(provider, 'macos'))).toBe('进阶：安装与使用命令行工具')
       expect(title(installGuideTopic(provider, 'windows'))).toBe('进阶：安装与使用命令行工具')
     }
@@ -453,23 +477,24 @@ describe('installJobRunning', () => {
 
 describe('maintenanceRowJobKeys', () => {
   // 第四十一批 B：首页那份任务里，只有这一页有行的几个跑完时才要重读本页。
+  // 已下线的 Gemini CLI（yoyo 2026-10-14）本页没有它那一行，它的任务跑完也不用重读。
   it('keeps only the Home jobs this page draws a row for', () => {
     const job = { label: '正在安装', log: [] }
     expect(maintenanceRowJobKeys(undefined)).toEqual([])
     expect(maintenanceRowJobKeys({
-      gemini: job, codexDesktop: job, node: job, python: job,
+      gemini: job, grok: job, codexDesktop: job, node: job, python: job,
       git: job, 'launch:codexDesktop': job, workbuddy: job,
-    })).toEqual(['gemini', 'codexDesktop', 'node', 'python'])
+    })).toEqual(['grok', 'codexDesktop', 'node', 'python'])
   })
 })
 
 describe('maintenanceJobsFinished', () => {
   it('reports a finish only when a job that was running is gone', () => {
     expect(maintenanceJobsFinished([], [])).toBe(false)
-    expect(maintenanceJobsFinished([], ['gemini'])).toBe(false)
-    expect(maintenanceJobsFinished(['gemini'], ['gemini'])).toBe(false)
-    expect(maintenanceJobsFinished(['gemini'], ['gemini', 'node'])).toBe(false)
-    expect(maintenanceJobsFinished(['node', 'gemini'], ['gemini'])).toBe(true)
+    expect(maintenanceJobsFinished([], ['grok'])).toBe(false)
+    expect(maintenanceJobsFinished(['grok'], ['grok'])).toBe(false)
+    expect(maintenanceJobsFinished(['grok'], ['grok', 'node'])).toBe(false)
+    expect(maintenanceJobsFinished(['node', 'grok'], ['grok'])).toBe(true)
     expect(maintenanceJobsFinished(['claude'], [])).toBe(true)
   })
 })

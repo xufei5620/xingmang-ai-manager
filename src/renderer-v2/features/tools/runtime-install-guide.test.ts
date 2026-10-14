@@ -42,12 +42,12 @@ describe('runtimeInstallGuide', () => {
     }
   })
 
-  // 第二十八批 C：四个命令行工具都不用 Python 了，Mac 上这段不再说 Gemini 要它、劝客户另装一份。
+  // 第二十八批 C：命令行工具都不用 Python 了，Mac 上这段不再说 Gemini 要它、劝客户另装一份。
   it('tells a Mac customer Python is only for the odd connection, and how to install it if they want', () => {
     const guide = runtimeInstallGuide('python', 'macos', 'external')
-    expect(guide?.summary).toBe('这台 Mac 上没有找到 Python（四个命令行工具都用不到它，外接工具里个别要用它的才需要）。星芒不会替你装它，要装的话下面两种装法选一种就行。')
+    expect(guide?.summary).toBe('这台 Mac 上没有找到 Python（命令行工具都用不到它，外接工具里个别要用它的才需要）。星芒不会替你装它，要装的话下面两种装法选一种就行。')
     expect(guide?.command).toBe('brew install python')
-    expect(runtimeInstallGuide('node', 'macos', 'external')?.summary).toBe('这台 Mac 上没有找到 Node.js（四个命令行工具都靠它来安装和启动）。星芒不会替你装它，下面两种装法选一种就行。')
+    expect(runtimeInstallGuide('node', 'macos', 'external')?.summary).toBe('这台 Mac 上没有找到 Node.js（命令行工具都靠它来安装和启动）。星芒不会替你装它，下面两种装法选一种就行。')
   })
 
   it('drops the Homebrew line on other external platforms rather than suggesting a wrong command', () => {
@@ -60,7 +60,7 @@ describe('runtimeInstallGuide', () => {
 describe('Python on Linux', () => {
   it('says no CLI needs it and gives the apt command instead of a website or the Mac chapter', () => {
     const guide = runtimeInstallGuide('python', 'linux', 'external')
-    expect(guide?.summary).toBe('这台电脑上没有找到 Python。四个命令行工具都用不到它，不装也没关系。')
+    expect(guide?.summary).toBe('这台电脑上没有找到 Python。命令行工具都用不到它，不装也没关系。')
     expect(guide?.command).toBe(linuxPythonInstallCommand)
     expect(guide?.command).toBe('sudo apt install python3')
     expect(guide?.noTutorial).toBe(true)
@@ -84,12 +84,12 @@ describe('Python on Linux', () => {
 
 describe('managedRuntimeNotice', () => {
   it('keeps the macOS sentence exactly as it was', () => {
-    expect(managedRuntimeNotice('node', 'macos', 'managed')).toBe('这台 Mac 上还没有 Node.js，四个命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
+    expect(managedRuntimeNotice('node', 'macos', 'managed')).toBe('这台 Mac 上还没有 Node.js，命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
   })
 
   it('tells Linux customers the app prepares Node.js itself instead of sending them to a website', () => {
     const notice = managedRuntimeNotice('node', 'linux', 'managed')
-    expect(notice).toBe('这台电脑上还没有能用的 Node.js，四个命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
+    expect(notice).toBe('这台电脑上还没有能用的 Node.js，命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
     expect(notice).not.toContain('官网')
   })
 

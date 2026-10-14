@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import type { V2Bridge } from './types'
 import {
+  BackupsPage,
   CuratedDetails,
   CuratedShelf,
+  ExtensionsPage,
+  SessionsPage,
   backupMatchesQuery,
   curatedPlaceholderField,
   curatedRuntimeCommand,
@@ -414,13 +418,13 @@ describe('extension row actions', () => {
     const api = extensionApi()
     await runExtensionAction(
       api,
-      listItem({ provider: 'gemini', kind: 'skill', id: '/cli/builtin/x/SKILL.md', scope: 'builtin' }),
+      listItem({ provider: 'grok', kind: 'skill', id: '/cli/builtin/x/SKILL.md', scope: 'builtin' }),
       'disable',
     )
     await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: null }), 'uninstall')
 
     expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
-      { provider: 'gemini', kind: 'skill', action: 'disable', id: '/cli/builtin/x/SKILL.md' },
+      { provider: 'grok', kind: 'skill', action: 'disable', id: '/cli/builtin/x/SKILL.md' },
       { provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'docs' },
     ])
   })
@@ -524,7 +528,7 @@ describe('extension row actions', () => {
   })
 
   it('still treats a built-in row as read-only for the other tools', () => {
-    expect(extensionRowState(listItem({ provider: 'gemini', kind: 'skill', scope: 'builtin' }))).toMatchObject({
+    expect(extensionRowState(listItem({ provider: 'grok', kind: 'skill', scope: 'builtin' }))).toMatchObject({
       readonly: true,
       canToggle: false,
       canUninstall: false,
@@ -536,7 +540,11 @@ describe('extension row actions', () => {
 describe('extension page default tool', () => {
   it('opens on the first installed command-line tool in navigation order', () => {
     expect(preferredExtensionProvider(['grok', 'codex'])).toBe('codex')
-    expect(preferredExtensionProvider(['gemini'])).toBe('gemini')
+    expect(preferredExtensionProvider(['gemini', 'grok'])).toBe('grok')
+  })
+  // Gemini CLI 已下线（yoyo 2026-10-14）：只装着它也不算，扩展页不会停在一个不再显示的工具上。
+  it('never opens on the retired Gemini CLI', () => {
+    expect(preferredExtensionProvider(['gemini'])).toBe('claude')
   })
   it('falls back to Claude when nothing is installed or detection has not finished', () => {
     expect(preferredExtensionProvider([])).toBe('claude')
@@ -583,5 +591,22 @@ describe('backup search', () => {
 
   it('no longer matches the backup id the list does not show', () => {
     expect(backupMatchesQuery(createdAt, 'backup-1', now)).toBe(false)
+  })
+})
+
+// Gemini CLI 下线（yoyo 2026-10-14）：会话、外接工具、技能、插件、备份几页的工具选单都不再有它。
+describe('management pages without the retired Gemini CLI', () => {
+  const api = {} as V2Bridge
+  it.each(['mcp', 'skill', 'plugin'] as const)('offers no Gemini CLI on the %s page', (kind) => {
+    const markup = renderToStaticMarkup(<ExtensionsPage api={api} kind={kind} installedProviders={['gemini', 'grok']} />)
+    expect(markup).toContain('Grok CLI')
+    expect(markup).not.toContain('Gemini')
+  })
+
+  it('offers no Gemini CLI on the sessions and backups pages', () => {
+    for (const markup of [renderToStaticMarkup(<SessionsPage api={api} />), renderToStaticMarkup(<BackupsPage api={api} />)]) {
+      expect(markup).toContain('Claude Code')
+      expect(markup).not.toContain('Gemini')
+    }
   })
 })

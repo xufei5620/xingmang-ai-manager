@@ -71,7 +71,8 @@ describe('renderer-v2 pending CLI updates', () => {
     const state = snapshot({
       claude: { ...cliStatus, latestVersion: '2.0.0', updateAvailable: true },
       codex: { ...cliStatus, latestVersion: '1.9.0', updateAvailable: true },
-      gemini: cliStatus,
+      // 已下线的 Gemini CLI（yoyo 2026-10-14）首页没有它那一行，有新版本也不算进角标。
+      gemini: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true },
       // 更新检查失败的那一行既没有「更新」按钮，也不该被算进角标：
       // 数字比不出来时报一个数，比不报还糟。
       grok: { ...cliStatus, updateAvailable: false, updateCheck: 'failed', updateError: '版本号无法解析' },
@@ -95,14 +96,14 @@ describe('renderer-v2 pending CLI updates', () => {
     const state = snapshot({
       claude: { ...cliStatus, latestVersion: '2.1.288', updateAvailable: true, installSource: 'path' },
       codex: { ...cliStatus, latestVersion: '1.9.0', updateAvailable: true, installSource: 'native', uninstall: officialOnly },
-      gemini: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true, installSource: 'npm' },
-      grok: cliStatus,
+      gemini: cliStatus,
+      grok: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true, installSource: 'npm' },
     })
     const tools = presentTools(state)
-    // 通知原话是「回到星芒的「你的工具」就能逐个更新」，首页只有 Gemini 那一行有「更新」按钮。
-    expect(inAppToolUpdates(tools)).toEqual([{ id: 'gemini', version: '0.62.0' }])
+    // 通知原话是「回到星芒的「你的工具」就能逐个更新」，首页只有 Grok 那一行有「更新」按钮。
+    expect(inAppToolUpdates(tools)).toEqual([{ id: 'grok', version: '0.62.0' }])
     // 角标和卡片上的数字照旧数全部：那两行自己写着该怎么更新。
-    expect(pendingToolUpdates(tools).map((entry) => entry.id)).toEqual(['claude', 'codex', 'gemini'])
+    expect(pendingToolUpdates(tools).map((entry) => entry.id)).toEqual(['claude', 'codex', 'grok'])
     const home = renderHome(state)
     expect(home).toContain('3 个有更新')
     expect(home).toContain('该版本由官方安装器管理，请用它自己的方式更新')

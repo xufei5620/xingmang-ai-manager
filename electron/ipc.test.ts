@@ -5870,6 +5870,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(JSON.stringify(result)).not.toMatch(/sk-claude-in-use|sk-codex-replaced|sk-user-picked/)
     })
 
+    it('never marks the key the retired Gemini CLI still holds', async () => {
+      const service = serviceStub()
+      configured(service, { claude: 'sk-claude-in-use-000', gemini: 'sk-gemini-left-behind-000' })
+      const withGemini = [...cached, { id: 13, provider: 'gemini' as const, group: 'g', name: 'xingmang-desktop-gemini', key: 'sk-gemini-left-behind-000' }]
+      const managedCliKeys = { read: vi.fn(async () => withGemini), save: vi.fn(), remove: vi.fn() }
+      register(service, undefined, undefined, signedIn(), undefined, managedCliKeys)
+      const result = await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {}) as AccountKeysPage
+      expect(result.keys.map((key) => key.managedProvider)).toEqual(['claude', undefined, undefined])
+      expect(vi.mocked(service.revealApiKey).mock.calls.map(([provider]) => provider)).not.toContain('gemini')
+    })
+
     it('returns the unmarked list when the cache, a config, or the session cannot be trusted', async () => {
       const service = serviceStub()
       vi.mocked(service.revealApiKey).mockImplementation(() => { throw new Error('config unreadable') })

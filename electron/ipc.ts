@@ -3722,6 +3722,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (accountService.getSessionState().account?.userId !== userId) return page
     const inUse = new Map<number, ProviderId>()
     for (const entry of cached) {
+      // 下线工具不再算星芒管的，它那把 Key 在密钥页上不标「在用」，也就不读它的配置。
+      if (isRetiredProviderId(entry.provider)) continue
       let configured = ''
       try { configured = service.revealApiKey(entry.provider, options.previewOnboarding) } catch { continue }
       if (configured && configured === entry.key) inUse.set(entry.id, entry.provider)

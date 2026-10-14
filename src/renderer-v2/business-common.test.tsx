@@ -78,7 +78,7 @@ describe('renderer-v2 result notice', () => {
 // 安装卸载页没装上的那一行，名字下面写的就是红框领头的这一句。
 describe('renderer-v2 result notice lead', () => {
   it('leads with the title the red banner shows when the catalog knows the failure', () => {
-    const error = 'Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir'
+    const error = 'Grok CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir'
     expect(resultNoticeLead(error)).toBe('写不进安装目录')
     expect(renderToStaticMarkup(<ResultNotice error={error} />)).toContain('<strong>写不进安装目录</strong>')
   })
