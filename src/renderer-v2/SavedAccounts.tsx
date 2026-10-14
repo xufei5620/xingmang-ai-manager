@@ -25,6 +25,7 @@ import { accountOrigin, siteIdForOrigin } from './account-context'
 import { accountSources, isEmail } from './features/auth/state'
 import type { LoginTarget } from './features/auth/api'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
+import { currentWindowOs, type WindowOs } from './features/app/window-os'
 
 export function SavedAccounts({
   api,
@@ -81,6 +82,7 @@ export function SavedAccounts({
       sameAccountOrigin(account.origin, resource.data.origin),
     )
   }
+  const desktopClientsHint = accountSwitchDesktopClientsHint(currentWindowOs())
   const alone = variant === 'card' && Boolean(resource.data) && !resource.data?.accounts.some((account) => !isCurrent(account))
   return (
     <div data-testid="saved-accounts-list">
@@ -236,6 +238,7 @@ export function SavedAccounts({
           <details className="v2-business-account-sync" open={variant !== 'card'}>
             <summary>同步到工具</summary>
             <p>勾上的工具会一起换成要切过去的账号，不勾的保持原样。</p>
+            {desktopClientsHint && <p data-testid="account-sync-desktop-clients">{desktopClientsHint}</p>}
             <ResultNotice error={sync.error} detail={sync.detail} />
             {sync.loading && <p role="status">正在检查工具配置…</p>}
             {candidates.map((candidate) => (
@@ -302,6 +305,15 @@ export function SavedAccounts({
       </Dialog>
     </div>
   )
+}
+
+/**
+ * 「同步到工具」只管命令行工具（account-switch-sync.ts 跳过桌面客户端），Claude Desktop、WorkBuddy、
+ * OpenCode 切完还用着原来账号的 Key，首页照样给「打开」（已知37）。先把出路说清楚；Linux 上首页不列
+ * 这几个客户端，就不提。
+ */
+export function accountSwitchDesktopClientsHint(os: WindowOs): string | null {
+  return os === 'linux' ? null : 'Claude Desktop、WorkBuddy、OpenCode 不会跟着换。切完要换的话，到首页它那一行点「…」里的「配置」，再点「检测模型」「保存配置」。'
 }
 
 type SyncProvider = AccountSyncCandidate['provider']
