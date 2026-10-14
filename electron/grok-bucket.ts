@@ -54,9 +54,10 @@ export function grokBucketIndexUrl(): string {
 }
 
 /**
- * 从桶里的清单原文挑出要装的那一版：没点名就是清单里的 stable；点名的版本比 stable 新时也装 stable，
- * 同 xAI 那一路（resolveGrokInstallVersion）。这台电脑的芯片、版本有一处对不上就是 null。
- * 点名的版本号本身无效时照旧抛错，和 xAI 那一路一样。
+ * 从桶里的清单原文挑出要装的那一版：没点名就是清单里的 stable，点名的就是那一版。这台电脑的芯片、
+ * 版本有一处对不上就是 null。点名的版本比桶里的 stable 新也是 null：桶是定时同步的，xAI 可能已经把它
+ * 定成 stable 了，这时装桶里的 stable 等于悄悄装旧，交给 xAI 那一路按真正的 stable 定
+ * （resolveGrokInstallVersion）。点名的版本号本身无效时照旧抛错，和 xAI 那一路一样。
  */
 export function parseGrokBucketIndex(text: string, architecture: NodeJS.Architecture, requestedVersion?: string): GrokBucketRelease | null {
   const platform = architecture === 'x64' || architecture === 'arm64' ? platforms[architecture] : null
@@ -68,6 +69,8 @@ export function parseGrokBucketIndex(text: string, architecture: NodeJS.Architec
   const stable = parseGrokStableVersion(root.stable.version)
   if (!stable) return null
   const version = resolveGrokInstallVersion(requestedVersion, stable)
+  const wanted = requestedVersion?.trim()
+  if (wanted && wanted !== 'latest' && wanted !== version) return null
   const releases = root.releases.filter((release) => isRecord(release) && release.version === version)
   if (releases.length !== 1 || !isRecord(releases[0]) || !Array.isArray(releases[0].files)) return null
   const files = releases[0].files.filter((file) => isRecord(file) && file.platformId === platform.platformId)

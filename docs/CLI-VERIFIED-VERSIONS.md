@@ -349,7 +349,7 @@ Windows x64 / ARM 两种包都在）。「总是装最新版」打开时装的�
 
 **2026-10-14 起（yoyo「放桶」）**：Windows 先从星芒存储桶下同一个 xAI 签名的 `grok.exe`（`grok-bucket.ts`），
 桶里的清单由 `scripts/sync-grok-cos.cjs` 每 6 小时同步 xAI stable 和**这份名单里 Grok 的推荐版本**；
-桶里没有要装的那一版、或签名 / 大小 / SHA-256 对不上，才回到上面那条 xAI 原路（加速也只罩这条原路）。
+桶里没有要装的那一版（包括点名的版本比桶里的 stable 新）、或签名 / 大小 / SHA-256 对不上，才回到上面那条 xAI 原路（加速也只罩这条原路）。
 签名校验仍是装之前那一道，一行没放宽。**抬 Grok 推荐版本合进 main 之后，要等下一次同步才进桶**，
 等不及就在 Actions 里手动跑一次 `sync-grok-cos`；没进桶时客户端照样去 xAI 下，只是国内慢。
 Mac 同日改成**只问 npm**（同 Linux）：npm `latest` 就是 xAI stable，点名的版本 npm 上有就装，

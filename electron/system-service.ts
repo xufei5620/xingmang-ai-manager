@@ -4716,6 +4716,7 @@ export function createSystemService(
             downloadedGrokBinary = await downloadLatestGrokBinary({
               fetchImpl: downloadFetch,
               bucket: grokBucketDownloads,
+              installedVersion: versionBeforeUpdate,
               withVendorDownloadRoute: (operation) => withDownloadAcceleration(
                 (message) => sendInstallProgress(target, provider, 'output', message),
                 operation,

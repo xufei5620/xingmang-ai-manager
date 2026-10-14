@@ -45,9 +45,11 @@ describe('Grok bucket index', () => {
     expect(grokBucketIndexUrl()).toBe(objectUrl('xingmang/offline/grok/latest.json'))
   })
 
-  it('picks a named version that is not newer than stable, and caps a newer one at stable like the xAI route', () => {
+  it('picks a named version that is not newer than stable', () => {
     expect(parseGrokBucketIndex(grokIndex(), 'x64', '1.0.46')?.url).toBe(objectUrl(`xingmang/offline/grok/windows-x64/sha256-${sha}/grok-1.0.46-windows-x86_64.exe`))
-    expect(parseGrokBucketIndex(grokIndex(), 'x64', '1.0.60')?.version).toBe('1.0.52')
+    expect(parseGrokBucketIndex(grokIndex(), 'x64', ' 1.0.52 ')?.version).toBe('1.0.52')
+    // The bucket's stable can lag xAI's by a sync interval, so a newer named version is xAI's call.
+    expect(parseGrokBucketIndex(grokIndex(), 'x64', '1.0.60')).toBeNull()
     // A version the bucket does not carry falls back to xAI instead of installing another one.
     expect(parseGrokBucketIndex(grokIndex(), 'x64', '1.0.40')).toBeNull()
     expect(() => parseGrokBucketIndex(grokIndex(), 'x64', '1.0.46 && calc')).toThrow('版本号无效')

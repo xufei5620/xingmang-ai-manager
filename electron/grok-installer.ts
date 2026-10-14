@@ -5,6 +5,7 @@ import { readBoundedUtf8File } from './bounded-file'
 import { downloadDesktopBucketPackage, type DesktopBucketOptions } from './desktop-package-bucket'
 import { readGrokBucketRelease } from './grok-bucket'
 import { sameLocalPathIdentity } from './path-identity'
+import { isNewerVersion } from './versions'
 import {
   fetchGrokStableVersion,
   parseGrokStableVersion,
@@ -70,6 +71,11 @@ export interface DownloadLatestGrokOptions {
   version?: string
   /** 先从星芒存储桶下（grok-bucket.ts）;缺省不试,直接去 xAI。 */
   bucket?: DesktopBucketOptions
+  /**
+   * 本机现在装着的版本。没点名版本(装最新)时,桶里那一版不比它新就直接去 xAI:桶是定时同步的,
+   * 会比 xAI 晚,客户点「更新」却装回同一版等于没更新。点了名的(推荐版本、退回)不看它。
+   */
+  installedVersion?: string | null
   /**
    * 去 xAI 那一路(问 stable 加下载)包进临时加速线路;存储桶那一路国内直连,不包。缺省直接下。
    * 调用方别再把整个安装包进线路:那样存储桶那一路也会走加速。
@@ -295,6 +301,11 @@ async function downloadFromBucket(
   if (!bucket) return null
   try {
     const release = await readGrokBucketRelease(architecture, options.version, fetchImpl, options.signal)
+    const installed = options.installedVersion
+    const wantsLatest = !options.version?.trim() || options.version.trim() === 'latest'
+    if (wantsLatest && installed && (installed === release.version || isNewerVersion(release.version, installed))) {
+      throw new Error(`桶里的 ${release.version} 不比本机的 ${installed} 新`)
+    }
     await downloadDesktopBucketPackage(release, binaryPath, {
       fetch: fetchImpl,
       ...(options.signal ? { signal: options.signal } : {}),

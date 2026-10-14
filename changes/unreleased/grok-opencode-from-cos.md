@@ -4,9 +4,9 @@
   新工作流 `sync-grok-cos`（`scripts/sync-grok-cos.cjs`，Windows 机器，每 6 小时）问 xAI 现在的 stable，
   再读 `cli-verified-versions.ts` 里 Grok 的推荐版本，两版的 x64、ARM64 缺哪个下哪个；核 PE 头芯片和
   `Get-AuthenticodeSignature`（有效、X.AI LLC）后传到 `xingmang/offline/grok/<平台>/sha256-<摘要>/`，最后改 `latest.json`，清单留最近 12 版。
-- 客户端新模块 `electron/grok-bucket.ts`：桶地址与清单路径写死，挑哪一版和 xAI 那一路同一个规矩
-  （`resolveGrokInstallVersion`，点名的不超过 stable 就装它）；清单里的路径、地址、大小、SHA-256、类型、校验标签
-  一处对不上、或桶里没有这一版就不用。`grok-installer.ts` 下完照旧跑 X.AI LLC 的签名核对，一行没放宽；没走通悄悄改去
+- 客户端新模块 `electron/grok-bucket.ts`：桶地址与清单路径写死；点名的版本比桶里的 stable 新、或桶里没有，就交给 xAI 那一路
+  按真正的 stable 定（桶会晚一个同步间隔）；装最新版时桶里那一版不比本机新也去 xAI。清单里的路径、地址、大小、SHA-256、
+  类型、校验标签一处对不上就不用。`grok-installer.ts` 下完照旧跑 X.AI LLC 的签名核对，一行没放宽；没走通悄悄改去
   xAI（运行日志 `grok-bucket.fallback`），下载加速线路改成只在去 xAI 时才借。
 - Mac 一键装 OpenCode 和 Codex、Claude 桌面端一样先从桶里下（yoyo 2026-10-14「做」）。新工作流 `sync-opencode-cos`
   （`scripts/sync-opencode-cos.cjs`，Mac 机器，每 6 小时）问 GitHub 上 OpenCode 的 `latest.json`，版本变了才下两种芯片的
