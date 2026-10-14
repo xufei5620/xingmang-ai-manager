@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { platformApi } from '../../platform-api'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, removeDraftImage, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, isGenerating, planTurn, resolveChatGroup, resolveChatModel, removeDraftImage, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -61,7 +61,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
         if (conversation.settings.group !== group || isGenerating(conversation)) return conversation
         const mode = conversation.settings.mode
         const choices = models.filter((model) => inspectModel(model).kind === (mode === 'image' ? 'image' : 'chat'))
-        const model = resolveChatModel(choices, conversation.settings.model, mode === 'image' ? DEFAULT_IMAGE_MODEL : DEFAULT_CHAT_MODEL)
+        const model = resolveChatModel(choices, conversation.settings.model, mode === 'image' ? DEFAULT_IMAGE_MODELS : DEFAULT_CHAT_MODEL)
         return { ...conversation, settings: normalizeModel({ ...conversation.settings, model }) }
       }
       commit((current) => ({ ...current, conversations: current.conversations.map(updateModel), draftConversation: updateModel(current.draftConversation) }))
@@ -172,7 +172,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const selectMode = (mode: ChatMode) => {
     const current = activeConversation(stateRef.current)
     const candidates = preparations[current.settings.group]?.models.filter((model) => inspectModel(model).kind === (mode === 'image' ? 'image' : 'chat')) ?? []
-    updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, mode, model: resolveChatModel(candidates, item.settings.model, mode === 'image' ? DEFAULT_IMAGE_MODEL : DEFAULT_CHAT_MODEL) }) }))
+    updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, mode, model: resolveChatModel(candidates, item.settings.model, mode === 'image' ? DEFAULT_IMAGE_MODELS : DEFAULT_CHAT_MODEL) }) }))
   }
   const openConversation = (id: string | null) => {
     commit((current) => ({ ...current, activeId: id }))

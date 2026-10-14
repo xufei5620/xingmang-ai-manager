@@ -524,8 +524,12 @@ export const IMAGE_SKILL_GROUP_NAMES = ['图片模型-中转/订阅', '生图分
 // xm 站 2026-10-14 把「图片模型-中转/订阅」改成本名「图片模型」，老名字留到老版本退场才删。
 // 这里只管对话和画布在图片分组里列哪些模型；画图技能挑哪个分组另走分组对照（managed-cli-groups.ts）。
 const IMAGE_GROUP_NAMES = new Set<string>(['图片模型', ...IMAGE_SKILL_GROUP_NAMES])
+// gpt-image-2.5 两个型号 xm 站「GPT」「图片模型」两个分组都开了，按张计价。排序跟星芒AI生图（#999）的取舍：
+// flare 是默认、排第一，gpt-image-2 第二；sunburst 慢、偏精修，不当默认，排在它们后面。
 const IMAGE_GROUP_MODEL_ORDER = [
+  'gpt-image-2.5-flare',
   'gpt-image-2',
+  'gpt-image-2.5-sunburst',
   'gemini-3.1-flash-image',
   'gpt-image-1',
   'jimeng_high_aes_general_v21_L',
@@ -850,7 +854,9 @@ export function buildImageGenerationRequest(input: {
     model: capability.model,
     prompt: input.prompt,
     n: 1,
-    size: /^gpt-image-2(?:-|$)/i.test(capability.model)
+    // gpt-image-2.5-* 的尺寸规矩和 gpt-image-2 一样（与生图技能的 isGptImage2 一致），2K/4K 也按它换算，
+    // 否则界面上选了 2K 实际仍按 1K 出图。
+    size: /^gpt-image-2(?:[.-]|$)/i.test(capability.model)
       ? validateImageSize(scaleGptImage2Size(size, imageResolution), capability)
       : size,
     quality,

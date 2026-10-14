@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { chatLimits, inspectModel, validateImageRequest } from './api'
@@ -21,7 +21,15 @@ describe('v2 chat request transitions', () => {
     expect(resolveChatGroup([{ name: 'default' }, { name: DEFAULT_CHAT_GROUP }])).toBe(DEFAULT_CHAT_GROUP)
     expect(resolveChatModel(['gpt-5.6-terra', DEFAULT_CHAT_MODEL])).toBe(DEFAULT_CHAT_MODEL)
     expect(resolveChatModel(['gpt-5.6-terra', DEFAULT_CHAT_MODEL], 'gpt-5.6-terra')).toBe('gpt-5.6-terra')
-    expect(resolveChatModel(['gpt-image-1', DEFAULT_IMAGE_MODEL], '', DEFAULT_IMAGE_MODEL)).toBe(DEFAULT_IMAGE_MODEL)
+    expect(resolveChatModel(['gpt-image-1', 'gpt-image-2'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2')
+  })
+
+  it('defaults image mode to GPT Image 2.5 flare when the group lists it, like the Xingmang image skill', () => {
+    expect(resolveChatModel(['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2.5-flare')
+    expect(resolveChatModel(['gpt-image-2.5-sunburst', 'gpt-image-2'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2')
+    expect(resolveChatModel(['gpt-image-2.5-sunburst', 'gpt-image-1'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2.5-sunburst')
+    expect(resolveChatModel(['gpt-image-2', 'gpt-image-2.5-flare'], 'gpt-image-2', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2')
+    expect(resolveChatModel([], '', DEFAULT_IMAGE_MODELS)).toBe('')
   })
 
   it('selects Sub2API Codex_pro independently of NewAPI groups', () => {

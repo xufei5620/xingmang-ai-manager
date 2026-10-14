@@ -11,7 +11,7 @@
 - Key 由 Electron `safeStorage` 加密保存，并按账号隔离。
 - 同一账号、同一服务、同一分组的并发准备请求会合并，避免重复创建 Key。
 - 在账号中心撤销或编辑 Key 后，对应的 AI聊天缓存会同步失效；缓存 Key 收到明确的 `401` 或服务端明确说明 Key/令牌无效的鉴权失败时也会自动移除，并复用或创建新的可用 Key。普通网络错误、IP 白名单和账号/分组权限类 `403` 不会误删缓存或创建新 Key。
-- 生图分组只展示生产验证过的 `gpt-image-2`、`gpt-image-1` 和 `jimeng_high_aes_general_v21_L`，并优先选择 `gpt-image-2`。
+- 生图分组只展示精选名单里的模型（`ai-chat-protocol.ts` 的 `IMAGE_GROUP_MODEL_ORDER`，依次是 `gpt-image-2.5-flare`、`gpt-image-2`、`gpt-image-2.5-sunburst`，再是 Gemini、`gpt-image-1`、即梦、Grok 等），站上没开的不列。画图默认模型跟星芒AI生图一致：分组里有 `gpt-image-2.5-flare` 就选它，没有选 `gpt-image-2`；对话里记住的模型优先。
 
 ## 接口与取消
 

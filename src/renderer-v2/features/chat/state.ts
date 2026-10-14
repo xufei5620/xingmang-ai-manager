@@ -43,7 +43,9 @@ export interface TurnPlan { conversation: Conversation; requestId: string; assis
 export const DEFAULT_CHAT_GROUP = 'GPT-中转/订阅'
 export const SUB2API_CHAT_GROUP = 'Codex_pro'
 export const DEFAULT_CHAT_MODEL = 'gpt-5.6-sol'
-export const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
+// 跟星芒AI生图（#999）一样：分组里有 gpt-image-2.5-flare 就默认用它，没有照旧 gpt-image-2。
+// gpt-image-2.5-sunburst 慢、偏精修，不当默认，客户可以自己在下拉里挑。
+export const DEFAULT_IMAGE_MODELS = ['gpt-image-2.5-flare', 'gpt-image-2'] as const
 
 export function createId(): string { return crypto.randomUUID() }
 export function defaultChatSettings(): ChatSettings { return { mode: 'text', group: '', model: '', systemPrompt: '', parameters: {}, size: '1024x1024', quality: 'low', imageResolution: '1K' } }
@@ -57,9 +59,10 @@ export function resolveChatGroup(groups: readonly Pick<AiChatGroupSummary, 'name
   const preferred = siteId === 'solov-api' ? SUB2API_CHAT_GROUP : DEFAULT_CHAT_GROUP
   return groups.find((group) => group.name === preferred)?.name ?? groups[0]?.name ?? ''
 }
-export function resolveChatModel(models: readonly string[], remembered = '', preferred = DEFAULT_CHAT_MODEL): string {
+export function resolveChatModel(models: readonly string[], remembered = '', preferred: string | readonly string[] = DEFAULT_CHAT_MODEL): string {
   if (remembered && models.includes(remembered)) return remembered
-  return models.includes(preferred) ? preferred : models[0] ?? ''
+  const choices = typeof preferred === 'string' ? [preferred] : preferred
+  return choices.find((model) => models.includes(model)) ?? models[0] ?? ''
 }
 export function activeConversation(state: ChatWorkspace): Conversation { return state.conversations.find((item) => item.id === state.activeId) ?? state.draftConversation }
 export function changeConversation(state: ChatWorkspace, id: string, change: (conversation: Conversation) => Conversation): ChatWorkspace {
