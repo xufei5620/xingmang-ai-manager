@@ -46,6 +46,13 @@ function pickPreferredGroup(
   return fallbackToFirst ? availableGroups[0]?.name : undefined
 }
 
+// xm 站 2026-10 改分组本名，图片、视频两个分组去掉了「中转」。老名字删掉以后只能按
+// 名字里的词认；站上同时有好几个分组时，带这个词的不止一个就说明认不准，不认。
+function onlyGroupNamed(availableGroups: readonly { name: string }[], word: string): string[] {
+  const matches = availableGroups.filter((entry) => entry.name.includes(word))
+  return matches.length === 1 ? [matches[0].name] : []
+}
+
 const imagePresetIds = new Set(imageModelPresets.map((preset) => preset.id))
 const videoPresetIds = new Set(videoModelPresets.map((preset) => preset.id))
 
@@ -107,11 +114,12 @@ export function withResolvedMediaModels(
 export function preferredMediaGroups(availableGroups: readonly { name: string }[], siteId: 'solov' | 'solov-api' = 'solov'): CanvasMediaGroups {
   if (availableGroups.length === 0) return {}
   const defaults = siteId === 'solov-api' ? sub2ApiCanvasMediaPreferences : defaultCanvasMediaPreferences
-  const image = pickPreferredGroup(availableGroups, defaults.image, siteId === 'solov-api' ? [] : ['生图分组', '图片模型-中转/订阅', 'openai', /图片.*中转/i], siteId !== 'solov-api')
+  const image = pickPreferredGroup(availableGroups, defaults.image, siteId === 'solov-api' ? [] : ['生图分组', '图片模型-中转/订阅', '图片模型', 'openai', /图片.*中转/i, ...onlyGroupNamed(availableGroups, '图片')], siteId !== 'solov-api')
   // 视频模型暂未上线。不要把图片分组当作视频分组，否则首次打开画布
-  // 会为视频节点准备错误的 API Key。
+  // 会为视频节点准备错误的 API Key。Grok 分组也不认：站上有好几个带 Grok 的，
+  // 认不出视频分组时宁可留空让客户自己选。
   const video = defaults.video
-    ? pickPreferredGroup(availableGroups, defaults.video, ['视频分组', '视频模型-中转/订阅', 'grok', /视频.*中转/i, /grok/i])
+    ? pickPreferredGroup(availableGroups, defaults.video, ['视频分组', '视频模型-中转/订阅', '视频模型', /视频.*中转/i, ...onlyGroupNamed(availableGroups, '视频')], false)
     : undefined
   const text = pickPreferredGroup(
     availableGroups,
