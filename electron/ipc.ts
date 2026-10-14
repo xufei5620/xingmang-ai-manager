@@ -131,7 +131,7 @@ import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
 import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
-import { loadManagedCliGroups } from './managed-cli-groups'
+import { loadAccountGroupHints, loadManagedCliGroups, markRecommendedChatGroup, type AccountGroupHints } from './managed-cli-groups'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -309,6 +309,9 @@ export interface IpcRegistrationOptions {
     clear(): Promise<void>
   }
   managedCliKeys?: ManagedCliKeyStoreLike
+  // 服务状态文件里的分组对照（service-status.ts 的 accountGroups）：签 Key、画图技能、AI 对话默认分组
+  // 先看它，站上改了分组本名也跟得上。缺省 = 不看对照，照旧按写死的名字和工具专属词认。
+  accountGroupHints?: () => Promise<AccountGroupHints | null>
   // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
   // 换新时照抄。缺省用内存版：测试与预览不落盘。
   keyReplacements?: ManagedKeyReplacementStore
@@ -2023,6 +2026,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
+    ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -3582,6 +3586,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
         syncImageMcp: options.xingmangAiSkill.syncImageMcp,
         fetchAvailableModels: (apiKey) => service.fetchAvailableModels(apiKey),
+        loadAccountGroupHints: () => loadAccountGroupHints(automaticProvisioning),
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)
@@ -3904,9 +3909,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     await accountService.updateKey(parsed)
     if (userId) await invalidateAccountKeyCaches(userId, parsed.id)
   })
-  registerTrustedHandler('chat:list-groups', () => {
+  registerTrustedHandler('chat:list-groups', async () => {
     if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')
-    return options.chatCredentials.listGroups()
+    const [groups, hints] = await Promise.all([
+      options.chatCredentials.listGroups(),
+      loadAccountGroupHints(automaticProvisioning),
+    ])
+    return markRecommendedChatGroup(groups, accountService.getActiveSiteId?.(), hints)
   })
   registerTrustedHandler('chat:prepare-group', (_event, group: unknown) => {
     if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')
@@ -4102,7 +4111,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     // 落盘读取必须保持同步，中间插一次网络等待会把账号切换的判定窗口拉宽。
     return (async () => {
       const managedCliGroups = accountService.getSessionState().authenticated
-        ? await loadManagedCliGroups(accountService)
+        ? await loadManagedCliGroups(automaticProvisioning)
         : null
       return resolveAccountKeyOptions({ provider, systemService: service, accountService,
         managedCliKeys: options.managedCliKeys,

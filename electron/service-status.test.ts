@@ -123,6 +123,45 @@ describe('parseServiceStatus', () => {
       expect(parseServiceStatus(JSON.stringify({ minimumVersion }), now).minimumVersion).toBeNull()
     }
   })
+
+  it('reads the account group map, keeping each role\'s order', () => {
+    const text = JSON.stringify({
+      accountGroups: {
+        claude: ['Claude 主力', 'Claude-MAX订阅'],
+        codex: ['  GPT 主力  ', 'GPT-中转/订阅', 'GPT 主力'],
+        image: ['画图专线'],
+      },
+    })
+    expect(parseServiceStatus(text, now).accountGroups).toEqual({
+      claude: ['Claude 主力', 'Claude-MAX订阅'],
+      codex: ['GPT 主力', 'GPT-中转/订阅'],
+      image: ['画图专线'],
+    })
+  })
+
+  it('drops map entries it cannot use without voiding the rest of a role', () => {
+    const text = JSON.stringify({
+      accountGroups: {
+        claude: ['坏\u0000名字', 'x'.repeat(129), 12, null, '', 'Claude-MAX订阅'],
+        codex: Array.from({ length: 20 }, (_, index) => `GPT ${index}`),
+        grok: 'Grok-中转/订阅',
+        gemini: ['Gemini-中转/订阅'],
+        video: ['视频模型-中转/订阅'],
+      },
+    })
+    const groups = parseServiceStatus(text, now).accountGroups
+    expect(groups?.claude).toEqual(['Claude-MAX订阅'])
+    expect(groups?.codex).toHaveLength(8)
+    expect(groups).not.toHaveProperty('grok')
+    expect(groups).not.toHaveProperty('gemini')
+    expect(groups).not.toHaveProperty('video')
+  })
+
+  it('treats a map with nothing usable as no map at all', () => {
+    for (const accountGroups of [null, [], 'claude=x', {}, { claude: [] }, { claude: [''] }]) {
+      expect(parseServiceStatus(JSON.stringify({ accountGroups }), now)).not.toHaveProperty('accountGroups')
+    }
+  })
 })
 
 describe('readServiceStatus', () => {
@@ -198,6 +237,21 @@ describe('createServiceStatusMonitor', () => {
     expect(read).toHaveBeenCalledTimes(1)
     await expect(monitor.refresh()).resolves.toBeNull()
     expect(onChange).toHaveBeenLastCalledWith(null)
+    monitor.dispose()
+  })
+
+  it('lets callers wait for the read already on the way without starting another', async () => {
+    let finish!: (value: ServiceStatus | null) => void
+    const read = vi.fn(() => new Promise<ServiceStatus | null>((resolve) => { finish = resolve }))
+    const monitor = createServiceStatusMonitor({ read, onChange: vi.fn() })
+    await expect(monitor.settled()).resolves.toBeNull()
+    expect(read).not.toHaveBeenCalled()
+    monitor.start()
+    const waiting = monitor.settled()
+    finish(maintenance)
+    await expect(waiting).resolves.toEqual(maintenance)
+    await expect(monitor.settled()).resolves.toEqual(maintenance)
+    expect(read).toHaveBeenCalledTimes(1)
     monitor.dispose()
   })
 })

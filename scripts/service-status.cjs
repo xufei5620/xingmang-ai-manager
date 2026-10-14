@@ -9,6 +9,12 @@ const fs = require('node:fs')
 
 const MAX_MESSAGE_LENGTH = 200
 const MAX_STATUS_BYTES = 16 * 1024
+// 分组对照的几样用途与客户端 electron/managed-cli-groups.ts 的 accountGroupRoles 一致；
+// 名字的上限与 isManagedCliGroupName、每样最多几个与 service-status.ts 的读法一致。
+const ACCOUNT_GROUP_ROLES = ['claude', 'codex', 'grok', 'image']
+const ACCOUNT_GROUP_LABELS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', image: '画图' }
+const MAX_GROUP_NAME_LENGTH = 128
+const MAX_GROUP_CANDIDATES = 8
 
 class StatusInputError extends Error {}
 
@@ -132,6 +138,48 @@ function applyMinimumVersion(current, input, publishedVersions = []) {
   return version
 }
 
+function groupName(role, value) {
+  const name = value.trim()
+  if (!name) throw new StatusInputError(`${role} 那一项里有空的分组名字（两个 | 挨着了？）`)
+  if (name.length > MAX_GROUP_NAME_LENGTH) throw new StatusInputError(`分组名字最多 ${MAX_GROUP_NAME_LENGTH} 个字：${name}`)
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new StatusInputError(`分组名字里不能有控制字符：${name}`)
+  return name
+}
+
+/**
+ * 分组对照：「claude=新名字|老名字; codex=…; grok=…; image=…」。每样用途按先后列名字，客户端在
+ * 这个账号能用的分组里挑排在前面的；站上改本名前把新名字写在前、老名字写在后。
+ * 只改这次写到的那几样，没写到的照线上保留；「claude=none」去掉一样，整个写 none 清空。
+ * 名字原样照抄，不认得的用途、写错的名字直接报错——客户端遇到会悄悄跳过，发布者得当场知道。
+ */
+function applyAccountGroups(current, input) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return current
+  if (raw.toLowerCase() === 'none') return undefined
+  const next = {}
+  if (isRecord(current)) {
+    for (const role of ACCOUNT_GROUP_ROLES) {
+      if (Array.isArray(current[role])) next[role] = current[role].filter((entry) => typeof entry === 'string')
+    }
+  }
+  for (const segment of raw.split(/[;；\n]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    const match = segment.match(/^([A-Za-z]+)\s*[=＝]\s*(.*)$/)
+    if (!match) throw new StatusInputError(`分组对照要写成「codex=新名字|老名字」，几样之间用分号隔开：${segment}`)
+    const role = match[1].toLowerCase()
+    if (!ACCOUNT_GROUP_ROLES.includes(role)) {
+      throw new StatusInputError(`分组对照只认 ${ACCOUNT_GROUP_ROLES.join(' / ')}：${match[1]}`)
+    }
+    if (match[2].trim().toLowerCase() === 'none') {
+      delete next[role]
+      continue
+    }
+    const names = [...new Set(match[2].split(/[|｜]/).map((entry) => groupName(role, entry)))]
+    if (names.length > MAX_GROUP_CANDIDATES) throw new StatusInputError(`${role} 最多写 ${MAX_GROUP_CANDIDATES} 个名字`)
+    next[role] = names
+  }
+  return Object.keys(next).length ? next : undefined
+}
+
 /**
  * maintenance: 'on' | 'off' | 'keep'。message / until 只在打开维护时有意义；
  * 关掉维护时整段删掉，下次打开从干净的一段开始。
@@ -167,6 +215,9 @@ function applyStatusChanges(current, changes, now = new Date()) {
   // 缺省就是只改地址（xm 三线路 C9）；只有切回整份重写时才写这个字段，切回来时整个删掉。
   if (toolRouteRewrite === 'targeted') delete next.toolRouteRewrite
   else if (toolRouteRewrite === 'merge') next.toolRouteRewrite = 'merge'
+  const accountGroups = applyAccountGroups(next.accountGroups, changes['account-groups'])
+  if (accountGroups === undefined) delete next.accountGroups
+  else next.accountGroups = accountGroups
   next.updatedAt = now.toISOString()
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
@@ -181,6 +232,13 @@ function describeRollout(rollout) {
   return `分批放量：${rollout.version} 先给 ${rollout.percent}% 的电脑`
 }
 
+function describeAccountGroups(groups) {
+  const roles = isRecord(groups) ? ACCOUNT_GROUP_ROLES.filter((role) => Array.isArray(groups[role]) && groups[role].length) : []
+  if (roles.length === 0) return '分组对照：无（客户端按写死的名字认）'
+  const parts = roles.map((role) => `${ACCOUNT_GROUP_LABELS[role]} 用「${groups[role].join('」，没有再用「')}」`)
+  return `分组对照：${parts.join('；')}（只有 0.2.19 及以后的客户端认）`
+}
+
 function describeStatus(status) {
   const lines = []
   const maintenance = isRecord(status.maintenance) && status.maintenance.active === true ? status.maintenance : null
@@ -189,6 +247,7 @@ function describeStatus(status) {
   lines.push(describeRollout(status.rollout))
   lines.push(typeof status.minimumVersion === 'string' ? `最低版本：${status.minimumVersion}（更低的必须先更新，只有 0.2.11 及以后的客户端认）` : '最低版本：无')
   lines.push(status.toolRouteRewrite === 'merge' ? '换线路时：整份重写工具配置（老办法，只有 0.2.18 及以后的客户端认）' : '换线路时：只改工具配置里的地址')
+  lines.push(describeAccountGroups(status.accountGroups))
   return lines
 }
 
@@ -207,7 +266,7 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--tool-route-rewrite keep|targeted|merge]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …]')
   // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
   const next = applyStatusChanges(parseCurrentStatus(currentText), options)
@@ -224,4 +283,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { StatusInputError, applyBadVersions, applyMinimumVersion, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }
+module.exports = { StatusInputError, applyAccountGroups, applyBadVersions, applyMinimumVersion, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }

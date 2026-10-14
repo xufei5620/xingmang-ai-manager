@@ -378,6 +378,38 @@ describe('xingmang-ai-skill', () => {
     expect(parsed.apiKey).toBeUndefined()
   })
 
+  it('follows the published group map once the image and Codex groups are renamed on the site', async () => {
+    const userHome = await temporaryHome()
+    const { accountService, provisionCliKey } = loggedInAccount({
+      groups: [{ name: 'default' }, { name: 'GPT 主力' }, { name: 'GPT-官方API直连' }, { name: '画图专线' }],
+    })
+
+    await expect(syncXingmangAiSkill({
+      accountService,
+      bundledRoot,
+      userHome,
+      loadAccountGroupHints: async () => ({ codex: ['GPT 主力', 'GPT-中转/订阅'], image: ['画图专线', '图片模型-中转/订阅'] }),
+    })).resolves.toMatchObject({ ready: true, group: '画图专线' })
+    expect(provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: 'GPT 主力' })
+    expect(provisionCliKey).toHaveBeenCalledWith({ name: XINGMANG_AI_SKILL_KEY_NAME, group: '画图专线' })
+    const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
+    expect(parsed.group).toBe('画图专线')
+    expect(parsed.codexGroup).toBe('GPT 主力')
+  })
+
+  it('keeps the shipped group names when the group map cannot be read', async () => {
+    const userHome = await temporaryHome()
+    const { accountService, provisionCliKey } = loggedInAccount()
+
+    await expect(syncXingmangAiSkill({
+      accountService,
+      bundledRoot,
+      userHome,
+      loadAccountGroupHints: async () => { throw new Error('状态文件读不到') },
+    })).resolves.toMatchObject({ ready: true, group: IMAGE_SKILL_GROUP_NAMES[0] })
+    expect(provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: managedCliKeyProfiles.codex.group })
+  })
+
   it('writes the newest OpenAI image model either key can use into every skill config', async () => {
     const userHome = await temporaryHome()
     await seedOptionalToolHomes(userHome)

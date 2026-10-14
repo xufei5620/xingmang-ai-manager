@@ -7,6 +7,7 @@ const { spawnSync } = require('node:child_process')
 const YAML = require('yaml')
 const {
   StatusInputError,
+  applyAccountGroups,
   applyBadVersions,
   applyMinimumVersion,
   applyRollout,
@@ -119,7 +120,7 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.throws(() => applyRollout(undefined, '0.2.11'), /版本号 空格 百分比/)
   assert.throws(() => applyRollout(undefined, '0.2.11 150'), /最多 100/)
   const next = applyStatusChanges({}, { rollout: '0.2.11 20' }, now)
-  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址'])
+  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '分组对照：无（客户端按写死的名字认）'])
 })
 
 test('a zero rollout reads as manual checks only', () => {
@@ -179,4 +180,45 @@ test('the workflow offers the tool route rewrite switch and passes only its keyw
   const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
   assert.equal(build.env.TOOL_ROUTE_REWRITE, '${{ inputs.tool_route_rewrite }}')
   assert.match(build.run, /--tool-route-rewrite "\$\{TOOL_ROUTE_REWRITE%%:\*\}"/)
+})
+
+test('the account group map sets only the roles it names and keeps the rest of the live file', () => {
+  const current = { badVersions: ['0.2.10'], accountGroups: { claude: ['Claude-MAX订阅'], grok: ['Grok-中转/订阅'] } }
+  const next = applyStatusChanges(current, { 'account-groups': 'codex=GPT 主力|GPT-中转/订阅； image = 画图专线 | 图片模型-中转/订阅' }, now)
+  assert.deepEqual(next.accountGroups, {
+    claude: ['Claude-MAX订阅'],
+    codex: ['GPT 主力', 'GPT-中转/订阅'],
+    grok: ['Grok-中转/订阅'],
+    image: ['画图专线', '图片模型-中转/订阅'],
+  })
+  assert.deepEqual(next.badVersions, ['0.2.10'])
+  assert.equal(describeStatus(next).at(-1), '分组对照：Claude Code 用「Claude-MAX订阅」；Codex 用「GPT 主力」，没有再用「GPT-中转/订阅」；Grok 用「Grok-中转/订阅」；画图 用「画图专线」，没有再用「图片模型-中转/订阅」（只有 0.2.19 及以后的客户端认）')
+  assert.deepEqual(applyStatusChanges(next, {}, now).accountGroups, next.accountGroups)
+})
+
+test('the account group map drops one role or the whole map on none', () => {
+  const current = { accountGroups: { claude: ['Claude 主力'], codex: ['GPT 主力'] } }
+  assert.deepEqual(applyAccountGroups(current.accountGroups, 'claude=none'), { codex: ['GPT 主力'] })
+  assert.equal(applyAccountGroups({ codex: ['GPT 主力'] }, 'codex=none'), undefined)
+  const cleared = applyStatusChanges(current, { 'account-groups': 'none' }, now)
+  assert.equal('accountGroups' in cleared, false)
+  assert.equal(describeStatus(cleared).at(-1), '分组对照：无（客户端按写死的名字认）')
+})
+
+test('the account group map refuses anything the client would quietly skip', () => {
+  for (const input of ['gemini=Gemini-中转/订阅', 'video=视频模型-中转/订阅', 'codex', 'codex=GPT 主力||GPT-中转/订阅', `codex=${'x'.repeat(129)}`, 'codex=坏\u0007名字', `codex=${Array.from({ length: 9 }, (_, index) => `GPT ${index}`).join('|')}`]) {
+    assert.throws(() => applyAccountGroups({}, input), StatusInputError, input)
+  }
+})
+
+test('the workflow offers the account group map and hands it to the script through the environment', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'service-status.yml'), 'utf8'))
+  const inputs = workflow.on.workflow_dispatch.inputs
+  assert.equal(inputs.account_groups.type, 'string')
+  assert.equal(inputs.account_groups.required, false)
+  // GitHub 手动运行最多 10 个输入，再加之前先合并旧的。
+  assert.ok(Object.keys(inputs).length <= 10)
+  const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
+  assert.equal(build.env.ACCOUNT_GROUPS, '${{ inputs.account_groups }}')
+  assert.match(build.run, /--account-groups "\$ACCOUNT_GROUPS"/)
 })

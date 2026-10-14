@@ -49,8 +49,11 @@ export function createId(): string { return crypto.randomUUID() }
 export function defaultChatSettings(): ChatSettings { return { mode: 'text', group: '', model: '', systemPrompt: '', parameters: {}, size: '1024x1024', quality: 'low', imageResolution: '1K' } }
 export function createConversation(settings = defaultChatSettings(), id = createId()): Conversation { const now = Date.now(); return { id, title: '新对话', createdAt: now, updatedAt: now, draft: '', settings: { ...settings, parameters: { ...settings.parameters } }, messages: [] } }
 export function createWorkspace(owner: string): ChatWorkspace { return { version: 2, owner, activeId: null, conversations: [], draftConversation: createConversation() } }
-export function resolveChatGroup(groups: readonly Pick<AiChatGroupSummary, 'name'>[], remembered = '', siteId: 'solov' | 'solov-api' = 'solov'): string {
+// 主进程标了 recommended 就跟它走：站上改了分组本名时写死的名字找不到，那边会按分组对照认出新名字。
+export function resolveChatGroup(groups: readonly Pick<AiChatGroupSummary, 'name' | 'recommended'>[], remembered = '', siteId: 'solov' | 'solov-api' = 'solov'): string {
   if (remembered && groups.some((group) => group.name === remembered)) return remembered
+  const recommended = groups.find((group) => group.recommended === true)
+  if (recommended) return recommended.name
   const preferred = siteId === 'solov-api' ? SUB2API_CHAT_GROUP : DEFAULT_CHAT_GROUP
   return groups.find((group) => group.name === preferred)?.name ?? groups[0]?.name ?? ''
 }
