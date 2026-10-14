@@ -1110,10 +1110,103 @@ describe('macOS installer from the Xingmang bucket', () => {
     expect(f.fallbacks).toEqual([])
   })
 
-  it.skipIf(process.platform === 'win32')('never asks the bucket for an app it does not carry', async () => {
-    const f = bucketSetup('codexDesktop')
-    const openCode = setup({}, {}, { bucket: f.options.bucket })
-    await installMacosDesktopApp(openCode.options)
-    expect(openCode.requested.some((url) => url.startsWith(desktopPackageBucketOrigin))).toBe(false)
+})
+
+const bucketOpenCodeVersion = '1.18.35'
+
+function bucketOpenCodeKey(architecture: string): string {
+  return `xingmang/offline/opencode/macos-${architecture}/sha256-${bucketDigest}/opencode-desktop-mac-${architecture}.app.tar.gz`
+}
+
+function bucketOpenCodeIndex(): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    product: 'opencode-desktop',
+    version: bucketOpenCodeVersion,
+    source: { feedUrl },
+    files: ['arm64', 'x64'].map((architecture) => ({
+      platformId: `macos-${architecture}`, platform: 'macos', architecture, kind: 'app-archive', format: 'tar.gz',
+      fileName: `opencode-desktop-mac-${architecture}.app.tar.gz`, type: 'application/gzip', verification: 'macos-developer-id-notarized',
+      version: bucketOpenCodeVersion, key: bucketOpenCodeKey(architecture), url: `${desktopPackageBucketOrigin}/${bucketOpenCodeKey(architecture)}`,
+      size: bucketBytes.byteLength, sha256: bucketDigest,
+      sourceUrl: `https://github.com/anomalyco/opencode/releases/download/v${bucketOpenCodeVersion}/opencode-desktop-mac-${architecture}.app.tar.gz`, cosEtag: '"etag"',
+    })),
+  })
+}
+
+function openCodeBucketSetup(indexStatus = 200, extra: Partial<InstallMacosDesktopAppOptions> = {}) {
+  const f = setup({}, {}, extra)
+  const vendorFetch = f.options.fetch
+  const routed: string[] = []
+  const fallbacks: string[] = []
+  f.options = {
+    ...f.options,
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (!url.startsWith(desktopPackageBucketOrigin)) return vendorFetch(input, init)
+      f.requested.push(url)
+      expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+      if (url.endsWith('/latest.json')) return new Response(bucketOpenCodeIndex(), { status: indexStatus, headers: { 'content-type': 'application/json' } })
+      return new Response(bucketBytes, { headers: { 'content-type': 'application/gzip', 'content-length': String(bucketBytes.byteLength) } })
+    }) as typeof globalThis.fetch,
+    bucket: { onFallback: (detail) => fallbacks.push(detail) },
+    withVendorDownloadRoute: async (operation) => {
+      routed.push('start')
+      try { return await operation() } finally { routed.push('end') }
+    },
+  }
+  return { ...f, routed, fallbacks }
+}
+
+describe('macOS OpenCode installer from the Xingmang bucket', () => {
+  it.skipIf(process.platform === 'win32')('unpacks the GitHub archive from the bucket, outside the download route, after the same checks', async () => {
+    const f = openCodeBucketSetup()
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketOpenCodeVersion, path: path.posix.join(f.applications, 'OpenCode.app') })
+    expect(f.requested).toEqual([desktopBucketIndexUrl('opencode-macos-arm64'), `${desktopPackageBucketOrigin}/${bucketOpenCodeKey('arm64')}`])
+    expect(desktopBucketIndexUrl('opencode-macos-arm64')).toBe(`${desktopPackageBucketOrigin}/xingmang/offline/opencode/latest.json`)
+    expect(f.routed).toEqual([])
+    expect(f.fallbacks).toEqual([])
+    const tar = f.plans.find((plan) => plan.executable === '/usr/bin/tar')
+    expect(tar?.argv).toEqual(['-xzf', expect.stringMatching(/\/bucket\/package\.tar\.gz$/), '-C', expect.stringMatching(/\/bucket\/extract$/)])
+    expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/bin/tar', '/usr/bin/plutil', '/usr/bin/sw_vers', '/usr/bin/codesign', '/usr/sbin/spctl'])
+    const requirement = signingRequirement(f.plans)
+    expect(requirement).toContain('identifier "ai.opencode.desktop"')
+    expect(requirement).toContain('certificate leaf[subject.OU] = "5NZ4Q7NXJ4"')
+    expect(f.progress[0]).toBe(`正在下载 OpenCode ${bucketOpenCodeVersion}`)
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('takes the Intel archive on an Intel Mac', async () => {
+    const f = openCodeBucketSetup(200, { architecture: 'x64' })
+    await installMacosDesktopApp(f.options)
+    expect(f.requested).toEqual([desktopBucketIndexUrl('opencode-macos-x64'), `${desktopPackageBucketOrigin}/${bucketOpenCodeKey('x64')}`])
+  })
+
+  it.skipIf(process.platform === 'win32')('asks GitHub inside the download route when the bucket index cannot be read', async () => {
+    const f = openCodeBucketSetup(404)
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: '1.18.34', path: path.posix.join(f.applications, 'OpenCode.app') })
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.requested[0]).toBe(desktopBucketIndexUrl('opencode-macos-arm64'))
+    expect(f.requested[1]).toBe(feedUrl)
+    expect(f.fallbacks).toEqual(['opencode-macos-arm64：存储桶清单返回 HTTP 404'])
+    expect(f.progress.some((message) => /存储桶|404/.test(message))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('asks GitHub when the bucket app fails the signature check, and installs that one', async () => {
+    const f = openCodeBucketSetup()
+    const runProcess = f.options.runProcess
+    let codesignCalls = 0
+    f.options.runProcess = async (plan) => {
+      if (plan.executable === '/usr/bin/codesign' && codesignCalls++ === 0) {
+        f.plans.push(plan)
+        throw rejection(plan)
+      }
+      return runProcess(plan)
+    }
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: '1.18.34' })
+    expect(f.fallbacks).toEqual(['opencode-macos-arm64：签名不是 5NZ4Q7NXJ4 团队的 Developer ID'])
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+    expect(stagingLeftovers(f.home)).toEqual([])
   })
 })

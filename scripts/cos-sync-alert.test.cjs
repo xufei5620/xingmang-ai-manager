@@ -177,6 +177,9 @@ test('the environment must name a known sync workflow on github.com', () => {
   assert.equal(readAlertEnvironment(env(failedNeeds)).product, 'Claude 桌面端')
   assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-chatgpt-official-cos.yml' })).product, 'Codex 桌面端')
   assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-codex-plugins-cos.yml' })).product, 'Codex 插件目录')
+  assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-grok-cos.yml' })).product, 'Grok CLI（Windows）')
+  assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-opencode-cos.yml' })).product, 'OpenCode 桌面端（Mac）')
+  for (const file of ['sync-grok-cos.yml', 'sync-opencode-cos.yml']) assert.match(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: file })).impact, /照旧去/)
   for (const overrides of [{ SYNC_WORKFLOW_FILE: 'quality.yml' }, { SYNC_WORKFLOW_FILE: undefined }, { GITHUB_API_URL: 'https://ghe.example.test/api/v3' },
     { GITHUB_SERVER_URL: 'https://ghe.example.test' }, { GITHUB_REPOSITORY: 'xufei5620/../x' }, { GITHUB_REPOSITORY_OWNER: 'someone-else' },
     { GITHUB_RUN_ID: '0' }, { GITHUB_RUN_ID: '1e3' }, { GITHUB_RUN_NUMBER: '' }]) {

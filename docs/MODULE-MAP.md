@@ -8,7 +8,7 @@
 - `electron/macos-platform.ts` — macOS 终端启动器与平台能力
 - `electron/macos-codex.ts` / `macos-codex-app.ts` — Codex CLI 与桌面端的 macOS 实现
 - `electron/macos-grok.ts` — Grok 的 macOS 安装
-- `electron/macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装外部桌面端（目前只收录核对过官方 Mac 包的 OpenCode）：官方 feed 与逐跳限定的重定向、codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」；失败的那几句话主进程与渲染层共用
+- `electron/macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装外部桌面端（目前只收录核对过官方 Mac 包的 OpenCode）：官方 feed 与逐跳限定的重定向、codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」；先从星芒存储桶下同一个官方包（`desktop-package-bucket.ts`，OpenCode 由 `scripts/sync-opencode-cos.cjs` 定时同步），没走通才问官方；失败的那几句话主进程与渲染层共用
 - `electron/darwin-path-trust.ts` / `darwin-cli-staging.ts` / `macos-code-signing.ts` — 路径信任判定、CLI 私有暂存、codesign/Team ID 校验
 - `electron/shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
 - `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
@@ -51,6 +51,7 @@
 **CLI 安装与运行时**
 - `system-service.ts` (3751) — **最大模块**。`createSystemService` 之前是纯函数库（可直接单测），它之后是闭包工厂
 - `tool-installation.ts` (705) / `node-runtime.ts` (1198) / `grok-installer.ts` (662) / `grok-update.ts` (161)
+- `grok-bucket.ts` — Windows 装 Grok 先从星芒腾讯云存储桶下同一个 xAI 签名的 `grok.exe`（`scripts/sync-grok-cos.cjs` 定时同步），签名核对不变；读不到、没有这一版、对不上就换回 xAI
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
 - `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名。Mac 上只在除 root 和当前用户外没人能改的目录里删
 - `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面

@@ -18,6 +18,10 @@ const WORKFLOWS = Object.freeze({
   'sync-chatgpt-official-cos.yml': Object.freeze({ product: 'Codex 桌面端' }),
   'sync-codex-plugins-cos.yml': Object.freeze({ product: 'Codex 插件目录',
     impact: '星芒替客户下 Codex 插件目录时，桶里还是上一次同步成功的那一版：客户照样下得到、装得上插件，只是目录旧一些；桶里一份都没有时客户端照旧去 GitHub 下。' }),
+  'sync-grok-cos.yml': Object.freeze({ product: 'Grok CLI（Windows）',
+    impact: '星芒在 Windows 上装 Grok 时，桶里还是上一次同步成功的那几版：要装的那一版在桶里就照样从桶里下；不在桶里的（比如 xAI 刚出的新版）客户端照旧去 xAI 下，国内多半要等或开加速。' }),
+  'sync-opencode-cos.yml': Object.freeze({ product: 'OpenCode 桌面端（Mac）',
+    impact: '星芒在 Mac 上装 OpenCode 时，桶里还是上一次同步成功的那一版：OpenCode 出了新版、桶里没跟上时，客户端照旧去 GitHub 下，国内时好时坏。' }),
 })
 // A job that runs out of timeout-minutes is reported as cancelled, and a long
 // upload stuck on a slow network is exactly the failure this alert is for.

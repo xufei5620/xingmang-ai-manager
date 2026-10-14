@@ -238,7 +238,7 @@ import {
   inspectCodexDesktopGlobalState,
   type CodexDesktopGlobalStateStatus,
 } from './codex-desktop-state'
-import { fetchGrokStableVersion, resolveGrokInstallVersion } from './grok-update'
+import { fetchGrokStableVersion } from './grok-update'
 import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedUtf8File } from './bounded-file'
 import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './cli-native-package'
@@ -2177,16 +2177,17 @@ export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallSt
 }
 
 /**
- * 「有没有新版」去哪问。Windows 与 macOS 的 Grok 以 xAI 的 stable 清单为准；Linux 的 Grok 从
- * npm 装，也就问 npm：x.ai 和它的备用地址在国内大多连不上，Linux 第一版又没有加速。
- * 不给平台时按 stable 清单答，和以前一样。
+ * 「有没有新版」去哪问。Windows 的 Grok 以 xAI 的 stable 清单为准；macOS 与 Linux 的 Grok 从
+ * npm 装，也就问 npm：x.ai 和它的备用地址在国内大多连不上，Linux 第一版又没有加速，Mac 上
+ * yoyo 2026-10-14 定了照 Linux 只问 npm（去加速）。不给平台时按 stable 清单答，和以前一样。
  */
 export function cliLatestVersionSource(
   provider: ProviderId,
   platform?: NodeJS.Platform,
 ): 'npm' | 'official-manifest' {
   if (provider !== 'grok') return 'npm'
-  return platform && grokInstallStrategyFor(platform) === 'linux-official-npm' ? 'npm' : 'official-manifest'
+  const strategy = platform ? grokInstallStrategyFor(platform) : null
+  return strategy === 'linux-official-npm' || strategy === 'darwin-official-npm' ? 'npm' : 'official-manifest'
 }
 
 export interface CliInstallTargetOptions {
@@ -2226,9 +2227,8 @@ export function cliInstallTargetDirectory(
 }
 
 export interface CliInstallReleaseOptions {
-  /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径以 xAI stable 为上限。 */
+  /** 要安装的版本,'latest' 表示不钉版本。 */
   version?: string
-  fetchGrokStableVersion: () => Promise<{ version: string }>
   fetchNpmRelease: (
     registry: string,
     packageName: string,
@@ -2236,33 +2236,22 @@ export interface CliInstallReleaseOptions {
   ) => Promise<NpmPackageReleaseMetadata>
 }
 
-/** Selects the authoritative release before generating an npm dependency lock. */
+/**
+ * Selects the authoritative release before generating an npm dependency lock. Grok on macOS
+ * and Linux comes from npm like the other tools: its npm latest follows xAI's stable channel
+ * (docs/CLI-VERIFIED-VERSIONS.md), and x.ai itself is mostly unreachable from China, so it is
+ * not asked first (yoyo 2026-10-14). fetchNpmRelease itself refuses a pinned version npm
+ * answers with another one.
+ */
 export async function resolveCliInstallRelease(
   provider: ProviderId,
-  grokStrategy: GrokInstallStrategy | null,
-  options: CliInstallReleaseOptions = {
-    fetchGrokStableVersion,
-    fetchNpmRelease: fetchNpmPackageReleaseMetadata,
-  },
+  options: CliInstallReleaseOptions = { fetchNpmRelease: fetchNpmPackageReleaseMetadata },
 ): Promise<NpmPackageReleaseMetadata> {
-  if (provider !== 'grok' || grokStrategy !== 'darwin-official-npm') {
-    return options.fetchNpmRelease(
-      npmOfficialRegistry,
-      cliCatalog[provider].packageName,
-      options.version ?? 'latest',
-    )
-  }
-  const stable = await options.fetchGrokStableVersion()
-  const version = resolveGrokInstallVersion(options.version, stable.version)
-  const release = await options.fetchNpmRelease(
+  return options.fetchNpmRelease(
     npmOfficialRegistry,
-    cliCatalog.grok.packageName,
-    version,
+    cliCatalog[provider].packageName,
+    options.version ?? 'latest',
   )
-  if (release.version !== version) {
-    throw new Error('Grok npm 发布版本与要安装的 xAI 官方版本不一致')
-  }
-  return release
 }
 
 /**
@@ -3276,6 +3265,9 @@ export function createSystemService(
   const desktopBucketDownloads: DesktopBucketOptions = {
     onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
   }
+  const grokBucketDownloads: DesktopBucketOptions = {
+    onFallback: (detail) => runtimeLog?.log('warn', 'install', 'grok-bucket.fallback', 'Grok 存储桶这一路没走通，改去 xAI 下载', { detail }),
+  }
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
     // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
@@ -3846,7 +3838,7 @@ export function createSystemService(
         if (key.startsWith('official:grok:')) npmLatestCache.delete(key)
       }
       grokLatestInFlight.clear()
-      // Linux 的 Grok 问的是 npm（cliLatestVersionSource），下面那份也要清。
+      // macOS、Linux 的 Grok 问的是 npm（cliLatestVersionSource），下面那份也要清。
       if (cliLatestVersionSource(provider, platform) === 'official-manifest') return
     }
     const packageSuffix = `:${cliCatalog[provider].packageName}`
@@ -4579,8 +4571,9 @@ export function createSystemService(
   }
 
   /**
-   * 安装整段都包在临时加速里：Grok 二进制、Node.js LTS 与 npm 下载共用同一条
-   * 线路，中途不换代理（换代理会让已建立的连接和重试落到两条线路上）。
+   * 安装整段都包在临时加速里：Node.js LTS 与 npm 下载共用同一条线路，中途不换代理
+   * （换代理会让已建立的连接和重试落到两条线路上）。Windows 上的 Grok 例外：先从星芒
+   * 存储桶下，国内直连，只有去 xAI 那一路才接加速（runCliInstall 里交给 grok-installer.ts）。
    */
   async function installCliOperation(
     provider: ProviderId,
@@ -4596,10 +4589,14 @@ export function createSystemService(
     // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
     await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
     try {
-      await withDownloadAcceleration(
-        (message) => sendInstallProgress(target, provider, 'output', message),
-        () => runCliInstall(provider, target, requestedVersion, cancellation),
-      )
+      if (provider === 'grok' && grokInstallStrategyFor(platform) === 'windows-native') {
+        await runCliInstall(provider, target, requestedVersion, cancellation)
+      } else {
+        await withDownloadAcceleration(
+          (message) => sendInstallProgress(target, provider, 'output', message),
+          () => runCliInstall(provider, target, requestedVersion, cancellation),
+        )
+      }
     } finally {
       // 命令行可能换了版本（更新、退回，装到一半回滚没回干净的也算）：读不进型号名单的话
       // Codex 起不来。趁还没出队就收回，排在后面的那次打开才不会先撞上。
@@ -4675,8 +4672,8 @@ export function createSystemService(
     try {
       // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
       // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
-      // latest,行为与从前一致。Grok 在 Windows、macOS 上以 xAI stable 为上限;Linux 上
-      // 和另外三家一样只认 npm（cliLatestVersionSource）。
+      // latest,行为与从前一致。Grok 在 Windows 上以 xAI stable 为上限(先看存储桶里同步的那份);
+      // macOS、Linux 上和另外三家一样只认 npm（cliLatestVersionSource）。
       const versionChoice = resolveCliInstallVersion(provider, {
         requested: requestedVersion,
         alwaysLatest: store.read().alwaysInstallLatestCli === true,
@@ -4718,6 +4715,12 @@ export function createSystemService(
           try {
             downloadedGrokBinary = await downloadLatestGrokBinary({
               fetchImpl: downloadFetch,
+              bucket: grokBucketDownloads,
+              installedVersion: versionBeforeUpdate,
+              withVendorDownloadRoute: (operation) => withDownloadAcceleration(
+                (message) => sendInstallProgress(target, provider, 'output', message),
+                operation,
+              ),
               ...(versionChoice.source === 'latest' ? {} : { version: versionChoice.version }),
               ...(cancellation ? { signal: cancellation.signal } : {}),
               createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
@@ -4863,9 +4866,8 @@ export function createSystemService(
         undefined,
         { stage: 'version' },
       )
-      const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy, {
+      const trustedRelease = await resolveCliInstallRelease(provider, {
         version: versionChoice.version,
-        fetchGrokStableVersion: () => fetchGrokStableVersion({ fetchImpl: registryMetadataFetch }),
         fetchNpmRelease: (registry, packageName, version) => (
           fetchNpmPackageReleaseMetadata(registry, packageName, version, registryMetadataFetch)
         ),
