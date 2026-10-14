@@ -12,7 +12,7 @@ import {
 import { tools } from '../../registry/tools'
 import { codexNeedsRepair, connectionReady, sourceFor } from './model'
 import { userFacingErrorMessage } from '../../business-common'
-import { networkBlockedFailures } from './online-resync'
+import { certificateBlockedFailures, networkBlockedFailures } from './online-resync'
 import { keySyncFailureText } from './key-sync-failure'
 import { relayProviderBaseUrls, relaySiteEndpointIdForBaseUrl } from '../../../../electron/relay-sites'
 import { activeProviderIds, isActiveProviderId, type ActiveProviderId } from '../../../../electron/catalog'
@@ -121,6 +121,8 @@ export interface AccountBootstrapResult {
    * 分辨哪条是网络问题就只能猜。
    */
   networkBlocked: boolean
+  /** networkBlocked 里有证书被换掉的：电脑联着网，首页不说「联网后会自动补写」。缺省 = 没有。 */
+  networkBlockedByCertificate?: boolean
   /** 这一轮顺手修好的「Codex 认不出」的配置，首页据此轻轻说一句。缺省 = 没有。 */
   repairedShadowed?: ActiveProviderId[]
   /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
@@ -559,6 +561,7 @@ export async function bootstrapAccountTools(
     skipped: plan.skipped,
     warnings,
     networkBlocked: networkBlockedFailures(failureSignals),
+    ...(certificateBlockedFailures(failureSignals) ? { networkBlockedByCertificate: true } : {}),
     ...(repairedShadowed.length ? { repairedShadowed } : {}),
     ...(synchronized?.regrouped?.length
       ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
@@ -612,7 +615,8 @@ export function describeAccountBootstrapResult(
   }
   if (result.repairedShadowed?.length) parts.push(`顺手修好 ${result.repairedShadowed.map(nameOf).join('、')} 认不出的连接设置`)
   if (result.routeFollowed?.length) parts.push(`跟着换了连接线路：${result.routeFollowed.map(nameOf).join('、')}`)
-  if (result.networkBlocked) parts.push('被网络拦住，联网后会自动补跑')
+  // 证书被换掉时电脑一直联着网，等不来「联网」事件，这一轮只能等客户点「重新同步」。
+  if (result.networkBlocked) parts.push(result.networkBlockedByCertificate ? '被网络拦住（证书被换掉），等客户点「重新同步」' : '被网络拦住，联网后会自动补跑')
   return {
     level: result.failed.length || result.networkBlocked ? 'warn' : 'info',
     message: `Key 自动配置（${bootstrapModeLabels[mode]}）：${parts.join('；')}`,

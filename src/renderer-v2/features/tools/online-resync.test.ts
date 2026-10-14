@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import {
   bootstrapBlockedByNetwork,
+  certificateBlockedFailures,
   idleOnlineResync,
+  isCertificateFailureText,
   isNetworkFailureText,
   networkBlockedFailures,
   noteBootstrapOutcome,
@@ -39,6 +41,32 @@ describe('networkBlockedFailures', () => {
   it('is false without any failure signal', () => {
     expect(networkBlockedFailures([])).toBe(false)
     expect(networkBlockedFailures(['   '])).toBe(false)
+  })
+})
+
+describe('isCertificateFailureText', () => {
+  it('recognises a swapped certificate in the main process sentence and in raw node codes', () => {
+    expect(isCertificateFailureText(`CLI Key 初始化失败：${networkFailureMessages.tls}`)).toBe(true)
+    expect(isCertificateFailureText('request failed: SELF_SIGNED_CERT_IN_CHAIN')).toBe(true)
+  })
+
+  it('leaves a wrong clock and plain network failures out', () => {
+    expect(isCertificateFailureText(networkFailureMessages.certDate)).toBe(false)
+    expect(isCertificateFailureText(offline)).toBe(false)
+    expect(isCertificateFailureText(undefined)).toBe(false)
+  })
+})
+
+describe('certificateBlockedFailures', () => {
+  it('is true when the network blocked the round and a certificate was swapped', () => {
+    expect(certificateBlockedFailures([networkFailureMessages.tls])).toBe(true)
+    expect(certificateBlockedFailures([networkFailureMessages.tls, dns])).toBe(true)
+  })
+
+  it('is false when no certificate was involved or something else also failed', () => {
+    expect(certificateBlockedFailures([offline, dns])).toBe(false)
+    expect(certificateBlockedFailures([networkFailureMessages.tls, '当前分组未返回可用模型'])).toBe(false)
+    expect(certificateBlockedFailures([])).toBe(false)
   })
 })
 

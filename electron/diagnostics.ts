@@ -1728,7 +1728,7 @@ export function certificateTrustOutcome(input: {
 }
 
 /**
- * 「安全证书」说「电脑自己也不认」时，若同一次检查里「星芒 AI 网络」也失败了，
+ * 「安全证书」判成 untrusted（收到的证书连这台电脑也不认）时，若同一次检查里「星芒 AI 网络」也失败了，
  * 根子多半在网络那一项（门户、公司网关拦截、断网），不在这里再怪一次证书。
  */
 export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): DiagnosticItem[] {

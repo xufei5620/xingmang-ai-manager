@@ -311,7 +311,7 @@ function networkRouteSetting(details: Diagnostic['details'], accountSiteId: stri
  */
 export function diagnosticTarget(code: string, details?: Diagnostic['details'], accountSiteId: string | null = null): V2Page | null {
   // 「安全证书」只有「Node.js 太旧」这一种能在软件里处理：去「安装卸载」换新版。
-  // 电脑自己也不认、以管理员身份打开这两种，结论里已经说了怎么办。
+  // 收到的证书谁都不认、以管理员身份打开这两种，结论里已经说了怎么办。
   if (code === 'CERTIFICATE_TRUST') return details?.verdict === 'outdatedNode' ? 'maintenance' : null
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'

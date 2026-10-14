@@ -33,7 +33,7 @@ describe('toolRouteHomeTexts', () => {
 
   it('explains an outage by its cause and says first when the app itself still connects', () => {
     expect(toolRouteHomeTexts({ outage: { id: 1, reason: 'certificate', appReachable: false } }, 0).outage)
-      .toBe('电脑上的安全软件接管了加密连接，AI 工具这会儿连不上星芒。可以在安全软件里关掉「网页扫描」再试。')
+      .toBe('你所在的网络在拦截星芒的加密连接（把证书换成了别的），AI 工具这会儿连不上。可以换个网络（比如手机热点）再试；公司或学校的网络请找网络管理员。')
     expect(toolRouteHomeTexts({ outage: { id: 1, reason: 'dns', appReachable: true } }, 0).outage)
       .toBe('星芒管理工具能连上，但 AI 工具会连不上。这台电脑这会儿查不到星芒的地址，AI 工具连不上。可以换个网络再试。')
     for (const reason of ['reset', 'unreachable'] as const) {
