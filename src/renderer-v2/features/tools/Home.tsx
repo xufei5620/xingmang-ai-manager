@@ -583,7 +583,10 @@ export function Home(props: HomeProps) {
     const officialLine = tool.source === 'official' && !broken && snapshot ? officialAccountSubtitle(snapshot.config.providers[tool.provider], Date.now()) : null
     // 配置里实际写的星芒线路（xm 三线路 C12）；codexDesktop 读的是 Codex 那份配置，标签跟着一起显示。
     const routeLabel = snapshot && !broken && !ownershipPending ? toolRouteLabel(snapshot.config.providers[tool.provider], tool.source) : null
-    const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
+    // 一屏只让「要你动手」的那颗按钮用主色（连接账号、重新配置这些）；已经能用的「打开」用普通按钮，
+    // 七个工具都装好时首页不再是一排七颗实心色块（白底风格，10-14）。
+    const launchVariant = tool.status.installed && (configUnavailable || Boolean(tool.error) || !openable) ? 'primary' : 'secondary'
+    const primaryButton = <Button size="sm" variant={launchVariant} loading={Boolean(job)}
       disabled={waitingForScan || waitingForAccount || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable}
       title={lastWorkspace ? `在 ${lastWorkspace.path} 打开` : undefined}
       icon={lastWorkspace ? undefined : tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined}
@@ -620,7 +623,7 @@ export function Home(props: HomeProps) {
       primaryAction={workspaces.length ? <span className="v2-tool-launch" data-testid={`tool-${tool.id}-launch`}>
         {primaryButton}
         {lastWorkspace && <Menu label="换一个目录" testId={`tool-${tool.id}-workspaces`}
-          anchor={<Button size="sm" variant="primary" icon={ChevronDown} disabled={waitingForScan || waitingForAccount || launchBusy} aria-label="换一个目录" />}
+          anchor={<Button size="sm" variant={launchVariant} icon={ChevronDown} disabled={waitingForScan || waitingForAccount || launchBusy} aria-label="换一个目录" />}
           items={workspaceChoices(workspaces).filter((choice) => !choice.create || props.onLaunchInNewFolder).map((choice) => ({
             label: choice.label,
             disabled: waitingForScan || waitingForAccount || launchBusy,
@@ -688,7 +691,7 @@ export function Home(props: HomeProps) {
       extraAction={installJob?.cancellable && props.onCancelInstallExternal
         ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
         : undefined}
-      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={externalBusy || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+      primaryAction={<Button size="sm" variant={tool.action === 'configure' ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={externalBusy || launchBusy || (tool.disabled && !manualInstall && !downloadUrl)} title={tool.disabled && !manualInstall && !downloadUrl ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
         icon={tool.action === 'launch' || downloadUrl ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处：行左边不再放独立的「配置」按钮，否则同一行会出现两个配置入口，

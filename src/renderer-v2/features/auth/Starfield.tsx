@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { starfieldAnimates, starfieldFrameDue, starfieldLinks, starfieldMeteorPassageMs, starfieldMeteorCycleMs, starfieldMeteorVisible, starfieldPixelRatio, type StarfieldLink } from './starfield-plan'
 
-export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: boolean }) {
+export function Starfield({ paused }: { paused: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     const canvas = ref.current
@@ -19,7 +19,7 @@ export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: 
     let dark = false
     let seed = 311
     const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
-    const stars = Array.from({ length: quiet ? 70 : 170 }, () => ({ x: random(), y: random(), radius: .4 + random() * 1.2, phase: random() * Math.PI * 2, speed: .4 + random(), gold: random() < .22 }))
+    const stars = Array.from({ length: 170 }, () => ({ x: random(), y: random(), radius: .4 + random() * 1.2, phase: random() * Math.PI * 2, speed: .4 + random(), gold: random() < .22 }))
     let links: StarfieldLink[] = []
     let horizon: CanvasGradient | null = null
     let reduce = paused
@@ -39,17 +39,17 @@ export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: 
     }
     const paint = (time: number) => {
       context.clearRect(0, 0, width, height)
-      context.globalAlpha = (dark ? .16 : .10) * (quiet ? .55 : 1)
+      context.globalAlpha = dark ? .16 : .10
       context.fillStyle = horizon ?? 'transparent'
       context.fillRect(0, 0, width, height)
       for (const star of stars) {
-        context.globalAlpha = (reduce ? .7 : Math.max(.1, .45 + .4 * Math.sin(time / 900 * star.speed + star.phase))) * (quiet ? dark ? .55 : .32 : dark ? 1 : .55)
+        context.globalAlpha = (reduce ? .7 : Math.max(.1, .45 + .4 * Math.sin(time / 900 * star.speed + star.phase))) * (dark ? 1 : .55)
         context.fillStyle = star.gold ? accent : starColor
         context.beginPath()
         context.arc(star.x * width, star.y * height, star.radius, 0, Math.PI * 2)
         context.fill()
       }
-      const linkAlpha = quiet ? dark ? .05 : .035 : dark ? .1 : .06
+      const linkAlpha = dark ? .1 : .06
       context.strokeStyle = starColor
       context.lineWidth = .6
       for (const link of links) {
@@ -65,7 +65,7 @@ export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: 
           const x = width * (.86 - progress * .32), y = height * (.12 + progress * .22)
           const tail = context.createLinearGradient(x, y, x + 80, y - 28)
           tail.addColorStop(0, accent); tail.addColorStop(1, 'transparent')
-          context.globalAlpha = Math.sin(progress * Math.PI) * (dark ? .8 : .45) * (quiet ? .6 : 1)
+          context.globalAlpha = Math.sin(progress * Math.PI) * (dark ? .8 : .45)
           context.strokeStyle = tail; context.lineWidth = 1.4
           context.beginPath(); context.moveTo(x, y); context.lineTo(x + 80, y - 28); context.stroke()
         }
@@ -113,6 +113,6 @@ export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: 
       window.cancelAnimationFrame(frame); observer.disconnect(); themeObserver.disconnect(); media.removeEventListener('change', resize)
       window.removeEventListener('focus', focus); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility)
     }
-  }, [paused, quiet])
-  return <canvas ref={ref} className={quiet ? 'v2-workspace-starfield' : 'auth-starfield'} aria-hidden="true" data-testid={quiet ? 'shell-starfield' : 'welcome-starfield'} />
+  }, [paused])
+  return <canvas ref={ref} className="auth-starfield" aria-hidden="true" data-testid="welcome-starfield" />
 }

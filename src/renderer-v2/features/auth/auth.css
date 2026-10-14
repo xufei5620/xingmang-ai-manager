@@ -35,7 +35,7 @@
 .auth-orbit-core .xm-logo { position: relative; width: 118px; height: auto; }
 @property --auth-spin { syntax: '<angle>'; initial-value: 0deg; inherits: true; }
 .auth-orbit-ring { --auth-spin: 0deg; --auth-radius: 150px; position: absolute; left: 50%; top: 46%; width: 300px; height: 300px; border: 1px dashed var(--line-2); border-radius: 50%; transform: translate(-50%, -50%) rotate(var(--auth-spin)); pointer-events: none; animation: auth-orbit 40s linear infinite; }
-.auth-orbit-satellite { --auth-angle: 20deg; position: absolute; left: 50%; top: 50%; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px 0 8px; transform: translate(-50%, -50%) rotate(var(--auth-angle)) translateY(calc(var(--auth-radius) * -1)) rotate(calc((var(--auth-angle) + var(--auth-spin)) * -1)); border: 1px solid var(--line-2); border-radius: 99px; color: var(--text-2); background: color-mix(in srgb, var(--panel-solid) 84%, transparent); backdrop-filter: blur(6px); box-shadow: 0 4px 14px color-mix(in srgb, var(--xm-navy) 40%, transparent); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.auth-orbit-satellite { --auth-angle: 20deg; position: absolute; left: 50%; top: 50%; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px 0 8px; transform: translate(-50%, -50%) rotate(var(--auth-angle)) translateY(calc(var(--auth-radius) * -1)) rotate(calc((var(--auth-angle) + var(--auth-spin)) * -1)); border: 1px solid var(--line-2); border-radius: var(--radius-pill); color: var(--text-2); background: color-mix(in srgb, var(--panel-solid) 84%, transparent); backdrop-filter: blur(6px); box-shadow: 0 4px 14px color-mix(in srgb, var(--xm-navy) 40%, transparent); font-size: 12px; font-weight: 500; white-space: nowrap; }
 /* 三个工具（Gemini CLI 下线后）在轨道上每隔 120° 一个。 */
 .auth-orbit-satellite[data-position='1'] { --auth-angle: 140deg; }
 .auth-orbit-satellite[data-position='2'] { --auth-angle: 260deg; }
@@ -46,11 +46,11 @@
 .auth-welcome-foot > .xm-card { min-width: 0; }
 .auth-welcome-foot .xm-card-body { padding: 13px 15px; }
 .auth-welcome-feature, .auth-welcome-support { display: flex; align-items: flex-start; gap: 12px; }
-.auth-welcome-feature > svg { flex: none; box-sizing: content-box; padding: 7px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+.auth-welcome-feature > svg { flex: none; box-sizing: content-box; padding: 7px; border-radius: var(--radius-card); background: var(--accent-soft); color: var(--accent); }
 .auth-welcome-feature strong, .auth-welcome-support strong { display: block; font-size: 14px; font-weight: 600; }
 .auth-welcome-feature p, .auth-welcome-support p { margin: 3px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.5; }
 .auth-welcome-support { align-items: center; gap: 10px; }
-.auth-welcome-support > img { width: 88px; height: 88px; padding: 6px; border-radius: 8px; box-shadow: var(--tile-ring); flex: none; object-fit: contain; }
+.auth-welcome-support > img { width: 88px; height: 88px; padding: 6px; border-radius: var(--radius-card); box-shadow: var(--tile-ring); flex: none; object-fit: contain; }
 .auth-welcome-foot > [data-testid='welcome-support'] .xm-card-body { padding: 10px 14px 10px 10px; }
 .auth-welcome-support > svg { flex: none; color: var(--accent); }
 .auth-welcome-support .xm-btn { margin-top: 3px; padding-inline: 0; }
@@ -112,7 +112,7 @@
 .auth-guide-lead { margin: 0; font-size: 13px; line-height: 1.75; color: var(--text-2); }
 .auth-guide-choices { margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .auth-guide-choices > legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.auth-guide-choice { position: relative; display: grid; align-content: start; gap: 8px; min-height: 144px; padding: 16px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel); cursor: pointer; }
+.auth-guide-choice { position: relative; display: grid; align-content: start; gap: 8px; min-height: 144px; padding: 16px; border: 1px solid var(--line-2); border-radius: var(--radius-card); background: var(--panel); cursor: pointer; }
 .auth-guide-choice > input { position: absolute; top: 12px; right: 12px; width: 15px; height: 15px; accent-color: var(--accent); }
 .auth-guide-choice[data-selected='true'] { background: var(--accent-soft); border-color: var(--accent); }
 .auth-guide-choice strong { font-size: 14px; font-weight: 600; }.auth-guide-choice > span:last-child { color: var(--text-2); font-size: 12px; line-height: 1.7; }

@@ -138,6 +138,45 @@ describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
   })
 })
 
+// 「白底」和它的暗色版（深色专业）：底面不带颜色，所有皮肤共用，所以字和状态色只要在这一套底上够清楚。
+describe.each(['dark', 'light'])('plain look tokens (%s)', (theme) => {
+  const values = block(`:root:not(.hc)[data-theme="${theme}"]`)
+  function solid(name: string): Rgb {
+    const value = values.get(name)
+    if (!value) throw new Error(`missing ${name}`)
+    return parseColor(value).rgb
+  }
+  function layered(name: string, base: string): Rgb {
+    const value = values.get(name)
+    if (!value) throw new Error(`missing ${name}`)
+    return over(parseColor(value), solid(base))
+  }
+  function failures(pairs: Array<[string, Rgb, Rgb]>, minimum: number) {
+    return pairs
+      .map(([label, fg, bg]) => [label, Math.round(ratio(fg, bg) * 100) / 100] as const)
+      .filter(([, value]) => value < minimum)
+  }
+
+  it('keeps all three text levels at 4.5:1 on every surface', () => {
+    const pairs: Array<[string, Rgb, Rgb]> = []
+    for (const text of ['--text', '--text-2', '--text-3']) {
+      for (const surface of surfaces) pairs.push([`${text} on ${surface}`, solid(text), solid(surface)])
+    }
+    expect(failures(pairs, 4.5)).toEqual([])
+  })
+
+  it('keeps status colors readable on plain and tinted surfaces', () => {
+    const pairs: Array<[string, Rgb, Rgb]> = []
+    for (const tone of ['ok', 'warn', 'bad']) {
+      for (const surface of ['--bg', '--panel-solid', '--panel-2']) {
+        pairs.push([`${tone} on ${surface}`, solid(`--${tone}`), solid(surface)])
+        pairs.push([`${tone} on ${tone}-soft over ${surface}`, solid(`--${tone}`), layered(`--${tone}-soft`, surface)])
+      }
+    }
+    expect(failures(pairs, 4.5)).toEqual([])
+  })
+})
+
 describe('high contrast stylesheet order', () => {
   it('loads contrast.css after every other stylesheet in the app entry', () => {
     // The eagerly loaded stylesheets share selectors with it at equal weight;

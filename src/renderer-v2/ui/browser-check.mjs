@@ -227,7 +227,7 @@ test('ToolRow uses six fixed columns, real brands and exact theme tokens across 
       const images = await page.locator('.xm-logo').evaluateAll(elements => elements.every(el => el.complete && el.naturalWidth > 0));
       assert.equal(images, true);
       const token = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().toUpperCase());
-      assert.equal(token, theme === 'dark' ? '#0B0C10' : '#FAF7EE');
+      assert.equal(token, theme === 'dark' ? '#111215' : '#FFFFFF');
       await page.screenshot({ path: 'artifacts/renderer-v2-components/' + os + '-' + theme + '.png', fullPage: true });
     } finally { await page.close(); }
   }

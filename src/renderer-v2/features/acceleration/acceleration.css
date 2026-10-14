@@ -56,7 +56,7 @@
 .acceleration-stage-bottom > .xm-btn:hover { color: var(--acceleration-stage-text); background: var(--acceleration-stage-inset); }
 .acceleration-status-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .acceleration-page[data-phase="active"] .acceleration-stage-bottom > span:first-child { color: var(--xm-sky); }
-.acceleration-console { display: flex; flex-direction: column; min-width: 0; padding: var(--space-6) var(--space-6) var(--space-4); background: linear-gradient(150deg, var(--accent-soft), transparent 52%), var(--panel-solid); }
+.acceleration-console { display: flex; flex-direction: column; min-width: 0; padding: var(--space-6) var(--space-6) var(--space-4); background: var(--panel-solid); }
 .acceleration-console-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
 .acceleration-console-top > span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--font-small); }
 .acceleration-quota-badge { padding: 3px 9px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); background: var(--panel); font-size: var(--font-small-compact); }

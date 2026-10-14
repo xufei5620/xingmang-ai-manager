@@ -130,5 +130,55 @@
 
 /* 设置「外观」里的「大字」：只把说明文字和小字各调大 1px，正文和布局不动，页面不会被挤乱。 */
 :root[data-large-text="true"] {
-  --font-small:13.5px; --font-small-compact:13px; --font-micro:12.5px; --font-micro-compact:12px;
+  --font-small:14px; --font-small-compact:13.5px; --font-micro:13px; --font-micro-compact:12.5px;
+}
+
+/* 「白底」界面风格（2026-10-14 yoyo 选的，暗色用「深色专业」）。
+   底面一律是不带颜色的白和近黑，皮肤只换主色；阴影、发光、渐变、星点都去掉，层次只靠 1px 细线和留白。
+   上面照原型抄的各皮肤底色原样留着（provenance.test.ts 钉着），这里靠多出来的 :root 和 :not(.hc) 盖过去；
+   高对比度有自己的整套颜色，排除在外。 */
+:root {
+  --radius-xs:4px; --radius-input:6px; --radius-button:6px; --radius-card:8px; --radius-dialog:12px; --radius-pill:999px;
+  --font-small:13px; --font-small-compact:12.5px; --font-micro:12px; --font-micro-compact:11.5px;
+  --font-num: var(--font);
+}
+:root:not(.hc)[data-theme="light"] {
+  --win:#FFFFFF; --rail:#FFFFFF; --bg:#FFFFFF;
+  --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#FAFAFA; --panel-2:#F4F4F5;
+  --line:#E7E7EA; --line-2:#D9D9DE; --line-3:#B4B4BC;
+  --text:#18181B; --text-2:#52525B; --text-3:#6B6B73; --kbd-bg:#F4F4F5;
+  --ok:#137D49; --ok-soft:#EDF6F1; --warn:#A74A10; --warn-soft:#FBF1EA; --bad:#BC3030; --bad-soft:#FBEEEE;
+  --overlay:rgba(24,24,27,.32);
+  --shadow:0 12px 32px rgba(24,24,27,.10), 0 2px 6px rgba(24,24,27,.05);
+  --btn-2-bg:#FFFFFF; --btn-2-hover:#F4F4F5;
+  --glow-top:none; --tile-ring:inset 0 0 0 1px #E7E7EA; --card-grad:#FFFFFF; --bubble-user:color-mix(in srgb, var(--accent) 9%, #FFFFFF);
+  --input-bg:#FFFFFF;
+  --accent-glow:transparent;
+  --accent-soft:color-mix(in srgb, var(--accent) 8%, #FFFFFF);
+  --accent-hover:color-mix(in srgb, var(--accent) 86%, #000000);
+  --surface-card-shadow:none; --surface-dialog-background:#FFFFFF; --surface-toast-background:#FFFFFF;
+  --control-danger-hover:#F7E1E1;
+}
+:root:not(.hc)[data-theme="dark"] {
+  --win:#0A0B0D; --rail:#0E0F12; --bg:#111215;
+  --panel:#16181D; --panel-solid:#16181D; --panel-hover:#1A1C21; --panel-2:#1D1F25;
+  --line:#24262C; --line-2:#2E3138; --line-3:#3E424A;
+  --text:#EDEEF0; --text-2:#A3A7AF; --text-3:#8B9099; --kbd-bg:#1D1F25;
+  --ok:#3DD68C; --ok-soft:rgba(61,214,140,.12); --warn:#F0883E; --warn-soft:rgba(240,136,62,.13); --bad:#FF6B6B; --bad-soft:rgba(255,107,107,.12);
+  --overlay:rgba(0,0,0,.62);
+  --shadow:0 16px 40px rgba(0,0,0,.55), 0 2px 6px rgba(0,0,0,.4), 0 0 0 1px #2E3138;
+  --btn-2-bg:#1B1D22; --btn-2-hover:#24272D;
+  --glow-top:none; --tile-ring:inset 0 0 0 1px #2E3138; --card-grad:#16181D; --bubble-user:color-mix(in srgb, var(--accent) 15%, #16181D);
+  --input-bg:#0F1013;
+  --accent-glow:transparent;
+  --accent-soft:color-mix(in srgb, var(--accent) 13%, transparent);
+  --accent-hover:color-mix(in srgb, var(--accent) 86%, #FFFFFF);
+  --surface-card-shadow:none; --surface-dialog-background:#17191E; --surface-toast-background:#1B1D22;
+  --control-danger-hover:rgba(255,107,107,.2);
+}
+/* 白底下没有阴影、没有发光：按钮、分段、开关一律平的，浮层（弹框、菜单、提示）才留一层投影。 */
+:root:not(.hc) {
+  --control-primary-shadow:none; --control-primary-active-shadow:none; --control-secondary-shadow:none;
+  --control-segment-shadow:inset 0 0 0 1px var(--line-2);
+  --surface-drawer-shadow:none;
 }

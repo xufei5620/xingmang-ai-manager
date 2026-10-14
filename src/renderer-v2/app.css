@@ -18,7 +18,7 @@
 .v2-runtime-list { padding: 8px 16px; }
 .v2-runtime-row { display: flex; align-items: center; gap: 9px; padding: 9px 0; font-size: var(--font-small); }
 .v2-runtime-row strong { font-weight: 400; }
-.v2-runtime-row > span:last-child { margin-left: auto; color: var(--text-3); font: var(--font-micro) var(--mono); }
+.v2-runtime-row > span:last-child { margin-left: auto; color: var(--text-3); font: var(--font-micro) var(--font-num); font-variant-numeric: tabular-nums; }
 .v2-runtime-actions { padding: 4px 16px 12px; display: flex; flex-wrap: wrap; gap: 8px; }
 .v2-runtime-actions:empty { display: none; }
 .v2-runtime-hint { padding: 0 16px 4px; margin: 0; color: var(--warn); font-size: var(--font-small); line-height: 1.5; }
@@ -39,13 +39,12 @@
 /* 首页「最近」一条只占一行：标题再长也截成省略号，完整内容放在悬停提示里。 */
 .v2-recent-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-balance-body { padding: 20px 16px 16px; }
-.v2-balance-body strong { font: 500 28px var(--mono); }
+.v2-balance-body strong { font: 600 28px var(--font-num); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .v2-balance-body small { margin-left: 6px; color: var(--text-3); font-size: var(--font-micro); }
 .v2-balance-body > div:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .v2-balance-body > div:first-child > .xm-btn { margin-left: auto; }
 .v2-balance-error { color: var(--warn); font-size: var(--font-small); }
 .v2-tool-external-note { color: var(--text-3); font-size: var(--font-small); text-align: right; overflow: hidden; text-overflow: ellipsis; }
-.v2-balance-body.tone-ok strong { color: var(--ok); }
 .v2-balance-body.tone-warn strong { color: var(--warn); }
 .v2-balance-body.tone-bad strong { color: var(--bad); }
 .v2-balance-actions { display: flex; justify-content: space-between; margin-top: 18px; }
@@ -122,11 +121,11 @@ button.v2-promo-tier:focus-visible { outline: 2px solid var(--accent); outline-o
 .v2-promo-tier-get strong { color: var(--text); font-weight: 600; }
 .v2-promo-tier-gift { color: var(--accent); font-size: var(--font-body); font-weight: 700; }
 .v2-promo-tiers > li.is-best .v2-promo-tier-gift { color: var(--warn); }
-.v2-promo-tier-badge { position: absolute; top: -9px; right: 8px; padding: 0 6px; border-radius: 5px; background: var(--warn); color: var(--panel-solid); font-size: 11px; font-weight: 600; line-height: 17px; }
+.v2-promo-tier-badge { position: absolute; top: -9px; right: 8px; padding: 0 6px; border-radius: var(--radius-xs); background: var(--warn); color: var(--panel-solid); font-size: 11px; font-weight: 600; line-height: 17px; }
 .v2-promo-card-more { display: flex; align-items: center; gap: 8px; margin-top: 4px; padding-top: 8px; border-top: 1px dashed var(--line-2); color: var(--text-2); font-size: var(--font-small-compact); }
 .v2-promo-card-more > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-promo-bar { display: flex; align-items: center; gap: 10px; min-height: 36px; flex: none; padding: 4px 10px 4px 14px; border-bottom: 1px solid var(--line); background: var(--bad-soft); color: var(--text); font-size: var(--font-small-compact); }
-.v2-promo-bar-tag { flex: none; padding: 0 7px; border-radius: 5px; background: var(--bad); color: var(--panel-solid); font-weight: 700; line-height: 20px; }
+.v2-promo-bar-tag { flex: none; padding: 0 7px; border-radius: var(--radius-xs); background: var(--bad); color: var(--panel-solid); font-weight: 700; line-height: 20px; }
 .v2-promo-bar-items { display: flex; flex-wrap: wrap; gap: 2px 14px; flex: 1; min-width: 0; }
 .v2-promo-bar-item { display: inline-flex; align-items: baseline; gap: 6px; padding: 0; border: 0; background: none; color: var(--bad); font: inherit; font-weight: 600; cursor: pointer; }
 .v2-promo-bar-item:hover { text-decoration: underline; }
@@ -174,7 +173,7 @@ button.v2-promo-tier:focus-visible { outline: 2px solid var(--accent); outline-o
 .v2-announcement-content th, .v2-announcement-rich th { background: var(--panel-2); font-weight: 600; }
 .v2-announcement-content img, .v2-announcement-rich img { display: block; max-width: 100%; height: auto; border-radius: var(--radius-input); }
 .v2-announcement-rich a, .v2-announcement-content a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-.v2-announcement-content code, .v2-announcement-rich code { padding: 1px 4px; border-radius: 4px; background: var(--panel-2); font-family: var(--mono); font-size: .92em; }
+.v2-announcement-content code, .v2-announcement-rich code { padding: 1px 4px; border-radius: var(--radius-xs); background: var(--panel-2); font-family: var(--mono); font-size: .92em; }
 .v2-announcement-content pre code, .v2-announcement-rich pre code { padding: 0; background: transparent; }
 .v2-announcement-content input[type="checkbox"] { width: 14px; height: 14px; margin: 0 6px 0 0; vertical-align: -2px; accent-color: var(--accent); }
 .v2-announcement-native-frame { display: block; width: 100%; height: min(62vh, 560px); border: 0; border-radius: var(--radius-input); background: transparent; }

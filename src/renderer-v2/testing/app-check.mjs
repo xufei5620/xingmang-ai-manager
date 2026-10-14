@@ -99,46 +99,14 @@ async function checkSupportDialog(page, url) {
   return dialog
 }
 
-// Count repaints of the workspace starfield only. Each repaint starts with a
-// clearRect, so wrapping it on the page's own prototype counts frames without
-// touching the component.
-async function countStarfieldPaints(page, milliseconds) {
-  await page.evaluate(() => {
-    const proto = CanvasRenderingContext2D.prototype
-    if (!window.__starfieldClear) window.__starfieldClear = proto.clearRect
-    window.__starfieldPaints = 0
-    proto.clearRect = function (...args) {
-      if (this.canvas?.dataset.testid === 'shell-starfield') window.__starfieldPaints++
-      return window.__starfieldClear.apply(this, args)
-    }
-  })
-  await page.waitForTimeout(milliseconds)
-  return page.evaluate(() => window.__starfieldPaints)
-}
-
-test('the workspace starfield stays still on low-end machines, runs at most 30 frames a second elsewhere, and stops while the window is in the background', async () => {
-  const low = await open('lowEnd=1')
-  try {
-    await low.getByTestId('shell-starfield').waitFor()
-    assert.equal(await low.evaluate(() => document.documentElement.dataset.lowEnd), 'true')
-    // Let the fixture finish laying out: a resize legitimately repaints once.
-    await low.waitForTimeout(1500)
-    assert.equal(await countStarfieldPaints(low, 1000), 0, '低配电脑上工作台星空只画静态一帧')
-    await clean(low)
-  } finally { await low.close() }
+// 「白底」风格（10-14 yoyo 选定）工作区就是一块平的底色：以前铺在后面的星空画布和光晕都不再画，
+// 也就不再在后台一直重绘。欢迎页的星空不在此列。
+test('the workspace is a plain surface without the starfield canvas or the top glow', async () => {
   const page = await open()
   try {
-    await page.getByTestId('shell-starfield').waitFor()
-    assert.equal(await page.evaluate(() => document.documentElement.dataset.lowEnd), 'false')
-    await page.waitForTimeout(1500)
-    const moving = await countStarfieldPaints(page, 1000)
-    assert.ok(moving >= 3, `其它电脑上星空照旧在动：${moving}`)
-    assert.ok(moving <= 40, `星空每秒最多约 30 帧：${moving}`)
-    await page.evaluate(() => window.dispatchEvent(new Event('blur')))
-    await page.waitForTimeout(200)
-    assert.equal(await countStarfieldPaints(page, 800), 0, '窗口不在前台时星空停下')
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-    assert.ok(await countStarfieldPaints(page, 800) >= 2, '回到前台后星空接着动')
+    await page.getByTestId('tool-row-claude').waitFor()
+    assert.equal(await page.locator('.v2-workspace canvas').count(), 0)
+    assert.equal(await page.locator('.v2-workspace').evaluate((element) => getComputedStyle(element).backgroundImage), 'none')
     await clean(page)
   } finally { await page.close() }
 })
@@ -3732,8 +3700,8 @@ test('large text switch enlarges the small print and Ctrl plus / minus / 0 step 
     await settings.getByRole('switch', { name: '大字' }).click()
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.largeText)).toBe('true')
     const after = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--font-small').trim())
-    assert.equal(before, '12.5px')
-    assert.equal(after, '13.5px')
+    assert.equal(before, '13px')
+    assert.equal(after, '14px')
     function saves() { return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0])) }
     assert.deepEqual((await saves()).at(-1), { version: 2, largeText: true })
 

@@ -10,7 +10,7 @@ button, input, select, textarea { font: inherit; }
 .v2-shell.sidebar-collapsed, .v2-shell.sidebar-overlay { grid-template-columns: 60px minmax(0, 1fr); }
 /* 窗口窄、侧栏自动收着时点「展开侧栏」：侧栏浮在页面上面展开，那一列照旧 60 宽，正文不跟着挤。 */
 .v2-shell.sidebar-overlay > .v2-sidebar { width: 216px; z-index: 20; box-shadow: var(--shadow); }
-.v2-sidebar { position: relative; display: flex; flex-direction: column; padding: 12px 10px 10px; min-height: 0; background: linear-gradient(180deg, var(--accent-soft), transparent 180px), var(--rail); border-right: 1px solid var(--line); }
+.v2-sidebar { position: relative; display: flex; flex-direction: column; padding: 12px 10px 10px; min-height: 0; background: var(--rail); border-right: 1px solid var(--line); }
 .v2-brand { display: flex; align-items: center; gap: 8px; padding: 6px 4px 14px; flex: none; }
 .v2-brand .xm-logo-wordmark { width: auto; min-width: 0; }
 .v2-brand .xm-btn { margin-left: auto; }
@@ -24,25 +24,25 @@ button, input, select, textarea { font: inherit; }
 .v2-sidebar-pinned { display: flex; flex-direction: column; gap: 1px; flex: none; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); }
 .v2-nav-group { padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
 .v2-nav-group:last-of-type { padding-bottom: 0; margin-bottom: 0; border: 0; }
-.v2-nav-item { position: relative; width: 100%; min-height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 7px; padding: 8px 10px; color: var(--text-2); background: transparent; font-size: var(--font-body); line-height: 20px; cursor: pointer; }
+.v2-nav-item { position: relative; width: 100%; min-height: 36px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; border: 0; border-radius: var(--radius-button); padding: 8px 10px; color: var(--text-2); background: transparent; font-size: var(--font-body); line-height: 20px; cursor: pointer; }
 .v2-nav-item > span { flex: 1; text-align: left; }
 .v2-nav-item > svg { flex: none; }
 .v2-nav-item:hover { background: var(--panel-2); color: var(--text); }
-.v2-nav-item.is-active { color: var(--accent); background: var(--accent-soft); box-shadow: var(--tile-ring); }
+.v2-nav-item.is-active { color: var(--accent); background: var(--accent-soft); font-weight: 500; }
 .v2-more-navigation { padding-left: 12px; }
-.v2-nav-badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: var(--font-micro); line-height: 1; }
+.v2-nav-badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: var(--radius-pill); background: var(--panel-2); color: var(--text-2); font-size: var(--font-micro); line-height: 1; font-variant-numeric: tabular-nums; }
 .sidebar-collapsed .v2-nav-badge { position: absolute; top: 1px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border: 2px solid var(--rail); background: var(--accent); color: var(--accent-fg); }
 
-.v2-account-entry { margin-top: 8px; padding: 8px 10px; flex: none; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--tile-ring); }
+.v2-account-entry { margin-top: 8px; padding: 8px 10px; flex: none; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
 .v2-account-top, .v2-account-top > button { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* 账号卡两行：头像小一号，恢复登录时换成空白头像，不把「正在恢复登录」的第一个字当名字。 */
-.v2-account-entry .v2-local-avatar-36, .v2-account-placeholder { width: 28px; height: 28px; border-radius: 9px; font-size: var(--font-body); }
+.v2-account-entry .v2-local-avatar-36, .v2-account-placeholder { width: 28px; height: 28px; border-radius: var(--radius-button); font-size: var(--font-body); }
 .v2-account-placeholder { display: inline-grid; place-items: center; flex: none; border: 1px solid var(--line); background: var(--panel-2); color: var(--text-3); }
 /* 名字长、放不下「历史账号」标签时，标签折到名字下面，不把名字挤成几个字加省略号。 */
 .v2-account-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
-.v2-account-who .v2-account-tag { flex: none; overflow: visible; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--text-2); font-size: var(--font-micro-compact); line-height: 16px; }
+.v2-account-who .v2-account-tag { flex: none; overflow: visible; padding: 0 5px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--panel-2); color: var(--text-2); font-size: var(--font-micro-compact); line-height: 16px; }
 .v2-account-top > button:first-child { flex: 1; border: 0; background: transparent; padding: 0; color: var(--text); text-align: left; cursor: pointer; }
-.v2-account-avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: var(--xm-navy); color: var(--xm-gold); border: 1px solid var(--line-2); flex: none; }
+.v2-account-avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--radius-card); background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line); flex: none; }
 .v2-account-who { display: grid; min-width: 0; line-height: 1.25; }
 .v2-account-who strong, .v2-account-who small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-account-who strong { font-size: var(--font-body); }
@@ -51,15 +51,15 @@ button, input, select, textarea { font: inherit; }
 .v2-account-balance small { color: var(--text-3); font-size: var(--font-micro-compact); }
 .v2-account-balance-summary { min-width: 0; }
 .v2-account-balance-amount { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: var(--control-xs); }
-.v2-account-balance-placeholder { display: block; width: 72px; height: 14px; border-radius: 4px; background: var(--panel-2); }
-.v2-account-balance strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--font-h2) var(--mono); }
+.v2-account-balance-placeholder { display: block; width: 72px; height: 14px; border-radius: var(--radius-xs); background: var(--panel-2); }
+.v2-account-balance strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--font-h2) var(--font-num); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 .v2-account-balance-subscription { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-account-balance > .v2-balance-error { grid-column: 1 / -1; }
 .v2-account-balance .v2-balance-error, .v2-statusbar .v2-balance-error { color: var(--warn); }
 .sidebar-collapsed .v2-sidebar { padding-inline: 8px; }
 .sidebar-collapsed .v2-brand { justify-content: center; padding: 2px 0 10px; }
 /* 窄条顶上只有标志；鼠标停上去或键盘移到上面，标志换成「展开侧栏」的图标。 */
-.v2-brand-toggle { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-2); cursor: pointer; }
+.v2-brand-toggle { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: var(--radius-card); background: transparent; color: var(--text-2); cursor: pointer; }
 .v2-brand-toggle > * { grid-area: 1 / 1; }
 .v2-brand-toggle > svg, .v2-brand-toggle:is(:hover, :focus-visible) > img { opacity: 0; }
 .v2-brand-toggle:is(:hover, :focus-visible) { background: var(--panel-2); color: var(--text); }
@@ -71,13 +71,12 @@ button, input, select, textarea { font: inherit; }
 .sidebar-collapsed .v2-account-entry { padding: 6px 0; border: 0; background: transparent; box-shadow: none; }
 .sidebar-collapsed .v2-account-top { flex-direction: column; }
 .sidebar-collapsed .v2-account-balance { display: flex; flex-direction: column; align-items: center; border: 0; padding: 0; justify-content: center; }
-.v2-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); background-image: var(--glow-top); background-repeat: no-repeat; }
-.v2-workspace-starfield { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
+.v2-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); }
 .v2-workspace > .v2-topbar, .v2-workspace > .v2-content, .v2-workspace > .v2-statusbar, .v2-workspace > .v2-announcement-banner, .v2-workspace > .v2-promo-card, .v2-workspace > .v2-promo-bar, .v2-workspace > .v2-offline-banner { position: relative; z-index: 1; }
 .v2-topbar { height: 46px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 20px; border-bottom: 1px solid var(--line); }
-.v2-command-trigger { display: flex; align-items: center; gap: 8px; width: 320px; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); color: var(--text-3); cursor: pointer; font-size: var(--font-small); }
+.v2-command-trigger { display: flex; align-items: center; gap: 8px; width: 320px; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--input-bg, var(--panel-2)); color: var(--text-3); cursor: pointer; font-size: var(--font-small); }
 .v2-command-trigger span { flex: 1; text-align: left; }
-.v2-command-trigger kbd { font: var(--font-micro-compact) var(--mono); background: var(--kbd-bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+.v2-command-trigger kbd { font: var(--font-micro-compact) var(--mono); background: var(--kbd-bg); border: 1px solid var(--line); border-radius: var(--radius-xs); padding: 1px 5px; }
 .v2-topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .v2-topbar-actions .xm-btn { position: relative; height: var(--control-sm); padding: 0 11px 0 9px; border-radius: var(--radius-input); color: var(--text-2); font-size: var(--font-small); }
 .v2-topbar-actions .xm-btn:hover:not(:disabled) { color: var(--text); }
