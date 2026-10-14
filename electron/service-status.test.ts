@@ -182,6 +182,18 @@ describe('readServiceStatus', () => {
     })).resolves.toBeNull()
   })
 
+  it('counts a 200 that is not a JSON object as not read, so the last good copy survives it', async () => {
+    for (const body of ['<html>请先登录</html>', '{"accountGroups": {"codex": ["GPT', '[]', 'null']) {
+      await expect(readServiceStatus({ url, fetch: async () => jsonResponse(body) })).resolves.toBeNull()
+    }
+    await expect(readServiceStatus({ url, fetch: async () => jsonResponse('{}') })).resolves.toEqual({
+      maintenance: null,
+      badVersions: [],
+      rollout: null,
+      minimumVersion: null,
+    })
+  })
+
   it('gives up after its timeout instead of holding anything up', async () => {
     const fetch = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))

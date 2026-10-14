@@ -201,13 +201,21 @@ function readAccountGroups(value: unknown): AccountGroupHints | null {
 
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
 export function parseServiceStatus(text: string, now: Date): ServiceStatus {
+  return parseServiceStatusDocument(text, now) ?? emptyServiceStatus
+}
+
+/**
+ * 同上，只是整份不是 JSON 对象时返回 null，不给空白的那一份。门户页、半截内容这类 200 回来的
+ * 东西算「没读到」：对维护提示两者一样，但分组对照要靠它接着用上一次读到的那份（lastKnown）。
+ */
+export function parseServiceStatusDocument(text: string, now: Date): ServiceStatus | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
   } catch {
-    return emptyServiceStatus
+    return null
   }
-  if (!isRecord(parsed)) return emptyServiceStatus
+  if (!isRecord(parsed)) return null
   const accountGroups = readAccountGroups(parsed.accountGroups)
   return {
     maintenance: readMaintenance(parsed.maintenance, now),
@@ -251,7 +259,7 @@ export async function readServiceStatus(options: ServiceStatusReaderOptions): Pr
       return null
     }
     const text = await readBoundedResponseText(response, maxStatusBytes, '服务状态文件')
-    return parseServiceStatus(text, (options.now ?? (() => new Date()))())
+    return parseServiceStatusDocument(text, (options.now ?? (() => new Date()))())
   } catch {
     return null
   } finally {
