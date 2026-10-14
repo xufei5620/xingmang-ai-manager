@@ -2,7 +2,7 @@ import {
   accountRealms, captureRealmLogin, isRealmRecord, parseRealmSavedAccount, requireRealmUserId,
   RealmAccountError, type RealmCredential, type RealmLoginInput, type RealmSavedAccount, type RealmSessionBackend,
 } from './realm-account'
-import { sub2ApiManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, sub2ApiManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { summarizeKeySecret } from './key-secret-summary'
 import { parseSub2ApiAnnouncements, type Sub2ApiAnnouncement } from './sub2api-announcements'
 import { isJsonContentType, isServiceUnavailableResponse } from './network-failure'
@@ -158,7 +158,8 @@ export async function provisionSub2ApiManagedCliKeys(
     if (!batch.items.length) throw new RealmAccountError('PROTOCOL')
   }
   const result: Sub2ApiManagedCliKey[] = []
-  for (const provider of providerIds) {
+  // 下线的工具（Gemini CLI）不再签：它的分组没了也不该让整个账号登不上。
+  for (const provider of activeProviderIds) {
     const profile = sub2ApiManagedCliKeyProfiles[provider]
     const matches = groups.filter((entry) => entry.name === profile.group && entry.status === 'active')
     if (matches.length !== 1) throw new RealmAccountError('UNSUPPORTED')

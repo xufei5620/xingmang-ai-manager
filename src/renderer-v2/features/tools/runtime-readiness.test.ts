@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { platformCapabilitiesFor } from '../../../../electron/platform-capabilities'
-import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage } from './runtime-readiness'
+import { cliInstallStageLabel, cliNeedsNodeRuntime, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage } from './runtime-readiness'
 
 const base = { installed: true, version: '1.0.0', path: null, installDirectory: null }
 
@@ -51,41 +51,29 @@ describe('nodeRuntimeReady', () => {
 })
 
 describe('planCliInstall', () => {
-  const managed = { nodeInstall: 'managed', pythonInstall: 'managed' } as const
-  const external = { nodeInstall: 'external', pythonInstall: 'external' } as const
+  const managed = { nodeInstall: 'managed' } as const
+  const external = { nodeInstall: 'external' } as const
   const missingNode = runtime({ installed: false, version: null, versionStatus: 'unknown' })
 
   it('installs straight away when everything is ready', () => {
-    expect(planCliInstall({ runtime: runtime({}), needsPython: true, ...managed })).toEqual({ prepare: [], blocked: null })
+    expect(planCliInstall({ runtime: runtime({}), ...managed })).toEqual({ prepare: [], blocked: null })
   })
 
   it('folds a missing, too old or unreadable Node into the same install where the app can install it', () => {
-    expect(planCliInstall({ runtime: missingNode, needsPython: false, ...managed })).toEqual({ prepare: ['node'], blocked: null })
-    expect(planCliInstall({ runtime: runtime({ tooOld: true, versionStatus: 'too-old' }), needsPython: false, ...managed })).toEqual({ prepare: ['node'], blocked: null })
-    expect(planCliInstall({ runtime: runtime({ versionStatus: 'unknown' }), needsPython: false, ...managed })).toEqual({ prepare: ['node'], blocked: null })
+    expect(planCliInstall({ runtime: missingNode, ...managed })).toEqual({ prepare: ['node'], blocked: null })
+    expect(planCliInstall({ runtime: runtime({ tooOld: true, versionStatus: 'too-old' }), ...managed })).toEqual({ prepare: ['node'], blocked: null })
+    expect(planCliInstall({ runtime: runtime({ versionStatus: 'unknown' }), ...managed })).toEqual({ prepare: ['node'], blocked: null })
   })
 
-  it('prepares Node before Python for Gemini', () => {
-    const bare = { ...missingNode, python: { ...missingNode.python, installed: false, version: null } }
-    expect(planCliInstall({ runtime: bare, needsPython: true, ...managed })).toEqual({ prepare: ['node', 'python'], blocked: null })
-    const failedProbe = { ...runtime({}), python: { ...runtime({}).python, detectionFailed: true } }
-    expect(planCliInstall({ runtime: failedProbe, needsPython: true, ...managed })).toEqual({ prepare: ['python'], blocked: null })
-    expect(planCliInstall({ runtime: failedProbe, needsPython: false, ...managed })).toEqual({ prepare: [], blocked: null })
-  })
-
-  it('skips Node for a tool that does not need it, without skipping Python', () => {
-    expect(planCliInstall({ runtime: missingNode, needsNode: false, needsPython: false, ...managed })).toEqual({ prepare: [], blocked: null })
-    expect(planCliInstall({ runtime: missingNode, needsNode: false, needsPython: false, ...external })).toEqual({ prepare: [], blocked: null })
-    const bare = { ...missingNode, python: { ...missingNode.python, installed: false, version: null } }
-    expect(planCliInstall({ runtime: bare, needsNode: false, needsPython: true, ...managed })).toEqual({ prepare: ['python'], blocked: null })
-    expect(planCliInstall({ runtime: missingNode, needsNode: true, needsPython: false, ...managed })).toEqual({ prepare: ['node'], blocked: null })
+  it('skips Node for a tool that does not need it', () => {
+    expect(planCliInstall({ runtime: missingNode, needsNode: false, ...managed })).toEqual({ prepare: [], blocked: null })
+    expect(planCliInstall({ runtime: missingNode, needsNode: false, ...external })).toEqual({ prepare: [], blocked: null })
+    expect(planCliInstall({ runtime: missingNode, needsNode: true, ...managed })).toEqual({ prepare: ['node'], blocked: null })
   })
 
   it('still blocks where the app cannot install the runtime, and says which step', () => {
-    expect(planCliInstall({ runtime: missingNode, needsPython: false, ...external })).toEqual({ prepare: [], blocked: '请先准备 Node.js 运行环境，再安装命令行工具。' })
-    expect(planCliInstall({ runtime: missingNode, needsPython: false, nodeInstall: undefined, pythonInstall: undefined }).blocked).toContain('Node.js')
-    const noPython = { ...runtime({}), python: { ...runtime({}).python, installed: false } }
-    expect(planCliInstall({ runtime: noPython, needsPython: true, ...external }).blocked).toContain('Python')
+    expect(planCliInstall({ runtime: missingNode, ...external })).toEqual({ prepare: [], blocked: '请先准备 Node.js 运行环境，再安装命令行工具。' })
+    expect(planCliInstall({ runtime: missingNode, nodeInstall: undefined }).blocked).toContain('Node.js')
   })
 })
 
@@ -100,28 +88,15 @@ describe('cliNeedsNodeRuntime', () => {
   })
 })
 
-describe('cliNeedsPythonRuntime', () => {
-  it('drops Python for Gemini on every platform, and falls back to the registry when the table is missing', () => {
-    const gemini = (platform: Parameters<typeof cliNeedsPythonRuntime>[0]) => cliNeedsPythonRuntime(platform, 'gemini', true)
-    expect(gemini(platformCapabilitiesFor('win32', 'x64'))).toBe(false)
-    expect(gemini(platformCapabilitiesFor('darwin', 'arm64'))).toBe(false)
-    expect(gemini(platformCapabilitiesFor('linux', 'x64'))).toBe(false)
-    expect(gemini({})).toBe(true)
-    expect(gemini(null)).toBe(true)
-    expect(cliNeedsPythonRuntime({}, 'claude', false)).toBe(false)
-    expect(cliNeedsPythonRuntime(platformCapabilitiesFor('linux', 'x64'), 'claude', false)).toBe(false)
-  })
-
-  // 第二十八批 C：以前 Windows 上要先多装一个 Python 3.12（它没装上 Gemini 就不装），Mac 上直接拦下。
-  it('starts a Gemini install without Python on every platform, neither installing it first nor blocking', () => {
+describe('missing Python', () => {
+  // 要 Python 的只有已下线的 Gemini CLI：在用的命令行工具缺 Python 时既不先装它，也不拦着。
+  it('starts a command-line install without Python on every platform, neither installing it first nor blocking', () => {
     const withoutPython = { ...runtime({}), python: { installed: false, version: null, path: null, installDirectory: null } }
     for (const [platform, architecture] of [['win32', 'x64'], ['darwin', 'arm64'], ['linux', 'x64']] as const) {
       const capabilities = platformCapabilitiesFor(platform, architecture)
       expect(planCliInstall({
         runtime: withoutPython,
-        needsPython: cliNeedsPythonRuntime(capabilities, 'gemini', true),
         nodeInstall: capabilities.nodeRuntimeInstall,
-        pythonInstall: capabilities.pythonRuntimeInstall,
       })).toEqual({ prepare: [], blocked: null })
     }
   })
@@ -130,8 +105,7 @@ describe('cliNeedsPythonRuntime', () => {
 describe('install stage wording', () => {
   it('numbers each stage out of the whole install', () => {
     expect(cliInstallStageLabel('node', 0, 2, 'Claude Code')).toBe('正在准备 Node.js 运行环境（1/2）')
-    expect(cliInstallStageLabel('python', 1, 3, 'Gemini CLI')).toBe('正在准备 Python 运行环境（2/3）')
-    expect(cliInstallStageLabel('tool', 2, 3, 'Gemini CLI')).toBe('正在安装 Gemini CLI（3/3）')
+    expect(cliInstallStageLabel('tool', 1, 2, 'Claude Code')).toBe('正在安装 Claude Code（2/2）')
   })
 
   it('says the runtime failed and the tool never started, keeping the raw cause for classification', () => {

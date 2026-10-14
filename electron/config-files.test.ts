@@ -43,6 +43,7 @@ import {
   inspectManagedCliHookTargets,
   inspectOfficialLogin,
   inspectProviderConfig,
+  inspectRetiredGeminiIntegrations,
   inspectCodexWorkspacePermissionsText,
   inspectHomeFolderTrust,
   managedProviderLaunchBlockedMessage,
@@ -51,6 +52,7 @@ import {
   providerAccountMode,
   providerConfigPaths,
   removeManagedCliHooks,
+  removeRetiredGeminiIntegrations,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
   saveProviderConfig,
@@ -3781,6 +3783,85 @@ describe('hooks and status line pointing at an old location', () => {
     }
     const grok = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8')) as unknown as GrokConfigShape
     expect(grok.compat).toEqual({ claude: { hooks: false } })
+  })
+})
+
+describe('taking back what Xingmang wrote into the retired Gemini CLI', () => {
+  const ourImageServer = {
+    command: '/managed/node/bin/node',
+    args: ['/home/me/.agents/skills/星芒AI/scripts/mcp-server.mjs'],
+    env: { XINGMANG_IMAGE_CONFIG_PATH: '/home/me/.agents/skills/星芒AI/config.json' },
+    trust: true,
+  }
+  const userServer = { command: 'npx', args: ['-y', 'user-mcp'] }
+  const userHook = { matcher: '*', hooks: [{ type: 'command', command: 'say done', name: 'user-notify' }] }
+
+  function writeGemini(roots: ReturnType<typeof providerRoots>, servers: Record<string, unknown>): string {
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]>, mcpServers?: unknown }
+    settings.hooks.AfterAgent.unshift(userHook)
+    settings.mcpServers = servers
+    fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    return settingsPath
+  }
+
+  it('removes only our hooks and image tool and keeps the key, address, model and what the user added', () => {
+    const roots = providerRoots(temporaryHome())
+    const settingsPath = writeGemini(roots, { 'xingmang-image': ourImageServer, 'user-server': userServer })
+    const before = inspectProviderConfig('gemini', roots)
+    expect(inspectRetiredGeminiIntegrations(roots)).toEqual({ hooks: true, imageMcp: true })
+
+    const removed = removeRetiredGeminiIntegrations(roots)
+    expect(removed).toMatchObject({ hooks: true, imageMcp: true, result: { files: [settingsPath] } })
+    expect(removed.result.backups).toHaveLength(1)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]>, mcpServers: Record<string, unknown> }
+    expect(settings.mcpServers).toEqual({ 'user-server': userServer })
+    expect(settings.hooks).toEqual({ AfterAgent: [userHook] })
+    expect(inspectManagedCliHookTargets('gemini', roots)).toEqual([])
+    const after = inspectProviderConfig('gemini', roots)
+    expect(after.apiKey).toBe('sk-relay')
+    expect(after.baseUrl).toBe(before.baseUrl)
+    expect(after.model).toBe(before.model)
+    expect(after.matchesRelay).toBe(true)
+
+    // Every startup asks again; once there is nothing left nothing is written.
+    const text = fs.readFileSync(settingsPath, 'utf8')
+    expect(inspectRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false })
+    expect(removeRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false, result: { backups: [], files: [] } })
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(text)
+  })
+
+  it('drops an emptied mcpServers section and leaves a same-name server the user set up alone', () => {
+    const roots = providerRoots(temporaryHome())
+    const settingsPath = writeGemini(roots, { 'xingmang-image': ourImageServer })
+    removeRetiredGeminiIntegrations(roots)
+    expect('mcpServers' in (JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>)).toBe(false)
+
+    const other = providerRoots(temporaryHome())
+    const userImage = { command: 'node', args: ['/home/me/my-image-server.mjs'] }
+    const otherPath = writeGemini(other, { 'xingmang-image': userImage })
+    expect(inspectRetiredGeminiIntegrations(other)).toEqual({ hooks: true, imageMcp: false })
+    expect(removeRetiredGeminiIntegrations(other)).toMatchObject({ hooks: true, imageMcp: false })
+    expect((JSON.parse(fs.readFileSync(otherPath, 'utf8')) as { mcpServers: unknown }).mcpServers).toEqual({ 'xingmang-image': userImage })
+  })
+
+  it('creates nothing when Gemini CLI was never set up', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(inspectRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false })
+    expect(removeRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false, result: { backups: [], files: [] } })
+    expect(fs.existsSync(path.join(roots.userHome, '.gemini'))).toBe(false)
+  })
+
+  it('leaves a settings.json it cannot read untouched', () => {
+    const roots = providerRoots(temporaryHome())
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, '{ "hooks": ', 'utf8')
+    expect(() => inspectRetiredGeminiIntegrations(roots)).toThrow()
+    expect(() => removeRetiredGeminiIntegrations(roots)).toThrow()
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ "hooks": ')
+    expect(fs.readdirSync(path.dirname(settingsPath))).toEqual(['settings.json'])
   })
 })
 

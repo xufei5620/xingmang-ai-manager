@@ -4,7 +4,7 @@ import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
-import { cliCatalog, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
 import {
   commandEnvironment,
   findExecutable,
@@ -70,7 +70,6 @@ import {
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
-import type { UserWideCertificateTrustState } from './user-certificate-trust'
 import {
   inspectWindowsExecutableMachine,
   type WindowsExecutableMachine,
@@ -237,11 +236,6 @@ export interface DiagnosticsDependencies {
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
    */
   probeNodeTls?: (input: NodeTlsProbeInput, signal: AbortSignal) => Promise<NodeTlsProbeResult>
-  /**
-   * 「安全证书」查出公司证书时，客户自己开的终端是不是也已经信任它
-   * （user-certificate-trust.ts）。宿主给了才在 Windows 上多一颗按钮；缺省 = 不提。
-   */
-  inspectUserWideCertificateTrust?: () => UserWideCertificateTrustState
   /**
    * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
    * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
@@ -1102,12 +1096,12 @@ interface EnvironmentOverrideMatch {
  * - Gemini：~/.gemini/.env 不覆盖已有的进程环境，GOOGLE_GEMINI_BASE_URL 与
  *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
  *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
+ *   Gemini CLI 下线（2026-10-14）后星芒不再管它的账号，这五个从表里拿掉了，结论留在这里。
  *
  * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
  * （system-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
- * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉；Gemini 照 providerCommandEnvironment
- * 去掉五个，breaksAccount 为 false 的三个也在内。检查页在 Mac 上另去读那几个终端设置文件，只找 breaksAccount
- * 的这四个（collectMacosShellOverrides）。
+ * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉。检查页在 Mac 上另去读那几个终端
+ * 设置文件，只找 breaksAccount 的那几个（collectMacosShellOverrides）。
  * 改这里的取值时那边一起看。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
@@ -1118,11 +1112,6 @@ const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
   { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl', breaksAccount: false },
   { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret', breaksAccount: false },
   { name: 'CODEX_HOME', provider: 'codex', kind: 'directory', breaksAccount: false },
-  { name: 'GOOGLE_GEMINI_BASE_URL', provider: 'gemini', kind: 'baseUrl', breaksAccount: true },
-  { name: 'GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: true },
-  { name: 'GOOGLE_GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: false },
-  { name: 'GEMINI_MODEL', provider: 'gemini', kind: 'model', breaksAccount: false },
-  { name: 'GOOGLE_GENAI_API_VERSION', provider: 'gemini', kind: 'other', breaksAccount: false },
 ]
 
 /** 与 defaultProxyVariables 同法：Windows 的环境变量名大小写不敏感。 */
@@ -1263,7 +1252,7 @@ function overridesFromShellSettings(
 /**
  * Mac 上终端设置文件里导出的、会让工具绕开当前账号的那几个（已知45）。只看用星芒账号的工具：Claude Code
  * 用客户自己的账号时，那几行多半就是他自己的 Key，从星芒打开也照旧带上（system-service.ts 的
- * macosShellOverrideVariables）；Gemini CLI 不用星芒账号时这几个变量起什么作用没实测过，按 T12 宁缺勿猜。
+ * macosShellOverrideVariables）。
  * 同一个名字在几个文件里都有，就各报一条，客户照着逐个去删。
  */
 async function collectMacosShellOverrides(
@@ -1304,11 +1293,11 @@ function withShellSettingsOverrides(
 
 /**
  * Mac 上从星芒打开这个工具时，启动脚本会不会先把它的这几个变量去掉（system-service.ts 的
- * macosShellOverrideVariables）：Claude Code 只在用星芒账号时去掉，Gemini CLI 不论哪种账号都去掉。
- * 只拿来问 breaksAccount 的那四个；两边对不上时 diagnostics.test.ts 会红。
+ * macosShellOverrideVariables）：Claude Code 只在用星芒账号时去掉。只拿来问 breaksAccount 的那几个；
+ * 两边对不上时 diagnostics.test.ts 会红。
  */
 function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySet<ProviderId>): boolean {
-  return provider === 'gemini' || (provider === 'claude' && relayProviders.has(provider))
+  return provider === 'claude' && relayProviders.has(provider)
 }
 
 /**
@@ -1721,37 +1710,21 @@ export function certificateTrustOutcome(input: {
   defaultRoots: NodeTlsProbeResult['outcome'] | null
   systemRoots: NodeTlsProbeResult['outcome'] | null
   elevated: boolean
-  /** 只在 systemTrusted 时有意义；缺省 = 不提客户自己开的窗口。 */
-  userWide?: UserWideCertificateTrustState
 }): CheckOutcome {
   const state: DiagnosticState = input.verdict === 'outdatedNode' || input.verdict === 'untrusted'
     ? 'fail'
     : input.verdict === 'elevated' ? 'warn' : 'pass'
-  const userWide = input.verdict === 'systemTrusted' ? input.userWide : undefined
   return {
     state,
-    summary: input.verdict === 'systemTrusted'
-      ? systemTrustedSummary(userWide)
-      : certificateTrustSummaries[input.verdict],
+    summary: certificateTrustSummaries[input.verdict],
     details: {
       verdict: input.verdict,
       nodeVersion: input.nodeVersion,
       defaultRoots: input.defaultRoots,
       systemRoots: input.systemRoots,
       elevated: input.elevated,
-      ...(userWide ? { userWide } : {}),
     },
   }
-}
-
-// 客户自己开的终端、VS Code 里的 Gemini 拿不到星芒给工具加的那一条（第十八批 7）。
-function systemTrustedSummary(userWide: UserWideCertificateTrustState | undefined): string {
-  const base = certificateTrustSummaries.systemTrusted
-  if (userWide === 'available') {
-    return `${base}你自己开的终端、VS Code 里的 Gemini 还不认它，可以点「让这台电脑上所有终端都信任」。`
-  }
-  if (userWide === 'applied') return `${base}你自己开的终端也已经设好，新开的终端就能用。`
-  return base
 }
 
 /**
@@ -1766,7 +1739,7 @@ export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): D
     : item)
 }
 
-const cliCheckCodes: readonly string[] = providerIds.map((provider) => `CLI_${provider.toUpperCase()}`)
+const cliCheckCodes: readonly string[] = activeProviderIds.map((provider) => `CLI_${provider.toUpperCase()}`)
 
 /**
  * 一个命令行工具都没装（只用 Codex 桌面端，它自带运行环境）时，Node.js、npm 没装只是
@@ -2000,7 +1973,7 @@ function relocatedFolderTargets(
 ): RelocatedFolderTarget[] {
   const targets: RelocatedFolderTarget[] = [{ label: '用户文件夹', path: userHome }]
   if (userDataDirectory?.trim()) targets.push({ label: '软件数据文件夹', path: userDataDirectory })
-  for (const provider of providerIds) {
+  for (const provider of activeProviderIds) {
     targets.push({
       label: `${cliCatalog[provider].name} 配置文件夹`,
       path: provider === 'codex' ? codexHome : path.join(userHome, providerConfigDirectoryNames[provider]),
@@ -2138,6 +2111,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const accountBaseUrls = environmentAccountBaseUrls(toolSite, toolRoute)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
+  // 下线的 Gemini CLI 也照读：它的 Key 还在本机配置里，报告里一样要遮掉。
   for (const provider of providerIds) {
     try {
       const inspection = inspectProvider(provider, providerRoots)
@@ -2152,7 +2126,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const workspaceOverrideOutcome = (): CheckOutcome => {
     const workspace = typeof dependencies.workspace === 'string' ? dependencies.workspace.trim() : ''
     const workspaceChecked = workspace !== '' && path.isAbsolute(workspace) && fs.existsSync(workspace)
-    const overrides = providerIds.flatMap((provider) => {
+    const overrides = activeProviderIds.flatMap((provider) => {
       const inspection = providerInspections.get(provider)
       if (!inspection?.exists) return []
       const found = inspectWorkspaceConfigOverrides(provider, workspaceChecked ? workspace : userHome, {
@@ -2444,7 +2418,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
-    ...providerIds.map<CheckDefinition>((provider) => ({
+    ...activeProviderIds.map<CheckDefinition>((provider) => ({
       code: `CLI_${provider.toUpperCase()}`,
       title: cliCatalog[provider].name,
       run: async (signal) => {
@@ -2472,7 +2446,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
-    ...providerIds.map<CheckDefinition>((provider) => ({
+    ...activeProviderIds.map<CheckDefinition>((provider) => ({
       code: `PROVIDER_${provider.toUpperCase()}`,
       title: `${cliCatalog[provider].name} 连接设置`,
       run: () => {
@@ -2670,16 +2644,12 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           systemRoots: withSwitch.outcome,
           nodeVersion,
         })
-        const userWide = verdict === 'systemTrusted' && platform === 'win32'
-          ? dependencies.inspectUserWideCertificateTrust?.()
-          : undefined
         return certificateTrustOutcome({
           verdict,
           nodeVersion,
           defaultRoots: withoutSwitch.outcome,
           systemRoots: withSwitch.outcome,
           elevated: false,
-          userWide,
         })
       },
     },
@@ -2888,7 +2858,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '电脑里另外设过的工具地址或密钥',
       run: async () => {
-        const relayProviders = new Set(providerIds.filter((provider) => {
+        const relayProviders = new Set(activeProviderIds.filter((provider) => {
           const inspection = providerInspections.get(provider)
           return inspection !== undefined && providerAccountMode(inspection) === 'relay'
         }))
@@ -2946,7 +2916,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '个人文件夹里早先留下的设置',
       run: () => homeFolderLeftoversOutcome({
         untouchedInstructions: hasUntouchedHomeProjectInstructions(userHome),
-        trustedBy: inspectHomeFolderTrust(providerRoots),
+        // Gemini CLI 下线后星芒不再提它记着的信任：那是客户自己的工具设置，星芒也不再从这里打开它。
+        trustedBy: inspectHomeFolderTrust(providerRoots).filter((provider) => !isRetiredProviderId(provider)),
       }),
     },
   ]

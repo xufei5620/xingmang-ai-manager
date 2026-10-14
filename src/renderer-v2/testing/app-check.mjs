@@ -385,17 +385,17 @@ test('opening a desktop client behind a running install says which install it wa
     await row.getByText('正在打开客户端', { exact: true }).waitFor()
     await page.evaluate(() => window.v2Test.releaseLaunch())
     await row.getByText(/运行中/).waitFor()
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
     await page.evaluate(() => window.v2Test.holdNextInstall())
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-grok-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
     await expect(opener).toBeEnabled()
     await opener.click()
-    await row.getByText('正在等 Gemini CLI 安装完，安装完马上打开', { exact: true }).waitFor()
+    await row.getByText('正在等 Grok CLI 安装完，安装完马上打开', { exact: true }).waitFor()
     await page.evaluate(() => window.v2Test.releaseInstall())
-    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
     await page.evaluate(() => window.v2Test.releaseLaunch())
-    await row.getByText('正在等 Gemini CLI 安装完，安装完马上打开', { exact: true }).waitFor({ state: 'detached' })
+    await row.getByText('正在等 Grok CLI 安装完，安装完马上打开', { exact: true }).waitFor({ state: 'detached' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['workbuddy', 'workbuddy'])
     await clean(page)
   } finally { await page.close() }
@@ -783,7 +783,9 @@ test('full App preserves the fixed desktop columns and renders only the new rend
       assert.equal(actionGeometry.pageHeadAlign, 'flex-start')
       assert.ok(Math.abs(actionGeometry.topCenterOffset) <= 1)
       assert.equal(actionGeometry.homeTopOffset, 4)
-      assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 8)
+      // Gemini CLI 下线后少了它那一行。
+      assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 7)
+      assert.equal(await page.getByTestId('tool-row-gemini').count(), 0)
       await page.getByRole('button', { name: '关闭公告提示' }).click()
       await page.screenshot({ path: path.join(artifacts, `home-${theme}.png`) })
       await page.getByTestId('sidebar-collapse').click()
@@ -797,7 +799,7 @@ test('launch and config actions use the original typed desktop and CLI endpoints
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await recentRead(page)
-    const providers = ['claude', 'codex', 'gemini', 'grok']
+    const providers = ['claude', 'codex', 'grok']
     for (const provider of providers) {
       const launchCount = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)
       await page.getByTestId(`tool-${provider}-primary`).click()
@@ -808,7 +810,7 @@ test('launch and config actions use the original typed desktop and CLI endpoints
     const calls = await page.evaluate(() => window.v2Test.calls)
     const choices = calls.filter((entry) => entry.method === 'chooseWorkspace')
     const launches = calls.filter((entry) => entry.method === 'launchCli')
-    // 四个工具都没聊过、也没选过文件夹：「打开」替用户建项目文件夹，建不成才弹选择框（已知40）。
+    // 这几个工具都没聊过、也没选过文件夹：「打开」替用户建项目文件夹，建不成才弹选择框（已知40）。
     assert.deepEqual(choices.map((entry) => entry.args), providers.map(() => [{ createStarter: true, firstOpen: true }]))
     assert.deepEqual(launches.map((entry) => entry.args), providers.map((provider) => [provider, starterFolder]))
     for (let index = 0; index < launches.length; index += 1) {
@@ -852,15 +854,18 @@ test('the launch button reuses the directory the tool was last opened in (N7)', 
     assert.equal(await button.getAttribute('title'), '在 C:\\work\\my-app 打开')
     // 带下拉的那些行把按钮列放宽（app.css 的 :has 规则）。宽度不够时目录名会被
     // 省略号吃掉，按钮上就只剩「打开 my…」，那比不写目录还糟。
-    const labels = await page.evaluate(() => ['claude', 'codex', 'gemini'].map((id) => {
-      const label = document.querySelector(`[data-testid="tool-${id}-primary"] span`)
-      return { id, text: label.textContent, clipped: label.scrollWidth - label.clientWidth }
-    }))
-    assert.deepEqual(labels, [
+    function primaryLabels(ids) {
+      return page.evaluate((list) => list.map((id) => {
+        const label = document.querySelector(`[data-testid="tool-${id}-primary"] span`)
+        return { id, text: label.textContent, clipped: label.scrollWidth - label.clientWidth }
+      }), ids)
+    }
+    assert.deepEqual(await primaryLabels(['claude', 'codex']), [
       { id: 'claude', text: '打开 my-app', clipped: 0 },
       { id: 'codex', text: '打开 codex-app', clipped: 0 },
-      { id: 'gemini', text: '打开 a-very-lon…', clipped: 0 },
     ])
+    // 夹具里还留着一条已下线的 Gemini CLI 的记录（目录名很长）：首页不画它那一行。
+    assert.equal(await page.getByTestId('tool-row-gemini').count(), 0)
     await button.click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     const direct = await page.evaluate(() => window.v2Test.calls)
@@ -880,6 +885,12 @@ test('the launch button reuses the directory the tool was last opened in (N7)', 
     const picked = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(picked.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args),
       [['claude', 'C:\\work\\my-app'], ['claude', 'C:\\Selected Project']])
+
+    // 目录名很长时按钮上省掉后半截，按钮列放得下，不再被省略号吃第二回。
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'grok', 'C:\\work\\a-very-long-project-name', 50))
+    await page.getByTestId('home-rescan').click()
+    await expect(page.getByTestId('tool-grok-primary')).toHaveText('打开 a-very-lon…')
+    assert.deepEqual(await primaryLabels(['grok']), [{ id: 'grok', text: '打开 a-very-lon…', clipped: 0 }])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1359,17 +1370,17 @@ test('the extension pages and the maintenance page read again when shown again (
       await expect.poll(() => calls('listProviderExtensions')).toBe(lists + 1)
       assert.equal(await calls('checkProviderMcpHealth'), health)
     }
-    // 安装卸载页：首页的任务跑完它本来就重读；在终端里自己装了 Gemini CLI（首页那份任务看不见）再回来，
+    // 安装卸载页：首页的任务跑完它本来就重读；在终端里自己装了 Grok CLI（首页那份任务看不见）再回来，
     // 那一行也不再写「未安装」。
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
     await page.getByTestId('nav-home').click()
     await page.getByTestId('page-home').waitFor()
-    await page.evaluate(() => window.xingmang.installCli('gemini'))
+    await page.evaluate(() => window.xingmang.installCli('grok'))
     // 「更多」那一组点开以后一直开着，再点一下反而收起来。
     await page.getByTestId('nav-maintenance').click()
-    await expect(page.getByTestId('maintenance-state-gemini')).not.toHaveText('未安装')
+    await expect(page.getByTestId('maintenance-state-grok')).not.toHaveText('未安装')
     await clean(page)
   } finally { await page.close() }
 })
@@ -1424,19 +1435,19 @@ test('an extension action that finishes after switching tools leaves the new too
     await page.getByTestId('nav-mcp').click()
     const mcp = page.getByTestId('page-mcp')
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    // 在 Claude Code 下停用连接，没跑完就换到 Gemini CLI。
+    // 在 Claude Code 下停用连接，没跑完就换到 Grok CLI。
     await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
     await expect.poll(async () => (await calls('mutateProviderExtension')).length).toBe(1)
-    await mcp.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
-    await mcp.getByTestId('mcp-row-gemini-link').waitFor()
+    await mcp.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await mcp.getByTestId('mcp-row-grok-link').waitFor()
     const lists = (await settled('listProviderExtensions')).length
     await page.evaluate(() => window.releaseHeld())
     await waitForToast(page, '操作已完成')
-    await expect(mcp.getByTestId('mcp-row-gemini-link')).toBeVisible()
+    await expect(mcp.getByTestId('mcp-row-grok-link')).toBeVisible()
     assert.equal(await mcp.getByTestId('mcp-row-claude-link').count(), 0)
     assert.equal((await settled('listProviderExtensions')).length, lists)
 
-    // 在 Gemini CLI 下点「重新检测」，列表还没读回来就换到 Claude Code：检测不再替 Gemini CLI 跑。
+    // 在 Grok CLI 下点「重新检测」，列表还没读回来就换到 Claude Code：检测不再替 Grok CLI 跑。
     const health = (await settled('checkProviderMcpHealth')).length
     await page.evaluate(() => window.holdNextList())
     await mcp.getByTestId('mcp-health-recheck').click()
@@ -1446,7 +1457,7 @@ test('an extension action that finishes after switching tools leaves the new too
     await page.evaluate(() => window.releaseHeld())
     assert.deepEqual((await settled('checkProviderMcpHealth')).slice(health), ['claude'])
     await expect(mcp.getByTestId('mcp-row-claude-link')).toBeVisible()
-    assert.equal(await mcp.getByTestId('mcp-row-gemini-link').count(), 0)
+    assert.equal(await mcp.getByTestId('mcp-row-grok-link').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -1480,11 +1491,11 @@ test('an extension action that fails after switching tools shows its failure und
     const mcp = page.getByTestId('page-mcp')
     const failure = mcp.getByRole('alert').filter({ hasText: 'claude-link 没能停用' })
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    // 在 Claude Code 下停用连接，没跑完就换到 Gemini CLI，这时它失败了。
+    // 在 Claude Code 下停用连接，没跑完就换到 Grok CLI，这时它失败了。
     await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
     await expect(mcp.getByTestId('mcp-add')).toBeDisabled()
-    await mcp.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
-    await mcp.getByTestId('mcp-row-gemini-link').waitFor()
+    await mcp.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await mcp.getByTestId('mcp-row-grok-link').waitFor()
     await page.evaluate(() => window.failHeld('claude-link 没能停用'))
     await expect(mcp.getByTestId('mcp-add')).toBeEnabled()
     assert.equal(await failure.count(), 0)
@@ -1492,8 +1503,8 @@ test('an extension action that fails after switching tools shows its failure und
     await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
     await expect(failure).toBeVisible()
-    await mcp.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
-    await mcp.getByTestId('mcp-row-gemini-link').waitFor()
+    await mcp.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await mcp.getByTestId('mcp-row-grok-link').waitFor()
     assert.equal(await failure.count(), 0)
     await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
@@ -1652,8 +1663,11 @@ test('deleting a session asks first, then removes it from the list and the home 
   try {
     await page.getByTestId('home-recent-resume-claude:1').waitFor()
     await page.getByTestId('nav-sessions').click()
-    // 只有能删的那家才给按钮：Gemini 这条在夹具里没开删除。
-    await page.getByTestId('sessions-view-gemini:5').click()
+    // 已下线的 Gemini CLI 那条记录（夹具里还留着）记录页不列。
+    await page.getByTestId('sessions-view-claude:1').waitFor()
+    assert.equal(await page.getByTestId('sessions-view-gemini:5').count(), 0)
+    // 只有能删的那家才给按钮：Codex 这条在夹具里没开删除。
+    await page.getByTestId('sessions-view-codex:4').click()
     assert.equal(await page.getByTestId('session-detail-delete').count(), 0)
     await page.getByTestId('session-detail-drawer').getByRole('button', { name: '关闭' }).first().click()
 
@@ -1778,9 +1792,9 @@ test('a folder picked for one CLI opens the others there without asking again', 
   } finally { await page.close() }
 })
 
-// 第四十批 A：托盘「已安装的工具」和 Ctrl+1～5 以前什么文件夹都不带，每次都弹选择框；
+// 第四十批 A：托盘「已安装的工具」和 Ctrl+数字以前什么文件夹都不带，每次都弹选择框；
 // 现在和首页那颗「打开 xx」挑同一个文件夹，都没有才弹。
-test('the tray and Ctrl+1-5 open a CLI in the folder its home button shows', async () => {
+test('the tray and Ctrl+number shortcuts open a CLI in the folder its home button shows', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   const launches = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args))
   const choices = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length)
@@ -1798,10 +1812,15 @@ test('the tray and Ctrl+1-5 open a CLI in the folder its home button shows', asy
     assert.deepEqual(await launches(), [['claude', 'C:\\work\\my-app'], ['codex', 'C:\\work\\codex-app']])
     assert.equal(await choices(), 0)
 
-    // Grok 没有记录，也没选过文件夹：照旧先问。
-    await page.keyboard.press('Control+5')
+    // Grok 没有记录，也没选过文件夹：照旧先问。Gemini CLI 下线以后它排第四。
+    await page.keyboard.press('Control+4')
     await settled('grok', 3)
     assert.deepEqual((await launches())[2], ['grok', 'C:\\Selected Project'])
+    assert.equal(await choices(), 1)
+    // 这台电脑上只看得到四个工具，Ctrl+5 什么都不开。
+    await page.keyboard.press('Control+5')
+    await page.waitForTimeout(300)
+    assert.equal((await launches()).length, 3)
     assert.equal(await choices(), 1)
 
     // Codex 桌面端自己管工作区，从托盘打开和以前一样。
@@ -2316,7 +2335,7 @@ test('a failed system scan leaves the maintenance page usable and never claims a
     assert.match(await page.getByTestId('maintenance-failure-system').innerText(), /读到之前装不了也卸不了/)
     // 运行环境那两行同样不能谎报「尚未安装」，也不给「安装」。
     assert.equal(await maintenance.getByText('尚未安装', { exact: true }).count(), 0)
-    assert.equal(await maintenance.getByText('暂未读到', { exact: true }).count(), 7, '每个工具行与运行环境行都只写一次「暂未读到」')
+    assert.equal(await maintenance.getByText('暂未读到', { exact: true }).count(), 6, '每个工具行与运行环境行都只写一次「暂未读到」')
     assert.equal(await page.getByTestId('maintenance-runtime-action-node').count(), 0)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await page.getByTestId('maintenance-failure-system').getByRole('button', { name: '重新检测', exact: true }).click()
@@ -2334,29 +2353,29 @@ test('the maintenance row being installed says so, shows plain progress and tell
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
     const maintenance = page.getByTestId('page-maintenance')
-    const row = page.getByTestId('maintenance-tool-gemini')
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    const row = page.getByTestId('maintenance-tool-grok')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
     assert.equal(await maintenance.getByRole('log').count(), 0)
     await page.evaluate(() => window.v2Test.holdNextInstall())
-    await page.getByTestId('maintenance-install-gemini').click()
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('安装中')
-    await expect(page.getByTestId('maintenance-install-gemini')).toBeDisabled()
+    await page.getByTestId('maintenance-install-grok').click()
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('安装中')
+    await expect(page.getByTestId('maintenance-install-grok')).toBeDisabled()
     const other = page.getByTestId('maintenance-install-claude')
     await expect(other).toBeDisabled()
-    await expect(other).toHaveAttribute('title', '等 Gemini CLI 装完再操作')
-    await page.evaluate(() => window.v2Test.emit('onInstallProgress', { provider: 'gemini', state: 'output', stage: 'download', message: 'npm 官方源：正在下载 @google/gemini-cli' }))
+    await expect(other).toHaveAttribute('title', '等 Grok CLI 装完再操作')
+    await page.evaluate(() => window.v2Test.emit('onInstallProgress', { provider: 'grok', state: 'output', stage: 'download', message: 'npm 官方源：正在下载 @xai-official/grok' }))
     await expect(row.locator('.xm-row-desc')).toHaveText('正在下载，第一次可能要几分钟，请别关窗口…')
     // 程序原话照旧只进「安装日志」，这张卡这时才出现。
-    await expect(maintenance.getByRole('log')).toHaveText('npm 官方源：正在下载 @google/gemini-cli')
+    await expect(maintenance.getByRole('log')).toHaveText('npm 官方源：正在下载 @xai-official/grok')
     assert.equal(await row.locator('.v2-maintenance-row-progress').count(), 0)
-    await page.evaluate(() => window.v2Test.emit('onInstallProgress', { provider: 'gemini', state: 'output', stage: 'download', message: '已下载 38%', percent: 38 }))
-    await expect(page.getByTestId('maintenance-install-gemini')).toHaveText('38%')
+    await page.evaluate(() => window.v2Test.emit('onInstallProgress', { provider: 'grok', state: 'output', stage: 'download', message: '已下载 38%', percent: 38 }))
+    await expect(page.getByTestId('maintenance-install-grok')).toHaveText('38%')
     await row.locator('.v2-maintenance-row-progress').waitFor()
-    await page.getByTestId('maintenance-cancel-gemini').click()
-    await expect(page.getByTestId('maintenance-cancel-gemini')).toHaveText('正在停止')
+    await page.getByTestId('maintenance-cancel-grok').click()
+    await expect(page.getByTestId('maintenance-cancel-grok')).toHaveText('正在停止')
     await page.evaluate(() => window.v2Test.releaseInstall('安装已取消'))
-    await page.getByTestId('maintenance-cancel-gemini').waitFor({ state: 'detached' })
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await page.getByTestId('maintenance-cancel-grok').waitFor({ state: 'detached' })
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
     assert.equal(await row.locator('.v2-maintenance-row-progress').count(), 0)
     await expect(other).toBeEnabled()
     assert.equal(await other.getAttribute('title'), null)
@@ -2370,10 +2389,10 @@ test('a maintenance row whose install failed says 安装失败 with the sentence
   try {
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
-    const row = page.getByTestId('maintenance-tool-gemini')
-    const state = page.getByTestId('maintenance-state-gemini')
+    const row = page.getByTestId('maintenance-tool-grok')
+    const state = page.getByTestId('maintenance-state-grok')
     await expect(state).toHaveText('未安装')
-    await page.getByTestId('maintenance-install-gemini').click()
+    await page.getByTestId('maintenance-install-grok').click()
     await expect(state).toHaveText('安装失败')
     assert.match(await state.getAttribute('class'), /xm-tone-bad/)
     const banner = page.getByTestId('page-maintenance').locator('.v2-business-notice.is-error strong')
@@ -2456,11 +2475,12 @@ test('restored login repairs missing tool configs without overwriting official o
   try {
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
     const input = await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'configureManagedCliKeys').args[0])
-    assert.deepEqual(input.providers, ['grok', 'gemini'])
+    // 已下线的 Gemini CLI 装着、配置也缺，同样不替它写。
+    assert.deepEqual(input.providers, ['grok'])
     await page.getByTestId('tool-row-claude').getByText('不是当前账号的 Key').waitFor()
     await page.getByTestId('tool-row-codex').getByText('官方账号', { exact: true }).waitFor()
     await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
-    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    assert.equal(await page.getByTestId('tool-row-gemini').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), 1)
     await clean(page)
   } finally { await page.close() }
@@ -2471,7 +2491,7 @@ test('restored login preserves a marked manual relay key and displays its source
   try {
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
     const input = await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'configureManagedCliKeys').args[0])
-    assert.deepEqual(input.providers, ['codex', 'grok', 'gemini'])
+    assert.deepEqual(input.providers, ['codex', 'grok'])
     await page.getByTestId('tool-row-claude').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '配置', exact: true }).click()
     assert.equal(await page.getByRole('button', { name: '自己填写密钥', exact: true }).getAttribute('aria-pressed'), 'true')
@@ -2486,7 +2506,7 @@ test('restored login preserves a marked manual relay key and displays its source
   }
 })
 
-const matchedToolIds = ['claude', 'codex', 'codexDesktop', 'grok', 'gemini']
+const matchedToolIds = ['claude', 'codex', 'codexDesktop', 'grok']
 async function matchedToolBadges(page, label) {
   for (const id of matchedToolIds) await page.getByTestId(`tool-row-${id}`).getByText(label, { exact: true }).waitFor()
 }
@@ -2499,7 +2519,7 @@ async function assertNoMatchedKeyOperations(page, from = 0) {
   assert.equal(calls.some(method => ['configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'switchToOfficialAccount', 'revealApiKey', 'revealAccountKey', 'getAccountKeys', 'getAccountKeyOptions', 'listModels', 'listAccountKeyModels', 'listConfiguredModels'].includes(method)), false)
 }
 
-test('read-only account matches restore all five CLI tool badges without key requests or writes and keep detection read-only', async () => {
+test('read-only account matches restore all four tool badges without key requests or writes and keep detection read-only', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1')
   try {
     await matchedToolBadges(page, '已配好')
@@ -2514,20 +2534,20 @@ test('read-only account matches restore all five CLI tool badges without key req
     const summary = await page.evaluate(() => window.xingmang.getConfig())
     assert.ok(Object.values(summary.providers).every(provider => provider.configurationOwnership === 'unknown' && provider.configurationAccountMatched === true))
     await page.setViewportSize({ width: 1440, height: 1100 })
-    await page.screenshot({ path: path.join(artifacts, 'readonly-account-match-five-tools.png') })
+    await page.screenshot({ path: path.join(artifacts, 'readonly-account-match-four-tools.png') })
     await clean(page)
   } finally { await page.close() }
 })
 
 test('read-only account matches respect local manual markers and preserve incomplete models without automatic repair', async () => {
-  const page = await open('readOnlyAccountMatch=1&allInstalled=1&matchedManualMarker=claude&matchedMissingModel=gemini')
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1&matchedManualMarker=claude&matchedMissingModel=grok')
   try {
     await page.getByTestId('tool-row-claude').getByText('已配好', { exact: true }).waitFor()
-    await page.getByTestId('tool-row-gemini').getByText('还没配 Key', { exact: true }).waitFor()
-    for (const id of ['codex', 'codexDesktop', 'grok']) await page.getByTestId(`tool-row-${id}`).getByText('已配好', { exact: true }).waitFor()
+    await page.getByTestId('tool-row-grok').getByText('还没配 Key', { exact: true }).waitFor()
+    for (const id of ['codex', 'codexDesktop']) await page.getByTestId(`tool-row-${id}`).getByText('已配好', { exact: true }).waitFor()
     await settleMatchedBootstrap(page)
     await assertNoMatchedKeyOperations(page)
-    assert.equal((await page.evaluate(() => window.xingmang.getConfig())).providers.gemini.model, '')
+    assert.equal((await page.evaluate(() => window.xingmang.getConfig())).providers.grok.model, '')
     await page.getByTestId('tool-row-claude').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '配置', exact: true }).click()
     assert.equal(await page.getByRole('button', { name: '自己填写密钥', exact: true }).getAttribute('aria-pressed'), 'true')
@@ -2831,7 +2851,8 @@ test('opening waits while the account key sync has not answered yet, then opens 
 // 检测没跑完时打开、刚选的文件夹写上了按钮；那一轮落地时带的是打开前读的配置，
 // 不能把这个文件夹盖回去，否则下次点「打开」又要选一遍。
 test('a folder picked while the startup scan runs stays on the button after the scan lands', async () => {
-  const page = await open('allInstalled=1&cachedScan=1&launchRemembers=1')
+  // 开机这一轮账号要写一次 Key：以前是已下线的 Gemini CLI 补写配置，现在让 Grok 的 Key 换了分组。
+  const page = await open('allInstalled=1&cachedScan=1&launchRemembers=1&regrouped=grok')
   try {
     await page.getByTestId('home-cached-scan').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
@@ -2845,7 +2866,7 @@ test('a folder picked while the startup scan runs stays on the button after the 
     await page.evaluate(() => window.v2Test.releaseScan())
     await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.textContent?.includes('打开 Selected P'))
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].providers.includes('grok')))
     await page.evaluate(() => window.v2Test.releaseConfigSave())
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length), 1)
     await clean(page)
@@ -2931,13 +2952,13 @@ test('the session event that trails a login keeps the login Key sync and unlocks
 test('installing a new CLI while signed in writes only that provider Key', async () => {
   const page = await open()
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-grok-primary').click()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
-    assert.deepEqual(calls.at(-1).args[0].providers, ['gemini'])
-    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    assert.deepEqual(calls.at(-1).args[0].providers, ['grok'])
+    await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -2947,8 +2968,8 @@ test('installing a new CLI while signed in writes only that provider Key', async
 test('the all-done key line on home goes away by itself after the toast reading time (已知12)', async () => {
   const page = await open()
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.getByTestId('tool-grok-primary').click()
     const done = page.locator('.v2-bootstrap-notice').filter({ hasText: '已完成 1 组工具的 Key 配置。' })
     await done.waitFor()
     // 14 个字：2400 + 2 × 200 毫秒。
@@ -3009,18 +3030,18 @@ test('cancelling on the maintenance page during the key sync after an install sa
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
     const maintenance = page.getByTestId('page-maintenance')
-    const row = page.getByTestId('maintenance-tool-gemini')
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    const row = page.getByTestId('maintenance-tool-grok')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
     await page.evaluate(() => window.v2Test.holdNextScan())
-    await page.getByTestId('maintenance-install-gemini').click()
+    await page.getByTestId('maintenance-install-grok').click()
     await expect(row.locator('.xm-row-desc')).toHaveText('安装完成，正在同步账号 Key 并刷新状态')
-    await page.getByTestId('maintenance-cancel-gemini').click()
+    await page.getByTestId('maintenance-cancel-grok').click()
     await expect(maintenance.getByRole('alert')).toContainText('这一步已经不能取消了。')
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelCliInstall').length), 0)
-    await expect(page.getByTestId('maintenance-cancel-gemini')).toHaveText('取消')
+    await expect(page.getByTestId('maintenance-cancel-grok')).toHaveText('取消')
     await page.evaluate(() => window.v2Test.releaseScan())
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
-    assert.equal(await page.getByTestId('maintenance-cancel-gemini').count(), 0)
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('已安装')
+    assert.equal(await page.getByTestId('maintenance-cancel-grok').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3032,16 +3053,16 @@ test('a refused cancel on the maintenance page stops showing once the install fi
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
     const maintenance = page.getByTestId('page-maintenance')
-    const row = page.getByTestId('maintenance-tool-gemini')
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    const row = page.getByTestId('maintenance-tool-grok')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
     await page.evaluate(() => window.v2Test.holdNextScan())
-    await page.getByTestId('maintenance-install-gemini').click()
+    await page.getByTestId('maintenance-install-grok').click()
     await expect(row.locator('.xm-row-desc')).toHaveText('安装完成，正在同步账号 Key 并刷新状态')
-    await page.getByTestId('maintenance-cancel-gemini').click()
+    await page.getByTestId('maintenance-cancel-grok').click()
     await expect(maintenance.getByRole('alert')).toContainText('这一步已经不能取消了。')
     await page.evaluate(() => window.v2Test.releaseScan())
     await waitForToast(page, '安装完成，工具状态已更新')
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('已安装')
     await expect(maintenance.getByRole('alert')).toHaveCount(0)
     assert.doesNotMatch(await maintenance.innerText(), /这一步已经不能取消了。/)
     await clean(page)
@@ -3069,11 +3090,12 @@ test('read-only account matches switch only explicitly selected CLI providers on
     await settleMatchedBootstrap(page)
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     const saved = page.getByTestId('saved-accounts-list')
-    // 原本就在用账号密钥的工具默认勾上；这里取消两个，确认只写勾着的。
+    // 原本就在用账号密钥的工具默认勾上；这里取消一个，确认只写勾着的。
     await page.getByTestId('account-sync-grok').waitFor()
     assert.equal(await page.getByTestId('account-sync-claude').isChecked(), true)
     assert.equal(await page.getByTestId('account-sync-codex').isChecked(), true)
-    await page.getByTestId('account-sync-gemini').uncheck()
+    // 已下线的 Gemini CLI 也是账号密钥，但不给勾。
+    assert.equal(await page.getByTestId('account-sync-gemini').count(), 0)
     await page.getByTestId('account-sync-grok').uncheck()
     await saved.getByRole('button', { name: '切换', exact: true }).click()
     await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
@@ -3083,8 +3105,8 @@ test('read-only account matches switch only explicitly selected CLI providers on
       { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
     ])
     for (const tool of ['claude', 'codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
-    // 没勾的两个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
-    for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('Key 可能不是当前账号的', { exact: true }).waitFor()
+    // 没勾的那个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
+    for (const tool of ['grok']) await page.getByTestId(`tool-row-${tool}`).getByText('Key 可能不是当前账号的', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
     await clean(page)
   } finally { await page.close() }
@@ -3119,7 +3141,6 @@ test('saved-account switching names the rewritten tools that are still open and 
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     const saved = page.getByTestId('saved-accounts-list')
     await page.getByTestId('account-sync-grok').waitFor()
-    await page.getByTestId('account-sync-gemini').uncheck()
     await page.getByTestId('account-sync-grok').uncheck()
     await saved.getByRole('button', { name: '切换', exact: true }).click()
     // 有工具还开着时切换框不自己关掉，提示和按钮要让用户看得到。
@@ -3213,7 +3234,8 @@ test('desktop status arriving during the initial scan preserves the full tool sn
   const page = await open('desktopEvent=1')
   try {
     await page.getByTestId('tool-row-codexDesktop').getByText('v9.9.9 · fixture-model').waitFor()
-    assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 8)
+    // Gemini CLI 下线后少了它那一行。
+    assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 7)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3614,7 +3636,8 @@ async function settleStartupBootstrap(page) {
 
 async function assertToolsOnTheirExpectedLine(page, line) {
   const providers = await page.evaluate(async () => (await window.xingmang.getConfig()).providers)
-  for (const provider of ['claude', 'codex', 'gemini', 'grok']) {
+  // 已下线的 Gemini CLI 星芒不再替它改线路，只看还在用的工具。
+  for (const provider of ['claude', 'codex', 'grok']) {
     assert.equal(new URL(providers[provider].actualBaseUrl).origin, line, provider)
     assert.equal(new URL(providers[provider].baseUrl).origin, line, provider)
   }
@@ -5666,7 +5689,6 @@ const defaultModelCases = [
   { tool: 'claude', provider: 'claude', model: 'claude-opus-5-5' },
   { tool: 'codex', provider: 'codex', model: 'gpt-6-astra' },
   { tool: 'codexDesktop', provider: 'codex', model: 'gpt-6-astra' },
-  { tool: 'gemini', provider: 'gemini', model: 'gemini-3.8-flash-high' },
   { tool: 'grok', provider: 'grok', model: 'grok-4.6' },
 ]
 // 没登录时欢迎页挡在前面（本机有 Key 也一样）。配好模型的工具走完使用步骤进首页再开配置；
@@ -5710,21 +5732,18 @@ for (const existing of [false, true]) for (const { tool, provider, model } of de
   })
 }
 
-// Google 从 2026-06-18 起不再服务个人账号（含 AI Pro / Ultra 订阅），Gemini CLI
-// 的官方来源只剩企业版 Code Assist。选项留着给企业客户，但限制要跟选项一起出现，
-// 而不是等用户选完、保存完、在 Google 登录页上失败几次之后才知道。
-test('Gemini marks the official source enterprise-only and still defaults to the relay key', async () => {
+// Gemini CLI 下线（yoyo 2026-10-14）：配置窗口的工具页签里没有它，原来挂在它「官方账号」旁边的
+// 那句企业版限制也跟着没了；装着它也一样。
+test('the configuration dialog offers no tab for the retired Gemini CLI', async () => {
   const page = await open('allInstalled=1')
   try {
-    await openToolConfiguration(page, 'gemini')
+    await openToolConfiguration(page, 'claude')
     const dialog = page.getByTestId('config-dialog')
-    assert.equal(await dialog.getByRole('button', { name: 'Google 企业版账号', exact: true }).count(), 1)
-    assert.equal(await dialog.getByRole('button', { name: '使用星芒账号', exact: true }).getAttribute('aria-pressed'), 'true')
-    const note = await page.getByTestId('tool-source-note').innerText()
-    assert.match(note, /个人 Google 账号/)
-    assert.match(note, /企业版 Code Assist/)
-    await dialog.getByRole('tab', { name: 'Claude Code', exact: true }).click()
-    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-source-note"]'))
+    await dialog.getByRole('tab', { name: 'Claude Code', exact: true }).waitFor()
+    await dialog.getByRole('tab', { name: 'Grok CLI', exact: true }).waitFor()
+    assert.equal(await dialog.getByRole('tab', { name: 'Gemini CLI', exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('tool-source-note').count(), 0)
+    assert.doesNotMatch(await dialog.innerText(), /Gemini CLI|Google 企业版账号/)
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'hidden' })
     await clean(page)
@@ -6387,7 +6406,7 @@ test('a failed configuration re-read leaves the tool list standing and says whic
     await page.getByTestId('tool-save-config').click()
     await waitForSavedConfiguration(page)
     await page.getByTestId('home-config-failure').waitFor()
-    for (const tool of ['claude', 'codex', 'grok', 'gemini']) {
+    for (const tool of ['claude', 'codex', 'grok']) {
       assert.equal(await page.getByTestId(`tool-row-${tool}`).count(), 1, `${tool} 那一行应该还在`)
     }
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
@@ -6480,12 +6499,12 @@ test('failed reset retains the selected key and retries reset without silently m
 test('an unreadable Node version is prepared again inside the same install (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1')
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.getByTestId('tool-grok-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method).filter((method) => method === 'installNodeRuntime' || method === 'installCli'))
     assert.deepEqual(methods, ['installNodeRuntime', 'installCli'])
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor({ state: 'detached' })
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor({ state: 'detached' })
     await clean(page)
   } finally { await page.close() }
 })
@@ -6493,9 +6512,9 @@ test('an unreadable Node version is prepared again inside the same install (R-G6
 test('a failed runtime stage says the tool never started and does not run the CLI install', async () => {
   const page = await open('nodeVersionUnknown=1&nodeInstallFail=1')
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.getByTestId('tool-gemini-primary').click()
-    await page.getByTestId('operation-error-detail').filter({ hasText: 'Node.js 运行环境没装上，Gemini CLI 还没开始安装' }).waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.getByTestId('tool-grok-primary').click()
+    await page.getByTestId('operation-error-detail').filter({ hasText: 'Node.js 运行环境没装上，Grok CLI 还没开始安装' }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
     await page.getByRole('button', { name: '返回', exact: true }).click()
     await clean(page)
@@ -6507,8 +6526,8 @@ test('a failed runtime stage says the tool never started and does not run the CL
 test('a runtime stage that needs a Windows restart stops before the CLI install and asks to restart', async () => {
   const page = await open('nodeVersionUnknown=1&nodeRestart=1')
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('runtime-restart-dialog').waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
     assert.equal(await page.getByTestId('operation-error-detail').count(), 0)
@@ -6519,8 +6538,8 @@ test('a runtime stage that needs a Windows restart stops before the CLI install 
 test('an unreadable Node version still blocks the CLI install where the app cannot install Node (R-G6)', async () => {
   const page = await open('nodeVersionUnknown=1&runtimeExternal=1')
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('operation-error-detail').filter({ hasText: '版本无法识别' }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
     await page.getByRole('button', { name: '返回', exact: true }).click()
@@ -6540,14 +6559,14 @@ test('a permission failure hands over the install directory instead of offering 
         value: { writeText: (text) => { window.__copied.push(text); return Promise.resolve() } },
       })
     })
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.getByTestId('tool-grok-primary').click()
     const dialog = page.getByTestId('operation-error')
     await dialog.waitFor()
     assert.match(await dialog.innerText(), /写不进安装目录/)
     // 这颗按钮已经没有了：本程序按普通权限运行，提权重试等于换一套安装事务。
     assert.equal(await page.getByRole('button', { name: /管理员/ }).count(), 0)
-    const target = '/home/fixture/.npm-global/lib/node_modules/@google/gemini-cli'
+    const target = '/home/fixture/.npm-global/lib/node_modules/@xai-official/grok'
     assert.equal(await page.getByTestId('operation-error-path').innerText(), target)
     await page.getByTestId('operation-error-copyPath').click()
     await page.getByTestId('operation-error-copied').waitFor()
@@ -6563,7 +6582,7 @@ test('an unreadable Node version leaves the guide runtime step to the one instal
   const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1')
   try {
     await page.getByTestId('welcome-steps').click()
-    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-route-grok').check()
     await page.getByTestId('guide-next').click()
     const guide = page.getByTestId('start-guide')
     await guide.getByText('点「安装」就行，缺的运行环境会一并装好。', { exact: true }).waitFor()
@@ -6578,7 +6597,7 @@ test('an unreadable Node version leaves the guide runtime step unfinished where 
   const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1&runtimeExternal=1')
   try {
     await page.getByTestId('welcome-steps').click()
-    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-route-grok').check()
     await page.getByTestId('guide-next').click()
     const guide = page.getByTestId('start-guide')
     await guide.getByText('命令行工具需要运行环境', { exact: true }).waitFor()
@@ -6604,19 +6623,19 @@ test('a deep link that cannot be read says so and points at the order page (R-B7
 test('installing from the maintenance page writes the account Key and refreshes the home page (R-G3)', async () => {
   const page = await open()
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
-    const row = page.getByTestId('maintenance-tool-gemini')
+    const row = page.getByTestId('maintenance-tool-grok')
     await row.getByText('未安装', { exact: true }).waitFor()
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
     await row.getByRole('button', { name: '安装', exact: true }).click()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
-    assert.deepEqual(calls.at(-1).args[0].providers, ['gemini'])
+    assert.deepEqual(calls.at(-1).args[0].providers, ['grok'])
     await row.getByText('已安装', { exact: true }).waitFor()
     await page.getByTestId('nav-home').click()
-    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -6661,17 +6680,17 @@ test('a tool installed from the home page reads as installed on a maintenance pa
   try {
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-maintenance').click()
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('未安装')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('未安装')
     await page.getByTestId('nav-home').click()
     await page.evaluate(() => window.v2Test.holdNextInstall())
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('nav-maintenance').click()
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('安装中')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('安装中')
     await page.evaluate(() => window.v2Test.releaseInstall())
     // 以前任务一完这一行就回到进页时读的那份：又写「未安装」，按钮又是「安装」。
-    await expect(page.getByTestId('maintenance-state-gemini')).toHaveText('已安装')
-    assert.match(await page.getByTestId('maintenance-tool-gemini').innerText(), /2\.0\.0/)
-    await expect(page.getByTestId('maintenance-install-gemini')).toHaveText('重新安装')
+    await expect(page.getByTestId('maintenance-state-grok')).toHaveText('已安装')
+    assert.match(await page.getByTestId('maintenance-tool-grok').innerText(), /2\.0\.0/)
+    await expect(page.getByTestId('maintenance-install-grok')).toHaveText('重新安装')
     await clean(page)
   } finally { await page.close() }
 })
@@ -6782,17 +6801,19 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
     await details.getByText('已核对当前账号的可用模型清单，gpt-6-astra 在其中', { exact: true }).waitFor()
     await details.getByRole('button', { name: '关闭', exact: true }).click()
     await expect(details).toHaveCount(0)
-    for (const provider of ['gemini', 'grok']) {
+    for (const provider of ['grok']) {
       const row = page.getByTestId(`health-connection-result-${provider}`)
       // 未配置不是失败：小标是灰的「未配置」，不是红的「有问题」，只给一条「去处理」。
       await expect(row.locator('.xm-pill')).toHaveText('未配置')
       await expect(row.locator('.xm-pill')).toHaveClass(/xm-tone-neutral/)
       await row.getByRole('button', { name: '去处理', exact: true }).waitFor()
     }
-    // 有问题的排前：没配的两条排在正常的两条前面，同一档里照注册表的次序。
+    // 有问题的排前：没配的那条排在正常的两条前面，同一档里照注册表的次序。
     const order = await page.getByTestId('health-connection').locator('[data-testid^="health-connection-result-"]')
       .evaluateAll((rows) => rows.map((row) => row.dataset.testid.replace('health-connection-result-', '')))
-    assert.deepEqual(order.filter((id) => ['claude', 'codex', 'gemini', 'grok'].includes(id)), ['gemini', 'grok', 'claude', 'codex'])
+    assert.deepEqual(order.filter((id) => ['claude', 'codex', 'grok'].includes(id)), ['grok', 'claude', 'codex'])
+    // 已下线的 Gemini CLI 不再自检，也不占一行。
+    assert.equal(order.includes('gemini'), false)
     assert.equal(await page.getByTestId('health-connection-idle').count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -6906,18 +6927,18 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await expect(codex.locator('.xm-row-desc')).toHaveText('自检没能完成')
     const order = await page.getByTestId('health-connection').locator('[data-testid^="health-connection-"]:is([data-testid*="-result-"], [data-testid*="-error-"])')
       .evaluateAll((rows) => rows.map((row) => row.dataset.testid.replace(/^health-connection-(result|error)-/, '')))
-    assert.deepEqual(order.filter((id) => ['claude', 'codex', 'gemini', 'grok'].includes(id)), ['claude', 'codex', 'gemini', 'grok'])
+    assert.deepEqual(order.filter((id) => ['claude', 'codex', 'grok'].includes(id)), ['claude', 'codex', 'grok'])
     // 分组层的下一步是重签一把 Key，所以这一条给的是「重新写入 Key」；仍旧跳页的
-    // 那几层（这里是未配置的 Gemini）继续给「去处理」。
+    // 那几层（这里是未配置的 Grok）继续给「去处理」。
     await claude.getByRole('button', { name: '重新写入 Key', exact: true }).waitFor()
-    await page.getByTestId('health-connection-result-gemini').getByRole('button', { name: '去处理', exact: true }).click()
+    await page.getByTestId('health-connection-result-grok').getByRole('button', { name: '去处理', exact: true }).click()
     await page.getByTestId('page-home').waitFor()
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-health').click()
     // 一个工具的 IPC 抛错只影响它自己那一条。
     await page.getByTestId('health-connection-run').click()
     await page.getByTestId('health-connection-error-codex').waitFor()
-    await page.getByTestId('health-connection-result-gemini').waitFor()
+    await page.getByTestId('health-connection-result-grok').waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -6969,9 +6990,9 @@ test('a failed rewrite says what the backend said instead of claiming it was fix
 test('the one-click repair on an invalid key runs the same rewrite', async () => {
   const page = await open()
   try {
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：令牌已失效' })
-    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('operation-error').waitFor()
     await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把 Key', { exact: true }).waitFor()
     const before = await page.evaluate(() => {
@@ -7180,7 +7201,7 @@ test('the skills page guide opens the skills chapter on its note and the directo
     await page.getByTestId('nav-skills').click()
     const skills = page.getByTestId('page-skills')
     const note = skills.getByTestId('skills-import-unsupported')
-    await expect(note).toContainText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI、Gemini CLI 可以在这里导入。')
+    await expect(note).toContainText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。')
     await expect(skills.getByTestId('skills-add')).toBeDisabled()
     await expect(skills.getByTestId('skills-add')).toHaveAttribute('title', 'Claude Code 不支持在这里导入')
     await note.getByRole('button', { name: '看怎么放', exact: true }).click()
@@ -8082,9 +8103,9 @@ test('the status bar drops back to not-checked once a tool was installed, and fo
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
     assert.equal(await environment.textContent(), '环境有 2 项需要处理')
-    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
-    await page.getByTestId('tool-gemini-primary').click()
-    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.getByTestId('tool-grok-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
     await expect.poll(() => environment.textContent()).toBe('环境待检测')
     assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot')
     await environment.click()

@@ -327,7 +327,7 @@ Key 走的型号菜单）不用抬。
 |---|---|---|---|
 | Claude Code | `2.1.291`（2026-10-06） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291 的依据见下文 |
 | Codex CLI | `0.160.1`（2026-10-06） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1 的依据见下文 |
-| Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文 |
+| Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
 | Grok CLI | `1.0.46`（2026-10-05） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44 与 1.0.46 各一遍，见下文） |
 
 四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
@@ -546,9 +546,9 @@ bundle：`DEFAULT_MODEL_CONFIGS` 整个对象逐字相同，出网前改名的 `
 
 名单越旧，默认装的版本离上游越远；而没人盯着的话，它只会在客户报障那天才被想起来。所以有一条每周的巡检例程（Routine）替人盯着：
 
-- **名字**：`四家 CLI 新版每周巡检`（2026-10-01 前叫「Claude Code 新版每周巡检」，只看 Claude Code）
+- **名字**：`四家 CLI 新版每周巡检`（2026-10-01 前叫「Claude Code 新版每周巡检」，只看 Claude Code；2026-10-13 起只看 Claude Code、Codex、Grok 三家，Gemini CLI 随后于 2026-10-14 下线，名单里它那条不再抬）
 - **频率**：每周一 01:00 UTC（北京时间周一 09:00）
-- **它做什么**：四家各取 npm `latest`（Grok 再和 xAI stable 取小），和名单比。都一样就只回一句「本周四家无新版」；有新版的逐个读上游变更记录——Claude Code 读仓库的 `CHANGELOG.md`，Codex 读 GitHub Releases 的 `rust-v*`（仓库里的 CHANGELOG 只是占位），Gemini 读 `docs/changelogs/index.md` 加缺的 release 页，Grok 没有可读的变更记录、只能装上新版在本地假接口重核配置。没有回归就抬推荐版本，有回归就加 `blocked`；一次巡检只开**一个草稿 PR**，含文档与 `changes/unreleased/` 分片。某个工具已经有别的 PR 在抬，就不再为它开，改为把评估结论交给那条线程。
+- **它做什么**：三家各取 npm `latest`（Grok 再和 xAI stable 取小），和名单比。都一样就只回一句「本周三家无新版」；有新版的逐个读上游变更记录——Claude Code 读仓库的 `CHANGELOG.md`，Codex 读 GitHub Releases 的 `rust-v*`（仓库里的 CHANGELOG 只是占位），Grok 没有可读的变更记录、只能装上新版在本地假接口重核配置。没有回归就抬推荐版本，有回归就加 `blocked`；一次巡检只开**一个草稿 PR**，含文档与 `changes/unreleased/` 分片。某个工具已经有别的 PR 在抬，就不再为它开，改为把评估结论交给那条线程。
 - **它不做什么**：不自己合并。抬版本的 PR 一律留给人复核——中转实测没跑过、或者跑红了，都不许合。
 - **抬 Codex 推荐版本时顺手换随包型号名单**（`bundled-catalog/codex-models/models.json`，步骤见同目录 README）：桌面端菜单靠它列出中转开着的新 GPT 型号，名单停在旧 tag 上，新型号就进不了菜单。
 
@@ -561,15 +561,14 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 所以 quality 工作流里有一个 `cli-relay-probe` 作业（`scripts/probe-cli-relay.cjs`）：
 
 - **什么时候跑**：PR 改到 `electron/cli-verified-versions.ts` 或本文档时。别的 PR 改不动这个答案，不值得对生产中转发真实请求。
-- **跑什么**：名单里**每一个**填了 `recommended` 的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex、Gemini 三个工具 × 两个站点 = 六次真实请求。
+- **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × 两个站点 = 四次真实请求（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测）。
   - Claude Code：`claude -p`，凭据走 `ANTHROPIC_AUTH_TOKEN`。
   - Codex：`codex exec`，配置是一份与 `config-files.ts` 的 `buildCodexRelayConfigTemplate` 同形的 `config.toml`（`wire_api = "responses"`、`model_reasoning_effort = "xhigh"`）。
-  - Gemini：`gemini -p --skip-trust --approval-mode plan`，凭据与 base URL 走 `GEMINI_API_KEY` / `GOOGLE_GEMINI_BASE_URL`。
-- **为什么连接自检不能代替它**：自检只读模型清单，而三个 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`、Gemini 的 `/v1beta/models/<model>:streamGenerateContent`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。
-- **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key。**三个工具共用这一把**，不另设第二个 secret。
-  - 但它必须覆盖三个工具各自的分组（`catalog.ts` 的 `managedCliKeyProfiles`：`Claude-MAX订阅` / `GPT-中转/订阅` / `Gemini-中转/订阅`）。只覆盖其中一个分组时，另外两个工具会被中转答成「当前分组下无可用渠道」。
+- **为什么连接自检不能代替它**：自检只读模型清单，而 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。
+- **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key。**探测的工具共用这一把**，不另设第二个 secret。
+  - 但它必须覆盖这几个工具各自的分组（`catalog.ts` 的 `managedCliKeyProfiles`：`Claude-MAX订阅` / `GPT-中转/订阅`）。只覆盖其中一个分组时，另一个工具会被中转答成「当前分组下无可用渠道」。
   - 探测脚本把这种回答单独归成 `group` 一类并在 summary 里写清「换一把覆盖该分组的 Key」，**不会**把它误报成「这个版本不能用」。
-  - Claude Code 与 Gemini 从子进程环境变量拿 Key。Codex 对自定义 model provider **不认** `OPENAI_API_KEY` 环境变量（对 0.155.1 实测：设了这个变量，请求里 `auth.header_attached=false`），只读 `$CODEX_HOME/auth.json`，所以它那一份是以 0600 写进一次性临时 HOME 的，跑完即删。三种路径都不经 argv——argv 在共享主机上是全员可读的。
+  - Claude Code 从子进程环境变量拿 Key。Codex 对自定义 model provider **不认** `OPENAI_API_KEY` 环境变量（对 0.155.1 实测：设了这个变量，请求里 `auth.header_attached=false`），只读 `$CODEX_HOME/auth.json`，所以它那一份是以 0600 写进一次性临时 HOME 的，跑完即删。两种路径都不经 argv——argv 在共享主机上是全员可读的。
 - **没有配密钥时**：作业照常通过，但 summary 里明确写「未在中转实测」，并列出这次本该探测的是哪几个工具的哪几个版本。一句诚实的「没验证」比一个看着绿的空作业有用。
 - **结论怎么读**：只有「端点拒绝了 CLI 发出的请求（400 类）」才说明这个版本不能推给客户。分组不对、401/403、额度不足、5xx 是**探测本身坏了**，作业同样变红，但那是去换密钥或等中转恢复，不是去改名单。
 

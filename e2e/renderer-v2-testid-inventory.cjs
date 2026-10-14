@@ -135,7 +135,11 @@ function inventory(renderer) {
 }
 const legacy = inventory('legacy'), v2 = inventory('v2');
 const current = new Map(v2.patterns.map(row => [row.pattern, row]));
-const unmatched = legacy.patterns.filter(row => row.kind !== 'forwarded-or-unresolved' && !current.has(row.pattern));
+// Gemini CLI 下线（yoyo 2026-10-14）：新界面有意不再画它的引导选项，冻结的旧界面照旧留着这个 testId。
+// 只按全名逐条放行，不放模式；新界面里再出现它反而算错（界面不许再露出下线的工具）。
+const retiredLegacyPatterns = new Set(['guide-route-gemini']);
+const revivedRetired = [...retiredLegacyPatterns].filter(pattern => current.has(pattern));
+const unmatched = legacy.patterns.filter(row => row.kind !== 'forwarded-or-unresolved' && !current.has(row.pattern) && !retiredLegacyPatterns.has(row.pattern));
 const escapeRegex = value => value.replace(/[.*+?^$()|[\]\\{}]/g, '\\$&');
 function templateMatches(pattern, literal) {
   if (!pattern.includes('$' + '{') || pattern.startsWith('$' + '{')) return false;
@@ -159,10 +163,11 @@ console.log(JSON.stringify(report.counts));
 // readable from the log alone.
 const boundary = report.runtimeBoundary;
 for (const row of missing) console.error('缺失 testId 模式: ' + row.pattern + '（旧位置 ' + row.locations[0].file + ':' + row.locations[0].line + '）');
+for (const pattern of revivedRetired) console.error('新界面又出现了已下线工具的 testId: ' + pattern + '（' + current.get(pattern).locations[0].file + ':' + current.get(pattern).locations[0].line + '）');
 for (const row of boundary.forbiddenLegacyImports) console.error('v2 运行时引入了旧界面模块: ' + row.from + ':' + row.line + ' -> ' + row.resolved);
 for (const row of boundary.forbiddenNodeImports) console.error('v2 运行时引入了 Node 内置模块: ' + row.from + ' -> ' + row.specifier);
 for (const row of boundary.unresolvedDynamic) console.error('v2 运行时存在无法解析的动态导入: ' + row.file + ' -> ' + row.expression);
-if (missing.length || boundary.forbiddenLegacyImports.length || boundary.forbiddenNodeImports.length || boundary.unresolvedDynamic.length) {
+if (missing.length || revivedRetired.length || boundary.forbiddenLegacyImports.length || boundary.forbiddenNodeImports.length || boundary.unresolvedDynamic.length) {
   if (!outputDirectory) console.error('完整报告可用 npm run check:v2 -- --report test-results 生成。');
   process.exitCode = 1;
 }

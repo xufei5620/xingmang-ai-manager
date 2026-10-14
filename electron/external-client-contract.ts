@@ -141,7 +141,8 @@ export function parseExternalClientConfigRequest(input: unknown): ExternalClient
   const source = record(value.credential)
   let credential: ExternalClientCredential
   if (source.kind === 'configured') {
-    if (source.provider !== 'claude' && source.provider !== 'codex' && source.provider !== 'gemini' && source.provider !== 'grok') {
+    // 下线的 Gemini CLI 不再当密钥来源：星芒不再管它的 Key，换了账号它也不跟着换。
+    if (source.provider !== 'claude' && source.provider !== 'codex' && source.provider !== 'grok') {
       throw new Error('密钥来源无效')
     }
     credential = { kind: 'configured', provider: source.provider }

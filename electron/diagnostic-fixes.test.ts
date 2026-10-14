@@ -116,9 +116,9 @@ describe('clearable environment overrides', () => {
   const urls = { claude: 'https://relay.example', codex: 'https://relay.example/v1', gemini: 'https://relay.example', grok: 'https://relay.example/v1' }
   it('offers keys and foreign addresses but never the folders that hold the user\'s own config', () => {
     const env = {
+      ANTHROPIC_BASE_URL: 'https://relay.example',
       ANTHROPIC_API_KEY: 'sk-x',
       OPENAI_BASE_URL: 'https://other.example/v1',
-      GOOGLE_GEMINI_BASE_URL: 'https://relay.example',
       CLAUDE_CONFIG_DIR: '/elsewhere/claude',
     }
     expect(clearableEnvironmentOverrides(env, [urls], '/home/user')).toEqual(['ANTHROPIC_API_KEY', 'OPENAI_BASE_URL'])
@@ -126,9 +126,24 @@ describe('clearable environment overrides', () => {
 
   it('leaves an address alone when it points at any line that counts as the current account', () => {
     const direct = { claude: 'https://direct.example', codex: 'https://direct.example/v1', gemini: 'https://direct.example', grok: 'https://direct.example/v1' }
-    const env = { GOOGLE_GEMINI_BASE_URL: 'https://relay.example', ANTHROPIC_BASE_URL: 'https://direct.example', OPENAI_BASE_URL: 'https://other.example/v1' }
-    expect(clearableEnvironmentOverrides(env, [direct, urls], '/home/user')).toEqual(['OPENAI_BASE_URL'])
-    expect(clearableEnvironmentOverrides(env, [direct], '/home/user')).toEqual(['OPENAI_BASE_URL', 'GOOGLE_GEMINI_BASE_URL'])
+    const env = { ANTHROPIC_BASE_URL: 'https://relay.example', OPENAI_BASE_URL: 'https://direct.example/v1' }
+    expect(clearableEnvironmentOverrides(env, [direct, urls], '/home/user')).toEqual([])
+    expect(clearableEnvironmentOverrides(env, [direct], '/home/user')).toEqual(['ANTHROPIC_BASE_URL'])
+    expect(clearableEnvironmentOverrides(env, [urls], '/home/user')).toEqual(['OPENAI_BASE_URL'])
+    expect(clearableEnvironmentOverrides({ ...env, OPENAI_BASE_URL: 'https://other.example/v1' }, [direct, urls], '/home/user'))
+      .toEqual(['OPENAI_BASE_URL'])
+  })
+
+  // Gemini CLI 下线（2026-10-14）：星芒不再管它的账号，它的变量也不再替客户删。
+  it('no longer offers to clear the variables of the retired Gemini CLI', () => {
+    const env = {
+      GOOGLE_GEMINI_BASE_URL: 'https://other.example',
+      GEMINI_API_KEY: 'sk-x',
+      GOOGLE_GEMINI_API_KEY: 'sk-x',
+      GEMINI_MODEL: 'gemini-other',
+      GOOGLE_GENAI_API_VERSION: 'v1',
+    }
+    expect(clearableEnvironmentOverrides(env, [urls], '/home/user')).toEqual([])
   })
 })
 
@@ -154,7 +169,7 @@ describe('clearUserProviderOverrides', () => {
 
   it('does not start PowerShell when nothing on the allow-list is left to clear', async () => {
     let ran = false
-    const result = await clearUserProviderOverrides({ names: ['PATH'], platform: 'win32', run: async () => { ran = true; return '' } })
+    const result = await clearUserProviderOverrides({ names: ['PATH', 'GEMINI_API_KEY'], platform: 'win32', run: async () => { ran = true; return '' } })
     expect(ran).toBe(false)
     expect(result.fixed).toBe(0)
   })
@@ -167,12 +182,13 @@ describe('clearUserProviderOverrides', () => {
     const script = buildClearProviderOverridesScript()
     expect(script).toContain('$allowed = @(')
     expect(script).toContain('"ANTHROPIC_API_KEY"')
+    expect(script).not.toContain('GEMINI')
     expect(script).toContain('SetEnvironmentVariable($name, $null, "User")')
     expect(script).not.toContain('"Machine")\n    [Environment]::SetEnvironmentVariable')
   })
 
   it('rejects output it cannot read and ignores names outside the allow-list', () => {
     expect(() => parseClearProviderOverridesOutput('')).toThrow('没能确认')
-    expect(parseClearProviderOverridesOutput('cleared:PATH;gemini_api_key\nmachine:\n')).toEqual({ cleared: ['GEMINI_API_KEY'], machine: [] })
+    expect(parseClearProviderOverridesOutput('cleared:PATH;anthropic_api_key;gemini_api_key\nmachine:\n')).toEqual({ cleared: ['ANTHROPIC_API_KEY'], machine: [] })
   })
 })

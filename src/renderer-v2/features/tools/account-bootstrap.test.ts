@@ -25,6 +25,7 @@ import {
 } from './account-bootstrap'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
+import type { ActiveProviderId } from '../../../../electron/catalog'
 import type { RunningToolsReport } from '../../../../electron/running-tools'
 import {
   readManualSourceMarker,
@@ -88,16 +89,17 @@ describe('account managed Key bootstrap', () => {
     snapshot.desktopApps.codex = { ...snapshot.desktopApps.codex, installed: true, appVersion: '1.0.0' }
     const current = config()
     current.providers.claude = { ...current.providers.claude, exists: true, codexAuthMode: null }
-    current.providers.gemini = { ...current.providers.gemini, exists: true, authType: 'oauth-personal' }
     current.providers.grok = { ...current.providers.grok, exists: true, hasApiKey: true, actualBaseUrl: 'https://other.example/v1' }
-    expect(accountBootstrapPlan(snapshot, current, { ...settings, officialProviders: ['claude'] })).toMatchObject({
+    const plan = accountBootstrapPlan(snapshot, current, { ...settings, officialProviders: ['claude'] })
+    expect(plan).toMatchObject({
       targets: ['codex'],
       skipped: expect.arrayContaining([
         expect.objectContaining({ provider: 'claude', reason: 'official' }),
-        expect.objectContaining({ provider: 'gemini', reason: 'official' }),
         expect.objectContaining({ provider: 'grok', reason: 'unknown' }),
       ]),
     })
+    // 已下线的 Gemini CLI 装着也不碰：不签 Key、不写配置，跳过的清单里也不提它。
+    expect(plan.skipped.map((entry) => entry.provider)).not.toContain('gemini')
   })
 
   it('leaves an edited configuration alone until the user asks for a rewrite', () => {
@@ -144,7 +146,7 @@ describe('account managed Key bootstrap', () => {
     expect(configure).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'], intent: 'explicit' }))
   })
 
-  it('syncs first, writes every installed missing provider, and verifies the readback', async () => {
+  it('syncs first, writes every installed missing provider except the retired Gemini CLI, and verifies the readback', async () => {
     const current = config()
     const storage = memoryStorage()
     for (const provider of ['claude', 'codex', 'grok', 'gemini'] as ProviderId[]) {
@@ -159,18 +161,20 @@ describe('account managed Key bootstrap', () => {
       getConfig: vi.fn(async () => structuredClone(current)),
       configureManagedCliKeys: vi.fn(async (input: Parameters<AccountBootstrapBridge['configureManagedCliKeys']>[0]) => {
         calls.push('configure')
-        for (const provider of input.providers) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'model', configurationOwnership: 'account', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}) }
+        for (const provider of input.providers) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'model', configurationOwnership: 'account' }
         return { configured: [...input.providers], failed: [] }
       }),
     }
     await expect(
       bootstrapAccountTools(api, 17, undefined, 'login', undefined, storage),
     ).resolves.toMatchObject({
-      configured: ['claude', 'codex', 'grok', 'gemini'],
+      readyKeys: ['claude', 'codex', 'grok'],
+      configured: ['claude', 'codex', 'grok'],
       failed: [],
     })
     expect(calls).toEqual(['sync', 'scan', 'configure'])
-    for (const provider of ['claude', 'codex', 'grok', 'gemini'] as ProviderId[]) {
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude', 'codex', 'grok'] }))
+    for (const provider of ['claude', 'codex', 'grok'] as ProviderId[]) {
       expect(
         readManualSourceMarker(
           storage,
@@ -179,6 +183,8 @@ describe('account managed Key bootstrap', () => {
         ),
       ).toBe(false)
     }
+    // 已下线的工具那份本机标记也不动：星芒不再替它写配置。
+    expect(readManualSourceMarker(storage, current.providers.gemini.baseUrl, 'gemini')).toBe(true)
   })
 
   it.each([
@@ -223,6 +229,29 @@ describe('account managed Key bootstrap', () => {
     await expect(
       bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage()),
     ).resolves.toMatchObject({ networkBlocked: false })
+  })
+
+  // 主进程不再替已下线的 Gemini CLI 签 Key；万一回来的结果里还带着它，首页横幅不提它，也不拿它当断网的证据。
+  it('neither mentions nor counts a key result for the retired Gemini CLI', async () => {
+    const current = config()
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({
+        ready: [{ provider: 'gemini' as ProviderId, group: 'group', name: 'gemini' }],
+        failed: [{ provider: 'gemini' as ProviderId, group: 'group', message: networkFailureMessages.offline }],
+      })),
+      scanSystem: vi.fn(async () => system(['gemini'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(result.readyKeys).toEqual([])
+    expect(result.warnings.join('\n')).not.toContain('Gemini')
+    expect(result.networkBlocked).toBe(false)
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
   })
 
   it('puts an unregistered image tool on the home banner without treating it as a network failure', async () => {
@@ -555,12 +584,11 @@ describe('account managed Key bootstrap', () => {
     expect(refused.repairedShadowed).toBeUndefined()
   })
 
-  it.each(['login', 'restore'] as const)('does not rewrite read-only matched keys during %s, even when their model or Gemini auth mode is incomplete', (mode) => {
+  it.each(['login', 'restore'] as const)('does not rewrite read-only matched keys during %s, even when their model is incomplete', (mode) => {
     const current = config()
-    const providers = ['claude', 'codex', 'grok', 'gemini'] as const
+    const providers = ['claude', 'codex', 'grok'] as const
     for (const provider of providers) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true,
       matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'existing-model', configurationOwnership: 'unknown', configurationAccountMatched: true,
-      ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}),
     }
     const installed = system([...providers])
     const readyPlan = accountBootstrapPlan(installed, current, settings, mode, null)
@@ -573,16 +601,12 @@ describe('account managed Key bootstrap', () => {
     const incompletePlan = accountBootstrapPlan(installed, current, settings, mode, null)
     expect(incompletePlan.targets).toEqual([])
     expect(incompletePlan.skipped).toEqual(providers.map((provider) => expect.objectContaining({ provider, reason: 'unknown' })))
-    current.providers.gemini.model = 'existing-model'
-    current.providers.gemini.authType = ''
-    expect(accountBootstrapPlan(installed, current, settings, mode, null).targets).toEqual([])
   })
 
   it.each(['login', 'restore'] as const)('retains read-only matched configs without configuring when account synchronization is offline during %s', async (mode) => {
     const current = config()
     for (const provider of ['claude', 'codex', 'grok', 'gemini'] as const) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true,
       matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'existing-model', configurationOwnership: 'unknown', configurationAccountMatched: true,
-      ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}),
     }
     const before = structuredClone(current)
     const api: AccountBootstrapBridge = {
@@ -811,8 +835,7 @@ describe('explicit applied connection routes on restore', () => {
   function routedConfig(provider: ProviderId = 'codex'): AppConfigSummary {
     const current = config()
     current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true,
-      baseUrl: direct[provider], actualBaseUrl: primary[provider], model: 'kept-model', configurationOwnership: 'account',
-      ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}) }
+      baseUrl: direct[provider], actualBaseUrl: primary[provider], model: 'kept-model', configurationOwnership: 'account' }
     return current
   }
   function fixture() {
@@ -834,10 +857,16 @@ describe('explicit applied connection routes on restore', () => {
     return { current, api }
   }
 
-  it.each(['claude', 'codex', 'gemini', 'grok'] as const)('plans an owned %s config for the explicitly applied route and keeps its model', (provider) => {
+  it.each(['claude', 'codex', 'grok'] as const)('plans an owned %s config for the explicitly applied route and keeps its model', (provider) => {
     expect(accountBootstrapPlan(system([provider]), routedConfig(provider), applied, 'restore', null)).toMatchObject({
       targets: [provider], preferredModels: { [provider]: 'kept-model' },
     })
+  })
+
+  it('never plans the retired Gemini CLI, even when its config sits on another route', () => {
+    const plan = accountBootstrapPlan(system(['gemini']), routedConfig('gemini'), applied, 'restore', null)
+    expect(plan.targets).toEqual([])
+    expect(plan.skipped.map((entry) => entry.provider)).not.toContain('gemini')
   })
 
   it('migrates the retired IP test entry even though its endpoint id is also direct', () => {
@@ -924,7 +953,7 @@ describe('explicit applied connection routes on restore', () => {
   })
 
   it('says a round only followed the line when every tool it wrote just changed its line', () => {
-    const configured: ProviderId[] = ['claude', 'codex']
+    const configured: ActiveProviderId[] = ['claude', 'codex']
     expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['claude', 'codex'] })).toBe(true)
     // 有一个是真写了 Key（新装的、换了分组的），首页照常说「已完成…」。
     expect(bootstrapOnlyFollowedRoute({ configured, routeFollowed: ['codex'] })).toBe(false)
@@ -1017,7 +1046,7 @@ describe('account bootstrap log lines', () => {
       configured: ['claude'],
       failed: [],
       skipped: [
-        { provider: 'gemini', reason: 'not-installed', message: 'Gemini CLI 尚未安装，Key 已保留在账号中' },
+        { provider: 'codex', reason: 'not-installed', message: 'Codex CLI 尚未安装，Key 已保留在账号中' },
         { provider: 'grok', reason: 'manual', message: 'Grok CLI 保留手动填写的密钥' },
       ],
       warnings: [],
@@ -1029,7 +1058,7 @@ describe('account bootstrap log lines', () => {
   it('says which tools were written and why the others were skipped, at info level', () => {
     expect(describeAccountBootstrapResult('login', result())).toEqual({
       level: 'info',
-      message: 'Key 自动配置（登录后）：写好 Claude Code；跳过 Gemini CLI（未安装）、Grok CLI（手填密钥）',
+      message: 'Key 自动配置（登录后）：写好 Claude Code；跳过 Codex CLI（未安装）、Grok CLI（手填密钥）',
     })
   })
 

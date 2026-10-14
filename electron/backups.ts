@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { readDirectoryEntriesSync } from './bounded-directory'
-import { isProviderId, type ProviderId } from './catalog'
+import { isProviderId, isRetiredProviderId, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig } from './config-files'
 import { assertNoReparseComponents, ensureSafeDataDirectory, renameWithTransientRetrySync } from './safe-local-data'
@@ -801,6 +801,8 @@ export class ConfigBackupStore {
   restore(id: string, context?: ConfigBackupAccountContext | null): ConfigRestoreResult {
     let validated = validateBackup(this.userDataDirectory, this.providerRoots, id)
     const restoreProvider = validated.manifest.provider
+    // 下线的工具（Gemini CLI）星芒不再改它的配置，以前留下的备份也不往回恢复。
+    if (isRetiredProviderId(restoreProvider)) throw new Error('未知的配置类型')
     const preRestore = this.create(restoreProvider, 'pre-restore', id, context)
     validated = validateBackup(this.userDataDirectory, this.providerRoots, id)
     if (validated.manifest.provider !== restoreProvider) {

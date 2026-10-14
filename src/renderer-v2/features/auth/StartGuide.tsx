@@ -16,7 +16,7 @@ import { buildGuideSetupResult, type GuideSetupResult } from './guide-result'
 import { AuthWindow } from './AuthWindow'
 import './auth.css'
 
-export type GuideRoute = 'claude' | 'codex' | 'codexDesktop' | 'gemini' | 'grok' | 'chat'
+export type GuideRoute = 'claude' | 'codex' | 'codexDesktop' | 'grok' | 'chat'
 export type GuideStep = 'choose' | 'prepare' | 'connect' | 'ready'
 export interface GuideToolState {
   id: Exclude<GuideRoute, 'chat'>
@@ -27,13 +27,8 @@ export interface GuideToolState {
   runtimeReady?: boolean
   /** 这台电脑上装它、用它都不需要 Node.js（Windows 版 Grok，第十八批 8）；缺省 = 需要。 */
   runtimeNotNeeded?: boolean
-  pythonReady?: boolean
-  /** 这台电脑上装它、用它都不需要 Python（Gemini：Linux 版拆分 ③ 先去掉，第二十八批 C 起 Windows、Mac 也是）；缺省 = 按原来的判断。 */
-  pythonNotNeeded?: boolean
   /** 缺 Node.js 时「安装」会先把它装上（Windows 代装）；缺省 = 旧行为，先单独准备。 */
   runtimeAutoPrepare?: boolean
-  /** 同上，Gemini 的 Python。 */
-  pythonAutoPrepare?: boolean
   detectionError?: boolean
   supported?: boolean
   installMode?: 'managed' | 'external' | 'unavailable'
@@ -61,7 +56,6 @@ export interface StartGuideProps {
   /** version：点名装哪个版本（「更新」到推荐版本时）；缺省 = 按名单或最新版。 */
   onInstall: (route: Exclude<GuideRoute, 'chat'>, version?: string) => Promise<void>
   onInstallRuntime?: () => Promise<void>
-  onInstallPython?: () => Promise<void>
   resumeKey?: string
   onConfigure: (route: Exclude<GuideRoute, 'chat'>) => Promise<void>
   /**
@@ -79,7 +73,7 @@ export interface StartGuideProps {
   /** 这台电脑能不能由本软件把 Node.js 换成新版（只有 Windows）；缺省 = 不能。 */
   canReplaceNode?: boolean
   onLogin: () => void
-  /** newFolder：不弹目录选择器，替用户新建一个项目文件夹再打开（只对四家 CLI 有意义）。 */
+  /** newFolder：不弹目录选择器，替用户新建一个项目文件夹再打开（只对命令行工具有意义）。 */
   onLaunch: (route: GuideRoute, newFolder?: boolean) => Promise<boolean | void>
   onComplete: (route: GuideRoute) => void
   onBack?: () => void
@@ -153,7 +147,7 @@ export function guideInstallFailure(error: unknown, name: string, canReplaceNode
 }
 
 /**
- * 引导里除「安装」以外的几步（准备环境、准备 Python、检测、确认连接、打开工具）
+ * 引导里除「安装」以外的几步（准备环境、检测、确认连接、打开工具）
  * 失败时的说法（全面检测 Q8）。这几步都不是登录，以前借 authErrorMessage 翻译，
  * 于是「Node.js 下载超时」成了「连接星芒服务器超时」，主进程写好的中文原因
  * （「请先确认账号连接，再打开工具。」）被换成「输入已保留，请稍后重试」。
@@ -201,7 +195,7 @@ export function guideFailureExits(reason: unknown): OperationAction[] {
 }
 
 /** 引导里会装东西的几步：失败时和错误框一样给出口，不只「再试一次」（第十九批 1）。 */
-const guideInstallActions = new Set(['安装工具', '更新工具', '准备环境', '准备 Python'])
+const guideInstallActions = new Set(['安装工具', '更新工具', '准备环境'])
 
 /**
  * 安装类失败的出口：和错误框（operationErrorActions）同一张表。「换成新版 Node.js」
@@ -242,15 +236,10 @@ function guideNeedsNodeRuntime(route: GuideRoute | null, state: GuideToolState |
   return route !== 'codexDesktop' && state?.runtimeNotNeeded !== true
 }
 
-/** 这一步要不要看 Python：只有 Gemini 看，而且主进程说这台电脑不需要时也不看。 */
-function guideNeedsPython(route: GuideRoute | null, state: GuideToolState | undefined): boolean {
-  return route === 'gemini' && state?.pythonNotNeeded !== true
-}
-
 export function resolveGuideReadiness(route: GuideRoute | null, state: GuideToolState | undefined, signedIn: boolean) {
   if (!route) return { prepared: false, connected: false }
   if (route === 'chat') return { prepared: true, connected: signedIn }
-  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (!guideNeedsNodeRuntime(route, state) || state.runtimeReady === true) && (!guideNeedsPython(route, state) || state.pythonReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'none' && !state.officialLoginRequired
+  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (!guideNeedsNodeRuntime(route, state) || state.runtimeReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'none' && !state.officialLoginRequired
     // 来源没确认的只放行 Key 就在当前账号那个站上、确实能用的两种；别的站的 Key 在这里用不了。
     && (state.source !== 'unknown' || state.keyState === 'otherAccount' || state.keyState === 'changed')
     && (state.configured || state.source === 'official')) }
@@ -297,7 +286,7 @@ function GuideFirstTaskPrompt({ prompt, disabled }: { prompt: string; disabled: 
   </div>
 }
 
-function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, onInstallPython, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, canReplaceNode = false, onLogin, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
+function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, canReplaceNode = false, onLogin, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
   const recommended = guideRecommendedToolFor(platform)
   const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === recommended) - Number(a.id === recommended) || a.shortcutIndex - b.shortcutIndex)
@@ -339,7 +328,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 只在工具和运行环境都齐了时才提：没齐的时候先要做的是把它们准备好。
   const update = readiness.prepared && tool?.update ? tool.update : null
   const updateLabel = update?.newer === false ? '换成推荐版本' : '更新'
-  const oneButton = Boolean(tool && !tool.installed && route !== 'codexDesktop' && (!guideNeedsNodeRuntime(route, tool) || tool.runtimeReady || tool.runtimeAutoPrepare) && (!guideNeedsPython(route, tool) || tool.pythonReady || tool.pythonAutoPrepare))
+  const oneButton = Boolean(tool && !tool.installed && route !== 'codexDesktop' && (!guideNeedsNodeRuntime(route, tool) || tool.runtimeReady || tool.runtimeAutoPrepare))
   // Node.js 由本软件准备的平台，运行环境那几句说「自动」「一键」，别把人支到软件外面去。
   // Mac、Linux 按能力判断（Mac 第十六批 2 起、Linux 版拆分 ② 起由本软件准备）。Mac 以前照旧写
   // 「在应用外安装」、按钮叫「安装指南」，点下去其实是星芒自己去下（已知9）。
@@ -447,10 +436,10 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
       if (launched !== false && ticket === owner.current) complete(chosen)
     })
   }
-  // Codex 桌面端自己管工作区，只有四家 CLI 打开时要选文件夹。
+  // Codex 桌面端自己管工作区，只有命令行工具打开时要选文件夹。
   const opensFolder = route !== null && route !== 'chat' && route !== 'codexDesktop'
-  // 保留着官方来源的工具,在这一步也要看到它自己的限制(Gemini 的个人 Google
-  // 账号已经登不上去了),否则用户会拿着一份用不了的连接走完引导。
+  // 保留着官方来源的工具,在这一步也要看到它自己的限制(registry/tools.ts 的
+  // officialAccountNotes),否则用户会拿着一份用不了的连接走完引导。
   const officialNote = route && route !== 'chat' && tool?.source === 'official' ? officialAccountNotes[route === 'codexDesktop' ? 'codex' : route] : null
   const officialName = route && route !== 'chat' ? officialAccountNames[route === 'codexDesktop' ? 'codex' : route] ?? '官方账号' : '官方账号'
   const switchLabel = switchAccountLabel(accountName)
@@ -487,8 +476,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             <p className="auth-guide-lead">{readiness.prepared ? update ? `${name} 已经装好，但${update.knownIssue ? '这个版本有已知问题，用起来会出错' : '版本旧了'}，建议先${update.manualHint ? '用它原来的方式更新' : `点「${updateLabel}」`}。${update.knownIssue ? '' : '不更新也能直接点「下一步」。'}` : `${name} 已经装好。` : oneButton ? '点「安装」就行，缺的运行环境会一并装好。' : `核对 ${name} 的安装状态，再按顺序准备。`}</p>
             {!tool || tool.detectionError ? <p className="auth-error" role="alert">暂时无法确认工具是否已安装，请重新检测。</p> : <div className="auth-guide-checklist">
               {guideNeedsNodeRuntime(route, tool) && <div className="auth-guide-check-row"><Terminal size={20} aria-hidden="true" /><div><strong>运行环境</strong><p>{tool.runtimeReady ? '运行环境已就绪' : oneButton ? '点「安装」时会一并装好' : runtimeByApp ? '命令行工具需要运行环境' : '在应用外安装完成后回来重新检测'}</p></div><Pill tone={tool.runtimeReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.runtimeReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.runtimeReady && !oneButton && onInstallRuntime && <Button icon={Download} disabled={locked} onClick={() => void run('准备环境', onInstallRuntime)} testId="guide-node">{runtimeByApp ? '一键安装' : '安装指南'}</Button>}</div>}
-              {guideNeedsPython(route, tool) && <div className="auth-guide-check-row" data-testid="guide-python-step"><BrandIcon tool="python" size={26} /><div><strong>Python</strong><p>{tool.pythonReady ? 'Python 已就绪' : oneButton ? '点「安装」时会一并装好' : !tool.runtimeReady ? '先准备运行环境，再继续这一步' : platform === 'win' ? 'Gemini 的准备清单包含 Python 环境' : '在应用外安装 Python 后回来重新检测'}</p></div><Pill tone={tool.pythonReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.pythonReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.pythonReady && !oneButton && onInstallPython && <Button icon={Download} disabled={locked || !tool.runtimeReady} onClick={() => void run('准备 Python', onInstallPython)} testId="guide-python">{platform === 'win' ? '一键安装' : '安装指南'}</Button>}</div>}
-              <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{tool.installed ? `已找到${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : ''}` : '尚未检测到安装'}</p></div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已安装'}</Pill>{update && !update.manualHint && <Button icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button icon={Download} disabled={locked || (!oneButton && ((guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady) || (guideNeedsPython(route, tool) && !tool.pythonReady)))} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
+              <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{tool.installed ? `已找到${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : ''}` : '尚未检测到安装'}</p></div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已安装'}</Pill>{update && !update.manualHint && <Button icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button icon={Download} disabled={locked || (!oneButton && guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady)} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
               {update?.manualHint && <p className="auth-hint" data-testid="guide-update-manual">{update.manualHint}</p>}
               {(tool.supported === false || tool.installMode === 'unavailable') && <p className="auth-error">当前平台暂不支持这个工具，请返回选择其他开始方式。</p>}
             </div>}

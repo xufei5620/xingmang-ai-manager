@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { connectionCheckView, connectionLayerLabels, rewritableKeyProviders } from './connection-check'
 import { providerIds, type AppConfigSummary, type ConnectionCheckLayer, type ConnectionCheckResult, type ExternalClientCheckResult, type ProviderConfigSummary, type ProviderId } from '../../../../electron/ipc-contract'
-import { writeManualSourceMarker, type SourceMarkerStorage } from './source-marker'
+import type { SourceMarkerStorage } from './source-marker'
+import { activeProviderIds } from '../../../../electron/catalog'
 
 function memoryStorage(): SourceMarkerStorage {
   const values = new Map<string, string>()
@@ -108,20 +109,20 @@ describe('connectionCheckView', () => {
     expect(view.statusLabel).toBe('服务端')
   })
 
-  // 一个只装了 Claude Code 的用户按下「测试连接」，另外三个工具必须读成
-  // 「还没配」，不是三条红色失败。
+  // 一个只装了 Claude Code 的用户按下「测试连接」，另外几个工具必须读成
+  // 「还没配」，不是几条红色失败。
   it('shows a tool that was never set up as unconfigured rather than a failure', () => {
     const view = connectionCheckView(result({
-      provider: 'gemini',
+      provider: 'grok',
       layer: 'unconfigured',
-      summary: '还没有给 Gemini CLI 写入星芒配置',
+      summary: '还没有给 Grok CLI 写入星芒配置',
       nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检',
       endpoint: null,
       detail: '不该出现',
     }))
     expect(view.tone).toBe('neutral')
     expect(view.statusLabel).toBe('未配置')
-    expect(view.title).toBe('还没有给 Gemini CLI 写入星芒配置')
+    expect(view.title).toBe('还没有给 Grok CLI 写入星芒配置')
     expect(view.endpoint).toBeNull()
     expect(view.detail).toBeNull()
   })
@@ -166,26 +167,27 @@ describe('connectionCheckView', () => {
 })
 
 describe('rewritableKeyProviders', () => {
-  it('names the tools whose configuration came from the current account', () => {
-    expect(rewritableKeyProviders(config(), memoryStorage())).toEqual([...providerIds])
+  // 主进程的配置里仍带着已下线的 Gemini CLI（也是当前账号写的），界面不再替它重写 Key。
+  it('names the tools whose configuration came from the current account, never the retired Gemini CLI', () => {
+    const rewritable = rewritableKeyProviders(config(), memoryStorage())
+    expect(rewritable).toEqual([...activeProviderIds])
+    expect(rewritable).not.toContain('gemini')
   })
 
   // 覆盖用户自己填的密钥就是把他的配置弄丢了，而重写流程本来也会跳过这些工具，
   // 所以按钮不该出现在它们身上。
   it('leaves out an official account and a hand-written key', () => {
     const storage = memoryStorage()
-    const marked = config({ gemini: { configurationOwnership: 'manual' } })
-    writeManualSourceMarker(storage, marked.providers.grok.baseUrl, 'grok', true)
-    const rewritable = rewritableKeyProviders(
+    const owned = rewritableKeyProviders(
       config({
-        gemini: { configurationOwnership: 'manual' },
+        grok: { configurationOwnership: 'manual' },
         codex: { codexAuthMode: 'chatgpt' },
       }),
       storage,
     )
-    expect(rewritable).toContain('claude')
-    expect(rewritable).not.toContain('gemini')
-    expect(rewritable).not.toContain('codex')
+    expect(owned).toContain('claude')
+    expect(owned).not.toContain('grok')
+    expect(owned).not.toContain('codex')
   })
 
   it('gives nothing while the configuration has not been read yet', () => {

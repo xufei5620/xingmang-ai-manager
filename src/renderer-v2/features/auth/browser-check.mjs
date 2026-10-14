@@ -292,7 +292,10 @@ test('recovery on an account with two-step verification asks for the code before
 test('chat guide keeps all four steps and never installs a runtime or tool', async () => {
   const page = await open('scenario=guide&loggedOut=1')
   try {
-    assert.equal(await page.locator('input[type=radio]').count(), 6)
+    // 四个工具（Gemini CLI 已下线，不再列）加「先在星芒里聊天」。
+    assert.equal(await page.locator('input[type=radio]').count(), 5)
+    assert.equal(await page.getByTestId('guide-route-gemini').count(), 0)
+    assert.equal(await page.getByText('Gemini').count(), 0)
     // 第十一批 1：默认选中推荐的 Codex 桌面端并排在第一位，「下一步」一开始就能点。
     assert.equal(await page.locator('input[type=radio]:checked').getAttribute('value'), 'codexDesktop')
     assert.equal(await page.locator('input[type=radio]').first().getAttribute('value'), 'codexDesktop')
@@ -496,42 +499,38 @@ test('canceling CLI workspace selection keeps the guide on its ready step', asyn
   } finally { await page.close() }
 })
 
-test('Gemini preparation unlocks Node then Python then CLI from confirmed snapshots', async () => {
-  const page = await open('scenario=guide&pending=python')
+// 要 Python 的只有已下线的 Gemini CLI：命令行工具这一步只有运行环境和工具本身两行。
+test('command-line preparation unlocks Node then the CLI from confirmed snapshots, with no Python step', async () => {
+  const page = await open('scenario=guide')
   try {
-    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-route-claude').check()
     await page.getByTestId('guide-next').click()
-    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Python', 'Gemini CLI'])
-    assert.equal(await page.getByTestId('guide-python').isDisabled(), true)
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Claude Code'])
+    assert.equal(await page.getByTestId('guide-python-step').count(), 0)
+    assert.equal(await page.getByTestId('guide-python').count(), 0)
     assert.equal(await page.getByTestId('guide-install').isDisabled(), true)
     assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
     await page.getByTestId('guide-node').click()
-    assert.equal(await page.getByTestId('guide-python').isEnabled(), true)
-    assert.equal(await page.getByTestId('guide-install').isDisabled(), true)
-    await page.getByTestId('guide-python').click()
-    assert.equal(await page.getByTestId('guide-install').isDisabled(), true)
-    assert.equal(await page.getByTestId('guide-pause').isDisabled(), true)
-    await page.evaluate(() => window.authHarness.release('python'))
     await page.waitForFunction(() => !document.querySelector('[data-testid="guide-install"]').disabled)
     await page.getByTestId('guide-install').click()
     await page.locator('[data-guide-step="connect"]').waitFor()
-    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'runtime', 'python', 'install'])
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'runtime', 'install'])
   } finally { await page.close() }
 })
 
 // 第十一批 2：能代装运行环境的平台上，「准备工具」这一步只剩一颗「安装」，
-// Node.js 和 Python 两行只报状态；失败时说清是哪一段没装上，并给一颗「再试一次」。
-test('Gemini installs with one button when the runtimes can be prepared automatically', async () => {
+// Node.js 那一行只报状态；失败时说清是哪一段没装上，并给一颗「再试一次」。
+test('a command-line tool installs with one button when the runtime can be prepared automatically', async () => {
   const page = await open('scenario=guide&auto=1&installFail=1')
   try {
-    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-route-claude').check()
     await page.getByTestId('guide-next').click()
-    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Python', 'Gemini CLI'])
+    assert.deepEqual(await page.locator('.auth-guide-check-row strong').allTextContents(), ['运行环境', 'Claude Code'])
     assert.equal(await page.getByTestId('guide-node').count(), 0)
     assert.equal(await page.getByTestId('guide-python').count(), 0)
     assert.equal(await page.getByTestId('guide-install').isEnabled(), true)
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-error').filter({ hasText: '运行环境没装上（下载超时），Gemini CLI 还没开始装' }).waitFor()
+    await page.getByTestId('guide-error').filter({ hasText: '运行环境没装上（下载超时），Claude Code 还没开始装' }).waitFor()
     await page.getByTestId('guide-retry').click()
     // 装好之后替用户点「下一步」；还没连上，所以停在「确认连接」。
     await page.locator('[data-guide-step="connect"]').waitFor()
@@ -673,38 +672,38 @@ test('an old version installed some other way gets a hint instead of an update b
 })
 
 test('guide pause resumes the chosen route and step without choosing for a fresh account', async () => {
-  const page = await open('scenario=guide&resume=1&runtime=1&python=1&installed=1&strict=1')
+  const page = await open('scenario=guide&resume=1&runtime=1&installed=1&strict=1')
   try {
     assert.equal(await page.evaluate(() => localStorage.getItem('xingmang-ui-v2:guide:site%3A7')), null)
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
-    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-route-grok').check()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-pause').click()
     assert.equal(await page.getByTestId('start-guide').count(), 0)
     await page.evaluate(() => window.authHarness.reopen())
     await page.getByTestId('start-guide').waitFor()
-    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'gemini')
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'grok')
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
     await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'guide-heading')
     await page.evaluate(() => window.authHarness.switchScope('site:8'))
     await page.getByTestId('guide-route-chat').waitFor()
-    // 新账号拿到的是推荐项，不是上一个账号停在半路的 Gemini。
+    // 新账号拿到的是推荐项，不是上一个账号停在半路的 Grok。
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'codexDesktop')
     assert.equal(await page.evaluate(() => localStorage.getItem('xingmang-ui-v2:guide:site%3A8')), null)
     await page.getByTestId('guide-route-chat').check()
     await page.evaluate(() => window.authHarness.switchScope('site:7'))
     await page.getByTestId('guide-config').waitFor()
-    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'gemini')
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-route'), 'grok')
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
-    assert.equal((await calls(page)).filter((item) => ['runtime', 'python', 'install', 'configure'].includes(item.method)).length, 0)
+    assert.equal((await calls(page)).filter((item) => ['runtime', 'install', 'configure'].includes(item.method)).length, 0)
   } finally { await page.close() }
 })
 
 test('a failed detection from the previous account cannot lock or report an error in the new guide', async () => {
   const page = await open('scenario=guide&resume=1&pending=detect')
   try {
-    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-route-grok').check()
     await page.getByTestId('guide-next').click()
     assert.equal(await page.getByTestId('start-guide').getAttribute('aria-busy'), 'true')
     await page.evaluate(() => window.authHarness.switchScope('site:8'))
@@ -986,7 +985,7 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
     try {
       await page.getByTestId('welcome-orbit-scene').waitFor()
       assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), theme === 'dark' ? 'obsidian' : 'dawn')
-      assert.equal(await page.locator('.auth-orbit-satellite').count(), 4)
+      assert.equal(await page.locator('.auth-orbit-satellite').count(), 3)
       assert.equal(await page.locator('.frame,.ptile,.welcome-preview-workbench').count(), 0)
       await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0))
       const pixels = await page.getByTestId('welcome-starfield').evaluate((canvas) => {
@@ -1011,7 +1010,7 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
   }
 })
 
-// 品牌和侧栏同一套（标志加「星芒 AI」字样），标志下面不再有一排和星轨重复的四个工具。
+// 品牌和侧栏同一套（标志加「星芒 AI」字样），标志下面不再有一排和星轨重复的工具。
 test('welcome shows the sidebar brand without the row of tools under it', async () => {
   const page = await open('scenario=welcome')
   try {
@@ -1026,13 +1025,14 @@ test('welcome shows the sidebar brand without the row of tools under it', async 
   } finally { await page.close() }
 })
 
-// 四个工具在同一条轨道上等距、同向公转：转到哪个角度都不会叠在一起。
-test('welcome keeps the four tools evenly spaced on one orbit so they never overlap', async () => {
+// 三个工具（Gemini CLI 下线后）在同一条轨道上每隔 120° 一个、同向公转：转到哪个角度都不会叠在一起。
+test('welcome keeps the three tools evenly spaced on one orbit so they never overlap', async () => {
   const page = await open('scenario=welcome')
   try {
     await page.getByTestId('welcome-orbit-scene').waitFor()
     assert.equal(await page.locator('.auth-orbit-ring').count(), 1)
-    for (let spin = 0; spin < 90; spin += 5) {
+    assert.deepEqual(await page.locator('.auth-orbit-satellite').allInnerTexts(), ['Claude Code', 'Codex CLI', 'Grok CLI'])
+    for (let spin = 0; spin < 120; spin += 5) {
       const boxes = await page.evaluate((angle) => {
         const ring = document.querySelector('.auth-orbit-ring')
         ring.style.setProperty('--auth-spin', `${angle}deg`)
@@ -1040,11 +1040,16 @@ test('welcome keeps the four tools evenly spaced on one orbit so they never over
         const cx = center.left + center.width / 2, cy = center.top + center.height / 2
         return [...ring.querySelectorAll('.auth-orbit-satellite')].map((item) => {
           const rect = item.getBoundingClientRect()
-          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, distance: Math.hypot(rect.left + rect.width / 2 - cx, rect.top + rect.height / 2 - cy) }
+          const x = rect.left + rect.width / 2 - cx, y = rect.top + rect.height / 2 - cy
+          return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, distance: Math.hypot(x, y), angle: Math.atan2(y, x) * 180 / Math.PI }
         })
       }, spin)
-      assert.equal(boxes.length, 4)
+      assert.equal(boxes.length, 3)
       for (const box of boxes) assert.ok(Math.abs(box.distance - boxes[0].distance) < 1, `every tool is on the same orbit at ${spin}deg`)
+      for (let index = 1; index < boxes.length; index++) {
+        const gap = ((boxes[index].angle - boxes[index - 1].angle) % 360 + 360) % 360
+        assert.ok(Math.abs(gap - 120) < 1, `tools ${index - 1} and ${index} sit 120deg apart at ${spin}deg (got ${gap})`)
+      }
       for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
         const apart = boxes[a].right <= boxes[b].left || boxes[b].right <= boxes[a].left || boxes[a].bottom <= boxes[b].top || boxes[b].bottom <= boxes[a].top
         assert.ok(apart, `tools ${a} and ${b} do not overlap at ${spin}deg`)

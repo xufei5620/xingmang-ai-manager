@@ -1,4 +1,4 @@
-import { providerIds, type ProviderId } from '../../../electron/catalog';
+import { isActiveProviderId, type ActiveProviderId, type ProviderId } from '../../../electron/catalog';
 import catalog from '../../../bundled-catalog/curated-extensions.json';
 
 /**
@@ -48,7 +48,7 @@ export interface CuratedExtension {
   summary: string;
   publisher: string;
   homepage: string;
-  providers: ProviderId[];
+  providers: ActiveProviderId[];
   install: CuratedInstall;
   inputs: CuratedInput[];
   runtime: CuratedRuntime;
@@ -96,8 +96,9 @@ function text(value: unknown): string | null {
 function stringArray(value: unknown): string[] | null {
   return Array.isArray(value) && value.every(entry => typeof entry === 'string') ? [...(value as string[])] : null;
 }
-function isProviderId(value: unknown): value is ProviderId {
-  return typeof value === 'string' && (providerIds as readonly string[]).includes(value);
+// 已下线的工具（Gemini CLI）和认不出的值一样算不认识：清单里再写上它，整条丢弃、由测试报出来。
+function isListedProvider(value: unknown): value is ActiveProviderId {
+  return isActiveProviderId(value);
 }
 function oneOf<T extends string>(allowed: readonly T[], value: unknown): T | null {
   return typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : null;
@@ -169,7 +170,7 @@ export function parseCuratedExtensions(raw: unknown): CuratedExtension[] {
     const rawInputs = Array.isArray(entry.inputs) ? entry.inputs : null;
     // 未知的 provider / risk 会被过滤掉，所以长度不等就说明清单里写了这一层认不出的值。
     // 那不该被静静吞掉成「少一个工具」，整条丢弃、由测试报出来。
-    const providers = rawProviders?.filter(isProviderId) ?? null;
+    const providers = rawProviders?.filter(isListedProvider) ?? null;
     const risks = rawRisks
       ?.map(risk => oneOf(curatedRisks, risk))
       .filter((risk): risk is CuratedRisk => risk !== null) ?? null;
@@ -202,6 +203,7 @@ export const curatedExtensions = parseCuratedExtensions(catalog);
 
 /** 页面只展示当前 tab 的类别、且当前工具支持的那几条。 */
 export function curatedItemsFor(kind: CuratedKind, provider: ProviderId): CuratedExtension[] {
+  if (!isActiveProviderId(provider)) return [];
   return curatedExtensions.filter(item => item.kind === kind && item.providers.includes(provider));
 }
 

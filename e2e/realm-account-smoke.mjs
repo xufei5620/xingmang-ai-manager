@@ -690,9 +690,10 @@ async function main() {
     // Also the first instance's fold: nothing below issues a request before the
     // restart that replaces it.
     const stats = await foldFixtureStats()
-    assert.deepEqual(new Set(stats.groups.api), new Set(['Codex_pro', 'Claude-MAX(不限客户端)', 'Gemini', 'grok-heavy']))
-    assert.equal(stats.groups.api.length, 4)
-    assert.equal(stats.groups.xm.length, 4)
+    // Gemini CLI 下线后只替三家签 Key，两个站都不再要 Gemini 分组。
+    assert.deepEqual(new Set(stats.groups.api), new Set(['Codex_pro', 'Claude-MAX(不限客户端)', 'grok-heavy']))
+    assert.equal(stats.groups.api.length, 3)
+    assert.equal(stats.groups.xm.length, 3)
     assert.deepEqual(stats.calls.filter((call) => generationRoute.test(call.route)), [])
     await fs.access(path.join(userData, 'managed-cli-keys.dat'))
     await fs.access(path.join(userData, 'realms/api-account/managed-cli-keys.dat'))

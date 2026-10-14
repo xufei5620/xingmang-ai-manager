@@ -56,7 +56,8 @@ try {
   const recommended = process.platform === 'linux' ? 'codex' : 'codexDesktop'
   assert.equal(await page.locator('[data-testid="start-guide"]').getAttribute('data-guide-route'), recommended)
   assert.equal(await page.getByRole('radio', { checked: true }).count(), recommended ? 1 : 0)
-  assert.equal(await page.getByRole('radio').count(), process.platform === 'linux' ? 5 : 6)
+  // 桌面端、三家命令行工具、星芒聊天（Gemini CLI 下线后不再有它那一项）；Linux 没有桌面端。
+  assert.equal(await page.getByRole('radio').count(), process.platform === 'linux' ? 4 : 5)
   assert.equal(await page.getByRole('button', { name: '下一步', exact: true }).isDisabled(), !recommended)
   assert.equal(await page.locator('.start-guide-steps > li').count(), 4)
   recordPass('guide-preselects-recommended-route')

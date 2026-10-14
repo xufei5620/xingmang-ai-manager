@@ -23,31 +23,37 @@ const limits = resolveManagedCliKeyLimits(
   [
     key({ id: 1, name: 'xingmang-desktop-claude', unlimitedQuota: false, remainQuota: 6_000_000, usedQuota: 2_000_000 }),
     key({ id: 2, name: 'xingmang-desktop-codex', group: 'GPT-中转/订阅', usedQuota: 1_500_000 }),
+    // 已下线的 Gemini CLI 那把 Key 还留在账号里，这张卡不再给它一行。
+    key({ id: 3, name: 'xingmang-desktop-gemini', group: 'Gemini-中转/订阅', usedQuota: 500_000 }),
   ],
   500_000,
   'solov',
 )
-const [claude, codex, , gemini] = limits
+const [claude, codex, grok] = limits
 
 describe('tool key limit rows', () => {
   it('lists only the tools that have a key, in the usual tool order, and names the rest', () => {
     const layout = toolKeyLimitLayout(limits)
     expect(layout.rows.map((limit) => limit.provider)).toEqual(['claude', 'codex'])
-    expect(layout.missing).toEqual(['Gemini CLI', 'Grok CLI'])
+    expect(layout.missing).toEqual(['Grok CLI'])
     expect(toolKeyLimitLayout([...limits].reverse()).rows.map((limit) => limit.provider)).toEqual(['claude', 'codex'])
-    expect(toolKeyLimitLayout([...limits].reverse()).missing).toEqual(['Gemini CLI', 'Grok CLI'])
+    expect(toolKeyLimitLayout([...limits].reverse()).missing).toEqual(['Grok CLI'])
+  })
+
+  it('has no row for the retired Gemini CLI even while its key is still on the account', () => {
+    expect(limits.map((limit) => limit.provider)).toEqual(['claude', 'codex', 'grok'])
   })
 
   it('describes a limited tool, an unlimited one and a tool without a key yet', () => {
     expect(toolKeyLimitDescription(claude)).toBe('已用 $4.00 · 上限剩余 $12.00')
     expect(toolKeyLimitDescription(codex)).toBe('已用 $3.00 · 不限额度')
-    expect(toolKeyLimitDescription(gemini)).toContain('在首页配置一次')
+    expect(toolKeyLimitDescription(grok)).toContain('在首页配置一次')
   })
 
   it('prefills the field with the current limit and leaves it blank when there is none', () => {
     expect(toolKeyLimitValue(claude)).toBe('12')
     expect(toolKeyLimitValue(codex)).toBe('')
-    expect(toolKeyLimitValue(gemini)).toBe('')
+    expect(toolKeyLimitValue(grok)).toBe('')
   })
 
   it('renders one editable row per tool with the tool name, not the key name', () => {
@@ -64,10 +70,10 @@ describe('tool key limit rows', () => {
 
   it('disables the field for a tool that has no managed key yet', () => {
     const html = renderToStaticMarkup(
-      <ToolKeyLimitRow limit={gemini} value="" busy={false} disabled={false} onChange={() => undefined} onSave={() => undefined} />,
+      <ToolKeyLimitRow limit={grok} value="" busy={false} disabled={false} onChange={() => undefined} onSave={() => undefined} />,
     )
     expect(html).toContain('disabled=""')
-    expect(html).toContain('Gemini CLI')
+    expect(html).toContain('Grok CLI')
   })
 
   it('never names the account backend in what the user reads', () => {
@@ -96,6 +102,6 @@ describe('tool key limit rows', () => {
   it('leaves an unlimited tool and a tool with budget left alone', () => {
     expect(toolKeyLimitReached(claude)).toBe(false)
     expect(toolKeyLimitReached(codex)).toBe(false)
-    expect(toolKeyLimitReached(gemini)).toBe(false)
+    expect(toolKeyLimitReached(grok)).toBe(false)
   })
 })

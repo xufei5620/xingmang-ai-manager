@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { providerIds } from './catalog'
+import { activeProviderIds, providerIds } from './catalog'
 import { externalToolIds } from './external-client-contract'
 import {
   buildFeedbackEnvironmentLines,
@@ -42,8 +42,19 @@ describe('buildFeedbackEnvironmentLines', () => {
       readConfig: () => pointingAtAccount,
     })
 
-    expect(lines).toHaveLength(providerIds.length + externalToolIds.length)
+    expect(lines).toHaveLength(activeProviderIds.length + externalToolIds.length)
     expect(lines[0]).toBe('Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号，模型 claude-opus-5')
+  })
+
+  // Gemini CLI 下线（2026-10-14）：星芒不再查它装没装，报告里也不该有一行不准的状态。
+  it('leaves the retired Gemini CLI out even when the cached scan still carries it', () => {
+    const text = buildFeedbackEnvironmentLines({
+      clis: statusesWith({ gemini: { ...installed, version: '0.60.0', installSource: 'path' } }),
+      readConfig: () => pointingAtAccount,
+    }).join('\n')
+
+    expect(text).not.toContain('Gemini')
+    expect(text).not.toContain('0.60.0')
   })
 
   it('names the Codex connection and flags one Codex ignores', () => {
@@ -59,16 +70,16 @@ describe('buildFeedbackEnvironmentLines', () => {
   it('labels the other install sources and leaves Grok unlabelled', () => {
     const lines = buildFeedbackEnvironmentLines({
       clis: statusesWith({
+        claude: { ...installed, version: '2.1.277', installSource: 'path' },
         codex: { ...installed, version: '0.155.1', installSource: 'native' },
-        gemini: { ...installed, version: '0.60.0', installSource: 'path' },
         grok: { ...installed, version: '1.0.40', installSource: undefined },
       }),
       readConfig: () => pointingAtAccount,
     })
     const text = lines.join('\n')
 
+    expect(text).toContain('Claude Code: 已安装 2.1.277（其他来源）')
     expect(text).toContain('Codex CLI: 已安装 0.155.1（官方安装器）')
-    expect(text).toContain('Gemini CLI: 已安装 0.60.0（其他来源）')
     // Grok 的安装与更新走原生通道，界面不给它标来源，报告同样不标。
     expect(text).toContain('Grok CLI: 已安装 1.0.40；')
   })
@@ -127,7 +138,7 @@ describe('buildFeedbackEnvironmentLines', () => {
   it('writes 未能读取 for every CLI when no scan has been cached yet', () => {
     const lines = buildFeedbackEnvironmentLines({ clis: null, readConfig: () => pointingAtAccount })
 
-    expect(lines).toEqual([...providerIds, ...externalToolIds].map(() => expect.stringContaining('未能读取')))
+    expect(lines).toEqual([...activeProviderIds, ...externalToolIds].map(() => expect.stringContaining('未能读取')))
     expect(lines.join('\n')).not.toContain('配置：')
   })
 

@@ -125,8 +125,6 @@ if (query.has('routedSwitch') || query.has('autoRelay')) {
   }
   reportRoutedConfig()
 }
-// 「自动」的用例里四个工具开机前都已连好（Gemini 也已是 API Key 模式），开机那一轮要写配置只可能是因为线路。
-if (query.has('autoRelay')) config.providers.gemini.authType = 'gemini-api-key'
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
   claude: ['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'fixture-model'],
@@ -166,7 +164,6 @@ const readOnlyConfigOwner = { siteId: session.siteId ?? 'solov', userId: account
 if (query.has('readOnlyAccountMatch')) {
   for (const provider of Object.keys(config.providers) as ProviderId[]) {
     config.providers[provider].configurationOwnership = 'unknown'
-    if (provider === 'gemini') config.providers[provider].authType = 'gemini-api-key'
     if (query.get('matchedMissingModel') === provider) config.providers[provider].model = ''
     if (query.get('matchedManualMarker') === provider) writeManualSourceMarker(getSourceMarkerStorage(), config.providers[provider].baseUrl, provider, true)
   }
@@ -239,8 +236,8 @@ if (query.has('desktopDetectionFailed')) {
 // 主进程另外给出「会装到哪」，错误面板上的「复制路径」复制的正是它（A2 余项）。
 if (query.has('installPermissionDenied')) {
   // 未装那一侧的形状要与主进程一致：installDirectory 为 null，落点单独给。
-  system.clis.gemini = { ...system.clis.gemini, installed: false, version: null, path: null, installDirectory: null,
-    installTarget: '/home/fixture/.npm-global/lib/node_modules/@google/gemini-cli' }
+  system.clis.grok = { ...system.clis.grok, installed: false, version: null, path: null, installDirectory: null,
+    installTarget: '/home/fixture/.npm-global/lib/node_modules/@xai-official/grok' }
 }
 if (query.has('uninstallUnavailable')) {
   system.clis.claude = {
@@ -319,6 +316,7 @@ const recentWorkspaceSessions = [
   recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
   // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页照样能点开，详情里说明只有摘要、不能导出。
   recentWorkspaceSession('4', 'codex', 'C:\\work\\codex-app', 100, true, false),
+  // 已下线的 Gemini CLI 的老记录：新主进程已经不列它了，夹具照旧给，是要盯住界面自己也不画它。
   recentWorkspaceSession('5', 'gemini', 'C:\\work\\a-very-long-project-name', 50),
 ]
 // v2Test.addRecentSession 是「打开工具以后在终端里又聊了一条」：排在最前面，同主进程按时间倒序给的列表。
@@ -403,8 +401,8 @@ const methods = {
     return { version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts: { pass: 1, warn: Number.isFinite(warn) ? warn : 0, fail: Number.isFinite(fail) ? fail : 0, error: 0 }, items: [] }
   },
   reportRendererError: async () => undefined,
-  // 四个工具各跑一遍：真实用户多半只配了一两个，所以夹具默认给出「两个能用、
-  // 两个还没配」的混合态，而不是四条一样的结论。
+  // 三个工具各跑一遍：真实用户多半只配了一两个，所以夹具默认给出「两个能用、
+  // 一个还没配」的混合态，而不是三条一样的结论。
   // 外部客户端：装好的那两个各给一条结论，没装的那条 installed 为 false，检查页
   // 据此不列它（同真实主进程的取舍）。
   checkExternalClientConnection: async (tool) => {
@@ -425,8 +423,8 @@ const methods = {
   },
   checkProviderConnection: async (provider) => {
     const base = { provider, siteId: 'solov', detail: null as string | null, status: 200 as number | null, durationMs: 12, checkedAt: new Date().toISOString() }
-    if (provider === 'gemini' || provider === 'grok') {
-      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `还没有给 ${provider === 'gemini' ? 'Gemini CLI' : 'Grok CLI'} 写入星芒配置`, nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检', endpoint: null, model: null, status: null }
+    if (provider === 'grok') {
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: '还没有给 Grok CLI 写入星芒配置', nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检', endpoint: null, model: null, status: null }
     }
     // 密钥层失败一次，重写 Key 之后再测就该是正常的——这正是「重新写入 Key」
     // 按钮要证明的那条路。
@@ -633,7 +631,7 @@ const methods = {
       nextInstallHeld = false
       await new Promise<void>((resolve, reject) => { releaseInstall = (error) => error ? reject(new Error(error)) : resolve() })
     }
-    if (query.has('installPermissionDenied')) throw new Error(`Gemini CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)
+    if (query.has('installPermissionDenied')) throw new Error(`Grok CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir`)
     system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0', latestVersion: '2.0.0', updateAvailable: false }
   },
   // 同主进程：取消只是递个话，那次安装自己报错结束（测试里用 releaseInstall 放行）。
@@ -745,7 +743,8 @@ const methods = {
   listModels: async () => detectedModels,
   syncManagedCliKeys: async () => {
     // ?regrouped=claude：这个工具的 Key 换了分组（买了订阅、订阅到期），开机这一轮要给已连好的它换 Key。
-    const providers = ['claude', 'codex', 'grok', 'gemini'] as ProviderId[]
+    // 同主进程：已下线的 Gemini CLI 不再领 Key。
+    const providers = ['claude', 'codex', 'grok'] as ProviderId[]
     const regrouped = providers.filter((provider) => query.get('regrouped') === provider)
     const result = { ready: providers.map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [], ...(regrouped.length ? { regrouped } : {}) }
     if (!query.has('bootstrapPending')) return result
@@ -760,7 +759,7 @@ const methods = {
         continue
       }
       keyRewritten.add(provider)
-      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(input.mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
+      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(input.mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
       if (query.has('autoFallback') && provider === 'codex') {
         config.providers[provider].model = 'gpt-5.6-sol'
         config.providers[provider].apiKeyPreview = 'sk-se••••9012'
@@ -780,7 +779,6 @@ const methods = {
       matchesRelay: true,
       actualBaseUrl: current.baseUrl,
       model: input.model,
-      ...(input.provider === 'gemini' ? { authType: 'gemini-api-key' } : {}),
       ...(input.provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}),
     }
     return { backups: [], files: [] }

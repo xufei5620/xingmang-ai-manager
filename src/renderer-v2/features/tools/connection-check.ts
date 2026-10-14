@@ -1,4 +1,5 @@
-import { providerIds, type AppConfigSummary, type ConnectionCheckLayer, type ConnectionProbeReport, type ProviderId } from '../../../../electron/ipc-contract'
+import type { AppConfigSummary, ConnectionCheckLayer, ConnectionProbeReport, ProviderId } from '../../../../electron/ipc-contract'
+import { activeProviderIds, type ActiveProviderId } from '../../../../electron/catalog'
 import type { PageId } from '../../registry/pages'
 import { sourceFor } from './model'
 import { getSourceMarkerStorage, type SourceMarkerStorage } from './source-marker'
@@ -64,9 +65,10 @@ const rewriteNextStep = '当前账号的 Key 需要重新写一次。点「重�
 export function rewritableKeyProviders(
   config: AppConfigSummary | null | undefined,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
-): ProviderId[] {
+): ActiveProviderId[] {
   if (!config) return []
-  return providerIds.filter((provider) => sourceFor(config.providers[provider], provider, storage) === 'account')
+  // 已下线的工具（Gemini）配置里还留着，但界面不再替它重写 Key。
+  return activeProviderIds.filter((provider) => sourceFor(config.providers[provider], provider, storage) === 'account')
 }
 
 export interface ConnectionCheckView {
@@ -87,7 +89,7 @@ export interface ConnectionCheckView {
 }
 
 /**
- * 结果条的渲染只认结论，不认身份：四个 CLI 与三个外部客户端的结论是同一种
+ * 结果条的渲染只认结论，不认身份：几个 CLI 与三个外部客户端的结论是同一种
  * 形状（electron/connection-check.ts 的 ConnectionProbeReport），所以这里收
  * ConnectionProbeReport 而不是 ConnectionCheckResult，两条路永远长一个样。
  */
@@ -100,8 +102,8 @@ export function connectionCheckView(
       tone: 'ok',
       statusLabel: '正常',
       title: result.summary,
-      // evidence 由主进程给：四个工具的探测形态不同（生成一次 vs 核对模型
-      // 清单），渲染层照 provider 猜会在加第五个工具时悄悄说错。
+      // evidence 由主进程给：各个工具的探测形态不同（生成一次 vs 核对模型
+      // 清单），渲染层照 provider 猜会在加新工具时悄悄说错。
       body: result.evidence ?? '已向星芒服务发过一次最小请求',
       endpoint: null,
       detail: null,

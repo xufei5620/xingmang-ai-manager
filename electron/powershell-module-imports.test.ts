@@ -31,7 +31,6 @@ import { buildClearUserProxyScript, buildReadProxyScopesScript, readProxyScopesM
 import { nativeCliSignatureScript } from './trusted-native-cli'
 import { buildProtectedDirectoryAclScript, protectedDirectoryAclModules } from './trusted-temp'
 import { uninstallAccountProbeModules, uninstallAccountProbeScript } from './uninstall-cleanup'
-import { buildSetUserCertificateTrustScript } from './user-certificate-trust'
 import { buildEnsureUserPathScript, buildRemoveUserPathScript } from './windows-cli-shell-access'
 import { buildCliLaunchPlan, cliLaunchBrokerModules, cliTerminalScriptModules } from './windows-elevation'
 import {
@@ -153,7 +152,6 @@ describe('PowerShell scripts under the trusted environment import their modules'
     ['provider override clean-up', buildClearProviderOverridesScript()],
     ['user PATH update', buildEnsureUserPathScript()],
     ['user PATH removal', buildRemoveUserPathScript()],
-    ['certificate trust switch', buildSetUserCertificateTrustScript()],
   ])('keeps the %s free of cmdlets that would be autoloaded', (_name, script) => {
     expect(unimportedCmdlets(script, [])).toEqual([])
   })

@@ -25,9 +25,10 @@ const shellRegions = {
   topbar: 'shell-topbar',
   statusbar: 'shell-statusbar',
 }
-// Home lists the four managed CLIs plus the Codex desktop app; on macOS
-// platformCapabilities reports codexDesktop.launch, so all five rows render.
-const expectedToolRows = ['codex', 'claude', 'gemini', 'grok', 'codexDesktop']
+// Home lists the managed CLIs plus the Codex desktop app; on macOS
+// platformCapabilities reports codexDesktop.launch, so all four rows render.
+// The retired Gemini CLI has no row anywhere any more.
+const expectedToolRows = ['codex', 'claude', 'grok', 'codexDesktop']
 
 const scenarios = [
   { width: 1590, height: 875, theme: 'dark', tool: 'codex' },
@@ -427,6 +428,7 @@ const failed = results.filter((result) => {
     || !layout.imagesLoaded
     || result.dialogError !== null
     || !expectedToolRows.every((id) => result.maintenanceRowIds.includes(id))
+    || result.maintenanceRowIds.includes('gemini')
     || !result.titleVisible
     || !result.subtitleVisible
     || !result.toolTabsVisible

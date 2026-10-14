@@ -1,9 +1,6 @@
-## 用户
-
-- 「检查」页「项目文件夹里的设置」多查一种情况：你在 Gemini 里选过不信任最近用的项目文件夹时，会提醒在那里自己开终端用 Gemini 不会用当前账号，从星芒打开不受影响。
-
 ## 开发
 
+- Gemini CLI 在同一版下线（`gemini-cli-retired.md`），检查页不再查它，下面 Gemini 文件夹信任这一项随之不再出现，原来的「用户」说明一并拿掉。
 - xm 三线路 C16 剩下的两项诊断，都没加新的界面文字。
 - Gemini 文件夹信任：`workspace-config-overrides.ts` 的 `inspectGemini` 先看 `~/.gemini/trustedFolders.json`，
   最近选的项目文件夹按 Gemini 0.62.0 `isPathTrusted` 的比法（规则管自己和下面的文件夹，`TRUST_PARENT` 管上一层，

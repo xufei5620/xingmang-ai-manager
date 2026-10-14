@@ -23,7 +23,7 @@
 - `electron/linux-renderer-sandbox.ts` — 画布打开前确认渲染进程的系统沙箱（`Seccomp: 2`）真的生效
 - `electron/linux-node-runtime.ts` — Linux 上代下 Node.js：钉版本与每个架构的 SHA-256，只用 root 所有的系统 tar 解进 `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`，核对后原子替换（Linux 版拆分 ②）
 - `electron/linux-platform.ts` — Linux 上找 node / npm / CLI 的目录顺序（本软件的 Node.js 排在继承 PATH 前面，和 macOS 相反）
-- `electron/linux-shell-profile.ts` — 客户自己开的终端里直接敲 claude / codex / gemini / grok：每个托管工具一个小启动器，`~/.bashrc` / `~/.zshrc` / `~/.profile` 末尾的标记段与 fish 的 conf.d 文件，卸掉最后一个时逐字撤掉（Linux 版拆分 ④）
+- `electron/linux-shell-profile.ts` — 客户自己开的终端里直接敲 claude / codex / grok：每个托管工具一个小启动器，`~/.bashrc` / `~/.zshrc` / `~/.profile` 末尾的标记段与 fish 的 conf.d 文件，卸掉最后一个时逐字撤掉（Linux 版拆分 ④）
 - `electron/linux-terminal.ts` — Linux 上「打开」工具：找命令窗口程序（按桌面、系统默认、再按表）、写一次性 sh 启动脚本、等脚本删掉自己才算打开；启动脚本文件的写入与清理和 macOS 共用 `electron/terminal-launcher-files.ts`（Linux 版拆分 ⑤）
 - `electron/linux-tray-host.ts` — 启动时问会话总线有没有托盘接收方（`org.kde.StatusNotifierWatcher`），只跑固定路径的 dbus-send / gdbus；没有就不建托盘、关窗直接退出（Linux 版拆分 ⑩）
 - `electron/linux-autostart.ts` — Linux 的开机自动启动：写 XDG autostart 里的 .desktop 文件，读写走 safe-local-data（Linux 版拆分 ⑩）
@@ -102,7 +102,7 @@
 - `updater.ts` (484) / `update-signature.ts` (238)
 - `diagnostics.ts` (874) / `runtime-log.ts` (352) / `models.ts`
 - `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报。前者全是纯函数（DSN 校验、脱敏、Sentry 事件与 envelope 构造），后者负责发送（按会话去重限量、超时、重定向拒绝）。没有用 `@sentry/electron`，原因见 `changes/unreleased/sentry.md`；开关是 `AppSettings.crashReporting`，缺省开启
-- `catalog.ts`（provider 单一定义源）/ `versions.ts` / `installation-queue.ts` / `path-identity.ts`（跨平台路径身份比对）
+- `catalog.ts`（provider 单一定义源；下线的 Gemini CLI 在 `retiredProviderIds`，按工具做事的地方用 `activeProviderIds`）/ `versions.ts` / `installation-queue.ts` / `path-identity.ts`（跨平台路径身份比对）
 - `safe-local-data.ts` / `bounded-file.ts` / `bounded-directory.ts` / `bounded-response.ts`
 
 ## `src/` 渲染进程

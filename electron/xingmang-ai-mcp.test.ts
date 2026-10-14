@@ -14,6 +14,7 @@ import {
   applyXingmangImagePermissionToClaudeSettings,
   buildXingmangImageMcpInvocation,
   isManagedXingmangImageMcpEntry,
+  removeXingmangImageMcpFromJson,
 } from './xingmang-ai-mcp'
 
 const temporaryHomes: string[] = []
@@ -213,6 +214,24 @@ describe('xingmang-ai-mcp', () => {
     })
   })
 
+  it('takes back only its own entry and drops a section it emptied', () => {
+    const own: Record<string, unknown> = {}
+    applyXingmangImageMcpToJson(own, invocation, 'gemini')
+    expect(removeXingmangImageMcpFromJson(own)).toBe(true)
+    expect(own).toEqual({})
+    expect(removeXingmangImageMcpFromJson(own)).toBe(false)
+
+    const mixed: Record<string, unknown> = { mcpServers: { other: { command: 'npx' } } }
+    applyXingmangImageMcpToJson(mixed, invocation, 'gemini')
+    expect(removeXingmangImageMcpFromJson(mixed)).toBe(true)
+    expect(mixed).toEqual({ mcpServers: { other: { command: 'npx' } } })
+
+    const userImage = { mcpServers: { [XINGMANG_IMAGE_MCP_NAME]: { command: 'node', args: ['/home/me/image.mjs'] } } }
+    expect(removeXingmangImageMcpFromJson(userImage)).toBe(false)
+    expect(asRecord(userImage.mcpServers)[XINGMANG_IMAGE_MCP_NAME]).toEqual({ command: 'node', args: ['/home/me/image.mjs'] })
+    expect(removeXingmangImageMcpFromJson({ mcpServers: 'broken' })).toBe(false)
+  })
+
   it('allows only the image tool in Claude settings and respects a user deny', () => {
     const fresh: Record<string, unknown> = { permissions: { allow: ['Bash(ls:*)'] } }
     expect(applyXingmangImagePermissionToClaudeSettings(fresh)).toBe(true)
@@ -229,7 +248,7 @@ describe('syncXingmangImageMcpConfigs', () => {
     return { userHome, codexHome: path.join(userHome, '.codex') }
   }
 
-  it('registers the tool in every installed CLI without needing any CLI binary', () => {
+  it('registers the tool in every installed CLI without needing any CLI binary, leaving the retired Gemini CLI alone', () => {
     const home = temporaryHome()
     fs.mkdirSync(path.join(home, '.codex'))
     fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model = "gpt-5.5"\n')
@@ -240,7 +259,7 @@ describe('syncXingmangImageMcpConfigs', () => {
     fs.writeFileSync(path.join(home, '.grok', 'config.toml'), '[cli]\nauto_update = false\n')
 
     const result = syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true })
-    expect(result).toEqual({ changed: ['codex', 'claude', 'gemini', 'grok'], warnings: [] })
+    expect(result).toEqual({ changed: ['codex', 'claude', 'grok'], warnings: [] })
 
     const codex = TOML.parse(fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf8')) as Record<string, unknown>
     expect(codex.model).toBe('gpt-5.5')
@@ -250,8 +269,7 @@ describe('syncXingmangImageMcpConfigs', () => {
     const claudeSettings = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')) as Record<string, unknown>
     expect(claudeSettings.env).toEqual({})
     expect(asRecord(claudeSettings.permissions).allow).toEqual([XINGMANG_IMAGE_CLAUDE_PERMISSION])
-    const gemini = JSON.parse(fs.readFileSync(path.join(home, '.gemini', 'settings.json'), 'utf8')) as Record<string, unknown>
-    expect(asRecord(gemini.mcpServers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({ trust: true })
+    expect(fs.readdirSync(path.join(home, '.gemini'))).toEqual([])
     const grok = TOML.parse(fs.readFileSync(path.join(home, '.grok', 'config.toml'), 'utf8')) as Record<string, unknown>
     expect(asRecord(grok.cli).auto_update).toBe(false)
     expect(asRecord(grok.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({ command: nodeExecutable })
@@ -262,11 +280,9 @@ describe('syncXingmangImageMcpConfigs', () => {
   it('leaves a user who wants to be asked before each picture alone on every later sync', () => {
     const home = temporaryHome()
     const codexPath = path.join(home, '.codex', 'config.toml')
-    const geminiPath = path.join(home, '.gemini', 'settings.json')
     fs.mkdirSync(path.join(home, '.codex'))
     fs.writeFileSync(codexPath, 'model = "gpt-5.5"\n')
-    fs.mkdirSync(path.join(home, '.gemini'))
-    expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true }).changed).toEqual(['codex', 'gemini'])
+    expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true }).changed).toEqual(['codex'])
 
     const codex = TOML.parse(fs.readFileSync(codexPath, 'utf8'))
     Object.assign(asRecord(asRecord(codex.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]), {
@@ -274,31 +290,20 @@ describe('syncXingmangImageMcpConfigs', () => {
       tools: { generate_image: { approval_mode: 'prompt' } },
     })
     fs.writeFileSync(codexPath, TOML.stringify(codex))
-    const gemini = JSON.parse(fs.readFileSync(geminiPath, 'utf8')) as Record<string, unknown>
-    Object.assign(asRecord(asRecord(gemini.mcpServers)[XINGMANG_IMAGE_MCP_NAME]), { trust: false, excludeTools: ['other_tool'] })
-    fs.writeFileSync(geminiPath, `${JSON.stringify(gemini, null, 2)}\n`)
     const codexBefore = fs.readFileSync(codexPath, 'utf8')
-    const geminiBefore = fs.readFileSync(geminiPath, 'utf8')
 
     expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true })).toEqual({ changed: [], warnings: [] })
     expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexBefore)
-    expect(fs.readFileSync(geminiPath, 'utf8')).toBe(geminiBefore)
 
     const movedNode = path.resolve(os.tmpdir(), 'nodejs-moved', 'node')
     const moved = buildXingmangImageMcpInvocation(movedNode, skillDirectory)
-    expect(syncXingmangImageMcpConfigs(roots(home), moved, { codex: true }).changed).toEqual(['codex', 'gemini'])
+    expect(syncXingmangImageMcpConfigs(roots(home), moved, { codex: true }).changed).toEqual(['codex'])
     const codexAfter = TOML.parse(fs.readFileSync(codexPath, 'utf8'))
     expect(asRecord(codexAfter.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({
       command: movedNode,
       tool_timeout_sec: XINGMANG_IMAGE_TOOL_TIMEOUT_SEC,
       startup_timeout_sec: 20,
       tools: { generate_image: { approval_mode: 'prompt' } },
-    })
-    const geminiAfter = JSON.parse(fs.readFileSync(geminiPath, 'utf8')) as Record<string, unknown>
-    expect(asRecord(geminiAfter.mcpServers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({
-      command: movedNode,
-      trust: false,
-      excludeTools: ['other_tool'],
     })
   })
 
@@ -316,9 +321,10 @@ describe('syncXingmangImageMcpConfigs', () => {
     const home = temporaryHome()
     fs.mkdirSync(path.join(home, '.codex'))
     fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model = [unclosed\n')
-    fs.mkdirSync(path.join(home, '.gemini'))
+    fs.mkdirSync(path.join(home, '.grok'))
+    fs.writeFileSync(path.join(home, '.grok', 'config.toml'), '[cli]\nauto_update = false\n')
     const result = syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true })
-    expect(result.changed).toEqual(['gemini'])
+    expect(result.changed).toEqual(['grok'])
     expect(result.warnings).toHaveLength(1)
     expect(result.warnings[0]).toMatch(/^codex：现有 Codex config.toml 无法解析/)
   })

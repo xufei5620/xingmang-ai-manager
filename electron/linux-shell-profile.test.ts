@@ -310,15 +310,31 @@ describe.runIf(process.platform !== 'win32')('syncLinuxTerminalCommands', () => 
     installManaged(home, 'claude')
     await syncLinuxTerminalCommands({ reason: 'startup', env: env(home), loginShell: '/bin/bash' })
     fs.writeFileSync(path.join(home, '.bashrc'), 'export A=1\n')
-    installManaged(home, 'gemini')
+    installManaged(home, 'codex')
 
     await expect(syncLinuxTerminalCommands({ reason: 'startup', env: env(home), loginShell: '/bin/bash' }))
-      .resolves.toMatchObject({ outcome: 'already-handled', launchers: ['claude', 'gemini'] })
+      .resolves.toMatchObject({ outcome: 'already-handled', launchers: ['claude', 'codex'] })
     expect(fs.readFileSync(path.join(home, '.bashrc'), 'utf8')).toBe('export A=1\n')
 
     // Installing a tool again is an explicit ask, so the block comes back.
     await expect(syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' }))
       .resolves.toMatchObject({ outcome: 'added' })
+  })
+
+  // Gemini CLI 下线（2026-10-14）：星芒不再从终端替它起名字，留着的那份安装不算我们的工具。
+  it('writes no launcher for the retired Gemini CLI even when its entry point is still there', async () => {
+    const home = homeDirectory()
+    installManaged(home, 'gemini')
+
+    await expect(syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' }))
+      .resolves.toEqual({ outcome: 'not-needed', launchers: [], skipped: [] })
+    expect(fs.existsSync(launcherDirectory(home))).toBe(false)
+    expect(fs.existsSync(path.join(home, '.bashrc'))).toBe(false)
+
+    installManaged(home, 'claude')
+    await expect(syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' }))
+      .resolves.toEqual({ outcome: 'added', launchers: ['claude'], skipped: [] })
+    expect(fs.readdirSync(launcherDirectory(home))).toEqual(['claude'])
   })
 
   it('creates a conf.d file for fish instead of editing config.fish', async () => {

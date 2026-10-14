@@ -107,11 +107,10 @@ const codexCatalogPlugin = {
   update: { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
   operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
 }
-// scopedExtensions：Claude 只在这个项目里用的插件（local）和 Gemini 扩展自带的技能（extension），
-// 验证「范围」筛选把它们放在详情写的那一档里。
-function scopedExtension(kind: 'skill' | 'plugin', id: string, name: string, scope: 'local' | 'extension') {
+// scopedExtensions：Claude 只在这个项目里用的插件（local），验证「范围」筛选把它放在详情写的那一档里。
+function scopedExtension(kind: 'plugin', id: string, name: string, scope: 'local') {
   return {
-    provider: kind === 'plugin' ? 'claude' as const : 'gemini' as const,
+    provider: 'claude' as const,
     kind,
     id,
     name,
@@ -348,7 +347,8 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
     claude: { ...cliStatus },
     codex: { ...cliStatus },
     gemini: { ...cliStatus },
-    grok: { ...cliStatus, installed: false },
+    // 部分同步失败那条要两个能勾的工具：Gemini CLI 下线后由装好的 Grok CLI 顶上。
+    grok: { ...cliStatus, installed: query.has('partial') },
   },
   desktopApps: {
     codex: {
@@ -381,9 +381,6 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
       ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
       ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
         ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
-        : []),
-      ...(query.has('scopedExtensions') && provider === 'gemini' && page === 'skills'
-        ? [scopedExtension('skill', 'extension-skill', '扩展自带技能', 'extension')]
         : []),
       ...(empty
       ? []
@@ -502,7 +499,7 @@ const apiMethods = {
     for (const config of Object.values(configs.providers)) {
       if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'
     }
-    if (query.has('revalidate')) configs.providers.gemini.matchesRelay = false
+    if (query.has('revalidate')) configs.providers.grok.matchesRelay = false
     return {
       authenticated: true,
       account: {
@@ -520,16 +517,16 @@ const apiMethods = {
   ) => {
     record('sync-config', input)
     if (input.intent !== 'explicit' || input.providers.length !== 1) throw new Error('显式同步必须逐个工具确认')
-    const configured = input.providers.filter((id) => !query.has('partial') || id !== 'gemini')
+    const configured = input.providers.filter((id) => !query.has('partial') || id !== 'grok')
     for (const provider of configured) configs.providers[provider].configurationOwnership = 'account'
     return {
       configured,
       failed:
-        query.has('partial') && input.providers.includes('gemini')
+        query.has('partial') && input.providers.includes('grok')
           ? [
               {
-                provider: 'gemini' as const,
-                message: 'Gemini 配置文件正在使用',
+                provider: 'grok' as const,
+                message: 'Grok 配置文件正在使用',
               },
             ]
           : [],
@@ -1238,7 +1235,7 @@ if (query.has('system')) {
 }
 const root = createRoot(document.getElementById('root')!)
 // 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
-let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'gemini' | 'grok'; sequence: number } | null = null
+let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'grok'; sequence: number } | null = null
 let pageActive: boolean | undefined
 const renderFixture = (paymentReturn?: {
   sequence: number
@@ -1298,7 +1295,7 @@ window.setPageActive = (active) => {
   flushSync(() => renderFixture())
 }
 window.addEventListener('test-tool-config-confirmed', (event) => {
-  const provider = (event as CustomEvent<'claude' | 'codex' | 'gemini' | 'grok'>).detail
+  const provider = (event as CustomEvent<'claude' | 'codex' | 'grok'>).detail
   toolConfigConfirmed = { provider, sequence: (toolConfigConfirmed?.sequence ?? 0) + 1 }
   renderFixture()
 })

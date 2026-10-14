@@ -52,7 +52,7 @@ describe('renderer tool source', () => {
     expect(connectionReady(shadowed, 'codex', storage)).toBe(false)
     expect(codexNeedsRepair(shadowed, 'codex')).toBe(true)
     expect(readyOnceRepaired(shadowed, 'codex', storage)).toBe(true)
-    expect(accountSwitchTarget({ provider: 'codex', source: 'account', status: { installed: true } as ToolPresentation['status'] })).toBe('official')
+    expect(accountSwitchTarget({ source: 'account', status: { installed: true } as ToolPresentation['status'] })).toBe('official')
     expect(codexNeedsRepair(shadowed, 'claude')).toBe(false)
     expect(readyOnceRepaired({ ...shadowed, model: '' }, 'codex', storage)).toBe(false)
     expect(readyOnceRepaired({ ...shadowed, codexProviderShadowed: false }, 'codex', storage)).toBe(false)
@@ -70,11 +70,12 @@ describe('renderer tool source', () => {
     expect(brokenConfigRepairTarget('codexConfig', { actualBaseUrl: '' })).toBe('account')
   })
 
-  // 已知44：Codex 读不了 auth.json 时当成没登录；Claude Code、Gemini CLI 读不了 settings.json 时星芒会把它认成官方账号。
+  // 已知44：Codex 读不了 auth.json 时当成没登录；Claude Code 读不了 settings.json 时星芒会把它认成官方账号。
+  // 已下线的 Gemini CLI（yoyo 2026-10-14）首页不再显示，它的配置坏了也不再出这一行。
   it('flags the other files the tools cannot read and keeps an official login official', () => {
     expect(brokenConfigOf({ codexAuthBroken: true }, 'codex')).toBe('codexAuth')
     expect(brokenConfigOf({ configBroken: true }, 'claude')).toBe('claudeSettings')
-    expect(brokenConfigOf({ configBroken: true }, 'gemini')).toBe('geminiSettings')
+    expect(brokenConfigOf({ configBroken: true }, 'gemini')).toBeNull()
     expect(brokenConfigOf({ configBroken: true }, 'grok')).toBeNull()
     expect(brokenConfigOf({ codexAuthBroken: true }, 'claude')).toBeNull()
     expect(brokenConfigOf({ configBroken: false, codexAuthBroken: false }, 'codex')).toBeNull()
@@ -84,8 +85,6 @@ describe('renderer tool source', () => {
     expect(brokenConfigRepairTarget('codexAuth', { ...relay, codexAuthMode: 'chatgpt' })).toBe('official')
     expect(brokenConfigRepairTarget('codexAuth', { ...relay, actualBaseUrl: '' })).toBe('official')
     expect(brokenConfigRepairTarget('claudeSettings', { ...relay, actualBaseUrl: '' })).toBe('account')
-    expect(brokenConfigRepairTarget('geminiSettings', relay)).toBe('account')
-    expect(brokenConfigRepairTarget('geminiSettings', { ...relay, authType: 'oauth-personal' })).toBe('official')
   })
 
   it('distinguishes marked manual relay keys and keeps them launch-ready', () => {
@@ -170,7 +169,7 @@ describe('renderer tool source', () => {
       writeManualSourceMarker(storage, config.baseUrl, 'claude', true)
       expect(ccSwitchLeftoverFor(config, 'claude', 'unknown', storage)).toBeNull()
       // 标记是按工具记的，别的工具照旧提醒。
-      expect(ccSwitchLeftoverFor(config, 'gemini', 'unknown', storage)).toBe('provider')
+      expect(ccSwitchLeftoverFor(config, 'grok', 'unknown', storage)).toBe('provider')
     })
   })
 
@@ -198,7 +197,6 @@ describe('renderer tool source', () => {
     it('never overrides an official sign-in', () => {
       const storage = memoryStorage()
       expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', codexAuthMode: 'chatgpt', actualBaseUrl: '' }, 'codex', storage)).toBe('official')
-      expect(sourceFor({ ...relayConfig(), configurationOwnership: 'changed', authType: 'oauth-personal' }, 'gemini', storage)).toBe('official')
     })
 
     it('calls a ChatGPT sign-in over a config that still points at the account service changed, not official', () => {
@@ -264,8 +262,8 @@ describe('renderer tool source', () => {
     expect(connectionReady(relayConfig(), 'codex', broken)).toBe(true)
   })
 
-  it.each(['claude', 'codex', 'grok', 'gemini'] as ProviderId[])('recognizes a read-only account match for %s without changing its persisted ownership', (provider) => {
-    const config = { ...relayConfig(), configurationOwnership: 'unknown' as const, configurationAccountMatched: true, authType: 'gemini-api-key' }
+  it.each(['claude', 'codex', 'grok'] as ProviderId[])('recognizes a read-only account match for %s without changing its persisted ownership', (provider) => {
+    const config = { ...relayConfig(), configurationOwnership: 'unknown' as const, configurationAccountMatched: true }
     expect(sourceFor(config, provider, null)).toBe('account')
     expect(connectionReady(config, provider, null)).toBe(true)
     expect(config.configurationOwnership).toBe('unknown')
@@ -283,14 +281,14 @@ describe('renderer tool source', () => {
     expect(sourceFor({ ...matched, configurationOwnership: 'manual' }, 'codex', null)).toBe('manual')
     expect(sourceFor({ ...matched, configurationOwnership: 'account' }, 'codex', storage)).toBe('account')
     expect(sourceFor({ ...matched, codexAuthMode: 'chatgpt', actualBaseUrl: '' }, 'codex', storage)).toBe('official')
-    expect(sourceFor({ ...matched, authType: 'oauth-personal' }, 'gemini', null)).toBe('official')
     const broken: SourceMarkerStorage = { getItem() { throw new Error('unavailable') }, setItem() {}, removeItem() {} }
     expect(sourceFor(matched, 'codex', broken)).toBe('account')
   })
 
-  it('presents four matched provider configurations as five ready tool rows without writing source markers', () => {
+  // 主进程的配置里仍按 ProviderId 全集带着已下线的 Gemini CLI，首页那几行只出还在用的工具。
+  it('presents matched provider configurations as ready tool rows, leaves out the retired Gemini CLI and writes no source markers', () => {
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider,
-      { ...relayConfig(), configurationOwnership: 'unknown', configurationAccountMatched: true, ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}) },
+      { ...relayConfig(), configurationOwnership: 'unknown', configurationAccountMatched: true },
     ]))
     const status = { installed: true, version: '1.0.0', path: '/fixture' }
     const snapshot = { config: { providers }, platform: { codexDesktop: { launch: true } },
@@ -299,7 +297,7 @@ describe('renderer tool source', () => {
     const before = structuredClone(snapshot)
     const storage: SourceMarkerStorage = { getItem: () => null, setItem() { throw new Error('must not write') }, removeItem() { throw new Error('must not write') } }
     const rows = presentTools(snapshot, storage)
-    expect(rows.map((row) => row.id).sort()).toEqual(['claude', 'codex', 'codexDesktop', 'gemini', 'grok'])
+    expect(rows.map((row) => row.id).sort()).toEqual(['claude', 'codex', 'codexDesktop', 'grok'])
     expect(rows.every((row) => row.source === 'account' && row.configured)).toBe(true)
     expect(snapshot).toEqual(before)
   })
@@ -610,7 +608,6 @@ describe('renderer install source labelling', () => {
     expect(updatesOutsideApp('codex', { installed: true, installSource: 'native', uninstall })).toBe(true)
     expect(updatesOutsideApp('claude', { installed: true, installSource: 'path', uninstall })).toBe(true)
     expect(updatesOutsideApp('claude', { installed: true, installSource: 'npm', uninstall })).toBe(false)
-    expect(updatesOutsideApp('gemini', { installed: true })).toBe(false)
   })
 
   it('gives a source-specific passive hint instead of an npm update', () => {
@@ -704,14 +701,15 @@ describe('renderer config directory menu entry', () => {
 
   it('reads the folder state the main process reported, per tool', () => {
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider,
-      { ...relayConfig(), ...(provider === 'gemini' ? { dataDirectoryExists: false } : {}) },
+      { ...relayConfig(), ...(provider === 'grok' ? { dataDirectoryExists: false } : {}) },
     ]))
     const status = { installed: true, version: '1.0.0', path: '/fixture' }
     const rows = presentTools({ config: { providers }, platform: { codexDesktop: { launch: true } },
       system: { clis: { claude: status, codex: status, grok: status, gemini: status },
         desktopApps: { codex: { ...status, appVersion: '1.0.0' } } },
     } as unknown as ToolboxSnapshot, memoryStorage())
-    expect(rows.find((row) => row.id === 'gemini')?.configDirectoryReady).toBe(false)
+    expect(rows.find((row) => row.id === 'grok')?.configDirectoryReady).toBe(false)
+    expect(rows.find((row) => row.id === 'claude')?.configDirectoryReady).toBe(true)
     // Codex 桌面端与 Codex CLI 共用一份配置,两行读的是同一个目录状态。
     expect(rows.filter((row) => row.id === 'codex' || row.id === 'codexDesktop')
       .every((row) => row.configDirectoryReady)).toBe(true)
@@ -731,27 +729,22 @@ describe('renderer config directory menu entry', () => {
 describe('renderer one-click account switch entry', () => {
   const installed = { installed: true } as ToolPresentation['status']
   it('offers the current account to any tool on its official account', () => {
-    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
-      expect(accountSwitchTarget({ provider, source: 'official', status: installed })).toBe('account')
-    }
+    expect(accountSwitchTarget({ source: 'official', status: installed })).toBe('account')
   })
 
-  it('offers the official account back only where a one-click official login works', () => {
+  // 还在用的几家都能一键登官方账号；唯一不能的 Gemini CLI 已下线（yoyo 2026-10-14），首页不再有它那一行。
+  it('offers the official account back to a tool on the current account, a manual key or a changed config', () => {
     for (const source of ['account', 'manual', 'changed'] as const) {
-      expect(accountSwitchTarget({ provider: 'claude', source, status: installed })).toBe('official')
-      expect(accountSwitchTarget({ provider: 'codex', source, status: installed })).toBe('official')
-      expect(accountSwitchTarget({ provider: 'grok', source, status: installed })).toBe('official')
-      // 个人 Google 账号已不能用 Gemini CLI。
-      expect(accountSwitchTarget({ provider: 'gemini', source, status: installed })).toBeNull()
+      expect(accountSwitchTarget({ source, status: installed })).toBe('official')
     }
   })
 
   it('offers the current account for a key it cannot confirm, but nothing for missing or uninstalled tools', () => {
     // 别家的 Key、同一个站上别的账号的 Key：一键改用当前账号（方案盘查 2026-09-25）。
-    expect(accountSwitchTarget({ provider: 'claude', source: 'unknown', status: installed })).toBe('account')
-    expect(accountSwitchTarget({ provider: 'claude', source: 'missing', status: installed })).toBeNull()
-    expect(accountSwitchTarget({ provider: 'claude', source: 'official', status: { installed: false } as ToolPresentation['status'] })).toBeNull()
-    expect(accountSwitchTarget({ provider: 'claude', source: 'unknown', status: { installed: false } as ToolPresentation['status'] })).toBeNull()
+    expect(accountSwitchTarget({ source: 'unknown', status: installed })).toBe('account')
+    expect(accountSwitchTarget({ source: 'missing', status: installed })).toBeNull()
+    expect(accountSwitchTarget({ source: 'official', status: { installed: false } as ToolPresentation['status'] })).toBeNull()
+    expect(accountSwitchTarget({ source: 'unknown', status: { installed: false } as ToolPresentation['status'] })).toBeNull()
   })
 })
 

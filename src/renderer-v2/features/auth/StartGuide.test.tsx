@@ -16,7 +16,7 @@ function stubResumedGuide(route: string, step: string) {
 }
 
 function guideTool(overrides: Partial<GuideToolState> = {}): GuideToolState {
-  return { id: 'claude', installed: true, configured: true, source: 'account', runtimeReady: true, pythonReady: true, ...overrides }
+  return { id: 'claude', installed: true, configured: true, source: 'account', runtimeReady: true, ...overrides }
 }
 
 function render(tools: GuideToolState[], overrides: Partial<StartGuideProps> = {}): string {
@@ -108,52 +108,47 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toContain('data-testid="guide-first-run"')
   })
 
-  // 引导里留着官方来源的 Gemini 配置,在 CLI 里已经登不上去了(Google 2026-06-18
-  // 起停服个人账号)。确认这一步会把限制讲出来,而不是让用户带着它走到最后一屏。
-  it('spells out the Gemini enterprise-only limit while the official source is kept', () => {
-    stubResumedGuide('gemini', 'connect')
-    const markup = render([guideTool({ id: 'gemini', source: 'official' })])
-    expect(markup).toContain('data-testid="guide-official-note"')
-    expect(markup).toContain('企业版 Code Assist')
+  it('adds no official-account note for the tools that have no such limit', () => {
+    for (const id of ['claude', 'codex', 'grok'] as const) {
+      stubResumedGuide(id, 'connect')
+      expect(render([guideTool({ id, source: 'official' })])).not.toContain('data-testid="guide-official-note"')
+    }
   })
 
-  it('stays quiet about it for the other tools and for a relay-backed Gemini', () => {
-    stubResumedGuide('claude', 'connect')
-    expect(render([guideTool({ source: 'official' })])).not.toContain('data-testid="guide-official-note"')
-    stubResumedGuide('gemini', 'connect')
-    expect(render([guideTool({ id: 'gemini', source: 'account' })])).not.toContain('data-testid="guide-official-note"')
+  // Gemini CLI 下线（yoyo 2026-10-14）：第一步不再列它，上次停在它那一条的也不再把它选上。
+  it('never offers the retired Gemini CLI as a way to start', () => {
+    for (const platform of ['win', 'mac', 'linux'] as const) {
+      const markup = render([], { platform })
+      expect(markup).not.toContain('guide-route-gemini')
+      expect(markup).not.toContain('Gemini')
+    }
+    stubResumedGuide('gemini', 'prepare')
+    const resumed = render([])
+    expect(resumed).toContain('data-guide-step="choose"')
+    expect(resumed).toContain('data-guide-route="codexDesktop"')
+    expect(resumed).not.toContain('Gemini')
   })
 
   it('leaves one install button when the app can prepare the missing runtime itself', () => {
-    stubResumedGuide('gemini', 'prepare')
-    const markup = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: false, pythonReady: false, runtimeAutoPrepare: true, pythonAutoPrepare: true })], { onInstallRuntime: async () => undefined, onInstallPython: async () => undefined })
+    stubResumedGuide('claude', 'prepare')
+    const markup = render([guideTool({ installed: false, configured: false, source: 'none', runtimeReady: false, runtimeAutoPrepare: true })], { onInstallRuntime: async () => undefined })
     expect(markup).not.toContain('data-testid="guide-node"')
-    expect(markup).not.toContain('data-testid="guide-python"')
     expect(markup).toContain('点「安装」时会一并装好')
     expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
     expect(markup).not.toMatch(/Node\.js 和 Python|PATH|LTS/)
   })
 
-  // Linux 版拆分 ③：Linux 上 Gemini 不需要 Python，引导不再多一步、也不因为没有 Python 拦着「安装」和「下一步」。
-  it('skips the Python step for a Gemini that does not need it on this computer', () => {
-    stubResumedGuide('gemini', 'prepare')
-    const missing = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: true, pythonReady: false, pythonNotNeeded: true })], { platform: 'linux', onInstallPython: async () => undefined })
-    expect(missing).not.toContain('data-testid="guide-python-step"')
-    expect(missing).not.toContain('data-testid="guide-python"')
-    expect(missing).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
-    expect(missing).not.toContain('Python')
-
-    const installed = guideTool({ id: 'gemini', pythonReady: false, pythonNotNeeded: true })
-    expect(guideCanSkipConnect('gemini', installed, true)).toBe(true)
-  })
-
-  it('keeps the Python step where Gemini still needs it', () => {
-    stubResumedGuide('gemini', 'prepare')
-    const markup = render([guideTool({ id: 'gemini', installed: false, configured: false, source: 'none', runtimeReady: true, pythonReady: false })], { onInstallPython: async () => undefined })
-    expect(markup).toContain('data-testid="guide-python-step"')
-    expect(markup).toMatch(/<button[^>]*data-testid="guide-install"[^>]*disabled/)
-    expect(guideCanSkipConnect('gemini', guideTool({ id: 'gemini', pythonReady: false }), true)).toBe(false)
-    expect(guideCanSkipConnect('gemini', guideTool({ id: 'gemini', pythonReady: false, pythonNotNeeded: false }), true)).toBe(false)
+  // 要 Python 的只有已下线的 Gemini CLI：在用的命令行工具准备这一步不再多一行 Python，也不因为它拦着「安装」和「下一步」。
+  it('never asks a command-line tool for Python', () => {
+    for (const id of ['claude', 'codex', 'grok'] as const) {
+      stubResumedGuide(id, 'prepare')
+      const missing = render([guideTool({ id, installed: false, configured: false, source: 'none', runtimeReady: true })], { platform: 'linux' })
+      expect(missing).not.toContain('data-testid="guide-python-step"')
+      expect(missing).not.toContain('data-testid="guide-python"')
+      expect(missing).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
+      expect(missing).not.toContain('Python')
+      expect(guideCanSkipConnect(id, guideTool({ id }), true)).toBe(true)
+    }
   })
 
   // 0.2.12～0.2.13 在这里按 Windows 账户类型提醒「装完可能打不开」，是误报，已撤掉。
@@ -334,7 +329,7 @@ describe('guide step failure wording', () => {
     const runtime = guideStepFailure(new Error('Node.js 下载超时，请检查网络后重试'), '准备环境').message
     expect(runtime).toBe('准备环境没有成功：下载超时。下载没有完成，已安装的工具不受影响。')
     expect(guideStepFailure(new Error('ETIMEDOUT'), '检测工具').message).toBe('检测工具没有成功：网络连不上。检查网络后点「再试一次」。')
-    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备 Python').message).toContain('写不进安装目录')
+    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境').message).toContain('写不进安装目录')
   })
 
   it('tells a switch that could not write the config file what to close and which buttons to press (known 29)', () => {
@@ -349,7 +344,7 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/关掉正在用这个工具的窗口后点「再试一次」，还不行就点「需要帮助」。$/)
     expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('写不进配置文件')
     // 装东西的几步照旧是安装目录。
-    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备 Python', true).reason).toBe('写不进安装目录')
+    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('写不进安装目录')
   })
 
   it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
@@ -403,13 +398,13 @@ describe('guide failure reason and raw text for support', () => {
   it('names the guide step and tool for the support bundle', () => {
     expect(guideSupportAction('安装工具', 'Claude Code')).toBe('新手引导 · 安装 Claude Code')
     expect(guideSupportAction('改用当前账号', 'Codex CLI')).toBe('新手引导 · Codex CLI 改用当前账号')
-    expect(guideSupportAction('准备环境', 'Gemini CLI')).toBe('新手引导 · 准备环境')
+    expect(guideSupportAction('准备环境', 'Grok CLI')).toBe('新手引导 · 准备环境')
   })
 })
 
 describe('guide default route', () => {
   it('keeps where the user left off, otherwise picks the recommended tool when it is shown', () => {
-    expect(defaultGuideRoute('gemini', ['claude', 'codexDesktop'])).toBe('gemini')
+    expect(defaultGuideRoute('grok', ['claude', 'codexDesktop'])).toBe('grok')
     expect(defaultGuideRoute(null, ['claude', 'codexDesktop'])).toBe('codexDesktop')
     expect(defaultGuideRoute(undefined, ['claude', 'codex'])).toBeNull()
   })
@@ -426,7 +421,7 @@ describe('guide default route', () => {
   })
 
   it('preselects Codex CLI on Linux, where the desktop app does not exist', () => {
-    expect(defaultGuideRoute(null, ['claude', 'codex', 'gemini', 'grok'], 'codex')).toBe('codex')
+    expect(defaultGuideRoute(null, ['claude', 'codex', 'grok'], 'codex')).toBe('codex')
     const markup = render([], { platform: 'linux' })
     expect(markup).toContain('data-guide-route="codex"')
     expect(markup).not.toContain('guide-route-codexDesktop')

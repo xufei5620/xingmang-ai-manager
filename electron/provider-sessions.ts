@@ -11,6 +11,7 @@ import {
   type CodexSessionsCapabilities,
 } from './codex-sessions'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
+import { isRetiredProviderId } from './catalog'
 import type {
   ProviderSessionProbeCacheWarning,
   ProviderSessionProbeState,
@@ -20,6 +21,11 @@ import { ProviderSessionProbeCache } from './provider-session-probe-cache'
 export const providerSessionProviders = ['codex', 'claude', 'gemini', 'grok'] as const
 
 export type ProviderSessionProvider = (typeof providerSessionProviders)[number]
+
+// 下线的工具（Gemini CLI）不再列它的对话记录，记录本身留在客户电脑上。类型里照旧有它：
+// 旧回滚界面按四家取统计数。
+export const listedProviderSessionProviders: readonly ProviderSessionProvider[] = providerSessionProviders
+  .filter((provider) => !isRetiredProviderId(provider))
 
 export interface ProviderSessionCapability {
   provider: ProviderSessionProvider
@@ -1001,7 +1007,7 @@ export class ProviderSessionsService {
 
   async list(query: ProviderSessionListQuery = {}): Promise<ProviderSessionPage> {
     const provider = query.provider ?? 'all'
-    const selected = provider === 'all' ? [...providerSessionProviders] : [provider]
+    const selected = provider === 'all' ? [...listedProviderSessionProviders] : [provider]
     const capabilities = await this.capabilities()
     const items: ProviderSessionSummary[] = []
     for (const current of selected) {

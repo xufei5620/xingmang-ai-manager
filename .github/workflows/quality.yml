@@ -812,8 +812,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.cliVersions == 'true'
     runs-on: ubuntu-latest
-    # One install plus one real request per pinned CLI per relay site. Three
-    # pinned CLIs and two sites is six requests, each bounded at two minutes.
+    # One install plus one real request per pinned CLI per relay site. Two
+    # probed CLIs and two sites is four requests, each bounded at two minutes.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0

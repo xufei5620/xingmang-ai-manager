@@ -342,7 +342,7 @@ describe('ProviderSessionsService', () => {
     await expect(sessions.exportMarkdown('codex:codex-native', outputPath)).resolves.toMatchObject({ messages: 1, truncated: true })
   })
 
-  it('unifies Codex SQLite and Claude/Gemini/Grok local sessions with explicit capabilities', async () => {
+  it('unifies Codex SQLite and Claude/Grok local sessions with explicit capabilities, leaving the retired Gemini CLI out', async () => {
     const data = fixture()
     seedExternalSessions(data)
     seedCodexSession(data.codexHome, 'custom-codex-native', 'Custom Codex 会话')
@@ -354,8 +354,8 @@ describe('ProviderSessionsService', () => {
     }))
 
     const page = await sessions.list({ pageSize: 100 })
-    expect(page.total).toBe(4)
-    expect(page.stats.byProvider).toEqual({ codex: 1, claude: 1, gemini: 1, grok: 1 })
+    expect(page.total).toBe(3)
+    expect(page.stats.byProvider).toEqual({ codex: 1, claude: 1, gemini: 0, grok: 1 })
     expect(page.capabilities.codex).toMatchObject({ readonly: false, source: 'sqlite-jsonl' })
     expect(page.capabilities.claude).toMatchObject({
       readonly: true,
@@ -368,14 +368,17 @@ describe('ProviderSessionsService', () => {
     expect(byProvider.codex.id).toBe('codex:custom-codex-native')
     expect(page.items.some((item) => item.nativeId === 'wrong-codex-native')).toBe(false)
     expect(byProvider.claude).toMatchObject({ nativeId: 'claude-native', title: 'Claude 自定义标题', model: 'claude-sonnet' })
-    expect(byProvider.gemini).toMatchObject({ nativeId: 'gemini-native', model: 'gemini-2.5-pro', messageCount: 2 })
+    expect(byProvider.gemini).toBeUndefined()
     expect(byProvider.grok).toMatchObject({ nativeId: 'grok-native', title: 'Grok 摘要标题', messageCount: 2 })
 
     const claude = await sessions.detail(byProvider.claude.id)
     expect(claude.messages.map((message) => message.text)).toEqual(['请检查 Claude 项目', 'Claude 已完成'])
     expect(claude.messageStats).toMatchObject({ total: 2, user: 1, assistant: 1, invalidLines: 1 })
     expect(claude.messagesTruncated).toBe(true)
-    const gemini = await sessions.detail(byProvider.gemini.id)
+    // Old Gemini records stay on disk; the reader still understands them when asked by name.
+    const [geminiSummary] = (await sessions.list({ provider: 'gemini', pageSize: 100 })).items
+    expect(geminiSummary).toMatchObject({ nativeId: 'gemini-native', model: 'gemini-2.5-pro', messageCount: 2 })
+    const gemini = await sessions.detail(geminiSummary.id)
     expect(gemini.messages.map((message) => message.text)).toEqual(['Gemini 问题', 'Gemini 回答'])
     const grok = await sessions.detail(byProvider.grok.id)
     expect(grok.messages.map((message) => message.text)).toEqual(['Grok 问题', 'Grok 回答'])
@@ -870,7 +873,7 @@ describe('ProviderSessionsService.delete', () => {
     await expect(sessions.delete('claude:../../etc/passwd')).rejects.toThrow('没找到这条记录')
     await expect(sessions.delete('unknown:abc')).rejects.toThrow()
     await expect(sessions.delete('codex:../../x')).rejects.toThrow('会话 ID 格式错误')
-    expect((await sessions.list({ pageSize: 100 })).stats.byProvider).toMatchObject({ claude: 1, gemini: 1, grok: 1 })
+    expect((await sessions.list({ pageSize: 100 })).stats.byProvider).toMatchObject({ claude: 1, grok: 1 })
   })
 
   it.runIf(process.platform !== 'win32')('never follows a linked companion folder out of the root', async () => {

@@ -15,7 +15,7 @@ import {
   probeLoopbackProxy,
   type LoopbackProbe,
 } from './stale-proxy-environment'
-import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, providerIds, retiredProviderIds, type ProviderId } from './catalog'
 import {
   buildCliVersionAdvice,
   resolveCliInstallVersion,
@@ -100,6 +100,7 @@ import {
   takeBackCodexModelCatalog,
   inspectManagedCliHookTargets,
   inspectProviderConfig,
+  inspectRetiredGeminiIntegrations,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
   providerAccountMode,
@@ -113,6 +114,7 @@ import {
   forgetStaleGeminiUsageStatisticsRecord,
   relayTemplateDefaultsPending,
   relayTemplateRevision,
+  removeRetiredGeminiIntegrations,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
   trustManagedWorkspace,
@@ -123,6 +125,7 @@ import {
   type NativeConfigSaveMode,
   type NativeConfigSummary,
   type ProviderAccountMode,
+  type RetiredGeminiIntegrations,
 } from './config-files'
 import {
   ProjectInstructionsStateStore,
@@ -412,6 +415,11 @@ export interface CliStatus extends ToolStatus {
    * 缺省 = 没有可退的版本,界面不显示「退回更新前的版本」。
    */
   revertVersion?: string
+  /**
+   * 星芒已经下线的工具（catalog.ts 的 retiredProviderIds）。扫描不再去看它装没装，
+   * 这一格只为让按 ProviderId 取值的旧代码照常拿到一份「未检测、没装」的占位。
+   */
+  retired?: boolean
 }
 
 export interface DesktopAppStatus extends ToolStatus, Partial<VersionUpdateStatus> {
@@ -646,7 +654,7 @@ export interface ToolRouteFollowRequest {
   reason: ToolRouteFollowReason
   /** 这次换线是因为连不上（relay-route-controller 的 health-failed）；只有这种才可能提示重开。 */
   fault?: boolean
-  /** 只看这几个；缺省 = 四个都看。 */
+  /** 只看这几个；缺省 = 还在管的那几个都看（catalog.ts 的 activeProviderIds）。 */
   providers?: readonly ProviderId[]
 }
 
@@ -1157,6 +1165,11 @@ export interface SystemService {
    * 账号、不联网，登录状态下开机那轮按账号同步也共用这一次。从不抛错。可选 = 旧实现不提供。
    */
   guardCodexModelCatalogAtStartup?(): Promise<void>
+  /**
+   * 开机后收回星芒以前写进下线工具（Gemini CLI）配置的做完提醒与画图工具；Key、线路、型号
+   * 不动。工具开着或看不出开没开的这次不动，下次开机再看。从不抛错。可选 = 旧实现不提供。
+   */
+  reclaimRetiredToolIntegrations?(): Promise<RetiredGeminiIntegrations>
 }
 
 function firstOutputLine(stdout: string, stderr: string): string | null {
@@ -2470,6 +2483,17 @@ export async function settleLatestVersionProbes(
     }))
   } finally {
     if (timer) clearTimeout(timer)
+  }
+}
+
+/** 下线工具在快照里的占位：当作没装、没查过更新，不给卸载、不给推荐版本。 */
+export function buildRetiredCliStatus(provider: ProviderId, platform?: NodeJS.Platform): CliStatus {
+  return {
+    ...buildCliStatus(
+      { installed: false, version: null, path: null, installDirectory: null },
+      buildUncheckedLatestVersion(provider, false, undefined, platform),
+    ),
+    retired: true,
   }
 }
 
@@ -4011,14 +4035,14 @@ export function createSystemService(
     const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npm.path)
     // 单个 CLI 探测异常不能伪装成“未安装”，否则维护页会自动勾选并重装。
     const cliProbes = await Promise.allSettled(
-      providerIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
+      activeProviderIds.map((id) => limitedProbe(() => inspectCliTool(id, npm.path, npmGlobalRoot))),
     )
     const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     // 老版本装的工具旁边还留着 .ps1 启动文件；每次打开软件后的第一轮检测顺手清掉，
     // 只动文件、不起 PowerShell，也不等它。Mac 上这一轮给以前装过、还没补终端设置的
     // 电脑补一次（只补一次，见 macos-shell-profile.ts）；Linux 同理，另外把小启动器
     // 和装着的工具对齐（linux-shell-profile.ts）。
-    void cliTerminalAccess.sweepOnce(providerIds.flatMap((provider, index) => {
+    void cliTerminalAccess.sweepOnce(activeProviderIds.flatMap((provider, index) => {
       const probe = cliProbes[index]
       return probe.status === 'fulfilled' && probe.value.installation
         ? [{ provider, installation: probe.value.installation }]
@@ -4033,7 +4057,7 @@ export function createSystemService(
 
     // 离线时四家探测会一个个耗满超时，首屏本地信息早就齐了却还在等；
     // 给整批一个总预算，到点先出画面（见 settleLatestVersionProbes）。
-    const uncheckedLatest = providerIds.map(
+    const uncheckedLatest = activeProviderIds.map(
       (id, index) => buildUncheckedLatestVersion(id, cliResults[index].installed, undefined, platform),
     )
     const latestVersionBudgetMs = networkProbeSuggestsOffline(network)
@@ -4041,7 +4065,7 @@ export function createSystemService(
       : null
     const latestVersionBudget = latestVersionBudgetMs === null ? undefined : new AbortController()
     const latestVersions = await settleLatestVersionProbes(
-      providerIds.map((id, index) => inspectCliLatestVersion(
+      activeProviderIds.map((id, index) => inspectCliLatestVersion(
         id,
         cliResults[index],
         networkRegion,
@@ -4054,13 +4078,17 @@ export function createSystemService(
     const scanSettings = store.read()
     const updateHistory = cliUpdateHistory.read()
     const scannedAt = Date.now()
-    const clis = Object.fromEntries(providerIds.map((id, index) => {
-      const status = cliResults[index]
-      return [id, buildCliStatus(status, latestVersions[index], buildCliVersionAdvice(id, status.version, {
-        siteId: scanSettings.relaySiteId,
-        alwaysLatest: scanSettings.alwaysInstallLatestCli === true,
-      }), resolveCliRevertVersion(id, updateHistory[id], status.version, scannedAt, scanSettings.relaySiteId))]
-    })) as Record<ProviderId, CliStatus>
+    const clis = Object.fromEntries([
+      ...activeProviderIds.map((id, index) => {
+        const status = cliResults[index]
+        return [id, buildCliStatus(status, latestVersions[index], buildCliVersionAdvice(id, status.version, {
+          siteId: scanSettings.relaySiteId,
+          alwaysLatest: scanSettings.alwaysInstallLatestCli === true,
+        }), resolveCliRevertVersion(id, updateHistory[id], status.version, scannedAt, scanSettings.relaySiteId))] as const
+      }),
+      // 下线的工具不起进程、不问 npm，只给一格占位（CliStatus.retired）。
+      ...retiredProviderIds.map((id) => [id, buildRetiredCliStatus(id, platform)] as const),
+    ]) as Record<ProviderId, CliStatus>
 
     // A Microsoft Store install is outside the app's installer IPC. Once a
     // scan positively sees the desktop package again, treat that as the user's
@@ -7211,6 +7239,43 @@ export function createSystemService(
     return startupCodexModelCatalogGuard
   }
 
+  /**
+   * Gemini CLI 下线后，星芒以前写进它 settings.json 的做完提醒和画图工具没人跟着改了：星芒换了
+   * 位置或被卸掉，Gemini 每一轮都会多报一行错。每次开机看一眼，有就收回（config-files.ts 的
+   * removeRetiredGeminiIntegrations），收过了就什么都不写。Gemini 开着时它可能正在写同一个文件，
+   * 和补设置同一套规矩：开着或看不出开没开的这次不动。
+   */
+  async function reclaimRetiredToolIntegrations(): Promise<RetiredGeminiIntegrations> {
+    const none: RetiredGeminiIntegrations = { hooks: false, imageMcp: false }
+    try {
+      const pending = inspectRetiredGeminiIntegrations(providerRoots)
+      if (!pending.hooks && !pending.imageMcp) return none
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'retired-integrations.unreadable', 'Gemini CLI 的设置读不懂，星芒写进去的提醒和画图这次没收回', { reason: credentialFailureReason(error) })
+      return none
+    }
+    let report: RunningToolsReport
+    try {
+      report = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['gemini'])
+    } catch {
+      report = { ...emptyRunningToolsReport, unknown: ['gemini'] }
+    }
+    if (report.running.includes('gemini') || report.unknown.includes('gemini')) {
+      runtimeLog?.log('info', 'config', 'retired-integrations.deferred', 'Gemini CLI 可能正开着，星芒写进去的提醒和画图下次开机再收回')
+      return none
+    }
+    try {
+      const removed = await serializeConfigWrite(async () => removeRetiredGeminiIntegrations(providerRoots))
+      if (removed.hooks || removed.imageMcp) {
+        runtimeLog?.log('info', 'config', 'retired-integrations.removed', '已收回星芒写进 Gemini CLI 的提醒和画图', { hooks: removed.hooks, imageMcp: removed.imageMcp })
+      }
+      return { hooks: removed.hooks, imageMcp: removed.imageMcp }
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'retired-integrations.failed', '收回星芒写进 Gemini CLI 的提醒和画图没有完成，下次开机再试', { reason: credentialFailureReason(error) })
+      return none
+    }
+  }
+
   // 注册表里整台电脑 + 当前账号的 PATH，最近读到的那一份；读不到时是 null，只看星芒启动时的快照。
   let windowsLivePath: string | null = null
   let windowsLivePathRead: Promise<void> | null = null
@@ -7342,7 +7407,7 @@ export function createSystemService(
     if (!owner || autoRepairCheckedOwners.has(owner)) return []
     autoRepairCheckedOwners.add(owner)
     const repaired: ProviderId[] = []
-    for (const provider of providerIds) {
+    for (const provider of activeProviderIds) {
       if (provider === 'grok' && platform === 'win32') {
         // 只装 Grok 时缺的那几条：这台电脑后来有了运行环境就补上（addMissingGrokHooks 自己看归属）。
         if (await addMissingGrokHooks('startup')) repaired.push(provider)
@@ -7704,7 +7769,7 @@ export function createSystemService(
     }
     const rewritten: ProviderId[] = []
     const failed: ProviderId[] = []
-    for (const provider of request.providers ?? providerIds) {
+    for (const provider of request.providers ?? activeProviderIds) {
       const attempt = request.reason === 'retry' ? toolRouteFailures.get(provider) ?? 0 : 0
       let outcome: ToolRouteOutcome
       try {
@@ -7957,7 +8022,7 @@ export function createSystemService(
     if (retry && !debt) return { filled: [] }
     const round: TemplateFillRound = retry && debt
       ? { retry, providers: debt.providers, codexModelCatalog: debt.codexModelCatalog }
-      : { retry: false, providers: providerIds, codexModelCatalog: true }
+      : { retry: false, providers: activeProviderIds, codexModelCatalog: true }
     const stopped = templateFillWaits.signal
     let result: ToolTemplateFillResult
     try {
@@ -7969,7 +8034,7 @@ export function createSystemService(
     const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
     const skipped = result.pending ?? []
     templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
-    const pending = providerIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
+    const pending = activeProviderIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
     // 客服看报告分得清是工具开着没补，还是给换账号让了路。
     if (stopped.aborted) runtimeLog?.log('info', 'config', 'template-defaults.stopped', '要换账号了，补设置不再等本机检测，没补的下次再补', { pending, ...(round.retry ? { retry: true } : {}) })
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
@@ -8168,6 +8233,7 @@ export function createSystemService(
       return toolModelChecker.check(provider)
     },
     guardCodexModelCatalogAtStartup,
+    reclaimRetiredToolIntegrations,
     fillToolTemplateDefaults: fillToolTemplateDefaultsThenSyncPickers,
     stopTemplateFillWaits,
     fetchAvailableModels,
