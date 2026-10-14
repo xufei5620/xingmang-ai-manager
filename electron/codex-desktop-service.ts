@@ -2485,6 +2485,14 @@ export function buildCodexDesktopDarwinStatus(
   }
 }
 
+/**
+ * 从星芒打开 Codex 后没换成中文时右下角那一句（中文通道没开起来，或开了没核对上）。以前把
+ * 底层原话拼在中间（「…未找到可注入的页面：The operation was aborted due to timeout」），客户
+ * 看不懂；原话现在只进运行日志（system-service 接的 withCodexDesktopCdpFailureReport 和
+ * withCodexDesktopLocaleFailureReport）。这条路只在 Windows 上走，首页「打开」在 Codex 开着时会问要不要重启。
+ */
+export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。'
+
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
   installationQueue: InstallationQueue
@@ -3921,7 +3929,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       && needsFreshActivation
     let chineseLocale: CodexDesktopLaunchResult['chineseLocale'] = launchOptions.injectChinese
       ? needsFreshActivation
-        ? { status: 'failed', message: 'Codex 已打开，但中文增强启动未完成。请在配置中再次启用中文界面。' }
+        ? { status: 'failed', message: codexDesktopChineseUnverifiedMessage }
         : { status: 'restart-required', message: '中文设置已保存；当前 Codex 已在运行，请在配置中启用中文界面以重启并应用。' }
       : undefined
     if (needsFreshActivation) {
@@ -4030,7 +4038,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         // A failed enhancement must not leave a successfully launched client
         // looking broken. config.toml remains authoritative for future builds.
         console.warn(`[codex-locale] 中文运行时补丁未生效，保留已启动客户端：${message}`)
-        chineseLocale = { status: 'failed', message: `Codex 已打开，但未确认中文界面生效：${message.slice(0, 300)}。可再次启用中文界面重试。` }
+        chineseLocale = { status: 'failed', message: codexDesktopChineseUnverifiedMessage }
       }
     }
     const runningStatus = { ...desktopApp, running: true }
