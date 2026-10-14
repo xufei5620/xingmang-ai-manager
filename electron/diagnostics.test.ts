@@ -335,7 +335,7 @@ describe('diagnostics', () => {
       expect(item).toMatchObject({
         state: 'pass',
         summary: '已连到当前账号',
-        details: { matchesRelay: true, routeLine: 'CF', currentRouteLine: '洛杉矶' },
+        details: { matchesRelay: true, routeLine: '线路1', currentRouteLine: '线路2' },
       })
       // 两条线路的名字里都不带地址，导出的报告照常可以发给客服。
       expect(`${item?.details?.routeLine} ${item?.details?.currentRouteLine}`).not.toMatch(/https?:|solov/)
@@ -346,12 +346,12 @@ describe('diagnostics', () => {
         const site = line === 'direct' ? directSite : primarySite
         const item = codexItem(await runDiagnostics(onLine(line, true, `${site.providerBaseUrls.codex}/`)))
 
-        expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: line === 'direct' ? '洛杉矶' : 'CF' } })
+        expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: line === 'direct' ? '线路2' : '线路1' } })
         expect(item?.details).not.toHaveProperty('currentRouteLine')
       }
     })
 
-    it('keeps the direct and default line names for the legacy account', async () => {
+    it('names the legacy account lines by the same entries: default is line 1, direct is line 2', async () => {
       const home = temporaryHome()
       const input = dependencies(home)
       const legacyPrimary = requireRelaySite('solov-api', 'primary')
@@ -362,7 +362,7 @@ describe('diagnostics', () => {
 
       const item = codexItem(await runDiagnostics(input))
 
-      expect(item).toMatchObject({ state: 'pass', details: { routeLine: '默认线路', currentRouteLine: '直连' } })
+      expect(item).toMatchObject({ state: 'pass', details: { routeLine: '线路1', currentRouteLine: '线路2' } })
     })
 
     it('does not compare while auto has not settled on a line yet', async () => {
@@ -379,7 +379,7 @@ describe('diagnostics', () => {
 
       const item = codexItem(await runDiagnostics(input))
 
-      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: 'CF' } })
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: '线路1' } })
       expect(item?.details).not.toHaveProperty('currentRouteLine')
     })
 
@@ -400,7 +400,7 @@ describe('diagnostics', () => {
 
       const item = codexItem(await runDiagnostics(onLine('direct', true, retired.baseUrl)))
 
-      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { currentRouteLine: '洛杉矶' } })
+      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { currentRouteLine: '线路2' } })
       expect(item?.details).not.toHaveProperty('routeLine')
     })
   })
@@ -826,7 +826,7 @@ describe('diagnostics', () => {
 
         expect(networkItem(await runDiagnostics(input))).toMatchObject({
           state: 'pass',
-          details: { lastRouteChange: '10月7日 21:14，洛杉矶线路连着 3 次没连上，改走 CF 线路', lastRouteChangeTrigger: 'ECONNRESET' },
+          details: { lastRouteChange: '10月7日 21:14，线路2连着 3 次没连上，改走线路1', lastRouteChangeTrigger: 'ECONNRESET' },
         })
       })
 
@@ -840,7 +840,7 @@ describe('diagnostics', () => {
 
         const network = networkItem(await runDiagnostics(input))
 
-        expect(network).toMatchObject({ state: 'fail', details: { lastRouteChange: '10月7日 09:05，洛杉矶线路连着 10 分钟都能连上，换回洛杉矶线路' } })
+        expect(network).toMatchObject({ state: 'fail', details: { lastRouteChange: '10月7日 09:05，线路2连着 10 分钟都能连上，换回线路2' } })
         expect(network?.details).not.toHaveProperty('lastRouteChangeTrigger')
       })
 
@@ -855,13 +855,13 @@ describe('diagnostics', () => {
       it('adds the tool line report to the details and ignores a report that throws', async () => {
         const { input } = onRoute({ line: 'direct', automatic: true, settled: true })
         input.fetch = vi.fn(async () => statusJson())
-        input.toolRoute = { site: requireRelaySite('solov'), report: () => ({ toolLine: 'CF', routeStatusFile: '还没读过' }) }
+        input.toolRoute = { site: requireRelaySite('solov'), report: () => ({ toolLine: '线路1', routeStatusFile: '还没读过' }) }
 
-        expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { toolLine: 'CF', routeStatusFile: '还没读过' } })
+        expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { toolLine: '线路1', routeStatusFile: '还没读过' } })
 
         input.toolRoute = { site: requireRelaySite('solov'), report: () => { throw new Error('boom') } }
         const network = networkItem(await runDiagnostics(input))
-        expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是洛杉矶线路' })
+        expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是线路2' })
         expect(network?.details).not.toHaveProperty('toolLine')
       })
 
@@ -874,7 +874,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务，用的是洛杉矶线路',
+          summary: '能连上星芒服务，用的是线路2',
           details: { endpoint: 'https://xm-direct.solov.cc/api/status', line: 'direct' },
         })
         expect(network?.details).not.toHaveProperty('fellBack')
@@ -896,7 +896,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务。洛杉矶线路这会儿连不上，已自动改走 CF 线路',
+          summary: '能连上星芒服务。线路2这会儿连不上，已自动改走线路1',
           details: { endpoint: 'https://xm.solov.cc/api/status', line: 'primary', fellBack: true },
         })
         expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
@@ -1021,7 +1021,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务。洛杉矶线路这会儿连不上，已自动改走 CF 线路（开着加速也不绕加速线路）',
+          summary: '能连上星芒服务。线路2这会儿连不上，已自动改走线路1（开着加速也不绕加速线路）',
           details: { endpoint: 'https://xm.solov.cc/api/status', line: 'primary', route: 'direct' },
         })
         expect(network?.details).not.toHaveProperty('fellBack')
@@ -1035,7 +1035,7 @@ describe('diagnostics', () => {
 
           expect(networkItem(await runDiagnostics(input))).toMatchObject({
             state: 'pass',
-            summary: '能连上星芒服务，用的是 CF 线路',
+            summary: '能连上星芒服务，用的是线路1',
             details: { line: 'primary' },
           })
         }
@@ -1045,15 +1045,15 @@ describe('diagnostics', () => {
         expect(relayNetworkPassSummary(null, false)).toBe('能连上星芒服务')
         expect(relayNetworkPassSummary(null, true)).toBe('能连上星芒服务（开着加速时也直接连，不绕加速线路）')
         // 星芒账号：xm 三线路附录 A。
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, false)).toBe('能连上星芒服务，用的是洛杉矶线路')
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: false }, false)).toBe('能连上星芒服务，用的是 CF 线路')
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: true }, false)).toBe('能连上星芒服务。洛杉矶线路这会儿连不上，已自动改走 CF 线路')
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是洛杉矶线路（开着加速也不绕加速线路）')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路2')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路1')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: true }, false)).toBe('能连上星芒服务。线路2这会儿连不上，已自动改走线路1')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是线路2（开着加速也不绕加速线路）')
         // 历史账号：用的是哪条照旧是直连适配方案第六节第 3 条；10-14 起先走默认线路、直连备用，退回那句跟着对调。
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, false)).toBe('能连上星芒服务，用的是直连')
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'primary', fellBack: false }, false)).toBe('能连上星芒服务，用的是默认线路')
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: true }, false)).toBe('能连上星芒服务。默认线路这会儿连不上，已自动改走直连')
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是直连（开着加速也不绕加速线路）')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路2')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'primary', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路1')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: true }, false)).toBe('能连上星芒服务。线路1这会儿连不上，已自动改走线路2')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是线路2（开着加速也不绕加速线路）')
       })
     })
 
@@ -1088,7 +1088,7 @@ describe('diagnostics', () => {
 
         expect(networkItem(await runDiagnostics(input))).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务。默认线路这会儿连不上，已自动改走直连',
+          summary: '能连上星芒服务。线路1这会儿连不上，已自动改走线路2',
           details: { endpoint: 'https://api-direct.solov.cc/api/v1/settings/public', line: 'direct', fellBack: true },
         })
         expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
@@ -1102,7 +1102,7 @@ describe('diagnostics', () => {
         const first = onHistoricalRoute({ line: 'primary', automatic: true, settled: true })
         const firstFetch = vi.fn(async (_url: string | URL | Request) => statusJson())
         first.input.fetch = firstFetch
-        expect(networkItem(await runDiagnostics(first.input))).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是默认线路', details: { line: 'primary' } })
+        expect(networkItem(await runDiagnostics(first.input))).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是线路1', details: { line: 'primary' } })
         expect(firstFetch.mock.calls.map(([url]) => String(url))).toEqual(['https://api.solov.cc/api/v1/settings/public'])
         expect(first.reportPreferredFailure).not.toHaveBeenCalled()
 
@@ -1115,14 +1115,14 @@ describe('diagnostics', () => {
         expect(moved.reportPreferredFailure).not.toHaveBeenCalled()
         moved.input.fetch = vi.fn(async () => statusJson())
         const network = networkItem(await runDiagnostics(moved.input))
-        expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务。默认线路这会儿连不上，已自动改走直连', details: { line: 'direct' } })
+        expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务。线路1这会儿连不上，已自动改走线路2', details: { line: 'direct' } })
         expect(network?.details).not.toHaveProperty('fellBack')
       })
 
       it('names direct when the customer pinned it', async () => {
         const { input } = onHistoricalRoute({ line: 'direct', automatic: false, settled: true })
         input.fetch = vi.fn(async () => statusJson())
-        expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是直连', details: { line: 'direct' } })
+        expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是线路2', details: { line: 'direct' } })
       })
     })
   })
@@ -1130,29 +1130,26 @@ describe('diagnostics', () => {
   describe('describeRelayRouteChange', () => {
     it('says when the line changed, in local time, and why, without any address', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at }, 'solov-api')).toBe('1月3日 08:00，查到直连能连上，走直连')
-      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ETIMEDOUT', at }, 'solov-api'))
-        .toBe('1月3日 08:00，直连连着 3 次没连上，改走默认线路')
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at }, 'solov-api')).toBe('1月3日 08:00，直连连着 10 分钟都能连上，换回直连')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at })).toBe('1月3日 08:00，查到线路2能连上，走线路2')
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ETIMEDOUT', at }))
+        .toBe('1月3日 08:00，线路2连着 3 次没连上，改走线路1')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at })).toBe('1月3日 08:00，线路2连着 10 分钟都能连上，换回线路2')
     })
 
-    // 0.2.19 起历史账号先走默认线路、直连备用（yoyo 10-14）：按记下的 from、to 说，新旧两种记录都对。
-    it('describes the historical account moving off and back to the default line it now uses first', () => {
+    // 0.2.19 起历史账号先走线路1（CF）、线路2 备用（yoyo 10-14）：按记下的 from、to 说，新旧两种记录都对。
+    it('describes the historical account moving off and back to line 1, which it now uses first', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
-      expect(describeRelayRouteChange({ from: 'primary', to: 'primary', reason: 'startup', at }, 'solov-api')).toBe('1月3日 08:00，查到默认线路能连上，走默认线路')
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'health-failed', trigger: 'scheduled', at }, 'solov-api'))
-        .toBe('1月3日 08:00，默认线路连着 3 次没连上，改走直连')
-      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'recovered', at }, 'solov-api')).toBe('1月3日 08:00，默认线路连着 10 分钟都能连上，换回默认线路')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'primary', reason: 'startup', at })).toBe('1月3日 08:00，查到线路1能连上，走线路1')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'health-failed', trigger: 'scheduled', at }))
+        .toBe('1月3日 08:00，线路1连着 3 次没连上，改走线路2')
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'recovered', at })).toBe('1月3日 08:00，线路1连着 10 分钟都能连上，换回线路1')
     })
 
-    it('names the xingmang account lines Los Angeles and CF', () => {
+    // 全新安装开机那一轮只查一次就改了，不能说成「连着 3 次」（#963）。
+    it('says a first-launch change came from one check', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at }, 'solov')).toBe('1月3日 08:00，查到洛杉矶线路能连上，走洛杉矶线路')
-      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', at }, 'solov')).toBe('1月3日 08:00，洛杉矶线路连着 3 次没连上，改走 CF 线路')
-      // 全新安装开机那一轮只查一次就改了，不能说成「连着 3 次」（#963）。
-      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'first-launch', at }, 'solov'))
-        .toBe('1月3日 08:00，第一次开机查到洛杉矶线路没连上，改走 CF 线路')
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at }, 'solov')).toBe('1月3日 08:00，洛杉矶线路连着 10 分钟都能连上，换回洛杉矶线路')
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'first-launch', at }))
+        .toBe('1月3日 08:00，第一次开机查到线路2没连上，改走线路1')
     })
   })
 

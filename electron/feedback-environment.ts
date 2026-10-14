@@ -283,18 +283,13 @@ export function resolveFeedbackRelayRoute(routing: RelayEndpointRoutingSnapshot,
   const site = routing.resolve(siteId)
   if (site.id !== 'solov' && site.id !== 'solov-api') return null
   const preference = routing.preferences[site.id]
-  // 星芒账号的两条线路叫洛杉矶、CF（xm 三线路附录 A）；历史账号照旧叫直连、默认线路。
-  if (site.id === 'solov') {
-    if (preference === 'direct') return '只用洛杉矶'
-    if (preference === 'primary') return '只用 CF'
-    return routing.lines().solov.line === 'direct' ? '自动（这次用的是洛杉矶线路）' : '自动（这次用的是 CF 线路）'
-  }
-  if (preference === 'direct') return '只用直连'
-  if (preference === 'primary') return '只用默认线路'
-  return routing.lines()[site.id].line === 'direct' ? '自动（这次用的是直连）' : '自动（这次用的是默认线路）'
+  if (preference !== 'auto') return `只用${feedbackLineNames[preference]}`
+  return `自动（这次用的是${feedbackLineNames[routing.lines()[site.id].line]}）`
 }
 
-const feedbackSolovLineNames: Readonly<Record<RelayEndpointId, string>> = { direct: '洛杉矶', primary: 'CF' }
+// 和设置里的选项一个叫法：只说线路1、线路2，不说在哪（yoyo 10-14）。两个账号按入口对应，默认那条（CF）
+// 是线路1，直连是线路2。
+const feedbackLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '线路1', direct: '线路2' }
 
 const routeFailureLabelTexts: Readonly<Record<RouteFailureLabel, string>> = {
   normal: '解析到的是星芒的地址',
@@ -311,7 +306,7 @@ export function buildFeedbackToolRouteCertificateLines(failure: ToolRouteCertifi
   if (!failure?.certificates.length) return []
   const label = failure.label ? `，标签 ${failure.label}（${routeFailureLabelTexts[failure.label]}）` : ''
   return [
-    `工具线路证书没过: ${feedbackSolovLineNames[failure.line]}，${new Date(failure.at).toISOString()}${label}`,
+    `工具线路证书没过: ${feedbackLineNames[failure.line]}，${new Date(failure.at).toISOString()}${label}`,
     ...failure.certificates.map((certificate, index) => [
       `收到的证书 ${index + 1}: 连 ${certificate.address}`,
       `颁发者 ${certificate.issuer || '（空）'}`,
@@ -325,7 +320,7 @@ export function buildFeedbackToolRouteCertificateLines(failure: ToolRouteCertifi
 /** 「工具线路」那一行：只有星芒账号有，写的是工具配置这会儿该用的那条（不写地址）。 */
 export function resolveFeedbackToolRoute(toolRouting: RelayEndpointRoutingSnapshot, siteId: string | null | undefined): string | null {
   if (toolRouting.resolve(siteId).id !== 'solov') return null
-  return feedbackSolovLineNames[toolRouting.lines().solov.line]
+  return feedbackLineNames[toolRouting.lines().solov.line]
 }
 
 /**

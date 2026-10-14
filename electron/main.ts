@@ -2055,7 +2055,7 @@ if (!hasSingleInstanceLock) {
               if (!failure) return false
               if (failure.lineFailure) relayRouteController.reportPreferredFailure('solov', failure.reason)
               useUpdateFeedLine('primary')
-              runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在直连上没走通，改走默认线路再查一次', { reason: failure.reason })
+              runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在线路2上没走通，改走线路1再查一次', { reason: failure.reason })
               return true
             },
           }
