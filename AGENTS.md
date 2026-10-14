@@ -290,7 +290,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 | 找文件、看模块职责 | `docs/MODULE-MAP.md` |
 | 改账号 / 计费 | `docs/RECON-new-api.md`、`docs/ACCOUNT-PLAN.md`（**必读**） |
 | 改画布 / AI 工作区 | `docs/RECON-canvas.md`、`docs/CANVAS-V2-PLAN.md`、`docs/AI-CHAT.md`、`docs/CANVAS-THIRD-PARTY.md`（**必读**；2026-08-12 起执行搬进主进程，早于该日期的描述以代码为准） |
-| 改界面（renderer-v2） | `docs/UI-V3.1.1-V2-REBUILD.md` 与 `ui-spec/`（见第 10 节） |
+| 改界面（renderer-v2） | `ui-spec/v4/README.md`（v4.0 基线），再按需看 `ui-spec/` 与 `docs/UI-V3.1.1-V2-REBUILD.md`（见第 10 节） |
 | 改 macOS 相关 | `.claude/rules/macos-platform.md`（自动加载）、`docs/MACOS_DEVELOPMENT.md`、`docs/MACOS_FREE_DISTRIBUTION.md` |
 | 改 Linux 相关 | `docs/LINUX.md` |
 | 发版 | `docs/RELEASING.md` |
@@ -304,7 +304,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 ## 10. 当前阶段（易变，改这里不影响上面）
 
-**界面重建 UI v3.1.1 进行中**。做 `src/renderer-v2/` 或 `ui-spec/` 的工作时，`.claude/rules/renderer-v2.md` 会自动加载，里面是完整的实施约束；实施状态见 `docs/UI-V3.1.1-V2-REBUILD.md`。
+**界面改版 UI v4.0**（2026-10-14 yoyo 确认，取代 v3.1.1 的视觉和页面结构）：基线是 `ui-spec/v4/README.md` 与 `ui-spec/v4/星芒AI管理工具-v4原型.html`，在现有 `src/renderer-v2/` 上改，已接好的业务照用。做 `src/renderer-v2/` 或 `ui-spec/` 的工作时，`.claude/rules/renderer-v2.md` 会自动加载，里面是完整的实施约束；v3.1.1 阶段的实施状态见 `docs/UI-V3.1.1-V2-REBUILD.md`。
 
 **legacy 回滚版已冻结**（2026-09-19，`R-S12`）：只接受安全修复，新功能与一般缺陷只在 `src/renderer-v2/` 做，代码与两条 `:legacy` 入口都不删。完整口径见 T14；#30（拆 legacy `App.tsx`）已按这条决定关闭。
 
