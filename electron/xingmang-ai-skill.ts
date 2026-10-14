@@ -4,6 +4,7 @@ import path from 'node:path'
 import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { cliCatalog, managedCliKeyProfiles, providerIds } from './catalog'
+import { resolveManagedCliGroup, resolveMappedGroup, type AccountGroupHints } from './managed-cli-groups'
 import type { RelayBackendClient } from './relay-backend'
 import { relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl } from './relay-sites'
 import { rewriteJsonStrings } from './tool-route-rewrite'
@@ -105,6 +106,11 @@ export interface XingmangAiSkillSyncOptions {
    * 缺省 = 不查，config.json 不写 model，画图照旧用 gpt-image-2。
    */
   fetchAvailableModels?: (apiKey: string) => Promise<string[]>
+  /**
+   * 服务状态文件里的分组对照（managed-cli-groups.ts）。画图和 Codex 两把 Key 放哪个分组先看它，
+   * 站上改了本名也跟得上；缺省或读不到 = 照旧按名单和名字里的词认。
+   */
+  loadAccountGroupHints?: () => Promise<AccountGroupHints | null>
 }
 
 export interface XingmangAiSkillInstallOptions {
@@ -773,12 +779,18 @@ export async function syncXingmangAiSkill(
     codexHome: options.codexHome,
   })
 
-  const groups = await options.accountService.listUsableGroups()
-  const imageGroup = selectImageSkillGroup(groups)
+  const [groups, hints] = await Promise.all([
+    options.accountService.listUsableGroups(),
+    options.loadAccountGroupHints ? options.loadAccountGroupHints().catch(() => null) : Promise.resolve(null),
+  ])
+  const imageGroup = resolveMappedGroup('image', groups, hints) ?? selectImageSkillGroup(groups)
   const codexProfile = managedCliKeyProfiles.codex
+  // 和命令行工具签 Codex Key 同一套认法：同名的 Key 在同一个分组里才会被复用，
+  // 认到别处就会在另一个分组里再签一把。站上改了本名、对照写上新名字以后也跟着走。
+  const codexGroup = resolveManagedCliGroup('codex', groups, undefined, [], hints).group
   const codex = await provisionSkillKey(options.accountService, {
     name: codexProfile.keyName,
-    group: codexProfile.group,
+    group: codexGroup,
   })
   const image = imageGroup
     ? await provisionSkillKey(options.accountService, {
@@ -795,7 +807,7 @@ export async function syncXingmangAiSkill(
     }
   }
 
-  const group = imageGroup || codexProfile.group
+  const group = imageGroup || codexGroup
   const model = await detectXingmangAiImageModel(
     options.fetchAvailableModels,
     [codex?.key, image?.key].filter((key): key is string => Boolean(key)),
@@ -810,7 +822,7 @@ export async function syncXingmangAiSkill(
       apiKey: image.key,
     } : {}),
     ...(codex ? {
-      codexGroup: codexProfile.group,
+      codexGroup,
       codexKeyId: codex.id,
       codexKeyName: codex.name,
       codexApiKey: codex.key,

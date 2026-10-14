@@ -2080,6 +2080,7 @@ if (!hasSingleInstanceLock) {
           runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
             maintenance: Boolean(status?.maintenance),
             toolRouteRewrite: toolRouteRewriteMode,
+            ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
           })
         },
       })
@@ -3320,6 +3321,12 @@ if (!hasSingleInstanceLock) {
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      // 分组对照跟着服务状态文件走：正在读就等这一次读完，不为它另发请求；这次没读到就用上一次读成功的那份。
+      accountGroupHints: async () => {
+        if (!serviceStatusMonitor) return null
+        await serviceStatusMonitor.settled()
+        return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
+      },
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,

@@ -523,6 +523,8 @@ export interface AiChatGroupSummary {
   name: string
   description: string
   ratio: number | string
+  /** 没选过分组时默认用这个（主进程按 Codex 那把 Key 的认法挑的，站上改了本名也跟得上）；缺省 = 不是。 */
+  recommended?: boolean
 }
 
 export interface AiChatPreparedGroup {

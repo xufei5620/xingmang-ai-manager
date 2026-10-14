@@ -1316,6 +1316,63 @@ describe('registerIpcHandlers', () => {
     }
   })
 
+  it('provisions keys into the renamed groups the published group map names', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      'default', 'Claude 主力', 'Claude AWS-B', 'GPT 主力', 'GPT-官方API直连', 'Grok 主力', 'Grok-官方API直连',
+    ].map((name) => ({ name, description: '', ratio: 1 })))
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7, name: input?.name ?? 'key', key: 'sk-ipc-fixture-only-renamed-key',
+    }))
+    const accountGroupHints = vi.fn(async () => ({
+      claude: ['Claude 主力', 'Claude-MAX订阅'],
+      codex: ['GPT 主力', 'GPT-中转/订阅'],
+      grok: ['Grok 主力', 'Grok-中转/订阅'],
+    }))
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {}, { accountGroupHints })
+
+    const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent()) as { ready: Array<{ provider: string; group: string }> }
+    expect(summary.ready.map(({ provider, group }) => [provider, group])).toEqual([
+      ['claude', 'Claude 主力'],
+      ['codex', 'GPT 主力'],
+      ['grok', 'Grok 主力'],
+    ])
+    expect(accountGroupHints).toHaveBeenCalled()
+  })
+
+  it('marks the chat group the Codex key would use, following the published group map', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const chatCredentials = {
+      listGroups: vi.fn(async () => ['default', 'GPT 主力', 'GPT-官方API直连'].map((name) => ({ name, description: '', ratio: 1 }))),
+      prepareGroup: vi.fn(),
+      resolveCredential: vi.fn(),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { chatCredentials } as never, {
+      accountGroupHints: async () => ({ codex: ['GPT 主力', 'GPT-中转/订阅'] }),
+    })
+
+    const groups = await electronMocks.handlers.get('chat:list-groups')!(trustedEvent()) as Array<{ name: string; recommended?: boolean }>
+    expect(groups.filter((group) => group.recommended).map((group) => group.name)).toEqual(['GPT 主力'])
+  })
+
+  it('leaves every chat group unmarked when nothing names the Codex group', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const chatCredentials = {
+      listGroups: vi.fn(async () => ['default', 'GPT 主力', 'GPT-官方API直连'].map((name) => ({ name, description: '', ratio: 1 }))),
+      prepareGroup: vi.fn(),
+      resolveCredential: vi.fn(),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { chatCredentials } as never)
+
+    const groups = await electronMocks.handlers.get('chat:list-groups')!(trustedEvent()) as Array<{ name: string; recommended?: boolean }>
+    expect(groups.some((group) => group.recommended)).toBe(false)
+  })
+
   it('persists a selected workspace and updates the repository context', async () => {
     electronMocks.showOpenDialog.mockResolvedValueOnce({
       canceled: false,

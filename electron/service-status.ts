@@ -1,5 +1,6 @@
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
+import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from './managed-cli-groups'
 
 /**
  * 更新目录上的一份状态文件（`service-status.json`），给发布者一个不发版就能对
@@ -12,7 +13,8 @@ import { readBoundedResponseText } from './bounded-response'
  *
  * 这份文件只能让客户端「少做」或「多说一句」，不能让它多拿任何能力：读不到、格式
  * 不对、字段缺失，一律当作没有这份文件——没在维护，客户端照常工作。它绝不能因为
- * 这份文件读不到而报错或拖慢启动。
+ * 这份文件读不到而报错或拖慢启动。分组对照（accountGroups）也守这一条：它只在服务端
+ * 已经允许这个账号用的分组里挑，不能让客户端用上任何它本来用不了的分组。
  */
 export const serviceStatusFileName = 'service-status.json'
 
@@ -48,6 +50,12 @@ export interface ServiceStatus {
    * 只改地址。0.2.18 起的客户端认。
    */
   toolRouteRewrite?: 'merge'
+  /**
+   * 星芒账号（xm 站）每样用途用哪个分组：claude / codex / grok / image，各列几个候选名字，
+   * 账号能用的里面排在前面的胜出。站上改分组本名前先在这里写上「新名字、老名字」，客户端不用
+   * 发版就跟过去。没写、写错的那样用途照旧按写死的名字和工具专属词认。0.2.19 起的客户端认。
+   */
+  accountGroups?: AccountGroupHints
 }
 
 export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
@@ -165,21 +173,57 @@ function readMinimumVersion(value: unknown): string | null {
   return version && /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version) ? version : null
 }
 
+// 一样用途列「新名字、老名字」两三个就够了；上限只防一份写坏的文件塞进一长串。
+const maxAccountGroupCandidates = 8
+
+// 名字会原样进建 Key 的请求体，按分组名的同一套口径校验（I5）；不合格的那一个丢掉，
+// 不让整样用途作废——排在后面的老名字仍然能兜底。
+function readAccountGroups(value: unknown): AccountGroupHints | null {
+  if (!isRecord(value)) return null
+  const hints: AccountGroupHints = {}
+  let any = false
+  for (const role of accountGroupRoles) {
+    const entries = value[role]
+    if (!Array.isArray(entries)) continue
+    const names: string[] = []
+    for (const entry of entries) {
+      const name = typeof entry === 'string' ? entry.trim() : ''
+      if (!isManagedCliGroupName(name) || names.includes(name)) continue
+      names.push(name)
+      if (names.length === maxAccountGroupCandidates) break
+    }
+    if (names.length === 0) continue
+    hints[role] = names
+    any = true
+  }
+  return any ? hints : null
+}
+
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
 export function parseServiceStatus(text: string, now: Date): ServiceStatus {
+  return parseServiceStatusDocument(text, now) ?? emptyServiceStatus
+}
+
+/**
+ * 同上，只是整份不是 JSON 对象时返回 null，不给空白的那一份。门户页、半截内容这类 200 回来的
+ * 东西算「没读到」：对维护提示两者一样，但分组对照要靠它接着用上一次读到的那份（lastKnown）。
+ */
+export function parseServiceStatusDocument(text: string, now: Date): ServiceStatus | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
   } catch {
-    return emptyServiceStatus
+    return null
   }
-  if (!isRecord(parsed)) return emptyServiceStatus
+  if (!isRecord(parsed)) return null
+  const accountGroups = readAccountGroups(parsed.accountGroups)
   return {
     maintenance: readMaintenance(parsed.maintenance, now),
     badVersions: readBadVersions(parsed.badVersions),
     rollout: readRollout(parsed.rollout),
     minimumVersion: readMinimumVersion(parsed.minimumVersion),
     ...(parsed.toolRouteRewrite === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}),
+    ...(accountGroups ? { accountGroups } : {}),
   }
 }
 
@@ -215,7 +259,7 @@ export async function readServiceStatus(options: ServiceStatusReaderOptions): Pr
       return null
     }
     const text = await readBoundedResponseText(response, maxStatusBytes, '服务状态文件')
-    return parseServiceStatus(text, (options.now ?? (() => new Date()))())
+    return parseServiceStatusDocument(text, (options.now ?? (() => new Date()))())
   } catch {
     return null
   } finally {
@@ -236,6 +280,16 @@ export interface ServiceStatusMonitor {
   start(): void
   refresh(): Promise<ServiceStatus | null>
   current(): ServiceStatus | null
+  /**
+   * 正在读就等这一次读完，没在读就给手上现有的那份，自己不发请求。登录后签 Key 要看分组对照，
+   * 又不能因为状态文件读不到就每次多等一个超时，所以只搭启动时（或定时）那一次的便车。
+   */
+  settled(): Promise<ServiceStatus | null>
+  /**
+   * 最近一次读成功的那份；一次也没读成功过是 null。维护提示读不到就当没在维护，分组对照不能这样：
+   * 站上删了老名字以后对照是唯一认得出新名字的办法，一次定时读失败不该让签 Key 退回老名字。
+   */
+  lastKnown(): ServiceStatus | null
   dispose(): void
 }
 
@@ -251,6 +305,7 @@ export function createServiceStatusMonitor(options: ServiceStatusMonitorOptions)
   const idleIntervalMs = options.idleIntervalMs ?? 15 * 60_000
   const activeIntervalMs = options.activeIntervalMs ?? 5 * 60_000
   let status: ServiceStatus | null = null
+  let lastKnown: ServiceStatus | null = null
   let inflight: Promise<ServiceStatus | null> | null = null
   let timer: NodeJS.Timeout | null = null
   let started = false
@@ -280,6 +335,7 @@ export function createServiceStatusMonitor(options: ServiceStatusMonitorOptions)
       if (disposed) return status
       const changed = !sameStatus(status, next)
       status = next
+      if (next) lastKnown = next
       if (changed) {
         try { options.onChange(next) } catch { /* a listener failure must not stop the polling */ }
       }
@@ -299,6 +355,8 @@ export function createServiceStatusMonitor(options: ServiceStatusMonitorOptions)
     },
     refresh,
     current: () => status,
+    settled: () => inflight ?? Promise.resolve(status),
+    lastKnown: () => lastKnown,
     dispose() {
       disposed = true
       if (timer) clearTimeout(timer)

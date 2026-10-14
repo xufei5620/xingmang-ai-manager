@@ -1,7 +1,7 @@
 import { activeProviderIds, resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel } from './cli-model-defaults'
 import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { loadManagedCliGroups, subscriptionsBindKeyGroups } from './managed-cli-groups'
+import { loadManagedCliGroups, subscriptionsBindKeyGroups, type ManagedCliGroupAccountService } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
@@ -72,6 +72,7 @@ interface ResolvedManagedCliKeys {
 type ManagedKeyAccountService = Pick<RelayBackendClient,
   'getSessionState' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listUsableGroups'>
   & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf'>>
+  & Pick<ManagedCliGroupAccountService, 'getAccountGroupHints'>
 
 class AccountSessionChangedError extends Error {
   constructor() {
