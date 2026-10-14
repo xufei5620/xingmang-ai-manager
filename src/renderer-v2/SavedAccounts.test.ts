@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultSyncSelection, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
+import { accountSwitchDesktopClientsHint, defaultSyncSelection, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
 
 describe('saved account list labels', () => {
   it('names the account source with the login page tab names instead of a hash fragment', () => {
@@ -39,5 +39,19 @@ describe('saved account switch sync defaults', () => {
   it('never selects a tool that cannot be switched, whatever the stored choice says', () => {
     const withOfficial = [candidate('claude', '星芒密钥'), candidate('codex', '官方账号'), candidate('grok', '尚未安装')]
     expect(defaultSyncSelection(withOfficial, { codex: true, grok: true })).toEqual(['claude'])
+  })
+})
+
+describe('saved account switch desktop clients', () => {
+  it('tells Windows and Mac users the desktop clients keep the old key and where to change it', () => {
+    for (const os of ['win', 'mac'] as const) {
+      const hint = accountSwitchDesktopClientsHint(os)
+      expect(hint).toContain('Claude Desktop、WorkBuddy、OpenCode 不会跟着换')
+      expect(hint).toContain('「配置」')
+      expect(hint).toContain('「保存配置」')
+    }
+  })
+  it('says nothing on Linux, where the home page does not list those clients', () => {
+    expect(accountSwitchDesktopClientsHint('linux')).toBeNull()
   })
 })

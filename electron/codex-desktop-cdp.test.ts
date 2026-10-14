@@ -15,6 +15,7 @@ import {
   validateCodexDesktopCdpPort,
   validateCodexDesktopCdpTarget,
   withCodexDesktopCdpFailureReport,
+  withCodexDesktopLocaleFailureReport,
   type CodexDesktopCdpTarget,
 } from './codex-desktop-cdp'
 
@@ -246,6 +247,26 @@ describe('Codex Desktop CDP activation failures', () => {
 
     await expect(activate('OpenAI.Codex_2p2nqsd0c76g0!App', 9222, environment)).resolves.toBe(18420)
     expect(calls).toEqual([['OpenAI.Codex_2p2nqsd0c76g0!App', 9222, environment]])
+  })
+
+  it('reports why the Chinese patch was not confirmed and still rejects with the same error', async () => {
+    const failure = new Error('Codex Desktop 启动后未找到可注入的页面：The operation was aborted due to timeout')
+    const reported: unknown[] = []
+    const inject = withCodexDesktopLocaleFailureReport(async () => { throw failure }, (error) => { reported.push(error) })
+
+    await expect(inject(9222, { expectedProcessId: 18420 })).rejects.toBe(failure)
+    expect(reported).toEqual([failure])
+  })
+
+  it('passes a confirmed Chinese patch through without reporting anything', async () => {
+    const calls: unknown[][] = []
+    const inject = withCodexDesktopLocaleFailureReport(async (port, options) => {
+      calls.push([port, options.expectedProcessId])
+      return { injectedTargets: 1, attempts: 1 }
+    }, () => { throw new Error('a confirmed patch has nothing to report') })
+
+    await expect(inject(9222, { expectedProcessId: 18420 })).resolves.toEqual({ injectedTargets: 1, attempts: 1 })
+    expect(calls).toEqual([[9222, 18420]])
   })
 })
 

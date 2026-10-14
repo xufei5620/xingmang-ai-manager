@@ -602,7 +602,8 @@ export function Home(props: HomeProps) {
     return <ToolRow key={tool.id} tool={tool.id} status={status}
       detail={job?.label ?? tool.error ?? (status === 'configBroken' && broken ? brokenConfigDetails[broken] : status === 'configChanged' ? configChangedDetail : status === 'codexShadowed' ? codexShadowedDetail : status === 'cliHooksStale' ? hooksDetail : status === 'ccSwitch' && ccSwitch ? ccSwitchDetails[ccSwitch] : foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[foreignKey] : status === 'ready' && hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail : status === 'ready' && hooksAutoRepaired ? cliHooksAutoRepairedDetail : elevationHint ?? desktopKnownIssue ?? undefined)}
       version={tool.status.installed ? versionSubtitle(tool) ?? '版本暂未识别' : undefined}
-      model={tool.status.installed ? officialLine ? officialLine.text : [tool.model, routeLabel?.text].filter(Boolean).join(' · ') || undefined : undefined}
+      route={tool.status.installed && !officialLine ? routeLabel?.text : undefined}
+      model={tool.status.installed ? officialLine ? officialLine.text : tool.model || undefined : undefined}
       modelHint={tool.status.installed ? officialLine?.renewal ?? routeLabel?.hint : undefined}
       progress={job?.percent}
       extraAction={installJob?.cancellable
