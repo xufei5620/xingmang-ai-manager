@@ -182,8 +182,8 @@ export interface DiagnosticsDependencies {
   relaySite?: RelaySite
   /**
    * 「星芒 AI 网络」一项：relaySite 这会儿走的线路（relay-route-controller.ts）。给了就在结论里写明
-   * 用的是直连还是默认线路；选「自动」、这会儿走直连却没连上时，改查同一个站的默认线路，查通了
-   * 算能连上、说清已经自动改走默认线路，并把直连的失败报给线路那边。缺省 = 不提线路（旧行为）。
+   * 用的是直连还是默认线路；选「自动」、这会儿走先走的那条却没连上时，改查同一个站的备用那条，查通了
+   * 算能连上、说清已经自动改走备用那条，并把先走那条的失败报给线路那边。缺省 = 不提线路（旧行为）。
    * 「电脑里另外设过的工具地址或密钥」也看它：选「自动」时指着默认线路的地址也算指向当前账号
    * （environmentAccountBaseUrls）。缺省 = 只认 relaySite 那一份。
    */
@@ -370,13 +370,21 @@ interface CheckDefinition {
 
 export interface DiagnosticsRelayRoute {
   line: RelayEndpointId
-  /** 选的是「自动」：只有它会在直连连不上时改走默认线路。 */
+  /** 选的是「自动」：只有它会在先走的那条连不上时改走备用那条。 */
   automatic: boolean
-  /** 「自动」定下来了没有；定在默认线路上 = 直连上次没连上，已经退回。 */
+  /** 「自动」定下来了没有；定在备用那条上 = 先走的那条上次没连上，已经退回。 */
   settled: boolean
-  /** 同一个站默认线路上的那一份，退回时查它。 */
+  /** 同一个站默认线路上的那一份。 */
   primarySite: RelaySite
-  reportDirectFailure(reason: string): void
+  /**
+   * 「自动」先走哪条，和备用那条上的那一份（先走的那条没查通时改查它）：星芒账号先走直连、备用默认线路，
+   * 历史账号先走默认线路、备用直连（relay-sites.ts 的 relayAutoPreferredLines）。缺省 = 星芒账号那样，
+   * 备用的就是 primarySite。
+   */
+  preferredLine?: RelayEndpointId
+  backupSite?: RelaySite
+  /** 先走那条上没查通，报给线路那边查一轮（relay-route-controller.ts 的 reportPreferredFailure）。 */
+  reportPreferredFailure(reason: string): void
   /** 「自动」最近一次换线路（relay-route-controller.ts 的 lastChange），详情里说给客户和客服听。 */
   lastChange?: RelayRouteChange | null
 }
@@ -384,8 +392,8 @@ export interface DiagnosticsRelayRoute {
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
 const accelerationBundleDamagedSummary = '加速用的文件被删掉或改动了，多半是杀毒软件拦的。'
   + '打开杀毒软件的「隔离区」或「恢复区」把星芒的文件恢复，并把星芒加入信任；也可以重新安装一次星芒，装在原来的位置就行。'
-// 「自动」走直连时直连那一次最多等这么久，剩下的留给默认线路：整项只有 DEFAULT_CHECK_TIMEOUT_MS。
-const DIRECT_NETWORK_PROBE_TIMEOUT_MS = 4_000
+// 「自动」走先走的那条时那一次最多等这么久，剩下的留给备用那条：整项只有 DEFAULT_CHECK_TIMEOUT_MS。
+const PREFERRED_NETWORK_PROBE_TIMEOUT_MS = 4_000
 
 /**
  * 差多少才值得说。证书校验本身有容差，本机时钟与服务器差几十秒也是常态，
@@ -1127,7 +1135,7 @@ function sameHostAs(value: string, expected: string): boolean {
  * 选「自动」时默认线路也一直算：它是客户照旧教程设得最多的地址，「自动」走直连并不说明它不通，
  * 报它只会教人删一个没问题的变量。直连只在这会儿真走直连时才算：「自动」退回了默认线路，说明直连
  * 在这台电脑上连不上，指着直连的变量会让工具跟着连不上。写死「只用直连」的照旧只认直连，多半是
- * 默认线路在他那儿不通才这么选。
+ * 默认线路在他那儿不通才这么选。历史账号先走默认线路（yoyo 10-14），走着它时同样只认默认线路。
  */
 export function environmentAccountBaseUrls(
   relaySite: RelaySite,
@@ -1450,9 +1458,9 @@ function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
 }
 
 /**
- * 「星芒 AI 网络」查通时那句结论。fellBack：选的是「自动」，直连这会儿连不上，用的是默认线路（这次当场
- * 退回的，或者之前就已经退回的）。星芒账号说洛杉矶、CF（xm 三线路附录 A）；历史账号照旧是直连适配方案
- * 第六节第 3 条的原话。
+ * 「星芒 AI 网络」查通时那句结论。fellBack：选的是「自动」，先走的那条这会儿连不上，用的是备用那条（这次
+ * 当场退回的，或者之前就已经退回的）。星芒账号先走洛杉矶、备用 CF（xm 三线路附录 A）；历史账号先走默认
+ * 线路、备用直连（yoyo 10-14），用的是哪条照旧是直连适配方案第六节第 3 条的原话。
  */
 export function relayNetworkPassSummary(route: { siteId: string; line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
   if (!route) return accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务'
@@ -1460,9 +1468,9 @@ export function relayNetworkPassSummary(route: { siteId: string; line: RelayEndp
     ? route.line === 'direct'
       ? '能连上星芒服务，用的是洛杉矶线路'
       : route.fellBack ? '能连上星芒服务。洛杉矶线路这会儿连不上，已自动改走 CF 线路' : '能连上星芒服务，用的是 CF 线路'
-    : route.line === 'direct'
-      ? '能连上星芒服务，用的是直连'
-      : route.fellBack ? '能连上星芒服务。直连这会儿连不上，已自动改走默认线路' : '能连上星芒服务，用的是默认线路'
+    : route.fellBack
+      ? '能连上星芒服务。默认线路这会儿连不上，已自动改走直连'
+      : route.line === 'direct' ? '能连上星芒服务，用的是直连' : '能连上星芒服务，用的是默认线路'
   return accelerating ? `${summary}（开着加速也不绕加速线路）` : summary
 }
 
@@ -1596,21 +1604,26 @@ function providerRouteLine(siteId: string, provider: ProviderId, actual: string)
 
 /**
  * 「自动」最近一次换线路，写进「星芒 AI 网络」那一项导出的报告（#941 第 2、7 节）：什么时候、为什么、
- * 换到哪条，不带地址。时间按这台电脑的时区说。
+ * 换到哪条，不带地址。时间按这台电脑的时区说。按记下的 from、to 说：历史账号 0.2.18 及以前先走直连，
+ * 0.2.19 起先走默认线路（yoyo 10-14），两种记录都说得对。
  */
 export function describeRelayRouteChange(change: RelayRouteChange, siteId: string): string {
   const at = new Date(change.at)
   const time = `${at.getMonth() + 1}月${at.getDate()}日 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
-  const direct = siteId === 'solov' ? '洛杉矶线路' : '直连'
-  // 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法。
-  const primary = siteId === 'solov' ? ' CF 线路' : '默认线路'
+  // 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法；星芒账号的 CF 线路只会出现在「改走」后面。
+  function name(line: RelayEndpointId): string {
+    if (siteId !== 'solov') return relayLineNames[line]
+    return line === 'direct' ? '洛杉矶线路' : ' CF 线路'
+  }
+  const from = name(change.from)
+  const to = name(change.to)
   const reason = change.reason === 'recovered'
-    ? `${direct}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${direct}`
+    ? `${to}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${to}`
     : change.reason === 'health-failed'
       ? change.trigger === firstLaunchTrigger
-        ? `第一次开机查到${direct}没连上，改走${primary}`
-        : `${direct}连着 ${relayRouteFailureThreshold} 次没连上，改走${primary}`
-      : `查到${direct}能连上，走${direct}`
+        ? `第一次开机查到${from}没连上，改走${to}`
+        : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
+      : `查到${to}能连上，走${to}`
   return `${time}，${reason}`
 }
 
@@ -2482,7 +2495,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             relayAnswered = true
             return { kind: 'answered', endpoint, response, body }
           } catch (error) {
-            // 「自动」给直连那一次单独限的时间到了（整项还没到点）：按超时算，下面改查默认线路。
+            // 「自动」给先走那条那一次单独限的时间到了（整项还没到点）：按超时算，下面改查备用那条。
             const reason = error instanceof Error && error.name === 'TimeoutError' && !signal.aborted
               ? 'timeout'
               : classifyNetworkFailure(error)
@@ -2499,25 +2512,27 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           try { toolDetails = dependencies.toolRoute?.report?.() ?? {} } catch { toolDetails = {} }
           return { ...relayRouteChangeDetails(route), ...toolDetails }
         }
-        const directFirst = route?.automatic === true && route.line === 'direct'
-        let probe = await probeStatus(relaySite, directFirst
-          ? AbortSignal.any([signal, AbortSignal.timeout(DIRECT_NETWORK_PROBE_TIMEOUT_MS)])
+        // 星芒账号先走直连、备用默认线路；历史账号先走默认线路、备用直连（DiagnosticsRelayRoute）。
+        const preferredLine = route?.preferredLine ?? 'direct'
+        const preferredFirst = route?.automatic === true && route.line === preferredLine
+        let probe = await probeStatus(relaySite, preferredFirst
+          ? AbortSignal.any([signal, AbortSignal.timeout(PREFERRED_NETWORK_PROBE_TIMEOUT_MS)])
           : signal)
         let line: RelayEndpointId | null = route?.line ?? null
         let fellBack = false
-        const directFailure = route && directFirst ? relayLineFailure(probe) : null
-        if (route && directFailure) {
-          if (reportsRelayLineFailure(probe)) route.reportDirectFailure(directFailure)
-          // 直连回的网关错误页不算「网络通了」：默认线路这次要是一直没人回，照样按连接超时说。
+        const preferredFailure = route && preferredFirst ? relayLineFailure(probe) : null
+        if (route && preferredFailure) {
+          if (reportsRelayLineFailure(probe)) route.reportPreferredFailure(preferredFailure)
+          // 先走那条回的网关错误页不算「网络通了」：备用那条这次要是一直没人回，照样按连接超时说。
           relayAnswered = false
-          const retry = await probeStatus(route.primarySite, signal).catch(() => null)
-          // 默认线路也没查通就照直连那次的结论说：用的是直连，说的就是直连那边的事。
+          const retry = await probeStatus(route.backupSite ?? route.primarySite, signal).catch(() => null)
+          // 备用那条也没查通就照先走那条的结论说：用的是它，说的就是它那边的事。
           if (retry?.kind === 'answered' && retry.response.ok && parsesAsJson(retry.body)) {
-            log?.('info', 'diagnostics.network.fallback', '直连这次没查通，默认线路查通了', {
-              reason: probe.kind === 'failed' ? probe.reason : directFailure,
+            log?.('info', 'diagnostics.network.fallback', '先走的那条线路这次没查通，备用那条查通了', {
+              reason: probe.kind === 'failed' ? probe.reason : preferredFailure,
             })
             probe = retry
-            line = 'primary'
+            line = preferredLine === 'direct' ? 'primary' : 'direct'
             fellBack = true
           }
         }
@@ -2579,7 +2594,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return {
           state: 'pass',
           // 状态码留在 details 里给导出报告，结论只说人话。
-          summary: relayNetworkPassSummary(route && line ? { siteId: relaySite.id, line, fellBack: fellBack || (route.automatic && route.settled && line === 'primary') } : null, accelerating),
+          summary: relayNetworkPassSummary(route && line ? { siteId: relaySite.id, line, fellBack: fellBack || (route.automatic && route.settled && line !== preferredLine) } : null, accelerating),
           details: {
             endpoint,
             status: response.status,

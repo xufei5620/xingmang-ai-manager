@@ -128,11 +128,17 @@ async function failTwiceMore(run: Harness): Promise<void> {
 
 describe('relay route controller', () => {
   it('starts an auto site on its stored conclusion; without one xm is settled on direct and the historical site waits on the default line', () => {
-    const stored = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' }, conclusions: { solov: 'primary', 'solov-api': 'direct' } })
+    const backToDefault: RelayRouteChange = { from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'scheduled', at: 5 }
+    const stored = harness({
+      preferences: { solov: 'auto', 'solov-api': 'auto' },
+      conclusions: { solov: 'primary', 'solov-api': 'primary' },
+      changes: { 'solov-api': backToDefault },
+    })
     expect(stored.controller.lines()).toEqual({
       solov: { line: 'primary', settled: true },
-      'solov-api': { line: 'direct', settled: true },
+      'solov-api': { line: 'primary', settled: true },
     })
+    expect(stored.controller.lastChange('solov-api')).toEqual(backToDefault)
     expect(stored.controller.route('solov')).toEqual({ line: 'primary', automatic: true })
 
     const fresh = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' } })
@@ -157,7 +163,7 @@ describe('relay route controller', () => {
     expect(pinned.controller.route('solov')).toEqual({ line: 'direct', automatic: false })
     expect(pinned.controller.lastChange('solov')).toBeNull()
     pinned.controller.start()
-    pinned.controller.reportDirectFailure('solov', 'ECONNRESET')
+    pinned.controller.reportPreferredFailure('solov', 'ECONNRESET')
     await settle()
     expect(pinned.probes).toEqual([])
     expect(pinned.timers.size).toBe(0)
@@ -176,19 +182,115 @@ describe('relay route controller', () => {
     expect(broken.controller.lastChange('solov')).toBeNull()
   })
 
-  it('settles the historical site on direct at startup when direct answers, tells subscribers once and stores the line and the change', async () => {
+  // 历史账号先走默认线路（api 的 CF），直连备用（yoyo 10-14）。
+  it('settles the historical site on the default line at startup when it answers, never asking direct, and stores the line and the change', async () => {
     const run = harness({ preferences: { 'solov-api': 'auto' } })
     run.controller.start()
     await settle()
-    expect(run.probes).toEqual([['solov-api', 'direct']])
+    expect(run.probes).toEqual([['solov-api', 'primary']])
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+    // 定下来了要叫一声：工具配置按定下的线路迁（0.2.18 写在直连上的迁回默认线路）。
+    expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
+    const change = { from: 'primary', to: 'primary', reason: 'startup', at: startedAt }
+    expect(run.writes).toEqual([{ lines: { 'solov-api': 'primary' }, changes: { 'solov-api': change } }])
+    expect(run.controller.lastChange('solov-api')).toEqual(change)
+    expect(run.events('relay.route.changed')).toEqual([{ siteId: 'solov-api', from: 'primary', to: 'primary', reason: 'startup' }])
+    // 走着先走的那条，隔一阵查一次。
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+  })
+
+  it('drops a historical direct conclusion stored under the old direct-first rule and starts again on the default line', async () => {
+    for (const reason of ['startup', 'recovered'] as const) {
+      const run = harness({
+        preferences: { 'solov-api': 'auto' },
+        conclusions: { 'solov-api': 'direct' },
+        changes: { 'solov-api': { from: 'primary', to: 'direct', reason, at: 5 } },
+      })
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
+      expect(run.controller.lastChange('solov-api')).toBeNull()
+      run.controller.start()
+      await settle()
+      expect(run.probes).toEqual([['solov-api', 'primary']])
+      expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
+      expect(run.writes.at(-1)).toEqual({
+        lines: { 'solov-api': 'primary' },
+        changes: { 'solov-api': { from: 'primary', to: 'primary', reason: 'startup', at: startedAt } },
+      })
+    }
+    // 只存了线路、没有切换记录的也是旧规矩存的。
+    const bare = harness({ preferences: { 'solov-api': 'auto' }, conclusions: { 'solov-api': 'direct' } })
+    expect(bare.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
+  })
+
+  it('keeps a historical direct conclusion reached because the default line failed, and keeps xm direct conclusions as they are', () => {
+    const fellBack: RelayRouteChange = { from: 'primary', to: 'direct', reason: 'health-failed', trigger: 'scheduled', at: 5 }
+    const run = harness({
+      preferences: { solov: 'auto', 'solov-api': 'auto' },
+      conclusions: { solov: 'direct', 'solov-api': 'direct' },
+      changes: { 'solov-api': fellBack },
+    })
+    expect(run.controller.lines()).toEqual({
+      solov: { line: 'direct', settled: true },
+      'solov-api': { line: 'direct', settled: true },
+    })
+    expect(run.controller.lastChange('solov-api')).toEqual(fellBack)
+  })
+
+  it('moves the historical site to direct only after the default line fails three checks in a row and direct answers', async () => {
+    const run = harness({ preferences: { 'solov-api': 'auto' } })
+    run.reachable.primary = false
+    run.controller.start()
+    await settle()
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
+    await failTwiceMore(run)
+    expect(run.probes).toEqual([['solov-api', 'primary'], ['solov-api', 'primary'], ['solov-api', 'primary'], ['solov-api', 'direct']])
+    expect(run.events('relay.route.check-failed')).toEqual([1, 2, 3].map((failures) => ({
+      siteId: 'solov-api', line: 'primary', failures, trigger: 'startup',
+    })))
     expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
     expect(run.changes).toEqual([['solov-api', { line: 'direct', settled: true }]])
-    const change = { from: 'primary', to: 'direct', reason: 'startup', at: startedAt }
-    expect(run.writes).toEqual([{ lines: { 'solov-api': 'direct' }, changes: { 'solov-api': change } }])
-    expect(run.controller.lastChange('solov-api')).toEqual(change)
-    expect(run.events('relay.route.changed')).toEqual([{ siteId: 'solov-api', from: 'primary', to: 'direct', reason: 'startup' }])
-    // 走直连以后隔一阵查一次。
+    expect(run.events('relay.route.changed')).toEqual([{
+      siteId: 'solov-api', from: 'primary', to: 'direct', reason: 'health-failed', trigger: 'startup',
+    }])
+    expect(run.writes.at(-1)?.lines).toEqual({ 'solov-api': 'direct' })
+    // 退到直连以后隔两分钟查一次默认线路，看能不能切回去。
+    expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
+  })
+
+  it('switches the historical site back to the default line only after it has answered every check for ten minutes', async () => {
+    const run = harness({
+      preferences: { 'solov-api': 'auto' },
+      conclusions: { 'solov-api': 'direct' },
+      changes: { 'solov-api': { from: 'primary', to: 'direct', reason: 'health-failed', at: 5 } },
+    })
+    run.controller.start()
+    await settle()
+    expect(run.probes).toEqual([['solov-api', 'primary']])
+    for (let probe = 1; probe < recoveryProbes; probe++) {
+      expect(run.controller.lines()['solov-api'].line).toBe('direct')
+      await run.fireTimer()
+    }
+    expect(run.probes.every(([, line]) => line === 'primary')).toBe(true)
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+    expect(run.events('relay.route.changed')).toEqual([{ siteId: 'solov-api', from: 'direct', to: 'primary', reason: 'recovered' }])
     expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+  })
+
+  it('checks the historical default line right away when a request on it fails, and ignores reports once it is on direct', async () => {
+    const run = harness({ preferences: { 'solov-api': 'auto' }, conclusions: { 'solov-api': 'primary' } })
+    run.controller.reportPreferredFailure('solov-api', 'ECONNRESET')
+    await settle()
+    expect(run.probes).toEqual([['solov-api', 'primary']])
+    expect(run.events('relay.route.direct-failed')).toEqual([{ siteId: 'solov-api', line: 'primary', reason: 'ECONNRESET' }])
+
+    const onDirect = harness({
+      preferences: { 'solov-api': 'auto' },
+      conclusions: { 'solov-api': 'direct' },
+      changes: { 'solov-api': { from: 'primary', to: 'direct', reason: 'health-failed', at: 5 } },
+    })
+    onDirect.controller.reportPreferredFailure('solov-api', 'ECONNRESET')
+    await settle()
+    expect(onDirect.probes).toEqual([])
   })
 
   // 全新安装开机那一轮两条一起查（#963）；直连查通照旧走直连、不叫订阅方，但要把它存成结论，
@@ -351,20 +453,6 @@ describe('relay route controller', () => {
     expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
   })
 
-  it('settles a site with no stored line on the default line after three failed checks', async () => {
-    const run = harness({ preferences: { 'solov-api': 'auto' } })
-    run.reachable.direct = false
-    run.controller.start()
-    await settle()
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
-    await failTwiceMore(run)
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
-    expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
-    expect(run.events('relay.route.changed')).toEqual([{
-      siteId: 'solov-api', from: 'primary', to: 'primary', reason: 'health-failed', trigger: 'startup',
-    }])
-  })
-
   it('starts counting again when one check in the round passes', async () => {
     const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
     run.reachable.direct = false
@@ -400,12 +488,12 @@ describe('relay route controller', () => {
     expect(run.events('relay.route.unreachable')).toEqual([{ siteId: 'solov-api', line: 'primary', settled: false, trigger: 'startup' }])
     expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
 
-    run.reachable.direct = true
+    run.reachable.primary = true
     run.probes.length = 0
     await run.fireTimer()
-    expect(run.probes).toEqual([['solov-api', 'direct']])
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
-    expect(run.events('relay.route.changed')).toEqual([{ siteId: 'solov-api', from: 'primary', to: 'direct', reason: 'startup' }])
+    expect(run.probes).toEqual([['solov-api', 'primary']])
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+    expect(run.events('relay.route.changed')).toEqual([{ siteId: 'solov-api', from: 'primary', to: 'primary', reason: 'startup' }])
   })
 
   it('stays on direct when the default line does not answer either', async () => {
@@ -463,7 +551,7 @@ describe('relay route controller', () => {
     const switchedAt = run.now()
 
     run.reachable.direct = false
-    run.controller.reportDirectFailure('solov', 'ERR_CONNECTION_RESET')
+    run.controller.reportPreferredFailure('solov', 'ERR_CONNECTION_RESET')
     await settle()
     await failTwiceMore(run)
     expect(run.controller.lines().solov.line).toBe('direct')
@@ -485,19 +573,19 @@ describe('relay route controller', () => {
     const run = harness({ preferences: { 'solov-api': 'auto' } })
     run.controller.start()
     await settle()
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
 
-    // 系统对时把钟往回拨了三个钟头，接着直连坏了。
+    // 系统对时把钟往回拨了三个钟头，接着默认线路坏了。
     run.advance(-3 * 60 * 60_000)
-    run.reachable.direct = false
-    run.controller.reportDirectFailure('solov-api', 'ECONNRESET')
+    run.reachable.primary = false
+    run.controller.reportPreferredFailure('solov-api', 'ECONNRESET')
     await settle()
     await failTwiceMore(run)
-    expect(run.events('relay.route.held')).toEqual([{ siteId: 'solov-api', line: 'direct', waitMs: relayRouteMinSwitchGapMs }])
+    expect(run.events('relay.route.held')).toEqual([{ siteId: 'solov-api', line: 'primary', waitMs: relayRouteMinSwitchGapMs }])
 
     await run.fireTimer()
     await failTwiceMore(run)
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
     expect(run.events('relay.route.held')).toHaveLength(1)
   })
 
@@ -518,7 +606,7 @@ describe('relay route controller', () => {
     })
 
     // 直连还通：失败只是那一下，线路不改。
-    run.controller.reportDirectFailure('solov', 'ECONNRESET')
+    run.controller.reportPreferredFailure('solov', 'ECONNRESET')
     await settle()
     expect(probes).toEqual([['solov', 'direct']])
     expect(run.controller.lines().solov.line).toBe('direct')
@@ -526,16 +614,16 @@ describe('relay route controller', () => {
 
     // 同一阵子里再报不再查。
     run.advance(relayRouteFailureRecheckGapMs - 1)
-    run.controller.reportDirectFailure('solov', 'ECONNRESET')
+    run.controller.reportPreferredFailure('solov', 'ECONNRESET')
     await settle()
     expect(probes).toHaveLength(1)
 
     // 过了这一阵再报才查；查着的时候再报也不重复查。
     run.advance(1)
     answers.direct = () => pending.promise
-    run.controller.reportDirectFailure('solov', 'ERR_CONNECTION_REFUSED')
+    run.controller.reportPreferredFailure('solov', 'ERR_CONNECTION_REFUSED')
     run.advance(relayRouteFailureRecheckGapMs)
-    run.controller.reportDirectFailure('solov', 'ERR_NAME_NOT_RESOLVED')
+    run.controller.reportPreferredFailure('solov', 'ERR_NAME_NOT_RESOLVED')
     await settle()
     expect(probes).toEqual([['solov', 'direct'], ['solov', 'direct']])
 
@@ -554,7 +642,7 @@ describe('relay route controller', () => {
 
     // 已经在默认线路上，再报直连失败没有意义。
     run.advance(relayRouteFailureRecheckGapMs)
-    run.controller.reportDirectFailure('solov', 'ECONNRESET')
+    run.controller.reportPreferredFailure('solov', 'ECONNRESET')
     await settle()
     expect(probes).toHaveLength(5)
   })
@@ -562,7 +650,7 @@ describe('relay route controller', () => {
   it('records a reported reason that is not a plain code as a request failure', async () => {
     const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
     run.reachable.direct = false
-    run.controller.reportDirectFailure('solov', 'C:\\Users\\peaker failed')
+    run.controller.reportPreferredFailure('solov', 'C:\\Users\\peaker failed')
     await settle()
     await failTwiceMore(run)
     expect(run.controller.lastChange('solov')?.trigger).toBe('request')
@@ -575,8 +663,8 @@ describe('relay route controller', () => {
     })
     run.controller.start()
     await settle()
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
-    expect(run.changes).toEqual([['solov-api', { line: 'direct', settled: true }]])
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+    expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
     expect(run.logs.find((entry) => entry.event === 'relay.route.persist-failed')).toEqual({
       level: 'warn',
       event: 'relay.route.persist-failed',
@@ -588,9 +676,9 @@ describe('relay route controller', () => {
     const run = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' } })
     run.controller.start()
     await settle()
-    expect(run.controller.lines()).toEqual({ solov: { line: 'direct', settled: true }, 'solov-api': { line: 'direct', settled: true } })
-    expect(run.writes.map((write) => write.lines)).toEqual([{ 'solov-api': 'direct' }, { solov: 'direct', 'solov-api': 'direct' }])
-    expect(run.changes).toEqual([['solov-api', { line: 'direct', settled: true }]])
+    expect(run.controller.lines()).toEqual({ solov: { line: 'direct', settled: true }, 'solov-api': { line: 'primary', settled: true } })
+    expect(run.writes.map((write) => write.lines)).toEqual([{ 'solov-api': 'primary' }, { solov: 'direct', 'solov-api': 'primary' }])
+    expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
   })
 
   // 开机先定的直连还没查过：历史账号先存结论时不能把它一起存下，否则下次开机就当它查过了。
@@ -602,10 +690,10 @@ describe('relay route controller', () => {
     })
     run.controller.start()
     await settle()
-    expect(run.writes.map((write) => write.lines)).toEqual([{ 'solov-api': 'direct' }])
+    expect(run.writes.map((write) => write.lines)).toEqual([{ 'solov-api': 'primary' }])
     solovDirect.resolve(true)
     await settle()
-    expect(run.writes.map((write) => write.lines).at(-1)).toEqual({ solov: 'direct', 'solov-api': 'direct' })
+    expect(run.writes.map((write) => write.lines).at(-1)).toEqual({ solov: 'direct', 'solov-api': 'primary' })
   })
 
   it('stores one conclusion after another so an earlier, slower write never overwrites a later one', async () => {
@@ -616,20 +704,20 @@ describe('relay route controller', () => {
     })
     run.controller.start()
     await settle()
-    expect(pending.map((write) => write.conclusions.lines)).toEqual([{ 'solov-api': 'direct' }])
+    expect(pending.map((write) => write.conclusions.lines)).toEqual([{ 'solov-api': 'primary' }])
 
-    // 直连接着就坏了：离开机那次切换不够 5 分钟，到点再查一轮才改，这时头一份还没写完。
-    run.reachable.direct = false
-    run.controller.reportDirectFailure('solov-api', 'ECONNRESET')
+    // 默认线路接着就坏了：离开机那次切换不够 5 分钟，到点再查一轮才改，这时头一份还没写完。
+    run.reachable.primary = false
+    run.controller.reportPreferredFailure('solov-api', 'ECONNRESET')
     await settle()
     await failTwiceMore(run)
     await run.fireTimer()
     await failTwiceMore(run)
-    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
-    expect(pending.map((write) => write.conclusions.lines)).toEqual([{ 'solov-api': 'direct' }])
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+    expect(pending.map((write) => write.conclusions.lines)).toEqual([{ 'solov-api': 'primary' }])
     pending[0]?.done()
     await settle()
-    expect(pending.map((write) => write.conclusions.lines)).toEqual([{ 'solov-api': 'direct' }, { 'solov-api': 'primary' }])
+    expect(pending.map((write) => write.conclusions.lines)).toEqual([{ 'solov-api': 'primary' }, { 'solov-api': 'direct' }])
   })
 
   it('counts a probe that throws as a failed check', async () => {
@@ -686,7 +774,7 @@ describe('relay route controller', () => {
     failing.controller.dispose()
     expect(failing.timers.size).toBe(0)
     failing.advance(relayRouteFailureRecheckGapMs)
-    failing.controller.reportDirectFailure('solov', 'ECONNRESET')
+    failing.controller.reportPreferredFailure('solov', 'ECONNRESET')
     await settle()
     expect(failing.probes).toEqual([['solov', 'direct']])
   })
@@ -699,7 +787,7 @@ describe('relay route controller', () => {
     unsubscribe()
     run.controller.start()
     await settle()
-    expect(run.changes).toEqual([['solov-api', { line: 'direct', settled: true }]])
+    expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
     expect(removed).not.toHaveBeenCalled()
   })
 })

@@ -22,7 +22,7 @@ describe('controlled connection route settings', () => {
   it('words the two settings exactly as approved', () => {
     expect(connectionRouteSettings.map((route) => [route.label, route.description])).toEqual([
       ['星芒账号线路', '自动会先走洛杉矶线路，连不上时改走 CF 线路。保存后重启星芒生效，不会切换账号。'],
-      ['历史账号线路', '自动会先走直连，直连连不上时改走默认线路。保存后重启星芒生效，不会切换账号。'],
+      ['历史账号线路', '自动会先走默认线路，默认线路连不上时改走直连。保存后重启星芒生效，不会切换账号。'],
     ]);
   });
 

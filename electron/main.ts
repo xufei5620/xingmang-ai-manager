@@ -134,7 +134,7 @@ import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relayEndpointOrigin, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relayAutoBackupLine, relayAutoPreferredLines, relayEndpointOrigin, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
 import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
 import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
@@ -1131,8 +1131,9 @@ if (!hasSingleInstanceLock) {
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
     // 线路选项开机时定下，这次运行里不再变（设置里改了要重启才生效）。选「自动」的站这次运行里会
-    // 换线路：先用上次存下的结论，开机后在后台查一次，直连连不上改走默认线路，好了再切回来
-    // （relay-route-controller.ts）。查线路走的是星芒自己连站点那条路（relayFetch，下面才建）。
+    // 换线路：先用上次存下的结论，开机后在后台查一次，先走的那条连不上改走备用那条，好了再切回来
+    // （星芒账号先走直连，历史账号先走默认线路，relay-route-controller.ts）。查线路走的是星芒自己连站点
+    // 那条路（relayFetch，下面才建）。
     const relayPreferences = resolveRelayRoutePreferences(settingsStore.read().relayEndpointIds)
     const relayRouteConclusions = createRelayRouteConclusionStore(path.join(managerDataDirectory, 'relay-route-lines.json'))
     const relayRouteController = createRelayRouteController({
@@ -1220,10 +1221,10 @@ if (!hasSingleInstanceLock) {
       },
     })
     // 星芒自己的请求（账号、AI 工作区、AI 工作区查模型）按线路走：认得出的星芒地址换到这个站这会儿
-    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。报给线路那边的只是叫它查一轮
+    // 的线路，「自动」时先走的那条没走通当场改走备用那条（relay-line-fetch.ts）。报给线路那边的只是叫它查一轮
     // 健康检查，换不换由它定（#941 第 3 节）：正文读得慢、客户点了「停止」不报；账号请求只会因为等到时限
     // 才中止，连回应头都没等来就报（abortMeansNoAnswer）。工具相关的检查（写配置前查模型、工具自检）查的
-    // 正是工具会用的那条线路，不换不重发，直连上连不上只报给线路那边。
+    // 正是工具会用的那条线路，不换不重发，先走的那条上连不上只报给线路那边。
     function logRelayLine(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
       runtimeLog.log(level, 'network', event, message, detail)
     }
@@ -1324,7 +1325,7 @@ if (!hasSingleInstanceLock) {
     // 写进工具配置、给工具自检对账用的线路：星芒账号读工具线路，历史账号照旧读应用线路。
     const toolRouting = createToolRouteRoutingSnapshot(relayPreferences, () => relayRouteController.lines(), () => toolRouteController.line())
     runtimeLog.log('info', 'config', 'relay.route.active', '本次运行写进工具配置的线路', { kind: 'tool', lines: { solov: toolRouteController.line() } })
-    // 写配置前查模型、工具自检：星芒账号在工具线路上没走通报给工具线路，历史账号照旧报直连给应用线路。
+    // 写配置前查模型、工具自检：星芒账号在工具线路上没走通报给工具线路，历史账号报先走的那条（默认线路）给应用线路。
     const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, {
       log: logRelayLine,
       toolLine: {
@@ -1653,7 +1654,7 @@ if (!hasSingleInstanceLock) {
       },
     })
     let latestDiagnostics: DiagnosticsReport | null = null
-    // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走直连没查通时它改查默认线路，并把失败报过来。
+    // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走先走的那条没查通时它改查备用那条，并把失败报过来。
     // 各工具「连接设置」、电脑里另外设过的工具地址比的是工具线路（xm 三线路）；历史账号两套是同一套，不另给。
     function diagnosticsToolRoute(siteId: string | undefined): DiagnosticsDependencies['toolRoute'] {
       const site = toolRouting.resolve(siteId)
@@ -1674,7 +1675,9 @@ if (!hasSingleInstanceLock) {
         settled,
         automatic: relayRouting.preferences[routeSiteId] === 'auto',
         primarySite: requireRelaySite(routeSiteId),
-        reportDirectFailure: (reason) => relayRouteController.reportDirectFailure(routeSiteId, reason),
+        preferredLine: relayAutoPreferredLines[routeSiteId],
+        backupSite: requireRelaySite(routeSiteId, relayAutoBackupLine(routeSiteId)),
+        reportPreferredFailure: (reason) => relayRouteController.reportPreferredFailure(routeSiteId, reason),
         lastChange: relayRouteController.lastChange(routeSiteId),
       }
     }
@@ -2049,7 +2052,7 @@ if (!hasSingleInstanceLock) {
               if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
               const failure = classifyDirectFeedFailure(error)
               if (!failure) return false
-              if (failure.lineFailure) relayRouteController.reportDirectFailure('solov', failure.reason)
+              if (failure.lineFailure) relayRouteController.reportPreferredFailure('solov', failure.reason)
               useUpdateFeedLine('primary')
               runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在直连上没走通，改走默认线路再查一次', { reason: failure.reason })
               return true

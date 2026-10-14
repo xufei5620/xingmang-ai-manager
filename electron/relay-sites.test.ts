@@ -6,6 +6,8 @@ import {
   defaultRelaySiteId,
   privacyPolicyUrl,
   relayApiProbeBaseUrl,
+  relayAutoBackupLine,
+  relayAutoPreferredLines,
   relayDirectHosts,
   relayDirectIps,
   relayEndpointForUrl,
@@ -221,6 +223,14 @@ describe('relay site registry', () => {
     expect(relayProviderBaseUrls('solov-api', 'direct')).toEqual({ claude: 'https://api-direct.solov.cc',
       codex: 'https://api-direct.solov.cc/v1', gemini: 'https://api-direct.solov.cc', grok: 'https://api-direct.solov.cc/v1' })
     expect(() => relayProviderBaseUrls('https://api.solov.cc', 'direct')).toThrow('未知中转站点')
+  })
+
+  // yoyo 10-14：星芒账号「自动」先走直连（洛杉矶）；历史账号先走默认线路（api 的 CF），直连备用。
+  it('sends xm to direct first and the historical account to its default line first, with the other line as backup', () => {
+    expect(relayAutoPreferredLines).toEqual({ solov: 'direct', 'solov-api': 'primary' })
+    expect(relayAutoBackupLine('solov')).toBe('primary')
+    expect(relayAutoBackupLine('solov-api')).toBe('direct')
+    expect(Object.isFrozen(relayAutoPreferredLines)).toBe(true)
   })
 
   it('accepts only auto or a line the site actually has as a stored preference', () => {
