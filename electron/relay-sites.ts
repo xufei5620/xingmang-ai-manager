@@ -25,6 +25,21 @@ export type RelayRouteSiteId = 'solov' | 'solov-api'
 
 export const relayRouteSiteIds: readonly RelayRouteSiteId[] = Object.freeze(['solov', 'solov-api'] as const)
 
+/**
+ * 「自动」先走哪条，另一条是备用（先走的那条连不上时改走它）。星芒账号先走直连，也就是洛杉矶
+ * （yoyo 10-8「xm 站点这边全部走直连」）；历史账号先走默认线路，也就是 api 的 CF，直连只做备用
+ * （yoyo 10-14「历史账号走的是 api 的 cf，直连备用」；0.2.17、0.2.18 是先走直连）。
+ */
+export const relayAutoPreferredLines: Readonly<Record<RelayRouteSiteId, RelayEndpointId>> = Object.freeze({
+  solov: 'direct',
+  'solov-api': 'primary',
+})
+
+/** 「自动」的备用线路：先走的那条以外的另一条。 */
+export function relayAutoBackupLine(siteId: RelayRouteSiteId): RelayEndpointId {
+  return relayAutoPreferredLines[siteId] === 'direct' ? 'primary' : 'direct'
+}
+
 export interface RelayRoutePreferences {
   solov?: RelayRoutePreference
   'solov-api'?: RelayRoutePreference
@@ -35,7 +50,7 @@ export interface RelayRouteLine {
   line: RelayEndpointId
   /**
    * 是不是定下来的：写死的偏好、上次存下的结论、这次探出来的都算，星芒账号没有结论时开机直接定在
-   * 直连也算（relay-route-controller.ts）。历史账号「自动」第一次开机还没探出结论时先走默认线路，
+   * 直连也算（relay-route-controller.ts）。历史账号「自动」开机还没查出结论时先走默认线路，
    * 这时为 false，工具配置不跟着它迁。
    */
   settled: boolean
