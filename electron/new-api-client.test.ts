@@ -33,6 +33,7 @@ import {
   parseAccountTaskRecord,
   parseChangePasswordResponseData,
   parseCliKeySecret,
+  parseCodexStartupTicket,
   parseLoginResponseData,
   parseLoginSessions,
   parsePaymentForm,
@@ -51,6 +52,7 @@ import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 
 function registerAckResponse(): Response {
   // RECON never confirmed a response shape for /api/user/register beyond the
@@ -922,6 +924,69 @@ describe('login failures', () => {
     await client.login({ username: 'tester', password: 'x', turnstileToken: 'ts-token' })
     const [, init] = fetchImpl.mock.calls[0]
     expect(JSON.parse(String(init?.body))).toMatchObject({ turnstile: 'ts-token' })
+  })
+})
+
+// 客户说登不上时，日志要记得出这一次走的哪条线路、服务器回了什么、服务端拿什么查（三线路 7b）。
+describe('request diagnostics for the log', () => {
+  const requestId = '20261013163012345678abcdEFGH'
+  // 按线路发请求的那一层（relay-line-fetch.ts）在回应和失败上挂走的哪条线路，这里只模拟它挂的那一下。
+  function onLine(line: 'direct' | 'primary', answer: () => Response | Error): ReturnType<typeof vi.fn<NewApiFetch>> {
+    return vi.fn<NewApiFetch>(async () => {
+      const value = answer()
+      noteRequestDiagnostics(value, { line })
+      if (value instanceof Error) throw value
+      return value
+    })
+  }
+
+  it('tells which line a rejected login went over, what came back and the request id', async () => {
+    const fetchImpl = onLine('direct', () => jsonResponse(
+      { success: false, message: 'user.username_or_password_error', data: null },
+      { headers: { 'X-Oneapi-Request-Id': requestId } },
+    ))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiLoginRejectedError)
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct', status: 200, requestId })
+  })
+
+  it('keeps the line on a login that never got an answer', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => new Error('net::ERR_CONNECTION_RESET')) })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct' })
+
+    const timedOut = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('primary', () => new DOMException('aborted', 'AbortError')) })
+    expect(requestDiagnosticsOf(await timedOut.login({ username: 'tester', password: 'x' }).catch((reason: unknown) => reason)))
+      .toEqual({ line: 'primary' })
+  })
+
+  it('marks a refused redirect and a portal page with what came back too', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => new Response('<html>portal</html>', { status: 200 })) })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((reason: unknown) => reason)
+    expect(error).toMatchObject({ reason: 'intercepted' })
+    expect(requestDiagnosticsOf(error)).toEqual({ line: 'direct', status: 200 })
+  })
+
+  it('records the line a login and a second step went through when they succeed, without touching the result', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('primary', () => loginResponse()) })
+    const result = await client.login({ username: 'tester', password: 'x' })
+    expect(requestDiagnosticsOf(result)).toEqual({ line: 'primary', status: 200 })
+    expect(Object.keys(result)).toEqual(['account', 'accessExpiresAt'])
+
+    const second = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: onLine('direct', () => loginResponse()) })
+    expect(requestDiagnosticsOf(await second.completeTwoFactorLogin({ flowToken: 'private-flow-token', code: '123456' })))
+      .toEqual({ line: 'direct', status: 200 })
+  })
+
+  it('marks an ordinary account request the service turned down', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: false, message: '无权进行此操作', data: null }, { headers: { 'X-Oneapi-Request-Id': requestId } }))
+    const error = await client.getProfile().catch((reason: unknown) => reason)
+    expect((error as Error).message).toContain('无权进行此操作')
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 200, requestId })
   })
 })
 
@@ -2898,6 +2963,69 @@ describe('updateKey', () => {
   })
 })
 
+// POST /api/verify's success envelope on rc.40 (service/security_verification.go
+// SecurityProof, written by controller/secure_verification.go UniversalVerify).
+function proofResponse(proofToken = 'proof-token-1'): Response {
+  return jsonResponse({
+    success: true,
+    message: '',
+    data: { proof_token: proofToken, expires_at: 1_790_000_000, method: 'password', scope: 'account.password.change' },
+  })
+}
+
+// A password change as rc.40 -- the version xm.solov.cc runs since 2026-10 --
+// handles it, from controller/user.go UpdateSelf, middleware/
+// secure_verification.go RequireSecurityProof, controller/secure_verification.go
+// UniversalVerify + writeSecurityOperationError and service/
+// security_verification.go: POST /api/verify trades the current password for a
+// one-time proof, and PUT /api/user/self refuses to change anything without it
+// in X-Security-Proof. An account with two-factor login may only prove itself
+// with that second factor, never with its password.
+function rc40PasswordServer(options: { password: string; twoFactor?: boolean }) {
+  let password = options.password
+  let issued = 0
+  const unspent = new Set<string>()
+  const fetchImpl = vi.fn<NewApiFetch>(async (input, init = {}) => {
+    const pathname = new URL(String(input)).pathname
+    const headers = (init.headers ?? {}) as Record<string, string>
+    const body = JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>
+    if (pathname === '/api/verify' && init.method === 'POST') {
+      if (body.scope !== 'account.password.change') {
+        return jsonResponse({ success: false, code: 'SECURITY_PROOF_SCOPE_MISMATCH', message: 'Verification does not match this action.' })
+      }
+      if (body.method !== 'password' || options.twoFactor) {
+        return jsonResponse({ success: false, code: 'SECURITY_PROOF_METHOD_MISMATCH', message: 'This verification method is not allowed for this action.' })
+      }
+      if (body.password !== password) {
+        return jsonResponse({ success: false, code: 'SECURITY_VERIFICATION_FAILED', message: 'Verification failed. Please try again.' })
+      }
+      issued += 1
+      unspent.add(`proof-${issued}`)
+      return proofResponse(`proof-${issued}`)
+    }
+    if (pathname === '/api/user/self' && init.method === 'PUT') {
+      const proof = headers['X-Security-Proof']
+      if (!proof) return jsonResponse({ success: false, code: 'SECURITY_PROOF_REQUIRED', message: '需要安全验证' }, { status: 403 })
+      if (!unspent.delete(proof)) return jsonResponse({ success: false, code: 'SECURITY_PROOF_INVALID', message: '安全验证状态无效' }, { status: 403 })
+      if (body.original_password !== password) {
+        return jsonResponse({ success: false, code: 'CURRENT_PASSWORD_INVALID', message: 'Current password is incorrect.' })
+      }
+      password = String(body.password)
+      return jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'rotated-access-token', token_type: 'Bearer', access_expires_at: null, session: {}, has_password: true, notification_warning: false },
+      })
+    }
+    throw new Error(`Unexpected rc.40 fixture request: ${init.method ?? 'GET'} ${pathname}`)
+  })
+  return { fetchImpl, password: () => password }
+}
+
+function requestsTo(fetchImpl: ReturnType<typeof vi.fn<NewApiFetch>>, pathname: string, method: string) {
+  return fetchImpl.mock.calls.filter(([url, init]) => new URL(String(url)).pathname === pathname && init?.method === method)
+}
+
 describe('changePassword', () => {
   it('requires login before it can be called', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
@@ -2918,32 +3046,101 @@ describe('changePassword', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  it('sends PUT /api/user/self with password and original_password', async () => {
+  it('changes the password on an rc.40 server, which refuses a change that carries no security proof', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .resolves.toEqual({ changed: true })
+
+    expect(server.password()).toBe('new-password-2')
+  })
+
+  it('proves the original password through POST /api/verify, then spends that proof on PUT /api/user/self', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+
+    const [[verifyUrl, verifyInit], [changeUrl, changeInit]] = server.fetchImpl.mock.calls
+    expect(String(verifyUrl)).toBe(`${testBaseUrl}/api/verify`)
+    expect(verifyInit?.method).toBe('POST')
+    expect(JSON.parse(String(verifyInit?.body))).toEqual({ method: 'password', scope: 'account.password.change', password: 'old-password-1' })
+    expect((verifyInit?.headers as Record<string, string>).Authorization).toBe('Bearer test-access-token-abc')
+    expect(String(changeUrl)).toBe(`${testBaseUrl}/api/user/self`)
+    expect(changeInit?.method).toBe('PUT')
+    expect(JSON.parse(String(changeInit?.body))).toEqual({ password: 'new-password-2', original_password: 'old-password-1' })
+    const changeHeaders = changeInit?.headers as Record<string, string>
+    expect(changeHeaders['X-Security-Proof']).toBe('proof-1')
+    expect(changeHeaders.Authorization).toBe('Bearer test-access-token-abc')
+    expect(server.fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks for a fresh proof every time, since rc.40 accepts each one only once', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+    await client.changePassword({ originalPassword: 'new-password-2', newPassword: 'new-password-3' })
+
+    expect(server.password()).toBe('new-password-3')
+    expect(requestsTo(server.fetchImpl, '/api/verify', 'POST')).toHaveLength(2)
+    const proofs = requestsTo(server.fetchImpl, '/api/user/self', 'PUT')
+      .map(([, init]) => (init?.headers as Record<string, string>)['X-Security-Proof'])
+    expect(proofs).toEqual(['proof-1', 'proof-2'])
+  })
+
+  it('says the original password is wrong when the security check turns it down, without sending the new one', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    const failure = client.changePassword({ originalPassword: 'wrong-password', newPassword: 'new-password-2' })
+
+    await expect(failure).rejects.toThrow(/^原密码错误$/)
+    const error = await failure.catch((reason: unknown) => reason)
+    expect(matchAccountErrorMessage(error)).toBe('原密码错误，请重新输入')
+    // The log still names what the server answered (三线路 7b).
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 200 })
+    expect(requestsTo(server.fetchImpl, '/api/user/self', 'PUT')).toHaveLength(0)
+    expect(server.password()).toBe('old-password-1')
+  })
+
+  it('also reads CURRENT_PASSWORD_INVALID from the change itself as a wrong original password', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
-    fetchImpl.mockResolvedValueOnce(jsonResponse({
-      success: true,
-      message: '',
-      data: {
-        access_token: 'rotated-access-token',
-        token_type: 'Bearer',
-        access_expires_at: '2026-08-10T02:00:00.000Z',
-        session: {},
-      },
-    }))
+    fetchImpl.mockResolvedValueOnce(proofResponse())
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: false, code: 'CURRENT_PASSWORD_INVALID', message: 'Current password is incorrect.' }))
 
-    const result = await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .rejects.toThrow(/^原密码错误$/)
+  })
 
-    expect(result).toEqual({ changed: true })
-    const [url, init] = fetchImpl.mock.calls[0]
-    expect(String(url)).toBe(`${testBaseUrl}/api/user/self`)
-    expect(init?.method).toBe('PUT')
-    expect(JSON.parse(String(init?.body))).toEqual({ password: 'new-password-2', original_password: 'old-password-1' })
+  it('passes on the refusal for an account that must verify with its second factor, without sending the change', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1', twoFactor: true })
+    const client = await authenticatedClient(server.fetchImpl)
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .rejects.toThrow('This verification method is not allowed for this action.')
+    expect(requestsTo(server.fetchImpl, '/api/user/self', 'PUT')).toHaveLength(0)
+    expect(server.password()).toBe('old-password-1')
+  })
+
+  it('leaves the server to refuse the change when the security check hands back no proof', async () => {
+    const server = rc40PasswordServer({ password: 'old-password-1' })
+    const client = await authenticatedClient(server.fetchImpl)
+    server.fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .rejects.toThrow(/^需要安全验证$/)
+    const [[, changeInit]] = requestsTo(server.fetchImpl, '/api/user/self', 'PUT')
+    expect(changeInit?.headers).not.toHaveProperty('X-Security-Proof')
+    expect(server.password()).toBe('old-password-1')
   })
 
   it('adopts the fresh access token in place so the very next call uses it without a re-login', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({
       success: true,
       message: '',
@@ -2954,14 +3151,16 @@ describe('changePassword', () => {
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userDetailData() }))
     await client.getProfile()
 
-    const [, init] = fetchImpl.mock.calls[1]
+    const [, init] = fetchImpl.mock.calls[2]
     const headers = init?.headers as Record<string, string>
     expect(headers.Authorization).toBe('Bearer rotated-access-token')
+    expect(headers).not.toHaveProperty('X-Security-Proof')
   })
 
   it('still resolves successfully when the response carries no usable bundle, without touching the existing access token', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
 
     await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
@@ -2969,26 +3168,29 @@ describe('changePassword', () => {
 
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userDetailData() }))
     await client.getProfile()
-    const [, init] = fetchImpl.mock.calls[1]
+    const [, init] = fetchImpl.mock.calls[2]
     const headers = init?.headers as Record<string, string>
     expect(headers.Authorization).toBe('Bearer test-access-token-abc')
   })
 
-  it('surfaces the server-reported failure message for a wrong original password', async () => {
+  it('surfaces the server-reported failure message from the change itself', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
     fetchImpl.mockResolvedValueOnce(failureResponse('原密码错误'))
 
     await expect(client.changePassword({ originalPassword: 'wrong-password', newPassword: 'new-password-2' }))
       .rejects.toThrow('原密码错误')
   })
 
-  it('redacts both plaintext passwords from an echoed failure message (I13)', async () => {
+  it('redacts both plaintext passwords and the proof from an echoed failure message (I13)', async () => {
     const originalPassword = 'super-secret-original-pw'
     const newPassword = 'super-secret-new-pw'
+    const proofToken = 'super-secret-proof-token'
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
-    fetchImpl.mockResolvedValueOnce(failureResponse(`rejected: ${originalPassword} / ${newPassword} invalid`))
+    fetchImpl.mockResolvedValueOnce(proofResponse(proofToken))
+    fetchImpl.mockResolvedValueOnce(failureResponse(`rejected: ${originalPassword} / ${newPassword} / ${proofToken} invalid`))
 
     let message = ''
     try {
@@ -2999,6 +3201,19 @@ describe('changePassword', () => {
     expect(message).toContain('[REDACTED]')
     expect(message).not.toContain(originalPassword)
     expect(message).not.toContain(newPassword)
+    expect(message).not.toContain(proofToken)
+  })
+
+  it('redacts the original password from an echoed security-check failure (I13)', async () => {
+    const originalPassword = 'super-secret-original-pw'
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse(`check rejected: ${originalPassword}`))
+
+    const failure = client.changePassword({ originalPassword, newPassword: 'new-password-2' })
+
+    await expect(failure).rejects.toThrow('[REDACTED]')
+    await expect(failure).rejects.not.toThrow(originalPassword)
   })
 
   it('clears the session and throws a typed error on a 401 response', async () => {
@@ -3210,6 +3425,119 @@ describe('refreshAccessToken', () => {
 
     await expect(client.refreshAccessToken()).rejects.toThrow('没有可用的登录凭据')
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('issueCodexStartupTicket', () => {
+  const issuedTicket = 'a'.repeat(43)
+
+  function ticketResponse(data: unknown = { ticket: issuedTicket, expires_in: 120 }): Response {
+    return jsonResponse({ success: true, message: '', data })
+  }
+
+  function rotatedTokenResponse(): Response {
+    return jsonResponse({ success: true, message: '', data: { access_token: 'rotated-token', access_expires_at: null } })
+  }
+
+  it('posts to the tunnel ticket path with the account auth headers', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(ticketResponse())
+
+    await expect(client.issueCodexStartupTicket()).resolves.toEqual({ ticket: issuedTicket, expiresInSeconds: 120 })
+
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/xingmang-tunnel/v1/ticket`)
+    expect(init?.method).toBe('POST')
+    expect(init?.redirect).toBe('manual')
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer test-access-token-abc')
+    expect(headers['New-Api-User']).toBe('42')
+  })
+
+  it('refreshes an expired access token once and retries', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+      .mockResolvedValueOnce(rotatedTokenResponse())
+      .mockResolvedValueOnce(ticketResponse())
+
+    await expect(client.issueCodexStartupTicket()).resolves.toMatchObject({ ticket: issuedTicket })
+
+    expect(String(fetchImpl.mock.calls[1][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+    expect((fetchImpl.mock.calls[2][1]?.headers as Record<string, string>).Authorization).toBe('Bearer rotated-token')
+  })
+
+  // A broken tunnel service must only send Codex back to acceleration; it can
+  // never be allowed to sign the customer out of the account.
+  it('keeps the account signed in when the tunnel service keeps refusing', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(failureResponse('ticket refused', 401))
+      .mockResolvedValueOnce(rotatedTokenResponse())
+      .mockResolvedValueOnce(failureResponse('ticket refused', 401))
+
+    const error = await client.issueCodexStartupTicket().catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
+    expect((error as Error).message).toBe('Codex 中文启动凭证被拒绝')
+    expect(client.isAuthenticated()).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps the account signed in when the refresh itself is rejected', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(failureResponse('ticket refused', 401))
+      .mockResolvedValueOnce(refreshRejectedResponse())
+
+    await expect(client.issueCodexStartupTicket()).rejects.toThrow()
+    expect(client.isAuthenticated()).toBe(true)
+  })
+
+  it('reports a site without the tunnel service as a plain failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    // What new-api answers for an /api path it does not know.
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ error: { message: 'Invalid URL (POST /api/xingmang-tunnel/v1/ticket)', type: 'invalid_request_error' } }, { status: 404 }))
+
+    await expect(client.issueCodexStartupTicket()).rejects.toThrow('HTTP 404')
+    expect(client.isAuthenticated()).toBe(true)
+  })
+
+  it('rejects a malformed ticket and never calls out when signed out', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(ticketResponse({ ticket: 'short', expires_in: 120 }))
+    await expect(client.issueCodexStartupTicket()).rejects.toThrow('格式无效')
+
+    const signedOut = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: vi.fn<NewApiFetch>() })
+    await expect(signedOut.issueCodexStartupTicket()).rejects.toThrow()
+  })
+})
+
+describe('parseCodexStartupTicket', () => {
+  it('accepts a url-safe ticket with a short bounded lifetime', () => {
+    expect(parseCodexStartupTicket({ ticket: 'A-b_'.repeat(10), expires_in: 600 })).toEqual({ ticket: 'A-b_'.repeat(10), expiresInSeconds: 600 })
+  })
+
+  it.each([
+    null,
+    'ticket',
+    { ticket: 'a'.repeat(31), expires_in: 120 },
+    { ticket: 'a'.repeat(129), expires_in: 120 },
+    { ticket: `${'a'.repeat(40)} x`, expires_in: 120 },
+    { ticket: 'a'.repeat(40), expires_in: 9 },
+    { ticket: 'a'.repeat(40), expires_in: 601 },
+    { ticket: 'a'.repeat(40), expires_in: 12.5 },
+    { ticket: 'a'.repeat(40), expires_in: '120' },
+    { ticket: 'a'.repeat(40) },
+  ])('rejects %#', (payload) => {
+    expect(() => parseCodexStartupTicket(payload)).toThrow('Codex 中文启动凭证格式无效')
   })
 })
 
@@ -3554,6 +3882,106 @@ describe('network hardening (I10)', () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(withUrl(statusResponse(), `${testBaseUrl}/api/status`))
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
     await expect(client.getStatus()).resolves.toMatchObject({ version: 'v1.0.0-rc.22-solov1' })
+  })
+})
+
+// From v1.0.0-rc.43 new-api answers console calls in English whatever language
+// the request states, and adds message_key / message_params for its web console
+// to translate (common/message.go).
+function englishFailureResponse(message: string, extra: Record<string, unknown> = {}): Response {
+  return jsonResponse({ success: false, message, message_key: message, ...extra })
+}
+
+describe('rc.43+ English console messages', () => {
+  const registration = {
+    username: 'new-user',
+    email: 'new-user@example.com',
+    password: 'correct horse battery staple',
+    verificationCode: '123456',
+  }
+
+  it.each([
+    ['Username already exists or has been deleted', '用户名已存在，或已注销'],
+    ['Email address is already in use', '邮箱地址已被占用'],
+    ['Verification code is incorrect or has expired', '验证码错误或已过期'],
+    ['Email verification is enabled, please enter email address and verification code', '管理员开启了邮箱验证，请输入邮箱地址和验证码'],
+  ])('shows "%s" in the Chinese that rc.42 and earlier sent', async (english, chinese) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse(english))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.register(registration).catch((reason: unknown) => reason)
+    expect((error as Error).message).toBe(chinese)
+    // The login box's own table reads it exactly as it read the old Chinese.
+    expect(matchAccountErrorMessage(error)).not.toBeNull()
+    expect(matchAccountErrorMessage(error)).toBe(matchAccountErrorMessage(chinese))
+  })
+
+  it('fills in the numbers of a payment-endpoint failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      message: 'error',
+      data: 'Top-up amount cannot exceed 10000',
+      message_key: 'Top-up amount cannot exceed {{max}}',
+      message_params: { max: 10000 },
+    }))
+    await expect(client.quoteTopupAmount({ amount: 20000 })).rejects.toThrow(/^充值数量不能大于 10000$/)
+  })
+
+  it('keeps an English sentence it has no Chinese for instead of swallowing it', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse('A rule this client has never seen'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.register(registration)).rejects.toThrow(/^A rule this client has never seen$/)
+  })
+
+  it('still redacts a secret the server echoes inside message_params', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(englishFailureResponse('Transfer failed test-access-token-abc', {
+      message_key: 'Transfer failed {{error}}',
+      message_params: { error: 'test-access-token-abc' },
+    }))
+    const error = await client.transferAffiliateQuota({ quota: 100_000 }).catch((reason: unknown) => reason)
+    expect((error as Error).message).toMatch(/^划转失败 /)
+    expect((error as Error).message).toContain('[REDACTED]')
+    expect((error as Error).message).not.toContain('test-access-token-abc')
+  })
+
+  it('still recognises rejected credentials by the English sentence', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse('Username or password is incorrect, or user has been banned'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.login({ username: 'tester', password: 'x' })).rejects.toBeInstanceOf(NewApiLoginRejectedError)
+  })
+
+  // controller/secure_verification.go writeSecurityOperationError: a code plus
+  // a fixed English sentence, which is also its message_key.
+  it.each([
+    ['TWOFA_CODE_INVALID', 'The authenticator code is incorrect.', twoFactorInvalidCodeMessage],
+    ['SECURITY_VERIFICATION_LOCKED', 'Two-factor authentication is temporarily locked.', twoFactorRateLimitedMessage],
+  ] as const)('still explains a %s second step in its own words', async (code, english, expected) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse(english, { code }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.completeTwoFactorLogin({ flowToken: 'flow', code: '123456' })).rejects.toThrow(expected)
+  })
+
+  // middleware/secure_verification.go securityProofError: 403, a code and a
+  // bare English sentence with no message_key. rc.40 said it in Chinese.
+  it('says a security-proof refusal in Chinese although it carries no message_key', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(proofResponse())
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: false,
+      code: 'SECURITY_PROOF_REQUIRED',
+      message: 'Additional verification required',
+    }, { status: 403 }))
+    await expect(client.changePassword({ originalPassword: 'old12345', newPassword: 'new12345' }))
+      .rejects.toThrow(/^需要进一步验证$/)
+  })
+
+  it('still ends the second step when the flow has expired', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(englishFailureResponse('Verification flow expired', { code: 'AUTH_FLOW_INVALID' }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.completeTwoFactorLogin({ flowToken: 'flow', code: '123456' })).rejects.toBeInstanceOf(NewApiTwoFactorExpiredError)
   })
 })
 

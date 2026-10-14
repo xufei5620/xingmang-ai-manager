@@ -1,8 +1,10 @@
 import {
+  activeProviderIds,
   managedCliKeyProfiles,
   providerIds,
   resolveManagedCliKeyProfiles,
   sub2ApiManagedCliKeyProfiles,
+  type ActiveProviderId,
   type ProviderId,
 } from './catalog'
 
@@ -13,9 +15,26 @@ export interface ManagedCliGroupCandidate {
 }
 
 /** subscription: 账号买了这家工具的订阅，Key 要放进订阅分组才扣订阅额度；
+ *  mapped: 服务状态文件里的分组对照写明了用哪个（站上改了本名也跟得上）；
  *  preferred: 服务端就有这个名字；alias: 命中另一套已知名单；
  *  detected: 靠工具专属词认出来的；fallback: 没认出来，退回写死名单。 */
-export type ManagedCliGroupSource = 'subscription' | 'preferred' | 'alias' | 'detected' | 'fallback'
+export type ManagedCliGroupSource = 'subscription' | 'mapped' | 'preferred' | 'alias' | 'detected' | 'fallback'
+
+/**
+ * 分组对照里的几样用途：三家在用的命令行工具，加上画图。下线的工具不在里面——星芒不再替它签 Key。
+ */
+export type AccountGroupRole = ActiveProviderId | 'image'
+
+export const accountGroupRoles: readonly AccountGroupRole[] = [...activeProviderIds, 'image']
+
+/**
+ * 发布者在服务状态文件里写的分组对照（`service-status.ts` 的 accountGroups）：每样用途按先后
+ * 列几个候选名字，这个账号在站上能用哪个就用排在前面的那个。只管星芒账号（xm 站）。
+ *
+ * 为什么要它：new-api 的分组没有编号，Key、可用分组接口、倍率配置全按名字认，站上改一次本名，
+ * 写死在客户端里的名字就对不上了。对照放在更新目录上，改名那天发布者改这一份就行，不用等发版。
+ */
+export type AccountGroupHints = Partial<Record<AccountGroupRole, readonly string[]>>
 
 export interface ResolvedManagedCliGroup {
   group: string
@@ -114,15 +133,35 @@ function normalizeGroups(groups: readonly ManagedCliGroupCandidate[]): Normalize
   return normalized
 }
 
+/**
+ * 对照里这样用途排在最前、这个账号此刻又真能用的那个分组；对照没写或一个都不在可用分组里时返回 null，
+ * 调用方照旧自己认。只在服务端给出的可用分组里挑，所以对照写错、被改坏，最多是换到这个账号
+ * 本来就能选的另一个分组，用不上任何它本来用不了的分组。
+ */
+export function resolveMappedGroup(
+  role: AccountGroupRole,
+  groups: readonly ManagedCliGroupCandidate[],
+  hints: AccountGroupHints | null | undefined,
+): string | null {
+  const candidates = hints?.[role]
+  if (!candidates?.length) return null
+  const names = new Set(normalizeGroupNames(groups))
+  return candidates.find((name) => names.has(name)) ?? null
+}
+
+function isAccountGroupRole(value: string): value is AccountGroupRole {
+  return (accountGroupRoles as readonly string[]).includes(value)
+}
+
 function platformOwner(platform: string | undefined): ProviderId | null {
   if (!platform) return null
   return providerIds.find((provider) => providerPlatforms[provider].includes(platform)) ?? null
 }
 
 /**
- * 从服务端实际可用的分组里挑出这家 CLI 该用的那个。四档从准到松：
- * 名单里的名字还在 → 另一套已知名单里的名字 → 认出来（先看分组接的是哪家上游，
- * 再看名字里的工具专属词，都要唯一）→ 退回名单。
+ * 从服务端实际可用的分组里挑出这家 CLI 该用的那个。五档从准到松：
+ * 分组对照写明的（只有星芒账号）→ 名单里的名字还在 → 另一套已知名单里的名字 →
+ * 认出来（先看分组接的是哪家上游，再看名字里的工具专属词，都要唯一）→ 退回名单。
  * 认不出或认到多个一律退回名单，让后续校验报「分组不可用」，不猜。
  */
 export function resolveManagedCliGroup(
@@ -130,6 +169,7 @@ export function resolveManagedCliGroup(
   groups: readonly ManagedCliGroupCandidate[],
   siteId?: string,
   subscribedGroups: readonly string[] = [],
+  hints?: AccountGroupHints | null,
 ): ResolvedManagedCliGroup {
   const preferred = resolveManagedCliKeyProfiles(siteId)[provider].group
   const normalized = normalizeGroups(groups)
@@ -137,6 +177,11 @@ export function resolveManagedCliGroup(
   if (names.length === 0) return { group: preferred, source: 'fallback' }
   const subscription = subscribedGroupFor(provider, normalized, subscribedGroups)
   if (subscription) return { group: subscription, source: 'subscription' }
+  // 对照只写给星芒账号：历史账号那套后端的分组名字是另一份，认法也不同。
+  const mapped = siteId !== 'solov-api' && isAccountGroupRole(provider)
+    ? resolveMappedGroup(provider, normalized, hints)
+    : null
+  if (mapped) return { group: mapped, source: 'mapped' }
   if (names.includes(preferred)) return { group: preferred, source: 'preferred' }
   for (const alias of knownGroupAliases(provider, preferred)) {
     if (names.includes(alias)) return { group: alias, source: 'alias' }
@@ -185,10 +230,28 @@ export function resolveManagedCliGroups(
   groups: readonly ManagedCliGroupCandidate[],
   siteId?: string,
   subscribedGroups: readonly string[] = [],
+  hints?: AccountGroupHints | null,
 ): Record<ProviderId, ResolvedManagedCliGroup> {
   return Object.fromEntries(
-    providerIds.map((provider) => [provider, resolveManagedCliGroup(provider, groups, siteId, subscribedGroups)]),
+    providerIds.map((provider) => [provider, resolveManagedCliGroup(provider, groups, siteId, subscribedGroups, hints)]),
   ) as Record<ProviderId, ResolvedManagedCliGroup>
+}
+
+/**
+ * AI 对话没选过分组时默认用 Codex 那把 Key 的分组（渲染层 chat/state.ts 的 DEFAULT_CHAT_GROUP 是它的
+ * 出厂名字）。这里按签 Key 的同一套认法把它标出来：站上改了本名、对照写上新名字以后，对话也落在
+ * 对的分组上，不会掉到排在第一个、没接渠道的 default 里。只标星芒账号的，认不出（fallback）不标，
+ * 渲染层照旧按写死的名字找。
+ */
+export function markRecommendedChatGroup<T extends ManagedCliGroupCandidate>(
+  groups: readonly T[],
+  siteId: string | undefined,
+  hints: AccountGroupHints | null,
+): Array<T & { recommended?: true }> {
+  if (siteId === 'solov-api') return [...groups]
+  const resolved = resolveManagedCliGroup('codex', groups, siteId, [], hints)
+  if (resolved.source === 'fallback') return [...groups]
+  return groups.map((group) => group.name === resolved.group ? { ...group, recommended: true as const } : group)
 }
 
 interface ManagedCliSubscriptionSnapshot {
@@ -199,6 +262,20 @@ export interface ManagedCliGroupAccountService {
   listUsableGroups?: () => Promise<ManagedCliGroupCandidate[]>
   getActiveSiteId?: () => string
   getSubscriptionSelf?: () => Promise<ManagedCliSubscriptionSnapshot>
+  /** 服务状态文件里的分组对照；没有、读不到都给 null。缺省 = 不看对照。 */
+  getAccountGroupHints?: () => Promise<AccountGroupHints | null>
+}
+
+/** 读分组对照。读不到不算失败：对照只是让认法更准，没有它照旧按名单和工具专属词认。 */
+export async function loadAccountGroupHints(
+  accountService: Pick<ManagedCliGroupAccountService, 'getAccountGroupHints' | 'getActiveSiteId'>,
+): Promise<AccountGroupHints | null> {
+  if (accountService.getActiveSiteId?.() === 'solov-api' || typeof accountService.getAccountGroupHints !== 'function') return null
+  try {
+    return await accountService.getAccountGroupHints()
+  } catch {
+    return null
+  }
 }
 
 /** 订阅会不会决定 Key 该放哪个分组。星芒账号的订阅不看分组、哪把 Key 都先扣订阅，只有历史账号要换。 */
@@ -221,6 +298,7 @@ export function activeSubscriptionGroupNames(snapshot: ManagedCliSubscriptionSna
  * 由调用方退回写死名单——那正是加入动态识别之前的行为，所以这条路径不引入新的失败方式。
  * 历史账号还要一并读订阅：订阅读不到时同样返回 null，不能当成「没有订阅」，
  * 否则一次读失败就会把已经在扣订阅的工具换回扣余额。
+ * 星芒账号一并读分组对照；对照读不到只是少一档认法，不让整次返回 null。
  */
 export async function loadManagedCliGroups(
   accountService: ManagedCliGroupAccountService,
@@ -228,15 +306,16 @@ export async function loadManagedCliGroups(
   if (typeof accountService.listUsableGroups !== 'function') return null
   const siteId = accountService.getActiveSiteId?.()
   try {
-    const [groups, subscribedGroups] = await Promise.all([
+    const [groups, subscribedGroups, hints] = await Promise.all([
       accountService.listUsableGroups(),
       subscriptionsBindKeyGroups(accountService)
         ? accountService.getSubscriptionSelf!().then((snapshot) => activeSubscriptionGroupNames(snapshot))
         : Promise.resolve([]),
+      loadAccountGroupHints(accountService),
     ])
     // 读分组这段时间里切了站点，这份结果就不属于当前账号了，按「没拿到」处理。
     if (accountService.getActiveSiteId?.() !== siteId) return null
-    return resolveManagedCliGroups(groups, siteId, subscribedGroups)
+    return resolveManagedCliGroups(groups, siteId, subscribedGroups, hints)
   } catch {
     return null
   }

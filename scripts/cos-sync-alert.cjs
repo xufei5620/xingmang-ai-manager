@@ -16,6 +16,8 @@ const REQUEST_TIMEOUT_MS = 20000
 const WORKFLOWS = Object.freeze({
   'sync-claude-official-cos.yml': Object.freeze({ product: 'Claude 桌面端' }),
   'sync-chatgpt-official-cos.yml': Object.freeze({ product: 'Codex 桌面端' }),
+  'sync-codex-plugins-cos.yml': Object.freeze({ product: 'Codex 插件目录',
+    impact: '星芒替客户下 Codex 插件目录时，桶里还是上一次同步成功的那一版：客户照样下得到、装得上插件，只是目录旧一些；桶里一份都没有时客户端照旧去 GitHub 下。' }),
 })
 // A job that runs out of timeout-minutes is reported as cancelled, and a long
 // upload stuck on a slow network is exactly the failure this alert is for.
@@ -105,13 +107,13 @@ function formatBeijingTime(iso) {
   return new Date(time + 8 * 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' ')
 }
 
-function buildAlertBody({ workflowFile, product, streak, truncated, since, runNumber, runUrl, failedJobs }) {
+function buildAlertBody({ workflowFile, product, impact, streak, truncated, since, runNumber, runUrl, failedJobs }) {
   const jobs = failedJobs.length ? failedJobs.map(function (name) { return `\`${name}\`` }).join('、') : '（没取到作业名，打开运行页面看）'
   return [
     alertMarker(workflowFile),
     `**${product}离线包**往腾讯云 COS 的定时同步已经连续失败 ${truncated ? '至少 ' : ''}**${streak} 次**，最早一次是 ${formatBeijingTime(since)}（北京时间）。`,
     '',
-    `**影响**：教程页上 ${product}的下载按钮停在上一次同步成功的版本。客户的自动更新和星芒一键安装都不经过 COS，不受影响。`,
+    `**影响**：${impact || `教程页上 ${product}的下载按钮停在上一次同步成功的版本。客户的自动更新和星芒一键安装都不经过 COS，不受影响。`}`,
     '',
     `**最近一次失败**：[第 ${runNumber} 次运行](${runUrl})，失败的作业：${jobs}。`,
     '',
@@ -194,7 +196,7 @@ function readAlertEnvironment(env) {
   const runId = Number(env.GITHUB_RUN_ID)
   const runNumber = Number(env.GITHUB_RUN_NUMBER)
   if (!/^[0-9]{1,16}$/.test(env.GITHUB_RUN_ID || '') || !isPositiveInteger(runId) || !/^[0-9]{1,10}$/.test(env.GITHUB_RUN_NUMBER || '') || !isPositiveInteger(runNumber)) throw new Error('GITHUB_RUN_ID 或 GITHUB_RUN_NUMBER 无效')
-  return { workflowFile, product: WORKFLOWS[workflowFile].product, repository: env.GITHUB_REPOSITORY, owner: env.GITHUB_REPOSITORY_OWNER,
+  return { workflowFile, product: WORKFLOWS[workflowFile].product, impact: WORKFLOWS[workflowFile].impact, repository: env.GITHUB_REPOSITORY, owner: env.GITHUB_REPOSITORY_OWNER,
     runId, runNumber, token: env.GITHUB_TOKEN, needs: env.SYNC_NEEDS }
 }
 
@@ -242,7 +244,7 @@ async function runCosSyncAlert({ env = process.env, fetchImpl = fetch, log = con
   if (action.type === 'create' || action.type === 'update') {
     const failedJobs = await readFailedJobs(config.runId)
     const since = previous.oldest?.created_at || current?.created_at || new Date().toISOString()
-    const body = buildAlertBody({ workflowFile: config.workflowFile, product: config.product, streak, truncated: previous.truncated,
+    const body = buildAlertBody({ workflowFile: config.workflowFile, product: config.product, impact: config.impact, streak, truncated: previous.truncated,
       since, runNumber: config.runNumber, runUrl, failedJobs })
     if (action.type === 'create') {
       const created = await client.request('POST', `/repos/${config.repository}/issues`, {

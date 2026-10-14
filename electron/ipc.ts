@@ -41,7 +41,7 @@ import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore }
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
-import { cliCatalog, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, isActiveProviderId, isProviderId, isRetiredProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { isExactCliVersion } from './versions'
 import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createMemoryManagedKeyReplacementStore, ManagedKeyReplacementUnreadableError, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
@@ -49,8 +49,10 @@ import { isInstallCancelledError } from './install-cancellation'
 import {
   configureManagedClis,
   syncManagedCliKeySummary,
+  type ManagedCliConfigurationOutcome,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
+import { requestDiagnosticsOf } from './request-diagnostics'
 import { relayRoutePreferenceAllowed, relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
@@ -69,6 +71,7 @@ import {
 } from './codex-sessions'
 import {
   ProviderSessionsService,
+  listedProviderSessionProviders,
   providerSessionProviders,
   type ProviderSessionListQuery,
 } from './provider-sessions'
@@ -128,7 +131,7 @@ import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
 import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
-import { loadManagedCliGroups } from './managed-cli-groups'
+import { loadAccountGroupHints, loadManagedCliGroups, markRecommendedChatGroup, type AccountGroupHints } from './managed-cli-groups'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -164,7 +167,6 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcome } from './proxy-bypass'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
-import type { UserWideCertificateTrustResult } from './user-certificate-trust'
 import { isDiagnosticFixKind, type DiagnosticFixKind, type DiagnosticFixResult } from './diagnostic-fixes'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
@@ -209,8 +211,6 @@ export interface IpcRegistrationOptions {
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
     clearStaleProxy?(): Promise<StaleProxyClearResult>
-    /** 检查页「让这台电脑上所有终端都信任」；宿主不给就是这台电脑上不提供。 */
-    trustCertificatesUserWide?(): Promise<UserWideCertificateTrustResult>
     /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
     fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
     /** 反馈报告「最近一次自检」那段有没有结果；缺省 = 不知道，预览报告时不提醒先去检查。 */
@@ -309,6 +309,9 @@ export interface IpcRegistrationOptions {
     clear(): Promise<void>
   }
   managedCliKeys?: ManagedCliKeyStoreLike
+  // 服务状态文件里的分组对照（service-status.ts 的 accountGroups）：签 Key、画图技能、AI 对话默认分组
+  // 先看它，站上改了分组本名也跟得上。缺省 = 不看对照，照旧按写死的名字和工具专属词认。
+  accountGroupHints?: () => Promise<AccountGroupHints | null>
   // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
   // 换新时照抄。缺省用内存版：测试与预览不落盘。
   keyReplacements?: ManagedKeyReplacementStore
@@ -585,7 +588,7 @@ function parseSkillInput(value: unknown): ImportSkillInput {
 }
 
 function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutation {
-  if (!isRecord(value) || !isProviderId(value.provider)) {
+  if (!isRecord(value) || !isActiveProviderId(value.provider)) {
     throw new Error('扩展操作格式错误')
   }
   const kind = String(value.kind)
@@ -651,7 +654,7 @@ function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
     model?: unknown
     mode?: unknown
   }
-  if (!isProviderId(input.provider)) throw new Error('未知的 CLI 类型')
+  if (!isActiveProviderId(input.provider)) throw new Error('未知的 CLI 类型')
   if (typeof input.apiKey !== 'string' || input.apiKey.length > 4_096) {
     throw new Error('API Key 格式错误')
   }
@@ -790,7 +793,7 @@ function parseProviderSessionListQuery(value: unknown): ProviderSessionListQuery
   if (
     provider !== undefined
     && provider !== 'all'
-    && !providerSessionProviders.includes(provider as (typeof providerSessionProviders)[number])
+    && !listedProviderSessionProviders.includes(provider as (typeof providerSessionProviders)[number])
   ) {
     throw new Error('会话工具类型错误')
   }
@@ -1188,11 +1191,11 @@ function parseLegalDocumentKind(value: unknown): LegalDocumentKind {
 }
 
 function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliConfigurationInput {
-  if (!isRecord(value) || !Array.isArray(value.providers) || value.providers.length > 4) {
+  if (!isRecord(value) || !Array.isArray(value.providers) || value.providers.length > activeProviderIds.length) {
     throw new Error('CLI 配置目标格式错误')
   }
   const providers = value.providers.map((provider) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     return provider
   })
   if (new Set(providers).size !== providers.length) throw new Error('CLI 配置目标不能重复')
@@ -1202,6 +1205,8 @@ function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliCon
   const preferredModels: AccountManagedCliConfigurationInput['preferredModels'] = {}
   for (const [provider, model] of Object.entries(value.preferredModels ?? {})) {
     if (!isProviderId(provider)) throw new Error('CLI 首选模型包含未知类型')
+    // 下线的工具（Gemini CLI）不再写配置，渲染层老状态里残留的那一格直接略过。
+    if (isRetiredProviderId(provider)) continue
     // Renderer state may contain an optional provider slot with an undefined
     // model. Treat that as absent; null and other non-string values remain
     // malformed input and are rejected below.
@@ -1257,7 +1262,7 @@ function parseAccountKeyUpdateInput(value: unknown, sub2Api = false): AccountKey
 
 function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConfigurationInput {
   if (!isRecord(value)) throw new Error('账号 Key 配置信息格式错误')
-  if (!isProviderId(value.provider)) throw new Error('未知的 CLI 类型')
+  if (!isActiveProviderId(value.provider)) throw new Error('未知的 CLI 类型')
   const mode = value.mode
   if (mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
   return {
@@ -1443,7 +1448,6 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'diagnostics:check-external-connection': '客户端连接自检',
   'diagnostics:export': '诊断报告导出',
   'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
-  'diagnostics:trust-certificates-user-wide': '让所有终端信任证书',
   'diagnostics:open-folder': '检查页打开文件夹',
   'diagnostics:fix': '检查页一键处理',
   'extensions:choose-directory': '外接工具选择文件夹',
@@ -1522,10 +1526,10 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
 
 /** 只收已知工具，去重；一次问的个数不超过工具总数（I5）。 */
 export function parseRunningToolsProviders(value: unknown): ProviderId[] {
-  if (!Array.isArray(value) || value.length > providerIds.length) throw new Error('工具列表格式错误')
+  if (!Array.isArray(value) || value.length > activeProviderIds.length) throw new Error('工具列表格式错误')
   const providers: ProviderId[] = []
   for (const item of value) {
-    if (!isProviderId(item)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(item)) throw new Error('未知的 CLI 类型')
     if (!providers.includes(item)) providers.push(item)
   }
   return providers
@@ -1656,8 +1660,6 @@ const quietIpcSuccessChannels = new Set([
   // reason to keep both fully out of the runtime log.
   'account:get-remembered-login',
   'account:set-remembered-login',
-  // The input is a live one-time code (or a single-use backup code).
-  'account:submit-two-factor-code',
   'chat:list-groups',
   'chat:prepare-group',
   'chat:start',
@@ -1668,6 +1670,17 @@ const quietIpcSuccessChannels = new Set([
   'chat:asset-menu',
   'chat:pick-images',
   'chat:paste-image',
+])
+
+// Channels whose *input* is a secret but whose success is still worth a line
+// in the log. recordSuccess hands the formatters below an empty argument list
+// for these, so the input cannot reach the log by construction rather than by
+// every formatter happening to ignore it (I13). The two-factor code is a live
+// one-time code (or a single-use backup code); it used to be fully quiet,
+// which left a "我输了验证码还是登不上" ticket without even a sign of whether
+// the second step went through (三线路 7b).
+const secretInputIpcChannels = new Set([
+  'account:submit-two-factor-code',
 ])
 
 const quietIpcFailureChannels = new Set([
@@ -1796,6 +1809,10 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
     detail.siteId = result.siteId
     detail.status = result.status
   }
+  // 登录、两步验证登上了也记走的哪条线路（request-diagnostics.ts）：同一个人先在直连上登不上、换到 CF
+  // 登上了，客服要分得出来（三线路 7b）。只有挂着诊断的结果才有这一项。
+  const request = requestDiagnosticsOf(result)
+  if (request) detail.request = request
   return detail
 }
 
@@ -1880,12 +1897,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const polling = pollingIpcChannels.has(channel)
         const recovered = polling && failedPollingChannels.delete(channel)
         const routinePoll = polling && !recovered && durationMs < SLOW_POLLING_SUCCESS_MS
+        const loggedArgs = secretInputIpcChannels.has(channel) ? [] : args
         options.runtimeLog.log(
           routinePoll ? 'debug' : ipcSuccessLevel(channel),
           'ipc',
           channel,
-          ipcSuccessMessage(channel, args, result),
-          { ...ipcLogDetail(channel, args, result, durationMs), ...(recovered ? { recovered: true } : {}) },
+          ipcSuccessMessage(channel, loggedArgs, result),
+          { ...ipcLogDetail(channel, loggedArgs, result, durationMs), ...(recovered ? { recovered: true } : {}) },
         )
       }
       const recordFailure = (error: unknown) => {
@@ -1899,11 +1917,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         // 同理：加速那条线把失败收成一句话，日志里看不出是临时目录、辅助进程
         // 还是本机账本。归类由主进程自己给出，单列一个字段便于按原因检索。
         const accelerationReason = accelerationFailureReason(error)
+        // 账号请求失败时这一次走的线路、服务器回的状态码和请求编号（三线路 7b）：客户说「登不上」，
+        // 客服拿请求编号就能请服务端查到这一次，不用再从前后几行日志里猜。
+        const request = requestDiagnosticsOf(error)
         options.runtimeLog.log('error', 'ipc', channel, `${label}失败：${reason || '未知错误'}`, {
           durationMs: Date.now() - startedAt,
           error,
           ...(networkFailure ? { networkFailure } : {}),
           ...(accelerationReason ? { accelerationReason } : {}),
+          ...(request ? { request } : {}),
         })
       }
       const senderUrl = event.senderFrame?.url ?? event.sender.getURL()
@@ -1980,6 +2002,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   const replacementSlot = (userId: number, provider: ProviderId): string => (
     `${accountService.getActiveSiteId?.() ?? 'solov'}:${userId}:${provider}`
   )
+  // 写 Key（account:configure-managed-clis，以及切到当前账号）时没配上的工具是当结果交回界面的，写 Key
+  // 的通道成功时又不记日志，所以以前一个字都不进日志：客户说「Key 配不上」，客服只看得到首页那句兜底话
+  // （0.2.18 真机 19 号第 6 条）。这里每个没配上的工具记一条：哪家、原话、走的线路、服务器回的状态码和
+  // 请求编号。原话是给客户看的那句，签 Key、查模型两处都已去掉 Key 和令牌；写配置失败的原话可能带配置
+  // 文件的绝对路径，进日志前把主目录换掉（I13）。
+  const logManagedCliFailures = (outcome: ManagedCliConfigurationOutcome): void => {
+    const home = options.providerRoots?.userHome ?? os.homedir()
+    for (const entry of outcome.failed) {
+      const request = requestDiagnosticsOf(entry)
+      options.runtimeLog.log('warn', 'account', 'managed-cli.key-failed',
+        `${cliCatalog[entry.provider].name} 的 Key 没配上：${redactHomeDirectory(entry.message, home)}`, {
+          provider: entry.provider,
+          ...(entry.serviceUnavailable ? { serviceUnavailable: true } : {}),
+          ...(request ? { request } : {}),
+        })
+    }
+  }
   // explicit：用户亲手点的「重新写入 Key」「再换一次」。只有这一种能越过读坏的记录。
   const provisioningAccountService = (explicit: boolean): Parameters<typeof configureManagedClis>[0] => ({
     getSessionState: accountService.getSessionState.bind(accountService),
@@ -1987,6 +2026,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
+    ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -2175,7 +2215,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })()
   })
   registerTrustedHandler('config:reveal-api-key', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     return service.revealApiKey(provider, options.previewOnboarding)
   })
   registerTrustedHandler('config:save', (_event, payload: unknown) => {
@@ -2190,7 +2230,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return backupBeforeReset(parsed.provider).then(save)
   })
   registerTrustedHandler('config:open-directory', async (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const directory = providerConfigRoot(provider, options.providerRoots ?? defaultProviderConfigRoots())
     assertOpenableConfigDirectory(directory)
     await externalShell.openPath(directory)
@@ -2247,7 +2287,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return service.launchExternalClient(tool)
   })
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
     if (mode === 'reset') return backupBeforeReset(provider).then(() => service.switchToOfficialAccount(provider, 'reset'))
     return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
@@ -2257,7 +2297,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // 的回滚也会互相覆盖。同方向的重复点击共用正在跑的那一次，反方向的直接拒绝。
   const accountSourceSwitches = new Map<ProviderId, { target: 'account' | 'official'; promise: Promise<unknown> }>()
   registerTrustedHandler('config:switch-account-source', async (_event, provider: unknown, target: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
     const running = accountSourceSwitches.get(provider)
     if (running) {
@@ -2273,7 +2313,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   })
   registerTrustedHandler('config:repair-cli-hooks', async (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (!service.repairCliHooks) throw new Error('这个版本还不能修提醒设置')
     // 和保存配置同一份备份：「备份」页里能找回改之前的样子。
     options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
@@ -2314,6 +2354,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const outcome = await configureManagedClis(
           automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, mode, 'explicit',
         )
+        logManagedCliFailures(outcome)
         if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()
         if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
         if (!outcome.configured.includes(id)) throw new Error('工具没有返回配置写入结果')
@@ -2339,7 +2380,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return service.inspectRunningTools(parsed)
   })
   registerTrustedHandler('tools:check-models', async (_event, provider: unknown): Promise<ToolModelCheck> => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (!service.checkToolModels) return { status: 'skipped' }
     return service.checkToolModels(provider)
   })
@@ -2590,7 +2631,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   })
   registerTrustedHandler('cli:install', async (event, provider: unknown, version: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const requestedVersion = parseCliInstallVersion(version)
     const providerName = cliCatalog[provider].name
     options.runtimeLog.log('info', 'maintenance', 'cli.install.started', `开始安装或更新 ${providerName}`, {
@@ -2611,7 +2652,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   })
   registerTrustedHandler('cli:cancel-install', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const outcome = service.cancelCliInstall(provider)
     options.runtimeLog.log('info', 'maintenance', 'cli.install.cancel-requested', `收到取消 ${cliCatalog[provider].name} 安装的请求`, {
       provider,
@@ -2621,7 +2662,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return outcome
   })
   registerTrustedHandler('cli:uninstall', async (_event, provider: unknown, input: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const uninstallOptions = parseCliUninstallOptions(input)
     const providerName = cliCatalog[provider].name
     options.runtimeLog.log('info', 'maintenance', 'cli.uninstall.started', `开始卸载 ${providerName}`, {
@@ -2645,11 +2686,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   // 只收工具名：删哪几个文件由主进程按那次卸载自己记下的定，渲染层多传什么都不看。
   registerTrustedHandler('cli:clean-uninstall-leftovers', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     return service.cleanUninstallLeftovers(provider)
   })
   registerTrustedHandler('cli:check-update', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     return service.inspectCliUpdate(provider, true)
   })
   registerTrustedHandler('setup:codex-status', () => service.inspectCodexSetupStatus())
@@ -2685,7 +2726,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       : service.launchProvider(provider, target, launchMode, resumeSessionId)
   }
   registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown, recordId: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const stored = service.readStoredConfig()
     const target = parseWorkspace(workspace, stored.workspace)
     const launchMode = parseCliLaunchMode(mode)
@@ -2827,7 +2868,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return service.fetchAvailableModels(apiKey)
   })
   registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (options.realmAccounts && !service.getConfig(options.previewOnboarding).providers[provider].matchesRelay) {
       throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
     }
@@ -3135,9 +3176,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
     }
   }
-  registerTrustedHandler('backups:list', async () => options.backupStore.list(await readBackupAccountContext()))
+  // 下线工具（Gemini CLI）以前的备份留在磁盘上，不再列出来，也不让恢复回去（backups.ts restore）。
+  registerTrustedHandler('backups:list', async () => (
+    options.backupStore.list(await readBackupAccountContext()).filter((entry) => !isRetiredProviderId(entry.provider))
+  ))
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的配置类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的配置类型')
     return (async () => options.backupStore.create(provider, 'manual', undefined, await readBackupAccountContext()))()
   })
   registerTrustedHandler('backups:inspect', (_event, id: unknown) => {
@@ -3231,7 +3275,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return snapshot
   }
   registerTrustedHandler('extensions:list', async (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 AI 工具')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 AI 工具')
     return recordExtensionWarnings(await options.providerExtensionService.list(provider))
   })
   registerTrustedHandler('extensions:list-all', async () => {
@@ -3242,11 +3286,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))
   ))
   registerTrustedHandler('extensions:ensure-marketplace', async (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 AI 工具')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 AI 工具')
     return recordExtensionWarnings(await options.providerExtensionService.ensureMarketplace(provider))
   })
   registerTrustedHandler('extensions:check-mcp-health', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 AI 工具')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 AI 工具')
     return options.providerExtensionService.checkMcpHealth(provider)
   })
   registerTrustedHandler('account:get-status', (_event, siteId: unknown) => (
@@ -3541,6 +3585,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         baseUrl: new URL(service.getConfig(false).providers.codex.baseUrl).origin,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
         syncImageMcp: options.xingmangAiSkill.syncImageMcp,
+        fetchAvailableModels: (apiKey) => service.fetchAvailableModels(apiKey),
+        loadAccountGroupHints: () => loadAccountGroupHints(automaticProvisioning),
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)
@@ -3571,7 +3617,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.managedCliKeys,
       parsed.mode,
       parsed.intent,
-    )
+    ).then((outcome) => {
+      logManagedCliFailures(outcome)
+      return outcome
+    })
     if (parsed.mode !== 'reset') return configure()
     return (async () => {
       for (const provider of parsed.providers) await backupBeforeReset(provider)
@@ -3678,6 +3727,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (accountService.getSessionState().account?.userId !== userId) return page
     const inUse = new Map<number, ProviderId>()
     for (const entry of cached) {
+      // 下线工具不再算星芒管的，它那把 Key 在密钥页上不标「在用」，也就不读它的配置。
+      if (isRetiredProviderId(entry.provider)) continue
       let configured = ''
       try { configured = service.revealApiKey(entry.provider, options.previewOnboarding) } catch { continue }
       if (configured && configured === entry.key) inUse.set(entry.id, entry.provider)
@@ -3858,9 +3909,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     await accountService.updateKey(parsed)
     if (userId) await invalidateAccountKeyCaches(userId, parsed.id)
   })
-  registerTrustedHandler('chat:list-groups', () => {
+  registerTrustedHandler('chat:list-groups', async () => {
     if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')
-    return options.chatCredentials.listGroups()
+    const [groups, hints] = await Promise.all([
+      options.chatCredentials.listGroups(),
+      loadAccountGroupHints(automaticProvisioning),
+    ])
+    return markRecommendedChatGroup(groups, accountService.getActiveSiteId?.(), hints)
   })
   registerTrustedHandler('chat:prepare-group', (_event, group: unknown) => {
     if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')
@@ -4030,7 +4085,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   }
   registerTrustedHandler('diagnostics:check-connection', (_event, provider: unknown) => {
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     return options.diagnosticsService.checkConnection(provider).then((result) => explainRejectedManagedKey(provider, result))
   })
 
@@ -4051,12 +4106,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
 
   registerTrustedHandler('account:get-key-options', (_event, provider: unknown) => {
     // 入参校验必须同步抛出，所以这里不把整个 handler 改成 async。
-    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     // 分组在进入 resolveAccountKeyOptions 之前读好：那里从捕获账号快照到第一次
     // 落盘读取必须保持同步，中间插一次网络等待会把账号切换的判定窗口拉宽。
     return (async () => {
       const managedCliGroups = accountService.getSessionState().authenticated
-        ? await loadManagedCliGroups(accountService)
+        ? await loadManagedCliGroups(automaticProvisioning)
         : null
       return resolveAccountKeyOptions({ provider, systemService: service, accountService,
         managedCliKeys: options.managedCliKeys,
@@ -4068,11 +4123,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:clear-stale-proxy', () => {
     const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
     return clear()
-  })
-  registerTrustedHandler('diagnostics:trust-certificates-user-wide', () => {
-    const trust = options.diagnosticsService.trustCertificatesUserWide
-    if (!trust) throw new Error('这台电脑上不能在这里设置')
-    return trust()
   })
   registerTrustedHandler('diagnostics:open-folder', async (_event, rawTarget: unknown) => {
     if (!isDiagnosticFolderTarget(rawTarget)) throw new Error('不认识要打开的文件夹')

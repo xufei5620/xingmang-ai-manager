@@ -21,9 +21,10 @@ after(async () => {
   await business.stop()
   business.assertNoPageErrors()
 })
-const fixture = async (route) => {
+const fixture = async (route, prepare) => {
   const page = await business.newPage()
   await page.addInitScript(recordToasts)
+  await prepare?.(page)
   // First paint waits on Vite transforming the module graph on demand, which on a
   // cold Windows runner under Defender routinely takes longer than the 5s default
   // the assertions below rely on. Waiting for the mount separately keeps that
@@ -110,13 +111,13 @@ test('the usage dashboard splits spending across the tools that have a managed k
     await card.waitFor()
     await card.getByText('当前账号累计已用 $8.00，其中 Claude Code 最多（75%）。', { exact: true }).waitFor()
     const rows = card.locator('tbody tr')
-    assert.equal(await rows.count(), 4)
+    // 已下线的 Gemini CLI 不占一行。
+    assert.equal(await rows.count(), 3)
+    assert.doesNotMatch(await card.innerText(), /Gemini/)
     assert.match(await rows.nth(0).innerText(), /Claude Code\t?\s*\$6\.00\s*75%\s*\$18\.00\s*\$12\.00/)
     assert.match(await rows.nth(1).innerText(), /Codex CLI\s*\$2\.00\s*25%\s*不限额\s*不限额/)
-    for (const index of [2, 3]) {
-      assert.match(await rows.nth(index).innerText(), /未启用/)
-      assert.equal(/\$/.test(await rows.nth(index).innerText()), false)
-    }
+    assert.match(await rows.nth(2).innerText(), /Grok CLI[\s\S]*未启用/)
+    assert.equal(/\$/.test(await rows.nth(2).innerText()), false)
     assert.equal(await card.getByText(/solov|new-api|sub2api/i).count(), 0)
   } finally { await page.close() }
 })
@@ -556,7 +557,7 @@ test('tool key limits list only the tools that have a key and name the ones stil
       await card.locator('[data-testid^="tool-key-limit-"]:not([data-testid*="-input-"]):not([data-testid*="-save-"])').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-testid'))),
       ['tool-key-limit-claude', 'tool-key-limit-codex'],
     )
-    assert.equal(await page.getByTestId('tool-key-limits-missing').innerText(), 'Gemini CLI、Grok CLI 还没配，配好后会出现在这里。')
+    assert.equal(await page.getByTestId('tool-key-limits-missing').innerText(), 'Grok CLI 还没配，配好后会出现在这里。')
   } finally {
     await page.close()
   }
@@ -734,7 +735,7 @@ test('revoking a key a hand-configured tool is using never claims a fresh key an
     // 只是打开了设置窗口，用户可能取消或保存失败：警告不能跟着消失（#546）。
     assert.equal(await notice.count(), 1)
     // 别的工具存好了也不算。
-    await page.evaluate(() => window.dispatchEvent(new CustomEvent('test-tool-config-confirmed', { detail: 'gemini' })))
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('test-tool-config-confirmed', { detail: 'grok' })))
     assert.equal(await notice.count(), 1)
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('test-tool-config-confirmed', { detail: 'claude' })))
     await notice.waitFor({ state: 'detached' })
@@ -1342,7 +1343,7 @@ test('a tool whose skills cannot be imported here says how to place them and off
   const page = await fixture('page=skills&empty')
   try {
     const note = page.getByTestId('skills-import-unsupported')
-    await note.getByText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI、Gemini CLI 可以在这里导入。', { exact: true }).waitFor()
+    await note.getByText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。', { exact: true }).waitFor()
     const add = page.getByTestId('skills-add')
     assert.equal(await add.count(), 1, '空状态里不再放那颗灰的「导入技能」')
     assert.equal(await add.isDisabled(), true)
@@ -1399,8 +1400,9 @@ test('installed plugins come before the curated shelf and an update sits on the 
   }
 })
 
-// 已知2 跟进：详情里 local 写「当前项目」、扩展自带的技能写「我的（全局）」，「范围」筛选也按这个归类。
-test('the scope filter lists a plugin or skill under the scope its details name', async () => {
+// 已知2 跟进：详情里 local 写「当前项目」，「范围」筛选也按这个归类。扩展自带的技能（「我的（全局）」）
+// 只有已下线的 Gemini CLI 有，界面上不再出现，那一半随它撤掉。
+test('the scope filter lists a plugin under the scope its details name', async () => {
   const plugins = await fixture('page=plugins&scopedExtensions')
   try {
     const scopes = plugins.getByTestId('plugins-scope')
@@ -1421,25 +1423,6 @@ test('the scope filter lists a plugin or skill under the scope its details name'
     await global.waitFor()
   } finally {
     await plugins.close()
-  }
-  const skills = await fixture('page=skills&scopedExtensions')
-  try {
-    await skills.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
-    const scopes = skills.getByTestId('skills-scope')
-    const bundled = skills.getByTestId('skills-row-extension-skill')
-    await bundled.waitFor()
-    await scopes.getByRole('button', { name: '我的（全局）', exact: true }).click()
-    await bundled.waitFor()
-    await bundled.getByRole('button', { name: /更多操作/ }).click()
-    await skills.getByRole('menuitem', { name: '查看详情', exact: true }).click()
-    const drawer = skills.getByTestId('resource-detail-drawer')
-    assert.equal(await drawer.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '我的（全局）')
-    await drawer.locator('[data-modal-close]').click()
-    await drawer.waitFor({ state: 'detached' })
-    await scopes.getByRole('button', { name: '当前项目', exact: true }).click()
-    await bundled.waitFor({ state: 'detached' })
-  } finally {
-    await skills.close()
   }
 })
 
@@ -1463,10 +1446,10 @@ test('an empty installed list points at the curated shelf and the market tab', a
 test('a tool without a plugin market says so on the market tab and goes back to installed', async () => {
   const page = await fixture('page=plugins')
   try {
-    await page.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await page.getByRole('button', { name: 'Grok CLI', exact: true }).click()
     await page.getByRole('tab', { name: '市场', exact: true }).click()
     const notice = page.getByTestId('plugins-market-unavailable')
-    await notice.getByText('Gemini CLI 没有插件市场', { exact: true }).waitFor()
+    await notice.getByText('Grok CLI 没有插件市场', { exact: true }).waitFor()
     await notice.getByText('它的插件装好后在「已安装」里管理。', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('plugins-search').count(), 0)
     assert.equal(await page.locator('.xm-toolbar-right').count(), 0)
@@ -1539,16 +1522,16 @@ test('an empty backup list says where backups come from and backs up the tool pi
     await state.getByText('改工具配置前会自动留一份。想现在就留一份，点下面的按钮。', { exact: true }).waitFor()
     const picker = page.getByRole('combobox', { name: '选择备份工具', exact: true })
     assert.equal(await picker.inputValue(), 'claude')
-    await page.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
-    await state.getByText('Gemini CLI 还没有备份', { exact: true }).waitFor()
-    assert.equal(await picker.inputValue(), 'gemini')
+    await page.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await state.getByText('Grok CLI 还没有备份', { exact: true }).waitFor()
+    assert.equal(await picker.inputValue(), 'grok')
     await state.getByRole('button', { name: '创建第一份备份', exact: true }).click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'createBackup'))
-    assert.deepEqual((await calls(page)).filter((call) => call.name === 'createBackup').map((call) => call.args), [['gemini']])
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'createBackup').map((call) => call.args), [['grok']])
     // 选回「全部工具」：右边的下拉不动。
     await page.getByRole('button', { name: '全部工具', exact: true }).click()
     await state.getByText('还没有备份', { exact: true }).waitFor()
-    assert.equal(await picker.inputValue(), 'gemini')
+    assert.equal(await picker.inputValue(), 'grok')
     await page.getByText('备份在本机，可能含凭据，请妥善保管。', { exact: true }).waitFor()
   } finally {
     await page.close()
@@ -2009,6 +1992,69 @@ test('recharge presets show credited, paid and bonus, and the quote dialog spell
   }
 })
 
+test('the quote dialog asks for the current promotion instead of the one the page loaded with', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1')
+  try {
+    await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).click()
+    await page.evaluate(() => window.endTopupPromotion())
+    await page.getByTestId('account-recharge-submit').click()
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.getByText('应付金额：20.00', { exact: false }).waitFor()
+    assert.equal(await quote.getByTestId('account-recharge-quote-bonus').count(), 0)
+    // 卡片也跟着这次读到的换掉，不再挂「送 25%」。
+    await page.getByRole('button', { name: '到账 $20，实付 20.00', exact: true }).waitFor()
+    assert.equal(await page.getByText('送 25%', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the recharge page rereads offers when the customer comes back to it, at most once a minute', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1', (next) => next.clock.install())
+  try {
+    const reads = async () => (await calls(page)).filter((call) => call.name === 'get-topup-info').length
+    await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).waitFor()
+    assert.equal(await reads(), 1)
+    await page.evaluate(() => window.endTopupPromotion())
+    // 分页一切过去，重读（如果要读）就在同一次提交里发出去了：等到分页选中再数。
+    const open = async (name) => {
+      await page.getByRole('tab', { name, exact: true }).click()
+      await page.locator('[role="tab"][aria-selected="true"]', { hasText: name }).waitFor()
+    }
+    // 刚读过：来回切一下不再问，免得逐档试算撞上限流。
+    await open('我的订单')
+    await open('充值与订阅')
+    assert.equal(await reads(), 1)
+    assert.equal(await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).count(), 1)
+
+    await page.clock.fastForward(61_000)
+    await open('我的订单')
+    await open('充值与订阅')
+    await page.getByRole('button', { name: '到账 $20，实付 20.00', exact: true }).waitFor()
+    assert.equal(await reads(), 2)
+    assert.equal(await page.getByText('送 25%', { exact: true }).count(), 0)
+
+    // 外壳切到别的页再回来（个人中心整页藏起来过）。
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.setPageActive(false))
+    await page.evaluate(() => window.setPageActive(true))
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, 2)
+
+    // 停在充值页缩到托盘，隔一阵从托盘点开：窗口回到前台也重读。
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, 3)
+
+    // 停在别的分页时窗口回到前台，不替充值页去读（focus 的处理是同步的，派发完就能数）。
+    await open('我的订单')
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    assert.equal(await reads(), 4)
+  } finally {
+    await page.close()
+  }
+})
+
 test('a tier picked on the home activity card arrives preselected on the recharge page', async () => {
   const page = await fixture('page=account&accountTab=recharge&rechargeAmount=20&topupBonus=1')
   try {
@@ -2243,18 +2289,14 @@ test('native preference errors retain the saved switch state', async () => {
 test('saved accounts switch tools already on the account key by default and expose only eligible choices', async () => {
   const page = await fixture('page=account&sync=1')
   try {
-    // 卡片里「同步到工具」默认收起；点开才看得到四个勾选框。
+    // 卡片里「同步到工具」默认收起；点开才看得到勾选框。
     const sync = page.getByText('同步到工具', { exact: true })
     await sync.waitFor()
-    assert.equal(await page.getByTestId('account-sync-gemini').isVisible(), false)
+    assert.equal(await page.getByTestId('account-sync-claude').isVisible(), false)
     await sync.click()
-    await page.getByTestId('account-sync-gemini').waitFor()
+    await page.getByTestId('account-sync-claude').waitFor()
     assert.equal(
       await page.getByTestId('account-sync-claude').isChecked(),
-      true,
-    )
-    assert.equal(
-      await page.getByTestId('account-sync-gemini').isChecked(),
       true,
     )
     assert.equal(
@@ -2262,9 +2304,10 @@ test('saved accounts switch tools already on the account key by default and expo
       true,
     )
     assert.equal(await page.getByTestId('account-sync-grok').isDisabled(), true)
+    // 已下线的 Gemini CLI 装着、也还是星芒密钥，同样不给勾（yoyo 2026-10-14）。
+    assert.equal(await page.getByTestId('account-sync-gemini').count(), 0)
     // 取消勾选就不同步：用户说了算。
     await page.getByTestId('account-sync-claude').uncheck()
-    await page.getByTestId('account-sync-gemini').uncheck()
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
@@ -2284,7 +2327,7 @@ test('explicit CLI sync retains partial failure details after account refresh', 
     await page.getByText('同步到工具', { exact: true }).click()
     await page.getByTestId('account-sync-claude').waitFor()
     await page.getByTestId('account-sync-claude').check()
-    await page.getByTestId('account-sync-gemini').check()
+    await page.getByTestId('account-sync-grok').check()
     await page
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
@@ -2292,13 +2335,13 @@ test('explicit CLI sync retains partial failure details after account refresh', 
       .getByText('账号已切换，部分工具没有同步', { exact: true })
       .waitFor()
     await page
-      .getByText('Gemini CLI：Gemini 配置文件正在使用', { exact: true })
+      .getByText('Grok CLI：Grok 配置文件正在使用', { exact: true })
       .waitFor()
     assert.deepEqual(
       (await calls(page)).filter((call) => call.name === 'sync-config').map((call) => call.args),
       [
         { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
-        { providers: ['gemini'], preferredModels: { gemini: 'fixture-model' }, intent: 'explicit' },
+        { providers: ['grok'], preferredModels: { grok: 'fixture-model' }, intent: 'explicit' },
       ],
     )
     const entries = await calls(page)

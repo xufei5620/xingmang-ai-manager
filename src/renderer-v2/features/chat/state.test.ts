@@ -38,6 +38,13 @@ describe('v2 chat request transitions', () => {
     expect(resolveChatGroup([{ name: 'default' }])).toBe('default')
     expect(resolveChatGroup([])).toBe('')
   })
+
+  it('follows the group the main process recommends once the managed GPT group is renamed', () => {
+    const renamed = [{ name: 'default' }, { name: 'GPT 主力', recommended: true }, { name: 'GPT-官方API直连' }]
+    expect(resolveChatGroup(renamed)).toBe('GPT 主力')
+    expect(resolveChatGroup(renamed, 'GPT-中转/订阅')).toBe('GPT 主力')
+    expect(resolveChatGroup(renamed, 'GPT-官方API直连')).toBe('GPT-官方API直连')
+  })
   it('tells the user to start a new conversation once one reply is longer than a single message may be', () => {
     const first = turn()
     const long = 'a'.repeat(chatLimits.messageLength + 1)

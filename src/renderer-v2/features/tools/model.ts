@@ -3,6 +3,7 @@ import { detectionFailureMessage, snapshotErrorMessage } from '../../business-co
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../../../../electron/codex-desktop-known-issues'
 import { relayProviderBaseUrlMatches } from '../../../../electron/relay-sites'
+import type { ActiveProviderId } from '../../../../electron/catalog'
 import { tools } from '../../registry/tools'
 import {
   getSourceMarkerStorage,
@@ -10,7 +11,8 @@ import {
   type SourceMarkerStorage,
 } from './source-marker'
 
-export type ToolId = ProviderId | 'codexDesktop'
+/** 界面上的工具只有注册表里那几个：已下线的 CLI（Gemini）不在其中，界面不替它做任何事。 */
+export type ToolId = ActiveProviderId | 'codexDesktop'
 /**
  * `changed` 是 `unknown` 里被单独拎出来的一种：主进程认得出这份配置原本是替
  * 当前账号写的，之后被改动过。其余判不准的仍旧是 `unknown`，两者在能不能自动
@@ -24,7 +26,7 @@ export interface ToolboxSnapshot {
 }
 export interface ToolPresentation {
   id: ToolId
-  provider: ProviderId
+  provider: ActiveProviderId
   name: string
   vendor: string
   status: ToolStatus
@@ -194,7 +196,7 @@ export function isToolId(value: string): value is ToolId {
   return tools.some((tool) => tool.id === value)
 }
 
-export function providerFor(id: ToolId): ProviderId {
+export function providerFor(id: ToolId): ActiveProviderId {
   return id === 'codexDesktop' ? 'codex' : id
 }
 
@@ -209,7 +211,6 @@ export function sourceFor(
   if (provider === 'codex' && config.codexAuthMode === 'chatgpt') {
     return config.actualBaseUrl && relayProviderBaseUrlMatches(provider, config.actualBaseUrl, config.baseUrl) ? 'changed' : 'official'
   }
-  if (provider === 'gemini' && config.authType === 'oauth-personal') return 'official'
   if (config.hasApiKey && config.matchesRelay) {
     if (config.configurationOwnership === 'account' || config.configurationOwnership === 'manual') return config.configurationOwnership
     if (readManualSourceMarker(storage, config.baseUrl, provider)) return 'manual'
@@ -228,23 +229,16 @@ export function sourceFor(
 }
 
 /**
- * 一键切回官方给 Claude Code、Codex 与 Grok。Gemini 的官方登录自 2026-06 起只剩企业版
- * Code Assist（registry/tools.ts 的 officialAccountNotes），小白点下去只会在 Google
- * 登录页反复失败；企业用户仍可在配置里选。
- */
-const oneClickOfficialProviders: ReadonlySet<ProviderId> = new Set<ProviderId>(['claude', 'codex', 'grok'])
-
-/**
  * 首页工具行「…」菜单里那一项切换指向哪边；null = 不给这一项。
- * 官方 → 当前账号对所有有官方来源的工具都给；当前账号（含手填、被改过）→ 官方
- * 只给上面两家。第三方配置与还没配置的不给：前者有专门的处理步骤，后者走「连接账号」。
+ * 官方 → 当前账号、当前账号（含手填、被改过）→ 官方，对所有有官方来源的工具都给。
+ * 第三方配置与还没配置的不给：前者有专门的处理步骤，后者走「连接账号」。
  */
-export function accountSwitchTarget(tool: Pick<ToolPresentation, 'provider' | 'source' | 'status'>): AccountSourceTarget | null {
+export function accountSwitchTarget(tool: Pick<ToolPresentation, 'source' | 'status'>): AccountSourceTarget | null {
   if (!tool.status.installed) return null
   // 来源没确认的（别家的 Key、同一个站上别的账号的 Key）同样一键改用当前账号：
   // 主进程先备份、再写入、再自检，连不上就恢复原样。
   if (tool.source === 'official' || tool.source === 'unknown') return 'account'
-  if ((tool.source === 'account' || tool.source === 'manual' || tool.source === 'changed') && oneClickOfficialProviders.has(tool.provider)) return 'official'
+  if (tool.source === 'account' || tool.source === 'manual' || tool.source === 'changed') return 'official'
   return null
 }
 
@@ -287,16 +281,16 @@ export function codexNeedsRepair(config: Pick<ProviderConfigSummary, 'codexProvi
  * 这时读出来的 Key、来源都不作数，首页先说文件坏了：
  * - codexConfig：Codex 的 config.toml。桌面端会停在「无法加载组织设置」，命令行直接报错。
  * - codexAuth：Codex 的 auth.json。Codex 不报错，当成没登录，打开就要重新登录。
- * - claudeSettings、geminiSettings：settings.json。Claude Code 弹英文的「Settings Error」、整份不用，
- *   Gemini CLI 直接退出。星芒自己读不出 Key 时会把它认成官方账号，其实不是。
+ * - claudeSettings：settings.json。Claude Code 弹英文的「Settings Error」、整份不用。
+ *   星芒自己读不出 Key 时会把它认成官方账号，其实不是。
  * Grok CLI 的配置主进程不判。
  */
-export type BrokenConfig = 'codexConfig' | 'codexAuth' | 'claudeSettings' | 'geminiSettings'
+export type BrokenConfig = 'codexConfig' | 'codexAuth' | 'claudeSettings'
 
 export function brokenConfigOf(config: Pick<ProviderConfigSummary, 'configBroken' | 'codexAuthBroken'>, provider: ProviderId): BrokenConfig | null {
   if (provider === 'codex') return config.configBroken === true ? 'codexConfig' : config.codexAuthBroken === true ? 'codexAuth' : null
   if (config.configBroken !== true) return null
-  return provider === 'claude' ? 'claudeSettings' : provider === 'gemini' ? 'geminiSettings' : null
+  return provider === 'claude' ? 'claudeSettings' : null
 }
 
 /** 「配置文件坏了」那一行的小字；修的过程中行上照旧是这句（yoyo 2026-10-06 定的原话）。 */
@@ -304,26 +298,23 @@ export const brokenConfigDetails: Record<BrokenConfig, string> = {
   codexConfig: 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
   codexAuth: 'Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留',
   claudeSettings: 'Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
-  geminiSettings: 'Gemini CLI 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
 }
 
 /**
  * 「配置文件坏了」的「修好它」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
  * 看得出原来用的是官方登录就照旧用官方账号，不顺手换成当前账号：Codex 登录的是 ChatGPT，
- * 或者只坏了 auth.json、config.toml 里又没有别的服务地址；Gemini CLI 读得出选的是 Google 登录。
+ * 或者只坏了 auth.json、config.toml 里又没有别的服务地址。
  * 其余按当前账号（Claude Code 的官方登录不记在 settings.json 里，看不出来）。
  */
 export function brokenConfigRepairTarget(
   broken: BrokenConfig,
-  config: Pick<ProviderConfigSummary, 'codexAuthMode' | 'actualBaseUrl' | 'authType'>,
+  config: Pick<ProviderConfigSummary, 'codexAuthMode' | 'actualBaseUrl'>,
 ): AccountSourceTarget {
   switch (broken) {
     case 'codexConfig':
       return config.codexAuthMode === 'chatgpt' ? 'official' : 'account'
     case 'codexAuth':
       return config.codexAuthMode === 'chatgpt' || !config.actualBaseUrl ? 'official' : 'account'
-    case 'geminiSettings':
-      return config.authType === 'oauth-personal' ? 'official' : 'account'
     case 'claudeSettings':
       return 'account'
   }
@@ -370,8 +361,7 @@ export function connectionReady(
   const source = sourceFor(config, provider, storage)
   if (source === 'official') return true
   if (codexNeedsRepair(config, provider)) return false
-  if ((source !== 'account' && source !== 'manual' && !((source === 'unknown' || source === 'changed') && config.hasApiKey && config.matchesRelay)) || !config.model.trim()) return false
-  return provider !== 'gemini' || config.authType === 'gemini-api-key'
+  return (source === 'account' || source === 'manual' || ((source === 'unknown' || source === 'changed') && config.hasApiKey && config.matchesRelay)) && Boolean(config.model.trim())
 }
 
 /**

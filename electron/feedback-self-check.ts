@@ -1,4 +1,4 @@
-import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, type ProviderId } from './catalog'
 import { connectionCheckLayerLabels, type ConnectionCheckLayer } from './connection-check'
 import type { DiagnosticState, DiagnosticsReport } from './diagnostics'
 
@@ -106,12 +106,12 @@ function readConnectionQuietly(
  */
 export function hasFeedbackSelfCheck(input: Pick<FeedbackSelfCheckInput, 'report' | 'readConnection'>): boolean {
   return input.report !== null
-    || providerIds.some((provider) => readConnectionQuietly(provider, input.readConnection) !== null)
+    || activeProviderIds.some((provider) => readConnectionQuietly(provider, input.readConnection) !== null)
 }
 
 export function buildFeedbackSelfCheckLines(input: FeedbackSelfCheckInput): string[] {
   const redact = input.redact ?? ((value: string) => value)
-  const connections = providerIds.map((provider) => ({
+  const connections = activeProviderIds.map((provider) => ({
     provider,
     record: readConnectionQuietly(provider, input.readConnection),
   }))

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
   Download,
@@ -63,14 +63,16 @@ import {
 } from './registry/curated-extensions'
 import { skillImportTutorialExtra } from './registry/tutorials'
 import { tools } from './registry/tools'
-import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest } from './features/tools/recent-workspaces'
+import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, withoutRetiredSessions } from './features/tools/recent-workspaces'
 import { launchDeclined, resumeSessionNotice } from './features/tools/launch-notice'
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import { backupKeyView } from './features/tools/backup-key'
 import { connectionCheckView } from './features/tools/connection-check'
 import type { OperationTarget } from './operation-error'
 import type { V2Bridge, V2Page } from './types'
-type Provider = Parameters<V2Bridge['listProviderExtensions']>[0]
+import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
+// 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：管理页不再列它的扩展、会话和备份。
+type Provider = ActiveProviderId
 type ExtensionSnapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
 type ExtensionItem = ExtensionSnapshot['items'][number]
 type ExtensionKind = ExtensionItem['kind']
@@ -358,8 +360,9 @@ export async function runExtensionAction(
   })
 }
 
-function isProvider(id: string): id is Provider {
-  return ['claude', 'codex', 'gemini', 'grok'].includes(id)
+// 已下线的工具（Gemini）不在筛选、备份、扩展里出现，主进程回来的数据里带着它也不认。
+function isProvider(id: unknown): id is ActiveProviderId {
+  return isActiveProviderId(id)
 }
 const providerOptions = tools
   .filter((tool) => tool.kind === 'cli' && isProvider(tool.id))
@@ -755,7 +758,7 @@ export function SessionsPage({
    * Codex 老配置先修。过不了的原因照常抛出来，挂在页顶；返回 false = 不往下走（问话框里
    * 关掉了，或者中途换了账号）。省略 = 不检查（旧行为）。
    */
-  beforeResume?: (provider: Session['provider']) => Promise<boolean>
+  beforeResume?: (provider: Provider) => Promise<boolean>
   /**
    * 外壳说的「现在显示的是这一页」（同 BusinessActions.active）：再显示时、显示着窗口又回到前面时重读；
    * 缺省 = 只在第一次进来时读（旧行为）。
@@ -767,7 +770,7 @@ export function SessionsPage({
   const [page, setPage] = useState(1)
   const load = useCallback(
     () =>
-      api.listProviderSessions({ provider, search: query, page, pageSize: 20 }),
+      api.listProviderSessions({ provider, search: query, page, pageSize: 20 }).then(withoutRetiredSessions),
     [api, provider, query, page],
   )
   const resource = useResource(load)
@@ -775,7 +778,7 @@ export function SessionsPage({
   // 过滤加分页之后的切片,判断不出全局最近。所以另取一份不带过滤的最新记录来
   // 定这件事,上限就是主进程允许的一页最大条数;更老的组合不给按钮(宁可少给)。
   const latestLoad = useCallback(
-    () => api.listProviderSessions({ provider: 'all', page: 1, pageSize: 100 }),
+    () => api.listProviderSessions({ provider: 'all', page: 1, pageSize: 100 }).then(withoutRetiredSessions),
     [api],
   )
   const latestResource = useResource(latestLoad)
@@ -796,7 +799,7 @@ export function SessionsPage({
   const detailResource = useResource(detailLoad)
   const detail = detailResource.data
   // 去过的页面只藏不卸：在终端里聊完回来，这一页还是第一次进来时那份，刚聊的那条不在，「接着聊」还挂在
-  // 同一文件夹更早那条上；Claude Code、Gemini CLI、Grok CLI 按文件夹接最近一条（#292），点下去接上的是刚聊的
+  // 同一文件夹更早那条上；Claude Code、Grok CLI 按文件夹接最近一条（#292），点下去接上的是刚聊的
   // 那条。所以再显示时、显示着窗口又回到前面时，两份列表连同开着的详情一起重读，先摆着旧的、读回来再换。
   // 窗口那一下离上次读不到 30 秒就不读；本页「接着聊」打开了终端就清零，回来头一次切回窗口一定重读。
   const lastRead = useRef(Number.NEGATIVE_INFINITY)
@@ -887,14 +890,16 @@ export function SessionsPage({
     return false
   }
   /**
-   * 四家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
+   * 各家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
    * 所以按钮只长在每个(工具 × 目录)组合最近的那一条上(resumable),点到的
    * 就是接上的。Codex 另外带上这条记录的 id:它自己按目录找时还按连接名过滤,
    * 切过账号就找不到(resumeLaunchChoice)。归档过的记录已经被移出 CLI
    * 自己的目录,它找不到,所以对归档记录置灰。
    */
   const resume = (session: Session) => {
-    if (!resumable.has(session.id) || session.archived || session.cwdExists === false)
+    const provider = session.provider
+    // 列表里本来就不收已下线工具的记录；万一漏进来一条，也不替它打开。
+    if (!resumable.has(session.id) || session.archived || session.cwdExists === false || !isProvider(provider))
       return
     void operation.execute(
       'resume',
@@ -903,12 +908,12 @@ export function SessionsPage({
         if (resumeNeedsRecheck(session) && !(await recheckResume(session))) return null
         // 首页「接着聊」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
         // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
-        if (beforeResume && !(await beforeResume(session.provider))) return null
+        if (beforeResume && !(await beforeResume(provider))) return null
         try {
           const choice = resumeLaunchChoice(session)
           const result = await (typeof choice === 'object'
-            ? api.launchCli(session.provider, session.cwd, 'resumeLast', choice.resumeSessionId)
-            : api.launchCli(session.provider, session.cwd, 'resumeLast'))
+            ? api.launchCli(provider, session.cwd, 'resumeLast', choice.resumeSessionId)
+            : api.launchCli(provider, session.cwd, 'resumeLast'))
           // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
           if (!launchDeclined(result)) {
             onSessionsChanged?.()
@@ -1317,6 +1322,39 @@ function useMcpHealth(api: V2Bridge, provider: Provider, enabled: boolean) {
   return { report, checking, check }
 }
 
+/**
+ * 扩展页的操作要等工具自己跑完，这期间可以换到别的工具。换过去那一下红条
+ * 已经清了，跑完才落下来的失败却照样挂在页顶，摆到了新工具下面。所以结果记着是哪个工具下点的，只在那个
+ * 工具下面摆出来：换走以后才落下的先收着，换回去再出来。clear() 只清屏上摆着的那条，换工具时清掉的是正
+ * 离开的那个工具的红条，收着的那条不跟着丢；再点一次操作照旧整个换掉。
+ */
+function useToolOperation(provider: Provider) {
+  const operation = useOperation()
+  const [owner, setOwner] = useState(provider)
+  const shown = owner === provider
+  const execute: typeof operation.execute = (name, action, success) =>
+    operation.execute(
+      name,
+      () => {
+        setOwner(provider)
+        return action()
+      },
+      success,
+    )
+  return {
+    ...operation,
+    message: shown ? operation.message : '',
+    revealPath: shown ? operation.revealPath : '',
+    error: shown ? operation.error : '',
+    detail: shown ? operation.detail : '',
+    failed: shown ? operation.failed : '',
+    execute,
+    clear: () => {
+      if (shown) operation.clear()
+    },
+  }
+}
+
 export function ExtensionsPage({
   api,
   kind,
@@ -1384,8 +1422,16 @@ export function ExtensionsPage({
   useReloadWhenShown(active, () => {
     if (!resource.loading) void resource.reload()
   })
+  // 装插件、改连接、重新检测都要等工具自己跑完，这期间可以换到别的工具。换过去那一下页面已经在读新工具的
+  // 列表和连接状态，跑完以后再照原来那个工具读一遍，就把上一个工具的东西摆到了新工具下面（逆向报告 B4）。
+  // 所以跑完先看一眼还是不是那个工具，换走了就不再读，留给新工具自己那一轮。
+  const shownProvider = useRef(provider)
+  useLayoutEffect(() => { shownProvider.current = provider })
+  const reloadList = async () => {
+    if (shownProvider.current === provider) await resource.reload()
+  }
   const health = useMcpHealth(api, provider, kind === 'mcp')
-  const operation = useOperation()
+  const operation = useToolOperation(provider)
   const [form, setForm] = useState<'add' | 'market' | null>(null)
   const [formName, setFormName] = useState('')
   const [source, setSource] = useState('')
@@ -1444,12 +1490,12 @@ export function ExtensionsPage({
         // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未装」、还给安装按钮。先叫、再读本页：
         // 本页那次读接上 App 刚起的那一轮检测（同「安装卸载」页）。
         onSystemChanged?.()
-        await resource.reload()
+        await reloadList()
       },
       'Python 已经装好了，可以继续添加这条连接',
     )
   const supportsInstall =
-    kind !== 'skill' || provider === 'codex' || provider === 'gemini'
+    kind !== 'skill' || provider === 'codex'
   const nativeSkillFor = (item: ExtensionItem) =>
     kind === 'skill' && resource.data?.codex
       ? findNativeSkill(resource.data.codex.skills, item)
@@ -1468,7 +1514,7 @@ export function ExtensionsPage({
     if (!allowed) return
     void operation.execute(action, async () => {
       await runExtensionAction(api, item, action, native)
-      await resource.reload()
+      await reloadList()
     })
   }
   const showForm = () => {
@@ -1545,7 +1591,7 @@ export function ExtensionsPage({
           })
         else await submitMcpInstall(api, provider, item.id, item.install, 'user')
         setCurated(null)
-        await resource.reload()
+        await reloadList()
       },
       `${item.name} 已添加，可以在下面的列表里看到`,
     )
@@ -1601,7 +1647,7 @@ export function ExtensionsPage({
             scope: formScope,
           })
         setForm(null)
-        await resource.reload()
+        await reloadList()
       },
       '已添加，列表已更新',
     )
@@ -1630,7 +1676,7 @@ export function ExtensionsPage({
   // 「重新检测」先把列表重新读一遍：在别处加过、删过的连接要先出现在列表里，检测才有对象。
   const recheck = async () => {
     await resource.reload()
-    await health.check()
+    if (shownProvider.current === provider) await health.check()
   }
   // 进页面时替用户自动下的那一次不另弹「已下载」：列表直接出来就是结果。自己点的照旧提示。
   const addOfficialMarketplace = (automatic = false) =>
@@ -1638,7 +1684,7 @@ export function ExtensionsPage({
       'marketplace-ensure',
       async () => {
         await api.ensureProviderMarketplace(provider)
-        await resource.reload()
+        await reloadList()
       },
       automatic
         ? () => null
@@ -1807,7 +1853,7 @@ export function ExtensionsPage({
       {kind === 'skill' && !supportsInstall && (
         <div className="v2-skill-import-note" data-testid="skills-import-unsupported">
           <span>
-            {toolName} 的技能不能在这里导入，要按它自己的方式放好；Codex CLI、Gemini CLI 可以在这里导入。
+            {toolName} 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。
           </span>
           {onOpenTutorial && (
             <Button
@@ -2064,7 +2110,7 @@ export function ExtensionsPage({
                                         )
                                       else
                                         await api.loginMcpServer(nativeMcp.name)
-                                      await resource.reload()
+                                      await reloadList()
                                     }),
                                 },
                               ]
@@ -2131,7 +2177,7 @@ export function ExtensionsPage({
                           'market-update',
                           async () => {
                             await api.upgradeMarketplace(market.name)
-                            await resource.reload()
+                            await reloadList()
                           },
                         )
                       }
@@ -2151,7 +2197,7 @@ export function ExtensionsPage({
                               'market-delete',
                               async () => {
                                 await api.removeMarketplace(market.name)
-                                await resource.reload()
+                                await reloadList()
                               },
                             ),
                         },
@@ -2431,7 +2477,7 @@ export function ExtensionsPage({
                         nativeSkillFor(deletion),
                       )
                       setDeletion(null)
-                      await resource.reload()
+                      await reloadList()
                     },
                     '已移除',
                   )
@@ -2587,6 +2633,7 @@ export function BackupsPage({
   const list =
     resource.data?.filter(
       (item) =>
+        isProvider(item.provider) &&
         (provider === 'all' || item.provider === provider) &&
         backupMatchesQuery(item.createdAt, query, now),
     ) ?? []
@@ -2810,8 +2857,11 @@ export function BackupsPage({
                       const result = await api.restoreBackup(preview.id)
                       setRestore(false)
                       setPreview(null)
-                      onRestored?.(result.provider)
-                      void checkRestored(result.provider)
+                      // 列表里只有还在用的工具的备份，恢复出来的不会是已下线的那个；类型上仍要排除它。
+                      if (isProvider(result.provider)) {
+                        onRestored?.(result.provider)
+                        void checkRestored(result.provider)
+                      }
                       await resource.reload()
                       if (!result.preRestoreBackupId)
                         throw new Error(

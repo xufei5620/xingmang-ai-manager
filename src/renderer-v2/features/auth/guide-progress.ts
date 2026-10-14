@@ -2,7 +2,8 @@ import type { GuideRoute, GuideStep } from './StartGuide'
 
 export interface GuideProgress { route: GuideRoute; step: GuideStep }
 export interface GuideProgressStorage { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void }
-const routes: readonly GuideRoute[] = ['claude', 'codex', 'codexDesktop', 'gemini', 'grok', 'chat']
+// 上次停在已下线的 Gemini CLI 那一条（存着 'gemini'）的不在这里，按读不出处理：引导从推荐的那一项重新开始。
+const routes: readonly GuideRoute[] = ['claude', 'codex', 'codexDesktop', 'grok', 'chat']
 const steps: readonly GuideStep[] = ['choose', 'prepare', 'connect', 'ready']
 
 export function guideProgressKey(scope: string): string { return `xingmang-ui-v2:guide:${encodeURIComponent(scope)}` }

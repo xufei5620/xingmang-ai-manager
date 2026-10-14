@@ -35,11 +35,14 @@ function summaryOf(keys: AccountKey[], quotaPerUnit = 500_000) {
 const summary = summaryOf([
   key({ id: 1, name: 'xingmang-desktop-claude', unlimitedQuota: false, remainQuota: 6_000_000, usedQuota: 3_000_000 }),
   key({ id: 2, name: 'xingmang-desktop-codex', group: 'GPT-中转/订阅', usedQuota: 1_000_000 }),
+  // 已下线的 Gemini CLI 那把 Key 还留在账号里：不单列、也不算进各工具的合计。
+  key({ id: 3, name: 'xingmang-desktop-gemini', group: 'Gemini-中转/订阅', usedQuota: 1_000_000 }),
 ])
-const [claude, codex, grok, gemini] = summary.rows
+const [claude, codex, grok] = summary.rows
 
 describe('per-tool usage summary', () => {
   it('splits the account total across the tools that have a managed key', () => {
+    expect(summary.rows.map((row) => row.provider)).toEqual(['claude', 'codex', 'grok'])
     expect(summary.used).toBe(8)
     expect(summary.enabledCount).toBe(2)
     expect(summary.top?.provider).toBe('claude')
@@ -56,10 +59,10 @@ describe('per-tool usage summary', () => {
   })
 
   it('leaves a tool without a key out of the split instead of counting it as zero usage', () => {
-    expect(gemini.enabled).toBe(false)
-    expect(gemini.share).toBeNull()
-    expect(toolUsageUsed(gemini)).toBe('—')
-    expect(toolUsageAllowance(gemini)).toBe('—')
+    expect(grok.enabled).toBe(false)
+    expect(grok.share).toBeNull()
+    expect(toolUsageUsed(grok)).toBe('—')
+    expect(toolUsageAllowance(grok)).toBe('—')
     expect(toolUsageShare(grok)).toBe('—')
   })
 
@@ -91,12 +94,13 @@ describe('per-tool usage table', () => {
   )
 
   it('names the tools rather than the managed key names', () => {
-    for (const name of ['Claude Code', 'Codex CLI', 'Gemini CLI', 'Grok CLI']) expect(html).toContain(name)
+    for (const name of ['Claude Code', 'Codex CLI', 'Grok CLI']) expect(html).toContain(name)
+    expect(html).not.toContain('Gemini')
     expect(html).not.toContain('xingmang-desktop-')
   })
 
   it('marks the tools that have no key yet as not enabled', () => {
-    expect(html.match(/未启用/g)).toHaveLength(2)
+    expect(html.match(/未启用/g)).toHaveLength(1)
   })
 
   it('never names the account backend in what the user reads', () => {

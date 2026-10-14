@@ -3,7 +3,9 @@
  *
  * 账号、余额、AI 工作区的对话画图视频这些请求，调用方照旧按默认线路的地址发（账号客户端、
  * sub2api-relay-backend.ts 里都写死着默认线路），这里按这个站这会儿走的线路换掉地址。选
- * 「自动」、这会儿走直连时，直连没走通就当场改走默认线路重发一次：
+ * 「自动」、这会儿走的是先走的那条时（星芒账号是直连，历史账号是默认线路，relay-sites.ts 的
+ * relayAutoPreferredLines），它没走通就当场改走备用那条重发一次。下面按星芒账号说直连、默认线路，
+ * 历史账号两条对调（白名单 404 除外，白名单只在直连上有）：
  *
  * - 会退回的：解析不出地址、连不上、TLS 握手失败、连接被断、超时；代理回绝了直连这个地址（只放行
  *   老域名的公司网关、按域名列规则的代理）；网关 502/503/504 回的网页；直连回的别的网页或跳转（拦截页、
@@ -24,14 +26,22 @@
  * 正是那条线路通不通，不换地址也不重发，只按上面的口径把直连上的失败报给线路那边。
  */
 import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, type NetworkFailureReason } from './network-failure'
-import { relayEndpointForUrl, relayEndpointOrigin, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import {
+  relayAutoBackupLine,
+  relayAutoPreferredLines,
+  relayEndpointForUrl,
+  relayEndpointOrigin,
+  type RelayEndpointId,
+  type RelayRouteSiteId,
+} from './relay-sites'
+import { noteRequestDiagnostics } from './request-diagnostics'
 import { watchResponseBody } from './response-body-watch'
 
 export interface RelayLineRouter {
-  /** 一个站这会儿走哪条线路；automatic 为真时（「自动」）直连没走通可以改走默认线路。 */
+  /** 一个站这会儿走哪条线路；automatic 为真时（「自动」）先走的那条没走通可以改走备用那条。 */
   route(siteId: RelayRouteSiteId): { line: RelayEndpointId; automatic: boolean }
-  /** 直连上的请求没走通（白名单 404 不算），交给线路那边再查一次。 */
-  reportDirectFailure(siteId: RelayRouteSiteId, reason: string): void
+  /** 先走的那条线路上的请求没走通（白名单 404 不算），交给线路那边再查一次。 */
+  reportPreferredFailure(siteId: RelayRouteSiteId, reason: string): void
   /** 线路改了就叫一声；返回取消订阅。 */
   subscribe(listener: (siteId: RelayRouteSiteId) => void): () => void
 }
@@ -190,6 +200,21 @@ async function discard(response: Response): Promise<void> {
 }
 
 /**
+ * 交出去的回应、抛出去的失败都挂上这一次实际走的线路（request-diagnostics.ts）：客户说登不上、Key 配不上时，
+ * 日志按它记走的是直连还是默认线路（三线路 7b）。served 在请求结束时才读，中途退回默认线路改了它也算数。
+ */
+async function onServedLine(served: { line?: RelayEndpointId }, send: () => Promise<Response>): Promise<Response> {
+  try {
+    const response = await send()
+    noteRequestDiagnostics(response, served)
+    return response
+  } catch (error) {
+    noteRequestDiagnostics(error, served)
+    throw error
+  }
+}
+
+/**
  * 星芒自己的请求用的 fetch：认得出的星芒地址按这个站这会儿的线路换掉 origin，别的地址原样
  * 交给 base。base 是 proxy-bypass.ts 的 relayFetch / accountFetch，所以换完线路以后照旧
  * 按代理那边的分流走。
@@ -202,37 +227,42 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     const requested = requestUrl(input)
     const endpoint = requested === null ? null : relayEndpointForUrl(requested)
     if (requested === null || !endpoint) return base(input, init)
-    return routed(requested, endpoint.siteId, init)
+    const served: { line?: RelayEndpointId } = {}
+    return onServedLine(served, () => routed(requested, endpoint.siteId, init, served))
   }
-  async function routed(requested: string, siteId: RelayRouteSiteId, init: RequestInit | undefined): Promise<Response> {
+  async function routed(requested: string, siteId: RelayRouteSiteId, init: RequestInit | undefined, served: { line?: RelayEndpointId }): Promise<Response> {
     const route = router.route(siteId)
+    served.line = route.line
     const sent = onLine(requested, siteId, route.line)
     // 正文是流的发出去就没了，没法重发：照旧走这条线路，不退回。
     const replayable = !(init?.body instanceof ReadableStream)
-    if (!route.automatic || route.line !== 'direct' || !replayable) return asRequested(await base(sent, init), sent, requested)
+    const preferred = relayAutoPreferredLines[siteId]
+    if (!route.automatic || route.line !== preferred || !replayable) return asRequested(await base(sent, init), sent, requested)
+    const backup = relayAutoBackupLine(siteId)
 
     const path = new URL(requested).pathname
     const idempotent = isIdempotent(init) && !mailingPaths.has(path)
     const callerSignal = init?.signal ?? undefined
     const method = (init?.method ?? 'GET').toUpperCase()
     function report(reason: string): void {
-      if (!unreportedPaths.has(path)) router.reportDirectFailure(siteId, reason)
+      if (!unreportedPaths.has(path)) router.reportPreferredFailure(siteId, reason)
     }
     async function fallBack(reason: string): Promise<Response> {
-      const primary = onLine(requested, siteId, 'primary')
-      log('info', 'relay.line.fallback', '直连这次没走通，改走默认线路重发', { siteId, from: 'direct', to: 'primary', reason, method, path })
-      return asRequested(await base(primary, init), primary, requested)
+      const target = onLine(requested, siteId, backup)
+      served.line = backup
+      log('info', 'relay.line.fallback', '先走的那条线路这次没走通，改走备用那条重发', { siteId, from: preferred, to: backup, reason, method, path })
+      return asRequested(await base(target, init), target, requested)
     }
 
-    // 只读的请求在直连上等着时，线路那边已经改走默认线路（开机那次查的结论、别的请求报上去
-    // 查出来的）：不陪它等到超时，掐掉改走默认线路。会改动数据的请求不掐，它可能已经送到了。
+    // 只读的请求在先走的那条上等着时，线路那边已经改走备用那条（开机那次查的结论、别的请求报上去
+    // 查出来的）：不陪它等到超时，掐掉改走备用那条。会改动数据的请求不掐，它可能已经送到了。
     const lineChange = new AbortController()
     let lineChanged = false
     const unsubscribe = idempotent
       ? router.subscribe((changed) => {
-        if (changed !== siteId || router.route(siteId).line === 'direct') return
+        if (changed !== siteId || router.route(siteId).line === preferred) return
         lineChanged = true
-        lineChange.abort(new Error('线路已改走默认线路'))
+        lineChange.abort(new Error('线路已改走备用线路'))
       })
       : null
     const signal = unsubscribe
@@ -259,8 +289,9 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     } finally {
       unsubscribe?.()
     }
-    if (blockedByAllowlist(response)) {
-      // 白名单挡下的是这一个接口，直连本身是通的：不报给线路那边，后面的请求照样先走直连。
+    if (route.line === 'direct' && blockedByAllowlist(response)) {
+      // 白名单挡下的是这一个接口，直连本身是通的：不报给线路那边，后面的请求照样先走直连。白名单只在
+      // 直连上有，先走默认线路的历史账号碰上网页 404 照原样交回去。
       await discard(response)
       log('warn', 'relay.line.blocked', '直连没放行这个接口，这次改走默认线路', { siteId, line: 'direct', method, path })
       return fallBack('allowlist-404')
@@ -293,9 +324,9 @@ export interface RelayToolLineObserver {
 
 /**
  * 写进工具配置之前查模型、工具自检用的 fetch：查的正是工具会用的那条线路通不通，所以不换地址、
- * 不重发；「自动」的站在直连上连不上时只报给线路那边，由它查过健康检查再决定要不要退回。
+ * 不重发；「自动」的站在先走的那条上连不上时只报给线路那边，由它查过健康检查再决定要不要退回。
  * 给了 toolLine 时星芒账号改报工具线路：打在工具线路上的（洛杉矶、CF 都算）没走通就报给它；历史账号
- * 照旧只报直连、报给应用线路。
+ * 只报先走的那条（默认线路）、报给应用线路。
  */
 export function createRelayObservedFetch(
   router: RelayLineRouter,
@@ -309,14 +340,24 @@ export function createRelayObservedFetch(
       if (!route.automatic || route.line !== endpoint.endpointId) return null
       return (reason) => toolLine.reportFailure(`check:${reason}`)
     }
-    if (endpoint.endpointId !== 'direct' || !router.route(endpoint.siteId).automatic) return null
-    return (reason) => router.reportDirectFailure(endpoint.siteId, reason)
+    if (endpoint.endpointId !== relayAutoPreferredLines[endpoint.siteId] || !router.route(endpoint.siteId).automatic) return null
+    return (reason) => router.reportPreferredFailure(endpoint.siteId, reason)
   }
   return async (input, init) => {
     const requested = requestUrl(input)
     const endpoint = requested === null ? null : relayEndpointForUrl(requested)
-    const report = endpoint ? reporterFor(endpoint) : null
-    if (requested === null || !endpoint || !report) return base(input, init)
+    if (requested === null || !endpoint) return base(input, init)
+    // 这里不换地址，打到哪个地址就是哪条线路。
+    return onServedLine({ line: endpoint.endpointId }, () => observed(input, init, requested, endpoint))
+  }
+  async function observed(
+    input: string | URL | Request,
+    init: RequestInit | undefined,
+    requested: string,
+    endpoint: { siteId: RelayRouteSiteId; endpointId: RelayEndpointId },
+  ): Promise<Response> {
+    const report = reporterFor(endpoint)
+    if (!report) return base(input, init)
     let response: Response
     try {
       response = await base(input, init)

@@ -60,7 +60,7 @@ test('the key never survives into anything the job prints', () => {
 })
 
 test('every probed CLI has a runner, and each runs the CLI in a narrow environment of its own', () => {
-  assert.deepEqual(PROBED_PROVIDERS, ['claude', 'codex', 'gemini'])
+  assert.deepEqual(PROBED_PROVIDERS, ['claude', 'codex'])
   for (const provider of PROBED_PROVIDERS) {
     const runner = probeRunners[provider]
     assert.ok(runner, `${provider} must have a probe runner`)
@@ -82,12 +82,10 @@ test('every probed CLI has a runner, and each runs the CLI in a narrow environme
 test('each CLI is pointed at its own relay base URL and told which model to use', () => {
   const site = { providerBaseUrls: { claude: 'https://relay.invalid', codex: 'https://relay.invalid/v1', gemini: 'https://relay.invalid', grok: 'https://relay.invalid/v1' } }
   assert.equal(probeRunners.claude.baseUrlFor(site), 'https://relay.invalid')
-  // Codex and Grok carry the /v1 suffix in their base; Claude and Gemini do not.
+  // Codex carries the /v1 suffix in its base; Claude does not.
   assert.equal(probeRunners.codex.baseUrlFor(site), 'https://relay.invalid/v1')
-  assert.equal(probeRunners.gemini.baseUrlFor(site), 'https://relay.invalid')
 
   assert.deepEqual(probeRunners.claude.argv('claude-opus-5').slice(-2), ['--model', 'claude-opus-5'])
-  assert.equal(probeRunners.gemini.argv('gemini-3.8-flash-high').includes('gemini-3.8-flash-high'), true)
   // Codex takes its model from config.toml, not argv -- that is the file a
   // customer actually gets, so the probe exercises the same request shape.
   assert.equal(probeRunners.codex.argv('gpt-6-astra').includes('gpt-6-astra'), false)
@@ -102,6 +100,11 @@ test('the Codex config the probe writes is the one a customer gets', () => {
   // exactly there.
   assert.match(text, /wire_api = "responses"/)
   assert.match(text, /requires_openai_auth = true/)
+  // The transport is part of what the customer gets: WebSocket and plain
+  // streaming take different paths through the relay's front proxy.
+  assert.match(text, /^supports_websockets = false$/m)
+  // Codex switches to its first-party request shape on exactly this name.
+  assert.match(text, /^name = "OpenAI"$/m)
   assert.match(text, /model_reasoning_effort = "xhigh"/)
   assert.match(text, /base_url = "https:\/\/relay\.invalid\/v1"/)
   assert.match(text, /^model = "gpt-6-astra"$/m)
@@ -111,10 +114,12 @@ test('only the tools the list actually pins are probed', () => {
   const list = {
     claude: { recommended: { version: '2.1.277' }, blocked: [] },
     codex: { recommended: { version: '0.155.1' }, blocked: [] },
-    gemini: { recommended: null, blocked: [] },
+    gemini: { recommended: { version: '0.60.0' }, blocked: [] },
     grok: { recommended: { version: '9.9.9' }, blocked: [] },
   }
-  // grok has no runner, so a pin on it must not enter the probe list.
+  // grok has no runner, and Gemini CLI is retired (2026-10-14), so a pin on
+  // either must not enter the probe list.
   assert.deepEqual(pinnedProviders(list), ['claude', 'codex'])
+  assert.equal(probeRunners.gemini, undefined)
   assert.deepEqual(pinnedProviders({ claude: { recommended: null }, codex: { recommended: null }, gemini: { recommended: null }, grok: { recommended: null } }), [])
 })

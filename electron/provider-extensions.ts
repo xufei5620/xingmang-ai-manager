@@ -8,7 +8,7 @@ import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
-import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, providerIds, type ProviderId } from './catalog'
 import { readCodexSkillEnablement } from './codex-extensions'
 import {
   CODEX_API_CURATED_MARKETPLACE_NAME,
@@ -26,6 +26,7 @@ import {
   type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
+import type { DesktopBucketOptions } from './desktop-package-bucket'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import { gitInstallGuidance } from './git-runtime'
 import {
@@ -278,8 +279,10 @@ export interface ProviderExtensionServiceOptions {
   resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
   /** 下载 Codex 插件目录用的网络栈；main.ts 接的是读系统代理与下载加速的那一条。 */
   downloadFetch?: typeof fetch
-  /** 下载前临时借一条加速线路，与装 CLI 同一套；缺省 = 不借。 */
+  /** 去 GitHub 下之前临时借一条加速线路，与装 CLI 同一套；缺省 = 不借。 */
   acquireDownloadAcceleration?: () => Promise<DownloadAccelerationLease>
+  /** Codex 插件目录先从星芒存储桶下（国内直连，不借线路）；缺省不试，直接去 GitHub。 */
+  codexCatalogBucket?: DesktopBucketOptions
   inspectSource?: SourceUpdateInspector
   sourceUpdateDependencies?: ProviderSourceUpdateDependencies
   now?: () => Date
@@ -1814,6 +1817,7 @@ export class ProviderExtensionService {
   private readonly resolveSubprocessProxyEnvironment: () => Promise<NodeJS.ProcessEnv>
   private readonly downloadFetch: typeof fetch
   private readonly acquireDownloadAcceleration: (() => Promise<DownloadAccelerationLease>) | null
+  private readonly codexCatalogBucket: DesktopBucketOptions | null
   private codexCatalogDownload: Promise<void> | null = null
   private readonly platform: NodeJS.Platform
   private readonly commandLineToolsShimState: (shim: string) => Promise<CommandLineToolsShimState>
@@ -1845,6 +1849,7 @@ export class ProviderExtensionService {
       ?? (async () => ({}))
     this.downloadFetch = options.downloadFetch ?? fetch
     this.acquireDownloadAcceleration = options.acquireDownloadAcceleration ?? null
+    this.codexCatalogBucket = options.codexCatalogBucket ?? null
     this.platform = options.platform ?? process.platform
     this.commandLineToolsShimState = commandLineToolsShimInspector(options, env)
   }
@@ -2127,7 +2132,8 @@ export class ProviderExtensionService {
   }
 
   async listAll(): Promise<ProviderExtensionsSnapshot[]> {
-    return Promise.all(providerIds.map((provider) => this.list(provider)))
+    // 下线的工具（Gemini CLI）不再列：星芒不再替它装、开关扩展。
+    return Promise.all(activeProviderIds.map((provider) => this.list(provider)))
   }
 
   /**
@@ -2152,15 +2158,13 @@ export class ProviderExtensionService {
 
   private async downloadCodexPluginCatalog(): Promise<void> {
     if (inspectCodexPluginCatalog(this.codexHome).present) return
-    // 借不到线路就按直连下载：加速是加分项，不能变成下载的前置条件。
-    const lease = this.acquireDownloadAcceleration
-      ? await this.acquireDownloadAcceleration().catch(() => null)
-      : null
-    try {
-      await ensureCodexPluginCatalog({ codexHome: this.codexHome, fetch: this.downloadFetch })
-    } finally {
-      await lease?.release().catch(() => undefined)
-    }
+    await ensureCodexPluginCatalog({
+      codexHome: this.codexHome,
+      fetch: this.downloadFetch,
+      ...(this.codexCatalogBucket ? { bucket: this.codexCatalogBucket } : {}),
+      // 只有去 GitHub 那一路才借线路；借不到照样直连下。
+      ...(this.acquireDownloadAcceleration ? { acquireGitHubRoute: this.acquireDownloadAcceleration } : {}),
+    })
   }
 
   private mcpInstallArgv(input: ProviderExtensionMutation, id: string): { argv: string[]; secrets: string[] } {

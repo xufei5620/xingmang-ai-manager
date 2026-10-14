@@ -110,7 +110,7 @@ npm run dev
 
 当前账号站点决定写入地址，客户端配置请求不能另行覆盖：
 
-| 账号站点 | Codex / Grok / OpenCode 基础地址 | Claude Code / Gemini / Claude Desktop gateway 基础地址 |
+| 账号站点 | Codex / Grok / OpenCode 基础地址 | Claude Code / Claude Desktop gateway 基础地址 |
 | --- | --- | --- |
 | 星芒AI（账号登录） | `https://xm.solov.cc/v1` | `https://xm.solov.cc` |
 | 星芒AI（Sub2API 账号） | `https://api.solov.cc/v1` | `https://api.solov.cc` |

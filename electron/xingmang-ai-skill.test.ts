@@ -14,6 +14,7 @@ import {
   XINGMANG_AI_CONFIG_FILE,
   XINGMANG_AI_MANAGED_MANIFEST_FILE,
   XINGMANG_AI_DEFAULT_BASE_URL,
+  XINGMANG_AI_DEFAULT_IMAGE_MODEL,
   XINGMANG_AI_SKILL_DIRECTORY,
   XINGMANG_AI_SKILL_KEY_NAME,
   XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
@@ -31,6 +32,7 @@ import {
   resolveXingmangAiCodexSkillPath,
   resolveXingmangAiSkillDirectories,
   selectImageSkillGroup,
+  selectXingmangAiImageModel,
   syncXingmangAiSkill,
   syncXingmangAiSkillCodexAvailability,
 } from './xingmang-ai-skill'
@@ -110,6 +112,21 @@ describe('xingmang-ai-skill', () => {
       { name: '视频模型-中转/订阅' },
       { name: '图片模型中转' },
     ])).toBe('图片模型中转')
+  })
+
+  it('picks the newest OpenAI image model the account can use and otherwise keeps gpt-image-2', () => {
+    expect(selectXingmangAiImageModel(['gpt-5.5', 'gpt-image-2', 'gpt-image-2.5-flare'])).toBe('gpt-image-2.5-flare')
+    expect(selectXingmangAiImageModel(['gpt-image-2', 'gemini-3.1-flash-image'])).toBe('gpt-image-2')
+    // Sunburst is slower and meant for careful edits; the AI may still name it.
+    expect(selectXingmangAiImageModel(['gpt-image-2.5-sunburst'])).toBe(XINGMANG_AI_DEFAULT_IMAGE_MODEL)
+    expect(selectXingmangAiImageModel([])).toBe(XINGMANG_AI_DEFAULT_IMAGE_MODEL)
+  })
+
+  it('keeps an OpenAI image model in the config and drops anything else', () => {
+    const base = { baseUrl: XINGMANG_AI_DEFAULT_BASE_URL, group: IMAGE_SKILL_GROUP_NAMES[0] }
+    expect(parseXingmangAiSkillConfig({ ...base, model: ' gpt-image-2.5-flare ' }).model).toBe('gpt-image-2.5-flare')
+    expect(parseXingmangAiSkillConfig({ ...base, model: 'jimeng_high_aes_general_v21_L' }).model).toBeUndefined()
+    expect(parseXingmangAiSkillConfig({ ...base, model: 42 }).model).toBeUndefined()
   })
 
   it('omits both API keys from the renderer-safe config view', () => {
@@ -359,6 +376,86 @@ describe('xingmang-ai-skill', () => {
     const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
     expect(parsed.codexApiKey).toBe('sk-test-codex-group-secret-12345678')
     expect(parsed.apiKey).toBeUndefined()
+  })
+
+  it('follows the published group map once the image and Codex groups are renamed on the site', async () => {
+    const userHome = await temporaryHome()
+    const { accountService, provisionCliKey } = loggedInAccount({
+      groups: [{ name: 'default' }, { name: 'GPT 主力' }, { name: 'GPT-官方API直连' }, { name: '画图专线' }],
+    })
+
+    await expect(syncXingmangAiSkill({
+      accountService,
+      bundledRoot,
+      userHome,
+      loadAccountGroupHints: async () => ({ codex: ['GPT 主力', 'GPT-中转/订阅'], image: ['画图专线', '图片模型-中转/订阅'] }),
+    })).resolves.toMatchObject({ ready: true, group: '画图专线' })
+    expect(provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: 'GPT 主力' })
+    expect(provisionCliKey).toHaveBeenCalledWith({ name: XINGMANG_AI_SKILL_KEY_NAME, group: '画图专线' })
+    const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
+    expect(parsed.group).toBe('画图专线')
+    expect(parsed.codexGroup).toBe('GPT 主力')
+  })
+
+  it('keeps the shipped group names when the group map cannot be read', async () => {
+    const userHome = await temporaryHome()
+    const { accountService, provisionCliKey } = loggedInAccount()
+
+    await expect(syncXingmangAiSkill({
+      accountService,
+      bundledRoot,
+      userHome,
+      loadAccountGroupHints: async () => { throw new Error('状态文件读不到') },
+    })).resolves.toMatchObject({ ready: true, group: IMAGE_SKILL_GROUP_NAMES[0] })
+    expect(provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: managedCliKeyProfiles.codex.group })
+  })
+
+  it('writes the newest OpenAI image model either key can use into every skill config', async () => {
+    const userHome = await temporaryHome()
+    await seedOptionalToolHomes(userHome)
+    const { accountService } = loggedInAccount()
+    const fetchAvailableModels = vi.fn(async (apiKey: string) => (
+      apiKey === 'sk-test-image-group-secret-12345678' ? ['gpt-image-2', 'gpt-image-2.5-flare'] : ['gpt-5.5']
+    ))
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
+
+    expect(result.directoryWarnings).toBeUndefined()
+    expect(fetchAvailableModels.mock.calls.map(([apiKey]) => apiKey).sort()).toEqual([
+      'sk-test-codex-group-secret-12345678',
+      'sk-test-image-group-secret-12345678',
+    ])
+    for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
+      const parsed = parseXingmangAiSkillConfig(JSON.parse(await readFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), 'utf8')))
+      expect(parsed.model).toBe('gpt-image-2.5-flare')
+    }
+  })
+
+  it('records gpt-image-2 when the account only has the older OpenAI image model', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const fetchAvailableModels = vi.fn(async (apiKey: string) => {
+      if (apiKey === 'sk-test-codex-group-secret-12345678') throw new Error('模型查询 HTTP 503')
+      return ['gpt-image-2', 'jimeng_high_aes_general_v21_L']
+    })
+
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
+
+    expect(parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome))).model).toBe('gpt-image-2')
+  })
+
+  it('leaves the model out and only logs it when no key could list its models', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const fetchAvailableModels = vi.fn(async () => {
+      throw new Error('network down')
+    })
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
+
+    expect(result.ready).toBe(true)
+    expect(result.directoryWarnings).toEqual([`没查到当前账号能用的图片模型，画图先用 ${XINGMANG_AI_DEFAULT_IMAGE_MODEL}`])
+    expect(JSON.parse(await readInstalledConfig(userHome))).not.toHaveProperty('model')
   })
 
   it('reuses provisionCliKey so an existing usable group key is not created twice', async () => {

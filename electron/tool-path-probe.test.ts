@@ -5,6 +5,7 @@ import tls from 'node:tls'
 import { describe, expect, it } from 'vitest'
 import {
   chainEndsOutsideBundledRoots,
+  describePeerCertificate,
   environmentProxyCandidates,
   probeToolPathDirect,
   probeToolPathThroughFetch,
@@ -13,6 +14,7 @@ import {
   toolPathOrigins,
   toolPathPassingLines,
   toolPathTlsRejected,
+  type ToolPathCertificateTarget,
   type ToolPathResult,
 } from './tool-path-probe'
 
@@ -20,6 +22,7 @@ import {
 const v4 = '192.0.2.10'
 const v4b = '198.51.100.20'
 const v6 = '2001:db8::10'
+const fingerprint = Array.from({ length: 32 }, (_, index) => index.toString(16).padStart(2, '0').toUpperCase()).join(':')
 
 type Behavior =
   | { kind: 'respond'; status?: number; body?: string; chunks?: string[]; hang?: boolean; certificate?: unknown }
@@ -133,17 +136,75 @@ describe('tool-path-probe', () => {
   })
 
   it('reports the most telling failure when every address fails', async () => {
+    const inspected: ToolPathCertificateTarget[] = []
     const result = await probeToolPathDirect(directOrigin, {
       lookup: lookupOf([{ address: v4b, family: 4 }, { address: v4, family: 4 }]),
       request: fakeRequest({
         [v4b]: { kind: 'error', code: 'ECONNREFUSED' },
         [v4]: { kind: 'error', code: 'ERR_TLS_CERT_ALTNAME_INVALID', delayMs: 5 },
       }),
+      inspectCertificate: async (target) => {
+        inspected.push(target)
+        return null
+      },
       staggerMs: 1,
     })
     expect(result).toMatchObject({ ok: false, kind: 'certificate', addresses: [v4b, v4] })
+    expect(result.certificates).toBeUndefined()
     expect(toolPathFailureCounted(result)).toBe(true)
     expect(toolPathTlsRejected(result)).toBe(true)
+    // Only the address whose certificate was rejected is looked at again, under the real name.
+    expect(inspected.map(({ address, port, servername }) => ({ address, port, servername })))
+      .toEqual([{ address: v4, port: 443, servername: new URL(directOrigin).hostname }])
+    expect(inspected[0].ca).toEqual(expect.arrayContaining([...tls.rootCertificates]))
+  })
+
+  it('records the certificate each rejected address presented without touching the verdict', async () => {
+    const presented = { issuer: 'CN=Some Firewall CA', subject: 'CN=xm-direct.solov.cc', fingerprint256: fingerprint, verifyError: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' }
+    const result = await probeToolPathDirect(directOrigin, {
+      lookup: lookupOf([{ address: v4b, family: 4 }, { address: v4, family: 4 }]),
+      request: fakeRequest({
+        [v4b]: { kind: 'error', code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' },
+        [v4]: { kind: 'error', code: 'SELF_SIGNED_CERT_IN_CHAIN' },
+      }),
+      inspectCertificate: async (target) => target.address === v4b ? { address: target.address, ...presented } : null,
+      staggerMs: 1,
+    })
+    expect(result).toMatchObject({ ok: false, kind: 'certificate', certificates: [{ address: v4b, ...presented }] })
+
+    const broken = await probeToolPathDirect(directOrigin, {
+      lookup: lookupOf([{ address: v4, family: 4 }]),
+      request: fakeRequest({ [v4]: { kind: 'error', code: 'CERT_HAS_EXPIRED' } }),
+      inspectCertificate: async () => { throw new Error('socket hang up') },
+    })
+    expect(broken).toMatchObject({ ok: false, kind: 'certificate' })
+    expect(broken.certificates).toBeUndefined()
+
+    let looked = false
+    const reset = await probeToolPathDirect(directOrigin, {
+      lookup: lookupOf([{ address: v4, family: 4 }]),
+      request: fakeRequest({ [v4]: { kind: 'error', code: 'ECONNRESET' } }),
+      inspectCertificate: async () => {
+        looked = true
+        return null
+      },
+    })
+    expect(reset).toMatchObject({ ok: false, kind: 'reset' })
+    expect(looked).toBe(false)
+  })
+
+  it('cleans what the far end wrote into its certificate before it reaches the report', () => {
+    const described = describePeerCertificate(v4, {
+      issuer: { CN: 'Fake\nRoot\u0007', O: ['Firewall', 'Inc'] },
+      subject: { CN: `xm-direct.solov.cc${'x'.repeat(400)}` },
+      fingerprint256: fingerprint.toLowerCase(),
+    } as unknown as tls.PeerCertificate, 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY')
+    expect(described).toMatchObject({ address: v4, issuer: 'CN=Fake Root, O=Firewall / Inc', fingerprint256: fingerprint, verifyError: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' })
+    expect(described?.subject.length).toBeLessThanOrEqual(200)
+    expect(describePeerCertificate(v4, { fingerprint256: fingerprint } as unknown as tls.PeerCertificate, null)?.verifyError).toBeNull()
+    expect(describePeerCertificate(v4, { fingerprint256: fingerprint } as unknown as tls.PeerCertificate, codedError('CERT_UNTRUSTED'))?.verifyError).toBe('CERT_UNTRUSTED')
+    expect(describePeerCertificate(v4, { fingerprint256: 'not a fingerprint' } as unknown as tls.PeerCertificate, null)).toBeNull()
+    expect(describePeerCertificate(v4, null, null)).toBeNull()
   })
 
   it('treats a non-200 status or a body without success as an http failure', async () => {

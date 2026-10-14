@@ -49,6 +49,13 @@ function render(
   return renderToStaticMarkup(<Home {...props} />)
 }
 
+/** 某个工具的配置里还没有 Key：没有别的说法时，首页那一行说「还没配 Key」。 */
+function keylessSnapshot(provider: ProviderId): ToolboxSnapshot {
+  const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+  const blank = { ...providerConfig, exists: false, hasApiKey: false, matchesRelay: false, actualBaseUrl: '' }
+  return { ...base, config: { ...base.config, providers: { ...base.config.providers, [provider]: blank } } } as unknown as ToolboxSnapshot
+}
+
 const configFailure: ToolboxPartitionFailure[] = [{ partition: 'config', message: '~/.codex/config.toml 解析失败' }]
 
 /** 配置那一块单独读失败时的降级快照：工具状态照旧，配置全部落到未配置。 */
@@ -94,7 +101,7 @@ describe('renderer-v2 home install progress', () => {
 describe('renderer-v2 home partial read failures (R-S8)', () => {
   it('still lists every tool when only the configuration partition failed', () => {
     const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
-    for (const tool of ['claude', 'codex', 'grok', 'gemini']) {
+    for (const tool of ['claude', 'codex', 'grok']) {
       expect(markup).toContain(`data-testid="tool-row-${tool}"`)
     }
     expect(markup).toContain('data-testid="home-rescan"')
@@ -233,7 +240,7 @@ describe('renderer-v2 home first-run suggestion', () => {
   })
 
   it('stays gone once every tool has been closed', () => {
-    expect(pickFirstRunTool(installedTools(), {}, ['claude', 'codex', 'gemini', 'grok'], noRecords)).toBeUndefined()
+    expect(pickFirstRunTool(installedTools(), {}, ['claude', 'codex', 'grok'], noRecords)).toBeUndefined()
   })
 
   // 还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
@@ -283,6 +290,22 @@ describe('renderer-v2 home recent resume for tools that are not installed (第�
   it('keeps it while the scan has not come back yet', () => {
     expect(recentResumeOffered([], 'claude')).toBe(true)
   })
+
+  // Gemini CLI 已下线（yoyo 2026-10-14）：装着也不再替它打开，它的旧记录不给「接着聊」。
+  it('never offers it for the retired Gemini CLI, installed or not', () => {
+    expect(recentResumeOffered(presentTools(snapshot(allTools), null), 'gemini')).toBe(false)
+    expect(recentResumeOffered([], 'gemini')).toBe(false)
+  })
+})
+
+describe('renderer-v2 home without the retired Gemini CLI', () => {
+  // 主进程的快照仍按 ProviderId 全集带着 Gemini CLI（装着、配好了），首页一个字都不提它。
+  it('draws no row, button or name for it even when the main process still reports it installed', () => {
+    const markup = render({})
+    expect(markup).not.toContain('tool-row-gemini')
+    expect(markup).not.toContain('tool-gemini-')
+    expect(markup).not.toContain('Gemini')
+  })
 })
 
 // 打开过的目录来自会话记录，只有读到记录之后才有下拉（N7）。静态渲染里
@@ -302,7 +325,7 @@ describe('renderer-v2 home launch button without a remembered directory (N7)', (
   })
 })
 
-// 这个工具还没有会话记录时，用上次在本软件里选过的文件夹，四个工具只问一次。
+// 这个工具还没有会话记录时，用上次在本软件里选过的文件夹，几个工具只问一次。
 describe('renderer-v2 home launch button with a folder picked earlier', () => {
   function withRemembered(rememberedWorkspace: string): string {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
@@ -367,10 +390,13 @@ describe('renderer-v2 home before the startup scan finishes', () => {
     expect(disabled(markup, 'tool-grok-primary')).toBe(true)
     expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*重新检测/)
     expect(disabled(markup, 'tool-codex-primary')).toBe(true)
-    // 夹具里的 Gemini 没配 API Key 模式，算没连上：「连接账号」照旧等。
-    expect(markup).toMatch(/data-testid="tool-gemini-primary"[^>]*>(?:<[^>]+>)*连接账号/)
-    expect(disabled(markup, 'tool-gemini-primary')).toBe(true)
     expect(disabled(markup, 'tool-claude-primary')).toBe(false)
+    // 配置里没写 Key 的 Grok CLI 算没连上：「连接账号」照旧等。
+    const keyless = keylessSnapshot('grok')
+    const connecting = render({}, undefined, { snapshot: cached({ ...keyless, platform } as ToolboxSnapshot), loading: true })
+    expect(connecting).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*连接账号/)
+    expect(disabled(connecting, 'tool-grok-primary')).toBe(true)
+    expect(disabled(connecting, 'tool-claude-primary')).toBe(false)
   })
 
   it('keeps 重新配置 waiting when the configuration could not be read', () => {
@@ -555,18 +581,20 @@ describe('renderer-v2 home account key bootstrap notice', () => {
   })
 
   it('shows a tool the account has not enabled as not enabled instead of waiting for a key', () => {
-    const failure = { provider: 'gemini' as const, message: '分组不存在、不可用或名称重复，请确认账号可用分组' }
-    const waiting = render({})
-    // The fixture's Gemini config carries no auth type, so without a failure it reads as keyless.
+    const failure = { provider: 'grok' as const, message: '分组不存在、不可用或名称重复，请确认账号可用分组' }
+    const keyless = keylessSnapshot('grok')
+    // Without a failure, a tool with no key in its config reads as keyless.
+    const waiting = render({}, undefined, { snapshot: keyless })
     expect(waiting).toContain('还没配 Key')
     const markup = render({}, undefined, {
+      snapshot: keyless,
       bootstrap: {
         phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
         result: bootstrapResult({ failed: [failure] }),
       },
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).toContain('Gemini CLI：当前账号还不能用，需要的话请联系客服开通')
+    expect(markup).toContain('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
     expect(markup).toContain('账号未开通')
     expect(markup).not.toContain('还没配 Key')
     expect(markup).not.toContain('分组')
@@ -621,7 +649,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     const failed = render({}, undefined, {
       bootstrap: {
         phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt,
-        result: bootstrapResult({ configured: ['claude'], failed: [{ provider: 'gemini', message: '当前分组未返回可用模型' }] }),
+        result: bootstrapResult({ configured: ['claude'], failed: [{ provider: 'grok', message: '当前分组未返回可用模型' }] }),
       },
       onBootstrapRetry: () => undefined,
     })
@@ -772,12 +800,13 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(windows).not.toContain('data-testid="home-runtime-git-waiting"')
   })
 
-  // 第二十八批 C：四个命令行工具都不用 Python 了，这段改说「要装的话」，不再说 Gemini 要它、劝另装一份。
-  it('gives Python its own block, saying none of the four command-line tools needs it', () => {
+  // 第二十八批 C：命令行工具都不用 Python 了，这段改说「要装的话」，不再说 Gemini 要它、劝另装一份。
+  it('gives Python its own block, saying no command-line tool needs it', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { python: true }) })
     expect(markup).toContain('data-testid="home-runtime-guide-python"')
     expect(markup).toContain('brew install python')
-    expect(markup).toContain('四个命令行工具都用不到它，外接工具里个别要用它的才需要')
+    expect(markup).toContain('命令行工具都用不到它，外接工具里个别要用它的才需要')
+    expect(markup).not.toContain('四个命令行工具')
     expect(markup).toContain('要装的话下面两种装法选一种就行')
     expect(markup).not.toContain('Gemini CLI 需要它')
     expect(markup).not.toContain('版本可能过旧')
@@ -789,12 +818,13 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
   })
 
-  // Linux 版拆分 ③：Linux 上四个命令行工具都用不到 Python。原来这里写「Gemini CLI 需要它；macOS 自带的…」，
+  // Linux 版拆分 ③：Linux 上命令行工具都用不到 Python。原来这里写「Gemini CLI 需要它；macOS 自带的…」，
   // 按钮把人送去 python.org（那里给 Linux 的只有源码包），「看教程」进的是 Mac 的章节。
   it('tells a Linux customer Python is optional and never sends them to python.org or the Mac chapter', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('linux', { python: true }) })
     expect(markup).toContain('data-testid="home-runtime-guide-python"')
-    expect(markup).toContain('四个命令行工具都用不到它')
+    expect(markup).toContain('命令行工具都用不到它')
+    expect(markup).not.toContain('四个命令行工具')
     expect(markup).toContain('sudo apt install python3')
     expect(markup).not.toContain('data-testid="home-runtime-python"')
     expect(markup).not.toContain('去官网下载 Python')
@@ -1047,7 +1077,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(rowButton(markup, 'tool-claude-primary')).not.toContain('修复中')
     })
 
-    // 已知44：星芒自己也读不出 Key 时，原来按「文件在、没 Key」把 Claude Code、Gemini CLI 写成「官方账号」。
+    // 已知44：星芒自己也读不出 Key 时，原来按「文件在、没 Key」把 Claude Code（还有已下线的 Gemini CLI）写成「官方账号」。
     const unreadable = { hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
     function withConfig(providers: Record<string, Record<string, unknown>>): ToolboxSnapshot {
       const base = brokenSnapshot({ configBroken: false })
@@ -1055,17 +1085,19 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       return { ...base, config: { ...base.config, providers: { ...base.config.providers, ...Object.fromEntries(entries) } } } as unknown as ToolboxSnapshot
     }
 
-    it('says a Claude Code or Gemini CLI settings file is broken instead of calling it the official account', () => {
+    it('says a Claude Code settings file is broken instead of calling it the official account', () => {
       const broken = withConfig({ claude: { ...unreadable, configBroken: true }, gemini: { ...unreadable, configBroken: true } })
       const markup = render({}, undefined, { snapshot: broken, onRepairConfig: () => undefined })
-      for (const [tool, name] of [['claude', 'Claude Code'], ['gemini', 'Gemini CLI']]) {
-        const row = toolRow(markup, tool)
-        expect(row, tool).toContain('配置文件坏了')
-        expect(row, tool).toContain(`>${name} 读不了这份配置，打开会报错。修之前会先备份，历史会话保留<`)
-        expect(row, tool).not.toContain('官方账号')
-        expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('修好它')
-      }
+      const row = toolRow(markup, 'claude')
+      expect(row).toContain('配置文件坏了')
+      expect(row).toContain('>Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留<')
+      expect(row).not.toContain('官方账号')
+      expect(rowButton(row, 'tool-claude-repair-config')).toContain('修好它')
       expect(toolRow(markup, 'codex')).toContain('已配好')
+      // 已下线的 Gemini CLI 那份坏配置不再有一行，也不给「修好它」。
+      expect(markup).not.toContain('data-testid="tool-row-gemini"')
+      expect(markup).not.toContain('tool-gemini-repair-config')
+      expect(markup).not.toContain('Gemini')
     })
 
     it('says Codex cannot read its login on both Codex rows', () => {
@@ -1411,6 +1443,28 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     // 没接下载入口的宿主仍是旧行为：点不动的「暂不支持」。
     expect(rowButton(render({}, undefined, { snapshot: windows, externalClients: [opencode] }), 'opencode')).toContain('暂不支持')
   })
+
+  it('sends WorkBuddy customers on Windows to the Tencent website instead of offering an install', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const windows = {
+      ...base,
+      platform: {
+        platform: 'windows', isMac: false, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true },
+      },
+    } as unknown as ToolboxSnapshot
+    // 主进程给的就是这样一行（external-client-runtime.ts 的 windowsInstallRoute）。
+    const workbuddy = {
+      ...macClient, installHint: '到腾讯官网下载安装，装好后回来重新检测', officialDownloadUrl: 'https://www.workbuddy.ai/',
+    } as typeof macClient
+    const markup = render({}, undefined, { snapshot: windows, externalClients: [workbuddy], onOpenExternalDownload: () => undefined })
+    expect(rowButton(markup, 'workbuddy')).toContain('去官网下载')
+    expect(rowButton(markup, 'workbuddy')).not.toContain('disabled')
+    expect(markup).toContain('到腾讯官网下载安装，装好后回来重新检测')
+    expect(markup).not.toContain('将使用腾讯官方安装包')
+    expect(markup).not.toContain('安装指南')
+  })
 })
 
 describe('renderer-v2 home balance for subscription customers', () => {
@@ -1657,13 +1711,13 @@ describe('Home sections and balance labels', () => {
   it('keeps a tool whose detection failed under 你的工具 and says how many were not detected', () => {
     // 主进程探测失败时回的就是 installed:false + detectionFailed（buildToolStatusFromSettled）。
     const failed = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null, detectionFailed: true, detectionError: '命令入口无法安全执行' }
-    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: failed })
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: failed, gemini: cliStatus })
     const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
     const markup = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
     const yours = section(markup, 'home-your-tools')
-    expect(yours).toContain('data-testid="tool-row-gemini"')
+    expect(yours).toContain('data-testid="tool-row-grok"')
     expect(yours).toMatch(/\d+ 个已装 · \d+ 个已连接 · 1 个没检测出来/)
-    expect(section(markup, 'home-available')).not.toContain('data-testid="tool-row-gemini"')
+    expect(section(markup, 'home-available')).not.toContain('data-testid="tool-row-grok"')
   })
 
   it('says what the balance card is waiting for instead of claiming nothing was read', () => {

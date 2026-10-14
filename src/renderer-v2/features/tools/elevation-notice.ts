@@ -9,7 +9,7 @@ type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
  * Windows 上只有这两处安装真的会弹管理员授权：Node.js 是机器级 MSI
  * （`electron/node-runtime.ts` 的 `elevation: 'uac'`），Codex 桌面端是 Appx
  * （`electron/codex-desktop-appx.ts` 的提权分支）。Python 按当前用户装
- * （`InstallAllUsers=0`），四个命令行工具走 npm，都不提权，所以都没有这句。
+ * （`InstallAllUsers=0`），命令行工具走 npm，都不提权，所以都没有这句。
  *
  * 这句必须在点之前就看得见：一个突然跳出来的系统授权窗口，很多人第一反应是点
  * 「否」，然后才看到「已取消管理员授权」。公司和学校的电脑还会直接要另一个账号的

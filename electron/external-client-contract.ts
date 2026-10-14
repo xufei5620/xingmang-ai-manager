@@ -22,10 +22,12 @@ export interface ExternalClientRuntimeStatus {
 }
 
 /**
- * 缺少系统 winget 时首页「去官网下载」打开的页面。主进程外链白名单逐条收录这几条
- * （I12 全等匹配），所以这里只放完整网址，不拼接。WorkBuddy 有腾讯官方安装包兜底，不在此列。
+ * 首页「去官网下载」打开的页面：WorkBuddy 在 Windows 上一律由客户自己去腾讯官网下载
+ * （yoyo 2026-10-13），另两家是缺少系统 winget 时。主进程外链白名单逐条收录这几条
+ * （I12 全等匹配），所以这里只放完整网址，不拼接。
  */
 export const externalClientOfficialDownloadUrls = {
+  workbuddy: 'https://www.workbuddy.ai/',
   claudeDesktop: claudeDesktopDownloadPageUrl,
   opencode: 'https://opencode.ai/download',
 } as const satisfies Partial<Record<ExternalToolId, string>>
@@ -139,7 +141,8 @@ export function parseExternalClientConfigRequest(input: unknown): ExternalClient
   const source = record(value.credential)
   let credential: ExternalClientCredential
   if (source.kind === 'configured') {
-    if (source.provider !== 'claude' && source.provider !== 'codex' && source.provider !== 'gemini' && source.provider !== 'grok') {
+    // 下线的 Gemini CLI 不再当密钥来源：星芒不再管它的 Key，换了账号它也不跟着换。
+    if (source.provider !== 'claude' && source.provider !== 'codex' && source.provider !== 'grok') {
       throw new Error('密钥来源无效')
     }
     credential = { kind: 'configured', provider: source.provider }

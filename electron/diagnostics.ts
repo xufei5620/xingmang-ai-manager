@@ -4,7 +4,7 @@ import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
-import { cliCatalog, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
 import {
   commandEnvironment,
   findExecutable,
@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
-import { inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
+import { inspectCodexDaemonAutoStart, inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type CodexDaemonAutoStart, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
   installMinimumFreeBytes,
@@ -70,7 +70,6 @@ import {
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
-import type { UserWideCertificateTrustState } from './user-certificate-trust'
 import {
   inspectWindowsExecutableMachine,
   type WindowsExecutableMachine,
@@ -183,8 +182,8 @@ export interface DiagnosticsDependencies {
   relaySite?: RelaySite
   /**
    * 「星芒 AI 网络」一项：relaySite 这会儿走的线路（relay-route-controller.ts）。给了就在结论里写明
-   * 用的是直连还是默认线路；选「自动」、这会儿走直连却没连上时，改查同一个站的默认线路，查通了
-   * 算能连上、说清已经自动改走默认线路，并把直连的失败报给线路那边。缺省 = 不提线路（旧行为）。
+   * 用的是直连还是默认线路；选「自动」、这会儿走先走的那条却没连上时，改查同一个站的备用那条，查通了
+   * 算能连上、说清已经自动改走备用那条，并把先走那条的失败报给线路那边。缺省 = 不提线路（旧行为）。
    * 「电脑里另外设过的工具地址或密钥」也看它：选「自动」时指着默认线路的地址也算指向当前账号
    * （environmentAccountBaseUrls）。缺省 = 只认 relaySite 那一份。
    */
@@ -237,11 +236,6 @@ export interface DiagnosticsDependencies {
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
    */
   probeNodeTls?: (input: NodeTlsProbeInput, signal: AbortSignal) => Promise<NodeTlsProbeResult>
-  /**
-   * 「安全证书」查出公司证书时，客户自己开的终端是不是也已经信任它
-   * （user-certificate-trust.ts）。宿主给了才在 Windows 上多一颗按钮；缺省 = 不提。
-   */
-  inspectUserWideCertificateTrust?: () => UserWideCertificateTrustState
   /**
    * 软件数据目录（Electron 的 userData）。诊断自己算不出它在哪，宿主给了才把它
    * 算进「磁盘空间」这一项；不给就只看 CLI 落点。
@@ -376,13 +370,21 @@ interface CheckDefinition {
 
 export interface DiagnosticsRelayRoute {
   line: RelayEndpointId
-  /** 选的是「自动」：只有它会在直连连不上时改走默认线路。 */
+  /** 选的是「自动」：只有它会在先走的那条连不上时改走备用那条。 */
   automatic: boolean
-  /** 「自动」定下来了没有；定在默认线路上 = 直连上次没连上，已经退回。 */
+  /** 「自动」定下来了没有；定在备用那条上 = 先走的那条上次没连上，已经退回。 */
   settled: boolean
-  /** 同一个站默认线路上的那一份，退回时查它。 */
+  /** 同一个站默认线路上的那一份。 */
   primarySite: RelaySite
-  reportDirectFailure(reason: string): void
+  /**
+   * 「自动」先走哪条，和备用那条上的那一份（先走的那条没查通时改查它）：星芒账号先走直连、备用默认线路，
+   * 历史账号先走默认线路、备用直连（relay-sites.ts 的 relayAutoPreferredLines）。缺省 = 星芒账号那样，
+   * 备用的就是 primarySite。
+   */
+  preferredLine?: RelayEndpointId
+  backupSite?: RelaySite
+  /** 先走那条上没查通，报给线路那边查一轮（relay-route-controller.ts 的 reportPreferredFailure）。 */
+  reportPreferredFailure(reason: string): void
   /** 「自动」最近一次换线路（relay-route-controller.ts 的 lastChange），详情里说给客户和客服听。 */
   lastChange?: RelayRouteChange | null
 }
@@ -390,8 +392,8 @@ export interface DiagnosticsRelayRoute {
 const DEFAULT_CHECK_TIMEOUT_MS = 8_000
 const accelerationBundleDamagedSummary = '加速用的文件被删掉或改动了，多半是杀毒软件拦的。'
   + '打开杀毒软件的「隔离区」或「恢复区」把星芒的文件恢复，并把星芒加入信任；也可以重新安装一次星芒，装在原来的位置就行。'
-// 「自动」走直连时直连那一次最多等这么久，剩下的留给默认线路：整项只有 DEFAULT_CHECK_TIMEOUT_MS。
-const DIRECT_NETWORK_PROBE_TIMEOUT_MS = 4_000
+// 「自动」走先走的那条时那一次最多等这么久，剩下的留给备用那条：整项只有 DEFAULT_CHECK_TIMEOUT_MS。
+const PREFERRED_NETWORK_PROBE_TIMEOUT_MS = 4_000
 
 /**
  * 差多少才值得说。证书校验本身有容差，本机时钟与服务器差几十秒也是常态，
@@ -1094,12 +1096,12 @@ interface EnvironmentOverrideMatch {
  * - Gemini：~/.gemini/.env 不覆盖已有的进程环境，GOOGLE_GEMINI_BASE_URL 与
  *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
  *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
+ *   Gemini CLI 下线（2026-10-14）后星芒不再管它的账号，这五个从表里拿掉了，结论留在这里。
  *
  * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
  * （system-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
- * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉；Gemini 照 providerCommandEnvironment
- * 去掉五个，breaksAccount 为 false 的三个也在内。检查页在 Mac 上另去读那几个终端设置文件，只找 breaksAccount
- * 的这四个（collectMacosShellOverrides）。
+ * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉。检查页在 Mac 上另去读那几个终端
+ * 设置文件，只找 breaksAccount 的那几个（collectMacosShellOverrides）。
  * 改这里的取值时那边一起看。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
@@ -1110,11 +1112,6 @@ const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
   { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl', breaksAccount: false },
   { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret', breaksAccount: false },
   { name: 'CODEX_HOME', provider: 'codex', kind: 'directory', breaksAccount: false },
-  { name: 'GOOGLE_GEMINI_BASE_URL', provider: 'gemini', kind: 'baseUrl', breaksAccount: true },
-  { name: 'GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: true },
-  { name: 'GOOGLE_GEMINI_API_KEY', provider: 'gemini', kind: 'secret', breaksAccount: false },
-  { name: 'GEMINI_MODEL', provider: 'gemini', kind: 'model', breaksAccount: false },
-  { name: 'GOOGLE_GENAI_API_VERSION', provider: 'gemini', kind: 'other', breaksAccount: false },
 ]
 
 /** 与 defaultProxyVariables 同法：Windows 的环境变量名大小写不敏感。 */
@@ -1138,7 +1135,7 @@ function sameHostAs(value: string, expected: string): boolean {
  * 选「自动」时默认线路也一直算：它是客户照旧教程设得最多的地址，「自动」走直连并不说明它不通，
  * 报它只会教人删一个没问题的变量。直连只在这会儿真走直连时才算：「自动」退回了默认线路，说明直连
  * 在这台电脑上连不上，指着直连的变量会让工具跟着连不上。写死「只用直连」的照旧只认直连，多半是
- * 默认线路在他那儿不通才这么选。
+ * 默认线路在他那儿不通才这么选。历史账号先走默认线路（yoyo 10-14），走着它时同样只认默认线路。
  */
 export function environmentAccountBaseUrls(
   relaySite: RelaySite,
@@ -1255,7 +1252,7 @@ function overridesFromShellSettings(
 /**
  * Mac 上终端设置文件里导出的、会让工具绕开当前账号的那几个（已知45）。只看用星芒账号的工具：Claude Code
  * 用客户自己的账号时，那几行多半就是他自己的 Key，从星芒打开也照旧带上（system-service.ts 的
- * macosShellOverrideVariables）；Gemini CLI 不用星芒账号时这几个变量起什么作用没实测过，按 T12 宁缺勿猜。
+ * macosShellOverrideVariables）。
  * 同一个名字在几个文件里都有，就各报一条，客户照着逐个去删。
  */
 async function collectMacosShellOverrides(
@@ -1296,11 +1293,11 @@ function withShellSettingsOverrides(
 
 /**
  * Mac 上从星芒打开这个工具时，启动脚本会不会先把它的这几个变量去掉（system-service.ts 的
- * macosShellOverrideVariables）：Claude Code 只在用星芒账号时去掉，Gemini CLI 不论哪种账号都去掉。
- * 只拿来问 breaksAccount 的那四个；两边对不上时 diagnostics.test.ts 会红。
+ * macosShellOverrideVariables）：Claude Code 只在用星芒账号时去掉。只拿来问 breaksAccount 的那几个；
+ * 两边对不上时 diagnostics.test.ts 会红。
  */
 function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySet<ProviderId>): boolean {
-  return provider === 'gemini' || (provider === 'claude' && relayProviders.has(provider))
+  return provider === 'claude' && relayProviders.has(provider)
 }
 
 /**
@@ -1461,9 +1458,9 @@ function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
 }
 
 /**
- * 「星芒 AI 网络」查通时那句结论。fellBack：选的是「自动」，直连这会儿连不上，用的是默认线路（这次当场
- * 退回的，或者之前就已经退回的）。星芒账号说洛杉矶、CF（xm 三线路附录 A）；历史账号照旧是直连适配方案
- * 第六节第 3 条的原话。
+ * 「星芒 AI 网络」查通时那句结论。fellBack：选的是「自动」，先走的那条这会儿连不上，用的是备用那条（这次
+ * 当场退回的，或者之前就已经退回的）。星芒账号先走洛杉矶、备用 CF（xm 三线路附录 A）；历史账号先走默认
+ * 线路、备用直连（yoyo 10-14），用的是哪条照旧是直连适配方案第六节第 3 条的原话。
  */
 export function relayNetworkPassSummary(route: { siteId: string; line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
   if (!route) return accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务'
@@ -1471,9 +1468,9 @@ export function relayNetworkPassSummary(route: { siteId: string; line: RelayEndp
     ? route.line === 'direct'
       ? '能连上星芒服务，用的是洛杉矶线路'
       : route.fellBack ? '能连上星芒服务。洛杉矶线路这会儿连不上，已自动改走 CF 线路' : '能连上星芒服务，用的是 CF 线路'
-    : route.line === 'direct'
-      ? '能连上星芒服务，用的是直连'
-      : route.fellBack ? '能连上星芒服务。直连这会儿连不上，已自动改走默认线路' : '能连上星芒服务，用的是默认线路'
+    : route.fellBack
+      ? '能连上星芒服务。默认线路这会儿连不上，已自动改走直连'
+      : route.line === 'direct' ? '能连上星芒服务，用的是直连' : '能连上星芒服务，用的是默认线路'
   return accelerating ? `${summary}（开着加速也不绕加速线路）` : summary
 }
 
@@ -1607,21 +1604,26 @@ function providerRouteLine(siteId: string, provider: ProviderId, actual: string)
 
 /**
  * 「自动」最近一次换线路，写进「星芒 AI 网络」那一项导出的报告（#941 第 2、7 节）：什么时候、为什么、
- * 换到哪条，不带地址。时间按这台电脑的时区说。
+ * 换到哪条，不带地址。时间按这台电脑的时区说。按记下的 from、to 说：历史账号 0.2.18 及以前先走直连，
+ * 0.2.19 起先走默认线路（yoyo 10-14），两种记录都说得对。
  */
 export function describeRelayRouteChange(change: RelayRouteChange, siteId: string): string {
   const at = new Date(change.at)
   const time = `${at.getMonth() + 1}月${at.getDate()}日 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
-  const direct = siteId === 'solov' ? '洛杉矶线路' : '直连'
-  // 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法。
-  const primary = siteId === 'solov' ? ' CF 线路' : '默认线路'
+  // 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法；星芒账号的 CF 线路只会出现在「改走」后面。
+  function name(line: RelayEndpointId): string {
+    if (siteId !== 'solov') return relayLineNames[line]
+    return line === 'direct' ? '洛杉矶线路' : ' CF 线路'
+  }
+  const from = name(change.from)
+  const to = name(change.to)
   const reason = change.reason === 'recovered'
-    ? `${direct}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${direct}`
+    ? `${to}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${to}`
     : change.reason === 'health-failed'
       ? change.trigger === firstLaunchTrigger
-        ? `第一次开机查到${direct}没连上，改走${primary}`
-        : `${direct}连着 ${relayRouteFailureThreshold} 次没连上，改走${primary}`
-      : `查到${direct}能连上，走${direct}`
+        ? `第一次开机查到${from}没连上，改走${to}`
+        : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
+      : `查到${to}能连上，走${to}`
   return `${time}，${reason}`
 }
 
@@ -1630,6 +1632,14 @@ function relayRouteChangeDetails(route: DiagnosticsRelayRoute | undefined): Reco
   const change = route?.lastChange
   if (!route || !change) return {}
   return { lastRouteChange: describeRelayRouteChange(change, route.primarySite.id), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
+}
+
+// 「Codex 连接设置」导出报告里的一行：换线路后旧对话还走原来的地址时，客服先看它（xm 三线路 C16）。
+// 客户自己设成开的也是一种选择，检查页详情不列这个键，不提醒。
+const codexDaemonAutoStartNames: Readonly<Record<CodexDaemonAutoStart, string>> = {
+  on: '开',
+  off: '关',
+  default: '没写（0.157 起缺省开）',
 }
 
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots, current?: ProviderRelayLine): CheckOutcome {
@@ -1700,37 +1710,21 @@ export function certificateTrustOutcome(input: {
   defaultRoots: NodeTlsProbeResult['outcome'] | null
   systemRoots: NodeTlsProbeResult['outcome'] | null
   elevated: boolean
-  /** 只在 systemTrusted 时有意义；缺省 = 不提客户自己开的窗口。 */
-  userWide?: UserWideCertificateTrustState
 }): CheckOutcome {
   const state: DiagnosticState = input.verdict === 'outdatedNode' || input.verdict === 'untrusted'
     ? 'fail'
     : input.verdict === 'elevated' ? 'warn' : 'pass'
-  const userWide = input.verdict === 'systemTrusted' ? input.userWide : undefined
   return {
     state,
-    summary: input.verdict === 'systemTrusted'
-      ? systemTrustedSummary(userWide)
-      : certificateTrustSummaries[input.verdict],
+    summary: certificateTrustSummaries[input.verdict],
     details: {
       verdict: input.verdict,
       nodeVersion: input.nodeVersion,
       defaultRoots: input.defaultRoots,
       systemRoots: input.systemRoots,
       elevated: input.elevated,
-      ...(userWide ? { userWide } : {}),
     },
   }
-}
-
-// 客户自己开的终端、VS Code 里的 Gemini 拿不到星芒给工具加的那一条（第十八批 7）。
-function systemTrustedSummary(userWide: UserWideCertificateTrustState | undefined): string {
-  const base = certificateTrustSummaries.systemTrusted
-  if (userWide === 'available') {
-    return `${base}你自己开的终端、VS Code 里的 Gemini 还不认它，可以点「让这台电脑上所有终端都信任」。`
-  }
-  if (userWide === 'applied') return `${base}你自己开的终端也已经设好，新开的终端就能用。`
-  return base
 }
 
 /**
@@ -1745,7 +1739,7 @@ export function reconcileCertificateTrustWithNetwork(items: DiagnosticItem[]): D
     : item)
 }
 
-const cliCheckCodes: readonly string[] = providerIds.map((provider) => `CLI_${provider.toUpperCase()}`)
+const cliCheckCodes: readonly string[] = activeProviderIds.map((provider) => `CLI_${provider.toUpperCase()}`)
 
 /**
  * 一个命令行工具都没装（只用 Codex 桌面端，它自带运行环境）时，Node.js、npm 没装只是
@@ -1979,7 +1973,7 @@ function relocatedFolderTargets(
 ): RelocatedFolderTarget[] {
   const targets: RelocatedFolderTarget[] = [{ label: '用户文件夹', path: userHome }]
   if (userDataDirectory?.trim()) targets.push({ label: '软件数据文件夹', path: userDataDirectory })
-  for (const provider of providerIds) {
+  for (const provider of activeProviderIds) {
     targets.push({
       label: `${cliCatalog[provider].name} 配置文件夹`,
       path: provider === 'codex' ? codexHome : path.join(userHome, providerConfigDirectoryNames[provider]),
@@ -2117,6 +2111,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const accountBaseUrls = environmentAccountBaseUrls(toolSite, toolRoute)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
+  // 下线的 Gemini CLI 也照读：它的 Key 还在本机配置里，报告里一样要遮掉。
   for (const provider of providerIds) {
     try {
       const inspection = inspectProvider(provider, providerRoots)
@@ -2131,7 +2126,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const workspaceOverrideOutcome = (): CheckOutcome => {
     const workspace = typeof dependencies.workspace === 'string' ? dependencies.workspace.trim() : ''
     const workspaceChecked = workspace !== '' && path.isAbsolute(workspace) && fs.existsSync(workspace)
-    const overrides = providerIds.flatMap((provider) => {
+    const overrides = activeProviderIds.flatMap((provider) => {
       const inspection = providerInspections.get(provider)
       if (!inspection?.exists) return []
       const found = inspectWorkspaceConfigOverrides(provider, workspaceChecked ? workspace : userHome, {
@@ -2423,7 +2418,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
-    ...providerIds.map<CheckDefinition>((provider) => ({
+    ...activeProviderIds.map<CheckDefinition>((provider) => ({
       code: `CLI_${provider.toUpperCase()}`,
       title: cliCatalog[provider].name,
       run: async (signal) => {
@@ -2451,14 +2446,17 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         }
       },
     },
-    ...providerIds.map<CheckDefinition>((provider) => ({
+    ...activeProviderIds.map<CheckDefinition>((provider) => ({
       code: `PROVIDER_${provider.toUpperCase()}`,
       title: `${cliCatalog[provider].name} 连接设置`,
       run: () => {
         const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
         // 「自动」还没定下来时不比：那时工具配置本来就不跟着迁。
         const current = toolRoute?.settled ? { siteId: toolSite.id, line: toolRoute.line, baseUrl: toolSite.providerBaseUrls[provider] } : undefined
-        return providerOutcome(provider, inspection, displayRoots, current)
+        const outcome = providerOutcome(provider, inspection, displayRoots, current)
+        if (provider !== 'codex' || outcome.state !== 'pass') return outcome
+        const daemon = inspectCodexDaemonAutoStart(providerRoots)
+        return daemon ? { ...outcome, details: { ...outcome.details, daemonAutoStart: codexDaemonAutoStartNames[daemon] } } : outcome
       },
     })),
     {
@@ -2497,7 +2495,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             relayAnswered = true
             return { kind: 'answered', endpoint, response, body }
           } catch (error) {
-            // 「自动」给直连那一次单独限的时间到了（整项还没到点）：按超时算，下面改查默认线路。
+            // 「自动」给先走那条那一次单独限的时间到了（整项还没到点）：按超时算，下面改查备用那条。
             const reason = error instanceof Error && error.name === 'TimeoutError' && !signal.aborted
               ? 'timeout'
               : classifyNetworkFailure(error)
@@ -2514,25 +2512,27 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           try { toolDetails = dependencies.toolRoute?.report?.() ?? {} } catch { toolDetails = {} }
           return { ...relayRouteChangeDetails(route), ...toolDetails }
         }
-        const directFirst = route?.automatic === true && route.line === 'direct'
-        let probe = await probeStatus(relaySite, directFirst
-          ? AbortSignal.any([signal, AbortSignal.timeout(DIRECT_NETWORK_PROBE_TIMEOUT_MS)])
+        // 星芒账号先走直连、备用默认线路；历史账号先走默认线路、备用直连（DiagnosticsRelayRoute）。
+        const preferredLine = route?.preferredLine ?? 'direct'
+        const preferredFirst = route?.automatic === true && route.line === preferredLine
+        let probe = await probeStatus(relaySite, preferredFirst
+          ? AbortSignal.any([signal, AbortSignal.timeout(PREFERRED_NETWORK_PROBE_TIMEOUT_MS)])
           : signal)
         let line: RelayEndpointId | null = route?.line ?? null
         let fellBack = false
-        const directFailure = route && directFirst ? relayLineFailure(probe) : null
-        if (route && directFailure) {
-          if (reportsRelayLineFailure(probe)) route.reportDirectFailure(directFailure)
-          // 直连回的网关错误页不算「网络通了」：默认线路这次要是一直没人回，照样按连接超时说。
+        const preferredFailure = route && preferredFirst ? relayLineFailure(probe) : null
+        if (route && preferredFailure) {
+          if (reportsRelayLineFailure(probe)) route.reportPreferredFailure(preferredFailure)
+          // 先走那条回的网关错误页不算「网络通了」：备用那条这次要是一直没人回，照样按连接超时说。
           relayAnswered = false
-          const retry = await probeStatus(route.primarySite, signal).catch(() => null)
-          // 默认线路也没查通就照直连那次的结论说：用的是直连，说的就是直连那边的事。
+          const retry = await probeStatus(route.backupSite ?? route.primarySite, signal).catch(() => null)
+          // 备用那条也没查通就照先走那条的结论说：用的是它，说的就是它那边的事。
           if (retry?.kind === 'answered' && retry.response.ok && parsesAsJson(retry.body)) {
-            log?.('info', 'diagnostics.network.fallback', '直连这次没查通，默认线路查通了', {
-              reason: probe.kind === 'failed' ? probe.reason : directFailure,
+            log?.('info', 'diagnostics.network.fallback', '先走的那条线路这次没查通，备用那条查通了', {
+              reason: probe.kind === 'failed' ? probe.reason : preferredFailure,
             })
             probe = retry
-            line = 'primary'
+            line = preferredLine === 'direct' ? 'primary' : 'direct'
             fellBack = true
           }
         }
@@ -2594,7 +2594,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return {
           state: 'pass',
           // 状态码留在 details 里给导出报告，结论只说人话。
-          summary: relayNetworkPassSummary(route && line ? { siteId: relaySite.id, line, fellBack: fellBack || (route.automatic && route.settled && line === 'primary') } : null, accelerating),
+          summary: relayNetworkPassSummary(route && line ? { siteId: relaySite.id, line, fellBack: fellBack || (route.automatic && route.settled && line !== preferredLine) } : null, accelerating),
           details: {
             endpoint,
             status: response.status,
@@ -2644,16 +2644,12 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           systemRoots: withSwitch.outcome,
           nodeVersion,
         })
-        const userWide = verdict === 'systemTrusted' && platform === 'win32'
-          ? dependencies.inspectUserWideCertificateTrust?.()
-          : undefined
         return certificateTrustOutcome({
           verdict,
           nodeVersion,
           defaultRoots: withoutSwitch.outcome,
           systemRoots: withSwitch.outcome,
           elevated: false,
-          userWide,
         })
       },
     },
@@ -2862,7 +2858,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
       title: '电脑里另外设过的工具地址或密钥',
       run: async () => {
-        const relayProviders = new Set(providerIds.filter((provider) => {
+        const relayProviders = new Set(activeProviderIds.filter((provider) => {
           const inspection = providerInspections.get(provider)
           return inspection !== undefined && providerAccountMode(inspection) === 'relay'
         }))
@@ -2920,7 +2916,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '个人文件夹里早先留下的设置',
       run: () => homeFolderLeftoversOutcome({
         untouchedInstructions: hasUntouchedHomeProjectInstructions(userHome),
-        trustedBy: inspectHomeFolderTrust(providerRoots),
+        // Gemini CLI 下线后星芒不再提它记着的信任：那是客户自己的工具设置，星芒也不再从这里打开它。
+        trustedBy: inspectHomeFolderTrust(providerRoots).filter((provider) => !isRetiredProviderId(provider)),
       }),
     },
   ]

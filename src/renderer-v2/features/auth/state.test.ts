@@ -185,6 +185,10 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error('Username already exists'), '注册')).toBe('该用户名已被注册，请更换用户名，或点击“已有账号，登录”')
     expect(authErrorMessage(new Error('Email address is already in use'), '注册')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
   })
+  it('says the mailbox is not accepted when the server refuses its domain at send-code time', () => {
+    const refused = new Error("Error invoking remote method 'account:send-verification-code': Error: This email address is not allowed by the administrator's email policy.")
+    expect(authFailure(refused, '发送验证码')).toEqual({ message: '这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试', kind: 'unknown' })
+  })
   // 以前 409 落到「请稍后重试」：服务端的设备数满了，重试一万次也登不上。
   it('explains login device and frequency limits instead of asking to try again later', () => {
     const sessionLimit = authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 这个账号同时登录的设备太多了，暂时登不上。"), '登录')
@@ -244,14 +248,15 @@ describe('v2 onboarding readiness', () => {
     expect(guideOfficialLoginRequired('codex', 'official', undefined)).toBe(true)
     expect(guideOfficialLoginRequired('codex', 'official', { codexAuthMode: 'chatgpt' })).toBe(false)
     expect(guideOfficialLoginRequired('codex', 'account', { codexAuthMode: null })).toBe(false)
-    for (const provider of ['claude', 'gemini', 'grok'] as const) expect(guideOfficialLoginRequired(provider, 'official', { codexAuthMode: null })).toBe(false)
+    for (const provider of ['claude', 'grok'] as const) expect(guideOfficialLoginRequired(provider, 'official', { codexAuthMode: null })).toBe(false)
   })
-  it('requires Node, Python and the installed CLI for the Gemini route', () => {
-    const tool = { id: 'gemini' as const, installed: true, configured: true, source: 'account' as const, runtimeReady: true, pythonReady: false }
-    expect(resolveGuideReadiness('gemini', tool, true).prepared).toBe(false)
-    expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true }, true).prepared).toBe(true)
-    expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true, runtimeReady: false }, true).prepared).toBe(false)
-    expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true, installed: false }, true).prepared).toBe(false)
+  it('requires Node and the installed CLI, never Python, for a command-line route', () => {
+    for (const id of ['claude', 'codex', 'grok'] as const) {
+      const tool = { id, installed: true, configured: true, source: 'account' as const, runtimeReady: true }
+      expect(resolveGuideReadiness(id, tool, true).prepared).toBe(true)
+      expect(resolveGuideReadiness(id, { ...tool, runtimeReady: false }, true).prepared).toBe(false)
+      expect(resolveGuideReadiness(id, { ...tool, installed: false }, true).prepared).toBe(false)
+    }
   })
 })
 

@@ -1,11 +1,12 @@
-import { resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel } from './cli-model-defaults'
 import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { loadManagedCliGroups, subscriptionsBindKeyGroups } from './managed-cli-groups'
+import { loadManagedCliGroups, subscriptionsBindKeyGroups, type ManagedCliGroupAccountService } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
+import { carryRequestDiagnostics } from './request-diagnostics'
 import type { ConfigSavePayload, SystemService } from './system-service'
 
 export interface ManagedCliKeyStatus {
@@ -71,6 +72,7 @@ interface ResolvedManagedCliKeys {
 type ManagedKeyAccountService = Pick<RelayBackendClient,
   'getSessionState' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listUsableGroups'>
   & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf'>>
+  & Pick<ManagedCliGroupAccountService, 'getAccountGroupHints'>
 
 class AccountSessionChangedError extends Error {
   constructor() {
@@ -166,7 +168,7 @@ async function resolveManagedCliKeys(
     ))
     // 历史账号例外：订阅是在服务端买、在服务端到期的，本机缓存看不出来，
     // 每次都得问一次，否则买了订阅工具也还在扣余额。
-    const everyKeyCached = !subscriptionsBindKeyGroups(accountService) && providerIds.every((provider) => (
+    const everyKeyCached = !subscriptionsBindKeyGroups(accountService) && activeProviderIds.every((provider) => (
       usableCache.some((entry) => entry.provider === provider)
     ))
     const resolvedGroups = everyKeyCached ? null : await loadManagedCliGroups(accountService)
@@ -192,7 +194,8 @@ async function resolveManagedCliKeys(
     const regrouped: ProviderId[] = []
     let fetchedFromServer = false
 
-    for (const provider of providerIds) {
+    // 下线的工具（Gemini CLI）不再签 Key：历史账号多半已经没有它的分组，签不出来会让每次登录都报一条失败。
+    for (const provider of activeProviderIds) {
       if (keys.has(provider)) continue
       const group = groupFor(provider)
       const previousGroup = usableCache.find((entry) => entry.provider === provider)?.group
@@ -214,12 +217,13 @@ async function resolveManagedCliKeys(
         fetchedFromServer = true
       } catch (error) {
         rethrowAccountSessionChange(error)
-        failed.push({
+        // 签 Key 那次请求走的线路、状态码、请求编号跟着这条失败走，写 Key 失败的日志要用（request-diagnostics.ts）。
+        failed.push(carryRequestDiagnostics(error, {
           provider,
           group,
           message: error instanceof Error ? error.message : 'CLI Key 初始化失败',
           ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
-        })
+        }))
       }
     }
 
@@ -227,6 +231,7 @@ async function resolveManagedCliKeys(
     if (keyStore && fetchedFromServer) {
       try {
         assertSameAuthenticatedUser(accountService, capture)
+        // 下线工具以前签的那把还留在缓存里，不因为这次保存丢掉；只是不再交出去写配置。
         const cachedKeys = providerIds.flatMap((provider) => {
           const entry = keys.get(provider)
           return entry ? [entry] : []
@@ -244,7 +249,7 @@ async function resolveManagedCliKeys(
 
     assertSameAuthenticatedUser(accountService, capture)
     return {
-      keys: providerIds.flatMap((provider) => {
+      keys: activeProviderIds.flatMap((provider) => {
         const entry = keys.get(provider)
         return entry ? [entry] : []
       }),
@@ -301,11 +306,11 @@ export async function configureManagedClis(
     let managedKey = keys.get(provider)
     if (!managedKey) {
       const syncFailure = syncFailures.get(provider)
-      outcome.failed.push({
+      outcome.failed.push(carryRequestDiagnostics(syncFailure, {
         provider,
         message: syncFailure?.message ?? '对应分组 Key 未就绪',
         ...(syncFailure?.serviceUnavailable ? { serviceUnavailable: true } : {}),
-      })
+      }))
       continue
     }
     try {
@@ -364,11 +369,11 @@ export async function configureManagedClis(
       outcome.configured.push(provider)
     } catch (error) {
       rethrowAccountSessionChange(error)
-      outcome.failed.push({
+      outcome.failed.push(carryRequestDiagnostics(error, {
         provider,
         message: error instanceof Error ? error.message : 'CLI 配置失败',
         ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
-      })
+      }))
     }
   }
   return outcome

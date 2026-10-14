@@ -31,7 +31,6 @@ import { buildClearUserProxyScript, buildReadProxyScopesScript, readProxyScopesM
 import { nativeCliSignatureScript } from './trusted-native-cli'
 import { buildProtectedDirectoryAclScript, protectedDirectoryAclModules } from './trusted-temp'
 import { uninstallAccountProbeModules, uninstallAccountProbeScript } from './uninstall-cleanup'
-import { buildSetUserCertificateTrustScript } from './user-certificate-trust'
 import { buildEnsureUserPathScript, buildRemoveUserPathScript } from './windows-cli-shell-access'
 import { buildCliLaunchPlan, cliLaunchBrokerModules, cliTerminalScriptModules } from './windows-elevation'
 import {
@@ -40,7 +39,6 @@ import {
   windowsAclProbeModules,
   type WindowsMachinePaths,
 } from './windows-machine-paths'
-import { workBuddyInstallerSignatureScript } from './workbuddy-installer'
 
 const machinePaths: WindowsMachinePaths = {
   systemRoot: 'C:\\Windows',
@@ -90,7 +88,6 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['installed Node.js signature check', installedNodeSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['Python installer signature check', pythonInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['installed Python check', installedPythonInspectionScript, authenticodeSignatureModules, 'pinned'],
-  ['WorkBuddy installer signature check', workBuddyInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['native CLI signature check', nativeCliSignatureScript, authenticodeSignatureModules, 'by-name'],
   ['protected directory ACL read-back', buildProtectedDirectoryAclScript(), protectedDirectoryAclModules, 'by-name'],
   ['Program Files ACL probe', decodeEncodedCommand(buildProgramFilesAclProbe(
@@ -155,7 +152,6 @@ describe('PowerShell scripts under the trusted environment import their modules'
     ['provider override clean-up', buildClearProviderOverridesScript()],
     ['user PATH update', buildEnsureUserPathScript()],
     ['user PATH removal', buildRemoveUserPathScript()],
-    ['certificate trust switch', buildSetUserCertificateTrustScript()],
   ])('keeps the %s free of cmdlets that would be autoloaded', (_name, script) => {
     expect(unimportedCmdlets(script, [])).toEqual([])
   })

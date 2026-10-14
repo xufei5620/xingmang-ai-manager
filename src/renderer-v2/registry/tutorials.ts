@@ -253,7 +253,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '点一下就行，工具箱会替你做完：先备份原来的配置，再把会冲突的旧登录挪到一边，写好新配置，最后自动测一次能不能连上。',
         bullets: ['改用前要先登录左下角的账号。', '测下来连不上时会自动恢复原样，并说一句原因。'],
         expected: '右下角提示「已改用当前账号」或「已切回官方账号」。',
-        extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「备份」页，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }, { title: 'Gemini 为什么没有「切回官方账号」？', detail: '个人 Google 账号已经不能用于 Gemini CLI。企业版用户可以在「…」→「配置」里选择官方账号。' }],
+        extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「备份」页，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }],
         action: '去首页切换',
         page: 'home',
       },
@@ -445,7 +445,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '找到要看的那次对话',
         where: '左侧记录 → 工具筛选 / 搜索框',
-        detail: '这里显示 Claude Code、Codex CLI、Gemini CLI、Grok CLI 的本机对话，记录只存在这台电脑上。',
+        detail: '这里显示 Claude Code、Codex CLI、Grok CLI 的本机对话，记录只存在这台电脑上。',
         bullets: ['顶部按工具筛选，或搜索标题、文件夹、模型。', '核对这一行的工作文件夹、消息条数和时间。'],
         expected: '找到正确工具和项目的记录。',
         action: '打开记录查找对话',
@@ -477,7 +477,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '显示「文件夹已不存在」时，原目录已删除或搬走，不能继续，但仍可查看和导出。',
         bullets: ['按钮按不动时，先看旁边的文件夹状态。', '重要内容及时「导出」，不要只依赖工具保留记录。'],
         expected: '知道不能续接的原因，也能保留需要的内容。',
-        extra: [{ title: '记录会保留多久？', detail: '记录由各工具管理。由工具箱写配置的 Claude Code 与 Gemini CLI，默认保留期已从一个月延长到一年；你自己设置过的保留期仍按原设置。' }],
+        extra: [{ title: '记录会保留多久？', detail: '记录由各工具管理。由工具箱写配置的 Claude Code，默认保留期已从一个月延长到一年；你自己设置过的保留期仍按原设置。' }],
         action: '打开记录核对状态',
         page: 'sessions',
       },
@@ -592,12 +592,12 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。只用 Codex 桌面端可以跳过这一章。',
     category: 'advanced',
     minutes: 5,
-    keywords: ['CLI', '命令行', '终端', 'Claude Code', 'Codex CLI', 'Gemini', 'Grok', 'Node.js', 'npm', 'Python', 'Git', '安装', '首次命令', '接着聊'],
+    keywords: ['CLI', '命令行', '终端', 'Claude Code', 'Codex CLI', 'Grok', 'Node.js', 'npm', 'Python', 'Git', '安装', '首次命令', '接着聊'],
     steps: [
       {
         title: '选一个命令行工具，看看缺不缺运行环境',
         where: '工具箱首页 → 运行环境',
-        detail: '点工具的「安装」时，缺的 Node.js 会自动先准备好，不用自己去下载；Windows 上只装 Grok 用不到它。四个命令行工具都不用装 Python。',
+        detail: '点工具的「安装」时，缺的 Node.js 会自动先准备好，不用自己去下载；Windows 上只装 Grok 用不到它。命令行工具都不用装 Python。',
         bullets: ['外接工具里个别要用 Python 的，那一页会提示；Mac 上怎么装看「Mac 上准备 Node.js 和 Python」。'],
         expected: '所需运行环境显示版本号。',
         extra: [{ title: 'Claude Code 为什么提示 Git？', detail: 'Windows 上部分技能、插件命令和首次添加官方插件市场需要 Git，按「检查」页的指引安装。' }],
@@ -710,7 +710,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '添加自己的技能',
         where: '技能 → 导入技能',
-        detail: 'Codex CLI 填本机技能文件夹，Gemini CLI 填技能来源。',
+        detail: 'Codex CLI 填本机技能文件夹。',
         bullets: ['点「导入技能」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
         expected: '列表出现新技能及添加范围。',
         extra: [{ title: skillImportTutorialExtra, detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页点「重新加载」；选择当前项目时先核对工作文件夹。' }],
@@ -723,7 +723,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '看到技能后，再用一个相关任务验证。',
         bullets: ['确认显示「已启用」。', '到对应工具里交代一个技能负责的任务。'],
         expected: 'AI 按技能的方法处理任务。',
-        extra: [{ title: '为什么不能开关或没触发？', detail: 'Gemini CLI 可在这里开关，其他工具到自身界面操作。技能只在相关任务中触发，不是所有问题都会使用。' }],
+        extra: [{ title: '为什么没触发？', detail: '技能只在相关任务中触发，不是所有问题都会使用。' }],
         action: '查看技能状态',
         page: 'skills',
       },
@@ -762,7 +762,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: 'Claude Code 的市场首次点「添加官方市场」；Codex CLI 的市场点「添加市场」。',
         bullets: ['有现成来源时点「添加插件」，填名称或仓库地址。', '选择添加范围，再确认安装。'],
         expected: '「已安装」里出现对应插件。',
-        extra: [{ title: '市场入口和来源有什么要求？', detail: 'Claude Code 添加官方市场后从清单安装；Codex CLI 填市场地址，市场行可更新或移除。Gemini CLI 和 Grok CLI 只有已安装列表；来源用作者提供的名称或地址，不填普通网页。' }],
+        extra: [{ title: '市场入口和来源有什么要求？', detail: 'Claude Code 添加官方市场后从清单安装；Codex CLI 填市场地址，市场行可更新或移除。Grok CLI 只有已安装列表；来源用作者提供的名称或地址，不填普通网页。' }],
         action: '去添加插件',
         page: 'plugins',
       },
@@ -772,7 +772,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '先核对安装状态，再到 AI 工具里试用。',
         bullets: ['确认插件行显示「已启用」。', '从「更多操作」→「查看详情」核对来源与版本。'],
         expected: '名称和状态正确，工具内能使用插件。',
-        extra: [{ title: '哪些插件能在这里更新、开关？', detail: 'Claude Code、Gemini CLI、Grok CLI 支持开关和更新；Codex CLI 支持添加和移除。' }],
+        extra: [{ title: '哪些插件能在这里更新、开关？', detail: 'Claude Code、Grok CLI 支持开关和更新；Codex CLI 支持添加和移除。' }],
         action: '查看已安装插件',
         page: 'plugins',
       },
@@ -815,7 +815,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [
           { title: '不想让它自动装？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
           { title: '自动装没装上？', detail: '比如授权窗口点了「否」：下次打开会告诉你上次没装上、为什么，点「重新安装」再装一次就行，不会每次打开都自己弹授权窗口。' },
-          { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
+          { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
           { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、被安全软件拦了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
           { title: updateDiskCleanupTitle, detail: updateDiskCleanupDetail },
           { title: macKeychainTutorialTitle, detail: macKeychainTutorialDetail },
@@ -846,7 +846,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '先看首页缺哪一个',
         where: '工具箱首页 → 运行环境',
-        detail: '命令行工具需要 Node.js。Python 四个命令行工具都用不到，外接工具里个别要用它的才装。',
+        detail: '命令行工具需要 Node.js。Python 命令行工具都用不到，外接工具里个别要用它的才装。',
         bullets: ['查看哪项没有版本号。', '只安装要用的环境，已装好的不用重复装。'],
         expected: '知道这次缺少 Node.js 还是 Python。',
         illustration: 'install',
@@ -1006,12 +1006,12 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '命令行工具里报错',
-        where: 'Claude Code、Codex CLI、Gemini CLI、Grok CLI 的终端窗口',
+        where: 'Claude Code、Codex CLI、Grok CLI 的终端窗口',
         detail: '找到报错里的关键词，按下面的说明处理。',
         bullets: ['看到让你运行 /login 或重新登录时，先不要照做：那是官方账号的登录，照做会把当前账号的配置弄乱。', '先到个人中心看余额和这把 Key 的额度，处理好后回到工具里再发一次。'],
         expected: '充值或调高额度后，工具里重发一次就恢复正常，不用重装，也不用重写 Key。',
         extra: [
-          { title: '「用户额度不足」或「Insufficient account balance」', detail: '当前账号余额用完了。Claude Code 这时会显示「Please run /login · API Error: 403 用户额度不足」，Codex 显示「unexpected status 403 Forbidden: 用户额度不足」，Gemini CLI 和 Grok CLI 也会带上这几个字。不要输入 /login，到个人中心充值，到账后重发。' },
+          { title: '「用户额度不足」或「Insufficient account balance」', detail: '当前账号余额用完了。Claude Code 这时会显示「Please run /login · API Error: 403 用户额度不足」，Codex 显示「unexpected status 403 Forbidden: 用户额度不足」，Grok CLI 也会带上这几个字。不要输入 /login，到个人中心充值，到账后重发。' },
           { title: '「token quota is not enough」「API key 额度已用完」或「Quota exceeded」', detail: '这把 Key 设置的额度上限用完了，或者剩下的不够这一次。Claude Code 同样会叫你 /login，不要照做。到「账号 → 密钥」调高这把 Key 的上限后重发。' },
           { title: '「401 无效的令牌」或「Authentication required … Run /login」', detail: 'Key 失效了，或者这把 Key 的额度上限已经用到 0（这两种情况报的是同一句）。Claude Code 会先自己重试约 3 分钟才显示。先在「账号 → 密钥」看这把 Key 的额度，用完了就调高；不是额度的问题，再到首页重新写入 Key。' },
         ],
@@ -1175,7 +1175,7 @@ const linuxSelfUpdateTutorialStep: TutorialStep = {
   extra: [
     { title: '不想让它在后台下载？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
     { title: '点了「安装新版本」没看到安装窗口？', detail: '安装窗口可能被别的窗口挡住了，看看任务栏或屏幕顶部有没有它。' },
-    { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI、Gemini CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
+    { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
     { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、网络断了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
     { title: updateDiskCleanupTitle, detail: `${linuxUpdateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。` },
   ],
@@ -1220,7 +1220,7 @@ function linuxTutorialTopic(topic: TutorialTopic): TutorialTopic[] {
   if (topic.id === cliTutorialTopic) {
     return [linuxTutorialText({
       ...topic,
-      lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。第一章走的是 Codex CLI，Claude Code、Gemini CLI 也是同样的装法。',
+      lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。第一章走的是 Codex CLI，Claude Code 也是同样的装法。',
       steps: topic.steps.map((step) => step.illustration === 'install' ? linuxRuntimeTutorialStep : step),
     })];
   }

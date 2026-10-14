@@ -37,6 +37,7 @@ function setup() {
     configs: {
       claude: { ...config },
       codex: { ...config, codexAuthMode: 'chatgpt' },
+      // Gemini CLI 已下线：主进程回来的数据里还带着它（装着、还是星芒密钥），界面不能列它、写它。
       gemini: { ...config },
       grok: { ...config },
     },
@@ -44,7 +45,7 @@ function setup() {
       claude: { installed: true },
       codex: { installed: true },
       gemini: { installed: true },
-      grok: { installed: false },
+      grok: { installed: true },
     },
     officialProviders: [],
     origin: 'https://xm.solov.cc',
@@ -220,16 +221,27 @@ describe('saved account explicit CLI key sync', () => {
   })
   it('offers only installed, detected, relay-key tools and excludes native official auth modes', () => {
     const h = setup()
-    expect(
-      accountSyncCandidates(h.context)
-        .filter((item) => item.eligible)
-        .map((item) => item.provider),
-    ).toEqual(['claude', 'gemini'])
-    h.context.configs.gemini.authType = 'oauth-personal'
+    const eligible = () => accountSyncCandidates(h.context)
+      .filter((item) => item.eligible)
+      .map((item) => item.provider)
+    expect(eligible()).toEqual(['claude', 'grok'])
+    h.context.clis.grok.installed = false
+    expect(eligible()).toEqual(['claude'])
+    h.context.clis.grok.installed = true
+    h.context.officialProviders = ['grok']
     h.context.clis.claude.detectionFailed = true
     expect(accountSyncCandidates(h.context).some((item) => item.eligible)).toBe(
       false,
     )
+  })
+  // Gemini CLI 下线（yoyo 2026-10-14）：它的配置里就算还是星芒密钥，切换账号时也不列、不写。
+  it('never offers or rewrites the retired Gemini CLI', async () => {
+    const h = setup()
+    expect(accountSyncCandidates(h.context).map((item) => item.provider)).toEqual(['claude', 'codex', 'grok'])
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['gemini'], h.context, h.context.origin)
+    expect(result.configured).toEqual([])
+    expect(result.skipped).toEqual([{ provider: 'gemini', message: '未满足同步条件，保持原配置' }])
+    expect(h.api.configureManagedCliKeys).not.toHaveBeenCalled()
   })
   it('shows a manual relay key and keeps explicit account switching available', () => {
     const h = setup()
@@ -276,12 +288,12 @@ describe('saved account explicit CLI key sync', () => {
   })
   it('rechecks actual state after switching and passes only still-eligible selected tools with fresh models', async () => {
     const h = setup()
-    h.fresh.configs.gemini.matchesRelay = false
+    h.fresh.configs.grok.matchesRelay = false
     h.fresh.configs.claude.model = 'fresh-model'
     const result = await switchAccountWithOptionalSync(
       h.api,
       h.target,
-      ['claude', 'gemini', 'codex'],
+      ['claude', 'grok', 'codex'],
       h.context,
       h.context.origin,
     )
@@ -295,28 +307,28 @@ describe('saved account explicit CLI key sync', () => {
     expect(result.configured).toEqual(['claude'])
     expect(result.skipped.map((entry) => entry.provider)).toEqual([
       'codex',
-      'gemini',
+      'grok',
     ])
   })
   it('syncs selected tools individually with explicit consent after the old account ownership becomes unknown', async () => {
     const h = setup()
     h.context.configs.claude.configurationOwnership = 'account'
-    h.context.configs.gemini.configurationOwnership = 'account'
+    h.context.configs.grok.configurationOwnership = 'account'
     h.fresh.configs.claude.configurationOwnership = 'unknown'
-    h.fresh.configs.gemini.configurationOwnership = 'unknown'
-    h.fresh.configs.gemini.model = 'gemini-model'
-    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini', 'claude'], h.context, h.context.origin)
-    expect(result.configured).toEqual(['claude', 'gemini'])
+    h.fresh.configs.grok.configurationOwnership = 'unknown'
+    h.fresh.configs.grok.model = 'grok-model'
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'grok', 'claude'], h.context, h.context.origin)
+    expect(result.configured).toEqual(['claude', 'grok'])
     expect(h.api.configureManagedCliKeys.mock.calls).toEqual([
       [{ providers: ['claude'], preferredModels: { claude: 'original-model' }, intent: 'explicit' }],
-      [{ providers: ['gemini'], preferredModels: { gemini: 'gemini-model' }, intent: 'explicit' }],
+      [{ providers: ['grok'], preferredModels: { grok: 'grok-model' }, intent: 'explicit' }],
     ])
     expect(h.api.getAccountSession).toHaveBeenCalledTimes(4)
   })
   it('retains partial failures after the account has switched and can restore their report', async () => {
     const h = setup()
     const storage = memoryStorage()
-    for (const provider of ['claude', 'gemini'] as const) {
+    for (const provider of ['claude', 'grok'] as const) {
       writeManualSourceMarker(
         storage,
         h.context.configs[provider].baseUrl,
@@ -335,19 +347,19 @@ describe('saved account explicit CLI key sync', () => {
       failed: [],
     }).mockResolvedValueOnce({
       configured: [],
-      failed: [{ provider: 'gemini', message: '配置文件正在使用' }],
+      failed: [{ provider: 'grok', message: '配置文件正在使用' }],
     })
     const result = await switchAccountWithOptionalSync(
       h.api,
       h.target,
-      ['claude', 'gemini'],
+      ['claude', 'grok'],
       h.context,
       h.context.origin,
       storage,
     )
     expect(result.configured).toEqual(['claude'])
     expect(result.failed).toEqual([
-      { provider: 'gemini', message: '配置文件正在使用' },
+      { provider: 'grok', message: '配置文件正在使用' },
     ])
     expect(
       readManualSourceMarker(
@@ -359,8 +371,8 @@ describe('saved account explicit CLI key sync', () => {
     expect(
       readManualSourceMarker(
         storage,
-        h.context.configs.gemini.baseUrl,
-        'gemini',
+        h.context.configs.grok.baseUrl,
+        'grok',
       ),
     ).toBe(true)
     expect(
@@ -377,8 +389,8 @@ describe('saved account explicit CLI key sync', () => {
   it('continues remaining selected tools when one explicit request fails', async () => {
     const h = setup()
     h.api.configureManagedCliKeys.mockRejectedValueOnce(new Error('配置文件正在使用'))
-    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini'], h.context, h.context.origin)
-    expect(result.configured).toEqual(['gemini'])
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'grok'], h.context, h.context.origin)
+    expect(result.configured).toEqual(['grok'])
     expect(result.failed).toEqual([{ provider: 'claude', message: '配置文件正在使用' }])
     expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(2)
   })
@@ -391,25 +403,25 @@ describe('saved account explicit CLI key sync', () => {
         : { authenticated: true, account, siteId: change === 'another-origin' ? 'solov-api' : 'solov' })
       return { configured: input.providers, failed: [] }
     })
-    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini'], h.context, h.context.origin)
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'grok'], h.context, h.context.origin)
     expect(result.configured).toEqual(['claude'])
-    expect(result.failed).toEqual([{ provider: 'gemini', message: '账号状态已变化，已停止同步工具密钥。' }])
+    expect(result.failed).toEqual([{ provider: 'grok', message: '账号状态已变化，已停止同步工具密钥。' }])
     expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(1)
   })
   it('retains earlier failures when a later account change interrupts the remaining tools', async () => {
     const h = setup()
-    h.context.clis.grok.installed = true
-    h.fresh.clis.grok.installed = true
+    h.context.configs.codex.codexAuthMode = 'apikey'
+    h.fresh.configs.codex.codexAuthMode = 'apikey'
     h.api.configureManagedCliKeys.mockRejectedValueOnce(new Error('第一个配置失败'))
       .mockImplementationOnce(async (input) => {
         h.api.getAccountSession.mockResolvedValue({ authenticated: false, account: null })
         return { configured: input.providers, failed: [] }
       })
-    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini', 'grok'], h.context, h.context.origin)
-    expect(result.configured).toEqual(['gemini'])
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'grok', 'codex'], h.context, h.context.origin)
+    expect(result.configured).toEqual(['grok'])
     expect(result.failed).toEqual([
       { provider: 'claude', message: '第一个配置失败' },
-      { provider: 'grok', message: '账号状态已变化，已停止同步工具密钥。' },
+      { provider: 'codex', message: '账号状态已变化，已停止同步工具密钥。' },
     ])
     expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(2)
   })
@@ -456,8 +468,8 @@ describe('saved account switch restart hint', () => {
       h.calls.push('inspect')
       return running({ running: ['claude'] })
     })
-    const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools }, h.target, ['claude', 'gemini'], h.context, h.context.origin, memoryStorage())
-    expect(inspectRunningTools).toHaveBeenCalledWith(['claude', 'gemini'])
+    const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools }, h.target, ['claude', 'grok'], h.context, h.context.origin, memoryStorage())
+    expect(inspectRunningTools).toHaveBeenCalledWith(['claude', 'grok'])
     expect(h.calls.at(-1)).toBe('inspect')
     expect(accountSwitchRestartHint(result)).toBe('Claude Code 还开着，要关掉重开才会用上当前账号。')
     expect(accountSwitchNeedsAttention(result)).toBe(true)

@@ -5,11 +5,11 @@
 // 为什么非跑真的 CLI 不可:名单要挡的三次上游回归(Claude Code 2.1.265-2.1.267、
 // 2.1.275-2.1.276,Codex 0.155.0)都是 CLI 自己发出的请求体被第三方端点拒掉,用
 // curl 手搓一个请求验证不了 —— 出问题的正是 CLI 构造请求的那一段。连接自检
-// (connection-check.ts)也验证不了:它只读模型清单,而 Codex 打的是 /responses、
-// Gemini 打的是 /v1beta/models/<model>:streamGenerateContent,请求体天差地别。
+// (connection-check.ts)也验证不了:它只读模型清单,而 Codex 打的是 /responses,
+// 请求体天差地别。Gemini CLI 已下线(2026-10-14),不再探测。
 //
-// The probe key is a real, billable credential. Claude Code and Gemini CLI take
-// it from the child process environment; Codex ignores OPENAI_API_KEY for a
+// The probe key is a real, billable credential. Claude Code takes it from the
+// child process environment; Codex ignores OPENAI_API_KEY for a
 // custom model provider (verified against 0.155.1: `auth.header_attached=false`
 // with the variable set) and reads $CODEX_HOME/auth.json instead, so its key is
 // written 0600 into a per-probe temporary home that is removed in a finally.
@@ -28,7 +28,7 @@ const PROBE_TIMEOUT_MS = 120_000
 const INSTALL_TIMEOUT_MS = 300_000
 
 /** 探测哪几个 CLI,按这个顺序。名单里 recommended 为 null 的会被跳过。 */
-const PROBED_PROVIDERS = ['claude', 'codex', 'gemini']
+const PROBED_PROVIDERS = ['claude', 'codex']
 
 /**
  * 把 TS 源码编译进内存再 require。名单与站点表都是零 Node 依赖模块(I6),
@@ -67,7 +67,7 @@ function redact(text, secret) {
  *
  * 分组这一层是三个工具一起探测之后才出现的:每个 CLI 的托管 Key 绑在各自的
  * new-api 分组上(catalog.ts 的 managedCliKeyProfiles),一把只覆盖 Claude 分组
- * 的巡检 Key 打到 Codex 或 Gemini 上就会被判成「当前分组下无可用渠道」。那不是
+ * 的巡检 Key 打到 Codex 上就会被判成「当前分组下无可用渠道」。那不是
  * 版本的问题,报告要说清需要的是一把什么样的 Key。关键词与
  * connection-check.ts 的 groupHints 同源。
  */
@@ -133,10 +133,13 @@ function codexProbeConfigText(baseUrl, model) {
     'sandbox_mode = "read-only"',
     '',
     '[model_providers.xingmang]',
-    'name = "xingmang"',
+    // Codex 认官方线路只看 name == "OpenAI"，对上了请求体会变（不再去掉官方专用字段），
+    // 客户装到的显示名就是它（config-files.ts 的 codexRelayDisplayName）。
+    'name = "OpenAI"',
     `base_url = ${JSON.stringify(baseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
+    'supports_websockets = false',
     '',
   ].join('\n')
 }
@@ -178,30 +181,6 @@ const probeRunners = {
     }),
     // --skip-git-repo-check:临时 HOME 不是 git 仓库,不给这个标志 codex 直接拒跑。
     argv: () => ['exec', '--skip-git-repo-check', '--color', 'never', PROBE_PROMPT],
-  },
-  gemini: {
-    baseUrlFor: (site) => site.providerBaseUrls.gemini,
-    prepare: (home) => {
-      const geminiHome = path.join(home, '.gemini')
-      fs.mkdirSync(geminiHome, { recursive: true })
-      // 与 config-files.ts 写给客户的那份同形。ide 关掉:CI 里没有编辑器可接。
-      fs.writeFileSync(
-        path.join(geminiHome, 'settings.json'),
-        `${JSON.stringify({ ide: { enabled: false }, security: { auth: { selectedType: 'gemini-api-key' } } }, null, 2)}\n`,
-        'utf8',
-      )
-    },
-    environment: (baseUrl, secret, home) => ({
-      PATH: process.env.PATH,
-      HOME: home,
-      GEMINI_API_KEY: secret,
-      GOOGLE_GEMINI_BASE_URL: baseUrl,
-      NO_COLOR: '1',
-      CI: '1',
-    }),
-    // --skip-trust:未信任目录下 Gemini 会跳过一部分配置(system-service.ts 同一处
-    // 注释);--approval-mode plan 让它只读,探测不该在 runner 上动文件。
-    argv: (model) => ['-p', PROBE_PROMPT, '-m', model, '--skip-trust', '--approval-mode', 'plan'],
   },
 }
 

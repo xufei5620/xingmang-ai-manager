@@ -51,8 +51,8 @@ export function runtimeButtonLabel(runtime: ManagedRuntimeId, management: Instal
 
 /**
  * Linux 上 Python 那颗「去官网下载」不给：python.org 给 Linux 的只有源码包，客户装不上；
- * 而且 Linux 上四个命令行工具都用不到它（platform-capabilities 的 cliNeedsPythonRuntime，
- * Linux 版拆分 ③），装法写在首页那段说明里。Windows、Mac 照旧。
+ * 而且命令行工具都用不到它（要它的只有已下线的 Gemini CLI），装法写在首页那段说明里。
+ * Windows、Mac 照旧。
  */
 export function runtimeInstallButtonShown(
   runtime: ManagedRuntimeId,
@@ -65,13 +65,13 @@ export function runtimeInstallButtonShown(
 /** Linux 版只出 deb 包，能装上它的系统都有 apt。 */
 export const linuxPythonInstallCommand = 'sudo apt install python3'
 
-// Python 四个命令行工具都用不到了（第二十八批 C，platform-capabilities 的 cliNeedsPythonRuntime），
+// Python 命令行工具都用不到了（要它的只有已下线的 Gemini CLI），
 // 只剩外接工具里个别连接要它（添加时那一页会提示，pages-management 的 mcpRuntimeNotice），
 // 所以说成「要装的话」，别让客户以为非装不可。
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
-    ? '四个命令行工具都靠它来安装和启动'
-    : '四个命令行工具都用不到它，外接工具里个别要用它的才需要'
+    ? '命令行工具都靠它来安装和启动'
+    : '命令行工具都用不到它，外接工具里个别要用它的才需要'
 }
 
 function ifWanted(runtime: ManagedRuntimeId): string {
@@ -126,7 +126,7 @@ export function runtimeInstallGuide(
   }
   if (platform === 'linux' && runtime === 'python') {
     return {
-      summary: '这台电脑上没有找到 Python。四个命令行工具都用不到它，不装也没关系。',
+      summary: '这台电脑上没有找到 Python。命令行工具都用不到它，不装也没关系。',
       steps: [
         '要装的话：打开「终端」，粘贴下面这条命令回车，按提示输入开机密码，等它跑完。',
         verifyStep(runtime),

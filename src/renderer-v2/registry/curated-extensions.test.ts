@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { providerIds } from '../../../electron/catalog';
+import { activeProviderIds } from '../../../electron/catalog';
 import {
   curatedCommandLines,
   curatedCommandText,
@@ -43,7 +43,7 @@ describe('curated extension catalog', () => {
   it('only names CLIs this application actually manages', () => {
     for (const item of curatedExtensions) {
       expect(item.providers.length).toBeGreaterThan(0);
-      for (const provider of item.providers) expect(providerIds).toContain(provider);
+      for (const provider of item.providers) expect(activeProviderIds).toContain(provider);
     }
   });
 
@@ -136,7 +136,7 @@ describe('curated extension catalog', () => {
 
   it('filters by page and by the tool the user is looking at', () => {
     for (const kind of ['mcp', 'plugin'] as const)
-      for (const provider of providerIds)
+      for (const provider of activeProviderIds)
         for (const item of curatedItemsFor(kind, provider)) {
           expect(item.kind).toBe(kind);
           expect(item.providers).toContain(provider);
@@ -145,9 +145,11 @@ describe('curated extension catalog', () => {
     expect(curatedItemsFor('plugin', 'claude').map(item => item.id)).toContain('code-review');
     // 技能的分发形态各家都不一样，那一页还没有精选，整块不渲染。
     expect(curatedItemsFor('skill', 'claude')).toEqual([]);
-    // 插件精选只给 Claude Code：另外三家没有这个市场，列出来就是列了装不上的东西。
-    for (const provider of ['codex', 'gemini', 'grok'] as const)
+    // 插件精选只给 Claude Code：另外几家没有这个市场，列出来就是列了装不上的东西。
+    for (const provider of ['codex', 'grok'] as const)
       expect(curatedItemsFor('plugin', provider)).toEqual([]);
+    // 已下线的 Gemini CLI 一条精选都没有。
+    for (const kind of ['mcp', 'plugin', 'skill'] as const) expect(curatedItemsFor(kind, 'gemini')).toEqual([]);
   });
 
   // 官方市场的 `plugin install` 没有钉版本的开关，装到的就是市场当下那一份。改不了，
@@ -212,6 +214,7 @@ describe('curated extension catalog', () => {
     const valid = rawItems[0];
     expect(parseCuratedExtensions({ items: [valid] })).toHaveLength(1);
     expect(parseCuratedExtensions({ items: [{ ...valid, providers: ['nope'] }] })).toEqual([]);
+    expect(parseCuratedExtensions({ items: [{ ...valid, providers: ['claude', 'gemini'] }] })).toEqual([]);
     expect(parseCuratedExtensions({ items: [{ ...valid, risks: ['made-up'] }] })).toEqual([]);
     expect(parseCuratedExtensions({ items: [{ ...valid, runtime: 'perl' }] })).toEqual([]);
     expect(parseCuratedExtensions({ items: [{ ...valid, install: { type: 'http', url: 'http://x.test/' } }] })).toEqual([]);

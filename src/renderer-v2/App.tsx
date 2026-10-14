@@ -25,7 +25,7 @@ import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapOffer, modelSwapQuestion, modelSwapTitle, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
-import { cliInstallStageLabel, cliNeedsNodeRuntime, cliNeedsPythonRuntime, nodeRuntimeReady, planCliInstall, pythonRuntimeReady, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
+import { cliInstallStageLabel, cliNeedsNodeRuntime, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
 import { brokenConfigDetails, brokenConfigOf, brokenConfigRepairTarget, canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { managedSwitchConfirmation, managedSwitchVersion } from './features/tools/managed-switch'
 import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
@@ -37,7 +37,8 @@ import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features
 import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, operationTargetOf, type OperationActionId } from './operation-error'
 import { accountSwitchAnchor, accountTabs, macDesktopTutorialTopic, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
-import { tools } from './registry/tools'
+import { shortcutTools, tools } from './registry/tools'
+import { activeProviderIds, type ActiveProviderId } from '../../electron/catalog'
 import { clientConnections } from './registry/clients'
 import { pageRegistry, type PageId } from './registry/pages'
 import type { ToolInstallOutcome } from './pages-maintenance'
@@ -508,7 +509,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * 订阅开通之后把用得上它的工具换过去。走的是开机恢复那一档：主进程这一轮发现哪家
    * 工具的 Key 换进了订阅分组，就只改写那几家，其余已连好的工具不碰。
    */
-  const applySubscriptionToTools = useCallback(async (): Promise<ProviderId[]> => {
+  const applySubscriptionToTools = useCallback(async (): Promise<ActiveProviderId[]> => {
     if (!session.authenticated || !session.account) return []
     const outcome = await runAccountBootstrap(session.account.userId, 'restore', true)
     if (outcome?.error) throw new Error(outcome.error)
@@ -579,7 +580,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [toast, toolbox.refreshConfig, toolbox.run, toolsApi])
   /**
    * 首页「配置文件坏了」的「修好它」：工具自己都读不了它的配置（Codex 的 config.toml、auth.json，
-   * Claude Code、Gemini CLI 的 settings.json）。做的就是配置里「高级」的「重置为初始状态」：主进程
+   * Claude Code 的 settings.json）。做的就是配置里「高级」的「重置为初始状态」：主进程
    * 先备份、再按现在用的账号整份重新生成。看得出原来用官方登录的照旧用官方账号，其余按当前账号
    * （brokenConfigRepairTarget）；没登录就先去登录。
    */
@@ -621,9 +622,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     [session.authenticated, toolbox.snapshot?.config],
   )
   // 扩展三页按它挑默认显示哪个工具。还没检测完时给 undefined，页面先按旧行为选 Claude。
+  // 已下线的工具（Gemini）装着也不算：扩展页不再显示它。
   const installedProviders = useMemo(() => {
     const clis = toolbox.snapshot?.system.clis
-    return clis ? (Object.keys(clis) as Array<keyof typeof clis>).filter((id) => clis[id].installed) : undefined
+    return clis ? activeProviderIds.filter((id) => clis[id].installed) : undefined
   }, [toolbox.snapshot?.system.clis])
   useEffect(() => {
     if (boot === 'ready' && !auth && session.authenticated && session.account) {
@@ -941,7 +943,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const toolName = definition?.name ?? '工具'
     const plan = id === 'codexDesktop'
       ? { prepare: [], blocked: null }
-      : planCliInstall({ runtime: state.system.runtime, needsNode: cliNeedsNodeRuntime(state.platform, id), needsPython: cliNeedsPythonRuntime(state.platform, id, Boolean(definition?.requires.includes('python'))), nodeInstall: platform?.nodeRuntimeInstall, pythonInstall: platform?.pythonRuntimeInstall })
+      : planCliInstall({ runtime: state.system.runtime, needsNode: cliNeedsNodeRuntime(state.platform, id), nodeInstall: platform?.nodeRuntimeInstall })
     if (plan.blocked) throw new Error(plan.blocked)
     const current = presentTools(state).find((tool) => tool.id === id)
     // 官方安装器装的 Claude Code 星芒更新不了，只能先卸掉再装回星芒自己的（第三十一批 B）。
@@ -1241,7 +1243,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   /**
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
-   * 'open' | 'restart',四家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
+   * 'open' | 'restart',各家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
    */
   async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, folder: LaunchFolder = 'choose', epoch = accountEpoch.current): Promise<boolean> {
     try {
@@ -1488,8 +1490,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
       if (event.isComposing || event.altKey || !(event.ctrlKey || event.metaKey) || document.querySelector('dialog[open]')) return
       if (event.key === ',') { event.preventDefault(); navigate('settings') }
-      if (/^[1-5]$/.test(event.key)) {
-        const tool = tools.filter((entry) => !entry.hidden?.(os))[Number(event.key) - 1]
+      if (/^[1-9]$/.test(event.key)) {
+        const tool = shortcutTools(os)[Number(event.key) - 1]
         if (tool && isToolId(tool.id)) { event.preventDefault(); void requestLaunchInLastWorkspace(tool.id) }
       }
     }
@@ -1501,9 +1503,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
     runtimeReady: nodeRuntimeReady(toolbox.snapshot!.system.runtime),
     runtimeNotNeeded: tool.id !== 'codexDesktop' && !cliNeedsNodeRuntime(toolbox.snapshot!.platform, tool.provider),
-    pythonReady: pythonRuntimeReady(toolbox.snapshot!.system.runtime),
-    pythonNotNeeded: tool.id !== 'codexDesktop' && !cliNeedsPythonRuntime(toolbox.snapshot!.platform, tool.provider, Boolean(tools.find((entry) => entry.id === tool.id)?.requires.includes('python'))),
-    runtimeAutoPrepare: platform?.nodeRuntimeInstall === 'managed', pythonAutoPrepare: platform?.pythonRuntimeInstall === 'managed',
+    runtimeAutoPrepare: platform?.nodeRuntimeInstall === 'managed',
     supported: tool.id !== 'codexDesktop' || platform?.codexDesktop.launch,
     officialLoginRequired: guideOfficialLoginRequired(tool.provider, guideSource(tool.source), toolbox.snapshot!.config.providers[tool.provider]),
     update: toolUpdateOffer(tool),
@@ -1596,7 +1596,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   if (boot !== 'ready') return <Splash platform={os} phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
   return <AccountBalanceContext.Provider value={balanceStore}><OnlineStatusContext.Provider value={onlineStatus}><BalanceTierProvider value={subscription ? 'ok' : balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
-      onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
+      onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />

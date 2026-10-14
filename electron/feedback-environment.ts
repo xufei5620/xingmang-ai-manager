@@ -1,9 +1,11 @@
-import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, type ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
 import { externalClientNames, externalToolIds, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { RelayEndpointId, RelayEndpointRoutingSnapshot } from './relay-sites'
+import type { RouteFailureLabel } from './route-failure-classifier'
 import type { CliStatus, DesktopAppStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
+import type { ToolRouteCertificateFailure } from './tool-route-controller'
 import {
   describeWindowsExecutionProbeFailure,
   type WindowsCliExecutionMode,
@@ -146,7 +148,8 @@ function externalClientLine(tool: ExternalToolId, clients: readonly FeedbackExte
 }
 
 export function buildFeedbackEnvironmentLines(input: FeedbackEnvironmentInput): string[] {
-  const clis = providerIds.map((provider) => {
+  // 下线的工具（Gemini CLI）星芒不再查它装没装，写进报告只会是一行不准的「未安装」。
+  const clis = activeProviderIds.map((provider) => {
     const name = cliCatalog[provider].name
     const status = input.clis?.[provider]
     if (!status) return `${name}: ${unreadable}`
@@ -193,6 +196,12 @@ export interface FeedbackRuntimeInput {
    * 历史账号没有这一行。
    */
   toolRoute?: string | null
+  /**
+   * 工具线路这次运行最近一次证书没过时对面给的证书（tool-route-controller.ts 的 certificateFailure），
+   * 只有星芒账号有。这里写连的 IP：这是星芒线路解析出来的服务器地址，不是客户自己的 IP，
+   * 排查是不是路上换了证书要用（需求 5.1.9：具体解析出的 IP 只进本机诊断包）。
+   */
+  toolRouteCertificate?: ToolRouteCertificateFailure | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -287,6 +296,32 @@ export function resolveFeedbackRelayRoute(routing: RelayEndpointRoutingSnapshot,
 
 const feedbackSolovLineNames: Readonly<Record<RelayEndpointId, string>> = { direct: '洛杉矶', primary: 'CF' }
 
+const routeFailureLabelTexts: Readonly<Record<RouteFailureLabel, string>> = {
+  normal: '解析到的是星芒的地址',
+  hijack: '解析到的不是星芒的地址',
+  proxy: '解析被本机代理软件接管',
+  unknown: '解析到的地址认不出',
+}
+
+/**
+ * 「工具线路证书没过」那几行：哪条线路、什么时候、失败标签，再一张证书一行。客服拿颁发者和
+ * SHA-256 指纹跟正版证书一比，对不上就是路上有设备换了证书。
+ */
+export function buildFeedbackToolRouteCertificateLines(failure: ToolRouteCertificateFailure | null | undefined): string[] {
+  if (!failure?.certificates.length) return []
+  const label = failure.label ? `，标签 ${failure.label}（${routeFailureLabelTexts[failure.label]}）` : ''
+  return [
+    `工具线路证书没过: ${feedbackSolovLineNames[failure.line]}，${new Date(failure.at).toISOString()}${label}`,
+    ...failure.certificates.map((certificate, index) => [
+      `收到的证书 ${index + 1}: 连 ${certificate.address}`,
+      `颁发者 ${certificate.issuer || '（空）'}`,
+      `证书名 ${certificate.subject || '（空）'}`,
+      `SHA-256 ${certificate.fingerprint256}`,
+      `Node 校验 ${certificate.verifyError ?? '通过'}`,
+    ].join('，')),
+  ]
+}
+
 /** 「工具线路」那一行：只有星芒账号有，写的是工具配置这会儿该用的那条（不写地址）。 */
 export function resolveFeedbackToolRoute(toolRouting: RelayEndpointRoutingSnapshot, siteId: string | null | undefined): string | null {
   if (toolRouting.resolve(siteId).id !== 'solov') return null
@@ -309,6 +344,7 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   lines.push(`网络位置: ${snapshot ? regionLabels[snapshot.region] : unreadable}`)
   if (input.relayRoute?.trim()) lines.push(`连接线路: ${input.relayRoute.trim()}`)
   if (input.toolRoute?.trim()) lines.push(`工具线路: ${input.toolRoute.trim()}`)
+  lines.push(...buildFeedbackToolRouteCertificateLines(input.toolRouteCertificate))
   if (input.certificateTrust?.trim()) lines.push(`安全证书: ${input.certificateTrust.trim()}`)
   if (input.platform === 'win32' && input.executionMode) {
     lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)

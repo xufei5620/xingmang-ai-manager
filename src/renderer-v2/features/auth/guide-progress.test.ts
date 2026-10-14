@@ -16,8 +16,8 @@ describe('v2 guide resume ownership', () => {
   })
   it('stores a user selection and step under its exact account scope', () => {
     const storage = memoryStorage()
-    expect(writeGuideProgress(storage, 'site:7', { route: 'gemini', step: 'prepare' })).toBe(true)
-    expect(readGuideProgress(storage, 'site:7', 'win')).toEqual({ route: 'gemini', step: 'prepare' })
+    expect(writeGuideProgress(storage, 'site:7', { route: 'grok', step: 'prepare' })).toBe(true)
+    expect(readGuideProgress(storage, 'site:7', 'win')).toEqual({ route: 'grok', step: 'prepare' })
     expect(readGuideProgress(storage, 'site:8', 'win')).toBeNull()
     storage.setItem(guideProgressKey('site:8'), storage.getItem(guideProgressKey('site:7'))!)
     expect(readGuideProgress(storage, 'site:8', 'win')).toBeNull()
@@ -32,6 +32,14 @@ describe('v2 guide resume ownership', () => {
     const raw = '{invalid json'
     storage.setItem(guideProgressKey('site:7'), raw)
     expect(readGuideProgress(storage, 'site:7', 'win')).toBeNull()
+    expect(storage.getItem(guideProgressKey('site:7'))).toBe(raw)
+  })
+  // Gemini CLI 下线（yoyo 2026-10-14）：上次停在它那一条的，引导不能再把它选上，回到推荐项重新开始。
+  it('treats progress saved on the retired Gemini route as unreadable on every platform', () => {
+    const storage = memoryStorage()
+    const raw = JSON.stringify({ version: 1, owner: 'site:7', route: 'gemini', step: 'prepare' })
+    storage.setItem(guideProgressKey('site:7'), raw)
+    for (const platform of ['win', 'mac', 'linux'] as const) expect(readGuideProgress(storage, 'site:7', platform)).toBeNull()
     expect(storage.getItem(guideProgressKey('site:7'))).toBe(raw)
   })
   it('keeps a guide usable when local storage is unavailable', () => {

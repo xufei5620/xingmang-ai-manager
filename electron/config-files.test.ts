@@ -23,12 +23,15 @@ import {
   codexChatGptAuthSnapshotName,
   applyCodexRelayMachineDefaults,
   codexConfigSnapshotPaths,
+  codexDaemonAutoStartSetting,
+  inspectCodexDaemonAutoStart,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogPath,
   codexModelCatalogTargetUsable,
   inspectCodexModelCatalogOnDisk,
   takeBackCodexModelCatalog,
   defaultCodexRelayProvider,
+  codexRelayDisplayName,
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
@@ -40,6 +43,7 @@ import {
   inspectManagedCliHookTargets,
   inspectOfficialLogin,
   inspectProviderConfig,
+  inspectRetiredGeminiIntegrations,
   inspectCodexWorkspacePermissionsText,
   inspectHomeFolderTrust,
   managedProviderLaunchBlockedMessage,
@@ -48,6 +52,7 @@ import {
   providerAccountMode,
   providerConfigPaths,
   removeManagedCliHooks,
+  removeRetiredGeminiIntegrations,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
   saveProviderConfig,
@@ -606,10 +611,11 @@ describe('native CLI configuration files', () => {
     expect(parsed.approval_policy).toBe('on-request')
     expect(parsed.sandbox_mode).toBe('workspace-write')
     expect(asRecord(parsed.model_providers)?.XingmangAI).toMatchObject({
-      name: 'XingmangAI',
+      name: 'OpenAI',
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
+      supports_websockets: false,
     })
     expect(asRecord(parsed.model_providers)?.OpenAI).toBeUndefined()
 
@@ -619,8 +625,65 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('codex', 'sk-merge-first', testModels.codex, 'merge', mergeRoots, {}, providerBaseUrls)
     const merged = asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))!
     expect(merged.model_provider).toBe(defaultCodexRelayProvider)
+    expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(false)
     expect(merged).not.toHaveProperty('model_context_window')
     expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
+  })
+
+  it('renames our own legacy XingmangAI display name during merge and keeps the table key', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    const [, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    fs.writeFileSync(configs.active, [
+      'model_provider = "XingmangAI"',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      `base_url = "${relayProviderBaseUrls('solov', 'direct').codex}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-merge', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    expect(codexRelayDisplayName).toBe('OpenAI')
+    for (const file of [configs.active, configs.relay]) {
+      const parsed = asRecord(TOML.parse(fs.readFileSync(file, 'utf8')))!
+      expect(parsed.model_provider).toBe('XingmangAI')
+      expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.name).toBe('OpenAI')
+    }
+  })
+
+  it.each([
+    ['a name the customer chose', 'XingmangAI', '我的中转', providerBaseUrls.codex],
+    ['the table older releases named OpenAI', 'OpenAI', 'OpenAI', providerBaseUrls.codex],
+    ['a XingmangAI name on a table that pointed somewhere else', 'XingmangAI', 'XingmangAI', 'https://other.example.com/v1'],
+  ])('keeps %s as the Codex display name during merge', (_label, table, name, baseUrl) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      `model_provider = "${table}"`,
+      '',
+      `[model_providers.${table}]`,
+      `name = "${name}"`,
+      `base_url = "${baseUrl}"`,
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-merge', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
+    expect(parsed.model_provider).toBe(table)
+    const provider = asRecord(asRecord(parsed.model_providers)?.[table])
+    expect(provider?.name).toBe(name)
+    expect(provider?.base_url).toBe('https://xm.solov.cc/v1')
   })
 
   it.each(['merge', 'reset'] as const)('keeps non-GPT model IDs on Responses during %s', (mode) => {
@@ -1292,6 +1355,40 @@ describe('native CLI configuration files', () => {
     expect(scalar).toEqual({ features: 'off', windows: 'x' })
   })
 
+  // 照 rust-v0.160.1 features/src/lib.rs 的 from_sources：[features] 在先，profile 选中的那张盖过它。
+  it('reads whether the Codex background server starts on its own', () => {
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: false } })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: true } })).toBe('on')
+    expect(codexDaemonAutoStartSetting({})).toBe('default')
+    expect(codexDaemonAutoStartSetting({ features: { daemon_auto_start: 'false' } })).toBe('default')
+    expect(codexDaemonAutoStartSetting({ features: 'off' })).toBe('default')
+    const withProfile = {
+      profile: 'work',
+      features: { daemon_auto_start: false },
+      profiles: { work: { features: { daemon_auto_start: true } }, home: { features: { daemon_auto_start: false } } },
+    }
+    expect(codexDaemonAutoStartSetting(withProfile)).toBe('on')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'home' })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'missing' })).toBe('off')
+    expect(codexDaemonAutoStartSetting({ ...withProfile, profile: 'work', profiles: { work: { model: 'x' } } })).toBe('off')
+  })
+
+  it('inspects the Codex background server setting on disk without touching the file', () => {
+    // macOS 的临时目录经过 /var → /private/var 这条符号链接，安全读法会拒读。
+    const home = fs.realpathSync.native(temporaryHome())
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    expect(inspectCodexDaemonAutoStart(roots)).toBeNull()
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, '[features]\ndaemon_auto_start = true\n', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBe('on')
+    fs.writeFileSync(configPath, 'model = "x"\n', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBe('default')
+    fs.writeFileSync(configPath, '[features', 'utf8')
+    expect(inspectCodexDaemonAutoStart(roots)).toBeNull()
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('[features')
+  })
+
   it('writes the Codex sleep and sandbox defaults on both a fresh install and an existing config', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -1478,7 +1575,8 @@ describe('native CLI configuration files', () => {
     const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     expect(parsed.model_provider).toBe('mycodex')
     const mycodexProvider = asRecord(asRecord(parsed.model_providers)?.mycodex)
-    expect(mycodexProvider?.name).toBe('mycodex')
+    // Reset writes the template: only the identifier is kept, for the resume list.
+    expect(mycodexProvider?.name).toBe('OpenAI')
     expect(mycodexProvider?.base_url).toBe('https://xm.solov.cc/v1')
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('new-key')
   })
@@ -1556,8 +1654,35 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
+      supports_websockets: false,
       custom_header: 'keep',
     })
+  })
+
+  it.each([true, false])('keeps a user supports_websockets = %s on the relay provider during merge', (choice) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'model_provider = "XingmangAI"',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      `base_url = "${relayProviderBaseUrls('solov', 'direct').codex}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      `supports_websockets = ${choice}`,
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'new-key', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    const provider = asRecord(asRecord(parsed?.model_providers)?.XingmangAI)
+    expect(provider?.base_url).toBe('https://xm.solov.cc/v1')
+    expect(provider?.supports_websockets).toBe(choice)
   })
 
   it('does not select a user custom provider when model_provider is absent', () => {
@@ -3208,6 +3333,25 @@ describe('workspace trust for the directory the user picked', () => {
     })
   })
 
+  // Gemini 0.62.0 在 macOS 上把键全转小写再写进去，读回来时同一文件夹的两条后一条算数。
+  it('finds the lower-case key Gemini writes on macOS and Windows instead of appending a second one', () => {
+    const declined = JSON.stringify({ '/users/alex/projects/app': 'DO_NOT_TRUST' })
+    const mac = trustGeminiWorkspaceInTrustedFoldersText(declined, '/Users/alex/Projects/App', 'darwin')
+    expect(mac.changed).toBe(false)
+    expect(JSON.parse(mac.content)).toEqual({ '/users/alex/projects/app': 'DO_NOT_TRUST' })
+
+    const windows = JSON.stringify({ 'c:/users/peaker/app': 'DO_NOT_TRUST' })
+    expect(trustGeminiWorkspaceInTrustedFoldersText(windows, 'C:\\Users\\peaker\\app', 'win32').changed).toBe(false)
+
+    // Linux 上 Gemini 分大小写，这是另一个文件夹。
+    const linux = trustGeminiWorkspaceInTrustedFoldersText(declined, '/Users/alex/Projects/App', 'linux')
+    expect(linux.changed).toBe(true)
+    expect(JSON.parse(linux.content)).toEqual({
+      '/users/alex/projects/app': 'DO_NOT_TRUST',
+      '/Users/alex/Projects/App': 'TRUST_FOLDER',
+    })
+  })
+
   it('keeps comments in Gemini trust and context files it adds entries to', () => {
     const trust = trustGeminiWorkspaceInTrustedFoldersText('{\n  // 家里的项目\n  "/home/tester/other": "TRUST_FOLDER"\n}\n', '/home/tester/work')
     expect(trust.changed).toBe(true)
@@ -3642,6 +3786,85 @@ describe('hooks and status line pointing at an old location', () => {
   })
 })
 
+describe('taking back what Xingmang wrote into the retired Gemini CLI', () => {
+  const ourImageServer = {
+    command: '/managed/node/bin/node',
+    args: ['/home/me/.agents/skills/星芒AI/scripts/mcp-server.mjs'],
+    env: { XINGMANG_IMAGE_CONFIG_PATH: '/home/me/.agents/skills/星芒AI/config.json' },
+    trust: true,
+  }
+  const userServer = { command: 'npx', args: ['-y', 'user-mcp'] }
+  const userHook = { matcher: '*', hooks: [{ type: 'command', command: 'say done', name: 'user-notify' }] }
+
+  function writeGemini(roots: ReturnType<typeof providerRoots>, servers: Record<string, unknown>): string {
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]>, mcpServers?: unknown }
+    settings.hooks.AfterAgent.unshift(userHook)
+    settings.mcpServers = servers
+    fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    return settingsPath
+  }
+
+  it('removes only our hooks and image tool and keeps the key, address, model and what the user added', () => {
+    const roots = providerRoots(temporaryHome())
+    const settingsPath = writeGemini(roots, { 'xingmang-image': ourImageServer, 'user-server': userServer })
+    const before = inspectProviderConfig('gemini', roots)
+    expect(inspectRetiredGeminiIntegrations(roots)).toEqual({ hooks: true, imageMcp: true })
+
+    const removed = removeRetiredGeminiIntegrations(roots)
+    expect(removed).toMatchObject({ hooks: true, imageMcp: true, result: { files: [settingsPath] } })
+    expect(removed.result.backups).toHaveLength(1)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, unknown[]>, mcpServers: Record<string, unknown> }
+    expect(settings.mcpServers).toEqual({ 'user-server': userServer })
+    expect(settings.hooks).toEqual({ AfterAgent: [userHook] })
+    expect(inspectManagedCliHookTargets('gemini', roots)).toEqual([])
+    const after = inspectProviderConfig('gemini', roots)
+    expect(after.apiKey).toBe('sk-relay')
+    expect(after.baseUrl).toBe(before.baseUrl)
+    expect(after.model).toBe(before.model)
+    expect(after.matchesRelay).toBe(true)
+
+    // Every startup asks again; once there is nothing left nothing is written.
+    const text = fs.readFileSync(settingsPath, 'utf8')
+    expect(inspectRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false })
+    expect(removeRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false, result: { backups: [], files: [] } })
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(text)
+  })
+
+  it('drops an emptied mcpServers section and leaves a same-name server the user set up alone', () => {
+    const roots = providerRoots(temporaryHome())
+    const settingsPath = writeGemini(roots, { 'xingmang-image': ourImageServer })
+    removeRetiredGeminiIntegrations(roots)
+    expect('mcpServers' in (JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>)).toBe(false)
+
+    const other = providerRoots(temporaryHome())
+    const userImage = { command: 'node', args: ['/home/me/my-image-server.mjs'] }
+    const otherPath = writeGemini(other, { 'xingmang-image': userImage })
+    expect(inspectRetiredGeminiIntegrations(other)).toEqual({ hooks: true, imageMcp: false })
+    expect(removeRetiredGeminiIntegrations(other)).toMatchObject({ hooks: true, imageMcp: false })
+    expect((JSON.parse(fs.readFileSync(otherPath, 'utf8')) as { mcpServers: unknown }).mcpServers).toEqual({ 'xingmang-image': userImage })
+  })
+
+  it('creates nothing when Gemini CLI was never set up', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(inspectRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false })
+    expect(removeRetiredGeminiIntegrations(roots)).toEqual({ hooks: false, imageMcp: false, result: { backups: [], files: [] } })
+    expect(fs.existsSync(path.join(roots.userHome, '.gemini'))).toBe(false)
+  })
+
+  it('leaves a settings.json it cannot read untouched', () => {
+    const roots = providerRoots(temporaryHome())
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, '{ "hooks": ', 'utf8')
+    expect(() => inspectRetiredGeminiIntegrations(roots)).toThrow()
+    expect(() => removeRetiredGeminiIntegrations(roots)).toThrow()
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ "hooks": ')
+    expect(fs.readdirSync(path.dirname(settingsPath))).toEqual(['settings.json'])
+  })
+})
+
 describe('bringing an older account config up to the current template', () => {
   function writeFile(filePath: string, content: string) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -3684,6 +3907,31 @@ describe('bringing an older account config up to the current template', () => {
     expect(parsed.model).toBe('gpt-5.5')
     expect(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8')).toBe(fs.readFileSync(configPath, 'utf8'))
     expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(false)
+  })
+
+  it('renames our own legacy Codex display name at startup and keeps a name the customer chose', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const fresh = fs.readFileSync(snapshots.active, 'utf8')
+    expect(fresh).toContain('name = "OpenAI"')
+    writeFile(snapshots.active, fresh.replace('name = "OpenAI"', 'name = "XingmangAI"'))
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(true)
+    const result = fillRelayTemplateDefaults('codex', roots, providerBaseUrls)
+
+    expect(result?.backups).toHaveLength(2)
+    for (const file of [snapshots.active, snapshots.relay]) {
+      const parsed = asRecord(TOML.parse(fs.readFileSync(file, 'utf8')))!
+      expect(parsed.model_provider).toBe('XingmangAI')
+      expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.name).toBe('OpenAI')
+    }
+
+    const renamed = fs.readFileSync(snapshots.active, 'utf8')
+    writeFile(snapshots.active, renamed.replace('name = "OpenAI"', 'name = "我的中转"'))
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
   })
 
   it('writes nothing when the config already has every template key', () => {

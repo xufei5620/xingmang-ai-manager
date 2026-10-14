@@ -5,6 +5,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import * as TOML from '@iarna/toml'
 import { classifyNetworkFailure } from './network-failure'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { InstallationQueue } from './installation-queue'
@@ -60,7 +61,9 @@ import {
   shouldAutoRepairCliHooks,
   externalCliInstallRefusal,
   buildCliMaintenancePlan,
+  buildCliResolutionManifest,
   buildCliToolStatusFromSettled,
+  buildRetiredCliStatus,
   buildDarwinCliLaunchPlan,
   buildDarwinTrustedVerificationRunner,
   buildCliUninstallPlan,
@@ -1383,7 +1386,10 @@ describe('createSystemService', () => {
 
     const snapshot = await service.scanSystem(false)
 
-    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+    // 下线的 Gemini CLI 不再去探，只留一份「没装」的占位，也就谈不上探测失败。
+    expect(snapshot.clis.gemini).toMatchObject({ installed: false, retired: true })
+    expect(snapshot.clis.gemini.detectionFailed).toBeUndefined()
+    for (const provider of ['claude', 'codex', 'grok'] as const) {
       expect(snapshot.clis[provider]).toMatchObject({
         installed: false,
         detectionFailed: true,
@@ -1483,7 +1489,7 @@ describe('createSystemService', () => {
     const elapsed = Date.now() - startedAt
 
     expect(elapsed).toBeLessThan(offlineLatestVersionBudgetMs + 4_000)
-    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+    for (const provider of ['claude', 'codex', 'grok'] as const) {
       // 只有「最新版」这一格说没检查成：已装状态照常，也不谎报有新版本。
       expect(snapshot.clis[provider]).toMatchObject({
         installed: true,
@@ -1494,8 +1500,8 @@ describe('createSystemService', () => {
       expect(snapshot.clis[provider].updateError).toBe(latestVersionUncheckedMessage)
     }
     // 已装版本来自本地包清单，不受最新版探测影响（grok 的版本读本地二进制，
-    // 这个夹具里没有真文件，所以只看那三个走 npm 包清单的）。
-    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+    // 这个夹具里没有真文件，所以只看那两个走 npm 包清单的）。
+    for (const provider of ['claude', 'codex'] as const) {
       expect(snapshot.clis[provider].version).toBe('1.2.3')
     }
 
@@ -1541,7 +1547,7 @@ describe('createSystemService', () => {
 
     const snapshot = await service.scanSystem(false)
 
-    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+    for (const provider of ['claude', 'codex'] as const) {
       expect(snapshot.clis[provider]).toMatchObject({
         installed: true,
         updateCheck: 'checked',
@@ -1839,6 +1845,25 @@ describe('createSystemService', () => {
     const error = await service.fetchAvailableModels('sk-maintenance-probe').catch((cause: unknown) => cause)
     expect(classifyNetworkFailure(error)).toBe('serviceUnavailable')
     expect((error as Error).message).toContain('HTTP 503')
+  })
+
+  // 写 Key 前查模型没过时，日志要记得出服务器回了什么、服务端拿什么查（三线路 7b）。
+  it('marks a failed model query with what the service answered and the request id', async () => {
+    const service = createService()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: '无效的令牌' } }), {
+      status: 401, headers: { 'X-Oneapi-Request-Id': 'req-models-1' },
+    })))
+    const error = await service.fetchAvailableModels('sk-model-probe').catch((cause: unknown) => cause)
+    expect((error as Error).message).toContain('模型查询失败，服务返回 401')
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 401, requestId: 'req-models-1' })
+
+    // 没等到回应时只有按线路发请求那一层挂的线路，换成中文的超时说法时跟着带过去。
+    const aborted = new DOMException('aborted', 'AbortError')
+    noteRequestDiagnostics(aborted, { line: 'direct' })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(aborted))
+    const timedOut = await service.fetchAvailableModels('sk-model-probe', { bypassCache: true }).catch((cause: unknown) => cause)
+    expect((timedOut as Error).message).toBe('模型查询超时，请检查网络后重试')
+    expect(requestDiagnosticsOf(timedOut)).toEqual({ line: 'direct' })
   })
 
   it('redacts echoed API keys and bounds relay error messages', async () => {
@@ -3630,6 +3655,7 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
    */
   function grokCommands(fixture: GrokFixture, installedBytes: () => Buffer) {
     const calls: Array<{ executable: string; argv: readonly string[] }> = []
+    const lifecycleManifests: unknown[] = []
     const runCommand = vi.fn(async (
       spec: { executable: string; argv: readonly string[] },
       options: { cwd?: string } = {},
@@ -3674,6 +3700,9 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
         }))
         fs.writeFileSync(path.join(platformPackage, 'bin', 'grok.br'), zlib.brotliCompressSync(fixture.binary))
       } else if (spec.argv[0] === 'ci') {
+        const cwd = options.cwd
+        if (!cwd) throw new Error('Fake npm requires cwd')
+        lifecycleManifests.push(JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')))
         const bin = path.join(fixture.homeDirectory, '.grok', 'bin')
         fs.mkdirSync(bin, { recursive: true })
         fs.writeFileSync(path.join(bin, `grok-${fixture.version}`), installedBytes(), { mode: 0o755 })
@@ -3691,12 +3720,12 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
         durationMs: 1,
       }
     })
-    return { runCommand, calls }
+    return { runCommand, calls, lifecycleManifests }
   }
 
   it('installs Grok with the lifecycle run, checks it byte for byte and never asks x.ai', async () => {
     const fixture = grokFixture()
-    const { runCommand, calls } = grokCommands(fixture, () => fixture.binary)
+    const { runCommand, calls, lifecycleManifests } = grokCommands(fixture, () => fixture.binary)
     const target = { isDestroyed: () => false, send: vi.fn() }
     const service = createSystemService(
       new AppSettingsStore(path.join(fixture.root, 'settings.json'), fixture.root),
@@ -3713,6 +3742,10 @@ describe.runIf(process.platform === 'linux')('Linux Grok install from npm', () =
     expect(npmRuns.map((call) => call.argv.includes('--ignore-scripts'))).toEqual([true, false])
     // The lifecycle run installs the resolved lock in place: no global install, no prefix.
     expect(npmRuns[1].argv.some((argument) => argument === '--global' || argument.startsWith('--prefix='))).toBe(false)
+    // npm 12 skips the postinstall that writes ~/.grok/bin unless the manifest allows exactly this release.
+    expect(lifecycleManifests).toEqual([
+      expect.objectContaining({ allowScripts: { [`@xai-official/grok@${fixture.version}`]: true } }),
+    ])
     expect(calls).toContainEqual({ executable: path.join(bin, `grok-${fixture.version}`), argv: ['--version'] })
   })
 
@@ -6003,6 +6036,50 @@ describe('CLI latest version state', () => {
     )).toThrow('macOS 用户级 npm 前缀')
   })
 
+  // npm 12 起依赖的安装脚本默认不跑，要按包放行；npm 11 及更早对放行名单视而不见，照旧全跑。
+  it('lets npm run only the install scripts each CLI cannot work without', () => {
+    const prefix = '/Users/tester/.local/share/XingMangAI/Cli/npm'
+    expect(buildCliMaintenancePlan('claude', '/usr/local/bin/npm', prefix, '2.1.291', true, 'darwin').argv).toEqual([
+      'install',
+      '--global',
+      `--prefix=${prefix}`,
+      '--allow-scripts=@anthropic-ai/claude-code@2.1.291',
+      '--omit=dev',
+      '--package-lock=false',
+      '@anthropic-ai/claude-code@2.1.291',
+    ])
+    // keytar only copies its bundled prebuilt binary; node-pty would compile from source
+    // and Gemini prefers the prebuilt @lydell/node-pty anyway.
+    expect(buildCliMaintenancePlan('gemini', '/usr/local/bin/npm', prefix, '0.62.0', true, 'darwin').argv)
+      .toContain('--allow-scripts=@github/keytar')
+    const codexPlan = buildCliMaintenancePlan('codex', '/usr/local/bin/npm', prefix, '0.160.1', true, 'darwin')
+    expect(codexPlan.argv.some((argument) => argument.startsWith('--allow-scripts'))).toBe(false)
+
+    // Scripts that have not passed the integrity check stay off whatever the npm version.
+    const unverified = buildCliMaintenancePlan('claude', '/usr/local/bin/npm', prefix, '2.1.291', false, 'darwin')
+    expect(unverified.argv).toContain('--ignore-scripts')
+    expect(unverified.argv.some((argument) => argument.startsWith('--allow-scripts'))).toBe(false)
+
+    // Grok installs with `npm ci`, where npm 12 rejects --allow-scripts (EALLOWSCRIPTS) and
+    // only reads the allowScripts field of the manifest in that directory.
+    const grokPlan = buildCliMaintenancePlan('grok', '/usr/local/bin/npm', null, '1.0.46', true, 'darwin')
+    expect(grokPlan.argv.some((argument) => argument.startsWith('--allow-scripts'))).toBe(false)
+    expect(buildCliResolutionManifest('grok', '1.0.46')).toEqual({
+      name: 'xingmang-cli-resolution',
+      version: '1.0.0',
+      private: true,
+      dependencies: { '@xai-official/grok': '1.0.46' },
+      allowScripts: { '@xai-official/grok@1.0.46': true },
+    })
+    // npm never reads the manifest during a global install, so the other three carry none.
+    expect(buildCliResolutionManifest('claude', '2.1.291')).toEqual({
+      name: 'xingmang-cli-resolution',
+      version: '1.0.0',
+      private: true,
+      dependencies: { '@anthropic-ai/claude-code': '2.1.291' },
+    })
+  })
+
   it('builds source-owned uninstall plans without deleting shared prefixes', () => {
     const npmInstallation = {
       commandPath: 'C:\\Users\\tester\\AppData\\Local\\hermes\\node\\codex.cmd',
@@ -7425,5 +7502,92 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
     await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
 
     expect(resolveCliCommand.mock.calls[0]?.[3]).toEqual({ darwinStagingRetention: 'retained' })
+  })
+})
+
+describe('the retired Gemini CLI', () => {
+  function geminiFixture() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-retired-gemini-'))
+    temporaryDirectories.push(home)
+    const roots = { userHome: home, codexHome: path.join(home, '.codex') }
+    const hook = {
+      nodeExecutable: '/managed/node/bin/node',
+      scriptPath: '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+      eventsDirectory: path.join(home, 'cli-events'),
+      platform: 'linux' as const,
+    }
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash-high', 'reset', roots, {}, providerBaseUrls, undefined, undefined, hook)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    settings.mcpServers = { 'xingmang-image': { command: hook.nodeExecutable, args: [path.join(home, '.agents', 'skills', '星芒AI', 'scripts', 'mcp-server.mjs')] } }
+    fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    return { roots, settingsPath }
+  }
+
+  function runningReport(partial: Partial<RunningToolsReport> = {}): RunningToolsReport {
+    return { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false, ...partial }
+  }
+
+  it('stands in the snapshot as a tool that is not installed and has nothing to update', () => {
+    expect(buildRetiredCliStatus('gemini', 'win32')).toMatchObject({
+      installed: false,
+      version: null,
+      path: null,
+      installDirectory: null,
+      latestVersion: null,
+      updateAvailable: false,
+      retired: true,
+    })
+    expect(buildRetiredCliStatus('gemini', 'win32').versionAdvice).toBeUndefined()
+  })
+
+  it('takes back our hooks and image tool on startup while Gemini is closed and keeps the key', async () => {
+    const { roots, settingsPath } = geminiFixture()
+    const running = vi.fn(async () => runningReport())
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: running })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: true, imageMcp: true })
+    expect(running).toHaveBeenCalledWith(['gemini'])
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(settings.hooks).toBeUndefined()
+    expect(settings.mcpServers).toBeUndefined()
+    expect(inspectProviderConfig('gemini', roots)).toMatchObject({ apiKey: 'sk-relay', matchesRelay: true })
+
+    // Nothing left: the next startup neither asks about running tools nor writes.
+    running.mockClear()
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(running).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['open', runningReport({ running: ['gemini'] })],
+    ['maybe open', runningReport({ unknown: ['gemini'] })],
+  ])('leaves the settings alone for the next startup while Gemini is %s', async (_label, report) => {
+    const { roots, settingsPath } = geminiFixture()
+    const before = fs.readFileSync(settingsPath, 'utf8')
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: async () => report })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before)
+  })
+
+  it('treats a failed running-tools check as maybe open', async () => {
+    const { roots, settingsPath } = geminiFixture()
+    const before = fs.readFileSync(settingsPath, 'utf8')
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: async () => { throw new Error('probe failed') } })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before)
+  })
+
+  it('never throws on a settings.json it cannot read', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-retired-gemini-broken-'))
+    temporaryDirectories.push(home)
+    const roots = { userHome: home, codexHome: path.join(home, '.codex') }
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, '{ broken', 'utf8')
+    const running = vi.fn(async () => runningReport())
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: running })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(running).not.toHaveBeenCalled()
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ broken')
   })
 })

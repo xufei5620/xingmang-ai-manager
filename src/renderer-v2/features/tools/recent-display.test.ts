@@ -37,7 +37,7 @@ describe('recent-display', () => {
     expect(recentToolName('codex')).toBe('Codex CLI')
     expect(recentSessionSubtitle({ provider: 'codex', cwd: 'C:\\Users\\peaker\\my-project\\' })).toBe('Codex CLI · my-project')
     expect(recentSessionSubtitle({ provider: 'claude', cwd: '/Users/alex/work/app' })).toBe('Claude Code · app')
-    expect(recentSessionSubtitle({ provider: 'gemini', cwd: '' })).toBe('Gemini CLI')
+    expect(recentSessionSubtitle({ provider: 'grok', cwd: '' })).toBe('Grok CLI')
   })
 
   it('tells which tool the resume button opens', () => {

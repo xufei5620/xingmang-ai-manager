@@ -80,11 +80,16 @@ describe('managed CLI key limits', () => {
 
   it('resolves one row per tool with its used and remaining amounts', () => {
     const limits = resolveManagedCliKeyLimits(keys, 500_000, 'solov')
-    expect(limits.map((limit) => limit.provider)).toEqual(['claude', 'codex', 'grok', 'gemini'])
+    expect(limits.map((limit) => limit.provider)).toEqual(['claude', 'codex', 'grok'])
     expect(limits[0]).toMatchObject({ keyName: 'xingmang-desktop-claude', unlimited: false, remaining: 5, used: 1 })
     expect(limits[1]).toMatchObject({ unlimited: true, remaining: null, used: 2 })
-    expect(limits[3]).toMatchObject({ key: null, unlimited: true, remaining: null, used: null })
-    expect(limits[3].group).toBe('Gemini-中转/订阅')
+    expect(limits[2]).toMatchObject({ key: null, unlimited: true, remaining: null, used: null })
+    expect(limits[2].group).toBe('Grok-中转/订阅')
+  })
+
+  it('leaves the retired Gemini CLI out even when its key is still on the account', () => {
+    const withGemini = [...keys, key({ id: 12, name: 'xingmang-desktop-gemini', group: 'Gemini-中转/订阅', managedProvider: 'gemini' })]
+    expect(resolveManagedCliKeyLimits(withGemini, 500_000, 'solov').map((limit) => limit.provider)).toEqual(['claude', 'codex', 'grok'])
   })
 
   it('uses the other backend group names and unit when that account is active', () => {

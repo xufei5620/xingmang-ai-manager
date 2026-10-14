@@ -4,7 +4,7 @@ const unverifiedChineseLocale = 'Codex 已打开，中文界面尚未确认生�
 
 /**
  * 打开成功之后还要提醒用户的那一句。两套结果各带各的：Codex 桌面端是中文界面
- * 没确认生效，四家 CLI 是项目文件夹里的设置会盖过当前账号。都没有就返回 null，
+ * 没确认生效，各家 CLI 是项目文件夹里的设置会盖过当前账号。都没有就返回 null，
  * 首页不弹任何东西。测试夹具与旧版主进程可能什么都不回，一并按「没有」处理。
  */
 export function launchWarning(result: CodexDesktopLaunchResult | CliLaunchResult | void | undefined): string | null {

@@ -45,7 +45,15 @@ interface ConfigDialogProps {
   onSwitchAccount?(tool: ToolId): Promise<AccountSourceSwitchResult | null>
 }
 
-export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onKeyWritten, onLogin, onKeys, accountName = null, onSwitchAccount }: ConfigDialogProps) {
+/**
+ * 只给注册表里的工具开配置框。已下线的工具（Gemini）不在注册表里，就算有地方点名它也不开：
+ * 星芒不再替它改配置，下面也找不到它的定义。
+ */
+export function ConfigDialog(props: ConfigDialogProps) {
+  return isToolId(props.tool) ? <RegisteredToolConfigDialog {...props} /> : null
+}
+
+function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onKeyWritten, onLogin, onKeys, accountName = null, onSwitchAccount }: ConfigDialogProps) {
   const [tab, setTab] = useState<ToolId>(tool)
   const [drafts, setDrafts] = useState<Partial<Record<ProviderId, ConfigDraft>>>({})
   const [keys, setKeys] = useState<AccountKey[]>([])

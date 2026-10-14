@@ -1,7 +1,18 @@
 import type { CliLaunchMode, MultiProviderSessionPage, ProviderId } from '../../../../electron/ipc-contract'
+import { isActiveProviderId } from '../../../../electron/catalog'
 import { rawErrorMessage } from '../../business-common'
 
 type SessionSummary = MultiProviderSessionPage['items'][number]
+
+/**
+ * 已下线的工具（Gemini）的对话文件还在客户电脑上，主进程照旧读得出来；界面不再显示它，
+ * 页面拿到这一页之前先去掉。总数减掉这一页去掉的条数，别的页上的那几条要等翻到那一页才知道。
+ */
+export function withoutRetiredSessions<T extends Pick<MultiProviderSessionPage, 'items' | 'total'>>(page: T): T {
+  const items = page.items.filter((session) => isActiveProviderId(session.provider))
+  if (items.length === page.items.length) return page
+  return { ...page, items, total: Math.max(0, page.total - (page.items.length - items.length)) }
+}
 
 /** 首页「打开」按钮记住的一个目录。 */
 export interface RecentWorkspace {
@@ -68,7 +79,7 @@ export function recentWorkspaces(
 
 /**
  * 「打开」按钮用的目录：先看这个工具自己的会话记录；一条都没有时（刚装好、或者
- * 上次打开没聊就关了），退回用户上次在本软件里选过的文件夹。四个工具因此只问一次。
+ * 上次打开没聊就关了），退回用户上次在本软件里选过的文件夹。几个工具因此只问一次。
  * remembered 由主进程给出，已经排除了主目录和其他敏感目录。
  */
 export function launchWorkspaces(

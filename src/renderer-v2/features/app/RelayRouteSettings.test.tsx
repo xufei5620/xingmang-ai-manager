@@ -19,7 +19,7 @@ describe('RelayRouteSettings', () => {
     // 星芒账号叫洛杉矶、CF；历史账号照旧叫直连、默认线路。
     expect(html).toMatch(/aria-label="星芒账号线路".*只用洛杉矶.*只用 CF.*aria-label="历史账号线路".*只用直连.*只用默认线路/s)
     expect(html).toContain('自动会先走洛杉矶线路，连不上时改走 CF 线路。保存后重启星芒生效，不会切换账号。')
-    expect(html).toContain('自动会先走直连，直连连不上时改走默认线路。保存后重启星芒生效，不会切换账号。')
+    expect(html).toContain('自动会先走默认线路，默认线路连不上时改走直连。保存后重启星芒生效，不会切换账号。')
     expect(html).not.toContain('settings-relay-relaunch')
   })
 

@@ -230,16 +230,14 @@ describe('resumeLaunchChoice', () => {
   it('resumes Codex by the record id and the other tools by folder', () => {
     expect(resumeLaunchChoice({ id: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', provider: 'codex' })).toEqual({ resumeSessionId: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
     expect(resumeLaunchChoice({ id: 'claude:1', provider: 'claude' })).toBe('resumeLast')
-    expect(resumeLaunchChoice({ id: 'gemini:1', provider: 'gemini' })).toBe('resumeLast')
     expect(resumeLaunchChoice({ id: 'grok:1', provider: 'grok' })).toBe('resumeLast')
   })
 })
 
 describe('resumeNeedsRecheck', () => {
-  // 按文件夹接最近一条的三家要先对一次；Codex 带着记录 id 接，点哪条接哪条。
+  // 按文件夹接最近一条的几家要先对一次；Codex 带着记录 id 接，点哪条接哪条。
   it('rechecks only the tools that resume the latest record in the folder', () => {
     expect(resumeNeedsRecheck({ id: 'claude:1', provider: 'claude' })).toBe(true)
-    expect(resumeNeedsRecheck({ id: 'gemini:1', provider: 'gemini' })).toBe(true)
     expect(resumeNeedsRecheck({ id: 'grok:1', provider: 'grok' })).toBe(true)
     expect(resumeNeedsRecheck({ id: 'codex:1', provider: 'codex' })).toBe(false)
   })
@@ -272,7 +270,7 @@ describe('resumeStillLatest', () => {
   it('ignores newer records of another tool in the same folder', () => {
     const clicked = session({ id: 'claude:older', cwd: 'C:\\work\\alpha' })
     expect(resumeStillLatest(clicked, [
-      session({ id: 'gemini:newer', provider: 'gemini', cwd: 'C:\\work\\alpha' }),
+      session({ id: 'grok:newer', provider: 'grok', cwd: 'C:\\work\\alpha' }),
       clicked,
     ])).toBe(true)
   })

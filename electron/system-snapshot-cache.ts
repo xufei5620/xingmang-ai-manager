@@ -234,6 +234,7 @@ function withoutVersionVerdicts(snapshot: SystemSnapshot): SystemSnapshot {
  */
 type CliOptionalFields = 'tooOld' | 'versionStatus' | 'detectionFailed' | 'detectionError' | 'installSource' | 'installTarget'
   | 'updateSource' | 'updateCheck' | 'updateState' | 'updateCheckedAt' | 'updateError' | 'versionAdvice' | 'revertVersion'
+  | 'retired'
 
 type CliOptionalFieldsSorted = Pin<SameShape<OptionalKeys<CliStatus>, CliOptionalFields>>
 

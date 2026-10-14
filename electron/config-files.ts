@@ -52,6 +52,9 @@ import {
   applyXingmangImageMcpToJson,
   applyXingmangImageMcpToToml,
   applyXingmangImagePermissionToClaudeSettings,
+  isManagedXingmangImageMcpEntry,
+  removeXingmangImageMcpFromJson,
+  XINGMANG_IMAGE_MCP_NAME,
   type XingmangImageMcpInvocation,
 } from './xingmang-ai-mcp'
 
@@ -1167,6 +1170,43 @@ export function applyCodexRelayMachineDefaults(
   if (isJsonRecord(windows) && windows.sandbox === undefined) windows.sandbox = 'unelevated'
 }
 
+/**
+ * Codex 的后台服务开没开（xm 三线路 C16）。本软件打开 Codex 时带 --no-daemon，这一项只管
+ * 客户自己在终端里敲 codex：开着时，换线路后半小时内接着聊的旧对话可能还留在后台那份里、
+ * 走原来的地址（#941 第 6 节）。'default' = 两处都没写，0.157.0 起缺省是开。
+ *
+ * 照 rust-v0.160.1 features/src/lib.rs（0.162.1 同）：先看 [features]，再看顶层 profile
+ * 选中的 [profiles.<名>.features]，后者盖过前者；不是 true / false 的值 Codex 根本读不进来，
+ * 当没写。
+ */
+export type CodexDaemonAutoStart = 'on' | 'off' | 'default'
+
+export function codexDaemonAutoStartSetting(parsed: Record<string, unknown>): CodexDaemonAutoStart {
+  const profileName = typeof parsed.profile === 'string' ? parsed.profile : ''
+  const profiles = isJsonRecord(parsed.profiles) ? parsed.profiles : {}
+  const profile = profileName && isJsonRecord(profiles[profileName]) ? profiles[profileName] : {}
+  let setting: CodexDaemonAutoStart = 'default'
+  for (const features of [parsed.features, profile.features]) {
+    if (isJsonRecord(features) && typeof features.daemon_auto_start === 'boolean') {
+      setting = features.daemon_auto_start ? 'on' : 'off'
+    }
+  }
+  return setting
+}
+
+/** 只读不改；没有这份配置、读不了或读不懂时是 null，配置坏没坏由 Codex 那一项自己去说。 */
+export function inspectCodexDaemonAutoStart(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): CodexDaemonAutoStart | null {
+  const configPath = codexConfigSnapshotPaths(normalizeProviderConfigRoots(rootsInput)).active
+  try {
+    const content = readTrustConfigText(configPath, path.dirname(configPath), '现有 Codex config.toml')
+    return content === null ? null : codexDaemonAutoStartSetting(TOML.parse(content))
+  } catch {
+    return null
+  }
+}
+
 function stripCodexRelayFromConfig(
   parsed: Record<string, unknown>,
   siteBaseUrl: string,
@@ -1204,14 +1244,23 @@ function applyCodexRelayConfig(
   disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
+  // Before base_url is overwritten: only a table that already points at our relay is ours to rename.
+  renameLegacyCodexRelayDisplayName(providerEntry, siteBaseUrl)
   providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
     ? providerEntry.name
-    : providerName
+    : codexRelayDisplayName
   providerEntry.base_url = siteBaseUrl
   // Current Codex accepts only Responses, including for custom model providers.
   // Model names alone cannot establish the relay's protocol compatibility.
   providerEntry.wire_api = 'responses'
   providerEntry.requires_openai_auth = true
+  // 自定义线路只有写了 supports_websockets = true，Codex 才改走 Responses WebSocket（core/src/client.rs
+  // 的 responses_websocket_enabled，rust-v0.160.1 与 0.162.1 一致，缺省是 false）。走 Cloudflare 的
+  // WebSocket 约两分钟就被掐断，思考久的回答出到一半报「stream closed before response.completed」，
+  // 普通流式不受影响（2026-10-13 服务端按断开时间统计）。把缺省明写出来，上游哪天把自定义线路的缺省
+  // 改成开，客户也不会跟着掉进去。换线路只改 base_url 那一处（tool-route-rewrite.ts），写的时候分不出
+  // 以后会走哪条，所以两条线路都写。用户自己写过就不动。
+  if (providerEntry.supports_websockets === undefined) providerEntry.supports_websockets = false
   // Keep the Desktop permission picker interactive on fresh mirror installs.
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
@@ -1257,10 +1306,11 @@ function buildCodexRelayConfigTemplate(
     ...notifyLine,
     '',
     `[model_providers.${providerKey}]`,
-    `name = ${tomlString(providerName)}`,
+    `name = ${tomlString(codexRelayDisplayName)}`,
     `base_url = ${tomlString(siteBaseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
+    'supports_websockets = false',
     '',
     '[features]',
     'goals = true',
@@ -1790,6 +1840,28 @@ function tomlTableKey(value: string): string {
 export const defaultCodexRelayProvider = 'XingmangAI'
 const reservedCodexProviders: ReadonlySet<string> = new Set(['openai', 'ollama', 'lmstudio'])
 
+/**
+ * The provider's `name` is what Codex Desktop shows in its lower-left picker.
+ * Codex treats exactly "OpenAI" (case-sensitive, base_url ignored) as the
+ * first-party provider: compaction goes through the remote /responses/compact
+ * task and the CLI's /model popup warns that the base URL is overridden.
+ * Only the display name changes; the table key stays defaultCodexRelayProvider
+ * because the resume picker filters earlier chats by that key.
+ *
+ * 2026-10-13 yoyo 选的大写 OpenAI，选之前在星芒中转上实测过命令行和桌面端的长对话压缩，
+ * 星芒账号和历史账号都通。
+ */
+export const codexRelayDisplayName = 'OpenAI'
+// 8-26（#104）到这次之前的模板写的显示名，和表名一样。
+const legacyCodexRelayDisplayName = 'XingmangAI'
+
+/** 只换星芒自己那张表上一字不差的老显示名；客户自己改过的名字、别人写的表都不动。 */
+function renameLegacyCodexRelayDisplayName(entry: Record<string, unknown>, siteBaseUrl: string): void {
+  if (entry.name === legacyCodexRelayDisplayName && isOwnCodexRelayEntry(entry, siteBaseUrl)) {
+    entry.name = codexRelayDisplayName
+  }
+}
+
 function existingCodexProvider(configPath: string, siteBaseUrl: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
   if (content === null) return defaultCodexRelayProvider
@@ -2105,17 +2177,31 @@ export function trustClaudeWorkspaceInRootConfigText(
   return { content: jsonContent(parsed), changed }
 }
 
+// Gemini CLI 0.62.0 (core/src/utils/paths.ts normalizePath) lower-cases every
+// trustedFolders.json key on win32 and darwin, both when it records an answer
+// and when it reads the file back, and of two keys that fold to the same folder
+// the later one wins. normalizeWorkspacePathKey already folds Windows-shaped
+// paths; a POSIX path on macOS has to be folded here too, or the
+// "/users/alex/app": "DO_NOT_TRUST" Gemini wrote is missed and the
+// "/Users/alex/app": "TRUST_FOLDER" appended after it overrides that answer.
+function geminiTrustedFolderKey(value: string, platform: NodeJS.Platform): string {
+  const key = normalizeWorkspacePathKey(value)
+  return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key
+}
+
 export function trustGeminiWorkspaceInTrustedFoldersText(
   content: string | null,
   workspace: string,
+  platform: NodeJS.Platform = process.platform,
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
   if (!trimmedWorkspace) throw new Error('Gemini CLI 工作目录不能为空')
   const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI trustedFolders.json')
-  const existing = matchingWorkspaceKey(parsed, trimmedWorkspace)
+  const wanted = geminiTrustedFolderKey(trimmedWorkspace, platform)
+  const answered = Object.keys(parsed).some((key) => geminiTrustedFolderKey(key, platform) === wanted)
   // A folder the user already answered for keeps its answer, including
   // DO_NOT_TRUST. Only a folder Gemini has never asked about gets filled in.
-  if (existing !== null) return { content: geminiJsonContent(content, parsed), changed: false }
+  if (answered) return { content: geminiJsonContent(content, parsed), changed: false }
   parsed[trimmedWorkspace] = 'TRUST_FOLDER'
   return { content: geminiJsonContent(content, parsed), changed: true }
 }
@@ -2214,7 +2300,8 @@ export function ensureGeminiProjectContextFiles(
 // ---------------------------------------------------------------------------
 // 星芒画图工具（MCP）
 //
-// 登录同步后替四家工具登记同一个 xingmang-image。Codex 与 Grok 直接写 config.toml，
+// 登录同步后替还在管的几家工具登记同一个 xingmang-image（Gemini CLI 下线后不再登记，
+// 已经登记过的由 removeRetiredGeminiIntegrations 收回）。Codex 与 Grok 直接写 config.toml，
 // 不走 `codex mcp add`：只装了 Codex 桌面端的客户没有命令行版，照样要能用上。
 // 每家只在它的配置目录已经存在时才写，没装过的工具不会被凭空建出目录。
 
@@ -2291,20 +2378,7 @@ function syncXingmangImageMcpClaude(roots: ProviderConfigRoots, invocation: Xing
   return true
 }
 
-function syncXingmangImageMcpGemini(roots: ProviderConfigRoots, invocation: XingmangImageMcpInvocation): boolean {
-  const providerRoot = providerConfigRoot('gemini', roots)
-  const configPath = path.join(providerRoot, 'settings.json')
-  assertSafeConfigPath(configPath, providerRoot, 'file')
-  const label = '现有 Gemini CLI settings.json'
-  const current = requireConfigText(configPath, label)
-  const parsed = requireGeminiWorkspaceJson(current, label)
-  if (!applyXingmangImageMcpToJson(parsed, invocation, 'gemini')) return false
-  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
-  executeFilePlans([{ path: configPath, content: geminiJsonContent(current, parsed) }], {}, providerRoot)
-  return true
-}
-
-/** 每家单独提交、单独失败：一家的配置读不懂，不该拖累另外三家。 */
+/** 每家单独提交、单独失败：一家的配置读不懂，不该拖累另外几家。 */
 export function syncXingmangImageMcpConfigs(
   rootsInput: ProviderConfigRoots,
   invocation: XingmangImageMcpInvocation,
@@ -2319,8 +2393,6 @@ export function syncXingmangImageMcpConfigs(
       && syncXingmangImageMcpToml('codex', codexConfigSnapshotPaths(roots).active, roots.codexHome, invocation)],
     ['claude', () => existingDirectory(providerConfigRoot('claude', roots))
       && syncXingmangImageMcpClaude(roots, invocation)],
-    ['gemini', () => existingDirectory(providerConfigRoot('gemini', roots))
-      && syncXingmangImageMcpGemini(roots, invocation)],
     ['grok', () => {
       const providerRoot = providerConfigRoot('grok', roots)
       return existingDirectory(providerRoot)
@@ -3198,7 +3270,9 @@ export function applyProviderRouteFollow(
 // 当前账号的配置，开机时由 fillRelayTemplateDefaults 补一次缺省项。往下面那几个
 // fill*RelayTemplateDefaults 里加了新的一项，就把这个号加一，否则老客户拿不到。
 // 2：Claude Code 没写权限模式的补「不逐条确认」（2026-10-06）。
-export const relayTemplateRevision = 2
+// 3：Codex 线路显示名老模板的 XingmangAI 换成 OpenAI（2026-10-14）。这一项改的是值不是缺省
+//    键，只认星芒自己那张表上一字不差的老值（renameLegacyCodexRelayDisplayName）。
+export const relayTemplateRevision = 3
 
 /** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
 function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -3207,13 +3281,16 @@ function fillableRecord(parent: Record<string, unknown>, key: string): Record<st
   return isJsonRecord(current) ? current : null
 }
 
-function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, platform: NodeJS.Platform): void {
+function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBaseUrl: string, platform: NodeJS.Platform): void {
   if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
   if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
   if (parsed.analytics === undefined || isJsonRecord(parsed.analytics)) disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
   applyCodexRelayMachineDefaults(parsed, platform)
+  const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  const entry = active && isJsonRecord(parsed.model_providers) ? parsed.model_providers[active] : null
+  if (isJsonRecord(entry)) renameLegacyCodexRelayDisplayName(entry, siteBaseUrl)
 }
 
 function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void {
@@ -3275,7 +3352,7 @@ function relayTemplateDefaultsPlans(
       const parsed = requireToml(snapshots.active, '现有 Codex config.toml')
       if (classifyCodexConfigProfile(parsed, siteBaseUrls.codex) !== 'relay') return []
       const before = cloneTomlRecord(parsed)
-      fillCodexRelayTemplateDefaults(parsed, platform)
+      fillCodexRelayTemplateDefaults(parsed, siteBaseUrls.codex, platform)
       dropEmptyCreatedTables(parsed, before)
       if (JSON.stringify(parsed) === JSON.stringify(before)) return []
       const content = tomlContent(parsed)
@@ -3338,7 +3415,8 @@ export function relayTemplateDefaultsPending(
 
 /**
  * 给一份「当前账号的」配置只补模板里缺的那几项：键缺省才写，用户写过的值（哪怕写的是
- * false）一律不动，Key、服务地址、型号、钩子、状态行这些也都不碰。配置不是指向当前
+ * false）一律不动，Key、服务地址、型号、钩子、状态行这些也都不碰。唯一换值的是 Codex
+ * 线路显示名：只换星芒自己那张表上一字不差的老模板值 XingmangAI（第 3 版）。配置不是指向当前
  * 账号服务的（切回了官方、换了别家）就什么都不做。写入与保存配置同一套两阶段提交、
  * 留 .bak、失败回滚（I9）。返回 null = 这份配置已经齐了，没写任何文件。
  */
@@ -3567,6 +3645,63 @@ export function removeManagedCliHooks(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
   return executeManagedCliHookPlan(provider, rootsInput, null)
+}
+
+// ---------------------------------------------------------------------------
+// 下线的 Gemini CLI：收回星芒写进它 settings.json 的两样东西
+//
+// 做完提醒（xingmang-notify）指向星芒安装目录里的小脚本和一个写死的 Node 位置，原来靠
+// 开机自动修（repairStaleAccountCliHooks）跟着走；星芒画图（xingmang-image）靠每次准备
+// Key 时对齐。下线后两样都没人维护，星芒挪了位置、重装到别处或被卸载，Gemini 每一轮都会
+// 多报一行错。只删认得出是星芒写的那几条，Key、线路、型号这些让它照常能用的一律不动。
+
+export interface RetiredGeminiIntegrations {
+  /** settings.json 里还有星芒的做完提醒。 */
+  hooks: boolean
+  /** settings.json 里还有星芒登记的画图工具。 */
+  imageMcp: boolean
+}
+
+function readRetiredGeminiSettings(roots: ProviderConfigRoots): {
+  configPath: string
+  providerRoot: string
+  parsed: Record<string, unknown>
+  original: string | null
+} {
+  const providerRoot = providerConfigRoot('gemini', roots)
+  const configPath = providerConfigPaths('gemini', roots)[0]
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  return { configPath, providerRoot, ...requireGeminiJson(configPath, '现有 Gemini settings.json') }
+}
+
+/** 只读：还有没有要收回的。配置读不懂时抛错，由调用方记一笔、不动它。 */
+export function inspectRetiredGeminiIntegrations(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): RetiredGeminiIntegrations {
+  const { parsed, original } = readRetiredGeminiSettings(normalizeProviderConfigRoots(rootsInput))
+  if (original === null) return { hooks: false, imageMcp: false }
+  const servers = parsed.mcpServers
+  return {
+    hooks: managedCliHookTargets('gemini', parsed).length > 0,
+    imageMcp: isJsonObject(servers) && isManagedXingmangImageMcpEntry(servers[XINGMANG_IMAGE_MCP_NAME]),
+  }
+}
+
+/** 收回提醒与画图；没有要收的就不写文件。写之前照常留 .bak，失败整份回滚。 */
+export function removeRetiredGeminiIntegrations(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): RetiredGeminiIntegrations & { result: NativeConfigSaveResult } {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const { configPath, providerRoot, parsed, original } = readRetiredGeminiSettings(roots)
+  const nothing = { hooks: false, imageMcp: false, result: { backups: [], files: [] } }
+  if (original === null) return nothing
+  const hooks = managedCliHookTargets('gemini', parsed).length > 0
+  if (hooks) removeGeminiCliHooks(parsed)
+  const imageMcp = removeXingmangImageMcpFromJson(parsed)
+  if (!hooks && !imageMcp) return nothing
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  const result = executeFilePlans([{ path: configPath, content: geminiJsonContent(original, parsed) }], {}, providerRoot)
+  return { hooks, imageMcp, result }
 }
 
 // ---------------------------------------------------------------------------

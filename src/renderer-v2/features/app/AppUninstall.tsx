@@ -6,7 +6,7 @@ import type { V2Bridge } from '../../types'
 import { settingsItemLabel } from '../../registry/business'
 import { Button, Dialog, Input, SettingRow } from '../../ui'
 
-export const appUninstallRowDescription = 'Mac 上删掉星芒之前先点这里：会收回星芒写进 Claude Code、Codex、Gemini CLI、Grok 里的提醒设置，再把星芒移到废纸篓。密钥和工具设置都留着，工具照样能用。'
+export const appUninstallRowDescription = 'Mac 上删掉星芒之前先点这里：会收回星芒写进 Claude Code、Codex、Grok 里的提醒设置，再把星芒移到废纸篓。密钥和工具设置都留着，工具照样能用。'
 
 /** Windows 和 Linux 那一行：工具到安装卸载页卸，星芒本身走系统自己的卸载，各说各的地方。 */
 export function toolUninstallRowDescription(isLinux: boolean): string {

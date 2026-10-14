@@ -2,10 +2,10 @@ import { relayRoutePreferenceAllowed } from '../../../electron/relay-sites';
 import type { RelayRoutePreference, RelayRoutePreferences } from '../../../electron/relay-sites';
 
 // 说明和下面的选项名：星芒账号是 xm 三线路计划附录 A 的原话（yoyo 10-8 回「改」）；历史账号仍叫「直连 / 默认线路」，
-// 说明改成自己完整的一句（同一处批的），意思和直连适配方案第六节第 2 条一样。
+// 说明改成自己完整的一句（同一处批的）。10-14 起历史账号先走默认线路、直连备用，说明跟着对调。
 export const connectionRouteSettings = [
   { siteId: 'solov', id: 'relay-route-solov', label: '星芒账号线路', description: '自动会先走洛杉矶线路，连不上时改走 CF 线路。保存后重启星芒生效，不会切换账号。' },
-  { siteId: 'solov-api', id: 'relay-route-solov-api', label: '历史账号线路', description: '自动会先走直连，直连连不上时改走默认线路。保存后重启星芒生效，不会切换账号。' },
+  { siteId: 'solov-api', id: 'relay-route-solov-api', label: '历史账号线路', description: '自动会先走默认线路，默认线路连不上时改走直连。保存后重启星芒生效，不会切换账号。' },
 ] as const;
 
 export interface ConnectionRoutePreferences {

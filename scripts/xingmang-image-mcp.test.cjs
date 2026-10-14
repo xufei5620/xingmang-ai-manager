@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict')
 const http = require('node:http')
-const { mkdtemp, writeFile, rm, symlink } = require('node:fs/promises')
+const { copyFile, mkdir, mkdtemp, realpath, writeFile, rm, symlink } = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
@@ -225,6 +225,65 @@ test('MCP server tries the Codex key first and falls back to the image key when 
   })
 })
 
+test('MCP server draws with the model Xingmang picked for the account and lists it as the default', async () => {
+  await withServer({ apiKey: 'sk-test-not-real', model: 'gpt-image-2.5-flare' }, ok, async ({ call, requests }) => {
+    const listed = await call('tools/list')
+    assert.equal(listed.result.tools[0].inputSchema.properties.model.default, 'gpt-image-2.5-flare')
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(generated.result.isError, undefined)
+    assert.match(generated.result.content[1].text, /gpt-image-2\.5-flare/)
+    assert.equal(JSON.parse(requests[0].body.toString('utf8')).model, 'gpt-image-2.5-flare')
+  })
+})
+
+test('MCP server ignores a configured model outside the OpenAI allow-list', async () => {
+  await withServer({ apiKey: 'sk-test-not-real', model: 'jimeng_high_aes_general_v21_L' }, ok, async ({ call, requests }) => {
+    const listed = await call('tools/list')
+    assert.equal(listed.result.tools[0].inputSchema.properties.model.default, 'gpt-image-2')
+    await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(JSON.parse(requests[0].body.toString('utf8')).model, 'gpt-image-2')
+  })
+})
+
+test('MCP server falls back to gpt-image-2 when the picked model is refused by the relay', async () => {
+  const config = { codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real', model: 'gpt-image-2.5-flare' }
+  function respond(request) {
+    const body = JSON.parse(request.body.toString('utf8'))
+    if (body.model === 'gpt-image-2.5-flare') {
+      return { status: 503, body: { error: { message: 'no available channel for gpt-image-2.5-flare' } } }
+    }
+    return ok()
+  }
+  await withServer(config, respond, async ({ call, requests }) => {
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(generated.result.isError, undefined)
+    assert.match(generated.result.content[1].text, /已用 gpt-image-2 画好图片/)
+    assert.deepEqual(requests.map((request) => [
+      request.authorization,
+      JSON.parse(request.body.toString('utf8')).model,
+    ]), [
+      ['Bearer sk-codex-not-real', 'gpt-image-2.5-flare'],
+      ['Bearer sk-image-not-real', 'gpt-image-2.5-flare'],
+      ['Bearer sk-codex-not-real', 'gpt-image-2'],
+    ])
+  })
+})
+
+test('MCP server keeps a model the AI named on purpose and does not swap it', async () => {
+  function respond() {
+    return { status: 500, body: { error: { message: 'model price not configured' } } }
+  }
+  await withServer({ apiKey: 'sk-test-not-real', model: 'gpt-image-2.5-flare' }, respond, async ({ call, requests }) => {
+    const failed = await call('tools/call', {
+      name: 'generate_image',
+      arguments: { prompt: 'a cat', model: 'gpt-image-2.5-sunburst' },
+    })
+    assert.equal(failed.result.isError, true)
+    assert.match(failed.result.content[0].text, /price not configured/)
+    assert.deepEqual(requests.map((request) => JSON.parse(request.body.toString('utf8')).model), ['gpt-image-2.5-sunburst'])
+  })
+})
+
 test('MCP server redacts keys echoed back in upstream errors', async () => {
   function respond() {
     return { status: 400, body: { error: { message: 'bad key sk-leaked-value in request' } } }
@@ -254,4 +313,87 @@ test('MCP server keeps answering after an oversized request line', async () => {
     const pong = await call('ping')
     assert.deepEqual(pong.result, {})
   })
+})
+
+const generatePath = path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-ai', 'scripts', 'generate.mjs')
+
+/**
+ * Runs the skill's fallback CLI from a copied skill directory against a fake
+ * relay. Every fetch is redirected before the script loads, so the production
+ * origin in config.json never reaches DNS or a real backend.
+ */
+async function runGenerate(config, respond, args) {
+  // generate.mjs only runs main() when argv[1] matches its own resolved URL, and
+  // macOS tmpdir sits behind the /var -> /private/var symlink.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'xingmang-image-generate-')))
+  const requests = []
+  const httpServer = http.createServer((req, res) => {
+    const chunks = []
+    req.on('data', (chunk) => chunks.push(chunk))
+    req.on('end', () => {
+      const request = { url: req.url, authorization: req.headers.authorization, body: Buffer.concat(chunks) }
+      requests.push(request)
+      const reply = respond(request)
+      res.writeHead(reply.status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(reply.body))
+    })
+  })
+  await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve))
+  const port = httpServer.address().port
+  try {
+    await mkdir(path.join(root, 'scripts'))
+    await copyFile(generatePath, path.join(root, 'scripts', 'generate.mjs'))
+    await writeFile(path.join(root, 'config.json'), JSON.stringify({ baseUrl: 'https://xm.solov.cc', ...config }))
+    const preloadPath = path.join(root, 'mock-fetch.mjs')
+    await writeFile(preloadPath, `const originalFetch = globalThis.fetch
+globalThis.fetch = function (input, init) {
+  return originalFetch(${JSON.stringify(`http://127.0.0.1:${port}`)} + new URL(input).pathname, init)
+}
+`)
+    const child = spawn(process.execPath, [
+      '--import', pathToFileURL(preloadPath).href,
+      path.join(root, 'scripts', 'generate.mjs'),
+      '--prompt', 'a cat', '--out', path.join(root, 'out.png'), ...args,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    const code = await new Promise((resolve) => child.once('close', resolve))
+    return { code, stdout, stderr, requests }
+  } finally {
+    await new Promise((resolve) => httpServer.close(resolve))
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+function requestedModels(requests) {
+  return requests.map((request) => JSON.parse(request.body.toString('utf8')).model)
+}
+
+test('generate script uses the model Xingmang picked and falls back to gpt-image-2 when the relay refuses it', async () => {
+  const picked = await runGenerate({ apiKey: 'sk-test-not-real', model: 'gpt-image-2.5-flare' }, ok, [])
+  assert.equal(picked.code, 0, picked.stderr)
+  assert.deepEqual(requestedModels(picked.requests), ['gpt-image-2.5-flare'])
+
+  function refuseNewModel(request) {
+    const model = JSON.parse(request.body.toString('utf8')).model
+    return model === 'gpt-image-2' ? ok() : { status: 503, body: { error: { message: 'no available channel' } } }
+  }
+  const fallback = await runGenerate({ apiKey: 'sk-test-not-real', model: 'gpt-image-2.5-flare' }, refuseNewModel, [])
+  assert.equal(fallback.code, 0, fallback.stderr)
+  assert.deepEqual(requestedModels(fallback.requests), ['gpt-image-2.5-flare', 'gpt-image-2'])
+  assert.match(fallback.stderr, /已改用 gpt-image-2/)
+})
+
+test('generate script only draws with OpenAI image models', async () => {
+  const refused = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, ['--model', 'jimeng_high_aes_general_v21_L'])
+  assert.notEqual(refused.code, 0)
+  assert.match(refused.stderr, /不在允许列表中/)
+  assert.equal(refused.requests.length, 0)
+
+  const legacy = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, [])
+  assert.equal(legacy.code, 0, legacy.stderr)
+  assert.deepEqual(requestedModels(legacy.requests), ['gpt-image-2'])
+  assert.equal(legacy.requests[0].url, '/v1/images/generations')
 })

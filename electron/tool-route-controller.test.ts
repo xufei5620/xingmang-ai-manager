@@ -256,6 +256,38 @@ describe('tool route controller', () => {
     expect(proxied.events('relay.route.check-failed')[0]).toMatchObject({ label: 'proxy', failure: 'certificate' })
   })
 
+  it('keeps the certificate the far end presented for the report and logs it without the address', async () => {
+    const run = harness({ status: status() })
+    const fingerprint256 = Array.from({ length: 32 }, () => 'AB').join(':')
+    const presented = { address: legitDirect, issuer: 'CN=Some Firewall CA', subject: 'CN=xm-direct.solov.cc', fingerprint256, verifyError: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' }
+    expect(run.controller.certificateFailure()).toBeNull()
+    run.results.direct = { ...fail('certificate'), certificates: [presented] }
+    run.controller.start()
+    await settle()
+    const [logged] = run.events('relay.route.check-failed')
+    expect(logged).toMatchObject({ label: 'normal', failure: 'certificate', certificates: [{ issuer: presented.issuer, subject: presented.subject, fingerprint256, verifyError: presented.verifyError }] })
+    expect(JSON.stringify(logged)).not.toContain(legitDirect)
+    expect(run.controller.certificateFailure()).toEqual({ line: 'direct', at: startedAt, label: 'normal', certificates: [presented] })
+
+    // A later pass leaves the last sighting in place, and a copy handed out cannot change it.
+    run.results.direct = pass()
+    await run.fireNext()
+    const kept = run.controller.certificateFailure()
+    expect(kept?.certificates).toEqual([presented])
+    if (kept) Object.assign(kept.certificates[0], { address: foreign })
+    expect(run.controller.certificateFailure()?.certificates[0].address).toBe(legitDirect)
+  })
+
+  it('records a certificate seen while probing the higher line without a label', async () => {
+    const run = harness({ stored: { line: 'primary', failures: { direct: [startedAt - hourMs] }, notices: {} } })
+    run.results.direct = { ...fail('certificate'), certificates: [{ address: legitDirect, issuer: 'CN=Other', subject: 'CN=x', fingerprint256: Array.from({ length: 32 }, () => 'CD').join(':'), verifyError: null }] }
+    run.controller.start()
+    await settle()
+    await run.fireUntil(() => run.probes.includes('direct'))
+    expect(run.controller.certificateFailure()).toMatchObject({ line: 'direct', certificates: [{ issuer: 'CN=Other', verifyError: null }] })
+    expect(run.controller.certificateFailure()?.label).toBeUndefined()
+  })
+
   it('waits five minutes from the first failure during a server incident and then only falls back to CF', async () => {
     const run = harness({ status: status({ incident: { line: 'direct', state: 'switching', since: '2026-10-08T00:00:00Z' } }) })
     const firstFailure = run.now()

@@ -20,6 +20,10 @@ describe('renderer-v2 new-api account error table', () => {
     expect(matchAccountErrorMessage('The administrator has enabled the email domain name whitelist, and your email address is not allowed')).toBe(expected)
     expect(matchAccountErrorMessage('管理员启用了邮箱域名白名单，您的邮箱地址的域名不在白名单中')).toBe(expected)
     expect(matchAccountErrorMessage('管理员已启用邮箱地址别名限制，您的邮箱地址由于包含特殊符号而被拒绝。')).toBe(expected)
+    // rc.40 onward: one fixed English sentence for both the whitelist and the alias rule.
+    expect(matchAccountErrorMessage("This email address is not allowed by the administrator's email policy.")).toBe(expected)
+    expect(matchAccountErrorMessage("Error invoking remote method 'account:send-verification-code': Error: This email address is not allowed by the administrator’s email policy.")).toBe(expected)
+    expect(matchAccountErrorMessage('此邮箱地址不符合管理员设置的邮箱规则。')).toBe(expected)
     // A whitelist that has nothing to do with email stays the caller's business.
     expect(matchAccountErrorMessage('该链接不在白名单中，已阻止打开')).toBeNull()
   })

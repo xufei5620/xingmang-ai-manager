@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { providerIds } from './catalog'
+import { activeProviderIds, providerIds } from './catalog'
 import { externalToolIds } from './external-client-contract'
 import {
   buildFeedbackEnvironmentLines,
   buildFeedbackRuntimeLines,
+  buildFeedbackToolRouteCertificateLines,
   pickFeedbackRuntimeSnapshot,
   resolveFeedbackRelayRoute,
   resolveFeedbackToolRoute,
@@ -41,8 +42,19 @@ describe('buildFeedbackEnvironmentLines', () => {
       readConfig: () => pointingAtAccount,
     })
 
-    expect(lines).toHaveLength(providerIds.length + externalToolIds.length)
+    expect(lines).toHaveLength(activeProviderIds.length + externalToolIds.length)
     expect(lines[0]).toBe('Claude Code: 已安装 2.1.277（应用托管）；配置：指向当前账号，模型 claude-opus-5')
+  })
+
+  // Gemini CLI 下线（2026-10-14）：星芒不再查它装没装，报告里也不该有一行不准的状态。
+  it('leaves the retired Gemini CLI out even when the cached scan still carries it', () => {
+    const text = buildFeedbackEnvironmentLines({
+      clis: statusesWith({ gemini: { ...installed, version: '0.60.0', installSource: 'path' } }),
+      readConfig: () => pointingAtAccount,
+    }).join('\n')
+
+    expect(text).not.toContain('Gemini')
+    expect(text).not.toContain('0.60.0')
   })
 
   it('names the Codex connection and flags one Codex ignores', () => {
@@ -58,16 +70,16 @@ describe('buildFeedbackEnvironmentLines', () => {
   it('labels the other install sources and leaves Grok unlabelled', () => {
     const lines = buildFeedbackEnvironmentLines({
       clis: statusesWith({
+        claude: { ...installed, version: '2.1.277', installSource: 'path' },
         codex: { ...installed, version: '0.155.1', installSource: 'native' },
-        gemini: { ...installed, version: '0.60.0', installSource: 'path' },
         grok: { ...installed, version: '1.0.40', installSource: undefined },
       }),
       readConfig: () => pointingAtAccount,
     })
     const text = lines.join('\n')
 
+    expect(text).toContain('Claude Code: 已安装 2.1.277（其他来源）')
     expect(text).toContain('Codex CLI: 已安装 0.155.1（官方安装器）')
-    expect(text).toContain('Gemini CLI: 已安装 0.60.0（其他来源）')
     // Grok 的安装与更新走原生通道，界面不给它标来源，报告同样不标。
     expect(text).toContain('Grok CLI: 已安装 1.0.40；')
   })
@@ -126,7 +138,7 @@ describe('buildFeedbackEnvironmentLines', () => {
   it('writes 未能读取 for every CLI when no scan has been cached yet', () => {
     const lines = buildFeedbackEnvironmentLines({ clis: null, readConfig: () => pointingAtAccount })
 
-    expect(lines).toEqual([...providerIds, ...externalToolIds].map(() => expect.stringContaining('未能读取')))
+    expect(lines).toEqual([...activeProviderIds, ...externalToolIds].map(() => expect.stringContaining('未能读取')))
     expect(lines.join('\n')).not.toContain('配置：')
   })
 
@@ -408,5 +420,38 @@ describe('resolveFeedbackToolRoute', () => {
   it('prints the tool line under the connection line in the report', () => {
     const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'darwin', executionMode: null, relayRoute: '自动（这次用的是 CF 线路）', toolRoute: '洛杉矶', appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
     expect(lines[lines.indexOf('连接线路: 自动（这次用的是 CF 线路）') + 1]).toBe('工具线路: 洛杉矶')
+  })
+})
+
+describe('buildFeedbackToolRouteCertificateLines', () => {
+  const fingerprint256 = Array.from({ length: 32 }, () => 'AB').join(':')
+  // RFC 5737 documentation addresses only.
+  const failure = {
+    line: 'direct' as const,
+    at: Date.parse('2026-10-13T08:00:00.000Z'),
+    label: 'normal' as const,
+    certificates: [
+      { address: '192.0.2.10', issuer: 'CN=Some Firewall CA, O=Firewall', subject: 'CN=xm-direct.solov.cc', fingerprint256, verifyError: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' },
+      { address: '192.0.2.11', issuer: '', subject: '', fingerprint256, verifyError: null },
+    ],
+  }
+
+  it('gives support the issuer, fingerprint and address to compare with the real certificate', () => {
+    expect(buildFeedbackToolRouteCertificateLines(failure)).toEqual([
+      '工具线路证书没过: 洛杉矶，2026-10-13T08:00:00.000Z，标签 normal（解析到的是星芒的地址）',
+      `收到的证书 1: 连 192.0.2.10，颁发者 CN=Some Firewall CA, O=Firewall，证书名 CN=xm-direct.solov.cc，SHA-256 ${fingerprint256}，Node 校验 UNABLE_TO_GET_ISSUER_CERT_LOCALLY`,
+      `收到的证书 2: 连 192.0.2.11，颁发者 （空），证书名 （空），SHA-256 ${fingerprint256}，Node 校验 通过`,
+    ])
+    const { label: _label, ...unlabelled } = failure
+    expect(buildFeedbackToolRouteCertificateLines({ ...unlabelled, line: 'primary' })[0]).toBe('工具线路证书没过: CF，2026-10-13T08:00:00.000Z')
+    expect(buildFeedbackToolRouteCertificateLines({ ...failure, certificates: [] })).toEqual([])
+    expect(buildFeedbackToolRouteCertificateLines(null)).toEqual([])
+  })
+
+  it('prints them right under the tool line', () => {
+    const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'win32', executionMode: null, toolRoute: '洛杉矶', toolRouteCertificate: failure, appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
+    const at = lines.indexOf('工具线路: 洛杉矶')
+    expect(lines[at + 1]).toMatch(/^工具线路证书没过: 洛杉矶/)
+    expect(lines[at + 2]).toMatch(/^收到的证书 1: 连 192\.0\.2\.10/)
   })
 })

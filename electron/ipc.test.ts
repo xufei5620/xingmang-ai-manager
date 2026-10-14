@@ -9,7 +9,7 @@ import type { NativeConfigSaveResult } from './config-files'
 import type { ConnectionCheckResult } from './connection-check'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
-import { providerSessionProviders } from './provider-sessions'
+import { listedProviderSessionProviders, providerSessionProviders } from './provider-sessions'
 import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
 import { createWindowCloseQuery } from './window-close-query'
@@ -20,6 +20,7 @@ import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
+import { noteRequestDiagnostics } from './request-diagnostics'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -186,6 +187,7 @@ function accountServiceStub(): NewApiClientService {
     revokeLoginSession: vi.fn() as never,
     revokeOtherLoginSessions: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
+    issueCodexStartupTicket: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
     getPersistableSession: vi.fn(() => null),
     getSessionRevision: vi.fn(() => 0),
@@ -1161,6 +1163,7 @@ describe('registerIpcHandlers', () => {
       name: input?.name ?? 'key',
       key: 'sk-ipc-must-not-return-this-secret-key',
     }))
+    vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-image-2', 'gpt-image-2.5-flare'])
     const cached = providerIds.map((provider, index) => ({
       id: index + 1,
       provider,
@@ -1193,6 +1196,9 @@ describe('registerIpcHandlers', () => {
       expect(JSON.stringify(summary)).not.toContain('sk-ipc-must-not-return-this-secret-key')
       const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
       expect(fs.readFileSync(configPath, 'utf8')).toContain('sk-ipc-must-not-return-this-secret-key')
+      // The image tool draws with the newest OpenAI model the account's own key can list.
+      expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-ipc-must-not-return-this-secret-key')
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe('gpt-image-2.5-flare')
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
@@ -1308,6 +1314,63 @@ describe('registerIpcHandlers', () => {
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
+  })
+
+  it('provisions keys into the renamed groups the published group map names', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      'default', 'Claude 主力', 'Claude AWS-B', 'GPT 主力', 'GPT-官方API直连', 'Grok 主力', 'Grok-官方API直连',
+    ].map((name) => ({ name, description: '', ratio: 1 })))
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7, name: input?.name ?? 'key', key: 'sk-ipc-fixture-only-renamed-key',
+    }))
+    const accountGroupHints = vi.fn(async () => ({
+      claude: ['Claude 主力', 'Claude-MAX订阅'],
+      codex: ['GPT 主力', 'GPT-中转/订阅'],
+      grok: ['Grok 主力', 'Grok-中转/订阅'],
+    }))
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => []), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {}, { accountGroupHints })
+
+    const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent()) as { ready: Array<{ provider: string; group: string }> }
+    expect(summary.ready.map(({ provider, group }) => [provider, group])).toEqual([
+      ['claude', 'Claude 主力'],
+      ['codex', 'GPT 主力'],
+      ['grok', 'Grok 主力'],
+    ])
+    expect(accountGroupHints).toHaveBeenCalled()
+  })
+
+  it('marks the chat group the Codex key would use, following the published group map', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const chatCredentials = {
+      listGroups: vi.fn(async () => ['default', 'GPT 主力', 'GPT-官方API直连'].map((name) => ({ name, description: '', ratio: 1 }))),
+      prepareGroup: vi.fn(),
+      resolveCredential: vi.fn(),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { chatCredentials } as never, {
+      accountGroupHints: async () => ({ codex: ['GPT 主力', 'GPT-中转/订阅'] }),
+    })
+
+    const groups = await electronMocks.handlers.get('chat:list-groups')!(trustedEvent()) as Array<{ name: string; recommended?: boolean }>
+    expect(groups.filter((group) => group.recommended).map((group) => group.name)).toEqual(['GPT 主力'])
+  })
+
+  it('leaves every chat group unmarked when nothing names the Codex group', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const chatCredentials = {
+      listGroups: vi.fn(async () => ['default', 'GPT 主力', 'GPT-官方API直连'].map((name) => ({ name, description: '', ratio: 1 }))),
+      prepareGroup: vi.fn(),
+      resolveCredential: vi.fn(),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { chatCredentials } as never)
+
+    const groups = await electronMocks.handlers.get('chat:list-groups')!(trustedEvent()) as Array<{ name: string; recommended?: boolean }>
+    expect(groups.some((group) => group.recommended)).toBe(false)
   })
 
   it('persists a selected workspace and updates the repository context', async () => {
@@ -1596,13 +1659,13 @@ describe('registerIpcHandlers', () => {
   })
 
   it('asks again on every launch into a configuration folder that skipped the picker', async () => {
-    const configFolder = path.join(os.homedir(), '.gemini')
+    const configFolder = path.join(os.homedir(), '.grok')
     electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
     const { service } = register()
 
-    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', configFolder)
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'grok', configFolder)
     expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
-    expect(service.launchProvider).toHaveBeenCalledWith('gemini', configFolder, 'new')
+    expect(service.launchProvider).toHaveBeenCalledWith('grok', configFolder, 'new')
   })
 
   it('lets the user pick another folder instead of launching into a configuration folder', async () => {
@@ -1722,14 +1785,14 @@ describe('registerIpcHandlers', () => {
     })
 
     await electronMocks.handlers.get('workspace:choose')!(trustedEvent())
-    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', desktop)
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'grok', desktop)
     expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
     expect(probe).toHaveBeenCalledWith(desktop)
-    expect(service.launchProvider).toHaveBeenCalledWith('gemini', desktop, 'new')
+    expect(service.launchProvider).toHaveBeenCalledWith('grok', desktop, 'new')
 
     // 下一次从首页「打开」、托盘或快捷键再进桌面，照样问；点了「仍然打开」照旧先试写。
     electronMocks.showMessageBox.mockResolvedValueOnce({ response: 2 })
-    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'gemini', desktop)
+    await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'grok', desktop)
     expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(2)
     expect(probe).toHaveBeenCalledTimes(2)
     expect(service.launchProvider).toHaveBeenCalledTimes(2)
@@ -2164,8 +2227,8 @@ describe('registerIpcHandlers', () => {
     register()
     const handler = electronMocks.handlers.get(ipcInvokeChannels.inspectRunningTools)!
 
-    await expect(handler(trustedEvent(), ['gemini'])).resolves.toEqual({
-      running: [], unknown: ['gemini'], codexDesktopRunning: false, canRestartCodexDesktop: false,
+    await expect(handler(trustedEvent(), ['grok'])).resolves.toEqual({
+      running: [], unknown: ['grok'], codexDesktopRunning: false, canRestartCodexDesktop: false,
     })
   })
 
@@ -2845,6 +2908,38 @@ describe('registerIpcHandlers', () => {
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('123456')
   })
 
+  // 三线路 7b：客户说登不上时，日志要记得出这一次走的哪条线路、服务器回了什么、服务端拿什么去查。
+  it('records the line, status and request id of a failed login', async () => {
+    const rejection = new Error('账号或密码错误，请检查后重试')
+    noteRequestDiagnostics(rejection, { line: 'direct', status: 200, requestId: 'req-login-1' })
+    const login = vi.fn(async () => { throw rejection })
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
+    await expect(electronMocks.handlers.get('account:login')!(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' }))
+      .rejects.toThrow()
+    expect(runtimeLog.log).toHaveBeenCalledWith('error', 'ipc', 'account:login', expect.stringContaining('失败'),
+      expect.objectContaining({ request: { line: 'direct', status: 200, requestId: 'req-login-1' } }))
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('fixture-password')
+  })
+
+  it('records the line a login and a second step went through when they succeed, never the code itself', async () => {
+    const signedIn = { account: { userId: 7 }, siteId: 'solov' }
+    noteRequestDiagnostics(signedIn, { line: 'primary', status: 200, requestId: 'req-login-2' })
+    const login = vi.fn(async () => signedIn)
+    const completeTwoFactorLogin = vi.fn(async () => signedIn)
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {
+      realmAccounts: { login, completeTwoFactorLogin } as never,
+    })
+    await electronMocks.handlers.get('account:login')!(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })
+    await electronMocks.handlers.get('account:submit-two-factor-code')!(trustedEvent(), '654321')
+    for (const channel of ['account:login', 'account:submit-two-factor-code']) {
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', channel, expect.stringContaining('完成'),
+        expect.objectContaining({ request: { line: 'primary', status: 200, requestId: 'req-login-2' } }))
+    }
+    const logged = JSON.stringify(runtimeLog.log.mock.calls)
+    expect(logged).not.toContain('654321')
+    expect(logged).not.toContain('fixture-password')
+  })
+
   it('reads remembered credentials only from the last successful identity without exposing its backend', async () => {
     const wrong = { read: vi.fn(async () => ({ identifier: 'unrelated@example.test', password: 'wrong-secret' })), save: vi.fn(), clear: vi.fn() }
     const right = { read: vi.fn(async () => ({ identifier: 'USER@example.test', password: 'right-secret' })), save: vi.fn(), clear: vi.fn() }
@@ -3059,7 +3154,7 @@ describe('registerIpcHandlers', () => {
     register(service)
     const handler = electronMocks.handlers.get('models:list-configured')!
 
-    expect(() => handler(trustedEvent(), 'gemini')).toThrow('未读取到已保存的 API Key')
+    expect(() => handler(trustedEvent(), 'grok')).toThrow('未读取到已保存的 API Key')
     expect(service.fetchAvailableModels).not.toHaveBeenCalled()
   })
 
@@ -3143,18 +3238,46 @@ describe('registerIpcHandlers', () => {
     )
   })
 
+  it('refuses the retired Gemini CLI on every channel that acts on one tool', async () => {
+    const service = serviceStub()
+    register(service)
+    async function refusal(channel: string, ...args: unknown[]): Promise<string> {
+      try {
+        await electronMocks.handlers.get(channel)!(trustedEvent(), ...args)
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+      return 'accepted'
+    }
+
+    for (const channel of [
+      'config:reveal-api-key', 'config:open-directory', 'config:repair-cli-hooks', 'tools:check-models',
+      'cli:install', 'cli:cancel-install', 'cli:uninstall', 'cli:clean-uninstall-leftovers', 'cli:check-update',
+      'models:list-configured', 'diagnostics:check-connection',
+    ]) {
+      expect(await refusal(channel, 'gemini'), channel).toBe('未知的 CLI 类型')
+    }
+    expect(await refusal('extensions:list', 'gemini')).toBe('未知的 AI 工具')
+    expect(await refusal('cli:launch', 'gemini', os.homedir())).toBe('未知的 CLI 类型')
+    expect(await refusal(ipcInvokeChannels.inspectRunningTools, ['gemini'])).toBe('未知的 CLI 类型')
+    expect(await refusal('backups:create', 'gemini')).toBe('未知的配置类型')
+    expect(service.installCli).not.toHaveBeenCalled()
+    expect(service.launchProvider).not.toHaveBeenCalled()
+    expect(service.revealApiKey).not.toHaveBeenCalled()
+  })
+
   it('records failed maintenance calls without logging their arguments', async () => {
     const service = serviceStub()
     vi.mocked(service.installCli).mockRejectedValueOnce(new Error('无法启动命令：npm'))
     const { runtimeLog } = register(service)
     const handler = electronMocks.handlers.get('cli:install')!
 
-    await expect(handler(trustedEvent(), 'gemini')).rejects.toThrow('无法启动命令：npm')
+    await expect(handler(trustedEvent(), 'grok')).rejects.toThrow('无法启动命令：npm')
     expect(runtimeLog.exception).toHaveBeenCalledWith(
       'maintenance',
       'cli.install.failed',
       expect.any(Error),
-      { provider: 'gemini' },
+      { provider: 'grok' },
     )
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('apiKey')
   })
@@ -4960,14 +5083,23 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { provider: 'chatgpt' })).toThrow('会话工具类型错误')
     })
 
-    it('accepts "all" and every known provider id', () => {
+    it('accepts "all" and every listed provider id', () => {
       const { providerSessionsService } = register()
       const handler = electronMocks.handlers.get('provider-sessions:list')!
 
-      for (const provider of ['all', ...providerSessionProviders] as const) {
+      for (const provider of ['all', ...listedProviderSessionProviders] as const) {
         expect(() => handler(trustedEvent(), { provider })).not.toThrow()
         expect(providerSessionsService.list).toHaveBeenCalledWith(expect.objectContaining({ provider }))
       }
+    })
+
+    it('no longer lists the retired Gemini CLI on its own', () => {
+      const { providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      expect(providerSessionProviders).toContain('gemini')
+      expect(() => handler(trustedEvent(), { provider: 'gemini' })).toThrow('会话工具类型错误')
+      expect(providerSessionsService.list).not.toHaveBeenCalled()
     })
 
     it('rejects a search string exceeding the maximum length', () => {
@@ -5793,6 +5925,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(result.keys[1]).not.toHaveProperty('managedProvider')
       // Only the provider id crosses IPC; neither the cached nor the configured secret does (I3).
       expect(JSON.stringify(result)).not.toMatch(/sk-claude-in-use|sk-codex-replaced|sk-user-picked/)
+    })
+
+    it('never marks the key the retired Gemini CLI still holds', async () => {
+      const service = serviceStub()
+      configured(service, { claude: 'sk-claude-in-use-000', gemini: 'sk-gemini-left-behind-000' })
+      const withGemini = [...cached, { id: 13, provider: 'gemini' as const, group: 'g', name: 'xingmang-desktop-gemini', key: 'sk-gemini-left-behind-000' }]
+      const managedCliKeys = { read: vi.fn(async () => withGemini), save: vi.fn(), remove: vi.fn() }
+      register(service, undefined, undefined, signedIn(), undefined, managedCliKeys)
+      const result = await electronMocks.handlers.get('account:list-keys')!(trustedEvent(), {}) as AccountKeysPage
+      expect(result.keys.map((key) => key.managedProvider)).toEqual(['claude', undefined, undefined])
+      expect(vi.mocked(service.revealApiKey).mock.calls.map(([provider]) => provider)).not.toContain('gemini')
     })
 
     it('returns the unmarked list when the cache, a config, or the session cannot be trusted', async () => {
@@ -7391,6 +7534,50 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
+    // 写 Key 没配上是当结果交回界面的，以前一个字都不进日志（0.2.18 真机 19 号第 6 条）。
+    it('logs each tool whose key did not get configured, with the request that failed and no home path', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      const keyRejected = new Error('令牌分组已被禁用')
+      noteRequestDiagnostics(keyRejected, { line: 'direct', status: 200, requestId: 'req-key-1' })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => {
+        if (input?.name === managedCliKeyProfiles.codex.keyName) throw keyRejected
+        return { id: 1, name: input?.name ?? 'managed-key', key: `sk-internal-${input?.name ?? 'default'}` }
+      })
+      const modelsRejected = new Error('模型查询失败，服务返回 403')
+      noteRequestDiagnostics(modelsRejected, { line: 'primary', status: 403, cfRay: '8f1a2b3c4d5e6f70-LAX' })
+      vi.mocked(service.fetchAvailableModels).mockImplementation(async (key) => {
+        if (key.endsWith(managedCliKeyProfiles.claude.keyName)) throw modelsRejected
+        return ['grok-4.6']
+      })
+      vi.mocked(service.saveConfig).mockRejectedValue(new Error(`写入 ${path.join(os.homedir(), '.grok', 'config.toml')} 失败`))
+      const { runtimeLog } = register(service, 'C:\\app-data\\logs', undefined, accountService)
+
+      const result = await electronMocks.handlers.get('account:configure-managed-clis')!(trustedEvent(), {
+        providers: ['codex', 'claude', 'grok'],
+        preferredModels: {},
+      })
+
+      expect(result).toMatchObject({ configured: [], failed: [{ provider: 'codex' }, { provider: 'claude' }, { provider: 'grok' }] })
+      const failures = runtimeLog.log.mock.calls.filter((call) => call[2] === 'managed-cli.key-failed')
+      expect(failures).toEqual([
+        ['warn', 'account', 'managed-cli.key-failed', 'Codex CLI 的 Key 没配上：令牌分组已被禁用',
+          { provider: 'codex', request: { line: 'direct', status: 200, requestId: 'req-key-1' } }],
+        ['warn', 'account', 'managed-cli.key-failed', 'Claude Code 的 Key 没配上：模型查询失败，服务返回 403',
+          { provider: 'claude', request: { line: 'primary', status: 403, cfRay: '8f1a2b3c4d5e6f70-LAX' } }],
+        ['warn', 'account', 'managed-cli.key-failed', expect.stringContaining('Grok CLI 的 Key 没配上：写入 '), { provider: 'grok' }],
+      ])
+      const logged = JSON.stringify(runtimeLog.log.mock.calls)
+      expect(logged).not.toContain(JSON.stringify(os.homedir()).slice(1, -1))
+      expect(logged).not.toContain('sk-internal-')
+      // 结果照旧只有给界面的那几项，诊断不跟着跨进程。
+      expect(Object.keys((result as { failed: object[] }).failed[0])).toEqual(['provider', 'message'])
+    })
+
     it('rejects unknown save modes before provisioning or writing config', () => {
       const service = serviceStub()
       const accountService = accountServiceStub()
@@ -7674,10 +7861,10 @@ describe('config:open-directory', () => {
     const providerRoots = roots()
     register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { providerRoots })
 
-    await expect(electronMocks.handlers.get('config:open-directory')!(trustedEvent(), 'gemini')).rejects.toThrow('还没有生成')
+    await expect(electronMocks.handlers.get('config:open-directory')!(trustedEvent(), 'grok')).rejects.toThrow('还没有生成')
 
     expect(electronMocks.openPath).not.toHaveBeenCalled()
-    expect(fs.existsSync(path.join(providerRoots.userHome, '.gemini'))).toBe(false)
+    expect(fs.existsSync(path.join(providerRoots.userHome, '.grok'))).toBe(false)
   })
 })
 
@@ -7709,6 +7896,13 @@ describe('backup handlers and account key ownership', () => {
     register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     await electronMocks.handlers.get('backups:list')!(trustedEvent())
     expect(backupStore.list).toHaveBeenCalledWith(null)
+  })
+
+  it('leaves old Gemini CLI backups out of the list', async () => {
+    const backupStore = backupStoreStub()
+    backupStore.list.mockImplementation(() => [{ id: 'g1', provider: 'gemini' }, { id: 'c1', provider: 'codex' }] as never)
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    await expect(electronMocks.handlers.get('backups:list')!(trustedEvent())).resolves.toEqual([{ id: 'c1', provider: 'codex' }])
   })
 
   it('passes the account name and key digests, never the key, to the backup store', async () => {

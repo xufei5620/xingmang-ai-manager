@@ -1,6 +1,6 @@
 import { accountOrigin, siteIdForOrigin, type AccountSiteId } from './account-context'
 import { relaySiteEndpointIdForBaseUrl } from '../../electron/relay-sites'
-import { isProviderId } from '../../electron/catalog'
+import { isActiveProviderId } from '../../electron/catalog'
 import { describeRunningTools, type RunningToolsReport } from '../../electron/running-tools'
 import { tools } from './registry/tools'
 import { errorMessage } from './business-common'
@@ -38,7 +38,6 @@ export interface AccountSyncContext {
       | 'matchesRelay'
       | 'model'
       | 'codexAuthMode'
-      | 'authType'
     > & Partial<Pick<Config, 'actualBaseUrl' | 'apiKeyPreview' | 'updatedAt' | 'officialAccountEmail' | 'configurationOwnership'>>
   >
   clis: Record<Provider, { installed: boolean; detectionFailed?: boolean }>
@@ -63,7 +62,7 @@ function unchangedPreviousRelay(
   const before = previous.configs[provider]
   const after = current.configs[provider]
   if (!current.clis[provider].installed || current.clis[provider].detectionFailed || current.officialProviders.includes(provider)
-    || after.codexAuthMode === 'chatgpt' || after.authType === 'oauth-personal') return false
+    || after.codexAuthMode === 'chatgpt') return false
   // Only selected, previously known relay configs qualify. The new site's
   // expected URL changes; the actual on-disk address must still be one of the
   // old site's routes, with no observable edits to its credentials/auth.
@@ -72,7 +71,7 @@ function unchangedPreviousRelay(
     || !siteRouteUrl(previousSiteId, provider, after.actualBaseUrl)
     || !siteRouteUrl(currentSiteId, provider, after.baseUrl)
     || !before.apiKeyPreview || !before.updatedAt) return false
-  return (['actualBaseUrl', 'apiKeyPreview', 'updatedAt', 'model', 'authType', 'codexAuthMode', 'officialAccountEmail'] as const)
+  return (['actualBaseUrl', 'apiKeyPreview', 'updatedAt', 'model', 'codexAuthMode', 'officialAccountEmail'] as const)
     .every((field) => before[field] === after[field])
 }
 export interface AccountSyncCandidate {
@@ -116,16 +115,15 @@ export function accountSyncCandidates(
   return tools
     .flatMap((tool) => {
       // Desktop entries share a CLI's provider config and must not be offered
-      // as their own sync candidate; isProviderId also narrows tool.id, which
-      // the registry now types as ProviderId | 'codexDesktop'.
-      if (tool.kind !== 'cli' || !isProviderId(tool.id)) return []
+      // as their own sync candidate; isActiveProviderId also narrows tool.id,
+      // which the registry types as ActiveProviderId | 'codexDesktop'.
+      if (tool.kind !== 'cli' || !isActiveProviderId(tool.id)) return []
       const provider = tool.id
       const config = context.configs[provider]
       const status = context.clis[provider]
       const official =
         context.officialProviders.includes(provider) ||
-        (provider === 'codex' && config.codexAuthMode === 'chatgpt') ||
-        (provider === 'gemini' && config.authType === 'oauth-personal')
+        (provider === 'codex' && config.codexAuthMode === 'chatgpt')
       const manual =
         config.hasApiKey &&
         config.matchesRelay &&

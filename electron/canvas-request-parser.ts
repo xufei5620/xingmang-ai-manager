@@ -6,6 +6,11 @@ import type { CanvasRunGraph, CanvasRunNodeKind, CanvasRunScope } from './canvas
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 const videoTaskIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
 const windowsReservedFileNamePattern = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+// Every run-graph field has its own bound, yet 5 000 nodes x 100 000-character
+// prompts still multiply to about 1 GB held by the main process, hashed again for
+// the graph revision and cloned again by the run service. A graph the canvas can
+// legitimately run comes from a workflow it can save, which is capped at 20 MB.
+const maximumRunPromptBytes = 20 * 1024 * 1024
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -62,6 +67,15 @@ export function canvasSaveFileName(value: unknown, label: string, fallback: stri
   const cleaned = leaf.replace(/[<>:"|?*\x00-\x1F\x7F]/g, '_').replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
   if (!cleaned || windowsReservedFileNamePattern.test(cleaned)) return fallback
   return cleaned
+}
+
+/**
+ * Canvas notifications are shown under this app's own name. They cannot be
+ * clicked, but a spelled-out link still reaches anyone who copies it, so a
+ * poisoned canvas must not be able to use them to point users at a page.
+ */
+export function canvasNotificationText(value: string): string {
+  return value.replace(/(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S*/gi, '').trim()
 }
 
 export function requiredCanvasText(value: unknown, label: string, maximumBytes: number): string {
@@ -361,6 +375,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
   }
   assertOnlyFields(value.graph, ['nodes', 'edges'], '画布运行图')
   if (value.graph.nodes.length > 5_000 || value.graph.edges.length > 20_000) throw new Error('工作流规模超过安全上限')
+  let promptBytes = 0
   const nodes: CanvasRunGraph['nodes'] = value.graph.nodes.map((entry) => {
     if (!isRecord(entry) || !isRecord(entry.data)) throw new Error('画布运行节点格式错误')
     assertOnlyFields(entry, ['id', 'kind', 'definitionVersion', 'disabled', 'data'], '画布运行节点')
@@ -373,6 +388,8 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
     if (entry.disabled !== undefined && typeof entry.disabled !== 'boolean') throw new Error('画布节点禁用状态格式错误')
     const prompt = canvasPrompt(entry.data.prompt, '画布节点提示词', 100_000)
+    promptBytes += Buffer.byteLength(prompt, 'utf8')
+    if (promptBytes > maximumRunPromptBytes) throw new Error('工作流规模超过安全上限')
     const model = canvasString(entry.data.model, '画布节点模型', 512)
     const group = optionalCanvasString(entry.data.group, '画布分组', 128)
     const quality = optionalCanvasString(entry.data.quality, '画布画质', 64)

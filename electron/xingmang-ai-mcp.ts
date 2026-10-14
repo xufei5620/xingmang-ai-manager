@@ -143,6 +143,19 @@ export function applyXingmangImageMcpToJson(
 }
 
 /**
+ * 收回本软件登记的那一条（Gemini CLI 下线时用）。同名但不是我们那份脚本的条目归客户，
+ * 不动；收完 mcpServers 空了就一并拿掉，星芒登记前多半就没有这一节。返回是否改动。
+ */
+export function removeXingmangImageMcpFromJson(parsed: Record<string, unknown>): boolean {
+  if (!isRecord(parsed.mcpServers)) return false
+  const servers = parsed.mcpServers
+  if (!isManagedXingmangImageMcpEntry(servers[XINGMANG_IMAGE_MCP_NAME])) return false
+  delete servers[XINGMANG_IMAGE_MCP_NAME]
+  if (Object.keys(servers).length === 0) delete parsed.mcpServers
+  return true
+}
+
+/**
  * Claude Code 每次调 MCP 工具都会问一次，除非 permissions.allow 里有它。只加这一个
  * 工具名；用户把它写进 deny 或 ask 的，一律不动。
  */

@@ -19,6 +19,7 @@ import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './rec
 import { chooseWorkspaceLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, workspaceButtonLabel, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
+import { isActiveProviderId } from '../../../../electron/catalog'
 import { isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
@@ -143,6 +144,8 @@ export function pickFirstRunTool(installed: ToolPresentation[], jobs: Record<str
  * 点了照旧说失败的原因。
  */
 export function recentResumeOffered(tools: readonly ToolPresentation[], provider: ProviderId): boolean {
+  // 已下线的工具（Gemini，yoyo 2026-10-14）首页不再替它打开：它的旧记录不给「接着聊」。
+  if (!isActiveProviderId(provider)) return false
   const tool = tools.find((entry) => entry.id === provider)
   return tool === undefined || tool.status.installed || tool.error !== null
 }
@@ -306,11 +309,13 @@ export function Home(props: HomeProps) {
   }
   /**
    * 「接着聊」点下去先对一次「最近」（已知4）。窗口回到前面时的那次重读是异步的：从终端直接点回星芒，
-   * 这一下用的还是手上的旧列表，点同一文件夹里更早那条，Claude Code、Gemini CLI、Grok CLI 接上的
+   * 这一下用的还是手上的旧列表，点同一文件夹里更早那条，Claude Code、Grok CLI 接上的
    * 却是刚聊的那条。所以先真去读一份（不认一分钟的缓存，它可能是在终端里聊之前读的）：点的这条已经
    * 不是它那个文件夹最近的了，就换上新列表、这次不打开，按钮自己挪到该挂的那条上。读不到就照旧打开。
    */
   async function resumeRecent(session: RecentSession) {
+    const provider = session.provider
+    if (!isActiveProviderId(provider)) return
     if (resumeNeedsRecheck(session)) {
       setResumeChecking(session.id)
       props.api.invalidateRecent()
@@ -321,7 +326,7 @@ export function Home(props: HomeProps) {
       if (fresh) setRecent(fresh)
       if (fresh && !resumeStillLatest(session, fresh.items)) return
     }
-    props.onLaunch(session.provider, session.cwd, resumeLaunchChoice(session))
+    props.onLaunch(provider, session.cwd, resumeLaunchChoice(session))
   }
   async function refreshOfficial() {
     if (officialLock.current) return
@@ -340,7 +345,7 @@ export function Home(props: HomeProps) {
   }, [props.api, recentAttempt, props.recentRevision])
   // 首页一直开着就不会重新挂载：从这里打开工具、在终端里聊完再切回来，「最近」和工具那一行
   // 「打开 xx」还是打开前读的那份。刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，
-  // 而 Claude Code、Gemini CLI、Grok CLI 续接是按文件夹找最近一条（#292），点下去接上的是刚聊的那条。
+  // 而 Claude Code、Grok CLI 续接是按文件夹找最近一条（#292），点下去接上的是刚聊的那条。
   // 所以窗口回到前面时再读一次：一分钟内又没打开过工具，toolsApi 给的还是原来那一份，不读盘，页面也不变。
   useEffect(() => {
     function foreground() {
@@ -471,7 +476,7 @@ export function Home(props: HomeProps) {
     return !accountKeyChangePending({ signedIn: account !== null, restoring: props.accountRestoring === true, bootstrap: props.bootstrap ?? null }, tool.provider)
   }
   // 「接着聊」点下去走的是同一个「打开」，跟着它那一行走。
-  function resumeReadyBeforeScan(provider: ToolId): boolean {
+  function resumeReadyBeforeScan(provider: ProviderId): boolean {
     const tool = tools.find((entry) => entry.id === provider)
     return tool !== undefined && launchReadyBeforeScan(tool)
   }
@@ -527,7 +532,7 @@ export function Home(props: HomeProps) {
         : tool.configured ? 'ready' : notEnabled ? 'notEnabled' : 'unconfigured'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，
     // 拿它当主按钮的默认值，旁边的下拉再给最近几个和原来的选择器（N7）。
-    // 这个工具还没有记录时用上次在本软件里选过的文件夹，四个工具只问一次。
+    // 这个工具还没有记录时用上次在本软件里选过的文件夹，几个命令行工具合起来只问一次。
     // Codex 桌面端自己管工作区，不走这条路。
     const opensWorkspace = !configUnavailable && !tool.error && tool.status.installed
       && openable && tool.id !== 'codexDesktop'
@@ -543,7 +548,7 @@ export function Home(props: HomeProps) {
       && recent.stats.byProvider[tool.provider] === 0 && Boolean(props.onLaunchInNewFolder)
     // 归客户自己装的（认不出芯片的 Mac 上的 Codex 桌面端）这颗按钮只能把人带到教程：写「安装」就是骗人。
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
-    // Codex 桌面端在 Windows 上是 Appx，装它要提权；四个 CLI 走 npm，不提权。
+    // Codex 桌面端在 Windows 上是 Appx，装它要提权；命令行工具走 npm，不提权。
     const elevationHint = tool.id === 'codexDesktop' && !tool.status.installed
       ? elevatedInstallShortNotice('codexDesktop', snapshot?.platform.platform, snapshot?.platform.codexDesktop.install, snapshot?.platform.processElevated)
       : null
@@ -687,7 +692,7 @@ export function Home(props: HomeProps) {
         icon={tool.action === 'launch' || downloadUrl ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处：行左边不再放独立的「配置」按钮，否则同一行会出现两个配置入口，
-        // 而四个 CLI 行从来只有菜单入口，用户看到的是同类工具行给法不一致。主按钮已经是这个动作时菜单里不再重复。
+        // 而命令行工具那几行从来只有菜单入口，用户看到的是同类工具行给法不一致。主按钮已经是这个动作时菜单里不再重复。
         ...(tool.action === 'configure' ? [] : [{ label: '配置', disabled: externalCached, testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
         ...(tool.action === 'launch' ? [] : [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy || externalCached, onSelect: () => props.onLaunchExternal(tool.id) }]),
       ] : undefined} menuLabel={toolMenuLabel} testId={`tool-row-${tool.id}`} />

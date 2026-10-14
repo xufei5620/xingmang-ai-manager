@@ -22,7 +22,7 @@
 
 **商业定位**：不是通用工具。四个 CLI 的 base URL 全部硬编码指向 `xm.solov.cc`（2026-08-10 起中转与账号后端统一到同一 new-api 实例，原 `api.solov.cc` 退役），onboarding 填的是"安装授权码"。**它的价值 = 降低客户接入门槛、减少客服成本。这条链路断了，用户就退款。**
 
-**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Gemini CLI（`@google/gemini-cli`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端。
+**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端。Gemini CLI（`@google/gemini-cli`）2026-10-14 下线：界面不显示、不再装、不再改它的配置，老客户电脑上的不卸不删；代码里它仍是 `ProviderId`，挂在 `catalog.ts` 的退役名单 `retiredProviderIds` 上，「替每个工具做点什么」的地方一律走 `activeProviderIds`。
 
 **内置的两块新能力**（2026-08 集成）：
 - **星芒账号**：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值外链，登录后自动签发 CLI Key 并写进 CLI 配置。
@@ -174,7 +174,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 `managed-cli.test.ts` 在非 Windows 平台每跑一次就泄漏若干个。
 
 **T12. 改账号对接 → 端点事实以 `docs/RECON-new-api.md` 为准，别按 new-api 文档想当然。**
-关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层与主进程各有一份密码长度等字面量是**有意重复**（electron 不 import src，同 I6/I7 的理由）。
+关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token（线上 rc.40 起还要先 `POST /api/verify` 换一次性凭证，放进 PUT 的 `X-Security-Proof` 头）、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层与主进程各有一份密码长度等字面量是**有意重复**（electron 不 import src，同 I6/I7 的理由）。
 
 **T13. 画布相关改动 → 分清源码与产物，且认清"执行发生在主进程"。**
 画布**源码**在 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成的**构建产物**，不入 git。改画布行为只改 `canvas-v2/`，**不要**改 `dist-canvas/` 里的产物文件。

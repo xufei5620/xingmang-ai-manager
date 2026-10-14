@@ -70,7 +70,7 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
-import { cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -90,7 +90,7 @@ import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
 import { findExecutable, isTrustedHighIntegrityExecutable, runWithTrustedWindowsProcessEnvironment, trustedCommandEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
-import { createNewApiClient, type NewApiRetryOffProxyFailure } from './new-api-client'
+import { createNewApiClient, type NewApiCodexStartupTicket, type NewApiRetryOffProxyFailure } from './new-api-client'
 import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
@@ -134,7 +134,7 @@ import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relayAutoBackupLine, relayAutoPreferredLines, relayEndpointOrigin, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
 import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
 import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
@@ -198,6 +198,7 @@ import {
 } from './download-proxy'
 import { createDownloadAccelerationCoordinator } from './download-acceleration'
 import { codexDesktopNeedsAccelerationOnlyAtStartup, createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
+import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator } from './codex-desktop-startup-route'
 import { probeCodexDesktopRunning } from './codex-desktop-service'
 import {
   createSystemService,
@@ -232,7 +233,6 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
-import { inspectUserWideCertificateTrust, trustCertificatesForUserTerminals } from './user-certificate-trust'
 
 guardProcessOutputStreams()
 
@@ -247,7 +247,7 @@ const nonSiteExternalUrlAllowlist = [
   'https://www.python.org/downloads/',
   // 首页运行环境行的「下载 Git」按钮只在 Windows 出现，落点就是这一条（I12 全等匹配）。
   gitWindowsDownloadUrl,
-  // 缺少系统 winget 时首页 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
+  // 首页 WorkBuddy 一行，以及缺少系统 winget 时 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
@@ -1131,8 +1131,9 @@ if (!hasSingleInstanceLock) {
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
     // 线路选项开机时定下，这次运行里不再变（设置里改了要重启才生效）。选「自动」的站这次运行里会
-    // 换线路：先用上次存下的结论，开机后在后台查一次，直连连不上改走默认线路，好了再切回来
-    // （relay-route-controller.ts）。查线路走的是星芒自己连站点那条路（relayFetch，下面才建）。
+    // 换线路：先用上次存下的结论，开机后在后台查一次，先走的那条连不上改走备用那条，好了再切回来
+    // （星芒账号先走直连，历史账号先走默认线路，relay-route-controller.ts）。查线路走的是星芒自己连站点
+    // 那条路（relayFetch，下面才建）。
     const relayPreferences = resolveRelayRoutePreferences(settingsStore.read().relayEndpointIds)
     const relayRouteConclusions = createRelayRouteConclusionStore(path.join(managerDataDirectory, 'relay-route-lines.json'))
     const relayRouteController = createRelayRouteController({
@@ -1220,10 +1221,10 @@ if (!hasSingleInstanceLock) {
       },
     })
     // 星芒自己的请求（账号、AI 工作区、AI 工作区查模型）按线路走：认得出的星芒地址换到这个站这会儿
-    // 的线路，「自动」时直连没走通当场改走默认线路（relay-line-fetch.ts）。报给线路那边的只是叫它查一轮
+    // 的线路，「自动」时先走的那条没走通当场改走备用那条（relay-line-fetch.ts）。报给线路那边的只是叫它查一轮
     // 健康检查，换不换由它定（#941 第 3 节）：正文读得慢、客户点了「停止」不报；账号请求只会因为等到时限
     // 才中止，连回应头都没等来就报（abortMeansNoAnswer）。工具相关的检查（写配置前查模型、工具自检）查的
-    // 正是工具会用的那条线路，不换不重发，直连上连不上只报给线路那边。
+    // 正是工具会用的那条线路，不换不重发，先走的那条上连不上只报给线路那边。
     function logRelayLine(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
       runtimeLog.log(level, 'network', event, message, detail)
     }
@@ -1324,7 +1325,7 @@ if (!hasSingleInstanceLock) {
     // 写进工具配置、给工具自检对账用的线路：星芒账号读工具线路，历史账号照旧读应用线路。
     const toolRouting = createToolRouteRoutingSnapshot(relayPreferences, () => relayRouteController.lines(), () => toolRouteController.line())
     runtimeLog.log('info', 'config', 'relay.route.active', '本次运行写进工具配置的线路', { kind: 'tool', lines: { solov: toolRouteController.line() } })
-    // 写配置前查模型、工具自检：星芒账号在工具线路上没走通报给工具线路，历史账号照旧报直连给应用线路。
+    // 写配置前查模型、工具自检：星芒账号在工具线路上没走通报给工具线路，历史账号报先走的那条（默认线路）给应用线路。
     const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, {
       log: logRelayLine,
       toolLine: {
@@ -1463,8 +1464,33 @@ if (!hasSingleInstanceLock) {
       // 桌面端用的是星芒的 Key：它要加速只为启动时拉中文界面那份配置，之后连着只会
       // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
       // 认不准的也按这种算，等桌面端退出再断。读配置抛错由守护按「一直要」处理。
-      onlyNeededAtStartup: () => codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
-        rootedOptions.system.providerRoots, relayRouting.resolve(systemService.readStoredConfig().relaySiteId).providerBaseUrls)),
+      onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    function codexDesktopUsesStarKeyOnly(): boolean {
+      return codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
+        rootedOptions.system.providerRoots, relayRouting.resolve(systemService.readStoredConfig().relaySiteId).providerBaseUrls))
+    }
+    // Codex 启动时读中文开关的那一下先试着经星芒服务器代取，走不通才照旧连加速（issue #977，
+    // codex-desktop-startup-route.ts）。账号服务建得比这里晚，建好以后才换成真的换票。
+    let issueCodexStartupTicket: () => Promise<NewApiCodexStartupTicket> = () => Promise.reject(new Error('账号服务尚未就绪'))
+    // 通道地址跟账号请求走同一个站、同一套线路：这会儿走的那条在前，另一条留作握不上手时再试。
+    function codexStartupTunnelUrls(): string[] {
+      const lines: RelayEndpointId[] = relayRouting.lines().solov.line === 'direct' ? ['direct', 'primary'] : ['primary', 'direct']
+      return lines.flatMap((line) => {
+        const origin = relayEndpointOrigin('solov', line)
+        const url = origin ? buildCodexStartupTunnelUrl(origin) : null
+        return url ? [url] : []
+      })
+    }
+    const codexDesktopStartupRoute = createCodexDesktopStartupRouteCoordinator({
+      launchArgumentsSupported: process.platform === 'win32' || process.platform === 'darwin',
+      fastFailSupported: process.platform === 'win32',
+      onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
+      issueTicket: () => issueCodexStartupTicket(),
+      tunnelUrls: () => codexStartupTunnelUrls(),
+      ensureAccelerated: () => codexDesktopAcceleration.ensureConnected(),
+      resolveSystemProxy: (url) => resolveSystemProxy(url),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
@@ -1553,7 +1579,7 @@ if (!hasSingleInstanceLock) {
         )
       },
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
-      prepareCodexDesktopAcceleration: async () => { await codexDesktopAcceleration.ensureConnected() },
+      prepareCodexDesktopStartupRoute: (context) => codexDesktopStartupRoute.prepare(context),
     })
     // 星芒账号的工具线路换了：主进程把四个工具配置里的地址定点改过去（xm 三线路 C9）。历史账号照旧
     // 由界面收到应用线路那声以后走同步 Key。只有因为连不上换的（没通、劫持、服务端整体故障）才可能提示
@@ -1620,12 +1646,15 @@ if (!hasSingleInstanceLock) {
         parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
       ),
       // Codex 的官方插件目录由本软件替它下载（codex-plugin-catalog.ts），与装 CLI
-      // 同一条下载通道，也同样临时借加速线路。
+      // 同一条下载通道。先从星芒存储桶下，没走通才去 GitHub，那时才临时借加速线路。
       downloadFetch,
       acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
+      codexCatalogBucket: {
+        onFallback: (detail) => runtimeLog.log('warn', 'install', 'codex-plugin-catalog.bucket-fallback', 'Codex 插件目录存储桶这一路没走通，改从 GitHub 下', { detail }),
+      },
     })
     let latestDiagnostics: DiagnosticsReport | null = null
-    // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走直连没查通时它改查默认线路，并把失败报过来。
+    // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走先走的那条没查通时它改查备用那条，并把失败报过来。
     // 各工具「连接设置」、电脑里另外设过的工具地址比的是工具线路（xm 三线路）；历史账号两套是同一套，不另给。
     function diagnosticsToolRoute(siteId: string | undefined): DiagnosticsDependencies['toolRoute'] {
       const site = toolRouting.resolve(siteId)
@@ -1646,7 +1675,9 @@ if (!hasSingleInstanceLock) {
         settled,
         automatic: relayRouting.preferences[routeSiteId] === 'auto',
         primarySite: requireRelaySite(routeSiteId),
-        reportDirectFailure: (reason) => relayRouteController.reportDirectFailure(routeSiteId, reason),
+        preferredLine: relayAutoPreferredLines[routeSiteId],
+        backupSite: requireRelaySite(routeSiteId, relayAutoBackupLine(routeSiteId)),
+        reportPreferredFailure: (reason) => relayRouteController.reportPreferredFailure(routeSiteId, reason),
         lastChange: relayRouteController.lastChange(routeSiteId),
       }
     }
@@ -1729,7 +1760,6 @@ if (!hasSingleInstanceLock) {
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
           // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
           workspace: systemService.readStoredConfig().workspace,
-          inspectUserWideCertificateTrust: () => inspectUserWideCertificateTrust({ executionMode: windowsCliExecutionMode }),
         })
         return latestDiagnostics
       },
@@ -1788,15 +1818,6 @@ if (!hasSingleInstanceLock) {
           ...rootedOptions.diagnosticExport,
           sensitiveValues: sensitiveKeyValues(),
         })
-      },
-      // 只在最近一次检查确实查出公司证书、且这条还没设过时才写：按钮是检查页给的，
-      // 主进程这里再对一次，不因为一条来路不明的调用就去改客户的电脑设置。
-      trustCertificatesUserWide: async () => {
-        const item = latestDiagnostics?.items.find((entry) => entry.code === 'CERTIFICATE_TRUST')
-        if (item?.details?.userWide !== 'available') throw new Error('这台电脑现在不需要这项设置，请先点「重新检测」')
-        const result = await trustCertificatesForUserTerminals({ executionMode: windowsCliExecutionMode })
-        runtimeLog.log('info', 'diagnostics', 'certificate.user-wide.trusted', '当前 Windows 账号的终端已设为信任这台电脑的证书', { result })
-        return result
       },
     }
     if (process.platform === 'win32') {
@@ -2031,7 +2052,7 @@ if (!hasSingleInstanceLock) {
               if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
               const failure = classifyDirectFeedFailure(error)
               if (!failure) return false
-              if (failure.lineFailure) relayRouteController.reportDirectFailure('solov', failure.reason)
+              if (failure.lineFailure) relayRouteController.reportPreferredFailure('solov', failure.reason)
               useUpdateFeedLine('primary')
               runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在直连上没走通，改走默认线路再查一次', { reason: failure.reason })
               return true
@@ -2059,6 +2080,7 @@ if (!hasSingleInstanceLock) {
           runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
             maintenance: Boolean(status?.maintenance),
             toolRouteRewrite: toolRouteRewriteMode,
+            ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
           })
         },
       })
@@ -2153,6 +2175,7 @@ if (!hasSingleInstanceLock) {
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
         relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
         toolRoute: resolveFeedbackToolRoute(toolRouting, systemService.readStoredConfig().relaySiteId),
+        toolRouteCertificate: toolRouting.resolve(systemService.readStoredConfig().relaySiteId).id === 'solov' ? toolRouteController.certificateFailure() : null,
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
@@ -2513,6 +2536,13 @@ if (!hasSingleInstanceLock) {
       },
     })
     readAccountSiteId = () => accounts.getSiteId()
+    // 只有星芒账号的站有代取服务；历史账号的客户端没有这个方法。票只在主进程里用。
+    issueCodexStartupTicket = async () => {
+      if (accounts.getSiteId() !== 'solov') throw new Error('当前账号没有 Codex 中文启动通道')
+      const issue = accounts.client.issueCodexStartupTicket
+      if (!issue) throw new Error('当前账号没有 Codex 中文启动通道')
+      return issue()
+    }
     const accountService = accounts.client
     readBillingAccountScope = () => {
       const state = accountService.getSessionState()
@@ -3095,6 +3125,8 @@ if (!hasSingleInstanceLock) {
     // 本软件写给 Codex 的型号名单读不进时 Codex 整个起不来（星芒关着的时候命令行或桌面端
     // 换成了旧版）：开机在本机看一眼，没登录的也看；登录状态下开机那轮按账号同步共用这一次。
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
+    // Gemini CLI 下线后，星芒以前写进它配置的做完提醒和画图没人维护了，开机后在后台收回。
+    void startupQuiet.whenOver().then(() => systemService.reclaimRetiredToolIntegrations?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -3289,6 +3321,12 @@ if (!hasSingleInstanceLock) {
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      // 分组对照跟着服务状态文件走：正在读就等这一次读完，不为它另发请求；这次没读到就用上一次读成功的那份。
+      accountGroupHints: async () => {
+        if (!serviceStatusMonitor) return null
+        await serviceStatusMonitor.settled()
+        return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
+      },
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
@@ -3847,7 +3885,7 @@ if (!hasSingleInstanceLock) {
           subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
           installedTools: [
             ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),
-            ...providerIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : id === 'gemini' ? 'Gemini CLI' : 'Grok CLI' })),
+            ...activeProviderIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : 'Grok CLI' })),
           ],
           update: resolveTrayUpdateEntry(updaterService.getState()),
           acceleration: trayAcceleration?.entry() ?? null,

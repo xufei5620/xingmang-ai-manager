@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
+import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
 import type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
 export type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
@@ -73,6 +75,10 @@ const topupAmountPath = '/api/user/amount'
 const topupPaymentPath = '/api/user/pay'
 const topupOrdersPath = '/api/user/topup/self'
 const redemptionPath = '/api/user/topup'
+// 星芒服务器上「只代取 Codex 启动时那一个请求」的小服务（issue #977）发通行票的地方。它不是 new-api 的
+// 接口：反向代理把 /api/xingmang-tunnel/ 这个前缀转给那个服务；还没部署时这里落到 new-api 自己的 JSON 404。
+const codexStartupTicketPath = '/api/xingmang-tunnel/v1/ticket'
+const codexStartupTicketMaxResponseBytes = 4 * 1024
 const affiliateTransferPath = '/api/user/aff_transfer'
 const subscriptionPlansPath = '/api/subscription/plans'
 const subscriptionSelfPath = '/api/subscription/self'
@@ -85,6 +91,9 @@ const subscriptionPaymentPaths = Object.freeze({
   'waffo-pancake': '/api/subscription/waffo-pancake/pay',
 })
 const loginSessionsPath = '/api/user/sessions'
+const securityVerifyPath = '/api/verify'
+// service/security_verification.go VerificationScopePasswordChange.
+const passwordChangeScope = 'account.password.change'
 const legalDocumentPaths = {
   'user-agreement': '/api/user-agreement',
   'privacy-policy': '/api/privacy-policy',
@@ -243,6 +252,15 @@ export interface NewApiResetPasswordInput {
 export interface NewApiLoginResult {
   account: NewApiAccountProfile
   accessExpiresAt: string | null
+}
+
+/**
+ * Codex 启动通道的通行票（codex-desktop-startup-route.ts）。只在主进程里用，从不跨 IPC、不进日志：
+ * 拿着它的人在有效期内能开那条只通 ab.chatgpt.com 的通道。
+ */
+export interface NewApiCodexStartupTicket {
+  ticket: string
+  expiresInSeconds: number
 }
 
 export interface NewApiSessionState {
@@ -910,10 +928,13 @@ export interface NewApiClientService extends RelayBackendClient {
   // the key's model limits and group. Verified against the exact
   // v1.0.0-rc.24 tag xm.solov.cc is pinned to.
   updateKey(input: NewApiAccountKeyUpdateInput): Promise<void>
-  // PUT /api/user/self with {password, original_password} -- confirmed
-  // identical between the `main` branch and the exact v1.0.0-rc.24 tag
-  // xm.solov.cc is pinned to (controller/user.go's UpdateSelf handler,
-  // service/auth_session.go's AdvanceCurrentSessionToUserVersion). See
+  // POST /api/verify (the original password for a one-time proof), then
+  // PUT /api/user/self with {password, original_password} and that proof in
+  // X-Security-Proof -- rc.40, which xm.solov.cc runs, refuses the PUT without
+  // it; rc.24 did not ask. Read from v1.0.0-rc.40 and rc.44
+  // (controller/user.go's UpdateSelf handler, middleware/
+  // secure_verification.go's RequireSecurityProof, service/auth_session.go's
+  // AdvanceCurrentSessionToUserVersion). See
   // parseChangePasswordResponseData's own comment for exactly what happens
   // to *this* session afterward (short version: it keeps working, no
   // re-login needed) versus every *other* session (signed out immediately,
@@ -923,6 +944,10 @@ export interface NewApiClientService extends RelayBackendClient {
   revokeLoginSession(sid: string): Promise<NewApiRevokeLoginSessionResult>
   revokeOtherLoginSessions(): Promise<NewApiRevokeOtherLoginSessionsResult>
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
+  // Main-process-only. Asks the xm tunnel service (not new-api) for a pass the
+  // Codex startup tunnel presents; see issueCodexStartupTicket below for why a
+  // refusal there never signs the account out.
+  issueCodexStartupTicket(): Promise<NewApiCodexStartupTicket>
   // Exchanges the captured refresh cookie for a new access_token. Every
   // authenticated call already retries through this same path once on a 401
   // (see withSession below); exposed directly too for a caller that wants to
@@ -1074,6 +1099,8 @@ interface NewApiRawResponse {
   ok: boolean
   payload: unknown
   headers: Headers
+  /** 走的线路、状态码、请求编号：读回应时出的错挂上它，日志记得出服务器回了什么（request-diagnostics.ts）。 */
+  diagnostics: RequestDiagnostics
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1191,6 +1218,8 @@ async function performRequestOnce(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), ctx.timeoutMs)
   timeout.unref?.()
+  // 连回应都没拿到时只有按线路发请求那一层挂在原始失败上的线路，换成下面的中文错误时带过去。
+  let diagnostics: RequestDiagnostics | null = null
   try {
     const response = await ctx.fetchImpl(url, {
       method: init.method,
@@ -1209,6 +1238,7 @@ async function performRequestOnce(
       redirect: 'manual',
       signal: controller.signal,
     })
+    diagnostics = responseDiagnostics(response)
     if (response.url) {
       const responseOrigin = safeOrigin(response.url)
       if (responseOrigin !== ctx.origin) {
@@ -1235,15 +1265,16 @@ async function performRequestOnce(
         payload = null
       }
     }
-    return { status: response.status, ok: response.ok, payload, headers: response.headers }
+    return { status: response.status, ok: response.ok, payload, headers: response.headers, diagnostics }
   } catch (error) {
+    noteRequestDiagnostics(error, diagnostics)
     if (error instanceof NewApiNetworkError) throw error
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new NewApiNetworkError('timeout', `${label}请求超时`)
+      throw carryRequestDiagnostics(error, new NewApiNetworkError('timeout', `${label}请求超时`))
     }
     // 认不出来的失败按原样抛：上游自己写的中文错误比一句猜出来的「网络问题」有用。
     const reason = classifyNetworkFailure(error)
-    if (reason) throw new NewApiNetworkError(reason, `${label}请求失败`)
+    if (reason) throw carryRequestDiagnostics(error, new NewApiNetworkError(reason, `${label}请求失败`))
     throw error
   } finally {
     clearTimeout(timeout)
@@ -1264,10 +1295,31 @@ function assertServiceAvailable(raw: NewApiRawResponse, detail: string): void {
   }
 }
 
+/** 读回应时出的错（服务回了错误、格式不对）都挂上这一次的线路、状态码和请求编号，再往外抛。 */
+function withRequestDiagnostics<T>(raw: NewApiRawResponse, read: () => T): T {
+  try {
+    return read()
+  } catch (error) {
+    noteRequestDiagnostics(error, raw.diagnostics)
+    throw error
+  }
+}
+
+// 服务器说的那句给人看的话：rc.43 起 message 一律是英文，带着 message_key 的换成
+// 上游自己的中文（new-api-messages.ts）；认不出的 key、老版本服务器照旧用 message。
+// 只用来上屏和记日志；按原话判断是哪种失败的地方（登录被拒、两步验证）仍看英文原句。
+function displayServerMessage(envelope: Record<string, unknown> | null, fallback: string): string {
+  return (envelope && resolveChineseServerMessage(envelope)) ?? fallback
+}
+
 function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
+  return withRequestDiagnostics(raw, () => readEnvelope(raw, label, secrets))
+}
+
+function readEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(serverMessage, secrets)
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
@@ -1379,9 +1431,13 @@ function unwrapTwoFactorLoginEnvelope(raw: NewApiRawResponse, secrets: readonly 
  * shape cannot weaken validation for account, billing, or key calls.
  */
 function unwrapPublicNotice(raw: NewApiRawResponse): unknown {
+  return withRequestDiagnostics(raw, () => readPublicNotice(raw))
+}
+
+function readPublicNotice(raw: NewApiRawResponse): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(serverMessage, [])
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), [])
   if (raw.status === 401) throw new NewApiAuthenticationError(detail || '公告读取未授权')
   assertServiceAvailable(raw, detail)
   if (!raw.ok) throw new Error(detail || `公告读取失败，服务返回 HTTP ${raw.status}`)
@@ -1414,10 +1470,18 @@ function unwrapLegacyBusinessEnvelope(
   label: string,
   secrets: readonly string[],
 ): LegacyBusinessEnvelope {
+  return withRequestDiagnostics(raw, () => readLegacyBusinessEnvelope(raw, label, secrets))
+}
+
+function readLegacyBusinessEnvelope(
+  raw: NewApiRawResponse,
+  label: string,
+  secrets: readonly string[],
+): LegacyBusinessEnvelope {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const message = envelope && typeof envelope.message === 'string' ? envelope.message : ''
   const dataMessage = envelope && typeof envelope.data === 'string' ? envelope.data : ''
-  const detail = sanitizeUpstreamMessage(message === 'error' ? dataMessage : message, secrets)
+  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, message === 'error' ? dataMessage : message), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
@@ -2288,6 +2352,19 @@ export function parseLoginResponseData(payload: unknown): NewApiRawLoginData {
   }
 }
 
+const codexStartupTicketPattern = /^[A-Za-z0-9_-]{32,128}$/
+
+export function parseCodexStartupTicket(payload: unknown): NewApiCodexStartupTicket {
+  const data = isRecord(payload) ? payload : null
+  const ticket = data && typeof data.ticket === 'string' ? data.ticket : ''
+  const expiresIn = data ? data.expires_in : undefined
+  if (!codexStartupTicketPattern.test(ticket)
+    || typeof expiresIn !== 'number' || !Number.isInteger(expiresIn) || expiresIn < 10 || expiresIn > 600) {
+    throw new Error('Codex 中文启动凭证格式无效')
+  }
+  return { ticket, expiresInSeconds: expiresIn }
+}
+
 export interface NewApiRawRefreshData {
   accessToken: string
   accessExpiresAt: string | null
@@ -2351,6 +2428,40 @@ export function parseChangePasswordResponseData(payload: unknown): NewApiRawChan
   const accessToken = asString(payload.access_token, '')
   if (!accessToken) return null
   return { accessToken, accessExpiresAt: normalizeExpiresAt(payload.access_expires_at) }
+}
+
+// POST /api/verify's success data (service/security_verification.go
+// SecurityProof). Only proof_token matters: it is spent on the very next
+// request, and the server accepts it once. Null rather than a thrown error on
+// a missing token: the change then goes out without a proof and the server's
+// own refusal ("需要安全验证") is what the user reads -- the same as before
+// this check existed, with no wording of ours in between.
+function parseSecurityProofToken(payload: unknown): string | null {
+  if (!isRecord(payload)) return null
+  return asString(payload.proof_token, '') || null
+}
+
+// rc.24's own Chinese for a wrong current password (i18n
+// user.original_password_error), which account-errors.ts already turns into
+// "原密码错误，请重新输入". rc.40 says it in English with a code instead, in
+// two places: the security check (SECURITY_VERIFICATION_FAILED -- with the
+// password method a wrong password is its only cause, since xm.solov.cc does
+// not encrypt passwords in transit) and, should the password change between
+// the check and the change, UpdateSelf itself (CURRENT_PASSWORD_INVALID).
+const originalPasswordRejectedMessage = '原密码错误'
+const originalPasswordRejectedCodes = new Set(['SECURITY_VERIFICATION_FAILED', 'CURRENT_PASSWORD_INVALID'])
+
+function isOriginalPasswordRejected(raw: NewApiRawResponse): boolean {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  return envelope !== null && envelope.success !== true
+    && typeof envelope.code === 'string' && originalPasswordRejectedCodes.has(envelope.code)
+}
+
+function unwrapPasswordChangeEnvelope(raw: NewApiRawResponse, secrets: readonly string[]): unknown {
+  return withRequestDiagnostics(raw, () => {
+    if (isOriginalPasswordRejected(raw)) throw new Error(originalPasswordRejectedMessage)
+    return readEnvelope(raw, '修改密码', secrets)
+  })
 }
 
 // Captures every Set-Cookie the server sent, stripped down to bare
@@ -2931,11 +3042,16 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     try { raw = await performRequest(ctx, loginPath, { method: 'POST', body }, '账号登录') }
     catch (error) { assertAuthAttempt(attempt, owner); throw error }
     assertAuthAttempt(attempt, owner)
-    const data = parseLoginResponseData(unwrapLoginEnvelope(raw, [password, ...(input.turnstileToken ? [input.turnstileToken] : [])]))
+    const data = withRequestDiagnostics(raw, () => (
+      parseLoginResponseData(unwrapLoginEnvelope(raw, [password, ...(input.turnstileToken ? [input.turnstileToken] : [])]))
+    ))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
     // Strip accessToken before it ever leaves the main process (I3/I13).
-    return { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    const result = { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    // 登上了也记走的哪条线路：同一个人先在直连上登不上、换 CF 登上了，客服要分得出来（三线路 7b）。
+    noteRequestDiagnostics(result, raw.diagnostics)
+    return result
   }
 
   // POST /api/user/login/2fa (rc.24 router/api-router.go:74, CriticalRateLimit,
@@ -2951,10 +3067,12 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     try { raw = await performRequest(ctx, loginTwoFactorPath, { method: 'POST', body }, '两步验证登录') }
     catch (error) { assertAuthAttempt(attempt, owner); throw error }
     assertAuthAttempt(attempt, owner)
-    const data = parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken]))
+    const data = withRequestDiagnostics(raw, () => parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken])))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
-    return { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    const result = { account: data.account, accessExpiresAt: data.accessExpiresAt }
+    noteRequestDiagnostics(result, raw.diagnostics)
+    return result
   }
 
   const logout = (): void => {
@@ -3522,17 +3640,32 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // as parseAccountLoginInput's password field in ipc.ts.
       if (!originalPassword) throw new Error('请输入原密码')
       if (!newPassword) throw new Error('请输入新密码')
+      // rc.40 changes nothing without a one-time proof of the current password
+      // (controller/user.go UpdateSelf -> RequireSecurityProof). An account
+      // with two-factor login may only prove itself with that second factor:
+      // the check turns the password down and its refusal is passed on as is.
+      const verified = await performRequest(
+        ctx,
+        securityVerifyPath,
+        {
+          method: 'POST',
+          body: { method: 'password', scope: passwordChangeScope, password: originalPassword },
+          headers: authHeaders(current),
+        },
+        '修改密码',
+      )
+      const proofToken = parseSecurityProofToken(unwrapPasswordChangeEnvelope(verified, [originalPassword, current.accessToken]))
       const raw = await performRequest(
         ctx,
         selfPath,
         {
           method: 'PUT',
           body: { password: newPassword, original_password: originalPassword },
-          headers: authHeaders(current),
+          headers: proofToken ? { ...authHeaders(current), 'X-Security-Proof': proofToken } : authHeaders(current),
         },
         '修改密码',
       )
-      const data = unwrapEnvelope(raw, '修改密码', [originalPassword, newPassword, current.accessToken])
+      const data = unwrapPasswordChangeEnvelope(raw, [originalPassword, newPassword, current.accessToken, ...(proofToken ? [proofToken] : [])])
       const bundle = parseChangePasswordResponseData(data)
       // Optimistic in-place swap so the very next authenticated call in this
       // same session does not spuriously 401 against the now-superseded old
@@ -3752,6 +3885,31 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return true
   }
 
+  // 发票的是星芒服务器上另一个服务，不是 new-api。它回 401 时先当成 access token 过期了（15 分钟一换），
+  // 续一次再试；续过还是 401，就是那个服务自己拒了，照普通失败抛，不走 withSession 那条「再 401 就清掉
+  // 登录」的路：代取服务坏了，只该让 Codex 退回加速，不能连带把客户登出。续期本身被 new-api 拒了照旧
+  // 抛登录失效，但这里也不清登录，留给下一次账号请求按老规矩处理。
+  const issueCodexStartupTicket = async (): Promise<NewApiCodexStartupTicket> => {
+    const label = 'Codex 中文启动凭证'
+    const request = (current: InternalSession): Promise<NewApiRawResponse> => performRequest(
+      ctx,
+      codexStartupTicketPath,
+      // 多发一次只是多一张两分钟就作废的票，可以照读请求那样重发。
+      { method: 'POST', headers: authHeaders(current), maxResponseBytes: codexStartupTicketMaxResponseBytes, idempotent: true },
+      label,
+    )
+    let current = requireSession()
+    let raw = await request(current)
+    assertCurrentOwner(current)
+    if (raw.status === 401) {
+      current = await refreshCurrentSession(current)
+      raw = await request(current)
+      assertCurrentOwner(current)
+    }
+    if (raw.status === 401) throw new Error(`${label}被拒绝`)
+    return parseCodexStartupTicket(unwrapEnvelope(raw, label, [current.accessToken]))
+  }
+
   const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
     if (session) return true
     return switchSession(persisted)
@@ -3801,6 +3959,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     revokeLoginSession,
     revokeOtherLoginSessions,
     provisionCliKey,
+    issueCodexStartupTicket,
     refreshAccessToken,
     getPersistableSession,
     getSessionRevision: () => authAttemptGeneration,
