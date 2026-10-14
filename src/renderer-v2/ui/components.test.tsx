@@ -58,9 +58,9 @@ describe('renderer-v2 component contract', () => {
     expect(html).toContain('width:100%');
   });
   it('puts the route first in a tool row subtitle so a long version cannot push it out of view', () => {
-    const html = renderToStaticMarkup(<ToolRow tool="claude" status="ready" version="2.1.200（推荐 2.1.296）" route="线路：洛杉矶" model="claude-model" modelHint="说明" primaryAction={null} />);
-    expect(html).toContain('>线路：洛杉矶 · v2.1.200（推荐 2.1.296） · claude-model</small>');
-    expect(html).toContain('title="线路：洛杉矶 · v2.1.200（推荐 2.1.296） · claude-model\n说明"');
+    const html = renderToStaticMarkup(<ToolRow tool="claude" status="ready" version="2.1.200（推荐 2.1.296）" route="线路2" model="claude-model" modelHint="说明" primaryAction={null} />);
+    expect(html).toContain('>线路2 · v2.1.200（推荐 2.1.296） · claude-model</small>');
+    expect(html).toContain('title="线路2 · v2.1.200（推荐 2.1.296） · claude-model\n说明"');
     expect(renderToStaticMarkup(<ToolRow tool="claude" status="ready" version="v2.1.0" model="claude-model" primaryAction={null} />)).toContain('>v2.1.0 · claude-model</small>');
   });
   it('names an overflow menu after the row it acts on', () => {
