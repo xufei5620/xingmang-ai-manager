@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { Search } from 'lucide-react';
-import { Button, Card, Input, Menu, Notice, Pill, Progress, Segment, Switch, Tabs, Toast, toastDurationMs } from './components';
+import { Button, Card, Input, Menu, Notice, Pill, Progress, Segment, Switch, Tabs, Toast, ToolRow, toastDurationMs } from './components';
 import { BrandIcon } from './brand';
 
 describe('renderer-v2 component contract', () => {
@@ -56,6 +56,12 @@ describe('renderer-v2 component contract', () => {
     const html = renderToStaticMarkup(<><Pill tone="ok" dot>已配好</Pill><Progress testId="progress" value={160} /></>);
     expect(html).toContain('已配好');
     expect(html).toContain('width:100%');
+  });
+  it('puts the route first in a tool row subtitle so a long version cannot push it out of view', () => {
+    const html = renderToStaticMarkup(<ToolRow tool="claude" status="ready" version="2.1.200（推荐 2.1.296）" route="线路：洛杉矶" model="claude-model" modelHint="说明" primaryAction={null} />);
+    expect(html).toContain('>线路：洛杉矶 · v2.1.200（推荐 2.1.296） · claude-model</small>');
+    expect(html).toContain('title="线路：洛杉矶 · v2.1.200（推荐 2.1.296） · claude-model\n说明"');
+    expect(renderToStaticMarkup(<ToolRow tool="claude" status="ready" version="v2.1.0" model="claude-model" primaryAction={null} />)).toContain('>v2.1.0 · claude-model</small>');
   });
   it('names an overflow menu after the row it acts on', () => {
     const html = renderToStaticMarkup(<Menu label="密钥 生产 Key 的更多操作" anchor={null} items={[{ label: '撤销密钥', danger: true, onSelect: () => undefined }]} />);

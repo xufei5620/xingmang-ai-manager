@@ -21,3 +21,5 @@
   `withCodexDesktopCdpFailureReport` 同一个做法），以前打包版只打到控制台、不留。
 - 插件页两句不再说插件目录「要从国外的网站下载」：#986 起先从星芒存储桶下，桶和 GitHub 两路都没下来才报
   （`pages-management.tsx` 还没下载时那张卡、`codex-plugin-catalog.ts` 的 `codexPluginCatalogNetworkMessage`）。
+- 首页工具行名字下面那行小字改成「线路：洛杉矶 · 版本 · 模型」：那一栏最宽 200，以前线路排最后，版本带推荐说明或模型名一长就被省略号截掉
+  （`ui/core.tsx` 的 `ToolRow` 加 `route?`，`Home.tsx` 把 `toolRouteLabel` 从 `model` 里拆出来传给它）。现在被截的换成模型名，鼠标停上去照样看整句。
