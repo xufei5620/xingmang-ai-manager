@@ -16,9 +16,10 @@ import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
 import { errorMessage } from '../../business-common'
 import { createTtlCache } from './ttl-cache'
-import type { CliLaunchChoice } from './recent-workspaces'
+import { withoutRetiredSessions, type CliLaunchChoice } from './recent-workspaces'
 import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
 import { accountScope } from '../../account-context'
+import type { ActiveProviderId } from '../../../../electron/catalog'
 
 /** 工具页一次读取里互相独立的三块。 */
 export type ToolboxPartition = 'system' | 'config' | 'platform'
@@ -67,6 +68,8 @@ export function withConfigFailure(
 /**
  * 配置读不出来时的占位表。每个工具都落到「未配置」，让工具列表、
  * 安装和卸载照常可用；真正的原因由分区错误单独告诉用户，不靠这张表去表达。
+ * 形状和主进程回来的配置一样按 providerIds 全集铺（含已下线的 Gemini）：
+ * 它只是替代那份数据，界面读哪几项照旧由工具注册表决定。
  */
 function placeholderConfig(): AppConfigSummary {
   const providers = {} as Record<ProviderId, ProviderConfigSummary>
@@ -126,7 +129,7 @@ async function loadBalanceUsage(bridge: XingmangApi): Promise<OwnedBalanceUsage>
 export function createToolsApi(bridge: XingmangApi) {
   const recentSessions = createTtlCache({
     ttlMs: recentSessionsTtlMs,
-    load: () => bridge.listProviderSessions({ page: 1, pageSize: 60 }),
+    load: () => bridge.listProviderSessions({ page: 1, pageSize: 60 }).then(withoutRetiredSessions),
   })
   const usageCache = createTtlCache({ ttlMs: balanceUsageTtlMs, load: () => loadBalanceUsage(bridge) })
   return {
@@ -191,11 +194,11 @@ export function createToolsApi(bridge: XingmangApi) {
       return result
     },
     /** 卸载框里的「帮我清理」（已知48）：只说是哪个工具，删哪几个文件由主进程按那次卸载记下的定。 */
-    cleanUninstallLeftovers: (id: ProviderId) => bridge.cleanUninstallLeftovers(id),
+    cleanUninstallLeftovers: (id: ActiveProviderId) => bridge.cleanUninstallLeftovers(id),
     /** 只有 Codex 桌面端有这一步，见错误框里的「重置 Codex」。 */
     resetCodexDesktop: () => bridge.resetCodexDesktop(),
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),
-    // mode 是两套互不相干的取值:codexDesktop 认 'open' | 'restart',四家 CLI 认
+    // mode 是两套互不相干的取值:codexDesktop 认 'open' | 'restart',各家 CLI 认
     // 'new' | 'resumeLast'(#292)。各自只取自己认得的那一个,另一套的值落回本侧
     // 默认,也就是旧行为。以前这里的 CLI 分支根本没把 mode 传下去,首页和记录页
     // 都发不出「接着上次对话」。
@@ -216,7 +219,7 @@ export function createToolsApi(bridge: XingmangApi) {
     restartWindows: () => bridge.restartWindows(),
     chooseWorkspace: (options?: ChooseWorkspaceOptions) => options === undefined ? bridge.chooseWorkspace() : bridge.chooseWorkspace(options),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
-    // 一页 3 条不够铺开四个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。
+    // 一页 3 条不够铺开几个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。
     recent: () => recentSessions.read(),
     /** 让首页那份「最近」立刻作废：用户主动重新检测、切换账号时调。 */
     invalidateRecent: () => recentSessions.invalidate(),

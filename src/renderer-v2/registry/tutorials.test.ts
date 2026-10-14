@@ -90,11 +90,18 @@ describe('tutorial wording that follows the current app', () => {
     expect(JSON.stringify(tutorialTopics)).not.toMatch(/TUN/i);
   });
 
+  // Gemini CLI 已下线（yoyo 2026-10-14）：教程不再教它，搜索词里也不再收它，免得搜出来一章讲不到它的教程。
+  it('never teaches or indexes the retired Gemini CLI', () => {
+    expect(JSON.stringify(tutorialTopics)).not.toContain('Gemini CLI');
+    for (const topic of tutorialTopics) expect(topic.keywords).not.toContain('Gemini');
+    expect(JSON.stringify(tutorialTopicsFor('linux'))).not.toContain('Gemini CLI');
+  });
+
   it('keeps npm and the bare word CLI out of what customers read', () => {
     // keywords only feed the search box, so customers who type「npm」or「CLI」still land on the right chapter.
     const visible = JSON.stringify(tutorialTopics.map(({ keywords: _keywords, ...topic }) => topic));
     expect(visible).not.toMatch(/npm|PATH|TOML/i);
-    expect(visible.replace(/(Codex|Gemini|Grok) CLI/g, '')).not.toMatch(/CLI/);
+    expect(visible.replace(/(Codex|Grok) CLI/g, '')).not.toMatch(/CLI/);
   });
 
   it('tells Mac users where to find Terminal before asking them to paste a command', () => {
@@ -134,7 +141,7 @@ describe('linux tutorials', () => {
   it('never points a Linux reader at Windows, a Mac, the desktop app or game acceleration', () => {
     expect(visible).not.toMatch(/Windows|Mac|桌面端|Homebrew|访达|PowerShell|开始菜单|废纸篓|游戏加速|C 盘|钥匙串/);
     expect(visible).not.toMatch(/npm|PATH|TOML/i);
-    expect(visible.replace(/(Codex|Gemini|Grok) CLI/g, '')).not.toMatch(/CLI/);
+    expect(visible.replace(/(Codex|Grok) CLI/g, '')).not.toMatch(/CLI/);
   });
 
   it('walks a Linux beginner through Codex CLI in the same four steps', () => {

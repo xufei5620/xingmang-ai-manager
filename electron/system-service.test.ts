@@ -63,6 +63,7 @@ import {
   buildCliMaintenancePlan,
   buildCliResolutionManifest,
   buildCliToolStatusFromSettled,
+  buildRetiredCliStatus,
   buildDarwinCliLaunchPlan,
   buildDarwinTrustedVerificationRunner,
   buildCliUninstallPlan,
@@ -1385,7 +1386,10 @@ describe('createSystemService', () => {
 
     const snapshot = await service.scanSystem(false)
 
-    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+    // 下线的 Gemini CLI 不再去探，只留一份「没装」的占位，也就谈不上探测失败。
+    expect(snapshot.clis.gemini).toMatchObject({ installed: false, retired: true })
+    expect(snapshot.clis.gemini.detectionFailed).toBeUndefined()
+    for (const provider of ['claude', 'codex', 'grok'] as const) {
       expect(snapshot.clis[provider]).toMatchObject({
         installed: false,
         detectionFailed: true,
@@ -1485,7 +1489,7 @@ describe('createSystemService', () => {
     const elapsed = Date.now() - startedAt
 
     expect(elapsed).toBeLessThan(offlineLatestVersionBudgetMs + 4_000)
-    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+    for (const provider of ['claude', 'codex', 'grok'] as const) {
       // 只有「最新版」这一格说没检查成：已装状态照常，也不谎报有新版本。
       expect(snapshot.clis[provider]).toMatchObject({
         installed: true,
@@ -1496,8 +1500,8 @@ describe('createSystemService', () => {
       expect(snapshot.clis[provider].updateError).toBe(latestVersionUncheckedMessage)
     }
     // 已装版本来自本地包清单，不受最新版探测影响（grok 的版本读本地二进制，
-    // 这个夹具里没有真文件，所以只看那三个走 npm 包清单的）。
-    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+    // 这个夹具里没有真文件，所以只看那两个走 npm 包清单的）。
+    for (const provider of ['claude', 'codex'] as const) {
       expect(snapshot.clis[provider].version).toBe('1.2.3')
     }
 
@@ -1543,7 +1547,7 @@ describe('createSystemService', () => {
 
     const snapshot = await service.scanSystem(false)
 
-    for (const provider of ['claude', 'codex', 'gemini'] as const) {
+    for (const provider of ['claude', 'codex'] as const) {
       expect(snapshot.clis[provider]).toMatchObject({
         installed: true,
         updateCheck: 'checked',
@@ -7498,5 +7502,92 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
     await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
 
     expect(resolveCliCommand.mock.calls[0]?.[3]).toEqual({ darwinStagingRetention: 'retained' })
+  })
+})
+
+describe('the retired Gemini CLI', () => {
+  function geminiFixture() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-retired-gemini-'))
+    temporaryDirectories.push(home)
+    const roots = { userHome: home, codexHome: path.join(home, '.codex') }
+    const hook = {
+      nodeExecutable: '/managed/node/bin/node',
+      scriptPath: '/opt/app/resources/bundled-catalog/cli-hooks/xingmang-hook.cjs',
+      eventsDirectory: path.join(home, 'cli-events'),
+      platform: 'linux' as const,
+    }
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.8-flash-high', 'reset', roots, {}, providerBaseUrls, undefined, undefined, hook)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    settings.mcpServers = { 'xingmang-image': { command: hook.nodeExecutable, args: [path.join(home, '.agents', 'skills', '星芒AI', 'scripts', 'mcp-server.mjs')] } }
+    fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    return { roots, settingsPath }
+  }
+
+  function runningReport(partial: Partial<RunningToolsReport> = {}): RunningToolsReport {
+    return { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false, ...partial }
+  }
+
+  it('stands in the snapshot as a tool that is not installed and has nothing to update', () => {
+    expect(buildRetiredCliStatus('gemini', 'win32')).toMatchObject({
+      installed: false,
+      version: null,
+      path: null,
+      installDirectory: null,
+      latestVersion: null,
+      updateAvailable: false,
+      retired: true,
+    })
+    expect(buildRetiredCliStatus('gemini', 'win32').versionAdvice).toBeUndefined()
+  })
+
+  it('takes back our hooks and image tool on startup while Gemini is closed and keeps the key', async () => {
+    const { roots, settingsPath } = geminiFixture()
+    const running = vi.fn(async () => runningReport())
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: running })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: true, imageMcp: true })
+    expect(running).toHaveBeenCalledWith(['gemini'])
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(settings.hooks).toBeUndefined()
+    expect(settings.mcpServers).toBeUndefined()
+    expect(inspectProviderConfig('gemini', roots)).toMatchObject({ apiKey: 'sk-relay', matchesRelay: true })
+
+    // Nothing left: the next startup neither asks about running tools nor writes.
+    running.mockClear()
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(running).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['open', runningReport({ running: ['gemini'] })],
+    ['maybe open', runningReport({ unknown: ['gemini'] })],
+  ])('leaves the settings alone for the next startup while Gemini is %s', async (_label, report) => {
+    const { roots, settingsPath } = geminiFixture()
+    const before = fs.readFileSync(settingsPath, 'utf8')
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: async () => report })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before)
+  })
+
+  it('treats a failed running-tools check as maybe open', async () => {
+    const { roots, settingsPath } = geminiFixture()
+    const before = fs.readFileSync(settingsPath, 'utf8')
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: async () => { throw new Error('probe failed') } })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before)
+  })
+
+  it('never throws on a settings.json it cannot read', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-retired-gemini-broken-'))
+    temporaryDirectories.push(home)
+    const roots = { userHome: home, codexHome: path.join(home, '.codex') }
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, '{ broken', 'utf8')
+    const running = vi.fn(async () => runningReport())
+    const service = createService({ providerRoots: roots, inspectRunningToolsForTemplateFill: running })
+    await expect(service.reclaimRetiredToolIntegrations?.()).resolves.toEqual({ hooks: false, imageMcp: false })
+    expect(running).not.toHaveBeenCalled()
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ broken')
   })
 })

@@ -248,14 +248,15 @@ describe('v2 onboarding readiness', () => {
     expect(guideOfficialLoginRequired('codex', 'official', undefined)).toBe(true)
     expect(guideOfficialLoginRequired('codex', 'official', { codexAuthMode: 'chatgpt' })).toBe(false)
     expect(guideOfficialLoginRequired('codex', 'account', { codexAuthMode: null })).toBe(false)
-    for (const provider of ['claude', 'gemini', 'grok'] as const) expect(guideOfficialLoginRequired(provider, 'official', { codexAuthMode: null })).toBe(false)
+    for (const provider of ['claude', 'grok'] as const) expect(guideOfficialLoginRequired(provider, 'official', { codexAuthMode: null })).toBe(false)
   })
-  it('requires Node, Python and the installed CLI for the Gemini route', () => {
-    const tool = { id: 'gemini' as const, installed: true, configured: true, source: 'account' as const, runtimeReady: true, pythonReady: false }
-    expect(resolveGuideReadiness('gemini', tool, true).prepared).toBe(false)
-    expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true }, true).prepared).toBe(true)
-    expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true, runtimeReady: false }, true).prepared).toBe(false)
-    expect(resolveGuideReadiness('gemini', { ...tool, pythonReady: true, installed: false }, true).prepared).toBe(false)
+  it('requires Node and the installed CLI, never Python, for a command-line route', () => {
+    for (const id of ['claude', 'codex', 'grok'] as const) {
+      const tool = { id, installed: true, configured: true, source: 'account' as const, runtimeReady: true }
+      expect(resolveGuideReadiness(id, tool, true).prepared).toBe(true)
+      expect(resolveGuideReadiness(id, { ...tool, runtimeReady: false }, true).prepared).toBe(false)
+      expect(resolveGuideReadiness(id, { ...tool, installed: false }, true).prepared).toBe(false)
+    }
   })
 })
 

@@ -256,6 +256,19 @@ describe('ConfigBackupStore', () => {
     expect(store.list()).toHaveLength(2)
   })
 
+  it('keeps an old Gemini CLI backup on disk but no longer restores it', () => {
+    const { home, userData } = fixture()
+    const [settingsPath] = providerConfigPaths('gemini', fixtureProviderRoots(home))
+    writeConfig(settingsPath, '{"model":{"name":"gemini-3.8-flash-high"}}\n')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const backup = store.create('gemini', 'manual')
+    writeConfig(settingsPath, '{"model":{"name":"changed"}}\n')
+
+    expect(() => store.restore(backup.id)).toThrow('未知的配置类型')
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{"model":{"name":"changed"}}\n')
+    expect(store.list().map((entry) => entry.id)).toEqual([backup.id])
+  })
+
   it('records absent targets and removes files that did not exist in the snapshot', () => {
     const { home, userData } = fixture()
     const [configPath, authPath] = providerConfigPaths('codex', fixtureProviderRoots(home))

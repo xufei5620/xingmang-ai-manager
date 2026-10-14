@@ -52,6 +52,9 @@ import {
   applyXingmangImageMcpToJson,
   applyXingmangImageMcpToToml,
   applyXingmangImagePermissionToClaudeSettings,
+  isManagedXingmangImageMcpEntry,
+  removeXingmangImageMcpFromJson,
+  XINGMANG_IMAGE_MCP_NAME,
   type XingmangImageMcpInvocation,
 } from './xingmang-ai-mcp'
 
@@ -2297,7 +2300,8 @@ export function ensureGeminiProjectContextFiles(
 // ---------------------------------------------------------------------------
 // 星芒画图工具（MCP）
 //
-// 登录同步后替四家工具登记同一个 xingmang-image。Codex 与 Grok 直接写 config.toml，
+// 登录同步后替还在管的几家工具登记同一个 xingmang-image（Gemini CLI 下线后不再登记，
+// 已经登记过的由 removeRetiredGeminiIntegrations 收回）。Codex 与 Grok 直接写 config.toml，
 // 不走 `codex mcp add`：只装了 Codex 桌面端的客户没有命令行版，照样要能用上。
 // 每家只在它的配置目录已经存在时才写，没装过的工具不会被凭空建出目录。
 
@@ -2374,20 +2378,7 @@ function syncXingmangImageMcpClaude(roots: ProviderConfigRoots, invocation: Xing
   return true
 }
 
-function syncXingmangImageMcpGemini(roots: ProviderConfigRoots, invocation: XingmangImageMcpInvocation): boolean {
-  const providerRoot = providerConfigRoot('gemini', roots)
-  const configPath = path.join(providerRoot, 'settings.json')
-  assertSafeConfigPath(configPath, providerRoot, 'file')
-  const label = '现有 Gemini CLI settings.json'
-  const current = requireConfigText(configPath, label)
-  const parsed = requireGeminiWorkspaceJson(current, label)
-  if (!applyXingmangImageMcpToJson(parsed, invocation, 'gemini')) return false
-  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
-  executeFilePlans([{ path: configPath, content: geminiJsonContent(current, parsed) }], {}, providerRoot)
-  return true
-}
-
-/** 每家单独提交、单独失败：一家的配置读不懂，不该拖累另外三家。 */
+/** 每家单独提交、单独失败：一家的配置读不懂，不该拖累另外几家。 */
 export function syncXingmangImageMcpConfigs(
   rootsInput: ProviderConfigRoots,
   invocation: XingmangImageMcpInvocation,
@@ -2402,8 +2393,6 @@ export function syncXingmangImageMcpConfigs(
       && syncXingmangImageMcpToml('codex', codexConfigSnapshotPaths(roots).active, roots.codexHome, invocation)],
     ['claude', () => existingDirectory(providerConfigRoot('claude', roots))
       && syncXingmangImageMcpClaude(roots, invocation)],
-    ['gemini', () => existingDirectory(providerConfigRoot('gemini', roots))
-      && syncXingmangImageMcpGemini(roots, invocation)],
     ['grok', () => {
       const providerRoot = providerConfigRoot('grok', roots)
       return existingDirectory(providerRoot)
@@ -3656,6 +3645,63 @@ export function removeManagedCliHooks(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
   return executeManagedCliHookPlan(provider, rootsInput, null)
+}
+
+// ---------------------------------------------------------------------------
+// 下线的 Gemini CLI：收回星芒写进它 settings.json 的两样东西
+//
+// 做完提醒（xingmang-notify）指向星芒安装目录里的小脚本和一个写死的 Node 位置，原来靠
+// 开机自动修（repairStaleAccountCliHooks）跟着走；星芒画图（xingmang-image）靠每次准备
+// Key 时对齐。下线后两样都没人维护，星芒挪了位置、重装到别处或被卸载，Gemini 每一轮都会
+// 多报一行错。只删认得出是星芒写的那几条，Key、线路、型号这些让它照常能用的一律不动。
+
+export interface RetiredGeminiIntegrations {
+  /** settings.json 里还有星芒的做完提醒。 */
+  hooks: boolean
+  /** settings.json 里还有星芒登记的画图工具。 */
+  imageMcp: boolean
+}
+
+function readRetiredGeminiSettings(roots: ProviderConfigRoots): {
+  configPath: string
+  providerRoot: string
+  parsed: Record<string, unknown>
+  original: string | null
+} {
+  const providerRoot = providerConfigRoot('gemini', roots)
+  const configPath = providerConfigPaths('gemini', roots)[0]
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  return { configPath, providerRoot, ...requireGeminiJson(configPath, '现有 Gemini settings.json') }
+}
+
+/** 只读：还有没有要收回的。配置读不懂时抛错，由调用方记一笔、不动它。 */
+export function inspectRetiredGeminiIntegrations(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): RetiredGeminiIntegrations {
+  const { parsed, original } = readRetiredGeminiSettings(normalizeProviderConfigRoots(rootsInput))
+  if (original === null) return { hooks: false, imageMcp: false }
+  const servers = parsed.mcpServers
+  return {
+    hooks: managedCliHookTargets('gemini', parsed).length > 0,
+    imageMcp: isJsonObject(servers) && isManagedXingmangImageMcpEntry(servers[XINGMANG_IMAGE_MCP_NAME]),
+  }
+}
+
+/** 收回提醒与画图；没有要收的就不写文件。写之前照常留 .bak，失败整份回滚。 */
+export function removeRetiredGeminiIntegrations(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): RetiredGeminiIntegrations & { result: NativeConfigSaveResult } {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const { configPath, providerRoot, parsed, original } = readRetiredGeminiSettings(roots)
+  const nothing = { hooks: false, imageMcp: false, result: { backups: [], files: [] } }
+  if (original === null) return nothing
+  const hooks = managedCliHookTargets('gemini', parsed).length > 0
+  if (hooks) removeGeminiCliHooks(parsed)
+  const imageMcp = removeXingmangImageMcpFromJson(parsed)
+  if (!hooks && !imageMcp) return nothing
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  const result = executeFilePlans([{ path: configPath, content: geminiJsonContent(original, parsed) }], {}, providerRoot)
+  return { hooks, imageMcp, result }
 }
 
 // ---------------------------------------------------------------------------

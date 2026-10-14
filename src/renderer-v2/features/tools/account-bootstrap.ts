@@ -1,6 +1,5 @@
 import { accountScope, accountSiteId, type AccountSiteId } from '../../account-context'
 import {
-  providerIds,
   type AccountSessionState,
   type AppConfigSummary,
   type AppSettingsV2,
@@ -16,6 +15,7 @@ import { userFacingErrorMessage } from '../../business-common'
 import { networkBlockedFailures } from './online-resync'
 import { keySyncFailureText } from './key-sync-failure'
 import { relayProviderBaseUrls, relaySiteEndpointIdForBaseUrl } from '../../../../electron/relay-sites'
+import { activeProviderIds, isActiveProviderId, type ActiveProviderId } from '../../../../electron/catalog'
 import {
   applyManualSourceMarker,
   getSourceMarkerStorage,
@@ -100,17 +100,18 @@ export function skippedNamedProviders(result: Pick<AccountBootstrapResult, 'skip
 }
 
 export interface AccountBootstrapPlan {
-  targets: ProviderId[]
+  /** 只会是还在用的工具：类型上就排除已下线的那几个，编译器不让它们被交给主进程写 Key。 */
+  targets: ActiveProviderId[]
   skipped: AccountBootstrapSkip[]
-  preferredModels: Partial<Record<ProviderId, string>>
+  preferredModels: Partial<Record<ActiveProviderId, string>>
   /** targets 里那几个 Codex 认不出连接设置、没有归属记录也照样自动修的工具（第十七批 1b）。 */
-  shadowRepairs?: ProviderId[]
+  shadowRepairs?: ActiveProviderId[]
 }
 
 export interface AccountBootstrapResult {
-  readyKeys: ProviderId[]
-  configured: ProviderId[]
-  failed: Array<{ provider: ProviderId; message: string }>
+  readyKeys: ActiveProviderId[]
+  configured: ActiveProviderId[]
+  failed: Array<{ provider: ActiveProviderId; message: string }>
   skipped: AccountBootstrapSkip[]
   warnings: string[]
   /**
@@ -121,14 +122,14 @@ export interface AccountBootstrapResult {
    */
   networkBlocked: boolean
   /** 这一轮顺手修好的「Codex 认不出」的配置，首页据此轻轻说一句。缺省 = 没有。 */
-  repairedShadowed?: ProviderId[]
+  repairedShadowed?: ActiveProviderId[]
   /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
-  regrouped?: ProviderId[]
+  regrouped?: ActiveProviderId[]
   /**
    * 这一轮跟着连接线路改了配置的工具，开没开都算（#941）。只换了线路的那几个首页不说「已完成…」
    * （bootstrapOnlyFollowedRoute），运行日志照记。缺省 = 这一轮没改线路。
    */
-  routeFollowed?: ProviderId[]
+  routeFollowed?: ActiveProviderId[]
   /**
    * 星芒画图没装进工具、只因为这台电脑没有 Node.js 时主进程给的那句。不放进 warnings：说不说要跟着
    * 首页运行环境卡对 Node.js 的说法走（Home 的 homeBootstrapWarnings）。缺省 = 没这回事。
@@ -145,6 +146,10 @@ export type AccountBootstrapBridge = Pick<
   | 'configureManagedCliKeys'
   | 'getAccountSession'
 >
+
+function activeEntries<T extends { provider: ProviderId }>(entries: readonly T[]): Array<T & { provider: ActiveProviderId }> {
+  return entries.filter((entry): entry is T & { provider: ActiveProviderId } => isActiveProviderId(entry.provider))
+}
 
 function nameOf(provider: ProviderId) {
   return tools.find((tool) => tool.id === provider)?.name ?? provider
@@ -241,7 +246,7 @@ export function accountRoutesPending(
   settings: AppSettingsV2,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): boolean {
-  return providerIds.some((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
+  return activeProviderIds.some((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
 }
 
 export function accountBootstrapPlan(
@@ -253,12 +258,13 @@ export function accountBootstrapPlan(
   regrouped: readonly ProviderId[] = [],
 ): AccountBootstrapPlan {
   const explicitOfficial = new Set(settings.officialProviders ?? [])
-  const targets: ProviderId[] = []
+  const targets: ActiveProviderId[] = []
   const skipped: AccountBootstrapSkip[] = []
-  const preferredModels: Partial<Record<ProviderId, string>> = {}
-  const shadowRepairs: ProviderId[] = []
+  const preferredModels: Partial<Record<ActiveProviderId, string>> = {}
+  const shadowRepairs: ActiveProviderId[] = []
 
-  for (const provider of providerIds) {
+  // 已下线的工具（Gemini）配置里还留着，这里一概不碰：不签 Key、不写配置、不算「没装」。
+  for (const provider of activeProviderIds) {
     const local = installedState(system, provider)
     const current = config.providers[provider]
     if (local.detectionFailed) {
@@ -282,7 +288,6 @@ export function accountBootstrapPlan(
     const official =
       explicitOfficial.has(provider) ||
       (provider === 'codex' && current.codexAuthMode === 'chatgpt') ||
-      (provider === 'gemini' && current.authType === 'oauth-personal') ||
       source === 'official'
     if (official) {
       skipped.push({
@@ -372,7 +377,6 @@ export const configurationFailureMessages = {
   missingKey: '配置文件里没有检测到密钥',
   relayMismatch: '服务地址尚未与当前账号匹配',
   missingModel: '默认模型尚未写入配置',
-  geminiAuthMode: 'Gemini 尚未切换到 API Key 模式',
   unconfirmedSource: '配置来源尚未确认属于当前账号',
   connectionIncomplete: '工具连接尚未完成',
 } as const
@@ -386,13 +390,12 @@ export function configurationFailure(
   if (!current.hasApiKey) return configurationFailureMessages.missingKey
   if (!current.matchesRelay) return configurationFailureMessages.relayMismatch
   if (!current.model.trim()) return configurationFailureMessages.missingModel
-  if (provider === 'gemini' && current.authType !== 'gemini-api-key') return configurationFailureMessages.geminiAuthMode
   if (current.configurationOwnership !== 'account' || sourceFor(current, provider, storage) !== 'account') return configurationFailureMessages.unconfirmedSource
   return connectionReady(current, provider, storage) ? null : configurationFailureMessages.connectionIncomplete
 }
 
 export function shouldShowAccountBootstrap(config: AppConfigSummary): boolean {
-  return providerIds.some(
+  return activeProviderIds.some(
     (provider) => sourceFor(config.providers[provider], provider) === 'missing',
   )
 }
@@ -438,7 +441,7 @@ export async function bootstrapAccountTools(
   await assertAccount(api, expectedUserId, expectedSiteId)
   // 先读本次启动的线路与新鲜配置，再宣布哪些工具能先打开，避免带着旧地址抢跑。
   const [config, settings] = await Promise.all([api.getConfig(), api.getSettings()])
-  const routeChanges = providerIds.filter((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
+  const routeChanges = activeProviderIds.filter((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
   const keyChanges = mode === 'restore' ? { connectedKeyChanges: [...new Set([...(synchronized?.regrouped ?? []), ...routeChanges])] } : {}
   onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40, ...keyChanges })
   // scanSystem 从不缓存安装状态，无需强制清掉下载源与网络位置缓存。
@@ -477,8 +480,8 @@ export async function bootstrapAccountTools(
   const verified = await api.getConfig()
   await assertAccount(api, expectedUserId, expectedSiteId)
 
-  const configured: ProviderId[] = []
-  const failed: Array<{ provider: ProviderId; message: string }> = []
+  const configured: ActiveProviderId[] = []
+  const failed: Array<{ provider: ActiveProviderId; message: string }> = []
   const markerWarnings: string[] = []
   for (const provider of plan.targets) {
     const reported = outcome.failed.find((entry) => entry.provider === provider)
@@ -509,7 +512,9 @@ export async function bootstrapAccountTools(
   }
   const followed = configured.filter((provider) => routeChanges.includes(provider))
 
-  const readyKeys = synchronized?.ready.map((entry) => entry.provider) ?? []
+  // 主进程不再替已下线的工具签 Key；万一回来的结果里还带着它，这里也不说、不算。
+  const readyKeys = (synchronized?.ready ?? []).map((entry) => entry.provider).filter(isActiveProviderId)
+  const syncFailed = activeEntries(synchronized?.failed ?? [])
   // 没装的工具 Key 签不下来，用户在首页什么也做不了，点「重新同步」也还是那句；
   // 等他真去装的时候，装完那一轮会只针对这个工具再写一次，失败原因在那时报。
   const notInstalled = new Set(
@@ -527,7 +532,7 @@ export async function bootstrapAccountTools(
     ...(synchronized?.imageMcpWarning && !synchronized.imageMcpNeedsNode
       ? [synchronized.imageMcpWarning]
       : []),
-    ...(synchronized?.failed ?? [])
+    ...syncFailed
       .filter(
         (entry) =>
           !notInstalled.has(entry.provider) &&
@@ -542,7 +547,7 @@ export async function bootstrapAccountTools(
   // 不在其列——它们换个网络也一样，拿来当断网证据会让补跑白跑。
   const failureSignals = [
     ...(syncError ? [syncError] : []),
-    ...(synchronized?.failed ?? []).map((entry) => entry.message),
+    ...syncFailed.map((entry) => entry.message),
     ...failed.map((entry) => entry.message),
   ]
 

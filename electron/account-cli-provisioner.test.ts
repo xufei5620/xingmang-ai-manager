@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  activeProviderIds,
   managedCliKeyProfiles,
   providerIds,
   resolveManagedCliKeyProfiles,
@@ -55,7 +56,7 @@ function keyForGroup(group: string): StoredManagedCliKey {
 }
 
 describe('syncManagedCliKeySummary', () => {
-  it('fetches and saves four missing group keys once, then uses the complete local cache', async () => {
+  it('fetches and saves the missing group key of every active tool once, then uses the complete local cache', async () => {
     let cached: StoredManagedCliKey[] = []
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => cached.map((entry) => ({ ...entry }))),
@@ -75,16 +76,16 @@ describe('syncManagedCliKeySummary', () => {
     const first = await syncManagedCliKeySummary(accountService, store)
 
     expect(first.failed).toEqual([])
-    expect(first.ready).toEqual(providerIds.map((provider) => {
+    expect(first.ready).toEqual(activeProviderIds.map((provider) => {
       const entry = managedKey(provider)
       return { provider, group: entry.group, name: entry.name }
     }))
-    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual(providerIds.map((provider) => ({
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual(activeProviderIds.map((provider) => ({
       name: managedCliKeyProfiles[provider].keyName,
       group: managedCliKeyProfiles[provider].group,
     })))
     expect(store.save).toHaveBeenCalledTimes(1)
-    expect(store.save).toHaveBeenCalledWith(73, providerIds.map((provider) => managedKey(provider)))
+    expect(store.save).toHaveBeenCalledWith(73, activeProviderIds.map((provider) => managedKey(provider)))
 
     provisionCliKey.mockClear()
     vi.mocked(store.save).mockClear()
@@ -93,6 +94,42 @@ describe('syncManagedCliKeySummary', () => {
     expect(second).toEqual(first)
     expect(provisionCliKey).not.toHaveBeenCalled()
     expect(store.save).not.toHaveBeenCalled()
+  })
+
+  it('never signs or hands out a key for the retired Gemini CLI but keeps its cached one', async () => {
+    const gemini = managedKey('gemini')
+    let cached: StoredManagedCliKey[] = [gemini, managedKey('claude')]
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => cached.map((entry) => ({ ...entry }))),
+      save: vi.fn(async (_userId: number, keys: readonly StoredManagedCliKey[]) => {
+        cached = keys.map((entry) => ({ ...entry }))
+      }),
+      remove: vi.fn(async () => undefined),
+    }
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const entry = keyForGroup(input.group ?? '')
+      return { id: providerIds.indexOf(entry.provider) + 1, name: input.name ?? entry.name, key: entry.key }
+    })
+
+    const summary = await syncManagedCliKeySummary(loggedInAccountService(provisionCliKey), store)
+
+    expect(summary.failed).toEqual([])
+    expect(summary.ready.map((entry) => entry.provider)).toEqual(['claude', 'codex', 'grok'])
+    expect(provisionCliKey.mock.calls.map(([input]) => input?.group)).toEqual([
+      managedCliKeyProfiles.codex.group,
+      managedCliKeyProfiles.grok.group,
+    ])
+    expect(cached.map((entry) => entry.provider)).toEqual(['claude', 'codex', 'grok', 'gemini'])
+    expect(cached.find((entry) => entry.provider === 'gemini')).toEqual(gemini)
+
+    const saveConfig = vi.fn()
+    const outcome = await configureManagedClis(
+      loggedInAccountService(provisionCliKey),
+      { fetchAvailableModels: vi.fn(async () => ['gemini-3.8-flash-high']), saveConfig } as unknown as ConfigurationService,
+      ['gemini'], {}, false, store,
+    )
+    expect(outcome.configured).toEqual([])
+    expect(saveConfig).not.toHaveBeenCalled()
   })
 
   it('keeps successful providers when one server provisioning call fails and saves the partial cache', async () => {
@@ -109,7 +146,7 @@ describe('syncManagedCliKeySummary', () => {
 
     const summary = await syncManagedCliKeySummary(loggedInAccountService(provisionCliKey), store)
 
-    expect(summary.ready.map((entry) => entry.provider)).toEqual(['claude', 'codex', 'gemini'])
+    expect(summary.ready.map((entry) => entry.provider)).toEqual(['claude', 'codex'])
     expect(summary.failed).toEqual([{
       provider: 'grok',
       group: managedCliKeyProfiles.grok.group,
@@ -117,7 +154,7 @@ describe('syncManagedCliKeySummary', () => {
     }])
     expect(store.save).toHaveBeenCalledWith(
       73,
-      ['claude', 'codex', 'gemini'].map((provider) => managedKey(provider as ProviderId)),
+      ['claude', 'codex'].map((provider) => managedKey(provider as ProviderId)),
     )
   })
 
@@ -131,19 +168,19 @@ describe('syncManagedCliKeySummary', () => {
       const entry = keyForGroup(input.group ?? '')
       if (entry.provider === 'codex') throw new NewApiNetworkError('serviceUnavailable', 'HTTP 522')
       if (entry.provider === 'grok') throw new RealmAccountError('UNAVAILABLE')
-      if (entry.provider === 'gemini') throw new Error('gemini 分组暂不可用')
+      if (entry.provider === 'claude') throw new Error('claude 分组暂不可用')
       return { id: providerIds.indexOf(entry.provider) + 1, name: entry.name, key: entry.key }
     })
     const saveConfig = vi.fn(async () => ({ backups: [], files: [] }))
     const outcome = await configureManagedClis(
       loggedInAccountService(provisionCliKey),
       { fetchAvailableModels: vi.fn(async () => ['fixture-model']), saveConfig } as unknown as ConfigurationService,
-      ['codex', 'grok', 'gemini'], {}, false, store,
+      ['codex', 'grok', 'claude'], {}, false, store,
     )
     expect(outcome.failed).toEqual([
       { provider: 'codex', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。（HTTP 522）', serviceUnavailable: true },
       { provider: 'grok', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。', serviceUnavailable: true },
-      { provider: 'gemini', message: 'gemini 分组暂不可用' },
+      { provider: 'claude', message: 'claude 分组暂不可用' },
     ])
     expect(saveConfig).not.toHaveBeenCalled()
   })
@@ -161,14 +198,14 @@ describe('syncManagedCliKeySummary', () => {
 
     const summary = await syncManagedCliKeySummary(loggedInAccountService(provisionCliKey), store)
 
-    expect(summary.ready.map((entry) => entry.provider)).toEqual(providerIds)
+    expect(summary.ready.map((entry) => entry.provider)).toEqual(activeProviderIds)
     expect(summary.failed).toEqual([])
     expect(summary.storageWarning).toBeUndefined()
     expect(store.save).toHaveBeenCalledTimes(1)
   })
 
   it('returns only non-sensitive status fields and never includes plaintext keys', async () => {
-    const keys = providerIds.map((provider) => managedKey(provider))
+    const keys = activeProviderIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => keys),
       save: vi.fn(async () => undefined),
@@ -193,7 +230,7 @@ describe('syncManagedCliKeySummary', () => {
       grok: 'grok',
       gemini: 'Gemini',
     }
-    let cached = providerIds.map((provider) => ({
+    let cached = activeProviderIds.map((provider) => ({
       ...managedKey(provider),
       group: legacyGroups[provider],
       key: `sk-legacy-${provider}-secret-123456`,
@@ -213,8 +250,8 @@ describe('syncManagedCliKeySummary', () => {
     const summary = await syncManagedCliKeySummary(loggedInAccountService(provisionCliKey), store)
 
     expect(summary.failed).toEqual([])
-    expect(provisionCliKey).toHaveBeenCalledTimes(providerIds.length)
-    expect(cached.map((entry) => entry.group)).toEqual(providerIds.map((provider) => managedCliKeyProfiles[provider].group))
+    expect(provisionCliKey).toHaveBeenCalledTimes(activeProviderIds.length)
+    expect(cached.map((entry) => entry.group)).toEqual(activeProviderIds.map((provider) => managedCliKeyProfiles[provider].group))
   })
 
   it('isolates in-flight synchronization by user and rejects results from an account that switched away', async () => {
@@ -255,7 +292,7 @@ describe('syncManagedCliKeySummary', () => {
     const secondUserSummary = await secondUserSync
     releaseFirstRead()
 
-    expect(secondUserSummary.ready).toHaveLength(4)
+    expect(secondUserSummary.ready).toHaveLength(activeProviderIds.length)
     await expect(firstUserSync).rejects.toThrow('账号已切换')
     expect(savedByUser.has(73)).toBe(false)
     expect(savedByUser.get(99)?.every((entry) => entry.key.includes('user-99'))).toBe(true)
@@ -329,11 +366,10 @@ describe('configureManagedClis', () => {
     { provider: 'codex', models: ['codex-auto-review', 'gpt-5.6-sol', 'gpt-6-astra'], preferred: 'gpt-5.6-sol', expected: 'gpt-5.6-sol' },
     { provider: 'codex', models: ['codex-auto-review', 'gpt-5.6-sol'], preferred: 'gpt-6-astra', expected: 'gpt-5.6-sol' },
     { provider: 'claude', models: ['claude-opus-4-6', 'claude-opus-5'], preferred: undefined, expected: 'claude-opus-5' },
-    { provider: 'gemini', models: ['gemini-3.1-pro', 'gemini-3.8-flash-high'], preferred: undefined, expected: 'gemini-3.8-flash-high' },
     { provider: 'grok', models: ['grok-4.5', 'grok-4.6'], preferred: undefined, expected: 'grok-4.6' },
   ] satisfies Array<{ provider: ProviderId; models: string[]; preferred?: string; expected: string }>)('writes $expected from the actual $provider key model list with preference $preferred', async ({ provider, models, preferred, expected }) => {
     const store: ManagedCliKeyStoreLike = {
-      read: vi.fn(async () => providerIds.map((provider) => managedKey(provider))),
+      read: vi.fn(async () => activeProviderIds.map((provider) => managedKey(provider))),
       save: vi.fn(async () => undefined),
       remove: vi.fn(async () => undefined),
     }
@@ -358,7 +394,7 @@ describe('configureManagedClis', () => {
 
   it('reports a missing interactive default without writing an auto-review-only group to config', async () => {
     const store: ManagedCliKeyStoreLike = {
-      read: vi.fn(async () => providerIds.map((provider) => managedKey(provider))),
+      read: vi.fn(async () => activeProviderIds.map((provider) => managedKey(provider))),
       save: vi.fn(async () => undefined),
       remove: vi.fn(async () => undefined),
     }
@@ -380,7 +416,7 @@ describe('configureManagedClis', () => {
   })
 
   it.each(['cached', 'provisioned'] as const)('resets the selected config in one write with a %s managed key', async (source) => {
-    const keys = providerIds.map((provider) => managedKey(provider))
+    const keys = activeProviderIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => source === 'cached' ? keys : []),
       save: vi.fn(async () => undefined),
@@ -404,7 +440,7 @@ describe('configureManagedClis', () => {
     )
 
     expect(result).toEqual({ configured: ['codex'], failed: [] })
-    expect(provisionCliKey).toHaveBeenCalledTimes(source === 'cached' ? 0 : providerIds.length)
+    expect(provisionCliKey).toHaveBeenCalledTimes(source === 'cached' ? 0 : activeProviderIds.length)
     expect(fetchAvailableModels).toHaveBeenCalledWith(managedKey('codex').key, { bypassCache: true })
     expect(saveConfig).toHaveBeenCalledTimes(1)
     expect(saveConfig).toHaveBeenCalledWith({
@@ -416,7 +452,7 @@ describe('configureManagedClis', () => {
   })
 
   it('uses an independent key, model lookup, and config payload for each provider', async () => {
-    const keys = providerIds.map((provider) => managedKey(provider))
+    const keys = activeProviderIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => keys),
       save: vi.fn(async () => undefined),
@@ -439,13 +475,13 @@ describe('configureManagedClis', () => {
     const result = await configureManagedClis(
       accountService,
       systemService,
-      providerIds,
-      { codex: 'codex-preferred', gemini: 'not-returned-by-server' },
+      activeProviderIds,
+      { codex: 'codex-preferred', grok: 'not-returned-by-server' },
       true,
       store,
     )
 
-    expect(result).toEqual({ configured: [...providerIds], failed: [] })
+    expect(result).toEqual({ configured: [...activeProviderIds], failed: [] })
     expect(fetchAvailableModels.mock.calls.map(([key]) => key)).toEqual(keys.map((entry) => entry.key))
     expect(saveConfig.mock.calls.map(([payload, preview]) => ({ payload, preview }))).toEqual(
       keys.map((entry) => ({
@@ -461,7 +497,7 @@ describe('configureManagedClis', () => {
   })
 
   it('reports per-provider model/config failures and continues configuring the others', async () => {
-    const keys = providerIds.map((provider) => managedKey(provider))
+    const keys = activeProviderIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => keys),
       save: vi.fn(async () => undefined),
@@ -471,7 +507,6 @@ describe('configureManagedClis', () => {
     const fetchAvailableModels = vi.fn(async (key: string) => {
       const provider = keys.find((entry) => entry.key === key)?.provider
       if (provider === 'codex') throw new Error('Codex 模型接口超时')
-      if (provider === 'gemini') return []
       return [`${provider}-model`]
     })
     const saveConfig = vi.fn(async (payload: { provider: ProviderId }) => {
@@ -482,7 +517,7 @@ describe('configureManagedClis', () => {
     const result = await configureManagedClis(
       accountService,
       { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
-      providerIds,
+      activeProviderIds,
       {},
       false,
       store,
@@ -493,16 +528,36 @@ describe('configureManagedClis', () => {
       failed: [
         { provider: 'codex', message: 'Codex 模型接口超时' },
         { provider: 'grok', message: 'Grok 配置写入失败' },
-        { provider: 'gemini', message: '当前分组未返回可用模型' },
       ],
     })
-    expect(fetchAvailableModels).toHaveBeenCalledTimes(4)
+    expect(fetchAvailableModels).toHaveBeenCalledTimes(3)
     expect(saveConfig.mock.calls.map(([payload]) => payload.provider)).toEqual(['claude', 'grok'])
+  })
+
+  it('reports a group that returns no models without writing its config', async () => {
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => activeProviderIds.map((provider) => managedKey(provider))),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const saveConfig = vi.fn()
+
+    const result = await configureManagedClis(
+      loggedInAccountService(vi.fn()),
+      { fetchAvailableModels: vi.fn(async () => []), saveConfig } as unknown as ConfigurationService,
+      ['grok'],
+      {},
+      false,
+      store,
+    )
+
+    expect(result).toEqual({ configured: [], failed: [{ provider: 'grok', message: '当前分组未返回可用模型' }] })
+    expect(saveConfig).not.toHaveBeenCalled()
   })
 
   it('stops before writing CLI config when the account changes during model lookup', async () => {
     let activeUserId = 73
-    const keys = providerIds.map((provider) => managedKey(provider))
+    const keys = activeProviderIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => keys),
       save: vi.fn(async () => undefined),
@@ -521,7 +576,7 @@ describe('configureManagedClis', () => {
     await expect(configureManagedClis(
       accountService,
       { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
-      providerIds,
+      activeProviderIds,
       {},
       false,
       store,
@@ -533,7 +588,7 @@ describe('configureManagedClis', () => {
 
   it('stops remaining providers when the account changes while a CLI config write is in flight', async () => {
     let activeUserId = 73
-    const keys = providerIds.map((provider) => managedKey(provider))
+    const keys = activeProviderIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => keys),
       save: vi.fn(async () => undefined),
@@ -653,43 +708,43 @@ describe('relay-site-specific managed CLI key groups', () => {
     const summary = await syncManagedCliKeySummary(accountService, store)
 
     expect(summary.failed).toEqual([])
-    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual(providerIds.map((provider) => ({
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual(activeProviderIds.map((provider) => ({
       name: profilesBySite[siteId][provider].keyName,
       group: profilesBySite[siteId][provider].group,
     })))
-    expect(summary.ready).toEqual(providerIds.map((provider) => ({
+    expect(summary.ready).toEqual(activeProviderIds.map((provider) => ({
       provider,
       group: profilesBySite[siteId][provider].group,
       name: profilesBySite[siteId][provider].keyName,
     })))
     expect(store.cached.map((entry) => ({ provider: entry.provider, group: entry.group }))).toEqual(
-      providerIds.map((provider) => ({ provider, group: profilesBySite[siteId][provider].group })),
+      activeProviderIds.map((provider) => ({ provider, group: profilesBySite[siteId][provider].group })),
     )
   })
 
   it('re-provisions every cached key after the account moves to the other relay site', async () => {
-    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov', provider)))
+    const store = recordingKeyStore(activeProviderIds.map((provider) => siteManagedKey('solov', provider)))
     const provisionCliKey = siteAwareProvisioner('solov-api')
     const accountService = siteAwareAccountService(provisionCliKey, () => 'solov-api')
 
     const summary = await syncManagedCliKeySummary(accountService, store)
 
     expect(summary.failed).toEqual([])
-    expect(provisionCliKey).toHaveBeenCalledTimes(providerIds.length)
+    expect(provisionCliKey).toHaveBeenCalledTimes(activeProviderIds.length)
     expect(summary.ready.map((entry) => entry.group)).toEqual(
-      providerIds.map((provider) => profilesBySite['solov-api'][provider].group),
+      activeProviderIds.map((provider) => profilesBySite['solov-api'][provider].group),
     )
     // 旧站点的缓存条目必须整体被丢弃,否则 xm 的 Key 会继续被写进指向
     // api.solov.cc 的 CLI 配置里。
     expect(store.cached.map((entry) => entry.key)).toEqual(
-      providerIds.map((provider) => siteManagedKey('solov-api', provider).key),
+      activeProviderIds.map((provider) => siteManagedKey('solov-api', provider).key),
     )
-    const xmKeys = new Set(providerIds.map((provider) => siteManagedKey('solov', provider).key))
+    const xmKeys = new Set(activeProviderIds.map((provider) => siteManagedKey('solov', provider).key))
     for (const entry of store.cached) expect(xmKeys.has(entry.key)).toBe(false)
   })
 
   it('rejects a cache bound to another site even when its group names match', async () => {
-    const foreignKeys = providerIds.map((provider) => siteManagedKey('solov', provider))
+    const foreignKeys = activeProviderIds.map((provider) => siteManagedKey('solov', provider))
     const store = { ...recordingKeyStore(foreignKeys), getSiteId: () => 'solov-api' }
     const provisionCliKey = siteAwareProvisioner('solov')
     const accountService = siteAwareAccountService(provisionCliKey, () => 'solov')
@@ -697,11 +752,11 @@ describe('relay-site-specific managed CLI key groups', () => {
     const summary = await syncManagedCliKeySummary(accountService, store)
 
     expect(summary.failed).toEqual([])
-    expect(provisionCliKey).toHaveBeenCalledTimes(providerIds.length)
+    expect(provisionCliKey).toHaveBeenCalledTimes(activeProviderIds.length)
   })
 
   it('writes the sub2api group key of each CLI into its config payload', async () => {
-    const keys = providerIds.map((provider) => siteManagedKey('solov-api', provider))
+    const keys = activeProviderIds.map((provider) => siteManagedKey('solov-api', provider))
     const store = recordingKeyStore(keys)
     const accountService = siteAwareAccountService(
       vi.fn(async () => { throw new Error('the complete cache must not contact the server') }),
@@ -716,13 +771,13 @@ describe('relay-site-specific managed CLI key groups', () => {
     const result = await configureManagedClis(
       accountService,
       { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
-      providerIds,
+      activeProviderIds,
       {},
       false,
       store,
     )
 
-    expect(result).toEqual({ configured: [...providerIds], failed: [] })
+    expect(result).toEqual({ configured: [...activeProviderIds], failed: [] })
     expect(saveConfig.mock.calls.map(([payload]) => payload)).toEqual(keys.map((entry) => ({
       provider: entry.provider,
       apiKey: entry.key,
@@ -832,7 +887,7 @@ describe('managed CLI groups resolved from the account backend', () => {
 
   it('signs keys into the renamed groups the backend actually offers', async () => {
     const listUsableGroups = vi.fn(async () => (
-      ['default', ...providerIds.map((provider) => renamedGroups[provider])].map((name) => ({ name }))
+      ['default', ...activeProviderIds.map((provider) => renamedGroups[provider])].map((name) => ({ name }))
     ))
     const { accountService, provisionCliKey } = groupAwareAccountService(listUsableGroups)
 
@@ -840,8 +895,8 @@ describe('managed CLI groups resolved from the account backend', () => {
 
     expect(summary.failed).toEqual([])
     expect(summary.ready.map((entry) => entry.group).sort())
-      .toEqual(providerIds.map((provider) => renamedGroups[provider]).sort())
-    for (const provider of providerIds) {
+      .toEqual(activeProviderIds.map((provider) => renamedGroups[provider]).sort())
+    for (const provider of activeProviderIds) {
       expect(provisionCliKey).toHaveBeenCalledWith({
         name: managedCliKeyProfiles[provider].keyName,
         group: renamedGroups[provider],
@@ -852,7 +907,7 @@ describe('managed CLI groups resolved from the account backend', () => {
 
   it('keeps the shipped names when the backend still offers them', async () => {
     const listUsableGroups = vi.fn(async () => (
-      providerIds.map((provider) => ({ name: managedCliKeyProfiles[provider].group }))
+      activeProviderIds.map((provider) => ({ name: managedCliKeyProfiles[provider].group }))
     ))
     const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
       const entry = keyForGroup(input.group ?? '')
@@ -867,7 +922,7 @@ describe('managed CLI groups resolved from the account backend', () => {
     const summary = await syncManagedCliKeySummary(accountService, memoryStore())
 
     expect(summary.ready.map((entry) => entry.group).sort())
-      .toEqual(providerIds.map((provider) => managedCliKeyProfiles[provider].group).sort())
+      .toEqual(activeProviderIds.map((provider) => managedCliKeyProfiles[provider].group).sort())
   })
 
   it('falls back to the shipped names when the group list cannot be read', async () => {
@@ -886,7 +941,7 @@ describe('managed CLI groups resolved from the account backend', () => {
 
     expect(summary.failed).toEqual([])
     expect(summary.ready.map((entry) => entry.group).sort())
-      .toEqual(providerIds.map((provider) => managedCliKeyProfiles[provider].group).sort())
+      .toEqual(activeProviderIds.map((provider) => managedCliKeyProfiles[provider].group).sort())
   })
 
   it('asks the backend for nothing when every key is already cached', async () => {
@@ -897,7 +952,7 @@ describe('managed CLI groups resolved from the account backend', () => {
       provisionCliKey,
       listUsableGroups,
     } as unknown as AccountService
-    const store = memoryStore(providerIds.map((provider) => managedKey(provider)))
+    const store = memoryStore(activeProviderIds.map((provider) => managedKey(provider)))
 
     const summary = await syncManagedCliKeySummary(accountService, store)
 
@@ -908,7 +963,7 @@ describe('managed CLI groups resolved from the account backend', () => {
 
   it('discards a cached key whose group the backend no longer offers', async () => {
     const listUsableGroups = vi.fn(async () => (
-      ['default', ...providerIds.map((provider) => renamedGroups[provider])].map((name) => ({ name }))
+      ['default', ...activeProviderIds.map((provider) => renamedGroups[provider])].map((name) => ({ name }))
     ))
     const { accountService, provisionCliKey } = groupAwareAccountService(listUsableGroups)
     // 缓存里三把还在，claude 那把是改名前签的：它必须被丢掉重签，否则请求会继续
@@ -946,7 +1001,7 @@ describe('history-account subscriptions decide the managed key group', () => {
     const listUsableGroups = vi.fn(async () => {
       if (state.groupsFail) throw new Error('连接服务器失败')
       return [
-        ...providerIds.filter((provider) => !state.withoutUsual?.includes(provider))
+        ...activeProviderIds.filter((provider) => !state.withoutUsual?.includes(provider))
           .map((provider) => ({ name: sub2Api[provider].group, description: '', ratio: 1, platform: platforms[provider] })),
         ...(state.listed ?? state.subscribed).map((name) => ({ name, description: '', ratio: 1, platform: 'anthropic' })),
       ]
@@ -962,7 +1017,7 @@ describe('history-account subscriptions decide the managed key group', () => {
   }
 
   it('moves only the subscribed CLI into its subscription group and reports it as regrouped', async () => {
-    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov-api', provider)), 'solov-api')
+    const store = recordingKeyStore(activeProviderIds.map((provider) => siteManagedKey('solov-api', provider)), 'solov-api')
     const { accountService, provisionCliKey, listUsableGroups } = subscriptionAccountService({ subscribed: ['Claude 包月'] })
 
     const summary = await syncManagedCliKeySummary(accountService, store)
@@ -978,7 +1033,7 @@ describe('history-account subscriptions decide the managed key group', () => {
   it('moves the CLI back to its usual group once the subscription is gone', async () => {
     const store = recordingKeyStore([
       { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
-      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+      ...activeProviderIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
     ], 'solov-api')
     const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: [] })
 
@@ -991,7 +1046,7 @@ describe('history-account subscriptions decide the managed key group', () => {
   it('keeps a cached subscription key when the groups cannot be read', async () => {
     const store = recordingKeyStore([
       { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
-      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+      ...activeProviderIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
     ], 'solov-api')
     const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], groupsFail: true })
 
@@ -1008,7 +1063,7 @@ describe('history-account subscriptions decide the managed key group', () => {
     // 配置里照样是这把旧 Key；留着它，用户至少看到服务端「订阅已到期」的原话。
     const store = recordingKeyStore([
       { ...siteManagedKey('solov-api', 'claude'), id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' },
-      ...providerIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
+      ...activeProviderIds.filter((provider) => provider !== 'claude').map((provider) => siteManagedKey('solov-api', provider)),
     ], 'solov-api')
     const { accountService, provisionCliKey } = subscriptionAccountService({
       subscribed: [], listed: ['Claude 包月'], withoutUsual: ['claude'],
@@ -1022,7 +1077,7 @@ describe('history-account subscriptions decide the managed key group', () => {
   })
 
   it('leaves the xm account alone: its subscriptions do not depend on the key group', async () => {
-    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov', provider)), 'solov')
+    const store = recordingKeyStore(activeProviderIds.map((provider) => siteManagedKey('solov', provider)), 'solov')
     const getSubscriptionSelf = vi.fn()
     const listUsableGroups = vi.fn()
     const provisionCliKey = vi.fn()
@@ -1091,7 +1146,7 @@ describe('dynamic groups with the encrypted managed key store', () => {
     const sub2Api = profilesBySite['solov-api']
     const platforms: Record<ProviderId, string> = { claude: 'anthropic', codex: 'openai', gemini: 'gemini', grok: 'grok' }
     const listUsableGroups = vi.fn(async () => [
-      ...providerIds.map((provider) => ({ name: sub2Api[provider].group, platform: platforms[provider] })),
+      ...activeProviderIds.map((provider) => ({ name: sub2Api[provider].group, platform: platforms[provider] })),
       { name: 'Claude 包月', platform: 'anthropic' },
     ])
     const getSubscriptionSelf = vi.fn(async () => ({
@@ -1138,7 +1193,7 @@ describe('dynamic groups with the encrypted managed key store', () => {
     const filePath = storePath()
     const firstStore = new ManagedCliKeyStore(filePath, storage())
     const issueKey = provisioner()
-    const listUsableGroups = vi.fn(async () => providerIds.map((provider) => ({ name: groups[provider] })))
+    const listUsableGroups = vi.fn(async () => activeProviderIds.map((provider) => ({ name: groups[provider] })))
     const accountService = {
       getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
       getActiveSiteId: vi.fn(() => 'solov'),
@@ -1149,8 +1204,8 @@ describe('dynamic groups with the encrypted managed key store', () => {
     const first = await syncManagedCliKeySummary(accountService, firstStore)
     expect(first.failed).toEqual([])
     expect(first.storageWarning).toBeUndefined()
-    expect(first.ready.map((entry) => entry.group)).toEqual(providerIds.map((provider) => groups[provider]))
-    expect(issueKey).toHaveBeenCalledTimes(providerIds.length)
+    expect(first.ready.map((entry) => entry.group)).toEqual(activeProviderIds.map((provider) => groups[provider]))
+    expect(issueKey).toHaveBeenCalledTimes(activeProviderIds.length)
 
     const reopened = new ManagedCliKeyStore(filePath, storage())
     const offlineService = {
@@ -1184,7 +1239,7 @@ describe('dynamic groups with the encrypted managed key store', () => {
 
     const result = await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, storage()))
     expect(result.ready).toContainEqual({ provider: 'codex', group: groups.codex, name: codexKey.name })
-    expect(result.failed.map((entry) => entry.provider).sort()).toEqual(['claude', 'gemini', 'grok'])
+    expect(result.failed.map((entry) => entry.provider).sort()).toEqual(['claude', 'grok'])
     expect(issueKey).not.toHaveBeenCalledWith(expect.objectContaining({ group: groups.codex }))
   })
 
@@ -1198,7 +1253,7 @@ describe('dynamic groups with the encrypted managed key store', () => {
       getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
       getActiveSiteId: vi.fn(() => 'solov'),
       provisionCliKey: issueKey,
-      listUsableGroups: vi.fn(async () => providerIds.map((provider) => ({ name: groups[provider] }))),
+      listUsableGroups: vi.fn(async () => activeProviderIds.map((provider) => ({ name: groups[provider] }))),
     } as unknown as AccountService
     const fetchAvailableModels = vi.fn(async (key: string) => {
       if (key === oldKey.key) throw new Error('模型查询失败，服务返回 401')

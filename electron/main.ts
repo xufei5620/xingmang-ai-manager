@@ -70,7 +70,7 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
-import { cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -233,7 +233,6 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
-import { inspectUserWideCertificateTrust, trustCertificatesForUserTerminals } from './user-certificate-trust'
 
 guardProcessOutputStreams()
 
@@ -1758,7 +1757,6 @@ if (!hasSingleInstanceLock) {
           readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
           // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
           workspace: systemService.readStoredConfig().workspace,
-          inspectUserWideCertificateTrust: () => inspectUserWideCertificateTrust({ executionMode: windowsCliExecutionMode }),
         })
         return latestDiagnostics
       },
@@ -1817,15 +1815,6 @@ if (!hasSingleInstanceLock) {
           ...rootedOptions.diagnosticExport,
           sensitiveValues: sensitiveKeyValues(),
         })
-      },
-      // 只在最近一次检查确实查出公司证书、且这条还没设过时才写：按钮是检查页给的，
-      // 主进程这里再对一次，不因为一条来路不明的调用就去改客户的电脑设置。
-      trustCertificatesUserWide: async () => {
-        const item = latestDiagnostics?.items.find((entry) => entry.code === 'CERTIFICATE_TRUST')
-        if (item?.details?.userWide !== 'available') throw new Error('这台电脑现在不需要这项设置，请先点「重新检测」')
-        const result = await trustCertificatesForUserTerminals({ executionMode: windowsCliExecutionMode })
-        runtimeLog.log('info', 'diagnostics', 'certificate.user-wide.trusted', '当前 Windows 账号的终端已设为信任这台电脑的证书', { result })
-        return result
       },
     }
     if (process.platform === 'win32') {
@@ -3132,6 +3121,8 @@ if (!hasSingleInstanceLock) {
     // 本软件写给 Codex 的型号名单读不进时 Codex 整个起不来（星芒关着的时候命令行或桌面端
     // 换成了旧版）：开机在本机看一眼，没登录的也看；登录状态下开机那轮按账号同步共用这一次。
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
+    // Gemini CLI 下线后，星芒以前写进它配置的做完提醒和画图没人维护了，开机后在后台收回。
+    void startupQuiet.whenOver().then(() => systemService.reclaimRetiredToolIntegrations?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -3884,7 +3875,7 @@ if (!hasSingleInstanceLock) {
           subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
           installedTools: [
             ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),
-            ...providerIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : id === 'gemini' ? 'Gemini CLI' : 'Grok CLI' })),
+            ...activeProviderIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : 'Grok CLI' })),
           ],
           update: resolveTrayUpdateEntry(updaterService.getState()),
           acceleration: trayAcceleration?.entry() ?? null,

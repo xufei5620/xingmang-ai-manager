@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "updatedAt": "2026-09-21",
+  "updatedAt": "2026-10-14",
   "items": [
     {
       "id": "files",
@@ -9,7 +9,7 @@
       "summary": "让 AI 直接读写你指定的那个文件夹：打开文件看内容、改文件、新建和整理文件，不用你来回复制粘贴。",
       "publisher": "Model Context Protocol 官方",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
-      "providers": ["claude", "codex", "gemini", "grok"],
+      "providers": ["claude", "codex", "grok"],
       "install": {
         "type": "stdio",
         "command": "npx",
@@ -41,7 +41,7 @@
       "summary": "让 AI 自己打开网页去看、去点：查资料、翻文档、填表单、核对页面上显示的内容。",
       "publisher": "微软（Playwright 团队）",
       "homepage": "https://github.com/microsoft/playwright-mcp",
-      "providers": ["claude", "codex", "gemini", "grok"],
+      "providers": ["claude", "codex", "grok"],
       "install": {
         "type": "stdio",
         "command": "npx",
@@ -66,7 +66,7 @@
       "summary": "让 AI 把你交代过的事情记在本机的一个文件里，换一次对话也还记得，不用每次重新讲一遍背景。",
       "publisher": "Model Context Protocol 官方",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
-      "providers": ["claude", "codex", "gemini", "grok"],
+      "providers": ["claude", "codex", "grok"],
       "install": {
         "type": "stdio",
         "command": "npx",
@@ -98,7 +98,7 @@
       "summary": "遇到复杂问题时，让 AI 先一步步把思路拆开、可以回头改，再给结论。排查问题和做方案时更靠得住。",
       "publisher": "Model Context Protocol 官方",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
-      "providers": ["claude", "codex", "gemini", "grok"],
+      "providers": ["claude", "codex", "grok"],
       "install": {
         "type": "stdio",
         "command": "npx",
@@ -123,7 +123,7 @@
       "summary": "让 AI 直接看你 GitHub 上的仓库、问题和合并请求，也能按你的要求在上面提交改动。",
       "publisher": "GitHub 官方",
       "homepage": "https://github.com/github/github-mcp-server",
-      "providers": ["claude", "codex", "gemini", "grok"],
+      "providers": ["claude", "codex", "grok"],
       "install": { "type": "http", "url": "https://api.githubcopilot.com/mcp/" },
       "inputs": [],
       "runtime": "none",

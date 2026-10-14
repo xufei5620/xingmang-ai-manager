@@ -368,14 +368,14 @@ module.exports = {
     icon: 'assets/brand/v3/app-icon.png',
     category: 'Development',
     synopsis: '星芒AI管理工具',
-    description: '一键安装、配置和启动 Claude Code、Codex、Gemini、Grok 等 AI 编程工具。',
+    description: '一键安装、配置和启动 Claude Code、Codex、Grok 等 AI 编程工具。',
     maintainer: '绍兴星芒文化传媒有限责任公司',
     vendor: '绍兴星芒文化传媒有限责任公司',
     desktop: {
       entry: {
         Name: '星芒AI管理工具',
         GenericName: 'AI 编程工具管理',
-        Keywords: 'AI;Claude;Codex;Gemini;Grok;星芒;',
+        Keywords: 'AI;Claude;Codex;Grok;星芒;',
         StartupNotify: 'true',
       },
     },

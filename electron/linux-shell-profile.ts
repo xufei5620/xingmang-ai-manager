@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, type ProviderId } from './catalog'
 import { resolveLinuxGrokInstalledVersion } from './linux-grok'
 import { quotePosixArgument } from './macos-platform'
 import {
@@ -315,7 +315,7 @@ async function syncLaunchers(env: NodeJS.ProcessEnv, homeDirectory: string, skip
   const launcherDirectory = managedTerminalLauncherDirectory(env, 'linux')
   const installed: string[] = []
   const launchers: string[] = []
-  for (const provider of providerIds) {
+  for (const provider of activeProviderIds) {
     const command = cliCatalog[provider].command
     const target = launcherTarget(provider, env, homeDirectory)
     const launcherPath = path.posix.join(launcherDirectory, command)

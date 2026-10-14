@@ -1,4 +1,4 @@
-import { cliCatalog, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, type ProviderId } from './catalog'
 import type { NativeConfigInspection } from './config-files'
 import { externalClientNames, externalToolIds, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
@@ -148,7 +148,8 @@ function externalClientLine(tool: ExternalToolId, clients: readonly FeedbackExte
 }
 
 export function buildFeedbackEnvironmentLines(input: FeedbackEnvironmentInput): string[] {
-  const clis = providerIds.map((provider) => {
+  // 下线的工具（Gemini CLI）星芒不再查它装没装，写进报告只会是一行不准的「未安装」。
+  const clis = activeProviderIds.map((provider) => {
     const name = cliCatalog[provider].name
     const status = input.clis?.[provider]
     if (!status) return `${name}: ${unreadable}`

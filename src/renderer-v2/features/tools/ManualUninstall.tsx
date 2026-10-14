@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Copy, Trash2 } from 'lucide-react'
-import type { CliLeftoverCleanupResult, PlatformCapabilities, ProviderId, ToolUninstallResult } from '../../../../electron/ipc-contract'
+import type { CliLeftoverCleanupResult, PlatformCapabilities, ToolUninstallResult } from '../../../../electron/ipc-contract'
+import type { ActiveProviderId } from '../../../../electron/catalog'
 import { Button, Dialog, useToast } from '../../ui'
 import { errorMessage } from '../../business-common'
 
@@ -13,13 +14,13 @@ export interface ManualUninstallState {
    * 主进程记下了命令里的那几个文件、能在核对后替客户删时才有（已知48「帮我清理」）。
    * 只是工具名：删哪些文件永远由主进程自己定。
    */
-  cleanUpTool?: ProviderId
+  cleanUpTool?: ActiveProviderId
 }
 
 type ManualHelp = Extract<ToolUninstallResult, { outcome: 'manual-required' }>['manualHelp']
 
 /** 首页和「安装卸载」页拿到 manual-required 后弹框用的那几样。 */
-export function manualUninstallState(name: string, id: ProviderId | 'codexDesktop', help: ManualHelp): ManualUninstallState {
+export function manualUninstallState(name: string, id: ActiveProviderId | 'codexDesktop', help: ManualHelp): ManualUninstallState {
   const state: ManualUninstallState = { name, reason: help.reason, manualCommand: help.manualCommand }
   if (help.cleanUpAvailable && help.manualCommand && id !== 'codexDesktop') state.cleanUpTool = id
   return state
@@ -39,7 +40,7 @@ export function ManualUninstallDialog({ state, platform, onClose, cleanUp }: {
   platform: PlatformCapabilities['platform'] | undefined
   onClose(): void
   /** 没传就只给命令，和以前一样。 */
-  cleanUp?(tool: ProviderId): Promise<CliLeftoverCleanupResult>
+  cleanUp?(tool: ActiveProviderId): Promise<CliLeftoverCleanupResult>
 }) {
   const toast = useToast()
   const [copied, setCopied] = useState(false)

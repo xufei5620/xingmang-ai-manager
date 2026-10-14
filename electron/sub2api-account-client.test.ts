@@ -237,7 +237,7 @@ describe('sub2api user-account adapter', () => {
     assert.equal(example.calls[1].init.method, 'PUT')
   })
 
-  it('creates and reveals the four requested managed groups without duplicate active keys', async () => {
+  it('creates and reveals the managed group key of every active tool without duplicate active keys', async () => {
     const groups = [
       { id: '1', name: 'Codex_pro', platform: 'openai', status: 'active' },
       { id: '2', name: 'Claude-MAX(不限客户端)', platform: 'anthropic', status: 'active' },
@@ -258,14 +258,31 @@ describe('sub2api user-account adapter', () => {
       { name: 'xingmang-desktop-claude', groupId: '2' },
       { name: 'xingmang-desktop-codex', groupId: '1' },
       { name: 'xingmang-desktop-grok', groupId: '4' },
-      { name: 'xingmang-desktop-gemini', groupId: '3' },
     ])
     assert.deepEqual(managed.map(({ provider, group, key }) => ({ provider, group, key })), [
       { provider: 'claude', group: 'Claude-MAX(不限客户端)', key: 'sk-managed-1' },
       { provider: 'codex', group: 'Codex_pro', key: 'sk-managed-2' },
       { provider: 'grok', group: 'grok-heavy', key: 'sk-managed-3' },
-      { provider: 'gemini', group: 'Gemini', key: 'sk-managed-4' },
     ])
+  })
+  // Gemini CLI 下线（2026-10-14）：历史账号里 Gemini 分组没了，也不该让整个账号签不出 Key。
+  it('still signs every active tool when the account no longer has a Gemini group', async () => {
+    const created: string[] = []
+    const managed = await provisionSub2ApiManagedCliKeys({
+      listGroups: async () => [
+        { id: '1', name: 'Codex_pro', platform: 'openai', status: 'active' },
+        { id: '2', name: 'Claude-MAX(不限客户端)', platform: 'anthropic', status: 'active' },
+        { id: '4', name: 'grok-heavy', platform: 'grok', status: 'active' },
+      ],
+      listKeys: async () => ({ items: [], total: 0 }),
+      createKey: async (_saved, input) => {
+        created.push(input.name)
+        return { id: String(created.length), name: input.name, groupId: input.groupId, status: 'active', quota: 0 }
+      },
+      revealKey: async (_saved, id) => `sk-managed-${id}`,
+    }, saved(), signal())
+    assert.deepEqual(managed.map(({ provider }) => provider), ['claude', 'codex', 'grok'])
+    assert.equal(created.includes('xingmang-desktop-gemini'), false)
   })
   it('does not automatically retry a possibly committed write', async () => {
     const example = fixture([new Error('private transport detail')])

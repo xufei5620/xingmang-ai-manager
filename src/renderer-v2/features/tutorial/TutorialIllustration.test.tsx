@@ -36,7 +36,12 @@ describe('tutorial illustrations', () => {
   it.each(Object.keys(everyIllustration) as TutorialIllustrationId[])('keeps technical words out of the %s illustration', (kind) => {
     const text = renderedText(kind)
     expect(text).not.toMatch(/npm|PATH|TOML|环境变量/i)
-    expect(text.replace(/(Codex|Gemini|Grok) CLI/g, '')).not.toMatch(/CLI/)
+    expect(text.replace(/(Codex|Grok) CLI/g, '')).not.toMatch(/CLI/)
+  })
+
+  // Gemini CLI 已下线（yoyo 2026-10-14），示意图上的工具选项也不能再画出它。
+  it.each(Object.keys(everyIllustration) as TutorialIllustrationId[])('never draws the retired Gemini CLI in the %s illustration', (kind) => {
+    expect(renderedText(kind)).not.toContain('Gemini')
   })
 
   it('names the runtimes the way the home runtime card lists them', () => {

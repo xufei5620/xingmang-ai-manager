@@ -349,7 +349,7 @@ export const notificationOptions = [
   {
     value: 'cliTrouble',
     label: '终端里没回上',
-    description: '终端里的 Claude Code、Gemini CLI、Grok 因额度、Key 或服务问题没回上时，告诉你原因和怎么办，同一原因半小时只提醒一次',
+    description: '终端里的 Claude Code、Grok 因额度、Key 或服务问题没回上时，告诉你原因和怎么办，同一原因半小时只提醒一次',
   },
   {
     value: 'cliTurn',

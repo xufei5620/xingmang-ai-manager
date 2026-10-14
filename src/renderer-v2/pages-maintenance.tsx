@@ -92,7 +92,8 @@ import {
   withdrawnVersionAdvice,
 } from './registry/business'
 import { appReleaseDownloadUrl } from '../../electron/app-download-page'
-import { tools } from './registry/tools'
+import { shortcutTools, tools } from './registry/tools'
+import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
 import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, updatesOutsideApp } from './features/tools/model'
@@ -109,13 +110,7 @@ import { createSettingsQueue } from './features/app/settings-queue'
 export { createSettingsQueue } from './features/app/settings-queue'
 import { diagnosticDetailRows } from './features/app/diagnostic-details'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from './features/app/stale-proxy'
-import {
-  canTrustCertificatesUserWide,
-  certificateDiagnosticCode,
-  certificateTrustConfirmBody,
-  certificateTrustConfirmTitle,
-  certificateTrustMessage,
-} from './features/app/certificate-trust'
+import { certificateDiagnosticCode } from './features/app/certificate-trust'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from './features/app/diagnostic-folder'
 import { takeSettingsGroup } from './features/app/settings-group-intent'
 import { firstProblemAnchor, useRowFocus } from './features/app/row-focus'
@@ -175,7 +170,8 @@ type Diagnostic = Awaited<
 type RuntimeLog = Awaited<
   ReturnType<V2Bridge['getRuntimeLogs']>
 >['entries'][number]
-type Provider = Parameters<V2Bridge['installCli']>[0]
+// 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：本页不再替它安装、检查或写 Key。
+type Provider = ActiveProviderId
 type ConnectionCheck = Awaited<ReturnType<V2Bridge['checkProviderConnection']>>
 interface ConnectionRow {
   /** React key 与 testId 后缀：CLI 是 provider，外部客户端是它自己的 id。 */
@@ -266,8 +262,17 @@ export type BusinessActions = {
 }
 /** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
 const networkDiagnosticCode = 'XINGMANG_NETWORK'
-function isProvider(id: string): id is Provider {
-  return ['claude', 'codex', 'gemini', 'grok'].includes(id)
+// 已下线的工具（Gemini）不在这几页出现：检查结果、安装卸载、任务里带着它也不认。
+function isProvider(id: string): id is ActiveProviderId {
+  return isActiveProviderId(id)
+}
+
+/**
+ * 设置里「快捷键」那一行：Ctrl / Command 加几个数字能打开工具，按这台电脑上看得到的个数写
+ * （和 App 里快捷键本身读同一张表，registry/tools.ts 的 shortcutTools）。
+ */
+export function launchShortcutMeta(os: WindowOs): string {
+  return `Ctrl / Command + 1–${shortcutTools(os).length}`
 }
 
 /**
@@ -494,7 +499,6 @@ export function HealthPage({
   const [details, setDetails] = useState<Diagnostic | null>(null)
   const [connectionDetailsId, setConnectionDetailsId] = useState<string | null>(null)
   const [proxyClearItem, setProxyClearItem] = useState<Diagnostic | null>(null)
-  const [certificateTrustOpen, setCertificateTrustOpen] = useState(false)
   const [fixing, setFixing] = useState<DiagnosticFixKind | null>(null)
   const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
@@ -632,16 +636,6 @@ export function HealthPage({
     }, staleProxyClearMessage)
     setProxyClearItem(null)
   }
-  // 写好之后重新检查一遍，那一行的按钮就没了；结果那句话留在页头。
-  const trustCertificatesUserWide = async () => {
-    await operation.execute('让所有终端信任证书', async () => {
-      const result = await api.trustCertificatesUserWide()
-      setCertificateTrustOpen(false)
-      void resource.reload()
-      return result
-    }, certificateTrustMessage)
-    setCertificateTrustOpen(false)
-  }
   // 挪开 Codex 的额外设置 / 删掉盖过当前账号的设置：做完重新检查，那一行立刻变成新结论。
   const runFix = async (kind: DiagnosticFixKind) => {
     await operation.execute(diagnosticFixLabels[kind], async () => {
@@ -724,16 +718,6 @@ export function HealthPage({
               testId="health-clear-stale-proxy"
             >
               清掉这条旧设置
-            </Button>
-          )}
-          {canTrustCertificatesUserWide(item) && (
-            <Button
-              size="sm"
-              icon={ShieldCheck}
-              onClick={() => setCertificateTrustOpen(true)}
-              testId="health-trust-certificates"
-            >
-              让这台电脑上所有终端都信任
             </Button>
           )}
           {diagnosticFixKind(item) && (
@@ -946,16 +930,6 @@ export function HealthPage({
         onOk={() => void clearStaleProxy()}
         onClose={() => setProxyClearItem(null)}
         testId="health-clear-stale-proxy-confirm"
-      />
-      <Confirm
-        open={certificateTrustOpen}
-        title={certificateTrustConfirmTitle}
-        body={certificateTrustConfirmBody}
-        okLabel="信任"
-        loading={operation.busy === '让所有终端信任证书'}
-        onOk={() => void trustCertificatesUserWide()}
-        onClose={() => setCertificateTrustOpen(false)}
-        testId="health-trust-certificates-confirm"
       />
       <Drawer
         open={Boolean(connectionDetails)}
@@ -1859,7 +1833,7 @@ export function installJobRunning(job: ToolJob | undefined): boolean {
 }
 
 /**
- * 首页那份任务里本页有行的几个（四个命令行工具、Codex 桌面端、Node.js、Python）。
+ * 首页那份任务里本页有行的几个（命令行工具、Codex 桌面端、Node.js、Python）。
  * Git、打开工具这些任务这一页不画，跑完也不用重读。
  */
 export function maintenanceRowJobKeys(jobs: Readonly<Record<string, ToolJob>> | undefined): string[] {
@@ -1883,7 +1857,7 @@ function installingName(busy: string): string | null {
 
 /**
  * 「查看安装步骤」「安装指南」落到教程哪一章。以前一律落到第一章，客户还得自己翻：
- * 桌面端在 Mac 上去「Mac 上装桌面端」、别的电脑去「Codex 桌面端怎么安装？」；四个命令行
+ * 桌面端在 Mac 上去「Mac 上装桌面端」、别的电脑去「Codex 桌面端怎么安装？」；命令行
  * 工具去「进阶：安装与使用命令行工具」；运行环境在 Mac 上去「Mac 上准备 Node.js 和 Python」，
  * 别的电脑也去命令行工具那一章。
  */
@@ -3825,7 +3799,7 @@ export function SettingsPage({
       >
         <ListRow title="命令面板" meta="Ctrl / Command + K" />
         <ListRow title="设置" meta="Ctrl / Command + ," />
-        <ListRow title="打开工具" meta="Ctrl / Command + 1–5" />
+        <ListRow title="打开工具" meta={launchShortcutMeta(currentWindowOs())} />
         <ListRow title="放大 / 缩小界面" meta="Ctrl / Command + 加号 / 减号" />
         <ListRow title="界面缩放恢复为自动" meta="Ctrl / Command + 0" />
         <ListRow title="关闭最上层弹窗" meta="Esc" />

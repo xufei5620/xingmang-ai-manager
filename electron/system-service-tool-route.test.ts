@@ -94,7 +94,15 @@ async function fixture(options: {
 }
 
 describe('tool route follow', () => {
-  it.each(['claude', 'codex', 'gemini', 'grok'] satisfies ProviderId[])(
+  it('leaves the retired Gemini CLI on the line it was last written with', async () => {
+    const f = await fixture({ providers: ['gemini'] })
+    const before = f.read('gemini')
+    expect(await f.follow({ reason: 'route-changed' })).toEqual({ rewritten: [] })
+    expect(f.read('gemini')).toBe(before)
+    expect(f.followed).not.toHaveBeenCalled()
+  })
+
+  it.each(['claude', 'codex', 'grok'] satisfies ProviderId[])(
     'moves an owned %s config to the current line without asking for models or touching the key', async (provider) => {
       const f = await fixture({ providers: [provider] })
       const before = f.read(provider)

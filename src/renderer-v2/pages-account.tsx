@@ -76,6 +76,7 @@ import type { V2Bridge } from './types'
 import { SavedAccounts } from './SavedAccounts'
 import { accountOrigin, accountSiteId, accountSupports, visibleAccountTab, accountKeyQuota, type AccountSiteId } from './account-context'
 import type { AccountSessionState } from '../../electron/ipc-contract'
+import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
 import { AccountFilters, accountTimeRange, type AccountFilterField } from './AccountFilters'
 import { usageDateRange } from '../../electron/usage-date-range'
 import { platformApi } from './platform-api'
@@ -119,7 +120,8 @@ type SubscriptionPaymentInput = Parameters<
   V2Bridge['createAccountSubscriptionPayment']
 >[0]
 type AccountTab = (typeof accountTabs)[number]['value']
-type Provider = Parameters<V2Bridge['saveConfigWithAccountKey']>[0]['provider']
+// 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：账号页不再替它写 Key、列它的额度。
+type Provider = ActiveProviderId
 /** 首页那边某个工具的设置已经保存并读回；sequence 每次加一，同一个工具连存两次也认得出。 */
 export interface ToolConfigConfirmation {
   provider: Provider
@@ -130,8 +132,10 @@ function keyToolName(provider: Provider): string {
   if (provider === 'codex') return 'Codex'
   return tools.find((tool) => tool.id === provider)?.name ?? provider
 }
-function isProvider(id: string): id is Provider {
-  return ['claude', 'codex', 'gemini', 'grok'].includes(id)
+// 已下线的工具（Gemini）不在「配置到工具」里出现，也不往它的配置里写 Key；
+// 主进程按本机缓存给密钥标的「在用」若是它，也不显示、撤销后不替它换新。
+function isProvider(id: unknown): id is ActiveProviderId {
+  return isActiveProviderId(id)
 }
 // 没读到的金额写「—」，不写「暂未读到」：小标签上是「消耗 —」「剩余 —」。
 function quotaMoney(
@@ -1543,7 +1547,7 @@ function AccountKeys({
                 badge={
                   <>
                     <Pill tone={status.tone}>{status.label}</Pill>
-                    {key.managedProvider && (
+                    {isProvider(key.managedProvider) && (
                       <Pill tone="accent" testId={`account-key-in-use-${key.id}`}>
                         {keyToolName(key.managedProvider)} 在用
                       </Pill>
@@ -1740,7 +1744,7 @@ function AccountKeys({
                     async () => {
                       await api.revokeAccountKey(removing.id)
                       // 换新也算在这一下里：确认按钮一直转着，直到新 Key 写进工具。
-                      const provider = onRewriteKey ? removing.managedProvider : undefined
+                      const provider = onRewriteKey && isProvider(removing.managedProvider) ? removing.managedProvider : undefined
                       const replaced = provider ? await replaceKey(provider) : false
                       setRemoving(null)
                       await resource.reload()
@@ -1758,7 +1762,7 @@ function AccountKeys({
         }
       >
         <p>
-          {removing?.managedProvider
+          {isProvider(removing?.managedProvider)
             ? onRewriteKey
               ? `${keyToolName(removing.managedProvider)} 正在用这把密钥。撤销后会马上自动换一把新的写进 ${keyToolName(removing.managedProvider)}，不用你再设置。`
               : `${keyToolName(removing.managedProvider)} 正在用这把密钥，撤销后它会停止工作。`

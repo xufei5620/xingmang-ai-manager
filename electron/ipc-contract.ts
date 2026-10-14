@@ -6,8 +6,6 @@ import type { SavedAccountSummary } from './saved-accounts'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 export type { StaleProxyClearResult } from './stale-proxy-environment'
-import type { UserWideCertificateTrustResult } from './user-certificate-trust'
-export type { UserWideCertificateTrustResult } from './user-certificate-trust'
 export type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
@@ -1232,12 +1230,6 @@ export interface XingmangInvokeContract {
    */
   clearStaleProxySettings: IpcInvokeDefinition<'diagnostics:clear-stale-proxy', [], StaleProxyClearResult>
   /**
-   * 检查页「让这台电脑上所有终端都信任」：把 Node.js 也信任这台电脑证书库的那一条
-   * 写进当前 Windows 账号的设置。没有入参；只在最近一次检查查出公司证书、且这条还没
-   * 设过时主进程才写（user-certificate-trust.ts）。
-   */
-  trustCertificatesUserWide: IpcInvokeDefinition<'diagnostics:trust-certificates-user-wide', [], UserWideCertificateTrustResult>
-  /**
    * 检查页「打开文件夹」：「文档」不让写时，新项目或 AI 作品改放的那个文件夹。
    * 入参只是「哪一个」，路径由主进程自己算（I5）。返回 false = 没打开。
    */
@@ -1511,7 +1503,6 @@ export const ipcInvokeChannels = {
   checkExternalClientConnection: 'diagnostics:check-external-connection',
   getAccountKeyOptions: 'account:get-key-options',
   clearStaleProxySettings: 'diagnostics:clear-stale-proxy',
-  trustCertificatesUserWide: 'diagnostics:trust-certificates-user-wide',
   openDiagnosticFolder: 'diagnostics:open-folder',
   fixDiagnostic: 'diagnostics:fix',
   chooseExtensionDirectory: 'extensions:choose-directory',

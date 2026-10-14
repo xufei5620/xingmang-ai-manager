@@ -1,4 +1,4 @@
-import { providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { activeProviderIds, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 import type { AccountKey, AccountKeyUpdateInput } from './ipc-contract'
 
@@ -191,7 +191,8 @@ export function resolveManagedCliKeyLimits(
   siteId: AccountKeyQuotaSite,
 ): ManagedCliKeyLimit[] {
   const profiles = resolveManagedCliKeyProfiles(siteId)
-  return providerIds.map((provider) => {
+  // 下线的工具（Gemini CLI）不再列一行：星芒不管它了，那把 Key 还在账号的密钥列表里。
+  return activeProviderIds.map((provider) => {
     const profile = profiles[provider]
     const key = pickManagedKey(keys, provider, profile.keyName, profile.group)
     return {

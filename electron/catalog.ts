@@ -2,6 +2,29 @@ export const providerIds = ['claude', 'codex', 'grok', 'gemini'] as const
 
 export type ProviderId = (typeof providerIds)[number]
 
+// Gemini CLI 下线（yoyo 2026-10-14）：星芒不再显示、安装、签 Key、改配置。它仍留在
+// ProviderId 里，因为客户电脑上已经存着按它认的数据——本机 Key 缓存整份校验（认不得
+// 就整份作废、全部工具重签）、备份清单、卸载时按工具收回提醒——拿掉会把这些一起弄坏。
+// 「替每个工具做点什么」的地方一律走 activeProviderIds；只有读老数据、收拾星芒自己
+// 留下的东西才认退役的那几个。
+export const retiredProviderIds = ['gemini'] as const satisfies readonly ProviderId[]
+
+export type RetiredProviderId = (typeof retiredProviderIds)[number]
+
+export type ActiveProviderId = Exclude<ProviderId, RetiredProviderId>
+
+export function isRetiredProviderId(value: unknown): value is RetiredProviderId {
+  return typeof value === 'string' && (retiredProviderIds as readonly string[]).includes(value)
+}
+
+export const activeProviderIds: readonly ActiveProviderId[] = providerIds.filter(
+  (provider): provider is ActiveProviderId => !isRetiredProviderId(provider),
+)
+
+export function isActiveProviderId(value: unknown): value is ActiveProviderId {
+  return isProviderId(value) && !isRetiredProviderId(value)
+}
+
 export interface CliDefinition {
   id: ProviderId
   name: string

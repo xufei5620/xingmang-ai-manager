@@ -2,9 +2,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, providerIds, type ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
-import type { NativeConfigInspection, ProviderAccountMode } from './config-files'
+import { inspectHomeFolderTrust, type NativeConfigInspection, type ProviderAccountMode } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import { createRelayEndpointRoutingSnapshot, relaySiteProviderBaseUrlVariants, relaySites, requireRelaySite } from './relay-sites'
 import {
@@ -258,6 +258,20 @@ describe('diagnostics', () => {
     expect(serialized).not.toContain(home)
   })
 
+  // Gemini CLI 下线（2026-10-14）：检查页不再给它单列「装没装」「连接设置」两项。
+  it('checks the installation and connection settings of the active CLIs only', async () => {
+    const report = await runDiagnostics(dependencies(temporaryHome()))
+    const codes = report.items.map((item) => item.code)
+
+    for (const provider of activeProviderIds) {
+      expect(codes).toContain(`CLI_${provider.toUpperCase()}`)
+      expect(codes).toContain(`PROVIDER_${provider.toUpperCase()}`)
+    }
+    expect(codes).not.toContain('CLI_GEMINI')
+    expect(codes).not.toContain('PROVIDER_GEMINI')
+    expect(report.items.filter((item) => item.title.includes('Gemini'))).toEqual([])
+  })
+
   it('inspects providers and Codex dotenv through provider roots', async () => {
     const userHome = temporaryHome()
     const codexHome = path.join(path.dirname(userHome), `${path.basename(userHome)}-custom-codex`)
@@ -278,6 +292,7 @@ describe('diagnostics', () => {
       inspectProvider,
     })
 
+    // 下线的 Gemini CLI 也照读：它的 Key 还在本机配置里，导出的报告里一样要遮掉。
     expect(inspected).toHaveLength(4)
     expect(inspected.map(({ provider }) => provider).sort()).toEqual(['claude', 'codex', 'gemini', 'grok'])
     expect(inspected.every(({ roots }) => roots === providerRoots)).toBe(true)
@@ -435,8 +450,9 @@ describe('diagnostics', () => {
     expect(item?.details?.workspace).toBeUndefined()
   })
 
-  // xm 三线路 C16：客户在 Gemini 里选过「Don't trust」的文件夹，自己开终端时 Gemini 不读当前账号那份设置。
-  it('warns that Gemini ignores the current account in a project folder the user told it not to trust', async () => {
+  // xm 三线路 C16 曾在这里提醒：客户在 Gemini 里选过「Don't trust」的文件夹，Gemini 不读当前账号那份设置。
+  // Gemini CLI 下线（2026-10-14）后星芒不再管它的账号，这条提醒一起拿掉。
+  it('no longer warns about a project folder the user told the retired Gemini CLI not to trust', async () => {
     const home = fs.realpathSync.native(temporaryHome())
     const workspace = path.join(home, 'work', 'app')
     fs.mkdirSync(workspace, { recursive: true })
@@ -450,10 +466,11 @@ describe('diagnostics', () => {
     const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
 
     expect(item).toMatchObject({
-      state: 'warn',
-      summary: '在最近打开的项目文件夹里自己开终端运行 Gemini CLI 时不会用当前账号，从本软件打开不受影响',
-      details: { workspace: '~/work/app', count: 1, file1: 'Gemini CLI · ~/.gemini/trustedFolders.json' },
+      state: 'pass',
+      summary: '项目文件夹里没有会盖过当前账号的设置',
+      details: { workspace: '~/work/app', count: 0 },
     })
+    expect(JSON.stringify(item)).not.toContain('Gemini')
   })
 
   // 星芒打开 Codex 时带 --no-daemon；客户自己敲 codex 时后台服务开着，换线路后旧对话可能还走原来的地址。
@@ -1196,6 +1213,9 @@ describe('diagnostics', () => {
       return report.items.find((item) => item.code === 'PROVIDER_ENVIRONMENT_OVERRIDE')
     }
 
+    // Gemini CLI 下线（2026-10-14）前这一项也看它的这五个。
+    const retiredGeminiVariables = ['GOOGLE_GEMINI_BASE_URL', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_API_KEY', 'GEMINI_MODEL', 'GOOGLE_GENAI_API_VERSION']
+
     it('passes when nothing in the environment can override the account configuration', async () => {
       const home = temporaryHome()
 
@@ -1226,8 +1246,8 @@ describe('diagnostics', () => {
       input.env = {
         ANTHROPIC_BASE_URL: 'https://gateway.example.com',
         ANTHROPIC_AUTH_TOKEN: 'sk-must-not-leak-token',
+        OPENAI_BASE_URL: 'https://gateway.example.com/v1',
         openai_api_key: 'sk-must-not-leak-key',
-        GEMINI_MODEL: 'gemini-must-not-leak',
       }
 
       const report = await runDiagnostics(input)
@@ -1241,20 +1261,18 @@ describe('diagnostics', () => {
         count: 4,
         variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
         variable2: 'ANTHROPIC_AUTH_TOKEN（Claude Code）',
+        variable3: 'OPENAI_BASE_URL（Codex CLI）',
         // 大小写不敏感：Windows 上 `openai_api_key` 与大写是同一个变量。
-        variable3: 'OPENAI_API_KEY（Codex CLI）',
-        variable4: 'GEMINI_MODEL（Gemini CLI）',
+        variable4: 'OPENAI_API_KEY（Codex CLI）',
       })
       expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
     })
 
-    // 这四个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics.ts 的 breaksAccount），
+    // 这两个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics.ts 的 breaksAccount），
     // 用户在终端里跑就连不上当前账号，所以是待处理，开机提示也会数它。
     it.each([
       ['ANTHROPIC_API_KEY', 'sk-must-not-leak', 'Claude Code'],
       ['CLAUDE_CONFIG_DIR', '/must-not-leak/claude', 'Claude Code'],
-      ['GOOGLE_GEMINI_BASE_URL', 'https://must-not-leak.example.com', 'Gemini CLI'],
-      ['GEMINI_API_KEY', 'sk-must-not-leak', 'Gemini CLI'],
     ])('treats %s as a finding to handle because it takes the CLI off the current account', async (name, value, tool) => {
       const home = temporaryHome()
       const input = dependencies(home)
@@ -1333,21 +1351,21 @@ describe('diagnostics', () => {
 
       it.runIf(posixHost)('lists every file a variable sits in and names each variable once', async () => {
         const home = realHome()
-        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-must-not-leak GEMINI_API_KEY=sk-must-not-leak\n')
+        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-must-not-leak CLAUDE_CONFIG_DIR=/must-not-leak/claude\n')
         writeShellSettings(home, '.zprofile', 'ANTHROPIC_API_KEY=sk-must-not-leak\nexport ANTHROPIC_API_KEY\n')
-        writeShellSettings(home, '.config/fish/config.fish', 'set -gx GOOGLE_GEMINI_BASE_URL https://must-not-leak.example.com\n')
+        writeShellSettings(home, '.config/fish/config.fish', 'set -gx CLAUDE_CONFIG_DIR /must-not-leak/claude\n')
 
         const item = overrideItem(await runDiagnostics(macosInput(home)))
 
         expect(item).toMatchObject({
           state: 'warn',
-          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、GOOGLE_GEMINI_BASE_URL、GEMINI_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code、Gemini CLI 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
           details: {
             count: 4,
             variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
             variable2: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zprofile）',
-            variable3: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.config/fish/config.fish）',
-            variable4: 'GEMINI_API_KEY（Gemini CLI，在 ~/.zshrc）',
+            variable3: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.zshrc）',
+            variable4: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.config/fish/config.fish）',
           },
         })
         expect(JSON.stringify(item)).not.toContain('must-not-leak')
@@ -1356,50 +1374,37 @@ describe('diagnostics', () => {
       it.runIf(posixHost)('reads every startup file a login shell may run', async () => {
         const home = realHome()
         const files = ['.zshrc', '.zprofile', '.zshenv', '.zlogin', '.bash_profile', '.bash_login', '.profile', '.bashrc']
-        for (const file of files) writeShellSettings(home, file, 'export GEMINI_API_KEY=sk-shell\n')
-        writeShellSettings(home, '.config/fish/config.fish', 'set -gx GEMINI_API_KEY sk-shell\n')
+        for (const file of files) writeShellSettings(home, file, 'export ANTHROPIC_API_KEY=sk-shell\n')
+        writeShellSettings(home, '.config/fish/config.fish', 'set -gx ANTHROPIC_API_KEY sk-shell\n')
 
         const details = overrideItem(await runDiagnostics(macosInput(home)))?.details
 
         expect(details).toMatchObject({ count: 9 })
         expect(Object.entries(details ?? {}).filter(([key]) => key.startsWith('variable')).map(([, label]) => label)).toEqual([
-          ...files.map((file) => `GEMINI_API_KEY（Gemini CLI，在 ~/${file}）`),
-          'GEMINI_API_KEY（Gemini CLI，在 ~/.config/fish/config.fish）',
+          ...files.map((file) => `ANTHROPIC_API_KEY（Claude Code，在 ~/${file}）`),
+          'ANTHROPIC_API_KEY（Claude Code，在 ~/.config/fish/config.fish）',
         ])
       })
 
-      it.runIf(posixHost)('shortens the names after three, as everywhere else', async () => {
+      // 下线的 Gemini CLI 的变量写在终端设置里也不再找。
+      it.runIf(posixHost)('only looks for the variables that take a tool off the account', async () => {
         const home = realHome()
-        writeShellSettings(home, '.zshrc', [
-          'export ANTHROPIC_API_KEY=sk-a CLAUDE_CONFIG_DIR=/elsewhere',
-          'export GOOGLE_GEMINI_BASE_URL=https://gateway.example.com GEMINI_API_KEY=sk-b',
-        ].join('\n'))
-
-        expect(overrideItem(await runDiagnostics(macosInput(home)))?.summary).toBe(
-          '终端设置里另外设了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR、GOOGLE_GEMINI_BASE_URL等 4 项：从星芒打开的工具不受影响，自己开终端直接用 Claude Code、Gemini CLI 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
-        )
-      })
-
-      it.runIf(posixHost)('only looks for the four variables that take a tool off the account', async () => {
-        const home = realHome()
-        writeShellSettings(home, '.zshrc', environmentOverrideNames
+        writeShellSettings(home, '.zshrc', [...environmentOverrideNames, ...retiredGeminiVariables]
           .map((name) => `export ${name}=https://must-not-leak.example.com/elsewhere`)
           .join('\n'))
 
         const details = overrideItem(await runDiagnostics(macosInput(home)))?.details
 
-        expect(details).toMatchObject({ count: 4 })
+        expect(details).toMatchObject({ count: 2 })
         expect(Object.entries(details ?? {}).filter(([key]) => key.startsWith('variable')).map(([, label]) => label)).toEqual([
           'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
           'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.zshrc）',
-          'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.zshrc）',
-          'GEMINI_API_KEY（Gemini CLI，在 ~/.zshrc）',
         ])
       })
 
       it.runIf(posixHost)('leaves the shell settings alone on Windows and Linux', async () => {
         const home = realHome()
-        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-shell GEMINI_API_KEY=sk-shell\n')
+        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-shell CLAUDE_CONFIG_DIR=/elsewhere\n')
 
         for (const platform of ['win32', 'linux'] as const) {
           expect(overrideItem(await runDiagnostics({ ...macosInput(home), platform }))).toMatchObject({
@@ -1412,58 +1417,38 @@ describe('diagnostics', () => {
 
       it.runIf(posixHost)('leaves a tool that is not on the 星芒 account alone', async () => {
         const home = realHome()
-        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-own CLAUDE_CONFIG_DIR=/own GEMINI_API_KEY=sk-own\n')
+        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-own CLAUDE_CONFIG_DIR=/own\n')
 
         for (const mode of ['official', 'unknown'] as const) {
-          expect(overrideItem(await runDiagnostics(macosInput(home, { claude: mode, gemini: mode }))), mode).toMatchObject({
+          expect(overrideItem(await runDiagnostics(macosInput(home, { claude: mode }))), mode).toMatchObject({
             state: 'pass',
             details: { count: 0 },
           })
         }
-        expect(overrideItem(await runDiagnostics(macosInput(home, { claude: 'official' })))).toMatchObject({
+        expect(overrideItem(await runDiagnostics(macosInput(home)))).toMatchObject({
           state: 'warn',
-          details: { count: 1, variable1: 'GEMINI_API_KEY（Gemini CLI，在 ~/.zshrc）' },
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
+            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.zshrc）',
+          },
         })
       })
 
-      it.runIf(posixHost)('skips a value that points at the current account, the default Claude folder or nothing', async () => {
+      it.runIf(posixHost)('skips a value that points at the default Claude folder or nothing, and a key that is never exported', async () => {
         const home = realHome()
         writeShellSettings(home, '.zshrc', [
           'export CLAUDE_CONFIG_DIR=~/.claude',
           'export CLAUDE_CONFIG_DIR="$HOME/.claude/"',
-          'export GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc',
-          'export ANTHROPIC_API_KEY=',
-          '# export GEMINI_API_KEY=sk-commented',
-          'GEMINI_API_KEY=sk-not-exported',
+          'export CLAUDE_CONFIG_DIR=',
+          '# export ANTHROPIC_API_KEY=sk-commented',
+          'ANTHROPIC_API_KEY=sk-not-exported',
         ].join('\n'))
 
         expect(overrideItem(await runDiagnostics(macosInput(home)))).toMatchObject({
           state: 'pass',
           summary: '没有另外设过工具地址或密钥',
           details: { count: 0 },
-        })
-      })
-
-      // 直连适配第二步：同进程环境那边一套判法，「自动」走直连时指着默认线路的也算当前账号。
-      it.runIf(posixHost)('takes the default line as the current account while auto runs on direct, but not direct once it fell back', async () => {
-        const home = realHome()
-        const directSite = createRelayEndpointRoutingSnapshot({ solov: 'direct' }).resolve('solov')
-        const primarySite = createRelayEndpointRoutingSnapshot({ solov: 'primary' }).resolve('solov')
-        function onRoute(line: 'direct' | 'primary') {
-          const input = macosInput(home)
-          input.relaySite = line === 'direct' ? directSite : primarySite
-          input.relayRoute = { line, automatic: true, settled: true, primarySite, reportDirectFailure: vi.fn() }
-          return input
-        }
-
-        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc\n')
-        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
-
-        writeShellSettings(home, '.zshrc', 'export GOOGLE_GEMINI_BASE_URL=https://xm-direct.solov.cc\n')
-        expect(overrideItem(await runDiagnostics(onRoute('direct')))).toMatchObject({ state: 'pass', details: { count: 0 } })
-        expect(overrideItem(await runDiagnostics(onRoute('primary')))).toMatchObject({
-          state: 'warn',
-          details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，在 ~/.zshrc）' },
         })
       })
 
@@ -1498,14 +1483,14 @@ describe('diagnostics', () => {
         const home = realHome()
         writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-shell\n')
         const input = macosInput(home)
-        input.env = { ANTHROPIC_API_KEY: 'sk-shell', GEMINI_API_KEY: 'sk-shell' }
+        input.env = { ANTHROPIC_API_KEY: 'sk-shell', CLAUDE_CONFIG_DIR: '/elsewhere/claude' }
 
         expect(overrideItem(await runDiagnostics(input))).toMatchObject({
           state: 'warn',
           details: {
             count: 2,
             variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
-            variable2: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，会绕开当前账号）',
           },
         })
       })
@@ -1514,26 +1499,26 @@ describe('diagnostics', () => {
       it('says the same when the app itself was started with those variables', async () => {
         const home = temporaryHome()
         const input = macosInput(home)
-        input.env = { ANTHROPIC_API_KEY: 'sk-must-not-leak', GEMINI_API_KEY: 'sk-must-not-leak' }
+        input.env = { ANTHROPIC_API_KEY: 'sk-must-not-leak', CLAUDE_CONFIG_DIR: '/must-not-leak/claude' }
 
         const item = overrideItem(await runDiagnostics(input))
 
         expect(item).toMatchObject({
           state: 'warn',
-          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、GEMINI_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code、Gemini CLI 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
           details: {
             count: 2,
             variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
-            variable2: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，会绕开当前账号）',
           },
         })
         expect(JSON.stringify(item)).not.toContain('must-not-leak')
       })
 
-      it('keeps a variable the launcher still passes on a finding to handle, and names only those', async () => {
+      it('keeps a variable the launcher still passes on a finding to handle, and names only the ones that break the account', async () => {
         const home = temporaryHome()
         const input = macosInput(home, { claude: 'official' })
-        input.env = { ANTHROPIC_API_KEY: 'sk-own', GEMINI_API_KEY: 'sk-shell' }
+        input.env = { ANTHROPIC_API_KEY: 'sk-own', OPENAI_BASE_URL: 'https://gateway.example.com/v1' }
 
         expect(overrideItem(await runDiagnostics(input))).toMatchObject({
           state: 'fail',
@@ -1541,7 +1526,7 @@ describe('diagnostics', () => {
           details: {
             count: 2,
             variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
-            variable2: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+            variable2: 'OPENAI_BASE_URL（Codex CLI）',
           },
         })
       })
@@ -1561,19 +1546,17 @@ describe('diagnostics', () => {
             checked.push(`${name} ${mode}`)
           }
         }
-        expect(checked).toHaveLength(12)
+        // ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR 各三种账号。
+        expect(checked).toHaveLength(6)
       })
     })
 
-    // 这些实测盖不过写入的配置，或只换模型、不换账号：留在需留意，不在开机时打扰。
+    // 这些实测盖不过写入的配置：留在需留意，不在开机时打扰。
     it.each([
       ['ANTHROPIC_BASE_URL', 'https://gateway.example.com'],
       ['ANTHROPIC_AUTH_TOKEN', 'sk-shell'],
       ['OPENAI_BASE_URL', 'https://gateway.example.com/v1'],
       ['OPENAI_API_KEY', 'sk-shell'],
-      ['GOOGLE_GEMINI_API_KEY', 'sk-shell'],
-      ['GEMINI_MODEL', 'gemini-other'],
-      ['GOOGLE_GENAI_API_VERSION', 'v1'],
     ])('keeps %s as only worth a look because the written configuration still wins', async (name, value) => {
       const home = temporaryHome()
       const input = dependencies(home)
@@ -1585,15 +1568,22 @@ describe('diagnostics', () => {
       })
     })
 
-    it('does not escalate a Gemini base URL that already points at the current account', async () => {
+    // Gemini CLI 下线（2026-10-14）：星芒不再管它的账号，它的变量不报、不给一键删除。
+    it('no longer reports or offers to clear the variables of the retired Gemini CLI', async () => {
       const home = temporaryHome()
       const input = dependencies(home)
-      input.env = { GOOGLE_GEMINI_BASE_URL: 'https://xm.solov.cc' }
+      input.env = Object.fromEntries(retiredGeminiVariables.map((name) => [name, 'https://must-not-leak.example.com/elsewhere']))
 
-      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
-        state: 'pass',
-        details: { count: 1, variable1: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）' },
-      })
+      for (const platform of ['win32', 'darwin', 'linux'] as const) {
+        const item = overrideItem(await runDiagnostics({ ...input, platform }))
+        expect(item, platform).toMatchObject({
+          state: 'pass',
+          summary: '没有另外设过工具地址或密钥',
+          details: { count: 0 },
+        })
+        expect(item?.details?.fix, platform).toBeUndefined()
+      }
+      expect(environmentOverrideNames.filter((name) => retiredGeminiVariables.includes(name))).toEqual([])
     })
 
     // 直连适配第二步：「自动」走直连时，照旧教程指着默认线路的地址不能被当成别家报「待处理」、给一键删除。
@@ -1612,14 +1602,14 @@ describe('diagnostics', () => {
 
       it('counts the default line and the direct line as the current account while auto runs on direct', async () => {
         for (const url of ['https://xm.solov.cc', 'https://xm-direct.solov.cc']) {
-          const item = overrideItem(await runDiagnostics(onRoute('direct', true, { GOOGLE_GEMINI_BASE_URL: url, ANTHROPIC_BASE_URL: url })))
+          const item = overrideItem(await runDiagnostics(onRoute('direct', true, { ANTHROPIC_BASE_URL: url, OPENAI_BASE_URL: `${url}/v1` })))
 
           expect(item).toMatchObject({
             state: 'pass',
             details: {
               count: 2,
               variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
-              variable2: 'GOOGLE_GEMINI_BASE_URL（Gemini CLI，已指向当前账号）',
+              variable2: 'OPENAI_BASE_URL（Codex CLI，已指向当前账号）',
             },
           })
           expect(item?.details?.fix).toBeUndefined()
@@ -1634,17 +1624,21 @@ describe('diagnostics', () => {
         expect(environmentAccountBaseUrls(directSite, undefined)).toEqual([directSite.providerBaseUrls])
       })
 
+      // 剩下的地址变量都盖不过写入的配置（breaksAccount 为 false），所以报出来是「需留意」，照样给一键删除。
       it('flags an address on direct once auto has moved to the default line', async () => {
-        const item = overrideItem(await runDiagnostics(onRoute('primary', true, { GOOGLE_GEMINI_BASE_URL: 'https://xm-direct.solov.cc' })))
+        const item = overrideItem(await runDiagnostics(onRoute('primary', true, { ANTHROPIC_BASE_URL: 'https://xm-direct.solov.cc' })))
 
-        expect(item).toMatchObject({ state: 'fail', details: { count: 1, fix: 'clear-user-overrides' } })
+        expect(item).toMatchObject({
+          state: 'warn',
+          details: { count: 1, variable1: 'ANTHROPIC_BASE_URL（Claude Code）', fix: 'clear-user-overrides' },
+        })
       })
 
       it('keeps flagging the default line for someone who fixed the direct line', async () => {
-        const fixed = overrideItem(await runDiagnostics(onRoute('direct', false, { GOOGLE_GEMINI_BASE_URL: 'https://xm.solov.cc' })))
-        const direct = overrideItem(await runDiagnostics(onRoute('direct', false, { GOOGLE_GEMINI_BASE_URL: 'https://xm-direct.solov.cc' })))
+        const fixed = overrideItem(await runDiagnostics(onRoute('direct', false, { ANTHROPIC_BASE_URL: 'https://xm.solov.cc' })))
+        const direct = overrideItem(await runDiagnostics(onRoute('direct', false, { ANTHROPIC_BASE_URL: 'https://xm-direct.solov.cc' })))
 
-        expect(fixed).toMatchObject({ state: 'fail', details: { fix: 'clear-user-overrides' } })
+        expect(fixed).toMatchObject({ state: 'warn', details: { variable1: 'ANTHROPIC_BASE_URL（Claude Code）', fix: 'clear-user-overrides' } })
         expect(direct).toMatchObject({ state: 'pass' })
       })
     })
@@ -1660,16 +1654,16 @@ describe('diagnostics', () => {
     it('names only the variables that break the account when both kinds are set', async () => {
       const home = temporaryHome()
       const input = dependencies(home)
-      input.env = { ANTHROPIC_BASE_URL: 'https://gateway.example.com', GEMINI_API_KEY: 'sk-shell', ANTHROPIC_API_KEY: 'sk-shell' }
+      input.env = { ANTHROPIC_BASE_URL: 'https://gateway.example.com', OPENAI_API_KEY: 'sk-shell', ANTHROPIC_API_KEY: 'sk-shell' }
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'fail',
-        summary: '电脑里另外设了 ANTHROPIC_API_KEY、GEMINI_API_KEY，会让 Claude Code、Gemini CLI 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服',
+        summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服',
         details: {
           count: 3,
           variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
           variable2: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
-          variable3: 'GEMINI_API_KEY（Gemini CLI，会绕开当前账号）',
+          variable3: 'OPENAI_API_KEY（Codex CLI）',
         },
       })
     })
@@ -1836,7 +1830,7 @@ describe('diagnostics', () => {
     function item(code: string, state: DiagnosticItem['state'], details?: DiagnosticItem['details']): DiagnosticItem {
       return { code, title: code, state, summary: state === 'error' ? '检查超时' : '未安装', details, durationMs: 1 }
     }
-    const missingClis = ['CLI_CLAUDE', 'CLI_CODEX', 'CLI_GEMINI', 'CLI_GROK'].map((code) => item(code, 'warn', { installed: false }))
+    const missingClis = ['CLI_CLAUDE', 'CLI_CODEX', 'CLI_GROK'].map((code) => item(code, 'warn', { installed: false }))
 
     // 查不出来装没装，就不能说用不到（同首页：没检测出来的工具算在用）。
     it('keeps Node.js red when a command-line tool could not be detected', () => {
@@ -2555,15 +2549,15 @@ describe('the home folder leftovers check', () => {
     const trust = homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude'] })
     expect(trust.summary).toBe('Claude Code 记着“信任整个个人文件夹”：个人文件夹下的项目，它打开时可能不会先问一句信不信得过。')
     expect(trust.details).not.toHaveProperty('fix')
-    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude', 'codex', 'gemini'] }).summary)
-      .toBe('Claude Code、Codex、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。')
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude', 'codex'] }).summary)
+      .toBe('Claude Code、Codex 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。')
   })
 
   it('runs both paragraphs together when both were left behind', () => {
-    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: ['claude', 'gemini'] })).toMatchObject({
+    expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: ['claude', 'codex'] })).toMatchObject({
       state: 'warn',
-      summary: `${instructions}Claude Code、Gemini CLI 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。`,
-      details: { trustedBy: 'claude,gemini', fix: 'set-aside-home-agents-md' },
+      summary: `${instructions}Claude Code、Codex 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。`,
+      details: { trustedBy: 'claude,codex', fix: 'set-aside-home-agents-md' },
     })
   })
 
@@ -2588,6 +2582,27 @@ describe('the home folder leftovers check', () => {
     fs.rmSync(path.join(home, '.claude.json'))
     const edited = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
     expect(edited).toMatchObject({ state: 'pass', summary: '没有早先留下的项目说明和信任设置' })
+  })
+
+  // Gemini CLI 下线（2026-10-14）：它记着的信任是客户自己的工具设置，星芒也不再从这里打开它。
+  it('no longer names Gemini CLI even when it still trusts the home folder', async () => {
+    const home = fs.realpathSync.native(temporaryHome())
+    fs.mkdirSync(path.join(home, '.gemini'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ [home]: 'TRUST_FOLDER' }), 'utf8')
+    const input = dependencies(home)
+    // The fixture does read as trusted; only the check leaves Gemini out.
+    expect(inspectHomeFolderTrust({ userHome: home, codexHome: path.join(home, '.codex') })).toEqual(['gemini'])
+
+    const alone = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(alone).toMatchObject({ state: 'pass', summary: '没有早先留下的项目说明和信任设置', details: { trustedBy: null } })
+
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }), 'utf8')
+    const withClaude = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
+    expect(withClaude).toMatchObject({
+      state: 'warn',
+      summary: 'Claude Code 记着“信任整个个人文件夹”：个人文件夹下的项目，它打开时可能不会先问一句信不信得过。',
+      details: { trustedBy: 'claude' },
+    })
   })
 })
 
@@ -2871,8 +2886,10 @@ describe('diagnostics reusing the home page scan', () => {
   it('probes everything itself when no scan is handed in, as a manual re-check does', async () => {
     const p = probes(temporaryHome())
     await runDiagnostics(p.input)
-    // 「安全证书」一项也要问一次 Node.js 在哪（8 + 1）。
-    expect(p.inspectTool).toHaveBeenCalledTimes(9)
+    // 四个运行环境、三个命令行工具，「安全证书」一项也要问一次 Node.js 在哪（7 + 1）。
+    // 下线的 Gemini CLI 不再探。
+    expect(p.inspectTool).toHaveBeenCalledTimes(8)
+    expect(p.inspectTool.mock.calls.map(([tool]) => tool)).not.toContain('gemini')
     expect(p.inspectPowerShell).toHaveBeenCalledOnce()
     expect(p.inspectCodexDesktop).toHaveBeenCalledOnce()
   })
@@ -2982,39 +2999,17 @@ describe('CERTIFICATE_TRUST', () => {
     expect(await certificateItem(input)).toMatchObject({ details: { verdict: 'systemTrusted' } })
   })
 
-  it('offers the user-wide switch on Windows only when a company certificate was found', async () => {
+  // 「让这台电脑上所有终端都信任」只为 Gemini 存在，Gemini CLI 下线后一起拿掉了。
+  it('no longer offers a user-wide certificate switch on Windows', async () => {
     const { input } = withProbe({ plain: 'cert', system: 'ok' })
     input.platform = 'win32'
-    const inspect = vi.fn(() => 'available' as const)
-    input.inspectUserWideCertificateTrust = inspect
-    expect(await certificateItem(input)).toMatchObject({
-      state: 'pass',
-      summary: expect.stringContaining('可以点「让这台电脑上所有终端都信任」'),
-      details: { verdict: 'systemTrusted', userWide: 'available' },
-    })
-
-    input.inspectUserWideCertificateTrust = () => 'applied'
-    expect(await certificateItem(input)).toMatchObject({
-      summary: expect.stringContaining('你自己开的终端也已经设好'),
-      details: { userWide: 'applied' },
-    })
-
-    const direct = withProbe({ plain: 'ok', system: 'ok' })
-    direct.input.platform = 'win32'
-    const unused = vi.fn(() => 'available' as const)
-    direct.input.inspectUserWideCertificateTrust = unused
-    const item = await certificateItem(direct.input)
-    expect(item?.details).not.toHaveProperty('userWide')
-    expect(unused).not.toHaveBeenCalled()
-  })
-
-  it('does not mention the user-wide switch on macOS', async () => {
-    const { input } = withProbe({ plain: 'cert', system: 'ok' })
-    input.platform = 'darwin'
-    input.inspectUserWideCertificateTrust = () => 'available'
     const item = await certificateItem(input)
+    expect(item).toMatchObject({
+      state: 'pass',
+      summary: '这台电脑装了公司或安全软件的证书。星芒已经让装工具和从星芒打开的工具信任它，可以正常用。',
+      details: { verdict: 'systemTrusted' },
+    })
     expect(item?.details).not.toHaveProperty('userWide')
-    expect(item?.summary).not.toContain('所有终端')
   })
 })
 

@@ -1,4 +1,5 @@
 import type { ExternalToolId, ProviderId } from '../../../electron/ipc-contract'
+import type { ActiveProviderId } from '../../../electron/catalog'
 
 export const clientConnections: ReadonlyArray<{
   id: ExternalToolId
@@ -13,9 +14,9 @@ export const clientConnections: ReadonlyArray<{
   { id: 'opencode', name: 'OpenCode', vendor: 'OpenCode', brandIcon: 'OpenCode', description: 'OpenCode CLI 与桌面端共享配置', preferredProvider: 'codex' },
 ]
 
-export const clientKeySources: ReadonlyArray<{ id: ProviderId; name: string }> = [
+// 外部客户端能借用哪个工具的 Key。已下线的 CLI（Gemini）不在其中：界面不再替它做任何事。
+export const clientKeySources: ReadonlyArray<{ id: ActiveProviderId; name: string }> = [
   { id: 'codex', name: 'Codex' },
   { id: 'claude', name: 'Claude Code' },
-  { id: 'gemini', name: 'Gemini CLI' },
   { id: 'grok', name: 'Grok CLI' },
 ]

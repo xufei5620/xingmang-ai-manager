@@ -22,7 +22,7 @@
 
 **商业定位**：不是通用工具。四个 CLI 的 base URL 全部硬编码指向 `xm.solov.cc`（2026-08-10 起中转与账号后端统一到同一 new-api 实例，原 `api.solov.cc` 退役），onboarding 填的是"安装授权码"。**它的价值 = 降低客户接入门槛、减少客服成本。这条链路断了，用户就退款。**
 
-**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Gemini CLI（`@google/gemini-cli`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端。
+**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端。Gemini CLI（`@google/gemini-cli`）2026-10-14 下线：界面不显示、不再装、不再改它的配置，老客户电脑上的不卸不删；代码里它仍是 `ProviderId`，挂在 `catalog.ts` 的退役名单 `retiredProviderIds` 上，「替每个工具做点什么」的地方一律走 `activeProviderIds`。
 
 **内置的两块新能力**（2026-08 集成）：
 - **星芒账号**：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值外链，登录后自动签发 CLI Key 并写进 CLI 配置。

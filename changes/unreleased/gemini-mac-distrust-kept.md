@@ -1,9 +1,6 @@
-## 用户
-
-- Mac 上，你在 Gemini 里对某个文件夹选过「不信任」，从星芒打开 Gemini 时不会再把它改成信任。
-
 ## 开发
 
+- Gemini CLI 在同一版下线（`gemini-cli-retired.md`），星芒不再打开它，原来的「用户」说明一并拿掉。
 - `config-files.ts` 的 `trustGeminiWorkspaceInTrustedFoldersText` 找已有条目时按 Gemini CLI 0.62.0
   `normalizePath` 的规矩比：win32 与 darwin 不分大小写。以前 macOS 上的 POSIX 路径照原样比，对不上
   Gemini 写下的全小写键（`/users/alex/app`），于是在后面再加一条原大小写的 `TRUST_FOLDER`；Gemini 读回来

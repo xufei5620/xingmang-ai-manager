@@ -141,19 +141,19 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
     case 'extensions':
       return <div className="tutorial-illustration-extensions">
         <div className="tutorial-illustration-row"><Plug size={19} /><strong>外接工具</strong><Control>添加连接</Control><Marker>2</Marker></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control><Control>Gemini CLI</Control></div>
+        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
         <div className="tutorial-illustration-row tutorial-illustration-runtime"><ShieldCheck size={20} /><div><strong>确认它需要哪些权限</strong><small>只添加任务确实需要的连接</small></div></div>
       </div>
     case 'skills':
       return <div className="tutorial-illustration-extensions">
         <div className="tutorial-illustration-row"><Sparkles size={19} /><strong>技能</strong><Control>导入技能</Control><Marker>2</Marker></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control>Claude Code</Control><Control primary>Codex CLI</Control><Control>Gemini CLI</Control></div>
+        <div className="tutorial-illustration-options"><Marker>1</Marker><Control>Claude Code</Control><Control primary>Codex CLI</Control></div>
         <div className="tutorial-illustration-row tutorial-illustration-runtime"><FileText size={20} /><div><strong>看清来源与范围</strong><small>系统内置 · 我的（全局） · 当前项目</small></div></div>
       </div>
     case 'plugins':
       return <div className="tutorial-illustration-extensions">
         <div className="tutorial-illustration-row"><Package size={19} /><strong>插件</strong><Control>添加插件</Control><Marker>2</Marker></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control><Control>Gemini CLI</Control></div>
+        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
         <div className="tutorial-illustration-options"><Control primary>已安装</Control><Control>市场</Control><span className="tutorial-illustration-muted">市场能力以当前工具为准</span></div>
       </div>
     case 'backup':

@@ -96,7 +96,8 @@ describe('buildFeedbackSelfCheckLines', () => {
     const records: Record<string, FeedbackConnectionRecord | null> = {
       claude: connection(),
       codex: connection({ ok: false, layer: 'credential', summary: '当前账号的密钥被拒绝' }),
-      gemini: connection({ ok: false, layer: 'unconfigured', summary: '这个工具还没配置' }),
+      // Gemini CLI 下线（2026-10-14）：以前存下的结果还在，报告里也不再列它。
+      gemini: connection({ ok: false, layer: 'credential', summary: '当前账号的密钥被拒绝' }),
       grok: null,
     }
     const lines = buildFeedbackSelfCheckLines({
@@ -110,9 +111,20 @@ describe('buildFeedbackSelfCheckLines', () => {
       'Claude Code 连接自检: 正常，连接正常（2026-09-22T11:35:00.000Z）',
       'Codex CLI 连接自检: 密钥有问题，当前账号的密钥被拒绝（2026-09-22T11:35:00.000Z）',
       'Grok CLI 连接自检: 未自检',
-      // 「还没配」不是故障，跟结果页一样不按失败说。
-      'Gemini CLI 连接自检: 未配置，这个工具还没配置（2026-09-22T11:35:00.000Z）',
     ])
+  })
+
+  it('does not call a tool that is not configured yet a failure', () => {
+    const lines = buildFeedbackSelfCheckLines({
+      report: null,
+      readConnection: (provider) => (provider === 'grok'
+        ? connection({ ok: false, layer: 'unconfigured', summary: '这个工具还没配置' })
+        : null),
+      now,
+    })
+
+    // 「还没配」不是故障，跟结果页一样不按失败说。
+    expect(lines).toContain('Grok CLI 连接自检: 未配置，这个工具还没配置（2026-09-22T11:35:00.000Z）')
   })
 
   it('keeps the section short when no connection check has run at all', () => {
@@ -163,9 +175,11 @@ describe('hasFeedbackSelfCheck', () => {
       { report: report([item()]), readConnection: () => null },
       { report: null, readConnection: (provider: string) => (provider === 'grok' ? connection() : null) },
       { report: null, readConnection: (provider: string) => (provider === 'codex' ? connection({ ok: false, layer: 'credential' }) : null) },
+      // 下线的 Gemini CLI 留下的结果不算查过：报告里那段不会列它。
+      { report: null, readConnection: (provider: string) => (provider === 'gemini' ? connection() : null) },
     ]
 
-    expect(cases.map((input) => hasFeedbackSelfCheck(input))).toEqual([false, true, true, true])
+    expect(cases.map((input) => hasFeedbackSelfCheck(input))).toEqual([false, true, true, true, false])
     for (const input of cases) {
       const notChecked = buildFeedbackSelfCheckLines({ ...input, now })[0].startsWith('还没做过自检')
       expect(hasFeedbackSelfCheck(input)).toBe(!notChecked)
