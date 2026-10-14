@@ -16,6 +16,269 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
+## 0.2.19 - 2026-10-14
+
+- 服务状态文件新增 `accountGroups`（分组对照）：xm 站改分组本名时，发布者在 service-status 工作流的「分组对照」里写
+  「codex=新名字|老名字」这类对照，客户端不用发版就跟过去。new-api 的分组没有编号、全按名字认，站上同一家又有好几个
+  分组，靠名字里的词认不出改了名的那个（`electron/managed-cli-groups.ts` 新增 `mapped` 一档，排在写死名字之前；
+  只在服务端给出的可用分组里挑，只管星芒账号）。
+- 画图技能给 Codex 签 Key 不再写死 `GPT-中转/订阅`，和命令行工具同一套认法；画图分组先看对照
+  （`electron/xingmang-ai-skill.ts`）。AI 对话没选过分组时跟主进程标的 `recommended` 走（`chat:list-groups`，
+  `AiChatGroupSummary.recommended` 可选字段），不再在写死名字找不到时掉进排第一、没接渠道的 `default`。
+- 对照读不到一律照旧认，不多等：签 Key 只搭启动时那一次读状态文件的便车（`ServiceStatusMonitor.settled()`）。
+  0.2.18 及更早的客户端不认对照，改名过渡期服务端仍要保留老名字，见 `docs/SERVICE-STATUS.md`「分组对照」。
+- 三线路 7b（`/mnt/project-files/累计问题/清单.md` 第二节第 3 条、第三节「写 Key 失败时把原因记进日志」）：
+  新增 `electron/request-diagnostics.ts`，用 WeakMap 给一次请求的回应、失败和结果挂上走的线路
+  （direct/primary）、HTTP 状态码、new-api 回应头 `X-Oneapi-Request-Id`（rc.24 起全局中间件加的）和 `cf-ray`。
+  挂在旁边不加字段，错误和结果的样子不变，也不跨进程；编号认不出的（超长、带空白或奇怪字符）不记。
+- `relay-line-fetch.ts`：按线路发的请求和写配置前的查模型，回应和失败都挂上实际走的线路，直连没走通改走默认线路
+  重发的记 primary。
+- `new-api-client.ts`：`performRequestOnce` 读回应时取诊断；`unwrapEnvelope`、公告、老计费信封和登录、两步验证
+  读回应时出的错都挂上；没拿到回应的失败换成中文错误时把线路带过去。登录、两步验证成功的结果也挂上，
+  `realm-account-service.ts` 换成带站点的新对象时跟着带过去。`system-service.ts` 的查模型同样挂上。
+- `ipc.ts`：IPC 失败日志多一个 `request` 字段（只在有诊断时）；登录、两步验证成功的日志带上 `request`。两步验证
+  登上了以前一条都不记，现在记一条，入参（验证码）在记日志前就换成空列表，从根上进不了日志（新的
+  `secretInputIpcChannels`）。写 Key（`account:configure-managed-clis`、切到当前账号）没配上的工具各记一条
+  `account/managed-cli.key-failed`：哪家、原话（主目录已换掉）、`request`。`account-cli-provisioner.ts` 把签 Key、
+  查模型那次的诊断跟着失败条目走。
+- Gemini CLI 在同一版下线（`gemini-cli-retired.md`），检查页不再查它，下面 Gemini 文件夹信任这一项随之不再出现，原来的「用户」说明一并拿掉。
+- xm 三线路 C16 剩下的两项诊断，都没加新的界面文字。
+- Gemini 文件夹信任：`workspace-config-overrides.ts` 的 `inspectGemini` 先看 `~/.gemini/trustedFolders.json`，
+  最近选的项目文件夹按 Gemini 0.62.0 `isPathTrusted` 的比法（规则管自己和下面的文件夹，`TRUST_PARENT` 管上一层，
+  听路径最长的那条，Windows / macOS 不分大小写）算出是 `DO_NOT_TRUST` 时，只报这一条
+  `launchUnaffected` 的结果，检查页沿用「自己开终端……不会用当前账号，从本软件打开不受影响」那句（需留意）。
+  不信任时 Gemini 不读 `~/.gemini/.env`、也不读项目里的 `.gemini/settings.json`（沙箱里假 HOME + 本地假接口跑过
+  0.62.0），所以那两样这时不再另报；以前项目 settings.json 换了登录方式会报成「待处理」并在打开时弹提醒，
+  其实打开不受影响。没记过的文件夹不报（交互界面第一次进来会先问）；用户级 settings.json 关了
+  `security.folderTrust.enabled` 时不报。
+- Codex 后台服务：`config-files.ts` 新增 `codexDaemonAutoStartSetting` / `inspectCodexDaemonAutoStart`，读
+  `[features] daemon_auto_start` 与顶层 `profile` 选中的 `[profiles.<名>.features]`（后者盖过前者，照
+  rust-v0.160.1 / 0.162.1 `features/src/lib.rs`，缺省开）。「Codex 连接设置」接的是当前账号时，导出报告的
+  details 多一个 `daemonAutoStart`（开 / 关 / 没写），检查页详情不列。只读不改。
+- 画布主进程侧补五处安全口子，只改 `electron/`，`canvas-v2/` 未动。
+- E-S4 剩下的一半：`canvas-host:save-file` 的保存框只给「星芒画布项目」一种类型，画布提议的文件名一律补成
+  `.xingcanvas`。画布同时决定内容，原来能提议 `readme.cmd` 配脚本内容，让用户存下一个双击就跑的文件。
+- E-G2：`platform/preload.ts` 只在主窗口的 `xingmang://app/` 和本机 Vite 开发地址上暴露
+  `window.xingmangPlatform`。它注册在整个会话上，画布窗口和画布沙箱探测页原来也拿得到。
+- E-G6（#89 ⑭ 剩下的一半）：`canvas-host:start-run` 和三条直连生成共用同一个每分钟 80 次的频率窗口，
+  被投毒的画布不能靠不停提交运行慢慢烧余额。
+- E-G9：一次运行里所有节点提示词合计超过 20 MB（和画布能保存的工作流上限一致）就报「工作流规模超过安全上限」，
+  原来 5000 个节点各 10 万字能让主进程一次吃下约 1 GB。
+- E-B8：`canvas-host:notify` 每 5 秒最多弹一条，标题和正文里的链接去掉，标题只剩链接的不弹。
+- 画布认默认图片、视频分组的规则跟上 xm 站 2026-10 的分组改名（新名字去掉了「中转」）：老名字在时照旧用老名字；
+  老名字删了认新名字「图片模型」「视频模型」，再认不出就看名字里带「图片」「视频」的分组，只有恰好一个时才认。
+  视频不再退到带 Grok 的分组，也不再退到列表第一个分组，认不出就留空让客户自己选。只改
+  `canvas-v2/src/library/media-groups.ts` 这一处规则（项目约定画布不动，这次经 yoyo 同意破例），画布别的代码未动。
+  主进程只把站上的分组列表原样交给画布，挑哪个是画布自己按名字认的，所以没法只改 `electron/`。
+- 证书被换掉时的四句话照服务端 10-13 的结论改（星芒证书和各入口都没问题，中转读不到 SNI 时直接拒绝、不发证书，
+  所以证书不对是路上被拦截，不是这台电脑或安全软件的事）：检查页 `certificate-trust-probe.ts` 的 `untrusted`、
+  首页红条 `route-label.ts` 的 `certificate`、报错框 `registry/errors.ts` 的 `tlsIntercepted`（标题改「连接被网络拦截」）、
+  首页 Key 同步横幅。新字 yoyo 10-14 回「改」。
+- Key 同步被网络拦住、其中有证书被换掉（`network-failure.ts` 归成 `tls`，不含证书日期）时，
+  `AccountBootstrapResult` 多一个 `networkBlockedByCertificate`，首页横幅换成「稍等一两分钟点「重新同步」」那句：
+  这时电脑一直联着网，等不来 `online` 事件，原句「联网后会自动补写」不成立。整段引导抛错时按那句错误同样判。
+  横幅这时一定给「重新同步」按钮；运行日志那一行也不再写「联网后会自动补跑」。
+- 账号服务器（new-api v1.0.0-rc.40）改密码多了一道安全验证：`PUT /api/user/self` 要在 `X-Security-Proof` 头里带一次性凭证，没带就回 403 `SECURITY_PROOF_REQUIRED`「需要安全验证」（`controller/user.go` UpdateSelf → `middleware/secure_verification.go` RequireSecurityProof）。星芒照 rc.24 写的只发了 PUT。`new-api-client.ts` 的 `changePassword` 先 `POST /api/verify`（`{method:'password', scope:'account.password.change', password:原密码}`）换凭证，再带着它 PUT；凭证只能用一次，每次改都重新换。rc.44 和上游 main 一样。
+- 原密码错时 rc.40 回的是英文：验证那步 `SECURITY_VERIFICATION_FAILED`，PUT 那步 `CURRENT_PASSWORD_INVALID`。两处都换成 rc.24 自己的「原密码错误」，渲染层 `account-errors.ts` 原有那条认得它。开了两步验证的账号只能用验证码证明身份，验证那步回 `SECURITY_PROOF_METHOD_MISMATCH`，照原话交出去，PUT 不发。
+- 直连线路的白名单（服务端 2026-10-06 文档 2.1 节）没有 `POST /api/verify`：选「自动」时直连回白名单 404 会当场改走默认线路（`relay-line-fetch.ts` 原有逻辑），选「只用洛杉矶」时改密码要等服务端把它加进白名单。
+- AI 对话和画布的图片分组模型精选也认 xm 站改名后的「图片模型」：`selectAiChatModelsForGroup` 以前只认
+  `图片模型-中转/订阅`、`生图分组`，新名字认不出就把分组里全部模型都列出来（功能照常，只是没筛）。现在写死名单
+  补上新名字，老名字照旧认；另外服务状态文件分组对照里「画图」那一项列的名字也算图片分组
+  （`chat-credential-coordinator.ts` 新增可选 `loadAccountGroupHints`，和 `chat:list-groups` 共用 `main.ts` 里
+  同一个读对照的函数），以后站上再改图片分组的本名，改对照就跟得上。只管星芒账号，读不到对照照旧只认写死名单。
+- `electron/cli-verified-versions.ts` 三家 `recommended` 一起抬（10-12 每周巡检，yoyo 测完 0.2.18 后补做）：Claude Code 2.1.291 → 2.1.296、Codex 0.160.1 → 0.162.1、Grok 1.0.46 → 1.0.52（npm latest 且是 xAI stable）。Gemini 留在 0.62.0（2026-10-13 yoyo 说「Gemini CLI 不要了」）。区间内上游变更记录没有第三方端点回归，三家都在沙箱本地假接口重核过，依据写进 `docs/CLI-VERIFIED-VERSIONS.md`。
+- Claude Code 2.1.293 起 `haiku` 别名在自定义 `ANTHROPIC_BASE_URL` 下改发 `claude-haiku-5-5`（以前 `claude-haiku-4-5-20251001`），内置 `claude-code-guide` 帮手与 `/model haiku` 要中转开着这个型号，缺了不会退回 4.5；后台小请求仍用主型号。
+- 随包 Codex 型号名单（`bundled-catalog/codex-models/models.json`）换成 `rust-v0.162.1`：和 `rust-v0.160.0` 比只删了每个型号里已废弃的 `"instructions_variables": null`，其余逐字相同；`codex-model-catalog.ts` 的 tag 与 sha256 同步改。
+- Codex 中转配置在 `[model_providers.<名字>]` 里明写 `supports_websockets = false`（模板和合并两条路都写，用户自己写过的值不动；CLI 巡检脚本的探测配置同步）。Codex 只有这个键为 true 时才走 Responses WebSocket，缺省 false，`rust-v0.160.1` 与 `rust-v0.162.1` 源码和真 CLI 对本地假中转实测一致，所以星芒写的配置本来就走普通流式，这次行为不变。写明是防上游把自定义线路的缺省改成开：服务端 2026-10-13 统计，走 Cloudflare 的 WebSocket 约两分钟被掐断，思考久的回答报「stream closed before response.completed」，普通流式基本不受影响。换线路只改 `base_url` 一处，所以两条线路都写，不按线路分。
+- Codex 官方插件目录放进星芒的腾讯云存储桶（yoyo 2026-10-13「插件目录放存储桶」，为的是以后去掉游戏加速）。
+  新工作流 `sync-codex-plugins-cos`（`scripts/sync-codex-plugins-cos.cjs`，每 6 小时）先问 GitHub 接口
+  `openai/plugins` 的 main 是哪个提交，变了才下那个提交的压缩包，核提交号、路径、两份市场清单（与客户端同一套规矩）
+  后传到 `xingmang/offline/codex-plugins/sha256-<摘要>/`，最后改 `latest.json`。沿用 `xingmang/*` 的权限，
+  不用新密钥；连续失败两次照样开 issue 报警（`cos-sync-alert.cjs` 加了这条工作流和它自己的「影响」说法）。
+- 客户端新模块 `electron/codex-plugin-catalog-bucket.ts`：桶地址与清单路径写死，清单里的路径、地址、大小、
+  SHA-256、类型、校验标签一处对不上就不用；不跟跳转；过了头半分钟照当时速度还要 2 分钟以上、或半分钟没数据就放弃。
+  解开后照 GitHub 那一份的规矩再核，压缩包里的提交号还要和清单一致。没走通悄悄改去 GitHub，原因只进运行日志
+  （`codex-plugin-catalog.bucket-fallback`）；下载加速线路改成只在去 GitHub 时才借。界面文字没有改。
+- Codex 线路显示名（`[model_providers.XingmangAI]` 的 `name`）改成 `OpenAI`，表名照旧 `XingmangAI`（续接列表按表名筛，改了老对话就看不见）。新装模板直接写 `OpenAI`；合并保存和开机补模板缺省项（`relayTemplateRevision` 升到 3）只换星芒自己那张表（地址是已登记站点）上一字不差的老值 `XingmangAI`，客户自己改过的名字、别人写的表、8-26（#104）以前就叫 `OpenAI` 的老配置都不动；`config.toml` 和 `xingmang-config-relay.toml` 一起改，改前照样备份。CLI 巡检脚本（`scripts/probe-cli-relay.cjs`）写的探测配置同步改成 `OpenAI`，让探测的请求体和客户的一样。
+- Codex 认官方线路看的是 `name == "OpenAI"`（区分大小写，不看地址），对上就把长对话压缩改走远程 `/responses/compact`，CLI 的 `/model` 还会多一行 base URL 被改写的红字。yoyo 2026-10-13 选大写之前，已在星芒中转上实测命令行 `/compact` 和桌面端压缩，星芒账号和历史账号都通；new-api rc.24 源码也有这条转发路由（`router/relay-router.go:104`）。调研见项目文件「Codex左下角名字/调研.md」。
+- Codex 桌面端启动时读中文开关（ab.chatgpt.com）的那一个请求，先试着经星芒服务器代取，走不通才照旧连加速（#977，
+  `codex-desktop-startup-route.ts`）：主进程用账号换一张短时通行票（`POST /api/xingmang-tunnel/v1/ticket`），
+  在 127.0.0.1 随机端口开本机转发，经 WSS 交给服务器；拉起 Codex 时带 `--host-resolver-rules="MAP ab.chatgpt.com 127.0.0.1:端口"`，
+  只改这一个主机。Windows 走 #976 实测过的两步激活（先带参数激活、再交工作区链接），Mac 给 `open` 加 `--args`。
+  服务端还没部署时换票是一个 404，直接退回加速，行为和以前一样；服务端要求见项目文件 `Codex中文保持/977-核对.md` 第六节。
+- 换票回 401 时续一次 access token 再试，续过还是 401 只当普通失败，不走「再 401 就清登录」那条路：代取服务坏了不能把客户登出。
+- 「立刻失败」（指到本机 1 号端口，#976 实测 9 秒出界面）只在 Windows、加速明确没连上（不含超时）、系统代理对
+  ab.chatgpt.com 是 DIRECT、并且实际 TLS 握手也连不上时才用：开着系统代理或 TUN 梯子的客户不会被弄成英文。
+- Codex 已经开着时启动参数不生效，照旧只连加速；带参数激活报错、改走普通打开时补连加速，通道留着到期自己关
+  （激活超时前进程可能已经带着参数起来了）。
+- COS 星芒下载清单 `xingmang/latest.json` 多一个可选的 `history` 字段，记最近 3 个旧版本的安装包（地址、大小、SHA-256，不记 zip、blockmap 和 latest*.yml）。每次同步新版本时，被替换下来的安装包挪进去；条目原样搬，不重新上传。教程下载页在当前版本被撤回时从这里挑上一版（#961）。`schemaVersion` 仍是 1，不带 `history` 的老清单照常读写。
+- `sync-published-manager-cos` 加「只补历史」选项（`history_only`，必须填标签）：从 GitHub Release 取这一版的安装包，把 COS 上同名文件完整读一遍核对，全部一致才把它记进 `history`，不上传任何文件、不改当前版本。新增的 `verifyFile` 只读不写，对象不在就报错。
+- Claude Mac 离线包同步从 2026-10-07 23:14Z 起每次在 `source-resolve` 失败：官方更新接口
+  `api.anthropic.com/api/desktop/darwin/<架构>/squirrel/update` 改成按芯片给更新 ZIP
+  （`downloads.claude.ai/releases/darwin/arm64|x64/<版本>/Claude-<id>.zip`），而
+  `claude-mac-update-source.cjs` 只认 `darwin/universal`。现在也接受**与本次查询架构一致**的
+  分芯片 ZIP，另一种芯片的地址照旧拒绝。我们同步的仍是同一版本、同一 release ID 的通用
+  DMG/PKG：2026-10-10 在 GitHub runner 上实测 2.31226.1 的 `darwin/universal` 下 DMG/PKG/ZIP
+  都在、`darwin/arm64|x64` 下的 DMG/PKG 是 404，所以 COS 索引格式和教程页都不用改。
+- 两条官方离线包定时同步（`sync-claude-official-cos`、`sync-chatgpt-official-cos`）加了
+  `alert` 作业（`scripts/cos-sync-alert.cjs`）：定时同步连续 2 次失败就开一条 issue、指派给
+  仓库负责人；之后的失败只改这条 issue；下一次定时同步成功就留言并关闭。手动运行不算。
+  只用本次运行的 `GITHUB_TOKEN`，作业级权限 `actions: read` + `issues: write`，不碰 COS
+  凭据，不接外部服务。起因是 Codex 同步 10-04～10-09 连红 17 次、Claude Mac 连红 9 次以上
+  都没人发现。
+- Codex 那 17 次（`verify-windows-package` 报 `operation-failed`）10-09 22:36Z 在同一个
+  commit 上自己恢复，推测是官方换了包；这次没有改它的校验。
+- 一键安装 Codex 桌面端、Claude Desktop 时先从星芒自己的腾讯云存储桶下同一个官方包，
+  没走通才照旧走原来的路（yoyo 2026-10-10「需要从存储桶下载，因为后期我打算去掉游戏加速这个功能」）。
+  新模块 `electron/desktop-package-bucket.ts`：桶地址写死；清单里的对象路径、地址、大小、
+  SHA-256、类型、校验标签一处对不上就不用；不跟跳转；照当时速度还要 10 分钟以上就放弃。
+  原因只进运行日志（`desktop-bucket.fallback`），界面文字沿用原来那几句，没有新增。
+- Windows：Codex（`downloadCodexDesktopBucketPackage`，排在微软商店前面；桶里那一版不比本机新就跳过）、
+  Claude（`installClaudeDesktopFromBucket`，排在 winget 前面）下完照旧核包身份、发布者、签名，
+  且包版本必须和清单一致，装法与官网那一路共用。下好、核过却没装上时也照旧走后面几路（商店、winget
+  和侧载不一定是同一种装法）；只有客户取消、取消了授权、盘满了照直报。
+- Mac：Codex 用桶里按芯片的 zip，Claude 用通用 PKG（先 `pkgutil --check-signature` 核安装包签名是
+  Anthropic 的 Developer ID Installer，再 `pkgutil --expand-full` 只展开、不安装，找出唯一的 Claude.app），
+  解开后照旧核 bundle id、最低系统、Team ID 签名和 Gatekeeper。
+  `installMacosDesktopApp` 新增 `bucket` 与 `withVendorDownloadRoute`：调用方不再把整个安装包进
+  加速线路，只有问官方那一路接线路，桶那一路国内直连。
+- `docs/COS-SYNC.md` 写清客户端认清单里的哪些字段；同步脚本改这些字段会让客户端全部退回原来的路。
+- 生产环境的下载走 Electron 的 `net.fetch`（为了跟系统代理），它和 Node 的 fetch 有两处不一样；单测
+  用的是 Node 的 fetch，所以一直没测出来（两处都在 Electron 43.6.0 上实测过）。
+- 一：`redirect: 'manual'` 遇到跳转直接报「Redirect was cancelled」，不把 3xx 交回来。Git（npmmirror、
+  GitHub 都会跳）、Claude Desktop 官网 MSIX 入口、npmmirror 的 Node.js 镜像，第一跳就失败。新增
+  `electron/manual-redirect-fetch.ts`，`main.ts` 的 `downloadFetch` 遇到 `manual` 改走 `net.request`，
+  跳转照 Node 的 fetch 那样作为 3xx（带 Location）交回去、请求当场停下，各下载照旧一跳一跳先核主机。
+  其余模式、带正文的请求不变。
+- 二：回应的 `url` 是空字符串。`grok-installer.ts` 的 `validateGrokArtifactResponseUrl` 拿它
+  `new URL('')` 就报「地址格式无效」，Windows 上一键装 Grok 因此每次都失败。现在空 `url` 只在要下的
+  地址本身在官方根地址下、https、不带端口/账号/查询/锚点时放行（请求是 `redirect: 'error'`，跳转会
+  直接失败）；非空时仍要求和要下的地址完全一致。其它下载早就是 `if (response.url)` 才核。
+- `ExtensionsPage`（`src/renderer-v2/pages-management.tsx`）改用页内的 `useToolOperation`：操作结果记着是在哪个工具下点的，只在那个工具下面摆出来，`clear()` 只清屏上那条（#983 顺带发现的另一半，逆向报告 B4）。共用的 `useOperation` 不动。`app-check.mjs` 加一条浏览器用例钉住。
+- `ExtensionsPage`（`src/renderer-v2/pages-management.tsx`）的各个操作跑完后先比对现在选中的工具，换走了就不再按原来那个工具重读列表、重跑连接检测，留给新工具自己那一轮（逆向报告 B4）。`app-check.mjs` 加一条浏览器用例钉住。
+- `relay-route-controller.ts`（#963）：星芒账号（solov）在这台电脑上还没存下过结论时，开机那一轮走 `checkFirstLaunch`：直连、默认线路两条健康检查一起查；直连查通就定直连，直连没通、或默认线路已查通而直连 `relayRouteFirstLaunchPreferDirectMs`（1.5 秒）内还没回，就定默认线路，不等 `relayRouteFailureThreshold` 那三次。两条都通时定直连，不看谁先回；直连晚回来的结果丢掉，交给切回规矩。两条都不通时不改，下一轮照样两条一起查。不经 `check()`：它的 `checking` 标记一次只记一个。
+- 防横跳只在开机那一轮让路：`SiteState.firstLaunch` 在 `settle()` 里清掉，之后照三次阈值；开机先定的直连查通了也存成结论（以前线路没变就不存，下次开机又会当成全新安装）；没查过的那条直连不随别的站一起存下。
+- 历史账号（solov-api）不变，照旧先走默认线路、连查三次。
+- 全新安装那次改走默认线路记 `trigger: 'first-launch'`，检查报告写「第一次开机查到洛杉矶线路没连上，改走 CF 线路」，不说「连着 3 次」。`RelayRouteChangeReason` 没加新值（落盘格式不变）。
+- `relay-line-fetch.ts`：`/api/verification`、`/api/reset_password` 这两个 GET 每发一次服务端就寄一封信，`new-api-client.ts` 的 `idempotent: false` 传不到 fetch 这一层，以前在直连上失败（连接被重置、网关网页）或等回话时线路改了都会被掐掉改走默认线路再发一次。现在照写请求办：线路改了不掐，只在证明没送到时重发。
+- Gemini CLI 下线（yoyo 2026-10-14）：界面不显示、不再装、不再签 Key、不再改它的配置，老客户电脑上的不卸不删。
+  `catalog.ts` 加退役名单 `retiredProviderIds` 与 `activeProviderIds` / `isActiveProviderId`，`gemini` 仍留在
+  `ProviderId` 里：本机 Key 缓存、备份清单、卸载时收回钩子都按它认老数据，拿掉会把这些一起弄坏。
+- 主进程「替每个工具做点什么」的地方改走 `activeProviderIds`：扫描（快照里 Gemini 是 `retired: true` 的占位，不起进程、
+  不查 npm）、签 Key（new-api 与 Sub2API 都不再签，历史账号没有 Gemini 分组也不再报失败）、跟线路、补设置、开机修钩子、
+  工具额度与用量、检查页各项（Gemini 的五个环境变量、个人文件夹信任、`CLI_GEMINI` / `PROVIDER_GEMINI` 都不再出）、
+  反馈报告、扩展列表、对话记录列表、托盘、Linux 启动器。IPC 动作通道收到 `gemini` 一律按原有的「未知的 CLI 类型」等文案拒绝；
+  备份页不再列 Gemini 的旧备份，也不让恢复（文件留在磁盘上）。读老数据、脱敏、卸载收回的地方照旧认四家。
+- 新界面（`src/renderer-v2/`）：注册表去掉 Gemini，首页、新手引导（连同只为它存在的 Python 那一步）、扩展、记录、备份、
+  账号页工具额度与用量、Ctrl/⌘ + 数字快捷键都只剩三家；主进程数据里带着 `gemini` 也一概不认，密钥页不再给它的 Key 标「在用」。
+  `check:v2` 的 testId 对照逐条放行冻结旧界面里的 `guide-route-gemini`，新界面再出现它反而报错。
+- 开机后在后台收回星芒以前写进 `~/.gemini/settings.json` 的做完提醒（`xingmang-notify` 钩子）和星芒画图
+  （`mcpServers.xingmang-image`），Key、线路、型号不动：`config-files.ts` 的 `inspectRetiredGeminiIntegrations` /
+  `removeRetiredGeminiIntegrations`（留 `.bak`，配置读不懂就不动），`system-service.ts` 的
+  `reclaimRetiredToolIntegrations`（Gemini 开着或看不出开没开就等下次开机）。登录时不再往 Gemini 里登记画图工具。
+- 拿掉只为 Gemini 存在的「让这台电脑上所有终端都信任证书」：删 `user-certificate-trust.ts` 与
+  `diagnostics:trust-certificates-user-wide` 通道，检查页「安全证书」只剩一句结论。已经设好的那一项不收回。
+- 中转实测（`scripts/probe-cli-relay.cjs`）与每周巡检不再管 Gemini；`cli-verified-versions.ts` 里它那条只为覆盖全部
+  `ProviderId` 留着，不再抬。
+- Gemini CLI 在同一版下线（`gemini-cli-retired.md`），星芒不再打开它，原来的「用户」说明一并拿掉。
+- `config-files.ts` 的 `trustGeminiWorkspaceInTrustedFoldersText` 找已有条目时按 Gemini CLI 0.62.0
+  `normalizePath` 的规矩比：win32 与 darwin 不分大小写。以前 macOS 上的 POSIX 路径照原样比，对不上
+  Gemini 写下的全小写键（`/users/alex/app`），于是在后面再加一条原大小写的 `TRUST_FOLDER`；Gemini 读回来
+  同一文件夹后一条算数，客户选的 `DO_NOT_TRUST` 就被翻了，之后在 Gemini 里再选一次「Don't trust」也翻不回来
+  （沙箱里把平台设成 darwin、用 0.62.0 自己的 `setValue` / `isPathTrusted` 跑过）。Linux 上 Gemini 分大小写，
+  照旧。已经被翻过的文件不回头改。
+- #28：`update-feed-stats` 多一节「下过新版安装包的电脑后来怎样」：按来源 IP 和系统，把每台电脑第一次从 Cloudflare 下这段时间里
+  最新那一版安装包（Windows 的 Setup.exe、Mac 的 zip）的小时，和它之后读 `service-status.json` 时的版本对上，分成装上了、还没装上、
+  没再出现三种，各写占比。状态文件也按小时分组，每台电脑按最后那个小时的版本算。
+- 摘要页每次都写「口径」：Mac、Linux 各版本都读 Cloudflare 这份，数字可信；0.2.18 起 Windows 走洛杉矶线路的更新和状态文件改读
+  xm-direct.solov.cc，Cloudflare 数不到，所以 Windows 的 0.2.18 及以后偏低、旧版本偏高。`docs/SERVICE-STATUS.md` 同步。
+- #28：`docs/RELEASING.md` 第 8 节加上「放量停住 / 撤回 / 退回」挑哪一招的表，以及退回管不到的几处（退到加签名之前的版本要靠 GitHub Release
+  的安装包补签、安装教程页的 COS 下载不跟着撤回和退回、0.2.18 起 Windows 直连更新地址要另外核对）。
+- `docs/SERVICE-STATUS.md`：「现在能退到哪」换成 2026-10-08 的状况（线上 0.2.15；0.2.18 出事退 0.2.15 时 Windows 清单靠补签）；
+  退回的旧版跟着「自动更新」开关走（0.2.12 起默认开，开着会自动装回去），原来写的「不会自动装」已经不对；补上放量中途填 0 停住、
+  先填 0 观察再放开的手动灰度。
+- `scripts/service-status.cjs` 的运行日志把放量 0 写成「先不自动推，只给自己点「检查更新」的人」，不再是「先给 0% 的电脑」；
+  service-status 工作流「分批放量」那一格的说明加上 0 这一档。
+- #28：新增 `update-feed-stats` 工作流（手动运行，只读的 `CLOUDFLARE_ANALYTICS_TOKEN`，不用 release 环境），按客户端读
+  `service-status.json` 时 User-Agent 里带的版本号，从 Cloudflare 访问统计算出各版本、各系统占全部电脑的比例，写进运行摘要页。
+  来源 IP 只在运行时去重，不输出；仓库公开，所以只写比例不写台数。用法与看不到的部分见 `docs/SERVICE-STATUS.md`「看各版本有多少人在用」。
+- macOS 上 `runCommand` 收到 `trustedOnly: true` 直接以 `UNSAFE_COMMAND` 拒绝，不再悄悄降级成只换环境、
+  不查可执行文件和 `trustedPaths`（#56，审查总表 E-G13 的 (b) 半）。今天 macOS 上没有调用点传这个开关，
+  行为不变；以后要在 macOS 上用受信任执行，得先照 `resolveTrustedLinuxSpec` 补 darwin 版再去掉这道拒绝。
+- macOS 打开终端改用 `open -a /System/Applications/Utilities/Terminal.app`，不再按名字「Terminal」交给
+  LaunchServices 去找（#57，I14 在 macOS 上的对应）。最低 macOS 13，系统终端固定在这个位置，不做回退。
+- `relay-sites.ts` 加 `relayAutoPreferredLines`、`relayAutoBackupLine`：「自动」先走哪条按站定。星芒账号（solov）照旧先走直连、备用默认线路；历史账号（solov-api）改成先走默认线路（api.solov.cc，CF）、备用直连（api-direct），yoyo 10-14「历史账号走的是 api 的 cf，直连备用」。0.2.17、0.2.18 是先走直连，和 docs/DIRECT-ROUTE-RELAY-SUPPLEMENT.md 第 5 节不一致。
+- `relay-route-controller.ts`：`checkDirect` 改成 `checkPreferred`，`watch`、`checkRecovery`、`start` 都按站的先走线路办；连败三次、切回要连通 10 分钟、两次切换隔 5 分钟这些规矩不变。历史账号开机没有结论时照旧先走默认线路（未定下），第一次查通就定下并通知界面，工具配置跟着迁。`reportDirectFailure` 改名 `reportPreferredFailure`（`RelayLineRouter`、`DiagnosticsRelayRoute` 同改），只在走着先走那条时才查。星芒账号的全新安装两条一起查（`checkFirstLaunch`）不变。
+- 0.2.18 留下的历史账号「直连」结论：最近一次切换不是「health-failed、改走直连」的一律当旧规矩存的，连同切换记录不认（`retireDirectFirstConclusions`）；星芒账号的结论原样用。落盘格式不变，装回 0.2.18 照样读得出。
+- `relay-line-fetch.ts`：「自动」走着先走那条时没走通，改走备用那条重发；历史账号就是默认线路失败改走直连。白名单 404 只在直连上认，默认线路回的网页 404 原样交回。`createRelayObservedFetch` 对历史账号改报默认线路上的失败。
+- `diagnostics.ts`「星芒 AI 网络」：先走那条没查通改查备用那条（`DiagnosticsRelayRoute.preferredLine`、`backupSite`，缺省按星芒账号）。历史账号退到直连时结论说「能连上星芒服务。默认线路这会儿连不上，已自动改走直连」。导出报告里的换线记录按记下的 from、to 说，新旧两种记录都说得对。
+- 设置里历史账号线路的说明改成「自动会先走默认线路，默认线路连不上时改走直连。保存后重启星芒生效，不会切换账号。」
+- `electron/macos-desktop-app-installer.ts`：Claude 的 Squirrel 更新接口 10-7 起按请求路径里的芯片给包（`releases/darwin/arm64/…`、`releases/darwin/x64/…`，2026-10-10 实测 2.31226.1，大小和 SHA-256 各不相同），不再给 `darwin/universal`。`selectClaudeRelease` 和 `allowsClaudeUrl` 只认通用包，所以从那以后 Mac 一键装 Claude Desktop 一律报「没装好」（带这段代码的 0.2.15 起都受影响）。改成认这台 Mac 芯片的 zip，通用 zip 照旧认，另一种芯片的不认。
+- 新增 `packageForHardware`（只给 Claude Desktop 开）：x64 版星芒靠 Rosetta 跑在 Apple 芯片上时，按 `sysctl -n hw.optional.arm64` 装 arm64 包，和以前拿通用包时一样是原生的 Claude。OpenCode 一直是按芯片分开的包，行为不变。
+- 逆向报告 B1（I13）：外接工具（MCP）失败时整个错误对象连命令参数和输出一起进日志，原来只有环境变量的值算敏感。
+  `redaction-patterns.ts` 新增按参数名认的规则：`--token 值`、`--api-key 值`、`--key=值`、`-key 值` 这类写法
+  （参数名以 key / token / secret / password / passwd / auth 结尾）在文本里打码；`Authorization: Basic xxx`
+  这类非 Bearer 头连凭据一起打码，不再只遮 scheme 那个词。`credentialArgumentValues` 把参数数组里紧跟这类参数的
+  值挑出来，`command-runner.ts` 的 `runCommand` 把它们并进显式敏感值，参数数组、退出时的输出、流式输出都按原值替换。
+  `--bearer-token-env-var`、`--password-store` 这种只是名字里带词的参数不受影响。
+- new-api 从 v1.0.0-rc.43 起控制台接口的 `message` 一律回英文原句，翻译交给网页前端按 `message_key` + `message_params` 去查 `web/src/i18n/locales/zh.json`。新增 `electron/new-api-messages.ts`：收了星芒调用的那些接口会回的提示（各接口的处理函数、全部 middleware、它们写到的 model），中文取上游 rc.44 的 zh.json 原句；和 rc.40 后端的中文对过，除了英文词两边的空格和几处 ID/邮箱字段名，字都一样。只收 rc.40 时就用中文回的句子：rc.40 本来就回英文的安全操作报错（`writeSecurityOperationError` 那一类）不收，升级后跟今天一样。发码限流那句用 rc.40 的「发送过于频繁，请稍后再试」，因为登录框按「频繁」认限流。安全验证中间件（`securityProofError`）回的三句不带 `message_key`，按原句另收一张小表。
+- `new-api-client.ts` 的 `unwrapEnvelope` / `unwrapPublicNotice` / `unwrapLegacyBusinessEnvelope` 上屏那句先按 `message_key` 换中文，换不了（老服务器、没见过的 key、参数缺了或不是普通值）照旧用 `message`，不吞英文原句。换出来的中文照旧过 `sanitizeUpstreamMessage` 打码，`message_params` 里回显的密钥一样会被遮掉。登录被拒（`loginRejectionMessages`）和两步验证第二步的分类仍看英文原句。
+- 老服务器（rc.42 及以前）不带 `message_key`，行为不变。
+- npm 12 起依赖的安装脚本默认不跑，要按包放行。`buildCliInstallScriptAllowlist` 只放行离了安装脚本就装不全
+  或会变样的包：Claude Code、Grok 的主程序包（钉死这次要装的版本），Gemini 的 `@github/keytar`（只拷包里带的
+  预编译文件）；Gemini 的 node-pty（现场编译，Gemini 先用预编译的 `@lydell/node-pty`）和 Codex 不放行。
+  全局安装走 `--allow-scripts=`；Grok 是 `npm ci`，npm 12 不许在命令行放行（EALLOWSCRIPTS），写进
+  `buildCliResolutionManifest` 生成的临时 package.json 的 `allowScripts`。npm 11 及更早只认「不许跑」，
+  放行名单对它们不起作用，照旧全跑，行为不变。云端照安装步骤实装：Node 26 + npm 12.2.0 / 11.20.0 下四家都装上
+  并对本地假接口问通；npm 10.9.4 下 Claude、Grok，npm 9.9.4 下 Claude 照常装上（老版本不认放行写法，忽略掉）。
+- 充值页切走只藏起来、不卸载，点关闭只缩到托盘，原来只在第一次进来和点「刷新」时读充值信息，
+  活动撤了以后客户还看得到旧的「送 X%」，确认框的「活动赠送」也是旧的（应付金额本来就是现问的）。
+  现在 `AccountRecharge`（`src/renderer-v2/pages-account.tsx`）在三处重读：切回这一分页或个人中心
+  整页切回（`useReloadWhenShown`，`AccountPage` 新接外壳的 `active`）、停在这一页时窗口回到前台
+  （`focus` / `visibilitychange`），两处都隔够一分钟才读，免得逐档试算撞上服务端限流；点「充值」
+  时充值信息和试算一起问，确认框的赠送按这次读到的折扣算，没读到就不写赠送，读到的和页面上的
+  不一样才换掉（`sameTopupInfo`，一样就不让各档重算实付）。不加新文字，不动接口。
+- new-api 从 rc.40 起，发码前邮箱后缀不在白名单、或带 `+` / `.` 的别名被禁时，`GET /api/verification` 回 HTTP 200 + `code: EMAIL_ADDRESS_REJECTED` + 固定英文「This email address is not allowed by the administrator's email policy.」（rc.40、rc.44 的 `service/email_binding.go` `ErrAccountEmailRestricted`，rc.40 就是英文；rc.43 起带的 `message_key` 就是这句英文，`electron/new-api-messages.ts` 按约定不收 rc.40 本来就回英文的句子，所以升级前后都到渲染层的还是英文）。renderer-v2 `features/auth/account-errors.ts` 那条邮箱限制原来只认带 whitelist / 白名单 / alias / 别名的旧说法，碰不上这句，注册框落到兜底「发送验证码没有成功，输入已保留，请稍后重试」。现在把这句英文和上游网页 zh.json 的中文「此邮箱地址不符合管理员设置的邮箱规则」也算进去，显示原有那句「这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试」，没写新字。
+- `docs/RELEASING.md`：发布前置条件和 CI 发布两处写上 0.2.19 起每一版都分批放量（触发发布之前用 service-status 设 `<版本号> 20`，
+  核对两个更新地址，观察一天后填 `none` 全部放开）。忘了先设、发版已停在第二次批准时，service-status 会不会被等批准的上传挡住没验证过，
+  写明了看到 Pending 时的退法：先 Reject 上传、批完放量、再 Re-run failed jobs。
+- `realm-account-service.ts` 的 `removeSavedAccount`：本机删掉之后，用一个不接身份的客户端拿库里那份
+  凭据调现成的 `endSavedSession`（同 #476 重登覆盖旧凭据时的 `POST /api/user/auth/logout`），
+  不等、不报错；本机没删成（当前账号、存储出错）就不发。历史账号（api 站）的后端没有这个接口，照旧只删本机。
+  补的是全面检测 Q11 剩下的那一半。
+- 工具线路探测因为证书没过时，另起一次只握手、不发任何数据的 TLS 连接，读出对面实际给的证书
+  （`tool-path-probe.ts` 的 `inspectPeerCertificate`）。颁发者、证书名、SHA-256 指纹和 Node 的校验结果
+  记进 `relay.route.check-failed`，跟失败标签放在一起；连的 IP 按需求 5.1.9 不进日志，只进反馈报告
+  「运行环境」段新增的「工具线路证书没过」几行。服务端 10-13 查过：星芒的证书和各个入口都没问题，
+  中转读不到 SNI 时直接拒绝、不发证书，所以指纹对不上正版就是路上换了证书。正版指纹不写死，证书大约三个月换一次。
+- `tool-route-controller.ts` 的 `outageReason` 原来把 `tls`（握手做到一半出错：EPROTO、ERR_SSL_*）和
+  `certificate` 一起归成「安全软件接管」。需求 5.1.5 第 5 条只让证书错误这么说；工具同路径探测本来就同时信
+  系统根证书，把根证书装进系统的安全软件会算通过。现在 `tls` 和 `reset` 一样归「网络掐断」，`certificate`
+  照旧。
+- Windows CI 的 vitest 分片从两片切成三片（`test:vitest:1/2/3` 改用 `--shard=i/3`，`quality.yml`
+  的矩阵加一个 `vitest-3`）。两片已经长进预算里：#955 上一片跑了 897.94s，对着这里的 900s，
+  6329 条用例**全部通过**后在收尾时被掐断，红的那一下说不出任何关于代码的事。三线路四个 PR
+  与 #954 都往这两个 runner 上加了套件。
+- 超时**没有调大**，照浏览器分片那段注释定下的规矩办：接近预算就再发一个 runner，而不是把数字
+  改大——那个数字是用来发现卡死的，调大等于削弱它。一片应落在 10 分钟上下，哪天某一片逼近 15
+  分钟，再发第四个。
+- `ci-workflow-config.test.cjs` 的穷尽性检查跟着从 2 改到 3（它会断言 `test:vitest:4` 不存在，
+  所以漏加矩阵项会红），三处把 vitest 分片称作「half」的注释改成「shard」。
+- `electron/node-runtime.ts` 的 `parseNodeReleaseIndex`：nodejs.org 的 `index.json` 从不列 `win-arm64-msi`（2026-10-13 核过全部版本），可 v19.9.0 起列了 `win-arm64-zip` 的 165 个版本，`SHASUMS256.txt` 里都有唯一一条 `node-vX-arm64.msi`。ARM 电脑上 winget 失败后退到 MSI 那条路永远挑不到版本。现在 Windows arm64 认 `win-arm64-msi` 或 `win-arm64-zip`，下载后仍照查 SHA-256 与 OpenJS Foundation 签名。x64 与 macOS 不变。
+- Windows 上 WorkBuddy 不再一键安装（yoyo 2026-10-13「WorkBuddy 改成客户自己下载」），星芒只管认出来和写配置。
+  `external-client-runtime.ts` 的 `windowsWithoutWinget` 换成 `windowsInstallRoute`：WorkBuddy 不论有没有
+  winget 都给 `installSupported: false`、说明「到腾讯官网下载安装，装好后回来重新检测」和下载页
+  `https://www.workbuddy.ai/`（加进 `externalClientOfficialDownloadUrls`，`main.ts` 外链白名单随之全等收录）。
+  Windows arm64 照旧「暂不支持」，Mac 照旧「安装指南」。
+- 去掉 WorkBuddy 的 winget 安装和星芒自己下腾讯安装包两条路：删除 `electron/workbuddy-installer.ts`
+  （固定 5.5.6 与两枚 SHA-256 一起去掉）及其测试、Windows CI 冒烟里那条签名脚本，`install()` 里只剩
+  Claude Desktop 有官方包兜底，`wingetSourceUnavailable` / `installerStarted` 随之删除。
+- 认没认出来不变：仍看卸载记录登记的位置、`WorkBuddy.exe` 和腾讯签名，跟谁装的、装在哪个盘无关。
+  `install-leftovers.ts` 保留 `workbuddy-` 两个前缀，清掉老版本下包落下的临时目录。
+- 生图技能（`bundled-skills/xingmang-ai`）去掉即梦和 Gemini：`generate.mjs` 只收 `gpt-image-*`，删掉 Chat Completions 出图和 `extra_fields` 分支；`SKILL.md` / `references.md` 跟着删。画图工具（`mcp-server.mjs`）本来就只放行 gpt-image。
+- 登录同步时 `syncXingmangAiSkill` 新增可选的 `fetchAvailableModels`（`ipc.ts` 接 `service.fetchAvailableModels`），拿技能的 Codex Key 和生图分组 Key 各查一次 `/v1/models`，按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE`（`gpt-image-2.5-flare` → `gpt-image-2`）挑一个写进 `config.json` 的 `model`；都没查到就不写、只进日志。
+- `mcp-server.mjs` 和 `generate.mjs` 把它当默认模型；默认模型被中转明确拒了（没渠道、没定价）自动换回 `gpt-image-2` 再试一次，AI 点名的别的型号不换。说明见 `docs/NATIVE-IMAGE-MCP.md`「用哪个模型」。
+
 ## 0.2.18 - 2026-10-09
 
 - `cli-model-defaults.ts`：Claude 默认型号改为 `claude-opus-5-5`，分组里没有时先退回 `claude-opus-5`；新增 `resolveCliModelUpgrade`（上一代默认 → 这一代）。
