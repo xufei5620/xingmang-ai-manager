@@ -8,6 +8,9 @@
   工具额度与用量、检查页各项（Gemini 的五个环境变量、个人文件夹信任、`CLI_GEMINI` / `PROVIDER_GEMINI` 都不再出）、
   反馈报告、扩展列表、对话记录列表、托盘、Linux 启动器。IPC 动作通道收到 `gemini` 一律按原有的「未知的 CLI 类型」等文案拒绝；
   备份页不再列 Gemini 的旧备份，也不让恢复（文件留在磁盘上）。读老数据、脱敏、卸载收回的地方照旧认四家。
+- 新界面（`src/renderer-v2/`）：注册表去掉 Gemini，首页、新手引导（连同只为它存在的 Python 那一步）、扩展、记录、备份、
+  账号页工具额度与用量、Ctrl/⌘ + 数字快捷键都只剩三家；主进程数据里带着 `gemini` 也一概不认，密钥页不再给它的 Key 标「在用」。
+  `check:v2` 的 testId 对照逐条放行冻结旧界面里的 `guide-route-gemini`，新界面再出现它反而报错。
 - 开机后在后台收回星芒以前写进 `~/.gemini/settings.json` 的做完提醒（`xingmang-notify` 钩子）和星芒画图
   （`mcpServers.xingmang-image`），Key、线路、型号不动：`config-files.ts` 的 `inspectRetiredGeminiIntegrations` /
   `removeRetiredGeminiIntegrations`（留 `.bak`，配置读不懂就不动），`system-service.ts` 的
