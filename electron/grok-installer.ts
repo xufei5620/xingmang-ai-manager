@@ -2,7 +2,10 @@ import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { readBoundedUtf8File } from './bounded-file'
+import { downloadDesktopBucketPackage, type DesktopBucketOptions } from './desktop-package-bucket'
+import { readGrokBucketRelease } from './grok-bucket'
 import { sameLocalPathIdentity } from './path-identity'
+import { isNewerVersion } from './versions'
 import {
   fetchGrokStableVersion,
   parseGrokStableVersion,
@@ -66,6 +69,18 @@ export interface DownloadLatestGrokOptions {
   signal?: AbortSignal
   /** 名单或「退回」点名的版本;缺省 = xAI 当前 stable。不会超过 stable,见 resolveGrokInstallVersion。 */
   version?: string
+  /** 先从星芒存储桶下（grok-bucket.ts）;缺省不试,直接去 xAI。 */
+  bucket?: DesktopBucketOptions
+  /**
+   * 本机现在装着的版本。没点名版本(装最新)时,桶里那一版不比它新就直接去 xAI:桶是定时同步的,
+   * 会比 xAI 晚,客户点「更新」却装回同一版等于没更新。点了名的(推荐版本、退回)不看它。
+   */
+  installedVersion?: string | null
+  /**
+   * 去 xAI 那一路(问 stable 加下载)包进临时加速线路;存储桶那一路国内直连,不包。缺省直接下。
+   * 调用方别再把整个安装包进线路:那样存储桶那一路也会走加速。
+   */
+  withVendorDownloadRoute?<T>(operation: () => Promise<T>): Promise<T>
 }
 
 export interface InstallDownloadedGrokOptions {
@@ -265,6 +280,100 @@ async function downloadArtifact(
   }
 }
 
+function runDirectly<T>(operation: () => Promise<T>): Promise<T> {
+  return operation()
+}
+
+/**
+ * 先从星芒存储桶下 xAI 签过名的同一个 grok.exe:清单里的大小和 SHA-256 绑住下载,下完照样过
+ * xAI 那一路的签名核对。读不到、没有这一版、对不上、核不过都删掉、返回 null,照旧去 xAI,原因只进日志;
+ * 客户点的取消原样抛出。
+ */
+async function downloadFromBucket(
+  options: DownloadLatestGrokOptions,
+  fetchImpl: GrokVersionFetch,
+  architecture: NodeJS.Architecture,
+  directory: string,
+  binaryPath: string,
+  verifyBinary: typeof verifyOfficialNativeCliFile,
+): Promise<DownloadedGrokBinary | null> {
+  const bucket = options.bucket
+  if (!bucket) return null
+  try {
+    const release = await readGrokBucketRelease(architecture, options.version, fetchImpl, options.signal)
+    const installed = options.installedVersion
+    const wantsLatest = !options.version?.trim() || options.version.trim() === 'latest'
+    if (wantsLatest && installed && (installed === release.version || isNewerVersion(release.version, installed))) {
+      throw new Error(`桶里的 ${release.version} 不比本机的 ${installed} 新`)
+    }
+    await downloadDesktopBucketPackage(release, binaryPath, {
+      fetch: fetchImpl,
+      ...(options.signal ? { signal: options.signal } : {}),
+      onProgress: ({ transferred, total, percent }) => options.onProgress?.({ transferred, total, percent }),
+    })
+    const verified = await verifyBinary('grok', binaryPath)
+    if (verified.size !== release.bytes || verified.sha256Hex !== release.sha256) {
+      throw new Error('Grok 二进制在签名校验期间发生变化')
+    }
+    return {
+      directory,
+      binaryPath,
+      version: release.version,
+      sourceUrl: release.url,
+      size: release.bytes,
+      sha256Hex: release.sha256,
+    }
+  } catch (error) {
+    await fs.promises.rm(binaryPath, { force: true }).catch(() => undefined)
+    options.signal?.throwIfAborted()
+    bucket.onFallback?.(`grok-windows-${architecture}：${compactError(error)}`)
+    return null
+  }
+}
+
+async function downloadFromXai(
+  options: DownloadLatestGrokOptions,
+  fetchImpl: GrokVersionFetch,
+  architecture: NodeJS.Architecture,
+  directory: string,
+  binaryPath: string,
+  verifyBinary: typeof verifyOfficialNativeCliFile,
+): Promise<DownloadedGrokBinary> {
+  const stable = await fetchGrokStableVersion({ fetchImpl })
+  const version = resolveGrokInstallVersion(options.version, stable.version)
+  const errors: string[] = []
+  for (const url of buildGrokArtifactUrls(version, architecture, stable.sourceUrl)) {
+    // 取消之后不许再试下一条镜像:否则点了取消,下载只是换了个地址继续。
+    options.signal?.throwIfAborted()
+    try {
+      const downloaded = await downloadArtifact(
+        url,
+        binaryPath,
+        fetchImpl,
+        options.onProgress ?? (() => undefined),
+        options.signal,
+      )
+      const verified = await verifyBinary('grok', binaryPath)
+      if (verified.size !== downloaded.size || verified.sha256Hex !== downloaded.sha256Hex) {
+        throw new Error('Grok 二进制在签名校验期间发生变化')
+      }
+      return {
+        directory,
+        binaryPath,
+        version,
+        sourceUrl: url,
+        size: downloaded.size,
+        sha256Hex: downloaded.sha256Hex,
+      }
+    } catch (error) {
+      await fs.promises.rm(binaryPath, { force: true }).catch(() => undefined)
+      options.signal?.throwIfAborted()
+      errors.push(`${new URL(url).hostname}：${compactError(error)}`)
+    }
+  }
+  throw new Error(`Grok 官方二进制下载或签名校验失败：${errors.join('；')}`)
+}
+
 export async function downloadLatestGrokBinary(
   options: DownloadLatestGrokOptions = {},
 ): Promise<DownloadedGrokBinary> {
@@ -274,44 +383,16 @@ export async function downloadLatestGrokBinary(
   const fetchImpl = options.fetchImpl ?? fetch
   const architecture = options.architecture ?? process.arch
   const verifyBinary = options.verifyBinary ?? verifyOfficialNativeCliFile
-  const stable = await fetchGrokStableVersion({ fetchImpl })
-  const version = resolveGrokInstallVersion(options.version, stable.version)
   const directory = await (options.createTemporaryDirectory
     ? options.createTemporaryDirectory()
     : createTrustedTemporaryDirectory('grok-binary'))
   const binaryPath = path.join(directory, 'grok-download.exe')
-  const errors: string[] = []
   try {
-    for (const url of buildGrokArtifactUrls(version, architecture, stable.sourceUrl)) {
-      // 取消之后不许再试下一条镜像:否则点了取消,下载只是换了个地址继续。
-      options.signal?.throwIfAborted()
-      try {
-        const downloaded = await downloadArtifact(
-          url,
-          binaryPath,
-          fetchImpl,
-          options.onProgress ?? (() => undefined),
-          options.signal,
-        )
-        const verified = await verifyBinary('grok', binaryPath)
-        if (verified.size !== downloaded.size || verified.sha256Hex !== downloaded.sha256Hex) {
-          throw new Error('Grok 二进制在签名校验期间发生变化')
-        }
-        return {
-          directory,
-          binaryPath,
-          version,
-          sourceUrl: url,
-          size: downloaded.size,
-          sha256Hex: downloaded.sha256Hex,
-        }
-      } catch (error) {
-        await fs.promises.rm(binaryPath, { force: true }).catch(() => undefined)
-        options.signal?.throwIfAborted()
-        errors.push(`${new URL(url).hostname}：${compactError(error)}`)
-      }
-    }
-    throw new Error(`Grok 官方二进制下载或签名校验失败：${errors.join('；')}`)
+    // 先从星芒存储桶下;没走通再去 xAI,只有去 xAI 那一路接加速线路。
+    return await downloadFromBucket(options, fetchImpl, architecture, directory, binaryPath, verifyBinary)
+      ?? await (options.withVendorDownloadRoute ?? runDirectly)(
+        () => downloadFromXai(options, fetchImpl, architecture, directory, binaryPath, verifyBinary),
+      )
   } catch (error) {
     await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)
     throw error

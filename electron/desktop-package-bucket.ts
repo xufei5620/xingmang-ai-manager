@@ -3,9 +3,9 @@ import { readBoundedResponseText } from './bounded-response'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 
 /**
- * 星芒自己的腾讯云存储桶里放着 Codex、Claude 桌面端的官方离线包：scripts/sync-chatgpt-official-cos.cjs、
- * sync-claude-official-cos.cjs 定时从官方下载、在 GitHub 的 Windows / Mac 机器上核过签名才传上去，
- * 清单里写着每个包的大小和 SHA-256。装桌面端时先从这里下：国内快，也用不着加速（yoyo 2026-10-10
+ * 星芒自己的腾讯云存储桶里放着 Codex、Claude 桌面端和 Mac 版 OpenCode 的官方离线包：
+ * scripts/sync-chatgpt-official-cos.cjs、sync-claude-official-cos.cjs、sync-opencode-cos.cjs 定时从官方下载、
+ * 在 GitHub 的 Windows / Mac 机器上核过签名才传上去，清单里写着每个包的大小和 SHA-256。装桌面端时先从这里下：国内快，也用不着加速（yoyo 2026-10-10
  * 「需要从存储桶下载，因为后期我打算去掉游戏加速这个功能」）。桶里没有、读不到、对不上，都悄悄换回
  * 原来那几路，客户看不出来。
  *
@@ -22,13 +22,18 @@ import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions
 export const desktopPackageBucketOrigin = 'https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com'
 const desktopPackageBucketHost = new URL(desktopPackageBucketOrigin).hostname
 const codexIndexKey = 'chatgpt/latest.json'
-const claudeIndexKey = 'xingmang/offline/claude/latest.json'
+const filesIndexes = {
+  claude: { key: 'xingmang/offline/claude/latest.json', prefix: 'xingmang/offline/claude', product: 'claude-desktop' },
+  opencode: { key: 'xingmang/offline/opencode/latest.json', prefix: 'xingmang/offline/opencode', product: 'opencode-desktop' },
+} as const
 const maximumIndexBytes = 256 * 1024
 const indexTimeoutMs = 10_000
 // 同 codex-desktop-service.ts 的安装包上下限：再小不是安装包，再大管理员安装那一步也会拒收。
 const minimumPackageBytes = 10 * 1024 * 1024
 const maximumWindowsPackageBytes = 1_500 * 1024 * 1024
 const maximumMacPackageBytes = 2 * 1024 * 1024 * 1024
+// 同 macos-desktop-app-installer.ts 收 GitHub 那一份 OpenCode 的上限。
+const maximumOpenCodePackageBytes = 640 * 1024 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 // 桶那一路照目前的平均速度还要这么久以上才下得完，就不等了，换原来那几路（同 Codex 桌面端
 // 官网那一路的 10 分钟）。在国外的客户连上海的桶可能很慢，原来那几路对他们反而快。
@@ -44,6 +49,8 @@ export type DesktopBucketPackageId =
   | 'claude-windows-x64'
   | 'claude-windows-arm64'
   | 'claude-macos-universal'
+  | 'opencode-macos-arm64'
+  | 'opencode-macos-x64'
 
 export interface DesktopBucketPackage {
   id: DesktopBucketPackageId
@@ -84,12 +91,14 @@ interface CodexMacSpec {
   architecture: 'arm64' | 'x64'
 }
 
-interface ClaudeSpec {
-  index: 'claude'
-  platformId: 'windows-x64' | 'windows-arm64' | 'macos-pkg-universal'
+/** 清单是 files 数组、每个平台一条的那两份：Claude 桌面端和 OpenCode。 */
+interface FilesIndexSpec {
+  index: keyof typeof filesIndexes
+  platformId: 'windows-x64' | 'windows-arm64' | 'macos-pkg-universal' | 'macos-arm64' | 'macos-x64'
   platform: 'windows' | 'macos'
   architecture: 'x64' | 'arm64' | 'universal'
-  format: 'msix' | 'pkg'
+  kind: 'installer' | 'app-archive'
+  format: 'msix' | 'pkg' | 'tar.gz'
   fileName: string
   contentType: string
   verification: string
@@ -99,27 +108,38 @@ interface ClaudeSpec {
 
 const windowsPackageVersionPattern = /^\d{1,5}(?:\.\d{1,5}){3}$/
 
-const packageSpecs: Record<DesktopBucketPackageId, CodexWindowsSpec | CodexMacSpec | ClaudeSpec> = {
+const packageSpecs: Record<DesktopBucketPackageId, CodexWindowsSpec | CodexMacSpec | FilesIndexSpec> = {
   'codex-windows-x64': { index: 'codex', platformId: 'windows-x64', architecture: 'x64' },
   'codex-windows-arm64': { index: 'codex', platformId: 'windows-arm64', architecture: 'arm64' },
   'codex-macos-arm64': { index: 'codex', platformId: 'macos-arm64', architecture: 'arm64' },
   'codex-macos-x64': { index: 'codex', platformId: 'macos-x64', architecture: 'x64' },
   'claude-windows-x64': {
-    index: 'claude', platformId: 'windows-x64', platform: 'windows', architecture: 'x64', format: 'msix',
+    index: 'claude', platformId: 'windows-x64', platform: 'windows', architecture: 'x64', kind: 'installer', format: 'msix',
     fileName: 'Claude-x64.msix', contentType: 'application/vnd.ms-appx', verification: 'windows-authenticode-msix-identity',
     versionPattern: windowsPackageVersionPattern, maximumBytes: maximumWindowsPackageBytes,
   },
   'claude-windows-arm64': {
-    index: 'claude', platformId: 'windows-arm64', platform: 'windows', architecture: 'arm64', format: 'msix',
+    index: 'claude', platformId: 'windows-arm64', platform: 'windows', architecture: 'arm64', kind: 'installer', format: 'msix',
     fileName: 'Claude-arm64.msix', contentType: 'application/vnd.ms-appx', verification: 'windows-authenticode-msix-identity',
     versionPattern: windowsPackageVersionPattern, maximumBytes: maximumWindowsPackageBytes,
   },
   // 桶里的 Claude Mac 是兼容两种芯片的通用 PKG（还有一份同版本的 DMG，用 PKG 是因为它不用挂载就能
   // 展开）；版本号的样子同 macos-desktop-app-installer.ts 认官方更新接口时的那条。
   'claude-macos-universal': {
-    index: 'claude', platformId: 'macos-pkg-universal', platform: 'macos', architecture: 'universal', format: 'pkg',
+    index: 'claude', platformId: 'macos-pkg-universal', platform: 'macos', architecture: 'universal', kind: 'installer', format: 'pkg',
     fileName: 'Claude-universal.pkg', contentType: 'application/vnd.apple.installer+xml', verification: 'macos-installer-signature',
     versionPattern: /^\d{1,4}\.\d{1,6}\.\d{1,6}$/, maximumBytes: maximumMacPackageBytes,
+  },
+  // OpenCode 按芯片各一个 GitHub 上那个 .app.tar.gz 原样；版本号的样子同 selectOpenCodeRelease。
+  'opencode-macos-arm64': {
+    index: 'opencode', platformId: 'macos-arm64', platform: 'macos', architecture: 'arm64', kind: 'app-archive', format: 'tar.gz',
+    fileName: 'opencode-desktop-mac-arm64.app.tar.gz', contentType: 'application/gzip', verification: 'macos-developer-id-notarized',
+    versionPattern: /^\d{1,4}\.\d{1,4}\.\d{1,6}$/, maximumBytes: maximumOpenCodePackageBytes,
+  },
+  'opencode-macos-x64': {
+    index: 'opencode', platformId: 'macos-x64', platform: 'macos', architecture: 'x64', kind: 'app-archive', format: 'tar.gz',
+    fileName: 'opencode-desktop-mac-x64.app.tar.gz', contentType: 'application/gzip', verification: 'macos-developer-id-notarized',
+    versionPattern: /^\d{1,4}\.\d{1,4}\.\d{1,6}$/, maximumBytes: maximumOpenCodePackageBytes,
   },
 }
 
@@ -140,7 +160,8 @@ function objectUrl(key: string): string {
 }
 
 export function desktopBucketIndexUrl(id: DesktopBucketPackageId): string {
-  return objectUrl(packageSpecs[id].index === 'codex' ? codexIndexKey : claudeIndexKey)
+  const index = packageSpecs[id].index
+  return objectUrl(index === 'codex' ? codexIndexKey : filesIndexes[index].key)
 }
 
 function parseJsonRecord(text: string): Record<string, unknown> | null {
@@ -207,18 +228,19 @@ function parseCodexEntry(root: Record<string, unknown>, spec: CodexWindowsSpec |
   return { id, version, url: objectUrl(key), bytes: artifact.bytes, sha256: artifact.sha256, contentType }
 }
 
-/** xingmang/offline/claude/latest.json：files 里按平台一条，目录是 SHA-256。 */
-function parseClaudeEntry(root: Record<string, unknown>, spec: ClaudeSpec, id: DesktopBucketPackageId): DesktopBucketPackage | null {
-  if (root.schemaVersion !== 1 || root.product !== 'claude-desktop' || !Array.isArray(root.files) || root.files.length > 16) return null
+/** xingmang/offline/claude/latest.json、xingmang/offline/opencode/latest.json：files 里按平台一条，目录是 SHA-256。 */
+function parseFilesEntry(root: Record<string, unknown>, spec: FilesIndexSpec, id: DesktopBucketPackageId): DesktopBucketPackage | null {
+  const index = filesIndexes[spec.index]
+  if (root.schemaVersion !== 1 || root.product !== index.product || !Array.isArray(root.files) || root.files.length > 16) return null
   const entries = root.files.filter((file) => isRecord(file) && file.platformId === spec.platformId)
   if (entries.length !== 1 || !isRecord(entries[0])) return null
   const file = entries[0]
   if (!isSha256Hex(file.sha256) || typeof file.version !== 'string' || !spec.versionPattern.test(file.version)) return null
-  const key = `xingmang/offline/claude/${spec.platformId}/sha256-${file.sha256}/${spec.fileName}`
+  const key = `${index.prefix}/${spec.platformId}/sha256-${file.sha256}/${spec.fileName}`
   if (
     file.platform !== spec.platform
     || file.architecture !== spec.architecture
-    || file.kind !== 'installer'
+    || file.kind !== spec.kind
     || file.format !== spec.format
     || file.fileName !== spec.fileName
     || file.type !== spec.contentType
@@ -235,12 +257,12 @@ export function parseDesktopBucketIndex(text: string, id: DesktopBucketPackageId
   const root = parseJsonRecord(text)
   if (!root) return null
   const spec = packageSpecs[id]
-  return spec.index === 'codex' ? parseCodexEntry(root, spec, id) : parseClaudeEntry(root, spec, id)
+  return spec.index === 'codex' ? parseCodexEntry(root, spec, id) : parseFilesEntry(root, spec, id)
 }
 
 /**
  * 只认桶本身的固定地址：https、这个主机、没有端口和账号、没有查询和片段，路径只能在同步脚本写的
- * 那几个目录下（Codex 插件目录那一路见 codex-plugin-catalog-bucket.ts）。
+ * 那几个目录下（Codex 插件目录那一路见 codex-plugin-catalog-bucket.ts，Grok 那一路见 grok-bucket.ts）。
  */
 export function validateDesktopBucketUrl(value: string): URL {
   let url: URL
@@ -257,7 +279,7 @@ export function validateDesktopBucketUrl(value: string): URL {
     || url.password
     || url.search
     || url.hash
-    || !/^\/(?:chatgpt|xingmang\/offline\/(?:claude|codex-plugins))\/[A-Za-z0-9._\-/]+$/.test(url.pathname)
+    || !/^\/(?:chatgpt|xingmang\/offline\/(?:claude|codex-plugins|grok|opencode))\/[A-Za-z0-9._\-/]+$/.test(url.pathname)
     || url.pathname.split('/').some((segment) => segment === '..' || segment === '.')
   ) {
     throw new Error('存储桶地址不在允许的范围内')
@@ -365,7 +387,7 @@ function mediaType(value: string | null): string {
  * 半个文件、抛 DesktopBucketUnavailableError。客户点了取消就原样抛 signal 的 reason。
  */
 export async function downloadDesktopBucketPackage(
-  release: DesktopBucketPackage,
+  release: Pick<DesktopBucketPackage, 'url' | 'bytes' | 'sha256' | 'contentType'>,
   destination: string,
   options: DesktopBucketDownloadOptions,
 ): Promise<DesktopBucketDownloadResult> {
@@ -434,7 +456,7 @@ export async function downloadDesktopBucketPackage(
   }
 }
 
-/** 记日志时那一行原话：开头带上是哪个包，免得客服分不清是 Codex 还是 Claude。 */
+/** 记日志时那一行原话：开头带上是哪个包，免得客服分不清是 Codex、Claude 还是 OpenCode。 */
 export function describeDesktopBucketFallback(id: DesktopBucketPackageId, error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error)
   return `${id}：${detail || '存储桶这一路没走通'}`
