@@ -12,3 +12,4 @@
 - Key 同步被网络拦住、其中有证书被换掉（`network-failure.ts` 归成 `tls`，不含证书日期）时，
   `AccountBootstrapResult` 多一个 `networkBlockedByCertificate`，首页横幅换成「稍等一两分钟点「重新同步」」那句：
   这时电脑一直联着网，等不来 `online` 事件，原句「联网后会自动补写」不成立。整段引导抛错时按那句错误同样判。
+  横幅这时一定给「重新同步」按钮；运行日志那一行也不再写「联网后会自动补跑」。

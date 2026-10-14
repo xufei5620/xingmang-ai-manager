@@ -634,6 +634,18 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(thrown).not.toContain(offline)
   })
 
+  it('offers the resync button the certificate notice asks for even when only uninstalled tools failed', () => {
+    const markup = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成', percent: 100, scope: 'scope',
+        result: bootstrapResult({ networkBlocked: true, networkBlockedByCertificate: true, configured: ['claude'] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain('稍等一两分钟点「重新同步」')
+    expect(markup).toContain('>重新同步<')
+  })
+
   it('uses the same wording when the whole bootstrap threw a network failure', () => {
     const markup = render({}, undefined, {
       bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: `账号 Key 初始化没有完成：${networkFailureMessages.dns}` },

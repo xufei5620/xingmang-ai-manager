@@ -615,7 +615,8 @@ export function describeAccountBootstrapResult(
   }
   if (result.repairedShadowed?.length) parts.push(`顺手修好 ${result.repairedShadowed.map(nameOf).join('、')} 认不出的连接设置`)
   if (result.routeFollowed?.length) parts.push(`跟着换了连接线路：${result.routeFollowed.map(nameOf).join('、')}`)
-  if (result.networkBlocked) parts.push('被网络拦住，联网后会自动补跑')
+  // 证书被换掉时电脑一直联着网，等不来「联网」事件，这一轮只能等客户点「重新同步」。
+  if (result.networkBlocked) parts.push(result.networkBlockedByCertificate ? '被网络拦住（证书被换掉），等客户点「重新同步」' : '被网络拦住，联网后会自动补跑')
   return {
     level: result.failed.length || result.networkBlocked ? 'warn' : 'info',
     message: `Key 自动配置（${bootstrapModeLabels[mode]}）：${parts.join('；')}`,

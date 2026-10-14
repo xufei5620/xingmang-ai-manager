@@ -1093,6 +1093,14 @@ describe('account bootstrap log lines', () => {
     expect(line.message).toBe(`Key 自动配置（开机或联网后恢复）：写好 无；没写成 Codex CLI（${configurationFailureMessages.relayMismatch}）`)
   })
 
+  it('does not promise an automatic retry when a swapped certificate blocked the round', () => {
+    const line = describeAccountBootstrapResult('restore', result({ configured: [], skipped: [], networkBlocked: true, networkBlockedByCertificate: true }))
+
+    expect(line.level).toBe('warn')
+    expect(line.message).toContain('被网络拦住（证书被换掉），等客户点「重新同步」')
+    expect(line.message).not.toContain('联网后会自动补跑')
+  })
+
   it('marks a network-blocked round as warn so it stands out in the report', () => {
     const line = describeAccountBootstrapResult('restore', result({ configured: [], skipped: [], networkBlocked: true }))
 

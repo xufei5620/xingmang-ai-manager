@@ -721,8 +721,9 @@ export function Home(props: HomeProps) {
     </div>}
     {bootstrapResult && bootstrapNoticeShown && bootstrapNoticeWanted && <div className={`v2-bootstrap-notice ${bootstrapFailed.length || bootstrapWarnings.length ? 'is-warn' : ''}`} role="status">
       <span className={`v2-dot ${bootstrapFailed.length || bootstrapWarnings.length ? 'is-warn' : 'is-ok'}`} /><span>{bootstrapResult.networkBlocked ? networkBlockedNotice(bootstrapResult) : `${bootstrapResult.configured.length ? configuredKeysText(bootstrapResult.configured.length) : '账号 Key 已同步。'}${bootstrapFailed.length ? ` ${bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${bootstrapWarnings.length ? ` ${bootstrapWarnings.join('；')}` : ''}`}</span>
-      {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。 */}
-      {(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
+      {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。证书被换掉的那句叫客户点它，
+          没写成的只是没装的工具时 failed、warnings 都是空的，按钮照样要给。 */}
+      {(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0 || (bootstrapResult.networkBlocked && bootstrapResult.networkBlockedByCertificate)) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
