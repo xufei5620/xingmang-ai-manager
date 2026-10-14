@@ -130,7 +130,7 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
   configurationAccountMatched?: boolean
   /**
    * 配置里实际写的是星芒账号（solov）的哪条线路（xm 三线路 C12）：按地址逐字比，落在退役别名上的、
-   * 本站以外的地址都算 other。首页据此标「线路：洛杉矶 / CF / 其他地址」。只给星芒账号、只在配置
+   * 本站以外的地址都算 other。首页据此标「线路1 / 线路2 / 线路：其他地址」。只给星芒账号、只在配置
    * 里有地址时才有；缺省 = 不标（历史账号照旧不标）。
    */
   relayLine?: 'direct' | 'primary' | 'other'

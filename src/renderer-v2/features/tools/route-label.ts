@@ -1,12 +1,15 @@
 import type { AppSettingsV2, ProviderConfigSummary } from '../../../../electron/ipc-contract'
 import type { ToolSource } from './model'
 
-const lineNames = { direct: '洛杉矶', primary: 'CF', other: '其他地址' } as const
+// 线路在界面上只叫线路1、线路2，不说在哪（yoyo 10-14）：默认那条（CF）是线路1，直连（洛杉矶）是线路2，以后
+// 香港那条是线路3。和 tool-route-controller.ts 里按优先级排的 L1、L2、L3 不是一回事。名字里已经带「线路」，前面
+// 不再加「线路：」；认不出的地址照旧说「线路：其他地址」。
+const lineNames = { primary: '线路1', direct: '线路2', other: '线路：其他地址' } as const
 
 export const managedElsewhereHint = '这份配置被别的软件改回过两次，星芒不再自动改它。'
 
 /**
- * 首页每个工具那行小字后面接的线路标签（xm 三线路 C12）：配置里实际写的是哪条线路，再加一个
+ * 首页每个工具那行小字开头的线路标签（xm 三线路 C12）：配置里实际写的是哪条线路，再加一个
  * 状态。只有主进程认出是星芒账号的地址才给 relayLine，历史账号、官方账号、别家地址都没有这一截。
  */
 export function toolRouteLabel(
@@ -15,7 +18,7 @@ export function toolRouteLabel(
 ): { text: string; hint?: string } | null {
   const line = config?.relayLine
   if (!line) return null
-  const parts = [`线路：${lineNames[line]}`]
+  const parts: string[] = [lineNames[line]]
   if (config.relayRouteState === 'managed-elsewhere') {
     parts.push('由其他工具管理')
     return { text: parts.join(' · '), hint: managedElsewhereHint }
@@ -37,7 +40,7 @@ const outageTexts = {
 } as const
 
 export const toolRouteServerSwitchingText = '服务端正在切换线路，稍等几分钟'
-export const toolRouteHijackText = '你所在的网络把星芒洛杉矶线路的地址指到了别处，已为你改用 CF 线路，不影响使用。星芒不会改你电脑的任何设置。'
+export const toolRouteHijackText = '你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。'
 /** 劫持提示出来以后在首页留多久（主进程那边同样只给半小时）。 */
 export const toolRouteHijackShownMs = 30 * 60_000
 

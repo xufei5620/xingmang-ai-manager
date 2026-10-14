@@ -151,7 +151,7 @@ describe('renderer-v2 home tool line status', () => {
   it('says once that the Cloudflare line is in use after a hijack', () => {
     const markup = render({}, undefined, { toolRouteStatus: { hijack: { id: Date.now() } } })
     expect(markup).toContain('data-testid="home-route-hijack"')
-    expect(markup).toContain('已为你改用 CF 线路，不影响使用。')
+    expect(markup).toContain('已为你改用线路1，不影响使用。')
   })
 })
 

@@ -293,7 +293,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
       // 白名单挡下的是这一个接口，直连本身是通的：不报给线路那边，后面的请求照样先走直连。白名单只在
       // 直连上有，先走默认线路的历史账号碰上网页 404 照原样交回去。
       await discard(response)
-      log('warn', 'relay.line.blocked', '直连没放行这个接口，这次改走默认线路', { siteId, line: 'direct', method, path })
+      log('warn', 'relay.line.blocked', '线路2没放行这个接口，这次改走线路1', { siteId, line: 'direct', method, path })
       return fallBack('allowlist-404')
     }
     const failure = relayLineFailureAnswer(response)
@@ -370,7 +370,7 @@ export function createRelayObservedFetch(
     if (failure) report(failure)
     else if (endpoint.endpointId === 'direct' && blockedByAllowlist(response)) {
       try {
-        options.log?.('warn', 'relay.line.blocked', '直连没放行这个接口', {
+        options.log?.('warn', 'relay.line.blocked', '线路2没放行这个接口', {
           siteId: endpoint.siteId, line: 'direct', method: (init?.method ?? 'GET').toUpperCase(), path: new URL(requested).pathname,
         })
       } catch { /* 记日志失败不影响请求 */ }

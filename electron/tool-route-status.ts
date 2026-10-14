@@ -87,9 +87,8 @@ export interface ToolRouteReportInput {
   probes: Partial<Record<RelayEndpointId, ToolRouteProbeRecord>>
 }
 
-const reportLineNames: Readonly<Record<RelayEndpointId, string>> = { direct: '洛杉矶', primary: 'CF' }
-// 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法。
-const reportLineTitles: Readonly<Record<RelayEndpointId, string>> = { direct: '洛杉矶线路', primary: ' CF 线路' }
+// 和设置里的叫法一样：只说线路1、线路2，不说在哪（yoyo 10-14）。默认那条（CF）是线路1，直连是线路2。
+const reportLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '线路1', direct: '线路2' }
 const reportChangeReasons: Readonly<Record<Exclude<ToolRouteChangeReason, 'recovered'>, string>> = {
   failed: '没连上',
   hijack: '的地址被指到了别处',
@@ -103,9 +102,9 @@ function reportTime(at: number): string {
 }
 
 function describeToolRouteChange(change: ToolRouteChange): string {
-  const from = reportLineTitles[change.from].trimStart()
-  const to = reportLineTitles[change.to]
-  if (change.reason === 'recovered') return `${reportTime(change.at)}，${to.trimStart()}恢复稳定，换回${to}`
+  const from = reportLineNames[change.from]
+  const to = reportLineNames[change.to]
+  if (change.reason === 'recovered') return `${reportTime(change.at)}，${to}恢复稳定，换回${to}`
   return `${reportTime(change.at)}，${from}${reportChangeReasons[change.reason]}，改走${to}`
 }
 

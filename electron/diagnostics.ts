@@ -1459,18 +1459,18 @@ function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
 
 /**
  * 「星芒 AI 网络」查通时那句结论。fellBack：选的是「自动」，先走的那条这会儿连不上，用的是备用那条（这次
- * 当场退回的，或者之前就已经退回的）。星芒账号先走洛杉矶、备用 CF（xm 三线路附录 A）；历史账号先走默认
- * 线路、备用直连（yoyo 10-14），用的是哪条照旧是直连适配方案第六节第 3 条的原话。
+ * 当场退回的，或者之前就已经退回的）。星芒账号先走线路2（直连）、备用线路1（CF）；历史账号先走线路1、
+ * 备用线路2（yoyo 10-14）。线路名见下面的 relayLineNames。
  */
 export function relayNetworkPassSummary(route: { siteId: string; line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
   if (!route) return accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务'
   const summary = route.siteId === 'solov'
     ? route.line === 'direct'
-      ? '能连上星芒服务，用的是洛杉矶线路'
-      : route.fellBack ? '能连上星芒服务。洛杉矶线路这会儿连不上，已自动改走 CF 线路' : '能连上星芒服务，用的是 CF 线路'
+      ? '能连上星芒服务，用的是线路2'
+      : route.fellBack ? '能连上星芒服务。线路2这会儿连不上，已自动改走线路1' : '能连上星芒服务，用的是线路1'
     : route.fellBack
-      ? '能连上星芒服务。默认线路这会儿连不上，已自动改走直连'
-      : route.line === 'direct' ? '能连上星芒服务，用的是直连' : '能连上星芒服务，用的是默认线路'
+      ? '能连上星芒服务。线路1这会儿连不上，已自动改走线路2'
+      : route.line === 'direct' ? '能连上星芒服务，用的是线路2' : '能连上星芒服务，用的是线路1'
   return accelerating ? `${summary}（开着加速也不绕加速线路）` : summary
 }
 
@@ -1578,15 +1578,10 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
   return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
 
-// 线路在星芒里就叫这几个名字，和设置里的选项、网络那一项的结论一致：星芒账号叫洛杉矶、CF（xm 三线路），
-// 历史账号叫直连、默认线路。下面几处只写进导出的检查报告，客服看得懂；检查页的详情不摆
-// （diagnostic-details.ts 不列这几个键）。
-const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '默认线路', direct: '直连' }
-const solovLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: 'CF', direct: '洛杉矶' }
-
-function relayLineName(siteId: string, line: RelayEndpointId): string {
-  return siteId === 'solov' ? solovLineNames[line] : relayLineNames[line]
-}
+// 线路在星芒里就叫这两个名字，和设置里的选项、网络那一项的结论一致：只说线路1、线路2，不说在哪
+// （yoyo 10-14）。两个账号按入口对应，默认那条（CF）是线路1，直连是线路2，客服对报告时同一个名字指同一种
+// 入口。下面几处只写进导出的检查报告；检查页的详情不摆（diagnostic-details.ts 不列这几个键）。
+const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '线路1', direct: '线路2' }
 
 /** 工具配置这会儿该用的那条线路，和那条线路上这个工具的地址。 */
 interface ProviderRelayLine {
@@ -1604,19 +1599,14 @@ function providerRouteLine(siteId: string, provider: ProviderId, actual: string)
 
 /**
  * 「自动」最近一次换线路，写进「星芒 AI 网络」那一项导出的报告（#941 第 2、7 节）：什么时候、为什么、
- * 换到哪条，不带地址。时间按这台电脑的时区说。按记下的 from、to 说：历史账号 0.2.18 及以前先走直连，
- * 0.2.19 起先走默认线路（yoyo 10-14），两种记录都说得对。
+ * 换到哪条，不带地址。时间按这台电脑的时区说。按记下的 from、to 说：历史账号 0.2.18 及以前先走线路2（直连），
+ * 0.2.19 起先走线路1（yoyo 10-14），两种记录都说得对。两个账号的线路名一样，不用分站。
  */
-export function describeRelayRouteChange(change: RelayRouteChange, siteId: string): string {
+export function describeRelayRouteChange(change: RelayRouteChange): string {
   const at = new Date(change.at)
   const time = `${at.getMonth() + 1}月${at.getDate()}日 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
-  // 拉丁字母前后空一格，和附录 A 的「改走 CF 线路」一个写法；星芒账号的 CF 线路只会出现在「改走」后面。
-  function name(line: RelayEndpointId): string {
-    if (siteId !== 'solov') return relayLineNames[line]
-    return line === 'direct' ? '洛杉矶线路' : ' CF 线路'
-  }
-  const from = name(change.from)
-  const to = name(change.to)
+  const from = relayLineNames[change.from]
+  const to = relayLineNames[change.to]
   const reason = change.reason === 'recovered'
     ? `${to}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${to}`
     : change.reason === 'health-failed'
@@ -1631,7 +1621,7 @@ export function describeRelayRouteChange(change: RelayRouteChange, siteId: strin
 function relayRouteChangeDetails(route: DiagnosticsRelayRoute | undefined): Record<string, string> {
   const change = route?.lastChange
   if (!route || !change) return {}
-  return { lastRouteChange: describeRelayRouteChange(change, route.primarySite.id), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
+  return { lastRouteChange: describeRelayRouteChange(change), ...(change.trigger ? { lastRouteChangeTrigger: change.trigger } : {}) }
 }
 
 // 「Codex 连接设置」导出报告里的一行：换线路后旧对话还走原来的地址时，客服先看它（xm 三线路 C16）。
@@ -1661,8 +1651,8 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     // 改的。两条线路连的是同一个账号，工具照样能用，所以不算要留意的事（yoyo 10-8：线路的事不要太多提示），
     // 只在导出的报告里写清两边各是哪条；星芒下次跟着线路改配置时会改过来。
     const line = current ? providerRouteLine(current.siteId, provider, inspection.actualBaseUrl) : null
-    if (current && line) details.routeLine = relayLineName(current.siteId, line)
-    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineName(current.siteId, current.line)
+    if (current && line) details.routeLine = relayLineNames[line]
+    if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineNames[current.line]
     return { state: 'pass', summary: '已连到当前账号', details }
   }
   if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
