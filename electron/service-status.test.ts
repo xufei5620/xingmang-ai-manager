@@ -254,4 +254,20 @@ describe('createServiceStatusMonitor', () => {
     expect(read).toHaveBeenCalledTimes(1)
     monitor.dispose()
   })
+
+  it('keeps the last status it could read across a failed read', async () => {
+    const mapped: ServiceStatus = { maintenance: null, accountGroups: { codex: ['GPT 主力', 'GPT-中转/订阅'] } }
+    const read = vi.fn()
+      .mockResolvedValueOnce(mapped)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(quiet)
+    const monitor = createServiceStatusMonitor({ read, onChange: vi.fn() })
+    expect(monitor.lastKnown()).toBeNull()
+    await monitor.refresh()
+    await expect(monitor.refresh()).resolves.toBeNull()
+    expect(monitor.lastKnown()).toEqual(mapped)
+    await monitor.refresh()
+    expect(monitor.lastKnown()).toEqual(quiet)
+    monitor.dispose()
+  })
 })

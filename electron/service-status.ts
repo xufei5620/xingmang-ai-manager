@@ -277,6 +277,11 @@ export interface ServiceStatusMonitor {
    * 又不能因为状态文件读不到就每次多等一个超时，所以只搭启动时（或定时）那一次的便车。
    */
   settled(): Promise<ServiceStatus | null>
+  /**
+   * 最近一次读成功的那份；一次也没读成功过是 null。维护提示读不到就当没在维护，分组对照不能这样：
+   * 站上删了老名字以后对照是唯一认得出新名字的办法，一次定时读失败不该让签 Key 退回老名字。
+   */
+  lastKnown(): ServiceStatus | null
   dispose(): void
 }
 
@@ -292,6 +297,7 @@ export function createServiceStatusMonitor(options: ServiceStatusMonitorOptions)
   const idleIntervalMs = options.idleIntervalMs ?? 15 * 60_000
   const activeIntervalMs = options.activeIntervalMs ?? 5 * 60_000
   let status: ServiceStatus | null = null
+  let lastKnown: ServiceStatus | null = null
   let inflight: Promise<ServiceStatus | null> | null = null
   let timer: NodeJS.Timeout | null = null
   let started = false
@@ -321,6 +327,7 @@ export function createServiceStatusMonitor(options: ServiceStatusMonitorOptions)
       if (disposed) return status
       const changed = !sameStatus(status, next)
       status = next
+      if (next) lastKnown = next
       if (changed) {
         try { options.onChange(next) } catch { /* a listener failure must not stop the polling */ }
       }
@@ -341,6 +348,7 @@ export function createServiceStatusMonitor(options: ServiceStatusMonitorOptions)
     refresh,
     current: () => status,
     settled: () => inflight ?? Promise.resolve(status),
+    lastKnown: () => lastKnown,
     dispose() {
       disposed = true
       if (timer) clearTimeout(timer)

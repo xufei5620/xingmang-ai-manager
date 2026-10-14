@@ -3321,8 +3321,12 @@ if (!hasSingleInstanceLock) {
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
-      // 分组对照跟着服务状态文件走：启动时那一次还在读就等它读完，读不到当没有，不为它另发请求。
-      accountGroupHints: async () => (await serviceStatusMonitor?.settled())?.accountGroups ?? null,
+      // 分组对照跟着服务状态文件走：正在读就等这一次读完，不为它另发请求；这次没读到就用上一次读成功的那份。
+      accountGroupHints: async () => {
+        if (!serviceStatusMonitor) return null
+        await serviceStatusMonitor.settled()
+        return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
+      },
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
