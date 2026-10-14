@@ -481,21 +481,22 @@ test('reports unknown write state without blindly retrying or logging injected c
   assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 1)
 })
 
-test('publishes each of the four fixed latest pointers with complete public readback', async () => {
+test('publishes each of the six fixed latest pointers with complete public readback', async () => {
   const mock = memoryCos()
   const store = createCosStore(config, mock)
-  for (const key of ['xingmang/latest.json', 'chatgpt/latest.json', 'xingmang/offline/claude/latest.json', 'xingmang/offline/codex-plugins/latest.json']) {
+  for (const key of ['xingmang/latest.json', 'chatgpt/latest.json', 'xingmang/offline/claude/latest.json', 'xingmang/offline/codex-plugins/latest.json', 'xingmang/offline/grok/latest.json', 'xingmang/offline/opencode/latest.json']) {
     const manifest = { version: '1', key }
     await store.publishJson(key, manifest, { overwrite: true })
     assert.deepEqual(await store.readJson(key), manifest)
   }
-  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 4)
+  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 6)
   await assert.rejects(store.publishJson('claude/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('xingmang/offline/other/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('xingmang/offline/codex-plugins/v1/latest.json', {}, { overwrite: true }), /固定/)
+  await assert.rejects(store.publishJson('xingmang/offline/grok/windows-x64/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('claude/v1/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('other/latest.json', {}, { overwrite: true }), /固定/)
-  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 4)
+  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 6)
 })
 
 test('refuses private objects and only permits overwriting the fixed latest pointers', async () => {

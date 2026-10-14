@@ -3028,7 +3028,7 @@ describe('CERTIFICATE_TRUST', () => {
     const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v24.6.0' })
     expect(await certificateItem(input)).toMatchObject({
       state: 'fail',
-      summary: expect.stringContaining('公司电脑请找网络管理员'),
+      summary: expect.stringContaining('公司或学校的网络请找网络管理员'),
       details: { verdict: 'untrusted' },
     })
   })

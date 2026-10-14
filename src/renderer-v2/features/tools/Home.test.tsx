@@ -614,6 +614,38 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).not.toContain(offline)
   })
 
+  it('tells the user to wait and resync instead of waiting for the network when a certificate was swapped', () => {
+    const certificate = '连星芒时被网络上的设备拦下了，这次没写好 Key。已装好的工具照常能用；稍等一两分钟点「重新同步」，还不行就换个网络（比如手机热点）。'
+    const blocked = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ networkBlocked: true, networkBlockedByCertificate: true, failed: [{ provider: 'claude', message: networkFailureMessages.tls }] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(blocked).toContain(certificate)
+    expect(blocked).not.toContain(offline)
+    expect(blocked).toContain('>重新同步<')
+    const thrown = render({}, undefined, {
+      bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: `账号 Key 初始化没有完成：${networkFailureMessages.tls}` },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(thrown).toContain(certificate)
+    expect(thrown).not.toContain(offline)
+  })
+
+  it('offers the resync button the certificate notice asks for even when only uninstalled tools failed', () => {
+    const markup = render({}, undefined, {
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成', percent: 100, scope: 'scope',
+        result: bootstrapResult({ networkBlocked: true, networkBlockedByCertificate: true, configured: ['claude'] }),
+      },
+      onBootstrapRetry: () => undefined,
+    })
+    expect(markup).toContain('稍等一两分钟点「重新同步」')
+    expect(markup).toContain('>重新同步<')
+  })
+
   it('uses the same wording when the whole bootstrap threw a network failure', () => {
     const markup = render({}, undefined, {
       bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: `账号 Key 初始化没有完成：${networkFailureMessages.dns}` },

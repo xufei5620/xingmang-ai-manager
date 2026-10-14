@@ -51,6 +51,19 @@ export function networkBlockedFailures(messages: readonly string[]): boolean {
   return signals.length > 0 && signals.every(isNetworkFailureText)
 }
 
+/** 证书被换掉（不含证书日期对不上，那是本机时钟的事）。 */
+export function isCertificateFailureText(text: unknown): boolean {
+  return classifyNetworkFailure(text) === 'tls'
+}
+
+/**
+ * 被网络拦住、且其中有证书被换掉的：这时电脑一直联着网，等不来「联网」事件，首页那句
+ * 「联网后会自动补写」不成立，要换一句（服务端 10-13 查过，洛杉矶证书不对是路上被拦截）。
+ */
+export function certificateBlockedFailures(messages: readonly string[]): boolean {
+  return networkBlockedFailures(messages) && messages.some(isCertificateFailureText)
+}
+
 /** 整段引导抛错时只有一句 message，这时按这句话归类；正常返回时看结果里的结论。 */
 export function bootstrapBlockedByNetwork(outcome: OnlineResyncOutcome | null | undefined): boolean {
   if (!outcome) return false

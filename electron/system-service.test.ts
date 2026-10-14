@@ -2664,60 +2664,31 @@ describe('npm registry metadata', () => {
     )
   })
 
-  it('uses the xAI stable manifest release as the exact Darwin Grok npm pin', async () => {
+  it('takes Grok on macOS and Linux straight from npm without asking x.ai for its stable version', async () => {
     const requestedVersions: string[] = []
-    const release = await resolveCliInstallRelease('grok', 'darwin-official-npm', {
-      fetchGrokStableVersion: async () => ({
-        version: '0.2.118',
-        sourceUrl: 'https://x.ai/cli/stable',
-      }),
-      fetchNpmRelease: async (_registry, _packageName, version) => {
-        requestedVersions.push(version)
-        return { name: '@xai-official/grok', version: '0.2.118', integrity }
-      },
-    })
-
-    expect(requestedVersions).toEqual(['0.2.118'])
-    expect(release).toMatchObject({ name: '@xai-official/grok', version: '0.2.118' })
-  })
-
-  it('rejects a Darwin Grok npm response that differs from the xAI stable manifest', async () => {
-    await expect(resolveCliInstallRelease('grok', 'darwin-official-npm', {
-      fetchGrokStableVersion: async () => ({
-        version: '0.2.118',
-        sourceUrl: 'https://x.ai/cli/stable',
-      }),
-      fetchNpmRelease: async () => ({
-        name: '@xai-official/grok',
-        version: '0.2.119',
-        integrity,
-      }),
-    })).rejects.toThrow('要安装的 xAI 官方版本')
-  })
-
-  it('takes Linux Grok straight from npm without asking x.ai for its stable version', async () => {
-    const requestedVersions: string[] = []
-    const release = await resolveCliInstallRelease('grok', 'linux-official-npm', {
+    const release = await resolveCliInstallRelease('grok', {
       version: '1.0.44',
-      fetchGrokStableVersion: async () => {
-        throw new Error('must not query Grok stable metadata')
-      },
-      fetchNpmRelease: async (_registry, _packageName, version) => {
-        requestedVersions.push(version)
+      fetchNpmRelease: async (_registry, packageName, version) => {
+        requestedVersions.push(`${packageName}@${version}`)
         return { name: '@xai-official/grok', version, integrity }
       },
     })
 
-    expect(requestedVersions).toEqual(['1.0.44'])
+    expect(requestedVersions).toEqual(['@xai-official/grok@1.0.44'])
     expect(release.version).toBe('1.0.44')
+    // Unpinned, it is npm's latest, which follows xAI's stable channel.
+    await resolveCliInstallRelease('grok', {
+      fetchNpmRelease: async (_registry, packageName, version) => {
+        requestedVersions.push(`${packageName}@${version}`)
+        return { name: '@xai-official/grok', version: '1.0.52', integrity }
+      },
+    })
+    expect(requestedVersions.at(-1)).toBe('@xai-official/grok@latest')
   })
 
   it('keeps other npm providers on their latest npm release selector', async () => {
     const requestedVersions: string[] = []
-    await resolveCliInstallRelease('codex', null, {
-      fetchGrokStableVersion: async () => {
-        throw new Error('must not query Grok stable metadata')
-      },
+    await resolveCliInstallRelease('codex', {
       fetchNpmRelease: async (_registry, _packageName, version) => {
         requestedVersions.push(version)
         return { name: '@openai/codex', version: '0.146.0', integrity }
@@ -2729,11 +2700,8 @@ describe('npm registry metadata', () => {
 
   it('pins the npm release query to the version the verified list selected', async () => {
     const requestedVersions: string[] = []
-    await resolveCliInstallRelease('claude', null, {
+    await resolveCliInstallRelease('claude', {
       version: '2.1.277',
-      fetchGrokStableVersion: async () => {
-        throw new Error('must not query Grok stable metadata')
-      },
       fetchNpmRelease: async (_registry, _packageName, version) => {
         requestedVersions.push(version)
         return { name: '@anthropic-ai/claude-code', version: '2.1.277', integrity }
@@ -2741,43 +2709,6 @@ describe('npm registry metadata', () => {
     })
 
     expect(requestedVersions).toEqual(['2.1.277'])
-  })
-
-  it('installs a named Darwin Grok version that is not newer than the xAI stable manifest', async () => {
-    const requestedVersions: string[] = []
-    const release = await resolveCliInstallRelease('grok', 'darwin-official-npm', {
-      version: '0.2.100',
-      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
-      fetchNpmRelease: async (_registry, _packageName, version) => {
-        requestedVersions.push(version)
-        return { name: '@xai-official/grok', version, integrity }
-      },
-    })
-
-    expect(requestedVersions).toEqual(['0.2.100'])
-    expect(release.version).toBe('0.2.100')
-  })
-
-  it('caps a named Darwin Grok version at the xAI stable manifest', async () => {
-    const requestedVersions: string[] = []
-    await resolveCliInstallRelease('grok', 'darwin-official-npm', {
-      version: '0.2.119',
-      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
-      fetchNpmRelease: async (_registry, _packageName, version) => {
-        requestedVersions.push(version)
-        return { name: '@xai-official/grok', version, integrity }
-      },
-    })
-
-    expect(requestedVersions).toEqual(['0.2.118'])
-  })
-
-  it('rejects a Darwin Grok npm response that differs from the named version', async () => {
-    await expect(resolveCliInstallRelease('grok', 'darwin-official-npm', {
-      version: '0.2.100',
-      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
-      fetchNpmRelease: async () => ({ name: '@xai-official/grok', version: '0.2.118', integrity }),
-    })).rejects.toThrow('要安装的 xAI 官方版本')
   })
 
   it('requires exact package identity, semantic version and SHA-512 integrity metadata', () => {
@@ -5836,10 +5767,10 @@ describe('CLI latest version state', () => {
     expect(grokInstallStrategyFor('freebsd')).toBe('external')
   })
 
-  it('asks npm for the newest Grok only on Linux, where Grok is installed from npm', () => {
+  it('asks npm for the newest Grok on macOS and Linux, where Grok is installed from npm', () => {
     expect(cliLatestVersionSource('grok', 'linux')).toBe('npm')
+    expect(cliLatestVersionSource('grok', 'darwin')).toBe('npm')
     expect(cliLatestVersionSource('grok', 'win32')).toBe('official-manifest')
-    expect(cliLatestVersionSource('grok', 'darwin')).toBe('official-manifest')
     // Callers that do not say which platform keep the old answer.
     expect(cliLatestVersionSource('grok')).toBe('official-manifest')
     expect(cliLatestVersionSource('codex', 'win32')).toBe('npm')
@@ -6147,7 +6078,7 @@ describe('latest version probe budget when the machine looks offline', () => {
     })
     expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z').source).toBe('official-manifest')
     expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'win32').source).toBe('official-manifest')
-    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'darwin').source).toBe('official-manifest')
+    expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'darwin').source).toBe('npm')
     expect(buildUncheckedLatestVersion('grok', true, '2026-09-22T00:00:00.000Z', 'linux').source).toBe('npm')
     expect(buildUncheckedLatestVersion('gemini', false, '2026-09-22T00:00:00.000Z')).toEqual({
       status: 'skipped',

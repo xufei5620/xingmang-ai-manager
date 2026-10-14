@@ -98,7 +98,7 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 「清一清磁盘」才是用户真做得到的那一步。
   { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|磁盘已满|disk full/i.test(message) },
   // 证书「已过期 / 还没生效」必须和「被换掉」分开：前者几乎都是这台电脑的时钟不对
-  // （主板电池没电、装完系统没对时、时区改错），照「连接被证书拦截」那句去换网络，
+  // （主板电池没电、装完系统没对时、时区改错），照「连接被网络拦截」那句去换网络，
   // 换几个热点都是同一个错。
   { key: 'certDate', match: (message) => classifyNetworkFailure(message) === 'certDate' },
   // 公司网关和安全软件会替换证书，npm 与账号接口因此拿到一张签不过的证书。归类

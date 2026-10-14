@@ -14,6 +14,7 @@ import {
   validateGrokArtifactResponseUrl,
   type DownloadedGrokBinary,
 } from './grok-installer'
+import { desktopPackageBucketOrigin } from './desktop-package-bucket'
 import type { GrokVersionFetch } from './grok-update'
 import type { VerifiedNativeCliFile } from './trusted-native-cli'
 
@@ -168,6 +169,140 @@ describe('Grok signed binary installer', () => {
 
     expect(result).toMatchObject({ version: '0.2.110', sourceUrl: artifactUrl })
     expect(String(fetchImpl.mock.calls[1][0])).toBe(artifactUrl)
+  })
+
+  describe('from the Xingmang bucket', () => {
+    const bucketIndexUrl = `${desktopPackageBucketOrigin}/xingmang/offline/grok/latest.json`
+    const binary = Buffer.alloc(1024 * 1024, 0x5b)
+    const digest = createHash('sha256').update(binary).digest('hex')
+    const bucketKey = `xingmang/offline/grok/windows-x64/sha256-${digest}/grok-1.0.46-windows-x86_64.exe`
+
+    function bucketIndex(): string {
+      const file = (version: string, platformId: string, architecture: string, artifact: string) => {
+        const key = `xingmang/offline/grok/${platformId}/sha256-${digest}/grok-${version}-${artifact}.exe`
+        return {
+          platformId, platform: 'windows', architecture, key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: binary.length, sha256: digest,
+          contentType: 'application/octet-stream', verification: 'windows-authenticode-xai', sourceUrl: `https://x.ai/cli/grok-${version}-${artifact}.exe`, cosEtag: '"etag"',
+        }
+      }
+      return JSON.stringify({
+        schemaVersion: 1, product: 'grok-cli', generatedAt: '2026-10-14T00:00:00.000Z', stable: { version: '1.0.52', url: 'https://x.ai/cli/stable' },
+        releases: ['1.0.52', '1.0.46'].map((version) => ({
+          version, files: [file(version, 'windows-x64', 'x64', 'windows-x86_64'), file(version, 'windows-arm64', 'arm64', 'windows-aarch64')],
+        })),
+      })
+    }
+
+    function bucketSetup(options: { indexStatus?: number, onBinaryRequest?: () => void, xaiStable?: string } = {}) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
+      temporaryDirectories.push(directory)
+      const requested: string[] = []
+      const routed: string[] = []
+      const fallbacks: string[] = []
+      const fetchImpl = vi.fn<GrokVersionFetch>(async (input, init) => {
+        const url = String(input)
+        requested.push(url)
+        if (url === bucketIndexUrl) return new Response(bucketIndex(), { status: options.indexStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
+        if (url.startsWith(desktopPackageBucketOrigin)) {
+          options.onBinaryRequest?.()
+          init?.signal?.throwIfAborted()
+          return new Response(binary, { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length) } })
+        }
+        if (url === 'https://x.ai/cli/stable') return new Response(`${options.xaiStable ?? '1.0.52'}\n`, { status: 200, headers: { 'Content-Type': 'text/plain' } })
+        return new Response(binary, { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length) } })
+      })
+      return {
+        directory, requested, routed, fallbacks, fetchImpl,
+        options: {
+          fetchImpl,
+          architecture: 'x64' as const,
+          version: '1.0.46',
+          createTemporaryDirectory: async () => directory,
+          verifyBinary: vi.fn(fakeVerification),
+          bucket: { onFallback: (detail: string) => fallbacks.push(detail) },
+          withVendorDownloadRoute: async <T>(operation: () => Promise<T>): Promise<T> => {
+            routed.push('start')
+            try { return await operation() } finally { routed.push('end') }
+          },
+        },
+      }
+    }
+
+    it('downloads the named version from the bucket outside the download route and checks the xAI signature', async () => {
+      const f = bucketSetup()
+      const progress = vi.fn()
+      const result = await downloadLatestGrokBinary({ ...f.options, onProgress: progress })
+      expect(result).toMatchObject({ version: '1.0.46', sourceUrl: `${desktopPackageBucketOrigin}/${bucketKey}`, size: binary.length, sha256Hex: digest })
+      expect(fs.readFileSync(result.binaryPath).equals(binary)).toBe(true)
+      expect(f.requested).toEqual([bucketIndexUrl, `${desktopPackageBucketOrigin}/${bucketKey}`])
+      expect(f.fetchImpl).toHaveBeenCalledWith(bucketIndexUrl, expect.objectContaining({ redirect: 'manual', credentials: 'omit' }))
+      expect(f.options.verifyBinary).toHaveBeenCalledWith('grok', result.binaryPath)
+      expect(f.routed).toEqual([])
+      expect(f.fallbacks).toEqual([])
+      expect(progress).toHaveBeenLastCalledWith({ transferred: binary.length, total: binary.length, percent: 100 })
+    })
+
+    it('goes to xAI inside the download route when the bucket index cannot be read', async () => {
+      const f = bucketSetup({ indexStatus: 404 })
+      const result = await downloadLatestGrokBinary(f.options)
+      expect(result).toMatchObject({ version: '1.0.46', sourceUrl: 'https://x.ai/cli/grok-1.0.46-windows-x86_64.exe' })
+      expect(f.requested).toEqual([bucketIndexUrl, 'https://x.ai/cli/stable', 'https://x.ai/cli/grok-1.0.46-windows-x86_64.exe'])
+      expect(f.routed).toEqual(['start', 'end'])
+      expect(f.fallbacks).toEqual(['grok-windows-x64：Grok 清单返回 HTTP 404'])
+    })
+
+    it('goes to xAI when the bucket binary fails the xAI signature check, and installs that one', async () => {
+      const f = bucketSetup()
+      f.options.verifyBinary.mockRejectedValueOnce(new Error('Grok CLI 签名不是 X.AI LLC'))
+      const result = await downloadLatestGrokBinary(f.options)
+      expect(result.sourceUrl).toBe('https://x.ai/cli/grok-1.0.46-windows-x86_64.exe')
+      expect(f.options.verifyBinary).toHaveBeenCalledTimes(2)
+      expect(f.fallbacks).toEqual(['grok-windows-x64：Grok CLI 签名不是 X.AI LLC'])
+      expect(f.routed).toEqual(['start', 'end'])
+    })
+
+    it('takes the bucket stable for a latest install when it is newer than the installed version', async () => {
+      const f = bucketSetup()
+      const result = await downloadLatestGrokBinary({ ...f.options, version: undefined, installedVersion: '1.0.46' })
+      expect(result.version).toBe('1.0.52')
+      expect(result.sourceUrl).toBe(`${desktopPackageBucketOrigin}/xingmang/offline/grok/windows-x64/sha256-${digest}/grok-1.0.52-windows-x86_64.exe`)
+      expect(f.routed).toEqual([])
+    })
+
+    it('asks xAI for a latest update when the bucket has nothing newer than the installed version', async () => {
+      const f = bucketSetup({ xaiStable: '1.0.53' })
+      const result = await downloadLatestGrokBinary({ ...f.options, version: 'latest', installedVersion: '1.0.52' })
+      expect(result).toMatchObject({ version: '1.0.53', sourceUrl: 'https://x.ai/cli/grok-1.0.53-windows-x86_64.exe' })
+      expect(f.requested).toEqual([bucketIndexUrl, 'https://x.ai/cli/stable', 'https://x.ai/cli/grok-1.0.53-windows-x86_64.exe'])
+      expect(f.routed).toEqual(['start', 'end'])
+      expect(f.fallbacks).toEqual(['grok-windows-x64：桶里的 1.0.52 不比本机的 1.0.52 新'])
+    })
+
+    it('ignores the installed version when a version is named, so a rollback still comes from the bucket', async () => {
+      const f = bucketSetup()
+      const result = await downloadLatestGrokBinary({ ...f.options, installedVersion: '1.0.52' })
+      expect(result.sourceUrl).toBe(`${desktopPackageBucketOrigin}/${bucketKey}`)
+      expect(f.routed).toEqual([])
+    })
+
+    it('lets xAI decide a named version newer than the bucket stable', async () => {
+      const f = bucketSetup({ xaiStable: '1.0.53' })
+      const result = await downloadLatestGrokBinary({ ...f.options, version: '1.0.53' })
+      expect(result).toMatchObject({ version: '1.0.53', sourceUrl: 'https://x.ai/cli/grok-1.0.53-windows-x86_64.exe' })
+      expect(f.routed).toEqual(['start', 'end'])
+      expect(f.fallbacks).toEqual(['grok-windows-x64：存储桶里没有要装的这一版 Grok，或清单格式对不上'])
+    })
+
+    it('stops on a cancel during the bucket download without asking xAI', async () => {
+      const controller = new AbortController()
+      const reason = new Error('客户取消了')
+      const f = bucketSetup({ onBinaryRequest: () => controller.abort(reason) })
+      await expect(downloadLatestGrokBinary({ ...f.options, signal: controller.signal })).rejects.toBe(reason)
+      expect(f.requested).toEqual([bucketIndexUrl, `${desktopPackageBucketOrigin}/${bucketKey}`])
+      expect(f.routed).toEqual([])
+      expect(f.fallbacks).toEqual([])
+      expect(fs.existsSync(f.directory)).toBe(false)
+    })
   })
 
   it('installs verified grok/agent binaries and local version metadata in a protected root', async () => {

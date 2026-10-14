@@ -20,7 +20,7 @@ import { chooseWorkspaceLabel, latestSessionIdsByWorkspace, launchWorkspaces, ne
 import { errorMessage } from '../../business-common'
 import { subscriptionSummaryText, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId } from '../../../../electron/catalog'
-import { isNetworkFailureText } from './online-resync'
+import { isCertificateFailureText, isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
@@ -158,6 +158,12 @@ export function recentResumeOffered(tools: readonly ToolPresentation[], provider
 const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常能用；联网后会自动补写 Key。'
 
 /**
+ * 拦住同步的是证书被换掉时，电脑一直联着网，等不来「联网后自动补写」，换这一句。「自动」线路下
+ * 星芒约半分钟到一分钟会自己换到 CF，所以先叫客户稍等再点「重新同步」，还不行再换网络。
+ */
+const certificateBootstrapNotice = '连星芒时被网络上的设备拦下了，这次没写好 Key。已装好的工具照常能用；稍等一两分钟点「重新同步」，还不行就换个网络（比如手机热点）。'
+
+/**
  * 「配置被改过」这一档必须自己解释一句：角标只说了发生什么，没说会怎样。
  * 用户真正要知道的是这个工具现在可能连不上，以及有一颗按钮能一键修回来。
  * 文案以「当前账号」为主语，不提站点。
@@ -232,7 +238,12 @@ function cachedUsage(api: ToolsApi, scope: string | undefined): BalanceUsage | n
 }
 
 function bootstrapErrorText(error: string) {
+  if (isCertificateFailureText(error)) return certificateBootstrapNotice
   return isNetworkFailureText(error) ? offlineBootstrapNotice : `账号 Key 初始化没有完成：${keySyncFailureReason(error)}`
+}
+
+function networkBlockedNotice(result: AccountBootstrapResult) {
+  return result.networkBlockedByCertificate ? certificateBootstrapNotice : offlineBootstrapNotice
 }
 
 function configuredKeysText(count: number) {
@@ -709,9 +720,10 @@ export function Home(props: HomeProps) {
       {props.bootstrap.error && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {bootstrapResult && bootstrapNoticeShown && bootstrapNoticeWanted && <div className={`v2-bootstrap-notice ${bootstrapFailed.length || bootstrapWarnings.length ? 'is-warn' : ''}`} role="status">
-      <span className={`v2-dot ${bootstrapFailed.length || bootstrapWarnings.length ? 'is-warn' : 'is-ok'}`} /><span>{bootstrapResult.networkBlocked ? offlineBootstrapNotice : `${bootstrapResult.configured.length ? configuredKeysText(bootstrapResult.configured.length) : '账号 Key 已同步。'}${bootstrapFailed.length ? ` ${bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${bootstrapWarnings.length ? ` ${bootstrapWarnings.join('；')}` : ''}`}</span>
-      {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。 */}
-      {(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
+      <span className={`v2-dot ${bootstrapFailed.length || bootstrapWarnings.length ? 'is-warn' : 'is-ok'}`} /><span>{bootstrapResult.networkBlocked ? networkBlockedNotice(bootstrapResult) : `${bootstrapResult.configured.length ? configuredKeysText(bootstrapResult.configured.length) : '账号 Key 已同步。'}${bootstrapFailed.length ? ` ${bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}` : ''}${bootstrapWarnings.length ? ` ${bootstrapWarnings.join('；')}` : ''}`}</span>
+      {/* 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。证书被换掉的那句叫客户点它，
+          没写成的只是没装的工具时 failed、warnings 都是空的，按钮照样要给。 */}
+      {(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0 || (bootstrapResult.networkBlocked && bootstrapResult.networkBlockedByCertificate)) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}

@@ -446,7 +446,7 @@ describe('renderer-v2 operation error classification', () => {
       `重新写入 Key 没有完成：${networkFailureMessages.tls}`,
     ]) expect([intercepted, classifyOperationError(intercepted)]).toEqual([intercepted, 'tlsIntercepted'])
     const hint = presentOperationError('Grok CLI 安装失败：unable to get local issuer certificate')
-    expect(hint?.title).toBe('连接被证书拦截')
+    expect(hint?.title).toBe('连接被网络拦截')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 

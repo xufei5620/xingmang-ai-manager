@@ -1,0 +1,65 @@
+# Mac 上一键装 OpenCode 要的官方 .app.tar.gz 放进腾讯云 COS，星芒装 OpenCode 时先从这里下。
+# 只问 OpenCode 在 GitHub 发布页的 latest.json，版本变了才下两种芯片的包；在 Mac 机器上解开核过
+# bundle id、5NZ4Q7NXJ4 团队的 Developer ID 签名和 Gatekeeper 才传。
+name: sync-opencode-cos
+
+on:
+  schedule:
+    - cron: '53 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cos-opencode-publish
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: macos-latest
+    environment: cos-sync
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Synchronize verified OpenCode Mac packages to Tencent COS
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          XINGMANG_COS_MULTIPART_ENABLED: ${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}
+          XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
+          XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
+        run: node scripts/sync-opencode-cos.cjs
+
+  # 定时同步连续两次失败就开一条 issue 报警（指派给仓库负责人），之后的失败只改这一条，
+  # 下一次定时同步成功就留言并关闭；手动运行不算。只有这个作业能写 issue，它不碰 COS 凭据。
+  alert:
+    needs: [sync]
+    if: ${{ always() && github.event_name == 'schedule' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Open, update or close the sync failure alert issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYNC_WORKFLOW_FILE: sync-opencode-cos.yml
+          SYNC_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/cos-sync-alert.cjs
