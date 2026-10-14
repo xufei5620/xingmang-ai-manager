@@ -11,6 +11,8 @@ const workflow = YAML.parse(source)
 const job = workflow.jobs.sync
 const claudeWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-claude-official-cos.yml'), 'utf8'))
 const pluginsWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-codex-plugins-cos.yml'), 'utf8'))
+const grokWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-grok-cos.yml'), 'utf8'))
+const openCodeWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-opencode-cos.yml'), 'utf8'))
 
 test('Claude backup packages support official native runners and independent manual platform selection', () => {
   assert.deepEqual(Object.keys(claudeWorkflow.on).sort(), ['schedule', 'workflow_dispatch'])
@@ -134,6 +136,8 @@ test('only a scheduled sync on main reports failures, from a job that can write 
     ['sync-claude-official-cos.yml', claudeWorkflow, ['select', 'sync']],
     ['sync-chatgpt-official-cos.yml', workflow, ['select', 'sync', 'verify-index']],
     ['sync-codex-plugins-cos.yml', pluginsWorkflow, ['sync']],
+    ['sync-grok-cos.yml', grokWorkflow, ['sync']],
+    ['sync-opencode-cos.yml', openCodeWorkflow, ['sync']],
   ]) {
     const alert = parsed.jobs.alert
     assert.deepEqual(alert.needs, needs, file)
@@ -182,5 +186,38 @@ test('the Codex plugin catalog upload credentials and read-only token stay in th
   for (const step of sync.steps.filter((entry) => entry.uses)) {
     assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
     assert.equal(step.env, undefined)
+  }
+})
+
+// Grok's signature is checked with Windows' own Authenticode and OpenCode's with codesign
+// and Gatekeeper, so each sync has to run on that system's runner.
+test('the Grok and OpenCode syncs run on their own systems, on a timer or by hand, only on main with the opt-in, one run at a time', () => {
+  const gate = "${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}"
+  for (const [parsed, cron, group, runner, script] of [
+    [grokWorkflow, '7 */6 * * *', 'cos-grok-publish', 'windows-latest', 'node scripts/sync-grok-cos.cjs'],
+    [openCodeWorkflow, '53 */6 * * *', 'cos-opencode-publish', 'macos-latest', 'node scripts/sync-opencode-cos.cjs'],
+  ]) {
+    assert.deepEqual(Object.keys(parsed.on).sort(), ['schedule', 'workflow_dispatch'])
+    assert.deepEqual(parsed.on.schedule, [{ cron }])
+    assert.equal(parsed.on.workflow_dispatch, null)
+    assert.deepEqual(parsed.permissions, { contents: 'read' })
+    assert.deepEqual(parsed.concurrency, { group, 'cancel-in-progress': false })
+    const sync = parsed.jobs.sync
+    assert.equal(sync.if, gate)
+    assert.equal(sync.environment, 'cos-sync')
+    assert.equal(sync['runs-on'], runner)
+    assert.equal(sync.permissions, undefined)
+    assert.equal(sync.env, undefined)
+    const steps = sync.steps.filter((step) => Object.keys(step.env || {}).some((key) => key.startsWith('COS_SECRET_') || key === 'GITHUB_TOKEN'))
+    assert.equal(steps.length, 1)
+    assert.equal(steps[0].run, script)
+    assert.equal(steps[0].env.COS_SECRET_ID, '${{ secrets.COS_SECRET_ID }}')
+    assert.equal(steps[0].env.COS_SECRET_KEY, '${{ secrets.COS_SECRET_KEY }}')
+    assert.equal(steps[0].env.GITHUB_TOKEN, undefined)
+    assert.doesNotMatch(steps[0].run, /inputs\.|secrets\.|\$\{\{/)
+    for (const step of sync.steps.filter((entry) => entry.uses)) {
+      assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+      assert.equal(step.env, undefined)
+    }
   }
 })

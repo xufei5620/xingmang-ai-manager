@@ -1,0 +1,27 @@
+# TEMPORARY: removed before the pull request. No COS credentials, no environment.
+name: tmp-verify-grok-opencode-sources
+on:
+  push:
+    branches: [claude/grok-opencode-bucket-download-hgv1rx]
+permissions:
+  contents: read
+jobs:
+  grok:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: node scripts/tmp-verify-grok-opencode-sources.cjs grok
+  opencode:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: spctl --status || true
+      - run: node scripts/tmp-verify-grok-opencode-sources.cjs opencode
