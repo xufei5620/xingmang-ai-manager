@@ -84,9 +84,9 @@ describe('buildToolRouteReport', () => {
       lastStatus: null,
       probes: {},
     })).toEqual({
-      toolLine: 'CF',
+      toolLine: '线路1',
       toolLineMode: '自动',
-      toolLastChange: '1月3日 08:00，洛杉矶线路没连上，改走 CF 线路',
+      toolLastChange: '1月3日 08:00，线路2没连上，改走线路1',
       toolLastChangeTrigger: 'check:reset',
       routeStatusFile: '还没读过',
     })
@@ -98,9 +98,9 @@ describe('buildToolRouteReport', () => {
       lastStatus: { at, status: null },
       probes: { direct: { ok: false, kind: 'dns', at }, primary: { ok: true, at } },
     })).toEqual({
-      toolLine: '洛杉矶',
+      toolLine: '线路2',
       toolLineMode: '固定',
-      toolLastChange: '1月3日 08:00，洛杉矶线路恢复稳定，换回洛杉矶线路',
+      toolLastChange: '1月3日 08:00，线路2恢复稳定，换回线路2',
       toolServerSwitching: '是',
       toolOutage: 'dns',
       routeStatusFile: '1月3日 08:00 读不到',

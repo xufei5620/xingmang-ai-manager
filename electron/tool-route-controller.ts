@@ -432,7 +432,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     switchedAt = at
     const change: ToolRouteChange = { from, to: target, reason, ...(triggerPattern.test(trigger) ? { trigger } : {}), at }
     state = { ...state, line: target, lastChange: change }
-    log('info', 'relay.route.changed', target === 'direct' ? '工具线路改走洛杉矶' : '工具线路改走 CF', {
+    log('info', 'relay.route.changed', target === 'direct' ? '工具线路改走线路2' : '工具线路改走线路1', {
       from, to: target, reason, trigger: change.trigger,
       ...(reason === 'recovered' ? {} : { failures7d: failuresOf(from).length }),
     })

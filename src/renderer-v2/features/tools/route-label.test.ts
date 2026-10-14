@@ -3,8 +3,8 @@ import { managedElsewhereHint, toolRouteHijackShownMs, toolRouteHomeTexts, toolR
 
 describe('toolRouteLabel', () => {
   it('names the line actually written in the tool config', () => {
-    expect(toolRouteLabel({ relayLine: 'direct' }, 'account')).toEqual({ text: '线路：洛杉矶' })
-    expect(toolRouteLabel({ relayLine: 'primary' }, 'account')).toEqual({ text: '线路：CF' })
+    expect(toolRouteLabel({ relayLine: 'direct' }, 'account')).toEqual({ text: '线路2' })
+    expect(toolRouteLabel({ relayLine: 'primary' }, 'account')).toEqual({ text: '线路1' })
     expect(toolRouteLabel({ relayLine: 'other' }, 'account')).toEqual({ text: '线路：其他地址' })
   })
 
@@ -15,9 +15,9 @@ describe('toolRouteLabel', () => {
 
   it('adds one state tag, managed elsewhere first, then restart, then manual', () => {
     expect(toolRouteLabel({ relayLine: 'direct', relayRouteState: 'managed-elsewhere' }, 'manual'))
-      .toEqual({ text: '线路：洛杉矶 · 由其他工具管理', hint: managedElsewhereHint })
-    expect(toolRouteLabel({ relayLine: 'primary', relayRouteState: 'restart' }, 'manual')).toEqual({ text: '线路：CF · 需重开生效' })
-    expect(toolRouteLabel({ relayLine: 'primary' }, 'manual')).toEqual({ text: '线路：CF · 手动配置' })
+      .toEqual({ text: '线路2 · 由其他工具管理', hint: managedElsewhereHint })
+    expect(toolRouteLabel({ relayLine: 'primary', relayRouteState: 'restart' }, 'manual')).toEqual({ text: '线路1 · 需重开生效' })
+    expect(toolRouteLabel({ relayLine: 'primary' }, 'manual')).toEqual({ text: '线路1 · 手动配置' })
   })
 })
 
@@ -44,8 +44,8 @@ describe('toolRouteHomeTexts', () => {
 
   it('keeps the hijack sentence for half an hour and never mentions DNS', () => {
     const shown = toolRouteHomeTexts({ hijack: { id: 1_000 } }, 1_000).hijack
-    expect(shown).toBe('你所在的网络把星芒洛杉矶线路的地址指到了别处，已为你改用 CF 线路，不影响使用。星芒不会改你电脑的任何设置。')
-    expect(shown).not.toMatch(/DNS/)
+    expect(shown).toBe('你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。')
+    expect(shown).not.toMatch(/DNS|洛杉矶|CF/)
     expect(toolRouteHomeTexts({ hijack: { id: 1_000 } }, 1_000 + toolRouteHijackShownMs).hijack).toBeUndefined()
   })
 })

@@ -16,7 +16,7 @@ export type RelayEndpointId = 'primary' | 'direct'
 
 /**
  * 设置里存的线路偏好：「自动」由星芒自己在直连和默认线路之间挑，另外两个写死一条。
- * 没存过的算「自动」；#872 起存下的 primary / direct 原样当「只用默认线路」「只用直连」。
+ * 没存过的算「自动」；#872 起存下的 primary / direct 原样当「只用线路1」「只用线路2」（以前叫「只用默认线路」「只用直连」）。
  */
 export type RelayRoutePreference = 'auto' | RelayEndpointId
 

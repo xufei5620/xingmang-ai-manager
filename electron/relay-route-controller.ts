@@ -309,7 +309,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     const changes = { ...conclusions.changes }
     changes[siteId] = { from, to: line, reason, ...(trigger === undefined ? {} : { trigger }), at }
     conclusions = { lines: conclusions.lines, changes }
-    log('info', 'relay.route.changed', line === 'direct' ? '「自动」线路改走直连' : '「自动」线路改走默认线路', {
+    log('info', 'relay.route.changed', line === 'direct' ? '「自动」线路改走线路2' : '「自动」线路改走线路1', {
       siteId, from, to: line, reason, ...(trigger === undefined ? {} : { trigger }),
     })
     persist()
@@ -356,7 +356,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     if (backupReachable === null || state.round !== round) return
     state.round = null
     if (!backupReachable) {
-      log('warn', 'relay.route.unreachable', '直连和默认线路这会儿都没连上，线路先不改', {
+      log('warn', 'relay.route.unreachable', '线路1和线路2这会儿都没连上，线路先不改', {
         siteId, line: state.line, settled: state.settled, trigger: round.trigger,
       })
       setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
@@ -417,14 +417,14 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     }
     state.round = null
     if (line === 'primary') {
-      log('info', 'relay.route.first-launch', '这台电脑第一次定线路：直连没连上，不等三次直接定在默认线路', {
+      log('info', 'relay.route.first-launch', '这台电脑第一次定线路：线路2没连上，不等三次直接定在线路1', {
         siteId, line: 'primary', trigger: round.trigger,
       })
       settle(siteId, state, 'primary', 'health-failed', firstLaunchTrigger)
       return
     }
     // 两条都没连上（开机时还没联网那种）：和原来一样不改，过一阵再查；还是全新安装，下一轮照样两条一起查。
-    log('warn', 'relay.route.unreachable', '直连和默认线路这会儿都没连上，线路先不改', {
+    log('warn', 'relay.route.unreachable', '线路1和线路2这会儿都没连上，线路先不改', {
       siteId, line: state.line, settled: state.settled, trigger: round.trigger,
     })
     setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))

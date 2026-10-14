@@ -1,11 +1,12 @@
 import { relayRoutePreferenceAllowed } from '../../../electron/relay-sites';
 import type { RelayRoutePreference, RelayRoutePreferences } from '../../../electron/relay-sites';
 
-// 说明和下面的选项名：星芒账号是 xm 三线路计划附录 A 的原话（yoyo 10-8 回「改」）；历史账号仍叫「直连 / 默认线路」，
-// 说明改成自己完整的一句（同一处批的）。10-14 起历史账号先走默认线路、直连备用，说明跟着对调。
+// 线路只叫线路1、线路2，不说在哪（yoyo 10-14「默认直连是线路1 然后洛杉矶加速是线路2 香港加速是线路3」）。
+// 两个账号按入口对应：默认那条（CF）是线路1，直连（洛杉矶）是线路2，客服对报告时同一个名字指同一种入口。
+// 星芒账号「自动」先走直连，所以它的说明是先走线路2；历史账号先走 CF（yoyo 10-14），先走线路1。
 export const connectionRouteSettings = [
-  { siteId: 'solov', id: 'relay-route-solov', label: '星芒账号线路', description: '自动会先走洛杉矶线路，连不上时改走 CF 线路。保存后重启星芒生效，不会切换账号。' },
-  { siteId: 'solov-api', id: 'relay-route-solov-api', label: '历史账号线路', description: '自动会先走默认线路，默认线路连不上时改走直连。保存后重启星芒生效，不会切换账号。' },
+  { siteId: 'solov', id: 'relay-route-solov', label: '星芒账号线路', description: '自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。' },
+  { siteId: 'solov-api', id: 'relay-route-solov-api', label: '历史账号线路', description: '自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。' },
 ] as const;
 
 export interface ConnectionRoutePreferences {
@@ -13,23 +14,18 @@ export interface ConnectionRoutePreferences {
   activeRelayEndpointIds?: RelayRoutePreferences;
 }
 
+// 存下的值不变（direct / primary），以前选「只用洛杉矶」「只用直连」的照旧认，显示成「只用线路2」。
+// 线路1 排在线路2 前面。
 const connectionRouteChoices: ReadonlyArray<{ value: RelayRoutePreference; label: string }> = [
   { value: 'auto', label: '自动（推荐）' },
-  { value: 'direct', label: '只用直连' },
-  { value: 'primary', label: '只用默认线路' },
+  { value: 'primary', label: '只用线路1' },
+  { value: 'direct', label: '只用线路2' },
 ];
-
-// 星芒账号的两条线路叫洛杉矶、CF；存下的值不变（direct / primary），老设置照旧认。
-const solovRouteChoiceLabels: Readonly<Record<RelayRoutePreference, string>> = {
-  auto: '自动（推荐）',
-  direct: '只用洛杉矶',
-  primary: '只用 CF',
-};
 
 export function connectionRouteOptions(siteId: string): Array<{ value: string; label: string }> {
   return connectionRouteChoices
     .filter((choice) => relayRoutePreferenceAllowed(siteId, choice.value))
-    .map((choice) => ({ value: choice.value, label: siteId === 'solov' ? solovRouteChoiceLabels[choice.value] : choice.label }));
+    .map((choice) => ({ value: choice.value, label: choice.label }));
 }
 
 /** Nothing stored means 'auto'; a choice saved before 'auto' existed keeps meaning that one line. */

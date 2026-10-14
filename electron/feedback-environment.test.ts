@@ -251,20 +251,20 @@ describe('buildFeedbackRuntimeLines', () => {
   })
 
   it('names the route this run uses right below the network location, ahead of the certificate line', () => {
-    const lines = buildFeedbackRuntimeLines(runtimeInput({ relayRoute: '备用直连', certificateTrust: '这台电脑装了公司或安全软件的证书。' }))
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ relayRoute: '只用线路2', certificateTrust: '这台电脑装了公司或安全软件的证书。' }))
     const at = lines.indexOf('网络位置: 中国大陆')
 
     expect(lines.slice(at, at + 3)).toEqual([
       '网络位置: 中国大陆',
-      '连接线路: 备用直连',
+      '连接线路: 只用线路2',
       '安全证书: 这台电脑装了公司或安全软件的证书。',
     ])
   })
 
   it('names the route even before any scan has finished, since it was fixed at startup', () => {
-    const lines = buildFeedbackRuntimeLines(runtimeInput({ snapshot: null, relayRoute: '默认线路' }))
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ snapshot: null, relayRoute: '只用线路1' }))
 
-    expect(lines[lines.indexOf('网络位置: 未能读取') + 1]).toBe('连接线路: 默认线路')
+    expect(lines[lines.indexOf('网络位置: 未能读取') + 1]).toBe('连接线路: 只用线路1')
   })
 
   it('adds no route line when none is passed', () => {
@@ -358,41 +358,41 @@ describe('buildFeedbackRuntimeLines', () => {
 })
 
 describe('resolveFeedbackRelayRoute', () => {
-  // 星芒账号：xm 三线路附录 A 的四句原话。
+  // 设置里选项的叫法：默认那条（CF）是线路1，直连是线路2（yoyo 10-14）。
   it('names the option the xingmang account runs with, and under auto the line it is on right now', () => {
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov')).toBe('只用洛杉矶')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'primary' }), 'solov')).toBe('只用 CF')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov')).toBe('自动（这次用的是 CF 线路）')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct' }), 'solov')).toBe('只用线路2')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'primary' }), 'solov')).toBe('只用线路1')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov')).toBe('自动（这次用的是线路1）')
     let line: 'primary' | 'direct' = 'direct'
     const routing = createRelayEndpointRoutingSnapshot({ solov: 'auto' }, () => ({ solov: { line, settled: true } }))
-    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是洛杉矶线路）')
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是线路2）')
     line = 'primary'
-    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是 CF 线路）')
+    expect(resolveFeedbackRelayRoute(routing, 'solov')).toBe('自动（这次用的是线路1）')
   })
 
-  // 历史账号：直连适配方案第六节第 5 条的四句原话，一字不变。
-  it('keeps the legacy account on the direct and default line wording', () => {
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ 'solov-api': 'direct' }), 'solov-api')).toBe('只用直连')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ 'solov-api': 'primary' }), 'solov-api')).toBe('只用默认线路')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov-api')).toBe('自动（这次用的是默认线路）')
+  // 历史账号按入口叫同样的名字：默认线路（CF）是线路1，直连是线路2。
+  it('names the legacy account lines by the same entries', () => {
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ 'solov-api': 'direct' }), 'solov-api')).toBe('只用线路2')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ 'solov-api': 'primary' }), 'solov-api')).toBe('只用线路1')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({}), 'solov-api')).toBe('自动（这次用的是线路1）')
     let line: 'primary' | 'direct' = 'direct'
     const routing = createRelayEndpointRoutingSnapshot({ 'solov-api': 'auto' }, () => ({ 'solov-api': { line, settled: true } }))
-    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是直连）')
+    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是线路2）')
     line = 'primary'
-    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是默认线路）')
+    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是线路1）')
   })
 
   it('follows the account site, not the other site the settings chose a route for', () => {
     const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' }, () => ({ 'solov-api': { line: 'direct', settled: true } }))
-    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是直连）')
-    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct', 'solov-api': 'primary' }), 'solov-api')).toBe('只用默认线路')
+    expect(resolveFeedbackRelayRoute(routing, 'solov-api')).toBe('自动（这次用的是线路2）')
+    expect(resolveFeedbackRelayRoute(createRelayEndpointRoutingSnapshot({ solov: 'direct', 'solov-api': 'primary' }), 'solov-api')).toBe('只用线路1')
   })
 
   it('resolves a missing or retired site id the way the rest of the app does', () => {
     const routing = createRelayEndpointRoutingSnapshot({ solov: 'direct' })
 
-    expect(resolveFeedbackRelayRoute(routing, null)).toBe('只用洛杉矶')
-    expect(resolveFeedbackRelayRoute(routing, 'sub2api')).toBe('只用洛杉矶')
+    expect(resolveFeedbackRelayRoute(routing, null)).toBe('只用线路2')
+    expect(resolveFeedbackRelayRoute(routing, 'sub2api')).toBe('只用线路2')
   })
 
   it('never carries an address into the report', () => {
@@ -411,15 +411,15 @@ describe('resolveFeedbackToolRoute', () => {
   it('names the line written into the tools for the xingmang account only', () => {
     let line: 'primary' | 'direct' = 'direct'
     const toolRouting = createToolRouteRoutingSnapshot({ solov: 'auto', 'solov-api': 'direct' }, () => ({}), () => line)
-    expect(resolveFeedbackToolRoute(toolRouting, 'solov')).toBe('洛杉矶')
+    expect(resolveFeedbackToolRoute(toolRouting, 'solov')).toBe('线路2')
     line = 'primary'
-    expect(resolveFeedbackToolRoute(toolRouting, 'solov')).toBe('CF')
+    expect(resolveFeedbackToolRoute(toolRouting, 'solov')).toBe('线路1')
     expect(resolveFeedbackToolRoute(toolRouting, 'solov-api')).toBeNull()
   })
 
   it('prints the tool line under the connection line in the report', () => {
-    const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'darwin', executionMode: null, relayRoute: '自动（这次用的是 CF 线路）', toolRoute: '洛杉矶', appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
-    expect(lines[lines.indexOf('连接线路: 自动（这次用的是 CF 线路）') + 1]).toBe('工具线路: 洛杉矶')
+    const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'darwin', executionMode: null, relayRoute: '自动（这次用的是线路1）', toolRoute: '线路2', appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
+    expect(lines[lines.indexOf('连接线路: 自动（这次用的是线路1）') + 1]).toBe('工具线路: 线路2')
   })
 })
 
@@ -438,20 +438,20 @@ describe('buildFeedbackToolRouteCertificateLines', () => {
 
   it('gives support the issuer, fingerprint and address to compare with the real certificate', () => {
     expect(buildFeedbackToolRouteCertificateLines(failure)).toEqual([
-      '工具线路证书没过: 洛杉矶，2026-10-13T08:00:00.000Z，标签 normal（解析到的是星芒的地址）',
+      '工具线路证书没过: 线路2，2026-10-13T08:00:00.000Z，标签 normal（解析到的是星芒的地址）',
       `收到的证书 1: 连 192.0.2.10，颁发者 CN=Some Firewall CA, O=Firewall，证书名 CN=xm-direct.solov.cc，SHA-256 ${fingerprint256}，Node 校验 UNABLE_TO_GET_ISSUER_CERT_LOCALLY`,
       `收到的证书 2: 连 192.0.2.11，颁发者 （空），证书名 （空），SHA-256 ${fingerprint256}，Node 校验 通过`,
     ])
     const { label: _label, ...unlabelled } = failure
-    expect(buildFeedbackToolRouteCertificateLines({ ...unlabelled, line: 'primary' })[0]).toBe('工具线路证书没过: CF，2026-10-13T08:00:00.000Z')
+    expect(buildFeedbackToolRouteCertificateLines({ ...unlabelled, line: 'primary' })[0]).toBe('工具线路证书没过: 线路1，2026-10-13T08:00:00.000Z')
     expect(buildFeedbackToolRouteCertificateLines({ ...failure, certificates: [] })).toEqual([])
     expect(buildFeedbackToolRouteCertificateLines(null)).toEqual([])
   })
 
   it('prints them right under the tool line', () => {
-    const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'win32', executionMode: null, toolRoute: '洛杉矶', toolRouteCertificate: failure, appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
-    const at = lines.indexOf('工具线路: 洛杉矶')
-    expect(lines[at + 1]).toMatch(/^工具线路证书没过: 洛杉矶/)
+    const lines = buildFeedbackRuntimeLines({ snapshot: null, platform: 'win32', executionMode: null, toolRoute: '线路2', toolRouteCertificate: failure, appDirectory: null, dataDirectory: null, managedDirectory: null, locale: null, timeZone: null })
+    const at = lines.indexOf('工具线路: 线路2')
+    expect(lines[at + 1]).toMatch(/^工具线路证书没过: 线路2/)
     expect(lines[at + 2]).toMatch(/^收到的证书 1: 连 192\.0\.2\.10/)
   })
 })

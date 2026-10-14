@@ -66,7 +66,7 @@ export interface AppSettings {
    */
   relaySiteId?: string
   /**
-   * 每个账号站的连接线路：auto（「自动」）、direct（「只用直连」）、primary（「只用默认线路」）。
+   * 每个账号站的连接线路：auto（「自动」）、primary（「只用线路1」）、direct（「只用线路2」）。
    * 缺省（整个字段或某个站没写）算「自动」；#872 起存下的 direct / primary 原样当后两个。
    */
   relayEndpointIds?: RelayRoutePreferences

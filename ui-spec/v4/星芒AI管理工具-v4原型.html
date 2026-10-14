@@ -3066,16 +3066,16 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
     S.keySync = 0;
     var t = setInterval(function () { S.keySync = Math.min(100, S.keySync + 20); if (S.keySync >= 100) { clearInterval(t); S.keySync = 'done'; setTimeout(function () { S.keySync = null; render(); }, 2600); } render(); }, 280);
   }
-  /* 两个站各有一组线路，说明和选项名与正式版登记的一致。保存后要重开星芒才生效，不会切换账号 */
+  /* 两个站各有一组线路，说明和选项名与正式版登记的一致：只叫线路1（默认，CF）、线路2（直连），不说在哪（yoyo 10-14）。保存后要重开星芒才生效，不会切换账号 */
   var ROUTES = [
-    ['relay', '星芒账号线路', '自动会先走洛杉矶线路，连不上时改走 CF 线路。保存后重启星芒生效，不会切换账号。', [['auto', '自动（推荐）'], ['direct', '只用洛杉矶'], ['primary', '只用 CF']], '洛杉矶 CF'],
-    ['relayApi', '历史账号线路', '自动会先走默认线路，默认线路连不上时改走直连。保存后重启星芒生效，不会切换账号。', [['auto', '自动（推荐）'], ['direct', '只用直连'], ['primary', '只用默认线路']], '直连 默认线路 历史账号']
+    ['relay', '星芒账号线路', '自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。', [['auto', '自动（推荐）'], ['primary', '只用线路1'], ['direct', '只用线路2']], '线路1 线路2 洛杉矶 CF'],
+    ['relayApi', '历史账号线路', '自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。', [['auto', '自动（推荐）'], ['primary', '只用线路1'], ['direct', '只用线路2']], '线路1 线路2 直连 默认线路 历史账号']
   ];
   function routeRows() { return ROUTES.map(function (r) { return { t: r[1], d: r[2], kw: '线路 连不上 中转 重启 ' + r[4], ctl: svSeg(r[0], r[3]) }; }); }
   function routeWait() { return ROUTES.some(function (r) { return S.sv[r[0]] !== S.routeBoot[r[0]]; }); }
   function routeNotice() { return routeWait() ? '<div class="notice sync route-wait" role="status">' + ic('info', 15, 'flex:none;color:var(--info-tx)') + '<span class="grow-min ell"><b>线路已保存，等待重启</b></span><button class="btn xs sec" data-act="routeRestart">现在重开</button></div>' : ''; }
   /* 这次启动实际在用的线路（检查页写这个，不写刚保存、还没生效的那个） */
-  function routeNow() { var api = S.site === 'api', r = ROUTES[api ? 1 : 0], v = S.routeBoot[r[0]]; return v === 'auto' ? '自动（' + (api ? '默认线路' : '洛杉矶') + '）' : r[3].filter(function (o) { return o[0] === v; })[0][1]; }
+  function routeNow() { var api = S.site === 'api', r = ROUTES[api ? 1 : 0], v = S.routeBoot[r[0]]; return v === 'auto' ? '自动（' + (api ? '线路1' : '线路2') + '）' : r[3].filter(function (o) { return o[0] === v; })[0][1]; }
   DLG_INIT.route = function () { return { title: '切换连接线路', sub: '返回后可继续填写；新线路要重启星芒才生效。', wide: true, f: {} }; };
   DLG.route = function () {
     return routeNotice() + '<section class="card">' + routeRows().map(srow).join('') + '</section><div class="dlg-acts"><button class="btn sec" data-act="dlgClose">返回继续填写</button></div>';

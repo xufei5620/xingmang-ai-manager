@@ -2,27 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { buildConnectionRoutePatch, connectionRouteNeedsRestart, connectionRouteOptions, connectionRouteSelection, connectionRouteSettings } from './connection-routes';
 
 describe('controlled connection route settings', () => {
-  it('names the xingmang lines Los Angeles and CF while keeping the stored values', () => {
-    expect(connectionRouteOptions('solov')).toEqual([
+  it('names the lines line 1 and line 2 by entry while keeping the stored values', () => {
+    const options = [
       { value: 'auto', label: '自动（推荐）' },
-      { value: 'direct', label: '只用洛杉矶' },
-      { value: 'primary', label: '只用 CF' },
-    ]);
+      { value: 'primary', label: '只用线路1' },
+      { value: 'direct', label: '只用线路2' },
+    ];
+    expect(connectionRouteOptions('solov')).toEqual(options);
+    expect(connectionRouteOptions('solov-api')).toEqual(options);
     expect(connectionRouteOptions('unknown')).toEqual([]);
-  });
-
-  it('keeps the legacy account on direct and default line wording', () => {
-    expect(connectionRouteOptions('solov-api')).toEqual([
-      { value: 'auto', label: '自动（推荐）' },
-      { value: 'direct', label: '只用直连' },
-      { value: 'primary', label: '只用默认线路' },
-    ]);
   });
 
   it('words the two settings exactly as approved', () => {
     expect(connectionRouteSettings.map((route) => [route.label, route.description])).toEqual([
-      ['星芒账号线路', '自动会先走洛杉矶线路，连不上时改走 CF 线路。保存后重启星芒生效，不会切换账号。'],
-      ['历史账号线路', '自动会先走默认线路，默认线路连不上时改走直连。保存后重启星芒生效，不会切换账号。'],
+      ['星芒账号线路', '自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。'],
+      ['历史账号线路', '自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。'],
     ]);
   });
 
