@@ -1,6 +1,6 @@
 # 安装包自动同步到腾讯云 COS
 
-COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude 桌面端的官方离线包有两个用处：教程站下载页的备用下载；星芒一键安装这两个桌面端时先从这里下（yoyo 2026-10-10 定），读不到、对不上、太慢就照旧走原来的路，见下文「星芒客户端怎么用这两份清单」。Codex 官方插件目录也放在这个桶里，只给星芒用：替 Codex 下第一份插件目录时先从这里下（yoyo 2026-10-13 定），见下文「Codex 插件目录」。
+COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude 桌面端的官方离线包有两个用处：教程站下载页的备用下载；星芒一键安装这两个桌面端时先从这里下（yoyo 2026-10-10 定），读不到、对不上、太慢就照旧走原来的路，见下文「星芒客户端怎么用这两份清单」。Codex 官方插件目录也放在这个桶里，只给星芒用：替 Codex 下第一份插件目录时先从这里下（yoyo 2026-10-13 定），见下文「Codex 插件目录」。Windows 版 Grok CLI（xAI 签名的 `grok.exe`）和 Mac 版 OpenCode 桌面端（官方 `.app.tar.gz`）同样只给星芒用：一键安装时先从这里下（yoyo 2026-10-14 定），见下文「Grok CLI（Windows）」「OpenCode 桌面端（Mac）」。
 
 教程可见名称使用「Codex 桌面端」，OpenAI 官方包的内部 `chatgpt` 目录、文件名和产品清单标识保持兼容。
 
@@ -16,6 +16,8 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 | 官方 ChatGPT 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-chatgpt-official-cos` | `chatgpt/latest.json` |
 | 官方 Claude 桌面备用离线包 | 每 6 小时检查一次；也可手动运行 `sync-claude-official-cos` | `xingmang/offline/claude/latest.json` |
 | Codex 官方插件目录（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-codex-plugins-cos` | `xingmang/offline/codex-plugins/latest.json` |
+| Grok CLI Windows 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-grok-cos` | `xingmang/offline/grok/latest.json` |
+| OpenCode 桌面端 Mac 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-opencode-cos` | `xingmang/offline/opencode/latest.json` |
 
 星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流，所以同步写在 `publish-release` 里，是排在 publish 后面的单独作业 `cos-sync`：publish 作业（`release` 环境批准、`update-feed` 串行）成功后才开始；它挂 `cos-sync` 环境，不多一次批准；和手动导入 `sync-published-manager-cos` 共用 `cos-manager-publish` 并发组，因为两边都会写 `xingmang/latest.json`。2026-10-04 以前同步接在 publish 作业末尾，为什么拆出来见下文「网络不稳时」。
 
@@ -53,7 +55,7 @@ Claude 备用文件保存在 `xingmang/offline/claude/<平台>/sha256-<摘要>/`
 ## 1. 准备 COS 上传身份
 
 1. 在腾讯云 CAM 创建专用于安装包同步的子账号，并为其准备 API 访问凭据。
-2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*` 和 `chatgpt/*` 两个前缀执行 GetObject、HeadObject、PutObject，Claude 备用包属于 `xingmang/offline/claude/`，Codex 插件目录属于 `xingmang/offline/codex-plugins/`。
+2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*` 和 `chatgpt/*` 两个前缀执行 GetObject、HeadObject、PutObject，Claude 备用包属于 `xingmang/offline/claude/`，Codex 插件目录属于 `xingmang/offline/codex-plugins/`，Grok 属于 `xingmang/offline/grok/`，OpenCode 属于 `xingmang/offline/opencode/`。
 3. 把策略关联给该子账号。同步脚本不需要删除文件、修改 ACL、管理存储桶或操作其它云产品的权限。
 4. 存储桶使用标准存储、公有读私有写，版本控制保持关闭。不可变版本目录和 `x-cos-forbid-overwrite` 用于防止包被覆盖；COS 的这项防覆盖头在开启桶版本控制后无效。
 
@@ -162,11 +164,32 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 
 打开 **Actions → sync-codex-plugins-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/codex-plugins/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
 
+### Grok CLI（Windows）
+
+星芒在 Windows 上装 Grok 是从 xAI 官方下载目录取已签名的 `grok-<版本>-windows-<架构>.exe`（`electron/grok-installer.ts`），国内多半连不上。`sync-grok-cos`（`scripts/sync-grok-cos.cjs`）把同一个文件放进桶里：
+
+- 每次问 xAI 现在的 stable（`https://x.ai/cli/stable`，备用 `storage.googleapis.com/grok-build-public-artifacts/cli/stable`），再读本仓 `electron/cli-verified-versions.ts` 里 Grok 的推荐版本（星芒默认装它）。这两版的 x64、ARM64 都要在桶里；已经在桶里、对象大小和 ETag 没变的不再下，所以多数运行几分钟就结束。
+- 缺的那几个才从 xAI 下（x.ai 不通换 GCS 备用地址，不跟跳转，1 MB～512 MB），在 Windows 机器上先核 PE 头写的芯片和文件名一致，再用 `Get-AuthenticodeSignature` 核签名有效、签名者是 X.AI LLC（和客户端 `trusted-native-cli.ts` 同一条规则），核不过不传。文件不在同步机器上运行。
+- 传到 `xingmang/offline/grok/<windows-x64|windows-arm64>/sha256-<SHA-256>/grok-<版本>-windows-<x86_64|aarch64>.exe`（`application/octet-stream`，不可覆盖），完整回读核过，最后才改 `latest.json`。清单留最近 12 版（stable 和推荐版本一定在），旧版文件不删；x64 一个一百六七十 MB。
+- 在 Windows 机器上跑，因为签名只有 Windows 能核。
+
+打开 **Actions → sync-grok-cos → Run workflow**，分支选 `main` 即可手动跑一次；抬了 Grok 推荐版本、不想等下一次定时同步时也这么做。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/grok/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
+
+### OpenCode 桌面端（Mac）
+
+星芒在 Mac 上一键装 OpenCode 是问 GitHub 上 `anomalyco/opencode` 最新一版的 `latest.json`，再下 `opencode-desktop-mac-<arm64|x64>.app.tar.gz`（`electron/macos-desktop-app-installer.ts`），国内时好时坏。`sync-opencode-cos`（`scripts/sync-opencode-cos.cjs`）把这两个包放进桶里：
+
+- 每次问同一份 `latest.json`（客户端问的就是它），版本和桶里的一样、对象还在就什么都不做。跳转只跟到 `github.com` 这个仓库的发布路径和 GitHub 的两个附件域名。
+- 版本变了才下两种芯片的包（不跟跳转，10 MB～640 MB），在 Mac 机器上解开：必须正好是 `OpenCode.app`，bundle id `ai.opencode.desktop`、版本和 `latest.json` 一致、主程序芯片对得上，`codesign` 核 Team `5NZ4Q7NXJ4` 的 Developer ID 签名，Gatekeeper 放行，核不过不传。包里的东西不运行。
+- 传到 `xingmang/offline/opencode/<macos-arm64|macos-x64>/sha256-<SHA-256>/opencode-desktop-mac-<arm64|x64>.app.tar.gz`（`application/gzip`，不可覆盖），完整回读核过，最后才改 `latest.json`。清单只写当前一版，旧版文件不删；一个一百五十 MB 左右。
+
+打开 **Actions → sync-opencode-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/opencode/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
+
 ### 同步失败报警
 
-三条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
+五条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录，Windows 版 Grok，Mac 版 OpenCode）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
 
-- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
+- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录 / Grok CLI（Windows） / OpenCode 桌面端（Mac）」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
 - 之后再失败只更新这条 issue 的正文，不另开；下一次定时同步成功就自动留言「恢复正常更新」并关闭。
 - 手动运行（Run workflow）不计数，也不开关 issue；重跑以前的某次定时运行也不改 issue，以最新一次定时同步为准。只有 `alert` 作业自己红（比如 GitHub 接口临时出错）的那次不算同步失败。
 - 看原因：打开 issue 里的运行链接，点红色作业，日志里搜 `stage-failed`，`stage` 是卡在哪一步，`failure.code` 是原因。
@@ -193,7 +216,7 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 **全球加速（可选，要在腾讯云控制台操作）**：
 
 1. 腾讯云控制台 → 对象存储 → 存储桶列表 → `xingmang-downloads-1342302199` → 域名与传输管理 → 全球加速 → 编辑，打开后保存（菜单名以控制台为准）。加速的流量另外计费，以腾讯云价格页为准。
-2. GitHub 仓库 Settings → Secrets and variables → Actions → Variables，新建 `XINGMANG_COS_ACCELERATE`，值填 `true`。五条 COS 工作流都会读它。
+2. GitHub 仓库 Settings → Secrets and variables → Actions → Variables，新建 `XINGMANG_COS_ACCELERATE`，值填 `true`。七条 COS 工作流都会读它。
 3. 打开后只有上传（Init、分块、Complete、Abort、PUT）走 `<桶名>.cos.accelerate.myqcloud.com`；完整回读核对、读 latest 和客户下载仍用原来的上海地址。签名方式、CAM 权限都不变，不用新建密钥。
 
 要关掉，把变量删掉或改回 `false`。没开桶的全球加速就把变量设成 `true`，上传会被拒绝而失败，删掉变量重跑即可（推测：拒绝的具体错误码没有实测过）。加速域名能不能明显提速，只能等下一次真实发版看 `[manager-sync]` 的耗时。
@@ -240,6 +263,10 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 改同步脚本时别改动上面这些字段的写法，改了客户端会全部退回原来的路（装得上，只是慢、费加速流量）。确实要改清单格式时，先改客户端认新旧两种，发版放量以后再改同步。
 
 Codex 插件目录同理（`electron/codex-plugin-catalog-bucket.ts`）：客户在「插件 → 市场 → Codex」点「下载插件目录」时，先读 `xingmang/offline/codex-plugins/latest.json`。认的字段：`schemaVersion` 为 1、`product` 为 `codex-plugin-catalog`；`source` 的 `repository`、`ref`、40 位小写 `commit`；`artifact` 的 `key`（必须正好是上节那个路径）、`url`（桶地址加 `key`）、`bytes`、`sha256`、`contentType`（`application/gzip`）、`verification`（`github-commit-archive-manifests`）。下载按大小和 SHA-256 核，解开以后照 GitHub 那一份的规矩再核一遍，压缩包里的提交号还要和清单一致。读不到、对不上、太慢（过了头半分钟照当时速度还要 2 分钟以上，或者半分钟没收到数据）都悄悄改去 GitHub，原因只写进运行日志（`codex-plugin-catalog.bucket-fallback`）；只有改去 GitHub 时才借下载加速线路。
+
+Windows 版 Grok（`electron/grok-bucket.ts`）：装 Grok 时先读 `xingmang/offline/grok/latest.json`。认的字段：`schemaVersion` 为 1、`product` 为 `grok-cli`；`stable.version`；`releases[]` 里每版的 `version` 和 `files[]`，每个文件的 `platformId`、`platform`（`windows`）、`architecture`、`key`（必须正好是上节那个路径）、`url`（桶地址加 `key`）、`bytes`、`sha256`、`contentType`（`application/octet-stream`）、`verification`（`windows-authenticode-xai`）。要装哪一版和 xAI 那一路同一个规矩：没点名装 stable，点名的不超过 stable 就装它，超过了装 stable；桶里没有这一版就整个改去 xAI。下载按大小和 SHA-256 核，下完照 xAI 那一份同一道签名核对（有效、X.AI LLC），一行没放宽。读不到、对不上、太慢、签名不对都悄悄改去 xAI，原因只写进运行日志（`grok-bucket.fallback`）；只有改去 xAI 时才借下载加速线路。
+
+Mac 版 OpenCode 和 Codex、Claude 桌面端走同一套（`electron/desktop-package-bucket.ts` 的 `files` 清单）：认 `xingmang/offline/opencode/latest.json` 的 `schemaVersion` 1、`product` `opencode-desktop`、`files` 里的 `macos-arm64`、`macos-x64`（`kind` `app-archive`、`format` `tar.gz`、`type` `application/gzip`、`verification` `macos-developer-id-notarized`）。下完解开以后照 GitHub 那一路核 bundle id、最低系统、Team ID 签名和 Gatekeeper；没走通悄悄改去 GitHub（`desktop-bucket.fallback`），只有改去 GitHub 时才借加速。
 
 ## 本次范围
 

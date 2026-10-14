@@ -830,7 +830,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024, signal }),
       onProgress: (event) => report(event.phase, event.message, event.percent),
       signal,
-      // Claude Desktop 先从星芒自己的存储桶下（国内直连）；只有问官方那一路接下载线路。
+      // Claude Desktop、OpenCode 先从星芒自己的存储桶下（国内直连）；只有问官方那一路接下载线路。
       ...(options.bucketDownloads ? { bucket: options.bucketDownloads } : {}),
       ...(options.withDownloadRoute ? { withVendorDownloadRoute: options.withDownloadRoute } : {}),
     })

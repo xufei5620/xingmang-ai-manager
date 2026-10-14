@@ -84,6 +84,23 @@ function claudeIndex(files: unknown[] = Object.keys(claudeFiles).map((id) => cla
   return JSON.stringify({ schemaVersion: 1, product: 'claude-desktop', files, ...overrides })
 }
 
+function openCodeFile(architecture: 'arm64' | 'x64', extra: Record<string, unknown> = {}) {
+  const fileName = `opencode-desktop-mac-${architecture}.app.tar.gz`
+  const key = `xingmang/offline/opencode/macos-${architecture}/sha256-${sha}/${fileName}`
+  return {
+    platformId: `macos-${architecture}`, platform: 'macos', architecture, kind: 'app-archive', format: 'tar.gz', fileName,
+    type: 'application/gzip', verification: 'macos-developer-id-notarized', version: '1.18.34', key, url: objectUrl(key),
+    size: 152 * mib, sha256: sha, sourceUrl: `https://github.com/anomalyco/opencode/releases/download/v1.18.34/${fileName}`, cosEtag: '"etag"', ...extra,
+  }
+}
+
+function openCodeIndex(files: unknown[] = [openCodeFile('arm64'), openCodeFile('x64')], overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    schemaVersion: 1, product: 'opencode-desktop', generatedAt: '2026-10-14T00:00:00.000Z', version: '1.18.34',
+    source: { feedUrl: 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json' }, files, ...overrides,
+  })
+}
+
 function release(payload: Buffer, extra: Partial<DesktopBucketPackage> = {}): DesktopBucketPackage {
   const digest = createHash('sha256').update(payload).digest('hex')
   const key = `xingmang/offline/claude/windows-x64/sha256-${digest}/Claude-x64.msix`
@@ -132,6 +149,16 @@ describe('desktop package bucket indexes', () => {
       id: 'claude-macos-universal', version: '1.1.2345', bytes: 150 * mib, sha256: sha, contentType: 'application/vnd.apple.installer+xml',
       url: objectUrl(`xingmang/offline/claude/macos-pkg-universal/sha256-${sha}/Claude-universal.pkg`),
     })
+  })
+
+  it('reads each OpenCode archive the sync script publishes', () => {
+    expect(parseDesktopBucketIndex(openCodeIndex(), 'opencode-macos-arm64')).toEqual({
+      id: 'opencode-macos-arm64', version: '1.18.34', bytes: 152 * mib, sha256: sha, contentType: 'application/gzip',
+      url: objectUrl(`xingmang/offline/opencode/macos-arm64/sha256-${sha}/opencode-desktop-mac-arm64.app.tar.gz`),
+    })
+    expect(parseDesktopBucketIndex(openCodeIndex(), 'opencode-macos-x64')?.url).toBe(objectUrl(`xingmang/offline/opencode/macos-x64/sha256-${sha}/opencode-desktop-mac-x64.app.tar.gz`))
+    expect(desktopBucketIndexUrl('opencode-macos-arm64')).toBe(objectUrl('xingmang/offline/opencode/latest.json'))
+    expect(desktopBucketIndexUrl('opencode-macos-x64')).toBe(objectUrl('xingmang/offline/opencode/latest.json'))
   })
 
   it('reads the Codex and Claude indexes from their fixed keys', () => {
@@ -196,6 +223,22 @@ describe('desktop package bucket indexes', () => {
     expect(parseDesktopBucketIndex(text, 'claude-windows-x64')).toBeNull()
   })
 
+  it.each([
+    ['the Claude product', openCodeIndex(undefined, { product: 'claude-desktop' })],
+    ['no entry for this chip', openCodeIndex([openCodeFile('x64')])],
+    ['the other chip\'s archive', openCodeIndex([openCodeFile('arm64', { fileName: 'opencode-desktop-mac-x64.app.tar.gz' }), openCodeFile('x64')])],
+    ['a Claude installer kind', openCodeIndex([openCodeFile('arm64', { kind: 'installer' }), openCodeFile('x64')])],
+    ['a zip', openCodeIndex([openCodeFile('arm64', { format: 'zip' }), openCodeFile('x64')])],
+    ['another type', openCodeIndex([openCodeFile('arm64', { type: 'application/octet-stream' }), openCodeFile('x64')])],
+    ['another verification', openCodeIndex([openCodeFile('arm64', { verification: 'none' }), openCodeFile('x64')])],
+    ['a prerelease version', openCodeIndex([openCodeFile('arm64', { version: '1.18.34-beta' }), openCodeFile('x64')])],
+    ['a key in the Claude folder', openCodeIndex([openCodeFile('arm64', { key: `xingmang/offline/claude/macos-arm64/sha256-${sha}/opencode-desktop-mac-arm64.app.tar.gz` }), openCodeFile('x64')])],
+    ['a URL that is not origin plus key', openCodeIndex([openCodeFile('arm64', { url: 'https://evil.example/opencode.tar.gz' }), openCodeFile('x64')])],
+    ['an archive above the GitHub cap', openCodeIndex([openCodeFile('arm64', { size: 641 * mib }), openCodeFile('x64')])],
+  ])('refuses an OpenCode index with %s', (_label, text) => {
+    expect(parseDesktopBucketIndex(text, 'opencode-macos-arm64')).toBeNull()
+  })
+
   it('refuses a Claude Mac PKG with a four-part version and an index larger than the cap', () => {
     expect(parseDesktopBucketIndex(claudeIndex([claudeFile('macos-pkg-universal', { version: '1.1.2345.0' })]), 'claude-macos-universal')).toBeNull()
     const padded = JSON.stringify({ ...JSON.parse(claudeIndex()), padding: 'x'.repeat(256 * 1024) })
@@ -206,7 +249,8 @@ describe('desktop package bucket indexes', () => {
 describe('desktop package bucket addresses', () => {
   it('accepts only object paths under the synced folders on the fixed bucket host', () => {
     for (const key of ['chatgpt/latest.json', `chatgpt/windows-x64/${windowsVersion}/ChatGPT-x64.msix`, 'xingmang/offline/claude/latest.json',
-      'xingmang/offline/codex-plugins/latest.json']) {
+      'xingmang/offline/codex-plugins/latest.json', 'xingmang/offline/grok/latest.json', `xingmang/offline/grok/windows-x64/sha256-${sha}/grok-1.0.52-windows-x86_64.exe`,
+      'xingmang/offline/opencode/latest.json']) {
       expect(validateDesktopBucketUrl(objectUrl(key)).href).toBe(objectUrl(key))
     }
     for (const value of [
@@ -217,6 +261,8 @@ describe('desktop package bucket addresses', () => {
       `${objectUrl('chatgpt/latest.json')}#top`,
       objectUrl('xingmang/stable/latest.json'),
       objectUrl('xingmang/offline/other/latest.json'),
+      objectUrl('xingmang/offline/grokx/latest.json'),
+      objectUrl('xingmang/offline/grok'),
       objectUrl('chatgpt/%2e%2e/secret.json'),
       objectUrl('chatgpt/a b.json'),
       'https://xingmang-downloads-1342302199.cos.ap-beijing.myqcloud.com/chatgpt/latest.json',

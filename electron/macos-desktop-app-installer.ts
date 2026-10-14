@@ -54,8 +54,8 @@ import { ensureTrustedDirectory } from './trusted-temp'
  * on first launch is the one step 3 has already made, and keeping it would put the
  * "downloaded from the Internet" prompt in front of an app the toolbox just verified.
  *
- * Codex 桌面端和 Claude Desktop 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
- * yoyo 2026-10-10）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载（Claude 的 PKG 展开前
+ * Codex 桌面端、Claude Desktop 和 OpenCode 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
+ * yoyo 2026-10-10；OpenCode 是 2026-10-14）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载（Claude 的 PKG 展开前
  * 还要先核安装包签名），解开以后照样过第 2、3 步才放进「应用程序」；哪一步没过都删掉，照旧问官方。
  */
 
@@ -146,7 +146,7 @@ export interface InstallMacosDesktopAppOptions {
    * 官方原版。只换说法，照样不装、不动它。
    */
   detectionUnfinished?: { message: string, rejectedPaths: readonly string[] }
-  /** 先从星芒自己的存储桶下（只有 Codex 桌面端和 Claude Desktop 有）。缺省 = 不走桶，直接问官方。 */
+  /** 先从星芒自己的存储桶下（只有 Codex 桌面端、Claude Desktop 和 OpenCode 有）。缺省 = 不走桶，直接问官方。 */
   bucket?: DesktopBucketOptions
   /**
    * 问官方那一路（版本信息加安装包）包进临时加速线路；存储桶那一路国内直连，不包。缺省直接下。
@@ -679,10 +679,14 @@ function runDirectly<T>(operation: () => Promise<T>): Promise<T> {
   return operation()
 }
 
-/** 存储桶里有这台 Mac 能用的那个官方包时，它在桶里叫什么。Codex 按芯片各一个 zip，Claude 是通用 PKG。 */
+/**
+ * 存储桶里有这台 Mac 能用的那个官方包时，它在桶里叫什么。Codex 按芯片各一个 zip，Claude 是通用 PKG，
+ * OpenCode 按芯片各一个 GitHub 上那个 .app.tar.gz。
+ */
 function bucketPackageId(tool: MacosDesktopAppId, architecture: MacosDesktopArchitecture): DesktopBucketPackageId | null {
   if (tool === 'codexDesktop') return architecture === 'arm64' ? 'codex-macos-arm64' : 'codex-macos-x64'
   if (tool === 'claudeDesktop') return 'claude-macos-universal'
+  if (tool === 'opencode') return architecture === 'arm64' ? 'opencode-macos-arm64' : 'opencode-macos-x64'
   return null
 }
 
@@ -775,8 +779,8 @@ async function unpackFromBucket(
   try {
     const release = await readDesktopBucketPackage(id, options.fetch, options.signal)
     await fs.promises.mkdir(workDirectory, { mode: 0o700 })
-    const pkg = release.contentType !== 'application/zip'
-    const archive = path.posix.join(workDirectory, pkg ? 'package.pkg' : 'package.zip')
+    const format = release.contentType === 'application/zip' ? 'zip' : release.contentType === 'application/gzip' ? 'tar.gz' : 'pkg'
+    const archive = path.posix.join(workDirectory, `package.${format}`)
     // 和官方那一路同一句话：客户看不出换了路。
     const downloading = `正在下载 ${source.name} ${release.version}`
     report('downloading', downloading, 0)
@@ -794,11 +798,11 @@ async function unpackFromBucket(
     options.signal?.throwIfAborted()
     const extractDirectory = path.posix.join(workDirectory, 'extract')
     await fs.promises.mkdir(extractDirectory, { mode: 0o700 })
-    if (pkg) {
+    if (format === 'pkg') {
       await expandPackageBundle(source, archive, workDirectory, extractDirectory, options.runProcess)
     } else {
-      // Same bsdtar extraction as the vendor zip below, with the same guarantees.
-      await options.runProcess({ executable: '/usr/bin/tar', argv: ['-xf', archive, '-C', extractDirectory], timeoutMs: extractTimeoutMs })
+      // Same bsdtar extraction as the vendor archive below, with the same guarantees.
+      await options.runProcess({ executable: '/usr/bin/tar', argv: [format === 'zip' ? '-xf' : '-xzf', archive, '-C', extractDirectory], timeoutMs: extractTimeoutMs })
     }
     const bundle = await verifyExtractedBundle(source, extractDirectory, bundleName, options.runProcess, readSystemVersion)
     return { version: release.version, bundle }

@@ -59,7 +59,8 @@ export interface CliVersionCompatibility {
  * 那次回归:那两天点过「更新」的客户装到的就是它,而名单管不到 Codex。
  * 2026-09-30 扩到 Grok:它两周发了十几版,而接当前账号的几项配置(出图地址、型号
  * 名单、标题用的型号)都挂在它的配置键名上,哪一版改了键名,Key 就会悄悄发去 xAI 官方。
- * Grok 的两条官方安装路径都以 xAI stable 为上限(resolveGrokInstallVersion)。
+ * Grok 在 Windows 上装 xAI 签名的原生包,以 xAI stable 为上限(resolveGrokInstallVersion),先从星芒存储桶下;
+ * macOS 与 Linux 只问 npm(2026-10-14 起 Mac 不再先问 x.ai)。
  */
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
