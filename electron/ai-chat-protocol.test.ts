@@ -90,6 +90,27 @@ describe('AI model capabilities', () => {
     ])).toEqual(['gpt-image-2', 'gemini-3.1-flash-image'])
   })
 
+  it('lists GPT Image 2.5 flare first and sunburst after GPT Image 2 in the image group', () => {
+    const models = ['gpt-image-2.5-sunburst', 'gpt-image-1', 'gpt-image-2', 'gpt-4o', 'gpt-image-2.5-flare']
+    const curated = ['gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-1']
+
+    expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
+    expect(selectAiChatModelsForGroup('图片模型-中转/订阅', models)).toEqual(curated)
+    expect(selectAiChatModelsForGroup('画图', models, ['画图'])).toEqual(curated)
+  })
+
+  it('keeps GPT Image 2.5 visible as image models in the default GPT group', () => {
+    const models = ['gpt-5.6-sol', 'gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']
+
+    expect(selectAiChatModelsForGroup('GPT', models)).toEqual(models)
+    expect(selectAiChatModelsForGroup('GPT-中转/订阅', models)).toEqual(models)
+    for (const model of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']) {
+      expect(resolveAiModelCapability(model)).toMatchObject({
+        kind: 'image', provider: 'gpt-image', available: true, hidden: false, resolutions: ['1K', '2K', '4K'],
+      })
+    }
+  })
+
   it('curates the image group under its renamed xm name as well as the old one', () => {
     const models = ['gpt-4o', 'gpt-image-1', 'gpt-image-2', 'jimeng_high_aes_general_v21_L']
     const curated = ['gpt-image-2', 'gpt-image-1', 'jimeng_high_aes_general_v21_L']
@@ -265,6 +286,18 @@ describe('image generation protocol', () => {
     expect(() => buildImageGenerationRequest({
       model: 'gpt-image-1', prompt: 'cat', imageResolution: '2K',
     })).toThrowError(expect.objectContaining({ code: 'invalid-image-resolution' }))
+  })
+
+  it('maps GPT Image 2.5 clarity tiers the same way as GPT Image 2', () => {
+    expect(buildImageGenerationRequest({
+      model: 'gpt-image-2.5-flare', prompt: 'square', size: '1024x1024', imageResolution: '2K',
+    })).toMatchObject({ model: 'gpt-image-2.5-flare', size: '2048x2048', quality: 'low' })
+    expect(buildImageGenerationRequest({
+      model: 'gpt-image-2.5-sunburst', prompt: 'wide', size: '1280x720', imageResolution: '4K',
+    })).toMatchObject({ model: 'gpt-image-2.5-sunburst', size: '3840x2160' })
+    expect(buildImageGenerationRequest({
+      model: 'gpt-image-2.5-flare', prompt: 'square', size: '1024x1024', imageResolution: '1K',
+    })).toMatchObject({ size: '1024x1024' })
   })
 
   it('maps Jimeng dimensions to extra_fields and never sends quality', () => {
