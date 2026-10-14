@@ -122,6 +122,67 @@ describe('media group defaults', () => {
     })
   })
 
+  // xm 站 2026-10 改名后的分组，老名字删掉以后站上剩下的就是这些。
+  const renamedGroups = [
+    { name: 'default' },
+    { name: 'Claude-MAX' },
+    { name: 'Claude-ANTI' },
+    { name: 'Claude AWS-B' },
+    { name: 'Claude-KIRO(高缓)' },
+    { name: 'GPT' },
+    { name: 'GPT-官方API直连' },
+    { name: 'Grok' },
+    { name: 'Grok-官方API直连' },
+    { name: 'Gemini' },
+    { name: '图片模型' },
+    { name: '视频模型' },
+  ]
+
+  it('recognizes the renamed image and video groups once the old names are gone', () => {
+    expect(preferredMediaGroups(renamedGroups)).toMatchObject({
+      image: '图片模型',
+      video: '视频模型',
+      text: 'Gemini',
+    })
+  })
+
+  it('keeps the old group names first while both names exist', () => {
+    expect(preferredMediaGroups([
+      ...renamedGroups,
+      { name: '图片模型-中转/订阅' },
+      { name: '视频模型-中转/订阅' },
+      { name: 'Gemini-中转/订阅' },
+    ])).toMatchObject({
+      image: '图片模型-中转/订阅',
+      video: '视频模型-中转/订阅',
+      text: 'Gemini-中转/订阅',
+    })
+  })
+
+  it('moves a project saved with the old names to the renamed groups', () => {
+    expect(withPreferredMediaDefaults(
+      { image: '图片模型-中转/订阅', video: '视频模型-中转/订阅', text: 'Gemini-中转/订阅' },
+      renamedGroups,
+    )).toMatchObject({
+      image: '图片模型',
+      video: '视频模型',
+      text: 'Gemini',
+    })
+  })
+
+  it('recognizes an image or video group by name only when exactly one group carries the word', () => {
+    expect(preferredMediaGroups([{ name: 'Gemini' }, { name: '星芒图片' }, { name: '星芒视频' }]))
+      .toMatchObject({ image: '星芒图片', video: '星芒视频' })
+    expect(preferredMediaGroups([{ name: 'Gemini' }, { name: '视频-A' }, { name: '视频-B' }]).video)
+      .toBeUndefined()
+  })
+
+  it('never prepares a Grok group for video nodes', () => {
+    const withoutVideo = renamedGroups.filter((group) => group.name !== '视频模型')
+    expect(preferredMediaGroups(withoutVideo).video).toBeUndefined()
+    expect(preferredMediaGroups([{ name: 'grok' }, { name: 'Gemini' }]).video).toBeUndefined()
+  })
+
   it('repairs a stale default model after the group changes', () => {
     expect(withResolvedMediaModels(
       { image: '生图分组', imageModel: 'gone' },

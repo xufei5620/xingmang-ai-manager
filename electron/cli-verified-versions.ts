@@ -65,11 +65,11 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.291',
-      verifiedAt: '2026-10-06',
+      version: '2.1.296',
+      verifiedAt: '2026-10-13',
       verifiedSites: [],
-      note: '当前 npm latest;2.1.278~2.1.291 没有新的网关回归,修了中转断流被当成完成、重复流事件让工具调用跑两遍、工具返回非文本后每轮 400、网关拒收 structured outputs 时标题与记忆失败、网关拒收 beta 头时请求失败,2.1.291 修了 2.1.288 起退出时丢最后几条消息;2.1.285 起接自定义 ANTHROPIC_BASE_URL 时上下文按 1M 算(以前 200K),中转支持 1M,配置不压',
-      userNote: '修好了几个会让回答中途断掉、或者每次提问都失败的问题',
+      note: '当前 npm latest;2.1.292~2.1.296 没有新的网关回归,修了网关拒收 context-1m beta 时 [1m] 型号每次请求都失败、只支持 adaptive thinking 的型号在部分网关后数 token 失败;2.1.293 起 haiku 别名在自定义 ANTHROPIC_BASE_URL 下改发 claude-haiku-5-5(以前 claude-haiku-4-5-20251001),内置 claude-code-guide 帮手与 /model haiku 要中转有这个型号,后台小请求仍用主型号;/context 仍是 1M',
+      userNote: '修好了用大上下文型号时可能每次提问都失败的问题，长对话压缩后也不会再把做完的事重做一遍',
     },
     blocked: [
       {
@@ -86,11 +86,11 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   codex: {
     recommended: {
-      version: '0.160.1',
-      verifiedAt: '2026-10-06',
+      version: '0.162.1',
+      verifiedAt: '2026-10-13',
       verifiedSites: [],
-      note: '当前 npm latest,随包型号名单 rust-v0.160.0 与 rust-v0.160.1 逐字相同;0.157~0.160.1 修了 Windows 沙箱在普通路径上失败、后台程序弹黑色窗口、重连后排队消息重复发送,未见与自定义 model_providers / base_url 相关的回归;0.157.0 起默认起后台服务,模板的 daemon_auto_start = false 与启动参数 --no-daemon 在 0.160.1 上仍然认',
-      userNote: 'Windows 上不再一闪一闪冒出黑色窗口，断线重连后没发出去的话也会接着发',
+      note: '当前 npm latest,随包型号名单换成 rust-v0.162.1(只删了已废弃的 instructions_variables: null,其余逐字相同);0.161.0~0.162.1 修了 Windows 10 盘符路径读不到、服务端繁忙时过早报错、后台服务功能设置不一致导致起不来,未见与自定义 model_providers / base_url 相关的回归;模板显式写了 model,0.161.0 改默认型号不影响;daemon_auto_start = false 与 --no-daemon 在 0.162.1 上仍然认',
+      userNote: '修好了 Windows 10 上读不到某些盘里文件、服务繁忙时太早放弃的问题',
     },
     blocked: [
       {
@@ -102,8 +102,8 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   grok: {
     recommended: {
-      version: '1.0.46',
-      verifiedAt: '2026-10-05',
+      version: '1.0.52',
+      verifiedAt: '2026-10-13',
       verifiedSites: [],
       note: '当前 npm latest 与 xAI stable;没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效',
       userNote: '跟上官方最新的稳定版，画图、起标题照旧走当前账号',

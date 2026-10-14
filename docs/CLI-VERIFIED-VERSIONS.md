@@ -325,10 +325,10 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.291`（2026-10-06） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291 的依据见下文 |
-| Codex CLI | `0.160.1`（2026-10-06） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1 的依据见下文 |
+| Claude Code | `2.1.296`（2026-10-13） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296 的依据见下文 |
+| Codex CLI | `0.162.1`（2026-10-13） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1 的依据见下文 |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
-| Grok CLI | `1.0.46`（2026-10-05） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44 与 1.0.46 各一遍，见下文） |
+| Grok CLI | `1.0.52`（2026-10-13） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52 各一遍，见下文） |
 
 四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
 
@@ -440,6 +440,28 @@ other than 400, or together with a second beta*；2.1.291 修了 2.1.288 起退�
 回复，请求体字段、20 个工具、只带 `Authorization` 都和 2.1.289 一样；`/context` 是 `2k / 1m`，
 写了 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 是 `2k / 200k`，退路照样管用。
 
+**2.1.291 → 2.1.296（2026-10-13 补做 10-12 的每周巡检）：没有新的网关回归，但 Haiku 别名换了型号。**
+2.1.292~2.1.296 逐条读过，和接中转有关的：
+
+- 2.1.295：*Fixed every request failing on a `[1m]` model when a gateway, Bedrock, Vertex or Foundry refuses
+  the context-1m beta; Claude Code now resends without it*。中转拒收这个 beta 时不再每次都失败。
+- 2.1.296：*Fixed token counts for Haiku 5.5 and other models that take only adaptive thinking, which failed
+  behind some gateways*。
+- 2.1.293：*Added Claude Haiku 5.5 (`claude-haiku-5-5`), now the default Haiku model on the Anthropic API*。
+  **这一条碰到我们**：接自定义 `ANTHROPIC_BASE_URL` 时 Claude Code 把自己当成直连 Anthropic，`haiku`
+  别名从 `claude-haiku-4-5-20251001` 改发 `claude-haiku-5-5`（沙箱 `--model haiku -p hi` 两版对照）。
+  用到这个别名的是内置的 `claude-code-guide` 帮手（定义里写死 `model: "haiku"`）、`/model haiku` 和
+  自定义子代理里写 `model: haiku` 的；后台小请求（`getSmallFastModel`）在自定义地址下用的是主型号，
+  不受影响。中转没开 `claude-haiku-5-5` 时，这几处会报「型号不存在」（假接口回 404）或直接把中转的
+  错误原样打出（回 400/503 时），**不会**退回 4.5。要中转把 `claude-haiku-5-5` 开出来；本软件不写
+  `ANTHROPIC_DEFAULT_HAIKU_MODEL`（它在「别家配置挪开」的名单里，见 `config-files.ts`）。
+- 其余大多是 Claude apps gateway（Anthropic 自家网关产品，不是我们这种自定义地址）、钩子、MCP 与
+  Artifact 的改动，碰不到我们写的配置；没有一条改 `permissions.defaultMode`、`permissions.deny`、
+  `skipWebFetchPreflight`、`modelPicker`、`effortLevel`、`DISABLE_AUTOUPDATER`。
+
+沙箱同上：`claude -p "hi"` 的请求与 2.1.291 逐字相同（同一组 beta 头、20 个工具、只带 `Authorization`）；
+`/context` 仍是 `2k / 1m`。没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
 每个模型用哪套系统提示词、哪些工具、支持哪些推理档位，`/model` 菜单也只列这份目录；这两个模型
@@ -497,6 +519,34 @@ Grok 没有可读的变更记录（x.ai 与 docs.x.ai 在沙箱里连不上，np
 
 没做的：两家都没有中转上的真实请求（secret 没配，`verifiedSites` 仍为空）；Grok 1.0.46 Windows 版挑
 哪个 shell 没有重读二进制字符串。
+
+**Codex 0.160.1 → 0.162.1、Grok 1.0.46 → 1.0.52（2026-10-13 补做 10-12 的每周巡检）。**
+
+Codex 区间内的正式版是 0.161.0、0.162.0、0.162.1，逐个读了 `rust-v<版本>` 的 release note，
+没有一条是对自定义 `model_providers` / `base_url` / `wire_api` 的回归。和本产品有关的：
+
+- 0.161.0：随包名单与 Bedrock 名单的默认型号换成 GPT-6.1 Sol——模板显式写了 `model`，碰不到；
+  daemon 拉起的后台服务默认开统计——我们 `daemon_auto_start = false` 且 `[analytics] enabled = false`；
+  Responses 重试与 WebSocket 退回 HTTP 时听服务端的重试建议，繁忙时不再过早报错。
+- 0.162.0：自定义 Responses 兼容 provider 多了「联网搜索」「远程压缩」两项能力开关（不写就是旧行为）；
+  新开 TUI 会话用服务端给的型号与推理摘要默认值，但启动时显式给的照旧优先；恢复 Windows 10 上按盘符读文件。
+- 0.162.1：后台服务的功能设置与命令行默认值不一致时不再起不来。
+
+随包型号名单换成 `rust-v0.162.1`（sha256 `943ca7fe…2c2b`）：11 个型号一个不差，和 `rust-v0.160.0` 的唯一差别是
+每个型号的 `model_messages` 里删掉了已废弃的 `"instructions_variables": null`（上游 `openai_models.rs` 里它从
+0.147.0 起就是 `Option`，缺了按没有处理），其余逐字相同，`codex-model-catalog.test.ts` 全过。沙箱实测（做法同上）：
+0.162.1 的 `codex debug models` 列出全部 11 个型号；`codex exec` 用 `gpt-6.1-sol` 拿到回复，没有
+`Model metadata ... not found`，推理摘要是 `none`，出网记录与 0.160.1 一模一样；`codex --no-daemon exec`
+照常跑（`--no-daemon` 仍要放在子命令前）；0.160.1 读新名单也照常。
+
+Grok：没有可读的变更记录。npm 上 1.0.47~1.0.55 都发了，`latest` 与 xAI stable 都在 1.0.52，所以选它。
+在 1.0.52 上按上一段同样的四项重跑，结果与 1.0.46 逐条相同：有 `allowed_models` 时 `grok models` 只列
+`grok`、去掉后多出 `grok-4.6`、`grok-4.5`（K3）；起标题那次请求是 `relay-x`、去掉 `session_summary`
+变回 `grok-4.6`（K4）；`image_gen` 打到本地 `POST /v1/images/generations`、去掉
+`[endpoints] xai_api_base_url` 后出网代理记下 `CONNECT api.x.ai:443`（K1）；一轮 `-p` 触发
+`UserPromptSubmit`、`Stop`、`SessionEnd`，配置无解析错误（钩子）。
+
+没做的：中转上的真实请求（`verifiedSites` 仍为空）；Grok 1.0.52 Windows 版挑哪个 shell 没有重读二进制字符串。
 
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：
