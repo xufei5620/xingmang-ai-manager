@@ -217,6 +217,7 @@ import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
+import type { AccountGroupHints } from './managed-cli-groups'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath, removeDirectoryFromWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
@@ -2086,6 +2087,12 @@ if (!hasSingleInstanceLock) {
       })
       : null
     serviceStatusMonitor?.start()
+    // 分组对照跟着服务状态文件走：正在读就等这一次读完，不为它另发请求；这次没读到就用上一次读成功的那份。
+    async function readAccountGroupHints(): Promise<AccountGroupHints | null> {
+      if (!serviceStatusMonitor) return null
+      await serviceStatusMonitor.settled()
+      return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
+    }
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
@@ -2597,7 +2604,7 @@ if (!hasSingleInstanceLock) {
       // AI 工作区查模型是星芒自己的请求：「自动」时直连没走通当场改走默认线路。
       const chatCredentials = createChatCredentialCoordinator({ accountService, keyStore: chatKeyStore, modelService: {
         fetchAvailableModels: (apiKey, options) => systemService.fetchAvailableModels(apiKey, { ...options, routed: true }),
-      } })
+      }, loadAccountGroupHints: readAccountGroupHints })
       // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
       const aiOutputPlacement = chooseAiOutputRoot({
         isPackaged: app.isPackaged,
@@ -3321,12 +3328,7 @@ if (!hasSingleInstanceLock) {
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
-      // 分组对照跟着服务状态文件走：正在读就等这一次读完，不为它另发请求；这次没读到就用上一次读成功的那份。
-      accountGroupHints: async () => {
-        if (!serviceStatusMonitor) return null
-        await serviceStatusMonitor.settled()
-        return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
-      },
+      accountGroupHints: readAccountGroupHints,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,

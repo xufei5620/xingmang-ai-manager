@@ -8,12 +8,16 @@ import type { StoredChatKey } from './chat-key-store'
 import type { RelayBackendClient } from './relay-backend'
 import type { NewApiAccountKey } from './new-api-client'
 import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
+import type { AccountGroupHints } from './managed-cli-groups'
 
 function setup(overrides: {
   userId?: number
   cached?: StoredChatKey[]
   storeFailure?: Error
   keys?: NewApiAccountKey[]
+  groups?: string[]
+  siteId?: 'solov' | 'solov-api'
+  loadAccountGroupHints?: () => Promise<AccountGroupHints | null>
 } = {}) {
   let userId = overrides.userId ?? 7
   let sessionRevision = 0
@@ -22,17 +26,16 @@ function setup(overrides: {
   const accountService = {
     getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })),
     getSessionRevision: vi.fn(() => sessionRevision),
-    listUsableGroups: vi.fn(async () => [
-      { name: 'codex-pro', description: '', ratio: 1 },
-      { name: '生图分组', description: '', ratio: 2 },
-    ]),
+    getActiveSiteId: vi.fn(() => overrides.siteId ?? 'solov'),
+    listUsableGroups: vi.fn(async () => (overrides.groups ?? ['codex-pro', '生图分组'])
+      .map((name, index) => ({ name, description: '', ratio: index + 1 }))),
     provisionCliKey: vi.fn(async (input: { name?: string; group?: string } = {}) => ({
       id: 10,
       name: input.name ?? 'generated',
       key: `sk-${userId}-${input.group}`,
     })),
     listKeys: vi.fn(async () => ({ page: 1, pageSize: 100, total: overrides.keys?.length ?? 0, keys: overrides.keys ?? [] })),
-  } as unknown as Pick<RelayBackendClient, 'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'listKeys'>
+  } as unknown as Pick<RelayBackendClient, 'getSessionState' | 'getActiveSiteId' | 'listUsableGroups' | 'provisionCliKey' | 'listKeys'>
   const store: ChatKeyStoreLike = {
     read: vi.fn(async (targetUserId) => cached.filter((entry) => entry.userId === targetUserId)),
     captureRevision: vi.fn(() => revision),
@@ -54,7 +57,12 @@ function setup(overrides: {
       ? ['gpt-image-2', 'jimeng_high_aes_general_v21_L']
       : ['gpt-5.4']),
   }
-  const coordinator = createChatCredentialCoordinator({ accountService, keyStore: store, modelService })
+  const coordinator = createChatCredentialCoordinator({
+    accountService,
+    keyStore: store,
+    modelService,
+    ...(overrides.loadAccountGroupHints ? { loadAccountGroupHints: overrides.loadAccountGroupHints } : {}),
+  })
   return {
     coordinator,
     accountService,
@@ -114,6 +122,43 @@ describe('chat credential coordinator', () => {
       'gpt-image-1',
       'jimeng_high_aes_general_v21_L',
     ])
+  })
+
+  it('curates the renamed image group from the group map without a client release', async () => {
+    const loadAccountGroupHints = vi.fn(async () => ({ image: ['画图-新名字', '图片模型-中转/订阅'] }))
+    const context = setup({ groups: ['codex-pro', '画图-新名字'], loadAccountGroupHints })
+    vi.mocked(context.modelService.fetchAvailableModels).mockResolvedValue(['gpt-4o', 'gpt-image-1', 'gpt-image-2'])
+
+    await expect(context.coordinator.prepareGroup('画图-新名字')).resolves.toMatchObject({
+      models: ['gpt-image-2', 'gpt-image-1'],
+    })
+    await expect(context.coordinator.prepareGroup('codex-pro')).resolves.toMatchObject({
+      models: ['gpt-4o', 'gpt-image-1', 'gpt-image-2'],
+    })
+    expect(loadAccountGroupHints).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps listing every model when the group map cannot be read', async () => {
+    const context = setup({
+      groups: ['画图-新名字'],
+      loadAccountGroupHints: vi.fn(async () => { throw new Error('service status unavailable') }),
+    })
+    vi.mocked(context.modelService.fetchAvailableModels).mockResolvedValue(['gpt-4o', 'gpt-image-2'])
+
+    await expect(context.coordinator.prepareGroup('画图-新名字')).resolves.toMatchObject({
+      models: ['gpt-4o', 'gpt-image-2'],
+    })
+  })
+
+  it('ignores the xm group map for the legacy relay account', async () => {
+    const loadAccountGroupHints = vi.fn(async () => ({ image: ['openai'] }))
+    const context = setup({ siteId: 'solov-api', groups: ['openai'], loadAccountGroupHints })
+    vi.mocked(context.modelService.fetchAvailableModels).mockResolvedValue(['gpt-4o', 'gpt-image-2'])
+
+    await expect(context.coordinator.prepareGroup('openai')).resolves.toMatchObject({
+      models: ['gpt-4o', 'gpt-image-2'],
+    })
+    expect(loadAccountGroupHints).not.toHaveBeenCalled()
   })
 
   it('rejects groups not returned by the server', async () => {
