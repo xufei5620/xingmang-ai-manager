@@ -2,6 +2,7 @@ import { buildCliKeyName } from './new-api-client'
 import { chatKeyQuotaExhaustedMessage, findAccountKeyById, isKeyQuotaExhaustedMessage } from './account-key-quota'
 import { isCappedKeyUsedUp } from './connection-check'
 import { selectAiChatModelsForGroup } from './ai-chat-protocol'
+import { loadAccountGroupHints, type AccountGroupHints } from './managed-cli-groups'
 import type { RelayBackendClient } from './relay-backend'
 import type { StoredChatKey } from './chat-key-store'
 
@@ -98,8 +99,21 @@ export function createChatCredentialCoordinator(options: {
     'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listKeys'>
   modelService: ChatModelServiceLike
   keyStore: ChatKeyStoreLike
+  /**
+   * 服务状态文件里的分组对照（managed-cli-groups.ts）。「画图」那一项列的分组按图片分组挑模型，
+   * 站上改了图片分组的本名也认得出。缺省或读不到 = 只认 ai-chat-protocol.ts 里写死的名字。
+   */
+  loadAccountGroupHints?: () => Promise<AccountGroupHints | null>
 }): ChatCredentialCoordinator {
   const { accountService, modelService, keyStore } = options
+
+  async function loadImageGroupNames(): Promise<readonly string[]> {
+    const hints = await loadAccountGroupHints({
+      getAccountGroupHints: options.loadAccountGroupHints,
+      getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
+    })
+    return hints?.image ?? []
+  }
 
   async function listGroups(): ReturnType<RelayBackendClient['listUsableGroups']> {
     authenticatedSession(accountService)
@@ -109,7 +123,10 @@ export function createChatCredentialCoordinator(options: {
 
   async function resolveOperation(userId: number, revision: number, group: string): Promise<ResolvedChatCredential> {
     assertSameSession(accountService, userId, revision)
-    const usableGroups = await accountService.listUsableGroups()
+    const [usableGroups, imageGroups] = await Promise.all([
+      accountService.listUsableGroups(),
+      loadImageGroupNames(),
+    ])
     assertSameSession(accountService, userId, revision)
     if (!usableGroups.some((entry) => entry.name === group)) {
       throw new Error(`当前账号不可使用分组「${group}」`)
@@ -122,6 +139,7 @@ export function createChatCredentialCoordinator(options: {
         const models = selectAiChatModelsForGroup(
           group,
           await modelService.fetchAvailableModels(cached.key, { bypassCache: true }),
+          imageGroups,
         )
         assertSameSession(accountService, userId, revision)
         return {
@@ -168,6 +186,7 @@ export function createChatCredentialCoordinator(options: {
       const models = selectAiChatModelsForGroup(
         group,
         await modelService.fetchAvailableModels(provisioned.key, { bypassCache: true }),
+        imageGroups,
       )
       assertSameSession(accountService, userId, revision)
 

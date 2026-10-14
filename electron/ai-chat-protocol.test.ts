@@ -90,6 +90,24 @@ describe('AI model capabilities', () => {
     ])).toEqual(['gpt-image-2', 'gemini-3.1-flash-image'])
   })
 
+  it('curates the image group under its renamed xm name as well as the old one', () => {
+    const models = ['gpt-4o', 'gpt-image-1', 'gpt-image-2', 'jimeng_high_aes_general_v21_L']
+    const curated = ['gpt-image-2', 'gpt-image-1', 'jimeng_high_aes_general_v21_L']
+
+    expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
+    expect(selectAiChatModelsForGroup('图片模型-中转/订阅', models)).toEqual(curated)
+    expect(selectAiChatModelsForGroup('视频模型', models)).toEqual(models)
+  })
+
+  it('curates groups the service status group map lists for images', () => {
+    const models = ['gpt-4o', 'gpt-image-2']
+
+    expect(selectAiChatModelsForGroup('画图', models, ['画图', '图片模型'])).toEqual(['gpt-image-2'])
+    expect(selectAiChatModelsForGroup(' 画图 ', models, ['画图'])).toEqual(['gpt-image-2'])
+    expect(selectAiChatModelsForGroup('GPT', models, ['画图'])).toEqual(models)
+    expect(selectAiChatModelsForGroup('画图', models)).toEqual(models)
+  })
+
   it('retains verified video models for the image group only when the server returns them', () => {
     expect(selectAiChatModelsForGroup('生图分组', [
       'grok-imagine-video',

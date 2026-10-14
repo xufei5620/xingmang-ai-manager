@@ -521,7 +521,9 @@ export function isImageModel(model: string): boolean {
 }
 
 export const IMAGE_SKILL_GROUP_NAMES = ['图片模型-中转/订阅', '生图分组'] as const
-const IMAGE_GROUP_NAMES = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
+// xm 站 2026-10-14 把「图片模型-中转/订阅」改成本名「图片模型」，老名字留到老版本退场才删。
+// 这里只管对话和画布在图片分组里列哪些模型；画图技能挑哪个分组另走分组对照（managed-cli-groups.ts）。
+const IMAGE_GROUP_NAMES = new Set<string>(['图片模型', ...IMAGE_SKILL_GROUP_NAMES])
 const IMAGE_GROUP_MODEL_ORDER = [
   'gpt-image-2',
   'gemini-3.1-flash-image',
@@ -537,7 +539,15 @@ const IMAGE_GROUP_MODEL_ORDER = [
   'minimax-h3-mini',
 ] as const
 
-export function selectAiChatModelsForGroup(group: string, models: readonly string[]): string[] {
+/**
+ * imageGroups：服务状态文件分组对照里「画图」那一项列的名字。站上以后再改图片分组的本名，
+ * 发布者改对照就认得出，不用等发版；缺省 = 只认上面写死的名字。
+ */
+export function selectAiChatModelsForGroup(
+  group: string,
+  models: readonly string[],
+  imageGroups: readonly string[] = [],
+): string[] {
   const unique = [...new Set(models.map((model) => model.trim()).filter(Boolean))]
   const visible = unique.filter((model) => {
     try {
@@ -546,7 +556,8 @@ export function selectAiChatModelsForGroup(group: string, models: readonly strin
       return false
     }
   })
-  if (!IMAGE_GROUP_NAMES.has(group.trim())) return visible
+  const name = group.trim()
+  if (!IMAGE_GROUP_NAMES.has(name) && !imageGroups.includes(name)) return visible
 
   const available = new Set(visible)
   return IMAGE_GROUP_MODEL_ORDER.filter((model) => available.has(model))
