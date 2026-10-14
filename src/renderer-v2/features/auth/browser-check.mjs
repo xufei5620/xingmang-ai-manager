@@ -1073,7 +1073,9 @@ test('welcome fits a 1280 by 690 window and scrolls to the support code in a 560
     assert.ok(fit.hud <= fit.scene, 'the orbit labels stay inside the orbit scene')
     await page.setViewportSize({ width: 1280, height: 560 })
     const support = page.getByTestId('welcome-support')
-    await support.scrollIntoViewIfNeeded()
+    // 直接把外面那层滚到底：scrollIntoViewIfNeeded 按整数像素停，字高一变（白底样子小字 12.5→13）
+    // 就可能停在卡片下沿差一两像素的地方，查的其实是滚动取整而不是「能不能滚到」。
+    await page.locator('.auth-window-content').evaluate((element) => { element.scrollTop = element.scrollHeight })
     const box = await support.boundingBox()
     // 滚到底时卡片下沿可能落在半个像素上。
     assert.ok(box.y >= 0 && box.y + box.height <= 561, `the support card can be scrolled into view at 560: ${JSON.stringify(box)}`)

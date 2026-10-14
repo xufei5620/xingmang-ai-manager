@@ -22,7 +22,8 @@ async function open({ theme = 'light', forced = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
   if (forced) await page.emulateMedia({ forcedColors: 'active' })
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
-  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?theme=${theme}`,
+  // 首页能用的「打开」是普通按钮，只有要动手的「配置」用主色；装了没配的外接客户端保证首页有一颗主按钮可查。
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?theme=${theme}&externalInstalled=1`,
     (timeout) => waitForFixtureMount(page, { timeout, what: 'the contrast fixture', ready: () => Boolean(window.v2Test) && Boolean(document.querySelector('.v2-nav-item')) }),
     { label: 'contrast fixture' })
   return page

@@ -278,19 +278,25 @@ test('account header names the current account, switches and refreshes from two 
     )
     const avatar = page.getByTestId('account-profile-avatar')
     assert.equal(await avatar.innerText(), '本')
-    assert.deepEqual(
-      await avatar.evaluate((element) => ({
+    // 白底样子：头像是主色的浅底配主色字，跟着皮肤走，不再写死藏青底金字。
+    const avatarLook = await avatar.evaluate((element) => {
+      const probe = document.createElement('span')
+      probe.style.background = 'var(--accent-soft)'
+      probe.style.color = 'var(--accent)'
+      document.body.append(probe)
+      const expected = { background: getComputedStyle(probe).backgroundColor, color: getComputedStyle(probe).color }
+      probe.remove()
+      return {
         width: element.getBoundingClientRect().width,
         height: element.getBoundingClientRect().height,
         background: getComputedStyle(element).backgroundColor,
         color: getComputedStyle(element).color,
-      })),
-      {
-        width: 56,
-        height: 56,
-        background: 'rgb(11, 31, 59)',
-        color: 'rgb(212, 163, 85)',
-      },
+        expected,
+      }
+    })
+    assert.deepEqual(
+      { width: avatarLook.width, height: avatarLook.height, background: avatarLook.background, color: avatarLook.color },
+      { width: 56, height: 56, ...avatarLook.expected },
     )
     // 页头不再放头像按钮；「刷新账号资料」并进页头唯一的「刷新」。
     assert.equal(await page.getByTestId('account-identity-menu').count(), 0)
