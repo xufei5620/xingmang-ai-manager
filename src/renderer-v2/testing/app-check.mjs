@@ -3706,16 +3706,16 @@ test('large text switch enlarges the small print and Ctrl plus / minus / 0 step 
     assert.deepEqual((await saves()).at(-1), { version: 2, largeText: true })
 
     await page.keyboard.press('Control+Equal')
-    await waitForToast(page, '界面放大到 110%，按 Ctrl 0 恢复')
+    await waitForToast(page, '界面缩放 110%，按 Ctrl 0 恢复自动')
     await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '110' })
     await settings.getByRole('button', { name: '110%', pressed: true }).waitFor()
     await page.keyboard.press('Control+Equal')
-    await waitForToast(page, '界面已经放到最大的 110%，按 Ctrl 0 恢复')
+    await waitForToast(page, '已经是最大的 110%')
     await page.keyboard.press('Control+Minus')
-    await waitForToast(page, '界面缩小到 100%，按 Ctrl 0 恢复')
+    await waitForToast(page, '界面缩放 100%，按 Ctrl 0 恢复自动')
     await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '100' })
     await page.keyboard.press('Control+0')
-    await waitForToast(page, '界面缩放已恢复为自动')
+    await waitForToast(page, '界面缩放已恢复自动')
     await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: 'auto' })
     await clean(page)
   } finally { await page.close() }
@@ -6999,9 +6999,14 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
     await waitForFixtureReady(page)
     const tour = page.getByTestId('shell-guide-tip')
     await tour.waitFor()
-    for (const label of ['下一步', '下一步', '开始使用'])
+    // v4：搜索框那步气泡在下面，侧栏两步气泡在右边；当前指着的那一项描金边，看完就撤掉。
+    for (const [label, side] of [['下一步', 'below'], ['下一步', 'right'], ['开始使用', 'right']]) {
+      await expect(tour).toHaveAttribute('data-side', side)
+      await expect(page.locator('[data-coach-target="true"]')).toHaveCount(1)
       await tour.getByRole('button', { name: label, exact: true }).click()
+    }
     assert.equal(await tour.count(), 0)
+    assert.equal(await page.locator('[data-coach-target]').count(), 0)
     await page.reload()
     await waitForFixtureReady(page)
     await page.getByTestId('tool-row-claude').waitFor()

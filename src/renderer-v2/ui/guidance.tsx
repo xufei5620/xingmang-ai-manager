@@ -56,12 +56,37 @@ export function Tooltip({ text, children, testId }: BaseProps & { text: string; 
   </span>
 }
 
-export function Coachmark({ open, target, title, body, step, count, onNext, onClose, testId }: BaseProps & {
-  open: boolean; target: string; title: string; body: string; step: number; count: number; onNext(): void; onClose(): void
+// v4: the bubble points at its target with an arrow and outlines the target
+// itself, so the reader's eye lands on the control being explained. A step can
+// ask for the bubble beside its target (rail items, where below would cover the
+// next rows); otherwise it goes below, or above when the window is too short.
+// Beside falls back to below/above when the window is too narrow for it.
+type CoachSide = 'below' | 'above' | 'right'
+export type CoachPlacement = 'below' | 'right'
+const coachGap = 12
+const coachEdge = 8
+const coachArrowInset = 16
+
+function placeCoachmark(rect: DOMRect, bubble: DOMRect, placement: CoachPlacement): { side: CoachSide; top: number; left: number; arrow: number } {
+  if (placement === 'right' && innerWidth - rect.right - coachGap - coachEdge >= bubble.width) {
+    const centre = rect.top + rect.height / 2
+    const top = Math.max(coachEdge, Math.min(centre - 22, innerHeight - bubble.height - coachEdge))
+    return { side: 'right', top, left: rect.right + coachGap + 2, arrow: Math.max(coachArrowInset, Math.min(centre - top, bubble.height - coachArrowInset)) }
+  }
+  const centre = rect.left + rect.width / 2
+  const left = Math.max(coachEdge, Math.min(centre - bubble.width / 2, innerWidth - bubble.width - coachEdge))
+  const arrow = Math.max(coachArrowInset, Math.min(centre - left, bubble.width - coachArrowInset))
+  if (rect.bottom + coachGap + bubble.height + coachEdge <= innerHeight) return { side: 'below', top: rect.bottom + coachGap, left, arrow }
+  return { side: 'above', top: Math.max(coachEdge, rect.top - coachGap - bubble.height), left, arrow }
+}
+
+export function Coachmark({ open, target, placement = 'below', title, body, step, count, onNext, onClose, testId }: BaseProps & {
+  open: boolean; target: string; placement?: CoachPlacement; title: string; body: string; step: number; count: number; onNext(): void; onClose(): void
 }) {
   const t = useUiText()
   const panel = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState<CSSProperties>({ visibility: 'hidden' })
+  const [side, setSide] = useState<CoachSide>('below')
   const titleId = useId()
   const close = useRef(onClose); close.current = onClose
   useLayoutEffect(() => {
@@ -69,21 +94,32 @@ export function Coachmark({ open, target, title, body, step, count, onNext, onCl
     if (!open || !element) return
     element.setAttribute('popover', 'manual')
     element.showPopover()
+    let marked: HTMLElement | null = null
+    const mark = (next: HTMLElement | null) => {
+      if (marked === next) return
+      marked?.removeAttribute('data-coach-target')
+      next?.setAttribute('data-coach-target', 'true')
+      marked = next
+    }
     const place = () => {
-      const rect = visibleBounds(document.querySelector<HTMLElement>(target))
-      if (!rect) { setPosition({ visibility: 'hidden' }); return }
-      const bounds = element.getBoundingClientRect()
-      setPosition({ top: rect.bottom + bounds.height + 8 < innerHeight ? rect.bottom + 8 : Math.max(8, rect.top - bounds.height - 8), left: Math.max(8, Math.min(rect.left, innerWidth - bounds.width - 8)), visibility: 'visible' })
+      const node = document.querySelector<HTMLElement>(target)
+      const rect = visibleBounds(node)
+      if (!rect) { mark(null); setPosition({ visibility: 'hidden' }); return }
+      mark(node)
+      const placed = placeCoachmark(rect, element.getBoundingClientRect(), placement)
+      element.style.setProperty(placed.side === 'right' ? '--coach-arrow-y' : '--coach-arrow-x', placed.arrow + 'px')
+      setSide(placed.side)
+      setPosition({ top: placed.top, left: placed.left, visibility: 'visible' })
     }
     const observer = new MutationObserver(place)
     observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'inert', 'class'] })
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); close.current() } }
     place(); document.addEventListener('keydown', escape, true)
     window.addEventListener('scroll', place, true); window.addEventListener('resize', place)
-    return () => { observer.disconnect(); document.removeEventListener('keydown', escape, true); window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); if (element.matches(':popover-open')) element.hidePopover() }
-  }, [open, target, step])
+    return () => { observer.disconnect(); mark(null); document.removeEventListener('keydown', escape, true); window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); if (element.matches(':popover-open')) element.hidePopover() }
+  }, [open, target, placement, step])
   if (!open) return null
-  return <div ref={panel} role="region" aria-labelledby={titleId} className="xm-coachmark" style={position} data-testid={testId}>
-    <small>{step} / {count}</small><h2 id={titleId}>{title}</h2><p>{body}</p><footer><Button size="sm" variant="ghost" onClick={onClose}>{t('skip')}</Button><Button size="sm" variant="primary" onClick={onNext}>{t(step === count ? 'start' : 'next')}</Button></footer>
+  return <div ref={panel} role="region" aria-labelledby={titleId} className="xm-coachmark" data-side={side} style={position} data-testid={testId}>
+    <small>{step} / {count}</small><h2 id={titleId}>{title}</h2><p>{body}</p><footer><Button size="xs" variant="ghost" onClick={onClose}>{t('skip')}</Button><Button size="xs" variant="primary" onClick={onNext}>{t(step === count ? 'start' : 'next')}</Button></footer>
   </div>
 }

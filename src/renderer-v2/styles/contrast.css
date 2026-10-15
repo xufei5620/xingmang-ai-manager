@@ -66,7 +66,7 @@
   /* The option row holds its own buttons, which repaint as ButtonFace and would
      cover a background fill, so the selection is an outline around the row. */
   :root .acceleration-line-option.is-selected { outline: 2px solid Highlight; outline-offset: -2px; }
-  :root :is(.v2-business-payment.is-selected, .v2-skin-chip.is-active) { outline: 2px solid Highlight; outline-offset: 1px; }
+  :root .v2-business-payment.is-selected { outline: 2px solid Highlight; outline-offset: 1px; }
   /* Switch track and thumb are background fills on a borderless button. */
   :root .xm-switch::before { box-sizing: border-box; border: 2px solid ButtonText; background: Canvas; }
   :root .xm-switch i { background: ButtonText; }

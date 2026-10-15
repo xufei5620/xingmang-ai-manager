@@ -21,18 +21,18 @@ describe('ui scale shortcut', () => {
   })
 
   it('steps between 90, 100 and 110 treating automatic as 100', () => {
-    expect(nextUiScale(undefined, 'larger', 'win')).toEqual({ next: '110', message: '界面放大到 110%，按 Ctrl 0 恢复' })
-    expect(nextUiScale('auto', 'smaller', 'win')).toEqual({ next: '90', message: '界面缩小到 90%，按 Ctrl 0 恢复' })
+    expect(nextUiScale(undefined, 'larger', 'win')).toEqual({ next: '110', message: '界面缩放 110%，按 Ctrl 0 恢复自动' })
+    expect(nextUiScale('auto', 'smaller', 'win')).toEqual({ next: '90', message: '界面缩放 90%，按 Ctrl 0 恢复自动' })
     expect(nextUiScale('90', 'larger', 'win').next).toBe('100')
-    expect(nextUiScale('110', 'smaller', 'mac')).toEqual({ next: '100', message: '界面缩小到 100%，按 ⌘ 0 恢复' })
+    expect(nextUiScale('110', 'smaller', 'mac')).toEqual({ next: '100', message: '界面缩放 100%，按 ⌘ 0 恢复自动' })
   })
 
   it('stays put at either end and says so', () => {
-    expect(nextUiScale('110', 'larger', 'win')).toEqual({ next: null, message: '界面已经放到最大的 110%，按 Ctrl 0 恢复' })
-    expect(nextUiScale('90', 'smaller', 'win').next).toBeNull()
+    expect(nextUiScale('110', 'larger', 'win')).toEqual({ next: null, message: '已经是最大的 110%' })
+    expect(nextUiScale('90', 'smaller', 'win')).toEqual({ next: null, message: '已经是最小的 90%' })
   })
 
   it('resets to automatic', () => {
-    expect(nextUiScale('110', 'reset', 'mac')).toEqual({ next: 'auto', message: '界面缩放已恢复为自动' })
+    expect(nextUiScale('110', 'reset', 'mac')).toEqual({ next: 'auto', message: '界面缩放已恢复自动' })
   })
 })

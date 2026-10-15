@@ -984,7 +984,8 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
     const page = await open(`scenario=welcome&theme=${theme}&os=${os}`)
     try {
       await page.getByTestId('welcome-orbit-scene').waitFor()
-      assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), theme === 'dark' ? 'obsidian' : 'dawn')
+      // UI v4.0 has two palettes and no skins: the document follows data-theme alone.
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), undefined)
       assert.equal(await page.locator('.auth-orbit-satellite').count(), 3)
       assert.equal(await page.locator('.frame,.ptile,.welcome-preview-workbench').count(), 0)
       await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0))

@@ -51,14 +51,24 @@ test('Coachmark advances, never points at a hidden target, and can always be ski
     const trigger = page.getByTestId('gallery-coach-open');
     await trigger.click();
     const coach = page.getByTestId('gallery-coach');
+    // v4: the bubble sits below its target (above when the window has no room under it) with the
+    // arrow over the target's centre, and the target itself is outlined while it is being explained.
+    await page.waitForFunction(() => document.querySelector('[data-testid="gallery-coach"]')?.style.visibility === 'visible');
+    assert.equal(await trigger.getAttribute('data-coach-target'), 'true');
+    const [side, anchor, bubble, arrow] = await Promise.all([coach.getAttribute('data-side'), trigger.boundingBox(), coach.boundingBox(), coach.evaluate(el => parseFloat(el.style.getPropertyValue('--coach-arrow-x')))]);
+    if (side === 'below') assert.ok(bubble.y > anchor.y + anchor.height, 'the bubble opens below the target');
+    else { assert.equal(side, 'above'); assert.ok(bubble.y + bubble.height < anchor.y, 'the bubble opens above the target'); }
+    assert.ok(Math.abs(bubble.x + arrow - (anchor.x + anchor.width / 2)) <= 1, 'the arrow points at the target centre');
     await coach.getByRole('button', { name: '下一步' }).click();
     await coach.getByRole('heading', { name: '随时返回这里' }).waitFor();
     await trigger.evaluate((button) => { button.hidden = true });
     await coach.waitFor({ state: 'hidden' });
+    assert.equal(await trigger.getAttribute('data-coach-target'), null);
     await trigger.evaluate((button) => { button.hidden = false });
     await coach.waitFor();
     await coach.getByRole('button', { name: '跳过' }).click();
     await coach.waitFor({ state: 'hidden' });
+    assert.equal(await trigger.getAttribute('data-coach-target'), null);
   } finally { await page.close(); }
 });
 
@@ -109,15 +119,38 @@ test('Dialog traps focus, protects dirty backdrop/escape, preserves draft and re
     await dialog.getByRole('button', { name: '保存配置' }).focus(); await page.keyboard.press('Tab');
     assert.equal(await focused(dialog.getByRole('button', { name: '关闭', exact: true })), true);
     await page.getByLabel('配置草稿').fill('未保存内容');
+    // v4: a dirty close keeps the form in view and swaps the footer for a bar at the bottom.
+    const bar = dialog.locator('.xm-leave-bar');
     await page.mouse.click(8, 8);
+    await bar.getByText('有修改还没保存，关掉会丢掉这些修改').waitFor();
+    assert.equal(await bar.getAttribute('role'), 'alert');
+    assert.equal(await dialog.isVisible(), true);
+    assert.equal(await page.getByLabel('配置草稿').isVisible(), true);
+    assert.equal(await page.getByLabel('配置草稿').inputValue(), '未保存内容');
+    assert.equal(await dialog.getByRole('button', { name: '保存配置' }).isVisible(), false);
+    assert.equal(await focused(bar.getByRole('button', { name: '继续编辑' })), true);
+    // Esc on the bar means keep editing; the footer comes back.
+    await page.keyboard.press('Escape');
+    await bar.waitFor({ state: 'detached' });
+    assert.equal(await dialog.getByRole('button', { name: '保存配置' }).isVisible(), true);
+    assert.equal(await focused(page.getByLabel('配置草稿')), true);
+    await page.keyboard.press('Escape');
+    await bar.waitFor();
+    // A second close attempt while the bar is up shakes it instead of closing.
+    assert.doesNotMatch(await bar.getAttribute('class'), /is-nudged/);
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await dialog.locator('.xm-leave-bar.is-nudged').waitFor();
+    assert.equal(await dialog.isVisible(), true);
+    await bar.getByRole('button', { name: '继续编辑' }).click();
+    assert.equal(await page.getByLabel('配置草稿').inputValue(), '未保存内容');
+    // Chromium stops letting a page veto the <dialog> cancel event after a few Esc presses in a row;
+    // the dialog must stay open (and stay React's) however many times Esc goes back and forth.
+    for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape');
     assert.equal(await dialog.isVisible(), true);
     assert.equal(await page.getByLabel('配置草稿').inputValue(), '未保存内容');
     await page.keyboard.press('Escape');
-    await dialog.getByText('要放弃未保存的修改吗？').waitFor();
-    await dialog.getByRole('button', { name: '继续编辑' }).click();
-    assert.equal(await page.getByLabel('配置草稿').inputValue(), '未保存内容');
-    await page.keyboard.press('Escape');
-    await dialog.getByRole('button', { name: '放弃修改' }).click();
+    assert.doesNotMatch(await bar.getAttribute('class'), /is-nudged/);
+    await bar.getByRole('button', { name: '不保存' }).click();
     await dialog.waitFor({ state: 'detached' });
     assert.equal(await focused(trigger), true);
   } finally { await page.close(); }
@@ -189,6 +222,11 @@ test('Toast keeps three unique items and expires; reduced motion disables animat
     const toasts = page.getByTestId('gallery-toasts');
     assert.equal(await toasts.getByRole('status').count(), 3);
     assert.doesNotMatch(await toasts.innerText(), /第一条/);
+    // v4: toasts stack in the bottom-right corner above the status bar, each led by its tone mark.
+    const corner = await toasts.getByRole('status').last().boundingBox();
+    assert.ok(Math.abs(1280 - corner.x - corner.width - 16) <= 1, 'toasts hug the right edge');
+    assert.ok(900 - corner.y - corner.height >= 30, 'toasts clear the status bar');
+    assert.equal(await toasts.locator('.xm-toast > svg').count(), 3);
     await toasts.getByRole('status').first().waitFor({ state: 'detached', timeout: 4000 });
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.waitForFunction(() => document.documentElement.dataset.systemReducedMotion === 'true');
@@ -227,7 +265,7 @@ test('ToolRow uses six fixed columns, real brands and exact theme tokens across 
       const images = await page.locator('.xm-logo').evaluateAll(elements => elements.every(el => el.complete && el.naturalWidth > 0));
       assert.equal(images, true);
       const token = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().toUpperCase());
-      assert.equal(token, theme === 'dark' ? '#0B0C10' : '#FAF7EE');
+      assert.equal(token, theme === 'dark' ? '#101116' : '#FBFAF6');
       await page.screenshot({ path: 'artifacts/renderer-v2-components/' + os + '-' + theme + '.png', fullPage: true });
     } finally { await page.close(); }
   }

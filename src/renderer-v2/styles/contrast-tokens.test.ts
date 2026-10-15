@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 // Pure arithmetic over tokens.css: the renderer-v2 project runs without a DOM,
 // and the ratios only depend on the declared values, never on layout.
 const tokens = readFileSync(new URL('./tokens.css', import.meta.url), 'utf8')
+// The two v4 themes the high-contrast palettes have to cover completely.
+const themeTokens = readFileSync(new URL('../../../ui-spec/tokens.css', import.meta.url), 'utf8')
 
 type Rgb = [number, number, number]
 interface Rgba {
@@ -11,10 +13,10 @@ interface Rgba {
   alpha: number
 }
 
-function block(selector: string) {
-  const start = tokens.indexOf(`${selector} {`)
+function block(selector: string, source = tokens) {
+  const start = source.indexOf(`${selector} {`)
   if (start < 0) throw new Error(`missing block ${selector}`)
-  const body = tokens.slice(tokens.indexOf('{', start) + 1, tokens.indexOf('}', start))
+  const body = source.slice(source.indexOf('{', start) + 1, source.indexOf('}', start))
   const values = new Map<string, string>()
   for (const declaration of body.split(';')) {
     const colon = declaration.indexOf(':')
@@ -73,11 +75,10 @@ function palette(values: Map<string, string>) {
   return { solid, layered }
 }
 
-const surfaces = ['--win', '--rail', '--bg', '--panel-solid', '--panel-2', '--panel-hover', '--btn-2-bg', '--btn-2-hover', '--kbd-bg']
-const skins = ['obsidian', 'mist', 'aurora']
+const surfaces = ['--win', '--rail', '--bg', '--panel-solid', '--panel-2', '--panel-hover', '--btn-2-bg', '--btn-2-hover', '--kbd-bg', '--input', '--pop']
 
 describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
-  const values = block(`:root[data-theme="${theme}"].hc[data-skin]`)
+  const values = block(`:root[data-theme="${theme}"].hc`)
   const { solid, layered } = palette(values)
 
   function failures(pairs: Array<[string, Rgb, Rgb]>, minimum: number) {
@@ -86,12 +87,10 @@ describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
       .filter(([, value]) => value < minimum)
   }
 
-  it('overrides every color token a skin sets, so no skin color leaks through', () => {
-    for (const skin of skins) {
-      const skinTokens = block(`[data-theme="${theme}"][data-skin="${skin}"]`)
-      const missing = [...skinTokens.keys()].filter((name) => !values.has(name))
-      expect(missing, skin).toEqual([])
-    }
+  it('overrides every token the theme sets, so no tinted or translucent theme color leaks through', () => {
+    const themeValues = block(`[data-theme="${theme}"]`, themeTokens)
+    const missing = [...themeValues.keys()].filter((name) => !values.has(name))
+    expect(missing).toEqual([])
   })
 
   it('keeps all three text levels at 4.5:1 on every surface', () => {
@@ -107,10 +106,16 @@ describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
       ['accent-fg on accent', solid('--accent-fg'), solid('--accent')],
       ['accent-fg on accent-2', solid('--accent-fg'), solid('--accent-2')],
     ]
-    for (const surface of ['--rail', '--bg', '--panel-solid']) {
+    pairs.push(['pri-tx on pri', solid('--pri-tx'), solid('--pri')])
+    pairs.push(['toast-tx on toast', solid('--toast-tx'), solid('--toast')])
+    for (const surface of ['--rail', '--bg', '--panel-solid', '--pop']) {
       pairs.push([`accent on ${surface}`, solid('--accent'), solid(surface)])
+      pairs.push([`gold-tx on ${surface}`, solid('--gold-tx'), solid(surface)])
+      pairs.push([`num on ${surface}`, solid('--num'), solid(surface)])
       pairs.push([`accent on accent-soft over ${surface}`, solid('--accent'), layered('--accent-soft', surface)])
       pairs.push([`text on accent-soft over ${surface}`, solid('--text'), layered('--accent-soft', surface)])
+      pairs.push([`soft-tx on soft over ${surface}`, solid('--soft-tx'), layered('--soft', surface)])
+      pairs.push([`info-tx on info-bg over ${surface}`, solid('--info-tx'), layered('--info-bg', surface)])
     }
     expect(failures(pairs, 4.5)).toEqual([])
   })
@@ -118,9 +123,11 @@ describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
   it('keeps status colors readable on plain and tinted surfaces', () => {
     const pairs: Array<[string, Rgb, Rgb]> = []
     for (const tone of ['ok', 'warn', 'bad']) {
-      for (const surface of ['--bg', '--panel-solid', '--panel-2']) {
-        pairs.push([`${tone} on ${surface}`, solid(`--${tone}`), solid(surface)])
-        pairs.push([`${tone} on ${tone}-soft over ${surface}`, solid(`--${tone}`), layered(`--${tone}-soft`, surface)])
+      for (const surface of ['--bg', '--panel-solid', '--panel-2', '--pop']) {
+        for (const text of [`--${tone}`, `--${tone}-tx`]) {
+          pairs.push([`${text} on ${surface}`, solid(text), solid(surface)])
+          pairs.push([`${text} on ${tone}-soft over ${surface}`, solid(text), layered(`--${tone}-soft`, surface)])
+        }
       }
     }
     expect(failures(pairs, 4.5)).toEqual([])
@@ -128,12 +135,13 @@ describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
 
   it('draws borders, dividers and the focus ring at 3:1 against their surfaces', () => {
     const pairs: Array<[string, Rgb, Rgb]> = []
-    for (const line of ['--line', '--line-2', '--line-3', '--info']) {
+    for (const line of ['--line', '--line-2', '--line-3', '--info', '--focus', '--input-line', '--pop-line', '--gold', '--sw-on']) {
       for (const surface of ['--win', '--rail', '--bg', '--panel-solid', '--panel-2']) {
         pairs.push([`${line} on ${surface}`, solid(line), solid(surface)])
       }
     }
     pairs.push(['switch thumb on track', solid('--text-2'), solid('--panel-2')])
+    for (const icon of ['--toast-ok', '--toast-info', '--toast-warn']) pairs.push([`${icon} on toast`, solid(icon), solid('--toast')])
     expect(failures(pairs, 3)).toEqual([])
   })
 })

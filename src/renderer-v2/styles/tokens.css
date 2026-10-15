@@ -1,30 +1,30 @@
 @import "../../../ui-spec/tokens.css";
 
-/* Material values transcribed from work/prototype.css:184-223,320-339 and 99-beauty.css:35-36,59,92-93. */
+/* Component materials over the v4.0 palette (ui-spec/tokens.css). The primary
+   button paints --pri with its own highlight and glow, which is why it keeps a
+   shadow token of its own instead of borrowing the card one. */
 :root {
-  --control-primary-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 1px 2px rgba(0,0,0,.3), 0 6px 18px var(--accent-glow);
-  --control-primary-active-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 1px 2px rgba(0,0,0,.3), 0 2px 8px var(--accent-glow);
+  --control-primary-shadow: var(--pri-sh);
+  --control-primary-active-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 1px 2px rgba(0,0,0,.3);
   --control-secondary-shadow: inset 0 1px 0 rgba(255,255,255,.04);
   --control-segment-shadow: 0 1px 2px rgba(0,0,0,.25), inset 0 0 0 1px var(--line);
-  --control-danger-hover: rgba(255,107,107,.24);
+  --control-danger-hover: color-mix(in srgb, var(--bad) 22%, transparent);
   --control-primary-kbd-bg: rgba(0,0,0,.08);
   --control-primary-kbd-line: rgba(0,0,0,.12);
   --control-switch-thumb: #FFFFFF;
   --control-switch-thumb-shadow: 0 1px 2px rgba(0,0,0,.3);
   --surface-drawer-shadow: -20px 0 60px rgba(0,0,0,.35);
-}
-[data-theme="light"] {
-  --surface-card-shadow: var(--tile-ring), 0 2px 12px rgba(60,45,15,.07);
-  --surface-dialog-background: var(--panel-solid);
-  --surface-toast-background: rgba(255,255,255,.88);
-}
-[data-theme="dark"] {
-  --surface-card-shadow: var(--tile-ring), 0 2px 10px rgba(2,6,14,.35);
-  --surface-dialog-background: linear-gradient(180deg, #1B1D23, #15171C);
-  --surface-toast-background: color-mix(in srgb, var(--panel-solid) 88%, transparent);
+  --surface-card-shadow: var(--sh-1);
+  --surface-dialog-background: var(--pop);
+  --surface-toast-background: var(--toast);
 }
 
-/* Exact variable-only rules from ui-spec/work/modules/99-skin.css. */
+/* UI v4.0 has no skins: the main window paints only by data-theme and never
+   sets data-skin. These rules stay for the canvas window alone, which builds
+   against this file (canvas-v2/vite.config.ts) and still marks its document
+   with the skin the user saved, so it keeps the colours it had until its own
+   appearance is decided (the 0.2.19 plan's question 10). Copied verbatim from
+   ui-spec/work/modules/99-skin.css; provenance.test.ts pins them. */
 [data-theme="dark"][data-skin="obsidian"] {
   --win:#08090C; --rail:#060708; --bg:#0B0C10;
   --panel:rgba(255,255,255,.045); --panel-solid:#15171C; --panel-hover:rgba(255,255,255,.07); --panel-2:rgba(255,255,255,.075);
@@ -100,35 +100,49 @@
   --text-2:#23324A; --text-3:#3E4D65;
 }
 /* The two rules above are the prototype's high contrast, kept verbatim
-   (provenance.test.ts pins them). On their own they only darken lines and
-   secondary text, which is barely visible. The rules below extend them into one
-   complete palette per theme that replaces every skin: each skin's accent was
-   tuned for looks, not for 4.5:1 text or 3:1 control boundaries, and translucent
-   panels/lines inherit whatever sits beneath them. Every value is opaque (or
-   composited over an opaque token) so contrast-tokens.test.ts can check the
-   ratios without a DOM. :root keeps them ahead of the prototype rules. */
-:root[data-theme="dark"].hc[data-skin] {
-  --win:#02060D; --rail:#03080F; --bg:#050B16;
-  --panel:#0B1424; --panel-solid:#0B1424; --panel-hover:#18253C; --panel-2:#101C30;
-  --line:#7F8FA8; --line-2:#A6B4C9; --line-3:#D0DAE8;
-  --text:#FFFFFF; --text-2:#E3EAF4; --text-3:#C9D4E4; --kbd-bg:#18253C;
+   (provenance.test.ts pins them); like the skins they only reach the canvas.
+   The main window's high contrast is the pair below: one complete opaque
+   palette per theme, in the v4 hues (neutral black with gold, ivory with navy),
+   that overrides every token the theme declares. Translucent panels and lines
+   inherit whatever sits beneath them, so every value is opaque (or composited
+   over an opaque token) and contrast-tokens.test.ts checks the ratios without a
+   DOM. :root keeps them ahead of the theme rules in ui-spec/tokens.css. */
+:root[data-theme="dark"].hc {
+  --win:#030304; --rail:#050506; --bg:#07080A;
+  --panel:#111216; --panel-solid:#111216; --panel-hover:#1F2128; --panel-2:#17181D;
+  --line:#80858F; --line-2:#A8ADB6; --line-3:#D3D6DC;
+  --text:#FFFFFF; --text-2:#E6E8EC; --text-3:#CDD0D6; --kbd-bg:#1F2128;
   --accent:#FFD27A; --accent-2:#FFE0A3; --accent-fg:#000000; --accent-glow:transparent; --accent-soft:rgba(255,210,122,.2); --info:#9FD3FF;
   --ok:#5EF0A8; --ok-soft:rgba(94,240,168,.16); --warn:#FFB066; --warn-soft:rgba(255,176,102,.16); --bad:#FF9E9E; --bad-soft:rgba(255,158,158,.16);
-  --overlay:rgba(0,0,0,.8); --btn-2-bg:#101C30; --btn-2-hover:#1C2A44; --bubble-user:rgba(255,210,122,.2);
-  --glow-top:none; --tile-ring:inset 0 0 0 1px #A6B4C9; --card-grad:#0B1424;
+  --ok-tx:#5EF0A8; --warn-tx:#FFB066; --bad-tx:#FF9E9E; --info-tx:#9FD3FF; --info-bg:rgba(159,211,255,.16);
+  --gold:#FFD27A; --gold-tx:#FFD27A; --num:#FFE0A3; --fill:#FFD27A;
+  --pri:#FFD27A; --pri-tx:#000000; --pri-sh:none;
+  --soft:rgba(255,210,122,.2); --soft-line:#FFD27A; --soft-tx:#FFE0A3;
+  --focus:#FFD27A; --sw-on:#FFD27A; --seg-on:#2A2C33; --input:#111216; --input-line:#A8ADB6;
+  --pop:#111216; --pop-line:#A8ADB6; --shadow-pop:none; --sh-1:none;
+  --toast:#111216; --toast-tx:#FFFFFF; --toast-ok:#5EF0A8; --toast-info:#9FD3FF; --toast-warn:#FFB066;
+  --overlay:rgba(0,0,0,.8); --shadow:none; --btn-2-bg:#17181D; --btn-2-hover:#25272E; --bubble-user:rgba(255,210,122,.2);
+  --glow-top:none; --tile-ring:inset 0 0 0 1px #A8ADB6; --card-grad:#111216;
 }
-:root[data-theme="light"].hc[data-skin] {
-  --win:#FFFFFF; --rail:#F3F5F9; --bg:#FFFFFF;
-  --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#E8EDF4; --panel-2:#F0F3F8;
-  --line:#6B7890; --line-2:#4B5970; --line-3:#1F2C42;
-  --text:#020A18; --text-2:#17243A; --text-3:#2E3D56; --kbd-bg:#E8EDF4;
-  --accent:#0B1F3B; --accent-2:#1B3560; --accent-fg:#FFFFFF; --accent-glow:transparent; --accent-soft:rgba(11,31,59,.12); --info:#0B4FB3;
+:root[data-theme="light"].hc {
+  --win:#FFFFFF; --rail:#F4F2EC; --bg:#FFFFFF;
+  --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#ECEAE3; --panel-2:#F4F2EC;
+  --line:#6B7487; --line-2:#4B5568; --line-3:#1F2A3E;
+  --text:#020A18; --text-2:#17243A; --text-3:#2E3D56; --kbd-bg:#ECEAE3;
+  --accent:#0D1F3A; --accent-2:#1B3560; --accent-fg:#FFFFFF; --accent-glow:transparent; --accent-soft:rgba(127,90,28,.14); --info:#0B4FB3;
   --ok:#0A6636; --ok-soft:rgba(10,102,54,.1); --warn:#8A3A06; --warn-soft:rgba(138,58,6,.1); --bad:#A01C1C; --bad-soft:rgba(160,28,28,.1);
-  --overlay:rgba(2,10,24,.6); --btn-2-bg:#FFFFFF; --btn-2-hover:#E8EDF4; --bubble-user:rgba(11,31,59,.1);
-  --glow-top:none; --tile-ring:inset 0 0 0 1px #4B5970; --card-grad:#FFFFFF;
+  --ok-tx:#0A6636; --warn-tx:#8A3A06; --bad-tx:#A01C1C; --info-tx:#0B4FB3; --info-bg:rgba(11,79,179,.1);
+  --gold:#7F5A1C; --gold-tx:#6B4A12; --num:#020A18; --fill:#7F5A1C;
+  --pri:#0D1F3A; --pri-tx:#FFFFFF; --pri-sh:none;
+  --soft:rgba(127,90,28,.14); --soft-line:#7F5A1C; --soft-tx:#4A3209;
+  --focus:#1B3560; --sw-on:#0D1F3A; --seg-on:#FFFFFF; --input:#FFFFFF; --input-line:#4B5568;
+  --pop:#FFFFFF; --pop-line:#4B5568; --shadow-pop:none; --sh-1:none;
+  --toast:#0D1F3A; --toast-tx:#FFFFFF; --toast-ok:#7CF0B5; --toast-info:#BFD6FF; --toast-warn:#FFC58F;
+  --overlay:rgba(2,10,24,.6); --shadow:none; --btn-2-bg:#FFFFFF; --btn-2-hover:#ECEAE3; --bubble-user:rgba(127,90,28,.12);
+  --glow-top:none; --tile-ring:inset 0 0 0 1px #4B5568; --card-grad:#FFFFFF;
 }
 
 /* 设置「外观」里的「大字」：只把说明文字和小字各调大 1px，正文和布局不动，页面不会被挤乱。 */
 :root[data-large-text="true"] {
-  --font-small:13.5px; --font-small-compact:13px; --font-micro:12.5px; --font-micro-compact:12px;
+  --font-small:13.5px; --font-small-compact:13px; --font-micro:12.5px; --font-micro-compact:12.5px;
 }
