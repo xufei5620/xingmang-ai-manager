@@ -1031,6 +1031,13 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   // 小框换成大框时 shown 一直是 true，不重新读、不丢选中的那一条。
   const [dialogOpen, setDialogOpen] = useState(false)
   const shown = open || dialogOpen
+  // 打开就要重新读，这一帧就转成「正在读取」。要是等下面的 effect 再清，第一帧会先画出上回读到的列表，
+  // 接着清空、读完再出来，列表闪一下。
+  const [shownBefore, setShownBefore] = useState(shown)
+  if (shown !== shownBefore) {
+    setShownBefore(shown)
+    if (shown) setLoading(true)
+  }
   useEffect(() => {
     setSelectedId(null)
     setBlockedLink(null)
