@@ -99,46 +99,14 @@ async function checkSupportDialog(page, url) {
   return dialog
 }
 
-// Count repaints of the workspace starfield only. Each repaint starts with a
-// clearRect, so wrapping it on the page's own prototype counts frames without
-// touching the component.
-async function countStarfieldPaints(page, milliseconds) {
-  await page.evaluate(() => {
-    const proto = CanvasRenderingContext2D.prototype
-    if (!window.__starfieldClear) window.__starfieldClear = proto.clearRect
-    window.__starfieldPaints = 0
-    proto.clearRect = function (...args) {
-      if (this.canvas?.dataset.testid === 'shell-starfield') window.__starfieldPaints++
-      return window.__starfieldClear.apply(this, args)
-    }
-  })
-  await page.waitForTimeout(milliseconds)
-  return page.evaluate(() => window.__starfieldPaints)
-}
-
-test('the workspace starfield stays still on low-end machines, runs at most 30 frames a second elsewhere, and stops while the window is in the background', async () => {
-  const low = await open('lowEnd=1')
-  try {
-    await low.getByTestId('shell-starfield').waitFor()
-    assert.equal(await low.evaluate(() => document.documentElement.dataset.lowEnd), 'true')
-    // Let the fixture finish laying out: a resize legitimately repaints once.
-    await low.waitForTimeout(1500)
-    assert.equal(await countStarfieldPaints(low, 1000), 0, '低配电脑上工作台星空只画静态一帧')
-    await clean(low)
-  } finally { await low.close() }
+// 登录后主界面背后原来铺着一层一直在重画的星空：窗口在最前面时界面和显卡进程各占掉
+// 一成左右 CPU（yoyo 10-15 拍板去掉，v4 原型主界面也没有）。欢迎页的星空不在这里管。
+test('the signed-in workspace draws no canvas behind the pages', async () => {
   const page = await open()
   try {
-    await page.getByTestId('shell-starfield').waitFor()
-    assert.equal(await page.evaluate(() => document.documentElement.dataset.lowEnd), 'false')
-    await page.waitForTimeout(1500)
-    const moving = await countStarfieldPaints(page, 1000)
-    assert.ok(moving >= 3, `其它电脑上星空照旧在动：${moving}`)
-    assert.ok(moving <= 40, `星空每秒最多约 30 帧：${moving}`)
-    await page.evaluate(() => window.dispatchEvent(new Event('blur')))
-    await page.waitForTimeout(200)
-    assert.equal(await countStarfieldPaints(page, 800), 0, '窗口不在前台时星空停下')
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-    assert.ok(await countStarfieldPaints(page, 800) >= 2, '回到前台后星空接着动')
+    await page.getByTestId('shell-topbar').waitFor()
+    assert.equal(await page.getByTestId('shell-starfield').count(), 0)
+    assert.equal(await page.locator('.v2-workspace canvas').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

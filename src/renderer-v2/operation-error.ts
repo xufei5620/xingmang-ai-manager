@@ -74,7 +74,10 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'toolNotEnabled', match: (message) => /分组不存在、不可用或名称重复|不可使用分组/.test(message) },
   { key: 'sessionExpired', match: (message) => /(^|\D)401(\D|$)|unauthorized|登录已过期|登录状态已失效|请重新登录/i.test(message) },
   { key: 'tooManyRequests', match: (message) => /(^|\D)429(\D|$)|too many requests|rate limit|请求(太|过于)频繁/i.test(message) },
-  { key: 'noBalance', match: (message) => /余额不足|额度不足|insufficient[_ ]quota|余额已用完/i.test(message) },
+  // 历史账号那个站（Sub2API）余额用完时，拿 Key 查模型就回 403「Insufficient account balance」，
+  // 错误码 INSUFFICIENT_BALANCE（同 electron/relay-quota-failure.ts）。没认它时，改用当前账号失败只给
+  // 一句英文原话和「操作没有完成」，客户看不出是没钱了。
+  { key: 'noBalance', match: (message) => /余额不足|额度不足|insufficient[_ ]quota|余额已用完|insufficient account balance|INSUFFICIENT_BALANCE/i.test(message) },
   { key: 'keyInvalid', match: (message) => /invalid[_ ]api[_ ]key|令牌(无效|已失效|不存在)|密钥(无效|已失效)/i.test(message) },
   // backups.ts 抛的是「备份文件已损坏或被篡改」，不是「校验失败」——只认后者时
   // 这条目录文案对用户真正会遇到的那句话是死的。两种说法都收。
