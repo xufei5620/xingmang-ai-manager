@@ -6,7 +6,6 @@ import { pageRegistry, type PageId } from '../../registry/pages'
 import type { SettingsItem } from '../../registry/business'
 import '../../styles/shell.css'
 import { errorMessage } from '../../business-common'
-import { Starfield } from '../auth/Starfield'
 import { LocalAvatar } from '../../LocalAvatar'
 import type { AvatarIdentity } from '../../local-avatar'
 import type { EnvironmentStatus } from '../app/environment-status'
@@ -400,7 +399,6 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         </section>
       </aside>
       <div className="v2-workspace">
-        <Starfield quiet paused={false} />
         <header className="v2-topbar" data-testid="shell-topbar"><button type="button" className="v2-command-trigger" onClick={openCommand}><Search size={16} /><span>{commandPlaceholder}</span><kbd>{platform === 'mac' ? '⌘K' : 'Ctrl K'}</kbd></button>
           <div className="v2-topbar-actions">{account.supportsAnnouncements !== false && <Button size="sm" icon={Bell} onClick={adapter.openAnnouncements} testId="announcement-open">公告{unread && <span className="v2-unread" />}</Button>}<Button size="sm" icon={CircleHelp} onClick={adapter.openHelp}>帮助与客服</Button></div>
         </header>
