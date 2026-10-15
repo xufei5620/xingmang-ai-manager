@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, CreditCard, Gauge, LogOut, Menu as MenuIcon, Moon, PanelLeft, RefreshCw, Search, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, CreditCard, Download, Gauge, LogOut, Menu as MenuIcon, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip, useToast } from '../../ui'
 import { moreNavigation, shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
@@ -18,7 +18,7 @@ import { balanceFailureLabel, balanceStatusText, type BalanceStatusView } from '
 import { OfflineBanner } from './OfflineBanner'
 import { offlineActionMessage } from './online-status'
 import { useOnlineStatus } from './useOnlineStatus'
-import { commandGroupLabels, searchCommands, type CommandResult } from './command-search'
+import { commandGroupLabels, searchCommands, type CommandAction, type CommandResult, type CommandTool } from './command-search'
 import { tutorialTopicsFor } from '../../registry/tutorials'
 import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
@@ -64,6 +64,11 @@ interface Adapter {
   /** 顶栏的深浅色键；缺省 = 不放这颗键，搜索里也没有「切换到浅色 / 深色」。 */
   toggleTheme?(): void
   setSidebarCollapsed?(collapsed: boolean): void
+  /** 搜索「工具」组列哪几个工具（v4 批 04）；缺省 = 不列。下面三个是选中后做的事，id 就是这里的 id。 */
+  tools?: readonly CommandTool[]
+  openTool?(id: string): void
+  installTool?(id: string): void
+  configureTool?(id: string): void
   redeemAccelerationCode?(code: string): Promise<AccelerationRedemptionResult | null>
 }
 interface ShellProps {
@@ -113,6 +118,7 @@ const narrowSidebarNote = '窗口较窄时侧栏会自动收起'
 const actionIcons: Partial<Record<string, LucideIcon>> = {
   'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'account:logout': LogOut,
 }
+const toolActionIcons: Partial<Record<CommandAction, LucideIcon>> = { openTool: Play, installTool: Download, configureTool: SlidersHorizontal }
 
 function useNarrowWindow() {
   const [narrow, setNarrow] = useState(() => typeof matchMedia !== 'undefined' && matchMedia(narrowWindowQuery).matches)
@@ -185,7 +191,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const [pageAnnouncement, setPageAnnouncement] = useState('')
   const results = searchCommands(query, {
     accountTabVisible: adapter.accountTabVisible, pageVisible: adapter.pageVisible, settingsItemVisible: adapter.settingsItemVisible,
-    theme: adapter.toggleTheme ? theme : undefined, signedIn: account.signedIn && Boolean(adapter.logout),
+    theme: adapter.toggleTheme ? theme : undefined, signedIn: account.signedIn && Boolean(adapter.logout), tools: adapter.tools,
   }, tutorialTopicsFor(platform))
   const bonusAction = Boolean(adapter.redeemAccelerationCode && isAccelerationBonusCode(query))
   const resultCount = bonusAction ? 1 : results.length
@@ -205,6 +211,9 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     else if (item.action === 'theme') adapter.toggleTheme?.()
     else if (item.action === 'help') adapter.openHelp?.()
     else if (item.action === 'logout') adapter.logout?.()
+    else if (item.action === 'openTool' && item.tool) adapter.openTool?.(item.tool)
+    else if (item.action === 'installTool' && item.tool) adapter.installTool?.(item.tool)
+    else if (item.action === 'configureTool' && item.tool) adapter.configureTool?.(item.tool)
     else adapter.navigate?.(item.page, item.section)
   }
   function searchTutorial() {
@@ -490,7 +499,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
           {bonusBusy ? <RefreshCw size={15} className="xm-spin" aria-hidden="true" /> : <Zap size={15} aria-hidden="true" />}<span>{bonusBusy ? '正在领取…' : `领取 ${accelerationBonusSeconds / 60} 分钟加速时长`}</span><ArrowRight size={14} aria-hidden="true" />
         </button>
         : results.map((item, index) => {
-          const Icon = item.action === 'theme' ? theme === 'dark' ? Sun : Moon : actionIcons[item.key] ?? pageRegistry.find((page) => page.id === item.page)!.icon
+          const Icon = item.action === 'theme' ? theme === 'dark' ? Sun : Moon : actionIcons[item.key] ?? (item.action && toolActionIcons[item.action]) ?? pageRegistry.find((page) => page.id === item.page)!.icon
           const heading = index === 0 || results[index - 1].group !== item.group
           // 分组标题只给看的人；读屏在每一项的名字里听到它属于哪一组。
           return <div className="v2-command-entry" key={item.key}>

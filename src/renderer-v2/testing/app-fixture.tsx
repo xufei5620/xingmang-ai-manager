@@ -374,6 +374,11 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
+  // 首页余额卡「近 7 天花费」一天查一次看板（v4 批 04）：按星期几回一个固定的数，柱子有高有低。
+  getAccountDashboard: async (input: { startTimestamp: number; endTimestamp: number }) => {
+    const quota = [40_000, 120_000, 0, 180_000, 80_000, 240_000, 100_000][new Date(input.startTimestamp * 1000).getDay()]
+    return { startTimestamp: input.startTimestamp, endTimestamp: input.endTimestamp, buckets: [], models: [], quota, count: quota ? 3 : 0, tokens: quota * 2, discardedCount: 0, coverage: 'range' as const }
+  },
   // 主进程替用户绕开连不上的代理：改成直连以后余额照常读得到（只演这一种结果）。
   bypassBrokenProxy: async () => {
     if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''

@@ -3,9 +3,16 @@ import { pageRegistry, pageSearchKeywords, type PageId } from '../../registry/pa
 import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
 import { searchWords, tutorialSearchText } from '../tutorial/tutorial-search'
 
-export type CommandGroup = 'page' | 'action' | 'account' | 'settings' | 'tutorial'
-/** 不只是跳页的那几条：开始检查、切换深浅色、打开帮助与客服、退出登录。 */
-export type CommandAction = 'check' | 'theme' | 'help' | 'logout'
+export type CommandGroup = 'page' | 'tool' | 'action' | 'account' | 'settings' | 'tutorial'
+/** 不只是跳页的那几条：开始检查、切换深浅色、打开帮助与客服、退出登录，「工具」组的打开、安装、配置。 */
+export type CommandAction = 'check' | 'theme' | 'help' | 'logout' | 'openTool' | 'installTool' | 'configureTool'
+
+/** 「工具」组按它列：装了的给「打开」「配置」，没装的给「安装」（v4 批 04）。 */
+export interface CommandTool {
+  id: string
+  name: string
+  installed: boolean
+}
 
 export interface CommandResult {
   key: string
@@ -16,6 +23,8 @@ export interface CommandResult {
   section?: string
   /** 选中后要做的事；缺省 = 跳到 page / section。 */
   action?: CommandAction
+  /** 「工具」组那一条是哪个工具。 */
+  tool?: string
 }
 
 export interface CommandSearchOptions {
@@ -29,18 +38,22 @@ export interface CommandSearchOptions {
   theme?: 'light' | 'dark'
   /** 登录着才有「退出登录」；缺省 = 不给。 */
   signedIn?: boolean
+  /** 首页那几个工具，按首页卡片的顺序；缺省 = 没有「工具」组。只在输了字时列。 */
+  tools?: readonly CommandTool[]
 }
 
 /** 结果按这个次序分组显示，回车打开的是排在最前面的那一项。 */
 export const commandGroupLabels: Record<CommandGroup, string> = {
   page: '页面',
+  tool: '工具',
   action: '操作',
   account: '个人中心',
   settings: '设置',
   tutorial: '教程',
 }
 // 「操作」排在页面后面：搜「检查」先给检查页，不先给「开始检查」；什么都没输入时「操作」排最上面。
-const commandGroupOrder: readonly CommandGroup[] = ['page', 'action', 'account', 'settings', 'tutorial']
+// 「工具」紧跟页面：搜「Codex」先给打开它，再给别的。
+const commandGroupOrder: readonly CommandGroup[] = ['page', 'tool', 'action', 'account', 'settings', 'tutorial']
 // 教程是全文搜的，常见词会命中一大串；列表只留最相关的几篇，其余到教程页里搜。
 export const maximumTutorialResults = 5
 
@@ -92,6 +105,14 @@ function actionEntries(options: CommandSearchOptions): Entry[] {
   ]
 }
 
+// 工具挪进首页卡片以后，不用先回首页再找那张卡：装了的直接打开、配置，没装的直接装。
+function toolEntries(options: CommandSearchOptions): Entry[] {
+  return (options.tools ?? []).flatMap(tool => {
+    const entry = (action: CommandAction, label: string): Entry => ({ result: { key: `tool:${action}:${tool.id}`, group: 'tool', label, page: 'home', action, tool: tool.id }, label, keywords: [tool.id, tool.name] })
+    return tool.installed ? [entry('openTool', `打开 ${tool.name}`), entry('configureTool', `${tool.name} 配置`)] : [entry('installTool', `安装 ${tool.name}`)]
+  })
+}
+
 // 页头的「切换账号」不是分页，哪种账号都有：点了停在当前分页，翻到那颗按钮。
 function accountEntries(options: CommandSearchOptions): Entry[] {
   const tabs: Entry[] = accountTabs.filter(tab => options.accountTabVisible?.(tab.value) ?? true)
@@ -116,19 +137,21 @@ function tutorialEntries(topics: readonly TutorialTopic[]): Entry[] {
 }
 
 /**
- * 顶部搜索的结果：页面、操作、个人中心、设置（分组和每一行）、教程主题五组，组内按命中程度排。
+ * 顶部搜索的结果：页面、工具、操作、个人中心、设置（分组和每一行）、教程主题六组，组内按命中程度排。
  * 什么都没输入时先列操作、再列页面。
  */
 export function searchCommands(query: string, options: CommandSearchOptions = {}, topics: readonly TutorialTopic[] = tutorialTopics): CommandResult[] {
   const words = searchWords(query)
   if (!words.length) return [...actionEntries(options), ...pageEntries(options)].map(entry => entry.result)
-  const entries = [...pageEntries(options), ...actionEntries(options), ...accountEntries(options), ...settingsEntries(options), ...tutorialEntries(topics)]
+  const entries = [...pageEntries(options), ...toolEntries(options), ...actionEntries(options), ...accountEntries(options), ...settingsEntries(options), ...tutorialEntries(topics)]
   const hits = entries.flatMap((entry, index) => {
     const rank = score(entry, words)
     return rank === null ? [] : [{ entry, rank, index }]
   })
   return commandGroupOrder.flatMap(group => {
-    const sorted = hits.filter(hit => hit.entry.result.group === group).sort((left, right) => left.rank - right.rank || left.index - right.index)
+    // 「工具」组按首页卡片的次序排，不按命中程度：搜「Claude」时「Claude Code 配置」因为名字打头会排到
+    // 「打开 Claude Code」前面，同一个工具的几条就被拆开了。
+    const sorted = hits.filter(hit => hit.entry.result.group === group).sort((left, right) => (group === 'tool' ? 0 : left.rank - right.rank) || left.index - right.index)
     return (group === 'tutorial' ? sorted.slice(0, maximumTutorialResults) : sorted).map(hit => hit.entry.result)
   })
 }

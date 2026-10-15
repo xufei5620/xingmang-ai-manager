@@ -16,6 +16,7 @@ import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
 import { errorMessage } from '../../business-common'
 import { createTtlCache } from './ttl-cache'
+import { createWeekSpendLoader } from './week-spend'
 import { withoutRetiredSessions, type CliLaunchChoice } from './recent-workspaces'
 import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
 import { accountScope } from '../../account-context'
@@ -132,6 +133,7 @@ export function createToolsApi(bridge: XingmangApi) {
     load: () => bridge.listProviderSessions({ page: 1, pageSize: 60 }).then(withoutRetiredSessions),
   })
   const usageCache = createTtlCache({ ttlMs: balanceUsageTtlMs, load: () => loadBalanceUsage(bridge) })
+  const weekSpend = createWeekSpendLoader(bridge)
   return {
     /**
      * 三块分开结算（对照 legacy 的 runCoordinatedScan）。一份损坏的
@@ -270,8 +272,11 @@ export function createToolsApi(bridge: XingmangApi) {
       const owned = usageCache.peek()
       return owned && owned.scope === scope ? owned.usage : null
     },
-    /** 让用量缓存立刻作废：换账号时调。 */
-    invalidateBalanceUsage: () => usageCache.invalidate(),
+    /** 让用量缓存立刻作废：换账号时调。近 7 天的小柱子跟着一起作废。 */
+    invalidateBalanceUsage: () => { usageCache.invalidate(); weekSpend.invalidate() },
+    /** 首页余额卡「近 7 天花费」每天一根柱子（只给能按时段查看板的账号用）。 */
+    weekSpend: (scope?: string) => weekSpend.read(scope),
+    peekWeekSpend: (scope: string) => weekSpend.peek(scope),
     /**
      * 「花费突然变多」核账用：最近一小时和最近七天各花了多少。只在余额一小时里掉了
      * $5 以上时才读一次（features/app/spend-spike.ts），不是又一处定时拉取。按日期查

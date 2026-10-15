@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Bell, ChevronRight, ExternalLink, Gift, X } from 'lucide-react'
@@ -43,6 +44,13 @@ interface Props {
   onTopUp?(amount?: number): void
   /** 读当前账号的充值优惠设置（和充值页同一份），卡片按它列档位；缺省 = 不列档位，显示正文前三行。 */
   readTopupOffers?(): Promise<TopupOffers>
+  /**
+   * 首页提示区那一格（v4）：公告条、活动条和活动卡片画进去，跟首页自己的提示一起排。null = 不在首页，
+   * 这几条都不挂（铃铛的红点照旧）；省略 = 照旧挂在顶栏下面（旧行为）。
+   */
+  noticeSlot?: HTMLElement | null
+  /** 首页提示区还剩几条的位置（一页最多两条）；省略 = 两条。 */
+  noticeRoom?: number
 }
 
 export interface TopupOffers { amountOptions: number[]; discounts: Record<string, number> }
@@ -1010,7 +1018,7 @@ function AnnouncementPopover({ onClose, children }: { onClose(): void; children:
   return <div ref={ref} role="dialog" aria-label="公告" className="v2-announcement-popover" tabIndex={-1} data-testid="announcement-popover">{children}</div>
 }
 
-export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify, promoVisible = false, onTopUp, readTopupOffers }: Props) {
+export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify, promoVisible = false, onTopUp, readTopupOffers, noticeSlot, noticeRoom = 2 }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1338,20 +1346,27 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     onOpen: () => openPromoFromBar(item.id, item.kind),
   })) : []
   const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
-  return <>
-    {!offline && !shown && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
-    {promoBarShown && <PromoBar items={promoBarItems} onHide={hidePromoBar}
-      onTopUp={onTopUp && promos.length ? () => { promos.forEach((item) => acknowledgePromoEntry(item.id)); onTopUp() } : undefined} />}
-    {promoCardShown && promo && <PromoCard title={stripSiteAddresses(promo.title) || '充值活动'} deadline={formatPromoDeadline(promo, now)}
+  // 活动（条或卡片）在前、公告条在后，按首页提示区剩下的位置往里放；放不下的等前面的收起再出来。
+  const strips = [
+    promoBarShown && <PromoBar key="promo-bar" items={promoBarItems} onHide={hidePromoBar}
+      onTopUp={onTopUp && promos.length ? () => { promos.forEach((item) => acknowledgePromoEntry(item.id)); onTopUp() } : undefined} />,
+    promoCardShown && promo && <PromoCard key="promo-card" title={stripSiteAddresses(promo.title) || '充值活动'} deadline={formatPromoDeadline(promo, now)}
       tiers={promoTiers} lines={promoTiers.length ? [] : promoPreviewLines(promo.text)} others={promoOthers}
       onTopUp={onTopUp ? (amount) => { acknowledgePromoEntry(promo.id); onTopUp(amount) } : undefined} onDetail={() => openPromoDetail(promo.id)}
       onDismiss={() => dismissPromo(promo.id)} onSnooze={() => snoozePromo(promo.id)}
-      onOpenOther={(id) => id ? openPromoDetail(id) : onOpen()} />}
-    {bannerShown && <div className="v2-announcement-banner" data-testid="announcement-banner">
+      onOpenOther={(id) => id ? openPromoDetail(id) : onOpen()} />,
+    bannerShown && <div key="banner" className="v2-announcement-banner" data-testid="announcement-banner">
       <Bell size={15} /><strong>公告</strong><span>{announcementTextPreview(preview) || '有一条新公告'}</span>
       <Button size="xs" variant="ghost" onClick={onOpen}>查看</Button>
       <Button size="xs" variant="ghost" icon={X} aria-label="关闭公告提示" title="关闭，有新公告时再提醒" onClick={acknowledge} testId="announcement-banner-close" />
-    </div>}
+    </div>,
+  ].filter(Boolean).slice(0, noticeSlot === undefined ? undefined : Math.max(0, noticeRoom))
+  const stripArea = <>
+    {!offline && !shown && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
+    {strips}
+  </>
+  return <>
+    {noticeSlot === undefined ? stripArea : noticeSlot ? createPortal(stripArea, noticeSlot) : null}
     {open && <AnnouncementPopover onClose={onClose}>
       <div className="v2-announcement-pop-head"><b>公告</b>{entries?.some((entry) => !entry.read) && <button type="button" className="v2-announcement-mark-all" onClick={() => void markAllRead()} data-testid="announcement-mark-all-read">全部已读</button>}</div>
       {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl
