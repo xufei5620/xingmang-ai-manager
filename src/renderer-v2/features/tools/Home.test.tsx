@@ -431,7 +431,7 @@ describe('renderer-v2 home before the startup scan finishes', () => {
 
   it('waits while the account key sync has not said which tools change their key', () => {
     expect(disabled(whileChecking({ account }), 'tool-claude-primary')).toBe(true)
-    const syncing = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15, scope: 'scope' }
+    const syncing = { phase: 'syncing' as const, label: '正在同步账号专属密钥', percent: 15, scope: 'scope' }
     expect(disabled(whileChecking({ account, bootstrap: syncing }), 'tool-claude-primary')).toBe(true)
   })
 
@@ -460,7 +460,7 @@ describe('renderer-v2 home before the startup scan finishes', () => {
         ? { hasApiKey: false, matchesRelay: false, actualBaseUrl: '' }
         : { configurationOwnership: 'manual' as const }) },
     } } }
-    const bootstrap = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15, scope: 'scope' }
+    const bootstrap = { phase: 'syncing' as const, label: '正在同步账号专属密钥', percent: 15, scope: 'scope' }
     const markup = render({}, undefined, { snapshot: current, loading: false, account, bootstrap })
     expect(disabled(markup, 'tool-claude-primary')).toBe(false)
     expect(disabled(markup, 'home-hero-pick-folder')).toBe(false)
@@ -670,10 +670,10 @@ describe('renderer-v2 home account key bootstrap notice', () => {
 
   it('still names a non-network bootstrap failure', () => {
     const markup = render({}, undefined, {
-      bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: '星芒账号已变化，已停止本次 Key 配置' },
+      bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: '星芒账号已变化，已停止本次密钥配置' },
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).toContain('密钥没写好：星芒账号已变化，已停止本次 Key 配置')
+    expect(markup).toContain('密钥没写好：星芒账号已变化，已停止本次密钥配置')
     expect(markup).not.toContain(offline)
   })
 
@@ -703,10 +703,10 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     const warned = render({}, undefined, {
       bootstrap: {
         phase: 'verifying', label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', finishedAt,
-        result: bootstrapResult({ configured: ['claude'], warnings: ['Key 同步阶段：fixture'] }),
+        result: bootstrapResult({ configured: ['claude'], warnings: ['密钥同步阶段：fixture'] }),
       },
     })
-    expect(warned).toContain('Key 同步阶段：fixture')
+    expect(warned).toContain('密钥同步阶段：fixture')
     expect(bootstrapNoticeExpiresAt({
       phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope', finishedAt,
       result: bootstrapResult({ networkBlocked: true, configured: ['claude'] }),
@@ -721,14 +721,14 @@ describe('renderer-v2 home account key bootstrap notice', () => {
   })
 
   it('shows no progress while it quietly moves the tools to the current line', () => {
-    const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在为 1 个已安装工具写入 Key', percent: 65, scope: 'scope', quiet: true } })
-    expect(markup).not.toContain('正在为 1 个已安装工具写入 Key')
+    const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在给 1 个工具写入密钥', percent: 65, scope: 'scope', quiet: true } })
+    expect(markup).not.toContain('正在给 1 个工具写入密钥')
     expect(markup).not.toContain('data-testid="home-bootstrap-progress"')
   })
 
   it('still says when the quiet round did not finish', () => {
     const markup = render({}, undefined, {
-      bootstrap: { phase: 'syncing', label: '正在同步账号专属 Key', percent: 5, scope: 'scope', quiet: true, error: '星芒账号已变化，已停止本次 Key 配置' },
+      bootstrap: { phase: 'syncing', label: '正在同步账号专属密钥', percent: 5, scope: 'scope', quiet: true, error: '星芒账号已变化，已停止本次密钥配置' },
       onBootstrapRetry: () => undefined,
     })
     expect(markup).toContain('role="alert"')
@@ -1880,7 +1880,7 @@ describe('renderer-v2 home v4 top cards', () => {
   it('shows at most two of the passing notices, but every error that needs the customer', () => {
     const markup = render({}, undefined, {
       account, accountScope: scope, balance: balance(0), api: api(null),
-      bootstrap: { phase: 'syncing', label: '正在同步账号专属 Key', percent: 15, scope: 'scope' },
+      bootstrap: { phase: 'syncing', label: '正在同步账号专属密钥', percent: 15, scope: 'scope' },
       toolRouteStatus: { serverSwitching: true, hijack: { id: Date.now() } },
     })
     expect(markup).toContain('data-testid="home-bootstrap-progress"')
@@ -1890,7 +1890,7 @@ describe('renderer-v2 home v4 top cards', () => {
     const errors = render({}, undefined, {
       error: '检测没有完成', externalError: '读不到', failures: configFailure, snapshot: unreadableConfig(),
       toolRouteStatus: { outage: { id: 1, reason: 'reset', appReachable: true } },
-      bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: '星芒账号已变化，已停止本次 Key 配置' },
+      bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: '星芒账号已变化，已停止本次密钥配置' },
     })
     expect(errors.match(/role="alert"/g)?.length ?? 0).toBeGreaterThanOrEqual(5)
   })

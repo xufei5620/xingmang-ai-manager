@@ -426,7 +426,7 @@ describe('account managed Key bootstrap', () => {
     ['backend success with manual config', 'manual', true, null, configurationFailureMessages.unconfirmedSource],
     ['backend success with unknown config', 'unknown', true, null, configurationFailureMessages.unconfirmedSource],
     ['backend success without ownership', undefined, true, null, configurationFailureMessages.unconfirmedSource],
-    ['missing backend result with account config', 'account', false, null, '账号 Key 配置未返回成功结果'],
+    ['missing backend result with account config', 'account', false, null, '账号密钥配置未返回成功结果'],
     ['conflicting backend results with account config', 'account', true, '配置写入失败', '配置写入失败'],
   ] as const)('does not report success for %s', async (_name, ownership, reportedSuccess, backendFailure, expectedMessage) => {
     const current = config()
@@ -639,7 +639,7 @@ describe('account managed Key bootstrap', () => {
     }
     const result = await bootstrapAccountTools(api, 17, undefined, mode, undefined, null)
     expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ configured: [], failed: [], warnings: ['Key 同步阶段：offline'] })
+    expect(result).toMatchObject({ configured: [], failed: [], warnings: ['密钥同步阶段：offline'] })
     expect(result.skipped.every((item) => item.reason === 'configured')).toBe(true)
     expect(current).toEqual(before)
   })
@@ -660,7 +660,7 @@ describe('account managed Key bootstrap', () => {
 
     const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
 
-    expect(result.warnings).toContain('Key 同步阶段：写入托管 Key 失败：本地配置文件')
+    expect(result.warnings).toContain('密钥同步阶段：写入托管 Key 失败：本地配置文件')
     expect(result.warnings.join(' ')).not.toContain('张三')
     expect(result.warnings.join(' ')).not.toContain('invoking remote method')
   })
@@ -745,7 +745,7 @@ describe('account key changes before the startup scan finishes', () => {
     files: [],
     updatedAt: null,
   })
-  const syncing = { phase: 'syncing' as const, label: '正在同步账号专属 Key', percent: 15 }
+  const syncing = { phase: 'syncing' as const, label: '正在同步账号专属密钥', percent: 15 }
 
   it('cannot tell yet for a signed-in or restoring account whose key sync has not started', () => {
     expect(accountKeyChangePending({ signedIn: true, restoring: false, bootstrap: null }, 'claude')).toBe(true)
@@ -777,7 +777,7 @@ describe('account key changes before the startup scan finishes', () => {
     // account service keeps retrying without one: neither may lock tools until a relaunch.
     expect(accountKeyChangeInProgress(null, 'claude')).toBe(false)
     expect(accountKeyChangeInProgress(syncing, 'claude')).toBe(true)
-    const bootstrap = { phase: 'configuring' as const, label: '正在为 1 个已安装工具写入 Key', percent: 65, connectedKeyChanges: ['claude' as ProviderId] }
+    const bootstrap = { phase: 'configuring' as const, label: '正在给 1 个工具写入密钥', percent: 65, connectedKeyChanges: ['claude' as ProviderId] }
     expect(accountKeyChangeInProgress(bootstrap, 'claude')).toBe(true)
     expect(accountKeyChangeInProgress(bootstrap, 'codex')).toBe(false)
     expect(accountKeyChangeInProgress({ ...bootstrap, result: { readyKeys: [], configured: ['claude'], failed: [], skipped: [], warnings: [], networkBlocked: false } }, 'claude')).toBe(false)
@@ -1066,7 +1066,7 @@ describe('account bootstrap log lines', () => {
       configured: ['claude'],
       failed: [],
       skipped: [
-        { provider: 'codex', reason: 'not-installed', message: 'Codex CLI 尚未安装，Key 已保留在账号中' },
+        { provider: 'codex', reason: 'not-installed', message: 'Codex CLI 尚未安装，密钥已保留在账号中' },
         { provider: 'grok', reason: 'manual', message: 'Grok CLI 保留手动填写的密钥' },
       ],
       warnings: [],
@@ -1115,9 +1115,9 @@ describe('account bootstrap log lines', () => {
   })
 
   it('describes a round that did not finish at warn level', () => {
-    expect(describeAccountBootstrapFailure('login', '星芒账号已变化，已停止本次 Key 配置')).toEqual({
+    expect(describeAccountBootstrapFailure('login', '星芒账号已变化，已停止本次密钥配置')).toEqual({
       level: 'warn',
-      message: 'Key 自动配置（登录后）没有完成：星芒账号已变化，已停止本次 Key 配置',
+      message: 'Key 自动配置（登录后）没有完成：星芒账号已变化，已停止本次密钥配置',
     })
   })
 })
