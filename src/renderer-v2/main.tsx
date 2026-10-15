@@ -16,7 +16,6 @@ const root = document.getElementById('root')!
 // bootstrap immediately afterwards.
 const initialTheme = 'light'
 document.documentElement.dataset.theme = initialTheme
-document.documentElement.dataset.skin = 'mist'
 document.documentElement.style.colorScheme = initialTheme
 // The Mac title bar has to make room for the traffic lights on the very first
 // frame, long before the platform capabilities come back over IPC.

@@ -1274,7 +1274,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       <Button size="xs" variant="ghost" onClick={onOpen}>查看</Button>
       <Button size="xs" variant="ghost" icon={X} aria-label="关闭公告提示" title="关闭，有新公告时再提醒" onClick={acknowledge} testId="announcement-banner-close" />
     </div>}
-    {open && <Dialog open title="公告" width={640} onClose={onClose} icon={Bell} footer={selected
+    {open && <Dialog open title="公告" width={640} onClose={onClose} footer={selected
       ? <Button icon={ArrowLeft} onClick={backToList}>返回列表</Button>
       : <><Button onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>{announcement && !entries && <Button variant="primary" onClick={() => markLegacyRead(true)}>标为已读</Button>}</>}>
       {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}

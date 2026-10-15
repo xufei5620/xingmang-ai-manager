@@ -103,7 +103,7 @@ export function Starfield({ paused, quiet = false }: { paused: boolean; quiet?: 
     const observer = new ResizeObserver(resize)
     const themeObserver = new MutationObserver(resize)
     observer.observe(host)
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin', 'data-reduced-motion', 'data-low-end'] })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-reduced-motion', 'data-low-end'] })
     media.addEventListener('change', resize)
     window.addEventListener('focus', focus)
     window.addEventListener('blur', blur)

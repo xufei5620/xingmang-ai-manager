@@ -143,8 +143,9 @@ async function inspectDashboardLayout(expectedRows) {
   }, { regions: shellRegions, expected: expectedRows })
 }
 
-// The v2 modal is a native <dialog>: header, then .xm-modal-content holding the
-// scrollable .xm-dialog-body and the footer.
+// The v2 modal is a native <dialog>: header (title and close button since UI
+// v4.0), then .xm-modal-content holding the scrollable .xm-dialog-body and the
+// footer.
 async function inspectConfigDialog() {
   return page.evaluate(() => {
     const rectangle = (element) => {
@@ -166,7 +167,7 @@ async function inspectConfigDialog() {
     const body = dialog?.querySelector('.xm-dialog-body')
     const header = dialog?.querySelector(':scope > header')
     const footer = dialog?.querySelector('.xm-modal-content > footer')
-    const headerCopy = header?.querySelector(':scope > div')
+    const headerCopy = header?.querySelector(':scope > h2')
     const headerClose = header?.querySelector('button[data-modal-close="true"]')
     const dialogRect = rectangle(dialog)
     const contentRect = rectangle(content)

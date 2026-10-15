@@ -12,7 +12,6 @@ import './auth.css'
 
 const query = new URLSearchParams(location.search)
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
-document.documentElement.dataset.skin = query.get('skin') ?? (document.documentElement.dataset.theme === 'dark' ? 'obsidian' : 'dawn')
 document.documentElement.dataset.os = query.get('os') ?? 'win'
 // 与 App.tsx 一致：低配判定由主进程给出，挂在根节点上。
 if (query.has('lowEnd')) document.documentElement.dataset.lowEnd = 'true'

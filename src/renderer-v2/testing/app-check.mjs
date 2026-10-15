@@ -7031,9 +7031,14 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
     await waitForFixtureReady(page)
     const tour = page.getByTestId('shell-guide-tip')
     await tour.waitFor()
-    for (const label of ['下一步', '下一步', '开始使用'])
+    // v4：搜索框那步气泡在下面，侧栏两步气泡在右边；当前指着的那一项描金边，看完就撤掉。
+    for (const [label, side] of [['下一步', 'below'], ['下一步', 'right'], ['开始使用', 'right']]) {
+      await expect(tour).toHaveAttribute('data-side', side)
+      await expect(page.locator('[data-coach-target="true"]')).toHaveCount(1)
       await tour.getByRole('button', { name: label, exact: true }).click()
+    }
     assert.equal(await tour.count(), 0)
+    assert.equal(await page.locator('[data-coach-target]').count(), 0)
     await page.reload()
     await waitForFixtureReady(page)
     await page.getByTestId('tool-row-claude').waitFor()

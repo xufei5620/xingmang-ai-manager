@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { X } from 'lucide-react';
+import { TriangleAlert, X } from 'lucide-react';
 import { Button } from './core';
-import { focusable, useUiText, type BaseProps, type Icon } from './shared';
+import { focusable, useUiText, type BaseProps } from './shared';
 
+// UI v4.0: the title row is the title and the close button only; a subtitle, when a caller still
+// passes one, is a quiet line under it. Closing with unsaved changes no longer swaps the form for a
+// confirmation page: the form stays in view and a bar replaces the footer, so the user can see what
+// they would lose. Asking to close again while the bar is up shakes it instead of stacking a second ask.
 // headless: no visible title row or close button; the title stays as the accessible name and the box
 // pins near the top so a growing result list never moves it (the command palette). Esc and the
 // backdrop still close it.
@@ -10,13 +14,18 @@ import { focusable, useUiText, type BaseProps, type Icon } from './shared';
 // content instead of closing it. It sits in the top layer as a manual popover so dialogs and menus
 // still stack above it, takes no backdrop and keeps no focus trap; Esc still closes it unless the key
 // belongs to a text field outside it.
-export type ModalProps = BaseProps & { open: boolean; title: ReactNode; subtitle?: ReactNode; icon?: Icon; onClose: () => void; footer?: ReactNode; dirty?: boolean; initialFocus?: RefObject<HTMLElement | null>; children?: ReactNode; busy?: boolean; headless?: boolean };
-function Modal({ open, title, subtitle, icon: Icon, onClose, footer, dirty, initialFocus, children, testId, busy, headless, kind, width = 480 }: ModalProps & { kind: 'dialog' | 'drawer'; width?: 480 | 640 }) {
+export type ModalProps = BaseProps & { open: boolean; title: ReactNode; subtitle?: ReactNode; onClose: () => void; footer?: ReactNode; dirty?: boolean; initialFocus?: RefObject<HTMLElement | null>; children?: ReactNode; busy?: boolean; headless?: boolean };
+function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, children, testId, busy, headless, kind, width = 480 }: ModalProps & { kind: 'dialog' | 'drawer'; width?: 480 | 640 }) {
   const ref = useRef<HTMLElement | null>(null); const returnFocus = useRef<HTMLElement | null>(null); const content = useRef<HTMLDivElement>(null);
-  const [confirmDiscard, setConfirmDiscard] = useState(false); const titleId = useId(); const subtitleId = useId(); const t = useUiText();
-  const current = useRef({ onClose, dirty, busy }); current.current = { onClose, dirty, busy };
+  const [confirmDiscard, setConfirmDiscard] = useState(false); const [nudge, setNudge] = useState(0); const titleId = useId(); const subtitleId = useId(); const t = useUiText();
+  const current = useRef({ onClose, dirty, busy, confirmDiscard }); current.current = { onClose, dirty, busy, confirmDiscard };
   const modal = kind === 'dialog'; const setNode = useCallback((node: HTMLElement | null) => { ref.current = node; }, []);
-  const requestClose = useCallback(() => { if (current.current.busy) return; if (current.current.dirty) setConfirmDiscard(true); else current.current.onClose(); }, []);
+  const requestClose = useCallback(() => {
+    if (current.current.busy) return;
+    if (!current.current.dirty) current.current.onClose();
+    else if (current.current.confirmDiscard) setNudge(value => value + 1);
+    else setConfirmDiscard(true);
+  }, []);
   useLayoutEffect(() => {
     const element = ref.current; if (!element || !open) return;
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -43,22 +52,32 @@ function Modal({ open, title, subtitle, icon: Icon, onClose, footer, dirty, init
     document.addEventListener('keydown', escape);
     return () => document.removeEventListener('keydown', escape);
   }, [open, modal, requestClose]);
-  useEffect(() => { if (!open) setConfirmDiscard(false); }, [open]);
-  useLayoutEffect(() => { if (confirmDiscard) ref.current?.querySelector<HTMLButtonElement>('[data-keep-editing]')?.focus(); }, [confirmDiscard]);
+  useEffect(() => { if (!open) { setConfirmDiscard(false); setNudge(0); } }, [open]);
+  useLayoutEffect(() => { if (confirmDiscard) ref.current?.querySelector<HTMLButtonElement>('[data-keep-editing]')?.focus(); }, [confirmDiscard, nudge]);
   if (!open) return null;
-  const cancelDiscard = () => { setConfirmDiscard(false); requestAnimationFrame(() => (initialFocus?.current ?? (content.current && focusable(content.current)[0]) ?? ref.current)?.focus()); };
+  const cancelDiscard = () => { setConfirmDiscard(false); setNudge(0); requestAnimationFrame(() => (initialFocus?.current ?? (content.current && focusable(content.current)[0]) ?? ref.current)?.focus()); };
   const className = 'xm-modal xm-' + kind + ' xm-dialog-' + width + (headless ? ' xm-dialog-headless' : '');
   const inner = <>
-    {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header>{Icon && <Icon size={20} aria-hidden="true" />}<div><h2 id={titleId}>{title}</h2>{subtitle && <small id={subtitleId}>{subtitle}</small>}</div><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy}><X size={18} aria-hidden="true" /></button></header>}
-    <div ref={content} className="xm-modal-content" hidden={confirmDiscard}><div className="xm-dialog-body">{children}</div>{footer && <footer>{footer}</footer>}</div>
-    {confirmDiscard && <div className="xm-discard" role="alert"><h3>{t('discardTitle')}</h3><p>{t('discardBody')}</p><div><Button data-keep-editing="true" onClick={cancelDiscard}>{t('keepEditing')}</Button><Button variant="danger" onClick={() => { setConfirmDiscard(false); onClose(); }}>{t('discard')}</Button></div></div>}
+    {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy}><X size={16} aria-hidden="true" /></button></header>}
+    {!headless && subtitle && <p id={subtitleId} className="xm-dialog-sub">{subtitle}</p>}
+    <div ref={content} className="xm-modal-content"><div className="xm-dialog-body">{children}</div>{footer && <footer hidden={confirmDiscard}>{footer}</footer>}</div>
+    {confirmDiscard && <div key={nudge} className={'xm-leave-bar' + (nudge ? ' is-nudged' : '')} role="alert"><TriangleAlert size={15} aria-hidden="true" /><span><strong>{t('discardTitle')}</strong>{t('discardBody')}</span><Button size="sm" variant="secondary" data-keep-editing="true" onClick={cancelDiscard}>{t('keepEditing')}</Button><Button size="sm" variant="danger" onClick={() => { setConfirmDiscard(false); onClose(); }}>{t('discard')}</Button></div>}
   </>;
   if (!modal) return <div ref={setNode} role="dialog" className={className} data-testid={testId} tabIndex={-1} aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined}>{inner}</div>;
   return <dialog ref={setNode} className={className} data-testid={testId} tabIndex={-1} aria-modal="true" aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined} onCancel={event => { event.preventDefault(); if (confirmDiscard) cancelDiscard(); else requestClose(); }} onClick={event => {
-    if (event.target !== event.currentTarget || dirty || busy || confirmDiscard) return;
+    if (event.target !== event.currentTarget || busy) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) requestClose();
   }} onKeyDown={event => {
+    // Chromium lets a page veto only so many Esc close requests in a row; past that the cancel event
+    // can no longer be prevented and the <dialog> closes behind React's back, dropping the draft and
+    // leaving the caller still "open". Handling Esc on keydown keeps every press ours. A search field
+    // with text keeps its own first Esc, which clears it without asking the dialog to close.
+    if (event.key === 'Escape') {
+      if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+      if (event.target instanceof HTMLInputElement && event.target.type === 'search' && event.target.value) return;
+      event.preventDefault(); if (confirmDiscard) cancelDiscard(); else requestClose(); return;
+    }
     if (event.key !== 'Tab') return;
     const targets = focusable(event.currentTarget);
     const first = targets[0]; const last = targets[targets.length - 1];

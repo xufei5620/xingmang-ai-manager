@@ -40,7 +40,9 @@ describe('platform UI registry', () => {
 
 describe('calculatePlatformZoom', () => {
   it('follows the 1280 DIP algorithm and preference multiplier', () => {
-    expect(calculatePlatformZoom(640)).toBe(0.7)
+    // UI v4.0 floors: the automatic factor stops at 0.9, the final one at 0.85.
+    expect(calculatePlatformZoom(640)).toBe(0.9)
+    expect(calculatePlatformZoom(640, '90')).toBe(0.85)
     expect(calculatePlatformZoom(1280)).toBe(1)
     expect(calculatePlatformZoom(1280, '90')).toBe(0.9)
     expect(calculatePlatformZoom(1280, '110')).toBe(1.1)

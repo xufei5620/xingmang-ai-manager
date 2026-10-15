@@ -2725,7 +2725,6 @@ export function SettingsPage({
     )
     onSettingsChanged?.(settings)
     document.documentElement.dataset.theme = settings.theme
-    document.documentElement.dataset.skin = settings.uiSkin ?? 'mist'
     document.documentElement.dataset.reducedMotion = String(
       Boolean(settings.reducedMotion),
     )

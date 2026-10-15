@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Info, TriangleAlert, X, XCircle } from 'lucide-react';
+import { Check, Info, TriangleAlert, X, XCircle } from 'lucide-react';
 import { Progress } from './core';
 import { useUiText, type BaseProps, type Icon, type Tone } from './shared';
 
@@ -46,8 +46,10 @@ function TimedToast({ id, text, tone, onDismiss }: { id: number; text: string; t
   const sticky = remaining.current === null;
   return <Toast text={text} tone={tone} onDismiss={sticky ? () => onDismiss(id) : undefined} onPause={() => setPaused(true)} onResume={() => setPaused(false)} />;
 }
+// v4: the mark mirrors the tone (done, heads-up, needs attention) so a toast in
+// the corner of the eye says which kind it is before it is read.
 export function Toast({ text, tone = 'neutral', onDismiss, onPause, onResume, testId }: BaseProps & { text: ReactNode; tone?: Tone; onDismiss?: () => void; onPause?: () => void; onResume?: () => void }) {
-  const t = useUiText();
-  return <div className={'xm-toast xm-tone-' + tone} data-testid={testId} role="status" onMouseEnter={onPause} onMouseLeave={onResume} onFocus={onPause} onBlur={onResume}><span>{text}</span>{onDismiss && <button className="xm-toast-close" aria-label={t('close')} onClick={onDismiss} type="button"><X size={14} aria-hidden="true" /></button>}</div>;
+  const t = useUiText(); const Mark = tone === 'ok' ? Check : tone === 'warn' || tone === 'bad' ? TriangleAlert : Info;
+  return <div className={'xm-toast xm-tone-' + tone} data-testid={testId} role="status" onMouseEnter={onPause} onMouseLeave={onResume} onFocus={onPause} onBlur={onResume}><Mark size={15} strokeWidth={2.3} aria-hidden="true" /><span>{text}</span>{onDismiss && <button className="xm-toast-close" aria-label={t('close')} onClick={onDismiss} type="button"><X size={14} aria-hidden="true" /></button>}</div>;
 }
 export function useToast() { return useContext(ToastContext); }

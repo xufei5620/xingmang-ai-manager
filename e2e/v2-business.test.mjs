@@ -2387,12 +2387,12 @@ test('failed saved-account verification never writes selected CLI config', async
   }
 })
 
-test('four skins persist via existing settings and failed changes leave the saved skin', async () => {
+test('a saved skin still round-trips through settings but no longer paints the window', async () => {
   for (const failed of [false, true]) {
     const page = await fixture(`page=settings${failed ? '&fail=settings' : ''}`)
     try {
       assert.equal(await page.locator('.v2-skin-chip').count(), 4)
-      await page.getByTestId('settings-skin-mist').click()
+      await page.getByTestId('settings-skin-aurora').click()
       if (failed) {
         await page.getByText('设置写入失败', { exact: true }).waitFor()
         assert.equal(
@@ -2403,11 +2403,20 @@ test('four skins persist via existing settings and failed changes leave the save
         )
       } else
         await page.waitForFunction(
-          () => document.documentElement.dataset.skin === 'mist',
+          () =>
+            document
+              .querySelector('[data-testid="settings-skin-aurora"]')
+              ?.getAttribute('aria-pressed') === 'true',
         )
       assert.deepEqual(
         (await calls(page)).find((call) => call.name === 'settings').args,
-        { version: 2, uiSkin: 'mist' },
+        { version: 2, uiSkin: 'aurora' },
+      )
+      // UI v4.0: two palettes follow data-theme alone; uiSkin stays in the
+      // settings file only because a missing field reads as a first launch.
+      assert.equal(
+        await page.evaluate(() => document.documentElement.dataset.skin),
+        undefined,
       )
     } finally {
       await page.close()

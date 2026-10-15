@@ -712,7 +712,6 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useLayoutEffect(() => {
     if (!settings) return
     document.documentElement.dataset.theme = settings.theme
-    document.documentElement.dataset.skin = settings.uiSkin ?? 'mist'
     document.documentElement.dataset.reducedMotion = String(settings.reducedMotion === true)
     document.documentElement.dataset.largeText = String(settings.largeText === true)
     document.documentElement.style.colorScheme = settings.theme
