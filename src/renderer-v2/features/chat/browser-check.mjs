@@ -45,7 +45,30 @@ async function open(query = '', stored = {}, init) {
   await page.getByTestId('chat-composer-input').waitFor()
   return page
 }
-async function ready(page) { await page.waitForFunction(() => { const select = document.querySelector('[data-testid=chat-model]'); return select && !select.disabled && select.value }) }
+async function ready(page) { await page.waitForFunction(() => { const button = document.querySelector('[data-testid=chat-model]'); return button && !button.disabled && button.dataset.model }) }
+// 分组和模型合在一个菜单里：按钮上带着当前选的分组和模型（data-group / data-model），选项只在菜单打开时才有。
+async function picked(page) { return page.getByTestId('chat-model').evaluate((button) => ({ group: button.dataset.group, model: button.dataset.model, label: button.querySelector('.chat-model-name').textContent })) }
+async function modelMenu(page) {
+  const menu = page.getByRole('menu', { name: '分组和模型', exact: true })
+  if (!await menu.count()) await page.getByTestId('chat-model').click()
+  await menu.waitFor()
+  return menu
+}
+async function closeMenu(page, menu) {
+  if (await menu.count()) { await menu.locator('button:not(:disabled)').first().focus(); await page.keyboard.press('Escape') }
+  await menu.waitFor({ state: 'detached' })
+}
+async function choices(menu, testId) { return menu.getByTestId(testId).getByRole('menuitemradio').evaluateAll((items) => items.map((item) => ({ label: item.querySelector('.xm-menu-choice > span').textContent, hint: item.querySelector('.xm-menu-choice > small')?.textContent ?? '', checked: item.getAttribute('aria-checked') === 'true', disabled: item.disabled }))) }
+async function groupChoices(page) { const menu = await modelMenu(page); const list = await choices(menu, 'chat-group'); await closeMenu(page, menu); return list }
+// 选分组后菜单不关，接着在下面选模型；这里选完分组就关掉。
+async function pickGroup(page, name) { const menu = await modelMenu(page); await menu.getByTestId('chat-group').getByRole('menuitemradio', { name, exact: true }).click(); await closeMenu(page, menu) }
+async function pickModel(page, name) { const menu = await modelMenu(page); await menu.getByTestId('chat-model-options').getByRole('menuitemradio', { name, exact: true }).click(); await menu.waitFor({ state: 'detached' }) }
+async function pickChoice(page, testId, label, name) {
+  await page.getByTestId(testId).click()
+  const menu = page.getByRole('menu', { name: label, exact: true })
+  await menu.getByRole('menuitemradio', { name, exact: true }).click()
+  await menu.waitFor({ state: 'detached' })
+}
 async function calls(page, method) { return page.evaluate((method) => window.chatHarness.calls.filter((item) => item.method === method), method) }
 async function send(page, prompt = 'fixture prompt') { await ready(page); await page.getByTestId('chat-composer-input').fill(prompt); await page.getByTestId('chat-send').click(); await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start' || item.method === 'image')); return (await calls(page, 'start')).at(-1)?.input ?? (await calls(page, 'image')).at(-1)?.input }
 async function emit(page, event) { await page.evaluate((event) => window.chatHarness.emit(event), event) }
@@ -175,44 +198,32 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
   } finally { await page.close() }
 })
 
-test('group options show canonical names and native menus inherit the active theme', async () => {
+test('one menu lists the backend groups with their descriptions above the models of the chosen group', async () => {
   const page = await open('theme=dark&preferredGroup=1')
   try {
-    const group = page.getByTestId('chat-group')
-    assert.deepEqual(await group.locator('option').evaluateAll((options) => options.map((option) => ({ value: option.value, label: option.textContent }))), [
-      { value: 'default', label: 'default' },
-      { value: 'GPT-中转/订阅', label: 'GPT-中转/订阅' },
-    ])
-    await page.waitForFunction(() => document.querySelector('[data-testid=chat-group]')?.value === 'GPT-中转/订阅')
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.group === 'GPT-中转/订阅')
     assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话', exact: true }).getAttribute('aria-pressed'), 'true', '首次进入聊天应默认文本对话')
-    const styles = await group.evaluate((select) => {
-      const option = select.options[0]
-      return {
-        selectScheme: getComputedStyle(select).colorScheme,
-        optionScheme: getComputedStyle(option).colorScheme,
-        optionColor: getComputedStyle(option).color,
-        optionBackground: getComputedStyle(option).backgroundColor,
-        height: getComputedStyle(select).height,
-      }
-    })
-    assert.equal(styles.selectScheme, 'dark')
-    assert.equal(styles.optionScheme, 'dark')
-    assert.notEqual(styles.optionBackground, 'rgba(0, 0, 0, 0)')
-    assert.notEqual(styles.optionColor, styles.optionBackground)
-    assert.equal(styles.height, '28px')
     await ready(page)
-    const model = page.getByTestId('chat-model')
-    const geometry = await page.locator('.chat-model-select').evaluate((wrapper) => {
-      const icon = wrapper.querySelector('.xm-brand').getBoundingClientRect()
-      const select = wrapper.querySelector('select').getBoundingClientRect()
-      return { iconLeft: icon.left, iconRight: icon.right, selectLeft: select.left, selectRight: select.right, selectWidth: select.width }
-    })
-    assert.ok(geometry.iconLeft >= geometry.selectLeft && geometry.iconRight <= geometry.selectRight)
-    assert.equal(geometry.selectWidth, 240)
-    assert.equal(await model.inputValue(), 'gpt-5.6-sol', '首次进入文本对话应选择截图中的默认模型')
-    await model.selectOption('other-model')
+    assert.deepEqual(await picked(page), { group: 'GPT-中转/订阅', model: 'gpt-5.6-sol', label: 'gpt-5.6-sol' }, '首次进入文本对话应选择截图中的默认模型')
+    const menu = await modelMenu(page)
+    // 选项名只是分组名，后台的说明作为补充读出来，不并进名字。
+    assert.deepEqual(await choices(menu, 'chat-group'), [
+      { label: 'default', hint: '用户分组', checked: false, disabled: false },
+      { label: 'GPT-中转/订阅', hint: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', checked: true, disabled: false },
+    ])
+    assert.equal(await menu.getByRole('menuitemradio', { name: 'GPT-中转/订阅', exact: true }).getAttribute('title'), 'gpt-image-1 / 1.5 / 2（官方按 token 计费）')
+    await menu.getByText('2 个模型可用', { exact: true }).waitFor()
+    assert.deepEqual((await choices(menu, 'chat-model-options')).map((item) => item.label), ['other-model', 'gpt-5.6-sol'])
+    assert.equal(await page.evaluate(() => document.activeElement?.querySelector('.xm-menu-choice > span')?.textContent), 'GPT-中转/订阅', 'the menu opens on the chosen group')
+    const surface = await menu.evaluate((element) => ({ background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color }))
+    assert.notEqual(surface.background, 'rgba(0, 0, 0, 0)')
+    assert.notEqual(surface.color, surface.background)
+    await pickModel(page, 'other-model')
+    assert.equal((await picked(page)).model, 'other-model')
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.testid), 'chat-model', 'focus returns to the button after a pick')
     // 计费提示只留输入框下面那一句，右上角那个「自动 · 费用不可预测」去掉了。
-    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，回复越长花得越多')
+    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，回复越长花得越多。')
+    assert.equal(await page.getByText('回答由模型生成，可能有误，重要内容请核对。', { exact: false }).count(), 1)
     assert.equal(await page.getByText('自动 · 费用不可预测', { exact: true }).count(), 0)
   } finally { await page.close() }
 })
@@ -290,7 +301,7 @@ test('retry reuses its original settings without duplicating a user message, edi
   try {
     const first = await send(page, 'original question')
     await emit(page, { type: 'error', requestId: first.requestId, message: 'network error' })
-    await page.getByTestId('chat-group').selectOption('group-b')
+    await pickGroup(page, 'group-b')
     await ready(page)
     await page.getByRole('button', { name: '重新生成', exact: true }).click()
     await page.getByTestId('chat-confirm').getByRole('button', { name: '重新生成', exact: true }).click()
@@ -302,7 +313,7 @@ test('retry reuses its original settings without duplicating a user message, edi
     assert.equal(await page.locator('.chat-message[data-role=user]').count(), 1)
     await emit(page, { type: 'content', requestId: retried.requestId, content: 'completed result' })
     await emit(page, { type: 'complete', requestId: retried.requestId })
-    await page.getByRole('button', { name: '编辑消息', exact: true }).click()
+    await page.getByRole('button', { name: '编辑后重新发送', exact: true }).click()
     await page.getByTestId('chat-edit-input').fill('edited question')
     await page.getByTestId('chat-edit-send').click()
     await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'start').length === 3)
@@ -315,11 +326,10 @@ test('retry reuses its original settings without duplicating a user message, edi
 test('late group preparation and account stream results cannot replace a newer scope', async () => {
   const page = await open('deferPreparation=1')
   try {
-    await page.getByTestId('chat-group').selectOption('group-b')
+    await pickGroup(page, 'group-b')
     await ready(page)
     await page.evaluate(() => window.chatHarness.finishPreparation())
-    assert.equal(await page.getByTestId('chat-group').inputValue(), 'group-b')
-    assert.equal(await page.getByTestId('chat-model').inputValue(), 'other-model')
+    assert.deepEqual(await picked(page), { group: 'group-b', model: 'other-model', label: 'other-model' })
     const request = await send(page, 'old account secret')
     await page.evaluate(() => window.chatHarness.switchScope(8))
     await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
@@ -335,10 +345,16 @@ test('image controls use real model capabilities and asset actions use opaque id
   try {
     await ready(page)
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
-    assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-image-2')
-    assert.equal(await page.getByTestId('chat-model').locator('option').filter({ hasText: 'gpt-image-1.5' }).count(), 0)
-    await page.getByTestId('chat-image-quality').selectOption('high')
-    await page.getByTestId('chat-image-resolution').selectOption('2K')
+    assert.equal((await picked(page)).model, 'gpt-image-2')
+    const menu = await modelMenu(page)
+    assert.equal(await menu.getByTestId('chat-model-options').getByRole('menuitemradio', { name: 'gpt-image-1.5', exact: true }).count(), 0)
+    await closeMenu(page, menu)
+    assert.equal(await page.getByTestId('chat-image-quality').textContent(), '画质：低')
+    await pickChoice(page, 'chat-image-quality', '画质', '高')
+    assert.equal(await page.getByTestId('chat-image-quality').textContent(), '画质：高')
+    await pickChoice(page, 'chat-image-resolution', '分辨率', '2K')
+    assert.equal(await page.getByTestId('chat-image-resolution').textContent(), '分辨率：2K')
+    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费。')
     const request = await send(page, 'A test scene')
     assert.equal(request.quality, 'high')
     assert.equal(request.imageResolution, '2K')
@@ -379,17 +395,22 @@ test('parameters and system prompt are applied to the request and text copy has 
   try {
     await ready(page)
     await page.getByTestId('chat-parameters-open').click()
-    await page.getByTestId('chat-parameter-temperature').fill('0.7')
+    // 滑块从「默认」起步，一动就有值：从 1 往左三格是 0.7。
+    const temperature = page.getByTestId('chat-parameter-temperature')
+    await temperature.focus()
+    for (let step = 0; step < 3; step++) await page.keyboard.press('ArrowLeft')
+    assert.equal(await temperature.inputValue(), '0.7')
     await page.getByTestId('chat-parameter-maxTokens').fill('2048')
     await page.getByTestId('chat-system-prompt').fill('Be precise')
     await page.getByTestId('chat-parameters-apply').click()
-    await page.keyboard.press('Escape')
+    await page.getByTestId('chat-parameters').waitFor({ state: 'detached' })
+    await waitForToast(page, '参数已应用到当前对话')
     const request = await send(page, 'test message')
     assert.deepEqual(request.parameters, { temperature: .7, maxTokens: 2048 })
     assert.deepEqual(request.messages[0], { role: 'system', content: 'Be precise' })
     await emit(page, { type: 'content', requestId: request.requestId, content: 'copy me' })
     await emit(page, { type: 'complete', requestId: request.requestId })
-    await page.locator('.chat-message[data-role=assistant]').getByRole('button', { name: '复制内容', exact: true }).click()
+    await page.locator('.chat-message[data-role=assistant]').getByRole('button', { name: '复制回答', exact: true }).click()
     await page.getByTestId('chat-copy-fallback').waitFor()
     assert.equal(await page.getByTestId('chat-copy-fallback').getByRole('textbox').inputValue(), 'copy me')
   } finally { await page.close() }
@@ -404,10 +425,12 @@ test('each code block copies only its own text and inline code gets no button', 
     const assistant = page.locator('.chat-message[data-role=assistant]')
     const buttons = assistant.getByTestId('chat-code-copy')
     assert.equal(await buttons.count(), 2)
+    // 代码块头上写语言；没写语言的就叫「代码」。
+    assert.deepEqual(await assistant.locator('.chat-code-head > span').allTextContents(), ['powershell', '代码'])
     await buttons.first().click()
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-code-copy]')?.textContent?.trim() === '已复制')
     assert.equal(await page.evaluate(() => window.__copied), 'npm install -g demo')
-    await waitForToast(page, '已复制')
+    await waitForToast(page, '代码已复制')
     await buttons.nth(1).click()
     await page.waitForFunction(() => window.__copied === 'demo --version')
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-code-copy]')?.textContent?.trim() === '复制', undefined, { timeout: 5000 })
@@ -437,7 +460,7 @@ test('formulas in replies render as math while money, code and the user message 
     assert.equal(await page.getByTestId('chat-copy-fallback').getByRole('textbox').inputValue(), 'echo $HOME$')
     await page.getByLabel('关闭', { exact: true }).click()
     await page.getByTestId('chat-copy-fallback').waitFor({ state: 'detached' })
-    await assistant.getByRole('button', { name: '复制内容', exact: true }).click()
+    await assistant.getByRole('button', { name: '复制回答', exact: true }).click()
     await page.getByTestId('chat-copy-fallback').waitFor()
     assert.equal(await page.getByTestId('chat-copy-fallback').getByRole('textbox').inputValue(), reply)
     const user = page.locator('.chat-message[data-role=user]')
@@ -511,32 +534,32 @@ test('opening the group menu refreshes metadata once without preparing keys or r
   const page = await open('preferredGroup=1')
   try {
     await ready(page)
-    await page.getByTestId('chat-model').selectOption('other-model')
+    await pickModel(page, 'other-model')
     await page.getByTestId('chat-composer-input').fill('keep this unsent draft')
     const before = (await calls(page, 'groups')).length
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => {
       window.chatHarness.setGroups(['default', 'GPT-中转/订阅', 'new-live-group'])
       window.chatHarness.deferGroupList()
-      const select = document.querySelector('[data-testid="chat-group"]')
-      select.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
-      select.focus()
-      select.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
     })
+    const menu = await modelMenu(page)
     await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'groups').length > count, before)
     assert.equal((await calls(page, 'groups')).length, before + 1)
-    assert.equal(await page.getByTestId('chat-group').isDisabled(), false, 'background refresh must leave an open native menu enabled')
+    assert.equal(await menu.isVisible(), true, 'background refresh must leave the open menu in place')
+    assert.equal(await page.getByTestId('chat-model').isDisabled(), false)
     await page.evaluate(() => window.chatHarness.releaseGroupList())
-    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'new-live-group'))
-    assert.equal(await page.getByTestId('chat-group').inputValue(), 'GPT-中转/订阅')
-    assert.equal(await page.getByTestId('chat-model').inputValue(), 'other-model')
+    await menu.getByRole('menuitemradio', { name: 'new-live-group', exact: true }).waitFor()
+    assert.deepEqual(await picked(page), { group: 'GPT-中转/订阅', model: 'other-model', label: 'other-model' })
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'keep this unsent draft')
     assert.equal((await calls(page, 'prepare')).length, prepared)
     assert.equal((await calls(page, 'start')).length + (await calls(page, 'image')).length, 0)
-    await page.getByTestId('chat-group-prepare').click()
+    // 菜单底部的「刷新分组和模型」再读一遍当前分组的模型，菜单不关。
+    await menu.getByTestId('chat-group-prepare').click()
     await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length > count, prepared)
     assert.equal((await calls(page, 'prepare')).length, prepared + 1)
-    assert.equal(await page.getByTestId('chat-model').inputValue(), 'other-model')
+    await waitForToast(page, '已刷新：GPT-中转/订阅分组有 2 个模型可用')
+    assert.equal(await menu.isVisible(), true)
+    assert.equal((await picked(page)).model, 'other-model')
   } finally { await page.close() }
 })
 
@@ -549,9 +572,8 @@ test('removing the selected group preserves selection/history and prevents send 
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => { window.chatHarness.setGroups(['group-b']); window.dispatchEvent(new Event('focus')) })
     await page.getByTestId('chat-group-unavailable').waitFor()
-    assert.equal(await page.getByTestId('chat-group').inputValue(), 'group-a')
-    assert.equal(await page.getByTestId('chat-group').locator('option:checked').textContent(), 'group-a（不可用）')
-    assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-test')
+    assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
+    assert.deepEqual(await groupChoices(page), [{ label: 'group-a（不可用）', hint: '', checked: true, disabled: true }, { label: 'group-b', hint: '', checked: false, disabled: false }])
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     assert.equal(await page.getByRole('button', { name: '重新生成', exact: true }).isDisabled(), true)
     await page.getByTestId('chat-composer-input').press('Enter')
@@ -559,7 +581,7 @@ test('removing the selected group preserves selection/history and prevents send 
     assert.equal((await calls(page, 'prepare')).length, prepared)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after revoked group')
     assert.equal(await page.locator('.chat-message[data-role="user"]').getByText('saved question', { exact: true }).count(), 1)
-    await page.getByTestId('chat-group').selectOption('group-b')
+    await pickGroup(page, 'group-b')
     await ready(page)
     assert.equal(await page.getByTestId('chat-group-unavailable').count(), 0)
     assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
@@ -575,8 +597,9 @@ test('focus and reactivation refresh groups without polling or repeating prepara
     await page.evaluate(() => Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true }))
     await page.getByTestId('chat-composer-input').fill('persistent draft')
     const prepared = (await calls(page, 'prepare')).length
+    const listed = (await calls(page, 'groups')).length
     await page.evaluate(() => { window.chatHarness.setGroups(['group-a', 'focus-group']); window.dispatchEvent(new Event('focus')) })
-    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'focus-group'))
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'groups').length > count, listed)
     await page.evaluate(() => window.chatHarness.setActive(false))
     await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
     await page.waitForFunction(() => document.querySelector('[data-testid="page-chat"]').hidden)
@@ -584,7 +607,7 @@ test('focus and reactivation refresh groups without polling or repeating prepara
     await page.clock.fastForward(31000)
     assert.equal((await calls(page, 'groups')).length, inactive)
     await page.evaluate(() => { window.chatHarness.setGroups(['group-a', 'reactivated-group']); window.chatHarness.setActive(true) })
-    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'reactivated-group'))
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'groups').length > count, inactive)
     const reactivated = (await calls(page, 'groups')).length
     await page.clock.fastForward(10 * 60_000)
     assert.equal((await calls(page, 'groups')).length, reactivated, 'a visible, focused chat page must not poll the group list')
@@ -597,7 +620,7 @@ test('focus and reactivation refresh groups without polling or repeating prepara
       Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
       document.dispatchEvent(new Event('visibilitychange'))
     })
-    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'visible-group'))
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'groups').length > count, hidden)
     assert.equal((await calls(page, 'prepare')).length, prepared)
     assert.equal((await calls(page, 'start')).length + (await calls(page, 'image')).length, 0)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'persistent draft')
@@ -612,12 +635,12 @@ test('a background list failure retains existing options and model while exposin
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => { window.chatHarness.failGroupList(); window.dispatchEvent(new Event('focus')) })
     await page.getByTestId('chat-groups-retry').waitFor()
-    assert.equal(await page.getByTestId('chat-group').inputValue(), 'group-a')
-    assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-test')
-    assert.equal(await page.getByTestId('chat-group').isDisabled(), false)
+    assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
+    assert.equal(await page.getByTestId('chat-model').isDisabled(), false)
     await page.evaluate(() => { window.chatHarness.resetGroupFailure(); window.chatHarness.setGroups(['group-a', 'recovered-group']) })
     await page.getByTestId('chat-groups-retry').click()
-    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'recovered-group'))
+    await page.getByTestId('chat-groups-retry').waitFor({ state: 'detached' })
+    assert.deepEqual((await groupChoices(page)).map((item) => item.label), ['group-a', 'recovered-group'])
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'offline draft')
     assert.equal((await calls(page, 'prepare')).length, prepared)
   } finally { await page.close() }
@@ -626,15 +649,15 @@ test('a background list failure retains existing options and model while exposin
 test('new groups after an empty initial list require an explicit choice before preparing a key', async () => {
   const page = await open('emptyGroups=1')
   try {
-    await page.waitForFunction(() => document.querySelector('[data-testid="chat-group"]')?.textContent === '暂无可用分组')
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-model"] .chat-model-name')?.textContent === '暂无可用分组')
     await page.getByTestId('chat-composer-input').fill('draft before access granted')
     await page.evaluate(() => { window.chatHarness.setGroups(['group-a']); window.dispatchEvent(new Event('focus')) })
-    await page.waitForFunction(() => document.querySelector('[data-testid="chat-group"]')?.options.length === 2)
-    assert.equal(await page.getByTestId('chat-group').inputValue(), '')
-    assert.equal(await page.getByTestId('chat-group').locator('option:checked').textContent(), '请选择分组')
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-model"] .chat-model-name')?.textContent === '请选择分组')
+    assert.deepEqual(await picked(page), { group: '', model: '', label: '请选择分组' })
+    assert.deepEqual(await groupChoices(page), [{ label: 'group-a', hint: '', checked: false, disabled: false }])
     assert.equal((await calls(page, 'prepare')).length, 0)
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
-    await page.getByTestId('chat-group').selectOption('group-a')
+    await pickGroup(page, 'group-a')
     await ready(page)
     assert.equal((await calls(page, 'prepare')).length, 1)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft before access granted')
@@ -674,9 +697,18 @@ test('hidden chat removes native popup surfaces and preserves an edited message 
     await page.evaluate(() => window.chatHarness.setActive(false))
     await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
     assert.equal(await page.locator(':popover-open').count(), 0)
+    assert.equal(await page.locator('dialog[open]').count(), 0)
     await page.evaluate(() => window.chatHarness.setActive(true))
     await page.getByTestId('page-chat').waitFor({ state: 'visible' })
-    await page.getByRole('button', { name: '编辑消息', exact: true }).click()
+    assert.equal(await page.getByTestId('chat-parameters').count(), 0, 'the parameters dialog does not come back on its own')
+    await page.getByTestId('chat-model').click()
+    await page.getByRole('menu', { name: '分组和模型', exact: true }).waitFor()
+    await page.evaluate(() => window.chatHarness.setActive(false))
+    await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
+    assert.equal(await page.locator(':popover-open').count(), 0)
+    await page.evaluate(() => window.chatHarness.setActive(true))
+    await page.getByTestId('page-chat').waitFor({ state: 'visible' })
+    await page.getByRole('button', { name: '编辑后重新发送', exact: true }).click()
     await page.getByTestId('chat-edit-input').fill('preserved edited draft')
     assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
     await page.evaluate(() => window.chatHarness.setActive(false))
@@ -711,9 +743,9 @@ test('default, empty and failed chat surfaces fit the fixed desktop content fram
 test('Sub2API opens with its Codex_pro group and gpt-5.6-sol model', async () => {
   const page = await open('sub2api=1&preferredGroup=1')
   try {
-    await page.waitForFunction(() => document.querySelector('[data-testid="chat-group"]')?.value === 'Codex_pro')
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-model"]')?.dataset.group === 'Codex_pro')
     await ready(page)
-    assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-5.6-sol')
+    assert.equal((await picked(page)).model, 'gpt-5.6-sol')
   } finally { await page.close() }
 })
 
@@ -722,7 +754,7 @@ test('a model that reads images takes picked and pasted screenshots and sends th
   try {
     await ready(page)
     assert.equal(await page.getByTestId('chat-attach-image').isDisabled(), true, 'gpt-test cannot read images')
-    await page.getByTestId('chat-model').selectOption('claude-test')
+    await pickModel(page, 'claude-test')
     await page.getByTestId('chat-attach-image').click()
     await page.locator('.chat-draft-image').first().waitFor()
     assert.deepEqual((await calls(page, 'pick-images')).map((call) => call.input), [4])
@@ -733,7 +765,7 @@ test('a model that reads images takes picked and pasted screenshots and sends th
     })
     await page.waitForFunction(() => document.querySelectorAll('.chat-draft-image').length === 2)
     assert.equal((await calls(page, 'paste-image')).length, 1)
-    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带图片的提问会更贵一些')
+    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带图片的提问会更贵一些。')
     assert.equal(await page.getByTestId('chat-send').isDisabled(), false, 'images alone are enough to send')
     await page.getByTestId('chat-send').click()
     await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
@@ -745,7 +777,7 @@ test('a model that reads images takes picked and pasted screenshots and sends th
     await emit(page, { type: 'complete', requestId: request.requestId })
     await waitSaved(page, (workspace) => workspace.conversations[0]?.messages[0]?.assets?.length === 2)
 
-    await page.getByTestId('chat-model').selectOption('gpt-test')
+    await pickModel(page, 'gpt-test')
     await page.getByTestId('chat-composer-input').evaluate((element) => {
       const data = new DataTransfer()
       data.items.add(new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' }))
@@ -797,18 +829,19 @@ test('an empty chat says where conversations go, and its examples only fill the 
     assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '聊过的对话会存在这里')
     assert.equal(await page.getByText('还没有对话', { exact: true }).count(), 0)
     const empty = page.getByTestId('chat-empty')
-    await empty.getByText('选好分组和模型，直接在下面输入。', { exact: true }).waitFor()
-    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['解释一段报错是什么意思', '帮我写一个 Python 小脚本', '把这段话翻译成英文'])
+    await empty.getByRole('heading', { name: '有什么想问的？', exact: true }).waitFor()
+    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['用大白话解释什么是 API Key', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
     await page.getByTestId('chat-example-2').click()
     const input = page.getByTestId('chat-composer-input')
-    assert.equal(await input.inputValue(), '帮我写一个 Python 小脚本')
+    assert.equal(await input.inputValue(), '帮我写一个批量重命名文件的脚本')
     assert.equal(await input.evaluate((element) => element === document.activeElement), true)
     assert.equal((await calls(page, 'start')).length, 0, 'an example is never sent on its own')
     // 输入框里有字了就不再摆例句：再点一颗会把打的字换掉。
     assert.equal(await empty.getByRole('button').count(), 0)
     await input.fill('')
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
-    await empty.getByText('选好分组和模型，直接在下面输入。', { exact: true }).waitFor()
+    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
     assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
   } finally { await page.close() }
 })
@@ -878,5 +911,112 @@ test('the composer starts one line high, grows with the text and scrolls inside 
     const full = await size()
     assert.ok(Math.abs(full.height - (8 * one.line + 6)) <= 1, `stops at eight lines (${full.height})`)
     assert.equal(full.scrolls, true)
+  } finally { await page.close() }
+})
+
+test('the conversation list groups by day, finds by title and clears everything after one confirmation', async () => {
+  const state = storedWorkspace()
+  const settings = state.conversations[0].settings
+  const noon = new Date(); noon.setHours(12, 0, 0, 0)
+  const conversation = (id, title, updatedAt, messages = []) => ({ id, title, createdAt: updatedAt, updatedAt, draft: '', settings, messages })
+  state.conversations = [
+    conversation('today', '今天聊的', Date.now(), [{ id: 't1', role: 'user', content: '你好', status: 'complete', createdAt: 1 }, { id: 't2', role: 'assistant', content: '你好呀', reasoning: '', status: 'complete', createdAt: 2 }]),
+    conversation('yesterday', '昨天聊的', noon.getTime() - 86_400_000),
+    conversation('older', '很久以前聊的', noon.getTime() - 10 * 86_400_000),
+  ]
+  state.activeId = 'today'
+  state.draftConversation.draft = '还没发出去的话'
+  const page = await open('', { [storedChatKey]: JSON.stringify(state) })
+  try {
+    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    await list.getByTestId('chat-conversation-older').waitFor()
+    assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['今天', '昨天', '更早'])
+    assert.equal(await page.getByTestId('chat-conversation-today').textContent(), '今天聊的2 条消息')
+    assert.equal(await page.getByTestId('chat-conversation-older').textContent(), '很久以前聊的0 条消息')
+    // 搜索框一直在，搜不到时说搜的是什么。
+    await page.getByTestId('chat-conversation-search').fill('昨天')
+    assert.deepEqual(await list.locator('.chat-conversation-select strong').allTextContents(), ['昨天聊的'])
+    await page.getByTestId('chat-conversation-search').fill('没有这个')
+    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的对话')
+    await page.getByTestId('chat-conversation-search').fill('')
+    await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
+    const menu = page.getByRole('menu', { name: '对话操作', exact: true })
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['导出这段对话', '删除这段对话…'])
+    await menu.getByRole('menuitem', { name: '导出这段对话', exact: true }).click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
+    assert.equal((await calls(page, 'export-text'))[0].input.title, '今天聊的')
+    await page.getByRole('button', { name: '「昨天聊的」更多操作', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '删除这段对话…', exact: true }).click()
+    const confirm = page.getByTestId('chat-confirm')
+    await confirm.getByRole('heading', { name: '删除「昨天聊的」？', exact: true }).waitFor()
+    await confirm.getByText('这段对话会从这台电脑上删掉，找不回来。已产生的用量不会改变。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await page.getByTestId('chat-conversation-yesterday').waitFor({ state: 'detached' })
+    // 页头的「导出这段对话」导出正在看的这一段。
+    await page.getByTestId('chat-conversation-export').click()
+    await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'export-text').length === 2)
+    await page.getByTestId('chat-conversations-clear').click()
+    await confirm.getByRole('heading', { name: '清空全部对话？', exact: true }).waitFor()
+    await confirm.getByText('聊天记录会从这台电脑上全部删掉，找不回来。用量账单不受影响。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '全部清空', exact: true }).click()
+    await waitForToast(page, '对话已清空')
+    assert.equal(await list.locator('.chat-conversation-select').count(), 0)
+    assert.equal(await page.getByTestId('chat-conversations-clear').count(), 0)
+    // 没发出去的草稿也算本机记录，清空后不会再冒出来。
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '')
+    await waitSaved(page, (workspace) => workspace.conversations.length === 0 && workspace.draftConversation.draft === '' && workspace.draftConversation.settings.model === 'gpt-test')
+  } finally { await page.close() }
+})
+
+test('a message typed while offline stays in the composer and goes out from the banner once the network is back', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await page.context().setOffline(true)
+    await page.getByTestId('chat-composer-input').fill('sent after reconnecting')
+    await page.getByTestId('chat-send').click()
+    await page.getByRole('alert').filter({ hasText: '没发出去：现在连不上网。网络恢复后点「重试」。' }).waitFor()
+    assert.equal((await calls(page, 'start')).length, 0)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'sent after reconnecting')
+    await page.context().setOffline(false)
+    await page.getByTestId('chat-send-retry').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
+    assert.deepEqual((await calls(page, 'start'))[0].input.messages.at(-1), { role: 'user', content: 'sent after reconnecting' })
+    assert.equal(await page.getByTestId('chat-send-retry').count(), 0)
+  } finally { await page.close() }
+})
+
+test('the parameters dialog starts every slider at the model default, explains bad numbers and only changes the conversation on apply', async () => {
+  const page = await open('openParameters=1')
+  try {
+    // 顶部搜索的「聊天参数设置」一进聊天页就打开这个对话框。
+    const dialog = page.getByTestId('chat-parameters')
+    await dialog.waitFor()
+    assert.equal(await dialog.getByRole('heading', { name: '参数设置', exact: true }).count(), 1)
+    assert.deepEqual(await dialog.locator('.xm-slider b').allTextContents(), ['默认', '默认', '默认', '默认'])
+    assert.deepEqual(await dialog.locator('.xm-slider small').allTextContents(), ['越高越有创意，越低越稳定', '一般不用改', '调高可以减少重复用词', '调高会更愿意换话题'])
+    assert.equal(await page.getByTestId('chat-parameter-maxTokens').getAttribute('placeholder'), '不限')
+    assert.equal(await page.getByTestId('chat-parameter-seed').getAttribute('placeholder'), '不填则每次随机')
+    assert.equal(await page.getByTestId('chat-system-prompt').getAttribute('placeholder'), '比如：你是一位耐心的编程老师，回答尽量简短')
+    await page.getByTestId('chat-parameter-topP').focus()
+    await page.keyboard.press('ArrowLeft')
+    assert.equal(await dialog.locator('.xm-slider b').nth(1).textContent(), '0.95')
+    await page.getByTestId('chat-parameter-maxTokens').fill('1.5')
+    await page.getByTestId('chat-parameters-apply').click()
+    await dialog.getByText('最大输出 Token 要填整数，比如 4096', { exact: true }).waitFor()
+    await page.getByTestId('chat-parameters-reset').click()
+    assert.deepEqual(await dialog.locator('.xm-slider b').allTextContents(), ['默认', '默认', '默认', '默认'])
+    assert.equal(await page.getByTestId('chat-parameter-maxTokens').inputValue(), '')
+    await page.getByTestId('chat-parameter-seed').fill('42')
+    await page.getByTestId('chat-parameters-cancel').click()
+    await dialog.waitFor({ state: 'detached' })
+    await page.evaluate(() => window.chatHarness.openParameters())
+    await dialog.waitFor()
+    assert.equal(await page.getByTestId('chat-parameter-seed').inputValue(), '', 'canceling keeps nothing')
+    await page.getByTestId('chat-parameter-seed').fill('42')
+    await page.getByTestId('chat-parameters-apply').click()
+    await dialog.waitFor({ state: 'detached' })
+    const request = await send(page, 'seeded')
+    assert.deepEqual(request.parameters, { seed: 42 })
   } finally { await page.close() }
 })

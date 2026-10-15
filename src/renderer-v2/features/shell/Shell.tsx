@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, CreditCard, Gauge, LogOut, Menu as MenuIcon, Moon, PanelLeft, RefreshCw, Search, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, CreditCard, Gauge, LogOut, Menu as MenuIcon, Moon, PanelLeft, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip, useToast } from '../../ui'
 import { moreNavigation, shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
@@ -111,7 +111,7 @@ const commandTitle = '搜索或跳转'
 const commandPlaceholder = '输入页面、工具或操作，比如「充值」'
 const narrowSidebarNote = '窗口较窄时侧栏会自动收起'
 const actionIcons: Partial<Record<string, LucideIcon>> = {
-  'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'account:logout': LogOut,
+  'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'account:logout': LogOut,
 }
 
 function useNarrowWindow() {

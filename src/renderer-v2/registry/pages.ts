@@ -27,7 +27,7 @@ export const pageRegistry: readonly PageDefinition[] = pages.map((page) => ({ id
 /** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。 */
 export const pageSearchKeywords: Record<PageId, readonly string[]> = {
   home: ['主页', '我的工具', '打开工具', '配置', '换模型'],
-  chat: ['对话', '问答', '提问', '生图', '画图'],
+  chat: ['对话', '问答', '提问', '生图', '画图', '分组', '模型'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
   canvas: ['画图', '生图', '工作流'],
   acceleration: ['加速', '游戏', '延迟', '卡顿'],
