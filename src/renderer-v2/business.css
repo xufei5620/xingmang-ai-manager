@@ -118,20 +118,59 @@
   font-size: 13px;
   line-height: 1.6;
 }
-/* 记录列表里没有「接着聊」的行：占着同样宽的一格，按钮和左边的信息上下对齐。 */
-.v2-row-action-placeholder {
-  display: inline-flex;
-  visibility: hidden;
-}
-.v2-transcript-message {
-  border-top: 1px solid var(--line);
-  padding: 16px 0;
-}
-.v2-transcript-message p {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.65;
-}
+/* 页头下面那一行：左边一排带数的按钮，右边搜索框；窗口窄了搜索框换到下一行。 */
+.v2-filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.v2-filter-bar > .xm-chips { flex: 1 1 auto; min-width: 0; }
+.v2-filter-bar > .xm-search { width: 250px; height: var(--control-sm); }
+/* 记录页的表：列宽固定，长标题和长路径在格子里省略，悬停看全；行高 58 放得下标题和下面那行小字。 */
+.v2-sessions-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--font-small); }
+.v2-sessions-table th { height: 36px; padding: 0 12px; text-align: left; color: var(--text-3); font-size: var(--font-small-compact); font-weight: 500; white-space: nowrap; box-shadow: inset 0 -1px 0 var(--line); }
+.v2-sessions-table th:nth-child(2) { width: 138px; }
+.v2-sessions-table th:nth-child(3) { width: 23%; }
+.v2-sessions-table th:nth-child(4) { width: 104px; }
+.v2-sessions-table th:nth-child(5) { width: 126px; }
+.v2-sessions-table td { height: 58px; padding: 0 12px; box-shadow: inset 0 -1px 0 var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v2-sessions-table tbody tr:last-child td { box-shadow: none; }
+.v2-sessions-table tbody tr:hover { background: var(--panel-hover); }
+.v2-sessions-open { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.v2-sessions-open > strong, .v2-sessions-open > small { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-sessions-open > strong { font-weight: 600; transition: color var(--duration-fast); }
+.v2-sessions-open > small { color: var(--text-3); font-size: var(--font-small-compact); }
+.v2-sessions-open:hover > strong { color: var(--gold-tx); }
+.v2-sessions-open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.v2-sessions-tool { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; color: var(--text-2); }
+.v2-sessions-dir { font-family: var(--mono); font-size: var(--font-small-compact); color: var(--text-2); }
+.v2-sessions-dir > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.v2-sessions-dir > .v2-sessions-dir-gone { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--warn-tx); }
+.v2-sessions-dir-gone > svg { flex: none; }
+.v2-sessions-dir-gone > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--warn-tx) 60%, transparent); }
+.v2-sessions-when { color: var(--text-2); }
+.v2-sessions-table td.v2-sessions-actions { text-align: right; overflow: visible; }
+.v2-sessions-actions > .xm-btn { vertical-align: middle; margin-right: 2px; }
+.v2-sessions-actions > .xm-menu { display: inline-flex; vertical-align: middle; margin-right: -6px; }
+/* 记录详情弹窗。 */
+.v2-dialog-footer-start { margin-right: auto; display: inline-flex; }
+.v2-session-detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.v2-session-detail-gone { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: var(--radius-input); background: var(--warn-soft); color: var(--warn-tx); font-size: var(--font-small); line-height: 1.6; overflow-wrap: anywhere; }
+.v2-session-detail-gone > svg { flex: none; margin-top: 2px; }
+.v2-session-detail-kv { display: flex; flex-direction: column; margin: 0; padding: 4px 14px; border-radius: var(--radius-card); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--font-small); }
+.v2-session-detail-kv > div { display: flex; align-items: center; gap: 12px; min-height: 38px; }
+.v2-session-detail-kv > div + div { box-shadow: inset 0 1px 0 var(--line); }
+.v2-session-detail-kv dt { flex: none; width: 76px; color: var(--text-3); }
+.v2-session-detail-kv dd { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; margin: 0; }
+.v2-session-detail-kv dd > .xm-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.v2-link-button { flex: none; padding: 0; border: 0; background: none; color: var(--gold-tx); font: inherit; cursor: pointer; }
+.v2-link-button:hover:not(:disabled) { text-decoration: underline; }
+.v2-link-button:disabled { opacity: .4; cursor: not-allowed; }
+.v2-link-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+.v2-session-transcript > h3 { margin: 0 0 8px; color: var(--text-2); font-size: var(--font-small); font-weight: 500; }
+/* 对话两边分开：自己说的靠右、带浅金底，AI 的靠左、前面一个小图标。 */
+.v2-transcript { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: var(--radius-card); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
+.v2-transcript p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.v2-transcript-me { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 12px 12px 4px 12px; background: var(--bubble-user); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--text); font-size: var(--font-small); }
+.v2-transcript-ai { display: flex; align-items: flex-start; gap: 8px; max-width: 94%; color: var(--text-2); font-size: var(--font-small); }
+.v2-transcript-ai > :first-child:not(p) { flex: none; margin-top: 3px; }
+.v2-transcript-more { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--text-3); font-size: var(--font-small-compact); }
 .v2-business-backup-grid {
   display: grid;
   /* 正文 1000 宽时左栏正好 690；窗口窄到正文不足 1000 时左栏先让，不撑出横向滚动。 */

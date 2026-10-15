@@ -111,6 +111,15 @@
 .xm-segment button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--control-xs); padding: 0 12px; border: 0; background: transparent; border-radius: 6px; color: var(--text-2); font: inherit; font-size: var(--font-small); cursor: pointer; }
 .xm-segment button.is-active { background: var(--seg-on); color: var(--text); font-weight: 500; box-shadow: var(--control-segment-shadow); }
 .xm-segment button:disabled, .xm-tabs button:disabled { opacity: .5; cursor: not-allowed; }
+.xm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.xm-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 0; border-radius: 14px; background: transparent; box-shadow: inset 0 0 0 1px var(--line-2); color: var(--text-2); font: inherit; font-size: var(--font-small); cursor: pointer; white-space: nowrap; transition: background var(--duration-fast), color var(--duration-fast); }
+.xm-chip.has-leading { padding-left: 6px; }
+.xm-chip-lead { display: inline-flex; }
+.xm-chip-count { color: var(--text-3); font-size: var(--font-small-compact); font-variant-numeric: tabular-nums; }
+.xm-chip:hover { background: var(--panel-hover); color: var(--text); }
+.xm-chip[aria-pressed="true"] { background: var(--soft); color: var(--soft-tx); box-shadow: none; font-weight: 600; }
+.xm-chip[aria-pressed="true"] .xm-chip-count { color: inherit; opacity: .8; }
+.xm-chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .xm-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
 .xm-tabs button { height: 38px; display: inline-flex; gap: 6px; align-items: center; padding: 8px 12px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-2); font: inherit; cursor: pointer; }
 .xm-tabs button.is-active { border-bottom-color: var(--gold); color: var(--text); font-weight: 600; }
@@ -141,6 +150,13 @@
 .xm-field .has-error, .xm-field [aria-invalid="true"] { border-color: var(--bad); }
 .xm-field input.xm-input-password { padding-right: 38px; }
 .xm-field em { display: block; color: var(--bad-tx); font-size: var(--font-small); font-style: normal; margin-top: 4px; }
+.xm-slider { display: grid; gap: 4px; min-width: 0; }
+.xm-slider > label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: var(--font-small); font-weight: 500; }
+.xm-slider > label b { color: var(--text); font-family: var(--mono); font-size: var(--font-small); font-weight: 500; }
+.xm-slider > label b[data-unset] { color: var(--text-3); font-family: var(--font); }
+.xm-slider input { width: 100%; margin: 2px 0; accent-color: var(--gold); }
+.xm-slider input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.xm-slider small { color: var(--text-3); font-size: var(--font-micro); line-height: 1.5; }
 .xm-field small { display: block; color: var(--text-3); font-size: var(--font-small); margin-top: 4px; }
 .xm-field small.xm-field-caps { display: flex; align-items: center; gap: 6px; color: var(--warn-tx); }
 .xm-field small.xm-field-caps::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; }
@@ -218,7 +234,17 @@
 .xm-menu-pop button:disabled { opacity: .5; cursor: not-allowed; }
 .xm-menu-pop .is-danger { color: var(--bad-tx); }
 .xm-menu-pop hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+/* ChoiceMenu: radio choices under small headings (a chat model picker, an image size). The panel caps its
+   height so a group with dozens of models scrolls inside the menu instead of covering the window. */
+.xm-choice-menu { min-width: 220px; max-width: min(360px, calc(100vw - 16px)); max-height: min(460px, calc(100vh - 16px)); }
 .xm-menu-heading { padding: 6px 10px 4px; color: var(--text-3); font-size: var(--font-micro); }
+.xm-menu-pop button > svg, .xm-menu-check { flex: none; }
+.xm-menu-check { width: 15px; }
+.xm-menu-choice { display: grid; gap: 1px; min-width: 0; }
+.xm-menu-choice > span, .xm-menu-choice > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xm-menu-choice > small { color: var(--text-3); font-size: var(--font-micro); }
+.xm-menu-pop [aria-checked='true'] { font-weight: 600; }
+.xm-menu-empty { margin: 0; padding: 2px 10px 8px; color: var(--text-3); font-size: var(--font-small); }
 .xm-menu-hint { margin-left: auto; padding-left: 10px; color: var(--text-3); font-size: var(--font-micro); }
 .xm-popover-panel { width: 280px; padding: 12px; }
 .xm-popover-panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }

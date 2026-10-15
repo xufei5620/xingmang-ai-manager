@@ -970,22 +970,33 @@ test('the records page opens the folder a record was made in (第七批 8)', asy
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
     await page.getByTestId('nav-sessions').click()
-    const open1 = page.getByTestId('sessions-open-directory-claude:1')
-    await open1.waitFor()
-    assert.equal(await open1.innerText(), '打开文件夹')
-    assert.equal(await open1.getAttribute('title'), '在文件管理器里打开 C:\\work\\my-app')
-
-    // 目录已经没了的那一行按钮留在原位但按不动,和旁边的「接着聊」同一个口径。
+    // v4：「打开文件夹」挪进了行上的「…」。目录已经没了的那一行这一项按不动，文件夹那一格挂着警告图标。
+    const goneMenu = page.getByTestId('sessions-menu-claude:2')
+    await goneMenu.waitFor()
+    assert.equal(await page.getByTestId('sessions-missing-claude:2').getAttribute('title'), '这个文件夹已经不在了')
+    await goneMenu.locator('button').first().click()
     const gone = page.getByTestId('sessions-open-directory-claude:2')
+    await gone.waitFor()
     assert.equal(await gone.isDisabled(), true)
-    assert.equal(await gone.getAttribute('title'), '这条记录的文件夹已经不在了，打不开')
+    await page.keyboard.press('Escape')
+    await gone.waitFor({ state: 'detached' })
 
+    const menu = page.getByTestId('sessions-menu-claude:1')
+    const trigger = menu.locator('button').first()
+    assert.equal(await trigger.getAttribute('aria-label'), '「会话 1」更多操作')
+    await trigger.click()
+    const open1 = page.getByTestId('sessions-open-directory-claude:1')
+    assert.equal(await open1.innerText(), '打开文件夹')
     await open1.click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openProviderSessionDirectory'))
+    // 详情弹窗「项目文件夹」那一行的「打开」是同一件事。
+    await page.getByTestId('sessions-view-claude:1').click()
+    await page.getByTestId('session-detail-open-directory').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openProviderSessionDirectory').length === 2)
     const calls = await page.evaluate(() => window.v2Test.calls)
     // 只发会话 id:路径由主进程从记录里取,渲染层没有办法点名要打开哪个目录。
     assert.deepEqual(calls.filter((entry) => entry.method === 'openProviderSessionDirectory').map((entry) => entry.args),
-      [['claude:1']])
+      [['claude:1'], ['claude:1']])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1008,8 +1019,8 @@ test('a summary-only record still opens, says only the summary is left and offer
   } finally { await page.close() }
 })
 
-// 整行可点的行，右边那一格里只有按钮各管各的：「可以试试」的小箭头、没有「接着聊」那一行留出的空位，点了照样打开整行。
-test('the arrow of a home suggestion and the empty slot of a record row still open the row', async () => {
+// 「可以试试」整行可点：右边的小箭头不接点击，点在它上面落到整行那颗按钮上。
+test('the arrow of a home suggestion still opens the row', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
     await page.evaluate(() => {
@@ -1029,26 +1040,6 @@ test('the arrow of a home suggestion and the empty slot of a record row still op
     assert.ok(arrow, 'the arrow is on the row')
     await page.mouse.click(arrow.x + arrow.width / 2, arrow.y + arrow.height / 2)
     await page.getByTestId('page-mcp').waitFor()
-
-    await page.getByTestId('nav-sessions').click()
-    // 记录行的标题是图标加文字：两者之间要留空、上下居中，不能贴在一起。
-    const title = page.locator('[data-testid^="sessions-row-"] .xm-row-open').first()
-    await title.waitFor()
-    const layout = await title.evaluate((button) => {
-      const icon = button.firstElementChild.getBoundingClientRect()
-      const range = document.createRange()
-      range.selectNodeContents([...button.childNodes].find((node) => node.nodeType === Node.TEXT_NODE))
-      const text = range.getBoundingClientRect()
-      return { gap: text.left - icon.right, offset: Math.abs((text.top + text.bottom) / 2 - (icon.top + icon.bottom) / 2) }
-    })
-    assert.ok(layout.gap >= 6, `icon and title are ${layout.gap}px apart`)
-    assert.ok(layout.offset <= 2, `icon and title centres are ${layout.offset}px apart`)
-    const placeholder = page.locator('[data-testid^="sessions-row-"] .v2-row-action-placeholder').first()
-    await placeholder.waitFor({ state: 'attached' })
-    const box = await placeholder.boundingBox()
-    assert.ok(box, 'the placeholder keeps its width')
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-    await page.getByTestId('session-detail-drawer').waitFor()
     await clean(page)
   } finally { await page.close() }
   const fresh = await open('allInstalled=1')
@@ -1056,6 +1047,34 @@ test('the arrow of a home suggestion and the empty slot of a record row still op
     await fresh.getByTestId('home-suggestion-codex').waitFor()
     await clean(fresh)
   } finally { await fresh.close() }
+})
+
+// v4 记录页是一张表：标题、工具、项目文件夹、最后活动四列；标题下面那行小字只剩模型和几条消息，时间在自己那一列。
+test('the records table puts each record on one row with tool chips that count', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('nav-sessions').click()
+    const sessions = page.getByTestId('page-sessions')
+    await sessions.getByTestId('sessions-row-claude:1').waitFor()
+    assert.deepEqual(await sessions.locator('thead th').evaluateAll((cells) => cells.map((cell) => cell.textContent)), ['标题', '工具', '项目文件夹', '最后活动', '操作'])
+    const row = sessions.getByTestId('sessions-row-claude:1')
+    assert.equal(await row.locator('.v2-sessions-open small').innerText(), 'fixture-model · 2 条消息')
+    assert.equal(await row.locator('td').nth(1).innerText(), 'Claude Code')
+    // 工具按钮带数：全部 = Claude Code 3 + Codex 1；下线的 Gemini CLI 不算、也不出按钮。
+    await page.waitForFunction(() => document.querySelector('[data-testid="sessions-tool-all"] .xm-chip-count')?.textContent === '4')
+    assert.equal(await sessions.getByTestId('sessions-tool-claude').locator('.xm-chip-count').innerText(), '3')
+    assert.equal(await sessions.getByTestId('sessions-tool-gemini').count(), 0)
+    assert.equal(await sessions.getByTestId('sessions-tool-all').getAttribute('aria-pressed'), 'true')
+    await sessions.getByTestId('sessions-tool-codex').click()
+    assert.equal(await sessions.getByTestId('sessions-tool-codex').getAttribute('aria-pressed'), 'true')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.provider === 'codex'))
+    // 搜不到时说这一页自己的话，提醒切回「全部」。
+    await page.evaluate(() => { window.xingmang.listProviderSessions = async () => ({ items: [], page: 1, pageSize: 20, total: 0, pages: 1, stats: { total: 0, byProvider: {} }, capabilities: {} }) })
+    await sessions.getByTestId('sessions-search').fill('没有这条')
+    await sessions.getByText('没有找到相关记录').waitFor()
+    await sessions.getByText('换个关键词，或者切换到「全部」再看看。').waitFor()
+    await clean(page)
+  } finally { await page.close() }
 })
 
 test('an exported report can be revealed in its folder and says so when it moved (第八批 5)', async () => {
@@ -1567,7 +1586,8 @@ test('after 接着聊 on the records page the next return to the window reads ag
     await page.getByTestId('nav-sessions').click()
     await page.getByTestId('sessions-view-claude:1').click()
     const drawer = page.getByTestId('session-detail-drawer')
-    await drawer.getByText('上回问到这里', { exact: true }).waitFor()
+    // 气泡前面有一句只给读屏的「你：」，按包含来找。
+    await drawer.getByText('上回问到这里').waitFor()
     const [list, latest] = await recordsReads(page)
     // 刚进来：回到窗口不读。
     await focusWindow()
@@ -1584,10 +1604,10 @@ test('after 接着聊 on the records page the next return to the window reads ag
       }).observe(document.body, { childList: true, subtree: true, characterData: true })
     })
     await focusWindow()
-    await drawer.getByText('刚在终端里问的', { exact: true }).waitFor()
+    await drawer.getByText('刚在终端里问的').waitFor()
     // 「最新 100 条」多读的那一次是点「接着聊」时先对的一下（已知4）。
     assert.deepEqual(await recordsReads(page), [list + 1, latest + 2])
-    await expect(drawer.getByText('上回问到这里', { exact: true })).toBeVisible()
+    await expect(drawer.getByText('上回问到这里')).toBeVisible()
     assert.equal(await page.evaluate(() => window.__sawTranscriptLoading), false)
     await clean(page)
   } finally { await page.close() }
@@ -7066,87 +7086,99 @@ function insidePageViewport(locator) {
   })
 }
 
+// v4 问8「卡片」：先在卡片里搜、点开文章；文章里命中的字带底色、含这个词的补充说明展开。回到列表搜索还在。
 test('tutorial searches step contents regardless of case and surrounding spaces and recovers from no results', async () => {
   const page = await open()
   try {
     await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
-    await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
+    const cards = tutorial.locator('[data-testid^="tutorial-card-"]')
+    await expect(tutorial.getByTestId('tutorial-cards')).toBeVisible()
+    const total = await cards.count()
+    assert.ok(total > 10, `all chapters are listed as cards (${total})`)
+    await expect(tutorial.getByTestId('tutorial-group-all').locator('.xm-chip-count')).toHaveText(String(total))
     const search = tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })
-    const viewport = page.getByTestId('page-viewport')
-    await viewport.evaluate((element) => { element.scrollTop = element.scrollHeight })
-    await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(300)
     await search.fill('  BREW INSTALL PYTHON  ')
-    await expect(tutorial.getByTestId('tutorial-group-advanced')).toHaveJSProperty('open', true)
-    await expect(tutorial.getByTestId('tutorial-topic-runtime-mac')).toBeVisible()
-    const heading = tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })
-    await expect(heading).toContainText(/Mac|macOS/i)
-    await expect.poll(() => heading.evaluate((element) => {
-      const title = element.getBoundingClientRect()
-      const visible = element.closest('[data-testid="page-viewport"]').getBoundingClientRect()
-      return title.top >= visible.top && title.bottom <= visible.bottom
-    })).toBe(true)
+    await expect(tutorial.getByTestId('tutorial-card-runtime-mac')).toBeVisible()
+    await expect(tutorial.getByTestId('tutorial-card-start')).toHaveCount(0)
+    // 分类按钮上的数跟着搜索走。
+    const found = await cards.count()
+    await expect(tutorial.getByTestId('tutorial-group-all').locator('.xm-chip-count')).toHaveText(String(found))
+    await expect(tutorial.getByTestId('tutorial-group-start').locator('.xm-chip-count')).toHaveText('0')
     await expect(search).toBeFocused()
-    await expect(tutorial.getByTestId('tutorial-article')).toContainText('brew install python')
+    await tutorial.getByTestId('tutorial-topic-runtime-mac').click()
+    const article = tutorial.getByTestId('tutorial-article')
+    await expect(article.getByRole('heading', { level: 2 })).toContainText(/Mac|macOS/i)
+    await expect(article).toContainText('brew install python')
     // 命中的字带浅黄底，大小写照原文；页面落在第一处命中（这一篇是标题里的 Python）。
-    const firstHit = tutorial.getByTestId('tutorial-article').locator('mark.v2-tutorial-hit').first()
+    const firstHit = article.locator('mark.v2-tutorial-hit').first()
     await expect(firstHit).toHaveText('Python')
     assert.notEqual(await firstHit.evaluate((element) => getComputedStyle(element).backgroundColor), 'rgba(0, 0, 0, 0)')
     await expect.poll(() => insidePageViewport(firstHit)).toBe(true)
-    const advanced = tutorial.getByTestId('tutorial-group-advanced')
-    await advanced.locator('summary').click()
-    await expect(advanced).toHaveJSProperty('open', false)
-    await search.fill('Homebrew')
-    await expect(advanced).toHaveJSProperty('open', true)
+    // 「全部教程」回到卡片列表，搜索还在，焦点落回刚才那张卡片。
+    await tutorial.getByTestId('tutorial-back').click()
+    await expect(search).toHaveValue('  BREW INSTALL PYTHON  ')
+    await expect(tutorial.getByTestId('tutorial-topic-runtime-mac')).toBeFocused()
 
     await search.fill('no-such-tutorial-8472')
-    await expect(tutorial.getByRole('heading', { name: '没找到相关教程', exact: true })).toBeVisible()
-    assert.equal(await tutorial.getByTestId('tutorial-article').count(), 0)
-    assert.equal(await tutorial.getByRole('navigation', { name: '教程目录', exact: true }).getByRole('button').count(), 0)
+    await expect(tutorial.getByRole('heading', { name: '没有找到相关教程', exact: true })).toBeVisible()
+    await expect(tutorial.getByText('换个说法试试，或者直接问客服。', { exact: true })).toBeVisible()
+    await expect(cards).toHaveCount(0)
     await tutorial.getByRole('button', { name: '清除搜索', exact: true }).click()
     await expect(search).toHaveValue('')
-    await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
-    await expect(tutorial.getByTestId('tutorial-topic-start')).toBeVisible()
+    await expect(cards).toHaveCount(total)
+
     await search.fill('重新读取时')
-    await expect(tutorial.getByTestId('tutorial-topic-start')).toBeVisible()
-    await expect(tutorial.getByTestId('tutorial-topic-start')).toHaveAttribute('aria-current', 'page')
-    const explanation = tutorial.getByTestId('tutorial-article').locator('details').filter({ hasText: '重新读取时' })
+    await tutorial.getByTestId('tutorial-topic-start').click()
+    const explanation = article.locator('details').filter({ hasText: '重新读取时' })
     await expect(explanation).toHaveCount(1)
     await expect(explanation).toHaveJSProperty('open', true)
     await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
     // 只展开含这个词的那一条补充说明，其余照旧收着；页面翻到命中的那几个字。
-    const notes = tutorial.getByTestId('tutorial-article').locator('details.v2-tutorial-extra')
+    const notes = article.locator('details.v2-tutorial-extra')
     await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 已在运行？'])
     const explanationHit = explanation.locator('mark.v2-tutorial-hit')
     await expect(explanationHit).toHaveText('重新读取时')
     await expect.poll(() => insidePageViewport(explanationHit)).toBe(true)
+    await tutorial.getByTestId('tutorial-back').click()
     await search.fill('安装报错怎么办')
-    const installationNote = tutorial.getByTestId('tutorial-article').locator('details').filter({ hasText: '安装报错怎么办' })
+    await tutorial.getByTestId('tutorial-topic-start').click()
+    const installationNote = article.locator('details').filter({ hasText: '安装报错怎么办' })
     await expect(installationNote).toHaveJSProperty('open', true)
-    await expect(tutorial.getByTestId('tutorial-article').locator('details[data-extra-title="装的时候能走开吗？"]')).toHaveJSProperty('open', false)
+    await expect(article.locator('details[data-extra-title="装的时候能走开吗？"]')).toHaveJSProperty('open', false)
     await installationNote.locator('summary').click()
     await expect(installationNote).toHaveJSProperty('open', false)
+    // 换一个词再搜，自己收起来的那条又展开。
+    await tutorial.getByTestId('tutorial-back').click()
     await search.fill('Windows 安装报错')
+    await tutorial.getByTestId('tutorial-topic-start').click()
     await expect(installationNote).toHaveJSProperty('open', true)
     await expect(installationNote.getByText(/Windows 安装报错时按提示处理/)).toBeVisible()
     await clean(page)
   } finally { await page.close() }
 })
 
-// 第五部分第 32、33 条：目录只写标题；读到中间，顶上吸着「第几步」；求助在文章最后。
+// 第五部分第 32、33 条：读到中间，顶上吸着「第几步」；求助在文章最后。v4：从卡片进、「全部教程」回。
 test('tutorial pins the step being read on top and puts help at the end of the article', async () => {
   const page = await open()
   try {
     await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
+    // 卡片写步数和时间；第一张是金色那张，按钮是主按钮「开始」，其余是普通按钮。
+    const card = tutorial.getByTestId('tutorial-card-start')
+    await expect(card).toContainText('4 步，约 5 分钟')
+    await expect(card).toHaveClass(/is-lead/)
+    const start = tutorial.getByTestId('tutorial-topic-start')
+    await expect(start).toHaveText('开始')
+    await expect(start).toHaveClass(/xm-btn-primary/)
+    await expect(tutorial.getByTestId('tutorial-topic-install')).toHaveClass(/xm-btn-secondary/)
+    await expect(tutorial.locator('.v2-tutorial-card.is-lead')).toHaveCount(1)
+    await start.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article).toBeVisible()
-    const directory = tutorial.getByRole('navigation', { name: '教程目录', exact: true })
-    // 目录每行只写标题，「约 5 分钟 · 4 步」留在文章开头。
-    await expect(directory.getByTestId('tutorial-topic-start')).toHaveText('第一次用？照着这 4 步做')
-    assert.equal(await directory.getByText(/分钟/).count(), 0)
-    await expect(article.locator('.v2-tutorial-meta')).toContainText('约 5 分钟 · 4 步')
-    assert.equal(Math.round(await tutorial.locator('.v2-tutorial-directory').evaluate((element) => element.getBoundingClientRect().width)), 240)
+    await expect(article).toBeFocused()
+    await expect(article.locator('.v2-tutorial-meta')).toContainText('入门')
+    await expect(article.locator('.v2-tutorial-meta')).toContainText('4 步，约 5 分钟')
     const progress = tutorial.getByTestId('tutorial-progress')
     await expect(progress).toBeHidden()
 
@@ -7174,19 +7206,19 @@ test('tutorial pins the step being read on top and puts help at the end of the a
     await page.getByTestId('page-viewport').evaluate((element) => { element.scrollTop = 0 })
     await expect(progress).toBeHidden()
 
-    // 求助在每篇最后、「上一篇 / 下一篇」下面，目录里不再有。
+    // 求助在每篇最后、「上一篇 / 下一篇」下面。
     const support = article.getByTestId('tutorial-support')
     await expect(support).toContainText('还是不会？')
     const footer = await article.locator('.v2-tutorial-footer').evaluate((element) => element.getBoundingClientRect().toJSON())
     const supportBox = await support.evaluate((element) => element.getBoundingClientRect().toJSON())
     assert.ok(supportBox.top >= footer.bottom, '求助在「上一篇 / 下一篇」下面')
-    assert.equal(await tutorial.locator('.v2-tutorial-directory').getByText('还是不知道怎么操作？').count(), 0)
     await support.getByRole('button', { name: '联系客服', exact: true }).click()
     const help = page.getByRole('dialog', { name: '帮助与客服', exact: true })
     await help.waitFor()
     await page.keyboard.press('Escape')
     await expect(help).toHaveCount(0)
     // 搜不到时，「联系客服」在「清除搜索」旁边。
+    await tutorial.getByTestId('tutorial-back').click()
     await tutorial.getByRole('searchbox', { name: '搜索教程', exact: true }).fill('no-such-tutorial-8472')
     const empty = tutorial.getByTestId('tutorial-empty')
     await empty.getByRole('button', { name: '清除搜索', exact: true }).waitFor()
@@ -7196,8 +7228,53 @@ test('tutorial pins the step being read on top and puts help at the end of the a
   } finally { await page.close() }
 })
 
-// 第五部分第 27、32 条：技能页「看怎么放」打开技能那篇、只展开那一条补充说明；目录翻到这一篇。
-test('the skills page guide opens the skills chapter on its note and the directory follows it', async () => {
+// v4 问8：卡片上记着读完了几步，「继续」翻到没读完的那一步；滚到文章底才算整篇读完；记在这台电脑上，重开还在。
+test('tutorial cards remember how far each chapter was read and continue from there', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-tutorial').click()
+    const tutorial = page.getByTestId('page-tutorial')
+    const card = tutorial.getByTestId('tutorial-card-start')
+    const button = tutorial.getByTestId('tutorial-topic-start')
+    await button.click()
+    const article = tutorial.getByTestId('tutorial-article')
+    const progress = tutorial.getByTestId('tutorial-progress')
+    // 打开就走，一步都不算读完。
+    await tutorial.getByTestId('tutorial-back').click()
+    await expect(button).toHaveText('开始')
+    await button.click()
+    // 读到第 3 步：前两步算读完了。
+    await article.locator('.v2-tutorial-step-links a').nth(2).click()
+    await expect(progress).toContainText('第 3 步，共 4 步')
+    await tutorial.getByTestId('tutorial-back').click()
+    await expect(button).toBeFocused()
+    await expect(button).toHaveText('继续')
+    await expect(card).toContainText('已完成 2 / 4 步')
+    await expect(card.locator('.v2-tutorial-card-steps i.is-done')).toHaveCount(2)
+    // 回头看前面不会把进度退回去；「继续」落在第 3 步。
+    await button.click()
+    await expect(progress).toBeVisible()
+    await expect(progress).toContainText('第 3 步，共 4 步')
+    await page.getByTestId('page-viewport').evaluate((element) => { element.scrollTop = 0 })
+    await expect(progress).toBeHidden()
+    await page.getByTestId('page-viewport').evaluate((element) => { element.scrollTop = element.scrollHeight })
+    await expect(progress).toContainText('第 4 步，共 4 步')
+    await tutorial.getByTestId('tutorial-back').click()
+    await expect(card).toContainText('已全部完成')
+    await expect(button).toHaveText('再看一遍')
+    // 读完的那张不再用主按钮催。
+    await expect(button).toHaveClass(/xm-btn-secondary/)
+    await page.reload()
+    await waitForFixtureReady(page)
+    await page.getByTestId('nav-tutorial').click()
+    await expect(tutorial.getByTestId('tutorial-topic-start')).toHaveText('再看一遍')
+    await expect(tutorial.getByTestId('tutorial-card-install')).toContainText('步，约')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第五部分第 27、32 条：技能页「看怎么放」打开技能那篇、只展开那一条补充说明；「全部教程」回到卡片时落在这一篇上。
+test('the skills page guide opens the skills chapter on its note and the card list comes back to it', async () => {
   const page = await open()
   try {
     await page.setViewportSize({ width: 1280, height: 560 })
@@ -7222,15 +7299,10 @@ test('the skills page guide opens the skills chapter on its note and the directo
     await expect(guide).toContainText('再回本页点「重新加载」')
     assert.deepEqual(await article.locator('details.v2-tutorial-extra').evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle)), ['Claude Code、Grok CLI 没有导入按钮？'])
     await expect.poll(() => insidePageViewport(guide.locator('summary'))).toBe(true)
-    // 目录只滚自己，翻到正在看的这一篇。
+    await tutorial.getByTestId('tutorial-back').click()
     const entry = tutorial.getByTestId('tutorial-topic-skills')
-    await expect(entry).toHaveAttribute('aria-current', 'page')
-    await expect.poll(() => entry.evaluate((element) => {
-      const list = element.closest('.v2-tutorial-directory')
-      const box = element.getBoundingClientRect()
-      const visible = list.getBoundingClientRect()
-      return list.scrollHeight > list.clientHeight && box.top >= visible.top && box.bottom <= visible.bottom
-    })).toBe(true)
+    await expect(entry).toBeFocused()
+    await expect.poll(() => insidePageViewport(entry)).toBe(true)
     await clean(page)
   } finally { await page.close() }
 })
@@ -7257,8 +7329,9 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
     await expect(page.getByTestId('page-mcp')).toBeVisible()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderExtensions'))
     await page.getByTestId('nav-tutorial').click()
-    await expect(tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })).toHaveValue('MCP')
     await expect(tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })).toHaveText(heading)
+    await tutorial.getByTestId('tutorial-back').click()
+    await expect(tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })).toHaveValue('MCP')
     await clean(page)
   } finally { await page.close() }
 })
@@ -7270,20 +7343,21 @@ test('tutorial actions land on the account tab or settings group the step descri
   try {
     const tutorial = page.getByTestId('page-tutorial')
     const accountTab = () => page.evaluate(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent ?? '')
-    async function openChapter(group, id) {
+    async function openChapter(id) {
       await page.getByTestId('nav-tutorial').click()
-      const directory = tutorial.getByTestId(`tutorial-group-${group}`)
-      if (!await directory.evaluate((element) => element.open)) await directory.locator('summary').click()
+      // 教程页去过就不卸载：上回开着的文章还在，先回到卡片列表。
+      const back = tutorial.getByTestId('tutorial-back')
+      if (await back.count()) await back.click()
       await tutorial.getByTestId(`tutorial-topic-${id}`).click()
     }
-    await openChapter('everyday', 'account')
+    await openChapter('account')
     await tutorial.getByTestId('tutorial-account-action-2').click()
     await page.getByTestId('account-tabs').waitFor()
     await expect.poll(accountTab).toBe('充值订阅')
     await page.getByTestId('account-tabs').getByRole('tab', { name: '账号安全', exact: true }).click()
     await expect.poll(accountTab).toBe('账号安全')
     for (const [index, label] of [[3, '用量账单'], [1, '密钥管理'], [2, '充值订阅'], [0, '账号概览']]) {
-      await openChapter('everyday', 'account')
+      await openChapter('account')
       await tutorial.getByTestId(`tutorial-account-action-${index}`).click()
       await expect.poll(accountTab).toBe(label)
     }
@@ -7293,7 +7367,7 @@ test('tutorial actions land on the account tab or settings group the step descri
     await settings.getByRole('tab', { name: '更新与关于', exact: true }).click()
     await expect(settings.getByRole('tab', { name: '更新与关于', exact: true })).toHaveAttribute('aria-selected', 'true')
     for (let visit = 0; visit < 2; visit += 1) {
-      await openChapter('advanced', 'safety')
+      await openChapter('safety')
       await tutorial.getByTestId('tutorial-safety-action-2').click()
       await expect(page.getByTestId('page-settings')).toBeVisible()
       await expect(page.getByTestId('page-settings').getByRole('tab', { name: '隐私与数据', exact: true })).toHaveAttribute('aria-selected', 'true')
@@ -7782,20 +7856,16 @@ test('tutorial illustrations remain accessible and contained in both themes and 
     try {
       await page.getByTestId('nav-tutorial').click()
       const tutorial = page.getByTestId('page-tutorial')
-      await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
-      for (const id of ['everyday', 'advanced']) {
-        const group = tutorial.getByTestId(`tutorial-group-${id}`)
-        await expect(group).toHaveJSProperty('open', false)
-        await group.locator('summary').click()
-      }
-      const chapters = tutorial.getByRole('navigation', { name: '教程目录', exact: true }).locator('[data-testid^="tutorial-topic-"]')
-      await expect(chapters.first()).toBeVisible()
+      const cards = tutorial.locator('[data-testid^="tutorial-card-"]')
+      await expect(cards.first()).toBeVisible()
+      // 卡片两列、不出横向滚动；每张卡片的标题和按钮都在卡片里。
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true)
+      await page.screenshot({ path: path.join(artifacts, `tutorial-cards-${theme}.png`), fullPage: true })
+      const ids = await cards.evaluateAll((items) => items.map((item) => item.dataset.testid.slice('tutorial-card-'.length)))
       let illustratedSteps = 0
-      for (const chapter of await chapters.all()) {
-        const group = chapter.locator('xpath=ancestor::details[1]')
-        if (await group.count() && !await group.evaluate((element) => element.open)) await group.locator('summary').click()
-        await chapter.click()
-        await expect(chapter).toHaveAttribute('aria-current', 'page')
+      for (const id of ids) {
+        await tutorial.getByTestId(`tutorial-topic-${id}`).click()
+        await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
         const illustrations = tutorial.getByTestId('tutorial-article').locator('[data-tutorial-illustration]')
         for (const illustration of await illustrations.all()) {
           illustratedSteps += 1
@@ -7804,6 +7874,7 @@ test('tutorial illustrations remain accessible and contained in both themes and 
           assert.equal(await illustration.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true)
         }
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true)
+        await tutorial.getByTestId('tutorial-back').click()
       }
       assert.ok(illustratedSteps > 0, '教程应包含可访问的操作示意图')
       await tutorial.getByTestId('tutorial-topic-start').click()
@@ -7831,6 +7902,7 @@ test('tutorial copies the first Codex message and offers manual copying when cli
     })
     await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
+    await tutorial.getByTestId('tutorial-topic-start').click()
     const step = tutorial.getByTestId('tutorial-article').locator('#tutorial-start-step-3')
     const copy = tutorial.getByTestId('tutorial-start-copy-3')
     await expect(copy).toBeVisible()
@@ -7856,15 +7928,18 @@ test('tutorial installation guides open the Mac desktop chapter and clear previo
     const tutorial = page.getByTestId('page-tutorial')
     const search = tutorial.getByRole('searchbox', { name: '搜索教程', exact: true })
     for (const query of ['MCP', '充值']) {
-      await tutorial.getByTestId('tutorial-topic-start').click()
+      await page.getByTestId('nav-tutorial').click()
+      const back = tutorial.getByTestId('tutorial-back')
+      if (await back.count()) await back.click()
       await search.fill(query)
-      await expect(tutorial.getByTestId('tutorial-article')).toBeVisible()
+      await expect(tutorial.getByTestId('tutorial-cards')).toBeVisible()
       await page.getByTestId('nav-home').click()
       const guide = page.getByTestId('tool-opencode-primary')
       await expect(guide).toHaveText('安装指南')
       await guide.click()
       await expect(tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })).toHaveText('Mac 上装桌面端')
-      await expect(tutorial.getByTestId('tutorial-topic-mac-desktop-apps')).toHaveAttribute('aria-current', 'page')
+      // 指名打开的这一篇不带上回的搜索：回到卡片列表时搜索框是空的。
+      await tutorial.getByTestId('tutorial-back').click()
       await expect(search).toHaveValue('')
     }
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installExternalClient')), false)
@@ -7986,29 +8061,23 @@ test('startup cards no longer carry the dialog shadow that the scroll area cut i
   } finally { await page.close() }
 })
 
-test('a detail drawer stays between the bars, leaves the list usable and switches to the row picked behind it', async () => {
+// v4 不用抽屉（yoyo 10-13）：记录详情是居中的弹窗，背后罩住；Esc 关掉，焦点回到点开它的那一行。
+test('a record opens in a modal dialog that closes with Esc and hands focus back to its row', async () => {
   const page = await open('recentWorkspaces=1')
   try {
     await page.getByTestId('nav-sessions').click()
     const rows = page.locator('[data-testid^="sessions-view-"]')
-    await rows.first().click()
-    const drawer = page.getByTestId('session-detail-drawer')
-    await drawer.getByRole('heading', { name: '会话 1', exact: true }).waitFor()
-    const drawerBox = await box(page, '[data-testid="session-detail-drawer"]')
-    assert.equal(drawerBox.top, (await box(page, '#v2-main')).top, 'the drawer starts where the page starts')
-    assert.equal(drawerBox.bottom, (await box(page, '[data-testid="shell-statusbar"]')).top, 'the drawer stops above the status bar')
-    // 背后不罩、不锁：页面上的按钮照样点得到。
-    assert.equal(await page.evaluate(() => document.querySelector(':modal')), null)
-    const topbarButton = await page.getByTestId('announcement-open').boundingBox()
-    assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-testid="announcement-open"]') !== null, { x: topbarButton.x + 5, y: topbarButton.y + 5 }), true)
-    // 盖在抽屉下面的那一行用键盘也能换过去，抽屉里换成那一行。
     await rows.nth(1).focus()
     await page.keyboard.press('Enter')
-    await drawer.getByRole('heading', { name: '会话 2', exact: true }).waitFor()
-    assert.equal(await page.getByRole('dialog').count(), 1)
-    // 焦点在抽屉外面时按 Esc 照样关，焦点留在刚才那一行上。
+    const dialog = page.getByTestId('session-detail-drawer')
+    await dialog.getByRole('heading', { name: '会话 2', exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => document.querySelector(':modal')?.getAttribute('data-testid')), 'session-detail-drawer')
+    assert.equal(await dialog.evaluate((element) => element.classList.contains('xm-dialog-640')), true)
+    // 文件夹没了的那条：弹窗里说清楚接不上，「接着聊」按不动。
+    assert.equal(await dialog.locator('.v2-session-detail-gone').innerText(), '项目文件夹 C:\\work\\older-app 已经不在了，接不上上次的对话。')
+    assert.equal(await dialog.getByTestId('session-detail-resume').isDisabled(), true)
     await page.keyboard.press('Escape')
-    await drawer.waitFor({ state: 'detached' })
+    await dialog.waitFor({ state: 'detached' })
     assert.equal(await rows.nth(1).evaluate((element) => element === document.activeElement), true)
     await clean(page)
   } finally { await page.close() }

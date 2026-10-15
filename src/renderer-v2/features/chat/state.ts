@@ -95,7 +95,25 @@ export function filterConversations(conversations: Conversation[], search: strin
   return conversations.filter((conversation) => conversationSearchText(conversation).includes(keyword))
 }
 
+// 对话列表按最后修改时间分成三段（本机日历日，不是「24 小时内」）。每段里保持原来的先后，
+// 所以分段不会把列表打乱，也不会出现两个「今天」。
+export type ConversationDay = '今天' | '昨天' | '更早'
+export function conversationDay(updatedAt: number, now = Date.now()): ConversationDay {
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  if (updatedAt >= today.getTime()) return '今天'
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  return updatedAt >= yesterday.getTime() ? '昨天' : '更早'
+}
+export function groupConversationsByDay(conversations: readonly Conversation[], now = Date.now()): Array<{ day: ConversationDay; conversations: Conversation[] }> {
+  const days: ConversationDay[] = ['今天', '昨天', '更早']
+  return days.map((day) => ({ day, conversations: conversations.filter((conversation) => conversationDay(conversation.updatedAt, now) === day) })).filter((group) => group.conversations.length > 0)
+}
+
 export const noImageModelMessage = '当前模型看不了图片，请换一个能看图的模型，或者先把图片去掉'
+// 聊天里发不出去时说的：草稿还在输入框里，横幅上给「重试」，网回来了点一下就发。
+export const offlineSendMessage = '没发出去：现在连不上网。网络恢复后点「重试」。'
 
 // 更早消息里的图片：模型看不了图，或者一次要发的图超过上限时，就不再重复发，
 // 换成一句话，让 AI 知道那里原本有图。

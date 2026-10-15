@@ -1333,8 +1333,8 @@ function AccountKeys({
           clear={() => setQuery('')}
           emptyTitle="还没有密钥"
           emptyDescription="新建一把，或者在工具配置里选「自动准备」。"
-          searchEmptyTitle="没有找到相关密钥"
-          searchEmptyDescription="换个名称或分组试试。"
+          searchTitle="没有找到相关密钥"
+          searchDescription="换个名称或分组试试。"
           action={
             <Button size="sm" icon={Plus} onClick={() => edit('new')} testId="keys-empty-add">
               新建密钥

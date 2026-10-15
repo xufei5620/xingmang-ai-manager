@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { chatLimits, inspectModel, validateImageRequest } from './api'
@@ -196,6 +196,21 @@ describe('v2 chat request transitions', () => {
     const invalid = { ...createParameterDraft({}), temperature: '2.1', maxTokens: '1.5', seed: 'Infinity' }
     expect(Object.keys(parseParameters(invalid).errors)).toEqual(['temperature', 'maxTokens', 'seed'])
     expect(parseParameters({ ...createParameterDraft({}), topP: '0', seed: '-1' }).parameters).toEqual({ topP: 0, seed: -1 })
+  })
+  it('says what to type when a whole number is expected, and gives the range only when the number is whole', () => {
+    const { errors } = parseParameters({ ...createParameterDraft({}), maxTokens: '1.5', seed: 'abc' })
+    expect(errors).toEqual({ maxTokens: '最大输出 Token 要填整数，比如 4096', seed: '随机种子要填整数' })
+    expect(parseParameters({ ...createParameterDraft({}), maxTokens: '0', seed: '3000000000' }).errors).toEqual({ maxTokens: '请输入 1 至 131072 之间的整数', seed: '请输入 -2147483648 至 2147483647 之间的整数' })
+    expect(parseParameters({ ...createParameterDraft({}), temperature: '2.1' }).errors).toEqual({ temperature: '请输入 0 至 2 之间的数值' })
+  })
+  it('sorts conversations into today, yesterday and earlier by the local calendar day, keeping their order', () => {
+    const now = new Date(2026, 9, 15, 0, 30).getTime()
+    const at = (day: number, hour: number) => new Date(2026, 9, day, hour).getTime()
+    expect([conversationDay(at(15, 0), now), conversationDay(at(14, 23), now), conversationDay(at(14, 0), now), conversationDay(at(13, 23), now)]).toEqual(['今天', '昨天', '昨天', '更早'])
+    const conversation = (id: string, updatedAt: number) => ({ ...createConversation(undefined, id), updatedAt })
+    const grouped = groupConversationsByDay([conversation('a', at(15, 0)), conversation('b', at(1, 9)), conversation('c', at(15, 0)), conversation('d', at(14, 9))], now)
+    expect(grouped.map((group) => [group.day, group.conversations.map((item) => item.id)])).toEqual([['今天', ['a', 'c']], ['昨天', ['d']], ['更早', ['b']]])
+    expect(groupConversationsByDay([conversation('e', at(2, 9))], now).map((group) => group.day)).toEqual(['更早'])
   })
   it('uses the authoritative model protocol for media capabilities and validation', () => {
     expect(inspectModel('gpt-image-1.5')).toMatchObject({ available: false, hidden: true })
