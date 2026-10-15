@@ -65,6 +65,15 @@ async function clean(page) {
   assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   assert.deepEqual(await page.evaluate(() => window.v2Test.unexpected), [])
 }
+// v4 侧栏账号卡上没有「切换账号」了，它只在个人中心页头。个人中心「我的账号」里也列着已保存的账号，
+// 所以切换框里的东西都在框里找。
+async function openAccountSwitcher(page) {
+  await page.getByTestId('sidebar-account-open').click()
+  await page.getByTestId('account-switch').click()
+  const switcher = page.getByRole('dialog', { name: '切换账号', exact: true })
+  await switcher.waitFor()
+  return switcher
+}
 
 // 首页「最近」读完之前说不准哪个工具聊过，第一次点「打开」照旧弹选择框；读完了、这个工具
 // 没聊过也没选过文件夹，「打开」才直接替用户建项目文件夹（已知40）。
@@ -559,8 +568,13 @@ test('WorkBuddy loses current-account readiness when switching saved accounts on
     assert.equal(await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText(/已连接|等待连接/).count(), 0)
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
     await page.evaluate(() => window.v2Test.holdNextExternalScan())
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    // WorkBuddy 用的是别处的配置，切换框留着说这件事；换好了就关掉它回首页看那一行。
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
+    await switcher.getByRole('button', { name: '关闭', exact: true }).click()
+    await switcher.waitFor({ state: 'hidden' })
+    await page.getByTestId('nav-home').click()
     await page.getByRole('heading', { name: /saved-user/ }).waitFor()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
     assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
@@ -2915,7 +2929,7 @@ test('the session event that trails a login keeps the login Key sync and unlocks
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
     await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-busy') === 'false')
     await page.getByTestId('guide-pause').click()
-    await page.getByRole('button', { name: '切换账号', exact: true }).waitFor()
+    await page.getByRole('button', { name: /^个人中心：fixture-user(，|$)/ }).waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -3044,9 +3058,9 @@ test('saved-account switching leaves tools without an account key untouched', as
   const page = await open('savedAccount=1')
   try {
     await page.getByTestId('tool-row-claude').waitFor()
-    await page.getByRole('button', { name: '切换账号' }).click()
-    await page.getByTestId('saved-account-row-saved-18').getByText('星芒账号', { exact: true }).waitFor()
-    await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('saved-account-row-saved-18').getByText('星芒账号', { exact: true }).waitFor()
+    await switcher.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
     await page.getByText('saved-user', { exact: true }).first().waitFor()
     await page.waitForTimeout(100)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), 0)
@@ -3059,15 +3073,15 @@ test('read-only account matches switch only explicitly selected CLI providers on
   try {
     await matchedToolBadges(page, '已配好')
     await settleMatchedBootstrap(page)
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    const saved = page.getByTestId('saved-accounts-list')
+    const switcher = await openAccountSwitcher(page)
+    const saved = switcher.getByTestId('saved-accounts-list')
     // 原本就在用账号密钥的工具默认勾上；这里取消一个，确认只写勾着的。
-    await page.getByTestId('account-sync-grok').waitFor()
-    assert.equal(await page.getByTestId('account-sync-claude').isChecked(), true)
-    assert.equal(await page.getByTestId('account-sync-codex').isChecked(), true)
+    await switcher.getByTestId('account-sync-grok').waitFor()
+    assert.equal(await switcher.getByTestId('account-sync-claude').isChecked(), true)
+    assert.equal(await switcher.getByTestId('account-sync-codex').isChecked(), true)
     // 已下线的 Gemini CLI 也是账号密钥，但不给勾。
-    assert.equal(await page.getByTestId('account-sync-gemini').count(), 0)
-    await page.getByTestId('account-sync-grok').uncheck()
+    assert.equal(await switcher.getByTestId('account-sync-gemini').count(), 0)
+    await switcher.getByTestId('account-sync-grok').uncheck()
     await saved.getByRole('button', { name: '切换', exact: true }).click()
     await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
     const writes = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
@@ -3075,6 +3089,7 @@ test('read-only account matches switch only explicitly selected CLI providers on
       { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
       { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
     ])
+    await page.getByTestId('nav-home').click()
     for (const tool of ['claude', 'codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
     // 没勾的那个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
     for (const tool of ['grok']) await page.getByTestId(`tool-row-${tool}`).getByText('Key 可能不是当前账号的', { exact: true }).waitFor()
@@ -3088,11 +3103,12 @@ test('tools switched to a saved account open right away instead of waiting for a
   try {
     await matchedToolBadges(page, '已配好')
     await settleMatchedBootstrap(page)
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    await page.getByTestId('account-sync-grok').waitFor()
-    await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('account-sync-grok').waitFor()
+    await switcher.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
     await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
     await expect(page.locator('dialog[open]')).toHaveCount(0)
+    await page.getByTestId('nav-home').click()
     // 切换账号时 Key 已经在切换框里换好，开机那一轮同步不会再跑：「打开」不能一直灰着等它。
     await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
     await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codex'))
@@ -3109,24 +3125,24 @@ test('saved-account switching names the rewritten tools that are still open and 
   try {
     await matchedToolBadges(page, '已配好')
     await settleMatchedBootstrap(page)
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    const saved = page.getByTestId('saved-accounts-list')
-    await page.getByTestId('account-sync-grok').waitFor()
-    await page.getByTestId('account-sync-grok').uncheck()
+    const switcher = await openAccountSwitcher(page)
+    const saved = switcher.getByTestId('saved-accounts-list')
+    await switcher.getByTestId('account-sync-grok').waitFor()
+    await switcher.getByTestId('account-sync-grok').uncheck()
     await saved.getByRole('button', { name: '切换', exact: true }).click()
     // 有工具还开着时切换框不自己关掉，提示和按钮要让用户看得到。
-    await page.getByTestId('account-sync-restart-hint')
+    await switcher.getByTestId('account-sync-restart-hint')
       .getByText('Claude Code、Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。', { exact: true }).waitFor()
     const asked = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'inspectRunningTools').map((entry) => entry.args[0]))
     assert.deepEqual(asked, [['claude', 'codex']])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop')), false, '不点就不许重开桌面端')
-    await page.getByTestId('account-sync-restart-codex-desktop').click()
+    await switcher.getByTestId('account-sync-restart-codex-desktop').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
     const launches = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args[0]))
     assert.deepEqual(launches, ['restart'])
-    await page.getByTestId('account-sync-restart-hint')
+    await switcher.getByTestId('account-sync-restart-hint')
       .getByText('Claude Code、Codex CLI 还开着，要关掉重开才会用上当前账号。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('account-sync-restart-codex-desktop').count(), 0)
+    assert.equal(await switcher.getByTestId('account-sync-restart-codex-desktop').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -4792,7 +4808,8 @@ test('chat retains its task across navigation and reports work to native close p
     await page.getByTestId('chat-send').click()
     await page.getByTestId('chat-stop').waitFor()
     const size = await page.getByTestId('page-chat').evaluate((element) => ({ width: element.clientWidth, height: element.clientHeight }))
-    assert.equal(size.width, 1064)
+    // 聊天页铺满侧栏右边：1280 减去 v4 侧栏 224。
+    assert.equal(size.width, 1056)
     assert.ok(size.height > 600)
     await page.getByTestId('nav-home').click()
     await page.evaluate(() => window.v2Test.emit('onWindowCloseRequest', { requestId: 'fixture-close' }))
@@ -5509,8 +5526,8 @@ test('a saved account with the same id switches platform without reusing NewAPI 
   const page = await open('crossSite=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    const list = page.getByTestId('saved-accounts-list')
+    const switcher = await openAccountSwitcher(page)
+    const list = switcher.getByTestId('saved-accounts-list')
     await list.getByTestId('saved-account-row-saved-aa0017').getByText('历史账号', { exact: true }).waitFor()
     assert.doesNotMatch(await list.innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov|账户尾号|aa0017/i)
     await list.getByRole('button', { name: '切换', exact: true }).click()
@@ -5530,8 +5547,8 @@ test('tools on the backup route follow a switch to a historical account', async 
   const page = await open('crossSite=1&directRelayActive=1&routedSwitch=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    const list = page.getByTestId('saved-accounts-list')
+    const switcher = await openAccountSwitcher(page)
+    const list = switcher.getByTestId('saved-accounts-list')
     await expect(list.getByTestId('account-sync-claude')).toBeChecked()
     await expect(list.getByTestId('account-sync-codex')).toBeChecked()
     await list.getByRole('button', { name: '切换', exact: true }).click()
@@ -5555,8 +5572,8 @@ test('relogin on an expired saved account opens the login dialog on that account
   const page = await open('crossSite=1&rememberedLegacy=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    const list = page.getByTestId('saved-accounts-list')
+    const switcher = await openAccountSwitcher(page)
+    const list = switcher.getByTestId('saved-accounts-list')
     await list.getByTestId('saved-account-row-saved-aa0017').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'switchSavedAccount'; window.v2Test.failMessage = '保存的账号登录已失效，请重新登录' })
     await list.getByRole('button', { name: '切换', exact: true }).click()
@@ -5570,8 +5587,8 @@ test('relogin on an expired saved account opens the login dialog on that account
     await dialog.waitFor({ state: 'hidden' })
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'loginAccount').length), 0)
     await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    await page.getByTestId('account-add').click()
+    await page.getByTestId('account-switch').click()
+    await page.getByRole('dialog', { name: '切换账号', exact: true }).getByTestId('account-add').click()
     await page.getByRole('heading', { name: '登录星芒账号' }).waitFor()
     assert.equal(await page.getByTestId('login-account').inputValue(), '')
     await clean(page)

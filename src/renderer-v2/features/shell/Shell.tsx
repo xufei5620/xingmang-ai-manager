@@ -286,19 +286,24 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     return () => cancelAnimationFrame(frame)
   }, [activePage])
   // 详情抽屉在顶层（popover）里按窗口定位：告诉它正文从哪儿开始（顶栏、公告条、断网条都在上面），
-  // 抽屉从那下面开始，不盖住它们的按钮。
+  // 抽屉从那下面开始，不盖住它们的按钮。开机提示卡贴着正文左边，也要知道侧栏现在多宽。
   useLayoutEffect(() => {
     const main = viewport.current
     if (!main || typeof ResizeObserver === 'undefined') return
     const element = main
     const root = document.documentElement
-    function measure() { root.style.setProperty('--v2-content-top', `${Math.round(element.getBoundingClientRect().top)}px`) }
+    function measure() {
+      const box = element.getBoundingClientRect()
+      root.style.setProperty('--v2-content-top', `${Math.round(box.top)}px`)
+      root.style.setProperty('--v2-content-left', `${Math.round(box.left)}px`)
+    }
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(element)
     return () => {
       observer.disconnect()
       root.style.removeProperty('--v2-content-top')
+      root.style.removeProperty('--v2-content-left')
     }
   }, [])
   function skipToContent(event: MouseEvent<HTMLAnchorElement>) {

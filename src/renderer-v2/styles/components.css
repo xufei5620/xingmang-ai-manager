@@ -157,7 +157,7 @@
 .xm-dialog-640 { width: var(--dialog-wide); }
 /* 详情抽屉从正文顶边（顶栏和公告条下面，外壳量好写在 --v2-content-top）到状态栏上面，不盖标题栏、顶栏和状态栏；
    不是模态框，背后不罩、不模糊，列表照样能点。 */
-.xm-drawer { position: fixed; inset: var(--v2-content-top, 82px) 0 30px auto; margin: 0; width: var(--drawer-width); height: auto; max-height: none; max-width: none; padding: 0; overflow: hidden; border-radius: 0; border: 0; border-left: 1px solid var(--line-2); background: var(--panel-solid); box-shadow: var(--surface-drawer-shadow); }
+.xm-drawer { position: fixed; inset: var(--v2-content-top, var(--topbar-height)) 0 var(--statusbar-height) auto; margin: 0; width: var(--drawer-width); height: auto; max-height: none; max-width: none; padding: 0; overflow: hidden; border-radius: 0; border: 0; border-left: 1px solid var(--line-2); background: var(--panel-solid); box-shadow: var(--surface-drawer-shadow); }
 .xm-drawer:popover-open { display: flex; flex-direction: column; }
 .xm-drawer::backdrop { background: none; backdrop-filter: none; }
 .xm-modal > header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--line); flex: none; }

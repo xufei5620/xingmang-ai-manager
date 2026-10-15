@@ -71,7 +71,9 @@ button, input, select, textarea { font: inherit; }
 .v2-account-rail:hover { background: var(--panel-hover); color: var(--text); }
 .v2-account-entry > .v2-balance-error { position: relative; z-index: 1; display: flex; align-items: center; gap: 4px; margin: -6px 12px 10px; font-size: var(--font-small-compact); }
 .v2-account-entry .v2-balance-error, .v2-statusbar .v2-balance-error { color: var(--warn-tx); }
-.v2-account-mark { position: absolute; right: -16px; bottom: -22px; opacity: .07; pointer-events: none; transform: rotate(-8deg); }
+/* 右下角那枚淡淡的标志一半露在卡外：外面套一层和卡一样大的裁切框，卡片本身不会因为它多出滚动宽度。 */
+.v2-account-mark { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.v2-account-mark > .xm-logo { position: absolute; right: -16px; bottom: -22px; opacity: .07; transform: rotate(-8deg); }
 .sidebar-collapsed .v2-sidebar { padding-inline: 8px; }
 .sidebar-collapsed .v2-brand { justify-content: center; padding: 0; }
 .sidebar-collapsed .v2-nav-item { justify-content: center; padding: 0; }
@@ -128,18 +130,17 @@ button, input, select, textarea { font: inherit; }
 .v2-dot.is-bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
 .v2-notification { position: absolute; right: 20px; bottom: 44px; width: 420px; z-index: 18; }
 .v2-notification > .xm-notice { box-shadow: var(--shadow); }
-/* 启动期后台检查的提示停在右上角，避开右下角的更新通知；容器不吃指针事件，
-   只有卡片那一摞和「还有 N 条」才吃，否则这条「不挡路」的提示会挡住它上面那一片界面。
-   卡片区有高度上限、超出就在区内滚：小屏或「大字」下展开全部时，最后一张的按钮也够得着；
-   上限留出顶栏（64px）、底部状态栏和「还有 N 条」那一行。
-   顶边留在 64px、压着顶栏下沿：挪到正文顶上会正好盖住各页页头右边那颗主按钮（检查页的「重新检查」、
-   备份页的「重新加载」这些），提示卡没关掉之前点不到。 */
-.v2-startup-notices { position: fixed; top: 64px; right: 20px; width: 380px; max-width: calc(100vw - 40px); max-height: calc(100vh - 120px); z-index: 30; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; pointer-events: none; }
+/* 启动期后台检查的提示（v4）放在正文左下角、状态栏上面：标题栏并进顶栏以后，右上角是顶栏的三个图标键和
+   Windows 的系统键，往下一点就是各页页头右边那颗主按钮（检查页的「重新检查」、备份页的「重新加载」这些），
+   提示卡没关掉之前点不到；右下角是短提示和更新通知。左边跟着侧栏走（外壳量好写在 --v2-content-left）。
+   容器不吃指针事件，只有卡片那一摞和「还有 N 条」才吃，否则这条「不挡路」的提示会挡住它上面那一片界面。
+   卡片区有高度上限、超出就在区内滚：小屏或「大字」下展开全部时，最后一张的按钮也够得着。 */
+.v2-startup-notices { position: fixed; left: calc(var(--v2-content-left, var(--sidebar-expanded)) + 20px); bottom: calc(var(--statusbar-height) + 12px); width: 380px; max-width: calc(100vw - var(--v2-content-left, var(--sidebar-expanded)) - 40px); max-height: calc(100vh - var(--topbar-height) - var(--statusbar-height) - 40px); z-index: 30; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; pointer-events: none; }
 /* 滚动区往外多留一圈再用负边距抵回去，给卡片的投影留地方。投影只用卡片那一档：
    弹框那一档（24px 偏移、64px 模糊）比这一圈大得多，会被滚动区裁成卡片后面一整块半透明方块。 */
 .v2-startup-notices-list { display: grid; gap: 8px; align-content: start; min-height: 0; margin: -4px -12px -14px; padding: 4px 12px 14px; overflow-y: auto; overscroll-behavior: contain; pointer-events: auto; }
 .v2-startup-notices-list > .xm-notice { box-shadow: var(--surface-card-shadow); }
-.v2-startup-notices > button { justify-self: end; pointer-events: auto; }
+.v2-startup-notices > button { justify-self: start; pointer-events: auto; }
 .v2-startup-notice-items { margin: 6px 0 0; padding-left: 1.2em; }
 .v2-startup-notice-items li + li { margin-top: 2px; }
 /* 搜索框（v4）：560 宽，输入行 46 高、不画框，结果最多露 8 行，底下一行键帽说明。 */
