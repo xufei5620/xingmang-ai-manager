@@ -60,7 +60,9 @@ function bootFixture(config) {
   const groups = Object.values(sub2ApiManagedCliKeyProfiles).map((entry, index) => ({ id: index + 1,
     name: entry.group, platform: 'openai', status: 'active', rate_multiplier: 1 }))
   groups.push({ id: 5, name: 'GPT-image2', platform: 'openai', status: 'active', rate_multiplier: 1 })
-  const xmUser = { id: 7, username: 'same@example.test', email: 'same@example.test', display_name: 'NewAPI User',
+  // 显示名称是用户自己填的，个人中心「基本资料」会照原样写出来。v4 的切换账号从个人中心页头打开，
+  // 加第二个账号时登录框下面就是这一页；名字里带平台名，下面的界面扫描就会把用户的名字当成界面泄漏。
+  const xmUser = { id: 7, username: 'same@example.test', email: 'same@example.test', display_name: 'Fixture User',
     group: 'default', role: 1, status: 1, quota: 50000000, used_quota: 0, request_count: 0,
     aff_code: '', aff_count: 0, aff_quota: 0, aff_history_quota: 0 }
   const apiUser = { id: 7, username: 'same@example.test', email: 'same@example.test', balance: 100, status: 'active', role: 'user' }
