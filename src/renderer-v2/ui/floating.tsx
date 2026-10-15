@@ -40,13 +40,15 @@ function useFloating(open: boolean, onClose?: () => void, align: 'start' | 'end'
 }
 // description: a second, quieter line under the label. checked: the item is one of a set of choices
 // (menuitemradio) and this says whether it is the current one; leaving it out keeps a plain menuitem.
-export type MenuItem = { label: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; description?: string; checked?: boolean; title?: string; onSelect: () => void };
+// hint: a quiet word after the label (「在用」「未安装」), read out with it.
+export type MenuItem = { label: string; hint?: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; description?: string; checked?: boolean; title?: string; onSelect: () => void };
 // A line of explanation between items; not focusable and not a choice.
 export type MenuNote = { note: string };
 function isMenuNote(item: MenuItem | MenuNote): item is MenuNote { return 'note' in item; }
 // A row-level overflow trigger reads as a bare "more" button to a screen reader,
 // so the label is required rather than defaulted: twenty key rows each offering
 // "revoke" behind an unnamed menu is indistinguishable by ear.
+// heading: a line above the items saying what picking one does (「把这把密钥写进」); not focusable.
 export function Menu({ items, anchor, testId, label, heading, align, panelClassName }: BaseProps & { items: Array<MenuItem | MenuNote | 'divider'> | 'divider'; anchor: ReactNode; label: string; heading?: string; align?: 'start' | 'end'; panelClassName?: string }) {
   const [open, setOpen] = useState(false); const id = useId();
   const float = useFloating(open, () => setOpen(false), align); const search = useRef({ text: '', at: 0 });
@@ -64,7 +66,7 @@ export function Menu({ items, anchor, testId, label, heading, align, panelClassN
       event.preventDefault(); const now = Date.now(); search.current.text = now - search.current.at > 600 ? event.key : search.current.text + event.key; search.current.at = now;
       const candidate = options.find(item => item.textContent?.trim().toLocaleLowerCase().startsWith(search.current.text.toLocaleLowerCase())); candidate?.focus();
     }
-  }}>{heading && <p className="xm-menu-heading" aria-hidden="true">{heading}</p>}{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : isMenuNote(item) ? <p className="xm-menu-note" key={'note-' + index}>{item.note}</p> : <button className={[item.danger ? 'is-danger' : '', item.description ? 'has-description' : ''].filter(Boolean).join(' ') || undefined} disabled={item.disabled} data-testid={item.testId} title={item.title} key={index} onClick={() => { close(); item.onSelect(); }} role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked} type="button">{item.checked !== undefined && <span className={item.checked ? 'xm-menu-radio is-on' : 'xm-menu-radio'} aria-hidden="true" />}{item.icon && <item.icon size={16} aria-hidden="true" />}{item.description ? <span className="xm-menu-text"><span>{item.label}</span><small>{item.description}</small></span> : item.label}</button>)}</div>}</span>;
+  }}>{heading && <div className="xm-menu-heading" role="presentation">{heading}</div>}{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : isMenuNote(item) ? <p className="xm-menu-note" key={'note-' + index}>{item.note}</p> : <button className={[item.danger ? 'is-danger' : '', item.description ? 'has-description' : ''].filter(Boolean).join(' ') || undefined} disabled={item.disabled} data-testid={item.testId} title={item.title} key={index} onClick={() => { close(); item.onSelect(); }} role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked} type="button">{item.checked !== undefined && <span className={item.checked ? 'xm-menu-radio is-on' : 'xm-menu-radio'} aria-hidden="true" />}{item.icon && <item.icon size={16} aria-hidden="true" />}{item.description ? <span className="xm-menu-text"><span>{item.label}</span><small>{item.description}</small></span> : item.label}{item.hint && <small className="xm-menu-hint">{item.hint}</small>}</button>)}</div>}</span>;
 }
 export function Popover({ anchor, title, children, onClose, testId, label }: BaseProps & { anchor: ReactNode; title?: ReactNode; children?: ReactNode; onClose?: () => void; label?: string }) {
   const [open, setOpen] = useState(false); const id = useId(); const t = useUiText();

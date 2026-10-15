@@ -582,8 +582,8 @@ async function loginWithUi(page, siteId) {
   assert.equal(balance.quotaPerUnit, siteId === 'solov' ? 500000 : 1)
   await assertCustomerUi(page)
 }
-// v4 侧栏账号卡上没有「切换账号」了，它只在个人中心页头。个人中心「我的账号」里也列着已保存的账号，
-// 所以切换框里的东西都在框里找。
+// v4 侧栏账号卡上没有「切换账号」了，它在个人中心「账号概览」底下那条「当前登录」上。
+// 切换框里的东西都在框里找。
 async function openAccountSwitcher(page) {
   await page.getByTestId('sidebar-account-open').click()
   await page.getByTestId('account-switch').click()

@@ -41,8 +41,8 @@ const calls = (page) =>
   )
 
 async function openUsageDetails(page) {
-  await page.getByRole('tab', { name: '调用明细', exact: true }).click()
-  await page.getByRole('button', { name: '详情', exact: true }).click()
+  await page.getByRole('tab', { name: '用量账单', exact: true }).click()
+  await page.getByTestId('account-usage-section').getByRole('button', { name: '详情', exact: true }).click()
   const dialog = page.getByTestId('usage-detail-dialog')
   await dialog.waitFor()
   return dialog
@@ -51,8 +51,11 @@ async function openUsageDetails(page) {
 test('Sub2API subscriptions show independent quotas and never offer unsupported writes or tasks', async () => {
   const page = await fixture('page=account&sub2apiReliability=1&subscriptionExternal=1')
   try {
-    assert.equal(await page.getByRole('tab', { name: '异步任务', exact: true }).count(), 0)
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    // 用量账单里没有「异步任务」这一节。
+    await page.getByRole('tab', { name: '用量账单', exact: true }).click()
+    await page.getByTestId('account-usage-section').waitFor()
+    assert.equal(await page.getByTestId('account-tasks-section').count(), 0)
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.locator('.xm-row-title').filter({ hasText: '周期订阅' }).waitFor()
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     const text = await panel.innerText()
@@ -71,21 +74,23 @@ test('Sub2API subscriptions show independent quotas and never offer unsupported 
 test('Sub2API usage submits calendar dates, IDs and timezone with unsupported filters absent', async () => {
   const page = await fixture('page=account&sub2apiReliability=1')
   try {
-    await page.getByRole('tab', { name: '调用明细', exact: true }).click()
+    await page.getByRole('tab', { name: '用量账单', exact: true }).click()
+    const usage = page.getByTestId('account-usage-section')
+    await usage.waitFor()
     for (const label of ['开始时间', '结束时间', '令牌名称', '分组', '请求 ID', '上游请求 ID', '日志类型']) {
-      assert.equal(await page.getByLabel(label, { exact: true }).count(), 0)
+      assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0)
     }
-    assert.equal(await page.getByLabel('Key ID', { exact: true }).count(), 0)
-    const toggle = page.getByTestId('account-filters-toggle')
+    assert.equal(await usage.getByLabel('Key ID', { exact: true }).count(), 0)
+    const toggle = usage.getByTestId('account-filters-toggle')
     assert.equal(await toggle.innerText(), '展开筛选')
-    await page.getByLabel('开始日期', { exact: true }).fill('2026-09-08')
-    await page.getByLabel('结束日期', { exact: true }).fill('2026-09-08')
+    await usage.getByLabel('开始日期', { exact: true }).fill('2026-09-08')
+    await usage.getByLabel('结束日期', { exact: true }).fill('2026-09-08')
     await toggle.click()
     assert.equal(await toggle.innerText(), '收起筛选')
-    await page.getByLabel('Key ID', { exact: true }).fill('4')
-    await page.getByLabel('分组 ID', { exact: true }).fill('5')
-    await page.getByLabel('计费来源', { exact: true }).selectOption('0')
-    await page.getByRole('button', { name: '查询', exact: true }).click()
+    await usage.getByLabel('Key ID', { exact: true }).fill('4')
+    await usage.getByLabel('分组 ID', { exact: true }).fill('5')
+    await usage.getByLabel('计费来源', { exact: true }).selectOption('0')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.apiKeyId === 4))
     const last = (await calls(page)).filter((call) => call.name === 'query-usage').at(-1).args
     assert.equal(last.startDate, '2026-09-08')
@@ -99,14 +104,14 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
     // 收起来以后，收着的框里生效的条件数挂在按钮上；日期在第一行看得见，不算。
     await toggle.click()
     assert.equal(await toggle.innerText(), '展开筛选 · 3')
-    assert.equal(await page.getByLabel('Key ID', { exact: true }).count(), 0)
+    assert.equal(await usage.getByLabel('Key ID', { exact: true }).count(), 0)
   } finally { await page.close() }
 })
 
 test('the usage dashboard splits spending across the tools that have a managed key', async () => {
   const page = await fixture('page=account&managedKeys=1')
   try {
-    await page.getByRole('tab', { name: '用量看板', exact: true }).click()
+    await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     const card = page.getByTestId('tool-usage')
     await card.waitFor()
     await card.getByText('当前账号累计已用 $8.00，其中 Claude Code 最多（75%）。', { exact: true }).waitFor()
@@ -124,10 +129,10 @@ test('the usage dashboard splits spending across the tools that have a managed k
 
 test('account views distinguish summary-only, failed reads and valid empty results', async () => {
   for (const [query, tab, expected, absent] of [
-    ['sub2apiReliability=1', '用量看板', '仅提供累计汇总', '这个时间段还没有用量'],
-    ['fail=dashboard', '用量看板', '用量趋势暂时没有读到', '这个时间段还没有用量'],
-    ['fail=usage', '调用明细', '调用明细暂时没有读到', '暂无调用明细'],
-    ['sub2apiReliability=1&fail=subscriptions', '充值与订阅', '订阅信息暂时没有读到', '还没有订阅'],
+    ['sub2apiReliability=1', '用量账单', '仅提供累计汇总', '这个时间段还没有用量'],
+    ['fail=dashboard', '用量账单', '用量趋势暂时没有读到', '这个时间段还没有用量'],
+    ['fail=usage', '用量账单', '调用明细暂时没有读到', '暂无调用明细'],
+    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '还没有订阅'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -162,7 +167,7 @@ test('usage details include request metadata, token counts, exact billed cost an
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
       assert.equal(await dialog.evaluate((element) => element.scrollWidth > element.clientWidth), false)
       await dialog.getByRole('button', { name: '关闭', exact: true }).last().click()
-      assert.equal(await page.getByRole('button', { name: '详情', exact: true }).evaluate((element) => document.activeElement === element), true)
+      assert.equal(await page.getByTestId('account-usage-section').getByRole('button', { name: '详情', exact: true }).evaluate((element) => document.activeElement === element), true)
     } finally { await page.close() }
   }
 })
@@ -200,33 +205,29 @@ test('usage details retain ordinary cache prices and distinguish missing prices 
   }
 })
 
-test('account exposes the exact nine tabs and keeps server orders and keys visible', async () => {
+test('account exposes the six v4 tabs and keeps server orders and keys visible', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '我的账号', exact: true }).waitFor()
+    await page.getByRole('tab', { name: '账号概览', exact: true }).waitFor()
     assert.deepEqual(await page.getByRole('tab').allTextContents(), [
-      '我的账号',
-      '充值与订阅',
-      '我的订单',
+      '账号概览',
+      '充值订阅',
+      '用量账单',
+      '密钥管理',
+      '账号安全',
       '邀请返利',
-      '用量看板',
-      '调用明细',
-      '异步任务',
-      '密钥',
-      '登录设备',
     ])
-    assert.deepEqual(await page.getByRole('tablist').evaluateAll((lists) => lists.map((list) => list.getAttribute('aria-labelledby') && document.getElementById(list.getAttribute('aria-labelledby'))?.textContent)), [
-      '账号与充值',
-      '用量',
-      '密钥与设备',
-    ])
-    await page.getByRole('tab', { name: '我的订单', exact: true }).click()
-    await page.getByText('TEST-ORDER').waitFor()
-    await page.getByText('已到账', { exact: true }).waitFor()
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
-    await page.getByText('Test key').waitFor()
-    await page.getByRole('button', { name: '复制', exact: true }).click()
-    await waitForToast(page, '密钥已复制。为了安全，1 分钟后会从剪贴板里清掉')
+    assert.deepEqual(await page.getByRole('tablist').evaluateAll((lists) => lists.map((list) => list.getAttribute('aria-label'))), ['个人中心分区'])
+    // 「我的订单」并进充值订阅，排在充值下面。
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const orders = page.getByTestId('account-orders-section')
+    await orders.getByText('TEST-ORDER').waitFor()
+    await orders.getByText('已到账', { exact: true }).waitFor()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const row = page.getByTestId('account-key-row-1')
+    await row.locator('.xm-row-title', { hasText: 'Test key' }).waitFor()
+    await row.getByRole('button', { name: '复制密钥', exact: true }).click()
+    await waitForToast(page, '已复制「Test key」的密钥，1 分钟后从剪贴板清除')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'copy-key').args,
       1,
@@ -236,27 +237,27 @@ test('account exposes the exact nine tabs and keeps server orders and keys visib
   }
 })
 
-test('the account pages move with the arrow keys across their three groups and open on Enter', async () => {
+test('the account tabs move with the left and right arrow keys and open on Enter', async () => {
   const page = await fixture('page=account')
   try {
-    const first = page.getByRole('tab', { name: '我的账号', exact: true })
-    const recharge = page.getByRole('tab', { name: '充值与订阅', exact: true })
-    const devices = page.getByRole('tab', { name: '登录设备', exact: true })
+    const first = page.getByRole('tab', { name: '账号概览', exact: true })
+    const recharge = page.getByRole('tab', { name: '充值订阅', exact: true })
+    const last = page.getByRole('tab', { name: '邀请返利', exact: true })
     const focused = (tab) => tab.evaluate((element) => element === document.activeElement)
     await first.waitFor()
     await first.focus()
-    // 手动激活：方向键只挪焦点，回车才打开，挪过的分页不会被读一遍。
-    await page.keyboard.press('ArrowDown')
+    // 手动激活：方向键只挪焦点，回车才打开，挪过的页签不会被读一遍。
+    await page.keyboard.press('ArrowRight')
     assert.equal(await focused(recharge), true)
     assert.equal(await recharge.getAttribute('aria-selected'), 'false')
     await page.keyboard.press('End')
-    assert.equal(await focused(devices), true)
-    await page.keyboard.press('ArrowDown')
+    assert.equal(await focused(last), true)
+    await page.keyboard.press('ArrowRight')
     assert.equal(await focused(first), true)
-    await page.keyboard.press('ArrowUp')
-    assert.equal(await focused(devices), true)
+    await page.keyboard.press('ArrowLeft')
+    assert.equal(await focused(last), true)
     await page.keyboard.press('Home')
-    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('ArrowRight')
     await page.keyboard.press('Enter')
     assert.equal(await recharge.getAttribute('aria-selected'), 'true')
     assert.equal(await first.getAttribute('aria-selected'), 'false')
@@ -271,8 +272,8 @@ test('the account pages move with the arrow keys across their three groups and o
 test('one refresh in the page head rereads the account and the page in view', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '我的订单', exact: true }).click()
-    await page.getByText('TEST-ORDER').waitFor()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    await page.getByTestId('account-orders-section').getByText('TEST-ORDER').waitFor()
     assert.equal(await page.getByRole('button', { name: '查询订单', exact: true }).count(), 0)
     const before = await calls(page)
     const count = (entries, name) => entries.filter((call) => call.name === name).length
@@ -285,7 +286,7 @@ test('one refresh in the page head rereads the account and the page in view', as
       },
       [count(before, 'query-orders'), count(before, 'get-profile')],
     )
-    await page.getByRole('tab', { name: '用量看板', exact: true }).click()
+    await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     await page.getByTestId('tool-usage').waitFor()
     // 用量看板和「各工具累计用量」都不再自带「刷新」。
     assert.equal(await page.getByRole('button', { name: '刷新', exact: true }).count(), 1)
@@ -304,13 +305,15 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
     assert.equal((await calls(page)).some((call) => call.name === 'open-help'), true)
     await page.getByText('当前账号的资料暂时没有读到', { exact: true }).first().waitFor()
     // 页头那句也直说没读到，不拿站点名或别的话顶上。
-    assert.equal(await page.locator('.xm-page-head p').innerText(), '当前账号的资料暂时没有读到')
-    assert.equal(await page.getByRole('tab').count(), 9)
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    assert.equal(await page.locator('.v2-acct-hero p').innerText(), '当前账号的资料暂时没有读到')
+    assert.equal(await page.getByRole('tab').count(), 6)
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
-    await page.getByRole('tab', { name: '我的订单', exact: true }).click()
-    await page.getByText('TEST-ORDER').waitFor()
-    await page.getByRole('tab', { name: '我的账号', exact: true }).click()
+    await page.getByTestId('account-orders-section').getByText('TEST-ORDER').waitFor()
+    // 账号安全什么都不等，照常能进。
+    await page.getByRole('tab', { name: '账号安全', exact: true }).click()
+    await page.getByTestId('account-security-password').waitFor()
+    await page.getByRole('tab', { name: '账号概览', exact: true }).click()
     const reads = (await calls(page)).filter((call) => call.name === 'get-profile').length
     await failure.getByTestId('account-read-retry').click()
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-profile').length > count, reads)
@@ -321,10 +324,10 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
 
 test('account lists that could not be read say so with the reason and read again on request', async () => {
   for (const [query, tab, title, reason, absent] of [
-    ['fail=orders', '我的订单', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
-    ['fail=tasks', '异步任务', '异步任务暂时没有读到', '任务服务暂时不可用', '暂无异步任务'],
-    ['fail=usage', '调用明细', '调用明细暂时没有读到', '调用记录服务暂时不可用', '暂无调用明细'],
-    ['fail=devices', '登录设备', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
+    ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
+    ['fail=tasks', '用量账单', '异步任务暂时没有读到', '任务服务暂时不可用', '暂无异步任务'],
+    ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '暂无调用明细'],
+    ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -345,26 +348,27 @@ test('account lists that could not be read say so with the reason and read again
 test('the usage and task filters keep three boxes in the first row and fold the rest away', async () => {
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
-    await page.getByRole('tab', { name: '调用明细', exact: true }).click()
-    for (const label of ['开始时间', '结束时间', '模型名称']) await page.getByLabel(label, { exact: true }).waitFor()
+    await page.getByRole('tab', { name: '用量账单', exact: true }).click()
+    const usage = page.getByTestId('account-usage-section')
+    for (const label of ['开始时间', '结束时间', '模型名称']) await usage.getByLabel(label, { exact: true }).waitFor()
     for (const label of ['分组', '日志类型', '令牌名称', '请求 ID', '上游请求 ID']) {
-      assert.equal(await page.getByLabel(label, { exact: true }).count(), 0, `${label} 先收着`)
+      assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0, `${label} 先收着`)
     }
-    assert.equal(await page.getByRole('button', { name: '重置筛选', exact: true }).count(), 0)
+    assert.equal(await usage.getByRole('button', { name: '重置筛选', exact: true }).count(), 0)
     // 一共不到 10 条：「每页多少条」不出。
-    assert.equal(await page.getByLabel('每页日志数量', { exact: true }).count(), 0)
-    const toggle = page.getByTestId('account-filters-toggle')
+    assert.equal(await usage.getByLabel('每页日志数量', { exact: true }).count(), 0)
+    const toggle = usage.getByTestId('account-filters-toggle')
     await toggle.click()
     assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
-    await page.getByLabel('上游请求 ID', { exact: true }).fill('up-1')
-    await page.getByRole('button', { name: '查询', exact: true }).click()
-    await page.getByRole('button', { name: '重置筛选', exact: true }).waitFor()
+    await usage.getByLabel('上游请求 ID', { exact: true }).fill('up-1')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await usage.getByRole('button', { name: '重置筛选', exact: true }).waitFor()
     await toggle.click()
     assert.equal(await toggle.innerText(), '展开筛选 · 1')
     await page.getByTestId('usage-stats').waitFor()
     assert.equal(await page.getByTestId('usage-stats').innerText(), '消耗 $0.00 · RPM 0 · TPM 0')
-    await page.getByRole('tab', { name: '异步任务', exact: true }).click()
-    const tasks = page.getByRole('tabpanel').filter({ visible: true })
+    // 异步任务在同一页下面那一节，筛选框各管各的。
+    const tasks = page.getByTestId('account-tasks-section')
     for (const label of ['开始时间', '结束时间', '状态']) await tasks.getByLabel(label, { exact: true }).waitFor()
     for (const label of ['平台', '任务 ID', '动作']) {
       assert.equal(await tasks.getByLabel(label, { exact: true }).count(), 0, `${label} 先收着`)
@@ -377,7 +381,7 @@ test('the usage and task filters keep three boxes in the first row and fold the 
 test('recharge stays open when subscriptions fail and says when the top-up details could not be read', async () => {
   const page = await fixture('page=account&fail=subscriptions')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     await panel.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
     assert.equal(await panel.getByTestId('account-recharge-submit').isDisabled(), false)
@@ -391,7 +395,7 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
   }
   const failed = await fixture('page=account&fail=topup&help=1')
   try {
-    await failed.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await failed.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const card = failed.getByTestId('account-recharge-error')
     await card.waitFor()
     assert.match(await card.innerText(), /充值信息暂时没有读到[\s\S]*充值服务暂时不可用/)
@@ -410,7 +414,7 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
 test('without a payment channel the recharge card says so first, greys the form and still redeems codes', async () => {
   const page = await fixture('page=account&noPayment=1&help=1')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const notice = page.getByTestId('account-recharge-no-methods')
     await notice.waitFor()
     assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。有充值码的话，可以在右边兑换。/)
@@ -439,68 +443,77 @@ test('without a payment channel the recharge card says so first, greys the form 
 test('login devices say which device each button signs out', async () => {
   const page = await fixture('page=account&otherDevice=1')
   try {
-    await page.getByRole('tab', { name: '登录设备', exact: true }).click()
-    const panel = page.getByRole('tabpanel').filter({ visible: true })
-    await panel.getByRole('button', { name: '下线其他设备', exact: true }).waitFor()
-    assert.equal(await panel.getByRole('button', { name: '退出其他设备', exact: true }).count(), 0)
-    await panel.getByRole('button', { name: '让它下线', exact: true }).click()
-    let dialog = page.getByRole('dialog', { name: '让这台设备下线？', exact: true })
-    await dialog.getByRole('button', { name: '确认下线', exact: true }).waitFor()
-    await dialog.getByText('该设备需要重新登录才能查看账户信息。', { exact: false }).waitFor()
+    await page.getByRole('tab', { name: '账号安全', exact: true }).click()
+    const devices = page.getByTestId('account-security-devices')
+    const others = page.getByTestId('account-security-devices-others')
+    await others.waitFor()
+    assert.equal(await others.innerText(), '下线其他设备')
+    // 这台电脑只标「当前设备」；退出登录在账号概览那条「当前登录」上。
+    await devices.getByText('当前设备', { exact: true }).waitFor()
+    assert.equal(await devices.getByRole('button', { name: '退出登录', exact: true }).count(), 0)
+    await devices.getByRole('button', { name: '让它下线', exact: true }).click()
+    let dialog = page.getByRole('dialog', { name: /^让「.+」下线？$/ })
+    await dialog.getByRole('button', { name: '下线', exact: true }).waitFor()
+    await dialog.getByText('它要重新登录才能看账号信息，那台电脑上配好的工具照常能用。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
-    await panel.getByRole('button', { name: '退出登录', exact: true }).click()
-    dialog = page.getByRole('dialog', { name: '退出登录？', exact: true })
-    await dialog.getByRole('button', { name: '退出登录', exact: true }).waitFor()
-    assert.equal(await dialog.getByRole('button', { name: '确认下线', exact: true }).count(), 0)
-    await dialog.getByRole('button', { name: '取消', exact: true }).click()
-    await panel.getByRole('button', { name: '下线其他设备', exact: true }).click()
-    dialog = page.getByRole('dialog', { name: '下线其他设备？', exact: true })
-    await dialog.getByRole('button', { name: '确认下线', exact: true }).waitFor()
+    await others.click()
+    dialog = page.getByRole('dialog', { name: '让其他设备都下线？', exact: true })
+    await dialog.getByRole('button', { name: '全部下线', exact: true }).waitFor()
+    await dialog.getByText('除了这台电脑，其他设备要重新登录才能看账号信息，上面配好的工具照常能用。', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
 })
 
-test('my account keeps the saved-accounts card down to two sentences and one button when there is no other account', async () => {
+test('the overview keeps switching and signing out on the current-login bar and edits the name in a dialog', async () => {
   const page = await fixture('page=account')
   try {
-    const alone = page.getByTestId('saved-accounts-alone')
-    await alone.waitFor()
-    assert.equal(
-      (await alone.innerText()).replace(/\s+/g, ''),
-      '还没有保存别的账号。点下面的「添加另一个账号」，以后在这里一键切换。添加另一个账号',
-    )
+    const bar = page.getByTestId('account-overview-session')
+    await bar.waitFor()
+    // 保存的账号只在「切换账号」框里列，概览不再摆那张卡。
+    assert.equal(await page.getByTestId('saved-accounts-list').count(), 0)
     assert.equal(await page.getByText('同步到工具', { exact: true }).count(), 0)
-    // 显示名称没改过，「保存」点不了；改了才亮。
-    const save = page.getByTestId('account-display-save')
+    await bar.getByTestId('account-switch').click()
+    assert.equal((await calls(page)).some((call) => call.name === 'open-account-switcher'), true)
+    await bar.getByTestId('account-overview-logout').click()
+    const logout = page.getByRole('dialog', { name: '退出登录？', exact: true })
+    await logout.getByText('已配好的工具会保留。', { exact: true }).waitFor()
+    await logout.getByRole('button', { name: '取消', exact: true }).click()
+    // 显示名称在页头铅笔打开的「编辑资料」里：没改过「保存」点不了，改了才亮。
+    await page.getByTestId('account-profile-edit').click()
+    const dialog = page.getByTestId('account-profile-dialog')
+    const save = dialog.getByTestId('account-display-save')
+    assert.equal(await dialog.getByTestId('account-display').inputValue(), '本地测试')
     assert.equal(await save.isDisabled(), true)
-    await page.getByTestId('account-display').fill('新的名字')
+    await dialog.getByTestId('account-display').fill('新的名字')
     assert.equal(await save.isDisabled(), false)
-    await page.getByRole('button', { name: '修改密码', exact: true }).waitFor()
-    assert.equal(await page.getByText('你的账户资料与余额', { exact: true }).count(), 0)
+    await save.click()
+    await waitForToast(page, '资料已保存')
+    await page.locator('.v2-acct-hero h1', { hasText: /^新的名字$/ }).waitFor()
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'update-display-name').map((call) => call.args), [{ displayName: '新的名字' }])
   } finally {
     await page.close()
   }
 })
 
-test('the invite page leads with the link and puts the transfer in the transferable cell', async () => {
+test('the invite page leads with the code, copies the whole link and moves rebates from the results card', async () => {
   const page = await fixture('page=account')
   try {
     await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
     const panel = page.getByRole('tabpanel').filter({ visible: true })
-    const titles = await panel.locator('.xm-card-head h2').allTextContents()
-    assert.equal(titles[0], '邀请链接')
-    assert.equal(titles.at(-1), '已邀请用户')
-    const link = await panel.getByTestId('account-invite-link').boundingBox()
-    const copy = await panel.getByRole('button', { name: '复制链接', exact: true }).boundingBox()
-    assert.ok(link && copy && copy.x > link.x + link.width - 1)
-    const cells = panel.locator('.v2-business-stat-grid.is-four > .xm-card')
-    assert.equal(await cells.count(), 4)
-    const tops = await cells.evaluateAll((elements) => elements.map((element) => Math.round(element.getBoundingClientRect().top)))
-    assert.equal(new Set(tops).size, 1)
-    const transferable = cells.filter({ hasText: '可转余额' })
-    await transferable.getByRole('button', { name: '转入余额', exact: true }).click()
-    await page.getByRole('dialog', { name: '转入账户余额', exact: true }).waitFor()
+    await panel.getByTestId('account-invite-code-card').waitFor()
+    assert.deepEqual(await panel.locator('.v2-acct-card h2').allTextContents(), ['我的邀请码', '邀请成绩'])
+    assert.equal(await panel.getByTestId('account-invite-code').innerText(), 'TEST')
+    // 页面上只摆邀请码，不出站点地址；复制出去的是完整链接。
+    assert.equal(await panel.getByText(/https?:\/\//).count(), 0)
+    await panel.getByTestId('account-invite-link').click()
+    await waitForToast(page, '邀请链接已复制')
+    const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').at(-1).args
+    assert.match(copied, /^https:\/\/[^/]+\/register\?aff=TEST$/)
+    // 星芒账号的后台不给邀请名单，「邀请记录」整节不出。
+    assert.equal(await panel.getByTestId('account-invite-records').count(), 0)
+    await panel.getByTestId('account-invite-transfer').click()
+    await page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -511,18 +524,20 @@ test('the transfer dialog starts from what is transferable now, also after part 
   try {
     await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
     const panel = page.getByRole('tabpanel').filter({ visible: true })
-    const transferable = panel.locator('.v2-business-stat-grid.is-four > .xm-card').filter({ hasText: '可转余额' })
-    const dialog = page.getByRole('dialog', { name: '转入账户余额', exact: true })
+    const transferable = panel.locator('.v2-acct-kv').filter({ hasText: '可转入余额' })
+    const transfer = panel.getByTestId('account-invite-transfer')
+    const dialog = page.getByRole('dialog', { name: /返利转入余额？$/ })
     const amount = dialog.getByLabel('转入金额（USD）', { exact: true })
-    await transferable.getByRole('button', { name: '转入余额', exact: true }).click()
+    await transfer.click()
     await dialog.waitFor()
     assert.equal(await amount.inputValue(), '1')
     await amount.fill('0.4')
-    await dialog.getByRole('button', { name: '确认转入', exact: true }).click()
+    await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
+    await waitForToast(page, '$0.40 已转入余额')
     await dialog.waitFor({ state: 'hidden' })
     await transferable.getByText('$0.60', { exact: true }).waitFor()
-    await transferable.getByRole('button', { name: '转入余额', exact: true }).click()
-    await dialog.waitFor()
+    await transfer.click()
+    await page.getByRole('dialog', { name: '把 $0.60 返利转入余额？', exact: true }).waitFor()
     assert.equal(await amount.inputValue(), '0.6')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'transfer-affiliate-quota').map((call) => call.args), [{ quota: 40 }])
   } finally {
@@ -533,7 +548,7 @@ test('the transfer dialog starts from what is transferable now, also after part 
 test('subscription rows name each state in Chinese instead of the value the server sent', async () => {
   const page = await fixture('page=account&subscriptionStates=1')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     const state = (title) => panel.locator('.xm-row-title').filter({ hasText: title }).locator('.xm-pill')
     await state('月卡一号').waitFor()
@@ -550,7 +565,7 @@ test('subscription rows name each state in Chinese instead of the value the serv
 test('tool key limits list only the tools that have a key and name the ones still missing', async () => {
   const page = await fixture('page=account&managedKeys=1')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     const card = page.getByTestId('tool-key-limits')
     await card.getByTestId('tool-key-limit-claude').waitFor()
     assert.deepEqual(
@@ -563,7 +578,7 @@ test('tool key limits list only the tools that have a key and name the ones stil
   }
   const none = await fixture('page=account')
   try {
-    await none.getByRole('tab', { name: '密钥', exact: true }).click()
+    await none.getByRole('tab', { name: '密钥管理', exact: true }).click()
     const line = none.getByTestId('tool-key-limits')
     await line.waitFor()
     assert.equal(await line.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
@@ -572,21 +587,25 @@ test('tool key limits list only the tools that have a key and name the ones stil
   }
 })
 
-test('a profile read once stays on screen with an unsaved name when a later refresh cannot read it', async () => {
+test('a profile read once stays on screen when a later refresh cannot read it', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByTestId('account-display').fill('改到一半的名字')
+    const name = page.locator('.v2-acct-hero h1')
+    await name.filter({ hasText: /^本地测试$/ }).waitFor()
     await page.evaluate(() => window.failNextRead('profile'))
     await page.getByTestId('account-refresh').click()
     const alert = page.getByRole('tabpanel').filter({ visible: true }).getByRole('alert')
     await alert.getByText('账号资料服务暂时不可用').waitFor()
-    // 手上那份资料留着：不整页换成「暂时没有读到」，没保存的名字也还在。
+    // 手上那份资料留着：不整页换成「暂时没有读到」，页头的名字和邮箱也还在。
     assert.equal(await page.getByTestId('account-read-error').count(), 0)
-    assert.equal(await page.getByTestId('account-display').inputValue(), '改到一半的名字')
-    assert.equal(await page.getByText('当前账号：本地测试（test@example.invalid）', { exact: true }).count(), 1)
+    assert.equal(await name.innerText(), '本地测试')
+    assert.match(await page.locator('.v2-acct-hero p').innerText(), /^test@example\.invalid · /)
+    await page.getByTestId('account-profile-edit').click()
+    const dialog = page.getByTestId('account-profile-dialog')
+    assert.equal(await dialog.getByTestId('account-display').inputValue(), '本地测试')
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await alert.getByRole('button', { name: '重新加载', exact: true }).click()
     await alert.waitFor({ state: 'detached' })
-    assert.equal(await page.getByTestId('account-display').inputValue(), '改到一半的名字')
   } finally {
     await page.close()
   }
@@ -595,13 +614,16 @@ test('a profile read once stays on screen with an unsaved name when a later refr
 test('a slow profile read that lands after a newer one is not what a later failed refresh falls back to', async () => {
   const page = await fixture('page=account')
   try {
-    const name = page.locator('.v2-business-profile-avatar strong')
+    const name = page.locator('.v2-acct-hero h1')
     await name.filter({ hasText: /^本地测试$/ }).waitFor()
     // 先点「刷新」，这次读得慢；还没回来就把显示名称改了存上，存完那次读得快。
     await page.evaluate(() => window.profileReadHarness.deferNext())
     await page.getByTestId('account-refresh').click()
-    await page.getByTestId('account-display').fill('新名字')
-    await page.getByTestId('account-display-save').click()
+    await page.getByTestId('account-profile-edit').click()
+    const dialog = page.getByTestId('account-profile-dialog')
+    await dialog.getByTestId('account-display').fill('新名字')
+    await dialog.getByTestId('account-display-save').click()
+    await dialog.waitFor({ state: 'detached' })
     await name.filter({ hasText: /^新名字$/ }).waitFor()
     // 慢的那次这时才回来，带的还是改名前的资料。
     await page.evaluate(() => window.profileReadHarness.release())
@@ -611,7 +633,8 @@ test('a slow profile read that lands after a newer one is not what a later faile
     const alert = page.getByRole('tabpanel').filter({ visible: true }).getByRole('alert')
     await alert.getByText('账号资料服务暂时不可用').waitFor()
     assert.equal(await name.innerText(), '新名字')
-    assert.equal(await page.getByTestId('account-display').inputValue(), '新名字')
+    await page.getByTestId('account-profile-edit').click()
+    assert.equal(await page.getByTestId('account-profile-dialog').getByTestId('account-display').inputValue(), '新名字')
   } finally {
     await page.close()
   }
@@ -660,7 +683,7 @@ test('redeeming subscription and concurrency codes reports the committed result 
   for (const [type, message] of [['subscription', '订阅兑换成功'], ['concurrency', '并发额度兑换成功'], ['balance', '余额兑换成功']]) {
     const page = await fixture(`page=account&redemptionType=${type}`)
     try {
-      await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+      await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
       await page.getByLabel('充值码', { exact: true }).fill('MOCK-CARD')
       await page.getByRole('button', { name: '兑换', exact: true }).click()
       const before = await calls(page)
@@ -679,24 +702,40 @@ test('redeeming subscription and concurrency codes reports the committed result 
 })
 
 async function revokeTestKey(page) {
-  await page.getByRole('tab', { name: '密钥', exact: true }).click()
-  await page.getByText('Test key').waitFor()
-  await page.locator('.xm-list-row').filter({ has: page.getByText('Test key') }).locator('button[aria-haspopup="menu"]').click()
+  await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+  await page.getByRole('button', { name: '密钥 Test key 的更多操作', exact: true }).click()
   await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '撤销这把密钥？', exact: true })
+  const dialog = page.getByRole('dialog', { name: '撤销「Test key」？', exact: true })
   await dialog.waitFor()
   return dialog
+}
+
+// 分组每次打开编辑框、点到分组、窗口回到前台都会重读；同一下手势里的几次合成一次（500 毫秒内）。
+// 只把夹具的钟往后拨过那一段，再让窗口回到前台，就是一次不带错误的重读。
+async function rereadKeyGroups(page) {
+  const before = await page.evaluate(() => {
+    const previousNow = Date.now
+    Date.now = () => previousNow() + 1000
+    const requests = window.keyGroupsHarness.requests
+    window.dispatchEvent(new Event('focus'))
+    return requests
+  })
+  await page.waitForFunction((count) => window.keyGroupsHarness.requests > count, before)
+}
+
+function keyGroupChoice(page, name) {
+  return page.getByTestId('account-key-group-choices').getByRole('button', { name, exact: true })
 }
 
 test('revoking a key a tool is using warns first and puts a fresh key back without asking again', async () => {
   const page = await fixture('page=account&keyInUse=1')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     await page.getByTestId('account-key-in-use-1').getByText('Claude Code 在用').waitFor()
     const dialog = await revokeTestKey(page)
-    assert.match(await dialog.innerText(), /Claude Code 正在用这把密钥。撤销后会马上自动换一把新的写进 Claude Code/)
-    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
-    await waitForToast(page, '密钥已撤销，Claude Code 已自动换上新密钥')
+    assert.match(await dialog.innerText(), /撤销后这把密钥马上失效，找不回来。[\s\S]*Claude Code 正在用它，会马上换一把新的写进去，不影响使用。/)
+    await dialog.getByRole('button', { name: '撤销', exact: true }).click()
+    await waitForToast(page, '已撤销「Test key」，Claude Code 已换用新的密钥')
     assert.equal(await page.getByTestId('account-key-replace-failed').count(), 0)
     const names = (await calls(page)).map((call) => [call.name, call.args])
     assert.deepEqual(names.filter(([name]) => name === 'revokeAccountKey' || name === 'rewriteKey'),
@@ -708,7 +747,7 @@ test('a failed key replacement after revoking says what to press and retries on 
   const page = await fixture('page=account&keyInUse=1&replaceFails=2')
   try {
     const dialog = await revokeTestKey(page)
-    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
+    await dialog.getByRole('button', { name: '撤销', exact: true }).click()
     const notice = page.getByTestId('account-key-replace-failed')
     await notice.getByText('Claude Code 暂时用不了', { exact: true }).waitFor()
     await page.getByTestId('account-key-replace-retry').click()
@@ -724,11 +763,11 @@ test('revoking a key a hand-configured tool is using never claims a fresh key an
   const page = await fixture('page=account&keyInUse=1&replaceSkipped=1')
   try {
     const dialog = await revokeTestKey(page)
-    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
+    await dialog.getByRole('button', { name: '撤销', exact: true }).click()
     const notice = page.getByTestId('account-key-replace-skipped')
     await notice.getByText('Claude Code 还在用刚撤销的密钥', { exact: true }).waitFor()
-    await waitForToast(page, '密钥已撤销')
-    assert.equal(await page.getByText(/已自动换上新密钥/).count(), 0)
+    await waitForToast(page, '已撤销「Test key」')
+    assert.equal(await page.getByText(/已换用新的密钥/).count(), 0)
     assert.equal(await page.getByTestId('account-key-replace-retry').count(), 0)
     await page.getByTestId('account-key-replace-configure').click()
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'openConfig').map((call) => call.args), ['claude'])
@@ -745,14 +784,14 @@ test('revoking a key a hand-configured tool is using never claims a fresh key an
 test('revoking the only key on the last page steps back to a real page instead of showing 2 / 1', async () => {
   const page = await fixture('page=account&keyCount=21')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).waitFor()
     await page.getByRole('button', { name: '下一页', exact: true }).click()
     await page.getByRole('button', { name: '密钥 paged-key-21 的更多操作', exact: true }).waitFor()
     await page.getByText('2 / 2', { exact: true }).waitFor()
     await page.getByRole('button', { name: '密钥 paged-key-21 的更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
-    await page.getByRole('dialog', { name: '撤销这把密钥？', exact: true }).getByRole('button', { name: '确认撤销', exact: true }).click()
+    await page.getByRole('dialog', { name: '撤销「paged-key-21」？', exact: true }).getByRole('button', { name: '撤销', exact: true }).click()
     await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).waitFor()
     assert.equal(await page.getByText('2 / 1', { exact: true }).count(), 0)
     // 只剩一页，分页条整个不摆。
@@ -760,10 +799,26 @@ test('revoking the only key on the last page steps back to a real page instead o
   } finally { await page.close() }
 })
 
+// 切到别的页签时账号概览藏着不卸：在「密钥管理」里撤销一把再回到概览，「密钥与设备」那张卡上的把数要跟着变。
+test('the overview key count catches up after a key is revoked on the key tab', async () => {
+  const page = await fixture('page=account&keyCount=21')
+  try {
+    const card = page.getByTestId('account-overview-security')
+    await card.getByText('21 把', { exact: true }).waitFor()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
+    await page.getByRole('dialog', { name: '撤销「paged-key-1」？', exact: true }).getByRole('button', { name: '撤销', exact: true }).click()
+    await waitForToast(page, '已撤销「paged-key-1」')
+    await page.getByRole('tab', { name: '账号概览', exact: true }).click()
+    await card.getByText('20 把', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
 test('key search finds a key that lives on a later page and starts from the first page of matches', async () => {
   const page = await fixture('page=account&keyCount=45')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).waitFor()
     await page.getByRole('button', { name: '下一页', exact: true }).click()
     await page.getByText('2 / 3', { exact: true }).waitFor()
@@ -777,13 +832,13 @@ test('key search finds a key that lives on a later page and starts from the firs
   } finally { await page.close() }
 })
 
-test('revoking a key no tool is using keeps the old confirmation and never rewrites a tool', async () => {
+test('revoking a key no tool is using only says it cannot be undone and never rewrites a tool', async () => {
   const page = await fixture('page=account')
   try {
     const dialog = await revokeTestKey(page)
-    assert.match(await dialog.innerText(), /使用这把密钥的工具会停止请求，需要重新配置有效密钥。/)
-    await dialog.getByRole('button', { name: '确认撤销', exact: true }).click()
-    await waitForToast(page, '密钥已撤销')
+    assert.equal((await dialog.locator('p').allInnerTexts()).join('\n'), '撤销后这把密钥马上失效，找不回来。')
+    await dialog.getByRole('button', { name: '撤销', exact: true }).click()
+    await waitForToast(page, '已撤销「Test key」')
     assert.equal((await calls(page)).some((call) => call.name === 'rewriteKey'), false)
   } finally { await page.close() }
 })
@@ -791,17 +846,18 @@ test('revoking a key no tool is using keeps the old confirmation and never rewri
 test('key editor re-reads available groups every time a new or existing key is opened', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
-    await page.getByText('Test key').waitFor()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-1').waitFor()
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A']))
     await page.getByTestId('account-key-add').click()
-    const group = page.getByTestId('account-key-group')
-    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
-    await page.getByRole('dialog', { name: '新建密钥', exact: true }).getByRole('button', { name: '取消', exact: true }).click()
+    const editor = page.getByTestId('account-key-editor')
+    // 分组不多时摆成分段，读到的第一个先选好。
+    await keyGroupChoice(page, 'group-A').and(page.locator('[aria-pressed="true"]')).waitFor()
+    await editor.getByRole('button', { name: '取消', exact: true }).click()
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-B']))
     await page.getByTestId('account-key-add').click()
-    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-B')
-    assert.equal(await group.locator('option[value="group-A"]').count(), 0)
+    await keyGroupChoice(page, 'group-B').and(page.locator('[aria-pressed="true"]')).waitFor()
+    assert.equal(await keyGroupChoice(page, 'group-A').count(), 0)
     const beforeOpen = await page.evaluate(() => {
       window.keyGroupsHarness.setGroups(['group-B', 'group-D'])
       // Move only the fixture clock beyond the focus/pointer coalescing window.
@@ -809,114 +865,123 @@ test('key editor re-reads available groups every time a new or existing key is o
       Date.now = () => previousNow() + 1000
       return window.keyGroupsHarness.requests
     })
-    await group.click()
-    // Confirm the existing value: Escape can also dismiss the parent dialog on macOS.
-    await group.selectOption('group-B')
+    // 点到分组那一下也重读一次。
+    await keyGroupChoice(page, 'group-B').click()
     await page.waitForFunction((before) => window.keyGroupsHarness.requests > before, beforeOpen)
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="account-key-group"] option[value="group-D"]')))
-    await page.getByRole('dialog', { name: '新建密钥', exact: true }).getByRole('button', { name: '取消', exact: true }).click()
+    await keyGroupChoice(page, 'group-D').waitFor()
+    assert.equal(await keyGroupChoice(page, 'group-B').getAttribute('aria-pressed'), 'true')
+    await editor.getByRole('button', { name: '取消', exact: true }).click()
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'group-C']))
-    await page.locator('.xm-list-row').filter({ has: page.getByText('Test key') }).locator('button[aria-haspopup="menu"]').click()
-    await page.getByRole('menuitem', { name: '编辑密钥', exact: true }).click()
-    await page.getByRole('dialog', { name: '编辑密钥', exact: true }).waitFor()
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="account-key-group"] option[value="group-C"]')))
-    assert.equal(await group.inputValue(), 'default')
-    assert.equal(await page.getByLabel('名称', { exact: true }).inputValue(), 'Test key')
+    await page.getByRole('button', { name: '密钥 Test key 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '编辑', exact: true }).click()
+    await page.getByRole('dialog', { name: '编辑「Test key」', exact: true }).waitFor()
+    await keyGroupChoice(page, 'group-C').waitFor()
+    assert.equal(await keyGroupChoice(page, 'default').getAttribute('aria-pressed'), 'true')
+    assert.equal(await editor.getByLabel('名称', { exact: true }).inputValue(), 'Test key')
   } finally { await page.close() }
 })
 
 test('refreshing key groups preserves the draft and requires a new choice when the selected group disappears', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
-    await page.getByText('Test key').waitFor()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-1').waitFor()
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A', 'group-B']))
     await page.getByTestId('account-key-add').click()
     const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
-    const group = page.getByTestId('account-key-group')
-    await group.selectOption('group-B')
+    await keyGroupChoice(page, 'group-B').click()
     await dialog.getByLabel('名称', { exact: true }).fill('draft key')
-    await dialog.getByLabel('可用额度（USD）', { exact: true }).fill('12.34')
+    await dialog.getByLabel('可用额度', { exact: true }).fill('12.34')
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-B', 'group-C']))
-    await page.getByTestId('account-key-groups-refresh').click()
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="account-key-group"] option[value="group-C"]')))
-    assert.equal(await group.inputValue(), 'group-B')
+    await rereadKeyGroups(page)
+    await keyGroupChoice(page, 'group-C').waitFor()
+    assert.equal(await keyGroupChoice(page, 'group-B').getAttribute('aria-pressed'), 'true')
     assert.equal(await dialog.getByLabel('名称', { exact: true }).inputValue(), 'draft key')
-    assert.equal(await dialog.getByLabel('可用额度（USD）', { exact: true }).inputValue(), '12.34')
+    assert.equal(await dialog.getByLabel('可用额度', { exact: true }).inputValue(), '12.34')
+    // 选中的分组没了：换成下拉，把它标成「已不可用」，不替用户换成别的分组。
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-C']))
-    await page.getByTestId('account-key-groups-refresh').click()
-    await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
-    const save = dialog.getByRole('button', { name: '保存密钥', exact: true })
+    await rereadKeyGroups(page)
+    const group = page.getByTestId('account-key-group')
+    await group.locator('option[value="group-B"]', { hasText: 'group-B（已不可用）' }).waitFor({ state: 'attached' })
+    await dialog.getByText('原分组已不可用，请重新选择；已填写的内容仍保留。', { exact: true }).waitFor()
+    const save = dialog.getByRole('button', { name: '创建密钥', exact: true })
     assert.equal(await save.isDisabled(), true)
-    assert.notEqual(await group.inputValue(), 'group-C')
+    assert.equal(await group.inputValue(), 'group-B')
     assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 0)
     await group.selectOption('group-C')
     await save.click()
-    await waitForToast(page, '密钥已保存')
-    const created = (await calls(page)).find((call) => call.name === 'create-key').args
-    assert.deepEqual({ name: created.name, group: created.group, remainQuota: created.remainQuota }, { name: 'draft key', group: 'group-C', remainQuota: 1234 })
+    const created = page.getByTestId('account-key-created')
+    await created.getByText('「draft key」已创建', { exact: true }).waitFor()
+    await created.getByText('想让某个工具用它，在列表里点「配置到工具」。', { exact: true }).waitFor()
+    const args = (await calls(page)).find((call) => call.name === 'create-key').args
+    assert.deepEqual({ name: args.name, group: args.group, remainQuota: args.remainQuota }, { name: 'draft key', group: 'group-C', remainQuota: 1234 })
+    await page.getByTestId('account-key-created-done').click()
+    await dialog.waitFor({ state: 'detached' })
   } finally { await page.close() }
 })
 
 test('pending or failed key group requests block saves and can be retried without clearing inputs', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
-    await page.getByText('Test key').waitFor()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-1').waitFor()
     await page.evaluate(() => { window.keyGroupsHarness.setGroups(['group-A']); window.keyGroupsHarness.deferNext() })
     await page.getByTestId('account-key-add').click()
     const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
-    const save = dialog.getByRole('button', { name: '保存密钥', exact: true })
+    const save = dialog.getByRole('button', { name: '创建密钥', exact: true })
     await dialog.getByLabel('名称', { exact: true }).fill('keep pending draft')
-    await dialog.getByLabel('可用额度（USD）', { exact: true }).fill('3.25')
+    await dialog.getByLabel('可用额度', { exact: true }).fill('3.25')
     assert.equal(await save.isDisabled(), true)
     assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 0)
     await page.evaluate(() => window.keyGroupsHarness.release())
-    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
+    await keyGroupChoice(page, 'group-A').and(page.locator('[aria-pressed="true"]')).waitFor()
+    // 「刷新分组」只在读失败时出现。
+    assert.equal(await page.getByTestId('account-key-groups-refresh').count(), 0)
     await page.evaluate(() => window.keyGroupsHarness.failNext())
-    await page.getByTestId('account-key-groups-refresh').click()
+    await rereadKeyGroups(page)
     await dialog.getByText('分组读取暂时失败，请重试', { exact: true }).waitFor()
     assert.equal(await save.isDisabled(), true)
     assert.equal(await dialog.getByLabel('名称', { exact: true }).inputValue(), 'keep pending draft')
-    assert.equal(await dialog.getByLabel('可用额度（USD）', { exact: true }).inputValue(), '3.25')
+    assert.equal(await dialog.getByLabel('可用额度', { exact: true }).inputValue(), '3.25')
     assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 0)
     await page.getByTestId('account-key-groups-refresh').click()
-    await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
+    await page.getByTestId('account-key-groups-refresh').waitFor({ state: 'detached' })
     await save.click()
-    await waitForToast(page, '密钥已保存')
+    await page.getByTestId('account-key-created').waitFor()
     assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 1)
+    await page.getByTestId('account-key-created-done').click()
     await page.evaluate(() => { window.keyGroupsHarness.setGroups(['outdated-group']); window.keyGroupsHarness.deferNext() })
     await page.getByTestId('account-key-add').click()
     assert.equal(await save.isDisabled(), true)
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['fresh-group']))
     await page.getByTestId('account-key-add').click()
-    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'fresh-group')
+    await keyGroupChoice(page, 'fresh-group').and(page.locator('[aria-pressed="true"]')).waitFor()
     await page.evaluate(async () => {
       window.keyGroupsHarness.release()
       await new Promise((resolve) => requestAnimationFrame(resolve))
     })
-    assert.equal(await page.getByTestId('account-key-group').inputValue(), 'fresh-group')
-    assert.equal(await page.getByTestId('account-key-group').locator('option[value="outdated-group"]').count(), 0)
+    assert.equal(await keyGroupChoice(page, 'fresh-group').getAttribute('aria-pressed'), 'true')
+    assert.equal(await keyGroupChoice(page, 'outdated-group').count(), 0)
   } finally { await page.close() }
 })
 
 test('key group failures name the real cause instead of one generic refresh prompt', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '密钥', exact: true }).click()
-    await page.getByText('Test key').waitFor()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-1').waitFor()
     await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A']))
     await page.getByTestId('account-key-add').click()
     const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
-    const save = dialog.getByRole('button', { name: '保存密钥', exact: true })
-    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
+    const save = dialog.getByRole('button', { name: '创建密钥', exact: true })
+    await keyGroupChoice(page, 'group-A').and(page.locator('[aria-pressed="true"]')).waitFor()
 
     // 会话过期：主进程抛的是中文原文，脱敏后原样上屏，用户知道该去重新登录
     await page.evaluate(() => window.keyGroupsHarness.failNext(
       "Error invoking remote method 'account:list-groups': Error: 登录状态已失效，请重新登录",
     ))
-    await page.getByTestId('account-key-groups-refresh').click()
+    await rereadKeyGroups(page)
     await dialog.getByText('登录状态已失效，请重新登录', { exact: true }).waitFor()
     assert.equal(await save.isDisabled(), true)
     assert.equal(await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).count(), 0)
@@ -937,7 +1002,7 @@ test('key group failures name the real cause instead of one generic refresh prom
     await page.getByTestId('account-key-groups-refresh').click()
     await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).waitFor()
     await page.getByTestId('account-key-groups-refresh').click()
-    await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
+    await page.getByTestId('account-key-groups-refresh').waitFor({ state: 'detached' })
     assert.equal(await save.isDisabled(), false)
   } finally { await page.close() }
 })
@@ -2036,9 +2101,12 @@ test('the updates page leaves the automatic update switch out where the app cann
 test('payment return only re-queries server orders and preserves the profile draft', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByTestId('account-display').fill('还没有保存的名称')
+    // 付款是在另一个窗口里付的：这边「编辑资料」还开着、名字改到一半。
+    await page.getByTestId('account-profile-edit').click()
+    const profile = page.getByTestId('account-profile-dialog')
+    await profile.getByTestId('account-display').fill('还没有保存的名称')
     await page.evaluate(() => dispatchEvent(new Event('test-payment-return')))
-    await page.getByText('TEST-ORDER').waitFor()
+    await page.getByTestId('account-orders-section').getByText('TEST-ORDER').waitFor()
     const count = (await calls(page)).filter(
       (call) => call.name === 'query-orders',
     ).length
@@ -2061,9 +2129,8 @@ test('payment return only re-queries server orders and preserves the profile dra
       ),
       false,
     )
-    await page.getByRole('tab', { name: '我的账号', exact: true }).click()
     assert.equal(
-      await page.getByTestId('account-display').inputValue(),
+      await profile.getByTestId('account-display').inputValue(),
       '还没有保存的名称',
     )
   } finally {
@@ -2074,7 +2141,7 @@ test('payment return only re-queries server orders and preserves the profile dra
 test('subscription payment terminal events clear the pending state and explain the outcome', async () => {
   const page = await fixture('page=account&subscriptionExternal=1')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByRole('button', { name: '购买', exact: true }).waitFor()
     await page.getByRole('button', { name: '购买', exact: true }).click()
     await page.getByRole('button', { name: '打开支付窗口', exact: true }).click()
@@ -2090,10 +2157,11 @@ test('subscription payment terminal events clear the pending state and explain t
 test('the payment terminal listener survives re-renders and still resolves a pending order', async () => {
   const page = await fixture('page=account&subscriptionExternal=1')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByRole('button', { name: '购买', exact: true }).waitFor()
     const subscribed = await page.evaluate(() => window.paymentTerminalSubscriptions())
-    assert.equal(subscribed.live, 1)
+    // 充值那一块一个；下面「我的订单」一个（付款成功就重读订单），v4 起两块在同一页。
+    assert.equal(subscribed.live, 2)
 
     // 余额 store 每 30 秒 publish 两次，整棵树跟着重渲染。回调若随渲染变身份，
     // 订阅就跟着退订重订，重订之间到达的那条回调没有人接。
@@ -2105,7 +2173,7 @@ test('the payment terminal listener survives re-renders and still resolves a pen
     })
     const afterRerenders = await page.evaluate(() => window.paymentTerminalSubscriptions())
     assert.equal(afterRerenders.added, subscribed.added)
-    assert.equal(afterRerenders.live, 1)
+    assert.equal(afterRerenders.live, 2)
 
     // 重渲染之后到达的回调仍然落到同一个待支付订单上
     await page.getByRole('button', { name: '购买', exact: true }).click()
@@ -2118,7 +2186,7 @@ test('the payment terminal listener survives re-renders and still resolves a pen
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-SUBSCRIPTION' }))
     await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
     assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
-    assert.equal((await page.evaluate(() => window.paymentTerminalSubscriptions())).live, 1)
+    assert.equal((await page.evaluate(() => window.paymentTerminalSubscriptions())).live, 2)
   } finally {
     await page.close()
   }
@@ -2127,7 +2195,7 @@ test('the payment terminal listener survives re-renders and still resolves a pen
 test('recharge presets show credited, paid and bonus, and the quote dialog spells the bonus out', async () => {
   const page = await fixture('page=account&topupBonus=1')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const plain = page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true })
     const bonus = page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true })
     await plain.waitFor()
@@ -2185,14 +2253,14 @@ test('the recharge page rereads offers when the customer comes back to it, at mo
       await page.locator('[role="tab"][aria-selected="true"]', { hasText: name }).waitFor()
     }
     // 刚读过：来回切一下不再问，免得逐档试算撞上限流。
-    await open('我的订单')
-    await open('充值与订阅')
+    await open('账号安全')
+    await open('充值订阅')
     assert.equal(await reads(), 1)
     assert.equal(await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).count(), 1)
 
     await page.clock.fastForward(61_000)
-    await open('我的订单')
-    await open('充值与订阅')
+    await open('账号安全')
+    await open('充值订阅')
     await page.getByRole('button', { name: '到账 $20，实付 20.00', exact: true }).waitFor()
     assert.equal(await reads(), 2)
     assert.equal(await page.getByText('送 25%', { exact: true }).count(), 0)
@@ -2209,7 +2277,7 @@ test('the recharge page rereads offers when the customer comes back to it, at mo
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, 3)
 
     // 停在别的分页时窗口回到前台，不替充值页去读（focus 的处理是同步的，派发完就能数）。
-    await open('我的订单')
+    await open('账号安全')
     await page.clock.fastForward(61_000)
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     assert.equal(await reads(), 4)
@@ -2237,7 +2305,7 @@ test('a tier picked on the home activity card arrives preselected on the recharg
 test('changing the recharge channel invalidates the previous quote', async () => {
   const page = await fixture('page=account&multiPayment=1')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByRole('radio', { name: 'Stripe', exact: true }).check()
     await page.getByTestId('account-recharge-submit').click()
     const quote = page.getByRole('dialog', { name: '确认充值报价' })
@@ -2255,10 +2323,9 @@ test('confirmed topup completion refreshes balance and cached orders and clears 
   for (const fast of [false, true]) {
     const page = await fixture(`page=account${fast ? '&fastPayment=1' : ''}`)
     try {
-      await page.getByRole('tab', { name: '我的订单', exact: true }).click()
-      await page.getByText('TEST-ORDER').waitFor()
+      await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+      await page.getByTestId('account-orders-section').getByText('TEST-ORDER').waitFor()
       const ordersBefore = (await calls(page)).filter((call) => call.name === 'query-orders').length
-      await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
       await page.getByTestId('account-recharge-submit').click()
       await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
       if (!fast) {
@@ -2286,7 +2353,7 @@ test('confirmed topup completion refreshes balance and cached orders and clears 
 test('a payment window closed before settlement keeps confirming and points to the order', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByTestId('account-recharge-submit').click()
     await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
     await page.getByText('等待支付结果', { exact: true }).waitFor()
@@ -2309,7 +2376,7 @@ test('a payment window closed before settlement keeps confirming and points to t
 test('an unconfirmed payment opens my orders with its order number', async () => {
   const page = await fixture('page=account')
   try {
-    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByTestId('account-recharge-submit').click()
     await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
     await page.getByText('等待支付结果', { exact: true }).waitFor()
@@ -2319,7 +2386,8 @@ test('an unconfirmed payment opens my orders with its order number', async () =>
     })
     await page.getByText('还没查到这笔订单到账', { exact: true }).waitFor()
     await page.getByTestId('account-payment-orders').click()
-    await page.getByRole('tab', { name: '我的订单', exact: true, selected: true }).waitFor()
+    await page.getByRole('tab', { name: '充值订阅', exact: true, selected: true }).waitFor()
+    await page.getByTestId('account-orders-section').waitFor()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-orders' && call.args.keyword === 'XM-VISUAL-TOPUP'))
   } finally { await page.close() }
 })
@@ -2449,14 +2517,18 @@ test('native preference errors retain the saved switch state', async () => {
   }
 })
 
+async function openAccountSwitcher(page) {
+  await page.getByTestId('account-switch').click()
+  const dialog = page.getByRole('dialog', { name: '切换账号', exact: true })
+  await dialog.getByText('切换后，下面勾上的工具会一起换成新账号的密钥。', { exact: true }).waitFor()
+  return dialog
+}
+
 test('saved accounts switch tools already on the account key by default and expose only eligible choices', async () => {
-  const page = await fixture('page=account&sync=1')
+  const page = await fixture('page=account&sync=1&switcher=1')
   try {
-    // 卡片里「同步到工具」默认收起；点开才看得到勾选框。
-    const sync = page.getByText('同步到工具', { exact: true })
-    await sync.waitFor()
-    assert.equal(await page.getByTestId('account-sync-claude').isVisible(), false)
-    await sync.click()
+    // 「切换账号」框里「同步到工具」直接展开。
+    await openAccountSwitcher(page)
     await page.getByTestId('account-sync-claude').waitFor()
     assert.equal(
       await page.getByTestId('account-sync-claude').isChecked(),
@@ -2485,9 +2557,9 @@ test('saved accounts switch tools already on the account key by default and expo
 })
 
 test('explicit CLI sync retains partial failure details after account refresh', async () => {
-  const page = await fixture('page=account&sync=1&partial=1')
+  const page = await fixture('page=account&sync=1&partial=1&switcher=1')
   try {
-    await page.getByText('同步到工具', { exact: true }).click()
+    await openAccountSwitcher(page)
     await page.getByTestId('account-sync-claude').waitFor()
     await page.getByTestId('account-sync-claude').check()
     await page.getByTestId('account-sync-grok').check()
@@ -2521,9 +2593,9 @@ test('explicit CLI sync retains partial failure details after account refresh', 
 })
 
 test('failed saved-account verification never writes selected CLI config', async () => {
-  const page = await fixture('page=account&sync=1&fail=switch')
+  const page = await fixture('page=account&sync=1&fail=switch&switcher=1')
   try {
-    await page.getByText('同步到工具', { exact: true }).click()
+    await openAccountSwitcher(page)
     await page.getByTestId('account-sync-claude').waitFor()
     await page.getByTestId('account-sync-claude').check()
     await page
@@ -2641,7 +2713,7 @@ test('desktop notifications start on, the master switch gates test notifications
 test('a previously observed account task sends one scoped completion notification after refresh', async () => {
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
-    await page.getByRole('tab', { name: '异步任务', exact: true }).click()
+    await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     await page.getByText('处理中 50%', { exact: true }).waitFor()
     assert.equal(
       (await calls(page)).some((call) => call.name === 'activity-notification'),
@@ -2665,11 +2737,11 @@ test('a previously observed account task sends one scoped completion notificatio
 test('an async task result is copied as a link instead of asking the host to open an upstream URL', async () => {
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
-    await page.getByRole('tab', { name: '异步任务', exact: true }).click()
+    await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     await page.getByText('处理中 50%', { exact: true }).waitFor()
     await page.getByTestId('account-refresh').click()
     await page.getByText('已完成 100%', { exact: true }).waitFor()
-    await page.getByRole('button', { name: '详情', exact: true }).click()
+    await page.getByTestId('account-tasks-section').getByRole('button', { name: '详情', exact: true }).click()
     await page
       .getByText('https://cdn.upstream.example.test/fixture-task.mp4', {
         exact: true,
@@ -2702,25 +2774,26 @@ test('an async task result is copied as a link instead of asking the host to ope
 test('cancelling the password dialog drops the typed secrets and Esc confirms before discarding them', async () => {
   const page = await fixture('page=account&system=1')
   try {
-    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    await page.getByRole('tab', { name: '账号安全', exact: true }).click()
+    await page.getByTestId('account-security-password').click()
     const dialog = page.getByRole('dialog')
-    await dialog.getByLabel('当前密码', { exact: true }).fill('old-secret')
+    await dialog.getByLabel('原密码', { exact: true }).fill('old-secret')
     await dialog.getByLabel('新密码', { exact: true }).fill('new-secret-value')
     await page.keyboard.press('Escape')
     await dialog.getByText('有修改还没保存，关掉会丢掉这些修改', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '继续编辑', exact: true }).click()
     assert.equal(
-      await dialog.getByLabel('当前密码', { exact: true }).inputValue(),
+      await dialog.getByLabel('原密码', { exact: true }).inputValue(),
       'old-secret',
     )
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
-    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    await page.getByTestId('account-security-password').click()
     const reopened = page.getByRole('dialog')
     assert.deepEqual(
       await Promise.all([
-        reopened.getByLabel('当前密码', { exact: true }).inputValue(),
+        reopened.getByLabel('原密码', { exact: true }).inputValue(),
         reopened.getByLabel('新密码', { exact: true }).inputValue(),
-        reopened.getByLabel('确认新密码', { exact: true }).inputValue(),
+        reopened.getByLabel('再输一次', { exact: true }).inputValue(),
       ]),
       ['', '', ''],
     )

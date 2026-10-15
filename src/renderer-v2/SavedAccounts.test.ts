@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountSwitchDesktopClientsHint, defaultSyncSelection, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
+import { accountSwitchDesktopClientsHint, accountSwitchedTitle, defaultSyncSelection, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
 
 describe('saved account list labels', () => {
   it('names the account source with the login page tab names instead of a hash fragment', () => {
@@ -18,6 +18,12 @@ describe('saved account list labels', () => {
   it('leaves a legacy account relogin blank when the saved name is a nickname, so the remembered email can fill it', () => {
     expect(savedAccountLoginTarget({ origin: 'https://api.solov.cc', username: 'fixture-user' })).toEqual({ siteId: 'solov-api', identifier: '' })
     expect(savedAccountLoginTarget({ origin: 'https://xm.solov.cc', username: 'fixture-user' })).toEqual({ siteId: 'solov', identifier: 'fixture-user' })
+  })
+  it('says which account and which kind the switch landed on, and falls back when either is unknown', () => {
+    expect(accountSwitchedTitle('peaker', 'https://xm.solov.cc')).toBe('已切换到「peaker」（星芒账号）')
+    expect(accountSwitchedTitle('old@example.com', 'https://api.solov.cc')).toBe('已切换到「old@example.com」（历史账号）')
+    expect(accountSwitchedTitle(undefined, 'https://xm.solov.cc')).toBe('账号已切换')
+    expect(accountSwitchedTitle('peaker', 'https://xm.solov.cc.evil.com')).toBe('账号已切换')
   })
 })
 

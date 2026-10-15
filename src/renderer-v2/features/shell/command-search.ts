@@ -1,4 +1,4 @@
-import { accountSwitchAnchor, accountSwitchKeywords, accountTabs, settingsGroups, settingsItems, type SettingsItem } from '../../registry/business'
+import { accountSections, accountTabs, settingsGroups, settingsItems, type SettingsItem } from '../../registry/business'
 import { pageRegistry, pageSearchKeywords, type PageId } from '../../registry/pages'
 import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
 import { searchWords, tutorialSearchText } from '../tutorial/tutorial-search'
@@ -31,7 +31,7 @@ export interface CommandResult {
 }
 
 export interface CommandSearchOptions {
-  /** 当前账号用不上的个人中心分页（比如历史账号没有充值）不出现在结果里；缺省 = 全部显示。 */
+  /** 当前账号用不上的个人中心页签和页签里的落点（比如历史账号没有异步任务）不出现在结果里；缺省 = 全部显示。 */
   accountTabVisible?(tab: string): boolean
   /** 这台电脑上没有的页面（Linux 没有游戏加速）不出现在结果里；缺省 = 全部显示。 */
   pageVisible?(page: PageId): boolean
@@ -100,7 +100,7 @@ function actionEntries(options: CommandSearchOptions): Entry[] {
   const tabVisible = (tab: string) => options.accountTabVisible?.(tab) ?? true
   return [
     ...(tabVisible('recharge') ? [actionEntry('recharge', '充值', { page: 'account', section: 'recharge' }, ['余额', '买', '续费', '付款', '支付'])] : []),
-    ...(tabVisible('dashboard') ? [actionEntry('usage', '查看用量账单', { page: 'account', section: 'dashboard' }, ['用量', '账单', '花了多少', '消耗', '统计'])] : []),
+    ...(tabVisible('usage') ? [actionEntry('usage', '查看用量账单', { page: 'account', section: 'usage' }, ['用量', '账单', '花了多少', '消耗', '统计'])] : []),
     actionEntry('check', '开始检查', { page: 'health', action: 'check' }, ['检测', '诊断', '体检', '环境']),
     ...(options.theme === 'dark' ? [actionEntry('theme', '切换到浅色', { page: 'settings', action: 'theme' }, ['浅色', '亮色', '白色', '主题', '外观', '深浅色'])] : []),
     ...(options.theme === 'light' ? [actionEntry('theme', '切换到深色', { page: 'settings', action: 'theme' }, ['深色', '暗色', '黑色', '主题', '外观', '深浅色'])] : []),
@@ -118,12 +118,15 @@ function toolEntries(options: CommandSearchOptions): Entry[] {
   })
 }
 
-// 页头的「切换账号」不是分页，哪种账号都有：点了停在当前分页，翻到那颗按钮。
+// 页签之外，页签里的几处落点也各占一条（「我的订单」「修改密码」「切换账号」……）：点了打开那个页签、
+// 翻到那一节。要看账号能力的落点（gated）跟页签一样按 accountTabVisible 收；其余哪种账号都有。
 function accountEntries(options: CommandSearchOptions): Entry[] {
   const tabs: Entry[] = accountTabs.filter(tab => options.accountTabVisible?.(tab.value) ?? true)
     .map(tab => ({ result: { key: `account:${tab.value}`, group: 'account', label: tab.label, page: 'account', section: tab.value }, label: tab.label, keywords: tab.keywords }))
+  const sections: Entry[] = accountSections.filter(section => !('gated' in section) || (options.accountTabVisible?.(section.value) ?? true))
+    .map(section => ({ result: { key: `account:${section.value}`, group: 'account', label: section.label, page: 'account', section: section.value }, label: section.label, keywords: section.keywords }))
   const logout: Entry[] = options.signedIn ? [{ result: { key: 'account:logout', group: 'account', label: '退出登录', page: 'account', action: 'logout' }, label: '退出登录', keywords: ['登出', '注销', '退出账号'] }] : []
-  return [...tabs, { result: { key: `account:${accountSwitchAnchor}`, group: 'account', label: '切换账号', page: 'account', section: accountSwitchAnchor }, label: '切换账号', keywords: accountSwitchKeywords }, ...logout]
+  return [...tabs, ...sections, ...logout]
 }
 
 // 设置里每一行单独一条，写成「更新与关于 › 自动更新」，点了翻到那一行；只按行名和常用说法算分，

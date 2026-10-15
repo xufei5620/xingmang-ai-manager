@@ -1,24 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
+  ChevronDown,
+  ChevronLeft,
   Copy,
-  ArrowLeft,
   CreditCard,
-  Download,
   Eye,
+  EyeOff,
   KeyRound,
   MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
-  ShieldCheck,
   Trash2,
   UserRound,
-  Users,
   Zap,
   HelpCircle,
-  Home,
   XCircle,
-  BarChart3,
 } from 'lucide-react'
 import {
   BrandIcon,
@@ -31,15 +28,13 @@ import {
   ListRow,
   Menu,
   Notice,
-  PageHead,
   Pill,
   SearchInput,
+  Segment,
   Select,
   SettingRow,
   Skeleton,
-  Switch,
   Table,
-  Textarea,
   Toolbar,
 } from './ui'
 import {
@@ -60,23 +55,25 @@ import {
   useResource,
 } from './business-common'
 import {
-  accountSwitchAnchor,
-  accountTabGroups,
+  accountProfileAnchor,
   accountTabs,
   billingOptions,
   keyStates,
   orderStates,
+  resolveAccountLanding,
   subscriptionStates,
   taskStates,
   taskFilterFields,
   usageFilterFields,
+  type AccountLanding,
+  type AccountTabValue,
 } from './registry/business'
 import { tools } from './registry/tools'
 import type { V2Bridge } from './types'
-import { SavedAccounts } from './SavedAccounts'
 import { accountOrigin, accountSiteId, accountSupports, visibleAccountTab, accountKeyQuota, type AccountSiteId } from './account-context'
 import type { AccountSessionState } from '../../electron/ipc-contract'
 import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
+import { accountKeyExpiredTime } from '../../electron/account-key-quota'
 import { AccountFilters, accountTimeRange, type AccountFilterField } from './AccountFilters'
 import { usageDateRange } from '../../electron/usage-date-range'
 import { platformApi } from './platform-api'
@@ -84,21 +81,32 @@ import {
   resolveRelaySite,
   type AccountPaymentWindowTerminalEvent,
 } from '../../electron/ipc-contract'
-import { LocalAvatar, LocalAvatarDialog } from './LocalAvatar'
-import type { AvatarIdentity } from './local-avatar'
+import { LocalAvatar } from './LocalAvatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
-import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
 import { buildTopupBonus } from './features/account/topup-bonus'
 import { paymentMethodLabel } from './features/account/payment-method-label'
 import { describeTopupTier, isQuotableAmount, sameTopupInfo, useTopupQuotes } from './features/account/topup-tier'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { ToolUsage } from './features/account/ToolUsage'
+import { AccountOverview, type AccountSummary } from './features/account/AccountOverview'
+import { AccountProfileDialog } from './features/account/AccountProfileDialog'
+import { AccountSecurity } from './features/account/AccountSecurity'
+import {
+  currentExpiryText,
+  inviteRuleText,
+  keyExpiredTime,
+  keyMetaParts,
+  keyToolChoice,
+  shortDate,
+  type KeyExpiryChoice,
+  type KeyToolTarget,
+} from './features/account/account-center'
 import type { LoginTarget } from './features/auth/api'
-import { describeLoginDevice } from './features/account/login-device-label'
+import { accountSources } from './features/auth/state'
 import { KeyRewriteSkippedError } from './features/tools/account-bootstrap'
 import { offlineActionMessage } from './features/shell/online-status'
-import { useRowFocus } from './features/app/row-focus'
+import { requestRowFocus, useRowFocus } from './features/app/row-focus'
 import { useOnlineStatus } from './features/shell/useOnlineStatus'
 import {
   getSourceMarkerStorage,
@@ -119,7 +127,7 @@ type TopupInfo = Awaited<ReturnType<V2Bridge['getAccountTopupInfo']>>
 type SubscriptionPaymentInput = Parameters<
   V2Bridge['createAccountSubscriptionPayment']
 >[0]
-type AccountTab = (typeof accountTabs)[number]['value']
+type AccountTab = AccountTabValue
 // 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：账号页不再替它写 Key、列它的额度。
 type Provider = ActiveProviderId
 /** 首页那边某个工具的设置已经保存并读回；sequence 每次加一，同一个工具连存两次也认得出。 */
@@ -147,22 +155,7 @@ function quotaMoney(
     : '—'
 }
 
-export interface PasswordFormState {
-  busy: string
-  originalPassword: string
-  password: string
-  confirmPassword: string
-}
-
-// Esc and the backdrop must raise the discard confirmation while any password
-// field still holds a secret, not only while the request is in flight: a
-// silent close used to leave the plaintext in React state, where reopening the
-// dialog refilled both boxes and the eye toggle revealed them.
-export function passwordFormDirty(form: PasswordFormState): boolean {
-  return Boolean(
-    form.busy || form.originalPassword || form.password || form.confirmPassword,
-  )
-}
+export { passwordFormDirty, type PasswordFormState } from './features/account/AccountSecurity'
 
 export function subscriptionPaymentMethods(
   plan: Plan,
@@ -403,28 +396,28 @@ function PaymentOptions({
   )
 }
 /**
- * 每个分页要先读到什么才画得出来。资料、余额分开读，一样没读到只挡要它的分页：
- * 充值、订单、登录设备什么都不等，照常能进。
+ * 每个页签要先读到什么才画得出来。资料、余额分开读，一样没读到只挡要它的页签：
+ * 充值订阅（连同下面的「我的订单」）、账号安全什么都不等，照常能进。
  */
 export function accountTabNeeds(tab: AccountTab): { profile: boolean; balance: boolean } {
   if (tab === 'overview' || tab === 'invite') return { profile: true, balance: true }
-  if (tab === 'recharge' || tab === 'orders' || tab === 'devices') return { profile: false, balance: false }
+  if (tab === 'recharge' || tab === 'security') return { profile: false, balance: false }
   return { profile: false, balance: true }
 }
 
-/** 页头那句：现在是哪个账号。资料没读到就直说，不拿别的话顶上。 */
-export function accountHeadLead(profile: Pick<Profile, 'username' | 'email'> | null): string {
+/** 页头名字下面那句：邮箱和哪种账号（v4 字表批06）。资料没读到就直说，不拿别的话顶上。 */
+export function accountHeadLead(profile: Pick<Profile, 'username' | 'email'> | null, source: string): string {
   if (!profile) return '当前账号的资料暂时没有读到'
-  return profile.email ? `当前账号：${profile.username}（${profile.email}）` : `当前账号：${profile.username}`
+  return `${profile.email || profile.username} · ${source}`
 }
 
 type ReadFailure = { message: string; detail?: string }
 
 /**
- * 个人中心左边的子导航：分三组，组名一行小灰字。上下方向键在全部分页里挪焦点，跨组接着走；
- * 和原来的横排页签一样手动激活（回车或空格才打开），挪过去不会把每一页都读一遍。
+ * 个人中心六个页签，横排（v4）。左右方向键挪焦点，回车或空格才打开（手动激活），
+ * 挪过去不会把每一页都读一遍。
  */
-function AccountNav({
+function AccountTabBar({
   tabs,
   value,
   onChange,
@@ -433,78 +426,55 @@ function AccountNav({
   value: AccountTab
   onChange: (tab: AccountTab) => void
 }) {
-  const groups = accountTabGroups
-    .map((group) => ({ label: group.label, tabs: group.tabs.filter((tab) => tabs.includes(tab)) }))
-    .filter((group) => group.tabs.length > 0)
-  const order = groups.flatMap((group) => group.tabs)
   function move(event: KeyboardEvent<HTMLButtonElement>, current: AccountTab) {
     if (event.nativeEvent.isComposing) return
-    const index = order.indexOf(current)
+    const index = tabs.indexOf(current)
     let target = index
-    if (event.key === 'ArrowDown') target = (index + 1) % order.length
-    else if (event.key === 'ArrowUp') target = (index + order.length - 1) % order.length
+    if (event.key === 'ArrowRight') target = (index + 1) % tabs.length
+    else if (event.key === 'ArrowLeft') target = (index + tabs.length - 1) % tabs.length
     else if (event.key === 'Home') target = 0
-    else if (event.key === 'End') target = order.length - 1
+    else if (event.key === 'End') target = tabs.length - 1
     else return
     event.preventDefault()
-    document.getElementById(`v2-account-tab-${order[target]}`)?.focus()
+    document.getElementById(`v2-account-tab-${tabs[target]}`)?.focus()
   }
   return (
-    <nav
-      className="v2-business-subnav v2-account-subnav"
-      aria-label="个人中心分页"
-      data-testid="account-tabs"
-    >
-      {groups.map((group, index) => (
-        <div className="v2-account-subnav-group" key={group.label}>
-          <span className="v2-account-subnav-label" id={`v2-account-group-${index}`}>
-            {group.label}
-          </span>
-          <div
-            role="tablist"
-            aria-orientation="vertical"
-            aria-labelledby={`v2-account-group-${index}`}
-          >
-            {group.tabs.map((tab) => (
-              <button
-                key={tab}
-                id={`v2-account-tab-${tab}`}
-                role="tab"
-                type="button"
-                aria-selected={value === tab}
-                aria-controls={value === tab ? `v2-account-panel-${tab}` : undefined}
-                tabIndex={value === tab ? 0 : -1}
-                className={value === tab ? 'is-active' : ''}
-                onClick={() => onChange(tab)}
-                onKeyDown={(event) => move(event, tab)}
-              >
-                {accountTabs.find((item) => item.value === tab)?.label}
-              </button>
-            ))}
-          </div>
-        </div>
+    <div className="xm-tabs v2-acct-tabs" role="tablist" aria-label="个人中心分区" data-testid="account-tabs">
+      {tabs.map((tab) => (
+        <button
+          key={tab}
+          id={`v2-account-tab-${tab}`}
+          role="tab"
+          type="button"
+          aria-selected={value === tab}
+          aria-controls={value === tab ? `v2-account-panel-${tab}` : undefined}
+          tabIndex={value === tab ? 0 : -1}
+          className={value === tab ? 'is-active' : ''}
+          onClick={() => onChange(tab)}
+          onKeyDown={(event) => move(event, tab)}
+        >
+          {accountTabs.find((item) => item.value === tab)?.label}
+        </button>
       ))}
-    </nav>
+    </div>
   )
 }
 
-/** 读取中右边那块：和那一页内容差不多的灰色占位块，读到了原地换成内容，页面不往下跳。 */
+/** 读取中那一页：和那一页内容差不多的灰色占位块，读到了原地换成内容，页面不往下跳。 */
 function AccountPanelSkeleton({ tab }: { tab: AccountTab }) {
   if (tab === 'overview')
     return (
-      <div className="v2-business-profile-grid" data-testid="account-loading">
-        <Card><Skeleton rows={7} /></Card>
-        <aside className="v2-business-profile-aside">
-          <Card><Skeleton rows={3} /></Card>
-          <Card><Skeleton rows={2} /></Card>
-        </aside>
+      <div className="v2-acct-overview" data-testid="account-loading">
+        {Array.from({ length: 4 }, (_, index) => (
+          <Card key={index}><Skeleton rows={index < 2 ? 5 : 3} /></Card>
+        ))}
       </div>
     )
-  if (tab === 'dashboard' || tab === 'invite')
+  if (tab === 'usage' || tab === 'invite')
     return (
       <div className="v2-business-account-loading" data-testid="account-loading">
-        <div className={tab === 'invite' ? 'v2-business-stat-grid is-four' : 'v2-business-stat-grid'}>
-          {Array.from({ length: tab === 'invite' ? 4 : 3 }, (_, index) => (
+        <div className="v2-business-stat-grid">
+          {Array.from({ length: 3 }, (_, index) => (
             <Card key={index}><Skeleton rows={2} /></Card>
           ))}
         </div>
@@ -550,6 +520,16 @@ function AccountReadFailure({
   )
 }
 
+/** 页签里一节的小标题（「调用明细」「异步任务」「我的订单」）。 */
+function AccountSection({ title, anchor, testId, children }: { title: string; anchor?: string; testId?: string; children: ReactNode }) {
+  return (
+    <section className="v2-acct-section" data-anchor={anchor} data-testid={testId}>
+      <div className="v2-acct-section-head"><h2>{title}</h2></div>
+      {children}
+    </section>
+  )
+}
+
 export function AccountPage({
   api,
   initialTab,
@@ -557,6 +537,8 @@ export function AccountPage({
   rechargeAmount,
   paymentReturn,
   accountSession,
+  summary,
+  keyTools,
   onLogin,
   onAccountChanged,
   onBack,
@@ -573,18 +555,23 @@ export function AccountPage({
   active,
 }: {
   api: V2Bridge
-  initialTab?: AccountTab
-  /** 每次从外面点名要切到某个分页就加一；同一个分页再点一次也得切回去（Q29）。 */
+  /** 要打开的页签，或页签里的某一节（「我的订单」「登录设备」…，见 accountSections）。 */
+  initialTab?: AccountLanding
+  /** 每次从外面点名要切到某个页签就加一；同一个页签再点一次也得切回去（Q29）。 */
   tabRequest?: number
   /** 从活动卡片点某一档进来时要选好的充值金额，跟着 tabRequest 一起变。缺省 = 默认金额。 */
   rechargeAmount?: number
   paymentReturn?: { sequence: number; order: string | null }
-  /** 外壳手上的登录状态：页面自己读回来之前先拿它摆出左边分页。缺省 = 等页面自己读。 */
+  /** 外壳手上的登录状态：页面自己读回来之前先拿它摆出页签。缺省 = 等页面自己读。 */
   accountSession?: AccountSessionState
+  /** 外壳和首页同源的那几样数（还能用几天、能扣的订阅、近 7 天花费）；缺省 = 概览不写这几行。 */
+  summary?: AccountSummary
+  /** 「配置到工具」下拉里的工具，带装没装、是不是官方登录；缺省 = 只列名字，都能点。 */
+  keyTools?: readonly KeyToolTarget[]
   onLogin?: (target?: LoginTarget) => void
   onAccountChanged?: () => void
   onBack?: () => void
-  /** 打开「切换账号」框（侧栏小 ▾ 那个）；缺省 = 页头这颗按钮灰着。 */
+  /** 打开「切换账号」框；缺省 = 概览「当前登录」那颗按钮灰着。 */
   onSwitchAccount?: () => void
   /** 撤销了工具正在用的 Key 之后，给那个工具换一把新的；缺省 = 不自动换（旧行为）。 */
   onRewriteKey?: (provider: Provider) => Promise<boolean>
@@ -602,34 +589,38 @@ export function AccountPage({
   onOpenHelp?: () => void
   /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
   onOpenHealth?: () => void
-  /** 现在摆出来的是哪个分页，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
+  /** 现在摆出来的是哪个页签，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
   onTabChange?: (tab: AccountTab) => void
-  /** 外壳说的「现在显示的是不是这一页」；缺省 = 只按分页算（旧行为）。 */
+  /** 外壳说的「现在显示的是不是这一页」；缺省 = 只按页签算（旧行为）。 */
   active?: boolean
 }) {
   const pageRef = useRef<HTMLElement>(null)
   const tabChange = useRef(onTabChange)
   tabChange.current = onTabChange
-  const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
+  const [tab, setTab] = useState<AccountTab>(resolveAccountLanding(initialTab).tab)
   // 「我的订单」按哪个订单号打开：外面付款回跳（paymentReturn）和充值页的「查看我的订单」
   // 共用一个递增编号，同一个订单号再点一次也会重新查。
   const [orderRequest, setOrderRequest] = useState(paymentReturn)
   useEffect(() => {
     if (paymentReturn) setOrderRequest((current) => ({ sequence: (current?.sequence ?? 0) + 1, order: paymentReturn.order }))
   }, [paymentReturn?.sequence])
+  // 页签里的某一节（「我的订单」「登录设备」…）：切到它所在的页签，再翻到那一节。
+  function openLanding(landing: AccountLanding) {
+    const resolved = resolveAccountLanding(landing)
+    if (resolved.anchor) requestRowFocus('account', resolved.anchor)
+    setTab(resolved.tab)
+  }
   function openOrders(order: string | null) {
     setOrderRequest((current) => ({ sequence: (current?.sequence ?? 0) + 1, order }))
-    setTab('orders')
+    openLanding('orders')
   }
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
-  const [visited, setVisited] = useState<AccountTab[]>([
-    initialTab ?? 'overview',
-  ])
+  const [visited, setVisited] = useState<AccountTab[]>([tab])
   useEffect(() => {
     setVisited((values) => (values.includes(tab) ? values : [...values, tab]))
   }, [tab])
   useEffect(() => {
-    if (initialTab) setTab(initialTab)
+    if (initialTab) setTab(resolveAccountLanding(initialTab).tab)
   }, [initialTab, tabRequest])
   const loadSession = useCallback(async () => {
     const session = await api.getAccountSession()
@@ -642,8 +633,8 @@ export function AccountPage({
   const signedOut = !sessionRead.loading && !sessionRead.error && !sessionRead.data
   const signedIn = Boolean(session)
   const detailsScope = session ? `${accountOrigin(session)}:${session.account?.userId ?? ''}` : ''
-  // 已经读到过的资料、余额：刷新或改了东西以后再读没读到，手上这份留着，正在改的显示名称也不丢，
-  // 只在要它的那页顶上说一声（同改版前）。换了账号不沿用。
+  // 已经读到过的资料、余额：刷新或改了东西以后再读没读到，手上这份留着，只在要它的那页顶上
+  // 说一声（同改版前）。换了账号不沿用。
   const keptDetails = useRef<{ scope: string; profile: Profile | null; balance: Balance | null } | null>(null)
   // 和 useResource 一样只认最后发出去的那次：先发后到的旧结果上不了屏，也不能顶掉留着的那份。
   const detailsRequest = useRef(0)
@@ -680,12 +671,18 @@ export function AccountPage({
   const availableTabs = session ? accountTabs.filter((item) => visibleAccountTab(item.value, session)) : []
   const activeTab = availableTabs.some((item) => item.value === tab) ? tab : 'overview'
   useEffect(() => { tabChange.current?.(activeTab) }, [activeTab])
-  // 页头「刷新」只重读点的时候停着的那一页；别的分页等切过去再说。
+  // 页头「刷新」只重读点的时候停着的那一页；别的页签等切过去再说。
   const [refreshRequest, setRefreshRequest] = useState<{ tab: AccountTab; sequence: number }>({ tab: 'overview', sequence: 0 })
-  // 「登录设备」里让设备下线以后，「我的账号」那张卡上的台数跟着重读。
+  // 「账号安全」里让设备下线以后，账号概览那张卡上的台数跟着重读。
   const [devicesChanged, setDevicesChanged] = useState(0)
   const refreshOf = (panel: AccountTab) => refreshRequest.tab === panel ? refreshRequest.sequence : 0
-  useRowFocus('account', pageRef, true)
+  // 「编辑资料」是页头铅笔打开的弹窗，不是页面上的一行：顶部搜索落到它时直接打开。
+  const [profileOpen, setProfileOpen] = useState(false)
+  useRowFocus('account', pageRef, true, (anchor) => {
+    if (anchor !== accountProfileAnchor) return anchor
+    setProfileOpen(true)
+    return null
+  })
   const reloadAccount = () => {
     void balanceStore?.refresh('manual')
     void sessionRead.reload()
@@ -734,17 +731,33 @@ export function AccountPage({
             api={api}
             profile={profile}
             balance={balance}
-            changed={changed}
-            navigateTab={setTab}
-            onLogin={onLogin}
-            identity={{ origin, userId: profile.userId }}
             session={session}
+            summary={summary}
             refreshRequest={refresh}
             devicesChanged={devicesChanged}
+            onNavigate={openLanding}
+            onSwitchAccount={onSwitchAccount}
+            active={(active ?? true) && activeTab === 'overview'}
+            changed={changed}
           />
         )
-      case 'dashboard':
-        return balance && <AccountDashboard api={api} balance={balance} session={session} refreshRequest={refresh} />
+      case 'usage':
+        // 用量看板、调用明细、异步任务并成一页（v4）：三块原样摆，这一页怎么改版归第 07 批。
+        return balance && (
+          <>
+            {visibleAccountTab('dashboard', session) && <AccountDashboard api={api} balance={balance} session={session} refreshRequest={refresh} />}
+            {accountSupports(session, 'supportsUsage') && (
+              <AccountSection title="调用明细" testId="account-usage-section">
+                <AccountUsage api={api} balance={balance} session={session} refreshRequest={refresh} />
+              </AccountSection>
+            )}
+            {visibleAccountTab('tasks', session) && (
+              <AccountSection title="异步任务" anchor="tasks" testId="account-tasks-section">
+                <AccountTasks api={api} balance={balance} accountScope={`${origin}:${accountId}`} refreshRequest={refresh} />
+              </AccountSection>
+            )}
+          </>
+        )
       case 'keys':
         return balance && site && (
           <AccountKeys
@@ -752,46 +765,55 @@ export function AccountPage({
             balance={balance}
             providerBaseUrls={site.providerBaseUrls}
             siteId={accountSiteId(session)}
+            keyTools={keyTools}
             onRewriteKey={onRewriteKey}
             onConfigureTool={onConfigureTool}
             onToolConfigSaved={onToolConfigSaved}
             toolConfigConfirmed={toolConfigConfirmed}
-            onGoHome={onBack}
-            refreshRequest={refresh}
-          />
-        )
-      case 'usage':
-        return balance && <AccountUsage api={api} balance={balance} session={session} refreshRequest={refresh} />
-      case 'tasks':
-        return balance && (
-          <AccountTasks
-            api={api}
-            balance={balance}
-            accountScope={`${origin}:${accountId}`}
             refreshRequest={refresh}
           />
         )
       case 'recharge':
+        // 「我的订单」挪到充值订阅下面（v4）；充值这一块怎么改版归第 07 批。
         return (
-          <AccountRecharge
+          <>
+            <AccountRecharge
+              api={api}
+              balance={balance}
+              session={session}
+              changed={changed}
+              refresh={reloadAccount}
+              refreshRequest={refresh}
+              subscriptionActivated={onSubscriptionActivated}
+              subscriptionPurchased={onSubscriptionPurchased}
+              openOrders={openOrders}
+              openHelp={onOpenHelp}
+              openHealth={onOpenHealth}
+              presetAmount={rechargeAmount}
+              presetRequest={tabRequest}
+              shown={(active ?? true) && activeTab === 'recharge'}
+            />
+            {visibleAccountTab('orders', session) && (
+              <AccountSection title="我的订单" anchor="orders" testId="account-orders-section">
+                <AccountOrders api={api} paymentReturn={orderRequest} refreshRequest={refresh} />
+              </AccountSection>
+            )}
+          </>
+        )
+      case 'security':
+        return (
+          <AccountSecurity
             api={api}
-            balance={balance}
             session={session}
-            changed={changed}
-            refresh={reloadAccount}
             refreshRequest={refresh}
-            subscriptionActivated={onSubscriptionActivated}
-            subscriptionPurchased={onSubscriptionPurchased}
-            openOrders={openOrders}
-            openHelp={onOpenHelp}
-            openHealth={onOpenHealth}
-            presetAmount={rechargeAmount}
-            presetRequest={tabRequest}
-            shown={(active ?? true) && activeTab === 'recharge'}
+            onChanged={changed}
+            onDevicesChanged={() => {
+              setDevicesChanged((value) => value + 1)
+              changed()
+            }}
+            onOpenKeys={visibleAccountTab('keys', session) ? () => setTab('keys') : undefined}
           />
         )
-      case 'orders':
-        return <AccountOrders api={api} paymentReturn={orderRequest} refreshRequest={refresh} />
       case 'invite':
         return profile && balance && site && (
           <AccountInvite
@@ -802,19 +824,10 @@ export function AccountPage({
             inviteBaseUrl={site.websiteUrl}
           />
         )
-      case 'devices':
-        return (
-          <AccountDevices
-            api={api}
-            changed={() => {
-              setDevicesChanged((value) => value + 1)
-              changed()
-            }}
-            refreshRequest={refresh}
-          />
-        )
     }
   }
+  const source = session ? accountSources[accountSiteId(session)].label : ''
+  const shownName = profile?.displayName || profile?.username || session?.account?.username || ''
   return (
     <section
       ref={pageRef}
@@ -822,47 +835,58 @@ export function AccountPage({
       data-page-id="account"
       data-testid="page-account"
     >
-      <div className="v2-business-account-heading">
-        <Button
-          variant="ghost"
-          icon={ArrowLeft}
-          aria-label="返回首页"
-          title="回首页"
-          onClick={onBack}
-          disabled={!onBack}
-          testId="account-back"
-        />
-        <PageHead
-          title="个人中心"
-          lead={signedIn ? (
-            detailsSettled ? accountHeadLead(profile) : <PlaceholderBar width="16em" testId="account-lead-loading" />
-          ) : undefined}
-          actions={
-            <>
-              <span className="v2-account-switch-anchor" data-anchor={accountSwitchAnchor}>
-                <Button
-                  icon={Users}
-                  onClick={onSwitchAccount}
-                  disabled={!onSwitchAccount}
-                  testId="account-switch"
-                >
-                  切换账号
-                </Button>
-              </span>
-              {signedIn && (
-                <Button
-                  icon={RefreshCw}
-                  loading={sessionRead.loading || details.loading}
-                  onClick={refreshAll}
-                  testId="account-refresh"
-                >
-                  刷新
-                </Button>
-              )}
-            </>
-          }
-        />
-      </div>
+      <button
+        type="button"
+        className="v2-acct-back"
+        aria-label="返回首页"
+        title="回首页"
+        onClick={onBack}
+        disabled={!onBack}
+        data-testid="account-back"
+      >
+        <ChevronLeft size={14} strokeWidth={2.2} aria-hidden="true" />回首页
+      </button>
+      <header className="v2-acct-hero">
+        {signedIn && (
+          <LocalAvatar
+            identity={accountId ? { origin, userId: accountId } : null}
+            name={shownName || '星'}
+            size={48}
+            testId="account-profile-avatar"
+          />
+        )}
+        <div className="v2-acct-hero-copy">
+          <div className="v2-acct-hero-name">
+            {!signedIn ? <h1>个人中心</h1> : shownName ? <h1>{shownName}</h1> : <PlaceholderBar width="8em" />}
+            {signedIn && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={Pencil}
+                aria-label="编辑资料"
+                title="编辑资料"
+                disabled={!profile}
+                onClick={() => setProfileOpen(true)}
+                testId="account-profile-edit"
+              />
+            )}
+          </div>
+          {signedIn && (
+            <p>{detailsSettled ? accountHeadLead(profile, source) : <PlaceholderBar width="16em" testId="account-lead-loading" />}</p>
+          )}
+        </div>
+        {signedIn && (
+          <Button
+            variant="ghost"
+            icon={RefreshCw}
+            aria-label="刷新"
+            title="刷新"
+            loading={sessionRead.loading || details.loading}
+            onClick={refreshAll}
+            testId="account-refresh"
+          />
+        )}
+      </header>
       {signedOut ? (
         <Empty
           icon={UserRound}
@@ -885,8 +909,8 @@ export function AccountPage({
           <AccountPanelSkeleton tab={activeTab} />
         )
       ) : (
-        <div className="v2-business-account-layout">
-          <AccountNav
+        <>
+          <AccountTabBar
             tabs={availableTabs.map((item) => item.value)}
             value={activeTab}
             onChange={setTab}
@@ -905,357 +929,60 @@ export function AccountPage({
               </div>
             ))}
           </div>
-        </div>
+        </>
+      )}
+      {profileOpen && profile && session && (
+        <AccountProfileDialog
+          key={detailsScope}
+          api={api}
+          profile={profile}
+          identity={{ origin, userId: profile.userId }}
+          editable={accountSupports(session, 'supportsProfileUpdate')}
+          onClose={() => setProfileOpen(false)}
+          onSaved={changed}
+        />
       )}
     </section>
   )
 }
-function AccountOverview({
-  api,
-  profile,
-  balance,
-  changed,
-  navigateTab,
-  onLogin,
-  identity,
-  session,
-  refreshRequest,
-  devicesChanged,
-}: {
-  api: V2Bridge
-  profile: Profile
-  balance: Balance
-  changed: () => void
-  navigateTab: (tab: AccountTab) => void
-  onLogin?: (target?: LoginTarget) => void
-  identity: AvatarIdentity
-  session: AccountSessionState
-  refreshRequest?: number
-  /** 「登录设备」那页让设备下线的次数；变了就重读台数。缺省 = 只在刷新时读。 */
-  devicesChanged?: number
-}) {
-  const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
-  const { offline } = useOnlineStatus()
-  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error, offline })
-  const [name, setName] = useState(profile.displayName ?? '')
-  const profileNameRef = useRef(profile.displayName ?? '')
-  const [passwordOpen, setPasswordOpen] = useState(false)
-  const [originalPassword, setOriginal] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirm] = useState('')
-  const operation = useOperation()
-  const closePassword = () => {
-    setPasswordOpen(false)
-    setOriginal('')
-    setPassword('')
-    setConfirm('')
-    operation.clear()
-  }
-  // 只认「支不支持」这一件事：刷新时 session 会换成新对象，跟着它变会把刚发出去的那次读取作废再读一遍。
-  const devicesSupported = accountSupports(session, 'supportsSessionManagement')
-  const accountsLoad = useCallback(
-    async () => ({ devices: devicesSupported ? await api.getAccountLoginSessions() : [] }),
-    [api, devicesSupported],
-  )
-  const accounts = useResource(accountsLoad)
-  useRefreshRequest(refreshRequest, () => void accounts.reload())
-  useRefreshRequest(devicesChanged, () => void accounts.reload())
-  const [logout, setLogout] = useState(false)
-  const [avatarOpen, setAvatarOpen] = useState(false)
-  useEffect(() => {
-    const nextName = profile.displayName ?? ''
-    // Preserve an in-progress edit while a sibling action refreshes the
-    // account. If the field still contains the previously loaded value,
-    // accept an external profile change.
-    setName((current) =>
-      current === profileNameRef.current ? nextName : current,
-    )
-    profileNameRef.current = nextName
-  }, [profile.displayName])
-  // 改过才能点「保存」；只差前后空格不算改过，存的时候本来就会去掉。
-  const nameChanged = name.trim() !== (profile.displayName ?? '').trim()
-  return (
-    <>
-      <ResultNotice {...operation} />
-      <div className="v2-business-profile-grid">
-        <Card title="基本资料">
-          <div className="v2-business-profile-avatar">
-            <LocalAvatar
-              identity={identity}
-              name={profile.displayName || profile.username}
-              size={56}
-              testId="account-profile-avatar"
-            />
-            <div>
-              <strong>{profile.displayName || profile.username}</strong>
-              <Button
-                size="sm"
-                icon={Pencil}
-                onClick={() => setAvatarOpen(true)}
-                testId="account-avatar-change"
-              >
-                更换头像
-              </Button>
-            </div>
-          </div>
-          <div
-            className="v2-business-profile-fields"
-            data-unsaved={nameChanged ? 'true' : undefined}
-          >
-            <div className="v2-business-profile-name">
-              <Input
-                label="显示名称"
-                value={name}
-                maxLength={20}
-                onChange={(event) => setName(event.target.value)}
-                testId="account-display"
-              />
-              <Button
-                variant="primary"
-                loading={operation.busy === 'profile'}
-                disabled={!nameChanged || !accountSupports(session, 'supportsProfileUpdate')}
-                testId="account-display-save"
-                onClick={() =>
-                  void operation.execute(
-                    'profile',
-                    async () => {
-                      await api.updateAccountDisplayName({
-                        displayName: name.trim(),
-                      })
-                      changed()
-                    },
-                    '显示名称已保存',
-                  )
-                }
-              >
-                保存
-              </Button>
-            </div>
-            <div className="v2-business-profile-row">
-              <span>用户名</span>
-              <strong>{profile.username}</strong>
-              <small>登录时使用，暂不支持修改。</small>
-            </div>
-            <div className="v2-business-profile-row">
-              <span>邮箱</span>
-              <strong>{profile.email || '—'}</strong>
-              <small>用于找回密码和接收通知。</small>
-            </div>
-            <div className="v2-business-profile-row">
-              <span>密码</span>
-              <Button size="sm" icon={ShieldCheck} onClick={() => setPasswordOpen(true)}>
-                修改密码
-              </Button>
-            </div>
-          </div>
-        </Card>
-        <aside className="v2-business-profile-aside">
-          <Card title="账户余额（美元）">
-            <strong
-              className="v2-business-amount"
-              data-testid="account-balance"
-              title={balanceHint}
-            >
-              {dollars(balance.displayAmount)}
-            </strong>
-            {balanceState.error && <p role="status" className="v2-balance-error" title={balanceState.error}>更新失败，显示上次余额</p>}
-            <p>{accountSupports(session, 'supportsUsage') ? '用于星芒账号的按量消费。每次调用的费用可在明细里查看。' : '这是当前账号的可用余额，消费记录可在官方网站查看。'}</p>
-            <div className="v2-business-control">
-              {balanceStore && <Button size="sm" icon={RefreshCw} loading={balanceState.loading} title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="account-balance-refresh">刷新余额</Button>}
-              {accountSupports(session, 'supportsBilling') && <Button
-                variant="balance"
-                size="sm"
-                icon={Zap}
-                onClick={() => navigateTab('recharge')}
-              >
-                充值
-              </Button>}
-              {accountSupports(session, 'supportsUsage') && <Button
-                size="sm"
-                icon={BarChart3}
-                onClick={() => navigateTab('dashboard')}
-              >
-                看用量
-              </Button>}
-            </div>
-          </Card>
-          <Card title="已保存的账号" padding="none">
-            <SavedAccounts
-              api={api}
-              variant="card"
-              onAccountChanged={changed}
-              onLogin={onLogin}
-            />
-          </Card>
-          <Card title="登录与设备">
-            {accountSupports(session, 'supportsSessionManagement') && accounts.error ? (
-              <ListReadFailure
-                page="account-devices"
-                noun="登录设备"
-                description={accounts.error}
-                retry={() => void accounts.reload()}
-              />
-            ) : (
-              <p>
-                {!accountSupports(session, 'supportsSessionManagement') ? '当前账号暂不提供登录设备管理。' : accounts.data
-                  ? `${accounts.data.devices.length} 台已登录设备`
-                  : '正在读取登录设备…'}
-              </p>
-            )}
-            <div className="v2-business-control">
-              {accountSupports(session, 'supportsSessionManagement') && <Button
-                size="sm"
-                icon={Users}
-                onClick={() => navigateTab('devices')}
-              >
-                管理设备
-              </Button>}
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={Trash2}
-                onClick={() => setLogout(true)}
-              >
-                退出登录
-              </Button>
-            </div>
-          </Card>
-        </aside>
-      </div>
-      {avatarOpen && (
-        <LocalAvatarDialog
-          key={`${identity.origin}:${identity.userId}`}
-          identity={identity}
-          name={profile.displayName || profile.username}
-          onClose={() => setAvatarOpen(false)}
-        />
-      )}
-      <Dialog
-        open={logout}
-        title="退出登录？"
-        onClose={() => setLogout(false)}
-        footer={
-          <>
-            <Button onClick={() => setLogout(false)}>取消</Button>
-            <Button
-              variant="danger"
-              icon={Trash2}
-              onClick={() =>
-                void operation.execute(
-                  'logout',
-                  async () => {
-                    await api.logoutAccount()
-                    setLogout(false)
-                    changed()
-                  },
-                  '',
-                )
-              }
-            >
-              退出登录
-            </Button>
-          </>
-        }
-      >
-        <p>工具里已写入的配置继续保留。</p>
-        <ResultNotice error={operation.error} detail={operation.detail} />
-      </Dialog>
-      <Dialog
-        open={passwordOpen}
-        title="修改密码"
-        onClose={closePassword}
-        busy={Boolean(operation.busy)}
-        dirty={passwordFormDirty({
-          busy: operation.busy,
-          originalPassword,
-          password,
-          confirmPassword,
-        })}
-        footer={
-          <>
-            <Button
-              onClick={closePassword}
-              disabled={Boolean(operation.busy)}
-            >
-              取消
-            </Button>
-            <Button
-              variant="primary"
-              loading={operation.busy === 'password'}
-              icon={ShieldCheck}
-              onClick={() =>
-                void operation.execute(
-                  'password',
-                  async () => {
-                    const minimum = accountSiteId(session) === 'solov-api' ? 6 : 8
-                    const maximum = accountSiteId(session) === 'solov-api' ? 256 : 20
-                    if (password.length < minimum)
-                      throw new Error(`新密码至少需要 ${minimum} 个字符。`)
-                    if (password.length > maximum)
-                      throw new Error(`新密码不能超过 ${maximum} 个字符。`)
-                    if (password !== confirmPassword)
-                      throw new Error('两次填写的新密码不一致。')
-                    await api.changeAccountPassword({
-                      originalPassword,
-                      newPassword: password,
-                    })
-                    closePassword()
-                    changed()
-                  },
-                  '密码已修改',
-                )
-              }
-            >
-              确认修改
-            </Button>
-          </>
-        }
-      >
-        <ResultNotice error={operation.error} detail={operation.detail} />
-        {accountSiteId(session) === 'solov-api' && <p>修改密码后当前登录会失效，请使用新密码重新登录。</p>}
-        <Input
-          label="当前密码"
-          password
-          value={originalPassword}
-          onChange={(event) => setOriginal(event.target.value)}
-          autoComplete="current-password"
-        />
-        <Input
-          label="新密码"
-          password
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          autoComplete="new-password"
-        />
-        <Input
-          label="确认新密码"
-          password
-          value={confirmPassword}
-          onChange={(event) => setConfirm(event.target.value)}
-          autoComplete="new-password"
-        />
-      </Dialog>
-    </>
-  )
+// 分组不多时摆成分段（v4），多了或选中的那个已不可用时用下拉，免得一排挤不下、也好标「已不可用」。
+const keyGroupSegmentLimit = 4
+const keyExpiryChoices: ReadonlyArray<{ value: KeyExpiryChoice; label: string }> = [
+  { value: 'never', label: '永不过期' },
+  { value: '30', label: '30 天' },
+  { value: '90', label: '90 天' },
+  { value: 'custom', label: '自定日期' },
+]
+const keyQuotaChoices = [
+  { value: 'unlimited', label: '不限额度' },
+  { value: 'limited', label: '限额' },
+]
+// 「配置到工具」下拉里的工具：外壳没给（keyTools）时只列名字，装没装不知道就不拦。
+function defaultKeyTools(): KeyToolTarget[] {
+  return tools.flatMap((tool) => tool.kind === 'cli' && isProvider(tool.id)
+    ? [{ provider: tool.id, name: tool.name, installed: null, official: false }]
+    : [])
+}
+function isKeyExpiryChoice(value: string): value is KeyExpiryChoice {
+  return value === 'keep' || keyExpiryChoices.some((choice) => choice.value === value)
 }
 function AccountKeys({
   api,
   balance,
   providerBaseUrls,
   siteId,
+  keyTools,
   onRewriteKey,
   onConfigureTool,
   onToolConfigSaved,
   toolConfigConfirmed,
-  onGoHome,
   refreshRequest,
 }: {
   api: V2Bridge
   balance: Balance
   providerBaseUrls: Record<Provider, string>
   siteId: AccountSiteId
-  /** 回首页配置工具；缺省 = 不给这颗按钮（旧行为）。 */
-  onGoHome?: () => void
+  keyTools?: readonly KeyToolTarget[]
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   onConfigureTool?: (provider: Provider) => void
   onToolConfigSaved?: () => void
@@ -1295,6 +1022,8 @@ function AccountKeys({
     if (fallback !== null) setPage(fallback)
   }, [keyTotal, page])
   const [editing, setEditing] = useState<AccountKey | 'new' | null>(null)
+  // 新建成功后弹窗不关，原地说「已创建」，并告诉用户怎么让工具用它（v4）。
+  const [created, setCreated] = useState('')
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
   const [groups, setGroups] = useState<Awaited<ReturnType<V2Bridge['getAccountUsableGroups']>>>([])
@@ -1305,7 +1034,8 @@ function AccountKeys({
   const groupsRequestedAt = useRef(0)
   const [quota, setQuota] = useState('10')
   const [unlimited, setUnlimited] = useState(false)
-  const [expires, setExpires] = useState('')
+  const [expiry, setExpiry] = useState<KeyExpiryChoice>('never')
+  const [customExpiry, setCustomExpiry] = useState('')
   const [removing, setRemoving] = useState<AccountKey | null>(null)
   // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
@@ -1320,12 +1050,15 @@ function AccountKeys({
     confirmedSequence.current = toolConfigConfirmed.sequence
     setReplaceFailed((current) => current?.provider === toolConfigConfirmed.provider ? null : current)
   }, [toolConfigConfirmed])
-  const [revealed, setRevealed] = useState('')
-  const [selected, setSelected] = useState<AccountKey | null>(null)
+  // 行内显示的完整密钥：只留一把，翻页、搜索、重读列表就收起，不在页面上多留。
+  const [revealed, setRevealed] = useState<{ id: number; key: string } | null>(null)
+  const revealing = useRef<number | null>(null)
+  useEffect(() => setRevealed(null), [page, keyword, resource.data])
+  const [selected, setSelected] = useState<{ key: AccountKey; provider: Provider } | null>(null)
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')
-  const [provider, setProvider] = useState<Provider>('claude')
   const modelRequest = useRef(0)
+  const toolTargets = keyTools ?? defaultKeyTools()
   useEffect(() => () => { groupsRequest.current++ }, [api, siteId])
   const refreshGroups = (force = false): Promise<void> => {
     if (operation.busy === 'save-key') return Promise.resolve()
@@ -1364,7 +1097,7 @@ function AccountKeys({
   const refreshGroupsRef = useRef(refreshGroups)
   refreshGroupsRef.current = refreshGroups
   useEffect(() => {
-    if (!editing) return
+    if (!editing || created) return
     const refreshVisible = () => {
       if (document.visibilityState === 'visible') void refreshGroupsRef.current()
     }
@@ -1376,13 +1109,15 @@ function AccountKeys({
       document.removeEventListener('visibilitychange', refreshVisible)
       window.clearInterval(interval)
     }
-  }, [editing])
+  }, [editing, created])
   const closeEditor = () => {
     groupsRequest.current++
     setEditing(null)
+    setCreated('')
   }
   const edit = (key: AccountKey | 'new') => {
     setEditing(key)
+    setCreated('')
     setName(key === 'new' ? '' : key.name)
     setGroup(key === 'new' ? '' : key.group)
     setGroups([])
@@ -1390,30 +1125,28 @@ function AccountKeys({
     setQuota(
       key === 'new' ? '10' : String(key.remainQuota / balance.quotaPerUnit),
     )
-    setExpires(
-      key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt),
-    )
+    setExpiry(key === 'new' ? 'never' : 'keep')
+    setCustomExpiry(key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt))
     operation.clear()
     void refreshGroups(true)
   }
   const selectedGroupAvailable = groups.some((entry) => entry.name === group)
+  const groupDescription = groups.find((entry) => entry.name === group)?.description?.trim()
   const save = () =>
     void operation.execute(
       'save-key',
       async () => {
         const amount = Number(quota)
         if (groupsLoading || groupsError || groupsPending.current?.request === groupsRequest.current) throw new Error('请先获取最新的可用分组。')
-        if (!name.trim()) throw new Error('请填写密钥名称。')
+        if (!name.trim()) throw new Error('请给密钥起个名字')
         if (!group.trim() || !selectedGroupAvailable)
           throw new Error('当前没有可用分组，暂时无法保存密钥。')
-        const expiredTime = expires
-          ? Math.floor(new Date(expires).getTime() / 1000)
-          : -1
-        if (
-          expires &&
-          (!Number.isFinite(expiredTime) || expiredTime <= Date.now() / 1000)
-        )
-          throw new Error('到期时间必须晚于现在。')
+        if (!unlimited && !(amount > 0)) throw new Error('请填写大于 0 的可用额度')
+        const expiredTime = keyExpiredTime(expiry, {
+          custom: customExpiry,
+          current: editing && editing !== 'new' && expiry === 'keep' ? accountKeyExpiredTime(editing.expiredAt) : -1,
+          now: Date.now(),
+        })
         const input = {
           name: name.trim(),
           group,
@@ -1421,13 +1154,18 @@ function AccountKeys({
           unlimitedQuota: unlimited,
           expiredTime,
         }
-        if (editing && editing !== 'new')
+        if (editing && editing !== 'new') {
           await api.updateAccountKey({ ...input, id: editing.id })
-        else await api.createAccountKey(input)
-        closeEditor()
+          closeEditor()
+        } else {
+          await api.createAccountKey(input)
+          groupsRequest.current++
+          setCreated(input.name)
+        }
         await resource.reload()
+        return input.name
       },
-      '密钥已保存',
+      (saved) => editing && editing !== 'new' ? `已保存「${saved}」` : '',
     )
   // 失败只记下工具，不把主进程的原话摆出来：这里要告诉用户的只有「点哪里」。
   const replaceKey = async (provider: Provider): Promise<boolean> => {
@@ -1448,42 +1186,103 @@ function AccountKeys({
       },
       `${keyToolName(provider)} 已换上新密钥`,
     )
+  function copyKey(key: AccountKey) {
+    void operation.execute('copy', () => api.copyAccountKey(key.id), `已复制「${key.name}」的密钥，1 分钟后从剪贴板清除`)
+  }
+  function toggleReveal(key: AccountKey) {
+    if (revealed?.id === key.id) {
+      setRevealed(null)
+      return
+    }
+    revealing.current = key.id
+    void operation.execute('reveal', async () => setRevealed({ id: key.id, key: await api.revealAccountKey(key.id) }), '')
+  }
+  function configureTo(key: AccountKey, provider: Provider) {
+    setSelected({ key, provider })
+    setModels([])
+    setModel('')
+    const requestId = ++modelRequest.current
+    void operation.execute(
+      'models',
+      async () => {
+        const values = await api.listAccountKeyModels(key.id)
+        if (requestId !== modelRequest.current) return
+        setModels(values)
+        setModel(values[0] ?? '')
+      },
+      '',
+    )
+  }
+  function closeConfigure() {
+    ++modelRequest.current
+    setSelected(null)
+  }
   const list = resource.data?.page.keys ?? []
+  const now = new Date()
+  const editingKey = editing && editing !== 'new' ? editing : null
+  const groupControl = groups.length > 0 && groups.length <= keyGroupSegmentLimit && (!group || selectedGroupAvailable) ? (
+    // 读分组的时机和下拉一样：点到或焦点进来就重读一次（同下面 Select 的 onFocus / onPointerDown）。
+    <div className="v2-acct-field" onFocus={() => void refreshGroups()} onPointerDown={() => void refreshGroups()}>
+      <span className="v2-acct-field-label">分组</span>
+      <Segment
+        label="密钥分组"
+        options={groups.map((entry) => ({ value: entry.name, label: entry.name, disabled: operation.busy === 'save-key' }))}
+        value={group}
+        onChange={setGroup}
+        testId="account-key-group-choices"
+      />
+      <small className="v2-acct-field-hint">{groupDescription || '分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。'}</small>
+    </div>
+  ) : (
+    <Select
+      label="分组"
+      testId="account-key-group"
+      aria-label="密钥分组"
+      disabled={!groups.length || operation.busy === 'save-key'}
+      aria-busy={groupsLoading}
+      onFocus={() => void refreshGroups()}
+      onPointerDown={() => void refreshGroups()}
+      onKeyDown={(event) => {
+        if (['ArrowDown', 'ArrowUp', 'Enter', ' ', 'F4'].includes(event.key)) void refreshGroups()
+      }}
+      options={
+        [
+          ...(!group ? [{ value: '', label: groupsLoading ? '正在读取分组…' : '暂无可用分组', disabled: true }]
+            : !selectedGroupAvailable ? [{ value: group, label: `${group}（${groupsLoading ? '确认中' : '已不可用'}）`, disabled: true }] : []),
+          ...groups.map((value) => ({
+            value: value.name,
+            label: value.name,
+          })),
+        ]
+      }
+      value={group}
+      hint={groupDescription || '分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。'}
+      onChange={(event) => setGroup(event.target.value)}
+    />
+  )
   return (
     <>
       {/* 工具用的密钥在首页配置工具时会自动准备好，新手不该从这页手动建一把
-          （新手引导梳理 9-25 第 5 条）。说在最前面，并给回首页的路。 */}
-      <Notice
-        tone="neutral"
-        title="工具用的密钥会自动准备好"
-        body="在首页安装或打开工具时，软件会替你生成并填好密钥，一般不用来这里。想给某个工具限额，或者给别的软件单独用一把，再来这页。"
-        testId="account-keys-auto-hint"
-        actions={onGoHome && (
-          <Button size="sm" icon={Home} onClick={onGoHome} testId="account-keys-go-home">
-            去首页配置工具
-          </Button>
-        )}
-      />
+          （新手引导梳理 9-25 第 5 条）。v4 收成最上面一行小字。 */}
+      <div className="v2-acct-keys-top">
+        <p className="v2-acct-muted" data-testid="account-keys-auto-hint">登录后每个工具会自动配好密钥，一般不用管。</p>
+        <SearchInput
+          value={query}
+          onChange={setQuery}
+          placeholder="搜索密钥或分组"
+          testId="keys-search"
+        />
+        <Button
+          variant="primary"
+          size="sm"
+          icon={Plus}
+          onClick={() => edit('new')}
+          testId="account-key-add"
+        >
+          新建密钥
+        </Button>
+      </div>
       <ToolKeyLimits api={api} balance={balance} siteId={siteId} refreshRequest={refreshRequest} />
-      <Toolbar
-        search={
-          <SearchInput
-            value={query}
-            onChange={setQuery}
-            placeholder="搜索密钥或分组"
-            testId="keys-search"
-          />
-        }
-        right={
-          <Button
-            icon={Plus}
-            onClick={() => edit('new')}
-            testId="account-key-add"
-          >
-            新建密钥
-          </Button>
-        }
-      />
       <ResultNotice {...operation} target={configureFailureTarget} />
       {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice
@@ -1533,7 +1332,10 @@ function AccountKeys({
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
-          emptyDescription="工具用的密钥会自动出现在这里；给别的软件用，点「新建密钥」。"
+          emptyTitle="还没有密钥"
+          emptyDescription="新建一把，或者在工具配置里选「自动准备」。"
+          searchTitle="没有找到相关密钥"
+          searchDescription="换个名称或分组试试。"
           action={
             <Button size="sm" icon={Plus} onClick={() => edit('new')} testId="keys-empty-add">
               新建密钥
@@ -1545,94 +1347,92 @@ function AccountKeys({
               label: '待确认',
               tone: 'neutral' as const,
             }
+            const inUse = isProvider(key.managedProvider) ? key.managedProvider : null
+            const shown = revealed?.id === key.id
+            const usedShare = !key.unlimitedQuota && key.usedQuota + key.remainQuota > 0
+              ? Math.min(100, Math.round(key.usedQuota / (key.usedQuota + key.remainQuota) * 100))
+              : null
             return (
               <ListRow
                 key={key.id}
                 icon={KeyRound}
                 title={key.name}
+                testId={`account-key-row-${key.id}`}
                 badge={
                   <>
-                    <Pill tone={status.tone}>{status.label}</Pill>
-                    {isProvider(key.managedProvider) && (
-                      <Pill tone="accent" testId={`account-key-in-use-${key.id}`}>
-                        {keyToolName(key.managedProvider)} 在用
+                    <Pill>{key.group || '默认分组'}</Pill>
+                    {inUse && (
+                      <Pill tone="ok" dot testId={`account-key-in-use-${key.id}`}>
+                        {keyToolName(inUse)} 在用
                       </Pill>
                     )}
+                    {/* 「有效」不标，别的状态（停用、过期、额度用完）照旧标出来。 */}
+                    {key.status !== 1 && <Pill tone={status.tone}>{status.label}</Pill>}
                   </>
                 }
                 desc={
                   <>
-                    <code>{key.maskedKey}</code> · {key.group || '默认分组'}
-                    <span className="v2-business-path">
-                      {key.unlimitedQuota
-                        ? '不限额度'
-                        : `剩余 ${quotaMoney(key.remainQuota, balance)}`}{' '}
-                      ·{' '}
-                      {key.expiredAt
-                        ? `到期 ${displayDate(key.expiredAt)}`
-                        : '永不过期'}
+                    <span className="v2-acct-key-line">
+                      <code className={shown ? 'is-shown' : undefined}>{shown ? revealed.key : key.maskedKey}</code>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        icon={shown ? EyeOff : Eye}
+                        aria-label={shown ? '隐藏密钥' : '显示密钥'}
+                        title={shown ? '隐藏密钥' : '不要把完整密钥发给别人'}
+                        loading={operation.busy === 'reveal' && revealing.current === key.id}
+                        disabled={Boolean(operation.busy) && operation.busy !== 'reveal'}
+                        onClick={() => toggleReveal(key)}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        icon={Copy}
+                        aria-label="复制密钥"
+                        title="复制密钥"
+                        disabled={Boolean(operation.busy)}
+                        onClick={() => copyKey(key)}
+                      />
                     </span>
+                    <span className="v2-acct-key-meta">
+                      {keyMetaParts(key, (value) => quotaMoney(value, balance), now).map((part) => <span key={part}>{part}</span>)}
+                    </span>
+                    {usedShare !== null && <span className="v2-acct-bar is-thin"><i style={{ width: `${usedShare}%` }} /></span>}
                   </>
                 }
                 actions={
                   <>
-                    <Button
-                      size="sm"
-                      icon={Copy}
-                      disabled={Boolean(operation.busy)}
-                      onClick={() =>
-                        void operation.execute(
-                          'copy',
-                          () => api.copyAccountKey(key.id),
-                          '密钥已复制。为了安全，1 分钟后会从剪贴板里清掉',
-                        )
-                      }
-                    >
-                      复制
-                    </Button>
+                    <Menu
+                      label={`把密钥 ${key.name} 配置到工具`}
+                      heading="把这把密钥写进"
+                      // 一页好几把密钥，每行都有一颗「配置到工具」：读屏要念出是哪一把的。
+                      anchor={<Button size="sm" iconRight={ChevronDown} disabled={Boolean(operation.busy)} aria-label={`把密钥 ${key.name} 配置到工具`}>配置到工具</Button>}
+                      items={toolTargets.map((target) => {
+                        const choice = keyToolChoice(target, inUse === target.provider)
+                        return {
+                          label: target.name,
+                          hint: choice.hint || undefined,
+                          disabled: choice.disabled,
+                          onSelect: () => configureTo(key, target.provider),
+                        }
+                      })}
+                    />
                     <Menu
                       label={`密钥 ${key.name} 的更多操作`}
                       anchor={<MoreHorizontal size={18} />}
                       items={[
                         {
-                          label: '编辑密钥',
+                          label: '编辑',
                           icon: Pencil,
                           onSelect: () => edit(key),
                         },
                         {
-                          label: '显示密钥',
-                          icon: Eye,
-                          onSelect: () =>
-                            void operation.execute(
-                              'reveal',
-                              async () =>
-                                setRevealed(await api.revealAccountKey(key.id)),
-                              '',
-                            ),
-                        },
-                        {
-                          label: '配置到工具',
-                          icon: KeyRound,
+                          label: '复制密钥',
+                          icon: Copy,
                           disabled: Boolean(operation.busy),
-                          onSelect: () => {
-                            setSelected(key)
-                            setModels([])
-                            setModel('')
-                            const requestId = ++modelRequest.current
-                            void operation.execute(
-                              'models',
-                              async () => {
-                                const values = await api.listAccountKeyModels(
-                                  key.id,
-                                )
-                                if (requestId !== modelRequest.current) return
-                                setModels(values)
-                                setModel(values[0] ?? '')
-                              },
-                              '',
-                            )
-                          },
+                          onSelect: () => copyKey(key),
                         },
+                        'divider',
                         {
                           label: '撤销密钥',
                           icon: Trash2,
@@ -1656,10 +1456,13 @@ function AccountKeys({
       />
       <Dialog
         open={Boolean(editing)}
-        title={editing === 'new' ? '新建密钥' : '编辑密钥'}
+        title={created ? '新建密钥' : editingKey ? `编辑「${editingKey.name}」` : '新建密钥'}
         onClose={closeEditor}
         busy={operation.busy === 'save-key'}
-        footer={
+        testId="account-key-editor"
+        footer={created ? (
+          <Button variant="primary" onClick={closeEditor} testId="account-key-created-done">完成</Button>
+        ) : (
           <>
             <Button onClick={closeEditor} disabled={operation.busy === 'save-key'}>取消</Button>
             <Button
@@ -1669,72 +1472,85 @@ function AccountKeys({
               disabled={groupsLoading || Boolean(groupsError) || !selectedGroupAvailable}
               onClick={save}
             >
-              保存密钥
+              {editingKey ? '保存' : '创建密钥'}
             </Button>
           </>
-        }
-      >
-        <ResultNotice error={operation.error} detail={operation.detail} />
-        <ResultNotice error={groupsError} />
-        <Input
-          label="名称"
-          value={name}
-          maxLength={50}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <Select
-          label="分组"
-          testId="account-key-group"
-          aria-label="密钥分组"
-          disabled={!groups.length || operation.busy === 'save-key'}
-          aria-busy={groupsLoading}
-          onFocus={() => void refreshGroups()}
-          onPointerDown={() => void refreshGroups()}
-          onKeyDown={(event) => {
-            if (['ArrowDown', 'ArrowUp', 'Enter', ' ', 'F4'].includes(event.key)) void refreshGroups()
-          }}
-          options={
-            [
-              ...(!group ? [{ value: '', label: groupsLoading ? '正在读取分组…' : '暂无可用分组', disabled: true }]
-                : !selectedGroupAvailable ? [{ value: group, label: `${group}（${groupsLoading ? '确认中' : '已不可用'}）`, disabled: true }] : []),
-              ...groups.map((value) => ({
-                value: value.name,
-                label: value.name,
-              })),
-            ]
-          }
-          value={group}
-          hint="分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。"
-          onChange={(event) => setGroup(event.target.value)}
-        />
-        <Button variant="ghost" size="sm" icon={RefreshCw} testId="account-key-groups-refresh"
-          loading={groupsLoading} disabled={groupsLoading || operation.busy === 'save-key'} onClick={() => void refreshGroups(true)}>
-          刷新分组
-        </Button>
-        {groupsLoading && <p role="status">正在获取最新分组…</p>}
-        {!groupsLoading && !groupsError && group && !selectedGroupAvailable && <p role="alert">原分组已不可用，请重新选择；已填写的内容仍保留。</p>}
-        <Switch label="不限额度" checked={unlimited} onChange={setUnlimited} />
-        {!unlimited && (
-          <Input
-            label="可用额度（USD）"
-            type="number"
-            min="0"
-            step="0.01"
-            hint="这把密钥最多花这么多，用完它就停，不影响账户余额。"
-            value={quota}
-            onChange={(event) => setQuota(event.target.value)}
-          />
         )}
-        <Input
-          label="到期时间（留空为永不过期）"
-          type="datetime-local"
-          value={expires}
-          onChange={(event) => setExpires(event.target.value)}
-        />
+      >
+        {created ? (
+          <div className="v2-acct-created" role="status" data-testid="account-key-created">
+            <strong>「{created}」已创建</strong>
+            <p>想让某个工具用它，在列表里点「配置到工具」。</p>
+          </div>
+        ) : (
+          <>
+            <ResultNotice error={operation.error} detail={operation.detail} />
+            <ResultNotice error={groupsError} />
+            <Input
+              label="名称"
+              value={name}
+              maxLength={50}
+              hint="方便你认出它"
+              onChange={(event) => setName(event.target.value)}
+            />
+            {groupControl}
+            {groupsError && (
+              <Button variant="ghost" size="sm" icon={RefreshCw} testId="account-key-groups-refresh"
+                loading={groupsLoading} disabled={groupsLoading || operation.busy === 'save-key'} onClick={() => void refreshGroups(true)}>
+                刷新分组
+              </Button>
+            )}
+            {groupsLoading && <p role="status">正在获取最新分组…</p>}
+            {!groupsLoading && !groupsError && group && !selectedGroupAvailable && <p role="alert">原分组已不可用，请重新选择；已填写的内容仍保留。</p>}
+            <div className="v2-acct-field">
+              <span className="v2-acct-field-label">到期时间</span>
+              <Segment
+                label="到期时间"
+                options={[...(editingKey ? [{ value: 'keep', label: '不改' }] : []), ...keyExpiryChoices]}
+                value={expiry}
+                onChange={(value) => {
+                  if (isKeyExpiryChoice(value)) setExpiry(value)
+                }}
+                testId="account-key-expiry"
+              />
+              {editingKey && expiry === 'keep' && <small className="v2-acct-field-hint">现在：{currentExpiryText(editingKey.expiredAt, now)}</small>}
+            </div>
+            {expiry === 'custom' && (
+              <Input
+                label="到期日期"
+                type="datetime-local"
+                value={customExpiry}
+                onChange={(event) => setCustomExpiry(event.target.value)}
+                testId="account-key-expiry-custom"
+              />
+            )}
+            <div className="v2-acct-field">
+              <span className="v2-acct-field-label">额度</span>
+              <Segment
+                label="额度"
+                options={keyQuotaChoices}
+                value={unlimited ? 'unlimited' : 'limited'}
+                onChange={(value) => setUnlimited(value === 'unlimited')}
+                testId="account-key-quota-mode"
+              />
+            </div>
+            {!unlimited && (
+              <Input
+                label="可用额度"
+                type="number"
+                min="0"
+                step="0.01"
+                hint="美元，用完后这把密钥会暂停，不影响账户余额"
+                value={quota}
+                onChange={(event) => setQuota(event.target.value)}
+              />
+            )}
+          </>
+        )}
       </Dialog>
       <Dialog
         open={Boolean(removing)}
-        title="撤销这把密钥？"
+        title={removing ? `撤销「${removing.name}」？` : ''}
         onClose={() => setRemoving(null)}
         footer={
           <>
@@ -1754,50 +1570,36 @@ function AccountKeys({
                       const replaced = provider ? await replaceKey(provider) : false
                       setRemoving(null)
                       await resource.reload()
-                      return provider && replaced ? provider : null
+                      return { name: removing.name, provider: provider && replaced ? provider : null }
                     },
-                    (provider) => provider
-                      ? `密钥已撤销，${keyToolName(provider)} 已自动换上新密钥`
-                      : '密钥已撤销',
+                    (result) => result.provider
+                      ? `已撤销「${result.name}」，${keyToolName(result.provider)} 已换用新的密钥`
+                      : `已撤销「${result.name}」`,
                   )
               }}
             >
-              确认撤销
+              撤销
             </Button>
           </>
         }
       >
-        <p>
-          {isProvider(removing?.managedProvider)
-            ? onRewriteKey
-              ? `${keyToolName(removing.managedProvider)} 正在用这把密钥。撤销后会马上自动换一把新的写进 ${keyToolName(removing.managedProvider)}，不用你再设置。`
-              : `${keyToolName(removing.managedProvider)} 正在用这把密钥，撤销后它会停止工作。`
-            : '使用这把密钥的工具会停止请求，需要重新配置有效密钥。'}
-        </p>
+        <p>撤销后这把密钥马上失效，找不回来。</p>
+        {isProvider(removing?.managedProvider) && (
+          <p>
+            {onRewriteKey
+              ? `${keyToolName(removing.managedProvider)} 正在用它，会马上换一把新的写进去，不影响使用。`
+              : `${keyToolName(removing.managedProvider)} 正在用它，撤销后它会连不上。`}
+          </p>
+        )}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
-        open={Boolean(revealed)}
-        title="密钥"
-        onClose={() => setRevealed('')}
-      >
-        <Notice
-          tone="warn"
-          title="妥善保管密钥"
-          body="不要把完整密钥发送给他人或放入反馈报告。"
-        />
-        <Input label="完整密钥" value={revealed} readOnly mono />
-      </Dialog>
-      <Dialog
         open={Boolean(selected)}
-        title="配置到工具"
-        onClose={() => {
-          ++modelRequest.current
-          setSelected(null)
-        }}
+        title={selected ? `把「${selected.key.name}」写进 ${toolTargets.find((target) => target.provider === selected.provider)?.name ?? keyToolName(selected.provider)}？` : ''}
+        onClose={closeConfigure}
         footer={
           <>
-            <Button onClick={() => { ++modelRequest.current; setSelected(null) }}>取消</Button>
+            <Button onClick={closeConfigure}>取消</Button>
             <Button
               variant="primary"
               icon={KeyRound}
@@ -1808,8 +1610,9 @@ function AccountKeys({
                   void operation.execute(
                     'configure',
                     async () => {
+                      const provider = selected.provider
                       await api.saveConfigWithAccountKey({
-                        keyId: selected.id,
+                        keyId: selected.key.id,
                         provider,
                         model,
                         mode: 'merge',
@@ -1831,29 +1634,19 @@ function AccountKeys({
                   )
               }}
             >
-              保存配置
+              写入并改用当前账号
             </Button>
           </>
         }
       >
         <ResultNotice error={operation.error} detail={operation.detail} target={configureFailureTarget} />
-        <Select
-          aria-label="选择工具"
-          options={tools
-            .filter((tool) => tool.kind === 'cli')
-            .map((tool) => ({ value: tool.id, label: tool.name }))}
-          value={provider}
-          onChange={(event) => {
-            if (isProvider(event.target.value)) setProvider(event.target.value)
-          }}
-        />
+        <p>写入后会改用当前账号，用量从余额里扣。原来的配置会先备份。{selected?.provider === 'codex' && 'Codex CLI 与桌面端共用同一份配置。'}</p>
         <Select
           aria-label="选择模型"
           options={models.map((value) => ({ value, label: value }))}
           value={model}
           onChange={(event) => setModel(event.target.value)}
         />
-        <p>会写入所选工具的连接配置。Codex CLI 与桌面端共用同一份配置。</p>
       </Dialog>
     </>
   )
@@ -3167,68 +2960,82 @@ function AccountInvite({
   const operation = useOperation()
   const [transfer, setTransfer] = useState(false)
   const [amount, setAmount] = useState('')
+  // 页面上只摆邀请码：完整链接里有站点地址，界面上不出现站点名；复制出去的还是完整链接。
   const invite = buildAccountInviteLink(inviteBaseUrl, profile.affCode)
+  const transferable = quotaMoney(profile.affQuota, balance)
+  const now = new Date()
   return (
     <>
       <ResultNotice {...operation} />
-      <Card title="邀请链接">
-        <p className="v2-business-help">分享邀请码或邀请链接。好友注册并充值后，返利会计入可转额度，可随时转入账户余额。</p>
-        <div className="v2-business-invite-link">
-          <Input label="分享邀请链接" readOnly value={invite} testId="account-invite-link" />
-          <Button
-            icon={Copy}
-            disabled={!invite}
-            onClick={() =>
-              void operation.execute(
-                'copy',
-                () => navigator.clipboard.writeText(invite),
-                '邀请链接已复制',
-              )
-            }
-          >
-            复制链接
-          </Button>
-        </div>
-      </Card>
-      <div className="v2-business-stat-grid is-four">
-        <Card title="我的返利比例">
-          <strong className="v2-business-amount">{profile.affRebateRatePercent ?? 0}%</strong>
-          <small>被邀请用户每次充值后可获得的返利比例</small>
-        </Card>
-        <Card title="已邀请">
-          <strong className="v2-business-amount">{profile.affCount} 人</strong>
-        </Card>
-        <Card title="可转余额">
-          <strong className="v2-business-amount">
-            {quotaMoney(profile.affQuota, balance)}
-          </strong>
-          <Button
-            size="sm"
-            icon={Zap}
-            disabled={profile.affQuota <= 0}
-            onClick={() => {
-              // 默认金额按点开这一刻的可转余额算。转出一部分后资料会重读，但这张卡不会重新挂上，
-              // 只在挂上时算一次的话，再点开还是上一次的数，可能比现在剩下的还多。
-              setAmount(String(profile.affQuota / balance.quotaPerUnit))
-              setTransfer(true)
-            }}
-            testId="account-invite-transfer"
-          >
-            转入余额
-          </Button>
-        </Card>
-        <Card title="累计返利">
-          <strong className="v2-business-amount">
-            {quotaMoney(profile.affHistoryQuota, balance)}
-          </strong>
-        </Card>
+      <div className="v2-acct-invite">
+        <section className="v2-acct-card is-focus" data-testid="account-invite-code-card">
+          <h2>我的邀请码</h2>
+          <div className="v2-acct-invite-code">
+            <code data-testid="account-invite-code">{profile.affCode?.trim() || '—'}</code>
+            <Button
+              size="sm"
+              icon={Copy}
+              disabled={!invite}
+              onClick={() =>
+                void operation.execute(
+                  'copy',
+                  () => navigator.clipboard.writeText(invite),
+                  '邀请链接已复制',
+                )
+              }
+              testId="account-invite-link"
+            >
+              复制邀请链接
+            </Button>
+          </div>
+          <p className="v2-acct-muted">{inviteRuleText(profile.affRebateRatePercent)}</p>
+        </section>
+        <section className="v2-acct-card">
+          <h2>邀请成绩</h2>
+          <div className="v2-acct-kv"><span>已邀请</span><b>{profile.affCount} 人</b></div>
+          <div className="v2-acct-kv"><span>可转入余额</span><b className="v2-acct-number">{transferable}</b></div>
+          <div className="v2-acct-kv"><span>累计获得返利</span><b>{quotaMoney(profile.affHistoryQuota, balance)}</b></div>
+          <div>
+            <Button
+              size="sm"
+              icon={Zap}
+              disabled={profile.affQuota <= 0}
+              onClick={() => {
+                // 默认金额按点开这一刻的可转余额算。转出一部分后资料会重读，但这张卡不会重新挂上，
+                // 只在挂上时算一次的话，再点开还是上一次的数，可能比现在剩下的还多。
+                setAmount(String(profile.affQuota / balance.quotaPerUnit))
+                setTransfer(true)
+              }}
+              testId="account-invite-transfer"
+            >
+              {profile.affQuota > 0 ? '转入余额' : '已全部转入'}
+            </Button>
+          </div>
+        </section>
       </div>
-      <Card title="已邀请用户">
-        {profile.invitees?.length ? <div className="v2-business-table"><div className="v2-business-table-row v2-business-table-head"><span>邮箱</span><span>用户名</span><span>累计返利</span></div>{profile.invitees.map((item) => <div className="v2-business-table-row" key={item.userId}><span>{item.email}</span><span>{item.username || '-'}</span><span>{quotaMoney(item.totalRebate, balance)}</span></div>)}</div> : <p>暂时还没有已邀请用户。</p>}
-      </Card>
+      {/* 只有历史账号的后台给邀请名单；星芒账号没有，整节不显示。 */}
+      {Boolean(profile.invitees?.length) && (
+        <section className="v2-acct-section">
+          <div className="v2-acct-section-head"><h2>邀请记录</h2></div>
+          <Card padding="none" testId="account-invite-records">
+            {profile.invitees?.map((item) => {
+              const joined = item.createdAt ? shortDate(item.createdAt, now) : ''
+              return (
+                <ListRow
+                  key={item.userId}
+                  icon={UserRound}
+                  title={item.email || item.username || '—'}
+                  desc={joined ? `${joined}注册` : undefined}
+                  actions={<Pill tone="ok">已返利 {quotaMoney(item.totalRebate, balance)}</Pill>}
+                />
+              )
+            })}
+          </Card>
+        </section>
+      )}
       <Dialog
         open={transfer}
-        title="转入账户余额"
+        title={`把 ${transferable} 返利转入余额？`}
         onClose={() => setTransfer(false)}
         footer={
           <>
@@ -3253,16 +3060,18 @@ function AccountInvite({
                     await api.transferAccountAffiliateQuota({ quota })
                     setTransfer(false)
                     changed()
+                    return quota
                   },
-                  '返利已转入余额',
+                  (quota) => `${quotaMoney(quota, balance)} 已转入余额`,
                 )
               }
             >
-              确认转入
+              转入余额
             </Button>
           </>
         }
       >
+        <p>转入后可以直接用来调用模型，不能再转回返利。</p>
         <Input
           label="转入金额（USD）"
           type="number"
@@ -3271,114 +3080,6 @@ function AccountInvite({
           value={amount}
           onChange={(event) => setAmount(event.target.value)}
         />
-        <ResultNotice error={operation.error} detail={operation.detail} />
-      </Dialog>
-    </>
-  )
-}
-function AccountDevices({
-  api,
-  changed,
-  refreshRequest,
-}: {
-  api: V2Bridge
-  changed: () => void
-  refreshRequest?: number
-}) {
-  const load = useCallback(() => api.getAccountLoginSessions(), [api])
-  const resource = useResource(load)
-  useRefreshRequest(refreshRequest, () => void resource.reload())
-  const operation = useOperation()
-  const [revoke, setRevoke] = useState<string | 'others' | null>(null)
-  // 「当前设备」那一行点了，确实是这台电脑退出登录：照这个说，不说「下线」。
-  const revokingCurrent = Boolean(revoke && revoke !== 'others' && resource.data?.some((session) => session.sid === revoke && session.current))
-  return (
-    <>
-      <Toolbar
-        right={
-          <Button
-            variant="danger"
-            icon={Trash2}
-            disabled={!resource.data?.some((session) => !session.current)}
-            onClick={() => setRevoke('others')}
-          >
-            下线其他设备
-          </Button>
-        }
-      />
-      <ResultNotice {...operation} />
-      <Card padding="none">
-        <ListState
-          page="devices"
-          noun="登录设备"
-          loading={resource.loading}
-          error={resource.error}
-          count={resource.data?.length ?? 0}
-          retry={() => void resource.reload()}
-          emptyTitle="没有读到登录设备"
-          emptyDescription="点「重新加载」再读一次。"
-          action={
-            <Button size="sm" icon={RefreshCw} onClick={() => void resource.reload()} testId="devices-empty-retry">
-              重新加载
-            </Button>
-          }
-        >
-          {resource.data?.map((session) => (
-            <ListRow
-              key={session.sid}
-              icon={Users}
-              title={describeLoginDevice(session.userAgent)}
-              badge={session.current && <Pill tone="ok">当前设备</Pill>}
-              desc={`${session.ip || '地址未提供'} · 最近活动 ${displayDate(session.lastActiveAt)}`}
-              actions={
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon={Trash2}
-                  onClick={() => setRevoke(session.sid)}
-                >
-                  {session.current ? '退出登录' : '让它下线'}
-                </Button>
-              }
-            />
-          ))}
-        </ListState>
-      </Card>
-      <Dialog
-        open={Boolean(revoke)}
-        title={revoke === 'others' ? '下线其他设备？' : revokingCurrent ? '退出登录？' : '让这台设备下线？'}
-        onClose={() => setRevoke(null)}
-        footer={
-          <>
-            <Button onClick={() => setRevoke(null)}>取消</Button>
-            <Button
-              variant="danger"
-              icon={Trash2}
-              loading={operation.busy === 'revoke'}
-              onClick={() =>
-                void operation.execute(
-                  'revoke',
-                  async () => {
-                    if (revoke === 'others')
-                      await api.revokeOtherAccountLoginSessions()
-                    else if (revoke) await api.revokeAccountLoginSession(revoke)
-                    setRevoke(null)
-                    changed()
-                    await resource.reload()
-                  },
-                  '登录状态已更新',
-                )
-              }
-            >
-              {revokingCurrent ? '退出登录' : '确认下线'}
-            </Button>
-          </>
-        }
-      >
-        <p>
-          该设备需要重新登录才能查看账户信息。工具里已经写入的 API Key
-          不受影响。
-        </p>
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>

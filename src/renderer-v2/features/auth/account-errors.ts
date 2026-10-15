@@ -114,7 +114,7 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // Not a "try again later": retries never help, and the website login hits
     // the same limit, so the way out is a device that is still signed in.
     test: /AUTH_SESSION_LIMIT\b|同时登录的设备太多/,
-    friendly: '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「登录设备」里退出几个不用的，再回来登录；都登不上的话请联系客服。',
+    friendly: '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「账号安全」里让几台不用的设备下线，再回来登录；都登不上的话请联系客服。',
     kind: 'support',
   },
   {

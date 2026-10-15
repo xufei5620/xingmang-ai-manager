@@ -1109,7 +1109,7 @@ export function Home(props: HomeProps) {
         </div>
       </section>
       <section className="v2-home-balance" data-testid="home-balance-card" title={balanceHint}>
-        <div className="v2-home-balance-head"><h2>账户余额</h2>{props.supportsUsage !== false && <button type="button" className="v2-more-link" onClick={() => props.onNavigate('account', 'dashboard')} data-testid="home-usage-link">用量账单<ChevronRight size={13} aria-hidden="true" /></button>}</div>
+        <div className="v2-home-balance-head"><h2>账户余额</h2>{props.supportsUsage !== false && <button type="button" className="v2-more-link" onClick={() => props.onNavigate('account', 'usage')} data-testid="home-usage-link">用量账单<ChevronRight size={13} aria-hidden="true" /></button>}</div>
         <div className="v2-home-balance-top">
           <strong className={lowMoney ? 'is-warn' : undefined} data-testid="home-balance">{dollars === null ? '—' : money(dollars)}</strong>
           {balanceLabel && <small data-testid="home-balance-label">{balanceLabel}</small>}

@@ -17,7 +17,7 @@ export function rememberedLoginAction(session: Pick<AccountSessionState, 'authen
   return { kind: 'forget', siteId: session.siteId }
 }
 
-export const rememberedLoginForgottenMessage = '本机不再记着密码了，下次登录要重新输入。'
+export const rememberedLoginForgottenMessage = '已清掉记住的密码'
 
 /**
  * Linux 上没有可用的系统密码保管时（会话里带 sessionOnly）：照常能登录，但登录和密码都

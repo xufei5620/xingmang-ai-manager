@@ -1352,10 +1352,9 @@ test('the actual add-account flow preserves the current login on failure and acc
     try {
       await page.getByTestId('tool-row-codex').waitFor()
       const previous = await page.evaluate(() => window.xingmang.getAccountSession())
-      // v4 侧栏账号卡上没有「切换账号」了，它在个人中心页头。
+      // v4 侧栏账号卡上没有「切换账号」了，它在个人中心「账号概览」底下那条「当前登录」上。
       await page.getByTestId('sidebar-account-open').click()
       await page.getByTestId('account-switch').click()
-      // 个人中心「我的账号」里也有一颗「添加另一个账号」，这里点切换框里那颗。
       await page.getByRole('dialog', { name: '切换账号', exact: true }).getByTestId('account-add').click()
       await chooseAccountSource(page, target === 'solov' ? '星芒账号' : '历史账号')
       await page.getByTestId('login-account').fill('same@example.test')
