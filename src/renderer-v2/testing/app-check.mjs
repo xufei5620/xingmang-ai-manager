@@ -8074,6 +8074,10 @@ test('the startup card on the welcome page stays clear of the links and the feat
       const apart = notice.x >= other.x + other.width || notice.x + notice.width <= other.x || notice.y >= other.y + other.height || notice.y + notice.height <= other.y
       assert.ok(apart, `the startup card must not cover ${selector}: ${JSON.stringify({ notice, other })}`)
     }
+    // 改动列表再长也只在卡里滚：整摞卡最高也到不了底下四格。
+    const reach = await page.getByTestId('startup-notices').evaluate((element) => element.getBoundingClientRect().top + Number.parseFloat(getComputedStyle(element).maxHeight))
+    const foot = await page.locator('.auth-welcome-foot').boundingBox()
+    assert.ok(reach <= foot.y, `the startup cards must stop above the feature row: ${JSON.stringify({ reach, foot })}`)
     await page.getByTestId('welcome-motion').click({ timeout: 5000 })
     await clean(page)
   } finally { await page.close() }

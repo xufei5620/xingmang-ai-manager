@@ -41,8 +41,9 @@
 .auth-welcome-support > svg { flex: none; color: var(--gold-tx); }
 .auth-welcome-support .xm-btn { margin-top: 2px; padding-inline: 0; }
 /* 开机提示卡（「已更新到 …」那种）在主界面里放正文左下角、状态栏上面；欢迎页没有侧栏和状态栏，放那里会压住
-   左边那行链接和底下四格。欢迎页上改放右上角、窗口条下面，只盖着星轨那片不能点的装饰。 */
-.auth-window-welcome ~ .v2-startup-notices { left: auto; right: 20px; top: calc(var(--topbar-height) + 12px); bottom: auto; max-width: calc(100vw - 40px); }
+   左边那行链接和底下四格。欢迎页上改放右上角、窗口条下面，只盖着星轨那片不能点的装饰；最高到底下四格上沿
+   （那一排约 144 高），改动列表再长就在卡里滚，不压住「打开客服」。 */
+.auth-window-welcome ~ .v2-startup-notices { left: auto; right: 20px; top: calc(var(--topbar-height) + 12px); bottom: auto; max-width: calc(100vw - 40px); max-height: calc(100vh - var(--topbar-height) - 192px); }
 /* 窗口没焦点、看不见时停在原地，回来接着转；减少动画、系统要求少动画、低配电脑一律不动。
    !important：动画写在比这里更具体的选择器上，不加就停不全。 */
 .auth-welcome[data-motion-idle='true'] *, .auth-welcome[data-motion-idle='true'] *::before, .auth-welcome[data-motion-idle='true'] *::after { animation-play-state: paused !important; }
