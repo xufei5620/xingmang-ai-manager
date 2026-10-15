@@ -4,6 +4,7 @@ import type { AiChatAsset, AiChatGroupSummary, AiChatHistorySnapshot, AiChatHist
 import type { ChatBridge } from './api'
 import { ChatPage } from './ChatPage'
 import { ToastProvider } from '../../ui'
+import { OnlineStatusContext, useBrowserOnline } from '../shell/useOnlineStatus'
 
 const query = new URLSearchParams(location.search)
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
@@ -22,6 +23,7 @@ let groupGate: Promise<void> | undefined
 let releaseGroupGate: (() => void) | undefined
 const imageAsset: AiChatAsset = { assetId: 'a'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png', fileName: 'fixture.png', width: 288, height: 256 }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
+function noRecheck() {}
 // Stands in for the main-process history files. IndexedDB survives page.reload()
 // like the files survive a restart, and has room for records far past the
 // localStorage quota this fixture used to depend on.
@@ -91,11 +93,15 @@ const bridge: ChatBridge = {
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void } }
+  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; openParameters: () => void } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
   const [active, setActive] = useState(true)
+  // 顶部搜索的「聊天参数设置」：App 把这个标记交给聊天页，聊天页打开参数对话框后放下。
+  const [openParameters, setOpenParameters] = useState(query.has('openParameters'))
+  // context.setOffline() 翻的是 navigator.onLine；App 里同一个信号交给 OnlineStatusContext。
+  const online = useBrowserOnline()
   window.chatHarness = { calls, emit: (event) => { for (const listener of listeners) listener(event) }, completeImage: (id) => images.get(id)?.resolve([imageAsset]), failImage: (id) => images.get(id)?.reject(new Error('network error')), finishPreparation: () => { for (const item of preparations) item.resolve({ group: item.group, models: ['gpt-test', 'gpt-image-2'], keyCreated: false }) }, switchScope: (id) => { userId = id; setScope(`xm-account:${id}`) }, resetGroupFailure: () => { failedGroupList = false }, setActive,
     setGroups: (names) => { groupOverride = names.map((name) => ({ name, description: name, ratio: 1 })) },
     failGroupList: () => { failedGroupList = true },
@@ -104,7 +110,8 @@ function Fixture() {
     savedWorkspace,
     failHistoryWrites: (fail) => { failHistoryWrites = fail },
     failHistoryReads: (fail) => { failHistoryReads = fail },
+    openParameters: () => setOpenParameters(true),
   }
-  return <ToastProvider testId="chat-toasts"><ChatPage bridge={bridge as XingmangApi} accountScope={scope} active={active} /></ToastProvider>
+  return <ToastProvider testId="chat-toasts"><OnlineStatusContext.Provider value={{ offline: !online, checking: false, recheck: noRecheck }}><ChatPage bridge={bridge as XingmangApi} accountScope={scope} active={active} openParameters={openParameters} onParametersOpened={() => setOpenParameters(false)} /></OnlineStatusContext.Provider></ToastProvider>
 }
 createRoot(document.getElementById('root')!).render(query.has('strict') ? <StrictMode><Fixture /></StrictMode> : <Fixture />)

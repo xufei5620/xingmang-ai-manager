@@ -29,6 +29,7 @@
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
 | `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` | ≤ 5 项 |
 | `Switch` | `checked` · `onChange` · `label?` · `description?` | 切换即保存 |
+| `Slider` | `label` · `value: string`（`''` = 没设） · `fallback` · `min` · `max` · `step` · `placeholder?` · `hint?` · `onChange` | 没设时右上角写 `placeholder`（聊天参数写「默认」）、滑块停在 `fallback`，一拖就有值；聊天参数对话框用 |
 | `Input` / `Select` / `Textarea` | 标准受控 props + `error?: string` · `hint?` · `mono?` · `password?`（带显隐） | |
 | `SearchInput` | `value` · `onChange` · `placeholder` | 带图标，宽 240 |
 | `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` · `headless?` | 只能有一个打开；`headless` 不画标题行和关闭按钮（标题只给读屏，Esc 和点遮罩照样关），框顶固定在窗口高度约 1/6 处，内容变高只往下长——目前只给命令面板用 |
@@ -38,6 +39,7 @@
 | `Toast` | 通过 `useToast().show(text, tone?)` 调用 | 2.4s，≤ 3 条；做成了的结果一律走它，不挂在页顶（带「打开所在位置」的导出结果除外，要给人点） |
 | `Menu` | `items: {label,icon?,danger?,onSelect}[] \| 'divider'` · `anchor` | |
 | `Popover` | `anchor` · `title?` · `children` · `onClose` | 帮助 / 公告 / 账号切换 |
+| `ChoiceMenu` | `label` · `anchor` · `sections: {label,value,options:{value,label,hint?,disabled?}[],onChange,keepOpen?,empty?,testId?}[]` · `actions?: {label,icon?,loading?,disabled?,keepOpen?,onSelect}[]` · `onOpen?` · `align?: 'start'\|'end'` | 带小标题的单选菜单，底部可放操作；`keepOpen` 的那组选完菜单不关（聊天先选分组、接着在下面选模型）；`hint` 是灰色第二行，读作说明、不并进名字；`align='start'` 让菜单和按钮左边对齐（输入框底部那排）。打开时焦点落在选中的那一项 |
 | `Empty` | `icon` · `title` · `description` · `action?` | `action` 里有两颗按钮时一样大、间距 8 |
 | `Progress` | `value` · `tone?` · `label?` | |
 | `Skeleton` | `rows?: number` | 列表加载 |

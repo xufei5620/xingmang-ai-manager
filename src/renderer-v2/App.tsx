@@ -9,6 +9,7 @@ import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { claudeDesktopDownloadPageUrl } from '../../electron/claude-desktop-install-failure'
 import { codexDesktopStoreUrl } from '../../electron/codex-desktop-install-failure'
 import { Shell as AppFrame } from './features/shell/Shell'
+import { chatParametersSection } from './features/shell/command-search'
 import { createChatTransfer } from './features/chat/transfer'
 import { isOffline, offlineActionMessage, offlineCause, stillOfflineText } from './features/shell/online-status'
 import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './features/shell/useOnlineStatus'
@@ -163,6 +164,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [dismissedMaintenance, setDismissedMaintenance] = useState<string | null>(null)
   const [page, setPage] = useState<PageId>('home')
   const [chatScope, setChatScope] = useState<string | null>(null)
+  const [chatParametersPending, setChatParametersPending] = useState(false)
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
   // 带序号：已经停在「我的订单」时再点「充值」，值还是上次那个 'wallet'，
   // 光比值 React 不会重新切过去（全面检测 Q29），同 tutorialTopic。
@@ -886,6 +888,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     if (target === 'health' && section) requestRowFocus('health', section)
     if (target === 'chat') setChatScope(scope)
+    // 只有从顶部搜索点「聊天参数设置」进来才打开参数对话框；去别处就放下，免得下次进聊天页突然弹出来。
+    setChatParametersPending(target === 'chat' && section === chatParametersSection)
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
   }, [accelerationAvailable, app, perform, restoring, restoreRetrying, session.authenticated, scope, toast])
@@ -1776,7 +1780,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
+            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
             {visitedPages.acceleration === scope && <div data-testid="page-acceleration" hidden={page !== 'acceleration'} inert={page !== 'acceleration'}>
               <Suspense fallback={pageLoading}>
                 <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null} live={page === 'acceleration'}
