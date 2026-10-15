@@ -575,6 +575,14 @@ export function toolUpdateOffer(
   return { version: null, target: tool.id === 'codexDesktop' ? null : tool.latestVersion, newer: true, knownIssue, manualHint }
 }
 
+/**
+ * 工具名后面接中文时补一个空格：「Codex CLI 已更新」「星芒AI生图已更新」。名字本身以汉字结尾就不补，
+ * 免得「星芒AI生图 已更新」中间空一格（v4 原型的 sp）。
+ */
+export function spacedName(name: string): string {
+  return /[一-鿿]$/.test(name) ? name : `${name} `
+}
+
 export function greeting(hour: number): string {
   return hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好'
 }

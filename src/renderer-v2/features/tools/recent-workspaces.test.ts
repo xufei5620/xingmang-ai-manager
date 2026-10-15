@@ -131,14 +131,14 @@ describe('workspaceChoices', () => {
     expect(choices).toEqual([
       { path: 'C:\\work\\alpha', label: 'C:\\work\\alpha' },
       { path: 'C:\\work\\beta', label: 'C:\\work\\beta' },
-      { path: null, label: '选择其他目录…' },
+      { path: null, label: '选择其他文件夹…' },
       { path: null, label: '新建项目文件夹并打开', create: true },
     ])
   })
 
   it('offers the picker and a new folder when nothing was remembered', () => {
     expect(workspaceChoices([])).toEqual([
-      { path: null, label: '选择其他目录…' },
+      { path: null, label: '选择其他文件夹…' },
       { path: null, label: '新建项目文件夹并打开', create: true },
     ])
   })

@@ -374,8 +374,13 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
-  // 个人中心一打开就是账号概览：近 7 天小图一天读一段、「我的订阅」卡读一次。这里一分没花、没有订阅。
-  getAccountDashboard: async (input) => ({ startTimestamp: input.startTimestamp ?? 0, endTimestamp: input.endTimestamp ?? 0, buckets: [], models: [], quota: 0, count: 0, tokens: 0, discardedCount: 0 }),
+  // 首页余额卡和个人中心账号概览的「近 7 天花费」都是一天查一次看板（v4 批 04、批 06）：按星期几回一个固定的数，
+  // 柱子有高有低。
+  getAccountDashboard: async (input) => {
+    const quota = [40_000, 120_000, 0, 180_000, 80_000, 240_000, 100_000][new Date((input.startTimestamp ?? 0) * 1000).getDay()]
+    return { startTimestamp: input.startTimestamp ?? 0, endTimestamp: input.endTimestamp ?? 0, buckets: [], models: [], quota, count: quota ? 3 : 0, tokens: quota * 2, discardedCount: 0, coverage: 'range' as const }
+  },
+  // 个人中心一打开就是账号概览，「我的订阅」卡读一次。这里没有订阅。
   getAccountSubscriptionSelf: async () => ({ billingPreference: null, activeSubscriptions: [], allSubscriptions: [] }),
   getAccountSubscriptionPlans: async () => [],
   // 主进程替用户绕开连不上的代理：改成直连以后余额照常读得到（只演这一种结果）。

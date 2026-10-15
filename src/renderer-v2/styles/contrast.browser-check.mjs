@@ -18,11 +18,11 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
-async function open({ theme = 'light', forced = false } = {}) {
+async function open({ theme = 'light', forced = false, query = '' } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
   if (forced) await page.emulateMedia({ forcedColors: 'active' })
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
-  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?theme=${theme}`,
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html?theme=${theme}${query ? '&' + query : ''}`,
     (timeout) => waitForFixtureMount(page, { timeout, what: 'the contrast fixture', ready: () => Boolean(window.v2Test) && Boolean(document.querySelector('.v2-nav-item')) }),
     { label: 'contrast fixture' })
   return page
@@ -92,7 +92,9 @@ for (const theme of ['light', 'dark']) {
 }
 
 test('Windows high contrast (forced colors) redraws selection, switches, progress and dialog edges with system colors', async () => {
-  const page = await open({ theme: 'dark', forced: true })
+  // The v4 home has no standing progress bar (the month-used bar is gone), so a
+  // held WorkBuddy install puts one on its card.
+  const page = await open({ theme: 'dark', forced: true, query: 'externalInstallPending=1' })
   try {
     // The OS setting also turns the in-app switch on; forced colors must still win.
     await highContrast(page)
@@ -110,6 +112,9 @@ test('Windows high contrast (forced colors) redraws selection, switches, progres
     const label = await style(activeNav.locator('span').first(), ['color'])
     assert.equal(label.color, highlightText)
 
+    const workbuddy = page.getByTestId('tool-row-workbuddy')
+    await workbuddy.getByRole('button', { name: '安装', exact: true }).click()
+    await workbuddy.getByRole('progressbar').waitFor()
     const progress = await style(page.locator('.xm-progress-track').first(), ['outline-style'])
     assert.equal(progress['outline-style'], 'solid')
     const bar = await style(page.locator('.xm-progress-bar').first(), ['background-color'])

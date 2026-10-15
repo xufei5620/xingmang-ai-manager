@@ -38,19 +38,24 @@ function useFloating(open: boolean, onClose?: () => void, align: 'start' | 'end'
   const restore = () => anchor.current?.querySelector<HTMLButtonElement>('button')?.focus();
   return { anchor, panel, position, restore };
 }
+// description: a second, quieter line under the label. checked: the item is one of a set of choices
+// (menuitemradio) and this says whether it is the current one; leaving it out keeps a plain menuitem.
 // hint: a quiet word after the label (「在用」「未安装」), read out with it.
-export type MenuItem = { label: string; hint?: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; onSelect: () => void };
+export type MenuItem = { label: string; hint?: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; description?: string; checked?: boolean; title?: string; onSelect: () => void };
+// A line of explanation between items; not focusable and not a choice.
+export type MenuNote = { note: string };
+function isMenuNote(item: MenuItem | MenuNote): item is MenuNote { return 'note' in item; }
 // A row-level overflow trigger reads as a bare "more" button to a screen reader,
 // so the label is required rather than defaulted: twenty key rows each offering
 // "revoke" behind an unnamed menu is indistinguishable by ear.
 // heading: a line above the items saying what picking one does (「把这把密钥写进」); not focusable.
-export function Menu({ items, anchor, testId, label, heading }: BaseProps & { items: Array<MenuItem | 'divider'> | 'divider'; anchor: ReactNode; label: string; heading?: string }) {
+export function Menu({ items, anchor, testId, label, heading, align, panelClassName }: BaseProps & { items: Array<MenuItem | MenuNote | 'divider'> | 'divider'; anchor: ReactNode; label: string; heading?: string; align?: 'start' | 'end'; panelClassName?: string }) {
   const [open, setOpen] = useState(false); const id = useId();
-  const float = useFloating(open, () => setOpen(false)); const search = useRef({ text: '', at: 0 });
+  const float = useFloating(open, () => setOpen(false), align); const search = useRef({ text: '', at: 0 });
   const entries = items === 'divider' ? [] : items;
   const close = (restore = true) => { setOpen(false); if (restore) float.restore(); };
   useEffect(() => { if (open && float.position.visibility === 'visible' && float.panel.current) focusable(float.panel.current)[0]?.focus(); }, [open, float.position.visibility]);
-  return <span className="xm-menu" data-testid={testId} ref={float.anchor}><Trigger anchor={anchor} open={open} id={id} kind="menu" label={label} toggle={() => setOpen(value => !value)} />{open && <div id={id} ref={float.panel} className="xm-menu-pop" style={float.position} role="menu" aria-label={label} onKeyDown={event => {
+  return <span className="xm-menu" data-testid={testId} ref={float.anchor}><Trigger anchor={anchor} open={open} id={id} kind="menu" label={label} toggle={() => setOpen(value => !value)} />{open && <div id={id} ref={float.panel} className={panelClassName ? 'xm-menu-pop ' + panelClassName : 'xm-menu-pop'} style={float.position} role="menu" aria-label={label} onKeyDown={event => {
     if (event.nativeEvent.isComposing) return;
     const options = focusable(event.currentTarget); const current = options.indexOf(document.activeElement as HTMLElement);
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
@@ -61,7 +66,7 @@ export function Menu({ items, anchor, testId, label, heading }: BaseProps & { it
       event.preventDefault(); const now = Date.now(); search.current.text = now - search.current.at > 600 ? event.key : search.current.text + event.key; search.current.at = now;
       const candidate = options.find(item => item.textContent?.trim().toLocaleLowerCase().startsWith(search.current.text.toLocaleLowerCase())); candidate?.focus();
     }
-  }}>{heading && <div className="xm-menu-heading" role="presentation">{heading}</div>}{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : <button className={item.danger ? 'is-danger' : undefined} disabled={item.disabled} data-testid={item.testId} key={index} onClick={() => { close(); item.onSelect(); }} role="menuitem" type="button">{item.icon && <item.icon size={16} aria-hidden="true" />}{item.label}{item.hint && <small className="xm-menu-hint">{item.hint}</small>}</button>)}</div>}</span>;
+  }}>{heading && <div className="xm-menu-heading" role="presentation">{heading}</div>}{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : isMenuNote(item) ? <p className="xm-menu-note" key={'note-' + index}>{item.note}</p> : <button className={[item.danger ? 'is-danger' : '', item.description ? 'has-description' : ''].filter(Boolean).join(' ') || undefined} disabled={item.disabled} data-testid={item.testId} title={item.title} key={index} onClick={() => { close(); item.onSelect(); }} role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked} type="button">{item.checked !== undefined && <span className={item.checked ? 'xm-menu-radio is-on' : 'xm-menu-radio'} aria-hidden="true" />}{item.icon && <item.icon size={16} aria-hidden="true" />}{item.description ? <span className="xm-menu-text"><span>{item.label}</span><small>{item.description}</small></span> : item.label}{item.hint && <small className="xm-menu-hint">{item.hint}</small>}</button>)}</div>}</span>;
 }
 export function Popover({ anchor, title, children, onClose, testId, label }: BaseProps & { anchor: ReactNode; title?: ReactNode; children?: ReactNode; onClose?: () => void; label?: string }) {
   const [open, setOpen] = useState(false); const id = useId(); const t = useUiText();

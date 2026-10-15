@@ -82,7 +82,8 @@ function placeCoachmark(rect: DOMRect, bubble: DOMRect, placement: CoachPlacemen
 
 export function Coachmark({ open, target, placement = 'below', title, label, body, step, count, onNext, onClose, testId }: BaseProps & {
   /** 没有标题时读屏念 label（「界面导览，第 2 步」）。 */
-  open: boolean; target: string; placement?: CoachPlacement; title?: string; label?: string; body: string; step: number; count: number; onNext(): void; onClose(): void
+  /** 给一串时按先后找第一个看得见的（指着的东西不在这一页时退回下一个）。 */
+  open: boolean; target: string | readonly string[]; placement?: CoachPlacement; title?: string; label?: string; body: string; step: number; count: number; onNext(): void; onClose(): void
 }) {
   const t = useUiText()
   const panel = useRef<HTMLDivElement>(null)
@@ -103,7 +104,8 @@ export function Coachmark({ open, target, placement = 'below', title, label, bod
       marked = next
     }
     const place = () => {
-      const node = document.querySelector<HTMLElement>(target)
+      const candidates = (typeof target === 'string' ? [target] : target).map(selector => document.querySelector<HTMLElement>(selector))
+      const node = candidates.find(candidate => visibleBounds(candidate)) ?? null
       const rect = visibleBounds(node)
       if (!rect) { mark(null); setPosition({ visibility: 'hidden' }); return }
       mark(node)

@@ -32,5 +32,9 @@ export function describeRuntimeInstallOutcome(
   if ('systemRestartRequired' in result && result.systemRestartRequired) {
     return { message: `${name} 装好了，重启电脑后就能用。`, tone: 'warn', restartRequired: true }
   }
+  // 首页运行环境那一行装好 Python 时带上版本（v4 批 04）；Node.js 那句照旧。主进程给的版本是
+  // `python --version` 的原样输出（「Python 3.12.9」），去掉前缀免得念成「Python Python」。
+  const pythonVersion = runtime === 'python' && 'version' in result ? result.version?.replace(/^Python\s+/i, '').trim() : ''
+  if (pythonVersion) return { message: `Python ${pythonVersion} 已装好`, tone: 'ok', restartRequired: false }
   return { message: `${name} 装好了。`, tone: 'ok', restartRequired: false }
 }
