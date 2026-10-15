@@ -44,7 +44,7 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onToolConfigSaved?: () => void
   /** 工具设置窗口保存成功并读回之后的信号，用来收起密钥页「还在用刚撤销的密钥」（#546）。 */
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
-  /** 装好的命令行工具，扩展三页用它挑默认显示哪个；缺省 = 默认 Claude（旧行为）。 */
+  /** 装好的命令行工具：扩展三页用它挑默认显示哪个，记录页用它把没装的那家「接着聊」按灰；缺省 = 默认 Claude、不按灰（旧行为）。 */
   installedProviders?: readonly string[]
   /** 订阅开通后把用得上它的工具换过去；缺省 = 不换（旧行为）。 */
   onSubscriptionActivated?: Parameters<typeof AccountPage>[0]['onSubscriptionActivated']
@@ -97,7 +97,7 @@ export function BusinessPage({
       />
     )
   if (page === 'sessions')
-    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
+    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'featured')
     return <FeaturedPage api={api} installedProviders={installedProviders} onRecommend={actions.navigate ? () => actions.navigate?.('feedback') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} active={actions.active} />
   if (page === 'mcp')

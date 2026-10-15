@@ -141,6 +141,13 @@ describe('renderer-v2 list empty states', () => {
     expect(markup).not.toContain('清空筛选')
   })
 
+  it('lets a page word its own search miss', () => {
+    const markup = renderToStaticMarkup(<ListState page="sessions" noun="会话" searchTitle="没有找到相关记录" searchDescription="换个关键词，或者切换到「全部」再看看。" filtered query="zzz" loading={false} error="" count={0} retry={() => undefined} clear={() => undefined}>{null}</ListState>)
+    expect(markup).toContain('没有找到相关记录')
+    expect(markup).toContain('换个关键词，或者切换到「全部」再看看。')
+    expect(markup).not.toContain('没有找到「zzz」')
+  })
+
   it('keeps the filter wording when only a range filter is set', () => {
     const markup = emptyList({ filtered: true, query: '' })
     expect(markup).toContain('没有符合条件的结果')

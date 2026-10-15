@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { HealthPage, MaintenancePage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
-import { tutorialTopicsFor } from './registry/tutorials'
+import { tutorialCategories, tutorialTopicsFor } from './registry/tutorials'
+import { tutorialIcons } from './features/tutorial/TutorialPage'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
 import { errors } from './registry/errors'
@@ -288,7 +289,7 @@ describe('tutorial topics', () => {
     expect(text).toContain('共用一份配置')
   })
 
-  it('opens at the chapter the caller asked for instead of the first one', () => {
+  it('opens at the chapter the caller asked for instead of the card list', () => {
     // 首页那几行「安装指南」跳过来时要直接停在 macOS 那一章（第七批 3）。
     // 教程按电脑分版本（Linux 版没有这一章），这里说明是在 Mac 上，测试跑在哪台机器都一样。
     const topic = tutorialTopics.find((entry) => entry.id === macDesktopTutorialTopic)
@@ -297,36 +298,76 @@ describe('tutorial topics', () => {
     )
     expect(markup).toContain(`<h2 id="tutorial-article-title">${topic?.title}</h2>`)
     expect(markup).toContain(topic?.steps[0]?.title ?? '')
+    expect(markup).toContain('data-testid="tutorial-back"')
+    expect(markup).toContain('全部教程')
+    expect(markup).toContain(`${topic?.steps.length} 步，约 ${topic?.minutes} 分钟`)
+    expect(markup).not.toContain('data-testid="tutorial-cards"')
   })
 
-  it('carries the text typed in the top search into the tutorial search box', () => {
+  it('carries the text typed in the top search into the tutorial search box on the card list', () => {
     const markup = renderToStaticMarkup(
       createElement(TutorialPage, { topic: { sequence: 1, id: 'start', query: '充值' } }),
     )
     expect(markup).toMatch(/data-testid="tutorial-search"[^>]*value="充值"|value="充值"[^>]*data-testid="tutorial-search"/)
-    expect(markup).toContain('找到')
+    expect(markup).toContain('data-testid="tutorial-card-account"')
+    expect(markup).not.toContain('data-testid="tutorial-article"')
+    expect(markup).toContain('<mark class="v2-tutorial-hit">充值</mark>')
   })
 
-  it('falls back to the first chapter when the requested one does not exist', () => {
+  it('shows the card list when the requested chapter does not exist', () => {
     const markup = renderToStaticMarkup(
       createElement(TutorialPage, { topic: { sequence: 1, id: 'no-such-chapter' } }),
     )
-    expect(markup).toContain(`<h2 id="tutorial-article-title">${tutorialTopics[0].title}</h2>`)
+    expect(markup).not.toContain('data-testid="tutorial-article"')
+    expect(markup).toContain(`data-testid="tutorial-card-${tutorialTopics[0].id}"`)
+  })
+
+  it('lists one card per chapter with categories, counts and the first chapter as the lead', () => {
+    const markup = renderToStaticMarkup(createElement(TutorialPage, { os: 'win' }))
+    for (const topic of tutorialTopics) expect(markup).toContain(`data-testid="tutorial-card-${topic.id}"`)
+    expect(markup).toContain('aria-label="按类别筛选"')
+    expect(markup).toContain('placeholder="搜索教程，比如「切换账号」"')
+    for (const label of ['全部', '入门', '工具', '账号与费用', '出问题时']) expect(markup).toContain(`>${label}<span class="xm-chip-count">`)
+    expect(markup).toContain(`全部<span class="xm-chip-count">${tutorialTopics.length}</span>`)
+    expect(markup).toContain(`入门<span class="xm-chip-count">${tutorialTopics.filter((topic) => topic.category === 'start').length}</span>`)
+    // 第一张是「从这里开始」：金色那张、主按钮；其余卡片都是普通按钮。
+    expect(markup).toMatch(/class="v2-tutorial-card is-lead"[^>]*data-testid="tutorial-card-start"/)
+    expect(markup.match(/is-lead/g)?.length).toBe(1)
+    const first = tutorialTopics[0]
+    expect(markup).toContain(`${first.steps.length} 步，约 ${first.minutes} 分钟`)
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="tutorial-topic-start"/)
+    expect(markup).not.toContain('先让 Codex 回你一句话')
+    expect(markup).not.toContain('找到 ')
   })
 
   it('opens the Linux chapters on a Linux computer and keeps the Windows chapters elsewhere', () => {
     // Linux 版拆分 ⑩：Linux 上第一章是 Codex CLI，没有桌面端和加速那几章。
     const linux = tutorialTopicsFor('linux')
     const linuxMarkup = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux' }))
-    expect(linuxMarkup).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
+    expect(linuxMarkup).toContain(`data-testid="tutorial-card-${linux[0].id}"`)
     expect(linuxMarkup).toContain('Codex CLI')
     expect(linuxMarkup).not.toContain('桌面端')
     expect(linuxMarkup).not.toContain('游戏加速')
-    // 要的那一章 Linux 上没有（比如 Mac 桌面端），落回 Linux 第一章，不显示 Windows 那份。
+    expect(linuxMarkup).toContain(`全部<span class="xm-chip-count">${linux.length}</span>`)
+    // 要的那一章 Linux 上没有（比如 Mac 桌面端），落回 Linux 的卡片列表，不显示 Windows 那份。
     const fallback = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux', topic: { sequence: 1, id: macDesktopTutorialTopic } }))
-    expect(fallback).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
+    expect(fallback).not.toContain('data-testid="tutorial-article"')
+    expect(fallback).not.toContain('桌面端')
+    const linuxArticle = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux', topic: { sequence: 1, id: 'start' } }))
+    expect(linuxArticle).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
     const windowsMarkup = renderToStaticMarkup(createElement(TutorialPage, { os: 'win' }))
-    expect(windowsMarkup).toContain(`<h2 id="tutorial-article-title">${tutorialTopics[0].title}</h2>`)
+    expect(windowsMarkup).toContain(`data-testid="tutorial-card-${macDesktopTutorialTopic}"`)
+  })
+
+  it('gives every chapter on every computer a category and its own card icon', () => {
+    for (const os of ['win', 'mac', 'linux'] as const)
+      for (const topic of tutorialTopicsFor(os)) {
+        expect(tutorialCategories.some((entry) => entry.value !== 'all' && entry.value === topic.category)).toBe(true)
+        expect(tutorialIcons[topic.id], topic.id).toBeDefined()
+      }
+    // 每一类都至少有一篇，分类按钮不会点出一片空白。
+    for (const entry of tutorialCategories)
+      expect(entry.value === 'all' || tutorialTopicsFor('linux').some((topic) => topic.category === entry.value), entry.value).toBe(true)
   })
 
   it('only links steps at pages the shell can actually navigate to', () => {

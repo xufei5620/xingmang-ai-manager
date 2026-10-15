@@ -26,6 +26,8 @@ import {
   mcpRuntimeNotice,
   officialMarketplaceNotice,
   runExtensionAction,
+  sessionRowMeta,
+  sessionToolCounts,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
 } from './pages-management'
@@ -748,3 +750,27 @@ describe('management pages without the retired Gemini CLI', () => {
     }
   })
 })
+
+describe('sessions table', () => {
+  it('counts sessions per tool chip and sums them for the all chip', () => {
+    expect(sessionToolCounts({ claude: 3, codex: 1, gemini: 5 })).toMatchObject({ all: 4, claude: 3, codex: 1, grok: 0 })
+    // 没读到统计就不显示数字，不能显示成一排 0。
+    expect(sessionToolCounts(undefined)).toBeNull()
+  })
+
+  it('shows model and message count under the title and leaves the time to its own column', () => {
+    expect(sessionRowMeta({ model: 'gpt-5', messageCount: 12, archived: false })).toBe('gpt-5 · 12 条消息')
+    expect(sessionRowMeta({ model: '', messageCount: null, archived: true })).toBe('未记录模型 · 已归档')
+  })
+
+  it('renders the records page as a table with tool chips and no drawer', () => {
+    const markup = renderToStaticMarkup(<SessionsPage api={{} as V2Bridge} />)
+    expect(markup).toContain('aria-label="按工具筛选"')
+    expect(markup).toContain('data-testid="sessions-tool-all"')
+    expect(markup).toContain('placeholder="搜索标题、文件夹或模型"')
+    expect(markup).toContain('aria-label="重新加载"')
+    expect(markup).not.toContain('本软件已把保留期放长到一年')
+    expect(markup).not.toContain('xm-drawer')
+  })
+})
+
