@@ -36,11 +36,13 @@ function useFloating(open: boolean, onClose?: () => void) {
   const restore = () => anchor.current?.querySelector<HTMLButtonElement>('button')?.focus();
   return { anchor, panel, position, restore };
 }
-export type MenuItem = { label: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; onSelect: () => void };
+// hint: a quiet word after the label (「在用」「未安装」), read out with it.
+export type MenuItem = { label: string; hint?: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; onSelect: () => void };
 // A row-level overflow trigger reads as a bare "more" button to a screen reader,
 // so the label is required rather than defaulted: twenty key rows each offering
 // "revoke" behind an unnamed menu is indistinguishable by ear.
-export function Menu({ items, anchor, testId, label }: BaseProps & { items: Array<MenuItem | 'divider'> | 'divider'; anchor: ReactNode; label: string }) {
+// heading: a line above the items saying what picking one does (「把这把密钥写进」); not focusable.
+export function Menu({ items, anchor, testId, label, heading }: BaseProps & { items: Array<MenuItem | 'divider'> | 'divider'; anchor: ReactNode; label: string; heading?: string }) {
   const [open, setOpen] = useState(false); const id = useId();
   const float = useFloating(open, () => setOpen(false)); const search = useRef({ text: '', at: 0 });
   const entries = items === 'divider' ? [] : items;
@@ -57,7 +59,7 @@ export function Menu({ items, anchor, testId, label }: BaseProps & { items: Arra
       event.preventDefault(); const now = Date.now(); search.current.text = now - search.current.at > 600 ? event.key : search.current.text + event.key; search.current.at = now;
       const candidate = options.find(item => item.textContent?.trim().toLocaleLowerCase().startsWith(search.current.text.toLocaleLowerCase())); candidate?.focus();
     }
-  }}>{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : <button className={item.danger ? 'is-danger' : undefined} disabled={item.disabled} data-testid={item.testId} key={index} onClick={() => { close(); item.onSelect(); }} role="menuitem" type="button">{item.icon && <item.icon size={16} aria-hidden="true" />}{item.label}</button>)}</div>}</span>;
+  }}>{heading && <div className="xm-menu-heading" role="presentation">{heading}</div>}{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : <button className={item.danger ? 'is-danger' : undefined} disabled={item.disabled} data-testid={item.testId} key={index} onClick={() => { close(); item.onSelect(); }} role="menuitem" type="button">{item.icon && <item.icon size={16} aria-hidden="true" />}{item.label}{item.hint && <small className="xm-menu-hint">{item.hint}</small>}</button>)}</div>}</span>;
 }
 export function Popover({ anchor, title, children, onClose, testId, label }: BaseProps & { anchor: ReactNode; title?: ReactNode; children?: ReactNode; onClose?: () => void; label?: string }) {
   const [open, setOpen] = useState(false); const id = useId(); const t = useUiText();

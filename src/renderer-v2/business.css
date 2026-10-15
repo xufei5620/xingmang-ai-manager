@@ -245,19 +245,6 @@
   align-items: start;
   gap: 16px;
 }
-.v2-business-stat-grid.is-four {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-.v2-business-stat-grid.is-four .v2-business-amount {
-  font-size: 22px;
-}
-/* 个人中心：左边分组的子导航 160 宽、不跟着滚，右边和设置页一样宽。 */
-.v2-business-account-layout {
-  display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
-  gap: 24px;
-  align-items: start;
-}
 .v2-business-account-panels {
   min-width: 0;
 }
@@ -272,26 +259,6 @@
 .v2-business-account-panel > .v2-business-stat-grid,
 .v2-business-account-loading > .v2-business-stat-grid {
   margin: 0;
-}
-.v2-account-subnav {
-  gap: 14px;
-}
-.v2-account-subnav-group > div {
-  display: grid;
-  gap: 2px;
-}
-.v2-account-subnav-label {
-  display: block;
-  margin: 0 0 4px 10px;
-  color: var(--text-3);
-  font-size: var(--font-small-compact);
-}
-/* 顶部搜索「切换账号」翻到页头这颗按钮时亮的那一圈，比按钮大一点。 */
-.v2-account-switch-anchor {
-  display: inline-flex;
-  margin: -3px;
-  padding: 3px;
-  border-radius: calc(var(--radius-input) + 3px);
 }
 /* 读取中的灰色占位条（大数字、页头那句、实付）：和骨架屏一样闪，读到了原地换成字。 */
 .v2-business-placeholder {
@@ -332,91 +299,6 @@
   align-items: start;
   gap: 18px;
 }
-.v2-business-profile-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  align-items: start;
-  gap: 18px;
-}
-.v2-business-profile-aside {
-  display: grid;
-  gap: 16px;
-}
-.v2-business-profile-avatar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 16px;
-}
-.v2-business-profile-avatar > div {
-  display: grid;
-  justify-items: start;
-  gap: 6px;
-  min-width: 0;
-}
-.v2-business-profile-avatar strong {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.v2-business-profile-fields {
-  display: grid;
-  gap: 16px;
-}
-/* 「显示名称」输入框和「保存」放一行；用户名、邮箱、密码是只读的一行字：左边标签，右边值。 */
-.v2-business-profile-name {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-.v2-business-profile-name > .xm-field {
-  flex: 1;
-}
-.v2-business-profile-row {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  align-items: baseline;
-  gap: 2px 12px;
-}
-.v2-business-profile-row > span {
-  color: var(--text-2);
-  font-size: var(--font-small);
-}
-.v2-business-profile-row > strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-weight: 500;
-}
-.v2-business-profile-row > small {
-  grid-column: 2;
-  color: var(--text-3);
-  font-size: var(--font-micro);
-}
-.v2-business-profile-row > .xm-btn {
-  justify-self: start;
-}
-.v2-business-profile-fields .xm-field > label {
-  font-size: var(--font-small);
-  font-weight: 500;
-}
-.v2-business-profile-fields .xm-field small {
-  font-size: var(--font-micro);
-  margin-top: 6px;
-}
-.v2-business-account-heading {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-.v2-business-account-heading > .xm-btn {
-  margin-top: 3px;
-  flex: none;
-}
-.v2-business-account-heading > .xm-page-head {
-  flex: 1;
-  min-width: 0;
-}
 .v2-local-avatar {
   display: inline-grid;
   place-items: center;
@@ -432,6 +314,12 @@
   height: 36px;
   border-radius: 11px;
   font-size: var(--font-body-l);
+}
+.v2-local-avatar-48 {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  font-size: 18px;
 }
 .v2-local-avatar-56 {
   width: 56px;
@@ -486,11 +374,6 @@
 .v2-business-card-inset {
   padding: 18px;
 }
-.v2-business-profile-aside p {
-  color: var(--text-2);
-  font-size: var(--font-small);
-  line-height: 1.65;
-}
 .v2-business-release-notes {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -508,7 +391,6 @@
 /* 表头放进带内边距的卡片时和下面的行一样通到两边，表头自带下边线，紧跟的那一行不再叠一道。 */
 .xm-card-md > .xm-card-body > .v2-business-table-head:first-child { margin: -14px -16px 0; }
 .v2-business-table-head + :is(.xm-list-row, .xm-tool-row) { border-top: 0; }
-.v2-business-help { color: var(--text-3); line-height: 1.6; }
 .v2-business-table-row { display: grid; grid-template-columns: 1fr 240px 200px; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line); }
 .v2-business-table-row:last-child { border-bottom: 0; }
 /*
@@ -767,15 +649,13 @@
 .v2-business-recharge-form:disabled .v2-business-tier {
   cursor: not-allowed;
 }
-/* 「兑换」挪到充值码输入框右边同一行；邀请链接框右边是「复制链接」。 */
-.v2-business-redeem,
-.v2-business-invite-link {
+/* 「兑换」挪到充值码输入框右边同一行。 */
+.v2-business-redeem {
   display: flex;
   align-items: flex-end;
   gap: 8px;
 }
-.v2-business-redeem > .xm-field,
-.v2-business-invite-link > .xm-field {
+.v2-business-redeem > .xm-field {
   flex: 1;
 }
 .v2-business-account-sync {
@@ -902,3 +782,94 @@
 .v2-health-consent { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .v2-health-consent > .xm-switch-wrap { min-width: 0; }
 .v2-health-consent > .xm-btn { flex: none; }
+/*
+ * 个人中心 v4（第 06 批）：左上角「回首页」，页头是头像、名字、邮箱 · 哪种账号，下面一排六个页签。
+ * 概览两列卡片：余额、订阅是亮的卡，密钥与设备、邀请是底色浅一层的 well；最下面一条「当前登录」。
+ */
+.v2-acct-back { display: inline-flex; align-items: center; gap: 2px; align-self: flex-start; margin: 0 0 10px; padding: 0; border: 0; background: none; color: var(--text-2); font: inherit; font-size: var(--font-small); cursor: pointer; }
+.v2-acct-back:hover { color: var(--text); }
+.v2-acct-back:disabled { opacity: .5; cursor: default; }
+.v2-acct-back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.v2-acct-hero { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.v2-acct-hero-copy { flex: 1; min-width: 0; }
+.v2-acct-hero-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.v2-acct-hero-name h1 { margin: 0; overflow: hidden; color: var(--text); font-size: var(--font-h1); font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.v2-acct-hero-copy > p { margin: 2px 0 0; overflow: hidden; color: var(--text-2); font-size: 13.5px; text-overflow: ellipsis; white-space: nowrap; }
+.v2-acct-tabs { margin-bottom: 16px; overflow-x: auto; scrollbar-width: none; }
+.v2-acct-tabs button { flex: none; }
+.v2-acct-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.v2-acct-card, .v2-acct-well { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 20px; border-radius: var(--radius-card); corner-shape: squircle; }
+.v2-acct-card { border: 1px solid var(--line); background: var(--panel-solid); box-shadow: var(--sh-1); }
+.v2-acct-card.is-focus { border-color: transparent; background: radial-gradient(460px 170px at 0% 0%, var(--glow), transparent 70%) padding-box, linear-gradient(var(--panel-solid), var(--panel-solid)) padding-box, var(--edge) border-box; box-shadow: var(--sh-2); }
+.v2-acct-well { gap: 8px; border: 1px solid var(--line); background: var(--panel); }
+.v2-acct-card h2, .v2-acct-well h2, .v2-acct-section-head h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
+.v2-acct-card-head, .v2-acct-well-head, .v2-acct-section-head { display: flex; align-items: center; gap: 10px; }
+.v2-acct-card-head h2, .v2-acct-well-head h2, .v2-acct-section-head h2 { flex: 1; min-width: 0; }
+.v2-acct-well-head > span { color: var(--text-3); font-size: var(--font-small); }
+.v2-acct-more { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: var(--text-2); font: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.v2-acct-more:hover { color: var(--text); }
+.v2-acct-more:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.v2-acct-links { display: flex; flex-wrap: wrap; gap: 14px; margin-top: auto; padding-top: 2px; }
+.v2-acct-kv { display: flex; align-items: center; gap: 12px; min-height: 24px; font-size: 13px; }
+.v2-acct-kv > span:first-child { flex: 1; color: var(--text-2); }
+.v2-acct-kv > :last-child { min-width: 0; text-align: right; }
+.v2-acct-kv .is-muted, .v2-acct-muted { color: var(--text-3); font-size: var(--font-small); }
+.v2-acct-number { color: var(--num); }
+.v2-acct-balance-top { display: flex; align-items: center; gap: 6px; }
+.v2-acct-amount { margin-right: auto; color: var(--num); font: 600 30px var(--mono); line-height: 1.2; }
+.v2-acct-amount.is-low { color: var(--warn-tx); }
+.v2-acct-note, .v2-acct-days { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; }
+.v2-acct-days.is-low { color: var(--warn-tx); }
+.v2-acct-plan { margin: 0; color: var(--text); font-size: 15px; font-weight: 600; }
+.v2-acct-bar { display: block; height: 6px; overflow: hidden; border-radius: 3px; background: var(--track); }
+.v2-acct-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--fill); }
+.v2-acct-bar.is-warn > i { background: var(--warn); }
+.v2-acct-bar.is-thin { max-width: 260px; height: 4px; margin-top: 6px; }
+.v2-acct-week { margin-top: auto; padding-top: 6px; }
+.v2-acct-week-head { display: flex; align-items: baseline; gap: 8px; color: var(--text-3); font-size: var(--font-small); }
+.v2-acct-week-head > b { margin-left: auto; color: var(--text-2); font: 500 var(--font-small) var(--mono); }
+.v2-acct-week-bars { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; height: 74px; margin-top: 8px; }
+.v2-acct-week-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+.v2-acct-week-track { position: relative; display: flex; flex: 1; align-items: flex-end; width: 100%; }
+.v2-acct-week-track > i { display: block; width: 100%; min-height: 0; border-radius: 3px 3px 1px 1px; background: var(--track); }
+.v2-acct-week-col.is-today .v2-acct-week-track > i { background: var(--fill); }
+.v2-acct-week-track > em { position: absolute; left: 50%; transform: translateX(-50%); color: var(--num); font: 500 11px var(--mono); font-style: normal; white-space: nowrap; }
+.v2-acct-week-col > span { color: var(--text-3); font-size: 11px; }
+.v2-acct-week-col.is-today > span { color: var(--text); font-weight: 500; }
+.v2-acct-session { flex-direction: row; align-items: center; gap: 14px; margin-top: 14px; padding: 14px 16px; }
+.v2-acct-session > div { flex: 1; min-width: 0; }
+.v2-acct-session strong { font-size: 14px; }
+.v2-acct-session p { margin: 2px 0 0; color: var(--text-3); font-size: var(--font-small); }
+.v2-acct-tile { display: flex; flex: none; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 9px; background: var(--panel-2); box-shadow: var(--tile-ring); color: var(--text); }
+/* 页签里一节一节往下排（用量账单、充值订阅、账号安全）：小标题一行，下面是那一节的卡片。 */
+.v2-acct-section { display: grid; gap: 10px; }
+.v2-acct-section-head { min-height: 30px; }
+.v2-business-account-panel > .v2-acct-section-head + .xm-card { margin-top: -6px; }
+/* 编辑资料弹窗：头像一行，下面显示名称和两行只读的用户名、邮箱。 */
+.v2-acct-profile-avatar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.v2-acct-profile-avatar > div { flex: 1; min-width: 0; }
+.v2-acct-profile-avatar p { margin: 2px 0 0; color: var(--text-3); font-size: var(--font-small); }
+.v2-acct-profile-fields { display: grid; gap: 14px; }
+.v2-acct-profile-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: baseline; gap: 2px 12px; }
+.v2-acct-profile-row > span { color: var(--text-2); font-size: var(--font-small); }
+.v2-acct-profile-row > strong { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+.v2-acct-profile-row > small { grid-column: 2; color: var(--text-3); font-size: var(--font-micro); }
+/* 密钥管理：最上面一行小字、搜索和「新建密钥」；每把密钥掩码一行（眼睛、复制贴在后面），小字一行。 */
+.v2-acct-keys-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.v2-acct-keys-top > p { flex: 1 1 220px; margin: 0; }
+.v2-acct-keys-top > .xm-search { width: 200px; }
+.v2-acct-key-line { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.v2-acct-key-line > code { min-width: 0; overflow: hidden; color: var(--text-3); text-overflow: ellipsis; white-space: nowrap; user-select: all; }
+.v2-acct-key-line > code.is-shown { color: var(--text); overflow-wrap: anywhere; white-space: normal; }
+.v2-acct-key-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; color: var(--text-3); font-size: 12px; }
+.v2-acct-field { display: grid; gap: 6px; }
+.v2-acct-field-label { color: var(--text); font-size: var(--font-small); font-weight: 500; }
+.v2-acct-field-hint { color: var(--text-3); font-size: var(--font-micro); }
+.v2-acct-created { display: grid; gap: 6px; padding: 6px 0; }
+.v2-acct-created p { margin: 0; color: var(--text-2); }
+/* 邀请返利：邀请码卡和成绩卡并排，下面是邀请记录（只有历史账号有）。 */
+.v2-acct-invite { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.v2-acct-invite-code { display: flex; align-items: center; gap: 12px; }
+.v2-acct-invite-code > code { margin-right: auto; color: var(--num); font: 700 28px var(--mono); letter-spacing: 5px; user-select: all; }
+.v2-acct-invite .v2-acct-kv > b { font-weight: 600; }
+.v2-saved-accounts-lead { margin: 0 0 10px; color: var(--text-2); font-size: var(--font-small); }

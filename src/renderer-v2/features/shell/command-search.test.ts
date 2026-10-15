@@ -23,11 +23,11 @@ describe('searchCommands', () => {
   it('runs the check and opens help from the action group', () => {
     expect(searchCommands('开始检查')[0]).toMatchObject({ group: 'action', page: 'health', action: 'check' })
     expect(searchCommands('客服').find((item) => item.group === 'action')).toMatchObject({ label: '帮助与客服', action: 'help' })
-    expect(searchCommands('账单')[0]).toMatchObject({ group: 'action', page: 'account', section: 'dashboard' })
+    expect(searchCommands('账单')[0]).toMatchObject({ group: 'action', page: 'account', section: 'usage' })
   })
 
   it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
-    const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'dashboard' }).filter((item) => item.group === 'action').map((item) => item.label)
+    const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'usage' }).filter((item) => item.group === 'action').map((item) => item.label)
     expect(labels).toEqual(['开始检查', '帮助与客服'])
   })
 
@@ -109,6 +109,27 @@ describe('searchCommands', () => {
     expect(searchCommands('换号', { accountTabVisible: () => false }).some((item) => item.key === 'account:switch-account')).toBe(true)
   })
 
+  it('finds the parts that used to be tabs of their own, and the entries that moved, by their old names', () => {
+    const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
+    expect(landing('我的订单')).toEqual({ key: 'account:orders', group: 'account', label: '我的订单', page: 'account', section: 'orders' })
+    expect(landing('没到账')).toMatchObject({ section: 'orders' })
+    expect(landing('异步任务')).toMatchObject({ section: 'tasks' })
+    expect(landing('登录设备')).toMatchObject({ section: 'devices' })
+    expect(landing('下线')).toMatchObject({ section: 'devices' })
+    expect(landing('记住密码')).toMatchObject({ section: 'remember-password' })
+    expect(landing('编辑资料')).toMatchObject({ section: 'edit-profile' })
+    expect(landing('调用明细')).toMatchObject({ section: 'usage' })
+    expect(landing('用量看板')).toMatchObject({ section: 'usage' })
+    expect(landing('账号安全')).toMatchObject({ section: 'security' })
+  })
+
+  it('leaves out the moved parts the current account cannot use', () => {
+    const historical = { accountTabVisible: (tab: string) => !['tasks', 'devices'].includes(tab) }
+    expect(searchCommands('异步任务', historical).some((item) => item.section === 'tasks')).toBe(false)
+    expect(searchCommands('登录设备', historical).some((item) => item.section === 'devices')).toBe(false)
+    expect(searchCommands('修改密码', { accountTabVisible: () => false }).some((item) => item.section === 'change-password')).toBe(true)
+  })
+
   it('returns nothing for text no page, setting or tutorial mentions', () => {
     expect(searchCommands('qqqqzzzz')).toEqual([])
   })
@@ -157,7 +178,7 @@ describe('searchCommands for single settings', () => {
     expect(searchCommands('配置')[0]).toMatchObject({ group: 'page', page: 'home' })
     expect(searchCommands('换模型')[0]).toMatchObject({ group: 'page', page: 'home' })
     expect(searchCommands('检查更新')[0]).toMatchObject({ group: 'page', page: 'updates' })
-    expect(searchCommands('修改密码').find((item) => item.group === 'account')).toMatchObject({ section: 'overview' })
+    expect(searchCommands('修改密码').find((item) => item.group === 'account')).toMatchObject({ section: 'change-password' })
     for (const word of ['扣费偏好', '先扣', '兑换码', '充值码']) expect(searchCommands(word).find((item) => item.group === 'account'), word).toMatchObject({ section: 'recharge' })
     for (const word of ['限额', '额度上限']) expect(searchCommands(word).find((item) => item.group === 'account'), word).toMatchObject({ section: 'keys' })
     expect(searchCommands('换账号').some((item) => item.section === 'switch-account')).toBe(true)

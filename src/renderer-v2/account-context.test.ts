@@ -36,6 +36,17 @@ describe('renderer account ownership', () => {
     expect(visibleAccountTab('dashboard', session)).toBe(true)
     expect(visibleAccountTab('tasks', session)).toBe(false)
   })
+  it('offers the merged usage tab when only the dashboard or only the call details exist', () => {
+    type Capabilities = Parameters<typeof visibleAccountTab>[1]['capabilities']
+    expect(visibleAccountTab('usage', { siteId: 'solov-api', capabilities: { supportsUsage: false, supportsDashboard: true } as Capabilities })).toBe(true)
+    expect(visibleAccountTab('usage', { siteId: 'solov-api', capabilities: { supportsUsage: true, supportsDashboard: false } as Capabilities })).toBe(true)
+    expect(visibleAccountTab('usage', { siteId: 'solov-api', capabilities: { supportsUsage: false, supportsDashboard: false } as Capabilities })).toBe(false)
+  })
+  it('gives every account the security tab and the landings that live on always-present tabs', () => {
+    const session = { siteId: 'solov-api' as const }
+    for (const value of ['security', 'switch-account', 'edit-profile', 'change-password', 'remember-password']) expect(visibleAccountTab(value, session), value).toBe(true)
+    expect(visibleAccountTab('wallet', session)).toBe(false)
+  })
 })
 
 describe('renderer account scope while the startup restore is still running', () => {

@@ -340,7 +340,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     steps: [
       {
         title: '在个人中心确认当前账号',
-        where: '工具箱左下角 → 个人中心 → 我的账号',
+        where: '左下角账号卡 → 账号概览',
         detail: '先确认当前登录的是你自己的账号。',
         bullets: ['点左下角账号，未登录就先登录。', '查看资料与余额，读取失败时点「刷新余额」。'],
         expected: '账号名字正确，余额已读取。',
@@ -350,9 +350,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '分清账号密码、密钥和模型分组',
-        where: '个人中心 → 密钥',
+        where: '个人中心 → 密钥管理',
         detail: '密码用来登录；Key 是调用 AI 的通行证；分组决定能用的模型和收费规则。普通使用通常不用手动复制 Key。',
-        bullets: ['在「密钥」里查看已有 Key。', '工具配置里核对所用 Key 的名称、分组和掩码预览。'],
+        bullets: ['在「密钥管理」里查看已有密钥。', '工具配置里核对所用 Key 的名称、分组和掩码预览。'],
         expected: '知道当前工具用了哪个分组。',
         extra: [{ title: '官方账号也扣星芒余额吗？', detail: '切换到官方账号来源后，登录和额度按官方服务的规则使用。' }],
         action: '查看账号与密钥',
@@ -361,7 +361,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '充值或兑换，并确认到账',
-        where: '个人中心 → 充值与订阅',
+        where: '侧栏「充值」',
         detail: '按页面提供的金额和支付方式充值。手里有充值码的，也可以直接兑换。',
         bullets: ['选金额和支付方式，点「充值」，核对报价后支付。', '使用充值码时，填入「兑换充值码」，点「兑换」并确认账号。', '付款后等成功提示，核对余额或权益。'],
         expected: '显示充值或兑换成功，余额或权益已更新。',
@@ -372,8 +372,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '查看每次调用消耗了多少',
-        where: '个人中心 → 调用明细 / 用量看板',
-        detail: '「调用明细」看每次用了多少，「用量看板」看整体趋势。',
+        where: '个人中心 → 用量账单',
+        detail: '「用量账单」上面看整体趋势，下面的「调用明细」看每次用了多少。',
         bullets: ['按刚才使用的时间找到调用。', '打开详情，核对模型、分组和费用。'],
         expected: '能找到对应请求的用量和计费信息。',
         extra: [{ title: '余额没变，或者想重试？', detail: '可以手动刷新余额；显示更新失败时可能仍是旧金额。聊天、生图和重试都是实际请求，费用以服务端记录为准。' }],
@@ -428,7 +428,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '同一件事继续原对话，换主题就开新对话。',
         bullets: ['点左侧已有对话继续。', '回复下方可复制，需重试时选「重新生成」。'],
         expected: '回到原对话能看到已有消息。',
-        extra: [{ title: '重新生成或编辑重发会怎样？', detail: '会提交新的请求，并替换对应消息之后的回复，可能产生新费用；费用在个人中心「调用明细」查看。' }],
+        extra: [{ title: '重新生成或编辑重发会怎样？', detail: '会提交新的请求，并替换对应消息之后的回复，可能产生新费用；费用在个人中心「用量账单」查看。' }],
         action: '打开聊天历史',
         page: 'chat',
       },

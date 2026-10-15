@@ -10,8 +10,9 @@ function step(topicId: string, action: string): TutorialStep {
 }
 
 // 「在哪里」写的是用户要去的分页；按钮若只跳页，就会停在默认分页或上次看的那页。
+// 充值的那一步写的是侧栏「充值」（v4 把充值放到了侧栏），它打开的是充值订阅。
 const sectionsByPage = {
-  account: accountTabs.filter((tab) => tab.value !== 'overview'),
+  account: [...accountTabs.filter((tab) => tab.value !== 'overview'), { value: 'recharge', label: '侧栏「充值」' }],
   settings: settingsGroups.filter((group) => group.value !== 'appearance'),
 } as const;
 

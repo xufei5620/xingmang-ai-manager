@@ -218,6 +218,8 @@
 .xm-menu-pop button:disabled { opacity: .5; cursor: not-allowed; }
 .xm-menu-pop .is-danger { color: var(--bad-tx); }
 .xm-menu-pop hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+.xm-menu-heading { padding: 6px 10px 4px; color: var(--text-3); font-size: var(--font-micro); }
+.xm-menu-hint { margin-left: auto; padding-left: 10px; color: var(--text-3); font-size: var(--font-micro); }
 .xm-popover-panel { width: 280px; padding: 12px; }
 .xm-popover-panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .xm-empty { text-align: center; padding: 44px 20px; color: var(--text-2); }

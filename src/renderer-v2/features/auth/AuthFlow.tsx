@@ -249,7 +249,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       catch (reason) {
         if (current()) {
           leaveTwoFactor(); setRecovered(result); setTempShown(true); setReveal(false)
-          setMessage('新密码没设上，你已经用下面这个临时密码登录了。先复制存好，再点「继续」进软件；以后可以在「个人中心 → 我的账号」里改密码。')
+          setMessage('新密码没设上，你已经用下面这个临时密码登录了。先复制存好，再点「继续」进软件；以后可以在「个人中心 → 账号安全」里改密码。')
           setError(authErrorMessage(reason, '设新密码'))
         }
         return
@@ -399,7 +399,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
           return
         }
         // 连登录都没成：密码还是那串临时的，亮出来让客户照老办法去登录。
-        if (current()) { setTempShown(true); setReveal(false); setMessage('新密码没设上，你的账号现在用的是下面这个临时密码。复制它去登录，登录后可以在「个人中心 → 我的账号」里再改。') }
+        if (current()) { setTempShown(true); setReveal(false); setMessage('新密码没设上，你的账号现在用的是下面这个临时密码。复制它去登录，登录后可以在「个人中心 → 账号安全」里再改。') }
         throw reason
       }
       if (current()) await finishLogin(result, attempt, current)

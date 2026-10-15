@@ -176,7 +176,7 @@ describe('renderer-v2 v4 sidebar', () => {
 describe('renderer-v2 v4 top bar', () => {
   it('says where you are: the page, or 个人中心 and its tab', () => {
     expect(renderShell()).toContain('data-testid="window-titlebar"><strong>首页</strong></div>')
-    expect(renderShell({ activePage: 'account', accountTab: 'recharge' })).toContain('data-testid="window-titlebar">个人中心<span aria-hidden="true">/</span><strong>充值与订阅</strong></div>')
+    expect(renderShell({ activePage: 'account', accountTab: 'recharge' })).toContain('data-testid="window-titlebar">个人中心<span aria-hidden="true">/</span><strong>充值订阅</strong></div>')
   })
 
   it('shows the theme key only when it can switch, and the other theme’s icon', () => {

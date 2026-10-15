@@ -134,21 +134,21 @@ describe('v2 business boundaries', () => {
     }
   })
 
-  it('lets each account page wait only for the reads it actually shows', () => {
+  it('lets each account tab wait only for the reads it actually shows', () => {
     expect(accountTabNeeds('overview')).toEqual({ profile: true, balance: true })
     expect(accountTabNeeds('invite')).toEqual({ profile: true, balance: true })
-    for (const tab of ['recharge', 'orders', 'devices'] as const) {
+    for (const tab of ['recharge', 'security'] as const) {
       expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: false })
     }
-    for (const tab of ['dashboard', 'usage', 'tasks', 'keys'] as const) {
+    for (const tab of ['usage', 'keys'] as const) {
       expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: true })
     }
   })
 
   it('names the current account in the page head and says plainly when its profile was not read', () => {
-    expect(accountHeadLead({ username: 'alice', email: 'a@example.test' })).toBe('当前账号：alice（a@example.test）')
-    expect(accountHeadLead({ username: 'alice', email: '' })).toBe('当前账号：alice')
-    expect(accountHeadLead(null)).toBe('当前账号的资料暂时没有读到')
+    expect(accountHeadLead({ username: 'alice', email: 'a@example.test' }, '星芒账号')).toBe('a@example.test · 星芒账号')
+    expect(accountHeadLead({ username: 'alice', email: '' }, '历史账号')).toBe('alice · 历史账号')
+    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号的资料暂时没有读到')
   })
 
   it('counts only the folded filters that a query actually applied', () => {

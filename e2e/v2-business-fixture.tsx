@@ -2,7 +2,8 @@ import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { BusinessPage } from '../src/renderer-v2/pages-business'
 import { Shell } from '../src/renderer-v2/features/shell/Shell'
-import { BalanceTierProvider, ToastProvider } from '../src/renderer-v2/ui'
+import { BalanceTierProvider, Dialog, ToastProvider } from '../src/renderer-v2/ui'
+import { SavedAccounts } from '../src/renderer-v2/SavedAccounts'
 import type { V2Bridge, V2Page } from '../src/renderer-v2/types'
 import type {
   PlatformSystemState,
@@ -1235,6 +1236,19 @@ const root = createRoot(document.getElementById('root')!)
 // 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
 let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'grok'; sequence: number } | null = null
 let pageActive: boolean | undefined
+// switcher：和 App.tsx 一样，「切换账号」打开装着保存账号的弹窗（v4 起个人中心不再自带这张卡）。
+// 切完不自动关，好看清切换结果。
+let switcherOpen = false
+function openSwitcher() {
+  record('open-account-switcher')
+  if (!query.has('switcher')) return
+  switcherOpen = true
+  renderFixture()
+}
+function closeSwitcher() {
+  switcherOpen = false
+  renderFixture()
+}
 const renderFixture = (paymentReturn?: {
   sequence: number
   order: string | null
@@ -1269,7 +1283,7 @@ const renderFixture = (paymentReturn?: {
           paymentReturn={paymentReturn}
           navigate={(next, section) => record('navigate', section === undefined ? next : [next, section])}
           openLogin={() => record('login')}
-          switchAccount={() => record('open-account-switcher')}
+          switchAccount={openSwitcher}
           openHelp={query.has('help') ? () => record('open-help') : undefined}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
@@ -1277,6 +1291,11 @@ const renderFixture = (paymentReturn?: {
           active={pageActive}
         />
       </BalanceTierProvider>
+      {switcherOpen && (
+        <Dialog open title="切换账号" width={480} onClose={closeSwitcher}>
+          <SavedAccounts api={api} onLogin={() => { record('login'); closeSwitcher() }} />
+        </Dialog>
+      )}
     </Shell>
     </ToastProvider>,
   )

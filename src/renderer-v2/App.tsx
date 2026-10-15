@@ -36,7 +36,7 @@ import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeR
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
 import { operationLogPage, operationTargetOf, type OperationActionId } from './operation-error'
-import { accountSwitchAnchor, accountTabs, macDesktopTutorialTopic, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
+import { accountTabs, macDesktopTutorialTopic, resolveAccountLanding, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
 import { shortcutTools, tools } from './registry/tools'
 import { activeProviderIds, type ActiveProviderId } from '../../electron/catalog'
 import { clientConnections } from './registry/clients'
@@ -842,9 +842,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       return
     }
     if ((target === 'account' || target === 'chat') && !session.authenticated) { setAuth('login'); return }
-    // 顶部搜索的个人中心「切换账号」落在页头那颗按钮上，停在当前分页不动。
-    if (target === 'account' && section === accountSwitchAnchor) requestRowFocus('account', section)
-    else if (target === 'account') setAccountTab((current) => ({ sequence: current.sequence + 1, value: accountTabs.find((entry) => entry.value === section)?.value ?? 'overview', rechargeAmount }))
+    // 个人中心的页签，或页签里的某一节（顶部搜索的「切换账号」「我的订单」、系统通知的「异步任务」…）：
+    // 切到那一节所在的页签，再翻到那一节。
+    if (target === 'account') {
+      const landing = resolveAccountLanding(section)
+      if (landing.anchor) requestRowFocus('account', landing.anchor)
+      setAccountTab((current) => ({ sequence: current.sequence + 1, value: landing.tab, rechargeAmount }))
+    }
     // 教程的 section 可以带「#某条补充说明的标题」：打开那一篇、展开那一条（技能页「看怎么放」）。
     if (target === 'tutorial' && section) {
       const mark = section.indexOf('#')
@@ -1468,10 +1472,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     } else if (!linkPrompted.current) { linkPrompted.current = true; setAuth('login') }
   }, [pendingLink, boot, auth, configTool, confirmation, switcher, restartDialog, session.authenticated, navigate])
   useEffect(() => native.onNavigate((target) => {
-    // 系统通知点进来：余额去「充值与订阅」，异步任务去个人中心那一栏，花费突然变多去「用量看板」，公告直接打开公告。
+    // 系统通知点进来：余额去「充值订阅」，异步任务去「用量账单」里那一节，花费突然变多去「用量账单」，公告直接打开公告。
     if (target === 'topup') navigate('account', 'recharge')
     else if (target === 'tasks') navigate('account', 'tasks')
-    else if (target === 'usage') navigate('account', visibleAccountTab('dashboard', session) ? 'dashboard' : 'usage')
+    else if (target === 'usage') navigate('account', 'usage')
     else if (target === 'announcement') { if (session.authenticated) setAnnouncementOpen(true) }
     else navigate(target)
   }), [native, navigate, session])
@@ -1560,6 +1564,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     walletUsd: balanceAmount, subscription,
     weekUsageUsd: runwayUsage && balance.quotaPerUnit > 0 ? runwayUsage.weekQuota / balance.quotaPerUnit : null,
   }) : null
+  // 账号概览和首页说同一套数：还能用几天、能扣的订阅、近 7 天花费（历史账号只有这个合计）。
+  const accountSummary = { runway, subscription, weekUsageUsd: runwayUsage && balance && balance.quotaPerUnit > 0 ? runwayUsage.weekQuota / balance.quotaPerUnit : null }
+  // 密钥管理「配置到工具」下拉：哪些命令行工具装了、哪些现在用官方账号登录。
+  const accountKeyTools = useMemo(() => toolbox.snapshot ? presentTools(toolbox.snapshot).flatMap((tool) => tool.id === 'claude' || tool.id === 'codex' || tool.id === 'grok'
+    ? [{ provider: tool.id, name: tool.name, installed: tool.status.detectionFailed ? null : tool.status.installed, official: tool.source === 'official' }]
+    : []) : undefined, [toolbox.snapshot])
   useEffect(() => {
     if (!balance || balanceState.updatedAt === null || !supportsSpendCheck) return
     void spendWatch.observe({ scope, account: String(session.account?.userId ?? 0), quota: balance.quota, quotaPerUnit: balance.quotaPerUnit, at: balanceState.updatedAt })
@@ -1679,7 +1689,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id === 'health' ? `health:${healthRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   onSessionsChanged={refreshRecent}
                   beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
@@ -1711,7 +1721,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
-    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result || !accountSwitchNeedsAttention(result)) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={(target) => { setSwitcher(false); setAuthTarget(target ?? null); setAuth('login') }} /></Dialog>}
+    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)} footer={<Button onClick={() => setSwitcher(false)} testId="account-switcher-done">完成</Button>}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result || !accountSwitchNeedsAttention(result)) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={(target) => { setSwitcher(false); setAuthTarget(target ?? null); setAuth('login') }} /></Dialog>}
     {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
       onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onKeyWritten={confirmToolKeyWritten} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}

@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { PlatformNotificationKind } from '../../../electron/platform/contract';
 import type { UpdateFailedStep } from '../../../electron/ipc-contract';
 import {
-  accountTabGroups,
+  accountSections,
   accountTabs,
+  resolveAccountLanding,
   autoUpdateBubbleBody,
   autoUpdateSettingDescription,
   notificationOptions,
@@ -30,10 +31,34 @@ import {
   withdrawnVersionAdvice,
 } from './business';
 
-describe('account center tab groups', () => {
-  // 左边子导航按组画，搜索结果按 accountTabs 排；两边次序一致，每个分页只出现一次。
-  it('lists every account tab in exactly one group, in the order of the tab list', () => {
-    expect(accountTabGroups.flatMap((group) => group.tabs)).toEqual(accountTabs.map((tab) => tab.value));
+describe('account center tabs and landings', () => {
+  // v4 把九个分页并成六个横排页签（字表批06）。
+  it('lists the six v4 tabs in order', () => {
+    expect(accountTabs.map((tab) => tab.label)).toEqual(['账号概览', '充值订阅', '用量账单', '密钥管理', '账号安全', '邀请返利']);
+  });
+
+  it('lands every former tab and moved entry on the tab that now holds it', () => {
+    expect(resolveAccountLanding('orders')).toEqual({ tab: 'recharge', anchor: 'orders' });
+    expect(resolveAccountLanding('tasks')).toEqual({ tab: 'usage', anchor: 'tasks' });
+    expect(resolveAccountLanding('devices')).toEqual({ tab: 'security', anchor: 'devices' });
+    expect(resolveAccountLanding('dashboard')).toEqual({ tab: 'usage' });
+    expect(resolveAccountLanding('change-password')).toEqual({ tab: 'security', anchor: 'change-password' });
+    expect(resolveAccountLanding('switch-account')).toEqual({ tab: 'overview', anchor: 'switch-account' });
+    expect(resolveAccountLanding('edit-profile')).toEqual({ tab: 'overview', anchor: 'edit-profile' });
+    expect(resolveAccountLanding('keys')).toEqual({ tab: 'keys' });
+  });
+
+  it('falls back to the overview for names it does not know, including inherited object keys', () => {
+    for (const value of [undefined, '', 'wallet', 'toString', '__proto__']) {
+      expect(resolveAccountLanding(value), String(value)).toEqual({ tab: 'overview' });
+    }
+  });
+
+  it('keeps each landing name distinct from the tab names', () => {
+    const tabValues: readonly string[] = accountTabs.map((tab) => tab.value);
+    const values = accountSections.map((section) => section.value);
+    expect(new Set(values).size).toBe(values.length);
+    for (const value of values) expect(tabValues).not.toContain(value);
   });
 });
 
