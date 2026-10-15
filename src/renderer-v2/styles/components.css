@@ -150,6 +150,15 @@
 .xm-segment button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--control-xs); padding: 0 12px; border: 0; background: transparent; border-radius: 6px; color: var(--text-2); font: inherit; font-size: var(--font-small); cursor: pointer; }
 .xm-segment button.is-active { background: var(--seg-on); color: var(--text); font-weight: 500; box-shadow: var(--control-segment-shadow); }
 .xm-segment button:disabled, .xm-tabs button:disabled { opacity: .5; cursor: not-allowed; }
+.xm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.xm-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 0; border-radius: 14px; background: transparent; box-shadow: inset 0 0 0 1px var(--line-2); color: var(--text-2); font: inherit; font-size: var(--font-small); cursor: pointer; white-space: nowrap; transition: background var(--duration-fast), color var(--duration-fast); }
+.xm-chip.has-leading { padding-left: 6px; }
+.xm-chip-lead { display: inline-flex; }
+.xm-chip-count { color: var(--text-3); font-size: var(--font-small-compact); font-variant-numeric: tabular-nums; }
+.xm-chip:hover { background: var(--panel-hover); color: var(--text); }
+.xm-chip[aria-pressed="true"] { background: var(--soft); color: var(--soft-tx); box-shadow: none; font-weight: 600; }
+.xm-chip[aria-pressed="true"] .xm-chip-count { color: inherit; opacity: .8; }
+.xm-chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .xm-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
 .xm-tabs button { height: 38px; display: inline-flex; gap: 6px; align-items: center; padding: 8px 12px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-2); font: inherit; cursor: pointer; }
 .xm-tabs button.is-active { border-bottom-color: var(--gold); color: var(--text); font-weight: 600; }

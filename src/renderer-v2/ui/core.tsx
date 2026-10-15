@@ -67,6 +67,13 @@ function Choices({ options, value, onChange, testId, kind, label, activation = k
   }} role={kind === 'tabs' ? 'tab' : undefined} type="button">{Icon && <Icon size={15} aria-hidden="true" />}{itemLabel}</button>)}</div>;
 }
 export function Segment(props: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; label?: string }) { return <Choices {...props} kind="segment" />; }
+// UI v4.0 filter chips (records by tool, tutorials by category): a row of toggle buttons that each
+// carry a count. Unlike Segment they wrap onto a second line instead of squeezing, and a count the
+// caller has not read yet is left out rather than drawn as 0.
+export type ChipOption = { value: string; label: string; count?: number; leading?: ReactNode; testId?: string };
+export function Chips({ options, value, onChange, label, testId }: BaseProps & { options: ChipOption[]; value: string; onChange: (value: string) => void; label?: string }) {
+  return <div className="xm-chips" role="group" aria-label={label} data-testid={testId}>{options.map(option => <button type="button" key={option.value} className={cx('xm-chip', Boolean(option.leading) && 'has-leading')} aria-pressed={option.value === value} onClick={() => onChange(option.value)} data-testid={option.testId}>{option.leading && <span className="xm-chip-lead" aria-hidden="true">{option.leading}</span>}{option.label}{typeof option.count === 'number' && <span className="xm-chip-count">{option.count}</span>}</button>)}</div>;
+}
 export function Tabs({ items, ...props }: BaseProps & { items: Choice[]; value: string; onChange: (value: string) => void; label?: string; activation?: 'manual' | 'automatic' }) { return <Choices {...props} options={items} kind="tabs" />; }
 export function Empty({ icon: Icon, title, description, action, testId }: BaseProps & { icon: Icon; title: ReactNode; description: ReactNode; action?: ReactNode }) {
   return <div className="xm-empty" data-testid={testId}><Icon size={28} aria-hidden="true" /><h3>{title}</h3>{description && <p>{description}</p>}{action && <div className="xm-empty-actions">{action}</div>}</div>;

@@ -1021,10 +1021,11 @@ test('a record whose folder is gone keeps the resume button in place but disable
       await resume.getAttribute('title'),
       '这条记录的文件夹已经不在了，接不上上次的对话',
     )
+    // v4：文件夹那一格挂着警告图标，悬停说一句，路径照旧显示。
     await page.getByTestId('sessions-missing-codex:session-1').waitFor()
     assert.equal(
-      await page.getByTestId('sessions-missing-codex:session-1').innerText(),
-      '文件夹已不存在',
+      await page.getByTestId('sessions-missing-codex:session-1').getAttribute('title'),
+      '这个文件夹已经不在了',
     )
     // 按不动就不该有任何一次启动请求发出去。
     await resume.click({ force: true }).catch(() => {})
@@ -1041,7 +1042,8 @@ test('session detail exposes a retry action after a temporary read failure', asy
     const drawer = page.getByTestId('session-detail-drawer')
     await drawer.getByText('会话详情暂时不可读', { exact: true }).waitFor()
     await drawer.getByRole('button', { name: '重试读取', exact: true }).click()
-    await drawer.getByText('这是一条测试消息', { exact: true }).waitFor()
+    // 气泡前面有一句只给读屏的「你：」，按包含来找。
+    await drawer.getByText('这是一条测试消息').waitFor()
   } finally {
     await page.close()
   }
@@ -1745,7 +1747,7 @@ test('a cancelled export reports nothing instead of claiming the file was writte
     await page.getByTestId('sessions-view-codex:session-1').click()
     const drawer = page.getByTestId('session-detail-drawer')
     await drawer.getByText('这是一条测试消息').waitFor()
-    await drawer.getByRole('button', { name: '导出', exact: true }).click()
+    await drawer.getByRole('button', { name: '导出对话', exact: true }).click()
     await page.waitForFunction(() =>
       JSON.parse(document.documentElement.dataset.calls || '[]').some(
         (call) => call.name === 'export-session',
