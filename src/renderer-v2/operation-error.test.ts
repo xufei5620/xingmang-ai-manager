@@ -105,6 +105,17 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('模型查询失败，服务返回 403：令牌已失效')).toBe('keyInvalid')
   })
 
+  it('names the history account backend running out of balance instead of showing the English sentence alone', () => {
+    // 客户装着 CC Switch、点「改用当前账号」时撞上的原话：历史账号余额用完，查模型那一步就被拒了。
+    const switchFailure = '改用当前账号没有完成：模型查询失败，服务返回 403：Insufficient account balance。已恢复到切换前的配置。'
+    expect(classifyOperationError(switchFailure, 'config')).toBe('noBalance')
+    const hint = presentOperationError(switchFailure, 'config')
+    expect(hint?.title).toBe('余额已用完')
+    expect(hint?.actions).toEqual([{ id: 'recharge', label: '马上充值' }])
+    // 只带错误码的写法同样认得。
+    expect(classifyOperationError('模型查询失败，服务返回 403：INSUFFICIENT_BALANCE')).toBe('noBalance')
+  })
+
   it('tells a service outage apart from a broken key or an expired login', () => {
     // 盲点 1：维护、网关错误、CDN 的 52x 与上游渠道被自动禁用，以前分别落进
     // 「操作没有成功」「Key 失效 → 一键修复」，用户于是去重写 Key、找客服。
