@@ -222,7 +222,7 @@ export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporti
     failure: false,
     tone: 'neutral',
     title: '软件出错时会发送错误报告',
-    body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私与数据」里关掉。',
+    body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私数据」里关掉。',
     action: { label: '知道了', crashReporting: 'keep' },
     secondaryAction: { label: '不想发送', crashReporting: 'off' },
   }

@@ -3581,7 +3581,7 @@ if (!hasSingleInstanceLock) {
           buttons: trayReady ? ['缩到托盘', '强制退出程序', '返回'] : ['强制退出程序', '返回'],
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
           // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
-          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 → 启动与关闭」里改）',
+          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 → 启动关闭」里改）',
           checkboxChecked: false,
         })
         const decision = trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'

@@ -3105,7 +3105,7 @@ export function BackupsPage({
   api: V2Bridge
   /** 恢复成功后回调，用来让首页重读配置。 */
   onRestored?: (provider: Provider) => void
-  /** section：连接测试结论是「网络」时落到设置的「网络」组；缺省 = 只跳页。 */
+  /** section：连接测试结论是「网络」时落到设置的「网络加速」组；缺省 = 只跳页。 */
   navigate?: (page: V2Page, section?: string) => void
   /** 外壳说的「现在显示的是这一页」：再显示时重读一次列表（同 BusinessActions.active）；缺省 = 不重读（旧行为）。 */
   active?: boolean

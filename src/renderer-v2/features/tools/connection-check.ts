@@ -82,7 +82,7 @@ export interface ConnectionCheckView {
   detail: string | null
   /** 成功时为 null：没有要处理的事就不该出现按钮。 */
   target: PageId | null
-  /** 「去处理」落到 target 那一页里的哪一组（设置的「网络」）；null = 只跳页。 */
+  /** 「去处理」落到 target 那一页里的哪一组（设置的「网络加速」）；null = 只跳页。 */
   section: string | null
   /** 'rewrite-key' 时按钮不再跳页，而是就地对当前账号重新写一次这个工具的 Key。 */
   action: 'rewrite-key' | null
