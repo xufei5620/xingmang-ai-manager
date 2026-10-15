@@ -225,7 +225,7 @@ describe('v2 auth recovery boundaries', () => {
   // 以前 409 落到「请稍后重试」：服务端的设备数满了，重试一万次也登不上。
   it('explains login device and frequency limits instead of asking to try again later', () => {
     const sessionLimit = authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 这个账号同时登录的设备太多了，暂时登不上。"), '登录')
-    expect(sessionLimit).toContain('登录设备')
+    expect(sessionLimit).toContain('「账号安全」里让几台不用的设备下线')
     expect(sessionLimit).toContain('联系客服')
     expect(sessionLimit).not.toMatch(/稍后重试|https?:|solov|\.cc/)
     expect(authErrorMessage(new Error('AUTH_SESSION_LIMIT'), '登录')).toBe(sessionLimit)

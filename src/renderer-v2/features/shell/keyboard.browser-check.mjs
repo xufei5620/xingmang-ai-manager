@@ -240,7 +240,7 @@ test('a setting found from the command palette stays in view when settings was l
   } finally { await page.close() }
 })
 
-test('switch account found from the command palette points at the account center header button and keeps the tab', async () => {
+test('switch account found from the command palette lands on the current-login bar of the overview, also from another tab', async () => {
   const page = await open()
   try {
     await page.keyboard.press('Control+k')
@@ -249,16 +249,17 @@ test('switch account found from the command palette points at the account center
     await page.getByTestId('page-account').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="page-account"] [data-anchor="switch-account"]')?.getAttribute('data-anchor-focus') === 'true')
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'account-switch')
-    assert.equal(await page.getByTestId('account-tabs').getByRole('tab', { name: '我的账号', exact: true }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.getByTestId('account-tabs').getByRole('tab', { name: '账号概览', exact: true }).getAttribute('aria-selected'), 'true')
 
-    // 停在别的分页时再搜一次：还在那一页，只翻到页头那颗按钮。
-    await page.getByTestId('account-tabs').getByRole('tab', { name: '我的订单', exact: true }).click()
+    // 停在别的页签时再搜一次：「切换账号」在账号概览底下那条「当前登录」上，切回概览再翻到它。
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '账号安全', exact: true }).click()
     await page.waitForFunction(() => !document.querySelector('[data-anchor="switch-account"]')?.hasAttribute('data-anchor-focus'), null, { timeout: 5000 })
     await page.keyboard.press('Control+k')
     await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('换账号')
     await page.getByTestId('command-palette').getByRole('option', { name: '个人中心 · 切换账号', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-anchor="switch-account"]')?.getAttribute('data-anchor-focus') === 'true')
-    assert.equal(await page.getByTestId('account-tabs').getByRole('tab', { name: '我的订单', exact: true }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.getByTestId('account-tabs').getByRole('tab', { name: '账号概览', exact: true }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'account-switch')
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
 })

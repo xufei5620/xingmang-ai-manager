@@ -19,31 +19,59 @@ export const updatesTutorialTopic = 'safety'
 /** 同理：「进阶：安装与使用命令行工具」那一章；设置里「用哪个终端打开工具」跳到这里。 */
 export const cliTutorialTopic = 'cli'
 // keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
-// 界面上不显示。次序就是个人中心左边子导航从上到下的次序（分组见 accountTabGroups）。
+// 界面上不显示。次序就是个人中心顶上那排页签从左到右的次序。
+// v4 把原来的九个分页并成这六个：「我的订单」「异步任务」「登录设备」成了页签里的一节，
+// 搜它们的说法挂在下面的 accountSections 上，不再写进页签自己的 keywords，免得同一句搜出两条。
 export const accountTabs = [
-  { value: 'overview', label: '我的账号', keywords: ['账号', '资料', '邮箱', '密码', '改密码', '修改密码'] },
-  { value: 'recharge', label: '充值与订阅', keywords: ['充值', '余额', '买', '购买', '续费', '付款', '支付', '订阅', '套餐', '兑换', '兑换码', '充值码', '扣费偏好', '先扣'] },
-  { value: 'orders', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'] },
+  { value: 'overview', label: '账号概览', keywords: ['账号', '我的账号', '资料', '头像', '名字', '显示名称', '邮箱', '当前登录'] },
+  { value: 'recharge', label: '充值订阅', keywords: ['充值', '余额', '买', '购买', '续费', '付款', '支付', '订阅', '套餐', '兑换', '兑换码', '充值码', '扣费偏好', '扣费顺序', '先扣'] },
+  { value: 'usage', label: '用量账单', keywords: ['用量', '统计', '消耗', '花了多少', '账单', '明细', '调用明细', '用量看板', '扣费', '消费', '扣了多少', '花费'] },
+  { value: 'keys', label: '密钥管理', keywords: ['密钥', 'Key', 'API Key', '令牌', '秘钥', 'token', '限额', '额度上限'] },
+  { value: 'security', label: '账号安全', keywords: ['安全', '密码', '设备'] },
   { value: 'invite', label: '邀请返利', keywords: ['邀请', '返利', '推广', '分享'] },
-  { value: 'dashboard', label: '用量看板', keywords: ['用量', '统计', '消耗', '花了多少'] },
-  { value: 'usage', label: '调用明细', keywords: ['明细', '扣费', '消费', '扣了多少', '花费'] },
-  { value: 'tasks', label: '异步任务', keywords: ['任务', '生成进度'] },
-  { value: 'keys', label: '密钥', keywords: ['Key', 'API Key', '令牌', '秘钥', 'token', '限额', '额度上限'] },
-  { value: 'devices', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'] },
 ] as const
 export type AccountTabValue = (typeof accountTabs)[number]['value']
-/** 个人中心左边子导航分的三组，每组上面一行小灰字组名；每个分页只在一组里出现一次（registry 测试钉着）。 */
-export const accountTabGroups: ReadonlyArray<{ label: string; tabs: readonly AccountTabValue[] }> = [
-  { label: '账号与充值', tabs: ['overview', 'recharge', 'orders', 'invite'] },
-  { label: '用量', tabs: ['dashboard', 'usage', 'tasks'] },
-  { label: '密钥与设备', tabs: ['keys', 'devices'] },
-]
 /**
- * 个人中心页头「切换账号」那颗按钮：顶部搜索搜「切换账号」时，个人中心那一条落到这里，
- * 不换分页。和设置里「切换账号」那一行同名，各在各的页上找。
+ * 个人中心页头「编辑资料」那颗铅笔：顶部搜索搜「编辑资料」「头像」时落到这里，打开编辑资料弹窗。
+ */
+export const accountProfileAnchor = 'edit-profile'
+/**
+ * 账号概览「当前登录」那一条里的「切换账号」：顶部搜索搜「切换账号」时，个人中心那一条落到这里。
+ * 和设置里「切换账号」那一行同名，各在各的页上找。
  */
 export const accountSwitchAnchor = 'switch-account'
 export const accountSwitchKeywords = ['换账号', '切账号', '换号'] as const
+/**
+ * 页签里的几处落点。原来单独一个分页的（我的订单、异步任务、登录设备）和挪了地方的（修改密码从
+ * 「我的账号」挪到账号安全），顶部搜索、教程、系统通知、付款回跳还按原来的名字跳过来，落到那个
+ * 页签的那一节、亮一下。value 同时是页面上那一节的 data-anchor。
+ * gated：要看当前账号能不能用（visibleAccountTab 按 value 判断）；不写的哪种账号都有。
+ */
+export const accountSections = [
+  { value: accountSwitchAnchor, tab: 'overview', label: '切换账号', keywords: accountSwitchKeywords },
+  { value: accountProfileAnchor, tab: 'overview', label: '编辑资料', keywords: ['改名', '改头像', '换头像', '显示名称'] },
+  { value: 'orders', tab: 'recharge', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'], gated: true },
+  { value: 'tasks', tab: 'usage', label: '异步任务', keywords: ['任务', '生成进度'], gated: true },
+  { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },
+  { value: 'remember-password', tab: 'security', label: '记住密码', keywords: [] },
+  { value: 'devices', tab: 'security', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'], gated: true },
+] as const satisfies ReadonlyArray<{ value: string; tab: AccountTabValue; label: string; keywords: readonly string[]; gated?: boolean }>
+export type AccountSectionValue = (typeof accountSections)[number]['value']
+/** 外面点名要去的地方：一个页签，或者页签里的一处落点。 */
+export type AccountLanding = AccountTabValue | AccountSectionValue
+// 只剩旧名字的分页：「用量看板」并进了用量账单最上面，没有单独的落点。
+const retiredAccountTabs: Readonly<Record<string, AccountTabValue>> = { dashboard: 'usage' }
+/**
+ * 外面给的名字（页签、落点或旧分页名）落到哪个页签、要不要翻到哪一节；认不出的回到账号概览。
+ * 不在这里看账号能不能用，那由个人中心按 visibleAccountTab 再收一次。
+ */
+export function resolveAccountLanding(value: string | undefined): { tab: AccountTabValue; anchor?: AccountSectionValue } {
+  const tab = accountTabs.find((entry) => entry.value === value)
+  if (tab) return { tab: tab.value }
+  const section = accountSections.find((entry) => entry.value === value)
+  if (section) return { tab: section.tab, anchor: section.value }
+  return { tab: (value !== undefined && Object.hasOwn(retiredAccountTabs, value) ? retiredAccountTabs[value] : undefined) ?? 'overview' }
+}
 export const settingsGroups = [
   { value: 'appearance', label: '外观', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
   { value: 'startup', label: '启动与关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化'] },

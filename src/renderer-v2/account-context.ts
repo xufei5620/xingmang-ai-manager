@@ -56,14 +56,20 @@ export function sessionRestoreRetrying(session: Pick<AccountSessionState, 'authe
 export function accountSupports(session: Pick<AccountContext, 'siteId' | 'realmId' | 'capabilities'>, feature: keyof RelayBackendCapabilities): boolean {
   return session.capabilities?.[feature] ?? accountSiteId(session) === 'solov'
 }
+/**
+ * 当前账号能不能用个人中心的这个页签，或页签里的这一处落点（registry 的 accountSections）。
+ * 旧分页名（dashboard、orders、tasks、devices）还会从通知、付款回跳、聊天跳过来，照旧按它
+ * 原来要的能力判断；账号概览、账号安全哪种账号都有。
+ */
 export function visibleAccountTab(value: string, session: Pick<AccountContext, 'siteId' | 'realmId' | 'capabilities'>): boolean {
   if (value === 'keys') return accountSupports(session, 'supportsKeyManagement')
-  if (value === 'usage') return accountSupports(session, 'supportsUsage')
+  // 用量账单上面是用量看板，下面是调用明细：有一样就有这个页签。
+  if (value === 'usage') return accountSupports(session, 'supportsUsage') || accountSupports(session, 'supportsDashboard')
   if (value === 'dashboard') return accountSupports(session, 'supportsDashboard')
   if (value === 'tasks') return accountSupports(session, 'supportsTasks')
   if (['orders', 'invite', 'recharge'].includes(value)) return accountSupports(session, 'supportsBilling')
   if (value === 'devices') return accountSupports(session, 'supportsSessionManagement')
-  return value === 'overview'
+  return ['overview', 'security', 'switch-account', 'edit-profile', 'change-password', 'remember-password'].includes(value)
 }
 
 // 金额与后端额度单位的换算对主进程和渲染层是同一件事,只在主进程定义一次。

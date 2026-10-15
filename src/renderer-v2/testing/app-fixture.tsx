@@ -374,6 +374,10 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
+  // 个人中心一打开就是账号概览：近 7 天小图一天读一段、「我的订阅」卡读一次。这里一分没花、没有订阅。
+  getAccountDashboard: async (input) => ({ startTimestamp: input.startTimestamp ?? 0, endTimestamp: input.endTimestamp ?? 0, buckets: [], models: [], quota: 0, count: 0, tokens: 0, discardedCount: 0 }),
+  getAccountSubscriptionSelf: async () => ({ billingPreference: null, activeSubscriptions: [], allSubscriptions: [] }),
+  getAccountSubscriptionPlans: async () => [],
   // 主进程替用户绕开连不上的代理：改成直连以后余额照常读得到（只演这一种结果）。
   bypassBrokenProxy: async () => {
     if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''

@@ -37,7 +37,7 @@
 | `Drawer` | `open` · `title` · `icon?` · `footer` · `onClose` | 右侧 420，从顶栏下面到状态栏上面；非模态：背后不罩、不模糊，点另一行换内容，Esc 关；footer 按钮从左往右排、主按钮在最左，放不下换行 |
 | `Notice` | `tone` · `icon` · `title` · `body` · `actions` · `onDismiss` · `progress?` | 同时只显示一张；`tone='bad'` 一律红圈 ×、`'warn'` 一律橙色三角，`icon` 只对一般说明生效；嵌在页面里只留细边框，浮在角上的（开机提示、更新通知）由外壳加阴影 |
 | `Toast` | 通过 `useToast().show(text, tone?)` 调用 | 2.4s，≤ 3 条；做成了的结果一律走它，不挂在页顶（带「打开所在位置」的导出结果除外，要给人点） |
-| `Menu` | `items: {label,icon?,danger?,onSelect}[] \| 'divider'` · `anchor` | |
+| `Menu` | `items: {label,hint?,icon?,danger?,disabled?,testId?,onSelect}[] \| 'divider'` · `anchor` · `label` · `heading?` | `label` 是触发键和菜单的读屏名，必填；`heading` 是菜单最上面一行小灰字，说点一项会做什么（密钥行「配置到工具」写「把这把密钥写进」），不能聚焦；`hint` 是一项后面的小灰字（「在用」「未安装」「官方账号」），跟着这一项一起读出来 |
 | `Popover` | `anchor` · `title?` · `children` · `onClose` | 帮助 / 公告 / 账号切换 |
 | `ChoiceMenu` | `label` · `anchor` · `sections: {label,value,options:{value,label,hint?,disabled?}[],onChange,keepOpen?,empty?,testId?}[]` · `actions?: {label,icon?,loading?,disabled?,keepOpen?,onSelect}[]` · `onOpen?` · `align?: 'start'\|'end'` | 带小标题的单选菜单，底部可放操作；`keepOpen` 的那组选完菜单不关（聊天先选分组、接着在下面选模型）；`hint` 是灰色第二行，读作说明、不并进名字；`align='start'` 让菜单和按钮左边对齐（输入框底部那排）。打开时焦点落在选中的那一项 |
 | `Empty` | `icon` · `title` · `description` · `action?` | `action` 里有两颗按钮时一样大、间距 8 |

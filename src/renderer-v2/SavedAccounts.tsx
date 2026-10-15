@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { MoreHorizontal, Plus, Trash2 } from 'lucide-react'
-import { Button, Dialog, Input, ListRow, Menu, Notice, Pill } from './ui'
+import { Plus, Trash2, X } from 'lucide-react'
+import { Button, Dialog, Input, ListRow, Notice, Pill } from './ui'
 import {
   ListState,
   ResultNotice,
@@ -37,8 +37,8 @@ export function SavedAccounts({
   onAccountChanged?: (result?: AccountSwitchSyncResult) => void
   onLogin?: (target?: LoginTarget) => void
   /**
-   * card = 个人中心「我的账号」里那张卡：没有别的账号时只留一句话和「添加另一个账号」，
-   * 「同步到工具」默认收起，不把下面的卡挤到第二屏。缺省 = 「切换账号」框。
+   * card = 摆在页面卡片里的样子：没有别的账号时只留一句话和「添加另一个账号」，「同步到工具」默认
+   * 收起。v4 的账号概览不再列保存的账号（只在「切换账号」框里），眼下没有页面用它。缺省 = 「切换账号」框。
    */
   variant?: 'dialog' | 'card'
 }) {
@@ -84,14 +84,16 @@ export function SavedAccounts({
   }
   const desktopClientsHint = accountSwitchDesktopClientsHint(currentWindowOs())
   const alone = variant === 'card' && Boolean(resource.data) && !resource.data?.accounts.some((account) => !isCurrent(account))
+  const switchedTo = result ? resource.data?.accounts.find((account) => account.id === result.accountId)?.username : undefined
   return (
     <div data-testid="saved-accounts-list">
+      {variant === 'dialog' && <p className="v2-saved-accounts-lead">切换后，下面勾上的工具会一起换成新账号的密钥。</p>}
       <ResultNotice {...operation} />
       {result && (
         <Notice
           tone={result.failed.length || result.skipped.length || restartHint ? 'warn' : 'ok'}
           title={
-            result.failed.length || result.skipped.length ? '账号已切换，部分工具没有同步' : '账号已切换'
+            result.failed.length || result.skipped.length ? '账号已切换，部分工具没有同步' : accountSwitchedTitle(switchedTo, result.origin)
           }
           body={
             <>
@@ -216,17 +218,15 @@ export function SavedAccounts({
                         </Button>
                       )}
                       {!current && (
-                        <Menu
-                          label={`账号 ${account.username} 的更多操作`}
-                          anchor={<MoreHorizontal size={18} />}
-                          items={[
-                            {
-                              label: '移除保存账号',
-                              icon: Trash2,
-                              danger: true,
-                              onSelect: () => setRemove(account.id),
-                            },
-                          ]}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={X}
+                          aria-label={`移除保存的账号「${account.username}」`}
+                          title="移除保存账号"
+                          disabled={Boolean(operation.busy)}
+                          onClick={() => setRemove(account.id)}
+                          testId={`saved-account-remove-${account.id}`}
                         />
                       )}
                     </>
@@ -267,7 +267,6 @@ export function SavedAccounts({
             <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
               添加另一个账号
             </Button>
-            <p>登录状态失效时需要重新登录。</p>
           </div>
         </>
       )}
@@ -339,6 +338,12 @@ export function defaultSyncSelection(
 export function savedAccountSourceLabel(origin: string): string {
   const siteId = siteIdForOrigin(origin)
   return siteId ? accountSources[siteId].label : '账号来源无法识别'
+}
+
+/** 切换成功那条提示的标题：切到了谁、哪种账号（v4）；名字或来源没认出来就照旧说「账号已切换」。 */
+export function accountSwitchedTitle(name: string | undefined, origin: string): string {
+  const siteId = siteIdForOrigin(origin)
+  return name && siteId ? `已切换到「${name}」（${accountSources[siteId].label}）` : '账号已切换'
 }
 
 /**

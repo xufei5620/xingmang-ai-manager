@@ -265,13 +265,14 @@ test('a discarded render of the next account does not block saving for the accou
   }
 })
 
-test('account header names the current account, switches and refreshes from two buttons and goes back home', async () => {
+test('account header names the current account, edits it from the pencil, refreshes from one button and goes back home', async () => {
   const page = await localAvatar.newPage()
   try {
     await openFixture(page, 'v2-business-fixture.html?page=account', 'account header fixture')
-    await page
-      .getByText('当前账号：本地测试（test@example.invalid）', { exact: true })
-      .waitFor()
+    const hero = page.locator('.v2-acct-hero')
+    await hero.locator('h1', { hasText: /^本地测试$/ }).waitFor()
+    // 名字下面一行是邮箱和哪种账号，界面上不出站点名。
+    assert.equal(await hero.locator('p').innerText(), 'test@example.invalid · 星芒账号')
     assert.equal(
       await page.getByText('管理你的星芒账号、余额与 Key。', { exact: true }).count(),
       0,
@@ -286,34 +287,39 @@ test('account header names the current account, switches and refreshes from two 
         color: getComputedStyle(element).color,
       })),
       {
-        width: 56,
-        height: 56,
+        width: 48,
+        height: 48,
         background: 'rgb(11, 31, 59)',
         color: 'rgb(212, 163, 85)',
       },
     )
-    // 页头不再放头像按钮；「刷新账号资料」并进页头唯一的「刷新」。
+    // 页头不放头像菜单；「刷新账号资料」并进页头唯一的「刷新」。
     assert.equal(await page.getByTestId('account-identity-menu').count(), 0)
     assert.equal(
       await page.getByRole('button', { name: '刷新', exact: true }).count(),
       1,
     )
-    await page.getByTestId('account-switch').click()
+    // 名字旁边的铅笔打开「编辑资料」：头像、显示名称在里面，用户名和邮箱只读。
+    await page.getByTestId('account-profile-edit').click()
+    const dialog = page.getByTestId('account-profile-dialog')
+    await dialog.getByTestId('account-avatar-change').waitFor()
+    assert.match(await dialog.innerText(), /用户名\s*本地测试[\s\S]*邮箱\s*test@example\.invalid/)
+    assert.equal(
+      await dialog
+        .locator('.v2-acct-profile-fields')
+        .evaluate((element) => getComputedStyle(element).rowGap),
+      '14px',
+    )
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
     assert.equal(await page.getByTestId('account-back').getAttribute('title'), '回首页')
     await page.getByTestId('account-back').click()
     const recorded = await page.evaluate(() =>
       JSON.parse(document.documentElement.dataset.calls),
     )
-    assert.equal(recorded.some((call) => call.name === 'open-account-switcher'), true)
     assert.equal(
       recorded.some((call) => call.name === 'navigate' && call.args === 'home'),
       true,
-    )
-    assert.equal(
-      await page
-        .locator('.v2-business-profile-fields')
-        .evaluate((element) => getComputedStyle(element).rowGap),
-      '16px',
     )
   } finally {
     await page.close()
