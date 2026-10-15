@@ -549,6 +549,8 @@ export function ListState({
   action,
   emptyTitle,
   emptyDescription,
+  searchTitle,
+  searchDescription,
   errorDescription,
   children,
 }: {
@@ -566,6 +568,9 @@ export function ListState({
   /** 列表真的空着时这一页自己的标题和那句话；缺省「还没有{noun}」和通用的那句。 */
   emptyTitle?: string
   emptyDescription?: string
+  /** 搜索词没搜到时这一页自己的标题和那句话；缺省「没有找到「{词}」」和「换个词试试。」。 */
+  searchTitle?: string
+  searchDescription?: string
   /** 读不到时那句说明；缺省 = 读取失败的原话。 */
   errorDescription?: string
   children: ReactNode
@@ -595,10 +600,10 @@ export function ListState({
       <Empty
         testId={`${page}-${filtered ? 'filter-empty' : 'empty'}`}
         icon={filtered ? Search : Archive}
-        title={searched ? `没有找到「${searched}」` : filtered ? '没有符合条件的结果' : emptyTitle ?? `还没有${noun}`}
+        title={searched ? searchTitle ?? `没有找到「${searched}」` : filtered ? '没有符合条件的结果' : emptyTitle ?? `还没有${noun}`}
         description={
           searched
-            ? '换个词试试。'
+            ? searchDescription ?? '换个词试试。'
             : filtered
               ? '试试其他关键词，或清空筛选。'
               : emptyDescription ?? (page === 'sessions'

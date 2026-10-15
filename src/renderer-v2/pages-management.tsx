@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
+  Copy,
   Download,
   FileText,
   FolderOpen,
@@ -14,11 +15,13 @@ import {
   Server,
   Sparkles,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react'
 import {
   BrandIcon,
   Button,
   Card,
+  Chips,
   Confirm,
   Dialog,
   Drawer,
@@ -35,6 +38,8 @@ import {
   Tabs,
   Textarea,
   Toolbar,
+  useToast,
+  type MenuItem,
 } from './ui'
 import {
   displayDate,
@@ -737,11 +742,44 @@ export function CuratedShelf({
 }
 // 记录页显示着、窗口回到前面时，离上次读不到这么久就不再读（同 useNetworkLocation 的 focusRefreshIntervalMs）。
 const recordsForegroundReloadMs = 30_000
+// 详情里「对话开头」先给几条；多出来的点「看全部」再展开，整段对话照旧都在。
+const transcriptPreviewCount = 2
+type SessionToolFilter = Provider | 'all'
+/**
+ * 工具按钮上的数。列表那一份已经按工具筛过、按搜索词滤过，数不出别的工具有几条，
+ * 所以用不带筛选的那份（定「接着聊」用的最新 100 条）的统计。已下线的工具不算进「全部」。
+ * 还没读到（或读不到）时返回 null，按钮上就不写数，免得像是真的一条没有。
+ */
+export function sessionToolCounts(
+  byProvider: Partial<Record<string, number>> | undefined,
+): Record<SessionToolFilter, number> | null {
+  if (!byProvider) return null
+  const counts: Record<SessionToolFilter, number> = { all: 0, claude: 0, codex: 0, grok: 0 }
+  for (const option of providerOptions) {
+    if (!isProvider(option.value)) continue
+    const count = byProvider[option.value] ?? 0
+    counts[option.value] = count
+    counts.all += count
+  }
+  return counts
+}
+/** 表格标题下面那行小字：模型、几条消息；归档过的记录在后面标一句。条数不知道就不写，不写「未知 条」。 */
+export function sessionRowMeta(session: Pick<Session, 'model' | 'messageCount' | 'archived'>): string {
+  return [
+    session.model || '未记录模型',
+    session.messageCount === null ? '' : `${session.messageCount} 条消息`,
+    session.archived ? '已归档' : '',
+  ].filter(Boolean).join(' · ')
+}
+function sessionTitle(session: Pick<Session, 'title'>) {
+  return session.title || '未命名会话'
+}
 export function SessionsPage({
   api,
   onSessionsChanged,
   onOpenTools,
   beforeResume,
+  installedProviders,
   active,
 }: {
   api: V2Bridge
@@ -759,12 +797,18 @@ export function SessionsPage({
    */
   beforeResume?: (provider: Provider) => Promise<boolean>
   /**
+   * 装好的命令行工具：没装的那家「接着聊」按不动，说一句要先装好。
+   * 缺省 = 还没检测完，不因此置灰（旧行为）。
+   */
+  installedProviders?: readonly string[]
+  /**
    * 外壳说的「现在显示的是这一页」（同 BusinessActions.active）：再显示时、显示着窗口又回到前面时重读；
    * 缺省 = 只在第一次进来时读（旧行为）。
    */
   active?: boolean
 }) {
-  const [provider, setProvider] = useState<Provider | 'all'>('all')
+  const toast = useToast()
+  const [provider, setProvider] = useState<SessionToolFilter>('all')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   const load = useCallback(
@@ -785,8 +829,10 @@ export function SessionsPage({
     () => latestSessionIdsByWorkspace(latestResource.data?.items ?? []),
     [latestResource.data],
   )
+  const counts = sessionToolCounts(latestResource.error ? undefined : latestResource.data?.stats.byProvider)
   const operation = useOperation()
   const [selected, setSelected] = useState<Session | null>(null)
+  const [showAllMessages, setShowAllMessages] = useState(false)
   // 只有摘要的记录原文已经不在这台电脑上，不去读；详情里照样看工具、文件夹和模型。
   const detailLoad = useCallback(
     () =>
@@ -825,22 +871,26 @@ export function SessionsPage({
     }
   }, [active])
   const view = (session: Session) => {
+    setShowAllMessages(false)
     setSelected(session)
   }
-  const capability = selected
-    ? resource.data?.capabilities[selected.provider]
-    : undefined
-  const archive = () => {
-    if (
-      !selected ||
-      !capability?.operations[selected.archived ? 'restore' : 'archive']
-    )
-      return
+  const capabilityOf = (session: Session) => resource.data?.capabilities[session.provider]
+  const capability = selected ? capabilityOf(selected) : undefined
+  // 装好的名单还没检测完时不算「没装」：宁可让它照旧去打开，也不把按钮错按灰。
+  const notInstalled = (session: Session) =>
+    installedProviders !== undefined && !installedProviders.includes(session.provider)
+  /**
+   * 归档、恢复只有 Codex 有（看 capability）。行上的「…」、归档行的「恢复」和详情里的按钮都走这里，
+   * 所以动的是点到的那一条，不是详情里开着的那条。
+   */
+  const archive = (session: Session) => {
+    if (!capabilityOf(session)?.operations[session.archived ? 'restore' : 'archive']) return
+    const title = sessionTitle(session)
     void operation.execute(
       'archive',
       async () => {
-        if (selected.archived) await api.restoreSession(selected.nativeId)
-        else await api.archiveSession(selected.nativeId)
+        if (session.archived) await api.restoreSession(session.nativeId)
+        else await api.archiveSession(session.nativeId)
         setSelected(null)
         // 归档会把记录移出 CLI 自己的目录,那个文件夹的「最近一条」也就变了,
         // 所以按钮的判断依据要跟着一起重读。首页「最近」缓存着同一份列表，
@@ -848,30 +898,46 @@ export function SessionsPage({
         onSessionsChanged?.()
         await Promise.all([resource.reload(), latestResource.reload()])
       },
-      selected.archived ? '会话已恢复' : '会话已归档',
+      session.archived ? `已恢复「${title}」` : `已归档「${title}」`,
     )
   }
-  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState<Session | null>(null)
   /**
    * 彻底删除只传会话 id,要删哪些文件由主进程重新找出来并校验。删掉之后和归档
    * 一样,那个文件夹的「最近一条」变了,首页「最近」也要作废(#544)。
    */
   const remove = () => {
-    if (!selected || !capability?.operations.delete) return
-    const target = selected
+    const target = deleting
+    if (!target || !capabilityOf(target)?.operations.delete) return
     void operation.execute(
       'delete-session',
       async () => {
         try {
           await api.deleteProviderSession(target.id)
         } finally {
-          setConfirmDelete(false)
+          setDeleting(null)
         }
         setSelected(null)
         onSessionsChanged?.()
         await Promise.all([resource.reload(), latestResource.reload()])
       },
-      '这条记录已从这台电脑上删掉',
+      `已删除「${sessionTitle(target)}」`,
+    )
+  }
+  const canExport = (session: Session) =>
+    Boolean(capabilityOf(session)?.operations.exportMarkdown) && session.detailAvailable
+  const exportSession = (session: Session) => {
+    if (!canExport(session)) return
+    void operation.execute(
+      'export',
+      () => api.exportProviderSession(session.id),
+      (result) =>
+        result
+          ? {
+              text: `已导出 ${result.messages} 条消息：${result.outputPath}${result.truncated ? '；源记录不完整，已在文件中标记' : ''}`,
+              revealPath: result.outputPath,
+            }
+          : null,
     )
   }
   /**
@@ -900,6 +966,11 @@ export function SessionsPage({
     // 列表里本来就不收已下线工具的记录；万一漏进来一条，也不替它打开。
     if (!resumable.has(session.id) || session.archived || session.cwdExists === false || !isProvider(provider))
       return
+    // 「…」里的「接着聊」不置灰，点了说清楚为什么接不上；行上和详情里的按钮是灰的，悬停有同一句。
+    if (notInstalled(session)) {
+      toast.show(`要先装好 ${providerName(provider)} 才能接着聊`, 'warn')
+      return
+    }
     void operation.execute(
       'resume',
       async () => {
@@ -937,6 +1008,13 @@ export function SessionsPage({
           : resumeSessionNotice(result, providerName(session.provider), session.cwd),
     )
   }
+  /** 行上和详情里「接着聊」那颗按钮的悬停说明：按不动时说为什么。 */
+  const resumeTitle = (session: Session) =>
+    session.cwdExists === false
+      ? '这条记录的文件夹已经不在了，接不上上次的对话'
+      : notInstalled(session)
+        ? `要先装好 ${providerName(session.provider)}`
+        : '接着这个文件夹里最近一次对话'
   /**
    * 只传会话 id,不传路径:工作目录由主进程从记录里取并校验(必须是真实存在的
    * 文件夹),界面没有办法让资源管理器去打开别的位置。目录已经不在的那一行按钮
@@ -959,6 +1037,33 @@ export function SessionsPage({
       `已打开 ${session.cwd}`,
     )
   }
+  const copySessionId = (session: Session) => {
+    void navigator.clipboard.writeText(session.nativeId).then(
+      () => toast.show('会话 ID 已复制', 'ok'),
+      () => toast.show('没复制上，请手动选中这行文字复制。', 'warn'),
+    )
+  }
+  const busy = Boolean(operation.busy)
+  /** 行上「…」里的几项：按这一家的能力给，能力里没有的一项就不出现（Claude Code、Grok CLI 没有归档）。 */
+  const rowMenu = (session: Session, canResume: boolean): Array<MenuItem | 'divider'> => {
+    const missingWorkspace = session.cwdExists === false
+    const operations = capabilityOf(session)?.operations
+    const items: Array<MenuItem | 'divider'> = []
+    if (canResume)
+      items.push({ label: '接着聊', icon: Play, disabled: busy || missingWorkspace, onSelect: () => resume(session), testId: `sessions-menu-resume-${session.id}` })
+    if (session.cwd)
+      items.push({ label: '打开文件夹', icon: FolderOpen, disabled: busy || missingWorkspace, onSelect: () => openDirectory(session), testId: `sessions-open-directory-${session.id}` })
+    items.push({ label: '导出对话', icon: Download, disabled: busy || !canExport(session), onSelect: () => exportSession(session), testId: `sessions-menu-export-${session.id}` })
+    if (operations?.[session.archived ? 'restore' : 'archive'])
+      items.push({ label: session.archived ? '恢复到记录' : '归档', icon: Archive, disabled: busy, onSelect: () => archive(session), testId: `sessions-menu-archive-${session.id}` })
+    if (operations?.delete)
+      items.push('divider', { label: '彻底删除', icon: Trash2, danger: true, disabled: busy, onSelect: () => setDeleting(session), testId: `sessions-menu-delete-${session.id}` })
+    return items
+  }
+  const messages = detail?.messages ?? []
+  const shownMessages = showAllMessages ? messages : messages.slice(0, transcriptPreviewCount)
+  const hiddenMessages = messages.length - shownMessages.length
+  const selectedCount = selected?.messageCount ?? detail?.messageStats.total ?? null
   return (
     <section
       className="v2-page"
@@ -967,44 +1072,50 @@ export function SessionsPage({
     >
       <PageHead
         title="记录"
-        lead="接着记录所在文件夹里最近的对话继续聊，也可以导出或整理本机记录。记录只存在这台电脑上，本软件已把保留期放长到一年。"
         actions={
           <Button
+            variant="ghost"
             icon={RefreshCw}
             loading={resource.loading}
+            aria-label="重新加载"
+            title="重新加载"
             onClick={() => void Promise.all([resource.reload(), latestResource.reload()])}
-          >
-            重新加载
-          </Button>
-        }
-      />
-      <Toolbar
-        left={
-          <ProviderFilter
-            value={provider}
-            all
-            onChange={(value) => {
-              setProvider(value)
-              setPage(1)
-              // 上一个工具的红条不跟到下一个工具上。
-              operation.clear()
-            }}
+            testId="sessions-reload"
           />
         }
-        search={
-          <SearchInput
-            value={query}
-            onChange={(value) => {
-              setQuery(value)
-              setPage(1)
-            }}
-            placeholder="搜索标题、文件夹或模型"
-            testId="sessions-search"
-          />
-        }
-        // 没读到时不写「0 条记录」，免得像是真没有；读不到的原因在下面的列表里说。
-        right={resource.data && !resource.error ? <span>{resource.data.total} 条记录</span> : null}
       />
+      <div className="v2-filter-bar">
+        <Chips
+          label="按工具筛选"
+          value={provider}
+          options={[
+            { value: 'all', label: '全部', count: counts?.all, testId: 'sessions-tool-all' },
+            ...providerOptions.map((option) => ({
+              value: option.value,
+              label: option.label,
+              count: counts && isProvider(option.value) ? counts[option.value] : undefined,
+              leading: <BrandIcon tool={option.value} size={16} />,
+              testId: `sessions-tool-${option.value}`,
+            })),
+          ]}
+          onChange={(value) => {
+            if (!isProvider(value) && value !== 'all') return
+            setProvider(value)
+            setPage(1)
+            // 上一个工具的红条不跟到下一个工具上。
+            operation.clear()
+          }}
+        />
+        <SearchInput
+          value={query}
+          onChange={(value) => {
+            setQuery(value)
+            setPage(1)
+          }}
+          placeholder="搜索标题、文件夹或模型"
+          testId="sessions-search"
+        />
+      </div>
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
@@ -1020,6 +1131,9 @@ export function SessionsPage({
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
+          emptyDescription="在首页打开工具，聊过的会话会出现在这里。"
+          searchTitle="没有找到相关记录"
+          searchDescription="换个关键词，或者切换到「全部」再看看。"
           action={
             onOpenTools && (
               <Button size="sm" onClick={onOpenTools} testId="sessions-empty-open-tools">
@@ -1028,90 +1142,77 @@ export function SessionsPage({
             )
           }
         >
-          {resource.data?.items.map((session) => {
-            // 文件夹被删掉或搬走之后,CLI 按目录找回对话这条路就断了。按钮留在
-            // 原位但按不动,旁边说一句为什么——把它藏起来的话,用户只会觉得
-            // 「昨天还有的按钮今天没了」。
-            const missingWorkspace = session.cwdExists === false
-            const canResume = resumable.has(session.id) && !session.archived
-            return (
-              <ListRow
-                key={session.id}
-                onOpen={() => view(session)}
-                openTestId={`sessions-view-${session.id}`}
-                title={
-                  <>
-                    <BrandIcon tool={session.provider} size={24} />
-                    {session.title || '未命名会话'}
-                  </>
-                }
-                badge={
-                  <>
-                    {session.archived && <Pill>已归档</Pill>}
-                    {missingWorkspace && (
-                      <Pill tone="warn" testId={`sessions-missing-${session.id}`}>
-                        文件夹已不存在
-                      </Pill>
-                    )}
-                  </>
-                }
-                desc={session.cwd || '未记录文件夹'}
-                descMono
-                meta={
-                  <span>
-                    {session.model || '未记录模型'} ·{' '}
-                    {session.messageCount ?? '未知'} 条 ·{' '}
-                    <RelativeTime value={session.updatedAt} />
-                  </span>
-                }
-                actions={
-                  <>
-                    {canResume ? (
-                      <Button
-                        size="sm"
-                        icon={Play}
-                        disabled={Boolean(operation.busy) || missingWorkspace}
-                        onClick={() => resume(session)}
-                        title={
-                          missingWorkspace
-                            ? '这条记录的文件夹已经不在了，接不上上次的对话'
-                            : '接着这个文件夹里最近一次对话'
-                        }
-                        testId={`sessions-resume-${session.id}`}
-                      >
-                        接着聊
-                      </Button>
-                    ) : (
-                      // 没有「接着聊」的行也占着这一格，后面的按钮和左边的信息上下对齐。
-                      <span className="v2-row-action-placeholder" aria-hidden="true">
-                        <Button size="sm" icon={Play} tabIndex={-1}>
+          <table className="v2-sessions-table">
+            <thead>
+              <tr>
+                <th scope="col">标题</th>
+                <th scope="col">工具</th>
+                <th scope="col">项目文件夹</th>
+                <th scope="col">最后活动</th>
+                <th scope="col"><span className="xm-visually-hidden">操作</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {resource.data?.items.map((session) => {
+                // 文件夹被删掉或搬走之后,CLI 按目录找回对话这条路就断了。按钮留在
+                // 原位但按不动,悬停说一句为什么——把它藏起来的话,用户只会觉得
+                // 「昨天还有的按钮今天没了」。
+                const missingWorkspace = session.cwdExists === false
+                const canResume = resumable.has(session.id) && !session.archived
+                const title = sessionTitle(session)
+                const operations = capabilityOf(session)?.operations
+                return (
+                  <tr key={session.id} data-testid={`sessions-row-${session.id}`}>
+                    <td>
+                      <button type="button" className="v2-sessions-open" onClick={() => view(session)} data-testid={`sessions-view-${session.id}`}>
+                        <strong>{title}</strong>
+                        <small>{sessionRowMeta(session)}</small>
+                      </button>
+                    </td>
+                    <td>
+                      <span className="v2-sessions-tool"><BrandIcon tool={session.provider} size={18} />{providerName(session.provider)}</span>
+                    </td>
+                    <td className="v2-sessions-dir">
+                      {missingWorkspace ? (
+                        <span className="v2-sessions-dir-gone" title="这个文件夹已经不在了" data-testid={`sessions-missing-${session.id}`}>
+                          <TriangleAlert size={13} aria-hidden="true" />
+                          <span className="xm-visually-hidden">这个文件夹已经不在了：</span>
+                          <span>{session.cwd || '未记录文件夹'}</span>
+                        </span>
+                      ) : (
+                        <span title={session.cwd || undefined}>{session.cwd || '未记录文件夹'}</span>
+                      )}
+                    </td>
+                    <td className="v2-sessions-when"><RelativeTime value={session.updatedAt} /></td>
+                    <td className="v2-sessions-actions">
+                      {session.archived && operations?.restore ? (
+                        <Button size="xs" disabled={busy} onClick={() => archive(session)} testId={`sessions-restore-${session.id}`}>
+                          恢复
+                        </Button>
+                      ) : canResume ? (
+                        <Button
+                          size="xs"
+                          icon={Play}
+                          disabled={busy || missingWorkspace || notInstalled(session)}
+                          onClick={() => resume(session)}
+                          title={resumeTitle(session)}
+                          testId={`sessions-resume-${session.id}`}
+                        >
                           接着聊
                         </Button>
-                      </span>
-                    )}
-                    {Boolean(session.cwd) && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon={FolderOpen}
-                        disabled={Boolean(operation.busy) || missingWorkspace}
-                        onClick={() => openDirectory(session)}
-                        title={
-                          missingWorkspace
-                            ? '这条记录的文件夹已经不在了，打不开'
-                            : `在文件管理器里打开 ${session.cwd}`
-                        }
-                        testId={`sessions-open-directory-${session.id}`}
-                      >
-                        打开文件夹
-                      </Button>
-                    )}
-                  </>
-                }
-                testId={`sessions-row-${session.id}`}
-              />
-            )
-          })}
+                      ) : null}
+                      <Menu
+                        label={`「${title}」更多操作`}
+                        testId={`sessions-menu-${session.id}`}
+                        anchor={<Button size="sm" variant="ghost" icon={MoreHorizontal} aria-label={`「${title}」更多操作`} />}
+                        items={rowMenu(session, canResume)}
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </ListState>
       </Card>
       <Pagination
@@ -1120,97 +1221,118 @@ export function SessionsPage({
         failed={Boolean(resource.error)}
         onChange={setPage}
       />
-      <Drawer
+      <Dialog
         open={Boolean(selected)}
         title={selected?.title || '记录详情'}
+        width={640}
         onClose={() => {
           setSelected(null)
         }}
         testId="session-detail-drawer"
         footer={
-          <>
-            {selected && resumable.has(selected.id) && !selected.archived && (
+          selected && (
+            <>
+              {capability?.operations.delete && (
+                <span className="v2-dialog-footer-start">
+                  <Button
+                    variant="danger"
+                    icon={Trash2}
+                    disabled={busy}
+                    onClick={() => setDeleting(selected)}
+                    testId="session-detail-delete"
+                  >
+                    彻底删除
+                  </Button>
+                </span>
+              )}
               <Button
-                variant="primary"
-                icon={Play}
-                disabled={
-                  Boolean(operation.busy) || selected.cwdExists === false
-                }
-                onClick={() => resume(selected)}
-                title={
-                  selected.cwdExists === false
-                    ? '这条记录的文件夹已经不在了，接不上上次的对话'
-                    : '接着这个文件夹里最近一次对话'
-                }
-                testId="session-detail-resume"
+                variant="ghost"
+                icon={Download}
+                title="导出成文件"
+                disabled={!canExport(selected) || busy}
+                onClick={() => exportSession(selected)}
+                testId="session-detail-export"
               >
-                接着聊
+                导出对话
               </Button>
-            )}
-            <Button
-              icon={Download}
-              title="导出成 Markdown 文件"
-              disabled={
-                !capability?.operations.exportMarkdown ||
-                !selected?.detailAvailable ||
-                Boolean(operation.busy)
-              }
-              onClick={() =>
-                selected &&
-                void operation.execute(
-                  'export',
-                  () => api.exportProviderSession(selected.id),
-                  (result) =>
-                    result
-                      ? {
-                          text: `已导出 ${result.messages} 条消息：${result.outputPath}${result.truncated ? '；源记录不完整，已在文件中标记' : ''}`,
-                          revealPath: result.outputPath,
-                        }
-                      : null,
-                )
-              }
-              testId="session-detail-export"
-            >
-              导出
-            </Button>
-            {capability?.operations[
-              selected?.archived ? 'restore' : 'archive'
-            ] && (
-              <Button
-                icon={Archive}
-                disabled={Boolean(operation.busy)}
-                onClick={archive}
-              >
-                {selected?.archived ? '恢复' : '归档'}
-              </Button>
-            )}
-            {capability?.operations.delete && (
-              <Button
-                variant="danger"
-                icon={Trash2}
-                disabled={Boolean(operation.busy)}
-                onClick={() => setConfirmDelete(true)}
-                testId="session-detail-delete"
-              >
-                彻底删除
-              </Button>
-            )}
-          </>
+              {!selected.archived && capability?.operations.archive && (
+                <Button variant="ghost" icon={Archive} disabled={busy} onClick={() => archive(selected)}>
+                  归档
+                </Button>
+              )}
+              <Button onClick={() => setSelected(null)}>关闭</Button>
+              {selected.archived
+                ? capability?.operations.restore && (
+                    <Button variant="primary" disabled={busy} onClick={() => archive(selected)} testId="session-detail-restore">
+                      恢复到记录
+                    </Button>
+                  )
+                : resumable.has(selected.id) && (
+                    <Button
+                      variant="primary"
+                      icon={Play}
+                      disabled={busy || selected.cwdExists === false || notInstalled(selected)}
+                      onClick={() => resume(selected)}
+                      title={resumeTitle(selected)}
+                      testId="session-detail-resume"
+                    >
+                      接着聊
+                    </Button>
+                  )}
+            </>
+          )
         }
       >
-        <ResultNotice
-          {...operation}
-          onReveal={(path) => api.revealExportedFile(path)}
-        />
         {selected && (
-          <dl className="v2-business-kv">
-            <dt>工具</dt>
-            <dd>{providerName(selected.provider)}</dd>
-            <dt>工作文件夹</dt>
-            <dd>{selected.cwd}</dd>
-            <dt>模型</dt>
-            <dd>{selected.model || '未记录'}</dd>
-          </dl>
+          <>
+            <div className="v2-session-detail-head">
+              <span className="v2-sessions-tool"><BrandIcon tool={selected.provider} size={18} />{providerName(selected.provider)}</span>
+              <Pill>{selected.model || '未记录模型'}</Pill>
+              {selected.archived && <Pill>已归档</Pill>}
+            </div>
+            {selected.cwdExists === false && (
+              <p className="v2-session-detail-gone" role="note">
+                <TriangleAlert size={15} aria-hidden="true" />
+                <span>项目文件夹 {selected.cwd} 已经不在了，接不上上次的对话。</span>
+              </p>
+            )}
+            <ResultNotice
+              {...operation}
+              onReveal={(path) => api.revealExportedFile(path)}
+            />
+            <dl className="v2-session-detail-kv">
+              <div>
+                <dt>项目文件夹</dt>
+                <dd>
+                  <span className="xm-mono">{selected.cwd || '未记录文件夹'}</span>
+                  {Boolean(selected.cwd) && selected.cwdExists !== false && (
+                    <button type="button" className="v2-link-button" disabled={busy} onClick={() => openDirectory(selected)} data-testid="session-detail-open-directory">
+                      打开
+                    </button>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>消息</dt>
+                <dd>{selectedCount === null ? '未知' : `${selectedCount} 条`}</dd>
+              </div>
+              <div>
+                <dt>开始于</dt>
+                <dd><RelativeTime value={selected.createdAt} /></dd>
+              </div>
+              <div>
+                <dt>最后活动</dt>
+                <dd><RelativeTime value={selected.updatedAt} /></dd>
+              </div>
+              <div>
+                <dt>会话 ID</dt>
+                <dd>
+                  <span className="xm-mono">{selected.nativeId}</span>
+                  <Button size="xs" variant="ghost" icon={Copy} aria-label="复制会话 ID" title="复制会话 ID" onClick={() => copySessionId(selected)} testId="session-detail-copy-id" />
+                </dd>
+              </div>
+            </dl>
+          </>
         )}
         {selected && !selected.detailAvailable && (
           <p className="v2-transcript-missing" data-testid="session-detail-summary-only">
@@ -1228,22 +1350,36 @@ export function SessionsPage({
             重试读取
           </Button>
         )}
-        {/* 回到窗口时连详情一起重读：正读着的对话先摆着、读回来再换，不闪成「正在读取」，翻到的位置也不丢。 */}
+        {/* 回到窗口时连详情一起重读：正读着的对话先摆着、读回来再换，不闪成「正在读取」，展开的「看全部」也不收回去。 */}
         {detailResource.loading && !detail ? (
           <p role="status">正在读取对话…</p>
         ) : (
-          detail?.messages.map((message, i) => (
-            <section className="v2-transcript-message" key={i}>
-              <Pill>
-                {message.role === 'user'
-                  ? '你'
-                  : message.role === 'assistant'
-                    ? 'AI'
-                    : message.role}
-              </Pill>
-              <p>{message.text}</p>
+          shownMessages.length > 0 && (
+            <section className="v2-session-transcript">
+              <h3>对话开头</h3>
+              <div className="v2-transcript">
+                {shownMessages.map((message, i) => (
+                  <div className={message.role === 'user' ? 'v2-transcript-me' : 'v2-transcript-ai'} key={i}>
+                    {message.role !== 'user' && <BrandIcon tool={selected?.provider} size={14} />}
+                    <p>
+                      <span className="xm-visually-hidden">
+                        {message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : message.role}：
+                      </span>
+                      {message.text}
+                    </p>
+                  </div>
+                ))}
+                {hiddenMessages > 0 && (
+                  <p className="v2-transcript-more">
+                    后面还有 {hiddenMessages} 条消息
+                    <Button size="xs" variant="ghost" onClick={() => setShowAllMessages(true)} testId="session-detail-show-all">
+                      看全部
+                    </Button>
+                  </p>
+                )}
+              </div>
             </section>
-          ))
+          )
         )}
         {detail?.messagesTruncated && (
           <Notice
@@ -1252,10 +1388,10 @@ export function SessionsPage({
             body="完整内容请通过导出记录查看。"
           />
         )}
-      </Drawer>
+      </Dialog>
       <Confirm
-        open={confirmDelete && Boolean(selected)}
-        title="彻底删除这条记录？"
+        open={Boolean(deleting)}
+        title={`彻底删除「${deleting ? sessionTitle(deleting) : ''}」？`}
         body={
           <>
             <p>
@@ -1268,7 +1404,7 @@ export function SessionsPage({
         cancelLabel="先不删"
         danger
         loading={operation.busy === 'delete-session'}
-        onClose={() => setConfirmDelete(false)}
+        onClose={() => setDeleting(null)}
         onOk={remove}
         testId="session-delete-confirm"
       />
