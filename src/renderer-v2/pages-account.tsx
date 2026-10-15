@@ -1404,7 +1404,8 @@ function AccountKeys({
                     <Menu
                       label={`把密钥 ${key.name} 配置到工具`}
                       heading="把这把密钥写进"
-                      anchor={<Button size="sm" iconRight={ChevronDown} disabled={Boolean(operation.busy)}>配置到工具</Button>}
+                      // 一页好几把密钥，每行都有一颗「配置到工具」：读屏要念出是哪一把的。
+                      anchor={<Button size="sm" iconRight={ChevronDown} disabled={Boolean(operation.busy)} aria-label={`把密钥 ${key.name} 配置到工具`}>配置到工具</Button>}
                       items={toolTargets.map((target) => {
                         const choice = keyToolChoice(target, inUse === target.provider)
                         return {

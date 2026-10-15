@@ -46,7 +46,8 @@ const lookupIntervalMs = 100
 
 function rowFor(root: HTMLElement, anchor: string): HTMLElement | null {
   for (const element of root.querySelectorAll<HTMLElement>('[data-anchor]'))
-    if (element.dataset.anchor === anchor) return element
+    // 个人中心切过的页签藏起来不卸：那一节还在藏着的页签里时滚不到、也拿不到焦点，等页签切过去露出来再翻。
+    if (element.dataset.anchor === anchor && !element.closest('[hidden]')) return element
   return null
 }
 
