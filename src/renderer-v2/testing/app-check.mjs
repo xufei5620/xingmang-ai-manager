@@ -3194,7 +3194,8 @@ test('macOS guide detects an installed Codex Desktop with no config files or CLI
     await expect(page.getByTestId('guide-next')).toBeEnabled()
     assert.equal(await page.getByTestId('guide-install').count(), 0)
     await page.getByTestId('guide-next').click()
-    await page.getByText('尚未选择连接方式', { exact: true }).waitFor()
+    // v4：没登录时第 3 步是一张「登录后自动连接」卡，不再写「尚未选择连接方式」。
+    await page.getByTestId('start-guide').getByText('登录后自动连接', { exact: true }).waitFor()
     await expect(page.getByTestId('guide-next')).toBeDisabled()
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(methods.some((method) => ['installCodexDesktop', 'saveConfig', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(method)), false)
@@ -5693,12 +5694,13 @@ const defaultModelCases = [
 ]
 // 没登录时欢迎页挡在前面（本机有 Key 也一样）。配好模型的工具走完使用步骤进首页再开配置；
 // 没配模型的工具在引导「确认连接」那一步就能打开配置，未登录用户实际也是这么走的。
+// v4 起引导是叠在欢迎页上面的弹窗，欢迎页一直在底下：引导已经开着就不再去点欢迎页。
 async function openGuestToolConfiguration(page, tool, existing) {
   if (existing) {
     if (await page.getByTestId('welcome-page').count()) await enterWorkspaceWithoutAccount(page)
     return openToolConfiguration(page, tool)
   }
-  if (await page.getByTestId('welcome-page').count()) {
+  if (await page.getByTestId('welcome-page').count() && !await page.getByTestId('start-guide').count()) {
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId(`guide-route-${tool}`).check()
     await page.getByTestId('guide-next').click()
