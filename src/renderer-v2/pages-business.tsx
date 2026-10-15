@@ -1,5 +1,6 @@
 import { AccountPage } from './pages-account'
 import { BackupsPage, ExtensionsPage, SessionsPage } from './pages-management'
+import { FeaturedPage } from './pages-featured'
 import {
   FeedbackPage,
   HealthPage,
@@ -97,12 +98,14 @@ export function BusinessPage({
     )
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
+  if (page === 'featured')
+    return <FeaturedPage api={api} installedProviders={installedProviders} onRecommend={actions.navigate ? () => actions.navigate?.('feedback') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} active={actions.active} />
   if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} active={actions.active} />
+    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} installedProviders={installedProviders} active={actions.active} />
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'plugins')
-    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} active={actions.active} />
+    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'backups')
     return (
       <BackupsPage
@@ -125,6 +128,7 @@ export {
   AccountPage,
   BackupsPage,
   ExtensionsPage,
+  FeaturedPage,
   SessionsPage,
   FeedbackPage,
   HealthPage,

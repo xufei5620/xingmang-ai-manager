@@ -64,13 +64,13 @@ export interface CuratedExtension {
 
 // 面向用户的一句话，风险标签与说明都上屏，所以措辞不留内部代号。
 export const curatedRiskLabels: Record<CuratedRisk, { label: string; detail: string }> = {
-  'local-fs-write': { label: '会改你的文件', detail: '能在你指定的位置新建、修改和删除文件。' },
+  'local-fs-write': { label: '会修改本地文件', detail: '能在你指定的位置新建、修改和删除文件。' },
   browser: { label: '会操作浏览器', detail: '能自己打开网页并在上面点击、输入。' },
   'remote-exec': { label: '内容会发到对方服务器', detail: '请求由提供方在他们的服务器上处理，不在你电脑上。' },
   network: { label: '需要联网', detail: '断网时这一项用不了。' },
   'third-party': { label: '第三方维护', detail: '由该软件的作者维护，不随本应用一起更新。' },
-  'git-write': { label: '会动 Git 仓库', detail: '会执行提交、推送这类 Git 命令，推出去的改动要你自己到远端撤回。' },
-  'extra-usage': { label: '会多用额度', detail: '会让 AI 多跑几轮，同一件事用掉的额度比平时多。' },
+  'git-write': { label: '会提交到 Git', detail: '会执行提交、推送这类 Git 命令，推出去的改动要你自己到远端撤回。' },
+  'extra-usage': { label: '会多消耗额度', detail: '会让 AI 多跑几轮，同一件事用掉的额度比平时多。' },
 };
 export const curatedNetworkLabels: Record<CuratedNetworkNeed, string | null> = {
   none: null,
@@ -79,8 +79,8 @@ export const curatedNetworkLabels: Record<CuratedNetworkNeed, string | null> = {
   'install-only': '安装时需要联网下载一次，用起来不需要',
 };
 export const curatedRuntimeLabels: Record<CuratedRuntime, string> = {
-  node: '在你电脑上运行，用的是本应用装好的 Node.js',
-  python: '在你电脑上运行，需要 Python',
+  node: '在你电脑上运行，用的是本应用装好的运行环境',
+  python: '在你电脑上运行，需要另外装一个运行环境',
   none: '不在你电脑上装东西',
   prompt: '只给工具本身加命令和技能，不在你电脑上跑额外的程序',
 };
