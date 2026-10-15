@@ -35,11 +35,22 @@ interface TutorialStepContent {
 
 export type TutorialStep = TutorialStepContent & TutorialStepTarget;
 
+// 教程页的分类按钮（v4 问8 选「卡片」）。「全部」不是分类，只是不筛；每一篇必须落在后四类之一。
+export const tutorialCategories = [
+  { value: 'all', label: '全部' },
+  { value: 'start', label: '入门' },
+  { value: 'tools', label: '工具' },
+  { value: 'account', label: '账号与费用' },
+  { value: 'trouble', label: '出问题时' },
+] as const;
+export type TutorialCategoryFilter = (typeof tutorialCategories)[number]['value'];
+export type TutorialCategory = Exclude<TutorialCategoryFilter, 'all'>;
+
 export interface TutorialTopic {
   id: string;
   title: string;
   lead: string;
-  category: 'start' | 'everyday' | 'advanced';
+  category: TutorialCategory;
   minutes: number;
   keywords: readonly string[];
   steps: readonly TutorialStep[];
@@ -233,7 +244,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'switch-account',
     title: '官方账号和当前账号怎么切换？',
     lead: '以前用过 Claude 或 ChatGPT 官方账号的，一键就能改用当前账号，也能一键切回去。不用自己备份，也不用重新安装。',
-    category: 'start',
+    category: 'account',
     minutes: 2,
     keywords: ['切换', '官方账号', '当前账号', 'ChatGPT', 'Claude 账号', '中转', '切回', '登录', '401', 'Please run /login', '报错', '备份'],
     steps: [
@@ -334,7 +345,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'account',
     title: '账号、充值与额度',
     lead: '查看自己的账号、充值到账情况和使用费用。',
-    category: 'everyday',
+    category: 'account',
     minutes: 4,
     keywords: ['个人中心', '登录', '注册', 'QQ邮箱', '密码', '余额', '充值', '订阅', '兑换码', '订单', 'Key', '费用'],
     steps: [
@@ -387,13 +398,13 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'chat',
     title: '直接聊天与生成图片',
     lead: '在工具箱里直接问问题或生成图片，不用另装工具。',
-    category: 'everyday',
+    category: 'start',
     minutes: 3,
     keywords: ['聊天', '问答', '文案', '图片', '生图', '发送', '停止', '分组', '模型', '新对话', '历史'],
     steps: [
       {
         title: '打开聊天，选好分组和模型',
-        where: '左侧聊天 → 新对话 → 输入框上方',
+        where: '左侧聊天 → 新对话 → 输入框底部',
         detail: '先选回答问题的模型。分组决定可用模型与计费规则。',
         bullets: ['点「新对话」，保持「文本对话」。', '选好「分组」和「模型」，列表失败时点刷新。'],
         expected: '分组和模型已选中，输入文字后可以发送。',
@@ -438,7 +449,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'sessions',
     title: '记录',
     lead: '找回这台电脑上的工具对话，继续上次的任务，也可以查看、导出和整理。',
-    category: 'everyday',
+    category: 'start',
     minutes: 3,
     keywords: ['记录', '会话', '历史', '搜索', '接着聊', '续接', '归档', '恢复', '导出', 'Markdown', '保留期', '一年', '本机'],
     steps: [
@@ -487,7 +498,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'canvas',
     title: '画布：从项目到生成结果',
     lead: '节点是一张处理卡片。先跑通一张，再连接成连续的工作步骤。',
-    category: 'everyday',
+    category: 'tools',
     minutes: 5,
     keywords: ['画布', '节点', '工作流', '项目', '生图', '素材', '模板', '生成', '保存'],
     steps: [
@@ -536,7 +547,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'acceleration',
     title: '游戏加速',
     lead: '选线路，点开始；用完点停止，剩余时长下次继续。',
-    category: 'everyday',
+    category: 'tools',
     minutes: 3,
     keywords: ['加速', '网络', '线路', '智能分配', 'Ping', '延迟', '代理', 'VPN', '免费时长', '托盘', '自动连接', '下载', '到期', '提醒', '通知'],
     steps: [
@@ -590,7 +601,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: cliTutorialTopic,
     title: '进阶：安装与使用命令行工具',
     lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。只用 Codex 桌面端可以跳过这一章。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 5,
     keywords: ['CLI', '命令行', '终端', 'Claude Code', 'Codex CLI', 'Grok', 'Node.js', 'npm', 'Python', 'Git', '安装', '首次命令', '接着聊'],
     steps: [
@@ -643,7 +654,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'mcp',
     title: '外接工具',
     lead: '外接工具（MCP）让 AI 使用浏览器等服务。先选工具，再添加连接。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['MCP', '浏览器', '外接工具', '连接', '本地程序', '网络服务', '授权', 'JSON'],
     steps: [
@@ -693,7 +704,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'skills',
     title: '技能',
     lead: '技能是一份做事说明，让 AI 按固定方法完成某类任务。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['技能', 'Skill', '导入', '全局', '当前项目', '启用', '来源', '文件夹'],
     steps: [
@@ -742,7 +753,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'plugins',
     title: '插件',
     lead: '插件是一整包扩展能力，可能包含命令、技能和服务连接。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['插件', 'plugin', '市场', '官方市场', '安装', '来源', '仓库', '更新'],
     steps: [
@@ -792,7 +803,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: updatesTutorialTopic,
     title: '备份、更新与数据',
     lead: '改配置前留备份，更新前保存工作，项目文件另外保管。',
-    category: 'advanced',
+    category: 'trouble',
     minutes: 3,
     keywords: ['备份', '恢复', '更新', '自动更新', '退回', '授权', '重置', '数据', '隐私', '卸载', '版本', 'Mac', '钥匙串', '开机密码', '始终允许', 'C 盘', '磁盘满', '空间不够', '清理'],
     steps: [
@@ -839,7 +850,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: macRuntimeTutorialTopic,
     title: 'Mac 上准备 Node.js 和 Python',
     lead: '只用 Codex 桌面端可以跳过。Node.js 在首页点一下，星芒替你放好；Python 和想自己装 Node.js 的，看后面两种装法。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['Mac', 'macOS', '苹果', 'CLI', '命令行', 'Node.js', 'npm', 'Python', 'Homebrew', 'brew', 'pkg', '环境'],
     steps: [
@@ -899,7 +910,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: macDesktopTutorialTopic,
     title: 'Mac 上装桌面端',
     lead: 'Codex 桌面端、Claude Desktop 和 OpenCode 在首页点「安装」就能装好；WorkBuddy 还要你从官网下载。装好后回工具箱检测、配置。不用把四个都装一遍。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', '一键安装', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
     steps: [
@@ -965,7 +976,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'messages',
     title: '看到这句提示怎么办',
     lead: '找到界面上的原话，展开对应说明，再按提示处理。',
-    category: 'advanced',
+    category: 'trouble',
     minutes: 4,
     keywords: ['报错', '提示', '安装失败', '更新失败', '登录过期', '密钥失效', '余额', '证书', '网络', '配置被改过', '检测失败', '文件夹', '日志'],
     steps: [
@@ -1053,7 +1064,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'trouble',
     title: '出问题怎么办',
     lead: '找到和你一样的情况，按对应步骤处理。不要一出错就重装所有工具。',
-    category: 'advanced',
+    category: 'trouble',
     minutes: 4,
     keywords: ['Codex', '桌面端', '安装', '未识别', '没检测到', '已配好', '英文', '中文', '报错', '失败', '打不开', '不回复', '检查', '诊断', '网络', '密钥', '余额', '额度', '反馈', '客服'],
     steps: [

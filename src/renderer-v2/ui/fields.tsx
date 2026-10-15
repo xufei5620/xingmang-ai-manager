@@ -37,3 +37,10 @@ export function Switch({ checked, onChange, label, description, disabled, testId
   const id = useId(); const t = useUiText();
   return <div className="xm-switch-wrap" data-testid={testId}><button id={id} className={cx('xm-switch', checked && 'is-on')} aria-checked={checked} aria-label={!label ? ariaLabel ?? t('notifications') : undefined} aria-labelledby={label ? id + '-label' : undefined} aria-describedby={description ? id + '-description' : undefined} disabled={disabled} onClick={() => onChange(!checked)} role="switch" type="button"><i aria-hidden="true" /></button>{(label || description) && <div>{label && <label id={id + '-label'} htmlFor={id}>{label}</label>}{description && <small id={id + '-description'}>{description}</small>}</div>}</div>;
 }
+// A range with an unset state: value '' parks the thumb at fallback and shows placeholder where the number
+// would be, so "left at the default" stays distinct from "chose the default value" (a chat parameter left
+// unset is not sent at all, and the model's own default applies).
+export function Slider({ label, value, fallback, min, max, step, hint, placeholder, onChange, testId }: BaseProps & { label: string; value: string; fallback: number; min: number; max: number; step: number; hint?: string; placeholder?: string; onChange: (value: string) => void }) {
+  const id = useId(); const unset = value === '';
+  return <div className="xm-slider"><label htmlFor={id}><span>{label}</span><b aria-hidden="true" data-unset={unset || undefined}>{unset ? placeholder : value}</b></label><input id={id} type="range" min={min} max={max} step={step} value={unset ? fallback : value} aria-valuetext={unset ? placeholder : undefined} aria-describedby={hint ? id + '-help' : undefined} data-testid={testId} onChange={event => onChange(event.target.value)} />{hint && <small id={id + '-help'}>{hint}</small>}</div>;
+}

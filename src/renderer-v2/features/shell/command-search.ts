@@ -7,6 +7,9 @@ export type CommandGroup = 'page' | 'action' | 'account' | 'settings' | 'tutoria
 /** 不只是跳页的那几条：开始检查、切换深浅色、打开帮助与客服、退出登录。 */
 export type CommandAction = 'check' | 'theme' | 'help' | 'logout'
 
+/** 聊天页的「参数设置」对话框；App 收到这个 section 时让聊天页把它打开。 */
+export const chatParametersSection = 'parameters'
+
 export interface CommandResult {
   key: string
   group: CommandGroup
@@ -89,6 +92,8 @@ function actionEntries(options: CommandSearchOptions): Entry[] {
     ...(options.theme === 'dark' ? [actionEntry('theme', '切换到浅色', { page: 'settings', action: 'theme' }, ['浅色', '亮色', '白色', '主题', '外观', '深浅色'])] : []),
     ...(options.theme === 'light' ? [actionEntry('theme', '切换到深色', { page: 'settings', action: 'theme' }, ['深色', '暗色', '黑色', '主题', '外观', '深浅色'])] : []),
     actionEntry('help', '帮助与客服', { page: 'feedback', action: 'help' }, ['客服', '帮助', '联系', '二维码', '人工']),
+    // 参数按对话保存：落到聊天页当前那段对话，打开它的参数对话框。
+    ...((options.pageVisible?.('chat') ?? true) ? [actionEntry('chat-parameters', '聊天参数设置', { page: 'chat', section: chatParametersSection }, ['参数', '系统提示词', '提示词', '随机度', '温度', '最大输出', 'token', '随机种子'])] : []),
   ]
 }
 
