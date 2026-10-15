@@ -53,9 +53,15 @@ function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, ch
     return () => document.removeEventListener('keydown', escape);
   }, [open, modal, requestClose]);
   useEffect(() => { if (!open) { setConfirmDiscard(false); setNudge(0); } }, [open]);
-  useLayoutEffect(() => { if (confirmDiscard) ref.current?.querySelector<HTMLButtonElement>('[data-keep-editing]')?.focus(); }, [confirmDiscard, nudge]);
+  // Keep editing hands focus back in the same commit that removes the bar, so a quick second Esc or Tab
+  // acts on the form rather than on the button that just went away.
+  const refocusForm = useRef(false);
+  useLayoutEffect(() => {
+    if (confirmDiscard) ref.current?.querySelector<HTMLButtonElement>('[data-keep-editing]')?.focus();
+    else if (refocusForm.current) { refocusForm.current = false; (initialFocus?.current ?? (content.current && focusable(content.current)[0]) ?? ref.current)?.focus(); }
+  }, [confirmDiscard, nudge, initialFocus]);
   if (!open) return null;
-  const cancelDiscard = () => { setConfirmDiscard(false); setNudge(0); requestAnimationFrame(() => (initialFocus?.current ?? (content.current && focusable(content.current)[0]) ?? ref.current)?.focus()); };
+  const cancelDiscard = () => { refocusForm.current = true; setConfirmDiscard(false); setNudge(0); };
   const className = 'xm-modal xm-' + kind + ' xm-dialog-' + width + (headless ? ' xm-dialog-headless' : '');
   const inner = <>
     {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy}><X size={16} aria-hidden="true" /></button></header>}
