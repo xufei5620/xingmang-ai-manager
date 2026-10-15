@@ -250,16 +250,22 @@ function detectChineseResources(installDirectory: string | null): CodexDesktopCh
       path.join(appDirectory, 'locales', 'zh-CN.pak'),
       path.join(appDirectory, 'resources', appName, 'app', 'locales', 'zh-CN.pak'),
     ],
+    pakRequired: true,
   })))
+  // Mac 上的 ChatGPT（26.1007 起写着 Powered by Codex & OWL）已经没有 Electron Framework.framework，
+  // 下面两个系统中文包的位置都不存在；网页界面和菜单的中文照样在 app.asar 里，界面能显示中文。
+  // 以前三样缺一样就算没有中文，Mac 上「检查中文界面」「启用中文界面」因此一直报缺中文资源。
+  // 系统中文包只管右键菜单这类自带的小字，Mac 上不再拿它当必需的一样，找得到照旧记下来。
   candidates.push({
     resourceRoot: path.join(installDirectory, 'Contents', 'Resources', 'app.asar'),
     pakPaths: [
       path.join(installDirectory, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Resources', 'zh_CN.lproj', 'locale.pak'),
       path.join(installDirectory, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources', 'zh_CN.lproj', 'locale.pak'),
     ],
+    pakRequired: false,
   })
   let best: CodexDesktopChineseResources | null = null
-  for (const { resourceRoot, pakPaths } of candidates) {
+  for (const { resourceRoot, pakPaths, pakRequired } of candidates) {
     const assetsDirectory = path.join(resourceRoot, 'webview', 'assets')
     const archiveMembers = asarMemberNames(resourceRoot)
     const frontendChunk = directoryNames(assetsDirectory).some((name) => /^zh[-_]cn(?:[-_.].*)?\.js$/i.test(name))
@@ -267,7 +273,7 @@ function detectChineseResources(installDirectory: string | null): CodexDesktopCh
     const menuLocale = directoryNames(path.join(resourceRoot, 'native-menu-locales')).some((name) => /^zh[-_]cn(?:[-_.].*)?\.json$/i.test(name))
       || archiveMembers.some((name) => /(^|\/)native-menu-locales\/zh[-_]cn(?:[-_.].*)?\.json$/i.test(name))
     const pakLocale = pakPaths.some((pakPath) => fs.existsSync(pakPath))
-    const result = { available: frontendChunk && menuLocale && pakLocale, frontendChunk, menuLocale, pakLocale, resourceRoot }
+    const result = { available: frontendChunk && menuLocale && (pakLocale || !pakRequired), frontendChunk, menuLocale, pakLocale, resourceRoot }
     if (result.available) return result
     const score = (value: CodexDesktopChineseResources) => Number(value.frontendChunk) + Number(value.menuLocale) + Number(value.pakLocale)
     if (!best || score(result) > score(best)) best = result
