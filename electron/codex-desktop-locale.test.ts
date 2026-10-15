@@ -255,6 +255,59 @@ describe('Codex Desktop locale content', () => {
     expect(status.chineseResources).toEqual({ available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot })
   })
 
+  // Shape reported from a Mac mini running ChatGPT 26.1007.71326 ("Powered by Codex & OWL"):
+  // no Electron Framework.framework at all, Chinese web and menu resources inside app.asar.
+  it('detects Chinese in a macOS bundle that no longer ships the Electron framework', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-locale-macos-owl-'))
+    const install = path.join(root, 'ChatGPT.app')
+    const source = path.join(root, 'asar-source')
+    const archive = path.join(install, 'Contents', 'Resources', 'app.asar')
+    fs.mkdirSync(path.join(source, 'webview', 'assets'), { recursive: true })
+    fs.mkdirSync(path.join(source, 'native-menu-locales'), { recursive: true })
+    fs.mkdirSync(path.dirname(archive), { recursive: true })
+    fs.writeFileSync(path.join(source, 'webview', 'assets', 'zh-CN-3727db380fd4.js'), 'export default {}', 'utf8')
+    fs.writeFileSync(path.join(source, 'webview', 'assets', 'zh-Hans-e6f25777cd0b.js'), 'export default {}', 'utf8')
+    fs.writeFileSync(path.join(source, 'native-menu-locales', 'zh-CN.json'), '{}', 'utf8')
+    await asar.createPackage(source, archive)
+
+    const status = inspectCodexDesktopLocale({
+      codexHome: path.join(root, '.codex'), installed: true, version: '26.1007.71326',
+      installDirectory: install, running: false, platform: 'darwin',
+    })
+    expect(status.chineseResources).toEqual({ available: true, frontendChunk: true, menuLocale: true, pakLocale: false, resourceRoot: archive })
+  })
+
+  it.each(['frontend', 'menu'] as const)('still needs the %s resource in a macOS bundle', async (missing) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-locale-macos-partial-'))
+    const install = path.join(root, 'ChatGPT.app')
+    const source = path.join(root, 'asar-source')
+    const archive = path.join(install, 'Contents', 'Resources', 'app.asar')
+    fs.mkdirSync(path.join(source, 'webview', 'assets'), { recursive: true })
+    fs.mkdirSync(path.join(source, 'native-menu-locales'), { recursive: true })
+    fs.mkdirSync(path.dirname(archive), { recursive: true })
+    fs.writeFileSync(path.join(source, 'webview', 'assets', missing === 'frontend' ? 'index-hash.js' : 'zh-CN-hash.js'), 'export default {}', 'utf8')
+    fs.writeFileSync(path.join(source, 'native-menu-locales', missing === 'menu' ? 'en.json' : 'zh-CN.json'), '{}', 'utf8')
+    await asar.createPackage(source, archive)
+
+    const status = inspectCodexDesktopLocale({
+      codexHome: path.join(root, '.codex'), installed: true, version: '26.1007.71326',
+      installDirectory: install, running: false, platform: 'darwin',
+    })
+    expect(status.chineseResources.available).toBe(false)
+    expect(status.chineseResources.frontendChunk).toBe(missing !== 'frontend')
+    expect(status.chineseResources.menuLocale).toBe(missing !== 'menu')
+  })
+
+  it('keeps requiring the Chromium locale pack on Windows', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-locale-windows-pak-'))
+    const install = makeInstall(root, { pak: false })
+    const status = inspectCodexDesktopLocale({
+      codexHome: path.join(root, '.codex'), installed: true, version: '26.810.7004.0',
+      installDirectory: install, running: false, platform: 'win32',
+    })
+    expect(status.chineseResources).toMatchObject({ available: false, frontendChunk: true, menuLocale: true, pakLocale: false })
+  })
+
   it('writes safely under the selected CODEX_HOME and validates the result', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-locale-write-'))
     const codexHome = path.join(root, '.codex')
