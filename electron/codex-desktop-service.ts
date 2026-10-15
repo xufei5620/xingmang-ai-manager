@@ -52,7 +52,7 @@ import {
 } from './install-cancellation'
 import { buildMacosCodexAppLaunchPlan, probeMacosCodexRunning, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import {
-  formatCodexStartupMacArgument,
+  formatCodexStartupMacArguments,
   formatCodexStartupWindowsArgument,
   noCodexDesktopStartupRoute,
   type CodexDesktopStartupRoute,
@@ -2493,6 +2493,16 @@ export function buildCodexDesktopDarwinStatus(
  */
 export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。'
 
+/**
+ * Mac 上客户自己的加速占着系统代理、又连不到 Codex 的中文开关，这次没能替他绕过去时右下角那一句
+ * （codex-desktop-startup-route.ts 的 ownProxyBlocked，或本机桥 Codex 没用上）。星芒的自动加速不跟别的
+ * 软件抢系统代理，关掉那个加速以后从星芒打开就能连上。
+ */
+export const codexDesktopOwnProxyMacMessage = '你电脑上开着别的加速软件，Codex 这次可能是英文界面。想要中文：先关掉那个加速软件，在 Codex 窗口里按 Command + Q 完全退出，再回星芒点「打开」。'
+
+/** Codex 冷启动头几秒就去读中文开关；等这么久还没连上本机桥，就当这一版 Codex 不认那几个启动参数。 */
+const ownProxyBridgeConfirmMs = 20_000
+
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
   installationQueue: InstallationQueue
@@ -3785,7 +3795,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
       // 已经开着的 Codex 收不到启动参数（LaunchServices 只把链接交过去），那时只照旧连加速。
       const startupRoute = await prepareStartupBeforeLaunch(!desktopApp.running)
-      const appArguments = startupRoute.kind === 'none' ? [] : [formatCodexStartupMacArgument(startupRoute.hostResolverRules)]
+      let appArguments: string[] = []
+      try { appArguments = formatCodexStartupMacArguments(startupRoute) }
+      catch (error) {
+        if (startupRoute.kind === 'tunnel' || startupRoute.kind === 'own-proxy-bridge') startupRoute.release()
+        throw error
+      }
       try {
         await executeCommand(buildMacosCodexAppLaunchPlan(desktopApp.path, workspace, codexEnv.CODEX_HOME, appArguments), {
           cwd: workspace,
@@ -3794,12 +3809,20 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           maxOutputBytes: 64 * 1024,
         })
       } catch (error) {
-        if (startupRoute.kind === 'tunnel') startupRoute.release()
+        if (startupRoute.kind === 'tunnel' || startupRoute.kind === 'own-proxy-bridge') startupRoute.release()
         throw error
       }
+      // 本机桥要等 Codex 真的连上来才算数：这一版 Codex 不认启动参数时什么都不会发生，只能靠等不到来认。
+      const ownProxyBlocked = startupRoute.kind === 'own-proxy-bridge'
+        ? !await startupRoute.confirmUse(ownProxyBridgeConfirmMs)
+        : startupRoute.kind === 'none' && startupRoute.ownProxyBlocked === true
       const status = await inspectCodexDesktop()
       if (status.running) sendCodexDesktopStatus(target, 'running', status)
-      return { restarted: false, status }
+      return {
+        restarted: false,
+        status,
+        ...(ownProxyBlocked ? { chineseLocale: { status: 'failed' as const, message: codexDesktopOwnProxyMacMessage } } : {}),
+      }
     }
     if (platform !== 'win32') throw new Error('Codex 桌面端启动目前仅支持 Windows')
 

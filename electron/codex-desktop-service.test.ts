@@ -14,6 +14,7 @@ import type { NativeConfigInspection } from './config-files'
 import {
   assertCodexDesktopUninstalled,
   buildCodexDesktopDarwinStatus,
+  codexDesktopOwnProxyMacMessage,
   createCodexDesktopService,
   buildCodexDesktopLaunchPlan,
   buildCodexDesktopManifestSources,
@@ -2039,6 +2040,52 @@ describe('Codex Desktop launch acceleration', () => {
 
     await expect(fixture.service.launchCodexDesktop('open', fixture.target)).rejects.toThrow('open failed')
     expect(release).toHaveBeenCalledTimes(1)
+  })
+
+  function ownProxyBridge(confirmed: boolean) {
+    return {
+      kind: 'own-proxy-bridge' as const,
+      hostResolverRules: 'MAP ab.chatgpt.com 127.0.0.1:43211',
+      proxyServer: 'http://127.0.0.1:7890,direct://',
+      release: vi.fn(),
+      confirmUse: vi.fn(async () => confirmed),
+    }
+  }
+
+  it('passes the customer proxy around the config host and says nothing once Codex uses the bridge', async () => {
+    const route = ownProxyBridge(true)
+    const fixture = darwinLaunchFixture(undefined, { prepareStartupRoute: async () => route })
+
+    const result = await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(fixture.launches[0].slice(-4)).toEqual([
+      '--args',
+      '--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1:43211',
+      '--proxy-server=http://127.0.0.1:7890,direct://',
+      '--proxy-bypass-list=ab.chatgpt.com',
+    ])
+    expect(route.confirmUse).toHaveBeenCalledWith(20_000)
+    expect(result.chineseLocale).toBeUndefined()
+    expect(route.release).not.toHaveBeenCalled()
+  })
+
+  it('reminds the customer to quit their own accelerator when Codex never uses the bridge or none was built', async () => {
+    for (const route of [ownProxyBridge(false), { kind: 'none' as const, ownProxyBlocked: true }]) {
+      const fixture = darwinLaunchFixture(undefined, { prepareStartupRoute: async () => route })
+
+      const result = await fixture.service.launchCodexDesktop('open', fixture.target)
+
+      expect(result.chineseLocale).toEqual({ status: 'failed', message: codexDesktopOwnProxyMacMessage })
+    }
+  })
+
+  it('gives the bridge back when the app could not be opened', async () => {
+    const route = ownProxyBridge(true)
+    const fixture = darwinLaunchFixture(undefined, { launchError: new Error('open failed'), prepareStartupRoute: async () => route })
+
+    await expect(fixture.service.launchCodexDesktop('open', fixture.target)).rejects.toThrow('open failed')
+    expect(route.release).toHaveBeenCalledTimes(1)
+    expect(route.confirmUse).not.toHaveBeenCalled()
   })
 })
 

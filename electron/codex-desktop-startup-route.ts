@@ -15,6 +15,12 @@
  *    端口，让那个请求当场失败：界面还是英文，但不再白屏等半分钟。先问系统代理、再探一次：开着自己的
  *    代理或者 TUN 模式梯子的客户本来拿得到中文，不能把他们弄成英文（#976 路 A）。
  *
+ * 第 2 条还有一个岔路：客户自己的加速软件占着系统代理时，星芒的自动加速按冲突跳过（不跟别的软件抢
+ * 系统代理），而那个加速又不一定通 ab.chatgpt.com，Codex 就是英文（2026-10-15 客户 Mac、yoyo 的
+ * Mac mini 都复现）。这时只在 Mac 上搭一座本机桥：其余流量照旧交给客户的代理，只有读中文开关的那个
+ * 主机绕开它，经星芒的下载线路（只开本机回环端口、不动系统代理）出去。搭不成、或者这一版 Codex 不认
+ * 这几个启动参数，就告诉调用方，由它提醒客户先关掉自己的加速再打开。
+ *
  * 只管「只在启动那一下要」的客户（用星芒 Key，见 codexDesktopNeedsAccelerationOnlyAtStartup）。登
  * ChatGPT 账号的整个使用过程都要连 chatgpt.com，照旧连加速，这里不碰。启动参数只有拉起新进程时才
  * 生效，Codex 已经开着时调用方会说（launchArgumentsUsable: false），那时也照旧连加速。
@@ -37,9 +43,16 @@ const fastFailPort = 1
 
 const hostResolverRulesPattern = /^MAP ab\.chatgpt\.com 127\.0\.0\.1:\d{1,5}$/
 
+// 交给 Codex 的只能是本机上的代理，后面跟着 direct://：客户中途关掉自己的加速，那个端口没人听了，
+// Codex 就改直连，和跟着系统代理走时一样，不会一直连一个死掉的端口。
+const proxyServerPattern = /^(?:http|https|socks4|socks5):\/\/(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\]):\d{1,5},direct:\/\/$/
+
 export type CodexDesktopStartupRoute =
-  /** 不带启动参数：加速连上了、用户自己有路，或者判断不了。 */
-  | { kind: 'none' }
+  /**
+   * 不带启动参数：加速连上了、用户自己有路，或者判断不了。ownProxyBlocked = 客户自己的加速占着系统代理、
+   * 又连不到 ab.chatgpt.com，这次也没搭成桥：Codex 多半是英文，调用方要提醒客户。
+   */
+  | { kind: 'none'; ownProxyBlocked?: boolean }
   /**
    * 代取：开关请求指到本机通道。release 关掉通道（确定没有 Codex 拉起来时用）；带参数启动报错、只能照
    * 普通方式再打开一次时，fallback 补连加速，通道留着到期自己关：报错不等于没拉起来（激活超时之前
@@ -48,6 +61,18 @@ export type CodexDesktopStartupRoute =
   | { kind: 'tunnel'; hostResolverRules: string; release(): void; fallback(cause?: unknown): Promise<void> }
   /** 立刻失败：开关请求指到没人听的本机端口。 */
   | { kind: 'fast-fail'; hostResolverRules: string }
+  /**
+   * 绕开客户自己的加速：proxyServer 原样是客户那个代理，ab.chatgpt.com 绕开它、指到本机桥。release 关桥、
+   * 还线路（没拉起 Codex 时用）；confirmUse 等 Codex 真的连上桥，等不到给 false，说明这一版 Codex 不认
+   * 这几个启动参数。桥到点自己关，用不着时调用方不必管。
+   */
+  | {
+    kind: 'own-proxy-bridge'
+    hostResolverRules: string
+    proxyServer: string
+    release(): void
+    confirmUse(timeoutMs: number): Promise<boolean>
+  }
 
 export const noCodexDesktopStartupRoute: CodexDesktopStartupRoute = Object.freeze({ kind: 'none' })
 
@@ -73,6 +98,43 @@ export function formatCodexStartupWindowsArgument(rules: string): string {
 export function formatCodexStartupMacArgument(rules: string): string {
   assertHostResolverRules(rules)
   return `--host-resolver-rules=${rules}`
+}
+
+const proxyServerSchemes: ReadonlyMap<string, string> = new Map([
+  ['PROXY', 'http'],
+  ['HTTPS', 'https'],
+  // Chromium 的 SOCKS 不带版本号就是 SOCKS4（download-proxy.ts 那张表是给 npm 用的，不能照搬）。
+  ['SOCKS', 'socks4'],
+  ['SOCKS4', 'socks4'],
+  ['SOCKS5', 'socks5'],
+])
+
+/**
+ * 把 Chromium resolveProxy 的结果换成交给 Codex 的 --proxy-server（客户自己的那个代理，后面跟 direct://）。
+ * 只认第一段、只认本机上的代理：远处的公司代理不是「客户自己开的加速」，不替他改走法；DIRECT、带账号
+ * 密码或别的写法一律 null，照旧。
+ */
+export function buildCodexStartupProxyServer(result: string): string | null {
+  if (typeof result !== 'string' || result.length > 2_048) return null
+  const first = result.split(';')[0]?.trim() ?? ''
+  const match = /^([A-Za-z0-9]+)\s+(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\]):(\d{1,5})$/i.exec(first)
+  if (!match) return null
+  const scheme = proxyServerSchemes.get(match[1].toUpperCase())
+  const port = Number(match[3])
+  if (!scheme || port < 1 || port > 65_535) return null
+  const proxyServer = `${scheme}://${match[2].toLowerCase()}:${port},direct://`
+  return proxyServerPattern.test(proxyServer) ? proxyServer : null
+}
+
+/** macOS 上这条路要交给 Codex 的启动参数，open 按数组交过去，不加引号。 */
+export function formatCodexStartupMacArguments(route: CodexDesktopStartupRoute): string[] {
+  if (route.kind === 'none') return []
+  const rules = formatCodexStartupMacArgument(route.hostResolverRules)
+  if (route.kind !== 'own-proxy-bridge') return [rules]
+  if (!proxyServerPattern.test(route.proxyServer)) throw new Error('Codex 启动参数无效')
+  // --proxy-bypass-list 只有和 --proxy-server 一起给才生效（Electron 文档原话）。绕开代理的那个主机由
+  // Codex 自己解析地址，于是落到上面那条 MAP 规则上，进本机桥。
+  return [rules, `--proxy-server=${route.proxyServer}`, `--proxy-bypass-list=${codexStartupConfigHost}`]
 }
 
 /** 只认 https 的站点根地址；换成 wss 以后接上通道路径。 */
@@ -329,6 +391,216 @@ export function openCodexStartupTunnel(options: CodexStartupTunnelOptions): Prom
   })
 }
 
+// 目标写死：桥只会替人连 ab.chatgpt.com:443，本机别的程序连上来也到不了别处。
+const bridgeConnectRequest = Buffer.from(
+  `CONNECT ${codexStartupConfigHost}:443 HTTP/1.1\r\nHost: ${codexStartupConfigHost}:443\r\n\r\n`,
+  'latin1',
+)
+const bridgeConnectAccepted = /^HTTP\/1\.[01] 200(?: |$)/
+
+export interface CodexStartupProxyBridgeOptions {
+  /** 星芒下载线路在本机的 HTTP 代理端口（download-acceleration.ts 只给回环地址）。 */
+  proxyPort: number
+  /** 整座桥开多久，到点全部关掉。缺省两分钟，和通道一样。 */
+  lifetimeMs?: number
+  maxConnections?: number
+  /** 每条连接上下行合计的上限。 */
+  maxBytesPerConnection?: number
+  idleTimeoutMs?: number
+  /** 等下载线路答应 CONNECT 最多多久。 */
+  handshakeTimeoutMs?: number
+  /** 下载线路答应之前，Codex 先发来的数据最多攒多少。 */
+  maxPendingBytes?: number
+}
+
+export interface CodexStartupProxyBridge {
+  readonly port: number
+  /** 一共接过几条连接：一条都没有，说明 Codex 没照启动参数来连。 */
+  connections(): number
+  /** 有没有哪条连接已经收到 ab.chatgpt.com 那头回来的字节：收到了才算 Codex 真的用上了。 */
+  used(): boolean
+  /** 等到用上为止，最多等 timeoutMs；桥关了还没用上给 false。 */
+  waitForUse(timeoutMs: number): Promise<boolean>
+  /** 桥关掉时兑现：expired = 到点自己关的，不是谁调了 close。 */
+  readonly closed: Promise<{ expired: boolean }>
+  close(): void
+}
+
+/**
+ * 在 127.0.0.1 的随机端口上接 Codex 的连接，每条都向星芒的下载线路发一个写死的 CONNECT，答应了就原样
+ * 来回传字节。Codex 和 OpenAI 之间的 TLS 是端到端的，桥和线路都只看得到密文。
+ */
+export function openCodexStartupProxyBridge(options: CodexStartupProxyBridgeOptions): Promise<CodexStartupProxyBridge> {
+  if (!Number.isInteger(options.proxyPort) || options.proxyPort < 1 || options.proxyPort > 65_535) {
+    return Promise.reject(new Error('星芒下载线路的端口无效'))
+  }
+  const proxyPort = options.proxyPort
+  const lifetimeMs = options.lifetimeMs ?? 120_000
+  const maxConnections = options.maxConnections ?? 8
+  const maxBytes = options.maxBytesPerConnection ?? 8 * 1024 * 1024
+  const idleTimeoutMs = options.idleTimeoutMs ?? 30_000
+  const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 10_000
+  const maxPendingBytes = options.maxPendingBytes ?? 256 * 1024
+  // CONNECT 的回应只有一行状态加几行头，超过这么多说明那头不是我们的线路。
+  const maxResponseHeaderBytes = 8 * 1024
+  const closers = new Set<() => void>()
+  const useWaiters = new Set<(used: boolean) => void>()
+  let accepted = 0
+  let closed = false
+  let used = false
+  let resolveClosed: (value: { expired: boolean }) => void = () => undefined
+  const closedPromise = new Promise<{ expired: boolean }>((resolve) => { resolveClosed = resolve })
+
+  function markUsed(): void {
+    if (used) return
+    used = true
+    for (const waiter of [...useWaiters]) waiter(true)
+  }
+
+  function bridge(local: net.Socket): void {
+    const upstream = net.connect({ host: '127.0.0.1', port: proxyPort })
+    let established = false
+    let finished = false
+    let bytes = 0
+    let pendingBytes = 0
+    let pending: Buffer[] = []
+    let header = Buffer.alloc(0)
+    const handshakeTimer = setTimeout(finish, handshakeTimeoutMs)
+    handshakeTimer.unref?.()
+
+    function finish(): void {
+      if (finished) return
+      finished = true
+      closers.delete(finish)
+      clearTimeout(handshakeTimer)
+      pending = []
+      upstream.destroy()
+      local.destroy()
+    }
+    closers.add(finish)
+
+    // 线路那头正常关了：本机这边先把已经写下去的字节送完再关，别把最后一段回应丢掉。
+    function finishAfterFlush(): void {
+      if (finished) return
+      local.end()
+      const timer = setTimeout(finish, 1_000)
+      timer.unref?.()
+      local.once('close', () => clearTimeout(timer))
+    }
+
+    function withinBudget(length: number): boolean {
+      bytes += length
+      if (bytes <= maxBytes) return true
+      finish()
+      return false
+    }
+
+    function deliver(chunk: Buffer): void {
+      if (!chunk.length || !withinBudget(chunk.length)) return
+      markUsed()
+      local.write(chunk)
+    }
+
+    upstream.setNoDelay(true)
+    upstream.once('connect', () => upstream.write(bridgeConnectRequest))
+    upstream.on('data', (chunk: Buffer) => {
+      if (finished) return
+      if (established) { deliver(chunk); return }
+      header = Buffer.concat([header, chunk])
+      const end = header.indexOf('\r\n\r\n')
+      if (end < 0) {
+        if (header.length > maxResponseHeaderBytes) finish()
+        return
+      }
+      const statusLine = header.subarray(0, end).toString('latin1').split('\r\n', 1)[0] ?? ''
+      if (end > maxResponseHeaderBytes || !bridgeConnectAccepted.test(statusLine)) { finish(); return }
+      established = true
+      clearTimeout(handshakeTimer)
+      const rest = header.subarray(end + 4)
+      header = Buffer.alloc(0)
+      for (const early of pending) upstream.write(early)
+      pending = []
+      pendingBytes = 0
+      deliver(rest)
+    })
+    upstream.on('end', () => { if (established) finishAfterFlush(); else finish() })
+    upstream.on('error', finish)
+    upstream.on('close', () => { if (!established) finish() })
+
+    local.setNoDelay(true)
+    local.setTimeout(idleTimeoutMs, finish)
+    local.on('data', (chunk: Buffer) => {
+      if (finished) return
+      if (!withinBudget(chunk.length)) return
+      if (established) {
+        upstream.write(chunk)
+        return
+      }
+      pendingBytes += chunk.length
+      if (pendingBytes > maxPendingBytes) { finish(); return }
+      pending.push(chunk)
+    })
+    local.on('end', finish)
+    local.on('error', finish)
+    local.on('close', finish)
+  }
+
+  return new Promise<CodexStartupProxyBridge>((resolve, reject) => {
+    const server = net.createServer((local) => {
+      if (closed || accepted >= maxConnections) {
+        local.destroy()
+        return
+      }
+      accepted += 1
+      bridge(local)
+    })
+    let lifetimeTimer: ReturnType<typeof setTimeout> | null = null
+    function close(expired = false): void {
+      if (closed) return
+      closed = true
+      if (lifetimeTimer) clearTimeout(lifetimeTimer)
+      server.close()
+      for (const finish of [...closers]) finish()
+      for (const waiter of [...useWaiters]) waiter(used)
+      resolveClosed({ expired })
+    }
+    server.once('error', (error) => {
+      close()
+      reject(error)
+    })
+    server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, () => {
+      const address = server.address() as AddressInfo | null
+      if (!address || typeof address.port !== 'number') {
+        close()
+        reject(new Error('本机桥没能拿到端口'))
+        return
+      }
+      lifetimeTimer = setTimeout(() => close(true), lifetimeMs)
+      lifetimeTimer.unref?.()
+      resolve({
+        port: address.port,
+        connections: () => accepted,
+        used: () => used,
+        waitForUse(timeoutMs) {
+          if (used || closed) return Promise.resolve(used)
+          return new Promise<boolean>((settle) => {
+            const timer = setTimeout(() => done(false), timeoutMs)
+            timer.unref?.()
+            function done(value: boolean): void {
+              clearTimeout(timer)
+              useWaiters.delete(done)
+              settle(value)
+            }
+            useWaiters.add(done)
+          })
+        },
+        closed: closedPromise,
+        close: () => close(),
+      })
+    })
+  })
+}
+
 // 握手失败在这些情况下其实是连上了：对面回了一张证书，只是这台电脑不认（被污染到别家的地址、
 // 安全软件换了证书）。这时按「连得上」算，少做一次立刻失败，照旧是今天的样子。
 const certificateFailureCodes: ReadonlySet<string> = new Set([
@@ -374,6 +646,27 @@ export function chromiumProxyResultIsDirect(result: string): boolean {
   return first === '' || first === 'DIRECT'
 }
 
+/**
+ * 经系统代理（客户自己的加速）向 ab.chatgpt.com 要一次回应，看那条路通不通。只发一个不带凭据的 HEAD，不跟
+ * 跳转、不读正文。403、451 按不通算：OpenAI 不服务的地区就是这样拒的，Codex 照样拿不到中文开关。跳转按通算：
+ * Electron 的 fetch 遇到跳转又说了不跟，会抛「Redirect was cancelled」（manual-redirect-fetch.ts），收得到跳转
+ * 就是对面回话了。
+ */
+export async function probeCodexStartupHostThroughProxy(fetchImpl: typeof fetch, timeoutMs = 6_000): Promise<boolean> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  timer.unref?.()
+  try {
+    const response = await fetchImpl(`https://${codexStartupConfigHost}/`, { method: 'HEAD', redirect: 'manual', signal: controller.signal })
+    void response.body?.cancel().catch(() => undefined)
+    return response.status !== 403 && response.status !== 451
+  } catch (error) {
+    return error instanceof Error && /redirect was cancelled/i.test(error.message)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export interface CodexDesktopStartupRouteOptions {
   /** 这个平台的 Codex 收不收启动参数。不收就只连加速。 */
   launchArgumentsSupported: boolean
@@ -391,6 +684,20 @@ export interface CodexDesktopStartupRouteOptions {
   resolveSystemProxy(url: string): Promise<string>
   /** 缺省 = probeCodexStartupHostDirect。 */
   probeDirect?(): Promise<boolean>
+  /**
+   * 客户自己的加速挡住了自动加速时，要不要搭本机桥。多出来的两个启动参数只核过 macOS 的写法（open 按数组
+   * 交过去）；Windows 的激活命令行要真机先核，那边的调用方也还只带 MAP 一个参数。缺省 = 不搭，照旧。
+   */
+  ownProxyBridgeSupported?: boolean
+  /** 经系统代理连 ab.chatgpt.com 拿不拿得到回应（probeCodexStartupHostThroughProxy）；缺省按「拿得到」。 */
+  probeThroughSystemProxy?(): Promise<boolean>
+  /**
+   * 拉起星芒的下载线路：只开本机回环端口，不动系统代理（download-acceleration.ts）。起不来给 null。
+   * 自己有超时，这里不再另外掐：掐掉了线路照样会起来，却没人去还。
+   */
+  startLoopbackRoute?(): Promise<{ port: number; release(): Promise<void> } | null>
+  /** 测试替身；缺省 = openCodexStartupProxyBridge。 */
+  openBridge?(options: CodexStartupProxyBridgeOptions): Promise<CodexStartupProxyBridge>
   connect?: CodexStartupTunnelConnect
   /** 测试替身；缺省 = openCodexStartupTunnel。 */
   openTunnel?(options: CodexStartupTunnelOptions): Promise<CodexStartupTunnel>
@@ -431,6 +738,9 @@ export function createCodexDesktopStartupRouteCoordinator(
   const preflightTimeoutMs = options.preflightTimeoutMs ?? 4_000
   const probeDirect = options.probeDirect ?? (() => probeCodexStartupHostDirect())
   const openTunnel = options.openTunnel ?? openCodexStartupTunnel
+  const openBridge = options.openBridge ?? openCodexStartupProxyBridge
+  // 搭过一次桥、到点都没人连上来：这一版 Codex 不认这几个启动参数。这次运行里不再白起线路，直接提醒。
+  let bridgeIgnored = false
 
   function log(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void {
     try { options.log?.(level, event, message, detail) }
@@ -498,6 +808,72 @@ export function createCodexDesktopStartupRouteCoordinator(
     catch { return true }
   }
 
+  /**
+   * 系统代理指着本机上一个代理、经它又拿不到 ab.chatgpt.com 的回应，给出交给 Codex 的 --proxy-server；
+   * 其余情况 null。拿不准按「拿得到」：宁可照旧，也不替本来有路的客户改走法。
+   */
+  async function blockingOwnProxy(): Promise<string | null> {
+    let proxyServer: string | null
+    try { proxyServer = buildCodexStartupProxyServer(await options.resolveSystemProxy(`https://${codexStartupConfigHost}/`)) }
+    catch { return null }
+    if (!proxyServer) return null
+    let reachable = true
+    try { reachable = options.probeThroughSystemProxy ? await options.probeThroughSystemProxy() : true }
+    catch { reachable = true }
+    if (reachable) {
+      log('info', 'codex-desktop.startup-route.own-proxy', '电脑上另有代理占着系统代理，经它连得到 Codex 的中文开关，照常打开')
+      return null
+    }
+    return proxyServer
+  }
+
+  async function bridgeAroundOwnProxy(proxyServer: string): Promise<CodexDesktopStartupRoute> {
+    const blocked: CodexDesktopStartupRoute = { kind: 'none', ownProxyBlocked: true }
+    if (bridgeIgnored) {
+      log('info', 'codex-desktop.startup-route.own-proxy', '电脑上另有代理挡住了 Codex 的中文开关，上次搭的本机桥 Codex 没用上，这次只提醒')
+      return blocked
+    }
+    let route: { port: number; release(): Promise<void> } | null = null
+    try { route = options.startLoopbackRoute ? await options.startLoopbackRoute() : null }
+    catch { route = null }
+    if (!route) {
+      log('warn', 'codex-desktop.startup-route.own-proxy', '电脑上另有代理挡住了 Codex 的中文开关，星芒的下载线路没起来，只提醒', { reason: 'route' })
+      return blocked
+    }
+    const lease = route
+    let bridge: CodexStartupProxyBridge
+    try { bridge = await openBridge({ proxyPort: lease.port }) }
+    catch (error) {
+      void lease.release().catch(() => undefined)
+      log('warn', 'codex-desktop.startup-route.own-proxy', '电脑上另有代理挡住了 Codex 的中文开关，本机桥开不起来，只提醒', { reason: 'listen', ...failureDetail(error) })
+      return blocked
+    }
+    let returned = false
+    function giveBack(): void {
+      if (returned) return
+      returned = true
+      bridge.close()
+      void lease.release().catch(() => undefined)
+    }
+    void bridge.closed.then(({ expired }) => {
+      // 只有到点自己关、一条连接都没来过，才说明 Codex 不认参数。调用方因为没拉起来而提前关的不算；
+      // 连上来了却没拿到回应，是线路那头的事，下次照样搭。
+      if (expired && bridge.connections() === 0) {
+        bridgeIgnored = true
+        log('warn', 'codex-desktop.startup-route.bridge-unused', '本机桥到点都没有连接，这一版 Codex 可能不认启动参数，这次运行里改为只提醒')
+      }
+      giveBack()
+    })
+    log('info', 'codex-desktop.startup-route.bridge', '电脑上另有代理挡住了 Codex 的中文开关，读开关那一下改走星芒的下载线路，其余照旧走那个代理')
+    return {
+      kind: 'own-proxy-bridge',
+      hostResolverRules: buildCodexStartupHostResolverRules(bridge.port),
+      proxyServer,
+      release: giveBack,
+      confirmUse: (timeoutMs) => bridge.waitForUse(timeoutMs),
+    }
+  }
+
   async function prepare(launchArgumentsUsable: boolean): Promise<CodexDesktopStartupRoute> {
     if (!launchArgumentsUsable || !options.launchArgumentsSupported || !await startupOnly()) {
       await accelerate()
@@ -506,6 +882,12 @@ export function createCodexDesktopStartupRouteCoordinator(
     const tunnel = await tryTunnel()
     if (tunnel) return tunnel
     const outcome = await accelerate()
+    // 自动加速被拒，多半是电脑上另有代理占着系统代理（加速不跟别的软件抢）。没登录、加速组件起不来的不在这里：
+    // 那时下载线路一样起不来，关掉客户的加速也不会变中文，不该提醒。
+    if (options.ownProxyBridgeSupported && outcome?.status === 'skipped' && outcome.reason === 'connect-failed') {
+      const proxyServer = await blockingOwnProxy()
+      if (proxyServer) return await bridgeAroundOwnProxy(proxyServer)
+    }
     // 连上了、本来就连着的，Codex 跟着系统代理走；超时的还在后台接着连，晚一点连上照样能拿到中文。
     if (!options.fastFailSupported || outcome?.status !== 'skipped' || outcome.reason === 'timeout') {
       return noCodexDesktopStartupRoute

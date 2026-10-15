@@ -198,7 +198,7 @@ import {
 } from './download-proxy'
 import { createDownloadAccelerationCoordinator } from './download-acceleration'
 import { codexDesktopNeedsAccelerationOnlyAtStartup, createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
-import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator } from './codex-desktop-startup-route'
+import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator, probeCodexStartupHostThroughProxy } from './codex-desktop-startup-route'
 import { probeCodexDesktopRunning } from './codex-desktop-service'
 import {
   createSystemService,
@@ -1492,6 +1492,17 @@ if (!hasSingleInstanceLock) {
       tunnelUrls: () => codexStartupTunnelUrls(),
       ensureAccelerated: () => codexDesktopAcceleration.ensureConnected(),
       resolveSystemProxy: (url) => resolveSystemProxy(url),
+      // 客户自己的加速挡住了中文开关时搭本机桥。Windows 的激活命令行带不带得上另外两个参数要真机先核，先只开 Mac。
+      ownProxyBridgeSupported: process.platform === 'darwin',
+      probeThroughSystemProxy: () => probeCodexStartupHostThroughProxy(systemProxyFetch),
+      startLoopbackRoute: async () => {
+        const lease = await downloadAcceleration.acquire()
+        if (!lease.endpoint) {
+          await lease.release()
+          return null
+        }
+        return { port: lease.endpoint.port, release: () => lease.release() }
+      },
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
