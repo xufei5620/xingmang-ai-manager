@@ -260,13 +260,56 @@ test('ToolRow uses six fixed columns, real brands and exact theme tokens across 
       assert.match(await row.innerText(), /已配好/);
       assert.doesNotMatch(await row.innerText(), /星芒中转|ready/);
       const columns = await row.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' '));
-      assert.equal(columns.length, 6); assert.deepEqual(columns.slice(-3), ['72px', '92px', '32px']);
-      assert.equal(await page.locator('.xm-brand > svg').count(), 9);
+      assert.equal(columns.length, 6); assert.deepEqual(columns.slice(-2), ['92px', '32px']);
+      // The extra column follows its button (v4 batch 04): a fixed 72px let a long label spill left over the status.
+      const extraButton = await row.locator('.xm-tool-extra .xm-btn').evaluate(el => el.getBoundingClientRect().width);
+      assert.ok(parseFloat(columns[3]) >= extraButton - 0.5, `extra column ${columns[3]} fits its ${extraButton}px button`);
+      assert.equal(await page.locator('.xm-brand > svg').count(), 12);
       const images = await page.locator('.xm-logo').evaluateAll(elements => elements.every(el => el.complete && el.naturalWidth > 0));
       assert.equal(images, true);
       const token = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().toUpperCase());
       assert.equal(token, theme === 'dark' ? '#101116' : '#FBFAF6');
       await page.screenshot({ path: 'artifacts/renderer-v2-components/' + os + '-' + theme + '.png', fullPage: true });
+    } finally { await page.close(); }
+  }
+});
+
+// 批次性能要求 04：「改用 388290490@qq.c…」压在状态牌上。一个 15 位以上的邮箱用户名配最长的那个状态，
+// 深浅两套、宽窄两种都不许叠：放得下时全显示，放不下时各自省略，谁也不盖谁。卡片同样。
+test('a long account name and the longest status never overlap on a tool row or card, light or dark', async () => {
+  for (const theme of ['light', 'dark']) {
+    const page = await gallery('?os=win&theme=' + theme);
+    try {
+      const measure = () => page.evaluate(() => {
+        const box = (selector) => { const rect = document.querySelector(selector).getBoundingClientRect(); return { left: rect.left, right: rect.right, width: rect.width }; };
+        const clipped = (selector) => { const element = document.querySelector(selector); return element.scrollWidth > element.clientWidth + 1; };
+        return {
+          row: box('[data-testid="gallery-tool-row-long"]'), pill: box('[data-testid="gallery-tool-row-long"] .xm-tool-status .xm-pill'),
+          extra: box('[data-testid="gallery-tool-row-long"] .xm-tool-extra .xm-btn'), primary: box('[data-testid="gallery-tool-row-long"] .xm-tool-primary .xm-btn'),
+          extraClipped: clipped('[data-testid="gallery-tool-row-long"] .xm-tool-extra .xm-btn > span'),
+          card: box('[data-testid="gallery-tool-card-long"]'), badge: box('[data-testid="gallery-tool-card-long"] .xm-tool-card-badge'),
+          actions: box('[data-testid="gallery-tool-card-long"] .xm-tool-card-actions'), action: box('[data-testid="gallery-tool-card-long"] .xm-tool-card-actions > .xm-btn'),
+        };
+      });
+      const assertApart = (layout, label) => {
+        assert.ok(layout.pill.right <= layout.extra.left + 0.5, `${label}: status ends ${layout.pill.right}, button starts ${layout.extra.left}`);
+        assert.ok(layout.extra.right <= layout.primary.left + 0.5, `${label}: the long button stays left of 打开`);
+        assert.ok(layout.extra.left >= layout.row.left && layout.primary.right <= layout.row.right + 0.5, `${label}: the row keeps its buttons inside`);
+        assert.ok(layout.badge.right <= layout.actions.left + 0.5, `${label}: card status ends ${layout.badge.right}, buttons start ${layout.actions.left}`);
+        assert.ok(layout.actions.right <= layout.card.right + 0.5 && layout.badge.left >= layout.card.left - 0.5, `${label}: the card keeps its foot inside`);
+        assert.ok(layout.action.width > 40, `${label}: the long card button stays readable (${layout.action.width}px)`);
+      };
+      const wide = await measure();
+      assertApart(wide, theme + ' wide');
+      assert.equal(wide.extraClipped, false, 'a wide row shows the whole account name');
+      // Narrowest the home page gets: a 560px row and a single 220px card.
+      await page.evaluate(() => {
+        document.querySelector('[data-testid="gallery-tool-row-long"]').parentElement.style.width = '560px';
+        document.querySelector('.xm-gallery-tool-cards').style.width = '220px';
+      });
+      const narrow = await measure();
+      assert.ok(Math.abs(narrow.card.width - 220) < 1, `the card is ${narrow.card.width}px wide`);
+      assertApart(narrow, theme + ' narrow');
     } finally { await page.close(); }
   }
 });

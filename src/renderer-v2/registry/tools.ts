@@ -1,4 +1,5 @@
 import { cliCatalog, providerConfigDirectoryNames, type ActiveProviderId } from '../../../electron/catalog';
+import type { ExternalToolId } from '../../../electron/ipc-contract';
 
 export type ToolFirstRun = { command: string; prompt: string };
 export type ToolDef = { id: ActiveProviderId | 'codexDesktop'; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop'; install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed' | 'store'; mac?: 'managed' | 'external'; linux?: 'unavailable' }; requires: Array<'node' | 'python'>; configPath: Record<'win' | 'mac' | 'linux', string>; sources: Array<'account' | 'official' | 'manual'>; models?: string[] | { endpoint: string }; shortcutIndex: number; firstRun?: ToolFirstRun; hidden?: (os: 'win' | 'mac' | 'linux') => boolean };
@@ -73,3 +74,22 @@ export const tools: ToolDef[] = [
 export function shortcutTools(os: 'win' | 'mac' | 'linux'): ToolDef[] {
   return tools.filter(tool => !tool.hidden?.(os));
 }
+
+// 卡片第二行「{厂商} · 命令行工具」那半句（v4 首页）。外接客户端的 kind 记在 registry/clients.ts。
+export const toolKindLabels: Record<ToolDef['kind'], string> = { cli: '命令行工具', desktop: '桌面应用' };
+
+// v4 首页的工具卡片按厂商排，命令行工具和外接的桌面客户端排在一张网格里（方案批 04）。
+// 次序只在这里定义，页面不写字面量（T2）；registry/tools.test.ts 钉住它不漏不重。
+export type HomeToolId = ToolDef['id'] | ExternalToolId;
+export const homeToolOrder: ReadonlyArray<HomeToolId> = ['claude', 'claudeDesktop', 'codex', 'codexDesktop', 'grok', 'opencode', 'workbuddy'];
+
+// 没装时卡片中间那一句介绍。写成 Record：加一个工具时漏掉它是编译错，不是卡片上空一行。
+export const homeToolBlurbs: Record<HomeToolId, string> = {
+  claude: '命令行编程助手',
+  claudeDesktop: '可以接当前账号使用',
+  codex: '命令行编程助手',
+  codexDesktop: '和 Codex CLI 共用配置',
+  grok: '在终端里读项目、改代码',
+  opencode: '开源，命令行版和桌面版共用配置',
+  workbuddy: '办公助手，可以接当前账号的模型',
+};

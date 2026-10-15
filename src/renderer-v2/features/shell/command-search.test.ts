@@ -199,4 +199,39 @@ describe('searchCommands for single settings', () => {
     for (const word of ['限额', '额度上限']) expect(searchCommands(word).find((item) => item.group === 'account'), word).toMatchObject({ section: 'keys' })
     expect(searchCommands('换账号').some((item) => item.section === 'switch-account')).toBe(true)
   })
+
+  describe('the tool group', () => {
+    const tools = [
+      { id: 'claude', name: 'Claude Code', installed: true },
+      { id: 'claudeDesktop', name: 'Claude Desktop', installed: false },
+      { id: 'codex', name: 'Codex CLI', installed: true },
+      { id: 'workbuddy', name: 'WorkBuddy', installed: false },
+    ]
+
+    it('offers opening and configuring an installed tool, and installing a missing one', () => {
+      const claude = searchCommands('Claude', { tools }).filter((item) => item.group === 'tool')
+      expect(claude.map((item) => item.label)).toEqual(['打开 Claude Code', 'Claude Code 配置', '安装 Claude Desktop'])
+      expect(claude.map((item) => item.action)).toEqual(['openTool', 'configureTool', 'installTool'])
+      expect(claude.map((item) => item.tool)).toEqual(['claude', 'claude', 'claudeDesktop'])
+      expect(claude.every((item) => item.page === 'home')).toBe(true)
+      expect(new Set(searchCommands('a', { tools }).map((item) => item.key)).size).toBe(searchCommands('a', { tools }).length)
+    })
+
+    it('finds a tool by its id and in any letter case', () => {
+      expect(searchCommands('workbuddy', { tools }).find((item) => item.group === 'tool')).toMatchObject({ label: '安装 WorkBuddy', action: 'installTool', tool: 'workbuddy' })
+      expect(searchCommands('CODEX', { tools }).filter((item) => item.group === 'tool').map((item) => item.label)).toEqual(['打开 Codex CLI', 'Codex CLI 配置'])
+    })
+
+    it('puts the tool group right after the pages', () => {
+      const groups = searchCommands('Codex', { tools }).map((item) => item.group)
+      const firstTool = groups.indexOf('tool')
+      expect(firstTool).toBeGreaterThan(-1)
+      expect(groups.slice(0, firstTool).every((group) => group === 'page')).toBe(true)
+    })
+
+    it('stays out of the list until something is typed, and out entirely without tools', () => {
+      expect(searchCommands('', { tools }).some((item) => item.group === 'tool')).toBe(false)
+      expect(searchCommands('Claude').some((item) => item.group === 'tool')).toBe(false)
+    })
+  })
 })
