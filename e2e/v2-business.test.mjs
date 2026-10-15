@@ -1042,7 +1042,8 @@ test('session detail exposes a retry action after a temporary read failure', asy
     const drawer = page.getByTestId('session-detail-drawer')
     await drawer.getByText('会话详情暂时不可读', { exact: true }).waitFor()
     await drawer.getByRole('button', { name: '重试读取', exact: true }).click()
-    await drawer.getByText('这是一条测试消息', { exact: true }).waitFor()
+    // 气泡前面有一句只给读屏的「你：」，按包含来找。
+    await drawer.getByText('这是一条测试消息').waitFor()
   } finally {
     await page.close()
   }
