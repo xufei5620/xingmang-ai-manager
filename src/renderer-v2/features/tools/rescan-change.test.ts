@@ -63,4 +63,20 @@ describe('home rescan fingerprint', () => {
     expect(rescanFingerprint(snapshot(), [client()])).not.toBe(rescanFingerprint(snapshot(), [client({ configured: false })]))
     expect(rescanFingerprint(snapshot(), [client({ detectionError: '读不到安装位置' })])).not.toBe(rescanFingerprint(snapshot(), [client()]))
   })
+
+  // 第三方的 Claude Desktop 配置从「待完善」补齐：configured 还是 false、来源还是 other，但卡片从「待连接」变成能用了。
+  it('notices a third-party desktop configuration that became ready or unreadable', () => {
+    const pending = client({ tool: 'claudeDesktop', configured: false, configurationSource: 'other', configurationReady: false, configurationError: null })
+    const before = rescanFingerprint(snapshot(), [pending])
+    expect(rescanFingerprint(snapshot(), [{ ...pending, configurationReady: true }])).not.toBe(before)
+    expect(rescanFingerprint(snapshot(), [{ ...pending, configurationError: 'Claude Desktop 本地配置无法确认' }])).not.toBe(before)
+    expect(rescanFingerprint(snapshot(), [{ ...pending, model: 'fixture-desktop-model' }])).not.toBe(before)
+  })
+
+  it('notices a tool whose configured model changed', () => {
+    const changed = snapshot()
+    const before = rescanFingerprint(changed, [])
+    changed.config.providers.claude = { ...changed.config.providers.claude, model: 'fixture-other-model' }
+    expect(rescanFingerprint(changed, [])).not.toBe(before)
+  })
 })
