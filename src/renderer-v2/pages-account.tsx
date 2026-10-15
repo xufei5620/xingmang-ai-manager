@@ -737,6 +737,7 @@ export function AccountPage({
             devicesChanged={devicesChanged}
             onNavigate={openLanding}
             onSwitchAccount={onSwitchAccount}
+            active={(active ?? true) && activeTab === 'overview'}
             changed={changed}
           />
         )

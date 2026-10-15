@@ -799,6 +799,22 @@ test('revoking the only key on the last page steps back to a real page instead o
   } finally { await page.close() }
 })
 
+// 切到别的页签时账号概览藏着不卸：在「密钥管理」里撤销一把再回到概览，「密钥与设备」那张卡上的把数要跟着变。
+test('the overview key count catches up after a key is revoked on the key tab', async () => {
+  const page = await fixture('page=account&keyCount=21')
+  try {
+    const card = page.getByTestId('account-overview-security')
+    await card.getByText('21 把', { exact: true }).waitFor()
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
+    await page.getByRole('dialog', { name: '撤销「paged-key-1」？', exact: true }).getByRole('button', { name: '撤销', exact: true }).click()
+    await waitForToast(page, '已撤销「paged-key-1」')
+    await page.getByRole('tab', { name: '账号概览', exact: true }).click()
+    await card.getByText('20 把', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
 test('key search finds a key that lives on a later page and starts from the first page of matches', async () => {
   const page = await fixture('page=account&keyCount=45')
   try {

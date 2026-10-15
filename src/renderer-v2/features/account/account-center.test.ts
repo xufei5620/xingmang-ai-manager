@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  countAccountKeys,
   currentExpiryText,
   deviceActivityText,
   inviteRateText,
@@ -8,6 +9,7 @@ import {
   keyExpiredTime,
   keyMetaParts,
   keyToolChoice,
+  keyToolInstalled,
   localSpendDays,
   passwordRules,
   runwayDaysText,
@@ -163,5 +165,34 @@ describe('account center keys', () => {
     expect(keyToolChoice({ ...claude, installed: false }, false)).toEqual({ hint: '未安装', disabled: true })
     expect(keyToolChoice({ ...claude, official: true }, false)).toEqual({ hint: '官方账号', disabled: false })
     expect(keyToolChoice({ ...claude, installed: null }, false)).toEqual({ hint: '', disabled: false })
+  })
+
+  it('counts a tool as installed when either Codex client is, and does not block on a failed detection', () => {
+    expect(keyToolInstalled([{ installed: false }, { installed: true }])).toBe(true)
+    expect(keyToolInstalled([{ installed: false }, { installed: false }])).toBe(false)
+    expect(keyToolInstalled([{ installed: false }, { installed: false, detectionFailed: true }])).toBe(null)
+    expect(keyToolInstalled([{ installed: true }, { installed: false, detectionFailed: true }])).toBe(true)
+    expect(keyToolInstalled([{ installed: true, detectionFailed: true }])).toBe(null)
+  })
+
+  it('walks every key page before counting the keys a tool uses', async () => {
+    const pages = [
+      { total: 205, keys: Array.from({ length: 100 }, () => ({})) },
+      { total: 205, keys: [...Array.from({ length: 99 }, () => ({})), { managedProvider: 'codex' }] },
+      { total: 205, keys: [{ managedProvider: 'claude' }, { managedProvider: 'gemini' }, {}, {}, {}] },
+    ]
+    const asked: number[] = []
+    const counted = await countAccountKeys(async ({ page }) => { asked.push(page); return pages[page - 1] }, (provider) => provider === 'claude' || provider === 'codex')
+    expect(counted).toEqual({ total: 205, inUse: 2 })
+    expect(asked).toEqual([1, 2, 3])
+  })
+
+  it('stops counting when a page comes back empty or the safety valve is reached', async () => {
+    const asked: number[] = []
+    expect(await countAccountKeys(async ({ page }) => { asked.push(page); return page === 1 ? { total: 300, keys: [{ managedProvider: 'grok' }] } : { total: 300, keys: [] } }, () => true)).toEqual({ total: 300, inUse: 1 })
+    expect(asked).toEqual([1, 2])
+    let calls = 0
+    expect(await countAccountKeys(async () => { calls++; return { total: 1_000_000, keys: [{}] } }, () => false)).toEqual({ total: 1_000_000, inUse: 0 })
+    expect(calls).toBe(100)
   })
 })

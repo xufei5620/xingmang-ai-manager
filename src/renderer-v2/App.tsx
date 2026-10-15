@@ -87,6 +87,7 @@ import { createSpendSpikeWatch } from './features/app/spend-spike'
 import { hasPendingSettingsGroup, requestSettingsGroup } from './features/app/settings-group-intent'
 import { requestRowFocus } from './features/app/row-focus'
 import { createTemplateFillRetry } from './features/app/template-fill-retry'
+import { keyToolInstalled } from './features/account/account-center'
 import './business.css'
 
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
@@ -1571,9 +1572,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 账号概览和首页说同一套数：还能用几天、能扣的订阅、近 7 天花费（历史账号只有这个合计）。
   const accountSummary = { runway, subscription, weekUsageUsd: runwayUsage && balance && balance.quotaPerUnit > 0 ? runwayUsage.weekQuota / balance.quotaPerUnit : null }
   // 密钥管理「配置到工具」下拉：哪些命令行工具装了、哪些现在用官方账号登录。
-  const accountKeyTools = useMemo(() => toolbox.snapshot ? presentTools(toolbox.snapshot).flatMap((tool) => tool.id === 'claude' || tool.id === 'codex' || tool.id === 'grok'
-    ? [{ provider: tool.id, name: tool.name, installed: tool.status.detectionFailed ? null : tool.status.installed, official: tool.source === 'official' }]
-    : []) : undefined, [toolbox.snapshot])
+  const accountKeyTools = useMemo(() => {
+    if (!toolbox.snapshot) return undefined
+    const tools = presentTools(toolbox.snapshot)
+    // Codex 桌面端和 Codex CLI 共用一份配置：只装了桌面端，「Codex CLI」那一项也能点。
+    const desktop = tools.find((tool) => tool.id === 'codexDesktop')
+    return tools.flatMap((tool) => tool.id === 'claude' || tool.id === 'codex' || tool.id === 'grok'
+      ? [{ provider: tool.id, name: tool.name, installed: keyToolInstalled(tool.id === 'codex' && desktop ? [tool.status, desktop.status] : [tool.status]), official: tool.source === 'official' }]
+      : [])
+  }, [toolbox.snapshot])
   useEffect(() => {
     if (!balance || balanceState.updatedAt === null || !supportsSpendCheck) return
     void spendWatch.observe({ scope, account: String(session.account?.userId ?? 0), quota: balance.quota, quotaPerUnit: balance.quotaPerUnit, at: balanceState.updatedAt })

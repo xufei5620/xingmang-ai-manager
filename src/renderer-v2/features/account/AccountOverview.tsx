@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronRight, LogOut, Monitor, RefreshCw, Users, Zap } from 'lucide-react'
 import { Button, Dialog, Pill } from '../../ui'
 import { dollars, PlaceholderBar, ResultNotice, useOperation, useRefreshRequest, useResource } from '../../business-common'
@@ -14,6 +14,7 @@ import type { BalanceRunway } from '../app/balance-runway'
 import { balanceStatusText } from '../shell/balance-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import {
+  countAccountKeys,
   inviteRateText,
   keyCountText,
   localSpendDays,
@@ -97,6 +98,7 @@ export function AccountOverview({
   devicesChanged,
   onNavigate,
   onSwitchAccount,
+  active = true,
   changed,
 }: {
   api: V2Bridge
@@ -111,6 +113,8 @@ export function AccountOverview({
   onNavigate: (landing: AccountLanding) => void
   /** 打开「切换账号」框；缺省 = 那颗按钮灰着。 */
   onSwitchAccount?: () => void
+  /** 概览是不是现在那个页签；从别的页签切回来时重读密钥把数。缺省 = 一直算在前台、不重读。 */
+  active?: boolean
   changed: () => void
 }) {
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
@@ -135,10 +139,15 @@ export function AccountOverview({
   const subscription = useResource(subscriptionLoad)
   const keysLoad = useCallback(async () => {
     if (!supportsKeys) return null
-    const page = await api.getAccountKeys({ page: 1, pageSize: 100 })
-    return { total: page.total, inUse: page.keys.filter((key) => isActiveProviderId(key.managedProvider)).length }
+    return countAccountKeys((query) => api.getAccountKeys(query), (provider) => isActiveProviderId(provider))
   }, [api, supportsKeys])
   const keys = useResource(keysLoad)
+  // 切到别的页签时概览藏着不卸：回到概览时重读密钥把数，在「密钥管理」里新建、撤销、配到工具以后这里才对得上。
+  const wasActive = useRef(active)
+  useEffect(() => {
+    if (active && !wasActive.current) void keys.reload()
+    wasActive.current = active
+  }, [active])
   const devicesLoad = useCallback(async () => supportsDevices ? (await api.getAccountLoginSessions()).length : null, [api, supportsDevices])
   const devices = useResource(devicesLoad)
   useRefreshRequest(refreshRequest, () => {

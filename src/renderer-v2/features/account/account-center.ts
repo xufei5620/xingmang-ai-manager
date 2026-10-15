@@ -214,6 +214,16 @@ export function keyMetaParts(
   ]
 }
 
+/**
+ * 「配置到工具」下拉里这个工具算不算装了：每一份检测结果没检测成是 null（不拦），装了是 true。
+ * Codex CLI 和 Codex 桌面端共用一份配置，只装了桌面端也能把密钥写进去，所以两份合起来看，有一份装了就算装了。
+ */
+export function keyToolInstalled(statuses: ReadonlyArray<{ installed: boolean; detectionFailed?: boolean }>): boolean | null {
+  const results = statuses.map((status) => status.detectionFailed ? null : status.installed)
+  if (results.includes(true)) return true
+  return results.includes(null) ? null : false
+}
+
 export interface KeyToolTarget {
   provider: 'claude' | 'codex' | 'grok'
   name: string
@@ -231,4 +241,29 @@ export function keyToolChoice(target: KeyToolTarget, inUse: boolean): { hint: st
   if (inUse) return { hint: '在用', disabled: true }
   if (target.installed === false) return { hint: '未安装', disabled: true }
   return { hint: target.official ? '官方账号' : '', disabled: false }
+}
+
+// 翻页的安全阀，同主进程 account-key-quota 的那一个：一万把已经远超正常账号，翻到这里还没见底多半是后端分页出了问题。
+const keyCountPageSize = 100
+const keyCountPageLimit = 100
+
+/**
+ * 「密钥与设备」那张卡上的把数。后台一页最多给 100 把，工具在用的那把可能在后面几页，所以一直翻到见底再数「在用」；
+ * 按已经看到的条数判断见底（同 account-key-quota），真翻到安全阀还没见底，就按已经看到的那些数。
+ */
+export async function countAccountKeys(
+  listKeys: (query: { page: number; pageSize: number }) => Promise<{ total: number; keys: ReadonlyArray<{ managedProvider?: string }> }>,
+  isInUse: (provider: string | undefined) => boolean,
+): Promise<{ total: number; inUse: number }> {
+  let total = 0
+  let seen = 0
+  let inUse = 0
+  for (let page = 1; page <= keyCountPageLimit; page++) {
+    const batch = await listKeys({ page, pageSize: keyCountPageSize })
+    total = batch.total
+    seen += batch.keys.length
+    inUse += batch.keys.filter((key) => isInUse(key.managedProvider)).length
+    if (!batch.keys.length || seen >= batch.total) break
+  }
+  return { total, inUse }
 }
