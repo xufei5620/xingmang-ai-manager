@@ -1846,7 +1846,7 @@ describe('renderer-v2 home v4 top cards', () => {
   })
 
   it('counts the subscription in the money that is left, by how it is billed', () => {
-    const subscription = { name: '月卡', remainingUsd: 2, endsAt: null, expiringSoon: false, lowRemaining: true, subscriptionOnly: false }
+    const subscription = { name: '月卡', remainingUsd: 2, endsAt: '2026-11-03T00:00:00Z', expiringSoon: false, lowRemaining: true, subscriptionOnly: false }
     expect(homeMoneyNotice(1, subscription, { usableUsd: 3, days: 1, low: true })?.text).toBe('余额加订阅额度只剩 $3.00，按最近用量约还能用 1 天。用完后工具会暂停')
     const only = { ...subscription, subscriptionOnly: true }
     expect(homeMoneyNotice(1, only, { usableUsd: 2, days: 0, low: true })).toEqual({ text: '月卡只剩 $2.00，按最近用量不到 1 天就会用完。用完后工具会暂停', renew: true })
