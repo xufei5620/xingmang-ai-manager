@@ -105,11 +105,13 @@ describe('v2 business boundaries', () => {
   it('says a paid subscription is open instead of calling it a top-up', () => {
     expect(paymentTerminalPresentation('success', false, 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
     expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付没有完成' })
-    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通，正在刷新订阅。')
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通。')
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription', '专业版')).toBe('订单 XM-2 已付款，专业版已开通。')
+    expect(paymentTerminalPresentation('success', false, 'subscription').body).toBe('已付款，订阅已开通。')
   })
 
   it('tells the customer whether their tools now draw on the subscription', () => {
-    expect(subscriptionToolsNotice({ followsPreference: true }).body).toContain('扣费偏好')
+    expect(subscriptionToolsNotice({ followsPreference: true }).body).toBe('工具发出的请求会按「扣费顺序」先用订阅额度。')
     expect(subscriptionToolsNotice({ followsPreference: false, switched: ['Claude Code', 'Codex'] })).toMatchObject({
       tone: 'ok', title: '工具已改用订阅额度', body: expect.stringContaining('Claude Code、Codex'),
     })
@@ -160,6 +162,8 @@ describe('v2 business boundaries', () => {
     expect(hiddenFilterCount(fields, ['start', 'modelName'], {})).toBe(0)
     expect(hiddenFilterCount(fields, ['start', 'modelName'], { start: '2026-10-01T00:00', modelName: 'gpt' })).toBe(0)
     expect(hiddenFilterCount(fields, ['start', 'modelName'], { group: 'vip', tokenName: '', modelName: 'gpt' })).toBe(1)
+    // 全部收起时（第一行一个框都不留），带着默认值的日期不算用户加的条件。
+    expect(hiddenFilterCount(fields, [], { start: '2026-10-01T00:00', modelName: 'gpt' }, { start: '2026-10-01T00:00' })).toBe(1)
   })
 
   it('tells the user what happens after the payment window closes and where to check', () => {
@@ -176,8 +180,8 @@ describe('v2 business boundaries', () => {
 
   it('validates recharge amounts against the integer IPC contract and channel minimum', () => {
     expect(validateTopupAmount(10, 5)).toBe(10)
-    expect(() => validateTopupAmount(10.5, 5)).toThrow('整数')
-    expect(() => validateTopupAmount(4, 5)).toThrow('不能低于')
+    expect(() => validateTopupAmount(10.5, 5)).toThrow('充值数量不能低于 5，请填整数')
+    expect(() => validateTopupAmount(4, 5)).toThrow('充值数量不能低于 5，请填整数')
     expect(() => validateTopupAmount(10, Number.NaN)).toThrow('最低充值金额无效')
   })
 

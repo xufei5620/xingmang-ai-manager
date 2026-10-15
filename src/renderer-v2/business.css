@@ -47,18 +47,6 @@
   min-height: 56px;
   color: var(--text-3);
 }
-.v2-business-suggestions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin: 8px 0 16px;
-  color: var(--text-3);
-}
-.v2-business-suggestions-label {
-  margin-top: 14px;
-  color: var(--text-2);
-  font-size: 13px;
-}
 .v2-business-path {
   display: block;
   overflow-wrap: anywhere;
@@ -271,19 +259,8 @@
   gap: 16px;
   margin: 18px 0;
 }
-.v2-business-amount {
-  font: 600 28px var(--mono);
-  color: var(--text);
-}
 .v2-business-stat-grid .xm-card-body { display: grid; gap: 4px; align-content: start; }
 .v2-business-stat-grid .xm-card-body small { display: block; color: var(--text-3); line-height: 1.5; }
-/* 和下面的卡片空 16（分页本身的 gap），不再自带下边距叠成 34。 */
-.v2-business-recharge-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  align-items: start;
-  gap: 16px;
-}
 .v2-business-account-panels {
   min-width: 0;
 }
@@ -518,13 +495,6 @@
 }
 .v2-feedback-log-next:hover { background: var(--panel-hover); }
 .v2-feedback-log-next:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.v2-business-chart {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  height: 180px;
-  padding: 8px 0 26px;
-}
 .v2-business-chart-empty {
   flex: 1;
   align-self: stretch;
@@ -536,64 +506,6 @@
 }
 .v2-business-chart-empty p {
   margin: 0;
-}
-.v2-business-chart-column {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-end;
-  flex-direction: column;
-  height: 100%;
-  position: relative;
-}
-.v2-business-chart-column > div {
-  background: var(--accent);
-  border-radius: 3px 3px 0 0;
-}
-.v2-business-chart-column small {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  padding-top: 8px;
-  color: var(--text-3);
-  font: 10px var(--mono);
-  white-space: nowrap;
-}
-.v2-business-payments {
-  display: grid;
-  gap: 8px;
-  margin: 16px 0;
-}
-.v2-business-payment {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 60px;
-  padding: 12px;
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius-input);
-  cursor: pointer;
-}
-.v2-business-payment.is-selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.v2-business-payment > span:nth-child(2) {
-  flex: 1;
-  display: grid;
-  gap: 4px;
-}
-.v2-business-payment small {
-  font-size: var(--font-small-compact);
-  color: var(--text-2);
-}
-.v2-business-payment .xm-field input[type='radio'] {
-  width: 18px;
-  height: 18px;
-  min-height: 18px;
-  margin: 0;
-  accent-color: var(--accent);
 }
 /* 只在个人中心的分页里用：和下面表格的 16 由分页本身的 gap 给，不再自带下边距叠成 32。 */
 .v2-business-filters {
@@ -625,13 +537,6 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-}
-/* 「消耗 · RPM · TPM」挂在「调用明细」表格标题那一行右边。 */
-.v2-business-usage-stats {
-  color: var(--text-2);
-  font-size: var(--font-small-compact);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 /* 表格下面一行：翻页，和「20 条 / 页」。 */
 .v2-business-table-foot {
@@ -685,17 +590,8 @@
 .v2-business-recharge-form:disabled {
   opacity: 0.5;
 }
-.v2-business-recharge-form:disabled .v2-business-tier {
+.v2-business-recharge-form:disabled .v2-recharge-tier {
   cursor: not-allowed;
-}
-/* 「兑换」挪到充值码输入框右边同一行。 */
-.v2-business-redeem {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-.v2-business-redeem > .xm-field {
-  flex: 1;
 }
 .v2-business-account-sync {
   margin: 0 16px 16px;
@@ -761,61 +657,6 @@
   display: block;
   margin-top: 4px;
   color: var(--text-2);
-}
-/* 后台给某一档配了充值优惠时，快捷金额按钮上挂「送 X%」，金额下面说清送多少、到账多少。 */
-.v2-business-tier {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.v2-business-tier:hover {
-  border-color: var(--accent);
-}
-.v2-business-tier:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-.v2-business-tier.is-selected {
-  border-style: solid;
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-.v2-business-tier-credited {
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 600;
-}
-.v2-business-tier-paid,
-.v2-business-tier-bonus {
-  overflow-wrap: anywhere;
-}
-/* 只有真有赠送才写「送 X%」，没有赠送不写字。 */
-.v2-business-tier-bonus,
-.v2-business-tier-note .has-bonus {
-  color: var(--ok-tx);
-  font-weight: 500;
-}
-.v2-business-tier-note {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin: 6px 0 10px;
-  color: var(--text-2);
-  font-size: 13px;
-}
-.v2-business-tier-note strong {
-  color: var(--text);
 }
 /* 检查页「Codex 干活检查」：开关和「开始检查」并成一行，按钮靠右。 */
 .v2-health-consent { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
@@ -912,3 +753,137 @@
 .v2-acct-invite-code > code { margin-right: auto; color: var(--num); font: 700 28px var(--mono); letter-spacing: 5px; user-select: all; }
 .v2-acct-invite .v2-acct-kv > b { font-weight: 600; }
 .v2-saved-accounts-lead { margin: 0 0 10px; color: var(--text-2); font-size: var(--font-small); }
+/*
+ * 充值订阅 v4（第 07 批）：左边「充值到账户余额」（快捷金额四格、自定义金额、支付方式两列），
+ * 右边亮的「本次充值」；下面我的订阅、订阅套餐两列、扣费顺序，最下面「我的订单」两行一条。
+ */
+.v2-recharge-result { display: flex; align-items: flex-start; gap: 12px; padding: 16px 14px 16px 18px; border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel-solid); box-shadow: var(--sh-1); }
+.v2-recharge-result.is-ok { border-color: color-mix(in srgb, var(--ok) 32%, transparent); }
+.v2-recharge-result.is-warn { border-color: color-mix(in srgb, var(--warn) 32%, transparent); }
+.v2-recharge-result.is-bad { border-color: color-mix(in srgb, var(--bad) 32%, transparent); }
+.v2-recharge-result-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 14px; background: var(--panel-2); color: var(--text-2); }
+.v2-recharge-result.is-ok .v2-recharge-result-icon { background: var(--ok-soft); color: var(--ok-tx); }
+.v2-recharge-result.is-warn .v2-recharge-result-icon { background: var(--warn-soft); color: var(--warn-tx); }
+.v2-recharge-result.is-bad .v2-recharge-result-icon { background: var(--bad-soft); color: var(--bad-tx); }
+.v2-recharge-result-copy { display: grid; flex: 1; gap: 4px; min-width: 0; }
+.v2-recharge-result-copy h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.v2-recharge-result-copy p { max-width: 72ch; margin: 0; color: var(--text-2); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.v2-recharge-result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.v2-recharge-result > .xm-btn { margin: -4px 0 0; }
+.v2-recharge-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(250px, 1fr); align-items: start; gap: 14px; }
+.v2-recharge-form { display: grid; gap: 14px; }
+.v2-recharge-label { color: var(--text-2); font-size: 12.5px; font-weight: 500; }
+.v2-recharge-heading { margin: 0; font-size: 14px; font-weight: 600; }
+.v2-recharge-divider { width: 100%; height: 1px; margin: 2px 0; border: 0; background: var(--line); }
+.v2-recharge-tiers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: -6px; padding-top: 8px; }
+.v2-recharge-tier { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; height: 66px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: var(--radius-input); corner-shape: squircle; background: var(--panel-2); color: var(--text); font: inherit; cursor: pointer; transition: border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard); }
+.v2-recharge-tier:hover { border-color: var(--line-3); }
+.v2-recharge-tier.is-selected { border-color: var(--gold); background: var(--soft); box-shadow: inset 0 0 0 .5px var(--gold); }
+.v2-recharge-tier-credited { display: flex; align-items: baseline; gap: 4px; max-width: 100%; overflow: hidden; font-size: 18px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.v2-recharge-tier-credited > small { color: var(--text-3); font-size: 11.5px; font-weight: 500; }
+.v2-recharge-tier.is-selected .v2-recharge-tier-credited { color: var(--gold-tx); }
+.v2-recharge-tier-paid { color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.v2-recharge-tier-gift { position: absolute; top: -9px; left: 10px; height: 18px; padding: 0 6px; border-radius: 6px; background: var(--pop); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok) 45%, transparent); color: var(--ok-tx); font-size: 11px; font-weight: 600; line-height: 18px; white-space: nowrap; }
+.v2-recharge-pay { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.v2-recharge-pay.is-stacked { grid-template-columns: minmax(0, 1fr); margin: 6px 0 4px; }
+.v2-recharge-pay-option { position: relative; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius-input); corner-shape: squircle; background: var(--panel-2); cursor: pointer; transition: border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard); }
+.v2-recharge-pay-option:hover { border-color: var(--line-3); }
+.v2-recharge-pay-option.is-selected { border-color: var(--gold); background: var(--soft); }
+.v2-recharge-pay-option.is-disabled { cursor: not-allowed; opacity: .55; }
+/* 原生单选框照旧能用键盘、读屏，只是看不见；画出来的是旁边那个圆点。 */
+.v2-recharge-pay-option > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.v2-recharge-pay-option:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.v2-recharge-radio { display: flex; flex: none; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.v2-recharge-pay-option.is-selected .v2-recharge-radio { box-shadow: inset 0 0 0 1.5px var(--gold); }
+.v2-recharge-pay-option.is-selected .v2-recharge-radio::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); }
+.v2-recharge-pay-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; background: var(--panel); box-shadow: var(--tile-ring); color: var(--text-2); }
+.v2-recharge-pay-copy { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.v2-recharge-pay-copy strong { font-size: 13.5px; font-weight: 600; }
+.v2-recharge-pay-copy small { color: var(--text-3); font-size: 12px; overflow-wrap: anywhere; }
+.v2-recharge-aside { gap: 12px; }
+.v2-recharge-aside > h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.v2-recharge-big-row { display: flex; align-items: baseline; gap: 6px; }
+.v2-recharge-big { min-width: 0; overflow: hidden; color: var(--num); font: 600 34px/1.15 var(--font); letter-spacing: -.4px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.v2-recharge-rows { display: grid; gap: 6px; }
+.v2-recharge-rows .v2-acct-kv > b { font-weight: 600; }
+.v2-recharge-gift { color: var(--ok-tx); }
+.v2-recharge-trade { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; user-select: all; }
+.v2-recharge-aside-foot { display: flex; align-items: center; gap: 8px; }
+.v2-recharge-aside-foot > .v2-acct-more { margin-left: auto; }
+.v2-recharge-aside > .xm-btn { width: 100%; height: 40px; }
+.v2-recharge-redeem-link { align-self: flex-start; color: var(--gold-tx); }
+.v2-recharge-redeem-link:hover { color: var(--gold-tx); text-decoration: underline; text-underline-offset: 3px; }
+.v2-recharge-plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.v2-recharge-plan { gap: 8px; }
+.v2-recharge-plan h3 { flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; }
+.v2-recharge-plan-price { color: var(--text-2); font-size: var(--font-small); }
+.v2-recharge-plan-price > b { color: var(--text); font: 600 22px/1.3 var(--font); font-variant-numeric: tabular-nums; }
+.v2-recharge-plan-foot { display: flex; align-items: center; gap: 10px; min-height: 30px; margin-top: auto; }
+.v2-recharge-plan-foot > span { flex: 1; min-width: 0; }
+.v2-recharge-preference { gap: 0; padding: 0; }
+.v2-recharge-preference-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.v2-recharge-preference-head > div:first-child { flex: 1; min-width: 180px; }
+.v2-recharge-preference-head p { margin: 2px 0 0; }
+.v2-recharge-preference-note { display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 16px 12px; color: var(--text-2); font-size: 12.5px; }
+.v2-recharge-preference-note > svg { flex: none; }
+.v2-recharge-quote { display: grid; gap: 6px; margin-bottom: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.v2-recharge-quote .v2-acct-kv > b { color: var(--num); font-size: 15px; font-variant-numeric: tabular-nums; }
+.v2-recharge-orders { display: grid; }
+.v2-recharge-order { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 16px; }
+.v2-recharge-order + .v2-recharge-order { border-top: 1px solid var(--line); }
+.v2-recharge-order > .v2-acct-tile { width: 30px; height: 30px; border-radius: 8px; }
+.v2-recharge-order-copy { flex: 1; min-width: 0; }
+.v2-recharge-order-copy strong { font-size: 13.5px; font-weight: 600; }
+.v2-recharge-order-copy p { margin: 2px 0 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.6; overflow-wrap: anywhere; }
+.v2-acct-section-head > .xm-search { width: 220px; }
+/*
+ * 用量账单 v4（第 07 批）：时间范围一排，三个数，花费趋势和按模型两张卡；
+ * 下面「调用明细 | 异步任务」切换、快捷筛选、「展开筛选」同一行，表格在下。
+ */
+.v2-usage-range { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.v2-usage-summary-only { gap: 4px; }
+.v2-usage-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.v2-usage-stat { gap: 4px; }
+.v2-usage-stat > small { color: var(--text-3); font-size: var(--font-small); }
+.v2-usage-stat-value { min-width: 0; overflow: hidden; color: var(--text); font: 600 26px/1.25 var(--font); letter-spacing: -.3px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.v2-usage-stat-value.is-gold { color: var(--num); }
+.v2-usage-charts { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr); align-items: start; gap: 14px; }
+.v2-usage-chart { position: relative; display: flex; align-items: flex-end; gap: 12px; height: 170px; margin-bottom: 24px; padding: 8px 0 0 34px; }
+.v2-usage-chart-line { position: absolute; right: 0; left: 34px; height: 1px; background: var(--line); }
+.v2-usage-chart-line > span { position: absolute; top: -8px; left: -34px; width: 28px; color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; text-align: right; }
+.v2-usage-chart-col { position: relative; display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: flex-end; min-width: 0; height: 100%; }
+.v2-usage-chart-bar { position: relative; width: 70%; max-width: 34px; border-radius: 6px 6px 2px 2px; background: var(--track); }
+.v2-usage-chart-col.is-current .v2-usage-chart-bar { background: var(--fill); }
+.v2-usage-chart-bar > span { position: absolute; bottom: calc(100% + 5px); left: 50%; color: var(--text); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; opacity: 0; transform: translateX(-50%); transition: opacity var(--duration-fast) var(--ease-standard); }
+.v2-usage-chart-col:hover .v2-usage-chart-bar > span, .v2-usage-chart-col.is-current .v2-usage-chart-bar > span { opacity: 1; }
+.v2-usage-chart-col.is-current .v2-usage-chart-bar > span { color: var(--gold-tx); }
+.v2-usage-chart-col > small { position: absolute; bottom: -22px; color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.v2-usage-chart-col.is-current > small { color: var(--gold-tx); font-weight: 600; }
+.v2-usage-chart-empty { min-height: 170px; }
+.v2-usage-models { gap: 14px; }
+.v2-usage-model { display: grid; gap: 7px; }
+.v2-usage-model .v2-acct-kv > .v2-usage-model-name { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--mono); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.v2-usage-model .v2-acct-kv > .v2-acct-muted { margin-right: -2px; }
+.v2-usage-details > div { display: grid; gap: 10px; min-width: 0; }
+.v2-usage-details > div[hidden] { display: none; }
+.v2-usage-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 30px; }
+.v2-usage-toolbar > h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
+.v2-usage-toolbar-gap { flex: 1; }
+.v2-usage-mono { font-family: var(--mono); font-size: 12.5px; }
+.v2-business-filters.is-folded { display: contents; }
+.v2-business-filters-panel { display: grid; flex-basis: 100%; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel); }
+.v2-business-filters.is-folded > .v2-business-notice { flex-basis: 100%; }
+.v2-business-filters-note { margin: 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.6; }
+/* 调用详情：请求 ID 后面一颗小复制；没成没扣钱那句；计费明细里「输入」「输出」「合计」几行。 */
+.v2-usage-detail-copy { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.v2-usage-detail-mono { min-width: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.v2-usage-detail-warn { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 9px 12px; border-radius: var(--radius-input); background: var(--warn-soft); color: var(--warn-tx); font-size: 12.5px; line-height: 1.6; }
+.v2-usage-detail-warn > svg { flex: none; margin-top: 2px; }
+.v2-usage-detail-spacer { flex: 1; }
+.v2-usage-bill { display: flex; flex-direction: column; margin-top: 10px; padding: 4px 14px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.v2-usage-bill-row { display: flex; align-items: center; gap: 12px; min-height: 38px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.v2-usage-bill-row + .v2-usage-bill-row { border-top: 1px solid var(--line); }
+.v2-usage-bill-row > span:first-child { flex: none; width: 60px; color: var(--text-2); }
+.v2-usage-bill-detail { flex: 1; min-width: 0; color: var(--text-3); overflow-wrap: anywhere; }
+.v2-usage-bill-row.is-total > b { color: var(--num); font-size: 15px; }
+:is([data-reduce-motion='1'], [data-reduced-motion='true'], [data-system-reduced-motion='true']) :is(.v2-recharge-tier, .v2-recharge-pay-option, .v2-usage-chart-bar > span) { transition: none; }
