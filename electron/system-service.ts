@@ -110,11 +110,13 @@ import {
   saveProviderConfig,
   applyProviderRouteFollow,
   planProviderRouteFollow,
+  codexOfficialAliasPending,
   fillRelayTemplateDefaults,
   forgetStaleGeminiUsageStatisticsRecord,
   relayTemplateDefaultsPending,
   relayTemplateRevision,
   removeRetiredGeminiIntegrations,
+  restoreCodexOfficialAlias,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
   trustManagedWorkspace,
@@ -7926,6 +7928,8 @@ export function createSystemService(
    * （fillRelayTemplateDefaults：只补缺的，用户写过的一律不动）。官方账号、手填、来源
    * 没确认、被改动过的都不碰；工具开着或看不出开没开的这次跳过，记进 pending 等渲染层
    * 再来要。失败只记日志，不打扰用户，版本号不前进，下次开机再试。
+   * 官方账号上的 Codex 只补一样：这次以前切官方时删掉的、旧对话记着的那张表
+   * （restoreCodexOfficialAlias），开着不补、先备份，与上面同一套规矩。
    */
   async function fillToolTemplateDefaults(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<ToolTemplateFillResult> {
     const filled: ProviderId[] = []
@@ -7939,7 +7943,19 @@ export function createSystemService(
       const revision = configOwnership.templateRevision(provider, config)
       return revision !== null && revision < relayTemplateRevision
     }
-    const due = round.providers.filter(outdated)
+    function codexSiteBaseUrls(): Record<ProviderId, string> {
+      return providerRelaySite('codex', inspectNativeProviderConfig('codex')).providerBaseUrls
+    }
+    function relayChatsStranded(provider: ProviderId): boolean {
+      if (provider !== 'codex' || !store.read().officialProviders?.includes(provider)) return false
+      try {
+        return codexOfficialAliasPending(providerRoots, codexSiteBaseUrls())
+      } catch {
+        // 配置读不了是别处要报的事，这一项看不了就不补，不连累别的工具补设置。
+        return false
+      }
+    }
+    const due = round.providers.filter((provider) => outdated(provider) || relayChatsStranded(provider))
     if (!due.length) return { filled }
     let report: RunningToolsReport
     try {
@@ -7961,7 +7977,14 @@ export function createSystemService(
       try {
         const wrote = await serializeConfigWrite(async () => {
           // 排队期间账号、配置都可能变了：进锁以后按同一套条件再判一次。
-          if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner || !outdated(provider)) return false
+          if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return false
+          if (relayChatsStranded(provider)) {
+            backup?.(provider)
+            const restored = restoreCodexOfficialAlias(providerRoots, codexSiteBaseUrls()) !== null
+            if (restored) runtimeLog?.log('info', 'config', 'codex.official-alias.restored', '已给官方账号上的 Codex 补回以前对话要用的线路表', round.retry ? { retry: true } : undefined)
+            return restored
+          }
+          if (!outdated(provider)) return false
           const site = providerRelaySite(provider, inspectNativeProviderConfig(provider))
           // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
           // 真要补才先做一份与保存配置同样的整套备份，「备份」页里能找回补之前的样子；

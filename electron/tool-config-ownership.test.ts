@@ -841,3 +841,55 @@ describe('permitsShadowedCodexRepair', () => {
     expect(permitsShadowedCodexRepair(change.provider ?? 'codex', { ...before, ...change.before }, change.ownership ?? 'unknown', change.key ?? 'sk-account')).toBe(false)
   })
 })
+
+describe('restoring the table older Codex chats need for a customer already on the official account', () => {
+  async function switchedBeforeTheFix() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-config-ownership-'))
+    directories.push(root)
+    const roots = { userHome: root, codexHome: path.join(root, '.codex') }
+    const data = path.join(root, 'manager')
+    const state = { report: { running: [] as ProviderId[], unknown: [] as ProviderId[], codexDesktopRunning: false as boolean | null } }
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({ data: [{ id: 'fixture-model' }] }), { status: 200 }))
+    const service = createSystemService(new AppSettingsStore(path.join(data, 'settings.json'), root), {
+      providerRoots: roots, managerDataDirectory: data, relayFetch: fetch,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+      inspectRunningToolsForTemplateFill: async () => ({ ...state.report, canRestartCodexDesktop: false }),
+    })
+    await service.saveConfig({ provider: 'codex', apiKey: 'sk-fixture-user-secret', model: 'fixture-model', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    await service.switchToOfficialAccount('codex')
+    // 这次以前的版本切官方时把那张表删了，官方配置里只剩客户自己的设置。
+    const configPath = codexConfigSnapshotPaths(roots).active
+    const official = 'approval_policy = "never"\n'
+    fs.writeFileSync(configPath, official, 'utf8')
+    return { state, service, configPath, official }
+  }
+
+  it('adds the table once, after a backup, while Codex is closed', async () => {
+    const f = await switchedBeforeTheFix()
+    const backups: string[] = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: ['codex'] })
+
+    expect(backups).toEqual(['codex'])
+    const active = fs.readFileSync(f.configPath, 'utf8')
+    expect(active.startsWith(f.official)).toBe(true)
+    expect(active).toContain('requires_openai_auth = true')
+    expect(active).not.toContain('base_url')
+    expect(await f.service.fillToolTemplateDefaults!(() => { backups.push('again') })).toEqual({ filled: [] })
+    expect(backups).toEqual(['codex'])
+  })
+
+  it('waits while Codex may be open and adds the table on a later try', async () => {
+    const f = await switchedBeforeTheFix()
+    f.state.report = { running: [], unknown: [], codexDesktopRunning: true }
+    const backups: string[] = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) })).toEqual({ filled: [], pending: ['codex'] })
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(f.official)
+
+    f.state.report = { running: [], unknown: [], codexDesktopRunning: false }
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push(provider) }, true)).toEqual({ filled: ['codex'] })
+    expect(backups).toEqual(['codex'])
+    expect(fs.readFileSync(f.configPath, 'utf8')).toContain('requires_openai_auth = true')
+  })
+})
