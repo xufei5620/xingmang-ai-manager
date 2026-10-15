@@ -1628,14 +1628,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const chatTransfer = useMemo(() => session.authenticated
     ? createChatTransfer(native, window.localStorage, scope, () => flushSync(() => setChatScope(null)))
     : undefined, [native, scope, session.authenticated])
+  // 顶栏和欢迎页窗口条上那颗深浅色切换走同一条保存路径。
+  const toggleTheme = settings ? () => {
+    const next = settings.theme === 'dark' ? 'light' : 'dark'
+    const system = platformApi()
+    void perform('保存外观', async () => { if (system) await system.setThemePreference(next); else setSettings(await app.savePreferences({ version: 2, theme: next })) })
+  } : undefined
   if (boot !== 'ready') return <Splash platform={os} phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
   return <AccountBalanceContext.Provider value={balanceStore}><OnlineStatusContext.Provider value={onlineStatus}><BalanceTierProvider value={subscription ? 'ok' : balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
-    {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
-      onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
-      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
-      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
-      onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
-      : !session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
+    {!session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
+        onHistoryLogin={() => { setAuthTarget({ siteId: 'solov-api', identifier: '' }); setAuth('login') }} theme={settings?.theme} onThemeToggle={toggleTheme}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
         : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoreRetrying ? '暂时连不上，登录还在' : restoring ? '正在恢复登录' : session.account?.username, email: restoreRetrying ? '稍后自动重试，不用重新登录' : restoring ? '网络慢时要多等一会儿' : undefined, restoring: restoreRetrying ? 'retrying' : restoring ? 'pending' : undefined, sourceTag: siteId === 'solov-api' ? accountSources[siteId].label : undefined, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, subscription: subscription ? `订阅：${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : undefined, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error,
             plan: session.authenticated && !restoring && balanceAmount !== null ? subscription ? subscription.name ?? undefined : '按量付费' : undefined, runway }} platform={os}
@@ -1667,11 +1669,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             } } : {}),
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck: () => { if (page === 'health') setHealthRequest((current) => current + 1); navigate('health') },
-            ...(settings ? { toggleTheme: () => {
-              const next = settings.theme === 'dark' ? 'light' : 'dark'
-              const system = platformApi()
-              void perform('保存外观', async () => { if (system) await system.setThemePreference(next); else setSettings(await app.savePreferences({ version: 2, theme: next })) })
-            } } : {}),
+            ...(toggleTheme ? { toggleTheme } : {}),
             logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
@@ -1721,6 +1719,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>)}
           </div>
         </AppFrame>}
+    {/* v4：新手引导是叠在欢迎页或主界面上面的弹窗，不再整页换掉它们。 */}
+    {guide && <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
+      onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
+      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
+      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
+      onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
       connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
