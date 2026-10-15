@@ -11,3 +11,6 @@
   会绕过 React 自己关掉，草稿丢了、调用方还以为开着。
 - `ui/feedback.tsx` 短提示挪到右下角、带图标；`ui/guidance.tsx` 导览气泡宽 264、带箭头、给目标描金边，
   侧栏两步放在目标右边（`registry/shell.ts` 的 `placement`）。
+- 窗口失焦或被挡住时根节点挂 `data-window-idle="true"`（`features/app/window-idle.ts`，`main.tsx` 里挂上），
+  转圈和骨架屏的循环动画据此暂停；后面各批新加的循环动画挂这一条就行。底座里新加的动画（短提示进场、
+  确认条抖一下）都是一次性的，只动 transform 和 opacity。

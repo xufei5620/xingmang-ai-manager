@@ -8,6 +8,7 @@ import './app.css'
 import './styles/contrast.css'
 import { attachRuntimeReporting } from './features/app/error-report'
 import { initialWindowOs } from './features/app/window-os'
+import { attachWindowIdleMarker } from './features/app/window-idle'
 
 declare const __XINGMANG_RENDERER__: string
 const root = document.getElementById('root')!
@@ -21,6 +22,7 @@ document.documentElement.style.colorScheme = initialTheme
 // frame, long before the platform capabilities come back over IPC.
 document.documentElement.dataset.os = initialWindowOs(undefined, navigator.platform)
 root.dataset.renderer = __XINGMANG_RENDERER__
+attachWindowIdleMarker(document, window)
 const native = window.xingmang
 if (native) {
   attachRuntimeReporting(native)
