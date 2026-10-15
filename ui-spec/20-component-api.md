@@ -27,6 +27,7 @@
 | `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` · `onOpen?` · `openTestId?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码）。给了 `onOpen` 整行都能点（标题是按钮，键盘和读屏从它进），鼠标停上去变色；`actions` 里的按钮各管各的，不触发整行 |
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
 | `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` | ≤ 5 项 |
+| `Chips` | `options: {value,label,count?,leading?,testId?}[]` · `value` · `onChange` · `label?` | v4 组件规范里的「分类」：一排 28 高的圆角按钮（`aria-pressed`），后面带数量，`leading` 放工具图标（只给眼睛看，读屏不念）；`label` 是整组的读屏名。记录页按工具、教程页按类别在用 |
 | `Switch` | `checked` · `onChange` · `label?` · `description?` | 切换即保存 |
 | `Input` / `Select` / `Textarea` | 标准受控 props + `error?: string` · `hint?` · `mono?` · `password?`（带显隐） | |
 | `SearchInput` | `value` · `onChange` · `placeholder` | 带图标，宽 240 |

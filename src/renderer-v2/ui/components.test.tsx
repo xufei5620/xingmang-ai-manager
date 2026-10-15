@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { Search } from 'lucide-react';
-import { Button, Card, Input, Menu, Notice, Pill, Progress, Segment, Switch, Tabs, Toast, ToolRow, toastDurationMs } from './components';
+import { Button, Card, Chips, Input, Menu, Notice, Pill, Progress, Segment, Switch, Tabs, Toast, ToolRow, toastDurationMs } from './components';
 import { BrandIcon } from './brand';
 
 describe('renderer-v2 component contract', () => {
@@ -30,6 +30,16 @@ describe('renderer-v2 component contract', () => {
     expect(html).toContain('data-testid="input-name"');
     expect(html).toContain('role="switch"');
     expect(html).toContain('role="tablist"');
+  });
+  it('renders chips as a labelled group of toggle buttons with counts', () => {
+    const html = renderToStaticMarkup(<Chips label="按类别筛选" testId="chips" value="b" onChange={() => undefined} options={[{ value: 'a', label: '全部', count: 3, testId: 'chip-a' }, { value: 'b', label: '入门', count: 0, leading: <i data-icon="" /> }]} />);
+    expect(html).toContain('role="group"');
+    expect(html).toContain('aria-label="按类别筛选"');
+    expect(html).toContain('data-testid="chip-a"');
+    expect(html).toContain('aria-pressed="false" data-testid="chip-a">全部<span class="xm-chip-count">3</span>');
+    expect(html).toContain('<span class="xm-chip-lead" aria-hidden="true"><i data-icon=""></i></span>入门');
+    expect(html).toContain('class="xm-chip has-leading" aria-pressed="true"');
+    expect(html).toContain('入门<span class="xm-chip-count">0</span>');
   });
   it('keeps the Caps Lock warning out of a password field until a key reports the lock', () => {
     const html = renderToStaticMarkup(<Input testId="login-password" password aria-label="密码" />);
