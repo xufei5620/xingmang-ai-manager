@@ -1246,6 +1246,7 @@ function applyCodexRelayConfig(
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
   // Before base_url is overwritten: only a table that already points at our relay is ours to rename.
   renameLegacyCodexRelayDisplayName(providerEntry, siteBaseUrl)
+  unparkCodexRelayEntry(providerEntry)
   providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
     ? providerEntry.name
     : codexRelayDisplayName
@@ -1447,18 +1448,25 @@ function createCodexOfficialConfigPlans(
   if (currentText && classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex) === 'relay') {
     plans.push({ path: paths.relay, content: withTrailingNewline(currentText) })
   }
+  // 用当前账号聊过的旧对话记着这张表的名字，官方配置里得给它留一张停着的（见 parkedCodexRelayEntry）。
+  // 已经在官方账号上重置时，名字从星芒存的那份当前账号配置里找。
+  const relayTable = activeCodexRelayTable(currentParsed, siteBaseUrls.codex)
+    ?? activeCodexRelayTable(readStoredCodexRelayConfigOrNull(paths.relay), siteBaseUrls.codex)
+  function officialContent(text: string): string {
+    return withParkedCodexRelayTable(text, relayTable, siteBaseUrls.codex)
+  }
   if (mode === 'reset') {
     // Reset only the selected account source. Replacing its snapshot too keeps
     // an old official customization from returning after a relay round trip.
     const initial = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n'
     plans.push({ path: paths.chatgpt, content: initial })
-    plans.push({ path: paths.active, content: initial })
+    plans.push({ path: paths.active, content: officialContent(initial) })
     return plans
   }
   if (!currentParsed) return plans
   const storedChatgpt = readStoredCodexConfig(paths.chatgpt, '已保存的 ChatGPT Codex 配置')
   if (storedChatgpt && classifyCodexConfigProfile(TOML.parse(storedChatgpt), siteBaseUrls.codex) === 'official') {
-    plans.push({ path: paths.active, content: storedChatgpt })
+    plans.push({ path: paths.active, content: officialContent(storedChatgpt) })
     return plans
   }
   const cleaned = cloneTomlRecord(currentParsed)
@@ -1467,7 +1475,7 @@ function createCodexOfficialConfigPlans(
   // Older versions could have stored another Xingmang site as the official
   // snapshot. Replace that polluted copy in the same file transaction.
   if (storedChatgpt) plans.push({ path: paths.chatgpt, content: cleanContent })
-  plans.push({ path: paths.active, content: cleanContent })
+  plans.push({ path: paths.active, content: officialContent(cleanContent) })
   return plans
 }
 
@@ -1857,8 +1865,102 @@ const legacyCodexRelayDisplayName = 'XingmangAI'
 
 /** 只换星芒自己那张表上一字不差的老显示名；客户自己改过的名字、别人写的表都不动。 */
 function renameLegacyCodexRelayDisplayName(entry: Record<string, unknown>, siteBaseUrl: string): void {
-  if (entry.name === legacyCodexRelayDisplayName && isOwnCodexRelayEntry(entry, siteBaseUrl)) {
-    entry.name = codexRelayDisplayName
+  if (entry.name !== legacyCodexRelayDisplayName) return
+  if (isOwnCodexRelayEntry(entry, siteBaseUrl) || isParkedCodexRelayEntry(entry)) entry.name = codexRelayDisplayName
+}
+
+/**
+ * Codex resumes a thread with the model_provider recorded when the thread
+ * started, not the one selected now (app-server merge_persisted_resume_metadata,
+ * rust-v0.162.1), and refuses to open it when config.toml no longer defines that
+ * ID: "Model provider `OpenAI` not found". Switching to the official account used
+ * to delete our table, so every chat started on the relay stopped opening.
+ *
+ * The table now stays under the same ID but parked: no base_url, no OpenAI auth,
+ * only an env_key nobody sets. The chat opens with its history; a new turn fails
+ * inside Codex before any request is built (provider auth resolves the env_key
+ * first), so the ChatGPT login never reaches the relay and neither account is
+ * billed. Switching back to the relay turns the same table into the live route
+ * again (applyCodexRelayConfig), so those chats carry on where they were.
+ * Verified against Codex 0.162.1 app-server: thread/resume succeeds, turn/start
+ * fails with the env_key error and the relay sees no request.
+ */
+const parkedCodexRelayEnvKey = 'XINGMANG_ACCOUNT_KEY'
+// Codex 报「Missing environment variable: `XINGMANG_ACCOUNT_KEY`.」，后面接这一句。
+export const parkedCodexRelayInstructions = '这段对话是用你在星芒登录的账号聊的，Codex 现在用的是官方账号，接不上。在星芒里把 Codex 换回那个账号，重新打开 Codex 就能接着聊。'
+
+function isParkedCodexRelayEntry(entry: unknown): entry is Record<string, unknown> {
+  return isJsonRecord(entry) && entry.env_key === parkedCodexRelayEnvKey
+}
+
+function parkedCodexRelayEntry(relayEntry: Record<string, unknown>): Record<string, unknown> {
+  return {
+    name: typeof relayEntry.name === 'string' && relayEntry.name.trim() ? relayEntry.name : codexRelayDisplayName,
+    wire_api: 'responses',
+    env_key: parkedCodexRelayEnvKey,
+    env_key_instructions: parkedCodexRelayInstructions,
+  }
+}
+
+/** 切回当前账号时把停着的表接回来：只拿掉我们写的那两项，其余由 applyCodexRelayConfig 照常补齐。 */
+function unparkCodexRelayEntry(entry: Record<string, unknown>): void {
+  if (!isParkedCodexRelayEntry(entry)) return
+  delete entry.env_key
+  delete entry.env_key_instructions
+}
+
+interface CodexRelayTable {
+  name: string
+  entry: Record<string, unknown>
+}
+
+/** 这份配置正在用的星芒中转表（旧对话记的就是这个表名）；不是中转、或用的是 Codex 内置的名字，返回 null。 */
+function activeCodexRelayTable(parsed: Record<string, unknown> | null, siteBaseUrl: string): CodexRelayTable | null {
+  if (!parsed || classifyCodexConfigProfile(parsed, siteBaseUrl) !== 'relay') return null
+  const name = String(parsed.model_provider).trim()
+  // 内置名下的对话 Codex 自己认得，用不着停表；停了反倒让 0.162.1 因「占用内置名」整份配置读不进去。
+  if (reservedCodexProviders.has(name)) return null
+  const providers = parsed.model_providers
+  const entry = isJsonRecord(providers) ? providers[name] : null
+  return isJsonRecord(entry) ? { name, entry } : null
+}
+
+/**
+ * 官方配置里给 relay 停一张表。同名表已经停好、或是客户自己的（不指向星芒中转）就原样返回；
+ * 是星芒中转的活表（以前留下的快照）就换成停着的，免得点开旧对话把 ChatGPT 登录发给中转。
+ * 只是加一张新表时接在原文后面，客户自己的注释和排版不动。
+ */
+function withParkedCodexRelayTable(officialText: string, relay: CodexRelayTable | null, siteBaseUrl: string): string {
+  if (!relay) return officialText
+  const parsed = parseTomlOrNull(officialText)
+  if (!parsed) return officialText
+  if (parsed.model_providers !== undefined && !isJsonRecord(parsed.model_providers)) return officialText
+  const existing = isJsonRecord(parsed.model_providers) ? parsed.model_providers[relay.name] : undefined
+  if (existing !== undefined && (isParkedCodexRelayEntry(existing) || !isOwnCodexRelayEntry(existing, siteBaseUrl))) {
+    return officialText
+  }
+  const parked = parkedCodexRelayEntry(relay.entry)
+  if (existing === undefined) {
+    const appended = [
+      withTrailingNewline(officialText),
+      `[model_providers.${tomlTableKey(relay.name)}]`,
+      ...Object.entries(parked).map(([key, value]) => `${key} = ${tomlString(String(value))}`),
+      '',
+    ].join('\n')
+    // 原文末尾是行内表 model_providers = { ... } 这类接不上的写法时，退回整份重写。
+    if (parseTomlOrNull(appended) !== null) return appended
+  }
+  ensureRecord(parsed, 'model_providers')[relay.name] = parked
+  return tomlContent(parsed)
+}
+
+/** 星芒替 Codex 存的那份当前账号配置；没有、读不了或读不懂都当没有，切官方不因它失败。 */
+function readStoredCodexRelayConfigOrNull(filePath: string): Record<string, unknown> | null {
+  try {
+    const text = requireConfigText(filePath, '已保存的星芒 Codex 配置')
+    return text ? parseTomlOrNull(text) : null
+  } catch {
+    return null
   }
 }
 
@@ -1898,9 +2000,14 @@ function codexRelayProviderFor(parsed: Record<string, unknown>, siteBaseUrl: str
   // model_provider, so renaming it would hide the customer's earlier chats.
   if (active && !reservedCodexProviders.has(active)) return active
   const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  // 切官方时停下的表：旧对话记的就是这个名字，切回来接着用它，那些对话才接得上。
+  const parked = active ? undefined
+    : Object.keys(providers).find((key) => !reservedCodexProviders.has(key) && isParkedCodexRelayEntry(providers[key]))
+  if (parked) return parked
   function isFree(candidate: string): boolean {
     return !Object.prototype.hasOwnProperty.call(providers, candidate)
       || isOwnCodexRelayEntry(providers[candidate], siteBaseUrl)
+      || isParkedCodexRelayEntry(providers[candidate])
   }
   // Without a selector, older releases picked `OpenAI`; keep that for the same
   // resume-list reason, but never take over a table someone else wrote.

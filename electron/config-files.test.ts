@@ -32,6 +32,7 @@ import {
   takeBackCodexModelCatalog,
   defaultCodexRelayProvider,
   codexRelayDisplayName,
+  parkedCodexRelayInstructions,
   ensureCodexPermissionDefaultsInConfigText,
   ensureGeminiContextFilenamesInSettingsText,
   ensureGeminiProjectContextFiles,
@@ -2196,6 +2197,11 @@ describe('switching a provider back to the official subscription account', () =>
     }
   }
 
+  // 切官方时给旧对话留下的那张表：没有地址、不带官方登录，只等一个没人设的环境变量。
+  function parkedRelayTable(name = codexRelayDisplayName) {
+    return { name, wire_api: 'responses', env_key: 'XINGMANG_ACCOUNT_KEY', env_key_instructions: parkedCodexRelayInstructions }
+  }
+
   function seedCodexRelayConfigWithChatGptLogin(home: string) {
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', providerRoots(home), {}, providerBaseUrls)
     const [, authPath] = providerConfigPaths('codex', providerRoots(home))
@@ -2229,7 +2235,10 @@ describe('switching a provider back to the official subscription account', () =>
     expect(fs.readFileSync(configs.chatgpt, 'utf8')).toBe(officialSnapshot)
     expect(fs.readFileSync(auth.chatgpt, 'utf8')).toBe(loginSnapshot)
     switchProviderToOfficialAccount('codex', roots, {}, secondSite)
-    expect(fs.readFileSync(configs.active, 'utf8')).toBe(officialConfig)
+    // 官方配置原文一字不动，旧对话要找的那张表接在后面。
+    const active = fs.readFileSync(configs.active, 'utf8')
+    expect(active.startsWith(officialConfig)).toBe(true)
+    expect(TOML.parse(active)).toEqual({ ...TOML.parse(officialConfig), model_providers: { OpenAI: parkedRelayTable() } })
     expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(officialAuth)
   })
 
@@ -2243,7 +2252,9 @@ describe('switching a provider back to the official subscription account', () =>
 
     switchProviderToOfficialAccount('codex', roots, {}, historicalCodexBaseUrls)
 
-    expect(fs.readFileSync(configs.active, 'utf8')).toBe('approval_policy = "never"\n')
+    const active = fs.readFileSync(configs.active, 'utf8')
+    expect(active.startsWith('approval_policy = "never"\n')).toBe(true)
+    expect(TOML.parse(active)).toEqual({ approval_policy: 'never', model_providers: { OpenAI: parkedRelayTable() } })
   })
 
   it('creates a clean official fallback when no official snapshot exists', () => {
@@ -2457,11 +2468,14 @@ describe('switching a provider back to the official subscription account', () =>
 
     const result = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
 
-    const initial = TOML.parse(fs.readFileSync(configs.active, 'utf8'))
-    expect(initial).toEqual({
+    const initial = {
       approval_policy: 'on-request',
       sandbox_mode: 'workspace-write',
       check_for_update_on_startup: false,
+    }
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8'))).toEqual({
+      ...initial,
+      model_providers: { [defaultCodexRelayProvider]: parkedRelayTable() },
     })
     expect(TOML.parse(fs.readFileSync(configs.chatgpt, 'utf8'))).toEqual(initial)
     expect(fs.readFileSync(configs.relay, 'utf8')).toBe(relayBefore)
@@ -2477,7 +2491,10 @@ describe('switching a provider back to the official subscription account', () =>
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
     expect(TOML.parse(fs.readFileSync(configs.active, 'utf8')).custom_relay).toEqual({ enabled: true })
     switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
-    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8'))).toEqual(initial)
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8'))).toEqual({
+      ...initial,
+      model_providers: { [defaultCodexRelayProvider]: parkedRelayTable() },
+    })
     expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(login)
   })
 
@@ -2587,7 +2604,7 @@ describe('switching a provider back to the official subscription account', () =>
     })
   })
 
-  it('removes the relay provider table and model overrides so Codex falls back to its built-in openai provider', () => {
+  it('parks the relay provider table and drops model overrides so Codex falls back to its built-in openai provider', () => {
     const home = temporaryHome()
     seedCodexRelayConfigWithChatGptLogin(home)
 
@@ -2596,7 +2613,8 @@ describe('switching a provider back to the official subscription account', () =>
     const [configPath] = providerConfigPaths('codex', providerRoots(home))
     const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
     expect(parsed?.model_provider).toBeUndefined()
-    expect(parsed?.model_providers).toBeUndefined()
+    // 旧对话还认这个表名才打得开；表里没有地址、不用官方登录，ChatGPT 令牌到不了中转。
+    expect(parsed?.model_providers).toEqual({ [defaultCodexRelayProvider]: parkedRelayTable() })
     // 中转的模型名未必存在于官方目录,留着会让 Codex 启动即报错。
     expect(parsed?.model).toBeUndefined()
     expect(parsed?.review_model).toBeUndefined()
@@ -2625,7 +2643,7 @@ describe('switching a provider back to the official subscription account', () =>
     expect(parsed?.windows_wsl_setup_acknowledged).toBeUndefined()
   })
 
-  it('leaves a user-authored provider table alone while removing only the relay one', () => {
+  it('leaves a user-authored provider table alone while parking only the relay one', () => {
     const home = temporaryHome()
     seedCodexRelayConfigWithChatGptLogin(home)
     const [configPath] = providerConfigPaths('codex', providerRoots(home))
@@ -2637,8 +2655,154 @@ describe('switching a provider back to the official subscription account', () =>
     switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
 
     const after = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
-    const remaining = asRecord(after?.model_providers)
-    expect(Object.keys(remaining ?? {})).toEqual(['mine'])
+    expect(after?.model_providers).toEqual({
+      mine: { name: 'mine', base_url: 'https://example.invalid/v1' },
+      [defaultCodexRelayProvider]: parkedRelayTable(),
+    })
+  })
+
+  describe('chats started on the relay after a round trip through the official account', () => {
+    function liveRelayTable(parsed: Record<string, unknown> | null, name: string) {
+      return asRecord(asRecord(parsed?.model_providers)?.[name])
+    }
+
+    it.each([
+      ['restored from the saved relay copy', false],
+      ['rebuilt from the official config when that copy is gone', true],
+    ])('picks the parked table up again under the same name when %s', (_label, dropRelayCopy) => {
+      const home = temporaryHome()
+      const roots = providerRoots(home)
+      const configs = codexConfigSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+      if (dropRelayCopy) fs.rmSync(configs.relay)
+
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+      const parsed = asRecord(TOML.parse(fs.readFileSync(configs.active, 'utf8')))
+      expect(parsed?.model_provider).toBe(defaultCodexRelayProvider)
+      expect(Object.keys(asRecord(parsed?.model_providers) ?? {})).toEqual([defaultCodexRelayProvider])
+      const table = liveRelayTable(parsed, defaultCodexRelayProvider)
+      expect(table).toMatchObject({ name: codexRelayDisplayName, base_url: providerBaseUrls.codex, requires_openai_auth: true })
+      expect(table?.env_key).toBeUndefined()
+      expect(table?.env_key_instructions).toBeUndefined()
+    })
+
+    it('keeps the OpenAI table name of a config that existed before Xingmang wrote it', () => {
+      const home = temporaryHome()
+      const roots = providerRoots(home)
+      const configs = codexConfigSnapshotPaths(roots)
+      fs.mkdirSync(roots.codexHome, { recursive: true })
+      fs.writeFileSync(configs.active, 'approval_policy = "never"\n')
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+      expect(asRecord(TOML.parse(fs.readFileSync(configs.active, 'utf8')))?.model_providers).toEqual({ OpenAI: parkedRelayTable() })
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+      // 第二趟官方配置来自存的快照，里面已经停着那张表：不重复加，整份照样读得懂。
+      const active = fs.readFileSync(configs.active, 'utf8')
+      expect(active.match(/\[model_providers\.OpenAI\]/g)).toHaveLength(1)
+      expect(asRecord(TOML.parse(active))?.model_providers).toEqual({ OpenAI: parkedRelayTable() })
+    })
+
+    it('renames the pre-#1000 display name when the parked table goes live again', () => {
+      const home = temporaryHome()
+      const roots = providerRoots(home)
+      const configs = codexConfigSnapshotPaths(roots)
+      fs.mkdirSync(roots.codexHome, { recursive: true })
+      fs.writeFileSync(configs.active, [
+        'approval_policy = "never"',
+        '',
+        `[model_providers.${defaultCodexRelayProvider}]`,
+        `name = "${defaultCodexRelayProvider}"`,
+        'wire_api = "responses"',
+        'env_key = "XINGMANG_ACCOUNT_KEY"',
+        `env_key_instructions = "${parkedCodexRelayInstructions}"`,
+        '',
+      ].join('\n'))
+
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+      const parsed = asRecord(TOML.parse(fs.readFileSync(configs.active, 'utf8')))
+      expect(parsed?.model_provider).toBe(defaultCodexRelayProvider)
+      expect(liveRelayTable(parsed, defaultCodexRelayProvider)?.name).toBe(codexRelayDisplayName)
+    })
+
+    it('parks under the saved relay name when the official profile is reset while already official', () => {
+      const home = temporaryHome()
+      const roots = providerRoots(home)
+      const configs = codexConfigSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+      fs.writeFileSync(configs.active, 'approval_policy = "never"\n')
+
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+      expect(asRecord(TOML.parse(fs.readFileSync(configs.active, 'utf8')))?.model_providers)
+        .toEqual({ [defaultCodexRelayProvider]: parkedRelayTable() })
+    })
+
+    it('leaves a same-named table the customer wrote in the official snapshot untouched', () => {
+      const home = temporaryHome()
+      const roots = providerRoots(home)
+      const configs = codexConfigSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      const official = [
+        'approval_policy = "never"',
+        '',
+        `[model_providers.${defaultCodexRelayProvider}]`,
+        'name = "自己的"',
+        'base_url = "https://example.invalid/v1"',
+        '',
+      ].join('\n')
+      fs.writeFileSync(configs.chatgpt, official)
+
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+      expect(fs.readFileSync(configs.active, 'utf8')).toBe(official)
+    })
+
+    it('parks a live relay table an older official snapshot still carries', () => {
+      const home = temporaryHome()
+      const roots = providerRoots(home)
+      const configs = codexConfigSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      fs.writeFileSync(configs.chatgpt, [
+        'approval_policy = "never"',
+        '',
+        `[model_providers.${defaultCodexRelayProvider}]`,
+        `name = "${codexRelayDisplayName}"`,
+        `base_url = "${providerBaseUrls.codex}"`,
+        'requires_openai_auth = true',
+        '',
+      ].join('\n'))
+
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+      const active = fs.readFileSync(configs.active, 'utf8')
+      expect(active).not.toContain(providerBaseUrls.codex)
+      expect(TOML.parse(active)).toEqual({
+        approval_policy: 'never',
+        model_providers: { [defaultCodexRelayProvider]: parkedRelayTable() },
+      })
+    })
+
+    it('rewrites the whole official config when its providers are an inline table that cannot be extended', () => {
+      const home = temporaryHome()
+      const roots = providerRoots(home)
+      const configs = codexConfigSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      fs.writeFileSync(configs.chatgpt, 'model_providers = { mine = { name = "mine", base_url = "https://example.invalid/v1" } }\n')
+
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+      expect(asRecord(TOML.parse(fs.readFileSync(configs.active, 'utf8')))?.model_providers).toEqual({
+        mine: { name: 'mine', base_url: 'https://example.invalid/v1' },
+        [defaultCodexRelayProvider]: parkedRelayTable(),
+      })
+    })
   })
 
   it('drops only the two relay env entries from Claude settings.json, never the credential store', () => {
