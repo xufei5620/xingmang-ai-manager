@@ -634,7 +634,7 @@ async function main() {
       await evaluateInMainProcess('select the fixture login outcome',
         (_electron, value) => globalThis.__realmSmoke.setLoginOutcome(value), outcome)
       await page.getByTestId('login-submit').click()
-      await page.getByTestId('auth-error').filter({ hasText: outcome === 'two-factor' ? '双重验证' : '账号或密码' }).waitFor()
+      await page.getByTestId('auth-error').filter({ hasText: outcome === 'two-factor' ? '两步验证' : '账号或密码' }).waitFor()
       assert.deepEqual(await evaluateInRenderer(page, 'session after a refused login', () => window.xingmang.getAccountSession()), originalSession)
       const attempts = loginCallOrigins(await readFixtureStats())
       assert.deepEqual(attempts.slice(before).map((call) => call.origin), ['https://api.solov.cc'])

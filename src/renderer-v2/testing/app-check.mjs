@@ -3190,7 +3190,7 @@ test('macOS guide detects an installed Codex Desktop with no config files or CLI
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
     await page.getByTestId('guide-next').click()
-    await page.getByTestId('start-guide').getByText('已安装', { exact: true }).waitFor()
+    await page.getByTestId('start-guide').getByText('已装好', { exact: true }).waitFor()
     await expect(page.getByTestId('guide-next')).toBeEnabled()
     assert.equal(await page.getByTestId('guide-install').count(), 0)
     await page.getByTestId('guide-next').click()
