@@ -122,7 +122,7 @@ test('Dialog traps focus, protects dirty backdrop/escape, preserves draft and re
     // v4: a dirty close keeps the form in view and swaps the footer for a bar at the bottom.
     const bar = dialog.locator('.xm-leave-bar');
     await page.mouse.click(8, 8);
-    await bar.getByText('要放弃未保存的修改吗？').waitFor();
+    await bar.getByText('有修改还没保存，关掉会丢掉这些修改').waitFor();
     assert.equal(await bar.getAttribute('role'), 'alert');
     assert.equal(await dialog.isVisible(), true);
     assert.equal(await page.getByLabel('配置草稿').isVisible(), true);
@@ -150,7 +150,7 @@ test('Dialog traps focus, protects dirty backdrop/escape, preserves draft and re
     assert.equal(await page.getByLabel('配置草稿').inputValue(), '未保存内容');
     await page.keyboard.press('Escape');
     assert.doesNotMatch(await bar.getAttribute('class'), /is-nudged/);
-    await bar.getByRole('button', { name: '放弃修改' }).click();
+    await bar.getByRole('button', { name: '不保存' }).click();
     await dialog.waitFor({ state: 'detached' });
     assert.equal(await focused(trigger), true);
   } finally { await page.close(); }

@@ -179,7 +179,6 @@
 .xm-leave-bar { display: flex; align-items: center; gap: 8px; flex: none; margin: 10px 20px 18px; padding: 8px 8px 8px 14px; border-radius: 12px; corner-shape: squircle; background: var(--warn-soft); color: var(--warn-tx); font-size: 13px; font-weight: 500; line-height: 1.5; }
 .xm-leave-bar > svg { flex: none; }
 .xm-leave-bar > span { flex: 1; min-width: 0; }
-.xm-leave-bar strong { font-weight: 600; margin-right: 4px; }
 .xm-drawer > .xm-leave-bar { margin: 10px 18px 12px; }
 .xm-leave-bar.is-nudged { animation: xm-nudge 360ms var(--ease-standard); }
 @keyframes xm-nudge { 0%, 100% { transform: none; } 20% { transform: translateX(-5px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } }

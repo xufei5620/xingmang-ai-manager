@@ -79,7 +79,6 @@ import {
   notificationSettingsItemId,
   settingsGroups,
   settingsItemLabel,
-  skinOptions,
   standardAccountUpdateNotice,
   updateFailureLabel,
   updateCardTitle,
@@ -2869,7 +2868,7 @@ export function SettingsPage({
         <>
           {row(
             'theme',
-            '外观调整会应用到整个工具箱',
+            null,
             <Segment
               label="主题"
               testId="settings-theme"
@@ -2883,8 +2882,8 @@ export function SettingsPage({
                       },
                     ]
                   : []),
-                { value: 'light', label: '亮色' },
-                { value: 'dark', label: '暗色' },
+                { value: 'light', label: '浅色' },
+                { value: 'dark', label: '深色' },
               ]}
               value={systemState?.preferences.themePreference ?? settings.theme}
               onChange={(theme) => {
@@ -2902,32 +2901,6 @@ export function SettingsPage({
                   void update({ theme })
               }}
             />,
-          )}
-          {row(
-            'skin',
-            '四套配色，暗色和亮色模式下都适用，选完立即生效',
-            <div className="v2-skin-row" role="group" aria-label="界面皮肤">
-              {skinOptions.map((skin) => (
-                <button
-                  type="button"
-                  key={skin.value}
-                  className={`v2-skin-chip${(settings.uiSkin ?? 'mist') === skin.value ? ' is-active' : ''}`}
-                  aria-pressed={
-                    (settings.uiSkin ?? 'mist') === skin.value
-                  }
-                  disabled={pending > 0}
-                  onClick={() => void update({ uiSkin: skin.value })}
-                  data-testid={`settings-skin-${skin.value}`}
-                >
-                  <span
-                    style={{
-                      background: `linear-gradient(135deg, ${skin.bright}, ${skin.dark})`,
-                    }}
-                  />
-                  {skin.label}
-                </button>
-              ))}
-            </div>,
           )}
           {row(
             'ui-scale',
@@ -2965,7 +2938,7 @@ export function SettingsPage({
             'high-contrast',
             systemState?.appearance.systemHighContrast
               ? '系统高对比度已开启；手动偏好会单独保留'
-              : '加大文字、边框和按钮的对比度，开启时皮肤配色暂停使用',
+              : '加大文字、边框和按钮的对比度',
             systemApi && systemState ? (
               <Switch
                 aria-label="高对比度"

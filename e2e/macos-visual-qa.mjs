@@ -76,7 +76,7 @@ async function selectTheme(theme) {
   await settings.waitFor({ state: 'visible', timeout: 30_000 })
   await settings
     .getByTestId('settings-theme')
-    .getByRole('button', { name: theme === 'dark' ? '暗色' : '亮色', exact: true })
+    .getByRole('button', { name: theme === 'dark' ? '深色' : '浅色', exact: true })
     .click()
   await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme, {
     timeout: 30_000,

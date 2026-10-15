@@ -2387,33 +2387,25 @@ test('failed saved-account verification never writes selected CLI config', async
   }
 })
 
-test('a saved skin still round-trips through settings but no longer paints the window', async () => {
+test('appearance offers only the light and dark palettes and leaves the saved skin alone', async () => {
   for (const failed of [false, true]) {
-    const page = await fixture(`page=settings${failed ? '&fail=settings' : ''}`)
+    const page = await fixture(`page=settings&skin=aurora${failed ? '&fail=settings' : ''}`)
     try {
-      assert.equal(await page.locator('.v2-skin-chip').count(), 4)
-      await page.getByTestId('settings-skin-aurora').click()
-      if (failed) {
-        await page.getByText('设置写入失败', { exact: true }).waitFor()
-        assert.equal(
-          await page
-            .getByTestId('settings-skin-mist')
-            .getAttribute('aria-pressed'),
-          'true',
-        )
-      } else
+      // UI v4.0: no skin row; uiSkin stays in the settings file only because a
+      // missing field reads as a first launch, so saving the theme never sends it.
+      assert.equal(await page.locator('[data-testid^="settings-skin-"]').count(), 0)
+      const theme = page.getByTestId('settings-theme')
+      assert.deepEqual(await theme.getByRole('button').allInnerTexts(), ['浅色', '深色'])
+      await theme.getByRole('button', { name: '深色', exact: true }).click()
+      if (failed) await page.getByText('设置写入失败', { exact: true }).waitFor()
+      else
         await page.waitForFunction(
-          () =>
-            document
-              .querySelector('[data-testid="settings-skin-aurora"]')
-              ?.getAttribute('aria-pressed') === 'true',
+          () => document.documentElement.dataset.theme === 'dark',
         )
       assert.deepEqual(
         (await calls(page)).find((call) => call.name === 'settings').args,
-        { version: 2, uiSkin: 'aurora' },
+        { version: 2, theme: 'dark' },
       )
-      // UI v4.0: two palettes follow data-theme alone; uiSkin stays in the
-      // settings file only because a missing field reads as a first launch.
       assert.equal(
         await page.evaluate(() => document.documentElement.dataset.skin),
         undefined,
@@ -2552,7 +2544,7 @@ test('cancelling the password dialog drops the typed secrets and Esc confirms be
     await dialog.getByLabel('当前密码', { exact: true }).fill('old-secret')
     await dialog.getByLabel('新密码', { exact: true }).fill('new-secret-value')
     await page.keyboard.press('Escape')
-    await dialog.getByText('要放弃未保存的修改吗？', { exact: true }).waitFor()
+    await dialog.getByText('有修改还没保存，关掉会丢掉这些修改', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '继续编辑', exact: true }).click()
     assert.equal(
       await dialog.getByLabel('当前密码', { exact: true }).inputValue(),

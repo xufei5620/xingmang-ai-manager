@@ -304,12 +304,6 @@ export const taskFilterFields = [
   },
   { key: 'action', label: '动作' },
 ]
-export const skinOptions = [
-  { value: 'dawn', label: '晨曦金', bright: '#E6BF7A', dark: '#0B1F3B' },
-  { value: 'obsidian', label: '极夜黑金', bright: '#EDD39B', dark: '#101114' },
-  { value: 'mist', label: '雾青', bright: '#7BDDD0', dark: '#0C1A1E' },
-  { value: 'aurora', label: '极光紫', bright: '#C0B6FB', dark: '#120F22' },
-] as const
 export const notificationOptions = [
   {
     value: 'install',
@@ -378,8 +372,7 @@ export interface SettingsItem {
  * 点了打开那一组、翻到那一行；页面上的行标题也从这里取，两边不会说成两个名字。
  */
 export const settingsItems: readonly SettingsItem[] = [
-  { id: 'theme', group: 'appearance', label: '主题', keywords: ['深色', '夜间', '暗色', '白色'] },
-  { id: 'skin', group: 'appearance', label: '界面皮肤', keywords: [] },
+  { id: 'theme', group: 'appearance', label: '主题', keywords: ['深色', '夜间', '暗色', '白色', '配色', '皮肤'] },
   { id: 'ui-scale', group: 'appearance', label: '界面缩放', keywords: ['缩放', '放大', '缩小', '太大', '太小'] },
   { id: 'large-text', group: 'appearance', label: '大字', keywords: ['字体', '字号', '字太小', '看不清'] },
   { id: 'high-contrast', group: 'appearance', label: '高对比度', keywords: [] },
