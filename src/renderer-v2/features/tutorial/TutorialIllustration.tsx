@@ -17,9 +17,9 @@ const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; 
   chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框底部选择文本对话、分组和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认分组和模型，再描述你希望完成的事。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
   acceleration: { title: '选线路，再开始加速', description: '在游戏加速页面选择加速线路，可以选智能分配，再点击开始加速；加速只改这台电脑的系统代理，连接后要换线路须先停止加速。不使用时点击停止加速。', hint: '连接后才计时；用完点击「停止加速」。' },
-  extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点添加连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
-  skills: { title: '技能要导入到对应的工具', description: '在技能页面先选择工具，例如 Codex CLI，再点击导入技能。列表可查看技能的来源与范围；系统内置技能只能查看。', hint: '不同工具的导入能力不同；先选工具，再看可用操作。' },
-  plugins: { title: '在插件页面选择工具和来源', description: '在插件页面选择要使用插件的工具，再点击添加插件；已安装和市场是两个不同页签，市场能力以当前工具实际支持为准。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
+  extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点自定义连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
+  skills: { title: '技能要导入到对应的工具', description: '在技能页面先选择工具，例如 Codex CLI，再点击从文件夹导入。列表可查看技能的来源与范围；系统自带的技能只能查看。', hint: '不同工具的导入能力不同；先选工具，再看可用操作。' },
+  plugins: { title: '在插件页面选择工具和来源', description: '在插件页面选择要使用插件的工具，再点击添加插件；装好的在上面的列表里，下面是官方目录，市场能力以当前工具实际支持为准。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
   backup: { title: '改设置前，先留一份配置备份', description: '在备份页面的马上备份区域选择工具，点击创建备份。随后核对列表中的工具和时间，通过预览确认包含的配置文件。图中未创建真实备份。', hint: '备份范围是工具配置；项目代码需要另外备份。' },
   health: { title: '有问题时，从检查开始', description: '进入检查页面运行检查，阅读异常项给出的处理建议，完成处理后重新检查；需要帮助时进入帮助与客服。', hint: '先看具体异常，再按建议处理，完成后重新检查。' },
 }
@@ -140,21 +140,21 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'extensions':
       return <div className="tutorial-illustration-extensions">
-        <div className="tutorial-illustration-row"><Plug size={19} /><strong>外接工具</strong><Control>添加连接</Control><Marker>2</Marker></div>
+        <div className="tutorial-illustration-row"><Plug size={19} /><strong>外接工具</strong><Control>自定义连接</Control><Marker>2</Marker></div>
         <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
         <div className="tutorial-illustration-row tutorial-illustration-runtime"><ShieldCheck size={20} /><div><strong>确认它需要哪些权限</strong><small>只添加任务确实需要的连接</small></div></div>
       </div>
     case 'skills':
       return <div className="tutorial-illustration-extensions">
-        <div className="tutorial-illustration-row"><Sparkles size={19} /><strong>技能</strong><Control>导入技能</Control><Marker>2</Marker></div>
+        <div className="tutorial-illustration-row"><Sparkles size={19} /><strong>技能</strong><Control>从文件夹导入</Control><Marker>2</Marker></div>
         <div className="tutorial-illustration-options"><Marker>1</Marker><Control>Claude Code</Control><Control primary>Codex CLI</Control></div>
-        <div className="tutorial-illustration-row tutorial-illustration-runtime"><FileText size={20} /><div><strong>看清来源与范围</strong><small>系统内置 · 我的（全局） · 当前项目</small></div></div>
+        <div className="tutorial-illustration-row tutorial-illustration-runtime"><FileText size={20} /><div><strong>看清来源与范围</strong><small>系统自带 · 我的（全局） · 当前项目</small></div></div>
       </div>
     case 'plugins':
       return <div className="tutorial-illustration-extensions">
         <div className="tutorial-illustration-row"><Package size={19} /><strong>插件</strong><Control>添加插件</Control><Marker>2</Marker></div>
         <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
-        <div className="tutorial-illustration-options"><Control primary>已安装</Control><Control>市场</Control><span className="tutorial-illustration-muted">市场能力以当前工具为准</span></div>
+        <div className="tutorial-illustration-options"><Control primary>已装到 Claude Code</Control><Control>官方目录</Control><span className="tutorial-illustration-muted">市场能力以当前工具为准</span></div>
       </div>
     case 'backup':
       return <div className="tutorial-illustration-backup">

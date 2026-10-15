@@ -905,7 +905,14 @@ const apiMethods = {
     input: Parameters<V2Bridge['mutateProviderExtension']>[0],
   ) => {
     record('extension', input)
+    // extensionOk：改动照常成功，用来看成功以后那句提示。
+    if (query.has('extensionOk')) return extensionList(input.provider)
     throw new Error('扩展操作失败，已有配置保留')
+  },
+  // Codex 的连接走它自己的原生接口；夹具只记下收到了什么。
+  addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
+    record('add-mcp', input)
+    return []
   },
   listBackups: async () => (empty ? [] : [backup]),
   inspectBackup: async () => ({
@@ -1288,6 +1295,12 @@ const renderFixture = (paymentReturn?: {
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}
+          // installedProviders=claude,codex：扩展几页认得哪些工具没装；不带 = 还没检测完（旧行为）。
+          installedProviders={query.get('installedProviders')?.split(',').filter(Boolean)}
+          installTool={query.has('installedProviders') ? async (tool) => {
+            record('install-tool', tool)
+            return 'installed' as const
+          } : undefined}
           active={pageActive}
         />
       </BalanceTierProvider>
