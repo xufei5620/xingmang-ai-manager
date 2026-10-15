@@ -3213,11 +3213,12 @@ test('macOS guide detects an installed Codex Desktop with no config files or CLI
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
     await page.getByTestId('guide-next').click()
-    await page.getByTestId('start-guide').getByText('已安装', { exact: true }).waitFor()
+    await page.getByTestId('start-guide').getByText('已装好', { exact: true }).waitFor()
     await expect(page.getByTestId('guide-next')).toBeEnabled()
     assert.equal(await page.getByTestId('guide-install').count(), 0)
     await page.getByTestId('guide-next').click()
-    await page.getByText('尚未选择连接方式', { exact: true }).waitFor()
+    // v4：没登录时第 3 步是一张「登录后自动连接」卡，不再写「尚未选择连接方式」。
+    await page.getByTestId('start-guide').getByText('登录后自动连接', { exact: true }).waitFor()
     await expect(page.getByTestId('guide-next')).toBeDisabled()
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(methods.some((method) => ['installCodexDesktop', 'saveConfig', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(method)), false)
@@ -5717,12 +5718,13 @@ const defaultModelCases = [
 ]
 // 没登录时欢迎页挡在前面（本机有 Key 也一样）。配好模型的工具走完使用步骤进首页再开配置；
 // 没配模型的工具在引导「确认连接」那一步就能打开配置，未登录用户实际也是这么走的。
+// v4 起引导是叠在欢迎页上面的弹窗，欢迎页一直在底下：引导已经开着就不再去点欢迎页。
 async function openGuestToolConfiguration(page, tool, existing) {
   if (existing) {
     if (await page.getByTestId('welcome-page').count()) await enterWorkspaceWithoutAccount(page)
     return openToolConfiguration(page, tool)
   }
-  if (await page.getByTestId('welcome-page').count()) {
+  if (await page.getByTestId('welcome-page').count() && !await page.getByTestId('start-guide').count()) {
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId(`guide-route-${tool}`).check()
     await page.getByTestId('guide-next').click()
@@ -8057,6 +8059,30 @@ test('startup cards no longer carry the dialog shadow that the scroll area cut i
     const card = page.getByTestId('startup-notices-list').locator('.xm-notice').first()
     await card.waitFor()
     assert.equal(await card.evaluate((element) => getComputedStyle(element).boxShadow.includes('64px')), false, 'the card does not carry the dialog shadow that the scroll area cuts into a block')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 欢迎页没有侧栏和状态栏：开机提示卡放在左下角会压住那行链接和底下四格（Windows 原生冒烟点「减少动画」
+// 就是被「已更新到 …」挡住的），欢迎页上它在右上角、星轨那片装饰上面。
+test('the startup card on the welcome page stays clear of the links and the feature row', async () => {
+  const page = await open('guest=1&justUpdated=1')
+  try {
+    await page.setViewportSize({ width: 1280, height: 660 })
+    await page.getByTestId('welcome-page').waitFor()
+    const card = page.getByTestId('startup-notices-list').locator('.xm-notice').first()
+    await card.waitFor()
+    const notice = await card.boundingBox()
+    for (const selector of ['.auth-welcome-copy', '.auth-welcome-foot']) {
+      const other = await page.locator(selector).boundingBox()
+      const apart = notice.x >= other.x + other.width || notice.x + notice.width <= other.x || notice.y >= other.y + other.height || notice.y + notice.height <= other.y
+      assert.ok(apart, `the startup card must not cover ${selector}: ${JSON.stringify({ notice, other })}`)
+    }
+    // 改动列表再长也只在卡里滚：整摞卡最高也到不了底下四格。
+    const reach = await page.getByTestId('startup-notices').evaluate((element) => element.getBoundingClientRect().top + Number.parseFloat(getComputedStyle(element).maxHeight))
+    const foot = await page.locator('.auth-welcome-foot').boundingBox()
+    assert.ok(reach <= foot.y, `the startup cards must stop above the feature row: ${JSON.stringify({ reach, foot })}`)
+    await page.getByTestId('welcome-motion').click({ timeout: 5000 })
     await clean(page)
   } finally { await page.close() }
 })

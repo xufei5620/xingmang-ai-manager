@@ -75,7 +75,7 @@ describe('guide setup result', () => {
 
   it('offers a first prompt while making clear opening is not a completed task', () => {
     const desktop = buildGuideSetupResult({ route: 'codexDesktop', tool: codex, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' })
-    expect(desktop.prompt).toContain('用中文')
+    expect(desktop.prompt).toBe('帮我看看这个文件夹里都有什么，每个文件用一句话说明它是做什么的。')
     expect(desktop.next.detail).toBe('打开后把下面这句话发给它试试。')
     const cli = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude' }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号' })
     expect(cli.prompt).toBeNull()
