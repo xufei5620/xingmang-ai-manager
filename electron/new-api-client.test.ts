@@ -1511,7 +1511,7 @@ describe('login limits (rc.24 session caps and rate limiting)', () => {
     expect(error).toBeInstanceOf(Error)
     expect(error).not.toBeInstanceOf(NewApiLoginRejectedError)
     expect((error as Error).message).toBe(loginSessionLimitMessage)
-    expect(loginSessionLimitMessage).toContain('登录设备')
+    expect(loginSessionLimitMessage).toContain('「账号安全」里让几台不用的设备下线')
     expect(loginSessionLimitMessage).not.toMatch(/https?:|solov|\.cc|稍后重试/)
     expect(client.isAuthenticated()).toBe(false)
   })

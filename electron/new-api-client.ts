@@ -1352,7 +1352,7 @@ const loginRejectionMessages = new Set([
 // 落到「请稍后重试」——可一直重试也不会好，用户还登不进去，没法自己去清理。
 // 渲染层 renderer-v2 的 account-errors.ts 按同样的字认它们（electron 不 import
 // src，同 T12 的有意重复）。文案里不出现网址或站点名。
-export const loginSessionLimitMessage = '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「登录设备」里退出几个不用的，再回来登录；都登不上的话请联系客服。'
+export const loginSessionLimitMessage = '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「账号安全」里让几台不用的设备下线，再回来登录；都登不上的话请联系客服。'
 export const loginIssuanceLimitMessage = '这个账号最近一天里登录的次数太多了，请过几个小时再试。'
 export const loginRateLimitedMessage = '登录太频繁了，请过一会儿再试。'
 
