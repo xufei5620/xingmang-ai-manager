@@ -2603,10 +2603,14 @@ test('read-only account matches do not survive logout or a late config read when
     await page.evaluate(() => window.v2Test.holdNextConfigRead())
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
+    await assertNoMatchedKeyOperations(page)
+    // 退出登录在账号概览上：一进个人中心，「密钥与设备」那张卡会读一次密钥列表数把数。那是用户点开个人中心读的，
+    // 不是配对去取 Key，所以从退出以后再接着查。
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
+    const loggedOut = await page.evaluate(() => window.v2Test.calls.length)
     await page.getByTestId('welcome-steps').click()
     await page.getByTestId('guide-route-codexDesktop').check()
     for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
@@ -2619,7 +2623,7 @@ test('read-only account matches do not survive logout or a late config read when
     assert.equal(await page.getByTestId('guide-next').count(), 0)
     const summary = await page.evaluate(() => window.xingmang.getConfig())
     assert.ok(Object.values(summary.providers).every(provider => provider.configurationAccountMatched === false))
-    await assertNoMatchedKeyOperations(page)
+    await assertNoMatchedKeyOperations(page, loggedOut)
     await clean(page)
     await page.goto(`${origin}/src/renderer-v2/testing/app.html?readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1`)
     // 引导进度按未登录作用域记在本机，重开直接回到上面停下的「确认连接」。
