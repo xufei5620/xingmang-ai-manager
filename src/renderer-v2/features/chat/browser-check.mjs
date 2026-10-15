@@ -693,7 +693,7 @@ test('default, empty and failed chat surfaces fit the fixed desktop content fram
   for (const theme of ['light', 'dark']) for (const os of ['win', 'mac']) for (const mode of ['default', 'empty', 'failed']) {
     const page = await open(`theme=${theme}&os=${os}${mode === 'failed' ? '&groupFail=1' : ''}`)
     try {
-      assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), theme === 'dark' ? 'obsidian' : 'dawn')
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), undefined)
       if (mode === 'default') {
         const request = await send(page, '测试聊天布局')
         await emit(page, { type: 'content', requestId: request.requestId, content: '已经收到你的问题。\n\n这是一段本地测试回复。' })

@@ -30,7 +30,6 @@ function Fixture() {
   useLayoutEffect(() => {
     const theme = notice?.theme ?? 'light'
     document.documentElement.dataset.theme = theme
-    document.documentElement.dataset.skin = 'mist'
     document.documentElement.style.colorScheme = theme
   }, [notice?.theme])
 

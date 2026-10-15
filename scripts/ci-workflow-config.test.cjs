@@ -721,7 +721,7 @@ test('real PowerShell runs once in the packaging job, never in the unit test sha
 // the zoom is driven by platform/renderer-v2.ts (0.7) — and both used to assume
 // a desktop big enough that resolveWindowPlacement would not maximize the
 // window. The two floors no longer disagree: platform/zoom.ts now delegates to
-// calculateUiZoom, which is the product's single formula and floors at 0.7.
+// calculateUiZoom, which is the product's single formula (floors 0.9 / 0.85 since UI v4.0).
 // Both are reconciled, so the gate flips: they must run, after the compile they
 // need, each under its own step bound.
 test('both native renderer smokes run in CI once the application is compiled', () => {

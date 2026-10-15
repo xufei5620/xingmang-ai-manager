@@ -25,7 +25,7 @@
 .v2-tutorial-group-more > summary > svg { flex-shrink: 0; }
 .v2-tutorial-group-more[open] > summary > svg { transform: rotate(90deg); }
 .v2-tutorial-group-more > summary:focus-visible,
-.v2-tutorial-extra > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.v2-tutorial-extra > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .v2-tutorial-group button {
   display: flex;
   width: 100%;
@@ -50,11 +50,11 @@
   font-weight: 600;
 }
 .v2-tutorial-group button:focus-visible,
-.v2-tutorial-step-links a:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.v2-tutorial-step-links a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .v2-tutorial-search-count { margin: 18px 10px 8px; color: var(--text-2); font-size: var(--font-small); }
 .v2-tutorial-article { min-width: 0; scroll-margin-top: 16px; }
 .v2-tutorial-article:focus { outline: none; }
-.v2-tutorial-article:focus-visible { outline: 2px solid var(--info); outline-offset: 4px; }
+.v2-tutorial-article:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
 .v2-tutorial-article-head { padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); }
 .v2-tutorial-meta { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: var(--font-small); }
 .v2-tutorial-meta > span { display: inline-flex; align-items: center; gap: 6px; }
@@ -74,7 +74,7 @@
 .v2-tutorial-progress-dots > button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--line-2); border-radius: 50%; background: transparent; color: var(--text-2); font: 600 var(--font-micro) var(--mono); cursor: pointer; }
 .v2-tutorial-progress-dots > button:hover { background: var(--panel-hover); color: var(--text); }
 .v2-tutorial-progress-dots > button[aria-current='step'] { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
-.v2-tutorial-progress-dots > button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.v2-tutorial-progress-dots > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .v2-tutorial-steps > li { scroll-margin-top: 54px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); }
 .v2-tutorial-step-title { display: flex; align-items: center; gap: 12px; }
 .v2-tutorial-step-title > span { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; border-radius: var(--radius-input); background: var(--accent-soft); color: var(--accent); font: 600 var(--font-body) var(--mono); }
@@ -86,10 +86,10 @@
 .v2-tutorial-instructions { padding-left: 24px; margin: 0 0 16px; line-height: 1.85; color: var(--text); }
 .v2-tutorial-instructions > li + li { margin-top: 6px; }
 .v2-tutorial-instructions > li::marker { color: var(--accent); font-weight: 600; }
-.v2-tutorial-expected { display: flex; gap: 8px; align-items: flex-start; margin: 16px 0; padding: 12px 14px; border-radius: var(--radius-input); background: var(--ok-soft); color: var(--ok); }
+.v2-tutorial-expected { display: flex; gap: 8px; align-items: flex-start; margin: 16px 0; padding: 12px 14px; border-radius: var(--radius-input); background: var(--ok-soft); color: var(--ok-tx); }
 .v2-tutorial-expected > svg { flex-shrink: 0; margin-top: 3px; }
 .v2-tutorial-expected p { margin: 0; font-size: var(--font-small); line-height: 1.8; color: var(--text-2); }
-.v2-tutorial-expected strong { display: block; color: var(--ok); font-weight: 600; }
+.v2-tutorial-expected strong { display: block; color: var(--ok-tx); font-weight: 600; }
 .v2-tutorial-step-body > .v2-tutorial-tip { font-size: var(--font-small); color: var(--text-2); padding-left: 12px; border-left: 2px solid var(--line-2); }
 .v2-tutorial-example { margin: 16px 0; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); padding: 14px 16px; }
 .v2-tutorial-example-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

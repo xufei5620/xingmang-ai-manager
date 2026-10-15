@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, Save, Settings } from 'lucide-react'
+import { RefreshCw, Save } from 'lucide-react'
 import type { AccountKey, AppConfigSummary, ExternalClientConfigResult, ExternalClientCredential, ExternalToolId, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
 import { Button, Confirm, Dialog, Input, Notice, Select } from '../../ui'
 import { clientConnections, clientKeySources } from '../../registry/clients'
@@ -95,7 +95,7 @@ export function ExternalClientDialog({ api, tool, signedIn, onClose, onSaved }: 
   // 保存完主进程会把刚写下去的配置回读一遍再核对一次当前账号，结论跟在同一张
   // Notice 里：0.2.8 之前这里只能说一句「未验证实际模型调用」。
   const connectionView = result?.connection ? connectionCheckView(result.connection) : null
-  return <><Dialog open title={`${definition.name} 配置`} subtitle={definition.description} icon={Settings} width={640}
+  return <><Dialog open title={`${definition.name} 配置`} subtitle={definition.description} width={640}
     onClose={onClose} busy={Boolean(busy)} dirty={dirty} testId="external-client-dialog"
     footer={<><Button onClick={() => dirty ? setDiscard(true) : onClose()} disabled={Boolean(busy)}>{result ? '完成' : '取消'}</Button><Button variant="primary" icon={Save} loading={busy === 'save'} disabled={Boolean(busy) || !model || !models.includes(model)} onClick={() => void save()} testId="external-client-save">保存配置</Button></>}>
     <fieldset className="v2-config-controls" disabled={Boolean(busy)}>

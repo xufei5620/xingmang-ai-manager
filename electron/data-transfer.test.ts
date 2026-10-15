@@ -97,6 +97,13 @@ describe('planPortableSettingsImport', () => {
     expect(plan.conflictLabels).toEqual(['主题', '点关闭按钮时'])
   })
 
+  it('never asks about the skin, which the settings page no longer shows, and keeps one chosen here', () => {
+    const plan = planPortableSettingsImport(settings({ uiSkin: 'obsidian' }), { uiSkin: 'aurora', theme: 'dark' })
+    expect(plan.settings).toEqual({ version: 2, theme: 'dark' })
+    expect(plan.conflictingSettings).toEqual({ version: 2 })
+    expect(plan.conflictLabels).toEqual([])
+  })
+
   it('treats a skin that follows the theme as untouched', () => {
     const plan = planPortableSettingsImport(settings({ uiSkin: undefined }), { uiSkin: 'obsidian' })
     expect(plan.settings).toEqual({ version: 2, uiSkin: 'obsidian' })

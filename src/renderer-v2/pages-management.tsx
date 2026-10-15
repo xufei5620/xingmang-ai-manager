@@ -5,7 +5,6 @@ import {
   FileText,
   FolderOpen,
   Globe,
-  History,
   MoreHorizontal,
   Package,
   Play,
@@ -1124,7 +1123,6 @@ export function SessionsPage({
       <Drawer
         open={Boolean(selected)}
         title={selected?.title || '记录详情'}
-        icon={History}
         onClose={() => {
           setSelected(null)
         }}
@@ -2400,7 +2398,6 @@ export function ExtensionsPage({
       <Dialog
         open={Boolean(curated)}
         title={`装上「${curated?.name ?? ''}」？`}
-        icon={Sparkles}
         testId="curated-confirm"
         busy={operation.busy === 'curated'}
         onClose={() => setCurated(null)}
@@ -2795,7 +2792,6 @@ export function BackupsPage({
       <Drawer
         open={Boolean(preview)}
         title="备份预览"
-        icon={Archive}
         onClose={() => setPreview(null)}
         testId="backup-preview-drawer"
         footer={

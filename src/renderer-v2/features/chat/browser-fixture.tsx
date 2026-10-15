@@ -7,7 +7,6 @@ import { ToastProvider } from '../../ui'
 
 const query = new URLSearchParams(location.search)
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
-document.documentElement.dataset.skin = query.get('skin') ?? (document.documentElement.dataset.theme === 'dark' ? 'obsidian' : 'dawn')
 document.documentElement.dataset.os = query.get('os') ?? 'win'
 document.body.style.margin = '0'
 document.body.style.height = '100vh'

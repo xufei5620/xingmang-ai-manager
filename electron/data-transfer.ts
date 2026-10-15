@@ -36,10 +36,11 @@ export interface PortableSettings {
 }
 type PortableKey = keyof PortableSettings
 
-// 设置页上的叫法，询问框里原样列出来。
-const portableLabels: Record<PortableKey, string> = {
+// 设置页上的叫法，询问框里原样列出来。null 的那项设置页上已经没有了（v4 界面只剩深浅两套配色，
+// 皮肤不再给用户选），列出来用户也认不出是什么，所以不问：这台电脑没改过就照文件换，改过就留着。
+const portableLabels: Record<PortableKey, string | null> = {
   theme: '主题',
-  uiSkin: '界面皮肤',
+  uiSkin: null,
   uiScale: '界面缩放',
   largeText: '大字',
   reducedMotion: '减少动画',
@@ -173,11 +174,12 @@ export function planPortableSettingsImport(
   for (const key of portableKeys) {
     const value = incoming[key]
     if (value === undefined || value === here[key]) continue
+    const label = portableLabels[key]
     if ((untouched[key] as readonly unknown[]).includes(here[key])) {
       Object.assign(settings, { [key]: value })
-    } else {
+    } else if (label !== null) {
       Object.assign(conflictingSettings, { [key]: value })
-      conflictLabels.push(portableLabels[key])
+      conflictLabels.push(label)
     }
   }
   return { settings, conflictingSettings, conflictLabels }

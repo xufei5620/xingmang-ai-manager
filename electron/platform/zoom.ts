@@ -6,7 +6,7 @@ import type { UiScalePreference } from './types'
 // 0.7 and window-preferences.ts at 0.8, so 960 DIP produced 0.75 here and 0.8
 // there, and only the listener registration order decided which one the user
 // actually saw.
-export { UI_DESIGN_WIDTH_DIP, UI_MAX_ZOOM, UI_MIN_ZOOM } from '../window-preferences'
+export { UI_AUTO_MIN_ZOOM, UI_DESIGN_WIDTH_DIP, UI_MAX_ZOOM, UI_MIN_ZOOM } from '../window-preferences'
 
 /**
  * Browser zoom is derived from DIP width. System DPI is already represented by

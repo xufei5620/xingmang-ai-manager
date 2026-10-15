@@ -154,8 +154,6 @@ window.emitPaymentWindowTerminal = (event) => {
   paymentWindowTerminalListeners.forEach((listener) => listener(event))
 }
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
-document.documentElement.dataset.skin =
-  query.get('skin') ?? (query.get('theme') === 'dark' ? 'obsidian' : 'dawn')
 document.documentElement.dataset.os = query.get('os') ?? 'win'
 document.body.style.margin = '0'
 document.body.style.background = 'var(--bg)'

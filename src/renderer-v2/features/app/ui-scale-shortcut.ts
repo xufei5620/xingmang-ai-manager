@@ -28,14 +28,14 @@ const order: readonly Exclude<AppUiScale, 'auto'>[] = ['90', '100', '110']
 
 export function nextUiScale(current: AppUiScale | undefined, shortcut: UiScaleShortcut, os: WindowOs): UiScaleStep {
   const reset = os === 'mac' ? '⌘ 0' : 'Ctrl 0'
-  if (shortcut === 'reset') return { next: 'auto', message: '界面缩放已恢复为自动' }
+  if (shortcut === 'reset') return { next: 'auto', message: '界面缩放已恢复自动' }
   const index = order.indexOf(current === undefined || current === 'auto' ? '100' : current)
   const target = order[shortcut === 'larger' ? index + 1 : index - 1]
   if (target === undefined) {
     return {
       next: null,
-      message: shortcut === 'larger' ? `界面已经放到最大的 110%，按 ${reset} 恢复` : `界面已经缩到最小的 90%，按 ${reset} 恢复`,
+      message: shortcut === 'larger' ? '已经是最大的 110%' : '已经是最小的 90%',
     }
   }
-  return { next: target, message: `界面${shortcut === 'larger' ? '放大' : '缩小'}到 ${target}%，按 ${reset} 恢复` }
+  return { next: target, message: `界面缩放 ${target}%，按 ${reset} 恢复自动` }
 }

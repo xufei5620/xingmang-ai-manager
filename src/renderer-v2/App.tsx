@@ -712,7 +712,6 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useLayoutEffect(() => {
     if (!settings) return
     document.documentElement.dataset.theme = settings.theme
-    document.documentElement.dataset.skin = settings.uiSkin ?? 'mist'
     document.documentElement.dataset.reducedMotion = String(settings.reducedMotion === true)
     document.documentElement.dataset.largeText = String(settings.largeText === true)
     document.documentElement.style.colorScheme = settings.theme
@@ -1627,7 +1626,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               return mounted.current && accountEpoch.current === epoch ? result : null
             } } : {}),
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen(true), openNotifications: () => navigate('updates'),
-            logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}

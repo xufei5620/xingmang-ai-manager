@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Eye, FolderOpen, KeyRound, RefreshCw, Save, Settings } from 'lucide-react'
+import { Eye, FolderOpen, KeyRound, RefreshCw, Save } from 'lucide-react'
 import type { AccountKey, AccountSourceSwitchResult, AppConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
@@ -357,7 +357,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelF
   const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} target="config" />
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   return <>
-    <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" icon={Settings} width={640}
+    <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" width={640}
       onClose={onClose} busy={Boolean(busy)} dirty={Object.values(drafts).some((entry) => entry?.dirty)} testId="config-dialog"
       footer={<><Button variant="ghost" onClick={() => requestExit(onClose)} disabled={Boolean(busy)}>取消</Button><Button variant="primary" icon={Save} loading={Boolean(busy)} disabled={draft.source === 'unknown' || Boolean(nonGptSaveIssue)} aria-describedby={nonGptSaveIssue ? modelFilterStatusId : undefined} onClick={requestSave} testId="tool-save-config">保存配置</Button></>}>
       <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
