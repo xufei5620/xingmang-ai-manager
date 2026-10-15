@@ -1429,6 +1429,10 @@ test('an extension action that finishes after switching tools leaves the new too
           }],
         }
       }
+      // 换到 Codex CLI 时页面还要读它自己的连接、技能、插件清单（夹具里 Grok CLI 没装，换不过去）。
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
       window.xingmang.checkProviderMcpHealth = async (provider) => ({
         provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
       })
@@ -1437,29 +1441,29 @@ test('an extension action that finishes after switching tools leaves the new too
     await page.getByTestId('nav-mcp').click()
     const mcp = page.getByTestId('page-mcp')
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    // 在 Claude Code 下停用连接，没跑完就换到 Grok CLI。
+    // 在 Claude Code 下停用连接，没跑完就换到 Codex CLI（夹具里 Grok CLI 没装，选它只出安装那一条）。
     await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
     await expect.poll(async () => (await calls('mutateProviderExtension')).length).toBe(1)
-    await mcp.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await mcp.getByTestId('mcp-row-grok-link').waitFor()
+    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await mcp.getByTestId('mcp-row-codex-link').waitFor()
     const lists = (await settled('listProviderExtensions')).length
     await page.evaluate(() => window.releaseHeld())
-    await waitForToast(page, '操作已完成')
-    await expect(mcp.getByTestId('mcp-row-grok-link')).toBeVisible()
+    await waitForToast(page, '已停用「claude-link」')
+    await expect(mcp.getByTestId('mcp-row-codex-link')).toBeVisible()
     assert.equal(await mcp.getByTestId('mcp-row-claude-link').count(), 0)
     assert.equal((await settled('listProviderExtensions')).length, lists)
 
-    // 在 Grok CLI 下点「重新检测」，列表还没读回来就换到 Claude Code：检测不再替 Grok CLI 跑。
+    // 在 Codex CLI 下点「重新检测」，列表还没读回来就换到 Claude Code：检测不再替 Codex CLI 跑。
     const health = (await settled('checkProviderMcpHealth')).length
     await page.evaluate(() => window.holdNextList())
     await mcp.getByTestId('mcp-health-recheck').click()
     await expect.poll(async () => (await calls('listProviderExtensions')).length).toBe(lists + 1)
-    await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
+    await mcp.getByRole('tab', { name: /^Claude Code/ }).click()
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
     await page.evaluate(() => window.releaseHeld())
     assert.deepEqual((await settled('checkProviderMcpHealth')).slice(health), ['claude'])
     await expect(mcp.getByTestId('mcp-row-claude-link')).toBeVisible()
-    assert.equal(await mcp.getByTestId('mcp-row-grok-link').count(), 0)
+    assert.equal(await mcp.getByTestId('mcp-row-codex-link').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -1482,6 +1486,10 @@ test('an extension action that fails after switching tools shows its failure und
           operations: { install: false, uninstall: true, enable: true, disable: true, update: false },
         }],
       })
+      // 换到 Codex CLI 时页面还要读它自己的连接、技能、插件清单（夹具里 Grok CLI 没装，换不过去）。
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
       window.xingmang.checkProviderMcpHealth = async (provider) => ({
         provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
       })
@@ -1493,22 +1501,22 @@ test('an extension action that fails after switching tools shows its failure und
     const mcp = page.getByTestId('page-mcp')
     const failure = mcp.getByRole('alert').filter({ hasText: 'claude-link 没能停用' })
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    // 在 Claude Code 下停用连接，没跑完就换到 Grok CLI，这时它失败了。
+    // 在 Claude Code 下停用连接，没跑完就换到 Codex CLI，这时它失败了。
     await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
     await expect(mcp.getByTestId('mcp-add')).toBeDisabled()
-    await mcp.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await mcp.getByTestId('mcp-row-grok-link').waitFor()
+    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await mcp.getByTestId('mcp-row-codex-link').waitFor()
     await page.evaluate(() => window.failHeld('claude-link 没能停用'))
     await expect(mcp.getByTestId('mcp-add')).toBeEnabled()
     assert.equal(await failure.count(), 0)
     // 换回 Claude Code 才看到；再换走照旧清掉，回来也不再出来。
-    await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
+    await mcp.getByRole('tab', { name: /^Claude Code/ }).click()
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
     await expect(failure).toBeVisible()
-    await mcp.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await mcp.getByTestId('mcp-row-grok-link').waitFor()
+    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await mcp.getByTestId('mcp-row-codex-link').waitFor()
     assert.equal(await failure.count(), 0)
-    await mcp.getByRole('button', { name: 'Claude Code', exact: true }).click()
+    await mcp.getByRole('tab', { name: /^Claude Code/ }).click()
     await mcp.getByTestId('mcp-row-claude-link').waitFor()
     assert.equal(await failure.count(), 0)
     await clean(page)
@@ -2292,7 +2300,7 @@ test('installing Python from the MCP page brings the home runtime card along', a
     await notice.getByTestId('mcp-install-python').click()
     // 本页重读以后有 Python 了，那条提示自己收起。这回先不加，关掉添加框回首页。
     await notice.waitFor({ state: 'detached' })
-    const dialog = page.getByRole('dialog', { name: /添加连接/ })
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'hidden' })
     await page.getByTestId('nav-home').click()
