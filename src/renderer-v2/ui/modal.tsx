@@ -9,13 +9,14 @@ import { focusable, useUiText, type BaseProps } from './shared';
 // they would lose. Asking to close again while the bar is up shakes it instead of stacking a second ask.
 // headless: no visible title row or close button; the title stays as the accessible name and the box
 // pins near the top so a growing result list never moves it (the command palette). Esc and the
-// backdrop still close it.
+// backdrop still close it. closeTestId: a dialog whose own Cancel/Back button the × replaced keeps
+// that button's test id on the ×.
 // A drawer is not modal: the list behind it stays usable, so picking another row swaps the drawer's
 // content instead of closing it. It sits in the top layer as a manual popover so dialogs and menus
 // still stack above it, takes no backdrop and keeps no focus trap; Esc still closes it unless the key
 // belongs to a text field outside it.
-export type ModalProps = BaseProps & { open: boolean; title: ReactNode; subtitle?: ReactNode; onClose: () => void; footer?: ReactNode; dirty?: boolean; initialFocus?: RefObject<HTMLElement | null>; children?: ReactNode; busy?: boolean; headless?: boolean };
-function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, children, testId, busy, headless, kind, width = 480 }: ModalProps & { kind: 'dialog' | 'drawer'; width?: 480 | 640 }) {
+export type ModalProps = BaseProps & { open: boolean; title: ReactNode; subtitle?: ReactNode; onClose: () => void; footer?: ReactNode; dirty?: boolean; initialFocus?: RefObject<HTMLElement | null>; children?: ReactNode; busy?: boolean; headless?: boolean; closeTestId?: string };
+function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, children, testId, busy, headless, closeTestId, kind, width = 480 }: ModalProps & { kind: 'dialog' | 'drawer'; width?: 480 | 640 }) {
   const ref = useRef<HTMLElement | null>(null); const returnFocus = useRef<HTMLElement | null>(null); const content = useRef<HTMLDivElement>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false); const [nudge, setNudge] = useState(0); const titleId = useId(); const subtitleId = useId(); const t = useUiText();
   const current = useRef({ onClose, dirty, busy, confirmDiscard }); current.current = { onClose, dirty, busy, confirmDiscard };
@@ -64,7 +65,7 @@ function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, ch
   const cancelDiscard = () => { refocusForm.current = true; setConfirmDiscard(false); setNudge(0); };
   const className = 'xm-modal xm-' + kind + ' xm-dialog-' + width + (headless ? ' xm-dialog-headless' : '');
   const inner = <>
-    {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy}><X size={16} aria-hidden="true" /></button></header>}
+    {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy} data-testid={closeTestId}><X size={16} aria-hidden="true" /></button></header>}
     {!headless && subtitle && <p id={subtitleId} className="xm-dialog-sub">{subtitle}</p>}
     <div ref={content} className="xm-modal-content"><div className="xm-dialog-body">{children}</div>{footer && <footer hidden={confirmDiscard}>{footer}</footer>}</div>
     {confirmDiscard && <div key={nudge} className={'xm-leave-bar' + (nudge ? ' is-nudged' : '')} role="alert"><TriangleAlert size={15} aria-hidden="true" /><span>{t('discardTitle')}</span><Button size="sm" variant="secondary" data-keep-editing="true" onClick={cancelDiscard}>{t('keepEditing')}</Button><Button size="sm" variant="danger" onClick={() => { setConfirmDiscard(false); onClose(); }}>{t('discard')}</Button></div>}
