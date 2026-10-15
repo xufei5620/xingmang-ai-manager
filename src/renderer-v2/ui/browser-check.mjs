@@ -51,13 +51,13 @@ test('Coachmark advances, never points at a hidden target, and can always be ski
     const trigger = page.getByTestId('gallery-coach-open');
     await trigger.click();
     const coach = page.getByTestId('gallery-coach');
-    // v4: the bubble sits below its target with the arrow over the target's centre, and the target
-    // itself is outlined while it is being explained.
+    // v4: the bubble sits below its target (above when the window has no room under it) with the
+    // arrow over the target's centre, and the target itself is outlined while it is being explained.
     await page.waitForFunction(() => document.querySelector('[data-testid="gallery-coach"]')?.style.visibility === 'visible');
-    assert.equal(await coach.getAttribute('data-side'), 'below');
     assert.equal(await trigger.getAttribute('data-coach-target'), 'true');
-    const [anchor, bubble, arrow] = await Promise.all([trigger.boundingBox(), coach.boundingBox(), coach.evaluate(el => parseFloat(el.style.getPropertyValue('--coach-arrow-x')))]);
-    assert.ok(bubble.y > anchor.y + anchor.height, 'the bubble opens below the target');
+    const [side, anchor, bubble, arrow] = await Promise.all([coach.getAttribute('data-side'), trigger.boundingBox(), coach.boundingBox(), coach.evaluate(el => parseFloat(el.style.getPropertyValue('--coach-arrow-x')))]);
+    if (side === 'below') assert.ok(bubble.y > anchor.y + anchor.height, 'the bubble opens below the target');
+    else { assert.equal(side, 'above'); assert.ok(bubble.y + bubble.height < anchor.y, 'the bubble opens above the target'); }
     assert.ok(Math.abs(bubble.x + arrow - (anchor.x + anchor.width / 2)) <= 1, 'the arrow points at the target centre');
     await coach.getByRole('button', { name: '下一步' }).click();
     await coach.getByRole('heading', { name: '随时返回这里' }).waitFor();
