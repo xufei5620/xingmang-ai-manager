@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { Search } from 'lucide-react';
-import { Button, Card, Chips, Input, Menu, Notice, Pill, Progress, Segment, Switch, Tabs, Toast, ToolRow, toastDurationMs } from './components';
+import { Button, Card, Chips, ChoiceMenu, Input, Menu, Notice, Pill, Progress, Segment, Slider, Switch, Tabs, Toast, ToolRow, toastDurationMs } from './components';
 import { BrandIcon } from './brand';
 
 describe('renderer-v2 component contract', () => {
@@ -77,6 +77,25 @@ describe('renderer-v2 component contract', () => {
     const html = renderToStaticMarkup(<Menu label="密钥 生产 Key 的更多操作" anchor={null} items={[{ label: '撤销密钥', danger: true, onSelect: () => undefined }]} />);
     expect(html).toContain('aria-label="密钥 生产 Key 的更多操作"');
     expect(html).not.toContain('aria-label="操作"');
+  });
+  it('turns a button anchor into the trigger of a closed choice menu', () => {
+    const html = renderToStaticMarkup(<ChoiceMenu label="分组和模型" anchor={<Button testId="picker">gpt-test</Button>} sections={[{ label: '分组', value: 'a', options: [{ value: 'a', label: 'a' }], onChange: () => undefined }]} />);
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('data-testid="picker"');
+    expect(html).not.toContain('role="menu"');
+  });
+  it('shows an untouched slider as its placeholder while the thumb rests on the fallback', () => {
+    const unset = renderToStaticMarkup(<Slider label="随机度" value="" fallback={1} min={0} max={2} step={0.1} placeholder="默认" hint="越高越有创意，越低越稳定" onChange={() => undefined} testId="temperature" />);
+    expect(unset).toContain('data-unset="true"');
+    expect(unset).toContain('>默认</b>');
+    expect(unset).toContain('value="1"');
+    expect(unset).toContain('aria-valuetext="默认"');
+    expect(unset).toContain('越高越有创意，越低越稳定');
+    const set = renderToStaticMarkup(<Slider label="随机度" value="0.7" fallback={1} min={0} max={2} step={0.1} placeholder="默认" onChange={() => undefined} />);
+    expect(set).toContain('>0.7</b>');
+    expect(set).not.toContain('data-unset');
+    expect(set).not.toContain('aria-valuetext');
   });
   it('resolves icons for provider models returned by the relay', () => {
     for (const model of ['deepseek-v4-flash', 'qwen3-max', 'glm-5', 'kimi-k2', 'minimax-m2']) {

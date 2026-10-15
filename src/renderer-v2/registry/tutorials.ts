@@ -404,7 +404,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     steps: [
       {
         title: '打开聊天，选好分组和模型',
-        where: '左侧聊天 → 新对话 → 输入框上方',
+        where: '左侧聊天 → 新对话 → 输入框底部',
         detail: '先选回答问题的模型。分组决定可用模型与计费规则。',
         bullets: ['点「新对话」，保持「文本对话」。', '选好「分组」和「模型」，列表失败时点刷新。'],
         expected: '分组和模型已选中，输入文字后可以发送。',
