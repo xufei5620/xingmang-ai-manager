@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { pageRegistry } from '../../registry/pages'
 import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
-import { maximumTutorialResults, searchCommands } from './command-search'
+import { chatParametersSection, maximumTutorialResults, searchCommands } from './command-search'
 
 describe('searchCommands', () => {
   it('lists the everyday actions, then every page, when nothing is typed', () => {
@@ -9,7 +9,7 @@ describe('searchCommands', () => {
     expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id))
     expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...pageRegistry.map(() => 'page')])
     expect(searchCommands('').filter((item) => item.group === 'page').every((item) => item.section === undefined)).toBe(true)
-    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服'])
+    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '聊天参数设置'])
   })
 
   it('offers switching to the other theme only, and sign-out only while signed in', () => {
@@ -28,7 +28,14 @@ describe('searchCommands', () => {
 
   it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
     const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'dashboard' }).filter((item) => item.group === 'action').map((item) => item.label)
-    expect(labels).toEqual(['开始检查', '帮助与客服'])
+    expect(labels).toEqual(['开始检查', '帮助与客服', '聊天参数设置'])
+  })
+
+  it('opens the chat parameters dialog from the action group, and leaves it out when chat is not on this computer', () => {
+    for (const word of ['聊天参数设置', '系统提示词', '随机度', '温度']) {
+      expect(searchCommands(word).find((item) => item.group === 'action')).toEqual({ key: 'action:chat-parameters', group: 'action', label: '聊天参数设置', page: 'chat', section: chatParametersSection })
+    }
+    expect(searchCommands('系统提示词', { pageVisible: (page) => page !== 'chat' }).some((item) => item.key === 'action:chat-parameters')).toBe(false)
   })
 
   it('still finds every page by its own name first', () => {
