@@ -138,7 +138,7 @@ describe('renderer-v2 v4 sidebar', () => {
     const markup = renderShell()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const order = [...scroll.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])
-    expect(order).toEqual(['home', 'chat', 'sessions', 'canvas', 'mcp', 'skills', 'plugins', 'recharge', 'tutorial', 'health', 'feedback'])
+    expect(order).toEqual(['home', 'chat', 'sessions', 'canvas', 'featured', 'mcp', 'skills', 'plugins', 'recharge', 'tutorial', 'health', 'feedback'])
     expect(scroll).toContain('role="group" aria-label="扩展"><p class="v2-nav-group-label" aria-hidden="true">扩展</p>')
     expect(scroll).toContain('<hr class="v2-nav-separator" aria-hidden="true"/>')
     expect(scroll).toContain('<span>反馈与客服</span>')

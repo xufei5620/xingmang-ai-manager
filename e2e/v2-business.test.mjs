@@ -1050,7 +1050,8 @@ test('session detail exposes a retry action after a temporary read failure', asy
 test('extension toggle preserves original state and reports mutation failure', async () => {
   const page = await fixture('page=mcp')
   try {
-    const control = page.getByRole('switch', { name: '已启用', exact: true })
+    // 开关的名字说的是点下去会怎样（v4 批12）。
+    const control = page.getByRole('switch', { name: '停用 测试扩展', exact: true })
     await control.click()
     await page.getByText('扩展操作失败，已有配置保留').waitFor()
     assert.equal(await control.getAttribute('aria-checked'), 'true')
@@ -1194,8 +1195,8 @@ test('the curated plugin shelf shows both commands and installs through the exis
 test('the Codex plugin market downloads the official catalog by itself and lists what can be installed', async () => {
   const page = await fixture('page=plugins&codexCatalogOffline')
   try {
-    await page.getByRole('button', { name: 'Codex CLI', exact: true }).click()
-    await page.getByRole('tab', { name: '市场' }).click()
+    // 插件页合成一页：选到 Codex CLI，官方目录就在已装列表下面。
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
     // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户开加速后自己再点。
     await page.getByText(/插件目录没有下载下来/).first().waitFor()
     const notice = page.getByTestId('plugins-official-marketplace')
@@ -1254,20 +1255,20 @@ test('the MCP page lists its own connections above the curated shelf and one sea
   const page = await fixture('page=mcp')
   try {
     const list = page.getByTestId('mcp-list')
-    await list.getByRole('heading', { name: '已添加', exact: true }).waitFor()
+    await page.getByRole('heading', { name: '已装到 Claude Code', exact: true }).waitFor()
     await list.getByTestId('mcp-row-test-extension').waitFor()
     const shelf = page.getByTestId('curated-shelf')
     await shelf.getByText('我们挑过的，装之前会先给你看它要什么权限', { exact: true }).waitFor()
     const listBox = await list.boundingBox()
     const shelfBox = await shelf.boundingBox()
     assert.ok(listBox.y + listBox.height <= shelfBox.y, '自己的列表排在「星芒精选」上面')
-    // 精选每一行只留「安装」：要不要联网放在点「安装」后的确认框里说。
+    // 精选每张卡只留「添加」：要不要联网放在点「添加」后的确认框里说。
     assert.equal(await shelf.getByText(/联网/).count(), 0)
     const search = page.getByTestId('mcp-search')
     await search.fill('GitHub')
     await shelf.getByTestId('curated-install-github').waitFor()
     await shelf.getByTestId('curated-install-browser').waitFor({ state: 'detached' })
-    // 精选一条都不匹配就整张收起；搜不到的那句在「已添加」这张卡里。
+    // 精选一条都不匹配就整块收起；搜不到的那句在已装列表那张卡里。
     await search.fill('no-such-connection-8472')
     await shelf.waitFor({ state: 'detached' })
     await list.getByTestId('mcp-filter-empty').getByText('没有找到「no-such-connection-8472」', { exact: true }).waitFor()
@@ -1280,9 +1281,9 @@ test('an empty MCP list says how to add one and 看看精选 lands on the first 
   const page = await fixture('page=mcp&empty')
   try {
     const empty = page.getByTestId('mcp-empty')
-    await empty.getByText('还没有添加连接', { exact: true }).waitFor()
-    await empty.getByText('装下面「星芒精选」里的，或点右上角「添加连接」接你自己的。', { exact: true }).waitFor()
-    await empty.getByRole('button', { name: '添加连接', exact: true }).waitFor()
+    await empty.getByText('还没有给 Claude Code 装外接工具', { exact: true }).waitFor()
+    await empty.getByText('装下面「星芒精选」里的，或点右上角「自定义连接」接你自己的。', { exact: true }).waitFor()
+    await empty.getByRole('button', { name: '自定义连接', exact: true }).waitFor()
     await empty.getByTestId('mcp-see-curated').click()
     await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
   } finally {
@@ -1308,16 +1309,20 @@ test('an MCP check that did not finish says so, and 重新检测 reads the list 
   }
 })
 
-// 第五部分第 26 条：弹框标题带上工具名，选项上面有小标题。
+// 第五部分第 26 条：弹框标题带上工具名，选项上面有小标题。v4 批12：外接工具的弹框叫「自定义连接」，
+// 下面选给哪几个工具用，所以标题不再带某一个工具的名字。
 test('the add dialogs name the tool they add to and label their choices', async () => {
   const mcp = await fixture('page=mcp')
   try {
     await mcp.getByTestId('mcp-add').first().click()
-    const dialog = mcp.getByRole('dialog', { name: '给 Claude Code 添加连接', exact: true })
+    const dialog = mcp.getByRole('dialog', { name: '自定义连接', exact: true })
     await dialog.waitFor()
-    await dialog.getByText('连接方式', { exact: true }).waitFor()
+    await dialog.getByText('类型', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '网络服务', exact: true }).waitFor()
     await dialog.getByRole('combobox', { name: '装到哪里', exact: true }).waitFor()
+    const tools = dialog.getByRole('group', { name: '给这些工具用', exact: true })
+    assert.equal(await tools.getByRole('button', { name: 'Claude Code', exact: true }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await tools.getByRole('button', { name: 'Codex CLI', exact: true }).getAttribute('aria-pressed'), 'false')
   } finally {
     await mcp.close()
   }
@@ -1330,7 +1335,7 @@ test('the add dialogs name the tool they add to and label their choices', async 
   }
   const skills = await fixture('page=skills')
   try {
-    await skills.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await skills.getByRole('tab', { name: /^Codex CLI/ }).click()
     await skills.getByTestId('skills-add').first().click()
     await skills.getByRole('dialog', { name: '给 Codex CLI 导入技能', exact: true }).waitFor()
   } finally {
@@ -1345,7 +1350,7 @@ test('a tool whose skills cannot be imported here says how to place them and off
     const note = page.getByTestId('skills-import-unsupported')
     await note.getByText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。', { exact: true }).waitFor()
     const add = page.getByTestId('skills-add')
-    assert.equal(await add.count(), 1, '空状态里不再放那颗灰的「导入技能」')
+    assert.equal(await add.count(), 1, '空状态里不再放那颗灰的「从文件夹导入」')
     assert.equal(await add.isDisabled(), true)
     assert.equal(await add.getAttribute('title'), 'Claude Code 不支持在这里导入')
     const empty = page.getByTestId('skills-empty')
@@ -1356,12 +1361,12 @@ test('a tool whose skills cannot be imported here says how to place them and off
     await note.getByRole('button', { name: '看怎么放', exact: true }).click()
     assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['tutorial', 'skills#Claude Code、Grok CLI 没有导入按钮？'])
     // 选 Grok CLI 时句首换成它。
-    await page.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
     await note.getByText(/^Grok CLI 的技能不能在这里导入/).waitFor()
-    // 能导入的工具：没有那一行，空着时叫人点「导入技能」；工具条上的「重新加载」照样重读。
-    await page.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    // 能导入的工具：没有那一行，空着时叫人点「从文件夹导入」；工具条上的「重新加载」照样重读。
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
     await note.waitFor({ state: 'detached' })
-    await empty.getByText('点「导入技能」，选一个技能文件夹。', { exact: true }).waitFor()
+    await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
     await empty.getByTestId('skills-add').waitFor()
     reads = (await callsNamed(page, 'list-extensions')).length
     await page.getByTestId('skills-reload').click()
@@ -1400,76 +1405,227 @@ test('installed plugins come before the curated shelf and an update sits on the 
   }
 })
 
-// 已知2 跟进：详情里 local 写「当前项目」，「范围」筛选也按这个归类。扩展自带的技能（「我的（全局）」）
-// 只有已下线的 Gemini CLI 有，界面上不再出现，那一半随它撤掉。
-test('the scope filter lists a plugin under the scope its details name', async () => {
+// 已知2 跟进：详情里 local 写「当前项目」。v4 批12：「范围」筛选换成按范围分组，local 归「本地」那一组；
+// 详情从抽屉换成弹窗，testId 沿用。
+test('installed plugins are grouped by the layer they live in and details open in a dialog', async () => {
   const plugins = await fixture('page=plugins&scopedExtensions')
   try {
-    const scopes = plugins.getByTestId('plugins-scope')
-    const local = plugins.getByTestId('plugins-row-local-plugin')
-    const global = plugins.getByTestId('plugins-row-test-extension')
-    await local.waitFor()
-    await scopes.getByRole('button', { name: '当前项目', exact: true }).click()
-    await global.waitFor({ state: 'detached' })
-    await local.waitFor()
-    await local.getByRole('button', { name: /更多操作/ }).click()
+    const user = plugins.getByTestId('plugins-group-user')
+    const local = plugins.getByTestId('plugins-group-local')
+    await user.getByTestId('plugins-row-test-extension').waitFor()
+    await user.getByText('你的所有项目都能用', { exact: true }).waitFor()
+    await local.getByText('只在当前项目、只给你自己', { exact: true }).waitFor()
+    const row = local.getByTestId('plugins-row-local-plugin')
+    assert.equal(await local.getByTestId('plugins-row-test-extension').count(), 0)
+    assert.equal(await plugins.getByTestId('plugins-scope').count(), 0, '不再有「范围」筛选')
+    await row.getByRole('button', { name: /更多操作/ }).click()
     await plugins.getByRole('menuitem', { name: '查看详情', exact: true }).click()
-    const drawer = plugins.getByTestId('resource-detail-drawer')
-    assert.equal(await drawer.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '当前项目')
-    await drawer.locator('[data-modal-close]').click()
-    await drawer.waitFor({ state: 'detached' })
-    await scopes.getByRole('button', { name: '我的（全局）', exact: true }).click()
-    await local.waitFor({ state: 'detached' })
-    await global.waitFor()
+    const details = plugins.getByTestId('resource-detail-drawer')
+    assert.equal(await details.evaluate((element) => element.tagName), 'DIALOG')
+    assert.equal(await details.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '当前项目')
+    await details.locator('[data-modal-close]').click()
+    await details.waitFor({ state: 'detached' })
   } finally {
     await plugins.close()
   }
 })
 
-test('an empty installed list points at the curated shelf and the market tab', async () => {
+test('an empty installed plugin list points at the catalog below and 看看精选 lands on the first install', async () => {
   const page = await fixture('page=plugins&empty')
   try {
     const empty = page.getByTestId('plugins-empty')
-    await empty.getByText('还没有插件', { exact: true }).waitFor()
-    await empty.getByText('装下面「星芒精选」里的，或到「市场」页签挑。', { exact: true }).waitFor()
-    // 在「市场」页签点「看看精选」：切回「已安装」，落到精选的第一颗「安装」。
-    await page.getByRole('tab', { name: '市场', exact: true }).click()
-    await page.getByTestId('plugins-empty').getByTestId('plugins-see-curated').click()
-    await page.getByRole('tab', { name: '已安装', exact: true, selected: true }).waitFor()
+    await empty.getByText('还没有给 Claude Code 装插件', { exact: true }).waitFor()
+    await empty.getByText('从下面的官方目录里挑一个。', { exact: true }).waitFor()
+    // 「已安装」「市场」两个页签合成了一页。
+    assert.equal(await page.getByRole('tab', { name: '市场', exact: true }).count(), 0)
+    await empty.getByTestId('plugins-see-curated').click()
     await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 30 条：没有插件市场的工具，「市场」页签直说，只留选工具。
-test('a tool without a plugin market says so on the market tab and goes back to installed', async () => {
+// 第五部分第 30 条：没有插件市场的工具直说。合页以后它的已装列表就在上面，不用再「去已安装」。
+test('a tool without a plugin market says so under its installed list', async () => {
   const page = await fixture('page=plugins')
   try {
-    await page.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await page.getByRole('tab', { name: '市场', exact: true }).click()
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
     const notice = page.getByTestId('plugins-market-unavailable')
     await notice.getByText('Grok CLI 没有插件市场', { exact: true }).waitFor()
-    await notice.getByText('它的插件装好后在「已安装」里管理。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('plugins-search').count(), 0)
-    assert.equal(await page.locator('.xm-toolbar-right').count(), 0)
-    await notice.getByTestId('plugins-market-go-installed').click()
-    await page.getByRole('tab', { name: '已安装', exact: true, selected: true }).waitFor()
+    await notice.getByText('它的插件装好后在上面的列表里管理。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('plugins-market-go-installed').count(), 0)
     await page.getByTestId('plugins-search').waitFor()
+    await page.getByTestId('plugins-list').getByTestId('plugins-row-test-extension').waitFor()
   } finally {
     await page.close()
   }
 })
 
-test('the Codex plugin catalog fetched on entering the market brings no extra success note', async () => {
+test('the Codex plugin catalog fetched on choosing Codex CLI brings no extra success note', async () => {
   const page = await fixture('page=plugins')
   try {
-    await page.getByRole('button', { name: 'Codex CLI', exact: true }).click()
-    await page.getByRole('tab', { name: '市场', exact: true }).click()
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
     await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
     await page.waitForTimeout(300)
     assert.equal(await page.getByText('插件目录已下载，下面就是可以安装的插件。').count(), 0)
     assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
+  } finally {
+    await page.close()
+  }
+})
+
+// v4 批12：页签上带数量，开关、删除、自定义连接成功后都说清是哪一个、给了哪个工具。
+test('the tool tabs carry the count and a switched-off connection is named in the toast', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    const claude = page.getByRole('tab', { name: /^Claude Code/ })
+    await claude.locator('.v2-ext-tab-count').getByText('1', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('tab', { name: /^Codex CLI/ }).locator('.v2-ext-tab-count').count(), 0, '没去过的工具不数')
+    await page.getByText('Claude Code 官方叫「MCP 服务器」', { exact: true }).waitFor()
+    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
+    await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('removing a connection says which tool it leaves and that the others keep theirs', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
+    await dialog.getByText('其他工具里的不受影响。以后可以在官方目录或精选里重新添加。', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '移除', exact: true }).click()
+    await page.getByText('已从 Claude Code 移除「测试扩展」', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'test-extension', scope: 'user' })
+  } finally {
+    await page.close()
+  }
+})
+
+test('a custom connection checks its name first and then goes to every tool picked', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    await page.getByTestId('mcp-add').first().click()
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    const submit = dialog.getByTestId('mcp-form-submit')
+    await page.getByTestId('mcp-source').fill('npx')
+    await page.getByTestId('mcp-name').fill('我的数据库')
+    await submit.click()
+    await dialog.getByText('名称只能用字母、数字和 - _，最多 40 位', { exact: true }).waitFor()
+    await page.getByTestId('mcp-name').fill('test-extension')
+    await submit.click()
+    await dialog.getByText('已经有叫「test-extension」的连接了，换个名字', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    await page.getByTestId('mcp-name').fill('my-db')
+    await dialog.getByTestId('mcp-form-tools-codex').click()
+    await submit.click()
+    await page.getByText('已添加「my-db」，给 Claude Code、Codex CLI 使用，下次打开工具时生效', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args), [
+      { provider: 'claude', kind: 'mcp', action: 'install', id: 'my-db', scope: 'user', mcp: { type: 'stdio', command: 'npx', args: [], env: {} } },
+    ])
+    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args), [
+      { name: 'my-db', type: 'stdio', command: 'npx', args: [], env: {} },
+    ])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a tool that is not installed offers its own install in place of the list', async () => {
+  const page = await fixture('page=skills&installedProviders=codex')
+  try {
+    await page.getByText('Codex CLI 官方叫「技能（Skills）」', { exact: true }).waitFor()
+    const claude = page.getByRole('tab', { name: /^Claude Code/ })
+    await claude.getByText('未安装', { exact: true }).waitFor()
+    await claude.click()
+    const bar = page.getByTestId('skills-tool-missing')
+    await bar.getByText('还没有安装 Claude Code', { exact: true }).waitFor()
+    await bar.getByText('装好后就能添加下面的技能。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('skills-list').count(), 0)
+    await bar.getByRole('button', { name: '安装 Claude Code', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'install-tool'))
+    assert.deepEqual((await callsNamed(page, 'install-tool')).map((call) => call.args), ['claude'])
+    // 没装的工具不去问它的列表。
+    assert.deepEqual((await callsNamed(page, 'list-extensions')).map((call) => call.args), ['codex'])
+  } finally {
+    await page.close()
+  }
+})
+
+// 「在上面的列表里管理」要上面真有列表：Grok CLI 没装时只给安装那一条。
+test('a missing tool without a plugin market shows only its install bar', async () => {
+  const page = await fixture('page=plugins&installedProviders=claude')
+  try {
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
+    await page.getByTestId('plugins-tool-missing').getByText('还没有安装 Grok CLI', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('plugins-market-unavailable').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the Codex skills page points at the plugins that now carry the official skills', async () => {
+  const page = await fixture('page=skills')
+  try {
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    const notice = page.getByTestId('skills-codex-official')
+    await notice.getByText('OpenAI 的官方技能现在放在插件里', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '去看插件', exact: true }).click()
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'plugins')
+  } finally {
+    await page.close()
+  }
+})
+
+// v4 批12 精选页：现有的 10 条，一次装进勾选的几个工具。
+test('the featured page installs an entry into every tool picked through the existing paths', async () => {
+  const page = await fixture('page=featured&extensionOk')
+  try {
+    await page.getByTestId('featured-card-browser').waitFor()
+    await page.getByTestId('featured-install-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '添加「逐步思考」', exact: true })
+    await dialog.getByText('npx -y @modelcontextprotocol/server-sequential-thinking@2026.8.31', { exact: true }).waitFor()
+    const tools = dialog.getByRole('group', { name: '给这些工具用', exact: true })
+    for (const name of ['Claude Code', 'Codex CLI', 'Grok CLI'])
+      assert.equal(await tools.getByRole('button', { name, exact: true }).getAttribute('aria-pressed'), 'true')
+    await tools.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await dialog.getByTestId('featured-install-submit').click()
+    await page.getByText('已添加「逐步思考」，给 Claude Code、Codex CLI 使用', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.provider), ['claude'])
+    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args.name), ['sequential-thinking'])
+    // 插件只有 Claude Code 能用：另两个灰着写「不支持」。
+    await page.getByTestId('featured-kind').getByRole('button', { name: '插件', exact: true }).click()
+    await page.getByTestId('featured-card-browser').waitFor({ state: 'detached' })
+    await page.getByTestId('featured-install-code-review').click()
+    const plugin = page.getByRole('dialog', { name: '安装「代码审查」', exact: true })
+    const codex = plugin.getByRole('group', { name: '给这些工具用', exact: true }).getByRole('button', { name: /^Codex CLI/ })
+    await codex.getByText('不支持', { exact: true }).waitFor()
+    assert.equal(await codex.isDisabled(), true)
+    await plugin.getByTestId('featured-install-submit').click()
+    await page.getByText('已安装「代码审查」，给 Claude Code 使用', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'plugin', action: 'install', source: 'code-review@claude-plugins-official' })
+  } finally {
+    await page.close()
+  }
+})
+
+test('a featured entry that needs a folder asks for it in the same dialog before adding', async () => {
+  const page = await fixture('page=featured')
+  try {
+    await page.getByTestId('featured-install-files').click()
+    const dialog = page.getByTestId('featured-install-dialog')
+    const submit = dialog.getByTestId('featured-install-submit')
+    assert.equal(await submit.innerText(), '继续填写')
+    await submit.click()
+    await dialog.getByTestId('curated-input-directory').getByText(/点「选择文件夹」挑一个，软件会替你填好，不用手改。/).waitFor()
+    await submit.click()
+    await dialog.getByText('{{directory}} 还没换成真实内容，请先填好再添加。', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByTestId('featured-recommend').click()
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'feedback')
   } finally {
     await page.close()
   }

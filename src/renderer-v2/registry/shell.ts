@@ -9,7 +9,7 @@ export interface ShellNavigationGroup {
 }
 export const shellNavigation: readonly ShellNavigationGroup[] = [
   { entries: ['home', 'chat', 'sessions', 'canvas'] },
-  { label: '扩展', entries: ['mcp', 'skills', 'plugins'] },
+  { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
   { entries: ['recharge', 'tutorial', 'health', 'feedback'] },
 ]
 // 过渡期：v4 里这四页各有新去处（设置 › 网络加速、首页工具卡片、设置 › 备份迁移、设置 › 版本更新），
