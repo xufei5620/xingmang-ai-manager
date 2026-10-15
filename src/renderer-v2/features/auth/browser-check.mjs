@@ -1004,7 +1004,8 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       assert.ok(geometry.footer <= 900, 'welcome feature strip remains visible')
       assert.ok(geometry.hud <= 1280, 'orbit status labels remain inside the viewport')
       const titlebar = await page.getByTestId('window-titlebar').evaluate((element) => ({ height: element.getBoundingClientRect().height, drag: getComputedStyle(element).getPropertyValue('-webkit-app-region') }))
-      assert.equal(titlebar.height, os === 'mac' ? 46 : 36)
+      // v4 把系统按钮那条压到 44 高，登录前这一条要跟它一样高，右上角三个键才落在条里。
+      assert.equal(titlebar.height, os === 'mac' ? 46 : 44)
       assert.equal(titlebar.drag, 'drag')
       await page.screenshot({ path: path.join(output, `welcome-${theme}-${os}.png`) })
     } finally { await page.close() }

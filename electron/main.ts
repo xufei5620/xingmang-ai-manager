@@ -228,6 +228,8 @@ import {
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
+  resolveWindowPalette,
+  titleBarOverlayHeight,
   windowIconFileName,
   type AssetMenuMediaType,
 } from './window-presentation'
@@ -321,16 +323,6 @@ protocol.registerSchemesAsPrivileged([{
     stream: true,
   },
 }])
-
-function windowThemePalette(theme: AppTheme): {
-  background: string
-  titleBar: string
-  symbol: string
-} {
-  return theme === 'dark'
-    ? { background: '#17191b', titleBar: '#202426', symbol: '#eef1f2' }
-    : { background: '#f4f6f9', titleBar: '#ffffff', symbol: '#29333a' }
-}
 
 function applicationUrlPolicy(): ApplicationUrlPolicy {
   return {
@@ -446,7 +438,7 @@ function setWindowMode(contents: WebContents, _mode: AppWindowMode): void {
 
 function setWindowTheme(contents: WebContents, theme: AppTheme): void {
   const target = windowForContents(contents)
-  const palette = windowThemePalette(theme)
+  const palette = resolveWindowPalette(theme)
   applyWindowTheme(target, palette, process.platform)
   windowPreferenceAppliers.get(contents)?.()
 }
@@ -470,7 +462,7 @@ function createWindow(
   const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
   const previewDashboard = !app.isPackaged && process.env.XINGMANG_DASHBOARD_PREVIEW === '1'
   const placement = resolveWindowPlacement(stored.windowState, screen.getAllDisplays(), screen.getPrimaryDisplay().id)
-  const palette = windowThemePalette(stored.theme)
+  const palette = resolveWindowPalette(stored.theme)
   const windowIcon = path.join(app.getAppPath(), 'assets', 'brand', 'v3', windowIconFileName(process.platform))
   const window = new BrowserWindow({
     ...placement.bounds,
@@ -521,7 +513,7 @@ function createWindow(
     const current = systemService.readStoredConfig()
     const zoom = calculateUiZoom(window.getContentBounds().width, current.uiScale)
     if (Math.abs(window.webContents.getZoomFactor() - zoom) > 0.0001) window.webContents.setZoomFactor(zoom)
-    if (process.platform !== 'darwin') window.setTitleBarOverlay({ height: Math.round(36 * zoom) })
+    if (process.platform !== 'darwin') window.setTitleBarOverlay({ height: titleBarOverlayHeight(zoom) })
   }
   windowPreferenceAppliers.set(window.webContents, applyPreferences)
   let boundsTimer: ReturnType<typeof setTimeout> | undefined

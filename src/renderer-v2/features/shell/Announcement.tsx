@@ -24,6 +24,7 @@ interface Props {
   refreshTick?: number | null
   markRemoteRead?(id: string, entryId: string): Promise<void>
   syncLocalReads?(scope: string, ids: string[]): Promise<string[]>
+  /** 铃铛下面那块小框开着没有；点其中一条才打开带详情的大框，大框由这里自己管。 */
   open: boolean
   onClose(): void
   onOpen(): void
@@ -964,6 +965,51 @@ export function PromoBar({ items, onTopUp, onHide }: { items: PromoBarItem[]; on
   </div>
 }
 
+// v4：铃铛下面一块 320 宽的小框，列标题、日期和第一句；点一条才开大框看全文。小框放在顶层，
+// 点外面或按 Esc 收起（Esc 把焦点还给铃铛），点铃铛本身由外壳来回开关，这里不抢。
+const popoverAnchor = '[data-testid="announcement-open"]'
+function AnnouncementPopover({ onClose, children }: { onClose(): void; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const latest = useRef(onClose)
+  latest.current = onClose
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+    const panel: HTMLDivElement = element
+    function place() {
+      const anchor = document.querySelector(popoverAnchor)?.getBoundingClientRect()
+      if (!anchor) return
+      panel.style.top = `${Math.round(anchor.bottom + 6)}px`
+      panel.style.right = `${Math.max(8, Math.round(window.innerWidth - anchor.right))}px`
+    }
+    function outside(event: PointerEvent) {
+      if (!(event.target instanceof Node) || panel.contains(event.target)) return
+      if (event.target instanceof Element && event.target.closest(popoverAnchor)) return
+      latest.current()
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector(':modal')) return
+      event.preventDefault()
+      document.querySelector<HTMLElement>(popoverAnchor)?.focus()
+      latest.current()
+    }
+    place()
+    panel.setAttribute('popover', 'manual')
+    panel.showPopover()
+    panel.focus()
+    window.addEventListener('resize', place)
+    document.addEventListener('pointerdown', outside, true)
+    document.addEventListener('keydown', escape)
+    return () => {
+      window.removeEventListener('resize', place)
+      document.removeEventListener('pointerdown', outside, true)
+      document.removeEventListener('keydown', escape)
+      if (panel.matches(':popover-open')) panel.hidePopover()
+    }
+  }, [])
+  return <div ref={ref} role="dialog" aria-label="公告" className="v2-announcement-popover" tabIndex={-1} data-testid="announcement-popover">{children}</div>
+}
+
 export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify, promoVisible = false, onTopUp, readTopupOffers }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
@@ -981,12 +1027,16 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const [readId, setReadId] = useState(() => readLegacyAnnouncementId(scope))
   // 活动卡片上点「查看详情」：公告窗口打开、读完列表后直接进这一条。
   const pendingDetail = useRef<string | null>(null)
+  // 大框（看全文）：从小框点一条、活动卡片「活动详情」、旧式只有一段文字的公告都开它。
+  // 小框换成大框时 shown 一直是 true，不重新读、不丢选中的那一条。
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const shown = open || dialogOpen
   useEffect(() => {
     setSelectedId(null)
     setBlockedLink(null)
     returnToRow.current = null
-    if (open) setAttempt((value) => value + 1)
-  }, [open])
+    if (shown) setAttempt((value) => value + 1)
+  }, [shown])
   // 公告里的链接多半不在可直接打开的名单里；被拦下时把地址复制给用户，
   // 其它失败仍走原来的错误提示。
   const openLink = useCallback(async (url: string) => {
@@ -1056,7 +1106,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     if (refreshTick === previous) return
     seenTick.current = refreshTick
     // The first balance read lands together with the initial announcement load.
-    if (previous === null || previous === undefined || open || silentLoad.current) return
+    if (previous === null || previous === undefined || shown || silentLoad.current) return
     if (!followsBalance && Date.now() - lastSilentLoad.current < announcementPollIntervalMs) return
     lastSilentLoad.current = Date.now()
     silentLoad.current = true
@@ -1071,7 +1121,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       // The next balance refresh retries; a transient failure is not worth an alert.
     }).finally(() => { silentLoad.current = false })
     return () => { active = false }
-  }, [refreshTick, open, followsBalance, loadNotice])
+  }, [refreshTick, shown, followsBalance, loadNotice])
   useLayoutEffect(() => {
     if (selectedId) detailHeading.current?.focus()
     else if (returnToRow.current) {
@@ -1097,14 +1147,14 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const [acknowledgedPromos, setAcknowledgedPromos] = useState(() => readAcknowledgedPromos(scope))
   const [snoozedPromos, setSnoozedPromos] = useState(() => readSnoozedPromos(scope))
   const promo = visiblePromo(promos, acknowledgedPromos, snoozedPromos, today)
-  const promoCardShown = Boolean(promoVisible && promo && !open)
+  const promoCardShown = Boolean(promoVisible && promo && !shown)
   const [barHiddenDay, setBarHiddenDay] = useState(() => readPromoBarHiddenDay(scope))
   // 首页大卡片已经在说活动时不再挂活动条；卡片收起后（不管点的哪个按钮）和别的页面都挂，
   // 点过 × 只收起当天。没有永久关掉的按钮：活动一截止自己消失。
   // 断网条和公告条、活动条共用顶栏下面那一个位置：断网时只挂断网条，这两条先藏起来，
   // 铃铛上的红点照旧，联网后自己回来。
   const { offline } = useOnlineStatus()
-  const promoBarShown = !offline && !open && allPromos.length > 0 && barHiddenDay !== today && !promoCardShown
+  const promoBarShown = !offline && !shown && allPromos.length > 0 && barHiddenDay !== today && !promoCardShown
   // 活动没结束前铃铛一直留着红点，点过「这个活动不再提醒」也一样，免得客户找不回活动。
   useEffect(() => { onUnread(unseen || allPromos.length > 0) }, [unseen, allPromos.length, onUnread])
   const [topupOffers, setTopupOffers] = useState<TopupOffers | null>(null)
@@ -1121,7 +1171,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const acknowledge = useCallback(() => {
     if (attentionKeys.length) setSeenKeys(rememberSeenAnnouncementKeys(scope, attentionKeys))
   }, [attentionKeys, scope])
-  useEffect(() => { if (open && unseen) acknowledge() }, [open, unseen, acknowledge])
+  useEffect(() => { if (shown && unseen) acknowledge() }, [shown, unseen, acknowledge])
   // 窗口在后台或缩到托盘时，横条没人看得见，再补一条系统通知；同一条公告只弹一次。
   useEffect(() => {
     if (!notify || !unseen || (document.visibilityState === 'visible' && document.hasFocus())) return
@@ -1161,7 +1211,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }
   function openPromoDetail(id: string) {
     pendingDetail.current = id
-    onOpen()
+    setDialogOpen(true)
   }
   function hidePromoBar() {
     setBarHiddenDay(rememberPromoBarHiddenDay(scope, today))
@@ -1176,11 +1226,15 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }
   useEffect(() => {
     const id = pendingDetail.current
-    if (!open || loading || !id) return
+    if (!shown || loading || !id) return
     pendingDetail.current = null
     const entry = entries?.find((item) => item.id === id)
     if (entry) openEntry(entry)
-  }, [open, loading, entries])
+  }, [shown, loading, entries])
+  // 旧式公告只有一段文字，没有列表可挑：小框读完直接换成大框。
+  useEffect(() => {
+    if (open && !loading && announcement && !announcement.entries) openDialog()
+  }, [open, loading, announcement])
 
   async function markEntryRead(entry: NonNullable<Announcement['entries']>[number]) {
     if (!announcement || entry.read) return
@@ -1217,6 +1271,23 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     setBlockedLink(null)
     void markEntryRead(entry)
   }
+  // 小框收起、大框打开的那一刻焦点先交回铃铛，大框关上时才有地方回。
+  function openDialog() {
+    document.querySelector<HTMLElement>(popoverAnchor)?.focus()
+    setDialogOpen(true)
+    onClose()
+  }
+  function openFromPopover(entry: NonNullable<Announcement['entries']>[number]) {
+    openEntry(entry)
+    openDialog()
+  }
+  function closeDialog() {
+    setDialogOpen(false)
+    onClose()
+  }
+  async function markAllRead() {
+    for (const entry of entries ?? []) if (!entry.read) await markEntryRead(entry)
+  }
   function backToList() {
     returnToRow.current = selectedId
     setSelectedId(null)
@@ -1241,7 +1312,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     if (revision.current !== capturedRevision) return
     setReadId(announcement.id)
     setError(null)
-    if (closeAfter) onClose()
+    if (closeAfter) closeDialog()
   }
   const openNoticeSite = () => {
     if (!noticeUrl) return
@@ -1249,7 +1320,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }
   // 首页卡片或活动条已经在说的活动，细横条不再重复说一遍。
   const coveredPromoIds = promoCardShown || promoBarShown ? allPromos.map((item) => item.id) : []
-  const bannerShown = !offline && unseen && !open && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !coveredPromoIds.some((id) => key === `entry:${id}`))
+  const bannerShown = !offline && unseen && !shown && announcement && attentionKeys.some((key) => !seenKeys.includes(key) && !coveredPromoIds.some((id) => key === `entry:${id}`))
   const unreadEntries = entries?.filter((entry) => !entry.read && !coveredPromoIds.includes(entry.id))
   const promoOthers = promoCardShown && promo ? allPromos.filter((item) => item.id !== promo.id).map((item) => ({ id: item.id, title: stripSiteAddresses(item.title) || '活动' })) : []
   const soonestExplicitEnd = Math.min(...allPromos.filter((item) => item.endsExplicitly).map((item) => item.endsAt))
@@ -1261,7 +1332,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   })) : []
   const preview = (unreadEntries?.find((entry) => !seenKeys.includes(`entry:${entry.id}`)) ?? unreadEntries?.[0])?.title ?? announcement?.text ?? ''
   return <>
-    {!offline && !open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
+    {!offline && !shown && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
     {promoBarShown && <PromoBar items={promoBarItems} onHide={hidePromoBar}
       onTopUp={onTopUp && promos.length ? () => { promos.forEach((item) => acknowledgePromoEntry(item.id)); onTopUp() } : undefined} />}
     {promoCardShown && promo && <PromoCard title={stripSiteAddresses(promo.title) || '充值活动'} deadline={formatPromoDeadline(promo, now)}
@@ -1274,7 +1345,30 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       <Button size="xs" variant="ghost" onClick={onOpen}>查看</Button>
       <Button size="xs" variant="ghost" icon={X} aria-label="关闭公告提示" title="关闭，有新公告时再提醒" onClick={acknowledge} testId="announcement-banner-close" />
     </div>}
-    {open && <Dialog open title="公告" width={640} onClose={onClose} footer={selected
+    {open && <AnnouncementPopover onClose={onClose}>
+      <div className="v2-announcement-pop-head"><b>公告</b>{entries?.some((entry) => !entry.read) && <button type="button" className="v2-announcement-mark-all" onClick={() => void markAllRead()} data-testid="announcement-mark-all-read">全部已读</button>}</div>
+      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl
+        ? <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>
+        : <Button size="sm" onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>}</div>}
+      {entries?.map((entry) => readErrors[entry.id] && <p key={entry.id} className="v2-announcement-error" role="alert">已读状态保存失败：{readErrors[entry.id]}</p>)}
+      {loading ? <p role="status" className="v2-announcement-pop-note">正在读取公告</p> : entries?.length ? (
+        <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
+          {entries.map((entry) => { const publishedAt = entryPublishedAt(entry); const preview = announcementTextPreview(entry.text); return <li key={entry.id}>
+            <button type="button" className={`v2-announcement-row${entry.read ? '' : ' is-unread'}`} data-testid={`announcement-item-${entry.id}`} onClick={() => openFromPopover(entry)} title={entry.title}>
+              <span className="v2-announcement-row-head">
+                {entry.timeline && <TimelineTag type={entry.timeline.type} />}
+                <span className="v2-announcement-title">{entry.title}</span>
+                {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineDate(publishedAt, Date.now()).slice(5, 10)}</time>}
+                <span className="v2-announcement-read-state xm-visually-hidden">{entry.read ? '已读' : '未读'}</span>
+              </span>
+              {/* 第一句只给眼睛看：读屏点进去就是全文，列表里每条只念标题、日期和已读未读。 */}
+              {preview && preview !== entry.title && <span className="v2-announcement-preview" aria-hidden="true">{preview}</span>}
+            </button>
+          </li> })}
+        </ul>
+      ) : !error && !(announcement && !entries) && <p className="v2-announcement-pop-note">暂无公告</p>}
+    </AnnouncementPopover>}
+    {dialogOpen && <Dialog open title="公告" width={640} onClose={closeDialog} footer={selected
       ? <Button icon={ArrowLeft} onClick={backToList}>返回列表</Button>
       : <><Button onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>{announcement && !entries && <Button variant="primary" onClick={() => markLegacyRead(true)}>标为已读</Button>}</>}>
       {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}
@@ -1291,9 +1385,9 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
             <p>已读状态保存失败：{readErrors[selected.id]}</p>
             <Button size="sm" onClick={() => void markEntryRead(selected)}>重试保存已读</Button>
           </div>}
-          <AnnouncementContent text={selected.timeline ? withMarkdownLineBreaks(selected.text) : selected.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
+          <AnnouncementContent text={selected.timeline ? withMarkdownLineBreaks(selected.text) : selected.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} />
           {selected.timeline?.extra && <div className="v2-announcement-extra" data-testid="announcement-detail-extra">
-            <AnnouncementContent text={withMarkdownLineBreaks(selected.timeline.extra)} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
+            <AnnouncementContent text={withMarkdownLineBreaks(selected.timeline.extra)} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} />
           </div>}
         </article>
       ) : (
@@ -1310,7 +1404,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
             </button>
           </li> })}
         </ul>
-      ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} /> : !error && <p>暂无公告</p>}
+      ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} /> : !error && <p>暂无公告</p>}
     </Dialog>}
   </>
 }

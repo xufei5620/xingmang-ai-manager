@@ -77,7 +77,7 @@ test('a page chosen from the command palette also receives focus once the palett
   const page = await open()
   try {
     await page.keyboard.press('Control+k')
-    const search = page.getByRole('searchbox', { name: '搜索页面' })
+    const search = page.getByRole('searchbox', { name: '搜索或跳转' })
     await search.waitFor()
     await search.fill('设置')
     await page.keyboard.press('Enter')
@@ -92,7 +92,7 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
   const page = await open()
   try {
     await page.keyboard.press('Control+k')
-    const search = page.getByRole('searchbox', { name: '搜索页面、设置和教程' })
+    const search = page.getByRole('searchbox', { name: '搜索或跳转' })
     await search.waitFor()
     await search.fill('打不开')
     const first = page.getByTestId('command-palette').getByRole('option').first()
@@ -105,7 +105,7 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
     await page.keyboard.press('Control+k')
     await search.fill('qqqq')
     assert.equal(await page.getByTestId('command-palette').getByRole('option').count(), 0)
-    await page.getByText('没找到相关的页面或设置。').waitFor()
+    await page.getByText('没有找到「qqqq」相关的内容').waitFor()
     await page.getByTestId('command-search-tutorial').click()
     await page.getByTestId('page-tutorial').waitFor()
     // 教程页上一步已经开着，页面出现时新的搜索词可能还没落进输入框，要等它落进去。
@@ -136,7 +136,7 @@ test('on a short screen More and Settings stay pinned in view, the open More lis
     for (const id of pinned) assert.equal(await page.getByTestId('sidebar-pinned').getByTestId(id).count(), 1, `${id} sits in the pinned part, not the scrolling one`)
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-updates').waitFor()
-    for (const id of [...pinned, 'nav-maintenance', 'nav-backups', 'nav-feedback', 'nav-updates'])
+    for (const id of [...pinned, 'nav-acceleration', 'nav-maintenance', 'nav-backups', 'nav-updates'])
       assert.equal(await visibleInSidebar(id), true, `${id} stays in view with More open`)
     // 上面那段放不下了自己滚，下沿渐隐，看得出还有。
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
@@ -160,18 +160,24 @@ test('the command palette has no title bar, stays put while the results change a
   const page = await open()
   try {
     await page.keyboard.press('Control+k')
-    const palette = page.getByRole('dialog', { name: '搜功能、设置或教程', exact: true })
+    const palette = page.getByRole('dialog', { name: '搜索或跳转', exact: true })
     await palette.waitFor()
     assert.equal(await palette.locator('[data-modal-close]').count(), 0, 'Esc and clicking outside close it; no close button')
-    assert.equal(await palette.getByTestId('command-hint').textContent(), '↑↓ 选择　回车 打开　Esc 关闭')
-    const search = palette.getByRole('searchbox', { name: '搜索页面、设置和教程' })
-    assert.equal(await search.getAttribute('placeholder'), '搜功能、设置或教程…')
+    // v4：底下一行是三个键帽，输入框右边还有一个 Esc 键帽。
+    assert.deepEqual(await palette.getByTestId('command-hint').locator('kbd').allTextContents(), ['↑↓', 'Enter', 'Esc'])
+    assert.equal(await palette.getByTestId('command-hint').textContent(), '↑↓选择Enter打开Esc关闭')
+    assert.equal(await palette.locator('.v2-command-esc').textContent(), 'Esc')
+    assert.equal(Math.round((await palette.boundingBox()).width), 560)
+    const search = palette.getByRole('searchbox', { name: '搜索或跳转' })
+    assert.equal(await search.getAttribute('placeholder'), '输入页面、工具或操作，比如「充值」')
+    // 什么都没输时先列常用操作，再列各页。
+    assert.deepEqual(await palette.locator('.v2-command-group').allTextContents(), ['操作', '页面'])
     const top = (await palette.boundingBox()).y
     await search.fill('通知')
     await palette.getByRole('option').first().waitFor()
     assert.equal((await palette.boundingBox()).y, top, 'more results grow the box downwards only')
     await search.fill('qqqq')
-    await page.getByText('没找到相关的页面或设置。').waitFor()
+    await page.getByText('没有找到「qqqq」相关的内容').waitFor()
     assert.equal((await palette.boundingBox()).y, top, 'fewer results do not move the box either')
     // 搜索框里有字时第一下 Esc 先清空（浏览器自带的），第二下关框，和原来一样。
     await page.keyboard.press('Escape')
@@ -186,7 +192,7 @@ test('a single setting found from the command palette opens its group and points
   const page = await open()
   try {
     await page.keyboard.press('Control+k')
-    const search = page.getByRole('searchbox', { name: '搜索页面、设置和教程' })
+    const search = page.getByRole('searchbox', { name: '搜索或跳转' })
     await search.fill('收不到通知')
     const first = page.getByTestId('command-palette').getByRole('option').first()
     assert.equal(await first.getAttribute('aria-label'), '设置 · 通知 › 测试通知')
@@ -224,7 +230,7 @@ test('a setting found from the command palette stays in view when settings was l
     await page.getByTestId('page-home').waitFor()
     // 设置页重新打开时还在读设置、高度不够，外壳会等它长高再滚回上次的位置；翻到那一行之后不能再被拽回去。
     await page.keyboard.press('Control+k')
-    await page.getByRole('searchbox', { name: '搜索页面、设置和教程' }).fill('主题')
+    await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('主题')
     await page.getByTestId('command-palette').getByRole('option', { name: '设置 · 外观 › 主题', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-anchor="theme"]')?.getAttribute('data-anchor-focus') === 'true')
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 200)))))
@@ -238,7 +244,7 @@ test('switch account found from the command palette points at the account center
   const page = await open()
   try {
     await page.keyboard.press('Control+k')
-    await page.getByRole('searchbox', { name: '搜索页面、设置和教程' }).fill('切换账号')
+    await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('切换账号')
     await page.getByTestId('command-palette').getByRole('option', { name: '个人中心 · 切换账号', exact: true }).click()
     await page.getByTestId('page-account').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="page-account"] [data-anchor="switch-account"]')?.getAttribute('data-anchor-focus') === 'true')
@@ -249,7 +255,7 @@ test('switch account found from the command palette points at the account center
     await page.getByTestId('account-tabs').getByRole('tab', { name: '我的订单', exact: true }).click()
     await page.waitForFunction(() => !document.querySelector('[data-anchor="switch-account"]')?.hasAttribute('data-anchor-focus'), null, { timeout: 5000 })
     await page.keyboard.press('Control+k')
-    await page.getByRole('searchbox', { name: '搜索页面、设置和教程' }).fill('换账号')
+    await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('换账号')
     await page.getByTestId('command-palette').getByRole('option', { name: '个人中心 · 切换账号', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-anchor="switch-account"]')?.getAttribute('data-anchor-focus') === 'true')
     assert.equal(await page.getByTestId('account-tabs').getByRole('tab', { name: '我的订单', exact: true }).getAttribute('aria-selected'), 'true')

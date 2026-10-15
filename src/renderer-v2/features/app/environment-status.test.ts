@@ -17,18 +17,23 @@ const missing = { installed: false, version: null }
 
 describe('renderer-v2 status bar environment', () => {
   it('stays grey until a check has run', () => {
-    expect(buildEnvironmentStatus(null)).toEqual({ tone: 'neutral', label: '环境待检测', detail: undefined })
+    expect(buildEnvironmentStatus(null)).toEqual({ tone: 'neutral', label: '环境待检测', detail: undefined, issues: 0, node: undefined })
   })
 
   it('counts only the findings the health page marks as pending, like the startup notice', () => {
-    expect(buildEnvironmentStatus({ warn: 3, fail: 1, error: 1 })).toMatchObject({ tone: 'warn', label: '环境有 2 项需要处理' })
-    expect(buildEnvironmentStatus({ warn: 5, fail: 0, error: 0 })).toMatchObject({ tone: 'ok', label: '环境正常' })
+    expect(buildEnvironmentStatus({ warn: 3, fail: 1, error: 1 })).toMatchObject({ tone: 'warn', label: '2 项需要处理', issues: 2 })
+    expect(buildEnvironmentStatus({ warn: 5, fail: 0, error: 0 })).toMatchObject({ tone: 'ok', label: '环境正常', issues: 0 })
   })
 
   it('lists every runtime on hover and says which ones are missing', () => {
     const runtimes = { node: installed('v24.0.0'), python: missing, git: installed('2.43.0') }
     expect(environmentRuntimeSummary(runtimes)).toBe('Node.js v24.0.0 · Python 没装 · Git 2.43.0')
     expect(buildEnvironmentStatus({ warn: 0, fail: 0, error: 0 }, runtimes).detail).toBe('Node.js v24.0.0 · Python 没装 · Git 2.43.0')
+  })
+
+  it('names the Node.js version on its own for the status bar', () => {
+    expect(buildEnvironmentStatus(null, { node: installed('v24.0.0'), python: missing, git: missing }).node).toBe('Node.js v24.0.0')
+    expect(buildEnvironmentStatus(null, { node: missing, python: missing, git: missing }).node).toBe('Node.js 没装')
   })
 
   it('does not call a runtime missing when its probe failed', () => {
@@ -50,7 +55,7 @@ function statusBar() {
 describe('renderer-v2 status bar after the environment changed', () => {
   it('drops back to the grey not-checked state once something was installed or changed', () => {
     publishDiagnosticsCounts({ warn: 0, fail: 2, error: 0 })
-    expect(statusBar()).toContain('环境有 2 项需要处理')
+    expect(statusBar()).toContain('2 项需要处理')
     markDiagnosticsStale()
     expect(statusBar()).toContain('环境待检测')
   })
@@ -67,7 +72,7 @@ describe('renderer-v2 status bar after the environment changed', () => {
   it('publishes as before when the caller does not say when its check started', () => {
     markDiagnosticsStale()
     publishDiagnosticsCounts({ warn: 0, fail: 1, error: 0 })
-    expect(statusBar()).toContain('环境有 1 项需要处理')
+    expect(statusBar()).toContain('1 项需要处理')
   })
 
   it('tells the health page that the environment changed', () => {

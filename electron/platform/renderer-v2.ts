@@ -2,9 +2,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { App, BrowserWindow } from 'electron'
 import { AppSettingsStore } from '../app-settings'
+import { setWindowChrome, titleBarOverlayHeight, v4WindowChrome } from '../window-presentation'
 import { calculatePlatformZoom } from './zoom'
 
 export function installRendererV2Platform(app: App): void {
+  // 主窗口还没建：先换成新界面的那套外框，建窗口时的颜色和按钮那一条的高度就是对的。
+  setWindowChrome(v4WindowChrome)
   const dispose = new Set<() => void>()
   app.on('browser-window-created', (_event, window: BrowserWindow) => {
     queueMicrotask(() => {
@@ -17,7 +20,7 @@ export function installRendererV2Platform(app: App): void {
         const preference = store.read().uiScale ?? 'auto'
         const factor = calculatePlatformZoom(window.getContentBounds().width, preference)
         if (Math.abs(window.webContents.getZoomFactor() - factor) > 0.0001) window.webContents.setZoomFactor(factor)
-        if (process.platform === 'win32') window.setTitleBarOverlay({ height: Math.round(36 * factor) })
+        if (process.platform === 'win32') window.setTitleBarOverlay({ height: titleBarOverlayHeight(factor) })
       }
       window.on('resize', apply)
       window.webContents.on('did-finish-load', apply)

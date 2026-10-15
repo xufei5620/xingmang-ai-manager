@@ -10,7 +10,7 @@ import { claudeDesktopDownloadPageUrl } from '../../electron/claude-desktop-inst
 import { codexDesktopStoreUrl } from '../../electron/codex-desktop-install-failure'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createChatTransfer } from './features/chat/transfer'
-import { isOffline, offlineActionMessage, offlineCause } from './features/shell/online-status'
+import { isOffline, offlineActionMessage, offlineCause, stillOfflineText } from './features/shell/online-status'
 import { OnlineStatusContext, useBrowserOnline, type OnlineStatus } from './features/shell/useOnlineStatus'
 import { buildEnvironmentStatus, diagnosticsRevision, environmentJobsFinished, markDiagnosticsStale, publishDiagnosticsCounts, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
@@ -50,6 +50,8 @@ import { SavedAccounts } from './SavedAccounts'
 import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
 import { AnnouncementCenter } from './features/shell/Announcement'
+import { buildBalanceRunway, useRunwayUsage } from './features/app/balance-runway'
+import { moreNavigation } from './registry/shell'
 import { createAccelerationApi } from './features/acceleration/api'
 import { useAcceleration } from './features/acceleration/useAcceleration'
 import { useNetworkLocation } from './features/shell/useNetworkLocation'
@@ -164,6 +166,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 设置页只在挂载时取一次要落的分组（settings-group-intent），已经打开过再点名
   // 某一组就换个 key 让它重新挂一次，否则会停在上次看的那组（全面检测 Q48）。
   const [settingsRequest, setSettingsRequest] = useState(0)
+  // 搜索里的「开始检查」：人已经在检查页上时换个 key 重挂一次，挂上就重查；不在检查页时跳过去本来就会重查。
+  const [healthRequest, setHealthRequest] = useState(0)
+  // 个人中心实际摆着的分页（没权限的分页会被它自己换掉），顶栏的「个人中心 / 页签」和侧栏亮哪一行都看它。
+  const [shownAccountTab, setShownAccountTab] = useState<AccountTab | undefined>(undefined)
   const [guide, setGuide] = useState(false)
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
@@ -292,11 +298,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void tryProxyBypass().then((direct) => { if (direct) void balanceStore.refresh('manual') })
   }, [onlineCause, tryProxyBypass, balanceStore])
   const recheckOnline = useCallback(() => {
-    if (!navigator.onLine || !session.authenticated) return
+    if (!navigator.onLine || !session.authenticated) { toast.show(stillOfflineText, 'warn'); return }
     setOnlineChecking(true)
     const bypass = onlineCause === 'proxy' ? tryProxyBypass() : Promise.resolve(false)
-    void bypass.then(() => balanceStore.refresh('manual')).finally(() => { if (mounted.current) setOnlineChecking(false) })
-  }, [balanceStore, session.authenticated, onlineCause, tryProxyBypass])
+    void bypass.then(() => balanceStore.refresh('manual')).finally(() => {
+      if (!mounted.current) return
+      setOnlineChecking(false)
+      if (isOffline({ browserOnline: navigator.onLine, networkFailures: balanceStore.getSnapshot().networkFailures })) toast.show(stillOfflineText, 'warn')
+    })
+  }, [balanceStore, session.authenticated, onlineCause, tryProxyBypass, toast])
   const openNetworkSettings = useCallback((kind: NetworkSettingsKind) => {
     void Promise.resolve().then(() => native.openNetworkSettings(kind)).then((opened) => {
       if (!opened) throw new Error('not-opened')
@@ -1545,6 +1555,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     notify: (eventKey, notice) => { void platformApi()?.notifyActivity('spend', eventKey, notice).catch(() => undefined) },
   }), [toolsApi])
   const supportsSpendCheck = session.authenticated && accountSupports(session, 'supportsUsage')
+  const runwayUsage = useRunwayUsage(toolsApi, supportsSpendCheck ? scope : null, balanceState.updatedAt ?? undefined)
+  const runway = session.authenticated && balance ? buildBalanceRunway({
+    walletUsd: balanceAmount, subscription,
+    weekUsageUsd: runwayUsage && balance.quotaPerUnit > 0 ? runwayUsage.weekQuota / balance.quotaPerUnit : null,
+  }) : null
   useEffect(() => {
     if (!balance || balanceState.updatedAt === null || !supportsSpendCheck) return
     void spendWatch.observe({ scope, account: String(session.account?.userId ?? 0), quota: balance.quota, quotaPerUnit: balance.quotaPerUnit, at: balanceState.updatedAt })
@@ -1601,7 +1616,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
-        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoreRetrying ? '暂时连不上，登录还在' : restoring ? '正在恢复登录' : session.account?.username, email: restoreRetrying ? '稍后自动重试，不用重新登录' : restoring ? '网络慢时要多等一会儿' : undefined, restoring: restoreRetrying ? 'retrying' : restoring ? 'pending' : undefined, sourceTag: siteId === 'solov-api' ? accountSources[siteId].label : undefined, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, subscription: subscription ? `订阅：${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : undefined, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error }} platform={os}
+        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoreRetrying ? '暂时连不上，登录还在' : restoring ? '正在恢复登录' : session.account?.username, email: restoreRetrying ? '稍后自动重试，不用重新登录' : restoring ? '网络慢时要多等一会儿' : undefined, restoring: restoreRetrying ? 'retrying' : restoring ? 'pending' : undefined, sourceTag: siteId === 'solov-api' ? accountSources[siteId].label : undefined, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, subscription: subscription ? `订阅：${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : undefined, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error,
+            plan: session.authenticated && !restoring && balanceAmount !== null ? subscription ? subscription.name ?? undefined : '按量付费' : undefined, runway }} platform={os}
+          accountTab={page === 'account' ? shownAccountTab : undefined} theme={settings?.theme} announcementOpen={announcementOpen}
+          update={update && !update.error ? update.phase === 'downloaded' ? 'ready' : update.phase === 'available' || update.phase === 'downloading' ? 'available' : undefined : undefined}
+          accelerationLine={acceleration.snapshot.state?.phase === 'active' ? acceleration.snapshot.state.line?.name : undefined}
           tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
           environment={buildEnvironmentStatus(diagnosticsCounts, toolbox.snapshot?.system.runtime)} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + visibleExternalClients(os, toolbox.externalClients).filter((tool) => tool.installed).length : undefined}
@@ -1625,7 +1644,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               const result = await acceleration.redeem(code)
               return mounted.current && accountEpoch.current === epoch ? result : null
             } } : {}),
-            openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen(true), openNotifications: () => navigate('updates'),
+            openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
+            startCheck: () => { if (page === 'health') setHealthRequest((current) => current + 1); navigate('health') },
+            ...(settings ? { toggleTheme: () => {
+              const next = settings.theme === 'dark' ? 'light' : 'dark'
+              const system = platformApi()
+              void perform('保存外观', async () => { if (system) await system.setThemePreference(next); else setSettings(await app.savePreferences({ version: 2, theme: next })) })
+            } } : {}),
             logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
@@ -1652,9 +1677,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
               : null}
-            {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id} hidden={page !== id} inert={page !== id}>
+            {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id === 'health' ? `health:${healthRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   onSessionsChanged={refreshRecent}
                   beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
@@ -1710,7 +1735,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         <SupportIdentity line={supportIdentity} lastFailure={lastFailureLine} onCopy={() => { void navigator.clipboard.writeText(lastFailureLine ? `${supportIdentity}\n${lastFailureLine}` : supportIdentity).then(() => toast.show('已复制，发给客服就行', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn')) }} /></div>
       <div className="v2-support-actions"><Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>去反馈页</Button><Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button></div>
       {/* 欢迎页和引导里没有侧栏，「左边「更多」」无从说起，这一行只在主界面里出。 */}
-      {!guide && (session.authenticated || restoring || workspaceEntered) && <div className="v2-support-more" data-testid="support-more"><span>左边「更多」里还有：</span>{(['maintenance', 'backups', 'updates'] as const).map((id) => <Button key={id} size="sm" onClick={() => { setHelp(false); navigate(id) }} testId={`support-more-${id}`}>{pageRegistry.find((entry) => entry.id === id)?.label}</Button>)}</div>}
+      {!guide && (session.authenticated || restoring || workspaceEntered) && <div className="v2-support-more" data-testid="support-more"><span>左边「更多」里还有：</span>{moreNavigation.filter((id) => id !== 'acceleration' || accelerationAvailable).map((id) => <Button key={id} size="sm" onClick={() => { setHelp(false); navigate(id) }} testId={`support-more-${id}`}>{pageRegistry.find((entry) => entry.id === id)?.label}</Button>)}</div>}
     </Dialog>}
     <RequiredUpdateGate update={update} windows={os === 'win'} linux={os === 'linux'} actions={{
       check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),

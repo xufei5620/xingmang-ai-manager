@@ -7,6 +7,10 @@ export interface EnvironmentStatus {
   label: string
   /** 鼠标停上去写的各运行环境版本；扫描结果还没回来时不写。 */
   detail?: string
+  /** 检查页「待处理」有几项，侧栏「检查」后面的角标；没检查过算 0。 */
+  issues: number
+  /** 状态栏上单列的那一项「Node.js 版本」；扫描结果还没回来时不写。 */
+  node?: string
 }
 
 interface RuntimeProbe {
@@ -27,11 +31,12 @@ export interface EnvironmentRuntimes {
  */
 export function buildEnvironmentStatus(counts: StartupDiagnosticsCounts | null, runtimes?: EnvironmentRuntimes): EnvironmentStatus {
   const detail = runtimes ? environmentRuntimeSummary(runtimes) : undefined
-  if (!counts) return { tone: 'neutral', label: '环境待检测', detail }
+  const node = runtimes ? `Node.js ${runtimeState(runtimes.node)}` : undefined
+  if (!counts) return { tone: 'neutral', label: '环境待检测', detail, issues: 0, node }
   const issues = diagnosticsIssueCount(counts)
   return issues > 0
-    ? { tone: 'warn', label: `环境有 ${issues} 项需要处理`, detail }
-    : { tone: 'ok', label: '环境正常', detail }
+    ? { tone: 'warn', label: `${issues} 项需要处理`, detail, issues, node }
+    : { tone: 'ok', label: '环境正常', detail, issues, node }
 }
 
 function runtimeState(probe: RuntimeProbe): string {

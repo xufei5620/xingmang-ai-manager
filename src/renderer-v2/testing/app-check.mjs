@@ -172,7 +172,7 @@ test('customer support returns to the default QR and browser destination after h
     await page.getByTestId('shell-topbar').getByRole('button', { name: '帮助与客服', exact: true }).click()
     const dialog = await checkSupportDialog(page, historicalSupportUrl)
     await dialog.locator('[data-modal-close]').click()
-    await page.getByRole('button', { name: '打开个人中心 fixture-user', exact: true }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-support').waitFor()
@@ -225,7 +225,7 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
         const opened = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').at(-1))
         assert.deepEqual(opened.args, [tool])
       }
-      await page.locator('.v2-statusbar').getByText('6 个工具已装', { exact: true }).waitFor()
+      await page.locator('.v2-statusbar').getByText('已装 6 个工具', { exact: true }).waitFor()
       await page.getByTestId('home-your-tools').locator('.xm-card-head').getByText(/(^| · )6 个已连接( · |$)/).waitFor()
       assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'revealApiKey' || entry.method === 'revealAccountKey')), false)
       await clean(page)
@@ -450,6 +450,8 @@ test('acceleration state is read once when idle, and again on entering the accel
     await page.clock.install()
     await page.clock.runFor(60_000)
     assert.equal(await reads(), initial, '没在加速时不定时读状态')
+    // v4 过渡期游戏加速收在侧栏「更多」里。
+    await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-acceleration').click()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccelerationState').length > count, initial)
     await clean(page)
@@ -605,7 +607,7 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     await page.evaluate(() => window.v2Test.holdNextExternalScan())
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
-    await page.getByRole('button', { name: '打开个人中心 fixture-user', exact: true }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
@@ -706,7 +708,7 @@ test('full App preserves the fixed desktop columns and renders only the new rend
         const height = (selector) => document.querySelector(selector).getBoundingClientRect().height
         return { root: width('.v2-root'), sidebar: width('.v2-sidebar'), left: width('.v2-home-main'), right: width('.v2-home-aside'), top: height('.v2-topbar'), bottom: height('.v2-statusbar'), overflow: document.documentElement.scrollWidth > 1280 }
       })
-      assert.deepEqual(geometry, { root: 1280, sidebar: 216, left: 690, right: 292, top: 46, bottom: 30, overflow: false })
+      assert.deepEqual(geometry, { root: 1280, sidebar: 224, left: 690, right: 292, top: 44, bottom: 28, overflow: false })
       const actionGeometry = await page.evaluate(() => {
         function measure(selector) {
           const group = document.querySelector(selector)
@@ -740,9 +742,10 @@ test('full App preserves the fixed desktop columns and renders only the new rend
           homeTopOffset: homeButton.top - pageHeadRect.top,
         }
       })
+      // v4 顶栏右边是深浅色、公告、帮助三个 30 见方的图标键。
       assert.deepEqual(actionGeometry.top, {
-        height: 32, gap: 6, align: 'center', paddingTop: 0, buttonHeights: [32, 32],
-        geometricGap: 6, sameLine: true, contained: true, overflow: false,
+        height: 30, gap: 2, align: 'center', paddingTop: 0, buttonHeights: [30, 30, 30],
+        geometricGap: 2, sameLine: true, contained: true, overflow: false,
       })
       assert.deepEqual(actionGeometry.home, {
         height: 40, gap: 8, align: 'center', paddingTop: 4, buttonHeights: [36, 36],
@@ -2586,7 +2589,7 @@ test('read-only account matches do not survive logout or a late config read when
     await page.evaluate(() => window.v2Test.holdNextConfigRead())
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
-    await page.getByRole('button', { name: '打开个人中心 fixture-user', exact: true }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
@@ -3066,7 +3069,7 @@ test('read-only account matches switch only explicitly selected CLI providers on
     assert.equal(await page.getByTestId('account-sync-gemini').count(), 0)
     await page.getByTestId('account-sync-grok').uncheck()
     await saved.getByRole('button', { name: '切换', exact: true }).click()
-    await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
     const writes = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
     assert.deepEqual(writes, [
       { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
@@ -3088,7 +3091,7 @@ test('tools switched to a saved account open right away instead of waiting for a
     await page.getByRole('button', { name: '切换账号', exact: true }).click()
     await page.getByTestId('account-sync-grok').waitFor()
     await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
-    await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
     await expect(page.locator('dialog[open]')).toHaveCount(0)
     // 切换账号时 Key 已经在切换框里换好，开机那一轮同步不会再跑：「打开」不能一直灰着等它。
     await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
@@ -3218,7 +3221,8 @@ test('unavailable local preferences cannot prevent the toolbox shell from openin
       (timeout) => waitForFixtureReady(page, timeout), { label: 'renderer-v2 fixture without storage' })
     await page.getByTestId('page-home').waitFor()
     await page.getByTestId('sidebar-collapse').click()
-    assert.equal(await page.locator('.v2-sidebar').evaluate((element) => element.clientWidth), 59)
+    // v4 侧栏右边那条线画在侧栏里面（内阴影），收起后整条 60 宽都是侧栏。
+    assert.equal(await page.locator('.v2-sidebar').evaluate((element) => element.clientWidth), 60)
     await clean(page)
   } finally { await page.close() }
 })
@@ -4993,7 +4997,7 @@ test('NewAPI read states survive collection updates and stay isolated between ac
     assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '已读'])
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'other-user', group: 'default', role: 1, quota: 1, usedQuota: 0 } }))
-    await page.getByRole('button', { name: '打开个人中心 other-user', exact: true }).waitFor()
+    await page.getByRole('button', { name: /^个人中心：other-user(，|$)/ }).waitFor()
     await page.getByTestId('announcement-open').click()
     // Opening reloads the new account's collection. The container can briefly
     // exist before that reload clears it; wait for both rows and their read
@@ -5037,8 +5041,9 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     await list.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
     await list.getByRole('button', { name: '套餐更新 09-20 未读', exact: true }).waitFor()
     assert.equal(await dialog.getByTestId('announcement-detail').count(), 0)
-    assert.equal(await dialog.getByText('系统升级完成', { exact: true }).count(), 0)
-    assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
+    // v4 的小框每条下面只露正文第一句的纯文字，正文要点进去才排出来。
+    assert.deepEqual(await list.locator('.v2-announcement-preview').allTextContents(), ['系统升级完成，请重新读取分组。', '套餐详情已更新'])
+    assert.equal(await dialog.locator('.v2-announcement-content, strong').count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead')), [])
     await page.screenshot({ path: path.join(artifacts, 'sub2api-announcements.png') })
 
@@ -5205,7 +5210,9 @@ test('announcement banner can be closed, stays closed after reload, and returns 
     // Opening the center re-reads the notice, so wait for the list before reading its rows.
     await dialog.getByTestId('announcement-list').waitFor()
     assert.deepEqual(await dialog.getByTestId('announcement-list').locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读', '未读'])
-    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    // 小框没有关闭键，再点一次铃铛就收起。
+    await button.click()
+    await dialog.waitFor({ state: 'hidden' })
     // Simulate a newly published entry: one unread key this account has never seen.
     await page.evaluate(([key, keys]) => localStorage.setItem(key, JSON.stringify(keys)), [seenKey, seen.slice(1)])
     await page.reload()
@@ -5267,7 +5274,13 @@ test('Sub2API announcements keep server-read and empty states and recover from r
       }
       assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead')), [])
       await page.evaluate(() => { window.v2Test.fail = 'getAccountNotice' })
-      await dialog.getByRole('button', { name: '重新读取' }).click()
+      // 看过一条的还在大框里，用底下的「重新读取」；小框没有这个键，收起再打开就会重新读，读坏了小框里才给「重新读取」。
+      if (query.includes('noticesRead')) await dialog.getByRole('button', { name: '重新读取' }).click()
+      else {
+        await page.getByTestId('announcement-open').click()
+        await dialog.waitFor({ state: 'hidden' })
+        await page.getByTestId('announcement-open').click()
+      }
       await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
       await page.evaluate(() => { window.v2Test.fail = '' })
       await dialog.getByRole('button', { name: '重新读取' }).click()
@@ -5282,7 +5295,7 @@ test('Sub2API session drives account panels while old relay settings stay on New
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     assert.equal(await page.getByRole('button', { name: '充值', exact: true }).count(), 0)
-    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByTestId('account-display').waitFor()
     const labels = await page.getByTestId('account-tabs').getByRole('tab').allTextContents()
     assert.deepEqual(labels, ['我的账号', '密钥'])
@@ -5433,25 +5446,27 @@ test('consumption completion refreshes after two seconds and merges notification
   } finally { await page.close() }
 })
 
-test('manual balance refresh is shared by the sidebar, footer, home and personal center', async () => {
+// v4 的账号卡平时只摆余额，没有刷新键：首页和个人中心的刷新、状态栏、账号卡读的是同一份余额。
+test('manual balance refresh is shared by the sidebar card, footer, home and personal center', async () => {
   const page = await open('sub2api=1')
   const reads = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length)
   try {
     await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
-    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    assert.equal(await page.getByTestId('sidebar-balance-refresh').count(), 0)
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByTestId('account-balance').waitFor()
     assert.equal(await reads(), 1)
     await page.evaluate(() => { window.v2Test.setBalance(20.25); window.v2Test.holdNextBalance() })
     const before = await reads()
-    await page.getByTestId('sidebar-balance-refresh').click()
-    assert.equal(await page.getByTestId('sidebar-balance-refresh').isDisabled(), true)
+    await page.getByTestId('account-balance-refresh').click()
     assert.equal(await page.getByTestId('account-balance-refresh').isDisabled(), true)
     assert.equal(await page.getByTestId('account-balance').innerText(), '$12.40')
     await page.evaluate(() => window.v2Test.releaseBalance())
     await page.getByTestId('account-balance').getByText('$20.25', { exact: true }).waitFor()
     assert.equal(await reads(), before + 1)
     assert.match(await page.getByTestId('statusbar-balance').innerText(), /20\.25/)
-    assert.match(await page.getByTestId('sidebar-balance-refresh').getAttribute('title'), /最后更新于/)
+    await page.getByTestId('account-entry').getByText('$20.25', { exact: true }).waitFor()
+    assert.match(await page.getByTestId('statusbar-balance').getAttribute('title'), /最后更新于/)
     await page.evaluate(() => window.v2Test.setBalance(23.5))
     await page.getByTestId('account-refresh').click()
     await page.getByTestId('account-balance').getByText('$23.50', { exact: true }).waitFor()
@@ -5468,9 +5483,9 @@ test('failed refresh keeps the last balance and timestamp without a blocking dia
     const page = await open(`sub2api=1&theme=${theme}`)
     try {
       await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
-      const originalTitle = await page.getByTestId('sidebar-balance-refresh').getAttribute('title')
+      const originalTitle = await page.getByTestId('statusbar-balance').getAttribute('title')
       await page.evaluate(() => { window.v2Test.fail = 'getAccountBalance' })
-      await page.getByTestId('sidebar-balance-refresh').click()
+      await page.getByTestId('home-balance-refresh').click()
       await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).waitFor()
       assert.equal(await page.getByTestId('home-balance').innerText(), '$12.40')
       assert.match(await page.getByTestId('statusbar-balance').innerText(), /12\.40/)
@@ -5500,7 +5515,7 @@ test('a saved account with the same id switches platform without reusing NewAPI 
     assert.doesNotMatch(await list.innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov|账户尾号|aa0017/i)
     await list.getByRole('button', { name: '切换', exact: true }).click()
     await page.getByRole('dialog', { name: '切换账号', exact: true }).waitFor({ state: 'hidden' })
-    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByTestId('account-display').waitFor()
     assert.deepEqual(await page.getByTestId('account-tabs').getByRole('tab').allTextContents(), ['我的账号', '密钥'])
     await page.getByTestId('announcement-open').click()
@@ -5567,7 +5582,7 @@ test('configuring a tool from the key page makes the home page re-read tool conf
   const page = await open('keyOptions=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
-    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByTestId('account-display').waitFor()
     await page.getByTestId('account-tabs').getByRole('tab', { name: '密钥', exact: true }).click()
     await page.getByRole('button', { name: '密钥 custom-key 的更多操作', exact: true }).click()
@@ -5591,7 +5606,7 @@ test('Sub2API keeps fractional key limits and changing its password returns to l
   const page = await open('sub2api=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
-    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByTestId('account-display').waitFor()
     await page.getByTestId('account-tabs').getByRole('tab', { name: '密钥', exact: true }).click()
     await page.getByTestId('account-key-add').click()
@@ -5627,7 +5642,7 @@ test('explicit historical login uses returned account ownership with customer ac
     await page.getByTestId('login-submit').click()
     await page.getByTestId('start-guide').waitFor()
     await page.getByTestId('guide-pause').click()
-    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('sidebar-account-open').click()
     await page.getByTestId('account-display').waitFor()
     assert.deepEqual(await page.getByTestId('account-tabs').getByRole('tab').allTextContents(), ['我的账号', '密钥'])
     assert.doesNotMatch(await page.locator('.v2-root').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
@@ -7000,7 +7015,7 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
     const tour = page.getByTestId('shell-guide-tip')
     await tour.waitFor()
     // v4：搜索框那步气泡在下面，侧栏两步气泡在右边；当前指着的那一项描金边，看完就撤掉。
-    for (const [label, side] of [['下一步', 'below'], ['下一步', 'right'], ['开始使用', 'right']]) {
+    for (const [label, side] of [['下一步', 'below'], ['下一步', 'right'], ['知道了', 'right']]) {
       await expect(tour).toHaveAttribute('data-side', side)
       await expect(page.locator('[data-coach-target="true"]')).toHaveCount(1)
       await tour.getByRole('button', { name: label, exact: true }).click()
@@ -7620,7 +7635,6 @@ test('the feedback page reads the run log again when it is shown again', async (
         total: window.__logs.length, truncated: false, counts: { debug: 0, info: 1, warn: 0, error: window.__logs.length - 1 }, sources: ['fixture'],
         currentProcessId: 4242, startedAt: '2026-10-06T00:00:00.000Z', entries: window.__logs.map((item) => ({ ...item })) })
     })
-    await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-feedback').click()
     const logs = page.getByTestId('page-feedback').locator('button.v2-feedback-log')
     await expect(logs.first()).toContainText('上回进来时就有的日志')
@@ -7901,7 +7915,7 @@ test('the shell fills a wide window and keeps each page 1000 wide to the right o
   try {
     await page.setViewportSize({ width: 1600, height: 900 })
     await page.getByTestId('page-home').waitFor()
-    for (const selector of ['.v2-root', '[data-testid="window-titlebar"]']) assert.equal((await box(page, selector)).width, 1600, selector)
+    assert.equal((await box(page, '.v2-root')).width, 1600)
     assert.equal((await box(page, '[data-testid="shell-statusbar"]')).right, 1600)
     assert.equal((await box(page, '[data-testid="shell-topbar"]')).right, 1600)
     const workspace = await box(page, '.v2-workspace')
@@ -7914,7 +7928,7 @@ test('the shell fills a wide window and keeps each page 1000 wide to the right o
   } finally { await page.close() }
 })
 
-test('a window narrower than the design collapses the sidebar by itself, floats it when opened and never saves that as the choice', async () => {
+test('a window narrower than the design collapses the sidebar by itself, says why it stays narrow and never saves that as the choice', async () => {
   const page = await open()
   try {
     // 选了 110% 的窗口在 1280 设计宽下只剩 1163 逻辑宽。
@@ -7922,23 +7936,13 @@ test('a window narrower than the design collapses the sidebar by itself, floats 
     await page.getByTestId('page-home').waitFor()
     const shell = page.locator('.v2-shell')
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    assert.equal((await box(page, '[data-testid="sidebar"]')).width, 60)
     assert.equal((await box(page, '[data-testid="page-home"]')).width, 1000)
-    const workspace = await box(page, '.v2-workspace')
+    // v4 不再让侧栏浮在页面上展开：点展开键只说一句为什么，侧栏照旧收着。
     await page.getByTestId('sidebar-collapse').click()
-    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-overlay')
-    assert.equal((await box(page, '[data-testid="sidebar"]')).width, 216)
-    assert.deepEqual(await box(page, '.v2-workspace'), workspace, 'the page does not move under the floating sidebar')
-    await page.screenshot({ path: path.join(artifacts, 'shell-narrow-overlay.png') })
-    await page.keyboard.press('Escape')
-    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
-    // Escape restores focus in the next animation frame, after the class changes.
-    await expect(page.getByTestId('sidebar-collapse')).toBeFocused()
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '展开侧栏')
-    await page.getByTestId('sidebar-collapse').click()
-    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-overlay')
-    await page.getByTestId('page-home').click({ position: { x: 900, y: 10 } })
-    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
-    await page.getByTestId('sidebar-collapse').click()
+    await waitForToast(page, '窗口较窄时侧栏会自动收起')
+    assert.equal(await shell.getAttribute('class'), 'v2-shell sidebar-collapsed')
+    await page.screenshot({ path: path.join(artifacts, 'shell-narrow-rail.png') })
     await page.getByTestId('nav-settings').click()
     await page.getByTestId('page-settings').waitFor()
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
@@ -7946,6 +7950,7 @@ test('a window narrower than the design collapses the sidebar by itself, floats 
     // 窗口拉回 1280：回到自己设的样子（没设过就是展开）。
     await page.setViewportSize({ width: 1280, height: 820 })
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+    assert.equal((await box(page, '[data-testid="sidebar"]')).width, 224)
     await clean(page)
   } finally { await page.close() }
 })
@@ -8006,7 +8011,7 @@ test('going offline swaps the announcement bar for the offline bar and brings it
     await banner.waitFor({ state: 'detached' })
     // 只剩一条：页面只往下让一条的高度。
     assert.equal(await page.locator('.v2-workspace > :is(.v2-offline-banner, .v2-announcement-banner, .v2-promo-bar)').count(), 1)
-    assert.equal(await offline.getByRole('button').last().textContent(), '检查网络')
+    assert.equal(await offline.getByRole('button').last().textContent(), '重试')
     // 铃铛的红点照旧。
     await page.getByTestId('announcement-open').locator('.v2-unread').waitFor()
     await setBrowserOnline(page, true)
@@ -8025,10 +8030,10 @@ test('the note that the app went direct closes by itself once the app is back on
       window.v2Test.fail = 'getAccountBalance'
       window.v2Test.failMessage = "Error invoking remote method 'account:get-balance': Error: 系统里设置的代理连不上，请检查代理或加速设置后再试。"
     })
-    const refresh = page.getByTestId('sidebar-balance-refresh')
-    await refresh.click()
+    // 账号卡平时没有刷新键，第一次从首页刷新；读失败了卡片上才出「更新失败」和刷新键。
+    await page.getByTestId('home-balance-refresh').click()
     await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).waitFor()
-    await refresh.click()
+    await page.getByTestId('sidebar-balance-refresh').click()
     const notice = page.getByTestId('proxy-bypass-banner')
     await notice.waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'bypassBrokenProxy').length), 1)
@@ -8044,7 +8049,7 @@ test('the status bar says whether the environment is fine and follows the latest
   const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
   try {
     const environment = page.getByTestId('statusbar-environment')
-    await expect.poll(() => environment.textContent()).toBe('环境有 2 项需要处理')
+    await expect.poll(() => environment.textContent()).toBe('2 项需要处理')
     assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot is-warn')
     await expect.poll(() => environment.getAttribute('title')).toBe('Node.js v24.0.0 · Python 3.12.0 · Git 2.43.0')
     await clean(page)
@@ -8070,12 +8075,12 @@ test('the status bar drops back to not-checked once a tool was installed, and fo
   const page = await open('diagnostics=1&diagnosticIssues=2&recentWorkspaces=1')
   try {
     const environment = page.getByTestId('statusbar-environment')
-    await expect.poll(() => environment.textContent()).toBe('环境有 2 项需要处理')
+    await expect.poll(() => environment.textContent()).toBe('2 项需要处理')
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
     await page.getByTestId('tool-claude-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.disabled === false)
-    assert.equal(await environment.textContent(), '环境有 2 项需要处理')
+    assert.equal(await environment.textContent(), '2 项需要处理')
     await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
     await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('tool-row-grok').getByText('已配好').waitFor()
@@ -8083,7 +8088,7 @@ test('the status bar drops back to not-checked once a tool was installed, and fo
     assert.equal(await environment.locator('.v2-dot').getAttribute('class'), 'v2-dot')
     await environment.click()
     await page.getByTestId('page-health').waitFor()
-    await expect.poll(() => environment.textContent()).toBe('环境有 2 项需要处理')
+    await expect.poll(() => environment.textContent()).toBe('2 项需要处理')
     await clean(page)
   } finally { await page.close() }
 })
@@ -8095,13 +8100,13 @@ test('the check page checks again by itself when the environment changed while i
     await page.getByTestId('nav-more').click()
     await page.getByTestId('nav-health').click()
     const environment = page.getByTestId('statusbar-environment')
-    await expect.poll(() => environment.textContent()).toBe('环境有 1 项需要处理')
+    await expect.poll(() => environment.textContent()).toBe('1 项需要处理')
     await page.waitForTimeout(100)
     const checks = await healthChecks(page)
     await page.getByTestId('health-connection-run').click()
     await page.getByTestId('health-connection-rewrite-claude').click()
     await expect.poll(() => healthChecks(page)).toBe(checks + 1)
-    await expect.poll(() => environment.textContent()).toBe('环境有 1 项需要处理')
+    await expect.poll(() => environment.textContent()).toBe('1 项需要处理')
     await clean(page)
   } finally { await page.close() }
 })

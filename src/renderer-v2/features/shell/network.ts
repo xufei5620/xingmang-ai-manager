@@ -17,21 +17,32 @@ export function latestNetworkLocation(
   return Date.parse(scanned.checkedAt) > Date.parse(refreshed.checkedAt) ? scanned : refreshed
 }
 
+function countryName(network: NetworkLocation | null | undefined): string | null {
+  if (!network || network.region === 'unknown' || !network.countryCode) return null
+  const countryCode = network.countryCode.trim().toUpperCase()
+  try {
+    return regionDisplayNames.of(countryCode) ?? countryCode
+  } catch {
+    // Keep the country code when the platform does not know this region.
+    return countryCode
+  }
+}
+
+/** 鼠标停在状态栏网络那一项上时写的全文：国家和出口 IP。 */
 export function networkLocationLabel(
   network: NetworkLocation | null | undefined,
 ): string {
-  if (!network || network.region === 'unknown' || !network.countryCode) {
-    return '网络位置未知'
-  }
+  const country = countryName(network)
+  if (!country) return '网络位置未知'
+  return network?.publicIp
+    ? `${country} · ${network.publicIp}`
+    : `${country} · IP 未知`
+}
 
-  const countryCode = network.countryCode.trim().toUpperCase()
-  let countryName = countryCode
-  try {
-    countryName = regionDisplayNames.of(countryCode) ?? countryCode
-  } catch {
-    // Keep the country code when the platform does not know this region.
-  }
-  return network.publicIp
-    ? `${countryName} · ${network.publicIp}`
-    : `${countryName} · IP 未知`
+/** 状态栏上露出来的那一句：联着网才显示，只写国家，IP 进悬停提示。 */
+export function networkStatusLabel(
+  network: NetworkLocation | null | undefined,
+): string {
+  const country = countryName(network)
+  return country ? `网络正常 · ${country}` : '网络正常'
 }
