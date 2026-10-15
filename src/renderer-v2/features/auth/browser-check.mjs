@@ -1004,7 +1004,8 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       assert.ok(geometry.footer <= 900, 'welcome feature strip remains visible')
       assert.ok(geometry.hud <= 1280, 'orbit status labels remain inside the viewport')
       const titlebar = await page.getByTestId('window-titlebar').evaluate((element) => ({ height: element.getBoundingClientRect().height, drag: getComputedStyle(element).getPropertyValue('-webkit-app-region') }))
-      assert.equal(titlebar.height, os === 'mac' ? 46 : 36)
+      // v4 把系统按钮那条压到 44 高，登录前这一条要跟它一样高，右上角三个键才落在条里。
+      assert.equal(titlebar.height, os === 'mac' ? 46 : 44)
       assert.equal(titlebar.drag, 'drag')
       await page.screenshot({ path: path.join(output, `welcome-${theme}-${os}.png`) })
     } finally { await page.close() }
@@ -1268,8 +1269,11 @@ test('the actual add-account flow preserves the current login on failure and acc
     try {
       await page.getByTestId('tool-row-codex').waitFor()
       const previous = await page.evaluate(() => window.xingmang.getAccountSession())
-      await page.getByRole('button', { name: '切换账号', exact: true }).click()
-      await page.getByTestId('account-add').click()
+      // v4 侧栏账号卡上没有「切换账号」了，它在个人中心页头。
+      await page.getByTestId('sidebar-account-open').click()
+      await page.getByTestId('account-switch').click()
+      // 个人中心「我的账号」里也有一颗「添加另一个账号」，这里点切换框里那颗。
+      await page.getByRole('dialog', { name: '切换账号', exact: true }).getByTestId('account-add').click()
       await chooseAccountSource(page, target === 'solov' ? '星芒账号' : '历史账号')
       await page.getByTestId('login-account').fill('same@example.test')
       await page.getByTestId('login-password').fill('same-test-password')

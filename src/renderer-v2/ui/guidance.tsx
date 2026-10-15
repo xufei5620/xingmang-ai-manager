@@ -80,8 +80,9 @@ function placeCoachmark(rect: DOMRect, bubble: DOMRect, placement: CoachPlacemen
   return { side: 'above', top: Math.max(coachEdge, rect.top - coachGap - bubble.height), left, arrow }
 }
 
-export function Coachmark({ open, target, placement = 'below', title, body, step, count, onNext, onClose, testId }: BaseProps & {
-  open: boolean; target: string; placement?: CoachPlacement; title: string; body: string; step: number; count: number; onNext(): void; onClose(): void
+export function Coachmark({ open, target, placement = 'below', title, label, body, step, count, onNext, onClose, testId }: BaseProps & {
+  /** 没有标题时读屏念 label（「界面导览，第 2 步」）。 */
+  open: boolean; target: string; placement?: CoachPlacement; title?: string; label?: string; body: string; step: number; count: number; onNext(): void; onClose(): void
 }) {
   const t = useUiText()
   const panel = useRef<HTMLDivElement>(null)
@@ -119,7 +120,7 @@ export function Coachmark({ open, target, placement = 'below', title, body, step
     return () => { observer.disconnect(); mark(null); document.removeEventListener('keydown', escape, true); window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); if (element.matches(':popover-open')) element.hidePopover() }
   }, [open, target, placement, step])
   if (!open) return null
-  return <div ref={panel} role="region" aria-labelledby={titleId} className="xm-coachmark" data-side={side} style={position} data-testid={testId}>
-    <small>{step} / {count}</small><h2 id={titleId}>{title}</h2><p>{body}</p><footer><Button size="xs" variant="ghost" onClick={onClose}>{t('skip')}</Button><Button size="xs" variant="primary" onClick={onNext}>{t(step === count ? 'start' : 'next')}</Button></footer>
+  return <div ref={panel} role="region" aria-labelledby={title ? titleId : undefined} aria-label={title ? undefined : label} className="xm-coachmark" data-side={side} style={position} data-testid={testId}>
+    <small>{step} / {count}</small>{title && <h2 id={titleId}>{title}</h2>}<p>{body}</p><footer><Button size="xs" variant="ghost" onClick={onClose}>{t('skip')}</Button><Button size="xs" variant="primary" onClick={onNext}>{t(step === count ? 'start' : 'next')}</Button></footer>
   </div>
 }

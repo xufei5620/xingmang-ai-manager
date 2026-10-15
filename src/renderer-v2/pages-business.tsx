@@ -21,6 +21,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
   accountTabRequest?: number
+  /** 个人中心现在摆出来的是哪个分页（顶栏面包屑用）；缺省 = 不报。 */
+  onAccountTabChange?: Parameters<typeof AccountPage>[0]['onTabChange']
   /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
   accountRechargeAmount?: number
   /**
@@ -65,6 +67,7 @@ export function BusinessPage({
   installedProviders,
   onSubscriptionActivated,
   onSubscriptionPurchased,
+  onAccountTabChange,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -88,6 +91,7 @@ export function BusinessPage({
         onSubscriptionActivated={onSubscriptionActivated}
         onSubscriptionPurchased={onSubscriptionPurchased}
         onOpenHelp={actions.openHelp}
+        onTabChange={onAccountTabChange}
         active={actions.active}
       />
     )

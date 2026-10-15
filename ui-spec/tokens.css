@@ -27,6 +27,9 @@
   --focus:#E3C285; --sw-on:#D9B26A; --seg-on:rgba(255,255,255,.1); --input:rgba(0,0,0,.26); --input-line:rgba(255,255,255,.1);
   --pop:#1A1C22; --pop-line:rgba(255,255,255,.1); --shadow-pop:0 18px 50px rgba(0,0,0,.5); --sh-1:0 1px 2px rgba(0,0,0,.28),0 8px 22px -12px rgba(0,0,0,.6);
   --toast:#23252C; --toast-tx:#ECEDF0; --toast-ok:#45D195; --toast-info:#AEC6EE; --toast-warn:#F6B47C;
+  --nav-on:linear-gradient(90deg,rgba(227,194,133,.13),rgba(255,255,255,.055) 75%); --nav-on-sh:inset 0 0 0 1px rgba(255,255,255,.06),inset 0 1px 0 rgba(255,255,255,.04);
+  --edge:linear-gradient(140deg,rgba(240,215,161,.62),rgba(227,194,133,.14) 38%,rgba(255,255,255,.06) 62%,rgba(227,194,133,.3)); --glow:rgba(227,194,133,.13);
+  --sh-2:0 2px 4px rgba(0,0,0,.3),0 18px 40px -16px rgba(0,0,0,.75); --track:rgba(255,255,255,.07); --status:rgba(10,11,15,.35);
 }
 [data-theme="light"] {
   --win:#F6F3EC; --rail:#F4F0E8; --bg:#FBFAF6; --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:rgba(13,31,58,.045); --panel-2:rgba(13,31,58,.045);
@@ -43,6 +46,9 @@
   --focus:#2D4C80; --sw-on:#0D1F3A; --seg-on:#FFFFFF; --input:#FFFFFF; --input-line:rgba(13,31,58,.17);
   --pop:#FFFFFF; --pop-line:rgba(13,31,58,.1); --shadow-pop:0 18px 50px rgba(13,31,58,.18); --sh-1:0 1px 2px rgba(13,31,58,.04),0 8px 20px -12px rgba(60,45,15,.18);
   --toast:#0D1F3A; --toast-tx:#FFFFFF; --toast-ok:#62D69E; --toast-info:#B9CDF0; --toast-warn:#F7B987;
+  --nav-on:#FFFFFF; --nav-on-sh:0 0 0 1px rgba(13,31,58,.06),0 1px 3px rgba(13,31,58,.08);
+  --edge:linear-gradient(140deg,rgba(184,134,47,.6),rgba(184,134,47,.14) 40%,rgba(13,31,58,.07) 64%,rgba(184,134,47,.34)); --glow:rgba(212,163,85,.15);
+  --sh-2:0 2px 4px rgba(13,31,58,.05),0 18px 36px -16px rgba(60,45,15,.26); --track:rgba(13,31,58,.08); --status:rgba(255,255,255,.45);
 }
 [data-os="win"] { --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
 [data-os="linux"] { --font: "Noto Sans CJK SC", "Noto Sans", "Source Han Sans SC", "WenQuanYi Micro Hei", sans-serif; }
@@ -50,7 +56,8 @@
 
 /* Shared scales. Product layout may compose these primitives; brand art is unchanged.
    v4.0: 字号最小 11.5（--font-micro-compact 从 11 提上来）；弹窗 460 / 640，标题 17；
-   动效 150 / 220ms，统一用 cubic-bezier(.22,1,.36,1)。 */
+   动效 150 / 220ms，统一用 cubic-bezier(.22,1,.36,1)。外壳：标题栏并进顶栏（44），侧栏 224 / 60，
+   状态栏 28；--titlebar-height 只剩登录前那几屏的窗口条在用，和顶栏、Windows 窗口按钮一样高。 */
 :root {
   --font-display:42px; --font-h1:22px; --font-h2:15px; --font-body-l:14px; --font-body:14px;
   --font-small:12.5px; --font-small-compact:12px; --font-micro:11.5px; --font-micro-compact:11.5px; --font-dialog-title:17px;
@@ -59,8 +66,8 @@
   --space-6:24px; --space-7:28px; --space-8:32px;
   --radius-input:8px; --radius-button:9px; --radius-card:13px; --radius-dialog:16px;
   --control-xs:28px; --control-sm:32px; --control-md:36px;
-  --sidebar-expanded:216px; --sidebar-collapsed:60px; --titlebar-height:36px;
-  --topbar-height:46px; --statusbar-height:30px; --tool-status-min:86px;
+  --sidebar-expanded:224px; --sidebar-collapsed:60px; --titlebar-height:44px;
+  --topbar-height:44px; --statusbar-height:28px; --tool-status-min:86px;
   --dialog-width:460px; --dialog-wide:640px; --drawer-width:420px; --coach-width:264px; --toast-width:380px;
   --z-drawer:15; --z-notice:18; --z-dialog:20; --z-popover:25; --z-toast:30; --z-coach:35;
   --duration-fast:150ms; --duration-enter:220ms; --duration-progress:300ms; --duration-spin:800ms;

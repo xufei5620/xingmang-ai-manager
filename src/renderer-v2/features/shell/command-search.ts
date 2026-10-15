@@ -3,7 +3,9 @@ import { pageRegistry, pageSearchKeywords, type PageId } from '../../registry/pa
 import { tutorialTopics, type TutorialTopic } from '../../registry/tutorials'
 import { searchWords, tutorialSearchText } from '../tutorial/tutorial-search'
 
-export type CommandGroup = 'page' | 'account' | 'settings' | 'tutorial'
+export type CommandGroup = 'page' | 'action' | 'account' | 'settings' | 'tutorial'
+/** 不只是跳页的那几条：开始检查、切换深浅色、打开帮助与客服、退出登录。 */
+export type CommandAction = 'check' | 'theme' | 'help' | 'logout'
 
 export interface CommandResult {
   key: string
@@ -12,6 +14,8 @@ export interface CommandResult {
   page: PageId
   /** 那一页里要落的分页、分组、设置里的某一行或教程主题；缺省 = 只跳页。 */
   section?: string
+  /** 选中后要做的事；缺省 = 跳到 page / section。 */
+  action?: CommandAction
 }
 
 export interface CommandSearchOptions {
@@ -21,16 +25,22 @@ export interface CommandSearchOptions {
   pageVisible?(page: PageId): boolean
   /** 这台电脑上没有的设置项（Windows 上的「卸载星芒」、不支持自动更新时的「自动更新」）不出现在结果里；缺省 = 全部显示。 */
   settingsItemVisible?(item: SettingsItem): boolean
+  /** 现在是深色还是浅色，「操作」里只给切到另一种的那一条；缺省 = 不给。 */
+  theme?: 'light' | 'dark'
+  /** 登录着才有「退出登录」；缺省 = 不给。 */
+  signedIn?: boolean
 }
 
 /** 结果按这个次序分组显示，回车打开的是排在最前面的那一项。 */
 export const commandGroupLabels: Record<CommandGroup, string> = {
   page: '页面',
+  action: '操作',
   account: '个人中心',
   settings: '设置',
   tutorial: '教程',
 }
-const commandGroupOrder: readonly CommandGroup[] = ['page', 'account', 'settings', 'tutorial']
+// 「操作」排在页面后面：搜「检查」先给检查页，不先给「开始检查」；什么都没输入时「操作」排最上面。
+const commandGroupOrder: readonly CommandGroup[] = ['page', 'action', 'account', 'settings', 'tutorial']
 // 教程是全文搜的，常见词会命中一大串；列表只留最相关的几篇，其余到教程页里搜。
 export const maximumTutorialResults = 5
 
@@ -65,11 +75,29 @@ function pageEntries(options: CommandSearchOptions): Entry[] {
   return pageRegistry.filter(page => options.pageVisible?.(page.id) ?? true).map(page => ({ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }))
 }
 
+function actionEntry(key: string, label: string, target: Pick<CommandResult, 'page' | 'section' | 'action'>, keywords: readonly string[]): Entry {
+  return { result: { key: `action:${key}`, group: 'action', label, ...target }, label, keywords }
+}
+
+// 常用的几件事，不用先进页面再找按钮。
+function actionEntries(options: CommandSearchOptions): Entry[] {
+  const tabVisible = (tab: string) => options.accountTabVisible?.(tab) ?? true
+  return [
+    ...(tabVisible('recharge') ? [actionEntry('recharge', '充值', { page: 'account', section: 'recharge' }, ['余额', '买', '续费', '付款', '支付'])] : []),
+    ...(tabVisible('dashboard') ? [actionEntry('usage', '查看用量账单', { page: 'account', section: 'dashboard' }, ['用量', '账单', '花了多少', '消耗', '统计'])] : []),
+    actionEntry('check', '开始检查', { page: 'health', action: 'check' }, ['检测', '诊断', '体检', '环境']),
+    ...(options.theme === 'dark' ? [actionEntry('theme', '切换到浅色', { page: 'settings', action: 'theme' }, ['浅色', '亮色', '白色', '主题', '外观', '深浅色'])] : []),
+    ...(options.theme === 'light' ? [actionEntry('theme', '切换到深色', { page: 'settings', action: 'theme' }, ['深色', '暗色', '黑色', '主题', '外观', '深浅色'])] : []),
+    actionEntry('help', '帮助与客服', { page: 'feedback', action: 'help' }, ['客服', '帮助', '联系', '二维码', '人工']),
+  ]
+}
+
 // 页头的「切换账号」不是分页，哪种账号都有：点了停在当前分页，翻到那颗按钮。
 function accountEntries(options: CommandSearchOptions): Entry[] {
   const tabs: Entry[] = accountTabs.filter(tab => options.accountTabVisible?.(tab.value) ?? true)
     .map(tab => ({ result: { key: `account:${tab.value}`, group: 'account', label: tab.label, page: 'account', section: tab.value }, label: tab.label, keywords: tab.keywords }))
-  return [...tabs, { result: { key: `account:${accountSwitchAnchor}`, group: 'account', label: '切换账号', page: 'account', section: accountSwitchAnchor }, label: '切换账号', keywords: accountSwitchKeywords }]
+  const logout: Entry[] = options.signedIn ? [{ result: { key: 'account:logout', group: 'account', label: '退出登录', page: 'account', action: 'logout' }, label: '退出登录', keywords: ['登出', '注销', '退出账号'] }] : []
+  return [...tabs, { result: { key: `account:${accountSwitchAnchor}`, group: 'account', label: '切换账号', page: 'account', section: accountSwitchAnchor }, label: '切换账号', keywords: accountSwitchKeywords }, ...logout]
 }
 
 // 设置里每一行单独一条，写成「更新与关于 › 自动更新」，点了翻到那一行；只按行名和常用说法算分，
@@ -88,13 +116,13 @@ function tutorialEntries(topics: readonly TutorialTopic[]): Entry[] {
 }
 
 /**
- * 顶部搜索的结果：页面、个人中心分页、设置（分组和每一行）、教程主题四组，组内按命中程度排。
- * 什么都没输入时只列页面，和原来一样。
+ * 顶部搜索的结果：页面、操作、个人中心、设置（分组和每一行）、教程主题五组，组内按命中程度排。
+ * 什么都没输入时先列操作、再列页面。
  */
 export function searchCommands(query: string, options: CommandSearchOptions = {}, topics: readonly TutorialTopic[] = tutorialTopics): CommandResult[] {
   const words = searchWords(query)
-  if (!words.length) return pageEntries(options).map(entry => entry.result)
-  const entries = [...pageEntries(options), ...accountEntries(options), ...settingsEntries(options), ...tutorialEntries(topics)]
+  if (!words.length) return [...actionEntries(options), ...pageEntries(options)].map(entry => entry.result)
+  const entries = [...pageEntries(options), ...actionEntries(options), ...accountEntries(options), ...settingsEntries(options), ...tutorialEntries(topics)]
   const hits = entries.flatMap((entry, index) => {
     const rank = score(entry, words)
     return rank === null ? [] : [{ entry, rank, index }]

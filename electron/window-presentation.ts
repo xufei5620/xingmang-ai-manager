@@ -11,10 +11,52 @@ export interface WindowThemePalette {
 export interface ThemeableWindow {
   setBackgroundColor(color: string): void
   setTitleBarOverlay(options: {
-    color: string
-    symbolColor: string
-    height: number
+    color?: string
+    symbolColor?: string
+    height?: number
   }): void
+}
+
+/**
+ * Windows/Linux 右上角那三颗系统按钮画在多高的一条里、什么颜色，窗口没画出来之前的底色是什么。
+ * 两套界面不一样：旧回滚界面是单独一条 36 高的标题栏；v4 新界面把标题栏并进了 44 高的顶栏，
+ * 按钮那一块的底色要和顶栏（--bg）一样，按钮图标用 --text-2，窗口底色是 --win（ui-spec/tokens.css）。
+ */
+export interface WindowChrome {
+  titleBarHeight: number
+  palettes: Record<'light' | 'dark', WindowThemePalette>
+}
+
+export const legacyWindowChrome: WindowChrome = {
+  titleBarHeight: 36,
+  palettes: {
+    dark: { background: '#17191b', titleBar: '#202426', symbol: '#eef1f2' },
+    light: { background: '#f4f6f9', titleBar: '#ffffff', symbol: '#29333a' },
+  },
+}
+
+export const v4WindowChrome: WindowChrome = {
+  titleBarHeight: 44,
+  palettes: {
+    dark: { background: '#0D0E12', titleBar: '#101116', symbol: '#A9AFBA' },
+    light: { background: '#F6F3EC', titleBar: '#FBFAF6', symbol: '#46566E' },
+  },
+}
+
+// 新界面在 desktop-entry 里、主窗口建出来之前换过来；只跑旧回滚界面时一直是旧的那套。
+let windowChrome = legacyWindowChrome
+
+export function setWindowChrome(chrome: WindowChrome): void {
+  windowChrome = chrome
+}
+
+export function resolveWindowPalette(theme: 'light' | 'dark'): WindowThemePalette {
+  return windowChrome.palettes[theme]
+}
+
+/** 按界面缩放算出那一条的实际高度：界面放大到 110%，按钮那一条也跟着高，和顶栏对齐。 */
+export function titleBarOverlayHeight(zoom: number): number {
+  return Math.round(windowChrome.titleBarHeight * zoom)
 }
 
 export function startupFailureMessage(error: unknown, platform: NodeJS.Platform): string {
@@ -79,7 +121,7 @@ export function platformWindowOptions(
     titleBarOverlay: {
       color: palette.titleBar,
       symbolColor: palette.symbol,
-      height: 38,
+      height: titleBarOverlayHeight(1),
     },
     icon: windowIcon,
   }
@@ -92,10 +134,10 @@ export function applyWindowTheme(
 ): void {
   target.setBackgroundColor(palette.background)
   if (platform === 'darwin') return
+  // 高度归缩放那一处管（titleBarOverlayHeight）：换深浅色时再写一个固定高度，110% 下按钮那一条会先缩回去一下。
   target.setTitleBarOverlay({
     color: palette.titleBar,
     symbolColor: palette.symbol,
-    height: 38,
   })
 }
 

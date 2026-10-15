@@ -16,7 +16,7 @@ const copy = {
   keepEditing: '继续编辑', discard: '不保存', acknowledge: '我已了解影响',
   loading: '正在加载', progress: '进度', notifications: '通知', unknownTool: '其他工具',
   dialog: '详情', popover: '说明',
-  skip: '跳过', next: '下一步', start: '开始使用',
+  skip: '跳过', next: '下一步', start: '知道了',
 } as const;
 type CopyKey = keyof typeof copy;
 const CopyContext = createContext<(key: CopyKey) => string>(key => copy[key]);

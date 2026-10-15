@@ -123,6 +123,8 @@
   --toast:#111216; --toast-tx:#FFFFFF; --toast-ok:#5EF0A8; --toast-info:#9FD3FF; --toast-warn:#FFB066;
   --overlay:rgba(0,0,0,.8); --shadow:none; --btn-2-bg:#17181D; --btn-2-hover:#25272E; --bubble-user:rgba(255,210,122,.2);
   --glow-top:none; --tile-ring:inset 0 0 0 1px #A8ADB6; --card-grad:#111216;
+  --nav-on:#2A2C33; --nav-on-sh:inset 0 0 0 1px #A8ADB6; --edge:linear-gradient(#A8ADB6,#A8ADB6); --glow:transparent;
+  --sh-2:none; --track:#2A2C33; --status:#050506;
 }
 :root[data-theme="light"].hc {
   --win:#FFFFFF; --rail:#F4F2EC; --bg:#FFFFFF;
@@ -140,6 +142,8 @@
   --toast:#0D1F3A; --toast-tx:#FFFFFF; --toast-ok:#7CF0B5; --toast-info:#BFD6FF; --toast-warn:#FFC58F;
   --overlay:rgba(2,10,24,.6); --shadow:none; --btn-2-bg:#FFFFFF; --btn-2-hover:#ECEAE3; --bubble-user:rgba(127,90,28,.12);
   --glow-top:none; --tile-ring:inset 0 0 0 1px #4B5568; --card-grad:#FFFFFF;
+  --nav-on:#FFFFFF; --nav-on-sh:inset 0 0 0 1px #4B5568; --edge:linear-gradient(#4B5568,#4B5568); --glow:transparent;
+  --sh-2:none; --track:#ECEAE3; --status:#F4F2EC;
 }
 
 /* 设置「外观」里的「大字」：只把说明文字和小字各调大 1px，正文和布局不动，页面不会被挤乱。 */

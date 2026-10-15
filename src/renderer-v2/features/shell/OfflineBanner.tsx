@@ -21,6 +21,6 @@ export function OfflineBanner() {
     <WifiOff size={15} aria-hidden="true" /><span>{offlineBannerTexts[cause]}</span>
     {cause === 'proxy' && openNetworkSettings && <Button size="xs" variant="ghost" icon={Settings} onClick={() => openNetworkSettings('proxy')} testId="offline-banner-proxy-settings">打开系统代理设置</Button>}
     {cause === 'portal' && openNetworkSettings && <Button size="xs" variant="ghost" icon={ExternalLink} onClick={() => openNetworkSettings('captive-portal')} testId="offline-banner-portal">打开认证页</Button>}
-    <Button size="xs" variant="ghost" icon={RefreshCw} loading={checking} onClick={recheck} testId="offline-banner-recheck">检查网络</Button>
+    <Button size="xs" variant="ghost" icon={RefreshCw} loading={checking} onClick={recheck} testId="offline-banner-recheck">重试</Button>
   </div>
 }

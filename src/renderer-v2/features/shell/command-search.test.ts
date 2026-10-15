@@ -4,9 +4,31 @@ import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
 import { maximumTutorialResults, searchCommands } from './command-search'
 
 describe('searchCommands', () => {
-  it('lists only the pages, in sidebar order, when nothing is typed', () => {
-    expect(searchCommands('   ').map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id))
-    expect(searchCommands('').every((item) => item.group === 'page' && item.section === undefined)).toBe(true)
+  it('lists the everyday actions, then every page, when nothing is typed', () => {
+    const empty = searchCommands('   ')
+    expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id))
+    expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...pageRegistry.map(() => 'page')])
+    expect(searchCommands('').filter((item) => item.group === 'page').every((item) => item.section === undefined)).toBe(true)
+    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服'])
+  })
+
+  it('offers switching to the other theme only, and sign-out only while signed in', () => {
+    expect(searchCommands('', { theme: 'dark' }).find((item) => item.action === 'theme')?.label).toBe('切换到浅色')
+    expect(searchCommands('', { theme: 'light' }).find((item) => item.action === 'theme')?.label).toBe('切换到深色')
+    expect(searchCommands('主题', { theme: 'dark' }).filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['切换到浅色'])
+    expect(searchCommands('退出').some((item) => item.key === 'account:logout')).toBe(false)
+    expect(searchCommands('退出', { signedIn: true })[0]).toEqual({ key: 'account:logout', group: 'account', label: '退出登录', page: 'account', action: 'logout' })
+  })
+
+  it('runs the check and opens help from the action group', () => {
+    expect(searchCommands('开始检查')[0]).toMatchObject({ group: 'action', page: 'health', action: 'check' })
+    expect(searchCommands('客服').find((item) => item.group === 'action')).toMatchObject({ label: '帮助与客服', action: 'help' })
+    expect(searchCommands('账单')[0]).toMatchObject({ group: 'action', page: 'account', section: 'dashboard' })
+  })
+
+  it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
+    const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'dashboard' }).filter((item) => item.group === 'action').map((item) => item.label)
+    expect(labels).toEqual(['开始检查', '帮助与客服'])
   })
 
   it('still finds every page by its own name first', () => {
@@ -17,7 +39,7 @@ describe('searchCommands', () => {
     for (const word of ['充值', '余额', '续费', '买']) {
       expect(searchCommands(word).find((item) => item.group === 'account')).toMatchObject({ page: 'account', section: 'recharge' })
     }
-    expect(searchCommands('充值')[0]).toMatchObject({ key: 'account:recharge' })
+    expect(searchCommands('充值')[0]).toMatchObject({ key: 'action:recharge', page: 'account', section: 'recharge' })
   })
 
   it('finds the key tab by Key, token and 令牌 in any letter case', () => {
@@ -34,7 +56,7 @@ describe('searchCommands', () => {
 
   it('leaves out pages this computer does not have, such as game acceleration on Linux', () => {
     const pageVisible = (page: string) => page !== 'acceleration'
-    expect(searchCommands('', { pageVisible }).map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id).filter((id) => id !== 'acceleration'))
+    expect(searchCommands('', { pageVisible }).filter((item) => item.group === 'page').map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id).filter((id) => id !== 'acceleration'))
     expect(searchCommands('加速', { pageVisible }, tutorialTopicsFor('linux')).some((item) => item.page === 'acceleration' || item.section === 'acceleration')).toBe(false)
     expect(searchCommands('加速')[0]).toMatchObject({ group: 'page', page: 'acceleration' })
   })
@@ -53,8 +75,8 @@ describe('searchCommands', () => {
     for (const item of hits) expect(tutorialTopics.some((topic) => topic.id === item.section)).toBe(true)
   })
 
-  it('groups results as pages, account center, settings, then tutorials', () => {
-    const order = ['page', 'account', 'settings', 'tutorial']
+  it('groups results as pages, actions, account center, settings, then tutorials', () => {
+    const order = ['page', 'action', 'account', 'settings', 'tutorial']
     for (const word of ['账号', '密码', '版本', '更新']) {
       const groups = searchCommands(word).map((item) => order.indexOf(item.group))
       expect(groups).toEqual([...groups].sort((left, right) => left - right))

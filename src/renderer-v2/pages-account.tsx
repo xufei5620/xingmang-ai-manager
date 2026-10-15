@@ -569,6 +569,7 @@ export function AccountPage({
   onSubscriptionPurchased,
   onOpenHelp,
   onOpenHealth,
+  onTabChange,
   active,
 }: {
   api: V2Bridge
@@ -601,10 +602,14 @@ export function AccountPage({
   onOpenHelp?: () => void
   /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
   onOpenHealth?: () => void
+  /** 现在摆出来的是哪个分页，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
+  onTabChange?: (tab: AccountTab) => void
   /** 外壳说的「现在显示的是不是这一页」；缺省 = 只按分页算（旧行为）。 */
   active?: boolean
 }) {
   const pageRef = useRef<HTMLElement>(null)
+  const tabChange = useRef(onTabChange)
+  tabChange.current = onTabChange
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
   // 「我的订单」按哪个订单号打开：外面付款回跳（paymentReturn）和充值页的「查看我的订单」
   // 共用一个递增编号，同一个订单号再点一次也会重新查。
@@ -674,6 +679,7 @@ export function AccountPage({
   const accountId = session?.account?.userId ?? profile?.userId ?? 0
   const availableTabs = session ? accountTabs.filter((item) => visibleAccountTab(item.value, session)) : []
   const activeTab = availableTabs.some((item) => item.value === tab) ? tab : 'overview'
+  useEffect(() => { tabChange.current?.(activeTab) }, [activeTab])
   // 页头「刷新」只重读点的时候停着的那一页；别的分页等切过去再说。
   const [refreshRequest, setRefreshRequest] = useState<{ tab: AccountTab; sequence: number }>({ tab: 'overview', sequence: 0 })
   // 「登录设备」里让设备下线以后，「我的账号」那张卡上的台数跟着重读。

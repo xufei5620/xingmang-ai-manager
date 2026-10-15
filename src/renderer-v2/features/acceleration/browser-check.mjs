@@ -38,9 +38,18 @@ async function open(query = 'accelerationPreview=1', { initScript } = {}) {
   await openLazyAcceleration(page)
   return page
 }
+// v4 过渡期游戏加速收在侧栏「更多」里：没展开就先展开（展开后一直开着，也记在本机）。
+async function goToAcceleration(page) {
+  if (!(await page.getByTestId('nav-acceleration').count())) await page.getByTestId('nav-more').click()
+  await page.getByTestId('nav-acceleration').click()
+}
+// 状态栏网络那一项只写「网络正常 · 国家」或「加速中 · 线路名」，国家和 IP 在悬停说明里。
+function locationTitled(page, place) {
+  return page.locator(`[data-testid="shell-network-location"][title^="${place}；"]`)
+}
 async function openLazyAcceleration(page) {
   const accelerationModule = page.waitForResponse((response) => response.url().includes('/features/acceleration/AccelerationPage.tsx'))
-  await page.getByTestId('nav-acceleration').click()
+  await goToAcceleration(page)
   await accelerationModule
   // React's Suspense reveal uses the browser clock, which this fixture freezes.
   await page.clock.runFor(500)
@@ -137,25 +146,27 @@ test('network location refreshes on connect and disconnect, stays synced on othe
   try {
     const location = page.getByTestId('shell-network-location')
     await location.click()
-    await location.filter({ hasText: '中国 · 198.51.100.18' }).waitFor()
+    await locationTitled(page, '中国 · 198.51.100.18').waitFor()
+    assert.equal(await location.innerText(), '网络正常 · 中国')
     const scansBefore = await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'scanSystem').length)
     await page.getByTestId('acceleration-session-start').click()
-    await location.filter({ hasText: '新加坡 · 203.0.113.24' }).waitFor()
+    await locationTitled(page, '新加坡 · 203.0.113.24').waitFor()
+    assert.match(await location.innerText(), /^加速中 · .+线路 \d$/)
     await page.getByTestId('nav-home').click()
     const refreshes = await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'refreshNetworkLocation').length)
     await page.clock.runFor(20_000)
-    assert.equal(await location.innerText(), '新加坡 · 203.0.113.24')
+    assert.equal(await location.getAttribute('title'), '新加坡 · 203.0.113.24；点击刷新网络位置')
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'refreshNetworkLocation').length), refreshes)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'scanSystem').length), scansBefore)
-    await page.getByTestId('nav-acceleration').click()
+    await goToAcceleration(page)
     await page.getByTestId('acceleration-session-stop').click()
-    await location.filter({ hasText: '中国 · 198.51.100.18' }).waitFor()
+    await locationTitled(page, '中国 · 198.51.100.18').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'refreshNetworkLocation' })
     await location.click()
-    await location.filter({ hasText: '网络位置未知' }).waitFor()
+    await page.locator('[data-testid="shell-network-location"]:not([title^="中国"])').filter({ hasText: /^网络正常$/ }).waitFor()
     await page.evaluate(() => { window.v2Test.fail = '' })
     await location.click()
-    await location.filter({ hasText: '中国 · 198.51.100.18' }).waitFor()
+    await locationTitled(page, '中国 · 198.51.100.18').waitFor()
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
 })
@@ -165,14 +176,14 @@ test('failed stop retains the last connected location until a confirmed disconne
   try {
     const location = page.getByTestId('shell-network-location')
     await page.getByTestId('acceleration-session-start').click()
-    await location.filter({ hasText: '新加坡 · 203.0.113.24' }).waitFor()
+    await locationTitled(page, '新加坡 · 203.0.113.24').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'stopAcceleration' })
     await page.getByTestId('acceleration-session-stop').click()
     await page.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
-    assert.equal(await location.innerText(), '新加坡 · 203.0.113.24')
+    assert.equal(await location.getAttribute('title'), '新加坡 · 203.0.113.24；点击刷新网络位置')
     await page.evaluate(() => { window.v2Test.fail = '' })
     await page.getByTestId('acceleration-session-stop').click()
-    await location.filter({ hasText: '中国 · 198.51.100.18' }).waitFor()
+    await locationTitled(page, '中国 · 198.51.100.18').waitFor()
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
 })
@@ -193,7 +204,7 @@ test('acceleration trial counts only connected time, survives navigation, pauses
     assert.equal(await remaining(page).innerText(), '00:19:50')
     await page.getByTestId('nav-home').click()
     await page.clock.runFor(10_000)
-    await page.getByTestId('nav-acceleration').click()
+    await goToAcceleration(page)
     assert.equal(await remaining(page).innerText(), '00:19:40')
     await page.getByTestId('acceleration-session-stop').click()
     await page.getByTestId('acceleration-session-start').waitFor()
@@ -241,7 +252,7 @@ test('a running session does not re-render the app every second while another pa
     const onHome = await page.evaluate(() => window.__reactCommits)
     await page.clock.runFor(10_000)
     assert.equal(await page.evaluate(() => window.__reactCommits) - onHome, 0)
-    await page.getByTestId('nav-acceleration').click()
+    await goToAcceleration(page)
     assert.equal(await remaining(page).innerText(), '00:19:41')
     await page.getByTestId('acceleration-session-stop').click()
     await page.getByTestId('acceleration-session-start').waitFor()
@@ -273,7 +284,7 @@ test('exhaustion stops the session once even when the acceleration page is hidde
     await page.getByTestId('acceleration-session-stop').waitFor()
     await page.getByTestId('nav-home').click()
     await page.clock.runFor(10_000)
-    await page.getByTestId('nav-acceleration').click()
+    await goToAcceleration(page)
     await page.getByTestId('acceleration-contact-support').filter({ hasText: '联系客服' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:00:00')
     assert.equal(await page.getByTestId('acceleration-session-start').count(), 0)
@@ -337,9 +348,9 @@ test('logged out users see the global acceleration page with a working login act
 
 const bonusCode = 'XM-NEBULA-10M-7Q9K'
 async function bonusPalette(page, code = bonusCode) {
-  await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).click()
+  await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索或跳转/ }).click()
   const palette = page.getByTestId('command-palette')
-  const input = palette.getByRole('searchbox', { name: '搜索页面' })
+  const input = palette.getByRole('searchbox', { name: '搜索或跳转' })
   if (code) await input.fill(code)
   return { palette, input, action: page.getByTestId('command-acceleration-bonus'), feedback: page.getByTestId('command-acceleration-feedback') }
 }
@@ -403,10 +414,10 @@ test('bonus palette preserves page search, arrows, IME Enter and Escape focus re
     await input.press('Enter')
     await palette.waitFor({ state: 'hidden' })
     assert.equal(await page.getByTestId('nav-settings').getAttribute('aria-current'), 'page')
-    await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).click()
+    await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索或跳转/ }).click()
     await input.press('Escape')
     await palette.waitFor({ state: 'hidden' })
-    assert.equal(await page.getByTestId('shell-topbar').getByRole('button', { name: /搜功能、设置或教程/ }).evaluate(element => document.activeElement === element), true)
+    assert.equal(await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索或跳转/ }).evaluate(element => document.activeElement === element), true)
     assert.equal((await bonusCalls(page)).length, 0)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
@@ -445,8 +456,8 @@ test('bonus redemption cannot show an old account credit after an account switch
     await input.press('Enter')
     await action.filter({ hasText: '正在领取' }).waitFor()
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
-    await page.getByRole('button', { name: '打开个人中心 next-user', exact: true }).waitFor()
-    await page.getByTestId('nav-acceleration').click()
+    await page.getByRole('button', { name: /^个人中心：next-user(，|$)/ }).waitFor()
+    await goToAcceleration(page)
     await page.clock.runFor(500)
     await remaining(page).waitFor()
     assert.equal(await remaining(page).innerText(), '00:20:00')
