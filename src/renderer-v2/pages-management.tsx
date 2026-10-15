@@ -1964,6 +1964,10 @@ export function ExtensionsPage({
   const formTargets = formChoices
     .filter((choice) => choice.note === null && formTools.includes(choice.id))
     .map((choice) => choice.id)
+  // Codex CLI 的连接只有全局一层，submitMcpInstall 给它的范围会被丢掉。勾上它时整张表就只能装到「我的（全局）」，
+  // 不然框里写着装进当前项目，Codex CLI 那边其实是全局的。
+  const mcpGlobalOnly = kind === 'mcp' && formTargets.includes('codex')
+  const mcpScope = mcpGlobalOnly ? 'user' : formScope
   const addMcp = async () => {
     const name = formName.trim()
     const problem = customMcpProblem({
@@ -2002,7 +2006,7 @@ export function ExtensionsPage({
     const done: Provider[] = []
     try {
       for (const target of formTargets) {
-        await submitMcpInstall(api, target, name, mcp, formScope, advanced)
+        await submitMcpInstall(api, target, name, mcp, mcpScope, advanced)
         done.push(target)
       }
     } finally {
@@ -2862,12 +2866,12 @@ export function ExtensionsPage({
             aria-label={kind === 'mcp' ? undefined : '添加范围'}
             options={[
               { value: 'user', label: '我的（全局）' },
-              // Codex 的连接和插件只有全局一层；几个工具一起加时，只要有一个分得出项目就给这一项。
-              ...((kind === 'mcp' ? formTargets.every((target) => target === 'codex') : provider === 'codex' && kind !== 'skill')
+              // Codex 的连接和插件只有全局一层；几个工具一起加时，勾了 Codex CLI 就不给这一项。
+              ...((kind === 'mcp' ? mcpGlobalOnly : provider === 'codex' && kind !== 'skill')
                 ? []
                 : [{ value: 'project', label: '当前项目' }]),
             ]}
-            value={formScope}
+            value={kind === 'mcp' ? mcpScope : formScope}
             onChange={(event) =>
               setFormScope(
                 event.target.value === 'project' ? 'project' : 'user',

@@ -1521,7 +1521,12 @@ test('a custom connection checks its name first and then goes to every tool pick
     await dialog.getByText('已经有叫「test-extension」的连接了，换个名字', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     await page.getByTestId('mcp-name').fill('my-db')
+    // 只给 Claude Code 时能选「当前项目」；勾上 Codex CLI（只有全局一层）就只剩「我的（全局）」，两边都装成全局。
+    const scope = dialog.getByLabel('装到哪里', { exact: true })
+    await scope.selectOption({ label: '当前项目' })
     await dialog.getByTestId('mcp-form-tools-codex').click()
+    assert.deepEqual(await scope.locator('option').allTextContents(), ['我的（全局）'])
+    assert.equal(await scope.inputValue(), 'user')
     await submit.click()
     await page.getByText('已添加「my-db」，给 Claude Code、Codex CLI 使用，下次打开工具时生效', { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args), [
