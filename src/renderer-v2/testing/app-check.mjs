@@ -8059,6 +8059,26 @@ test('startup cards no longer carry the dialog shadow that the scroll area cut i
   } finally { await page.close() }
 })
 
+// 欢迎页没有侧栏和状态栏：开机提示卡放在左下角会压住那行链接和底下四格（Windows 原生冒烟点「减少动画」
+// 就是被「已更新到 …」挡住的），欢迎页上它在右上角、星轨那片装饰上面。
+test('the startup card on the welcome page stays clear of the links and the feature row', async () => {
+  const page = await open('guest=1&justUpdated=1')
+  try {
+    await page.setViewportSize({ width: 1280, height: 660 })
+    await page.getByTestId('welcome-page').waitFor()
+    const card = page.getByTestId('startup-notices-list').locator('.xm-notice').first()
+    await card.waitFor()
+    const notice = await card.boundingBox()
+    for (const selector of ['.auth-welcome-copy', '.auth-welcome-foot']) {
+      const other = await page.locator(selector).boundingBox()
+      const apart = notice.x >= other.x + other.width || notice.x + notice.width <= other.x || notice.y >= other.y + other.height || notice.y + notice.height <= other.y
+      assert.ok(apart, `the startup card must not cover ${selector}: ${JSON.stringify({ notice, other })}`)
+    }
+    await page.getByTestId('welcome-motion').click({ timeout: 5000 })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // v4 不用抽屉（yoyo 10-13）：记录详情是居中的弹窗，背后罩住；Esc 关掉，焦点回到点开它的那一行。
 test('a record opens in a modal dialog that closes with Esc and hands focus back to its row', async () => {
   const page = await open('recentWorkspaces=1')
