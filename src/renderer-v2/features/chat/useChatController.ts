@@ -324,9 +324,10 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     return send(pending && pending.conversationId === activeConversation(stateRef.current).id ? pending.options : {})
   }
   // 正在回答的对话删不掉，所以有对话在生成时整个不动，界面上那颗按钮也是灰的。
+  // 没发出去的草稿也存在本机，一起换成空白的，不然清空后它马上又冒出来；分组、模型和参数照旧。
   const clearAllConversations = () => {
     if (stateRef.current.conversations.some(isGenerating)) return false
-    commit((workspace) => ({ ...workspace, conversations: [], activeId: null }))
+    commit((workspace) => ({ ...workspace, conversations: [], activeId: null, draftConversation: createConversation(workspace.draftConversation.settings) }))
     return true
   }
   const clearConversation = () => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => ({ ...item, messages: [], title: '新对话' })) }

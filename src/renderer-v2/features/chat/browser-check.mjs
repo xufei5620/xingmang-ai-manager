@@ -925,6 +925,7 @@ test('the conversation list groups by day, finds by title and clears everything 
     conversation('older', '很久以前聊的', noon.getTime() - 10 * 86_400_000),
   ]
   state.activeId = 'today'
+  state.draftConversation.draft = '还没发出去的话'
   const page = await open('', { [storedChatKey]: JSON.stringify(state) })
   try {
     const list = page.getByRole('navigation', { name: '已保存的对话' })
@@ -961,7 +962,9 @@ test('the conversation list groups by day, finds by title and clears everything 
     await waitForToast(page, '对话已清空')
     assert.equal(await list.locator('.chat-conversation-select').count(), 0)
     assert.equal(await page.getByTestId('chat-conversations-clear').count(), 0)
-    await waitSaved(page, (workspace) => workspace.conversations.length === 0)
+    // 没发出去的草稿也算本机记录，清空后不会再冒出来。
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '')
+    await waitSaved(page, (workspace) => workspace.conversations.length === 0 && workspace.draftConversation.draft === '' && workspace.draftConversation.settings.model === 'gpt-test')
   } finally { await page.close() }
 })
 
