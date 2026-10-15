@@ -1,10 +1,12 @@
-import type { NewApiBillingPreference, NewApiLoginSession, NewApiSubscription, NewApiSubscriptionSelf } from '../../../../electron/new-api-client'
+import type { AccountLoginSession, AccountSubscriptionBillingPreference, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
 import { subscriptionExpiringDays, subscriptionLowUsd } from '../../../../electron/subscription-summary'
 
 /**
  * 个人中心 v4（账号概览、账号安全、密钥管理、邀请返利）上那些由数据拼出来的话。都是纯函数，
  * 页面只管摆；字以字表批06为准，测试钉着。
  */
+
+type Subscription = AccountSubscriptionSelf['activeSubscriptions'][number]
 
 const dayMs = 86_400_000
 const weekdayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const
@@ -73,10 +75,10 @@ export interface SubscriptionOverview {
   totalUsd: number | null
   /** 快到期或快用完：标签写「快用完了」，链接写「去续费」。 */
   short: boolean
-  preference: NewApiBillingPreference | null
+  preference: AccountSubscriptionBillingPreference | null
 }
 
-function usageOf(subscription: NewApiSubscription, quotaPerUnit: number): { used: number; total: number } | null {
+function usageOf(subscription: Subscription, quotaPerUnit: number): { used: number; total: number } | null {
   if (subscription.quotaPeriods) {
     // 历史账号按日、周、月各有一个上限，最紧的那个说了算（同 subscription-summary）。
     let tightest: { used: number; total: number } | null = null
@@ -96,11 +98,11 @@ function usageOf(subscription: NewApiSubscription, quotaPerUnit: number): { used
  * 不一样，扣费顺序是「只用余额」时也照样列出来，订阅确实还在；没有就是 null（「没有订阅」）。
  */
 export function subscriptionOverview(
-  self: Pick<NewApiSubscriptionSelf, 'billingPreference' | 'activeSubscriptions'> | null | undefined,
+  self: Pick<AccountSubscriptionSelf, 'billingPreference' | 'activeSubscriptions'> | null | undefined,
   { now, quotaPerUnit, planNames }: { now: number; quotaPerUnit: number; planNames?: ReadonlyMap<number, string> },
 ): SubscriptionOverview | null {
   if (!self) return null
-  let best: NewApiSubscription | null = null
+  let best: Subscription | null = null
   for (const subscription of self.activeSubscriptions) {
     if (subscription.status !== 'active') continue
     const ends = Date.parse(subscription.endsAt)
@@ -145,7 +147,7 @@ export function inviteRuleText(rate: number | null | undefined): string {
  * 登录设备那一行的小字：这台是「正在使用」；别的写多久以前活动过、从哪个地址。后台没给地址
  * 或时间的那一半就不写。
  */
-export function deviceActivityText(session: Pick<NewApiLoginSession, 'current' | 'ip' | 'lastActiveAt'>, now: number): string {
+export function deviceActivityText(session: Pick<AccountLoginSession, 'current' | 'ip' | 'lastActiveAt'>, now: number): string {
   if (session.current) return '正在使用'
   const at = Date.parse(session.lastActiveAt)
   let when = ''
