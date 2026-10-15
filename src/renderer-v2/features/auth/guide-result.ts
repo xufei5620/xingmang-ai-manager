@@ -102,7 +102,7 @@ export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult 
   const { route, readiness } = input
   const connection = connectionResult(input)
   const prompt = route === 'codexDesktop'
-    ? '请用中文先阅读当前项目，概述目标，并列出开始实现前需要确认的三个问题；先不要修改文件。'
+    ? '帮我看看这个文件夹里都有什么，每个文件用一句话说明它是做什么的。'
     : route === 'chat' ? '请先问我想解决的问题和限制，然后给我一个今天就能做的第一步。' : null
   const next: GuideResultRow = !readiness.prepared
     ? { value: '先回上一步', detail: '把工具准备好后，点「重新检测」。', tone: 'warn' }

@@ -228,19 +228,20 @@ async function main() {
     assert.equal(checks.length, widths.length)
     passedAssertions.push('zoom-follows-the-platform-formula-at-every-width')
 
-    progress('checking the star canvas')
+    progress('checking the star layer')
     await assertNoStartupDialog(page, evidence, 'after resizing the window')
     passedAssertions.push('no-blocking-startup-dialog')
     await page.getByTestId('welcome-motion').click()
     await withDeadline('reduced motion', stepBudgetMs, () => page.waitForFunction(() => document.documentElement.dataset.reducedMotion === 'true'))
-    evidence.pixels = await withDeadline('canvas pixels', stepBudgetMs, () => page.getByTestId('welcome-starfield').evaluate((canvas) => {
-      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
-      let visible = 0
-      for (let i = 3; i < data.length; i += 4) if (data[i]) visible++
-      return { visible, total: canvas.width * canvas.height }
+    // v4 的星星是 CSS 圆点（不再是逐帧重画的整窗画布）：要真的画出了圆点，欢迎页里也不能再有画布。
+    evidence.stars = await withDeadline('star layer', stepBudgetMs, () => page.getByTestId('welcome-starfield').evaluate((layer) => {
+      const rect = layer.getBoundingClientRect()
+      return { image: getComputedStyle(layer).backgroundImage, width: rect.width, height: rect.height, canvases: document.querySelectorAll('.auth-welcome canvas').length }
     }))
-    assert.ok(evidence.pixels.visible > evidence.pixels.total * 0.01, 'The star canvas must contain rendered pixels')
-    passedAssertions.push('star-canvas-renders-pixels')
+    assert.match(evidence.stars.image, /radial-gradient/, 'The star layer must draw its dots')
+    assert.ok(evidence.stars.width > 0 && evidence.stars.height > 0, 'The star layer must cover the welcome page')
+    assert.equal(evidence.stars.canvases, 0, 'The welcome page must not repaint a full-window canvas')
+    passedAssertions.push('star-layer-renders-without-a-canvas')
 
     progress('checking that preferences survive a reload')
     await withDeadline('high contrast', stepBudgetMs, () => page.evaluate(() => window.xingmangPlatform.setHighContrast(true)))
