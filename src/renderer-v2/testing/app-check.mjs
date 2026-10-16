@@ -243,6 +243,13 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
         await page.getByTestId(`home-client-${tool}`).click()
         const dialog = page.getByTestId('external-client-dialog')
         await dialog.waitFor()
+        // 自家工具的密钥默认选中、也排在下拉第一项：0.2.19 测试包里 Claude Desktop 的下拉第一项是 Codex 那把。
+        const own = tool === 'claudeDesktop' ? 'configured:claude' : 'configured:codex'
+        await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', own)
+        await page.getByTestId('external-client-source').click()
+        const options = page.locator('[data-testid^="external-client-source-option-"]')
+        assert.equal(await options.first().getAttribute('data-testid'), `external-client-source-option-${own}`)
+        await options.first().click()
         await page.getByTestId('external-client-detect').click()
         const model = tool === 'claudeDesktop' ? 'claude-fixture' : 'deepseek-fixture'
         await page.getByTestId('external-client-model').selectOption(model)
