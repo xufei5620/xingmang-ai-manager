@@ -259,6 +259,85 @@ describe('tool model check', () => {
     expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.account-changed', expect.any(String), { provider: 'codex' })
   })
 
+  describe('retired default model', () => {
+    const listed = ['codex-auto-review', 'gpt-6-astra', 'gpt-6.1-sol']
+
+    it('swaps a retired Codex model for the current default at startup, backing up first', async () => {
+      const codex = { apiKey: 'sk-fixture', model: 'gpt-5.5', identity: 'site:1:key:gpt-5.5' }
+      const order: string[] = []
+      const { deps, checker } = setup({
+        listModels: vi.fn(async () => listed),
+        refreshPicker: vi.fn(async () => { order.push('write') }),
+      }, { codex })
+      await expect(checker.syncPicker('codex', { beforeRefresh: () => { order.push('backup') } })).resolves.toBe(true)
+      expect(order).toEqual(['backup', 'write'])
+      expect(deps.refreshPicker).toHaveBeenCalledWith('codex', 'gpt-6-astra', expect.any(Function))
+      expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.retired-replaced', expect.stringContaining('Codex'), { provider: 'codex', model: 'gpt-5.5', replacement: 'gpt-6-astra' })
+    })
+
+    it('falls back to a model the account can use when it has no current default either', async () => {
+      const codex = { apiKey: 'sk-fixture', model: 'gpt-5.5', identity: 'x' }
+      const { deps, checker } = setup({ listModels: vi.fn(async () => ['codex-auto-review', 'gpt-6.1-sol']) }, { codex })
+      await expect(checker.syncPicker('codex')).resolves.toBe(true)
+      expect(deps.refreshPicker).toHaveBeenCalledWith('codex', 'gpt-6.1-sol', expect.any(Function))
+    })
+
+    it('keeps a retired model the account still lists, and leaves other missing models to the question before a launch', async () => {
+      const stillListed = setup({ listModels: vi.fn(async () => ['gpt-5.5', ...listed]) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
+      await expect(stillListed.checker.syncPicker('codex')).resolves.toBe(false)
+      expect(stillListed.deps.refreshPicker).not.toHaveBeenCalled()
+
+      const notRetired = setup({ listModels: vi.fn(async () => listed) }, { codex: { apiKey: 'sk', model: 'gpt-5.6-sol', identity: 'x' } })
+      await expect(notRetired.checker.syncPicker('codex')).resolves.toBe(false)
+      expect(notRetired.deps.refreshPicker).not.toHaveBeenCalled()
+
+      const nothingToUse = setup({ listModels: vi.fn(async () => ['codex-auto-review']) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
+      await expect(nothingToUse.checker.syncPicker('codex')).resolves.toBe(false)
+      expect(nothingToUse.deps.refreshPicker).not.toHaveBeenCalled()
+    })
+
+    it('still only asks before a launch, without changing anything itself', async () => {
+      const { deps, checker } = setup({ listModels: vi.fn(async () => listed) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
+      await expect(checker.check('codex')).resolves.toEqual({ status: 'unavailable', model: 'gpt-5.5', replacement: 'gpt-6-astra' })
+      expect(deps.refreshPicker).not.toHaveBeenCalled()
+    })
+
+    it('does not swap when the backup fails or the account switched while the list was loading', async () => {
+      const failed = setup({ listModels: vi.fn(async () => listed) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
+      await expect(failed.checker.syncPicker('codex', { beforeRefresh: () => { throw new Error('备份失败') } })).resolves.toBe(false)
+      expect(failed.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(failed.deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-replace-failed', expect.any(String), { provider: 'codex', model: 'gpt-5.5', replacement: 'gpt-6-astra', reason: '备份失败' })
+
+      let finish!: (models: string[]) => void
+      const target = { apiKey: 'sk-account-a', model: 'gpt-5.5', identity: 'A' }
+      const switched = setup({ listModels: vi.fn(() => new Promise<string[]>((resolve) => { finish = resolve })) }, { codex: target })
+      const pending = switched.checker.syncPicker('codex')
+      await Promise.resolve()
+      target.identity = 'B'
+      finish(listed)
+      await expect(pending).resolves.toBe(false)
+      expect(switched.deps.refreshPicker).not.toHaveBeenCalled()
+    })
+
+    it('hands the writer a guard that holds through its own write but fails once the account has moved on', async () => {
+      const config = { apiKey: 'sk-account-a', model: 'gpt-5.5', identity: 'A:gpt-5.5' }
+      let guard!: () => void
+      const { checker } = setup({
+        listModels: vi.fn(async () => listed),
+        identity: vi.fn(() => config.identity),
+        refreshPicker: vi.fn(async (_provider: string, _model: string, assertCurrent: () => void) => { guard = assertCurrent }),
+      }, { codex: config })
+      await checker.syncPicker('codex')
+      expect(() => guard()).not.toThrow()
+      config.identity = 'B:gpt-5.5'
+      expect(() => guard()).toThrow('账号已变化')
+      // 写完以后配置里已经是换上去的那个：这一下不算换了人。
+      config.model = 'gpt-6-astra'
+      config.identity = 'A:gpt-6-astra'
+      expect(() => guard()).not.toThrow()
+    })
+  })
+
   it('accepts the Gemini -high spelling the config writer adds', () => {
     expect(modelOffered('gemini', 'gemini-3.8-flash-high', ['gemini-3.8-flash'])).toBe(true)
     expect(modelOffered('claude', 'claude-opus-5-high', ['claude-opus-5'])).toBe(false)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
+import { isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -67,5 +67,14 @@ describe('resolveCliModelUpgrade', () => {
   it('ignores model names that collide with object prototype keys', () => {
     expect(resolveCliModelUpgrade('claude', 'constructor', ['claude-opus-5-5'])).toBeNull()
     expect(resolveCliModelUpgrade('claude', '__proto__', ['claude-opus-5-5'])).toBeNull()
+  })
+})
+
+describe('isRetiredCliModel', () => {
+  it('names only models both sites have taken down, and only for the tool that used them', () => {
+    expect(isRetiredCliModel('codex', 'gpt-5.5')).toBe(true)
+    expect(isRetiredCliModel('codex', 'gpt-5.6-sol')).toBe(false)
+    expect(isRetiredCliModel('codex', 'gpt-6-astra')).toBe(false)
+    expect(isRetiredCliModel('claude', 'gpt-5.5')).toBe(false)
   })
 })
