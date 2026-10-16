@@ -40,6 +40,7 @@ const codexChineseRuntimeSource = String.raw`((documentHook) => {
     patchedConfigs: 0,
     lastPatchAt: 0,
     localeReads: 0,
+    nativeI18n: false,
     documentHook,
   };
   try { globalThis.__xingmangCodexChineseLocaleState = state; } catch {}
@@ -56,6 +57,10 @@ const codexChineseRuntimeSource = String.raw`((documentHook) => {
   defineNavigator("languages", [locale, "zh"]);
 
   let verifyingConfig = false;
+  // Statsig hands out the stored value object itself, so the write below
+  // reaches every later read of the same object. Only a value seen before
+  // that write says what OpenAI actually sent.
+  const forcedValues = new WeakSet();
   const forceConfig = (config) => {
     if (!config || (typeof config !== "object" && typeof config !== "function")) return config;
     const previousPatch = config.__xingmangCodexChineseConfigV3;
@@ -82,10 +87,15 @@ const codexChineseRuntimeSource = String.raw`((documentHook) => {
       } catch {}
     }
     try {
-      if (config.value && typeof config.value === "object") {
-        config.value.enable_i18n = true;
-        config.value.locale_source = "SYSTEM";
-        patched = patched || (config.value.enable_i18n === true && config.value.locale_source === "SYSTEM");
+      const value = config.value;
+      if (value && typeof value === "object") {
+        // The switch already on from OpenAI means Codex shows Chinese by itself
+        // (localeOverride is zh-CN), whether or not it reads it through us.
+        if (!forcedValues.has(value) && value.enable_i18n === true) state.nativeI18n = true;
+        value.enable_i18n = true;
+        value.locale_source = "SYSTEM";
+        forcedValues.add(value);
+        patched = patched || (value.enable_i18n === true && value.locale_source === "SYSTEM");
       }
     } catch {}
     if (patched) {
@@ -829,6 +839,8 @@ interface CdpRendererProbe {
    */
   interfaceShown: boolean
   localeReadObserved: boolean
+  /** OpenAI 那边下发的中文开关本来就开着：星芒写好了 localeOverride，Codex 自己就会显示中文。 */
+  nativeLocaleEnabled: boolean
 }
 
 interface CdpInjectionSession {
@@ -850,6 +862,7 @@ const codexRendererProbeScript = String.raw`(() => {
     patchInstalled: Boolean(state && state.runtimeVersion === 3),
     patchReady: Boolean(state && state.patchedClients > 0 && state.patchedConfigs > 0),
     localeReadObserved: Boolean(state && state.localeReads > 0),
+    nativeLocaleEnabled: Boolean(state && state.nativeI18n),
     navigatorLocale: navigator.language,
   });
 })();`
@@ -858,7 +871,7 @@ const codexRendererProbeScript = String.raw`(() => {
 const codexInterfaceTextLength = 40
 
 function readRendererProbeResult(response: CdpResponse): CdpRendererProbe {
-  const unavailable = { ready: false, rendererReady: false, documentReady: false, patchReady: false, patchInstalled: false, documentIdentity: null, interfaceShown: false, localeReadObserved: false }
+  const unavailable = { ready: false, rendererReady: false, documentReady: false, patchReady: false, patchInstalled: false, documentIdentity: null, interfaceShown: false, localeReadObserved: false, nativeLocaleEnabled: false }
   if (response.error || response.result?.exceptionDetails) return unavailable
   const value = response.result?.result?.value
   if (typeof value !== 'string') return unavailable
@@ -873,8 +886,13 @@ function readRendererProbeResult(response: CdpResponse): CdpRendererProbe {
     const documentIdentity = typeof parsed.documentIdentity === 'number' && Number.isFinite(parsed.documentIdentity) && parsed.documentIdentity > 0
       ? parsed.documentIdentity : null
     const localeReadObserved = parsed.localeReadObserved === true
+    const nativeLocaleEnabled = parsed.nativeLocaleEnabled === true
+    // 两种都算换成了：Codex 经补丁读到了开关；或者 OpenAI 那边的开关本来就开着，界面已经画出来，
+    // 它自己就是中文。后一种以前不算，界面明明是中文，星芒却报「没换成」。
+    const chineseConfirmed = (patchReady && localeReadObserved)
+      || (nativeLocaleEnabled && typeof parsed.textLength === 'number' && parsed.textLength >= codexInterfaceTextLength)
     return {
-      ready: rendererReady && documentReady && patchInstalled && patchReady && documentIdentity !== null && localeReadObserved,
+      ready: rendererReady && documentReady && patchInstalled && documentIdentity !== null && chineseConfirmed,
       rendererReady,
       documentReady,
       patchReady,
@@ -882,6 +900,7 @@ function readRendererProbeResult(response: CdpResponse): CdpRendererProbe {
       documentIdentity,
       interfaceShown: typeof parsed.textLength === 'number' && parsed.textLength >= codexInterfaceTextLength,
       localeReadObserved,
+      nativeLocaleEnabled,
     }
   } catch {
     return unavailable
@@ -896,7 +915,8 @@ function readRendererProbeResult(response: CdpResponse): CdpRendererProbe {
 function describeRendererProbe(probe: CdpRendererProbe | null): string {
   if (!probe) return ''
   return `（界面${probe.interfaceShown ? '已画出' : '还停在启动那一屏'}，补丁${probe.patchInstalled ? '已挂上' : '没挂上'}，`
-    + `${probe.patchReady ? '找到了' : '没找到'}语言开关，Codex ${probe.localeReadObserved ? '读过' : '没读过'}开关）`
+    + `${probe.patchReady ? '找到了' : '没找到'}语言开关，Codex ${probe.localeReadObserved ? '读过' : '没读过'}开关，`
+    + `OpenAI 下发的开关${probe.nativeLocaleEnabled ? '开着' : '没开'}）`
 }
 
 async function listTargets(

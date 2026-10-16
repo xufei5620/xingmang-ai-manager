@@ -121,7 +121,7 @@ function runtimeHarness(initialRoot?: unknown) {
     context,
     run: () => vm.runInContext(codexChineseRuntimeScript, context),
     state: () => vm.runInContext('globalThis.__xingmangCodexChineseLocaleState', context) as {
-      patchedClients: number; patchedConfigs: number; localeReads: number
+      patchedClients: number; patchedConfigs: number; localeReads: number; nativeI18n: boolean
     },
     tick: (milliseconds: number) => { now += milliseconds; for (const callback of intervals.values()) callback() },
   }
@@ -314,6 +314,23 @@ describe('Codex Desktop Chinese CDP injection', () => {
     root.getLayer('72216192')!.get('other', 'fallback', { disableExposureLog: true })
     expect(forwardedArguments).toEqual(['other', 'fallback', { disableExposureLog: true }])
     expect(config.value).toMatchObject({ enable_i18n: true, locale_source: 'SYSTEM' })
+  })
+
+  it('records a switch OpenAI already turned on, but never one this patch turned on itself', () => {
+    const sent = { enable_i18n: true, locale_source: 'IDE' }
+    const on = runtimeHarness({ getDynamicConfig: () => ({ value: sent, get: (_key: string, fallback: unknown) => fallback }) })
+    on.run()
+    expect(on.state().nativeI18n).toBe(true)
+
+    // Statsig returns the same stored value object on every call, so after the
+    // first forced write a later read must not be mistaken for OpenAI's answer.
+    const stored = { enable_i18n: false }
+    const off = runtimeHarness({ getDynamicConfig: () => ({ value: stored, get: (_key: string, fallback: unknown) => fallback }) })
+    off.run()
+    off.tick(50)
+    off.tick(50)
+    expect(stored.enable_i18n).toBe(true)
+    expect(off.state().nativeI18n).toBe(false)
   })
 
   it('patches a late Statsig root before its synchronous first locale read', () => {
@@ -644,7 +661,29 @@ describe('Codex Desktop Chinese CDP injection', () => {
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => socket,
       delay: async () => undefined,
-    })).rejects.toThrow('（界面已画出，补丁已挂上，没找到语言开关，Codex 没读过开关）')
+    })).rejects.toThrow('（界面已画出，补丁已挂上，没找到语言开关，Codex 没读过开关，OpenAI 下发的开关没开）')
+  })
+
+  it('accepts a drawn interface whose switch OpenAI already turned on, without a reload', async () => {
+    const { socket, sent } = mockCdpSocket(() => ({ ...readyProbe, localeReadObserved: false, nativeLocaleEnabled: true }))
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 1 })
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(0)
+  })
+
+  it('does not take the switch OpenAI sent as the language shown while Codex is still starting', async () => {
+    const { socket } = mockCdpSocket(() => ({ ...readyProbe, textLength: 0, localeReadObserved: false, nativeLocaleEnabled: true }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('界面还停在启动那一屏')
   })
 
   it('neither reloads nor gives up while Codex still shows its own start-up screen', async () => {
