@@ -12,8 +12,6 @@ export const shellNavigation: readonly ShellNavigationGroup[] = [
   { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
   { entries: ['recharge', 'tutorial', 'health', 'feedback'] },
 ]
-// 过渡期：游戏加速、备份、更新已并进设置（第 9 批）；安装卸载等第 10 批拆掉，空了连「更多」一起删。
-export const moreNavigation: readonly PageId[] = ['maintenance']
 /** 界面导览三步：没有标题，第一步按系统只写一种快捷键。 */
 export const shellTour = [
   { target: '.v2-command-trigger', body: { win: '按 Ctrl K 随时搜索页面、设置和操作，比翻菜单快。', mac: '按 ⌘ K 随时搜索页面、设置和操作，比翻菜单快。' } },

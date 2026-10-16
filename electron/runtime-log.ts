@@ -700,7 +700,7 @@ export class RuntimeLogStore {
     // sizing it with the untrimmed count keeps the budget conservative.
     const fixedLength = render(headLines(logLines.length, true), []).length
     if (fixedLength > maxLength) {
-      throw new Error('反馈报告里日志以外的部分就已经超过大小上限，没法生成；请在反馈页点「打开日志目录」，把里面的日志文件直接发给客服')
+      throw new Error('反馈报告里日志以外的部分就已经超过大小上限，没法生成；请在「反馈与客服」页点「打开日志文件夹」，把里面的日志文件直接发给客服')
     }
     let budget = maxLength - fixedLength
     let kept = 0

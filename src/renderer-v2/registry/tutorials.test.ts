@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
-import { accountTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { accountTabs, feedbackTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
 import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
@@ -14,6 +14,7 @@ function step(topicId: string, action: string): TutorialStep {
 const sectionsByPage = {
   account: [...accountTabs.filter((tab) => tab.value !== 'overview'), { value: 'recharge', label: '侧栏「充值」' }],
   settings: settingsGroups.filter((group) => group.value !== 'appearance'),
+  feedback: feedbackTabs.filter((tab) => tab.value !== 'form'),
 } as const;
 
 // 设置的 section 可以是一行：比的是那一行所在的组，「在哪里」写的是组名。
@@ -22,7 +23,7 @@ function settingsGroupOf(section: string | undefined): string | undefined {
 }
 
 function sectionNamedIn(entry: TutorialStep): string | undefined {
-  if (entry.page !== 'account' && entry.page !== 'settings') return undefined;
+  if (entry.page !== 'account' && entry.page !== 'settings' && entry.page !== 'feedback') return undefined;
   const where = entry.where ?? '';
   const named = sectionsByPage[entry.page]
     .map((section) => ({ value: section.value, position: where.indexOf(section.label) }))
@@ -55,9 +56,20 @@ describe('tutorial step targets', () => {
     for (const topic of tutorialTopics) for (const entry of topic.steps) {
       if (entry.section === undefined) continue;
       const known: readonly string[] = entry.page === 'account' ? accountTabs.map((tab) => tab.value)
-        : entry.page === 'settings' ? [...settingsGroups.map((group) => group.value), ...settingsItems.map((item) => item.id)] : [];
+        : entry.page === 'settings' ? [...settingsGroups.map((group) => group.value), ...settingsItems.map((item) => item.id)]
+        : entry.page === 'feedback' ? feedbackTabs.map((tab) => tab.value) : [];
       expect(known, `${topic.id} / ${entry.action}`).toContain(entry.section);
     }
+  });
+
+  // 「安装卸载」页拆掉了（第 10 批）：教程不再教人去那一页，按钮也不再落到那个已经只是别名的页面上。
+  it('never sends a step to the retired install page or tells the customer to look for it', () => {
+    for (const topic of tutorialTopics) for (const entry of topic.steps) {
+      expect(entry.page, `${topic.id} / ${entry.action}`).not.toBe('maintenance');
+    }
+    expect(JSON.stringify(tutorialTopics)).not.toContain('安装卸载');
+    expect(JSON.stringify(tutorialTopics)).not.toContain('「更多」');
+    expect(step('messages', '查看安装与更新结果')).toMatchObject({ page: 'feedback', section: 'log' });
   });
 
   it('declares a section whenever the step location names a non-default tab of its page', () => {

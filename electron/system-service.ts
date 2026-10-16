@@ -66,6 +66,7 @@ import {
   createCodexDesktopService,
   desktopUpdateFields,
   inspectCodexDesktopPackage,
+  type CodexDesktopInstallProgress,
   type CodexDesktopInstallResult,
   type CodexDesktopPackageProbe,
 } from './codex-desktop-service'
@@ -3140,6 +3141,47 @@ export function createCachedProbe<T>(probe: () => Promise<T>, ttlMs: number, now
   }
 }
 
+/**
+ * Codex 桌面端装的时候每一步原来只发给界面，「安装卸载」页的安装日志卡还看得见；那一页
+ * 拆掉以后（界面 v4 第 10 批）要落进运行日志，客服才看得出卡在哪一步、商店那一路换没换
+ * 官网离线包。下载百分比和已等秒数每跳一次就是一条，按去掉数字以后的话去重，同一句只记一次。
+ */
+export function codexDesktopProgressLogKey(progress: CodexDesktopInstallProgress): string {
+  return `${progress.phase}:${progress.message.replace(/\d+(?:\.\d+)*/g, '#')}`
+}
+
+function isCodexDesktopInstallProgress(value: unknown): value is CodexDesktopInstallProgress {
+  return typeof value === 'object' && value !== null
+    && typeof (value as { phase?: unknown }).phase === 'string'
+    && typeof (value as { message?: unknown }).message === 'string'
+}
+
+/**
+ * 包一层发给界面的目标，安装进度照发，同时按 codexDesktopProgressLogKey 去重后交给 log。
+ * 失败那一条不交：ipc 层已经把「Codex 桌面端安装失败：…」记成错误，再记一遍错误数会多算。
+ */
+export function withCodexDesktopProgressLog(
+  target: RendererMessageTarget,
+  log: (progress: CodexDesktopInstallProgress) => void,
+): RendererMessageTarget {
+  let lastKey: string | null = null
+  return {
+    isDestroyed() {
+      return target.isDestroyed()
+    },
+    send(channel, payload) {
+      if (channel === 'desktop:codex-install-progress' && isCodexDesktopInstallProgress(payload) && payload.phase !== 'error') {
+        const key = codexDesktopProgressLogKey(payload)
+        if (key !== lastKey) {
+          lastKey = key
+          log(payload)
+        }
+      }
+      target.send(channel, payload)
+    },
+  }
+}
+
 /** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
 export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
   return { failures: failures.map((failure) => ({ ...failure, reason: redactHomeDirectory(failure.reason, userHome) })) }
@@ -5907,7 +5949,9 @@ export function createSystemService(
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
     let result: CodexDesktopInstallResult
     try {
-      result = await installCodexDesktopOperation(target)
+      result = await installCodexDesktopOperation(withCodexDesktopProgressLog(target, (progress) => runtimeLog?.log(
+        'info', 'install', 'codex-desktop.install.progress', progress.message, { phase: progress.phase },
+      )))
     } finally {
       // 桌面端换了一批，自带的 Codex 也跟着换了：读不进型号名单的话开不了新对话。
       await takeBackUnreadableCodexModelCatalog('desktop-installed')

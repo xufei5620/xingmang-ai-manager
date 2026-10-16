@@ -4,6 +4,7 @@ import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { errors } from './registry/errors'
+import { feedbackInstallLogSection } from './registry/business'
 
 export type OperationErrorKey = keyof typeof errors
 export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopDownload'
@@ -190,7 +191,7 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   复制路径: 'copyPath',
   去备份迁移: 'backups',
   // 公司电脑的证书要新版 Node.js 才认（system-certificate-trust.ts）。以前这里只有「重试」，
-  // 提示叫人去「安装卸载」页点「安装」，那边一看 Node.js 够装工具就回「无需重复安装」，
+  // 提示叫人去「安装卸载」页（v4 第 10 批拆掉了）点「安装」，那边一看 Node.js 够装工具就回「无需重复安装」，
   // 客户来回转圈（第十八批 4）。只有 Windows 换得了：调用方按平台决定留不留它。
   '换成新版 Node.js': 'replaceNode',
   // 只有 Codex 桌面端装不上那一类会出这颗，而那句话只有 Windows 的安装路径写得出来，
@@ -237,25 +238,26 @@ export function operationFallbackActions(): OperationAction[] {
 }
 
 /**
- * 「查看日志」该落到哪一页。以前一律跳「安装卸载」页，于是连接检查、写 Key、
- * 拉起终端这些失败的用户点开的是一张空的「安装日志」卡（候选 8）。
+ * 「查看日志」落到「反馈与客服 › 运行日志」的哪里。以前一律跳「安装卸载」页，于是连接检查、写 Key、
+ * 拉起终端这些失败的用户点开的是一张空的「安装日志」卡（候选 8）；v4 拆掉那一页以后（第 10 批），
+ * 安装的过程也在运行日志里，差别只剩来源要不要先选好「安装与更新」。
  *
  * 判断分两步，因为两条线索缺一不可：
  * 1. 没有 tool 的失败根本不来自安装 / 卸载 / 更新（只有这三条路会把工具记下来），
- *    它们的痕迹只在 runtime.jsonl 里，要到「反馈」页看。
+ *    打开整份运行日志看。
  * 2. 来自安装的失败再看类别：网络、证书、磁盘、权限、文件被占用、账号这些是
- *    环境问题，运行日志记得全；真正只有安装那一侧才写得出的（杀毒拦截、更新包
- *    校验、认不出的安装失败）才值得跳到「安装日志」卡。
+ *    环境问题，整份日志都记着；真正只有安装那一侧才写得出的（杀毒拦截、更新包
+ *    校验、认不出的安装失败）才先筛到「安装与更新」。
  */
-export type OperationLogPage = 'maintenance' | 'feedback'
+export type OperationLogSection = 'log' | typeof feedbackInstallLogSection
 
 const installLogKeys: ReadonlySet<OperationErrorKey> = new Set<OperationErrorKey>(['installBlocked', 'updateIntegrity', 'unknown'])
 
-export function operationLogPage(failure: { message: string; detail?: string | undefined; tool?: string | undefined }): OperationLogPage {
-  if (!failure.tool) return 'feedback'
+export function operationLogSection(failure: { message: string; detail?: string | undefined; tool?: string | undefined }): OperationLogSection {
+  if (!failure.tool) return 'log'
   const key = classifyOperationError(failure.message)
   const resolved = key === 'unknown' && failure.detail ? classifyOperationError(failure.detail) : key
-  return installLogKeys.has(resolved) ? 'maintenance' : 'feedback'
+  return installLogKeys.has(resolved) ? feedbackInstallLogSection : 'log'
 }
 
 export function presentOperationError(message: string, target?: OperationTarget): OperationErrorHint | null {

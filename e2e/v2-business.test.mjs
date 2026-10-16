@@ -1789,7 +1789,8 @@ test('a featured entry that needs a folder asks for it in the same dialog before
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await page.getByTestId('featured-recommend').click()
-    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'feedback')
+    // 「反馈与客服」分两个页签（v4 第 10 批）：想要新的连接落在「留言反馈」。
+    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['feedback', 'form'])
   } finally {
     await page.close()
   }
@@ -1911,23 +1912,105 @@ test('backup list names whose key a backup holds and warns before restoring anot
   }
 })
 
+// v4 第 10 批：「反馈与客服」分「留言反馈」「运行日志」两个页签，日志在第二个里。
+async function openRunLog(page) {
+  await page.getByTestId('feedback-tabs').getByRole('tab', { name: /^运行日志/ }).click()
+  await page.getByTestId('feedback-panel-log').waitFor()
+}
+
+test('feedback opens on the message form and copies what the customer wrote together with the report', async () => {
+  const page = await fixture('page=feedback')
+  try {
+    const form = page.getByTestId('feedback-form')
+    await form.waitFor()
+    assert.equal(await page.getByRole('tab', { name: '留言反馈', exact: true }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.getByTestId('feedback-panel-log').isHidden(), true)
+    // 没写描述就点：就地提示，不复制、不打开客服。
+    await page.getByTestId('feedback-send').click()
+    await form.getByText('请先描述一下发生了什么', { exact: true }).waitFor()
+    assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard' || call.name === 'open-support'), false)
+    await page.getByTestId('feedback-type').getByRole('button', { name: '功能建议', exact: true }).click()
+    await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
+    assert.equal(await form.getAttribute('data-unsaved'), 'true')
+    await page.getByTestId('feedback-contact').fill('wx-test')
+    await page.getByTestId('feedback-send').click()
+    await waitForToast(page, '已复制，发给客服就行')
+    const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').map((call) => call.args)
+    assert.deepEqual(copied, [[
+      '留言反馈 · 功能建议',
+      '点「打开」后终端闪一下就关了',
+      '联系方式：wx-test',
+      '星芒 0.1.31 · Windows · 已登录 test-user',
+      '最近一次失败：安装 Codex CLI · 网络超时',
+    ].join('\n') + '\n\n固定的脱敏报告内容'])
+    assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
+    // 复制出去了就不再拦关窗口。
+    assert.equal(await form.getAttribute('data-unsaved'), null)
+    // 关掉「附带诊断报告」只复制客户写的那几行；关掉以后剪贴板里那段和表单对不上，又算没复制出去。
+    await page.getByTestId('feedback-attach').getByRole('switch').click()
+    assert.equal(await form.getAttribute('data-unsaved'), 'true')
+    await page.getByTestId('feedback-send').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
+    const last = (await calls(page)).filter((call) => call.name === 'copy-clipboard').at(-1).args
+    assert.equal(last.includes('固定的脱敏报告内容'), false)
+    assert.match(last, /^留言反馈 · 功能建议\n/)
+    assert.equal(await form.getAttribute('data-unsaved'), null)
+    // 换了类型也一样。
+    await page.getByTestId('feedback-type').getByRole('button', { name: '其他', exact: true }).click()
+    assert.equal(await form.getAttribute('data-unsaved'), 'true')
+  } finally {
+    await page.close()
+  }
+})
+
+test('feedback lists the first things to try and the support card next to the form', async () => {
+  const page = await fixture('page=feedback')
+  try {
+    const card = page.getByTestId('feedback-support-card')
+    await card.getByText('微信扫码添加客服', { exact: true }).waitFor()
+    await card.getByTestId('feedback-support-identity-line').getByText('星芒 0.1.31 · Windows · 已登录 test-user').waitFor()
+    await card.getByTestId('feedback-support-open').click()
+    const tries = page.getByTestId('feedback-try')
+    assert.deepEqual(
+      await tries.locator('.v2-fb-try-item > span > span').allInnerTexts(),
+      ['工具装不上，或者打开就闪退', '付了款，余额没变', '不知道从哪里开始用', '想把 AI 连上浏览器或文件夹'],
+    )
+    await page.getByTestId('feedback-try-orders').click()
+    await page.getByTestId('feedback-try-health').click()
+    assert.deepEqual(
+      (await calls(page)).filter((call) => ['open-support', 'navigate'].includes(call.name)).map((call) => [call.name, call.args]),
+      [['open-support', undefined], ['navigate', ['account', 'orders']], ['navigate', 'health']],
+    )
+  } finally {
+    await page.close()
+  }
+  const without = await fixture('page=feedback&noSupport')
+  try {
+    await without.getByTestId('feedback-form').waitFor()
+    assert.equal(await without.getByTestId('feedback-support-card').count(), 0)
+  } finally {
+    await without.close()
+  }
+})
+
 test('feedback narrows the log list by source and to this run, and copies one entry', async () => {
   const page = await fixture('page=feedback')
   try {
+    await openRunLog(page)
     await page.getByText('上次启动的更新记录').waitFor()
-    await page.getByTestId('feedback-source').selectOption('更新')
-    await page.waitForFunction(() => !document.body.innerText.includes('测试日志'))
+    await page.getByTestId('feedback-source').getByRole('button', { name: '更新', exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-panel-log"]')?.innerText.includes('测试日志'))
     await page.getByText('本次启动的更新失败').waitFor()
 
     await page.getByTestId('feedback-current-boot').getByRole('switch').click()
     await page.waitForFunction(() =>
-      !document.body.innerText.includes('上次启动的更新记录'),
+      !document.querySelector('[data-testid="feedback-panel-log"]')?.innerText.includes('上次启动的更新记录'),
     )
     await page.getByText('本次启动的更新失败').waitFor()
 
     await page.getByTestId('feedback-log-2026-09-07T01:00:00Z:4242:2').click()
     await page.getByRole('button', { name: '复制这一条', exact: true }).click()
-    await waitForToast(page, '这一条已复制')
+    await waitForToast(page, '已复制这一条日志')
     assert.deepEqual(
       (await calls(page))
         .filter((call) => call.name === 'copy-clipboard')
@@ -1939,10 +2022,13 @@ test('feedback narrows the log list by source and to this run, and copies one en
   }
 })
 
-// 第 48～50 条：日志一条一行、整行点开；卡头写条数、放「打开日志目录」「清除日志」；脱敏提示是一行细条。
-test('feedback shows one line per log entry under a card head that counts them', async () => {
-  const page = await fixture('page=feedback')
+// 第 48～50 条：日志一条一行、整行点开；v4 第 10 批起「详情」在这一行下面就地展开，
+// 页签上数着本次启动的错误，工具条上放「打开日志文件夹」「清除日志」。
+test('feedback shows one line per log entry that opens in place and counts this run\'s errors on the tab', async () => {
+  const page = await fixture('page=feedback&feedbackTab=log')
   try {
+    assert.equal(await page.getByTestId('feedback-error-count').innerText(), '1')
+    assert.equal(await page.getByTestId('feedback-panel-form').isHidden(), true)
     const row = page.getByTestId('feedback-log-2026-09-07T01:00:00Z:4242:2')
     await row.waitFor()
     assert.match(await row.locator('time').innerText(), /^(\d{4}年)?\d{1,2}月\d{1,2}日 \d{2}:\d{2}:\d{2}$/)
@@ -1950,23 +2036,28 @@ test('feedback shows one line per log entry under a card head that counts them',
     assert.match(await row.locator('.v2-feedback-log-level').getAttribute('class'), /is-error/)
     assert.equal(await row.locator('.v2-feedback-log-message').innerText(), '本次启动的更新失败')
     assert.equal(await row.locator('.v2-feedback-log-source').innerText(), '更新')
-    assert.equal(await row.locator('.v2-feedback-log-more').innerText(), '详情 ›')
-    // 一条一行：没有文件图标，也没有单独的「详情」按钮。
-    assert.equal(await row.locator('svg').count(), 0)
+    // 一条一行：没有文件图标，也没有单独的「详情」按钮，只有行尾一个展开箭头。
+    assert.equal(await row.locator('svg').count(), 1)
     assert.equal(await page.getByRole('button', { name: '详情', exact: true }).count(), 0)
+    // v4 原型一条日志一行 44 高（.log-r），等级换成了小标签，不再比这高。
     const height = (await row.boundingBox()).height
-    assert.ok(height < 44, `one line per entry (${height})`)
-    const card = page.locator('.xm-card').filter({ has: row })
-    await card.locator('.xm-card-head').getByText('共 3 条', { exact: true }).waitFor()
-    await card.locator('.xm-card-head').getByRole('button', { name: '打开日志目录', exact: true }).waitFor()
+    assert.ok(height <= 44, `one line per entry (${height})`)
+    assert.equal(await row.getAttribute('aria-expanded'), 'false')
+    await row.click()
+    assert.equal(await row.getAttribute('aria-expanded'), 'true')
+    const detail = page.getByTestId('feedback-log-detail')
+    await detail.getByText('{\n  "code": "ENOENT"\n}').waitFor()
+    await detail.getByText('已隐去密钥', { exact: true }).waitFor()
+    await row.click()
+    await detail.waitFor({ state: 'detached' })
+    const panel = page.getByTestId('feedback-panel-log')
+    await panel.getByRole('button', { name: '打开日志文件夹', exact: true }).waitFor()
+    await panel.getByRole('button', { name: '刷新', exact: true }).waitFor()
     assert.equal(await page.getByTestId('feedback-clear').isEnabled(), true)
-    assert.equal(await page.getByText('已限制为最近日志。').count(), 0)
-    const privacy = page.getByTestId('feedback-privacy')
-    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '报告会自动脱敏：不会包含账号密码与完整密钥。发送前仍请检查私有项目名称和地址。联系客服')
-    assert.ok((await privacy.boundingBox()).height <= 50)
-    // 筛选后条数跟着列表走。
-    await page.getByTestId('feedback-source').selectOption('更新')
-    await card.locator('.xm-card-head').getByText('共 2 条', { exact: true }).waitFor()
+    await panel.getByText('日志只保存在这台电脑上。', { exact: true }).waitFor()
+    // 筛选后列表跟着走。
+    await page.getByTestId('feedback-source').getByRole('button', { name: '更新', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.v2-feedback-log').length === 2)
   } finally {
     await page.close()
   }
@@ -1975,6 +2066,8 @@ test('feedback shows one line per log entry under a card head that counts them',
 test('feedback cannot clear logs it has none of and says how to read them when the list fails', async () => {
   const empty = await fixture('page=feedback&empty')
   try {
+    await openRunLog(empty)
+    assert.equal(await empty.getByTestId('feedback-error-count').count(), 0)
     const state = empty.getByTestId('feedback-empty')
     await state.getByText('还没有运行日志', { exact: true }).waitFor()
     await state.getByText('软件运行时的事件会记录在这里。', { exact: true }).waitFor()
@@ -1984,8 +2077,9 @@ test('feedback cannot clear logs it has none of and says how to read them when t
   }
   const failed = await fixture('page=feedback&fail=load')
   try {
+    await openRunLog(failed)
     const state = failed.getByTestId('feedback-error')
-    await state.getByText('点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。', { exact: true }).waitFor()
+    await state.getByText('点「重新加载」再试；还不行，点「打开日志文件夹」直接看日志文件。', { exact: true }).waitFor()
     await state.getByRole('button', { name: '重新加载', exact: true }).waitFor()
     assert.equal(await failed.getByTestId('feedback-clear').isDisabled(), true)
   } finally {
@@ -1993,11 +2087,32 @@ test('feedback cannot clear logs it has none of and says how to read them when t
   }
 })
 
-test('feedback shows the latest 100 entries first and 100 more on request', async () => {
-  const page = await fixture('page=feedback&manyLogs')
+test('feedback clears the run log only after asking and then says it was cleared', async () => {
+  const page = await fixture('page=feedback&feedbackTab=log')
   try {
-    const card = page.locator('.xm-card').filter({ has: page.getByTestId('feedback-log-next') })
-    await card.locator('.xm-card-head').getByText('最近 500 条', { exact: true }).waitFor()
+    await page.getByTestId('feedback-clear').click()
+    const confirm = page.getByRole('dialog', { name: '清除全部运行日志？', exact: true })
+    await confirm.getByText('清除后找不回来。要发反馈的话，建议先保留日志。', { exact: true }).waitFor()
+    await confirm.getByText('仅清除运行日志，不会删除工具配置、账号或对话记录。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '取消', exact: true }).click()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.equal((await calls(page)).some((call) => call.name === 'clear-logs'), false)
+    await page.getByTestId('feedback-clear').click()
+    await confirm.getByRole('button', { name: '清除', exact: true }).click()
+    await waitForToast(page, '日志已清除')
+    const state = page.getByTestId('feedback-empty')
+    await state.getByText('日志已清空', { exact: true }).waitFor()
+    await state.getByText('之后的操作会重新记录在这里。', { exact: true }).waitFor()
+    assert.equal((await calls(page)).filter((call) => call.name === 'clear-logs').length, 1)
+  } finally {
+    await page.close()
+  }
+})
+
+test('feedback shows the latest 100 entries first and 100 more on request', async () => {
+  const page = await fixture('page=feedback&manyLogs&feedbackTab=log')
+  try {
+    await page.getByTestId('feedback-log-next').waitFor()
     assert.equal(await page.locator('.v2-feedback-log').count(), 100)
     assert.equal(await page.getByTestId('feedback-log-next').innerText(), '再显示 100 条')
     await page.getByTestId('feedback-log-next').click()
@@ -2026,6 +2141,10 @@ test('feedback copy and export retain the preview snapshot id', async () => {
       .getByRole('button', { name: '预览反馈报告', exact: true })
       .click()
     await page.getByTestId('feedback-report-text').waitFor()
+    // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
+    const privacy = page.getByTestId('feedback-privacy')
+    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
+    assert.ok((await privacy.boundingBox()).height <= 50)
     // 报告里已经有检查结果时不提醒先去检查。
     assert.equal(await page.getByTestId('feedback-report-unchecked').count(), 0)
     await page.getByRole('button', { name: '复制报告', exact: true }).click()

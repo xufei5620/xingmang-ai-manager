@@ -139,7 +139,7 @@ export function subscriptionToolsNotice(
     tone: 'ok', title: '工具不用重新设置', body: '工具发出的请求会按「扣费顺序」先用订阅额度。',
   }
   if ('error' in input) return {
-    tone: 'warn', title: '订阅已开通，工具还没换过去', body: `${input.error} 可以到「检查」页点「重新写入 Key」再试一次。`, action: 'health',
+    tone: 'warn', title: '订阅已开通，工具还没换过去', body: `${input.error} 可以到「检查」页点「重新写入密钥」再试一次。`, action: 'health',
   }
   if (input.switched.length) return {
     tone: 'ok', title: '工具已改用订阅额度', body: `${input.switched.join('、')} 已换成用这份订阅，不用重新打开设置。`,

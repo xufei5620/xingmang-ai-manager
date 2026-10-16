@@ -98,7 +98,7 @@ export function rendererCrashRecoveryDetail(platform: NodeJS.Platform): string {
     : platform === 'win32'
       ? '从任务栏右下角的星芒图标退出软件后重新打开'
       : '关掉窗口再从应用菜单重新打开（屏幕顶部或任务栏上有星芒图标的话，先从它的菜单里点「退出」）'
-  return `可以再试一次重新加载。如果还是空白，请${restart}，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。`
+  return `可以再试一次重新加载。如果还是空白，请${restart}，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。`
 }
 
 export function platformWindowOptions(

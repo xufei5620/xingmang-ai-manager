@@ -20,16 +20,20 @@ export const anyRuntimeLogValue = 'all'
 // 日志的 source / event 是给客服和开发看的（ipc、maintenance、account:balance…），
 // 反馈页上要换成侧栏里那些用户认得的叫法。认不出来的归「其他」，列表上不显示。
 export const otherRuntimeLogArea = '其他'
+// 装、卸、更新工具和运行环境的那几块（主进程的 maintenance、install，通道 cli:、desktop:、runtime:、setup:）。
+// 以前叫「安装卸载」，跟着那一页；v4 拆掉那一页以后（第 10 批）改叫这个，装的过程逐行都在这一块里。
+export const installRuntimeLogArea = '安装与更新'
 
 const runtimeLogAreaOrder = [
-  '账号', '充值', '安装卸载', '外接工具', '插件', '技能', '工具设置', '加速', 'AI 对话', '画布',
+  '账号', '充值', installRuntimeLogArea, '外接工具', '插件', '技能', '工具设置', '加速', 'AI 对话', '画布',
   '记录', '备份', '检查', '更新', '设置', '反馈', '界面', '软件', '安全', otherRuntimeLogArea,
 ]
 
 const sourceAreas: Record<string, string> = {
   account: '账号',
   payment: '充值',
-  maintenance: '安装卸载',
+  maintenance: installRuntimeLogArea,
+  install: installRuntimeLogArea,
   config: '工具设置',
   extensions: '插件',
   chat: 'AI 对话',
@@ -53,10 +57,10 @@ const channelAreas: Record<string, string> = {
   canvas: '画布',
   chat: 'AI 对话',
   models: 'AI 对话',
-  cli: '安装卸载',
-  desktop: '安装卸载',
-  runtime: '安装卸载',
-  setup: '安装卸载',
+  cli: installRuntimeLogArea,
+  desktop: installRuntimeLogArea,
+  runtime: installRuntimeLogArea,
+  setup: installRuntimeLogArea,
   config: '工具设置',
   workspace: '工具设置',
   'external-clients': '外接工具',
@@ -194,7 +198,7 @@ export interface RuntimeLogWriteNotice {
 }
 
 /**
- * 日志写不进文件时反馈页顶上那一句。以前这件事完全静默：日志页是空的，导出的
+ * 日志写不进文件时运行日志页签顶上那一句。以前这件事完全静默：日志页是空的，导出的
  * 报告也是空的，用户和客服都不知道为什么。没失败时返回 null，页面不出这条。
  */
 export function runtimeLogWriteNotice(

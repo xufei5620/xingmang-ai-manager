@@ -589,77 +589,81 @@
 .v2-business-table-row { display: grid; grid-template-columns: 1fr 240px 200px; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line); }
 .v2-business-table-row:last-child { border-bottom: 0; }
 /*
- * 安装卸载页：表头和每行同一套三栏——工具约四成（图标单独一格，名字和厂商上下两行）、
- * 版本与状态约三成、操作约两成半（主按钮在左，「…」贴最右）。有百分比时整行底下一道细进度条。
+ * 反馈与客服（v4 第 10 批）：「留言反馈」左边表单、右边「找客服」卡和「先试试这些」；「运行日志」一条一行，
+ * 点开在这一行下面展开详情。
  */
-.v2-maintenance-table > :is(.v2-business-table-head, .v2-maintenance-row) {
-  display: grid;
-  /* 操作那一格最窄也要放得下「重新安装」「正在停止」「…」三颗（约 238 宽，开「大字」再宽一点），窗口窄时先让前两栏。 */
-  grid-template-columns: 32px minmax(0, 8fr) minmax(0, 6fr) minmax(248px, 5fr);
-  column-gap: 12px;
-}
-.v2-maintenance-table > .v2-business-table-head > :first-child { grid-column: span 2; }
-.v2-maintenance-table > .v2-maintenance-row:first-child { border-top: 0; }
-.v2-maintenance-row > .xm-row-actions > .xm-menu { margin-left: auto; }
-.v2-maintenance-row-progress { grid-column: 2 / -1; margin-top: -4px; }
-.v2-tool-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.v2-tool-status-reason { display: block; margin-top: 3px; }
-/* 安装日志最高约八行，多了在卡里滚。 */
-.v2-maintenance-log { max-height: calc(1.65em * 8); }
-/* 反馈页「报告会自动脱敏」：一行细条，不再是一大块提示。 */
-.v2-feedback-privacy {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px 6px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-  background: var(--panel);
-  color: var(--text-2);
-  font-size: var(--font-small);
-  line-height: 1.5;
-}
-.v2-feedback-privacy > svg { flex: none; color: var(--accent-2); }
-.v2-feedback-privacy > span { flex: 1; min-width: 0; }
-/*
- * 运行日志一条一行：时间、固定宽的级别字、内容（太长打省略号）、来源、「详情 ›」，整行点开详情。
- * 时间那一格按「10月12日 18:02:54」留宽，来源那一格按最长的四个字留宽，各行才对得齐。
- */
+/* 检查页、反馈与客服页同原型 .page：页头、页签、各组之间一律隔 16。 */
+.v2-health, .v2-fb { display: flex; flex-direction: column; gap: 16px; }
+.v2-health > .xm-page-head, .v2-fb > .xm-page-head { padding-bottom: 2px; }
+.v2-fb-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(250px, 1fr); align-items: start; gap: 14px; }
+.v2-fb-form { gap: 16px; }
+.v2-fb-field { display: grid; gap: 6px; justify-items: start; color: var(--text); font-size: var(--font-small); font-weight: 500; }
+.v2-fb-attach { display: flex; align-items: center; gap: 12px; }
+.v2-fb-attach-text { flex: 1; min-width: 0; }
+.v2-fb-attach strong { font-size: 13.5px; font-weight: 500; }
+.v2-fb-attach p { margin: 2px 0 0; color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-fb-submit { display: flex; justify-content: flex-end; }
+.v2-fb-link { padding: 0; border: 0; background: none; color: var(--gold-tx); font: inherit; font-size: var(--font-small-compact); font-weight: 600; cursor: pointer; }
+.v2-fb-attach .v2-fb-link { margin-left: 8px; }
+.v2-fb-link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.v2-fb-link:disabled { opacity: .5; cursor: default; }
+.v2-fb-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.v2-fb-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.v2-fb-support { gap: 12px; }
+.v2-fb-support > .v2-fb-link { align-self: flex-start; }
+.v2-fb-support-qr { display: flex; align-items: flex-start; gap: 14px; }
+.v2-fb-support-qr img { width: 76px; height: 76px; flex: none; border-radius: 8px; }
+.v2-fb-support-qr > div { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.v2-fb-support-qr strong { font-size: 13.5px; }
+.v2-fb-support-qr p { margin: 0; color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-fb-try { gap: 2px; padding: 12px 8px; }
+.v2-fb-try > h2 { padding: 0 10px 6px; }
+.v2-fb-try-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard); }
+.v2-fb-try-item:hover { background: var(--panel-hover); }
+.v2-fb-try-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.v2-fb-try-item > span { flex: 1; min-width: 0; }
+.v2-fb-try-item > span > span { display: block; }
+.v2-fb-try-item small { color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-fb-try-item > svg { flex: none; color: var(--text-3); }
+.v2-fb-tab-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; margin-left: 6px; padding: 0 6px; box-sizing: border-box; border-radius: 10px; background: var(--bad-soft); color: var(--bad-tx); font-size: 12px; font-weight: 600; vertical-align: 1px; }
+.v2-fb-log { display: flex; flex-direction: column; gap: 12px; }
+.v2-fb-log-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.v2-fb-log-tools > .xm-search { width: 220px; }
+.v2-fb-log-gap { flex: 1; }
+.v2-fb-foot { margin: 0; color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-fb-privacy { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; }
+.v2-fb-privacy > svg { flex: none; margin-top: 2px; color: var(--accent-2); }
+/* 一条一行：时间、级别、来源、内容（太长打省略号）、展开箭头。时间那一格按「10月12日 18:02:54」留宽，各行才对得齐。 */
+.v2-feedback-log-entry + .v2-feedback-log-entry { border-top: 1px solid var(--line); }
 .v2-feedback-log {
   display: grid;
-  grid-template-columns: 112px 28px minmax(0, 1fr) 56px auto;
+  grid-template-columns: 112px auto minmax(34px, auto) minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   width: 100%;
-  padding: 8px 16px;
+  min-height: 44px;
+  padding: 0 14px 0 16px;
   border: 0;
-  border-top: 1px solid var(--line);
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: var(--font-small);
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
 }
-.v2-feedback-log.has-year { grid-template-columns: 152px 28px minmax(0, 1fr) 56px auto; }
-.v2-feedback-log:first-child { border-top: 0; }
+.v2-feedback-log.has-year { grid-template-columns: 152px auto minmax(34px, auto) minmax(0, 1fr) auto; }
 .v2-feedback-log:hover { background: var(--panel-hover); }
 .v2-feedback-log:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.v2-feedback-log > time {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-3);
-}
-.v2-feedback-log-level { font-size: 11px; font-weight: 600; color: var(--text-3); }
-.v2-feedback-log-level.is-error { color: var(--bad-tx); }
-.v2-feedback-log-level.is-warn { color: var(--warn-tx); }
+.v2-feedback-log > time { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; color: var(--text-3); }
+.v2-feedback-log-source { color: var(--text-2); font-size: 12.5px; white-space: nowrap; }
 .v2-feedback-log-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.v2-feedback-log-source { text-align: right; }
-.v2-feedback-log-source,
-.v2-feedback-log-more { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.v2-feedback-log > svg { color: var(--text-3); transition: transform var(--duration-fast) var(--ease-standard); }
+.v2-feedback-log[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.v2-feedback-log-detail { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px 140px; }
+.v2-feedback-log-detail > .v2-business-kv { margin: 0; }
+.v2-feedback-log-detail > .v2-business-code { margin: 0; }
+.v2-feedback-log-detail-actions { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: var(--font-small-compact); }
 .v2-feedback-log-next {
   display: block;
   width: 100%;
@@ -674,6 +678,10 @@
 }
 .v2-feedback-log-next:hover { background: var(--panel-hover); }
 .v2-feedback-log-next:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+@media (max-width: 860px) {
+  .v2-fb-grid { grid-template-columns: minmax(0, 1fr); }
+  .v2-feedback-log-detail { padding-left: 16px; }
+}
 .v2-business-chart-empty {
   flex: 1;
   align-self: stretch;
@@ -831,10 +839,53 @@
   margin-top: 4px;
   color: var(--text-2);
 }
-/* 检查页「Codex 干活检查」：开关和「开始检查」并成一行，按钮靠右。 */
-.v2-health-consent { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.v2-health-consent > .xm-switch-wrap { min-width: 0; }
-.v2-health-consent > .xm-btn { flex: none; }
+/*
+ * 检查页 v4（第 10 批）：头卡写结论，下面「需要处理」「可选」「正常」三组；行首一个状态图标，
+ * 「详情」在这一行下面就地展开。「正常」默认收成一块只写名字。
+ */
+.v2-health-summary { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); box-shadow: var(--sh-1); corner-shape: squircle; }
+.v2-health-summary.is-focus { border-color: transparent; background: radial-gradient(460px 170px at 0% 0%, var(--glow), transparent 70%) padding-box, linear-gradient(var(--panel-solid), var(--panel-solid)) padding-box, var(--edge) border-box; box-shadow: var(--sh-2); }
+.v2-health-summary strong { display: block; color: var(--text); font-size: 15px; font-weight: 600; }
+.v2-health-summary p { margin: 2px 0 0; color: var(--text-2); font-size: var(--font-small); }
+.v2-health-summary-tile { display: flex; flex: none; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 10px; background: var(--panel-2); box-shadow: var(--tile-ring); color: var(--warn-tx); }
+.v2-health-summary.is-focus .v2-health-summary-tile { color: var(--gold-tx); }
+.v2-health-group { display: flex; flex-direction: column; gap: 8px; }
+.v2-health-group-head { display: flex; align-items: center; gap: 8px; }
+.v2-health-group-head h2 { flex: 1; margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
+.v2-health-count { margin-left: 6px; color: var(--text-3); font-weight: 500; }
+.v2-health-toggle { padding: 0; border: 0; background: none; color: var(--gold-tx); font: inherit; font-size: var(--font-small-compact); font-weight: 600; cursor: pointer; }
+.v2-health-toggle:hover { text-decoration: underline; text-underline-offset: 3px; }
+.v2-health-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.v2-health-row { align-items: flex-start; padding-top: 10px; padding-bottom: 10px; min-height: 0; }
+.v2-health-row > .xm-row-actions { align-self: center; }
+.v2-health-state { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 26px; height: 26px; margin-top: 1px; border-radius: 8px; background: var(--panel-hover); color: var(--text-2); }
+.v2-health-state.is-ok { background: var(--ok-soft); color: var(--ok-tx); }
+.v2-health-state.is-warn { background: var(--warn-soft); color: var(--warn-tx); }
+.v2-health-state.is-bad { background: var(--bad-soft); color: var(--bad-tx); }
+.v2-health-tile { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; background: var(--panel-2); box-shadow: var(--tile-ring); color: var(--text); }
+.v2-health-more { margin: 6px 0 0; padding: 8px 12px; border-radius: 8px; background: var(--panel-2); color: var(--text-2); font-size: 12.5px; line-height: 1.65; }
+.v2-health-more p { margin: 0; }
+dl.v2-health-more { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; }
+dl.v2-health-more > div { display: contents; }
+dl.v2-health-more dt { color: var(--text-3); }
+dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.v2-health-note { margin: 4px 0 0; color: var(--text-2); font-size: var(--font-small-compact); line-height: 1.6; }
+.v2-health-ok-sum { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 12px 16px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); color: var(--text-2); font-size: 13px; corner-shape: squircle; }
+.v2-health-ok-sum > span { display: inline-flex; align-items: center; gap: 6px; }
+.v2-health-ok-sum svg { color: var(--ok-tx); }
+.v2-health-lines { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.v2-health-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; }
+.v2-health-line > .v2-health-state { width: 20px; height: 20px; margin-top: 0; border-radius: 6px; }
+.v2-health-line-main { flex: 1; min-width: 0; }
+.v2-health-line-text { display: block; padding-top: 2px; color: var(--text); overflow-wrap: anywhere; }
+.v2-health-line.is-ok .v2-health-line-text { color: var(--ok-tx); }
+.v2-health-line.is-warn .v2-health-line-text { color: var(--warn-tx); }
+.v2-health-line.is-bad .v2-health-line-text { color: var(--bad-tx); }
+.v2-health-line.is-neutral .v2-health-line-text { color: var(--text-2); }
+.v2-health-line-actions { display: flex; flex: none; align-items: center; gap: 4px; }
+/* 「Codex 干活检查」那一勾：每次检查前都要重新勾。 */
+.v2-health-consent { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--text-2); font-size: var(--font-small-compact); cursor: pointer; }
+.v2-health-consent > input { margin: 0; accent-color: var(--gold); }
 /*
  * 个人中心 v4（第 06 批）：左上角「回首页」，页头是头像、名字、邮箱 · 哪种账号，下面一排六个页签。
  * 概览两列卡片：余额、订阅是亮的卡，密钥与设备、邀请是底色浅一层的 well；最下面一条「当前登录」。

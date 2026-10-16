@@ -19,7 +19,7 @@ export interface ManualUninstallState {
 
 type ManualHelp = Extract<ToolUninstallResult, { outcome: 'manual-required' }>['manualHelp']
 
-/** 首页和「安装卸载」页拿到 manual-required 后弹框用的那几样。 */
+/** 首页工具卡片拿到 manual-required 后弹框用的那几样。 */
 export function manualUninstallState(name: string, id: ActiveProviderId | 'codexDesktop', help: ManualHelp): ManualUninstallState {
   const state: ManualUninstallState = { name, reason: help.reason, manualCommand: help.manualCommand }
   if (help.cleanUpAvailable && help.manualCommand && id !== 'codexDesktop') state.cleanUpTool = id

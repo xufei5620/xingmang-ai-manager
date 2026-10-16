@@ -7807,7 +7807,7 @@ describe('runtime-logs:preview-feedback size budget', () => {
     const { runtimeLog } = register()
     runtimeLog.captureFeedbackReport.mockResolvedValueOnce({ text: 'x'.repeat(2_000_001), entries: 1 })
     const failure = electronMocks.handlers.get('runtime-logs:preview-feedback')!(trustedEvent())
-    await expect(failure).rejects.toThrow('打开日志目录')
+    await expect(failure).rejects.toThrow('打开日志文件夹')
     await expect(failure).rejects.not.toThrow('减少日志')
   })
 })

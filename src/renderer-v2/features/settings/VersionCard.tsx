@@ -221,7 +221,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
                 </Button>
               )}
               {offerDownloadPage && <Button size="sm" icon={ExternalLink} onClick={openDownloadPage}>打开下载页</Button>}
-              <Button size="sm" icon={FileText} onClick={() => navigate?.('feedback')}>查看日志</Button>
+              <Button size="sm" icon={FileText} onClick={() => navigate?.('feedback', 'log')}>查看日志</Button>
             </>
           }
         />

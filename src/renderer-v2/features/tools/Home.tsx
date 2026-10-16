@@ -1130,7 +1130,7 @@ export function Home(props: HomeProps) {
       {firstScan ? <div className="v2-home-tools-detecting" data-testid="home-tools-detecting"><p className="v2-loading-inline" role="status">正在检测这台电脑上装了哪些工具</p><Skeleton rows={3} /></div>
         : <div className="v2-home-tool-grid" data-testid="home-tools">
           {cards}
-          <button type="button" className="v2-home-tool-add" onClick={() => props.onNavigate('feedback')} data-testid="home-tools-request"><Plus size={18} aria-hidden="true" /><b>想用的工具不在这里？</b><span>告诉我们，我们来接入</span></button>
+          <button type="button" className="v2-home-tool-add" onClick={() => props.onNavigate('feedback', 'form')} data-testid="home-tools-request"><Plus size={18} aria-hidden="true" /><b>想用的工具不在这里？</b><span>告诉我们，我们来接入</span></button>
         </div>}
       {!firstScan && (externalCached || (props.externalLoading && !external.length)) && <div className="v2-loading-inline" role="status" data-testid="home-external-detecting">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
     </section>

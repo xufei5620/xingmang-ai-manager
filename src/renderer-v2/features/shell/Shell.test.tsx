@@ -115,12 +115,15 @@ describe('renderer-v2 sidebar account card', () => {
 })
 
 describe('renderer-v2 sidebar pinned navigation', () => {
-  it('pins More right above Settings, outside the scrolling list', () => {
+  // 「更多」里的几页在 v4 各有了去处，「更多」去掉了（第 10 批）；钉在下面的只剩「设置」。
+  it('pins only Settings outside the scrolling list, with no 更多 left', () => {
     const markup = render()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const pinned = markup.slice(markup.indexOf('data-testid="sidebar-pinned"'), markup.indexOf('data-testid="account-entry"'))
-    expect(scroll).not.toContain('nav-more')
-    expect(pinned.indexOf('data-testid="nav-more"')).toBeLessThan(pinned.indexOf('data-testid="nav-settings"'))
+    expect(scroll).not.toContain('nav-settings')
+    expect([...pinned.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])).toEqual(['settings'])
+    expect(markup).not.toContain('nav-more')
+    expect(markup).not.toContain('更多')
   })
 
   it('names the search by what it does and shows the shortcut of this computer', () => {
@@ -167,9 +170,10 @@ describe('renderer-v2 v4 sidebar', () => {
     expect(renderShell({ environment: { tone: 'ok', label: '环境正常', issues: 0 } })).not.toContain('nav-health-issues')
   })
 
-  it('opens 更多 on its own when the page shown lives there', () => {
-    expect(renderShell({ activePage: 'maintenance' })).toMatch(/data-testid="sidebar-pinned"[\s\S]*data-testid="nav-maintenance"/)
+  // 「安装卸载」页拆到首页和检查页（第 10 批），侧栏里没有它了。
+  it('lists no 安装卸载 entry anywhere in the sidebar', () => {
     expect(renderShell()).not.toContain('data-testid="nav-maintenance"')
+    expect(renderShell()).not.toContain('安装卸载')
   })
 })
 
@@ -240,26 +244,26 @@ describe('renderer-v2 status bar account label', () => {
 describe('renderer-v2 sidebar pages per computer', () => {
   it('drops game acceleration from the sidebar when this computer has none (Linux)', () => {
     const linux = renderToStaticMarkup(createElement(Shell, {
-      activePage: 'maintenance',
+      activePage: 'home',
       platform: 'linux',
       account: { signedIn: true, displayName: '星芒用户' },
       adapter: { pageVisible: (page) => page !== 'acceleration' },
       children: null,
     }))
     expect(linux).not.toContain('data-testid="nav-acceleration"')
-    expect(linux).toContain('data-testid="nav-maintenance"')
+    expect(linux).toContain('data-testid="nav-health"')
     expect(linux).toContain('data-testid="nav-home"')
     expect(linux).toContain('data-testid="nav-tutorial"')
   })
 
   it('keeps every page when nothing says otherwise', () => {
-    const markup = renderShell({ activePage: 'maintenance' })
-    expect(markup).toContain('data-testid="nav-maintenance"')
+    const markup = renderShell()
+    for (const id of ['home', 'chat', 'sessions', 'canvas', 'featured', 'mcp', 'skills', 'plugins', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
   })
 
-  // 游戏加速、备份、更新并进了设置（v4 批09），侧栏「更多」里只剩安装卸载。
-  it('leaves the pages that moved into settings out of the sidebar', () => {
-    const markup = renderShell({ activePage: 'maintenance' })
-    for (const id of ['acceleration', 'backups', 'updates']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
+  // 游戏加速、备份、更新并进了设置（v4 批09），安装卸载拆到首页和检查页（第 10 批）。
+  it('leaves the pages that moved elsewhere out of the sidebar', () => {
+    const markup = renderShell()
+    for (const id of ['acceleration', 'backups', 'updates', 'maintenance']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
   })
 })

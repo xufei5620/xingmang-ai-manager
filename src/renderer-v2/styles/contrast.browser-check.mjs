@@ -130,11 +130,16 @@ test('Windows high contrast (forced colors) redraws selection, switches, progres
     assert.equal(thumb['background-color'], buttonText, 'the switch thumb stays visible')
     const segment = await style(page.locator('.xm-segment button.is-active').first(), ['background-color'])
     assert.equal(segment['background-color'], highlight)
-    // v4 settings have no select left (language is plain text, routes are a segment),
-    // so check the run log's source filter on the feedback page instead.
-    await page.getByTestId('nav-feedback').click()
-    const select = await style(page.getByTestId('feedback-source'), ['appearance'])
+    // v4 settings have no select left (language is plain text, routes are a segment), and
+    // the run log's source filter became chips in batch 10, so check the scope select of
+    // the add-a-connection dialog instead.
+    await page.getByTestId('nav-mcp').click()
+    await page.getByTestId('mcp-add').first().click()
+    const add = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    const select = await style(add.getByRole('combobox', { name: '装到哪里', exact: true }), ['appearance'])
     assert.equal(select.appearance, 'auto', 'the native arrow replaces the gradient one')
+    await page.keyboard.press('Escape')
+    await add.waitFor({ state: 'detached' })
 
     await page.keyboard.press('Control+k')
     const dialog = page.locator('.xm-modal[open]').first()

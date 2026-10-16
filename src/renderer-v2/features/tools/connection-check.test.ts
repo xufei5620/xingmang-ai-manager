@@ -97,10 +97,13 @@ describe('connectionCheckView', () => {
     expect(connectionCheckView(result({ layer: 'credential' })).section).toBeNull()
     expect(connectionCheckView(result({ layer: 'protocol' })).target).toBe('feedback')
     expect(connectionCheckView(result({ layer: 'unknown' })).target).toBe('feedback')
+    // 「反馈与客服」有两个页签：这两层要找客服，落在「留言反馈」，不停在运行日志。
+    expect(connectionCheckView(result({ layer: 'protocol' })).section).toBe('form')
+    expect(connectionCheckView(result({ layer: 'unknown' })).section).toBe('form')
   })
 
   it('offers nothing to fix when the service itself is down', () => {
-    // 盲点 1：维护期间用户这边没有能做的事，「去处理」与「重新写入 Key」都只会
+    // 盲点 1：维护期间用户这边没有能做的事，「去处理」与「重新写入密钥」都只会
     // 把人送去改没坏的东西。
     const view = connectionCheckView(result({ layer: 'service', summary: '服务暂时不可用（HTTP 503），多半在维护或线路繁忙', nextStep: '你这边不用做任何改动，Key 和配置都不用动，稍后再自检一次就行', status: 503 }), { canRewriteKey: true })
     expect(view.target).toBeNull()
@@ -203,7 +206,8 @@ describe('connectionCheckView rewrite action', () => {
       const view = connectionCheckView(result({ layer }), { canRewriteKey: true })
       expect(view.action).toBe('rewrite-key')
       expect(view.target).toBeNull()
-      expect(view.body).toContain('重新写入 Key')
+      // 按钮跟首页工具卡上那颗一样叫「重新写入密钥」（第 10 批）。
+      expect(view.body).toContain('重新写入密钥')
       // 文案以「当前账号」为主语，但不再让用户先跑一趟账号页。
       expect(view.body).toContain('当前账号')
       expect(view.body).not.toContain('「账号」页')
