@@ -67,7 +67,9 @@ function Choices({ options, value, onChange, testId, kind, label, activation = k
     if (next !== undefined) { refs.current[next]?.focus(); if (activation === 'automatic') onChange(options[next].value); }
   }} role={kind === 'tabs' ? 'tab' : undefined} type="button">{Icon && <Icon size={15} aria-hidden="true" />}{leading}{itemLabel}{meta}</button>)}</div>;
 }
-export function Segment(props: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; label?: string }) { return <Choices {...props} kind="segment" />; }
+// activation 'manual': arrow keys only move focus and Enter/Space picks. For a choice that acts as soon
+// as it is picked (Codex's interface language restarts a running Codex), a stray arrow key must not.
+export function Segment(props: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; label?: string; activation?: 'manual' | 'automatic' }) { return <Choices {...props} kind="segment" />; }
 // UI v4.0 filter chips (records by tool, tutorials by category): a row of toggle buttons that each
 // carry a count. Unlike Segment they wrap onto a second line instead of squeezing, and a count the
 // caller has not read yet is left out rather than drawn as 0.

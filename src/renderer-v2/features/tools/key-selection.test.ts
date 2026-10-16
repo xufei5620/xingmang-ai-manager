@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccountKey, AppConfigSummary, AccountKeysPage } from '../../../../electron/ipc-contract'
-import { accountKeyLabel, currentKeyLabel, initialKeyChoice, manualKeyPreview, readAllAccountKeys } from './key-selection'
+import { accountKeyDescription, currentKeyLabel, initialKeyChoice, manualKeyIssue, manualKeyPreview, readAllAccountKeys } from './key-selection'
 
 const key = (id: number) => ({ id, name: `key-${id}`, group: 'Group A', maskedKey: 'sk-••••1234', status: 1 }) as AccountKey
 
@@ -9,8 +9,20 @@ describe('configuration key selection', () => {
     expect(initialKeyChoice({ hasApiKey: true, matchesRelay: true } as AppConfigSummary['providers']['codex'])).toBe('current')
     expect(initialKeyChoice({ hasApiKey: false, matchesRelay: false } as AppConfigSummary['providers']['codex'])).toBe('automatic')
     expect(currentKeyLabel(null, 'sk-••••1234')).toBe('保持当前 · 名称未确认 · sk-••••1234')
-    expect(accountKeyLabel(key(1))).toBe('key-1 · Group A · sk-••••1234')
-    expect(accountKeyLabel({ ...key(2), group: '' })).toBe('key-2 · sk-••••1234')
+  })
+  it('puts the mask before the group on the second line of a key option', () => {
+    expect(accountKeyDescription(key(1))).toBe('sk-••••1234，Group A分组')
+    expect(accountKeyDescription({ ...key(1), group: '' })).toBe('sk-••••1234')
+    expect(accountKeyDescription({ ...key(1), maskedKey: '' })).toBe('密钥预览未提供，Group A分组')
+  })
+  it('checks the sk- prefix only where the key format is known', () => {
+    expect(manualKeyIssue('  ', true)).toBe('请粘贴你在星芒创建的密钥')
+    expect(manualKeyIssue('', false)).toBe('请粘贴你在星芒创建的密钥')
+    expect(manualKeyIssue('abc-12345678901234567890', true)).toContain('应以 sk- 开头')
+    expect(manualKeyIssue('sk-short', true)).toContain('20 位以上')
+    expect(manualKeyIssue(' sk-12345678901234567 ', true)).toBeNull()
+    // 历史账号的密钥前缀没核实，只拦空的。
+    expect(manualKeyIssue('abc', false)).toBeNull()
   })
   it('defaults to an automatic key when the local key belongs to another site', () => {
     // 「保持当前」对别的站的 Key 存不进去（主进程报「属于其他账号」），不能默认选它。

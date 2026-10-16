@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { TriangleAlert, X } from 'lucide-react';
 import { Button } from './core';
 import { focusable, useUiText, type BaseProps } from './shared';
@@ -15,17 +15,23 @@ import { focusable, useUiText, type BaseProps } from './shared';
 // content instead of closing it. It sits in the top layer as a manual popover so dialogs and menus
 // still stack above it, takes no backdrop and keeps no focus trap; Esc still closes it unless the key
 // belongs to a text field outside it.
+// A Cancel button in the footer, or a link that leaves the dialog for another page, asks to close the
+// same way the × does: with unsaved changes it raises the leave bar instead of closing at once. after
+// runs only once the dialog has really closed (straight away, or when 不保存 is picked); 继续编辑 drops it.
+const DialogCloseContext = createContext<(after?: () => void) => void>(() => undefined);
+export function useDialogClose() { return useContext(DialogCloseContext); }
 export type ModalProps = BaseProps & { open: boolean; title: ReactNode; subtitle?: ReactNode; onClose: () => void; footer?: ReactNode; dirty?: boolean; initialFocus?: RefObject<HTMLElement | null>; children?: ReactNode; busy?: boolean; headless?: boolean; closeTestId?: string };
 function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, children, testId, busy, headless, closeTestId, kind, width = 480 }: ModalProps & { kind: 'dialog' | 'drawer'; width?: 480 | 640 }) {
   const ref = useRef<HTMLElement | null>(null); const returnFocus = useRef<HTMLElement | null>(null); const content = useRef<HTMLDivElement>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false); const [nudge, setNudge] = useState(0); const titleId = useId(); const subtitleId = useId(); const t = useUiText();
   const current = useRef({ onClose, dirty, busy, confirmDiscard }); current.current = { onClose, dirty, busy, confirmDiscard };
   const modal = kind === 'dialog'; const setNode = useCallback((node: HTMLElement | null) => { ref.current = node; }, []);
-  const requestClose = useCallback(() => {
+  const pendingAfter = useRef<(() => void) | null>(null);
+  const requestClose = useCallback((after?: () => void) => {
     if (current.current.busy) return;
-    if (!current.current.dirty) current.current.onClose();
+    if (!current.current.dirty) { current.current.onClose(); after?.(); }
     else if (current.current.confirmDiscard) setNudge(value => value + 1);
-    else setConfirmDiscard(true);
+    else { pendingAfter.current = after ?? null; setConfirmDiscard(true); }
   }, []);
   useLayoutEffect(() => {
     const element = ref.current; if (!element || !open) return;
@@ -53,7 +59,7 @@ function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, ch
     document.addEventListener('keydown', escape);
     return () => document.removeEventListener('keydown', escape);
   }, [open, modal, requestClose]);
-  useEffect(() => { if (!open) { setConfirmDiscard(false); setNudge(0); } }, [open]);
+  useEffect(() => { if (!open) { setConfirmDiscard(false); setNudge(0); pendingAfter.current = null; } }, [open]);
   // Keep editing hands focus back in the same commit that removes the bar, so a quick second Esc or Tab
   // acts on the form rather than on the button that just went away.
   const refocusForm = useRef(false);
@@ -62,15 +68,17 @@ function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, ch
     else if (refocusForm.current) { refocusForm.current = false; (initialFocus?.current ?? (content.current && focusable(content.current)[0]) ?? ref.current)?.focus(); }
   }, [confirmDiscard, nudge, initialFocus]);
   if (!open) return null;
-  const cancelDiscard = () => { refocusForm.current = true; setConfirmDiscard(false); setNudge(0); };
+  const cancelDiscard = () => { refocusForm.current = true; pendingAfter.current = null; setConfirmDiscard(false); setNudge(0); };
+  const discard = () => { const after = pendingAfter.current; pendingAfter.current = null; setConfirmDiscard(false); onClose(); after?.(); };
   const className = 'xm-modal xm-' + kind + ' xm-dialog-' + width + (headless ? ' xm-dialog-headless' : '');
   const inner = <>
-    {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={requestClose} disabled={busy} data-testid={closeTestId}><X size={16} aria-hidden="true" /></button></header>}
+    {headless ? <h2 id={titleId} className="xm-visually-hidden">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" data-modal-close="true" className="xm-icon-btn" aria-label={t('close')} onClick={() => requestClose()} disabled={busy} data-testid={closeTestId}><X size={16} aria-hidden="true" /></button></header>}
     {!headless && subtitle && <p id={subtitleId} className="xm-dialog-sub">{subtitle}</p>}
     <div ref={content} className="xm-modal-content"><div className="xm-dialog-body">{children}</div>{footer && <footer hidden={confirmDiscard}>{footer}</footer>}</div>
-    {confirmDiscard && <div key={nudge} className={'xm-leave-bar' + (nudge ? ' is-nudged' : '')} role="alert"><TriangleAlert size={15} aria-hidden="true" /><span>{t('discardTitle')}</span><Button size="sm" variant="secondary" data-keep-editing="true" onClick={cancelDiscard}>{t('keepEditing')}</Button><Button size="sm" variant="danger" onClick={() => { setConfirmDiscard(false); onClose(); }}>{t('discard')}</Button></div>}
+    {confirmDiscard && <div key={nudge} className={'xm-leave-bar' + (nudge ? ' is-nudged' : '')} role="alert"><TriangleAlert size={15} aria-hidden="true" /><span>{t('discardTitle')}</span><Button size="sm" variant="secondary" data-keep-editing="true" onClick={cancelDiscard}>{t('keepEditing')}</Button><Button size="sm" variant="danger" onClick={discard}>{t('discard')}</Button></div>}
   </>;
-  if (!modal) return <div ref={setNode} role="dialog" className={className} data-testid={testId} tabIndex={-1} aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined}>{inner}</div>;
+  const provided = <DialogCloseContext.Provider value={requestClose}>{inner}</DialogCloseContext.Provider>;
+  if (!modal) return <div ref={setNode} role="dialog" className={className} data-testid={testId} tabIndex={-1} aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined}>{provided}</div>;
   return <dialog ref={setNode} className={className} data-testid={testId} tabIndex={-1} aria-modal="true" aria-labelledby={titleId} aria-describedby={subtitle ? subtitleId : undefined} onCancel={event => { event.preventDefault(); if (confirmDiscard) cancelDiscard(); else requestClose(); }} onClick={event => {
     if (event.target !== event.currentTarget || busy) return;
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -91,7 +99,7 @@ function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, ch
     if (!first) { event.preventDefault(); ref.current?.focus(); }
     else if (event.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-  }}>{inner}</dialog>;
+  }}>{provided}</dialog>;
 }
 export function Dialog(props: ModalProps & { width?: 480 | 640 }) { return <Modal {...props} kind="dialog" />; }
 export function Drawer(props: ModalProps) { return <Modal {...props} kind="drawer" />; }

@@ -131,24 +131,76 @@
 .v2-callout.is-warn { color: var(--warn-tx); background: var(--warn-soft); }
 .v2-callout.is-ok { color: var(--ok-tx); background: var(--ok-soft); }
 .v2-loading-inline { padding: 28px 16px; color: var(--text-2); font-size: var(--font-small); }
-.v2-config-field { display: grid; gap: 8px; margin: 16px 0; }
-.v2-config-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
-.v2-config-field > .xm-btn { justify-self: start; }
-.v2-config-field > strong { font-size: var(--font-small); }
-.v2-save-options { display: grid; gap: 12px; padding-bottom: 8px; }
-.v2-save-options > .xm-btn { width: 100%; height: auto; min-height: 72px; padding: 14px 16px; justify-content: flex-start; text-align: left; white-space: normal; }
-.v2-save-options > .xm-btn > span { display: grid; min-width: 0; gap: 6px; overflow-wrap: anywhere; }
-.v2-save-options strong { font-size: var(--font-body); line-height: 1.5; }
-.v2-save-options small { font-size: var(--font-small); font-weight: 400; line-height: 1.6; }
+/* 工具配置弹窗（v4 第 5 批）：三张来源卡、带说明的密钥下拉、模型行、两段折叠、行内重置。 */
+.v2-config-controls { display: flex; flex-direction: column; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.v2-config-controls > .v2-callout { margin: 0; }
+.v2-field-label { display: block; margin-bottom: 6px; font-size: var(--font-small); font-weight: 500; }
+.v2-field-note { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; }
+.v2-config-key, .v2-config-model { display: grid; gap: 6px; min-width: 0; }
+.v2-config-key > .xm-btn { justify-self: start; }
+.v2-config-model-row { display: flex; align-items: flex-end; gap: 8px; }
+.v2-config-model-row > .xm-field { flex: 1; min-width: 0; }
+.v2-ok-line { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--ok-tx); font-size: var(--font-small); }
+.v2-ok-line > svg { flex: none; }
+.v2-radio-cards { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+.v2-radio-cards.is-stack { grid-auto-flow: row; }
+.v2-radio-card { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 11px 12px; border: 0; border-radius: 12px; corner-shape: squircle; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-2); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: box-shadow var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard); }
+.v2-radio-card:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--line-3); }
+.v2-radio-card[aria-checked='true'] { background: var(--soft); box-shadow: inset 0 0 0 1.5px var(--gold); }
+.v2-radio-card:disabled { opacity: .5; cursor: default; }
+.v2-radio-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.v2-radio-dot { display: flex; align-items: center; justify-content: center; flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.v2-radio-card[aria-checked='true'] .v2-radio-dot { box-shadow: inset 0 0 0 1.5px var(--gold); }
+.v2-radio-card[aria-checked='true'] .v2-radio-dot::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); }
+.v2-radio-card-text { display: grid; gap: 2px; min-width: 0; }
+.v2-radio-card-label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--font-small); font-weight: 600; }
+.v2-radio-card-text > small { color: var(--text-3); font-size: var(--font-micro); line-height: 1.5; }
+.v2-model-name { font-family: var(--mono); overflow-wrap: anywhere; }
+.v2-option-picker > .xm-menu { display: block; }
+.v2-option-picker-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: var(--font-small); font-weight: 500; }
+.v2-option-picker-head > span:first-child { flex: 1; min-width: 0; }
+.v2-option-picker-aside { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+.v2-option-picker-btn { display: flex; align-items: center; gap: 8px; width: 100%; height: 38px; padding: 0 10px 0 12px; border: 0; border-radius: var(--radius-input); background: var(--input); box-shadow: inset 0 0 0 1px var(--input-line); color: var(--text); font: inherit; font-size: var(--font-body); text-align: left; cursor: pointer; }
+.v2-option-picker-btn[aria-expanded='true'] { box-shadow: inset 0 0 0 1.5px var(--focus); }
+.v2-option-picker-btn:disabled { opacity: .55; cursor: not-allowed; }
+.v2-option-picker-btn > svg { flex: none; color: var(--text-3); transition: transform var(--duration-fast) var(--ease-standard); }
+.v2-option-picker-btn[aria-expanded='true'] > svg { transform: rotate(180deg); }
+.v2-option-picker-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-option-picker-pop { max-height: 300px; }
+.v2-option-picker-pop button.has-description { min-height: 40px; }
+.v2-config-disclosure { border-top: 1px solid var(--line); }
+.v2-config-disclosure + .v2-config-disclosure { margin-top: -14px; }
+.v2-config-disclosure > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; cursor: pointer; font-size: var(--font-small); font-weight: 600; list-style-position: inside; }
+.v2-config-disclosure > summary > small { color: var(--text-3); font-weight: 400; }
+.v2-config-disclosure-body { display: flex; flex-direction: column; gap: 10px; padding: 2px 0 12px 18px; }
+.v2-config-perm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-2); font-size: var(--font-small); }
+.v2-config-perm > svg { flex: none; color: var(--ok-tx); }
+.v2-path-row { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 3px 0 12px; border-radius: 10px; corner-shape: squircle; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
+.v2-path-row > code { flex: 1; min-width: 0; font: var(--font-small-compact)/1.6 var(--mono); overflow-wrap: anywhere; user-select: text; }
+.v2-path-row > .xm-pill { flex: none; }
+.v2-reset-box { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 14px; corner-shape: squircle; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad-tx) 28%, transparent); }
+.v2-reset-box > div { display: grid; gap: 2px; flex: 1; min-width: 200px; }
+.v2-reset-box strong { font-size: var(--font-small); }
+.v2-reset-box small { color: var(--text-2); font-size: var(--font-micro); line-height: 1.55; }
+.v2-reset-box .xm-btn-ghost { color: var(--bad-tx); }
+.v2-reset-warn { color: var(--bad-tx); font-size: var(--font-micro); }
+.v2-config-foot-note { flex: 1; min-width: 0; color: var(--text-3); font-size: var(--font-micro); line-height: 1.5; }
 .v2-save-profile-note { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; }
 .v2-inline-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.v2-code-preview { background: var(--panel-2); padding: 10px 12px; border-radius: var(--radius-input); }
-.v2-code-preview > div { display: flex; align-items: start; gap: 10px; font: var(--font-small-compact)/1.7 var(--mono); }
-.v2-code-preview code { overflow-wrap: anywhere; flex: 1; }
-.v2-code-preview span { color: var(--text-3); }
-.v2-official-summary { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line-2); border-radius: var(--radius-card); }
+.v2-official-summary { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; corner-shape: squircle; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
 .v2-official-summary > div { flex: 1; min-width: 0; }
-.v2-official-summary p { color: var(--text-2); font-size: var(--font-small); }
+.v2-official-summary strong { font-size: var(--font-small); overflow-wrap: anywhere; }
+.v2-official-summary p { margin: 0; color: var(--text-2); font-size: var(--font-small); }
+.v2-client-head { display: flex; align-items: center; gap: 10px; }
+.v2-client-head > strong { font-size: var(--font-body); }
+.v2-client-head > span { color: var(--text-3); font-size: var(--font-small); }
+/* ChatGPT 账号额度：按已用画，用得多的那条变成提醒色。 */
+.v2-quota { display: flex; flex-direction: column; gap: 14px; }
+.v2-quota-window { display: grid; gap: 7px; }
+.v2-quota-window > small { color: var(--text-3); font-size: var(--font-micro); }
+.v2-quota-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: var(--font-small); }
+.v2-quota > p { margin: 0; color: var(--text-2); font-size: var(--font-small); }
+.v2-quota-note { color: var(--text-3); }
 /* 帮助与客服：左边扫码，右边复制身份；常用去向在下面一行。 */
 .v2-support { display: grid; grid-template-columns: 232px minmax(0, 1fr); align-items: center; gap: 20px; }
 /* 左栏那句一行放得下；开了大字放不下时两行折得一样长，不剩一个孤字。 */
