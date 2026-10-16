@@ -20,15 +20,15 @@ jobs:
           curl -sS -o /dev/null -w '%{redirect_url}\n' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect | tee url.txt
           curl -sSfL --retry 3 -o claude.msix https://claude.ai/api/desktop/win32/x64/msix/latest/redirect
           ls -l claude.msix
-          mkdir msix && (cd msix && unzip -q ../claude.msix || true)
+          mkdir msix && (cd msix && unzip -q ../claude.msix || true) && set +o pipefail
           grep -o 'Version="[^"]*"' msix/AppxManifest.xml | head -2
           find msix -maxdepth 3 -type d | head -40
           find msix -name '*.asar' -o -name '*.zip' | head
           ASAR=$(find msix -name app.asar | head -1)
           echo "asar=$ASAR"
           npx --yes @electron/asar@3.2.10 extract "$ASAR" asar || echo "asar extract partial"
-          ls msix/app/resources/ion-dist | head -30; du -sh msix/app/resources/ion-dist; ls msix/app/locales | head -80
-          du -sh asar
+          (ls msix/app/resources/ion-dist | head -30; du -sh msix/app/resources/ion-dist; ls msix/app/locales | head -80) || true
+          du -sh asar || true
       - name: Search for locales
         run: |
           cd work
