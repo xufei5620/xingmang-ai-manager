@@ -361,14 +361,16 @@ export function AccountRecharge({
   )
   const presetAmounts = info.data?.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   const amountText = custom !== '' ? custom : String(presetValue)
-  const customValue = custom !== '' && isQuotableAmount(Number(custom), topupMinimum) ? Number(custom) : null
   const amountValue = isQuotableAmount(Number(amountText), topupMinimum) ? Number(amountText) : null
-  const customBad = custom !== '' && customValue === null
+  // 框里填的不对，或者没填而默认那档低于这个渠道的最低额（渠道是自动选上的，没走下面换渠道时的重置），
+  // 都在框下面说清楚，不然「充值」灰着没有一句话。
+  const amountBad = Boolean(info.data) && amountValue === null
   const quoting = Boolean(info.data && paymentMethod) && !offline
   const tierQuotes = useTopupQuotes({
     quote: async (value) => (await api.quoteAccountTopupAmount({ amount: value })).payableAmount,
     presets: presetAmounts,
-    custom: customValue,
+    // 选中的那个数也要问：它可能不在头几档里（活动卡片带来的、默认 10 不在后台的档位里），不问「实付」就一直转。
+    custom: amountValue,
     enabled: quoting,
     resetKey: info.data,
   })
@@ -677,7 +679,7 @@ export function AccountRecharge({
                   inputMode="numeric"
                   placeholder={`最低 ${topupMinimum}，填整数`}
                   value={custom !== '' ? custom : presetAmounts.includes(presetValue) ? '' : String(presetValue)}
-                  error={customBad ? topupAmountError(topupMinimum) : undefined}
+                  error={amountBad ? topupAmountError(topupMinimum) : undefined}
                   onChange={(event) => {
                     setCustom(event.target.value)
                     setQuote(null)

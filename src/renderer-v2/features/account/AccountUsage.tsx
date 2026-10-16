@@ -287,6 +287,13 @@ function AccountCalls({
   const calendar = siteId === 'solov-api'
   const defaultDates = useMemo(() => usageDateRange({}), [])
   const [page, setPage] = useState(1)
+  // 换了上面的时间范围就回第一页：停在「30 天」的第 3 页切到「24 小时」，那边可能根本没有第 3 页，
+  // 列表空着、分页条也不出来，回不去。渲染时就对上，不先拿旧页码多问一次。
+  const [pageRange, setPageRange] = useState(range)
+  if (pageRange !== range) {
+    setPageRange(range)
+    setPage(1)
+  }
   const [pageSize, setPageSize] = useState(20)
   const [filter, setFilter] = useState<AccountUsageQuery>(calendar ? defaultDates : {})
   const [quick, setQuick] = useState<UsageQuickFilter>('all')
@@ -376,6 +383,7 @@ function AccountCalls({
               const status = usageStatus(row)
               return {
                 id: String(row.id),
+                label: `${displayDate(row.createdAt)} ${row.modelName}`,
                 when: <RelativeTime value={row.createdAt} />,
                 model: <span className="v2-usage-mono">{row.modelName}</span>,
                 key: row.tokenName || '—',
@@ -385,6 +393,7 @@ function AccountCalls({
               }
             })}
             rowKey={(row) => String(row.id)}
+            rowLabel={(row) => String(row.label)}
             onRowClick={(row) => setSelected(records.find((record) => String(record.id) === row.id) ?? null)}
             empty=""
             label="调用明细"
@@ -497,6 +506,7 @@ function AccountTasks({
             ]}
             rows={tasks.map((task) => ({
               id: String(task.id),
+              label: task.taskId,
               task: <span className="v2-usage-mono">{task.taskId}</span>,
               model: task.originModelName || task.platform,
               status: (
@@ -507,6 +517,7 @@ function AccountTasks({
               cost: quotaMoney(task.quota, balance),
             }))}
             rowKey={(row) => String(row.id)}
+            rowLabel={(row) => String(row.label)}
             onRowClick={(row) => setSelected(tasks.find((task) => String(task.id) === row.id) ?? null)}
             empty={resource.loading ? '正在读取异步任务…' : '暂无异步任务'}
             label="异步任务"

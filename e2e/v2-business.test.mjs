@@ -180,6 +180,25 @@ test('the usage range drives the stats, one bar per local day or week and the ca
   } finally { await page.close() }
 })
 
+test('changing the usage range sends the call list back to its first page', async () => {
+  const page = await fixture('page=account&accountTab=usage&usagePages=1')
+  try {
+    const section = page.getByTestId('account-usage-section')
+    await section.getByText('共 60 条').waitFor()
+    // 整行就是入口，读屏念时间和模型，不是「[object Object]」。
+    const label = await section.locator('tbody tr').first().getAttribute('aria-label')
+    assert.doesNotMatch(label, /object/)
+    assert.match(label, /\S+ \S+/)
+    await section.getByRole('button', { name: '下一页', exact: true }).click()
+    await section.getByText('2 / 3', { exact: true }).waitFor()
+    await page.getByRole('group', { name: '统计时间' }).getByRole('button', { name: '24 小时', exact: true }).click()
+    await section.getByText('1 / 3', { exact: true }).waitFor()
+    const pages = (await calls(page)).filter((call) => call.name === 'query-usage').map((call) => call.args.page)
+    // 换范围那一下直接问第一页，不先拿旧页码多问一次。
+    assert.deepEqual(pages.slice(-2), [2, 1])
+  } finally { await page.close() }
+})
+
 test('account views distinguish summary-only, failed reads and valid empty results', async () => {
   for (const [query, tab, expected, absent] of [
     ['sub2apiReliability=1', '用量账单', '只有累计数', '这个时间段还没有用量'],
@@ -2378,6 +2397,32 @@ test('a tier picked on the home activity card arrives preselected on the recharg
       await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).getAttribute('aria-pressed'),
       'true',
     )
+  } finally {
+    await page.close()
+  }
+})
+
+test('an amount outside the quick tiers is still quoted on the summary', async () => {
+  // 活动卡片带来的 30 不在后台的档位（10、20）里：自定义金额框写着它，「实付」也要问出来，不能一直转。
+  const page = await fixture('page=account&accountTab=recharge&rechargeAmount=30')
+  try {
+    const breakdown = page.getByTestId('account-recharge-breakdown')
+    await breakdown.getByText('30.00', { exact: true }).waitFor()
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '30')
+    assert.equal(await flat(breakdown), '实付 30.00 充值后余额 $40.00')
+  } finally {
+    await page.close()
+  }
+})
+
+test('a default amount below the minimum says why recharging is unavailable', async () => {
+  const page = await fixture('page=account&accountTab=recharge&highMinimum=1')
+  try {
+    await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), true)
+    await page.getByRole('button', { name: /^到账 \$20，实付 20\.00/ }).click()
+    assert.equal(await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), false)
   } finally {
     await page.close()
   }
