@@ -1,5 +1,6 @@
 import path from 'node:path'
 import type { SafeStorageLike } from './account-session-store'
+import { currentAccountGroupName } from './catalog'
 import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
@@ -129,6 +130,25 @@ export function pruneChatKeys(keys: readonly StoredChatKey[]): StoredChatKey[] {
   return retained
 }
 
+/**
+ * xm 站 10-16 删了老分组名，删前把老名字下的 Key 原样挂到了新名字下，所以缓存里记着老名字的那把
+ * 就是现在新名字下的那把。换成新名字读出来，老对话换到新名字后接着用它，它自己设的上限也照旧管用；
+ * 按老名字找不到而去签新的，会拿分组里别的 Key 顶上，等于悄悄绕过那个上限。
+ * 同一账号新老名字各有一把时，留排在前面（较新）的那把。
+ */
+export function renameRetiredChatKeyGroups(keys: readonly StoredChatKey[]): StoredChatKey[] {
+  const seen = new Set<string>()
+  const renamed: StoredChatKey[] = []
+  for (const entry of keys) {
+    const group = currentAccountGroupName(entry.group)
+    const scope = JSON.stringify([entry.userId, group])
+    if (seen.has(scope)) continue
+    seen.add(scope)
+    renamed.push({ ...entry, group })
+  }
+  return renamed
+}
+
 export class ChatKeyStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private invalidationRevision = 0
@@ -143,6 +163,7 @@ export class ChatKeyStore {
     private readonly filePath: string,
     private readonly storage: SafeStorageLike,
     private readonly persistence: CredentialPersistence = 'durable',
+    private readonly siteId: 'solov' | 'solov-api' = 'solov',
   ) {}
 
   async read(userId: number): Promise<StoredChatKey[]> {
@@ -245,7 +266,8 @@ export class ChatKeyStore {
     if (content === null) return null
     const record = decodePersistedChatKeys(content, this.storage)
     if (!record) throw new Error('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
-    return record
+    // 只有星芒账号（xm 站）改过名；文件里的老名字等下次写入时跟着换掉。
+    return this.siteId === 'solov' ? { ...record, keys: renameRetiredChatKeyGroups(record.keys) } : record
   }
 
   private assertUserId(userId: number): void {

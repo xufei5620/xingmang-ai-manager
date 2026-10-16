@@ -1,14 +1,17 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 import type { SafeStorageLike } from './account-session-store'
+import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import {
   ChatKeyStore,
   decodePersistedChatKeys,
   encodePersistedChatKeys,
   isPersistedChatKeys,
   pruneChatKeys,
+  renameRetiredChatKeyGroups,
   type PersistedChatKeys,
   type StoredChatKey,
 } from './chat-key-store'
@@ -334,5 +337,72 @@ describe('ChatKeyStore session-only mode (Linux without a keyring)', () => {
   it('keeps refusing in the default durable mode', async () => {
     const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false }))
     await expect(store.read(42)).rejects.toThrow('系统安全存储不可用')
+  })
+})
+
+describe('group names the xm site retired', () => {
+  it('reads a key cached under a retired group name under its current name', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    seedStore(filePath, storage, [chatKey(42, 'GPT-中转/订阅', 1), chatKey(42, '生图分组', 2)])
+    const store = new ChatKeyStore(filePath, storage)
+
+    await expect(store.read(42)).resolves.toEqual([
+      { ...chatKey(42, 'GPT-中转/订阅', 1), group: 'GPT' },
+      chatKey(42, '生图分组', 2),
+    ])
+  })
+
+  it('keeps the newer key when an account cached both names and rewrites the file under the current one', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    seedStore(filePath, storage, [
+      chatKey(42, 'GPT', 3),
+      chatKey(42, 'GPT-中转/订阅', 1),
+      chatKey(42, '图片模型-中转/订阅', 2),
+    ])
+    const store = new ChatKeyStore(filePath, storage)
+    const image = { ...chatKey(42, '图片模型-中转/订阅', 2), group: '图片模型' }
+
+    await expect(store.read(42)).resolves.toEqual([chatKey(42, 'GPT', 3), image])
+    await store.remove(42, 'GPT')
+    await expect(store.read(42)).resolves.toEqual([image])
+    expect(decodePersistedChatKeys(fs.readFileSync(filePath, 'utf8'), storage)?.keys).toEqual([image])
+  })
+
+  it('leaves group names alone for the legacy relay account', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    seedStore(filePath, storage, [chatKey(42, 'GPT-中转/订阅', 1)])
+    const store = new ChatKeyStore(filePath, storage, 'durable', 'solov-api')
+
+    await expect(store.read(42)).resolves.toEqual([chatKey(42, 'GPT-中转/订阅', 1)])
+  })
+
+  it('renames per account without merging two accounts', () => {
+    expect(renameRetiredChatKeyGroups([chatKey(42, 'GPT-中转/订阅', 1), chatKey(99, 'GPT', 2)]))
+      .toEqual([{ ...chatKey(42, 'GPT-中转/订阅', 1), group: 'GPT' }, chatKey(99, 'GPT', 2)])
+  })
+
+  it('stops at the used-up cap of a chat key cached under a retired name instead of signing around it', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    seedStore(filePath, storage, [{ ...chatKey(7, 'GPT-中转/订阅', 3), keyName: 'xingmang-chat-1' }])
+    const provisionCliKey = vi.fn(async () => ({ id: 10, name: 'xingmang-chat-2', key: 'sk-7-10-unlimited-replacement' }))
+    const coordinator = createChatCredentialCoordinator({
+      accountService: {
+        getSessionState: () => ({ authenticated: true, account: { userId: 7 } }),
+        getSessionRevision: () => 0,
+        getActiveSiteId: () => 'solov',
+        listUsableGroups: async () => [{ name: 'GPT', description: '', ratio: 1 }],
+        provisionCliKey,
+        listKeys: async () => ({ page: 1, pageSize: 100, total: 0, keys: [] }),
+      } as unknown as Parameters<typeof createChatCredentialCoordinator>[0]['accountService'],
+      keyStore: new ChatKeyStore(filePath, storage),
+      modelService: { fetchAvailableModels: async () => { throw new Error('服务返回 429：API key 额度已用完') } },
+    })
+
+    await expect(coordinator.resolveCredential('GPT')).rejects.toThrow(chatKeyQuotaExhaustedMessage)
+    expect(provisionCliKey).not.toHaveBeenCalled()
   })
 })
