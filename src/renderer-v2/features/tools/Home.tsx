@@ -738,8 +738,8 @@ export function Home(props: HomeProps) {
    * 星芒卸不了的桌面端（外接客户端、Mac 上的 Codex 桌面端）在「…」里也放「卸载…」，点了弹框说
    * 在系统里怎么删；Windows 上的 Codex 桌面端星芒自己能卸，不走这里。
    */
-  function uninstallGuideItems(tool: UninstallGuideTool, name: string): MenuItem[] {
-    const guide = buildUninstallGuide(tool, name, os)
+  function uninstallGuideItems(tool: UninstallGuideTool, name: string, path: string | null): MenuItem[] {
+    const guide = buildUninstallGuide(tool, name, os, path)
     return guide ? [{ label: '卸载…', danger: true, testId: `tool-${tool}-uninstall-guide`, onSelect: () => setUninstallGuide(guide) }] : []
   }
 
@@ -803,7 +803,7 @@ export function Home(props: HomeProps) {
       ],
       canUninstallTool(tool.status, tool.id === 'codexDesktop' && snapshot?.platform.codexDesktop.uninstall === true)
         ? [{ label: '卸载…', danger: true, testId: `tool-${tool.id}-uninstall`, onSelect: () => props.onUninstall(tool.id) }]
-        : tool.id === 'codexDesktop' ? uninstallGuideItems(tool.id, tool.name) : [],
+        : tool.id === 'codexDesktop' ? uninstallGuideItems(tool.id, tool.name, tool.status.path) : [],
     ]
     return groups.filter((group) => group.length > 0).flatMap((group, index) => index ? ['divider' as const, ...group] : group)
   }
@@ -947,7 +947,7 @@ export function Home(props: HomeProps) {
         ...(tool.action === 'configure'
           ? [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy || externalCached, testId: `tool-${tool.id}-open`, onSelect: () => props.onLaunchExternal(tool.id) }]
           : [{ label: '配置…', disabled: externalCached, testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
-        ...uninstallGuideItems(tool.id, tool.name).flatMap((item) => ['divider' as const, item]),
+        ...uninstallGuideItems(tool.id, tool.name, tool.status.path).flatMap((item) => ['divider' as const, item]),
       ] : undefined} menuLabel={`${spacedName(tool.name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 

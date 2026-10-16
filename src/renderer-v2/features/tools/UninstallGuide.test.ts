@@ -40,6 +40,23 @@ describe('buildUninstallGuide', () => {
     ])
   })
 
+  it('names the bundle Finder shows when detection found one, so a legacy ChatGPT app is not the one deleted', () => {
+    // 早先的官方包叫 Codex.app：照写 ChatGPT 的话，同时留着旧聊天程序 ChatGPT.app 的人会删错。
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Applications/Codex.app')?.steps).toEqual([
+      '先退出 Codex（在它的窗口里按 ⌘Q）。',
+      '打开访达，点左边的「应用程序」。',
+      '找到 Codex，把它拖进废纸篓。',
+    ])
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Users/mike/Applications/ChatGPT.app/')?.steps[2])
+      .toBe('找到 ChatGPT（Codex 桌面端在 Mac 上叫这个名字），把它拖进废纸篓。')
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'mac', '/Applications/Claude.app')?.steps[2]).toBe('找到 Claude，把它拖进废纸篓。')
+    // 不是 .app 的路径（没读到、或别的形状）照旧用固定的名字；Windows 上不看路径。
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', null)?.steps[0]).toBe('先退出 ChatGPT（在它的窗口里按 ⌘Q）。')
+    expect(buildUninstallGuide('opencode', 'OpenCode', 'mac', '/Applications/OpenCode')?.steps[2]).toBe('找到 OpenCode，把它拖进废纸篓。')
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'win', 'C:\\Users\\a\\AppData\\Local\\AnthropicClaude\\Claude.exe')?.steps[1])
+      .toContain('找到 Claude，')
+  })
+
   it('gives no guide where the app uninstalls it itself or does not list the card', () => {
     // Windows 上的 Codex 桌面端星芒自己卸；Linux 上这几张卡片都不列。
     expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'win')).toBeNull()
