@@ -1,10 +1,10 @@
 import { forwardRef, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { Archive, ChevronDown, FolderOpen, MoreHorizontal, RefreshCw } from 'lucide-react';
-import { tools } from '../registry/tools';
+import { toolKindLabels, tools } from '../registry/tools';
 import { clientConnections } from '../registry/clients';
 import { statuses } from '../registry/status';
 import { BrandIcon, Kbd, type ToolId } from './brand';
-import { Menu, type MenuItem } from './floating';
+import { Menu, type MenuItem, type MenuNote } from './floating';
 import { cx, iconSize, useBalanceTier, useUiText, type BaseProps, type Icon, type Size, type Tone } from './shared';
 
 export type ButtonProps = BaseProps & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className' | 'style' | 'color'> & {
@@ -39,6 +39,16 @@ export function ToolRow({ tool, status, version, route, model, modelHint, detail
   // 线路排在最前：这一栏最宽 200，版本带推荐说明或模型名长时，排在后面的线路会被省略号截掉。
   const subtitle = detail ?? (version ? [route, version.startsWith('v') ? version : 'v' + version, model].filter(Boolean).join(' · ') : definition?.vendor);
   return <div className="xm-tool-row" data-testid={testId}><BrandIcon tool={tool} size={40} variant="tile" /><div className="xm-tool-name"><strong>{definition?.name ?? tool}</strong><small title={modelHint && !detail ? subtitle + '\n' + modelHint : subtitle}>{subtitle}</small></div><div className="xm-tool-status"><Pill tone={tone} dot>{text}{(status === 'installing' || status === 'updating') && typeof progress === 'number' ? ' ' + Math.round(progress) + '%' : ''}</Pill></div><div className="xm-tool-extra">{extraAction}</div><div className="xm-tool-primary">{primaryAction}</div><div className="xm-tool-menu">{menu && <Menu items={menu} label={moreLabel} anchor={<Button size="sm" icon={MoreHorizontal} variant="ghost" aria-label={moreLabel} title={moreLabel} />} />}</div>{typeof progress === 'number' && <div className="xm-tool-progress"><Progress value={progress} /></div>}</div>;
+}
+// v4 首页的工具卡片：上面图标、名字和「厂商 · 种类」，中间一两行说明，底下左边一块牌子（来源、状态），右边按钮和「…」。
+// 底下那一行是弹性排开的：牌子可以缩、超长就省略号，按钮排在它后面，两者永远不叠（批 04 修的就是工具行里这个叠字）。
+export function ToolCard({ tool, meta, metaTone, metaTitle, link, badge, actions, menu, menuLabel, progress, off, testId }: BaseProps & { tool: ToolId; meta: ReactNode; metaTone?: 'warn' | 'bad'; metaTitle?: string; link?: ReactNode; badge?: ReactNode; actions?: ReactNode; menu?: Array<MenuItem | MenuNote | 'divider'>; menuLabel?: string; progress?: number; off?: boolean }) {
+  const definition = tools.find(item => item.id === tool) ?? clientConnections.find(item => item.id === tool); const t = useUiText(); const name = definition?.name ?? tool; const moreLabel = menuLabel ?? (/[\u4e00-\u9fff]$/.test(name) ? name : name + ' ') + t('more');
+  return <section className={cx('xm-tool-card', off && 'is-off')} data-testid={testId} data-installed={off ? 'false' : 'true'}>
+    <div className="xm-tool-card-head"><BrandIcon tool={tool} size={40} variant="tile" /><div><strong>{name}</strong>{definition && <small>{definition.vendor + ' · ' + toolKindLabels[definition.kind]}</small>}</div></div>
+    <div className="xm-tool-card-meta"><span className={cx('xm-tool-card-text', metaTone && 'xm-tone-' + metaTone)} title={metaTitle}>{meta}</span>{link}</div>
+    <div className="xm-tool-card-foot">{typeof progress === 'number' ? <div className="xm-tool-card-progress"><Progress value={progress} /><span>{Math.round(progress) + '%'}</span></div> : badge && <div className="xm-tool-card-badge">{badge}</div>}<div className="xm-tool-card-actions">{actions}{menu && <Menu items={menu} label={moreLabel} anchor={<Button size="sm" icon={MoreHorizontal} variant="ghost" aria-label={moreLabel} title={moreLabel} />} />}</div></div>
+  </section>;
 }
 export function SessionRow({ tool, title, path, model, count, when, archived, onOpen, testId }: BaseProps & { tool: ToolId; title: string; path: string; model: string; count: number; when: string; archived?: boolean; onOpen: () => void }) {
   const t = useUiText(); const definition = tools.find(item => item.id === tool);

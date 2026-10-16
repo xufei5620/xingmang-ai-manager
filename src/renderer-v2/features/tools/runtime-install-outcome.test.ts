@@ -47,7 +47,13 @@ describe('describeRuntimeInstallOutcome', () => {
       expect(outcome.tone).toBe('ok')
       expect(outcome.message).not.toMatch(/重开|重启/)
     }
-    expect(describeRuntimeInstallOutcome('python', pythonResult()).message).toBe('Python 装好了。')
+    expect(describeRuntimeInstallOutcome('python', pythonResult()).message).toBe('Python 3.12 已装好')
+  })
+
+  it('names the installed Python version once, whatever form the host reports it in', () => {
+    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: '3.12.9' })).message).toBe('Python 3.12.9 已装好')
+    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: 'Python 3.12.9' })).message).toBe('Python 3.12.9 已装好')
+    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: null })).message).toBe('Python 装好了。')
   })
 
   it('says it was already there when nothing was installed', () => {

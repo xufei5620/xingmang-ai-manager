@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
-import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, spacedName, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -817,5 +817,15 @@ describe('renderer official account subtitle', () => {
 
   it('keeps the plain wording when nothing about the plan is known', () => {
     expect(officialAccountSubtitle({}, now)).toEqual({ text: '官方账号' })
+  })
+})
+
+describe('renderer spaced tool names', () => {
+  // 「已装好」「更多操作」这类中文直接跟在名字后面：英文名后面留一个空格，中文名后面不留。
+  it('adds a space after a Latin name and none after a Chinese one', () => {
+    expect(`${spacedName('Claude Code')}已卸载`).toBe('Claude Code 已卸载')
+    expect(`${spacedName('WorkBuddy')}更多操作`).toBe('WorkBuddy 更多操作')
+    expect(`${spacedName('Codex 桌面端')}更多操作`).toBe('Codex 桌面端更多操作')
+    expect(`${spacedName('2 个工具')}写入密钥`).toBe('2 个工具写入密钥')
   })
 })

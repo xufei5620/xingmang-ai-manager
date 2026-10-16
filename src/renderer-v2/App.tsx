@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
@@ -19,7 +19,8 @@ import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, gu
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
-import { Home } from './features/tools/Home'
+import { Home, type ToolInstallIntent } from './features/tools/Home'
+import { rescanFingerprint } from './features/tools/rescan-change'
 import { visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
 import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
@@ -27,7 +28,7 @@ import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapOffer, modelSwapQue
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage, type InstallRuntimeId } from './features/tools/runtime-readiness'
-import { brokenConfigDetails, brokenConfigOf, brokenConfigRepairTarget, canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
+import { brokenConfigDetails, brokenConfigOf, brokenConfigRepairTarget, canSwitchToManagedInstall, codexNeedsRepair, foreignKeyKind, isToolId, presentTools, providerFor, readyOnceRepaired, recommendedVersionVerb, spacedName, toolInstallDirectory, toolUpdateOffer, type ToolId, type ToolSource } from './features/tools/model'
 import { managedSwitchConfirmation, managedSwitchVersion } from './features/tools/managed-switch'
 import { inAppToolUpdates, pendingToolUpdates, readAnnouncedToolUpdates, rememberAnnouncedToolUpdates, rememberRevertedToolUpdate, unannouncedToolUpdates, updateNoticeKey } from './features/tools/update-notice'
 import { isMissingWorkspace, launchWorkspaces, type CliLaunchChoice } from './features/tools/recent-workspaces'
@@ -36,9 +37,9 @@ import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './fea
 import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
-import { operationLogPage, operationTargetOf, type OperationActionId } from './operation-error'
+import { operationLogPage, operationTargetOf, presentOperationFailure, type OperationActionId } from './operation-error'
 import { accountTabs, macDesktopTutorialTopic, resolveAccountLanding, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
-import { shortcutTools, tools } from './registry/tools'
+import { homeToolOrder, shortcutTools, tools } from './registry/tools'
 import { activeProviderIds, type ActiveProviderId } from '../../electron/catalog'
 import { clientConnections } from './registry/clients'
 import { pageRegistry, type PageId } from './registry/pages'
@@ -102,7 +103,7 @@ type AccountTab = typeof accountTabs[number]['value']
  * 建不成说一句再弹选择器。
  */
 type LaunchFolder = 'choose' | 'create' | 'firstOpen'
-interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }
+interface PendingConfirmation { title: string; body: ReactNode; label: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
   result?: AccountBootstrapResult
@@ -129,6 +130,13 @@ function notifyAnnouncement(eventKey: string) {
 }
 
 // 「打开」排队时说在等谁（launchWaitLabel）：工具行任务的 key 就是工具或客户端的编号。
+function withoutTool<T>(record: Partial<Record<ToolId, T>>, tool: ToolId): Partial<Record<ToolId, T>> {
+  if (!(tool in record)) return record
+  const next = { ...record }
+  delete next[tool]
+  return next
+}
+
 function jobToolName(key: string): string | undefined {
   return tools.find((tool) => tool.id === key)?.name ?? clientConnections.find((client) => client.id === key)?.name
 }
@@ -212,6 +220,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [dismissedUpdate, setDismissedUpdate] = useState('')
   const [updateRetrying, setUpdateRetrying] = useState(false)
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
+  // 首页卡片上正在装的是更新、回到推荐版本还是退回（v4 批 04）：进度那一行开头说清楚。
+  const [installIntents, setInstallIntents] = useState<Partial<Record<ToolId, ToolInstallIntent>>>({})
+  // 首页卡片上第一次装没装上的原因：卡片写「没装上：…，已撤回」，「看原因」再弹一次同一个错误框。
+  const [installFailures, setInstallFailures] = useState<Partial<Record<ToolId, { reason: string; failure: OperationFailure }>>>({})
+  // 首页提示区交出来的那一格和剩下的位置：公告、活动画进去，跟首页自己的提示一起最多两条。
+  const [homeNoticeSlot, setHomeNoticeSlot] = useState<HTMLElement | null>(null)
+  const [homeNoticeRoom, setHomeNoticeRoom] = useState(2)
+  // 首页「重新检测」点下去那一刻的工具和运行环境（rescanFingerprint）；null = 没在等这一轮检测。
+  const [rescanBefore, setRescanBefore] = useState<string | null>(null)
   // 帮助框「最近一次出错」：错误框关掉以后客户才想起来找客服，那时错误已经不在屏上了。
   const [lastFailure, setLastFailure] = useState<SupportFailure | null>(null)
   // 错误框里点了「换成新版 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
@@ -477,7 +494,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         await toolbox.refreshConfig().catch(() => undefined)
         // 开机那一轮替客户修好了 Codex 认不出的老配置：没人点过按钮，轻轻说一句改了什么、
         // 原样在哪找回。点名重写的那一档由调用方自己报结果，这里不重复。
-        if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修好 Codex 的连接设置，原来的设置在「备份」里。', 'ok')
+        if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修好 Codex 的配置文件，坏掉的那份已备份', 'ok')
       } catch (cause) {
         outcome.error = errorMessage(cause, '账号 Key 初始化没有完成')
         logAccountBootstrap(describeAccountBootstrapFailure(mode, outcome.error))
@@ -539,7 +556,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!current) throw new Error('请先完成工具检测')
     const warning = applyManualSourceMarker(getSourceMarkerStorage(), current.baseUrl, provider, true)
     if (warning) toast.show(warning, 'warn')
-    else toast.show('已按现在这份配置处理，以后不再提示。', 'ok')
+    else toast.show(`好的，${spacedName(tools.find((entry) => entry.id === tool)?.name ?? '工具')}就用现在这份配置，不再提醒`, 'ok')
     await toolbox.refreshConfig().catch(() => undefined)
   }, [toast, toolbox.refreshConfig, toolbox.snapshot])
   /**
@@ -743,6 +760,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const supportIdentity = buildSupportIdentityLine(supportInput)
   const lastFailureLine = lastFailure ? buildLastFailureLine(lastFailure) : undefined
   useEffect(() => { if (operationError) setLastFailure(supportFailureOf(operationError, new Date())) }, [operationError])
+  // 首页「重新检测」两边都检测完、都没出错，结果和点之前一样：说一句，免得以为没点上。
+  useEffect(() => {
+    if (rescanBefore === null || toolbox.loading || toolbox.externalLoading) return
+    setRescanBefore(null)
+    if (toolbox.error || toolbox.externalError) return
+    if (rescanFingerprint(toolbox.snapshot, toolbox.externalClients) === rescanBefore) toast.show('检测完了，工具和运行环境都没有变化', 'neutral')
+  }, [rescanBefore, toast, toolbox.error, toolbox.externalClients, toolbox.externalError, toolbox.externalLoading, toolbox.loading, toolbox.snapshot])
   useLayoutEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
     let current = true
@@ -947,7 +971,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (toolbox.snapshot?.system.clis.codex.installed) toast.show('Codex 命令行版在首页，点它那一行的「打开」就能用。', 'neutral')
     else void perform('安装工具', () => install('codex'), 'codex')
   }
-  async function install(id: ToolId, version?: string): Promise<ToolInstallOutcome> {
+  /** done 传了就把「装完以后账号密钥写没写进去」记进去：首页装好时那句话要按它说（v4 批 04）。 */
+  async function install(id: ToolId, version?: string, done?: { keyWritten?: boolean }): Promise<ToolInstallOutcome> {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
     const management = id === 'codexDesktop' ? state.platform.codexDesktop.install : state.platform.cliInstall[id]
@@ -1035,7 +1060,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
       finishing = true
       report(installedToolSyncLabel)
-      await syncAfterToolInstalled(id)
+      const keyWritten = await syncAfterToolInstalled(id)
+      if (done) done.keyWritten = keyWritten
     }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling || finishing ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
     // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
     return finished ? outcome : 'skipped'
@@ -1097,14 +1123,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    * 首页和「安装卸载」页必须共用这一段，否则维护页装完只提示「工具状态已更新」，
    * 首页还停在「未安装」、Key 也没写（R-G3）。
    */
-  async function syncAfterToolInstalled(id: ToolId) {
+  async function syncAfterToolInstalled(id: ToolId): Promise<boolean> {
+    let keyWritten = false
     if (session.authenticated && session.account) {
-      await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
+      const outcome = await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
+      keyWritten = Boolean(outcome?.result?.configured.includes(providerFor(id)))
     }
     // 「安装卸载」页装完走的是它自己的 bridge 调用，绕开了 toolsApi 那侧的作废，
     // 所以收尾这一步补一刀，两个入口装完都能立刻看到新的「最近」。
     refreshRecent()
     await toolbox.refresh(true)
+    return keyWritten
   }
   async function installRuntime(runtime: 'node' | 'python' | 'git') {
     if (offline) { toast.show(offlineActionMessage, 'warn'); return }
@@ -1408,7 +1437,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   function requestUninstall(id: ToolId) {
     const definition = tools.find((tool) => tool.id === id)!
-    setConfirmation({ title: `卸载 ${definition.name}？`, body: '工具配置、账户数据和历史记录会保留。', label: '卸载工具', danger: true, tool: id, work: async () => {
+    setConfirmation({ title: `卸载 ${definition.name}？`, body: `会删掉 ${spacedName(definition.name)}程序，配置和历史会话都保留，重装后直接能用。`, label: `卸载 ${definition.name}`, danger: true, tool: id, work: async () => {
       let uninstalled = false
       await toolbox.run(id, '正在卸载', async () => {
         const result = await toolsApi.uninstall(id)
@@ -1424,22 +1453,89 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       // 真卸掉了、紧接着的检测没读到（已知32）：卸载本身做成了，不弹「操作没有完成」，确认框
       // 照常关，免得客户以为没卸成又点一次「卸载工具」。首页顶上检测自己的那句照旧。转交给
       // 命令窗口的、要自己手动卸的，照旧当没做完。
-      await toolbox.refresh(true).catch((cause: unknown) => {
+      const refreshed = await toolbox.refresh(true).then(() => true, (cause: unknown) => {
         if (!uninstalled) throw cause
         if (mounted.current) toast.show(`${definition.name} 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。`, 'warn')
+        return false
       })
+      // 转交给命令窗口的、要自己手动卸的不说这句（照字表）：那时程序还没卸掉。
+      if (uninstalled && refreshed && mounted.current) toast.show(`${spacedName(definition.name)}已卸载，配置已保留`, 'ok')
     } })
   }
   function requestRevert(id: ToolId, version: string) {
     const name = tools.find((tool) => tool.id === id)?.name ?? '工具'
     const latestVersion = toolbox.snapshot ? presentTools(toolbox.snapshot).find((tool) => tool.id === id)?.latestVersion ?? null : null
-    setConfirmation({ title: `退回 ${name} ${version}？`, body: '更新后如果用着不对劲，可以先退回原来的版本。退回后还会显示有新版本，等下次更新写明修好了再更新。', label: '退回', tool: id, work: async () => {
-      // 确认框马上关掉，进度交给工具行，和「更新」一样可以看进度、可以取消。
+    const shown = version.replace(/^v/, '')
+    setConfirmation({ title: `退回 v${shown}？`, body: `会把 ${spacedName(name)}换回更新前的 v${shown}，配置和历史会话都保留。退回后还会显示有新版本，等下次更新写明修好了再更新。`, label: `退回 v${shown}`, tool: id, work: async () => {
+      // 确认框马上关掉，进度交给工具卡片，和「更新」一样可以看进度、可以取消。
       void perform('退回工具版本', async () => {
         rememberRevertedToolUpdate(id, latestVersion)
-        if (await install(id, version) === 'installed' && mounted.current) toast.show(`已退回 ${name} ${version}。`, 'ok')
+        setInstallIntents((current) => ({ ...current, [id]: { kind: 'revert', version: shown } }))
+        try {
+          if (await install(id, version) === 'installed' && mounted.current) toast.show(`${spacedName(name)}已退回 v${shown}`, 'ok')
+        } finally {
+          if (mounted.current) setInstallIntents((current) => withoutTool(current, id))
+        }
       }, id)
     } })
+  }
+  /**
+   * 首页卡片上的安装、更新、回到推荐版本、重新安装（v4 批 04），走的就是上面那个 install。
+   * 推荐版本比装着的旧时先问一句再回去；进度那一行开头写「更新到 / 回到 v…」；做完照字表说一句。
+   */
+  function installFromHome(id: ToolId, version?: string, intent?: 'update' | 'rollback') {
+    const current = toolbox.snapshot ? presentTools(toolbox.snapshot).find((tool) => tool.id === id) : undefined
+    const name = tools.find((tool) => tool.id === id)?.name ?? current?.name ?? '工具'
+    const target = version?.replace(/^v/, '')
+    const goingBack = intent === 'rollback' && current !== undefined && recommendedVersionVerb(current) === '回到'
+    if (goingBack && target && current?.currentVersion) {
+      const installed = current.currentVersion.replace(/^v/, '')
+      setConfirmation({ title: `回到推荐版本 v${target}？`, label: `回到 v${target}`, tool: id,
+        body: <><p>{`现在装的是 v${installed}，比星芒验证过的版本新。遇到问题时可以回到 v${target}。`}</p><p>配置和历史会话都会保留。</p></>,
+        // 确认框马上关掉，进度交给工具卡片，同「退回」。
+        work: async () => { void runHomeInstall(id, name, version, 'rollback', true) } })
+      return
+    }
+    void runHomeInstall(id, name, version, goingBack ? 'rollback' : intent || current?.status.installed ? 'update' : undefined, Boolean(current?.status.installed))
+  }
+  async function runHomeInstall(id: ToolId, name: string, version: string | undefined, kind: 'update' | 'rollback' | undefined, wasInstalled: boolean) {
+    const target = version?.replace(/^v/, '')
+    // 重新安装（装着、没点名版本）不算更新：进度那一行不加开头，装完也不说「已更新到」。
+    const shownKind = kind === 'update' && !version ? undefined : kind
+    if (shownKind && target) setInstallIntents((current) => ({ ...current, [id]: { kind: shownKind, version: target } }))
+    setInstallFailures((current) => withoutTool(current, id))
+    setOperationError(null)
+    const done: { keyWritten?: boolean } = {}
+    try {
+      const outcome = await install(id, version, done)
+      if (outcome !== 'installed' || !mounted.current) return
+      if (!wasInstalled) toast.show(done.keyWritten ? `${spacedName(name)}已装好，并配好了你的账号` : `${spacedName(name)}已装好`, 'ok')
+      else if (shownKind === 'rollback' && target) toast.show(`${spacedName(name)}已回到推荐版本 v${target}`, 'ok')
+      else if (shownKind === 'update' && target) toast.show(`${spacedName(name)}已更新到 v${target}，有问题可以在「更多操作」里退回`, 'ok')
+    } catch (cause) {
+      const action = '安装工具'
+      const operationTarget = operationTargetOf(action)
+      const failure: OperationFailure = { ...operationFailureFrom(cause, action), action, retry: () => void runHomeInstall(id, name, version, kind, wasInstalled), tool: id, ...(operationTarget ? { target: operationTarget } : {}) }
+      if (!mounted.current) return
+      setOperationError(failure)
+      // 第一次装没装上：卡片上留一句原因和「看原因」。Codex 桌面端装不上时错误框里有自己的出路（去商店），卡片照旧。
+      if (!wasInstalled && id !== 'codexDesktop') {
+        const reason = presentOperationFailure(failure)?.title ?? failure.message.replace(/[。.\s]+$/, '')
+        setInstallFailures((current) => ({ ...current, [id]: { reason, failure } }))
+      }
+    } finally {
+      if (mounted.current) setInstallIntents((current) => withoutTool(current, id))
+    }
+  }
+  /** 首页卡片上的「取消」：停下来以后照字表说一句，主进程不让停时说为什么。 */
+  async function cancelHomeInstall(id: ToolId) {
+    const current = toolbox.snapshot ? presentTools(toolbox.snapshot).find((tool) => tool.id === id) : undefined
+    const name = tools.find((tool) => tool.id === id)?.name ?? current?.name ?? '工具'
+    const outcome = await toolbox.cancel(id)
+    if (!outcome.cancelled) { if (outcome.reason) toast.show(outcome.reason, 'warn'); return }
+    if (!mounted.current) return
+    if (!current?.status.installed) toast.show(`已取消安装 ${name}，没有留下文件`, 'neutral')
+    else if (current.currentVersion) toast.show(`已取消，${spacedName(name)}还是 v${current.currentVersion.replace(/^v/, '')}`, 'neutral')
   }
   // 确认过的事没做成时，错误框里的「重试」直接再做一遍，不再问一次。卸载时工具还开着，
   // 错误框说「先关掉……再重试」，以前框里却没有「重试」可点。确认框一直开在错误框后面，
@@ -1531,6 +1627,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
   })) : []
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
+  // 顶部搜索的「工具」组，按首页卡片的顺序；还没检测完时不列。
+  const presentedTools = toolbox.snapshot ? presentTools(toolbox.snapshot) : []
+  const shownClients = visibleExternalClients(os, toolbox.externalClients)
+  const commandTools = toolbox.snapshot ? homeToolOrder.flatMap((id) => {
+    const cli = presentedTools.find((tool) => tool.id === id)
+    if (cli) return [{ id, name: tools.find((tool) => tool.id === id)?.name ?? cli.name, installed: cli.status.installed }]
+    const client = shownClients.find((tool) => tool.tool === id)
+    return client ? [{ id, name: clientConnections.find((tool) => tool.id === id)?.name ?? id, installed: client.installed }] : []
+  }) : undefined
   const toolUpdates = toolbox.snapshot ? pendingToolUpdates(presentTools(toolbox.snapshot)) : []
   // 启动扫描完成后把「有新版本」汇总成一条系统通知。同一个工具同一个目标版本
   // 只说一次，抑制状态留在本机，所以下次启动不会再念一遍；工具更完或者上游又
@@ -1650,8 +1755,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           updatableCount={toolUpdates.length}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
-          banner={<><RestartReminder restart={toolsApi.restartWindows} />{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
-            promoVisible={page === 'home'} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
+          banner={<>{page !== 'home' && <RestartReminder restart={toolsApi.restartWindows} />}{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
+            promoVisible={page === 'home'} noticeSlot={page === 'home' ? homeNoticeSlot : null} noticeRoom={homeNoticeRoom} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
             readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
           notification={showUpdate && <Notice tone={update.error ? updateFailureTone(update) : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
             body={update.error ? userFacingErrorMessage(update.error) : updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn, update.installMethod, update.installNeedsAdminPassword)} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)}
@@ -1667,6 +1772,23 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               const result = await acceleration.redeem(code)
               return mounted.current && accountEpoch.current === epoch ? result : null
             } } : {}),
+            tools: commandTools,
+            openTool: (id: string) => {
+              if (isToolId(id)) { void requestLaunchInLastWorkspace(id); return }
+              const client = clientConnections.find((tool) => tool.id === id)
+              if (client) void perform('打开客户端', () => launchExternal(client.id))
+            },
+            installTool: (id: string) => {
+              navigate('home')
+              if (isToolId(id)) { installFromHome(id); return }
+              const client = clientConnections.find((tool) => tool.id === id)
+              if (client) void perform('安装客户端', () => installExternal(client.id))
+            },
+            configureTool: (id: string) => {
+              if (isToolId(id)) { openToolConfig(id); return }
+              const client = clientConnections.find((tool) => tool.id === id)
+              if (client) setExternalClient(client.id)
+            },
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck: () => { if (page === 'health') setHealthRequest((current) => current + 1); navigate('health') },
             ...(toggleTheme ? { toggleTheme } : {}),
@@ -1681,13 +1803,19 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onContactSupport={() => setHelp(true)} onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })} />
               </Suspense>
             </div>}
-            {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
+            {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsUsageTrend={accountSupports(session, 'supportsDashboardTrends')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               toolRouteStatus={session.authenticated && siteId === 'solov' ? settings?.relayToolRouteStatus : undefined}
               onScan={() => {
+                setRescanBefore(rescanFingerprint(toolbox.snapshot, toolbox.externalClients))
                 refreshRecent(); void toolbox.refresh(true, { recheckRoutes: true }).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)
-              }} onInstall={(id, version) => void perform('安装工具', () => install(id, version), id)} onCancelInstall={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
-              onRewriteKey={(id) => void perform('重新写入 Key', () => rewriteAccountKeys([providerFor(id)]), id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
+              }} onInstall={installFromHome} installIntents={installIntents} installFailures={installFailures}
+              onShowInstallFailure={(id) => { const failure = installFailures[id]?.failure; if (failure) setOperationError(failure) }}
+              restart={toolsApi.restartWindows} onNoticeSlot={setHomeNoticeSlot} onNoticeRoom={setHomeNoticeRoom}
+              onCancelInstall={(id) => void perform('取消安装', () => cancelHomeInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
+              onRewriteKey={(id) => void perform('重新写入 Key', async () => {
+                if (await rewriteAccountKeys([providerFor(id)]) && mounted.current) toast.show(`已重新写入 ${spacedName(tools.find((tool) => tool.id === id)?.name ?? '工具')}的密钥，改动前的配置已备份`, 'ok')
+              }, id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
               onRepairConfig={(id) => void perform('重置为初始状态', async () => { if (await repairBrokenToolConfig(id)) confirmToolKeyWritten(id) }, id)}
@@ -1709,7 +1837,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onSystemChanged={() => { markDiagnosticsStale(); refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
-                  onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
+                  onToolsChanged={(tool) => syncAfterToolInstalled(tool).then(() => undefined, (cause) => {
                     if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
                   })}
                   installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)} toolJobs={toolbox.jobs}
