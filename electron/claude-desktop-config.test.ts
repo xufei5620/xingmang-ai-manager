@@ -826,20 +826,41 @@ describe('Claude Desktop official login switch', () => {
     expectSnapshot(previous)
   })
 
-  it('leaves the choice alone when the client is not on the toolbox profile or already on the requested login', async () => {
+  it('leaves the choice alone when the client is on another gateway or already on the requested login', async () => {
     const f = fixture()
     const saved = await f.service.saveGateway(input)
     const metadata = read(f.metadataPath) as { entries: unknown[] }
-    write(path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`), read(saved.path))
-    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '自己的' }] })
+    write(path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`), { ...read(saved.path), inferenceGatewayApiKey: 'sk-someone-else' })
+    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '别人的' }] })
     const previous = snapshot([f.configPath, f.metadataPath])
-    await expect(f.service.useOfficialLogin()).rejects.toThrow('在切换前已变化')
+    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('在切换前已变化')
     await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).rejects.toThrow('在切换前已变化')
     expectSnapshot(previous)
 
     write(f.metadataPath, metadata)
     await f.service.useOfficialLogin()
+    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('在切换前已变化')
+    expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
+  })
+
+  it('switches a copy the customer made of the toolbox profile only while its key is the current account', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    const metadata = read(f.metadataPath) as { entries: unknown[] }
+    write(path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`), read(saved.path))
+    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '自己的' }] })
+    // 首页认它是「当前账号」，切官方也得认，不然点了只会报「已变化」。
+    expect(await f.service.inspectConnection(input.baseUrl, belongs)).toMatchObject({ configured: true })
+    const previous = snapshot([f.configPath, f.metadataPath])
     await expect(f.service.useOfficialLogin()).rejects.toThrow('在切换前已变化')
+    await expect(f.service.useOfficialLogin(() => false)).rejects.toThrow('在切换前已变化')
+    expectSnapshot(previous)
+
+    await f.service.useOfficialLogin(belongs)
+    expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
+    expect(read(f.metadataPath)).toMatchObject({ appliedId: otherId })
+    // 切回来只认星芒写的那份：复制的那份不替他改回去，交给「连接 Claude Desktop」重新保存。
+    await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).resolves.toEqual({ outcome: 'reconnect' })
     expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
   })
 

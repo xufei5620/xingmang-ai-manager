@@ -6790,7 +6790,7 @@ export function createSystemService(
       if (!status?.installed) throw new Error(`还没有检测到 ${externalClientNames[tool]}`)
       const gateway = await claudeDesktopConfig(status, assertBeforeWrite)
       if (target === 'official') {
-        const result = await gateway.useOfficialLogin()
+        const result = await gateway.useOfficialLogin(belongsToCurrentAccount)
         runtimeLog?.log('info', 'config', 'external-client.source-switched', 'Claude Desktop 已切回官方登录', { target, running: status.running })
         return { tool, target, outcome: 'switched', backups: result.backups,
           message: '已切回官方账号，原来的配置已备份。下次打开 Claude Desktop 时用你自己的 Claude 账号登录；现在开着的话，要完全退出再打开。用星芒时的聊天记录不会删，切回当前账号还能看到。' }

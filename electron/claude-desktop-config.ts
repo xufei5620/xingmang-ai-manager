@@ -393,10 +393,11 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
     /**
      * 首页「切回官方账号」：只把 claude_desktop_config.json 的 deploymentMode 改成官方登录，等于替客户在
      * Claude Desktop 的登录页选了「用 Claude 账号登录」。星芒那份配置和密钥原样留着，切回来不用重配；
-     * 别的字段一个字不动（缩进、顺序照原样）。只在星芒那份正在用时才改：客户在 Claude Desktop 里换成
-     * 自己的另一份、或者已经是官方登录了，都不替他做决定。
+     * 别的字段一个字不动（缩进、顺序照原样）。只在正在用的是当前账号那份时才改，跟首页认「当前账号」的
+     * 口径一样：星芒写的那份，或者客户自己复制出来、密钥还是当前账号的那份。客户换成了别人的网关、或者
+     * 已经是官方登录了，都不替他做决定。
      */
-    useOfficialLogin: (): Promise<{ path: string; backups: string[] }> => serial(async () => {
+    useOfficialLogin: (belongsToCurrentAccount?: (apiKey: string) => boolean): Promise<{ path: string; backups: string[] }> => serial(async () => {
       assertContext()
       await options.assertUnmanaged?.()
       assertContext()
@@ -410,7 +411,12 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const desktop = parseObject(original)
       const metadata = parseMetadata(capture(metadataPath))
       const owner = parseOwner(capture(markerPath), profileDirectory)
-      if (original === null || !owner || metadata.appliedId !== owner.id || metadata.hybridPointer
+      const appliedId = metadata.appliedId
+      const ownedInUse = Boolean(owner && appliedId === owner.id)
+      const applied = !ownedInUse && appliedId && belongsToCurrentAccount
+        ? parseObject(capture(path.join(libraryDirectory, `${appliedId}.json`))).inferenceGatewayApiKey : undefined
+      const accountInUse = ownedInUse || (typeof applied === 'string' && Boolean(belongsToCurrentAccount?.(applied)))
+      if (original === null || !accountInUse || metadata.hybridPointer
         || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) {
         throw new Error(`${label}在切换前已变化，未执行修改`)
       }
