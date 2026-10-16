@@ -1874,6 +1874,59 @@ test('a new user opens a CLI in a folder the app creates and can still pick one 
   } finally { await page.close() }
 })
 
+// 星芒卸不了的桌面端（外接客户端、Mac 上的 Codex 桌面端）以前「…」里什么都没有，客户以为是漏了。
+test('desktop apps the app cannot remove explain in the card menu how to uninstall them in the system', async () => {
+  const windows = await open('allInstalled=1&externalInstalled=1')
+  try {
+    await windows.getByTestId('tool-row-claudeDesktop').waitFor()
+    await windows.getByTestId('tool-row-claudeDesktop').getByRole('button', { name: '更多操作' }).click()
+    assert.equal(await windows.getByTestId('tool-claudeDesktop-uninstall-guide').innerText(), '卸载…')
+    await windows.getByTestId('tool-claudeDesktop-uninstall-guide').click()
+    const dialog = windows.getByTestId('uninstall-guide')
+    await dialog.waitFor()
+    assert.equal(await dialog.getByRole('heading').innerText(), '怎么卸载 Claude Desktop')
+    assert.deepEqual(await dialog.locator('li').allInnerTexts(), [
+      '打开 Windows「设置 → 应用 → 已安装的应用」（Windows 10 上叫「应用和功能」）。',
+      '找到 Claude，点右边的「…」→「卸载」（Windows 10 上先点它，再点「卸载」）。',
+    ])
+    await windows.getByTestId('uninstall-guide-close').click()
+    await dialog.waitFor({ state: 'detached' })
+    for (const id of ['opencode', 'workbuddy']) {
+      await windows.getByTestId(`tool-row-${id}`).getByRole('button', { name: '更多操作' }).click()
+      await windows.getByTestId(`tool-${id}-uninstall-guide`).waitFor()
+      await windows.keyboard.press('Escape')
+    }
+    // Windows 上的 Codex 桌面端星芒自己卸，照旧是真的「卸载…」，不换成指引。
+    await windows.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
+    await windows.getByTestId('tool-codexDesktop-uninstall').waitFor()
+    assert.equal(await windows.getByTestId('tool-codexDesktop-uninstall-guide').count(), 0)
+    await windows.keyboard.press('Escape')
+    await clean(windows)
+  } finally { await windows.close() }
+
+  const mac = await open('os=mac&allInstalled=1&externalInstalled=1')
+  try {
+    await mac.getByTestId('tool-row-codexDesktop').waitFor()
+    await mac.getByTestId('tool-row-codexDesktop').getByRole('button', { name: '更多操作' }).click()
+    assert.equal(await mac.getByTestId('tool-codexDesktop-uninstall').count(), 0)
+    await mac.getByTestId('tool-codexDesktop-uninstall-guide').click()
+    const dialog = mac.getByTestId('uninstall-guide')
+    await dialog.waitFor()
+    assert.equal(await dialog.getByRole('heading').innerText(), '怎么卸载 Codex 桌面端')
+    assert.deepEqual(await dialog.locator('li').allInnerTexts(), [
+      '先退出 ChatGPT（在它的窗口里按 ⌘Q）。',
+      '打开访达，点左边的「应用程序」。',
+      '找到 ChatGPT（Codex 桌面端在 Mac 上叫这个名字），把它拖进废纸篓。',
+    ])
+    await mac.getByTestId('uninstall-guide-close').click()
+    await dialog.waitFor({ state: 'detached' })
+    // 只是告诉客户怎么删，星芒自己什么都不卸。
+    const calls = await mac.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(calls.some((method) => /uninstall/i.test(method)), false)
+    await clean(mac)
+  } finally { await mac.close() }
+})
+
 test('a CLI with chats older than the home list still asks for a folder on its first open (known 40)', async () => {
   const page = await open('allInstalled=1&codexOlderSessions=1')
   try {
