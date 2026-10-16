@@ -544,6 +544,7 @@ export function AccountPage({
             api={api}
             balance={balance}
             siteId={accountSiteId(session)}
+            username={session.account?.username}
             accountScope={`${origin}:${accountId}`}
             dashboard={visibleAccountTab('dashboard', session)}
             trends={accountSupports(session, 'supportsDashboardTrends')}
@@ -561,6 +562,7 @@ export function AccountPage({
             balance={balance}
             providerBaseUrls={site.providerBaseUrls}
             siteId={accountSiteId(session)}
+            username={session.account?.username}
             keyTools={keyTools}
             onRewriteKey={onRewriteKey}
             onConfigureTool={onConfigureTool}
@@ -773,6 +775,7 @@ function AccountKeys({
   balance,
   providerBaseUrls,
   siteId,
+  username,
   keyTools,
   onRewriteKey,
   onConfigureTool,
@@ -784,6 +787,8 @@ function AccountKeys({
   balance: Balance
   providerBaseUrls: Record<Provider, string>
   siteId: AccountSiteId
+  /** 当前账号的用户名，「每个工具的额度上限」靠它认星芒新签的「用户名-分组」那几把。 */
+  username?: string
   keyTools?: readonly KeyToolTarget[]
   onRewriteKey?: (provider: Provider) => Promise<boolean>
   onConfigureTool?: (provider: Provider) => void
@@ -1084,7 +1089,7 @@ function AccountKeys({
           新建密钥
         </Button>
       </div>
-      <ToolKeyLimits api={api} balance={balance} siteId={siteId} refreshRequest={refreshRequest} />
+      <ToolKeyLimits api={api} balance={balance} siteId={siteId} username={username} refreshRequest={refreshRequest} />
       <ResultNotice {...operation} target={configureFailureTarget} />
       {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice

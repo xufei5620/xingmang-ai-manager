@@ -3233,19 +3233,19 @@ describe('provisionCliKey with a used-up per-key cap', () => {
   const capped = { id: 7, name, group: 'codex-pro', status: 4, remain_quota: 0, unlimited_quota: false, expired_time: -1 }
 
   it('recognizes only a capped, used-up key under this exact name and group', () => {
-    expect(hasExhaustedCappedCliKey([capped], name, 'codex-pro')).toBe(true)
-    expect(hasExhaustedCappedCliKey([{ ...capped, status: 1 }], name, 'codex-pro')).toBe(true)
-    expect(hasExhaustedCappedCliKey([{ ...capped, unlimited_quota: true }], name, 'codex-pro')).toBe(false)
-    expect(hasExhaustedCappedCliKey([{ ...capped, status: 2 }], name, 'codex-pro')).toBe(false)
-    expect(hasExhaustedCappedCliKey([{ ...capped, status: 1, remain_quota: 10 }], name, 'codex-pro')).toBe(false)
-    expect(hasExhaustedCappedCliKey([capped], 'someone-else', 'codex-pro')).toBe(false)
-    expect(hasExhaustedCappedCliKey([capped], name, 'vip')).toBe(false)
+    expect(hasExhaustedCappedCliKey([capped], [name], 'codex-pro')).toBe(true)
+    expect(hasExhaustedCappedCliKey([{ ...capped, status: 1 }], [name], 'codex-pro')).toBe(true)
+    expect(hasExhaustedCappedCliKey([{ ...capped, unlimited_quota: true }], [name], 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([{ ...capped, status: 2 }], [name], 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([{ ...capped, status: 1, remain_quota: 10 }], [name], 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([capped], ['someone-else'], 'codex-pro')).toBe(false)
+    expect(hasExhaustedCappedCliKey([capped], [name], 'vip')).toBe(false)
   })
 
   it('counts only used-up caps newer than the key that would be reused', () => {
-    expect(hasExhaustedCappedCliKey([capped], name, 'codex-pro', 6)).toBe(true)
-    expect(hasExhaustedCappedCliKey([capped], name, 'codex-pro', 8)).toBe(false)
-    expect(hasExhaustedCappedCliKey([{ ...capped, id: 'broken' }], name, 'codex-pro', 8)).toBe(true)
+    expect(hasExhaustedCappedCliKey([capped], [name], 'codex-pro', 6)).toBe(true)
+    expect(hasExhaustedCappedCliKey([capped], [name], 'codex-pro', 8)).toBe(false)
+    expect(hasExhaustedCappedCliKey([{ ...capped, id: 'broken' }], [name], 'codex-pro', 8)).toBe(true)
   })
 
   it('does not fall back to an older unlimited key under the same name when the newer cap is used up', async () => {
@@ -3287,7 +3287,7 @@ describe('provisionCliKey with a used-up per-key cap', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     const other = { id: 9, name: 'hand-made', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
-    const created = { id: 12, name, group: 'codex-pro', status: 1, remain_quota: 500, unlimited_quota: false, expired_time: -1 }
+    const created = { id: 12, name: 'tester-codex-pro', group: 'codex-pro', status: 1, remain_quota: 500, unlimited_quota: false, expired_time: -1 }
     fetchImpl
       .mockResolvedValueOnce(usableGroupsResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, other] } }))
@@ -3297,11 +3297,71 @@ describe('provisionCliKey with a used-up per-key cap', () => {
 
     await expect(client.provisionCliKey({
       name, group: 'codex-pro', fresh: true, unlimitedQuota: false, remainQuota: 500, expiredTime: -1,
-    })).resolves.toEqual({ id: 12, name, key: 'sk-capped-replacement' })
+    })).resolves.toEqual({ id: 12, name: 'tester-codex-pro', key: 'sk-capped-replacement' })
     const create = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST' && !String(init.body).includes('"key"'))
     expect(JSON.parse(String(create?.[1]?.body))).toEqual({
-      name, group: 'codex-pro', remain_quota: 500, unlimited_quota: false, expired_time: -1,
+      name: 'tester-codex-pro', group: 'codex-pro', remain_quota: 500, unlimited_quota: false, expired_time: -1,
     })
+  })
+
+  it('holds a used-up cap on a key issued under the username-group name', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 1, items: [{ ...capped, name: 'tester-codex-pro' }] } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  // 同一分组里谁新签都叫「用户名-分组」（AI 对话那边也是），新的一把同名 Key 说明不了是用户自己放开了上限。
+  it('does not let a newer username-group key lift a used-up cap under the old name', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const newer = { ...capped, id: 8, name: 'tester-codex-pro', status: 1, remain_quota: 0, unlimited_quota: true }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, newer] } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+})
+
+describe('provisionCliKey naming', () => {
+  it('names a key created in a group after the account username and that group', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 0, items: [] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+        { id: 3, name: managedCliKeyProfiles.codex.keyName, group: 'vip', status: 2 },
+        { id: 4, name: 'tester-codex-pro', group: 'codex-pro', status: 1 },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-named-value' } }))
+
+    await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 4, name: 'tester-codex-pro', key: 'sk-named-value' })
+    const create = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST' && !String(init.body).includes('"key"'))
+    expect(JSON.parse(String(create?.[1]?.body))).toMatchObject({ name: 'tester-codex-pro', group: 'codex-pro' })
+    expect(String(fetchImpl.mock.calls[4][0])).toBe(`${testBaseUrl}/api/token/4/key`)
+  })
+
+  it('keeps the name a key already carries when it is reused', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const older = { id: 6, name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 1, items: [older] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-older-value' } }))
+
+    await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 6, name: managedCliKeyProfiles.codex.keyName, key: 'sk-older-value' })
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST' && String(init.body ?? '').includes('"name"'))).toBe(false)
   })
 })
 

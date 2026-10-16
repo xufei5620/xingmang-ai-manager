@@ -148,6 +148,28 @@ describe('managed CLI key limits', () => {
     expect(() => buildManagedCliKeyLimitUpdate(claude, 5, 500_000, 'solov')).toThrow('还没有对应的密钥')
   })
 
+  it('recognizes the username-group keys this program issues on the xm site', () => {
+    const named = [
+      key({ id: 20, name: 'yoyo-Claude-MAX', group: 'Claude-MAX', unlimitedQuota: false, remainQuota: 1_000_000 }),
+      key({ id: 21, name: 'yoyo-GPT', group: 'GPT' }),
+      key({ id: 22, name: 'someone-Grok', group: 'Grok' }),
+    ]
+    const limits = resolveManagedCliKeyLimits(named, 500_000, 'solov', 'yoyo')
+    expect(limits.map((limit) => limit.key?.id ?? null)).toEqual([20, 21, null])
+    expect(limits[0]).toMatchObject({ unlimited: false, remaining: 2 })
+    // 没有用户名时只认以前的固定名；历史账号那套后端不这样起名。
+    expect(resolveManagedCliKeyLimits(named, 500_000, 'solov').map((limit) => limit.key)).toEqual([null, null, null])
+    expect(resolveManagedCliKeyLimits([key({ id: 23, name: 'yoyo-Codex_pro', group: 'Codex_pro' })], 1, 'solov-api', 'yoyo')[1].key).toBeNull()
+  })
+
+  it('prefers the older fixed-name key when both names are on the account', () => {
+    const both = [
+      key({ id: 40, name: 'yoyo-GPT', group: 'GPT' }),
+      key({ id: 4, name: 'xingmang-desktop-codex', group: 'GPT' }),
+    ]
+    expect(resolveManagedCliKeyLimits(both, 500_000, 'solov', 'yoyo')[1].key?.id).toBe(4)
+  })
+
   it('falls back to the provisioning group when the backend reports no group for the key', () => {
     const [claude] = resolveManagedCliKeyLimits([key({ id: 3, name: 'xingmang-desktop-claude', group: '' })], 1, 'solov-api')
     expect(buildManagedCliKeyLimitUpdate(claude, 1, 1, 'solov-api').group).toBe('Claude-MAX(不限客户端)')
@@ -167,6 +189,16 @@ describe('loadManagedCliKeys', () => {
     }, 'solov')
     expect(requested).toEqual([[1, 100], [2, 100]])
     expect(found.map((entry) => entry.id)).toEqual([2, 4, 3])
+  })
+
+  it('keeps the username-group keys when the username is known', async () => {
+    const page = { total: 3, keys: [
+      key({ id: 1, name: 'yoyo-GPT', group: 'GPT' }),
+      key({ id: 2, name: 'yoyo-default', group: 'default' }),
+      key({ id: 3, name: 'xingmang-desktop-claude' }),
+    ] }
+    expect((await loadManagedCliKeys(async () => page, 'solov', 'yoyo')).map((entry) => entry.id)).toEqual([1, 3])
+    expect((await loadManagedCliKeys(async () => page, 'solov')).map((entry) => entry.id)).toEqual([3])
   })
 
   it('stops after the first page once it already covers the whole list', async () => {

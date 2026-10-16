@@ -1,4 +1,4 @@
-import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { buildAccountKeyName, isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import type { StoredChatKey } from './chat-key-store'
 import type { ResolvedManagedCliGroup } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
@@ -44,11 +44,15 @@ export async function resolveAccountKeyOptions(options: AccountKeyOptionsDepende
     options.managedCliGroups?.[provider].group ?? resolveManagedCliKeyProfiles(siteId)[provider].group
   )
   const configured = options.systemService.getConfig(options.previewOnboarding).providers[options.provider]
+  const session = service.getSessionState()
+  const automaticGroup = groupFor(options.provider)
+  // xm 站新签的叫「用户名-分组」（new-api-client.ts 的 provisionCliKey）；历史账号照旧。
+  const automaticName = (siteId !== 'solov-api' && session.account
+    && buildAccountKeyName(session.account.username, automaticGroup)) || profile.keyName
   const result: AccountKeyOptionsResult = {
     current: { preview: configured.apiKeyPreview, keyId: null, name: null, group: null },
-    automatic: { name: profile.keyName, group: groupFor(options.provider) },
+    automatic: { name: automaticName, group: automaticGroup },
   }
-  const session = service.getSessionState()
   if (!configured.hasApiKey || !configured.matchesRelay || !session.authenticated || !session.account) return result
   const userId = session.account.userId
   const revision = service.getSessionRevision?.()

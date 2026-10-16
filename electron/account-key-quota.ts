@@ -1,4 +1,4 @@
-import { activeProviderIds, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { activeProviderIds, buildAccountKeyName, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 import type { AccountKey, AccountKeyUpdateInput } from './ipc-contract'
 
@@ -178,23 +178,32 @@ export interface ManagedCliKeyLimit {
 // or move the managed one to another group. Prefer the one whose group matches
 // what this program provisions; otherwise take the oldest id, so two refreshes
 // of the same list never resolve to two different keys.
-function pickManagedKey(keys: readonly AccountKey[], provider: ProviderId, keyName: string, group: string): AccountKey | null {
+function pickManagedKey(keys: readonly AccountKey[], provider: ProviderId, names: readonly string[], group: string): AccountKey | null {
   const inUse = keys.find((key) => key.managedProvider === provider)
   if (inUse) return inUse
-  const matches = keys.filter((key) => key.name === keyName).sort((left, right) => left.id - right.id)
+  const matches = keys.filter((key) => names.includes(key.name)).sort((left, right) => left.id - right.id)
   return matches.find((key) => key.group === group) ?? matches[0] ?? null
+}
+
+/** 账号里这个工具的 Key 可能叫的名字：以前签的固定名，和 xm 站新签的「用户名-分组」（历史账号没有后者）。 */
+function managedKeyNames(siteId: AccountKeyQuotaSite, provider: ProviderId, username?: string): string[] {
+  const profile = resolveManagedCliKeyProfiles(siteId)[provider]
+  const named = siteId !== 'solov-api' && username ? buildAccountKeyName(username, profile.group) : null
+  return named ? [profile.keyName, named] : [profile.keyName]
 }
 
 export function resolveManagedCliKeyLimits(
   keys: readonly AccountKey[],
   quotaPerUnit: number,
   siteId: AccountKeyQuotaSite,
+  /** 当前账号的用户名，认「用户名-分组」那几把；缺省 = 只认以前的固定名。 */
+  username?: string,
 ): ManagedCliKeyLimit[] {
   const profiles = resolveManagedCliKeyProfiles(siteId)
   // 下线的工具（Gemini CLI）不再列一行：星芒不管它了，那把 Key 还在账号的密钥列表里。
   return activeProviderIds.map((provider) => {
     const profile = profiles[provider]
-    const key = pickManagedKey(keys, provider, profile.keyName, profile.group)
+    const key = pickManagedKey(keys, provider, managedKeyNames(siteId, provider, username), profile.group)
     return {
       provider,
       keyName: profile.keyName,
@@ -249,9 +258,10 @@ const managedKeyPageLimit = 5
 export async function loadManagedCliKeys(
   load: (page: number, pageSize: number) => Promise<{ total: number; keys: AccountKey[] }>,
   siteId: AccountKeyQuotaSite,
+  /** 同 resolveManagedCliKeyLimits 的 username。 */
+  username?: string,
 ): Promise<AccountKey[]> {
-  const profiles = resolveManagedCliKeyProfiles(siteId)
-  const names = new Set(providerIds.map((provider) => profiles[provider].keyName))
+  const names = new Set(providerIds.flatMap((provider) => managedKeyNames(siteId, provider, username)))
   const found: AccountKey[] = []
   for (let page = 1; page <= managedKeyPageLimit; page++) {
     const batch = await load(page, managedKeyPageSize)
