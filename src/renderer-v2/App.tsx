@@ -457,7 +457,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!mounted.current || epoch !== bootstrapEpoch.current) return
       setAccountBootstrap({ ...progress, scope: bootstrapScope, ...(quiet ? { quiet } : {}) })
     }
-    updateProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 5 })
+    updateProgress({ phase: 'syncing', label: '正在同步账号专属密钥', percent: 5 })
     // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入 Key」
     // 的人正站在「检查」页上，横幅在他看不见的地方。用对象而不是 let，是因为赋值
     // 发生在闭包里，TypeScript 会把 let 的类型收窄成初始值。
