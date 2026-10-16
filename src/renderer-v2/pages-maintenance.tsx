@@ -702,7 +702,7 @@ export function HealthPage({
         const written = await onRewriteKey(provider)
         if (written) await loadConnections()
         return written
-      }, (written) => written ? '已按当前账号重新写入 Key，并重新测了一次连接' : null)
+      }, (written) => written ? '已按当前账号重新写入密钥，并重新测了一次连接' : null)
     } finally {
       setConnectionBusy(false)
     }
