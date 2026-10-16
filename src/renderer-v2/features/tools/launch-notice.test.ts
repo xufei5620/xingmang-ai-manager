@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { launchDeclined, launchWaitLabel, launchWarning, resumeSessionNotice } from './launch-notice'
+import { clientLaunchWaitLabel, launchDeclined, launchWaitLabel, launchWarning, resumeSessionNotice } from './launch-notice'
 import type { DesktopAppStatus } from '../../../../electron/ipc-contract'
 
 const status = { installed: true } as DesktopAppStatus
@@ -89,5 +89,21 @@ describe('launchWaitLabel', () => {
     expect(launchWaitLabel({ node: { label: '正在准备运行环境' } }, nameOf)).toBe('正在等运行环境准备好，好了马上打开')
     expect(launchWaitLabel({ python: { label: '正在准备运行环境' } }, nameOf, '正在打开客户端')).toBe('正在等运行环境准备好，好了马上打开')
     expect(launchWaitLabel({ git: { label: '正在准备安装 Git' } }, nameOf)).toBe('正在等运行环境准备好，好了马上打开')
+  })
+})
+
+describe('clientLaunchWaitLabel', () => {
+  const names: Record<string, string> = { claude: 'Claude Code', claudeDesktop: 'Claude Desktop', workbuddy: 'WorkBuddy' }
+  const nameOf = (key: string) => names[key]
+
+  it('does not claim to wait for another tool being installed, since a desktop client no longer queues behind it', () => {
+    expect(clientLaunchWaitLabel({ claude: { label: '正在安装' } }, 'claudeDesktop', nameOf)).toBe('正在打开客户端')
+    expect(clientLaunchWaitLabel({ git: { label: '正在准备安装 Git' }, workbuddy: { label: '正在安装' } }, 'claudeDesktop', nameOf)).toBe('正在打开客户端')
+    expect(clientLaunchWaitLabel({}, 'opencode', nameOf)).toBe('正在打开客户端')
+  })
+
+  it('names the client\'s own install when that is what the launch waits for', () => {
+    expect(clientLaunchWaitLabel({ claude: { label: '正在安装' }, workbuddy: { label: '正在下载' } }, 'workbuddy', nameOf))
+      .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
   })
 })

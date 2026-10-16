@@ -656,17 +656,64 @@ describe('external desktop client lifecycle', () => {
     expect(f.execute.mock.calls.some(([spec]) => spec.executable.endsWith('OpenCode.exe'))).toBe(false)
   })
 
-  it('launches Claude Store through its fixed AUMID and waits for active installs', async () => {
+  it('launches Claude Store through its fixed AUMID without waiting behind other tools\' installs', async () => {
+    // yoyo 2026-10-16 真机：装着 Claude Code 点 Claude Desktop「打开」，以前要等 Claude Code 装完。
     const queue = new InstallationQueue()
     const gate = deferred()
-    void queue.enqueue('existing-install', () => gate.promise)
+    const otherInstall = queue.enqueue('cli:install:claude', () => gate.promise)
     const f = fixture({ installationQueue: queue })
     f.setInventory([appx()])
-    const opened = f.runtime.launch('claudeDesktop')
+    await f.runtime.launch('claudeDesktop')
+    expect(f.launchProcess).toHaveBeenCalledWith(expect.objectContaining({ executable: explorer, argv: ['shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude'] }))
+    expect(queue.snapshot()).toEqual({ activeKey: 'cli:install:claude', pendingKeys: [] })
+    gate.resolve()
+    await otherInstall
+  })
+
+  it('waits for the same client\'s own install before launching it', async () => {
+    const queue = new InstallationQueue()
+    const gate = deferred()
+    void queue.enqueue('cli:install:claude', () => gate.promise)
+    const f = fixture({ installationQueue: queue })
+    f.setInventory([candidate('workbuddy')])
+    // Queued behind the Claude Code install, so the WorkBuddy install has not finished yet.
+    const installed = f.runtime.install('workbuddy')
+    const opened = f.runtime.launch('workbuddy')
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(f.launchProcess).not.toHaveBeenCalled()
     gate.resolve()
+    await installed
     await opened
-    expect(f.launchProcess).toHaveBeenCalledWith(expect.objectContaining({ executable: explorer, argv: ['shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude'] }))
+    expect(f.launchProcess).toHaveBeenCalledWith(expect.objectContaining({ argv: [candidate('workbuddy').path] }))
+  })
+
+  it('opens a client once when its open is clicked again while the first one is on its way', async () => {
+    const f = fixture()
+    f.setInventory([candidate('opencode')])
+    const first = f.runtime.launch('opencode')
+    const second = f.runtime.launch('opencode')
+    expect(second).toBe(first)
+    await Promise.all([first, second])
+    expect(f.launchProcess).toHaveBeenCalledTimes(1)
+    await f.runtime.launch('opencode')
+    expect(f.launchProcess).toHaveBeenCalledTimes(2)
+  })
+
+  it('holds an install of a client until its launch has been handed to Explorer', async () => {
+    const handedOff = deferred()
+    const launchProcess = vi.fn(() => handedOff.promise)
+    const f = fixture({ launchProcess })
+    f.setInventory([candidate('opencode')])
+    const opened = f.runtime.launch('opencode')
+    await vi.waitFor(() => expect(launchProcess).toHaveBeenCalledTimes(1))
+    const inventoriesBeforeInstall = f.execute.mock.calls.length
+    const installed = f.runtime.install('opencode')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(f.execute.mock.calls.length).toBe(inventoriesBeforeInstall)
+    handedOff.resolve()
+    await opened
+    await expect(installed).resolves.toMatchObject({ installed: true })
+    expect(f.execute.mock.calls.length).toBeGreaterThan(inventoriesBeforeInstall)
   })
 
   it('has the inventory before a launch look at the client being opened alone, AppX only for Claude Desktop', async () => {
@@ -710,11 +757,14 @@ describe('external desktop client lifecycle', () => {
       clock += 2_000
       return { ...commandResult(spec, JSON.stringify({ clients: [candidate('workbuddy')], errors: {}, timings: sections })), durationMs: 1_900 }
     })
+    // Only the client's own install is waited for: queued behind another tool, then 2 s of its own check.
+    const installed = f.runtime.install('workbuddy')
     const opened = f.runtime.launch('workbuddy')
     clock += 250
     gate.resolve()
+    await installed
     await opened
-    expect(onLaunchTiming.mock.calls).toEqual([[{ tool: 'workbuddy', queueWaitMs: 250, inventoryMs: 2_000, launchMs: 50, powershellMs: 1_900, ...sections }]])
+    expect(onLaunchTiming.mock.calls).toEqual([[{ tool: 'workbuddy', queueWaitMs: 2_250, inventoryMs: 2_000, launchMs: 50, powershellMs: 1_900, ...sections }]])
   })
 
   it('passes on only the section timings the script reported as plain non-negative whole numbers', async () => {

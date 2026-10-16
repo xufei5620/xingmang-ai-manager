@@ -117,6 +117,8 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 **I11. 安装/卸载/启动类操作必须过 `InstallationQueue`。**
 这些操作会原子替换机器级目录，并发会互相看到半完成状态。同 key 复用同一 Promise，双击天然幂等。
 
+*已登记的例外*：WorkBuddy、Claude Desktop、OpenCode 三个桌面客户端的「打开」（`external-client-runtime.ts` 的 `launch`，2026-10-16 yoyo 真机报「装着 Claude Code 点 Claude Desktop 全卡住」）。它只读这一家自己的安装位置和签名、交给资源管理器（Mac 上是 `open`），别的工具装到一半碰不到它，开机盘点这三家本来也不排队；所以不进队列，只等同一家正在装的那一次，反过来点安装前已经在打开的，安装等它交出去再动手（两边都只等先来的那一次，不会互相等死）。命令行工具和 Codex 桌面端的「打开」照旧排队，它们读的正是安装会原子替换的目录。不要把这个例外扩到它们身上。
+
 **I12. 渲染进程导航与外链必须过白名单，外链要 `href` 全等匹配。**
 刻意做全等而非前缀匹配，因为前缀匹配会被 `https://xm.solov.cc.evil.com` 绕过。画布窗口同样受此约束（`canvas-window.ts` 的 `will-navigate` / `setWindowOpenHandler` 都过白名单）；充值页 `/wallet` 已在白名单内。
 
