@@ -990,6 +990,40 @@ describe('createSystemService', () => {
     expect(f.running).toHaveBeenCalledWith(['codex'])
   })
 
+  it('swaps a retired gpt-5.5 for the current default at startup once Codex is closed, backing the config up first', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-5.5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+    // 两站都下架了 gpt-5.5：模型列表不再列它。
+    f.account.models = ['claude-opus-5', 'gpt-6-astra', 'gpt-6.1-sol']
+    const backups: Array<{ provider: ProviderId; model: unknown }> = []
+    function configured(): Record<string, unknown> {
+      return asTomlRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8')))
+    }
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, model: configured().model }) })).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(configured().model).toBe('gpt-6-astra')
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(configured().review_model).toBe('gpt-6-astra')
+    expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol'])
+    expect(backups).toEqual([{ provider: 'codex', model: 'gpt-5.5' }])
+  })
+
+  it('leaves a retired gpt-5.5 alone at startup in a Codex config the account did not write', async () => {
+    const f = codexCatalogFixture()
+    await f.save('gpt-5.5')
+    f.account.models = ['claude-opus-5', 'gpt-6-astra', 'gpt-6.1-sol']
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(asTomlRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8'))).model).toBe('gpt-5.5')
+    expect(f.running).not.toHaveBeenCalled()
+  })
+
   it('refreshes the Claude Code menu before a launch and keeps the account as the source of the config', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-picker-refresh-'))
     temporaryDirectories.push(root)

@@ -25,6 +25,19 @@ const supersededCliModels: Readonly<Partial<Record<ProviderId, Readonly<Record<s
   claude: { 'claude-opus-5': 'claude-opus-5-5' },
 }
 
+/**
+ * 两个站都已下架、请求直接报「该模型无可用渠道」的型号。和上面那张不同：留着它每一轮都报错，
+ * 所以开机那轮替客户换成现在的默认（tool-model-check.ts 的 syncPicker），不等打开前那一问。
+ * gpt-5.5：OpenAI 2026-10-14 起拒绝服务，xm 和 api 的模型列表都不再列它（服务端 10-16 通知）。
+ */
+const retiredCliModels: Readonly<Partial<Record<ProviderId, readonly string[]>>> = {
+  codex: ['gpt-5.5'],
+}
+
+export function isRetiredCliModel(provider: ProviderId, model: string): boolean {
+  return retiredCliModels[provider]?.includes(model) ?? false
+}
+
 export function resolveDefaultCliModel(
   provider: ProviderId,
   models: readonly string[],
