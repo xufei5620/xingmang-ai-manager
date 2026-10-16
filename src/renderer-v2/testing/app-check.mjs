@@ -705,6 +705,37 @@ test('external client installation completion does not refresh or notify the nex
   } finally { await page.close() }
 })
 
+test('the Claude Desktop dialog moves to the Claude Code key once it lands, but only while untouched', async () => {
+  const page = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1')
+  try {
+    await page.getByTestId('home-client-claudeDesktop').click()
+    await page.getByTestId('external-client-dialog').waitFor()
+    // Claude Code 还没写上密钥：先借 Codex 那把，但不把 Codex 的 GPT 型号带进来。
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'configured:codex')
+    assert.equal(await page.getByTestId('external-client-model').inputValue(), '')
+    await page.evaluate(() => window.v2Test.releaseBootstrap())
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'configured:claude')
+    await page.getByTestId('external-client-save').click()
+    await page.getByTestId('external-client-result').getByText('配置已保存', { exact: true }).waitFor()
+    const call = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').at(-1))
+    assert.deepEqual(call.args, ['claudeDesktop', { credential: { kind: 'configured', provider: 'claude' }, model: 'claude-fixture' }])
+    await clean(page)
+  } finally { await page.close() }
+  // 他已经自己换过来源，后来写好的 Claude Code 密钥不许把他的选择换掉。
+  const touched = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1')
+  try {
+    await touched.getByTestId('home-client-claudeDesktop').click()
+    await expect(touched.getByTestId('external-client-source')).toHaveAttribute('data-value', 'configured:codex')
+    await pickOption(touched, 'external-client-source', 'manual')
+    await expect(touched.getByTestId('tool-claude-primary')).not.toHaveText('打开')
+    await touched.evaluate(() => window.v2Test.releaseBootstrap())
+    // 首页那张 Claude Code 卡片变成「打开」，说明写好的配置已经读回来了。
+    await expect(touched.getByTestId('tool-claude-primary')).toHaveText('打开')
+    await expect(touched.getByTestId('external-client-source')).toHaveAttribute('data-value', 'manual')
+    await clean(touched)
+  } finally { await touched.close() }
+})
+
 test('client save errors retain the selected model and never show a success notice', async () => {
   const page = await open('clientModels=1&clientSaveFailure=1&keyOptions=1')
   try {

@@ -154,6 +154,8 @@ if (query.has('codexBroken')) config.providers.codex.configBroken = true
 if (query.has('codexAuthBroken')) { config.providers.codex.codexAuthBroken = true; config.providers.codex.hasApiKey = false }
 // ?claudeBroken：Claude Code 读不了 settings.json，星芒也读不出 Key，来源会被认成官方账号（已知44）。
 if (query.has('claudeBroken')) config.providers.claude = { ...config.providers.claude, configBroken: true, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
+// ?claudeUnconfigured：Claude Code 装好了、还没写上当前账号的密钥（刚装完，开机那一轮同步还没做完）。
+if (query.has('claudeUnconfigured')) config.providers.claude = { ...config.providers.claude, exists: false, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
   config.providers.claude = { ...configValue, configurationOwnership: 'manual' }

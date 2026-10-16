@@ -26,7 +26,7 @@ function connectedText(tool: ExternalToolId, model: string): string {
   return '已连好 OpenCode，命令行版和桌面版都能用'
 }
 
-export function ExternalClientDialog({ api, tool, signedIn, ready = false, version = null, strictKeyFormat = false, onClose, onSaved }: {
+export function ExternalClientDialog({ api, tool, signedIn, ready = false, version = null, strictKeyFormat = false, liveConfig = null, onClose, onSaved }: {
   api: XingmangApi
   tool: ExternalToolId
   signedIn: boolean
@@ -36,6 +36,11 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   version?: string | null
   /** 同配置弹窗：只有星芒的密钥确定是 sk- 开头。缺省 = 只拦空的。 */
   strictKeyFormat?: boolean
+  /**
+   * 首页最新读到的工具配置。弹窗还没动过（没换密钥、没检测、没保存）时跟着它重挑默认：刚装好的
+   * Claude Code 常常是弹窗打开以后才写好密钥。缺省 = 只在打开时读一次。
+   */
+  liveConfig?: AppConfigSummary | null
   onClose(): void
   onSaved(): void
 }) {
@@ -55,6 +60,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   const [result, setResult] = useState<ExternalClientConfigResult | null>(null)
   const alive = useRef(true)
   const lock = useRef(false)
+  const openedWith = useRef(liveConfig)
   const toast = useToast()
   useEffect(() => {
     let current = true
@@ -77,6 +83,16 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     })
     return () => { current = false; alive.current = false }
   }, [api, signedIn, tool, definition.preferredProvider])
+  // 打开时读到的那份可能晚了一步：0.2.19 测试包里 Claude Code 还没写好密钥时点开，默认就落到了 Codex
+  // 那把上（推测）。只跟打开以后首页新读到的那份，还在读的那一下不跟，免得拿旧的盖掉刚读到的。
+  useEffect(() => {
+    if (!liveConfig || liveConfig === openedWith.current) return
+    openedWith.current = liveConfig
+    if (busy || dirty || models.length || result) return
+    const next = initialClientSource(tool, definition.preferredProvider, clientKeySources, liveConfig.providers, keys)
+    setConfig(liveConfig)
+    if (next !== source) { setSource(next); setModel(configuredSourceModel(tool, next, liveConfig.providers)) }
+  }, [liveConfig])
 
   // 切回自家工具那把密钥，型号也回到打开时替他填的那个；换成别的来源照旧清空，检测完再挑。
   function changeSource(next: string) {
