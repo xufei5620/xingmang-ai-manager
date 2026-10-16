@@ -632,6 +632,43 @@
   `accountSwitchDesktopClientsHint`）改成到首页卡片上点「…」里的「配置…」再点「保存并检测」；配置文件读不懂时的那句
   （`electron/broken-config-advice.ts` 的 `describeConfigReset`）改成到首页卡片上点「…」里的「配置…」、选「当前账号」。
   旧句里的「那一行」「检测模型」「保存配置」「使用星芒账号」新界面上都没有了，钉着原句的单元测试跟着换。
+- 连接 Claude Desktop 的弹窗不再默认借 Codex 的密钥、填 GPT 型号（0.2.19 测试包里默认成了 gpt-6.1-sol）。
+  默认选择收进 `features/tools/external-client-defaults.ts`：访问密钥下拉把客户端自己那一家工具的密钥排第一
+  （Claude Desktop 先列 Claude Code）；Claude Code 没配当前账号时，先找账号里分组名带 Claude 的那把，再轮到
+  Codex、Grok；借别的工具的密钥时，只把合这个客户端的型号带过来（Claude Desktop 只认名字带 claude 的）；检测
+  完原来填着的型号不是 Claude 的，Claude Desktop 改挑列表里的 Claude 型号，一个都没有就不替他保存；在下拉里切回
+  自家工具那把密钥时，型号也回到打开时填的那个。WorkBuddy、OpenCode 的默认不变。
+- 外接工具的配置弹窗以前只在打开那一下读一次工具配置：Claude Code 刚装好、密钥还没写完就点开，默认就落到
+  Codex 那把上，后面也不跟着变。现在弹窗还没动过（没换来源、没检测、没保存）时，首页读到新的配置就重挑一次
+  默认；已经动过的不改他的选择（App 把首页那份配置经 `liveConfig` 传进 `ExternalClientDialog`）。
+- xm 站 2026-10-16 删了老分组名（删前服务端把老名字下的 Key 全挂到了新名字下，Key 本身不变）。`catalog.ts` 的 `managedCliKeyProfiles` 换成新名字（Claude-MAX / GPT / Grok / Gemini），新增 `retiredAccountGroups`（老名字 → 新名字）与 `currentAccountGroupName`。
+- `managed-cli-key-store.ts`：星芒账号的缓存读出来时把老名字换成新名字，开机不会因为「分组对不上」重签一把、再重写配置；0.2.12 以前写的不分站点的老缓存，分组是老出厂名的也照样认，不再整份当损坏挪走。
+- `chat-key-store.ts`：AI 对话/画图的聊天密钥缓存同样把老名字换成新名字读出来（同一账号新老名字各一把时留较新的），老对话换到新名字后接着用原来那把，不会因为缓存对不上去拿分组里别的 Key 顶上、绕过那把聊天密钥自己设的上限。
+- 配置框密钥下拉（`key-selection.ts` 的 `listedAccountKeys`）：`xingmang-` 开头的密钥同组同名只列一把（正选着的 > 最近用过的 > 编号大的），不列下线工具星芒签的 Key，也不列分组还写着老名字的（那种一调用就 403）。
+- 旧回滚界面（已冻结）的 AI 对话默认分组取自 `managedCliKeyProfiles.codex.group`，跟着变成「GPT」；只改了它的测试断言，源码没动。
+- AI 对话默认分组 `DEFAULT_CHAT_GROUP` 改「GPT」，聊天记录读出来时老名字换成新名字；画图技能的出厂图片分组 `IMAGE_SKILL_GROUP_NAMES` 改成「图片模型」「生图分组」，技能说明里的分组名跟着换；画布主进程执行器的兜底图片分组改「图片模型」。
+- 欢迎页星空和星轨照 0.2.18 的样子重做（yoyo 10-16 看测试包说 v4 那版「不如上一个版本」）：`welcome-starfield.ts` 用 0.2.18 Starfield 同一个种子和取数顺序布 170 颗星和连线，`WelcomeStarfield.tsx` 挂上时画成 SVG，闪烁分五层整体变透明度，加流星、三道斜椭圆、光柱和虚线轨道。轨道上照 0.2.18 四颗：yoyo 回「还是要加上Gemini」（Gemini CLI 不装了，Gemini 模型还能用），写模型名「Gemini」、`BrandIcon` 按模型取图标，次序在 `registry/tools.ts` 的 `welcomeOrbitItems`，`e2e/electron-ci-smoke.mjs` 的星轨标签跟着改。不回到整窗 canvas 逐帧重画：慢慢变的动画都按 `steps()` 落在 0.2 秒一拍上（轨道 30 档每秒），整窗重新合成一秒只有几次，沙箱 headless 软件合成里显卡进程约 0.2.18 的一半、v4 那版的七成；`browser-check.mjs` 钉住这条节拍。界面文字只多了 Gemini 一个词。
+- WorkBuddy、Claude Desktop、OpenCode 的「打开」不再进安装队列（AGENTS.md I11 登记例外）：
+  `external-client-runtime.ts` 的 `launch` 只等同一家正在装的那一次，点安装前已经在打开的，
+  安装等它交给资源管理器再动手，两边都只等先来的那一次。以前装着 Claude Code 点 Claude Desktop
+  要等它装完，首页别的「打开」也一起变灰（yoyo 2026-10-16 真机，0.2.18 起就这样）。
+  首页那一行只在等它自己安装时才说在等谁（`clientLaunchWaitLabel`）。命令行工具和 Codex 桌面端的
+  「打开」照旧排队。
+- 首页卡片「…」给星芒卸不了的桌面端（三个外接客户端、Mac 上的 Codex 桌面端）加「卸载…」，点了弹 `UninstallGuideDialog`，按 Windows / Mac 说在系统里怎么删，星芒自己不卸、不加 IPC。Windows 上的 Codex 桌面端照旧走 `desktop:uninstall-codex`。外接客户端从来没有卸载通道，0.2.18「安装卸载」页也没列它们，换界面后客户以为是漏了。
+- 测试夹具 `app-fixture.tsx` 的 Codex 桌面端改成和主进程一样：状态不带 `uninstall`，`codexDesktop.uninstall` 在 Mac 上为假。
+- 首页命令行工具卡片「…」最上面那串最近文件夹（`workspaceChoices`，最多 5 个整条路径，点了是在那里开新对话）去掉，换成「接着之前的对话…」，打开 `ToolConversationsDialog`。窗口每次现读这一个工具的记录（`toolsApi.toolSessions`，按工具过滤、一页 100，不走首页 60 秒缓存），一个文件夹一行放最近那条（`folderConversations`，最多 8 行），「接着聊」照首页「接着上次」先核对一次再打开；底部「全部记录」「开新对话」（同卡片上的「打开」）。这个工具一条记录都没有时不给这一项。教程「点击打开」那步删去「选最近用过的」。起因：yoyo 10-16 在 Mac 0.2.19 测试包上把那串路径看成了对话记录。
+- Claude Desktop 加一键切换来源（新通道 `external-clients:switch-source`）：切官方只把第三方目录
+  `claude_desktop_config.json` 的 `deploymentMode` 改成官方登录，星芒那份配置和密钥原样留着；切回只在那份还在、
+  是正在用的那份、地址是当前线路、密钥归当前账号时改回 `3p`，否则一个字不写、界面打开「连接 Claude Desktop」。
+  见 `claude-desktop-config.ts` 的 `useOfficialLogin` / `useGatewayLogin`。
+- 检测结果新增可选字段 `officialAccount`（落进开机快照），首页据此显示「官方账号」而不是「待连接」，检查页显示未配置、
+  不拿留着的密钥去发请求。官方登录记成的值 `1p` 官方文档没写，出自 Linux 打包项目 claude-desktop-extra 的文档，
+  10-16 在 Mac 上手改核过（重开停在 Claude 登录页，改回 `3p` 回到星芒）。
+- Codex 桌面端「显示中文」的核对不再误报：OpenAI 下发的中文开关本来就开着、界面已经画出来时直接算换成了
+  （`electron/codex-desktop-cdp.ts`，补丁在改写之前记下开关原值）；Codex 还停在启动那一屏（开关请求连不上要
+  34–38 秒，#976）时核对最多等到 45 秒，补丁盯 Statsig 的时间从 20 秒放到 60 秒。以前 20 秒一到
+  就报「这次没换成中文界面」，界面随后却是中文（26.1013 包核过读开关的写法没变）。没核对上时，运行日志里那条
+  `codex-desktop.chinese-locale.unverified` 现在带上最后看到的页面状态，分得清是哪一步没成。
 
 ## 0.2.18 - 2026-10-09
 
