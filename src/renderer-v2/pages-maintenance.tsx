@@ -2209,6 +2209,11 @@ export function SettingsPage({
       return { ...previous, settings: { ...previous.settings, checkUpdatesOnStartup, autoUpdate } }
     })
   }, [checkUpdatesOnStartup, autoUpdate, setResourceData])
+  // 「要输入管理员密码才能装」这句现在只在「自动下载更新」那一行说（原来更新页顶上那段跟着推送变），
+  // 这一页开着时也跟着主进程推来的更新状态走，别停在打开时读到的那一份。
+  useEffect(() => api.onUpdateState((update) => {
+    setResourceData((previous) => (previous ? { ...previous, update } : previous))
+  }), [api, setResourceData])
   const operation = useOperation()
   const showToast = useToast().show
   const systemApi = platformApi()

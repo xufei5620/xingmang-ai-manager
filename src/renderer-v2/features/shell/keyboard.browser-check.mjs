@@ -135,8 +135,10 @@ test('on a short screen More and Settings stay pinned in view, the open More lis
     for (const id of pinned) assert.equal(await visibleInSidebar(id), true, `${id} is not cut off below the fold`)
     for (const id of pinned) assert.equal(await page.getByTestId('sidebar-pinned').getByTestId(id).count(), 1, `${id} sits in the pinned part, not the scrolling one`)
     await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').waitFor()
-    for (const id of [...pinned, 'nav-acceleration', 'nav-maintenance', 'nav-backups', 'nav-updates'])
+    await page.getByTestId('nav-maintenance').waitFor()
+    // 游戏加速、备份、更新并进了设置（v4 批09），「更多」里只剩安装卸载。
+    for (const id of ['nav-acceleration', 'nav-backups', 'nav-updates']) assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from More`)
+    for (const id of [...pinned, 'nav-maintenance'])
       assert.equal(await visibleInSidebar(id), true, `${id} stays in view with More open`)
     // 上面那段放不下了自己滚，下沿渐隐，看得出还有。
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
@@ -144,14 +146,14 @@ test('on a short screen More and Settings stay pinned in view, the open More lis
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
 
     await page.reload()
-    await page.getByTestId('nav-updates').waitFor()
+    await page.getByTestId('nav-maintenance').waitFor()
     assert.equal(await page.getByTestId('nav-more').getAttribute('aria-expanded'), 'true', 'More reopens the way it was left')
     await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').waitFor({ state: 'detached' })
+    await page.getByTestId('nav-maintenance').waitFor({ state: 'detached' })
     await page.reload()
     await page.getByTestId('nav-more').waitFor()
     assert.equal(await page.getByTestId('nav-more').getAttribute('aria-expanded'), 'false')
-    assert.equal(await page.getByTestId('nav-updates').count(), 0)
+    assert.equal(await page.getByTestId('nav-maintenance').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
