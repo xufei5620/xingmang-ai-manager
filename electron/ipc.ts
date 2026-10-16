@@ -1395,6 +1395,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'external-clients:install': '外部客户端安装',
   'external-clients:cancel-install': '外部客户端安装取消',
   'external-clients:launch': '外部客户端启动',
+  'external-clients:switch-source': '外部客户端账号切换',
   'workspace:choose': '工作目录选择',
   'repository:get-context': '仓库上下文读取',
   'runtime:install-node': 'Node.js LTS 自动安装',
@@ -1940,7 +1941,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password',
           'account:copy-reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
-          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
+          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'external-clients:switch-source' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
           && !publicAccountChannels.has(channel) && !readsCachedExternalClientsOnly(channel, args)
         const invoke = () => scoped && options.accountWork
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
@@ -2285,6 +2286,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('external-clients:launch', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
     return service.launchExternalClient(tool)
+  })
+  // 只有 Claude Desktop 有两种登录可选：WorkBuddy、OpenCode 没有官方账号这一说。
+  registerTrustedHandler('external-clients:switch-source', (_event, tool: unknown, target: unknown) => {
+    if (tool !== 'claudeDesktop') throw new Error('未知的外部客户端类型')
+    if (target !== 'account' && target !== 'official') throw new Error('未知的账号来源')
+    if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再改用当前账号')
+    const revision = accountService.getSessionRevision?.()
+    const assertCurrent = () => {
+      if (revision !== undefined && accountService.getSessionRevision?.() !== revision) throw new Error('账号已变化，请重新配置')
+    }
+    return service.switchExternalClientSource(tool, target, assertCurrent)
   })
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')

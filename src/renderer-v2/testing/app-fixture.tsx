@@ -539,6 +539,15 @@ const methods = {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
     externalStatuses.find((entry) => entry.tool === tool)!.running = true
   },
+  // 同主进程：只改 Claude Desktop 登录页那个选择，星芒那份留着；?externalReconnect 时那份已经用不上。
+  switchExternalClientSource: async (tool, target) => {
+    const current = externalStatuses.find((entry) => entry.tool === tool)!
+    if (target === 'account' && query.has('externalReconnect')) return { tool, target, outcome: 'reconnect' as const }
+    if (target === 'official') Object.assign(current, { configured: false, configurationReady: false, configurationSource: 'other', officialAccount: true })
+    else Object.assign(current, { configured: true, configurationReady: true, configurationSource: 'xingmang', officialAccount: undefined })
+    return { tool, target, outcome: 'switched' as const, backups: ['C:\\Fixture\\Claude-3p\\claude_desktop_config.json.bak'],
+      message: target === 'official' ? '已切回官方账号，原来的配置已备份。' : '已改用当前账号，原来的配置已备份。' }
+  },
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
     const workspace = options?.createStarter ? 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project' : 'C:\\Selected Project'
