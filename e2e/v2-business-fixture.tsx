@@ -960,7 +960,11 @@ const apiMethods = {
       evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中',
     }
   },
-  getSettings: async () => settings,
+  getSettings: async () => {
+    // fail=settings-read：设置本身读不到（读设置文件出错），别的照常。
+    if (fail === 'settings-read') throw new Error('设置文件暂时读不到')
+    return settings
+  },
   getWindowCapabilities: async () => ({ tray: true, notifications: true }),
   saveSettings: async (patch: Parameters<V2Bridge['saveSettings']>[0]) => {
     record('settings', patch)

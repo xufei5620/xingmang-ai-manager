@@ -1837,13 +1837,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
                   accelerating={acceleration.snapshot.state?.phase === 'active'}
                   onSettingsGroupChange={setSettingsGroup}
-                  accelerationCard={(shown) => <div data-testid="page-acceleration">
+                  // 平台读回来之前按窗口所在系统猜：Linux 上不先挂一张加速卡再撤掉（同侧栏和顶部搜索那一份判断）。
+                  accelerationCard={accelerationAvailable ? (shown) => <div data-testid="page-acceleration">
                     <Suspense fallback={null}>
                       <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null} live={shown}
                         onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} onViewLog={() => navigate('feedback')} preview={accelerationPreview}
                         onContactSupport={() => setHelp(true)} onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })} />
                     </Suspense>
-                  </div>}
+                  </div> : undefined}
                   onSessionsChanged={refreshRecent}
                   beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
                   onBackupRestored={() => { markDiagnosticsStale(); void toolbox.refreshConfig().catch(() => undefined) }}

@@ -2527,7 +2527,32 @@ export function SettingsPage({
       (saved) => (saved ? '已恢复默认外观' : null),
     )
   // 每一行按 settingsItems 的 id 放在这里，分组页和页内搜索取的是同一份；这台电脑没有的行不放。
-  const views: Partial<Record<string, ReactNode>> = {}
+  // 三张卡（批09，原来是三个独立页面）各读各的，不等设置读回来：设置读不到时更新、备份、加速照样有地方点，
+  // 托盘、通知、错误框跳过来也不会落空。
+  const views: Partial<Record<string, ReactNode>> = {
+    // 原来的游戏加速页；没有加速的电脑（Linux）没有这张卡。
+    acceleration: accelerationAvailable && accelerationCard ? accelerationCard(active !== false) : undefined,
+    // 原来的备份页：切到这一组时新挂上、读一次；设置页从别的页回来时再读一次。
+    backups: (
+      <BackupCard
+        key="backups"
+        api={api}
+        active={active}
+        navigate={navigate}
+        onRestored={onBackupRestored}
+        installedProviders={installedProviders}
+      />
+    ),
+    // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
+    version: (
+      <VersionCard
+        key="version"
+        api={api}
+        navigate={navigate}
+        autoUpdate={(settings ?? appSettings)?.autoUpdate !== false}
+      />
+    ),
+  }
   if (settings) {
     const themeOptions: Array<{ value: ThemeCardValue; disabled?: boolean }> = [
       { value: 'light' },
@@ -2536,8 +2561,6 @@ export function SettingsPage({
     if (systemApi) themeOptions.unshift({ value: 'system', disabled: !systemState })
     const notificationsOff = settings.desktopNotifications === false
     Object.assign(views, {
-      // 原来的游戏加速页（批09）；没有加速的电脑（Linux）没有这张卡。
-      acceleration: accelerationAvailable && accelerationCard ? accelerationCard(active !== false) : undefined,
       theme: row(
         'theme',
         null,
@@ -2962,17 +2985,6 @@ export function SettingsPage({
             ),
           ]),
       ),
-      // 原来的备份页（批09）：切到这一组时新挂上、读一次；设置页从别的页回来时再读一次。
-      backups: (
-        <BackupCard
-          key="backups"
-          api={api}
-          active={active}
-          navigate={navigate}
-          onRestored={onBackupRestored}
-          installedProviders={installedProviders}
-        />
-      ),
       // 没登录时聊天记录带不走（按账号分开存），标题只说「导出设置」。
       transfer: (
         <SettingRow
@@ -3098,15 +3110,6 @@ export function SettingsPage({
             隐私政策
           </Button>
         </>,
-      ),
-      // 原来的版本更新卡（批09）。两个开关不在卡上再摆一份，就是下面那两行。
-      version: (
-        <VersionCard
-          key="version"
-          api={api}
-          navigate={navigate}
-          autoUpdate={settings.autoUpdate !== false}
-        />
       ),
       'update-check': row(
         'update-check',
@@ -3245,8 +3248,10 @@ export function SettingsPage({
         <p>换个说法试试，比如「托盘」「镜像」「快捷键」。</p>
       </div>
     )
-  } else if (settings) {
-    content = buildSettingsBlocks(group, settingsItems.filter(shown)).map((block, index) => (
+  } else if (settings || resource.error) {
+    // 设置没读到时只摆这一组里的那张卡（如果有），上面照旧写「设置暂时没有读到」、给「重新读取」。
+    const blocks = buildSettingsBlocks(group, settingsItems.filter((item) => shown(item) && (Boolean(settings) || item.card === true)))
+    const groupContent = blocks.map((block, index) => (
       <section key={block.section?.value ?? `rows-${index}`} className="v2-settings-block">
         {block.section && (
           <div
@@ -3261,6 +3266,7 @@ export function SettingsPage({
         {block.items[0].card ? cardSlot(block.items[0]) : <Card padding="none">{block.items.map((item) => views[item.id])}</Card>}
       </section>
     ))
+    content = settings ? groupContent : <>{content}{groupContent}</>
   }
   // 读不到的是设置本身或系统状态时，红条右边给「重新读取」；保存失败不给，那是另一回事。
   const readFailed = Boolean(resource.error) || (!saveError && Boolean(systemError))

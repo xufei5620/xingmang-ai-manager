@@ -2098,6 +2098,30 @@ test('the version card names the current and the new version and shows what to k
   }
 })
 
+// 版本卡、备份卡原来是独立的页面，设置读不到也照样能用；并进设置以后不能跟着设置一起没了，
+// 不然托盘、更新气泡、错误框跳过来只看到一句「设置暂时没有读到」，更新装不上、备份找不回。
+test('the version and backup cards still show when the settings themselves cannot be read', async () => {
+  const updates = await fixture('page=updates&fail=settings-read')
+  try {
+    await updates.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    assert.equal(await updates.getByRole('tab', { name: '版本更新' }).getAttribute('aria-selected'), 'true')
+    await updates.getByTestId('updates-current-version').getByText('当前版本 v0.1.31', { exact: true }).waitFor()
+    assert.equal(await updates.getByTestId('updates-new-version').innerText(), '有新版本 v0.1.32')
+    // 只摆卡；要设置读回来才画得出的行（启动时检查新版本）不摆。
+    assert.equal(await updates.getByTestId('updates-check-on-startup').count(), 0)
+  } finally {
+    await updates.close()
+  }
+  const backups = await fixture('page=backups&fail=settings-read')
+  try {
+    await backups.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    assert.equal(await backups.getByRole('tab', { name: '备份迁移' }).getAttribute('aria-selected'), 'true')
+    await backups.getByTestId('backups-row-backup-1').waitFor()
+  } finally {
+    await backups.close()
+  }
+})
+
 // 「版本更新」组里版本卡下面就能开关启动检查和自动下载更新，不用再绕去别处。
 test('the version updates group switches the startup check and automatic downloads in place', async () => {
   const page = await fixture('page=updates&autoUpdate=1')

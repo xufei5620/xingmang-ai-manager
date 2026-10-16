@@ -135,7 +135,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'acceleration':
       return <div className="tutorial-illustration-acceleration">
-        <Pane title={<><Globe2 size={18} />线路</>}><div className="tutorial-illustration-row"><Marker>1</Marker><strong>自动选择</strong><ChevronDown size={16} /></div><p className="tutorial-illustration-note">也可选择线路并检测 Ping</p></Pane>
+        <Pane title={<><Globe2 size={18} />线路</>}><div className="tutorial-illustration-row"><Marker>1</Marker><strong>自动选择</strong><ChevronDown size={16} /></div><p className="tutorial-illustration-note">也可选择线路，菜单里能重新测速</p></Pane>
         <div className="tutorial-illustration-acceleration-actions"><div className="tutorial-illustration-row"><strong>加速范围</strong><span className="tutorial-illustration-muted">只改这台电脑的系统代理</span></div><Control primary><Marker>2</Marker><Zap size={16} />开启加速</Control><small>不用时记得停止加速</small></div>
       </div>
     case 'extensions':

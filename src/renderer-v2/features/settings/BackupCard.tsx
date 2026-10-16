@@ -104,7 +104,10 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
   onRestored?: (provider: Provider) => void
   /** 连接测试结论的「去处理」；缺省 = 不给这颗按钮。 */
   navigate?: (page: V2Page, section?: string) => void
-  /** 装好的命令行工具：「立即备份」菜单里没装的按灰；缺省 = 都能点。 */
+  /**
+   * 装好的命令行工具：「立即备份 › 全部工具」只备份这几家，免得给没装的工具存一份空备份。单独点哪一家都能备份
+   * （只装了 Codex 桌面端的也要能备份 Codex 那份配置），和原来的备份页一样。缺省 = 全部工具就是每一家。
+   */
   installedProviders?: readonly string[]
 }) {
   const load = useCallback(() => api.listBackups(), [api])
@@ -134,14 +137,17 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
   }
   const all = resource.data?.filter((item) => isActiveProviderId(item.provider)) ?? []
   const list = provider === 'all' ? all : all.filter((item) => item.provider === provider)
-  const installed = (id: Provider) => !installedProviders || installedProviders.includes(id)
-  const installedTools = backupTools.filter((tool) => installed(tool.id))
+  const installedTools = backupTools.filter((tool) => !installedProviders || installedProviders.includes(tool.id))
   function create(targets: readonly Provider[]) {
     void operation.execute(
       'create',
       async () => {
-        for (const target of targets) await api.createBackup(target)
-        await resource.reload()
+        // 「全部工具」中途哪一家没备份成，前面已经存好的也要摆进列表。
+        try {
+          for (const target of targets) await api.createBackup(target)
+        } finally {
+          await resource.reload()
+        }
       },
       '备份完成',
     )
@@ -153,8 +159,6 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
     { label: '全部工具', disabled: !installedTools.length, testId: 'backups-create-all', onSelect: () => create(installedTools.map((tool) => tool.id)) },
     ...backupTools.map((tool): MenuItem => ({
       label: tool.name,
-      disabled: !installed(tool.id),
-      ...(installed(tool.id) ? {} : { hint: '未安装' }),
       testId: `backups-create-${tool.id}`,
       onSelect: () => create([tool.id]),
     })),
