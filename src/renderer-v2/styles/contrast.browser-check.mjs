@@ -130,7 +130,10 @@ test('Windows high contrast (forced colors) redraws selection, switches, progres
     assert.equal(thumb['background-color'], buttonText, 'the switch thumb stays visible')
     const segment = await style(page.locator('.xm-segment button.is-active').first(), ['background-color'])
     assert.equal(segment['background-color'], highlight)
-    const select = await style(page.locator('.xm-field select').first(), ['appearance'])
+    // v4 settings have no select left (language is plain text, routes are a segment),
+    // so check the run log's source filter on the feedback page instead.
+    await page.getByTestId('nav-feedback').click()
+    const select = await style(page.getByTestId('feedback-source'), ['appearance'])
     assert.equal(select.appearance, 'auto', 'the native arrow replaces the gradient one')
 
     await page.keyboard.press('Control+k')
