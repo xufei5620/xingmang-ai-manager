@@ -247,13 +247,15 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
     expectedBaseUrl: string,
     belongsToCurrentAccount?: (apiKey: string) => boolean,
   ): Promise<ExternalClientConnectionStatus & { apiKey: string | null }> {
+    let officialLogin = false
     try {
       await options.assertUnmanaged?.()
       const desktop = parseObject(read(configPath))
+      // 选了官方登录，第三方配置留着也不读：照实标出来，首页据此显示「官方账号」，不说成没连上。
+      officialLogin = desktop.deploymentMode === claudeDesktopOfficialDeploymentMode
+      const official = officialLogin ? { officialAccount: true } : {}
       const metadata = parseMetadata(read(metadataPath))
       const owner = parseOwner(read(markerPath), profileDirectory)
-      // 选了官方登录，第三方配置留着也不读：照实标出来，首页据此显示「官方账号」，不说成没连上。
-      const official = desktop.deploymentMode === claudeDesktopOfficialDeploymentMode ? { officialAccount: true } : {}
       if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official }
       const config = parseObject(read(path.join(libraryDirectory, `${metadata.appliedId}.json`)))
       if (!Object.keys(config).length && !metadata.hybridPointer) {
@@ -272,6 +274,8 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       return { configured, configurationReady, model, configurationSource: configured ? 'xingmang' : 'other', configurationError: null,
         apiKey: configured && typeof apiKey === 'string' ? apiKey : null, ...official }
     } catch {
+      // 官方登录时 Claude Desktop 不读留着的第三方那几份，它们读不懂也不算配置坏了；管理策略在前面已经查过。
+      if (officialLogin) return { configured: false, configurationReady: false, model: null, configurationSource: 'other', configurationError: null, apiKey: null, officialAccount: true }
       return { configured: false, configurationReady: false, model: null, configurationSource: 'unknown', configurationError: 'Claude Desktop 本地配置无法确认，可能存在管理策略或配置文件异常，请重新检测。', apiKey: null }
     }
   }

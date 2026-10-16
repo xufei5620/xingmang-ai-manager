@@ -806,6 +806,19 @@ describe('Claude Desktop official login switch', () => {
     expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
   })
 
+  it('still reports the official login when the dormant third-party files cannot be read, but not under a policy', async () => {
+    const assertUnmanaged = vi.fn(async () => undefined)
+    const f = fixture({ assertUnmanaged })
+    await f.service.saveGateway(input)
+    await f.service.useOfficialLogin()
+    fs.writeFileSync(f.metadataPath, '{"entries": [', 'utf8')
+    expect(await f.service.inspectConnection(input.baseUrl, belongs)).toEqual({ configured: false, configurationReady: false, model: null,
+      configurationSource: 'other', configurationError: null, officialAccount: true })
+    assertUnmanaged.mockRejectedValueOnce(new Error('检测到管理策略'))
+    expect(await f.service.inspectConnection(input.baseUrl, belongs)).toMatchObject({ configurationSource: 'unknown', configurationError: expect.any(String) })
+    expect(await f.service.inspectConnection(input.baseUrl, belongs)).toMatchObject({ officialAccount: true, configurationError: null })
+  })
+
   it.each([
     ['belongs to another account', (_f: ReturnType<typeof fixture>, _saved: string) => undefined, () => false, input.baseUrl],
     ['points at another route', (_f: ReturnType<typeof fixture>, _saved: string) => undefined, belongs, 'https://xm-direct.solov.cc'],
