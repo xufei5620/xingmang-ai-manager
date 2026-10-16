@@ -70,6 +70,7 @@ export function isCachedExternalClientStatus(value: unknown): value is ExternalC
     && (downloadUrl === undefined || downloadUrl === null || downloadUrl === officialDownloadUrls[value.tool])
     && typeof value.configured === 'boolean'
     && (value.configurationReady === undefined || typeof value.configurationReady === 'boolean')
+    && (value.officialAccount === undefined || typeof value.officialAccount === 'boolean')
     && nullableString(value.model)
     && isConfigurationSource(value.configurationSource)
     && nullableString(value.configurationError)
@@ -104,7 +105,7 @@ interface PinnedExternalClientStatus {
   configurationError: string | null
 }
 
-type ExternalClientOptionalFields = 'officialDownloadUrl' | 'configurationReady' | 'routePending' | 'routeRecheck' | 'cachedAt'
+type ExternalClientOptionalFields = 'officialDownloadUrl' | 'configurationReady' | 'routePending' | 'routeRecheck' | 'officialAccount' | 'cachedAt'
 
 function scrub(value: string | null): string | null {
   return value === null ? null : redactCommandText(value).slice(0, maximumStringLength)
@@ -132,6 +133,8 @@ function cachedStatus(status: ExternalClientStatus): ExternalClientStatus {
     ...(downloadUrl === undefined ? {} : { officialDownloadUrl: downloadUrl }),
     configured: status.configured,
     ...(status.configurationReady === undefined ? {} : { configurationReady: status.configurationReady }),
+    // Claude Desktop 选了官方登录要留：不然开机先画出来的那一下会把它说成「待连接」。
+    ...(status.officialAccount ? { officialAccount: true } : {}),
     model: scrub(status.model),
     configurationSource: status.configurationSource,
     configurationError: scrub(status.configurationError),

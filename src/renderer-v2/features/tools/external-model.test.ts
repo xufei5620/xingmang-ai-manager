@@ -29,6 +29,16 @@ describe('external client lifecycle presentation', () => {
     expect(value.detail).toContain('自动获取模型')
     expect(value.detail).not.toContain('其他账号')
   })
+  it('shows Claude Desktop on its official login as the customer\'s own Claude account rather than unconnected', () => {
+    const value = present({ tool: 'claudeDesktop', installed: true, version: '2.42304.0', configurationSource: 'other', configurationReady: false, officialAccount: true })
+    expect(value).toMatchObject({ ready: true, action: 'launch', configurationStatus: 'official' })
+    expect(value.detail).toBe('Claude 账号 · v2.42304.0')
+    expect(present({ tool: 'claudeDesktop', installed: true, version: '2.42304.0', configurationSource: 'missing', officialAccount: true, running: true }).detail)
+      .toBe('Claude 账号 · v2.42304.0 · 运行中')
+    // 配置读坏了照旧先说读坏了，不说成官方账号。
+    expect(present({ tool: 'claudeDesktop', installed: true, configurationSource: 'unknown', configurationError: 'config denied', officialAccount: true }))
+      .toMatchObject({ ready: false, action: 'configure', configurationStatus: 'unconfigured', detail: 'config denied' })
+  })
   it('does not mark an incomplete or unreadable Claude configuration as ready', () => {
     const value = present({ tool: 'claudeDesktop', installed: true, configurationSource: 'other', configurationReady: false })
     expect(value).toMatchObject({ ready: false, action: 'configure', configurationStatus: 'unconfigured' })

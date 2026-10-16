@@ -58,6 +58,8 @@ export interface ExternalClientProbeInput {
   model: string | null
   /** 配置里写着的密钥；只有确认归属当前账号时才取得出来，否则为 null。 */
   apiKey: string | null
+  /** Claude Desktop 选的是官方登录：额度走客户自己的订阅，没有星芒这边可测的。缺省 = 不是。 */
+  officialAccount?: boolean
 }
 
 /**
@@ -113,6 +115,11 @@ export function buildExternalClientProbe(input: ExternalClientProbeInput): Conne
   if (!input.installed) {
     return blocked('unconfigured', `还没有检测到 ${name}`,
       '先在首页安装这个客户端或点一次「重新检测」，装好之后再回来自检', model)
+  }
+  // 官方登录不是故障，也不该拿留着的那把星芒密钥替它测：和命令行工具切官方后一样，显示成未配置。
+  if (input.officialAccount) {
+    return blocked('unconfigured', `${name} 现在用的是你自己的 Claude 账号`,
+      '额度走你自己的官方订阅，不扣当前账号的余额。想改用当前账号，在首页的工具卡片上切换', model)
   }
   if (input.configurationSource === 'unknown') {
     return blocked('config', input.configurationError?.trim() || `${name} 的本地配置无法确认`,

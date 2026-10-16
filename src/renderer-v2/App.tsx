@@ -1205,6 +1205,26 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (launched && mounted.current && epoch === accountEpoch.current) toolbox.noteExternalLaunched(id)
     } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
   }
+  // Claude Desktop 卡上的「切回官方账号 / 改用当前账号」：只改它登录页那个选择。星芒那份配置用不上了
+  // （不在了、不是当前账号的密钥）时主进程一个字没写，这里接着打开「连接 Claude Desktop」重新保存。
+  async function switchExternalSource(id: ExternalToolId, target: AccountSourceTarget) {
+    if (target === 'account' && (!session.authenticated || !session.account)) { setAuth('login'); return }
+    const epoch = accountEpoch.current
+    const outcome: { result?: Awaited<ReturnType<typeof toolsApi.switchExternalSource>> } = {}
+    try {
+      await toolbox.run(`switch:${id}`, target === 'account' ? '正在改用当前账号' : '正在切回官方账号', async () => {
+        try {
+          outcome.result = await toolsApi.switchExternalSource(id, target)
+        } finally {
+          await toolbox.refreshExternal(true).catch(() => undefined)
+        }
+      })
+    } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
+    const result = outcome.result
+    if (!result || !mounted.current || epoch !== accountEpoch.current) return
+    if (result.outcome === 'reconnect') setExternalClient(id)
+    else toast.show(result.message, 'ok')
+  }
   function finishExternalConfigSave() {
     const epoch = accountEpoch.current
     void toolbox.refreshExternal().catch(() => {
@@ -1847,7 +1867,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
               onRepairConfig={(id) => void perform('重置为初始状态', async () => { if (await repairBrokenToolConfig(id)) confirmToolKeyWritten(id) }, id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
-              onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onCancelInstallExternal={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
+              onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onCancelInstallExternal={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
+              onSwitchExternalSource={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', () => switchExternalSource(id, target))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
               : null}

@@ -199,6 +199,35 @@ describe('renderer-v2 home install cancellation', () => {
     installSupported: true, launchSupported: false, detectionError: null, installHint: null,
   } as unknown as HomeProps['externalClients'][number]
 
+  it('lets Claude Desktop switch between the current account and the customer\'s own Claude account from its source chip', () => {
+    const noop = () => undefined
+    // 只截 Claude Desktop 那一行：整页搜会被 Claude Code 那一行的来源牌顶掉。
+    function desktopRow(markup: string): string {
+      const start = markup.indexOf('data-testid="tool-row-claudeDesktop"')
+      const next = markup.indexOf('data-testid="tool-row-', start + 1)
+      expect(start, '没有渲染出 Claude Desktop 那一行').toBeGreaterThan(-1)
+      return markup.slice(start, next < 0 ? undefined : next)
+    }
+    const connected = { ...claudeDesktop, installed: true, version: '2.42304.0', launchSupported: true, configured: true, configurationReady: true,
+      model: 'claude-opus-5-5', configurationSource: 'xingmang', configurationError: null } as typeof claudeDesktop
+    const official = { ...connected, configured: false, configurationReady: false, configurationSource: 'other', officialAccount: true } as typeof claudeDesktop
+    const switchable = desktopRow(render({}, undefined, { externalClients: [connected], onSwitchExternalSource: noop }))
+    expect(switchable).toContain('现在用当前账号，点击切换')
+    expect(switchable).not.toContain('v2-source-chip is-static')
+    // 没接这个回调的宿主照旧是不可点的来源牌。
+    expect(desktopRow(render({}, undefined, { externalClients: [connected] }))).toContain('v2-source-chip is-static')
+
+    const onOfficial = desktopRow(render({}, undefined, { externalClients: [official], onSwitchExternalSource: noop }))
+    expect(onOfficial).toContain('现在用官方账号，点击切换')
+    expect(onOfficial).toContain('Claude 账号 · v2.42304.0')
+    expect(onOfficial).not.toContain('待连接')
+    expect(onOfficial).not.toContain('确认连接')
+    // 切换进行中：来源牌收起，「打开」点不动，那一行写正在做什么。
+    const switching = desktopRow(render({ 'switch:claudeDesktop': { label: '正在改用当前账号', log: [], cancellable: false } }, undefined, { externalClients: [official], onSwitchExternalSource: noop }))
+    expect(switching).toContain('正在改用当前账号')
+    expect(switching).not.toContain('点击切换')
+  })
+
   it('offers 取消 on a desktop client row while its install can still be stopped', () => {
     const noop = () => undefined
     const markup = render({ claudeDesktop: { label: '正在从 Claude 官网下载离线安装包（42%）', log: [], cancellable: true } }, undefined, {

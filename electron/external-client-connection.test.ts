@@ -110,6 +110,17 @@ describe('buildExternalClientProbe', () => {
     expect(build.outcome.summary).toContain('WorkBuddy')
   })
 
+  it('treats Claude Desktop on its official login as unconfigured and sends nothing with the key it kept', async () => {
+    const official = input({ tool: 'claudeDesktop', baseUrl: xmSite.providerBaseUrls.claude, configurationSource: 'other', model: 'claude-opus-5', apiKey: null, officialAccount: true })
+    const build = buildExternalClientProbe(official)
+    expect(build).toMatchObject({ kind: 'blocked', outcome: { layer: 'unconfigured' } })
+    if (build.kind !== 'blocked') return
+    expect(build.outcome.summary).toBe('Claude Desktop 现在用的是你自己的 Claude 账号')
+    expect(build.outcome.nextStep).toContain('首页的工具卡片上切换')
+    const result = await check((async () => { throw new Error('must not send') }) as typeof globalThis.fetch, official)
+    expect(result).toMatchObject({ ok: false, layer: 'unconfigured', endpoint: null })
+  })
+
   it('refuses to send a key the current account did not write', () => {
     const build = buildExternalClientProbe(input({ configurationSource: 'other', apiKey: null }))
     expect(build).toMatchObject({ kind: 'blocked', outcome: { layer: 'config' } })

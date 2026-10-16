@@ -7,6 +7,13 @@ import type { ExternalClientConnectionStatus } from './external-client-contract'
 
 const label = 'Claude Desktop 第三方推理配置'
 const maximumBytes = 512 * 1024
+// Claude Desktop 在登录页选「用 Claude 账号登录」时，第三方目录的 claude_desktop_config.json 里记成这个值，
+// 之后开机就进官方登录、第三方配置留着也不读。官方文档只写了登录页上有这个选择，没写记成什么；这个值
+// 出自 Linux 打包项目 claude-desktop-extra 的 docs/third-party-inference.md（它的 --1p 就是写 Claude
+// Desktop 自己的这一项：「"1p" forces 1P even while a 3P config is still stored」）。2026-10-16 在 Mac 上
+// 手改成这个值核过：重开停在 Claude 登录页，页底有「或使用此设备上保存的 Gateway 配置」；改回 3p 回到星芒。
+export const claudeDesktopOfficialDeploymentMode = '1p'
+const claudeDesktopGatewayDeploymentMode = '3p'
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type JsonObject = Record<string, unknown>
 
@@ -37,6 +44,14 @@ export type ClaudeDesktopModelRepairOutcome =
   | { status: 'unowned' | 'unchanged' }
   | { status: 'unrecognized'; reason: 'unreadable' | 'model-list' | 'gateway' }
   | { status: 'repaired'; model: string; backups: string[] }
+
+/**
+ * 切回当前账号的结论。reconnect 是星芒那份配置不在了、不是正在用的那份、或者不是当前账号的
+ * 密钥：一个字没写，由调用方打开「连接 Claude Desktop」重新保存一次。
+ */
+export type ClaudeDesktopGatewayReturn =
+  | { outcome: 'switched'; path: string; backups: string[] }
+  | { outcome: 'reconnect' }
 
 export interface ClaudeDesktopConfigOptions {
   dataDirectory: string
@@ -232,20 +247,24 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
     expectedBaseUrl: string,
     belongsToCurrentAccount?: (apiKey: string) => boolean,
   ): Promise<ExternalClientConnectionStatus & { apiKey: string | null }> {
+    let officialLogin = false
     try {
       await options.assertUnmanaged?.()
       const desktop = parseObject(read(configPath))
+      // 选了官方登录，第三方配置留着也不读：照实标出来，首页据此显示「官方账号」，不说成没连上。
+      officialLogin = desktop.deploymentMode === claudeDesktopOfficialDeploymentMode
+      const official = officialLogin ? { officialAccount: true } : {}
       const metadata = parseMetadata(read(metadataPath))
       const owner = parseOwner(read(markerPath), profileDirectory)
-      if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null }
+      if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official }
       const config = parseObject(read(path.join(libraryDirectory, `${metadata.appliedId}.json`)))
       if (!Object.keys(config).length && !metadata.hybridPointer) {
-        return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null }
+        return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official }
       }
       const model = firstModel(config.inferenceModels)
       const apiKey = config.inferenceGatewayApiKey
       const baseUrl = config.inferenceGatewayBaseUrl
-      const configurationReady = (desktop.deploymentMode === undefined || desktop.deploymentMode === '3p')
+      const configurationReady = (desktop.deploymentMode === undefined || desktop.deploymentMode === claudeDesktopGatewayDeploymentMode)
         && !metadata.hybridPointer && gatewayConfigurationReady(config)
       const configured = configurationReady
         && typeof baseUrl === 'string' && sameBaseUrl(baseUrl, expectedBaseUrl)
@@ -253,8 +272,10 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
         && (owner?.id === metadata.appliedId || Boolean(belongsToCurrentAccount))
         && (!belongsToCurrentAccount || belongsToCurrentAccount(apiKey))
       return { configured, configurationReady, model, configurationSource: configured ? 'xingmang' : 'other', configurationError: null,
-        apiKey: configured && typeof apiKey === 'string' ? apiKey : null }
+        apiKey: configured && typeof apiKey === 'string' ? apiKey : null, ...official }
     } catch {
+      // 官方登录时 Claude Desktop 不读留着的第三方那几份，它们读不懂也不算配置坏了；管理策略在前面已经查过。
+      if (officialLogin) return { configured: false, configurationReady: false, model: null, configurationSource: 'other', configurationError: null, apiKey: null, officialAccount: true }
       return { configured: false, configurationReady: false, model: null, configurationSource: 'unknown', configurationError: 'Claude Desktop 本地配置无法确认，可能存在管理策略或配置文件异常，请重新检测。', apiKey: null }
     }
   }
@@ -374,6 +395,77 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
       const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
       return { path: gatewayPath, backups: saved.backups }
+    }),
+    /**
+     * 首页「切回官方账号」：只把 claude_desktop_config.json 的 deploymentMode 改成官方登录，等于替客户在
+     * Claude Desktop 的登录页选了「用 Claude 账号登录」。星芒那份配置和密钥原样留着，切回来不用重配；
+     * 别的字段一个字不动（缩进、顺序照原样）。只在正在用的是当前账号那份时才改，跟首页认「当前账号」的
+     * 口径一样：星芒写的那份，或者客户自己复制出来、密钥还是当前账号的那份。客户换成了别人的网关、或者
+     * 已经是官方登录了，都不替他做决定。
+     */
+    useOfficialLogin: (belongsToCurrentAccount?: (apiKey: string) => boolean): Promise<{ path: string; backups: string[] }> => serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const original = capture(configPath)
+      const desktop = parseObject(original)
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      const appliedId = metadata.appliedId
+      const ownedInUse = Boolean(owner && appliedId === owner.id)
+      const applied = !ownedInUse && appliedId && belongsToCurrentAccount
+        ? parseObject(capture(path.join(libraryDirectory, `${appliedId}.json`))).inferenceGatewayApiKey : undefined
+      const accountInUse = ownedInUse || (typeof applied === 'string' && Boolean(belongsToCurrentAccount?.(applied)))
+      if (original === null || !accountInUse || metadata.hybridPointer
+        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) {
+        throw new Error(`${label}在切换前已变化，未执行修改`)
+      }
+      const content = applyEdits(original, modify(original, ['deploymentMode'], claudeDesktopOfficialDeploymentMode, {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+      }))
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: configPath, content }], snapshots, assertContext)
+      return { path: configPath, backups: saved.backups }
+    }),
+    /**
+     * 首页「改用当前账号」：Claude Desktop 现在是官方登录、星芒那份还在用着的位置上、地址是当前线路、
+     * 密钥归当前账号，四条都对才把 deploymentMode 改回第三方，不用重新保存配置。有一条不对就一个字
+     * 不写，回 reconnect，由调用方打开「连接 Claude Desktop」照常保存（saveGateway 会把模式一起改回来）。
+     */
+    useGatewayLogin: (expectedBaseUrl: string, belongsToCurrentAccount: (apiKey: string) => boolean): Promise<ClaudeDesktopGatewayReturn> => serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const original = capture(configPath)
+      const desktop = parseObject(original)
+      if (original === null || desktop.deploymentMode !== claudeDesktopOfficialDeploymentMode) {
+        throw new Error(`${label}在切换前已变化，未执行修改`)
+      }
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer) return { outcome: 'reconnect' }
+      const gateway = parseObject(capture(path.join(libraryDirectory, `${owner.id}.json`)))
+      const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
+      if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || !sameBaseUrl(baseUrl, expectedBaseUrl)
+        || typeof apiKey !== 'string' || !apiKey.trim() || !belongsToCurrentAccount(apiKey)) return { outcome: 'reconnect' }
+      const content = applyEdits(original, modify(original, ['deploymentMode'], claudeDesktopGatewayDeploymentMode, {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+      }))
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: configPath, content }], snapshots, assertContext)
+      return { outcome: 'switched', path: configPath, backups: saved.backups }
     }),
     saveGateway: (input: ClaudeDesktopGatewayInput): Promise<ClaudeDesktopConfigResult> => serial(async () => {
       const gateway = buildClaudeDesktopGatewayConfig(input)
