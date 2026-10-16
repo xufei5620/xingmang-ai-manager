@@ -58,11 +58,12 @@
 /* 光柱的模糊画在不动的里层：外层只变透明度，合成器直接用画好的那张，不用每帧重新模糊。 */
 .auth-orbit-beam { position: absolute; left: 50%; top: 50%; width: 4px; height: 170px; transform: translate(-50%, -100%); pointer-events: none; animation: auth-beam 3.6s steps(9) infinite; }
 .auth-orbit-beam::before { content: ''; position: absolute; inset: 0; background: linear-gradient(to top, var(--welcome-core), transparent 85%); filter: blur(2px); }
-/* 虚线轨道 300 见方（这一栏 440 宽时），三个工具在 20°、140°、260° 上。 */
+/* 虚线轨道 300 见方（这一栏 440 宽时），四颗照 0.2.18 在 20°、110°、200°、290° 上。 */
 .auth-orbit-ring { position: absolute; inset: 16%; border: 1px dashed var(--welcome-dash); border-radius: 50%; pointer-events: none; animation: auth-spin 40s steps(1200) infinite; }
 .auth-orbit-satellite { position: absolute; left: 67.1%; top: 3.02%; transform: translate(-50%, -50%); }
-.auth-orbit-satellite[data-position='1'] { left: 82.14%; top: 88.3%; }
-.auth-orbit-satellite[data-position='2'] { left: .76%; top: 58.68%; }
+.auth-orbit-satellite[data-position='1'] { left: 96.98%; top: 67.1%; }
+.auth-orbit-satellite[data-position='2'] { left: 32.9%; top: 96.98%; }
+.auth-orbit-satellite[data-position='3'] { left: 3.02%; top: 32.9%; }
 /* 0.2.18 的胶囊背后还有一层毛玻璃；它跟着轨道一直在动，每帧都要重新模糊身后的画面，换成更不透明的底色。 */
 .auth-orbit-planet { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px 0 8px; border: 1px solid var(--welcome-dash); border-radius: 99px; color: var(--text-2); background: color-mix(in srgb, var(--panel-solid) 92%, transparent); box-shadow: 0 4px 14px color-mix(in srgb, var(--xm-navy) 40%, transparent); font-size: 12px; font-weight: 500; white-space: nowrap; animation: auth-spin 40s steps(1200) infinite reverse; }
 .auth-orbit-core { position: absolute; left: 50%; top: 50%; width: 150px; height: 150px; display: grid; place-items: center; transform: translate(-50%, -50%); pointer-events: none; }

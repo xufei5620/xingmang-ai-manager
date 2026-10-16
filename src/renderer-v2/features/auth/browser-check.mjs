@@ -1032,7 +1032,7 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       await page.getByTestId('welcome-orbit-scene').waitFor()
       // UI v4.0 has two palettes and no skins: the document follows data-theme alone.
       assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), undefined)
-      assert.equal(await page.locator('.auth-orbit-satellite').count(), 3)
+      assert.equal(await page.locator('.auth-orbit-satellite').count(), 4)
       assert.equal(await page.locator('.frame,.ptile,.welcome-preview-workbench').count(), 0)
       await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0))
       // 星空照 0.2.18：170 颗星和连线是画一次的 SVG，整页没有一块逐帧重画的画布（批次性能要求 批03 第 2 条）。
@@ -1074,14 +1074,15 @@ test('welcome shows the sidebar brand without the row of tools under it', async 
   } finally { await page.close() }
 })
 
-// 三个工具（Gemini CLI 下线后）在同一条轨道上每隔 120° 一个、同向公转：转到哪个角度都不会叠在一起。
-test('welcome keeps the three tools evenly spaced on one orbit so they never overlap', async () => {
+// 照 0.2.18 四颗（yoyo 2026-10-16：Gemini CLI 不装了，Gemini 模型还能用，星轨上留着它）在同一条轨道上
+// 每隔 90° 一个、同向公转：转到哪个角度都不会叠在一起。
+test('welcome keeps the four orbit labels evenly spaced on one orbit so they never overlap', async () => {
   const page = await open('scenario=welcome')
   try {
     await page.getByTestId('welcome-orbit-scene').waitFor()
     assert.equal(await page.locator('.auth-orbit-ring').count(), 1)
-    assert.deepEqual(await page.locator('.auth-orbit-satellite').allInnerTexts(), ['Claude Code', 'Codex CLI', 'Grok CLI'])
-    for (let spin = 0; spin < 120; spin += 5) {
+    assert.deepEqual(await page.locator('.auth-orbit-satellite').allInnerTexts(), ['Claude Code', 'Codex CLI', 'Gemini', 'Grok CLI'])
+    for (let spin = 0; spin < 90; spin += 5) {
       const boxes = await page.evaluate((angle) => {
         // 动画默认停着（夹具默认减少动画），直接把轨道转到这个角度、工具反着转回来，和动画走到这一帧时一样。
         const ring = document.querySelector('.auth-orbit-ring')
@@ -1095,11 +1096,11 @@ test('welcome keeps the three tools evenly spaced on one orbit so they never ove
           return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, distance: Math.hypot(x, y), angle: Math.atan2(y, x) * 180 / Math.PI }
         })
       }, spin)
-      assert.equal(boxes.length, 3)
+      assert.equal(boxes.length, 4)
       for (const box of boxes) assert.ok(Math.abs(box.distance - boxes[0].distance) < 1, `every tool is on the same orbit at ${spin}deg`)
       for (let index = 1; index < boxes.length; index++) {
         const gap = ((boxes[index].angle - boxes[index - 1].angle) % 360 + 360) % 360
-        assert.ok(Math.abs(gap - 120) < 1, `tools ${index - 1} and ${index} sit 120deg apart at ${spin}deg (got ${gap})`)
+        assert.ok(Math.abs(gap - 90) < 1, `tools ${index - 1} and ${index} sit 90deg apart at ${spin}deg (got ${gap})`)
       }
       for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
         const apart = boxes[a].right <= boxes[b].left || boxes[b].right <= boxes[a].left || boxes[a].bottom <= boxes[b].top || boxes[b].bottom <= boxes[a].top
