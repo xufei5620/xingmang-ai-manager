@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexModelChoices, codexModelFilterSaveIssue, isOpenAiModelId } from './model-filter'
+import { codexModelChoices, isOpenAiModelId, otherModelChoices, otherModelSaveIssue } from './model-filter'
 
 describe('Codex model filtering', () => {
   it.each(['gpt-6-astra', 'GPT-5.6-sol', 'gpt4', 'chatgpt-4o-latest', 'codex-auto-review', 'o3', 'o4-mini', 'vendor/gpt-5', 'azure:openai/model-alias', 'openai/custom-alias'])('recognizes OpenAI model names without deciding their protocol: %s', (model) => {
@@ -34,31 +34,25 @@ describe('Codex model filtering', () => {
   })
 })
 
-describe('Codex non-GPT save guard', () => {
-  const ready = { filter: 'non-gpt' as const, models: ['gpt-6-astra', 'qwen3-max'], selectedModel: 'qwen3-max', detected: true, automaticKey: false }
+describe('Codex other-model dialog', () => {
+  const ready = { models: ['gpt-6-astra', 'gpt-6-mini', 'qwen3-max', 'qwen3-max'], defaultModel: 'gpt-6-astra', selectedModel: 'qwen3-max', detected: true }
 
-  it('allows only a non-GPT model verified for the current key', () => {
-    expect(codexModelFilterSaveIssue(ready)).toBeNull()
-    expect(codexModelFilterSaveIssue({ ...ready, selectedModel: 'gpt-6-astra' })).toContain('请选择本次检测到')
-    expect(codexModelFilterSaveIssue({ ...ready, selectedModel: 'retired-model' })).toContain('请选择本次检测到')
-    expect(codexModelFilterSaveIssue({ ...ready, detected: false })).toContain('请先检测当前密钥')
+  it('lists the Codex default first and then the detected non-GPT models', () => {
+    expect(otherModelChoices(ready.models, 'gpt-6-astra')).toEqual(['gpt-6-astra', 'qwen3-max'])
+    // The default is offered only when this key can actually use it.
+    expect(otherModelChoices(['qwen3-max'], 'gpt-6-astra')).toEqual(['qwen3-max'])
+  })
+
+  it('allows the default or a non-GPT model verified for the current key', () => {
+    expect(otherModelSaveIssue(ready)).toBeNull()
+    expect(otherModelSaveIssue({ ...ready, selectedModel: 'gpt-6-astra' })).toBeNull()
+    expect(otherModelSaveIssue({ ...ready, selectedModel: 'gpt-6-mini' })).toContain('请选择本次检测到')
+    expect(otherModelSaveIssue({ ...ready, selectedModel: 'retired-model' })).toContain('请选择本次检测到')
+    expect(otherModelSaveIssue({ ...ready, detected: false })).toContain('请先检测当前密钥')
   })
 
   it('blocks GPT-only and empty results with a useful key-permission explanation', () => {
-    expect(codexModelFilterSaveIssue({ ...ready, models: ['gpt-6-astra'] })).toContain('更换有相应模型权限的密钥')
-    expect(codexModelFilterSaveIssue({ ...ready, models: [] })).toContain('更换有相应模型权限的密钥')
-  })
-
-  it('blocks automatic provisioning so it cannot silently save its GPT default', () => {
-    expect(codexModelFilterSaveIssue({ ...ready, automaticKey: true })).toContain('选择已有密钥或自己填写密钥')
-  })
-
-  it('requires an explicit source choice when the non-GPT entry opens a ChatGPT configuration', () => {
-    expect(codexModelFilterSaveIssue({ ...ready, officialSource: true })).toContain('请换一个账号来源后再检测模型')
-    expect(codexModelFilterSaveIssue({ ...ready, officialSource: true, filter: 'all' })).toBeNull()
-  })
-
-  it('leaves the existing all-model save flow unchanged', () => {
-    expect(codexModelFilterSaveIssue({ ...ready, filter: 'all', detected: false, automaticKey: true, models: [] })).toBeNull()
+    expect(otherModelSaveIssue({ ...ready, models: ['gpt-6-astra'], selectedModel: 'gpt-6-astra' })).toContain('更换有相应模型权限的密钥')
+    expect(otherModelSaveIssue({ ...ready, models: [] })).toContain('更换有相应模型权限的密钥')
   })
 })

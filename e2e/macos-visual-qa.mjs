@@ -38,11 +38,12 @@ const scenarios = [
 ]
 // The fixture below reports both tools as installed, which is what puts a row
 // menu (and therefore the configuration dialog) within reach.
+// UI v4: only Codex keeps a subtitle (its CLI and desktop app share one
+// configuration); the tool tabs are gone, each dialog configures one tool.
 const toolCases = {
-  codex: { name: 'Codex CLI' },
-  grok: { name: 'Grok CLI' },
+  codex: { name: 'Codex CLI', subtitle: 'Codex CLI 和 Codex 桌面端共用这一份配置，在哪边改都一样' },
+  grok: { name: 'Grok CLI', subtitle: null },
 }
-const dialogSubtitle = '选好账号后，保存并打开工具即可开始。'
 const results = []
 const pageErrors = []
 let application = null
@@ -309,8 +310,8 @@ try {
       maintenanceRowIds: [],
       dialog: null,
       titleVisible: false,
-      subtitleVisible: false,
-      toolTabsVisible: false,
+      subtitleAsExpected: false,
+      toolTabsAbsent: false,
       cancelButtonVisible: false,
       saveButtonVisible: false,
       closeButtonVisible: false,
@@ -345,8 +346,10 @@ try {
       result.titleVisible = await dialog
         .getByRole('heading', { name: `${subject.name} 配置`, exact: true })
         .isVisible()
-      result.subtitleVisible = await dialog.getByText(dialogSubtitle, { exact: true }).isVisible()
-      result.toolTabsVisible = await dialog.getByRole('tablist', { name: '选择要配置的工具' }).isVisible()
+      result.subtitleAsExpected = subject.subtitle
+        ? await dialog.getByText(subject.subtitle, { exact: true }).isVisible()
+        : await dialog.locator('.xm-dialog-sub').count() === 0
+      result.toolTabsAbsent = await dialog.getByRole('tablist').count() === 0
       result.cancelButtonVisible = await dialog.getByRole('button', { name: '取消', exact: true }).isVisible()
       result.saveButtonVisible = await dialog.getByTestId('tool-save-config').isVisible()
       const close = dialog.getByRole('button', { name: '关闭', exact: true })
@@ -431,8 +434,8 @@ const failed = results.filter((result) => {
     || !expectedToolRows.every((id) => result.maintenanceRowIds.includes(id))
     || result.maintenanceRowIds.includes('gemini')
     || !result.titleVisible
-    || !result.subtitleVisible
-    || !result.toolTabsVisible
+    || !result.subtitleAsExpected
+    || !result.toolTabsAbsent
     || !result.cancelButtonVisible
     || !result.saveButtonVisible
     || !result.closeButtonVisible

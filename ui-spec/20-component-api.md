@@ -27,13 +27,13 @@
 | `ToolCard` | `tool: ToolId` · `meta: ReactNode` · `metaTone?: 'warn'\|'bad'` · `metaTitle?` · `link?: ReactNode` · `badge?: ReactNode` · `actions?: ReactNode` · `menu?` · `menuLabel?` · `progress?: number` · `off?: boolean` | v4 首页的工具卡片（批04）：上面图标、名字和「厂商 · 命令行工具 / 桌面应用」，中间一行说明（`metaTone` 上色，`link` 是下面那行小字链接，如「可更新到 v…」），底下左边一块牌子（来源牌、状态小牌、灰字「未安装」），右边按钮和「…」；有 `progress` 时牌子换成进度条和百分比。底下一行弹性排开，牌子可缩、按钮不缩，两边永不叠字。`off` = 没装，卡片变淡，`data-installed` 跟着写 |
 | `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` · `onOpen?` · `openTestId?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码）。给了 `onOpen` 整行都能点（标题是按钮，键盘和读屏从它进），鼠标停上去变色；`actions` 里的按钮各管各的，不触发整行 |
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
-| `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` | ≤ 5 项 |
+| `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` · `activation?: 'automatic'\|'manual'` | ≤ 5 项；缺省方向键移到哪项就选哪项，`manual` 只挪焦点、回车或空格才选——选了马上有动作的（Codex 界面语言会重开 Codex）用它 |
 | `Chips` | `options: {value,label,count?,leading?,testId?}[]` · `value` · `onChange` · `label?` | v4 组件规范里的「分类」：一排 28 高的圆角按钮（`aria-pressed`），后面带数量，`leading` 放工具图标（只给眼睛看，读屏不念）；`label` 是整组的读屏名。记录页按工具、教程页按类别在用 |
 | `Switch` | `checked` · `onChange` · `label?` · `description?` | 切换即保存 |
 | `Slider` | `label` · `value: string`（`''` = 没设） · `fallback` · `min` · `max` · `step` · `placeholder?` · `hint?` · `onChange` | 没设时右上角写 `placeholder`（聊天参数写「默认」）、滑块停在 `fallback`，一拖就有值；聊天参数对话框用 |
 | `Input` / `Select` / `Textarea` | 标准受控 props + `error?: string` · `hint?` · `mono?` · `password?`（带显隐） | |
 | `SearchInput` | `value` · `onChange` · `placeholder` | 带图标，宽 240 |
-| `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` · `headless?` | 只能有一个打开；`headless` 不画标题行和关闭按钮（标题只给读屏，Esc 和点遮罩照样关），框顶固定在窗口高度约 1/6 处，内容变高只往下长——目前只给命令面板用 |
+| `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` · `headless?` | 只能有一个打开；框里的「取消」或去别处的链接用 `useDialogClose()(after?)` 关，有草稿时和点 × 一样先亮离开条，`after` 等真关了才跑（要开另一个弹窗、去别的页就放这里）；`headless` 不画标题行和关闭按钮（标题只给读屏，Esc 和点遮罩照样关），框顶固定在窗口高度约 1/6 处，内容变高只往下长——目前只给命令面板用 |
 | `Confirm` | `title` · `body` · `okLabel` · `danger?` · `requireAck?` · `onOk` | Dialog 特化 |
 | `Drawer` | `open` · `title` · `icon?` · `footer` · `onClose` | 右侧 420，从顶栏下面到状态栏上面；非模态：背后不罩、不模糊，点另一行换内容，Esc 关；footer 按钮从左往右排、主按钮在最左，放不下换行 |
 | `Notice` | `tone` · `icon` · `title` · `body` · `actions` · `onDismiss` · `progress?` | 同时只显示一张；`tone='bad'` 一律红圈 ×、`'warn'` 一律橙色三角，`icon` 只对一般说明生效；嵌在页面里只留细边框，浮在角上的（开机提示、更新通知）由外壳加阴影 |

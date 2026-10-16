@@ -56,13 +56,12 @@ try {
       await page.getByRole('menuitem', { name: '配置', exact: true }).click()
       const dialog = page.getByTestId('config-dialog')
       await dialog.waitFor()
-      result.observations.push({ id: 'claude-official-source', officialActions: await dialog.getByRole('button', { name: 'Claude 账号', exact: true }).count() })
-      await dialog.getByRole('tab', { name: 'Gemini CLI', exact: true }).click()
-      result.observations.push({ id: 'gemini-official-source', officialActions: await dialog.getByRole('button', { name: 'Google 账号', exact: true }).count() })
-      await dialog.getByRole('button', { name: '自己填写密钥', exact: true }).click()
-      await dialog.getByLabel('星芒访问密钥', { exact: true }).fill('sk-fixture-unsaved')
+      // UI v4: one dialog per tool (no tool tabs); the sources are radio cards.
+      result.observations.push({ id: 'claude-official-source', officialActions: await dialog.getByRole('radio', { name: /^Claude 账号/ }).count() })
+      await dialog.getByRole('radio', { name: /^自己填写密钥/ }).click()
+      await dialog.getByLabel('星芒密钥', { exact: true }).fill('sk-fixture-unsaved')
       await dialog.getByRole('button', { name: '取消', exact: true }).click()
-      result.observations.push({ id: 'config-cancel-draft', configStillOpen: await page.getByTestId('config-dialog').count() > 0, discardConfirmationVisible: await page.getByText('要放弃未保存的修改吗？').count() > 0 })
+      result.observations.push({ id: 'config-cancel-draft', configStillOpen: await page.getByTestId('config-dialog').count() > 0, discardConfirmationVisible: await page.getByText('有修改还没保存，关掉会丢掉这些修改').count() > 0 })
     } finally { await page.close() }
   }
   {
@@ -71,7 +70,7 @@ try {
       await page.getByTestId('tool-claude-primary').click()
       const dialog = page.getByTestId('config-dialog')
       await dialog.waitFor()
-      result.observations.push({ id: 'unknown-source-recovery', sourceOptions: await dialog.getByRole('group').count(), saveDisabled: await dialog.getByTestId('tool-save-config').isDisabled(), recoveryActions: await dialog.getByRole('button').allTextContents() })
+      result.observations.push({ id: 'unknown-source-recovery', sourceOptions: await dialog.getByRole('radiogroup').count(), saveDisabled: await dialog.getByTestId('tool-save-config').isDisabled(), recoveryActions: await dialog.getByRole('button').allTextContents() })
     } finally { await page.close() }
   }
   await fs.writeFile('docs/renderer-v2-gap-audit.json', JSON.stringify(result, null, 2) + '\n', 'utf8')
