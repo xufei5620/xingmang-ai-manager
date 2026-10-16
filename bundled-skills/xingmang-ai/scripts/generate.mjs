@@ -27,7 +27,7 @@ async function readSkillConfig(skillRoot) {
   try {
     raw = await readFile(filePath, 'utf8')
   } catch {
-    fail('还没有本机配置。请先打开星芒AI管理工具并登录，工具会自动检测「图片模型-中转/订阅」分组并写入 config.json。')
+    fail('还没有本机配置。请先打开星芒AI管理工具并登录，工具会自动检测「图片模型」分组并写入 config.json。')
   }
   let parsed
   try {

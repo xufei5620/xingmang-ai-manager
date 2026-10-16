@@ -68,7 +68,7 @@ function loggedInAccount(options: {
     accountService: {
       getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 9 } })),
       listUsableGroups: vi.fn(async () => options.groups ?? [
-        { name: 'GPT-中转/订阅' },
+        { name: 'GPT' },
         { name: IMAGE_SKILL_GROUP_NAMES[0] },
       ]),
       provisionCliKey,
@@ -91,8 +91,8 @@ describe('xingmang-ai-skill', () => {
   it('prefers the current image group name over the legacy alias', () => {
     expect(selectImageSkillGroup([
       { name: '生图分组' },
-      { name: '图片模型-中转/订阅' },
-    ])).toBe('图片模型-中转/订阅')
+      { name: '图片模型' },
+    ])).toBe('图片模型')
   })
 
   it('falls back to the legacy image group when that is the only usable one', () => {
@@ -100,7 +100,7 @@ describe('xingmang-ai-skill', () => {
   })
 
   it('returns null when the account cannot use any image group', () => {
-    expect(selectImageSkillGroup([{ name: 'GPT-中转/订阅' }])).toBeNull()
+    expect(selectImageSkillGroup([{ name: 'GPT' }])).toBeNull()
   })
 
   it('accepts the openai alias used by older image groups', () => {
@@ -109,7 +109,7 @@ describe('xingmang-ai-skill', () => {
 
   it('matches a renamed 图片中转 group without treating video groups as image groups', () => {
     expect(selectImageSkillGroup([
-      { name: '视频模型-中转/订阅' },
+      { name: '视频模型' },
       { name: '图片模型中转' },
     ])).toBe('图片模型中转')
   })
@@ -283,7 +283,7 @@ describe('xingmang-ai-skill', () => {
 
     expect(result).toEqual({
       ready: true,
-      group: '图片模型-中转/订阅',
+      group: '图片模型',
       installed: 3,
       configured: 3,
     })
@@ -293,7 +293,7 @@ describe('xingmang-ai-skill', () => {
     })
     expect(provisionCliKey).toHaveBeenCalledWith({
       name: XINGMANG_AI_SKILL_KEY_NAME,
-      group: '图片模型-中转/订阅',
+      group: '图片模型',
     })
 
     for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
@@ -303,7 +303,7 @@ describe('xingmang-ai-skill', () => {
       )))
       expect(parsed.apiKey).toBe('sk-test-image-group-secret-12345678')
       expect(parsed.codexApiKey).toBe('sk-test-codex-group-secret-12345678')
-      expect(parsed.group).toBe('图片模型-中转/订阅')
+      expect(parsed.group).toBe('图片模型')
       expect(parsed.codexGroup).toBe(managedCliKeyProfiles.codex.group)
       expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: 星芒AI')
       expect(path.basename(directory)).toBe(XINGMANG_AI_SKILL_DIRECTORY)
@@ -388,7 +388,7 @@ describe('xingmang-ai-skill', () => {
       accountService,
       bundledRoot,
       userHome,
-      loadAccountGroupHints: async () => ({ codex: ['GPT 主力', 'GPT-中转/订阅'], image: ['画图专线', '图片模型-中转/订阅'] }),
+      loadAccountGroupHints: async () => ({ codex: ['GPT 主力', 'GPT'], image: ['画图专线', '图片模型'] }),
     })).resolves.toMatchObject({ ready: true, group: '画图专线' })
     expect(provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: 'GPT 主力' })
     expect(provisionCliKey).toHaveBeenCalledWith({ name: XINGMANG_AI_SKILL_KEY_NAME, group: '画图专线' })
@@ -483,7 +483,7 @@ describe('xingmang-ai-skill', () => {
 
     expect(result).toEqual({
       ready: true,
-      group: '图片模型-中转/订阅',
+      group: '图片模型',
       installed: 1,
       configured: 1,
     })
@@ -510,7 +510,7 @@ describe('xingmang-ai-skill', () => {
     expect(result.directoryWarnings ?? []).toEqual([])
     expect(provisionCliKey).toHaveBeenCalledWith({
       name: XINGMANG_AI_SKILL_KEY_NAME,
-      group: '图片模型-中转/订阅',
+      group: '图片模型',
     })
     const agentsConfig = parseXingmangAiSkillConfig(JSON.parse(await readFile(
       path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY, XINGMANG_AI_CONFIG_FILE),
@@ -528,7 +528,7 @@ describe('xingmang-ai-skill', () => {
     const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
     expect(parsed.apiKey).toBeUndefined()
     expect(parsed.codexApiKey).toBeUndefined()
-    expect(parsed.group).toBe('图片模型-中转/订阅')
+    expect(parsed.group).toBe('图片模型')
     expect(parsed.codexGroup).toBe(managedCliKeyProfiles.codex.group)
     expect(JSON.stringify(parsed)).not.toContain('sk-test-image-group-secret-12345678')
     expect(JSON.stringify(parsed)).not.toContain('sk-test-codex-group-secret-12345678')

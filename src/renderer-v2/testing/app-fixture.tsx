@@ -738,7 +738,7 @@ const methods = {
   fillToolTemplateDefaults: async (retry?: boolean) => query.has('templateDeferred')
     ? retry ? { filled: ['codex'] as ProviderId[] } : { filled: [] as ProviderId[], pending: ['codex'] as ProviderId[] }
     : { filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] },
-  getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
+  getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {
     session = { ...session, authenticated: false, account: null }
