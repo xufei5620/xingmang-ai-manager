@@ -243,6 +243,13 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
         await page.getByTestId(`home-client-${tool}`).click()
         const dialog = page.getByTestId('external-client-dialog')
         await dialog.waitFor()
+        // 自家工具的密钥默认选中、也排在下拉第一项：0.2.19 测试包里 Claude Desktop 的下拉第一项是 Codex 那把。
+        const own = tool === 'claudeDesktop' ? 'configured:claude' : 'configured:codex'
+        await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', own)
+        await page.getByTestId('external-client-source').click()
+        const options = page.locator('[data-testid^="external-client-source-option-"]')
+        assert.equal(await options.first().getAttribute('data-testid'), `external-client-source-option-${own}`)
+        await options.first().click()
         await page.getByTestId('external-client-detect').click()
         const model = tool === 'claudeDesktop' ? 'claude-fixture' : 'deepseek-fixture'
         await page.getByTestId('external-client-model').selectOption(model)
@@ -696,6 +703,53 @@ test('external client installation completion does not refresh or notify the nex
     assert.equal(await page.getByText('WorkBuddy 已装好，点「确认连接」用上当前账号', { exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
+})
+
+test('the Claude Desktop dialog moves to the Claude Code key once it lands, but only while untouched', async () => {
+  const page = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1')
+  try {
+    await page.getByTestId('home-client-claudeDesktop').click()
+    await page.getByTestId('external-client-dialog').waitFor()
+    // Claude Code 还没写上密钥：先借 Codex 那把，但不把 Codex 的 GPT 型号带进来。
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'configured:codex')
+    assert.equal(await page.getByTestId('external-client-model').inputValue(), '')
+    await page.evaluate(() => window.v2Test.releaseBootstrap())
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'configured:claude')
+    await page.getByTestId('external-client-save').click()
+    await page.getByTestId('external-client-result').getByText('配置已保存', { exact: true }).waitFor()
+    const call = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').at(-1))
+    assert.deepEqual(call.args, ['claudeDesktop', { credential: { kind: 'configured', provider: 'claude' }, model: 'claude-fixture' }])
+    await clean(page)
+  } finally { await page.close() }
+  // 他已经自己换过来源，后来写好的 Claude Code 密钥不许把他的选择换掉。
+  const touched = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1')
+  try {
+    await touched.getByTestId('home-client-claudeDesktop').click()
+    await expect(touched.getByTestId('external-client-source')).toHaveAttribute('data-value', 'configured:codex')
+    await pickOption(touched, 'external-client-source', 'manual')
+    await expect(touched.getByTestId('tool-claude-primary')).not.toHaveText('打开')
+    await touched.evaluate(() => window.v2Test.releaseBootstrap())
+    // 首页那张 Claude Code 卡片变成「打开」，说明写好的配置已经读回来了；再等两帧，弹窗那边跟不跟都该落定了。
+    await expect(touched.getByTestId('tool-claude-primary')).toHaveText('打开')
+    await touched.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await touched.getByTestId('external-client-source').getAttribute('data-value'), 'manual')
+    await clean(touched)
+  } finally { await touched.close() }
+  // 弹窗自己读到的工具配置还是旧的、密钥列表还没回来，首页先读到了写好的配置：弹窗读完也要换到 Claude Code 那把。
+  const racing = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1')
+  try {
+    await racing.getByTestId('home-client-claudeDesktop').waitFor()
+    await racing.evaluate(() => window.v2Test.holdAccountKeys())
+    await racing.getByTestId('home-client-claudeDesktop').click()
+    await racing.getByTestId('external-client-dialog').waitFor()
+    await racing.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountKeys'))
+    await racing.evaluate(() => window.v2Test.releaseBootstrap())
+    await expect(racing.getByTestId('tool-claude-primary')).toHaveText('打开')
+    await expect(racing.getByTestId('external-client-save')).toBeDisabled()
+    await racing.evaluate(() => window.v2Test.releaseAccountKeys())
+    await expect(racing.getByTestId('external-client-source')).toHaveAttribute('data-value', 'configured:claude')
+    await clean(racing)
+  } finally { await racing.close() }
 })
 
 test('client save errors retain the selected model and never show a success notice', async () => {
