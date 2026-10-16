@@ -795,11 +795,7 @@ async function injectTarget(
         // Keep the same CDP session (and its new-document hook) alive across
         // reload. A ready renderer alone says nothing about its locale.
         // Slow document loading must not consume the only reload attempt.
-        // Neither may Codex's own start-up screen: it has not read the switch
-        // yet, so the patch already in place will see that read, and a reload
-        // there restarts the wait for the switch request (or fails the start
-        // outright, "ChatGPT failed to start · ERR_FAILED (-2)", #976).
-        if (!reloadState.attempted && probe.rendererReady && probe.documentReady && probe.patchReady && probe.interfaceShown && probe.documentIdentity !== null) {
+        if (!reloadState.attempted && probe.rendererReady && probe.documentReady && probe.patchReady && probe.documentIdentity !== null) {
           reloadState.attempted = true
           reloadState.previousDocument = probe.documentIdentity
           const reload = await sendCdpCommand(socket, ++commandId, 'Page.reload', { ignoreCache: false })

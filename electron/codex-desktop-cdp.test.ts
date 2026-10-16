@@ -477,7 +477,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
     const listeners = new Map<string, Set<(event: any) => void>>()
     const prepareDocument = () => {
       Object.assign(page.context, {
-        document: { readyState: 'complete', body: { innerText: 'New chat\nAutomations\nSkills\nSettings\nCodex desktop is ready' }, querySelector: () => ({}) },
+        document: { readyState: 'complete', body: { innerText: 'Codex desktop is ready' }, querySelector: () => ({}) },
         electronBridge: { sendMessageFromView() {} },
         performance: { timeOrigin: 1_000 + reloaded },
       })
@@ -686,15 +686,16 @@ describe('Codex Desktop Chinese CDP injection', () => {
     })).rejects.toThrow('界面还停在启动那一屏')
   })
 
-  it('neither reloads nor gives up while Codex still shows its own start-up screen', async () => {
+  it('does not give up while Codex still shows its own start-up screen', async () => {
     // #976: when the switch request cannot get out, Codex sits on a spinner for
     // 34-38 s and only reads the switch afterwards, well past the usual bound.
     let probes = 0
     const { socket, sent } = mockCdpSocket(() => {
       probes += 1
+      const documentIdentity = probes === 1 ? 1_000 : 2_000
       return probes <= 45
-        ? { ...readyProbe, textLength: 0, localeReadObserved: false }
-        : readyProbe
+        ? { ...readyProbe, documentIdentity, textLength: 0, localeReadObserved: false }
+        : { ...readyProbe, documentIdentity }
     })
     const result = await injectCodexDesktopChineseLocale(9222, {
       ...codexPortOwner,
@@ -703,7 +704,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
       delay: async () => undefined,
     })
     expect(result).toEqual({ injectedTargets: 1, attempts: 46 })
-    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(0)
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(1)
   })
 
   it('still gives up on a start-up screen that never ends, and says so in the logged reason', async () => {
@@ -719,7 +720,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
       delay: async () => undefined,
     })).rejects.toThrow('界面还停在启动那一屏')
     expect(attempts).toBe(90)
-    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(0)
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(1)
   })
 
   it('keeps the usual bound once the interface is drawn but the switch is never read', async () => {
