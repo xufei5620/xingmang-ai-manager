@@ -109,22 +109,26 @@ export function ToolKeyLimits({
   api,
   balance,
   siteId,
+  username,
   refreshRequest,
 }: {
   api: V2Bridge
   balance: Balance
   siteId: AccountSiteId
+  /** 当前账号的用户名，认星芒新签的「用户名-分组」那几把；缺省 = 只认以前的固定名。 */
+  username?: string
   /** 个人中心页头「刷新」点到密钥页时加一；缺省 = 只在打开时读一次。 */
   refreshRequest?: number
 }) {
   const load = useCallback(
     async () =>
       resolveManagedCliKeyLimits(
-        await loadManagedCliKeys((page, pageSize) => api.getAccountKeys({ page, pageSize }), siteId),
+        await loadManagedCliKeys((page, pageSize) => api.getAccountKeys({ page, pageSize }), siteId, username),
         balance.quotaPerUnit,
         siteId,
+        username,
       ),
-    [api, balance.quotaPerUnit, siteId],
+    [api, balance.quotaPerUnit, siteId, username],
   )
   const resource = useResource(load)
   useRefreshRequest(refreshRequest, () => void resource.reload())

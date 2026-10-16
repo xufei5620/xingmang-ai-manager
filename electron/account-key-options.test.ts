@@ -19,7 +19,7 @@ function fixture() {
   const chat: StoredChatKey[] = []
   const identifyKey = vi.fn(async (): Promise<{ id: number; name: string; group: string } | null> => null)
   const accountService = { getSessionState: () => ({ authenticated: state.authenticated,
-    account: state.authenticated ? { userId: state.userId } : null }), getSessionRevision: () => state.revision,
+    account: state.authenticated ? { userId: state.userId, username: 'tester' } : null }), getSessionRevision: () => state.revision,
     getActiveSiteId: () => state.siteId, identifyKey } as unknown as RelayBackendClient
   const systemService = {
     getConfig: vi.fn(() => ({ workspace: '', providers: Object.fromEntries(providerIds.map((id) => [id,
@@ -51,8 +51,9 @@ describe('current and automatic account key options', () => {
       f.state.siteId = siteId
       const profile = resolveManagedCliKeyProfiles(siteId).codex
       f.managed.push({ id: 3, provider: 'codex', name: profile.keyName, group: profile.group, key: f.state.secret })
+      // xm 站新签的叫「用户名-分组」，历史账号照旧用固定名。
       expect(await resolveAccountKeyOptions(f.options)).toMatchObject({ current: { keyId: 3, group: profile.group },
-        automatic: { name: profile.keyName, group: profile.group } })
+        automatic: { name: siteId === 'solov' ? `tester-${profile.group}` : profile.keyName, group: profile.group } })
       expect(f.managedCliKeys.read).toHaveBeenCalledWith(7)
       expect(f.identifyKey).not.toHaveBeenCalled()
     }

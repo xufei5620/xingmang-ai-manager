@@ -116,6 +116,44 @@ export function resolveManagedCliKeyProfiles(siteId?: string): Record<ProviderId
   return siteId === 'solov-api' ? sub2ApiManagedCliKeyProfiles : managedCliKeyProfiles
 }
 
+// new-api 按 UTF-8 字节数限令牌名 50（rc.44 controller/token.go AddToken 的 len(token.Name) > 50），
+// 用户名最长 20 个字、可以是中文，所以按字节截，不按字数截。
+const accountKeyNameMaxBytes = 50
+
+function utf8Length(text: string): number {
+  let bytes = 0
+  for (const char of text) {
+    const codePoint = char.codePointAt(0) ?? 0
+    bytes += codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4
+  }
+  return bytes
+}
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  let kept = ''
+  let bytes = 0
+  for (const char of text) {
+    bytes += utf8Length(char)
+    if (bytes > maxBytes) break
+    kept += char
+  }
+  return kept
+}
+
+/**
+ * 星芒在 xm 站新签的密钥叫「用户名-分组」，比如 yoyo-Claude-MAX：站长在后台的令牌和日志里一眼看出是谁的、
+ * 哪个分组的（yoyo 10-16）。suffix 接在分组后面，AI 对话签的是 yoyo-GPT-对话，跟同分组命令行工具的分开。
+ * 以前签好的不改名。太长先截用户名，分组尽量留全。用户名或分组是空的返回 null，调用方照旧用原来的名字。
+ * 历史账号那套后端不走这里。
+ */
+export function buildAccountKeyName(username: string, group: string, suffix?: string): string | null {
+  const user = username.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+  if (!user || !group.trim()) return null
+  const tail = `-${group.trim()}${suffix ? `-${suffix}` : ''}`
+  const head = truncateUtf8(user, accountKeyNameMaxBytes - utf8Length(tail))
+  return (head ? `${head}${tail}` : truncateUtf8(`${user}${tail}`, accountKeyNameMaxBytes)).trim()
+}
+
 // 老板拍板(2026-08-10):中转与账号后端统一到 new-api 生产实例
 // xm.solov.cc——CLI 的 AI 请求和注册/登录/Key 签发从此同域。原
 // api.solov.cc 不再出现在任何写入 CLI 的配置里;老用户配置里的旧域会被

@@ -597,6 +597,7 @@ export function AccountUsagePage({
   api,
   balance,
   siteId,
+  username,
   accountScope,
   dashboard: dashboardOn,
   trends,
@@ -609,6 +610,8 @@ export function AccountUsagePage({
   api: V2Bridge
   balance: AccountBalance
   siteId: AccountSiteId
+  /** 当前账号的用户名，「各工具累计用量」靠它认星芒新签的「用户名-分组」那几把。 */
+  username?: string
   accountScope: string
   /** 这个账号有没有用量看板、按天的趋势、调用明细、异步任务。 */
   dashboard: boolean
@@ -669,7 +672,7 @@ export function AccountUsagePage({
           )}
         </section>
       )}
-      {dashboardOn && <ToolUsage api={api} balance={balance} siteId={siteId} refreshRequest={refreshRequest} />}
+      {dashboardOn && <ToolUsage api={api} balance={balance} siteId={siteId} username={username} refreshRequest={refreshRequest} />}
     </>
   )
 }

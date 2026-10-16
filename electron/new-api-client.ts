@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { buildAccountKeyName } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
@@ -817,6 +818,11 @@ export interface NewApiProvisionCliKeyInput {
    * to its replacement: reusing an unlimited sibling would drop them.
    */
   fresh?: boolean
+  /**
+   * AI 对话签的 Key 叫「用户名-分组-对话」，跟同分组命令行工具的「用户名-分组」分开，额度上限互不牵连
+   * （yoyo 10-16 选的）。缺省 = 命令行工具或画图技能的 Key。
+   */
+  purpose?: 'chat'
 }
 
 // The plaintext key is meant to flow straight into a CLI config write (I3
@@ -2568,9 +2574,11 @@ export function findNewestUsableCliKeyByGroup(
 // used-up cap is the user's own later reset and may be reused; an older one
 // is not -- reusing it would fall back past the newest cap (#475). Records
 // without a readable id are counted, so an unreadable listing never lifts a cap.
-export function hasExhaustedCappedCliKey(payload: unknown, name: string, group: string, newerThanId = 0): boolean {
+// names: every name this one key has gone by -- keys issued before the
+// username-group naming still carry the old fixed name, and their caps hold.
+export function hasExhaustedCappedCliKey(payload: unknown, names: readonly string[], group: string, newerThanId = 0): boolean {
   for (const entry of collectionEntries(payload)) {
-    if (!isRecord(entry) || asString(entry.name, '') !== name || asString(entry.group, '') !== group) continue
+    if (!isRecord(entry) || !names.includes(asString(entry.name, '')) || asString(entry.group, '') !== group) continue
     if (entry.unlimited_quota === true) continue
     const id = entry.id
     if (typeof id === 'number' && Number.isInteger(id) && id > 0 && id <= newerThanId) continue
@@ -3764,8 +3772,14 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const provisionCliKey = (input: NewApiProvisionCliKeyInput = {}): Promise<NewApiCliKeyResult> => (
     withSession(async (current) => {
-      const name = (input.name?.trim() || buildCliKeyName()).slice(0, 50)
+      const requested = (input.name?.trim() || buildCliKeyName()).slice(0, 50)
       const group = input.group?.trim()
+      // 新签的叫「用户名-分组」，AI 对话的再接「-对话」。命令行工具传的仍是这把 Key 以前的名字
+      // （ipc.ts 靠它认是哪个工具）：以前签好的都叫它，认额度上限时两个名字一起认。对话传的是随机名，
+      // 它自己那把的上限由 chat-credential-coordinator.ts 认，这里照旧不按名字拦。
+      const chat = input.purpose === 'chat'
+      const name = (group && buildAccountKeyName(current.profile.username, group, chat ? '对话' : undefined)) || requested
+      const names = name === requested || chat ? [requested] : [requested, name]
       if (group) {
         if (group.length > 128) throw new Error('CLI Key 分组格式错误')
         await assertUsableGroup(current, group)
@@ -3773,9 +3787,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         const existing = input.fresh ? null : findNewestUsableCliKeyByGroup(records, group)
         // Only a usable key under this very name, newer than the used-up cap,
         // outranks it. A capped key being created never lifts a cap, so it is
-        // not stopped.
+        // not stopped. A newer username-group key does not count as that reset:
+        // every caller in this group issues keys under that same name.
         if (input.unlimitedQuota !== false
-          && hasExhaustedCappedCliKey(records, name, group, existing?.name === name ? existing.id : 0)) {
+          && hasExhaustedCappedCliKey(records, names, group, existing?.name === requested ? existing.id : 0)) {
           throw new Error(managedKeyQuotaExhaustedMessage)
         }
         if (existing) return revealCliKeyForSession(current, existing)
