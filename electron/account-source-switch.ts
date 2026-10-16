@@ -148,7 +148,7 @@ export async function switchAccountSource(
 
   function failure(prefix: string, rollbackFailure: string | null): Error {
     return new Error(rollbackFailure
-      ? `${prefix}自动恢复也没有完成（${rollbackFailure}），请到「备份」里恢复切换前那一份。`
+      ? `${prefix}自动恢复也没有完成（${rollbackFailure}），请到「设置 › 备份迁移」里恢复切换前那一份。`
       : `${prefix}已恢复到切换前的配置。`)
   }
 

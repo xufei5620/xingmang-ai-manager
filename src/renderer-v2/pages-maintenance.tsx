@@ -9,13 +9,11 @@ import {
   type ReactNode,
 } from 'react'
 import {
-  Archive,
   BookOpen,
   Check,
   Compass,
   Copy,
   Download,
-  ExternalLink,
   FileText,
   FolderOpen,
   HeartPulse,
@@ -37,7 +35,6 @@ import {
   Confirm,
   Dialog,
   Drawer,
-  Input,
   ListRow,
   Menu,
   Notice,
@@ -49,7 +46,6 @@ import {
   Select,
   SettingRow,
   Switch,
-  Table,
   Textarea,
   Toolbar,
   useToast,
@@ -57,7 +53,6 @@ import {
 import {
   displayDate,
   RelativeTime,
-  beginBusinessOperation,
   errorMessage,
   failureWithDetail,
   ListState,
@@ -67,7 +62,6 @@ import {
   useOperation,
   useReloadWhenShown,
   useResource,
-  userFacingErrorMessage,
 } from './business-common'
 import {
   autoUpdateSettingDescription,
@@ -86,21 +80,9 @@ import {
   type SettingsGroupId,
   type SettingsItem,
   type SettingsSectionId,
-  standardAccountUpdateNotice,
-  updateFailureLabel,
-  updateCardTitle,
-  updateDiskShortfallText,
-  updateDownloadDetail,
-  updateInstallActionLabel,
-  updateInstallNote,
-  updateNewVersion,
-  updatesPageLead,
-  withdrawnVersionAdvice,
 } from './registry/business'
-import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import { shortcutTools, tools } from './registry/tools'
 import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
-import { updateDiskCleanupDetail } from './registry/tutorials'
 import { clientConnections } from './registry/clients'
 import { canUninstallTool, externalInstallHint, updatesOutsideApp } from './features/tools/model'
 import { elevatedInstallNotice } from './features/tools/elevation-notice'
@@ -110,6 +92,8 @@ import type { ToolJob } from './features/tools/useToolbox'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring, signedInSiteId } from './account-context'
 import { AppUninstallRow } from './features/app/AppUninstall'
+import { BackupCard } from './features/settings/BackupCard'
+import { VersionCard } from './features/settings/VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from './features/app/RelayRouteSettings'
 import { ThemeCards, type ThemeCardValue } from './features/app/ThemeCards'
 import { connectionRouteOptions, connectionRouteSettings } from './registry/connection-routes'
@@ -123,7 +107,6 @@ import { takeSettingsGroup } from './features/app/settings-group-intent'
 import { firstProblemAnchor, useRowFocus } from './features/app/row-focus'
 import { diagnosticsRevision, publishDiagnosticsCounts, useDiagnosticsRevision } from './features/app/environment-status'
 import { currentWindowOs, type WindowOs } from './features/app/window-os'
-import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from './features/app/diagnostic-fix'
 import { parseImportedConversations } from './features/chat/storage'
 import type { ChatTransfer } from './features/chat/transfer'
@@ -253,7 +236,7 @@ export type BusinessActions = {
   /** 设置页「搬到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
   chatTransfer?: ChatTransfer
   /**
-   * App 手里最新的设置。「启动时检查新版本」「自动更新」在设置页、更新页（更新气泡里也有
+   * App 手里最新的设置。「启动时检查新版本」「自动更新」在设置页、版本更新卡（更新气泡里也有
    * 「自动更新」）各有一个开关，哪边改了另一边要跟着变；缺省 = 只用页面自己读到的那份（旧行为）。
    */
   appSettings?: AppSettings
@@ -261,6 +244,13 @@ export type BusinessActions = {
   updateAvailable?: boolean
   /** 游戏加速开着：设置左栏「网络加速」后面带个绿点。缺省 = 不带。 */
   accelerating?: boolean
+  /**
+   * 设置 › 网络加速最上面那张游戏加速卡，由 App 画：连接挂在 App 上（托盘、到期提醒、Codex 桌面端
+   * 自动连接都连着它）。参数是这张卡此刻在不在眼前，不在时剩余时长不跟着每秒走。缺省 = 没有这张卡。
+   */
+  accelerationCard?: (shown: boolean) => ReactNode
+  /** 设置现在摆着哪一组（搜索时 null）：App 据此判断人是不是就在「版本更新」，不再弹同一件事的更新气泡。 */
+  onSettingsGroupChange?: (group: SettingsGroupId | null) => void
   /**
    * 外壳告诉页面「现在显示的是你」。去过的页面换走时只藏起来、不卸载（App.tsx 的 visitedPages），
    * 再显示时页面自己重读一次（useReloadWhenShown），和点页头那颗按钮一样；缺省 = 不重读（旧行为）。
@@ -279,11 +269,22 @@ function isProvider(id: string): id is ActiveProviderId {
 }
 
 /**
- * 设置里「快捷键」那一行：Ctrl / Command 加几个数字能打开工具，按这台电脑上看得到的个数写
- * （和 App 里快捷键本身读同一张表，registry/tools.ts 的 shortcutTools）。
+ * 快捷键弹窗里的键（v4 字表批09）：按这台电脑只写一种，Mac 写 ⌘，别的写 Ctrl。打开工具那一行
+ * 按这台电脑上看得到的个数写（和 App 里快捷键本身读同一张表，registry/tools.ts 的 shortcutTools）。
  */
 export function launchShortcutMeta(os: WindowOs): string {
-  return `Ctrl / Command + 1–${shortcutTools(os).length}`
+  return `${os === 'mac' ? '⌘' : 'Ctrl'} 1–${shortcutTools(os).length}`
+}
+export function shortcutRows(os: WindowOs): Array<{ keys: string; label: string }> {
+  const mod = os === 'mac' ? '⌘' : 'Ctrl'
+  return [
+    { keys: `${mod} K`, label: '搜索或跳转' },
+    { keys: `${mod} ,`, label: '打开设置' },
+    { keys: launchShortcutMeta(os), label: '打开工具' },
+    { keys: `${mod} + / ${mod} -`, label: '放大 / 缩小界面' },
+    { keys: `${mod} 0`, label: '恢复自动缩放' },
+    { keys: 'Esc', label: '关闭弹窗或菜单' },
+  ]
 }
 
 /**
@@ -326,7 +327,7 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details'], 
   if (code === 'CERTIFICATE_TRUST') return details?.verdict === 'outdatedNode' ? 'maintenance' : null
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
   if (code === 'FOLDER_RELOCATED') return 'feedback'
-  // 加速文件坏了：加速页上有「重新检查」和「联系客服」。
+  // 加速文件坏了：设置里的游戏加速卡上有「重新检查」和「联系客服」。
   if (code === 'ACCELERATION_BUNDLE') return 'acceleration'
   // 网络和代理软件这两项以前跳「设置 → 网络」，那一组里没有能处理它们的东西，
   // 「去检查」又跳回这一页，等于绕一圈（新手引导梳理 9-25 第 2 条），就拿掉了。
@@ -1391,397 +1392,6 @@ export function FeedbackPage({
   )
 }
 
-export function UpdatesPage({
-  api,
-  navigate,
-  appSettings,
-  onSettingsChanged,
-}: { api: V2Bridge } & BusinessActions) {
-  const load = useCallback(() => api.getUpdateState(), [api])
-  const resource = useResource(load)
-  const operation = useOperation()
-  const showToast = useToast().show
-  const [confirm, setConfirm] = useState(false)
-  const [isMac, setIsMac] = useState(false)
-  const [isWindows, setIsWindows] = useState(false)
-  // 星芒这次本身就带着管理员权限在跑（自带 Administrator 之类）：装更新不弹授权窗口，确认框不说会弹（已知19）。
-  const [processElevated, setProcessElevated] = useState(false)
-  const [ownSettings, setOwnSettings] = useState<AppSettings | null>(null)
-  const [settingsReadFailed, setSettingsReadFailed] = useState(false)
-  const [settingsSaving, setSettingsSaving] = useState(false)
-  const [settingsError, setSettingsError] = useState('')
-  const [diskCleanupOpen, setDiskCleanupOpen] = useState(false)
-  useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
-  useEffect(() => {
-    let current = true
-    // 读不到平台就不提示：多说一句对 Windows 客户是噪音，少说一句只是回到原来的样子。
-    void api.getPlatformCapabilities()
-      .then((capability) => {
-        if (!current) return
-        setIsMac(capability.platform === 'macos')
-        setIsWindows(capability.platform === 'windows')
-        setProcessElevated(capability.processElevated === true)
-      })
-      .catch(() => undefined)
-    return () => { current = false }
-  }, [api])
-  useEffect(() => {
-    let current = true
-    // 读不到设置就按关着说：多承诺一句「会自动装」比少说一句更糟。
-    void api.getSettings()
-      .then((settings) => { if (current) setOwnSettings(settings) })
-      .catch(() => { if (current) setSettingsReadFailed(true) })
-    return () => { current = false }
-  }, [api])
-  // App 手里那份最新（设置页、更新气泡里改过也算）；还没有就用这一页自己读到的。
-  const settings = appSettings ?? ownSettings
-  const autoUpdateSetting = settings ? settings.autoUpdate !== false : false
-  // 「启动时检查新版本」「自动更新」直接在这一页改，和设置「版本更新」里那两行是同一份设置。
-  async function saveSetting(patch: Omit<SettingsUpdate, 'version'>) {
-    const finish = beginBusinessOperation('保存设置')
-    setSettingsSaving(true)
-    setSettingsError('')
-    try {
-      const saved = await api.saveSettings({ version: 2, ...patch })
-      setOwnSettings(saved)
-      onSettingsChanged?.(saved)
-      showToast('已保存', 'ok')
-    } catch (error) {
-      setSettingsError(errorMessage(error))
-    } finally {
-      setSettingsSaving(false)
-      finish()
-    }
-  }
-  // 还在读：开关灰着点不了；没读到：写「暂未读到」，不装成关着的样子（同设置页）。
-  function settingSwitch(label: string, checked: boolean | undefined, onChange: (value: boolean) => void, testId: string) {
-    if (checked === undefined && settingsReadFailed) return <Pill tone="neutral">暂未读到</Pill>
-    return (
-      <Switch
-        checked={checked ?? false}
-        disabled={checked === undefined || settingsSaving}
-        aria-label={label}
-        onChange={onChange}
-        testId={testId}
-      />
-    )
-  }
-  const update = resource.data
-  const newVersion = updateNewVersion(update)
-  const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdateSetting)
-  // Linux 的 .deb：装这一步交给系统安装程序，软件只关掉、不会自己重开（updater.ts 的 UpdateInstallMethod）。
-  const systemInstaller = update?.installMethod === 'system-installer'
-  const check = () =>
-    void operation.execute(
-      'check',
-      async () => resource.setData(await api.checkForUpdates()),
-      '',
-    )
-  const download = () =>
-    void operation.execute(
-      'download',
-      async () => resource.setData(await api.downloadUpdate()),
-      '',
-    )
-  // 空间不够时不拦死：估算是估的，他清出了一点、或者就想试一次，由他决定。
-  const downloadAnyway = () =>
-    void operation.execute(
-      'download',
-      async () => resource.setData(await api.downloadUpdate({ ignoreDiskSpace: true })),
-      '',
-    )
-  const diskShortfallText = updateDiskShortfallText(update, autoUpdateOn)
-  const redownload = () =>
-    void operation.execute(
-      'download',
-      async () => resource.setData(await redownloadUpdate(api)),
-      '',
-    )
-  // 失败在哪一步，重试就从哪一步接着走；首页气泡走的是同一套（update-retry.ts）。
-  const failure = updateFailureLabel(update?.failedStep)
-  const releaseNotes = releaseNotesSection(update)
-  const retryFailedStep = () => retryFailedUpdateStep(update?.failedStep, { check, redownload, confirmInstall: () => setConfirm(true) })
-  const manualReinstall = updateNeedsManualReinstall(update)
-  const offerDownloadPage = updateOffersDownloadPage(update)
-  const openDownloadPage = () => void operation.execute('download-page', async () => { await api.openExternal(appReleaseDownloadUrl) }, '')
-  // 首页气泡上点了「重新安装」：跳过来直接弹确认框。
-  useEffect(() => subscribeUpdateInstallConfirm(() => {
-    if (takeUpdateInstallConfirm()) setConfirm(true)
-  }), [])
-  const action =
-    update?.phase === 'available' || update?.phase === 'cancelled' ? (
-      <Button variant="primary" icon={Download} onClick={download}>
-        下载更新
-      </Button>
-    ) : update?.phase === 'downloaded' ? (
-      // 验签没通过时「重启安装」和失败卡里去掉的「重新安装」是同一条死路，下一步只在失败卡的「打开下载页」。
-      manualReinstall ? null : (
-        <Button
-          variant="primary"
-          icon={RefreshCw}
-          onClick={() => setConfirm(true)}
-        >
-          {updateInstallActionLabel(update.installMethod)}
-        </Button>
-      )
-    ) : (
-      <Button
-        variant="primary"
-        icon={RefreshCw}
-        loading={
-          update?.phase === 'checking' ||
-          update?.phase === 'downloading' ||
-          Boolean(operation.busy)
-        }
-        disabled={update?.phase === 'disabled'}
-        onClick={check}
-      >
-        {update?.phase === 'error' ? '重新检查' : '检查更新'}
-      </Button>
-    )
-  return (
-    <section
-      className="v2-page"
-      data-page-id="updates"
-      data-testid="page-updates"
-    >
-      <PageHead title="更新" lead={updatesPageLead(autoUpdateOn, update?.installMethod, update?.installNeedsAdminPassword)} />
-      <ResultNotice
-        error={resource.error || settingsError || operation.error}
-        detail={resource.error ? resource.detail : settingsError ? undefined : operation.detail}
-        message={operation.message}
-      />
-      <div className="v2-business-update-grid">
-        <Card
-          title={update ? updateCardTitle(update) : resource.error ? '更新状态暂未读到' : '正在读取更新状态…'}
-          actions={action}
-        >
-          <ListRow
-            title="当前版本"
-            meta={<span className="v2-update-version">{update?.currentVersion ?? '暂未读到'}</span>}
-            testId="updates-current-version"
-          />
-          {newVersion && (
-            <ListRow
-              title="新版本"
-              meta={<span className="v2-update-version">{newVersion}</span>}
-              testId="updates-new-version"
-            />
-          )}
-          <ListRow title="上次检查" meta={<RelativeTime value={update?.checkedAt} />} />
-          {update?.currentVersionWithdrawn && (
-            <Notice
-              tone="warn"
-              title="这个版本有已知问题"
-              body={withdrawnVersionAdvice(update)}
-              testId="updates-current-withdrawn"
-            />
-          )}
-          {/* 账号不是管理员的 Windows 电脑：下好的新版本不自动装，就在「重启安装」旁边说清要谁来点。 */}
-          {update?.phase === 'downloaded' && update.installNeedsAdminPassword && (
-            <Notice
-              tone="warn"
-              title={standardAccountUpdateNotice.title}
-              body={standardAccountUpdateNotice.body}
-              testId="updates-admin-password"
-            />
-          )}
-          {update?.unsignedChannel && !update.autoUpdateSupported && (
-            <ListRow
-              title="更新方式"
-              meta="每次下载和安装新版本前都会先问你"
-              testId="updates-channel-unsigned"
-            />
-          )}
-          <ListRow
-            title={settingsItemLabel('update-check')}
-            desc="发现新版本会提醒你"
-            actions={settingSwitch(
-              '启动时检查新版本',
-              settings?.checkUpdatesOnStartup,
-              (checkUpdatesOnStartup) => void saveSetting({ checkUpdatesOnStartup }),
-              'updates-check-on-startup',
-            )}
-          />
-          {update?.autoUpdateSupported && (
-            <ListRow
-              title={settingsItemLabel('auto-update')}
-              desc={autoUpdateSettingDescription(update.installMethod, update.installNeedsAdminPassword)}
-              actions={settingSwitch(
-                '自动更新',
-                settings ? autoUpdateSetting : undefined,
-                (autoUpdate) => void saveSetting({ autoUpdate }),
-                'updates-auto-update',
-              )}
-            />
-          )}
-          {update?.progress && (
-            <Progress
-              value={update.progress.percent}
-              label={`${update.progress.percent.toFixed(0)}%`}
-            />
-          )}
-          {update?.progress && (
-            <p className="v2-update-progress-detail" data-testid="updates-progress-detail">
-              {updateDownloadDetail(update.progress)}
-            </p>
-          )}
-          {diskShortfallText && (
-            <Notice
-              tone="warn"
-              title="磁盘空间不够，新版本先不下载"
-              body={
-                <>
-                  <p>{diskShortfallText}</p>
-                  {diskCleanupOpen && (
-                    <p data-testid="updates-disk-cleanup">{updateDiskCleanupDetail}</p>
-                  )}
-                </>
-              }
-              testId="updates-disk-shortfall"
-              actions={
-                <>
-                  <Button
-                    size="sm"
-                    icon={BookOpen}
-                    onClick={() => setDiskCleanupOpen((open) => !open)}
-                  >
-                    {diskCleanupOpen ? '收起' : '怎么清理'}
-                  </Button>
-                  <Button
-                    size="sm"
-                    icon={Download}
-                    loading={operation.busy === 'download'}
-                    onClick={downloadAnyway}
-                  >
-                    仍要下载
-                  </Button>
-                </>
-              }
-            />
-          )}
-          {update?.error && (
-            <Notice
-              tone="warn"
-              title={failure.title}
-              body={userFacingErrorMessage(update.error)}
-              testId={`updates-failure-${update.failedStep ?? 'unknown'}`}
-              actions={
-                <>
-                  {!manualReinstall && (
-                    <Button
-                      size="sm"
-                      icon={!update.failedStep || update.failedStep === 'download' ? Download : RefreshCw}
-                      onClick={retryFailedStep}
-                    >
-                      {failure.retry}
-                    </Button>
-                  )}
-                  {offerDownloadPage && (
-                    <Button size="sm" icon={ExternalLink} onClick={openDownloadPage}>
-                      打开下载页
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    icon={FileText}
-                    onClick={() => navigate?.('feedback')}
-                  >
-                    查看日志
-                  </Button>
-                </>
-              }
-            />
-          )}
-          {update?.installMethod === 'manual' && (
-            <Notice
-              tone="warn"
-              title="这台电脑上没法自动更新"
-              body="星芒在这台电脑上不是用安装包装的，没法自己更新。到下载页下载新版本的安装包，装好后打开就行。"
-              testId="updates-manual-install"
-              actions={
-                <Button
-                  size="sm"
-                  icon={ExternalLink}
-                  onClick={openDownloadPage}
-                >
-                  打开下载页
-                </Button>
-              }
-            />
-          )}
-          {update?.development && <p>当前是开发运行环境。</p>}
-        </Card>
-        <Card title={releaseNotes.title}>
-          {releaseNotes.items ? (
-            <ul
-              className="v2-business-release-notes v2-business-release-notes-list"
-              data-testid="updates-installed-notes"
-            >
-              {releaseNotes.items.map((item, index) => (
-                <li key={index}>{item}</li>
-              ))}
-            </ul>
-          ) : (
-            <div className="v2-business-release-notes">{releaseNotes.text}</div>
-          )}
-          <div className="v2-update-install-note" data-testid="updates-install-note">
-            <h3>安装前需要知道</h3>
-            <p>{updateInstallNote}</p>
-          </div>
-        </Card>
-      </div>
-      <Dialog
-        open={confirm}
-        title={systemInstaller ? '安装新版本？' : '重启并安装更新？'}
-        onClose={() => setConfirm(false)}
-        footer={
-          <>
-            <Button onClick={() => setConfirm(false)}>稍后安装</Button>
-            <Button
-              variant="primary"
-              icon={RefreshCw}
-              loading={operation.busy === 'install'}
-              onClick={() =>
-                void operation.execute(
-                  'install',
-                  async () => {
-                    // 有工具在装或排着队时主进程先问一句再重启（已知31）。
-                    const result = await api.installUpdate({ askIfInstalling: true })
-                    setConfirm(false)
-                    return result
-                  },
-                  // 还有工具在装、客户在问的那一句里点了「继续安装」：这次不装，回到原来的样子（已知31）。
-                  (result) => (result.postponed ? null : '安装请求已提交'),
-                )
-              }
-            >
-              {systemInstaller ? '关掉并安装' : '确认重启安装'}
-            </Button>
-          </>
-        }
-      >
-        {systemInstaller
-          ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
-          : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
-        {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
-        {isWindows && !processElevated && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
-        <ResultNotice error={operation.error} detail={operation.detail} />
-      </Dialog>
-    </section>
-  )
-}
-
-// 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
-// macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
-// 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
-export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
-// 账号不在管理员组时那个窗口要的是管理员密码，只点「是」过不去。
-export const windowsAdminPasswordUpdateHint = 'Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。'
-// Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
-export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
-export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
-
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string | null {
   if (result === 'declined') return null
   if (result === 'cancelled') return '安装已取消'
@@ -2560,7 +2170,15 @@ export function SettingsPage({
   appSettings,
   updateAvailable,
   accelerating,
-}: { api: V2Bridge } & BusinessActions) {
+  active,
+  accelerationCard,
+  onSettingsGroupChange,
+  onBackupRestored,
+  installedProviders,
+}: { api: V2Bridge } & BusinessActions & Pick<Parameters<typeof BackupCard>[0], 'installedProviders'> & {
+  /** 备份卡恢复成功后回调，用来让首页重读配置。 */
+  onBackupRestored?: Parameters<typeof BackupCard>[0]['onRestored']
+}) {
   const load = useCallback(async () => {
     const [settings, capabilities, update] = await Promise.all([
       api.getSettings(),
@@ -2581,7 +2199,7 @@ export function SettingsPage({
       return { ...previous, settings: persisted === undefined ? rest : { ...rest, uiScale: persisted } }
     })
   }, [uiScale, setResourceData])
-  // 「更新」页和更新气泡里也能改这两项，改完 App 拿到的是最新的；这一页开着时跟着变。
+  // 更新气泡里也能改「自动下载更新」，改完 App 拿到的是最新的；这一页开着时跟着变。
   const checkUpdatesOnStartup = appSettings?.checkUpdatesOnStartup
   const autoUpdate = appSettings?.autoUpdate
   useEffect(() => {
@@ -2591,6 +2209,11 @@ export function SettingsPage({
       return { ...previous, settings: { ...previous.settings, checkUpdatesOnStartup, autoUpdate } }
     })
   }, [checkUpdatesOnStartup, autoUpdate, setResourceData])
+  // 「要输入管理员密码才能装」这句现在只在「自动下载更新」那一行说（原来更新页顶上那段跟着推送变），
+  // 这一页开着时也跟着主进程推来的更新状态走，别停在打开时读到的那一份。
+  useEffect(() => api.onUpdateState((update) => {
+    setResourceData((previous) => (previous ? { ...previous, update } : previous))
+  }), [api, setResourceData])
   const operation = useOperation()
   const showToast = useToast().show
   const systemApi = platformApi()
@@ -2844,7 +2467,7 @@ export function SettingsPage({
     id: string,
     description: ReactNode,
     control: ReactNode,
-    extra?: { badge?: ReactNode; wide?: boolean },
+    extra?: { badge?: ReactNode; wide?: boolean; testId?: string },
   ) => (
     <SettingRow
       key={id}
@@ -2854,6 +2477,7 @@ export function SettingsPage({
       control={control}
       badge={extra?.badge}
       wide={extra?.wide}
+      testId={extra?.testId}
     />
   )
   // 要先读一次系统状态的那几项：读的那一下照常画开关、灰着点不了，不写字；没读到写
@@ -2871,7 +2495,6 @@ export function SettingsPage({
         onChange={() => undefined}
       />
     )
-  const currentVersion = resource.data?.update?.currentVersion
   const relaunch = () =>
     void operation.execute(
       'relaunch',
@@ -2904,7 +2527,32 @@ export function SettingsPage({
       (saved) => (saved ? '已恢复默认外观' : null),
     )
   // 每一行按 settingsItems 的 id 放在这里，分组页和页内搜索取的是同一份；这台电脑没有的行不放。
-  const views: Partial<Record<string, ReactNode>> = {}
+  // 三张卡（批09，原来是三个独立页面）各读各的，不等设置读回来：设置读不到时更新、备份、加速照样有地方点，
+  // 托盘、通知、错误框跳过来也不会落空。
+  const views: Partial<Record<string, ReactNode>> = {
+    // 原来的游戏加速页；没有加速的电脑（Linux）没有这张卡。
+    acceleration: accelerationAvailable && accelerationCard ? accelerationCard(active !== false) : undefined,
+    // 原来的备份页：切到这一组时新挂上、读一次；设置页从别的页回来时再读一次。
+    backups: (
+      <BackupCard
+        key="backups"
+        api={api}
+        active={active}
+        navigate={navigate}
+        onRestored={onBackupRestored}
+        installedProviders={installedProviders}
+      />
+    ),
+    // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
+    version: (
+      <VersionCard
+        key="version"
+        api={api}
+        navigate={navigate}
+        autoUpdate={(settings ?? appSettings)?.autoUpdate !== false}
+      />
+    ),
+  }
   if (settings) {
     const themeOptions: Array<{ value: ThemeCardValue; disabled?: boolean }> = [
       { value: 'light' },
@@ -3337,42 +2985,38 @@ export function SettingsPage({
             ),
           ]),
       ),
-      backups: row(
-        'backups',
-        '恢复前会保留当前配置快照',
+      // 没登录时聊天记录带不走（按账号分开存），标题只说「导出设置」。
+      transfer: (
+        <SettingRow
+          key="transfer"
+          anchor="transfer"
+          title={chatTransfer ? settingsItemLabel('transfer') : '导出设置'}
+          description={chatTransfer ? '文件里没有密码和密钥，在新电脑上登录一下就行' : '登录后再导出，会连聊天记录一起带上'}
+          control={
+            <Button
+              size="sm"
+              icon={Download}
+              disabled={Boolean(operation.busy)}
+              onClick={startExport}
+              testId="settings-transfer-export"
+            >
+              导出
+            </Button>
+          }
+        />
+      ),
+      'transfer-import': row(
+        'transfer-import',
+        null,
         <Button
           size="sm"
-          icon={Archive}
-          onClick={() => navigate?.('backups')}
+          icon={FolderOpen}
+          disabled={Boolean(operation.busy)}
+          onClick={startImport}
+          testId="settings-transfer-import"
         >
-          查看备份
+          导入
         </Button>,
-      ),
-      transfer: row(
-        'transfer',
-        chatTransfer
-          ? '把软件里的聊天记录和设置存成一个文件，在新电脑上导入。文件里没有密码和 Key，新电脑上登录一下就行'
-          : '把软件里的设置存成一个文件，在新电脑上导入。登录后再导出，会连当前账号的聊天记录一起带上',
-        <>
-          <Button
-            size="sm"
-            icon={Download}
-            disabled={Boolean(operation.busy)}
-            onClick={startExport}
-            testId="settings-transfer-export"
-          >
-            导出
-          </Button>
-          <Button
-            size="sm"
-            icon={FolderOpen}
-            disabled={Boolean(operation.busy)}
-            onClick={startImport}
-            testId="settings-transfer-import"
-          >
-            导入
-          </Button>
-        </>,
       ),
       'crash-reporting': row(
         'crash-reporting',
@@ -3467,22 +3111,9 @@ export function SettingsPage({
           </Button>
         </>,
       ),
-      version: row(
-        'version',
-        currentVersion
-          ? `v${currentVersion}。点右边看这一版改了什么、检查有没有新版本`
-          : '版本暂未读到',
-        <Button
-          size="sm"
-          icon={RefreshCw}
-          onClick={() => navigate?.('updates')}
-        >
-          查看更新
-        </Button>,
-      ),
       'update-check': row(
         'update-check',
-        '发现新版本会提醒你',
+        null,
         <Switch
           checked={settings.checkUpdatesOnStartup}
           aria-label="启动时检查新版本"
@@ -3490,6 +3121,7 @@ export function SettingsPage({
             void update({ checkUpdatesOnStartup })
           }
         />,
+        { testId: 'updates-check-on-startup' },
       ),
       'auto-update': resource.data?.update?.autoUpdateSupported
         ? row(
@@ -3498,20 +3130,21 @@ export function SettingsPage({
             <Switch
               testId="settings-auto-update"
               checked={settings.autoUpdate !== false}
-              aria-label="自动更新"
+              aria-label="自动下载更新"
               onChange={(autoUpdate) => void update({ autoUpdate })}
             />,
+            { testId: 'updates-auto-update' },
           )
         : undefined,
       shortcuts: row(
         'shortcuts',
-        '查看当前系统使用的快捷键',
+        null,
         <Button
           size="sm"
           icon={BookOpen}
           onClick={() => setShortcuts(true)}
         >
-          查看快捷键
+          查看
         </Button>,
       ),
       guide: (
@@ -3527,13 +3160,18 @@ export function SettingsPage({
           api={api}
           isMac={isMac}
           isLinux={isLinux}
-          openMaintenance={() => navigate?.('maintenance')}
         />
       ),
     })
   }
   const shown = (item: SettingsItem) => views[item.id] !== undefined
   const searching = search.trim().length > 0
+  // App 要知道人是不是就在「版本更新」：在的话更新气泡不再说版本卡上写着的同一件事。
+  useEffect(() => { onSettingsGroupChange?.(searching ? null : group) }, [group, searching, onSettingsGroupChange])
+  // 整张卡的那几项（游戏加速、工具配置备份、版本卡）单独摆，外面包一层带 data-anchor 的，顶部搜索翻得过去。
+  const cardSlot = (item: SettingsItem) => (
+    <div key={item.id} className="v2-settings-card-slot" data-anchor={item.id}>{views[item.id]}</div>
+  )
   const hits = settings && searching ? searchSettingsItems(search).filter(shown) : []
   // 小标题右边的那句、卡片上面的那条：桌面通知关着时提醒项都不会响；线路存好了要重开才用上。
   const sectionNotes: Partial<Record<SettingsSectionId, ReactNode>> = {
@@ -3563,35 +3201,57 @@ export function SettingsPage({
     // 搜出来的行就地能改，小标题那一句和卡片上面那条也得跟着：线路改完要在这儿就能「现在重开」，
     // 桌面通知关着时提醒项为什么是灰的也要说。同一个小标题下搜出好几行时只在第一行上面放一次。
     const shownSections = new Set<SettingsSectionId>()
+    const groupLink = (item: SettingsItem) => (
+      <button type="button" className="v2-link-button" onClick={() => openGroup(item.group)}>
+        {settingsGroups.find((entry) => entry.value === item.group)?.label}
+      </button>
+    )
+    const hit = (item: SettingsItem) => {
+      const section = item.section && !shownSections.has(item.section) ? item.section : undefined
+      if (section) shownSections.add(section)
+      const note = section ? sectionNotes[section] : undefined
+      const lead = section ? sectionLeads[section] : undefined
+      return (
+        <Fragment key={item.id}>
+          <div className="v2-settings-hit">
+            {groupLink(item)}
+            {note && <span>{note}</span>}
+          </div>
+          {lead && <div className="v2-settings-hit-lead">{lead}</div>}
+          {views[item.id]}
+        </Fragment>
+      )
+    }
+    // 挨着的几行照旧装进同一张卡；整张卡的那一项自己摆，组名写在卡上面。
+    const segments: SettingsItem[][] = []
+    for (const item of hits) {
+      const last = segments[segments.length - 1]
+      if (last && !item.card && !last[0].card) last.push(item)
+      else segments.push([item])
+    }
     content = hits.length ? (
-      <Card padding="none" testId="settings-search-results">
-        {hits.map((item) => {
-          const section = item.section && !shownSections.has(item.section) ? item.section : undefined
-          if (section) shownSections.add(section)
-          const note = section ? sectionNotes[section] : undefined
-          const lead = section ? sectionLeads[section] : undefined
-          return (
-            <Fragment key={item.id}>
-              <div className="v2-settings-hit">
-                <button type="button" className="v2-link-button" onClick={() => openGroup(item.group)}>
-                  {settingsGroups.find((entry) => entry.value === item.group)?.label}
-                </button>
-                {note && <span>{note}</span>}
-              </div>
-              {lead && <div className="v2-settings-hit-lead">{lead}</div>}
-              {views[item.id]}
-            </Fragment>
-          )
-        })}
-      </Card>
+      <div className="v2-settings-results" data-testid="settings-search-results">
+        {segments.map((segment) =>
+          segment[0].card ? (
+            <section key={segment[0].id} className="v2-settings-block">
+              <div className="v2-settings-section">{groupLink(segment[0])}</div>
+              {cardSlot(segment[0])}
+            </section>
+          ) : (
+            <Card key={segment[0].id} padding="none">{segment.map(hit)}</Card>
+          ),
+        )}
+      </div>
     ) : (
       <div className="v2-settings-empty" data-testid="settings-search-empty">
         <h3>没有找到相关设置</h3>
         <p>换个说法试试，比如「托盘」「镜像」「快捷键」。</p>
       </div>
     )
-  } else if (settings) {
-    content = buildSettingsBlocks(group, settingsItems.filter(shown)).map((block, index) => (
+  } else if (settings || resource.error) {
+    // 设置没读到时只摆这一组里的那张卡（如果有），上面照旧写「设置暂时没有读到」、给「重新读取」。
+    const blocks = buildSettingsBlocks(group, settingsItems.filter((item) => shown(item) && (Boolean(settings) || item.card === true)))
+    const groupContent = blocks.map((block, index) => (
       <section key={block.section?.value ?? `rows-${index}`} className="v2-settings-block">
         {block.section && (
           <div
@@ -3603,9 +3263,10 @@ export function SettingsPage({
           </div>
         )}
         {block.section && sectionLeads[block.section.value]}
-        <Card padding="none">{block.items.map((item) => views[item.id])}</Card>
+        {block.items[0].card ? cardSlot(block.items[0]) : <Card padding="none">{block.items.map((item) => views[item.id])}</Card>}
       </section>
     ))
+    content = settings ? groupContent : <>{content}{groupContent}</>
   }
   // 读不到的是设置本身或系统状态时，红条右边给「重新读取」；保存失败不给，那是另一回事。
   const readFailed = Boolean(resource.error) || (!saveError && Boolean(systemError))
@@ -3749,13 +3410,12 @@ export function SettingsPage({
         open={shortcuts}
         title="快捷键"
         onClose={() => setShortcuts(false)}
+        testId="settings-shortcuts-dialog"
+        footer={<Button variant="primary" onClick={() => setShortcuts(false)}>知道了</Button>}
       >
-        <ListRow title="命令面板" meta="Ctrl / Command + K" />
-        <ListRow title="设置" meta="Ctrl / Command + ," />
-        <ListRow title="打开工具" meta={launchShortcutMeta(currentWindowOs())} />
-        <ListRow title="放大 / 缩小界面" meta="Ctrl / Command + 加号 / 减号" />
-        <ListRow title="界面缩放恢复为自动" meta="Ctrl / Command + 0" />
-        <ListRow title="关闭最上层弹窗" meta="Esc" />
+        {shortcutRows(currentWindowOs()).map((entry) => (
+          <ListRow key={entry.label} title={entry.label} meta={<kbd className="v2-shortcut-keys">{entry.keys}</kbd>} />
+        ))}
       </Dialog>
     </section>
   )

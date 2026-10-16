@@ -1795,31 +1795,49 @@ test('a featured entry that needs a folder asks for it in the same dialog before
   }
 })
 
+// 备份行的标题就是列表上写的那个时间（今天 09:12 / 9月7日 09:00…），后面跟着原因和 Key 两颗小标签。
+function backupRowTime(row) {
+  return row.locator('.xm-row-title').evaluate((title) => title.firstChild.textContent)
+}
+
 test('backup restore requires preview and confirmation before touching files', async () => {
+  // 原来的备份页并进了设置（v4 批09）：page=backups 和托盘、错误框里的「去备份」一样，落在「备份迁移」那一组。
   const page = await fixture('page=backups')
   try {
-    await page.getByRole('button', { name: '预览', exact: true }).click()
-    await page
-      .getByRole('dialog')
-      .getByText('config.toml', { exact: true })
-      .waitFor()
-    await page
+    const row = page.getByTestId('backups-row-backup-1')
+    await row.waitFor()
+    assert.equal(await page.getByRole('tab', { name: '备份迁移', exact: true }).getAttribute('aria-selected'), 'true')
+    const shown = await backupRowTime(row)
+    await row.getByRole('button', { name: '预览', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: '备份内容', exact: true })
+    await preview.getByText('config.toml', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('backup-preview-drawer').count(), 1)
+    await preview.getByText('已校验，文件完整', { exact: true }).waitFor()
+    await preview.getByText('恢复前会先把当前配置另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
+    await preview.getByText('备份在本机，可能含凭据，请妥善保管。', { exact: true }).waitFor()
+    await preview
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
+    // 预览里点「恢复这份配置」只是打开确认，还没动任何文件。
+    const confirm = page.getByRole('dialog', { name: `恢复到 ${shown} 的配置？`, exact: true })
+    await confirm.getByText('当前配置会先另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
     assert.equal(
       (await calls(page)).filter((call) => call.name === 'restore-backup')
         .length,
       0,
     )
-    await page
-      .getByRole('button', { name: '备份当前配置并恢复', exact: true })
-      .click()
-    await waitForToast(page, '配置已恢复，恢复前备份已保留')
+    await confirm.getByTestId('backups-restore-confirm').click()
+    await waitForToast(page, `已恢复到 ${shown} 的配置，原来的配置已另存`)
     assert.equal(
       (await calls(page)).find((call) => call.name === 'restore-backup').args,
       'backup-1',
     )
-    // 恢复完当场测一次连接，结论留在备份页上。
+    // 恢复成功要让首页重读这个工具的配置。
+    assert.equal(
+      (await calls(page)).find((call) => call.name === 'backup-restored').args,
+      'codex',
+    )
+    // 恢复完当场测一次连接，结论留在备份卡上。
     await page
       .getByTestId('backups-restore-check')
       .getByText('连接正常，gpt-6-astra 可以直接使用')
@@ -1833,45 +1851,42 @@ test('backup restore requires preview and confirmation before touching files', a
   }
 })
 
-// 第 45～47 条：空着时说清备份从哪来；按工具筛选时空状态点名那个工具，「创建第一份备份」和右边的下拉都跟着筛选走。
+// 第 45～47 条：空着时说清备份从哪来；按工具筛选时空状态点名那个工具。v4 批09 起「立即备份」是卡头的菜单，
+// 点哪个工具就只备份哪个，不再跟着上面的筛选走。
 test('an empty backup list says where backups come from and backs up the tool picked above', async () => {
   const page = await fixture('page=backups&empty')
   try {
+    const card = page.getByTestId('page-backups')
     const state = page.getByTestId('backups-empty')
     await state.getByText('还没有备份', { exact: true }).waitFor()
-    await state.getByText('改工具配置前会自动留一份。想现在就留一份，点下面的按钮。', { exact: true }).waitFor()
-    const picker = page.getByRole('combobox', { name: '选择备份工具', exact: true })
-    assert.equal(await picker.inputValue(), 'claude')
-    await page.getByRole('button', { name: 'Grok CLI', exact: true }).click()
+    await state.getByText('点「立即备份」存一份当前的工具配置。', { exact: true }).waitFor()
+    await card.getByRole('button', { name: 'Grok CLI', exact: true }).click()
     await state.getByText('Grok CLI 还没有备份', { exact: true }).waitFor()
-    assert.equal(await picker.inputValue(), 'grok')
-    await state.getByRole('button', { name: '创建第一份备份', exact: true }).click()
-    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'createBackup'))
-    assert.deepEqual((await calls(page)).filter((call) => call.name === 'createBackup').map((call) => call.args), [['grok']])
-    // 选回「全部工具」：右边的下拉不动。
-    await page.getByRole('button', { name: '全部工具', exact: true }).click()
+    await page.getByTestId('backups-create').click()
+    await page.getByRole('menu', { name: '立即备份', exact: true }).waitFor()
+    await page.getByTestId('backups-create-grok').click()
+    await waitForToast(page, '备份完成')
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'create-backup').map((call) => call.args), ['grok'])
+    // 选回「全部工具」：空状态不再点名哪个工具。
+    await card.getByRole('button', { name: '全部工具', exact: true }).click()
     await state.getByText('还没有备份', { exact: true }).waitFor()
-    assert.equal(await picker.inputValue(), 'grok')
-    await page.getByText('备份在本机，可能含凭据，请妥善保管。', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
 })
 
-test('backups are searched by the date the list shows, not by an id nobody sees', async () => {
+// 搜索框去掉了（v4 批09）；认备份靠的仍是列表上写的时间和工具名，不是谁也看不到的 id。
+test('backup rows are named by the time they were taken and the tool, never by an id nobody sees', async () => {
   const page = await fixture('page=backups')
   try {
     const row = page.getByTestId('backups-row-backup-1')
-    const shown = await row.locator('time').innerText()
-    // 图标单独一格，标题只有工具名。
-    await row.locator('.xm-row-icon').waitFor()
-    assert.equal(await row.locator('.xm-row-title').innerText().then((text) => text.startsWith('Codex CLI')), true)
-    const search = page.getByTestId('backups-search')
-    assert.equal(await search.getAttribute('placeholder'), '搜索日期')
-    await search.fill(shown)
     await row.waitFor()
-    await search.fill('backup-1')
-    await page.getByTestId('backups-filter-empty').getByText('没有找到「backup-1」', { exact: true }).waitFor()
+    // 图标单独一格，标题只有时间。
+    await row.locator('.xm-row-icon').waitFor()
+    assert.match(await backupRowTime(row), /^(今天|昨天|(\d{4}年)?\d{1,2}月\d{1,2}日) \d{2}:\d{2}$/)
+    await row.locator('.xm-row-desc').getByText(/^Codex CLI 配置，0\.1 KB$/).waitFor()
+    assert.equal(await page.getByTestId('page-backups').getByText('backup-1').count(), 0)
+    assert.equal(await page.getByTestId('backups-search').count(), 0)
   } finally {
     await page.close()
   }
@@ -2088,29 +2103,38 @@ test('row overflow menus are named after the row they act on', async () => {
   } finally {
     await keys.close()
   }
+  // 备份行的「…」菜单换成了一颗垃圾桶（v4 批09）：只有图标的按钮照样要有名字，点开的确认点名是哪一份。
   const backups = await fixture('page=backups')
   try {
-    await backups
-      .getByRole('button', { name: /的备份更多操作$/ })
-      .first()
-      .waitFor()
+    const row = backups.getByTestId('backups-row-backup-1')
+    await row.waitFor()
+    const shown = await backupRowTime(row)
+    await row.getByRole('button', { name: '删除这份备份', exact: true }).click()
+    const confirm = backups.getByRole('dialog', { name: `删除 ${shown} 的备份？`, exact: true })
+    await confirm.getByText('删除后就不能用它恢复配置了。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '取消', exact: true }).click()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.equal((await calls(backups)).some((call) => call.name === 'deleteBackup'), false)
   } finally {
     await backups.close()
   }
 })
 
 test('available update displays download action and failed download remains reviewable', async () => {
+  // 原来的更新页并进了设置（v4 批09）：page=updates 和托盘、更新气泡的「查看更新」一样，落在「版本更新」那一组。
   const page = await fixture('page=updates')
   try {
-    await page.getByRole('button', { name: '下载更新', exact: true }).click()
-    await page.getByText('测试下载失败').waitFor()
+    const card = page.getByTestId('page-updates')
+    await card.getByRole('button', { name: '下载更新', exact: true }).click()
+    await card.getByText('测试下载失败').waitFor()
+    assert.equal(await page.getByRole('tab', { name: '版本更新', exact: true }).getAttribute('aria-selected'), 'true')
     assert.equal(
       (await calls(page)).filter((call) => call.name === 'download-update')
         .length,
       1,
     )
     assert.equal(
-      await page.getByRole('button', { name: '重启安装', exact: true }).count(),
+      await page.getByRole('button', { name: '重启并安装', exact: true }).count(),
       0,
     )
   } finally {
@@ -2118,33 +2142,47 @@ test('available update displays download action and failed download remains revi
   }
 })
 
-// 第 52～54 条：版本号和别的行对齐、用正文的字；有新版本时多一行「新版本」；读不到时标题照实说；
-//「安装前需要知道」不折叠。
-test('the updates page lines up the versions, names the new one and shows what to know before installing', async () => {
+// 第 52～54 条：版本卡写清当前版本、点名新版本；版本号和卡上别的说明一样用正文字体，不另起一种字；
+// 读不到时照实说。「安装前需要知道」那句挪进了「重启并安装」的确认框，照样摊开不折叠。
+test('the version card names the current and the new version and shows what to know before installing', async () => {
   const page = await fixture('page=updates')
   try {
     const current = page.getByTestId('updates-current-version')
-    await current.getByText('0.1.31', { exact: true }).waitFor()
-    assert.equal(await current.locator('.xm-row-icon').count(), 0)
+    await current.getByText('当前版本 v0.1.31', { exact: true }).waitFor()
     const next = page.getByTestId('updates-new-version')
-    await next.getByText('新版本', { exact: true }).waitFor()
-    await next.getByText('0.1.32', { exact: true }).waitFor()
-    const titleLeft = (row) => row.locator('.xm-row-title').evaluate((element) => Math.round(element.getBoundingClientRect().left))
-    const checked = page.locator('.xm-list-row').filter({ hasText: '上次检查' })
-    assert.equal(await titleLeft(current), await titleLeft(checked))
-    const size = await current.locator('.v2-update-version').evaluate((element) => getComputedStyle(element).fontSize)
-    assert.equal(size, '14px')
-    const note = page.getByTestId('updates-install-note')
-    assert.equal(await note.isVisible(), true)
-    await note.getByText('安装前需要知道', { exact: true }).waitFor()
-    await note.getByText(/^装之前先保存工具里没做完的东西。/).waitFor()
+    await next.getByText('有新版本 v0.1.32', { exact: true }).waitFor()
+    const typeface = (locator) => locator.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { fontSize: style.fontSize, fontFamily: style.fontFamily }
+    })
+    const checked = page.getByTestId('page-updates').getByText(/检查过$/)
+    assert.deepEqual(await typeface(current), await typeface(checked))
+    assert.equal(
+      (await typeface(current)).fontFamily,
+      await page.evaluate(() => getComputedStyle(document.body).fontFamily),
+    )
     assert.equal(await page.locator('details').count(), 0)
   } finally {
     await page.close()
   }
-  const failed = await fixture('page=updates&fail=load')
+  const downloaded = await fixture('page=updates&updateDownloaded')
   try {
-    await failed.getByText('更新状态暂未读到', { exact: true }).waitFor()
+    await downloaded.getByTestId('page-updates').getByText('已下载，重启后生效', { exact: true }).waitFor()
+    await downloaded.getByRole('button', { name: '重启并安装', exact: true }).click()
+    const note = downloaded
+      .getByRole('dialog', { name: '重启并安装更新？', exact: true })
+      .getByTestId('updates-install-note')
+    await note.waitFor()
+    assert.equal(await note.isVisible(), true)
+    assert.match(await note.innerText(), /^装之前先保存工具里没做完的东西。/)
+    assert.equal(await downloaded.locator('details').count(), 0)
+  } finally {
+    await downloaded.close()
+  }
+  // 只有更新状态读不到：设置页照常打开，版本卡说没读到，不一直挂着「正在读取」。
+  const failed = await fixture('page=updates&fail=update')
+  try {
+    await failed.getByTestId('updates-current-version').getByText('版本暂未读到', { exact: true }).waitFor()
     assert.equal(await failed.getByText('正在读取更新状态…', { exact: true }).count(), 0)
     assert.equal(await failed.getByTestId('updates-new-version').count(), 0)
   } finally {
@@ -2152,12 +2190,36 @@ test('the updates page lines up the versions, names the new one and shows what t
   }
 })
 
-// 「更新」页也能直接开关启动检查和自动更新，不用再绕去设置。
-test('the updates page switches the startup check and automatic updates in place', async () => {
+// 版本卡、备份卡原来是独立的页面，设置读不到也照样能用；并进设置以后不能跟着设置一起没了，
+// 不然托盘、更新气泡、错误框跳过来只看到一句「设置暂时没有读到」，更新装不上、备份找不回。
+test('the version and backup cards still show when the settings themselves cannot be read', async () => {
+  const updates = await fixture('page=updates&fail=settings-read')
+  try {
+    await updates.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    assert.equal(await updates.getByRole('tab', { name: '版本更新' }).getAttribute('aria-selected'), 'true')
+    await updates.getByTestId('updates-current-version').getByText('当前版本 v0.1.31', { exact: true }).waitFor()
+    assert.equal(await updates.getByTestId('updates-new-version').innerText(), '有新版本 v0.1.32')
+    // 只摆卡；要设置读回来才画得出的行（启动时检查新版本）不摆。
+    assert.equal(await updates.getByTestId('updates-check-on-startup').count(), 0)
+  } finally {
+    await updates.close()
+  }
+  const backups = await fixture('page=backups&fail=settings-read')
+  try {
+    await backups.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    assert.equal(await backups.getByRole('tab', { name: '备份迁移' }).getAttribute('aria-selected'), 'true')
+    await backups.getByTestId('backups-row-backup-1').waitFor()
+  } finally {
+    await backups.close()
+  }
+})
+
+// 「版本更新」组里版本卡下面就能开关启动检查和自动下载更新，不用再绕去别处。
+test('the version updates group switches the startup check and automatic downloads in place', async () => {
   const page = await fixture('page=updates&autoUpdate=1')
   try {
     const check = page.getByTestId('updates-check-on-startup').getByRole('switch', { name: '启动时检查新版本', exact: true })
-    const automatic = page.getByTestId('updates-auto-update').getByRole('switch', { name: '自动更新', exact: true })
+    const automatic = page.getByTestId('updates-auto-update').getByRole('switch', { name: '自动下载更新', exact: true })
     await page.waitForFunction(() => document.querySelector('[data-testid="updates-check-on-startup"] [role="switch"]')?.disabled === false)
     assert.equal(await check.getAttribute('aria-checked'), 'true')
     assert.equal(await automatic.getAttribute('aria-checked'), 'true')
@@ -2180,7 +2242,7 @@ test('the updates page switches the startup check and automatic updates in place
   }
 })
 
-test('the updates page leaves the automatic update switch out where the app cannot update itself', async () => {
+test('the version updates group leaves the automatic download switch out where the app cannot update itself', async () => {
   const page = await fixture('page=updates')
   try {
     await page.getByTestId('updates-check-on-startup').waitFor()

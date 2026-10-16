@@ -65,7 +65,7 @@ export interface StartGuideProps {
   /** 按钮上的账号名；没登录为 null。 */
   accountName?: string | null
   /**
-   * 失败时「找客服」「去充值」「去备份页」「换成新版 Node.js」这些出口；缺省 = 只给「再试一次」。
+   * 失败时「找客服」「去充值」「去备份迁移」「换成新版 Node.js」这些出口；缺省 = 只给「再试一次」。
    * retry 只在安装类失败时带上：换完 Node.js 要接着重装刚才那个工具。
    */
   onFailureAction?: (action: OperationActionId, retry?: () => void) => void
@@ -320,7 +320,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const [error, setError] = useState('')
   // 上一次失败的那一步，留着给「再试一次」原样再跑一遍；以前只有「安装」有这颗按钮。
   const [failed, setFailed] = useState<{ action: string; work: () => Promise<void> } | null>(null)
-  // 「改用」失败时除了「再试一次」还要给的出口（没开通找客服、余额不足去充值、恢复失败去备份页）。
+  // 「改用」失败时除了「再试一次」还要给的出口（没开通找客服、余额不足去充值、恢复失败去备份迁移）。
   const [failureExits, setFailureExits] = useState<OperationAction[]>([])
   // 这次失败交给客服的那份（原因、原话、哪一步）；复制的是出错那一刻的内容。
   const [failureNote, setFailureNote] = useState<SupportFailure | null>(null)
@@ -480,7 +480,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 切换的回执：失败时原因一定要留着（余额不足、网络不通），只去掉和标题重复的开头；
   // 真有备份编号才说能找回。
   function switchReceipt(result: AccountSourceSwitchResult) {
-    const backup = result.backupId.trim() ? '原来的设置已备份，在「备份」里能找回。' : ''
+    const backup = result.backupId.trim() ? '原来的设置已备份，在「设置 › 备份迁移」里能找回。' : ''
     if (result.target === 'official') return `已换回 ${officialName}。${result.loginRequired ? `还要打开 ${name}，用 ${officialName}登录一次。` : ''}${backup}`
     if (result.verified) return `已${switchLabel}。${backup}`
     return `${result.message.replace(/^已改用当前账号[，。]?/, '')}${backup}`

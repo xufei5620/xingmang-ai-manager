@@ -13,6 +13,9 @@ import type { AccountPaymentWindowTerminalEvent, ProviderId } from '../electron/
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
+import { settingsPageAlias } from '../src/renderer-v2/registry/pages'
+import { settingsItems } from '../src/renderer-v2/registry/business'
+import { requestSettingsGroup } from '../src/renderer-v2/features/app/settings-group-intent'
 
 declare global {
   interface Window {
@@ -42,7 +45,14 @@ declare global {
 }
 
 const query = new URLSearchParams(location.search)
-const page = (query.get('page') as V2Page) ?? 'account'
+const requestedPage = (query.get('page') as V2Page) ?? 'account'
+// 备份、更新、游戏加速并进了设置（v4 批09），老页面名只是别名。夹具照 App 的 navigate 那样
+// 换成设置页、先把那张卡所在的一组放好，page=backups / page=updates 打开的就是客户点托盘、
+// 通知、错误框按钮时落到的同一个地方。
+const settingsCard = settingsPageAlias(requestedPage)
+const page: V2Page = settingsCard ? 'settings' : requestedPage
+const settingsCardGroup = settingsItems.find((item) => item.id === settingsCard)?.group
+if (settingsCardGroup) requestSettingsGroup(settingsCardGroup)
 const requestedSkin = query.get('skin')
 const initialSkin = requestedSkin === 'dawn' || requestedSkin === 'obsidian' || requestedSkin === 'mist' || requestedSkin === 'aurora'
   ? requestedSkin
@@ -924,6 +934,10 @@ const apiMethods = {
     return []
   },
   listBackups: async () => (empty ? [] : [backup]),
+  createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
+    record('create-backup', provider)
+    return { ...backup, id: `backup-${provider}`, provider }
+  },
   inspectBackup: async () => ({
     ...backup,
     files: [
@@ -955,7 +969,11 @@ const apiMethods = {
       evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中',
     }
   },
-  getSettings: async () => settings,
+  getSettings: async () => {
+    // fail=settings-read：设置本身读不到（读设置文件出错），别的照常。
+    if (fail === 'settings-read') throw new Error('设置文件暂时读不到')
+    return settings
+  },
   getWindowCapabilities: async () => ({ tray: true, notifications: true }),
   saveSettings: async (patch: Parameters<V2Bridge['saveSettings']>[0]) => {
     record('settings', patch)
@@ -1058,18 +1076,23 @@ const apiMethods = {
     record('reveal-file', filePath)
     return true
   },
-  getUpdateState: async () => ({
-    phase: 'available' as const,
-    currentVersion: '0.1.31',
-    availableVersion: '0.1.32',
-    releaseName: '测试版本',
-    releaseNotesText: '测试更新内容',
-    checkedAt: time,
-    progress: null,
-    error: null,
-    development: true,
-    ...(query.has('autoUpdate') ? { autoUpdateSupported: true } : {}),
-  }),
+  getUpdateState: async () => {
+    // fail=update：只有更新状态读不到，设置页照常打开，版本卡自己说没读到。
+    if (fail === 'update') throw new Error('更新状态暂时读不到')
+    return {
+      // updateDownloaded：新版本已经下好，版本卡的主按钮换成「重启并安装」。
+      phase: query.has('updateDownloaded') ? 'downloaded' as const : 'available' as const,
+      currentVersion: '0.1.31',
+      availableVersion: '0.1.32',
+      releaseName: '测试版本',
+      releaseNotesText: '测试更新内容',
+      checkedAt: time,
+      progress: null,
+      error: null,
+      development: true,
+      ...(query.has('autoUpdate') ? { autoUpdateSupported: true } : {}),
+    }
+  },
   downloadUpdate: async () => {
     record('download-update')
     throw new Error('测试下载失败')
@@ -1304,6 +1327,8 @@ const renderFixture = (paymentReturn?: {
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}
+          // 设置 › 备份迁移恢复成功后，外壳要让首页重读这个工具的配置。
+          onBackupRestored={(provider) => record('backup-restored', provider)}
           // installedProviders=claude,codex：扩展几页认得哪些工具没装；不带 = 还没检测完（旧行为）。
           installedProviders={query.get('installedProviders')?.split(',').filter(Boolean)}
           installTool={query.has('installedProviders') ? async (tool) => {

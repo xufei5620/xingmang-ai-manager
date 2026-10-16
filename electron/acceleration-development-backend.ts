@@ -172,28 +172,28 @@ function accountTotalMs(entry: AccountUsage): number {
 const legacyVersion1MaximumUsedMs = 3_600_000
 const ledgerLabel = '本机免费加速时长账本'
 const ledgerFailure = '本机测试时长无法读取或保存，请检查本地数据目录后重试。'
-const startFailure = '加速没能打开，请再点「开始加速」试一次；还不行就点「查看日志」，把日志发给客服。'
+const startFailure = '加速没能打开，请再点「开启加速」试一次；还不行就点「查看日志」，把日志发给客服。'
 
 /**
- * 加速页上开不了加速时只有这一行字，所以每句都说清「卡在哪」和「客户自己能做的下一步」。
+ * 游戏加速卡上开不了加速时只有这一行字，所以每句都说清「卡在哪」和「客户自己能做的下一步」。
  * 刻意不带端口号、文件路径、错误原文：这句话会跨进程送到界面，还会进托盘菜单（I13），
  * 细节只留在日志的阶段名里。加速只接管系统的网络设置、不开 TUN，文案里也不许改口。
  */
 export const accelerationStartFailureMessages: Record<AccelerationStartFailureStage, string> = {
   'core-architecture': '加速没能打开：加速组件和这台电脑的系统不匹配。请到官网下载适合这台电脑的安装包重新安装。',
   'core-integrity': '加速没能打开：本机的加速组件不完整或被改动过，常见是安全软件动过它。请重新安装一次星芒；还不行就联系客服。',
-  'core-launch': '加速没能打开：加速组件没有按时启动。请再点「开始加速」试一次；反复这样就完全退出软件（含托盘图标）后重新打开。',
-  'core-blocked': '加速没能打开：加速组件刚要运行就被拦下了，常见是安全软件拦的。到安全软件的拦截记录里把星芒的文件恢复或加入信任，再点「开始加速」。',
-  'core-exited': '加速没能打开：加速组件刚启动就被关掉了，常见是安全软件拦的，或别的加速器占着它要用的位置。放行星芒、关掉别的加速器后，再点「开始加速」。',
-  'core-port': '加速没能打开：这台电脑上加速要用的本机通道被别的程序占满了。关掉别的加速器或下载工具后，再点「开始加速」。',
+  'core-launch': '加速没能打开：加速组件没有按时启动。请再点「开启加速」试一次；反复这样就完全退出软件（含托盘图标）后重新打开。',
+  'core-blocked': '加速没能打开：加速组件刚要运行就被拦下了，常见是安全软件拦的。到安全软件的拦截记录里把星芒的文件恢复或加入信任，再点「开启加速」。',
+  'core-exited': '加速没能打开：加速组件刚启动就被关掉了，常见是安全软件拦的，或别的加速器占着它要用的位置。放行星芒、关掉别的加速器后，再点「开启加速」。',
+  'core-port': '加速没能打开：这台电脑上加速要用的本机通道被别的程序占满了。关掉别的加速器或下载工具后，再点「开启加速」。',
   'core-storage': '加速没能打开：本机的加速文件没通过安全检查。请完全退出软件（含托盘图标）后重新打开；还不行就联系客服。',
-  'line-unavailable': '加速没能打开：现在没有能连通的线路。请检查这台电脑能不能正常上网，稍后再点「开始加速」。',
-  'line-unreachable': '加速没能打开：这条线路现在连不通。点「换线路」换一条线路试试。',
+  'line-unavailable': '加速没能打开：现在没有能连通的线路。请检查这台电脑能不能正常上网，稍后再点「开启加速」。',
+  'line-unreachable': '加速没能打开：这条线路现在连不通。在「线路」那里换一条线路试试。',
   'runtime-invalid': startFailure,
   'ledger-write': startFailure,
   'proxy-authorization': 'macOS 网络设置授权未完成，请允许系统授权后重试。',
   'proxy-helper': '加速没能打开：改网络设置用的组件不见了，常见是安全软件删了它。请重新安装一次星芒；还不行就联系客服。',
-  'proxy-enable': '加速没能打开：系统不让改网络设置，可能是安全软件或公司电脑的管理规定拦着。放行星芒后再点「开始加速」；公司电脑请找管理员。',
+  'proxy-enable': '加速没能打开：系统不让改网络设置，可能是安全软件或公司电脑的管理规定拦着。放行星芒后再点「开启加速」；公司电脑请找管理员。',
   unknown: startFailure,
 }
 
@@ -644,7 +644,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       if (probeNeedsCleanup) await stopSession()
       if (session) {
         if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) {
-          // 用户自己点「开始加速」时连着的若是软件替他在后台连的那一次（加速页上
+          // 用户自己点「开启加速」时连着的若是软件替他在后台连的那一次（加速页上
           // 看不见，见 acceleration-service 的 userAccelerationState），停掉它重新
           // 连一次计时的，从这一刻起归他。时长用完的照旧原样返回，后台那次不动。
           if (session.billed || !billed || usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)

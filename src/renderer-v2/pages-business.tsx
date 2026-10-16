@@ -1,5 +1,5 @@
 import { AccountPage } from './pages-account'
-import { BackupsPage, ExtensionsPage, SessionsPage } from './pages-management'
+import { ExtensionsPage, SessionsPage } from './pages-management'
 import { FeaturedPage } from './pages-featured'
 import {
   FeedbackPage,
@@ -7,7 +7,6 @@ import {
   MaintenancePage,
   SettingsPage,
   TutorialPage,
-  UpdatesPage,
   type BusinessActions,
 } from './pages-maintenance'
 import type { V2Bridge, V2Page, V2SystemState } from './types'
@@ -42,8 +41,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onSessionsChanged?: () => void
   /** 记录页「接着聊」真打开之前，先过首页「打开」那几道关；缺省 = 不检查（旧行为）。 */
   beforeResume?: Parameters<typeof SessionsPage>[0]['beforeResume']
-  /** 备份页恢复成功后回调，用来让首页重读这份配置。 */
-  onBackupRestored?: Parameters<typeof BackupsPage>[0]['onRestored']
+  /** 设置 › 备份迁移里恢复成功后回调，用来让首页重读这份配置。 */
+  onBackupRestored?: Parameters<typeof SettingsPage>[0]['onBackupRestored']
   /** 密钥页「配置到工具」写成功后回调，让首页重读工具配置（#479）。 */
   onToolConfigSaved?: () => void
   /** 工具设置窗口保存成功并读回之后的信号，用来收起密钥页「还在用刚撤销的密钥」（#546）。 */
@@ -114,27 +113,16 @@ export function BusinessPage({
     return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'plugins')
     return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
-  if (page === 'backups')
-    return (
-      <BackupsPage
-        api={api}
-        onRestored={onBackupRestored}
-        navigate={actions.navigate}
-        active={actions.active}
-      />
-    )
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
-  if (page === 'updates') return <UpdatesPage api={api} {...actions} />
   if (page === 'maintenance') return <MaintenancePage api={api} {...actions} />
-  if (page === 'settings') return <SettingsPage api={api} {...actions} />
+  if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
   return null
 }
 
 export {
   AccountPage,
-  BackupsPage,
   ExtensionsPage,
   FeaturedPage,
   SessionsPage,
@@ -143,6 +131,5 @@ export {
   MaintenancePage,
   SettingsPage,
   TutorialPage,
-  UpdatesPage,
 }
 export { SavedAccounts } from './SavedAccounts'

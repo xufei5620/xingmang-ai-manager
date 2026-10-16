@@ -150,7 +150,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       <div className="v2-config-key"><OptionPicker label="访问密钥" value={source} options={sourceOptions} onChange={changeSource} testId="external-client-source" />
         {keyError && <p role="status">{accountKeyListFailureText(keyError)}</p>}
         {source === 'manual' && <Input label="星芒密钥" password mono autoComplete="off" value={secret} error={secretError || undefined} placeholder={strictKeyFormat ? '粘贴你在星芒创建的密钥，以 sk- 开头' : undefined}
-          onChange={(event) => { setSecret(event.target.value); setSecretError(''); setModels([]); setResult(null); setDirty(true) }} testId="external-client-secret" />}
+          onChange={(event) => { setSecret(event.target.value); setSecretError(''); setModels([]); setModel(''); setResult(null); setDirty(true) }} testId="external-client-secret" />}
       </div>
       <div className="xm-field v2-config-model">
         <div className="v2-config-model-row"><Select label="默认模型" value={model} options={models.length ? models.map((id) => ({ value: id, label: id })) : [{ value: model, label: model || '先检测这把密钥的可用模型' }]} onChange={(event) => { setModel(event.target.value); setDirty(true); setResult(null) }} disabled={!models.length} testId="external-client-model" />

@@ -31,7 +31,7 @@ import {
   updateInstallNote,
   updateInstallActionLabel,
   updateNewVersion,
-  updatesPageLead,
+  updateStatusLabel,
   withdrawnVersionAdvice,
 } from './business';
 
@@ -163,12 +163,39 @@ describe('renderer-v2 settings rows registry', () => {
       ['文字与缩放', ['ui-scale', 'large-text', 'language']],
       ['辅助与显示', ['high-contrast', 'reduced-motion', 'hardware-acceleration', 'restore-appearance']],
     ]);
+    // 游戏加速、工具配置备份、版本卡是整张卡（v4 批09），各占一块、不和别的行挤进同一张卡。
     expect(shape('network')).toEqual([
+      [null, ['acceleration']],
       ['连接线路', ['relay-route-solov', 'relay-route-solov-api', 'tool-route-restart-hints']],
       ['下载与连接', ['mirror', 'proxy', 'network-check', 'certificate']],
     ]);
     expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒哪些事']);
     expect(shape('tools')).toEqual([[null, ['workspace', 'latest-cli', 'install-location', 'terminal']]]);
+    expect(shape('backup')).toEqual([
+      [null, ['backups']],
+      ['搬到新电脑', ['transfer', 'transfer-import']],
+    ]);
+    expect(shape('about')).toEqual([
+      [null, ['version']],
+      [null, ['update-check', 'auto-update', 'shortcuts', 'guide', 'tour', 'uninstall-app', 'uninstall']],
+    ]);
+  });
+
+  it('never merges a card item into the rows around it, even without headings', () => {
+    const items = settingsItems.filter(item => item.group === 'about');
+    const blocks = buildSettingsBlocks('about', [items[1], items[0], items[2]]);
+    expect(blocks.map(block => block.items.map(item => item.id))).toEqual([['update-check'], ['version'], ['auto-update']]);
+  });
+
+  // 原来的三个页面挪进来以后，顶部搜索按原来的说法还要找得到它们（v4 批09）。
+  it('finds the moved acceleration, backup and update cards by their old words', () => {
+    const ids = (query: string) => searchSettingsItems(query).map(item => item.id);
+    expect(ids('游戏加速')).toContain('acceleration');
+    expect(ids('免费时长')).toContain('acceleration');
+    expect(ids('立即备份')).toEqual(['backups']);
+    expect(ids('当前版本')).toEqual(['version']);
+    expect(ids('自动更新')).toEqual(['auto-update']);
+    expect(ids('搬到新电脑')).toEqual(['transfer', 'transfer-import']);
   });
 
   // 设置页左栏的「搜索设置」：行名、常用说法、组名、小标题都算，空格隔开的词都要对上。
@@ -216,9 +243,11 @@ describe('renderer-v2 settings rows registry', () => {
     for (const item of settingsItems) expect(`${item.label} ${item.keywords.join(' ')}`).not.toMatch(/solov|new-api|sub2api|relay/i);
   });
 
-  it('describes automatic updates the same way on the settings and update pages', () => {
-    expect(autoUpdateSettingDescription('system-installer')).toContain('由你点下载');
-    expect(autoUpdateSettingDescription(undefined)).toContain('由你点安装');
+  // 原来更新页顶上那句页头说明拆掉了，意思挪到「自动下载更新」这一行（字表批09）。
+  it('says when a downloaded update gets installed in the auto-update row', () => {
+    expect(autoUpdateSettingDescription(undefined)).toBe('下好后在你关掉星芒时装上');
+    expect(autoUpdateSettingDescription('system-installer')).toBe('下好后提醒你点安装');
+    expect(autoUpdateSettingDescription(undefined, true)).toBe('下好后要输入管理员密码才能装');
   });
 });
 
@@ -318,7 +347,8 @@ describe('renderer-v2 auto-update bubble wording', () => {
 describe('renderer-v2 wording for a Windows account outside the administrators group', () => {
   it('uses the sentence yoyo approved, the same one the system notification uses', () => {
     // 2026-10-06 批的原话（句末补了句号）；主进程 desktop-notifications.ts 那一份也钉着同一句。
-    expect(standardAccountUpdateText).toBe('这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。');
+    // 批09 把按钮叫法统一成「重启并安装」，这句跟着换词。
+    expect(standardAccountUpdateText).toBe('这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。');
     expect(standardAccountUpdateNotice.body).toContain(`「${updateInstallActionLabel(undefined)}」`);
   });
 
@@ -333,25 +363,33 @@ describe('renderer-v2 wording for a Windows account outside the administrators g
     expect(autoUpdateBubbleBody('downloading', true, undefined, true)).toBe('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。');
     expect(autoUpdateBubbleBody('available', true, undefined, true)).toBe(autoUpdateBubbleBody('downloading', true, undefined, true));
     expect(autoUpdateBubbleBody('downloading', false, undefined, true)).toBe('查看更新内容和安装状态。');
-    expect(updatesPageLead(true, undefined, true)).toBe('新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。');
-    // 自动更新关着时本来就不说会装，也不会在后台下。
-    expect(updatesPageLead(false, undefined, true)).toBe(updatesPageLead(false));
-    expect(autoUpdateSettingDescription(undefined, true)).toBe('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装');
-    for (const text of [autoUpdateBubbleBody('downloading', true, undefined, true), updatesPageLead(true, undefined, true), autoUpdateSettingDescription(undefined, true)]) {
-      expect(text).not.toMatch(/关掉软件或下次打开时自动装上|UAC|管理员权限/);
+    for (const text of [autoUpdateBubbleBody('downloading', true, undefined, true), autoUpdateSettingDescription(undefined, true)]) {
+      expect(text).not.toMatch(/关掉软件或下次打开时自动装上|关掉星芒时装上|UAC|管理员权限/);
     }
     // 管理员账号照旧。
     expect(autoUpdateBubbleBody('downloading', true, undefined, false)).toBe(autoUpdateBubbleBody('downloading', true));
-    expect(updatesPageLead(true, undefined, false)).toBe(updatesPageLead(true));
     expect(autoUpdateSettingDescription(undefined, false)).toBe(autoUpdateSettingDescription(undefined));
   });
 });
 
-describe('renderer-v2 updates page wording', () => {
-  it('does not promise the user decides when auto-update is on', () => {
-    expect(updatesPageLead(true)).toContain('自动装上');
-    expect(updatesPageLead(true)).not.toContain('不会自己重启');
-    expect(updatesPageLead(false)).toBe('新版本什么时候安装由你决定，不会自己重启。');
+describe('renderer-v2 version card wording', () => {
+  const base = { phase: 'not-available', currentVersion: '0.2.19', availableVersion: null, rollback: false, currentVersionWithdrawn: false } as const;
+
+  it('names the new version in the status tag and says a download takes effect after a restart', () => {
+    expect(updateStatusLabel({ ...base, phase: 'available', availableVersion: '0.2.20' })).toBe('有新版本 v0.2.20');
+    expect(updateStatusLabel({ ...base, phase: 'downloaded', availableVersion: '0.2.20' })).toBe('已下载，重启后生效');
+    expect(updateStatusLabel(base)).toBe('已是最新版本');
+  });
+
+  // Linux 要点「安装新版本」、账号不是管理员的 Windows 要输管理员密码：都不是重启就生效。
+  it('does not promise a restart where installing needs another step', () => {
+    expect(updateStatusLabel({ ...base, phase: 'downloaded', availableVersion: '0.2.20', installMethod: 'system-installer' })).toBe('更新已下载');
+    expect(updateStatusLabel({ ...base, phase: 'downloaded', availableVersion: '0.2.20', installNeedsAdminPassword: true })).toBe('更新已下载');
+  });
+
+  it('keeps the rollback and withdrawn titles instead of calling them a new version', () => {
+    expect(updateStatusLabel({ ...base, phase: 'available', availableVersion: '0.2.18', rollback: true, currentVersionWithdrawn: true })).toBe('建议退回稳定版本');
+    expect(updateStatusLabel({ ...base, currentVersionWithdrawn: true })).toBe('这个版本有已知问题');
   });
 
   it('explains what to do before installing without internal jargon', () => {
@@ -410,16 +448,14 @@ describe('update download detail', () => {
 describe('renderer-v2 wording when the system installer takes over (Linux)', () => {
   it('never promises that the update installs itself or that the app restarts', () => {
     const linux = 'system-installer' as const;
-    expect(autoUpdateBubbleBody('downloaded', true, linux)).toBe('已经下好了，到更新页点「安装新版本」就能装上。');
-    expect(autoUpdateBubbleBody('downloaded', false, linux)).toBe('已经下好了，到更新页点「安装新版本」就能装上。');
-    expect(autoUpdateBubbleBody('downloading', true, linux)).toBe('正在后台下载，下好后到更新页点「安装新版本」。');
-    expect(updatesPageLead(true, linux)).toContain('输入开机密码');
-    expect(updatesPageLead(true, linux)).not.toContain('自动装上');
-    expect(updatesPageLead(false, linux)).toBe(updatesPageLead(false));
+    expect(autoUpdateBubbleBody('downloaded', true, linux)).toBe('已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。');
+    expect(autoUpdateBubbleBody('downloaded', false, linux)).toBe('已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。');
+    expect(autoUpdateBubbleBody('downloading', true, linux)).toBe('正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。');
+    expect(autoUpdateSettingDescription(linux)).not.toContain('装上');
     expect(updateInstallActionLabel(linux)).toBe('安装新版本');
-    expect(updateInstallActionLabel(undefined)).toBe('重启安装');
+    expect(updateInstallActionLabel(undefined)).toBe('重启并安装');
     const rollback = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true } as const;
     expect(withdrawnVersionAdvice({ ...rollback, installMethod: linux })).toContain('再点「安装新版本」');
-    expect(withdrawnVersionAdvice(rollback)).toContain('再点「重启安装」');
+    expect(withdrawnVersionAdvice(rollback)).toContain('再点「重启并安装」');
   });
 });

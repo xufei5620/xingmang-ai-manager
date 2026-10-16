@@ -159,13 +159,6 @@
 .v2-transcript-ai { display: flex; align-items: flex-start; gap: 8px; max-width: 94%; color: var(--text-2); font-size: var(--font-small); }
 .v2-transcript-ai > :first-child:not(p) { flex: none; margin-top: 3px; }
 .v2-transcript-more { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--text-3); font-size: var(--font-small-compact); }
-.v2-business-backup-grid {
-  display: grid;
-  /* 正文 1000 宽时左栏正好 690；窗口窄到正文不足 1000 时左栏先让，不撑出横向滚动。 */
-  grid-template-columns: minmax(0, 690px) 292px;
-  align-items: start;
-  gap: 18px;
-}
 /* v4 设置页：左栏搜索框加八个组名，右栏组名、每个小标题一张卡（原型 .set 一节）。 */
 .v2-business-settings-grid {
   display: grid;
@@ -337,6 +330,41 @@
 }
 .v2-settings-route-wait > svg { flex: none; color: var(--info-tx); }
 .v2-settings-route-wait strong { flex: 1; min-width: 0; color: var(--text); font-weight: 600; }
+/*
+ * 设置里整张卡的那几项（游戏加速、工具配置备份、版本卡，v4 批09）。外面这层只给顶部搜索认位置：
+ * 落到这里时整张卡外面围一圈再退掉，不像普通行那样铺底色（卡自己有底色，铺了看不出来）。
+ */
+.v2-settings-card-slot { min-width: 0; border-radius: var(--radius-card); corner-shape: squircle; }
+.v2-settings-card-slot[data-anchor-focus='true'] { animation: v2-settings-card-flash 2s ease-out; }
+@keyframes v2-settings-card-flash { 0%, 50% { box-shadow: 0 0 0 2px var(--accent); } }
+:is([data-reduce-motion='1'], [data-reduced-motion='true'], [data-system-reduced-motion='true']) .v2-settings-card-slot[data-anchor-focus='true'] { animation: none; box-shadow: 0 0 0 2px var(--accent); }
+.v2-settings-results { display: flex; flex-direction: column; gap: 12px; }
+/* 工具配置备份：标题下面一排按工具筛，结果和恢复后的连接结论夹在筛选和列表中间。 */
+.v2-backup-card-tools { padding: 12px 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.v2-backup-card-notices { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 0; }
+.v2-backup-card-notices:empty { display: none; }
+.v2-backup-preview-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; color: var(--text); font-size: var(--font-small); }
+.v2-backup-preview-check { margin: 8px 0 12px; color: var(--ok-tx); font-size: var(--font-small); }
+.v2-backup-preview-check.is-bad { color: var(--bad-tx); }
+.v2-backup-preview-note { margin: 8px 0 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: 1.6; }
+/* 版本更新最上面那张版本卡（原型 secAbout）：发光卡，左上标志、名字和当前版本，右上状态，底下检查时间和按钮。 */
+.v2-version-card { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 20px; border: 1px solid transparent; border-radius: var(--radius-card); corner-shape: squircle; background: radial-gradient(460px 170px at 0% 0%, var(--glow), transparent 70%) padding-box, linear-gradient(var(--panel-solid), var(--panel-solid)) padding-box, var(--edge) border-box; box-shadow: var(--sh-2); color: var(--text); }
+.v2-version-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
+.v2-version-card-head > div { flex: 1; min-width: 160px; }
+.v2-version-card-head h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4; }
+.v2-version-card-head p { margin: 2px 0 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
+.v2-version-card-logo { display: inline-flex; flex: none; }
+.v2-version-card-notes { display: flex; flex-direction: column; gap: 6px; }
+.v2-version-card-notes h3 { margin: 0; font-size: var(--font-body); font-weight: 600; }
+.v2-version-card-notes p { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; }
+.v2-version-card-progress { display: flex; flex-direction: column; gap: 6px; }
+.v2-version-card-progress p { margin: 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
+.v2-version-card-line { display: flex; gap: 10px; margin: 0; color: var(--text-2); font-size: var(--font-small); }
+.v2-version-card-line > span { color: var(--text-3); }
+.v2-version-card-foot { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
+.v2-version-card-foot > span { color: var(--text-3); font-size: var(--font-small); }
+/* 快捷键弹窗右边那一格按键。 */
+.v2-shortcut-keys { padding: 2px 8px; border: 1px solid var(--line-2); border-radius: var(--radius-input); background: var(--panel-2); color: var(--text); font-family: inherit; font-size: var(--font-small-compact); white-space: nowrap; }
 /* 外观显示的主题卡：三张并排，最宽 600。 */
 .v2-theme-cards {
   display: grid;
@@ -465,12 +493,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-}
-.v2-business-update-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  align-items: start;
-  gap: 18px;
 }
 .v2-local-avatar {
   display: inline-grid;
@@ -780,12 +802,6 @@
 .v2-connection-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; overflow-wrap: anywhere; }
 .v2-connection-note > summary { cursor: pointer; }
 .v2-update-progress-detail { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
-/* 更新页的版本号用正文的大小和颜色，不再是行尾最不显眼的那一小格。 */
-.xm-row-meta > .v2-update-version { font-size: var(--font-body); color: var(--text); font-variant-numeric: tabular-nums; }
-/* 「安装前需要知道」不折叠：更新说明下面一道细线、一行小标题，下面直接写。 */
-.v2-update-install-note { padding-top: 12px; border-top: 1px solid var(--line); }
-.v2-update-install-note h3 { margin: 0 0 4px; font-size: var(--font-small); font-weight: 600; color: var(--text-2); }
-.v2-update-install-note p { margin: 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.65; }
 /* 技能页选到不能在这里导入的工具：工具条下面平平的一行字加「看怎么放」，不做成浮起来的提示框。 */
 .v2-skill-import-note {
   display: flex;

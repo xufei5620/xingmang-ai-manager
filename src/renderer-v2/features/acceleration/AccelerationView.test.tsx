@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, type AccelerationLine, type AccelerationState } from '../../../../electron/acceleration-contract'
-import { AccelerationView, bundleDamagedNotice, lineOptionTarget } from './AccelerationView'
+import { AccelerationView, bundleDamagedNotice, formatAccelerationDuration, lineButtonText } from './AccelerationView'
 
 function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   return {
@@ -18,7 +18,7 @@ function render(current: AccelerationState | null, extra: { error?: string; onVi
     onStop={() => undefined} onRefresh={() => undefined} onLogin={() => undefined} onHelp={() => undefined}
     onViewLog={extra.onViewLog} lines={extra.lines ?? []} selectedLineId={extra.selectedLineId ?? null}
     rememberedLine={extra.rememberedLine} linesBusy={false} linesError={null}
-    onSelectLine={() => undefined} onPingLine={() => undefined} onRefreshLines={() => undefined}
+    onSelectLine={() => undefined} onRefreshLines={() => undefined}
     bundleCheck={extra.bundleCheck} onRecheckBundle={() => undefined} onContactSupport={() => undefined} onRelaunch={() => undefined}
   />)
 }
@@ -69,10 +69,10 @@ describe('acceleration conflict notice', () => {
     expect(markup).toContain(accelerationConflictNotice)
     expect(markup).toContain('系统代理已被其他程序设置；检测到 VPN 虚拟网卡')
     // 重新检测靠主按钮走一次完整的连接请求，这里不放一个只会重读缓存状态的按钮。
-    expect(markup).toContain('关掉之后再点「开始加速」会重新检测')
+    expect(markup).toContain('关掉之后再点「开启加速」会重新检测')
     expect(markup).toContain('data-testid="acceleration-conflict-force"')
     expect(markup).toContain('仍然连接')
-    // 开始加速仍然可用：冲突是提醒，不是把入口关掉。
+    // 开启加速仍然可用：冲突是提醒，不是把入口关掉。
     expect(markup).toContain('data-testid="acceleration-session-start"')
   })
 
@@ -81,27 +81,26 @@ describe('acceleration conflict notice', () => {
   })
 
   it('leaves an ordinary failure with its own strip and no override button', () => {
-    const markup = render(state({ phase: 'error', error: '加速没能打开：这条线路现在连不通。点「换线路」换一条线路试试。' }))
+    const markup = render(state({ phase: 'error', error: '加速没能打开：这条线路现在连不通。在「线路」那里换一条线路试试。' }))
     expect(markup).toContain('acceleration-error')
     expect(markup).not.toContain('data-testid="acceleration-conflict"')
   })
 
-  // 窗口矮的时候工作台下面在第一屏外，提示条放在那里等于没说。
-  it('puts every strip between the heading and the workbench', () => {
-    const workbench = (markup: string) => markup.indexOf('class="acceleration-workbench"')
+  // 并进设置以后整张卡不高，提示条挂在卡里开关那一排下面，跟着这张卡走。
+  it('keeps every strip inside the card under the switch row', () => {
+    const switchRow = (markup: string) => markup.indexOf('data-testid="acceleration-session-start"')
     const failed = render(state({ phase: 'error', error: '加速没能打开：加速组件刚要运行就被拦下了。' }))
-    expect(failed.indexOf('data-testid="acceleration-error"')).toBeGreaterThan(-1)
-    expect(failed.indexOf('data-testid="acceleration-error"')).toBeLessThan(workbench(failed))
+    expect(failed.indexOf('data-testid="acceleration-error"')).toBeGreaterThan(switchRow(failed))
     const conflict = render(state({ phase: 'error', error: accelerationConflictNotice, conflicts: ['system-proxy'] }))
-    expect(conflict.indexOf('data-testid="acceleration-conflict"')).toBeLessThan(workbench(conflict))
-    const damaged = render(state({ phase: 'unavailable', remainingSeconds: null, line: null, unavailableReason: 'bundle-damaged' }))
-    expect(damaged.indexOf('data-testid="acceleration-bundle-damaged"')).toBeLessThan(workbench(damaged))
+    expect(conflict.indexOf('data-testid="acceleration-conflict"')).toBeGreaterThan(switchRow(conflict))
+    for (const markup of [failed, conflict]) expect(markup.lastIndexOf('</section>')).toBe(markup.length - '</section>'.length)
   })
 
   it('marks a failure with an alert sign rather than a question mark', () => {
     const markup = render(state({ phase: 'error', error: '加速没能打开：加速组件刚要运行就被拦下了。' }))
     const strip = markup.slice(markup.indexOf('data-testid="acceleration-error"'))
-    expect(strip).toContain('lucide-circle-alert')
+    // 用设置里通用的红色提示条（v4 批09），图标是它的叉号。
+    expect(strip.slice(0, strip.indexOf('<div>'))).toContain('lucide-circle-x')
     expect(strip.slice(0, strip.indexOf('</div>'))).not.toContain('lucide-circle-help')
   })
 
@@ -160,25 +159,6 @@ describe('acceleration error wording', () => {
   })
 })
 
-describe('acceleration line list keys', () => {
-  it('moves one row at a time and stops at both ends instead of wrapping', () => {
-    expect(lineOptionTarget('ArrowDown', 0, 4)).toBe(1)
-    expect(lineOptionTarget('ArrowDown', 3, 4)).toBe(3)
-    expect(lineOptionTarget('ArrowUp', 2, 4)).toBe(1)
-    expect(lineOptionTarget('ArrowUp', 0, 4)).toBe(0)
-  })
-
-  it('jumps to the first and last rows with Home and End', () => {
-    expect(lineOptionTarget('Home', 2, 4)).toBe(0)
-    expect(lineOptionTarget('End', 0, 4)).toBe(3)
-  })
-
-  it('leaves every other key to the row and its buttons', () => {
-    for (const key of ['Enter', ' ', 'Tab', 'ArrowLeft', 'a']) expect(lineOptionTarget(key, 1, 4)).toBeNull()
-    expect(lineOptionTarget('ArrowDown', 0, 0)).toBeNull()
-  })
-})
-
 describe('acceleration bundle damaged', () => {
   const damaged = () => state({ phase: 'unavailable', remainingSeconds: null, line: null, unavailableReason: 'bundle-damaged' })
 
@@ -224,16 +204,68 @@ describe('acceleration bundle damaged', () => {
 })
 
 describe('acceleration line switch', () => {
-  it('offers 换线路 in the line row before connecting', () => {
+  it('offers the line button in the line row before connecting', () => {
     const markup = render(state())
-    expect(markup).toMatch(/data-testid="acceleration-line-picker-toggle"[^>]*>.*?换线路/)
-    expect(markup).not.toContain('选择加速线路')
-    const row = markup.slice(markup.indexOf('class="acceleration-route-info"'), markup.indexOf('class="acceleration-stage-bottom"'))
-    expect(row).toContain('data-testid="acceleration-line-picker-toggle"')
+    const row = markup.slice(markup.indexOf('class="acceleration-line-row"'))
+    expect(row).toMatch(/<span>线路<\/span>/)
+    expect(row).toMatch(/data-testid="acceleration-line-picker-toggle"[^>]*>.*?自动选择/)
+    expect(markup).not.toMatch(/data-testid="acceleration-line-picker-toggle"[^>]*disabled/)
   })
 
-  it('takes the switch away once connected', () => {
-    expect(render(state({ phase: 'active', connectedAt: '2026-09-22T00:00:00Z', line: rememberedLine }))).not.toContain('acceleration-line-picker-toggle')
+  // 连着的时候按钮照样摆着，写的是连上的那条，只是点不了：要换线路先停止加速。
+  it('locks the line button once connected and names the connected line', () => {
+    const markup = render(state({ phase: 'active', connectedAt: '2026-09-22T00:00:00Z', line: rememberedLine }), { lines: [rememberedLine] })
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="acceleration-line-picker-toggle"|data-testid="acceleration-line-picker-toggle"[^>]*disabled=""/)
+    expect(markup).toContain('自动选择（香港线路） · 31 ms')
+  })
+
+  it('writes the button text the way the line was chosen', () => {
+    expect(lineButtonText(null, null, false)).toBe('自动选择')
+    // 没连上时不知道「自动」会选哪条，测过延迟的那条也不写。
+    expect(lineButtonText(null, rememberedLine, false)).toBe('自动选择')
+    expect(lineButtonText(null, rememberedLine, true)).toBe('自动选择（香港线路） · 31 ms')
+    expect(lineButtonText('hk-02', rememberedLine, false)).toBe('香港线路 · 31 ms')
+    expect(lineButtonText('hk-02', { ...rememberedLine, latencyMs: null }, false)).toBe('香港线路')
+    // 记住的那条已经不在名单里：退回自动选择的写法，不写一个空名字。
+    expect(lineButtonText('gone', undefined, false)).toBe('自动选择')
+  })
+})
+
+describe('acceleration card copy', () => {
+  it('says what the card is for and how much free time is left', () => {
+    const markup = render(state({ remainingSeconds: 754 }))
+    expect(markup).toContain('游戏加速</h2>')
+    expect(markup).toContain('为游戏走一条更快的线路，当前账号的 AI 工具照常直连，剩余免费时长 <span data-testid="acceleration-quota-remaining">12 分 34 秒</span>')
+    expect(markup).toMatch(/data-testid="acceleration-session-start"[^>]*>.*?开启加速/)
+    expect(markup).toContain('data-testid="acceleration-help-open"')
+    // 地球动画、三格详情去掉了，计时规则在「使用帮助」里。
+    expect(markup).not.toMatch(/acceleration-globe|累计使用|免费额度规则/)
+  })
+
+  it('turns into 游戏加速已开启 with the session length while connected', () => {
+    const markup = render(state({ phase: 'active', connectedAt: '2026-09-22T00:00:00Z', line: rememberedLine, sessionSeconds: 65, remainingSeconds: 600 }))
+    expect(markup).toContain('class="acceleration-card is-active"')
+    expect(markup).toContain('游戏加速已开启</h2>')
+    expect(markup).toContain('已连接 <span data-testid="acceleration-session-duration">1 分 5 秒</span>，剩余免费时长 <span data-testid="acceleration-quota-remaining">10 分钟</span>')
+    expect(markup).toMatch(/data-testid="acceleration-session-stop"[^>]*>.*?停止加速/)
+  })
+
+  it('keeps the timing rule when the remaining time is unknown', () => {
+    const markup = render(state({ remainingSeconds: null }))
+    expect(markup).toContain('连接成功才计时，随时停止，剩余下次继续')
+    expect(markup).not.toContain('acceleration-quota-remaining')
+  })
+
+  it('writes durations the way people say them', () => {
+    expect(formatAccelerationDuration(0)).toBe('0 秒')
+    expect(formatAccelerationDuration(40)).toBe('40 秒')
+    expect(formatAccelerationDuration(60)).toBe('1 分钟')
+    expect(formatAccelerationDuration(725)).toBe('12 分 5 秒')
+    expect(formatAccelerationDuration(3600)).toBe('1 小时')
+    expect(formatAccelerationDuration(9600)).toBe('2 小时 40 分')
+    // 剩余时长往上取整：还剩半秒不写成 0 秒。
+    expect(formatAccelerationDuration(0.4, true)).toBe('1 秒')
+    expect(formatAccelerationDuration(-3)).toBe('0 秒')
   })
 })
 
@@ -246,10 +278,10 @@ describe('acceleration trial used up', () => {
     expect(markup).not.toContain('data-testid="acceleration-session-start"')
     expect(markup).not.toContain('免费体验已用完')
     expect(markup).toContain('免费体验已经用完，后续服务请联系客服')
-    expect(markup).toContain('额度已用完')
+    expect(markup).toContain('体验已结束')
   })
 
-  it('drops the line switch and the small help button under the globe', () => {
+  it('drops the line switch and the status refresh', () => {
     const markup = render(exhausted())
     expect(markup).not.toContain('acceleration-line-picker-toggle')
     expect(markup).not.toContain('acceleration-status-refresh')
