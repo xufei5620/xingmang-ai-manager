@@ -11,4 +11,4 @@
   见 `claude-desktop-config.ts` 的 `useOfficialLogin` / `useGatewayLogin`。
 - 检测结果新增可选字段 `officialAccount`（落进开机快照），首页据此显示「官方账号」而不是「待连接」，检查页显示未配置、
   不拿留着的密钥去发请求。官方登录记成的值 `1p` 官方文档没写，出自 Linux 打包项目 claude-desktop-extra 的文档，
-  待 Mac 真机核对。
+  10-16 在 Mac 上手改核过（重开停在 Claude 登录页，改回 `3p` 回到星芒）。

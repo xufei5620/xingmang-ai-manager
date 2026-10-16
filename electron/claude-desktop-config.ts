@@ -10,8 +10,8 @@ const maximumBytes = 512 * 1024
 // Claude Desktop 在登录页选「用 Claude 账号登录」时，第三方目录的 claude_desktop_config.json 里记成这个值，
 // 之后开机就进官方登录、第三方配置留着也不读。官方文档只写了登录页上有这个选择，没写记成什么；这个值
 // 出自 Linux 打包项目 claude-desktop-extra 的 docs/third-party-inference.md（它的 --1p 就是写 Claude
-// Desktop 自己的这一项：「"1p" forces 1P even while a 3P config is still stored」），Mac 真机核对见
-// /mnt/project-files/Claude桌面端切官方账号/说明.md。
+// Desktop 自己的这一项：「"1p" forces 1P even while a 3P config is still stored」）。2026-10-16 在 Mac 上
+// 手改成这个值核过：重开停在 Claude 登录页，页底有「或使用此设备上保存的 Gateway 配置」；改回 3p 回到星芒。
 export const claudeDesktopOfficialDeploymentMode = '1p'
 const claudeDesktopGatewayDeploymentMode = '3p'
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
