@@ -17,7 +17,7 @@ import {
 } from './account-cli-provisioner'
 import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
 import type { SafeStorageLike } from './account-session-store'
-import { NewApiNetworkError, type NewApiAccountKey } from './new-api-client'
+import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
@@ -624,11 +624,12 @@ describe('configureManagedClis', () => {
 // 故意不从那两个常量 import:从被测代码里读回它自己的值等于什么都没验。
 // 改分组名时必须同步改这里,这就是本表存在的意义。
 const profilesBySite = {
+  // xm 站 2026-10-16 删了「Claude-MAX订阅」「GPT-中转/订阅」这些老名字。
   solov: {
-    claude: { group: 'Claude-MAX订阅', keyName: 'xingmang-desktop-claude' },
-    codex: { group: 'GPT-中转/订阅', keyName: 'xingmang-desktop-codex' },
-    grok: { group: 'Grok-中转/订阅', keyName: 'xingmang-desktop-grok' },
-    gemini: { group: 'Gemini-中转/订阅', keyName: 'xingmang-desktop-gemini' },
+    claude: { group: 'Claude-MAX', keyName: 'xingmang-desktop-claude' },
+    codex: { group: 'GPT', keyName: 'xingmang-desktop-codex' },
+    grok: { group: 'Grok', keyName: 'xingmang-desktop-grok' },
+    gemini: { group: 'Gemini', keyName: 'xingmang-desktop-gemini' },
   },
   'solov-api': {
     claude: { group: 'Claude-MAX(不限客户端)', keyName: 'xingmang-desktop-claude' },
@@ -1243,6 +1244,37 @@ describe('dynamic groups with the encrypted managed key store', () => {
     expect(issueKey).not.toHaveBeenCalledWith(expect.objectContaining({ group: groups.codex }))
   })
 
+  it('keeps a key cached under a group name the xm site retired instead of signing another one', async () => {
+    const filePath = storePath()
+    // 0.2.18 以前签在老名字下、记在本机的那把；服务端删老名字前把它挂到了「GPT」下，Key 本身没变。
+    const codexKey = { ...managedKey('codex'), id: 501, group: 'GPT-中转/订阅', key: 'sk-codex-cached-secret-123456' }
+    await new ManagedCliKeyStore(filePath, storage()).save(73, [codexKey])
+    const issueKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+      id: 600 + providerIds.findIndex((provider) => managedCliKeyProfiles[provider].group === input.group),
+      name: input.name ?? 'xingmang-desktop',
+      key: `sk-${input.group}-fresh-secret-123456`,
+    }))
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey: issueKey,
+      listUsableGroups: vi.fn(async () => [{ name: 'default' }, { name: 'Claude-MAX' }, { name: 'GPT' }, { name: 'Grok' }]),
+    } as unknown as AccountService
+
+    const result = await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, storage()))
+
+    expect(result.failed).toEqual([])
+    expect(result.regrouped).toBeUndefined()
+    expect(result.ready).toEqual([
+      { provider: 'claude', group: 'Claude-MAX', name: managedCliKeyProfiles.claude.keyName },
+      { provider: 'codex', group: 'GPT', name: codexKey.name },
+      { provider: 'grok', group: 'Grok', name: managedCliKeyProfiles.grok.keyName },
+    ])
+    expect(issueKey.mock.calls.map(([input]) => input?.group)).toEqual(['Claude-MAX', 'Grok'])
+    const cached = await new ManagedCliKeyStore(filePath, storage()).read(73)
+    expect(cached.find((entry) => entry.provider === 'codex')).toEqual({ ...codexKey, group: 'GPT' })
+  })
+
   it('persists a replacement in the renamed group after a cached key receives 401', async () => {
     const filePath = storePath()
     const oldKey = { ...managedKey('codex'), group: groups.codex, key: 'sk-codex-old-secret-123456' }
@@ -1305,195 +1337,5 @@ describe('dynamic groups with the encrypted managed key store', () => {
     expect(result).toEqual({ configured: ['codex'], failed: [] })
     expect(issueKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: groups.codex })
     expect((await new ManagedCliKeyStore(filePath, storage()).read(73))[0].group).toBe(groups.codex)
-  })
-})
-
-describe('managed keys left under a renamed group', () => {
-  // 线上分组对照（10-14 写的）：新名字在前、老名字在后。
-  const hints = {
-    claude: ['Claude-MAX', 'Claude-MAX订阅'],
-    codex: ['GPT', 'GPT-中转/订阅'],
-    grok: ['Grok', 'Grok-中转/订阅'],
-    image: ['图片模型', '图片模型-中转/订阅'],
-  }
-  const renamedTo: Record<string, string> = {
-    'Claude-MAX订阅': 'Claude-MAX',
-    'GPT-中转/订阅': 'GPT',
-    'Grok-中转/订阅': 'Grok',
-  }
-  const usableGroups = [
-    'default', 'Claude-MAX', 'Claude-MAX订阅', 'GPT', 'GPT-中转/订阅', 'Grok', 'Grok-中转/订阅', '图片模型', '图片模型-中转/订阅',
-  ].map((name) => ({ name, description: '', ratio: 1 }))
-
-  function serverKey(id: number, name: string, group: string, extra: Partial<NewApiAccountKey> = {}): NewApiAccountKey {
-    return {
-      id, name, group,
-      maskedKey: 'sk-ab**********cd',
-      status: 1,
-      remainQuota: 0,
-      unlimitedQuota: true,
-      usedQuota: 0,
-      createdAt: '2026-10-15T00:00:00.000Z',
-      expiredAt: null,
-      accessedAt: null,
-      ...extra,
-    }
-  }
-
-  // 0.2.18 签下、本机记的是老名字的三把。
-  function oldNameCache(): StoredManagedCliKey[] {
-    return activeProviderIds.map((provider) => managedKey(provider))
-  }
-
-  function accountService(keys: NewApiAccountKey[], overrides: Record<string, unknown> = {}) {
-    const listKeys = vi.fn(async ({ page = 1, pageSize = 100 }: { page?: number; pageSize?: number } = {}) => ({
-      page, pageSize, total: keys.length, keys: keys.slice((page - 1) * pageSize, page * pageSize),
-    }))
-    const revealKey = vi.fn(async (id: number) => `sk-revealed-${id}-plaintext-secret-123456`)
-    const provisionCliKey = vi.fn(async () => { throw new Error('must not issue a new key') })
-    const listUsableGroups = vi.fn(async () => usableGroups)
-    const service = {
-      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
-      getActiveSiteId: vi.fn(() => 'solov'),
-      getAccountGroupHints: vi.fn(async () => hints),
-      provisionCliKey,
-      listUsableGroups,
-      listKeys,
-      revealKey,
-      ...overrides,
-    }
-    return { service: service as unknown as AccountService, listKeys, revealKey, provisionCliKey, listUsableGroups }
-  }
-
-  it('only relabels the local record when the server already moved the key', async () => {
-    const store = recordingKeyStore(oldNameCache(), 'solov')
-    const keys = oldNameCache().map((entry) => serverKey(entry.id, entry.name, renamedTo[entry.group]))
-    const { service, revealKey, provisionCliKey } = accountService(keys)
-
-    const result = await syncManagedCliKeySummary(service, store)
-
-    expect(result.failed).toEqual([])
-    expect(result.regrouped).toBeUndefined()
-    expect(result.ready.map((entry) => entry.group)).toEqual(['Claude-MAX', 'GPT', 'Grok'])
-    expect(store.cached.map((entry) => [entry.id, entry.group, entry.key])).toEqual(
-      oldNameCache().map((entry) => [entry.id, renamedTo[entry.group], entry.key]),
-    )
-    expect(revealKey).not.toHaveBeenCalled()
-    expect(provisionCliKey).not.toHaveBeenCalled()
-  })
-
-  it('switches to the same-named key under the new name when an old version left the tool on the old name', async () => {
-    const store = recordingKeyStore(oldNameCache(), 'solov')
-    const keys = [
-      serverKey(1, 'xingmang-desktop-claude', 'Claude-MAX'),
-      serverKey(2, 'xingmang-desktop-codex', 'GPT-中转/订阅'),
-      serverKey(3, 'xingmang-desktop-grok', 'Grok'),
-      serverKey(20, 'xingmang-desktop-codex', 'GPT'),
-      serverKey(25, 'xingmang-desktop-codex', 'GPT', { status: 2 }),
-      serverKey(26, 'xingmang-desktop-codex', 'GPT', { expiredAt: '2026-01-01T00:00:00.000Z' }),
-      serverKey(30, 'xingmang-chat-abc', 'GPT'),
-    ]
-    const { service, revealKey, provisionCliKey } = accountService(keys)
-
-    const result = await syncManagedCliKeySummary(service, store)
-
-    expect(result.failed).toEqual([])
-    expect(result.regrouped).toEqual(['codex'])
-    expect(result.ready).toContainEqual({ provider: 'codex', group: 'GPT', name: 'xingmang-desktop-codex' })
-    expect(revealKey).toHaveBeenCalledTimes(1)
-    expect(revealKey).toHaveBeenCalledWith(20)
-    expect(store.cached.find((entry) => entry.provider === 'codex')).toEqual({
-      id: 20, provider: 'codex', group: 'GPT', name: 'xingmang-desktop-codex', key: 'sk-revealed-20-plaintext-secret-123456',
-    })
-    expect(provisionCliKey).not.toHaveBeenCalled()
-
-    const fetchAvailableModels = vi.fn(async () => ['gpt-6-astra'])
-    const saveConfig = vi.fn(async () => ({ backups: [], files: [] }))
-    const configured = await configureManagedClis(
-      service, { fetchAvailableModels, saveConfig } as unknown as ConfigurationService, ['codex'], {}, false, store,
-    )
-    expect(configured).toEqual({ configured: ['codex'], failed: [] })
-    expect(saveConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'codex', apiKey: 'sk-revealed-20-plaintext-secret-123456' }),
-      false, expect.any(Function), expect.any(Object),
-    )
-  })
-
-  it('keeps the old-name key when nothing with the same name sits under the new name', async () => {
-    const store = recordingKeyStore(oldNameCache(), 'solov')
-    const keys = [
-      ...oldNameCache().map((entry) => serverKey(entry.id, entry.name, entry.group)),
-      serverKey(30, 'xingmang-chat-abc', 'GPT'),
-    ]
-    const { service, revealKey, provisionCliKey } = accountService(keys)
-
-    const result = await syncManagedCliKeySummary(service, store)
-
-    expect(result.regrouped).toBeUndefined()
-    expect(result.ready.map((entry) => entry.group)).toEqual(['Claude-MAX订阅', 'GPT-中转/订阅', 'Grok-中转/订阅'])
-    expect(store.save).not.toHaveBeenCalled()
-    expect(revealKey).not.toHaveBeenCalled()
-    expect(provisionCliKey).not.toHaveBeenCalled()
-  })
-
-  it('does not lift a limit by switching away from a capped or expiring old-name key', async () => {
-    const store = recordingKeyStore(oldNameCache(), 'solov')
-    const keys = [
-      serverKey(1, 'xingmang-desktop-claude', 'Claude-MAX订阅', { unlimitedQuota: false, remainQuota: 5_000 }),
-      serverKey(2, 'xingmang-desktop-codex', 'GPT-中转/订阅', { expiredAt: '2999-01-01T00:00:00.000Z' }),
-      serverKey(3, 'xingmang-desktop-grok', 'Grok-中转/订阅'),
-      serverKey(10, 'xingmang-desktop-claude', 'Claude-MAX'),
-      serverKey(20, 'xingmang-desktop-codex', 'GPT'),
-    ]
-    const { service, revealKey } = accountService(keys)
-
-    const result = await syncManagedCliKeySummary(service, store)
-
-    expect(result.regrouped).toBeUndefined()
-    expect(result.ready.map((entry) => entry.group)).toEqual(['Claude-MAX订阅', 'GPT-中转/订阅', 'Grok-中转/订阅'])
-    expect(revealKey).not.toHaveBeenCalled()
-  })
-
-  it('asks the server nothing when every cached key already sits under a current name', async () => {
-    const cache = oldNameCache().map((entry) => ({ ...entry, group: renamedTo[entry.group] }))
-    const store = recordingKeyStore(cache, 'solov')
-    const { service, listKeys, listUsableGroups } = accountService([])
-
-    const result = await syncManagedCliKeySummary(service, store)
-
-    expect(result.ready.map((entry) => entry.group)).toEqual(['Claude-MAX', 'GPT', 'Grok'])
-    expect(listKeys).not.toHaveBeenCalled()
-    expect(listUsableGroups).not.toHaveBeenCalled()
-  })
-
-  it('keeps using the cached keys when the key list cannot be read', async () => {
-    const store = recordingKeyStore(oldNameCache(), 'solov')
-    const { service, provisionCliKey } = accountService([], {
-      listKeys: vi.fn(async () => { throw new Error('key list offline') }),
-    })
-
-    const result = await syncManagedCliKeySummary(service, store)
-
-    expect(result.failed).toEqual([])
-    expect(result.regrouped).toBeUndefined()
-    expect(result.ready.map((entry) => entry.group)).toEqual(['Claude-MAX订阅', 'GPT-中转/订阅', 'Grok-中转/订阅'])
-    expect(store.save).not.toHaveBeenCalled()
-    expect(provisionCliKey).not.toHaveBeenCalled()
-  })
-
-  it('stays on the old name while the account cannot use the new one', async () => {
-    const store = recordingKeyStore(oldNameCache(), 'solov')
-    const keys = [
-      ...oldNameCache().map((entry) => serverKey(entry.id, entry.name, entry.group)),
-      serverKey(20, 'xingmang-desktop-codex', 'GPT'),
-    ]
-    const { service, revealKey } = accountService(keys, {
-      listUsableGroups: vi.fn(async () => usableGroups.filter((group) => group.name !== 'GPT')),
-    })
-
-    const result = await syncManagedCliKeySummary(service, store)
-
-    expect(result.ready).toContainEqual({ provider: 'codex', group: 'GPT-中转/订阅', name: 'xingmang-desktop-codex' })
-    expect(revealKey).not.toHaveBeenCalled()
   })
 })

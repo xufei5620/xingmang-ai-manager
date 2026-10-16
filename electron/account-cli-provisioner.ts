@@ -1,14 +1,7 @@
 import { activeProviderIds, resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel } from './cli-model-defaults'
-import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage, readAllAccountKeys } from './account-key-quota'
-import {
-  isRenamedAwayGroup,
-  loadAccountGroupHints,
-  loadManagedCliGroups,
-  resolveMappedGroup,
-  subscriptionsBindKeyGroups,
-  type ManagedCliGroupAccountService,
-} from './managed-cli-groups'
+import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { loadManagedCliGroups, subscriptionsBindKeyGroups, type ManagedCliGroupAccountService } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
@@ -78,7 +71,7 @@ interface ResolvedManagedCliKeys {
 
 type ManagedKeyAccountService = Pick<RelayBackendClient,
   'getSessionState' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listUsableGroups'>
-  & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf' | 'listKeys' | 'revealKey'>>
+  & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf'>>
   & Pick<ManagedCliGroupAccountService, 'getAccountGroupHints'>
 
 class AccountSessionChangedError extends Error {
@@ -128,82 +121,6 @@ function isCredentialFailure(error: unknown): boolean {
   return new RegExp(`${credential}.{0,24}${invalid}|${invalid}.{0,24}${credential}`, 'i').test(message)
 }
 
-interface RenamedGroupMove {
-  cache: StoredManagedCliKey[]
-  regrouped: ProviderId[]
-}
-
-function isUsableAccountKey(
-  key: { status: number; unlimitedQuota: boolean; remainQuota: number; expiredAt: string | null },
-  now: number,
-): boolean {
-  if (key.status !== 1) return false
-  if (key.expiredAt !== null && !(Date.parse(key.expiredAt) > now)) return false
-  return key.unlimitedQuota || key.remainQuota > 0
-}
-
-/**
- * 站上改了分组本名（服务状态文件的分组对照把老名字排在后面）以后，本机记着的 Key 还在老名字下的挪到新名字下：
- * - 服务端已经把这把 Key 迁到新名字了：只改本机记的分组名，Key 不换、配置不动。
- * - 它还在老名字下（迁移之后老版本星芒在老名字下新建的）：新名字下有同名、能用的那把就换过去，
- *   开机那一轮按「换了分组」重写星芒自己写的那几份配置（account-bootstrap.ts 的 regrouped）。
- * - 都没有就接着用老的：老名字还在，照样能用，等服务端删老名字那天迁过去。
- * 只认同名的那把，不新建：provisionCliKey 会挑分组里最新的任意一把，那可能是用户自己建的、另设了额度的。
- * 原来那把设了额度上限或到期时间的也不换，换过去等于替用户放开了限制。
- * 哪一步读不到都当没这回事，照旧用本机记的，下次开机再试。
- */
-async function moveKeysOffRenamedGroups(
-  accountService: ManagedKeyAccountService,
-  capture: AccountSessionCapture,
-  cache: readonly StoredManagedCliKey[],
-): Promise<RenamedGroupMove | null> {
-  const { listKeys, revealKey } = accountService
-  if (!cache.length || accountService.getActiveSiteId?.() === 'solov-api' || !listKeys || !revealKey) return null
-  const hints = await loadAccountGroupHints(accountService)
-  assertSameAuthenticatedUser(accountService, capture)
-  const stale = activeProviderIds.flatMap((provider) => {
-    const entry = cache.find((item) => item.provider === provider)
-    return entry && isRenamedAwayGroup(provider, entry.group, hints) ? [{ provider, entry }] : []
-  })
-  if (!stale.length) return null
-  try {
-    const groups = await accountService.listUsableGroups()
-    assertSameAuthenticatedUser(accountService, capture)
-    const keys = await readAllAccountKeys((query) => listKeys.call(accountService, query))
-    assertSameAuthenticatedUser(accountService, capture)
-    const profiles = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())
-    const now = Date.now()
-    const replacements = new Map<StoredManagedCliKey, StoredManagedCliKey>()
-    const regrouped: ProviderId[] = []
-    for (const { provider, entry } of stale) {
-      const target = resolveMappedGroup(provider, groups, hints)
-      const order = hints?.[provider] ?? []
-      if (!target || order.indexOf(target) >= order.indexOf(entry.group)) continue
-      const own = keys.find((key) => key.id === entry.id)
-      if (!own) continue
-      if (own.group === target) {
-        replacements.set(entry, { ...entry, group: target })
-        continue
-      }
-      if (own.group !== entry.group || !own.unlimitedQuota || own.expiredAt !== null) continue
-      const twin = keys
-        .filter((key) => key.name === profiles[provider].keyName && key.group === target && isUsableAccountKey(key, now))
-        .reduce<(typeof keys)[number] | null>((newest, key) => (!newest || key.id > newest.id ? key : newest), null)
-      if (!twin) continue
-      const secret = await revealKey.call(accountService, twin.id)
-      assertSameAuthenticatedUser(accountService, capture)
-      if (!secret) continue
-      replacements.set(entry, { id: twin.id, provider, group: target, name: twin.name, key: secret })
-      regrouped.push(provider)
-    }
-    if (!replacements.size) return null
-    return { cache: cache.map((entry) => replacements.get(entry) ?? entry), regrouped }
-  } catch (error) {
-    rethrowAccountSessionChange(error)
-    return null
-  }
-}
-
 async function resolveManagedCliKeys(
   accountService: ManagedKeyAccountService,
   capture: AccountSessionCapture,
@@ -249,14 +166,10 @@ async function resolveManagedCliKeys(
     const usableCache = foreignCache ? [] : scopedCache ? cached : cached.filter((entry) => (
       entry.group === profiles[entry.provider].group
     ))
-    // 站上改了分组本名：本机记着的 Key 还在老名字下的，先挪到新名字下（见 moveKeysOffRenamedGroups）。
-    // 不分站点的老缓存只认写死的名字，挪过去下次读就被滤掉，所以只挪分站点的。
-    const moved = scopedCache ? await moveKeysOffRenamedGroups(accountService, capture, usableCache) : null
-    const currentCache = moved?.cache ?? usableCache
     // 历史账号例外：订阅是在服务端买、在服务端到期的，本机缓存看不出来，
     // 每次都得问一次，否则买了订阅工具也还在扣余额。
     const everyKeyCached = !subscriptionsBindKeyGroups(accountService) && activeProviderIds.every((provider) => (
-      currentCache.some((entry) => entry.provider === provider)
+      usableCache.some((entry) => entry.provider === provider)
     ))
     const resolvedGroups = everyKeyCached ? null : await loadManagedCliGroups(accountService)
     assertSameAuthenticatedUser(accountService, capture)
@@ -267,25 +180,25 @@ async function resolveManagedCliKeys(
       // 历史账号订阅到期也走这条：服务端还给得出这家工具的普通分组时会认出来、
       // 换回去；认不出时换去写死的名字只会签 Key 失败，配置里仍是这把旧 Key。
       return (resolved?.source !== 'fallback' ? resolved?.group : undefined)
-        ?? currentCache.find((entry) => entry.provider === provider)?.group
+        ?? usableCache.find((entry) => entry.provider === provider)?.group
         ?? profiles[provider].group
     }
     // A group rename on the account backend must invalidate the old local
     // entry. Otherwise a cached secret from the previous production config
     // would bypass provisioning and keep writing requests to a stale group.
-    const keys = new Map(currentCache.flatMap((entry) => {
+    const keys = new Map(usableCache.flatMap((entry) => {
       const profile = profiles[entry.provider]
       return profile && groupFor(entry.provider) === entry.group ? [[entry.provider, entry] as const] : []
     }))
     const failed: ManagedCliKeyFailure[] = []
-    const regrouped: ProviderId[] = [...(moved?.regrouped ?? [])]
-    let fetchedFromServer = moved !== null
+    const regrouped: ProviderId[] = []
+    let fetchedFromServer = false
 
     // 下线的工具（Gemini CLI）不再签 Key：历史账号多半已经没有它的分组，签不出来会让每次登录都报一条失败。
     for (const provider of activeProviderIds) {
       if (keys.has(provider)) continue
       const group = groupFor(provider)
-      const previousGroup = currentCache.find((entry) => entry.provider === provider)?.group
+      const previousGroup = usableCache.find((entry) => entry.provider === provider)?.group
       try {
         assertSameAuthenticatedUser(accountService, capture)
         const result = await accountService.provisionCliKey({

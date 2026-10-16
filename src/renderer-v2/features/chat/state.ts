@@ -40,7 +40,8 @@ export interface TurnPlan { conversation: Conversation; requestId: string; assis
 // silently pick whichever entry happened to arrive first.
 // 与账号登录后自动创建的 Codex Key 分组保持一致。这里使用协议约定的
 // 稳定名称，避免 catalog 中 CLI 配置的历史别名改变聊天初始分组。
-export const DEFAULT_CHAT_GROUP = 'GPT-中转/订阅'
+// xm 站 2026-10-16 删了老名字「GPT-中转/订阅」，现在叫「GPT」。
+export const DEFAULT_CHAT_GROUP = 'GPT'
 export const SUB2API_CHAT_GROUP = 'Codex_pro'
 export const DEFAULT_CHAT_MODEL = 'gpt-5.6-sol'
 // 跟星芒AI生图（#999）一样：分组里有 gpt-image-2.5-flare 就默认用它，没有照旧 gpt-image-2。

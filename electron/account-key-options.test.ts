@@ -57,23 +57,6 @@ describe('current and automatic account key options', () => {
       expect(f.identifyKey).not.toHaveBeenCalled()
     }
   })
-  it('names a cached key still recorded under the old name of a renamed group', async () => {
-    const f = fixture()
-    f.accountService.identifyKey = undefined
-    f.state.siteId = 'solov'
-    f.managed.push({ id: 5, provider: 'codex', name: 'xingmang-desktop-codex', group: 'GPT-中转/订阅', key: f.state.secret })
-    const other = { group: 'other', source: 'mapped' as const }
-    const managedCliGroups = { claude: other, codex: { group: 'GPT', source: 'mapped' as const }, grok: other, gemini: other }
-    const renamedGroups = new Map([['GPT-中转/订阅', 'GPT'], ['图片模型-中转/订阅', '图片模型']])
-    expect(await resolveAccountKeyOptions({ ...f.options, managedCliGroups, renamedGroups })).toEqual({
-      current: { preview: 'sk-cu••••1234', keyId: 5, name: 'xingmang-desktop-codex', group: 'GPT-中转/订阅' },
-      automatic: { name: 'xingmang-desktop-codex', group: 'GPT' },
-      renamedGroups: [{ from: 'GPT-中转/订阅', to: 'GPT' }, { from: '图片模型-中转/订阅', to: '图片模型' }],
-    })
-    // 对照没把它指向这家工具现在的分组：照旧不认。
-    const unrelated = new Map([['GPT-中转/订阅', 'GPT-备用']])
-    expect((await resolveAccountKeyOptions({ ...f.options, managedCliGroups, renamedGroups: unrelated })).current.keyId).toBeNull()
-  })
   it('does not identify a key by matching preview or suffix', async () => {
     const f = fixture()
     f.chat.push({ userId: 7, keyId: 1, keyName: 'spoofed', group: 'wrong', key: 'sk-current-different-secret-1234' })

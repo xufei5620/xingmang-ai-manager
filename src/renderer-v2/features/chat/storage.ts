@@ -1,3 +1,4 @@
+import { currentAccountGroupName } from '../../../../electron/catalog'
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
@@ -56,7 +57,8 @@ function readSettings(value: unknown): ChatSettings {
     if (value !== undefined && value !== null) throw new ChatStorageError('聊天参数格式无效，原始记录已保留')
     return defaultChatSettings()
   }
-  const result = { ...defaultChatSettings(), mode: settings.mode === 'image' ? 'image' as const : 'text' as const, group: text(settings.group), model: text(settings.model), systemPrompt: text(settings.systemPrompt) }
+  // xm 站删了的老分组名换成现在的名字（catalog.ts 的 retiredAccountGroups），老对话打开就能接着聊，不用重选分组。
+  const result = { ...defaultChatSettings(), mode: settings.mode === 'image' ? 'image' as const : 'text' as const, group: currentAccountGroupName(text(settings.group)), model: text(settings.model), systemPrompt: text(settings.systemPrompt) }
   const parameters = object(settings.parameters)
   for (const key of ['temperature', 'topP', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed'] as const) if (parameters && typeof parameters[key] === 'number' && Number.isFinite(parameters[key])) result.parameters[key] = parameters[key]
   if (typeof settings.size === 'string' && /^(auto|\d{3,4}x\d{3,4})$/.test(settings.size)) result.size = settings.size

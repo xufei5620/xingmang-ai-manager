@@ -15,31 +15,26 @@ describe('configuration key selection', () => {
     expect(accountKeyDescription({ ...key(1), group: '' })).toBe('sk-••••1234')
     expect(accountKeyDescription({ ...key(1), maskedKey: '' })).toBe('密钥预览未提供，Group A分组')
   })
-  it('lists one key per name when an old version left a twin under the old group name', () => {
-    const named = (id: number, name: string, group: string, status = 1) => ({ ...key(id), name, group, status }) as AccountKey
+  it('lists one key per name and group among the keys Xingmang signed', () => {
+    const named = (id: number, name: string, group: string, accessedAt: string | null, status = 1) => ({ ...key(id), name, group, accessedAt, status }) as AccountKey
     const keys = [
-      named(1, 'xingmang-chat-abc', 'Claude-KIRO(高缓)'),
-      named(2, 'xingmang-ai', '图片模型-中转/订阅'),
-      named(3, 'xingmang-desktop-gemini', 'Gemini-中转/订阅'),
-      named(4, 'xingmang-desktop-codex', 'GPT-中转/订阅'),
-      named(5, 'xingmang-desktop-claude', 'Claude-MAX订阅'),
-      named(6, 'xingmang-ai', '图片模型'),
-      named(7, 'xingmang-desktop-gemini', 'Gemini'),
-      named(8, 'xingmang-desktop-codex', 'GPT'),
-      named(9, 'xingmang-desktop-claude', 'Claude-MAX', 2),
-      named(10, 'my-own-key', 'GPT-中转/订阅'),
+      named(1, 'xingmang-chat-abc', 'Claude-KIRO(高缓)', null),
+      named(2, 'xingmang-desktop-codex', 'GPT', '2026-10-15T08:00:00.000Z'),
+      named(3, 'xingmang-desktop-gemini', 'Gemini', null),
+      named(4, 'xingmang-ai', '图片模型', null),
+      named(5, 'xingmang-desktop-codex', 'GPT', '2026-10-16T08:00:00.000Z'),
+      named(6, 'xingmang-ai', '图片模型', null),
+      named(7, 'xingmang-desktop-claude', 'Claude-MAX', null),
+      named(8, 'xingmang-desktop-claude', 'Claude-MAX', '2026-10-16T09:00:00.000Z', 2),
+      named(9, 'my-own-key', 'GPT', null),
+      named(10, 'my-own-key', 'GPT', null),
+      named(11, 'xingmang-desktop-codex', 'Codex 专线', null),
     ]
-    const renamed = [
-      { from: 'Claude-MAX订阅', to: 'Claude-MAX' },
-      { from: 'GPT-中转/订阅', to: 'GPT' },
-      { from: '图片模型-中转/订阅', to: '图片模型' },
-    ]
-    // 新名字下同名的那把停用了就不算：老名字那把是这个名字下唯一能选的。
-    expect(listedAccountKeys(keys, renamed, 'current').map((entry) => entry.id)).toEqual([1, 5, 6, 8, 10])
-    // 正选着的那把照旧列着。
-    expect(listedAccountKeys(keys, renamed, '4').map((entry) => entry.id)).toEqual([1, 4, 5, 6, 8, 10])
-    // 没改过名：只少了下线工具那两把和停用的。
-    expect(listedAccountKeys(keys, undefined, 'automatic').map((entry) => entry.id)).toEqual([1, 2, 4, 5, 6, 8, 10])
+    // 同组同名留最近用过的那把；都没用过留后建的；停用的不算；自己建的同名密钥、别的分组里的不合并；下线工具那把不列。
+    expect(listedAccountKeys(keys, 'current').map((entry) => entry.id)).toEqual([1, 5, 6, 7, 9, 10, 11])
+    // 正选着的那把留下，同组同名的另一把不再列。
+    expect(listedAccountKeys(keys, '2').map((entry) => entry.id)).toEqual([1, 2, 6, 7, 9, 10, 11])
+    expect(listedAccountKeys(keys, '3').map((entry) => entry.id)).toEqual([1, 3, 5, 6, 7, 9, 10, 11])
   })
   it('checks the sk- prefix only where the key format is known', () => {
     expect(manualKeyIssue('  ', true)).toBe('请粘贴你在星芒创建的密钥')

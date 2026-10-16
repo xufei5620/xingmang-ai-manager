@@ -131,7 +131,7 @@ import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
 import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
-import { loadAccountGroupHints, loadManagedCliGroupState, markRecommendedChatGroup, type AccountGroupHints } from './managed-cli-groups'
+import { loadAccountGroupHints, loadManagedCliGroups, markRecommendedChatGroup, type AccountGroupHints } from './managed-cli-groups'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -2027,9 +2027,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
-    // 站上改了分组本名后把工具换到新名字下同名的那把（account-cli-provisioner.ts 的 moveKeysOffRenamedGroups）。
-    listKeys: (query) => accountService.listKeys(query),
-    revealKey: (id) => accountService.revealKey(id),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -4113,14 +4110,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     // 分组在进入 resolveAccountKeyOptions 之前读好：那里从捕获账号快照到第一次
     // 落盘读取必须保持同步，中间插一次网络等待会把账号切换的判定窗口拉宽。
     return (async () => {
-      const groupState = accountService.getSessionState().authenticated
-        ? await loadManagedCliGroupState(automaticProvisioning)
+      const managedCliGroups = accountService.getSessionState().authenticated
+        ? await loadManagedCliGroups(automaticProvisioning)
         : null
       return resolveAccountKeyOptions({ provider, systemService: service, accountService,
         managedCliKeys: options.managedCliKeys,
         chatKeyStore: options.chatKeyStore?.read ? { read: (userId) => options.chatKeyStore!.read!(userId) } : undefined,
-        managedCliGroups: groupState?.resolved ?? null,
-        renamedGroups: groupState?.renamed,
+        managedCliGroups,
         previewOnboarding: options.previewOnboarding })
     })()
   })
