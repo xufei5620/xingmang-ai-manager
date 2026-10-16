@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, MaintenancePage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, MaintenancePage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialCategories, tutorialTopicsFor } from './registry/tutorials'
@@ -382,10 +382,9 @@ describe('tutorial topics', () => {
 })
 
 describe('settings page lead', () => {
-  it('says changes save themselves and how to search, with the Mac shortcut on a Mac', () => {
-    expect(settingsPageLead('win')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
-    expect(settingsPageLead('linux')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
-    expect(settingsPageLead('mac')).toBe('改完自动保存。找不到某一项，按 ⌘K 搜它的名字。')
+  // 找设置改用左栏的「搜索设置」，顶上只说会自己保存（字表批08）。
+  it('only says changes save themselves now that the page has its own search', () => {
+    expect(settingsPageLead).toBe('改动会立即保存。')
   })
 })
 
@@ -394,8 +393,24 @@ describe('settings page before the settings arrive', () => {
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
     expect(markup).toContain('正在读取设置…')
     expect(markup).not.toContain('此版本暂不支持')
-    expect(markup).toContain('>更新与关于</button>')
-    expect(markup).not.toContain('>关于</button>')
+    expect(markup).toContain('<span>版本更新</span></button>')
+    expect(markup).not.toContain('<span>账号</span></button>')
+    expect(markup).toContain('aria-label="搜索设置"')
+  })
+
+  it('lists the eight v4 groups with their icons, backup and migration included', () => {
+    const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
+    const names = [...markup.matchAll(/role="tab"[^>]*>.*?<span>([^<]+)<\/span>/g)].map((match) => match[1])
+    expect(names).toEqual(['外观显示', '启动关闭', '工具管理', '网络加速', '消息通知', '备份迁移', '隐私数据', '版本更新'])
+    expect(markup).toMatch(/id="v2-settings-appearance"[^>]*><svg/)
+  })
+
+  it('marks the update group when a new version is out and the network group while accelerating', () => {
+    const idle = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
+    expect(idle).not.toContain('v2-settings-nav-dot')
+    const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge, updateAvailable: true, accelerating: true }))
+    expect(markup).toMatch(/title="有新版本"[^>]*>.*?<span>版本更新<\/span><i class="v2-settings-nav-dot" aria-hidden="true">/)
+    expect(markup).toMatch(/title="加速中"[^>]*>.*?<span>网络加速<\/span><i class="v2-settings-nav-dot is-ok" aria-hidden="true">/)
   })
 })
 
@@ -433,34 +448,22 @@ describe('updates page layout', () => {
 })
 
 describe('settings onboarding entries', () => {
-  it('offers both 「再看一遍」 and 「重看导览」 when the app can drive them', () => {
-    const markup = renderToStaticMarkup(
-      createElement(OnboardingSettingRows, { openGuide: () => undefined, replayTour: () => undefined }),
-    )
-    expect(markup).toContain('data-testid="settings-start-guide"')
-    expect(markup).toContain('新手引导')
-    expect(markup).toContain('再看一遍')
-    expect(markup).toContain('data-testid="settings-replay-tour"')
-    expect(markup).toContain('界面导览')
-    expect(markup).toContain('重看导览')
-    // 两行名字很像，说明必须把它们区分开，否则这一条改回了 A8 修的那个毛病。
-    expect(markup).toContain('已经填好的账号和密钥不会被清空')
-  })
-
-  it('hides the tour entry when the host cannot replay it', () => {
-    const markup = renderToStaticMarkup(
-      createElement(OnboardingSettingRows, { openGuide: () => undefined }),
-    )
-    expect(markup).toContain('data-testid="settings-start-guide"')
-    expect(markup).not.toContain('data-testid="settings-replay-tour"')
+  // v4 去掉了两行的说明（字表批08），两行靠标题和按钮字分开：「新手引导 · 再看一遍」「界面导览 · 重看导览」。
+  it('offers 「再看一遍」 and 「重看导览」 under their own titles without a description', () => {
+    const guide = renderToStaticMarkup(createElement(OnboardingGuideRow, { openGuide: () => undefined }))
+    const tour = renderToStaticMarkup(createElement(OnboardingTourRow, { replayTour: () => undefined }))
+    expect(guide).toContain('data-testid="settings-start-guide"')
+    expect(guide).toContain('<strong>新手引导</strong>')
+    expect(guide).toContain('再看一遍')
+    expect(tour).toContain('data-testid="settings-replay-tour"')
+    expect(tour).toContain('<strong>界面导览</strong>')
+    expect(tour).toContain('重看导览')
+    expect(`${guide}${tour}`).not.toContain('<p>')
   })
 
   it('marks both rows so the top search can scroll to them', () => {
-    const markup = renderToStaticMarkup(
-      createElement(OnboardingSettingRows, { openGuide: () => undefined, replayTour: () => undefined }),
-    )
-    expect(markup).toContain('data-anchor="guide"')
-    expect(markup).toContain('data-anchor="tour"')
+    expect(renderToStaticMarkup(createElement(OnboardingGuideRow, { openGuide: () => undefined }))).toContain('data-anchor="guide"')
+    expect(renderToStaticMarkup(createElement(OnboardingTourRow, { replayTour: () => undefined }))).toContain('data-anchor="tour"')
   })
 })
 

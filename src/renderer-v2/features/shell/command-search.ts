@@ -129,7 +129,7 @@ function accountEntries(options: CommandSearchOptions): Entry[] {
   return [...tabs, ...sections, ...logout]
 }
 
-// 设置里每一行单独一条，写成「更新与关于 › 自动更新」，点了翻到那一行；只按行名和常用说法算分，
+// 设置里每一行单独一条，写成「版本更新 › 自动更新」，点了翻到那一行；只按行名和常用说法算分，
 // 组名不算，免得搜「更新」把这一组十来行全拉出来。组本身也还是一条，排在它的行前面。
 function settingsEntries(options: CommandSearchOptions): Entry[] {
   const groups: Entry[] = settingsGroups.map(group => ({ result: { key: `settings:${group.value}`, group: 'settings', label: group.label, page: 'settings', section: group.value }, label: group.label, keywords: group.keywords }))

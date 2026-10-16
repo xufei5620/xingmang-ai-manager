@@ -34,8 +34,7 @@ export function AuthConnectionRoutes({ api, settings, onSettingsChanged, onBusyC
     <ResultNotice error={error} />
     <RelayRouteSettings
       settings={settings}
-      saving={pending}
-      restarting={pending}
+      disabled={pending}
       onChange={(patch) => void run(async () => {
         await writer({ version: 2, ...patch })
         toast.show('已保存', 'ok')

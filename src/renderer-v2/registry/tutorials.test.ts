@@ -35,7 +35,7 @@ describe('tutorial step targets', () => {
   });
 
   it('lands the privacy step on the privacy settings group', () => {
-    expect(step('safety', '查看隐私与数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
+    expect(step('safety', '查看隐私数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
   });
 
   it('only names sections that exist on the target page', () => {
@@ -83,7 +83,7 @@ describe('tutorial wording that follows the current app', () => {
     expect(text).toContain('「自动更新」');
     expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
     expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
-    expect(text).toContain('「退回更新前的版本」');
+    expect(text).toContain('「退回更新前的 v…」');
     expect(text).not.toContain('区分两种更新入口');
   });
 
@@ -148,7 +148,7 @@ describe('linux tutorials', () => {
   it('walks a Linux beginner through Codex CLI in the same four steps', () => {
     const start = linux[0];
     expect(start.title).toBe(tutorialTopics[0].title);
-    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '装好 Codex CLI', '看到「已配好」就继续', '打开 Codex，发出第一条消息']);
+    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '装好 Codex CLI', '看到「当前账号」就继续', '打开 Codex，发出第一条消息']);
     expect(start.steps[0]).toBe(tutorialTopics[0].steps[0]);
     expect(start.reminders).toEqual(tutorialTopics[0].reminders);
     expect(JSON.stringify(start)).toContain('不用输开机密码');
@@ -162,7 +162,7 @@ describe('linux tutorials', () => {
     expect(text).toContain('输入开机密码');
     expect(text).toContain('从应用菜单重新打开');
     expect(text).toContain(linuxUpdateDiskCleanupSteps);
-    expect(text).toContain('「退回更新前的版本」');
+    expect(text).toContain('「退回更新前的 v…」');
     expect(updates?.steps.length).toBe(tutorialTopics.find((topic) => topic.id === updatesTutorialTopic)?.steps.length);
     expect(updateDiskCleanupStepsFor('linux')).toBe(linuxUpdateDiskCleanupSteps);
   });

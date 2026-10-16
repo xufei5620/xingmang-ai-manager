@@ -166,43 +166,75 @@
   align-items: start;
   gap: 18px;
 }
+/* v4 设置页：左栏搜索框加八个组名，右栏组名、每个小标题一张卡（原型 .set 一节）。 */
 .v2-business-settings-grid {
   display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
+  grid-template-columns: 190px minmax(0, 1fr);
   gap: 24px;
   align-items: start;
 }
-.v2-business-subnav {
-  display: grid;
-  align-content: start;
-  gap: 2px;
+.v2-settings-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   /* 右边内容长时往下滚，左边组名停在原处。 */
   position: sticky;
   top: 16px;
 }
+.v2-settings-side .xm-search {
+  width: auto;
+  height: 30px;
+  font-size: var(--font-small);
+}
+.v2-business-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 .v2-business-subnav button {
-  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
   border: 0;
-  border-radius: 7px;
-  padding: 6px 10px;
+  border-radius: 8px;
+  padding: 0 10px;
   background: transparent;
   color: var(--text-2);
   text-align: left;
   font: inherit;
+  font-size: 13.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
 }
+.v2-business-subnav button > svg { flex: none; }
+.v2-business-subnav button > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .v2-business-subnav button:hover {
   background: var(--panel-hover);
+  color: var(--text);
 }
 .v2-business-subnav button.is-active {
-  background: var(--panel-2);
+  background: var(--nav-on);
+  box-shadow: var(--nav-on-sh);
   color: var(--text);
-  font-weight: 500;
-}
-.v2-business-settings-grid h2 {
-  margin: 0 0 8px 2px;
-  color: var(--text);
-  font-size: var(--font-body);
   font-weight: 600;
+}
+.v2-business-subnav button.is-active > svg { color: var(--gold); }
+.v2-settings-nav-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--gold);
+}
+.v2-settings-nav-dot.is-ok { background: var(--ok); }
+.v2-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
 }
 /* 组名右边挂「正在保存更改…」，不单独占一行，保存时页面不往下跳。 */
 .v2-settings-panel-head {
@@ -210,37 +242,162 @@
   align-items: baseline;
   gap: 12px;
   min-height: 22px;
-  margin: 0 0 8px 2px;
 }
-.v2-business-settings-grid .v2-settings-panel-head h2 {
+.v2-settings-panel-head h2 {
   margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
 }
 .v2-settings-panel-head [role='status'] {
   color: var(--text-3);
   font-size: var(--font-small-compact);
 }
-/* 同一张卡里分段的小标题（通知的「提醒哪些事」）。 */
+.v2-settings-panel-lead {
+  margin: -10px 0 0;
+  color: var(--text-3);
+  font-size: var(--font-small-compact);
+}
+.v2-settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 卡片上面的小标题（「文字与缩放」「提醒哪些事」），右边可以挂一句提醒。 */
 .v2-settings-section {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
   gap: 4px 10px;
-  padding: 16px 16px 4px;
-  border-top: 1px solid var(--line);
+  padding: 6px 4px 0;
 }
 .v2-settings-section h3 {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--font-small-compact);
+  font-weight: 600;
+}
+.v2-settings-section span {
+  color: var(--warn-tx);
+  font-size: var(--font-small-compact);
+}
+.v2-settings-value {
+  color: var(--text-3);
+  font-size: var(--font-small);
+}
+/* 页内搜索：每一行上面写它在哪一组，点组名跳过去。 */
+.v2-settings-hit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 10px 16px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--font-small-compact);
+  font-weight: 500;
+}
+.v2-settings-hit:first-child { border-top: 0; }
+.v2-settings-hit + .xm-setting-row,
+.v2-settings-hit-lead + .xm-setting-row { border-top: 0; }
+/* 搜到的行所在小标题的那句话、线路等重启那条，跟着搜出来的行一起摆。 */
+.v2-settings-hit > span { color: var(--warn-tx); font-weight: 400; }
+.v2-settings-hit-lead { padding: 8px 16px 0; }
+.v2-settings-hit-lead:empty { display: none; }
+.v2-settings-empty {
+  padding: 32px 24px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  text-align: center;
+}
+.v2-settings-empty h3 {
   margin: 0;
   color: var(--text);
   font-size: var(--font-body);
   font-weight: 600;
 }
-.v2-settings-section span {
+.v2-settings-empty p {
+  margin: 6px 0 0;
   color: var(--text-3);
-  font-size: var(--font-small-compact);
+  font-size: var(--font-small);
 }
-.v2-settings-section + .xm-setting-row {
-  border-top: 0;
+/* 线路存好了、等重开的那一条，挂在连接线路那张卡上面。 */
+.v2-settings-route-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 4px 0 12px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-2);
+  font-size: var(--font-small);
 }
+.v2-settings-route-wait > svg { flex: none; color: var(--info-tx); }
+.v2-settings-route-wait strong { flex: 1; min-width: 0; color: var(--text); font-weight: 600; }
+/* 外观显示的主题卡：三张并排，最宽 600。 */
+.v2-theme-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  max-width: 600px;
+}
+.v2-theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
+}
+.v2-theme-card:hover { box-shadow: inset 0 0 0 1px var(--line-2); }
+.v2-theme-card[aria-pressed='true'] { background: var(--soft); box-shadow: inset 0 0 0 1.5px var(--gold); }
+.v2-theme-card:disabled { opacity: .5; cursor: not-allowed; }
+.v2-theme-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.v2-theme-card-preview {
+  position: relative;
+  display: block;
+  height: 68px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .25);
+}
+/* 两套配色的底色写死：「浅色」那张在深色下也要是浅的。 */
+.v2-theme-card-preview.is-dark { background: #101116; }
+.v2-theme-card-preview.is-light { background: #FBFAF6; }
+.v2-theme-card-preview.is-system { background: linear-gradient(90deg, #FBFAF6 50%, #101116 50%); }
+.v2-theme-card-preview i { position: absolute; left: 0; top: 0; bottom: 0; width: 26%; background: rgba(127, 127, 127, .18); }
+.v2-theme-card-preview b { position: absolute; left: 34%; right: 12%; top: 16px; height: 8px; border-radius: 4px; background: rgba(214, 170, 98, .85); }
+.v2-theme-card-preview b + b { top: 32px; right: 34%; background: rgba(127, 127, 127, .4); }
+.v2-theme-card-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 2px;
+  font-size: var(--font-small);
+}
+.v2-theme-card-radio {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+.v2-theme-card[aria-pressed='true'] .v2-theme-card-radio { box-shadow: inset 0 0 0 1.5px var(--gold); }
+.v2-theme-card[aria-pressed='true'] .v2-theme-card-radio::after { content: ''; width: 8px; height: 8px; border-radius: 4px; background: var(--gold); }
 .v2-business-control {
   display: flex;
   gap: 8px;

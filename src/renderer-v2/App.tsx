@@ -454,7 +454,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!mounted.current || epoch !== bootstrapEpoch.current) return
       setAccountBootstrap({ ...progress, scope: bootstrapScope, ...(quiet ? { quiet } : {}) })
     }
-    updateProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 5 })
+    updateProgress({ phase: 'syncing', label: '正在同步账号专属密钥', percent: 5 })
     // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入 Key」
     // 的人正站在「检查」页上，横幅在他看不见的地方。用对象而不是 let，是因为赋值
     // 发生在闭包里，TypeScript 会把 let 的类型收窄成初始值。
@@ -834,7 +834,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const chooseDisplayCompat = useCallback((choice: 'keep' | 'restore') => perform('保存显示方式', async () => {
     setSettings(await app.savePreferences({ version: 2, hardwareAcceleration: choice === 'restore' }))
     if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
-    else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观」里打开「用显卡加速显示」。', 'ok')
+    else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观显示」里打开「用显卡加速显示」。', 'ok')
   }), [app, noteStartupCheck, perform, toast])
   // 错误报告告知：登录进来后说一次，这次运行里只出一回。两颗按钮都记下「已告知」，
   // 「不想发送」同时把上报关掉，和设置页那个开关是同一个设置。
@@ -848,7 +848,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [boot, noteStartupCheck, session.authenticated, settings])
   const chooseCrashReporting = useCallback((choice: 'keep' | 'off') => perform('保存错误报告设置', async () => {
     setSettings(await app.savePreferences({ version: 2, crashReportingNoticeShown: true, ...(choice === 'off' ? { crashReporting: false } : {}) }))
-    if (choice === 'off') toast.show('已关掉，出错时不再发送错误报告。想重新打开，到「设置」的「隐私与数据」里。', 'ok')
+    if (choice === 'off') toast.show('已关掉，出错时不再发送错误报告。想重新打开，到「设置」的「隐私数据」里。', 'ok')
   }), [app, perform, toast])
   // 连按几下 Ctrl 加号时，保存还没回来，下一下要接着上一下算，不能都从旧设置起步。
   const uiScaleRef = useRef<AppSettingsV2['uiScale']>(undefined)
@@ -1765,7 +1765,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               {updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
               {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
           adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), pageVisible: (id) => id !== 'acceleration' || accelerationAvailable,
-            settingsItemVisible: (item: SettingsItem) => settingsItemAvailable(item, { mac: os === 'mac', autoUpdate: Boolean(update?.autoUpdateSupported), acceleration: accelerationAvailable, signedIn: session.authenticated }), refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
+            settingsItemVisible: (item: SettingsItem) => settingsItemAvailable(item, { mac: os === 'mac', autoUpdate: Boolean(update?.autoUpdateSupported), acceleration: accelerationAvailable }), refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             ...(accelerationAvailable ? { redeemAccelerationCode: async (code: string) => {
               if (!session.authenticated) throw new Error('请先登录星芒账号，再领取加速时长。')
               const epoch = accountEpoch.current
@@ -1828,6 +1828,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               <Suspense fallback={pageLoading}>
                 <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
+                  updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
+                  accelerating={acceleration.snapshot.state?.phase === 'active'}
                   onSessionsChanged={refreshRecent}
                   beforeResume={async (provider) => Boolean(await prepareToolLaunch(provider, accountEpoch.current))}
                   onBackupRestored={() => { markDiagnosticsStale(); void toolbox.refreshConfig().catch(() => undefined) }}

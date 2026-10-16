@@ -148,8 +148,9 @@ describe('searchCommands for single settings', () => {
   }
 
   it('offers each setting on its own, labelled with its group, and opens that row', () => {
-    expect(settingsHits('自动更新')[0]).toEqual({ key: 'settings-item:auto-update', group: 'settings', label: '更新与关于 › 自动更新', page: 'settings', section: 'auto-update' })
-    expect(settingsHits('测试通知')[0]).toMatchObject({ label: '通知 › 测试通知', section: 'test-notification' })
+    expect(settingsHits('自动更新')[0]).toEqual({ key: 'settings-item:auto-update', group: 'settings', label: '版本更新 › 自动更新', page: 'settings', section: 'auto-update' })
+    // 「发测试通知」并进了桌面通知那一行，搜「测试通知」落到那一行。
+    expect(settingsHits('测试通知')[0]).toMatchObject({ label: '消息通知 › 桌面通知', section: 'desktop-notifications' })
   })
 
   it('still offers the group itself next to its rows', () => {
@@ -162,7 +163,7 @@ describe('searchCommands for single settings', () => {
     const cases: Array<[string, string]> = [
       ['深色', 'theme'], ['太小', 'ui-scale'], ['看不清', 'large-text'], ['黑屏', 'hardware-acceleration'], ['自启', 'launch-at-login'],
       ['最小化', 'close-behavior'], ['项目文件夹', 'workspace'], ['推荐版本', 'latest-cli'], ['下载慢', 'mirror'], ['梯子', 'proxy'],
-      ['公司电脑', 'certificate'], ['收不到通知', 'test-notification'], ['换号', 'switch-account'], ['注销', 'logout'],
+      ['公司电脑', 'certificate'], ['收不到通知', 'desktop-notifications'], ['网络连接', 'proxy'], ['重置', 'restore-appearance'],
       ['换电脑', 'transfer'], ['日志', 'logs'], ['版本号', 'version'], ['检查更新', 'update-check'], ['键盘', 'shortcuts'],
       ['从头', 'guide'], ['删除软件', 'uninstall'],
     ]
@@ -170,14 +171,22 @@ describe('searchCommands for single settings', () => {
   })
 
   it('matches a row by its own name and words, not by the name of its group', () => {
-    expect(settingsHits('更新与关于').map((item) => item.section)).toEqual(['about'])
+    expect(settingsHits('版本更新').map((item) => item.section)).toEqual(['about'])
+  })
+
+  // 设置里的「账号」组拆掉了：切换账号、退出登录只在个人中心那边搜得到，不再有设置里的那一条。
+  it('finds switching and signing out in the account center only', () => {
+    expect(settingsHits('换号')).toEqual([])
+    expect(settingsHits('注销', { signedIn: true })).toEqual([])
+    expect(searchCommands('换号').find((item) => item.group === 'account')).toMatchObject({ section: 'switch-account' })
+    expect(searchCommands('注销', { signedIn: true })[0]).toMatchObject({ key: 'account:logout', action: 'logout' })
   })
 
   it('leaves out rows this computer or this login does not have', () => {
-    const windows = { settingsItemVisible: (item: { when?: string }) => item.when !== 'mac' && item.when !== 'autoUpdate' && item.when !== 'signedIn' }
+    const windows = { settingsItemVisible: (item: { when?: string }) => item.when !== 'mac' && item.when !== 'autoUpdate' && item.when !== 'acceleration' }
     expect(settingsHits('卸载星芒', windows).map((item) => item.section)).toEqual(['uninstall'])
     expect(settingsHits('自动更新', windows).some((item) => item.section === 'auto-update')).toBe(false)
-    expect(settingsHits('注销', windows)).toEqual([])
+    expect(settingsHits('加速提醒', windows).some((item) => item.section === 'notify-acceleration')).toBe(false)
     expect(settingsHits('卸载星芒').map((item) => item.section)).toEqual(['uninstall-app', 'uninstall'])
   })
 
