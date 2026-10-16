@@ -7,6 +7,11 @@ import type { ExternalClientConnectionStatus } from './external-client-contract'
 
 const label = 'Claude Desktop 第三方推理配置'
 const maximumBytes = 512 * 1024
+// Claude Desktop 在登录页选「用 Claude 账号登录」时，第三方目录的 claude_desktop_config.json 里记成这个值，
+// 之后开机就进官方登录、不读第三方配置。官方文档只写了登录页上有这个选择，没写记成什么；
+// 这个值是推测，等 Mac 真机核对（/mnt/project-files/Claude桌面端切官方账号/说明.md）。
+export const claudeDesktopOfficialDeploymentMode = '1p'
+const claudeDesktopGatewayDeploymentMode = '3p'
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type JsonObject = Record<string, unknown>
 
@@ -37,6 +42,14 @@ export type ClaudeDesktopModelRepairOutcome =
   | { status: 'unowned' | 'unchanged' }
   | { status: 'unrecognized'; reason: 'unreadable' | 'model-list' | 'gateway' }
   | { status: 'repaired'; model: string; backups: string[] }
+
+/**
+ * 切回当前账号的结论。reconnect 是星芒那份配置不在了、不是正在用的那份、或者不是当前账号的
+ * 密钥：一个字没写，由调用方打开「连接 Claude Desktop」重新保存一次。
+ */
+export type ClaudeDesktopGatewayReturn =
+  | { outcome: 'switched'; path: string; backups: string[] }
+  | { outcome: 'reconnect' }
 
 export interface ClaudeDesktopConfigOptions {
   dataDirectory: string
@@ -237,15 +250,17 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const desktop = parseObject(read(configPath))
       const metadata = parseMetadata(read(metadataPath))
       const owner = parseOwner(read(markerPath), profileDirectory)
-      if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null }
+      // 选了官方登录，第三方配置留着也不读：照实标出来，首页据此显示「官方账号」，不说成没连上。
+      const official = desktop.deploymentMode === claudeDesktopOfficialDeploymentMode ? { officialAccount: true } : {}
+      if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official }
       const config = parseObject(read(path.join(libraryDirectory, `${metadata.appliedId}.json`)))
       if (!Object.keys(config).length && !metadata.hybridPointer) {
-        return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null }
+        return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official }
       }
       const model = firstModel(config.inferenceModels)
       const apiKey = config.inferenceGatewayApiKey
       const baseUrl = config.inferenceGatewayBaseUrl
-      const configurationReady = (desktop.deploymentMode === undefined || desktop.deploymentMode === '3p')
+      const configurationReady = (desktop.deploymentMode === undefined || desktop.deploymentMode === claudeDesktopGatewayDeploymentMode)
         && !metadata.hybridPointer && gatewayConfigurationReady(config)
       const configured = configurationReady
         && typeof baseUrl === 'string' && sameBaseUrl(baseUrl, expectedBaseUrl)
@@ -253,7 +268,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
         && (owner?.id === metadata.appliedId || Boolean(belongsToCurrentAccount))
         && (!belongsToCurrentAccount || belongsToCurrentAccount(apiKey))
       return { configured, configurationReady, model, configurationSource: configured ? 'xingmang' : 'other', configurationError: null,
-        apiKey: configured && typeof apiKey === 'string' ? apiKey : null }
+        apiKey: configured && typeof apiKey === 'string' ? apiKey : null, ...official }
     } catch {
       return { configured: false, configurationReady: false, model: null, configurationSource: 'unknown', configurationError: 'Claude Desktop 本地配置无法确认，可能存在管理策略或配置文件异常，请重新检测。', apiKey: null }
     }
@@ -374,6 +389,71 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
       const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
       return { path: gatewayPath, backups: saved.backups }
+    }),
+    /**
+     * 首页「切回官方账号」：只把 claude_desktop_config.json 的 deploymentMode 改成官方登录，等于替客户在
+     * Claude Desktop 的登录页选了「用 Claude 账号登录」。星芒那份配置和密钥原样留着，切回来不用重配；
+     * 别的字段一个字不动（缩进、顺序照原样）。只在星芒那份正在用时才改：客户在 Claude Desktop 里换成
+     * 自己的另一份、或者已经是官方登录了，都不替他做决定。
+     */
+    useOfficialLogin: (): Promise<{ path: string; backups: string[] }> => serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const original = capture(configPath)
+      const desktop = parseObject(original)
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      if (original === null || !owner || metadata.appliedId !== owner.id || metadata.hybridPointer
+        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) {
+        throw new Error(`${label}在切换前已变化，未执行修改`)
+      }
+      const content = applyEdits(original, modify(original, ['deploymentMode'], claudeDesktopOfficialDeploymentMode, {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+      }))
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: configPath, content }], snapshots, assertContext)
+      return { path: configPath, backups: saved.backups }
+    }),
+    /**
+     * 首页「改用当前账号」：Claude Desktop 现在是官方登录、星芒那份还在用着的位置上、地址是当前线路、
+     * 密钥归当前账号，四条都对才把 deploymentMode 改回第三方，不用重新保存配置。有一条不对就一个字
+     * 不写，回 reconnect，由调用方打开「连接 Claude Desktop」照常保存（saveGateway 会把模式一起改回来）。
+     */
+    useGatewayLogin: (expectedBaseUrl: string, belongsToCurrentAccount: (apiKey: string) => boolean): Promise<ClaudeDesktopGatewayReturn> => serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const original = capture(configPath)
+      const desktop = parseObject(original)
+      if (original === null || desktop.deploymentMode !== claudeDesktopOfficialDeploymentMode) {
+        throw new Error(`${label}在切换前已变化，未执行修改`)
+      }
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer) return { outcome: 'reconnect' }
+      const gateway = parseObject(capture(path.join(libraryDirectory, `${owner.id}.json`)))
+      const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
+      if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || !sameBaseUrl(baseUrl, expectedBaseUrl)
+        || typeof apiKey !== 'string' || !apiKey.trim() || !belongsToCurrentAccount(apiKey)) return { outcome: 'reconnect' }
+      const content = applyEdits(original, modify(original, ['deploymentMode'], claudeDesktopGatewayDeploymentMode, {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+      }))
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: configPath, content }], snapshots, assertContext)
+      return { outcome: 'switched', path: configPath, backups: saved.backups }
     }),
     saveGateway: (input: ClaudeDesktopGatewayInput): Promise<ClaudeDesktopConfigResult> => serial(async () => {
       const gateway = buildClaudeDesktopGatewayConfig(input)

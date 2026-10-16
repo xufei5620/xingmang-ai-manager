@@ -759,3 +759,102 @@ describe('Claude Desktop connection route follow (batch 43 A)', () => {
     expectSnapshot(previous)
   })
 })
+
+describe('Claude Desktop official login switch', () => {
+  const belongs = (key: string) => key === input.apiKey
+
+  it('switches to the official login by changing only the deployment mode and keeps the toolbox profile', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    // Claude Desktop 自己重写过这份：四个空格缩进、CRLF，还有客户自己的 MCP 和偏好。
+    const before = JSON.stringify({ deploymentMode: '3p', mcpServers: { example: { command: 'example' } }, preferences: { theme: 'dark' } }, null, 4).replaceAll('\n', '\r\n')
+    fs.writeFileSync(f.configPath, before, 'utf8')
+    const others = snapshot([saved.path, f.metadataPath, markerPath(f), path.join(f.profileDirectory, 'developer_settings.json'), path.join(f.developerDirectory, 'developer_settings.json')])
+
+    const result = await f.service.useOfficialLogin()
+    expect(result.path).toBe(f.configPath)
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before.replace('"3p"', '"1p"'))
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(before)
+    expectSnapshot(others)
+    expect(JSON.stringify(result)).not.toContain(input.apiKey)
+    expect(await f.service.inspectConnection(input.baseUrl, belongs)).toEqual({ configured: false, configurationReady: false, model: 'claude-opus-5',
+      configurationSource: 'other', configurationError: null, officialAccount: true })
+  })
+
+  it('switches back to the toolbox profile without saving it again when it still belongs to the current account', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    await f.service.useOfficialLogin()
+    const others = snapshot([saved.path, f.metadataPath, markerPath(f)])
+
+    const result = await f.service.useGatewayLogin(`${input.baseUrl}/`, belongs)
+    expect(result).toMatchObject({ outcome: 'switched', path: f.configPath })
+    expect(read(f.configPath)).toEqual({ deploymentMode: '3p' })
+    expectSnapshot(others)
+    expect(JSON.stringify(result)).not.toContain(input.apiKey)
+    expect(await f.service.inspectConnection(input.baseUrl, belongs)).toEqual({ configured: true, configurationReady: true, model: 'claude-opus-5',
+      configurationSource: 'xingmang', configurationError: null })
+  })
+
+  it('reports the official login even when the toolbox never saved a profile', async () => {
+    const f = fixture()
+    write(f.configPath, { deploymentMode: '1p' })
+    expect(await f.service.inspectConnection(input.baseUrl)).toEqual({ configured: false, configurationReady: false, model: null,
+      configurationSource: 'missing', configurationError: null, officialAccount: true })
+    await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).resolves.toEqual({ outcome: 'reconnect' })
+    expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
+  })
+
+  it.each([
+    ['belongs to another account', (_f: ReturnType<typeof fixture>, _saved: string) => undefined, () => false, input.baseUrl],
+    ['points at another route', (_f: ReturnType<typeof fixture>, _saved: string) => undefined, belongs, 'https://xm-direct.solov.cc'],
+    ['was removed', (_f: ReturnType<typeof fixture>, saved: string) => fs.rmSync(saved), belongs, input.baseUrl],
+    ['was switched to a dynamic credential', (_f: ReturnType<typeof fixture>, saved: string) => write(saved, { ...read(saved), inferenceCredentialKind: 'oidc' }), belongs, input.baseUrl],
+    ['is no longer the applied profile', (f: ReturnType<typeof fixture>) => {
+      const metadata = read(f.metadataPath) as { entries: unknown[] }
+      write(path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`), {})
+      write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: 'Default' }] })
+    }, belongs, input.baseUrl],
+  ])('asks to connect again without writing when the toolbox profile %s', async (_case, edit, owner, baseUrl) => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    await f.service.useOfficialLogin()
+    edit(f, saved.path)
+    const previous = snapshot([f.configPath, f.metadataPath, markerPath(f)])
+    await expect(f.service.useGatewayLogin(baseUrl, owner)).resolves.toEqual({ outcome: 'reconnect' })
+    expectSnapshot(previous)
+  })
+
+  it('leaves the choice alone when the client is not on the toolbox profile or already on the requested login', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    const metadata = read(f.metadataPath) as { entries: unknown[] }
+    write(path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`), read(saved.path))
+    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '自己的' }] })
+    const previous = snapshot([f.configPath, f.metadataPath])
+    await expect(f.service.useOfficialLogin()).rejects.toThrow('在切换前已变化')
+    await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).rejects.toThrow('在切换前已变化')
+    expectSnapshot(previous)
+
+    write(f.metadataPath, metadata)
+    await f.service.useOfficialLogin()
+    await expect(f.service.useOfficialLogin()).rejects.toThrow('在切换前已变化')
+    expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
+  })
+
+  it('stops before writing when the account changes or a policy appears', async () => {
+    let switched = false
+    const assertUnmanaged = vi.fn(async () => undefined)
+    const f = fixture({ assertBeforeWrite: () => { if (switched) throw new Error('account switched') }, assertUnmanaged })
+    await f.service.saveGateway(input)
+    const previous = snapshot([f.configPath])
+    switched = true
+    await expect(f.service.useOfficialLogin()).rejects.toThrow('账号已切换')
+    expectSnapshot(previous)
+    switched = false
+    assertUnmanaged.mockRejectedValueOnce(new Error('检测到管理策略'))
+    await expect(f.service.useOfficialLogin()).rejects.toThrow('管理策略')
+    expectSnapshot(previous)
+  })
+})

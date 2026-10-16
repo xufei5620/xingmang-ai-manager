@@ -179,6 +179,7 @@ export function createToolsApi(bridge: XingmangApi) {
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
     cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
+    switchExternalSource: (id: ExternalToolId, target: AccountSourceTarget) => bridge.switchExternalClientSource(id, target),
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
     // 只有「回到推荐版本」会点名版本。
     install: async (id: ToolId, version?: string) => {

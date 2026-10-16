@@ -120,6 +120,7 @@ function serviceStub(): SystemService {
     installExternalClient: vi.fn() as never,
     cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
     launchExternalClient: vi.fn(async () => undefined),
+    switchExternalClientSource: vi.fn(async (tool, target) => ({ tool, target, outcome: 'switched' as const, backups: [], message: '已切回官方账号' })),
   }
 }
 
@@ -2992,6 +2993,25 @@ describe('registerIpcHandlers', () => {
     expect(service.scanExternalClients).toHaveBeenCalledOnce()
     expect(service.configureExternalTool).not.toHaveBeenCalled()
     expect(service.installCli).not.toHaveBeenCalled()
+  })
+
+  it('switches only Claude Desktop between its official login and the current account', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('external-clients:switch-source')!
+    await expect(handler(trustedEvent(), 'claudeDesktop', 'official')).resolves.toMatchObject({ tool: 'claudeDesktop', target: 'official', outcome: 'switched' })
+    expect(service.switchExternalClientSource).toHaveBeenLastCalledWith('claudeDesktop', 'official', expect.any(Function))
+    // WorkBuddy、OpenCode 没有官方账号这一说；路径、对象一律当成不认识的客户端。
+    for (const tool of ['workbuddy', 'opencode', 'claude', undefined, {}, 'C:\\untrusted.exe']) {
+      expect(() => handler(trustedEvent(), tool, 'official')).toThrow('未知的外部客户端类型')
+    }
+    for (const target of [undefined, 'manual', {}, ['official']]) {
+      expect(() => handler(trustedEvent(), 'claudeDesktop', target)).toThrow('未知的账号来源')
+    }
+    // 没登录时改用当前账号没有可认的账号，主进程不读不写。
+    expect(() => handler(trustedEvent(), 'claudeDesktop', 'account')).toThrow('请先登录账号，再改用当前账号')
+    expect(() => electronMocks.handlers.get('external-clients:switch-source')!(trustedEvent('https://untrusted.example/'), 'claudeDesktop', 'official')).toThrow('已拒绝')
+    expect(service.switchExternalClientSource).toHaveBeenCalledOnce()
   })
 
   it('rejects paths, objects and unknown IDs before installing or launching an external client', () => {

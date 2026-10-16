@@ -116,6 +116,11 @@ export interface HomeProps {
   /** 中止正在进行的客户端安装；缺省 = 不给这颗按钮（旧行为）。 */
   onCancelInstallExternal?(tool: ExternalToolId): void
   onLaunchExternal(tool: ExternalToolId): void
+  /**
+   * Claude Desktop 在当前账号和客户自己的 Claude 账号之间切换（只改它登录页那个选择，星芒那份配置留着）；
+   * 缺省 = 来源牌照旧不可点（旧行为）。
+   */
+  onSwitchExternalSource?(tool: ExternalToolId, target: AccountSourceTarget): void
   /** 一键安装用不了时打开客户端官网下载页；缺省 = 不给这颗按钮，仍是「暂不支持」（旧行为）。 */
   onOpenExternalDownload?(url: string): void
   onCodexModels(): void
@@ -897,8 +902,25 @@ export function Home(props: HomeProps) {
       menu={toolMenu(tool, state)} menuLabel={`${spacedName(name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 
+  /** Claude Desktop 卡上的来源牌：和命令行工具那块同一套字，只给当前账号和 Claude 账号两项。 */
+  function externalSourceMenu(tool: ExternalPresentation, official: boolean): ReactNode {
+    const name = spacedName(tool.name)
+    const sourceLabel = official ? '官方账号' : '当前账号'
+    const items: Array<MenuItem | MenuNote | 'divider'> = [
+      { label: '当前账号', description: '按用量从当前账号扣费', checked: !official, disabled: externalCached && official, testId: `tool-${tool.id}-source-account`,
+        onSelect: () => { if (official) props.onSwitchExternalSource?.(tool.id, 'account') } },
+      { label: officialAccountNames.claude ?? '官方账号', description: '用你自己的官方订阅登录', checked: official, disabled: externalCached && !official, testId: `tool-${tool.id}-source-official`,
+        onSelect: () => { if (!official) props.onSwitchExternalSource?.(tool.id, 'official') } },
+      'divider',
+      { label: '更多配置…', disabled: externalCached, onSelect: () => props.onConfigureExternal(tool.id) },
+    ]
+    return <Menu align="start" heading="用哪个账号使用 AI" label={`${name}现在用${sourceLabel}，点击切换`} testId={`tool-${tool.id}-source-menu`} items={items}
+      anchor={<button type="button" className="v2-source-chip" data-testid={`tool-${tool.id}-source`} aria-label={`${name}现在用${sourceLabel}，点击切换`}>
+        <span>{sourceLabel}</span><ChevronDown size={13} aria-hidden="true" /></button>} />
+  }
+
   function renderExternal(tool: ExternalPresentation) {
-    const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
+    const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], switchJob = jobs[`switch:${tool.id}`], job = launchJob ?? switchJob ?? installJob
     const status = installJob ? 'installing' as const : tool.status.detectionError ? 'detectionFailed' as const : !tool.status.installed ? 'missing' as const
       : tool.configurationStatus
     // macOS 上没有核对得了的官方 Mac 包的（主进程 macos-desktop-app-installer.ts 那张表之外，
@@ -918,15 +940,18 @@ export function Home(props: HomeProps) {
       // 里面已经有一份别家的配置、只是没配全（Claude Desktop 的第三方推理）时，照旧写那一句，不笼统说没连上。
       : status === 'unconfigured' && tool.status.configurationSource !== 'other' && !tool.status.configurationError && !tool.status.detectionError ? unconfiguredDetail : tool.detail)
     const metaTone = status === 'detectionFailed' || tool.status.configurationError ? 'bad' as const : undefined
-    // 外接客户端的来源牌不可点：额度从哪扣写在悬停说明里。
+    // 只有 Claude Desktop 有两种登录可切；WorkBuddy、OpenCode 的来源牌不可点，额度从哪扣写在悬停说明里。
+    const switchable = tool.id === 'claudeDesktop' && Boolean(props.onSwitchExternalSource) && !job
+      && (status === 'official' || (status === 'ready' && tool.status.configurationSource === 'xingmang'))
     const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : status === 'missing' ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
+      : switchable ? externalSourceMenu(tool, status === 'official')
       : status === 'ready' && tool.status.configurationSource === 'xingmang' ? <span className="v2-source-chip is-static" title="额度从当前账号的余额里扣" data-testid={`tool-${tool.id}-source`}>当前账号</span>
         : <Pill tone={statuses.tool[status][1]} dot>{statuses.tool[status][0]}</Pill>
     const actions = installJob?.cancellable && props.onCancelInstallExternal
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
       : installJob ? null
-        : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || launchBusy || unsupported} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+        : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || launchBusy || unsupported || Boolean(switchJob)} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
           icon={tool.action === 'install' && !unsupported && !manualInstall ? Download : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolCard key={tool.id} tool={tool.id} off={!tool.status.installed && !installJob && !tool.status.detectionError} meta={meta} metaTone={metaTone} metaTitle={meta}
       badge={badge} actions={actions} progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
@@ -935,6 +960,9 @@ export function Home(props: HomeProps) {
         ...(tool.action === 'configure'
           ? [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy || externalCached, testId: `tool-${tool.id}-open`, onSelect: () => props.onLaunchExternal(tool.id) }]
           : [{ label: '配置…', disabled: externalCached, testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
+        ...(switchable ? [status === 'official'
+          ? { label: useAccountLabel, disabled: externalCached, testId: `tool-${tool.id}-switch-account`, onSelect: () => props.onSwitchExternalSource?.(tool.id, 'account') }
+          : { label: '切回官方账号', disabled: externalCached, testId: `tool-${tool.id}-switch-official`, onSelect: () => props.onSwitchExternalSource?.(tool.id, 'official') }] : []),
       ] : undefined} menuLabel={`${spacedName(tool.name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 

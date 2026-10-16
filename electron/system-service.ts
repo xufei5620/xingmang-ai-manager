@@ -310,7 +310,7 @@ import {
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
-import { externalClientNames, type ExternalClientConfigResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { externalClientNames, type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
 import type { DesktopBucketOptions } from './desktop-package-bucket'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
@@ -1154,6 +1154,8 @@ export interface SystemService {
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
   cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   launchExternalClient(tool: ExternalToolId): Promise<void>
+  /** 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择，星芒那份配置留着。 */
+  switchExternalClientSource(tool: ExternalToolId, target: 'account' | 'official', assertBeforeWrite?: () => void): Promise<ExternalClientSourceSwitchResult>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -6650,6 +6652,7 @@ export function createSystemService(
       configurationError: described?.configurationError ?? null,
       model: credential?.model ?? described?.model ?? null,
       apiKey: credential?.apiKey ?? null,
+      ...(described?.officialAccount ? { officialAccount: true } : {}),
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
   async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
@@ -6763,6 +6766,40 @@ export function createSystemService(
           : '全局配置与默认模型已保存。重新打开 OpenCode 后使用；项目配置或环境变量可能覆盖全局设置。',
         restartRequired: tool === 'opencode',
         connectionVerified: connection?.ok === true, connection }
+    }
+    const task = externalConfigQueue.then(work, work)
+    externalConfigQueue = task.catch(() => undefined)
+    return task
+  }
+  /**
+   * 首页 Claude Desktop 卡上「切回官方账号 / 改用当前账号」。和保存配置排同一个队：两件事改的是同一个
+   * 文件。切回当前账号只认星芒替当前账号写的、地址是当前线路的那一份，用不上就回 reconnect，界面接着
+   * 打开「连接 Claude Desktop」重新保存。
+   */
+  function switchExternalClientSource(
+    tool: ExternalToolId,
+    target: 'account' | 'official',
+    assertBeforeWrite?: () => void,
+  ): Promise<ExternalClientSourceSwitchResult> {
+    const work = async (): Promise<ExternalClientSourceSwitchResult> => {
+      if (tool !== 'claudeDesktop') throw new Error('未知的外部客户端类型')
+      assertBeforeWrite?.()
+      const { baseUrl, belongsToCurrentAccount } = externalClientContext(tool)
+      const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
+      assertBeforeWrite?.()
+      if (!status?.installed) throw new Error(`还没有检测到 ${externalClientNames[tool]}`)
+      const gateway = await claudeDesktopConfig(status, assertBeforeWrite)
+      if (target === 'official') {
+        const result = await gateway.useOfficialLogin()
+        runtimeLog?.log('info', 'config', 'external-client.source-switched', 'Claude Desktop 已切回官方登录', { target, running: status.running })
+        return { tool, target, outcome: 'switched', backups: result.backups,
+          message: '已切回官方账号，原来的配置已备份。下次打开 Claude Desktop 时用你自己的 Claude 账号登录；现在开着的话，要完全退出再打开。用星芒时的聊天记录不会删，切回当前账号还能看到。' }
+      }
+      const result = await gateway.useGatewayLogin(baseUrl, belongsToCurrentAccount)
+      runtimeLog?.log('info', 'config', 'external-client.source-switched', result.outcome === 'switched' ? 'Claude Desktop 已改用当前账号' : 'Claude Desktop 原来那份配置用不上，要重新连接', { target, outcome: result.outcome, running: status.running })
+      if (result.outcome === 'reconnect') return { tool, target, outcome: 'reconnect' }
+      return { tool, target, outcome: 'switched', backups: result.backups,
+        message: '已改用当前账号，原来的配置已备份。Claude Desktop 现在开着的话，要完全退出再打开才会换过来。' }
     }
     const task = externalConfigQueue.then(work, work)
     externalConfigQueue = task.catch(() => undefined)
@@ -8318,6 +8355,7 @@ export function createSystemService(
     installExternalClient,
     cancelExternalClientInstall,
     launchExternalClient,
+    switchExternalClientSource,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     cleanupInstallLeftovers,

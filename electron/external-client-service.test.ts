@@ -537,6 +537,53 @@ describe('external client system-service integration', () => {
     })
   })
 
+  it('switches Claude Desktop to the official login and back without asking for the key again', async () => {
+    const f = fixture()
+    const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    const desktopPath = path.join(f.claudeProfileDirectory, 'claude_desktop_config.json')
+    const profile = fs.readFileSync(saved.path, 'utf8')
+    f.relayFetch.mockClear()
+
+    const official = await f.service.switchExternalClientSource('claudeDesktop', 'official')
+    expect(official).toMatchObject({ tool: 'claudeDesktop', target: 'official', outcome: 'switched' })
+    expect(official.outcome === 'switched' && official.message).toContain('用你自己的 Claude 账号登录')
+    expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ deploymentMode: '1p' })
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(profile)
+    const status = (await f.service.scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop')
+    expect(status).toMatchObject({ configured: false, officialAccount: true })
+    // 官方登录走客户自己的订阅：检查页照实说，不拿留着的那把星芒密钥去发请求。
+    expect(await f.service.checkExternalClientConnection('claudeDesktop')).toMatchObject({ ok: false, layer: 'unconfigured', endpoint: null })
+
+    // 换了账号，那份不是这个账号的：一个字不写，界面去打开连接窗口。
+    f.setUser(18)
+    await expect(f.service.switchExternalClientSource('claudeDesktop', 'account')).resolves.toEqual({ tool: 'claudeDesktop', target: 'account', outcome: 'reconnect' })
+    expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ deploymentMode: '1p' })
+
+    f.setUser(17)
+    const back = await f.service.switchExternalClientSource('claudeDesktop', 'account')
+    expect(back).toMatchObject({ tool: 'claudeDesktop', target: 'account', outcome: 'switched' })
+    expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ deploymentMode: '3p' })
+    expect((await f.service.scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop')).toMatchObject({ configured: true, configurationSource: 'xingmang' })
+    expect(JSON.stringify([official, back])).not.toContain(selectedKey)
+    expect(f.relayFetch).not.toHaveBeenCalled()
+  })
+
+  it.each(['workbuddy', 'opencode'] as const)('does not offer %s an official login to switch to', async (tool) => {
+    const f = fixture()
+    await expect(f.service.switchExternalClientSource(tool, 'official')).rejects.toThrow('未知的外部客户端类型')
+    expect(f.runtime.scan).not.toHaveBeenCalled()
+  })
+
+  it('stops a Claude Desktop switch when the account changes after the management check', async () => {
+    const f = fixture()
+    await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    const desktopPath = path.join(f.claudeProfileDirectory, 'claude_desktop_config.json')
+    let revision = 1
+    f.assertClaudeDesktopUnmanaged.mockImplementationOnce(async () => { revision++ })
+    await expect(f.service.switchExternalClientSource('claudeDesktop', 'official', () => { if (revision !== 1) throw new Error('账号已切换') })).rejects.toThrow('账号已切换')
+    expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ deploymentMode: '3p' })
+  })
+
   it('blocks Claude local configuration when a managed policy is present', async () => {
     const f = fixture()
     f.assertClaudeDesktopUnmanaged.mockRejectedValueOnce(new Error('Claude Desktop 已受管理策略控制'))

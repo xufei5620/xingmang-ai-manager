@@ -59,6 +59,16 @@ describe('external client snapshot cache', () => {
     expect(parsed?.[0]).not.toHaveProperty('routeRecheck')
   })
 
+  it('remembers that Claude Desktop is on its official login so the first paint does not call it unconnected', () => {
+    const scanned = clients()
+    scanned[1] = { ...scanned[1], configured: false, configurationReady: false, configurationSource: 'other', officialAccount: true }
+    const parsed = parseExternalClientSnapshotCache(serializeExternalClientSnapshotCache(scanned, new Date('2026-10-05T10:00:05.000Z'))!)
+    expect(parsed?.[1]).toMatchObject({ tool: 'claudeDesktop', officialAccount: true })
+    expect(parsed?.[0]).not.toHaveProperty('officialAccount')
+    const row: Record<string, unknown> = { ...scanned[1], officialAccount: 'yes' }
+    expect(parseExternalClientSnapshotCache(document([scanned[0], row, scanned[2]]))).toBeNull()
+  })
+
   it('keeps only a whole scan: one row for each of the three clients', () => {
     const [workbuddy, claudeDesktop] = clients()
     expect(serializeExternalClientSnapshotCache([workbuddy, claudeDesktop], new Date())).toBeNull()
