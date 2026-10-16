@@ -22,23 +22,20 @@ export interface RecentWorkspace {
   name: string
 }
 
-/** 「打开」旁边那个下拉里的一项。 */
-export interface WorkspaceChoice {
-  /** null = 「选择其他文件夹…」，走原来的目录选择器；带 create 时是「新建项目文件夹」。 */
-  path: string | null
-  label: string
-  /** 不选目录，由主进程在「文档」下替用户建一个空的项目文件夹再打开。 */
-  create?: true
-}
-
 /** 首页与引导里「新建项目文件夹」入口的统一文案。 */
 export const newWorkspaceLabel = '新建项目文件夹并打开'
 
 /** 「选择其他文件夹…」：弹原来的目录选择器。首页大卡和卡片「…」菜单里都用它（v4 批 04 改字）。 */
 export const chooseWorkspaceLabel = '选择其他文件夹…'
 
-/** 下拉里最多放几个目录。再多用户也不会一个个看完。 */
+/** 卡片「…」最上面那一项，点了弹「接着之前的对话」那个窗口。 */
+export const conversationsMenuLabel = '接着之前的对话…'
+
+/** recentWorkspaces 默认推出几个目录。现在只有「打开」用第一个；卡片「…」里不再列目录。 */
 const RECENT_LIMIT = 5
+
+/** 「接着之前的对话」那个窗口最多列几个文件夹，再早的去「记录」页找。 */
+const CONVERSATION_LIMIT = 8
 
 /** 主按钮上目录名最多显示几个字符，超了截断，完整路径留在 title 里。 */
 const NAME_LIMIT = 10
@@ -93,18 +90,6 @@ export function launchWorkspaces(
   return [{ path, name: workspaceName(path) }]
 }
 
-/**
- * 下拉里的条目：最近用过的目录，最后永远留「选择其他文件夹…」和「新建项目文件夹」。
- * 后者给不知道该选哪个文件夹的新手，一步到位，不用再起名、再选。
- */
-export function workspaceChoices(items: readonly RecentWorkspace[]): WorkspaceChoice[] {
-  return [
-    ...items.map((item) => ({ path: item.path, label: item.path })),
-    { path: null, label: chooseWorkspaceLabel },
-    { path: null, label: newWorkspaceLabel, create: true },
-  ]
-}
-
 /** 主按钮上的文字。目录名太长时截断，鼠标停上去还能看到完整路径。 */
 export function workspaceButtonLabel(name: string, limit = NAME_LIMIT): string {
   return name.length > limit ? `${name.slice(0, limit)}…` : name
@@ -149,6 +134,22 @@ export function latestSessionIdsByWorkspace(
     latest.add(session.id)
   }
   return latest
+}
+
+/**
+ * 「接着之前的对话」窗口里的行：这个工具每个文件夹一行，放的是那个文件夹里最近的那条对话。
+ * 卡片「…」以前在最上面列最近用过的几个文件夹的整条路径（点了是在那里开新对话），客户看着像
+ * 对话记录又看不懂（yoyo 10-16，Mac 0.2.19 测试包截图）。「接着聊」本来就只能接每个文件夹最近
+ * 的那一条（见 latestSessionIdsByWorkspace），所以一个文件夹一行，点哪行接上的就是哪行。
+ * sessions 要按时间倒序（主进程的 list 给的就是）。
+ */
+export function folderConversations(
+  sessions: readonly SessionSummary[],
+  provider: ProviderId,
+  limit = CONVERSATION_LIMIT,
+): SessionSummary[] {
+  const latest = latestSessionIdsByWorkspace(sessions)
+  return sessions.filter((session) => session.provider === provider && latest.has(session.id)).slice(0, limit)
 }
 
 /**

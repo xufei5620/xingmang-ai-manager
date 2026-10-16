@@ -997,9 +997,9 @@ test('the launch button reuses the directory the tool was last opened in (N7)', 
     await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
     await page.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
     const items = await page.getByRole('menuitem').allInnerTexts()
-    // 原来「打开」旁边的下拉挪进了「…」最上面：同一个目录的两条记录只占一格，顺序按最近用过排，
-    // 后面永远留着原来的选择器和新建。
-    assert.deepEqual(items.slice(0, 4), ['C:\\work\\my-app', 'C:\\work\\older-app', '选择其他文件夹…', '新建项目文件夹并打开'])
+    // 「…」最上面原来是最近几个文件夹的整条路径，客户看着像对话记录又看不懂（yoyo 10-16）：
+    // 换成「接着之前的对话…」，后面还是原来的选择器和新建。
+    assert.deepEqual(items.slice(0, 3), ['接着之前的对话…', '选择其他文件夹…', '新建项目文件夹并打开'])
     await page.getByTestId('tool-claude-choose-workspace').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'chooseWorkspace'))
     const picked = await page.evaluate(() => window.v2Test.calls)
@@ -1043,6 +1043,76 @@ test('the home recent card resumes the last conversation of that folder (#292)',
       [['claude', 'C:\\work\\my-app', 'resumeLast']])
     // 目录是记录里现成的,不该再弹一次目录选择器。
     assert.equal(calls.some((entry) => entry.method === 'chooseWorkspace'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// yoyo 10-16：卡片「…」最上面那串文件夹路径看着像对话记录、又看不懂，换成「接着之前的对话…」，
+// 弹一个窗口，一个文件夹一行，点哪行接哪行。
+test('the card menu lists earlier chats of that tool, one per folder, and resumes the one picked', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    await page.getByTestId('tool-claude-conversations').click()
+    const dialog = page.getByTestId('tool-conversations-dialog')
+    await dialog.waitFor()
+    assert.equal(await dialog.getByRole('heading').innerText(), '接着 Claude Code 之前的对话')
+    // my-app 的两条只留最近的 claude:1；older-app 的文件夹没了，那行照样列、按钮灰着；别的工具的不进来。
+    await page.getByTestId('tool-conversation-row-claude:1').waitFor()
+    assert.deepEqual(await dialog.locator('.v2-home-recent-row').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-testid'))),
+      ['tool-conversation-row-claude:1', 'tool-conversation-row-claude:2'])
+    // 现读的是这一个工具的记录，不是首页那份 60 条（开发版的 StrictMode 会让窗口挂上时读两遍，只看读的是什么）。
+    const reads = await page.evaluate(() => window.v2Test.calls
+      .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.provider === 'claude').map((entry) => entry.args[0]))
+    assert.ok(reads.length > 0)
+    for (const read of reads) assert.deepEqual(read, { provider: 'claude', page: 1, pageSize: 100 })
+    const row = page.getByTestId('tool-conversation-row-claude:1')
+    assert.equal(await row.locator('.v2-recent-title').innerText(), '会话 1')
+    assert.equal(await row.locator('.v2-home-recent-dir').innerText(), 'my-app')
+    assert.equal(await row.locator('.v2-home-recent-dir').getAttribute('title'), 'C:\\work\\my-app')
+    assert.equal(await page.getByTestId('tool-conversation-row-claude:2').getByText('文件夹已不存在').count(), 1)
+    assert.equal(await page.getByTestId('tool-conversation-resume-claude:2').isDisabled(), true)
+
+    await page.getByTestId('tool-conversation-resume-claude:1').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await expect(dialog).toHaveCount(0)
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    // 文件夹是记录里现成的，不再弹选择框。
+    assert.equal(calls.some((entry) => entry.method === 'chooseWorkspace'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the earlier-chats window can go to all records or start a new chat instead', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  async function openChats() {
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    await page.getByTestId('tool-claude-conversations').click()
+    await page.getByTestId('tool-conversations-dialog').waitFor()
+  }
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    // Grok CLI 一条记录都没有：它的「…」里没有这一项。
+    await page.getByRole('button', { name: 'Grok CLI 更多操作', exact: true }).click()
+    assert.equal(await page.getByTestId('tool-grok-conversations').count(), 0)
+    await page.keyboard.press('Escape')
+
+    await openChats()
+    await page.getByTestId('tool-conversations-all').click()
+    await page.getByTestId('page-sessions').waitFor()
+    await expect(page.getByTestId('tool-conversations-dialog')).toHaveCount(0)
+    await page.getByTestId('nav-home').click()
+
+    await openChats()
+    await page.getByTestId('tool-conversations-new').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    // 「开新对话」就是卡片上的「打开」：在最近用过的文件夹里开，不接上一条。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args)),
+      [['claude', 'C:\\work\\my-app']])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1957,9 +2027,9 @@ test('after the first open the button names the created folder and keeps the ful
     await page.getByTestId('tool-codex-primary').click()
     await page.waitForFunction((folder) => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === `在 ${folder} 打开`, starterFolder)
     await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
-    // v4：原来「打开」旁边那个下拉挪进了「…」最上面。
+    // v4：「…」最上面是选择器和新建；Codex 还没聊过，没有「接着之前的对话…」。
     await page.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
-    assert.deepEqual((await page.getByRole('menuitem').allInnerTexts()).slice(0, 3), [starterFolder, '选择其他文件夹…', '新建项目文件夹并打开'])
+    assert.deepEqual((await page.getByRole('menuitem').allInnerTexts()).slice(0, 2), ['选择其他文件夹…', '新建项目文件夹并打开'])
     await page.keyboard.press('Escape')
     await page.getByTestId('tool-claude-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
