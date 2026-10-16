@@ -50,6 +50,11 @@ export interface ExternalClientConnectionStatus {
    * 关了就自动换（xm 三线路 C11，只有星芒账号这么做）。缺省 = 照旧要点「重新检测」。
    */
   routeRecheck?: boolean
+  /**
+   * Claude Desktop 选的是官方登录（用客户自己的 Claude 账号），第三方配置留着也不读。缺省 = 不是
+   * （旧行为）。只有 Claude Desktop 会有。
+   */
+  officialAccount?: boolean
 }
 
 export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {
@@ -123,6 +128,14 @@ export interface ExternalClientConfigResult {
   /** 自检结果本身；客户端没装或配置回读不出来时为 null。永不含 Key。 */
   connection: ExternalClientCheckResult | null
 }
+
+/**
+ * 首页 Claude Desktop 卡上「切回官方账号 / 改用当前账号」的结果。reconnect 是星芒那份配置用不上了
+ * （不在了、被换掉了、不是当前账号的密钥），一个字没写，界面接着打开「连接 Claude Desktop」。
+ */
+export type ExternalClientSourceSwitchResult =
+  | { tool: ExternalToolId; target: 'account' | 'official'; outcome: 'switched'; backups: string[]; message: string }
+  | { tool: ExternalToolId; target: 'account'; outcome: 'reconnect' }
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('客户端配置参数无效')

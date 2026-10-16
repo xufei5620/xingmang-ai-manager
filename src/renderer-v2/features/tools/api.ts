@@ -179,6 +179,7 @@ export function createToolsApi(bridge: XingmangApi) {
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
     cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
+    switchExternalSource: (id: ExternalToolId, target: AccountSourceTarget) => bridge.switchExternalClientSource(id, target),
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
     // 只有「回到推荐版本」会点名版本。
     install: async (id: ToolId, version?: string) => {
@@ -225,6 +226,9 @@ export function createToolsApi(bridge: XingmangApi) {
     recent: () => recentSessions.read(),
     /** 让首页那份「最近」立刻作废：用户主动重新检测、切换账号时调。 */
     invalidateRecent: () => recentSessions.invalidate(),
+    // 卡片「…」里「接着之前的对话」那个窗口：只读这一个工具的，每次打开现读、不走缓存。用得少的工具
+    // 挤不进首页那 60 条，也照样列得出来；100 是主进程一页的上限。
+    toolSessions: (provider: ProviderId) => bridge.listProviderSessions({ provider, page: 1, pageSize: 100 }).then(withoutRetiredSessions),
     readConfig: () => bridge.getConfig(),
     readKeys: () => readAllAccountKeys((query) => bridge.getAccountKeys(query)),
     readKeyOptions: (tool: ToolId) => bridge.getAccountKeyOptions(providerFor(tool)),

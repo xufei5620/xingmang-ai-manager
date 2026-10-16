@@ -176,7 +176,8 @@ const system: SystemSnapshot = { checkedAt: '2026-09-07T01:00:00Z',
   network: { region: 'unknown', publicIp: null, countryCode: null, checkedAt: '2026-09-07T01:00:00Z', error: null },
   runtime: { node: { ...status, version: 'v24.0.0' }, npm: { ...status, version: '11.0.0' }, python: { ...status, version: '3.12.0' }, git: { ...status, version: '2.43.0' } },
   clis: { claude: { ...status }, codex: { ...status, installed: !query.has('codexMissing') }, gemini: { ...status, installed: query.has('allInstalled') }, grok: { ...status, installed: query.has('allInstalled') } },
-  desktopApps: { codex: { ...status, appVersion: '1.2.3', mirrorVersion: null, mirrorUpdateAvailable: false, mirrorError: null, running: query.has('running') } },
+  // 主进程报 Codex 桌面端时不带 uninstall，能不能卸只看平台能力（Mac 上不能）。
+  desktopApps: { codex: { ...status, uninstall: undefined, appVersion: '1.2.3', mirrorVersion: null, mirrorUpdateAvailable: false, mirrorError: null, running: query.has('running') } },
 }
 // 版本串解析不出来的 Node（自编译 / 魔改）：tooOld 仍是 false，只有
 // versionStatus 说得出「认不出来」。
@@ -297,7 +298,7 @@ if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 // ?elevated：星芒这次本身就带着管理员权限在跑（自带 Administrator 之类），装东西不弹授权窗口（已知19）。
-const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true }, ...(query.has('elevated') ? { processElevated: true } : {}) } as const
+const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', pythonRuntimeInstall: query.has('runtimeExternal') ? 'external' : 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: query.get('os') !== 'mac', windowsStore: true }, ...(query.has('elevated') ? { processElevated: true } : {}) } as const
 const balance = { quota: 6_200_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 12.4 }
 /** ?runningTools：问到的工具都还开着，问到 Codex 时桌面端也开着，且能替用户重开。 */
 function fixtureRunningTools(providers: readonly ProviderId[]) {
@@ -537,6 +538,15 @@ const methods = {
   launchExternalClient: async (tool) => {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
     externalStatuses.find((entry) => entry.tool === tool)!.running = true
+  },
+  // 同主进程：只改 Claude Desktop 登录页那个选择，星芒那份留着；?externalReconnect 时那份已经用不上。
+  switchExternalClientSource: async (tool, target) => {
+    const current = externalStatuses.find((entry) => entry.tool === tool)!
+    if (target === 'account' && query.has('externalReconnect')) return { tool, target, outcome: 'reconnect' as const }
+    if (target === 'official') Object.assign(current, { configured: false, configurationReady: false, configurationSource: 'other', officialAccount: true })
+    else Object.assign(current, { configured: true, configurationReady: true, configurationSource: 'xingmang', officialAccount: undefined })
+    return { tool, target, outcome: 'switched' as const, backups: ['C:\\Fixture\\Claude-3p\\claude_desktop_config.json.bak'],
+      message: target === 'official' ? '已切回官方账号，原来的配置已备份。' : '已改用当前账号，原来的配置已备份。' }
   },
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null

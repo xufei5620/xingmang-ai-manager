@@ -12,6 +12,6 @@ export function rescanFingerprint(snapshot: ToolboxSnapshot | null, external: re
   return JSON.stringify([
     presentTools(snapshot).map((tool) => [tool.id, tool.status.installed, tool.status.version, Boolean(tool.status.detectionFailed), tool.source, tool.model ?? null, tool.configured, tool.updateAvailable]),
     (['node', 'npm', 'git', 'python'] as const).map((id) => [id, runtime[id].installed, runtime[id].version, Boolean(runtime[id].detectionFailed)]),
-    external.map((client) => [client.tool, client.installed, client.version, client.configured, client.configurationSource, client.configurationReady ?? null, Boolean(client.configurationError), client.model ?? null, Boolean(client.detectionError)]),
+    external.map((client) => [client.tool, client.installed, client.version, client.configured, client.configurationSource, client.configurationReady ?? null, Boolean(client.configurationError), client.model ?? null, Boolean(client.detectionError), client.officialAccount === true]),
   ])
 }

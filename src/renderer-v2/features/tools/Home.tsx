@@ -17,7 +17,7 @@ import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { chooseWorkspaceLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
+import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId } from '../../../../electron/catalog'
@@ -32,6 +32,8 @@ import { buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
 import { useRestartPending } from './restart-reminder'
 import { RuntimeRestartDialog } from './RuntimeRestartDialog'
 import { OfficialQuotaDialog } from './OfficialQuotaDialog'
+import { ToolConversationsDialog } from './ToolConversationsDialog'
+import { buildUninstallGuide, UninstallGuideDialog, type UninstallGuide, type UninstallGuideTool } from './UninstallGuide'
 import { weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
 import { currentWindowOs, windowOsFor } from '../app/window-os'
 
@@ -116,6 +118,11 @@ export interface HomeProps {
   /** 中止正在进行的客户端安装；缺省 = 不给这颗按钮（旧行为）。 */
   onCancelInstallExternal?(tool: ExternalToolId): void
   onLaunchExternal(tool: ExternalToolId): void
+  /**
+   * Claude Desktop 在当前账号和客户自己的 Claude 账号之间切换（只改它登录页那个选择，星芒那份配置留着）；
+   * 缺省 = 来源牌照旧不可点（旧行为）。
+   */
+  onSwitchExternalSource?(tool: ExternalToolId, target: AccountSourceTarget): void
   /** 一键安装用不了时打开客户端官网下载页；缺省 = 不给这颗按钮，仍是「暂不支持」（旧行为）。 */
   onOpenExternalDownload?(url: string): void
   onCodexModels(): void
@@ -409,12 +416,15 @@ export function Home(props: HomeProps) {
   const [recentAttempt, setRecentAttempt] = useState(0)
   // 「接着聊」点下去以后正在核对的那一条（见 resumeRecent）；null = 没在核对。
   const [resumeChecking, setResumeChecking] = useState<string | null>(null)
+  // 卡片「…」里「接着之前的对话…」开着的那个工具；null = 窗口没开。
+  const [conversationsTool, setConversationsTool] = useState<ToolId | null>(null)
   const [usage, setUsage] = useState<BalanceUsage | null>(() => cachedUsage(props.api, props.accountScope))
   const [usageError, setUsageError] = useState('')
   const trendWanted = props.supportsUsageTrend === true && props.supportsUsage !== false
   const [week, setWeek] = useState<WeekSpend | null>(() => cachedWeekSpend(props.api, props.accountScope, trendWanted))
   const [officialOpen, setOfficialOpen] = useState(false)
   const [official, setOfficial] = useState<OfficialChatGptAccount | null>(null)
+  const [uninstallGuide, setUninstallGuide] = useState<UninstallGuide | null>(null)
   const [firstRunDismissed, setFirstRunDismissed] = useState<ToolId[]>(() => readFirstRunDismissals(getFirstRunStorage()))
   const [noticeSlot, setNoticeSlot] = useState<HTMLDivElement | null>(null)
   const active = useRef(true)
@@ -659,7 +669,7 @@ export function Home(props: HomeProps) {
         : bootstrapBusy && !tool.configured ? 'configuring' as const
         : tool.configured ? 'ready' as const : notEnabled ? 'notEnabled' as const : 'unconfigured' as const
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，拿它当「打开」的默认值，
-    // 「…」里再给最近几个和原来的选择器（N7）。这个工具还没有记录时用上次在本软件里选过的文件夹，
+    // 「…」里再给原来的选择器（N7）。这个工具还没有记录时用上次在本软件里选过的文件夹，
     // 几个命令行工具合起来只问一次。Codex 桌面端自己管工作区，不走这条路。
     const opensWorkspace = !configUnavailable && !tool.error && tool.status.installed
       && openable && tool.id !== 'codexDesktop'
@@ -732,6 +742,15 @@ export function Home(props: HomeProps) {
         <span>{state.sourceLabel}</span><ChevronDown size={13} aria-hidden="true" /></button>} />
   }
 
+  /**
+   * 星芒卸不了的桌面端（外接客户端、Mac 上的 Codex 桌面端）在「…」里也放「卸载…」，点了弹框说
+   * 在系统里怎么删；Windows 上的 Codex 桌面端星芒自己能卸，不走这里。
+   */
+  function uninstallGuideItems(tool: UninstallGuideTool, name: string, path: string | null): MenuItem[] {
+    const guide = buildUninstallGuide(tool, name, os, path)
+    return guide ? [{ label: '卸载…', danger: true, testId: `tool-${tool}-uninstall-guide`, onSelect: () => setUninstallGuide(guide) }] : []
+  }
+
   function managedInstall(id: ToolId): boolean {
     return (id === 'codexDesktop' ? snapshot?.platform.codexDesktop?.install : snapshot?.platform.cliInstall?.[id]) === 'managed'
   }
@@ -750,7 +769,9 @@ export function Home(props: HomeProps) {
     const switchTarget = state.configUnavailable || state.broken || tool.error || state.ownershipPending ? null : accountSwitchTarget(tool)
     // 被拦着的那几种（配置坏了、被改过……）卡上只放修的那颗按钮，还能用的话「打开」挪进这里。
     const blockedOpen = state.openable && ['configBroken', 'configChanged', 'ccSwitch', 'otherSiteKey'].includes(state.status)
-    const recentChoices = state.opensWorkspace ? workspaceChoices(state.workspaces).filter((choice) => choice.path !== null) : []
+    // 这个工具聊过（记录还没读到时说不准，照旧给）才有「接着之前的对话…」。以前这里列的是最近几个文件夹的
+    // 整条路径，点了是在那里开新对话，客户看着像对话记录又看不懂（yoyo 10-16）；v4 原型这里也没有那一串。
+    const conversationsOffered = state.opensWorkspace && (recent === null || recent.stats.byProvider[tool.provider] > 0)
     const groups: Array<Array<MenuItem | MenuNote>> = [
       // 故意改过配置的人也要有出路，否则那颗黄牌会一直挂着。认下之后这个工具
       // 就按「自己填写的密钥」处理，下次在配置里改回当前账号时标记自动清掉。
@@ -758,7 +779,7 @@ export function Home(props: HomeProps) {
         ? [{ label: '就用现在这份配置', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : [],
       [
         ...(blockedOpen ? [{ label: '打开', testId: `tool-${tool.id}-open`, disabled: launchBlocked, onSelect: state.primary }] : []),
-        ...recentChoices.map((choice) => ({ label: choice.label, title: choice.path ?? undefined, disabled: launchBlocked, onSelect: () => props.onLaunch(tool.id, choice.path ?? undefined) })),
+        ...(conversationsOffered ? [{ label: conversationsMenuLabel, testId: `tool-${tool.id}-conversations`, onSelect: () => setConversationsTool(tool.id) }] : []),
         // 还没有最近目录、「打开」已经替人新建项目文件夹时（已知40），这里只给「选择其他文件夹…」；
         // 记录还没读到、「打开」还是弹选择框的那一小会儿，反过来只给新建入口。
         ...(state.opensWorkspace && (state.lastWorkspace || (state.startsFresh && props.onLaunchInNewFolder))
@@ -791,7 +812,8 @@ export function Home(props: HomeProps) {
         { label: '查看记录', testId: `tool-${tool.id}-sessions`, onSelect: () => props.onNavigate('sessions') },
       ],
       canUninstallTool(tool.status, tool.id === 'codexDesktop' && snapshot?.platform.codexDesktop.uninstall === true)
-        ? [{ label: '卸载…', danger: true, testId: `tool-${tool.id}-uninstall`, onSelect: () => props.onUninstall(tool.id) }] : [],
+        ? [{ label: '卸载…', danger: true, testId: `tool-${tool.id}-uninstall`, onSelect: () => props.onUninstall(tool.id) }]
+        : tool.id === 'codexDesktop' ? uninstallGuideItems(tool.id, tool.name, tool.status.path) : [],
     ]
     return groups.filter((group) => group.length > 0).flatMap((group, index) => index ? ['divider' as const, ...group] : group)
   }
@@ -897,8 +919,25 @@ export function Home(props: HomeProps) {
       menu={toolMenu(tool, state)} menuLabel={`${spacedName(name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 
+  /** Claude Desktop 卡上的来源牌：和命令行工具那块同一套字，只给当前账号和 Claude 账号两项。 */
+  function externalSourceMenu(tool: ExternalPresentation, official: boolean): ReactNode {
+    const name = spacedName(tool.name)
+    const sourceLabel = official ? '官方账号' : '当前账号'
+    const items: Array<MenuItem | MenuNote | 'divider'> = [
+      { label: '当前账号', description: '按用量从当前账号扣费', checked: !official, disabled: externalCached && official, testId: `tool-${tool.id}-source-account`,
+        onSelect: () => { if (official) props.onSwitchExternalSource?.(tool.id, 'account') } },
+      { label: officialAccountNames.claude ?? '官方账号', description: '用你自己的官方订阅登录', checked: official, disabled: externalCached && !official, testId: `tool-${tool.id}-source-official`,
+        onSelect: () => { if (!official) props.onSwitchExternalSource?.(tool.id, 'official') } },
+      'divider',
+      { label: '更多配置…', disabled: externalCached, onSelect: () => props.onConfigureExternal(tool.id) },
+    ]
+    return <Menu align="start" heading="用哪个账号使用 AI" label={`${name}现在用${sourceLabel}，点击切换`} testId={`tool-${tool.id}-source-menu`} items={items}
+      anchor={<button type="button" className="v2-source-chip" data-testid={`tool-${tool.id}-source`} aria-label={`${name}现在用${sourceLabel}，点击切换`}>
+        <span>{sourceLabel}</span><ChevronDown size={13} aria-hidden="true" /></button>} />
+  }
+
   function renderExternal(tool: ExternalPresentation) {
-    const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
+    const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], switchJob = jobs[`switch:${tool.id}`], job = launchJob ?? switchJob ?? installJob
     const status = installJob ? 'installing' as const : tool.status.detectionError ? 'detectionFailed' as const : !tool.status.installed ? 'missing' as const
       : tool.configurationStatus
     // macOS 上没有核对得了的官方 Mac 包的（主进程 macos-desktop-app-installer.ts 那张表之外，
@@ -918,15 +957,18 @@ export function Home(props: HomeProps) {
       // 里面已经有一份别家的配置、只是没配全（Claude Desktop 的第三方推理）时，照旧写那一句，不笼统说没连上。
       : status === 'unconfigured' && tool.status.configurationSource !== 'other' && !tool.status.configurationError && !tool.status.detectionError ? unconfiguredDetail : tool.detail)
     const metaTone = status === 'detectionFailed' || tool.status.configurationError ? 'bad' as const : undefined
-    // 外接客户端的来源牌不可点：额度从哪扣写在悬停说明里。
+    // 只有 Claude Desktop 有两种登录可切；WorkBuddy、OpenCode 的来源牌不可点，额度从哪扣写在悬停说明里。
+    const switchable = tool.id === 'claudeDesktop' && Boolean(props.onSwitchExternalSource) && !job
+      && (status === 'official' || (status === 'ready' && tool.status.configurationSource === 'xingmang'))
     const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : status === 'missing' ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
+      : switchable ? externalSourceMenu(tool, status === 'official')
       : status === 'ready' && tool.status.configurationSource === 'xingmang' ? <span className="v2-source-chip is-static" title="额度从当前账号的余额里扣" data-testid={`tool-${tool.id}-source`}>当前账号</span>
         : <Pill tone={statuses.tool[status][1]} dot>{statuses.tool[status][0]}</Pill>
     const actions = installJob?.cancellable && props.onCancelInstallExternal
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
       : installJob ? null
-        : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || launchBusy || unsupported} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+        : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || launchBusy || unsupported || Boolean(switchJob)} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
           icon={tool.action === 'install' && !unsupported && !manualInstall ? Download : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolCard key={tool.id} tool={tool.id} off={!tool.status.installed && !installJob && !tool.status.detectionError} meta={meta} metaTone={metaTone} metaTitle={meta}
       badge={badge} actions={actions} progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
@@ -935,6 +977,10 @@ export function Home(props: HomeProps) {
         ...(tool.action === 'configure'
           ? [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy || externalCached, testId: `tool-${tool.id}-open`, onSelect: () => props.onLaunchExternal(tool.id) }]
           : [{ label: '配置…', disabled: externalCached, testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
+        ...(switchable ? [status === 'official'
+          ? { label: useAccountLabel, disabled: externalCached, testId: `tool-${tool.id}-switch-account`, onSelect: () => props.onSwitchExternalSource?.(tool.id, 'account') }
+          : { label: '切回官方账号', disabled: externalCached, testId: `tool-${tool.id}-switch-official`, onSelect: () => props.onSwitchExternalSource?.(tool.id, 'official') }] : []),
+        ...uninstallGuideItems(tool.id, tool.name, tool.status.path).flatMap((item) => ['divider' as const, item]),
       ] : undefined} menuLabel={`${spacedName(tool.name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 
@@ -982,6 +1028,22 @@ export function Home(props: HomeProps) {
           {state.opensWorkspace && <Button variant="secondary" icon={FolderOpen} disabled={state.waitingForScan || state.waitingForAccount || launchBusy} onClick={() => props.onLaunch(heroTool.id)} testId="home-hero-pick-folder">{chooseWorkspaceLabel}</Button>}
         </div></div>
     </div>
+  }
+
+  /** 卡片「…」里「接着之前的对话…」那个窗口。卡片要是不再能打开（卸了、配置坏了），里面的按钮跟着按不动。 */
+  function renderConversations(): ReactNode {
+    const tool = conversationsTool ? tools.find((entry) => entry.id === conversationsTool) : undefined
+    if (!tool) return null
+    const state = toolState(tool)
+    const name = toolRegistry.find((entry) => entry.id === tool.id)?.name ?? tool.name
+    const close = () => setConversationsTool(null)
+    return <ToolConversationsDialog api={props.api} provider={tool.provider} toolName={name}
+      resumeDisabled={!state.opensWorkspace || (loading && !launchReadyBeforeScan(tool)) || launchWaitingForAccount(tool.provider) || launchBusy}
+      newDisabled={!state.opensWorkspace || state.primaryDisabled}
+      onResume={(session) => { close(); props.onLaunch(tool.id, session.cwd, resumeLaunchChoice(session)) }}
+      onNew={() => { close(); state.primary() }}
+      onAllRecords={() => { close(); props.onNavigate('sessions') }}
+      onClose={close} />
   }
 
   function renderRecentRow(session: RecentSession) {
@@ -1181,6 +1243,8 @@ export function Home(props: HomeProps) {
         {!codexInUse && <ListRow icon={BookOpen} title="第一次用 Codex？跟着 4 步开始" onOpen={() => props.onNavigate('tutorial')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-codex" />}
       </section>
     </div>
+    {uninstallGuide && <UninstallGuideDialog guide={uninstallGuide} onClose={() => setUninstallGuide(null)} />}
     {officialOpen && <OfficialQuotaDialog email={snapshot?.config.providers.codex.officialAccountEmail ?? null} initial={official} refresh={() => props.api.officialUsage()} onClose={() => setOfficialOpen(false)} />}
+    {renderConversations()}
   </section>
 }
