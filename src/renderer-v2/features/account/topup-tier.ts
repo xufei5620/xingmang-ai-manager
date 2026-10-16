@@ -28,7 +28,7 @@ export function describeTopupTier(input: {
   creditMultiplier?: number
 }): TopupTierView {
   const multiplier = input.creditMultiplier
-  const credited = `$${formatAmount(multiplier === undefined ? input.amount : Math.round(input.amount * multiplier * 100) / 100)}`
+  const credited = creditedMoney(multiplier === undefined ? input.amount : Math.round(input.amount * multiplier * 100) / 100)
   const paid = typeof input.quote === 'number'
     ? `${payableSymbol(input.provider)}${input.quote.toFixed(2)}`
     : null
@@ -54,6 +54,11 @@ export function payableSymbol(provider: string | undefined): string {
 
 function formatAmount(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2)
+}
+
+// 到账、赠送这类按余额单位（美元）算的数：整数不带小数，跟档位卡上的「到账 $20」一个写法。
+export function creditedMoney(value: number): string {
+  return `$${formatAmount(value)}`
 }
 
 // 充值信息是服务端解析出来的纯数据（档位、折扣、渠道），字段次序固定，逐字比较就够。

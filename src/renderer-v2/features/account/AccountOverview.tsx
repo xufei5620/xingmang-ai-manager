@@ -21,6 +21,7 @@ import {
   runwayDaysText,
   spendBarHeights,
   spendDayTitle,
+  spendSegmentQuery,
   subscriptionOverview,
   subscriptionOverviewText,
 } from './account-center'
@@ -52,12 +53,8 @@ function useWeekSpend(api: V2Bridge, enabled: boolean, quotaPerUnit: number, ref
   const load = useCallback(async () => {
     if (!enabled) return null
     const days = localSpendDays(new Date())
-    const totals = await Promise.all(days.map(async (day, index) => {
-      const start = Math.floor(day.start / 1000)
-      // 后台按「开始 ≤ 时间 ≤ 结束」取，相邻两天的零点那一小时不能算两遍。
-      const end = Math.max(start, Math.floor(day.end / 1000) - (index === days.length - 1 ? 0 : 1))
-      return (await api.getAccountDashboard({ startTimestamp: start, endTimestamp: end })).quota
-    }))
+    const totals = await Promise.all(days.map(async (day, index) =>
+      (await api.getAccountDashboard(spendSegmentQuery(day, index === days.length - 1))).quota))
     return days.map((day, index) => ({ ...day, usd: quotaPerUnit > 0 ? totals[index] / quotaPerUnit : 0 }))
   }, [api, enabled, quotaPerUnit])
   const resource = useResource(load)

@@ -45,7 +45,7 @@
 | `Progress` | `value` · `tone?` · `label?` | |
 | `Skeleton` | `rows?: number` | 列表加载 |
 | `Tabs` | `items` · `value` · `onChange` | 弹窗页签 / 账号页签 |
-| `Table` | `columns` · `rows` · `rowKey` · `onRowClick?` · `empty` | 卡片内自动横向滚动 |
+| `Table` | `columns` · `rows` · `rowKey` · `rowLabel?` · `onRowClick?` · `empty` | 卡片内自动横向滚动；行能点时读屏念 `rowLabel`，不传就念第一格（第一格不是纯文字时念 `rowKey`） |
 | `PageHead` | `title` · `lead` · `actions?` | |
 | `Toolbar` | `left` · `search?` · `right?` | |
 | `SettingRow` | `title` · `description` · `control` · `anchor?` · `badge?` · `wide?` | `anchor` 写成 `data-anchor`，取 `settingsItems` 里那一行的 id，顶部搜索靠它翻到这一行并亮一下；`badge` 是标题后面的小标签（「重启后生效」）；`wide` 让控件占满整行、排在标题下面（v4 外观的主题卡） |

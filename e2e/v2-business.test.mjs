@@ -40,9 +40,14 @@ const calls = (page) =>
     JSON.parse(document.documentElement.dataset.calls || '[]'),
   )
 
+// 调用明细一行就是一个入口（v4），点那一行打开详情。
+function usageRow(page) {
+  return page.getByTestId('account-usage-section').locator('tbody tr').first()
+}
+
 async function openUsageDetails(page) {
   await page.getByRole('tab', { name: '用量账单', exact: true }).click()
-  await page.getByTestId('account-usage-section').getByRole('button', { name: '详情', exact: true }).click()
+  await usageRow(page).click()
   const dialog = page.getByTestId('usage-detail-dialog')
   await dialog.waitFor()
   return dialog
@@ -62,7 +67,7 @@ test('Sub2API subscriptions show independent quotas and never offer unsupported 
     assert.match(text, /日额度：\s*已用 \$1\.00 · 限额 \$5\.00 · 剩余 \$4\.00/)
     assert.match(text, /周额度：\s*已用 \$4\.00 · 限额 \$20\.00 · 剩余 \$16\.00/)
     assert.match(text, /月额度：\s*已用 \$12\.00 · 限额暂未提供/)
-    assert.equal(await panel.getByRole('combobox', { name: '扣费偏好' }).count(), 0)
+    assert.equal(await panel.getByRole('group', { name: '扣费顺序' }).count(), 0)
     assert.equal(await panel.getByRole('button', { name: '购买', exact: true }).count(), 0)
     await panel.getByText('订阅仅供查看', { exact: true }).waitFor()
     assert.equal((await calls(page)).some((call) => /purchase-subscription|create-subscription-payment|updateAccountSubscriptionPreference/.test(call.name)), false)
@@ -77,18 +82,19 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     const usage = page.getByTestId('account-usage-section')
     await usage.waitFor()
-    for (const label of ['开始时间', '结束时间', '令牌名称', '分组', '请求 ID', '上游请求 ID', '日志类型']) {
-      assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0)
-    }
-    assert.equal(await usage.getByLabel('Key ID', { exact: true }).count(), 0)
+    // 筛选框全部收在「展开筛选」里（v4），工具条上只有这一颗按钮。
     const toggle = usage.getByTestId('account-filters-toggle')
     assert.equal(await toggle.innerText(), '展开筛选')
-    await usage.getByLabel('开始日期', { exact: true }).fill('2026-09-08')
-    await usage.getByLabel('结束日期', { exact: true }).fill('2026-09-08')
+    assert.equal(await usage.getByLabel('开始日期', { exact: true }).count(), 0)
     await toggle.click()
     assert.equal(await toggle.innerText(), '收起筛选')
-    await usage.getByLabel('Key ID', { exact: true }).fill('4')
-    await usage.getByLabel('分组 ID', { exact: true }).fill('5')
+    for (const label of ['开始时间', '结束时间', '令牌名称', '分组', '请求 ID', '上游请求 ID', '日志类型', 'Key ID', '分组 ID']) {
+      assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0)
+    }
+    await usage.getByLabel('开始日期', { exact: true }).fill('2026-09-08')
+    await usage.getByLabel('结束日期', { exact: true }).fill('2026-09-08')
+    await usage.getByLabel('密钥编号', { exact: true }).fill('4')
+    await usage.getByLabel('分组编号', { exact: true }).fill('5')
     await usage.getByLabel('计费来源', { exact: true }).selectOption('0')
     await usage.getByRole('button', { name: '查询', exact: true }).click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.apiKeyId === 4))
@@ -100,11 +106,12 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
     assert.equal(last.groupId, 5)
     assert.equal('startTimestamp' in last, false)
     await page.getByText(/包含结束日期全天/).waitFor()
-    await page.getByText('暂无调用明细', { exact: true }).waitFor()
-    // 收起来以后，收着的框里生效的条件数挂在按钮上；日期在第一行看得见，不算。
+    await usage.getByText('这段时间没有调用', { exact: true }).waitFor()
+    await usage.getByText('换个筛选条件看看。', { exact: true }).waitFor()
+    // 收起来以后，改过的条件数挂在按钮上；没动过的默认日期不算。
     await toggle.click()
-    assert.equal(await toggle.innerText(), '展开筛选 · 3')
-    assert.equal(await usage.getByLabel('Key ID', { exact: true }).count(), 0)
+    assert.equal(await toggle.innerText(), '展开筛选 · 5')
+    assert.equal(await usage.getByLabel('密钥编号', { exact: true }).count(), 0)
   } finally { await page.close() }
 })
 
@@ -127,11 +134,76 @@ test('the usage dashboard splits spending across the tools that have a managed k
   } finally { await page.close() }
 })
 
+test('the usage range drives the stats, one bar per local day or week and the call list', async () => {
+  // 直接打开用量账单：账号概览的「近 7 天」也问看板，先停在概览会混进来。
+  const page = await fixture('page=account&accountTab=usage')
+  try {
+    const dashboards = async () => (await calls(page)).filter((call) => call.name === 'get-dashboard').map((call) => call.args)
+    const lastUsage = async () => (await calls(page)).filter((call) => call.name === 'query-usage').at(-1)?.args
+    await page.getByRole('tab', { name: '用量账单', exact: true, selected: true }).waitFor()
+    const stats = page.getByTestId('usage-stats')
+    await stats.getByText('$35.00', { exact: true }).waitFor()
+    // 默认「7 天」：一天问一次（本地零点切开，接缝那一秒不算两遍），柱子一天一根，最后一根是今天。
+    const week = await dashboards()
+    assert.equal(week.length, 7)
+    const midnight = await page.evaluate(() => { const now = new Date(); return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime() / 1000) })
+    assert.equal(week[0].startTimestamp, midnight)
+    for (let index = 1; index < week.length; index++) assert.equal(week[index].startTimestamp, week[index - 1].endTimestamp + 1)
+    assert.equal((await stats.innerText()).replace(/\s+/g, ' '), '总花费 $35.00 日均 $5.00 请求次数 77 处理 Token 14,000')
+    const bars = page.locator('.v2-usage-chart-col')
+    assert.equal(await bars.count(), 7)
+    assert.equal(await bars.last().innerText().then((text) => text.replace(/\s+/g, ' ')), '$5.00 今天')
+    assert.match(await bars.last().getAttribute('class'), /is-current/)
+    // 调用明细跟着同一段时间查。
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage'))
+    assert.equal((await lastUsage()).startTimestamp, midnight)
+    await page.getByTestId('account-usage-section').getByText('这段时间没有调用', { exact: true }).waitFor()
+
+    const range = page.getByRole('group', { name: '统计时间' })
+    await range.getByRole('button', { name: '24 小时', exact: true }).click()
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-dashboard').length > count, week.length)
+    const day = (await dashboards()).slice(week.length)
+    assert.equal(day.length, 1)
+    assert.equal(day[0].endTimestamp - day[0].startTimestamp, 86_400)
+    await page.waitForFunction((start) => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startTimestamp === start), day[0].startTimestamp)
+    await stats.getByText('$5.00', { exact: true }).first().waitFor()
+
+    await range.getByRole('button', { name: '30 天', exact: true }).click()
+    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-dashboard').length >= count + 5, week.length + 1)
+    await page.waitForFunction(() => document.querySelectorAll('.v2-usage-chart-col').length === 5)
+    assert.match(await bars.first().getAttribute('title'), /^\d+ 月 \d+ 日至\d+ 月 \d+ 日：\$5\.00$/)
+
+    // 快捷筛选「失败」：只查错误记录，空着时说这段时间没有失败的调用。
+    await page.getByTestId('account-usage-section').getByRole('button', { name: '失败', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.type === 5))
+    await page.getByText('这段时间没有失败的调用', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
+test('changing the usage range sends the call list back to its first page', async () => {
+  const page = await fixture('page=account&accountTab=usage&usagePages=1')
+  try {
+    const section = page.getByTestId('account-usage-section')
+    await section.getByText('共 60 条').waitFor()
+    // 整行就是入口，读屏念时间和模型，不是「[object Object]」。
+    const label = await section.locator('tbody tr').first().getAttribute('aria-label')
+    assert.doesNotMatch(label, /object/)
+    assert.match(label, /\S+ \S+/)
+    await section.getByRole('button', { name: '下一页', exact: true }).click()
+    await section.getByText('2 / 3', { exact: true }).waitFor()
+    await page.getByRole('group', { name: '统计时间' }).getByRole('button', { name: '24 小时', exact: true }).click()
+    await section.getByText('1 / 3', { exact: true }).waitFor()
+    const pages = (await calls(page)).filter((call) => call.name === 'query-usage').map((call) => call.args.page)
+    // 换范围那一下直接问第一页，不先拿旧页码多问一次。
+    assert.deepEqual(pages.slice(-2), [2, 1])
+  } finally { await page.close() }
+})
+
 test('account views distinguish summary-only, failed reads and valid empty results', async () => {
   for (const [query, tab, expected, absent] of [
-    ['sub2apiReliability=1', '用量账单', '仅提供累计汇总', '这个时间段还没有用量'],
-    ['fail=dashboard', '用量账单', '用量趋势暂时没有读到', '这个时间段还没有用量'],
-    ['fail=usage', '用量账单', '调用明细暂时没有读到', '暂无调用明细'],
+    ['sub2apiReliability=1', '用量账单', '只有累计数', '这个时间段还没有用量'],
+    ['fail=dashboard', '用量账单', '花费趋势暂时没有读到', '这个时间段还没有用量'],
+    ['fail=usage', '用量账单', '调用明细暂时没有读到', '这段时间没有调用'],
     ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '还没有订阅'],
   ]) {
     const page = await fixture(`page=account&${query}`)
@@ -151,11 +223,12 @@ test('usage details include request metadata, token counts, exact billed cost an
     try {
       const dialog = await openUsageDetails(page)
       assert.equal(await dialog.locator('.xm-dialog-body').evaluate((element) => element.scrollTop), 0)
-      const info = dialog.locator('section[aria-label="调用信息"]')
-      assert.match(await info.innerText(), /xingmang-desktop-codex[\s\S]*GPT-中转\/订阅[\s\S]*16 秒[\s\S]*4,778 ms[\s\S]*xhigh/)
-      assert.match(await dialog.locator('section[aria-label="Token 明细"]').innerText(), /输入 Token\s*368,531[\s\S]*输出 Token\s*311[\s\S]*缓存读取\s*368,000/)
-      const billing = dialog.locator('section[aria-label="计费详情"]')
-      for (const expected of ['动态计费', 'long', '$25/M', '$75/M', '$2/M', '1.0000x', '$0.7726']) assert.ok((await billing.innerText()).includes(expected), expected)
+      // 调用信息和 Token 数平铺成一张（v4），计费单独一节「计费明细」。
+      const summary = await dialog.innerText()
+      assert.match(summary, /xingmang-desktop-codex[\s\S]*GPT-中转\/订阅，倍率 1×[\s\S]*16 秒[\s\S]*4,778 ms[\s\S]*xhigh/)
+      assert.match(summary, /输入 Token\s*368,531[\s\S]*输出 Token\s*311[\s\S]*缓存读取\s*368,000/)
+      const billing = dialog.locator('section[aria-label="计费明细"]')
+      for (const expected of ['动态计费', 'long', '368,531 Token × $25 / 百万', '311 Token × $75 / 百万', '$2/M', '1.0000x', '$0.7726']) assert.ok((await billing.innerText()).includes(expected), expected)
       const table = dialog.getByRole('table')
       assert.equal(await table.locator('tbody tr').count(), 2)
       assert.equal(await table.locator('.is-matched').count(), 1)
@@ -167,7 +240,7 @@ test('usage details include request metadata, token counts, exact billed cost an
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
       assert.equal(await dialog.evaluate((element) => element.scrollWidth > element.clientWidth), false)
       await dialog.getByRole('button', { name: '关闭', exact: true }).last().click()
-      assert.equal(await page.getByTestId('account-usage-section').getByRole('button', { name: '详情', exact: true }).evaluate((element) => document.activeElement === element), true)
+      assert.equal(await usageRow(page).evaluate((element) => document.activeElement === element), true)
     } finally { await page.close() }
   }
 })
@@ -177,24 +250,25 @@ test('usage details retain ordinary cache prices and distinguish missing prices 
     const page = await fixture(`page=account&usageDetail=${kind}`)
     try {
       const dialog = await openUsageDetails(page)
-      const billing = dialog.locator('section[aria-label="计费详情"]')
+      const billing = dialog.locator('section[aria-label="计费明细"]')
       const text = await dialog.innerText()
       if (kind === 'legacy') {
-        assert.match(await billing.innerText(), /按 Token 计费[\s\S]*\$3\/M[\s\S]*\$15\/M[\s\S]*\$0\.3\/M[\s\S]*用户专属倍率\s*0\.5000x/)
+        // 输入、输出的单价写在下面那两行里：「N Token × $3 / 百万」。
+        assert.match(await billing.innerText(), /按 Token 计费[\s\S]*\$0\.3\/M[\s\S]*用户专属倍率\s*0\.5000x[\s\S]*输入\s*[\d,]+ Token × \$3 \/ 百万[\s\S]*输出\s*[\d,]+ Token × \$15 \/ 百万/)
         assert.match(text, /缓存写入（5 分钟）\s*1,000[\s\S]*缓存写入（1 小时）\s*500/)
         assert.equal(await dialog.getByRole('table').count(), 0)
       } else if (kind === 'missing' || kind === 'unknown-tier') {
-        assert.doesNotMatch(await billing.innerText(), /\$25\/M|\$75\/M/)
+        assert.doesNotMatch(await billing.innerText(), /\$25 \/ 百万|\$75 \/ 百万/)
         assert.match(await billing.innerText(), /\$0\.7726/)
         assert.match(text, /请以服务端记录的总费用为准/)
         assert.equal(await dialog.locator('.is-matched').count(), 0)
         if (kind === 'missing') assert.doesNotMatch(text, /未提供 ms/)
       } else if (kind === 'sub2') {
-        assert.match(await billing.innerText(), /订阅额度[\s\S]*0\.5000x[\s\S]*已触发[\s\S]*\$0\.013275[\s\S]*\$0\.023325[\s\S]*\$0\.7360[\s\S]*\$0\.0000[\s\S]*\$0\.7726[\s\S]*\$0\.3863/)
+        assert.match(await billing.innerText(), /订阅额度[\s\S]*0\.5000x[\s\S]*已触发[\s\S]*\$0\.7360[\s\S]*\$0\.0000[\s\S]*\$0\.7726[\s\S]*输入[\s\S]*\$0\.013275[\s\S]*输出[\s\S]*\$0\.023325[\s\S]*合计\s*\$0\.3863/)
         assert.equal(await dialog.getByRole('table').count(), 0)
-        assert.doesNotMatch(await billing.innerText(), /\/M/)
+        assert.doesNotMatch(await billing.innerText(), /\/M|百万/)
       } else if (kind === 'sub2-missing') {
-        assert.match(await billing.innerText(), /总费用\s*未提供/)
+        assert.match(await billing.innerText(), /合计\s*未提供/)
         assert.doesNotMatch(await billing.innerText(), /\$0\.0000|\$0\.7726/)
       } else {
         assert.match(text, /流式响应详情[\s\S]*upstream_error[\s\S]*连接中断[\s\S]*请稍后重试/)
@@ -326,13 +400,15 @@ test('account lists that could not be read say so with the reason and read again
   for (const [query, tab, title, reason, absent] of [
     ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
     ['fail=tasks', '用量账单', '异步任务暂时没有读到', '任务服务暂时不可用', '暂无异步任务'],
-    ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '暂无调用明细'],
+    ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '这段时间没有调用'],
     ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
       await page.getByRole('tab', { name: tab, exact: true }).click()
       const panel = page.getByRole('tabpanel').filter({ visible: true })
+      // 异步任务和调用明细同一处，两段切换（v4）。
+      if (query === 'fail=tasks') await panel.getByRole('button', { name: '异步任务', exact: true }).click()
       await panel.getByText(title, { exact: true }).waitFor()
       await panel.getByText(reason, { exact: false }).waitFor()
       await panel.getByRole('button', { name: '重新加载', exact: true }).first().waitFor()
@@ -345,34 +421,44 @@ test('account lists that could not be read say so with the reason and read again
   }
 })
 
-test('the usage and task filters keep three boxes in the first row and fold the rest away', async () => {
+test('the usage and task filters fold behind one button on the toolbar and count what was applied', async () => {
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     const usage = page.getByTestId('account-usage-section')
-    for (const label of ['开始时间', '结束时间', '模型名称']) await usage.getByLabel(label, { exact: true }).waitFor()
-    for (const label of ['分组', '日志类型', '令牌名称', '请求 ID', '上游请求 ID']) {
+    const toggle = usage.getByTestId('account-filters-toggle')
+    await toggle.waitFor()
+    for (const label of ['开始时间', '结束时间', '模型名称', '分组', '日志类型', '令牌名称', '请求 ID', '上游请求 ID']) {
       assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0, `${label} 先收着`)
     }
     assert.equal(await usage.getByRole('button', { name: '重置筛选', exact: true }).count(), 0)
     // 一共不到 10 条：「每页多少条」不出。
     assert.equal(await usage.getByLabel('每页日志数量', { exact: true }).count(), 0)
-    const toggle = usage.getByTestId('account-filters-toggle')
+    // 「展开筛选」和「调用明细 | 异步任务」在同一行。
+    const switchBox = await usage.getByRole('button', { name: '调用明细', exact: true }).boundingBox()
+    const toggleBox = await toggle.boundingBox()
+    assert.ok(switchBox && toggleBox && Math.abs(switchBox.y + switchBox.height / 2 - (toggleBox.y + toggleBox.height / 2)) <= 4)
     await toggle.click()
     assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
+    for (const label of ['开始时间', '结束时间', '模型名称']) await usage.getByLabel(label, { exact: true }).waitFor()
     await usage.getByLabel('上游请求 ID', { exact: true }).fill('up-1')
     await usage.getByRole('button', { name: '查询', exact: true }).click()
     await usage.getByRole('button', { name: '重置筛选', exact: true }).waitFor()
     await toggle.click()
     assert.equal(await toggle.innerText(), '展开筛选 · 1')
-    await page.getByTestId('usage-stats').waitFor()
-    assert.equal(await page.getByTestId('usage-stats').innerText(), '消耗 $0.00 · RPM 0 · TPM 0')
-    // 异步任务在同一页下面那一节，筛选框各管各的。
+    assert.match(await page.getByTestId('usage-stats').innerText(), /总花费[\s\S]*请求次数[\s\S]*处理 Token/)
+    // 切到异步任务：焦点跟到新露出来那组按钮上，筛选框各管各的，也收着。
+    await usage.getByRole('button', { name: '异步任务', exact: true }).click()
     const tasks = page.getByTestId('account-tasks-section')
-    for (const label of ['开始时间', '结束时间', '状态']) await tasks.getByLabel(label, { exact: true }).waitFor()
-    for (const label of ['平台', '任务 ID', '动作']) {
-      assert.equal(await tasks.getByLabel(label, { exact: true }).count(), 0, `${label} 先收着`)
-    }
+    const taskSwitch = tasks.getByRole('button', { name: '异步任务', exact: true })
+    await taskSwitch.waitFor()
+    assert.equal(await usage.isHidden(), true)
+    assert.equal(await taskSwitch.getAttribute('aria-pressed'), 'true')
+    assert.equal(await taskSwitch.evaluate((element) => document.activeElement === element), true)
+    const taskToggle = tasks.getByTestId('account-filters-toggle')
+    assert.equal(await taskToggle.innerText(), '展开筛选')
+    await taskToggle.click()
+    for (const label of ['开始时间', '结束时间', '状态', '平台', '任务 ID', '动作']) await tasks.getByLabel(label, { exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -387,8 +473,8 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
     assert.equal(await panel.getByTestId('account-recharge-submit').isDisabled(), false)
     await panel.getByText('订阅信息暂时没有读到', { exact: true }).waitFor()
     await panel.getByTestId('account-subscriptions-retry').waitFor()
-    assert.equal(await panel.getByText('选择订阅', { exact: true }).count(), 0)
-    assert.equal(await panel.getByRole('combobox', { name: '扣费偏好' }).count(), 0)
+    assert.equal(await panel.getByTestId('account-recharge-plans').count(), 0)
+    assert.equal(await panel.getByRole('group', { name: '扣费顺序' }).count(), 0)
     assert.equal(await panel.getByText('未完成', { exact: true }).count(), 0)
   } finally {
     await page.close()
@@ -417,7 +503,7 @@ test('without a payment channel the recharge card says so first, greys the form 
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const notice = page.getByTestId('account-recharge-no-methods')
     await notice.waitFor()
-    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。有充值码的话，可以在右边兑换。/)
+    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。有充值码的话，点「有充值码？」兑换。/)
     await notice.getByRole('button', { name: '联系客服', exact: true }).waitFor()
     // 提示在卡片最上面，档位在它下面。
     const noticeBox = await notice.boundingBox()
@@ -427,14 +513,13 @@ test('without a payment channel the recharge card says so first, greys the form 
     assert.equal(await tier.isDisabled(), true)
     assert.equal(await page.getByLabel('自定义金额').isDisabled(), true)
     assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), true)
-    assert.equal(await page.getByText(/^实付/).count(), 0)
-    await page.getByLabel('充值码').fill('CODE-1')
-    const redeem = page.getByTestId('account-redeem')
-    assert.equal(await redeem.isDisabled(), false)
-    const input = await page.getByLabel('充值码').boundingBox()
-    const button = await redeem.boundingBox()
-    // 「兑换」在输入框右边同一行。
-    assert.ok(input && button && button.x > input.x + input.width - 1 && Math.abs(button.y + button.height - (input.y + input.height)) <= 2)
+    assert.equal(await page.getByRole('radiogroup', { name: '支付方式' }).count(), 0)
+    // 兑换充值码是「本次充值」下面的文字链，点开是一个弹窗。
+    await page.getByTestId('account-recharge-redeem-open').click()
+    const dialog = page.getByRole('dialog', { name: '兑换充值码' })
+    await dialog.waitFor()
+    await dialog.getByLabel('充值码').fill('CODE-1')
+    assert.equal(await dialog.getByTestId('account-redeem').isDisabled(), false)
   } finally {
     await page.close()
   }
@@ -641,10 +726,10 @@ test('a slow profile read that lands after a newer one is not what a later faile
 })
 
 test('a subscription re-read that fails says so instead of still showing no subscriptions', async () => {
-  const page = await fixture('page=account&accountTab=recharge')
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1')
   try {
     const panel = page.getByRole('tabpanel').filter({ visible: true })
-    const choose = panel.locator('.xm-card-head h2', { hasText: '选择订阅' })
+    const choose = panel.getByTestId('account-recharge-plans')
     await panel.getByText('还没有订阅', { exact: true }).waitFor()
     assert.equal(await choose.count(), 1)
     await page.evaluate(() => window.failNextRead('subscriptions'))
@@ -680,14 +765,19 @@ test('the header refresh reads the usage dashboard up to now, not up to when it 
 })
 
 test('redeeming subscription and concurrency codes reports the committed result and refreshes account data once', async () => {
-  for (const [type, message] of [['subscription', '订阅兑换成功'], ['concurrency', '并发额度兑换成功'], ['balance', '余额兑换成功']]) {
+  for (const [type, message] of [['subscription', '订阅兑换成功'], ['concurrency', '并发额度兑换成功'], ['balance', '兑换成功，$0.05 已到账']]) {
     const page = await fixture(`page=account&redemptionType=${type}`)
     try {
       await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
-      await page.getByLabel('充值码', { exact: true }).fill('MOCK-CARD')
-      await page.getByRole('button', { name: '兑换', exact: true }).click()
+      await page.getByTestId('account-recharge-redeem-open').click()
+      const dialog = page.getByRole('dialog', { name: '兑换充值码' })
+      await dialog.waitFor()
+      // 空着点「兑换」不发请求，框下面说要填。
+      await dialog.getByTestId('account-redeem').click()
+      await dialog.getByText('请输入充值码', { exact: true }).waitFor()
+      await dialog.getByLabel('充值码', { exact: true }).fill('MOCK-CARD')
       const before = await calls(page)
-      await page.getByRole('dialog', { name: '确认兑换到当前账号？' }).getByRole('button', { name: '确认兑换', exact: true }).click()
+      await dialog.getByTestId('account-redeem').click()
       await waitForToast(page, message)
       await page.waitForFunction((previous) => {
         const current = JSON.parse(document.documentElement.dataset.calls || '[]')
@@ -695,8 +785,10 @@ test('redeeming subscription and concurrency codes reports the committed result 
           current.filter((call) => call.name === name).length > previous.filter((call) => call.name === name).length)
       }, before)
       assert.equal((await calls(page)).filter((call) => call.name === 'redeem-code').length, 1)
-      assert.equal(await page.getByLabel('充值码', { exact: true }).inputValue(), '')
-      assert.equal(await page.getByRole('dialog', { name: '确认兑换到当前账号？' }).count(), 0)
+      await dialog.waitFor({ state: 'hidden' })
+      // 再打开时框是空的。
+      await page.getByTestId('account-recharge-redeem-open').click()
+      assert.equal(await page.getByRole('dialog', { name: '兑换充值码' }).getByLabel('充值码', { exact: true }).inputValue(), '')
     } finally { await page.close() }
   }
 })
@@ -2321,7 +2413,7 @@ test('subscription payment terminal events clear the pending state and explain t
     await page.getByRole('button', { name: '购买', exact: true }).waitFor()
     await page.getByRole('button', { name: '购买', exact: true }).click()
     await page.getByRole('button', { name: '打开支付窗口', exact: true }).click()
-    await page.getByText('订阅订单 XM-VISUAL-SUBSCRIPTION', { exact: false }).waitFor()
+    await page.getByTestId('account-payment-notice').getByText('XM-VISUAL-SUBSCRIPTION', { exact: true }).waitFor()
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-SUBSCRIPTION' }))
     await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
     assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
@@ -2354,7 +2446,7 @@ test('the payment terminal listener survives re-renders and still resolves a pen
     // 重渲染之后到达的回调仍然落到同一个待支付订单上
     await page.getByRole('button', { name: '购买', exact: true }).click()
     await page.getByRole('button', { name: '打开支付窗口', exact: true }).click()
-    await page.getByText('订阅订单 XM-VISUAL-SUBSCRIPTION', { exact: false }).waitFor()
+    await page.getByTestId('account-payment-notice').getByText('XM-VISUAL-SUBSCRIPTION', { exact: true }).waitFor()
     await page.evaluate(async () => {
       window.rerenderFixture()
       await new Promise((resolve) => requestAnimationFrame(resolve))
@@ -2368,6 +2460,9 @@ test('the payment terminal listener survives re-renders and still resolves a pen
   }
 })
 
+// 「本次充值」那张卡上几行合成一句比对：到账的大字在卡上，下面是实付、赠送和充值后余额。
+const flat = async (locator) => (await locator.innerText()).replace(/\s+/g, ' ').trim()
+
 test('recharge presets show credited, paid and bonus, and the quote dialog spells the bonus out', async () => {
   const page = await fixture('page=account&topupBonus=1')
   try {
@@ -2377,23 +2472,26 @@ test('recharge presets show credited, paid and bonus, and the quote dialog spell
     await plain.waitFor()
     await bonus.click()
     assert.equal(await bonus.getAttribute('aria-pressed'), 'true')
+    const summary = page.getByTestId('account-recharge-summary')
     const breakdown = page.getByTestId('account-recharge-breakdown')
-    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $20 实付 16.00 送 25%')
+    assert.match(await flat(summary), /^本次充值 \$20 到账/)
+    assert.equal(await flat(breakdown), '实付 16.00 其中活动赠送 $4（多送 25%） 充值后余额 $30.00')
     await plain.click()
-    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $10 实付 10.00')
+    assert.equal(await flat(breakdown), '实付 10.00 充值后余额 $20.00')
+    // 自定义金额一填，快捷金额就不再选中；清空又回到刚才那一档。
     await page.getByLabel('自定义金额').fill('37')
-    await breakdown.getByText('实付 37.00', { exact: false }).waitFor()
-    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $37 实付 37.00')
+    await breakdown.getByText('37.00', { exact: true }).waitFor()
+    assert.equal(await flat(breakdown), '实付 37.00 充值后余额 $47.00')
+    assert.equal(await plain.getAttribute('aria-pressed'), 'false')
+    await page.getByLabel('自定义金额').fill('')
+    assert.equal(await plain.getAttribute('aria-pressed'), 'true')
     assert.equal(await page.getByText('无赠送', { exact: true }).count(), 0)
     await bonus.click()
     await page.getByTestId('account-recharge-submit').click()
     const quote = page.getByRole('dialog', { name: '确认充值报价' })
     await quote.waitFor()
-    assert.equal(
-      await quote.getByTestId('account-recharge-quote-bonus').textContent(),
-      '活动赠送：4（多送 25%），到账 20',
-    )
-    await quote.getByText('应付金额：16.00', { exact: false }).waitFor()
+    assert.equal(await flat(quote.getByTestId('account-recharge-quote-bonus')), '其中活动赠送 $4（多送 25%）')
+    assert.match(await flat(quote), /到账 \$20 其中活动赠送 \$4（多送 25%） 应付金额 16\.00 支付方式 Stripe/)
   } finally {
     await page.close()
   }
@@ -2406,7 +2504,8 @@ test('the quote dialog asks for the current promotion instead of the one the pag
     await page.evaluate(() => window.endTopupPromotion())
     await page.getByTestId('account-recharge-submit').click()
     const quote = page.getByRole('dialog', { name: '确认充值报价' })
-    await quote.getByText('应付金额：20.00', { exact: false }).waitFor()
+    await quote.getByText('20.00', { exact: true }).waitFor()
+    assert.match(await flat(quote), /应付金额 20\.00/)
     assert.equal(await quote.getByTestId('account-recharge-quote-bonus').count(), 0)
     // 卡片也跟着这次读到的换掉，不再挂「送 25%」。
     await page.getByRole('button', { name: '到账 $20，实付 20.00', exact: true }).waitFor()
@@ -2466,13 +2565,40 @@ test('a tier picked on the home activity card arrives preselected on the recharg
   const page = await fixture('page=account&accountTab=recharge&rechargeAmount=20&topupBonus=1')
   try {
     const breakdown = page.getByTestId('account-recharge-breakdown')
-    await breakdown.getByText('实付 16.00', { exact: false }).waitFor()
-    assert.equal(await page.getByLabel('自定义金额').inputValue(), '20')
-    assert.equal(await breakdown.innerText().then((text) => text.replace(/\s+/g, ' ')), '到账 $20 实付 16.00 送 25%')
+    await breakdown.getByText('16.00', { exact: true }).waitFor()
+    // 是快捷金额里的一档：选中那一档，自定义金额空着。
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '')
+    assert.equal(await flat(breakdown), '实付 16.00 其中活动赠送 $4（多送 25%） 充值后余额 $30.00')
     assert.equal(
       await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).getAttribute('aria-pressed'),
       'true',
     )
+  } finally {
+    await page.close()
+  }
+})
+
+test('an amount outside the quick tiers is still quoted on the summary', async () => {
+  // 活动卡片带来的 30 不在后台的档位（10、20）里：自定义金额框写着它，「实付」也要问出来，不能一直转。
+  const page = await fixture('page=account&accountTab=recharge&rechargeAmount=30')
+  try {
+    const breakdown = page.getByTestId('account-recharge-breakdown')
+    await breakdown.getByText('30.00', { exact: true }).waitFor()
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '30')
+    assert.equal(await flat(breakdown), '实付 30.00 充值后余额 $40.00')
+  } finally {
+    await page.close()
+  }
+})
+
+test('a default amount below the minimum says why recharging is unavailable', async () => {
+  const page = await fixture('page=account&accountTab=recharge&highMinimum=1')
+  try {
+    await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), true)
+    await page.getByRole('button', { name: /^到账 \$20，实付 20\.00/ }).click()
+    assert.equal(await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), false)
   } finally {
     await page.close()
   }
@@ -2489,7 +2615,9 @@ test('changing the recharge channel invalidates the previous quote', async () =>
     await quote.getByRole('button', { name: '取消', exact: true }).click()
     await page.getByRole('radio', { name: '支付宝', exact: true }).check()
     assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
-    assert.equal(await page.getByLabel('自定义金额').inputValue(), '20')
+    // 支付宝最低 20：金额跟着挪到 20 那一档。
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '')
+    assert.equal(await page.getByRole('button', { name: /^到账 \$20/ }).getAttribute('aria-pressed'), 'true')
   } finally {
     await page.close()
   }
@@ -2938,14 +3066,17 @@ test('a previously observed account task sends one scoped completion notificatio
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
-    await page.getByText('处理中 50%', { exact: true }).waitFor()
+    // 异步任务藏在「调用明细 | 异步任务」后面也照样读，做完了照样提醒。
+    const tasks = page.getByTestId('account-tasks-section')
+    await tasks.getByText('处理中 50%', { exact: true }).waitFor({ state: 'attached' })
+    assert.equal(await tasks.isHidden(), true)
     assert.equal(
       (await calls(page)).some((call) => call.name === 'activity-notification'),
       false,
     )
     assert.equal(await page.getByRole('button', { name: '刷新任务', exact: true }).count(), 0)
     await page.getByTestId('account-refresh').click()
-    await page.getByText('已完成 100%', { exact: true }).waitFor()
+    await tasks.getByText('已完成 100%', { exact: true }).waitFor({ state: 'attached' })
     await page.getByTestId('account-refresh').click()
     const notifications = (await calls(page)).filter(
       (call) => call.name === 'activity-notification',
@@ -2962,11 +3093,15 @@ test('an async task result is copied as a link instead of asking the host to ope
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
-    await page.getByText('处理中 50%', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '异步任务', exact: true }).click()
+    const tasks = page.getByTestId('account-tasks-section')
+    await tasks.getByText('处理中 50%', { exact: true }).waitFor()
     await page.getByTestId('account-refresh').click()
-    await page.getByText('已完成 100%', { exact: true }).waitFor()
-    await page.getByTestId('account-tasks-section').getByRole('button', { name: '详情', exact: true }).click()
-    await page
+    await tasks.getByText('已完成 100%', { exact: true }).waitFor()
+    // 一行就是一个入口，点开是任务详情弹窗。
+    await tasks.locator('tbody tr').first().click()
+    const dialog = page.getByTestId('task-detail-dialog')
+    await dialog
       .getByText('https://cdn.upstream.example.test/fixture-task.mp4', {
         exact: true,
       })
@@ -2975,7 +3110,7 @@ test('an async task result is copied as a link instead of asking the host to ope
       await page.getByRole('button', { name: '查看结果', exact: true }).count(),
       0,
     )
-    await page
+    await dialog
       .getByRole('button', { name: '复制结果链接', exact: true })
       .click()
     await waitForToast(page, '结果链接已复制')
