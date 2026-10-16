@@ -52,7 +52,7 @@ describe('provider route follow', () => {
   it('keeps the codex websocket setting when the line moves to cloudflare', () => {
     const { roots: r } = roots()
     const [config] = providerConfigPaths('codex', r)
-    saveProviderConfig('codex', 'sk-route-fixture', 'fixture-model', 'merge', r, {}, direct)
+    saveProviderConfig('codex', 'sk-route-fixture', 'gpt-fixture', 'merge', r, {}, direct)
     const plan = planProviderRouteFollow('codex', 'solov', primary.codex, r)
     if (plan.status !== 'rewrite') throw new Error(plan.status)
     applyProviderRouteFollow('codex', plan, r)

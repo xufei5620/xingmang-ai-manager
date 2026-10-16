@@ -1237,6 +1237,7 @@ function applyCodexRelayConfig(
   siteBaseUrl: string,
 ): void {
   migrateOwnReservedCodexProvider(parsed, providerName, siteBaseUrl)
+  const previousModel = parsed.model
   parsed.model = model
   parsed.review_model = model
   parsed.model_provider = providerName
@@ -1254,7 +1255,7 @@ function applyCodexRelayConfig(
   // Model names alone cannot establish the relay's protocol compatibility.
   providerEntry.wire_api = 'responses'
   providerEntry.requires_openai_auth = true
-  codexRelayWebsocketsDefault(providerEntry)
+  followCodexRelayWebsockets(providerEntry, previousModel, model)
   // Keep the Desktop permission picker interactive on fresh mirror installs.
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
@@ -1304,7 +1305,7 @@ function buildCodexRelayConfigTemplate(
     `base_url = ${tomlString(siteBaseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
-    `supports_websockets = ${codexRelaySupportsWebsockets}`,
+    `supports_websockets = ${codexModelUsesRelayWebsockets(model)}`,
     '',
     '[features]',
     'goals = true',
@@ -1866,19 +1867,33 @@ const legacyCodexRelayDisplayName = 'XingmangAI'
  *
  * 2026-10-16 yoyo 定默认开（#992 当时写的是 false）。服务端同日实测：xm 两条线路的 GPT 分组和
  * api.solov.cc 都开了，后续每轮上传约 118 KB 降到约 400 字节，5 步任务 21.8 秒对普通请求 47 秒。
- * 服务端只给 GPT 渠道开了，这一项对整条线路生效、不能按型号分，所以只对得上「Codex 的 Key 只用
- * GPT」：星芒账号签进 GPT 分组、历史账号签进 Codex_pro（catalog.ts、managed-cli-groups.ts），
- * 两种账号都是。走 Cloudflare 时一轮里约 100 秒一个字都不出，WebSocket 会被当成闲置掐掉，Codex
- * 连着重连 5 次才退回普通请求（10-13 模拟；服务端 7 天数据约占 0.27%）。服务端的办法是让 CF 入口对
- * /v1/responses 的 WebSocket 握手回 426：Codex 收到当场改走普通请求、不重试（client.rs 的
- * UPGRADE_REQUIRED → FallbackToHttp），洛杉矶照常走 WebSocket。所以两条线路写一样的值，换线路
- * 仍只改 base_url（tool-route-rewrite.ts）。
+ * 服务端只给 GPT 渠道开了，而这一项对整条线路生效：星芒签的 Key（星芒账号进 GPT 分组、历史账号
+ * 进 Codex_pro）用 GPT 型号时写 true；首页「换用别家模型」选了别家型号时写 false，那些渠道不收
+ * WebSocket，开着会连着重试甚至报错。走 Cloudflare 时一轮里约 100 秒一个字都不出，WebSocket 会被
+ * 当成闲置掐掉，Codex 连着重连 5 次才退回普通请求（10-13 模拟；服务端 7 天数据约占 0.27%）。服务端
+ * 的办法是让 CF 入口对 /v1/responses 的 WebSocket 握手回 426：Codex 收到当场改走普通请求、不重试
+ * （client.rs 的 UPGRADE_REQUIRED → FallbackToHttp），洛杉矶照常走 WebSocket。所以两条线路写一样的
+ * 值，换线路仍只改 base_url（tool-route-rewrite.ts）。
  */
-const codexRelaySupportsWebsockets = true
+export function codexModelUsesRelayWebsockets(model: string): boolean {
+  // Same split as the renderer's isOpenAiModelId (model-filter.ts), which the
+  // 换用别家模型 dialog uses to decide what counts as another vendor's model;
+  // electron/ does not import src/, so the pattern is repeated here.
+  return model.trim().toLowerCase().split(/[/:]/).some((part) => part === 'openai'
+    || /^(?:gpt(?:[-_.]|\d|$)|chatgpt(?:[-_.]|\d|$)|codex(?:[-_.]|\d|$)|o\d+(?:[-_.]|$))/.test(part))
+}
 
-/** 星芒那张表上没写过才补；客户自己写的 true 或 false 都不动。 */
-function codexRelayWebsocketsDefault(entry: Record<string, unknown>): void {
-  if (entry.supports_websockets === undefined) entry.supports_websockets = codexRelaySupportsWebsockets
+/**
+ * 没写过就按型号补。写过的值要是正好是星芒按上一个型号会写的那个，就当是星芒写的，跟着这次的型号
+ * 改（GPT 换到别家 true → false，换回来 false → true）；对不上的是客户自己定的，不动。
+ */
+function followCodexRelayWebsockets(entry: Record<string, unknown>, previousModel: unknown, model: string): void {
+  const next = codexModelUsesRelayWebsockets(model)
+  if (entry.supports_websockets === undefined) {
+    entry.supports_websockets = next
+  } else if (typeof previousModel === 'string' && entry.supports_websockets === codexModelUsesRelayWebsockets(previousModel)) {
+    entry.supports_websockets = next
+  }
 }
 
 /** 只换星芒自己那张表上一字不差的老显示名；客户自己改过的名字、别人写的表都不动。 */
@@ -3382,7 +3397,7 @@ export function applyProviderRouteFollow(
 // 2：Claude Code 没写权限模式的补「不逐条确认」（2026-10-06）。
 // 3：Codex 线路显示名老模板的 XingmangAI 换成 OpenAI（2026-10-14）。这一项改的是值不是缺省
 //    键，只认星芒自己那张表上一字不差的老值（renameLegacyCodexRelayDisplayName）。
-// 4：Codex 星芒那张表没写 supports_websockets 的补 true（2026-10-16）。
+// 4：Codex 星芒那张表没写 supports_websockets 的按型号补，GPT 型号 true、别家型号 false（2026-10-16）。
 export const relayTemplateRevision = 4
 
 /** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
@@ -3402,7 +3417,10 @@ function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBas
   const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
   const entry = active && isJsonRecord(parsed.model_providers) ? parsed.model_providers[active] : null
   if (isJsonRecord(entry)) renameLegacyCodexRelayDisplayName(entry, siteBaseUrl)
-  if (isJsonRecord(entry) && isOwnCodexRelayEntry(entry, siteBaseUrl)) codexRelayWebsocketsDefault(entry)
+  if (isJsonRecord(entry) && isOwnCodexRelayEntry(entry, siteBaseUrl) && entry.supports_websockets === undefined
+    && typeof parsed.model === 'string') {
+    entry.supports_websockets = codexModelUsesRelayWebsockets(parsed.model)
+  }
 }
 
 function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void {
