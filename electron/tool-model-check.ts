@@ -1,4 +1,4 @@
-import { resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
+import { isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
 import type { ProviderId } from './catalog'
 
 /**
@@ -7,7 +7,8 @@ import type { ProviderId } from './catalog'
  * 工具里就还是老样子，默认模型一下架，每一轮都报错（第十二批候选 5）。
  *
  * 所以每天第一次打开工具时核对一次：菜单悄悄刷新，默认模型用不了就把换成什么交给
- * 界面去问，用户点了才换。核对失败绝不挡住打开，就当没核。
+ * 界面去问，用户点了才换。核对失败绝不挡住打开，就当没核。两站都下架了的型号例外：
+ * 开机那轮直接换掉（replaceRetiredModel）。
  *
  * 有菜单要刷新的是 Claude Code（settings.json 里的 /model 菜单，claude-model-picker.ts）
  * 和 Codex（本软件写的型号名单，命令行和桌面端共用，codex-model-catalog.ts）。
@@ -47,6 +48,7 @@ export interface ToolModelCheckDependencies {
   /**
    * assertCurrent 要在真正落盘前再调一次：核对和写入之间隔着网络请求，账号随时会切走，
    * 写入那一刻认的必须还是开始核对时那个账号那份配置（#538）。
+   * model 是写进去的默认型号：刷新菜单时就是原来那个，换掉下架型号时是换上去的那个。
    */
   refreshPicker(provider: ModelPickerProvider, model: string, assertCurrent: () => void): Promise<void>
   /** 这个工具的这个新型号问没问过（记在应用设置里，重启、换账号都不再问）。缺省 = 不问。 */
@@ -150,6 +152,44 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     return 'refreshed'
   }
 
+  /**
+   * 默认模型是两站都下架了的（cli-model-defaults.ts 的 retiredCliModels），当前账号也确实不再列它：
+   * 开机那轮直接换成现在的默认，不等打开前那一问。从开始菜单、终端、VS Code 打开 Codex 的客户
+   * 走不到那一问，每一轮都报「该模型无可用渠道」。别的「用不了」照旧留给打开前去问，那可能只是
+   * 分组一时没配好。写入和刷新菜单是同一道（refreshPicker）：先备份，写一半回滚照旧。
+   */
+  async function replaceRetiredModel(
+    provider: ModelPickerProvider,
+    target: ToolModelCheckTarget,
+    models: readonly string[],
+    guard: ReturnType<typeof currentGuard>,
+    beforeReplace?: () => void,
+  ): Promise<boolean> {
+    if (!isRetiredCliModel(provider, target.model)) return false
+    const replacement = resolveDefaultCliModel(provider, models)
+    if (!replacement) return false
+    if (!guard.stillCurrent()) {
+      logStale(provider)
+      return false
+    }
+    // 写完以后配置里就是 replacement 了，按换之前那份认人一定对不上。写完那一下账号换没换，
+    // 写入那边（system-service.ts 的 saveConfig）自己还会再核一次。
+    function assertCurrent(): void {
+      if (deps.target(provider)?.model === replacement) return
+      guard.assertCurrent()
+    }
+    const name = pickerNames[provider]
+    try {
+      beforeReplace?.()
+      await deps.refreshPicker(provider, replacement, assertCurrent)
+    } catch (error) {
+      deps.log?.('warn', 'tool-models.retired-replace-failed', `${name} 的默认模型已经下架，这次没能换掉`, { provider, model: target.model, replacement, reason: errorText(error) })
+      return false
+    }
+    deps.log?.('info', 'tool-models.retired-replaced', `${name} 的默认模型已经下架，已换成当前账号能用的默认模型`, { provider, model: target.model, replacement })
+    return true
+  }
+
   async function offerUpgrade(provider: ProviderId, model: string, models: readonly string[]): Promise<ToolModelCheck | null> {
     const replacement = resolveCliModelUpgrade(provider, model, models)
     if (!replacement || !deps.upgradeOffered || !deps.markUpgradeOffered) return null
@@ -206,7 +246,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
   /**
    * 开机时只把菜单对一遍（system-service.ts）：客户升级后多半直接从开始菜单打开 Codex
    * 桌面端，不经过打开前那次核对，新型号就一直进不了菜单。这里不劝换模型、也不占当天
-   * 那次核对，默认模型已经用不了的留给打开前那次去问。返回菜单是否真的刷新了。
+   * 那次核对，默认模型已经用不了的留给打开前那次去问；只有两站都下架了的直接换掉
+   * （replaceRetiredModel）。返回菜单是否真的刷新了。
    */
   async function syncPicker(provider: ProviderId, options: { beforeRefresh?: () => void } = {}): Promise<boolean> {
     if (!hasModelPicker(provider)) return false
@@ -224,7 +265,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       logStale(provider)
       return false
     }
-    if (models.length === 0 || !modelOffered(provider, target.model, models)) return false
+    if (models.length === 0) return false
+    if (!modelOffered(provider, target.model, models)) return replaceRetiredModel(provider, target, models, guard, options.beforeRefresh)
     const refreshed = await refreshPickerIfOutdated(provider, target, models, guard, options.beforeRefresh)
     if (refreshed === 'stale') logStale(provider)
     return refreshed === 'refreshed'
