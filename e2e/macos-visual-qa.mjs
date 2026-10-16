@@ -321,8 +321,9 @@ try {
 
     try {
       // 安装卸载页第 10 批拆掉了：装、卸、重装都在首页工具卡片上，上面的 dashboardLayout 已经量过这几张卡。
-      await row.getByRole('button', { name: '更多操作', exact: true }).click()
-      await row.getByRole('menuitem', { name: '配置', exact: true }).click()
+      // v4 首页卡片上「…」的读屏名带着工具名（「Codex CLI 更多操作」），菜单里那一项是「配置…」。
+      await row.getByRole('button', { name: `${subject.name} 更多操作`, exact: true }).click()
+      await row.getByRole('menuitem', { name: '配置…', exact: true }).click()
       const dialog = page.getByTestId('config-dialog')
       await dialog.waitFor({ state: 'visible', timeout: 30_000 })
 
