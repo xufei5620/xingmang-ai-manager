@@ -59,8 +59,16 @@ const codexChineseRuntimeSource = String.raw`((documentHook) => {
   let verifyingConfig = false;
   // Statsig hands out the stored value object itself, so the write below
   // reaches every later read of the same object. Only a value seen before
-  // that write says what OpenAI actually sent.
-  const forcedValues = new WeakSet();
+  // that write says what OpenAI actually sent. The record lives on the
+  // document rather than in this runtime's state: a runtime re-applied after
+  // its state was lost in the same document must still know which values an
+  // earlier one forced.
+  const forcedValuesKey = Symbol.for("xingmang.codexChineseLocale.forcedValues");
+  let forcedValues = globalThis[forcedValuesKey];
+  if (!(forcedValues instanceof WeakSet)) {
+    forcedValues = new WeakSet();
+    try { Object.defineProperty(globalThis, forcedValuesKey, { value: forcedValues, configurable: true }); } catch {}
+  }
   const forceConfig = (config) => {
     if (!config || (typeof config !== "object" && typeof config !== "function")) return config;
     const previousPatch = config.__xingmangCodexChineseConfigV3;

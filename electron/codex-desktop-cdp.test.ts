@@ -333,6 +333,17 @@ describe('Codex Desktop Chinese CDP injection', () => {
     expect(off.state().nativeI18n).toBe(false)
   })
 
+  it('does not take a switch an earlier runtime forced as OpenAI\'s after the runtime state is lost', () => {
+    const stored = { enable_i18n: false }
+    const harness = runtimeHarness({ getLayer: () => ({ value: stored, get: (_key: string, fallback: unknown) => fallback }) })
+    harness.run()
+    expect(stored.enable_i18n).toBe(true)
+    vm.runInContext('delete globalThis.__xingmangCodexChineseLocaleState', harness.context)
+    harness.run()
+    expect(harness.state().patchedConfigs).toBe(1)
+    expect(harness.state().nativeI18n).toBe(false)
+  })
+
   it('patches a late Statsig root before its synchronous first locale read', () => {
     const harness = runtimeHarness()
     harness.run()
