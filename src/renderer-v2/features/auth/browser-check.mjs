@@ -1032,16 +1032,19 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       await page.getByTestId('welcome-orbit-scene').waitFor()
       // UI v4.0 has two palettes and no skins: the document follows data-theme alone.
       assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), undefined)
-      assert.equal(await page.locator('.auth-orbit-satellite').count(), 3)
+      assert.equal(await page.locator('.auth-orbit-satellite').count(), 4)
       assert.equal(await page.locator('.frame,.ptile,.welcome-preview-workbench').count(), 0)
       await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0))
-      // v4 的星星是两层 CSS 圆点，整页没有一块逐帧重画的画布（批次性能要求 批03 第 2 条）。
+      // 星空照 0.2.18：170 颗星和连线是画一次的 SVG，整页没有一块逐帧重画的画布（批次性能要求 批03 第 2 条）。
       assert.equal(await page.locator('.auth-welcome canvas').count(), 0)
       assert.match(await page.getByTestId('welcome-starfield').evaluate((layer) => getComputedStyle(layer).backgroundImage), /radial-gradient/)
-      assert.equal(await page.locator('.auth-stars-twinkle').count(), 1)
+      assert.equal(await page.locator('.auth-stars-twinkle').count(), 5)
+      assert.equal(await page.locator('.auth-stars-twinkle circle').count(), 170)
+      assert.ok(await page.locator('.auth-star-links line').count() > 0)
+      assert.equal(await page.locator('.auth-orbit-ellipses > i').count(), 3)
       assert.equal(await page.locator('.auth-orbit-hud').count(), 0)
       assert.equal(await page.getByTestId('welcome-page').getAttribute('data-motion-paused'), 'true')
-      assert.ok(await page.locator('.auth-orbit-ring, .auth-orbit-planet, .auth-stars-twinkle').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationName === 'none')))
+      assert.ok(await page.locator('.auth-orbit-ring, .auth-orbit-planet, .auth-stars-twinkle, .auth-meteor, .auth-orbit-ellipses > *, .auth-orbit-beam').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationName === 'none')))
       const geometry = await page.evaluate(() => ({ width: document.querySelector('.auth-welcome').getBoundingClientRect().width, logo: document.querySelector('.auth-welcome-brand img').getBoundingClientRect().height, footer: document.querySelector('.auth-welcome-foot').getBoundingClientRect().bottom, scene: document.querySelector('.auth-orbit-scene').getBoundingClientRect() }))
       assert.equal(geometry.width, 1280)
       assert.equal(geometry.logo, 64)
@@ -1071,14 +1074,15 @@ test('welcome shows the sidebar brand without the row of tools under it', async 
   } finally { await page.close() }
 })
 
-// 三个工具（Gemini CLI 下线后）在同一条轨道上每隔 120° 一个、同向公转：转到哪个角度都不会叠在一起。
-test('welcome keeps the three tools evenly spaced on one orbit so they never overlap', async () => {
+// 照 0.2.18 四颗（yoyo 2026-10-16：Gemini CLI 不装了，Gemini 模型还能用，星轨上留着它）在同一条轨道上
+// 每隔 90° 一个、同向公转：转到哪个角度都不会叠在一起。
+test('welcome keeps the four orbit labels evenly spaced on one orbit so they never overlap', async () => {
   const page = await open('scenario=welcome')
   try {
     await page.getByTestId('welcome-orbit-scene').waitFor()
     assert.equal(await page.locator('.auth-orbit-ring').count(), 1)
-    assert.deepEqual(await page.locator('.auth-orbit-satellite').allInnerTexts(), ['Claude Code', 'Codex CLI', 'Grok CLI'])
-    for (let spin = 0; spin < 120; spin += 5) {
+    assert.deepEqual(await page.locator('.auth-orbit-satellite').allInnerTexts(), ['Claude Code', 'Codex CLI', 'Gemini', 'Grok CLI'])
+    for (let spin = 0; spin < 90; spin += 5) {
       const boxes = await page.evaluate((angle) => {
         // 动画默认停着（夹具默认减少动画），直接把轨道转到这个角度、工具反着转回来，和动画走到这一帧时一样。
         const ring = document.querySelector('.auth-orbit-ring')
@@ -1092,16 +1096,42 @@ test('welcome keeps the three tools evenly spaced on one orbit so they never ove
           return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, distance: Math.hypot(x, y), angle: Math.atan2(y, x) * 180 / Math.PI }
         })
       }, spin)
-      assert.equal(boxes.length, 3)
+      assert.equal(boxes.length, 4)
       for (const box of boxes) assert.ok(Math.abs(box.distance - boxes[0].distance) < 1, `every tool is on the same orbit at ${spin}deg`)
       for (let index = 1; index < boxes.length; index++) {
         const gap = ((boxes[index].angle - boxes[index - 1].angle) % 360 + 360) % 360
-        assert.ok(Math.abs(gap - 120) < 1, `tools ${index - 1} and ${index} sit 120deg apart at ${spin}deg (got ${gap})`)
+        assert.ok(Math.abs(gap - 90) < 1, `tools ${index - 1} and ${index} sit 90deg apart at ${spin}deg (got ${gap})`)
       }
       for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
         const apart = boxes[a].right <= boxes[b].left || boxes[b].right <= boxes[a].left || boxes[a].bottom <= boxes[b].top || boxes[b].bottom <= boxes[a].top
         assert.ok(apart, `tools ${a} and ${b} do not overlap at ${spin}deg`)
       }
+    }
+  } finally { await page.close() }
+})
+
+// 满屏一层的透明度一变，整个窗口就要重新合成：慢慢变的几样都按 steps() 在同一个 0.2 秒的拍子上换档，
+// 轨道每秒 30 档，只有流星（11 秒里划 1.4 秒）是平滑的。拍子一乱，软件绘制下显卡进程又会吃满一个核。
+test('welcome steps its slow animations on one shared beat', async () => {
+  const page = await open('scenario=welcome&motion')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    const timings = await page.evaluate(() => document.getAnimations().filter((animation) => animation instanceof CSSAnimation).map((animation) => {
+      // CSS 的 animation-timing-function 落在每个关键帧上，不在整段动画的 timing 上。
+      const timing = animation.effect.getTiming(), keyframes = animation.effect.getKeyframes()
+      return { name: animation.animationName, duration: timing.duration, delay: timing.delay, easing: keyframes[0].easing, keyframes: keyframes.length }
+    }))
+    assert.ok(timings.length >= 10, JSON.stringify(timings))
+    for (const timing of timings) {
+      if (timing.name.startsWith('auth-meteor')) continue
+      const steps = /^steps\((\d+)/.exec(timing.easing)
+      assert.ok(steps, `${timing.name} changes in steps: ${JSON.stringify(timing)}`)
+      // steps() 作用在每两个关键帧之间；auth-core 和 auth-beam 是 0% / 50% / 100% 两段。
+      const segments = Math.max(1, timing.keyframes - 1)
+      const beat = timing.name === 'auth-spin' ? 1000 / 30 : 200
+      const step = timing.duration / segments / Number(steps[1])
+      assert.ok(Math.abs(step - beat) < .01, `${timing.name} steps every ${beat}ms: ${JSON.stringify(timing)}`)
+      assert.ok(Math.abs(timing.delay / beat - Math.round(timing.delay / beat)) < .001, `${timing.name} starts on the beat: ${JSON.stringify(timing)}`)
     }
   } finally { await page.close() }
 })

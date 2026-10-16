@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react'
 import { ArrowUpRight, KeyRound, MessageCircle, Moon, ShieldCheck, Sun, Zap } from 'lucide-react'
 import type { LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Logo } from '../../ui'
-import { tools } from '../../registry/tools'
+import { welcomeOrbitItems } from '../../registry/tools'
 import type { WindowOs } from '../app/window-os'
 import { AuthWindow } from './AuthWindow'
+import { WelcomeStarfield } from './WelcomeStarfield'
 import './auth.css'
 
 export interface WelcomeProps {
@@ -26,7 +27,7 @@ export interface WelcomeProps {
 
 /**
  * 低配电脑由主进程判一次，结论挂在根节点的 data-low-end 上（App.tsx）。欢迎页的星轨、
- * 闪烁这些 CSS 动画据此全停，否则老电脑上光这一页就占一大截 CPU。
+ * 闪烁、流星这些 CSS 动画据此全停，否则老电脑上光这一页就占一大截 CPU。
  */
 function useLowEndDevice(): boolean {
   const [lowEnd, setLowEnd] = useState(() => typeof document !== 'undefined' && document.documentElement.dataset.lowEnd === 'true')
@@ -73,11 +74,10 @@ export function Welcome({ onLogin, onRegister, onSteps, onHistoryLogin, onHelp, 
   const lowEnd = useLowEndDevice()
   const active = useWindowActive()
   const paused = reducedMotion || systemReduced || lowEnd
-  const providers = tools.filter((tool) => tool.kind === 'cli').sort((a, b) => a.shortcutIndex - b.shortcutIndex)
   const themeToggle = onThemeToggle ? <button type="button" className="v2-topbar-icon" aria-label="切换深浅色" title="切换深浅色" onClick={onThemeToggle} data-testid="welcome-theme">{theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}</button> : null
   return <AuthWindow platform={platform} variant="welcome" actions={themeToggle}><main className="auth-welcome welcome-page welcome-v4" data-testid="welcome-page" data-motion-paused={paused} data-motion-idle={!active}>
-    {/* 星星是两层 CSS 圆点，只有后一层的透明度在变：不再用整窗画布逐帧重画（批次性能要求 批03 第 2 条）。 */}
-    <div className="auth-stars" aria-hidden="true" data-testid="welcome-starfield" /><div className="auth-stars auth-stars-twinkle" aria-hidden="true" />
+    {/* 0.2.18 的满屏星空、连线和流星，不再用整窗画布逐帧重画（批次性能要求 批03 第 2 条）。 */}
+    <WelcomeStarfield />
     <div className="auth-welcome-hero">
       <div className="auth-welcome-copy">
         {/* 标志加侧栏那份「星芒 AI」字样，横版标志下面那行英文名不放。 */}
@@ -94,10 +94,14 @@ export function Welcome({ onLogin, onRegister, onSteps, onHistoryLogin, onHelp, 
         </div>
       </div>
       <div className="auth-orbit-scene" role="img" aria-label="星芒与 AI 编程工具的星轨" data-testid="welcome-orbit-scene">
-        {/* 一圈轨道整体转，几个工具每隔 120° 一个、各自反着转回来保持正着：转到哪个角度都不会叠在一起。
+        {/* 10-16 yoyo 定：星轨照 0.2.18 的样子（斜着的三道椭圆、星芒的光和光柱、虚线轨道），v4 原型那一圈细线不用。 */}
+        <div className="auth-orbit-ellipses" aria-hidden="true"><i /><i /><i /><b /></div>
+        <div className="auth-orbit-glow" aria-hidden="true" />
+        <div className="auth-orbit-beam" aria-hidden="true" />
+        {/* 一圈轨道整体转，四颗每隔 90° 一个、各自反着转回来保持正着：转到哪个角度都不会叠在一起。
             只动 transform（批次性能要求 批03 第 1 条），不再动自定义属性、left 这些每帧都要重排的东西。 */}
-        <div className="auth-orbit-ring">{providers.map((tool, index) => <span className="auth-orbit-satellite" data-position={index} key={tool.id}><span className="auth-orbit-planet"><BrandIcon tool={tool.id} size={18} variant="xs" />{tool.name}</span></span>)}</div>
-        <div className="auth-orbit-core"><Logo kind="symbol" height={84} /></div>
+        <div className="auth-orbit-ring">{welcomeOrbitItems.map((item, index) => <span className="auth-orbit-satellite" data-position={index} key={item.key}><span className="auth-orbit-planet"><BrandIcon tool={item.tool} model={item.model} size={22} variant="xs" />{item.name}</span></span>)}</div>
+        <div className="auth-orbit-core"><Logo kind="symbol" height={105} /></div>
       </div>
     </div>
     <div className="auth-welcome-foot">
