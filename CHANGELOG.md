@@ -632,6 +632,22 @@
   `accountSwitchDesktopClientsHint`）改成到首页卡片上点「…」里的「配置…」再点「保存并检测」；配置文件读不懂时的那句
   （`electron/broken-config-advice.ts` 的 `describeConfigReset`）改成到首页卡片上点「…」里的「配置…」、选「当前账号」。
   旧句里的「那一行」「检测模型」「保存配置」「使用星芒账号」新界面上都没有了，钉着原句的单元测试跟着换。
+- 连接 Claude Desktop 的弹窗不再默认借 Codex 的密钥、填 GPT 型号（0.2.19 测试包里默认成了 gpt-6.1-sol）。
+  默认选择收进 `features/tools/external-client-defaults.ts`：访问密钥下拉把客户端自己那一家工具的密钥排第一
+  （Claude Desktop 先列 Claude Code）；Claude Code 没配当前账号时，先找账号里分组名带 Claude 的那把，再轮到
+  Codex、Grok；借别的工具的密钥时，只把合这个客户端的型号带过来（Claude Desktop 只认名字带 claude 的）；检测
+  完原来填着的型号不是 Claude 的，Claude Desktop 改挑列表里的 Claude 型号，一个都没有就不替他保存；在下拉里切回
+  自家工具那把密钥时，型号也回到打开时填的那个。WorkBuddy、OpenCode 的默认不变。
+- 外接工具的配置弹窗以前只在打开那一下读一次工具配置：Claude Code 刚装好、密钥还没写完就点开，默认就落到
+  Codex 那把上，后面也不跟着变。现在弹窗还没动过（没换来源、没检测、没保存）时，首页读到新的配置就重挑一次
+  默认；已经动过的不改他的选择（App 把首页那份配置经 `liveConfig` 传进 `ExternalClientDialog`）。
+- xm 站 2026-10-16 删了老分组名（删前服务端把老名字下的 Key 全挂到了新名字下，Key 本身不变）。`catalog.ts` 的 `managedCliKeyProfiles` 换成新名字（Claude-MAX / GPT / Grok / Gemini），新增 `retiredAccountGroups`（老名字 → 新名字）与 `currentAccountGroupName`。
+- `managed-cli-key-store.ts`：星芒账号的缓存读出来时把老名字换成新名字，开机不会因为「分组对不上」重签一把、再重写配置；0.2.12 以前写的不分站点的老缓存，分组是老出厂名的也照样认，不再整份当损坏挪走。
+- `chat-key-store.ts`：AI 对话/画图的聊天密钥缓存同样把老名字换成新名字读出来（同一账号新老名字各一把时留较新的），老对话换到新名字后接着用原来那把，不会因为缓存对不上去拿分组里别的 Key 顶上、绕过那把聊天密钥自己设的上限。
+- 配置框密钥下拉（`key-selection.ts` 的 `listedAccountKeys`）：`xingmang-` 开头的密钥同组同名只列一把（正选着的 > 最近用过的 > 编号大的），不列下线工具星芒签的 Key，也不列分组还写着老名字的（那种一调用就 403）。
+- 旧回滚界面（已冻结）的 AI 对话默认分组取自 `managedCliKeyProfiles.codex.group`，跟着变成「GPT」；只改了它的测试断言，源码没动。
+- AI 对话默认分组 `DEFAULT_CHAT_GROUP` 改「GPT」，聊天记录读出来时老名字换成新名字；画图技能的出厂图片分组 `IMAGE_SKILL_GROUP_NAMES` 改成「图片模型」「生图分组」，技能说明里的分组名跟着换；画布主进程执行器的兜底图片分组改「图片模型」。
+- 欢迎页星空和星轨照 0.2.18 的样子重做（yoyo 10-16 看测试包说 v4 那版「不如上一个版本」）：`welcome-starfield.ts` 用 0.2.18 Starfield 同一个种子和取数顺序布 170 颗星和连线，`WelcomeStarfield.tsx` 挂上时画成 SVG，闪烁分五层整体变透明度，加流星、三道斜椭圆、光柱和虚线轨道。轨道上照 0.2.18 四颗：yoyo 回「还是要加上Gemini」（Gemini CLI 不装了，Gemini 模型还能用），写模型名「Gemini」、`BrandIcon` 按模型取图标，次序在 `registry/tools.ts` 的 `welcomeOrbitItems`，`e2e/electron-ci-smoke.mjs` 的星轨标签跟着改。不回到整窗 canvas 逐帧重画：慢慢变的动画都按 `steps()` 落在 0.2 秒一拍上（轨道 30 档每秒），整窗重新合成一秒只有几次，沙箱 headless 软件合成里显卡进程约 0.2.18 的一半、v4 那版的七成；`browser-check.mjs` 钉住这条节拍。界面文字只多了 Gemini 一个词。
 
 ## 0.2.18 - 2026-10-09
 
