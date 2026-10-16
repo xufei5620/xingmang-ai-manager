@@ -37,6 +37,15 @@ function macBundleName(path: string | null | undefined): string | null {
 }
 
 /**
+ * 不是管理员的账号，星芒把程序装进他自己的「应用程序」（~/Applications），访达左边那个「应用程序」
+ * 是 /Applications，照着找不到。渲染层拿不到主目录，只认 /Users/<名字>/Applications 这种常见的样子，
+ * 认不出来照旧写左边那个。
+ */
+function inUserApplications(path: string | null | undefined): boolean {
+  return /^\/Users\/[^/]+\/Applications\/[^/]+\.app\/*$/i.test(path ?? '')
+}
+
+/**
  * 卡片上名字为 name 的这个桌面端在这台电脑上该怎么自己卸。星芒自己能卸的（Windows 上的
  * Codex 桌面端）和根本不列这几张卡片的系统（Linux）给 null，菜单里就不加「卸载…」。
  * path 是主进程检测到的位置，Mac 上用来取访达里的名字。
@@ -58,7 +67,7 @@ export function buildUninstallGuide(tool: UninstallGuideTool, name: string, os: 
     return { title, lead, after: '删完回到星芒，点首页的「重新检测」。', steps: [
       // 开着的程序访达不让拖进废纸篓。
       `先退出 ${systemName}（在它的窗口里按 ⌘Q）。`,
-      '打开访达，点左边的「应用程序」。',
+      inUserApplications(path) ? '打开访达，按 ⇧⌘H 打开你的个人文件夹，再打开里面的「应用程序」。' : '打开访达，点左边的「应用程序」。',
       `找到 ${found}，把它拖进废纸篓。`,
     ] }
   }

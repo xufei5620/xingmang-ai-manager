@@ -47,14 +47,29 @@ describe('buildUninstallGuide', () => {
       '打开访达，点左边的「应用程序」。',
       '找到 Codex，把它拖进废纸篓。',
     ])
-    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Users/mike/Applications/ChatGPT.app/')?.steps[2])
-      .toBe('找到 ChatGPT（Codex 桌面端在 Mac 上叫这个名字），把它拖进废纸篓。')
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Users/mike/Applications/ChatGPT.app/')?.steps)
+      .toContain('找到 ChatGPT（Codex 桌面端在 Mac 上叫这个名字），把它拖进废纸篓。')
     expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'mac', '/Applications/Claude.app')?.steps[2]).toBe('找到 Claude，把它拖进废纸篓。')
     // 不是 .app 的路径（没读到、或别的形状）照旧用固定的名字；Windows 上不看路径。
     expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', null)?.steps[0]).toBe('先退出 ChatGPT（在它的窗口里按 ⌘Q）。')
     expect(buildUninstallGuide('opencode', 'OpenCode', 'mac', '/Applications/OpenCode')?.steps[2]).toBe('找到 OpenCode，把它拖进废纸篓。')
     expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'win', 'C:\\Users\\a\\AppData\\Local\\AnthropicClaude\\Claude.exe')?.steps[1])
       .toContain('找到 Claude，')
+  })
+
+  it('sends a non-admin Mac customer to the Applications folder inside their home folder', () => {
+    // 不是管理员的账号，星芒装进 ~/Applications，访达左边那个「应用程序」里没有。
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'mac', '/Users/mike/Applications/Claude.app')?.steps).toEqual([
+      '先退出 Claude（在它的窗口里按 ⌘Q）。',
+      '打开访达，按 ⇧⌘H 打开你的个人文件夹，再打开里面的「应用程序」。',
+      '找到 Claude，把它拖进废纸篓。',
+    ])
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Users/mike/Applications/ChatGPT.app/')?.steps[1])
+      .toBe('打开访达，按 ⇧⌘H 打开你的个人文件夹，再打开里面的「应用程序」。')
+    // 系统的 /Applications、认不出来的位置和没读到路径都照旧写左边那个「应用程序」。
+    for (const path of ['/Applications/Claude.app', '/Users/mike/Downloads/Claude.app', '/Volumes/外置/Applications/Claude.app', null]) {
+      expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'mac', path)?.steps[1]).toBe('打开访达，点左边的「应用程序」。')
+    }
   })
 
   it('gives no guide where the app uninstalls it itself or does not list the card', () => {
