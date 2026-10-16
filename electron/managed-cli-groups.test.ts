@@ -15,13 +15,14 @@ function named(...names: string[]): { name: string }[] {
   return names.map((name) => ({ name }))
 }
 
+// xm 站 2026-10-16 删了「Claude-MAX订阅」「GPT-中转/订阅」这些老名字以后的样子。
 const productionGroups = named(
   'default',
-  'Claude-MAX订阅',
-  'GPT-中转/订阅',
-  'Gemini-中转/订阅',
-  'Grok-中转/订阅',
-  '图片模型-中转/订阅',
+  'Claude-MAX',
+  'GPT',
+  'Gemini',
+  'Grok',
+  '图片模型',
 )
 
 describe('normalizeGroupNames', () => {
@@ -70,9 +71,11 @@ describe('resolveManagedCliGroup', () => {
   it('falls back to the other known name list before guessing', () => {
     const renamed = named('default', ...providerIds.map((provider) => sub2ApiManagedCliKeyProfiles[provider].group))
     for (const provider of providerIds) {
+      const group = sub2ApiManagedCliKeyProfiles[provider].group
+      // 「Gemini」两套名单里一样，算不上别名。
       expect(resolveManagedCliGroup(provider, renamed)).toEqual({
-        group: sub2ApiManagedCliKeyProfiles[provider].group,
-        source: 'alias',
+        group,
+        source: group === managedCliKeyProfiles[provider].group ? 'preferred' : 'alias',
       })
     }
   })
@@ -86,7 +89,7 @@ describe('resolveManagedCliGroup', () => {
   })
 
   it('never claims a shared group for a CLI', () => {
-    const shared = named('default', '默认分组', '图片模型-中转/订阅', '生图分组', 'GPT-image2', '视频模型-中转/订阅')
+    const shared = named('default', '默认分组', '图片模型', '生图分组', 'GPT-image2', '视频模型')
     for (const provider of providerIds) {
       expect(resolveManagedCliGroup(provider, shared)).toEqual({
         group: managedCliKeyProfiles[provider].group,
@@ -255,36 +258,36 @@ describe('loadManagedCliGroups', () => {
   })
 })
 
-// xm 站的分组表长这样（10-14 服务端列出来的那份里挑的）：同一家有好几个分组，靠名字里的词
-// 认不出改了名的那个，只能靠发布者写的对照。
+// xm 站的分组表长这样（10-14 服务端列出来的那份里挑的，名字是 10-16 删了老名字以后的）：同一家有好几个分组，
+// 靠名字里的词认不出改了名的那个，只能靠发布者写的对照。
 const xmGroups = named(
   'default',
-  'Claude-MAX订阅',
+  'Claude-MAX',
   'Claude AWS-B',
   'Claude-KIRO(高缓)',
-  'GPT-中转/订阅',
+  'GPT',
   'GPT-官方API直连',
-  'Grok-中转/订阅',
+  'Grok',
   'Grok-官方API直连',
-  '图片模型-中转/订阅',
-  '视频模型-中转/订阅',
+  '图片模型',
+  '视频模型',
 )
 
 function renamedXmGroups(): { name: string }[] {
   const renames: Record<string, string> = {
-    'Claude-MAX订阅': 'Claude 主力',
-    'GPT-中转/订阅': 'GPT 主力',
-    'Grok-中转/订阅': 'Grok 主力',
-    '图片模型-中转/订阅': '画图专线',
+    'Claude-MAX': 'Claude 主力',
+    'GPT': 'GPT 主力',
+    'Grok': 'Grok 主力',
+    '图片模型': '画图专线',
   }
   return xmGroups.map((group) => ({ name: renames[group.name] ?? group.name }))
 }
 
 const renameMap = {
-  claude: ['Claude 主力', 'Claude-MAX订阅'],
-  codex: ['GPT 主力', 'GPT-中转/订阅'],
-  grok: ['Grok 主力', 'Grok-中转/订阅'],
-  image: ['画图专线', '图片模型-中转/订阅'],
+  claude: ['Claude 主力', 'Claude-MAX'],
+  codex: ['GPT 主力', 'GPT'],
+  grok: ['Grok 主力', 'Grok'],
+  image: ['画图专线', '图片模型'],
 }
 
 describe('published group map', () => {
@@ -303,14 +306,14 @@ describe('published group map', () => {
   })
 
   it('takes the first listed name the account can use, so the old name can stay listed as a fallback', () => {
-    expect(resolveManagedCliGroup('claude', xmGroups, 'solov', [], renameMap)).toEqual({ group: 'Claude-MAX订阅', source: 'mapped' })
+    expect(resolveManagedCliGroup('claude', xmGroups, 'solov', [], renameMap)).toEqual({ group: 'Claude-MAX', source: 'mapped' })
     const transition = [...xmGroups, { name: 'Claude 主力' }]
     expect(resolveManagedCliGroup('claude', transition, 'solov', [], renameMap)).toEqual({ group: 'Claude 主力', source: 'mapped' })
   })
 
   it('never conjures a group the account cannot use', () => {
     expect(resolveManagedCliGroup('claude', xmGroups, 'solov', [], { claude: ['没开通的分组'] })).toEqual({
-      group: 'Claude-MAX订阅',
+      group: 'Claude-MAX',
       source: 'preferred',
     })
     expect(resolveMappedGroup('image', xmGroups, { image: ['没开通的分组'] })).toBeNull()
@@ -319,7 +322,7 @@ describe('published group map', () => {
   it('leaves roles the map does not mention on the usual order', () => {
     const resolved = resolveManagedCliGroups(xmGroups, 'solov', [], { claude: ['Claude AWS-B'] })
     expect(resolved.claude).toEqual({ group: 'Claude AWS-B', source: 'mapped' })
-    expect(resolved.codex).toEqual({ group: 'GPT-中转/订阅', source: 'preferred' })
+    expect(resolved.codex).toEqual({ group: 'GPT', source: 'preferred' })
   })
 
   it('never applies the xm map to the history account', () => {
@@ -345,7 +348,7 @@ describe('published group map', () => {
       getActiveSiteId: () => 'solov',
       getAccountGroupHints: async () => { throw new Error('状态文件读不到') },
     })
-    expect(resolved?.codex).toEqual({ group: 'GPT-中转/订阅', source: 'preferred' })
+    expect(resolved?.codex).toEqual({ group: 'GPT', source: 'preferred' })
   })
 
   it('does not even ask for the map on the history account', async () => {
@@ -361,7 +364,7 @@ describe('published group map', () => {
 describe('markRecommendedChatGroup', () => {
   it('marks the group the Codex key would use, renamed or not', () => {
     expect(markRecommendedChatGroup(xmGroups, 'solov', null).filter((group) => group.recommended).map((group) => group.name))
-      .toEqual(['GPT-中转/订阅'])
+      .toEqual(['GPT'])
     expect(markRecommendedChatGroup(renamedXmGroups(), 'solov', renameMap).filter((group) => group.recommended).map((group) => group.name))
       .toEqual(['GPT 主力'])
   })

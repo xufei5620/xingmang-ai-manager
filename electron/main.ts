@@ -2592,7 +2592,7 @@ if (!hasSingleInstanceLock) {
       })
       const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
       const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId, credentialPersistence)
-      const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage, credentialPersistence)
+      const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage, credentialPersistence, siteId)
       // AI 工作区查模型是星芒自己的请求：「自动」时直连没走通当场改走默认线路。
       const chatCredentials = createChatCredentialCoordinator({ accountService, keyStore: chatKeyStore, modelService: {
         fetchAvailableModels: (apiKey, options) => systemService.fetchAvailableModels(apiKey, { ...options, routed: true }),

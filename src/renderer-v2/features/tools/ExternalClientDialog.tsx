@@ -6,6 +6,7 @@ import { clientConnections, clientKeySources } from '../../registry/clients'
 import { connectionCheckView } from './connection-check'
 import { accountKeyListFailureText, externalClientSavedTone } from './external-client-notice'
 import { accountKeyDescription, manualKeyIssue, readAllAccountKeys } from './key-selection'
+import { configuredKeySources, configuredSourceModel, detectedClientModel, initialClientSource } from './external-client-defaults'
 import { DialogExitButton } from './dialog-parts'
 import { OptionPicker, type PickerOption } from './OptionPicker'
 import { beginBusinessOperation, errorMessage } from '../../business-common'
@@ -25,7 +26,7 @@ function connectedText(tool: ExternalToolId, model: string): string {
   return '已连好 OpenCode，命令行版和桌面版都能用'
 }
 
-export function ExternalClientDialog({ api, tool, signedIn, ready = false, version = null, strictKeyFormat = false, onClose, onSaved }: {
+export function ExternalClientDialog({ api, tool, signedIn, ready = false, version = null, strictKeyFormat = false, liveConfig = null, onClose, onSaved }: {
   api: XingmangApi
   tool: ExternalToolId
   signedIn: boolean
@@ -35,6 +36,11 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   version?: string | null
   /** 同配置弹窗：只有星芒的密钥确定是 sk- 开头。缺省 = 只拦空的。 */
   strictKeyFormat?: boolean
+  /**
+   * 首页最新读到的工具配置。弹窗还没动过（没换密钥、没检测、没保存）时跟着它重挑默认：刚装好的
+   * Claude Code 常常是弹窗打开以后才写好密钥。缺省 = 只在打开时读一次。
+   */
+  liveConfig?: AppConfigSummary | null
   onClose(): void
   onSaved(): void
 }) {
@@ -54,6 +60,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   const [result, setResult] = useState<ExternalClientConfigResult | null>(null)
   const alive = useRef(true)
   const lock = useRef(false)
+  const openedWith = useRef(liveConfig)
   const toast = useToast()
   useEffect(() => {
     let current = true
@@ -66,24 +73,32 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       const availableKeys = keyResult.status === 'fulfilled' ? keyResult.value.keys.filter((key) => key.status === 1) : []
       setKeys(availableKeys)
       if (keyResult.status === 'rejected') setKeyError(errorMessage(keyResult.reason))
-      if (configResult.status === 'fulfilled') {
-        const value = configResult.value
-        setConfig(value)
-        const choices = [definition.preferredProvider, ...clientKeySources.map((item) => item.id)]
-        const current = choices.find((id) => value.providers[id].hasApiKey && value.providers[id].matchesRelay)
-        setSource(current ? `configured:${current}` : availableKeys.length ? `account:${availableKeys[0].id}` : 'manual')
-        setModel(current ? value.providers[current].model : '')
-      } else {
-        setSource(availableKeys.length ? `account:${availableKeys[0].id}` : 'manual')
-        setError(errorMessage(configResult.reason))
-      }
+      const providers = configResult.status === 'fulfilled' ? configResult.value.providers : null
+      const initial = initialClientSource(tool, definition.preferredProvider, clientKeySources, providers, availableKeys)
+      setSource(initial)
+      setModel(configuredSourceModel(tool, initial, providers))
+      if (configResult.status === 'fulfilled') setConfig(configResult.value)
+      else setError(errorMessage(configResult.reason))
       setBusy('')
     })
     return () => { current = false; alive.current = false }
-  }, [api, signedIn, definition.preferredProvider])
+  }, [api, signedIn, tool, definition.preferredProvider])
+  // 打开时读到的那份可能晚了一步：0.2.19 测试包里 Claude Code 还没写好密钥时点开，默认就落到了 Codex
+  // 那把上（推测）。只跟打开以后首页新读到的那份；弹窗自己还在读、检测、保存时先压着，忙完再看。弹窗自己
+  // 那次读要等密钥列表一起回来，常常比首页这份还旧。动过的（换了来源、检测过、保存过）不再跟。
+  useEffect(() => {
+    if (!liveConfig || liveConfig === openedWith.current || busy) return
+    openedWith.current = liveConfig
+    if (dirty || models.length || result || error) return
+    const next = initialClientSource(tool, definition.preferredProvider, clientKeySources, liveConfig.providers, keys)
+    // 来源没变也重填型号：那个工具的配置可能刚换了型号（比如开机那一轮把下架的换掉）。
+    setConfig(liveConfig); setSource(next); setModel(configuredSourceModel(tool, next, liveConfig.providers))
+  }, [liveConfig, busy])
 
+  // 切回自家工具那把密钥，型号也回到打开时替他填的那个；换成别的来源照旧清空，检测完再挑。
   function changeSource(next: string) {
-    setSource(next); setModels([]); setModel(''); setResult(null); setError(''); setSecretError(''); setDirty(true)
+    const seeded = next === `configured:${definition.preferredProvider}` ? configuredSourceModel(tool, next, config?.providers ?? null) : ''
+    setSource(next); setModels([]); setModel(seeded); setResult(null); setError(''); setSecretError(''); setDirty(true)
   }
   function credential(): ExternalClientCredential {
     if (source.startsWith('configured:')) return { kind: 'configured', provider: source.slice(11) as ProviderId }
@@ -104,11 +119,10 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
         : selected.kind === 'account' ? await api.listAccountKeyModels(selected.keyId) : await api.listModels(selected.apiKey)
       if (!alive.current) return null
       setModels(values)
-      const preferred = tool === 'claudeDesktop' ? values.find((id) => /claude/i.test(id)) : undefined
-      const kept = values.includes(model) ? model : preferred
+      const kept = detectedClientModel(tool, model, values)
       setModel(kept ?? values[0] ?? '')
       if (!values.length) setError('这把密钥没有可用模型，请换一把密钥后重新检测。')
-      return { values, kept: kept ?? null }
+      return { values, kept }
     } catch (cause) { if (alive.current) { setModels([]); setError(errorMessage(cause)) } return null }
     finally { lock.current = false; if (alive.current) setBusy('') }
   }
@@ -131,7 +145,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     if (listed?.kept && alive.current) await save(listed.kept, listed.values)
   }
   const detected = models.length > 0
-  const currentSources = clientKeySources.filter((item) => config?.providers[item.id].hasApiKey && config.providers[item.id].matchesRelay)
+  const currentSources = configuredKeySources(clientKeySources, definition.preferredProvider, config?.providers ?? null)
   const sourceOptions: PickerOption[] = [
     ...currentSources.map((entry) => ({ value: `configured:${entry.id}`, label: `使用 ${entry.name} 当前的星芒密钥` })),
     ...keys.map((key) => ({ value: `account:${key.id}`, label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),

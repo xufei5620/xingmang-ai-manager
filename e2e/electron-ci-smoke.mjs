@@ -85,7 +85,7 @@ async function main() {
     })
 
     progress('reading the welcome page')
-    const expectedConstellationLabels = ['Claude Code', 'Codex CLI', 'Grok CLI']
+    const expectedConstellationLabels = ['Claude Code', 'Codex CLI', 'Gemini', 'Grok CLI']
     const result = {
       title: await withDeadline('document title', stepBudgetMs, () => page.title()),
       pageErrors,

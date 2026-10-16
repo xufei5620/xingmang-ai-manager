@@ -7,7 +7,7 @@ import { officialAccountNames, officialAccountNotes, tools } from '../../registr
 import { brokenConfigOf, brokenConfigRepairTarget, codexNeedsRepair, foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
-import { accountKeyDescription, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyIssue, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
+import { accountKeyDescription, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, listedAccountKeys, manualKeyIssue, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
 import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
 import { codexModelChoices, isHiddenCodexModel, type CodexModelFilter } from './model-filter'
 import { DialogExitButton, DialogExitLink, RadioCards, type RadioCardOption } from './dialog-parts'
@@ -435,7 +435,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     // 别的站的 Key 不给「保持当前」：选了也存不进去（主进程报「属于其他账号」）。
     ...((native.hasApiKey && native.matchesRelay) || usingCurrentKey ? [{ value: CURRENT_KEY, label: currentKeyLabel(metadata, native.apiKeyPreview), disabled: !native.hasApiKey || !native.matchesRelay }] : []),
     { value: AUTOMATIC_KEY, label: automaticLabel, description: '保存时自动准备好密钥，不用自己创建', disabled: !metadata || metadataLoading || Boolean(metadataError) },
-    ...keys.filter((key) => key.status === 1).map((key) => ({ value: String(key.id), label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
+    ...listedAccountKeys(keys, draft.keyId).map((key) => ({ value: String(key.id), label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
     ...(!usingCurrentKey && !usingAutomaticKey && !selectedKey ? [{ value: draft.keyId, label: '所选密钥已不可用，请重新选择', disabled: true }] : []),
   ]
   const detectedForDraft = modelsDetected && (draft.source !== 'manual' || draft.validatedSecret === draft.secret)
