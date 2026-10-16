@@ -35,7 +35,7 @@ describe('tutorial step targets', () => {
   });
 
   it('lands the privacy step on the privacy settings group', () => {
-    expect(step('safety', '查看隐私与数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
+    expect(step('safety', '查看隐私数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
   });
 
   it('only names sections that exist on the target page', () => {

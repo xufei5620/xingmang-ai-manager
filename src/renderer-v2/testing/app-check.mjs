@@ -3498,6 +3498,33 @@ test('turning the display switch off in settings asks for a relaunch, and later 
   } finally { await page.close() }
 })
 
+// v4 第 8 批：线路从下拉框换成一排三个按钮，按下的那颗 aria-pressed；「现在重开」先问一句再重开。
+const routeChoiceLabels = { auto: '自动（推荐）', primary: '只用线路1', direct: '只用线路2' }
+
+function routeChoice(route, value) {
+  return route.getByRole('button', { name: routeChoiceLabels[value], exact: true })
+}
+
+async function chooseRoute(route, value) {
+  await routeChoice(route, value).click()
+}
+
+async function expectRoute(route, value) {
+  await expect(routeChoice(route, value)).toHaveAttribute('aria-pressed', 'true')
+}
+
+async function expectRouteLocked(route, locked = true) {
+  for (const value of ['auto', 'primary', 'direct']) {
+    if (locked) await expect(routeChoice(route, value)).toBeDisabled()
+    else await expect(routeChoice(route, value)).toBeEnabled()
+  }
+}
+
+async function relaunchFromRouteNotice(page, scope = page) {
+  await scope.getByTestId('settings-relay-relaunch-now').click()
+  await page.getByTestId('settings-relay-relaunch-confirm').getByRole('button', { name: '现在重开', exact: true }).click()
+}
+
 test('a first login network failure can change routes without losing its draft or bypassing relaunch', async () => {
   const page = await open('guest=1&missingConfig=1')
   try {
@@ -3514,14 +3541,14 @@ test('a first login network failure can change routes without losing its draft o
     await expect(page.locator('dialog[open]')).toHaveCount(1)
     const route = panel.getByTestId('settings-relay-route-solov')
     await page.evaluate(() => window.v2Test.holdNextConfigSave())
-    await route.selectOption('direct')
-    await expect(route).toBeDisabled()
+    await chooseRoute(route, 'direct')
+    await expectRouteLocked(route)
     await expect(page.getByTestId('auth-connection-back')).toBeDisabled()
-    await expect(route).toHaveValue('primary')
+    await expectRoute(route, 'primary')
     await page.evaluate(() => window.v2Test.releaseConfigSave('线路设置没有保存成功'))
     await panel.getByRole('alert').filter({ hasText: '线路设置没有保存成功' }).waitFor()
-    await expect(route).toHaveValue('primary')
-    await route.selectOption('direct')
+    await expectRoute(route, 'primary')
+    await chooseRoute(route, 'direct')
     await panel.getByTestId('settings-relay-relaunch').waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length), 0)
     await page.getByTestId('auth-connection-back').click()
@@ -3529,11 +3556,14 @@ test('a first login network failure can change routes without losing its draft o
     await expect(page.getByTestId('login-password')).toHaveValue('fixture-password')
     await expect(page.getByTestId('auth-agree')).toBeChecked()
     await page.getByTestId('auth-connection-settings').click()
-    await expect(route).toHaveValue('direct')
+    await expectRoute(route, 'direct')
     await page.evaluate(() => window.v2Test.emit('onWindowCloseRequest', { requestId: 'fixture-route-relaunch' }))
     await expect.poll(() => page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose' && entry.args[0] === 'fixture-route-relaunch')?.args[1]?.unsavedChanges)).toBe(true)
     await page.evaluate(() => { window.xingmang.relaunchApp = async () => false })
     await panel.getByTestId('settings-relay-relaunch-now').click()
+    // 登录框里问的是没填完的登录信息，不是「登录状态不变」。
+    await expect(page.getByTestId('settings-relay-relaunch-confirm')).toContainText('没填完的登录信息要重新填')
+    await page.getByTestId('settings-relay-relaunch-confirm').getByRole('button', { name: '现在重开', exact: true }).click()
     await waitForToast(page, '已取消重开')
     await expect(panel.getByTestId('settings-relay-relaunch')).toBeVisible()
     await page.screenshot({ path: path.join(artifacts, 'auth-relay-route-pending.png'), fullPage: true })
@@ -3555,7 +3585,7 @@ test('an unsigned first-run guide reaches connection routes before it can config
     await page.getByTestId('guide-login').click()
     await page.getByTestId('auth-connection-settings').click()
     const panel = page.getByTestId('auth-connection-routes')
-    await panel.getByTestId('settings-relay-route-solov').selectOption('direct')
+    await chooseRoute(panel.getByTestId('settings-relay-route-solov'), 'direct')
     await panel.getByTestId('settings-relay-relaunch').waitFor()
     await page.getByTestId('auth-connection-back').click()
     await page.getByTestId('login-cancel').click()
@@ -3571,29 +3601,36 @@ test('relay route settings stay confirmed while saving and keep the restart noti
   try {
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
-    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    await settings.getByRole('tab', { name: '网络加速', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
-    await expect(route).toHaveValue('primary')
+    await expectRoute(route, 'primary')
     // 历史账号也有直连了，这一行能选。
-    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeEnabled()
-    await expect(page.getByTestId('settings-relay-route-solov-api')).toHaveValue('primary')
+    await expectRouteLocked(page.getByTestId('settings-relay-route-solov-api'), false)
+    await expectRoute(page.getByTestId('settings-relay-route-solov-api'), 'primary')
     await page.evaluate(() => window.v2Test.holdNextConfigSave())
-    await route.selectOption('direct')
-    await expect(route).toBeDisabled()
-    await expect(route).toHaveValue('primary')
+    await chooseRoute(route, 'direct')
+    await expectRouteLocked(route)
+    await expectRoute(route, 'primary')
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
     await page.evaluate(() => window.v2Test.releaseConfigSave())
-    await expect(route).toHaveValue('direct')
+    await expectRoute(route, 'direct')
     await page.getByTestId('settings-relay-relaunch').waitFor()
     const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
     assert.deepEqual(saves.at(-1), { version: 2, relayEndpointIds: { solov: 'direct', 'solov-api': 'primary' } })
     assert.equal(await page.evaluate(async () => (await window.xingmang.getSettings()).activeRelayEndpointIds.solov), 'primary')
     await page.getByTestId('nav-home').click()
     await page.getByTestId('nav-settings').click()
-    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    await settings.getByRole('tab', { name: '网络加速', exact: true }).click()
     await page.getByTestId('settings-relay-relaunch').waitFor()
     await page.screenshot({ path: path.join(artifacts, 'settings-relay-route-pending.png'), fullPage: true })
+    // 先问一句：点「稍后」什么都不做，横条留着。
     await page.getByTestId('settings-relay-relaunch-now').click()
+    const confirm = page.getByTestId('settings-relay-relaunch-confirm')
+    await expect(confirm).toContainText('登录状态和配好的工具都不变')
+    await confirm.getByRole('button', { name: '稍后', exact: true }).click()
+    await expect(confirm).toBeHidden()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length), 0)
+    await relaunchFromRouteNotice(page)
     await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
     await expect(page.getByTestId('settings-relay-relaunch')).toBeVisible()
     await clean(page)
@@ -3604,18 +3641,18 @@ test('relay route settings roll back a failed save and do not announce a pending
   const page = await open()
   try {
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
     await page.evaluate(() => { window.v2Test.fail = 'saveSettings' })
-    await route.selectOption('direct')
+    await chooseRoute(route, 'direct')
     await page.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
-    await expect(route).toHaveValue('primary')
-    await expect(route).toBeEnabled()
+    await expectRoute(route, 'primary')
+    await expectRouteLocked(route, false)
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
     await page.evaluate(() => { window.v2Test.fail = '' })
-    await route.selectOption('direct')
+    await chooseRoute(route, 'direct')
     await page.getByTestId('settings-relay-relaunch').waitFor()
-    await route.selectOption('primary')
+    await chooseRoute(route, 'primary')
     await expect.poll(() => page.getByTestId('settings-relay-relaunch').count()).toBe(0)
     await clean(page)
   } finally { await page.close() }
@@ -3625,17 +3662,33 @@ test('relay route settings compare against the active backup route and preserve 
   const page = await open('directRelayActive=1')
   try {
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
-    await expect(route).toHaveValue('direct')
+    await expectRoute(route, 'direct')
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
-    await route.selectOption('primary')
+    await chooseRoute(route, 'primary')
     await page.getByTestId('settings-relay-relaunch').waitFor()
     await page.evaluate(() => { window.xingmang.relaunchApp = async () => false })
-    await page.getByTestId('settings-relay-relaunch-now').click()
+    await relaunchFromRouteNotice(page)
     await waitForToast(page, '已取消重开')
     await expect(page.getByTestId('settings-relay-relaunch')).toBeVisible()
     assert.equal(await page.evaluate(async () => (await window.xingmang.getAccountSession()).account.userId), 17)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 左栏搜索搜到线路那一行，改完就在搜索结果里给「现在重开」，不用再回到网络加速那一组。
+test('a route changed from the settings search offers the restart right there', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('settings-search').fill('星芒账号线路')
+    const results = page.getByTestId('settings-search-results')
+    await chooseRoute(results.getByTestId('settings-relay-route-solov'), 'direct')
+    await results.getByTestId('settings-relay-relaunch').waitFor()
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 1)
+    await relaunchFromRouteNotice(page, results)
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3645,19 +3698,19 @@ test('relay route settings read nothing stored as auto and offer it first with t
   const page = await open('autoRelay=direct')
   try {
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
-    await expect(route).toHaveValue('auto')
-    assert.deepEqual(await route.locator('option').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
-    assert.deepEqual(await page.getByTestId('settings-relay-route-solov-api').locator('option').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
+    await expectRoute(route, 'auto')
+    assert.deepEqual(await route.getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
+    assert.deepEqual(await page.getByTestId('settings-relay-route-solov-api').getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
     await page.getByText('自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
     await page.getByText('自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
-    await route.selectOption('primary')
+    await chooseRoute(route, 'primary')
     await page.getByTestId('settings-relay-relaunch').waitFor()
     const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
     assert.deepEqual(saves.at(-1), { version: 2, relayEndpointIds: { 'solov-api': 'primary', solov: 'primary' } })
-    await route.selectOption('auto')
+    await chooseRoute(route, 'auto')
     await expect.poll(() => page.getByTestId('settings-relay-relaunch').count()).toBe(0)
     await clean(page)
   } finally { await page.close() }
@@ -7133,7 +7186,7 @@ async function openAboutSettings(page) {
   await page.getByTestId('nav-settings').click()
   const settings = page.getByTestId('page-settings')
   await settings.waitFor()
-  await settings.getByRole('tab', { name: '更新与关于', exact: true }).click()
+  await settings.getByRole('tab', { name: '版本更新', exact: true }).click()
   return settings
 }
 
@@ -7462,19 +7515,19 @@ test('tutorial actions land on the account tab or settings group the step descri
 
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
-    await settings.getByRole('tab', { name: '更新与关于', exact: true }).click()
-    await expect(settings.getByRole('tab', { name: '更新与关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await settings.getByRole('tab', { name: '版本更新', exact: true }).click()
+    await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
     for (let visit = 0; visit < 2; visit += 1) {
       await openChapter('safety')
       await tutorial.getByTestId('tutorial-safety-action-2').click()
       await expect(page.getByTestId('page-settings')).toBeVisible()
-      await expect(page.getByTestId('page-settings').getByRole('tab', { name: '隐私与数据', exact: true })).toHaveAttribute('aria-selected', 'true')
-      await page.getByTestId('page-settings').getByRole('tab', { name: '更新与关于', exact: true }).click()
+      await expect(page.getByTestId('page-settings').getByRole('tab', { name: '隐私数据', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await page.getByTestId('page-settings').getByRole('tab', { name: '版本更新', exact: true }).click()
     }
     // 从侧栏点「设置」不点名分组，仍停在用户上次看的那组，不会被教程的跳转带偏。
     await page.getByTestId('nav-home').click()
     await page.getByTestId('nav-settings').click()
-    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '更新与关于', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('page-settings').getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
     // 默认夹具没接充值、订单、用量那几个读取（会记进 unexpected），这里只看有没有报错。
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
@@ -7513,10 +7566,11 @@ test('a cut-off network row takes a signed-in account to its route setting', asy
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
     const settings = page.getByTestId('page-settings')
-    await expect(settings.getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(settings.getByRole('tab', { name: '网络加速', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
-    await expect(page.getByTestId('settings-relay-route-solov')).toBeFocused()
-    await page.getByTestId('settings-relay-route-solov').selectOption('direct')
+    // 焦点落在那一排的第一颗按钮上，键盘用户左右键就能换。
+    await expect(routeChoice(page.getByTestId('settings-relay-route-solov'), 'auto')).toBeFocused()
+    await chooseRoute(page.getByTestId('settings-relay-route-solov'), 'direct')
     await page.getByTestId('settings-relay-relaunch').waitFor()
     await clean(page)
   } finally { await page.close() }
@@ -7542,7 +7596,7 @@ test('a cut-off network row takes a historical account to its own route setting'
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov-api"]')?.getAttribute('data-anchor-focus') === 'true')
-    await expect(page.getByTestId('settings-relay-route-solov-api')).toBeFocused()
+    await expect(routeChoice(page.getByTestId('settings-relay-route-solov-api'), 'auto')).toBeFocused()
     await clean(page)
   } finally { await page.close() }
 })
@@ -7603,7 +7657,7 @@ test('the enterprise certificate row opens the check page on the certificate ite
     })
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
-    await settings.getByRole('tab', { name: '网络', exact: true }).click()
+    await settings.getByRole('tab', { name: '网络加速', exact: true }).click()
     await page.getByTestId('settings-certificate-health').click()
     await page.getByTestId('page-health').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="CERTIFICATE_TRUST"]')?.getAttribute('data-anchor-focus') === 'true')
@@ -7692,7 +7746,7 @@ test('the settings network check opens the passing network item and points at it
   try {
     await stubHealthReport(page, mixedHealthItems)
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
     await page.getByTestId('settings-network-health').click()
     await page.getByTestId('page-health').waitFor()
     // 网络那一项是正常的：先把正常的几项摆出来，再翻到它、亮一下。
@@ -7802,7 +7856,7 @@ test('pointing at an item of a check page visited before waits for the new resul
       ]
     })
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
     await page.getByTestId('settings-network-health').click()
     await page.getByTestId('page-health').waitFor()
     // 新结果还没回来：哪一项都不亮，正常的几项也还收着。
@@ -7890,8 +7944,8 @@ test('a network self-check result sends 去处理 to the network group of settin
     await claude.getByRole('button', { name: '去处理', exact: true }).click()
     const settings = page.getByTestId('page-settings')
     await settings.waitFor()
-    await expect(settings.getByRole('tab', { name: '网络', exact: true })).toHaveAttribute('aria-selected', 'true')
-    await expect(settings.locator('#v2-settings-panel h2')).toHaveText('网络')
+    await expect(settings.getByRole('tab', { name: '网络加速', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(settings.locator('#v2-settings-panel h2')).toHaveText('网络加速')
     await clean(page)
   } finally { await page.close() }
 })
@@ -7922,7 +7976,7 @@ test('the help dialog lists the pages tucked under More and opens them', async (
   } finally { await welcome.close() }
 })
 
-// 「更新」页和设置「更新与关于」改的是同一份设置：在一边关掉，另一边跟着关。
+// 「更新」页和设置「版本更新」改的是同一份设置：在一边关掉，另一边跟着关。
 test('the startup update check switched on the updates page shows the same in settings, and back', async () => {
   const page = await open()
   try {
@@ -7936,7 +7990,7 @@ test('the startup update check switched on the updates page shows the same in se
     await expect(check).toHaveAttribute('aria-checked', 'true')
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
-    await settings.getByRole('tab', { name: '更新与关于', exact: true }).click()
+    await settings.getByRole('tab', { name: '版本更新', exact: true }).click()
     const settingsCheck = settings.getByRole('switch', { name: '启动时检查新版本', exact: true })
     await expect(settingsCheck).toHaveAttribute('aria-checked', 'true')
     await settingsCheck.click()

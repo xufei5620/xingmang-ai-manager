@@ -7,12 +7,16 @@ import {
   resolveAccountLanding,
   autoUpdateBubbleBody,
   autoUpdateSettingDescription,
+  buildSettingsBlocks,
   notificationOptions,
   notificationSettingsItemId,
+  searchSettingsItems,
+  settingsGroupIcons,
   settingsGroups,
   settingsItemAvailable,
   settingsItemLabel,
   settingsItems,
+  settingsSections,
   standardAccountUpdateNotice,
   standardAccountUpdateText,
   updateBubbleRepeatsUpdatesPage,
@@ -89,11 +93,21 @@ describe('renderer-v2 notification settings registry', () => {
 
   it('describes the CLI update reminder in the customer’s own words', () => {
     const option = notificationOptions.find(entry => entry.value === 'cliUpdate');
+    // Codex 桌面端出新版也走这一项，标题说「工具」不说「命令行」，只装了桌面端的客户也认得出（第三十二批 B）。
     expect(option?.label).toBe('工具有新版本');
-    // Codex 桌面端出新版也走这一项，只装了桌面端的客户也要能认出这一项跟自己有关（第三十二批 B）。
-    expect(option?.description).toBe('你装的工具出新版本时提醒一次');
     // 站点名、内部代号不进面向用户的文案（双站点对用户无感）。
-    expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|CLI|命令行/i);
+    expect(option?.label).not.toMatch(/solov|new-api|relay|CLI|命令行/i);
+  });
+
+  // v4 的次序和叫法（字表批08）：钱的事在前；只有余额和花费两项要说清楚什么时候提醒，而且按代码的判断写。
+  it('lists the reminders in the v4 order, explaining only the two money thresholds', () => {
+    expect(notificationOptions.map(option => option.label)).toEqual([
+      '余额不足', '花费突然变多', '终端里的 AI 做完或在等你', '终端里没回上', '安装和更新结果', '工具有新版本', '后台任务做完', '公告与优惠', '加速提醒',
+    ]);
+    expect(notificationOptions.filter(option => option.description).map(option => [option.value, option.description])).toEqual([
+      ['balance', '余额低于 $5 时提醒'],
+      ['spend', '一小时内花费超过平时 5 倍时提醒'],
+    ]);
   });
 });
 
@@ -109,15 +123,67 @@ describe('renderer-v2 settings rows registry', () => {
     for (const group of settingsGroups) expect(settingsItems.some(item => item.group === group.value), group.value).toBe(true);
   });
 
-  it('lists the four rows the settings page moved or renamed under their new groups', () => {
+  it('lists the rows the settings page moved or renamed under their new groups', () => {
     const groupOf = (id: string) => settingsItems.find(item => item.id === id)?.group;
     expect(groupOf('latest-cli')).toBe('tools');
     expect(groupOf('update-check')).toBe('about');
     expect(groupOf('auto-update')).toBe('about');
+    expect(groupOf('backups')).toBe('backup');
+    expect(groupOf('transfer')).toBe('backup');
+    expect(groupOf('legal')).toBe('privacy');
     expect(settingsItemLabel('workspace')).toBe('打开工具时进入的文件夹');
-    expect(settingsItemLabel('test-notification')).toBe('测试通知');
-    expect(settingsGroups.find(group => group.value === 'about')?.label).toBe('更新与关于');
+    expect(settingsItemLabel('language')).toBe('界面语言');
+    expect(settingsItemLabel('terminal')).toBe('终端');
+    expect(settingsItemLabel('install-location')).toBe('安装位置');
+    expect(settingsItemLabel('proxy')).toBe('连接方式');
+    expect(settingsItemLabel('logs')).toBe('运行日志');
+    expect(settingsItemLabel('usage-stats')).toBe('匿名使用统计');
     expect(settingsGroups.find(group => group.value === 'startup')?.keywords).not.toContain('自动更新');
+  });
+
+  // v4 八组，组名都是四个字；「账号」组拆走，测试通知并进桌面通知那一行（字表批08）。
+  it('names the eight v4 groups and drops the account group and the test notification row', () => {
+    expect(settingsGroups.map(group => group.label)).toEqual(['外观显示', '启动关闭', '工具管理', '网络加速', '消息通知', '备份迁移', '隐私数据', '版本更新']);
+    for (const group of settingsGroups) expect(settingsGroupIcons[group.value], group.value).toBeTruthy();
+    const ids = settingsItems.map(item => item.id);
+    for (const gone of ['current-account', 'switch-account', 'remember-password', 'logout', 'test-notification']) expect(ids).not.toContain(gone);
+  });
+
+  it('puts each row under a heading of its own group', () => {
+    for (const item of settingsItems) {
+      if (!item.section) continue;
+      expect(settingsSections.find(section => section.value === item.section)?.group, item.id).toBe(item.group);
+    }
+  });
+
+  it('splits a group into one card per heading in page order', () => {
+    const shape = (group: Parameters<typeof buildSettingsBlocks>[0]) => buildSettingsBlocks(group).map(block => [block.section?.label ?? null, block.items.map(item => item.id)]);
+    expect(shape('appearance')).toEqual([
+      [null, ['theme']],
+      ['文字与缩放', ['ui-scale', 'large-text', 'language']],
+      ['辅助与显示', ['high-contrast', 'reduced-motion', 'hardware-acceleration', 'restore-appearance']],
+    ]);
+    expect(shape('network')).toEqual([
+      ['连接线路', ['relay-route-solov', 'relay-route-solov-api', 'tool-route-restart-hints']],
+      ['下载与连接', ['mirror', 'proxy', 'network-check', 'certificate']],
+    ]);
+    expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒哪些事']);
+    expect(shape('tools')).toEqual([[null, ['workspace', 'latest-cli', 'install-location', 'terminal']]]);
+  });
+
+  // 设置页左栏的「搜索设置」：行名、常用说法、组名、小标题都算，空格隔开的词都要对上。
+  it('finds rows for the in-page search by title, everyday word, group or heading', () => {
+    const ids = (query: string) => searchSettingsItems(query).map(item => item.id);
+    expect(ids('')).toEqual([]);
+    expect(ids('   ')).toEqual([]);
+    expect(ids('托盘')).toContain('close-behavior');
+    expect(ids('镜像')).toEqual(['mirror']);
+    expect(ids('快捷键')).toEqual(['shortcuts']);
+    expect(ids('测试通知')).toEqual(['desktop-notifications']);
+    expect(ids('连接线路')).toEqual(['relay-route-solov', 'relay-route-solov-api', 'tool-route-restart-hints']);
+    expect(ids('外观显示 默认')).toEqual(['restore-appearance']);
+    expect(ids('VPN')).toEqual(ids('vpn'));
+    expect(ids('没有这种设置')).toEqual([]);
   });
 
   it('carries one row per notification switch, titled like the switch', () => {
@@ -129,7 +195,7 @@ describe('renderer-v2 settings rows registry', () => {
   });
 
   it('only offers the rows this computer and this login have', () => {
-    const context = { mac: false, autoUpdate: false, acceleration: false, signedIn: false };
+    const context = { mac: false, autoUpdate: false, acceleration: false };
     const visible = (id: string, overrides: Partial<typeof context> = {}) => {
       const item = settingsItems.find(entry => entry.id === id);
       if (!item) throw new Error(id);
@@ -143,8 +209,6 @@ describe('renderer-v2 settings rows registry', () => {
     expect(visible('auto-update', { autoUpdate: true })).toBe(true);
     expect(visible(notificationSettingsItemId('acceleration'))).toBe(false);
     expect(visible(notificationSettingsItemId('acceleration'), { acceleration: true })).toBe(true);
-    expect(visible('logout')).toBe(false);
-    expect(visible('logout', { signedIn: true })).toBe(true);
     expect(visible('theme')).toBe(true);
   });
 
@@ -161,7 +225,7 @@ describe('renderer-v2 settings rows registry', () => {
 describe('renderer-v2 announcement notification option', () => {
   it('names the announcement reminder without the relay site', () => {
     const option = notificationOptions.find(entry => entry.value === 'announcement');
-    expect(option?.label).toBe('新公告');
+    expect(option?.label).toBe('公告与优惠');
     expect(`${option?.label} ${option?.description}`).not.toMatch(/solov|new-api|relay|sub2api/i);
   });
 });

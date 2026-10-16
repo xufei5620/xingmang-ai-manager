@@ -48,7 +48,7 @@
 | `Table` | `columns` · `rows` · `rowKey` · `onRowClick?` · `empty` | 卡片内自动横向滚动 |
 | `PageHead` | `title` · `lead` · `actions?` | |
 | `Toolbar` | `left` · `search?` · `right?` | |
-| `SettingRow` | `title` · `description` · `control` · `anchor?` | `anchor` 写成 `data-anchor`，取 `settingsItems` 里那一行的 id，顶部搜索靠它翻到这一行并亮一下 |
+| `SettingRow` | `title` · `description` · `control` · `anchor?` · `badge?` · `wide?` | `anchor` 写成 `data-anchor`，取 `settingsItems` 里那一行的 id，顶部搜索靠它翻到这一行并亮一下；`badge` 是标题后面的小标签（「重启后生效」）；`wide` 让控件占满整行、排在标题下面（v4 外观的主题卡） |
 | `BrandIcon` | `tool: ToolId \| model: string` · `size` · `variant: tile\|inline\|xs` | 内部映射 lobehub / simple-icons |
 | `Logo` | `kind: micro\|symbol\|horizontal\|wordmark` · `height` | 内部按主题选深浅文件 |
 | `Kbd` | `keys: string` | 自动按平台把 ⌘ 换成 Ctrl |

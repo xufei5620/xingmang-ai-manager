@@ -2429,36 +2429,84 @@ test('settings that wait on the system state say they were not read and read aga
 test('the notification kinds sit under their own heading and say when the master switch silences them', async () => {
   const page = await fixture('page=settings&system=1')
   try {
-    await page.getByRole('tab', { name: '通知', exact: true }).click()
+    await page.getByRole('tab', { name: '消息通知', exact: true }).click()
     const kinds = page.getByTestId('settings-notification-kinds')
     await kinds.getByRole('heading', { name: '提醒哪些事', exact: true }).waitFor()
     assert.equal(await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).count(), 0)
     await page.getByRole('switch', { name: '桌面通知', exact: true }).click()
     await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
     assert.equal(await page.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
+    // 左栏搜出来的提醒项一样是灰的，那一句也跟着摆在搜索结果里。
+    await page.getByTestId('settings-search').fill('余额不足')
+    const results = page.getByTestId('settings-search-results')
+    await results.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
+    assert.equal(await results.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
   } finally {
     await page.close()
   }
 })
 
-test('account and network rows open the account switcher and the check page entry they name', async () => {
+// v4 第 8 批：组名都是四个字；「账号」那一组去掉了，切换账号、退出登录在个人中心的账号概览里。
+test('settings show the eight four-character groups without an account group, and the certificate row opens the check page entry it names', async () => {
   const page = await fixture('page=settings')
   try {
-    await page.getByRole('tab', { name: '账号', exact: true }).click()
-    await page.getByTestId('settings-switch-account').click()
-    await page.getByTestId('settings-logout').click()
-    const logout = page.getByRole('dialog', { name: '退出登录？', exact: true })
-    await logout.getByText('工具里已写入的配置继续保留。', { exact: true }).waitFor()
-    await logout.getByRole('button', { name: '取消', exact: true }).click()
-    await page.getByRole('tab', { name: '网络', exact: true }).click()
+    const tabs = page.getByRole('tablist', { name: '设置分组', exact: true }).getByRole('tab')
+    assert.deepEqual(await tabs.allInnerTexts(), ['外观显示', '启动关闭', '工具管理', '网络加速', '消息通知', '备份迁移', '隐私数据', '版本更新'])
+    assert.equal(await page.locator('[data-testid="settings-switch-account"], [data-testid="settings-logout"], [data-testid="settings-account-center"], [data-testid="settings-account-login"]').count(), 0)
+    await page.getByRole('tab', { name: '网络加速', exact: true }).click()
     await page.getByTestId('settings-certificate-health').click()
     assert.deepEqual(
       (await calls(page)).filter((call) => ['open-account-switcher', 'navigate'].includes(call.name)).map((call) => [call.name, call.args ?? null]),
-      [
-        ['open-account-switcher', null],
-        ['navigate', ['health', 'CERTIFICATE_TRUST']],
-      ],
+      [['navigate', ['health', 'CERTIFICATE_TRUST']]],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// 左栏「搜索设置」：搜到的几行直接摆在右边，能当场改；组名点一下回到那一组。
+test('the settings search lists matching rows in place, links back to their group and says when nothing matches', async () => {
+  const page = await fixture('page=settings&system=1')
+  try {
+    const search = page.getByTestId('settings-search')
+    await search.fill('托盘')
+    const results = page.getByTestId('settings-search-results')
+    await results.waitFor()
+    await page.getByRole('heading', { name: '搜索「托盘」', exact: true }).waitFor()
+    await page.getByText('找到 1 项，可以直接在这里修改', { exact: true }).waitFor()
+    assert.deepEqual(await results.locator('[data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), ['close-behavior'])
+    // 搜索时左栏哪一组都不算选中。
+    assert.equal(await page.getByRole('tab', { selected: true }).count(), 0)
+    // 当场能改：点「直接退出」就存（夹具不回写这一项，只看存了什么）。
+    await results.getByRole('button', { name: '直接退出', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'settings'))
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'settings').at(-1).args, { version: 2, closeBehavior: 'quit' })
+    await results.getByRole('button', { name: '启动关闭', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="settings-search"]')?.value === '')
+    assert.equal(await page.getByRole('tab', { name: '启动关闭', exact: true }).getAttribute('aria-selected'), 'true')
+    // 几个字都要对上；对不上给一句换个说法。
+    await search.fill('镜像 托盘')
+    await page.getByTestId('settings-search-empty').getByText('没有找到相关设置', { exact: true }).waitFor()
+    await page.getByText('换个说法试试，比如「托盘」「镜像」「快捷键」。', { exact: true }).waitFor()
+    // 点左栏的组也会清掉搜索。
+    await page.getByRole('tab', { name: '外观显示', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="settings-search"]')?.value === '')
+    await page.getByTestId('settings-theme').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('restoring the default appearance resets the theme, contrast, scale, large text and motion together', async () => {
+  const page = await fixture('page=settings&system=1')
+  try {
+    await page.getByRole('switch', { name: '减少动画', exact: true }).click()
+    await page.getByTestId('settings-restore-appearance').click()
+    await waitForToast(page, '已恢复默认外观')
+    const recorded = await calls(page)
+    assert.equal(recorded.filter((call) => call.name === 'platform-theme').at(-1).args, 'system')
+    assert.equal(recorded.filter((call) => call.name === 'platform-contrast').at(-1).args, false)
+    assert.deepEqual(recorded.filter((call) => call.name === 'settings').at(-1).args, { version: 2, uiScale: 'auto', largeText: false, reducedMotion: false })
   } finally {
     await page.close()
   }
@@ -2484,13 +2532,13 @@ test('native preferences use the independent bridge while proxy remains a read-o
       ),
       true,
     )
-    await page.getByRole('tab', { name: '启动与关闭', exact: true }).click()
+    await page.getByRole('tab', { name: '启动关闭', exact: true }).click()
     await page
       .getByRole('switch', { name: '开机自动启动', exact: true })
       .click()
-    await page.getByRole('tab', { name: '网络', exact: true }).click()
-    await page.getByRole('button', { name: '看连接方式', exact: true }).click()
-    await page.getByText('应用窗口当前直接连接', { exact: true }).waitFor()
+    await page.getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.locator('[data-anchor="proxy"]').getByRole('button', { name: '查看', exact: true }).click()
+    await waitForToast(page, '当前：应用窗口当前直接连接')
     assert.deepEqual(
       (await calls(page)).map((call) => call.name),
       [
@@ -2654,9 +2702,9 @@ test('appearance offers only the light and dark palettes and leaves the saved sk
 test('desktop notifications start on, the master switch gates test notifications and privacy stores only an explicit local preference', async () => {
   const page = await fixture('page=settings&system=1')
   try {
-    await page.getByRole('tab', { name: '通知', exact: true }).click()
+    await page.getByRole('tab', { name: '消息通知', exact: true }).click()
     const testNotice = page.getByRole('button', {
-      name: '发一条测试通知',
+      name: '发测试通知',
       exact: true,
     })
     // 没存过的设置按默认打开；关掉时只存下显式的 false，再打开能恢复。
@@ -2675,8 +2723,8 @@ test('desktop notifications start on, the master switch gates test notifications
       .getByRole('switch', { name: '余额不足通知', exact: true })
       .click()
     await testNotice.click()
-    await waitForToast(page, '已请求显示测试通知')
-    await page.getByRole('tab', { name: '隐私与数据', exact: true }).click()
+    await waitForToast(page, '已发送一条测试通知')
+    await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
     const crashReports = page.getByRole('switch', {
       name: '崩溃自动上报',
       exact: true,
