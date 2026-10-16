@@ -169,7 +169,7 @@ export function bootstrapOnlyFollowedRoute(result: Pick<AccountBootstrapResult, 
 /**
  * 主进程说「会话变了」时，正在跑的那一轮 Key 同步还算不算数：还是同一个账号就接着算，换了账号、
  * 退出登录才作废。登录成功后主进程要把手上的事忙完才发这一条，常常晚于界面已经开跑的那一轮登录同步；
- * 以前一律作废，那一轮的结果被扔掉，引导页一直停在「正在同步账号专属 Key」、按钮全灰，要等别的事
+ * 以前一律作废，那一轮的结果被扔掉，引导页一直停在「正在同步账号专属密钥」、按钮全灰，要等别的事
  * 碰巧再跑一轮才解开。
  */
 export function sessionChangeKeepsBootstrap(
@@ -281,7 +281,7 @@ export function accountBootstrapPlan(
       skipped.push({
         provider,
         reason: 'not-installed',
-        message: `${nameOf(provider)} 尚未安装，Key 已保留在账号中`,
+        message: `${nameOf(provider)} 尚未安装，密钥已保留在账号中`,
       })
       continue
     }
@@ -409,7 +409,7 @@ async function assertAccount(
 ) {
   const session = await api.getAccountSession()
   if (!session.authenticated || session.account?.userId !== expectedUserId || (expectedSiteId !== undefined && accountSiteId(session) !== expectedSiteId)) {
-    throw new Error('星芒账号已变化，已停止本次 Key 配置')
+    throw new Error('星芒账号已变化，已停止本次密钥配置')
   }
   return accountSiteId(session)
 }
@@ -428,16 +428,16 @@ export async function bootstrapAccountTools(
   // this preview and read again after sync when planning local writes.
   await api.getConfig()
   await assertAccount(api, expectedUserId, expectedSiteId)
-  onProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 15 })
+  onProgress({ phase: 'syncing', label: '正在同步账号专属密钥', percent: 15 })
 
   let synchronized: Awaited<ReturnType<AccountBootstrapBridge['syncManagedCliKeys']>> | null = null
   let syncError = ''
   try {
     synchronized = await api.syncManagedCliKeys()
   } catch (error) {
-    // 这条不是给用户的主提示，而是拼进 warnings 的诊断行（「Key 同步阶段：…」已交代
+    // 这条不是给用户的主提示，而是拼进 warnings 的诊断行（「密钥同步阶段：…」已交代
     // 了场景），所以只脱敏、保留原文，不替换成一句通用文案。
-    syncError = userFacingErrorMessage(error) || '账号专属 Key 没有同步完成'
+    syncError = userFacingErrorMessage(error) || '账号专属密钥没有同步完成'
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
@@ -464,7 +464,7 @@ export async function bootstrapAccountTools(
   if (plan.targets.length) {
     onProgress({
       phase: 'configuring',
-      label: `正在为 ${plan.targets.length} 个已安装工具写入 Key`,
+      label: `正在给 ${plan.targets.length} 个工具写入密钥`,
       percent: 65,
       ...keyChanges,
     })
@@ -478,7 +478,7 @@ export async function bootstrapAccountTools(
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
-  onProgress({ phase: 'verifying', label: '正在复核 Key、服务地址和模型', percent: 88, ...keyChanges })
+  onProgress({ phase: 'verifying', label: '正在复核密钥、服务地址和模型', percent: 88, ...keyChanges })
   const verified = await api.getConfig()
   await assertAccount(api, expectedUserId, expectedSiteId)
 
@@ -488,12 +488,12 @@ export async function bootstrapAccountTools(
   for (const provider of plan.targets) {
     const reported = outcome.failed.find((entry) => entry.provider === provider)
     if (reported) {
-      failed.push({ provider, message: reported.message || '账号 Key 配置失败' })
+      failed.push({ provider, message: reported.message || '账号密钥配置失败' })
       continue
     }
     let problem = outcome.configured.includes(provider)
       ? configurationFailure(verified, provider, storage)
-      : '账号 Key 配置未返回成功结果'
+      : '账号密钥配置未返回成功结果'
     // 说是写好了、地址却还在原来那条线路上：照「服务地址没对上」说，不另提线路（yoyo 10-8）。
     if (!problem && routeChanges.includes(provider)
       && !sameNativeRelayUrl(verified.providers[provider].actualBaseUrl, config.providers[provider].baseUrl)) {
@@ -523,7 +523,7 @@ export async function bootstrapAccountTools(
     plan.skipped.filter((entry) => entry.reason === 'not-installed').map((entry) => entry.provider),
   )
   const warnings = [
-    ...(syncError ? [`Key 同步阶段：${syncError}`] : []),
+    ...(syncError ? [`密钥同步阶段：${syncError}`] : []),
     ...markerWarnings,
     ...(synchronized?.storageWarning
       ? [`本机加密缓存：${synchronized.storageWarning}`]

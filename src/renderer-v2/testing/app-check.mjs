@@ -2936,7 +2936,7 @@ test('Key bootstrap progress locks the guide until the account operation settles
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
     const guide = page.getByTestId('start-guide')
-    await guide.getByText('正在同步账号专属 Key').waitFor()
+    await guide.getByText('正在同步账号专属密钥').waitFor()
     assert.equal(await guide.getAttribute('data-busy'), 'true')
     assert.equal(await page.getByTestId('guide-route-claude').isDisabled(), true)
     await page.evaluate(() => window.v2Test.releaseBootstrap())
@@ -2949,7 +2949,7 @@ test('Key bootstrap progress locks the guide until the account operation settles
 })
 
 // 主进程登录完要把手上的事忙完才发「会话变了」，常常晚于界面开跑的那一轮登录同步；说的还是
-// 同一个账号，那一轮不能作废，否则引导页一直停在「正在同步账号专属 Key」、按钮全灰。
+// 同一个账号，那一轮不能作废，否则引导页一直停在「正在同步账号专属密钥」、按钮全灰。
 test('the session event that trails a login keeps the login Key sync and unlocks the guide', async () => {
   const page = await open('guest=1&bootstrapPending=1')
   try {
@@ -2958,7 +2958,7 @@ test('the session event that trails a login keeps the login Key sync and unlocks
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('start-guide').getByText('正在同步账号专属 Key').waitFor()
+    await page.getByTestId('start-guide').getByText('正在同步账号专属密钥').waitFor()
     await page.evaluate(async () => window.v2Test.emit('onAccountSessionChanged', await window.xingmang.getAccountSession()))
     await page.evaluate(() => window.v2Test.releaseBootstrap())
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
@@ -7199,8 +7199,8 @@ test('tutorial pins the step being read on top and puts help at the end of the a
     // 点开头的第 3 步：开头滚出去，顶上那条出来，写着第 3 步，第三颗圆点亮着，也不压住第 3 步的标题。
     await article.locator('.v2-tutorial-step-links a').nth(2).click()
     await expect(progress).toBeVisible()
-    await expect(progress).toContainText('第 3 步，共 4 步 · 看到「已配好」就继续')
-    await expect(progress.getByRole('button', { name: '第 3 步：看到「已配好」就继续', exact: true })).toHaveAttribute('aria-current', 'step')
+    await expect(progress).toContainText('第 3 步，共 4 步 · 看到「当前账号」就继续')
+    await expect(progress.getByRole('button', { name: '第 3 步：看到「当前账号」就继续', exact: true })).toHaveAttribute('aria-current', 'step')
     const bar = await progress.evaluate((element) => element.getBoundingClientRect().toJSON())
     const pane = await page.getByTestId('page-viewport').evaluate((element) => element.getBoundingClientRect().toJSON())
     assert.ok(Math.abs(bar.height - 36) <= 1, `吸顶条约 36 高，实际 ${bar.height}`)
