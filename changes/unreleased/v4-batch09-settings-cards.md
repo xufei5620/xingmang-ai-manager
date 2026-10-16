@@ -10,8 +10,9 @@
   依次重测全部线路；`acceleration-usage-total` 跟着三格详情去掉。主进程加速失败的几句里「开始加速」换成「开启加速」，
   「点「换线路」」换成「在「线路」那里」（`acceleration-development-backend.ts`）。
 - 工具配置备份卡（新 `features/settings/BackupCard.tsx`，原 `BackupsPage` 删除）：时间当标题（`calendar-time.ts` 新增
-  `formatClockTime`）、立即备份菜单（「全部工具」只备份装了的）、预览抽屉换弹窗（testId 照旧）；`backups-search` 跟着搜索框去掉。
+  `formatClockTime`）、立即备份菜单（单独哪一家都能点，「全部工具」只备份装了的）、预览抽屉换弹窗（testId 照旧）；`backups-search` 跟着搜索框去掉。
   切到这一组时新挂上读一次，设置页从别的页回来时再读一次。「搬到新电脑」两行挪进备份迁移。
+  三张卡各读各的，设置本身读不到时照样摆在各自那一组里（原来的独立页面也不依赖设置）。
 - 版本卡（新 `features/settings/VersionCard.tsx`，原 `UpdatesPage` 删除，`updatesPageLead` 删除）：状态小标签走新的
   `updateStatusLabel`；气泡上「重新安装」的确认请求改成卡挂上以后再取（设置页带分组跳进来会整页重挂，旧卡不再先把请求拿走）；
   App 经 `onSettingsGroupChange` 知道人在不在「版本更新」组，在时那三种气泡不弹。快捷键弹窗按这台电脑只写 ⌘ 或 Ctrl。
