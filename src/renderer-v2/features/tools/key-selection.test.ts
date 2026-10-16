@@ -29,12 +29,15 @@ describe('configuration key selection', () => {
       named(9, 'my-own-key', 'GPT', null),
       named(10, 'my-own-key', 'GPT', null),
       named(11, 'xingmang-desktop-codex', 'Codex 专线', null),
+      named(12, 'my-old-key', 'GPT-中转/订阅', null),
     ]
-    // 同组同名留最近用过的那把；都没用过留后建的；停用的不算；自己建的同名密钥、别的分组里的不合并；下线工具那把不列。
+    // 同组同名留最近用过的那把；都没用过留后建的；停用的不算；自己建的同名密钥、别的分组里的不合并；
+    // 下线工具那把、分组还写着删掉的老名字的不列。
     expect(listedAccountKeys(keys, 'current').map((entry) => entry.id)).toEqual([1, 5, 6, 7, 9, 10, 11])
     // 正选着的那把留下，同组同名的另一把不再列。
     expect(listedAccountKeys(keys, '2').map((entry) => entry.id)).toEqual([1, 2, 6, 7, 9, 10, 11])
     expect(listedAccountKeys(keys, '3').map((entry) => entry.id)).toEqual([1, 3, 5, 6, 7, 9, 10, 11])
+    expect(listedAccountKeys(keys, '12').map((entry) => entry.id)).toEqual([1, 5, 6, 7, 9, 10, 11, 12])
   })
   it('checks the sk- prefix only where the key format is known', () => {
     expect(manualKeyIssue('  ', true)).toBe('请粘贴你在星芒创建的密钥')

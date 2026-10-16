@@ -1,5 +1,5 @@
 import type { AccountKey, AccountKeyOptions, AccountKeysPage, AppConfigSummary, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
-import { managedCliKeyProfiles, retiredProviderIds } from '../../../../electron/catalog'
+import { managedCliKeyProfiles, retiredAccountGroups, retiredProviderIds } from '../../../../electron/catalog'
 
 export const CURRENT_KEY = 'current'
 export const AUTOMATIC_KEY = 'automatic'
@@ -38,6 +38,7 @@ function preferredTwin(kept: AccountKey, other: AccountKey, selectedKeyId: strin
  * - 星芒签的密钥在同一个分组里同名的只列一把，挑最近用过的那把。xm 站改分组本名那几天，老版本星芒在老名字下
  *   又签了一把同名的，服务端删老名字时把它挂回了新名字下，就成了同一分组里两把一样名字的。用户自己建的同名密钥不合并。
  * - 下线工具（Gemini CLI）星芒签的那把不列：星芒不再替它配，选给别的工具也用不了。
+ * - 分组还写着 xm 站删掉的老名字的不列：服务端删之前已把这些都挂到新名字下，再有就是坏的，一调用就 403「无权访问 … 分组」。
  * 正选着的那把照旧列着，免得下拉里找不到它。
  */
 export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: string): AccountKey[] {
@@ -51,7 +52,7 @@ export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: st
   }
   return enabled.filter((key) => {
     if (String(key.id) === selectedKeyId) return true
-    if (retiredManagedKeyNames.has(key.name)) return false
+    if (retiredManagedKeyNames.has(key.name) || retiredAccountGroups.has(key.group)) return false
     return !key.name.startsWith('xingmang-') || shown.get(JSON.stringify([key.name, key.group])) === key
   })
 }
