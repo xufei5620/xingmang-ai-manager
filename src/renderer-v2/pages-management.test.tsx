@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { V2Bridge } from './types'
+import { BackupCard } from './features/settings/BackupCard'
 import {
-  BackupsPage,
   CuratedDetails,
   CuratedShelf,
   ExtensionsPage,
   SessionsPage,
-  backupMatchesQuery,
   curatedRuntimeCommand,
   curatedVersionText,
   customMcpProblem,
@@ -710,30 +709,6 @@ describe('curated folder placeholders', () => {
   })
 })
 
-describe('backup search', () => {
-  const now = new Date(2026, 9, 4, 15, 0).getTime()
-  const createdAt = new Date(2026, 9, 2, 18, 5).toISOString()
-
-  it('finds a backup by the date the list shows', () => {
-    expect(backupMatchesQuery(createdAt, '10月2日', now)).toBe(true)
-    expect(backupMatchesQuery(new Date(2026, 9, 4, 9, 30).toISOString(), '今天', now)).toBe(true)
-  })
-
-  it('also finds it by the full time shown on hover', () => {
-    expect(backupMatchesQuery(createdAt, '18:05', now)).toBe(true)
-    expect(backupMatchesQuery(createdAt, ' 2026/10/2 ', now)).toBe(true)
-  })
-
-  it('keeps everything for an empty search and drops what does not match', () => {
-    expect(backupMatchesQuery(createdAt, '  ', now)).toBe(true)
-    expect(backupMatchesQuery(createdAt, '9月30日', now)).toBe(false)
-  })
-
-  it('no longer matches the backup id the list does not show', () => {
-    expect(backupMatchesQuery(createdAt, 'backup-1', now)).toBe(false)
-  })
-})
-
 // Gemini CLI 下线（yoyo 2026-10-14）：会话、外接工具、技能、插件、备份几页的工具选单都不再有它。
 describe('management pages without the retired Gemini CLI', () => {
   const api = {} as V2Bridge
@@ -743,8 +718,8 @@ describe('management pages without the retired Gemini CLI', () => {
     expect(markup).not.toContain('Gemini')
   })
 
-  it('offers no Gemini CLI on the sessions and backups pages', () => {
-    for (const markup of [renderToStaticMarkup(<SessionsPage api={api} />), renderToStaticMarkup(<BackupsPage api={api} />)]) {
+  it('offers no Gemini CLI on the sessions page or the backup card', () => {
+    for (const markup of [renderToStaticMarkup(<SessionsPage api={api} />), renderToStaticMarkup(<BackupCard api={api} />)]) {
       expect(markup).toContain('Claude Code')
       expect(markup).not.toContain('Gemini')
     }

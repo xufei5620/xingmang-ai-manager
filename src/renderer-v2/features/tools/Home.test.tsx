@@ -1219,7 +1219,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         },
       } as unknown as ToolboxSnapshot
       const markup = render({}, undefined, { snapshot: repaired, onRepairHooks: () => undefined })
-      expect(markup).toContain('提醒设置指向了旧位置，打开软件时已经自动改好，原来的设置在「备份」里')
+      expect(markup).toContain('提醒设置指向了旧位置，打开软件时已经自动改好，原来的设置在「设置 › 备份迁移」里')
       expect(markup).not.toContain('提醒设置要修')
       expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
       expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)

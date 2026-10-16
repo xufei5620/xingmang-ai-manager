@@ -52,9 +52,9 @@ describe('desktop update notification content', () => {
 
   it('asks Linux users to click install because nothing installs on its own there', () => {
     const linux = { installMethod: 'system-installer' as const }
-    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已经下好，到更新页点「安装新版本」就能装上。')
-    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), false)?.body).toBe('新版 0.2.0 已经下好，到更新页点「安装新版本」就能装上。')
-    expect(updateDesktopNotification(update(linux), true)?.body).toBe('新版 0.2.0 正在后台下载，下好后到更新页点「安装新版本」。')
+    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已经下好，到「设置 › 版本更新」点「安装新版本」就能装上。')
+    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), false)?.body).toBe('新版 0.2.0 已经下好，到「设置 › 版本更新」点「安装新版本」就能装上。')
+    expect(updateDesktopNotification(update(linux), true)?.body).toBe('新版 0.2.0 正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。')
     expect(updateDesktopNotification(update(linux), false)?.body).toBe('版本 0.2.0 已可下载。')
     expect(updateDesktopNotification(update({ phase: 'downloaded' }), true)?.body).toContain('关掉软件或下次打开时自动装上')
   })
@@ -172,7 +172,7 @@ describe('auto-update wording', () => {
     expect(available.body).toBe('新版 0.2.0 正在后台下载，下好后关掉软件时自动装上。')
     const downloaded = updateDesktopNotification(update({ phase: 'downloaded' }), true)!
     expect(downloaded.body).toContain('自动装上')
-    expect(downloaded.body).not.toContain('重启安装')
+    expect(downloaded.body).not.toContain('重启并安装')
   })
 
   it('says how much disk space is missing once per version and retracts the stale downloading note', () => {
@@ -193,7 +193,7 @@ describe('auto-update wording', () => {
   })
 
   it('keeps the old wording when auto-update is off or cannot be read', () => {
-    expect(updateDesktopNotification(update({ phase: 'downloaded' }))!.body).toBe('版本 0.2.0 已下载，可在更新页面重启安装。')
+    expect(updateDesktopNotification(update({ phase: 'downloaded' }))!.body).toBe('版本 0.2.0 已下载，可在「设置 › 版本更新」重启并安装。')
     const { controller, runtime } = fixture({ readAutoUpdate: () => { throw new Error('settings unreadable') } })
     controller.handleUpdate(update())
     expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: '版本 0.2.0 已可下载。' }))
@@ -207,8 +207,8 @@ describe('auto-update wording', () => {
 })
 
 describe('Windows account outside the administrators group', () => {
-  // yoyo 2026-10-06 批的原话（句末补了句号）；渲染层 registry/business.ts 那一份也钉着同一句。
-  const approved = '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。'
+  // yoyo 2026-10-06 批的原话（句末补了句号），v4 批09 按钮改叫「重启并安装」；渲染层 registry/business.ts 那一份也钉着同一句。
+  const approved = '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。'
 
   it('says an administrator has to install the downloaded version instead of promising it installs itself', () => {
     expect(standardAccountUpdateNotice).toBe(approved)

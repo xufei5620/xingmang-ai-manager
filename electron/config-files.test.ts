@@ -517,7 +517,7 @@ describe('native CLI configuration files', () => {
     // 以前只说「现有 … 无法解析，未执行修改」，客户不知道「重置为初始状态」能救，只能反复重试（第三十批 C）。
     const userHome = temporaryHome()
     const roots = providerRoots(userHome)
-    const reset = '星芒没有改动它。在首页 {tool} 那一行点「…」里的「配置」，选「使用星芒账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「备份」页能找回），再重新生成。'
+    const reset = '星芒没有改动它。在首页 {tool} 那一行点「…」里的「配置」，选「使用星芒账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「设置 › 备份迁移」里能找回），再重新生成。'
     const advice = (tool: string, problem: string) => `${problem}，${reset.replace('{tool}', tool)}`
     const cases: Array<{ provider: ProviderId, content: string, expected: string }> = [
       { provider: 'codex', content: 'model = “gpt-5.5”\n', expected: advice('Codex', 'Codex 的配置文件里有写错的地方（第 1 行附近）') },

@@ -1,8 +1,9 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, MaintenancePage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { HealthPage, MaintenancePage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, shortcutRows, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
 import type { V2Bridge } from './types'
+import { VersionCard } from './features/settings/VersionCard'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
 import { tutorialCategories, tutorialTopicsFor } from './registry/tutorials'
 import { tutorialIcons } from './features/tutorial/TutorialPage'
@@ -42,11 +43,23 @@ describe('maintenance pages without the retired Gemini CLI', () => {
     expect(markup).not.toContain('-gemini')
   })
 
-  // 设置里「快捷键」写的数字跟着这台电脑看得到的工具走，不再写死 1–5。
+  // 设置里「快捷键」写的数字跟着这台电脑看得到的工具走，不再写死 1–5；键名按这台电脑只写一种（字表批09）。
   it('numbers the launch shortcut over the tools this computer shows', () => {
-    expect(launchShortcutMeta('win')).toBe('Ctrl / Command + 1–4')
-    expect(launchShortcutMeta('mac')).toBe('Ctrl / Command + 1–4')
-    expect(launchShortcutMeta('linux')).toBe('Ctrl / Command + 1–3')
+    expect(launchShortcutMeta('win')).toBe('Ctrl 1–4')
+    expect(launchShortcutMeta('mac')).toBe('⌘ 1–4')
+    expect(launchShortcutMeta('linux')).toBe('Ctrl 1–3')
+  })
+
+  it('lists the shortcuts the app actually answers, in the keys of this computer', () => {
+    expect(shortcutRows('mac').map((row) => `${row.keys} ${row.label}`)).toEqual([
+      '⌘ K 搜索或跳转',
+      '⌘ , 打开设置',
+      '⌘ 1–4 打开工具',
+      '⌘ + / ⌘ - 放大 / 缩小界面',
+      '⌘ 0 恢复自动缩放',
+      'Esc 关闭弹窗或菜单',
+    ])
+    for (const os of ['win', 'linux'] as const) expect(shortcutRows(os).every((row) => !row.keys.includes('⌘'))).toBe(true)
   })
 })
 
@@ -188,7 +201,7 @@ describe('tutorial topics', () => {
     // 「不在游戏加速那边体现」、结束后断开）。
     expect(text).toContain('不计入免费时长')
     expect(text).toContain('不弹通知')
-    expect(text).toContain('加速页和托盘也不显示')
+    expect(text).toContain('游戏加速卡和托盘也不显示')
     expect(text).toContain('打开约 2 分钟后自动断开')
     expect(text).toContain('关掉 Codex 后自动断开')
     expect(text).not.toContain('已自动连接')
@@ -414,36 +427,17 @@ describe('settings page before the settings arrive', () => {
   })
 })
 
-describe('updates page startup switches', () => {
-  it('replaces the 去设置 button with the two switches, greyed out until the settings are read', () => {
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
-    expect(markup).not.toContain('去设置')
-    expect(markup).toContain('启动时检查新版本')
-    expect(markup).toContain('发现新版本会提醒你')
-    expect(markup).toMatch(/data-testid="updates-check-on-startup"[^>]*>[^]*?disabled=""/)
-  })
-
-  it('shows the saved values the app already holds', () => {
-    const settings = { checkUpdatesOnStartup: false, autoUpdate: true } as Parameters<typeof UpdatesPage>[0]['appSettings']
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge, appSettings: settings }))
-    expect(markup).toMatch(/aria-checked="false"[^>]*aria-label="启动时检查新版本"/)
-  })
-})
-
-describe('updates page layout', () => {
-  it('lines the current version up with the other rows and writes it in body text', () => {
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
-    const row = markup.match(/<div class="xm-list-row"[^>]*data-testid="updates-current-version"[^>]*>.*?<\/div><div class="xm-row-actions">/)?.[0] ?? ''
-    expect(row).toContain('当前版本')
-    expect(row).not.toContain('xm-row-icon')
-    expect(row).toContain('class="v2-update-version"')
-  })
-
-  it('shows what to know before installing without a fold', () => {
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+// 原来的更新页并进了设置 › 版本更新（v4 批09）：两颗开关是那一组下面的两行，最上面是这张版本卡。
+describe('version card', () => {
+  it('names the app and waits for the update state before writing a version', () => {
+    const markup = renderToStaticMarkup(createElement(VersionCard, { api: {} as V2Bridge, autoUpdate: true }))
+    expect(markup).toContain('data-testid="page-updates"')
+    expect(markup).toContain('<h2 id="v2-version-card-title">星芒AI管理工具</h2>')
+    expect(markup).toMatch(/data-testid="updates-current-version"[^>]*>正在读取更新状态…</)
+    expect(markup).toMatch(/<button[^>]*>.*?<span>检查更新<\/span><\/button>/)
     expect(markup).not.toContain('<details')
-    expect(markup).toContain('<h3>安装前需要知道</h3>')
-    expect(markup).toMatch(/data-testid="updates-install-note"[^>]*><h3>安装前需要知道<\/h3><p>装之前先保存工具里没做完的东西。/)
+    // 两颗开关不在卡上再摆一份。
+    expect(markup).not.toContain('启动时检查新版本')
   })
 })
 

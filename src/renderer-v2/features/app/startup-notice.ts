@@ -60,7 +60,7 @@ export function startupCheckFailure(id: StartupCheckFailureId, detail: string): 
     tone: 'warn',
     title: failureTitles[id],
     body: detail,
-    ...(id === 'update' ? { action: { label: '查看更新', page: 'updates' } } : {}),
+    ...(id === 'update' ? { action: { label: '查看更新', page: 'settings', section: 'version' } } : {}),
   }
 }
 
@@ -125,7 +125,7 @@ const UPDATED_NOTICE_ITEM_LENGTH = 36
 
 /**
  * 一条改动在角落卡片里只留开头那句：release-notes 的写法是「做了什么：为什么/细节」，
- * 冒号或句号之前那半句就是用户要的那件事；还太长就截断，完整的在更新页。
+ * 冒号或句号之前那半句就是用户要的那件事；还太长就截断，完整的在「设置 › 版本更新」里。
  */
 export function releaseNoteHeadline(note: string): string {
   const cut = note.search(/[：:。；;]/)
@@ -136,7 +136,7 @@ export function releaseNoteHeadline(note: string): string {
 /**
  * 更新装完后的第一次启动：软件消失又出现，界面和之前一模一样，不说一句用户就只能
  * 再去点一次「检查更新」确认自己在不在新版上。挂在角落、不挡操作，只有一颗「知道了」，
- * 不让用户做任何选择；列最前面几项改动的开头那句，完整清单在更新页（随包带的，断网
+ * 不让用户做任何选择；列最前面几项改动的开头那句，完整清单在「设置 › 版本更新」（随包带的，断网
  * 也在）。不是更新后第一次启动时返回 null。
  */
 export function updatedNotice(currentVersion: string, release: InstalledRelease | null | undefined): StartupNotice | null {
@@ -146,7 +146,7 @@ export function updatedNotice(currentVersion: string, release: InstalledRelease 
   const rest = notes.length - items.length
   const body = items.length === 0
     ? '已经在用新版本了，可以照常使用。'
-    : rest > 0 ? `这一版的主要改动如下，另外 ${rest} 项在「更新」页可以看到。` : '这一版的改动：'
+    : rest > 0 ? `这一版的主要改动如下，另外 ${rest} 项在「设置 › 版本更新」里可以看到。` : '这一版的改动：'
   return {
     id: 'updated',
     failure: false,
@@ -276,7 +276,7 @@ export function toolTemplateFilledNotice(filled: readonly ProviderId[]): Startup
     failure: false,
     tone: 'ok',
     title: '已把工具设置补齐到最新',
-    body: `已按新版本补上了 ${names.join('、')} 的几项设置，用起来更顺、更少卡顿。你的账号、密钥、对话和自己改过的设置都没动，改之前的样子在「备份」页可以找回。`,
+    body: `已按新版本补上了 ${names.join('、')} 的几项设置，用起来更顺、更少卡顿。你的账号、密钥、对话和自己改过的设置都没动，改之前的样子在「设置 › 备份迁移」里可以找回。`,
     action: { label: '知道了', dismiss: true },
   }
 }

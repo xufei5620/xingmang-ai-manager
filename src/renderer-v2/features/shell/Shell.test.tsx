@@ -168,8 +168,8 @@ describe('renderer-v2 v4 sidebar', () => {
   })
 
   it('opens 更多 on its own when the page shown lives there', () => {
-    expect(renderShell({ activePage: 'acceleration' })).toMatch(/data-testid="sidebar-pinned"[\s\S]*data-testid="nav-acceleration"/)
-    expect(renderShell()).not.toContain('data-testid="nav-acceleration"')
+    expect(renderShell({ activePage: 'maintenance' })).toMatch(/data-testid="sidebar-pinned"[\s\S]*data-testid="nav-maintenance"/)
+    expect(renderShell()).not.toContain('data-testid="nav-maintenance"')
   })
 })
 
@@ -254,6 +254,12 @@ describe('renderer-v2 sidebar pages per computer', () => {
 
   it('keeps every page when nothing says otherwise', () => {
     const markup = renderShell({ activePage: 'maintenance' })
-    for (const id of ['acceleration', 'maintenance', 'backups', 'updates']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    expect(markup).toContain('data-testid="nav-maintenance"')
+  })
+
+  // 游戏加速、备份、更新并进了设置（v4 批09），侧栏「更多」里只剩安装卸载。
+  it('leaves the pages that moved into settings out of the sidebar', () => {
+    const markup = renderShell({ activePage: 'maintenance' })
+    for (const id of ['acceleration', 'backups', 'updates']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
   })
 })

@@ -79,11 +79,11 @@ export const settingsGroups = [
   { value: 'appearance', label: '外观显示', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
   { value: 'startup', label: '启动关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化'] },
   { value: 'tools', label: '工具管理', keywords: ['工作文件夹', '文件夹', '终端', '安装位置', '装在哪'] },
-  { value: 'network', label: '网络加速', keywords: ['下载来源', '网络', '证书', '连不上'] },
+  { value: 'network', label: '网络加速', keywords: ['加速', '游戏', '下载来源', '网络', '证书', '连不上'] },
   { value: 'notifications', label: '消息通知', keywords: ['通知', '提醒', '消息提示'] },
   { value: 'backup', label: '备份迁移', keywords: ['备份', '恢复', '还原', '迁移', '换电脑'] },
   { value: 'privacy', label: '隐私数据', keywords: ['隐私', '数据', '崩溃', '上报', '日志', '统计', '许可'] },
-  { value: 'about', label: '版本更新', keywords: ['版本', '版本号'] },
+  { value: 'about', label: '版本更新', keywords: ['更新', '升级', '版本', '版本号'] },
 ] as const
 export const settingsGroupIcons: Record<SettingsGroupId, LucideIcon> = { appearance: Sun, startup: Play, tools: Terminal, network: Globe, notifications: Bell, backup: Archive, privacy: Shield, about: RefreshCw }
 /**
@@ -96,6 +96,7 @@ export const settingsSections = [
   { value: 'routes', group: 'network', label: '连接线路' },
   { value: 'download', group: 'network', label: '下载与连接' },
   { value: 'reminders', group: 'notifications', label: '提醒哪些事' },
+  { value: 'transfer', group: 'backup', label: '搬到新电脑' },
 ] as const satisfies ReadonlyArray<{ value: string; group: SettingsGroupId; label: string }>
 export type SettingsSectionId = (typeof settingsSections)[number]['value']
 export const scopeOptions = [
@@ -119,7 +120,7 @@ export const updateLabels = {
 /**
  * 更新失败分三步说。只报一句「更新没有完成」时，断网点一次「检查更新」也会被
  * 告知更新装不上、按钮还写着「重新下载」——更新其实根本没开始下。标题和按钮都
- * 只在这里定义一次，首页气泡和更新页读同一份。
+ * 只在这里定义一次，首页气泡和版本更新卡读同一份。
  */
 export const updateFailureLabels = {
   check: { title: '检查更新失败', retry: '重试' },
@@ -134,7 +135,7 @@ export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
 /**
  * 发布者撤回了本机这个版本（状态文件的 badVersions），或者找到的「新版本」其实比
  * 本机旧（退回上一个好版本）时，照常说「发现新版本」就是在骗人。这几句也只在这里
- * 定义一次，更新页与首页气泡读同一份。
+ * 定义一次，版本更新卡与首页气泡读同一份。
  */
 type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall' | 'installMethod'>
 export function updateCardTitle(update: UpdateOfferState): string {
@@ -142,14 +143,14 @@ export function updateCardTitle(update: UpdateOfferState): string {
   if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
   return updateLabels[update.phase]
 }
-/** 更新页「当前版本」下面那行「新版本」写哪一版。退回旧版本不是新版本，那时没有这一行。 */
+/** 「有新版本 v{y}」写哪一版。退回旧版本不是新版本，那时不这么写。 */
 export function updateNewVersion(update: Pick<UpdateSnapshot, 'currentVersion' | 'availableVersion' | 'rollback'> | null | undefined): string | null {
   if (!update?.availableVersion || update.rollback || update.availableVersion === update.currentVersion) return null
   return update.availableVersion
 }
 /**
- * 人就在更新页时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
- * 页面上写着的同一件事，不弹；离开更新页照旧弹。别的几种（「这个版本有已知问题」等）照旧。
+ * 人就在「设置 › 版本更新」时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
+ * 版本卡上写着的同一件事，不弹；离开那一组照旧弹。别的几种（「这个版本有已知问题」等）照旧。
  */
 export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<UpdateSnapshot, 'error' | 'failedStep'>): boolean {
   if (update.error) return update.failedStep === 'download'
@@ -165,20 +166,20 @@ export function updateBubbleTitle(update: UpdateOfferState): string {
 }
 /**
  * Windows 上账号不在管理员组（update.installNeedsAdminPassword）：下好的新版本不自动装，首页气泡
- * 说整句，更新页拆成标题和正文。主进程 desktop-notifications.ts 的系统通知是同一句，两边字面量
+ * 说整句，版本更新卡拆成标题和正文。主进程 desktop-notifications.ts 的系统通知是同一句，两边字面量
  * 要一致。
  */
 export const standardAccountUpdateNotice = {
   title: '这台电脑的账号不是管理员，装更新时要输入管理员密码',
-  body: '让有管理员账号的人点一次「重启安装」，或者找客服。',
+  body: '让有管理员账号的人点一次「重启并安装」，或者找客服。',
 } as const;
 export const standardAccountUpdateText = `${standardAccountUpdateNotice.title}。${standardAccountUpdateNotice.body}`;
-// 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进更新页。
+// 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进「版本更新」。
 // 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
 export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
   if (installMethod === 'system-installer') {
-    if (phase === 'downloaded') return '已经下好了，到更新页点「安装新版本」就能装上。';
-    return autoUpdate ? '正在后台下载，下好后到更新页点「安装新版本」。' : '查看更新内容和安装状态。';
+    if (phase === 'downloaded') return '已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。';
+    return autoUpdate ? '正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。' : '查看更新内容和安装状态。';
   }
   if (phase === 'downloaded' && installNeedsAdminPassword) return standardAccountUpdateText;
   if (!autoUpdate) return '查看更新内容和安装状态。';
@@ -223,7 +224,7 @@ export function formatDownloadRemaining(seconds: number): string {
 /**
  * 进度条下面那行：「已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 1 分钟」。
  * 速度和剩余时间用主进程算好的近 10 秒平均值；刚开始、或者速度算不出来时只说下了多少，
- * 不知道总大小时连「共多少」也不说。更新页和强制更新那道门读同一份。
+ * 不知道总大小时连「共多少」也不说。版本卡和强制更新那道门读同一份。
  */
 export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null | undefined): string | null {
   if (!progress) return null;
@@ -238,27 +239,29 @@ export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null
   }
   return parts.join(' · ');
 }
-// 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
-// 重启」就是在说反话。账号不是管理员的 Windows 电脑只在后台下、不自己装，也不能说会装上。
-export function updatesPageLead(autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
-  if (autoUpdate && installMethod === 'system-installer') {
-    return '新版本会在后台下好，下好后点「安装新版本」，在弹出的安装窗口里输入开机密码就装上了。';
-  }
-  if (autoUpdate && installNeedsAdminPassword) return '新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。';
-  return autoUpdate
-    ? '新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。'
-    : '新版本什么时候安装由你决定，不会自己重启。';
-}
-/** 「自动更新」开关下面那句。设置「版本更新」和「更新」页各有一个这个开关，说的是同一句。 */
+/**
+ * 「自动下载更新」那一行的说明（v4 字表批09）。原来版本卡顶上那句页头说明拆掉了，意思挪到这里：
+ * 只有普通 Windows 和 Mac 是「关掉星芒时装上」；交给系统安装器的（Linux）下好后要他点安装，
+ * 账号不是管理员的 Windows 电脑要输管理员密码，都不能说会自己装上。
+ */
 export function autoUpdateSettingDescription(installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
-  if (installMethod === 'system-installer') return '新版本在后台下好，下好后提醒你点安装，不会自己弹出安装窗口。关掉后有新版本先提醒你，由你点下载';
-  return installNeedsAdminPassword
-    ? '新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装'
-    : '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装';
+  if (installMethod === 'system-installer') return '下好后提醒你点安装';
+  return installNeedsAdminPassword ? '下好后要输入管理员密码才能装' : '下好后在你关掉星芒时装上';
 }
-/** 更新页上「装」那颗按钮。交给系统安装器（Linux）时软件只关掉、不会自己重开，不能叫「重启安装」。*/
+/**
+ * 版本卡右上角的小标签：「有新版本 v{y}」「已下载，重启后生效」，其余照旧用 updateCardTitle。
+ * 「重启后生效」只对普通 Windows 和 Mac 成立：Linux 要点「安装新版本」，账号不是管理员的 Windows
+ * 要输管理员密码，这两种照旧写「更新已下载」，下一步由卡里那条提示和按钮说。
+ */
+export function updateStatusLabel(update: UpdateOfferState & Pick<UpdateSnapshot, 'installNeedsAdminPassword'>): string {
+  const next = update.phase === 'available' && !update.rollback ? updateNewVersion(update) : null
+  if (next) return `有新版本 v${next}`
+  if (update.phase === 'downloaded' && update.installMethod !== 'system-installer' && !update.installNeedsAdminPassword) return '已下载，重启后生效'
+  return updateCardTitle(update)
+}
+/** 版本卡上「装」那颗按钮。交给系统安装器（Linux）时软件只关掉、不会自己重开，不能叫「重启并安装」。*/
 export function updateInstallActionLabel(installMethod: UpdateOfferState['installMethod']): string {
-  return installMethod === 'system-installer' ? '安装新版本' : '重启安装';
+  return installMethod === 'system-installer' ? '安装新版本' : '重启并安装';
 }
 export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
@@ -369,8 +372,8 @@ export const notificationOptions: readonly NotificationOption[] = [
 ]
 export type SettingsGroupId = (typeof settingsGroups)[number]['value']
 /**
- * 设置里不是每台电脑都有的那几行：Mac 才有「卸载星芒」，别的电脑是「卸载工具或星芒」；
- * 支持自动更新的电脑才有「自动更新」；有游戏加速的电脑才有「加速提醒」。
+ * 设置里不是每台电脑都有的那几行：Mac 的「卸载星芒」能在软件里卸，别的电脑那一行只说怎么卸；
+ * 支持自动更新的电脑才有「自动下载更新」；有游戏加速的电脑才有游戏加速卡和「加速提醒」。
  */
 export type SettingsItemCondition = 'mac' | 'notMac' | 'autoUpdate' | 'acceleration'
 export interface SettingsItem {
@@ -384,6 +387,11 @@ export interface SettingsItem {
   /** 顶部搜索和设置页里的搜索用的常用说法，界面上不显示。 */
   keywords: readonly string[]
   when?: SettingsItemCondition
+  /**
+   * 这一项是一整张卡（游戏加速、工具配置备份、版本卡），不是卡里的一行：页面上单独摆，
+   * 不和挨着的行装进同一张卡。原来是三个页面，v4 并进设置（批09）。缺省 = 普通的一行。
+   */
+  card?: boolean
 }
 /**
  * 设置里的每一行，按页面上的顺序。顶部搜索按行出结果（「版本更新 › 自动更新」），
@@ -405,6 +413,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
+  { id: 'acceleration', group: 'network', label: '游戏加速', keywords: ['加速', '游戏', '延迟', '卡顿', '免费时长', '加速线路'], when: 'acceleration', card: true },
   ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', section: 'routes', label: route.label, keywords: ['线路', '线路1', '线路2', '直连', '洛杉矶', 'CF', '备用', '重启', '连不上'] })),
   { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '换线路后提醒我重开工具', keywords: ['线路', '重开', '需重开生效'] },
   { id: 'mirror', group: 'network', section: 'download', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
@@ -421,20 +430,22 @@ export const settingsItems: readonly SettingsItem[] = [
     keywords: [],
     ...(option.value === 'acceleration' ? { when: 'acceleration' as const } : {}),
   })),
-  { id: 'backups', group: 'backup', label: '工具配置备份', keywords: [] },
-  { id: 'transfer', group: 'backup', label: '搬到新电脑', keywords: ['导出', '导入', '换电脑', '新电脑', '迁移', '聊天记录'] },
+  { id: 'backups', group: 'backup', label: '工具配置备份', keywords: ['备份', '恢复', '还原', '找回配置', '立即备份'], card: true },
+  // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
+  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
+  { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
   { id: 'crash-reporting', group: 'privacy', label: '崩溃自动上报', keywords: [] },
   { id: 'usage-stats', group: 'privacy', label: '匿名使用统计', keywords: [] },
   { id: 'logs', group: 'privacy', label: '运行日志', keywords: ['日志', '报告'] },
   { id: 'legal', group: 'privacy', label: '用户协议与隐私政策', keywords: [] },
-  { id: 'version', group: 'about', label: '当前版本', keywords: ['版本号', '版本'] },
+  { id: 'version', group: 'about', label: '检查更新', keywords: ['当前版本', '版本号', '版本', '升级', '新版本', '下载更新', '更新内容'], card: true },
   { id: 'update-check', group: 'about', label: '启动时检查新版本', keywords: ['检查更新', '升级', '新版本'] },
-  { id: 'auto-update', group: 'about', label: '自动更新', keywords: ['检查更新', '升级', '新版本'], when: 'autoUpdate' },
+  { id: 'auto-update', group: 'about', label: '自动下载更新', keywords: ['自动更新', '检查更新', '升级', '新版本'], when: 'autoUpdate' },
   { id: 'shortcuts', group: 'about', label: '快捷键', keywords: ['快捷键', '键盘'] },
   { id: 'guide', group: 'about', label: '新手引导', keywords: ['引导', '新手', '从头'] },
   { id: 'tour', group: 'about', label: '界面导览', keywords: [] },
   { id: 'uninstall-app', group: 'about', label: '卸载星芒', keywords: ['卸载星芒', '删除软件'], when: 'mac' },
-  { id: 'uninstall', group: 'about', label: '卸载工具或星芒', keywords: ['卸载星芒', '删除软件'], when: 'notMac' },
+  { id: 'uninstall', group: 'about', label: '卸载星芒', keywords: ['卸载星芒', '删除软件'], when: 'notMac' },
 ]
 export function notificationSettingsItemId(kind: PlatformNotificationKind): string {
   return `notify-${kind}`
@@ -463,13 +474,13 @@ export interface SettingsBlock {
   section?: (typeof settingsSections)[number]
   items: SettingsItem[]
 }
-/** 一组在页面上分成几张卡：挨着的几行 section 相同就放进同一张。 */
+/** 一组在页面上分成几张卡：挨着的几行 section 相同就放进同一张；整张卡的那一项（card）自己一块。 */
 export function buildSettingsBlocks(group: SettingsGroupId, items: readonly SettingsItem[] = settingsItems): SettingsBlock[] {
   const blocks: SettingsBlock[] = []
   for (const item of items) {
     if (item.group !== group) continue
     const last = blocks[blocks.length - 1]
-    if (last && last.section?.value === item.section) last.items.push(item)
+    if (last && !item.card && !last.items[0].card && last.section?.value === item.section) last.items.push(item)
     else blocks.push({ section: settingsSections.find((section) => section.value === item.section), items: [item] })
   }
   return blocks

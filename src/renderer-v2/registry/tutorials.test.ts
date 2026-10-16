@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
-import { accountTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { accountTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
 import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
@@ -15,6 +15,11 @@ const sectionsByPage = {
   account: [...accountTabs.filter((tab) => tab.value !== 'overview'), { value: 'recharge', label: '侧栏「充值」' }],
   settings: settingsGroups.filter((group) => group.value !== 'appearance'),
 } as const;
+
+// 设置的 section 可以是一行：比的是那一行所在的组，「在哪里」写的是组名。
+function settingsGroupOf(section: string | undefined): string | undefined {
+  return settingsItems.find((item) => item.id === section)?.group ?? section;
+}
 
 function sectionNamedIn(entry: TutorialStep): string | undefined {
   if (entry.page !== 'account' && entry.page !== 'settings') return undefined;
@@ -38,25 +43,34 @@ describe('tutorial step targets', () => {
     expect(step('safety', '查看隐私数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
   });
 
+  it('lands the acceleration, backup and update steps on their rows in settings', () => {
+    for (const action of ['打开游戏加速', '去选择加速线路', '打开游戏加速连接', '查看并停止加速']) {
+      expect(step('acceleration', action)).toMatchObject({ page: 'settings', section: 'acceleration' });
+    }
+    expect(step(updatesTutorialTopic, '打开备份迁移')).toMatchObject({ page: 'settings', section: 'backups' });
+    expect(step(updatesTutorialTopic, '打开版本更新')).toMatchObject({ page: 'settings', section: 'version' });
+  });
+
   it('only names sections that exist on the target page', () => {
     for (const topic of tutorialTopics) for (const entry of topic.steps) {
       if (entry.section === undefined) continue;
       const known: readonly string[] = entry.page === 'account' ? accountTabs.map((tab) => tab.value)
-        : entry.page === 'settings' ? settingsGroups.map((group) => group.value) : [];
+        : entry.page === 'settings' ? [...settingsGroups.map((group) => group.value), ...settingsItems.map((item) => item.id)] : [];
       expect(known, `${topic.id} / ${entry.action}`).toContain(entry.section);
     }
   });
 
   it('declares a section whenever the step location names a non-default tab of its page', () => {
     for (const topic of tutorialTopics) for (const entry of topic.steps) {
-      expect(entry.section, `${topic.id} / ${entry.action}`).toBe(sectionNamedIn(entry));
+      const landed = entry.page === 'settings' ? settingsGroupOf(entry.section) : entry.section;
+      expect(landed, `${topic.id} / ${entry.action}`).toBe(sectionNamedIn(entry));
     }
   });
 });
 
 describe('mac keychain prompt help', () => {
   it('explains the keychain password prompt next to the toolbox update step', () => {
-    const extra = step('safety', '打开工具箱更新').extra ?? [];
+    const extra = step('safety', '打开版本更新').extra ?? [];
     const entry = extra.find((item) => item.title === macKeychainTutorialTitle);
     expect(entry?.detail).toContain('xingmang-ai-manager Safe Storage');
     expect(entry?.detail).toContain('始终允许');
@@ -64,7 +78,7 @@ describe('mac keychain prompt help', () => {
   });
 
   it('tells a full-disk user where to clean up next to the toolbox update step', () => {
-    const extra = step(updatesTutorialTopic, '打开工具箱更新').extra ?? [];
+    const extra = step(updatesTutorialTopic, '打开版本更新').extra ?? [];
     const entry = extra.find((item) => item.title === updateDiskCleanupTitle);
     expect(entry?.detail).toBe(updateDiskCleanupDetail);
     expect(updateDiskCleanupDetail).toContain('系统设置 → 通用 → 储存空间');
@@ -76,11 +90,11 @@ describe('mac keychain prompt help', () => {
 // 这里把教程里的按钮名钉在界面真正用的那份文案上，改了界面忘改教程会红。
 describe('tutorial wording that follows the current app', () => {
   it('describes automatic updates with the labels the settings and update page use', () => {
-    const update = step('safety', '打开工具箱更新');
+    const update = step('safety', '打开版本更新');
     const text = JSON.stringify(update);
     expect(update.detail).toContain('自动装上');
     expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'about')?.label}」`);
-    expect(text).toContain('「自动更新」');
+    expect(text).toContain(`「${settingsItemLabel('auto-update')}」`);
     expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
     expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
     expect(text).toContain('「退回更新前的 v…」');
@@ -136,7 +150,9 @@ describe('linux tutorials', () => {
     const hidden = ['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic];
     expect(ids).toEqual(tutorialTopics.map((topic) => topic.id).filter((id) => !hidden.includes(id)));
     expect(ids[0]).toBe('start');
-    expect(linux.flatMap((topic) => topic.steps).some((entry) => entry.page === 'acceleration')).toBe(false);
+    const landsOnAcceleration = (entry: TutorialStep) => entry.page === 'settings' && entry.section === 'acceleration';
+    expect(tutorialTopics.flatMap((topic) => topic.steps).some(landsOnAcceleration)).toBe(true);
+    expect(linux.flatMap((topic) => topic.steps).some(landsOnAcceleration)).toBe(false);
   });
 
   it('never points a Linux reader at Windows, a Mac, the desktop app or game acceleration', () => {
@@ -156,7 +172,7 @@ describe('linux tutorials', () => {
 
   it('describes the Linux self-update the way the update page and quit prompt do', () => {
     const updates = linux.find((topic) => topic.id === updatesTutorialTopic);
-    const self = updates?.steps.find((entry) => entry.page === 'updates');
+    const self = updates?.steps.find((entry) => entry.page === 'settings' && entry.section === 'version');
     const text = JSON.stringify(self);
     expect(text).toContain('「安装新版本」');
     expect(text).toContain('输入开机密码');

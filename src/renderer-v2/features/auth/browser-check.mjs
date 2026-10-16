@@ -384,7 +384,7 @@ test('a key from another site switches to the signed-in account in one click and
     assert.equal((await page.getByTestId('guide-switch-account').textContent())?.trim(), '改用 peaker')
     await page.getByTestId('guide-switch-account').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') === 'ready')
-    assert.match(await page.getByTestId('guide-switched-note').textContent() ?? '', /原来的设置已备份，在「备份」里能找回/)
+    assert.match(await page.getByTestId('guide-switched-note').textContent() ?? '', /原来的设置已备份，在「设置 › 备份迁移」里能找回/)
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch'])
   } finally { await page.close() }
 })

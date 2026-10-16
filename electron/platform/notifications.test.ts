@@ -120,13 +120,13 @@ describe('acceleration reminders sent by the main process', () => {
     expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t0')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
       title: '加速意外断开了',
-      body: '网络已恢复正常，可以回到加速页重新连接。',
+      body: '网络已恢复正常，可以到「设置 › 网络加速」重新连接。',
       silent: true,
     })
     expect(h.controller.notifyHost('accelerationInterruptedUnrestored', 'xm-account:1:t1')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
       title: '加速意外断开了',
-      body: '网络可能暂时连不上，点这里回到加速页，星芒会再试着恢复。',
+      body: '网络可能暂时连不上，点这里打开游戏加速，星芒会再试着恢复。',
       silent: true,
     })
     h.preferences.acceleration = false

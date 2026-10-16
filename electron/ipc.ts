@@ -2315,7 +2315,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:repair-cli-hooks', async (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (!service.repairCliHooks) throw new Error('这个版本还不能修提醒设置')
-    // 和保存配置同一份备份：「备份」页里能找回改之前的样子。
+    // 和保存配置同一份备份：「设置 › 备份迁移」里能找回改之前的样子。
     options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
     return service.repairCliHooks(provider)
   })
@@ -3386,7 +3386,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // 不收参数：读的是安装包里那几个固定文件名，渲染层给不出任何路径（I5）。
   registerTrustedHandler('acceleration:recheck-bundle', () => {
     const service = accelerationService()
-    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请刷新一下加速页。')
+    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请重新打开「设置 › 网络加速」。')
     return service.recheckAccelerationBundle()
   })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (

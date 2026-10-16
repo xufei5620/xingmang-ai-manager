@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { pageRegistry } from '../../registry/pages'
+import { pageRegistry, settingsPageAlias } from '../../registry/pages'
 import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
 import { chatParametersSection, maximumTutorialResults, searchCommands } from './command-search'
+
+// 游戏加速、备份、更新并进了设置（v4 批09）：它们还在页面表里（老入口靠它换到设置里那张卡），但不再单独出页面结果。
+const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null)
 
 describe('searchCommands', () => {
   it('lists the everyday actions, then every page, when nothing is typed', () => {
     const empty = searchCommands('   ')
-    expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id))
-    expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...pageRegistry.map(() => 'page')])
+    expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(searchablePages.map((page) => page.id))
+    expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...searchablePages.map(() => 'page')])
     expect(searchCommands('').filter((item) => item.group === 'page').every((item) => item.section === undefined)).toBe(true)
     expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '聊天参数设置'])
   })
@@ -39,7 +42,15 @@ describe('searchCommands', () => {
   })
 
   it('still finds every page by its own name first', () => {
-    for (const page of pageRegistry) expect(searchCommands(page.label)[0]).toMatchObject({ group: 'page', page: page.id })
+    for (const page of searchablePages) expect(searchCommands(page.label)[0]).toMatchObject({ group: 'page', page: page.id })
+  })
+
+  it('finds the cards that moved into settings by their old page names', () => {
+    expect(searchCommands('游戏加速')[0]).toMatchObject({ group: 'settings', page: 'settings', section: 'acceleration' })
+    expect(searchCommands('备份').find((item) => item.group === 'settings')).toMatchObject({ page: 'settings' })
+    expect(searchCommands('备份').some((item) => item.section === 'backups')).toBe(true)
+    expect(searchCommands('更新').some((item) => item.section === 'version')).toBe(true)
+    for (const word of ['游戏加速', '备份', '更新']) expect(searchCommands(word).some((item) => item.group === 'page' && settingsPageAlias(item.page) !== null), word).toBe(false)
   })
 
   it('finds the top-up tab of the account center by everyday words', () => {
@@ -62,10 +73,11 @@ describe('searchCommands', () => {
   })
 
   it('leaves out pages this computer does not have, such as game acceleration on Linux', () => {
-    const pageVisible = (page: string) => page !== 'acceleration'
-    expect(searchCommands('', { pageVisible }).filter((item) => item.group === 'page').map((item) => item.page)).toEqual(pageRegistry.map((page) => page.id).filter((id) => id !== 'acceleration'))
-    expect(searchCommands('加速', { pageVisible }, tutorialTopicsFor('linux')).some((item) => item.page === 'acceleration' || item.section === 'acceleration')).toBe(false)
-    expect(searchCommands('加速')[0]).toMatchObject({ group: 'page', page: 'acceleration' })
+    const pageVisible = (page: string) => page !== 'chat'
+    expect(searchCommands('', { pageVisible }).filter((item) => item.group === 'page').map((item) => item.page)).toEqual(searchablePages.map((page) => page.id).filter((id) => id !== 'chat'))
+    const linux = { settingsItemVisible: (item: { when?: string }) => item.when !== 'acceleration' }
+    expect(searchCommands('加速', linux, tutorialTopicsFor('linux')).some((item) => item.page === 'acceleration' || item.section === 'acceleration')).toBe(false)
+    expect(searchCommands('加速').find((item) => item.section === 'acceleration')).toMatchObject({ group: 'settings', page: 'settings' })
   })
 
   it('searches the Linux tutorials on Linux, so it never offers the desktop-app chapters there', () => {
@@ -148,7 +160,7 @@ describe('searchCommands for single settings', () => {
   }
 
   it('offers each setting on its own, labelled with its group, and opens that row', () => {
-    expect(settingsHits('自动更新')[0]).toEqual({ key: 'settings-item:auto-update', group: 'settings', label: '版本更新 › 自动更新', page: 'settings', section: 'auto-update' })
+    expect(settingsHits('自动更新')[0]).toEqual({ key: 'settings-item:auto-update', group: 'settings', label: '版本更新 › 自动下载更新', page: 'settings', section: 'auto-update' })
     // 「发测试通知」并进了桌面通知那一行，搜「测试通知」落到那一行。
     expect(settingsHits('测试通知')[0]).toMatchObject({ label: '消息通知 › 桌面通知', section: 'desktop-notifications' })
   })
@@ -193,7 +205,7 @@ describe('searchCommands for single settings', () => {
   it('finds the pages and account tabs behind the words that used to find nothing', () => {
     expect(searchCommands('配置')[0]).toMatchObject({ group: 'page', page: 'home' })
     expect(searchCommands('换模型')[0]).toMatchObject({ group: 'page', page: 'home' })
-    expect(searchCommands('检查更新')[0]).toMatchObject({ group: 'page', page: 'updates' })
+    expect(searchCommands('检查更新')[0]).toMatchObject({ group: 'settings', page: 'settings', section: 'version' })
     expect(searchCommands('修改密码').find((item) => item.group === 'account')).toMatchObject({ section: 'change-password' })
     for (const word of ['扣费偏好', '先扣', '兑换码', '充值码']) expect(searchCommands(word).find((item) => item.group === 'account'), word).toMatchObject({ section: 'recharge' })
     for (const word of ['限额', '额度上限']) expect(searchCommands(word).find((item) => item.group === 'account'), word).toMatchObject({ section: 'keys' })
