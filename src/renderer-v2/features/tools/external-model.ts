@@ -1,4 +1,4 @@
-import type { ExternalClientStatus } from '../../../../electron/ipc-contract'
+import type { ExternalClientStatus, ExternalToolId } from '../../../../electron/ipc-contract'
 import { clientConnections } from '../../registry/clients'
 import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
 import type { WindowOs } from '../app/window-os'
@@ -32,4 +32,9 @@ export function presentExternalClients(statuses: ExternalClientStatus[]) {
               : status.configurationSource === 'other' ? status.configurationReady === false ? '第三方推理配置待完善' : '已有第三方配置' : null)].filter(Boolean).join(' · ')),
     }]
   })
+}
+
+/** 这一行连好了没有，和首页卡片同一个认法：配置弹窗的标题靠它分「连接 X」还是「X 配置」。 */
+export function externalClientReady(statuses: ExternalClientStatus[], tool: ExternalToolId): boolean {
+  return presentExternalClients(statuses).find((client) => client.id === tool)?.ready ?? false
 }

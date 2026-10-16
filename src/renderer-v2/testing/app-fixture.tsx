@@ -145,6 +145,8 @@ const pendingKeyMetadata = new Map<ProviderId, () => void>()
 const heldConfiguredModels = new Map<ProviderId, Array<() => void>>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
 if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt'; config.providers.codex.actualBaseUrl = '' }
+// ?officialEmail=1：读得出 ChatGPT 登录的邮箱和套餐（配置里的官方账号那一栏、「查看 ChatGPT 账号额度」）。
+if (query.has('officialEmail')) { config.providers.codex.officialAccountEmail = 'chatgpt@example.test'; config.providers.codex.officialAccountPlan = 'Plus' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
 // ?codexBroken：Codex 自己读不了 config.toml（主进程 configBroken），重置之后才好。
 if (query.has('codexBroken')) config.providers.codex.configBroken = true
@@ -614,6 +616,8 @@ const methods = {
       ...(failed ? { warning: '中文设置已保存，但本次未确认中文界面生效。请再次启用中文界面以重试。' } : {}) }
   },
   getCodexDesktopStatus: async () => structuredClone(system.desktopApps.codex),
+  // 配置里「界面语言与文件夹权限」头一次展开就读一次（UI v4）。
+  inspectCodexWorkspacePermissions: async () => ({ configPath: 'C:\\Fixture\\config.toml', workspace: config.workspace, configExists: true, trustLevel: 'trusted' as const, approvalPolicy: null, permissionProfile: null, sandboxMode: null, control: 'available' as const, error: null }),
   // 「安装」遇到缺 / 认不出的 Node 会先走这一步（第十一批 2），装完运行环境即就绪。
   installNodeRuntime: async () => {
     if (query.has('nodeInstallFail')) throw new Error('下载 Node.js 时 ETIMEDOUT')
