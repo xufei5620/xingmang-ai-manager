@@ -201,20 +201,20 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
 test('one menu lists the backend groups with their descriptions above the models of the chosen group', async () => {
   const page = await open('theme=dark&preferredGroup=1')
   try {
-    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.group === 'GPT-中转/订阅')
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.group === 'GPT')
     assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话', exact: true }).getAttribute('aria-pressed'), 'true', '首次进入聊天应默认文本对话')
     await ready(page)
-    assert.deepEqual(await picked(page), { group: 'GPT-中转/订阅', model: 'gpt-5.6-sol', label: 'gpt-5.6-sol' }, '首次进入文本对话应选择截图中的默认模型')
+    assert.deepEqual(await picked(page), { group: 'GPT', model: 'gpt-5.6-sol', label: 'gpt-5.6-sol' }, '首次进入文本对话应选择截图中的默认模型')
     const menu = await modelMenu(page)
     // 选项名只是分组名，后台的说明作为补充读出来，不并进名字。
     assert.deepEqual(await choices(menu, 'chat-group'), [
       { label: 'default', hint: '用户分组', checked: false, disabled: false },
-      { label: 'GPT-中转/订阅', hint: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', checked: true, disabled: false },
+      { label: 'GPT', hint: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', checked: true, disabled: false },
     ])
-    assert.equal(await menu.getByRole('menuitemradio', { name: 'GPT-中转/订阅', exact: true }).getAttribute('title'), 'gpt-image-1 / 1.5 / 2（官方按 token 计费）')
+    assert.equal(await menu.getByRole('menuitemradio', { name: 'GPT', exact: true }).getAttribute('title'), 'gpt-image-1 / 1.5 / 2（官方按 token 计费）')
     await menu.getByText('2 个模型可用', { exact: true }).waitFor()
     assert.deepEqual((await choices(menu, 'chat-model-options')).map((item) => item.label), ['other-model', 'gpt-5.6-sol'])
-    assert.equal(await page.evaluate(() => document.activeElement?.querySelector('.xm-menu-choice > span')?.textContent), 'GPT-中转/订阅', 'the menu opens on the chosen group')
+    assert.equal(await page.evaluate(() => document.activeElement?.querySelector('.xm-menu-choice > span')?.textContent), 'GPT', 'the menu opens on the chosen group')
     const surface = await menu.evaluate((element) => ({ background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color }))
     assert.notEqual(surface.background, 'rgba(0, 0, 0, 0)')
     assert.notEqual(surface.color, surface.background)
@@ -539,7 +539,7 @@ test('opening the group menu refreshes metadata once without preparing keys or r
     const before = (await calls(page, 'groups')).length
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => {
-      window.chatHarness.setGroups(['default', 'GPT-中转/订阅', 'new-live-group'])
+      window.chatHarness.setGroups(['default', 'GPT', 'new-live-group'])
       window.chatHarness.deferGroupList()
     })
     const menu = await modelMenu(page)
@@ -549,7 +549,7 @@ test('opening the group menu refreshes metadata once without preparing keys or r
     assert.equal(await page.getByTestId('chat-model').isDisabled(), false)
     await page.evaluate(() => window.chatHarness.releaseGroupList())
     await menu.getByRole('menuitemradio', { name: 'new-live-group', exact: true }).waitFor()
-    assert.deepEqual(await picked(page), { group: 'GPT-中转/订阅', model: 'other-model', label: 'other-model' })
+    assert.deepEqual(await picked(page), { group: 'GPT', model: 'other-model', label: 'other-model' })
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'keep this unsent draft')
     assert.equal((await calls(page, 'prepare')).length, prepared)
     assert.equal((await calls(page, 'start')).length + (await calls(page, 'image')).length, 0)
@@ -557,7 +557,7 @@ test('opening the group menu refreshes metadata once without preparing keys or r
     await menu.getByTestId('chat-group-prepare').click()
     await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length > count, prepared)
     assert.equal((await calls(page, 'prepare')).length, prepared + 1)
-    await waitForToast(page, '已刷新：GPT-中转/订阅分组有 2 个模型可用')
+    await waitForToast(page, '已刷新：GPT分组有 2 个模型可用')
     assert.equal(await menu.isVisible(), true)
     assert.equal((await picked(page)).model, 'other-model')
   } finally { await page.close() }

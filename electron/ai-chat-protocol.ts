@@ -520,10 +520,10 @@ export function isImageModel(model: string): boolean {
   return resolveAiModelCapability(model).kind === 'image'
 }
 
-export const IMAGE_SKILL_GROUP_NAMES = ['图片模型-中转/订阅', '生图分组'] as const
-// xm 站 2026-10-14 把「图片模型-中转/订阅」改成本名「图片模型」，老名字留到老版本退场才删。
-// 这里只管对话和画布在图片分组里列哪些模型；画图技能挑哪个分组另走分组对照（managed-cli-groups.ts）。
-const IMAGE_GROUP_NAMES = new Set<string>(['图片模型', ...IMAGE_SKILL_GROUP_NAMES])
+// xm 站 2026-10-14 把「图片模型-中转/订阅」改成本名「图片模型」，10-16 删了老名字。
+// 这里只管对话和画布在图片分组里列哪些模型；画图技能挑哪个分组先走分组对照（managed-cli-groups.ts）。
+export const IMAGE_SKILL_GROUP_NAMES = ['图片模型', '生图分组'] as const
+const IMAGE_GROUP_NAMES = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
 // gpt-image-2.5 两个型号 xm 站「GPT」「图片模型」两个分组都开了，按张计价。排序跟星芒AI生图（#999）的取舍：
 // flare 是默认、排第一，gpt-image-2 第二；sunburst 慢、偏精修，不当默认，排在它们后面。
 const IMAGE_GROUP_MODEL_ORDER = [

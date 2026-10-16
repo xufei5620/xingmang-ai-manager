@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { activeProviderIds, cliCatalog, isActiveProviderId, isProviderId, isRetiredProviderId, providerConfigDirectoryNames, retiredProviderIds } from '../../../electron/catalog';
 import { clientConnections } from './clients';
-import { firstRunHints, guideRecommendedTool, guideRecommendedToolFor, homeToolBlurbs, homeToolOrder, officialAccountNames, officialAccountNotes, shortcutTools, toolKindLabels, tools } from './tools';
+import { firstRunHints, guideRecommendedTool, guideRecommendedToolFor, homeToolBlurbs, homeToolOrder, officialAccountNames, officialAccountNotes, shortcutTools, toolKindLabels, tools, welcomeOrbitItems } from './tools';
 
 describe('renderer-v2 tool registry', () => {
   it('only carries ids the main process knows, plus the Codex desktop entry', () => {
@@ -20,6 +20,16 @@ describe('renderer-v2 tool registry', () => {
       for (const retired of retiredProviderIds) expect(Object.keys(table)).not.toContain(retired);
     const names = tools.map(tool => tool.name).join('\n');
     for (const retired of retiredProviderIds) expect(names).not.toContain(cliCatalog[retired].name);
+  });
+
+  // 欢迎页星轨照 0.2.18 摆四颗（yoyo 2026-10-16）：Gemini 写模型名、按模型取图标，不是下线的 Gemini CLI。
+  it('puts Gemini back on the welcome orbit as a model, not as the retired CLI', () => {
+    expect(welcomeOrbitItems.map(item => item.name)).toEqual(['Claude Code', 'Codex CLI', 'Gemini', 'Grok CLI']);
+    expect(new Set(welcomeOrbitItems.map(item => item.key)).size).toBe(welcomeOrbitItems.length);
+    const gemini = welcomeOrbitItems.find(item => item.key === 'gemini');
+    expect(gemini).toEqual({ key: 'gemini', name: 'Gemini', model: 'Gemini' });
+    for (const retired of retiredProviderIds) expect(welcomeOrbitItems.map(item => item.name)).not.toContain(cliCatalog[retired].name);
+    for (const item of welcomeOrbitItems) if (item.tool) expect(tools.find(tool => tool.id === item.tool)?.name).toBe(item.name);
   });
 
   // v3.1.1 起 renderer-v2 只有这一套展示顺序（legacy 树另有概览序与管理序两套，已冻结）。

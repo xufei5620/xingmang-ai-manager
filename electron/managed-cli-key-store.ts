@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { currentAccountGroupName, isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { isManagedCliGroupName } from './managed-cli-groups'
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
@@ -47,6 +47,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+// 不分站点的老文件（0.2.12 以前写的）只认出厂的分组名。xm 站 10-16 删了老名字，出厂名换成了新名字，
+// 0.2.8、0.2.10 这些老版本写下的老名字也还得认，不然整份缓存读不出来、被当成损坏挪走。
+function isShippedGroup(group: unknown, provider: ProviderId, siteId: 'solov' | 'solov-api'): boolean {
+  const shipped = resolveManagedCliKeyProfiles(siteId)[provider].group
+  return typeof group === 'string' && (group === shipped || (siteId === 'solov' && currentAccountGroupName(group) === shipped))
+}
+
 function isStoredManagedCliKey(
   value: unknown,
   siteId: 'solov' | 'solov-api',
@@ -56,7 +63,7 @@ function isStoredManagedCliKey(
   return typeof value.id === 'number'
     && Number.isInteger(value.id)
     && value.id > 0
-    && (scoped ? isManagedCliGroupName(value.group) : value.group === resolveManagedCliKeyProfiles(siteId)[value.provider].group)
+    && (scoped ? isManagedCliGroupName(value.group) : isShippedGroup(value.group, value.provider, siteId))
     && typeof value.name === 'string'
     && value.name.length > 0
     && value.name.length <= 50
@@ -150,7 +157,11 @@ export class ManagedCliKeyStore {
     this.assertEncryptionAvailable()
     await this.writeQueue.catch(() => undefined)
     const record = await this.readRecord()
-    return record?.accounts.find((entry) => entry.userId === userId)?.keys.map((entry) => ({ ...entry })) ?? []
+    // xm 站删老分组名之前把老名字下的 Key 全挂到了新名字下（Key 不变），本机记的老名字照着换，
+    // 开机时就不会因为「分组对不上」去重签一把、再重写一遍配置。文件里的老名字等下次保存时自然换掉。
+    return record?.accounts.find((entry) => entry.userId === userId)?.keys.map((entry) => (
+      this.siteId === 'solov' ? { ...entry, group: currentAccountGroupName(entry.group) } : { ...entry }
+    )) ?? []
   }
 
   captureRevision(): number {
