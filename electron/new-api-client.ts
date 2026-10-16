@@ -818,6 +818,11 @@ export interface NewApiProvisionCliKeyInput {
    * to its replacement: reusing an unlimited sibling would drop them.
    */
   fresh?: boolean
+  /**
+   * AI 对话签的 Key 叫「用户名-分组-对话」，跟同分组命令行工具的「用户名-分组」分开，额度上限互不牵连
+   * （yoyo 10-16 选的）。缺省 = 命令行工具或画图技能的 Key。
+   */
+  purpose?: 'chat'
 }
 
 // The plaintext key is meant to flow straight into a CLI config write (I3
@@ -3769,10 +3774,12 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     withSession(async (current) => {
       const requested = (input.name?.trim() || buildCliKeyName()).slice(0, 50)
       const group = input.group?.trim()
-      // 新签的叫「用户名-分组」。调用方传的仍是这把 Key 以前的名字（ipc.ts 靠它认是哪个工具）：
-      // 以前签好的都叫它，认额度上限时两个名字一起认。
-      const name = (group && buildAccountKeyName(current.profile.username, group)) || requested
-      const names = name === requested ? [name] : [requested, name]
+      // 新签的叫「用户名-分组」，AI 对话的再接「-对话」。命令行工具传的仍是这把 Key 以前的名字
+      // （ipc.ts 靠它认是哪个工具）：以前签好的都叫它，认额度上限时两个名字一起认。对话传的是随机名，
+      // 它自己那把的上限由 chat-credential-coordinator.ts 认，这里照旧不按名字拦。
+      const chat = input.purpose === 'chat'
+      const name = (group && buildAccountKeyName(current.profile.username, group, chat ? '对话' : undefined)) || requested
+      const names = name === requested || chat ? [requested] : [requested, name]
       if (group) {
         if (group.length > 128) throw new Error('CLI Key 分组格式错误')
         await assertUsableGroup(current, group)

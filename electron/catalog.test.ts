@@ -50,6 +50,13 @@ describe('buildAccountKeyName', () => {
     expect(buildAccountKeyName('yoyo', ' ')).toBeNull()
   })
 
+  it('puts a suffix after the group, so AI chat keys stay apart from tool keys', () => {
+    expect(buildAccountKeyName('yoyo', 'GPT', '对话')).toBe('yoyo-GPT-对话')
+    const name = buildAccountKeyName('二十个字的中文用户名二十个字的中文用户名', 'GPT', '对话') ?? ''
+    expect(name.endsWith('-GPT-对话')).toBe(true)
+    expect(bytes(name)).toBeLessThanOrEqual(50)
+  })
+
   it('drops control characters from the username', () => {
     expect(buildAccountKeyName('yo\nyo\u007f', 'GPT')).toBe('yoyo-GPT')
   })

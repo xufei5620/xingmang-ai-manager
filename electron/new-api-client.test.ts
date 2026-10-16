@@ -3350,6 +3350,55 @@ describe('provisionCliKey naming', () => {
     expect(String(fetchImpl.mock.calls[4][0])).toBe(`${testBaseUrl}/api/token/4/key`)
   })
 
+  it('names an AI chat key apart from the tool keys in the same group', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 0, items: [] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 1, items: [{ id: 5, name: 'tester-codex-pro-对话', group: 'codex-pro', status: 1 }] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-value' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group: 'codex-pro', purpose: 'chat' }))
+      .resolves.toEqual({ id: 5, name: 'tester-codex-pro-对话', key: 'sk-chat-value' })
+    const create = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST' && !String(init.body).includes('"key"'))
+    expect(JSON.parse(String(create?.[1]?.body))).toMatchObject({ name: 'tester-codex-pro-对话', group: 'codex-pro' })
+  })
+
+  // 两边额度互不牵连：工具的上限用完不拦对话，对话自己那把的上限由 chat-credential-coordinator.ts 认。
+  it('does not stop an AI chat key on a used-up cap of a tool or chat key in the same group', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const usedUp = { status: 4, remain_quota: 0, unlimited_quota: false, expired_time: -1, group: 'codex-pro' }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+        { ...usedUp, id: 3, name: 'tester-codex-pro' },
+        { ...usedUp, id: 4, name: 'tester-codex-pro-对话' },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 1, items: [{ id: 9, name: 'tester-codex-pro-对话', group: 'codex-pro', status: 1 }] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-new' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group: 'codex-pro', purpose: 'chat' }))
+      .resolves.toEqual({ id: 9, name: 'tester-codex-pro-对话', key: 'sk-chat-new' })
+  })
+
+  it('keeps a tool cap even when a newer AI chat key sits in the same group', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+        { id: 3, name: 'tester-codex-pro', group: 'codex-pro', status: 4, remain_quota: 0, unlimited_quota: false, expired_time: -1 },
+        { id: 9, name: 'tester-codex-pro-对话', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 },
+      ] } }))
+
+    await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
   it('keeps the name a key already carries when it is reused', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)

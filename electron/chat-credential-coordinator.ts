@@ -181,6 +181,7 @@ export function createChatCredentialCoordinator(options: {
         // when model probing or local persistence failed after its creation.
         name: accountService.getActiveSiteId?.() === 'solov-api' ? 'xingmang-chat' : buildCliKeyName('xingmang-chat'),
         group,
+        purpose: 'chat',
       })
       assertSameSession(accountService, userId, revision)
       const models = selectAiChatModelsForGroup(

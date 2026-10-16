@@ -103,7 +103,8 @@ describe('chat credential coordinator', () => {
     expect(first).toEqual(second)
     expect(first.keyCreated).toBe(true)
     expect(accountService.provisionCliKey).toHaveBeenCalledTimes(1)
-    expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({ group: '生图分组' }))
+    // 对话签的 Key 跟同分组的命令行工具分开起名（「用户名-分组-对话」），由账号客户端换名字。
+    expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({ group: '生图分组', purpose: 'chat' }))
     expect(store.upsert).toHaveBeenCalledTimes(1)
   })
 

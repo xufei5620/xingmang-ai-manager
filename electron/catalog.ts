@@ -142,13 +142,14 @@ function truncateUtf8(text: string, maxBytes: number): string {
 
 /**
  * 星芒在 xm 站新签的密钥叫「用户名-分组」，比如 yoyo-Claude-MAX：站长在后台的令牌和日志里一眼看出是谁的、
- * 哪个分组的（yoyo 10-16）。以前签好的不改名。太长先截用户名，分组尽量留全。用户名或分组是空的返回 null，
- * 调用方照旧用原来的名字。历史账号那套后端不走这里。
+ * 哪个分组的（yoyo 10-16）。suffix 接在分组后面，AI 对话签的是 yoyo-GPT-对话，跟同分组命令行工具的分开。
+ * 以前签好的不改名。太长先截用户名，分组尽量留全。用户名或分组是空的返回 null，调用方照旧用原来的名字。
+ * 历史账号那套后端不走这里。
  */
-export function buildAccountKeyName(username: string, group: string): string | null {
+export function buildAccountKeyName(username: string, group: string, suffix?: string): string | null {
   const user = username.replace(/[\u0000-\u001f\u007f]/g, '').trim()
-  const tail = `-${group.trim()}`
-  if (!user || tail === '-') return null
+  if (!user || !group.trim()) return null
+  const tail = `-${group.trim()}${suffix ? `-${suffix}` : ''}`
   const head = truncateUtf8(user, accountKeyNameMaxBytes - utf8Length(tail))
   return (head ? `${head}${tail}` : truncateUtf8(`${user}${tail}`, accountKeyNameMaxBytes)).trim()
 }
