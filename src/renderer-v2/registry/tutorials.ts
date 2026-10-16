@@ -300,7 +300,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '打开 Codex 窗口',
         where: '工具箱首页 → Codex 桌面端 → 打开',
-        detail: '卡片左下角写着「当前账号」后点「打开」，接下来在 Codex 窗口里操作。',
+        detail: '卡片左下角写着「当前账号」、「官方账号」或「自己的密钥」时，点「打开」，接下来在 Codex 窗口里操作。',
         bullets: ['点击 Codex 桌面端卡片上的「打开」。', '提示已经运行时，点「打开窗口」。'],
         expected: '屏幕上出现 Codex 的独立窗口。',
         illustration: 'desktop-home',
@@ -1081,7 +1081,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '连好了却打不开：查看启动结果',
         where: '工具箱首页 → Codex 桌面端 → 打开',
-        detail: '卡片左下角写着「当前账号」说明设置保存了，还要点「打开」启动 Codex。',
+        detail: '卡片左下角写着「当前账号」、「官方账号」或「自己的密钥」，说明设置保存了，还要点「打开」启动 Codex。',
         bullets: ['提示已运行时选「打开窗口」。', '刚改过配置时先保存任务，再选「重启 Codex」（Mac 上先按 Command + Q 退出 Codex，再点「打开」）。', '其他错误记下原文，不要连续重复点击。'],
         expected: '看到 Codex 窗口，或取得明确启动错误。',
         extra: [{ title: '能打开，但还是英文？', detail: '中文界面只在从星芒打开 Codex 时生效。直接点 Codex 自己的图标（Mac 上叫 ChatGPT）打开会是英文：关掉它，从星芒首页点「打开」，或点右下角（Mac 在屏幕顶部）的星芒图标 →「已安装的工具」→「Codex 桌面端」。从星芒打开还是英文，再到桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
@@ -1198,7 +1198,7 @@ const linuxLaunchTroubleTutorialStep: TutorialStep = {
   title: '点「打开」后没看到终端窗口',
   where: '工具箱首页 → 工具的「打开」',
   detail: '命令行工具会在这台电脑的终端窗口里启动。窗口没出来时，先看看是不是被别的窗口挡住了，再看首页有没有出错提示。',
-  bullets: ['有出错提示就按提示里的按钮处理，不要连续重复点击。', '卡片左下角写着「当前账号」只说明设置保存了，还要点「打开」才会启动。'],
+  bullets: ['有出错提示就按提示里的按钮处理，不要连续重复点击。', '卡片左下角写着「当前账号」、「官方账号」或「自己的密钥」，只说明设置保存了，还要点「打开」才会启动。'],
   expected: '终端窗口里工具启动好了，或者拿到了明确的出错提示。',
   action: '回首页打开工具',
   page: 'home',
