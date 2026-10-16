@@ -738,6 +738,8 @@ const methods = {
   listConfiguredModels: async (provider: ProviderId) => {
     const held = heldConfiguredModels.get(provider)
     if (held) await new Promise<void>((resolve) => held.push(resolve))
+    // codexGrokModels：密钥能用 grok-4.6 和 grok-4.7，Codex 的两处型号列表只该列出 grok-4.7。
+    if (query.has('codexGrokModels')) return ['gpt-6-astra', 'grok-4.6', 'grok-4.7']
     return query.has('clientModels') ? ['gpt-fixture', 'deepseek-fixture', 'claude-fixture'] : query.has('cliDefaultModels') ? detectedModelsByProvider[provider] : [config.providers[provider].model || 'fixture-model']
   },
   configureExternalTool: async (tool, input) => {

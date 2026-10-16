@@ -9,7 +9,7 @@ import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker
 import type { ToolsApi } from './api'
 import { accountKeyDescription, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyIssue, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
 import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
-import { codexModelChoices, type CodexModelFilter } from './model-filter'
+import { codexModelChoices, isHiddenCodexModel, type CodexModelFilter } from './model-filter'
 import { DialogExitButton, DialogExitLink, RadioCards, type RadioCardOption } from './dialog-parts'
 import { OptionPicker, type PickerOption } from './OptionPicker'
 import { OtherModelsDialog } from './OtherModelsDialog'
@@ -179,7 +179,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     if (!signedIn || draft.source !== 'account' || !usingCurrentKey || !native.hasApiKey || !native.matchesRelay) return
     const id = ++request.current
     setAutoDetectId(id)
-    void api.configuredModels(tool).then((result) => {
+    void api.configuredModels(tool).then(offeredModels).then((result) => {
       if (!active.current || id !== request.current) return
       setModels(result)
       setModelsDetected(true)
@@ -187,10 +187,14 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (active.current) setAutoDetectId((current) => current === id ? 0 : current)
     })
   }, [])
+  /** 读到的型号先过一遍：Codex 不列 grok-4.6（isHiddenCodexModel），别的工具照原样。 */
+  function offeredModels(result: string[]) {
+    return provider === 'codex' ? result.filter((model) => !isHiddenCodexModel(model)) : result
+  }
   function listModels(target: ConfigDraft) {
     const chosen = keys.find((key) => String(key.id) === target.keyId && key.status === 1)
-    return target.source === 'manual' ? api.manualModels(target.secret)
-      : target.keyId === CURRENT_KEY || !chosen ? api.configuredModels(tool) : api.keyModels(chosen.id)
+    return (target.source === 'manual' ? api.manualModels(target.secret)
+      : target.keyId === CURRENT_KEY || !chosen ? api.configuredModels(tool) : api.keyModels(chosen.id)).then(offeredModels)
   }
   /** 检测完替用户选好型号：自己填的密钥按读到的挑；已经选了的、工具里本来就配着的不动。 */
   function detectedDraft(target: ConfigDraft, result: string[]): ConfigDraft {
@@ -321,7 +325,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (!active.current) return
       const savedDraft = { ...draft, model: savedModel, dirty: false }
       setEdited(savedDraft)
-      const result = await api.configuredModels(tool)
+      const result = offeredModels(await api.configuredModels(tool))
       if (!active.current || id !== request.current) return
       setModels(result)
       setModelsDetected(true)

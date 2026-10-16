@@ -770,6 +770,38 @@ test('Codex non-GPT menu requires a detected non-GPT model before saving', async
   } finally { await page.close() }
 })
 
+test('Codex model lists leave out grok-4.6 while the Grok CLI still offers it', async () => {
+  const page = await open('codexGrokModels=1&allInstalled=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.waitFor()
+    await row.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
+    await page.getByTestId('home-codex-models').click()
+    const list = page.getByTestId('tool-codex-model-filter')
+    await list.getByRole('radio', { name: 'grok-4.7' }).waitFor()
+    const choices = await list.getByRole('radio').allTextContents()
+    assert.equal(choices.length, 2)
+    assert.equal(choices.some((label) => label.includes('gpt-6-astra')), true)
+    assert.equal(choices.some((label) => label.includes('grok-4.6')), false)
+    await page.keyboard.press('Escape')
+    await page.getByTestId('codex-other-models-dialog').waitFor({ state: 'hidden' })
+
+    const options = () => page.getByLabel('默认模型').locator('option').evaluateAll((items) => items.map((item) => item.value))
+    await openToolConfiguration(page, 'codex')
+    await page.getByTestId('tool-detect-models').click()
+    await page.getByLabel('默认模型').locator('option[value="grok-4.7"]').waitFor({ state: 'attached' })
+    assert.equal((await options()).includes('grok-4.6'), false)
+    await page.keyboard.press('Escape')
+    await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
+
+    await openToolConfiguration(page, 'grok')
+    await page.getByTestId('tool-detect-models').click()
+    await page.getByLabel('默认模型').locator('option[value="grok-4.6"]').waitFor({ state: 'attached' })
+    assert.equal((await options()).includes('grok-4.7'), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('full App preserves the fixed desktop columns and renders only the new renderer assets', async () => {
   for (const theme of ['light', 'dark']) {
     const page = await open(`theme=${theme}`)
