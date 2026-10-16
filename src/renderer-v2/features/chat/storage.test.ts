@@ -86,6 +86,18 @@ describe('lossless chat history files', () => {
     expect(restored.state.conversations[0].lengthNoticeDismissed).toBe(true)
     expect(restored.state).toEqual(state)
   })
+  it('moves conversations saved under a group name the xm site retired onto its current name', () => {
+    const state = workspace()
+    const conversation = state.conversations[0]
+    conversation.settings.group = 'GPT-中转/订阅'
+    conversation.messages = [message(0, { settings: { ...conversation.settings, group: '图片模型-中转/订阅' } })]
+    state.draftConversation.settings.group = 'GPT-官方API直连'
+    const restored = parseHistorySnapshot(snapshotOf(state), scope).state
+    expect(restored.conversations[0].settings.group).toBe('GPT')
+    expect(restored.conversations[0].messages[0].settings?.group).toBe('图片模型')
+    // 不是删掉的老名字就原样留着。
+    expect(restored.draftConversation.settings.group).toBe('GPT-官方API直连')
+  })
   it('preserves all 350 messages and all asset references without reusing request limits for stored history', async () => {
     const state = workspace()
     state.conversations[0].messages = Array.from({ length: 350 }, (_, index) => message(index))

@@ -337,3 +337,56 @@ describe('ManagedCliKeyStore session-only mode (Linux without a keyring)', () =>
     await expect(store.read(42)).rejects.toThrow('系统安全存储不可用')
   })
 })
+
+// xm 站 2026-10-16 删掉的老分组名，按 catalog.ts 逐字抄写。
+const retiredXmGroups: Record<ProviderId, string> = {
+  claude: 'Claude-MAX订阅',
+  codex: 'GPT-中转/订阅',
+  grok: 'Grok-中转/订阅',
+  gemini: 'Gemini-中转/订阅',
+}
+
+function writeRecord(filePath: string, record: PersistedManagedCliKeys, storage: SafeStorageLike): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, encodePersistedManagedCliKeys(record, storage))
+}
+
+describe('group names the xm site retired', () => {
+  it('still reads a cache an old version wrote before it recorded the site, under the current names', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const record = persistedRecord()
+    record.accounts[0].keys = record.accounts[0].keys.map((entry) => ({ ...entry, group: retiredXmGroups[entry.provider] }))
+    writeRecord(filePath, record, storage)
+
+    expect(isPersistedManagedCliKeys(record, 'solov')).toBe(true)
+    // 历史账号那套后端从没用过这些名字。
+    expect(isPersistedManagedCliKeys(record, 'solov-api')).toBe(false)
+    expect(await new ManagedCliKeyStore(filePath, storage).read(42)).toEqual(providerIds.map((provider) => managedKey(provider)))
+  })
+
+  it('hands out the current name for a key a later version cached under the old one', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const record = persistedRecord()
+    record.siteId = 'solov'
+    record.accounts[0].keys = record.accounts[0].keys.map((entry) => (
+      entry.provider === 'codex' ? { ...entry, group: retiredXmGroups.codex } : entry.provider === 'claude' ? { ...entry, group: 'Claude AWS-B' } : entry
+    ))
+    writeRecord(filePath, record, storage)
+
+    const keys = await new ManagedCliKeyStore(filePath, storage, 'solov').read(42)
+    expect(keys.find((entry) => entry.provider === 'codex')?.group).toBe('GPT')
+    // 用户自己挑的、不是老名字的分组不动。
+    expect(keys.find((entry) => entry.provider === 'claude')?.group).toBe('Claude AWS-B')
+  })
+
+  it('leaves the history account cache alone', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const keys = providerIds.map((provider) => ({ ...managedKey(provider), group: provider === 'codex' ? retiredXmGroups.codex : sub2ApiManagedCliKeyProfiles[provider].group }))
+    const store = new ManagedCliKeyStore(filePath, storage, 'solov-api')
+    await store.save(7, keys)
+    expect(await store.read(7)).toEqual(keys)
+  })
+})

@@ -16,7 +16,7 @@ function seed(storage: ReturnType<typeof memoryStorage>, state: ChatWorkspace) {
 describe('v2 chat request transitions', () => {
   it('starts a fresh workspace in text mode and chooses the screenshot defaults when available', () => {
     expect(defaultChatSettings()).toMatchObject({ mode: 'text', group: '', model: '' })
-    expect(DEFAULT_CHAT_GROUP).toBe('GPT-中转/订阅')
+    expect(DEFAULT_CHAT_GROUP).toBe('GPT')
     expect(DEFAULT_CHAT_MODEL).toBe('gpt-5.6-sol')
     expect(resolveChatGroup([{ name: 'default' }, { name: DEFAULT_CHAT_GROUP }])).toBe(DEFAULT_CHAT_GROUP)
     expect(resolveChatModel(['gpt-5.6-terra', DEFAULT_CHAT_MODEL])).toBe(DEFAULT_CHAT_MODEL)
@@ -33,16 +33,16 @@ describe('v2 chat request transitions', () => {
   })
 
   it('selects Sub2API Codex_pro independently of NewAPI groups', () => {
-    const groups = [{ name: 'GPT-中转/订阅' }, { name: 'Codex_pro' }]
+    const groups = [{ name: 'GPT' }, { name: 'Codex_pro' }]
     expect(resolveChatGroup(groups, '', 'solov-api')).toBe('Codex_pro')
-    expect(resolveChatGroup(groups, '', 'solov')).toBe('GPT-中转/订阅')
+    expect(resolveChatGroup(groups, '', 'solov')).toBe('GPT')
   })
 
   it('prefers the managed GPT group for a new conversation and preserves a valid remembered group', () => {
-    const groups = [{ name: 'default' }, { name: 'GPT-中转/订阅' }, { name: '图片模型-中转/订阅' }]
-    expect(resolveChatGroup(groups)).toBe('GPT-中转/订阅')
-    expect(resolveChatGroup(groups, '图片模型-中转/订阅')).toBe('图片模型-中转/订阅')
-    expect(resolveChatGroup(groups, '已下线分组')).toBe('GPT-中转/订阅')
+    const groups = [{ name: 'default' }, { name: 'GPT' }, { name: '图片模型' }]
+    expect(resolveChatGroup(groups)).toBe('GPT')
+    expect(resolveChatGroup(groups, '图片模型')).toBe('图片模型')
+    expect(resolveChatGroup(groups, '已下线分组')).toBe('GPT')
     expect(resolveChatGroup([{ name: 'default' }])).toBe('default')
     expect(resolveChatGroup([])).toBe('')
   })
@@ -50,7 +50,7 @@ describe('v2 chat request transitions', () => {
   it('follows the group the main process recommends once the managed GPT group is renamed', () => {
     const renamed = [{ name: 'default' }, { name: 'GPT 主力', recommended: true }, { name: 'GPT-官方API直连' }]
     expect(resolveChatGroup(renamed)).toBe('GPT 主力')
-    expect(resolveChatGroup(renamed, 'GPT-中转/订阅')).toBe('GPT 主力')
+    expect(resolveChatGroup(renamed, 'GPT')).toBe('GPT 主力')
     expect(resolveChatGroup(renamed, 'GPT-官方API直连')).toBe('GPT-官方API直连')
   })
   it('tells the user to start a new conversation once one reply is longer than a single message may be', () => {

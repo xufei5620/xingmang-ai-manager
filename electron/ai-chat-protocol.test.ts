@@ -70,7 +70,7 @@ describe('AI model capabilities', () => {
   })
 
   it('keeps only production-verified models in the image group and puts GPT Image 2 first', () => {
-    expect(selectAiChatModelsForGroup('图片模型-中转/订阅', [
+    expect(selectAiChatModelsForGroup('图片模型', [
       'gemini-3.1-flash-image',
       'gpt-image-1',
       'gpt-image-1.5',
@@ -95,7 +95,6 @@ describe('AI model capabilities', () => {
     const curated = ['gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-1']
 
     expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
-    expect(selectAiChatModelsForGroup('图片模型-中转/订阅', models)).toEqual(curated)
     expect(selectAiChatModelsForGroup('画图', models, ['画图'])).toEqual(curated)
   })
 
@@ -111,12 +110,12 @@ describe('AI model capabilities', () => {
     }
   })
 
-  it('curates the image group under its renamed xm name as well as the old one', () => {
+  it('curates the image group under its current xm name only, now that the old name is gone', () => {
     const models = ['gpt-4o', 'gpt-image-1', 'gpt-image-2', 'jimeng_high_aes_general_v21_L']
     const curated = ['gpt-image-2', 'gpt-image-1', 'jimeng_high_aes_general_v21_L']
 
     expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
-    expect(selectAiChatModelsForGroup('图片模型-中转/订阅', models)).toEqual(curated)
+    expect(selectAiChatModelsForGroup('图片模型-中转/订阅', models)).toEqual(models)
     expect(selectAiChatModelsForGroup('视频模型', models)).toEqual(models)
   })
 
