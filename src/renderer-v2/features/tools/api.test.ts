@@ -402,6 +402,19 @@ describe('recent sessions cache', () => {
     expect(listProviderSessions).toHaveBeenCalledTimes(2)
   })
 
+  // 卡片「…」里「接着之前的对话」那个窗口：只读这一个工具的，每次现读，也不动首页那份缓存。
+  it('reads one tool\'s sessions fresh for the conversations dialog and leaves the home cache alone', async () => {
+    const { bridge, listProviderSessions } = recentBridge()
+    const api = createToolsApi(bridge)
+    await api.recent()
+    await api.toolSessions('codex')
+    await api.toolSessions('codex')
+    expect(listProviderSessions).toHaveBeenNthCalledWith(2, { provider: 'codex', page: 1, pageSize: 100 })
+    expect(listProviderSessions).toHaveBeenCalledTimes(3)
+    await api.recent()
+    expect(listProviderSessions).toHaveBeenCalledTimes(3)
+  })
+
   it.each([
     ['install', (api: ReturnType<typeof createToolsApi>) => api.install('claude')],
     ['uninstall', (api: ReturnType<typeof createToolsApi>) => api.uninstall('claude')],

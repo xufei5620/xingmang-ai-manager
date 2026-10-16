@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { MultiProviderSessionPage } from '../../../../electron/ipc-contract'
 import {
+  folderConversations,
   isMissingWorkspace,
   latestSessionIdsByWorkspace,
   launchWorkspaces,
@@ -9,7 +10,6 @@ import {
   resumeNeedsRecheck,
   resumeStillLatest,
   workspaceButtonLabel,
-  workspaceChoices,
   workspaceName,
 } from './recent-workspaces'
 
@@ -122,25 +122,38 @@ describe('workspaceName', () => {
   })
 })
 
-describe('workspaceChoices', () => {
-  it('always offers the directory picker and a new folder after the remembered directories', () => {
-    const choices = workspaceChoices([
-      { path: 'C:\\work\\alpha', name: 'alpha' },
-      { path: 'C:\\work\\beta', name: 'beta' },
-    ])
-    expect(choices).toEqual([
-      { path: 'C:\\work\\alpha', label: 'C:\\work\\alpha' },
-      { path: 'C:\\work\\beta', label: 'C:\\work\\beta' },
-      { path: null, label: '选择其他文件夹…' },
-      { path: null, label: '新建项目文件夹并打开', create: true },
-    ])
+describe('folderConversations', () => {
+  // 一个文件夹一行，放它最近的那条：「接着聊」只接得上那一条。
+  it('keeps one row per folder, the newest chat in it, in the order the list gave', () => {
+    const rows = folderConversations([
+      session({ id: 'codex:3', provider: 'codex', cwd: 'C:\\work\\alpha', updatedAt: 30 }),
+      session({ id: 'claude:9', provider: 'claude', cwd: 'C:\\work\\alpha', updatedAt: 25 }),
+      session({ id: 'codex:2', provider: 'codex', cwd: 'C:\\work\\beta', updatedAt: 20 }),
+      session({ id: 'codex:1', provider: 'codex', cwd: 'c:\\WORK\\alpha', updatedAt: 10 }),
+    ], 'codex')
+    expect(rows.map((row) => row.id)).toEqual(['codex:3', 'codex:2'])
   })
 
-  it('offers the picker and a new folder when nothing was remembered', () => {
-    expect(workspaceChoices([])).toEqual([
-      { path: null, label: '选择其他文件夹…' },
-      { path: null, label: '新建项目文件夹并打开', create: true },
-    ])
+  // 归档的、没记下文件夹的都接不上，不占一行。
+  it('leaves out archived chats and chats without a folder', () => {
+    const rows = folderConversations([
+      session({ id: 'codex:4', provider: 'codex', cwd: 'C:\\work\\alpha', archived: true }),
+      session({ id: 'codex:3', provider: 'codex', cwd: '  ' }),
+      session({ id: 'codex:2', provider: 'codex', cwd: 'C:\\work\\alpha' }),
+    ], 'codex')
+    expect(rows.map((row) => row.id)).toEqual(['codex:2'])
+  })
+
+  // 文件夹已经不在的那一行照样列出来（窗口里置灰），客户知道它去哪了。
+  it('still lists a folder that is gone', () => {
+    const rows = folderConversations([session({ id: 'grok:1', provider: 'grok', cwdExists: false })], 'grok')
+    expect(rows.map((row) => row.id)).toEqual(['grok:1'])
+  })
+
+  it('stops at eight folders by default', () => {
+    const sessions = Array.from({ length: 12 }, (_, index) => session({ id: `claude:${index}`, cwd: `C:\\work\\p${index}` }))
+    expect(folderConversations(sessions, 'claude')).toHaveLength(8)
+    expect(folderConversations(sessions, 'claude', 3)).toHaveLength(3)
   })
 })
 

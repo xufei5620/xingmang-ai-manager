@@ -50,6 +50,10 @@
 .v2-home-recent-time { color: var(--text-3); font-size: var(--font-small-compact); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .v2-home-recent-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
 .v2-home-recent-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px 12px; color: var(--text-3); font-size: var(--font-small); }
+/* 卡片「…」里「接着之前的对话」那个窗口：一行一个文件夹，和「接着上次」同一种行，只是都是同一个工具，不放图标。
+   各行共用一套列宽（subgrid），「文件夹已不存在」比日期宽时，那一行的文件夹名不往左错开。 */
+.v2-tool-conversations { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto; column-gap: 12px; }
+.v2-tool-conversations .v2-home-recent-row { grid-column: 1 / -1; grid-template-columns: subgrid; }
 /* 余额卡：标题行、金额和充值一行、订阅和还能用几天、近 7 天的柱子。 */
 .v2-home-balance { display: flex; flex-direction: column; padding: 18px 20px 16px; }
 .v2-home-balance-head { display: flex; align-items: center; gap: 10px; }
