@@ -84,15 +84,16 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     return () => { current = false; alive.current = false }
   }, [api, signedIn, tool, definition.preferredProvider])
   // 打开时读到的那份可能晚了一步：0.2.19 测试包里 Claude Code 还没写好密钥时点开，默认就落到了 Codex
-  // 那把上（推测）。只跟打开以后首页新读到的那份，还在读的那一下不跟，免得拿旧的盖掉刚读到的。
+  // 那把上（推测）。只跟打开以后首页新读到的那份；弹窗自己还在读、检测、保存时先压着，忙完再看。弹窗自己
+  // 那次读要等密钥列表一起回来，常常比首页这份还旧。动过的（换了来源、检测过、保存过）不再跟。
   useEffect(() => {
-    if (!liveConfig || liveConfig === openedWith.current) return
+    if (!liveConfig || liveConfig === openedWith.current || busy) return
     openedWith.current = liveConfig
-    if (busy || dirty || models.length || result) return
+    if (dirty || models.length || result || error) return
     const next = initialClientSource(tool, definition.preferredProvider, clientKeySources, liveConfig.providers, keys)
     setConfig(liveConfig)
     if (next !== source) { setSource(next); setModel(configuredSourceModel(tool, next, liveConfig.providers)) }
-  }, [liveConfig])
+  }, [liveConfig, busy])
 
   // 切回自家工具那把密钥，型号也回到打开时替他填的那个；换成别的来源照旧清空，检测完再挑。
   function changeSource(next: string) {
