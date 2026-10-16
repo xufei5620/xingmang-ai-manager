@@ -1235,7 +1235,8 @@ export function FeedbackPage({
   const [descriptionError, setDescriptionError] = useState('')
   const [contact, setContact] = useState('')
   const [attachReport, setAttachReport] = useState(true)
-  // 写了字还没复制出去：关窗口时提醒一句（App 认 data-unsaved）。复制过以后再改才又算。
+  // 写了字还没复制出去：关窗口时提醒一句（App 认 data-unsaved）。复制过以后再改（连换类型、开关诊断报告也算，
+  // 剪贴板里那段已经和表单对不上）才又算。
   const [copied, setCopied] = useState(false)
   const formRef = useRef<HTMLElement>(null)
   // 外面点名要看「运行日志」（错误框「查看日志」、顶部搜索、帮助弹窗）：页面早就挂着，只是藏着，换到那个页签；
@@ -1328,7 +1329,7 @@ export function FeedbackPage({
       >
         <div className="v2-fb-field">
           <span id="feedback-type-label">类型</span>
-          <Segment options={feedbackTypes} value={type} onChange={setType} label="类型" testId="feedback-type" />
+          <Segment options={feedbackTypes} value={type} onChange={(value) => { setType(value); setCopied(false) }} label="类型" testId="feedback-type" />
         </div>
         <Textarea
           label="描述一下发生了什么"
@@ -1358,7 +1359,7 @@ export function FeedbackPage({
             <strong id="feedback-attach-label">附带诊断报告</strong>
             <p>已自动隐去密钥和个人路径<button type="button" className="v2-fb-link" onClick={preview} data-testid="feedback-attach-preview">预览报告</button></p>
           </div>
-          <Switch checked={attachReport} onChange={setAttachReport} aria-label="附带诊断报告" testId="feedback-attach" />
+          <Switch checked={attachReport} onChange={(checked) => { setAttachReport(checked); setCopied(false) }} aria-label="附带诊断报告" testId="feedback-attach" />
         </div>
         <div className="v2-fb-submit">
           <Button

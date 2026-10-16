@@ -1946,13 +1946,18 @@ test('feedback opens on the message form and copies what the customer wrote toge
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
     // 复制出去了就不再拦关窗口。
     assert.equal(await form.getAttribute('data-unsaved'), null)
-    // 关掉「附带诊断报告」只复制客户写的那几行。
+    // 关掉「附带诊断报告」只复制客户写的那几行；关掉以后剪贴板里那段和表单对不上，又算没复制出去。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
+    assert.equal(await form.getAttribute('data-unsaved'), 'true')
     await page.getByTestId('feedback-send').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
     const last = (await calls(page)).filter((call) => call.name === 'copy-clipboard').at(-1).args
     assert.equal(last.includes('固定的脱敏报告内容'), false)
     assert.match(last, /^留言反馈 · 功能建议\n/)
+    assert.equal(await form.getAttribute('data-unsaved'), null)
+    // 换了类型也一样。
+    await page.getByTestId('feedback-type').getByRole('button', { name: '其他', exact: true }).click()
+    assert.equal(await form.getAttribute('data-unsaved'), 'true')
   } finally {
     await page.close()
   }
