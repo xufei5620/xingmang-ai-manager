@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { pageRegistry, settingsPageAlias } from '../../registry/pages'
+import { pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
 import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
 import { chatParametersSection, maximumTutorialResults, searchCommands } from './command-search'
 
-// 游戏加速、备份、更新并进了设置（v4 批09）：它们还在页面表里（老入口靠它换到设置里那张卡），但不再单独出页面结果。
-const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null)
+// 游戏加速、备份、更新并进了设置（v4 批09），「安装卸载」拆掉了（批10）：它们还在页面表里（老入口靠它换到
+// 新去处），但不再单独出页面结果。
+const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null && retiredPageAlias(page.id) === null)
 
 describe('searchCommands', () => {
   it('lists the everyday actions, then every page, when nothing is typed', () => {
@@ -12,7 +13,7 @@ describe('searchCommands', () => {
     expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(searchablePages.map((page) => page.id))
     expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...searchablePages.map(() => 'page')])
     expect(searchCommands('').filter((item) => item.group === 'page').every((item) => item.section === undefined)).toBe(true)
-    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '聊天参数设置'])
+    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '运行日志', '聊天参数设置'])
   })
 
   it('offers switching to the other theme only, and sign-out only while signed in', () => {
@@ -27,11 +28,13 @@ describe('searchCommands', () => {
     expect(searchCommands('开始检查')[0]).toMatchObject({ group: 'action', page: 'health', action: 'check' })
     expect(searchCommands('客服').find((item) => item.group === 'action')).toMatchObject({ label: '帮助与客服', action: 'help' })
     expect(searchCommands('账单')[0]).toMatchObject({ group: 'action', page: 'account', section: 'usage' })
+    // 运行日志是「反馈与客服」的一个页签：这一条直接落到那个页签。
+    expect(searchCommands('运行日志').find((item) => item.group === 'action')).toEqual({ key: 'action:log', group: 'action', label: '运行日志', page: 'feedback', section: 'log' })
   })
 
   it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
     const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'usage' }).filter((item) => item.group === 'action').map((item) => item.label)
-    expect(labels).toEqual(['开始检查', '帮助与客服', '聊天参数设置'])
+    expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '聊天参数设置'])
   })
 
   it('opens the chat parameters dialog from the action group, and leaves it out when chat is not on this computer', () => {
@@ -64,12 +67,16 @@ describe('searchCommands', () => {
     for (const word of ['密钥', 'key', 'KEY', '令牌']) expect(searchCommands(word)[0]).toMatchObject({ page: 'account', section: 'keys' })
   })
 
-  it('finds settings groups and the install page by their common names', () => {
+  it('finds settings groups and the new homes of the install page by their common names', () => {
     expect(searchCommands('开机')[0]).toMatchObject({ page: 'settings', section: 'launch-at-login' })
     expect(searchCommands('开机').some((item) => item.section === 'startup')).toBe(true)
     expect(searchCommands('通知')[0]).toMatchObject({ page: 'settings', section: 'notifications' })
     expect(searchCommands('隐私')[0]).toMatchObject({ page: 'settings', section: 'privacy' })
-    expect(searchCommands('卸载')[0]).toMatchObject({ group: 'page', page: 'maintenance' })
+    // 「安装卸载」页拆掉了（批10）：装、卸工具在首页卡片上，运行环境在检查页那几行。
+    expect(searchCommands('卸载')[0]).toMatchObject({ group: 'page', page: 'home' })
+    expect(searchCommands('安装')[0]).toMatchObject({ group: 'page', page: 'home' })
+    for (const word of ['Node.js', 'Python', 'Git', '运行环境']) expect(searchCommands(word)[0], word).toMatchObject({ group: 'page', page: 'health' })
+    expect(searchCommands('').some((item) => item.page === 'maintenance')).toBe(false)
   })
 
   it('leaves out pages this computer does not have, such as game acceleration on Linux', () => {

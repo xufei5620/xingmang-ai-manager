@@ -4,7 +4,6 @@ import { FeaturedPage } from './pages-featured'
 import {
   FeedbackPage,
   HealthPage,
-  MaintenancePage,
   SettingsPage,
   TutorialPage,
   type BusinessActions,
@@ -106,7 +105,7 @@ export function BusinessPage({
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'featured')
-    return <FeaturedPage api={api} installedProviders={installedProviders} onRecommend={actions.navigate ? () => actions.navigate?.('feedback') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} active={actions.active} />
+    return <FeaturedPage api={api} installedProviders={installedProviders} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} active={actions.active} />
   if (page === 'mcp')
     return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'skills')
@@ -115,7 +114,6 @@ export function BusinessPage({
     return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
-  if (page === 'maintenance') return <MaintenancePage api={api} {...actions} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
   return null
@@ -128,7 +126,6 @@ export {
   SessionsPage,
   FeedbackPage,
   HealthPage,
-  MaintenancePage,
   SettingsPage,
   TutorialPage,
 }

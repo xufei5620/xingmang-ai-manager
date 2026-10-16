@@ -313,7 +313,7 @@ describe('renderer tool source', () => {
         desktopApps: { codex: { ...status, appVersion: '1.0.0', detectionFailed: true, detectionError: '读取 C:\\Users\\yoyo\\AppData 失败' } } },
     } as unknown as ToolboxSnapshot, memoryStorage())
     const claude = rows.find((row) => row.id === 'claude')
-    expect(claude?.error).toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。')
+    expect(claude?.error).toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。')
     expect(claude?.error).not.toContain('EPERM')
     // 主进程本来就说中文的照旧显示，只把路径脱敏（R-S7b）。
     expect(rows.find((row) => row.id === 'codexDesktop')?.error).toBe('读取 本地配置文件 失败')

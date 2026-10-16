@@ -20,7 +20,7 @@ describe('renderer-v2 result notice', () => {
 
   it('names the failure from the original it folded away, without showing the original', () => {
     // useOperation 把带路径的英文换成通用兜底句以后，标题要靠原话认出来（第三十批 A）。
-    const shown = '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。'
+    const shown = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
     const original = "EBUSY: resource busy or locked, rename '本地配置文件 -> '本地配置文件"
     const markup = renderToStaticMarkup(<ResultNotice error={shown} detail={original} />)
     expect(markup).toContain('工具正在运行')

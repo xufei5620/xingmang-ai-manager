@@ -33,10 +33,20 @@ export type SettingsPageAlias = keyof typeof settingsPageAliases
 export function settingsPageAlias(page: PageId): typeof settingsPageAliases[SettingsPageAlias] | null {
   return page === 'acceleration' || page === 'backups' || page === 'updates' ? settingsPageAliases[page] : null
 }
-/** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。别名页不单独出结果，说法挪进了设置那一行。 */
-export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias>, readonly string[]> = {
-  // v4 起工具的更新、回到推荐版本、重新安装、卸载都在首页卡片的「…」里；余额卡上有还能用几天。
-  home: ['主页', '我的工具', '打开工具', '配置', '换模型', '工具卡片', '接着上次', '还能用几天', '更新工具', '回到推荐版本', '退回版本', '重新安装', '卸载工具'],
+/**
+ * v4 起「安装卸载」页拆掉（第 10 批）：工具的安装、重新安装、卸载都在首页卡片上，Node.js、Python、Git
+ * 的安装挪进检查页那几行，安装过程的记录在「反馈与客服」的运行日志里。页面 id 留作别名：教程、旧测试
+ * 和别处还叫它的跳转落到首页。
+ */
+export const retiredPageAliases = { maintenance: 'home' } as const;
+export type RetiredPageAlias = keyof typeof retiredPageAliases
+export function retiredPageAlias(page: PageId): typeof retiredPageAliases[RetiredPageAlias] | null {
+  return page === 'maintenance' ? retiredPageAliases[page] : null
+}
+/** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。别名页不单独出结果，说法挪进了它们的新去处。 */
+export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | RetiredPageAlias>, readonly string[]> = {
+  // v4 起工具的安装、更新、回到推荐版本、重新安装、卸载都在首页卡片上；余额卡上有还能用几天。
+  home: ['主页', '我的工具', '打开工具', '配置', '换模型', '工具卡片', '接着上次', '还能用几天', '更新工具', '回到推荐版本', '退回版本', '重新安装', '卸载工具', '装', '安装', '删', '卸载', '重装', '下载'],
   chat: ['对话', '问答', '提问', '生图', '画图', '分组', '模型'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
   canvas: ['画图', '生图', '工作流'],
@@ -46,9 +56,9 @@ export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias>, read
   skills: ['Skill', '从文件夹导入', '导入技能'],
   plugins: ['Plugin', '扩展', '市场', '插件市场', '官方市场'],
   tutorial: ['帮助', '怎么用', '说明', '新手'],
-  health: ['检测', '诊断', '体检', '环境'],
-  maintenance: ['装', '安装', '装不上', '删', '卸载', '重装', '下载'],
-  feedback: ['客服', '报告', '日志', '投诉'],
+  // 「安装卸载」页拆掉以后，Node.js、Python、Git 在这一页装（第 10 批）。
+  health: ['检测', '诊断', '体检', '环境', '运行环境', 'Node.js', 'Python', 'Git', '装不上', '代理', '证书', '测试连接'],
+  feedback: ['客服', '报告', '日志', '运行日志', '投诉', '留言', '建议', '二维码', '微信'],
   settings: ['选项', '偏好'],
   account: ['账号', '我的', '个人信息'],
 };

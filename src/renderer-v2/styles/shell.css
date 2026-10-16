@@ -32,10 +32,7 @@ button, input, select, textarea { font: inherit; }
 .v2-nav-item:hover { background: var(--panel-hover); color: var(--text); }
 .v2-nav-item.is-active { color: var(--text); background: var(--nav-on); box-shadow: var(--nav-on-sh); font-weight: 600; }
 .v2-nav-item.is-active > svg:first-child { color: var(--gold); }
-.v2-nav-external, .v2-nav-chevron { color: var(--text-3); }
-.v2-nav-item[aria-expanded='true'] .v2-nav-chevron { transform: rotate(180deg); }
-.v2-more-navigation { display: flex; flex-direction: column; gap: 1px; }
-.v2-more-navigation .v2-nav-item { height: 30px; padding-left: 38px; font-size: 13px; }
+.v2-nav-external { color: var(--text-3); }
 .v2-nav-badge { flex: none; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 9px; background: var(--soft); color: var(--soft-tx); font-size: var(--font-micro); font-weight: 700; line-height: 1; }
 .v2-nav-badge.is-warn { background: var(--warn); color: var(--accent-fg); }
 .v2-nav-tag { flex: none; height: 18px; padding: 0 6px; display: flex; align-items: center; border-radius: 9px; background: var(--warn-soft); color: var(--warn-tx); font-size: var(--font-micro); font-weight: 600; }
@@ -78,7 +75,7 @@ button, input, select, textarea { font: inherit; }
 .sidebar-collapsed .v2-brand { justify-content: center; padding: 0; }
 .sidebar-collapsed .v2-nav-item { justify-content: center; padding: 0; }
 .sidebar-collapsed .v2-sidebar-nav .xm-tooltip-anchor { width: 100%; }
-.sidebar-collapsed .v2-nav-item > span, .sidebar-collapsed .v2-nav-external, .sidebar-collapsed .v2-nav-chevron { display: none; }
+.sidebar-collapsed .v2-nav-item > span, .sidebar-collapsed .v2-nav-external { display: none; }
 .sidebar-collapsed .v2-nav-group-label { height: 1px; margin: 9px 10px; padding: 0; overflow: hidden; background: var(--line); font-size: 0; }
 .sidebar-collapsed .v2-nav-separator { margin: 9px 10px; }
 .sidebar-collapsed .v2-sidebar-scroll { scrollbar-width: none; }
@@ -176,7 +173,6 @@ button, input, select, textarea { font: inherit; }
 /* 窗口矮（按缩放折算不到 660）时导航每行 34 → 30，分组小标题和分隔线的空隙收一半，侧栏放得下。 */
 @media (max-height: 659px) {
   .v2-nav-item { height: 30px; }
-  .v2-more-navigation .v2-nav-item { height: 28px; }
   .v2-nav-group-label { padding-top: 8px; }
   .v2-nav-separator { margin-block: 6px; }
   .v2-sidebar-pinned { padding-top: 6px; }

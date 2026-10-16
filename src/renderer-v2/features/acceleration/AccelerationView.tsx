@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { ArrowUpRight, ChevronDown, CircleHelp, Globe2, Pause, Power, RefreshCw, ScrollText } from 'lucide-react'
 import { accelerationConflictDescriptions, accelerationConflictNotice, type AccelerationBundleCheck, type AccelerationLine, type AccelerationPhase, type AccelerationState } from '../../../../electron/acceleration-contract'
 import { Button, Menu, Notice, type MenuItem } from '../../ui'
-// 落点规则只有 operationLogPage 一份：加速这条线没有 tool，按它的口径永远落
-// 「反馈」页的运行日志，而不是「安装卸载」页那张只装当次安装进度的卡。
-import { operationLogPage } from '../../operation-error'
+// 落点规则只有 operationLogSection 一份：加速这条线没有 tool，按它的口径永远落
+// 「反馈与客服」页的整份运行日志，不先筛到「安装与更新」。
+import { operationLogSection } from '../../operation-error'
 import './acceleration.css'
 
 interface AccelerationViewProps {
@@ -196,7 +196,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
 
     {notice && <Notice tone="bad" testId="acceleration-error" title={notice} body={null}
       actions={<>
-        {onViewLog && operationLogPage({ message: notice }) === 'feedback' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}
+        {onViewLog && operationLogSection({ message: notice }) === 'log' && <Button variant="ghost" size="sm" icon={ScrollText} onClick={onViewLog} testId="acceleration-error-log">查看日志</Button>}
         <Button variant="ghost" size="sm" icon={RefreshCw} onClick={refresh} disabled={busy}>重新检查</Button>
         {phase === 'error' && onContactSupport && <Button variant="ghost" size="sm" icon={ArrowUpRight} onClick={onContactSupport} testId="acceleration-error-support">联系客服</Button>}
       </>} />}

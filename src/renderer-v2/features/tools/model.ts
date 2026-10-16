@@ -153,8 +153,8 @@ export function canSwitchToManagedInstall(
 }
 
 /**
- * 只能用它自己的方式更新：外部来源装的，能换成星芒装的那一种除外。首页、新手引导、
- * 安装卸载页对它只给被动提示、不给按钮，系统通知也不为它把人叫回来。
+ * 只能用它自己的方式更新：外部来源装的，能换成星芒装的那一种除外。首页和新手引导
+ * 对它只给被动提示、不给按钮，系统通知也不为它把人叫回来。
  */
 export function updatesOutsideApp(
   id: ToolId,

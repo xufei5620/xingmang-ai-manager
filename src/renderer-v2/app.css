@@ -201,16 +201,19 @@
 .v2-quota-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: var(--font-small); }
 .v2-quota > p { margin: 0; color: var(--text-2); font-size: var(--font-small); }
 .v2-quota-note { color: var(--text-3); }
-/* 帮助与客服：左边扫码，右边复制身份；常用去向在下面一行。 */
+/* 帮助与客服：左边扫码，右边复制身份；常去的几处排成下面的六格（v4 第 10 批）。 */
 .v2-support { display: grid; grid-template-columns: 232px minmax(0, 1fr); align-items: center; gap: 20px; }
 /* 左栏那句一行放得下；开了大字放不下时两行折得一样长，不剩一个孤字。 */
 .v2-support-contact { display: grid; justify-items: center; gap: 8px; text-align: center; text-wrap: balance; }
 .v2-support img { width: 160px; height: 160px; }
 .v2-support h3, .v2-support p { margin: 0; }
-.v2-support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.v2-support-more { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-support-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 16px 0 16px; }
+.v2-support-item { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px; border: 0; border-radius: 10px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; corner-shape: squircle; transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
+.v2-support-item > svg { color: var(--gold-tx); }
+.v2-support-item:hover { background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--line-2); }
+.v2-support-item:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .v2-support-identity { display: grid; gap: 6px; width: 100%; }
-.v2-support-identity > p { color: var(--text-2); font-size: var(--font-small-compact); }
+.v2-support-identity > p { margin: 0; color: var(--text-2); font-size: var(--font-small-compact); }
 .v2-support-identity > div { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
 .v2-support-identity code { flex: 1; min-width: 0; font-family: inherit; overflow-wrap: anywhere; user-select: text; }
 .v2-announcement-banner { display: flex; align-items: center; gap: 10px; height: 36px; flex: none; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--text-2); background: var(--panel-2); font-size: var(--font-small-compact); }

@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, MaintenancePage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, shortcutRows, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { FeedbackPage, HealthPage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, buildFeedbackMessage, connectionRowStatus, feedbackCopyNotice, feedbackErrorCount, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, shortcutRows, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { VersionCard } from './features/settings/VersionCard'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
@@ -23,24 +23,17 @@ describe('paid Codex check in HealthPage', () => {
   it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
-    expect(markup).toContain('这一条证明你现在能用')
+    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的外部客户端也一起测')
   })
 })
 
 // Gemini CLI 下线（yoyo 2026-10-14）：「信任安全证书」只为它从星芒打开时用，主进程那条通道一起撤了，
-// 检查页不再有这颗按钮；检查页、安装卸载页也都不再出现它的名字。
+// 检查页不再有这颗按钮，也不再出现它的名字。
 describe('maintenance pages without the retired Gemini CLI', () => {
   it('offers no certificate trust button on the health page', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-trust-certificates')
     expect(markup).not.toContain('Gemini')
-  })
-
-  it('draws no row for it on the install page', () => {
-    const markup = renderToStaticMarkup(createElement(MaintenancePage, { api: {} as V2Bridge }))
-    expect(markup).toContain('Claude Code')
-    expect(markup).not.toContain('Gemini')
-    expect(markup).not.toContain('-gemini')
   })
 
   // 设置里「快捷键」写的数字跟着这台电脑看得到的工具走，不再写死 1–5；键名按这台电脑只写一种（字表批09）。
@@ -119,6 +112,99 @@ describe('feedback report notices', () => {
 
   it('claims nothing when the save dialog was dismissed', () => {
     expect(feedbackExportNotice(null)).toBeNull()
+  })
+})
+
+describe('feedback and support page', () => {
+  const support = { identity: '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows', open: () => undefined, copyIdentity: () => undefined }
+
+  it('opens on the message form with the support card and the first things to try', () => {
+    const markup = renderToStaticMarkup(createElement(FeedbackPage, { api: {} as V2Bridge, support }))
+    expect(markup).toContain('<h1>反馈与客服</h1>')
+    expect(markup).toContain('role="tablist"')
+    expect(markup).toContain('留言反馈')
+    expect(markup).toContain('运行日志')
+    expect(markup).toContain('描述一下发生了什么')
+    expect(markup).toContain('比如：点「打开」后终端闪一下就关了')
+    expect(markup).toContain('微信号或邮箱，方便我们回复你')
+    expect(markup).toContain('已自动隐去密钥和个人路径')
+    expect(markup).toContain('复制给客服')
+    expect(markup).toContain('data-testid="feedback-support-card"')
+    expect(markup).toContain('微信扫码添加客服')
+    expect(markup).toContain('data-testid="feedback-support-identity-line"')
+    expect(markup).toContain('预览反馈报告')
+    for (const id of ['health', 'orders', 'tutorial', 'mcp']) expect(markup).toContain(`data-testid="feedback-try-${id}"`)
+    // 两个页签都挂着、只藏不卸：一开始藏起来的是运行日志那一块。
+    expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" data-testid')
+    expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" hidden=""')
+    // 报告预览的隐私说明挪进了弹窗，页面上不再有横条。
+    expect(markup).not.toContain('feedback-privacy')
+  })
+
+  it('leaves out the orders shortcut for an account without orders and the support card when there is none', () => {
+    const markup = renderToStaticMarkup(createElement(FeedbackPage, { api: {} as V2Bridge, ordersVisible: false }))
+    expect(markup).not.toContain('feedback-try-orders')
+    expect(markup).not.toContain('feedback-support-card')
+    expect(markup).toContain('feedback-try-health')
+  })
+
+  it('lands on the run log when another page asks for it', () => {
+    const markup = renderToStaticMarkup(createElement(FeedbackPage, { api: {} as V2Bridge, feedbackRequest: { sequence: 1, tab: 'log' } }))
+    expect(markup).toContain('data-testid="feedback-search"')
+    expect(markup).toContain('打开日志文件夹')
+    expect(markup).toContain('aria-label="刷新"')
+    expect(markup).toContain('日志只保存在这台电脑上。')
+    // 留言那一块还挂着（写到一半的字不丢），只是藏起来。
+    expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden=""')
+    expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" data-testid')
+  })
+})
+
+describe('buildFeedbackMessage', () => {
+  it('puts the type, what the customer wrote and who they are in one block, then the report', () => {
+    expect(buildFeedbackMessage({
+      type: '遇到问题',
+      description: '  点「打开」后终端闪一下就关了 \n',
+      contact: ' wx-yoyo ',
+      identity: '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows',
+      lastFailure: '最近一次出错：14:37 打开 Codex：没有写入权限',
+      report: '[report]',
+    })).toBe([
+      '留言反馈 · 遇到问题',
+      '点「打开」后终端闪一下就关了',
+      '联系方式：wx-yoyo',
+      '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows',
+      '最近一次出错：14:37 打开 Codex：没有写入权限',
+      '',
+      '[report]',
+    ].join('\n'))
+  })
+
+  it('leaves out an empty contact and the report when it is not attached', () => {
+    expect(buildFeedbackMessage({ type: '功能建议', description: '想要深色图标', contact: '  ' })).toBe('留言反馈 · 功能建议\n想要深色图标')
+  })
+
+  it('masks a key the customer pasted into the description', () => {
+    const text = buildFeedbackMessage({ type: '其他', description: '我的 key 是 sk-abcdefghijklmnopqrstuvwxyz0123456789', contact: '' })
+    expect(text).not.toContain('sk-abcdefghijklmnopqrstuvwxyz0123456789')
+  })
+})
+
+describe('feedbackErrorCount', () => {
+  it('counts only the errors logged since this launch', () => {
+    const startedAt = '2026-10-16T08:00:00.000Z'
+    const entry = (id: string, level: string, timestamp: string) => ({ id, level, timestamp, source: 'main', event: 'x', message: 'm' })
+    const snapshot = {
+      currentProcessId: 42,
+      startedAt,
+      entries: [
+        entry('2026-10-16T08:01:00.000Z:42:1', 'error', '2026-10-16T08:01:00.000Z'),
+        entry('2026-10-16T08:02:00.000Z:42:2', 'warn', '2026-10-16T08:02:00.000Z'),
+        entry('2026-10-15T08:01:00.000Z:17:1', 'error', '2026-10-15T08:01:00.000Z'),
+      ],
+    } as Parameters<typeof feedbackErrorCount>[0]
+    expect(feedbackErrorCount(snapshot)).toBe(1)
+    expect(feedbackErrorCount(undefined)).toBe(0)
   })
 })
 
@@ -461,18 +547,8 @@ describe('settings onboarding entries', () => {
   })
 })
 
-describe('withElevationNotice', () => {
-  it('hangs the notice off the line the row already shows, with the same separator', () => {
-    expect(withElevationNotice('OpenAI', '这一步需要管理员授权')).toBe('OpenAI · 这一步需要管理员授权')
-  })
-
-  it('leaves the row untouched where nothing elevates', () => {
-    expect(withElevationNotice('命令行工具需要的运行环境', null)).toBe('命令行工具需要的运行环境')
-  })
-})
-
 describe('installGuideTopic', () => {
-  it('sends each maintenance row to the chapter that installs it instead of the first chapter', () => {
+  it('sends each install guide button to the chapter that installs it instead of the first chapter', () => {
     const title = (id: string) => tutorialTopics.find((entry) => entry.id === id)?.title
     expect(title(installGuideTopic('codexDesktop', 'macos'))).toBe('Mac 上装桌面端')
     expect(title(installGuideTopic('codexDesktop', 'windows'))).toBe('Codex 桌面端怎么安装？')
@@ -491,7 +567,7 @@ describe('installGuideTopic', () => {
 })
 
 describe('installResultMessage', () => {
-  // Q33：「安装卸载」页改走首页那条安装之后，结果不止「装好 / 取消」两种。
+  // Q33：装工具都走首页那条安装之后，结果不止「装好 / 取消」两种。
   it('does not claim success when the install stopped for a restart or never started', () => {
     expect(installResultMessage('installed')).toBe('安装完成，工具状态已更新')
     expect(installResultMessage('cancelled')).toBe('安装已取消')
@@ -505,34 +581,10 @@ describe('installResultMessage', () => {
 })
 
 describe('installJobRunning', () => {
-  // 首页的卸载也挂在工具编号下；「安装卸载」页那一行不能把它当成在装，标「安装中」。
+  // 首页的卸载也挂在工具编号下；扩展页那一行不能把它当成在装，标「安装中」。
   it('counts a Home job as an install unless it is an uninstall', () => {
     expect(installJobRunning(undefined)).toBe(false)
     expect(installJobRunning({ label: '正在安装', log: [] })).toBe(true)
     expect(installJobRunning({ label: '正在卸载', log: [], kind: 'uninstall' })).toBe(false)
-  })
-})
-
-describe('maintenanceRowJobKeys', () => {
-  // 第四十一批 B：首页那份任务里，只有这一页有行的几个跑完时才要重读本页。
-  // 已下线的 Gemini CLI（yoyo 2026-10-14）本页没有它那一行，它的任务跑完也不用重读。
-  it('keeps only the Home jobs this page draws a row for', () => {
-    const job = { label: '正在安装', log: [] }
-    expect(maintenanceRowJobKeys(undefined)).toEqual([])
-    expect(maintenanceRowJobKeys({
-      gemini: job, grok: job, codexDesktop: job, node: job, python: job,
-      git: job, 'launch:codexDesktop': job, workbuddy: job,
-    })).toEqual(['grok', 'codexDesktop', 'node', 'python'])
-  })
-})
-
-describe('maintenanceJobsFinished', () => {
-  it('reports a finish only when a job that was running is gone', () => {
-    expect(maintenanceJobsFinished([], [])).toBe(false)
-    expect(maintenanceJobsFinished([], ['grok'])).toBe(false)
-    expect(maintenanceJobsFinished(['grok'], ['grok'])).toBe(false)
-    expect(maintenanceJobsFinished(['grok'], ['grok', 'node'])).toBe(false)
-    expect(maintenanceJobsFinished(['node', 'grok'], ['grok'])).toBe(true)
-    expect(maintenanceJobsFinished(['claude'], [])).toBe(true)
   })
 })

@@ -37,7 +37,7 @@ export function elevatedInstallNotice(
 
 /**
  * 首页工具行只有一行小字的位置，塞不下上面那整句。短版只说「会弹授权窗口」，
- * 完整说明留给运行环境卡和「安装卸载」页。
+ * 完整说明留给运行环境卡和检查页。
  */
 export function elevatedInstallShortNotice(
   subject: ElevatedInstallSubject,
@@ -50,7 +50,7 @@ export function elevatedInstallShortNotice(
 }
 
 /**
- * 首页运行环境卡用的那一句。`elevatedInstallNotice` 是给「安装卸载」页的，那里的按钮就叫「安装」；
+ * 首页运行环境卡用的那一句。`elevatedInstallNotice` 写给按钮就叫「安装」的地方；
  * 首页这张卡上的按钮叫「准备 Node.js」，左边工具列表里又有一排「安装」，照抄「点「安装」后」
  * 客户分不清说的是哪颗（第二十七批 B）。装命令行工具时星芒也会顺带准备 Node.js，那时客户点的
  * 是工具那一行的「安装」，所以这里不说点哪颗，只说「准备 Node.js 时」会弹窗。

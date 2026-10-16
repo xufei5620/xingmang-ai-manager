@@ -1357,7 +1357,7 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'fail',
-        summary: `电脑里另外设了 ${name}，会让 ${tool} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
+        summary: `电脑里另外设了 ${name}，会让 ${tool} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服`,
         details: { count: 1, variable1: `${name}（${tool}，会绕开当前账号）` },
       })
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
@@ -1597,7 +1597,7 @@ describe('diagnostics', () => {
 
         expect(overrideItem(await runDiagnostics(input))).toMatchObject({
           state: 'fail',
-          summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服',
+          summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
           details: {
             count: 2,
             variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
@@ -1733,7 +1733,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'fail',
-        summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服',
+        summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
         details: {
           count: 3,
           variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
