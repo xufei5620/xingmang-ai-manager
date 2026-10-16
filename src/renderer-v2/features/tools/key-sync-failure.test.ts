@@ -6,7 +6,7 @@ describe('key sync failure wording', () => {
     expect(keySyncFailureText('codex', 'fetch failed')).toBe('Codex CLI：连不上星芒服务器')
     // 写 Key 写的是配置文件，不是安装目录（已知29）。
     expect(keySyncFailureText('claude', 'EPERM: operation not permitted')).toBe('Claude Code：写不进配置文件')
-    expect(keySyncFailureText('grok', 'unexpected token in JSON')).toBe('Grok CLI：Key 没有写进去，点「重新同步」再试')
+    expect(keySyncFailureText('grok', 'unexpected token in JSON')).toBe('Grok CLI：密钥没有写进去，点「重新同步」再试')
   })
 
   it('keeps Chinese reasons but never shows the home folder path', () => {
@@ -19,9 +19,9 @@ describe('key sync failure wording', () => {
   it('does not take an English failure for Chinese because its redacted path is', () => {
     // 脱敏后的占位词「本地配置文件」本身是汉字，以前这两句英文原样上屏（第三十批 A）。
     expect(keySyncFailureText('claude', "ENOENT: no such file or directory, open 'C:\\Users\\张三\\.claude\\settings.json'"))
-      .toBe('Claude Code：Key 没有写进去，点「重新同步」再试')
+      .toBe('Claude Code：密钥没有写进去，点「重新同步」再试')
     expect(keySyncFailureText('codex', "EISDIR: illegal operation on a directory, read '/Users/alice/.codex/config.toml'"))
-      .toBe('Codex CLI：Key 没有写进去，点「重新同步」再试')
+      .toBe('Codex CLI：密钥没有写进去，点「重新同步」再试')
   })
 
   it('masks keys in a Chinese reason it shows as is', () => {

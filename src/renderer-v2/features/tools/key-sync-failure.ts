@@ -24,7 +24,7 @@ export function keySyncFailureReason(message: string): string {
   const hint = presentOperationError(safe, 'config')
   if (hint) return hint.title
   if (speaksChinese(safe)) return redactSecretPatterns(safe)
-  return 'Key 没有写进去，点「重新同步」再试'
+  return '密钥没有写进去，点「重新同步」再试'
 }
 
 /** 这条失败是不是「账号没开通这个工具」：重新同步、重新写入都救不了，只能找客服。 */
