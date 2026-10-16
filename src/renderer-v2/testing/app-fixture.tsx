@@ -154,6 +154,8 @@ if (query.has('codexBroken')) config.providers.codex.configBroken = true
 if (query.has('codexAuthBroken')) { config.providers.codex.codexAuthBroken = true; config.providers.codex.hasApiKey = false }
 // ?claudeBroken：Claude Code 读不了 settings.json，星芒也读不出 Key，来源会被认成官方账号（已知44）。
 if (query.has('claudeBroken')) config.providers.claude = { ...config.providers.claude, configBroken: true, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
+// ?claudeUnconfigured：Claude Code 装好了、还没写上当前账号的密钥（刚装完，开机那一轮同步还没做完）。
+if (query.has('claudeUnconfigured')) config.providers.claude = { ...config.providers.claude, exists: false, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
   config.providers.claude = { ...configValue, configurationOwnership: 'manual' }
@@ -252,7 +254,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdAccountKeys(): void; releaseAccountKeys(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -263,6 +265,9 @@ let fixtureToolsRunning = query.has('runningTools')
 let releaseExternalScan: () => void = () => undefined
 let holdConfigRead = false
 let releaseConfigRead: () => void = () => undefined
+// 扣住读账号密钥列表：外接工具弹窗打开时要等它和工具配置一起回来。扣着时来几次都等着（开发模式下
+// React 会把打开窗口时的那次读连发两遍），放开时一起答。
+let heldAccountKeys: Array<() => void> | null = null
 let holdScan = query.has('holdFirstScan')
 let releaseScan: () => void = () => undefined
 /** ?cachedScan：开机那一轮还没跑完。同主进程，这时谁来要真结果（首页、账号 Key 同步）都接这同一轮，releaseScan 一起放行。 */
@@ -287,7 +292,7 @@ let leftoverCleanups = 0
 let nextInstallHeld = false
 let releaseInstall: (error?: string) => void = () => undefined
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
@@ -673,10 +678,14 @@ const methods = {
     return { remaining: leftoverCleanups === 1 ? 1 : 0 }
   },
   installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
-  getAccountKeys: async () => ({ keys: query.has('keyOptions') ? [
+  getAccountKeys: async () => {
+    const held = heldAccountKeys
+    if (held) await new Promise<void>((resolve) => held.push(resolve))
+    return { keys: query.has('keyOptions') ? [
     { id: 201, name: 'coding-key', group: 'Codex_pro', maskedKey: 'sk-se••••9012', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
     { id: 202, name: 'custom-key', group: 'Custom group', maskedKey: 'sk-ot••••1234', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
-  ] : [], total: query.has('keyOptions') ? 2 : 0, page: 1, pageSize: 100 }),
+  ] : [], total: query.has('keyOptions') ? 2 : 0, page: 1, pageSize: 100 }
+  },
   getAccountKeyOptions: async (provider: ProviderId) => {
     const reads = (keyMetadataReads.get(provider) ?? 0) + 1
     keyMetadataReads.set(provider, reads)
@@ -728,7 +737,7 @@ const methods = {
   fillToolTemplateDefaults: async (retry?: boolean) => query.has('templateDeferred')
     ? retry ? { filled: ['codex'] as ProviderId[] } : { filled: [] as ProviderId[], pending: ['codex'] as ProviderId[] }
     : { filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] },
-  getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
+  getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT', description: 'Codex', ratio: 1 }],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {
     session = { ...session, authenticated: false, account: null }

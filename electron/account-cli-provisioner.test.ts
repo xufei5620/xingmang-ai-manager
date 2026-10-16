@@ -624,11 +624,12 @@ describe('configureManagedClis', () => {
 // 故意不从那两个常量 import:从被测代码里读回它自己的值等于什么都没验。
 // 改分组名时必须同步改这里,这就是本表存在的意义。
 const profilesBySite = {
+  // xm 站 2026-10-16 删了「Claude-MAX订阅」「GPT-中转/订阅」这些老名字。
   solov: {
-    claude: { group: 'Claude-MAX订阅', keyName: 'xingmang-desktop-claude' },
-    codex: { group: 'GPT-中转/订阅', keyName: 'xingmang-desktop-codex' },
-    grok: { group: 'Grok-中转/订阅', keyName: 'xingmang-desktop-grok' },
-    gemini: { group: 'Gemini-中转/订阅', keyName: 'xingmang-desktop-gemini' },
+    claude: { group: 'Claude-MAX', keyName: 'xingmang-desktop-claude' },
+    codex: { group: 'GPT', keyName: 'xingmang-desktop-codex' },
+    grok: { group: 'Grok', keyName: 'xingmang-desktop-grok' },
+    gemini: { group: 'Gemini', keyName: 'xingmang-desktop-gemini' },
   },
   'solov-api': {
     claude: { group: 'Claude-MAX(不限客户端)', keyName: 'xingmang-desktop-claude' },
@@ -1241,6 +1242,37 @@ describe('dynamic groups with the encrypted managed key store', () => {
     expect(result.ready).toContainEqual({ provider: 'codex', group: groups.codex, name: codexKey.name })
     expect(result.failed.map((entry) => entry.provider).sort()).toEqual(['claude', 'grok'])
     expect(issueKey).not.toHaveBeenCalledWith(expect.objectContaining({ group: groups.codex }))
+  })
+
+  it('keeps a key cached under a group name the xm site retired instead of signing another one', async () => {
+    const filePath = storePath()
+    // 0.2.18 以前签在老名字下、记在本机的那把；服务端删老名字前把它挂到了「GPT」下，Key 本身没变。
+    const codexKey = { ...managedKey('codex'), id: 501, group: 'GPT-中转/订阅', key: 'sk-codex-cached-secret-123456' }
+    await new ManagedCliKeyStore(filePath, storage()).save(73, [codexKey])
+    const issueKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+      id: 600 + providerIds.findIndex((provider) => managedCliKeyProfiles[provider].group === input.group),
+      name: input.name ?? 'xingmang-desktop',
+      key: `sk-${input.group}-fresh-secret-123456`,
+    }))
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey: issueKey,
+      listUsableGroups: vi.fn(async () => [{ name: 'default' }, { name: 'Claude-MAX' }, { name: 'GPT' }, { name: 'Grok' }]),
+    } as unknown as AccountService
+
+    const result = await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, storage()))
+
+    expect(result.failed).toEqual([])
+    expect(result.regrouped).toBeUndefined()
+    expect(result.ready).toEqual([
+      { provider: 'claude', group: 'Claude-MAX', name: managedCliKeyProfiles.claude.keyName },
+      { provider: 'codex', group: 'GPT', name: codexKey.name },
+      { provider: 'grok', group: 'Grok', name: managedCliKeyProfiles.grok.keyName },
+    ])
+    expect(issueKey.mock.calls.map(([input]) => input?.group)).toEqual(['Claude-MAX', 'Grok'])
+    const cached = await new ManagedCliKeyStore(filePath, storage()).read(73)
+    expect(cached.find((entry) => entry.provider === 'codex')).toEqual({ ...codexKey, group: 'GPT' })
   })
 
   it('persists a replacement in the renamed group after a cached key receives 401', async () => {

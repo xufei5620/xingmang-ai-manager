@@ -93,3 +93,16 @@ export const homeToolBlurbs: Record<HomeToolId, string> = {
   opencode: '开源，命令行版和桌面版共用配置',
   workbuddy: '办公助手，可以接当前账号的模型',
 };
+
+// 欢迎页星轨上的几颗，按这个次序每隔 90° 一个（yoyo 2026-10-16：照 0.2.18 摆四颗）。
+// Gemini CLI 已下线、星芒不再装它（2026-10-14），但当前账号照样能用 Gemini 模型，所以星轨上留着它：
+// 写模型名「Gemini」不写「Gemini CLI」，图标也按模型取，免得客户以为这里还替它装命令行工具。
+export type WelcomeOrbitItem = { key: string; name: string; tool?: ToolDef['id']; model?: string };
+function buildWelcomeOrbitItems(): WelcomeOrbitItem[] {
+  const items: WelcomeOrbitItem[] = tools.filter(tool => tool.kind === 'cli').map(tool => ({ key: tool.id, name: tool.name, tool: tool.id }));
+  // 0.2.18 的次序：Claude Code、Codex CLI、Gemini、Grok CLI。
+  const grok = items.findIndex(item => item.key === 'grok');
+  items.splice(grok < 0 ? items.length : grok, 0, { key: 'gemini', name: 'Gemini', model: 'Gemini' });
+  return items;
+}
+export const welcomeOrbitItems: ReadonlyArray<WelcomeOrbitItem> = buildWelcomeOrbitItems();
