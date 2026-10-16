@@ -20,7 +20,15 @@ jobs:
           grep -oE '<Identity[^>]*>' AppxManifest.xml
       - name: Extract and search
         run: |
-          npx --yes @electron/asar@3.2.17 extract app/resources/app.asar out
+          mkdir -p tool && (cd tool && npm i --silent @electron/asar@3.2.17)
+          node -e "
+            const asar = require('./tool/node_modules/@electron/asar'); const fs = require('fs'); const path = require('path')
+            const archive = 'app/resources/app.asar'
+            const files = asar.listPackage(archive).filter((f) => /webview|\\.vite[\\/]build/.test(f))
+            let n = 0
+            for (const f of files) { const rel = f.replace(/^[\\/]/, ''); try { const data = asar.extractFile(archive, rel); fs.mkdirSync(path.dirname(path.join('out', rel)), { recursive: true }); fs.writeFileSync(path.join('out', rel), data); n++ } catch {} }
+            console.log('extracted', n, 'of', files.length)
+          "
           ls out | head -30
           A=$(find out -type d -path '*webview/assets' | head -1); echo "assets=$A"
           ls "$A" | wc -l
@@ -34,3 +42,6 @@ jobs:
           echo '--- zh-CN chunk refs'; grep -oE '.{0,300}zh-CN-[A-Za-z0-9_-]+\.js.{0,300}' "$A"/*.js | head -6
           echo '--- modulepreload'; grep -oE '.{0,200}modulepreload.{0,200}' "$A"/*.js | head -4
           echo '--- electronBridge'; grep -lE 'electronBridge' "$A"/*.js | head -3; grep -rlE 'electronBridge' out/.vite 2>/dev/null | head -3
+          echo '--- zh-CN literal'; grep -oE '.{0,400}["'"'"']zh-CN["'"'"'].{0,400}' "$A"/*.js | head -8
+          echo '--- locale_source'; grep -oE '.{0,400}locale_source.{0,400}' "$A"/*.js | head -6
+          echo '--- lang attr'; grep -oE '.{0,200}(\.lang=|setAttribute\(.lang.).{0,200}' "$A"/*.js | head -6
