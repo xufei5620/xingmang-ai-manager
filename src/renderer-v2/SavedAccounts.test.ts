@@ -53,8 +53,8 @@ describe('saved account switch desktop clients', () => {
     for (const os of ['win', 'mac'] as const) {
       const hint = accountSwitchDesktopClientsHint(os)
       expect(hint).toContain('Claude Desktop、WorkBuddy、OpenCode 不会跟着换')
-      expect(hint).toContain('「配置」')
-      expect(hint).toContain('「保存配置」')
+      expect(hint).toContain('「配置…」')
+      expect(hint).toContain('「保存并检测」')
     }
   })
   it('says nothing on Linux, where the home page does not list those clients', () => {

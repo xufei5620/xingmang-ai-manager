@@ -312,7 +312,7 @@ export function SavedAccounts({
  * 这几个客户端，就不提。
  */
 export function accountSwitchDesktopClientsHint(os: WindowOs): string | null {
-  return os === 'linux' ? null : 'Claude Desktop、WorkBuddy、OpenCode 不会跟着换。切完要换的话，到首页它那一行点「…」里的「配置」，再点「检测模型」「保存配置」。'
+  return os === 'linux' ? null : 'Claude Desktop、WorkBuddy、OpenCode 不会跟着换。切完要换的话，到首页它的卡片上点「…」里的「配置…」，再点「保存并检测」。'
 }
 
 type SyncProvider = AccountSyncCandidate['provider']
