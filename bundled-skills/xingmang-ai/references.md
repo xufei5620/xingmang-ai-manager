@@ -6,7 +6,7 @@
 
 - Header：`Authorization: Bearer sk-...`
 - 生产网关固定 `https://xm.solov.cc`，不要改成第三方生图站
-- 脚本先用 `config.json` 的 Codex Key（`GPT-中转/订阅`），失败再改用 `图片模型-中转/订阅`（或旧名 `生图分组`）
+- 脚本先用 `config.json` 的 Codex Key（`GPT`），失败再改用 `图片模型`（或旧名 `生图分组`）
 - 不要走 `/pg/chat/completions`
 - Key 只存在本技能 `config.json`，由星芒AI管理工具写入；不要读环境变量或 CLI 配置
 

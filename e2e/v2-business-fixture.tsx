@@ -300,8 +300,8 @@ const pagedKeys = query.has('keyCount')
   : null
 const managedKeys = query.has('managedKeys')
   ? [
-      { ...key, id: 11, name: 'xingmang-desktop-claude', group: 'Claude-MAX订阅', unlimitedQuota: false, remainQuota: 1200, usedQuota: 600 },
-      { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT-中转/订阅', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
+      { ...key, id: 11, name: 'xingmang-desktop-claude', group: 'Claude-MAX', unlimitedQuota: false, remainQuota: 1200, usedQuota: 600 },
+      { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
     ]
   : null
 let activeUserId = 7

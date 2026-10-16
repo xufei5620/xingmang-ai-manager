@@ -65,18 +65,18 @@ function message(overrides: Partial<AiChatMessage>): AiChatMessage {
 
 describe('AI聊天页面纯逻辑', () => {
   it('prefers the Codex relay group and model when entering chat', () => {
-    expect(DEFAULT_AI_CHAT_GROUP).toBe('GPT-中转/订阅')
+    expect(DEFAULT_AI_CHAT_GROUP).toBe('GPT')
     expect(DEFAULT_AI_CHAT_MODEL).toBe('gpt-5.6-sol')
     expect(resolveAiChatDefaultGroup([
-      { name: 'Claude-MAX订阅' },
-      { name: 'GPT-中转/订阅' },
+      { name: 'Claude-MAX' },
+      { name: 'GPT' },
       { name: '生图分组' },
-    ], '生图分组')).toBe('GPT-中转/订阅')
+    ], '生图分组')).toBe('GPT')
     expect(resolveAiChatDefaultGroup([
-      { name: 'Claude-MAX订阅' },
+      { name: 'Claude-MAX' },
       { name: '生图分组' },
     ], '生图分组')).toBe('生图分组')
-    expect(resolveAiChatDefaultGroup([{ name: 'Claude-MAX订阅' }])).toBe('Claude-MAX订阅')
+    expect(resolveAiChatDefaultGroup([{ name: 'Claude-MAX' }])).toBe('Claude-MAX')
     expect(resolveAiChatDefaultGroup([])).toBe('')
   })
 

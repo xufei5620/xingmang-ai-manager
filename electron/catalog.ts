@@ -77,11 +77,32 @@ export interface ManagedCliKeyProfile {
 // The account-side token group each local CLI must use. Kept beside
 // providerIds so the main-process provisioning code and renderer UI cannot
 // drift onto different group names or provider coverage.
+// xm 站 2026-10-14 改了分组本名，10-16 删了老名字（见下面的 retiredAccountGroups）。
+// 服务状态文件的分组对照读不到时，这里的名字就是签 Key 的分组，所以必须是新名字。
 export const managedCliKeyProfiles: Record<ProviderId, ManagedCliKeyProfile> = {
-  claude: { group: 'Claude-MAX订阅', keyName: 'xingmang-desktop-claude' },
-  codex: { group: 'GPT-中转/订阅', keyName: 'xingmang-desktop-codex' },
-  grok: { group: 'Grok-中转/订阅', keyName: 'xingmang-desktop-grok' },
-  gemini: { group: 'Gemini-中转/订阅', keyName: 'xingmang-desktop-gemini' },
+  claude: { group: 'Claude-MAX', keyName: 'xingmang-desktop-claude' },
+  codex: { group: 'GPT', keyName: 'xingmang-desktop-codex' },
+  grok: { group: 'Grok', keyName: 'xingmang-desktop-grok' },
+  gemini: { group: 'Gemini', keyName: 'xingmang-desktop-gemini' },
+}
+
+/**
+ * xm 站删掉的老分组名 → 现在的名字。服务端删之前把老名字下的 Key 全挂到了新名字下（Key 本身不变），
+ * 所以本机还记着老名字的（托管 Key 缓存、聊天记录里选过的分组）照这张表换成新名字就对得上。
+ * 只是 xm 站的名字；历史账号那套后端的分组是另一份，不查这张表。
+ */
+export const retiredAccountGroups: ReadonlyMap<string, string> = new Map([
+  ['Claude-MAX订阅', 'Claude-MAX'],
+  ['GPT-中转/订阅', 'GPT'],
+  ['Grok-中转/订阅', 'Grok'],
+  ['Gemini-中转/订阅', 'Gemini'],
+  ['图片模型-中转/订阅', '图片模型'],
+  ['视频模型-中转/订阅', '视频模型'],
+])
+
+/** 老名字换成现在的名字；不是老名字的原样返回。 */
+export function currentAccountGroupName(group: string): string {
+  return retiredAccountGroups.get(group) ?? group
 }
 
 export const sub2ApiManagedCliKeyProfiles: Record<ProviderId, ManagedCliKeyProfile> = {
