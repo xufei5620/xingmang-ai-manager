@@ -617,7 +617,7 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
-      supports_websockets: false,
+      supports_websockets: true,
     })
     expect(asRecord(parsed.model_providers)?.OpenAI).toBeUndefined()
 
@@ -627,7 +627,7 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('codex', 'sk-merge-first', testModels.codex, 'merge', mergeRoots, {}, providerBaseUrls)
     const merged = asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))!
     expect(merged.model_provider).toBe(defaultCodexRelayProvider)
-    expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(false)
+    expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(true)
     expect(merged).not.toHaveProperty('model_context_window')
     expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
   })
@@ -1656,7 +1656,7 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
-      supports_websockets: false,
+      supports_websockets: true,
       custom_header: 'keep',
     })
   })
@@ -4132,9 +4132,24 @@ describe('bringing an older account config up to the current template', () => {
     expect(asRecord(parsed.features)?.prevent_idle_sleep).toBe(false)
     expect(asRecord(parsed.features)?.daemon_auto_start).toBe(false)
     expect(asRecord(parsed.windows)?.sandbox).toBe('unelevated')
+    expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.supports_websockets).toBe(true)
     expect(parsed.model).toBe('gpt-5.5')
     expect(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8')).toBe(fs.readFileSync(configPath, 'utf8'))
     expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(false)
+  })
+
+  it('keeps a customer supports_websockets = false on our Codex table at startup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const fresh = fs.readFileSync(snapshots.active, 'utf8')
+    expect(fresh).toMatch(/^supports_websockets = true$/m)
+    writeFile(snapshots.active, fresh.replace('supports_websockets = true', 'supports_websockets = false'))
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
+    expect(fs.readFileSync(snapshots.active, 'utf8')).toMatch(/^supports_websockets = false$/m)
   })
 
   it('renames our own legacy Codex display name at startup and keeps a name the customer chose', () => {

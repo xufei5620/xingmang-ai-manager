@@ -102,7 +102,7 @@ test('the Codex config the probe writes is the one a customer gets', () => {
   assert.match(text, /requires_openai_auth = true/)
   // The transport is part of what the customer gets: WebSocket and plain
   // streaming take different paths through the relay's front proxy.
-  assert.match(text, /^supports_websockets = false$/m)
+  assert.match(text, /^supports_websockets = true$/m)
   // Codex switches to its first-party request shape on exactly this name.
   assert.match(text, /^name = "OpenAI"$/m)
   assert.match(text, /model_reasoning_effort = "xhigh"/)
