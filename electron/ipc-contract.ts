@@ -19,10 +19,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
+import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
+export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -776,6 +776,15 @@ export interface XingmangInvokeContract {
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**
+   * 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择（官方登录 / 第三方），星芒那份配置留着。
+   * 只有 Claude Desktop 支持；切回当前账号时那份用不上了回 reconnect，界面接着打开配置窗口。
+   */
+  switchExternalClientSource: IpcInvokeDefinition<
+    'external-clients:switch-source',
+    [tool: ExternalToolId, target: AccountSourceTarget],
+    ExternalClientSourceSwitchResult
+  >
+  /**
    * 切回官方订阅账号；merge 恢复对应来源配置，reset 重建初始配置。
    * 两种方式均保留官方登录凭据和历史会话。省略 mode 沿用 merge。
    * 切回星芒走既有的 config:save,不另开通道。
@@ -1328,6 +1337,7 @@ export const ipcInvokeChannels = {
   installExternalClient: 'external-clients:install',
   cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
+  switchExternalClientSource: 'external-clients:switch-source',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
   repairCliHooks: 'config:repair-cli-hooks',

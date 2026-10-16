@@ -1,5 +1,6 @@
 import type { ExternalClientStatus, ExternalToolId } from '../../../../electron/ipc-contract'
 import { clientConnections } from '../../registry/clients'
+import { officialAccountNames } from '../../registry/tools'
 import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
 import type { WindowOs } from '../app/window-os'
 
@@ -18,14 +19,18 @@ export function presentExternalClients(statuses: ExternalClientStatus[]) {
   return clientConnections.flatMap((definition) => {
     const status = statuses.find((entry) => entry.tool === definition.id)
     if (!status) return []
-    const ready = !status.configurationError && (status.configurationReady ?? (status.configured || status.configurationSource === 'other'))
-    const configurationStatus: 'ready' | 'unknownSource' | 'unconfigured' = !ready ? 'unconfigured'
+    // Claude Desktop 选了官方登录：用的是客户自己的 Claude 账号，能直接打开，不是没连上。
+    const official = status.officialAccount === true && !status.configurationError
+    const ready = official || (!status.configurationError && (status.configurationReady ?? (status.configured || status.configurationSource === 'other')))
+    const configurationStatus: 'ready' | 'official' | 'unknownSource' | 'unconfigured' = !ready ? 'unconfigured' : official ? 'official'
       : status.configurationReady === true || status.configured ? 'ready' : 'unknownSource'
     const action = status.detectionError ? 'scan' : !status.installed ? 'install' : ready ? 'launch' : 'configure'
+    const version = status.version ? `v${status.version.replace(/^v/, '')}` : '版本暂未识别'
     return [{ ...definition, status, ready, configurationStatus, action,
       disabled: action === 'install' ? !status.installSupported : action === 'launch' ? !status.launchSupported : false,
       detail: detectionFailureMessage(status.detectionError) ?? snapshotErrorMessage(status.configurationError) ?? (!status.installed ? status.installHint ?? definition.vendor
-        : [status.version ? `v${status.version.replace(/^v/, '')}` : '版本暂未识别', status.running ? '运行中' : null,
+        : official ? [officialAccountNames.claude, version, status.running ? '运行中' : null].filter(Boolean).join(' · ')
+        : [version, status.running ? '运行中' : null,
           // 换了线路、客户端开着这次没换成（第四十三批 A）：这时摆模型名，客户看不出这一行还连着原来那条。
           status.running && status.routePending ? status.routeRecheck ? '还开着，完全退出后会自动换到当前线路' : '连接线路暂未改动，完全退出后点「重新检测」'
             : status.model ?? (status.tool === 'claudeDesktop' && status.configurationReady ? '自动获取模型'
