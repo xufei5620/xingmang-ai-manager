@@ -121,7 +121,7 @@ function runtimeHarness(initialRoot?: unknown) {
     context,
     run: () => vm.runInContext(codexChineseRuntimeScript, context),
     state: () => vm.runInContext('globalThis.__xingmangCodexChineseLocaleState', context) as {
-      patchedClients: number; patchedConfigs: number; localeReads: number
+      patchedClients: number; patchedConfigs: number; localeReads: number; nativeI18n: boolean
     },
     tick: (milliseconds: number) => { now += milliseconds; for (const callback of intervals.values()) callback() },
   }
@@ -314,6 +314,34 @@ describe('Codex Desktop Chinese CDP injection', () => {
     root.getLayer('72216192')!.get('other', 'fallback', { disableExposureLog: true })
     expect(forwardedArguments).toEqual(['other', 'fallback', { disableExposureLog: true }])
     expect(config.value).toMatchObject({ enable_i18n: true, locale_source: 'SYSTEM' })
+  })
+
+  it('records a switch OpenAI already turned on, but never one this patch turned on itself', () => {
+    const sent = { enable_i18n: true, locale_source: 'IDE' }
+    const on = runtimeHarness({ getDynamicConfig: () => ({ value: sent, get: (_key: string, fallback: unknown) => fallback }) })
+    on.run()
+    expect(on.state().nativeI18n).toBe(true)
+
+    // Statsig returns the same stored value object on every call, so after the
+    // first forced write a later read must not be mistaken for OpenAI's answer.
+    const stored = { enable_i18n: false }
+    const off = runtimeHarness({ getDynamicConfig: () => ({ value: stored, get: (_key: string, fallback: unknown) => fallback }) })
+    off.run()
+    off.tick(50)
+    off.tick(50)
+    expect(stored.enable_i18n).toBe(true)
+    expect(off.state().nativeI18n).toBe(false)
+  })
+
+  it('does not take a switch an earlier runtime forced as OpenAI\'s after the runtime state is lost', () => {
+    const stored = { enable_i18n: false }
+    const harness = runtimeHarness({ getLayer: () => ({ value: stored, get: (_key: string, fallback: unknown) => fallback }) })
+    harness.run()
+    expect(stored.enable_i18n).toBe(true)
+    vm.runInContext('delete globalThis.__xingmangCodexChineseLocaleState', harness.context)
+    harness.run()
+    expect(harness.state().patchedConfigs).toBe(1)
+    expect(harness.state().nativeI18n).toBe(false)
   })
 
   it('patches a late Statsig root before its synchronous first locale read', () => {
@@ -635,6 +663,90 @@ describe('Codex Desktop Chinese CDP injection', () => {
     })).rejects.toThrow('未确认中文配置生效')
     expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(1)
     expect(isClosed()).toBe(true)
+  })
+
+  it('says in the logged reason which step was never seen on the page', async () => {
+    const { socket } = mockCdpSocket(() => ({ ...readyProbe, patchReady: false, localeReadObserved: false }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('（界面已画出，补丁已挂上，没找到语言开关，Codex 没读过开关，OpenAI 下发的开关没开）')
+  })
+
+  it('accepts a drawn interface whose switch OpenAI already turned on, without a reload', async () => {
+    const { socket, sent } = mockCdpSocket(() => ({ ...readyProbe, localeReadObserved: false, nativeLocaleEnabled: true }))
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 1 })
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(0)
+  })
+
+  it('does not take the switch OpenAI sent as the language shown while Codex is still starting', async () => {
+    const { socket } = mockCdpSocket(() => ({ ...readyProbe, textLength: 0, localeReadObserved: false, nativeLocaleEnabled: true }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('界面还停在启动那一屏')
+  })
+
+  it('does not give up while Codex still shows its own start-up screen', async () => {
+    // #976: when the switch request cannot get out, Codex sits on a spinner for
+    // 34-38 s and only reads the switch afterwards, well past the usual bound.
+    let probes = 0
+    const { socket, sent } = mockCdpSocket(() => {
+      probes += 1
+      const documentIdentity = probes === 1 ? 1_000 : 2_000
+      return probes <= 45
+        ? { ...readyProbe, documentIdentity, textLength: 0, localeReadObserved: false }
+        : { ...readyProbe, documentIdentity }
+    })
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 46 })
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(1)
+  })
+
+  it('still gives up on a start-up screen that never ends, and says so in the logged reason', async () => {
+    let attempts = 0
+    const { socket, sent } = mockCdpSocket(() => ({ ...readyProbe, textLength: 0, localeReadObserved: false }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => {
+        attempts += 1
+        return new Response(JSON.stringify([target()]))
+      },
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('界面还停在启动那一屏')
+    expect(attempts).toBe(90)
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(1)
+  })
+
+  it('keeps the usual bound once the interface is drawn but the switch is never read', async () => {
+    let attempts = 0
+    const { socket } = mockCdpSocket(() => ({ ...readyProbe, patchReady: false, localeReadObserved: false }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => {
+        attempts += 1
+        return new Response(JSON.stringify([target()]))
+      },
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('未确认中文配置生效')
+    expect(attempts).toBe(30)
   })
 
   it('does not reload an incompatible renderer that never exposes the locale config', async () => {
