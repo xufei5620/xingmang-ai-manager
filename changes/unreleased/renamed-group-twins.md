@@ -1,3 +1,8 @@
+## 用户
+
+- 账号里的分组都换成了新名字（比如「GPT-中转/订阅」现在叫「GPT」），星芒也跟着只认新名字。已经配好的 Claude Code、Codex、Grok CLI 照常能用，不会重新配置；AI 对话里以前选过老名字的对话，打开就换到新名字接着聊。
+- 工具配置里「访问密钥」的下拉，同一个分组里星芒签的同名密钥只列一把，也不再列已经不支持的 Gemini CLI 的密钥。「个人中心」的「密钥」里照旧全部列出。
+
 ## 开发
 
 - xm 站 2026-10-16 删了老分组名（删前服务端把老名字下的 Key 全挂到了新名字下，Key 本身不变）。`catalog.ts` 的 `managedCliKeyProfiles` 换成新名字（Claude-MAX / GPT / Grok / Gemini），新增 `retiredAccountGroups`（老名字 → 新名字）与 `currentAccountGroupName`。
