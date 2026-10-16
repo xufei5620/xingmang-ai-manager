@@ -219,7 +219,7 @@ describe('CLI update reminders', () => {
     )
     expect(h.runtime.create).toHaveBeenCalledWith({
       title: '工具有新版本',
-      body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
+      body: '你装的工具出了新版本，回到星芒首页就能逐个更新。',
       silent: true,
     })
     expect(h.controller.notify('cliUpdate', 'cli-update:claude.2.0.0')).toBe(
@@ -241,7 +241,7 @@ describe('CLI update reminders', () => {
     const message = buildActivityNotificationMessage('cliUpdate', 'cli-update:codexDesktop.26.928.3736.0')
     expect(message).toEqual({
       title: '工具有新版本',
-      body: '你装的工具出了新版本，回到星芒的「你的工具」就能逐个更新。',
+      body: '你装的工具出了新版本，回到星芒首页就能逐个更新。',
     })
     expect(`${message.title} ${message.body}`).not.toContain('命令行')
   })

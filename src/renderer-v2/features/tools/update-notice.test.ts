@@ -104,7 +104,7 @@ describe('renderer-v2 pending CLI updates', () => {
       grok: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true, installSource: 'npm' },
     })
     const tools = presentTools(state)
-    // 通知原话是「回到星芒的「你的工具」就能逐个更新」，首页只有 Grok 那一行有「更新」按钮。
+    // 通知原话是「回到星芒首页就能逐个更新」，首页只有 Grok 那张卡片有「更新」按钮。
     expect(inAppToolUpdates(tools)).toEqual([{ id: 'grok', version: '0.62.0' }])
     // 角标和卡片上的数字照旧数全部：那两行自己写着该怎么更新。
     expect(pendingToolUpdates(tools).map((entry) => entry.id)).toEqual(['claude', 'codex', 'grok'])
