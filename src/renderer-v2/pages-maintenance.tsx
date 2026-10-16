@@ -3560,18 +3560,29 @@ export function SettingsPage({
     </Card>
   )
   if (settings && searching) {
+    // 搜出来的行就地能改，小标题那一句和卡片上面那条也得跟着：线路改完要在这儿就能「现在重开」，
+    // 桌面通知关着时提醒项为什么是灰的也要说。同一个小标题下搜出好几行时只在第一行上面放一次。
+    const shownSections = new Set<SettingsSectionId>()
     content = hits.length ? (
       <Card padding="none" testId="settings-search-results">
-        {hits.map((item) => (
-          <Fragment key={item.id}>
-            <div className="v2-settings-hit">
-              <button type="button" className="v2-link-button" onClick={() => openGroup(item.group)}>
-                {settingsGroups.find((entry) => entry.value === item.group)?.label}
-              </button>
-            </div>
-            {views[item.id]}
-          </Fragment>
-        ))}
+        {hits.map((item) => {
+          const section = item.section && !shownSections.has(item.section) ? item.section : undefined
+          if (section) shownSections.add(section)
+          const note = section ? sectionNotes[section] : undefined
+          const lead = section ? sectionLeads[section] : undefined
+          return (
+            <Fragment key={item.id}>
+              <div className="v2-settings-hit">
+                <button type="button" className="v2-link-button" onClick={() => openGroup(item.group)}>
+                  {settingsGroups.find((entry) => entry.value === item.group)?.label}
+                </button>
+                {note && <span>{note}</span>}
+              </div>
+              {lead && <div className="v2-settings-hit-lead">{lead}</div>}
+              {views[item.id]}
+            </Fragment>
+          )
+        })}
       </Card>
     ) : (
       <div className="v2-settings-empty" data-testid="settings-search-empty">

@@ -3667,6 +3667,22 @@ test('relay route settings compare against the active backup route and preserve 
   } finally { await page.close() }
 })
 
+// 左栏搜索搜到线路那一行，改完就在搜索结果里给「现在重开」，不用再回到网络加速那一组。
+test('a route changed from the settings search offers the restart right there', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('settings-search').fill('星芒账号线路')
+    const results = page.getByTestId('settings-search-results')
+    await chooseRoute(results.getByTestId('settings-relay-route-solov'), 'direct')
+    await results.getByTestId('settings-relay-relaunch').waitFor()
+    assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 1)
+    await relaunchFromRouteNotice(page, results)
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 直连适配第二步：星芒账号线路没选过就是「自动」，主进程查出走哪条，换了就叫一声（onRelayRouteChanged）。
 test('relay route settings read nothing stored as auto and offer it first with the approved wording', async () => {
   const page = await open('autoRelay=direct')

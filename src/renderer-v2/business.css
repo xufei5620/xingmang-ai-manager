@@ -300,13 +300,23 @@
 }
 /* 页内搜索：每一行上面写它在哪一组，点组名跳过去。 */
 .v2-settings-hit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   padding: 10px 16px 0;
   border-top: 1px solid var(--line);
   font-size: var(--font-small-compact);
   font-weight: 500;
 }
 .v2-settings-hit:first-child { border-top: 0; }
-.v2-settings-hit + .xm-setting-row { border-top: 0; }
+.v2-settings-hit + .xm-setting-row,
+.v2-settings-hit-lead + .xm-setting-row { border-top: 0; }
+/* 搜到的行所在小标题的那句话、线路等重启那条，跟着搜出来的行一起摆。 */
+.v2-settings-hit > span { color: var(--warn-tx); font-weight: 400; }
+.v2-settings-hit-lead { padding: 8px 16px 0; }
+.v2-settings-hit-lead:empty { display: none; }
 .v2-settings-empty {
   padding: 32px 24px;
   border-radius: 12px;

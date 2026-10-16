@@ -2436,6 +2436,11 @@ test('the notification kinds sit under their own heading and say when the master
     await page.getByRole('switch', { name: '桌面通知', exact: true }).click()
     await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
     assert.equal(await page.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
+    // 左栏搜出来的提醒项一样是灰的，那一句也跟着摆在搜索结果里。
+    await page.getByTestId('settings-search').fill('余额不足')
+    const results = page.getByTestId('settings-search-results')
+    await results.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
+    assert.equal(await results.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
   } finally {
     await page.close()
   }
