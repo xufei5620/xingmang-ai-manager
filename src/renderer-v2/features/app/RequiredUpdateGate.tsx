@@ -22,8 +22,8 @@ export interface RequiredUpdateActions {
  * 设成不可操作。能做的只有更新和找客服；自动更新走不通时再多一个「打开下载页」。
  * 「联系客服」打开的帮助框是后开的模态框，会叠在这层上面。
  *
- * 磁盘不够时更新器不下载、也不报错，这层就换成更新页那段「只剩多少、要多少、怎么清理」，
- * 主按钮改成「空间够了，再试一次」；更新页给了「仍要下载」，这里也给，说法相同。
+ * 磁盘不够时更新器不下载、也不报错，这层就换成版本更新卡那段「只剩多少、要多少、怎么清理」，
+ * 主按钮改成「空间够了，再试一次」；版本更新卡给了「仍要下载」，这里也给，说法相同。
  */
 export function RequiredUpdateGate({ update, windows, linux = false, actions }: {
   update: UpdateSnapshot | null
@@ -88,7 +88,7 @@ export function RequiredUpdateGate({ update, windows, linux = false, actions }: 
   }
 
   if (!gate) return null
-  // 门里进不了更新页，也不等后台自己下：用「自动更新关着」那句，下一步由下面的按钮给。
+  // 门里进不了版本更新卡，也不等后台自己下：用「自动更新关着」那句，下一步由下面的按钮给。
   const shortfallText = gate.diskShortfall ? updateDiskShortfallText(update, false) : null
   const busy = !gate.action || measuring
   return <GateDialog>
@@ -120,7 +120,7 @@ export function RequiredUpdateGate({ update, windows, linux = false, actions }: 
       <footer>
         <Button variant="ghost" testId="required-update-support" onClick={actions.contactSupport}>联系客服</Button>
         {gate.failure && <Button variant={gate.manualReinstall ? 'primary' : 'secondary'} testId="required-update-download-page" onClick={actions.openDownloadPage}>打开下载页</Button>}
-        {/* 空间是估算的：他清出了一点、或者就想试一次，由他决定，和更新页一样。 */}
+        {/* 空间是估算的：他清出了一点、或者就想试一次，由他决定，和版本更新卡一样。 */}
         {gate.diskShortfall && <Button testId="required-update-download-anyway" disabled={busy} onClick={() => start('download', { ignoreDiskSpace: true })}>仍要下载</Button>}
         {!gate.manualReinstall && <Button variant="primary" testId="required-update-start" disabled={busy} loading={busy} onClick={() => { if (gate.action) start(gate.action) }}>{gate.label}</Button>}
       </footer>

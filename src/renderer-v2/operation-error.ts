@@ -33,7 +33,8 @@ export interface OperationErrorHint {
 const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) => boolean }> = [
   // 一键改用当前账号失败后连恢复也没做成（account-source-switch.ts）。这句里常带着
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
-  // 所以排在最前，出口直接是「去备份页」。
+  // 所以排在最前，出口直接是「去备份迁移」。只认「自动恢复也没有完成」这半句，不认
+  // 后面叫人去哪儿：新版说「设置 › 备份迁移」，旧版和旧日志里还是「备份」，两种都要接住。
   { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
   // Codex 桌面端叫了、等了将近一分钟也没起来（主进程 codex-desktop-service.ts 的
   // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
@@ -187,7 +188,7 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   打开检查页: 'network',
   一键修复: 'repair',
   复制路径: 'copyPath',
-  去备份页: 'backups',
+  去备份迁移: 'backups',
   // 公司电脑的证书要新版 Node.js 才认（system-certificate-trust.ts）。以前这里只有「重试」，
   // 提示叫人去「安装卸载」页点「安装」，那边一看 Node.js 够装工具就回「无需重复安装」，
   // 客户来回转圈（第十八批 4）。只有 Windows 换得了：调用方按平台决定留不留它。

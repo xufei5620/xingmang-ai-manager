@@ -87,8 +87,10 @@ function score(entry: Entry, words: readonly string[]) {
   return worst
 }
 
+// 游戏加速、备份、更新并进了设置：不再单独出页面结果，搜到的是设置里那一行（「网络加速 › 游戏加速」）。
 function pageEntries(options: CommandSearchOptions): Entry[] {
-  return pageRegistry.filter(page => options.pageVisible?.(page.id) ?? true).map(page => ({ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }))
+  return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || !(options.pageVisible?.(page.id) ?? true) ? []
+    : [{ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }])
 }
 
 function actionEntry(key: string, label: string, target: Pick<CommandResult, 'page' | 'section' | 'action'>, keywords: readonly string[]): Entry {

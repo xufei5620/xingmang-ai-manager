@@ -48,7 +48,7 @@ describe('tray acceleration menu entry', () => {
     expect(entry({ state: state({ remainingSeconds: 0 }) }))
       .toMatchObject({ statusLabel: '加速：当前账号的免费时长已用完', actionEnabled: false })
     expect(entry({ state: state({ conflicts: ['virtual-adapter'] }) }))
-      .toMatchObject({ statusLabel: '加速：检测到其他代理或 VPN，请到加速页处理', actionEnabled: false })
+      .toMatchObject({ statusLabel: '加速：检测到其他代理或 VPN，请到「设置 › 网络加速」处理', actionEnabled: false })
   })
 
   it('keeps a transition greyed out and names which direction it is going', () => {

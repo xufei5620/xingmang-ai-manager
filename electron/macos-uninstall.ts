@@ -19,7 +19,7 @@ export interface MacUninstallDependencies {
   executablePath: string
   /** 安装队列里有活就不卸（I11）：原子替换做到一半被删掉目录，比不卸更糟。 */
   installationBusy(): boolean
-  /** 改之前按「保存配置」同一份备份，「备份」页里能找回。 */
+  /** 改之前按「保存配置」同一份备份，「设置 › 备份迁移」里能找回。 */
   backupCliConfigs(): Promise<void>
   removeCliHooks(): boolean
   removeLoginItem(): boolean

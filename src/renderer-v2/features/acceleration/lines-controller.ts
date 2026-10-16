@@ -93,6 +93,19 @@ export function createAccelerationLinesController(api: AccelerationClient, canSe
     },
     refresh: () => request(),
     ping: (lineId: string) => request(lineId),
+    /**
+     * 线路菜单里的「重新测速」：重读线路名单，再一条一条测延迟（同一时间只测一条，见 request）。
+     * 连着、正在连或停的时候测不了，只重读名单；换了账号或哪一条测失败就停下，错误留在那一条上。
+     */
+    async measure() {
+      const requestEpoch = epoch
+      await request()
+      const ids = snapshot.lines.map(line => line.id)
+      for (const id of ids) {
+        if (disposed || epoch !== requestEpoch || snapshot.error || !canSelect()) return
+        await request(id)
+      }
+    },
     select(lineId: string | null) {
       if (disposed || !snapshot.scope || snapshot.busy || !canSelect()) return
       if (lineId !== null && !snapshot.lines.some(line => line.id === lineId)) return

@@ -11,13 +11,20 @@ import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'desktop-config' | 'desktop-project' | 'desktop-message' | 'home' | 'account' | 'install' | 'config' | 'launch' | 'chat' | 'canvas' | 'acceleration' | 'extensions' | 'skills' | 'plugins' | 'backup' | 'health';
 
 /**
+ * 游戏加速、备份、更新并进设置以后（v4 批09），教程直接落到那一行：外壳打开它那一组、
+ * 再翻到那一行，比只落到组上少找一次。行的 id 在 business.ts 的 settingsItems 里是 string，
+ * 这里只收教程真用到的几个，写错照样编译不过；tutorials.test.ts 核对它们都登记过。
+ */
+type TutorialSettingsRow = 'acceleration' | 'backups' | 'version';
+
+/**
  * 按钮落到哪一页、哪个分页。个人中心和设置里分页很多，只跳页会停在默认的
- * 「我的账号」「外观」（或上次看的那页），用户还得自己再找一遍（全面检测 Q48）。
+ * 「我的账号」「外观显示」（或上次看的那页），用户还得自己再找一遍（全面检测 Q48）。
  * section 按页收窄类型：给首页写分页、把设置分组写到个人中心上都编译不过。
  */
 export type TutorialStepTarget =
   | { page: 'account'; section?: (typeof accountTabs)[number]['value'] }
-  | { page: 'settings'; section?: (typeof settingsGroups)[number]['value'] }
+  | { page: 'settings'; section?: (typeof settingsGroups)[number]['value'] | TutorialSettingsRow }
   | { page: Exclude<PageId, 'account' | 'settings'>; section?: never };
 
 interface TutorialStepContent {
@@ -63,12 +70,12 @@ export interface TutorialTopic {
 export const macKeychainTutorialTitle = 'Mac 更新后弹出钥匙串密码框？';
 export const macKeychainTutorialDetail = 'Mac 上换新版本后第一次打开，系统可能提示「星芒AI管理工具」想使用钥匙串里「xingmang-ai-manager Safe Storage」的信息。这是工具箱在读你本机保存的登录信息：输入这台 Mac 的开机密码，点「始终允许」就好，换新版本后一般只问这一次。点了「拒绝」会像退出了登录，下次打开还会再问。Windows 不会出现这个提示。';
 
-// 更新页「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
+// 「设置 › 版本更新」里「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
 // 缓存、临时目录这类词；删之前先看清楚是什么，别让客户把项目文件清掉。
 export const updateDiskCleanupTitle = '电脑磁盘快满了，更新下不下来？';
-// 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了更新页，收尾那句换成门自己的按钮。
+// 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了「设置 › 版本更新」，收尾那句换成门自己的按钮。
 export const updateDiskCleanupSteps = 'Windows：打开「设置 → 系统 → 存储」，点「临时文件」，勾上「回收站」「临时文件」「Windows 更新清理」后点「删除文件」；再把「下载」「桌面」里用不着的大文件挪到别的盘或 U 盘。Mac：点左上角苹果标志 →「系统设置 → 通用 → 储存空间」，按建议清理，并清空废纸篓。自己的项目文件夹别删。';
-export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。`;
+export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，「自动下载更新」开着会自己下载，关着就到「设置 › 版本更新」点「下载更新」。`;
 // Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
 export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
 
@@ -264,7 +271,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '点一下就行，工具箱会替你做完：先备份原来的配置，再把会冲突的旧登录挪到一边，写好新配置，最后自动测一次能不能连上。',
         bullets: ['改用前要先登录左下角的账号。', '测下来连不上时会自动恢复原样，并说一句原因。'],
         expected: '右下角提示「已改用当前账号」或「已切回官方账号」。',
-        extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「备份」页，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }],
+        extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「设置 › 备份迁移」，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }],
         action: '去首页切换',
         page: 'home',
       },
@@ -546,54 +553,58 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: 'acceleration',
     title: '游戏加速',
-    lead: '选线路，点开始；用完点停止，剩余时长下次继续。',
+    lead: '选线路，点开启；用完点停止，剩余时长下次继续。',
     category: 'tools',
     minutes: 3,
     keywords: ['加速', '网络', '线路', '智能分配', 'Ping', '延迟', '代理', 'VPN', '免费时长', '托盘', '自动连接', '下载', '到期', '提醒', '通知'],
     steps: [
       {
         title: '登录后查看可用时长',
-        where: '左侧游戏加速 → 剩余免费时长',
+        where: '设置 › 网络加速 → 剩余免费时长',
         detail: `每个账号在本机累计 ${accelerationTrialSeconds / 60} 分钟，连接成功才计时，不每日重置。`,
         bullets: ['未登录先点「登录领取免费体验」。', '查看剩余时长、页面下方「本次连接」和「累计使用」。'],
         expected: '读到剩余时长与线路状态。',
         illustration: 'acceleration',
         extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「联系客服」，可通过「帮助与客服」咨询。启用「设置」→「消息通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
         action: '打开游戏加速',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
       {
-        title: '连接前选择线路或智能分配',
-        where: '游戏加速 → 换线路',
-        detail: '不确定选哪条就用「智能分配」，连接时自动测速选可用线路。Ping 用来测线路的响应快慢。',
-        bullets: ['展开线路列表，选择「智能分配」或具体线路。', '手选线路可点旁边「Ping」，数字越小通常越快。'],
+        title: '连接前选择线路或「自动选择」',
+        where: '设置 › 网络加速 › 游戏加速 → 线路',
+        detail: '不确定选哪条就用「自动选择」，连接时自动测速选可用线路。Ping 用来测线路的响应快慢。',
+        bullets: ['展开线路列表，选择「自动选择」或具体线路。', '手选线路可点旁边「Ping」，数字越小通常越快。'],
         expected: '当前线路显示你的选择。',
         action: '去选择加速线路',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
       {
-        title: '开始加速，等状态确认',
-        where: '游戏加速 → 开始加速',
-        detail: '点「开始加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
-        bullets: ['点「开始加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
+        title: '开启加速，等状态确认',
+        where: '设置 › 网络加速 › 游戏加速 → 开启加速',
+        detail: '点「开启加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
+        bullets: ['点「开启加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
         expected: '显示实际线路，剩余时长开始计时。',
         extra: [
           { title: '提示其他代理或 VPN 冲突？', detail: '先关闭其他代理或 VPN 后重试；也可以按页面选择「仍然连接」。系统代理能否影响某个应用，取决于那个应用是否采用系统代理。' },
-          { title: '为什么有时会自动连接？', detail: '安装、更新命令行工具，装 Node.js、Git、Python，或下载 Codex 插件目录时，工具箱会在后台准备下载专用临时线路：不改电脑网络设置，不计入免费时长，下载后关闭，加速页不显示已连接。打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，加速页和托盘也不显示。桌面端用星芒 Key 的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。' },
+          { title: '为什么有时会自动连接？', detail: '安装、更新命令行工具，装 Node.js、Git、Python，或下载 Codex 插件目录时，工具箱会在后台准备下载专用临时线路：不改电脑网络设置，不计入免费时长，下载后关闭，游戏加速卡上不显示已连接。打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，游戏加速卡和托盘也不显示。桌面端用星芒 Key 的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。' },
           { title: '「加速服务暂不可用」或连不上？', detail: '先按具体提示处理：完全退出工具箱（含托盘）后重开、检查磁盘空间，或请管理员处理系统限制。「查看日志」会进入反馈页运行日志，「重新检查」会重新读取状态；线路准备中可点「刷新线路状态」。' },
         ],
         action: '打开游戏加速连接',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
       {
         title: '用完明确点击停止加速',
-        where: '游戏加速 → 停止加速',
+        where: '设置 › 网络加速 › 游戏加速 → 停止加速',
         detail: '不用时明确点停止，缩到托盘或切换页面不等于停止。',
         bullets: ['点「停止加速」，等连接结束。', '要换线路，也先停止。'],
         expected: '显示未计时，剩余时长保留。',
         extra: [{ title: '窗口缩到托盘后怎么操作？', detail: '右键工具箱托盘图标，查看加速状态和剩余时长，使用「连接加速 / 断开加速」。不可操作时按钮变灰，状态行说明原因。' }],
         action: '查看并停止加速',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
     ],
   },
@@ -809,30 +820,32 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     steps: [
       {
         title: '先备份工具配置',
-        where: '侧栏更多 → 备份',
+        where: '设置 → 备份迁移',
         detail: '配置备份保存工具设置，不包含整个项目或所有聊天记录。',
-        bullets: ['选工具，点「创建备份」或「创建第一份备份」。', '恢复时核对工具、时间和文件范围，再确认。'],
+        bullets: ['点「立即备份」，选工具。', '恢复时核对工具、时间和文件范围，再确认。'],
         expected: '列表出现对应工具的新备份。',
         illustration: 'backup',
-        action: '打开备份',
-        page: 'backups',
+        action: '打开备份迁移',
+        page: 'settings',
+        section: 'backups',
       },
       {
         title: '工具箱自己更新，AI 工具在首页更新',
-        where: '更多 → 更新；首页 → 工具卡片上的「可更新到 v…」',
+        where: '设置 → 版本更新；首页 → 工具卡片上的「可更新到 v…」',
         detail: '工具箱的新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的；首页工具卡片上的「可更新到 v…」管那个 AI 工具。',
-        bullets: ['自动装之前右下角会先弹一条通知；Windows 会弹一次授权窗口，点「是」就好。', '想马上装：进「更多」→「更新」，点「下载更新」，下好后先保存工具里没做完的东西，再点「重启安装」。'],
-        expected: '重新打开后，更新页显示「已是最新版本」。',
+        bullets: ['自动装之前右下角会先弹一条通知；Windows 会弹一次授权窗口，点「是」就好。', '想马上装：进「设置」→「版本更新」，点「下载更新」，下好后先保存工具里没做完的东西，再点「重启并安装」。'],
+        expected: '重新打开后，「设置 › 版本更新」显示「已是最新版本」。',
         extra: [
-          { title: '不想让它自动装？', detail: '在「更新」页或「设置」→「版本更新」里关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
+          { title: '不想让它自动装？', detail: '在「设置」→「版本更新」里关掉「自动下载更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
           { title: '自动装没装上？', detail: '比如授权窗口点了「否」：下次打开会告诉你上次没装上、为什么，点「重新安装」再装一次就行，不会每次打开都自己弹授权窗口。' },
           { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具卡片的「…」里有「退回更新前的 v…」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
           { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、被安全软件拦了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
           { title: updateDiskCleanupTitle, detail: updateDiskCleanupDetail },
           { title: macKeychainTutorialTitle, detail: macKeychainTutorialDetail },
         ],
-        action: '打开工具箱更新',
-        page: 'updates',
+        action: '打开版本更新',
+        page: 'settings',
+        section: 'version',
       },
       {
         title: '知道哪些数据需要另外保存',
@@ -1037,11 +1050,11 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '工具使用正确的配置，文件任务在选定的项目内进行。',
         extra: [
           { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就点卡片上的「重新写入」；如果这是你有意做的修改，在「…」中选择「就用现在这份配置」。' },
-          { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。登录或打开软件时一般会自动改好；没改好的，点卡片上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「备份」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
-          { title: statuses.tool.cliHooksStale[0], detail: '软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡着）还指着以前的位置，常见于卸载后换了文件夹重装、挪过软件或重新装过 Node.js。工具照样能用，只是每次都多报一行错。软件打开时会自己改好：先备份原来的设置（在「备份」里能找回），再只改这几行。自己没改好，或者这份设置不是软件替当前账号写的，卡片上会出现「修好它」，点一下就改。' },
-          { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点卡片上的「改用当前账号」就能用，改之前会先备份原来的设置（在「备份」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。登录或打开软件时一般会自动改好；没改好的，点卡片上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「设置 › 备份迁移」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.cliHooksStale[0], detail: '软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡着）还指着以前的位置，常见于卸载后换了文件夹重装、挪过软件或重新装过 Node.js。工具照样能用，只是每次都多报一行错。软件打开时会自己改好：先备份原来的设置（在「设置 › 备份迁移」里能找回），再只改这几行。自己没改好，或者这份设置不是软件替当前账号写的，卡片上会出现「修好它」，点一下就改。' },
+          { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点卡片上的「改用当前账号」就能用，改之前会先备份原来的设置（在「设置 › 备份迁移」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
           { title: statuses.tool.otherAccountKey[0], detail: '工具能用，但认不出这把 Key 是当前账号的，用量可能算到别的账号上（常见于在同一台电脑上换了账号登录）。点卡片上的「改用当前账号」换成你自己的，改之前会先备份。' },
-          { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点卡片上的「改用当前账号」会先备份原来的设置（在「备份」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份配置」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
+          { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点卡片上的「改用当前账号」会先备份原来的设置（在「设置 › 备份迁移」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份配置」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
           { title: statuses.tool.detectionFailed[0], detail: '检测失败不等于没安装。先查看具体原因，处理后重新检测。' },
           { title: '这个文件夹范围太大', detail: '用户主目录、磁盘根目录、桌面、下载、文档等范围太大，改选具体项目文件夹，或者直接点提示里的「新建一个项目文件夹」。若仍选择这次打开，不会把该目录标为信任，也不会自动生成项目说明。' },
         ],
@@ -1116,7 +1129,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
 /*
  * Linux 版教程（Linux 版拆分 ⑩）。Linux 上没有 Codex 桌面端和游戏加速，Mac 专属的两章
  * 也用不上；第一章换成 Codex CLI（和新手引导在 Linux 上的推荐项同一个），更新那一步换成
- * 「交给系统安装窗口」的说法，和更新页、退出确认、必须更新提示同一口径（#760）。
+ * 「交给系统安装窗口」的说法，和「设置 › 版本更新」、退出确认、必须更新提示同一口径（#760）。
  * 其余章节原样沿用，只删掉几句讲 Codex 桌面端的话。Windows 和 Mac 拿到的还是上面那份。
  */
 const linuxHiddenTutorialTopics: ReadonlySet<string> = new Set(['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic]);
@@ -1179,19 +1192,20 @@ const linuxRuntimeTutorialStep: TutorialStep = {
 
 const linuxSelfUpdateTutorialStep: TutorialStep = {
   title: '工具箱自己更新，AI 工具在首页更新',
-  where: '更多 → 更新；首页 → 工具卡片上的「可更新到 v…」',
+  where: '设置 → 版本更新；首页 → 工具卡片上的「可更新到 v…」',
   detail: '工具箱的新版本会在后台下好，下好后提醒你点「安装新版本」；首页工具卡片上的「可更新到 v…」管那个 AI 工具。',
   bullets: ['点「安装新版本」，星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。', '装好后从应用菜单重新打开星芒。'],
-  expected: '重新打开后，更新页显示「已是最新版本」。',
+  expected: '重新打开后，「设置 › 版本更新」显示「已是最新版本」。',
   extra: [
-    { title: '不想让它在后台下载？', detail: '在「更新」页或「设置」→「版本更新」里关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
+    { title: '不想让它在后台下载？', detail: '在「设置」→「版本更新」里关掉「自动下载更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
     { title: '点了「安装新版本」没看到安装窗口？', detail: '安装窗口可能被别的窗口挡住了，看看任务栏或屏幕顶部有没有它。' },
     { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具卡片的「…」里有「退回更新前的 v…」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
     { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、网络断了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
-    { title: updateDiskCleanupTitle, detail: `${linuxUpdateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。` },
+    { title: updateDiskCleanupTitle, detail: `${linuxUpdateDiskCleanupSteps}清出空间后，「自动下载更新」开着会自己下载，关着就到「设置 › 版本更新」点「下载更新」。` },
   ],
-  action: '打开工具箱更新',
-  page: 'updates',
+  action: '打开版本更新',
+  page: 'settings',
+  section: 'version',
 };
 
 const linuxLaunchTroubleTutorialStep: TutorialStep = {
@@ -1239,7 +1253,7 @@ function linuxTutorialTopic(topic: TutorialTopic): TutorialTopic[] {
     return [{
       ...topic,
       keywords: [...topic.keywords.filter((keyword) => !['Mac', '钥匙串', '始终允许', 'C 盘'].includes(keyword)), '安装窗口', '应用菜单'],
-      steps: topic.steps.map((step) => step.page === 'updates' ? linuxSelfUpdateTutorialStep : step),
+      steps: topic.steps.map((step) => step.page === 'settings' && step.section === 'version' ? linuxSelfUpdateTutorialStep : step),
     }];
   }
   if (topic.id === 'trouble') {

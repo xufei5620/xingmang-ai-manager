@@ -4,16 +4,22 @@ import type { AppUninstallLeftover, AppUninstallResult } from '../../../../elect
 import { ResultNotice, useOperation } from '../../business-common'
 import type { V2Bridge } from '../../types'
 import { settingsItemLabel } from '../../registry/business'
-import { Button, Dialog, Input, SettingRow } from '../../ui'
+import { Button, Dialog, Input, Notice, SettingRow } from '../../ui'
 
-export const appUninstallRowDescription = 'Mac 上删掉星芒之前先点这里：会收回星芒写进 Claude Code、Codex、Grok 里的提醒设置，再把星芒移到废纸篓。密钥和工具设置都留着，工具照样能用。'
+export const appUninstallRowDescription = '工具和它们的配置默认会保留'
 
-/** Windows 和 Linux 那一行：工具到安装卸载页卸，星芒本身走系统自己的卸载，各说各的地方。 */
+/**
+ * Windows 和 Linux 那一行：软件里卸不了星芒，只说去哪儿卸（v4 字表批09）；工具的卸载在首页卡片的「…」里，
+ * 这一行不再管。
+ */
 export function toolUninstallRowDescription(isLinux: boolean): string {
   return isLinux
-    ? 'AI 工具到「安装卸载」页卸，配置默认留着。要卸载星芒本身，用系统的软件管理器'
-    : 'AI 工具到「安装卸载」页卸，配置默认留着。要卸载星芒本身：打开 Windows「设置 → 应用」，找到「星芒AI管理工具」卸载'
+    ? '用系统的软件管理器卸载星芒；工具和它们的配置会保留'
+    : '打开 Windows「设置 → 应用」，找到「星芒AI管理工具」卸载；工具和它们的配置会保留'
 }
+
+/** 勾了「连同星芒替你装的命令行工具一起删」之后那条提醒。删之前确实会先备份配置（macos-uninstall.ts 的 backupCliConfigs）。 */
+export const appUninstallRemoveToolsWarning = '会删掉星芒替你装的 Claude Code、Codex CLI、Grok CLI，你自己装的不动。删之前会先备份它们的配置。'
 
 const leftoverLabels: Record<AppUninstallLeftover, string> = {
   'cli-hooks': '有工具里的提醒设置没收回来',
@@ -61,7 +67,7 @@ export function AppUninstallDialog({
   return (
     <Dialog
       open={open}
-      title="卸载星芒AI管理工具"
+      title="卸载星芒"
       onClose={onClose}
       busy={busy}
       testId="app-uninstall-dialog"
@@ -75,12 +81,12 @@ export function AppUninstallDialog({
             onClick={onConfirm}
             testId="app-uninstall-confirm"
           >
-            卸载并退出
+            卸载星芒
           </Button>
         </>
       }
     >
-      <p>先收回星芒写进各个工具里的提醒设置，再把星芒移到废纸篓并退出。密钥和工具设置都留着，卸了以后在终端里照样能用这些工具。</p>
+      <p>会先收回星芒写进各个工具里的提醒设置，再删除星芒本身。工具的配置会保留，Claude Code、Codex 这些工具也会留着，照样能用。卸完星芒会退出。</p>
       <Input
         type="checkbox"
         label="同时清除登录记录和聊天记录"
@@ -93,33 +99,31 @@ export function AppUninstallDialog({
       <Input
         type="checkbox"
         label="连同星芒替你装的命令行工具一起删"
-        hint="你自己装的不会动；删了以后终端里就用不了星芒装的那几个工具"
         checked={removeTools}
         disabled={busy}
         testId="app-uninstall-remove-tools"
         onChange={(event) => onRemoveTools(event.target.checked)}
       />
+      {removeTools && <Notice tone="warn" title={appUninstallRemoveToolsWarning} body={null} testId="app-uninstall-remove-tools-warning" />}
       <ResultNotice error={error} detail={detail} message={message} />
     </Dialog>
   )
 }
 
 /**
- * 设置 → 版本更新「卸载」那一行。Mac 没有卸载程序，拖进废纸篓以后工具里的提醒设置
- * 还指着已经不在的星芒，所以 Mac 上给一颗真正的「卸载星芒」；其它电脑照旧去工具的
- * 安装卸载页，卸星芒走系统自己的卸载。
+ * 设置 → 版本更新「卸载星芒」那一行。Mac 没有卸载程序，拖进废纸篓以后工具里的提醒设置
+ * 还指着已经不在的星芒，所以 Mac 上给一颗真正的「卸载」；其它电脑没有按钮，只说卸星芒走
+ * 系统自己的卸载（工具的卸载在首页卡片的「…」里）。
  */
 export function AppUninstallRow({
   api,
   isMac,
   isLinux = false,
-  openMaintenance,
 }: {
   api: Pick<V2Bridge, 'uninstallApp'>
   isMac: boolean
-  /** Linux 上没有 Windows 的「设置 → 应用」，卸星芒本身那半句换成系统的软件管理器。 */
+  /** Linux 上没有 Windows 的「设置 → 应用」，那句换成系统的软件管理器。 */
   isLinux?: boolean
-  openMaintenance: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [clearRecords, setClearRecords] = useState(false)
@@ -131,11 +135,7 @@ export function AppUninstallRow({
         title={settingsItemLabel('uninstall')}
         anchor="uninstall"
         description={toolUninstallRowDescription(isLinux)}
-        control={
-          <Button size="sm" icon={Trash2} onClick={openMaintenance}>
-            去安装卸载
-          </Button>
-        }
+        control={null}
       />
     )
   }
@@ -155,7 +155,7 @@ export function AppUninstallRow({
         testId="settings-app-uninstall"
         control={
           <Button size="sm" icon={Trash2} onClick={() => setOpen(true)} testId="settings-app-uninstall-open">
-            卸载星芒
+            卸载
           </Button>
         }
       />

@@ -7387,7 +7387,7 @@ export function createSystemService(
       // 首页「补上」也走这里：Grok 一条没写过的，这次一并补上。
       const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand, addIfMissing: provider === 'grok' })
       const after = managedCliHooksState(provider)
-      if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「备份」里找回')
+      if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「设置 › 备份迁移」里找回')
       if (cliHook && after.missing) throw new Error('做完提醒和防睡还没补上，先点首页的「补上」准备好运行环境再试')
       runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
         provider,
@@ -7657,7 +7657,7 @@ export function createSystemService(
       }
       runtimeLog?.log('warn', 'config', 'route.reverted', '工具配置换完线路又被改了回去，再换一次', { provider })
     }
-    // 迁移前原件：第一次定点改写之前整套备份一次，「备份」页里能找回。备份不成照旧换线路（连不上
+    // 迁移前原件：第一次定点改写之前整套备份一次，「设置 › 备份迁移」里能找回。备份不成照旧换线路（连不上
     // 的线路比少一份备份要紧），下回再补。
     let originalKept = record.originalKept === true
     if (!originalKept && toolRouteAccount) {
@@ -7987,7 +7987,7 @@ export function createSystemService(
           if (!outdated(provider)) return false
           const site = providerRelaySite(provider, inspectNativeProviderConfig(provider))
           // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
-          // 真要补才先做一份与保存配置同样的整套备份，「备份」页里能找回补之前的样子；
+          // 真要补才先做一份与保存配置同样的整套备份，「设置 › 备份迁移」里能找回补之前的样子；
           // 备份不成就不补。
           const pending = relayTemplateDefaultsPending(provider, providerRoots, site.providerBaseUrls)
           if (pending) backup?.(provider)

@@ -18,7 +18,7 @@ import { operationFailureFrom } from './business-common'
 const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: OperationTarget } | { unreachable: string }> = {
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
-  switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。' },
+  switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
@@ -381,6 +381,14 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('写入失败：应用设置目录不能经过符号链接或目录联接（EPERM）')
     expect(hint?.key).toBe('folderRelocated')
     expect(hint?.actions).toEqual([{ id: 'network', label: '打开检查页' }, { id: 'support', label: '找客服' }])
+  })
+
+  it('sends a failed undo to the backups action whether the message names the new or the old place', () => {
+    for (const where of ['「设置 › 备份迁移」', '「备份」']) {
+      const hint = presentOperationError(`改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到${where}里恢复切换前那一份。`)
+      expect(hint?.key).toBe('switchUndoFailed')
+      expect(hint?.actions).toEqual([{ id: 'backups', label: '去备份迁移' }, { id: 'support', label: '找客服' }])
+    }
   })
 
   it('offers 复制路径 on the antivirus block, where the catalog has asked for it all along', () => {

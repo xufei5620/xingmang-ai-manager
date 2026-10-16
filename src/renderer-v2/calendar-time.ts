@@ -24,3 +24,19 @@ export function formatCalendarTime(milliseconds: number, now: number): string | 
   if (date.getFullYear() === today.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日`
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
 }
+
+/**
+ * 备份那一行的标题：一份备份就靠时间认，同一天里也要分得开，所以哪天都带上钟点、也不写「刚刚」：
+ * 「今天 09:12」「昨天 18:40」「10月12日 18:40」，往年带上年份。读不出日期返回 null。
+ */
+export function formatClockTime(milliseconds: number, now: number): string | null {
+  const date = new Date(milliseconds)
+  if (!Number.isFinite(date.getTime())) return null
+  const today = new Date(now)
+  const days = Math.round((startOfDay(today) - startOfDay(date)) / 86_400_000)
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  if (days <= 0) return `今天 ${clock}`
+  if (days === 1) return `昨天 ${clock}`
+  if (date.getFullYear() === today.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+}

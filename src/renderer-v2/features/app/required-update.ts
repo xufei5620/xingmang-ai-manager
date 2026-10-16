@@ -17,7 +17,7 @@ export interface RequiredUpdateGateState {
   progressDetail: string | null
   /** 上一步失败时给用户看的那句话；这时才出现「打开下载页」。 */
   failure: string | null
-  /** 失败那段的标题，和更新页、首页气泡同一份（「检查更新失败」「下载更新失败」…）。 */
+  /** 失败那段的标题，和版本更新卡、首页气泡同一份（「检查更新失败」「下载更新失败」…）。 */
   failureTitle: string | null
   /**
    * 量过磁盘、空间不够，更新器这一轮没下载（它不报错，只在快照上挂这个缺口）。门里
@@ -87,7 +87,7 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
 }
 
 /**
- * 失败时门里的标题、按钮和原因与更新页、首页气泡说同一套话：标题和按钮都读
+ * 失败时门里的标题、按钮和原因与版本更新卡、首页气泡说同一套话：标题和按钮都读
  * updateFailureLabel，原因句是主进程那一句。主进程的原因句只说「发生了什么、点哪颗
  * 三处都有的按钮」，唯一要在门里改口的是开机检查超时——那句安慰客户「不影响现在使用」，
  * 可门正把他挡在外面。

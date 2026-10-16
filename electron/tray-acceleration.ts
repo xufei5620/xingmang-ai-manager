@@ -136,8 +136,8 @@ export function buildTrayAccelerationEntry(input: TrayAccelerationInput): TrayAc
   }
   if (state.conflicts?.length) {
     // 冲突要用户先关掉别的代理，或者在加速页上按「仍然连接」确认一次；托盘不做
-    // 这个确认，所以这里只报状态，把人引回加速页。
-    return { statusLabel: `${statusPrefix}检测到其他代理或 VPN，请到加速页处理`, actionLabel: connectLabel, actionEnabled: false, action: 'start' }
+    // 这个确认，所以这里只报状态，把人引回「设置 › 网络加速」。
+    return { statusLabel: `${statusPrefix}检测到其他代理或 VPN，请到「设置 › 网络加速」处理`, actionLabel: connectLabel, actionEnabled: false, action: 'start' }
   }
   const failure = input.failure ?? (state.error ? shortReason(state.error, failureSummaries.unknown) : null)
   return {

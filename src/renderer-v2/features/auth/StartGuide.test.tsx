@@ -541,6 +541,7 @@ describe('guide connect step with a key the current account did not write', () =
 describe('guide switch failure exits', () => {
   it('sends a tool the account has not opened to support and a failed undo to the backups page', () => {
     expect(guideFailureExits(new Error('改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。')).map((action) => action.id)).toEqual(['support'])
+    expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
     expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
     expect(guideFailureExits('不过账号余额不足，充值后再试。').map((action) => action.id)).toEqual(['recharge'])
     expect(guideFailureExits(new Error('something odd'))).toEqual([])

@@ -227,12 +227,12 @@ const hostMessages: Record<
   accelerationInterrupted: {
     kind: 'acceleration',
     title: '加速意外断开了',
-    body: '网络已恢复正常，可以回到加速页重新连接。',
+    body: '网络已恢复正常，可以到「设置 › 网络加速」重新连接。',
   },
   accelerationInterruptedUnrestored: {
     kind: 'acceleration',
     title: '加速意外断开了',
-    body: '网络可能暂时连不上，点这里回到加速页，星芒会再试着恢复。',
+    body: '网络可能暂时连不上，点这里打开游戏加速，星芒会再试着恢复。',
   },
   // Windows 11 默认把新托盘图标收进任务栏右边的 ^ 里，小白找不到窗口会以为软件没了。
   hiddenToTray: {

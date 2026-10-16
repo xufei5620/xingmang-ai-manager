@@ -24,14 +24,22 @@ export type PageGroup = 'daily' | 'extend' | 'maintain' | 'account'
 export interface PageDefinition { id: PageId; label: string; icon: LucideIcon; group: PageGroup; testId: string; external?: boolean }
 const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, acceleration: Globe2, featured: Star, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
 export const pageRegistry: readonly PageDefinition[] = pages.map((page) => ({ id: page.id, label: page.label, icon: pageIcons[page.id], group: page.group as PageGroup, testId: page.testId, external: page.id === 'canvas' }))
-/** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。 */
-export const pageSearchKeywords: Record<PageId, readonly string[]> = {
+/**
+ * v4 起游戏加速、备份、更新三页并进设置（第 9 批），页面 id 留作别名：托盘、系统通知、
+ * 旧测试和各处「去备份」按钮照样能跳，落到设置里对应那一张卡（值是设置行的 id）。
+ */
+export const settingsPageAliases = { acceleration: 'acceleration', backups: 'backups', updates: 'version' } as const;
+export type SettingsPageAlias = keyof typeof settingsPageAliases
+export function settingsPageAlias(page: PageId): typeof settingsPageAliases[SettingsPageAlias] | null {
+  return page === 'acceleration' || page === 'backups' || page === 'updates' ? settingsPageAliases[page] : null
+}
+/** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。别名页不单独出结果，说法挪进了设置那一行。 */
+export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias>, readonly string[]> = {
   // v4 起工具的更新、回到推荐版本、重新安装、卸载都在首页卡片的「…」里；余额卡上有还能用几天。
   home: ['主页', '我的工具', '打开工具', '配置', '换模型', '工具卡片', '接着上次', '还能用几天', '更新工具', '回到推荐版本', '退回版本', '重新安装', '卸载工具'],
   chat: ['对话', '问答', '提问', '生图', '画图', '分组', '模型'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
   canvas: ['画图', '生图', '工作流'],
-  acceleration: ['加速', '游戏', '延迟', '卡顿'],
   featured: ['推荐', '好用的', '扩展推荐', '星芒精选'],
   // 入口改了名、页签合了页，旧说法照样搜得到。
   mcp: ['MCP', '外部工具', '自定义连接', '添加连接', '连接'],
@@ -40,9 +48,7 @@ export const pageSearchKeywords: Record<PageId, readonly string[]> = {
   tutorial: ['帮助', '怎么用', '说明', '新手'],
   health: ['检测', '诊断', '体检', '环境'],
   maintenance: ['装', '安装', '装不上', '删', '卸载', '重装', '下载'],
-  backups: ['恢复', '还原', '找回配置'],
   feedback: ['客服', '报告', '日志', '投诉'],
-  updates: ['升级', '新版本', '版本', '检查更新'],
   settings: ['选项', '偏好'],
   account: ['账号', '我的', '个人信息'],
 };

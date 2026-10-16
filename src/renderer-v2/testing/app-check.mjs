@@ -75,6 +75,30 @@ async function openAccountSwitcher(page) {
   return switcher
 }
 
+// v4 批09：游戏加速、备份、更新三页并进了「设置」，成了三张卡。手动去的路是侧栏「设置」再点
+// 左栏那一组；卡的 testId 沿用原来的页面名。
+async function openSettingsGroup(page, label) {
+  await page.getByTestId('nav-settings').click()
+  const settings = page.getByTestId('page-settings')
+  const tab = settings.getByRole('tab', { name: label, exact: true })
+  await tab.click()
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  return settings
+}
+// 版本卡挂上后先自己读一次更新状态，读回来会盖掉在那之前推过去的：等它读完再往下走。
+async function openVersionCard(page) {
+  const settings = await openSettingsGroup(page, '版本更新')
+  const card = settings.getByTestId('page-updates')
+  await expect(card.getByTestId('updates-current-version')).toHaveText(/^当前版本 v|^版本暂未读到$/)
+  return card
+}
+async function openBackupCard(page) {
+  const settings = await openSettingsGroup(page, '备份迁移')
+  const card = settings.getByTestId('page-backups')
+  await card.waitFor()
+  return card
+}
+
 // 首页「最近」读完之前说不准哪个工具聊过，第一次点「打开」照旧弹选择框；读完了、这个工具
 // 没聊过也没选过文件夹，「打开」才直接替用户建项目文件夹（已知40）。
 async function recentRead(page) {
@@ -456,7 +480,7 @@ test('external client incomplete Claude configuration requires setup before prim
   } finally { await page.close() }
 })
 
-test('acceleration state is read once when idle, and again on entering the acceleration page', async () => {
+test('acceleration state is read once when idle, and again when the game acceleration card in settings is shown', async () => {
   const page = await open()
   try {
     const reads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccelerationState').length)
@@ -465,9 +489,9 @@ test('acceleration state is read once when idle, and again on entering the accel
     await page.clock.install()
     await page.clock.runFor(60_000)
     assert.equal(await reads(), initial, '没在加速时不定时读状态')
-    // v4 过渡期游戏加速收在侧栏「更多」里。
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-acceleration').click()
+    // v4 批09：游戏加速是「设置 › 网络加速」最上面那张卡。
+    const settings = await openSettingsGroup(page, '网络加速')
+    await settings.getByTestId('acceleration-page').waitFor()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccelerationState').length > count, initial)
     await clean(page)
   } finally { await page.close() }
@@ -3831,7 +3855,7 @@ test('large text switch enlarges the small print and Ctrl plus / minus / 0 step 
 })
 
 // 更新装完重新打开时，软件原来一句话都没有。现在角落里一张轻量卡片说一声已经在新版上、
-// 列前几项改动，只有一颗「知道了」；完整清单在更新页。普通启动什么都不说。
+// 列前几项改动，只有一颗「知道了」；完整清单在「设置 › 版本更新」的版本卡上。普通启动什么都不说。
 test('the first launch after an update says which version it is on and lists the bundled changes', async () => {
   const page = await open('justUpdated=1')
   try {
@@ -3845,11 +3869,8 @@ test('the first launch after an update says which version it is on and lists the
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').length), 0)
     await notice.getByRole('button', { name: '知道了', exact: true }).click()
     await expect.poll(() => page.getByTestId('startup-notice-updated').count()).toBe(0)
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
-    await updates.getByText('当前版本 0.1.31 更新内容', { exact: true }).waitFor()
+    const updates = await openVersionCard(page)
+    await updates.getByText('v0.1.31 更新了什么', { exact: true }).waitFor()
     const notes = updates.getByTestId('updates-installed-notes')
     await notes.getByText('更新页能看到当前这一版改了什么。', { exact: true }).waitFor()
     assert.equal(await notes.locator('li').count(), 2)
@@ -3950,13 +3971,10 @@ test('an ordinary launch says nothing about updates', async () => {
   } finally { await page.close() }
 })
 
-test('a failed manual update check still reports on the updates page', async () => {
+test('a failed manual update check still reports on the version card in settings', async () => {
   const page = await open('updateCheckFail=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     await updates.getByRole('button', { name: '检查更新', exact: true }).click()
     await updates.getByText('更新服务器暂时连不上', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('startup-notices').count(), 0)
@@ -3966,13 +3984,10 @@ test('a failed manual update check still reports on the updates page', async () 
 
 // 更新失败原来只有一句「更新没有装上」加一个「重新下载」，断网点一次「检查更新」
 // 也是这句——更新根本还没开始下。三步各自的标题和按钮在这里一次看全。
-test('the updates page names the step that failed and offers that step again', async () => {
+test('the version card names the step that failed and offers that step again', async () => {
   const page = await open('updateCheckFail=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     const stages = [
       { step: 'check', phase: 'error', title: '检查更新失败', retry: '重试', reason: '设备当前没有连上网络，请先连接网络再试。' },
       { step: 'download', phase: 'error', title: '下载更新失败', retry: '重新下载', reason: '连接更新服务器超时，请检查网络后再试。' },
@@ -3990,7 +4005,7 @@ test('the updates page names the step that failed and offers that step again', a
       await notice.getByText(stage.reason, { exact: true }).waitFor()
       await notice.getByRole('button', { name: stage.retry, exact: true }).waitFor()
       await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
-      // 首页那条浮动气泡读的是同一份文案，不许和页面说两套话；下载失败那条人在更新页时不弹（第 55 条）。
+      // 首页那条浮动气泡读的是同一份文案，不许和卡上说两套话；下载失败那条人在「设置 › 版本更新」时不弹（第 55 条）。
       if (stage.step === 'download') await expect.poll(() => page.locator('.v2-notification').count()).toBe(0)
       else await page.getByRole('alert').getByText(stage.title, { exact: true }).waitFor()
     }
@@ -4002,8 +4017,8 @@ test('the updates page names the step that failed and offers that step again', a
 })
 
 // 首页气泡说「下载更新失败」却只给「查看更新」，客户得换页再找按钮。气泡上直接
-// 给那一步的重试，走的和更新页同一套：下载失败先重新查再下，安装失败落到更新页的
-// 重启确认框，检查失败重新查。
+// 给那一步的重试，走的和版本更新卡同一套：下载失败先重新查再下，安装失败落到「设置 › 版本更新」
+// 那张卡的重启确认框，检查失败重新查。
 test('the update failure bubble retries the failed step without a detour', async () => {
   const page = await open('updateRetryAvailable=1')
   try {
@@ -4035,24 +4050,23 @@ test('the update failure bubble retries the failed step without a detour', async
     await emit('install', 'downloaded', 'UPDATE_ERROR', '更新程序未能启动，已继续打开主程序；可在“检查更新”页重试安装')
     const install = page.getByRole('alert').filter({ hasText: '安装更新失败' })
     await install.getByRole('button', { name: '重新安装', exact: true }).click()
-    await page.getByTestId('page-updates').waitFor()
+    const settings = page.getByTestId('page-settings')
+    await settings.getByTestId('page-updates').waitFor()
+    await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('dialog', { name: '重启并安装更新？' }).waitFor()
     assert.equal(await calls('installUpdate'), 0)
     await clean(page)
   } finally { await page.close() }
 })
 
-// 已知31：更新页「确认重启安装」让主进程先看有没有工具在装（askIfInstalling），有就先问退出时那一句。
+// 已知31：版本更新卡确认框里的「重启并安装」让主进程先看有没有工具在装（askIfInstalling），有就先问退出时那一句。
 // 客户在那一句里点了「继续安装」：确认框关掉，不说「安装请求已提交」，新版本留着。
-test('the updates page asks about running installs before restarting and stays quiet when the user keeps installing (known 31)', async () => {
+test('the version card asks about running installs before restarting and stays quiet when the user keeps installing (known 31)', async () => {
   const page = await open('installPostponed=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
-    const restart = updates.getByRole('button', { name: '重启安装', exact: true })
-    // 更新页进来先自己读一次状态（假数据里是没开自动更新），读回来之前推过去的会被它盖掉：推到按钮出来为止。
+    const updates = await openVersionCard(page)
+    const restart = updates.getByRole('button', { name: '重启并安装', exact: true })
+    // 版本卡挂上先自己读一次状态（假数据里是没开自动更新），读回来之前推过去的会被它盖掉：推到按钮出来为止。
     await expect.poll(async () => {
       await page.evaluate(() => window.v2Test.emit('onUpdateState', {
         phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
@@ -4062,7 +4076,7 @@ test('the updates page asks about running installs before restarting and stays q
     }).toBe(1)
     await restart.click()
     const confirm = page.getByRole('dialog', { name: '重启并安装更新？' })
-    await confirm.getByRole('button', { name: '确认重启安装', exact: true }).click()
+    await confirm.getByRole('button', { name: '重启并安装', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args)), [[{ askIfInstalling: true }]])
     await restart.waitFor()
@@ -4071,15 +4085,12 @@ test('the updates page asks about running installs before restarting and stays q
   } finally { await page.close() }
 })
 
-// 开机和每 3 小时自己跑的检查没查成，客户什么都没点：首页不弹红框，更新页照常能看到
+// 开机和每 3 小时自己跑的检查没查成，客户什么都没点：首页不弹红框，版本更新卡照常能看到
 // 这次失败和「重试」。客户自己点的检查没查成，照旧弹。
-test('an automatic update check that fails stays off the home bubble but shows on the updates page', async () => {
+test('an automatic update check that fails stays off the home bubble but shows on the version card', async () => {
   const page = await open('updateCheckFail=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     const emit = (automatic) => page.evaluate((flag) => window.v2Test.emit('onUpdateState', {
       phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
@@ -4098,15 +4109,12 @@ test('an automatic update check that fails stays off the home bubble but shows o
   } finally { await page.close() }
 })
 
-// Mac 校验新版本签名没通过时，同一个包装多少遍都一样：更新页和首页气泡都不再给
+// Mac 校验新版本签名没通过时，同一个包装多少遍都一样：版本更新卡和首页气泡都不再给
 //「重新安装」，改给「打开下载页」，让客户手动装一次。
 test('a Mac signature rejection offers the download page instead of reinstalling', async () => {
   const page = await open('updateCheckFail=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     const reason = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
     await page.evaluate((message) => window.v2Test.emit('onUpdateState', {
       phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
@@ -4118,8 +4126,8 @@ test('a Mac signature rejection offers the download page instead of reinstalling
     await notice.getByText(reason, { exact: true }).waitFor()
     await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
     assert.equal(await notice.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
-    // 卡片头上的「重启安装」是同一条死路，也不能留。
-    assert.equal(await updates.getByRole('button', { name: '重启安装', exact: true }).count(), 0)
+    // 卡底那颗「重启并安装」是同一条死路，也不能留。
+    assert.equal(await updates.getByRole('button', { name: '重启并安装', exact: true }).count(), 0)
     const bubble = page.getByRole('alert').filter({ hasText: '安装更新失败' })
     await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
     assert.equal(await bubble.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
@@ -4136,15 +4144,12 @@ test('a Mac signature rejection offers the download page instead of reinstalling
 })
 
 // 下载停住、自动换直连重下也还是停住：有的公司网关先把整个安装包扣住查完才放行，再点
-//「重新下载」多半还是一样。更新页和首页气泡在「重新下载」旁边多给「打开下载页」；别的下载
+//「重新下载」多半还是一样。版本更新卡和首页气泡在「重新下载」旁边多给「打开下载页」；别的下载
 // 失败照旧只给「重新下载」。
 test('a stalled update download offers the download page next to downloading again', async () => {
   const page = await open('updateCheckFail=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     const reason = '连接更新服务器超时，请检查网络后再试。'
     const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
       phase: 'error', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
@@ -4157,7 +4162,7 @@ test('a stalled update download offers the download page next to downloading aga
     await notice.getByText(reason, { exact: true }).waitFor()
     await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
     await notice.getByRole('button', { name: '查看日志', exact: true }).waitFor()
-    // 人在更新页时气泡不重复说一遍（第 55 条）。
+    // 人在「设置 › 版本更新」时气泡不重复说一遍（第 55 条）。
     assert.equal(await page.locator('.v2-notification').count(), 0)
 
     const opened = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
@@ -4170,7 +4175,7 @@ test('a stalled update download offers the download page next to downloading aga
     await expect.poll(() => notice.getByRole('button', { name: '打开下载页', exact: true }).count()).toBe(0)
     await notice.getByRole('button', { name: '重新下载', exact: true }).waitFor()
 
-    // 离开更新页，气泡照旧弹，按钮和页面上的一样。
+    // 离开设置页，气泡照旧弹，按钮和卡上的一样。
     await page.getByTestId('nav-home').click()
     await emit('UPDATE_DOWNLOAD_STALLED')
     const bubble = page.getByRole('alert').filter({ hasText: '下载更新失败' })
@@ -4185,15 +4190,12 @@ test('a stalled update download offers the download page next to downloading aga
   } finally { await page.close() }
 })
 
-// 检查更新 45 秒没动静被掐断：连更新清单都拿不回来的网络，再点「重试」多半一样。更新页在
+// 检查更新 45 秒没动静被掐断：连更新清单都拿不回来的网络，再点「重试」多半一样。版本更新卡在
 //「重试」旁边多给「打开下载页」；别的检查失败照旧只给「重试」。
 test('a stalled update check offers the download page next to retrying', async () => {
   const page = await open('updateCheckFail=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     const reason = '连接更新服务器超时，请检查网络后再试。'
     const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
       phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
@@ -4215,15 +4217,12 @@ test('a stalled update check offers the download page next to retrying', async (
   } finally { await page.close() }
 })
 
-// 磁盘快满时新版本先不下：更新页和首页气泡都说清差多少，「怎么清理」就地展开步骤，
+// 磁盘快满时新版本先不下：版本更新卡和首页气泡都说清差多少，「怎么清理」就地展开步骤，
 //「仍要下载」跳过这一次的空间预检。
-test('the updates page explains a full disk and still lets the user download', async () => {
+test('the version card explains a full disk and still lets the user download', async () => {
   const page = await open('updateCheckFail=1')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     await page.evaluate(() => window.v2Test.emit('onUpdateState', {
       phase: 'available', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: true,
@@ -4244,7 +4243,7 @@ test('the updates page explains a full disk and still lets the user download', a
 })
 
 // 必须更新的门碰上磁盘不够：主进程不下载也不报错，门要说清差多少、给清理步骤，
-//「空间够了，再试一次」重新量盘，「仍要下载」跳过预检，和更新页一样。
+//「空间够了，再试一次」重新量盘，「仍要下载」跳过预检，和版本更新卡一样。
 test('the required-update gate explains a full disk and lets the user retry', async () => {
   const page = await open('')
   try {
@@ -4281,15 +4280,12 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac and t
   for (const [query, expected] of [['os=mac', 1], ['', 0]]) {
     const page = await open(query)
     try {
-      await page.getByTestId('nav-more').click()
-      await page.getByTestId('nav-updates').click()
-      const updates = page.getByTestId('page-updates')
-      await updates.waitFor()
+      const updates = await openVersionCard(page)
       await page.evaluate(() => window.v2Test.emit('onUpdateState', {
         phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
         checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
       }))
-      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      await updates.getByRole('button', { name: '重启并安装', exact: true }).click()
       const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
       await dialog.waitFor()
       if (expected) await dialog.getByTestId('updates-mac-keychain-hint').getByText('始终允许', { exact: false }).waitFor()
@@ -4302,7 +4298,7 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac and t
   }
 })
 
-// 账号不在管理员组的 Windows 电脑：下好的新版本不自动装（第二十四批 2）。首页气泡和更新页「重启安装」
+// 账号不在管理员组的 Windows 电脑：下好的新版本不自动装（第二十四批 2）。首页气泡和更新页「重启并安装」
 // 旁边说清要管理员密码、要谁来点，还没下好时也不说会自动装上，确认框不再只叫他点「是」，强制更新
 // 那道门同样改口；字都是 yoyo 2026-10-06 批的原话。管理员账号照旧。
 test('a Windows account outside the administrators group is told an administrator has to install updates', async () => {
@@ -4319,7 +4315,7 @@ test('a Windows account outside the administrators group is told an administrato
     await page.locator('.xm-notice').getByText('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。', { exact: true }).waitFor()
 
     await emit({ phase: 'downloaded', progress: null })
-    const bubble = page.locator('.xm-notice').filter({ hasText: '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启安装」，或者找客服。' })
+    const bubble = page.locator('.xm-notice').filter({ hasText: '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。' })
     await bubble.getByText('更新已下载', { exact: true }).waitFor()
     await bubble.getByRole('button', { name: '查看更新', exact: true }).click()
     const updates = page.getByTestId('page-updates')
@@ -4330,9 +4326,9 @@ test('a Windows account outside the administrators group is told an administrato
     await updates.getByText('新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装', { exact: true }).waitFor()
     const notice = updates.getByTestId('updates-admin-password')
     await notice.getByText('这台电脑的账号不是管理员，装更新时要输入管理员密码', { exact: true }).waitFor()
-    await notice.getByText('让有管理员账号的人点一次「重启安装」，或者找客服。', { exact: true }).waitFor()
+    await notice.getByText('让有管理员账号的人点一次「重启并安装」，或者找客服。', { exact: true }).waitFor()
     // 原话叫他点的就是卡片头上这颗按钮：自己点照样能装，确认框说清要输管理员密码。
-    await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+    await updates.getByRole('button', { name: '重启并安装', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
     await dialog.getByTestId('updates-windows-consent-hint').getByText('Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
@@ -4351,7 +4347,7 @@ test('a Windows account outside the administrators group is told an administrato
 })
 
 // 星芒这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、右键「以管理员
-// 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、安装卸载页和重启安装确认框都不说
+// 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、安装卸载页和重启并安装确认框都不说
 // 会弹（已知19）。首页那段在只用 Codex 桌面端时只去掉弹窗半句，「一般不用单独点」照旧。没带管理员权限的照旧说。
 test('an app already running with administrator rights does not promise a consent window', async () => {
   for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
@@ -4379,7 +4375,7 @@ test('an app already running with administrator rights does not promise a consen
         phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
         checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
       }))
-      await updates.getByRole('button', { name: '重启安装', exact: true }).click()
+      await updates.getByRole('button', { name: '重启并安装', exact: true }).click()
       const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
       await dialog.waitFor()
       if (!elevated) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
@@ -4389,22 +4385,19 @@ test('an app already running with administrator rights does not promise a consen
   }
 })
 
-// Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启安装」（软件只关掉、不会自己重开），
+// Linux 的 .deb 交给系统安装窗口装：按钮不能叫「重启并安装」（软件只关掉、不会自己重开），
 // 确认框要先说清楚会弹安装窗口、要输开机密码。不是 .deb 装的那种根本没法自动更新，
 // 更新页给一条去下载页的路，而不是一颗永远点不动的「检查更新」。
 test('on Linux the updates page hands installing to the system installer and explains the password prompt', async () => {
   const page = await open('')
   try {
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     await page.evaluate(() => window.v2Test.emit('onUpdateState', {
       phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
       installMethod: 'system-installer',
     }))
-    assert.equal(await updates.getByRole('button', { name: '重启安装', exact: true }).count(), 0)
+    assert.equal(await updates.getByRole('button', { name: '重启并安装', exact: true }).count(), 0)
     await updates.getByRole('button', { name: '安装新版本', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '安装新版本？' })
     await dialog.waitFor()
@@ -4509,10 +4502,7 @@ test('a withdrawn running version is called out and the older release is offered
     }))
     await emitWithdrawn()
     await page.getByText('建议退回 0.2.9', { exact: true }).waitFor()
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-updates').click()
-    const updates = page.getByTestId('page-updates')
-    await updates.waitFor()
+    const updates = await openVersionCard(page)
     await emitWithdrawn()
     await updates.getByText('建议退回稳定版本', { exact: true }).waitFor()
     await updates.getByTestId('updates-current-withdrawn').getByText(/建议装回 0\.2\.9/).waitFor()

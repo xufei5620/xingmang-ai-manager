@@ -11,13 +11,13 @@ describe('release notes section on the updates page', () => {
       releaseNotesText: '- 新版本的改动',
       installedRelease: { justUpdated: true, previousVersion: '0.2.8', notes: ['本版改动'] },
     })
-    expect(section).toEqual({ title: '0.3.0 更新内容', items: null, text: '- 新版本的改动' })
+    expect(section).toEqual({ title: 'v0.3.0 更新内容', items: null, text: '- 新版本的改动' })
   })
 
   it('lists the bundled changes of the running version when nothing newer is pending', () => {
     // 不论是不是刚更新完：更新页一直能看到当前这一版改了什么，断网也在。
     const section = releaseNotesSection({ ...base, installedRelease: { justUpdated: false, previousVersion: '0.2.9', notes: ['一条', '两条'] } })
-    expect(section).toEqual({ title: '当前版本 0.2.9 更新内容', items: ['一条', '两条'], text: '' })
+    expect(section).toEqual({ title: 'v0.2.9 更新了什么', items: ['一条', '两条'], text: '' })
   })
 
   it('falls back to the old sentence when the build carried no notes', () => {

@@ -12,9 +12,8 @@ export const shellNavigation: readonly ShellNavigationGroup[] = [
   { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
   { entries: ['recharge', 'tutorial', 'health', 'feedback'] },
 ]
-// 过渡期：v4 里这四页各有新去处（设置 › 网络加速、首页工具卡片、设置 › 备份迁移、设置 › 版本更新），
-// 去处落地之前先收在「更多」里，落地一个删一个，空了连「更多」一起删。
-export const moreNavigation: readonly PageId[] = ['acceleration', 'maintenance', 'backups', 'updates']
+// 过渡期：游戏加速、备份、更新已并进设置（第 9 批）；安装卸载等第 10 批拆掉，空了连「更多」一起删。
+export const moreNavigation: readonly PageId[] = ['maintenance']
 /** 界面导览三步：没有标题，第一步按系统只写一种快捷键。 */
 export const shellTour = [
   { target: '.v2-command-trigger', body: { win: '按 Ctrl K 随时搜索页面、设置和操作，比翻菜单快。', mac: '按 ⌘ K 随时搜索页面、设置和操作，比翻菜单快。' } },
