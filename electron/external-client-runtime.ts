@@ -175,7 +175,7 @@ export interface ExternalClientInventoryTimings {
 /** 点「打开」到交给资源管理器（Mac 上是 open）为止，各段花的毫秒数。 */
 export interface ExternalClientLaunchTiming extends ExternalClientInventoryTimings {
   tool: ExternalToolId
-  /** 排在别的安装、卸载、打开后面等了多久。 */
+  /** 等这一家自己正在装的那一次装完等了多久（别的工具装着不等，见 launch）。 */
   queueWaitMs: number
   /** 打开前那次检测一共多久：Windows 上是 powershellMs 加上星芒自己再核一遍路径。 */
   inventoryMs: number
@@ -580,6 +580,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const launchProcess = options.launchProcess ?? launchDetached
   const resolveMachinePaths = options.resolveMachinePaths ?? resolveWindowsMachinePaths
   const jobs = new Map<ExternalToolId, { promise: Promise<ExternalClientRuntimeStatus>; observers: Set<(event: ExternalClientInstallProgress) => void>; last: ExternalClientInstallProgress | null }>()
+  // 正在打开的那几家：连点两下合成一次；同一家的安装要等它打开完再动手（见 install）。
+  const launches = new Map<ExternalToolId, Promise<void>>()
   const installCancellations = new InstallCancellationRegistry()
   let inFlightScan: Promise<ExternalClientRuntimeStatus[]> | null = null
   const now = options.now ?? Date.now
@@ -920,10 +922,14 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       return error
     }
     let started = false
+    const launchAhead = launches.get(tool)
     report('queued', `${definitions[tool].name} 已加入安装队列`)
     job.promise = queue.enqueue(installKey(tool), async () => {
       started = true
       try {
+        // 点安装之前这一家已经在打开（打开不排这条队）：等它交给系统再动它的文件。只等点安装之前
+        // 那一次：之后点的打开反过来在等这次安装（见 launch），两边都等对方就互相等死了。
+        await launchAhead?.catch(() => undefined)
         // 排着队时点的取消已经让这一项直接出队了；这里兜底，这时什么都还没动。
         cancellation.throwIfCancelled()
         report('checking', `正在检测 ${definitions[tool].name}`)
@@ -1001,8 +1007,14 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   }
   function launch(tool: ExternalToolId): Promise<void> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
+    const existing = launches.get(tool)
+    if (existing) return existing
     const requestedAt = now()
-    const launched = queue.enqueue(`external-client:launch:${tool}`, async () => {
+    // 不排安装队列（I11 的登记例外），只等这一家自己正在装的那一次。打开它读的是它自己的安装位置和
+    // 签名，命令行工具、运行环境、别家客户端装到一半都碰不到（开机那轮盘点本来也不排队）；以前排在
+    // 它们后面，装着 Claude Code 点 Claude Desktop 要干等十几分钟，首页别的「打开」也跟着灰掉。
+    const ownInstall = jobs.get(tool)?.promise.then(() => undefined, () => undefined) ?? Promise.resolve()
+    const launched = ownInstall.then(async () => {
       const startedAt = now()
       // 只看要打开的这一个：没点的那几家跟这次打开无关，不该让人多等它们的检测和签名核对。
       // Windows 上验过并且通过、文件和版本都没变的不再现验（已知68，理由见 windowsExternalClientInventoryScript 上面）。
@@ -1024,8 +1036,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }
       catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
     })
-    // 打开之后「正在运行」就变了，下一次检测得重新盘点。
-    void launched.then(invalidateScan, invalidateScan)
+    launches.set(tool, launched)
+    const settle = () => {
+      if (launches.get(tool) === launched) launches.delete(tool)
+      // 打开之后「正在运行」就变了，下一次检测得重新盘点。
+      invalidateScan()
+    }
+    void launched.then(settle, settle)
     return launched
   }
   /**

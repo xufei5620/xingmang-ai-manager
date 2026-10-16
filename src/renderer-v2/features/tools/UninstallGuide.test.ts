@@ -1,0 +1,81 @@
+import { describe, expect, it } from 'vitest'
+import { buildUninstallGuide } from './UninstallGuide'
+
+describe('buildUninstallGuide', () => {
+  it('sends a Windows customer to the installed apps list under the name Windows shows', () => {
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'win')).toEqual({
+      title: '怎么卸载 Claude Desktop',
+      lead: 'Claude Desktop 要在系统里卸载：',
+      steps: [
+        '打开 Windows「设置 → 应用 → 已安装的应用」（Windows 10 上叫「应用和功能」）。',
+        '找到 Claude，点右边的「…」→「卸载」（Windows 10 上先点它，再点「卸载」）。',
+      ],
+      after: '卸完回到星芒，点首页的「重新检测」。',
+    })
+    expect(buildUninstallGuide('opencode', 'OpenCode', 'win')?.steps[1]).toContain('找到 OpenCode，')
+    expect(buildUninstallGuide('workbuddy', 'WorkBuddy', 'win')?.steps[1]).toContain('找到 WorkBuddy，')
+  })
+
+  it('has the Mac customer quit the app first and drag it to the Trash from Applications', () => {
+    expect(buildUninstallGuide('opencode', 'OpenCode', 'mac')).toEqual({
+      title: '怎么卸载 OpenCode',
+      lead: 'OpenCode 要在系统里卸载：',
+      steps: [
+        '先退出 OpenCode（在它的窗口里按 ⌘Q）。',
+        '打开访达，点左边的「应用程序」。',
+        '找到 OpenCode，把它拖进废纸篓。',
+      ],
+      after: '删完回到星芒，点首页的「重新检测」。',
+    })
+  })
+
+  it('names the Mac Codex desktop app ChatGPT, the name Finder shows', () => {
+    const guide = buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac')
+    expect(guide?.title).toBe('怎么卸载 Codex 桌面端')
+    expect(guide?.lead).toBe('Codex 桌面端要在系统里卸载：')
+    expect(guide?.steps).toEqual([
+      '先退出 ChatGPT（在它的窗口里按 ⌘Q）。',
+      '打开访达，点左边的「应用程序」。',
+      '找到 ChatGPT（Codex 桌面端在 Mac 上叫这个名字），把它拖进废纸篓。',
+    ])
+  })
+
+  it('names the bundle Finder shows when detection found one, so a legacy ChatGPT app is not the one deleted', () => {
+    // 早先的官方包叫 Codex.app：照写 ChatGPT 的话，同时留着旧聊天程序 ChatGPT.app 的人会删错。
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Applications/Codex.app')?.steps).toEqual([
+      '先退出 Codex（在它的窗口里按 ⌘Q）。',
+      '打开访达，点左边的「应用程序」。',
+      '找到 Codex，把它拖进废纸篓。',
+    ])
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Users/mike/Applications/ChatGPT.app/')?.steps)
+      .toContain('找到 ChatGPT（Codex 桌面端在 Mac 上叫这个名字），把它拖进废纸篓。')
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'mac', '/Applications/Claude.app')?.steps[2]).toBe('找到 Claude，把它拖进废纸篓。')
+    // 不是 .app 的路径（没读到、或别的形状）照旧用固定的名字；Windows 上不看路径。
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', null)?.steps[0]).toBe('先退出 ChatGPT（在它的窗口里按 ⌘Q）。')
+    expect(buildUninstallGuide('opencode', 'OpenCode', 'mac', '/Applications/OpenCode')?.steps[2]).toBe('找到 OpenCode，把它拖进废纸篓。')
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'win', 'C:\\Users\\a\\AppData\\Local\\AnthropicClaude\\Claude.exe')?.steps[1])
+      .toContain('找到 Claude，')
+  })
+
+  it('sends a non-admin Mac customer to the Applications folder inside their home folder', () => {
+    // 不是管理员的账号，星芒装进 ~/Applications，访达左边那个「应用程序」里没有。
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'mac', '/Users/mike/Applications/Claude.app')?.steps).toEqual([
+      '先退出 Claude（在它的窗口里按 ⌘Q）。',
+      '打开访达，按 ⇧⌘H 打开你的个人文件夹，再打开里面的「应用程序」。',
+      '找到 Claude，把它拖进废纸篓。',
+    ])
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'mac', '/Users/mike/Applications/ChatGPT.app/')?.steps[1])
+      .toBe('打开访达，按 ⇧⌘H 打开你的个人文件夹，再打开里面的「应用程序」。')
+    // 系统的 /Applications、认不出来的位置和没读到路径都照旧写左边那个「应用程序」。
+    for (const path of ['/Applications/Claude.app', '/Users/mike/Downloads/Claude.app', '/Volumes/外置/Applications/Claude.app', null]) {
+      expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'mac', path)?.steps[1]).toBe('打开访达，点左边的「应用程序」。')
+    }
+  })
+
+  it('gives no guide where the app uninstalls it itself or does not list the card', () => {
+    // Windows 上的 Codex 桌面端星芒自己卸；Linux 上这几张卡片都不列。
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'win')).toBeNull()
+    expect(buildUninstallGuide('claudeDesktop', 'Claude Desktop', 'linux')).toBeNull()
+    expect(buildUninstallGuide('codexDesktop', 'Codex 桌面端', 'linux')).toBeNull()
+  })
+})

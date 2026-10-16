@@ -44,8 +44,7 @@ const notWaitedOn = ['launch:', 'switch:', 'repair-hooks:', 'repair-config:']
  * 安装、卸载、打开工具在主进程排同一个队（AGENTS.md I11），前面那一项没做完，
  * 「打开」只能干等，装一个工具最长要十几分钟。工具行以前只写「正在打开工具」，
  * 用户以为卡死了（全面检测 Q15）。这里挑出排在前面、还在跑的那一项，说清在等谁。
- * WorkBuddy、Claude Desktop、OpenCode 的「打开」排的是同一个队，前面没人时说
- * 「正在打开客户端」，由 idle 传进来（第三十九批 C）。
+ * 前面没人时说 idle（桌面客户端那几家见 clientLaunchWaitLabel）。
  */
 export function launchWaitLabel(
   jobs: Record<string, { label: string }>,
@@ -59,4 +58,18 @@ export function launchWaitLabel(
   if (key === 'node' || key === 'python' || key === 'git') return '正在等运行环境准备好，好了马上打开'
   const action = /卸载/.test(job.label) ? '卸载' : '安装'
   return `正在等 ${nameOf(key) ?? '另一个工具'} ${action}完，${action}完马上打开`
+}
+
+/**
+ * WorkBuddy、Claude Desktop、OpenCode 的「打开」不排那条队（I11 的登记例外），只等这一家
+ * 自己正在装的那一次。以前装着 Claude Code 点 Claude Desktop 要等它装完，首页别的「打开」
+ * 也跟着灰掉（yoyo 2026-10-16 真机）。别家在装时照常写「正在打开客户端」，不说在等谁。
+ */
+export function clientLaunchWaitLabel(
+  jobs: Record<string, { label: string }>,
+  client: string,
+  nameOf: (key: string) => string | undefined,
+): string {
+  const own = jobs[client]
+  return launchWaitLabel(own ? { [client]: own } : {}, nameOf, '正在打开客户端')
 }
