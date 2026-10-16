@@ -7512,7 +7512,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(result).toEqual({ configured: ['codex'], failed: [] })
       expect(service.saveConfig).toHaveBeenCalledWith({
         provider: 'codex',
-        apiKey: 'sk-internal-GPT-中转/订阅',
+        apiKey: 'sk-internal-GPT',
         model: 'gpt-5.6-sol',
         mode: mode ?? 'merge',
       }, false, expect.any(Function), { source: 'account', automatic: true })

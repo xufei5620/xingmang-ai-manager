@@ -21,7 +21,7 @@ import type { AccountKey } from './ipc-contract'
 function key(overrides: Partial<AccountKey> & Pick<AccountKey, 'id' | 'name'>): AccountKey {
   return {
     maskedKey: 'sk-••••••••0001',
-    group: 'Claude-MAX订阅',
+    group: 'Claude-MAX',
     status: 1,
     remainQuota: 0,
     unlimitedQuota: true,
@@ -73,9 +73,9 @@ describe('account key quota conversion', () => {
 
 describe('managed CLI key limits', () => {
   const keys = [
-    key({ id: 3, name: 'xingmang-desktop-claude', group: 'Claude-MAX订阅', unlimitedQuota: false, remainQuota: 2_500_000, usedQuota: 500_000 }),
-    key({ id: 4, name: 'xingmang-desktop-codex', group: 'GPT-中转/订阅', usedQuota: 1_000_000 }),
-    key({ id: 9, name: 'my-own-key', group: 'GPT-中转/订阅' }),
+    key({ id: 3, name: 'xingmang-desktop-claude', group: 'Claude-MAX', unlimitedQuota: false, remainQuota: 2_500_000, usedQuota: 500_000 }),
+    key({ id: 4, name: 'xingmang-desktop-codex', group: 'GPT', usedQuota: 1_000_000 }),
+    key({ id: 9, name: 'my-own-key', group: 'GPT' }),
   ]
 
   it('resolves one row per tool with its used and remaining amounts', () => {
@@ -84,11 +84,11 @@ describe('managed CLI key limits', () => {
     expect(limits[0]).toMatchObject({ keyName: 'xingmang-desktop-claude', unlimited: false, remaining: 5, used: 1 })
     expect(limits[1]).toMatchObject({ unlimited: true, remaining: null, used: 2 })
     expect(limits[2]).toMatchObject({ key: null, unlimited: true, remaining: null, used: null })
-    expect(limits[2].group).toBe('Grok-中转/订阅')
+    expect(limits[2].group).toBe('Grok')
   })
 
   it('leaves the retired Gemini CLI out even when its key is still on the account', () => {
-    const withGemini = [...keys, key({ id: 12, name: 'xingmang-desktop-gemini', group: 'Gemini-中转/订阅', managedProvider: 'gemini' })]
+    const withGemini = [...keys, key({ id: 12, name: 'xingmang-desktop-gemini', group: 'Gemini', managedProvider: 'gemini' })]
     expect(resolveManagedCliKeyLimits(withGemini, 500_000, 'solov').map((limit) => limit.provider)).toEqual(['claude', 'codex', 'grok'])
   })
 
@@ -117,7 +117,7 @@ describe('managed CLI key limits', () => {
   it('prefers the key this program provisions when a hand-made key shares its name', () => {
     const duplicates = [
       key({ id: 11, name: 'xingmang-desktop-claude', group: '另一个分组' }),
-      key({ id: 12, name: 'xingmang-desktop-claude', group: 'Claude-MAX订阅' }),
+      key({ id: 12, name: 'xingmang-desktop-claude', group: 'Claude-MAX' }),
     ]
     expect(resolveManagedCliKeyLimits(duplicates, 500_000, 'solov')[0].key?.id).toBe(12)
     expect(resolveManagedCliKeyLimits(duplicates.slice(0, 1), 500_000, 'solov')[0].key?.id).toBe(11)
@@ -129,7 +129,7 @@ describe('managed CLI key limits', () => {
     expect(buildManagedCliKeyLimitUpdate(claude, 20, 500_000, 'solov')).toEqual({
       id: 3,
       name: 'xingmang-desktop-claude',
-      group: 'Claude-MAX订阅',
+      group: 'Claude-MAX',
       remainQuota: 10_000_000,
       unlimitedQuota: false,
       expiredTime: Date.parse(expiredAt) / 1000,
@@ -158,7 +158,7 @@ describe('loadManagedCliKeys', () => {
   it('pages until the list is exhausted and keeps only the managed keys', async () => {
     const pages = [
       { total: 150, keys: [key({ id: 1, name: 'other' }), key({ id: 2, name: 'xingmang-desktop-claude' }), key({ id: 4, name: 'renamed', managedProvider: 'gemini' })] },
-      { total: 150, keys: [key({ id: 3, name: 'xingmang-desktop-grok', group: 'Grok-中转/订阅' })] },
+      { total: 150, keys: [key({ id: 3, name: 'xingmang-desktop-grok', group: 'Grok' })] },
     ]
     const requested: Array<[number, number]> = []
     const found = await loadManagedCliKeys(async (page, pageSize) => {

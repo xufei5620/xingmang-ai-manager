@@ -1,4 +1,5 @@
 import type { AccountKey, AccountKeyOptions, AccountKeysPage, AppConfigSummary, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
+import { managedCliKeyProfiles, retiredAccountGroups, retiredProviderIds } from '../../../../electron/catalog'
 
 export const CURRENT_KEY = 'current'
 export const AUTOMATIC_KEY = 'automatic'
@@ -15,6 +16,45 @@ export function initialKeyChoice(native: AppConfigSummary['providers'][ProviderI
  */
 export function accountKeyDescription(key: Pick<AccountKey, 'group' | 'maskedKey'>): string {
   return [key.maskedKey || '密钥预览未提供', key.group ? `${key.group}分组` : null].filter(Boolean).join('，')
+}
+
+// 下线工具（Gemini CLI）以前星芒替它签的那把。
+const retiredManagedKeyNames = new Set<string>(retiredProviderIds.map((provider) => managedCliKeyProfiles[provider].keyName))
+
+function lastUsedAt(key: AccountKey): number {
+  const time = key.accessedAt ? Date.parse(key.accessedAt) : Number.NaN
+  return Number.isFinite(time) ? time : 0
+}
+
+// 同一分组里同名的两把留哪把：正选着的，否则最近用过的，都没用过就留后建的（编号大）。
+function preferredTwin(kept: AccountKey, other: AccountKey, selectedKeyId: string): AccountKey {
+  if (String(kept.id) === selectedKeyId) return kept
+  if (String(other.id) === selectedKeyId) return other
+  return (lastUsedAt(other) - lastUsedAt(kept) || other.id - kept.id) > 0 ? other : kept
+}
+
+/**
+ * 工具配置框的密钥下拉列哪几把（个人中心「密钥」页照旧全列）：
+ * - 星芒签的密钥在同一个分组里同名的只列一把，挑最近用过的那把。xm 站改分组本名那几天，老版本星芒在老名字下
+ *   又签了一把同名的，服务端删老名字时把它挂回了新名字下，就成了同一分组里两把一样名字的。用户自己建的同名密钥不合并。
+ * - 下线工具（Gemini CLI）星芒签的那把不列：星芒不再替它配，选给别的工具也用不了。
+ * - 分组还写着 xm 站删掉的老名字的不列：服务端删之前已把这些都挂到新名字下，再有就是坏的，一调用就 403「无权访问 … 分组」。
+ * 正选着的那把照旧列着，免得下拉里找不到它。
+ */
+export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: string): AccountKey[] {
+  const enabled = keys.filter((key) => key.status === 1)
+  const shown = new Map<string, AccountKey>()
+  for (const key of enabled) {
+    if (!key.name.startsWith('xingmang-')) continue
+    const slot = JSON.stringify([key.name, key.group])
+    const kept = shown.get(slot)
+    shown.set(slot, kept ? preferredTwin(kept, key, selectedKeyId) : key)
+  }
+  return enabled.filter((key) => {
+    if (String(key.id) === selectedKeyId) return true
+    if (retiredManagedKeyNames.has(key.name) || retiredAccountGroups.has(key.group)) return false
+    return !key.name.startsWith('xingmang-') || shown.get(JSON.stringify([key.name, key.group])) === key
+  })
 }
 
 /**
