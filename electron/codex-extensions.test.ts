@@ -727,7 +727,7 @@ describe('Codex config.toml that no longer parses', () => {
     const invoke: CodexInvoker = async (argv) => argv[0] === 'plugin' ? pluginCatalog() : argv[1] === 'add' ? '' : mcpList([])
     const service = new CodexExtensionService({ homeDirectory: home, invoke })
     // 和保存配置那边同一句：只报行号，再指去「重置为初始状态」（第三十批 C）。
-    const expected = 'Codex 的配置文件里有写错的地方（第 4 行附近），星芒没有改动它。在首页 Codex 那一行点「…」里的「配置」，选「使用星芒账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「设置 › 备份迁移」里能找回），再重新生成。'
+    const expected = 'Codex 的配置文件里有写错的地方（第 4 行附近），星芒没有改动它。在首页 Codex 的卡片上点「…」里的「配置…」，选「当前账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「设置 › 备份迁移」里能找回），再重新生成。'
 
     expect(await failureMessage(service.listSkills())).toBe(expected)
     expect(await failureMessage(service.setSkillEnabled(skillPath, false))).toBe(expected)
