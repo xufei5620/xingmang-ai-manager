@@ -10,4 +10,5 @@
   是正在用的那份、地址是当前线路、密钥归当前账号时改回 `3p`，否则一个字不写、界面打开「连接 Claude Desktop」。
   见 `claude-desktop-config.ts` 的 `useOfficialLogin` / `useGatewayLogin`。
 - 检测结果新增可选字段 `officialAccount`（落进开机快照），首页据此显示「官方账号」而不是「待连接」，检查页显示未配置、
-  不拿留着的密钥去发请求。官方登录记成的值 `1p` 是推测，待 Mac 真机核对。
+  不拿留着的密钥去发请求。官方登录记成的值 `1p` 官方文档没写，出自 Linux 打包项目 claude-desktop-extra 的文档，
+  待 Mac 真机核对。
