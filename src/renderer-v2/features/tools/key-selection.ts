@@ -1,4 +1,5 @@
 import type { AccountKey, AccountKeyOptions, AccountKeysPage, AppConfigSummary, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
+import { managedCliKeyProfiles, retiredProviderIds } from '../../../../electron/catalog'
 
 export const CURRENT_KEY = 'current'
 export const AUTOMATIC_KEY = 'automatic'
@@ -15,6 +16,30 @@ export function initialKeyChoice(native: AppConfigSummary['providers'][ProviderI
  */
 export function accountKeyDescription(key: Pick<AccountKey, 'group' | 'maskedKey'>): string {
   return [key.maskedKey || '密钥预览未提供', key.group ? `${key.group}分组` : null].filter(Boolean).join('，')
+}
+
+// 下线工具（Gemini CLI）以前星芒替它签的那把。
+const retiredManagedKeyNames = new Set<string>(retiredProviderIds.map((provider) => managedCliKeyProfiles[provider].keyName))
+
+/**
+ * 工具配置框的密钥下拉列哪几把（个人中心「密钥」页照旧全列）：
+ * - 站上改了分组本名以后，老版本星芒会在老名字下再建一把同名的。新名字下有同名、能用的那把时，老名字那把不列。
+ * - 下线工具（Gemini CLI）星芒签的那把不列：星芒不再替它配，选给别的工具也用不了。
+ * 正选着的那把照旧列着，免得下拉里找不到它。
+ */
+export function listedAccountKeys(
+  keys: readonly AccountKey[],
+  renamedGroups: AccountKeyOptions['renamedGroups'],
+  selectedKeyId: string,
+): AccountKey[] {
+  const renamed = new Map((renamedGroups ?? []).map(({ from, to }) => [from, to]))
+  const enabled = keys.filter((key) => key.status === 1)
+  return enabled.filter((key) => {
+    if (String(key.id) === selectedKeyId) return true
+    if (retiredManagedKeyNames.has(key.name)) return false
+    const renamedTo = renamed.get(key.group)
+    return renamedTo === undefined || !enabled.some((other) => other.name === key.name && other.group === renamedTo)
+  })
 }
 
 /**

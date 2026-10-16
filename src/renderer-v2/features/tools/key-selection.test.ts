@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccountKey, AppConfigSummary, AccountKeysPage } from '../../../../electron/ipc-contract'
-import { accountKeyDescription, currentKeyLabel, initialKeyChoice, manualKeyIssue, manualKeyPreview, readAllAccountKeys } from './key-selection'
+import { accountKeyDescription, currentKeyLabel, initialKeyChoice, listedAccountKeys, manualKeyIssue, manualKeyPreview, readAllAccountKeys } from './key-selection'
 
 const key = (id: number) => ({ id, name: `key-${id}`, group: 'Group A', maskedKey: 'sk-••••1234', status: 1 }) as AccountKey
 
@@ -14,6 +14,32 @@ describe('configuration key selection', () => {
     expect(accountKeyDescription(key(1))).toBe('sk-••••1234，Group A分组')
     expect(accountKeyDescription({ ...key(1), group: '' })).toBe('sk-••••1234')
     expect(accountKeyDescription({ ...key(1), maskedKey: '' })).toBe('密钥预览未提供，Group A分组')
+  })
+  it('lists one key per name when an old version left a twin under the old group name', () => {
+    const named = (id: number, name: string, group: string, status = 1) => ({ ...key(id), name, group, status }) as AccountKey
+    const keys = [
+      named(1, 'xingmang-chat-abc', 'Claude-KIRO(高缓)'),
+      named(2, 'xingmang-ai', '图片模型-中转/订阅'),
+      named(3, 'xingmang-desktop-gemini', 'Gemini-中转/订阅'),
+      named(4, 'xingmang-desktop-codex', 'GPT-中转/订阅'),
+      named(5, 'xingmang-desktop-claude', 'Claude-MAX订阅'),
+      named(6, 'xingmang-ai', '图片模型'),
+      named(7, 'xingmang-desktop-gemini', 'Gemini'),
+      named(8, 'xingmang-desktop-codex', 'GPT'),
+      named(9, 'xingmang-desktop-claude', 'Claude-MAX', 2),
+      named(10, 'my-own-key', 'GPT-中转/订阅'),
+    ]
+    const renamed = [
+      { from: 'Claude-MAX订阅', to: 'Claude-MAX' },
+      { from: 'GPT-中转/订阅', to: 'GPT' },
+      { from: '图片模型-中转/订阅', to: '图片模型' },
+    ]
+    // 新名字下同名的那把停用了就不算：老名字那把是这个名字下唯一能选的。
+    expect(listedAccountKeys(keys, renamed, 'current').map((entry) => entry.id)).toEqual([1, 5, 6, 8, 10])
+    // 正选着的那把照旧列着。
+    expect(listedAccountKeys(keys, renamed, '4').map((entry) => entry.id)).toEqual([1, 4, 5, 6, 8, 10])
+    // 没改过名：只少了下线工具那两把和停用的。
+    expect(listedAccountKeys(keys, undefined, 'automatic').map((entry) => entry.id)).toEqual([1, 2, 4, 5, 6, 8, 10])
   })
   it('checks the sk- prefix only where the key format is known', () => {
     expect(manualKeyIssue('  ', true)).toBe('请粘贴你在星芒创建的密钥')

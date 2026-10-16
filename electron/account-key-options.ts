@@ -9,6 +9,8 @@ import type { SystemService } from './system-service'
 export interface AccountKeyOptionsResult {
   current: { preview: string | null; keyId: number | null; name: string | null; group: string | null }
   automatic: { name: string; group: string }
+  /** 站上改了分组本名：老名字 → 新名字。缺省 = 没改过名。 */
+  renamedGroups?: Array<{ from: string; to: string }>
 }
 export interface AccountKeyOptionsDependencies {
   provider: ProviderId
@@ -22,6 +24,8 @@ export interface AccountKeyOptionsDependencies {
    *  网络等待会把「账号被切换 / 本地配置被改动」的判定窗口整个拉宽。
    *  缺省（拿不到分组列表）时退回写死名单，也就是加入动态识别之前的行为。 */
   managedCliGroups?: Record<ProviderId, ResolvedManagedCliGroup> | null
+  /** 老名字 → 新名字（managed-cli-groups.ts 的 renamedAccountGroups）；缺省 = 没改过名。 */
+  renamedGroups?: ReadonlyMap<string, string>
   previewOnboarding: boolean
 }
 interface KeyMetadata { id: number; name: string; group: string }
@@ -44,9 +48,11 @@ export async function resolveAccountKeyOptions(options: AccountKeyOptionsDepende
     options.managedCliGroups?.[provider].group ?? resolveManagedCliKeyProfiles(siteId)[provider].group
   )
   const configured = options.systemService.getConfig(options.previewOnboarding).providers[options.provider]
+  const renamed = options.renamedGroups ?? new Map<string, string>()
   const result: AccountKeyOptionsResult = {
     current: { preview: configured.apiKeyPreview, keyId: null, name: null, group: null },
     automatic: { name: profile.keyName, group: groupFor(options.provider) },
+    ...(renamed.size ? { renamedGroups: [...renamed].map(([from, to]) => ({ from, to })) } : {}),
   }
   const session = service.getSessionState()
   if (!configured.hasApiKey || !configured.matchesRelay || !session.authenticated || !session.account) return result
@@ -87,8 +93,9 @@ export async function resolveAccountKeyOptions(options: AccountKeyOptionsDepende
   if (options.managedCliKeys) {
     const cached = await owned(() => options.managedCliKeys!.read(userId))
     for (const entry of cached) {
+      // 本机记的还是老名字、对照说它现在叫这个名字的，也是这家工具的 Key（服务端还没迁走它，或者迁走了本机没跟上）。
       if (entry.key !== secret || !isProviderId(entry.provider)
-        || entry.group !== groupFor(entry.provider)) continue
+        || (entry.group !== groupFor(entry.provider) && renamed.get(entry.group) !== groupFor(entry.provider))) continue
       const candidate = { id: entry.id, name: entry.name, group: entry.group }
       if (validMetadata(candidate, secret)) matches.push(candidate)
     }

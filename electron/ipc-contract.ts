@@ -486,6 +486,8 @@ export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
 export interface AccountKeyOptions {
   current: { preview: string | null; keyId: number | null; name: string | null; group: string | null }
   automatic: { name: string; group: string }
+  /** 站上改了分组本名：老名字 → 新名字，密钥下拉据此不再列老名字下同名的那把。缺省 = 没改过名。 */
+  renamedGroups?: Array<{ from: string; to: string }>
 }
 
 export interface AccountKeyCliConfigurationInput {

@@ -153,6 +153,39 @@ function isAccountGroupRole(value: string): value is AccountGroupRole {
   return (accountGroupRoles as readonly string[]).includes(value)
 }
 
+/**
+ * 这个分组名是不是对照里这样用途排在后面的老名字。只看对照本身、不看账号此刻能用哪个：
+ * 开机时本机三把 Key 都记着的话一次网络都不走，要先凭这个决定值不值得去问服务端。
+ */
+export function isRenamedAwayGroup(role: AccountGroupRole, group: string, hints: AccountGroupHints | null | undefined): boolean {
+  const candidates = hints?.[role]
+  return Boolean(candidates && candidates.indexOf(group) > 0)
+}
+
+/**
+ * 站上改了本名以后「老名字 → 这个账号此刻在用的新名字」。只收对照里排在账号能用的那个名字后面的，
+ * 两样用途把同一个老名字指向不同新名字的（对照写错）两边都不收。
+ */
+export function renamedAccountGroups(
+  groups: readonly ManagedCliGroupCandidate[],
+  hints: AccountGroupHints | null | undefined,
+): Map<string, string> {
+  const renamed = new Map<string, string>()
+  const conflicting = new Set<string>()
+  for (const role of accountGroupRoles) {
+    const current = resolveMappedGroup(role, groups, hints)
+    const candidates = hints?.[role]
+    if (!current || !candidates) continue
+    for (const older of candidates.slice(candidates.indexOf(current) + 1)) {
+      if (older === current) continue
+      if (renamed.has(older) && renamed.get(older) !== current) conflicting.add(older)
+      renamed.set(older, current)
+    }
+  }
+  for (const name of conflicting) renamed.delete(name)
+  return renamed
+}
+
 function platformOwner(platform: string | undefined): ProviderId | null {
   if (!platform) return null
   return providerIds.find((provider) => providerPlatforms[provider].includes(platform)) ?? null
@@ -303,6 +336,19 @@ export function activeSubscriptionGroupNames(snapshot: ManagedCliSubscriptionSna
 export async function loadManagedCliGroups(
   accountService: ManagedCliGroupAccountService,
 ): Promise<Record<ProviderId, ResolvedManagedCliGroup> | null> {
+  return (await loadManagedCliGroupState(accountService))?.resolved ?? null
+}
+
+export interface ManagedCliGroupState {
+  resolved: Record<ProviderId, ResolvedManagedCliGroup>
+  /** 老名字 → 新名字（renamedAccountGroups）；对照没写、或历史账号时是空的。 */
+  renamed: Map<string, string>
+}
+
+/** 同 loadManagedCliGroups，另外带上「老名字 → 新名字」，给工具配置框的密钥下拉去掉老名字下同名的那把。 */
+export async function loadManagedCliGroupState(
+  accountService: ManagedCliGroupAccountService,
+): Promise<ManagedCliGroupState | null> {
   if (typeof accountService.listUsableGroups !== 'function') return null
   const siteId = accountService.getActiveSiteId?.()
   try {
@@ -315,7 +361,10 @@ export async function loadManagedCliGroups(
     ])
     // 读分组这段时间里切了站点，这份结果就不属于当前账号了，按「没拿到」处理。
     if (accountService.getActiveSiteId?.() !== siteId) return null
-    return resolveManagedCliGroups(groups, siteId, subscribedGroups, hints)
+    return {
+      resolved: resolveManagedCliGroups(groups, siteId, subscribedGroups, hints),
+      renamed: renamedAccountGroups(groups, hints),
+    }
   } catch {
     return null
   }

@@ -93,7 +93,20 @@ export async function findAccountKeyById<T extends { id: number }>(
   throw new Error(accountKeyListTooLongMessage)
 }
 
-export const accountKeySearchTooLongMessage = '这个账号的密钥太多，没能全部搜一遍。请换个更准确的名称再搜，或到网页上删掉一些不用的密钥。'
+/** 整张密钥列表，与 findAccountKeyById 同一个安全阀；翻不完时抛错，不拿半张当全部。 */
+export async function readAllAccountKeys<T>(
+  listKeys: (query: { page: number; pageSize: number }) => Promise<{ total: number; keys: readonly T[] }>,
+): Promise<T[]> {
+  const keys: T[] = []
+  for (let page = 1; page <= findKeyPageLimit; page++) {
+    const batch = await listKeys({ page, pageSize: findKeyPageSize })
+    keys.push(...batch.keys)
+    if (!batch.keys.length || keys.length >= batch.total) return keys
+  }
+  throw new Error(accountKeyListTooLongMessage)
+}
+
+export const accountKeySearchTooLongMessage ='这个账号的密钥太多，没能全部搜一遍。请换个更准确的名称再搜，或到网页上删掉一些不用的密钥。'
 
 /**
  * 密钥页的搜索（#495）。两个后端的 Key 列表接口都只能按页取、不带搜索条件，

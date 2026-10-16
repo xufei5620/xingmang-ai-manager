@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { managedCliKeyProfiles, providerIds, sub2ApiManagedCliKeyProfiles } from './catalog'
 import {
   activeSubscriptionGroupNames,
+  isRenamedAwayGroup,
   loadAccountGroupHints,
+  loadManagedCliGroupState,
   loadManagedCliGroups,
   markRecommendedChatGroup,
   normalizeGroupNames,
   resolveManagedCliGroup,
   resolveManagedCliGroups,
+  renamedAccountGroups,
   resolveMappedGroup,
 } from './managed-cli-groups'
 
@@ -370,5 +373,60 @@ describe('markRecommendedChatGroup', () => {
     expect(markRecommendedChatGroup(renamedXmGroups(), 'solov', null).some((group) => group.recommended)).toBe(false)
     const groups = named(...providerIds.map((p) => sub2ApiManagedCliKeyProfiles[p].group))
     expect(markRecommendedChatGroup(groups, 'solov-api', renameMap).some((group) => group.recommended)).toBe(false)
+  })
+})
+
+describe('renamed account groups', () => {
+  const liveMap = {
+    claude: ['Claude-MAX', 'Claude-MAX订阅'],
+    codex: ['GPT', 'GPT-中转/订阅'],
+    grok: ['Grok', 'Grok-中转/订阅'],
+    image: ['图片模型', '图片模型-中转/订阅'],
+  }
+  const bothNames = named(
+    'default', 'Claude-MAX', 'Claude-MAX订阅', 'GPT', 'GPT-中转/订阅', 'Grok', 'Grok-中转/订阅', '图片模型', '图片模型-中转/订阅', 'Gemini',
+  )
+
+  it('tells an old name from the current one by its place in the map alone', () => {
+    expect(isRenamedAwayGroup('codex', 'GPT-中转/订阅', liveMap)).toBe(true)
+    expect(isRenamedAwayGroup('codex', 'GPT', liveMap)).toBe(false)
+    expect(isRenamedAwayGroup('codex', 'Grok-中转/订阅', liveMap)).toBe(false)
+    expect(isRenamedAwayGroup('claude', 'Claude-MAX订阅', null)).toBe(false)
+  })
+
+  it('maps every old name to the name this account uses now', () => {
+    expect([...renamedAccountGroups(bothNames, liveMap)]).toEqual([
+      ['Claude-MAX订阅', 'Claude-MAX'],
+      ['GPT-中转/订阅', 'GPT'],
+      ['Grok-中转/订阅', 'Grok'],
+      ['图片模型-中转/订阅', '图片模型'],
+    ])
+  })
+
+  it('maps nothing for a role whose new name this account cannot use yet', () => {
+    const withoutNewGpt = bothNames.filter((group) => group.name !== 'GPT')
+    expect(renamedAccountGroups(withoutNewGpt, liveMap).has('GPT-中转/订阅')).toBe(false)
+    expect(renamedAccountGroups(bothNames, null).size).toBe(0)
+  })
+
+  it('drops an old name that two roles point at different new names', () => {
+    const broken = { codex: ['GPT', 'shared-old'], grok: ['Grok', 'shared-old'] }
+    expect(renamedAccountGroups(named('GPT', 'Grok', 'shared-old'), broken).has('shared-old')).toBe(false)
+  })
+
+  it('loads the renames with the resolved groups, and none for the history account', async () => {
+    const xm = await loadManagedCliGroupState({
+      listUsableGroups: async () => bothNames,
+      getActiveSiteId: () => 'solov',
+      getAccountGroupHints: async () => liveMap,
+    })
+    expect(xm?.resolved.codex).toEqual({ group: 'GPT', source: 'mapped' })
+    expect(xm?.renamed.get('GPT-中转/订阅')).toBe('GPT')
+    const history = await loadManagedCliGroupState({
+      listUsableGroups: async () => bothNames,
+      getActiveSiteId: () => 'solov-api',
+      getAccountGroupHints: async () => liveMap,
+    })
+    expect(history?.renamed.size).toBe(0)
   })
 })
