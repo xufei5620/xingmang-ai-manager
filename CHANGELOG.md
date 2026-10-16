@@ -657,6 +657,13 @@
 - 首页卡片「…」给星芒卸不了的桌面端（三个外接客户端、Mac 上的 Codex 桌面端）加「卸载…」，点了弹 `UninstallGuideDialog`，按 Windows / Mac 说在系统里怎么删，星芒自己不卸、不加 IPC。Windows 上的 Codex 桌面端照旧走 `desktop:uninstall-codex`。外接客户端从来没有卸载通道，0.2.18「安装卸载」页也没列它们，换界面后客户以为是漏了。
 - 测试夹具 `app-fixture.tsx` 的 Codex 桌面端改成和主进程一样：状态不带 `uninstall`，`codexDesktop.uninstall` 在 Mac 上为假。
 - 首页命令行工具卡片「…」最上面那串最近文件夹（`workspaceChoices`，最多 5 个整条路径，点了是在那里开新对话）去掉，换成「接着之前的对话…」，打开 `ToolConversationsDialog`。窗口每次现读这一个工具的记录（`toolsApi.toolSessions`，按工具过滤、一页 100，不走首页 60 秒缓存），一个文件夹一行放最近那条（`folderConversations`，最多 8 行），「接着聊」照首页「接着上次」先核对一次再打开；底部「全部记录」「开新对话」（同卡片上的「打开」）。这个工具一条记录都没有时不给这一项。教程「点击打开」那步删去「选最近用过的」。起因：yoyo 10-16 在 Mac 0.2.19 测试包上把那串路径看成了对话记录。
+- Claude Desktop 加一键切换来源（新通道 `external-clients:switch-source`）：切官方只把第三方目录
+  `claude_desktop_config.json` 的 `deploymentMode` 改成官方登录，星芒那份配置和密钥原样留着；切回只在那份还在、
+  是正在用的那份、地址是当前线路、密钥归当前账号时改回 `3p`，否则一个字不写、界面打开「连接 Claude Desktop」。
+  见 `claude-desktop-config.ts` 的 `useOfficialLogin` / `useGatewayLogin`。
+- 检测结果新增可选字段 `officialAccount`（落进开机快照），首页据此显示「官方账号」而不是「待连接」，检查页显示未配置、
+  不拿留着的密钥去发请求。官方登录记成的值 `1p` 官方文档没写，出自 Linux 打包项目 claude-desktop-extra 的文档，
+  10-16 在 Mac 上手改核过（重开停在 Claude 登录页，改回 `3p` 回到星芒）。
 
 ## 0.2.18 - 2026-10-09
 
