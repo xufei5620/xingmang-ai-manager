@@ -32,6 +32,7 @@ import { buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
 import { useRestartPending } from './restart-reminder'
 import { RuntimeRestartDialog } from './RuntimeRestartDialog'
 import { OfficialQuotaDialog } from './OfficialQuotaDialog'
+import { buildUninstallGuide, UninstallGuideDialog, type UninstallGuide, type UninstallGuideTool } from './UninstallGuide'
 import { weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
 import { currentWindowOs, windowOsFor } from '../app/window-os'
 
@@ -420,6 +421,7 @@ export function Home(props: HomeProps) {
   const [week, setWeek] = useState<WeekSpend | null>(() => cachedWeekSpend(props.api, props.accountScope, trendWanted))
   const [officialOpen, setOfficialOpen] = useState(false)
   const [official, setOfficial] = useState<OfficialChatGptAccount | null>(null)
+  const [uninstallGuide, setUninstallGuide] = useState<UninstallGuide | null>(null)
   const [firstRunDismissed, setFirstRunDismissed] = useState<ToolId[]>(() => readFirstRunDismissals(getFirstRunStorage()))
   const [noticeSlot, setNoticeSlot] = useState<HTMLDivElement | null>(null)
   const active = useRef(true)
@@ -737,6 +739,15 @@ export function Home(props: HomeProps) {
         <span>{state.sourceLabel}</span><ChevronDown size={13} aria-hidden="true" /></button>} />
   }
 
+  /**
+   * 星芒卸不了的桌面端（外接客户端、Mac 上的 Codex 桌面端）在「…」里也放「卸载…」，点了弹框说
+   * 在系统里怎么删；Windows 上的 Codex 桌面端星芒自己能卸，不走这里。
+   */
+  function uninstallGuideItems(tool: UninstallGuideTool, name: string, path: string | null): MenuItem[] {
+    const guide = buildUninstallGuide(tool, name, os, path)
+    return guide ? [{ label: '卸载…', danger: true, testId: `tool-${tool}-uninstall-guide`, onSelect: () => setUninstallGuide(guide) }] : []
+  }
+
   function managedInstall(id: ToolId): boolean {
     return (id === 'codexDesktop' ? snapshot?.platform.codexDesktop?.install : snapshot?.platform.cliInstall?.[id]) === 'managed'
   }
@@ -796,7 +807,8 @@ export function Home(props: HomeProps) {
         { label: '查看记录', testId: `tool-${tool.id}-sessions`, onSelect: () => props.onNavigate('sessions') },
       ],
       canUninstallTool(tool.status, tool.id === 'codexDesktop' && snapshot?.platform.codexDesktop.uninstall === true)
-        ? [{ label: '卸载…', danger: true, testId: `tool-${tool.id}-uninstall`, onSelect: () => props.onUninstall(tool.id) }] : [],
+        ? [{ label: '卸载…', danger: true, testId: `tool-${tool.id}-uninstall`, onSelect: () => props.onUninstall(tool.id) }]
+        : tool.id === 'codexDesktop' ? uninstallGuideItems(tool.id, tool.name, tool.status.path) : [],
     ]
     return groups.filter((group) => group.length > 0).flatMap((group, index) => index ? ['divider' as const, ...group] : group)
   }
@@ -963,6 +975,7 @@ export function Home(props: HomeProps) {
         ...(switchable ? [status === 'official'
           ? { label: useAccountLabel, disabled: externalCached, testId: `tool-${tool.id}-switch-account`, onSelect: () => props.onSwitchExternalSource?.(tool.id, 'account') }
           : { label: '切回官方账号', disabled: externalCached, testId: `tool-${tool.id}-switch-official`, onSelect: () => props.onSwitchExternalSource?.(tool.id, 'official') }] : []),
+        ...uninstallGuideItems(tool.id, tool.name, tool.status.path).flatMap((item) => ['divider' as const, item]),
       ] : undefined} menuLabel={`${spacedName(tool.name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 
@@ -1209,6 +1222,7 @@ export function Home(props: HomeProps) {
         {!codexInUse && <ListRow icon={BookOpen} title="第一次用 Codex？跟着 4 步开始" onOpen={() => props.onNavigate('tutorial')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-codex" />}
       </section>
     </div>
+    {uninstallGuide && <UninstallGuideDialog guide={uninstallGuide} onClose={() => setUninstallGuide(null)} />}
     {officialOpen && <OfficialQuotaDialog email={snapshot?.config.providers.codex.officialAccountEmail ?? null} initial={official} refresh={() => props.api.officialUsage()} onClose={() => setOfficialOpen(false)} />}
   </section>
 }

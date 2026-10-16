@@ -24,7 +24,7 @@ import { Home, type ToolInstallIntent } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
-import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
+import { clientLaunchWaitLabel, launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapOffer, modelSwapQuestion, modelSwapTitle, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
@@ -1198,8 +1198,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   async function launchExternal(id: ExternalToolId) {
     const epoch = accountEpoch.current
     try {
-      // 和命令行工具的「打开」排同一个队：前面有东西在装，这一行写清在等谁（第三十九批 C）。
-      const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName, '正在打开客户端')
+      // 只等这一家自己正在装的那一次，别的工具在装不等（I11 的登记例外）。
+      const waitLabel = clientLaunchWaitLabel(toolbox.jobs, id, jobToolName)
       const launched = await toolbox.run(`launch:${id}`, waitLabel, () => toolsApi.launchExternal(id))
       // 打开以后变的只有这一行的「运行中」：不再整轮重扫，那会让三行按钮一起变灰（第三十一批 C）。
       if (launched && mounted.current && epoch === accountEpoch.current) toolbox.noteExternalLaunched(id)
