@@ -41,6 +41,7 @@ import {
   forgetStaleGeminiUsageStatisticsRecord,
   geminiUsageStatisticsRecordName,
   fillRelayTemplateDefaults,
+  codexModelUsesRelayWebsockets,
   relayTemplateDefaultsPending,
   inspectManagedCliHookTargets,
   inspectOfficialLogin,
@@ -73,6 +74,7 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrls } from './relay-sites'
 import type { CliHookInvocation } from './cli-hooks'
 import { renameWithTransientRetrySync } from './safe-local-data'
+import { isOpenAiModelId } from '../src/renderer-v2/features/tools/model-filter'
 
 const temporaryHomes: string[] = []
 const statusLineCommand = '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"'
@@ -617,7 +619,7 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
-      supports_websockets: false,
+      supports_websockets: true,
     })
     expect(asRecord(parsed.model_providers)?.OpenAI).toBeUndefined()
 
@@ -627,7 +629,7 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('codex', 'sk-merge-first', testModels.codex, 'merge', mergeRoots, {}, providerBaseUrls)
     const merged = asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))!
     expect(merged.model_provider).toBe(defaultCodexRelayProvider)
-    expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(false)
+    expect(asRecord(asRecord(merged.model_providers)?.[defaultCodexRelayProvider])?.supports_websockets).toBe(true)
     expect(merged).not.toHaveProperty('model_context_window')
     expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
   })
@@ -1656,7 +1658,7 @@ describe('native CLI configuration files', () => {
       base_url: 'https://xm.solov.cc/v1',
       wire_api: 'responses',
       requires_openai_auth: true,
-      supports_websockets: false,
+      supports_websockets: true,
       custom_header: 'keep',
     })
   })
@@ -1684,6 +1686,71 @@ describe('native CLI configuration files', () => {
     const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
     const provider = asRecord(asRecord(parsed?.model_providers)?.XingmangAI)
     expect(provider?.base_url).toBe('https://xm.solov.cc/v1')
+    expect(provider?.supports_websockets).toBe(choice)
+  })
+
+  it('treats exactly the models the other-vendor dialog calls GPT as websocket models', () => {
+    const models = [
+      'gpt-5.5', 'gpt-6.1-sol', 'GPT-5', 'chatgpt-4o-latest', 'codex-auto-review', 'o3', 'o4-mini', 'openai/gpt-oss',
+      'claude-opus-4-6', 'grok-4.5', 'gemini-3.5-flash', 'deepseek-v3', 'kimi-k2', 'gpt', 'gptx', 'o', 'oss',
+    ]
+    for (const model of models) expect(codexModelUsesRelayWebsockets(model)).toBe(isOpenAiModelId(model))
+    expect(codexModelUsesRelayWebsockets('gpt-5.5')).toBe(true)
+    expect(codexModelUsesRelayWebsockets('claude-opus-4-6')).toBe(false)
+  })
+
+  it('keeps plain streaming when a fresh Codex config uses another vendor model', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+
+    saveProviderConfig('codex', 'sk-first', 'claude-opus-4-6', 'reset', roots, {}, providerBaseUrls)
+
+    expect(fs.readFileSync(configPath, 'utf8')).toMatch(/^supports_websockets = false$/m)
+  })
+
+  it('moves our own websocket setting with the model between GPT and another vendor', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    const websockets = () => asRecord(asRecord(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))?.model_providers)?.XingmangAI)?.supports_websockets
+
+    saveProviderConfig('codex', 'sk-first', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    expect(websockets()).toBe(true)
+    saveProviderConfig('codex', 'sk-first', 'claude-opus-4-6', 'merge', roots, {}, providerBaseUrls)
+    expect(websockets()).toBe(false)
+    saveProviderConfig('codex', 'sk-first', 'grok-4.5', 'merge', roots, {}, providerBaseUrls)
+    expect(websockets()).toBe(false)
+    saveProviderConfig('codex', 'sk-first', 'gpt-6.1-sol', 'merge', roots, {}, providerBaseUrls)
+    expect(websockets()).toBe(true)
+  })
+
+  it.each([
+    ['gpt-5.5', false],
+    ['claude-opus-4-6', true],
+  ] as const)('keeps a customer websocket choice that does not match model %s', (model, choice) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'model_provider = "XingmangAI"',
+      `model = "${model}"`,
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "OpenAI"',
+      `base_url = "${providerBaseUrls.codex}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      `supports_websockets = ${choice}`,
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'new-key', model, 'merge', roots, {}, providerBaseUrls)
+    saveProviderConfig('codex', 'new-key', model === 'gpt-5.5' ? 'gpt-6.1-sol' : 'grok-4.5', 'merge', roots, {}, providerBaseUrls)
+
+    const provider = asRecord(asRecord(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))?.model_providers)?.XingmangAI)
     expect(provider?.supports_websockets).toBe(choice)
   })
 
@@ -4132,9 +4199,45 @@ describe('bringing an older account config up to the current template', () => {
     expect(asRecord(parsed.features)?.prevent_idle_sleep).toBe(false)
     expect(asRecord(parsed.features)?.daemon_auto_start).toBe(false)
     expect(asRecord(parsed.windows)?.sandbox).toBe('unelevated')
+    expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.supports_websockets).toBe(true)
     expect(parsed.model).toBe('gpt-5.5')
     expect(fs.readFileSync(codexConfigSnapshotPaths(roots).relay, 'utf8')).toBe(fs.readFileSync(configPath, 'utf8'))
     expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls, 'win32')).toBe(false)
+  })
+
+  it('keeps a customer supports_websockets = false on our Codex table at startup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const fresh = fs.readFileSync(snapshots.active, 'utf8')
+    expect(fresh).toMatch(/^supports_websockets = true$/m)
+    writeFile(snapshots.active, fresh.replace('supports_websockets = true', 'supports_websockets = false'))
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
+    expect(fs.readFileSync(snapshots.active, 'utf8')).toMatch(/^supports_websockets = false$/m)
+  })
+
+  it('fills plain streaming at startup when the old Codex config uses another vendor model', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+    writeFile(configPath, [
+      'model_provider = "XingmangAI"',
+      'model = "claude-opus-4-6"',
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "OpenAI"',
+      `base_url = "${providerBaseUrls.codex}"`,
+      'wire_api = "responses"',
+      '',
+    ].join('\n'))
+
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).not.toBeNull()
+
+    const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.supports_websockets).toBe(false)
   })
 
   it('renames our own legacy Codex display name at startup and keeps a name the customer chose', () => {
