@@ -134,8 +134,9 @@ describe('feedback and support page', () => {
     expect(markup).toContain('data-testid="feedback-support-identity-line"')
     expect(markup).toContain('预览反馈报告')
     for (const id of ['health', 'orders', 'tutorial', 'mcp']) expect(markup).toContain(`data-testid="feedback-try-${id}"`)
-    // 运行日志的工具条只在那个页签里。
-    expect(markup).not.toContain('feedback-search')
+    // 两个页签都挂着、只藏不卸：一开始藏起来的是运行日志那一块。
+    expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" data-testid')
+    expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" hidden=""')
     // 报告预览的隐私说明挪进了弹窗，页面上不再有横条。
     expect(markup).not.toContain('feedback-privacy')
   })
@@ -153,7 +154,9 @@ describe('feedback and support page', () => {
     expect(markup).toContain('打开日志文件夹')
     expect(markup).toContain('aria-label="刷新"')
     expect(markup).toContain('日志只保存在这台电脑上。')
-    expect(markup).not.toContain('复制给客服')
+    // 留言那一块还挂着（写到一半的字不丢），只是藏起来。
+    expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden=""')
+    expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" data-testid')
   })
 })
 

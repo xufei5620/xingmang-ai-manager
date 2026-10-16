@@ -117,7 +117,7 @@ describe('v2 business boundaries', () => {
     })
     expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
     expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
-      tone: 'warn', body: expect.stringContaining('重新写入 Key'), action: 'health',
+      tone: 'warn', body: expect.stringContaining('重新写入密钥'), action: 'health',
     })
     expect(subscriptionToolsNotice({ followsPreference: true }).action).toBeUndefined()
   })
