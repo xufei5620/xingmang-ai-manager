@@ -1,15 +1,18 @@
-import { useEffect, useId, useRef, useState } from 'react'
-import { Eye, FolderOpen, KeyRound, RefreshCw, Save } from 'lucide-react'
-import type { AccountKey, AccountSourceSwitchResult, AppConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
+import { useEffect, useRef, useState } from 'react'
+import { Archive, Check, Copy, Eye, FolderOpen, KeyRound, RefreshCw, Save, ShieldCheck } from 'lucide-react'
+import type { AccountKey, AccountSourceSwitchResult, AppConfigSummary, CodexDesktopLocaleStatus, CodexWorkspacePermissionStatus } from '../../../../electron/ipc-contract'
 import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
-import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
+import { BrandIcon, Button, Dialog, Input, Pill, Segment, Select, useToast } from '../../ui'
 import { officialAccountNames, officialAccountNotes, tools } from '../../registry/tools'
-import { brokenConfigOf, brokenConfigRepairTarget, foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
+import { brokenConfigOf, brokenConfigRepairTarget, codexNeedsRepair, foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
-import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
+import { accountKeyDescription, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyIssue, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
 import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
-import { codexModelChoices, codexModelFilterSaveIssue, type CodexModelFilter } from './model-filter'
+import { codexModelChoices, type CodexModelFilter } from './model-filter'
+import { DialogExitButton, DialogExitLink, RadioCards, type RadioCardOption } from './dialog-parts'
+import { OptionPicker, type PickerOption } from './OptionPicker'
+import { OtherModelsDialog } from './OtherModelsDialog'
 import { errorMessage, FailureReason, failureWithDetail } from '../../business-common'
 import { currentWindowOs } from '../app/window-os'
 
@@ -18,15 +21,25 @@ type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
 // 运行」这类原因就先说原因，原来那句跟在后面。没过前置检查的提示还是一句话。
 type DialogError = string | ReturnType<typeof failureWithDetail>
 interface ConfigDraft { source: SourceChoice; keyId: string; secret: string; model: string; validatedSecret: string; dirty: boolean }
-interface ConfigDialogProps {
+/** 保存成功后页顶那句按哪种说：重置、换成官方账号，还是一般的保存。 */
+export type ConfigSaveOutcome = 'saved' | 'reset' | 'official'
+export interface ConfigDialogProps {
   api: ToolsApi
   tool: ToolId
   config: AppConfigSummary
   signedIn: boolean
+  /** 'non-gpt' = Codex 首页「换用别家模型」进来的，开的是那个小弹窗，不是整份配置。 */
   initialModelFilter?: CodexModelFilter
+  /** 只有星芒的密钥确定是 sk- 开头，填密钥时才按这个格式拦；缺省 = 只拦空的（旧行为）。 */
+  strictKeyFormat?: boolean
+  /**
+   * 「查看 ChatGPT 账号额度」：先关掉配置（有没保存的修改照旧先问），再打开额度弹窗——同一时间只开一个弹窗。
+   * 缺省 = 不给这个链接。
+   */
+  onOfficialQuota?(): void
   onClose(): void
   onRefresh(): Promise<void>
-  onSaved(warning?: string): void
+  onSaved(warning?: string, outcome?: ConfigSaveOutcome): void
   /**
    * 主进程已经把一把新的 Key（或官方登录）写进这个工具；原样沿用现有 Key 的保存不算。
    * 密钥页靠它收起「还在用刚撤销的密钥」（#546）。缺省 = 不通知（旧行为）。
@@ -34,6 +47,8 @@ interface ConfigDialogProps {
   onKeyWritten?(tool: ToolId): void
   onLogin(): void
   onKeys(): void
+  /** 「高级」里的「查看配置备份」；缺省 = 不给这颗按钮。 */
+  onBackups?(): void
   onHelp(): void
   /** 按钮上写的账号名（「改用 <名>」）；没登录为 null。 */
   accountName?: string | null
@@ -50,42 +65,47 @@ interface ConfigDialogProps {
  * 星芒不再替它改配置，下面也找不到它的定义。
  */
 export function ConfigDialog(props: ConfigDialogProps) {
-  return isToolId(props.tool) ? <RegisteredToolConfigDialog {...props} /> : null
+  if (!isToolId(props.tool)) return null
+  if (props.initialModelFilter === 'non-gpt' && providerFor(props.tool) === 'codex') return <OtherModelsDialog {...props} />
+  return <RegisteredToolConfigDialog {...props} />
 }
 
-function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onKeyWritten, onLogin, onKeys, accountName = null, onSwitchAccount }: ConfigDialogProps) {
-  const [tab, setTab] = useState<ToolId>(tool)
-  const [drafts, setDrafts] = useState<Partial<Record<ProviderId, ConfigDraft>>>({})
+function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyFormat = false, onOfficialQuota, onClose, onRefresh, onSaved, onKeyWritten, onLogin, onKeys, onBackups, accountName = null, onSwitchAccount }: ConfigDialogProps) {
+  const [edited, setEdited] = useState<ConfigDraft | null>(null)
   const [keys, setKeys] = useState<AccountKey[]>([])
   const [models, setModels] = useState<string[]>([])
   const [modelsDetected, setModelsDetected] = useState(false)
+  // 「保存并检测」的检测这一步没读成：已有密钥的照旧能直接保存，按钮换回「保存配置」。
+  const [detectTried, setDetectTried] = useState(false)
   // 打开时自动读的那一次的编号，0 = 没在读。按编号清：先发的那次晚到时，关不掉后发那次的转圈。
   const [autoDetectId, setAutoDetectId] = useState(0)
-  const [modelFilter, setModelFilter] = useState<CodexModelFilter>(initialModelFilter)
   const [keyError, setKeyError] = useState('')
   const [keyRevision, setKeyRevision] = useState(0)
   const [keysLoading, setKeysLoading] = useState(false)
-  const [keyMetadata, setKeyMetadata] = useState<Partial<Record<ProviderId, ConfigKeyMetadata>>>({})
-  const [metadataErrors, setMetadataErrors] = useState<Partial<Record<ProviderId, string>>>({})
-  const [metadataLoading, setMetadataLoading] = useState<Partial<Record<ProviderId, boolean>>>({})
+  const [metadata, setMetadata] = useState<ConfigKeyMetadata | null>(null)
+  const [metadataError, setMetadataError] = useState('')
+  const [metadataLoading, setMetadataLoading] = useState(false)
   const [error, setError] = useState<DialogError>('')
+  const [secretError, setSecretError] = useState('')
   const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState('')
-  const [confirmation, setConfirmation] = useState<'reset' | null>(null)
-  const [exitAction, setExitAction] = useState<(() => void) | null>(null)
-  const [localeText, setLocaleText] = useState('')
+  const [resetAsk, setResetAsk] = useState(false)
   const [notice, setNotice] = useState('')
+  const [locale, setLocale] = useState<CodexDesktopLocaleStatus | null>(null)
+  const [permission, setPermission] = useState<CodexWorkspacePermissionStatus | null>(null)
+  const [localeText, setLocaleText] = useState('')
   const request = useRef(0)
   const active = useRef(true)
   const locked = useRef(false)
   const metadataRequest = useRef(0)
   const lastKeyRefresh = useRef(0)
-  const modelFilterStatusId = useId()
+  const desktopLoaded = useRef(false)
+  const toast = useToast()
   // 只用来分 Mac 的说法：Mac 上星芒不会替人重开 Codex，也不开那条本机通道。
   const os = currentWindowOs()
-  const provider = providerFor(tab)
+  const provider = providerFor(tool)
   const native = config.providers[provider]
-  const definition = tools.find((item) => item.id === tab)!
+  const definition = tools.find((item) => item.id === tool)!
   const sourceStorage = getSourceMarkerStorage()
   const switchLabel = switchAccountLabel(accountName)
   const currentSource = sourceFor(native, provider, sourceStorage)
@@ -93,41 +113,29 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelF
   // 会用的那边，展开「高级」点重置就和点「修好它」一样；读得出官方登录的照旧是官方账号。
   const broken = brokenConfigOf(native, provider)
   const initialSource = currentSource === 'official' && broken && brokenConfigRepairTarget(broken, native) === 'account' ? 'account' : currentSource
-  const draft: ConfigDraft = drafts[provider] ?? {
+  const draft: ConfigDraft = edited ?? {
     // 「被改过」在这个对话框里和「来源未确认」走同一条路：都要先让用户挑一个来源，
     // 挑完保存就把所有权重新写清楚。
     source: initialSource === 'missing' ? 'account' : initialSource === 'changed' ? 'unknown' : initialSource,
     keyId: initialKeyChoice(native), secret: '', model: native.model || defaultCliModels[provider], validatedSecret: '', dirty: false,
   }
   const selectedKey = keys.find((key) => String(key.id) === draft.keyId && key.status === 1)
-  const metadata = keyMetadata[provider] ?? null
   const usingCurrentKey = draft.keyId === CURRENT_KEY
   const usingAutomaticKey = draft.keyId === AUTOMATIC_KEY
-  const activeModelFilter = provider === 'codex' ? modelFilter : 'all'
-  const modelChoices = codexModelChoices(models, activeModelFilter, draft.model)
-  const nonGptSaveIssue = provider === 'codex' && draft.source !== 'unknown'
-    ? codexModelFilterSaveIssue({
-      filter: activeModelFilter, models, selectedModel: draft.model,
-      detected: modelsDetected && (draft.source !== 'manual' || draft.validatedSecret === draft.secret),
-      automaticKey: draft.source === 'account' && usingAutomaticKey,
-      officialSource: draft.source === 'official',
-    }) : null
+  const modelChoices = codexModelChoices(models, 'all', draft.model)
   function refreshKeyOptions(force = false) {
     if (!signedIn || locked.current || keysLoading) return
     if (!force && Date.now() - lastKeyRefresh.current < 500) return
     lastKeyRefresh.current = Date.now()
     setKeyRevision((value) => value + 1)
   }
-  function requestExit(action: () => void) {
-    if (busy) return
-    if (Object.values(drafts).some((entry) => entry?.dirty)) setExitAction(() => action)
-    else action()
-  }
   function change(patch: Partial<ConfigDraft>) {
-    setDrafts((current) => ({ ...current, [providerFor(tab)]: { ...draft, ...patch, dirty: true } }))
+    setEdited({ ...draft, ...patch, dirty: true })
     setError('')
+    setSecretError('')
     setWarning('')
     setNotice('')
+    setResetAsk(false)
   }
   useEffect(() => { active.current = true; return () => { active.current = false; request.current++; metadataRequest.current++ } }, [])
   useEffect(() => {
@@ -143,67 +151,107 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelF
   useEffect(() => {
     const owner = ++metadataRequest.current
     if (!signedIn) return
-    setMetadataLoading((current) => ({ ...current, [provider]: true }))
-    setMetadataErrors((current) => ({ ...current, [provider]: '' }))
-    void api.readKeyOptions(tab).then((value) => {
-      if (active.current && owner === metadataRequest.current) setKeyMetadata((current) => ({ ...current, [provider]: value }))
+    setMetadataLoading(true)
+    setMetadataError('')
+    void api.readKeyOptions(tool).then((value) => {
+      if (active.current && owner === metadataRequest.current) setMetadata(value)
     }).catch((cause) => {
-      if (active.current && owner === metadataRequest.current) setMetadataErrors((current) => ({ ...current, [provider]: errorMessage(cause, '当前密钥信息暂时没有读到') }))
+      if (active.current && owner === metadataRequest.current) setMetadataError(errorMessage(cause, '当前密钥信息暂时没有读到'))
     }).finally(() => {
-      if (active.current && owner === metadataRequest.current) setMetadataLoading((current) => ({ ...current, [provider]: false }))
+      if (active.current && owner === metadataRequest.current) setMetadataLoading(false)
     })
     return () => { metadataRequest.current++ }
-  }, [api, provider, signedIn, tab, keyRevision])
+  }, [api, signedIn, tool, keyRevision])
   useEffect(() => {
     request.current++
     setModels([])
     setModelsDetected(false)
+    setDetectTried(false)
     setAutoDetectId(0)
     setError('')
-  }, [tab, draft.source, draft.keyId, draft.secret])
+  }, [draft.source, draft.keyId, draft.secret])
   // 下拉框里只有已选的那一个型号时，客户会以为只能用它（「为什么没有 6.1 Sol」）。
-  // 工具里已经是当前账号的 Key，就在打开窗口、换到另一个工具时替他读一次：只把读到的
-  // 放进下拉框，选中的型号不动、也不算改动（关窗口不会问要不要放弃）；不锁窗口；
-  // 读不到不出红字，「检测模型」还在，点了照旧说清原因。没登录不读（这时账号相关的
-  // 选项都是灰的），也免得没登录跑的 Mac 界面检查拿占位 Key 去请求正式服务。
+  // 工具里已经是当前账号的 Key，就在打开窗口时替他读一次：只把读到的放进下拉框，选中的
+  // 型号不动、也不算改动（关窗口不会问要不要放弃）；不锁窗口；读不到不出红字，「检测模型」
+  // 还在，点了照旧说清原因。没登录不读（这时账号相关的选项都是灰的），也免得没登录跑的
+  // Mac 界面检查拿占位 Key 去请求正式服务。
   useEffect(() => {
     if (!signedIn || draft.source !== 'account' || !usingCurrentKey || !native.hasApiKey || !native.matchesRelay) return
     const id = ++request.current
     setAutoDetectId(id)
-    void api.configuredModels(tab).then((result) => {
+    void api.configuredModels(tool).then((result) => {
       if (!active.current || id !== request.current) return
       setModels(result)
       setModelsDetected(true)
     }).catch(() => undefined).finally(() => {
       if (active.current) setAutoDetectId((current) => current === id ? 0 : current)
     })
-  }, [tab])
-  useEffect(() => { setWarning(''); setNotice('') }, [tab])
+  }, [])
+  function listModels(target: ConfigDraft) {
+    const chosen = keys.find((key) => String(key.id) === target.keyId && key.status === 1)
+    return target.source === 'manual' ? api.manualModels(target.secret)
+      : target.keyId === CURRENT_KEY || !chosen ? api.configuredModels(tool) : api.keyModels(chosen.id)
+  }
+  /** 检测完替用户选好型号：自己填的密钥按读到的挑；已经选了的、工具里本来就配着的不动。 */
+  function detectedDraft(target: ConfigDraft, result: string[]): ConfigDraft {
+    const suggested = resolveDefaultCliModel(provider, result, target.model) ?? ''
+    if (target.source === 'manual') return { ...target, validatedSecret: target.secret, model: suggested }
+    if (!target.model || (!native.model && !result.includes(target.model))) return { ...target, model: suggested }
+    return target
+  }
+  /** 检测前的检查，过了返回 true；没过的已经写进了提示（没登录的直接去登录）。 */
+  function readyToDetect(target: ConfigDraft): boolean {
+    if (target.source === 'manual') {
+      const issue = manualKeyIssue(target.secret, strictKeyFormat)
+      if (issue) { setSecretError(issue); return false }
+    }
+    if (target.source === 'account' && !signedIn && target.keyId !== CURRENT_KEY) { onLogin(); return false }
+    if (target.source === 'account' && target.keyId !== CURRENT_KEY && !keys.some((key) => String(key.id) === target.keyId && key.status === 1)) {
+      setError('所选密钥已不可用，请重新选择。'); return false
+    }
+    return true
+  }
   async function detectModels() {
-    if (locked.current) return
-    if (draft.source === 'account' && usingAutomaticKey) { setError('选了自动准备时，请点「保存并检测模型」。'); return }
-    if (draft.source === 'account' && !usingCurrentKey && !selectedKey) { setError('所选密钥已不可用，请重新选择。'); return }
+    if (locked.current || !readyToDetect(draft)) return
+    const target = draft
     locked.current = true
     const id = ++request.current
     setModelsDetected(false)
     setBusy('检测模型'); setError('')
     try {
-      const result = draft.source === 'manual' ? await api.manualModels(draft.secret)
-        : usingCurrentKey ? await api.configuredModels(tab) : await api.keyModels(selectedKey!.id)
+      const result = await listModels(target)
       if (!active.current || id !== request.current) return
       setModels(result)
       setModelsDetected(true)
-      // Filtering does not change the user's existing selection. In this mode
-      // they must explicitly pick a detected non-GPT model before saving.
-      if (activeModelFilter === 'non-gpt') {
-        if (draft.source === 'manual') change({ validatedSecret: draft.secret })
-        return
-      }
-      const suggested = resolveDefaultCliModel(provider, result, draft.model) ?? ''
-      if (draft.source === 'manual') change({ validatedSecret: draft.secret, model: suggested })
-      else if (!draft.model || (!native.model && !result.includes(draft.model))) change({ model: suggested })
-    } catch (cause) { if (active.current && id === request.current) setError(errorMessage(cause, '模型检测未完成')) }
+      const next = detectedDraft(target, result)
+      if (next !== target) change(next)
+      if (!result.length) setError('这把密钥没有可用模型，请换一把密钥后重新检测。')
+    } catch (cause) {
+      if (active.current && id === request.current) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) }
+    }
     finally { locked.current = false; if (active.current) setBusy('') }
+  }
+  // 底栏「保存并检测」：先列出这把密钥能用的模型，选中的型号能用就接着保存；不能用就停在
+  // 这里让用户自己挑，按钮跟着变回「保存配置」。
+  async function detectThenSave() {
+    if (locked.current || !readyToDetect(draft)) return
+    const target = draft
+    locked.current = true
+    const id = ++request.current
+    setModelsDetected(false)
+    setBusy('保存并检测'); setError(''); setWarning(''); setNotice('')
+    let result: string[] | null = null
+    try { result = await listModels(target) }
+    catch (cause) { if (active.current && id === request.current) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) } }
+    finally { locked.current = false; if (active.current) setBusy('') }
+    if (!result || !active.current || id !== request.current) return
+    setModels(result)
+    setModelsDetected(true)
+    const next = detectedDraft(target, result)
+    if (next !== target) change(next)
+    if (!result.length) { setError('这把密钥没有可用模型，请换一把密钥后重新检测。'); return }
+    if (!result.includes(next.model)) { setError('请选择默认模型。'); return }
+    if (readyToSave(next, result)) commit('merge', next)
   }
   async function run(label: string, operation: () => Promise<void>) {
     if (locked.current) return
@@ -213,60 +261,56 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelF
     finally { locked.current = false; if (active.current) setBusy('') }
   }
   // 一键改用当前账号：成功后留在对话框里说一句结果（一闪而过的提示容易看漏），
-  // 这个工具的草稿跟着新配置重来；失败由调用方弹统一的错误框。
+  // 草稿跟着新配置重来；失败由调用方弹统一的错误框。
   async function switchAccount() {
     if (!onSwitchAccount || locked.current) return
     if (!signedIn) { onLogin(); return }
     locked.current = true; setBusy('改用当前账号'); setError(''); setWarning(''); setNotice('')
     try {
-      const result = await onSwitchAccount(tab)
-      if (result) onKeyWritten?.(tab)
+      const result = await onSwitchAccount(tool)
+      if (result) onKeyWritten?.(tool)
       if (!active.current || !result) return
-      setDrafts((current) => { const next = { ...current }; delete next[provider]; return next })
+      setEdited(null)
       setNotice(result.verified ? `已${switchLabel}，可以开始用了。` : `已${switchLabel}。${result.message.replace(/^已改用当前账号[，。]?/, '')}`)
     } finally { locked.current = false; if (active.current) setBusy('') }
   }
-  /** 保存与重置共用同一套前置检查；返回 false 表示已经把原因写进了错误提示。 */
-  function readyToSave(): boolean {
-    if (draft.source === 'unknown') return false
-    if (nonGptSaveIssue) { setError(nonGptSaveIssue); return false }
-    if (draft.source === 'account' && !signedIn && !usingCurrentKey) { onLogin(); return false }
-    if (draft.source === 'account') {
-      if (usingCurrentKey && !native.hasApiKey) { setError('当前工具没有可保留的密钥，请重新选择。'); return false }
-      if (usingAutomaticKey && (!metadata || metadataLoading[provider] || metadataErrors[provider])) { setError('还没读到当前账号的密钥信息，请稍等片刻或点「刷新密钥」。'); return false }
-      if (!usingCurrentKey && !usingAutomaticKey && (!selectedKey || selectedKey.status !== 1)) { setError('所选密钥已不可用，请重新选择。'); return false }
-      if (!usingCurrentKey && !usingAutomaticKey && (keysLoading || keyError)) { setError('请先获取最新的账号密钥列表。'); return false }
-      if (!usingAutomaticKey && !draft.model) { setError('请选择默认模型。'); return false }
+  /** 保存与重置共用同一套前置检查；返回 false 表示已经把原因写进了提示。 */
+  function readyToSave(target: ConfigDraft, detected: readonly string[]): boolean {
+    const current = target.keyId === CURRENT_KEY
+    const automatic = target.keyId === AUTOMATIC_KEY
+    const chosen = keys.find((key) => String(key.id) === target.keyId && key.status === 1)
+    if (target.source === 'unknown') return false
+    if (target.source === 'account' && !signedIn && !current) { onLogin(); return false }
+    if (target.source === 'account') {
+      if (current && !native.hasApiKey) { setError('当前工具没有可保留的密钥，请重新选择。'); return false }
+      if (automatic && (!metadata || metadataLoading || metadataError)) { setError('还没读到当前账号的密钥信息，请稍等片刻或点「刷新密钥」。'); return false }
+      if (!current && !automatic && !chosen) { setError('所选密钥已不可用，请重新选择。'); return false }
+      if (!current && !automatic && (keysLoading || keyError)) { setError('请先获取最新的账号密钥列表。'); return false }
+      if (!automatic && !target.model) { setError('请选择默认模型。'); return false }
     }
-    if (draft.source === 'manual' && (!draft.secret || draft.validatedSecret !== draft.secret || !models.includes(draft.model))) {
-      setError('请先检测这把密钥的可用模型，再选择模型保存。'); return false
+    if (target.source === 'manual') {
+      const issue = manualKeyIssue(target.secret, strictKeyFormat)
+      if (issue) { setSecretError(issue); return false }
+      if (target.validatedSecret !== target.secret || !detected.includes(target.model)) { setError('请先检测这把密钥的可用模型，再选择模型保存。'); return false }
     }
     setError('')
     return true
   }
-  // 小白分不清「只更新」和「重置」，保存默认就是只改账号、密钥和模型（merge）；
-  // 重置收进「高级」，仍要二次确认。两条路都由主进程先备份再两阶段写入（I9）。
-  function requestSave() {
-    if (readyToSave()) save('merge')
-  }
-  function requestReset() {
-    if (readyToSave()) setConfirmation('reset')
-  }
   // 自动准备的密钥要先写进配置才有模型可查。以前让用户「先保存、再打开、再检测」，
   // 这里一步做完：保存（merge）后留在对话框里，用刚写好的配置列出模型。
   async function saveAndDetectModels() {
-    if (locked.current || !usingAutomaticKey || !readyToSave()) return
+    if (locked.current || !usingAutomaticKey || !readyToSave(draft, models)) return
     locked.current = true
     const id = ++request.current
     setModelsDetected(false)
     setBusy('保存并检测'); setError(''); setWarning(''); setNotice('')
     let saved = false
     try {
-      const outcome = await api.configureManaged(tab, draft.model || undefined, 'merge')
+      const outcome = await api.configureManaged(tool, draft.model || undefined, 'merge')
       if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
       if (!outcome.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
       saved = true
-      onKeyWritten?.(tab)
+      onKeyWritten?.(tool)
       const markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       if (!active.current) return
       // 首页状态刷新失败不影响已经写好的配置，模型照样检测。主进程可能因为分组里
@@ -275,70 +319,103 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelF
       const latest = await api.readConfig().catch(() => null)
       const savedModel = latest?.providers[provider].model || draft.model
       if (!active.current) return
-      setDrafts((current) => ({ ...current, [provider]: { ...draft, model: savedModel, dirty: false } }))
-      const result = await api.configuredModels(tab)
+      const savedDraft = { ...draft, model: savedModel, dirty: false }
+      setEdited(savedDraft)
+      const result = await api.configuredModels(tool)
       if (!active.current || id !== request.current) return
       setModels(result)
       setModelsDetected(true)
       const suggested = result.includes(savedModel) ? savedModel : resolveDefaultCliModel(provider, result, savedModel) ?? ''
-      if (suggested && suggested !== savedModel) change({ model: suggested })
+      if (suggested && suggested !== savedModel) setEdited({ ...savedDraft, model: suggested, dirty: true })
       if (markerWarning) setWarning(markerWarning)
       setNotice('密钥已准备好并保存。想换模型就在上面选，选完再点「保存配置」。')
     } catch (cause) {
       if (!active.current || id !== request.current) return
       // 写进去了就要说清楚，否则用户会以为什么都没改、再去点一遍。
-      setError(saved ? `配置已保存，但模型列表暂时没读到：${errorMessage(cause, '请稍后再点一次')}` : failureWithDetail(cause, '保存并检测模型没有成功'))
+      setError(saved ? `配置已保存，但模型列表暂时没读到：${errorMessage(cause, '请稍后再点一次')}` : failureWithDetail(cause, '保存并检测没有成功'))
     }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
-  function save(mode: 'merge' | 'reset') {
-    if (nonGptSaveIssue) { setError(nonGptSaveIssue); return }
+  // 小白分不清「只更新」和「重置」，保存默认就是只改账号、密钥和模型（merge）；
+  // 重置收进「高级」，仍要再点一次确认。两条路都由主进程先备份再两阶段写入（I9）。
+  function commit(mode: 'merge' | 'reset', target: ConfigDraft) {
+    const chosen = keys.find((key) => String(key.id) === target.keyId && key.status === 1)
     void run('保存配置', async () => {
-      const provider = providerFor(tab)
       let markerWarning = ''
       let keyWritten = true
-      if (draft.source === 'official') {
-        await api.official(tab, mode)
+      if (target.source === 'official') {
+        await api.official(tool, mode)
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
-      else if (draft.source === 'manual') {
-        await api.saveManual({ provider, apiKey: draft.secret, model: draft.model, mode })
+      else if (target.source === 'manual') {
+        await api.saveManual({ provider, apiKey: target.secret, model: target.model, mode })
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, true)
       }
-      else if (usingCurrentKey) {
+      else if (target.keyId === CURRENT_KEY) {
         // Empty is the main-process reuse sentinel. It never reveals or
         // replaces the local key and must not mark its source as manual.
-        await api.saveManual({ provider, apiKey: '', model: draft.model, mode })
+        await api.saveManual({ provider, apiKey: '', model: target.model, mode })
         keyWritten = false
       }
-      else if (selectedKey) {
-        await api.saveAccountKey({ provider, keyId: selectedKey.id, model: draft.model, mode })
+      else if (chosen) {
+        await api.saveAccountKey({ provider, keyId: chosen.id, model: target.model, mode })
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
-      else if (usingAutomaticKey) {
-        const result = await api.configureManaged(tab, draft.model || undefined, mode)
+      else if (target.keyId === AUTOMATIC_KEY) {
+        const result = await api.configureManaged(tool, target.model || undefined, mode)
         if (result.failed.length) throw new Error(result.failed.map((item) => item.message).join('；'))
         if (!result.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else throw new Error('请选择要保存的密钥。')
-      if (keyWritten) onKeyWritten?.(tab)
+      if (keyWritten) onKeyWritten?.(tool)
       if (!active.current) return
       // The host has committed the write. Close through the owner so feedback
       // survives this dialog's unmount; a later refresh cannot undo that save.
-      onSaved(markerWarning || undefined)
+      onSaved(markerWarning || undefined, mode === 'reset' ? 'reset' : target.source === 'official' && currentSource !== 'official' ? 'official' : 'saved')
     })
   }
+  function requestReset() {
+    if (readyToSave(draft, models)) setResetAsk(true)
+  }
+  // 「界面语言与文件夹权限」头一次展开时替用户读一次，原来要点「检查中文界面」才知道。
+  // 只读不改，也不锁窗口；读不到的那一半照旧能点。
+  function loadDesktopState() {
+    if (desktopLoaded.current) return
+    desktopLoaded.current = true
+    void api.getLocale().then((value) => {
+      if (!active.current) return
+      setLocale(value)
+      if (value.error) setLocaleText(value.error)
+      else if (!value.installed || !value.chineseResources.available) setLocaleText(describeChineseLocale(value, os))
+    }, (cause) => { if (active.current) setLocaleText(errorMessage(cause)) })
+    void api.getPermissions().then((value) => { if (active.current) setPermission(value) }, () => undefined)
+  }
+  function changeLocale(value: string) {
+    if (value !== 'zh-CN' && value !== 'system') return
+    void run(value === 'zh-CN' ? '启用中文界面' : '跟随系统语言', async () => {
+      setLocaleText('')
+      const result = await api.setLocale(value)
+      if (result.error) throw new Error(result.error)
+      if (!active.current) return
+      setLocale(result)
+      if (value === 'zh-CN' && result.warning) setWarning(result.warning)
+      else setLocaleText(describeChineseLocaleResult(result, os))
+    })
+  }
+  function copyPath(path: string) {
+    const copied = navigator.clipboard?.writeText ? navigator.clipboard.writeText(path) : Promise.reject(new Error('clipboard unavailable'))
+    void copied.then(() => toast.show('路径已复制', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn'))
+  }
   const officialName = officialAccountNames[provider] ?? '官方账号'
+  const officialEmail = native.officialAccountEmail
+  const officialPlan = native.officialAccountPlan
   // 官方来源仍然可选,但它的限制要跟选项一起出现,而不是等用户选完再弹窗。
   const officialNote = definition.sources.includes('official') ? officialAccountNotes[provider] : null
-  // 都靠账号识别以后，自己粘贴 Key 只剩没登录的人用得上（登录就能解决），所以收进
-  // 「高级」；已经是自己填写的照旧显示这一项，免得选中的值在选项里找不到。
-  const manualVisible = draft.source === 'manual' || currentSource === 'manual'
-  const sourceOptions = [
-    { value: 'account', label: '使用星芒账号' },
-    ...(definition.sources.includes('official') ? [{ value: 'official', label: officialName }] : []),
-    ...(manualVisible ? [{ value: 'manual', label: '自己填写密钥' }] : []),
+  const sourceCards: RadioCardOption[] = [
+    { value: 'account', label: '当前账号', badge: <Pill tone="accent">推荐</Pill>, description: '按用量从当前账号扣费', testId: 'tool-source-account' },
+    ...(definition.sources.includes('official') ? [{ value: 'official', label: officialName, description: officialEmail ? officialPlan ? `已登录 ${officialPlan}` : '已登录' : '用你自己的官方订阅', testId: 'tool-source-official' }] : []),
+    { value: 'manual', label: '自己填写密钥', description: '粘贴星芒创建的密钥', testId: 'tool-manual-key' },
   ]
   const keyDescription = draft.source === 'manual'
     ? { name: '手动填写', group: '分组未确认', preview: manualKeyPreview(draft.secret) }
@@ -347,74 +424,98 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, initialModelF
       : usingAutomaticKey
         ? { name: metadata?.automatic.name || '正在读取', group: metadata?.automatic.group || '分组未确认', preview: '保存时准备或复用' }
         : { name: selectedKey?.name || '密钥已不可用', group: selectedKey?.group || '分组未确认', preview: selectedKey?.maskedKey || '密钥预览未提供' }
-  // 「分组」对小白没有意义，下拉框和摘要都不再写它；需要核对时在「高级」里看。
   const automaticLabel = metadata
     ? '自动准备（推荐）'
-    : metadataErrors[provider] ? '自动准备 · 账号信息暂时没读到' : '自动准备 · 正在读取账号信息'
-  const keySummary = usingAutomaticKey ? '保存时自动准备好密钥，不用自己创建'
-    : `${usingCurrentKey ? '继续用现在这把密钥' : '用你选的这把密钥'}：${keyDescription.name} · ${keyDescription.preview}`
+    : metadataError ? '自动准备 · 账号信息暂时没读到' : '自动准备 · 正在读取账号信息'
+  const keyOptions: PickerOption[] = [
+    // 别的站的 Key 不给「保持当前」：选了也存不进去（主进程报「属于其他账号」）。
+    ...((native.hasApiKey && native.matchesRelay) || usingCurrentKey ? [{ value: CURRENT_KEY, label: currentKeyLabel(metadata, native.apiKeyPreview), disabled: !native.hasApiKey || !native.matchesRelay }] : []),
+    { value: AUTOMATIC_KEY, label: automaticLabel, description: '保存时自动准备好密钥，不用自己创建', disabled: !metadata || metadataLoading || Boolean(metadataError) },
+    ...keys.filter((key) => key.status === 1).map((key) => ({ value: String(key.id), label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
+    ...(!usingCurrentKey && !usingAutomaticKey && !selectedKey ? [{ value: draft.keyId, label: '所选密钥已不可用，请重新选择', disabled: true }] : []),
+  ]
+  const detectedForDraft = modelsDetected && (draft.source !== 'manual' || draft.validatedSecret === draft.secret)
+  const detecting = busy === '检测模型' || autoDetectId !== 0
+  const modelCount = new Set(models.filter(Boolean)).size
+  const settledSource = currentSource === 'account' || currentSource === 'official' || currentSource === 'manual'
+  // 没改动、来源也清楚的，底栏就是「完成」：点了只是关上，不再写一遍。工具里还没配模型、
+  // 下拉框先替他填了默认的那个，也算要保存的改动，否则点「完成」默认模型就没写进去。
+  const done = !draft.dirty && settledSource && !broken && !codexNeedsRepair(native, provider)
+    && (draft.source === 'official' || draft.model === native.model)
+  // 自动准备的密钥要先保存才查得到模型；已有密钥的检测没读成，可以照旧直接保存。
+  const needsDetect = draft.source !== 'official' && draft.source !== 'unknown' && !detectedForDraft
+    && !(detectTried && draft.source === 'account' && !usingAutomaticKey)
+  const saving = busy === '保存配置' || busy === '保存并检测'
+  const primaryLabel = saving ? '正在保存' : done ? '完成' : needsDetect ? '保存并检测' : '保存配置'
+  function primary() {
+    if (done) { onClose(); return }
+    if (draft.source === 'account' && usingAutomaticKey && needsDetect) void saveAndDetectModels()
+    else if (needsDetect) void detectThenSave()
+    else if (readyToSave(draft, models)) commit('merge', draft)
+  }
   // 这个窗口里的动作改的都是工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
   const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} target="config" />
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
-  return <>
-    <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" width={640}
-      onClose={onClose} busy={Boolean(busy)} dirty={Object.values(drafts).some((entry) => entry?.dirty)} testId="config-dialog"
-      footer={<><Button variant="ghost" onClick={() => requestExit(onClose)} disabled={Boolean(busy)}>取消</Button><Button variant="primary" icon={Save} loading={Boolean(busy)} disabled={draft.source === 'unknown' || Boolean(nonGptSaveIssue)} aria-describedby={nonGptSaveIssue ? modelFilterStatusId : undefined} onClick={requestSave} testId="tool-save-config">保存配置</Button></>}>
-      <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
-      <Tabs label="选择要配置的工具" items={tools.filter((entry) => isToolId(entry.id)).map((entry) => ({ value: entry.id, label: entry.name, disabled: Boolean(busy) }))}
-        value={tab} onChange={(value) => { if (isToolId(value)) setTab(value) }} />
-      {providerFor(tab) === 'codex' && <p className="v2-callout">Codex 桌面端与 Codex CLI 共用这份配置。模型和来源在任一入口修改后会同步。</p>}
-      {draft.source === 'unknown' ? <><p className="v2-callout is-warn" data-testid="tool-foreign-key-note">{foreignKeyKind(native, 'unknown') === 'otherAccount' ? '这把 Key 可能不是当前账号的，用量可能算到别的账号上。' : '这个工具现在用的不是当前账号的 Key，在这里打不开。'}点「{switchLabel}」换成你自己的，改之前会先备份现在的设置。</p><div className="v2-inline-actions">{onSwitchAccount
-        ? <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} onClick={() => void switchAccount()} testId="tool-switch-account">{signedIn ? switchLabel : '登录后改用我的账号'}</Button>
-        : <Button onClick={() => change({ source: 'account' })}>{switchLabel}</Button>}</div></> : <>
-        <div className="v2-config-field"><strong>用哪个账号使用 AI</strong><Segment options={sourceOptions} value={draft.source} onChange={(value) => {
-          if (value === 'account' || value === 'manual' || value === 'official') change({ source: value })
-        }} />{officialNote && <p data-testid="tool-source-note">{officialNote}</p>}</div>
-        {draft.source === 'official' ? <><div className="v2-official-summary"><BrandIcon tool={tab} /><div><strong>{native.officialAccountEmail || `使用 ${officialName}`}</strong><p>{native.officialAccountPlan ?? '保存来源后，在工具中完成官方登录。'}</p></div><Pill tone={native.officialAccountEmail ? 'ok' : 'warn'}>{native.officialAccountEmail ? '已登录' : '待登录'}</Pill></div>
-          {nonGptSaveIssue && <div className="v2-config-field"><p id={modelFilterStatusId} role="status" data-testid="tool-model-filter-status">{nonGptSaveIssue}</p><Button size="sm" variant="ghost" onClick={() => setModelFilter('all')}>继续配置官方模型</Button></div>}</> : <>
-          {draft.source === 'account' ? <div className="v2-config-field"><Select label="访问密钥（Key）" testId="tool-key-select" value={draft.keyId} onFocus={() => refreshKeyOptions()} onPointerDown={() => refreshKeyOptions()} onKeyDown={(event) => { if (['ArrowDown', 'ArrowUp', ' ', 'Enter', 'F4'].includes(event.key)) refreshKeyOptions() }} onChange={(event) => change({ keyId: event.target.value })}
-            options={[
-              // 别的站的 Key 不给「保持当前」：选了也存不进去（主进程报「属于其他账号」）。
-              ...((native.hasApiKey && native.matchesRelay) || usingCurrentKey ? [{ value: CURRENT_KEY, label: currentKeyLabel(metadata, native.apiKeyPreview), disabled: !native.hasApiKey || !native.matchesRelay }] : []),
-              { value: AUTOMATIC_KEY, label: automaticLabel, disabled: !metadata || Boolean(metadataLoading[provider]) || Boolean(metadataErrors[provider]) },
-              ...keys.filter((key) => key.status === 1).map((key) => ({ value: String(key.id), label: accountKeyLabel(key) })),
-              ...(!usingCurrentKey && !usingAutomaticKey && !selectedKey ? [{ value: draft.keyId, label: '所选密钥已不可用，请重新选择', disabled: true }] : []),
-            ]} disabled={!signedIn} />
-            <p data-testid="tool-key-summary">{keySummary}</p>
-            {metadataErrors[provider] && <p role="alert">{metadataErrors[provider]}</p>}
-            {keyError && <p role="alert">{keyError}</p>}<div className="v2-inline-actions"><Button variant="ghost" size="sm" icon={RefreshCw} testId="tool-key-refresh" loading={keysLoading || metadataLoading[provider]} onClick={() => refreshKeyOptions(true)} disabled={!signedIn}>刷新密钥</Button><Button variant="ghost" size="sm" icon={KeyRound} onClick={() => requestExit(onKeys)}>管理密钥</Button></div></div>
-            : <div className="v2-config-field"><Input label="星芒访问密钥" type="password" value={draft.secret} onChange={(event) => change({ secret: event.target.value, validatedSecret: '' })} placeholder={native.apiKeyPreview ?? '粘贴你在星芒创建的密钥'} />
-              {native.hasApiKey && <Button size="sm" variant="ghost" icon={Eye} onClick={() => void run('读取密钥', async () => { const secret = await api.reveal(tab); if (active.current) change({ secret, validatedSecret: '' }) })}>读取当前密钥</Button>}</div>}
-          <div className="v2-config-field">
-            {provider === 'codex' && <Segment label="Codex 模型筛选" testId="tool-codex-model-filter" options={[{ value: 'all', label: '全部模型' }, { value: 'non-gpt', label: '别家模型' }]} value={modelFilter} onChange={(value) => { if (value === 'all' || value === 'non-gpt') { setModelFilter(value); setError('') } }} />}
-            <Select label="默认模型" testId="tool-default-model" value={draft.model} options={[...(!draft.model ? [{ value: '', label: activeModelFilter === 'non-gpt' ? '请选择别家模型' : '请先检测模型', disabled: true }] : []), ...modelChoices.options]} onChange={(event) => change({ model: event.target.value })} />
-            {draft.source === 'account' && usingAutomaticKey
-              ? <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-save-detect-models" loading={busy === '保存并检测'} onClick={() => void saveAndDetectModels()} disabled={activeModelFilter !== 'all' || !metadata || Boolean(metadataLoading[provider]) || Boolean(metadataErrors[provider])}>保存并检测模型</Button>
-              : <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-detect-models" loading={busy === '检测模型' || autoDetectId !== 0} onClick={() => void detectModels()} disabled={draft.source === 'manual' && !draft.secret}>检测模型</Button>}
-            {provider === 'codex' && <p>列表里的模型来自当前账号，不是每个都能在 Codex 里用，拿不准就选默认的。</p>}
-            {nonGptSaveIssue && <p id={modelFilterStatusId} role="status" data-testid="tool-model-filter-status">{nonGptSaveIssue}</p>}
-            {draft.source === 'account' && usingAutomaticKey && activeModelFilter === 'all' && <p>点「保存并检测模型」会先把密钥准备好、保存，再列出能用的模型。</p>}
-            {notice && <p role="status" data-testid="tool-save-detect-notice">{notice}</p>}</div>
-        </>}
+  const permissionText = !permission ? '' : permission.error ? permission.error
+    : permission.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹，可以直接改里面的文件'
+      : permission.trustLevel === 'untrusted' ? 'Codex 没有信任这个文件夹' : 'Codex 还没对这个文件夹做过选择'
+  const modelField = <div className="xm-field v2-config-model">
+    <div className="v2-config-model-row"><Select label="默认模型" testId="tool-default-model" value={draft.model} options={[...(!draft.model ? [{ value: '', label: '请先检测模型', disabled: true }] : []), ...modelChoices.options]} onChange={(event) => change({ model: event.target.value })} />
+      {!(draft.source === 'account' && usingAutomaticKey) && <Button icon={RefreshCw} testId="tool-detect-models" loading={detecting} onClick={() => void detectModels()} disabled={draft.source === 'manual' && !draft.secret}>{detecting ? '检测中' : '检测模型'}</Button>}</div>
+    {detectedForDraft && draft.model && models.includes(draft.model) && <p className="v2-ok-line" data-testid="tool-model-ok"><Check size={13} aria-hidden="true" />这把密钥能用 {modelCount} 个模型，{draft.model} 可以用</p>}
+    {notice && <p role="status" data-testid="tool-save-detect-notice">{notice}</p>}
+  </div>
+  return <Dialog open title={`${definition.name} 配置`} subtitle={provider === 'codex' ? 'Codex CLI 和 Codex 桌面端共用这一份配置，在哪边改都一样' : undefined} width={640}
+    onClose={onClose} busy={Boolean(busy)} dirty={draft.dirty} testId="config-dialog"
+    footer={<><span className="v2-dialog-footer-start v2-config-foot-note">只改账号、密钥和模型，改之前会自动备份。</span><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>
+      <Button variant="primary" icon={done ? undefined : Save} loading={saving} disabled={Boolean(busy) || (!done && draft.source === 'unknown')} onClick={primary} testId="tool-save-config">{primaryLabel}</Button></>}>
+    <fieldset className="v2-config-controls" disabled={Boolean(busy)} data-unsaved={draft.dirty ? 'true' : undefined}>
+    {draft.source === 'unknown' && <><p className="v2-callout is-warn" data-testid="tool-foreign-key-note">{foreignKeyKind(native, 'unknown') === 'otherAccount' ? '这把 Key 可能不是当前账号的，用量可能算到别的账号上。' : '这个工具现在用的不是当前账号的 Key，在这里打不开。'}点「{switchLabel}」换成你自己的，改之前会先备份现在的设置。</p><div className="v2-inline-actions">{onSwitchAccount
+      ? <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} onClick={() => void switchAccount()} testId="tool-switch-account">{signedIn ? switchLabel : '登录后改用我的账号'}</Button>
+      : <Button onClick={() => change({ source: 'account' })}>{switchLabel}</Button>}</div></>}
+      {/* 来源没确认时三张卡都不选中：一键改用当前账号最省事，没登录的人还能挑「自己填写密钥」。 */}
+      <div className="xm-field"><span className="v2-field-label">用哪个账号使用 AI</span><RadioCards label="用哪个账号使用 AI" testId="tool-source" value={draft.source} options={sourceCards} onChange={(value) => {
+        if (value === 'account' || value === 'manual' || value === 'official') change({ source: value })
+      }} />{officialNote && <p data-testid="tool-source-note">{officialNote}</p>}</div>
+      {draft.source === 'unknown' ? null : draft.source === 'official' ? <><div className="v2-official-summary"><BrandIcon tool={tool} /><div><strong>{officialEmail || `使用 ${officialName}`}</strong><p>{officialEmail ? [officialPlan, '不扣当前账号余额'].filter(Boolean).join('，') : `还没登录。保存后打开 ${definition.name}，按提示登录官方账号`}</p></div><Pill tone={officialEmail ? 'ok' : 'warn'}>{officialEmail ? '已登录' : '待登录'}</Pill></div>
+        {provider === 'codex' && officialEmail && onOfficialQuota && <div><DialogExitLink after={onOfficialQuota} testId="tool-official-quota">查看 ChatGPT 账号额度</DialogExitLink></div>}</> : <>
+        {draft.source === 'account' ? <div className="v2-config-key">
+          <OptionPicker label="访问密钥" testId="tool-key-select" value={draft.keyId} options={keyOptions} disabled={!signedIn} onOpen={() => refreshKeyOptions()} onChange={(value) => change({ keyId: value })}
+            aside={<span className="v2-option-picker-aside"><Button variant="ghost" size="sm" icon={RefreshCw} aria-label="刷新密钥" title="刷新密钥" testId="tool-key-refresh" loading={keysLoading || metadataLoading} onClick={() => refreshKeyOptions(true)} disabled={!signedIn} /><DialogExitLink after={onKeys}>管理密钥</DialogExitLink></span>} />
+          {usingCurrentKey && <p className="v2-field-note" data-testid="tool-key-summary">继续用现在这把密钥：{keyDescription.name} · {keyDescription.preview}</p>}
+          {metadataError && <p role="alert">{metadataError}</p>}
+          {keyError && <p role="alert">{keyError}</p>}</div>
+          : <div className="v2-config-key"><Input label="星芒密钥" password mono autoComplete="off" testId="tool-manual-secret" value={draft.secret} error={secretError || undefined} onChange={(event) => change({ secret: event.target.value, validatedSecret: '' })}
+            placeholder={native.apiKeyPreview ?? (strictKeyFormat ? '粘贴你在星芒创建的密钥，以 sk- 开头' : '粘贴你在星芒创建的密钥')} />
+            {native.hasApiKey && <Button size="sm" variant="ghost" icon={Eye} onClick={() => void run('读取密钥', async () => { const secret = await api.reveal(tool); if (active.current) change({ secret, validatedSecret: '' }) })}>读取当前密钥</Button>}</div>}
+        {modelField}
       </>}
-      <div className="v2-config-field"><Input label="打开工具时进入的文件夹" readOnly value={config.workspace} /><Button size="sm" icon={FolderOpen} onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onRefresh() })}>选择文件夹</Button></div>
-      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary>{os === 'mac' ? <p>{macLocaleNote}</p> : <><p>中文界面只在从星芒打开 Codex 时生效，直接点开始菜单、任务栏或桌面上的 Codex 图标打开还是英文。从星芒打开仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
-        <p>要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p></>}<div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value, os)) })}>检查中文界面</Button>
-        <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result, os)) } })}>启用中文界面</Button>
-        <Button size="sm" onClick={() => void run('跟随系统语言', async () => { setLocaleText(''); const result = await api.setLocale('system'); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(describeChineseLocaleResult(result, os)) })}>跟随系统语言</Button>
-        <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`文件夹：${result.workspace}，${result.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹' : result.trustLevel === 'untrusted' ? 'Codex 没有信任这个文件夹' : 'Codex 还没对这个文件夹做过选择'}`) })}>查看文件夹权限</Button>
-        <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { const result = await api.trustWorkspace(); if (active.current) setLocaleText(describeWorkspaceTrustResult(result.changed, os)) })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
-      <details data-testid="tool-config-advanced"><summary>高级</summary>
-        <p>点「保存配置」只改账号、密钥和模型，你在工具里做的其他设置都会留着；改之前会先自动备份。</p>
-        {!manualVisible && <Button size="sm" variant="ghost" icon={KeyRound} onClick={() => change({ source: 'manual' })} testId="tool-manual-key">自己填写密钥</Button>}
+    <Input label="打开工具时进入的文件夹" readOnly mono value={config.workspace} error={config.workspace ? undefined : '请选择打开工具时进入的文件夹'}
+      addon={<Button size="sm" onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onRefresh() })}>选择文件夹</Button>} />
+    {tool === 'codexDesktop' && <details className="v2-config-disclosure" data-testid="tool-config-language" onToggle={(event) => { if (event.currentTarget.open) loadDesktopState() }}>
+      <summary><span>界面语言与文件夹权限</span>{locale?.installed && <small>{locale.configuredLocale === 'zh-CN' ? '中文界面' : '跟随系统语言'}</small>}</summary>
+      <div className="v2-config-disclosure-body">
+        <div className="xm-field"><span className="v2-field-label">Codex 界面语言</span><Segment label="Codex 界面语言" testId="tool-codex-language" activation="manual" value={locale?.installed ? locale.configuredLocale === 'zh-CN' ? 'zh-CN' : 'system' : ''}
+          options={[{ value: 'zh-CN', label: '启用中文界面' }, { value: 'system', label: '跟随系统语言' }]} onChange={changeLocale} />
+          {os === 'mac' ? <p className="v2-field-note">{macLocaleNote}</p> : <><p className="v2-field-note">中文界面只在从星芒打开 Codex 时生效；从开始菜单或任务栏直接打开还是英文。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
+            <p className="v2-field-note">要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p></>}</div>
+        {localeText && <p role="status" data-testid="tool-locale-status">{localeText}</p>}
+        <div className="v2-config-perm">{permission?.trustLevel === 'trusted' && <ShieldCheck size={15} aria-hidden="true" />}{permissionText && <span>{permissionText}</span>}
+          <button type="button" className="v2-link-button" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setPermission(result) })}>查看文件夹权限</button>
+          {permission && permission.trustLevel !== 'trusted' && <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { const result = await api.trustWorkspace(); if (active.current) { setPermission(result.status); setLocaleText(describeWorkspaceTrustResult(result.changed, os)) } })}>信任当前文件夹</Button>}</div>
+      </div></details>}
+    <details className="v2-config-disclosure" data-testid="tool-config-advanced"><summary><span>高级</span><small>配置文件位置、重置</small></summary>
+      <div className="v2-config-disclosure-body">
+        {native.files.map((file) => <div className="v2-path-row" key={file.path}><code>{file.path}</code>{!file.exists && <Pill>尚未创建</Pill>}<Button variant="ghost" size="sm" icon={Copy} aria-label="复制路径" title="复制路径" onClick={() => copyPath(file.path)} /></div>)}
+        <div className="v2-inline-actions"><Button size="sm" icon={FolderOpen} onClick={() => void run('打开配置文件夹', async () => { await api.openConfigDirectory(tool) })}>打开配置文件夹</Button>
+          {onBackups && <DialogExitButton size="sm" icon={Archive} after={onBackups}>查看配置备份</DialogExitButton>}</div>
         {draft.source !== 'unknown' && saveSummary}
         {provider === 'codex' && <p className="v2-save-profile-note">星芒与 ChatGPT 各自保留一份配置；切换来源时，优先恢复该来源上次保存的自定义设置。</p>}
-        <div className="v2-code-preview">{native.files.map((file) => <div key={file.path}><code>{file.path}</code><span>{file.exists ? '已存在' : '尚未创建'}</span></div>)}</div>
-        {draft.source !== 'unknown' && <div className="v2-save-options"><Button variant="danger" onClick={requestReset} disabled={Boolean(nonGptSaveIssue)} testId="tool-save-reset"><strong>重置为初始状态</strong><small>配置乱了想从头来过时再用：先备份，再按上面选的账号重新生成配置。历史会话会保留。</small></Button></div>}</details>
-      </fieldset>
-      {error && !confirmation && <p className="v2-callout is-bad" role="alert">{errorText}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
-    </Dialog>
-    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置（在「设置 › 备份迁移」里能找回），再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{errorText}</p>}</>} okLabel="备份并重置" cancelLabel="取消" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation(null) }} onOk={() => save('reset')} />}
-    {exitAction && <Confirm title="要放弃未保存的修改吗？" body="关闭后，这次修改不会保存。" okLabel="放弃修改" cancelLabel="继续编辑" danger onClose={() => setExitAction(null)} onOk={() => { const action = exitAction; setExitAction(null); action() }} />}
-  </>
+        {draft.source !== 'unknown' && <div className="v2-reset-box"><div><strong>重置为初始状态</strong><small>会先备份，再按上面选的账号重新生成配置，历史会话会保留。</small></div>
+          {resetAsk ? <><span className="v2-reset-warn" role="status">这个工具里自己改过的设置也会重置</span><Button size="sm" onClick={() => setResetAsk(false)}>取消</Button><Button size="sm" variant="danger" testId="tool-save-reset-confirm" onClick={() => commit('reset', draft)}>确认重置</Button></>
+            : <Button size="sm" variant="ghost" testId="tool-save-reset" onClick={requestReset}>重置</Button>}</div>}
+      </div></details>
+    </fieldset>
+    {error && <p className="v2-callout is-bad" role="alert">{errorText}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
+  </Dialog>
 }

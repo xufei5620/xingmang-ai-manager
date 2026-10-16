@@ -4,7 +4,7 @@ import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClien
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
-import { BrandIcon, Button, Card, Dialog, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
+import { BrandIcon, Button, Card, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
 import { accountSwitchTarget, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, brokenConfigDetails, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, officialAccountSubtitle, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, spacedName, toolUpdateOffer, updateButtonHint, updatesOutsideApp, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -31,6 +31,7 @@ import { toolRouteHijackShownMs, toolRouteHomeTexts, toolRouteLabel, type RelayT
 import { buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
 import { useRestartPending } from './restart-reminder'
 import { RuntimeRestartDialog } from './RuntimeRestartDialog'
+import { OfficialQuotaDialog } from './OfficialQuotaDialog'
 import { weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
 import { currentWindowOs, windowOsFor } from '../app/window-os'
 
@@ -414,9 +415,6 @@ export function Home(props: HomeProps) {
   const [week, setWeek] = useState<WeekSpend | null>(() => cachedWeekSpend(props.api, props.accountScope, trendWanted))
   const [officialOpen, setOfficialOpen] = useState(false)
   const [official, setOfficial] = useState<OfficialChatGptAccount | null>(null)
-  const [officialBusy, setOfficialBusy] = useState(false)
-  const [officialError, setOfficialError] = useState('')
-  const officialLock = useRef(false)
   const [firstRunDismissed, setFirstRunDismissed] = useState<ToolId[]>(() => readFirstRunDismissals(getFirstRunStorage()))
   const [noticeSlot, setNoticeSlot] = useState<HTMLDivElement | null>(null)
   const active = useRef(true)
@@ -473,13 +471,6 @@ export function Home(props: HomeProps) {
       if (fresh && !resumeStillLatest(session, fresh.items)) return
     }
     props.onLaunch(provider, session.cwd, resumeLaunchChoice(session))
-  }
-  async function refreshOfficial() {
-    if (officialLock.current) return
-    officialLock.current = true; setOfficialBusy(true); setOfficialError('')
-    try { const value = await props.api.officialUsage(); if (active.current) setOfficial(value) }
-    catch (cause) { if (active.current) setOfficialError(errorMessage(cause, '官方额度暂时没有读到')) }
-    finally { officialLock.current = false; if (active.current) setOfficialBusy(false) }
   }
   useEffect(() => {
     let current = true
@@ -1190,12 +1181,6 @@ export function Home(props: HomeProps) {
         {!codexInUse && <ListRow icon={BookOpen} title="第一次用 Codex？跟着 4 步开始" onOpen={() => props.onNavigate('tutorial')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-codex" />}
       </section>
     </div>
-    {officialOpen && <Dialog open title="ChatGPT 官方账户额度" width={480} onClose={() => setOfficialOpen(false)} busy={officialBusy}
-      footer={<><Button onClick={() => setOfficialOpen(false)} disabled={officialBusy}>关闭</Button><Button icon={RefreshCw} loading={officialBusy} onClick={() => void refreshOfficial()}>刷新额度</Button></>}>
-      {officialError && <p className="v2-callout is-bad" role="alert">{officialError}</p>}
-      {official ? <><p>{official.planLabel ?? '官方账户'}{official.renewsAt ? ` · ${new Date(official.renewsAt).toLocaleDateString('zh-CN')} 续订` : ''}</p>
-        {official.windows.map((window) => <div className="v2-config-field" key={window.id}><Progress value={window.remainingPercent} label={`${window.label} · 剩余 ${window.remainingPercent}%`} />{window.resetAt && <small>{new Date(window.resetAt).toLocaleString('zh-CN')} 重置</small>}</div>)}
-        {official.resetCredits !== null && <p>剩余额度 {official.resetCredits}</p>}<p>更新于 {new Date(official.checkedAt).toLocaleString('zh-CN')}</p></> : <p>官方额度暂未读取，刷新后查看。</p>}
-    </Dialog>}
+    {officialOpen && <OfficialQuotaDialog email={snapshot?.config.providers.codex.officialAccountEmail ?? null} initial={official} refresh={() => props.api.officialUsage()} onClose={() => setOfficialOpen(false)} />}
   </section>
 }

@@ -17,11 +17,12 @@ import { buildEnvironmentStatus, diagnosticsRevision, environmentJobsFinished, m
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
-import { ConfigDialog } from './features/tools/ConfigDialog'
+import { ConfigDialog, type ConfigSaveOutcome } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
+import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
 import { Home, type ToolInstallIntent } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
-import { visibleExternalClients } from './features/tools/external-model'
+import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
 import { launchWaitLabel, launchWarning } from './features/tools/launch-notice'
 import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapOffer, modelSwapQuestion, modelSwapTitle, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
@@ -203,6 +204,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [help, setHelp] = useState(false)
   const [accelerationHelp, setAccelerationHelp] = useState(false)
   const [switcher, setSwitcher] = useState(false)
+  // 配置弹窗里「查看 ChatGPT 账号额度」打开的那个（首页「…」里的那个由首页自己开）。
+  const [officialQuotaOpen, setOfficialQuotaOpen] = useState(false)
   const [announcementOpen, setAnnouncementOpen] = useState(false)
   const [unread, setUnread] = useState(false)
   const [pendingLink, setPendingLink] = useState<ExternalDeepLink | null>(null)
@@ -641,7 +644,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         written = true
         // 与配置对话框重置时一样：整份重新生成了，「自己填写密钥」的本机标记跟着清掉。
         const markerWarning = config.baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), config.baseUrl, provider, false) : ''
-        toast.show('配置保存成功', 'ok')
+        toast.show(`已重置 ${spacedName(jobToolName(tool) ?? tool)}的配置，原来的配置已备份`, 'ok')
         if (markerWarning) toast.show(markerWarning, 'warn')
       } finally {
         await toolbox.refresh(true).catch(() => undefined)
@@ -1188,7 +1191,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id), { cancel: () => toolsApi.cancelExternalInstall(id), notice: {} })
       if (!completed || !mounted.current || epoch !== accountEpoch.current) return
       await toolbox.refreshExternal()
-      if (mounted.current && epoch === accountEpoch.current) toast.show('客户端已安装，点击“配置”选择密钥和模型。', 'ok')
+      if (mounted.current && epoch === accountEpoch.current) toast.show(`${spacedName(jobToolName(id) ?? id)}已装好，点「确认连接」用上当前账号`, 'ok')
     } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
   }
   async function launchExternal(id: ExternalToolId) {
@@ -1431,11 +1434,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setToolConfigConfirmed((current) => ({ provider, sequence: (current?.sequence ?? 0) + 1 }))
     }, () => undefined)
   }
-  function finishConfigSave(warning?: string) {
+  function finishConfigSave(warning?: string, outcome: ConfigSaveOutcome = 'saved') {
     const epoch = accountEpoch.current
+    const name = configTool ? jobToolName(configTool) ?? configTool : '工具'
     markDiagnosticsStale()
     setConfigTool(null)
-    toast.show('配置保存成功', 'ok')
+    // 配置弹窗的保存不带连接自检（主进程只写文件），这里不说「自检通过」。
+    toast.show(outcome === 'reset' ? `已重置 ${spacedName(name)}的配置，原来的配置已备份` : outcome === 'official' ? '已切回官方账号，原来的配置已备份' : `${spacedName(name)}的配置已保存`, 'ok')
     if (warning) toast.show(warning, 'warn')
     void toolbox.refresh(true).catch(() => {
       if (mounted.current && epoch === accountEpoch.current) {
@@ -1876,8 +1881,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
     {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)} footer={<Button onClick={() => setSwitcher(false)} testId="account-switcher-done">完成</Button>}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result || !accountSwitchNeedsAttention(result)) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={(target) => { setSwitcher(false); setAuthTarget(target ?? null); setAuth('login') }} /></Dialog>}
-    {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
+    {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} strictKeyFormat={siteId === 'solov'}
+      ready={externalClientReady(toolbox.externalClients, externalClient)} version={toolbox.externalClients.find((client) => client.tool === externalClient)?.version ?? null} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
+      strictKeyFormat={siteId === 'solov'} onOfficialQuota={() => setOfficialQuotaOpen(true)} onBackups={() => navigate('backups')}
       onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onKeyWritten={confirmToolKeyWritten} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}
       accountName={session.account?.username ?? null}
       onSwitchAccount={async (id) => {
@@ -1885,6 +1892,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         await perform('改用当前账号', async () => { switched.result = await switchToolAccount(id, 'account') }, id)
         return switched.result
       }} />}
+    {officialQuotaOpen && <OfficialQuotaDialog email={toolbox.snapshot?.config.providers.codex.officialAccountEmail ?? null} initial={toolbox.snapshot?.system.officialChatGpt ?? null}
+      refresh={() => toolsApi.officialUsage()} onClose={() => setOfficialQuotaOpen(false)} />}
     {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
       <p>选择线路后点击“开启加速”，连接成功后再打开游戏或启动器。“自动选择”会自动测速并选择可用线路，也可以手动选择。</p>

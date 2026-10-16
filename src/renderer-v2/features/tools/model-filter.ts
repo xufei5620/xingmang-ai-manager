@@ -24,20 +24,24 @@ export function codexModelChoices(models: readonly string[], filter: CodexModelF
   return { candidates, options }
 }
 
-export function codexModelFilterSaveIssue(input: {
-  filter: CodexModelFilter
+/**
+ * 「换用别家模型」弹窗里的单选列表：Codex 的默认型号排第一（说明里那句「拿不准就选默认的」
+ * 指的就是它），后面是检测到的非 GPT 型号。默认型号这把密钥用不了就不列。
+ */
+export function otherModelChoices(models: readonly string[], defaultModel: string): string[] {
+  const detected = [...new Set(models.filter(Boolean))]
+  const others = detected.filter((model) => !isOpenAiModelId(model))
+  return detected.includes(defaultModel) && !others.includes(defaultModel) ? [defaultModel, ...others] : others
+}
+
+export function otherModelSaveIssue(input: {
   models: readonly string[]
+  defaultModel: string
   selectedModel: string
   detected: boolean
-  automaticKey: boolean
-  officialSource?: boolean
 }): string | null {
-  if (input.filter !== 'non-gpt') return null
-  if (input.officialSource) return '别家模型要用星芒账号或自己填写的密钥。请换一个账号来源后再检测模型。'
-  if (input.automaticKey) return '看别家模型时，请先选择已有密钥或自己填写密钥，再检测模型。'
   if (!input.detected) return '请先检测当前密钥的可用模型，再选择别家模型。'
-  const { candidates } = codexModelChoices(input.models, input.filter, input.selectedModel)
-  if (!candidates.length) return '当前密钥没有别家模型可用。请更换有相应模型权限的密钥后重新检测。'
-  if (!candidates.includes(input.selectedModel)) return '请选择本次检测到的别家模型后再保存。'
+  if (!input.models.some((model) => model && !isOpenAiModelId(model))) return '当前密钥没有别家模型可用。请更换有相应模型权限的密钥后重新检测。'
+  if (!otherModelChoices(input.models, input.defaultModel).includes(input.selectedModel)) return '请选择本次检测到的别家模型后再保存。'
   return null
 }
