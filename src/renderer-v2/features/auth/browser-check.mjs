@@ -1035,13 +1035,16 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       assert.equal(await page.locator('.auth-orbit-satellite').count(), 3)
       assert.equal(await page.locator('.frame,.ptile,.welcome-preview-workbench').count(), 0)
       await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0))
-      // v4 的星星是两层 CSS 圆点，整页没有一块逐帧重画的画布（批次性能要求 批03 第 2 条）。
+      // 星空照 0.2.18：170 颗星和连线是画一次的 SVG，整页没有一块逐帧重画的画布（批次性能要求 批03 第 2 条）。
       assert.equal(await page.locator('.auth-welcome canvas').count(), 0)
       assert.match(await page.getByTestId('welcome-starfield').evaluate((layer) => getComputedStyle(layer).backgroundImage), /radial-gradient/)
-      assert.equal(await page.locator('.auth-stars-twinkle').count(), 1)
+      assert.equal(await page.locator('.auth-stars-twinkle').count(), 5)
+      assert.equal(await page.locator('.auth-stars-twinkle circle').count(), 170)
+      assert.ok(await page.locator('.auth-star-links line').count() > 0)
+      assert.equal(await page.locator('.auth-orbit-ellipses > i').count(), 3)
       assert.equal(await page.locator('.auth-orbit-hud').count(), 0)
       assert.equal(await page.getByTestId('welcome-page').getAttribute('data-motion-paused'), 'true')
-      assert.ok(await page.locator('.auth-orbit-ring, .auth-orbit-planet, .auth-stars-twinkle').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationName === 'none')))
+      assert.ok(await page.locator('.auth-orbit-ring, .auth-orbit-planet, .auth-stars-twinkle, .auth-meteor, .auth-orbit-ellipses > *, .auth-orbit-beam').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationName === 'none')))
       const geometry = await page.evaluate(() => ({ width: document.querySelector('.auth-welcome').getBoundingClientRect().width, logo: document.querySelector('.auth-welcome-brand img').getBoundingClientRect().height, footer: document.querySelector('.auth-welcome-foot').getBoundingClientRect().bottom, scene: document.querySelector('.auth-orbit-scene').getBoundingClientRect() }))
       assert.equal(geometry.width, 1280)
       assert.equal(geometry.logo, 64)
@@ -1102,6 +1105,32 @@ test('welcome keeps the three tools evenly spaced on one orbit so they never ove
         const apart = boxes[a].right <= boxes[b].left || boxes[b].right <= boxes[a].left || boxes[a].bottom <= boxes[b].top || boxes[b].bottom <= boxes[a].top
         assert.ok(apart, `tools ${a} and ${b} do not overlap at ${spin}deg`)
       }
+    }
+  } finally { await page.close() }
+})
+
+// 满屏一层的透明度一变，整个窗口就要重新合成：慢慢变的几样都按 steps() 在同一个 0.2 秒的拍子上换档，
+// 轨道每秒 30 档，只有流星（11 秒里划 1.4 秒）是平滑的。拍子一乱，软件绘制下显卡进程又会吃满一个核。
+test('welcome steps its slow animations on one shared beat', async () => {
+  const page = await open('scenario=welcome&motion')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    const timings = await page.evaluate(() => document.getAnimations().filter((animation) => animation instanceof CSSAnimation).map((animation) => {
+      // CSS 的 animation-timing-function 落在每个关键帧上，不在整段动画的 timing 上。
+      const timing = animation.effect.getTiming(), keyframes = animation.effect.getKeyframes()
+      return { name: animation.animationName, duration: timing.duration, delay: timing.delay, easing: keyframes[0].easing, keyframes: keyframes.length }
+    }))
+    assert.ok(timings.length >= 10, JSON.stringify(timings))
+    for (const timing of timings) {
+      if (timing.name.startsWith('auth-meteor')) continue
+      const steps = /^steps\((\d+)/.exec(timing.easing)
+      assert.ok(steps, `${timing.name} changes in steps: ${JSON.stringify(timing)}`)
+      // steps() 作用在每两个关键帧之间；auth-core 和 auth-beam 是 0% / 50% / 100% 两段。
+      const segments = Math.max(1, timing.keyframes - 1)
+      const beat = timing.name === 'auth-spin' ? 1000 / 30 : 200
+      const step = timing.duration / segments / Number(steps[1])
+      assert.ok(Math.abs(step - beat) < .01, `${timing.name} steps every ${beat}ms: ${JSON.stringify(timing)}`)
+      assert.ok(Math.abs(timing.delay / beat - Math.round(timing.delay / beat)) < .001, `${timing.name} starts on the beat: ${JSON.stringify(timing)}`)
     }
   } finally { await page.close() }
 })
