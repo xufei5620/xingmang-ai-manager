@@ -6,9 +6,14 @@ import {
   applyWindowTheme,
   assetMenuFailureDialog,
   buildMacApplicationMenuTemplate,
+  legacyWindowChrome,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
+  resolveWindowPalette,
+  setWindowChrome,
   startupFailureMessage,
+  titleBarOverlayHeight,
+  v4WindowChrome,
   windowIconFileName,
 } from './window-presentation'
 
@@ -33,7 +38,7 @@ describe('platform window presentation', () => {
       titleBarOverlay: {
         color: '#202426',
         symbolColor: '#eef1f2',
-        height: 38,
+        height: 36,
       },
       icon: '/app/windows-icon.png',
     })
@@ -47,8 +52,8 @@ describe('platform window presentation', () => {
   })
 
   it('tells each system where to quit from after the window kept crashing', () => {
-    expect(rendererCrashRecoveryDetail('win32')).toBe('可以再试一次重新加载。如果还是空白，请从任务栏右下角的星芒图标退出软件后重新打开，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
-    expect(rendererCrashRecoveryDetail('darwin')).toBe('可以再试一次重新加载。如果还是空白，请从屏幕顶部菜单栏的星芒图标退出软件后重新打开，并在「反馈」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
+    expect(rendererCrashRecoveryDetail('win32')).toBe('可以再试一次重新加载。如果还是空白，请从任务栏右下角的星芒图标退出软件后重新打开，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
+    expect(rendererCrashRecoveryDetail('darwin')).toBe('可以再试一次重新加载。如果还是空白，请从屏幕顶部菜单栏的星芒图标退出软件后重新打开，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
     const linux = rendererCrashRecoveryDetail('linux')
     expect(linux).not.toContain('右下角')
     expect(linux).toContain('从应用菜单重新打开')
@@ -65,6 +70,42 @@ describe('platform window presentation', () => {
 
     expect(target.setBackgroundColor).toHaveBeenCalledWith('#17191b')
     expect(target.setTitleBarOverlay).not.toHaveBeenCalled()
+  })
+
+  it('leaves the overlay height to the zoom when the Windows theme changes', () => {
+    const target = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn() }
+    applyWindowTheme(target, palette, 'win32')
+    expect(target.setTitleBarOverlay).toHaveBeenCalledWith({ color: '#202426', symbolColor: '#eef1f2' })
+  })
+})
+
+describe('window chrome per renderer', () => {
+  it('keeps the legacy 36 high title bar and colours until the v4 renderer takes over', () => {
+    setWindowChrome(legacyWindowChrome)
+    expect(titleBarOverlayHeight(1)).toBe(36)
+    expect(resolveWindowPalette('dark')).toEqual({ background: '#17191b', titleBar: '#202426', symbol: '#eef1f2' })
+  })
+
+  it('lines the window buttons up with the 44 high v4 top bar at every zoom', () => {
+    setWindowChrome(v4WindowChrome)
+    try {
+      expect(titleBarOverlayHeight(1)).toBe(44)
+      expect(titleBarOverlayHeight(0.9)).toBe(40)
+      expect(titleBarOverlayHeight(1.1)).toBe(48)
+      expect(platformWindowOptions('win32', resolveWindowPalette('dark'), '/app/windows-icon.png').titleBarOverlay).toEqual({ color: '#101116', symbolColor: '#A9AFBA', height: 44 })
+      expect(resolveWindowPalette('light')).toEqual({ background: '#F6F3EC', titleBar: '#FBFAF6', symbol: '#46566E' })
+    } finally {
+      setWindowChrome(legacyWindowChrome)
+    }
+  })
+
+  it('takes the v4 colours from the same tokens the top bar paints with', () => {
+    const tokens = fs.readFileSync(path.join(__dirname, '..', 'ui-spec', 'tokens.css'), 'utf8')
+    for (const theme of ['dark', 'light'] as const) {
+      const block = tokens.slice(tokens.indexOf(`[data-theme="${theme}"] {`))
+      const value = (name: string) => new RegExp(`${name}:\\s*([^;]+);`).exec(block)?.[1].trim()
+      expect(v4WindowChrome.palettes[theme]).toEqual({ background: value('--win'), titleBar: value('--bg'), symbol: value('--text-2') })
+    }
   })
 })
 

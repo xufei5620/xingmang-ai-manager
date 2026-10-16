@@ -104,10 +104,14 @@ export function buildLastFailureLine(failure: SupportFailure): string {
   return redactSecretPatterns(why ? `最近一次出错：${time} ${what}：${why}` : `最近一次出错：${time} ${what}`)
 }
 
-export function SupportIdentity({ line, lastFailure, onCopy }: { line: string; lastFailure?: string | undefined; onCopy: () => void }) {
-  return <div className="v2-support-identity" data-testid="support-identity">
+/**
+ * testIdPrefix：反馈与客服页的「找客服」卡上也有这一行，帮助与客服弹窗叠在那一页上面时两份同时在，
+ * 测试按前缀分开认。缺省 = 帮助弹窗那一份（support）。
+ */
+export function SupportIdentity({ line, lastFailure, onCopy, testIdPrefix = 'support' }: { line: string; lastFailure?: string | undefined; onCopy: () => void; testIdPrefix?: string }) {
+  return <div className="v2-support-identity" data-testid={`${testIdPrefix}-identity`}>
     <p>找客服时把这行一起发过去：</p>
-    <div><code data-testid="support-identity-line">{line}</code><Button size="sm" onClick={onCopy}>复制</Button></div>
-    {lastFailure && <p data-testid="support-last-failure">{lastFailure}</p>}
+    <div><code data-testid={`${testIdPrefix}-identity-line`}>{line}</code><Button size="sm" onClick={onCopy}>复制</Button></div>
+    {lastFailure && <p data-testid={`${testIdPrefix}-last-failure`}>{lastFailure}</p>}
   </div>
 }

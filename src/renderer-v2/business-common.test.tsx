@@ -20,7 +20,7 @@ describe('renderer-v2 result notice', () => {
 
   it('names the failure from the original it folded away, without showing the original', () => {
     // useOperation 把带路径的英文换成通用兜底句以后，标题要靠原话认出来（第三十批 A）。
-    const shown = '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。'
+    const shown = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
     const original = "EBUSY: resource busy or locked, rename '本地配置文件 -> '本地配置文件"
     const markup = renderToStaticMarkup(<ResultNotice error={shown} detail={original} />)
     expect(markup).toContain('工具正在运行')
@@ -139,6 +139,13 @@ describe('renderer-v2 list empty states', () => {
     expect(markup).toContain('换个词试试。')
     expect(markup).toContain('>清除搜索<')
     expect(markup).not.toContain('清空筛选')
+  })
+
+  it('lets a page word its own search miss', () => {
+    const markup = renderToStaticMarkup(<ListState page="sessions" noun="会话" searchTitle="没有找到相关记录" searchDescription="换个关键词，或者切换到「全部」再看看。" filtered query="zzz" loading={false} error="" count={0} retry={() => undefined} clear={() => undefined}>{null}</ListState>)
+    expect(markup).toContain('没有找到相关记录')
+    expect(markup).toContain('换个关键词，或者切换到「全部」再看看。')
+    expect(markup).not.toContain('没有找到「zzz」')
   })
 
   it('keeps the filter wording when only a range filter is set', () => {

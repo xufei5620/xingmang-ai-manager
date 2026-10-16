@@ -203,7 +203,7 @@ describe('errorMessage', () => {
   })
 
   it('keeps its own generic fallback when the caller passes none', () => {
-    expect(errorMessage(new Error('EPIPE'))).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
+    expect(errorMessage(new Error('EPIPE'))).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
   })
 
   it('does not take an English failure for Chinese because of a redacted path', () => {
@@ -220,7 +220,7 @@ describe('errorMessage', () => {
     ]
     for (const reason of failures) {
       expect(errorMessage(ipc(reason), '保存配置没有成功')).toBe('保存配置没有成功')
-      expect(errorMessage(ipc(reason))).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
+      expect(errorMessage(ipc(reason))).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
     }
   })
 
@@ -278,10 +278,10 @@ describe('snapshotErrorMessage', () => {
 })
 
 describe('detectionFailureMessage', () => {
-  const permission = '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。'
+  const permission = '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。'
   const busy = '这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。'
-  const missing = '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。'
-  const other = '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。'
+  const missing = '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。'
+  const other = '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。'
 
   it('says in plain words that a permission error is most likely security software', () => {
     expect(detectionFailureMessage("EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'")).toBe(permission)
@@ -375,7 +375,7 @@ describe('failureWithDetail', () => {
   it('keeps the generic banner sentence and hands the redacted original over for classification', () => {
     // useOperation 交给页头红条的两样东西：上屏那句照旧，原话只拿来认类别。
     const failure = failureWithDetail(new Error("EBUSY: resource busy or locked, rename 'C:\\Users\\yoyo\\.codex\\config.toml' api_key=abc123"))
-    expect(failure.message).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
+    expect(failure.message).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
     expect(failure.detail).toContain('EBUSY: resource busy or locked')
     expect(failure.detail).not.toMatch(/yoyo|abc123/)
   })
@@ -383,6 +383,6 @@ describe('failureWithDetail', () => {
   it('leaves no detail when the shown sentence already explains the cause', () => {
     expect(failureWithDetail(new Error('配置文件写入失败：磁盘只读'))).toEqual({ message: '配置文件写入失败：磁盘只读' })
     expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
-    expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。' })
+    expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。' })
   })
 })

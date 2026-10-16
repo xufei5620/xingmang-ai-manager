@@ -2315,7 +2315,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:repair-cli-hooks', async (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (!service.repairCliHooks) throw new Error('这个版本还不能修提醒设置')
-    // 和保存配置同一份备份：「备份」页里能找回改之前的样子。
+    // 和保存配置同一份备份：「设置 › 备份迁移」里能找回改之前的样子。
     options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
     return service.repairCliHooks(provider)
   })
@@ -3043,7 +3043,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
     // captureFeedbackReport already trims the oldest log lines to fit; this
     // only guards a runtime log implementation that ignored the budget.
-    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
+    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告太大了，请在「反馈与客服」页的「运行日志」里点「打开日志文件夹」，把日志文件直接发给客服')
     const selfChecked = options.diagnosticsService.hasSelfCheckResult?.()
     const preview = {
       id: randomUUID(),
@@ -3386,7 +3386,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   // 不收参数：读的是安装包里那几个固定文件名，渲染层给不出任何路径（I5）。
   registerTrustedHandler('acceleration:recheck-bundle', () => {
     const service = accelerationService()
-    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请刷新一下加速页。')
+    if (!service.recheckAccelerationBundle) throw new Error('加速文件现在不用检查，请重新打开「设置 › 网络加速」。')
     return service.recheckAccelerationBundle()
   })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
@@ -4137,7 +4137,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:fix', async (_event, rawKind: unknown) => {
     if (!isDiagnosticFixKind(rawKind)) throw new Error('不认识要处理的是哪一项')
     const fix = options.diagnosticsService.fix
-    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈」页导出报告发给客服')
+    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈与客服」页导出报告发给客服')
     return fix(rawKind)
   })
   registerTrustedHandler('extensions:choose-directory', async (event) => {

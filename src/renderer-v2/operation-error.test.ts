@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyOperationError, operationFallbackActions, operationLogPage, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
+import { classifyOperationError, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
 import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
@@ -18,7 +18,7 @@ import { operationFailureFrom } from './business-common'
 const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: OperationTarget } | { unreachable: string }> = {
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
-  switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。' },
+  switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
@@ -103,6 +103,17 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('模型查询超时，请检查网络后重试')).toBe('timeout')
     expect(classifyOperationError('账号接口返回 401 Unauthorized')).toBe('sessionExpired')
     expect(classifyOperationError('模型查询失败，服务返回 403：令牌已失效')).toBe('keyInvalid')
+  })
+
+  it('names the history account backend running out of balance instead of showing the English sentence alone', () => {
+    // 客户装着 CC Switch、点「改用当前账号」时撞上的原话：历史账号余额用完，查模型那一步就被拒了。
+    const switchFailure = '改用当前账号没有完成：模型查询失败，服务返回 403：Insufficient account balance。已恢复到切换前的配置。'
+    expect(classifyOperationError(switchFailure, 'config')).toBe('noBalance')
+    const hint = presentOperationError(switchFailure, 'config')
+    expect(hint?.title).toBe('余额已用完')
+    expect(hint?.actions).toEqual([{ id: 'recharge', label: '马上充值' }])
+    // 只带错误码的写法同样认得。
+    expect(classifyOperationError('模型查询失败，服务返回 403：INSUFFICIENT_BALANCE')).toBe('noBalance')
   })
 
   it('tells a service outage apart from a broken key or an expired login', () => {
@@ -192,8 +203,8 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('写入失败：文件被占用', 'config')).toBe('toolRunning')
     expect(classifyOperationError('Provider 配置根目录不能经过符号链接或目录联接（EPERM）', 'config')).toBe('folderRelocated')
     expect(classifyOperationError('写入配置失败：ENOSPC', 'config')).toBe('diskFull')
-    // 日志照旧落「反馈」页：运行日志记得全。
-    expect(operationLogPage({ message: raw, tool: 'claude' })).toBe('feedback')
+    // 日志照旧落「反馈与客服」的运行日志：那里记得全。
+    expect(operationLogSection({ message: raw, tool: 'claude' })).toBe('log')
   })
 
   it('treats exactly the home actions that rewrite a tool config as config writes', () => {
@@ -248,7 +259,7 @@ describe('renderer-v2 operation error classification', () => {
           { id: 'support', label: '找客服' },
         ])
         // 「查看日志」要落到运行日志：原话（SHA-256、退出码）只记在那里。
-        expect(operationLogPage({ message, tool: 'codexDesktop' })).toBe('feedback')
+        expect(operationLogSection({ message, tool: 'codexDesktop' })).toBe('log')
       }
     }
   })
@@ -261,7 +272,7 @@ describe('renderer-v2 operation error classification', () => {
       expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallNoStore'])
       expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'log', 'support'])
       expect(JSON.stringify(hint)).not.toContain('去微软商店装')
-      expect(operationLogPage({ message, tool: 'codexDesktop' })).toBe('feedback')
+      expect(operationLogSection({ message, tool: 'codexDesktop' })).toBe('log')
     }
   })
 
@@ -288,7 +299,7 @@ describe('renderer-v2 operation error classification', () => {
           { id: 'support', label: '找客服' },
         ])
         // 原话（签名、HTTP 状态码）只记在运行日志里。
-        expect(operationLogPage({ message, tool: 'claudeDesktop' })).toBe('feedback')
+        expect(operationLogSection({ message, tool: 'claudeDesktop' })).toBe('log')
       }
     }
     // 授权、磁盘这几句各有自己的下一步，主进程原样放行，这里也不归到这一类。
@@ -325,7 +336,7 @@ describe('renderer-v2 operation error classification', () => {
         { id: 'support', label: '找客服' },
       ])
       // 原因原话只记在运行日志里。
-      expect(operationLogPage({ message })).toBe('feedback')
+      expect(operationLogSection({ message })).toBe('log')
     }
     // 磁盘不够还是「磁盘空间不够」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
     expect(classifyOperationError('OpenCode 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
@@ -370,6 +381,14 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('写入失败：应用设置目录不能经过符号链接或目录联接（EPERM）')
     expect(hint?.key).toBe('folderRelocated')
     expect(hint?.actions).toEqual([{ id: 'network', label: '打开检查页' }, { id: 'support', label: '找客服' }])
+  })
+
+  it('sends a failed undo to the backups action whether the message names the new or the old place', () => {
+    for (const where of ['「设置 › 备份迁移」', '「备份」']) {
+      const hint = presentOperationError(`改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到${where}里恢复切换前那一份。`)
+      expect(hint?.key).toBe('switchUndoFailed')
+      expect(hint?.actions).toEqual([{ id: 'backups', label: '去备份迁移' }, { id: 'support', label: '找客服' }])
+    }
   })
 
   it('offers 复制路径 on the antivirus block, where the catalog has asked for it all along', () => {
@@ -492,7 +511,7 @@ describe('renderer-v2 operation error classification', () => {
         '连接检查失败：net::ERR_CERT_AUTHORITY_INVALID',
         '重新写入 Key 没有完成：账号接口返回 401 Unauthorized',
         '打开工具没有完成：找不到可用的终端',
-      ]) expect([message, operationLogPage({ message })]).toEqual([message, 'feedback'])
+      ]) expect([message, operationLogSection({ message })]).toEqual([message, 'log'])
     })
 
     it('keeps the environment failures on the runtime log even when they happened during an install', () => {
@@ -502,7 +521,7 @@ describe('renderer-v2 operation error classification', () => {
         'Codex CLI 安装失败：self signed certificate in certificate chain',
         'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。',
         'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT',
-      ]) expect([message, operationLogPage({ message, tool: 'claude' })]).toEqual([message, 'feedback'])
+      ]) expect([message, operationLogSection({ message, tool: 'claude' })]).toEqual([message, 'log'])
     })
 
     it('sends the failures only the install side writes down to the install log', () => {
@@ -510,7 +529,7 @@ describe('renderer-v2 operation error classification', () => {
         'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录',
         'Claude Code 更新失败：SHA-512 完整性校验不一致',
         'Claude Code 安装失败：npm exited with code 1',
-      ]) expect([message, operationLogPage({ message, tool: 'claude' })]).toEqual([message, 'maintenance'])
+      ]) expect([message, operationLogSection({ message, tool: 'claude' })]).toEqual([message, 'install-log'])
     })
   })
 
@@ -532,7 +551,7 @@ describe('presentOperationFailure', () => {
   })
 
   it('lets the log page follow the original too', () => {
-    expect(operationLogPage({ message: '安装没有完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('maintenance')
-    expect(operationLogPage({ message: '安装没有完成', detail: 'ENOSPC', tool: 'claude' })).toBe('feedback')
+    expect(operationLogSection({ message: '安装没有完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('install-log')
+    expect(operationLogSection({ message: '安装没有完成', detail: 'ENOSPC', tool: 'claude' })).toBe('log')
   })
 })

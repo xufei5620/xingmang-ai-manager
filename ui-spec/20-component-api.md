@@ -22,29 +22,33 @@
 |---|---|---|
 | `Button` | `variant: primary\|secondary\|ghost\|danger\|accent\|balance` · `size` · `icon` · `iconRight` · `loading` · `disabled` · `onClick` · `kbd?` | `balance` 变体内部读余额档位决定颜色 |
 | `Pill` | `tone` · `dot?: boolean` · `children` | 只展示，不可点 |
-| `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `defaultOpen?`（默认 true）· `onOpenChange?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head；可折叠的卡要记住收起时，页面用 `defaultOpen` 和 `onOpenChange` 自己存（首页「还可以装」）；标题不折行。`meta` 是超过 24 个字的字符串时放进卡片第一行单独成段（`xm-card-lead`），短的跟在标题后面、放不下打省略号。卡片里直接放 ListRow / ToolRow / 表头时，行和分隔线通到卡片两边，第一行上面不画线 |
-| `ToolRow` | `tool: ToolId` · `status: ToolStatus` · `version?` · `route?` · `model?` · `extraAction?` · `primaryAction` · `menu?: MenuItem[]` · `menuLabel?` · `progress?: number` | 六列固定网格；名字下面那行小字按「线路 · 版本 · 模型」排，`route` 是首页的「线路2」这类标签，排最前免得被长版本挤掉；`menuLabel` 是「…」的鼠标提示和读屏名，缺省「更多操作」，首页工具行写「配置和更多操作」 |
+| `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `defaultOpen?`（默认 true）· `onOpenChange?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head；可折叠的卡要记住收起时，页面用 `defaultOpen` 和 `onOpenChange` 自己存；标题不折行。`meta` 是超过 24 个字的字符串时放进卡片第一行单独成段（`xm-card-lead`），短的跟在标题后面、放不下打省略号。卡片里直接放 ListRow / ToolRow / 表头时，行和分隔线通到卡片两边，第一行上面不画线 |
+| `ToolRow` | `tool: ToolId` · `status: ToolStatus` · `version?` · `route?` · `model?` · `extraAction?` · `primaryAction` · `menu?: MenuItem[]` · `menuLabel?` · `progress?: number` | 六列网格，第四格（`extraAction`）按内容放宽，放不下时状态牌和它各自打省略号、不叠字（v4 批04）；名字下面那行小字按「线路 · 版本 · 模型」排，`route` 是首页的「线路2」这类标签，排最前免得被长版本挤掉；`menuLabel` 是「…」的鼠标提示和读屏名，缺省「更多操作」 |
+| `ToolCard` | `tool: ToolId` · `meta: ReactNode` · `metaTone?: 'warn'\|'bad'` · `metaTitle?` · `link?: ReactNode` · `badge?: ReactNode` · `actions?: ReactNode` · `menu?` · `menuLabel?` · `progress?: number` · `off?: boolean` | v4 首页的工具卡片（批04）：上面图标、名字和「厂商 · 命令行工具 / 桌面应用」，中间一行说明（`metaTone` 上色，`link` 是下面那行小字链接，如「可更新到 v…」），底下左边一块牌子（来源牌、状态小牌、灰字「未安装」），右边按钮和「…」；有 `progress` 时牌子换成进度条和百分比。底下一行弹性排开，牌子可缩、按钮不缩，两边永不叠字。`off` = 没装，卡片变淡，`data-installed` 跟着写 |
 | `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` · `onOpen?` · `openTestId?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码）。给了 `onOpen` 整行都能点（标题是按钮，键盘和读屏从它进），鼠标停上去变色；`actions` 里的按钮各管各的，不触发整行 |
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
-| `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` | ≤ 5 项 |
+| `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` · `activation?: 'automatic'\|'manual'` | ≤ 5 项；缺省方向键移到哪项就选哪项，`manual` 只挪焦点、回车或空格才选——选了马上有动作的（Codex 界面语言会重开 Codex）用它 |
+| `Chips` | `options: {value,label,count?,leading?,testId?}[]` · `value` · `onChange` · `label?` | v4 组件规范里的「分类」：一排 28 高的圆角按钮（`aria-pressed`），后面带数量，`leading` 放工具图标（只给眼睛看，读屏不念）；`label` 是整组的读屏名。记录页按工具、教程页按类别在用 |
 | `Switch` | `checked` · `onChange` · `label?` · `description?` | 切换即保存 |
+| `Slider` | `label` · `value: string`（`''` = 没设） · `fallback` · `min` · `max` · `step` · `placeholder?` · `hint?` · `onChange` | 没设时右上角写 `placeholder`（聊天参数写「默认」）、滑块停在 `fallback`，一拖就有值；聊天参数对话框用 |
 | `Input` / `Select` / `Textarea` | 标准受控 props + `error?: string` · `hint?` · `mono?` · `password?`（带显隐） | |
 | `SearchInput` | `value` · `onChange` · `placeholder` | 带图标，宽 240 |
-| `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` · `headless?` | 只能有一个打开；`headless` 不画标题行和关闭按钮（标题只给读屏，Esc 和点遮罩照样关），框顶固定在窗口高度约 1/6 处，内容变高只往下长——目前只给命令面板用 |
+| `Dialog` | `open` · `title` · `subtitle?` · `icon?` · `width: 480\|640` · `onClose` · `footer` · `dirty?`（有草稿时点遮罩不关） · `initialFocus?` · `headless?` | 只能有一个打开；框里的「取消」或去别处的链接用 `useDialogClose()(after?)` 关，有草稿时和点 × 一样先亮离开条，`after` 等真关了才跑（要开另一个弹窗、去别的页就放这里）；`headless` 不画标题行和关闭按钮（标题只给读屏，Esc 和点遮罩照样关），框顶固定在窗口高度约 1/6 处，内容变高只往下长——目前只给命令面板用 |
 | `Confirm` | `title` · `body` · `okLabel` · `danger?` · `requireAck?` · `onOk` | Dialog 特化 |
 | `Drawer` | `open` · `title` · `icon?` · `footer` · `onClose` | 右侧 420，从顶栏下面到状态栏上面；非模态：背后不罩、不模糊，点另一行换内容，Esc 关；footer 按钮从左往右排、主按钮在最左，放不下换行 |
 | `Notice` | `tone` · `icon` · `title` · `body` · `actions` · `onDismiss` · `progress?` | 同时只显示一张；`tone='bad'` 一律红圈 ×、`'warn'` 一律橙色三角，`icon` 只对一般说明生效；嵌在页面里只留细边框，浮在角上的（开机提示、更新通知）由外壳加阴影 |
 | `Toast` | 通过 `useToast().show(text, tone?)` 调用 | 2.4s，≤ 3 条；做成了的结果一律走它，不挂在页顶（带「打开所在位置」的导出结果除外，要给人点） |
-| `Menu` | `items: {label,icon?,danger?,onSelect}[] \| 'divider'` · `anchor` | |
+| `Menu` | `items: {label,hint?,icon?,danger?,disabled?,testId?,onSelect}[] \| 'divider'` · `anchor` · `label` · `heading?` | `label` 是触发键和菜单的读屏名，必填；`heading` 是菜单最上面一行小灰字，说点一项会做什么（密钥行「配置到工具」写「把这把密钥写进」），不能聚焦；`hint` 是一项后面的小灰字（「在用」「未安装」「官方账号」），跟着这一项一起读出来 |
 | `Popover` | `anchor` · `title?` · `children` · `onClose` | 帮助 / 公告 / 账号切换 |
+| `ChoiceMenu` | `label` · `anchor` · `sections: {label,value,options:{value,label,hint?,disabled?}[],onChange,keepOpen?,empty?,testId?}[]` · `actions?: {label,icon?,loading?,disabled?,keepOpen?,onSelect}[]` · `onOpen?` · `align?: 'start'\|'end'` | 带小标题的单选菜单，底部可放操作；`keepOpen` 的那组选完菜单不关（聊天先选分组、接着在下面选模型）；`hint` 是灰色第二行，读作说明、不并进名字；`align='start'` 让菜单和按钮左边对齐（输入框底部那排）。打开时焦点落在选中的那一项 |
 | `Empty` | `icon` · `title` · `description` · `action?` | `action` 里有两颗按钮时一样大、间距 8 |
 | `Progress` | `value` · `tone?` · `label?` | |
 | `Skeleton` | `rows?: number` | 列表加载 |
 | `Tabs` | `items` · `value` · `onChange` | 弹窗页签 / 账号页签 |
-| `Table` | `columns` · `rows` · `rowKey` · `onRowClick?` · `empty` | 卡片内自动横向滚动 |
+| `Table` | `columns` · `rows` · `rowKey` · `rowLabel?` · `onRowClick?` · `empty` | 卡片内自动横向滚动；行能点时读屏念 `rowLabel`，不传就念第一格（第一格不是纯文字时念 `rowKey`） |
 | `PageHead` | `title` · `lead` · `actions?` | |
 | `Toolbar` | `left` · `search?` · `right?` | |
-| `SettingRow` | `title` · `description` · `control` · `anchor?` | `anchor` 写成 `data-anchor`，取 `settingsItems` 里那一行的 id，顶部搜索靠它翻到这一行并亮一下 |
+| `SettingRow` | `title` · `description` · `control` · `anchor?` · `badge?` · `wide?` | `anchor` 写成 `data-anchor`，取 `settingsItems` 里那一行的 id，顶部搜索靠它翻到这一行并亮一下；`badge` 是标题后面的小标签（「重启后生效」）；`wide` 让控件占满整行、排在标题下面（v4 外观的主题卡） |
 | `BrandIcon` | `tool: ToolId \| model: string` · `size` · `variant: tile\|inline\|xs` | 内部映射 lobehub / simple-icons |
 | `Logo` | `kind: micro\|symbol\|horizontal\|wordmark` · `height` | 内部按主题选深浅文件 |
 | `Kbd` | `keys: string` | 自动按平台把 ⌘ 换成 Ctrl |

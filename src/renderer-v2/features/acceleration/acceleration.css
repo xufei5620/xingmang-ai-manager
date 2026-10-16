@@ -1,94 +1,23 @@
-.acceleration-page {
-  --acceleration-stage: var(--xm-navy);
-  --acceleration-stage-text: var(--xm-ivory);
-  --acceleration-stage-muted: color-mix(in srgb, var(--xm-sky) 76%, var(--xm-ivory));
-  --acceleration-stage-line: color-mix(in srgb, var(--xm-sky) 19%, transparent);
-  --acceleration-stage-inset: color-mix(in srgb, var(--xm-sky) 5%, transparent);
-  display: grid; gap: var(--space-4); min-width: 0; color: var(--text);
-}
-.acceleration-heading { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); }
-.acceleration-heading-title { display: flex; align-items: center; gap: var(--space-3); }
-.acceleration-heading h1 { margin: 0; font-size: var(--font-h1); line-height: var(--line-heading); letter-spacing: -.4px; }
-.acceleration-heading p { margin: var(--space-2) 0 0; color: var(--text-2); font-size: var(--font-body); }
-.acceleration-preview { padding: 3px 7px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); font-size: var(--font-small-compact); }
-/* 工作台不定死高度，跟着地球和圆环走：窗口 1280×560 时「开始加速」也在第一屏里。 */
-.acceleration-workbench { display: grid; grid-template-columns: minmax(0, 1.37fr) minmax(0, 1fr); border: 1px solid var(--line-2); border-radius: var(--radius-dialog); background: var(--panel-solid); overflow: hidden; box-shadow: var(--tile-ring); }
-.acceleration-stage { position: relative; display: flex; flex-direction: column; min-width: 0; padding: var(--space-6) var(--space-7) var(--space-4); isolation: isolate; color: var(--acceleration-stage-text); background: radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--xm-slate) 27%, transparent), transparent 68%), var(--acceleration-stage); }
-.acceleration-stage::before { position: absolute; inset: 0; z-index: -1; background-image: radial-gradient(circle, var(--acceleration-stage-line) .65px, transparent .75px); background-size: 20px 20px; opacity: .35; content: ''; }
-.acceleration-stage-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
-.acceleration-eyebrow { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--xm-gold); font: 500 var(--font-micro) var(--mono); letter-spacing: 1.4px; }
-.acceleration-stage-title { margin-top: var(--space-6); }
-.acceleration-stage-title h2 { margin: 0; color: var(--acceleration-stage-text); font-size: var(--font-h1); font-weight: 600; letter-spacing: .4px; }
-.acceleration-stage-title p { margin: var(--space-2) 0 0; color: var(--acceleration-stage-muted); font-size: var(--font-small); }
-.acceleration-orb { position: relative; flex: 1; min-height: 140px; margin: -16px -20px -13px; }
-.acceleration-globe { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.acceleration-globe-route { animation: acceleration-route-flow 9s linear infinite; animation-play-state: paused; }
-.acceleration-page[data-phase="active"] .acceleration-globe-route { animation-play-state: running; }
-.acceleration-page[data-motion="paused"] .acceleration-globe-route { animation-play-state: paused; }
-.acceleration-route-info { position: relative; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--acceleration-stage-line); border-radius: var(--radius-button); background: var(--acceleration-stage-inset); }
-.acceleration-route-icon { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--acceleration-stage-line); border-radius: var(--radius-input); color: var(--xm-gold); }
-.acceleration-route-name { display: grid; gap: var(--space-1); flex: 1; min-width: 0; }
-.acceleration-route-name > span, .acceleration-route-latency > span { color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
-.acceleration-route-name strong { display: flex; gap: var(--space-2); align-items: baseline; font-size: var(--font-body); font-weight: 500; overflow-wrap: anywhere; }
-.acceleration-route-name strong small { color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); font-weight: 400; }
-.acceleration-route-latency { display: grid; gap: var(--space-1); flex: none; text-align: right; }
-.acceleration-route-latency strong { font: 500 var(--font-h2) var(--mono); }
-.acceleration-route-latency small { font-size: var(--font-small-compact); font-weight: 400; }
-/* 「换线路」在深色底上做成浅色描边的小按钮：原来是深底上的一行字，看着不像能点。线路列表从这一行上面弹出来。 */
-.acceleration-route-info > .xm-btn { flex: none; border-color: color-mix(in srgb, var(--xm-sky) 45%, transparent); color: var(--acceleration-stage-text); }
-.acceleration-route-info > .xm-btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--xm-sky) 70%, transparent); color: var(--acceleration-stage-text); background: var(--acceleration-stage-inset); }
-.acceleration-line-list { display: grid; gap: 2px; position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(100% + 4px); max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--line-2); border-radius: var(--radius-input); background: var(--panel-solid); box-shadow: var(--shadow-float); }
-.acceleration-line-list-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 5px; color: var(--text-3); font-size: var(--font-small-compact); }
-.acceleration-line-option { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 5px; border-radius: var(--radius-input); }
-.acceleration-line-option.is-selected { background: var(--accent-soft); }
-.acceleration-line-option > button:first-child { display: flex; align-items: baseline; gap: 7px; flex: 1; min-width: 0; padding: 5px 2px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-.acceleration-line-option strong { font-size: var(--font-small); font-weight: 600; }
-.acceleration-line-option small, .acceleration-line-option > span { color: var(--text-3); font-size: var(--font-small-compact); white-space: nowrap; }
-.acceleration-line-option .xm-btn { min-width: 44px; }
-.acceleration-line-option > button:first-child:disabled { cursor: default; }
-.acceleration-line-auto > button:first-child { flex-direction: column; gap: var(--space-1); }
-.acceleration-line-auto > svg { flex: none; color: var(--accent); }
-.acceleration-line-error { padding: 5px; color: var(--bad); font-size: var(--font-small-compact); }
-.acceleration-stage-bottom { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-3); color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
-.acceleration-stage-bottom > span:first-child { display: inline-flex; align-items: center; gap: 6px; flex: none; }
-.acceleration-stage-bottom > span:last-child { text-align: right; }
-.acceleration-stage-bottom > .xm-btn { height: var(--control-xs); color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
-.acceleration-stage-bottom > .xm-btn:hover { color: var(--acceleration-stage-text); background: var(--acceleration-stage-inset); }
-.acceleration-status-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.acceleration-page[data-phase="active"] .acceleration-stage-bottom > span:first-child { color: var(--xm-sky); }
-.acceleration-console { display: flex; flex-direction: column; min-width: 0; padding: var(--space-6) var(--space-6) var(--space-4); background: linear-gradient(150deg, var(--accent-soft), transparent 52%), var(--panel-solid); }
-.acceleration-console-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
-.acceleration-console-top > span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--font-small); }
-.acceleration-quota-badge { padding: 3px 9px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); background: var(--panel); font-size: var(--font-small-compact); }
-.acceleration-quota { position: relative; display: grid; place-items: center; min-height: 164px; flex: 1; margin: 2px 0; }
-.acceleration-quota-ring { position: absolute; width: 160px; height: 160px; fill: none; }
-.acceleration-quota-track { stroke: var(--line); stroke-width: 3; }
-.acceleration-quota-ticks { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 1 8; }
-.acceleration-quota-progress { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray var(--duration-progress) linear; }
-.acceleration-quota-label { position: relative; display: grid; justify-items: center; gap: var(--space-1); }
-.acceleration-quota-label > span { color: var(--text-2); font-size: var(--font-small); }
-.acceleration-quota-label strong { color: var(--text); font: 500 calc(var(--font-display) - 16px)/var(--line-display) var(--mono); letter-spacing: -1.5px; font-variant-numeric: tabular-nums; }
-.acceleration-quota-label small { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); font-size: var(--font-small-compact); }
-.acceleration-page[data-phase="active"] .acceleration-quota-label small { color: var(--ok); }
-.acceleration-primary-action > .xm-btn { width: 100%; min-height: 46px; height: auto; border-radius: var(--radius-button); font-size: var(--font-body); }
-.acceleration-quota-note { min-height: 34px; margin: var(--space-2) 0 0; text-align: center; color: var(--text-2); font-size: var(--font-small-compact); line-height: var(--line-body); }
-.acceleration-details { display: grid; grid-template-columns: .94fr .94fr 1.35fr; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); }
-.acceleration-details > div { display: flex; position: relative; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); min-width: 0; padding: var(--space-3) var(--space-5); }
-.acceleration-details > div + div { border-left: 1px solid var(--line); }
-.acceleration-detail-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; color: var(--text-2); }
-.acceleration-details > div > div { display: grid; gap: var(--space-1); min-width: 0; }
-.acceleration-details > div > div > span { color: var(--text-3); font-size: var(--font-small-compact); }
-.acceleration-details strong { font: 500 var(--font-body) var(--mono); font-variant-numeric: tabular-nums; }
-.acceleration-details > div:last-child strong { font: 500 var(--font-body) var(--font); }
-.acceleration-details > div > small { display: inline-flex; align-items: center; gap: 5px; flex: 1 1 100%; padding-left: 42px; color: var(--text-3); font-size: var(--font-small-compact); }
-.acceleration-error { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid color-mix(in srgb, var(--bad) 25%, var(--line)); border-radius: var(--radius-input); background: var(--bad-soft); color: var(--bad); font-size: var(--font-small); }
-.acceleration-error > svg { flex: none; }
-.acceleration-error > span { flex: 1; overflow-wrap: anywhere; }
-.acceleration-conflict { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line)); border-radius: var(--radius-input); background: var(--warn-soft); color: var(--warn); font-size: var(--font-small); }
-.acceleration-conflict > svg { flex: none; }
-.acceleration-conflict-text { flex: 1; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
-.acceleration-conflict-text > span { color: var(--text-2); }
-.acceleration-bundle-damaged { flex-wrap: wrap; }
-.acceleration-bundle-damaged .acceleration-conflict-text { min-width: 240px; }
-@keyframes acceleration-route-flow { to { stroke-dashoffset: -90; } }
-@media (prefers-reduced-motion: reduce) { .acceleration-page *, .acceleration-page *::before, .acceleration-page *::after { animation: none !important; transition: none !important; } }
+/* 设置 › 网络加速最上面的游戏加速卡（v4 原型 secNetwork）：左边图标块，中间标题、说明和线路，右边开关；连着时卡片发光。 */
+.acceleration-card { position: relative; display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel-solid); box-shadow: var(--sh-1); color: var(--text); }
+.acceleration-card.is-active { border-color: transparent; background: radial-gradient(460px 170px at 0% 0%, var(--glow), transparent 70%) padding-box, linear-gradient(var(--panel-solid), var(--panel-solid)) padding-box, var(--edge) border-box; box-shadow: var(--sh-2); }
+.acceleration-card-main { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 16px; }
+.acceleration-tile { display: flex; flex: none; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 13px; corner-shape: squircle; background: var(--panel-2); box-shadow: var(--tile-ring); color: var(--text); }
+.acceleration-card.is-active .acceleration-tile { background: color-mix(in srgb, var(--gold) 14%, var(--panel-2)); color: var(--gold-tx); }
+.acceleration-copy { flex: 1; min-width: 240px; }
+.acceleration-title { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.acceleration-title > h2 { margin: 0; font-family: var(--font-display); font-size: 18px; font-weight: 600; line-height: 1.3; }
+.acceleration-title > .xm-btn { margin-left: auto; }
+.acceleration-preview { padding: 1px 7px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); font-size: var(--font-small-compact); }
+.acceleration-phase { color: var(--warn-tx); font-size: var(--font-small-compact); }
+.acceleration-lead { margin: 2px 0 0; color: var(--text-2); font-size: var(--font-small); }
+.acceleration-lead > span { color: var(--text); font-variant-numeric: tabular-nums; }
+.acceleration-line-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.acceleration-line-row > span:first-child { color: var(--text-2); font-size: var(--font-small); }
+.acceleration-line-remembered { color: var(--text-3); font-size: var(--font-small-compact); }
+.acceleration-line-menu { min-width: 280px; }
+.acceleration-line-error { margin: 6px 0 0; color: var(--bad-tx); font-size: var(--font-small-compact); }
+.acceleration-status-hint { margin: 6px 0 0; color: var(--text-3); font-size: var(--font-small-compact); }
+.acceleration-copy > .xm-btn { margin-top: 8px; }
+.acceleration-card-main > .xm-btn { flex: none; align-self: center; }
+.acceleration-card > .xm-notice .xm-notice-body:empty { display: none; }

@@ -49,16 +49,16 @@ describe('provider route follow', () => {
     },
   )
 
-  it('keeps codex on plain streaming when the line moves to cloudflare', () => {
+  it('keeps the codex websocket setting when the line moves to cloudflare', () => {
     const { roots: r } = roots()
     const [config] = providerConfigPaths('codex', r)
-    saveProviderConfig('codex', 'sk-route-fixture', 'fixture-model', 'merge', r, {}, direct)
+    saveProviderConfig('codex', 'sk-route-fixture', 'gpt-fixture', 'merge', r, {}, direct)
     const plan = planProviderRouteFollow('codex', 'solov', primary.codex, r)
     if (plan.status !== 'rewrite') throw new Error(plan.status)
     applyProviderRouteFollow('codex', plan, r)
     const content = fs.readFileSync(config, 'utf8')
     expect(content).toContain(`base_url = "${primary.codex}"`)
-    expect(content).toMatch(/^supports_websockets = false$/m)
+    expect(content).toMatch(/^supports_websockets = true$/m)
   })
 
   it('finds the codex table by model_provider, whatever it is called', () => {

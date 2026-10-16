@@ -1,10 +1,12 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { HealthPage, MaintenancePage, OnboardingSettingRows, SettingsPage, TutorialPage, UpdatesPage, connectionRowStatus, feedbackCopyNotice, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, maintenanceJobsFinished, maintenanceRowJobKeys, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics, withElevationNotice } from './pages-maintenance'
+import { FeedbackPage, HealthPage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, buildFeedbackMessage, connectionRowStatus, feedbackCopyNotice, feedbackErrorCount, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, shortcutRows, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics } from './pages-maintenance'
 import type { V2Bridge } from './types'
+import { VersionCard } from './features/settings/VersionCard'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
-import { tutorialTopicsFor } from './registry/tutorials'
+import { tutorialCategories, tutorialTopicsFor } from './registry/tutorials'
+import { tutorialIcons } from './features/tutorial/TutorialPage'
 import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
 import { errors } from './registry/errors'
@@ -21,12 +23,12 @@ describe('paid Codex check in HealthPage', () => {
   it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
-    expect(markup).toContain('这一条证明你现在能用')
+    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的外部客户端也一起测')
   })
 })
 
 // Gemini CLI 下线（yoyo 2026-10-14）：「信任安全证书」只为它从星芒打开时用，主进程那条通道一起撤了，
-// 检查页不再有这颗按钮；检查页、安装卸载页也都不再出现它的名字。
+// 检查页不再有这颗按钮，也不再出现它的名字。
 describe('maintenance pages without the retired Gemini CLI', () => {
   it('offers no certificate trust button on the health page', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
@@ -34,18 +36,23 @@ describe('maintenance pages without the retired Gemini CLI', () => {
     expect(markup).not.toContain('Gemini')
   })
 
-  it('draws no row for it on the install page', () => {
-    const markup = renderToStaticMarkup(createElement(MaintenancePage, { api: {} as V2Bridge }))
-    expect(markup).toContain('Claude Code')
-    expect(markup).not.toContain('Gemini')
-    expect(markup).not.toContain('-gemini')
+  // 设置里「快捷键」写的数字跟着这台电脑看得到的工具走，不再写死 1–5；键名按这台电脑只写一种（字表批09）。
+  it('numbers the launch shortcut over the tools this computer shows', () => {
+    expect(launchShortcutMeta('win')).toBe('Ctrl 1–4')
+    expect(launchShortcutMeta('mac')).toBe('⌘ 1–4')
+    expect(launchShortcutMeta('linux')).toBe('Ctrl 1–3')
   })
 
-  // 设置里「快捷键」写的数字跟着这台电脑看得到的工具走，不再写死 1–5。
-  it('numbers the launch shortcut over the tools this computer shows', () => {
-    expect(launchShortcutMeta('win')).toBe('Ctrl / Command + 1–4')
-    expect(launchShortcutMeta('mac')).toBe('Ctrl / Command + 1–4')
-    expect(launchShortcutMeta('linux')).toBe('Ctrl / Command + 1–3')
+  it('lists the shortcuts the app actually answers, in the keys of this computer', () => {
+    expect(shortcutRows('mac').map((row) => `${row.keys} ${row.label}`)).toEqual([
+      '⌘ K 搜索或跳转',
+      '⌘ , 打开设置',
+      '⌘ 1–4 打开工具',
+      '⌘ + / ⌘ - 放大 / 缩小界面',
+      '⌘ 0 恢复自动缩放',
+      'Esc 关闭弹窗或菜单',
+    ])
+    for (const os of ['win', 'linux'] as const) expect(shortcutRows(os).every((row) => !row.keys.includes('⌘'))).toBe(true)
   })
 })
 
@@ -105,6 +112,99 @@ describe('feedback report notices', () => {
 
   it('claims nothing when the save dialog was dismissed', () => {
     expect(feedbackExportNotice(null)).toBeNull()
+  })
+})
+
+describe('feedback and support page', () => {
+  const support = { identity: '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows', open: () => undefined, copyIdentity: () => undefined }
+
+  it('opens on the message form with the support card and the first things to try', () => {
+    const markup = renderToStaticMarkup(createElement(FeedbackPage, { api: {} as V2Bridge, support }))
+    expect(markup).toContain('<h1>反馈与客服</h1>')
+    expect(markup).toContain('role="tablist"')
+    expect(markup).toContain('留言反馈')
+    expect(markup).toContain('运行日志')
+    expect(markup).toContain('描述一下发生了什么')
+    expect(markup).toContain('比如：点「打开」后终端闪一下就关了')
+    expect(markup).toContain('微信号或邮箱，方便我们回复你')
+    expect(markup).toContain('已自动隐去密钥和个人路径')
+    expect(markup).toContain('复制给客服')
+    expect(markup).toContain('data-testid="feedback-support-card"')
+    expect(markup).toContain('微信扫码添加客服')
+    expect(markup).toContain('data-testid="feedback-support-identity-line"')
+    expect(markup).toContain('预览反馈报告')
+    for (const id of ['health', 'orders', 'tutorial', 'mcp']) expect(markup).toContain(`data-testid="feedback-try-${id}"`)
+    // 两个页签都挂着、只藏不卸：一开始藏起来的是运行日志那一块。
+    expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" data-testid')
+    expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" hidden=""')
+    // 报告预览的隐私说明挪进了弹窗，页面上不再有横条。
+    expect(markup).not.toContain('feedback-privacy')
+  })
+
+  it('leaves out the orders shortcut for an account without orders and the support card when there is none', () => {
+    const markup = renderToStaticMarkup(createElement(FeedbackPage, { api: {} as V2Bridge, ordersVisible: false }))
+    expect(markup).not.toContain('feedback-try-orders')
+    expect(markup).not.toContain('feedback-support-card')
+    expect(markup).toContain('feedback-try-health')
+  })
+
+  it('lands on the run log when another page asks for it', () => {
+    const markup = renderToStaticMarkup(createElement(FeedbackPage, { api: {} as V2Bridge, feedbackRequest: { sequence: 1, tab: 'log' } }))
+    expect(markup).toContain('data-testid="feedback-search"')
+    expect(markup).toContain('打开日志文件夹')
+    expect(markup).toContain('aria-label="刷新"')
+    expect(markup).toContain('日志只保存在这台电脑上。')
+    // 留言那一块还挂着（写到一半的字不丢），只是藏起来。
+    expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden=""')
+    expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" data-testid')
+  })
+})
+
+describe('buildFeedbackMessage', () => {
+  it('puts the type, what the customer wrote and who they are in one block, then the report', () => {
+    expect(buildFeedbackMessage({
+      type: '遇到问题',
+      description: '  点「打开」后终端闪一下就关了 \n',
+      contact: ' wx-yoyo ',
+      identity: '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows',
+      lastFailure: '最近一次出错：14:37 打开 Codex：没有写入权限',
+      report: '[report]',
+    })).toBe([
+      '留言反馈 · 遇到问题',
+      '点「打开」后终端闪一下就关了',
+      '联系方式：wx-yoyo',
+      '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows',
+      '最近一次出错：14:37 打开 Codex：没有写入权限',
+      '',
+      '[report]',
+    ].join('\n'))
+  })
+
+  it('leaves out an empty contact and the report when it is not attached', () => {
+    expect(buildFeedbackMessage({ type: '功能建议', description: '想要深色图标', contact: '  ' })).toBe('留言反馈 · 功能建议\n想要深色图标')
+  })
+
+  it('masks a key the customer pasted into the description', () => {
+    const text = buildFeedbackMessage({ type: '其他', description: '我的 key 是 sk-abcdefghijklmnopqrstuvwxyz0123456789', contact: '' })
+    expect(text).not.toContain('sk-abcdefghijklmnopqrstuvwxyz0123456789')
+  })
+})
+
+describe('feedbackErrorCount', () => {
+  it('counts only the errors logged since this launch', () => {
+    const startedAt = '2026-10-16T08:00:00.000Z'
+    const entry = (id: string, level: string, timestamp: string) => ({ id, level, timestamp, source: 'main', event: 'x', message: 'm' })
+    const snapshot = {
+      currentProcessId: 42,
+      startedAt,
+      entries: [
+        entry('2026-10-16T08:01:00.000Z:42:1', 'error', '2026-10-16T08:01:00.000Z'),
+        entry('2026-10-16T08:02:00.000Z:42:2', 'warn', '2026-10-16T08:02:00.000Z'),
+        entry('2026-10-15T08:01:00.000Z:17:1', 'error', '2026-10-15T08:01:00.000Z'),
+      ],
+    } as Parameters<typeof feedbackErrorCount>[0]
+    expect(feedbackErrorCount(snapshot)).toBe(1)
+    expect(feedbackErrorCount(undefined)).toBe(0)
   })
 })
 
@@ -187,7 +287,7 @@ describe('tutorial topics', () => {
     // 「不在游戏加速那边体现」、结束后断开）。
     expect(text).toContain('不计入免费时长')
     expect(text).toContain('不弹通知')
-    expect(text).toContain('加速页和托盘也不显示')
+    expect(text).toContain('游戏加速卡和托盘也不显示')
     expect(text).toContain('打开约 2 分钟后自动断开')
     expect(text).toContain('关掉 Codex 后自动断开')
     expect(text).not.toContain('已自动连接')
@@ -288,7 +388,7 @@ describe('tutorial topics', () => {
     expect(text).toContain('共用一份配置')
   })
 
-  it('opens at the chapter the caller asked for instead of the first one', () => {
+  it('opens at the chapter the caller asked for instead of the card list', () => {
     // 首页那几行「安装指南」跳过来时要直接停在 macOS 那一章（第七批 3）。
     // 教程按电脑分版本（Linux 版没有这一章），这里说明是在 Mac 上，测试跑在哪台机器都一样。
     const topic = tutorialTopics.find((entry) => entry.id === macDesktopTutorialTopic)
@@ -297,36 +397,76 @@ describe('tutorial topics', () => {
     )
     expect(markup).toContain(`<h2 id="tutorial-article-title">${topic?.title}</h2>`)
     expect(markup).toContain(topic?.steps[0]?.title ?? '')
+    expect(markup).toContain('data-testid="tutorial-back"')
+    expect(markup).toContain('全部教程')
+    expect(markup).toContain(`${topic?.steps.length} 步，约 ${topic?.minutes} 分钟`)
+    expect(markup).not.toContain('data-testid="tutorial-cards"')
   })
 
-  it('carries the text typed in the top search into the tutorial search box', () => {
+  it('carries the text typed in the top search into the tutorial search box on the card list', () => {
     const markup = renderToStaticMarkup(
       createElement(TutorialPage, { topic: { sequence: 1, id: 'start', query: '充值' } }),
     )
     expect(markup).toMatch(/data-testid="tutorial-search"[^>]*value="充值"|value="充值"[^>]*data-testid="tutorial-search"/)
-    expect(markup).toContain('找到')
+    expect(markup).toContain('data-testid="tutorial-card-account"')
+    expect(markup).not.toContain('data-testid="tutorial-article"')
+    expect(markup).toContain('<mark class="v2-tutorial-hit">充值</mark>')
   })
 
-  it('falls back to the first chapter when the requested one does not exist', () => {
+  it('shows the card list when the requested chapter does not exist', () => {
     const markup = renderToStaticMarkup(
       createElement(TutorialPage, { topic: { sequence: 1, id: 'no-such-chapter' } }),
     )
-    expect(markup).toContain(`<h2 id="tutorial-article-title">${tutorialTopics[0].title}</h2>`)
+    expect(markup).not.toContain('data-testid="tutorial-article"')
+    expect(markup).toContain(`data-testid="tutorial-card-${tutorialTopics[0].id}"`)
+  })
+
+  it('lists one card per chapter with categories, counts and the first chapter as the lead', () => {
+    const markup = renderToStaticMarkup(createElement(TutorialPage, { os: 'win' }))
+    for (const topic of tutorialTopics) expect(markup).toContain(`data-testid="tutorial-card-${topic.id}"`)
+    expect(markup).toContain('aria-label="按类别筛选"')
+    expect(markup).toContain('placeholder="搜索教程，比如「切换账号」"')
+    for (const label of ['全部', '入门', '工具', '账号与费用', '出问题时']) expect(markup).toContain(`>${label}<span class="xm-chip-count">`)
+    expect(markup).toContain(`全部<span class="xm-chip-count">${tutorialTopics.length}</span>`)
+    expect(markup).toContain(`入门<span class="xm-chip-count">${tutorialTopics.filter((topic) => topic.category === 'start').length}</span>`)
+    // 第一张是「从这里开始」：金色那张、主按钮；其余卡片都是普通按钮。
+    expect(markup).toMatch(/class="v2-tutorial-card is-lead"[^>]*data-testid="tutorial-card-start"/)
+    expect(markup.match(/is-lead/g)?.length).toBe(1)
+    const first = tutorialTopics[0]
+    expect(markup).toContain(`${first.steps.length} 步，约 ${first.minutes} 分钟`)
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="tutorial-topic-start"/)
+    expect(markup).not.toContain('先让 Codex 回你一句话')
+    expect(markup).not.toContain('找到 ')
   })
 
   it('opens the Linux chapters on a Linux computer and keeps the Windows chapters elsewhere', () => {
     // Linux 版拆分 ⑩：Linux 上第一章是 Codex CLI，没有桌面端和加速那几章。
     const linux = tutorialTopicsFor('linux')
     const linuxMarkup = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux' }))
-    expect(linuxMarkup).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
+    expect(linuxMarkup).toContain(`data-testid="tutorial-card-${linux[0].id}"`)
     expect(linuxMarkup).toContain('Codex CLI')
     expect(linuxMarkup).not.toContain('桌面端')
     expect(linuxMarkup).not.toContain('游戏加速')
-    // 要的那一章 Linux 上没有（比如 Mac 桌面端），落回 Linux 第一章，不显示 Windows 那份。
+    expect(linuxMarkup).toContain(`全部<span class="xm-chip-count">${linux.length}</span>`)
+    // 要的那一章 Linux 上没有（比如 Mac 桌面端），落回 Linux 的卡片列表，不显示 Windows 那份。
     const fallback = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux', topic: { sequence: 1, id: macDesktopTutorialTopic } }))
-    expect(fallback).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
+    expect(fallback).not.toContain('data-testid="tutorial-article"')
+    expect(fallback).not.toContain('桌面端')
+    const linuxArticle = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux', topic: { sequence: 1, id: 'start' } }))
+    expect(linuxArticle).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
     const windowsMarkup = renderToStaticMarkup(createElement(TutorialPage, { os: 'win' }))
-    expect(windowsMarkup).toContain(`<h2 id="tutorial-article-title">${tutorialTopics[0].title}</h2>`)
+    expect(windowsMarkup).toContain(`data-testid="tutorial-card-${macDesktopTutorialTopic}"`)
+  })
+
+  it('gives every chapter on every computer a category and its own card icon', () => {
+    for (const os of ['win', 'mac', 'linux'] as const)
+      for (const topic of tutorialTopicsFor(os)) {
+        expect(tutorialCategories.some((entry) => entry.value !== 'all' && entry.value === topic.category)).toBe(true)
+        expect(tutorialIcons[topic.id], topic.id).toBeDefined()
+      }
+    // 每一类都至少有一篇，分类按钮不会点出一片空白。
+    for (const entry of tutorialCategories)
+      expect(entry.value === 'all' || tutorialTopicsFor('linux').some((topic) => topic.category === entry.value), entry.value).toBe(true)
   })
 
   it('only links steps at pages the shell can actually navigate to', () => {
@@ -341,10 +481,9 @@ describe('tutorial topics', () => {
 })
 
 describe('settings page lead', () => {
-  it('says changes save themselves and how to search, with the Mac shortcut on a Mac', () => {
-    expect(settingsPageLead('win')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
-    expect(settingsPageLead('linux')).toBe('改完自动保存。找不到某一项，按 Ctrl K 搜它的名字。')
-    expect(settingsPageLead('mac')).toBe('改完自动保存。找不到某一项，按 ⌘K 搜它的名字。')
+  // 找设置改用左栏的「搜索设置」，顶上只说会自己保存（字表批08）。
+  it('only says changes save themselves now that the page has its own search', () => {
+    expect(settingsPageLead).toBe('改动会立即保存。')
   })
 })
 
@@ -353,88 +492,63 @@ describe('settings page before the settings arrive', () => {
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
     expect(markup).toContain('正在读取设置…')
     expect(markup).not.toContain('此版本暂不支持')
-    expect(markup).toContain('>更新与关于</button>')
-    expect(markup).not.toContain('>关于</button>')
+    expect(markup).toContain('<span>版本更新</span></button>')
+    expect(markup).not.toContain('<span>账号</span></button>')
+    expect(markup).toContain('aria-label="搜索设置"')
+  })
+
+  it('lists the eight v4 groups with their icons, backup and migration included', () => {
+    const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
+    const names = [...markup.matchAll(/role="tab"[^>]*>.*?<span>([^<]+)<\/span>/g)].map((match) => match[1])
+    expect(names).toEqual(['外观显示', '启动关闭', '工具管理', '网络加速', '消息通知', '备份迁移', '隐私数据', '版本更新'])
+    expect(markup).toMatch(/id="v2-settings-appearance"[^>]*><svg/)
+  })
+
+  it('marks the update group when a new version is out and the network group while accelerating', () => {
+    const idle = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
+    expect(idle).not.toContain('v2-settings-nav-dot')
+    const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge, updateAvailable: true, accelerating: true }))
+    expect(markup).toMatch(/title="有新版本"[^>]*>.*?<span>版本更新<\/span><i class="v2-settings-nav-dot" aria-hidden="true">/)
+    expect(markup).toMatch(/title="加速中"[^>]*>.*?<span>网络加速<\/span><i class="v2-settings-nav-dot is-ok" aria-hidden="true">/)
   })
 })
 
-describe('updates page startup switches', () => {
-  it('replaces the 去设置 button with the two switches, greyed out until the settings are read', () => {
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
-    expect(markup).not.toContain('去设置')
-    expect(markup).toContain('启动时检查新版本')
-    expect(markup).toContain('发现新版本会提醒你')
-    expect(markup).toMatch(/data-testid="updates-check-on-startup"[^>]*>[^]*?disabled=""/)
-  })
-
-  it('shows the saved values the app already holds', () => {
-    const settings = { checkUpdatesOnStartup: false, autoUpdate: true } as Parameters<typeof UpdatesPage>[0]['appSettings']
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge, appSettings: settings }))
-    expect(markup).toMatch(/aria-checked="false"[^>]*aria-label="启动时检查新版本"/)
-  })
-})
-
-describe('updates page layout', () => {
-  it('lines the current version up with the other rows and writes it in body text', () => {
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
-    const row = markup.match(/<div class="xm-list-row"[^>]*data-testid="updates-current-version"[^>]*>.*?<\/div><div class="xm-row-actions">/)?.[0] ?? ''
-    expect(row).toContain('当前版本')
-    expect(row).not.toContain('xm-row-icon')
-    expect(row).toContain('class="v2-update-version"')
-  })
-
-  it('shows what to know before installing without a fold', () => {
-    const markup = renderToStaticMarkup(createElement(UpdatesPage, { api: {} as V2Bridge }))
+// 原来的更新页并进了设置 › 版本更新（v4 批09）：两颗开关是那一组下面的两行，最上面是这张版本卡。
+describe('version card', () => {
+  it('names the app and waits for the update state before writing a version', () => {
+    const markup = renderToStaticMarkup(createElement(VersionCard, { api: {} as V2Bridge, autoUpdate: true }))
+    expect(markup).toContain('data-testid="page-updates"')
+    expect(markup).toContain('<h2 id="v2-version-card-title">星芒AI管理工具</h2>')
+    expect(markup).toMatch(/data-testid="updates-current-version"[^>]*>正在读取更新状态…</)
+    expect(markup).toMatch(/<button[^>]*>.*?<span>检查更新<\/span><\/button>/)
     expect(markup).not.toContain('<details')
-    expect(markup).toContain('<h3>安装前需要知道</h3>')
-    expect(markup).toMatch(/data-testid="updates-install-note"[^>]*><h3>安装前需要知道<\/h3><p>装之前先保存工具里没做完的东西。/)
+    // 两颗开关不在卡上再摆一份。
+    expect(markup).not.toContain('启动时检查新版本')
   })
 })
 
 describe('settings onboarding entries', () => {
-  it('offers both 「再看一遍」 and 「重看导览」 when the app can drive them', () => {
-    const markup = renderToStaticMarkup(
-      createElement(OnboardingSettingRows, { openGuide: () => undefined, replayTour: () => undefined }),
-    )
-    expect(markup).toContain('data-testid="settings-start-guide"')
-    expect(markup).toContain('新手引导')
-    expect(markup).toContain('再看一遍')
-    expect(markup).toContain('data-testid="settings-replay-tour"')
-    expect(markup).toContain('界面导览')
-    expect(markup).toContain('重看导览')
-    // 两行名字很像，说明必须把它们区分开，否则这一条改回了 A8 修的那个毛病。
-    expect(markup).toContain('已经填好的账号和密钥不会被清空')
-  })
-
-  it('hides the tour entry when the host cannot replay it', () => {
-    const markup = renderToStaticMarkup(
-      createElement(OnboardingSettingRows, { openGuide: () => undefined }),
-    )
-    expect(markup).toContain('data-testid="settings-start-guide"')
-    expect(markup).not.toContain('data-testid="settings-replay-tour"')
+  // v4 去掉了两行的说明（字表批08），两行靠标题和按钮字分开：「新手引导 · 再看一遍」「界面导览 · 重看导览」。
+  it('offers 「再看一遍」 and 「重看导览」 under their own titles without a description', () => {
+    const guide = renderToStaticMarkup(createElement(OnboardingGuideRow, { openGuide: () => undefined }))
+    const tour = renderToStaticMarkup(createElement(OnboardingTourRow, { replayTour: () => undefined }))
+    expect(guide).toContain('data-testid="settings-start-guide"')
+    expect(guide).toContain('<strong>新手引导</strong>')
+    expect(guide).toContain('再看一遍')
+    expect(tour).toContain('data-testid="settings-replay-tour"')
+    expect(tour).toContain('<strong>界面导览</strong>')
+    expect(tour).toContain('重看导览')
+    expect(`${guide}${tour}`).not.toContain('<p>')
   })
 
   it('marks both rows so the top search can scroll to them', () => {
-    const markup = renderToStaticMarkup(
-      createElement(OnboardingSettingRows, { openGuide: () => undefined, replayTour: () => undefined }),
-    )
-    expect(markup).toContain('data-anchor="guide"')
-    expect(markup).toContain('data-anchor="tour"')
-  })
-})
-
-describe('withElevationNotice', () => {
-  it('hangs the notice off the line the row already shows, with the same separator', () => {
-    expect(withElevationNotice('OpenAI', '这一步需要管理员授权')).toBe('OpenAI · 这一步需要管理员授权')
-  })
-
-  it('leaves the row untouched where nothing elevates', () => {
-    expect(withElevationNotice('命令行工具需要的运行环境', null)).toBe('命令行工具需要的运行环境')
+    expect(renderToStaticMarkup(createElement(OnboardingGuideRow, { openGuide: () => undefined }))).toContain('data-anchor="guide"')
+    expect(renderToStaticMarkup(createElement(OnboardingTourRow, { replayTour: () => undefined }))).toContain('data-anchor="tour"')
   })
 })
 
 describe('installGuideTopic', () => {
-  it('sends each maintenance row to the chapter that installs it instead of the first chapter', () => {
+  it('sends each install guide button to the chapter that installs it instead of the first chapter', () => {
     const title = (id: string) => tutorialTopics.find((entry) => entry.id === id)?.title
     expect(title(installGuideTopic('codexDesktop', 'macos'))).toBe('Mac 上装桌面端')
     expect(title(installGuideTopic('codexDesktop', 'windows'))).toBe('Codex 桌面端怎么安装？')
@@ -453,7 +567,7 @@ describe('installGuideTopic', () => {
 })
 
 describe('installResultMessage', () => {
-  // Q33：「安装卸载」页改走首页那条安装之后，结果不止「装好 / 取消」两种。
+  // Q33：装工具都走首页那条安装之后，结果不止「装好 / 取消」两种。
   it('does not claim success when the install stopped for a restart or never started', () => {
     expect(installResultMessage('installed')).toBe('安装完成，工具状态已更新')
     expect(installResultMessage('cancelled')).toBe('安装已取消')
@@ -467,34 +581,10 @@ describe('installResultMessage', () => {
 })
 
 describe('installJobRunning', () => {
-  // 首页的卸载也挂在工具编号下；「安装卸载」页那一行不能把它当成在装，标「安装中」。
+  // 首页的卸载也挂在工具编号下；扩展页那一行不能把它当成在装，标「安装中」。
   it('counts a Home job as an install unless it is an uninstall', () => {
     expect(installJobRunning(undefined)).toBe(false)
     expect(installJobRunning({ label: '正在安装', log: [] })).toBe(true)
     expect(installJobRunning({ label: '正在卸载', log: [], kind: 'uninstall' })).toBe(false)
-  })
-})
-
-describe('maintenanceRowJobKeys', () => {
-  // 第四十一批 B：首页那份任务里，只有这一页有行的几个跑完时才要重读本页。
-  // 已下线的 Gemini CLI（yoyo 2026-10-14）本页没有它那一行，它的任务跑完也不用重读。
-  it('keeps only the Home jobs this page draws a row for', () => {
-    const job = { label: '正在安装', log: [] }
-    expect(maintenanceRowJobKeys(undefined)).toEqual([])
-    expect(maintenanceRowJobKeys({
-      gemini: job, grok: job, codexDesktop: job, node: job, python: job,
-      git: job, 'launch:codexDesktop': job, workbuddy: job,
-    })).toEqual(['grok', 'codexDesktop', 'node', 'python'])
-  })
-})
-
-describe('maintenanceJobsFinished', () => {
-  it('reports a finish only when a job that was running is gone', () => {
-    expect(maintenanceJobsFinished([], [])).toBe(false)
-    expect(maintenanceJobsFinished([], ['grok'])).toBe(false)
-    expect(maintenanceJobsFinished(['grok'], ['grok'])).toBe(false)
-    expect(maintenanceJobsFinished(['grok'], ['grok', 'node'])).toBe(false)
-    expect(maintenanceJobsFinished(['node', 'grok'], ['grok'])).toBe(true)
-    expect(maintenanceJobsFinished(['claude'], [])).toBe(true)
   })
 })

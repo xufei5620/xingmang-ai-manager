@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { latestNetworkLocation, networkLocationLabel } from './network'
+import { latestNetworkLocation, networkLocationLabel, networkStatusLabel } from './network'
 
 describe('renderer v2 network location label', () => {
   it('preserves fresh route results against a late full scan, including a fresh unknown result', () => {
@@ -39,5 +39,13 @@ describe('renderer v2 network location label', () => {
       checkedAt: '2026-09-08T00:00:00.000Z',
       error: '网络位置服务不可用',
     })).toBe('网络位置未知')
+  })
+
+  it('shows only the country on the status bar and leaves the IP to the tooltip', () => {
+    const located = { region: 'mainland-china' as const, countryCode: 'CN', publicIp: '203.0.113.8', checkedAt: '2026-09-08T00:00:00.000Z', error: null }
+    expect(networkStatusLabel(located)).toBe('网络正常 · 中国')
+    expect(networkStatusLabel({ ...located, publicIp: null })).toBe('网络正常 · 中国')
+    expect(networkStatusLabel({ ...located, region: 'unknown', countryCode: null })).toBe('网络正常')
+    expect(networkStatusLabel(undefined)).toBe('网络正常')
   })
 })

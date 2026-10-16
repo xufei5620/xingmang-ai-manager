@@ -1,16 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { V2Bridge } from './types'
+import { BackupCard } from './features/settings/BackupCard'
 import {
-  BackupsPage,
   CuratedDetails,
   CuratedShelf,
   ExtensionsPage,
   SessionsPage,
-  backupMatchesQuery,
-  curatedPlaceholderField,
   curatedRuntimeCommand,
   curatedVersionText,
+  customMcpProblem,
+  extensionToolChoices,
+  extensionToolNames,
+  groupExtensionItems,
   extensionFailureTarget,
   extensionRowState,
   fillCuratedPlaceholders,
@@ -23,6 +25,8 @@ import {
   mcpRuntimeNotice,
   officialMarketplaceNotice,
   runExtensionAction,
+  sessionRowMeta,
+  sessionToolCounts,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
 } from './pages-management'
@@ -31,6 +35,7 @@ import {
   curatedExtensions,
   curatedItemsFor,
 } from './registry/curated-extensions'
+import { extensionScopeGroups } from './registry/extensions'
 
 function item(id: string) {
   const found = curatedExtensions.find((entry) => entry.id === id)
@@ -46,24 +51,26 @@ function mcpInstall(id: string) {
 }
 
 describe('curated extension shelf', () => {
-  // 联网说明以前在每一行右边各写一遍，把说明挤成两行；点「安装」后的确认框里本来就有。
-  it('lists one row per curated entry with its risk badges and leaves the network need to the confirm dialog', () => {
+  // 联网说明以前在每一行右边各写一遍，把说明挤成两行；点「添加」后的确认框里本来就有。
+  it('lists one card per curated entry with its risk badges and leaves the network need to the confirm dialog', () => {
     const markup = renderToStaticMarkup(
-      <CuratedShelf items={curatedItemsFor('mcp', 'claude')} onPick={() => {}} />,
+      <CuratedShelf items={curatedItemsFor('mcp', 'claude')} toolName="Claude Code" onPick={() => {}} />,
     )
     expect(markup).toContain('星芒精选')
     expect(markup).toContain('我们挑过的，装之前会先给你看它要什么权限')
     expect(markup).toContain('data-testid="curated-row-files"')
     expect(markup).toContain('data-testid="curated-install-browser"')
-    expect(markup).toContain('会改你的文件')
+    expect(markup).toContain('会修改本地文件')
     expect(markup).toContain('需要先登录')
+    // 外接工具的卡上是「添加」，插件的才是「安装」。
+    expect(markup).toMatch(/data-testid="curated-install-browser"[^>]*>(?:(?!<\/button>).)*<span>添加<\/span><\/button>/)
     expect(markup).not.toContain('第一次使用时需要联网下载')
     expect(markup).not.toContain('点「安装」会先让你确认一次')
     expect(renderToStaticMarkup(<CuratedDetails item={item('files')} />)).toContain('第一次使用时需要联网下载')
   })
 
   it('renders nothing on the pages that have no curated entries yet', () => {
-    expect(renderToStaticMarkup(<CuratedShelf items={[]} onPick={() => {}} />)).toBe('')
+    expect(renderToStaticMarkup(<CuratedShelf items={[]} toolName="Claude Code" onPick={() => {}} />)).toBe('')
   })
 
   // 用户点「安装」之后看到的就是这一段，所以「将要执行的确切命令」必须原样出现在里面，
@@ -71,11 +78,20 @@ describe('curated extension shelf', () => {
   it('states the exact command, the risk and the disclaimer before anything is installed', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={item('files')} />)
     expect(markup).toContain('npx -y @modelcontextprotocol/server-filesystem@2026.8.31 {{directory}}')
-    expect(markup).toContain('Model Context Protocol 官方')
-    expect(markup).toContain('会改你的文件')
+    expect(markup).toContain('<dt>提供方</dt><dd>Model Context Protocol 官方</dd>')
+    expect(markup).toContain('会修改本地文件')
     expect(markup).toContain('改动不进回收站')
     expect(markup).toContain('装到哪里')
+    expect(markup).toContain('用的是本应用装好的运行环境')
+    expect(markup).not.toContain('Node.js')
     expect(markup).toContain(curatedDisclaimer)
+  })
+
+  // 精选页的确认框下面另有「给这些工具用」，不再写「当前这个工具」装在哪一层。
+  it('leaves out the fixed scope line when the dialog picks the tools itself', () => {
+    const markup = renderToStaticMarkup(<CuratedDetails item={item('files')} hideScope />)
+    expect(markup).not.toContain('装到哪里')
+    expect(markup).toContain('将写进配置、由工具启动时执行的命令')
   })
 
   it('shows the remote address and the login requirement for an online service', () => {
@@ -95,12 +111,13 @@ describe('curated extension shelf', () => {
   // 插件精选与 MCP 精选是同一张卡：形态一致，只是图标、命令与版本那一行不同。
   it('lists the curated plugins with what each one costs the user', () => {
     const markup = renderToStaticMarkup(
-      <CuratedShelf items={curatedItemsFor('plugin', 'claude')} onPick={() => {}} />,
+      <CuratedShelf items={curatedItemsFor('plugin', 'claude')} toolName="Claude Code" onPick={() => {}} />,
     )
     expect(markup).toContain('data-testid="curated-row-code-review"')
     expect(markup).toContain('data-testid="curated-install-commit-commands"')
-    expect(markup).toContain('会多用额度')
-    expect(markup).toContain('会动 Git 仓库')
+    expect(markup).toMatch(/data-testid="curated-install-commit-commands"[^>]*>(?:(?!<\/button>).)*<span>安装<\/span><\/button>/)
+    expect(markup).toContain('会多消耗额度')
+    expect(markup).toContain('会提交到 Git')
     expect(markup).not.toContain('安装时需要联网下载一次')
     expect(renderToStaticMarkup(<CuratedDetails item={item('code-review')} />)).toContain('安装时需要联网下载一次')
   })
@@ -128,18 +145,23 @@ describe('curated extension shelf', () => {
     const markup = renderToStaticMarkup(
       <CuratedShelf
         items={curatedItemsFor('plugin', 'claude')}
+        toolName="Claude Code"
         installedIds={['code-review@claude-plugins-official']}
         onPick={() => {}}
       />,
     )
-    expect(markup).toContain('已安装')
+    expect(markup).toContain('已装到 Claude Code')
     expect(markup).not.toContain('data-testid="curated-install-code-review"')
     expect(markup).toContain('data-testid="curated-install-feature-dev"')
   })
 
-  it('points the form at the field that actually holds the placeholder', () => {
-    expect(curatedPlaceholderField(item('files'), 'directory')).toBe('参数')
-    expect(curatedPlaceholderField(item('memory'), 'directory')).toBe('环境变量')
+  // 工具还没装时精选照样摆出来看，只是不给按钮：装好工具再来添加。
+  it('shows the entries without any button while the tool is not installed', () => {
+    const markup = renderToStaticMarkup(
+      <CuratedShelf items={curatedItemsFor('mcp', 'grok')} toolName="Grok CLI" toolMissing onPick={() => {}} />,
+    )
+    expect(markup).toContain('data-testid="curated-row-files"')
+    expect(markup).not.toContain('data-testid="curated-install-')
   })
 })
 
@@ -553,6 +575,123 @@ describe('extension page default tool', () => {
   })
 })
 
+// v4 批12：「范围」筛选换成按范围分组，分组标题和说明在 registry/extensions.ts。
+describe('installed extension groups', () => {
+  it('files each item under the layer it was installed in, in the order of the table', () => {
+    const groups = groupExtensionItems(
+      [
+        listItem({ id: 'local-one', scope: 'local' }),
+        listItem({ id: 'user-one', scope: 'user' }),
+        listItem({ id: 'user-two', scope: 'user' }),
+      ],
+      extensionScopeGroups.mcp.claude,
+    )
+    expect(groups.map((group) => [group.title, group.description, group.items.map((item) => item.id)])).toEqual([
+      ['用户', '你的所有项目都能用', ['user-one', 'user-two']],
+      ['本地', '只在当前项目、只给你自己', ['local-one']],
+    ])
+  })
+
+  it('puts everything in the one group of a tool that has a single layer', () => {
+    const groups = groupExtensionItems(
+      [listItem({ provider: 'codex', kind: 'mcp', id: 'a', scope: null }), listItem({ provider: 'codex', kind: 'mcp', id: 'b', scope: 'user' })],
+      extensionScopeGroups.mcp.codex,
+    )
+    expect(groups).toHaveLength(1)
+    expect(groups[0]).toMatchObject({ title: '全局', description: '所有项目共用' })
+    expect(groups[0].items.map((item) => item.id)).toEqual(['a', 'b'])
+  })
+
+  it('puts the read-only Codex skills under 系统内置 whatever scope the list gave them', () => {
+    const groups = groupExtensionItems(
+      [listItem({ provider: 'codex', kind: 'skill', id: 'mine', scope: 'user' }), listItem({ provider: 'codex', kind: 'skill', id: 'system', scope: 'user' })],
+      extensionScopeGroups.skill.codex,
+      (item) => item.id === 'system',
+    )
+    expect(groups.map((group) => [group.title, group.items.map((item) => item.id)])).toEqual([
+      ['用户', ['mine']],
+      ['系统内置', ['system']],
+    ])
+  })
+
+  // 表里没有的层不能被分组弄丢：另起一组，标题用详情里那套范围叫法。
+  it('keeps an item whose layer the table does not list in a group of its own', () => {
+    const groups = groupExtensionItems(
+      [listItem({ provider: 'grok', kind: 'skill', id: 'repo', scope: 'project' }), listItem({ provider: 'grok', kind: 'skill', id: 'bare', scope: null })],
+      extensionScopeGroups.skill.grok,
+    )
+    expect(groups.map((group) => [group.title, group.description, group.items.map((item) => item.id)])).toEqual([
+      ['当前项目', '', ['repo']],
+      ['未提供', '', ['bare']],
+    ])
+  })
+})
+
+describe('the 给这些工具用 picker', () => {
+  it('lists every tool and says why the ones it cannot pick are grey', () => {
+    expect(extensionToolChoices(['claude'], ['claude', 'codex'], [])).toEqual([
+      { id: 'claude', name: 'Claude Code', note: null },
+      { id: 'codex', name: 'Codex CLI', note: '不支持' },
+      { id: 'grok', name: 'Grok CLI', note: '不支持' },
+    ])
+    expect(extensionToolChoices(['claude', 'codex', 'grok'], ['claude', 'codex'], ['codex']).map((choice) => choice.note)).toEqual([
+      null,
+      '已添加',
+      '未安装',
+    ])
+  })
+
+  it('treats every tool as installed while detection has not finished', () => {
+    expect(extensionToolChoices(['claude', 'codex', 'grok'], undefined).every((choice) => choice.note === null)).toBe(true)
+  })
+
+  it('names the tools in navigation order whatever order they were picked in', () => {
+    expect(extensionToolNames(['grok', 'claude'])).toBe('Claude Code、Grok CLI')
+  })
+})
+
+describe('custom connection checks', () => {
+  const valid = { name: 'my-database', transport: 'stdio', source: 'npx -y pkg' }
+  it('passes a well-formed connection', () => {
+    expect(customMcpProblem(valid)).toBeNull()
+    expect(customMcpProblem({ ...valid, transport: 'http', source: 'https://example.com/mcp' })).toBeNull()
+  })
+  it('reports the first problem from the top of the form', () => {
+    expect(customMcpProblem({ ...valid, name: '  ' })).toBe('请给这个连接起个名字')
+    expect(customMcpProblem({ ...valid, name: '我的数据库' })).toBe('名称只能用字母、数字和 - _，最多 40 位')
+    expect(customMcpProblem({ ...valid, name: 'a'.repeat(41) })).toBe('名称只能用字母、数字和 - _，最多 40 位')
+    expect(customMcpProblem({ ...valid, existing: ['my-database'] })).toBe('已经有叫「my-database」的连接了，换个名字')
+    expect(customMcpProblem({ ...valid, source: ' ' })).toBe('请填写启动命令')
+    expect(customMcpProblem({ ...valid, transport: 'http', source: 'example.com/mcp' })).toBe('服务地址要以 http:// 或 https:// 开头')
+  })
+})
+
+describe('extension page layout', () => {
+  const api = {} as V2Bridge
+  it('switches tools with tabs and names what the tool itself calls this kind', () => {
+    const markup = renderToStaticMarkup(<ExtensionsPage api={api} kind="mcp" installedProviders={['claude', 'codex']} />)
+    expect(markup).toContain('role="tablist"')
+    expect(markup).toContain('Claude Code 官方叫「MCP 服务器」')
+    // 没装的工具在页签上直说，不去读它的列表。
+    expect(markup).toMatch(/Grok CLI<span class="v2-ext-tab-note">未安装<\/span>/)
+    expect(markup).toContain('自定义连接')
+    expect(markup).not.toContain('添加连接')
+  })
+
+  it('offers to install the tool in place of the list when it is not installed', () => {
+    const markup = renderToStaticMarkup(
+      <ExtensionsPage api={api} kind="plugin" installedProviders={['codex']} installTool={async () => 'installed'} />,
+    )
+    // 一进来按导航次序选第一个装好的：Codex CLI；Claude Code 没装，选它时才出安装那一条。
+    expect(markup).toContain('Codex CLI 官方叫「插件（Plugins）」')
+    const missing = renderToStaticMarkup(<ExtensionsPage api={api} kind="skill" installedProviders={[]} installTool={async () => 'installed'} />)
+    expect(missing).toContain('还没有安装 Claude Code')
+    expect(missing).toContain('装好后就能添加下面的技能。')
+    expect(missing).toContain('data-testid="skills-install-tool"')
+    expect(missing).not.toContain('data-testid="skills-list"')
+  })
+})
+
 describe('curated folder placeholders', () => {
   it('fills the chosen folder into parsed arguments and environment without JSON escaping', () => {
     const folder = 'C:\\Users\\张三\\项目'
@@ -566,31 +705,7 @@ describe('curated folder placeholders', () => {
   })
   it('explains a pasted Windows path in Chinese instead of surfacing the JSON parser error', () => {
     expect(() => parseCommandArguments('["C:\\Users"]')).toThrow('选择文件夹')
-    expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('环境变量的格式不对')
-  })
-})
-
-describe('backup search', () => {
-  const now = new Date(2026, 9, 4, 15, 0).getTime()
-  const createdAt = new Date(2026, 9, 2, 18, 5).toISOString()
-
-  it('finds a backup by the date the list shows', () => {
-    expect(backupMatchesQuery(createdAt, '10月2日', now)).toBe(true)
-    expect(backupMatchesQuery(new Date(2026, 9, 4, 9, 30).toISOString(), '今天', now)).toBe(true)
-  })
-
-  it('also finds it by the full time shown on hover', () => {
-    expect(backupMatchesQuery(createdAt, '18:05', now)).toBe(true)
-    expect(backupMatchesQuery(createdAt, ' 2026/10/2 ', now)).toBe(true)
-  })
-
-  it('keeps everything for an empty search and drops what does not match', () => {
-    expect(backupMatchesQuery(createdAt, '  ', now)).toBe(true)
-    expect(backupMatchesQuery(createdAt, '9月30日', now)).toBe(false)
-  })
-
-  it('no longer matches the backup id the list does not show', () => {
-    expect(backupMatchesQuery(createdAt, 'backup-1', now)).toBe(false)
+    expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('附加设置的格式不对')
   })
 })
 
@@ -603,10 +718,34 @@ describe('management pages without the retired Gemini CLI', () => {
     expect(markup).not.toContain('Gemini')
   })
 
-  it('offers no Gemini CLI on the sessions and backups pages', () => {
-    for (const markup of [renderToStaticMarkup(<SessionsPage api={api} />), renderToStaticMarkup(<BackupsPage api={api} />)]) {
+  it('offers no Gemini CLI on the sessions page or the backup card', () => {
+    for (const markup of [renderToStaticMarkup(<SessionsPage api={api} />), renderToStaticMarkup(<BackupCard api={api} />)]) {
       expect(markup).toContain('Claude Code')
       expect(markup).not.toContain('Gemini')
     }
   })
 })
+
+describe('sessions table', () => {
+  it('counts sessions per tool chip and sums them for the all chip', () => {
+    expect(sessionToolCounts({ claude: 3, codex: 1, gemini: 5 })).toMatchObject({ all: 4, claude: 3, codex: 1, grok: 0 })
+    // 没读到统计就不显示数字，不能显示成一排 0。
+    expect(sessionToolCounts(undefined)).toBeNull()
+  })
+
+  it('shows model and message count under the title and leaves the time to its own column', () => {
+    expect(sessionRowMeta({ model: 'gpt-5', messageCount: 12, archived: false })).toBe('gpt-5 · 12 条消息')
+    expect(sessionRowMeta({ model: '', messageCount: null, archived: true })).toBe('未记录模型 · 已归档')
+  })
+
+  it('renders the records page as a table with tool chips and no drawer', () => {
+    const markup = renderToStaticMarkup(<SessionsPage api={{} as V2Bridge} />)
+    expect(markup).toContain('aria-label="按工具筛选"')
+    expect(markup).toContain('data-testid="sessions-tool-all"')
+    expect(markup).toContain('placeholder="搜索标题、文件夹或模型"')
+    expect(markup).toContain('aria-label="重新加载"')
+    expect(markup).not.toContain('本软件已把保留期放长到一年')
+    expect(markup).not.toContain('xm-drawer')
+  })
+})
+

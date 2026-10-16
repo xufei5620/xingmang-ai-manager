@@ -77,7 +77,8 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toContain('data-testid="guide-recharge"')
     expect(markup).toContain('data-testid="guide-recharge-button"')
     expect(markup).toContain('去充值')
-    expect(markup).toContain('左下角余额旁边的「充值」')
+    // v4 只留一颗「去充值」，不再在旁边写一段怎么充值的说明。
+    expect(markup).not.toContain('左下角余额旁边的「充值」')
     stubResumedGuide('chat', 'ready')
     expect(render([guideTool()], { onFailureAction: () => undefined })).toContain('data-testid="guide-recharge"')
   })
@@ -213,7 +214,7 @@ describe('renderer-v2 start guide first run', () => {
     stubResumedGuide('claude', 'prepare')
     const markup = render([guideTool({ version: '2.1.42', update: { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: null } })])
     expect(markup).toContain('Claude Code 已经装好，但版本旧了，建议先点「更新」。不更新也能直接点「下一步」。')
-    expect(markup).toContain('已找到 v2.1.42，新版是 2.1.277')
+    expect(markup).toContain('已安装 v2.1.42，新版是 2.1.277')
     expect(markup).toMatch(/data-testid="guide-tool-status"[^>]*>可更新</)
     expect(markup).toMatch(/<button[^>]*data-testid="guide-update"(?![^>]*disabled)/)
     expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
@@ -240,7 +241,8 @@ describe('renderer-v2 start guide first run', () => {
     stubResumedGuide('claude', 'prepare')
     const current = render([guideTool({ version: '2.1.277' })])
     expect(current).toContain('Claude Code 已经装好。')
-    expect(current).toMatch(/data-testid="guide-tool-status"[^>]*>已安装</)
+    expect(current).toMatch(/data-testid="guide-tool-status"[^>]*>已装好</)
+    expect(current).toContain('已安装 v2.1.277，可以直接用')
     expect(current).not.toContain('data-testid="guide-update"')
     const offer = { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: null }
     const notReady = render([guideTool({ version: '2.1.42', runtimeReady: false, update: offer })], { onInstallRuntime: async () => undefined })
@@ -431,21 +433,27 @@ describe('guide default route', () => {
   })
 })
 
-describe('guide choose step runtime wording', () => {
-  // Mac 跟 Linux 一样按能力判断（已知9）：Node.js 由本软件准备时，不再说「要先按提示准备」。
-  it('says the app prepares the runtime on Linux and Mac only when it really does', () => {
-    for (const platform of ['linux', 'mac'] as const) {
-      const managed = render([guideTool({ runtimeAutoPrepare: true })], { platform })
-      expect(managed).toContain('命令行，会自动帮你准备运行环境')
-      expect(managed).not.toContain('要先按提示准备运行环境')
-      const external = render([guideTool({ runtimeAutoPrepare: false })], { platform })
-      expect(external).toContain('命令行，要先按提示准备运行环境')
-    }
+describe('guide choose step descriptions', () => {
+  // v4 第 1 步每项只说这个工具是干什么的；运行环境要不要另外准备，第 2 步的「运行环境」那一行再说。
+  it('describes each start option by what it does', () => {
+    stubResumedGuide('claude', 'choose')
+    const markup = render(['claude', 'codex', 'codexDesktop', 'grok'].map((id) => guideTool({ id: id as GuideToolState['id'] })), { platform: 'win' })
+    for (const text of ['在终端里让 AI 读项目、改代码', '终端版，和桌面端共用配置', '不开终端，装好就能改代码', '在终端里用 Grok 读项目、改代码', '什么都不用装，直接问问题', '先挑一个，之后随时可以装别的。']) expect(markup).toContain(text)
+    expect(markup).not.toContain('运行环境')
   })
 
-  it('keeps the Windows wording unchanged', () => {
-    expect(render([guideTool({ runtimeAutoPrepare: true })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
-    expect(render([guideTool({ runtimeAutoPrepare: false })], { platform: 'win' })).toContain('命令行，会自动帮你准备运行环境')
+  it('does not mention the desktop app beside Codex CLI where there is none', () => {
+    stubResumedGuide('codex', 'choose')
+    const markup = render([guideTool({ id: 'codex' })], { platform: 'linux' })
+    expect(markup).toMatch(/Codex CLI.*?<span>终端版<\/span>/)
+    expect(markup).not.toContain('和桌面端共用配置')
+  })
+
+  it('still says the runtime needs preparing outside the app on the next step when the app cannot do it', () => {
+    stubResumedGuide('claude', 'prepare')
+    const external = render([guideTool({ installed: false, runtimeReady: false, runtimeAutoPrepare: false })], { platform: 'linux', onInstallRuntime: async () => undefined })
+    expect(external).toContain('运行环境')
+    expect(external).toMatch(/data-testid="guide-node"/)
   })
 })
 
@@ -533,6 +541,7 @@ describe('guide connect step with a key the current account did not write', () =
 describe('guide switch failure exits', () => {
   it('sends a tool the account has not opened to support and a failed undo to the backups page', () => {
     expect(guideFailureExits(new Error('改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。')).map((action) => action.id)).toEqual(['support'])
+    expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
     expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
     expect(guideFailureExits('不过账号余额不足，充值后再试。').map((action) => action.id)).toEqual(['recharge'])
     expect(guideFailureExits(new Error('something odd'))).toEqual([])

@@ -95,7 +95,9 @@ test('NewAPI read state survives a browser process restart, a new host store and
   await expectReadStates(reopened, ['已读', '未读', '未读'])
   assert.equal(await reopened.page.evaluate(() => localStorage.getItem('xingmang-v2-notice-entries:xm-account:17')), null)
   assert.equal(await reopened.page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
-  await reopened.dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  // v4 的公告小框没有关闭按钮：再点一次铃铛就收起。
+  await reopened.page.getByTestId('announcement-open').click()
+  await reopened.dialog.waitFor({ state: 'hidden' })
   await reopened.page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', {
     authenticated: true, siteId: 'solov', account: { userId: 18, username: 'other', group: 'default', role: 1, quota: 1, usedQuota: 0 },
   }))
@@ -115,7 +117,10 @@ test('existing local read IDs migrate to the host and a failed browser cache can
   await current.page.evaluate((id) => {
     localStorage.setItem('xingmang-v2-notice-entries:xm-account:17', JSON.stringify([id]))
   }, id)
-  await current.dialog.getByRole('button', { name: '重新读取' }).click()
+  // 小框每次打开都重新读一遍列表，收起再打开就是用户的「重新读取」。
+  await current.page.getByTestId('announcement-open').click()
+  await current.dialog.waitFor({ state: 'hidden' })
+  await current.page.getByTestId('announcement-open').click()
   await current.list.getByRole('button', { name: '图片模型上线 已读' }).waitFor()
   assert.deepEqual(await store.sync('xm-account:17', []), [id])
   await current.page.evaluate(() => {

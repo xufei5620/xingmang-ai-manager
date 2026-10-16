@@ -15,8 +15,8 @@ describe('v2 two-step verification', () => {
   it('tidies authenticator digits but passes a backup code through', () => {
     expect(parseTwoFactorCode(' 123 456 ', false)).toEqual({ ok: true, code: '123456' })
     expect(parseTwoFactorCode('１２３４５６', false)).toEqual({ ok: true, code: '123456' })
-    expect(parseTwoFactorCode('12345', false).ok).toBe(false)
-    expect(parseTwoFactorCode('', false).ok).toBe(false)
+    expect(parseTwoFactorCode('12345', false)).toEqual({ ok: false, error: '请输入验证器里的 6 位数字' })
+    expect(parseTwoFactorCode('', false)).toEqual({ ok: false, error: '请输入验证器里的 6 位数字' })
     expect(parseTwoFactorCode(' abcd-efgh ', true)).toEqual({ ok: true, code: 'abcd-efgh' })
     expect(parseTwoFactorCode('  ', true).ok).toBe(false)
   })
@@ -48,7 +48,8 @@ describe('v2 auth recovery boundaries', () => {
   it('honors the actual verification capability while preserving independent username and email', () => {
     const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
     expect(validateRegistration(draft, false)).toEqual({})
-    expect(validateRegistration(draft, true).code).toBeTruthy()
+    expect(validateRegistration(draft, true).code).toBe('请填写邮件中的验证码')
+    expect(validateRegistration(draft, true, false).code).toBe('请先点「获取验证码」，再填写邮件中的验证码')
     expect(validateRegistration({ ...draft, confirm: 'different', agreed: false }, false)).toEqual({ confirm: '两次密码不一致', agreed: '请先同意用户协议和隐私政策' })
     expect(validateRegistration({ ...draft, username: '', email: '' }, false)).toHaveProperty('username')
     expect(validateRegistration({ ...draft, username: '', email: '' }, false)).toHaveProperty('email')
@@ -120,7 +121,7 @@ describe('v2 auth recovery boundaries', () => {
   it('does not expose raw server error text to the interface', () => {
     expect(authErrorMessage(new Error('GET https://example.test 500 internal stack trace'), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
     expect(authErrorMessage(new Error('ETIMEDOUT'), '登录')).toBe(authUnreachableMessage)
-    expect(authErrorMessage(new Error('TWO_FACTOR_REQUIRED'), '登录')).toContain('双重验证')
+    expect(authErrorMessage(new Error('TWO_FACTOR_REQUIRED'), '登录')).toContain('两步验证')
     expect(authErrorMessage(new Error('此账号需要双重验证，请先完成验证'), '登录')).toContain('所选账号官网')
   })
   // 校园网那位用户看到的就是这句兜底文案：真实原因是域名解析不了 / 证书被替换 /
@@ -224,7 +225,7 @@ describe('v2 auth recovery boundaries', () => {
   // 以前 409 落到「请稍后重试」：服务端的设备数满了，重试一万次也登不上。
   it('explains login device and frequency limits instead of asking to try again later', () => {
     const sessionLimit = authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 这个账号同时登录的设备太多了，暂时登不上。"), '登录')
-    expect(sessionLimit).toContain('登录设备')
+    expect(sessionLimit).toContain('「账号安全」里让几台不用的设备下线')
     expect(sessionLimit).toContain('联系客服')
     expect(sessionLimit).not.toMatch(/稍后重试|https?:|solov|\.cc/)
     expect(authErrorMessage(new Error('AUTH_SESSION_LIMIT'), '登录')).toBe(sessionLimit)
@@ -324,7 +325,7 @@ describe('recovery new password', () => {
     expect(validateNewPassword('short', 'short').password).toBe('新密码至少 8 位')
     expect(validateNewPassword('a'.repeat(21), 'a'.repeat(21)).password).toBe('新密码不能超过 20 位')
     expect(validateNewPassword('my-own-password', '').confirm).toBe('请再输一次新密码')
-    expect(validateNewPassword('my-own-password', 'my-own-passwor').confirm).toBe('两次输入的新密码不一样')
+    expect(validateNewPassword('my-own-password', 'my-own-passwor').confirm).toBe('两次密码不一致')
     // Passwords are forwarded exactly as typed, so surrounding spaces count toward the length.
     expect(validateNewPassword(' 1234567', ' 1234567')).toEqual({})
   })

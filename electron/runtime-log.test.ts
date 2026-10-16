@@ -526,7 +526,7 @@ describe('RuntimeLogStore', () => {
   it('fails only when the part without logs is already over budget, and says what to do instead', async () => {
     const store = createStore()
     store.log('info', 'fixture', 'entry', 'small entry')
-    await expect(store.captureFeedbackReport(600, 50)).rejects.toThrow('打开日志目录')
+    await expect(store.captureFeedbackReport(600, 50)).rejects.toThrow('打开日志文件夹')
   })
 
   it('captures report text and its count together, independently of later appends or clears', async () => {

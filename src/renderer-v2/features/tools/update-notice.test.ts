@@ -67,7 +67,7 @@ const globalWithStorage = globalThis as { localStorage?: Storage }
 afterEach(() => { delete globalWithStorage.localStorage })
 
 describe('renderer-v2 pending CLI updates', () => {
-  it('counts exactly what the home card already calls 「N 个有更新」', () => {
+  it('counts exactly the tools whose home card offers 「可更新到 v…」', () => {
     const state = snapshot({
       claude: { ...cliStatus, latestVersion: '2.0.0', updateAvailable: true },
       codex: { ...cliStatus, latestVersion: '1.9.0', updateAvailable: true },
@@ -79,7 +79,11 @@ describe('renderer-v2 pending CLI updates', () => {
     })
     const pending = pendingToolUpdates(presentTools(state))
     expect(pending.map((entry) => entry.id)).toEqual(['claude', 'codex'])
-    expect(renderHome(state)).toContain(`${pending.length} 个有更新`)
+    // v4 首页不再有「N 个有更新」那句总数，改成每张卡片自己的「可更新到 v…」链接（批 04）。
+    const home = renderHome(state)
+    expect(home.match(/data-testid="tool-[a-zA-Z]+-update"/g)).toHaveLength(pending.length)
+    expect(home).toContain('可更新到 v2.0.0')
+    expect(home).toContain('可更新到 v1.9.0')
   })
 
   it('leaves the badge empty when nothing is installed or nothing has a new version', () => {
@@ -100,12 +104,13 @@ describe('renderer-v2 pending CLI updates', () => {
       grok: { ...cliStatus, latestVersion: '0.62.0', updateAvailable: true, installSource: 'npm' },
     })
     const tools = presentTools(state)
-    // 通知原话是「回到星芒的「你的工具」就能逐个更新」，首页只有 Grok 那一行有「更新」按钮。
+    // 通知原话是「回到星芒首页就能逐个更新」，首页只有 Grok 那张卡片有「更新」按钮。
     expect(inAppToolUpdates(tools)).toEqual([{ id: 'grok', version: '0.62.0' }])
     // 角标和卡片上的数字照旧数全部：那两行自己写着该怎么更新。
     expect(pendingToolUpdates(tools).map((entry) => entry.id)).toEqual(['claude', 'codex', 'grok'])
     const home = renderHome(state)
-    expect(home).toContain('3 个有更新')
+    // 每张有新版本的卡片都说一句：能在这里更新的给链接，别的软件管着的给说明。
+    expect(home.match(/data-testid="tool-[a-zA-Z]+-(?:update|external-managed)"/g)).toHaveLength(3)
     expect(home).toContain('该版本由官方安装器管理，请用它自己的方式更新')
     expect(home).toContain('该版本不是通过本工具安装的，更新请用它原本的安装方式')
   })

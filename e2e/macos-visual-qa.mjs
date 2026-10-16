@@ -38,11 +38,12 @@ const scenarios = [
 ]
 // The fixture below reports both tools as installed, which is what puts a row
 // menu (and therefore the configuration dialog) within reach.
+// UI v4: only Codex keeps a subtitle (its CLI and desktop app share one
+// configuration); the tool tabs are gone, each dialog configures one tool.
 const toolCases = {
-  codex: { name: 'Codex CLI' },
-  grok: { name: 'Grok CLI' },
+  codex: { name: 'Codex CLI', subtitle: 'Codex CLI 和 Codex 桌面端共用这一份配置，在哪边改都一样' },
+  grok: { name: 'Grok CLI', subtitle: null },
 }
-const dialogSubtitle = '选好账号后，保存并打开工具即可开始。'
 const results = []
 const pageErrors = []
 let application = null
@@ -76,7 +77,7 @@ async function selectTheme(theme) {
   await settings.waitFor({ state: 'visible', timeout: 30_000 })
   await settings
     .getByTestId('settings-theme')
-    .getByRole('button', { name: theme === 'dark' ? '暗色' : '亮色', exact: true })
+    .getByRole('button', { name: theme === 'dark' ? '深色' : '浅色', exact: true })
     .click()
   await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme, {
     timeout: 30_000,
@@ -143,8 +144,9 @@ async function inspectDashboardLayout(expectedRows) {
   }, { regions: shellRegions, expected: expectedRows })
 }
 
-// The v2 modal is a native <dialog>: header, then .xm-modal-content holding the
-// scrollable .xm-dialog-body and the footer.
+// The v2 modal is a native <dialog>: header (title and close button since UI
+// v4.0), then .xm-modal-content holding the scrollable .xm-dialog-body and the
+// footer.
 async function inspectConfigDialog() {
   return page.evaluate(() => {
     const rectangle = (element) => {
@@ -166,7 +168,7 @@ async function inspectConfigDialog() {
     const body = dialog?.querySelector('.xm-dialog-body')
     const header = dialog?.querySelector(':scope > header')
     const footer = dialog?.querySelector('.xm-modal-content > footer')
-    const headerCopy = header?.querySelector(':scope > div')
+    const headerCopy = header?.querySelector(':scope > h2')
     const headerClose = header?.querySelector('button[data-modal-close="true"]')
     const dialogRect = rectangle(dialog)
     const contentRect = rectangle(content)
@@ -305,11 +307,10 @@ try {
       tool: scenario.tool,
       pageErrors: [...pageErrors],
       dashboardLayout: await inspectDashboardLayout(expectedToolRows),
-      maintenanceRowIds: [],
       dialog: null,
       titleVisible: false,
-      subtitleVisible: false,
-      toolTabsVisible: false,
+      subtitleAsExpected: false,
+      toolTabsAbsent: false,
       cancelButtonVisible: false,
       saveButtonVisible: false,
       closeButtonVisible: false,
@@ -319,23 +320,7 @@ try {
     results.push(result)
 
     try {
-      // 安装卸载 lives behind the sidebar's 更多 group in v2, and that button
-      // toggles: clicking it while the group is already open hides the entry.
-      const moreNavigation = page.getByTestId('nav-more')
-      if (await moreNavigation.getAttribute('aria-expanded') !== 'true') await moreNavigation.click()
-      await page.getByTestId('nav-maintenance').click()
-      const maintenance = page.getByTestId('page-maintenance')
-      await maintenance.waitFor({ state: 'visible', timeout: 30_000 })
-      await maintenance
-        .getByTestId(`maintenance-tool-${scenario.tool}`)
-        .waitFor({ state: 'visible', timeout: 60_000 })
-      result.maintenanceRowIds = await maintenance.evaluate((element) => (
-        [...element.querySelectorAll('[data-testid^="maintenance-tool-"]')]
-          .map((node) => node.getAttribute('data-testid')?.slice('maintenance-tool-'.length) ?? '')
-      ))
-
-      await page.getByTestId('nav-home').click()
-      await home.waitFor({ state: 'visible', timeout: 30_000 })
+      // 安装卸载页第 10 批拆掉了：装、卸、重装都在首页工具卡片上，上面的 dashboardLayout 已经量过这几张卡。
       await row.getByRole('button', { name: '更多操作', exact: true }).click()
       await row.getByRole('menuitem', { name: '配置', exact: true }).click()
       const dialog = page.getByTestId('config-dialog')
@@ -344,8 +329,10 @@ try {
       result.titleVisible = await dialog
         .getByRole('heading', { name: `${subject.name} 配置`, exact: true })
         .isVisible()
-      result.subtitleVisible = await dialog.getByText(dialogSubtitle, { exact: true }).isVisible()
-      result.toolTabsVisible = await dialog.getByRole('tablist', { name: '选择要配置的工具' }).isVisible()
+      result.subtitleAsExpected = subject.subtitle
+        ? await dialog.getByText(subject.subtitle, { exact: true }).isVisible()
+        : await dialog.locator('.xm-dialog-sub').count() === 0
+      result.toolTabsAbsent = await dialog.getByRole('tablist').count() === 0
       result.cancelButtonVisible = await dialog.getByRole('button', { name: '取消', exact: true }).isVisible()
       result.saveButtonVisible = await dialog.getByTestId('tool-save-config').isVisible()
       const close = dialog.getByRole('button', { name: '关闭', exact: true })
@@ -427,11 +414,10 @@ const failed = results.filter((result) => {
     || layout.clippedControls.length > 0
     || !layout.imagesLoaded
     || result.dialogError !== null
-    || !expectedToolRows.every((id) => result.maintenanceRowIds.includes(id))
-    || result.maintenanceRowIds.includes('gemini')
+    || layout.visibleRowIds.includes('gemini')
     || !result.titleVisible
-    || !result.subtitleVisible
-    || !result.toolTabsVisible
+    || !result.subtitleAsExpected
+    || !result.toolTabsAbsent
     || !result.cancelButtonVisible
     || !result.saveButtonVisible
     || !result.closeButtonVisible

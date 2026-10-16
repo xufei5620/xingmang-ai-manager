@@ -6,7 +6,7 @@ import { runtimeDisplayName, type ManagedRuntimeId } from './runtime-install-gui
  * - systemRestartRequired：MSI 退出码 3010，Windows 要重启才算把这次安装做完；
  * - pathRefreshRequired：安装器改了系统 PATH，但已经开着的进程看不到。
  *
- * 以前首页和「安装卸载」页都把返回值扔了，一律说「运行环境已准备」，遇到 3010
+ * 以前首页和当时的「安装卸载」页都把返回值扔了，一律说「运行环境已准备」，遇到 3010
  * 的机器接着装命令行工具才失败，用户不知道该先重启（第七批 5）。这里只负责把两个
  * 标记翻成一句话，要不要弹重启确认由调用方看 restartRequired。
  *
@@ -32,5 +32,9 @@ export function describeRuntimeInstallOutcome(
   if ('systemRestartRequired' in result && result.systemRestartRequired) {
     return { message: `${name} 装好了，重启电脑后就能用。`, tone: 'warn', restartRequired: true }
   }
+  // 首页运行环境那一行装好 Python 时带上版本（v4 批 04）；Node.js 那句照旧。主进程给的版本是
+  // `python --version` 的原样输出（「Python 3.12.9」），去掉前缀免得念成「Python Python」。
+  const pythonVersion = runtime === 'python' && 'version' in result ? result.version?.replace(/^Python\s+/i, '').trim() : ''
+  if (pythonVersion) return { message: `Python ${pythonVersion} 已装好`, tone: 'ok', restartRequired: false }
   return { message: `${name} 装好了。`, tone: 'ok', restartRequired: false }
 }

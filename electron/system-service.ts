@@ -66,6 +66,7 @@ import {
   createCodexDesktopService,
   desktopUpdateFields,
   inspectCodexDesktopPackage,
+  type CodexDesktopInstallProgress,
   type CodexDesktopInstallResult,
   type CodexDesktopPackageProbe,
 } from './codex-desktop-service'
@@ -110,11 +111,13 @@ import {
   saveProviderConfig,
   applyProviderRouteFollow,
   planProviderRouteFollow,
+  codexOfficialAliasPending,
   fillRelayTemplateDefaults,
   forgetStaleGeminiUsageStatisticsRecord,
   relayTemplateDefaultsPending,
   relayTemplateRevision,
   removeRetiredGeminiIntegrations,
+  restoreCodexOfficialAlias,
   switchProviderToOfficialAccount,
   trustCodexWorkspace,
   trustManagedWorkspace,
@@ -3138,6 +3141,47 @@ export function createCachedProbe<T>(probe: () => Promise<T>, ttlMs: number, now
   }
 }
 
+/**
+ * Codex 桌面端装的时候每一步原来只发给界面，「安装卸载」页的安装日志卡还看得见；那一页
+ * 拆掉以后（界面 v4 第 10 批）要落进运行日志，客服才看得出卡在哪一步、商店那一路换没换
+ * 官网离线包。下载百分比和已等秒数每跳一次就是一条，按去掉数字以后的话去重，同一句只记一次。
+ */
+export function codexDesktopProgressLogKey(progress: CodexDesktopInstallProgress): string {
+  return `${progress.phase}:${progress.message.replace(/\d+(?:\.\d+)*/g, '#')}`
+}
+
+function isCodexDesktopInstallProgress(value: unknown): value is CodexDesktopInstallProgress {
+  return typeof value === 'object' && value !== null
+    && typeof (value as { phase?: unknown }).phase === 'string'
+    && typeof (value as { message?: unknown }).message === 'string'
+}
+
+/**
+ * 包一层发给界面的目标，安装进度照发，同时按 codexDesktopProgressLogKey 去重后交给 log。
+ * 失败那一条不交：ipc 层已经把「Codex 桌面端安装失败：…」记成错误，再记一遍错误数会多算。
+ */
+export function withCodexDesktopProgressLog(
+  target: RendererMessageTarget,
+  log: (progress: CodexDesktopInstallProgress) => void,
+): RendererMessageTarget {
+  let lastKey: string | null = null
+  return {
+    isDestroyed() {
+      return target.isDestroyed()
+    },
+    send(channel, payload) {
+      if (channel === 'desktop:codex-install-progress' && isCodexDesktopInstallProgress(payload) && payload.phase !== 'error') {
+        const key = codexDesktopProgressLogKey(payload)
+        if (key !== lastKey) {
+          lastKey = key
+          log(payload)
+        }
+      }
+      target.send(channel, payload)
+    },
+  }
+}
+
 /** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
 export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
   return { failures: failures.map((failure) => ({ ...failure, reason: redactHomeDirectory(failure.reason, userHome) })) }
@@ -5905,7 +5949,9 @@ export function createSystemService(
   async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
     let result: CodexDesktopInstallResult
     try {
-      result = await installCodexDesktopOperation(target)
+      result = await installCodexDesktopOperation(withCodexDesktopProgressLog(target, (progress) => runtimeLog?.log(
+        'info', 'install', 'codex-desktop.install.progress', progress.message, { phase: progress.phase },
+      )))
     } finally {
       // 桌面端换了一批，自带的 Codex 也跟着换了：读不进型号名单的话开不了新对话。
       await takeBackUnreadableCodexModelCatalog('desktop-installed')
@@ -7385,7 +7431,7 @@ export function createSystemService(
       // 首页「补上」也走这里：Grok 一条没写过的，这次一并补上。
       const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand, addIfMissing: provider === 'grok' })
       const after = managedCliHooksState(provider)
-      if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「备份」里找回')
+      if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「设置 › 备份迁移」里找回')
       if (cliHook && after.missing) throw new Error('做完提醒和防睡还没补上，先点首页的「补上」准备好运行环境再试')
       runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
         provider,
@@ -7655,7 +7701,7 @@ export function createSystemService(
       }
       runtimeLog?.log('warn', 'config', 'route.reverted', '工具配置换完线路又被改了回去，再换一次', { provider })
     }
-    // 迁移前原件：第一次定点改写之前整套备份一次，「备份」页里能找回。备份不成照旧换线路（连不上
+    // 迁移前原件：第一次定点改写之前整套备份一次，「设置 › 备份迁移」里能找回。备份不成照旧换线路（连不上
     // 的线路比少一份备份要紧），下回再补。
     let originalKept = record.originalKept === true
     if (!originalKept && toolRouteAccount) {
@@ -7926,6 +7972,8 @@ export function createSystemService(
    * （fillRelayTemplateDefaults：只补缺的，用户写过的一律不动）。官方账号、手填、来源
    * 没确认、被改动过的都不碰；工具开着或看不出开没开的这次跳过，记进 pending 等渲染层
    * 再来要。失败只记日志，不打扰用户，版本号不前进，下次开机再试。
+   * 官方账号上的 Codex 只补一样：这次以前切官方时删掉的、旧对话记着的那张表
+   * （restoreCodexOfficialAlias），开着不补、先备份，与上面同一套规矩。
    */
   async function fillToolTemplateDefaults(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<ToolTemplateFillResult> {
     const filled: ProviderId[] = []
@@ -7939,7 +7987,19 @@ export function createSystemService(
       const revision = configOwnership.templateRevision(provider, config)
       return revision !== null && revision < relayTemplateRevision
     }
-    const due = round.providers.filter(outdated)
+    function codexSiteBaseUrls(): Record<ProviderId, string> {
+      return providerRelaySite('codex', inspectNativeProviderConfig('codex')).providerBaseUrls
+    }
+    function relayChatsStranded(provider: ProviderId): boolean {
+      if (provider !== 'codex' || !store.read().officialProviders?.includes(provider)) return false
+      try {
+        return codexOfficialAliasPending(providerRoots, codexSiteBaseUrls())
+      } catch {
+        // 配置读不了是别处要报的事，这一项看不了就不补，不连累别的工具补设置。
+        return false
+      }
+    }
+    const due = round.providers.filter((provider) => outdated(provider) || relayChatsStranded(provider))
     if (!due.length) return { filled }
     let report: RunningToolsReport
     try {
@@ -7961,10 +8021,17 @@ export function createSystemService(
       try {
         const wrote = await serializeConfigWrite(async () => {
           // 排队期间账号、配置都可能变了：进锁以后按同一套条件再判一次。
-          if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner || !outdated(provider)) return false
+          if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return false
+          if (relayChatsStranded(provider)) {
+            backup?.(provider)
+            const restored = restoreCodexOfficialAlias(providerRoots, codexSiteBaseUrls()) !== null
+            if (restored) runtimeLog?.log('info', 'config', 'codex.official-alias.restored', '已给官方账号上的 Codex 补回以前对话要用的线路表', round.retry ? { retry: true } : undefined)
+            return restored
+          }
+          if (!outdated(provider)) return false
           const site = providerRelaySite(provider, inspectNativeProviderConfig(provider))
           // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
-          // 真要补才先做一份与保存配置同样的整套备份，「备份」页里能找回补之前的样子；
+          // 真要补才先做一份与保存配置同样的整套备份，「设置 › 备份迁移」里能找回补之前的样子；
           // 备份不成就不补。
           const pending = relayTemplateDefaultsPending(provider, providerRoots, site.providerBaseUrls)
           if (pending) backup?.(provider)

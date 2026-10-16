@@ -1,6 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
-import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
+import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type FeedbackTabValue, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -11,14 +11,22 @@ import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'desktop-config' | 'desktop-project' | 'desktop-message' | 'home' | 'account' | 'install' | 'config' | 'launch' | 'chat' | 'canvas' | 'acceleration' | 'extensions' | 'skills' | 'plugins' | 'backup' | 'health';
 
 /**
+ * 游戏加速、备份、更新并进设置以后（v4 批09），教程直接落到那一行：外壳打开它那一组、
+ * 再翻到那一行，比只落到组上少找一次。行的 id 在 business.ts 的 settingsItems 里是 string，
+ * 这里只收教程真用到的几个，写错照样编译不过；tutorials.test.ts 核对它们都登记过。
+ */
+type TutorialSettingsRow = 'acceleration' | 'backups' | 'version';
+
+/**
  * 按钮落到哪一页、哪个分页。个人中心和设置里分页很多，只跳页会停在默认的
- * 「我的账号」「外观」（或上次看的那页），用户还得自己再找一遍（全面检测 Q48）。
+ * 「我的账号」「外观显示」（或上次看的那页），用户还得自己再找一遍（全面检测 Q48）。
  * section 按页收窄类型：给首页写分页、把设置分组写到个人中心上都编译不过。
  */
 export type TutorialStepTarget =
   | { page: 'account'; section?: (typeof accountTabs)[number]['value'] }
-  | { page: 'settings'; section?: (typeof settingsGroups)[number]['value'] }
-  | { page: Exclude<PageId, 'account' | 'settings'>; section?: never };
+  | { page: 'settings'; section?: (typeof settingsGroups)[number]['value'] | TutorialSettingsRow }
+  | { page: 'feedback'; section?: FeedbackTabValue }
+  | { page: Exclude<PageId, 'account' | 'settings' | 'feedback'>; section?: never };
 
 interface TutorialStepContent {
   title: string;
@@ -35,11 +43,22 @@ interface TutorialStepContent {
 
 export type TutorialStep = TutorialStepContent & TutorialStepTarget;
 
+// 教程页的分类按钮（v4 问8 选「卡片」）。「全部」不是分类，只是不筛；每一篇必须落在后四类之一。
+export const tutorialCategories = [
+  { value: 'all', label: '全部' },
+  { value: 'start', label: '入门' },
+  { value: 'tools', label: '工具' },
+  { value: 'account', label: '账号与费用' },
+  { value: 'trouble', label: '出问题时' },
+] as const;
+export type TutorialCategoryFilter = (typeof tutorialCategories)[number]['value'];
+export type TutorialCategory = Exclude<TutorialCategoryFilter, 'all'>;
+
 export interface TutorialTopic {
   id: string;
   title: string;
   lead: string;
-  category: 'start' | 'everyday' | 'advanced';
+  category: TutorialCategory;
   minutes: number;
   keywords: readonly string[];
   steps: readonly TutorialStep[];
@@ -52,12 +71,12 @@ export interface TutorialTopic {
 export const macKeychainTutorialTitle = 'Mac 更新后弹出钥匙串密码框？';
 export const macKeychainTutorialDetail = 'Mac 上换新版本后第一次打开，系统可能提示「星芒AI管理工具」想使用钥匙串里「xingmang-ai-manager Safe Storage」的信息。这是工具箱在读你本机保存的登录信息：输入这台 Mac 的开机密码，点「始终允许」就好，换新版本后一般只问这一次。点了「拒绝」会像退出了登录，下次打开还会再问。Windows 不会出现这个提示。';
 
-// 更新页「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
+// 「设置 › 版本更新」里「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
 // 缓存、临时目录这类词；删之前先看清楚是什么，别让客户把项目文件清掉。
 export const updateDiskCleanupTitle = '电脑磁盘快满了，更新下不下来？';
-// 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了更新页，收尾那句换成门自己的按钮。
+// 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了「设置 › 版本更新」，收尾那句换成门自己的按钮。
 export const updateDiskCleanupSteps = 'Windows：打开「设置 → 系统 → 存储」，点「临时文件」，勾上「回收站」「临时文件」「Windows 更新清理」后点「删除文件」；再把「下载」「桌面」里用不着的大文件挪到别的盘或 U 盘。Mac：点左上角苹果标志 →「系统设置 → 通用 → 储存空间」，按建议清理，并清空废纸篓。自己的项目文件夹别删。';
-export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。`;
+export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后，「自动下载更新」开着会自己下载，关着就到「设置 › 版本更新」点「下载更新」。`;
 // Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
 export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
 
@@ -94,7 +113,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '装好 Codex 桌面端',
         where: '工具箱首页 → Codex 桌面端',
-        detail: '找准「Codex 桌面端」这一行。已经显示版本号的，不用重复安装。',
+        detail: '找准「Codex 桌面端」这张卡片。已经显示版本号的，不用重复安装。',
         bullets: ['Windows：点「安装」，等进度结束。', 'Mac：也是点「安装」，等进度结束；装好后它在「应用程序」里叫 ChatGPT。'],
         expected: 'Codex 桌面端显示已安装版本。',
         illustration: 'desktop-install',
@@ -103,14 +122,14 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'home',
       },
       {
-        title: '看到「已配好」就继续',
-        where: '工具箱首页 → Codex 桌面端 → 状态',
-        detail: '工具箱通常会自动配好。已经显示「已配好」就看第 4 步；显示「连接账号」时，才需要下面的操作。',
-        bullets: ['点「连接账号」，选择「使用星芒账号」。', '需要准备密钥时选「自动准备（推荐）」；密钥就是工具调用 AI 用的通行证。', '点「保存配置」，你在工具里做的其他设置会原样保留。'],
-        expected: 'Codex 桌面端这一行显示「已配好」。',
+        title: '看到「当前账号」就继续',
+        where: '工具箱首页 → Codex 桌面端卡片 → 左下角',
+        detail: '工具箱通常会自动配好。卡片左下角写着「当前账号」就看第 4 步；写着「待连接」时，才需要下面的操作。',
+        bullets: ['点卡片上的「确认连接」，选择「当前账号」。', '需要准备密钥时选「自动准备（推荐）」；密钥就是工具调用 AI 用的通行证。', '点「保存并检测」，好了再点「完成」；你在工具里做的其他设置会原样保留。'],
+        expected: 'Codex 桌面端卡片左下角显示「当前账号」。',
         illustration: 'desktop-config',
         extra: [{ title: '没配成功怎么办？', detail: '看到账号信息或密钥读取失败时，先点「刷新密钥」，读到后再保存；自动准备会先用默认模型。已有自己的密钥或想换模型，详见「Codex 怎么连接账号、换模型？」。' }],
-        action: '去首页看是否已配好',
+        action: '去首页看是否已连好',
         page: 'home',
       },
       {
@@ -138,13 +157,13 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     steps: [
       {
         title: '确认看的是「Codex 桌面端」',
-        where: '工具箱首页 → 还可以装 / 你的工具',
+        where: '工具箱首页 → 工具',
         detail: '找到名字完整写着「Codex 桌面端」的工具。它和「Codex CLI」是两个程序。',
-        bullets: ['未安装时，在「还可以装」里找。', '已安装时，在「你的工具」里看版本。'],
+        bullets: ['没装的卡片是灰的，左下角写着「未安装」。', '装好的卡片中间那行写着版本号。'],
         expected: '找到 Codex 桌面端自己的安装状态。',
         illustration: 'desktop-install',
-        action: '打开安装卸载',
-        page: 'maintenance',
+        action: '去首页找 Codex 桌面端',
+        page: 'home',
       },
       {
         title: 'Windows：点安装，等它装完',
@@ -152,7 +171,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '安装由工具箱完成，不用先装 Node.js 或 Python。',
         bullets: ['点一次「安装」，等待下载和安装进度结束。', '出现版本号后再看账号连接状态。'],
         expected: 'Codex 桌面端显示版本号。',
-        extra: [{ title: '安装报错，或者电脑上没有微软商店？', detail: '电脑没有微软商店也能装，星芒会改用 OpenAI 官网的离线安装包或国内线路；装不上时按错误框里的按钮走，装好后回来「重新检测」。「更多」→「安装卸载」可查看安装日志。' }],
+        extra: [{ title: '安装报错，或者电脑上没有微软商店？', detail: '电脑没有微软商店也能装，星芒会改用 OpenAI 官网的离线安装包或国内线路；装不上时按错误框里的按钮走，装好后回来「重新检测」。安装日志在「反馈与客服」的运行日志里。' }],
         action: '去首页安装桌面端',
         page: 'home',
       },
@@ -181,17 +200,17 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: 'config',
     title: 'Codex 怎么连接账号、换模型？',
-    lead: '已经「已配好」而且能正常回复，就不用改。需要连接账号或换模型时，再跟着这一章做。',
+    lead: '卡片左下角已经是「当前账号」而且能正常回复，就不用改。需要连接账号或换模型时，再跟着这一章做。',
     category: 'start',
     minutes: 4,
     keywords: ['Codex', '桌面端', '配置', '模型', 'Key', 'API Key', '密钥', '分组', '自动配置', '保存', '重置', 'ChatGPT', '官方账号'],
     steps: [
       {
-        title: '打开配置，选择星芒账号',
-        where: '工具箱首页 → Codex 桌面端 → … → 配置',
-        detail: '配置就是告诉 Codex 使用哪个账号。使用星芒额度时，选「使用星芒账号」。',
-        bullets: ['点「连接账号」，或「…」里的「配置」。', '确认弹窗写的是「Codex 桌面端 配置」。'],
-        expected: '「使用星芒账号」已选中。',
+        title: '打开配置，选择当前账号',
+        where: '工具箱首页 → Codex 桌面端 → … → 配置…',
+        detail: '配置就是告诉 Codex 使用哪个账号。使用星芒额度时，选「当前账号」。',
+        bullets: ['没连上时点卡片上的「确认连接」，连上了点「…」里的「配置…」。', '确认弹窗写的是「Codex 桌面端 配置」。'],
+        expected: '「当前账号」已选中。',
         extra: [{ title: '想用自己的 Key 或 ChatGPT 账号？', detail: '自己的星芒 Key 选「自己填写密钥」，粘贴完整内容；官方账号选「ChatGPT 账号」，保存后到 Codex 完成官方登录。Codex CLI 与桌面端共用配置，修改会影响两者。' }],
         illustration: 'desktop-config',
         action: '去首页打开 Codex 配置',
@@ -199,7 +218,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '确认访问密钥',
-        where: 'Codex 配置窗口 → 访问密钥（Key）',
+        where: 'Codex 配置窗口 → 访问密钥',
         detail: '密钥是调用 AI 的通行证。已有可用密钥可以保留，没有时再选自动准备。',
         bullets: ['保留正在正常使用的「当前密钥」。', '首次配置选「自动准备（推荐）」，保存时会自动准备好密钥。', '提示读取失败时点「刷新密钥」，读到后再保存。'],
         expected: '密钥已选好，没有读取失败提示。',
@@ -211,9 +230,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '需要换模型时，再检测和选择',
         where: 'Codex 配置窗口 → 检测模型 → 默认模型',
         detail: '模型就是回答问题的 AI。第一次自动配置可用默认模型，不必马上更换。',
-        bullets: ['使用当前、已有或手填密钥时，点「检测模型」；选了自动准备就点「保存并检测模型」。', '在「默认模型」里选择想用的一个，通常保持「全部模型」筛选。'],
+        bullets: ['使用当前、已有或手填密钥时，点「检测模型」；选了自动准备就点「保存并检测」。', '在「默认模型」里选择想用的一个。'],
         expected: '默认模型已选中，没有检测失败提示。',
-        extra: [{ title: '自动准备时怎么选模型？', detail: '点「保存并检测模型」：工具箱会先准备好密钥并保存，再列出能用的模型。选好后再点一次「保存配置」。' }, { title: '官方账号或模型兼容问题', detail: 'ChatGPT 账号在 Codex 自己的界面里选模型。星芒模型需要支持 Codex 使用的接口，列表中出现不保证每次调用成功。' }],
+        extra: [{ title: '自动准备时怎么选模型？', detail: '点「保存并检测」：工具箱会先准备好密钥并保存，再列出能用的模型。选好后再点一次「保存配置」。' }, { title: '官方账号或模型兼容问题', detail: 'ChatGPT 账号在 Codex 自己的界面里选模型。星芒模型需要支持 Codex 使用的接口，列表中出现不保证每次调用成功。' }],
         action: '返回首页选择模型',
         page: 'home',
       },
@@ -233,27 +252,27 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'switch-account',
     title: '官方账号和当前账号怎么切换？',
     lead: '以前用过 Claude 或 ChatGPT 官方账号的，一键就能改用当前账号，也能一键切回去。不用自己备份，也不用重新安装。',
-    category: 'start',
+    category: 'account',
     minutes: 2,
     keywords: ['切换', '官方账号', '当前账号', 'ChatGPT', 'Claude 账号', '中转', '切回', '登录', '401', 'Please run /login', '报错', '备份'],
     steps: [
       {
-        title: '看工具行写的是哪个账号',
-        where: '工具箱首页 → 工具行',
-        detail: '工具行右边的小标签说明现在用的是谁的账号。',
-        bullets: ['「官方账号」：用的是你自己的 Claude 或 ChatGPT 订阅。', '「已配好」：用的是左下角这个账号的额度。'],
+        title: '看卡片上写的是哪个账号',
+        where: '工具箱首页 → 工具卡片左下角',
+        detail: '卡片左下角的小标签说明现在用的是谁的账号，点它也能直接切换。',
+        bullets: ['「官方账号」：用的是你自己的 Claude 或 ChatGPT 订阅。', '「当前账号」：用的是工具箱左下角登录的这个账号的额度。'],
         expected: '知道这个工具现在用的是哪个账号。',
         illustration: 'home',
-        action: '回首页看工具行',
+        action: '回首页看工具卡片',
         page: 'home',
       },
       {
-        title: '在「…」里点切换',
-        where: '工具箱首页 → 工具行右侧 … → 改用（你的账号名） / 切回官方账号',
+        title: '点小标签或「…」切换',
+        where: '工具箱首页 → 卡片左下角的小标签，或右下角 … → 改用当前账号 / 切回官方账号',
         detail: '点一下就行，工具箱会替你做完：先备份原来的配置，再把会冲突的旧登录挪到一边，写好新配置，最后自动测一次能不能连上。',
         bullets: ['改用前要先登录左下角的账号。', '测下来连不上时会自动恢复原样，并说一句原因。'],
         expected: '右下角提示「已改用当前账号」或「已切回官方账号」。',
-        extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「备份」页，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }],
+        extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「设置 › 备份迁移」，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }],
         action: '去首页切换',
         page: 'home',
       },
@@ -289,8 +308,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '打开 Codex 窗口',
         where: '工具箱首页 → Codex 桌面端 → 打开',
-        detail: '看到「已配好」后点「打开」，接下来在 Codex 窗口里操作。',
-        bullets: ['点击 Codex 桌面端这一行的「打开」。', '提示已经运行时，点「打开窗口」。'],
+        detail: '卡片左下角写着「当前账号」、「官方账号」或「自己的密钥」时，点「打开」，接下来在 Codex 窗口里操作。',
+        bullets: ['点击 Codex 桌面端卡片上的「打开」。', '提示已经运行时，点「打开窗口」。'],
         expected: '屏幕上出现 Codex 的独立窗口。',
         illustration: 'desktop-home',
         action: '去首页打开 Codex',
@@ -334,13 +353,13 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'account',
     title: '账号、充值与额度',
     lead: '查看自己的账号、充值到账情况和使用费用。',
-    category: 'everyday',
+    category: 'account',
     minutes: 4,
     keywords: ['个人中心', '登录', '注册', 'QQ邮箱', '密码', '余额', '充值', '订阅', '兑换码', '订单', 'Key', '费用'],
     steps: [
       {
         title: '在个人中心确认当前账号',
-        where: '工具箱左下角 → 个人中心 → 我的账号',
+        where: '左下角账号卡 → 账号概览',
         detail: '先确认当前登录的是你自己的账号。',
         bullets: ['点左下角账号，未登录就先登录。', '查看资料与余额，读取失败时点「刷新余额」。'],
         expected: '账号名字正确，余额已读取。',
@@ -350,9 +369,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '分清账号密码、密钥和模型分组',
-        where: '个人中心 → 密钥',
+        where: '个人中心 → 密钥管理',
         detail: '密码用来登录；Key 是调用 AI 的通行证；分组决定能用的模型和收费规则。普通使用通常不用手动复制 Key。',
-        bullets: ['在「密钥」里查看已有 Key。', '工具配置里核对所用 Key 的名称、分组和掩码预览。'],
+        bullets: ['在「密钥管理」里查看已有密钥。', '工具配置里核对所用 Key 的名称、分组和掩码预览。'],
         expected: '知道当前工具用了哪个分组。',
         extra: [{ title: '官方账号也扣星芒余额吗？', detail: '切换到官方账号来源后，登录和额度按官方服务的规则使用。' }],
         action: '查看账号与密钥',
@@ -361,9 +380,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '充值或兑换，并确认到账',
-        where: '个人中心 → 充值与订阅',
+        where: '侧栏「充值」',
         detail: '按页面提供的金额和支付方式充值。手里有充值码的，也可以直接兑换。',
-        bullets: ['选金额和支付方式，点「充值」，核对报价后支付。', '使用充值码时，填入「兑换充值码」，点「兑换」并确认账号。', '付款后等成功提示，核对余额或权益。'],
+        bullets: ['选金额和支付方式，点「充值」，核对报价后支付。', '有充值码的，点「有充值码？」，填好后点「兑换」。', '付款后等成功提示，核对余额或权益。'],
         expected: '显示充值或兑换成功，余额或权益已更新。',
         extra: [{ title: '付了钱但没有到账提示？', detail: '关掉支付窗口后，星芒还会在后台确认一阵子，到账了余额会自己更新。想自己核对就点提示里的「查看我的订单」。关闭支付窗口不会取消订单，不要因为没看到提示就重复付款；可用支付、订阅入口以页面实际显示为准。' }],
         action: '打开个人中心办理充值',
@@ -372,8 +391,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '查看每次调用消耗了多少',
-        where: '个人中心 → 调用明细 / 用量看板',
-        detail: '「调用明细」看每次用了多少，「用量看板」看整体趋势。',
+        where: '个人中心 → 用量账单',
+        detail: '「用量账单」上面看整体趋势，下面的「调用明细」看每次用了多少。',
         bullets: ['按刚才使用的时间找到调用。', '打开详情，核对模型、分组和费用。'],
         expected: '能找到对应请求的用量和计费信息。',
         extra: [{ title: '余额没变，或者想重试？', detail: '可以手动刷新余额；显示更新失败时可能仍是旧金额。聊天、生图和重试都是实际请求，费用以服务端记录为准。' }],
@@ -387,13 +406,13 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'chat',
     title: '直接聊天与生成图片',
     lead: '在工具箱里直接问问题或生成图片，不用另装工具。',
-    category: 'everyday',
+    category: 'start',
     minutes: 3,
     keywords: ['聊天', '问答', '文案', '图片', '生图', '发送', '停止', '分组', '模型', '新对话', '历史'],
     steps: [
       {
         title: '打开聊天，选好分组和模型',
-        where: '左侧聊天 → 新对话 → 输入框上方',
+        where: '左侧聊天 → 新对话 → 输入框底部',
         detail: '先选回答问题的模型。分组决定可用模型与计费规则。',
         bullets: ['点「新对话」，保持「文本对话」。', '选好「分组」和「模型」，列表失败时点刷新。'],
         expected: '分组和模型已选中，输入文字后可以发送。',
@@ -428,7 +447,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '同一件事继续原对话，换主题就开新对话。',
         bullets: ['点左侧已有对话继续。', '回复下方可复制，需重试时选「重新生成」。'],
         expected: '回到原对话能看到已有消息。',
-        extra: [{ title: '重新生成或编辑重发会怎样？', detail: '会提交新的请求，并替换对应消息之后的回复，可能产生新费用；费用在个人中心「调用明细」查看。' }],
+        extra: [{ title: '重新生成或编辑重发会怎样？', detail: '会提交新的请求，并替换对应消息之后的回复，可能产生新费用；费用在个人中心「用量账单」查看。' }],
         action: '打开聊天历史',
         page: 'chat',
       },
@@ -438,7 +457,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'sessions',
     title: '记录',
     lead: '找回这台电脑上的工具对话，继续上次的任务，也可以查看、导出和整理。',
-    category: 'everyday',
+    category: 'start',
     minutes: 3,
     keywords: ['记录', '会话', '历史', '搜索', '接着聊', '续接', '归档', '恢复', '导出', 'Markdown', '保留期', '一年', '本机'],
     steps: [
@@ -455,7 +474,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '继续这个文件夹最近的对话',
         where: '记录 → 对应行 → 接着聊',
         detail: '「接着聊」会在记录的文件夹打开对应工具，接上这个文件夹里最近的一次对话。',
-        bullets: ['核对工作文件夹，点击「接着聊」。', '首页「最近」卡里也可以使用这个按钮。'],
+        bullets: ['核对工作文件夹，点击「接着聊」。', '首页「接着上次」里也有这个按钮。'],
         expected: '对应工具打开，并接上该目录最近的对话。',
         extra: [{ title: '为什么这一条没有「接着聊」？', detail: '命令行工具只能按文件夹找回最近一条。同一工具、同一文件夹里更早的记录、已归档的记录、没记下文件夹的记录，都不显示这个按钮。' }],
         action: '打开记录继续任务',
@@ -487,7 +506,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'canvas',
     title: '画布：从项目到生成结果',
     lead: '节点是一张处理卡片。先跑通一张，再连接成连续的工作步骤。',
-    category: 'everyday',
+    category: 'tools',
     minutes: 5,
     keywords: ['画布', '节点', '工作流', '项目', '生图', '素材', '模板', '生成', '保存'],
     steps: [
@@ -535,54 +554,58 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: 'acceleration',
     title: '游戏加速',
-    lead: '选线路，点开始；用完点停止，剩余时长下次继续。',
-    category: 'everyday',
+    lead: '选线路，点开启；用完点停止，剩余时长下次继续。',
+    category: 'tools',
     minutes: 3,
     keywords: ['加速', '网络', '线路', '智能分配', 'Ping', '延迟', '代理', 'VPN', '免费时长', '托盘', '自动连接', '下载', '到期', '提醒', '通知'],
     steps: [
       {
         title: '登录后查看可用时长',
-        where: '左侧游戏加速 → 剩余免费时长',
+        where: '设置 › 网络加速 → 剩余免费时长',
         detail: `每个账号在本机累计 ${accelerationTrialSeconds / 60} 分钟，连接成功才计时，不每日重置。`,
-        bullets: ['未登录先点「登录领取免费体验」。', '查看剩余时长、页面下方「本次连接」和「累计使用」。'],
+        bullets: ['未登录先点「登录领取免费体验」。', '剩余时长写在「游戏加速」下面那句说明里。'],
         expected: '读到剩余时长与线路状态。',
         illustration: 'acceleration',
-        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「联系客服」，可通过「帮助与客服」咨询。启用「设置」→「通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
+        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「联系客服」，可通过「帮助与客服」咨询。启用「设置」→「消息通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
         action: '打开游戏加速',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
       {
-        title: '连接前选择线路或智能分配',
-        where: '游戏加速 → 换线路',
-        detail: '不确定选哪条就用「智能分配」，连接时自动测速选可用线路。Ping 用来测线路的响应快慢。',
-        bullets: ['展开线路列表，选择「智能分配」或具体线路。', '手选线路可点旁边「Ping」，数字越小通常越快。'],
+        title: '连接前选择线路或「自动选择」',
+        where: '设置 › 网络加速 › 游戏加速 → 线路',
+        detail: '不确定选哪条就用「自动选择」，连接时自动测速选可用线路。',
+        bullets: ['点「线路」右边的按钮，选择「自动选择」或具体线路。', '每条线路右边写着延迟，数字越小通常越快；点菜单最下面的「重新测速」再测一遍。'],
         expected: '当前线路显示你的选择。',
         action: '去选择加速线路',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
       {
-        title: '开始加速，等状态确认',
-        where: '游戏加速 → 开始加速',
-        detail: '点「开始加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
-        bullets: ['点「开始加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
+        title: '开启加速，等状态确认',
+        where: '设置 › 网络加速 › 游戏加速 → 开启加速',
+        detail: '点「开启加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
+        bullets: ['点「开启加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
         expected: '显示实际线路，剩余时长开始计时。',
         extra: [
           { title: '提示其他代理或 VPN 冲突？', detail: '先关闭其他代理或 VPN 后重试；也可以按页面选择「仍然连接」。系统代理能否影响某个应用，取决于那个应用是否采用系统代理。' },
-          { title: '为什么有时会自动连接？', detail: '安装、更新命令行工具，装 Node.js、Git、Python，或下载 Codex 插件目录时，工具箱会在后台准备下载专用临时线路：不改电脑网络设置，不计入免费时长，下载后关闭，加速页不显示已连接。打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，加速页和托盘也不显示。桌面端用星芒 Key 的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。' },
+          { title: '为什么有时会自动连接？', detail: '安装、更新命令行工具，装 Node.js、Git、Python，或下载 Codex 插件目录时，工具箱会在后台准备下载专用临时线路：不改电脑网络设置，不计入免费时长，下载后关闭，游戏加速卡上不显示已连接。打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，游戏加速卡和托盘也不显示。桌面端用星芒 Key 的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。' },
           { title: '「加速服务暂不可用」或连不上？', detail: '先按具体提示处理：完全退出工具箱（含托盘）后重开、检查磁盘空间，或请管理员处理系统限制。「查看日志」会进入反馈页运行日志，「重新检查」会重新读取状态；线路准备中可点「刷新线路状态」。' },
         ],
         action: '打开游戏加速连接',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
       {
         title: '用完明确点击停止加速',
-        where: '游戏加速 → 停止加速',
+        where: '设置 › 网络加速 › 游戏加速 → 停止加速',
         detail: '不用时明确点停止，缩到托盘或切换页面不等于停止。',
         bullets: ['点「停止加速」，等连接结束。', '要换线路，也先停止。'],
-        expected: '显示未计时，剩余时长保留。',
+        expected: '标题变回「游戏加速」，剩余时长保留。',
         extra: [{ title: '窗口缩到托盘后怎么操作？', detail: '右键工具箱托盘图标，查看加速状态和剩余时长，使用「连接加速 / 断开加速」。不可操作时按钮变灰，状态行说明原因。' }],
         action: '查看并停止加速',
-        page: 'acceleration',
+        page: 'settings',
+        section: 'acceleration',
       },
     ],
   },
@@ -590,7 +613,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: cliTutorialTopic,
     title: '进阶：安装与使用命令行工具',
     lead: '命令行工具是在终端窗口里和 AI 一起处理项目的方式。只用 Codex 桌面端可以跳过这一章。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 5,
     keywords: ['CLI', '命令行', '终端', 'Claude Code', 'Codex CLI', 'Grok', 'Node.js', 'npm', 'Python', 'Git', '安装', '首次命令', '接着聊'],
     steps: [
@@ -609,19 +632,19 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '安装命令行工具并确认账号连接',
         where: '工具箱首页 → 要用的工具 → 安装',
         detail: '选一个要用的工具，装好后确认账号连接。',
-        bullets: ['点「安装」，等进度和账号同步结束。', '仍未配好时点「连接账号」，选来源、密钥和模型后保存。'],
-        expected: '工具行出现版本和「已配好」。',
+        bullets: ['点「安装」，等进度和账号同步结束。', '卡片上还写着「待连接」时点「确认连接」，选来源、密钥和模型后保存。'],
+        expected: '卡片上出现版本号，左下角写着「当前账号」。',
         extra: [{ title: '已有安装或正在使用 Codex 桌面端？', detail: '已有工具先检测；官方安装器或其他来源管理的工具按原方式更新。Codex CLI 与桌面端共用配置，修改会影响两者；点「保存配置」只改账号、密钥和模型。' }],
         action: '查看安装状态',
-        page: 'maintenance',
+        page: 'home',
       },
       {
         title: '点击打开，选择这次的工作文件夹',
         where: '工具箱首页 → 工具的「打开」 → 选择文件夹',
         detail: '文件夹决定 AI 在哪里处理项目。第一次先用练习目录。',
-        bullets: ['点「打开」，第一次会让你选项目文件夹；以后按钮上直接写着上次的文件夹名，点了就开。', '已有最近目录时可用旁边下拉「换一个目录」。', '等终端里工具启动好，再输入中文任务。'],
+        bullets: ['点「打开」：用过的工具会回到上次的文件夹（鼠标停在按钮上能看到是哪个）；从没选过文件夹时，会替你新建一个项目文件夹并在里面打开。', '想换文件夹，在卡片的「…」里选最近用过的，或点「选择其他文件夹…」。', '等终端里工具启动好，再输入中文任务。'],
         expected: '工具已在正确的文件夹里启动，不用再敲一次启动命令。',
-        extra: [{ title: '不知道选哪个文件夹？', detail: '点新建就好：在这一行的「…」里选「新建项目文件夹并打开」，已有最近目录时在旁边下拉里选同一项。软件会建好一个空的项目文件夹并直接打开，不用选位置、不用起名。' }],
+        extra: [{ title: '不知道选哪个文件夹？', detail: '点新建就好：在这张卡片的「…」里选「新建项目文件夹并打开」（从没选过文件夹时，直接点「打开」就是这样）。软件会建好一个空的项目文件夹并直接打开，不用选位置、不用起名。' }],
         illustration: 'launch',
         action: '回首页打开工具',
         page: 'home',
@@ -630,7 +653,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '发出第一个任务，再从记录继续',
         where: '工具的终端窗口 → 输入任务；工具箱 → 记录',
         detail: '在启动好的工具里输入任务，收到回复后再继续。',
-        bullets: ['发送下面的例句。', '下次从「记录」或首页「最近」找项目，支持时可点「接着聊」。'],
+        bullets: ['发送下面的例句。', '下次从「记录」或首页「接着上次」找项目，支持时可点「接着聊」。'],
         example: firstRunHints.claude.prompt,
         expected: '收到项目相关的回复。',
         extra: [{ title: '自己打开终端怎么启动？', detail: '新开一个终端，粘贴首页「试试第一条命令」里的启动命令即可。只有支持续接的最近会话显示「接着聊」。' }],
@@ -643,7 +666,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'mcp',
     title: '外接工具',
     lead: '外接工具（MCP）让 AI 使用浏览器等服务。先选工具，再添加连接。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['MCP', '浏览器', '外接工具', '连接', '本地程序', '网络服务', '授权', 'JSON'],
     steps: [
@@ -660,19 +683,19 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '添加一条连接',
-        where: '外接工具 → 星芒精选 / 添加连接',
+        where: '外接工具 → 星芒精选 / 自定义连接',
         detail: '第一次优先从「星芒精选」安装；有连接说明时再手动添加。',
-        bullets: ['精选卡点「安装」，看清权限后确认。', '手动添加点「添加连接」，按提供方说明填名称、地址或本地程序。'],
+        bullets: ['精选卡点「添加」，看清权限后确认。', '手动添加点「自定义连接」，按提供方说明填名称、地址或启动命令。'],
         expected: '连接列表新增一行。',
-        extra: [{ title: '参数和环境变量怎么填？', detail: '参数用 JSON 字符串数组，例如 ["--help"]；环境变量用文字对象，例如 {"MODE":"read-only"}。这里只是格式示例，实际值按服务说明填写；本地程序必须先装好。' }],
+        extra: [{ title: '附加参数和附加设置怎么填？', detail: '在「更多设置」里。附加参数用 JSON 字符串数组，例如 ["--help"]；附加设置用文字对象，例如 {"MODE":"read-only"}。这里只是格式示例，实际值按服务说明填写；本地程序必须先装好。' }],
         action: '去添加连接',
         page: 'mcp',
       },
       {
         title: '确认真的接上了',
-        where: '外接工具 → 连接行 → 更多操作',
+        where: '外接工具 → 连接行',
         detail: '需要登录的连接，先授权再使用。',
-        bullets: ['显示「尚未登录」时点「更多操作」→「登录授权」。', '到对应 AI 工具里试一个必须使用该连接的任务。'],
+        bullets: ['显示「需要登录授权」时点行上的「登录授权」。', '到对应 AI 工具里试一个必须使用该连接的任务。'],
         example: '请用我刚添加的浏览器工具打开指定页面，并告诉我页面标题。',
         expected: '授权正常，AI 能使用这条连接。',
         action: '查看连接状态',
@@ -682,10 +705,10 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '加不上怎么办',
         where: '外接工具 → 错误提示',
         detail: '先按页面指出的字段修正，不用重新安装所有工具。',
-        bullets: ['地址空就补地址；格式错误就核对 JSON。', '「当前工具未提供管理能力」时，到「安装卸载」核对安装。'],
+        bullets: ['地址空就补地址；格式错误就核对 JSON。', '「当前工具未提供管理能力」时，到首页工具卡片上核对安装。'],
         expected: '修正后可以保存或完成授权。',
-        action: '打开安装卸载',
-        page: 'maintenance',
+        action: '去首页核对安装',
+        page: 'home',
       },
     ],
   },
@@ -693,7 +716,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'skills',
     title: '技能',
     lead: '技能是一份做事说明，让 AI 按固定方法完成某类任务。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['技能', 'Skill', '导入', '全局', '当前项目', '启用', '来源', '文件夹'],
     steps: [
@@ -701,7 +724,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '先看技能是什么',
         where: '左侧技能 → 顶部工具选择',
         detail: '先选技能要给哪个 AI 工具使用。',
-        bullets: ['顶部选择工具，查看已有技能。', '带「系统内置」的只能查看，其余可按工具能力管理。'],
+        bullets: ['顶部选择工具，查看已有技能。', '写着「系统自带」的只能查看，其余可按工具能力管理。'],
         expected: '列表对应选中的工具。',
         illustration: 'skills',
         action: '打开技能',
@@ -709,9 +732,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '添加自己的技能',
-        where: '技能 → 导入技能',
+        where: '技能 → 从文件夹导入',
         detail: 'Codex CLI 填本机技能文件夹。',
-        bullets: ['点「导入技能」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
+        bullets: ['点「从文件夹导入」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
         expected: '列表出现新技能及添加范围。',
         extra: [{ title: skillImportTutorialExtra, detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页点「重新加载」；选择当前项目时先核对工作文件夹。' }],
         action: '去导入技能',
@@ -721,7 +744,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '确认生效',
         where: '技能 → 新技能状态',
         detail: '看到技能后，再用一个相关任务验证。',
-        bullets: ['确认显示「已启用」。', '到对应工具里交代一个技能负责的任务。'],
+        bullets: ['确认没有写着「已停用」。', '到对应工具里交代一个技能负责的任务。'],
         expected: 'AI 按技能的方法处理任务。',
         extra: [{ title: '为什么没触发？', detail: '技能只在相关任务中触发，不是所有问题都会使用。' }],
         action: '查看技能状态',
@@ -742,7 +765,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'plugins',
     title: '插件',
     lead: '插件是一整包扩展能力，可能包含命令、技能和服务连接。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['插件', 'plugin', '市场', '官方市场', '安装', '来源', '仓库', '更新'],
     steps: [
@@ -750,7 +773,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '先分清它和外接工具',
         where: '左侧插件 → 顶部工具选择',
         detail: '外接工具连接单个服务，插件可带来一整套能力。',
-        bullets: ['顶部选你要用的 AI 工具。', '查看「已安装」，安装新插件前先读用途和来源。'],
+        bullets: ['顶部选你要用的 AI 工具。', '先看「已装到」下面的列表，安装新插件前先读用途和来源。'],
         expected: '插件列表对应正确的工具。',
         illustration: 'plugins',
         action: '打开插件',
@@ -758,19 +781,19 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '添加插件',
-        where: '插件 → 添加插件 / 市场',
+        where: '插件 → 添加插件 / 官方目录',
         detail: 'Claude Code 的市场首次点「添加官方市场」；Codex CLI 的市场点「添加市场」。',
         bullets: ['有现成来源时点「添加插件」，填名称或仓库地址。', '选择添加范围，再确认安装。'],
-        expected: '「已安装」里出现对应插件。',
+        expected: '「已装到」下面出现对应插件。',
         extra: [{ title: '市场入口和来源有什么要求？', detail: 'Claude Code 添加官方市场后从清单安装；Codex CLI 填市场地址，市场行可更新或移除。Grok CLI 只有已安装列表；来源用作者提供的名称或地址，不填普通网页。' }],
         action: '去添加插件',
         page: 'plugins',
       },
       {
         title: '确认装上了',
-        where: '插件 → 已安装 → 更多操作',
+        where: '插件 → 已装列表 → 更多操作',
         detail: '先核对安装状态，再到 AI 工具里试用。',
-        bullets: ['确认插件行显示「已启用」。', '从「更多操作」→「查看详情」核对来源与版本。'],
+        bullets: ['确认插件行没有写着「已停用」。', '从「更多操作」→「查看详情」核对来源与版本。'],
         expected: '名称和状态正确，工具内能使用插件。',
         extra: [{ title: '哪些插件能在这里更新、开关？', detail: 'Claude Code、Grok CLI 支持开关和更新；Codex CLI 支持添加和移除。' }],
         action: '查看已安装插件',
@@ -782,7 +805,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '工具运行中安装的插件，可能需要重新打开工具才生效。',
         bullets: ['先保存当前工作，再重新打开工具。', '仍失败时，记录插件名称、工具版本和报错。'],
         expected: '重开后能使用插件，或已取得明确错误。',
-        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '看到「没有插件市场」，表示这个工具没有市场，装好的插件仍在「已安装」里。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
+        extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '看到「没有插件市场」，表示这个工具没有市场，装好的插件仍在上面的列表里。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
         action: '打开插件检查状态',
         page: 'plugins',
       },
@@ -792,44 +815,46 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: updatesTutorialTopic,
     title: '备份、更新与数据',
     lead: '改配置前留备份，更新前保存工作，项目文件另外保管。',
-    category: 'advanced',
+    category: 'trouble',
     minutes: 3,
     keywords: ['备份', '恢复', '更新', '自动更新', '退回', '授权', '重置', '数据', '隐私', '卸载', '版本', 'Mac', '钥匙串', '开机密码', '始终允许', 'C 盘', '磁盘满', '空间不够', '清理'],
     steps: [
       {
         title: '先备份工具配置',
-        where: '侧栏更多 → 备份',
+        where: '设置 → 备份迁移',
         detail: '配置备份保存工具设置，不包含整个项目或所有聊天记录。',
-        bullets: ['选工具，点「创建备份」或「创建第一份备份」。', '恢复时核对工具、时间和文件范围，再确认。'],
+        bullets: ['点「立即备份」，选工具。', '恢复时核对工具、时间和文件范围，再确认。'],
         expected: '列表出现对应工具的新备份。',
         illustration: 'backup',
-        action: '打开备份',
-        page: 'backups',
+        action: '打开备份迁移',
+        page: 'settings',
+        section: 'backups',
       },
       {
         title: '工具箱自己更新，AI 工具在首页更新',
-        where: '更多 → 更新；首页 → 工具行更新',
-        detail: '工具箱的新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的；首页工具行的「更新」管那个 AI 工具。',
-        bullets: ['自动装之前右下角会先弹一条通知；Windows 会弹一次授权窗口，点「是」就好。', '想马上装：进「更多」→「更新」，点「下载更新」，下好后先保存工具里没做完的东西，再点「重启安装」。'],
-        expected: '重新打开后，更新页显示「已是最新版本」。',
+        where: '设置 → 版本更新；首页 → 工具卡片上的「可更新到 v…」',
+        detail: '工具箱的新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的；首页工具卡片上的「可更新到 v…」管那个 AI 工具。',
+        bullets: ['自动装之前右下角会先弹一条通知；Windows 会弹一次授权窗口，点「是」就好。', '想马上装：进「设置」→「版本更新」，点「下载更新」，下好后先保存工具里没做完的东西，再点「重启并安装」。'],
+        expected: '重新打开后，「设置 › 版本更新」显示「已是最新版本」。',
         extra: [
-          { title: '不想让它自动装？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
+          { title: '不想让它自动装？', detail: '在「设置」→「版本更新」里关掉「自动下载更新」，之后有新版本会先提醒你，由你点安装。看不到这个开关，说明这台电脑只能手动更新。' },
           { title: '自动装没装上？', detail: '比如授权窗口点了「否」：下次打开会告诉你上次没装上、为什么，点「重新安装」再装一次就行，不会每次打开都自己弹授权窗口。' },
-          { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
+          { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具卡片的「…」里有「退回更新前的 v…」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
           { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、被安全软件拦了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
           { title: updateDiskCleanupTitle, detail: updateDiskCleanupDetail },
           { title: macKeychainTutorialTitle, detail: macKeychainTutorialDetail },
         ],
-        action: '打开工具箱更新',
-        page: 'updates',
+        action: '打开版本更新',
+        page: 'settings',
+        section: 'version',
       },
       {
         title: '知道哪些数据需要另外保存',
-        where: '设置 → 隐私与数据；自己的项目文件夹',
+        where: '设置 → 隐私数据；自己的项目文件夹',
         detail: '换电脑或清理文件前，单独保留项目和重要资料。',
         bullets: ['找到自己的项目目录和画布项目目录。', '分别确认配置、对话和登录信息如何保留。'],
         expected: '知道哪些文件要另外备份。',
-        action: '查看隐私与数据设置',
+        action: '查看隐私数据设置',
         page: 'settings',
         section: 'privacy',
       },
@@ -839,7 +864,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: macRuntimeTutorialTopic,
     title: 'Mac 上准备 Node.js 和 Python',
     lead: '只用 Codex 桌面端可以跳过。Node.js 在首页点一下，星芒替你放好；Python 和想自己装 Node.js 的，看后面两种装法。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['Mac', 'macOS', '苹果', 'CLI', '命令行', 'Node.js', 'npm', 'Python', 'Homebrew', 'brew', 'pkg', '环境'],
     steps: [
@@ -899,7 +924,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: macDesktopTutorialTopic,
     title: 'Mac 上装桌面端',
     lead: 'Codex 桌面端、Claude Desktop 和 OpenCode 在首页点「安装」就能装好；WorkBuddy 还要你从官网下载。装好后回工具箱检测、配置。不用把四个都装一遍。',
-    category: 'advanced',
+    category: 'tools',
     minutes: 4,
     keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', '一键安装', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
     steps: [
@@ -946,10 +971,10 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'home',
       },
       {
-        title: '重新检测，确认已配好',
-        where: '工具箱首页 → 重新检测 → 对应桌面端 → 配置',
-        detail: '先确认显示版本号。当前账号已配好且能用的，直接打开即可。',
-        bullets: ['点「重新检测」，核对对应桌面端的版本和配置状态。', '未配好时点「配置」，选择密钥来源，再点「检测模型」并选择模型、保存。', '打开应用，发一个简单问题确认能回复。'],
+        title: '重新检测，确认已连好',
+        where: '工具箱首页 → 重新检测 → 对应桌面端卡片',
+        detail: '先确认显示版本号。卡片左下角写着「当前账号」的，直接打开即可。',
+        bullets: ['点「重新检测」，核对对应桌面端的版本和配置状态。', '写着「待连接」时点「确认连接」，选择密钥来源，再点「检测模型」并选择模型、保存。', '打开应用，发一个简单问题确认能回复。'],
         expected: '桌面端使用当前账号配置，并能正常回复。',
         extra: [
           { title: 'Claude Desktop 保存后没生效？', detail: '先保存当前工作，把 Claude Desktop 完全退出，再重新打开，让它读取新配置。' },
@@ -965,13 +990,13 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'messages',
     title: '看到这句提示怎么办',
     lead: '找到界面上的原话，展开对应说明，再按提示处理。',
-    category: 'advanced',
+    category: 'trouble',
     minutes: 4,
     keywords: ['报错', '提示', '安装失败', '更新失败', '登录过期', '密钥失效', '余额', '证书', '网络', '配置被改过', '检测失败', '文件夹', '日志'],
     steps: [
       {
         title: '装不上、更新不了',
-        where: '失败提示 → 查看日志；更多 → 安装卸载',
+        where: '失败提示 → 查看日志；反馈与客服 → 运行日志',
         detail: '先记录失败提示，再展开下面同名的说明。',
         bullets: ['确认失败的是工具箱更新，还是某个 AI 工具的安装。', '按对应原因处理后再重试，不要连续重复点击安装。'],
         expected: '安装继续进行，或日志里有明确的失败原因。',
@@ -983,7 +1008,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
           { title: errors.downloadTimeout.title, detail: '已经安装的工具不受这次下载失败影响。检查网络，或点「换官方源重试」。' },
         ],
         action: '查看安装与更新结果',
-        page: 'maintenance',
+        page: 'feedback',
+        section: 'log',
       },
       {
         title: '连不上、登录不了',
@@ -1025,12 +1051,12 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['找到下面与首页一致的提示。', '自己有意改过配置时，先核对内容，再决定是否重新写入。'],
         expected: '工具使用正确的配置，文件任务在选定的项目内进行。',
         extra: [
-          { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就重新写入 Key；如果这是你有意做的修改，在「…」中选择「就用现在这份」。' },
-          { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。登录或打开软件时一般会自动改好；没改好的，点工具行上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「备份」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
-          { title: statuses.tool.cliHooksStale[0], detail: '软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡着）还指着以前的位置，常见于卸载后换了文件夹重装、挪过软件或重新装过 Node.js。工具照样能用，只是每次都多报一行错。软件打开时会自己改好：先备份原来的设置（在「备份」里能找回），再只改这几行。自己没改好，或者这份设置不是软件替当前账号写的，工具行上会出现「修好它」，点一下就改。' },
-          { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点工具行上的「改用（你的账号名）」就能用，改之前会先备份原来的设置（在「备份」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
-          { title: statuses.tool.otherAccountKey[0], detail: '工具能用，但认不出这把 Key 是当前账号的，用量可能算到别的账号上（常见于在同一台电脑上换了账号登录）。点「改用（你的账号名）」换成你自己的，改之前会先备份。' },
-          { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点「改用（你的账号名）」会先备份原来的设置（在「备份」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
+          { title: statuses.tool.configChanged[0], detail: '其他程序或手工操作改过配置，当前账号的 Key 可能已不在里面。要用星芒配置就点卡片上的「重新写入」；如果这是你有意做的修改，在「…」中选择「就用现在这份配置」。' },
+          { title: statuses.tool.codexShadowed[0], detail: '以前的 Codex 设置里有一处 Codex 自己认不出，看着连好了，打开却会报 Key 无效。登录或打开软件时一般会自动改好；没改好的，点卡片上的「修好它」，或者直接点「打开」，软件会先备份原来的设置（在「设置 › 备份迁移」里能找回），再改好。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.cliHooksStale[0], detail: '软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡着）还指着以前的位置，常见于卸载后换了文件夹重装、挪过软件或重新装过 Node.js。工具照样能用，只是每次都多报一行错。软件打开时会自己改好：先备份原来的设置（在「设置 › 备份迁移」里能找回），再只改这几行。自己没改好，或者这份设置不是软件替当前账号写的，卡片上会出现「修好它」，点一下就改。' },
+          { title: statuses.tool.otherSiteKey[0], detail: '这个工具里的 Key 不是当前账号的，在这里打不开。点卡片上的「改用当前账号」就能用，改之前会先备份原来的设置（在「设置 › 备份迁移」里能找回）。Codex CLI 和 Codex 桌面端共用一份设置，会一起改。' },
+          { title: statuses.tool.otherAccountKey[0], detail: '工具能用，但认不出这把 Key 是当前账号的，用量可能算到别的账号上（常见于在同一台电脑上换了账号登录）。点卡片上的「改用当前账号」换成你自己的，改之前会先备份。' },
+          { title: statuses.tool.ccSwitch[0], detail: '以前用 CC Switch 配过这个工具，它现在还连着 CC Switch 里选的那一家。点卡片上的「改用当前账号」会先备份原来的设置（在「设置 › 备份迁移」里能找回），再换成当前账号；想继续用 CC Switch 的，在「…」中选择「就用现在这份配置」。不再用 CC Switch 的话请把它退出，免得它又把设置改回去。' },
           { title: statuses.tool.detectionFailed[0], detail: '检测失败不等于没安装。先查看具体原因，处理后重新检测。' },
           { title: '这个文件夹范围太大', detail: '用户主目录、磁盘根目录、桌面、下载、文档等范围太大，改选具体项目文件夹，或者直接点提示里的「新建一个项目文件夹」。若仍选择这次打开，不会把该目录标为信任，也不会自动生成项目说明。' },
         ],
@@ -1039,9 +1065,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '还是不知道怎么办',
-        where: '检查 → 去处理；更多 → 反馈',
+        where: '检查 → 去处理；反馈与客服',
         detail: '先让检查页定位问题，再把失败位置和报告提供给客服。',
-        bullets: ['在检查页按「去处理」完成建议操作。', '环境问题查看反馈页的运行日志，安装失败查看安装卸载页的安装日志。', '预览反馈报告，核对后复制或下载，连同操作步骤和截图交给客服。'],
+        bullets: ['在检查页按「去处理」完成建议操作。', '环境问题和安装失败都看「反馈与客服」的运行日志。', '预览反馈报告，核对后复制或下载，连同操作步骤和截图交给客服。'],
         expected: '客服拿到具体错误和排查结果，能够继续定位。',
         extra: [{ title: '反馈报告里有什么？', detail: '报告会带上次连接自检结果并自动脱敏。发送前仍要预览，确认截图和补充文字不含完整 Key、密码或无关项目资料。' }],
         action: '预览反馈报告',
@@ -1053,9 +1079,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     id: 'trouble',
     title: '出问题怎么办',
     lead: '找到和你一样的情况，按对应步骤处理。不要一出错就重装所有工具。',
-    category: 'advanced',
+    category: 'trouble',
     minutes: 4,
-    keywords: ['Codex', '桌面端', '安装', '未识别', '没检测到', '已配好', '英文', '中文', '报错', '失败', '打不开', '不回复', '检查', '诊断', '网络', '密钥', '余额', '额度', '反馈', '客服'],
+    keywords: ['Codex', '桌面端', '安装', '未识别', '没检测到', '当前账号', '待连接', '英文', '中文', '报错', '失败', '打不开', '不回复', '检查', '诊断', '网络', '密钥', '余额', '额度', '反馈', '客服'],
     steps: [
       {
         title: '装了却没识别：先确认应用和系统账号',
@@ -1063,17 +1089,17 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '先确认电脑能打开 Codex 桌面端，再重新检测。装了 Codex CLI 不代表装了桌面端。',
         bullets: ['Windows 用安装 Codex 的同一个系统用户。', 'Mac 确认「应用程序」里的 ChatGPT 能打开。', '点「重新检测」，记下仍然出现的错误。'],
         expected: '读到桌面端状态，或取得具体检测错误。',
-        extra: [{ title: '检测失败或安装失败在哪里看？', detail: '检测失败不等于未安装。安装日志在「更多」→「安装卸载」；记录系统、Codex 版本和错误，不必重装 Node.js 或 Python。' }],
+        extra: [{ title: '检测失败或安装失败在哪里看？', detail: '检测失败不等于未安装。安装日志在「反馈与客服」的运行日志里；记录系统、Codex 版本和错误，不必重装 Node.js 或 Python。' }],
         action: '回首页重新检测 Codex',
         page: 'home',
       },
       {
-        title: '已配好却打不开：查看启动结果',
+        title: '连好了却打不开：查看启动结果',
         where: '工具箱首页 → Codex 桌面端 → 打开',
-        detail: '「已配好」说明设置保存了，还要点「打开」启动 Codex。',
+        detail: '卡片左下角写着「当前账号」、「官方账号」或「自己的密钥」，说明设置保存了，还要点「打开」启动 Codex。',
         bullets: ['提示已运行时选「打开窗口」。', '刚改过配置时先保存任务，再选「重启 Codex」（Mac 上先按 Command + Q 退出 Codex，再点「打开」）。', '其他错误记下原文，不要连续重复点击。'],
         expected: '看到 Codex 窗口，或取得明确启动错误。',
-        extra: [{ title: '能打开，但还是英文？', detail: '中文界面只在从星芒打开 Codex 时生效。直接点 Codex 自己的图标（Mac 上叫 ChatGPT）打开会是英文：关掉它，从星芒首页点「打开」，或点右下角（Mac 在屏幕顶部）的星芒图标 →「已安装的工具」→「Codex 桌面端」。从星芒打开还是英文，再到桌面端「配置」→「界面语言与文件夹权限」点「检查中文界面」，按结果决定是否「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
+        extra: [{ title: '能打开，但还是英文？', detail: '中文界面只在从星芒打开 Codex 时生效。直接点 Codex 自己的图标（Mac 上叫 ChatGPT）打开会是英文：关掉它，从星芒首页点「打开」，或点右下角（Mac 在屏幕顶部）的星芒图标 →「已安装的工具」→「Codex 桌面端」。从星芒打开还是英文，再到桌面端「配置」→「界面语言与文件夹权限」点「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
         action: '回首页检查 Codex 打开结果',
         page: 'home',
       },
@@ -1090,7 +1116,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '预览报告后联系支持',
-        where: '更多 → 反馈 → 预览反馈报告',
+        where: '反馈与客服 → 预览反馈报告',
         detail: '把「点了哪里、出现什么」和报告一起提供给客服。',
         bullets: ['预览报告，核对后复制或下载。', '通过右上角「帮助与客服」发送报告、报错截图和操作步骤。'],
         expected: '客服能看清问题发生的位置和错误信息。',
@@ -1105,7 +1131,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
 /*
  * Linux 版教程（Linux 版拆分 ⑩）。Linux 上没有 Codex 桌面端和游戏加速，Mac 专属的两章
  * 也用不上；第一章换成 Codex CLI（和新手引导在 Linux 上的推荐项同一个），更新那一步换成
- * 「交给系统安装窗口」的说法，和更新页、退出确认、必须更新提示同一口径（#760）。
+ * 「交给系统安装窗口」的说法，和「设置 › 版本更新」、退出确认、必须更新提示同一口径（#760）。
  * 其余章节原样沿用，只删掉几句讲 Codex 桌面端的话。Windows 和 Mac 拿到的还是上面那份。
  */
 const linuxHiddenTutorialTopics: ReadonlySet<string> = new Set(['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic]);
@@ -1122,7 +1148,7 @@ const linuxStartTutorial: TutorialTopic = {
     {
       title: '装好 Codex CLI',
       where: '工具箱首页 → Codex CLI',
-      detail: '找准「Codex CLI」这一行。已经显示版本号的，不用重复安装。',
+      detail: '找准「Codex CLI」这张卡片。已经显示版本号的，不用重复安装。',
       bullets: ['点「安装」，等进度和账号同步结束。', '缺 Node.js 时星芒会先自动准备好，不用输开机密码，也不用自己去下载。'],
       expected: 'Codex CLI 显示已安装版本。',
       illustration: 'install',
@@ -1130,20 +1156,20 @@ const linuxStartTutorial: TutorialTopic = {
       page: 'home',
     },
     {
-      title: '看到「已配好」就继续',
-      where: '工具箱首页 → Codex CLI → 状态',
-      detail: '工具箱通常会自动配好。已经显示「已配好」就看第 4 步；显示「连接账号」时，才需要下面的操作。',
-      bullets: ['点「连接账号」，选择「使用星芒账号」。', '需要准备密钥时选「自动准备（推荐）」；密钥就是工具调用 AI 用的通行证。', '点「保存配置」，你在工具里做的其他设置会原样保留。'],
-      expected: 'Codex CLI 这一行显示「已配好」。',
+      title: '看到「当前账号」就继续',
+      where: '工具箱首页 → Codex CLI 卡片 → 左下角',
+      detail: '工具箱通常会自动配好。卡片左下角写着「当前账号」就看第 4 步；写着「待连接」时，才需要下面的操作。',
+      bullets: ['点卡片上的「确认连接」，选择「当前账号」。', '需要准备密钥时选「自动准备（推荐）」；密钥就是工具调用 AI 用的通行证。', '点「保存并检测」，好了再点「完成」；你在工具里做的其他设置会原样保留。'],
+      expected: 'Codex CLI 卡片左下角显示「当前账号」。',
       illustration: 'config',
-      action: '去首页看是否已配好',
+      action: '去首页看是否已连好',
       page: 'home',
     },
     {
       title: '打开 Codex，发出第一条消息',
       where: '工具箱首页 → Codex CLI「打开」→ 终端窗口',
-      detail: '点「打开」，第一次会让你选这次要处理的文件夹，选好后会弹出终端窗口，Codex 在里面启动。先问一个简单问题。',
-      bullets: ['不知道选哪个文件夹，就在这一行的「…」里选「新建项目文件夹并打开」。', '等终端里的 Codex 启动好，输入下面这句话并回车，等它回复。'],
+      detail: '点「打开」，第一次会替你新建一个项目文件夹，接着弹出终端窗口，Codex 在里面启动。先问一个简单问题。',
+      bullets: ['想自己挑文件夹，在卡片的「…」里点「选择其他文件夹…」。', '等终端里的 Codex 启动好，输入下面这句话并回车，等它回复。'],
       example: '你好，请用中文告诉我你能帮我做什么。',
       expected: 'Codex 回了一段完整文字，你就可以开始用了。',
       illustration: 'launch',
@@ -1168,26 +1194,27 @@ const linuxRuntimeTutorialStep: TutorialStep = {
 
 const linuxSelfUpdateTutorialStep: TutorialStep = {
   title: '工具箱自己更新，AI 工具在首页更新',
-  where: '更多 → 更新；首页 → 工具行更新',
-  detail: '工具箱的新版本会在后台下好，下好后提醒你点「安装新版本」；首页工具行的「更新」管那个 AI 工具。',
+  where: '设置 → 版本更新；首页 → 工具卡片上的「可更新到 v…」',
+  detail: '工具箱的新版本会在后台下好，下好后提醒你点「安装新版本」；首页工具卡片上的「可更新到 v…」管那个 AI 工具。',
   bullets: ['点「安装新版本」，星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。', '装好后从应用菜单重新打开星芒。'],
-  expected: '重新打开后，更新页显示「已是最新版本」。',
+  expected: '重新打开后，「设置 › 版本更新」显示「已是最新版本」。',
   extra: [
-    { title: '不想让它在后台下载？', detail: '在「更新」页或「设置」→「更新与关于」里关掉「自动更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
+    { title: '不想让它在后台下载？', detail: '在「设置」→「版本更新」里关掉「自动下载更新」，之后有新版本会先提醒你，由你点下载。看不到这个开关，说明这台电脑只能手动更新。' },
     { title: '点了「安装新版本」没看到安装窗口？', detail: '安装窗口可能被别的窗口挡住了，看看任务栏或屏幕顶部有没有它。' },
-    { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具的「…」里有「退回更新前的版本」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
+    { title: 'AI 工具更新后用着不对劲？', detail: '通过星芒更新过的 Claude Code、Codex CLI，首页这个工具卡片的「…」里有「退回更新前的 v…」，确认后装回原来那一版；更新 14 天后这一项会自动消失。' },
     { title: '更新失败怎么办？', detail: '看提示里写的原因（磁盘满了、网络断了、安装包坏了），处理后点提示里的按钮重试。工具箱的版本和 Codex 等工具的版本是两回事，不要混在一起。' },
-    { title: updateDiskCleanupTitle, detail: `${linuxUpdateDiskCleanupSteps}清出空间后，自动更新开着会自己下载，关着就回到更新页点「下载更新」。` },
+    { title: updateDiskCleanupTitle, detail: `${linuxUpdateDiskCleanupSteps}清出空间后，「自动下载更新」开着会自己下载，关着就到「设置 › 版本更新」点「下载更新」。` },
   ],
-  action: '打开工具箱更新',
-  page: 'updates',
+  action: '打开版本更新',
+  page: 'settings',
+  section: 'version',
 };
 
 const linuxLaunchTroubleTutorialStep: TutorialStep = {
   title: '点「打开」后没看到终端窗口',
   where: '工具箱首页 → 工具的「打开」',
   detail: '命令行工具会在这台电脑的终端窗口里启动。窗口没出来时，先看看是不是被别的窗口挡住了，再看首页有没有出错提示。',
-  bullets: ['有出错提示就按提示里的按钮处理，不要连续重复点击。', '工具行显示「已配好」只说明设置保存了，还要点「打开」才会启动。'],
+  bullets: ['有出错提示就按提示里的按钮处理，不要连续重复点击。', '卡片左下角写着「当前账号」、「官方账号」或「自己的密钥」，只说明设置保存了，还要点「打开」才会启动。'],
   expected: '终端窗口里工具启动好了，或者拿到了明确的出错提示。',
   action: '回首页打开工具',
   page: 'home',
@@ -1228,7 +1255,7 @@ function linuxTutorialTopic(topic: TutorialTopic): TutorialTopic[] {
     return [{
       ...topic,
       keywords: [...topic.keywords.filter((keyword) => !['Mac', '钥匙串', '始终允许', 'C 盘'].includes(keyword)), '安装窗口', '应用菜单'],
-      steps: topic.steps.map((step) => step.page === 'updates' ? linuxSelfUpdateTutorialStep : step),
+      steps: topic.steps.map((step) => step.page === 'settings' && step.section === 'version' ? linuxSelfUpdateTutorialStep : step),
     }];
   }
   if (topic.id === 'trouble') {

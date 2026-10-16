@@ -147,11 +147,13 @@ describe('runtimeLogArea', () => {
   const cases: Array<[string, string, string]> = [
     ['ipc', 'account:balance', '账号'],
     ['ipc', 'acceleration:start', '加速'],
-    ['ipc', 'cli:install', '安装卸载'],
+    ['ipc', 'cli:install', '安装与更新'],
     ['ipc', 'mcp:save', '外接工具'],
     ['ipc', 'something:new', '其他'],
     ['network', 'acceleration.start.failed', '加速'],
-    ['maintenance', 'cli.install.started', '安装卸载'],
+    ['maintenance', 'cli.install.started', '安装与更新'],
+    // 装的过程逐行记在 install 下（cli.install.output），以前认不出、归「其他」。
+    ['install', 'cli.install.output', '安装与更新'],
     ['updater', 'version.updated', '更新'],
     ['telemetry', 'sent', '其他'],
     ['constructor', 'x', '其他'],

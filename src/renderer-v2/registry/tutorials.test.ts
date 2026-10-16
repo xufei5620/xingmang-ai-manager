@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
-import { accountTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { accountTabs, feedbackTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
 import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
@@ -10,13 +10,20 @@ function step(topicId: string, action: string): TutorialStep {
 }
 
 // 「在哪里」写的是用户要去的分页；按钮若只跳页，就会停在默认分页或上次看的那页。
+// 充值的那一步写的是侧栏「充值」（v4 把充值放到了侧栏），它打开的是充值订阅。
 const sectionsByPage = {
-  account: accountTabs.filter((tab) => tab.value !== 'overview'),
+  account: [...accountTabs.filter((tab) => tab.value !== 'overview'), { value: 'recharge', label: '侧栏「充值」' }],
   settings: settingsGroups.filter((group) => group.value !== 'appearance'),
+  feedback: feedbackTabs.filter((tab) => tab.value !== 'form'),
 } as const;
 
+// 设置的 section 可以是一行：比的是那一行所在的组，「在哪里」写的是组名。
+function settingsGroupOf(section: string | undefined): string | undefined {
+  return settingsItems.find((item) => item.id === section)?.group ?? section;
+}
+
 function sectionNamedIn(entry: TutorialStep): string | undefined {
-  if (entry.page !== 'account' && entry.page !== 'settings') return undefined;
+  if (entry.page !== 'account' && entry.page !== 'settings' && entry.page !== 'feedback') return undefined;
   const where = entry.where ?? '';
   const named = sectionsByPage[entry.page]
     .map((section) => ({ value: section.value, position: where.indexOf(section.label) }))
@@ -34,28 +41,48 @@ describe('tutorial step targets', () => {
   });
 
   it('lands the privacy step on the privacy settings group', () => {
-    expect(step('safety', '查看隐私与数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
+    expect(step('safety', '查看隐私数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
+  });
+
+  it('lands the acceleration, backup and update steps on their rows in settings', () => {
+    for (const action of ['打开游戏加速', '去选择加速线路', '打开游戏加速连接', '查看并停止加速']) {
+      expect(step('acceleration', action)).toMatchObject({ page: 'settings', section: 'acceleration' });
+    }
+    expect(step(updatesTutorialTopic, '打开备份迁移')).toMatchObject({ page: 'settings', section: 'backups' });
+    expect(step(updatesTutorialTopic, '打开版本更新')).toMatchObject({ page: 'settings', section: 'version' });
   });
 
   it('only names sections that exist on the target page', () => {
     for (const topic of tutorialTopics) for (const entry of topic.steps) {
       if (entry.section === undefined) continue;
       const known: readonly string[] = entry.page === 'account' ? accountTabs.map((tab) => tab.value)
-        : entry.page === 'settings' ? settingsGroups.map((group) => group.value) : [];
+        : entry.page === 'settings' ? [...settingsGroups.map((group) => group.value), ...settingsItems.map((item) => item.id)]
+        : entry.page === 'feedback' ? feedbackTabs.map((tab) => tab.value) : [];
       expect(known, `${topic.id} / ${entry.action}`).toContain(entry.section);
     }
   });
 
+  // 「安装卸载」页拆掉了（第 10 批）：教程不再教人去那一页，按钮也不再落到那个已经只是别名的页面上。
+  it('never sends a step to the retired install page or tells the customer to look for it', () => {
+    for (const topic of tutorialTopics) for (const entry of topic.steps) {
+      expect(entry.page, `${topic.id} / ${entry.action}`).not.toBe('maintenance');
+    }
+    expect(JSON.stringify(tutorialTopics)).not.toContain('安装卸载');
+    expect(JSON.stringify(tutorialTopics)).not.toContain('「更多」');
+    expect(step('messages', '查看安装与更新结果')).toMatchObject({ page: 'feedback', section: 'log' });
+  });
+
   it('declares a section whenever the step location names a non-default tab of its page', () => {
     for (const topic of tutorialTopics) for (const entry of topic.steps) {
-      expect(entry.section, `${topic.id} / ${entry.action}`).toBe(sectionNamedIn(entry));
+      const landed = entry.page === 'settings' ? settingsGroupOf(entry.section) : entry.section;
+      expect(landed, `${topic.id} / ${entry.action}`).toBe(sectionNamedIn(entry));
     }
   });
 });
 
 describe('mac keychain prompt help', () => {
   it('explains the keychain password prompt next to the toolbox update step', () => {
-    const extra = step('safety', '打开工具箱更新').extra ?? [];
+    const extra = step('safety', '打开版本更新').extra ?? [];
     const entry = extra.find((item) => item.title === macKeychainTutorialTitle);
     expect(entry?.detail).toContain('xingmang-ai-manager Safe Storage');
     expect(entry?.detail).toContain('始终允许');
@@ -63,7 +90,7 @@ describe('mac keychain prompt help', () => {
   });
 
   it('tells a full-disk user where to clean up next to the toolbox update step', () => {
-    const extra = step(updatesTutorialTopic, '打开工具箱更新').extra ?? [];
+    const extra = step(updatesTutorialTopic, '打开版本更新').extra ?? [];
     const entry = extra.find((item) => item.title === updateDiskCleanupTitle);
     expect(entry?.detail).toBe(updateDiskCleanupDetail);
     expect(updateDiskCleanupDetail).toContain('系统设置 → 通用 → 储存空间');
@@ -75,14 +102,14 @@ describe('mac keychain prompt help', () => {
 // 这里把教程里的按钮名钉在界面真正用的那份文案上，改了界面忘改教程会红。
 describe('tutorial wording that follows the current app', () => {
   it('describes automatic updates with the labels the settings and update page use', () => {
-    const update = step('safety', '打开工具箱更新');
+    const update = step('safety', '打开版本更新');
     const text = JSON.stringify(update);
     expect(update.detail).toContain('自动装上');
     expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'about')?.label}」`);
-    expect(text).toContain('「自动更新」');
+    expect(text).toContain(`「${settingsItemLabel('auto-update')}」`);
     expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
     expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
-    expect(text).toContain('「退回更新前的版本」');
+    expect(text).toContain('「退回更新前的 v…」');
     expect(text).not.toContain('区分两种更新入口');
   });
 
@@ -109,13 +136,13 @@ describe('tutorial wording that follows the current app', () => {
     expect(homebrew?.bullets?.[0]).toContain('Command + 空格');
   });
 
-  // Codex 的中文开关每次启动时才拿，只有从星芒打开的那一下拿得到；先问从哪打开，再教「检查中文界面」。
+  // Codex 的中文开关每次启动时才拿，只有从星芒打开的那一下拿得到；先问从哪打开，再教「启用中文界面」。
   it('asks where Codex was opened from before sending an English desktop app to the locale check', () => {
     const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '能打开，但还是英文？');
     expect(entry?.detail).toMatch(/^中文界面只在从星芒打开 Codex 时生效。/);
     expect(entry?.detail).toContain('（Mac 上叫 ChatGPT）');
     expect(entry?.detail).toContain('的星芒图标 →「已安装的工具」→「Codex 桌面端」');
-    expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「检查中文界面」') ?? -1);
+    expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
   });
 });
 
@@ -135,7 +162,9 @@ describe('linux tutorials', () => {
     const hidden = ['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic];
     expect(ids).toEqual(tutorialTopics.map((topic) => topic.id).filter((id) => !hidden.includes(id)));
     expect(ids[0]).toBe('start');
-    expect(linux.flatMap((topic) => topic.steps).some((entry) => entry.page === 'acceleration')).toBe(false);
+    const landsOnAcceleration = (entry: TutorialStep) => entry.page === 'settings' && entry.section === 'acceleration';
+    expect(tutorialTopics.flatMap((topic) => topic.steps).some(landsOnAcceleration)).toBe(true);
+    expect(linux.flatMap((topic) => topic.steps).some(landsOnAcceleration)).toBe(false);
   });
 
   it('never points a Linux reader at Windows, a Mac, the desktop app or game acceleration', () => {
@@ -147,7 +176,7 @@ describe('linux tutorials', () => {
   it('walks a Linux beginner through Codex CLI in the same four steps', () => {
     const start = linux[0];
     expect(start.title).toBe(tutorialTopics[0].title);
-    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '装好 Codex CLI', '看到「已配好」就继续', '打开 Codex，发出第一条消息']);
+    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '装好 Codex CLI', '看到「当前账号」就继续', '打开 Codex，发出第一条消息']);
     expect(start.steps[0]).toBe(tutorialTopics[0].steps[0]);
     expect(start.reminders).toEqual(tutorialTopics[0].reminders);
     expect(JSON.stringify(start)).toContain('不用输开机密码');
@@ -155,13 +184,13 @@ describe('linux tutorials', () => {
 
   it('describes the Linux self-update the way the update page and quit prompt do', () => {
     const updates = linux.find((topic) => topic.id === updatesTutorialTopic);
-    const self = updates?.steps.find((entry) => entry.page === 'updates');
+    const self = updates?.steps.find((entry) => entry.page === 'settings' && entry.section === 'version');
     const text = JSON.stringify(self);
     expect(text).toContain('「安装新版本」');
     expect(text).toContain('输入开机密码');
     expect(text).toContain('从应用菜单重新打开');
     expect(text).toContain(linuxUpdateDiskCleanupSteps);
-    expect(text).toContain('「退回更新前的版本」');
+    expect(text).toContain('「退回更新前的 v…」');
     expect(updates?.steps.length).toBe(tutorialTopics.find((topic) => topic.id === updatesTutorialTopic)?.steps.length);
     expect(updateDiskCleanupStepsFor('linux')).toBe(linuxUpdateDiskCleanupSteps);
   });

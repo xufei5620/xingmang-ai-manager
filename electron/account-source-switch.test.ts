@@ -122,7 +122,7 @@ describe('switchAccountSource', () => {
       checkConnection: async () => check(false, 'model'),
       restoreBackup: () => { throw new Error('文件被占用') },
     })
-    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow(/自动恢复也没有完成（文件被占用），请到「备份」里恢复切换前那一份/)
+    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow(/自动恢复也没有完成（文件被占用），请到「设置 › 备份迁移」里恢复切换前那一份/)
   })
 
   it('switches back to the official account without sending any request', async () => {

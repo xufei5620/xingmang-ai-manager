@@ -16,7 +16,7 @@ export function useAcceleration(api: AccelerationClient, scope: string | null, a
   }), [api, controller])
   const lifetime = useMemo(() => ({ consumers: 0 }), [controller, linesController])
   // 这个钩子挂在整个应用的最外层：订阅会每秒走表的快照，开着加速时整个界面就每秒重画一遍。
-  // 外层只拿不带走表的那份，秒数由加速页自己用 useLiveAccelerationState 订阅。
+  // 外层只拿不带走表的那份，秒数由游戏加速卡自己用 useLiveAccelerationState 订阅。
   const readClockFree = useMemo(() => createClockFreeSnapshotReader(controller.getSnapshot), [controller])
   const snapshot = useSyncExternalStore(controller.subscribe, readClockFree)
   const lineSnapshot = useSyncExternalStore(linesController.subscribe, linesController.getSnapshot)
@@ -65,13 +65,13 @@ export function useAcceleration(api: AccelerationClient, scope: string | null, a
     rememberedLine: lineSnapshot.scope === scope && lineSnapshot.remembered,
     linesBusy: lineSnapshot.scope === scope && lineSnapshot.busy,
     linesError: lineSnapshot.scope === scope ? lineSnapshot.error : null,
-    setSelectedLineId: linesController.select, refreshLines: linesController.refresh, pingLine: linesController.ping,
+    setSelectedLineId: linesController.select, refreshLines: linesController.refresh, pingLine: linesController.ping, measureLines: linesController.measure,
   }
 }
 
 /**
- * 加速页显示剩余时长和本次连接时长，要跟着每秒走；只在这里订阅走表的快照，重画就只到加速页为止。
- * `live` 为 false（加速页藏在后面）时不订阅，秒数等切回来再补上。
+ * 游戏加速卡显示剩余时长和本次连接时长，要跟着每秒走；只在这里订阅走表的快照，重画就只到这张卡为止。
+ * `live` 为 false（卡不在眼前）时不订阅，秒数等切回来再补上。
  */
 export function useLiveAccelerationState(connection: Pick<ReturnType<typeof useAcceleration>, 'snapshot' | 'subscribeLive' | 'getLiveSnapshot'>, live = true) {
   const current = useSyncExternalStore(live ? connection.subscribeLive : subscribeNever, connection.getLiveSnapshot)

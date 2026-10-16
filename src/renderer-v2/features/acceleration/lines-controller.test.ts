@@ -190,3 +190,57 @@ describe('acceleration line memory', () => {
     expect(controller.getSnapshot()).toMatchObject({ selectedLineId: null, remembered: false })
   })
 })
+
+// 线路菜单里的「重新测速」（v4 批09）：原来每条线路旁边有一颗「测速」，现在一次全测。
+describe('acceleration line measuring', () => {
+  const second: AccelerationLine = { id: 'line-2', name: '香港线路', region: 'HK', latencyMs: null }
+
+  it('reloads the list and then pings every line one at a time', async () => {
+    const { api, controller } = setup()
+    vi.mocked(api.listAccelerationLines!).mockResolvedValue([line, second])
+    vi.mocked(api.pingAccelerationLine!).mockImplementation(async (_scope, id) => ({ ...(id === line.id ? line : second), latencyMs: id === line.id ? 80 : 30 }))
+    controller.setScope(firstScope)
+    await controller.refresh()
+    vi.mocked(api.listAccelerationLines!).mockClear()
+    await controller.measure()
+    expect(api.listAccelerationLines).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(api.pingAccelerationLine!).mock.calls.map(([, id]) => id)).toEqual(['line-1', 'line-2'])
+    expect(controller.getSnapshot().lines.map((entry) => [entry.id, entry.latencyMs])).toEqual([['line-2', 30], ['line-1', 80]])
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, error: null })
+  })
+
+  it('stops at the first failed line and keeps its error', async () => {
+    const { api, controller } = setup()
+    vi.mocked(api.listAccelerationLines!).mockResolvedValue([line, second])
+    vi.mocked(api.pingAccelerationLine!).mockRejectedValueOnce(new Error('这条线路暂时测不了'))
+    controller.setScope(firstScope)
+    await controller.refresh()
+    await controller.measure()
+    expect(api.pingAccelerationLine).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().error).toBe('这条线路暂时测不了')
+  })
+
+  it('only reloads the list while a session holds the line', async () => {
+    const { api, controller, lock } = setup()
+    controller.setScope(firstScope)
+    await controller.refresh()
+    lock()
+    await controller.measure()
+    expect(api.pingAccelerationLine).not.toHaveBeenCalled()
+  })
+
+  it('stops when the account changes halfway', async () => {
+    const { api, controller } = setup()
+    vi.mocked(api.listAccelerationLines!).mockResolvedValue([line, second])
+    controller.setScope(firstScope)
+    await controller.refresh()
+    const pending = deferred<AccelerationLine>()
+    vi.mocked(api.pingAccelerationLine!).mockReturnValueOnce(pending.promise)
+    const measuring = controller.measure()
+    await vi.waitFor(() => expect(api.pingAccelerationLine).toHaveBeenCalledTimes(1))
+    controller.setScope(secondScope)
+    pending.resolve({ ...line, latencyMs: 40 })
+    await measuring
+    expect(api.pingAccelerationLine).toHaveBeenCalledTimes(1)
+  })
+})

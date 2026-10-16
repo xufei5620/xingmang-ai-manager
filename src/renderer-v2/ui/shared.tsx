@@ -12,11 +12,11 @@ const copy = {
   close: '关闭', cancel: '取消', expand: '展开', collapse: '收起', show: '显示密码', hide: '隐藏密码',
   search: '搜索', more: '更多操作', open: '打开', archived: '已归档', brand: '星芒 AI',
   capsLock: '大写锁定已开启',
-  discardTitle: '要放弃未保存的修改吗？', discardBody: '关闭后，这次修改不会保存。',
-  keepEditing: '继续编辑', discard: '放弃修改', acknowledge: '我已了解影响',
+  discardTitle: '有修改还没保存，关掉会丢掉这些修改',
+  keepEditing: '继续编辑', discard: '不保存', acknowledge: '我已了解影响',
   loading: '正在加载', progress: '进度', notifications: '通知', unknownTool: '其他工具',
   dialog: '详情', popover: '说明',
-  skip: '跳过', next: '下一步', start: '开始使用',
+  skip: '跳过', next: '下一步', start: '知道了',
 } as const;
 type CopyKey = keyof typeof copy;
 const CopyContext = createContext<(key: CopyKey) => string>(key => copy[key]);

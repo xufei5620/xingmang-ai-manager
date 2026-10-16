@@ -73,7 +73,7 @@ describe('certificateBlockedFailures', () => {
 describe('bootstrapBlockedByNetwork', () => {
   it('classifies a thrown bootstrap by its message', () => {
     expect(bootstrapBlockedByNetwork({ error: `账号 Key 初始化没有完成：${dns}` })).toBe(true)
-    expect(bootstrapBlockedByNetwork({ error: '星芒账号已变化，已停止本次 Key 配置' })).toBe(false)
+    expect(bootstrapBlockedByNetwork({ error: '星芒账号已变化，已停止本次密钥配置' })).toBe(false)
   })
 
   it('reads the verdict off a returned result', () => {

@@ -1,12 +1,11 @@
 import { AccountPage } from './pages-account'
-import { BackupsPage, ExtensionsPage, SessionsPage } from './pages-management'
+import { ExtensionsPage, SessionsPage } from './pages-management'
+import { FeaturedPage } from './pages-featured'
 import {
   FeedbackPage,
   HealthPage,
-  MaintenancePage,
   SettingsPage,
   TutorialPage,
-  UpdatesPage,
   type BusinessActions,
 } from './pages-maintenance'
 import type { V2Bridge, V2Page, V2SystemState } from './types'
@@ -21,10 +20,16 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   refresh?: () => void
   accountTab?: Parameters<typeof AccountPage>[0]['initialTab']
   accountTabRequest?: number
+  /** 个人中心现在摆出来的是哪个分页（顶栏面包屑用）；缺省 = 不报。 */
+  onAccountTabChange?: Parameters<typeof AccountPage>[0]['onTabChange']
   /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
   accountRechargeAmount?: number
+  /** 账号概览里和首页同源的那几样数；缺省 = 概览不写还能用几天、另有订阅、近 7 天花费。 */
+  accountSummary?: Parameters<typeof AccountPage>[0]['summary']
+  /** 密钥管理「配置到工具」下拉里的工具和它们的状态；缺省 = 只列名字。 */
+  accountKeyTools?: Parameters<typeof AccountPage>[0]['keyTools']
   /**
-   * 外壳手上的登录状态，个人中心自己读回来之前先拿它摆出左边分页；检查页拿它认「星芒 AI 网络」
+   * 外壳手上的登录状态，个人中心自己读回来之前先拿它摆出页签；检查页拿它认「星芒 AI 网络」
    * 给不给「去处理」。缺省 = 等个人中心自己读，检查页按访客算。
    */
   accountSession?: Parameters<typeof AccountPage>[0]['accountSession']
@@ -35,13 +40,13 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onSessionsChanged?: () => void
   /** 记录页「接着聊」真打开之前，先过首页「打开」那几道关；缺省 = 不检查（旧行为）。 */
   beforeResume?: Parameters<typeof SessionsPage>[0]['beforeResume']
-  /** 备份页恢复成功后回调，用来让首页重读这份配置。 */
-  onBackupRestored?: Parameters<typeof BackupsPage>[0]['onRestored']
+  /** 设置 › 备份迁移里恢复成功后回调，用来让首页重读这份配置。 */
+  onBackupRestored?: Parameters<typeof SettingsPage>[0]['onBackupRestored']
   /** 密钥页「配置到工具」写成功后回调，让首页重读工具配置（#479）。 */
   onToolConfigSaved?: () => void
   /** 工具设置窗口保存成功并读回之后的信号，用来收起密钥页「还在用刚撤销的密钥」（#546）。 */
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
-  /** 装好的命令行工具，扩展三页用它挑默认显示哪个；缺省 = 默认 Claude（旧行为）。 */
+  /** 装好的命令行工具：扩展三页用它挑默认显示哪个，记录页用它把没装的那家「接着聊」按灰；缺省 = 默认 Claude、不按灰（旧行为）。 */
   installedProviders?: readonly string[]
   /** 订阅开通后把用得上它的工具换过去；缺省 = 不换（旧行为）。 */
   onSubscriptionActivated?: Parameters<typeof AccountPage>[0]['onSubscriptionActivated']
@@ -55,6 +60,8 @@ export function BusinessPage({
   accountTabRequest,
   accountRechargeAmount,
   accountSession,
+  accountSummary,
+  accountKeyTools,
   tutorialTopic,
   paymentReturn,
   onSessionsChanged,
@@ -65,6 +72,7 @@ export function BusinessPage({
   installedProviders,
   onSubscriptionActivated,
   onSubscriptionPurchased,
+  onAccountTabChange,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -76,6 +84,8 @@ export function BusinessPage({
         rechargeAmount={accountRechargeAmount}
         paymentReturn={paymentReturn}
         accountSession={accountSession}
+        summary={accountSummary}
+        keyTools={accountKeyTools}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}
         onBack={actions.navigate ? () => actions.navigate?.('home') : undefined}
@@ -88,45 +98,35 @@ export function BusinessPage({
         onSubscriptionActivated={onSubscriptionActivated}
         onSubscriptionPurchased={onSubscriptionPurchased}
         onOpenHelp={actions.openHelp}
+        onTabChange={onAccountTabChange}
         active={actions.active}
       />
     )
   if (page === 'sessions')
-    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
+    return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
+  if (page === 'featured')
+    return <FeaturedPage api={api} installedProviders={installedProviders} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} active={actions.active} />
   if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} active={actions.active} />
+    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} installedProviders={installedProviders} active={actions.active} />
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'plugins')
-    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} active={actions.active} />
-  if (page === 'backups')
-    return (
-      <BackupsPage
-        api={api}
-        onRestored={onBackupRestored}
-        navigate={actions.navigate}
-        active={actions.active}
-      />
-    )
+    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
-  if (page === 'updates') return <UpdatesPage api={api} {...actions} />
-  if (page === 'maintenance') return <MaintenancePage api={api} {...actions} />
-  if (page === 'settings') return <SettingsPage api={api} {...actions} />
+  if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
   return null
 }
 
 export {
   AccountPage,
-  BackupsPage,
   ExtensionsPage,
+  FeaturedPage,
   SessionsPage,
   FeedbackPage,
   HealthPage,
-  MaintenancePage,
   SettingsPage,
   TutorialPage,
-  UpdatesPage,
 }
 export { SavedAccounts } from './SavedAccounts'

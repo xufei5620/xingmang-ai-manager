@@ -8,6 +8,7 @@ import './app.css'
 import './styles/contrast.css'
 import { attachRuntimeReporting } from './features/app/error-report'
 import { initialWindowOs } from './features/app/window-os'
+import { attachWindowIdleMarker } from './features/app/window-idle'
 
 declare const __XINGMANG_RENDERER__: string
 const root = document.getElementById('root')!
@@ -16,12 +17,12 @@ const root = document.getElementById('root')!
 // bootstrap immediately afterwards.
 const initialTheme = 'light'
 document.documentElement.dataset.theme = initialTheme
-document.documentElement.dataset.skin = 'mist'
 document.documentElement.style.colorScheme = initialTheme
 // The Mac title bar has to make room for the traffic lights on the very first
 // frame, long before the platform capabilities come back over IPC.
 document.documentElement.dataset.os = initialWindowOs(undefined, navigator.platform)
 root.dataset.renderer = __XINGMANG_RENDERER__
+attachWindowIdleMarker(document, window)
 const native = window.xingmang
 if (native) {
   attachRuntimeReporting(native)

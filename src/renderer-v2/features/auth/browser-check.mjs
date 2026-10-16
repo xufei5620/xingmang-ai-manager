@@ -107,7 +107,8 @@ test('login preserves drafts through legal documents and only authenticates afte
     await page.getByTestId('login-remember').check()
     await page.getByTestId('login-submit').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
-    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'remember', 'authenticated'])
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'remember', 'authenticated', 'notice'])
+    assert.equal((await calls(page)).find((item) => item.method === 'notice').input, '欢迎回来，fixture-member')
   } finally { await page.close() }
 })
 
@@ -143,6 +144,14 @@ test('registration preserves its completed result when the following real login 
     assert.equal(await page.getByTestId('register-email').getAttribute('placeholder'), '常用邮箱（如 QQ 邮箱）')
     await page.getByTestId('register-email').fill('person@163.com')
     assert.equal(await page.getByTestId('register-user').inputValue(), 'person')
+    // v4：「获取验证码」放在邮箱框里面的右端。
+    assert.equal(await page.getByTestId('register-email').locator('xpath=..').getByTestId('register-send-code').count(), 1)
+    await page.getByTestId('register-password').fill('fixture-password')
+    await page.getByTestId('register-password-confirm').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.getByText('请先点「获取验证码」，再填写邮件中的验证码', { exact: true }).waitFor()
+    await page.getByTestId('auth-agree').uncheck()
     await page.getByTestId('register-send-code').click()
     await page.getByTestId('register-send-code').filter({ hasText: '秒后重发' }).waitFor()
     assert.equal(await page.getByTestId('register-send-code').isDisabled(), true)
@@ -184,11 +193,13 @@ test('recovery validates reset links and keeps the generated password available 
     await page.getByTestId('auth-error').filter({ hasText: '手动复制' }).waitFor()
     assert.equal(await page.getByTestId('forgot-new-password').inputValue(), 'new-test-password')
     assert.equal(await page.getByTestId('forgot-new-password').getAttribute('type'), 'text')
+    // v4：「用临时密码登录」直接拿找回邮箱和临时密码登录，不再先退回登录框。
     await page.getByTestId('forgot-finish').click()
-    assert.equal(await page.getByTestId('login-account').inputValue(), 'person@gmail.com')
-    assert.equal(await page.getByTestId('login-password').inputValue(), '')
-    assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
-    assert.deepEqual((await calls(page)).find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two', siteId: 'solov' })
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two', siteId: 'solov' })
+    assert.deepEqual(recorded.find((item) => item.method === 'login').input, { username: 'person@gmail.com', password: 'new-test-password', siteId: 'solov' })
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '已用临时密码登录，记得改成自己的密码')
   } finally { await page.close() }
 })
 
@@ -215,7 +226,7 @@ test('recovery lets the user set their own password and signs in without ever sh
     await page.getByTestId('forgot-set-password').fill('my-own-password')
     await page.getByTestId('forgot-set-confirm').fill('my-own-passwor')
     await page.getByTestId('forgot-set-submit').click()
-    await page.getByText('两次输入的新密码不一样').waitFor()
+    await page.getByText('两次密码不一致').waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset'])
     await page.getByTestId('forgot-set-confirm').fill('my-own-password')
     await page.getByTestId('forgot-remember').check()
@@ -226,7 +237,7 @@ test('recovery lets the user set their own password and signs in without ever sh
     assert.deepEqual(recorded.find((item) => item.method === 'login').input, { username: 'person@example.test', password: 'new-test-password', siteId: 'solov' })
     assert.deepEqual(recorded.find((item) => item.method === 'change-password').input, { originalPassword: 'new-test-password', newPassword: 'my-own-password' })
     assert.deepEqual(recorded.find((item) => item.method === 'remember').input, { identifier: 'person@example.test', password: 'my-own-password' })
-    assert.equal(recorded.find((item) => item.method === 'notice').input, '密码已改好，已经登录')
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '密码已重设，已自动登录')
   } finally { await page.close() }
 })
 
@@ -246,8 +257,9 @@ test('recovery shows the temporary password when the change fails after signing 
     await page.getByTestId('forgot-continue').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'authenticated'))
     const recorded = await calls(page)
-    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated'])
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated', 'notice'])
     assert.equal(recorded.find((item) => item.method === 'remember').input, null)
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '已用临时密码登录，记得改成自己的密码')
   } finally { await page.close() }
 })
 
@@ -262,8 +274,13 @@ test('recovery falls back to the temporary password and the login page when sign
     await page.getByTestId('auth-error').waitFor()
     await page.getByTestId('auth-message').filter({ hasText: '复制它去登录' }).waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
+    // 「用临时密码登录」再试一次还是没登上：退回登录框，账号和临时密码都已填好，红字跟过去。
     await page.getByTestId('forgot-finish').click()
+    await page.getByTestId('login-dialog').waitFor()
     assert.equal(await page.getByTestId('login-account').inputValue(), 'person@example.test')
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'new-test-password')
+    await page.getByTestId('auth-error').filter({ hasText: '账号或密码不正确' }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'login'])
   } finally { await page.close() }
 })
 
@@ -315,6 +332,29 @@ test('chat guide keeps all four steps and never installs a runtime or tool', asy
   } finally { await page.close() }
 })
 
+test('a signed-out guide asks for the login where the connection waits and offers sign-up at the end', async () => {
+  const waiting = await open('scenario=guide&installed=1&loggedOut=1')
+  try {
+    await waiting.getByTestId('guide-next').click()
+    await waiting.getByTestId('guide-next').click()
+    await waiting.locator('.auth-guide-state').filter({ hasText: '登录后自动连接' }).waitFor()
+    assert.equal(await waiting.getByTestId('guide-next').isDisabled(), true)
+    await waiting.getByTestId('guide-login').click()
+    assert.deepEqual((await calls(waiting)).map((item) => item.method).filter((method) => method !== 'detect'), ['guide-login'])
+  } finally { await waiting.close() }
+  const connected = await open('scenario=guide&installed=1&connected=1&loggedOut=1')
+  try {
+    // 已经连好的会跳过第 3 步，点到第 4 步为止。
+    while (await connected.getByTestId('start-guide').getAttribute('data-guide-step') !== 'ready') await connected.getByTestId('guide-next').click()
+    assert.equal(await connected.getByTestId('guide-pause').count(), 0)
+    assert.equal(await connected.getByTestId('guide-next').count(), 0)
+    assert.match(await connected.locator('.auth-guide-count').innerText(), /第 4 步，共 4 步/)
+    await connected.getByTestId('guide-ready-register').click()
+    await connected.getByTestId('guide-ready-login').click()
+    assert.deepEqual((await calls(connected)).map((item) => item.method).filter((method) => method !== 'detect'), ['guide-register', 'guide-login'])
+  } finally { await connected.close() }
+})
+
 test('desktop route avoids Node and unknown configuration requires an explicit configuration action', async () => {
   const page = await open('scenario=guide&installed=1&unknown=1')
   try {
@@ -344,7 +384,7 @@ test('a key from another site switches to the signed-in account in one click and
     assert.equal((await page.getByTestId('guide-switch-account').textContent())?.trim(), '改用 peaker')
     await page.getByTestId('guide-switch-account').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') === 'ready')
-    assert.match(await page.getByTestId('guide-switched-note').textContent() ?? '', /原来的设置已备份，在「备份」里能找回/)
+    assert.match(await page.getByTestId('guide-switched-note').textContent() ?? '', /原来的设置已备份，在「设置 › 备份迁移」里能找回/)
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch'])
   } finally { await page.close() }
 })
@@ -569,7 +609,9 @@ test('the setup result keeps installation, billing and first-task completion as 
     assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedFirstTask = value } } }))
     await page.getByTestId('guide-first-task-copy').click()
-    await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '已复制' }).waitFor()
+    // 复制成功只弹一句短提示，框里不再留一行字。
+    await page.locator('.xm-toasts .xm-toast').filter({ hasText: '已复制，粘贴到' }).waitFor()
+    assert.equal(await page.getByTestId('guide-first-task-copy-status').count(), 0)
     assert.equal(await page.evaluate(() => window.copiedFirstTask), await page.getByTestId('guide-first-task-prompt').innerText())
     assert.equal((await calls(page)).some((entry) => entry.method === 'launch' || entry.method === 'complete'), false)
     await page.getByTestId('guide-open-tool').click()
@@ -633,7 +675,7 @@ test('official login remains pending and a denied first-task copy offers selecta
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
     await page.getByTestId('guide-first-task-copy').click()
     await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '手动选中' }).waitFor()
-    assert.match(await page.getByTestId('guide-first-task-prompt').innerText(), /用中文/)
+    assert.match(await page.getByTestId('guide-first-task-prompt').innerText(), /帮我看看这个文件夹里都有什么/)
   } finally { await page.close() }
 })
 
@@ -646,13 +688,13 @@ test('an old installed version is flagged with an update button that never block
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-update').waitFor()
     assert.match(await page.locator('.auth-guide-lead').textContent(), /已经装好，但版本旧了，建议先点「更新」/)
-    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已找到 v2\.1\.42，新版是 2\.1\.277/)
+    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已安装 v2\.1\.42，新版是 2\.1\.277/)
     assert.equal(await page.getByTestId('guide-tool-status').textContent(), '可更新')
     assert.equal(await page.getByTestId('guide-next').isEnabled(), true)
     await page.getByTestId('guide-update').click()
-    await page.getByTestId('guide-tool-status').filter({ hasText: '已安装' }).waitFor()
+    await page.getByTestId('guide-tool-status').filter({ hasText: '已装好' }).waitFor()
     assert.equal(await page.getByTestId('guide-update').count(), 0)
-    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已找到 v2\.1\.277/)
+    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已安装 v2\.1\.277，可以直接用/)
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'prepare')
     assert.deepEqual(await calls(page), [{ method: 'detect' }, { method: 'install', input: { route: 'claude', version: '2.1.277' } }])
   } finally { await page.close() }
@@ -856,7 +898,7 @@ test('a network failure on login names proxy software and offers retry and suppo
     assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)
     await page.getByTestId('auth-exit-retry').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
-    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'help', 'login', 'remember', 'authenticated'])
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'help', 'login', 'remember', 'authenticated', 'notice'])
   } finally { await page.close() }
 })
 
@@ -887,6 +929,9 @@ test('a wrong password offers password recovery and registration under the red t
     await page.getByTestId('auth-error').filter({ hasText: '账号或密码不正确' }).waitFor()
     assert.equal(await page.getByTestId('auth-exit-retry').count(), 0)
     await page.getByTestId('auth-exit-register').waitFor()
+    // 「找回密码」跟在红字那一行里，不在下面那排出口里。
+    assert.equal(await page.getByTestId('auth-error').getByTestId('auth-exit-forgot').count(), 1)
+    assert.equal(await page.getByTestId('auth-exits').getByTestId('auth-exit-forgot').count(), 0)
     await page.getByTestId('auth-exit-forgot').click()
     await page.getByTestId('forgot-password-dialog').waitFor()
     assert.equal(await page.getByTestId('forgot-email').inputValue(), 'person@example.test')
@@ -945,8 +990,9 @@ test('registration authenticates through a separate login request before reporti
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
-    assert.deepEqual((await calls(page)).map((item) => item.method), ['register', 'login', 'authenticated'])
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['register', 'login', 'authenticated', 'notice'])
     assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: 'fixture-member', password: 'fixture-password', siteId: 'solov' })
+    assert.equal((await calls(page)).find((item) => item.method === 'notice').input, '注册成功，已自动登录')
   } finally { await page.close() }
 })
 
@@ -973,8 +1019,8 @@ test('recovery requests block closing and focus each next field only after compl
     assert.equal(await page.getByTestId('forgot-finish').isDisabled(), true)
     await page.evaluate(() => window.authHarness.release('copy'))
     await page.getByTestId('forgot-finish').click()
-    await page.waitForFunction(() => document.activeElement?.id === 'login-password')
-    assert.equal(await page.getByTestId('login-account').inputValue(), 'fixture@example.test')
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: 'fixture@example.test', password: 'new-test-password', siteId: 'solov' })
     assert.equal((await calls(page)).filter((item) => item.method === 'close').length, 0)
   } finally { await page.close() }
 })
@@ -984,26 +1030,26 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
     const page = await open(`scenario=welcome&theme=${theme}&os=${os}`)
     try {
       await page.getByTestId('welcome-orbit-scene').waitFor()
-      assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), theme === 'dark' ? 'obsidian' : 'dawn')
+      // UI v4.0 has two palettes and no skins: the document follows data-theme alone.
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.skin), undefined)
       assert.equal(await page.locator('.auth-orbit-satellite').count(), 3)
       assert.equal(await page.locator('.frame,.ptile,.welcome-preview-workbench').count(), 0)
       await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0))
-      const pixels = await page.getByTestId('welcome-starfield').evaluate((canvas) => {
-        const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
-        let visible = 0
-        for (let i = 3; i < data.length; i += 4) if (data[i] > 0) visible++
-        return visible
-      })
-      assert.ok(pixels > 2000, `starfield contains painted pixels for ${theme}/${os}`)
+      // v4 的星星是两层 CSS 圆点，整页没有一块逐帧重画的画布（批次性能要求 批03 第 2 条）。
+      assert.equal(await page.locator('.auth-welcome canvas').count(), 0)
+      assert.match(await page.getByTestId('welcome-starfield').evaluate((layer) => getComputedStyle(layer).backgroundImage), /radial-gradient/)
+      assert.equal(await page.locator('.auth-stars-twinkle').count(), 1)
+      assert.equal(await page.locator('.auth-orbit-hud').count(), 0)
       assert.equal(await page.getByTestId('welcome-page').getAttribute('data-motion-paused'), 'true')
-      assert.ok(await page.locator('.auth-orbit-ring').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationPlayState === 'paused')))
-      const geometry = await page.evaluate(() => ({ width: document.querySelector('.auth-welcome').getBoundingClientRect().width, logo: document.querySelector('.auth-welcome-brand img').getBoundingClientRect().height, footer: document.querySelector('.auth-welcome-foot').getBoundingClientRect().bottom, hud: document.querySelector('.auth-orbit-hud').getBoundingClientRect().right }))
+      assert.ok(await page.locator('.auth-orbit-ring, .auth-orbit-planet, .auth-stars-twinkle').evaluateAll((items) => items.every((item) => getComputedStyle(item).animationName === 'none')))
+      const geometry = await page.evaluate(() => ({ width: document.querySelector('.auth-welcome').getBoundingClientRect().width, logo: document.querySelector('.auth-welcome-brand img').getBoundingClientRect().height, footer: document.querySelector('.auth-welcome-foot').getBoundingClientRect().bottom, scene: document.querySelector('.auth-orbit-scene').getBoundingClientRect() }))
       assert.equal(geometry.width, 1280)
       assert.equal(geometry.logo, 64)
       assert.ok(geometry.footer <= 900, 'welcome feature strip remains visible')
-      assert.ok(geometry.hud <= 1280, 'orbit status labels remain inside the viewport')
+      assert.ok(geometry.scene.right <= 1280 && geometry.scene.width > 300, 'the orbit stays inside the viewport at a readable size')
       const titlebar = await page.getByTestId('window-titlebar').evaluate((element) => ({ height: element.getBoundingClientRect().height, drag: getComputedStyle(element).getPropertyValue('-webkit-app-region') }))
-      assert.equal(titlebar.height, os === 'mac' ? 46 : 36)
+      // v4 把系统按钮那条压到 44 高，登录前这一条要跟它一样高，右上角三个键才落在条里。
+      assert.equal(titlebar.height, os === 'mac' ? 46 : 44)
       assert.equal(titlebar.drag, 'drag')
       await page.screenshot({ path: path.join(output, `welcome-${theme}-${os}.png`) })
     } finally { await page.close() }
@@ -1034,8 +1080,10 @@ test('welcome keeps the three tools evenly spaced on one orbit so they never ove
     assert.deepEqual(await page.locator('.auth-orbit-satellite').allInnerTexts(), ['Claude Code', 'Codex CLI', 'Grok CLI'])
     for (let spin = 0; spin < 120; spin += 5) {
       const boxes = await page.evaluate((angle) => {
+        // 动画默认停着（夹具默认减少动画），直接把轨道转到这个角度、工具反着转回来，和动画走到这一帧时一样。
         const ring = document.querySelector('.auth-orbit-ring')
-        ring.style.setProperty('--auth-spin', `${angle}deg`)
+        ring.style.transform = `rotate(${angle}deg)`
+        for (const planet of ring.querySelectorAll('.auth-orbit-planet')) planet.style.transform = `rotate(${-angle}deg)`
         const center = ring.getBoundingClientRect()
         const cx = center.left + center.width / 2, cy = center.top + center.height / 2
         return [...ring.querySelectorAll('.auth-orbit-satellite')].map((item) => {
@@ -1066,11 +1114,11 @@ test('welcome fits a 1280 by 690 window and scrolls to the support code in a 560
     await page.setViewportSize({ width: 1280, height: 690 })
     const fit = await page.evaluate(() => {
       const content = document.querySelector('.auth-window-content')
-      return { scroll: content.scrollHeight - content.clientHeight, support: document.querySelector('[data-testid="welcome-support"]').getBoundingClientRect().bottom, hud: document.querySelector('.auth-orbit-hud').getBoundingClientRect().bottom, scene: document.querySelector('.auth-orbit-scene').getBoundingClientRect().bottom }
+      return { scroll: content.scrollHeight - content.clientHeight, support: document.querySelector('[data-testid="welcome-support"]').getBoundingClientRect().bottom, labels: Math.max(...[...document.querySelectorAll('.auth-orbit-planet')].map((item) => item.getBoundingClientRect().bottom)), foot: document.querySelector('.auth-welcome-foot').getBoundingClientRect().top }
     })
     assert.ok(fit.scroll <= 0, `nothing to scroll at 690: ${JSON.stringify(fit)}`)
     assert.ok(fit.support <= 690, `the support card is on the first screen at 690: ${JSON.stringify(fit)}`)
-    assert.ok(fit.hud <= fit.scene, 'the orbit labels stay inside the orbit scene')
+    assert.ok(fit.labels <= fit.foot, `the tool names on the orbit stay above the cards: ${JSON.stringify(fit)}`)
     await page.setViewportSize({ width: 1280, height: 560 })
     const support = page.getByTestId('welcome-support')
     await support.scrollIntoViewIfNeeded()
@@ -1111,17 +1159,54 @@ test('welcome stops every animation when motion is reduced, and on a low-end com
   } finally { await lowEnd.close() }
 })
 
+// 批次性能要求 批03 第 3 条：窗口没焦点或看不见时星轨和闪烁停在原地，回来接着转。
+test('welcome holds its animations in place while the window is in the background', async () => {
+  function running(page) {
+    return page.evaluate(() => document.getAnimations().filter((animation) => animation instanceof CSSAnimation && animation.playState === 'running').length)
+  }
+  const page = await open('scenario=welcome&motion')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    assert.equal(await page.getByTestId('welcome-page').getAttribute('data-motion-idle'), 'false')
+    assert.ok(await running(page) > 0)
+    // 无头浏览器里窗口一直算有焦点：替它说一声「没焦点了」再发 blur。
+    await page.evaluate(() => { document.hasFocus = () => false; window.dispatchEvent(new Event('blur')) })
+    await page.waitForFunction(() => document.querySelector('[data-testid="welcome-page"]')?.dataset.motionIdle === 'true')
+    assert.equal(await running(page), 0)
+    assert.ok(await page.evaluate(() => document.getAnimations().filter((animation) => animation instanceof CSSAnimation).every((animation) => animation.playState === 'paused')), 'paused where they were instead of removed')
+    await page.evaluate(() => { document.hasFocus = () => true; window.dispatchEvent(new Event('focus')) })
+    await page.waitForFunction(() => document.querySelector('[data-testid="welcome-page"]')?.dataset.motionIdle === 'false')
+    assert.ok(await running(page) > 0)
+  } finally { await page.close() }
+})
+
+test('welcome offers the theme switch in its window bar and a direct way into a history account', async () => {
+  const page = await open('scenario=welcome&theme=dark')
+  try {
+    await page.getByTestId('welcome-orbit-scene').waitFor()
+    const theme = page.getByTestId('welcome-theme')
+    assert.equal(await theme.getAttribute('aria-label'), '切换深浅色')
+    assert.equal(await page.getByTestId('window-titlebar').getByTestId('welcome-theme').count(), 1)
+    assert.equal(await theme.evaluate((element) => getComputedStyle(element.parentElement).getPropertyValue('-webkit-app-region')), 'no-drag')
+    await theme.click()
+    await page.getByTestId('welcome-history-login').click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['theme', 'history-login-entry'])
+    assert.equal(await page.locator('.auth-welcome h1').innerText(), '装好就能用的\nAI 编程工具')
+  } finally { await page.close() }
+})
+
 test('auth and guide default surfaces fit the fixed desktop frame in both themes', async () => {
   for (const theme of ['light', 'dark']) for (const scenario of ['login', 'register', 'recovery', 'guide', 'splash']) {
     const page = await open(`scenario=${scenario}&theme=${theme}`)
     try {
-      await page.locator(scenario === 'guide' ? '.auth-guide-frame' : scenario === 'splash' ? '.auth-splash' : '.auth-form').waitFor()
+      await page.locator(scenario === 'guide' ? '[data-testid="start-guide"]' : scenario === 'splash' ? '.auth-splash' : '.auth-form').waitFor()
       const overflow = await page.evaluate(() => {
         const visible = [...document.querySelectorAll('button,input')].filter((item) => item.getBoundingClientRect().width > 0)
         return visible.filter((item) => { const rect = item.getBoundingClientRect(); return rect.left < 0 || rect.right > innerWidth || rect.top < 0 || rect.bottom > innerHeight }).map((item) => item.getAttribute('data-testid') || item.textContent)
       })
       assert.deepEqual(overflow, [], `${scenario}/${theme} controls stay reachable`)
-      if (['guide', 'splash'].includes(scenario)) assert.equal(await page.getByTestId('window-titlebar').count(), 1)
+      // v4 的引导是弹窗，不再自带一条窗口条；只有启动画面还铺满整窗。
+      assert.equal(await page.getByTestId('window-titlebar').count(), scenario === 'splash' ? 1 : 0)
       await page.screenshot({ path: path.join(output, `${scenario}-${theme}.png`) })
     } finally { await page.close() }
   }
@@ -1173,7 +1258,7 @@ test('a pending explicit login locks its source and 2FA retains its source witho
     assert.equal(await page.getByTestId('login-cancel').isDisabled(), true)
     await page.keyboard.press('Enter')
     await page.evaluate(() => window.authHarness.release('login'))
-    await page.getByTestId('auth-error').filter({ hasText: '双重验证' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '两步验证' }).waitFor()
     assert.equal(await page.getByTestId('login-password').inputValue(), 'test-password')
     assert.equal(await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).getAttribute('aria-pressed'), 'true')
     await page.getByTestId('auth-open-website').click()
@@ -1267,8 +1352,10 @@ test('the actual add-account flow preserves the current login on failure and acc
     try {
       await page.getByTestId('tool-row-codex').waitFor()
       const previous = await page.evaluate(() => window.xingmang.getAccountSession())
-      await page.getByRole('button', { name: '切换账号', exact: true }).click()
-      await page.getByTestId('account-add').click()
+      // v4 侧栏账号卡上没有「切换账号」了，它在个人中心「账号概览」底下那条「当前登录」上。
+      await page.getByTestId('sidebar-account-open').click()
+      await page.getByTestId('account-switch').click()
+      await page.getByRole('dialog', { name: '切换账号', exact: true }).getByTestId('account-add').click()
       await chooseAccountSource(page, target === 'solov' ? '星芒账号' : '历史账号')
       await page.getByTestId('login-account').fill('same@example.test')
       await page.getByTestId('login-password').fill('same-test-password')

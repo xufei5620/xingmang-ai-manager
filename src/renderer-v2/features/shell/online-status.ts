@@ -11,6 +11,8 @@ import { classifyNetworkFailure, type NetworkFailureReason } from '../../../../e
 export const offlineBannerText = '现在连不上网。已经装好的 AI 工具照常能用；充值、聊天、安装和更新要等网络恢复。'
 export const offlineActionMessage = '现在没网，等网络恢复后再试。'
 export const offlineBalanceText = '没网，稍后自动刷新'
+/** 断网横条上点了「重试」还是不通：横条自己会在网回来时收起，不用一直点。 */
+export const stillOfflineText = '还是连不上网。网络恢复后这条提示会自己消失'
 
 /**
  * 只认「本机这一侧的网」出的问题。超时、连接被拒、证书不对、服务在维护，都可能只是

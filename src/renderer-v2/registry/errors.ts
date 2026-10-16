@@ -35,6 +35,6 @@ export const errors = {
   codexDesktopKnownIssue: { title: 'Codex 这一版打不开', body: '这是 Codex 这一版自己的问题，不是星芒，等微软商店出新版会自动好。急用先点「改用 Codex 命令行版」。', actions: ['重试', '改用 Codex 命令行版', '找客服'] },
   codexDesktopNotStarted: { title: 'Codex 没能打开', body: '先点「重试」；还不行就点「重置 Codex」，重置完会自动再打开一次；还是不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '重置 Codex', '找客服'] },
   pluginCatalogStuck: { title: '插件目录暂时改不动', body: '重启电脑后再试一次；还不行请联系客服。', actions: ['重试', '找客服'] },
-  switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「备份」里恢复改用之前的那一份就好。', actions: ['去备份页', '找客服'] },
+  switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「设置 › 备份迁移」里恢复改用之前的那一份就好。', actions: ['去备份迁移', '找客服'] },
   unknown: { title: '操作没有完成', body: '', actions: ['重试', '查看日志', '找客服'] },
 } as const;

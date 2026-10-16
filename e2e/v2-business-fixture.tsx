@@ -2,7 +2,8 @@ import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { BusinessPage } from '../src/renderer-v2/pages-business'
 import { Shell } from '../src/renderer-v2/features/shell/Shell'
-import { BalanceTierProvider, ToastProvider } from '../src/renderer-v2/ui'
+import { BalanceTierProvider, Dialog, ToastProvider } from '../src/renderer-v2/ui'
+import { SavedAccounts } from '../src/renderer-v2/SavedAccounts'
 import type { V2Bridge, V2Page } from '../src/renderer-v2/types'
 import type {
   PlatformSystemState,
@@ -12,6 +13,9 @@ import type { AccountPaymentWindowTerminalEvent, ProviderId } from '../electron/
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
+import { settingsPageAlias } from '../src/renderer-v2/registry/pages'
+import { settingsItems } from '../src/renderer-v2/registry/business'
+import { requestSettingsGroup } from '../src/renderer-v2/features/app/settings-group-intent'
 
 declare global {
   interface Window {
@@ -41,13 +45,22 @@ declare global {
 }
 
 const query = new URLSearchParams(location.search)
-const page = (query.get('page') as V2Page) ?? 'account'
+const requestedPage = (query.get('page') as V2Page) ?? 'account'
+// 备份、更新、游戏加速并进了设置（v4 批09），老页面名只是别名。夹具照 App 的 navigate 那样
+// 换成设置页、先把那张卡所在的一组放好，page=backups / page=updates 打开的就是客户点托盘、
+// 通知、错误框按钮时落到的同一个地方。
+const settingsCard = settingsPageAlias(requestedPage)
+const page: V2Page = settingsCard ? 'settings' : requestedPage
+const settingsCardGroup = settingsItems.find((item) => item.id === settingsCard)?.group
+if (settingsCardGroup) requestSettingsGroup(settingsCardGroup)
 const requestedSkin = query.get('skin')
 const initialSkin = requestedSkin === 'dawn' || requestedSkin === 'obsidian' || requestedSkin === 'mist' || requestedSkin === 'aurora'
   ? requestedSkin
   : 'mist'
 const fail = query.get('fail')
 const empty = query.has('empty')
+// 「清除日志」确认以后，再读日志就是空的。
+let logsCleared = false
 
 // 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
 let topupPromotionEnded = false
@@ -154,8 +167,6 @@ window.emitPaymentWindowTerminal = (event) => {
   paymentWindowTerminalListeners.forEach((listener) => listener(event))
 }
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
-document.documentElement.dataset.skin =
-  query.get('skin') ?? (query.get('theme') === 'dark' ? 'obsidian' : 'dawn')
 document.documentElement.dataset.os = query.get('os') ?? 'win'
 document.body.style.margin = '0'
 document.body.style.background = 'var(--bg)'
@@ -612,6 +623,14 @@ const apiMethods = {
   getAccountUsage: async (input: Parameters<V2Bridge['getAccountUsage']>[0]) => {
     record('query-usage', input)
     if (fail === 'usage') throw new Error('调用记录服务暂时不可用')
+    // usagePages：三页明细（每页 20 条），看翻页以后换时间范围会不会回第一页。
+    if (query.has('usagePages')) return {
+      page: input.page ?? 1,
+      pageSize: 20,
+      total: 60,
+      records: Array.from({ length: 20 }, (_, index) => ({ ...usageDetailFixture('tiered'), id: (input.page ?? 1) * 100 + index })),
+      stats: { quota: 0, rpm: 0, tpm: 0 },
+    }
     return {
     page: 1,
     pageSize: 20,
@@ -684,7 +703,8 @@ const apiMethods = {
             minTopup: 1,
           },
         ],
-    minTopup: 1,
+    // highMinimum：最低充值额比默认那档 10 还高。
+    minTopup: query.has('highMinimum') ? 20 : 1,
     amountOptions: [10, 20],
     discounts: fixtureTopupDiscounts(),
     topupLink: null,
@@ -906,9 +926,20 @@ const apiMethods = {
     input: Parameters<V2Bridge['mutateProviderExtension']>[0],
   ) => {
     record('extension', input)
+    // extensionOk：改动照常成功，用来看成功以后那句提示。
+    if (query.has('extensionOk')) return extensionList(input.provider)
     throw new Error('扩展操作失败，已有配置保留')
   },
+  // Codex 的连接走它自己的原生接口；夹具只记下收到了什么。
+  addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
+    record('add-mcp', input)
+    return []
+  },
   listBackups: async () => (empty ? [] : [backup]),
+  createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
+    record('create-backup', provider)
+    return { ...backup, id: `backup-${provider}`, provider }
+  },
   inspectBackup: async () => ({
     ...backup,
     files: [
@@ -940,7 +971,11 @@ const apiMethods = {
       evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中',
     }
   },
-  getSettings: async () => settings,
+  getSettings: async () => {
+    // fail=settings-read：设置本身读不到（读设置文件出错），别的照常。
+    if (fail === 'settings-read') throw new Error('设置文件暂时读不到')
+    return settings
+  },
   getWindowCapabilities: async () => ({ tray: true, notifications: true }),
   saveSettings: async (patch: Parameters<V2Bridge['saveSettings']>[0]) => {
     record('settings', patch)
@@ -983,7 +1018,7 @@ const apiMethods = {
     sources: ['fixture', 'updater'],
     currentProcessId: 4242,
     startedAt: time,
-    entries: empty
+    entries: empty || logsCleared
       ? []
       : query.has('manyLogs')
         ? Array.from({ length: 150 }, (_, index) => ({
@@ -1025,6 +1060,10 @@ const apiMethods = {
           },
         ],
   }),
+  clearRuntimeLogs: async () => {
+    record('clear-logs')
+    logsCleared = true
+  },
   getFeedbackReport: async () => ({
     id: 'report-snapshot-7',
     text: '固定的脱敏报告内容',
@@ -1043,18 +1082,23 @@ const apiMethods = {
     record('reveal-file', filePath)
     return true
   },
-  getUpdateState: async () => ({
-    phase: 'available' as const,
-    currentVersion: '0.1.31',
-    availableVersion: '0.1.32',
-    releaseName: '测试版本',
-    releaseNotesText: '测试更新内容',
-    checkedAt: time,
-    progress: null,
-    error: null,
-    development: true,
-    ...(query.has('autoUpdate') ? { autoUpdateSupported: true } : {}),
-  }),
+  getUpdateState: async () => {
+    // fail=update：只有更新状态读不到，设置页照常打开，版本卡自己说没读到。
+    if (fail === 'update') throw new Error('更新状态暂时读不到')
+    return {
+      // updateDownloaded：新版本已经下好，版本卡的主按钮换成「重启并安装」。
+      phase: query.has('updateDownloaded') ? 'downloaded' as const : 'available' as const,
+      currentVersion: '0.1.31',
+      availableVersion: '0.1.32',
+      releaseName: '测试版本',
+      releaseNotesText: '测试更新内容',
+      checkedAt: time,
+      progress: null,
+      error: null,
+      development: true,
+      ...(query.has('autoUpdate') ? { autoUpdateSupported: true } : {}),
+    }
+  },
   downloadUpdate: async () => {
     record('download-update')
     throw new Error('测试下载失败')
@@ -1237,6 +1281,19 @@ const root = createRoot(document.getElementById('root')!)
 // 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
 let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'grok'; sequence: number } | null = null
 let pageActive: boolean | undefined
+// switcher：和 App.tsx 一样，「切换账号」打开装着保存账号的弹窗（v4 起个人中心不再自带这张卡）。
+// 切完不自动关，好看清切换结果。
+let switcherOpen = false
+function openSwitcher() {
+  record('open-account-switcher')
+  if (!query.has('switcher')) return
+  switcherOpen = true
+  renderFixture()
+}
+function closeSwitcher() {
+  switcherOpen = false
+  renderFixture()
+}
 const renderFixture = (paymentReturn?: {
   sequence: number
   order: string | null
@@ -1253,7 +1310,7 @@ const renderFixture = (paymentReturn?: {
         balance: '$10.00',
       }}
       version="0.1.31"
-      environment={{ tone: 'ok', label: '环境正常' }}
+      environment={{ tone: 'ok', label: '环境正常', issues: 0 }}
       adapter={{ navigate: (next) => record('navigate', next) }}
     >
       <BalanceTierProvider value="warn">
@@ -1271,14 +1328,36 @@ const renderFixture = (paymentReturn?: {
           paymentReturn={paymentReturn}
           navigate={(next, section) => record('navigate', section === undefined ? next : [next, section])}
           openLogin={() => record('login')}
-          switchAccount={() => record('open-account-switcher')}
+          switchAccount={openSwitcher}
           openHelp={query.has('help') ? () => record('open-help') : undefined}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}
+          // 设置 › 备份迁移恢复成功后，外壳要让首页重读这个工具的配置。
+          onBackupRestored={(provider) => record('backup-restored', provider)}
+          // installedProviders=claude,codex：扩展几页认得哪些工具没装；不带 = 还没检测完（旧行为）。
+          installedProviders={query.get('installedProviders')?.split(',').filter(Boolean)}
+          installTool={query.has('installedProviders') ? async (tool) => {
+            record('install-tool', tool)
+            return 'installed' as const
+          } : undefined}
+          // 反馈与客服页右边那张客服卡；noSupport = 读不到客服信息时整张卡不出现。
+          support={query.has('noSupport') ? undefined : {
+            identity: '星芒 0.1.31 · Windows · 已登录 test-user',
+            lastFailure: '最近一次失败：安装 Codex CLI · 网络超时',
+            open: () => record('open-support'),
+            copyIdentity: () => record('copy-identity'),
+          }}
+          // feedbackTab=log：像错误框「查看日志」那样直接落在运行日志。
+          feedbackRequest={query.get('feedbackTab') === 'log' ? { sequence: 1, tab: 'log' } : undefined}
           active={pageActive}
         />
       </BalanceTierProvider>
+      {switcherOpen && (
+        <Dialog open title="切换账号" width={480} onClose={closeSwitcher}>
+          <SavedAccounts api={api} onLogin={() => { record('login'); closeSwitcher() }} />
+        </Dialog>
+      )}
     </Shell>
     </ToastProvider>,
   )

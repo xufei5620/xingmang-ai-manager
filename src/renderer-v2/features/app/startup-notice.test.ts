@@ -7,7 +7,7 @@ describe('startup check notices', () => {
     expect(notice.title).toBe('更新检查没有完成')
     expect(notice.body).toBe('本地更新源暂时不可用')
     expect(notice.failure).toBe(true)
-    expect(notice.action).toEqual({ label: '查看更新', page: 'updates' })
+    expect(notice.action).toEqual({ label: '查看更新', page: 'settings', section: 'version' })
   })
 
   it('offers no destination for checks whose page would not help', () => {
@@ -83,7 +83,7 @@ describe('startup check notices', () => {
       failure: false,
       tone: 'ok',
       title: '已更新到 0.2.9',
-      body: '这一版的主要改动如下，另外 1 项在「更新」页可以看到。',
+      body: '这一版的主要改动如下，另外 1 项在「设置 › 版本更新」里可以看到。',
       items: ['第一件事', '第二件事', '第三件事'],
       action: { label: '知道了', dismiss: true },
     })
@@ -243,7 +243,7 @@ describe('toolTemplateFilledNotice', () => {
     const notice = toolTemplateFilledNotice(['grok', 'codex', 'claude'])
     expect(notice).toMatchObject({ id: 'template-filled', failure: false, tone: 'ok', action: { label: '知道了', dismiss: true } })
     expect(notice?.body).toContain('Claude Code、Codex、Grok CLI')
-    expect(notice?.body).toContain('「备份」页')
+    expect(notice?.body).toContain('「设置 › 备份迁移」')
     expect(notice?.secondaryAction).toBeUndefined()
   })
 })

@@ -1,60 +1,34 @@
-.v2-tutorial-layout {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  align-items: start;
-  gap: 24px;
-}
-.v2-tutorial-directory {
-  position: sticky;
-  top: 0;
-  max-height: calc(100vh - 150px);
-  overflow-y: auto;
-  padding: 2px 6px 12px 0;
-}
-.v2-tutorial-directory .xm-search { width: 100%; }
-.v2-tutorial-group { margin-top: 20px; }
-.v2-tutorial-group > p {
-  margin: 0 10px 8px;
-  font-size: var(--font-small);
-  font-weight: 600;
-  color: var(--text-2);
-}
-.v2-tutorial-group-more { padding-top: 12px; border-top: 1px solid var(--line); }
-.v2-tutorial-group-more > summary { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px; color: var(--text-2); font-size: var(--font-small); font-weight: 600; cursor: pointer; list-style: none; }
-.v2-tutorial-group-more > summary::-webkit-details-marker { display: none; }
-.v2-tutorial-group-more > summary > svg { flex-shrink: 0; }
-.v2-tutorial-group-more[open] > summary > svg { transform: rotate(90deg); }
-.v2-tutorial-group-more > summary:focus-visible,
-.v2-tutorial-extra > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.v2-tutorial-group button {
-  display: flex;
-  width: 100%;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-  min-height: 40px;
-  padding: 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-input);
-  color: var(--text-2);
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.v2-tutorial-group button:hover { background: var(--panel-hover); }
-.v2-tutorial-group button[aria-current='page'] {
-  color: var(--accent);
-  border-color: var(--line-2);
-  background: var(--accent-soft);
-  font-weight: 600;
-}
-.v2-tutorial-group button:focus-visible,
-.v2-tutorial-step-links a:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.v2-tutorial-search-count { margin: 18px 10px 8px; color: var(--text-2); font-size: var(--font-small); }
+/* v4 问8「卡片」：分类按钮和搜索在上，下面两列卡片；点开还是原来的文章，插图和复制示例都在。 */
+.v2-tutorial-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.v2-tutorial-filter > .xm-chips { flex: 1 1 auto; min-width: 0; }
+.v2-tutorial-filter > .xm-search { width: 250px; height: var(--control-sm); }
+.v2-tutorial-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.v2-tutorial-card { position: relative; display: flex; flex-direction: column; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel-solid); box-shadow: var(--surface-card-shadow); }
+.v2-tutorial-card:hover { border-color: var(--line-2); }
+/* 第一张（全部、没在搜时）是「从这里开始」：左上角一团金色的光，顶边一道金线。 */
+.v2-tutorial-card.is-lead { border-color: var(--soft-line); background: radial-gradient(460px 170px at 0% 0%, var(--glow, var(--accent-soft)), transparent 70%), var(--panel-solid); }
+.v2-tutorial-card.is-lead::before { content: ''; position: absolute; top: -1px; left: 18px; right: 40%; height: 1px; background: linear-gradient(90deg, transparent, var(--gold, var(--accent)) 40%, transparent); opacity: .8; }
+.v2-tutorial-card-head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.v2-tutorial-card-head > div { min-width: 0; }
+.v2-tutorial-card h2 { margin: 0; font-size: var(--font-body-l); font-weight: 600; line-height: 1.45; }
+/* 说明最多两行：长的那几篇（Mac 上装桌面端）不把同一行的另一张卡片撑高一截。 */
+.v2-tutorial-card-head p { display: -webkit-box; margin: 3px 0 0; overflow: hidden; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.v2-tutorial-tile { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 9px; corner-shape: squircle; background: var(--panel-2); box-shadow: var(--tile-ring); color: var(--text); }
+.v2-tutorial-card.is-lead .v2-tutorial-tile { background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--gold-tx, var(--accent)); }
+.v2-tutorial-card-steps { display: flex; gap: 4px; margin-top: auto; }
+.v2-tutorial-card-steps > i { flex: 1; height: 5px; border-radius: 3px; background: var(--track, var(--line-2)); }
+.v2-tutorial-card-steps > i.is-done { background: var(--fill, var(--accent)); }
+.v2-tutorial-card-foot { display: flex; align-items: center; gap: 10px; }
+.v2-tutorial-card-foot > span { flex: 1; min-width: 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
+/* 文章上面那条「全部教程」：回卡片列表。 */
+.v2-tutorial-back { display: inline-flex; align-items: center; gap: 2px; margin: -6px 0 10px -4px; padding: 2px 4px; border: 0; border-radius: 6px; background: none; color: var(--text-3); font: inherit; font-size: var(--font-small); cursor: pointer; }
+.v2-tutorial-back:hover { color: var(--text-2); }
+.v2-tutorial-back:focus-visible,
+.v2-tutorial-extra > summary:focus-visible,
+.v2-tutorial-step-links a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .v2-tutorial-article { min-width: 0; scroll-margin-top: 16px; }
 .v2-tutorial-article:focus { outline: none; }
-.v2-tutorial-article:focus-visible { outline: 2px solid var(--info); outline-offset: 4px; }
+.v2-tutorial-article:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
 .v2-tutorial-article-head { padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); }
 .v2-tutorial-meta { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: var(--font-small); }
 .v2-tutorial-meta > span { display: inline-flex; align-items: center; gap: 6px; }
@@ -74,7 +48,7 @@
 .v2-tutorial-progress-dots > button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--line-2); border-radius: 50%; background: transparent; color: var(--text-2); font: 600 var(--font-micro) var(--mono); cursor: pointer; }
 .v2-tutorial-progress-dots > button:hover { background: var(--panel-hover); color: var(--text); }
 .v2-tutorial-progress-dots > button[aria-current='step'] { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
-.v2-tutorial-progress-dots > button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.v2-tutorial-progress-dots > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .v2-tutorial-steps > li { scroll-margin-top: 54px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel-solid); }
 .v2-tutorial-step-title { display: flex; align-items: center; gap: 12px; }
 .v2-tutorial-step-title > span { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; border-radius: var(--radius-input); background: var(--accent-soft); color: var(--accent); font: 600 var(--font-body) var(--mono); }
@@ -86,10 +60,10 @@
 .v2-tutorial-instructions { padding-left: 24px; margin: 0 0 16px; line-height: 1.85; color: var(--text); }
 .v2-tutorial-instructions > li + li { margin-top: 6px; }
 .v2-tutorial-instructions > li::marker { color: var(--accent); font-weight: 600; }
-.v2-tutorial-expected { display: flex; gap: 8px; align-items: flex-start; margin: 16px 0; padding: 12px 14px; border-radius: var(--radius-input); background: var(--ok-soft); color: var(--ok); }
+.v2-tutorial-expected { display: flex; gap: 8px; align-items: flex-start; margin: 16px 0; padding: 12px 14px; border-radius: var(--radius-input); background: var(--ok-soft); color: var(--ok-tx); }
 .v2-tutorial-expected > svg { flex-shrink: 0; margin-top: 3px; }
 .v2-tutorial-expected p { margin: 0; font-size: var(--font-small); line-height: 1.8; color: var(--text-2); }
-.v2-tutorial-expected strong { display: block; color: var(--ok); font-weight: 600; }
+.v2-tutorial-expected strong { display: block; color: var(--ok-tx); font-weight: 600; }
 .v2-tutorial-step-body > .v2-tutorial-tip { font-size: var(--font-small); color: var(--text-2); padding-left: 12px; border-left: 2px solid var(--line-2); }
 .v2-tutorial-example { margin: 16px 0; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); padding: 14px 16px; }
 .v2-tutorial-example-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

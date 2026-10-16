@@ -4,23 +4,23 @@ import type { TutorialIllustrationId } from '../../registry/tutorials'
 import './tutorial-illustration.css'
 
 const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; description: string; hint: string }> = {
-  'desktop-home': { title: '点「打开」，进入 Codex 桌面端', description: '在星芒工具箱首页找到 Codex 桌面端这一行，点击打开。随后会出现独立的 Codex 桌面窗口，在新窗口里输入问题即可。', hint: '打开后，去新出现的 Codex 窗口里提问。' },
-  'desktop-install': { title: '认准「Codex 桌面端」这一行', description: '在星芒工具箱首页找到 Codex 桌面端，未安装时点击安装，Windows 和 Mac 都一样。已经安装过的用户先点击首页重新检测。', hint: '图示为 Windows 安装；Mac 上同样点「安装」，装好后在「应用程序」里叫 ChatGPT。' },
-  'desktop-config': { title: '用默认选择，保存配置', description: '在 Codex 桌面端配置中选择使用星芒账号，访问密钥选择自动准备，默认模型保留自动选择的结果，然后点击保存配置。', hint: '保存只改账号、密钥和模型，其他设置会留着。' },
+  'desktop-home': { title: '点「打开」，进入 Codex 桌面端', description: '在星芒工具箱首页找到 Codex 桌面端这张卡片，点击打开。随后会出现独立的 Codex 桌面窗口，在新窗口里输入问题即可。', hint: '打开后，去新出现的 Codex 窗口里提问。' },
+  'desktop-install': { title: '认准「Codex 桌面端」这张卡片', description: '在星芒工具箱首页找到 Codex 桌面端，未安装时点击安装，Windows 和 Mac 都一样。已经安装过的用户先点击首页重新检测。', hint: '图示为 Windows 安装；Mac 上同样点「安装」，装好后在「应用程序」里叫 ChatGPT。' },
+  'desktop-config': { title: '用默认选择，保存配置', description: '在 Codex 桌面端配置中选择当前账号，访问密钥选择自动准备，默认模型保留自动选择的结果，然后点击保存并检测。', hint: '保存只改账号、密钥和模型，其他设置会留着。' },
   'desktop-message': { title: '先发一句话，看看它的回复', description: '在独立的 Codex 桌面窗口里输入一个简单的中文问题，例如请用中文告诉我你能帮我做什么，再发送并等待回复。简单提问不用先选项目文件夹。图中回复仅为示意。', hint: '能收到回复，就可以开始问自己的问题了。' },
   'desktop-project': { title: '处理文件时，选择本地项目', description: '需要处理本地文件时，在 Codex 桌面端里选择项目文件夹，再输入具体任务，等待并阅读回复。简单提问可以直接新建对话。示例问题要求先说明项目内容，不修改文件；图中回复仅为示意。', hint: '先用练习项目熟悉操作；允许改文件前，先看清它准备做什么。' },
   home: { title: '先认识三个常用入口', description: '首页工具区用于安装、配置和打开工具；左侧聊天可以直接提问；左下角账号入口用于登录和查看余额。', hint: '首页管工具，聊天直接用，左下角管账号。' },
   account: { title: '先登录自己的星芒账号', description: '点击工具箱左下角的未登录账号区域，按提示登录。完成后，左下角会显示自己的账号昵称，先确认登录的是自己准备使用的账号。图中不包含真实账号。', hint: '左下角出现自己的账号昵称，就完成这一步了。' },
-  install: { title: '找到工具，点击安装', description: '在首页找到想使用的工具，点击它右侧的安装。缺的 Node.js 会自动准备好，首页「运行环境」那张卡里能看到装好了没有。', hint: '先装一个需要的工具，不必一次全部安装。' },
-  config: { title: '确认来源、密钥和模型', description: '配置窗口内选择星芒账号，确认访问密钥与默认模型，然后点击保存配置；其他自定义设置会保留。', hint: '点「保存配置」即可，其他自定义设置会保留。' },
-  launch: { title: '在自己的文件夹里开始', description: '点击工具行的打开，按提示选择工作文件夹。工具会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
-  chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框上方选择文本对话、分组和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认分组和模型，再描述你希望完成的事。' },
+  install: { title: '找到工具，点击安装', description: '在首页找到想使用的工具，点击卡片右下角的安装。缺的 Node.js 会自动准备好，首页「运行环境」那张卡里能看到装好了没有。', hint: '先装一个需要的工具，不必一次全部安装。' },
+  config: { title: '确认来源、密钥和模型', description: '配置窗口内选择当前账号，确认访问密钥与默认模型，然后点击保存配置；其他自定义设置会保留。', hint: '点「保存配置」即可，其他自定义设置会保留。' },
+  launch: { title: '在自己的文件夹里开始', description: '点击工具卡片上的打开，按提示选择工作文件夹。工具会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
+  chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框底部选择文本对话、分组和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认分组和模型，再描述你希望完成的事。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
-  acceleration: { title: '选线路，再开始加速', description: '在游戏加速页面选择加速线路，可以选智能分配，再点击开始加速；加速只改这台电脑的系统代理，连接后要换线路须先停止加速。不使用时点击停止加速。', hint: '连接后才计时；用完点击「停止加速」。' },
-  extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点添加连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
-  skills: { title: '技能要导入到对应的工具', description: '在技能页面先选择工具，例如 Codex CLI，再点击导入技能。列表可查看技能的来源与范围；系统内置技能只能查看。', hint: '不同工具的导入能力不同；先选工具，再看可用操作。' },
-  plugins: { title: '在插件页面选择工具和来源', description: '在插件页面选择要使用插件的工具，再点击添加插件；已安装和市场是两个不同页签，市场能力以当前工具实际支持为准。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
-  backup: { title: '改设置前，先留一份配置备份', description: '在备份页面的马上备份区域选择工具，点击创建备份。随后核对列表中的工具和时间，通过预览确认包含的配置文件。图中未创建真实备份。', hint: '备份范围是工具配置；项目代码需要另外备份。' },
+  acceleration: { title: '选线路，再开启加速', description: '在「设置 › 网络加速」的游戏加速卡上选线路，可以选「自动选择」，再点「开启加速」；加速只改这台电脑的系统代理，连接后要换线路须先停止加速。不使用时点击停止加速。', hint: '连接后才计时；用完点击「停止加速」。' },
+  extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点自定义连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
+  skills: { title: '技能要导入到对应的工具', description: '在技能页面先选择工具，例如 Codex CLI，再点击从文件夹导入。列表可查看技能的来源与范围；系统自带的技能只能查看。', hint: '不同工具的导入能力不同；先选工具，再看可用操作。' },
+  plugins: { title: '在插件页面选择工具和来源', description: '在插件页面选择要使用插件的工具，再点击添加插件；装好的在上面的列表里，下面是官方目录，市场能力以当前工具实际支持为准。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
+  backup: { title: '改设置前，先留一份配置备份', description: '在「设置 › 备份迁移」点「立即备份」，选工具。随后核对列表中的工具和时间，通过预览确认包含的配置文件。图中未创建真实备份。', hint: '备份范围是工具配置；项目代码需要另外备份。' },
   health: { title: '有问题时，从检查开始', description: '进入检查页面运行检查，阅读异常项给出的处理建议，完成处理后重新检查；需要帮助时进入帮助与客服。', hint: '先看具体异常，再按建议处理，完成后重新检查。' },
 }
 
@@ -42,7 +42,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       return <div className="tutorial-illustration-desktop-home">
         <Pane title={<><Marker>1</Marker>星芒工具箱 · 首页</>}>
           <div className="tutorial-illustration-tool"><Monitor size={25} /><strong>Codex 桌面端</strong><Control primary>打开<ArrowUpRight size={14} /></Control></div>
-          <p className="tutorial-illustration-note">找到这一行，点右侧「打开」</p>
+          <p className="tutorial-illustration-note">找到这张卡片，点右下角「打开」</p>
         </Pane>
         <ArrowRight className="tutorial-illustration-arrow" size={22} />
         <Pane title={<><Marker>2</Marker>Codex 桌面端</>}>
@@ -57,10 +57,10 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'desktop-config':
       return <div className="tutorial-illustration-config">
-        <div className="tutorial-illustration-row"><Monitor size={19} /><strong>Codex 桌面端</strong><Control primary><Marker>1</Marker>使用星芒账号</Control></div>
-        <div className="tutorial-illustration-field"><span>访问密钥（Key）</span><span><KeyRound size={14} />自动准备（推荐）<ChevronDown size={14} /></span></div>
+        <div className="tutorial-illustration-row"><Monitor size={19} /><strong>Codex 桌面端</strong><Control primary><Marker>1</Marker>当前账号</Control></div>
+        <div className="tutorial-illustration-field"><span>访问密钥</span><span><KeyRound size={14} />自动准备（推荐）<ChevronDown size={14} /></span></div>
         <div className="tutorial-illustration-field"><span>默认模型</span><span>保留自动选择的模型<ChevronDown size={14} /></span></div>
-        <div className="tutorial-illustration-row tutorial-illustration-save"><span>不用自己填写密钥</span><Control primary><Marker>2</Marker>保存配置<ArrowRight size={14} /></Control></div>
+        <div className="tutorial-illustration-row tutorial-illustration-save"><span>不用自己填写密钥</span><Control primary><Marker>2</Marker>保存并检测<ArrowRight size={14} /></Control></div>
       </div>
     case 'desktop-message':
       return <Pane title={<><Monitor size={17} />Codex 桌面端 · 新打开的窗口</>}>
@@ -105,14 +105,14 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'install':
       return <div className="tutorial-illustration-install">
-        <div className="tutorial-illustration-row"><span><Marker>1</Marker>首页 · 还可以装</span><span className="tutorial-illustration-muted">按需选择</span></div>
+        <div className="tutorial-illustration-row"><span><Marker>1</Marker>首页 · 工具</span><span className="tutorial-illustration-muted">按需选择</span></div>
         <div className="tutorial-illustration-tool tutorial-illustration-highlight"><Terminal size={24} /><div className="tutorial-illustration-grow"><strong>Claude Code</strong><small>在终端里和 AI 一起写代码</small></div><Control primary><Download size={15} />安装</Control><Marker>2</Marker></div>
         <div className="tutorial-illustration-row tutorial-illustration-runtime"><Settings2 size={16} /><span>运行环境</span><span className="tutorial-illustration-muted">Node.js · Python</span><ArrowRight size={16} /><span>缺什么，再准备什么</span></div>
       </div>
     case 'config':
       return <div className="tutorial-illustration-config">
-        <div className="tutorial-illustration-row"><span>用哪个账号使用 AI</span><Control primary><Check size={14} />使用星芒账号</Control></div>
-        <div className="tutorial-illustration-field"><span>访问密钥（Key）</span><span><KeyRound size={14} />自动准备（推荐）<ChevronDown size={14} /></span></div>
+        <div className="tutorial-illustration-row"><span>用哪个账号使用 AI</span><Control primary><Check size={14} />当前账号</Control></div>
+        <div className="tutorial-illustration-field"><span>访问密钥</span><span><KeyRound size={14} />自动准备（推荐）<ChevronDown size={14} /></span></div>
         <div className="tutorial-illustration-field"><span>默认模型</span><span>选择想用的模型<ChevronDown size={14} /></span></div>
         <div className="tutorial-illustration-row tutorial-illustration-save"><span><Marker>1</Marker>核对密钥和模型</span><Control primary>保存配置</Control><Marker>2</Marker></div>
       </div>
@@ -135,26 +135,26 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'acceleration':
       return <div className="tutorial-illustration-acceleration">
-        <Pane title={<><Globe2 size={18} />加速线路</>}><div className="tutorial-illustration-row"><Marker>1</Marker><strong>智能分配</strong><ChevronDown size={16} /></div><p className="tutorial-illustration-note">也可选择线路并检测 Ping</p></Pane>
-        <div className="tutorial-illustration-acceleration-actions"><div className="tutorial-illustration-row"><strong>加速范围</strong><span className="tutorial-illustration-muted">只改这台电脑的系统代理</span></div><Control primary><Marker>2</Marker><Zap size={16} />开始加速</Control><small>不用时记得停止加速</small></div>
+        <Pane title={<><Globe2 size={18} />线路</>}><div className="tutorial-illustration-row"><Marker>1</Marker><strong>自动选择</strong><ChevronDown size={16} /></div><p className="tutorial-illustration-note">也可选择线路，菜单里能重新测速</p></Pane>
+        <div className="tutorial-illustration-acceleration-actions"><div className="tutorial-illustration-row"><strong>加速范围</strong><span className="tutorial-illustration-muted">只改这台电脑的系统代理</span></div><Control primary><Marker>2</Marker><Zap size={16} />开启加速</Control><small>不用时记得停止加速</small></div>
       </div>
     case 'extensions':
       return <div className="tutorial-illustration-extensions">
-        <div className="tutorial-illustration-row"><Plug size={19} /><strong>外接工具</strong><Control>添加连接</Control><Marker>2</Marker></div>
+        <div className="tutorial-illustration-row"><Plug size={19} /><strong>外接工具</strong><Control>自定义连接</Control><Marker>2</Marker></div>
         <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
         <div className="tutorial-illustration-row tutorial-illustration-runtime"><ShieldCheck size={20} /><div><strong>确认它需要哪些权限</strong><small>只添加任务确实需要的连接</small></div></div>
       </div>
     case 'skills':
       return <div className="tutorial-illustration-extensions">
-        <div className="tutorial-illustration-row"><Sparkles size={19} /><strong>技能</strong><Control>导入技能</Control><Marker>2</Marker></div>
+        <div className="tutorial-illustration-row"><Sparkles size={19} /><strong>技能</strong><Control>从文件夹导入</Control><Marker>2</Marker></div>
         <div className="tutorial-illustration-options"><Marker>1</Marker><Control>Claude Code</Control><Control primary>Codex CLI</Control></div>
-        <div className="tutorial-illustration-row tutorial-illustration-runtime"><FileText size={20} /><div><strong>看清来源与范围</strong><small>系统内置 · 我的（全局） · 当前项目</small></div></div>
+        <div className="tutorial-illustration-row tutorial-illustration-runtime"><FileText size={20} /><div><strong>看清来源与范围</strong><small>系统自带 · 我的（全局） · 当前项目</small></div></div>
       </div>
     case 'plugins':
       return <div className="tutorial-illustration-extensions">
         <div className="tutorial-illustration-row"><Package size={19} /><strong>插件</strong><Control>添加插件</Control><Marker>2</Marker></div>
         <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
-        <div className="tutorial-illustration-options"><Control primary>已安装</Control><Control>市场</Control><span className="tutorial-illustration-muted">市场能力以当前工具为准</span></div>
+        <div className="tutorial-illustration-options"><Control primary>已装到 Claude Code</Control><Control>官方目录</Control><span className="tutorial-illustration-muted">市场能力以当前工具为准</span></div>
       </div>
     case 'backup':
       return <div className="tutorial-illustration-backup">

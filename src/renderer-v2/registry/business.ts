@@ -1,4 +1,6 @@
+import { Archive, Bell, Globe, Play, RefreshCw, Shield, Sun, Terminal, type LucideIcon } from 'lucide-react'
 import type { UpdateFailedStep, UpdateSnapshot } from '../../../electron/ipc-contract'
+import type { PlatformNotificationKind } from '../../../electron/platform/contract'
 import { describeUpdateDiskShortfall } from '../../../electron/disk-space-copy'
 import { connectionRouteSettings } from './connection-routes'
 /**
@@ -19,41 +21,103 @@ export const updatesTutorialTopic = 'safety'
 /** 同理：「进阶：安装与使用命令行工具」那一章；设置里「用哪个终端打开工具」跳到这里。 */
 export const cliTutorialTopic = 'cli'
 // keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
-// 界面上不显示。次序就是个人中心左边子导航从上到下的次序（分组见 accountTabGroups）。
+// 界面上不显示。次序就是个人中心顶上那排页签从左到右的次序。
+// v4 把原来的九个分页并成这六个：「我的订单」「异步任务」「登录设备」成了页签里的一节，
+// 搜它们的说法挂在下面的 accountSections 上，不再写进页签自己的 keywords，免得同一句搜出两条。
 export const accountTabs = [
-  { value: 'overview', label: '我的账号', keywords: ['账号', '资料', '邮箱', '密码', '改密码', '修改密码'] },
-  { value: 'recharge', label: '充值与订阅', keywords: ['充值', '余额', '买', '购买', '续费', '付款', '支付', '订阅', '套餐', '兑换', '兑换码', '充值码', '扣费偏好', '先扣'] },
-  { value: 'orders', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'] },
+  { value: 'overview', label: '账号概览', keywords: ['账号', '我的账号', '资料', '头像', '名字', '显示名称', '邮箱', '当前登录'] },
+  { value: 'recharge', label: '充值订阅', keywords: ['充值', '余额', '买', '购买', '续费', '付款', '支付', '订阅', '套餐', '兑换', '兑换码', '充值码', '扣费偏好', '扣费顺序', '先扣'] },
+  { value: 'usage', label: '用量账单', keywords: ['用量', '统计', '消耗', '花了多少', '账单', '明细', '调用明细', '用量看板', '扣费', '消费', '扣了多少', '花费'] },
+  { value: 'keys', label: '密钥管理', keywords: ['密钥', 'Key', 'API Key', '令牌', '秘钥', 'token', '限额', '额度上限'] },
+  { value: 'security', label: '账号安全', keywords: ['安全', '密码', '设备'] },
   { value: 'invite', label: '邀请返利', keywords: ['邀请', '返利', '推广', '分享'] },
-  { value: 'dashboard', label: '用量看板', keywords: ['用量', '统计', '消耗', '花了多少'] },
-  { value: 'usage', label: '调用明细', keywords: ['明细', '扣费', '消费', '扣了多少', '花费'] },
-  { value: 'tasks', label: '异步任务', keywords: ['任务', '生成进度'] },
-  { value: 'keys', label: '密钥', keywords: ['Key', 'API Key', '令牌', '秘钥', 'token', '限额', '额度上限'] },
-  { value: 'devices', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'] },
 ] as const
 export type AccountTabValue = (typeof accountTabs)[number]['value']
-/** 个人中心左边子导航分的三组，每组上面一行小灰字组名；每个分页只在一组里出现一次（registry 测试钉着）。 */
-export const accountTabGroups: ReadonlyArray<{ label: string; tabs: readonly AccountTabValue[] }> = [
-  { label: '账号与充值', tabs: ['overview', 'recharge', 'orders', 'invite'] },
-  { label: '用量', tabs: ['dashboard', 'usage', 'tasks'] },
-  { label: '密钥与设备', tabs: ['keys', 'devices'] },
-]
 /**
- * 个人中心页头「切换账号」那颗按钮：顶部搜索搜「切换账号」时，个人中心那一条落到这里，
- * 不换分页。和设置里「切换账号」那一行同名，各在各的页上找。
+ * 个人中心页头「编辑资料」那颗铅笔：顶部搜索搜「编辑资料」「头像」时落到这里，打开编辑资料弹窗。
+ */
+export const accountProfileAnchor = 'edit-profile'
+/**
+ * 账号概览「当前登录」那一条里的「切换账号」：顶部搜索搜「切换账号」时，个人中心那一条落到这里。
  */
 export const accountSwitchAnchor = 'switch-account'
 export const accountSwitchKeywords = ['换账号', '切账号', '换号'] as const
-export const settingsGroups = [
-  { value: 'appearance', label: '外观', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
-  { value: 'startup', label: '启动与关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化'] },
-  { value: 'tools', label: '工具', keywords: ['工作文件夹', '文件夹', '终端', '安装位置', '装在哪'] },
-  { value: 'network', label: '网络', keywords: ['下载来源', '网络', '证书', '连不上'] },
-  { value: 'notifications', label: '通知', keywords: ['通知', '提醒', '消息提示'] },
-  { value: 'account', label: '账号', keywords: ['记住密码', '退出登录', '登出'] },
-  { value: 'privacy', label: '隐私与数据', keywords: ['隐私', '数据', '崩溃', '上报', '日志', '统计'] },
-  { value: 'about', label: '更新与关于', keywords: ['版本', '版本号', '许可'] },
+/**
+ * 页签里的几处落点。原来单独一个分页的（我的订单、异步任务、登录设备）和挪了地方的（修改密码从
+ * 「我的账号」挪到账号安全），顶部搜索、教程、系统通知、付款回跳还按原来的名字跳过来，落到那个
+ * 页签的那一节、亮一下。value 同时是页面上那一节的 data-anchor。
+ * gated：要看当前账号能不能用（visibleAccountTab 按 value 判断）；不写的哪种账号都有。
+ */
+export const accountSections = [
+  { value: accountSwitchAnchor, tab: 'overview', label: '切换账号', keywords: accountSwitchKeywords },
+  { value: accountProfileAnchor, tab: 'overview', label: '编辑资料', keywords: ['改名', '改头像', '换头像', '显示名称'] },
+  { value: 'orders', tab: 'recharge', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'], gated: true },
+  { value: 'tasks', tab: 'usage', label: '异步任务', keywords: ['任务', '生成进度'], gated: true },
+  { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },
+  { value: 'remember-password', tab: 'security', label: '记住密码', keywords: [] },
+  { value: 'devices', tab: 'security', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'], gated: true },
+] as const satisfies ReadonlyArray<{ value: string; tab: AccountTabValue; label: string; keywords: readonly string[]; gated?: boolean }>
+export type AccountSectionValue = (typeof accountSections)[number]['value']
+/** 外面点名要去的地方：一个页签，或者页签里的一处落点。 */
+export type AccountLanding = AccountTabValue | AccountSectionValue
+// 只剩旧名字的分页：「用量看板」并进了用量账单最上面，没有单独的落点。
+const retiredAccountTabs: Readonly<Record<string, AccountTabValue>> = { dashboard: 'usage' }
+/**
+ * 外面给的名字（页签、落点或旧分页名）落到哪个页签、要不要翻到哪一节；认不出的回到账号概览。
+ * 不在这里看账号能不能用，那由个人中心按 visibleAccountTab 再收一次。
+ */
+export function resolveAccountLanding(value: string | undefined): { tab: AccountTabValue; anchor?: AccountSectionValue } {
+  const tab = accountTabs.find((entry) => entry.value === value)
+  if (tab) return { tab: tab.value }
+  const section = accountSections.find((entry) => entry.value === value)
+  if (section) return { tab: section.tab, anchor: section.value }
+  return { tab: (value !== undefined && Object.hasOwn(retiredAccountTabs, value) ? retiredAccountTabs[value] : undefined) ?? 'overview' }
+}
+/**
+ * 「反馈与客服」的两个页签（v4 第 10 批）：留言给客服、看运行日志。navigate('feedback', …) 的第二个参数是
+ * 页签，或下面那个落点；不写就停在上回看的那个页签（头一回是「留言反馈」）。
+ */
+export const feedbackTabs = [
+  { value: 'form', label: '留言反馈' },
+  { value: 'log', label: '运行日志' },
 ] as const
+export type FeedbackTabValue = (typeof feedbackTabs)[number]['value']
+/**
+ * 装工具没装上时错误框的「查看日志」：落到运行日志，来源先选好「安装与更新」。「安装卸载」页拆掉以前，
+ * 这一下去的是那一页的「安装日志」卡；装的过程本来就逐行记进了运行日志（主进程 source 为 install）。
+ */
+export const feedbackInstallLogSection = 'install-log'
+export function resolveFeedbackLanding(section: string | undefined): { tab: FeedbackTabValue; installLog?: true } | null {
+  if (section === feedbackInstallLogSection) return { tab: 'log', installLog: true }
+  const tab = feedbackTabs.find((entry) => entry.value === section)
+  return tab ? { tab: tab.value } : null
+}
+// v4 的八组，组名都是四个字（字表批08）。「账号」组拆走了：切换账号、退出登录在账号概览，记住密码在账号安全。
+// 备份迁移的 value 不能叫 backups：那是「工具配置备份」那一行的 id，组和行撞名，顶部搜索会把那一行当成一组打开。
+export const settingsGroups = [
+  { value: 'appearance', label: '外观显示', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
+  { value: 'startup', label: '启动关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化'] },
+  { value: 'tools', label: '工具管理', keywords: ['工作文件夹', '文件夹', '终端', '安装位置', '装在哪'] },
+  { value: 'network', label: '网络加速', keywords: ['加速', '游戏', '下载来源', '网络', '证书', '连不上'] },
+  { value: 'notifications', label: '消息通知', keywords: ['通知', '提醒', '消息提示'] },
+  { value: 'backup', label: '备份迁移', keywords: ['备份', '恢复', '还原', '迁移', '换电脑'] },
+  { value: 'privacy', label: '隐私数据', keywords: ['隐私', '数据', '崩溃', '上报', '日志', '统计', '许可'] },
+  { value: 'about', label: '版本更新', keywords: ['更新', '升级', '版本', '版本号'] },
+] as const
+export const settingsGroupIcons: Record<SettingsGroupId, LucideIcon> = { appearance: Sun, startup: Play, tools: Terminal, network: Globe, notifications: Bell, backup: Archive, privacy: Shield, about: RefreshCw }
+/**
+ * 一组里分段的小标题（外观显示的「文字与缩放」「辅助与显示」……）。行按 settingsItems 的次序排，
+ * 挨着的几行 section 相同就画在同一个小标题、同一张卡里；没写 section 的几行画在不带标题的卡里。
+ */
+export const settingsSections = [
+  { value: 'text-scale', group: 'appearance', label: '文字与缩放' },
+  { value: 'display', group: 'appearance', label: '辅助与显示' },
+  { value: 'routes', group: 'network', label: '连接线路' },
+  { value: 'download', group: 'network', label: '下载与连接' },
+  { value: 'reminders', group: 'notifications', label: '提醒哪些事' },
+  { value: 'transfer', group: 'backup', label: '搬到新电脑' },
+] as const satisfies ReadonlyArray<{ value: string; group: SettingsGroupId; label: string }>
+export type SettingsSectionId = (typeof settingsSections)[number]['value']
 export const scopeOptions = [
   { value: 'all', label: '全部范围' },
   { value: 'user', label: '我的（全局）' },
@@ -75,7 +139,7 @@ export const updateLabels = {
 /**
  * 更新失败分三步说。只报一句「更新没有完成」时，断网点一次「检查更新」也会被
  * 告知更新装不上、按钮还写着「重新下载」——更新其实根本没开始下。标题和按钮都
- * 只在这里定义一次，首页气泡和更新页读同一份。
+ * 只在这里定义一次，首页气泡和版本更新卡读同一份。
  */
 export const updateFailureLabels = {
   check: { title: '检查更新失败', retry: '重试' },
@@ -90,7 +154,7 @@ export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
 /**
  * 发布者撤回了本机这个版本（状态文件的 badVersions），或者找到的「新版本」其实比
  * 本机旧（退回上一个好版本）时，照常说「发现新版本」就是在骗人。这几句也只在这里
- * 定义一次，更新页与首页气泡读同一份。
+ * 定义一次，版本更新卡与首页气泡读同一份。
  */
 type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall' | 'installMethod'>
 export function updateCardTitle(update: UpdateOfferState): string {
@@ -98,14 +162,14 @@ export function updateCardTitle(update: UpdateOfferState): string {
   if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
   return updateLabels[update.phase]
 }
-/** 更新页「当前版本」下面那行「新版本」写哪一版。退回旧版本不是新版本，那时没有这一行。 */
+/** 「有新版本 v{y}」写哪一版。退回旧版本不是新版本，那时不这么写。 */
 export function updateNewVersion(update: Pick<UpdateSnapshot, 'currentVersion' | 'availableVersion' | 'rollback'> | null | undefined): string | null {
   if (!update?.availableVersion || update.rollback || update.availableVersion === update.currentVersion) return null
   return update.availableVersion
 }
 /**
- * 人就在更新页时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
- * 页面上写着的同一件事，不弹；离开更新页照旧弹。别的几种（「这个版本有已知问题」等）照旧。
+ * 人就在「设置 › 版本更新」时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
+ * 版本卡上写着的同一件事，不弹；离开那一组照旧弹。别的几种（「这个版本有已知问题」等）照旧。
  */
 export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<UpdateSnapshot, 'error' | 'failedStep'>): boolean {
   if (update.error) return update.failedStep === 'download'
@@ -121,20 +185,20 @@ export function updateBubbleTitle(update: UpdateOfferState): string {
 }
 /**
  * Windows 上账号不在管理员组（update.installNeedsAdminPassword）：下好的新版本不自动装，首页气泡
- * 说整句，更新页拆成标题和正文。主进程 desktop-notifications.ts 的系统通知是同一句，两边字面量
+ * 说整句，版本更新卡拆成标题和正文。主进程 desktop-notifications.ts 的系统通知是同一句，两边字面量
  * 要一致。
  */
 export const standardAccountUpdateNotice = {
   title: '这台电脑的账号不是管理员，装更新时要输入管理员密码',
-  body: '让有管理员账号的人点一次「重启安装」，或者找客服。',
+  body: '让有管理员账号的人点一次「重启并安装」，或者找客服。',
 } as const;
 export const standardAccountUpdateText = `${standardAccountUpdateNotice.title}。${standardAccountUpdateNotice.body}`;
-// 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进更新页。
+// 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进「版本更新」。
 // 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
 export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
   if (installMethod === 'system-installer') {
-    if (phase === 'downloaded') return '已经下好了，到更新页点「安装新版本」就能装上。';
-    return autoUpdate ? '正在后台下载，下好后到更新页点「安装新版本」。' : '查看更新内容和安装状态。';
+    if (phase === 'downloaded') return '已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。';
+    return autoUpdate ? '正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。' : '查看更新内容和安装状态。';
   }
   if (phase === 'downloaded' && installNeedsAdminPassword) return standardAccountUpdateText;
   if (!autoUpdate) return '查看更新内容和安装状态。';
@@ -179,7 +243,7 @@ export function formatDownloadRemaining(seconds: number): string {
 /**
  * 进度条下面那行：「已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 1 分钟」。
  * 速度和剩余时间用主进程算好的近 10 秒平均值；刚开始、或者速度算不出来时只说下了多少，
- * 不知道总大小时连「共多少」也不说。更新页和强制更新那道门读同一份。
+ * 不知道总大小时连「共多少」也不说。版本卡和强制更新那道门读同一份。
  */
 export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null | undefined): string | null {
   if (!progress) return null;
@@ -194,27 +258,29 @@ export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null
   }
   return parts.join(' · ');
 }
-// 更新页顶上那句。自动更新开着时软件确实会在退出或下次打开时自己装，再写「不会自己
-// 重启」就是在说反话。账号不是管理员的 Windows 电脑只在后台下、不自己装，也不能说会装上。
-export function updatesPageLead(autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
-  if (autoUpdate && installMethod === 'system-installer') {
-    return '新版本会在后台下好，下好后点「安装新版本」，在弹出的安装窗口里输入开机密码就装上了。';
-  }
-  if (autoUpdate && installNeedsAdminPassword) return '新版本会在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。';
-  return autoUpdate
-    ? '新版本会在后台下好，等你关掉软件或下次打开时自动装上，不打断你正在用的。'
-    : '新版本什么时候安装由你决定，不会自己重启。';
-}
-/** 「自动更新」开关下面那句。设置「更新与关于」和「更新」页各有一个这个开关，说的是同一句。 */
+/**
+ * 「自动下载更新」那一行的说明（v4 字表批09）。原来版本卡顶上那句页头说明拆掉了，意思挪到这里：
+ * 只有普通 Windows 和 Mac 是「关掉星芒时装上」；交给系统安装器的（Linux）下好后要他点安装，
+ * 账号不是管理员的 Windows 电脑要输管理员密码，都不能说会自己装上。
+ */
 export function autoUpdateSettingDescription(installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
-  if (installMethod === 'system-installer') return '新版本在后台下好，下好后提醒你点安装，不会自己弹出安装窗口。关掉后有新版本先提醒你，由你点下载';
-  return installNeedsAdminPassword
-    ? '新版本在后台下好；这台电脑装更新时要输入管理员密码，不会自动装上。关掉后改成先提醒你，由你点安装'
-    : '新版本在后台下好，等你关掉软件或下次打开时自动装上，不会打断正在用的你。关掉后改成先提醒你，由你点安装';
+  if (installMethod === 'system-installer') return '下好后提醒你点安装';
+  return installNeedsAdminPassword ? '下好后要输入管理员密码才能装' : '下好后在你关掉星芒时装上';
 }
-/** 更新页上「装」那颗按钮。交给系统安装器（Linux）时软件只关掉、不会自己重开，不能叫「重启安装」。*/
+/**
+ * 版本卡右上角的小标签：「有新版本 v{y}」「已下载，重启后生效」，其余照旧用 updateCardTitle。
+ * 「重启后生效」只对普通 Windows 和 Mac 成立：Linux 要点「安装新版本」，账号不是管理员的 Windows
+ * 要输管理员密码，这两种照旧写「更新已下载」，下一步由卡里那条提示和按钮说。
+ */
+export function updateStatusLabel(update: UpdateOfferState & Pick<UpdateSnapshot, 'installNeedsAdminPassword'>): string {
+  const next = update.phase === 'available' && !update.rollback ? updateNewVersion(update) : null
+  if (next) return `有新版本 v${next}`
+  if (update.phase === 'downloaded' && update.installMethod !== 'system-installer' && !update.installNeedsAdminPassword) return '已下载，重启后生效'
+  return updateCardTitle(update)
+}
+/** 版本卡上「装」那颗按钮。交给系统安装器（Linux）时软件只关掉、不会自己重开，不能叫「重启并安装」。*/
 export function updateInstallActionLabel(installMethod: UpdateOfferState['installMethod']): string {
-  return installMethod === 'system-installer' ? '安装新版本' : '重启安装';
+  return installMethod === 'system-installer' ? '安装新版本' : '重启并安装';
 }
 export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
@@ -304,130 +370,103 @@ export const taskFilterFields = [
   },
   { key: 'action', label: '动作' },
 ]
-export const skinOptions = [
-  { value: 'dawn', label: '晨曦金', bright: '#E6BF7A', dark: '#0B1F3B' },
-  { value: 'obsidian', label: '极夜黑金', bright: '#EDD39B', dark: '#101114' },
-  { value: 'mist', label: '雾青', bright: '#7BDDD0', dark: '#0C1A1E' },
-  { value: 'aurora', label: '极光紫', bright: '#C0B6FB', dark: '#120F22' },
-] as const
-export const notificationOptions = [
-  {
-    value: 'install',
-    label: '安装 / 更新结果',
-    description: '工具装好或没装上时提醒你',
-  },
-  {
-    value: 'balance',
-    label: '余额不足',
-    description: '星芒美元余额低于 $5 时提醒',
-  },
-  {
-    value: 'task',
-    label: '异步任务完成',
-    description: '聊天回复、图片和异步任务完成时提醒你（正看着窗口时不提醒）',
-  },
-  {
-    value: 'cliUpdate',
-    label: '工具有新版本',
-    description: '你装的工具出新版本时提醒一次',
-  },
-  {
-    value: 'announcement',
-    label: '新公告',
-    description: '软件在后台时有新公告，提醒一次',
-  },
-  {
-    value: 'spend',
-    label: '花费突然变多',
-    description: '一小时里用掉的钱比平时多很多时提醒你',
-  },
-  {
-    value: 'acceleration',
-    label: '加速提醒',
-    description: '免费加速还剩 5 分钟、用完自动断开、加速意外断开时各提醒一次',
-  },
-  {
-    value: 'cliTrouble',
-    label: '终端里没回上',
-    description: '终端里的 Claude Code、Grok 因额度、Key 或服务问题没回上时，告诉你原因和怎么办，同一原因半小时只提醒一次',
-  },
-  {
-    value: 'cliTurn',
-    label: '终端里的 AI 做完或在等你',
-    description: '终端里的 AI 一轮跑了一分钟以上做完时，或停下来等你确认时提醒你',
-  },
-] as const
+export interface NotificationOption {
+  value: PlatformNotificationKind
+  label: string
+  /** 只有两项要说清楚什么时候提醒；其余的标题就说明白了，不另写一句。 */
+  description?: string
+}
+// 次序照 v4：钱的事在前，终端里的事其次，装工具、出新版、任务、公告和加速在后（字表批08）。
+// 「做完了」和「在等你回复」还是一个开关：主进程只有一个 cliTurn 偏好。
+export const notificationOptions: readonly NotificationOption[] = [
+  { value: 'balance', label: '余额不足', description: '余额低于 $5 时提醒' },
+  { value: 'spend', label: '花费突然变多', description: '一小时内花费超过平时 5 倍时提醒' },
+  { value: 'cliTurn', label: '终端里的 AI 做完或在等你' },
+  { value: 'cliTrouble', label: '终端里没回上' },
+  { value: 'install', label: '安装和更新结果' },
+  { value: 'cliUpdate', label: '工具有新版本' },
+  { value: 'task', label: '后台任务做完' },
+  { value: 'announcement', label: '公告与优惠' },
+  { value: 'acceleration', label: '加速提醒' },
+]
 export type SettingsGroupId = (typeof settingsGroups)[number]['value']
 /**
- * 设置里不是每台电脑、每种情况都有的那几行：Mac 才有「卸载星芒」，别的电脑是「卸载工具或星芒」；
- * 支持自动更新的电脑才有「自动更新」；有游戏加速的电脑才有「加速提醒」；登录了才有「退出登录」。
+ * 设置里不是每台电脑都有的那几行：Mac 的「卸载星芒」能在软件里卸，别的电脑那一行只说怎么卸；
+ * 支持自动更新的电脑才有「自动下载更新」；有游戏加速的电脑才有游戏加速卡和「加速提醒」。
  */
-export type SettingsItemCondition = 'mac' | 'notMac' | 'autoUpdate' | 'acceleration' | 'signedIn'
+export type SettingsItemCondition = 'mac' | 'notMac' | 'autoUpdate' | 'acceleration'
 export interface SettingsItem {
   /** 设置页上那一行的 data-anchor：顶部搜索点了靠它翻到那一行，不能和分组的 value 撞名。 */
   id: string
   group: SettingsGroupId
+  /** 组里的哪个小标题下面；缺省 = 不带标题的那张卡。 */
+  section?: SettingsSectionId
   /** 那一行的标题，设置页和顶部搜索读同一份。 */
   label: string
-  /** 顶部搜索用的常用说法，界面上不显示。 */
+  /** 顶部搜索和设置页里的搜索用的常用说法，界面上不显示。 */
   keywords: readonly string[]
   when?: SettingsItemCondition
+  /**
+   * 这一项是一整张卡（游戏加速、工具配置备份、版本卡），不是卡里的一行：页面上单独摆，
+   * 不和挨着的行装进同一张卡。原来是三个页面，v4 并进设置（批09）。缺省 = 普通的一行。
+   */
+  card?: boolean
 }
 /**
- * 设置里的每一行，按页面上的顺序。顶部搜索按行出结果（「更新与关于 › 自动更新」），
+ * 设置里的每一行，按页面上的顺序。顶部搜索按行出结果（「版本更新 › 自动更新」），
  * 点了打开那一组、翻到那一行；页面上的行标题也从这里取，两边不会说成两个名字。
  */
 export const settingsItems: readonly SettingsItem[] = [
-  { id: 'theme', group: 'appearance', label: '主题', keywords: ['深色', '夜间', '暗色', '白色'] },
-  { id: 'skin', group: 'appearance', label: '界面皮肤', keywords: [] },
-  { id: 'ui-scale', group: 'appearance', label: '界面缩放', keywords: ['缩放', '放大', '缩小', '太大', '太小'] },
-  { id: 'large-text', group: 'appearance', label: '大字', keywords: ['字体', '字号', '字太小', '看不清'] },
-  { id: 'high-contrast', group: 'appearance', label: '高对比度', keywords: [] },
-  { id: 'reduced-motion', group: 'appearance', label: '减少动画', keywords: [] },
-  { id: 'hardware-acceleration', group: 'appearance', label: '用显卡加速显示', keywords: ['黑屏', '花屏', '闪烁', '闪退', '显卡'] },
-  { id: 'language', group: 'appearance', label: '语言', keywords: [] },
+  { id: 'theme', group: 'appearance', label: '主题', keywords: ['深色', '浅色', '夜间', '暗色', '白色', '配色', '皮肤', '跟随系统'] },
+  { id: 'ui-scale', group: 'appearance', section: 'text-scale', label: '界面缩放', keywords: ['缩放', '放大', '缩小', '太大', '太小'] },
+  { id: 'large-text', group: 'appearance', section: 'text-scale', label: '大字', keywords: ['字体', '字号', '字太小', '看不清'] },
+  { id: 'language', group: 'appearance', section: 'text-scale', label: '界面语言', keywords: ['中文'] },
+  { id: 'high-contrast', group: 'appearance', section: 'display', label: '高对比度', keywords: ['看不清'] },
+  { id: 'reduced-motion', group: 'appearance', section: 'display', label: '减少动画', keywords: ['动效'] },
+  { id: 'hardware-acceleration', group: 'appearance', section: 'display', label: '用显卡加速显示', keywords: ['黑屏', '花屏', '闪烁', '闪退', '显卡'] },
+  { id: 'restore-appearance', group: 'appearance', section: 'display', label: '恢复默认外观', keywords: ['重置', '默认'] },
   { id: 'launch-at-login', group: 'startup', label: '开机自动启动', keywords: ['开机', '自启'] },
   { id: 'close-behavior', group: 'startup', label: '点关闭按钮时', keywords: ['托盘', '最小化', '关闭'] },
   { id: 'startup-diagnostics', group: 'startup', label: '启动时检查环境', keywords: [] },
   { id: 'workspace', group: 'tools', label: '打开工具时进入的文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
-  { id: 'terminal', group: 'tools', label: '用哪个终端打开工具', keywords: [] },
-  { id: 'install-location', group: 'tools', label: '工具装在哪里', keywords: [] },
-  ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', label: route.label, keywords: ['线路', '线路1', '线路2', '直连', '洛杉矶', 'CF', '备用', '重启', '连不上'] })),
-  { id: 'tool-route-restart-hints', group: 'network', label: '换线路后提醒我重开工具', keywords: ['线路', '重开', '需重开生效'] },
-  { id: 'mirror', group: 'network', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
-  { id: 'proxy', group: 'network', label: '网络连接', keywords: ['代理', 'VPN', '梯子'] },
-  { id: 'network-check', group: 'network', label: '网络检查', keywords: [] },
-  { id: 'certificate', group: 'network', label: '企业证书', keywords: ['证书', '公司电脑'] },
-  { id: 'desktop-notifications', group: 'notifications', label: '桌面通知', keywords: [] },
-  { id: 'test-notification', group: 'notifications', label: '测试通知', keywords: ['通知不弹', '收不到通知'] },
+  { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
+  { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
+  { id: 'acceleration', group: 'network', label: '游戏加速', keywords: ['加速', '游戏', '延迟', '卡顿', '免费时长', '加速线路'], when: 'acceleration', card: true },
+  ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', section: 'routes', label: route.label, keywords: ['线路', '线路1', '线路2', '直连', '洛杉矶', 'CF', '备用', '重启', '连不上'] })),
+  { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '换线路后提醒我重开工具', keywords: ['线路', '重开', '需重开生效'] },
+  { id: 'mirror', group: 'network', section: 'download', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
+  { id: 'proxy', group: 'network', section: 'download', label: '连接方式', keywords: ['网络连接', '代理', 'VPN', '梯子'] },
+  { id: 'network-check', group: 'network', section: 'download', label: '网络检查', keywords: [] },
+  { id: 'certificate', group: 'network', section: 'download', label: '企业证书', keywords: ['证书', '公司电脑'] },
+  // 「发测试通知」并进了这一行，原来搜「测试通知」的说法跟过来。
+  { id: 'desktop-notifications', group: 'notifications', label: '桌面通知', keywords: ['测试通知', '通知不弹', '收不到通知'] },
   ...notificationOptions.map((option): SettingsItem => ({
     id: notificationSettingsItemId(option.value),
     group: 'notifications',
+    section: 'reminders',
     label: option.label,
     keywords: [],
     ...(option.value === 'acceleration' ? { when: 'acceleration' as const } : {}),
   })),
-  { id: 'current-account', group: 'account', label: '当前账号', keywords: [] },
-  { id: 'switch-account', group: 'account', label: '切换账号', keywords: accountSwitchKeywords },
-  { id: 'remember-password', group: 'account', label: '记住密码', keywords: [] },
-  { id: 'logout', group: 'account', label: '退出登录', keywords: ['登出', '注销'], when: 'signedIn' },
-  { id: 'transfer', group: 'privacy', label: '搬到新电脑', keywords: ['导出', '导入', '换电脑', '新电脑', '迁移', '聊天记录'] },
-  { id: 'backups', group: 'privacy', label: '工具配置备份', keywords: [] },
-  { id: 'logs', group: 'privacy', label: '本机日志', keywords: ['日志', '报告'] },
+  { id: 'backups', group: 'backup', label: '工具配置备份', keywords: ['备份', '恢复', '还原', '找回配置', '立即备份'], card: true },
+  // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
+  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
+  { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
   { id: 'crash-reporting', group: 'privacy', label: '崩溃自动上报', keywords: [] },
-  { id: 'usage-stats', group: 'privacy', label: '使用统计', keywords: [] },
-  { id: 'version', group: 'about', label: '当前版本', keywords: ['版本号', '版本'] },
+  { id: 'usage-stats', group: 'privacy', label: '匿名使用统计', keywords: [] },
+  { id: 'logs', group: 'privacy', label: '运行日志', keywords: ['日志', '报告'] },
+  { id: 'legal', group: 'privacy', label: '用户协议与隐私政策', keywords: [] },
+  { id: 'version', group: 'about', label: '检查更新', keywords: ['当前版本', '版本号', '版本', '升级', '新版本', '下载更新', '更新内容'], card: true },
   { id: 'update-check', group: 'about', label: '启动时检查新版本', keywords: ['检查更新', '升级', '新版本'] },
-  { id: 'auto-update', group: 'about', label: '自动更新', keywords: ['检查更新', '升级', '新版本'], when: 'autoUpdate' },
+  { id: 'auto-update', group: 'about', label: '自动下载更新', keywords: ['自动更新', '检查更新', '升级', '新版本'], when: 'autoUpdate' },
   { id: 'shortcuts', group: 'about', label: '快捷键', keywords: ['快捷键', '键盘'] },
   { id: 'guide', group: 'about', label: '新手引导', keywords: ['引导', '新手', '从头'] },
   { id: 'tour', group: 'about', label: '界面导览', keywords: [] },
-  { id: 'legal', group: 'about', label: '用户协议与隐私政策', keywords: [] },
   { id: 'uninstall-app', group: 'about', label: '卸载星芒', keywords: ['卸载星芒', '删除软件'], when: 'mac' },
-  { id: 'uninstall', group: 'about', label: '卸载工具或星芒', keywords: ['卸载星芒', '删除软件'], when: 'notMac' },
+  { id: 'uninstall', group: 'about', label: '卸载星芒', keywords: ['卸载星芒', '删除软件'], when: 'notMac' },
 ]
-export function notificationSettingsItemId(kind: (typeof notificationOptions)[number]['value']): string {
+export function notificationSettingsItemId(kind: PlatformNotificationKind): string {
   return `notify-${kind}`
 }
 /** 设置页某一行的标题；id 写错是开发时的错，直接抛出来，不让页面悄悄少一个字。 */
@@ -440,14 +479,42 @@ export interface SettingsItemContext {
   mac: boolean
   autoUpdate: boolean
   acceleration: boolean
-  signedIn: boolean
 }
-/** 这一行在这台电脑、这个登录状态下有没有。没有的不出现在顶部搜索里。 */
+/** 这一行在这台电脑上有没有。没有的不出现在顶部搜索里。 */
 export function settingsItemAvailable(item: SettingsItem, context: SettingsItemContext): boolean {
   if (item.when === 'mac') return context.mac
   if (item.when === 'notMac') return !context.mac
   if (item.when === 'autoUpdate') return context.autoUpdate
   if (item.when === 'acceleration') return context.acceleration
-  if (item.when === 'signedIn') return context.signedIn
   return true
+}
+export interface SettingsBlock {
+  /** 这张卡上面的小标题；缺省 = 不带标题。 */
+  section?: (typeof settingsSections)[number]
+  items: SettingsItem[]
+}
+/** 一组在页面上分成几张卡：挨着的几行 section 相同就放进同一张；整张卡的那一项（card）自己一块。 */
+export function buildSettingsBlocks(group: SettingsGroupId, items: readonly SettingsItem[] = settingsItems): SettingsBlock[] {
+  const blocks: SettingsBlock[] = []
+  for (const item of items) {
+    if (item.group !== group) continue
+    const last = blocks[blocks.length - 1]
+    if (last && !item.card && !last.items[0].card && last.section?.value === item.section) last.items.push(item)
+    else blocks.push({ section: settingsSections.find((section) => section.value === item.section), items: [item] })
+  }
+  return blocks
+}
+/**
+ * 设置页左栏「搜索设置」：按行名、常用说法、组名和小标题找，空格隔开的几个词都要对上；
+ * 次序和页面上一样。没输字返回空，页面照常显示当前那一组。
+ */
+export function searchSettingsItems(query: string, items: readonly SettingsItem[] = settingsItems): SettingsItem[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (!words.length) return []
+  return items.filter((item) => {
+    const group = settingsGroups.find((entry) => entry.value === item.group)?.label ?? ''
+    const section = settingsSections.find((entry) => entry.value === item.section)?.label ?? ''
+    const text = [item.label, ...item.keywords, group, section].join(' ').toLowerCase()
+    return words.every((word) => text.includes(word))
+  })
 }

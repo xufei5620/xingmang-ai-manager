@@ -16,7 +16,6 @@ import {
   subscriptionPaymentMethods,
 } from './pages-account'
 import {
-  extensionInScope,
   extensionItemsForView,
   extensionScopeLabel,
   filterExtensionMarkets,
@@ -106,17 +105,19 @@ describe('v2 business boundaries', () => {
   it('says a paid subscription is open instead of calling it a top-up', () => {
     expect(paymentTerminalPresentation('success', false, 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
     expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付没有完成' })
-    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通，正在刷新订阅。')
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通。')
+    expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription', '专业版')).toBe('订单 XM-2 已付款，专业版已开通。')
+    expect(paymentTerminalPresentation('success', false, 'subscription').body).toBe('已付款，订阅已开通。')
   })
 
   it('tells the customer whether their tools now draw on the subscription', () => {
-    expect(subscriptionToolsNotice({ followsPreference: true }).body).toContain('扣费偏好')
+    expect(subscriptionToolsNotice({ followsPreference: true }).body).toBe('工具发出的请求会按「扣费顺序」先用订阅额度。')
     expect(subscriptionToolsNotice({ followsPreference: false, switched: ['Claude Code', 'Codex'] })).toMatchObject({
       tone: 'ok', title: '工具已改用订阅额度', body: expect.stringContaining('Claude Code、Codex'),
     })
     expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
     expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
-      tone: 'warn', body: expect.stringContaining('重新写入 Key'), action: 'health',
+      tone: 'warn', body: expect.stringContaining('重新写入密钥'), action: 'health',
     })
     expect(subscriptionToolsNotice({ followsPreference: true }).action).toBeUndefined()
   })
@@ -134,21 +135,21 @@ describe('v2 business boundaries', () => {
     }
   })
 
-  it('lets each account page wait only for the reads it actually shows', () => {
+  it('lets each account tab wait only for the reads it actually shows', () => {
     expect(accountTabNeeds('overview')).toEqual({ profile: true, balance: true })
     expect(accountTabNeeds('invite')).toEqual({ profile: true, balance: true })
-    for (const tab of ['recharge', 'orders', 'devices'] as const) {
+    for (const tab of ['recharge', 'security'] as const) {
       expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: false })
     }
-    for (const tab of ['dashboard', 'usage', 'tasks', 'keys'] as const) {
+    for (const tab of ['usage', 'keys'] as const) {
       expect(accountTabNeeds(tab)).toEqual({ profile: false, balance: true })
     }
   })
 
   it('names the current account in the page head and says plainly when its profile was not read', () => {
-    expect(accountHeadLead({ username: 'alice', email: 'a@example.test' })).toBe('当前账号：alice（a@example.test）')
-    expect(accountHeadLead({ username: 'alice', email: '' })).toBe('当前账号：alice')
-    expect(accountHeadLead(null)).toBe('当前账号的资料暂时没有读到')
+    expect(accountHeadLead({ username: 'alice', email: 'a@example.test' }, '星芒账号')).toBe('a@example.test · 星芒账号')
+    expect(accountHeadLead({ username: 'alice', email: '' }, '历史账号')).toBe('alice · 历史账号')
+    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号的资料暂时没有读到')
   })
 
   it('counts only the folded filters that a query actually applied', () => {
@@ -161,6 +162,8 @@ describe('v2 business boundaries', () => {
     expect(hiddenFilterCount(fields, ['start', 'modelName'], {})).toBe(0)
     expect(hiddenFilterCount(fields, ['start', 'modelName'], { start: '2026-10-01T00:00', modelName: 'gpt' })).toBe(0)
     expect(hiddenFilterCount(fields, ['start', 'modelName'], { group: 'vip', tokenName: '', modelName: 'gpt' })).toBe(1)
+    // 全部收起时（第一行一个框都不留），带着默认值的日期不算用户加的条件。
+    expect(hiddenFilterCount(fields, [], { start: '2026-10-01T00:00', modelName: 'gpt' }, { start: '2026-10-01T00:00' })).toBe(1)
   })
 
   it('tells the user what happens after the payment window closes and where to check', () => {
@@ -177,8 +180,8 @@ describe('v2 business boundaries', () => {
 
   it('validates recharge amounts against the integer IPC contract and channel minimum', () => {
     expect(validateTopupAmount(10, 5)).toBe(10)
-    expect(() => validateTopupAmount(10.5, 5)).toThrow('整数')
-    expect(() => validateTopupAmount(4, 5)).toThrow('不能低于')
+    expect(() => validateTopupAmount(10.5, 5)).toThrow('充值数量不能低于 5，请填整数')
+    expect(() => validateTopupAmount(4, 5)).toThrow('充值数量不能低于 5，请填整数')
     expect(() => validateTopupAmount(10, Number.NaN)).toThrow('最低充值金额无效')
   })
 
@@ -242,24 +245,6 @@ describe('v2 business boundaries', () => {
     expect(extensionScopeLabel('extension')).toBe('我的（全局）')
     expect(extensionScopeLabel(null)).toBe('未提供')
     expect(extensionScopeLabel(undefined)).toBe('未提供')
-  })
-
-  it('files each item under the same scope filter its details name', () => {
-    // 详情写「当前项目」的，选「当前项目」就列出来；写「我的（全局）」的同理。
-    expect(extensionInScope('local', 'project')).toBe(true)
-    expect(extensionInScope('extension', 'user')).toBe(true)
-    expect(extensionInScope('project', 'project')).toBe(true)
-    expect(extensionInScope('user', 'user')).toBe(true)
-    expect(extensionInScope('workspace', 'workspace')).toBe(true)
-    expect(extensionInScope('builtin', 'builtin')).toBe(true)
-    expect(extensionInScope('local', 'user')).toBe(false)
-    expect(extensionInScope('extension', 'project')).toBe(false)
-    expect(extensionInScope('user', 'project')).toBe(false)
-    // 没带 scope 的只在「全部范围」里。
-    expect(extensionInScope(null, 'user')).toBe(false)
-    expect(extensionInScope(undefined, 'project')).toBe(false)
-    for (const scope of ['user', 'project', 'local', 'workspace', 'builtin', 'extension', null] as const)
-      expect(extensionInScope(scope, 'all')).toBe(true)
   })
 
   it('filters plugin markets by both display name and root path', () => {
@@ -339,14 +324,18 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
     // 设置页没有能处理它的东西；能清的那种在行里直接给按钮。
     expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBeNull()
-    expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
-    expect(diagnosticTarget('RUNTIME_PYTHON')).toBe('maintenance')
-    expect(diagnosticTarget('CLI_CLAUDE')).toBe('maintenance')
-    expect(diagnosticTarget('CODEX_DESKTOP')).toBe('maintenance')
-    // Git 的安装指引在首页「运行环境」里，「安装卸载」页没有它。
-    expect(diagnosticTarget('RUNTIME_GIT')).toBe('home')
-    // 文件夹被搬过没有软件里能一键修的地方，下一步是导出报告。
+    // 「安装卸载」页拆掉了（第 10 批）：Node.js、Python、Git 在检查页那一行里直接装，不跳走；
+    // 命令行工具和 Codex 桌面端去首页工具卡片，npm 跟着 Node.js 走首页运行环境卡。
+    for (const code of ['RUNTIME_NODE', 'RUNTIME_PYTHON', 'RUNTIME_GIT']) {
+      expect(diagnosticTarget(code)).toBeNull()
+      expect(diagnosticHasFix(code)).toBe(false)
+    }
+    expect(diagnosticTarget('RUNTIME_NPM')).toBe('home')
+    expect(diagnosticTarget('CLI_CLAUDE')).toBe('home')
+    expect(diagnosticTarget('CODEX_DESKTOP')).toBe('home')
+    // 文件夹被搬过没有软件里能一键修的地方，下一步是留言找客服。
     expect(diagnosticTarget('FOLDER_RELOCATED')).toBe('feedback')
+    expect(diagnosticSection('FOLDER_RELOCATED')).toBe('form')
     // 加速文件坏了：「重新检查」和「联系客服」都在加速页上。
     expect(diagnosticTarget('ACCELERATION_BUNDLE')).toBe('acceleration')
   })
@@ -412,10 +401,10 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeNull()
     expect(diagnosticSection('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeUndefined()
   })
-  it('sends only the outdated Node.js certificate verdict to the install page', () => {
-    expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')
-    expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe(true)
-    for (const verdict of ['untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
+  // 「Node.js 太旧」那一种在检查页那一行里直接给「换成新版 Node.js」，不再跳去「安装卸载」页。
+  it('sends no certificate verdict away from the check page', () => {
+    for (const verdict of ['outdatedNode', 'untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
+      expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict })).toBeNull()
       expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict })).toBe(false)
     }
     expect(diagnosticHasFix('CERTIFICATE_TRUST')).toBe(false)
@@ -448,9 +437,9 @@ describe('v2 business boundaries', () => {
     )
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。',
+      '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
+    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length
@@ -487,9 +476,10 @@ describe('v2 business boundaries', () => {
     expect(
       parseEnvironmentVariables('{"TEST_TOKEN":"value with spaces"}'),
     ).toEqual({ TEST_TOKEN: 'value with spaces' })
+    // 报错里叫的是表单上那一栏的名字（v4 批12 改叫「附加设置」）。
     expect(() => parseEnvironmentVariables('{"BAD-NAME":"value"}')).toThrow(
-      '环境变量',
+      '附加设置',
     )
-    expect(() => parseEnvironmentVariables('{"NAME":12}')).toThrow('环境变量')
+    expect(() => parseEnvironmentVariables('{"NAME":12}')).toThrow('附加设置')
   })
 })

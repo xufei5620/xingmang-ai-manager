@@ -60,7 +60,9 @@ function bootFixture(config) {
   const groups = Object.values(sub2ApiManagedCliKeyProfiles).map((entry, index) => ({ id: index + 1,
     name: entry.group, platform: 'openai', status: 'active', rate_multiplier: 1 }))
   groups.push({ id: 5, name: 'GPT-image2', platform: 'openai', status: 'active', rate_multiplier: 1 })
-  const xmUser = { id: 7, username: 'same@example.test', email: 'same@example.test', display_name: 'NewAPI User',
+  // 显示名称是用户自己填的，个人中心「基本资料」会照原样写出来。v4 的切换账号从个人中心页头打开，
+  // 加第二个账号时登录框下面就是这一页；名字里带平台名，下面的界面扫描就会把用户的名字当成界面泄漏。
+  const xmUser = { id: 7, username: 'same@example.test', email: 'same@example.test', display_name: 'Fixture User',
     group: 'default', role: 1, status: 1, quota: 50000000, used_quota: 0, request_count: 0,
     aff_code: '', aff_count: 0, aff_quota: 0, aff_history_quota: 0 }
   const apiUser = { id: 7, username: 'same@example.test', email: 'same@example.test', balance: 100, status: 'active', role: 'user' }
@@ -524,7 +526,7 @@ async function openLoginWithUi(page) {
 // 新账号登录后先盖一层开始引导，「稍后继续」在引导替账号核对 Key 时是灰的。夹具不答历史账号的直连线路，
 // 程序起来 30 秒出头「自动」改走默认线路，界面重读设置后会再核对一轮 Key，按钮又灰下去几百毫秒。Playwright
 // 的 click 先确认按钮能点、再发鼠标事件，按钮正好在这两步之间变灰，浏览器就把这次点击丢掉，click() 照样
-// 返回；引导一直盖着，等不到「切换账号」（#530 两次、#942 一次，这一步都在第 29.7 秒前后开始）。所以点完
+// 返回；引导一直盖着，等不到登录后的界面（#530 两次、#942 一次，这一步都在第 29.7 秒前后开始）。所以点完
 // 要看引导真的收起了，没收起就再点。
 const startGuideCloseMs = 5_000
 async function pauseStartGuide(page) {
@@ -566,7 +568,8 @@ async function loginWithUi(page, siteId) {
   await expect.poll(() => evaluateInRenderer(page, 'account session after login', () => window.xingmang.getAccountSession()),
     { timeout: fixtureReadyTimeoutMs }).toMatchObject({ authenticated: true, siteId, account: { userId: 7 } })
   await pauseStartGuide(page)
-  await page.getByRole('button', { name: '切换账号', exact: true }).waitFor({ timeout: fixtureReadyTimeoutMs })
+  // 侧栏账号卡登录后读屏念「个人中心：名字…」，没登录时念「登录」。
+  await page.getByRole('button', { name: /^个人中心：/ }).waitFor({ timeout: fixtureReadyTimeoutMs })
   // The UI performs the first sync; explicitly repeating it checks reuse.
   const synchronized = await evaluateInRenderer(page, 'managed CLI key sync', () => window.xingmang.syncManagedCliKeys())
   assert.deepEqual(synchronized.failed, [])
@@ -579,15 +582,24 @@ async function loginWithUi(page, siteId) {
   assert.equal(balance.quotaPerUnit, siteId === 'solov' ? 500000 : 1)
   await assertCustomerUi(page)
 }
+// v4 侧栏账号卡上没有「切换账号」了，它在个人中心「账号概览」底下那条「当前登录」上。
+// 切换框里的东西都在框里找。
+async function openAccountSwitcher(page) {
+  await page.getByTestId('sidebar-account-open').click()
+  await page.getByTestId('account-switch').click()
+  const switcher = page.getByRole('dialog', { name: '切换账号', exact: true })
+  await switcher.waitFor({ timeout: fixtureReadyTimeoutMs })
+  return switcher
+}
 async function switchWithUi(page, origin) {
   const accounts = await evaluateInRenderer(page, 'saved accounts', () => window.xingmang.listSavedAccounts())
   const target = accounts.find((account) => account.origin === origin)
   assert.ok(target)
-  await page.getByRole('button', { name: '切换账号', exact: true }).click()
+  const switcher = await openAccountSwitcher(page)
   await assertCustomerUi(page)
-  const row = page.getByTestId(`saved-account-row-${target.id}`)
+  const row = switcher.getByTestId(`saved-account-row-${target.id}`)
   await row.getByRole('button', { name: '切换', exact: true }).click()
-  await page.getByTestId('saved-accounts-list').waitFor({ state: 'hidden', timeout: fixtureReadyTimeoutMs })
+  await switcher.getByTestId('saved-accounts-list').waitFor({ state: 'hidden', timeout: fixtureReadyTimeoutMs })
 }
 
 async function main() {
@@ -610,8 +622,7 @@ async function main() {
       window.xingmangCanvasHost.onAccountChange((event) => window.__realmEvents.push(event))
     })
     beginStage('sub2api UI login')
-    await page.getByRole('button', { name: '切换账号', exact: true }).click()
-    await page.getByTestId('account-add').click()
+    await (await openAccountSwitcher(page)).getByTestId('account-add').click()
     const originalSession = await evaluateInRenderer(page, 'session before the historical login', () => window.xingmang.getAccountSession())
     await chooseAccountSource(page, '历史账号')
     await page.getByTestId('login-account').fill('same@example.test')
@@ -623,7 +634,7 @@ async function main() {
       await evaluateInMainProcess('select the fixture login outcome',
         (_electron, value) => globalThis.__realmSmoke.setLoginOutcome(value), outcome)
       await page.getByTestId('login-submit').click()
-      await page.getByTestId('auth-error').filter({ hasText: outcome === 'two-factor' ? '双重验证' : '账号或密码' }).waitFor()
+      await page.getByTestId('auth-error').filter({ hasText: outcome === 'two-factor' ? '两步验证' : '账号或密码' }).waitFor()
       assert.deepEqual(await evaluateInRenderer(page, 'session after a refused login', () => window.xingmang.getAccountSession()), originalSession)
       const attempts = loginCallOrigins(await readFixtureStats())
       assert.deepEqual(attempts.slice(before).map((call) => call.origin), ['https://api.solov.cc'])

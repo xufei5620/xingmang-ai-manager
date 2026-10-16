@@ -80,7 +80,7 @@ export function suggestEmailCorrection(value: string): string | null {
 
 export function parseRecoveryCode(value: string, expectedOrigin?: string): RecoveryCodeResult {
   const text = value.trim()
-  if (!text) return { ok: false, error: '请粘贴邮件中的重置码或完整链接' }
+  if (!text) return { ok: false, error: '请粘贴邮件里的重置码或链接' }
   if (/\s/.test(text)) return { ok: false, error: '重置码不能包含空格或换行，请重新复制' }
   if (/^[a-z][a-z0-9+.-]*:/i.test(text)) {
     let url: URL
@@ -131,7 +131,8 @@ export function parseInviteCode(value: string): string {
   return new URLSearchParams(query).get('aff')?.trim() ?? ''
 }
 
-export function validateRegistration(draft: RegistrationDraft, verificationRequired: boolean): RegistrationErrors {
+/** codeSent：这次打开注册框以后点过「获取验证码」没有；没点过就先叫人去点，缺省 = 点过（旧说法）。 */
+export function validateRegistration(draft: RegistrationDraft, verificationRequired: boolean, codeSent = true): RegistrationErrors {
   const errors: RegistrationErrors = {}
   const username = draft.username.trim()
   const invite = draft.invite.trim()
@@ -142,7 +143,7 @@ export function validateRegistration(draft: RegistrationDraft, verificationRequi
   else if (draft.password.length > maxPasswordLength) errors.password = `密码不能超过 ${maxPasswordLength} 位`
   if (!draft.confirm) errors.confirm = '请再次输入密码'
   else if (draft.password !== draft.confirm) errors.confirm = '两次密码不一致'
-  if (verificationRequired && !draft.code.trim()) errors.code = '请填写邮件中的验证码'
+  if (verificationRequired && !draft.code.trim()) errors.code = codeSent ? '请填写邮件中的验证码' : '请先点「获取验证码」，再填写邮件中的验证码'
   if (invite) {
     const parsed = parseInviteCode(invite)
     if (!parsed) errors.invite = '邀请链接中没有邀请码，请检查后重试'
@@ -158,7 +159,7 @@ export function validateNewPassword(password: string, confirm: string): { passwo
   if (password.length < minPasswordLength) errors.password = `新密码至少 ${minPasswordLength} 位`
   else if (password.length > maxPasswordLength) errors.password = `新密码不能超过 ${maxPasswordLength} 位`
   if (!confirm) errors.confirm = '请再输一次新密码'
-  else if (password !== confirm) errors.confirm = '两次输入的新密码不一样'
+  else if (password !== confirm) errors.confirm = '两次密码不一致'
   return errors
 }
 
@@ -239,7 +240,7 @@ export function authFailure(error: unknown, action: string, online = true): Auth
   // 两步验证第二步的几句已经是给用户看的话，原样上屏；不然会被下面「验证码」「频繁」两条宽正则改写。
   const twoFactor = twoFactorMessages.find((text) => message.includes(text))
   if (twoFactor) return { message: twoFactor, kind: 'final' }
-  if (requiresBrowserAuthentication(error)) return { message: '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。', kind: 'final' }
+  if (requiresBrowserAuthentication(error)) return { message: '此账号需要两步验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。', kind: 'final' }
   // 主进程已经把受限网络下的失败分好类并写好了中文（DNS / 证书被替换 / 门户认证
   // 未完成 / 连接被切断），原样上屏。放在启发式之前：下面那几条正则宽到会把
   // 「证书被替换」也说成「连接超时」，那会让用户在一个换网络才能解决的问题上
@@ -332,8 +333,7 @@ export function parseTwoFactorCode(value: string, backup: boolean): TwoFactorCod
   const text = value.trim()
   if (backup) return text ? { ok: true, code: text } : { ok: false, error: '请输入备用码' }
   const code = text.replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0)).replace(/[\s\u3000-]/g, '')
-  if (!code) return { ok: false, error: '请输入验证器里的 6 位数字' }
-  return /^\d{6}$/.test(code) ? { ok: true, code } : { ok: false, error: '验证码是 6 位数字，请看验证器里星芒账号那一行' }
+  return /^\d{6}$/.test(code) ? { ok: true, code } : { ok: false, error: '请输入验证器里的 6 位数字' }
 }
 
 export function requiresBrowserAuthentication(error: unknown): boolean {

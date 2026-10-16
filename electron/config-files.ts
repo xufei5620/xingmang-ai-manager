@@ -1237,6 +1237,7 @@ function applyCodexRelayConfig(
   siteBaseUrl: string,
 ): void {
   migrateOwnReservedCodexProvider(parsed, providerName, siteBaseUrl)
+  const previousModel = parsed.model
   parsed.model = model
   parsed.review_model = model
   parsed.model_provider = providerName
@@ -1254,13 +1255,7 @@ function applyCodexRelayConfig(
   // Model names alone cannot establish the relay's protocol compatibility.
   providerEntry.wire_api = 'responses'
   providerEntry.requires_openai_auth = true
-  // 自定义线路只有写了 supports_websockets = true，Codex 才改走 Responses WebSocket（core/src/client.rs
-  // 的 responses_websocket_enabled，rust-v0.160.1 与 0.162.1 一致，缺省是 false）。走 Cloudflare 的
-  // WebSocket 约两分钟就被掐断，思考久的回答出到一半报「stream closed before response.completed」，
-  // 普通流式不受影响（2026-10-13 服务端按断开时间统计）。把缺省明写出来，上游哪天把自定义线路的缺省
-  // 改成开，客户也不会跟着掉进去。换线路只改 base_url 那一处（tool-route-rewrite.ts），写的时候分不出
-  // 以后会走哪条，所以两条线路都写。用户自己写过就不动。
-  if (providerEntry.supports_websockets === undefined) providerEntry.supports_websockets = false
+  followCodexRelayWebsockets(providerEntry, previousModel, model)
   // Keep the Desktop permission picker interactive on fresh mirror installs.
   // Never override an explicit user policy such as `never`.
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
@@ -1310,7 +1305,7 @@ function buildCodexRelayConfigTemplate(
     `base_url = ${tomlString(siteBaseUrl)}`,
     'wire_api = "responses"',
     'requires_openai_auth = true',
-    'supports_websockets = false',
+    `supports_websockets = ${codexModelUsesRelayWebsockets(model)}`,
     '',
     '[features]',
     'goals = true',
@@ -1447,18 +1442,25 @@ function createCodexOfficialConfigPlans(
   if (currentText && classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex) === 'relay') {
     plans.push({ path: paths.relay, content: withTrailingNewline(currentText) })
   }
+  // 用当前账号聊过的旧对话记着这张表的名字，官方配置里得留一张同名走官方登录的（见 officialCodexAliasEntry）。
+  // 已经在官方账号上重置时，名字从星芒存的那份当前账号配置里找。
+  const relayProviderName = activeCodexRelayProviderName(currentParsed, siteBaseUrls.codex)
+    ?? activeCodexRelayProviderName(readStoredCodexRelayConfigOrNull(paths.relay), siteBaseUrls.codex)
+  function officialContent(text: string): string {
+    return withOfficialCodexAlias(text, relayProviderName, siteBaseUrls.codex)
+  }
   if (mode === 'reset') {
     // Reset only the selected account source. Replacing its snapshot too keeps
     // an old official customization from returning after a relay round trip.
     const initial = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n'
     plans.push({ path: paths.chatgpt, content: initial })
-    plans.push({ path: paths.active, content: initial })
+    plans.push({ path: paths.active, content: officialContent(initial) })
     return plans
   }
   if (!currentParsed) return plans
   const storedChatgpt = readStoredCodexConfig(paths.chatgpt, '已保存的 ChatGPT Codex 配置')
   if (storedChatgpt && classifyCodexConfigProfile(TOML.parse(storedChatgpt), siteBaseUrls.codex) === 'official') {
-    plans.push({ path: paths.active, content: storedChatgpt })
+    plans.push({ path: paths.active, content: officialContent(storedChatgpt) })
     return plans
   }
   const cleaned = cloneTomlRecord(currentParsed)
@@ -1467,7 +1469,7 @@ function createCodexOfficialConfigPlans(
   // Older versions could have stored another Xingmang site as the official
   // snapshot. Replace that polluted copy in the same file transaction.
   if (storedChatgpt) plans.push({ path: paths.chatgpt, content: cleanContent })
-  plans.push({ path: paths.active, content: cleanContent })
+  plans.push({ path: paths.active, content: officialContent(cleanContent) })
   return plans
 }
 
@@ -1855,10 +1857,128 @@ export const codexRelayDisplayName = 'OpenAI'
 // 8-26（#104）到这次之前的模板写的显示名，和表名一样。
 const legacyCodexRelayDisplayName = 'XingmangAI'
 
+/**
+ * A custom provider takes the Responses WebSocket transport only when its
+ * table says supports_websockets = true; without the key it is false
+ * (model-provider-info `#[serde(default)]`, core/src/client.rs
+ * responses_websocket_enabled, rust-v0.162.1). The display name does not enter
+ * that check. Over WebSocket each later request in a turn sends only the new
+ * input against previous_response_id instead of the whole conversation.
+ *
+ * 2026-10-16 yoyo 定默认开（#992 当时写的是 false）。服务端同日实测：xm 两条线路的 GPT 分组和
+ * api.solov.cc 都开了，后续每轮上传约 118 KB 降到约 400 字节，5 步任务 21.8 秒对普通请求 47 秒。
+ * 服务端只给 GPT 渠道开了，而这一项对整条线路生效：星芒签的 Key（星芒账号进 GPT 分组、历史账号
+ * 进 Codex_pro）用 GPT 型号时写 true；首页「换用别家模型」选了别家型号时写 false，那些渠道不收
+ * WebSocket，开着会连着重试甚至报错。走 Cloudflare 时一轮里约 100 秒一个字都不出，WebSocket 会被
+ * 当成闲置掐掉，Codex 连着重连 5 次才退回普通请求（10-13 模拟；服务端 7 天数据约占 0.27%）。服务端
+ * 的办法是让 CF 入口对 /v1/responses 的 WebSocket 握手回 426：Codex 收到当场改走普通请求、不重试
+ * （client.rs 的 UPGRADE_REQUIRED → FallbackToHttp），洛杉矶照常走 WebSocket。所以两条线路写一样的
+ * 值，换线路仍只改 base_url（tool-route-rewrite.ts）。
+ */
+export function codexModelUsesRelayWebsockets(model: string): boolean {
+  // Same split as the renderer's isOpenAiModelId (model-filter.ts), which the
+  // 换用别家模型 dialog uses to decide what counts as another vendor's model;
+  // electron/ does not import src/, so the pattern is repeated here.
+  return model.trim().toLowerCase().split(/[/:]/).some((part) => part === 'openai'
+    || /^(?:gpt(?:[-_.]|\d|$)|chatgpt(?:[-_.]|\d|$)|codex(?:[-_.]|\d|$)|o\d+(?:[-_.]|$))/.test(part))
+}
+
+/**
+ * 没写过就按型号补。写过的值要是正好是星芒按上一个型号会写的那个，就当是星芒写的，跟着这次的型号
+ * 改（GPT 换到别家 true → false，换回来 false → true）；对不上的是客户自己定的，不动。
+ */
+function followCodexRelayWebsockets(entry: Record<string, unknown>, previousModel: unknown, model: string): void {
+  const next = codexModelUsesRelayWebsockets(model)
+  if (entry.supports_websockets === undefined) {
+    entry.supports_websockets = next
+  } else if (typeof previousModel === 'string' && entry.supports_websockets === codexModelUsesRelayWebsockets(previousModel)) {
+    entry.supports_websockets = next
+  }
+}
+
 /** 只换星芒自己那张表上一字不差的老显示名；客户自己改过的名字、别人写的表都不动。 */
 function renameLegacyCodexRelayDisplayName(entry: Record<string, unknown>, siteBaseUrl: string): void {
   if (entry.name === legacyCodexRelayDisplayName && isOwnCodexRelayEntry(entry, siteBaseUrl)) {
     entry.name = codexRelayDisplayName
+  }
+}
+
+/**
+ * Codex resumes a thread with the model_provider recorded when the thread
+ * started, not the one selected now (app-server merge_persisted_resume_metadata,
+ * rust-v0.162.1), and refuses to open it when config.toml no longer defines that
+ * ID: "Model provider `OpenAI` not found". Switching to the official account used
+ * to delete our table, so every chat started on the relay stopped opening.
+ *
+ * The ID now stays defined as an alias of the official route. Without base_url
+ * Codex picks the endpoint that fits auth.json (chatgpt.com/backend-api/codex for
+ * a ChatGPT login, api.openai.com/v1 for an API key), requires_openai_auth sends
+ * that login, and "OpenAI" is the exact display name ModelProviderInfo::is_openai()
+ * checks, so the alias behaves like the built-in provider. Those chats open and
+ * carry on under the official account. Switching back to the relay restores the
+ * table from the relay snapshot, or turns the alias back into the relay route
+ * (codexRelayProviderFor, applyCodexRelayConfig), so they move back with it.
+ *
+ * 2026-10-15 一位客户在 Codex 桌面端上自己改出了一模一样的表，卡住的旧对话接着回了；
+ * 写死 api.openai.com 的 base_url 对 ChatGPT 登录不行（Missing scopes: api.responses.write）。
+ */
+function officialCodexAliasEntry(): Record<string, unknown> {
+  return { name: 'OpenAI', wire_api: 'responses', requires_openai_auth: true }
+}
+
+// 这几项任何一项在，请求就不是拿 auth.json 里的官方登录发去官方地址了。
+const codexProviderRouteKeys = ['base_url', 'env_key', 'experimental_bearer_token', 'auth', 'gateway_oauth', 'aws']
+
+/** 走官方登录、不另指地址也不另带凭据的表：星芒切官方时写的，或客户照同样办法自己写的。 */
+function isOfficialCodexAliasEntry(entry: unknown): entry is Record<string, unknown> {
+  return isJsonRecord(entry) && entry.requires_openai_auth === true
+    && codexProviderRouteKeys.every((key) => entry[key] === undefined)
+}
+
+/** 这份配置正在用的星芒中转表名（旧对话记的就是它）；不是中转、或用的是 Codex 内置的名字，返回 null。 */
+function activeCodexRelayProviderName(parsed: Record<string, unknown> | null, siteBaseUrl: string): string | null {
+  if (!parsed || classifyCodexConfigProfile(parsed, siteBaseUrl) !== 'relay') return null
+  const name = String(parsed.model_provider).trim()
+  // 内置名下的对话 Codex 自己认得；用这个名字另写一张表，0.162.1 会因「占用内置名」整份配置读不进去。
+  return reservedCodexProviders.has(name) ? null : name
+}
+
+/**
+ * 官方配置里给旧对话记着的那个表名写一张走官方登录的表。同名表已经是这样、或是客户自己的
+ * （不指向星芒中转）就原样返回；是星芒中转的活表（以前留下的快照）就换掉，免得旧对话把
+ * ChatGPT 登录发给中转。只是加一张新表时接在原文后面，客户自己的注释和排版不动。
+ */
+function withOfficialCodexAlias(officialText: string, providerName: string | null, siteBaseUrl: string): string {
+  if (!providerName) return officialText
+  const parsed = parseTomlOrNull(officialText)
+  if (!parsed) return officialText
+  if (parsed.model_providers !== undefined && !isJsonRecord(parsed.model_providers)) return officialText
+  const existing = isJsonRecord(parsed.model_providers) ? parsed.model_providers[providerName] : undefined
+  if (existing !== undefined && (isOfficialCodexAliasEntry(existing) || !isOwnCodexRelayEntry(existing, siteBaseUrl))) {
+    return officialText
+  }
+  const alias = officialCodexAliasEntry()
+  if (existing === undefined) {
+    const appended = [
+      withTrailingNewline(officialText),
+      `[model_providers.${tomlTableKey(providerName)}]`,
+      ...Object.entries(alias).map(([key, value]) => `${key} = ${typeof value === 'string' ? tomlString(value) : String(value)}`),
+      '',
+    ].join('\n')
+    // 原文末尾是行内表 model_providers = { ... } 这类接不上的写法时，退回整份重写。
+    if (parseTomlOrNull(appended) !== null) return appended
+  }
+  ensureRecord(parsed, 'model_providers')[providerName] = alias
+  return tomlContent(parsed)
+}
+
+/** 星芒替 Codex 存的那份当前账号配置；没有、读不了或读不懂都当没有，切官方不因它失败。 */
+function readStoredCodexRelayConfigOrNull(filePath: string): Record<string, unknown> | null {
+  try {
+    const text = requireConfigText(filePath, '已保存的星芒 Codex 配置')
+    return text ? parseTomlOrNull(text) : null
+  } catch {
+    return null
   }
 }
 
@@ -1898,9 +2018,14 @@ function codexRelayProviderFor(parsed: Record<string, unknown>, siteBaseUrl: str
   // model_provider, so renaming it would hide the customer's earlier chats.
   if (active && !reservedCodexProviders.has(active)) return active
   const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  // 切官方时留下的那张走官方登录的表：旧对话记的就是这个名字，切回来接着用它，那些对话才跟着回来。
+  const alias = active ? undefined
+    : Object.keys(providers).find((key) => !reservedCodexProviders.has(key) && isOfficialCodexAliasEntry(providers[key]))
+  if (alias) return alias
   function isFree(candidate: string): boolean {
     return !Object.prototype.hasOwnProperty.call(providers, candidate)
       || isOwnCodexRelayEntry(providers[candidate], siteBaseUrl)
+      || isOfficialCodexAliasEntry(providers[candidate])
   }
   // Without a selector, older releases picked `OpenAI`; keep that for the same
   // resume-list reason, but never take over a table someone else wrote.
@@ -3272,7 +3397,8 @@ export function applyProviderRouteFollow(
 // 2：Claude Code 没写权限模式的补「不逐条确认」（2026-10-06）。
 // 3：Codex 线路显示名老模板的 XingmangAI 换成 OpenAI（2026-10-14）。这一项改的是值不是缺省
 //    键，只认星芒自己那张表上一字不差的老值（renameLegacyCodexRelayDisplayName）。
-export const relayTemplateRevision = 3
+// 4：Codex 星芒那张表没写 supports_websockets 的按型号补，GPT 型号 true、别家型号 false（2026-10-16）。
+export const relayTemplateRevision = 4
 
 /** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
 function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -3291,6 +3417,10 @@ function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBas
   const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
   const entry = active && isJsonRecord(parsed.model_providers) ? parsed.model_providers[active] : null
   if (isJsonRecord(entry)) renameLegacyCodexRelayDisplayName(entry, siteBaseUrl)
+  if (isJsonRecord(entry) && isOwnCodexRelayEntry(entry, siteBaseUrl) && entry.supports_websockets === undefined
+    && typeof parsed.model === 'string') {
+    entry.supports_websockets = codexModelUsesRelayWebsockets(parsed.model)
+  }
 }
 
 function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void {
@@ -3431,6 +3561,49 @@ export function fillRelayTemplateDefaults(
   const providerRoot = providerConfigRoot(provider, roots)
   for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
   const plans = relayTemplateDefaultsPlans(provider, roots, siteBaseUrlsInput, platform)
+  if (plans.length === 0) return null
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans(plans, hooks, providerRoot)
+}
+
+/** 给已经在官方账号上的 Codex 配置补旧对话要的那张表；读不懂的配置不碰（那是重置的事）。 */
+function codexOfficialAliasPlans(roots: ProviderConfigRoots, siteBaseUrls: Record<ProviderId, string>): FilePlan[] {
+  const snapshots = codexConfigSnapshotPaths(roots)
+  const text = requireConfigText(snapshots.active, '现有 Codex config.toml')
+  if (!text) return []
+  if (classifyCodexConfigProfile(parseTomlOrNull(text), siteBaseUrls.codex) !== 'official') return []
+  const providerName = activeCodexRelayProviderName(readStoredCodexRelayConfigOrNull(snapshots.relay), siteBaseUrls.codex)
+  const content = withOfficialCodexAlias(text, providerName, siteBaseUrls.codex)
+  return content === text ? [] : [{ path: snapshots.active, content }]
+}
+
+/** 已经在官方账号上的 Codex 配置缺不缺旧对话要的那张表（这次以前切官方时删掉了）。只读。 */
+export function codexOfficialAliasPending(
+  rootsInput: ProviderConfigRoots,
+  siteBaseUrlsInput: Record<ProviderId, string>,
+): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  for (const filePath of providerConfigPaths('codex', roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  return codexOfficialAliasPlans(roots, siteBaseUrlsInput).length > 0
+}
+
+/**
+ * 这次以前切到官方账号的客户，config.toml 里已经没有旧对话记着的那张表，不再切一遍就一直
+ * 打不开。这里给他们补上同一张走官方登录的表（见 officialCodexAliasEntry）：只加这一张，
+ * 别的一个字不动；星芒没存过当前账号配置、表已经在、同名表是客户自己的都什么也不做。写入与
+ * 保存配置同一套两阶段提交、留 .bak、失败回滚（I9）。返回 null = 没写任何文件。
+ */
+export function restoreCodexOfficialAlias(
+  rootsInput: ProviderConfigRoots,
+  siteBaseUrlsInput: Record<ProviderId, string>,
+  hooks: NativeConfigWriteHooks = {},
+): NativeConfigSaveResult | null {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  for (const filePath of providerConfigPaths('codex', roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const plans = codexOfficialAliasPlans(roots, siteBaseUrlsInput)
   if (plans.length === 0) return null
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')

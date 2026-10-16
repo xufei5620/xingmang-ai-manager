@@ -1,10 +1,10 @@
 import { forwardRef, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { Archive, ChevronDown, FolderOpen, MoreHorizontal, RefreshCw } from 'lucide-react';
-import { tools } from '../registry/tools';
+import { toolKindLabels, tools } from '../registry/tools';
 import { clientConnections } from '../registry/clients';
 import { statuses } from '../registry/status';
 import { BrandIcon, Kbd, type ToolId } from './brand';
-import { Menu, type MenuItem } from './floating';
+import { Menu, type MenuItem, type MenuNote } from './floating';
 import { cx, iconSize, useBalanceTier, useUiText, type BaseProps, type Icon, type Size, type Tone } from './shared';
 
 export type ButtonProps = BaseProps & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className' | 'style' | 'color'> & {
@@ -40,23 +40,43 @@ export function ToolRow({ tool, status, version, route, model, modelHint, detail
   const subtitle = detail ?? (version ? [route, version.startsWith('v') ? version : 'v' + version, model].filter(Boolean).join(' · ') : definition?.vendor);
   return <div className="xm-tool-row" data-testid={testId}><BrandIcon tool={tool} size={40} variant="tile" /><div className="xm-tool-name"><strong>{definition?.name ?? tool}</strong><small title={modelHint && !detail ? subtitle + '\n' + modelHint : subtitle}>{subtitle}</small></div><div className="xm-tool-status"><Pill tone={tone} dot>{text}{(status === 'installing' || status === 'updating') && typeof progress === 'number' ? ' ' + Math.round(progress) + '%' : ''}</Pill></div><div className="xm-tool-extra">{extraAction}</div><div className="xm-tool-primary">{primaryAction}</div><div className="xm-tool-menu">{menu && <Menu items={menu} label={moreLabel} anchor={<Button size="sm" icon={MoreHorizontal} variant="ghost" aria-label={moreLabel} title={moreLabel} />} />}</div>{typeof progress === 'number' && <div className="xm-tool-progress"><Progress value={progress} /></div>}</div>;
 }
+// v4 首页的工具卡片：上面图标、名字和「厂商 · 种类」，中间一两行说明，底下左边一块牌子（来源、状态），右边按钮和「…」。
+// 底下那一行是弹性排开的：牌子可以缩、超长就省略号，按钮排在它后面，两者永远不叠（批 04 修的就是工具行里这个叠字）。
+export function ToolCard({ tool, meta, metaTone, metaTitle, link, badge, actions, menu, menuLabel, progress, off, testId }: BaseProps & { tool: ToolId; meta: ReactNode; metaTone?: 'warn' | 'bad'; metaTitle?: string; link?: ReactNode; badge?: ReactNode; actions?: ReactNode; menu?: Array<MenuItem | MenuNote | 'divider'>; menuLabel?: string; progress?: number; off?: boolean }) {
+  const definition = tools.find(item => item.id === tool) ?? clientConnections.find(item => item.id === tool); const t = useUiText(); const name = definition?.name ?? tool; const moreLabel = menuLabel ?? (/[\u4e00-\u9fff]$/.test(name) ? name : name + ' ') + t('more');
+  return <section className={cx('xm-tool-card', off && 'is-off')} data-testid={testId} data-installed={off ? 'false' : 'true'}>
+    <div className="xm-tool-card-head"><BrandIcon tool={tool} size={40} variant="tile" /><div><strong>{name}</strong>{definition && <small>{definition.vendor + ' · ' + toolKindLabels[definition.kind]}</small>}</div></div>
+    <div className="xm-tool-card-meta"><span className={cx('xm-tool-card-text', metaTone && 'xm-tone-' + metaTone)} title={metaTitle}>{meta}</span>{link}</div>
+    <div className="xm-tool-card-foot">{typeof progress === 'number' ? <div className="xm-tool-card-progress"><Progress value={progress} /><span>{Math.round(progress) + '%'}</span></div> : badge && <div className="xm-tool-card-badge">{badge}</div>}<div className="xm-tool-card-actions">{actions}{menu && <Menu items={menu} label={moreLabel} anchor={<Button size="sm" icon={MoreHorizontal} variant="ghost" aria-label={moreLabel} title={moreLabel} />} />}</div></div>
+  </section>;
+}
 export function SessionRow({ tool, title, path, model, count, when, archived, onOpen, testId }: BaseProps & { tool: ToolId; title: string; path: string; model: string; count: number; when: string; archived?: boolean; onOpen: () => void }) {
   const t = useUiText(); const definition = tools.find(item => item.id === tool);
   return <ListRow testId={testId} icon={Archive} title={title} badge={archived && <Pill>{t('archived')}</Pill>} desc={path} descMono meta={<span>{definition?.name ?? tool} · {model} · {count} · {when}</span>} actions={<Button size="sm" icon={FolderOpen} onClick={onOpen}>{t('open')}</Button>} />;
 }
-type Choice = { value: string; label: string; icon?: Icon; disabled?: boolean; panelId?: string };
+/** leading 画在字前面（工具标志），meta 画在字后面（数量、「未安装」）；缺省 = 只有字。 */
+type Choice = { value: string; label: string; icon?: Icon; disabled?: boolean; panelId?: string; leading?: ReactNode; meta?: ReactNode };
 function Choices({ options, value, onChange, testId, kind, label, activation = kind === 'tabs' ? 'manual' : 'automatic' }: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; kind: 'segment' | 'tabs'; label?: string; activation?: 'manual' | 'automatic' }) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]); const baseId = useId();
   const selected = options.findIndex(item => item.value === value && !item.disabled);
   const entry = selected >= 0 ? selected : options.findIndex(item => !item.disabled);
-  return <div className={'xm-' + kind} role={kind === 'tabs' ? 'tablist' : 'group'} aria-label={label} data-testid={testId}>{options.map(({ value: itemValue, label: itemLabel, icon: Icon, disabled, panelId }, index) => <button id={baseId + '-' + index} className={itemValue === value ? 'is-active' : ''} ref={node => { refs.current[index] = node; }} disabled={disabled} key={itemValue} tabIndex={index === entry ? 0 : -1} aria-selected={kind === 'tabs' ? itemValue === value : undefined} aria-pressed={kind === 'segment' ? itemValue === value : undefined} aria-controls={panelId} onClick={() => onChange(itemValue)} onKeyDown={event => {
+  return <div className={'xm-' + kind} role={kind === 'tabs' ? 'tablist' : 'group'} aria-label={label} data-testid={testId}>{options.map(({ value: itemValue, label: itemLabel, icon: Icon, disabled, panelId, leading, meta }, index) => <button id={baseId + '-' + index} className={itemValue === value ? 'is-active' : ''} ref={node => { refs.current[index] = node; }} disabled={disabled} key={itemValue} tabIndex={index === entry ? 0 : -1} aria-selected={kind === 'tabs' ? itemValue === value : undefined} aria-pressed={kind === 'segment' ? itemValue === value : undefined} aria-controls={panelId} onClick={() => onChange(itemValue)} onKeyDown={event => {
     if (event.nativeEvent.isComposing || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault(); const enabled = options.map((item, i) => item.disabled ? -1 : i).filter(i => i >= 0); const current = enabled.indexOf(index);
     const next = event.key === 'Home' ? enabled[0] : event.key === 'End' ? enabled[enabled.length - 1] : enabled[(current + (event.key === 'ArrowRight' ? 1 : -1) + enabled.length) % enabled.length];
     if (next !== undefined) { refs.current[next]?.focus(); if (activation === 'automatic') onChange(options[next].value); }
-  }} role={kind === 'tabs' ? 'tab' : undefined} type="button">{Icon && <Icon size={15} aria-hidden="true" />}{itemLabel}</button>)}</div>;
+  }} role={kind === 'tabs' ? 'tab' : undefined} type="button">{Icon && <Icon size={15} aria-hidden="true" />}{leading}{itemLabel}{meta}</button>)}</div>;
 }
-export function Segment(props: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; label?: string }) { return <Choices {...props} kind="segment" />; }
+// activation 'manual': arrow keys only move focus and Enter/Space picks. For a choice that acts as soon
+// as it is picked (Codex's interface language restarts a running Codex), a stray arrow key must not.
+export function Segment(props: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; label?: string; activation?: 'manual' | 'automatic' }) { return <Choices {...props} kind="segment" />; }
+// UI v4.0 filter chips (records by tool, tutorials by category): a row of toggle buttons that each
+// carry a count. Unlike Segment they wrap onto a second line instead of squeezing, and a count the
+// caller has not read yet is left out rather than drawn as 0.
+export type ChipOption = { value: string; label: string; count?: number; leading?: ReactNode; testId?: string };
+export function Chips({ options, value, onChange, label, testId }: BaseProps & { options: ChipOption[]; value: string; onChange: (value: string) => void; label?: string }) {
+  return <div className="xm-chips" role="group" aria-label={label} data-testid={testId}>{options.map(option => <button type="button" key={option.value} className={cx('xm-chip', Boolean(option.leading) && 'has-leading')} aria-pressed={option.value === value} onClick={() => onChange(option.value)} data-testid={option.testId}>{option.leading && <span className="xm-chip-lead" aria-hidden="true">{option.leading}</span>}{option.label}{typeof option.count === 'number' && <span className="xm-chip-count">{option.count}</span>}</button>)}</div>;
+}
 export function Tabs({ items, ...props }: BaseProps & { items: Choice[]; value: string; onChange: (value: string) => void; label?: string; activation?: 'manual' | 'automatic' }) { return <Choices {...props} options={items} kind="tabs" />; }
 export function Empty({ icon: Icon, title, description, action, testId }: BaseProps & { icon: Icon; title: ReactNode; description: ReactNode; action?: ReactNode }) {
   return <div className="xm-empty" data-testid={testId}><Icon size={28} aria-hidden="true" /><h3>{title}</h3>{description && <p>{description}</p>}{action && <div className="xm-empty-actions">{action}</div>}</div>;
@@ -70,10 +90,15 @@ export function Skeleton({ rows = 3, testId }: BaseProps & { rows?: number }) {
   return <div className="xm-skeleton" data-testid={testId} aria-busy="true" aria-label={t('loading')}>{Array.from({ length: Math.max(1, Math.min(50, Math.floor(rows))) }, (_, index) => <i key={index} aria-hidden="true" />)}</div>;
 }
 type TableRow = Record<string, ReactNode>;
-export function Table({ columns, rows, rowKey, onRowClick, empty, testId, label }: BaseProps & { columns: Array<{ key: string; label: string }>; rows: TableRow[]; rowKey: (row: TableRow) => string; onRowClick?: (row: TableRow) => void; empty: ReactNode; label?: string }) {
+// rowLabel: what a screen reader announces for a clickable row. Without it the first cell is used when it
+// is plain text; a cell that is an element (a relative time, a styled id) would read as "[object Object]",
+// so the row key stands in instead.
+export function Table({ columns, rows, rowKey, rowLabel, onRowClick, empty, testId, label }: BaseProps & { columns: Array<{ key: string; label: string }>; rows: TableRow[]; rowKey: (row: TableRow) => string; rowLabel?: (row: TableRow) => string; onRowClick?: (row: TableRow) => void; empty: ReactNode; label?: string }) {
+  const accessibleName = (row: TableRow) => { const first = row[columns[0]?.key]; return rowLabel?.(row) ?? (typeof first === 'string' || typeof first === 'number' ? String(first) : rowKey(row)); };
   const isAction = (target: EventTarget | null, row: EventTarget) => target instanceof HTMLElement && target !== row && Boolean(target.closest('button, a, input, select, textarea'));
-  return <div className="xm-table-wrap" data-testid={testId}>{rows.length ? <table aria-label={label}><thead><tr>{columns.map(column => <th scope="col" key={column.key}>{column.label}</th>)}</tr></thead><tbody>{rows.map(row => <tr key={rowKey(row)} tabIndex={onRowClick ? 0 : undefined} aria-label={onRowClick ? String(row[columns[0]?.key] ?? rowKey(row)) : undefined} onClick={event => { if (!isAction(event.target, event.currentTarget)) onRowClick?.(row); }} onKeyDown={event => { if (onRowClick && event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onRowClick(row); } }}>{columns.map(column => <td key={column.key}>{row[column.key]}</td>)}</tr>)}</tbody></table> : <Empty icon={Archive} title={empty} description="" />}</div>;
+  return <div className="xm-table-wrap" data-testid={testId}>{rows.length ? <table aria-label={label}><thead><tr>{columns.map(column => <th scope="col" key={column.key}>{column.label}</th>)}</tr></thead><tbody>{rows.map(row => <tr key={rowKey(row)} tabIndex={onRowClick ? 0 : undefined} aria-label={onRowClick ? accessibleName(row) : undefined} onClick={event => { if (!isAction(event.target, event.currentTarget)) onRowClick?.(row); }} onKeyDown={event => { if (onRowClick && event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onRowClick(row); } }}>{columns.map(column => <td key={column.key}>{row[column.key]}</td>)}</tr>)}</tbody></table> : <Empty icon={Archive} title={empty} description="" />}</div>;
 }
 export function PageHead({ title, lead, actions, testId }: BaseProps & { title: ReactNode; lead?: ReactNode; actions?: ReactNode }) { return <header className="xm-page-head" data-testid={testId}><div className="xm-page-head-copy"><h1>{title}</h1>{lead && <p>{lead}</p>}</div>{actions && <div className="xm-page-head-actions">{actions}</div>}</header>; }
 export function Toolbar({ left, search, right, testId }: BaseProps & { left?: ReactNode; search?: ReactNode; right?: ReactNode }) { return <div className="xm-toolbar" data-testid={testId}>{left && <div className="xm-toolbar-left">{left}</div>}{search && <div className="xm-toolbar-search">{search}</div>}{right && <div className="xm-toolbar-right">{right}</div>}</div>; }
-export function SettingRow({ title, description, control, anchor, testId }: BaseProps & { title: ReactNode; description: ReactNode; control: ReactNode; anchor?: string }) { return <div className="xm-setting-row" data-testid={testId} data-anchor={anchor}><div><strong>{title}</strong><p>{description}</p></div><div>{control}</div></div>; }
+// wide: the control takes the full width under the title (v4 theme cards); badge: a small tag after the title (「重启后生效」).
+export function SettingRow({ title, description, control, anchor, badge, wide, testId }: BaseProps & { title: ReactNode; description: ReactNode; control: ReactNode; anchor?: string; badge?: ReactNode; wide?: boolean }) { return <div className={cx('xm-setting-row', wide && 'is-wide')} data-testid={testId} data-anchor={anchor}><div><strong>{title}{badge ? <span className="xm-setting-badge">{badge}</span> : null}</strong>{description ? <p>{description}</p> : null}</div><div>{control}</div></div>; }

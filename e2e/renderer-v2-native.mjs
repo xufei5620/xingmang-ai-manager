@@ -19,14 +19,16 @@ import { createSmokeRuntime } from './smoke-runtime.mjs'
 //    queueMicrotask 里注册、晚于 main.ts 的 applyPreferences，所以最后写入的是
 //    平台层那条。当时两处各有一份公式、下限不同（0.7 与 0.8），960 宽算出
 //    0.75 与 0.8 两个答案；公式随后已合成一份（platform/zoom.ts 转调
-//    calculateUiZoom，统一下限 0.7），两个入口再也算不出不同值。这里的期望值
-//    照同一条公式算，不再依赖哪一条监听最后跑。
+//    calculateUiZoom），两个入口再也算不出不同值。这里的期望值照同一条公式算，
+//    不再依赖哪一条监听最后跑。UI v4.0 起自动倍率下限是 0.9、最终倍率下限 0.85
+//    （ui-spec/03-layout-window.md §1）：960 宽时缩放 90%，逻辑宽约 1067，
+//    不再撑回 1280，侧栏靠收窄条腾地方。
 
 const UI_DESIGN_WIDTH_DIP = 1280
 // 与 electron/window-preferences.ts 那份唯一公式的常量同值（platform/zoom.ts 转出的就是
 // 它们）。冒烟脚本不 import 主进程产物（那是压缩过的 CommonJS），这份重复是有意的：
 // 它表达的是「产品应该算出什么」，独立于被测代码。
-const UI_MIN_ZOOM = 0.7
+const UI_AUTO_MIN_ZOOM = 0.9
 const UI_MAX_ZOOM = 1.25
 const widths = [960, 1280, 1440]
 
@@ -49,7 +51,8 @@ async function assertNoStartupDialog(page, evidence, when) {
 }
 
 function expectedZoom(contentWidthDip) {
-  const automatic = Math.min(UI_MAX_ZOOM, Math.max(UI_MIN_ZOOM, contentWidthDip / UI_DESIGN_WIDTH_DIP))
+  // 这里只量「自动」那一档：用户乘数是 1，最终下限 0.85 在 0.9 之下，碰不到。
+  const automatic = Math.min(UI_MAX_ZOOM, Math.max(UI_AUTO_MIN_ZOOM, contentWidthDip / UI_DESIGN_WIDTH_DIP))
   return Math.round(automatic * 10_000) / 10_000
 }
 
@@ -213,8 +216,10 @@ async function main() {
       assert.equal(applied.width, width, `The runner must honour a ${width}px content width, got ${JSON.stringify(applied)}`)
       const expected = expectedZoom(width)
       const geometry = await waitForWindowZoom(expected)
-      // 固定 1280 逻辑宽：缩放没有触到上下限时，CSS 视口宽必须回到设计稿的 1280。
-      await withDeadline('logical width', stepBudgetMs, () => page.waitForFunction(() => Math.abs(window.innerWidth - 1280) <= 1))
+      // 缩放没有触到上下限时，CSS 视口宽回到设计稿的 1280；960 宽触到 0.9 的下限，
+      // 逻辑宽就是 960 / 0.9。两种情况都按「内容宽 ÷ 缩放」算。
+      const logicalWidth = width / expected
+      await withDeadline('logical width', stepBudgetMs, () => page.waitForFunction((target) => Math.abs(window.innerWidth - target) <= 1, logicalWidth))
       await withDeadline('image decode', stepBudgetMs, () => page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0)))
       const capture = await evaluateInMainProcess('window capture', async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64'))
       await fs.writeFile(path.join(output, `welcome-${width}.png`), Buffer.from(capture, 'base64'))
@@ -223,19 +228,20 @@ async function main() {
     assert.equal(checks.length, widths.length)
     passedAssertions.push('zoom-follows-the-platform-formula-at-every-width')
 
-    progress('checking the star canvas')
+    progress('checking the star layer')
     await assertNoStartupDialog(page, evidence, 'after resizing the window')
     passedAssertions.push('no-blocking-startup-dialog')
     await page.getByTestId('welcome-motion').click()
     await withDeadline('reduced motion', stepBudgetMs, () => page.waitForFunction(() => document.documentElement.dataset.reducedMotion === 'true'))
-    evidence.pixels = await withDeadline('canvas pixels', stepBudgetMs, () => page.getByTestId('welcome-starfield').evaluate((canvas) => {
-      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
-      let visible = 0
-      for (let i = 3; i < data.length; i += 4) if (data[i]) visible++
-      return { visible, total: canvas.width * canvas.height }
+    // v4 的星星是 CSS 圆点（不再是逐帧重画的整窗画布）：要真的画出了圆点，欢迎页里也不能再有画布。
+    evidence.stars = await withDeadline('star layer', stepBudgetMs, () => page.getByTestId('welcome-starfield').evaluate((layer) => {
+      const rect = layer.getBoundingClientRect()
+      return { image: getComputedStyle(layer).backgroundImage, width: rect.width, height: rect.height, canvases: document.querySelectorAll('.auth-welcome canvas').length }
     }))
-    assert.ok(evidence.pixels.visible > evidence.pixels.total * 0.01, 'The star canvas must contain rendered pixels')
-    passedAssertions.push('star-canvas-renders-pixels')
+    assert.match(evidence.stars.image, /radial-gradient/, 'The star layer must draw its dots')
+    assert.ok(evidence.stars.width > 0 && evidence.stars.height > 0, 'The star layer must cover the welcome page')
+    assert.equal(evidence.stars.canvases, 0, 'The welcome page must not repaint a full-window canvas')
+    passedAssertions.push('star-layer-renders-without-a-canvas')
 
     progress('checking that preferences survive a reload')
     await withDeadline('high contrast', stepBudgetMs, () => page.evaluate(() => window.xingmangPlatform.setHighContrast(true)))

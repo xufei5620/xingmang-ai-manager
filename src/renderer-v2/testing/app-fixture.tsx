@@ -145,6 +145,8 @@ const pendingKeyMetadata = new Map<ProviderId, () => void>()
 const heldConfiguredModels = new Map<ProviderId, Array<() => void>>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
 if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt'; config.providers.codex.actualBaseUrl = '' }
+// ?officialEmail=1：读得出 ChatGPT 登录的邮箱和套餐（配置里的官方账号那一栏、「查看 ChatGPT 账号额度」）。
+if (query.has('officialEmail')) { config.providers.codex.officialAccountEmail = 'chatgpt@example.test'; config.providers.codex.officialAccountPlan = 'Plus' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
 // ?codexBroken：Codex 自己读不了 config.toml（主进程 configBroken），重置之后才好。
 if (query.has('codexBroken')) config.providers.codex.configBroken = true
@@ -374,6 +376,15 @@ const methods = {
     return value
   },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
+  // 首页余额卡和个人中心账号概览的「近 7 天花费」都是一天查一次看板（v4 批 04、批 06）：按星期几回一个固定的数，
+  // 柱子有高有低。
+  getAccountDashboard: async (input) => {
+    const quota = [40_000, 120_000, 0, 180_000, 80_000, 240_000, 100_000][new Date((input.startTimestamp ?? 0) * 1000).getDay()]
+    return { startTimestamp: input.startTimestamp ?? 0, endTimestamp: input.endTimestamp ?? 0, buckets: [], models: [], quota, count: quota ? 3 : 0, tokens: quota * 2, discardedCount: 0, coverage: 'range' as const }
+  },
+  // 个人中心一打开就是账号概览，「我的订阅」卡读一次。这里没有订阅。
+  getAccountSubscriptionSelf: async () => ({ billingPreference: null, activeSubscriptions: [], allSubscriptions: [] }),
+  getAccountSubscriptionPlans: async () => [],
   // 主进程替用户绕开连不上的代理：改成直连以后余额照常读得到（只演这一种结果）。
   bypassBrokenProxy: async () => {
     if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''
@@ -605,6 +616,8 @@ const methods = {
       ...(failed ? { warning: '中文设置已保存，但本次未确认中文界面生效。请再次启用中文界面以重试。' } : {}) }
   },
   getCodexDesktopStatus: async () => structuredClone(system.desktopApps.codex),
+  // 配置里「界面语言与文件夹权限」头一次展开就读一次（UI v4）。
+  inspectCodexWorkspacePermissions: async () => ({ configPath: 'C:\\Fixture\\config.toml', workspace: config.workspace, configExists: true, trustLevel: 'trusted' as const, approvalPolicy: null, permissionProfile: null, sandboxMode: null, control: 'available' as const, error: null }),
   // 「安装」遇到缺 / 认不出的 Node 会先走这一步（第十一批 2），装完运行环境即就绪。
   installNodeRuntime: async () => {
     if (query.has('nodeInstallFail')) throw new Error('下载 Node.js 时 ETIMEDOUT')
@@ -725,6 +738,8 @@ const methods = {
   listConfiguredModels: async (provider: ProviderId) => {
     const held = heldConfiguredModels.get(provider)
     if (held) await new Promise<void>((resolve) => held.push(resolve))
+    // codexGrokModels：密钥能用 grok-4.6 和 grok-4.7，Codex 的两处型号列表只该列出 grok-4.7。
+    if (query.has('codexGrokModels')) return ['gpt-6-astra', 'grok-4.6', 'grok-4.7']
     return query.has('clientModels') ? ['gpt-fixture', 'deepseek-fixture', 'claude-fixture'] : query.has('cliDefaultModels') ? detectedModelsByProvider[provider] : [config.providers[provider].model || 'fixture-model']
   },
   configureExternalTool: async (tool, input) => {
