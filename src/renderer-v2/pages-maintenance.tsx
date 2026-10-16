@@ -211,11 +211,6 @@ export type BusinessActions = {
   /** 设置页的「重看界面导览」：回到首页重播首页上那几条操作提示（A8）。 */
   replayTour?: () => void
   /**
-   * 装完一个工具后由 App 负责的收尾：写账号 Key + 刷新首页的检测结果。页面自己
-   * 只刷新自己那一份数据，回到首页仍会看到「未安装」（R-G3）。
-   */
-  onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
-  /**
    * 页面里装好了运行环境（精选、外接工具页的「自动安装 Python」）以后叫一声，由 App 重新检测，首页跟着变；
    * 不叫的话首页还写 Python「未安装」。装工具不用它：走 installTool，装完还要写 Key。页面先叫它、再读本页：
    * 本页那次读接上 App 刚起的那一轮检测，不另起一轮。

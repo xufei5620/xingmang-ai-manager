@@ -13,6 +13,14 @@ describe('diagnosticGroup', () => {
     }
   })
 
+  it('treats Node.js and npm as optional only when the main process lowered them to a warning', () => {
+    // 一个命令行工具都没装时主进程把没装的 Node.js、npm 降成「需留意」。
+    expect(diagnosticGroup({ code: 'RUNTIME_NODE', state: 'warn', details: { installed: false } })).toBe('optional')
+    expect(diagnosticGroup({ code: 'RUNTIME_NPM', state: 'warn', details: { installed: false } })).toBe('optional')
+    // 装着但版本太旧之类的「需留意」不算可选。
+    expect(diagnosticGroup({ code: 'RUNTIME_NODE', state: 'warn', details: { installed: true } })).toBe('problem')
+  })
+
   it('keeps a missing Node.js or npm, and any other warning, under 需要处理', () => {
     expect(diagnosticGroup({ code: 'RUNTIME_NODE', state: 'fail', details: { installed: false } })).toBe('problem')
     expect(diagnosticGroup({ code: 'RUNTIME_NPM', state: 'fail', details: { installed: false } })).toBe('problem')

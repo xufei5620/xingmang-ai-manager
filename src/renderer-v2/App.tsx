@@ -1141,8 +1141,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       const outcome = await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
       keyWritten = Boolean(outcome?.result?.configured.includes(providerFor(id)))
     }
-    // 以前「安装卸载」页装完走的是它自己的 bridge 调用，绕开了 toolsApi 那侧的作废；那一页拆掉了（第 10 批），
-    // BusinessActions.onToolsChanged 还接着这一段，补的这一刀留着，从那里进来的装完也能立刻看到新的「最近」。
+    // 以前「安装卸载」页装完走的是它自己的 bridge 调用，绕开了 toolsApi 那侧的作废，才补了这一刀；那一页拆掉了
+    // （第 10 批），留着它不碍事：刷新「最近」只是多读一次，哪条安装入口以后再绕开 toolsApi 也不会漏。
     refreshRecent()
     await toolbox.refresh(true)
     return keyWritten
@@ -1875,9 +1875,6 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onSystemChanged={() => { markDiagnosticsStale(); refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
-                  onToolsChanged={(tool) => syncAfterToolInstalled(tool).then(() => undefined, (cause) => {
-                    if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
-                  })}
                   installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)} toolJobs={toolbox.jobs}
                   onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
                   onInstallRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onReplaceNode={() => setNodeReplace({})}
