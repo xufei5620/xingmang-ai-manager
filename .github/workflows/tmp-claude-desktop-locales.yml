@@ -1,0 +1,87 @@
+# 临时：核对 Claude Desktop 官方安装包里带不带中文界面，核完就删，不进 main。
+name: tmp-claude-desktop-locales
+on:
+  push:
+    branches: [claude/project-thread-14ti64]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Download and unpack official MSIX
+        run: |
+          set -euo pipefail
+          mkdir -p work && cd work
+          curl -sS -o /dev/null -w '%{redirect_url}\n' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect | tee url.txt
+          curl -sSfL --retry 3 -o claude.msix https://claude.ai/api/desktop/win32/x64/msix/latest/redirect
+          ls -l claude.msix
+          mkdir msix && (cd msix && unzip -q ../claude.msix || true)
+          grep -o 'Version="[^"]*"' msix/AppxManifest.xml | head -2
+          find msix -maxdepth 3 -type d | head -40
+          find msix -name '*.asar' -o -name '*.zip' | head
+          ASAR=$(find msix -name app.asar | head -1)
+          echo "asar=$ASAR"
+          npx --yes @electron/asar@3.2.10 extract "$ASAR" asar
+          du -sh asar
+      - name: Search for locales
+        run: |
+          cd work
+          python3 - <<'PY'
+          import os, re
+          roots = ['asar', 'msix']
+          files = []
+          for root in roots:
+              for d, _, fs in os.walk(root):
+                  for f in fs:
+                      files.append(os.path.join(d, f))
+          print('total files', len(files))
+          print('== files with locale-like names ==')
+          for p in files:
+              b = os.path.basename(p).lower()
+              if re.search(r'(^|[^a-z])(zh|zh-cn|zh-tw|zh_cn|zh-hans|zh-hant|ja-jp|ko-kr|hi-in|id-id|fr-fr|de-de)([^a-z]|$)', b) or 'i18n' in p.lower() or 'locale' in p.lower():
+                  print(p, os.path.getsize(p))
+          pats = {
+              'zh-CN': re.compile(rb'zh-CN'),
+              'zh-TW': re.compile(rb'zh-TW'),
+              'zh-Hans': re.compile(rb'zh-Hans'),
+              'simplified-zh': re.compile('简体中文|中文（简体）|中文(简体)|中文 \(简体\)'.encode()),
+              'choose-lang': re.compile(rb'Choose your language'),
+              'hi-IN': re.compile(rb'"hi-IN"'),
+              'es-419': re.compile(rb'es-419'),
+              'ru-RU': re.compile(rb'"ru-RU"'),
+          }
+          hits = {k: [] for k in pats}
+          for p in files:
+              if os.path.getsize(p) > 80 * 1024 * 1024: continue
+              try:
+                  data = open(p, 'rb').read()
+              except Exception:
+                  continue
+              for k, rx in pats.items():
+                  n = len(rx.findall(data))
+                  if n: hits[k].append((p, n))
+          for k, v in hits.items():
+              print(f'== {k}: {len(v)} files ==')
+              for p, n in v[:25]:
+                  print('  ', n, p)
+          def ctx(k, limit=6, width=700):
+              rx = pats[k]
+              shown = 0
+              for p, _ in hits[k]:
+                  data = open(p, 'rb').read()
+                  for m in rx.finditer(data):
+                      s = max(0, m.start() - width); e = min(len(data), m.end() + width)
+                      print(f'--- {k} in {p} @{m.start()}')
+                      print(data[s:e].decode('utf-8', 'replace'))
+                      shown += 1
+                      if shown >= limit: return
+          ctx('hi-IN', 4, 900)
+          ctx('choose-lang', 3, 900)
+          ctx('zh-CN', 8, 500)
+          ctx('simplified-zh', 4, 300)
+          PY
