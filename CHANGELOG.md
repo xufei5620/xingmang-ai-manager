@@ -16,7 +16,7 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
-## 0.2.19 - 2026-10-14
+## 0.2.19 - 2026-10-16
 
 - 服务状态文件新增 `accountGroups`（分组对照）：xm 站改分组本名时，发布者在 service-status 工作流的「分组对照」里写
   「codex=新名字|老名字」这类对照，客户端不用发版就跟过去。new-api 的分组没有编号、全按名字认，站上同一家又有好几个
@@ -333,6 +333,305 @@
   以及反馈页运行日志里讲这两条线路的几句（`relay-route-controller.ts`、`tool-route-controller.ts`、`relay-line-fetch.ts`、`main.ts` 的更新检查退回）。
   事件名、设置里存的 `direct` / `primary`、报告的键都不变，老设置照旧认。「更新下载停住了，换直连重下一次」的「直连」是不走代理，没改。
 - 设置顶部搜索加「线路1」「线路2」两个词，「洛杉矶」「CF」「直连」留着给看旧教程的人搜。v4 原型设置页那两组线路文字同步改掉。
+- Codex 的两处型号列表不再列 grok-4.6：首页「换用别家模型」的单选列表，和 Codex 配置弹窗「默认模型」下拉（`model-filter.ts` 的 `isHiddenCodexModel`，配置弹窗只对 Codex 过滤）。服务端 2026-10-16 实测 grok-4.6 写不对 Codex 改文件用的补丁格式，选了改不成文件，Grok 只放 grok-4.7；yoyo 同日定列表里藏掉、不加字。密钥能用的别家型号只剩 grok-4.6 时，「换用别家模型」照「当前密钥没有别家模型可用」处理。已经配成 grok-4.6 的不改；Grok 命令行用它自己的改文件工具，默认型号仍是 grok-4.6，不受影响。
+- Codex 切到官方账号不再删掉中转那张 `[model_providers.<表名>]`，改成同名写一张走官方登录的表：`name = "OpenAI"`、`wire_api = "responses"`、`requires_openai_auth = true`，不写 `base_url`。Codex 续接旧对话时用的是对话开始时记下的 `model_provider`（app-server `merge_persisted_resume_metadata`，rust-v0.162.1），配置里没这个表名就报 `Model provider \`OpenAI\` not found`、整段对话打不开；表名 `OpenAI` 的是星芒第一次写配置时电脑上已经有 config.toml 的客户，从零写的是 `XingmangAI`，两种都中。不写地址时 Codex 按 auth.json 选官方默认地址（ChatGPT 登录走 chatgpt.com/backend-api/codex，API Key 走 api.openai.com/v1），显示名正好是 `is_openai()` 认的 `OpenAI`，和内置官方线路一样；这张表和 2026-10-15 客户自己在 Codex 桌面端上改好、旧对话接着回了的那张一字不差（写死 api.openai.com 对 ChatGPT 登录报 `Missing scopes: api.responses.write`）。切回当前账号时照旧用 `xingmang-config-relay.toml` 恢复原样；那份没了时 `codexRelayProviderFor` 优先接回这张表的表名，旧对话跟着回中转。新加一张表时接在官方配置原文后面，客户的注释和排版不动；同名表是客户自己写的不动；以前快照里留着的星芒中转活表换掉；在官方账号上重置时表名从 `xingmang-config-relay.toml` 里找。这次以前就切到官方的客户：开机补设置那一轮（`fillToolTemplateDefaults`）对记着官方账号的 Codex 补这一张表（`restoreCodexOfficialAlias`），只加这一张、先备份、Codex 开着就等下次，与补模板缺省项同一套规矩。沙箱用 Codex 0.162.1 app-server 实测：切官方后 `thread/resume` 成功、新一轮请求和内置官方线路一样发去 chatgpt.com、中转收不到；切回后接着发到中转；模拟老版本删表后报 not found，开机补表后又能打开。
+- Codex 中转配置的 `supports_websockets` 改成按型号写：GPT 型号 `true`（#992 写的是 `false`），首页「换用别家模型」选了别家型号写 `false`。新装模板、合并、开机补写三条路都写，两条线路写一样的值。写过的值正好是星芒按上一个型号会写的那个，就跟着这次的型号改；对不上的当客户自己定的，不动。开机补写跟着把 `relayTemplateRevision` 升到 4，0.2.18 升上来的老配置开机补一次；CLI 巡检脚本的探测配置同步。型号怎么算 GPT 跟渲染层 `isOpenAiModelId` 一致，测试钉住。
+- 原因：2026-10-16 服务端在 xm 两条线路的 GPT 分组和 api.solov.cc 开了 Responses WebSocket，实测同一连接里后续每轮上传从约 118 KB 降到约 400 字节，5 步任务 21.8 秒对普通请求 47 秒；yoyo 同日定默认开。服务端只给 GPT 渠道开了，这一项又对整条线路生效、不能按请求分，所以只在用 GPT 型号时开：星芒账号签进 GPT 分组、历史账号签进 `Codex_pro`，别家型号的渠道不收 WebSocket。
+- 走 Cloudflare 时一轮里约 100 秒不出字，WebSocket 会被当成闲置掐掉，Codex 重连 5 次才退回普通请求（10-13 模拟，服务端 7 天数据约占 0.27%）。服务端让 CF 入口对 `GET /v1/responses` 的 WebSocket 握手回 426，Codex 0.162.1 收到当场改走普通请求、不重试，洛杉矶照常用 WebSocket；只对这个路径回，星芒 Codex 桌面端中文通道 `/api/xingmang-tunnel/v1/ab-chatgpt` 不能一起挡。新开对话和接着聊旧对话各有一次预热请求，用量明细里多一条输出为 0 的记录（走 CF 收到 426 时不预热）。服务端 10-16 12:40（北京时间）起已就绪：xm.solov.cc 对 WebSocket 握手回 426，api.solov.cc 单个 Key 的连接上限 64 → 512（它的 CF 入口暂时没回 426，服务端在观察）；发版后告诉服务端一声，他们看用量和断开情况。「用户」两句是 yoyo 2026-10-16 批的原文（回「说明改」）。
+- Mac 上 Codex 桌面端的中文检查不再要求 Electron Framework 里的系统中文包（`electron/codex-desktop-locale.ts`）。
+  ChatGPT 26.1007 起（Powered by Codex & OWL）Mac 包里没有 Electron Framework.framework，网页界面和菜单的中文
+  照样在 app.asar 里，以前三样缺一样就算没有中文，「检查中文界面」一直说缺少中文资源、「启用中文界面」一直报
+  「当前 Codex Desktop 安装包没有本地简体中文资源」。Windows 照旧三样都要。
+- `src/renderer-v2/operation-error.ts` 的 noBalance 规则补认 Sub2API（历史账号站）余额用完的原话
+  「Insufficient account balance」和错误码 `INSUFFICIENT_BALANCE`。历史账号余额为零时，签好的 Key
+  拿去查模型就被拒，「改用当前账号」（首页、引导第 3 步）和登录后自动写 Key 失败以前只上屏
+  「操作没有完成」加英文原话；现在按余额用完给「余额已用完」和「马上充值」。主进程行为不变：
+  这一步失败时配置没有写，原来的（例如 CC Switch 的）照旧留着。
+- UI v4 批01 底座：`ui-spec/tokens.css` 换成 v4 两套配色（黑金深色、晨曦金浅色），加 v4 语义变量
+  （`--pri`、`--gold`、`--focus`、`--pop`、`--toast`、状态文字 `-tx` 等）；高对比改成每套主题一整套值，
+  `contrast-tokens.test.ts` 加查它覆盖了主题的每个变量、状态文字 4.5:1、焦点环和输入框边 3:1。
+  主窗口不再设 `data-skin`，设置里的 `uiSkin` 字段照旧存（删了会被当成第一次启动），皮肤规则只留给画布。
+- 缩放下限：自动倍率 0.9、最终倍率 0.85（`UI_AUTO_MIN_ZOOM` / `UI_MIN_ZOOM`，`e2e/renderer-v2-native.mjs`
+  的副本同步）。
+- `ui/modal.tsx`：标题去掉图标，副标题挪到标题下面一行；有修改时关闭不再整块换成确认页，表单留着、底部换成确认条，
+  条在时再关会抖一下。Esc 改在 keydown 上处理：Chromium 连按几次 Esc 后 `cancel` 事件不能再拦，`<dialog>`
+  会绕过 React 自己关掉，草稿丢了、调用方还以为开着。
+- `ui/feedback.tsx` 短提示挪到右下角、带图标；`ui/guidance.tsx` 导览气泡宽 264、带箭头、给目标描金边，
+  侧栏两步放在目标右边（`registry/shell.ts` 的 `placement`）。
+- 窗口失焦或被挡住时根节点挂 `data-window-idle="true"`（`features/app/window-idle.ts`，`main.tsx` 里挂上），
+  转圈和骨架屏的循环动画据此暂停；后面各批新加的循环动画挂这一条就行。底座里新加的动画（短提示进场、
+  确认条抖一下）都是一次性的，只动 transform 和 opacity。
+- 界面文字照 `界面文字/批01-底座` 改（yoyo 2026-10-15 回「全部按推荐改」）：主题选项改叫浅色 / 深色，去掉外观说明和
+  皮肤那一行（设置搜索的「主题」补关键词配色、皮肤），高对比说明去掉「皮肤」；缩放快捷键提示、退出登录确认、
+  没保存确认条换成字表里的句子。导入设置时不再问「界面皮肤」：这台电脑没改过照文件换，改过就留着（`electron/data-transfer.ts`）。
+  `SettingRow` 没有说明时不再留一个空段落。
+- UI v4 批02 外壳（`features/shell/Shell.tsx`、`styles/shell.css`）：标题栏并进 44 高的顶栏，侧栏 224 / 60、导航行 34（逻辑高
+  不到 660 时 30）、状态栏 28；`ui-spec/tokens.css` 加外壳用的 `--nav-on`、`--nav-on-sh`、`--edge`、`--glow`、`--sh-2`、
+  `--track`、`--status`，`styles/tokens.css` 的高对比两套各补一份。登录前的标题栏（`AuthWindow`）照旧，高度跟着变量变成 44。
+- Windows / Linux 系统三键那条：`electron/window-presentation.ts` 加 `WindowChrome`，旧回滚界面 36 高、原来的颜色；新界面在
+  `installRendererV2Platform` 里建窗口之前换成 `v4WindowChrome`（44 高，颜色取 `--win` / `--bg` / `--text-2`，测试对着
+  `ui-spec/tokens.css` 钉住）。高度统一走 `titleBarOverlayHeight(zoom)`，90% / 110% 是 40 / 48；换深浅色时不再写死 38，
+  免得放大时那一条先缩回去一下。建窗口时的初始高度也从 38 改成跟缩放那处一样的 36（旧界面）或 44（新界面）。
+- 侧栏按 `registry/shell.ts` 的新结构排：三组（第二组带「扩展」小标题），第三组里的「充值」是个人中心充值页签，余额按最近
+  7 天用量不够 7 天时后面挂「余额低」；游戏加速、安装卸载、备份、更新过渡期收在「更多」，在这四页时「更多」自己展开。检查后面
+  挂待处理项数（`environment-status.ts` 加 `issues`）。
+- 账号卡：套餐、余额、进度条、「约还能用 N 天」（`features/app/balance-runway.ts`，最近 7 天用量走 `useRunwayUsage`，换账号
+  读一次、之后最多十分钟一次）；卡上不再放充值、切换账号；余额刷新键只在读失败时出现。
+- 顶栏：当前位置（个人中心带页签名，`pages-account.tsx` / `pages-business.tsx` 把当前页签报上来）、搜索框、深浅色 / 公告 / 帮助
+  三个图标键。深浅色键走现有的保存外观。公告改成铃铛下面的小框（`Announcement.tsx` 的 `AnnouncementPopover`，顶层
+  `popover="manual"`），点一条或旧式单段公告才开原来那个大框，小框换大框时不重新读、不丢选中的那一条；铃铛来回开关。打开那一帧就显示「正在读取公告」，
+  不再先画出上回读到的列表、清空、再出新列表。
+- 状态栏：加 Node.js 版本、「已装 N 个工具」，网络位置只写国家（`networkStatusLabel`）、加速时写线路，版本号带有新版本 /
+  重启后更新；不加 backdrop-filter。断网条按钮改叫「重试」，点了还是不通给一句提示。
+- 命令面板 560 宽、键帽提示，空输入先列「操作」组（充值、查看用量账单、开始检查、帮助与客服、切深浅色、退出登录），
+  命令面板「开始检查」打开检查页（打开就跑一次），人已经在检查页时让它重新挂一次、再跑一次。导览三步去掉标题。窄窗口（逻辑宽不到 1280）不再把侧栏浮在页面上展开，
+  点「展开侧栏」只提示一句，用户自己的展开 / 收起记录不动。
+- 开机提示卡从右上角（顶边 64、压着顶栏下沿）挪到正文左下角、状态栏上面：标题栏并进顶栏以后，右上角是顶栏图标和
+  Windows 系统键，往下就是各页页头的主按钮，原来的位置会盖住检查页「重新检查」这些；右下角留给短提示和更新通知。
+  外壳把正文左边写进 `--v2-content-left`。详情抽屉上下边改跟 `--topbar-height` / `--statusbar-height` 走。
+- 界面文字照 `界面文字/批02-外壳` 改（yoyo 2026-10-15 回「全部按推荐改」）；页面名「反馈」改成「反馈与客服」；`registry/pages.ts` 里画布名字
+  后面那个只给注册表看的「 ↗」去掉（侧栏一直画的是图标）。浏览器测试跟着新结构改：公告的关闭和重新读取改成点铃铛收起再打开，登录前标题栏 44，
+  窄窗口改测提示和记录不动，余额刷新从首页余额卡开始；切换账号改从个人中心页头打开切换框（`e2e/realm-account-smoke.mjs`
+  这个 Windows CI 冒烟也跟着改），个人中心「我的账号」里也列着已保存的账号，框里的东西在框里找。
+- UI v4 批03 欢迎登录引导。欢迎页（`features/auth/Welcome.tsx`、`auth.css`）照 v4 原型重排：`AuthWindow` 不再写标题字，
+  欢迎页那条透明、右上角只放深浅色切换（和顶栏那颗走同一条保存外观）；加「用历史账号登录」（打开登录框并切到历史账号）；
+  底部 HUD、整窗星空 canvas 去掉。星空改成两层 CSS 圆点（`--star`），只有一层的透明度在闪；星轨一圈三颗，整圈转、胶囊反着
+  转回来，只动 transform 和透明度；窗口失焦或看不见时 `data-motion-idle` 把动画停在原地（`animation-play-state`），减少动画、
+  系统要求少动画、低配电脑照旧全停。`ui-spec/tokens.css` 加 `--star`、`--ring`、`--welcome`（高对比度另配不透明的值）。`Starfield.tsx`、
+  `starfield-plan.ts` 已经没人用（#1017 起主界面也不挂），连同测试删掉；旧回滚界面自己的星空不动。
+- 登录、注册、找回、两步验证（`AuthFlow.tsx`）：去掉副标题，主按钮通栏放在弹窗底部，下面一行文字链接；「取消」「返回」并进
+  右上角 ×，`Dialog` 加 `closeTestId` 让 × 带上原来的 `login-cancel` / `register-cancel` / `login-2fa-back`。关框前问不问只看客户
+  亲手填的，记住密码自动带出来的不算。`Input` 加 `addon`，注册的「获取验证码」放进邮箱框；没点过就提交时验证码那格提示先去点
+  （`validateRegistration` 加 `codeSent`，缺省 = 旧说法）。账号或密码不对时「找回密码」跟在红字那一行里。找回第 3 步「先不设」
+  以后的「用临时密码登录」直接登录（两步验证账号先进两步验证），没登上退回登录框、账号和临时密码都填好。登录、注册、设新密码、
+  临时密码登录成功各带一句短提示给 `onAuthenticated`。
+- 新手引导（`StartGuide.tsx`）从整页改成叠在欢迎页或主界面上面的 640 宽弹窗，`App.tsx` 不再用它换掉欢迎页；四段进度条、底栏
+  步数，选项两列，几种「已办好 / 还差一步」改成卡片，「试试第一句话」复制成功走短提示。Windows 装 Node.js、管理员授权、
+  换新版 Node.js、改用当前账号、出错出口这些分支原样搬进弹窗，没改逻辑。没登录时第 3 步给「登录账号」、第 4 步给「去登录」
+  「注册新账号」（新 `onRegister`）。
+- 界面文字照 `界面文字/批03-欢迎登录引导` 改（yoyo 2026-10-15 回「全部按推荐改」）：「双重验证」统一叫「两步验证」（主进程
+  认两步验证挑战的那句原话不动）。测试跟着改：欢迎页的画布像素检查换成「有 CSS 星点、没有 canvas」（`e2e/renderer-v2-native.mjs`
+  一起改），星轨转角测试真的去转轨道，加失焦停住、深浅色切换、未登录引导、临时密码直接登录这几条；整页回归里
+  引导开着时不再去点底下的欢迎页。
+- UI v4 批04 首页（`features/tools/Home.tsx` 整页重写，`app.css` 换掉旧首页两栏的样式）：顶部大卡（第一个装好的命令行工具，没有就放
+  Claude Code 的「还没装」）+「接着上次」三条；余额卡金额、订阅一行、按最近用量还能用几天（`features/app/balance-runway.ts`，不到 7 天
+  转提醒色）、近 7 天花费七根柱子（`features/tools/week-spend.ts`：按本机的天一天查一次看板，过完的天记住只再查今天；只给能按时段查
+  看板的账号画柱子）；工具区按 `registry/tools.ts` 的 `homeToolOrder` 排七张 `ToolCard`（`ui/core.tsx` 新组件），命令行工具和外接客户端
+  在一张网格里；运行环境 Node.js、Git、Python 三行加「全面检查」。旧 `ToolRow` 的第四格不再固定 72，按内容放宽、放不下时两边各自省略。
+- 提示区：要客户动手的错误（写密钥失败、检测失败、线路断了、配置读不到）都摆着；重启、写密钥进度和结果、钱、线路这几条最多两条，
+  剩下的位置给公告和活动（`Announcement.tsx` 加 `noticeSlot` / `noticeRoom`，用 portal 画进首页那一格，别的页不再画公告条和活动条，
+  铃铛照旧）；装完要重启的提醒在首页是一条提示，别的页还是外壳上那条（`RestartReminder`，Windows 流程没动）。
+- 卡片「…」：配置…、改用当前账号 / 切回官方账号、换用别家模型…、ChatGPT 账号额度…、更新到 v…、回到推荐版本 v…（新：比推荐版本新时
+  先确认）、退回更新前的 v…、重新安装（新，只给星芒装的，同安装卸载页）、打开配置文件夹、查看记录、卸载…；最近打开过的文件夹、
+  选择其他文件夹…、新建项目文件夹并打开也在这里。来源牌下拉切当前账号 / 官方账号 / 自己填写密钥。装失败的卡片写「没装上：原因，已撤回」，
+  「看原因」打开那次的错误框、主按钮「重试」。
+- 命令面板加「工具」组（`command-search.ts`）：输了字才列，装了的给「打开 X」「X 配置」，没装的给「安装 X」，按首页卡片次序排；
+  `registry/pages.ts` 首页关键词补「工具卡片」「接着上次」「还能用几天」「更新工具」「回到推荐版本」「退回版本」「重新安装」「卸载工具」。
+  导览第 2 步换字（`registry/shell.ts`）。
+- App 侧：安装、更新、回到推荐版本、退回、卸载、重新写入密钥、取消安装、认下配置、重新检测没变化各有一句结果提示
+  （`rescan-change.ts` 比较检测前后首页看得见的那些字段）；`syncAfterToolInstalled` 带回这次有没有写成密钥。
+- 界面文字照 `界面文字/批04-首页` 改（yoyo 2026-10-15 回「全部按推荐改」）：Key 一律写「密钥」，状态小牌「待连接」「配置坏了」等，
+  「选择其他目录…」改「选择其他文件夹…」，装好 Python 写「Python {版本} 已装好」。单元测试和浏览器测试跟着新结构改：两个工具区标题
+  并成「工具」、「N 个已连接」改成看每张卡片的来源牌，`.v2-bootstrap-notice` 换成 `home-bootstrap-*` 四个 testid；加长邮箱和最长状态
+  在工具行、工具卡片上深浅两套都不重叠的浏览器检查。
+- UI v4 批04 补：教程（`registry/tutorials.ts`）和教程插图（`features/tutorial/TutorialIllustration.tsx`）跟着新首页换说法：
+  「已配好」改成卡片左下角的「当前账号」，「连接账号」改成「待连接」小牌和「确认连接」按钮，「你的工具 / 还可以装」并成「工具」，
+  「工具行 / 这一行」改成卡片，「最近」改成「接着上次」，「改用（你的账号名）」改成「改用当前账号」，「就用现在这份」补成
+  「就用现在这份配置」，更新入口写成卡片上的「可更新到 v…」，「退回更新前的版本」写成「退回更新前的 v…」；命令行进阶篇第 3 步按现在的
+  「打开」（用过的回上次文件夹，从没选过的直接新建，换文件夹走「…」）重写两条。
+- 写密钥流程里还写「Key」的进度和失败文字换成「密钥」（`account-bootstrap.ts`、`key-sync-failure.ts`、`App.tsx`），新手引导进度条、
+  首页提示条和切换账号框里看得到；「正在为 N 个已安装工具写入 Key」改成首页同一句「正在给 N 个工具写入密钥」。界面文字见
+  `界面文字/批04-补-教程和写密钥`，单元测试和浏览器测试里钉着原句的地方跟着换。
+- 新写的两句（yoyo 2026-10-16 回「教程改」）：Linux「第一次用」第 4 步说明改成「第一次会替你新建一个项目文件夹」（从没选过文件夹时
+  「打开」直接新建，已知40）；「工具有新版本」系统通知（`electron/platform/notifications.ts`）改成「回到星芒首页就能逐个更新」。
+- UI v4 批05 工具配置弹窗（`features/tools/ConfigDialog.tsx` 整个重写）：去掉工具页签，`App.tsx` 点开哪个工具就开哪个的配置；
+  来源改成三张单选卡（`features/tools/dialog-parts.tsx` 的 `RadioCards`，`role="radio"` + `aria-checked`，方向键换选中），访问密钥
+  改成带第二行说明的下拉（`features/tools/OptionPicker.tsx`，选中值挂在按钮的 `data-value`，每项 `tool-key-select-option-<值>`），
+  `key-selection.ts` 的 `accountKeyLabel` 换成 `accountKeyDescription`，新增 `manualKeyIssue`（星芒站 `sk-` 开头、20 位以上）。
+  原来的 `tool-save-detect-models` 并进主按钮 `tool-save-config`（没改动「完成」、没检测「保存并检测」、其余「保存配置」）；
+  重置的确认从单独的确认框挪到「高级」里原处（`tool-save-reset` → `tool-save-reset-confirm`）。Codex 桌面端的语言与文件夹权限
+  展开时读一次，「检查中文界面」去掉。保存成功的提示按 `ConfigSaveOutcome`（保存 / 重置 / 换成官方账号）写出工具名；配置弹窗只写
+  文件、不做连接自检，所以不说「自检通过」。
+- `ui/modal.tsx` 加 `useDialogClose()`：框里的「取消」、去别处的链接（管理密钥、查看配置备份、查看 ChatGPT 账号额度）和点 × 一样，
+  有修改先亮离开条，`after` 等真关了才跑。`ui/core.tsx` 的 `Segment` 加 `activation`（Codex 界面语言选了就重开 Codex，方向键不能触发）。
+- Codex「换用别家模型」改成单独的 `OtherModelsDialog.tsx`：只用工具里现在那把当前账号的密钥（主进程沿用通道，空 apiKey），
+  用 ChatGPT 账号或别的来源时先走一键改用当前账号；`model-filter.ts` 的 `codexModelFilterSaveIssue` 换成 `otherModelChoices` /
+  `otherModelSaveIssue`。ChatGPT 账号额度抽成 `OfficialQuotaDialog.tsx`，首页「…」和配置里都开它；配置里打开时先关配置，同一时间
+  只开一个弹窗。
+- 外接工具弹窗（`ExternalClientDialog.tsx`）同一个样子：标题按首页是否连好写「连接 {名称}」或「{名称} 配置」（`external-model.ts`
+  的 `externalClientReady`），名称旁写版本；「保存并检测」拿得准型号（原来就配着的、Claude Desktop 认得出的 Claude）就接着保存，
+  换了自己填的密钥和换来源一样清掉型号，上一把密钥替他填上的第一项不算拿得准；连好后右下角说下一步。关闭时原来的「放弃未保存的修改？」确认框换成弹窗底部的离开条（配置弹窗同）。
+- 界面文字照 `界面文字/批05-工具配置弹窗` 改（yoyo 2026-10-15 回「全部按推荐改」），来源一律写「当前账号」；教程里指到配置弹窗的
+  说法跟着换（「使用星芒账号」→「当前账号」、「访问密钥」、「保存并检测」、「启用中文界面」）。浏览器测试跟着新结构改（页签、
+  确认框、`selectOption` 改下拉菜单），加「配置里打开 ChatGPT 额度」一条；fixture 补 `inspectCodexWorkspacePermissions` 和
+  `?officialEmail=1`。`e2e/macos-visual-qa.mjs` 和 `scripts/audit/renderer-v2-gap-audit.mjs` 不再找工具页签。
+- UI v4 批06 个人中心（上）（`pages-account.tsx`、`features/account/`）：九个页签并成横排六个，`registry/business.ts` 的
+  `accountTabs` 只剩 overview / recharge / usage / keys / security / invite；旧页签名和页签里的一节（orders、tasks、dashboard、
+  devices、change-password、edit-profile、switch-account…）进 `accountSections`，`resolveAccountLanding` 把它们落到所在页签
+  再翻到那一节（`requestRowFocus`），App 的 `navigate('account', …)`、通知、教程、首页「用量账单」、顶部搜索都走它。
+  页签横排，左右方向键 / Home / End 挪焦点、回车打开（手动激活）。「我的订单」成充值订阅下面一节，用量看板、调用明细、
+  异步任务在用量账单里从上往下摆（怎么改版归批07），各节带 `account-*-section` 测试 id。
+- 页头：头像、显示名称、铅笔「编辑资料」（新 `AccountProfileDialog`，头像和显示名称从原资料卡挪进来，改过没存会先问），
+  名字下面「{邮箱} · 星芒账号 / 历史账号」（`accountHeadLead`），右边只留图标「刷新」，左上留小「回首页」（testid 不变）。
+- 账号概览（新 `AccountOverview`）：余额卡（订阅余额、按首页同一算法的还能用几天、星芒账号的近 7 天花费小图，`App.tsx`
+  把外壳手上的 `runway`、`subscription`、近 7 天用量经 `accountSummary` 传进来，不再多读）、我的订阅、密钥与设备、
+  邀请好友、「当前登录」条（切换账号、退出登录，退出确认只说「已配好的工具会保留。」）。保存的账号不再摆在概览，
+  只在「切换账号」框里。「密钥与设备」卡的把数翻完整张密钥表再数「在用」（一页最多 100 把），从别的页签切回概览时重读。
+- 账号安全（新 `AccountSecurity`）：修改密码（弹窗从概览搬来，标签照字表改，主进程流程不动）、记住密码「清掉」、
+  登录设备（当前设备只标「当前设备」，下线确认带设备名）、去密钥管理。两步验证这次不放（v4 方案问 3）。
+- 密钥管理：顶部一行小字；行内显示 / 隐藏完整密钥（只留一把，翻页、搜索、重读就收起）和复制图标，原「显示密钥」弹窗去掉；
+  「配置到工具」改成行上的下拉（`ui/floating.tsx` 的 `Menu` 加 `heading`，`MenuItem` 加 `hint`，标「在用」「未安装」
+  「官方账号」，外壳经 `accountKeyTools` 给装没装、是不是官方登录；Codex CLI 和桌面端共用配置，装了哪个都算装了）；编辑弹窗分组不多于 4 个时用分段、到期改成分段
+  （永不过期 / 30 天 / 90 天 / 自定日期，编辑时多「不改」）、额度分段（不限额度 / 限额）；「刷新分组」只在读失败时出现，
+  点到分组、窗口回到前台照旧重读；新建成功弹窗不关、原地说「已创建」。撤销、配置确认、空状态的字照字表改。
+- 邀请返利：只摆邀请码（复制出去的还是完整链接），成绩卡里「转入余额」，历史账号才有的邀请名单改叫「邀请记录」。
+- 切换账号框（`SavedAccounts.tsx` + `App.tsx`）：顶上加一句说明、行尾 × 移除、底部「完成」、切换成功写「已切换到「名」
+  （星芒账号 / 历史账号）」，去掉「登录状态失效时需要重新登录。」。
+- `features/app/row-focus.ts`：要翻到的那一节还在藏着的页签里（个人中心切过的页签藏起来不卸）时先不翻，等页签切过去露出来
+  再翻；以前会对着藏着的那一节「翻」一下，滚不过去、焦点也落空。
+- 别处写着旧页签名的字跟着改（教程、找回密码两句、设备太多的报错、首页余额卡「用量账单」、记住密码清掉后的提示）。
+  设备太多那句主进程 `electron/new-api-client.ts` 的 `loginSessionLimitMessage` 有一份逐字副本（测试钉着两边一样），一起改了。
+  界面文字照 `界面文字/批06-个人中心页签和概览` 改（yoyo 2026-10-15 回「全部按推荐改」）。浏览器测试跟着新页签改：
+  `e2e/v2-business-fixture.tsx` 加 `switcher` 参数，「切换账号」像 App 一样打开装着保存账号的框，保存账号的三条测试改在框里做；
+  `e2e/realm-account-smoke.mjs` 只改了注释。
+- UI v4 批07 充值订阅和用量账单（`features/account/`）：两页从 `pages-account.tsx` 搬出来，充值订阅在新的
+  `AccountRecharge.tsx`（连同「我的订单」`AccountOrders`），用量账单在新的 `AccountUsage.tsx`（看板、调用明细、异步任务），
+  由数据算出来的字和数分别收进纯函数模块 `recharge.ts`、`usage.ts`（带单测）。`pages-account.tsx` 原来导出的几个充值纯函数
+  改成从 `recharge.ts` 转出去，引用处不用改。
+- 充值订阅：左边「充值到账户余额」（快捷金额四格写到账、实付和「送 N%」，自定义金额填了就不选档位、清空回到原来那档，选中的数不在档位里也照样报价，低于最低额时框下面直接报错，
+  支付方式两列单选卡），右边「本次充值」（到账、实付、其中活动赠送、充值后余额、按最近用量，余额和天数用外壳传进来的
+  `summary`，跟首页同一算法），付款时右栏换成「等待支付结果」。兑换充值码从卡片改成「有充值码？」弹窗，不再二次确认。
+  订阅套餐两列卡（价格 / 周期，含多少额度；跟自己生效中的订阅对上时写已用和到期），购买弹窗里余额和渠道一列单选，
+  余额只在标价是美元时比够不够。「扣费偏好」下拉改成「扣费顺序」四段，只在有订阅或改过默认时出。我的订单一单两行，
+  支付窗口开着的那单写「支付窗口开着」（`AccountPage` 记着开着的订单号传下去）。历史账号订单按人民币档位写「充值 ¥N」。
+- 用量账单：时间范围三段。星芒账号「7 天」「30 天」每根柱子按本机零点切开单独问一次（`account-center.ts` 新的
+  `spendSegmentQuery`，账号概览的「近 7 天」也改用它），不用后台按 UTC 日分的桶；「24 小时」问一次按小时的桶再四小时并一根。
+  调用明细默认跟着上面的范围查。「调用明细 / 异步任务」两段切换，任务那段藏着时也挂着（任务做完照旧发通知），
+  顶部搜索落到「异步任务」时先切过去。筛选全部收进「展开筛选」（`AccountFilters` 的 `primary` 传空数组时外层
+  `display: contents`，按钮落在工具条那一行；收起时按钮上的数不算没动过的默认日期）。明细和任务表一行就是一个入口，
+  原来的「详情」按钮去掉（`ui/core.tsx` 的 `Table` 加可选 `rowLabel`，行读屏念时间和模型）；调用详情平铺调用信息、计费明细写「N Token × 单价」；任务详情多一行「消耗（USD）」。
+  明细标题旁的「消耗 · RPM · TPM」去掉。换时间范围时明细回第一页。
+- 教程「充值」那步改成「有充值码的，点「有充值码？」，填好后点「兑换」。」（批06 字表批过）。
+  界面文字照 `界面文字/批07-充值订阅和用量账单` 改（yoyo 2026-10-15 回「全部按推荐改」）。浏览器回归跟着新界面改，
+  另加一条看时间范围、柱子和明细查询范围的；旧的 `v2-business-tier` / `v2-business-payment` 等样式随旧代码删掉。
+- UI v4 批08 设置八组（`pages-maintenance.tsx` 的 `SettingsPage`、`registry/business.ts`）：组名改成四个字（外观显示、
+  启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新），「账号」组整组去掉（切换账号、退出登录在
+  个人中心账号概览，记住密码在账号安全，`settings-switch-account` / `settings-logout` / `settings-account-*` 这几个测试 id
+  跟着去掉，概览上有自己的 `account-switch` / `account-overview-logout`）；新组「备份迁移」放工具配置备份和搬到新电脑，
+  用户协议从版本更新挪进隐私数据。`settingsGroupIcons` 给每组一个图标；左栏「版本更新」有新版本、「网络加速」正在加速时
+  带一个点（App 经 `updateAvailable` / `accelerating` 传进来）。
+- 一组分几张卡改由注册表定：`settingsSections`（文字与缩放、辅助与显示、连接线路、下载与连接、提醒哪些事）+ 每行的
+  `section`，`buildSettingsBlocks` 把挨着的同一小标题的行放进一张卡；页面上每一行只写一遍（`views` 按行 id），分组页和
+  页内搜索取同一份。左栏「搜索设置」走 `searchSettingsItems`（几个字都要对上：标题、常用说法、组名、小标题），搜到的行
+  直接摆在右边能改，上面带组名链接回那一组。`settingsItemAvailable` 不再有 `signedIn` 条件。
+- 外观显示：主题换成三张预览卡（新 `features/app/ThemeCards.tsx`，预览底色写死两套配色的底色）；「语言」改叫「界面语言」、
+  只写「简体中文」；新增「恢复默认外观」（主题回跟随系统、关高对比度，缩放、大字、减少动画回默认，显卡加速不动）；
+  显卡加速那一行用 `SettingRow` 新的 `badge` 标「重启后生效」。`SettingRow` 另加 `wide`（控件占满标题下面一整行）。
+- 网络加速：线路从 `Select` 换成三颗 `Segment`（`RelayRouteRow`），「线路已保存，等待重启」只留标题和「现在重开」
+  （`RelayRouteRestartNotice`），点了先弹 `Confirm`「现在重开星芒？」，确认框关掉以后才调重开（开着的对话框会被关窗前的
+  检查当成没保存的东西）；登录框「切换连接线路」用同一套，确认框正文换成说没填完的登录信息。「网络连接」改叫「连接方式」，
+  「查看」后用小提示说 `当前：{summary}`（主进程的「代理路由」照旧换成「连接路径」）。
+- 消息通知：测试通知那一行并进桌面通知（「发测试通知」按钮 + 总开关），提醒项顺序和说明照字表（只有余额不足、
+  花费突然变多带说明，公告改叫「公告与优惠」）。其余行名和说明照 `界面文字/批08-设置八组` 改（yoyo 2026-10-15 回
+  「全部按推荐改」）；别处写着旧组名的字跟着改（开机隐私提示、教程、主进程托盘提示「设置 → 启动关闭」）。
+- 测试：`app-check.mjs` 的线路用例改点分段按钮、`aria-pressed` 断言，重开多点一下确认框；`e2e/v2-business.test.mjs`
+  加页内搜索和恢复默认外观两条，账号组那条改成钉住八个组名；`keyboard.browser-check.mjs` 跟着新组名。
+- UI v4 批09 游戏加速、备份、更新并进设置：侧栏「更多」只剩安装卸载（`registry/shell.ts` 的 `moreNavigation`）；`PageId`
+  里的 `acceleration` / `backups` / `updates` 留作别名（`registry/pages.ts` 的 `settingsPageAlias`），`App.navigate` 把它们换成
+  设置页加对应那一行，托盘、系统通知、教程、错误框、更新气泡的老入口不用改就落到新位置；顶部搜索不再出这三个页面结果，
+  改由设置项 `acceleration` / `backups` / `version`（`settingsItems` 新增 `card: true`，`buildSettingsBlocks` 不把整张卡和别的行合进
+  一张卡）带过去。设置页里整张卡外面包一层 `v2-settings-card-slot`（`data-anchor`），落到时外围闪一圈。
+- 游戏加速卡（`features/acceleration/AccelerationView.tsx` 重写、`acceleration.css` 换成小卡、`Globe.tsx` 删除）：连接仍挂在 App
+  上，卡只在「网络加速」组露面时挂上；线路列表换成通用 `Menu`（单选项 + 「重新测速」），`lines-controller` 新增 `measure()`
+  依次重测全部线路；`acceleration-usage-total` 跟着三格详情去掉。主进程加速失败的几句里「开始加速」换成「开启加速」，
+  「点「换线路」」换成「在「线路」那里」（`acceleration-development-backend.ts`）。
+- 工具配置备份卡（新 `features/settings/BackupCard.tsx`，原 `BackupsPage` 删除）：时间当标题（`calendar-time.ts` 新增
+  `formatClockTime`）、立即备份菜单（单独哪一家都能点，「全部工具」只备份装了的）、预览抽屉换弹窗（testId 照旧）；`backups-search` 跟着搜索框去掉。
+  切到这一组时新挂上读一次，设置页从别的页回来时再读一次。「搬到新电脑」两行挪进备份迁移。
+  三张卡各读各的，设置本身读不到时照样摆在各自那一组里（原来的独立页面也不依赖设置）。
+- 版本卡（新 `features/settings/VersionCard.tsx`，原 `UpdatesPage` 删除，`updatesPageLead` 删除）：状态小标签走新的
+  `updateStatusLabel`；气泡上「重新安装」的确认请求改成卡挂上以后再取（设置页带分组跳进来会整页重挂，旧卡不再先把请求拿走）；
+  App 经 `onSettingsGroupChange` 知道人在不在「版本更新」组，在时那三种气泡不弹。快捷键弹窗按这台电脑只写 ⌘ 或 Ctrl。
+- 界面文字照 `界面文字/批09-加速备份更新并进设置` 改（yoyo 2026-10-15 回「全部按推荐改」）：「重启安装」→「重启并安装」
+  （含主进程系统通知那句）、教程/托盘/通知里去加速页、更新页、备份页的说法换成设置里的位置、卸载弹窗和那一行的字。
+- UI v4 批10 检查和反馈与客服：「安装卸载」页拆掉（`MaintenancePage`、`features/tools/maintenance-status.ts`、`ToolStatusMeta.tsx`
+  删除），侧栏「更多」和 `registry/shell.ts` 的 `moreNavigation` 跟着去掉；`PageId` 里的 `maintenance` 留作别名
+  （`registry/pages.ts` 的 `retiredPageAlias`），`App.navigate` 把它落到首页；它的搜索说法挪给首页和检查页。工具的安装、重新安装、
+  卸载只在首页工具卡片上，没人再叫的 `BusinessActions.onToolsChanged` 一并去掉（首页那条安装照旧走 `syncAfterToolInstalled`，R-G3）。
+  安装记录改看运行日志：Codex 桌面端安装原来每一步只发给界面，现在 `system-service.ts` 的 `withCodexDesktopProgressLog` 把它按句去重
+  （`codexDesktopProgressLogKey` 去掉数字比）后记成 `install` / `codex-desktop.install.progress`，失败那句照旧只由 ipc 层记一条错误；
+  只加日志，安装本身没改。
+- 检查页（`pages-maintenance.tsx` 的 `HealthPage` 重写）：结论一行 + 「需要处理 / 可选 / 正常」三组（新 `features/app/diagnostic-group.ts`
+  分组；一个命令行工具都没装、主进程把 Node.js / npm 降成「需留意」时也归「可选」），行首 `StateIcon` 代替小标，详情就地展开；Node.js、Python、Git 那几行接上 `onInstallRuntime` / `onReplaceNode`（同首页运行
+  环境卡，testId `maintenance-runtime-action-*` 照旧），Windows 上准备 Node.js 那句授权提示跟着挪过来；连接自检和 Codex 干活检查并成
+  最下面一张卡，连接详情从抽屉换成就地展开，Codex 的同意从开关换成勾选。`diagnosticTarget` 不再把运行环境和证书项送去别的页（按钮就在
+  这一页），CLI / npm / Codex 桌面端那几项改落首页，`FOLDER_RELOCATED` 落反馈与客服的留言页签。
+- 反馈与客服（`FeedbackPage` 重写）：两个页签挂着只藏不卸（`feedbackRequest` 带序号落页签，`resolveFeedbackLanding` /
+  `operationLogSection` 把「查看日志」落到运行日志）；留言表单「复制给客服」拼一段文字连同脱敏报告复制，复制完打开客服，没复制出去时
+  `data-unsaved` 拦关窗口；「找客服」卡复用 `SupportIdentity`（加 `testIdPrefix`）。运行日志的「运行日志」页签带这次启动的错误数，
+  清空以后读回来才写「日志已清空」。
+- 帮助与客服弹窗下面换成六格（`App.tsx` 的 `helpShortcuts`），欢迎页和新手引导里只给四格；「设置里还有」「左边「更多」里还有」去掉。
+- 界面文字照 `界面文字/批10-检查和反馈与客服` 改（yoyo 2026-10-15 回「全部按推荐改」）：「重新写入 Key」→「重新写入密钥」，
+  「诊断报告已导出」→「检查报告已导出」，「打开日志目录」→「打开日志文件夹」，主进程几句里的「反馈」页跟着叫「反馈与客服」，
+  教程里去「安装卸载」页的说法换成首页工具卡片、检查页和运行日志。
+- 浏览器测试：整页回归里「安装卸载」页那十几条，能在新位置验的挪到首页卡片和检查页（安装进度与取消、安装指南落章、管理员身份不说
+  授权窗口、在检查页装 Node.js），只验那一页自己分块读取、两边同步的删掉；`e2e/macos-visual-qa.mjs` 不再进那一页。
+- UI v4 批11 记录页（`pages-management.tsx` 的 `SessionsPage`）：列表改成一张表（标题、工具、项目文件夹、最后活动），上面一排带数量的
+  工具按钮（数取不带筛选的那份最新 100 条的 `stats.byProvider`，读不到就不写数），行上只留「接着聊」（归档的 Codex 记录是「恢复」）
+  和「…」；「打开文件夹」挪进「…」，文件夹不在了那一格挂警告图标。详情从右侧 `Drawer` 换成 640 宽的 `Dialog`：头部工具和模型，
+  键值五行（项目文件夹带「打开」、会话 ID 带复制），「对话开头」两边气泡、先给两条再「看全部」，删除挪到弹窗左下角，行上「…」里也能删。
+  没装的工具「接着聊」置灰、悬停「要先装好 {工具}」（`pages-business.tsx` 把首页检测到的已装名单传进来，没检测完不置灰）。
+  归档、恢复、删除的提示带上标题。`ListState` 加 `searchTitle` / `searchDescription`，搜不到时这一页说自己的话。
+- UI v4 批11 教程页（`features/tutorial/`）：按问8「卡片」改成分类卡片入口，`registry/tutorials.ts` 的分类从 start / everyday /
+  advanced 换成 start / tools / account / trouble（`tutorialCategories`），卡片图标在 `tutorialIcons`，测试钉住每篇都有分类和图标。
+  读到第几步记在 localStorage（`tutorial-progress.ts`，只往前走，滚到文章底才算整篇读完）。点开还是原来的文章，上面加「全部教程」
+  回卡片；顶部搜索「去教程里搜」落在卡片列表上搜，指名一篇（命令面板、技能页「看怎么放」、安装指南）直接打开那一篇。
+- `ui/core.tsx` 新增 `Chips`（v4 组件规范「分类」），记录页和教程页在用。界面文字照 `界面文字/批11-记录和教程`（yoyo 2026-10-15 回
+  「全部按推荐改」）；「最近 / 已归档」分段这次不做。原来借记录页验抽屉位置的浏览器测试改成验详情弹窗（抽屉组件本身的行为
+  `ui/browser-check.mjs` 里还有）。删除确认第二段「先点「导出」」跟着按钮改成「先点「导出对话」」（yoyo 2026-10-16 回「字都行」）。
+- UI v4 批12 扩展和精选（`pages-management.tsx`、新 `pages-featured.tsx`、新 `extensions.css`）：外接工具、技能、插件三页
+  换成同一套结构：工具页签（`Tabs` 的选项加 `leading` / `meta`，放工具标志和已装数量，没装写「未安装」）、「{工具} 官方叫
+  「…」」、「已装到 {工具}」按范围分组（`groupExtensionItems`，分组表在新 `registry/extensions.ts`），替掉原来的范围筛选。
+  选到的工具没装时，列表位置换成「安装 {工具}」那一条，走 App 现有的 `installTool` / `toolJobs`，不另开安装路径。
+- 详情、卸载确认从抽屉改成 `<dialog>` 弹窗（详情弹窗仍用 `resource-detail-drawer` 这个 testid）。启停、卸载、插件安装的
+  提示点名对象和工具。MCP 需要登录的行上直接给「登录授权」，「退出授权」留在「更多操作」。
+- 「自定义连接」（原「添加连接」）：名称按 `[A-Za-z0-9_-]{1,40}` 校验（Codex CLI 的规则，三家都照它，免得一个名字只有部分
+  工具能用），重名在页面上拦下；参数、环境变量改叫附加参数、附加设置，收进「更多设置」；「给这些工具用」可以多选，按导航
+  顺序挨个调现有的 `addMcpServer`，中途失败只留没加上的工具。没有新 IPC。
+- 插件「已安装」「市场」两个页签合成一页：上面装好的，下面「星芒精选」和官方目录（Claude Code 官方市场 / Codex CLI 插件
+  目录，只列还没装的）。目录的下载、安装逻辑没动（Codex 目录照旧从 COS 下，#986）。技能页选 Codex CLI 时多一条「去看插件」，
+  通过 `features/app/extension-tool-intent.ts`（同 `row-focus` 的待取写法）让插件页落在 Codex CLI 上。
+- 新增「精选」页（`registry/pages.ts` 加 `featured`，侧栏「扩展」组第一行，搜索词「推荐」「星芒精选」）：只放现有的 10 个
+  精选（问4「现有」），类型分段只出有条目的类型，一个弹窗里选「给这些工具用」后挨个装；「推荐一个」去「反馈与客服」。
+- 界面文字照 `界面文字/批12-扩展和精选` 改（yoyo 2026-10-15 回「全部按推荐改」）；字表外的句子列在 PR 里。教程「外接工具」
+  「技能」「插件」三篇和示意图里的按钮名跟着改。顶部搜索里旧说法（添加连接、导入技能、插件市场）照样搜得到。
+- 浏览器测试（`e2e/v2-business.test.mjs`）跟着新结构改，新增页签数量、卸载措辞、自定义连接校验和多工具、工具没装时安装、
+  没装又没市场的工具只出安装条、Codex 技能去看插件、精选多工具安装、精选填文件夹八条；`testing/app-check.mjs` 两条 B4 竞态
+  用例原来换到 Grok CLI，这个夹具里它没装、现在不读列表了，改成换到 Codex CLI（按工具名点页签，给 Codex CLI 自己的三份清单打桩）。
+- UI v4 批13 聊天（`features/chat/ChatPage.tsx`、`chat.css`）：会话栏 236、搜索常驻、`groupConversationsByDay`（`state.ts`）按本地日历
+  分「今天 / 昨天 / 更早」，条目写「N 条消息」/「正在回答…」，「…」菜单只留「导出这段对话」「删除这段对话…」，底部「清空全部对话」
+  （`useChatController` 的 `clearAllConversations`，有对话在生成时不让点）；页头加「导出这段对话」。
+- 分组和模型两个下拉框并成一个 `ChoiceMenu`（`ui/floating.tsx` 新组件，`align='start'`，分组那组选完不关）：分组列后台的分组名、
+  说明用后台 `description`（和名字一样时不重复），下面是这个分组的模型和「N 个模型可用」，底部「刷新分组和模型」走
+  `refreshGroupsAndModels`（先刷分组再准备当前分组，刷完提示可用模型数）。按钮带 `data-group` / `data-model` / `data-preparing`，
+  沿用 `chat-model` 这个 testid；分组项、模型项在 `chat-group`、`chat-model-options` 两组里，刷新是 `chat-group-prepare`。打开菜单
+  照旧只触发一次后台刷新分组（`refreshOnInteraction`）。画图的尺寸、画质、分辨率也改成同样的小菜单，加「画质：自动」。
+- 参数从弹出层改成对话框（`ParametersPanel.tsx` 改名 `ParametersDialog.tsx`），带「没保存」确认条，点「应用」才写回；随机度、采样范围、
+  两个惩罚改成 `Slider`（`ui/fields.tsx` 新组件），空值 = 不发；整数项填了小数时说「要填整数」。命令面板加「聊天参数设置」
+  （`command-search.ts` 的 `chatParametersSection`，App 收到后把 `openParameters` 交给聊天页）。
+- 断网时发送的提示换成聊天自己的「没发出去：…点「重试」」，横幅上的「重试」用上次那次发送的参数再发；`online-status.ts` 的共用句子没动。
+- 消息：自己发的靠右、无头像、按钮悬停出现（复制 / 编辑后重新发送 / 删除消息）；回答不带气泡、按钮常驻（复制回答 / 重新生成 / 删除消息）；
+  代码块头上写语言（取 `language-xxx`，没有写「代码」），复制代码提示「代码已复制」。计费小字去掉「服务端」三个字，跟「回答由模型生成…」
+  同一行。切走聊天页时输入框那排菜单和对话「…」菜单重新挂一遍，开着的弹出层跟着收起。
+- 教程「直接聊天与生成图片」第一步和配图说明里的「输入框上方」改成「输入框底部」；`registry/pages.ts` 聊天页的搜索词加「分组」「模型」，
+  分组和模型挪进菜单以后顶部搜索照样找得到。
+- 登录后主界面（`Shell.tsx`）背后不再挂 `<Starfield quiet />`。它整窗 canvas 每秒重画 10~30 次，且每个刷新周期都跑一次 requestAnimationFrame，沙箱（软件绘制）实测星芒窗口在最前面时界面进程约 8%、显卡进程约 10%，去掉后两边都降到 0.1%。v4 原型主界面本来就没有星空，yoyo 10-15 拍板去掉。`Starfield` 组件和欢迎页的星空不动；`app-check.mjs` 里钉住工作区星空帧率的用例改成钉住工作区不再有 canvas。
+- gpt-5.5 两站都下架了（OpenAI 10-14 起拒绝服务，xm 和 api 的模型列表都不再列它），Codex 默认模型还是它的客户每一轮都报「该模型无可用渠道」。`cli-model-defaults.ts` 加一张下架型号表（目前只有 Codex 的 gpt-5.5）；开机那轮按账号核对 Codex 型号名单时（`tool-model-check.ts` 的 `syncPicker`），配置是本软件替当前账号写的、默认模型在表里、当前账号也确实不再列它，就先备份再换成现在的默认（`resolveDefaultCliModel`：账号有 gpt-6-astra 就是它），和刷新名单同一道写入，Codex 开着的照旧记成还欠着、关了再补。以前只在从星芒打开时问一句，从开始菜单、终端、VS Code 打开的客户走不到那一问。手填、官方账号、别的软件写的配置不动；别的「用不了」的型号照旧留给打开前那一问。
+- 两句还按旧首页教人点的提示换成新首页的说法（yoyo 2026-10-16 回「提示改」）：切换账号后
+  「Claude Desktop、WorkBuddy、OpenCode 不会跟着换」那句（`SavedAccounts.tsx` 的
+  `accountSwitchDesktopClientsHint`）改成到首页卡片上点「…」里的「配置…」再点「保存并检测」；配置文件读不懂时的那句
+  （`electron/broken-config-advice.ts` 的 `describeConfigReset`）改成到首页卡片上点「…」里的「配置…」、选「当前账号」。
+  旧句里的「那一行」「检测模型」「保存配置」「使用星芒账号」新界面上都没有了，钉着原句的单元测试跟着换。
 
 ## 0.2.18 - 2026-10-09
 
