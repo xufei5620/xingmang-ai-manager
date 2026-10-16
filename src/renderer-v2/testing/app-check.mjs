@@ -1697,6 +1697,8 @@ test('deleting a session asks first, then removes it from the list and the home 
     const confirm = page.getByTestId('session-delete-confirm')
     await confirm.waitFor()
     assert.match(await confirm.textContent(), /删了就找不回来/)
+    // 指的是「…」和详情里那颗「导出对话」，按钮改名后这句跟着改。
+    assert.match(await confirm.textContent(), /先点「导出对话」/)
     // 「先不删」什么都不动。
     await confirm.getByRole('button', { name: '先不删' }).click()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession')), false)
