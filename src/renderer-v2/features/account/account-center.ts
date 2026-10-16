@@ -48,6 +48,15 @@ export function localSpendDays(now: Date, days = 7): SpendDay[] {
   return result
 }
 
+/**
+ * 一段的查询区间（秒）：后台按「开始 ≤ 时间 ≤ 结束」取，相邻两段接缝那一秒不能算两遍，
+ * 只有最后一段算到「现在」那一秒。账号概览的「近 7 天」和用量账单的每根柱子都按这个问。
+ */
+export function spendSegmentQuery(segment: Pick<SpendDay, 'start' | 'end'>, last: boolean): { startTimestamp: number; endTimestamp: number } {
+  const startTimestamp = Math.floor(segment.start / 1000)
+  return { startTimestamp, endTimestamp: Math.max(startTimestamp, Math.floor(segment.end / 1000) - (last ? 0 : 1)) }
+}
+
 /** 悬停在一根柱子上的那句：「10 月 3 日 周五：$1.20」。 */
 export function spendDayTitle(day: Pick<SpendDay, 'start'>, amount: string): string {
   const date = new Date(day.start)

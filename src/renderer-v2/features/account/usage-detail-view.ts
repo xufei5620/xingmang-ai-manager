@@ -39,3 +39,15 @@ export function usageTierCondition(condition: { variable: 'input' | 'output' | '
   const label = { input: '输入', output: '输出', length: '上下文长度' }[condition.variable]
   return `${label} ${condition.operator} ${usageNumber(condition.value)}`
 }
+
+/** 计费明细「输入」「输出」那一行中间的单价：「$3 / 百万」（字表批07），太小的照 usageUnitPrice 那样说。 */
+export function usagePerMillion(value: number | null | undefined): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  if (value > 0 && value < 0.00000001) return '< $0.00000001 / 百万'
+  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 8 })} / 百万`
+}
+
+/** 「分组」那一行的倍率：「1×」「0.5×」，多余的零不写。 */
+export function usageRatioText(value: number): string {
+  return `${Number(value.toFixed(4))}×`
+}

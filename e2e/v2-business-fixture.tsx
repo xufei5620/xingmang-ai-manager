@@ -621,6 +621,14 @@ const apiMethods = {
   getAccountUsage: async (input: Parameters<V2Bridge['getAccountUsage']>[0]) => {
     record('query-usage', input)
     if (fail === 'usage') throw new Error('调用记录服务暂时不可用')
+    // usagePages：三页明细（每页 20 条），看翻页以后换时间范围会不会回第一页。
+    if (query.has('usagePages')) return {
+      page: input.page ?? 1,
+      pageSize: 20,
+      total: 60,
+      records: Array.from({ length: 20 }, (_, index) => ({ ...usageDetailFixture('tiered'), id: (input.page ?? 1) * 100 + index })),
+      stats: { quota: 0, rpm: 0, tpm: 0 },
+    }
     return {
     page: 1,
     pageSize: 20,
@@ -693,7 +701,8 @@ const apiMethods = {
             minTopup: 1,
           },
         ],
-    minTopup: 1,
+    // highMinimum：最低充值额比默认那档 10 还高。
+    minTopup: query.has('highMinimum') ? 20 : 1,
     amountOptions: [10, 20],
     discounts: fixtureTopupDiscounts(),
     topupLink: null,
