@@ -124,6 +124,9 @@
 .v2-runtime-guide-line > code { flex: 1; min-width: 0; max-height: none; color: var(--text); }
 .v2-runtime-guide-line > .xm-btn { flex: none; }
 .v2-runtime-guide-note { margin: 6px 0 0; color: var(--text-3); }
+.v2-uninstall-guide { display: grid; gap: 8px; line-height: 1.6; }
+.v2-uninstall-guide > p { margin: 0; }
+.v2-uninstall-guide > ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; color: var(--text-2); }
 [data-testid='home-suggestions'] .xm-list-row { min-height: 40px; padding: 5px 12px; gap: 8px; }
 [data-testid='home-suggestions'] .xm-row-icon { width: 16px; height: 18px; background: transparent; }
 [data-testid='home-suggestions'] .xm-row-icon svg { width: 14px; height: 14px; }
