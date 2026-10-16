@@ -91,8 +91,8 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     openedWith.current = liveConfig
     if (dirty || models.length || result || error) return
     const next = initialClientSource(tool, definition.preferredProvider, clientKeySources, liveConfig.providers, keys)
-    setConfig(liveConfig)
-    if (next !== source) { setSource(next); setModel(configuredSourceModel(tool, next, liveConfig.providers)) }
+    // 来源没变也重填型号：那个工具的配置可能刚换了型号（比如开机那一轮把下架的换掉）。
+    setConfig(liveConfig); setSource(next); setModel(configuredSourceModel(tool, next, liveConfig.providers))
   }, [liveConfig, busy])
 
   // 切回自家工具那把密钥，型号也回到打开时替他填的那个；换成别的来源照旧清空，检测完再挑。
