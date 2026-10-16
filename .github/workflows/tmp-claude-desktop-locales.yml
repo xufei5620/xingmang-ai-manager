@@ -26,7 +26,8 @@ jobs:
           find msix -name '*.asar' -o -name '*.zip' | head
           ASAR=$(find msix -name app.asar | head -1)
           echo "asar=$ASAR"
-          npx --yes @electron/asar@3.2.10 extract "$ASAR" asar
+          npx --yes @electron/asar@3.2.10 extract "$ASAR" asar || echo "asar extract partial"
+          ls msix/app/resources/ion-dist | head -30; du -sh msix/app/resources/ion-dist; ls msix/app/locales | head -80
           du -sh asar
       - name: Search for locales
         run: |
