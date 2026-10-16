@@ -17,7 +17,7 @@ import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { chooseWorkspaceLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, workspaceChoices, type CliLaunchChoice } from './recent-workspaces'
+import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId } from '../../../../electron/catalog'
@@ -32,6 +32,7 @@ import { buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
 import { useRestartPending } from './restart-reminder'
 import { RuntimeRestartDialog } from './RuntimeRestartDialog'
 import { OfficialQuotaDialog } from './OfficialQuotaDialog'
+import { ToolConversationsDialog } from './ToolConversationsDialog'
 import { buildUninstallGuide, UninstallGuideDialog, type UninstallGuide, type UninstallGuideTool } from './UninstallGuide'
 import { weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
 import { currentWindowOs, windowOsFor } from '../app/window-os'
@@ -410,6 +411,8 @@ export function Home(props: HomeProps) {
   const [recentAttempt, setRecentAttempt] = useState(0)
   // 「接着聊」点下去以后正在核对的那一条（见 resumeRecent）；null = 没在核对。
   const [resumeChecking, setResumeChecking] = useState<string | null>(null)
+  // 卡片「…」里「接着之前的对话…」开着的那个工具；null = 窗口没开。
+  const [conversationsTool, setConversationsTool] = useState<ToolId | null>(null)
   const [usage, setUsage] = useState<BalanceUsage | null>(() => cachedUsage(props.api, props.accountScope))
   const [usageError, setUsageError] = useState('')
   const trendWanted = props.supportsUsageTrend === true && props.supportsUsage !== false
@@ -661,7 +664,7 @@ export function Home(props: HomeProps) {
         : bootstrapBusy && !tool.configured ? 'configuring' as const
         : tool.configured ? 'ready' as const : notEnabled ? 'notEnabled' as const : 'unconfigured' as const
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，拿它当「打开」的默认值，
-    // 「…」里再给最近几个和原来的选择器（N7）。这个工具还没有记录时用上次在本软件里选过的文件夹，
+    // 「…」里再给原来的选择器（N7）。这个工具还没有记录时用上次在本软件里选过的文件夹，
     // 几个命令行工具合起来只问一次。Codex 桌面端自己管工作区，不走这条路。
     const opensWorkspace = !configUnavailable && !tool.error && tool.status.installed
       && openable && tool.id !== 'codexDesktop'
@@ -761,7 +764,9 @@ export function Home(props: HomeProps) {
     const switchTarget = state.configUnavailable || state.broken || tool.error || state.ownershipPending ? null : accountSwitchTarget(tool)
     // 被拦着的那几种（配置坏了、被改过……）卡上只放修的那颗按钮，还能用的话「打开」挪进这里。
     const blockedOpen = state.openable && ['configBroken', 'configChanged', 'ccSwitch', 'otherSiteKey'].includes(state.status)
-    const recentChoices = state.opensWorkspace ? workspaceChoices(state.workspaces).filter((choice) => choice.path !== null) : []
+    // 这个工具聊过（记录还没读到时说不准，照旧给）才有「接着之前的对话…」。以前这里列的是最近几个文件夹的
+    // 整条路径，点了是在那里开新对话，客户看着像对话记录又看不懂（yoyo 10-16）；v4 原型这里也没有那一串。
+    const conversationsOffered = state.opensWorkspace && (recent === null || recent.stats.byProvider[tool.provider] > 0)
     const groups: Array<Array<MenuItem | MenuNote>> = [
       // 故意改过配置的人也要有出路，否则那颗黄牌会一直挂着。认下之后这个工具
       // 就按「自己填写的密钥」处理，下次在配置里改回当前账号时标记自动清掉。
@@ -769,7 +774,7 @@ export function Home(props: HomeProps) {
         ? [{ label: '就用现在这份配置', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : [],
       [
         ...(blockedOpen ? [{ label: '打开', testId: `tool-${tool.id}-open`, disabled: launchBlocked, onSelect: state.primary }] : []),
-        ...recentChoices.map((choice) => ({ label: choice.label, title: choice.path ?? undefined, disabled: launchBlocked, onSelect: () => props.onLaunch(tool.id, choice.path ?? undefined) })),
+        ...(conversationsOffered ? [{ label: conversationsMenuLabel, testId: `tool-${tool.id}-conversations`, onSelect: () => setConversationsTool(tool.id) }] : []),
         // 还没有最近目录、「打开」已经替人新建项目文件夹时（已知40），这里只给「选择其他文件夹…」；
         // 记录还没读到、「打开」还是弹选择框的那一小会儿，反过来只给新建入口。
         ...(state.opensWorkspace && (state.lastWorkspace || (state.startsFresh && props.onLaunchInNewFolder))
@@ -997,6 +1002,22 @@ export function Home(props: HomeProps) {
     </div>
   }
 
+  /** 卡片「…」里「接着之前的对话…」那个窗口。卡片要是不再能打开（卸了、配置坏了），里面的按钮跟着按不动。 */
+  function renderConversations(): ReactNode {
+    const tool = conversationsTool ? tools.find((entry) => entry.id === conversationsTool) : undefined
+    if (!tool) return null
+    const state = toolState(tool)
+    const name = toolRegistry.find((entry) => entry.id === tool.id)?.name ?? tool.name
+    const close = () => setConversationsTool(null)
+    return <ToolConversationsDialog api={props.api} provider={tool.provider} toolName={name}
+      resumeDisabled={!state.opensWorkspace || (loading && !launchReadyBeforeScan(tool)) || launchWaitingForAccount(tool.provider) || launchBusy}
+      newDisabled={!state.opensWorkspace || state.primaryDisabled}
+      onResume={(session) => { close(); props.onLaunch(tool.id, session.cwd, resumeLaunchChoice(session)) }}
+      onNew={() => { close(); state.primary() }}
+      onAllRecords={() => { close(); props.onNavigate('sessions') }}
+      onClose={close} />
+  }
+
   function renderRecentRow(session: RecentSession) {
     const offered = recentResumeOffered(tools, session.provider)
     const tool = tools.find((entry) => entry.id === session.provider)
@@ -1196,5 +1217,6 @@ export function Home(props: HomeProps) {
     </div>
     {uninstallGuide && <UninstallGuideDialog guide={uninstallGuide} onClose={() => setUninstallGuide(null)} />}
     {officialOpen && <OfficialQuotaDialog email={snapshot?.config.providers.codex.officialAccountEmail ?? null} initial={official} refresh={() => props.api.officialUsage()} onClose={() => setOfficialOpen(false)} />}
+    {renderConversations()}
   </section>
 }
