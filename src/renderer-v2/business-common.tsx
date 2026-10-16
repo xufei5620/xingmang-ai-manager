@@ -99,10 +99,10 @@ export function snapshotErrorMessage(value: string | null | undefined) {
 }
 
 const detectionFailureCopy = {
-  permission: '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。',
+  permission: '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
   busy: '这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。',
-  missing: '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。',
-  other: '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈」页导出报告发给客服。',
+  missing: '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
+  other: '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
 }
 
 /**
@@ -136,8 +136,8 @@ export function detectionFailureMessage(value: string | null | undefined) {
   return detectionFailureCopy.other
 }
 
-// 只在说不出具体原因时用；指到「反馈」页而不是让人自己去翻日志。
-const genericFailure = '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。'
+// 只在说不出具体原因时用；指到「反馈与客服」页而不是让人自己去翻日志。
+const genericFailure = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
 
 export function errorMessage(error: unknown, fallback = genericFailure) {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
@@ -551,6 +551,10 @@ export function ListState({
   emptyDescription,
   searchTitle,
   searchDescription,
+  filteredTitle,
+  filteredDescription,
+  loadingTitle,
+  loadingDescription,
   errorDescription,
   children,
 }: {
@@ -571,6 +575,12 @@ export function ListState({
   /** 搜索词没搜到时这一页自己的标题和那句话；缺省「没有找到「{词}」」和「换个词试试。」。 */
   searchTitle?: string
   searchDescription?: string
+  /** 只用了筛选（没有搜索词）却一条都不剩时这一页自己的标题和那句话；缺省是通用的两句。 */
+  filteredTitle?: string
+  filteredDescription?: string
+  /** 第一次读的时候那两句；缺省「正在读取{noun}…」和「请稍等，正在整理列表。」，说明给 null 就不写。 */
+  loadingTitle?: string
+  loadingDescription?: string | null
   /** 读不到时那句说明；缺省 = 读取失败的原话。 */
   errorDescription?: string
   children: ReactNode
@@ -583,8 +593,8 @@ export function ListState({
         data-testid={`${page}-loading`}
       >
         <RefreshCw size={24} className="xm-spin" />
-        <strong>正在读取{noun}…</strong>
-        <p>请稍等，正在整理列表。</p>
+        <strong>{loadingTitle ?? `正在读取${noun}…`}</strong>
+        {loadingDescription !== null && <p>{loadingDescription ?? '请稍等，正在整理列表。'}</p>}
       </div>
     )
   if (error)
@@ -600,12 +610,12 @@ export function ListState({
       <Empty
         testId={`${page}-${filtered ? 'filter-empty' : 'empty'}`}
         icon={filtered ? Search : Archive}
-        title={searched ? searchTitle ?? `没有找到「${searched}」` : filtered ? '没有符合条件的结果' : emptyTitle ?? `还没有${noun}`}
+        title={searched ? searchTitle ?? `没有找到「${searched}」` : filtered ? filteredTitle ?? '没有符合条件的结果' : emptyTitle ?? `还没有${noun}`}
         description={
           searched
             ? searchDescription ?? '换个词试试。'
             : filtered
-              ? '试试其他关键词，或清空筛选。'
+              ? filteredDescription ?? '试试其他关键词，或清空筛选。'
               : emptyDescription ?? (page === 'sessions'
                 ? '在 AI 工具里开始一次对话，记录就会出现在这里。'
                 : '从页面上的添加入口开始。')

@@ -40,8 +40,11 @@ const layerTargets: Record<ConnectionCheckLayer, PageId | null> = {
   unknown: 'feedback',
 }
 
-/** 「去处理」落到那一页里的哪一组；没写的只跳页。网络那一层以前只跳到设置页、落在第一组「外观」。 */
-const layerSections: Partial<Record<ConnectionCheckLayer, string>> = { network: 'network' }
+/**
+ * 「去处理」落到那一页里的哪一组；没写的只跳页。网络那一层以前只跳到设置页、落在第一组「外观」。
+ * 协议和认不出的那两层落「反馈与客服」的留言页签：右边就是找客服的卡（第 10 批）。
+ */
+const layerSections: Partial<Record<ConnectionCheckLayer, string>> = { network: 'network', protocol: 'form', unknown: 'form' }
 
 /**
  * 这两层的下一步就是让客户端对当前账号重新签发一把 Key 再写回配置，所以结果条
@@ -55,7 +58,7 @@ const rewritableLayers: ReadonlySet<ConnectionCheckLayer> = new Set<ConnectionCh
  * 端到用户面前时，再让他先去别的页面就是自相矛盾。所以只有在给得出这颗按钮时
  * 才换这句话，其余情况仍旧原样转述主进程的结论。
  */
-const rewriteNextStep = '当前账号的 Key 需要重新写一次。点「重新写入 Key」，写完会自动再测一遍连接。'
+const rewriteNextStep = '当前账号的 Key 需要重新写一次。点「重新写入密钥」，写完会自动再测一遍连接。'
 
 /**
  * 「重新写入 Key」只对星芒来源的工具给得出来：重写流程本身会跳过官方账号与

@@ -320,14 +320,18 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
     // 设置页没有能处理它的东西；能清的那种在行里直接给按钮。
     expect(diagnosticTarget('PROXY_ENVIRONMENT')).toBeNull()
-    expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
-    expect(diagnosticTarget('RUNTIME_PYTHON')).toBe('maintenance')
-    expect(diagnosticTarget('CLI_CLAUDE')).toBe('maintenance')
-    expect(diagnosticTarget('CODEX_DESKTOP')).toBe('maintenance')
-    // Git 的安装指引在首页「运行环境」里，「安装卸载」页没有它。
-    expect(diagnosticTarget('RUNTIME_GIT')).toBe('home')
-    // 文件夹被搬过没有软件里能一键修的地方，下一步是导出报告。
+    // 「安装卸载」页拆掉了（第 10 批）：Node.js、Python、Git 在检查页那一行里直接装，不跳走；
+    // 命令行工具和 Codex 桌面端去首页工具卡片，npm 跟着 Node.js 走首页运行环境卡。
+    for (const code of ['RUNTIME_NODE', 'RUNTIME_PYTHON', 'RUNTIME_GIT']) {
+      expect(diagnosticTarget(code)).toBeNull()
+      expect(diagnosticHasFix(code)).toBe(false)
+    }
+    expect(diagnosticTarget('RUNTIME_NPM')).toBe('home')
+    expect(diagnosticTarget('CLI_CLAUDE')).toBe('home')
+    expect(diagnosticTarget('CODEX_DESKTOP')).toBe('home')
+    // 文件夹被搬过没有软件里能一键修的地方，下一步是留言找客服。
     expect(diagnosticTarget('FOLDER_RELOCATED')).toBe('feedback')
+    expect(diagnosticSection('FOLDER_RELOCATED')).toBe('form')
     // 加速文件坏了：「重新检查」和「联系客服」都在加速页上。
     expect(diagnosticTarget('ACCELERATION_BUNDLE')).toBe('acceleration')
   })
@@ -393,10 +397,10 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeNull()
     expect(diagnosticSection('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeUndefined()
   })
-  it('sends only the outdated Node.js certificate verdict to the install page', () => {
-    expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe('maintenance')
-    expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict: 'outdatedNode' })).toBe(true)
-    for (const verdict of ['untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
+  // 「Node.js 太旧」那一种在检查页那一行里直接给「换成新版 Node.js」，不再跳去「安装卸载」页。
+  it('sends no certificate verdict away from the check page', () => {
+    for (const verdict of ['outdatedNode', 'untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
+      expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict })).toBeNull()
       expect(diagnosticHasFix('CERTIFICATE_TRUST', { verdict })).toBe(false)
     }
     expect(diagnosticHasFix('CERTIFICATE_TRUST')).toBe(false)
@@ -429,9 +433,9 @@ describe('v2 business boundaries', () => {
     )
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。',
+      '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈」页把报告发给客服。')
+    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

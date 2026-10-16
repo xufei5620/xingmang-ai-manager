@@ -73,6 +73,25 @@ export function resolveAccountLanding(value: string | undefined): { tab: Account
   if (section) return { tab: section.tab, anchor: section.value }
   return { tab: (value !== undefined && Object.hasOwn(retiredAccountTabs, value) ? retiredAccountTabs[value] : undefined) ?? 'overview' }
 }
+/**
+ * 「反馈与客服」的两个页签（v4 第 10 批）：留言给客服、看运行日志。navigate('feedback', …) 的第二个参数是
+ * 页签，或下面那个落点；不写就停在上回看的那个页签（头一回是「留言反馈」）。
+ */
+export const feedbackTabs = [
+  { value: 'form', label: '留言反馈' },
+  { value: 'log', label: '运行日志' },
+] as const
+export type FeedbackTabValue = (typeof feedbackTabs)[number]['value']
+/**
+ * 装工具没装上时错误框的「查看日志」：落到运行日志，来源先选好「安装与更新」。「安装卸载」页拆掉以前，
+ * 这一下去的是那一页的「安装日志」卡；装的过程本来就逐行记进了运行日志（主进程 source 为 install）。
+ */
+export const feedbackInstallLogSection = 'install-log'
+export function resolveFeedbackLanding(section: string | undefined): { tab: FeedbackTabValue; installLog?: true } | null {
+  if (section === feedbackInstallLogSection) return { tab: 'log', installLog: true }
+  const tab = feedbackTabs.find((entry) => entry.value === section)
+  return tab ? { tab: tab.value } : null
+}
 // v4 的八组，组名都是四个字（字表批08）。「账号」组拆走了：切换账号、退出登录在账号概览，记住密码在账号安全。
 // 备份迁移的 value 不能叫 backups：那是「工具配置备份」那一行的 id，组和行撞名，顶部搜索会把那一行当成一组打开。
 export const settingsGroups = [

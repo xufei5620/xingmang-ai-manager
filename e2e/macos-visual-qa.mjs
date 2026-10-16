@@ -307,7 +307,6 @@ try {
       tool: scenario.tool,
       pageErrors: [...pageErrors],
       dashboardLayout: await inspectDashboardLayout(expectedToolRows),
-      maintenanceRowIds: [],
       dialog: null,
       titleVisible: false,
       subtitleAsExpected: false,
@@ -321,23 +320,7 @@ try {
     results.push(result)
 
     try {
-      // 安装卸载 lives behind the sidebar's 更多 group in v2, and that button
-      // toggles: clicking it while the group is already open hides the entry.
-      const moreNavigation = page.getByTestId('nav-more')
-      if (await moreNavigation.getAttribute('aria-expanded') !== 'true') await moreNavigation.click()
-      await page.getByTestId('nav-maintenance').click()
-      const maintenance = page.getByTestId('page-maintenance')
-      await maintenance.waitFor({ state: 'visible', timeout: 30_000 })
-      await maintenance
-        .getByTestId(`maintenance-tool-${scenario.tool}`)
-        .waitFor({ state: 'visible', timeout: 60_000 })
-      result.maintenanceRowIds = await maintenance.evaluate((element) => (
-        [...element.querySelectorAll('[data-testid^="maintenance-tool-"]')]
-          .map((node) => node.getAttribute('data-testid')?.slice('maintenance-tool-'.length) ?? '')
-      ))
-
-      await page.getByTestId('nav-home').click()
-      await home.waitFor({ state: 'visible', timeout: 30_000 })
+      // 安装卸载页第 10 批拆掉了：装、卸、重装都在首页工具卡片上，上面的 dashboardLayout 已经量过这几张卡。
       await row.getByRole('button', { name: '更多操作', exact: true }).click()
       await row.getByRole('menuitem', { name: '配置', exact: true }).click()
       const dialog = page.getByTestId('config-dialog')
@@ -431,8 +414,7 @@ const failed = results.filter((result) => {
     || layout.clippedControls.length > 0
     || !layout.imagesLoaded
     || result.dialogError !== null
-    || !expectedToolRows.every((id) => result.maintenanceRowIds.includes(id))
-    || result.maintenanceRowIds.includes('gemini')
+    || layout.visibleRowIds.includes('gemini')
     || !result.titleVisible
     || !result.subtitleAsExpected
     || !result.toolTabsAbsent

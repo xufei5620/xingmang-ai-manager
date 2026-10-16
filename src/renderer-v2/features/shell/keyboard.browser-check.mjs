@@ -114,7 +114,9 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
   } finally { await page.close() }
 })
 
-test('on a short screen More and Settings stay pinned in view, the open More list fits and is remembered', async () => {
+// 「更多」里的几页在 v4 各有了去处（游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），
+// 「更多」跟着去掉了（第 10 批）；钉在下面的只剩「设置」。
+test('on a short screen Settings stays pinned in view and the list above it scrolls', async () => {
   const page = await open()
   try {
     // 1280×720 屏幕、1920×1080 开 150% 缩放时，窗口里能给侧栏的高度大约就这么多。
@@ -131,29 +133,17 @@ test('on a short screen More and Settings stay pinned in view, the open More lis
         return box.top >= clip.top - 1 && box.bottom <= clip.bottom + 1 && Boolean(hit && element.contains(hit))
       }, testId)
     }
-    const pinned = ['nav-more', 'nav-settings']
-    for (const id of pinned) assert.equal(await visibleInSidebar(id), true, `${id} is not cut off below the fold`)
-    for (const id of pinned) assert.equal(await page.getByTestId('sidebar-pinned').getByTestId(id).count(), 1, `${id} sits in the pinned part, not the scrolling one`)
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-maintenance').waitFor()
-    // 游戏加速、备份、更新并进了设置（v4 批09），「更多」里只剩安装卸载。
-    for (const id of ['nav-acceleration', 'nav-backups', 'nav-updates']) assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from More`)
-    for (const id of [...pinned, 'nav-maintenance'])
-      assert.equal(await visibleInSidebar(id), true, `${id} stays in view with More open`)
+    assert.equal(await visibleInSidebar('nav-settings'), true, 'nav-settings is not cut off below the fold')
+    assert.equal(await page.getByTestId('sidebar-pinned').getByTestId('nav-settings').count(), 1, 'nav-settings sits in the pinned part, not the scrolling one')
+    assert.equal(await page.getByTestId('sidebar-pinned').locator('[data-testid^="nav-"]').count(), 1, 'nothing else is pinned')
+    for (const id of ['nav-more', 'nav-maintenance', 'nav-acceleration', 'nav-backups', 'nav-updates'])
+      assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from the sidebar`)
     // 上面那段放不下了自己滚，下沿渐隐，看得出还有。
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
     await page.getByTestId('sidebar-scroll').evaluate((element) => { element.scrollTop = element.scrollHeight })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
-
-    await page.reload()
-    await page.getByTestId('nav-maintenance').waitFor()
-    assert.equal(await page.getByTestId('nav-more').getAttribute('aria-expanded'), 'true', 'More reopens the way it was left')
-    await page.getByTestId('nav-more').click()
-    await page.getByTestId('nav-maintenance').waitFor({ state: 'detached' })
-    await page.reload()
-    await page.getByTestId('nav-more').waitFor()
-    assert.equal(await page.getByTestId('nav-more').getAttribute('aria-expanded'), 'false')
-    assert.equal(await page.getByTestId('nav-maintenance').count(), 0)
+    assert.equal(await visibleInSidebar('nav-feedback'), true, 'the last page in the list scrolls into view')
+    assert.equal(await visibleInSidebar('nav-settings'), true, 'nav-settings stays in view after scrolling')
     await clean(page)
   } finally { await page.close() }
 })

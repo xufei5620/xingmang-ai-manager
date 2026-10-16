@@ -5,7 +5,7 @@ import { markRestartPending, useRestartPending } from './restart-reminder'
 import { errorMessage, pendingBusinessOperations } from '../../business-common'
 
 /**
- * Node.js 装完 Windows 要求重启（MSI 退出码 3010）时弹的框，首页与「安装卸载」页
+ * Node.js 装完 Windows 要求重启（MSI 退出码 3010）时弹的框，首页与检查页
  * 共用。只给一颗「现在重启」，不让用户在「稍后 / 现在」之间做选择（yoyo 2026-09-22：
  * 面向小白，少让他做决定）；关掉这个框就是稍后自己重启。
  *

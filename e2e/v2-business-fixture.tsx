@@ -59,6 +59,8 @@ const initialSkin = requestedSkin === 'dawn' || requestedSkin === 'obsidian' || 
   : 'mist'
 const fail = query.get('fail')
 const empty = query.has('empty')
+// 「清除日志」确认以后，再读日志就是空的。
+let logsCleared = false
 
 // 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
 let topupPromotionEnded = false
@@ -1007,7 +1009,7 @@ const apiMethods = {
     sources: ['fixture', 'updater'],
     currentProcessId: 4242,
     startedAt: time,
-    entries: empty
+    entries: empty || logsCleared
       ? []
       : query.has('manyLogs')
         ? Array.from({ length: 150 }, (_, index) => ({
@@ -1049,6 +1051,10 @@ const apiMethods = {
           },
         ],
   }),
+  clearRuntimeLogs: async () => {
+    record('clear-logs')
+    logsCleared = true
+  },
   getFeedbackReport: async () => ({
     id: 'report-snapshot-7',
     text: '固定的脱敏报告内容',
@@ -1326,6 +1332,15 @@ const renderFixture = (paymentReturn?: {
             record('install-tool', tool)
             return 'installed' as const
           } : undefined}
+          // 反馈与客服页右边那张客服卡；noSupport = 读不到客服信息时整张卡不出现。
+          support={query.has('noSupport') ? undefined : {
+            identity: '星芒 0.1.31 · Windows · 已登录 test-user',
+            lastFailure: '最近一次失败：安装 Codex CLI · 网络超时',
+            open: () => record('open-support'),
+            copyIdentity: () => record('copy-identity'),
+          }}
+          // feedbackTab=log：像错误框「查看日志」那样直接落在运行日志。
+          feedbackRequest={query.get('feedbackTab') === 'log' ? { sequence: 1, tab: 'log' } : undefined}
           active={pageActive}
         />
       </BalanceTierProvider>

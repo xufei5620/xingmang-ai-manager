@@ -3043,7 +3043,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
     // captureFeedbackReport already trims the oldest log lines to fit; this
     // only guards a runtime log implementation that ignored the budget.
-    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告超过大小上限，请在反馈页点「打开日志目录」，把日志文件直接发给客服')
+    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告太大了，请在「反馈与客服」页的「运行日志」里点「打开日志文件夹」，把日志文件直接发给客服')
     const selfChecked = options.diagnosticsService.hasSelfCheckResult?.()
     const preview = {
       id: randomUUID(),
@@ -4137,7 +4137,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('diagnostics:fix', async (_event, rawKind: unknown) => {
     if (!isDiagnosticFixKind(rawKind)) throw new Error('不认识要处理的是哪一项')
     const fix = options.diagnosticsService.fix
-    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈」页导出报告发给客服')
+    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈与客服」页导出报告发给客服')
     return fix(rawKind)
   })
   registerTrustedHandler('extensions:choose-directory', async (event) => {

@@ -1750,7 +1750,7 @@ export function ExtensionsPage({
     [api, kind, provider, missing],
   )
   const resource = useResource(load)
-  // 去过的页面只藏不卸：在首页、「安装卸载」或终端里装好、删掉东西，回来还是第一次进来时那份，
+  // 去过的页面只藏不卸：在首页、检查页或终端里装好、删掉东西，回来还是第一次进来时那份，
   // 要自己点「重新加载」（已知5）。再显示时重读列表；读列表要问一遍工具本身，还在读就不再起一轮。
   // 外接工具的连接检测要挨个连一遍，比读列表重得多，照旧只在进页、换工具和点「重新检测」时做。
   useReloadWhenShown(active, () => {
@@ -1831,7 +1831,7 @@ export function ExtensionsPage({
       async () => {
         await api.installPythonRuntime()
         // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未装」、还给安装按钮。先叫、再读本页：
-        // 本页那次读接上 App 刚起的那一轮检测（同「安装卸载」页）。
+        // 本页那次读接上 App 刚起的那一轮检测。
         onSystemChanged?.()
         await reloadList()
       },

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { BookOpen, Download, ListChecks, MessageSquare, RefreshCw, RotateCcw, Zap } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
 import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
@@ -38,13 +38,13 @@ import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './fea
 import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
-import { operationLogPage, operationTargetOf, presentOperationFailure, type OperationActionId } from './operation-error'
-import { accountTabs, macDesktopTutorialTopic, resolveAccountLanding, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsGroupId, type SettingsItem } from './registry/business'
+import { operationLogSection, operationTargetOf, presentOperationFailure, type OperationActionId } from './operation-error'
+import { accountTabs, macDesktopTutorialTopic, resolveAccountLanding, resolveFeedbackLanding, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsGroupId, type SettingsItem } from './registry/business'
 import { homeToolOrder, shortcutTools, tools } from './registry/tools'
 import { activeProviderIds, type ActiveProviderId } from '../../electron/catalog'
 import { clientConnections } from './registry/clients'
-import { pageRegistry, settingsPageAlias, type PageId } from './registry/pages'
-import type { ToolInstallOutcome } from './pages-maintenance'
+import { retiredPageAlias, settingsPageAlias, type PageId } from './registry/pages'
+import type { FeedbackRequest, FeedbackSupport, ToolInstallOutcome } from './pages-maintenance'
 import type { ToolConfigConfirmation } from './pages-account'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
@@ -54,7 +54,6 @@ import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
 import { AnnouncementCenter } from './features/shell/Announcement'
 import { buildBalanceRunway, useRunwayUsage } from './features/app/balance-runway'
-import { moreNavigation } from './registry/shell'
 import { createAccelerationApi } from './features/acceleration/api'
 import { useAcceleration } from './features/acceleration/useAcceleration'
 import { useNetworkLocation } from './features/shell/useNetworkLocation'
@@ -95,11 +94,6 @@ import './business.css'
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
 const ChatPage = lazy(() => import('./features/chat').then((module) => ({ default: module.ChatPage })))
 const AccelerationPage = lazy(() => import('./features/acceleration/AccelerationPage').then((module) => ({ default: module.AccelerationPage })))
-// 帮助与客服弹窗「设置里还有：」那两颗（v4 批09）：按钮写设置里的组名，点了由 navigate 把老页面名换成设置里那张卡。
-const supportSettingsLinks = (['backups', 'updates'] as const).map((id) => ({
-  id,
-  label: settingsGroups.find((group) => group.value === (id === 'backups' ? 'backup' : 'about'))?.label ?? '',
-}))
 const pageLoading = <div className="v2-business-loading" role="status" data-testid="route-loading"><RefreshCw size={24} className="xm-spin" aria-hidden="true" /><strong>正在加载页面...</strong></div>
 
 type AccountTab = typeof accountTabs[number]['value']
@@ -187,6 +181,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [settingsRequest, setSettingsRequest] = useState(0)
   // 搜索里的「开始检查」：人已经在检查页上时换个 key 重挂一次，挂上就重查；不在检查页时跳过去本来就会重查。
   const [healthRequest, setHealthRequest] = useState(0)
+  // 反馈与客服要落的页签（「查看日志」落「运行日志」）。页面挂上以后只藏不卸，带序号才接得住第二次，同 accountTab。
+  const [feedbackRequest, setFeedbackRequest] = useState<FeedbackRequest | undefined>(undefined)
   // 个人中心实际摆着的分页（没权限的分页会被它自己换掉），顶栏的「个人中心 / 页签」和侧栏亮哪一行都看它。
   const [shownAccountTab, setShownAccountTab] = useState<AccountTab | undefined>(undefined)
   const [guide, setGuide] = useState(false)
@@ -872,8 +868,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (requested === 'canvas') { void perform('打开画布', app.openCanvas); return }
     if (requested === 'acceleration' && !accelerationAvailable) return
     // 加速、备份、更新并进了设置（v4 批09）：托盘、系统通知、教程、错误框还叫老页面名，这里换成设置里那张卡。
+    // 「安装卸载」页拆掉了（第 10 批）：还叫它的跳转落到首页，工具卡片上装、卸、重装。
     const alias = settingsPageAlias(requested)
-    const target: PageId = alias ? 'settings' : requested
+    const target: PageId = alias ? 'settings' : retiredPageAlias(requested) ?? requested
     const section = alias ?? requestedSection
     if ((target === 'account' || target === 'chat') && restoring) {
       toast.show(restoreRetrying ? '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。' : '正在恢复上次的登录，稍等一下再试。')
@@ -903,6 +900,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (hasPendingSettingsGroup()) setSettingsRequest((current) => current + 1)
     }
     if (target === 'health' && section) requestRowFocus('health', section)
+    if (target === 'feedback') {
+      const landing = resolveFeedbackLanding(section)
+      if (landing) setFeedbackRequest((current) => ({ sequence: (current?.sequence ?? 0) + 1, ...landing }))
+    }
     if (target === 'chat') setChatScope(scope)
     // 只有从顶部搜索点「聊天参数设置」进来才打开参数对话框；去别处就放下，免得下次进聊天页突然弹出来。
     setChatParametersPending(target === 'chat' && section === chatParametersSection)
@@ -940,7 +941,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const failure = operationError
     setOperationError(null)
     if (action === 'retry') failure?.retry?.()
-    else if (action === 'log') navigate(failure ? operationLogPage(failure) : 'feedback')
+    else if (action === 'log') navigate('feedback', failure ? operationLogSection(failure) : 'log')
     else if (action === 'network') navigate('health')
     else if (action === 'recharge') navigate('account', 'recharge')
     else if (action === 'backups') navigate('backups')
@@ -964,7 +965,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (action === 'replaceNode') setNodeReplace(retry ? { retry } : {})
     else if (action === 'recharge') navigate('account', 'recharge')
     else if (action === 'backups') navigate('backups')
-    else if (action === 'log') navigate('feedback')
+    else if (action === 'log') navigate('feedback', 'log')
     else if (action === 'network') navigate('health')
     else if (action === 'relogin') setAuth('login')
     else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
@@ -1004,7 +1005,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 卸之前问一句；问之前上面已经确认过没断网、运行环境装得上。
     const switchVersion = current && canSwitchToManagedInstall(id, current.status) ? managedSwitchVersion(current, version) : null
     if (switchVersion) {
-      // 这一份已经在换（比如首页点过、又到安装卸载页点「重新安装」）：再问一遍「先把它卸掉」
+      // 这一份已经在换（比如首页点过、又在卡片「…」里点「重新安装」）：再问一遍「先把它卸掉」
       // 只会让人糊涂。和 toolbox.run 撞锁一样，当作已经在装。
       if (toolbox.jobs[id]) return 'skipped'
       if (!await confirmManagedSwitch(switchVersion)) return 'declined'
@@ -1131,8 +1132,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   /**
    * 装完一个工具要做两件收尾：把账号 Key 写进刚装好的工具，再刷新检测结果。
-   * 首页和「安装卸载」页必须共用这一段，否则维护页装完只提示「工具状态已更新」，
-   * 首页还停在「未安装」、Key 也没写（R-G3）。
+   * 装工具的入口都必须共用这一段，否则装完只提示「工具状态已更新」，首页还停在「未安装」、
+   * Key 也没写（R-G3）。
    */
   async function syncAfterToolInstalled(id: ToolId): Promise<boolean> {
     let keyWritten = false
@@ -1140,8 +1141,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       const outcome = await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
       keyWritten = Boolean(outcome?.result?.configured.includes(providerFor(id)))
     }
-    // 「安装卸载」页装完走的是它自己的 bridge 调用，绕开了 toolsApi 那侧的作废，
-    // 所以收尾这一步补一刀，两个入口装完都能立刻看到新的「最近」。
+    // 以前「安装卸载」页装完走的是它自己的 bridge 调用，绕开了 toolsApi 那侧的作废；那一页拆掉了（第 10 批），
+    // BusinessActions.onToolsChanged 还接着这一段，补的这一刀留着，从那里进来的装完也能立刻看到新的「最近」。
     refreshRecent()
     await toolbox.refresh(true)
     return keyWritten
@@ -1706,6 +1707,26 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 导览看完或被关掉才记成「已看」，所以上次没看完的用户一回到首页就接着播。
   // 从没有过记录的老用户不在此列：他们不会凭空多出一段导览。
   const workspaceVisible = boot === 'ready' && !guide && (session.authenticated || restoring || workspaceEntered)
+  // 顶部搜索的「开始检查」和帮助弹窗的「跑一遍检查」：人已经在检查页上时换个 key 重挂一次，挂上就重查。
+  const startCheck = () => { if (page === 'health') setHealthRequest((current) => current + 1); navigate('health') }
+  // 帮助弹窗和反馈与客服页「找客服」卡上的同一行身份，复制时连同最近一次出错一起带走。
+  const copySupportIdentity = () => {
+    void navigator.clipboard.writeText(lastFailureLine ? `${supportIdentity}\n${lastFailureLine}` : supportIdentity)
+      .then(() => toast.show('已复制，发给客服就行', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn'))
+  }
+  const openSupport = () => void perform('打开帮助', () => app.openExternal(supportUrl))
+  const feedbackSupport: FeedbackSupport = { qr, qrFallback, identity: supportIdentity, lastFailure: lastFailureLine, open: openSupport, copyIdentity: copySupportIdentity }
+  // 帮助弹窗下面那六格（v4 第 10 批）。跑检查、看日志要进主界面，欢迎页和引导里只给不用进主界面的那几格。
+  const helpShortcuts = [
+    { id: 'tutorial', label: '使用教程', icon: BookOpen, run: () => navigate('tutorial') },
+    { id: 'feedback', label: '留言反馈', icon: MessageSquare, run: () => navigate('feedback', 'form') },
+    ...(workspaceVisible ? [
+      { id: 'health', label: '跑一遍检查', icon: Zap, run: startCheck },
+      { id: 'log', label: '运行日志', icon: ListChecks, run: () => navigate('feedback', 'log') },
+    ] : []),
+    { id: 'download', label: '打开下载页', icon: Download, run: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)) },
+    { id: 'relaunch', label: '重开软件', icon: RotateCcw, run: () => void perform('重开软件', async () => { await app.relaunch() }) },
+  ]
   useEffect(() => {
     if (workspaceVisible && page === 'home' && tourReplayPending(scope)) setTourOpen(true)
   }, [workspaceVisible, page, scope])
@@ -1803,7 +1824,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               if (client) setExternalClient(client.id)
             },
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
-            startCheck: () => { if (page === 'health') setHealthRequest((current) => current + 1); navigate('health') },
+            startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
             logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
@@ -1841,7 +1862,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   accelerationCard={accelerationAvailable ? (shown) => <div data-testid="page-acceleration">
                     <Suspense fallback={null}>
                       <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null} live={shown}
-                        onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} onViewLog={() => navigate('feedback')} preview={accelerationPreview}
+                        onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} onViewLog={() => navigate('feedback', 'log')} preview={accelerationPreview}
                         onContactSupport={() => setHelp(true)} onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })} />
                     </Suspense>
                   </div> : undefined}
@@ -1859,6 +1880,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   })}
                   installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)} toolJobs={toolbox.jobs}
                   onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
+                  onInstallRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onReplaceNode={() => setNodeReplace({})}
+                  support={feedbackSupport} feedbackRequest={feedbackRequest} ordersVisible={!session.authenticated || visibleAccountTab('orders', session)}
                   onSubscriptionActivated={applySubscriptionToTools} onSubscriptionPurchased={() => void refreshSubscription()} />
               </Suspense>
             </div>)}
@@ -1903,17 +1926,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={640} testId="support-dialog">
-      {/* 左边扫码、右边复制身份，常用的几处去向排在下面一行，弹框不再高出一截。 */}
+      {/* 左边扫码、右边复制身份，常去的几处排成下面的六格（v4 第 10 批，代替原来那排按钮和「设置里还有」「左边「更多」里还有」）。 */}
       <div className="v2-support"><div className="v2-support-contact">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
-        {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}</div>
-        <SupportIdentity line={supportIdentity} lastFailure={lastFailureLine} onCopy={() => { void navigator.clipboard.writeText(lastFailureLine ? `${supportIdentity}\n${lastFailureLine}` : supportIdentity).then(() => toast.show('已复制，发给客服就行', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn')) }} /></div>
-      <div className="v2-support-actions"><Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>去反馈页</Button><Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button></div>
-      {/* 欢迎页和引导里没有侧栏，「左边「更多」」无从说起，这一行只在主界面里出。 */}
-      {/* 备份、更新并进了设置（v4 批09），这两颗按钮落到设置里那张卡上；testId 照旧。 */}
-      {!guide && (session.authenticated || restoring || workspaceEntered) && <div className="v2-support-more" data-testid="support-more">
-        <span>设置里还有：</span>{supportSettingsLinks.map((link) => <Button key={link.id} size="sm" onClick={() => { setHelp(false); navigate(link.id) }} testId={`support-more-${link.id}`}>{link.label}</Button>)}
-        <span>左边「更多」里还有：</span>{moreNavigation.map((id) => <Button key={id} size="sm" onClick={() => { setHelp(false); navigate(id) }} testId={`support-more-${id}`}>{pageRegistry.find((entry) => entry.id === id)?.label}</Button>)}
-      </div>}
+        {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}
+        <Button size="sm" onClick={openSupport}>在浏览器打开</Button></div>
+        <SupportIdentity line={supportIdentity} lastFailure={lastFailureLine} onCopy={copySupportIdentity} /></div>
+      <div className="v2-support-grid" data-testid="support-more">
+        {helpShortcuts.map((item) => <button key={item.id} type="button" className="v2-support-item" onClick={() => { setHelp(false); item.run() }} data-testid={`support-more-${item.id}`}><item.icon size={16} aria-hidden="true" /><span>{item.label}</span></button>)}
+      </div>
     </Dialog>}
     <RequiredUpdateGate update={update} windows={os === 'win'} linux={os === 'linux'} actions={{
       check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),

@@ -1,6 +1,6 @@
 import type { PageId } from './pages';
 import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
-import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type settingsGroups } from './business';
+import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type FeedbackTabValue, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -25,7 +25,8 @@ type TutorialSettingsRow = 'acceleration' | 'backups' | 'version';
 export type TutorialStepTarget =
   | { page: 'account'; section?: (typeof accountTabs)[number]['value'] }
   | { page: 'settings'; section?: (typeof settingsGroups)[number]['value'] | TutorialSettingsRow }
-  | { page: Exclude<PageId, 'account' | 'settings'>; section?: never };
+  | { page: 'feedback'; section?: FeedbackTabValue }
+  | { page: Exclude<PageId, 'account' | 'settings' | 'feedback'>; section?: never };
 
 interface TutorialStepContent {
   title: string;
@@ -161,8 +162,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['没装的卡片是灰的，左下角写着「未安装」。', '装好的卡片中间那行写着版本号。'],
         expected: '找到 Codex 桌面端自己的安装状态。',
         illustration: 'desktop-install',
-        action: '打开安装卸载',
-        page: 'maintenance',
+        action: '去首页找 Codex 桌面端',
+        page: 'home',
       },
       {
         title: 'Windows：点安装，等它装完',
@@ -170,7 +171,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '安装由工具箱完成，不用先装 Node.js 或 Python。',
         bullets: ['点一次「安装」，等待下载和安装进度结束。', '出现版本号后再看账号连接状态。'],
         expected: 'Codex 桌面端显示版本号。',
-        extra: [{ title: '安装报错，或者电脑上没有微软商店？', detail: '电脑没有微软商店也能装，星芒会改用 OpenAI 官网的离线安装包或国内线路；装不上时按错误框里的按钮走，装好后回来「重新检测」。「更多」→「安装卸载」可查看安装日志。' }],
+        extra: [{ title: '安装报错，或者电脑上没有微软商店？', detail: '电脑没有微软商店也能装，星芒会改用 OpenAI 官网的离线安装包或国内线路；装不上时按错误框里的按钮走，装好后回来「重新检测」。安装日志在「反馈与客服」的运行日志里。' }],
         action: '去首页安装桌面端',
         page: 'home',
       },
@@ -635,7 +636,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '卡片上出现版本号，左下角写着「当前账号」。',
         extra: [{ title: '已有安装或正在使用 Codex 桌面端？', detail: '已有工具先检测；官方安装器或其他来源管理的工具按原方式更新。Codex CLI 与桌面端共用配置，修改会影响两者；点「保存配置」只改账号、密钥和模型。' }],
         action: '查看安装状态',
-        page: 'maintenance',
+        page: 'home',
       },
       {
         title: '点击打开，选择这次的工作文件夹',
@@ -704,10 +705,10 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '加不上怎么办',
         where: '外接工具 → 错误提示',
         detail: '先按页面指出的字段修正，不用重新安装所有工具。',
-        bullets: ['地址空就补地址；格式错误就核对 JSON。', '「当前工具未提供管理能力」时，到「安装卸载」核对安装。'],
+        bullets: ['地址空就补地址；格式错误就核对 JSON。', '「当前工具未提供管理能力」时，到首页工具卡片上核对安装。'],
         expected: '修正后可以保存或完成授权。',
-        action: '打开安装卸载',
-        page: 'maintenance',
+        action: '去首页核对安装',
+        page: 'home',
       },
     ],
   },
@@ -995,7 +996,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     steps: [
       {
         title: '装不上、更新不了',
-        where: '失败提示 → 查看日志；更多 → 安装卸载',
+        where: '失败提示 → 查看日志；反馈与客服 → 运行日志',
         detail: '先记录失败提示，再展开下面同名的说明。',
         bullets: ['确认失败的是工具箱更新，还是某个 AI 工具的安装。', '按对应原因处理后再重试，不要连续重复点击安装。'],
         expected: '安装继续进行，或日志里有明确的失败原因。',
@@ -1007,7 +1008,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
           { title: errors.downloadTimeout.title, detail: '已经安装的工具不受这次下载失败影响。检查网络，或点「换官方源重试」。' },
         ],
         action: '查看安装与更新结果',
-        page: 'maintenance',
+        page: 'feedback',
+        section: 'log',
       },
       {
         title: '连不上、登录不了',
@@ -1065,7 +1067,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '还是不知道怎么办',
         where: '检查 → 去处理；反馈与客服',
         detail: '先让检查页定位问题，再把失败位置和报告提供给客服。',
-        bullets: ['在检查页按「去处理」完成建议操作。', '环境问题查看反馈页的运行日志，安装失败查看安装卸载页的安装日志。', '预览反馈报告，核对后复制或下载，连同操作步骤和截图交给客服。'],
+        bullets: ['在检查页按「去处理」完成建议操作。', '环境问题和安装失败都看「反馈与客服」的运行日志。', '预览反馈报告，核对后复制或下载，连同操作步骤和截图交给客服。'],
         expected: '客服拿到具体错误和排查结果，能够继续定位。',
         extra: [{ title: '反馈报告里有什么？', detail: '报告会带上次连接自检结果并自动脱敏。发送前仍要预览，确认截图和补充文字不含完整 Key、密码或无关项目资料。' }],
         action: '预览反馈报告',
@@ -1087,7 +1089,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '先确认电脑能打开 Codex 桌面端，再重新检测。装了 Codex CLI 不代表装了桌面端。',
         bullets: ['Windows 用安装 Codex 的同一个系统用户。', 'Mac 确认「应用程序」里的 ChatGPT 能打开。', '点「重新检测」，记下仍然出现的错误。'],
         expected: '读到桌面端状态，或取得具体检测错误。',
-        extra: [{ title: '检测失败或安装失败在哪里看？', detail: '检测失败不等于未安装。安装日志在「更多」→「安装卸载」；记录系统、Codex 版本和错误，不必重装 Node.js 或 Python。' }],
+        extra: [{ title: '检测失败或安装失败在哪里看？', detail: '检测失败不等于未安装。安装日志在「反馈与客服」的运行日志里；记录系统、Codex 版本和错误，不必重装 Node.js 或 Python。' }],
         action: '回首页重新检测 Codex',
         page: 'home',
       },

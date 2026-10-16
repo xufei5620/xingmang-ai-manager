@@ -88,8 +88,9 @@ function score(entry: Entry, words: readonly string[]) {
 }
 
 // 游戏加速、备份、更新并进了设置：不再单独出页面结果，搜到的是设置里那一行（「网络加速 › 游戏加速」）。
+// 「安装卸载」页拆掉了（第 10 批）：搜「安装」「卸载」给首页，搜 Node.js、Python 给检查页。
 function pageEntries(options: CommandSearchOptions): Entry[] {
-  return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || !(options.pageVisible?.(page.id) ?? true) ? []
+  return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || page.id === 'maintenance' || !(options.pageVisible?.(page.id) ?? true) ? []
     : [{ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }])
 }
 
@@ -107,6 +108,7 @@ function actionEntries(options: CommandSearchOptions): Entry[] {
     ...(options.theme === 'dark' ? [actionEntry('theme', '切换到浅色', { page: 'settings', action: 'theme' }, ['浅色', '亮色', '白色', '主题', '外观', '深浅色'])] : []),
     ...(options.theme === 'light' ? [actionEntry('theme', '切换到深色', { page: 'settings', action: 'theme' }, ['深色', '暗色', '黑色', '主题', '外观', '深浅色'])] : []),
     actionEntry('help', '帮助与客服', { page: 'feedback', action: 'help' }, ['客服', '帮助', '联系', '二维码', '人工']),
+    actionEntry('log', '运行日志', { page: 'feedback', section: 'log' }, ['日志', '报错', '错误记录', '出错记录', '安装日志']),
     // 参数按对话保存：落到聊天页当前那段对话，打开它的参数对话框。
     ...((options.pageVisible?.('chat') ?? true) ? [actionEntry('chat-parameters', '聊天参数设置', { page: 'chat', section: chatParametersSection }, ['参数', '系统提示词', '提示词', '随机度', '温度', '最大输出', 'token', '随机种子'])] : []),
   ]

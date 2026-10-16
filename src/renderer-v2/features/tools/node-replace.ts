@@ -15,7 +15,7 @@ export function canReplaceNode(input: { platform: PlatformCapabilities['platform
   return (input.platform === 'windows' || input.platform === 'linux') && input.nodeRuntimeInstall === 'managed'
 }
 
-/** 「安装卸载」页 Node.js 那一行：装着、但版本认不了证书时，按钮改叫「换成新版」。 */
+/** 检查页 Node.js 那一行：装着、但版本认不了证书时，按钮改叫「换成新版」。 */
 export function nodeReplaceOffered(input: {
   platform: PlatformCapabilities['platform'] | null | undefined
   nodeRuntimeInstall: PlatformCapabilities['nodeRuntimeInstall'] | null | undefined

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, CreditCard, Download, Gauge, LogOut, Menu as MenuIcon, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip, useToast } from '../../ui'
-import { moreNavigation, shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
+import { shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
 import { accountTabs, type SettingsItem } from '../../registry/business'
 import '../../styles/shell.css'
@@ -105,7 +105,6 @@ interface ShellProps {
   children: ReactNode
 }
 
-const moreNavigationPreference = 'xingmang-v2-sidebar-more'
 // 窗口逻辑宽不到 1280（选了 110%，或窗口窄过自动缩放的下限）时侧栏自动收成窄条，不改你自己记的展开/收起。
 // 判在 1272 而不是 1280：自动缩放本来就把逻辑宽算成 1280，可倍率取四位小数、窗口宽取整，真机上会差出不到一个
 // 像素，不能因此把侧栏收掉；1272～1280 之间侧栏照样展开，只是正文两边的留白收窄一点，正文照样 1000 宽。
@@ -141,9 +140,6 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
   const narrow = useNarrowWindow()
   const rail = narrow || collapsed
-  // 「更多」和「设置」一起钉在导航下面，窗口再矮也看得到；展开还是收起记在本机，下次打开照旧。
-  // 开在「更多」里的那一页（从搜索跳过去）一上来就展开，不等下一帧再撑开。
-  const [more, setMore] = useState(() => moreNavigation.includes(activePage) || readLocalPreference(moreNavigationPreference) === 'expanded')
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [fade, setFade] = useState<'top' | 'bottom' | 'both' | null>(null)
   // 上面那段导航放不下时自己滚：上下边缘渐隐，看得出还有。
@@ -165,7 +161,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
       observer.disconnect()
       element.removeEventListener('scroll', measure)
     }
-  }, [rail, more])
+  }, [rail])
   // 换页时当前那一项可能在滚出去的那段里：滚到看得见，不滚别的地方。
   useEffect(() => {
     const scroller = scrollerRef.current
@@ -272,9 +268,6 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     document.addEventListener('keydown', keydown)
     return () => document.removeEventListener('keydown', keydown)
   }, [])
-  useEffect(() => {
-    if (moreNavigation.includes(activePage)) setMore(true)
-  }, [activePage])
   // 切页之后焦点原来还停在侧栏按钮上：键盘用户要 Tab 穿过整条侧栏才到正文，读屏用户
   // 根本不知道页面换了。换页时把焦点交给正文区，并在播报区念一句页面名。首次渲染不动，
   // 开着弹窗不抢；新页面自己已经把焦点放进正文（比如聊天的输入框）也不抢。
@@ -362,12 +355,6 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
       return !current
     })
   }
-  function toggleMore() {
-    setMore((current) => {
-      writeLocalPreference(moreNavigationPreference, current ? 'collapsed' : 'expanded')
-      return !current
-    })
-  }
   function entryVisible(entry: ShellNavigationEntry) {
     return entry === 'recharge' ? account.supportsBilling !== false : adapter.pageVisible?.(entry) ?? true
   }
@@ -420,10 +407,9 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
               {entries.map((entry) => entry === 'recharge' ? rechargeButton() : navButton(entry))}
             </div>
           })}</div>
-          {/* 「更多」和「设置」不跟着滚：屏幕矮时上面那段先收缩，这两项和展开的几项始终露在外面。 */}
+          {/* 「设置」不跟着滚：屏幕矮时上面那段先收缩，它始终露在外面。「更多」里的几页在 v4 各有了去处
+              （游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），「更多」跟着去掉了（第 10 批）。 */}
           <div className="v2-sidebar-pinned" data-testid="sidebar-pinned">
-            <button type="button" className="v2-nav-item" onClick={toggleMore} aria-expanded={more} aria-label="更多" title={rail ? '更多' : undefined} data-testid="nav-more"><MenuIcon size={16} strokeWidth={1.9} aria-hidden="true" /><span>更多</span><ChevronDown className="v2-nav-chevron" size={14} aria-hidden="true" /></button>
-            {more && <div className="v2-more-navigation">{moreNavigation.filter((id) => adapter.pageVisible?.(id) ?? true).map(navButton)}</div>}
             {navButton('settings')}
           </div>
         </nav>

@@ -1369,7 +1369,7 @@ function environmentOverrideOutcome(
       // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
       // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
       state: 'fail',
-      summary: `电脑里另外设了 ${namesOf(reachingTools)}，会让 ${toolsOf(reachingTools)} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈」页导出报告发给客服`,
+      summary: `电脑里另外设了 ${namesOf(reachingTools)}，会让 ${toolsOf(reachingTools)} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服`,
       details,
     }
   }
@@ -2277,7 +2277,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           // 这时再说「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
           return {
             state: 'warn',
-            summary: `软件这次是以管理员权限打开的，但没能确认细节，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。请关掉软件，直接双击重新打开（不要选「以管理员身份运行」）；还不行请在「反馈」页导出报告发给客服`,
+            summary: `软件这次是以管理员权限打开的，但没能确认细节，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。请关掉软件，直接双击重新打开（不要选「以管理员身份运行」）；还不行请在「反馈与客服」页导出报告发给客服`,
             details: { elevated, required: false, ...probeDetails },
           }
         }
@@ -2358,7 +2358,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           state: status.installed ? 'pass' : 'fail',
           summary: status.installed
             ? '可用'
-            : '这台电脑上找不到打开工具要用的系统命令窗口，工具没法从星芒打开。请在「反馈」页导出报告发给客服',
+            : '这台电脑上找不到打开工具要用的系统命令窗口，工具没法从星芒打开。请在「反馈与客服」页导出报告发给客服',
           details: {
             required: true,
             installed: status.installed,
@@ -2794,7 +2794,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
               + '所以写入 Key、保存设置、记录日志都可能失败。关掉软件，直接双击打开（不要选「以管理员身份运行」）就能恢复'
             : `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
               + '所以写入 Key、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
-              + '搬不回来请在「反馈」页导出报告发给客服',
+              + '搬不回来请在「反馈与客服」页导出报告发给客服',
           details,
         }
       },

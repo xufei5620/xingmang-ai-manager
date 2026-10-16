@@ -16,9 +16,9 @@
 | plugins | 插件 | package | extend | T1 | 跳转 | page-plugins |
 | tutorial | 教程 | book-open | maintain | 专用 | 跳转 | page-tutorial |
 | health | 检查 | zap | maintain | 专用 | 跳转 | page-health |
-| maintenance | 安装卸载 | wrench | maintain/more | 专用 | 跳转 | page-maintenance |
+| maintenance | 安装卸载（v4 批10 拆掉，别名落首页） | wrench | — | — | 不出 | page-maintenance |
 | backups | 备份 | archive | maintain/more | T1 | 跳转 | page-backups |
-| feedback | 反馈 | flag | maintain/more | T1 | 跳转 | page-feedback |
+| feedback | 反馈与客服 | flag | maintain | T1 | 跳转 | page-feedback |
 | updates | 更新 | refresh-cw | maintain/more | 专用 | 跳转 | page-updates |
 | settings | 设置 | settings | maintain | T2 | 跳转（⌘,） | page-settings |
 | account | 个人中心 | user | 侧栏账号卡 | T2 | 跳转 | page-account |

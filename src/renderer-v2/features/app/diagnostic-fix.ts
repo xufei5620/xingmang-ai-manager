@@ -52,9 +52,9 @@ export function diagnosticFixMessage(result: DiagnosticFixResult): string {
     return result.fixed ? '已经挪开。' : '没有要挪的了：这份说明已经不在了。'
   if (result.fixed)
     return result.machineRemaining
-      ? '已经删掉你这个账号下的那几项。整台电脑还有同样的设置，要管理员才能改，请在「反馈」页导出报告发给客服。'
+      ? '已经删掉你这个账号下的那几项。整台电脑还有同样的设置，要管理员才能改，请在「反馈与客服」页导出报告发给客服。'
       : '已经删掉。关掉开着的命令行窗口再打开工具就好。'
   return result.machineRemaining
-    ? '这几项是给整台电脑设的，要管理员才能改，请在「反馈」页导出报告发给客服。'
+    ? '这几项是给整台电脑设的，要管理员才能改，请在「反馈与客服」页导出报告发给客服。'
     : '没有要删的了：这几项设置已经不在了。'
 }
