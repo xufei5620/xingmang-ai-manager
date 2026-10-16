@@ -696,6 +696,27 @@ test('client save errors retain the selected model and never show a success noti
   } finally { await page.close() }
 })
 
+test('a replaced manual client key cannot save the previous key first detected model unseen', async () => {
+  const page = await open('clientModels=1')
+  try {
+    await page.getByTestId('home-client-workbuddy').click()
+    await pickOption(page, 'external-client-source', 'manual')
+    await page.getByTestId('external-client-secret').fill('sk-fixture-first-key-0001')
+    await page.getByTestId('external-client-save').click()
+    // 第一把密钥读到的型号没有一个拿得准，只替他填上第一项，不保存。
+    await expect(page.getByTestId('external-client-save')).toHaveText('保存配置')
+    assert.equal(await page.getByTestId('external-client-model').inputValue(), 'fixture-model')
+    await page.getByTestId('external-client-secret').fill('sk-fixture-second-key-0002')
+    await expect(page.getByTestId('external-client-save')).toHaveText('保存并检测')
+    await page.getByTestId('external-client-save').click()
+    // 换了密钥，上一把替他填的第一项不算「原来就配着的」：检测完照旧停下让他自己挑。
+    await expect(page.getByTestId('external-client-save')).toHaveText('保存配置')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').length), 0)
+    assert.equal(await page.getByTestId('external-client-result').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Codex non-GPT menu requires a detected non-GPT model before saving', async () => {
   const page = await open('clientModels=1')
   try {

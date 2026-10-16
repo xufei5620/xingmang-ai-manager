@@ -15,8 +15,8 @@
   `otherModelSaveIssue`。ChatGPT 账号额度抽成 `OfficialQuotaDialog.tsx`，首页「…」和配置里都开它；配置里打开时先关配置，同一时间
   只开一个弹窗。
 - 外接工具弹窗（`ExternalClientDialog.tsx`）同一个样子：标题按首页是否连好写「连接 {名称}」或「{名称} 配置」（`external-model.ts`
-  的 `externalClientReady`），名称旁写版本；「保存并检测」拿得准型号（原来就配着的、Claude Desktop 认得出的 Claude）就接着保存；
-  连好后右下角说下一步。关闭时原来的「放弃未保存的修改？」确认框换成弹窗底部的离开条（配置弹窗同）。
+  的 `externalClientReady`），名称旁写版本；「保存并检测」拿得准型号（原来就配着的、Claude Desktop 认得出的 Claude）就接着保存，
+  换了自己填的密钥和换来源一样清掉型号，上一把密钥替他填上的第一项不算拿得准；连好后右下角说下一步。关闭时原来的「放弃未保存的修改？」确认框换成弹窗底部的离开条（配置弹窗同）。
 - 界面文字照 `界面文字/批05-工具配置弹窗` 改（yoyo 2026-10-15 回「全部按推荐改」），来源一律写「当前账号」；教程里指到配置弹窗的
   说法跟着换（「使用星芒账号」→「当前账号」、「访问密钥」、「保存并检测」、「启用中文界面」）。浏览器测试跟着新结构改（页签、
   确认框、`selectOption` 改下拉菜单），加「配置里打开 ChatGPT 额度」一条；fixture 补 `inspectCodexWorkspacePermissions` 和
