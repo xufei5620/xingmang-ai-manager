@@ -30,18 +30,31 @@ jobs:
             console.log('extracted', n, 'of', files.length)
           "
           ls out | head -30
-          A=$(find out -type d -path '*webview/assets' | head -1); echo "assets=$A"
-          ls "$A" | wc -l
-          ls "$A" | grep -iE '^zh|^en|locale' | head -20
-          echo '--- index.html'; find out -path '*webview/index.html' -exec cat {} \; | head -c 3000; echo
-          echo '--- files with 72216192'; grep -l 72216192 "$A"/*.js || true
-          for f in $(grep -l 72216192 "$A"/*.js); do echo "=== $f"; grep -oE '.{0,700}72216192.{0,900}' "$f" | head -5; done
-          echo '--- enable_i18n'; for f in $(grep -l enable_i18n "$A"/*.js); do echo "=== $f"; grep -oE '.{0,500}enable_i18n.{0,500}' "$f" | head -6; done
-          echo '--- STATSIG globals'; grep -oE '.{0,200}(__STATSIG__|globalThis\.statsig|window\.Statsig).{0,200}' "$A"/*.js | head -8
-          echo '--- documentElement.lang'; grep -oE '.{0,300}documentElement\.lang.{0,300}' "$A"/*.js | head -6
-          echo '--- zh-CN chunk refs'; grep -oE '.{0,300}zh-CN-[A-Za-z0-9_-]+\.js.{0,300}' "$A"/*.js | head -6
-          echo '--- modulepreload'; grep -oE '.{0,200}modulepreload.{0,200}' "$A"/*.js | head -4
-          echo '--- electronBridge'; grep -lE 'electronBridge' "$A"/*.js | head -3; grep -rlE 'electronBridge' out/.vite 2>/dev/null | head -3
-          echo '--- zh-CN literal'; grep -oE '.{0,400}["'"'"']zh-CN["'"'"'].{0,400}' "$A"/*.js | head -8
-          echo '--- locale_source'; grep -oE '.{0,400}locale_source.{0,400}' "$A"/*.js | head -6
-          echo '--- lang attr'; grep -oE '.{0,200}(\.lang=|setAttribute\(.lang.).{0,200}' "$A"/*.js | head -6
+          cat > search.cjs <<'JS'
+          const fs = require('fs'); const path = require('path')
+          const root = 'out'
+          const files = []
+          ;(function walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else files.push(p) } })(root)
+          console.log('files', files.length)
+          console.log('zh/en/locale names:', files.filter((f) => /(^|[\\/])(zh|en)[-_][^\\/]*\.js$|locale/i.test(f)).slice(0, 30).join('\n'))
+          const html = files.filter((f) => f.endsWith('.html'))
+          for (const f of html) console.log('=== HTML', f, '\n', fs.readFileSync(f, 'utf8').slice(0, 2500))
+          const needles = ['72216192', 'enable_i18n', 'locale_source', '__STATSIG__', 'documentElement.lang', 'documentElement.setAttribute("lang"', 'firstInstance', 'modulepreload', 'zh-CN', 'localeOverride']
+          for (const needle of needles) {
+            let shown = 0
+            console.log('\n##### NEEDLE', needle)
+            for (const f of files.filter((f) => /\.(js|mjs|cjs)$/.test(f))) {
+              const text = fs.readFileSync(f, 'utf8')
+              let i = text.indexOf(needle)
+              let perFile = 0
+              while (i !== -1 && shown < 6 && perFile < 3) {
+                console.log('--- ' + f + ' @' + i + '\n' + text.slice(Math.max(0, i - 500), i + 700).replace(/\n/g, ' '))
+                shown++; perFile++
+                i = text.indexOf(needle, i + needle.length)
+              }
+              if (shown >= 6) break
+            }
+          }
+          JS
+          sed -i 's/^          //' search.cjs
+          node search.cjs

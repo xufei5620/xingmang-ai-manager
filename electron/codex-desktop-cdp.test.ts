@@ -460,7 +460,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
     const listeners = new Map<string, Set<(event: any) => void>>()
     const prepareDocument = () => {
       Object.assign(page.context, {
-        document: { readyState: 'complete', body: { innerText: 'Codex desktop is ready' }, querySelector: () => ({}) },
+        document: { readyState: 'complete', body: { innerText: 'New chat\nAutomations\nSkills\nSettings\nCodex desktop is ready' }, querySelector: () => ({}) },
         electronBridge: { sendMessageFromView() {} },
         performance: { timeOrigin: 1_000 + reloaded },
       })
@@ -635,6 +635,67 @@ describe('Codex Desktop Chinese CDP injection', () => {
     })).rejects.toThrow('未确认中文配置生效')
     expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(1)
     expect(isClosed()).toBe(true)
+  })
+
+  it('says in the logged reason which step was never seen on the page', async () => {
+    const { socket } = mockCdpSocket(() => ({ ...readyProbe, patchReady: false, localeReadObserved: false }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('（界面已画出，补丁已挂上，没找到语言开关，Codex 没读过开关）')
+  })
+
+  it('neither reloads nor gives up while Codex still shows its own start-up screen', async () => {
+    // #976: when the switch request cannot get out, Codex sits on a spinner for
+    // 34-38 s and only reads the switch afterwards, well past the usual bound.
+    let probes = 0
+    const { socket, sent } = mockCdpSocket(() => {
+      probes += 1
+      return probes <= 45
+        ? { ...readyProbe, textLength: 0, localeReadObserved: false }
+        : readyProbe
+    })
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => new Response(JSON.stringify([target()])),
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 46 })
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(0)
+  })
+
+  it('still gives up on a start-up screen that never ends, and says so in the logged reason', async () => {
+    let attempts = 0
+    const { socket, sent } = mockCdpSocket(() => ({ ...readyProbe, textLength: 0, localeReadObserved: false }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => {
+        attempts += 1
+        return new Response(JSON.stringify([target()]))
+      },
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('界面还停在启动那一屏')
+    expect(attempts).toBe(90)
+    expect(sent.filter((entry) => entry.method === 'Page.reload')).toHaveLength(0)
+  })
+
+  it('keeps the usual bound once the interface is drawn but the switch is never read', async () => {
+    let attempts = 0
+    const { socket } = mockCdpSocket(() => ({ ...readyProbe, patchReady: false, localeReadObserved: false }))
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      fetch: async () => {
+        attempts += 1
+        return new Response(JSON.stringify([target()]))
+      },
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })).rejects.toThrow('未确认中文配置生效')
+    expect(attempts).toBe(30)
   })
 
   it('does not reload an incompatible renderer that never exposes the locale config', async () => {

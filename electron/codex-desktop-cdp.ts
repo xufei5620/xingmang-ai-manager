@@ -14,6 +14,10 @@ const cdpDiscoveryTimeoutMs = 2_000
 const cdpCommandTimeoutMs = 5_000
 const cdpDiscoveryAttempts = 30
 const cdpDiscoveryDeadlineMs = 20_000
+// Codex 的界面还停在启动那一屏时多等一会儿：开关请求连不上时那一屏要停 34–38 秒（#976 实测），
+// 原来 20 秒一到就判「没换成」，界面随后变成中文，提示却已经弹出去了。
+const cdpStartupScreenDeadlineMs = 45_000
+const cdpStartupScreenAttempts = 90
 const cdpPortOwnershipRevalidateMs = 5_000
 const cdpPortOwnerLookupFailureLimit = 3
 // 进了用户看到的「未确认中文界面生效」提示，不带命令原文，也不说技术词。
@@ -200,7 +204,9 @@ const codexChineseRuntimeSource = String.raw`((documentHook) => {
     patchStatsig();
     // Keep observing during startup: clients/config objects may be replaced
     // after the SDK's asynchronous initialization or an account handshake.
-    if (Date.now() - startedAt >= 20_000) {
+    // That initialization only ends once the switch request gives up, which
+    // takes 34-38 s when it cannot get out (#976), so watch past that.
+    if (Date.now() - startedAt >= 60_000) {
       clearInterval(timer);
     }
   }, 50);
@@ -779,7 +785,11 @@ async function injectTarget(
         // Keep the same CDP session (and its new-document hook) alive across
         // reload. A ready renderer alone says nothing about its locale.
         // Slow document loading must not consume the only reload attempt.
-        if (!reloadState.attempted && probe.rendererReady && probe.documentReady && probe.patchReady && probe.documentIdentity !== null) {
+        // Neither may Codex's own start-up screen: it has not read the switch
+        // yet, so the patch already in place will see that read, and a reload
+        // there restarts the wait for the switch request (or fails the start
+        // outright, "ChatGPT failed to start · ERR_FAILED (-2)", #976).
+        if (!reloadState.attempted && probe.rendererReady && probe.documentReady && probe.patchReady && probe.interfaceShown && probe.documentIdentity !== null) {
           reloadState.attempted = true
           reloadState.previousDocument = probe.documentIdentity
           const reload = await sendCdpCommand(socket, ++commandId, 'Page.reload', { ignoreCache: false })
@@ -794,6 +804,7 @@ async function injectTarget(
             rendererReady: false,
             documentReady: false,
             patchReady: false,
+            interfaceShown: false,
           }
         }
         return probe
@@ -812,6 +823,12 @@ interface CdpRendererProbe {
   patchReady: boolean
   patchInstalled: boolean
   documentIdentity: number | null
+  /**
+   * Codex 自己的界面已经画出来了（有成段的文字），不再是启动时那一屏只转圈的白底。开关请求连不上时
+   * 那一屏要停约 35 秒（#976），这期间 Codex 还没读过语言开关。
+   */
+  interfaceShown: boolean
+  localeReadObserved: boolean
 }
 
 interface CdpInjectionSession {
@@ -837,8 +854,11 @@ const codexRendererProbeScript = String.raw`(() => {
   });
 })();`
 
+// 页面上有这么多字，才算 Codex 的界面画出来了；启动那一屏只有转圈的图标。
+const codexInterfaceTextLength = 40
+
 function readRendererProbeResult(response: CdpResponse): CdpRendererProbe {
-  const unavailable = { ready: false, rendererReady: false, documentReady: false, patchReady: false, patchInstalled: false, documentIdentity: null }
+  const unavailable = { ready: false, rendererReady: false, documentReady: false, patchReady: false, patchInstalled: false, documentIdentity: null, interfaceShown: false, localeReadObserved: false }
   if (response.error || response.result?.exceptionDetails) return unavailable
   const value = response.result?.result?.value
   if (typeof value !== 'string') return unavailable
@@ -846,23 +866,37 @@ function readRendererProbeResult(response: CdpResponse): CdpRendererProbe {
     const parsed = JSON.parse(value) as Record<string, unknown>
     const rendererReady = parsed.codexRendererProbe === true
       && parsed.hasBridge === true
-      && (parsed.hasAppRoot === true || (typeof parsed.textLength === 'number' && parsed.textLength >= 40))
+      && (parsed.hasAppRoot === true || (typeof parsed.textLength === 'number' && parsed.textLength >= codexInterfaceTextLength))
     const patchReady = parsed.patchReady === true && parsed.navigatorLocale === 'zh-CN'
     const documentReady = parsed.documentReady === true
     const patchInstalled = parsed.patchInstalled === true
     const documentIdentity = typeof parsed.documentIdentity === 'number' && Number.isFinite(parsed.documentIdentity) && parsed.documentIdentity > 0
       ? parsed.documentIdentity : null
+    const localeReadObserved = parsed.localeReadObserved === true
     return {
-      ready: rendererReady && documentReady && patchInstalled && patchReady && documentIdentity !== null && parsed.localeReadObserved === true,
+      ready: rendererReady && documentReady && patchInstalled && patchReady && documentIdentity !== null && localeReadObserved,
       rendererReady,
       documentReady,
       patchReady,
       patchInstalled,
       documentIdentity,
+      interfaceShown: typeof parsed.textLength === 'number' && parsed.textLength >= codexInterfaceTextLength,
+      localeReadObserved,
     }
   } catch {
     return unavailable
   }
+}
+
+/**
+ * 「没核对上」只进运行日志（客户看到的是一句固定的话）。带上最后一次看到的页面状态，下回
+ * 有人报「点了显示中文还是英文」，从日志就分得清是界面没画出来、补丁没挂上、找不到开关，
+ * 还是 Codex 一直没去读开关。
+ */
+function describeRendererProbe(probe: CdpRendererProbe | null): string {
+  if (!probe) return ''
+  return `（界面${probe.interfaceShown ? '已画出' : '还停在启动那一屏'}，补丁${probe.patchInstalled ? '已挂上' : '没挂上'}，`
+    + `${probe.patchReady ? '找到了' : '没找到'}语言开关，Codex ${probe.localeReadObserved ? '读过' : '没读过'}开关）`
 }
 
 async function listTargets(
@@ -931,9 +965,15 @@ export async function injectCodexDesktopChineseLocale(
   const sessions = new Map<string, CdpInjectionSession>()
   const reloadStates = new Map<string, { attempted: boolean; previousDocument: number | null }>()
   let rendererFound = false
-  const deadline = Date.now() + cdpDiscoveryDeadlineMs
+  let lastRendererProbe: CdpRendererProbe | null = null
+  // 最近一轮看到的 Codex 页面还停在启动那一屏：这时它还没读过开关，按「没换成」收尾太早。
+  let codexStarting = false
+  const startedAt = Date.now()
+  const withinBudget = (attempt: number): boolean => codexStarting
+    ? attempt <= cdpStartupScreenAttempts && Date.now() < startedAt + cdpStartupScreenDeadlineMs
+    : attempt <= cdpDiscoveryAttempts && Date.now() < startedAt + cdpDiscoveryDeadlineMs
   try {
-    for (let attempt = 1; attempt <= cdpDiscoveryAttempts && Date.now() < deadline; attempt += 1) {
+    for (let attempt = 1; withinBudget(attempt); attempt += 1) {
       // A squatted port must abort the whole injection: retrying would only
       // keep handing the payload to whoever answers on it.
       const ownership = await inspectPortOwnership()
@@ -957,6 +997,7 @@ export async function injectCodexDesktopChineseLocale(
         const priority: Record<string, number> = { page: 0, iframe: 1, webview: 2 }
         const targets = filterCodexDesktopCdpTargets(await listTargets(port, fetchImpl), port)
           .sort((left, right) => priority[left.type.toLowerCase()]! - priority[right.type.toLowerCase()]!)
+        let startingThisRound: boolean | null = null
         const visibleIds = new Set(targets.map((target) => target.id))
         for (const [id, session] of sessions) {
           if (!visibleIds.has(id)) {
@@ -983,6 +1024,10 @@ export async function injectCodexDesktopChineseLocale(
             const result = await session.inspect()
             rendererFound ||= result.rendererReady
             if (result.ready) return { injectedTargets, attempts: attempt }
+            if (result.rendererReady) {
+              lastRendererProbe = result
+              startingThisRound = (startingThisRound ?? true) && !result.interfaceShown
+            }
           } catch (error) {
             lastError = error
             // A crashed/replaced renderer needs a fresh registration. Keeping
@@ -991,6 +1036,7 @@ export async function injectCodexDesktopChineseLocale(
             sessions.delete(target.id)
           }
         }
+        if (startingThisRound !== null) codexStarting = startingThisRound
       } catch (error) {
         lastError = error
       }
@@ -1000,7 +1046,7 @@ export async function injectCodexDesktopChineseLocale(
     for (const session of sessions.values()) session.close()
   }
   const detail = lastError instanceof Error ? `：${lastError.message}` : ''
-  if (rendererFound) throw new Error(`Codex Desktop 页面已启动，但未确认中文配置生效${detail}`)
+  if (rendererFound) throw new Error(`Codex Desktop 页面已启动，但未确认中文配置生效${describeRendererProbe(lastRendererProbe)}${detail}`)
   // No page was looked for after the last lookup failed, so "no page found"
   // would be the wrong reason to give.
   if (unansweredLookups) throw new Error(cdpPortOwnerUnconfirmedMessage)
