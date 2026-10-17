@@ -8,6 +8,7 @@ import { resolveManagedCliGroup, resolveMappedGroup, type AccountGroupHints } fr
 import type { RelayBackendClient } from './relay-backend'
 import { relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl } from './relay-sites'
 import { rewriteJsonStrings } from './tool-route-rewrite'
+import { editTomlArrayTableText, mutateCodexConfigToml } from './codex-config-toml'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
@@ -258,13 +259,17 @@ async function writeXingmangAiSkillOffRecord(statePath: string, offByXingmang: b
   )
 }
 
-async function writeCodexToml(filePath: string, parsed: Record<string, unknown>, label: string): Promise<void> {
-  ensureSafeDataDirectory(path.dirname(filePath), 'Codex 配置目录')
-  await writeAtomicSafeUtf8File(
-    filePath,
-    `${TOML.stringify(parsed as Parameters<typeof TOML.stringify>[0])}\n`,
-    label,
-  )
+// 读、改、写、备份交给 codex-config-toml.ts（#1068）：从读到写是同步的，这段时间里别处（保存配置、
+// 扩展页、桌面端语言）刚写进去的改动不会被这里整份盖掉；只动 [[skills.config]] 那几行，客户写的
+// 注释留着。
+function setCodexSkillEnabled(configPath: string, skillPath: string, enabled: boolean): boolean {
+  return mutateCodexConfigToml(configPath, {
+    label: 'Codex config.toml',
+    unreadable: 'Codex config.toml 无法解析，未修改星芒AI Skill 开关',
+    createIfMissing: true,
+    mutate: (config) => applyXingmangAiSkillEnabledFlag(config, skillPath, enabled),
+    editText: (source, before, after) => editTomlArrayTableText(source, ['skills', 'config'], before, after),
+  }).changed
 }
 
 /**
@@ -296,20 +301,15 @@ async function relaySnapshotHasSkillOff(codexHome: string, skillPath: string): P
  * 只开 config.toml 的话，切换没成功、回滚（只还原 config.toml）以后再切过来，拿回来的还是
  * 那份带着关的，到那时就认不出它是星芒的了。
  */
-async function turnOnSkillInRelaySnapshot(codexHome: string, skillPath: string): Promise<void> {
-  const snapshotPath = path.join(codexHome, CODEX_RELAY_CONFIG_SNAPSHOT_FILE)
-  const text = await readSafeUtf8File(snapshotPath, CODEX_RELAY_CONFIG_SNAPSHOT_LABEL, MAX_CODEX_CONFIG_BYTES)
-  if (!text?.trim()) return
-  let parsed: Record<string, unknown>
-  try {
-    parsed = TOML.parse(text)
-  } catch {
+function turnOnSkillInRelaySnapshot(codexHome: string, skillPath: string): void {
+  mutateCodexConfigToml(path.join(codexHome, CODEX_RELAY_CONFIG_SNAPSHOT_FILE), {
+    label: CODEX_RELAY_CONFIG_SNAPSHOT_LABEL,
     // 读不懂的那份切回星芒时也用不上（会让客户重置），不替它改。
-    return
-  }
-  if (!isXingmangAiSkillTurnedOff(parsed, skillPath)) return
-  applyXingmangAiSkillEnabledFlag(parsed, skillPath, true)
-  await writeCodexToml(snapshotPath, parsed, CODEX_RELAY_CONFIG_SNAPSHOT_LABEL)
+    unreadable: 'skip',
+    mutate: (config) => isXingmangAiSkillTurnedOff(config, skillPath)
+      && applyXingmangAiSkillEnabledFlag(config, skillPath, true),
+    editText: (source, before, after) => editTomlArrayTableText(source, ['skills', 'config'], before, after),
+  })
 }
 
 export async function syncXingmangAiSkillCodexAvailability(options: {
@@ -346,20 +346,22 @@ export async function syncXingmangAiSkillCodexAvailability(options: {
       await writeXingmangAiSkillOffRecord(statePath, reopenOnReturn)
       return { changed: false, enabled: false }
     }
+    // 先在读出来的这份上试一遍：skills 写得不对时在这里就报错，记录还没动。真写的时候再读一遍，
+    // 上面等着读记录、读存着的星芒配置那一会儿，别处可能刚改过 config.toml。
     applyXingmangAiSkillEnabledFlag(parsed, skillPath, false)
     await writeXingmangAiSkillOffRecord(statePath, reopenOnReturn)
-    await writeCodexToml(configPath, parsed, 'Codex config.toml')
-    return { changed: true, enabled: false }
+    const changed = setCodexSkillEnabled(configPath, skillPath, false)
+    return { changed, enabled: false }
   }
 
   if (turnedOff && offByXingmang === true) {
     applyXingmangAiSkillEnabledFlag(parsed, skillPath, true)
     // 先开存着的那份、再开 config.toml、最后改记录：中途失败时 config.toml 还关着、记录还在，
     // 下次照样两份都开。
-    await turnOnSkillInRelaySnapshot(codexHome, skillPath)
-    await writeCodexToml(configPath, parsed, 'Codex config.toml')
+    turnOnSkillInRelaySnapshot(codexHome, skillPath)
+    const changed = setCodexSkillEnabled(configPath, skillPath, true)
     await writeXingmangAiSkillOffRecord(statePath, false)
-    return { changed: true, enabled: true }
+    return { changed, enabled: true }
   }
   // 其余的关都是客户自己的，不动。
   if (offByXingmang !== false) await writeXingmangAiSkillOffRecord(statePath, false)

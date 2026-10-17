@@ -18,6 +18,7 @@ import {
 } from './codex-home'
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
+import { configBackupSuffix, staleConfigBackups, uniqueConfigBackupPath } from './config-file-backups'
 import { applyClaudeStatusLine, claudeStatusLineSetting, managedClaudeStatusLineTarget } from './claude-status-line'
 import {
   applyClaudeCliHooks,
@@ -2899,47 +2900,20 @@ function createMergePlans(
   }
 }
 
-function backupSuffix(): string {
-  return new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 17)
-}
-
 type PreparedFilePlan = FilePlan & {
   backupPath: string | null
   existed: boolean
   temporaryPath: string
 }
 
-function uniqueBackupPath(filePath: string, suffix: string): string {
-  const baseBackupPath = `${filePath}.bak.${suffix}`
-  let backupPath = baseBackupPath
-  let counter = 1
-  while (fs.existsSync(backupPath)) {
-    backupPath = `${baseBackupPath}-${counter}`
-    counter += 1
-  }
-  return backupPath
-}
-
-const MAX_BACKUPS_PER_FILE = 5
-
-// 备份后缀是时间戳，字典序即时间序；清理失败只静默跳过，绝不影响已成功的保存。
-function pruneBackups(
-  filePath: string,
-  providerRoot: string,
-  keep = MAX_BACKUPS_PER_FILE,
-): void {
-  const directory = path.dirname(filePath)
-  const prefix = `${path.basename(filePath)}.bak.`
-  let entries: string[]
+// 清理失败只静默跳过，绝不影响已成功的保存。
+function pruneBackups(filePath: string, providerRoot: string): void {
   try {
     assertSafeConfigPath(filePath, providerRoot, 'parent')
-    entries = fs.readdirSync(directory)
   } catch {
     return
   }
-  const backups = entries.filter((name) => name.startsWith(prefix)).sort()
-  for (const name of backups.slice(0, Math.max(0, backups.length - keep))) {
-    const backupPath = path.join(directory, name)
+  for (const backupPath of staleConfigBackups(filePath)) {
     try {
       assertSafeConfigPath(backupPath, providerRoot, 'file')
       removeIfPresent(backupPath)
@@ -3064,7 +3038,7 @@ function assertSafeSourceAndTarget(
 
 function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFilePlan[] {
   const seenTargets = new Set<string>()
-  const suffix = backupSuffix()
+  const suffix = configBackupSuffix()
   return plans.map((plan) => {
     const targetKey = path.resolve(plan.path).toLowerCase()
     if (seenTargets.has(targetKey)) throw new Error(`配置写入计划包含重复路径：${plan.path}`)
@@ -3083,7 +3057,7 @@ function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFile
     return {
       ...plan,
       existed,
-      backupPath: existed ? uniqueBackupPath(plan.path, suffix) : null,
+      backupPath: existed ? uniqueConfigBackupPath(plan.path, suffix) : null,
       temporaryPath: `${plan.path}.xingmang-${randomUUID()}.tmp`,
     }
   }).filter((plan) => plan.existed || !isRemovePlan(plan))
