@@ -57,11 +57,17 @@ async function recoverInterruptedManagedNpmTransaction(
   if (!interrupted) return
 
   const displacedPrefix = path.join(interrupted.transaction, 'interrupted-prefix')
+  const activeExists = fs.existsSync(prefix)
   if (fs.existsSync(displacedPrefix)) {
-    throw new Error('npm 安装恢复目录已存在冲突，未修改当前安装')
+    // 上一次恢复把当前目录挪成 interrupted-prefix 之后、把旧版放回去之前断了（进程被杀，或放回失败、
+    // 还原也失败）。这时 prefix 已经没了，previous-prefix 是唯一能用的一份，照常放回去，换下来的
+    // interrupted-prefix 随事务目录一起删（#1056）。prefix 也在就分不清该留哪份，照旧不动。
+    if (activeExists) {
+      throw new Error('npm 安装恢复目录已存在冲突，未修改当前安装')
+    }
+    assertPlainDirectory(displacedPrefix, platform)
   }
 
-  const activeExists = fs.existsSync(prefix)
   if (activeExists) {
     assertPlainDirectory(prefix, platform)
     await fs.promises.rename(prefix, displacedPrefix)

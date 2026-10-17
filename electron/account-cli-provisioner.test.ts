@@ -21,6 +21,7 @@ import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
+import type { CliModelHints } from './cli-model-defaults'
 
 type AccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey' | 'listUsableGroups' | 'getActiveSiteId'>
 type ConfigurationService = Pick<SystemService, 'fetchAvailableModels' | 'saveConfig'>
@@ -390,6 +391,25 @@ describe('configureManagedClis', () => {
     expect(saveConfig).toHaveBeenCalledWith({
       provider, apiKey: managedKey(provider).key, model: expected, mode: 'merge',
     }, false, expect.any(Function), { source: 'account', automatic: true })
+  })
+
+  it('picks the default from the published model table, and from the bundled one when that cannot be read', async () => {
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => activeProviderIds.map((provider) => managedKey(provider))),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const fetchAvailableModels = vi.fn(async () => ['gpt-6-astra', 'gpt-7'])
+    async function configureWith(getCliModelHints: () => Promise<CliModelHints | null>) {
+      const saveConfig = vi.fn()
+      const accountService = Object.assign(loggedInAccountService(vi.fn()), { getCliModelHints })
+      await configureManagedClis(accountService, { fetchAvailableModels, saveConfig } as unknown as ConfigurationService, ['codex'], {}, false, store)
+      return saveConfig.mock.calls[0]?.[0]
+    }
+
+    await expect(configureWith(async () => ({ codex: { default: 'gpt-7' } }))).resolves.toMatchObject({ provider: 'codex', model: 'gpt-7' })
+    await expect(configureWith(async () => null)).resolves.toMatchObject({ provider: 'codex', model: 'gpt-6-astra' })
+    await expect(configureWith(async () => { throw new Error('offline') })).resolves.toMatchObject({ provider: 'codex', model: 'gpt-6-astra' })
   })
 
   it('reports a missing interactive default without writing an auto-review-only group to config', async () => {

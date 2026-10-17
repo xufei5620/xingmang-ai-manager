@@ -1100,7 +1100,8 @@ interface EnvironmentOverrideMatch {
  *
  * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
  * （system-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
- * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉。检查页在 Mac 上另去读那几个终端
+ * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉。Windows、Linux 上从星芒打开时
+ * Claude 的这两个同样不带（launchExcludedEnvironmentVariables，#1081）。检查页在 Mac 上另去读那几个终端
  * 设置文件，只找 breaksAccount 的那几个（collectMacosShellOverrides）。
  * 改这里的取值时那边一起看。
  */
@@ -1336,8 +1337,10 @@ function toolsOf(matches: readonly EnvironmentOverrideMatch[]): string {
 }
 
 /**
- * droppedByLauncher：从星芒打开时启动脚本会不会先去掉这一个（只在 Mac 上可能为 true）。
- * 缺省 = 都会带给工具，Windows、Linux 就是这样。
+ * droppedByLauncher：Mac 上从星芒打开时启动脚本会不会先去掉这一个，去掉的降成「需留意」。
+ * Windows、Linux 不传，照旧报「待处理」：Claude 的那两个从星芒打开时同样不带了（#1081），但这里读的是
+ * 星芒自己的进程环境，客户自己开命令窗口直接跑工具时拿到的也是这一份，照样绕开当前账号。Mac 降级时那句
+ * 说的是「终端设置」，Windows、Linux 要降级得另写一句，#1081 定的是这次不加新字。
  */
 function environmentOverrideOutcome(
   matches: readonly EnvironmentOverrideMatch[],

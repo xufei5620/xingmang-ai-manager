@@ -132,6 +132,7 @@ import { normalizeRealmLoginIdentifier } from './realm-account-vault'
 import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
 import { loadAccountGroupHints, loadManagedCliGroups, markRecommendedChatGroup, type AccountGroupHints } from './managed-cli-groups'
+import type { CliModelHints } from './cli-model-defaults'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -230,7 +231,7 @@ export interface IpcRegistrationOptions {
   // The server-owned payment form stays in the main process. IPC receives
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
-  paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
+  paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'close' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
   // Resolves once main.ts's startup session-restore attempt (see
   // account-session-store.ts's restoreAccountSessionOnStartup) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
@@ -312,6 +313,9 @@ export interface IpcRegistrationOptions {
   // 服务状态文件里的分组对照（service-status.ts 的 accountGroups）：签 Key、画图技能、AI 对话默认分组
   // 先看它，站上改了分组本名也跟得上。缺省 = 不看对照，照旧按写死的名字和工具专属词认。
   accountGroupHints?: () => Promise<AccountGroupHints | null>
+  // 服务状态文件里的型号表（service-status.ts 的 cliModels）：登录后签 Key、写配置时挑默认型号先看它。
+  // 缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
+  cliModelHints?: () => Promise<CliModelHints | null>
   // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
   // 换新时照抄。缺省用内存版：测试与预览不落盘。
   keyReplacements?: ManagedKeyReplacementStore
@@ -2028,6 +2032,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
+    ...(options.cliModelHints ? { getCliModelHints: options.cliModelHints } : {}),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -3542,7 +3547,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })
   })
   registerTrustedHandler('account:close-payment-window', () => {
-    options.paymentWindow.destroy()
+    // 和点支付窗口右上角的 × 一样：付过款的订单在后台接着确认到账。
+    // destroy() 会把这份确认一起停掉，只留给换账号、退出这类场合。
+    options.paymentWindow.close()
   })
   registerTrustedHandler('account:list-topup-orders', (_event, input: unknown) => (
     accountService.listTopupOrders(parseAccountTopupOrdersQuery(input))
@@ -3609,7 +3616,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       // 缺 Node.js 的那句要不要上首页，渲染层跟着运行环境卡对 Node.js 的说法定，这里只把原因带过去。
       const imageMcpNeedsNode = (skill.imageMcpWarnings ?? []).includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)
       if (skill.ready) return imageMcpWarning ? { ...summary, imageMcpWarning, ...(imageMcpNeedsNode ? { imageMcpNeedsNode } : {}) } : summary
-      const imageSkillWarning = skill.reason || '星芒AI 生图 Key 未完成初始化'
+      const imageSkillWarning = skill.reason || '星芒AI 生图密钥未完成初始化'
       options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', imageSkillWarning)
       return { ...summary, imageSkillWarning }
     } catch (error) {

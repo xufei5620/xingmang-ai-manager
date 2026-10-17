@@ -59,7 +59,7 @@ import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, res
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
-import { createRendererCrashRecovery } from './renderer-crash-recovery'
+import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
@@ -218,6 +218,7 @@ import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, 
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import type { AccountGroupHints } from './managed-cli-groups'
+import type { CliModelHints } from './cli-model-defaults'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath, removeDirectoryFromWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
@@ -285,6 +286,7 @@ const canvasExternalUrlAllowlist = [
 
 const windowPreferenceAppliers = new WeakMap<WebContents, () => void>()
 const windowPreferenceFlushers = new WeakMap<WebContents, () => Promise<void>>()
+const rendererCrashRecoveries = new WeakMap<WebContents, RendererCrashRecovery>()
 
 const updateCheckIntervalMs = 3 * 60 * 60 * 1_000
 // 启动时看一眼本机配置就够了：内存和核数不会在运行中变化。
@@ -557,10 +559,12 @@ function createWindow(
       if (event === 'reload.auto') { runtimeLog.log('warn', 'renderer', 'process.gone.reload', '界面进程退出后自动重新加载'); return }
       if (event === 'prompt.shown') { runtimeLog.log('warn', 'renderer', 'process.gone.prompted', '界面接连退出，已提示用户'); return }
       if (event === 'prompt.reload') { runtimeLog.log('info', 'renderer', 'process.gone.user-reload', '用户选择重新加载界面'); return }
-      runtimeLog.log('info', 'renderer', 'process.gone.dismissed', '用户暂不重新加载界面')
+      if (event === 'reload.reopen') { runtimeLog.log('info', 'renderer', 'process.gone.reopen-reload', '重新打开窗口时重新加载界面'); return }
+      if (event === 'prompt.dismiss') runtimeLog.log('info', 'renderer', 'process.gone.dismissed', '用户暂不重新加载界面')
     },
     onError: (cause) => { runtimeLog.exception('renderer', 'process.gone.recover-failed', cause) },
   })
+  rendererCrashRecoveries.set(window.webContents, crashRecovery)
   window.once('closed', () => { crashRecovery.dispose() })
   window.webContents.on('render-process-gone', (_event, details) => {
     runtimeLog.log('error', 'renderer', 'process.gone', '渲染进程异常退出', {
@@ -642,7 +646,15 @@ function focusExistingWindow(): boolean {
   if (window.isMinimized()) window.restore()
   if (!window.isVisible()) window.show()
   window.focus()
+  reloadIfRendererGone(window)
   return true
+}
+
+// 崩溃询问框里选了「先不管」，界面进程就一直没回来；只把窗口叫到前面，用户看到的
+// 还是那块空白（#1061 第 12 项）。
+function reloadIfRendererGone(window: BrowserWindow): void {
+  if (window.webContents.isDestroyed()) return
+  rendererCrashRecoveries.get(window.webContents)?.handleReopen(window.webContents.isCrashed())
 }
 
 if (app.isPackaged && hasDisallowedPackagedDebugSwitch(process.argv)) {
@@ -1518,6 +1530,7 @@ if (!hasSingleInstanceLock) {
       },
       getExternalClientAccountId: () => readExternalClientAccountId(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
+      cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
       windowsExecutionMode: windowsCliExecutionMode,
@@ -2074,6 +2087,7 @@ if (!hasSingleInstanceLock) {
             maintenance: Boolean(status?.maintenance),
             toolRouteRewrite: toolRouteRewriteMode,
             ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
+            ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
           })
         },
       })
@@ -2084,6 +2098,12 @@ if (!hasSingleInstanceLock) {
       if (!serviceStatusMonitor) return null
       await serviceStatusMonitor.settled()
       return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
+    }
+    // 型号表同上：默认型号、上一代、下架名单，读不到就用程序自带的那份（cli-model-defaults.ts）。
+    async function readCliModelHints(): Promise<CliModelHints | null> {
+      if (!serviceStatusMonitor) return null
+      await serviceStatusMonitor.settled()
+      return serviceStatusMonitor.lastKnown()?.cliModels ?? null
     }
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
@@ -3321,6 +3341,7 @@ if (!hasSingleInstanceLock) {
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,
+      cliModelHints: readCliModelHints,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
@@ -3538,6 +3559,7 @@ if (!hasSingleInstanceLock) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
       mainWindow.focus()
+      reloadIfRendererGone(mainWindow)
     }
     // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
     const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {

@@ -116,9 +116,13 @@ const failurePatterns: readonly { reason: NetworkFailureReason; test: RegExp }[]
   // A captive portal answers with a redirect to its own login page. Callers
   // that ask for `redirect: 'error'` never see the 3xx itself -- undici turns
   // it into `TypeError: fetch failed` whose cause reads `unexpected redirect`,
-  // and Chromium spells the same refusal `ERR_UNSAFE_REDIRECT`. Without this
-  // row that is the one restricted-network failure with no answer at all.
-  { reason: 'intercepted', test: /unexpected redirect|ERR_UNSAFE_REDIRECT|ERR_TOO_MANY_REDIRECTS|redirect count exceeded/i },
+  // and Chromium spells the same refusal `ERR_UNSAFE_REDIRECT`. Electron's
+  // net.fetch never hands back the opaqueredirect that `redirect: 'manual'`
+  // promises: it dies with `Redirect was cancelled` (manual-redirect-fetch.ts),
+  // so the account and relay requests that ask for 'manual' see only that
+  // sentence. Without this row that is the one restricted-network failure with
+  // no answer at all.
+  { reason: 'intercepted', test: /unexpected redirect|ERR_UNSAFE_REDIRECT|ERR_TOO_MANY_REDIRECTS|redirect count exceeded|Redirect was cancelled/i },
   { reason: 'offline', test: /ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ENETDOWN|ENETUNREACH|EHOSTUNREACH/i },
   { reason: 'refused', test: /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_ABORTED|ERR_CONNECTION_CLOSED|ERR_CONNECTION_FAILED|ERR_EMPTY_RESPONSE|ERR_ADDRESS_UNREACHABLE|ERR_SOCKET_NOT_CONNECTED|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|socket hang up/i },
 ]

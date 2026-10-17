@@ -24,7 +24,7 @@ import {
   ensureTrustedDirectory,
   type ApplyWindowsAcl,
 } from './trusted-temp'
-import { verifyOfficialNativeCliFile } from './trusted-native-cli'
+import { NativeCliPublisherMismatchError, verifyOfficialNativeCliFile } from './trusted-native-cli'
 
 const primaryArtifactRoot = 'https://x.ai/cli'
 const fallbackArtifactRoot = 'https://storage.googleapis.com/grok-build-public-artifacts/cli'
@@ -369,6 +369,9 @@ async function downloadFromXai(
       await fs.promises.rm(binaryPath, { force: true }).catch(() => undefined)
       options.signal?.throwIfAborted()
       errors.push(`${new URL(url).hostname}：${compactError(error)}`)
+      // 两个地址发的是同一个文件：签名有效、签名者却对不上，换地址再下一遍 170 MB
+      // 结果也一样，国内客户要白等十几分钟才看到这句（#1051）。
+      if (error instanceof NativeCliPublisherMismatchError) break
     }
   }
   throw new Error(`Grok 官方二进制下载或签名校验失败：${errors.join('；')}`)

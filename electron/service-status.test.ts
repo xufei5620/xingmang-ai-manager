@@ -162,6 +162,45 @@ describe('parseServiceStatus', () => {
       expect(parseServiceStatus(JSON.stringify({ accountGroups }), now)).not.toHaveProperty('accountGroups')
     }
   })
+
+  it('reads the CLI model table for the tools it still manages', () => {
+    const text = JSON.stringify({
+      cliModels: {
+        codex: { default: ' gpt-7 ', previous: ['gpt-6-astra', 'gpt-6-astra'], retired: ['gpt-5.5', 'gpt-6-luna'] },
+        claude: { previous: ['claude-opus-5-5'] },
+        grok: { retired: ['grok-4.6'] },
+      },
+    })
+    expect(parseServiceStatus(text, now).cliModels).toEqual({
+      codex: { default: 'gpt-7', previous: ['gpt-6-astra'], retired: ['gpt-5.5', 'gpt-6-luna'] },
+      claude: { previous: ['claude-opus-5-5'] },
+      grok: { retired: ['grok-4.6'] },
+    })
+  })
+
+  it('drops model names it cannot use without voiding the rest of a tool', () => {
+    const text = JSON.stringify({
+      cliModels: {
+        codex: { default: 'gpt 7', previous: ['gpt-6-astra"', 12, null, '', 'gpt-6-astra'], retired: Array.from({ length: 40 }, (_, index) => `gpt-old-${index}`) },
+        claude: { default: ['claude-opus-6'], retired: 'claude-opus-5' },
+        gemini: { default: 'gemini-4' },
+        image: { default: 'gpt-image-3' },
+      },
+    })
+    const models = parseServiceStatus(text, now).cliModels
+    expect(models?.codex?.default).toBeUndefined()
+    expect(models?.codex?.previous).toEqual(['gpt-6-astra'])
+    expect(models?.codex?.retired).toHaveLength(32)
+    expect(models).not.toHaveProperty('claude')
+    expect(models).not.toHaveProperty('gemini')
+    expect(models).not.toHaveProperty('image')
+  })
+
+  it('treats a model table with nothing usable as no table at all', () => {
+    for (const cliModels of [null, [], 'codex.default=gpt-7', {}, { codex: null }, { codex: {} }, { codex: { default: '' } }, { codex: { previous: [] } }]) {
+      expect(parseServiceStatus(JSON.stringify({ cliModels }), now)).not.toHaveProperty('cliModels')
+    }
+  })
 })
 
 describe('readServiceStatus', () => {

@@ -51,6 +51,7 @@ import {
 } from './cli-process-probe'
 import { cliProcessProbeRoots, emptyRunningToolsReport, inspectRunningTools as inspectRunningToolsWith, toolRouteRestartNeeds, type RunningToolsReport, type ToolRouteRestartHint } from './running-tools'
 import { createToolModelChecker, type ToolModelCheck, type ToolModelCheckTarget } from './tool-model-check'
+import { isRetiredCliModel, type CliModelHints } from './cli-model-defaults'
 import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
@@ -320,6 +321,7 @@ import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
+import { modelProbeFailurePrefix } from './relay-quota-failure'
 import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
@@ -2691,6 +2693,11 @@ export interface SystemServiceOptions {
    * （渲染层照旧跑同步 Key）。来自服务状态文件，出问题不用发版就能切回。
    */
   getToolRouteRewriteMode?: () => 'targeted' | 'merge'
+  /**
+   * 服务状态文件里的型号表（service-status.ts 的 cliModels）：默认型号、上一代、已下架。从不拒绝，
+   * 读不到给 null。缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
+   */
+  cliModelHints?: () => Promise<CliModelHints | null>
   /** 换线路自动改了工具配置、出了重开提示、外部客户端换成了：叫一声，界面重读（main.ts 发 network:relay-route-changed）。 */
   onToolRouteFollowed?: () => void
   /** 测试注入：换线路那几个定时器；缺省 setTimeout（unref）。 */
@@ -2849,12 +2856,20 @@ export function providerCommandEnvironment(
 }
 
 /**
- * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进）。用星芒账号时，客户自己设的 ANTHROPIC_MODEL 这类
- * 选型号的变量会让 Claude Code 去要当前账号没有的型号；接账号时 settings.json 里的同名项已经挪开
- * （config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。用自己的 Claude 账号时照旧带。
+ * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进，#1081）。只管 Claude Code 用星芒账号的时候：
+ * - 检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：ANTHROPIC_API_KEY 会换掉 Key，
+ *   CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。这一次不交给工具不等于改客户的电脑，他系统里的设置
+ *   一个字不动，所以 Windows、Linux 和 Mac 一样不带，不再只靠检查页提示。
+ * - 选型号的那几个：客户自己设的 ANTHROPIC_MODEL 这类会让 Claude Code 去要当前账号没有的型号；接账号时
+ *   settings.json 里的同名项已经挪开（config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。
+ * 用自己的 Claude 账号时照旧都带：这些可能就是客户自己的 Key、登录和型号（切回官方账号时星芒也把他原来的
+ * ANTHROPIC_API_KEY 放回 settings.json）。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的
+ * env 段，不在里面。
  */
+const claudeRelayLaunchExcludedVariables: readonly string[] = ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys]
+
 export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
-  return provider === 'claude' && accountMode === 'relay' ? claudeForeignModelEnvKeys : []
+  return provider === 'claude' && accountMode === 'relay' ? claudeRelayLaunchExcludedVariables : []
 }
 
 /** 名字不分大小写：Windows 上 `anthropic_model` 和大写是同一个变量（同 providerCommandEnvironment）。 */
@@ -2868,10 +2883,7 @@ export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: reado
  * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
  * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
  * 都在里面，另加 Mac 才要的：
- * - Claude Code：只在用星芒账号时去掉检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：
- *   ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。用自己的 Claude 账号时
- *   这两个可能就是客户自己的 Key 和登录（切回官方账号时星芒也把他原来的 ANTHROPIC_API_KEY 放回 settings.json），
- *   不动。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，也不动。
+ * - Claude Code：没有另加的，Key、配置目录和选型号的那几个三个平台一样，只在用星芒账号时去掉。
  * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
  *   里的，要给的值启动时另给。
  * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
@@ -2879,9 +2891,7 @@ export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: reado
 export function macosShellOverrideVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
   switch (provider) {
     case 'claude':
-      return accountMode === 'relay'
-        ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...launchExcludedEnvironmentVariables(provider, accountMode)]
-        : []
+      return launchExcludedEnvironmentVariables(provider, accountMode)
     case 'gemini':
       return managedGeminiVariables
     case 'codex':
@@ -6508,7 +6518,7 @@ export function createSystemService(
         } catch {
           detail = ''
         }
-        const statusMessage = `模型查询失败，服务返回 ${response.status}`
+        const statusMessage = `${modelProbeFailurePrefix} ${response.status}`
         throw new Error((detail ? `${statusMessage}：${detail}` : statusMessage).slice(0, 500))
       }
 
@@ -7964,6 +7974,7 @@ export function createSystemService(
     refreshPicker: async (provider, model, assertCurrent) => {
       await saveConfig({ provider, apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
+    ...(serviceOptions.cliModelHints ? { modelHints: serviceOptions.cliModelHints } : {}),
     upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
     markUpgradeOffered: async (provider, model) => {
       await store.update({ version: 2, offeredModelUpgrades: [`${provider}:${model}`] })
@@ -8122,6 +8133,57 @@ export function createSystemService(
   }
 
   /**
+   * 开机那轮替 Claude Code、Grok 换掉已下架的默认型号（Codex 由上面的 syncPicker 连菜单一起管）。下架名单
+   * 可以由服务状态文件加（cli-model-defaults.ts），站上下架一个型号不用等发版。只碰当前账号写的配置：
+   * 配置里的型号不在名单上就什么都不做，不起进程看工具开没开；在名单上、工具开着或看不出开没开的这次不换，
+   * 交回去记成还欠着，与补设置同一套规矩。真换由 toolModelChecker.replaceRetired 在后台做：先问一遍中转，
+   * 账号确实不再列它、写之前再看一眼工具还关着才换，先备份。返回这次欠下的工具。
+   */
+  async function replaceRetiredCliModels(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<ProviderId[]> {
+    const candidates = round.providers.filter((provider) => provider === 'claude' || provider === 'grok')
+    if (!candidates.length) return []
+    let hints: CliModelHints | null = null
+    if (serviceOptions.cliModelHints) {
+      const loadHints = serviceOptions.cliModelHints
+      try {
+        hints = await unlessStopped(() => loadHints().catch(() => null), stopped)
+      } catch {
+        // 换账号叫停：没看过就谈不上欠，下次开机再看。
+        return []
+      }
+    }
+    const due = candidates.filter((provider) => {
+      const target = modelCheckTarget(provider, true)
+      return target !== null && isRetiredCliModel(provider, target.model, hints)
+    })
+    if (!due.length) return []
+    let report: RunningToolsReport
+    try {
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due), stopped)
+    } catch {
+      return due
+    }
+    const pending: ProviderId[] = []
+    for (const provider of due) {
+      if (report.running.includes(provider) || report.unknown.includes(provider)) {
+        runtimeLog?.log('info', 'config', 'tool-models.retired-deferred', '工具可能正开着，已下架的默认模型这次先不换', { provider, ...(round.retry ? { retry: true } : {}) })
+        pending.push(provider)
+        continue
+      }
+      void toolModelChecker.replaceRetired(provider, {
+        // 问中转那几秒里客户可能刚从终端打开工具：写之前再看一眼，开着或看不出就这次不写。这时开机那轮
+        // 已经交了差，不再记成欠着；下次开机再换，从星芒打开的打开前那一问也会劝换。
+        beforeReplace: async () => {
+          const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)([provider])
+          if (latest.running.includes(provider) || latest.unknown.includes(provider)) throw new Error('工具可能正开着，这次先不换')
+          backup?.(provider)
+        },
+      }).catch(() => undefined)
+    }
+    return pending
+  }
+
+  /**
    * 开机那次：先补设置，再在本机看 Codex 开没开、型号名单欠不欠，两样都算进 pending 交回去；
    * 按账号核对型号名单要先问一遍中转，补设置那句提示不等它。retry = 渲染层隔一阵来补做
    * （第二十六批 E）：只做开机那轮欠下的，换了账号就什么都不做。
@@ -8139,10 +8201,12 @@ export function createSystemService(
       result = await fillToolTemplateDefaults(backup, round, stopped)
     } catch (error) {
       void syncCodexModelCatalog(backup, round, stopped).catch(() => false)
+      void replaceRetiredCliModels(backup, round, stopped).catch(() => [])
       throw error
     }
     const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
-    const skipped = result.pending ?? []
+    const retiredOwed = await replaceRetiredCliModels(backup, round, stopped).catch((): ProviderId[] => [])
+    const skipped = [...new Set([...(result.pending ?? []), ...retiredOwed])]
     templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
     const pending = activeProviderIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
     // 客服看报告分得清是工具开着没补，还是给换账号让了路。

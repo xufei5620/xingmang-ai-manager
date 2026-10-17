@@ -1,9 +1,10 @@
 export type RendererCrashChoice = 'reload' | 'dismiss'
-export type RendererCrashEvent = 'reload.auto' | 'prompt.shown' | 'prompt.reload' | 'prompt.dismiss'
+export type RendererCrashEvent = 'reload.auto' | 'reload.reopen' | 'reload.limit' | 'prompt.shown' | 'prompt.reload' | 'prompt.dismiss'
 
 export interface RendererCrashRecoveryOptions {
   reload(): void
-  prompt(): Promise<RendererCrashChoice>
+  // 不给的窗口（画布）到了次数就停在空白页，等用户自己再打开它时由 handleReopen 接着救。
+  prompt?(): Promise<RendererCrashChoice>
   log(event: RendererCrashEvent): void
   onError(error: unknown): void
   now?: () => number
@@ -11,6 +12,7 @@ export interface RendererCrashRecoveryOptions {
 
 export interface RendererCrashRecovery {
   handleGone(reason: string): void
+  handleReopen(rendererGone: boolean): void
   dispose(): void
 }
 
@@ -50,10 +52,12 @@ export function createRendererCrashRecovery(options: RendererCrashRecoveryOption
         reload()
         return
       }
+      const prompt = options.prompt
+      if (!prompt) { write('reload.limit'); return }
       prompting = true
       write('prompt.shown')
       void Promise.resolve()
-        .then(() => options.prompt())
+        .then(() => prompt())
         .then((choice) => {
           if (choice !== 'reload') { write('prompt.dismiss'); return }
           write('prompt.reload')
@@ -63,6 +67,16 @@ export function createRendererCrashRecovery(options: RendererCrashRecoveryOption
           reload()
         }, report)
         .finally(() => { prompting = false })
+    },
+    handleReopen(rendererGone) {
+      // 询问框里选了「先不管」或者自动重载停下以后，窗口一直是空白的。用户再从托盘、
+      // 桌面图标或入口按钮把它叫出来，就是要用了；询问框还挂着时让它来定。
+      if (disposed || prompting || !rendererGone) return
+      write('reload.reopen')
+      // The user asked for this one too: it starts a fresh count.
+      reloads.length = 0
+      reloads.push(now())
+      reload()
     },
     dispose() { disposed = true },
   }
