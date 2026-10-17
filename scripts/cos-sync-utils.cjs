@@ -68,6 +68,14 @@ function observedProcessFailure(error) {
     timedOut: error?.killed === true }
 }
 
+// The architectures a package check read (lipo, a bundle's Mach-O slices) as one
+// space-separated value; a list holding anything but plain names is dropped.
+function observedArchitectures(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 8
+    || !value.every(function (item) { return typeof item === 'string' && /^[A-Za-z0-9_]{1,32}$/.test(item) })) return undefined
+  return value.join(' ')
+}
+
 function readObservedValue(name, value) {
   if (OBSERVED_BOOLEAN_FIELDS.has(name)) return typeof value === 'boolean' ? value : undefined
   if (OBSERVED_INTEGER_FIELDS.has(name)) return Number.isSafeInteger(value) && Math.abs(value) <= 0xffffffff ? value : undefined
@@ -823,6 +831,7 @@ module.exports = {
   hashFile,
   inspectResource,
   isTransientTransferFailure,
+  observedArchitectures,
   observedProcessFailure,
   readBoundedRegularFile,
   readCosConfiguration,

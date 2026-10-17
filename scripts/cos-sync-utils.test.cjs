@@ -17,6 +17,7 @@ const {
   hashFile,
   inspectResource,
   isTransientTransferFailure,
+  observedArchitectures,
   observedProcessFailure,
   readBoundedRegularFile,
   readCosConfiguration,
@@ -57,6 +58,8 @@ test('inspector process failures keep the exit status, spawn code and timeout bu
   assert.deepEqual(observedProcessFailure(Object.assign(new Error('timeout'), { code: null, killed: true, signal: 'SIGTERM' })), { exitCode: undefined, inspectorErrorCode: undefined, timedOut: true })
   assert.deepEqual(observedProcessFailure(Object.assign(new Error('odd'), { code: 'not a code; SECRET' })), { exitCode: undefined, inspectorErrorCode: undefined, timedOut: false })
   assert.deepEqual(observedProcessFailure(undefined), { exitCode: undefined, inspectorErrorCode: undefined, timedOut: false })
+  assert.equal(observedArchitectures(['arm64', 'x86_64']), 'arm64 x86_64')
+  for (const value of [[], ['arm64', 'x86_64; SECRET'], ['https://SECRET'], 'arm64', Array(9).fill('arm64'), [1]]) assert.equal(observedArchitectures(value), undefined)
 })
 
 test('safe diagnostics recognize owned errors and never trust forged fields or raw transport details', async () => {

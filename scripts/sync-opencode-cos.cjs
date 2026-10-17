@@ -5,7 +5,7 @@ const https = require('node:https')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
-const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { checkFailure, observedArchitectures, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 // Mac 上一键装 OpenCode 从 GitHub 下官方的 .app.tar.gz（electron/macos-desktop-app-installer.ts），国内时好时坏，
 // 以前靠加速。yoyo 2026-10-14 定「做」：和 Codex、Claude 桌面端一样放进星芒的腾讯云存储桶，客户端先从桶里下
@@ -310,7 +310,8 @@ async function inspectPackage(filePath, workDirectory, machine, run = promisify(
     await inspect('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinOpenCodeRequirement()}`, application], 'package-signature-invalid', `OpenCode 的签名不是 ${TEAM_IDENTIFIER} 团队的 Developer ID`)
     await inspect('/usr/sbin/spctl', ['--assess', '--type', 'execute', application], 'package-signature-invalid', 'Gatekeeper 没有放行 OpenCode')
     const architectures = await inspect('/usr/bin/lipo', ['-archs', path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)], 'inspection-unparsable', 'OpenCode 主程序的芯片读不出来')
-    if (!architectures.stdout.trim().split(/\s+/).includes(machine)) throw checkFailure('package-identity-mismatch', 'OpenCode 主程序的芯片和文件名不一致')
+    const archs = architectures.stdout.trim().split(/\s+/)
+    if (!archs.includes(machine)) throw checkFailure('package-identity-mismatch', 'OpenCode 主程序的芯片和文件名不一致', { packageArchitecture: observedArchitectures(archs) })
     return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, minimumSystemVersion: info.LSMinimumSystemVersion ?? null }
   } finally {
     await fs.rm(extractDirectory, { recursive: true, force: true })

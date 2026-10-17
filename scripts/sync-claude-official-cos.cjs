@@ -8,7 +8,7 @@ const { performance } = require('node:perf_hooks')
 const { createHash, randomUUID } = require('node:crypto')
 const { getConfirmedMacSource, validateConfirmedMacSourceRecord, sameConfirmedMacSourceResolution } = require('./claude-mac-confirmed-sources.cjs')
 const { createClaudeStageRunner, safeClaudeSyncFailure } = require('./claude-sync-diagnostics.cjs')
-const { checkFailure, observedProcessFailure } = require('./cos-sync-utils.cjs')
+const { checkFailure, observedArchitectures, observedProcessFailure } = require('./cos-sync-utils.cjs')
 const { SOURCE_MODE: MAC_UPDATE_SOURCE_MODE, createMacUpdateSourceDependencies, resolveMacUpdateReleaseCandidates,
   validateMacUpdateSourceRecord, sameMacUpdateSourceResolution, validateMacUpdatePackageVersion, revalidateMacUpdateReleaseCandidates } = require('./claude-mac-update-source.cjs')
 
@@ -265,7 +265,8 @@ function validateInspection(report, source, expectedVersion) {
       { expectedVersion, packageName: report?.package, packageVersion: report?.version, packageArchitecture: report?.architecture })
     return { version: validateVersion(report.version), verification: source.verification, aptSignatureVerified: false }
   }
-  const observed = { packageVersion: report?.version, bundleIdentifier: report?.bundleIdentifier, signatureStatus: report?.signatureStatus, signerOrganization: report?.signerOrganization,
+  const observed = { packageVersion: report?.version, bundleIdentifier: report?.bundleIdentifier, packageArchitecture: observedArchitectures(report?.architectures),
+    signatureStatus: report?.signatureStatus, signerOrganization: report?.signerOrganization,
     teamIdentifier: report?.teamIdentifier, installerTeamIdentifier: report?.installerTeamIdentifier, installerSignatureStatus: report?.installerSignatureStatus }
   if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== CLAUDE_MAC_ORGANIZATION) throw checkFailure('package-signature-invalid', 'Claude Mac 安装包 Anthropic 签名不匹配', observed)
   if (report.bundleIdentifier !== 'com.anthropic.claudefordesktop' || !Array.isArray(report.architectures)

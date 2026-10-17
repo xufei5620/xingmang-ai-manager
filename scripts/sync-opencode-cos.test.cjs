@@ -338,6 +338,7 @@ test('the package check unpacks with bsdtar and asks codesign, Gatekeeper and li
         assert.doesNotMatch(error.message, /SECRET/)
         assert.equal(safeSyncFailure(error).code, code)
         assert.doesNotMatch(JSON.stringify(safeSyncFailure(error)), /SECRET/)
+        if (options.archs) assert.deepEqual(safeSyncFailure(error).observed, { packageArchitecture: options.archs })
         return true
       })
       await assert.rejects(fs.access(path.join(directory, 'extract-arm64')), { code: 'ENOENT' })

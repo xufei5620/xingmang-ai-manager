@@ -266,6 +266,13 @@ test('identity and signer mismatches log their own code and the public values th
     assert.deepEqual(safeSyncFailure(error), { code: 'package-signature-invalid', observed: { signatureStatus: 'Valid', signerOrganization: 'Someone Else' } })
     return true
   })
+  assert.throws(() => validateInspection({ signatureStatus: 'Valid', signerOrganization: 'Anthropic PBC', bundleIdentifier: 'com.anthropic.claudefordesktop',
+    teamIdentifier: 'Q6L2SF6YDW', architectures: ['x86_64'] }, mac), (error) => {
+    const failure = safeSyncFailure(error)
+    assert.equal(failure.code, 'package-identity-mismatch')
+    assert.equal(failure.observed.packageArchitecture, 'x86_64')
+    return true
+  })
   const deb = SOURCES['linux-deb-x64']
   assert.throws(() => validateInspection({ package: 'claude-desktop', architecture: deb.packageArchitecture, version: '1.1.41' }, deb, '1.1.42'), (error) => {
     assert.deepEqual(safeSyncFailure(error).observed, { expectedVersion: '1.1.42', packageName: 'claude-desktop', packageVersion: '1.1.41', packageArchitecture: deb.packageArchitecture })
