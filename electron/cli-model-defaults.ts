@@ -79,6 +79,69 @@ export function isRetiredCliModel(provider: ProviderId, model: string, hints?: C
   return cliModelTable(provider, hints).retired.includes(model)
 }
 
+interface ModelLineage {
+  family: string
+  version: number[]
+  /** 系列名有几段：版本一样时，不带 -thinking、-fast 这类后缀的排前面。 */
+  parts: number
+}
+
+// 型号名按 - 和 _ 切段：1~4 位数字（可带点，如 4.6）是版本号，更长的纯数字是快照日期，剩下的连起来是系列。
+// claude-opus-5-5 → claude-opus [5, 5]；grok-4.6 → grok [4, 6]；claude-3-5-sonnet-20241022 → claude-sonnet [3, 5]。
+function modelLineage(model: string): ModelLineage {
+  const family: string[] = []
+  const version: number[] = []
+  for (const part of model.toLowerCase().split(/[-_]/)) {
+    if (/^\d{1,4}(?:\.\d{1,4})*$/.test(part)) version.push(...part.split('.').map(Number))
+    else if (!/^\d+$/.test(part)) family.push(part)
+  }
+  return { family: family.join('-'), version, parts: family.length }
+}
+
+/** 版本新的排前面；版本一样时系列名段少的排前面，再一样就照列表原来的先后（sort 是稳定的）。 */
+function compareNewerFirst(left: string, right: string): number {
+  const a = modelLineage(left)
+  const b = modelLineage(right)
+  for (let index = 0; index < Math.max(a.version.length, b.version.length); index += 1) {
+    const difference = (index < b.version.length ? b.version[index] : -1) - (index < a.version.length ? a.version[index] : -1)
+    if (difference !== 0) return difference
+  }
+  return a.parts - b.parts
+}
+
+function newestOfFamily(offered: readonly string[], model: string): string | undefined {
+  const { family } = modelLineage(model)
+  return offered.filter((candidate) => modelLineage(candidate).family === family).sort(compareNewerFirst)[0]
+}
+
+// 模型列表按字母排，claude-haiku 排在 opus、sonnet 前面，兜底只拿第一个就挑到最弱的（#1154）。
+const claudeTiers = ['haiku', 'sonnet', 'opus']
+
+function claudeTier(model: string): number {
+  const parts = model.toLowerCase().split(/[^a-z0-9]+/)
+  return Math.max(...claudeTiers.map((tier, index) => parts.includes(tier) ? index : -1))
+}
+
+function knownCliModel(table: CliModelTable, offered: readonly string[]): string | undefined {
+  return [table.default, ...table.previous].find((model) => offered.includes(model))
+}
+
+/**
+ * 默认和上一代都不在时先在同系列里挑：跟要换掉的那个同系列的优先（客户用的是 Sonnet 就还是 Sonnet），再跟默认、
+ * 上一代同系列，同系列里挑版本最新的。比如 claude-opus-5 → claude-opus-4-8，grok-4.6 → grok-4.7。
+ */
+function sameFamilyCliModel(table: CliModelTable, offered: readonly string[], replacing?: string): string | undefined {
+  for (const model of [replacing, table.default, ...table.previous]) {
+    const found = model ? newestOfFamily(offered, model) : undefined
+    if (found) return found
+  }
+  return undefined
+}
+
+/**
+ * 新配工具、打开前劝换、配置窗口预选用哪个型号。preferred 是原来设的那个：账号还列着就留着，不列了就按它的系列挑。
+ * 默认、上一代、同系列都挑不到时，Claude Code 按 Opus > Sonnet > Haiku 挑，别家照旧取列表第一个。
+ */
 export function resolveDefaultCliModel(
   provider: ProviderId,
   models: readonly string[],
@@ -88,13 +151,36 @@ export function resolveDefaultCliModel(
   if (preferred && models.includes(preferred)) return preferred
   const table = cliModelTable(provider, hints)
   const offered = models.filter((model) => !table.retired.includes(model))
-  const known = [table.default, ...table.previous].find((model) => offered.includes(model))
+  const known = knownCliModel(table, offered)
   if (known) return known
-  if (provider !== 'codex') return offered[0] ?? null
-  // The model endpoint sorts IDs alphabetically, which puts service-only
-  // auto-review models first. Keep explicit choices, but never infer one as
-  // the interactive default when the preferred model is unavailable.
-  return offered.find((model) => !/(?:^|\/)codex[-_]auto[-_]review(?:$|[-_:/])/i.test(model)) ?? null
+  if (provider === 'codex') {
+    // The model endpoint sorts IDs alphabetically, which puts service-only
+    // auto-review models first. Keep explicit choices, but never infer one as
+    // the interactive default when the preferred model is unavailable.
+    return offered.find((model) => !/(?:^|\/)codex[-_]auto[-_]review(?:$|[-_:/])/i.test(model)) ?? null
+  }
+  const close = sameFamilyCliModel(table, offered, preferred)
+  if (close) return close
+  if (provider === 'claude') return [...offered].sort((left, right) => claudeTier(right) - claudeTier(left) || compareNewerFirst(left, right))[0] ?? null
+  return offered[0] ?? null
+}
+
+/**
+ * 开机那轮替客户换掉已下架的型号时换成哪个（tool-model-check.ts 的 replaceRetiredModel）。那是不问客户直接写，
+ * 所以 Claude Code、Grok 只换成默认、上一代或者同系列的；账号里只剩别的系列（比如只有 Sonnet、Haiku 的分组里
+ * 换掉下架的 Opus）就是 null，这次不换，留给打开前那一问让客户自己点（#1154）。Codex 照旧：默认不在就退到
+ * 第一个能对话的型号，0.2.19 起换掉 gpt-5.5 就是这么换的。
+ */
+export function resolveRetiredCliModelReplacement(
+  provider: ProviderId,
+  retired: string,
+  models: readonly string[],
+  hints?: CliModelHints | null,
+): string | null {
+  if (provider === 'codex') return resolveDefaultCliModel(provider, models, undefined, hints)
+  const table = cliModelTable(provider, hints)
+  const offered = models.filter((model) => !table.retired.includes(model))
+  return knownCliModel(table, offered) ?? sameFamilyCliModel(table, offered, retired) ?? null
 }
 
 /** 配置里还是上一代默认、而当前账号已经能用这一代时，返回这一代的型号；否则 null。 */

@@ -8240,7 +8240,14 @@ export function createSystemService(
       return true
     }
     if (round.retry) runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-resumed', 'Codex 已经关了，型号名单补做一次按账号核对')
-    void toolModelChecker.syncPicker('codex', { beforeRefresh: () => backup?.('codex') }).catch(() => undefined)
+    void toolModelChecker.syncPicker('codex', {
+      // 问中转、问 Codex 版本那几秒里客户可能刚打开了它：写之前再看一眼，规矩同下面 Claude Code、Grok 那条（#1154）。
+      beforeRefresh: async () => {
+        const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex'])
+        if (latest.running.includes('codex') || latest.unknown.includes('codex') || latest.codexDesktopRunning !== false) throw new Error('Codex 可能正开着，这次先不写')
+        backup?.('codex')
+      },
+    }).catch(() => undefined)
     return false
   }
 
