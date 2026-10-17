@@ -15,9 +15,10 @@ const { safeSyncFailure } = require('./cos-sync-utils.cjs')
 //
 // Trust: only xAI's two documented hosts are contacted, every URL is built from the
 // constants below and the shared transport refuses redirects. A binary is uploaded only
-// after this Windows runner's Get-AuthenticodeSignature reports a valid signature whose
-// subject is X.AI LLC (the same pattern electron/trusted-native-cli.ts applies) and its
-// PE header names the processor its file name claims. The binary is never executed here:
+// after this Windows runner's Get-AuthenticodeSignature reports a valid signature from one
+// of xAI's two signers, each pinned to the CA that issued it (the same list
+// electron/trusted-native-cli.ts applies), and its PE header names the processor its file
+// name claims. The binary is never executed here:
 // this job holds the bucket's upload credentials. Objects are stored under their own
 // SHA-256 so a published object is never overwritten; the client still verifies the
 // signature again before installing anything.
@@ -45,7 +46,21 @@ const MAX_STABLE_BYTES = 1024
 const MAX_RELEASES = 12
 const MAX_SOURCE_BYTES = 256 * 1024
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
-const SIGNER_PATTERN = /(?:^|,\s*)(?:CN|O)=X\.AI LLC(?:,|$)/i
+// xAI 从 Grok 1.0.54（2026-10-12）起改用 X Corp. 的证书签名，1.0.53 及更早（含推荐版本 1.0.52）是
+// X.AI LLC 的（#1051）。两张各钉住签发机构；和 electron/trusted-native-cli.ts 的 grok 名单是同一份，改一处要改两处。
+function nameComponent(attribute, value) {
+  return new RegExp(`(?:^|,\\s*)(?:${attribute})="?${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"?(?:,|$)`, 'i')
+}
+const SIGNERS = Object.freeze([
+  Object.freeze({
+    subject: Object.freeze([/(?:^|,\s*)(?:CN|O)=X\.AI LLC(?:,|$)/i]),
+    issuer: Object.freeze([nameComponent('CN', 'SSL.com EV Code Signing Intermediate CA RSA R3'), nameComponent('O', 'SSL Corp')]),
+  }),
+  Object.freeze({
+    subject: Object.freeze([nameComponent('CN', 'X Corp.'), nameComponent('O', 'X Corp.'), nameComponent('L', 'Bastrop'), nameComponent('S|ST', 'Texas'), nameComponent('C', 'US')]),
+    issuer: Object.freeze([nameComponent('CN', 'GlobalSign GCC R45 CodeSigning CA 2020'), nameComponent('O', 'GlobalSign nv-sa')]),
+  }),
+])
 const PLATFORMS = Object.freeze({
   'windows-x64': Object.freeze({ architecture: 'x64', artifact: 'windows-x86_64', machine: 0x8664 }),
   'windows-arm64': Object.freeze({ architecture: 'arm64', artifact: 'windows-aarch64', machine: 0xaa64 }),
@@ -182,7 +197,12 @@ function createStageRunner(progress, pointerState) {
 
 function validateSignature(signature) {
   if (!isRecord(signature) || typeof signature.status !== 'string' || signature.status.toLowerCase() !== 'valid') throw new Error('Grok 安装包没有有效的 Authenticode 签名')
-  if (typeof signature.subject !== 'string' || !SIGNER_PATTERN.test(signature.subject)) throw new Error('Grok 安装包的签名发布者不是 X.AI LLC')
+  const subject = typeof signature.subject === 'string' ? signature.subject : ''
+  const issuer = typeof signature.issuer === 'string' ? signature.issuer : ''
+  const trusted = SIGNERS.some(function (signer) {
+    return signer.subject.every(function (pattern) { return pattern.test(subject) }) && signer.issuer.every(function (pattern) { return pattern.test(issuer) })
+  })
+  if (!trusted) throw new Error('Grok 安装包的签名发布者不是 xAI 官方的 X.AI LLC 或 X Corp.')
 }
 
 async function verifyUnchangedArtifact(store, file) {
@@ -325,7 +345,7 @@ async function readPeMachine(filePath) {
 const SIGNATURE_SCRIPT = String.raw`param([string]$FilePath)
 $ErrorActionPreference='Stop'
 $signature=Get-AuthenticodeSignature -LiteralPath $FilePath
-@{status=$signature.Status.ToString();subject=if($signature.SignerCertificate){[string]$signature.SignerCertificate.Subject}else{$null}} | ConvertTo-Json -Compress
+@{status=$signature.Status.ToString();subject=if($signature.SignerCertificate){[string]$signature.SignerCertificate.Subject}else{$null};issuer=if($signature.SignerCertificate){[string]$signature.SignerCertificate.Issuer}else{$null}} | ConvertTo-Json -Compress
 `
 
 async function inspectSignature(filePath, workDirectory, run = promisify(execFile), platform = process.platform) {

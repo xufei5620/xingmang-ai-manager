@@ -1,6 +1,6 @@
 # Windows 上一键装 Grok 要的 grok.exe（xAI 官方签过名的原件）放进腾讯云 COS，星芒装 Grok 时先从这里下。
 # 每次问 xAI 现在的 stable，再加上星芒的推荐版本，两版的 x64、ARM64 都在桶里；签名核对在 Windows 机器上做，
-# 签名不是 X.AI LLC 的有效签名就不传。已经在桶里、对象没变的不再下。
+# 签名不是 xAI 那两张证书（X.AI LLC、X Corp.，各钉住签发机构）的有效签名就不传。已经在桶里、对象没变的不再下。
 name: sync-grok-cos
 
 on:

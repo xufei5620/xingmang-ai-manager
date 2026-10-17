@@ -33,7 +33,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   // 主进程 macos-desktop-app-installer.ts 照 macos-desktop-install-failure.ts 拼的那几句。
   macDesktopInstallFailed: { sample: macosDesktopDownloadFailedMessage('OpenCode') },
   macDesktopTooOld: { sample: macosDesktopSystemTooOldMessage('OpenCode', '13.0') },
-  keyInvalid: { sample: '模型查询失败，服务返回 403：令牌已失效' },
+  // new-api 对失效、被删、额度用到 0 的 Key 都这么回（electron/relay-quota-failure.ts）。
+  keyInvalid: { sample: '模型查询失败，服务返回 401：无效的令牌' },
   noBalance: { sample: '账号余额或 API Key 额度不足，请充值后重试' },
   tooManyRequests: { sample: '星芒服务返回 429 Too Many Requests' },
   server: { sample: '星芒服务返回 500 Internal Server Error' },
@@ -177,6 +178,54 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('模型查询失败，服务返回 403：令牌已失效')
     expect(hint?.title).toBe('Key 失效')
     expect(hint?.actions).toEqual([{ id: 'repair', label: '一键修复' }])
+  })
+
+  // #1095：查模型那一步回 401「无效的令牌」，以前被裸认的 401 说成「登录已过期，工具里已写入的 Key 还能用」，
+  // 按钮叫人重新登录；Key 失效重新登录救不了，客户只能去找客服。
+  it('calls a key the relay rejected a dead key, never an expired login', () => {
+    for (const raw of [
+      '模型查询失败，服务返回 401：无效的令牌',
+      '模型查询失败，服务返回 401',
+      'Claude Code 改用当前账号没有完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。',
+      'Codex CLI 的 Key 没配上：模型查询失败，服务返回 401：无效的令牌 (request id: 2)',
+      '模型查询失败，服务返回 403：API key 已过期',
+    ]) {
+      expect([raw, classifyOperationError(raw, 'config')]).toEqual([raw, 'keyInvalid'])
+      const hint = presentOperationError(raw, 'config')
+      expect(hint?.actions).toEqual([{ id: 'repair', label: '一键修复' }])
+      expect(hint?.body).not.toMatch(/还能用/)
+    }
+    expect(presentOperationFailure({ message: '改用当前账号没有完成', detail: '模型查询失败，服务返回 401：无效的令牌', target: 'config' })?.key).toBe('keyInvalid')
+  })
+
+  it('keeps a key that hit its own limit away from top-up, waiting and login', () => {
+    // 「按工具分账」设的上限用完了：充值、等几秒、重新登录都没用，目录里也没有对应的一条，原话自己说。
+    for (const raw of [
+      '模型查询失败，服务返回 403：令牌额度不足',
+      '模型查询失败，服务返回 403：token quota is not enough, token remain quota: ＄0.001000, need quota: ＄0.050000',
+      '模型查询失败，服务返回 429：API key 额度已用完',
+      '模型查询失败，服务返回 401：该令牌额度已用尽 TokenStatusExhausted[sk-***]',
+    ]) {
+      expect([raw, classifyOperationError(raw)]).toEqual([raw, 'unknown'])
+      expect(presentOperationError(raw)).toBeNull()
+    }
+    // 钱包没钱和 Key 失效照旧各归各的。
+    expect(classifyOperationError('模型查询失败，服务返回 403：用户额度不足, 剩余额度: ＄0.000000')).toBe('noBalance')
+  })
+
+  it('still names an expired login when the account API says so in Chinese', () => {
+    // new-api 的英文原话经 new-api-messages.ts 翻成中文后，不再带 401 和 Unauthorized。
+    for (const raw of ['无权进行此操作，access token 无效', '无权进行此操作，未登录且未提供 access token', '访问令牌已过期', '账号接口返回 401 Unauthorized']) {
+      expect([raw, classifyOperationError(raw)]).toEqual([raw, 'sessionExpired'])
+      expect(presentOperationError(raw)?.actions).toEqual([{ id: 'relogin', label: '重新登录' }])
+    }
+  })
+
+  it('treats a .NET UnauthorizedAccessException as a denied file, not an expired login', () => {
+    const raw = "System.UnauthorizedAccessException: Access to the path '本地配置文件 is denied."
+    expect(classifyOperationError(raw)).toBe('permission')
+    expect(classifyOperationError(raw, 'config')).toBe('configPermission')
+    expect(classifyOperationError("Access to the path '本地配置文件 is denied.", 'config')).toBe('configPermission')
   })
 
   it('sends a permission failure to the directory and the log, never to an elevated retry', () => {
