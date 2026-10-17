@@ -3219,6 +3219,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           reason: error instanceof Error ? error.message : String(error),
         })
       }
+      // 恢复的是当前账号的配置还是官方登录，「选了官方账号」的记号和 Claude 的官方 Key 跟着换（#1080）。
+      // 同上，恢复已经落盘，对不齐只记日志。
+      try {
+        await service.alignRestoredAccountSource(result.provider)
+      } catch (error) {
+        options.runtimeLog.log('warn', 'ipc', 'backups:restore', '配置已恢复，但官方账号的记号或官方 Key 没能跟着对齐', {
+          provider: result.provider,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
       return result
     })()
   })

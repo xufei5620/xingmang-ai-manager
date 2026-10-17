@@ -1275,6 +1275,63 @@ describe('createSystemService', () => {
     expect(f.store.read().officialProviders).toContain('claude')
   })
 
+  it('moves the Console key aside and drops the official marker when a relay backup is restored', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-relay-')
+    // On the official Console account, the backups page puts back the settings.json from the relay days.
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console', theme: 'dark' }), 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
+
+    await f.service.alignRestoredAccountSource('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ theme: 'dark' })
+    expect(JSON.parse(fs.readFileSync(f.snapshotPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(f.store.read().officialProviders ?? []).not.toContain('claude')
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
+  })
+
+  it('puts the Console key back and marks the official account when an official backup is restored', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-official-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.service.saveConfig(f.payload, false)
+    fs.writeFileSync(f.settingsPath, JSON.stringify({ env: { DISABLE_AUTOUPDATER: '1' } }), 'utf8')
+
+    await f.service.alignRestoredAccountSource('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(fs.readFileSync(f.snapshotPath, 'utf8')).toBe('')
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
+  it('leaves the Console key and official marker alone for a third-party backup', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-other-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+    fs.mkdirSync(path.dirname(f.settingsPath), { recursive: true })
+    fs.writeFileSync(f.settingsPath, JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://relay.example.com', ANTHROPIC_AUTH_TOKEN: 'sk-someone-else' },
+    }), 'utf8')
+
+    await f.service.alignRestoredAccountSource('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(fs.existsSync(f.snapshotPath)).toBe(false)
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
+  it('still drops the official marker when the Console key cannot be moved after a restore', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-stuck-')
+    fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
+
+    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/官方 Key 没能挪开/)
+
+    expect(f.store.read().officialProviders ?? []).not.toContain('claude')
+    expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
+  })
+
   it('passes official reset through to the selected Codex root and persists its account source', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-reset-'))
     temporaryDirectories.push(root)

@@ -12,7 +12,7 @@ import {
   relayTemplateRevision,
   saveProviderConfig,
 } from './config-files'
-import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership, sameNativeConfigSnapshot } from './system-service'
+import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership, restoredAccountSide, sameNativeConfigSnapshot } from './system-service'
 import type { RunningToolsReport } from './running-tools'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { XINGMANG_AI_CODEX_SKILL_STATE_FILE, resolveXingmangAiCodexSkillPath } from './xingmang-ai-skill'
@@ -477,6 +477,76 @@ describe('durable tool configuration ownership', () => {
 
     await expect(f.makeService().adoptRestoredConfig('codex', () => false, { fromBackupsPage: true })).rejects.toThrow()
     expect(record()).toEqual({ version: 1, offByXingmang: false })
+  })
+
+  it('drops the official Codex marker for a restored Xingmang config and keeps the user\'s skill off', async () => {
+    const f = fixture()
+    const record = await restoredXingmangConfigWithSkillOff(f)
+    const service = f.makeService()
+    await service.adoptRestoredConfig('codex', () => false, { fromBackupsPage: true })
+    await service.alignRestoredAccountSource('codex')
+
+    expect(service.readStoredConfig().officialProviders ?? []).not.toContain('codex')
+    expect(record()).toEqual({ version: 1, offByXingmang: false })
+    const skillPath = resolveXingmangAiCodexSkillPath(f.roots.userHome)
+    expect(fs.readFileSync(path.join(f.roots.codexHome, 'config.toml'), 'utf8')).toContain(`path = ${JSON.stringify(skillPath)}\nenabled = false`)
+  })
+
+  it('marks Codex official when the restored backup is a ChatGPT login', async () => {
+    const f = fixture()
+    const [configPath, authPath] = providerConfigPaths('codex', f.roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model = "gpt-6-sol"\n', 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt', tokens: { id_token: 'fixture-id', access_token: 'fixture-access' } }), 'utf8')
+    const service = f.makeService()
+
+    await service.alignRestoredAccountSource('codex')
+
+    expect(service.readStoredConfig().officialProviders).toContain('codex')
+  })
+
+  it('leaves the official marker alone for a restored third-party Codex config', async () => {
+    const f = fixture()
+    saveProviderConfig('codex', 'sk-someone-else', f.payload.model, 'reset', f.roots, {}, { ...providerBaseUrls, codex: 'https://relay.example.com/v1' })
+    await new AppSettingsStore(path.join(f.data, 'settings.json'), f.root).setOfficialProvider('codex', true)
+    const service = f.makeService()
+
+    await service.alignRestoredAccountSource('codex')
+
+    expect(service.readStoredConfig().officialProviders).toContain('codex')
+  })
+})
+
+describe('restoredAccountSide', () => {
+  const relay = { exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: 'https://xm.solov.cc/v1' }
+  const blank = { exists: true, hasApiKey: false, matchesRelay: false, actualBaseUrl: '' }
+
+  it.each(['claude', 'codex', 'grok'] as const)('reads a %s key on the current site as the account side', (provider) => {
+    expect(restoredAccountSide(provider, relay)).toBe('account')
+  })
+
+  it.each([
+    ['Claude Code with no key or address', 'claude', blank],
+    ['Codex signed in with ChatGPT', 'codex', { ...blank, codexAuthMode: 'chatgpt' as const }],
+    ['Codex with a ChatGPT login and its leftover key', 'codex', { ...blank, hasApiKey: true, codexAuthMode: 'chatgpt' as const }],
+    ['Codex with neither key nor connection', 'codex', blank],
+    ['Grok signed in through the browser', 'grok', { ...blank, grokLoginMode: 'oidc' }],
+  ] as const)('reads %s as the official side', (_label, provider, restored) => {
+    expect(restoredAccountSide(provider, restored)).toBe('official')
+  })
+
+  it.each([
+    ['a key for another relay', 'claude', { ...relay, matchesRelay: false, actualBaseUrl: 'https://relay.example.com' }],
+    ['an address with no key', 'claude', { ...blank, actualBaseUrl: 'https://xm.solov.cc' }],
+    ['a key with no address', 'claude', { ...blank, hasApiKey: true }],
+    ['a ChatGPT login wired to a relay', 'codex', { ...relay, codexAuthMode: 'chatgpt' as const }],
+    ['a Grok config without a login', 'grok', { ...blank, grokLoginMode: null }],
+    ['a settings file the tool cannot read', 'claude', { ...blank, configBroken: true }],
+    ['a Codex login file the tool cannot read', 'codex', { ...relay, codexAuthBroken: true }],
+    ['nothing on disk', 'claude', { ...blank, exists: false }],
+    ['the retired Gemini CLI', 'gemini', blank],
+  ] as const)('leaves %s alone', (_label, provider, restored) => {
+    expect(restoredAccountSide(provider, restored)).toBeNull()
   })
 })
 
