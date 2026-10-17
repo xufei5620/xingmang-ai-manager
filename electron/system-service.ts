@@ -15,7 +15,7 @@ import {
   probeLoopbackProxy,
   type LoopbackProbe,
 } from './stale-proxy-environment'
-import { activeProviderIds, cliCatalog, providerIds, retiredProviderIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, isRetiredProviderId, providerIds, retiredProviderIds, type ProviderId } from './catalog'
 import {
   buildCliVersionAdvice,
   resolveCliInstallVersion,
@@ -1064,6 +1064,12 @@ export interface SystemService {
    * `fromBackupsPage`：客户在备份页挑的那一份；缺省 = 切换失败的回滚（恢复切换前那一刻）。
    */
   adoptRestoredConfig(provider: ProviderId, isAccountKey: (apiKey: string) => boolean, options?: { fromBackupsPage?: boolean }): Promise<void>
+  /**
+   * 备份页恢复、登记来源之后调用（#1080）：恢复出来的是当前账号的配置还是官方登录，「选了官方账号」
+   * 的记号和 Claude 的官方 Key 跟着对齐。切换失败的回滚不调：它自己按切换前的样子放回这两样。
+   * 对不齐抛错，配置照样是恢复出来的那份。
+   */
+  alignRestoredAccountSource(provider: ProviderId): Promise<void>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
   recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
@@ -2964,6 +2970,28 @@ export function planRestoredConfigOwnership(input: {
   if (!input.hasApiKey) return null
   if (input.current === 'account' || input.current === 'manual') return null
   return input.owner && input.matchesRelay && input.isAccountKey ? 'account' : 'manual'
+}
+
+/**
+ * 备份页恢复出来的这份配置是哪一边的（#1080），「选了官方账号」的记号和 Claude 的官方 Key
+ * 照它对齐。只认两种看得准的，口径跟首页 sourceFor 对得上，只是更保守：
+ * - 'account'：地址是当前账号所在的站，带着 Key。
+ * - 'official'：官方登录的样子。Codex 是 ChatGPT 登录、没有接到别的连接上；其余工具什么 Key 和
+ *   地址都没写。Grok 的 config.toml 装好就有，还要真有一份 Grok 登录才算。
+ * 别家中转、半截的（ChatGPT 令牌配着中转地址）、工具自己都读不了的，返回 null，一样都不动。
+ */
+export function restoredAccountSide(
+  provider: ProviderId,
+  restored: Pick<NativeConfigInspection, 'exists' | 'hasApiKey' | 'matchesRelay' | 'actualBaseUrl'
+    | 'codexAuthMode' | 'configBroken' | 'codexAuthBroken' | 'grokLoginMode'>,
+): 'account' | 'official' | null {
+  if (isRetiredProviderId(provider)) return null
+  if (restored.configBroken === true || restored.codexAuthBroken === true) return null
+  if (provider === 'codex' && restored.codexAuthMode === 'chatgpt') return restored.actualBaseUrl ? null : 'official'
+  if (restored.hasApiKey && restored.matchesRelay) return 'account'
+  if (!restored.exists || restored.hasApiKey || restored.actualBaseUrl) return null
+  if (provider === 'grok' && !restored.grokLoginMode) return null
+  return 'official'
 }
 
 /**
@@ -8318,6 +8346,38 @@ export function createSystemService(
     })
   }
 
+  async function alignRestoredAccountSource(provider: ProviderId): Promise<void> {
+    await serializeConfigWrite(async () => {
+      const side = restoredAccountSide(provider, inspectNativeProviderConfig(provider))
+      if (!side) return
+      const official = side === 'official'
+      // 和 saveConfig / switchToOfficialAccount 一样：接中转的挪开官方 Console Key（不挪它会顶掉中转的 Key，
+      // 一用就是无效令牌），官方的放回来。配置已经是恢复出来的那份了，挪不动也照样往下对齐记号。
+      let credentialFailure: string | null = null
+      if (provider === 'claude') {
+        try {
+          const changed = official ? restoreClaudeConsoleKey(providerRoots) : moveClaudeConsoleKeyAside(providerRoots)
+          if (changed) {
+            runtimeLog?.log('info', 'config', official ? 'official-credentials.restored' : 'official-credentials.moved',
+              official ? '恢复的是官方账号的配置，Claude Code 的官方 Console Key 已放回' : '恢复的是当前账号的配置，Claude Code 的官方 Console Key 已挪到一边，切回官方账号时放回',
+              { provider })
+          }
+        } catch (error) {
+          credentialFailure = credentialFailureReason(error)
+        }
+      }
+      if ((store.read().officialProviders ?? []).includes(provider) !== official) {
+        await store.setOfficialProvider(provider, official)
+        if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(official)
+      }
+      if (credentialFailure) {
+        throw new Error(official
+          ? `Claude Code 原来的官方 Key 没能放回原处：${credentialFailure}`
+          : `Claude Code 原来登录留下的官方 Key 没能挪开，打开会报无效令牌：${credentialFailure}`)
+      }
+    })
+  }
+
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     return serializeConfigWrite(async () => {
       const activeSite = providerRelaySite(provider, inspectNativeProviderConfig(provider), true)
@@ -8370,6 +8430,7 @@ export function createSystemService(
     restoreOfficialCredentials,
     inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),
     adoptRestoredConfig,
+    alignRestoredAccountSource,
     scanSystem,
     recentScan: (maxAgeMs: number) => coalescedScan.recent(maxAgeMs),
     cachedScan,
