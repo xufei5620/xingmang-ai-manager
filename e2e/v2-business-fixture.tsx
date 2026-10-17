@@ -154,6 +154,7 @@ window.keyGroupsHarness = {
   release() { releaseKeyGroups?.(); releaseKeyGroups = null },
 }
 const paymentWindowTerminalListeners = new Set<(event: AccountPaymentWindowTerminalEvent) => void>()
+let openPaymentTradeNo: string | null = null
 let paymentWindowTerminalSubscriptions = 0
 window.paymentTerminalSubscriptions = () => ({
   added: paymentWindowTerminalSubscriptions,
@@ -720,9 +721,16 @@ const apiMethods = {
   ) => {
     record('create-topup-payment', input)
     if (query.has('fastPayment')) window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'XM-VISUAL-TOPUP' })
+    openPaymentTradeNo = 'XM-VISUAL-TOPUP'
     return { opened: true as const, tradeNo: 'XM-VISUAL-TOPUP' }
   },
-  closeAccountPaymentWindow: async () => undefined,
+  // 和主进程一样：窗口里有能查的订单，关窗就报「已关闭、还在确认」，再接着在后台问。
+  closeAccountPaymentWindow: async () => {
+    record('close-payment-window')
+    const tradeNo = openPaymentTradeNo
+    openPaymentTradeNo = null
+    if (tradeNo) window.emitPaymentWindowTerminal({ status: 'closed', tradeNo, confirming: true })
+  },
   redeemAccountTopupCode: async (code: string) => {
     record('redeem-code', code)
     const type = query.get('redemptionType')
@@ -754,6 +762,7 @@ const apiMethods = {
     input: Parameters<V2Bridge['createAccountSubscriptionPayment']>[0],
   ) => {
     record('create-subscription-payment', input)
+    openPaymentTradeNo = 'XM-VISUAL-SUBSCRIPTION'
     return {
       opened: true as const,
       tradeNo: 'XM-VISUAL-SUBSCRIPTION',
