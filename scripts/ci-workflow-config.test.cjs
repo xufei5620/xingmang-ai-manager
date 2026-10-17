@@ -718,6 +718,12 @@ test('the release path itself is rehearsed on every pull request, not only when 
   assert.ok(prepareIndex < commands.indexOf('npm run compile'))
   assert.ok(commands.includes('npm run test:mac:release-path'))
   assert.match(packageJson.scripts['test:mac:release-path'], /macos-release-keychain-rehearsal\.sh --with-release-build/)
+  // 排练在 Apple 芯片上还要经 Rosetta 启动 Intel 版（与发布的 macos-build 一样），
+  // 所以 Rosetta 得在排练之前装好。
+  const rosettaIndex = commands.findIndex((command) => command.includes('--install-rosetta'))
+  assert.ok(rosettaIndex >= 0 && rosettaIndex < commands.indexOf('npm run test:mac:release-path'))
+  const rehearsalScript = fs.readFileSync(path.join(root, 'scripts', 'macos-release-keychain-rehearsal.sh'), 'utf8')
+  assert.match(rehearsalScript, /node e2e\/macos-launch-smoke\.mjs "\$output" --arch x64/)
   // 一次性签名那条路是另一回事（自定义 sign 钩子），它由 macos-test 覆盖。这里
   // 要验的恰恰是发布路径独有的那一段，两者不能互相顶替。
   assert.equal(commands.some((command) => command.includes('--ci-temporary-signing')), false)
@@ -727,6 +733,33 @@ test('the release path itself is rehearsed on every pull request, not only when 
   assert.ok(Number.isInteger(rehearsal['timeout-minutes']))
   assert.ok(rehearsal['timeout-minutes'] < job['timeout-minutes'])
   // 不读任何 secret 是这个作业能挂在 PR 上的前提。
+  assert.equal(/secrets\./.test(JSON.stringify(job)), false)
+})
+
+// Every other macOS job runs on Apple silicon, and the launch smoke picks the
+// host's own ZIP, so up to 0.2.19 the Intel package shipped without ever having
+// been started. Rosetta now starts it there too, but only an Intel Mac runs it
+// natively.
+test('the Intel package is built and launched natively on an Intel runner', () => {
+  const job = workflow.jobs['macos-intel']
+  const commands = runSteps('macos-intel')
+
+  assert.equal(job['runs-on'], 'macos-15-intel')
+  // A label that resolved to an Apple silicon machine would quietly turn the
+  // native launch below into a Rosetta one; the job refuses before building.
+  assert.equal(commands[0], 'test "$(uname -m)" = x86_64')
+  // --ci-temporary-signing leaves compiling to its caller.
+  const compileIndex = commands.indexOf('npm run compile')
+  const buildIndex = commands.indexOf('node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package')
+  const launchIndex = commands.indexOf('node e2e/macos-launch-smoke.mjs --arch x64')
+  assert.ok(compileIndex >= 0 && compileIndex < buildIndex)
+  assert.ok(buildIndex < launchIndex)
+  for (const index of [buildIndex, launchIndex]) {
+    const step = job.steps.find((entry) => entry.run === commands[index])
+    assert.ok(step['timeout-minutes'] > 0 && step['timeout-minutes'] < job['timeout-minutes'])
+  }
+  // Native means native: no Rosetta anywhere in this job.
+  assert.equal(commands.some((command) => /rosetta|arch -x86_64/.test(command)), false)
   assert.equal(/secrets\./.test(JSON.stringify(job)), false)
 })
 
@@ -948,7 +981,7 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
   }
@@ -990,7 +1023,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -1000,7 +1033,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   }
   const verify = (code, changeResult, results) => {
     const jobs = { changes: { outputs: { code }, result: changeResult } }
-    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
+    for (const name of ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
     jobs.test = { result: results.test || 'success' }
@@ -1020,6 +1053,10 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('false', 'failure', {}), false)
   assert.equal(verify('', 'success', {}), false)
   assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'failure' }), false)
+  // The only job that starts the Intel package on an Intel Mac; a skip would
+  // read as "Intel never checked" all over again.
+  assert.equal(verify('true', 'success', { 'macos-intel': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'macos-intel': 'skipped' }), false)
   // One red architecture fails the whole matrix job, which is what this sees.
   assert.equal(verify('true', 'success', { 'linux-package': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'linux-package': 'skipped' }), false)
@@ -1028,7 +1065,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'skipped' }), false)
   const documentationOnly = Object.fromEntries(
-    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
+    ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
   )
   assert.equal(verify('false', 'success', documentationOnly), true)
   // The relay probe runs only when the verified-version list moves, so its

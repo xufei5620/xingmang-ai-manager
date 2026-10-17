@@ -205,3 +205,19 @@ test('the macOS launch smoke runs in the macOS job, before the artifact is uploa
     'Windows 作业跑不了 macOS 冒烟',
   )
 })
+
+// 这台 runner 是 Apple 芯片，上面那次只启动了 M 芯片版。直到 0.2.19，Intel 版发出去
+// 之前一次都没被启动过（2026-10-17 查客户 Intel Mac 装不上时发现）。
+test('the Intel test package is launched through Rosetta before it is uploaded', () => {
+  const commands = macosJob.steps.map((step) => String(step.run || ''))
+  const rosettaIndex = commands.findIndex((command) => command.includes('--install-rosetta'))
+  const intelIndex = commands.findIndex((command) => /e2e\/macos-launch-smoke\.mjs .*--arch x64$/.test(command))
+  const uploadIndex = macosJob.steps.findIndex((step) => String(step.uses || '').includes('upload-artifact'))
+
+  assert.equal(macosJob['runs-on'], 'macos-15')
+  assert.notEqual(intelIndex, -1, 'Intel 版也要真的启动一次')
+  assert.ok(rosettaIndex >= 0 && rosettaIndex < intelIndex, 'Rosetta 要在启动 Intel 版之前装好')
+  assert.ok(intelIndex < uploadIndex, 'Intel 版的启动冒烟也必须在上传产物之前')
+  assert.ok(macosJob.steps[intelIndex]['timeout-minutes'] > 0)
+  assert.ok(macosJob.steps[rosettaIndex]['timeout-minutes'] > 0)
+})
