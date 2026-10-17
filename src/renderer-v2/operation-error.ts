@@ -3,6 +3,7 @@ import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailur
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
+import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
 import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
 
@@ -31,7 +32,7 @@ export interface OperationErrorHint {
  * …EPERM…" become the catalog's "需要管理员权限". Order matters: the first
  * rule that matches wins, so the narrow, unambiguous tokens come first.
  */
-const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) => boolean }> = [
+const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean }> = [
   // 一键改用当前账号失败后连恢复也没做成（account-source-switch.ts）。这句里常带着
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
   // 所以排在最前，出口直接是「去备份迁移」。只认「自动恢复也没有完成」这半句，不认
@@ -74,7 +75,18 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 账号没开通这个工具（服务端说分组不可用，同 key-sync-failure.ts 的判断）：重试、
   // 重写都救不了，只能找客服。
   { key: 'toolNotEnabled', match: (message) => /分组不存在、不可用或名称重复|不可使用分组/.test(message) },
-  { key: 'sessionExpired', match: (message) => /(^|\D)401(\D|$)|unauthorized|登录已过期|登录状态已失效|请重新登录/i.test(message) },
+  // 写 Key 前查模型被中转拒了（主进程那句以 modelProbeFailurePrefix 开头）。new-api 对失效、被删、
+  // 额度用到 0 的 Key 一律回 401「无效的令牌」，以前被下一条裸认的 401 说成「登录已过期，Key 还能用」，
+  // 客户重新登录多少次都没用（#1095）。归类交给 relay-quota-failure.ts，和对话、生图同一份认法。
+  // Key 自己设的上限用完了，目录里没有对应的一条：余额那条会叫人充值，429 那条会叫人等几秒，
+  // 都不对，所以落回 unknown，让主进程的原话自己说。
+  { key: 'keyInvalid', match: (message) => relayQuotaFailureInMessage(message) === 'keyInvalid' },
+  { key: 'noBalance', match: (message) => relayQuotaFailureInMessage(message) === 'balance' },
+  { key: 'unknown', match: (message) => relayQuotaFailureInMessage(message) === 'keyLimit' },
+  // 账号接口的 401：new-api 的原话经 new-api-messages.ts 翻成「无权进行此操作，access token 无效」这类
+  // 中文后就不再带 401 和 Unauthorized，要单独认。Windows 上 .NET 的 UnauthorizedAccessException 说的
+  // 是文件拒绝访问，不是登录，留给下面的 permission。
+  { key: 'sessionExpired', match: (message) => /(^|\D)401(\D|$)|unauthorized(?!access)|登录已过期|登录状态已失效|请重新登录|access token 无效|未提供 access token|访问令牌已过期/i.test(message) },
   { key: 'tooManyRequests', match: (message) => /(^|\D)429(\D|$)|too many requests|rate limit|请求(太|过于)频繁/i.test(message) },
   // 历史账号那个站（Sub2API）余额用完时，拿 Key 查模型就回 403「Insufficient account balance」，
   // 错误码 INSUFFICIENT_BALANCE（同 electron/relay-quota-failure.ts）。没认它时，改用当前账号失败只给
@@ -122,7 +134,7 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。
   { key: 'folderRelocated', match: (message) => /不能经过符号链接或目录联接/.test(message) },
-  { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
+  { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|UnauthorizedAccess|access to the path\b.*\bis denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
   // toolRunning：两条都留着的话，先匹配到的那条就决定用户去关哪个东西。
   { key: 'installBlocked', match: (message) => /杀毒|防病毒|病毒|Defender|已被隔离/i.test(message) },

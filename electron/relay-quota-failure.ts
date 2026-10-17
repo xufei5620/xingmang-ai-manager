@@ -81,3 +81,25 @@ const relayQuotaFailures: readonly RelayQuotaFailure[] = ['balance', 'keyLimit',
 export function matchRelayQuotaFailureMessage(message: string): RelayQuotaFailure | null {
   return relayQuotaFailures.find((kind) => message.includes(relayQuotaFailureMessages[kind])) ?? null
 }
+
+/**
+ * 写 Key 前拿它查一次模型（system-service.ts 的 fetchAvailableModels），被中转拒了时抛的
+ * 那句话的开头，后面接状态码和服务端原话，例如「模型查询失败，服务返回 401：无效的令牌」。
+ * 主进程里自动换 Key 的两处（account-cli-provisioner、chat-credential-coordinator）认的是
+ * 这句里的「服务返回 401」，所以这句话本身不改写，渲染层拿它回到上面同一份认法。
+ */
+export const modelProbeFailurePrefix = '模型查询失败，服务返回'
+
+/**
+ * Finds the model-probe sentence inside a longer failure (the one-click switch
+ * and key sync wrap it in their own words) and classifies it with the status
+ * and wording it carries. Anything else yields null, so a 401 from the account
+ * API is never mistaken for a dead key here.
+ */
+export function relayQuotaFailureInMessage(message: string): RelayQuotaFailure | null {
+  const start = message.indexOf(modelProbeFailurePrefix)
+  if (start < 0) return null
+  const probe = message.slice(start + modelProbeFailurePrefix.length)
+  const status = /^\s*(\d{3})(?!\d)/.exec(probe)
+  return status ? classifyRelayQuotaFailure(Number(status[1]), probe) : null
+}

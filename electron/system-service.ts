@@ -320,6 +320,7 @@ import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
+import { modelProbeFailurePrefix } from './relay-quota-failure'
 import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { NewApiNetworkError } from './new-api-client'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
@@ -6536,7 +6537,7 @@ export function createSystemService(
         } catch {
           detail = ''
         }
-        const statusMessage = `模型查询失败，服务返回 ${response.status}`
+        const statusMessage = `${modelProbeFailurePrefix} ${response.status}`
         throw new Error((detail ? `${statusMessage}：${detail}` : statusMessage).slice(0, 500))
       }
 
