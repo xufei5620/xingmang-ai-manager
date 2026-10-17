@@ -270,13 +270,14 @@ export function accountRoutesPending(
 }
 
 /**
- * 已连好的工具里，配置那把 Key 已经不是本机缓存给它的那把（#1079）：上一轮换了分组（买了订阅、订阅
- * 到期、分组改名）或重签了 Key，新 Key 存进了缓存，写配置那一步却没成（拉型号时网络抖、写文件出错、
+ * 已连好的工具里，配置那把 Key 是本机缓存以前给它、后来换掉的那把（#1079）：上一轮换了分组（买了订阅、
+ * 订阅到期、分组改名）或重签了 Key，新 Key 存进了缓存，写配置那一步却没成（拉型号时网络抖、写文件出错、
  * 写到一半关了软件）。下一轮缓存里的分组已经对上，主进程不再报「换了分组」，以前就一直当「已连好」
  * 跳过，工具拿着旧 Key 接着扣余额。
- * 只认星芒替当前账号写下、之后没人动过的配置（来源记录对得上）；手填、被改过的照旧不碰。这一轮同步
- * 没跑成、缓存没存上、缓存里没有这家工具的 Key 时一概不认：那时读到的缓存说明不了配置旧了，认了会
- * 每次开机都重写一遍。
+ * 只认星芒替当前账号写下、之后没人动过的配置（来源记录对得上）；手填、被改过的照旧不碰。「不是缓存里
+ * 眼下那把」不够：客户在密钥页、配置窗口自己选的账号密钥也不是，那样会每次开机都被换回自动那把（#1153），
+ * 所以要主进程认出它确实是缓存换掉过的（configurationKeyReplaced）。这一轮同步没跑成、缓存没存上、
+ * 缓存里没有这家工具的 Key 时一概不认：那时读到的缓存说明不了配置旧了，认了会每次开机都重写一遍。
  */
 export function staleAccountKeys(
   config: AppConfigSummary,
@@ -286,7 +287,7 @@ export function staleAccountKeys(
   return activeProviderIds.filter((provider) => {
     const current = config.providers[provider]
     return current.configurationOwnership === 'account' && current.hasApiKey && current.matchesRelay
-      && current.configurationAccountMatched === false
+      && current.configurationKeyReplaced === true
       && synchronized.ready.some((entry) => entry.provider === provider)
   })
 }

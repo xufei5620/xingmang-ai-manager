@@ -195,7 +195,7 @@ import {
 } from './install-cancellation'
 import { inspectCcSwitchInstalled, resolveCcSwitchLeftover, type CcSwitchLeftover } from './cc-switch-leftover'
 import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership, type ToolTemplateFillResult } from './tool-config-ownership'
-import type { StoredManagedCliKey } from './managed-cli-key-store'
+import { isReplacedManagedKey, type StoredManagedCliKey } from './managed-cli-key-store'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
 import {
   assertTrustedElevatedCliCommand,
@@ -7192,6 +7192,8 @@ export function createSystemService(
             configurationOwnership: configOwnership.read(id, current, owner),
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
+            configurationKeyReplaced: Boolean(owner) && current.hasApiKey && current.matchesRelay
+              && isReplacedManagedKey(id, current.apiKey, cachedKeys),
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
             ...cliHooksSummaryFields(hooks),
             ...cliHooksAutoRepairedField(!previewOnboarding && autoRepairedCliHooks.has(id), hooks?.stale === true),
@@ -7208,6 +7210,7 @@ export function createSystemService(
         hasApiKey: false,
         matchesRelay: false,
         configurationAccountMatched: false,
+        configurationKeyReplaced: false,
         ccSwitchLeftover: undefined,
         apiKeyPreview: null,
         officialAccountEmail: null,

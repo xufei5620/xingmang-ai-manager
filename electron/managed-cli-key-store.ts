@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { currentAccountGroupName, isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { createHash } from 'node:crypto'
+import { currentAccountGroupName, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { isManagedCliGroupName } from './managed-cli-groups'
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
@@ -16,6 +17,8 @@ const MAX_FILE_BYTES = 64 * 1024
 const MAX_CACHED_ACCOUNTS = 16
 const FILE_LABEL = '托管 CLI API Key'
 const MAX_QUARANTINED_RECORDS = 3
+// 换掉的那几把记几条：连着换两次组、中间都没写进配置，也还认得出最早那把。
+const MAX_REPLACED_KEYS = 3
 
 export interface StoredManagedCliKey {
   id: number
@@ -23,12 +26,23 @@ export interface StoredManagedCliKey {
   group: string
   name: string
   key: string
+  /**
+   * 读出来时由缓存附上：这家工具以前缓存过、后来被换掉的托管 Key 的指纹（managedKeyDigest），新的在前。
+   * 存回去时不看这一项，换没换由缓存自己比出来。缺省 = 这台电脑上没换过。
+   */
+  replacedKeyDigests?: string[]
 }
 
 export interface PersistedManagedCliKeyAccount {
   userId: number
   updatedAt: string
   keys: StoredManagedCliKey[]
+  /**
+   * 每家工具被换掉、被拿掉的托管 Key 的指纹（#1153）。配置里那把正好在这里，才说明是「上一轮换了 Key
+   * 没写进配置」；客户在密钥页、配置窗口自己选的那把从来不在缓存里，不会被开机补写换掉。
+   * 拿掉的也记：分组被删、旧那把从缓存里去掉，下一轮才签出新的，中间隔着一次保存。
+   */
+  replacedKeys?: Partial<Record<ProviderId, string[]>>
 }
 
 export interface PersistedManagedCliKeys {
@@ -45,6 +59,60 @@ interface LegacyPersistedManagedCliKeys extends PersistedManagedCliKeyAccount {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** 托管 Key 的指纹：只用来认「配置里这把是不是缓存以前的那把」，缓存里不留旧 Key 本身。 */
+export function managedKeyDigest(key: string): string {
+  return createHash('sha256').update(key).digest('hex')
+}
+
+/**
+ * 配置里这把 Key 是不是这家工具以前缓存过、后来被换掉的托管 Key（#1153）。缓存里眼下没有这家的 Key、
+ * 或者配置里就是眼下那把时不算。
+ */
+export function isReplacedManagedKey(provider: ProviderId, key: string, cachedKeys: readonly StoredManagedCliKey[]): boolean {
+  const entry = cachedKeys.find((item) => item.provider === provider)
+  if (!entry || !key || entry.key === key) return false
+  return entry.replacedKeyDigests?.includes(managedKeyDigest(key)) === true
+}
+
+function replacedDigests(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((digest): digest is string => typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest))
+}
+
+// 这次保存以后每家工具换掉过的那几把：上一份里有、这一份里没了或换了的，排到最前面。眼下还在用的那把不记。
+function nextReplacedKeys(
+  previous: PersistedManagedCliKeyAccount | undefined,
+  keys: readonly StoredManagedCliKey[],
+): Partial<Record<ProviderId, string[]>> {
+  const result: Partial<Record<ProviderId, string[]>> = {}
+  for (const provider of providerIds) {
+    const before = previous?.keys.find((entry) => entry.provider === provider)
+    const current = keys.find((entry) => entry.provider === provider)
+    const currentDigest = current ? managedKeyDigest(current.key) : null
+    const history = [
+      ...(before && before.key !== current?.key ? [managedKeyDigest(before.key)] : []),
+      ...replacedDigests(previous?.replacedKeys?.[provider]),
+    ]
+    const kept = [...new Set(history)].filter((digest) => digest !== currentDigest).slice(0, MAX_REPLACED_KEYS)
+    if (kept.length) result[provider] = kept
+  }
+  return result
+}
+
+function persistedAccount(
+  userId: number,
+  keys: readonly StoredManagedCliKey[],
+  previous: PersistedManagedCliKeyAccount | undefined,
+): PersistedManagedCliKeyAccount {
+  const replacedKeys = nextReplacedKeys(previous, keys)
+  return {
+    userId,
+    updatedAt: new Date().toISOString(),
+    keys: keys.map(({ replacedKeyDigests: _replacedKeyDigests, ...entry }) => ({ ...entry })),
+    ...(Object.keys(replacedKeys).length ? { replacedKeys } : {}),
+  }
 }
 
 // 不分站点的老文件（0.2.12 以前写的）只认出厂的分组名。xm 站 10-16 删了老名字，出厂名换成了新名字，
@@ -80,6 +148,8 @@ function isPersistedManagedCliKeyAccount(
   if (typeof value.userId !== 'number' || !Number.isInteger(value.userId) || value.userId <= 0) return false
   if (typeof value.updatedAt !== 'string' || Number.isNaN(Date.parse(value.updatedAt))) return false
   if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every((entry) => isStoredManagedCliKey(entry, siteId, scoped))) return false
+  // 换掉过的那几把只是线索：认不出的条目读的时候丢掉就是，不为它把整份缓存当坏的挪走、重签一遍 Key。
+  if (value.replacedKeys !== undefined && !isRecord(value.replacedKeys)) return false
   return new Set(value.keys.map((entry) => entry.provider)).size === value.keys.length
 }
 
@@ -157,11 +227,17 @@ export class ManagedCliKeyStore {
     this.assertEncryptionAvailable()
     await this.writeQueue.catch(() => undefined)
     const record = await this.readRecord()
+    const account = record?.accounts.find((entry) => entry.userId === userId)
     // xm 站删老分组名之前把老名字下的 Key 全挂到了新名字下（Key 不变），本机记的老名字照着换，
     // 开机时就不会因为「分组对不上」去重签一把、再重写一遍配置。文件里的老名字等下次保存时自然换掉。
-    return record?.accounts.find((entry) => entry.userId === userId)?.keys.map((entry) => (
-      this.siteId === 'solov' ? { ...entry, group: currentAccountGroupName(entry.group) } : { ...entry }
-    )) ?? []
+    return account?.keys.map((entry) => {
+      const replaced = replacedDigests(account.replacedKeys?.[entry.provider])
+      return {
+        ...entry,
+        ...(this.siteId === 'solov' ? { group: currentAccountGroupName(entry.group) } : {}),
+        ...(replaced.length ? { replacedKeyDigests: replaced } : {}),
+      }
+    }) ?? []
   }
 
   captureRevision(): number {
@@ -183,11 +259,7 @@ export class ManagedCliKeyStore {
         await this.quarantineCorruptRecord()
       }
       if (expectedRevision !== undefined && expectedRevision !== this.revision) return false
-      const account: PersistedManagedCliKeyAccount = {
-        userId,
-        updatedAt: new Date().toISOString(),
-        keys: keys.map((entry) => ({ ...entry })),
-      }
+      const account = persistedAccount(userId, keys, existing?.accounts.find((entry) => entry.userId === userId))
       const accounts = [
         account,
         ...(existing?.accounts.filter((entry) => entry.userId !== userId) ?? []),
@@ -215,11 +287,7 @@ export class ManagedCliKeyStore {
         siteId: this.siteId,
         revision: this.revision + 1,
         accounts: record.accounts.map((entry) => entry.userId === userId
-          ? {
-              ...entry,
-              updatedAt: new Date().toISOString(),
-              keys: entry.keys.filter((key) => key.id !== keyId),
-            }
+          ? persistedAccount(userId, entry.keys.filter((key) => key.id !== keyId), entry)
           : entry),
       }
       await this.writeRecord(updated)

@@ -13,6 +13,7 @@ import {
   saveProviderConfig,
 } from './config-files'
 import { createSystemService, permitsShadowedCodexRepair, planRestoredConfigOwnership, restoredAccountSide, sameNativeConfigSnapshot } from './system-service'
+import { managedKeyDigest } from './managed-cli-key-store'
 import type { RunningToolsReport } from './running-tools'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { XINGMANG_AI_CODEX_SKILL_STATE_FILE, resolveXingmangAiCodexSkillPath } from './xingmang-ai-skill'
@@ -143,6 +144,22 @@ describe('durable tool configuration ownership', () => {
     f.setOwner(JSON.stringify(['solov', 36]))
     saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, { ...providerBaseUrls, codex: 'https://other.example/v1' })
     expect(service.getConfig(false, [cached]).providers.codex.configurationAccountMatched).toBe(false)
+  })
+
+  it('tells a key the cache replaced apart from one the customer chose', () => {
+    const f = fixture()
+    saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    const service = f.makeService()
+    const current = { id: 2, provider: 'codex' as const, group: 'fixture', name: 'Fixture', key: 'sk-fixture-current-managed' }
+    const replaced = { ...current, replacedKeyDigests: [managedKeyDigest(f.payload.apiKey)] }
+    expect(service.getConfig(false, [replaced]).providers.codex).toMatchObject({ configurationAccountMatched: false, configurationKeyReplaced: true })
+    // 客户在密钥页自己选的那把从来不在缓存里（#1153）。
+    expect(service.getConfig(false, [current]).providers.codex).toMatchObject({ configurationAccountMatched: false, configurationKeyReplaced: false })
+    expect(service.getConfig(false, [{ ...replaced, provider: 'claude' }]).providers.codex.configurationKeyReplaced).toBe(false)
+    expect(service.getConfig(true, [replaced]).providers.codex.configurationKeyReplaced).toBe(false)
+    expect(JSON.stringify(service.getConfig(false, [replaced]))).not.toContain(replaced.replacedKeyDigests[0])
+    f.setOwner(null)
+    expect(service.getConfig(false, [replaced]).providers.codex.configurationKeyReplaced).toBe(false)
   })
 
   it('preserves manual protection even when the key belongs to the current account', async () => {

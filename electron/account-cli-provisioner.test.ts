@@ -21,7 +21,7 @@ import {
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
 import type { AccountGroupHints } from './managed-cli-groups'
-import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
+import { ManagedCliKeyStore, managedKeyDigest, type StoredManagedCliKey } from './managed-cli-key-store'
 import type { SafeStorageLike } from './account-session-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
@@ -1454,8 +1454,43 @@ describe('dynamic groups with the encrypted managed key store', () => {
     expect(result).toEqual({ configured: ['codex'], failed: [] })
     expect(issueKey).toHaveBeenCalledTimes(1)
     expect(await new ManagedCliKeyStore(filePath, storage()).read(73)).toEqual(
-      providerIds.map((provider) => dynamicKey(provider)),
+      providerIds.map((provider) => provider === 'codex'
+        // 失效重签换掉的那把留下指纹：写配置没成的话，下次开机认得出配置里还是它（#1153）。
+        ? { ...dynamicKey(provider), replacedKeyDigests: [managedKeyDigest(oldKey.key)] }
+        : dynamicKey(provider)),
     )
+  })
+
+  it('remembers the key a subscription moved away from, across a restart', async () => {
+    const filePath = storePath()
+    const sub2Api = profilesBySite['solov-api']
+    const platforms: Record<ProviderId, string> = { claude: 'anthropic', codex: 'openai', gemini: 'gemini', grok: 'grok' }
+    const usual = activeProviderIds.map((provider) => ({ ...siteManagedKey('solov-api', provider), key: `sk-${provider}-usual-secret-123456` }))
+    await new ManagedCliKeyStore(filePath, storage(), 'solov-api').save(73, usual)
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov-api'),
+      provisionCliKey: vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+        id: 900, name: input.name ?? 'xingmang-desktop', key: 'sk-subscription-plaintext-secret-123456',
+      })),
+      listUsableGroups: vi.fn(async () => [
+        ...activeProviderIds.map((provider) => ({ name: sub2Api[provider].group, platform: platforms[provider] })),
+        { name: 'Claude 包月', platform: 'anthropic' },
+      ]),
+      getSubscriptionSelf: vi.fn(async () => ({
+        activeSubscriptions: [{ status: 'active', groupName: 'Claude 包月', endsAt: '2999-01-01T00:00:00Z' }],
+      })),
+    } as unknown as AccountService
+
+    const summary = await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, storage(), 'solov-api'))
+    expect(summary.regrouped).toEqual(['claude'])
+
+    const cached = await new ManagedCliKeyStore(filePath, storage(), 'solov-api').read(73)
+    expect(cached.find((entry) => entry.provider === 'claude')).toMatchObject({
+      key: 'sk-subscription-plaintext-secret-123456',
+      replacedKeyDigests: [managedKeyDigest(usual.find((entry) => entry.provider === 'claude')!.key)],
+    })
+    expect(cached.find((entry) => entry.provider === 'codex')).not.toHaveProperty('replacedKeyDigests')
   })
 
   it('replaces a revoked dynamic-group key when the group list is temporarily unavailable', async () => {

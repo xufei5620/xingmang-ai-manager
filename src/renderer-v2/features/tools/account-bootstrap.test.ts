@@ -1216,12 +1216,14 @@ describe('session changes while an account bootstrap runs', () => {
 
 // #1079：上一轮换了 Key（买了订阅换组、订阅到期、Key 重签）却没写进配置，下一轮缓存分组已经对上、主进程不再报换组。
 describe('account keys left unwritten by an earlier round', () => {
-  const owned = (matched: boolean | undefined) => ({
+  // replaced：配置里那把是缓存以前给它、后来换掉的托管 Key；不是的那种是客户自己选的账号密钥（#1153）。
+  const owned = (matched: boolean | undefined, replaced = false) => ({
     exists: true,
     hasApiKey: true,
     matchesRelay: true,
     configurationOwnership: 'account' as const,
     ...(matched === undefined ? {} : { configurationAccountMatched: matched }),
+    ...(replaced ? { configurationKeyReplaced: true } : {}),
     baseUrl: 'https://xm.solov.cc/v1',
     actualBaseUrl: 'https://xm.solov.cc/v1',
     model: 'fixture-model',
@@ -1236,7 +1238,7 @@ describe('account keys left unwritten by an earlier round', () => {
 
   function fixture(sync: Awaited<ReturnType<AccountBootstrapBridge['syncManagedCliKeys']>>, configure: AccountBootstrapBridge['configureManagedCliKeys']) {
     const current = config()
-    current.providers.claude = owned(false)
+    current.providers.claude = owned(false, true)
     current.providers.codex = owned(true)
     const api: AccountBootstrapBridge = {
       getAccountSession: vi.fn(async () => member),
@@ -1249,17 +1251,24 @@ describe('account keys left unwritten by an earlier round', () => {
     return { current, api }
   }
 
-  it('flags an owned connected config whose key is no longer the cached one', () => {
+  it('flags an owned connected config still holding a key the cache replaced', () => {
     const current = config()
-    current.providers.claude = owned(false)
+    current.providers.claude = owned(false, true)
     current.providers.codex = owned(true)
     current.providers.grok = owned(undefined)
     expect(staleAccountKeys(current, { ready: ready('claude', 'codex', 'grok') })).toEqual(['claude'])
   })
 
+  it('does not take an account key the customer chose for one left unwritten', () => {
+    const current = config()
+    // 密钥页「写进工具」、配置窗口选了别的账号密钥：来源同样是当前账号，Key 也不是缓存里那把。
+    current.providers.claude = owned(false)
+    expect(staleAccountKeys(current, { ready: ready('claude') })).toEqual([])
+  })
+
   it('does not trust the comparison when the cache could not vouch for it', () => {
     const current = config()
-    current.providers.claude = owned(false)
+    current.providers.claude = owned(false, true)
     // 同步整轮没成、缓存没存上、缓存里压根没有这家：读到的缓存说明不了配置旧了。
     expect(staleAccountKeys(current, null)).toEqual([])
     expect(staleAccountKeys(current, { ready: ready('claude'), storageWarning: '本地 API Key 保存失败' })).toEqual([])
@@ -1270,10 +1279,10 @@ describe('account keys left unwritten by an earlier round', () => {
   it('leaves edited, manual and foreign configs alone', () => {
     const current = config()
     for (const ownership of ['changed', 'manual', 'unknown'] as const) {
-      current.providers.claude = { ...owned(false), configurationOwnership: ownership }
+      current.providers.claude = { ...owned(false, true), configurationOwnership: ownership }
       expect(staleAccountKeys(current, { ready: ready('claude') })).toEqual([])
     }
-    current.providers.claude = { ...owned(false), matchesRelay: false }
+    current.providers.claude = { ...owned(false, true), matchesRelay: false }
     expect(staleAccountKeys(current, { ready: ready('claude') })).toEqual([])
   })
 
@@ -1292,6 +1301,20 @@ describe('account keys left unwritten by an earlier round', () => {
     expect(result.keyChangeFailed).toBeUndefined()
     expect(bootstrapOnlyFollowedRoute(result)).toBe(false)
     expect(subscriptionSwitchResult(result)).toEqual(['claude'])
+  })
+
+  it('keeps the account key the customer chose on every restore', async () => {
+    const { current, api } = fixture({ ready: ready('claude', 'codex'), failed: [] }, async () => ({ configured: [], failed: [] }))
+    current.providers.claude = owned(false)
+    const progress: AccountBootstrapProgress[] = []
+
+    const result = await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, memoryStorage())
+
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(progress.find((entry) => entry.phase === 'inspecting')?.connectedKeyChanges).toEqual([])
+    expect(result.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'claude', reason: 'configured' })]))
+    expect(result.regrouped).toBeUndefined()
+    expect(result.keyChangeFailed).toBeUndefined()
   })
 
   it('leaves a login to its usual rewrite of every connected tool', async () => {
