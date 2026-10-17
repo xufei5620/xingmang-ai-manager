@@ -1,0 +1,65 @@
+# 临时诊断（#1084 线程）：只读官方源，打印 Windows 包检查结果里的公开字段，不碰 COS、不用任何密钥。合并前删掉。
+name: probe-chatgpt-windows-verify
+
+on:
+  push:
+    branches: [claude/fix-1084-sync-failure-codes-r2glvw]
+    paths: [.github/workflows/probe-chatgpt-windows-verify.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-x64, windows-arm64]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Inspect the current official package without publishing anything
+        shell: bash
+        env:
+          PROBE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          cat > "$RUNNER_TEMP/probe.cjs" <<'JS'
+          const path = require('node:path')
+          const fs = require('node:fs/promises')
+          const os = require('node:os')
+          const root = process.env.GITHUB_WORKSPACE
+          const common = require(path.join(root, 'scripts/cos-sync-utils.cjs'))
+          const sync = require(path.join(root, 'scripts/sync-chatgpt-official-cos.cjs'))
+          async function main() {
+            const id = process.env.PROBE_PLATFORM
+            const source = sync.SOURCES[id]
+            const metadata = sync.validateWindowsMetadata(await common.fetchJson({ url: sync.WINDOWS_METADATA_URL, allowedHosts: [sync.OFFICIAL_HOST], maxBytes: 65536 }))
+            console.log('metadata', JSON.stringify(metadata))
+            const head = await common.inspectResource({ url: source.url, allowedHosts: [sync.OFFICIAL_HOST], maxBytes: sync.MAX_PACKAGE_BYTES })
+            console.log('package-head', JSON.stringify({ bytes: head.bytes, etag: head.etag, lastModified: head.lastModified }))
+            const licenseHead = await common.inspectResource({ url: sync.LICENSE_SOURCE.url, allowedHosts: [sync.OFFICIAL_HOST], maxBytes: sync.MAX_LICENSE_BYTES })
+            console.log('license-head', JSON.stringify({ bytes: licenseHead.bytes, etag: licenseHead.etag, lastModified: licenseHead.lastModified }))
+            const workDirectory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-official-cos-'))
+            const filePath = path.join(workDirectory, `${id}-${source.fileName}`)
+            const downloaded = await common.downloadResource({ url: source.url, filePath, allowedHosts: [sync.OFFICIAL_HOST], maxBytes: sync.MAX_PACKAGE_BYTES, expectedBytes: head.bytes, expectedEtag: head.etag })
+            console.log('downloaded', JSON.stringify({ bytes: downloaded.bytes, sha256: downloaded.sha256 }))
+            const started = Date.now()
+            const report = await sync.inspectWindowsFile({ filePath, workDirectory })
+            console.log('inspection-ms', Date.now() - started)
+            console.log('inspection', JSON.stringify(report))
+            try { console.log('validate', sync.validateWindowsInspection(report, metadata, source.architecture)) } catch (error) { console.log('validate-failed', error.message) }
+            const licensePath = path.join(workDirectory, sync.LICENSE_SOURCE.fileName)
+            await common.downloadResource({ url: sync.LICENSE_SOURCE.url, filePath: licensePath, allowedHosts: [sync.OFFICIAL_HOST], maxBytes: sync.MAX_LICENSE_BYTES, expectedBytes: licenseHead.bytes, expectedEtag: licenseHead.etag })
+            const license = await sync.inspectWindowsFile({ filePath: licensePath, license: true, workDirectory })
+            console.log('license', JSON.stringify(license))
+            try { sync.validateLicenseInspection(license); console.log('license-validate ok') } catch (error) { console.log('license-validate-failed', error.message) }
+          }
+          main().catch(function (error) { console.log('probe-error', error && error.message); process.exitCode = 1 })
+          JS
+          node "$RUNNER_TEMP/probe.cjs"
