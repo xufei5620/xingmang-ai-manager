@@ -7,6 +7,8 @@ import {
   type ManualRedirectIncomingMessage,
   type ManualRedirectRequestOptions,
 } from './manual-redirect-fetch'
+import { createRelayLineFetch, type RelayLineRouter } from './relay-line-fetch'
+import type { RelayEndpointId, RelayRouteSiteId } from './relay-sites'
 
 // Mirrors the parts of Electron's ClientRequest the adapter drives: a redirect
 // nobody follows dies with "Redirect was cancelled" unless the listener aborted.
@@ -215,5 +217,52 @@ describe('manual redirect fetch', () => {
     await expect(pending).rejects.toThrow('stopped')
     expect(requests[0].aborted).toBe(true)
     expect(requests[0].ended).toBe(false)
+  })
+})
+
+// #1064：生产环境里星芒的请求走的是 main.ts 包了这一层的 Chromium 会话。门户在直连上回跳转时，
+// 只读的请求要换默认线路重发、写请求原样交回 3xx，两种都报给线路那边；以前只拿到「Redirect was cancelled」。
+describe('manual redirect fetch under the relay line fetch', () => {
+  function onPortalNetwork() {
+    const requests: FakeClientRequest[] = []
+    const reports: Array<[RelayRouteSiteId, RelayEndpointId, string]> = []
+    // Electron's own net.fetch: every redirect dies with this message.
+    const netFetch = vi.fn<typeof fetch>(async () => { throw new TypeError('Redirect was cancelled') })
+    const sessionFetch = createManualRedirectFetch(netFetch, (options) => {
+      const request = new FakeClientRequest(options)
+      requests.push(request)
+      setImmediate(() => {
+        if (new URL(options.url).hostname === 'xm-direct.solov.cc') request.redirect(302, 'http://portal.example/login')
+        else request.respond(200, { 'content-type': 'application/json' }, ['{"success":true}'])
+      })
+      return request
+    })
+    const router: RelayLineRouter = {
+      route: () => ({ line: 'direct', automatic: true }),
+      reportFailure: (siteId, line, reason) => { reports.push([siteId, line, reason]) },
+      subscribe: () => () => undefined,
+    }
+    return { requests, reports, netFetch, routed: createRelayLineFetch(router, sessionFetch) }
+  }
+
+  it('moves a read caught by a portal on direct to the default line', async () => {
+    const { requests, reports, netFetch, routed } = onPortalNetwork()
+    const response = await routed('https://xm.solov.cc/api/user/self', { credentials: 'omit', redirect: 'manual' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ success: true })
+    expect(requests.map((request) => request.options.url)).toEqual(['https://xm-direct.solov.cc/api/user/self', 'https://xm.solov.cc/api/user/self'])
+    expect(requests[0].aborted).toBe(true)
+    expect(reports).toEqual([['solov', 'direct', 'intercepted']])
+    expect(netFetch).not.toHaveBeenCalled()
+  })
+
+  it('hands a write caught by a portal back as the redirect without sending it again', async () => {
+    const { requests, reports, routed } = onPortalNetwork()
+    const response = await routed('https://xm.solov.cc/api/user/login', { method: 'POST', body: '{"username":"fixture"}', credentials: 'omit', redirect: 'manual' })
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('http://portal.example/login')
+    expect(requests).toHaveLength(1)
+    expect(requests[0].options.method).toBe('POST')
+    expect(reports).toEqual([['solov', 'direct', 'intercepted']])
   })
 })

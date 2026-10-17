@@ -3,8 +3,8 @@
 - 主进程交出去的每个 Chromium 会话 fetch（默认会话、站点直连、系统代理、工具代理分区、更新会话、崩溃上报）
   都包上 `createManualRedirectFetch`（`main.ts` 的 `chromiumSessionFetch`），`redirect: 'manual'` 的请求
   照 Node 的 fetch 交回不带正文的 3xx 和 Location，带正文的写请求也一样（`manual-redirect-fetch.ts` 把正文
-  逐块写进 ClientRequest）。`relay-line-fetch.ts` 把 3xx 认成「回话的不是星芒」：只读的换线路重发，
-  写请求不重发、只报给线路那边。#1120 的「Redirect was cancelled」兜底留着（#1064）。
+  逐块写进 ClientRequest）。`relay-line-fetch.ts` 和 `proxy-bypass.ts` 的直连分流把 3xx 认成「回话的不是
+  星芒」：只读的换线路重发，写请求不重发、只报给线路那边。#1120 的「Redirect was cancelled」兜底留着（#1064）。
 - 「自动」线路的四处恢复（`relay-route-controller.ts`，#1053）：开机（有存下的结论时）、唤醒、网络恢复、
   点「重新检测」都两条一起查，走着的那条不通、另一条通就当场换（新原因 `line-down`），不等三次、也不等
   切回去的那 10 分钟；两次切换至少隔 5 分钟照旧，定时检查照旧三次阈值。唤醒、网络恢复时切回去的连续
