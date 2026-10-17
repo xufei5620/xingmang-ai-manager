@@ -11,6 +11,10 @@ const {
 } = require('./sync-grok-cos.cjs')
 
 const SIGNER = 'CN=X.AI LLC, O=X.AI LLC, L=Palo Alto, S=California, C=US'
+const ISSUER = 'CN=SSL.com EV Code Signing Intermediate CA RSA R3, O=SSL Corp, L=Houston, S=Texas, C=US'
+// xAI 从 1.0.54 起签 grok.exe 用的那张（#1051）。
+const X_CORP_SIGNER = 'CN=X Corp., O=X Corp., L=Bastrop, S=Texas, C=US'
+const X_CORP_ISSUER = 'CN=GlobalSign GCC R45 CodeSigning CA 2020, O=GlobalSign nv-sa, C=BE'
 const MACHINES = { 'windows-x86_64': 0x8664, 'windows-aarch64': 0xaa64 }
 
 function sha256(value) {
@@ -30,7 +34,7 @@ function createFixture() {
     stable: '1.0.52',
     stableResponses: new Map(),
     failingHosts: new Set(),
-    signature: { status: 'Valid', subject: SIGNER },
+    signature: { status: 'Valid', subject: SIGNER, issuer: ISSUER },
     machineOverride: null,
     latest: null,
     objects: new Map(),
@@ -239,7 +243,11 @@ test('binaries without xAI\'s valid signature or for the wrong processor are nev
     [{ status: 'HashMismatch', subject: SIGNER }, null, /Authenticode/],
     [{ status: 'Valid', subject: 'CN=Evil LLC, O=Evil LLC' }, null, /X\.AI LLC/],
     [{ status: 'Valid', subject: 'CN=X.AI LLC Fake, O=Other' }, null, /X\.AI LLC/],
-    [{ status: 'Valid', subject: SIGNER }, 0x14c, /处理器架构/],
+    [{ status: 'Valid', subject: SIGNER }, null, /X\.AI LLC/],
+    [{ status: 'Valid', subject: X_CORP_SIGNER, issuer: ISSUER }, null, /X Corp\./],
+    [{ status: 'Valid', subject: SIGNER, issuer: X_CORP_ISSUER }, null, /X Corp\./],
+    [{ status: 'Valid', subject: 'CN=X Corp., O=X Corp., L=Austin, S=Texas, C=US', issuer: X_CORP_ISSUER }, null, /X Corp\./],
+    [{ status: 'Valid', subject: SIGNER, issuer: ISSUER }, 0x14c, /处理器架构/],
   ]) {
     const fixture = createFixture()
     fixture.signature = signature
@@ -259,7 +267,22 @@ test('binaries without xAI\'s valid signature or for the wrong processor are nev
     assert.ok(fixture.removedFiles.length >= 1)
   }
   assert.throws(() => validateSignature(null), /Authenticode/)
-  assert.doesNotThrow(() => validateSignature({ status: 'Valid', subject: 'O=X.AI LLC, C=US' }))
+  assert.doesNotThrow(() => validateSignature({ status: 'Valid', subject: 'O=X.AI LLC, C=US', issuer: ISSUER }))
+  assert.doesNotThrow(() => validateSignature({ status: 'Valid', subject: X_CORP_SIGNER, issuer: X_CORP_ISSUER }))
+})
+
+test('a stable signed by X Corp. and a recommendation signed by X.AI LLC are both uploaded', async () => {
+  const fixture = createFixture()
+  fixture.stable = '1.0.62'
+  fixture.dependencies.inspectSignature = async function (filePath) {
+    return path.basename(filePath).startsWith('grok-1.0.62-')
+      ? { status: 'Valid', subject: X_CORP_SIGNER, issuer: X_CORP_ISSUER }
+      : { status: 'Valid', subject: SIGNER, issuer: ISSUER }
+  }
+  const result = await fixture.run({ recommendedVersion: '1.0.52' })
+  assert.deepEqual(versionsOf(result.manifest), ['1.0.62', '1.0.52'])
+  assert.equal(fixture.publications.length, 4)
+  assert.equal(fixture.pointers.length, 1)
 })
 
 test('a pointer changed by another run stops the write; a cleanup failure never hides the first error', async () => {
@@ -353,14 +376,15 @@ test('the signature probe uses the fixed Windows PowerShell with a minimal envir
     const calls = []
     const result = await inspectSignature(path.join(directory, 'grok.exe'), directory, async function (executable, args, options) {
       calls.push({ executable, args, options })
-      return { stdout: `\uFEFF${JSON.stringify({ status: 'Valid', subject: SIGNER })}\r\n` }
+      return { stdout: `\uFEFF${JSON.stringify({ status: 'Valid', subject: SIGNER, issuer: ISSUER })}\r\n` }
     }, 'win32')
-    assert.deepEqual(result, { status: 'Valid', subject: SIGNER })
+    assert.deepEqual(result, { status: 'Valid', subject: SIGNER, issuer: ISSUER })
     assert.equal(calls[0].executable, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
     assert.deepEqual(calls[0].args.slice(0, 6), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'])
     assert.deepEqual(calls[0].args.slice(7), ['-FilePath', path.join(directory, 'grok.exe')])
     assert.deepEqual(Object.keys(calls[0].options.env).sort(), ['PSModulePath', 'SystemRoot', 'TEMP', 'TMP', 'WINDIR'])
     assert.match(await fs.readFile(calls[0].args[6], 'utf8'), /Get-AuthenticodeSignature -LiteralPath \$FilePath/)
+    assert.match(await fs.readFile(calls[0].args[6], 'utf8'), /issuer=if\(\$signature\.SignerCertificate\)\{\[string\]\$signature\.SignerCertificate\.Issuer\}/)
     await assert.rejects(inspectSignature(path.join(directory, 'grok.exe'), directory, async function () { return { stdout: 'not json' } }, 'win32'), /无法解析/)
     await assert.rejects(inspectSignature(path.join(directory, 'grok.exe'), directory, async function () { throw new Error('SECRET') }, 'win32'), /签名检查失败/)
   } finally {
