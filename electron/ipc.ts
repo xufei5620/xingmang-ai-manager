@@ -3589,7 +3589,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!options.xingmangAiSkill || accountService.getActiveSiteId?.() === 'solov-api') return summary
     try {
       const skill = await syncXingmangAiSkill({
-        accountService,
+        // 跟上面工具那一轮同一层包装：撤销后待补的额度设置照抄，读不到记录就停下，不另签一把不限额的 Codex Key。
+        accountService: automaticProvisioning,
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
         // The expected endpoint comes from the active main-process route, not

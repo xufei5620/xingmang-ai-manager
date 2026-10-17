@@ -2544,23 +2544,40 @@ export interface NewApiExistingCliKeyMatch {
   name: string
 }
 
+const chatKeyNameSuffix = '对话'
+
+// AI 对话签过的 Key 叫什么：#1106 起是「用户名-分组-对话」，更早是随机的 xingmang-chat-*，
+// 历史账号那套固定叫 xingmang-chat。对话缓存里不是这几种的，是以前按分组复用拿到的工具那把（#1077）。
+export function isChatKeyName(name: string, username: string, group: string): boolean {
+  return name === buildAccountKeyName(username, group, chatKeyNameSuffix) || /^xingmang-chat(?:-|$)/.test(name)
+}
+
+// reusable: which names this caller may take over. Matching on group alone
+// handed the AI chat the tool key of the same group and wrote keys the user
+// made by hand on the web into the CLIs (#1077).
 export function findNewestUsableCliKeyByGroup(
   payload: unknown,
   group: string,
+  reusable: (name: string) => boolean,
   nowSeconds = Math.floor(Date.now() / 1_000),
 ): NewApiExistingCliKeyMatch | null {
   let best: NewApiExistingCliKeyMatch | null = null
   for (const entry of collectionEntries(payload)) {
     if (!isRecord(entry) || asString(entry.group, '') !== group) continue
+    const name = asString(entry.name, '')
+    if (!reusable(name)) continue
     if (asFiniteNumber(entry.status, 0) !== 1) continue
     const expiredTime = asFiniteNumber(entry.expired_time, -1)
     if (expiredTime !== -1 && expiredTime <= nowSeconds) continue
     const unlimitedQuota = entry.unlimited_quota === true
     const remainQuota = asFiniteNumber(entry.remain_quota, 0)
     if (!unlimitedQuota && remainQuota <= 0) continue
+    // A key limited to some models or source IPs on the web would break a CLI
+    // outright, so it is passed over; a revoked key's replacement does not
+    // copy these two limits either.
+    if (entry.model_limits_enabled === true || asString(entry.allow_ips, '').trim()) continue
     const id = entry.id
     if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) continue
-    const name = asString(entry.name, '')
     if (!best || id > best.id) best = { id, name }
   }
   return best
@@ -3778,13 +3795,18 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // （ipc.ts 靠它认是哪个工具）：以前签好的都叫它，认额度上限时两个名字一起认。对话传的是随机名，
       // 它自己那把的上限由 chat-credential-coordinator.ts 认，这里照旧不按名字拦。
       const chat = input.purpose === 'chat'
-      const name = (group && buildAccountKeyName(current.profile.username, group, chat ? '对话' : undefined)) || requested
+      const name = (group && buildAccountKeyName(current.profile.username, group, chat ? chatKeyNameSuffix : undefined)) || requested
       const names = name === requested || chat ? [requested] : [requested, name]
       if (group) {
         if (group.length > 128) throw new Error('CLI Key 分组格式错误')
         await assertUsableGroup(current, group)
         const records = await listAllTokenRecords(current)
-        const existing = input.fresh ? null : findNewestUsableCliKeyByGroup(records, group)
+        // 两边只复用自己这一边签过的：对话认对话的名字；工具认它以前的固定名、「用户名-分组」，
+        // 还有本软件以前给工具签的 xingmang-desktop-*。
+        const reusable = chat
+          ? (candidate: string) => isChatKeyName(candidate, current.profile.username, group)
+          : (candidate: string) => names.includes(candidate) || candidate.startsWith('xingmang-desktop-')
+        const existing = input.fresh ? null : findNewestUsableCliKeyByGroup(records, group, reusable)
         // Only a usable key under this very name, newer than the used-up cap,
         // outranks it. A capped key being created never lifts a cap, so it is
         // not stopped. A newer username-group key does not count as that reset:
