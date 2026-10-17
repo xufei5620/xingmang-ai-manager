@@ -2,7 +2,7 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
-import type { ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
+import type { ReleaseGuard, ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 
 export type UpdatePhase =
@@ -350,6 +350,16 @@ export interface UpdaterRuntime {
    * 读不到返回 null（当作没有那份文件），不能抛错。
    */
   refreshServiceStatus?: () => Promise<ServiceStatus | null>
+  /**
+   * 上次读成功时记在本地的撤回名单和分批放量（#1055）。这次打开软件后状态文件还没读到、
+   * 或者一直读不到，就按它算；读到了以后以读到的为准。不传或 null＝从没读到过，不撤回、不限量。
+   */
+  releaseGuardAtLaunch?: ReleaseGuard | null
+  /**
+   * 状态文件读到的撤回名单或分批放量跟本地记着的不一样时调用，宿主把它记下来。reject 了
+   * 下次读成功时再交一次。不传＝只在内存里记。
+   */
+  rememberReleaseGuard?: (guard: ReleaseGuard) => Promise<void>
   /**
    * 下载好（或命中本地缓存）一个版本时问一句：上次运行是不是已经自动装过它、却没装上
    * （见 auto-update-install.ts 的 resolvePreviousAutoInstallFailure）。返回给用户看的
@@ -942,9 +952,12 @@ export function createUpdaterService(
   let disposed = false
   let lastProgressAt = 0
   // 撤回名单和分批放量是发版的安全网，只认最近一次读成功的那份：网差的电脑这一次没读到状态文件、
-  // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。维护提示和最低版本照旧跟着
-  // 这一次读到的走，读不到就不提示、不拦人。打开软件后一次都没读到过时仍按不撤回、不限量算。
-  let releaseGuard: { badVersions: readonly string[]; rollout: ServiceRollout | null } = { badVersions: [], rollout: null }
+  // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。这份记在本地，打开软件时先用
+  // 上次记下的。维护提示和最低版本照旧跟着这一次读到的走，读不到就不提示、不拦人。从来没读成功过
+  // 的电脑仍按不撤回、不限量算。
+  let releaseGuard: ReleaseGuard = runtime.releaseGuardAtLaunch ?? { badVersions: [], rollout: null }
+  // 本地记着的那份；读到的跟它一样就不再写盘。没记下来时清掉，下次读成功再写。
+  let rememberedReleaseGuard: string | null = JSON.stringify(releaseGuard)
   let manualCheck = false
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
@@ -979,7 +992,7 @@ export function createUpdaterService(
     autoUpdateSupported,
     installedRelease: cloneInstalledRelease(runtime.installedRelease),
     serviceMaintenance: null,
-    currentVersionWithdrawn: false,
+    currentVersionWithdrawn: isWithdrawn(runtime.currentVersion),
     rollback: false,
     diskShortfall: null,
     requiredVersion: null,
@@ -1081,8 +1094,19 @@ export function createUpdaterService(
     })
   }
 
+  const adoptReleaseGuard = (guard: ReleaseGuard) => {
+    releaseGuard = guard
+    const remember = runtime.rememberReleaseGuard
+    const key = JSON.stringify(guard)
+    if (!remember || key === rememberedReleaseGuard) return
+    rememberedReleaseGuard = key
+    void Promise.resolve().then(() => remember(guard)).catch(() => {
+      if (rememberedReleaseGuard === key) rememberedReleaseGuard = null
+    })
+  }
+
   const applyServiceStatus = (status: ServiceStatus | null) => {
-    if (status) releaseGuard = { badVersions: status.badVersions ?? [], rollout: status.rollout ?? null }
+    if (status) adoptReleaseGuard({ badVersions: status.badVersions ?? [], rollout: status.rollout ?? null })
     const maintenance = status?.maintenance ? { message: status.maintenance.message } : null
     const patch: Partial<UpdateSnapshot> = {}
     if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {

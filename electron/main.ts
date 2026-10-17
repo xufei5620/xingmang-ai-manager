@@ -217,6 +217,7 @@ import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
+import { createReleaseGuardStore } from './release-guard-store'
 import type { AccountGroupHints } from './managed-cli-groups'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath, removeDirectoryFromWindowsUserPath } from './windows-cli-shell-access'
@@ -1888,6 +1889,10 @@ if (!hasSingleInstanceLock) {
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
     const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
     const pendingUpdateAtLaunch = pendingUpdateStore.read()
+    // 撤回名单和分批放量记在本地（#1055），同样在更新服务之前读好：开机那次检查时状态文件
+    // 还没读到、或者读不到，也按上次读成功的那份算。
+    const releaseGuardStore = createReleaseGuardStore({ filePath: path.join(managerDataDirectory, 'release-guard.json') })
+    const releaseGuardAtLaunch = releaseGuardStore.read()
     let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
     // 开机自启时在后台装新版本（见下面打开时装），安装器把它重新拉起的这一次照开机自启
     // 那样待在后台。这条记录只认一次，读到就清掉；已经装上的这一版也从记录里清掉，免得
@@ -2012,6 +2017,11 @@ if (!hasSingleInstanceLock) {
       },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
+      releaseGuardAtLaunch,
+      rememberReleaseGuard: (guard) => releaseGuardStore.write(guard).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'release-guard.save-failed', cause)
+        throw cause
+      }),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
       macInstallHandoff: process.platform === 'darwin'
         ? {
@@ -2093,6 +2103,8 @@ if (!hasSingleInstanceLock) {
       signatureVerification: unsignedChannel ? 'none' : 'strict',
       requestGuard: updateRequests !== null,
       updateFeedRoute: directUpdateFeed ? updateFeedLine : 'packaged',
+      // 开机时有没有上次记下的撤回名单和分批放量：状态文件读不到时，客服靠这一项看出还拦着没有。
+      storedReleaseGuard: releaseGuardAtLaunch !== null,
     })
     if (unsignedChannel) {
       runtimeLog.log(
