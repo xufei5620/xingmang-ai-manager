@@ -324,9 +324,9 @@ function abortedCommand(spec: CommandSpecLike): CommandRunnerError {
 /**
  * 能跑到 `npm ci` 的最小安装（同 install-cancel 那份）：依赖图立刻解析好，npm ci 要么一直
  * 不结束、直到它收到的信号停下它（下得动下不动由测试往缓存目录里写字节决定），要么立刻
- * 成功、后面「装到本机」那一步失败，用来看那一步拿到的时长。
+ * 成功、后面「装到本机」那一步按 offlineStderr 失败，用来看那一步拿到的时长和失败后换不换源。
  */
-function createDownloadFixture(downloadBehavior: 'hang' | 'succeed') {
+function createDownloadFixture(downloadBehavior: 'hang' | 'succeed', offlineStderr = 'npm error code E500\n') {
   const root = temporaryDirectory('xingmang-download-stall-')
   const homeDirectory = path.join(root, 'home')
   const runtimeBin = path.join(homeDirectory, '.local', 'bin')
@@ -417,7 +417,7 @@ function createDownloadFixture(downloadBehavior: 'hang' | 'succeed') {
         exitCode: 1,
         signal: null,
         stdout: '',
-        stderr: 'npm error code E500\n',
+        stderr: offlineStderr,
         outputBytes: 0,
         maxOutputBytes: 8 * 1024 * 1024,
         durationMs: 1,
@@ -606,5 +606,40 @@ describe('a CLI download that stops moving', () => {
       .filter(([spec]) => spec.argv.includes('--package-lock-only'))
       .map(([, options]) => options?.timeoutMs)
     expect(resolutions).toEqual([npmResolutionTimeoutMs, npmResolutionTimeoutMs, npmResolutionTimeoutMs])
+  })
+})
+
+// macOS / Linux 装进托管目录前先写一份暂存目录，每个源一份新的（同上，只在 macOS / Linux 主机上跑）。
+describe('a CLI install that fails while writing the staged folder', () => {
+  it.runIf(process.platform !== 'win32')('stops at the first registry when the disk is full', async () => {
+    const fixture = createDownloadFixture('succeed', [
+      'npm error code ENOSPC',
+      'npm error syscall write',
+      'npm error errno -28',
+      'npm error nospc ENOSPC: no space left on device, write',
+      '',
+    ].join('\n'))
+
+    const error = await fixture.service.installCli('claude', fixture.target).catch((failure: unknown) => failure)
+
+    // 下一个源要写的还是那么多，以前照样从头再下一遍。
+    expect(fixture.downloads.map((attempt) => attempt.registry)).toEqual([officialRegistry])
+    expect(fixture.offlineInstalls).toHaveLength(1)
+    expect(classifyOperationError((error as Error).message)).toBe('diskFull')
+  })
+
+  it.runIf(process.platform !== 'win32')('still tries the next registry when the staged folder is busy', async () => {
+    const fixture = createDownloadFixture('succeed', [
+      'npm error code EBUSY',
+      'npm error syscall rename',
+      'npm error EBUSY: resource busy or locked, rename',
+      '',
+    ].join('\n'))
+
+    await fixture.service.installCli('claude', fixture.target).catch((failure: unknown) => failure)
+
+    // 暂存目录每个源都是新的一份，开着的工具占着的不是它。
+    expect(fixture.downloads.map((attempt) => attempt.registry)).toEqual([officialRegistry, mirrorRegistry])
+    expect(fixture.offlineInstalls).toHaveLength(2)
   })
 })

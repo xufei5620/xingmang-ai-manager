@@ -1813,6 +1813,20 @@ export function describeNpmCommandFailure(error: unknown): string {
 }
 
 /**
+ * 换一个 npm 源，换的只是从哪儿下，换不了这台电脑（#1057 第 5a 条）。以前哪一步失败都记成
+ * 「这个源不行」，换下一个源从头再下一遍（最长 30 分钟），下面两种最后报的还是同一个错：
+ * - 盘满了（ENOSPC）：这一轮下的东西删掉以后，下一个源要写的还是那么多，哪一步报的都一样。
+ * - 往正在用的工具目录里写的那一步，文件被占用或者没有权限（EBUSY、ETXTBSY、EPERM、EACCES）：
+ *   下一个源写的还是那个目录，开着的工具也还开着。
+ * 写进暂存目录（管理员身份、macOS、Linux）时撞上的占用不算：开着的工具用的是正在用的那份，
+ * 不是这份；每个源都新建一份暂存目录，换个源照旧可能就过去了。
+ */
+export function isMachineBoundNpmFailure(detail: string, writingFolderInUse: boolean): boolean {
+  if (/\bENOSPC\b/.test(detail)) return true
+  return writingFolderInUse && /\b(?:EBUSY|ETXTBSY|EPERM|EACCES)\b/.test(detail)
+}
+
+/**
  * 卸载不下载任何东西，所以不借上面那句「下载超时」：借过去渲染层会归成下载超时，
  * 叫客户换源重试。这里一律用命令运行器自己那句话（它刻意不说「超时」），后面接上
  * npm 的要点（EPERM、EBUSY 这些），文件被占用要靠它们才认得出来。
@@ -5204,6 +5218,8 @@ export function createSystemService(
           )
         }
         const attemptRoot = path.join(transaction, `attempt-${index}`)
+        // 正在往正在用的工具目录里写；这一步失败时它还是 true（见 isMachineBoundNpmFailure）。
+        let writingFolderInUse = false
         try {
           const resolution = path.join(attemptRoot, 'resolution')
           const cache = path.join(attemptRoot, 'cache')
@@ -5345,7 +5361,9 @@ export function createSystemService(
               cancellation?.seal(managedPrefixSwapSealReason)
             }
             try {
+              writingFolderInUse = writesInPlace
               await lifecycle()
+              writingFolderInUse = false
               // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
               // 而不是带着装不全的程序走到替换托管目录那一步。
               const stagedPrefix = attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null
@@ -5374,6 +5392,16 @@ export function createSystemService(
           // 这个源下了一半的东西先删掉再换源：下载最长能等 30 分钟，留到整次安装结束才删，
           // 盘快满时下一个源更容易写不下。删不掉就算了，结束时 finally 还会整个再删一次。
           await fs.promises.rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined)
+          if (isMachineBoundNpmFailure(detail, writingFolderInUse)) {
+            runtimeLog?.log(
+              'warn',
+              'install',
+              'cli.install.machine-bound-failure',
+              `${definition.name} 写不进本机（盘满、文件被占用或没有权限），换 npm 源也一样，不再换源`,
+              { provider, registry, writingFolderInUse },
+            )
+            break
+          }
         }
       }
       if (!installed) {
