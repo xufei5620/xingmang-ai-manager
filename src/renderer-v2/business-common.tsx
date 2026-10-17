@@ -152,7 +152,8 @@ export function errorMessage(error: unknown, fallback = genericFailure) {
   // 主进程把第三方的原话拼在中文后面时，不能连 Key 一起端上屏（第三十批 B，I13）。
   const safe = userFacingErrorMessage(error)
   if (speaksChinese(safe)) return redactSecretPatterns(safe)
-  if (/401|unauthorized/i.test(safe)) return `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
+  // .NET 的 UnauthorizedAccessException 是文件拒绝访问，不是登录过期（#1095，同 detectionFailureMessage）。
+  if (/401|unauthorized(?!access)/i.test(safe)) return `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
   // 限流与超时是两回事：超时让人去查网络，限流只需要等几秒。没有这条，new-api 的英文
   // 限流原文会掉进最后的通用兜底，把「稍等几秒」说成兜底那句「请重试」。
   // 只认 HTTP 429 与明确的限流措辞，不认裸的 429，避免把额度数字之类误判成限流。

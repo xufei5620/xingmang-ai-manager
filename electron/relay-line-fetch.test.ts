@@ -249,6 +249,23 @@ describe('createRelayLineFetch', () => {
     }
   })
 
+  // Electron 的 net.fetch 碰到跳转不交回 opaqueredirect，只报这一句（#1064）：只读的退回备用线路；
+  // 写请求可能已经送到，不重发。两种都报给线路那边。
+  it('treats the redirect net.fetch gives up on like a portal redirect', async () => {
+    const read = fakeRouter()
+    const readBase = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error('Redirect was cancelled')).mockResolvedValueOnce(json(200))
+    expect((await createRelayLineFetch(read.router, readBase)('https://xm.solov.cc/api/user/self')).status).toBe(200)
+    expect(sentUrls(readBase)).toEqual(['https://xm-direct.solov.cc/api/user/self', 'https://xm.solov.cc/api/user/self'])
+    expect(read.reports).toEqual([['solov', 'intercepted']])
+
+    const write = fakeRouter()
+    const writeBase = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error('Redirect was cancelled')).mockResolvedValueOnce(json(200))
+    await expect(createRelayLineFetch(write.router, writeBase)('https://xm.solov.cc/api/user/login', { method: 'POST', body: '{}' }))
+      .rejects.toThrow('Redirect was cancelled')
+    expect(sentUrls(writeBase)).toEqual(['https://xm-direct.solov.cc/api/user/login'])
+    expect(write.reports).toEqual([['solov', 'intercepted']])
+  })
+
   it('leaves a proxy that is not running and the caller\'s own abort to the caller', async () => {
     // 代理软件本身没开，换哪条线路都一样（归 proxy-bypass.ts 管）。
     const proxyOff = fakeRouter()
