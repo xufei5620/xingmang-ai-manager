@@ -2031,6 +2031,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
+    listKeys: accountService.listKeys.bind(accountService),
     ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
     ...(options.cliModelHints ? { getCliModelHints: options.cliModelHints } : {}),
     // 分组没了换组签了新密钥、新的已写进工具以后，删掉星芒签的旧那把（account-cli-provisioner.ts 的

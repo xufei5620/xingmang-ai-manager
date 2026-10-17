@@ -1,6 +1,6 @@
 import { activeProviderIds, buildAccountKeyName, resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel, type CliModelHints } from './cli-model-defaults'
-import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { findAccountKeyById, isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import {
   loadAccountGroupHints,
   loadManagedCliGroupListing,
@@ -79,7 +79,7 @@ interface ResolvedManagedCliKeys {
 
 type ManagedKeyAccountService = Pick<RelayBackendClient,
   'getSessionState' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listUsableGroups'>
-  & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf' | 'revokeKey'>>
+  & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf' | 'listKeys' | 'revokeKey'>>
   & Pick<ManagedCliGroupAccountService, 'getAccountGroupHints'>
   & {
     /**
@@ -249,7 +249,7 @@ function noteKeyRetirement(
   }
 }
 
-// 新 Key 已经写进这家工具了才删旧那把。删不掉只是账号里多留一把用不了的 Key，不算这家工具配置失败。
+// 新 Key 已经写进这家工具了才删旧那把。删不掉、核不清都只是账号里多留一把 Key，不算这家工具配置失败。
 async function retireReplacedKey(
   accountService: ManagedKeyAccountService,
   keyStore: ManagedCliKeyStoreLike,
@@ -259,12 +259,24 @@ async function retireReplacedKey(
 ): Promise<void> {
   const retirements = pendingKeyRetirements.get(keyStore)
   const pending = retirements?.get(slot)
-  if (!pending || pending.replacementId !== written.id) return
-  retirements!.delete(slot)
-  if (typeof accountService.revokeKey !== 'function') return
+  if (!retirements || !pending || pending.replacementId !== written.id) return
+  retirements.delete(slot)
+  const { listKeys, revokeKey } = accountService
+  if (typeof listKeys !== 'function' || typeof revokeKey !== 'function') return
   try {
     assertSameAuthenticatedUser(accountService, capture)
-    await accountService.revokeKey(pending.keyId)
+    // 本机记的分组可能已经过时：站上删组时常先把 Key 挪到新分组下接着用（catalog.ts 的 retiredAccountGroups），
+    // Claude Desktop 那份拷贝之类可能还拿着它。动手前照服务端现在的样子再核一遍：这把还在、名字仍是星芒签的、
+    // 所在的分组确实已经不能用，才删。
+    const [current, listing] = await Promise.all([
+      findAccountKeyById((query) => listKeys.call(accountService, query), pending.keyId),
+      loadManagedCliGroupListing(accountService),
+    ])
+    assertSameAuthenticatedUser(accountService, capture)
+    if (!current || !listing) return
+    if (!retiresReplacedKey(current, written, listing.names, accountService.getActiveSiteId?.(),
+      accountService.getSessionState().account?.username)) return
+    await revokeKey.call(accountService, pending.keyId)
   } catch {
     // 见上。账号中途换了也落到这里：不拿旧账号的 Key 编号去动新账号。
   }

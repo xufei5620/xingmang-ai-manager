@@ -1497,9 +1497,15 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
     hints?: AccountGroupHints | null
     username?: string
     revokeKey?: ReturnType<typeof vi.fn>
+    /** 服务端此刻的 Key 列表里旧那几把的样子；缺省 = 跟本机缓存一样。 */
+    serverKeys?: Array<Pick<StoredManagedCliKey, 'id' | 'name' | 'group'>>
   }) {
     let nextId = 500
-    const state = { listed: options.listed, hints: options.hints ?? null }
+    const state = {
+      listed: options.listed,
+      hints: options.hints ?? null,
+      serverKeys: options.serverKeys ?? activeProviderIds.map((provider) => siteManagedKey('solov', provider)),
+    }
     const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
       id: nextId++,
       name: input.name ?? 'xingmang-desktop',
@@ -1516,6 +1522,12 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
       provisionCliKey,
       listUsableGroups,
       revokeKey,
+      listKeys: vi.fn(async () => ({
+        page: 1,
+        pageSize: 100,
+        total: state.serverKeys.length,
+        keys: state.serverKeys.map(({ id, name, group }) => ({ id, name, group })),
+      })),
       getAccountGroupHints: vi.fn(async () => state.hints),
     } as unknown as AccountService
     return { accountService, provisionCliKey, listUsableGroups, revokeKey, state }
@@ -1586,7 +1598,10 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
   })
 
   it('never deletes a key the customer made by hand', async () => {
-    const { accountService, revokeKey } = xmAccountService({ listed: afterGptDeleted })
+    const { accountService, revokeKey } = xmAccountService({
+      listed: afterGptDeleted,
+      serverKeys: [{ ...oldCodex, name: '我自己建的' }],
+    })
     const store = xmCache({ codex: { name: '我自己建的' } })
     await syncManagedCliKeySummary(accountService, store)
 
@@ -1597,13 +1612,47 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
   })
 
   it('deletes the username-group key the xm site issued for the tool', async () => {
-    const { accountService, revokeKey } = xmAccountService({ listed: afterGptDeleted, username: 'yoyo' })
+    const { accountService, revokeKey } = xmAccountService({
+      listed: afterGptDeleted,
+      username: 'yoyo',
+      serverKeys: [{ ...oldCodex, name: 'yoyo-GPT' }],
+    })
     const store = xmCache({ codex: { name: 'yoyo-GPT' } })
     await syncManagedCliKeySummary(accountService, store)
 
     await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
 
     expect(revokeKey.mock.calls).toEqual([[oldCodex.id]])
+  })
+
+  it('leaves the old key alone when the site already moved it into a group that still works', async () => {
+    // 站上删组前先把 Key 挪到了新分组下（xm 站以前就这么做过），本机记的还是老分组。
+    const { accountService, revokeKey } = xmAccountService({
+      listed: afterGptDeleted,
+      serverKeys: [{ ...oldCodex, group: 'GPT-Plus' }],
+    })
+    const store = xmCache()
+    await syncManagedCliKeySummary(accountService, store)
+
+    const result = await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
+
+    expect(result.configured).toEqual(['codex'])
+    expect(revokeKey).not.toHaveBeenCalled()
+  })
+
+  it('leaves the old key alone when it can no longer be found or the groups cannot be read', async () => {
+    for (const trouble of ['gone', 'groups'] as const) {
+      const { accountService, revokeKey, state, listUsableGroups } = xmAccountService({ listed: afterGptDeleted })
+      const store = xmCache()
+      await syncManagedCliKeySummary(accountService, store)
+      if (trouble === 'gone') state.serverKeys = []
+      else listUsableGroups.mockRejectedValue(new Error('连接服务器失败'))
+
+      const result = await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
+
+      expect(result.configured).toEqual(['codex'])
+      expect(revokeKey).not.toHaveBeenCalled()
+    }
   })
 
   it('still reports the tool as configured when the old key cannot be deleted', async () => {

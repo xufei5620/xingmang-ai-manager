@@ -6140,6 +6140,49 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       )
     })
 
+    it('deletes the old app-issued key of a deleted group once the replacement is written, and clears both caches', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.revokeKey).mockResolvedValue(undefined)
+      // 站上删了 GPT，开了 GPT-Plus。
+      vi.mocked(accountService.listUsableGroups).mockResolvedValue([{ name: 'GPT-Plus', description: '', ratio: 1 }])
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 100, total: 1, keys: [{
+        id: 7, name: managedCliKeyProfiles.codex.keyName, maskedKey: 'sk-***', group: managedCliKeyProfiles.codex.group, status: 1,
+        remainQuota: 0, unlimitedQuota: true, usedQuota: 0, createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null,
+      }] })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 99, name: input?.name ?? 'managed-key', key: `sk-new-${input?.group}`,
+      }))
+      const service = serviceStub()
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-6-astra'])
+      const codex = managedCliKeyProfiles.codex
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => [{ id: 7, provider: 'codex' as const, group: codex.group, name: codex.keyName, key: 'sk-old' }]),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      const { runtimeLog } = register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, { chatKeyStore })
+
+      await expect(electronMocks.handlers.get('account:configure-managed-clis')!(
+        trustedEvent(),
+        { providers: ['codex'], preferredModels: {}, mode: 'merge' },
+      )).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+      expect(service.saveConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'codex', apiKey: 'sk-new-GPT-Plus' }), false, expect.any(Function), expect.any(Object),
+      )
+      expect(accountService.revokeKey).toHaveBeenCalledWith(7)
+      expect(vi.mocked(service.saveConfig).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(accountService.revokeKey).mock.invocationCallOrder[0])
+      expect(managedCliKeys.remove).toHaveBeenCalledWith(42, 7)
+      expect(chatKeyStore.removeByKeyId).toHaveBeenCalledWith(42, 7)
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'account', 'managed-cli.old-key-revoked', expect.any(String), { keyId: 7 })
+    })
+
     describe('replacing a limited key a tool is using', () => {
       const account = { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 }
       const codex = managedCliKeyProfiles.codex
