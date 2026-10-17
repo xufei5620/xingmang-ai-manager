@@ -1,5 +1,7 @@
 # 交接快照
 
+> ⚠️ **这份快照停在 2026-09-18（0.2.6），之后没有再维护，下面全文只当历史看。** 现在的状态请直接读：`main` 上最近的提交、开着的 PR 和 issue、`release-notes.md` 顶部的版本。改代码前读 `AGENTS.md`，找文件读 `docs/MODULE-MAP.md`。
+>
 > 本文件 = 会话之间的**当前状态快照**，不是流水账。**时效性文档：与 AGENTS.md 或代码冲突时一律以代码为准。**
 > 接手方式：`git checkout main` + 读完本文件即可开工。历史流水（2026-08-10 的「滚动报告」版本）留在 git 历史里，需要时 `git log -- HANDOFF.md` 翻。
 
@@ -51,7 +53,7 @@
 ## ⑤ 开工前必读顺序
 
 1. `docs/ROADMAP.md` — 产品定位与优先级
-2. `AGENTS.md` — 不变量 I1-I15 / 陷阱 T1-T13，**保命的**
+2. `AGENTS.md` — 不变量 I1-I15 / 陷阱 T1-T14，**保命的**
 3. `docs/AGENT-RUNBOOK.md` — 怎么领任务、怎么提 PR
 4. 按改动面补：改账号 → `docs/RECON-new-api.md`；改画布 → `docs/RECON-canvas.md` + `docs/CANVAS-V2-PLAN.md`；动界面 → `ui-spec/HANDOFF.md`
 

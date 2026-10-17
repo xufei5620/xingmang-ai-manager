@@ -8,9 +8,9 @@
 |---|---|---|---|
 | **Windows** | **0** | 需要 `SeCreateSymbolicLinkPrivilege` 的 9 条（`safe-local-data` ×4、`runtime-log` ×2、`backups`、`path-identity`、`relocated-folders`）已按能力门控，没有该特权时跳过而非 EPERM 失败；原先那 5 条 5s 超时已随 `test:vitest` 的 `--testTimeout=30000` 消失 | **#40** |
 | **macOS** | 0 | — | — |
-| **Linux** | 0 | 原 `samePathIdentity` 误删缺陷已修复：launcher 文件清理现走 `macos-platform.ts` 的 `sameFileIdentity`（追加 size/nlink/mtime/ctime 比对） | #2 已关闭 |
+| **Linux** | 0 | 原 `samePathIdentity` 误删缺陷已修复：launcher 文件清理现走 `terminal-launcher-files.ts` 的 `sameFileIdentity`（追加 size/nlink/mtime/ctime 比对，macOS 与 Linux 共用） | #2 已关闭 |
 
-遇到超时类失败先原样复跑一遍 `npm test`（它已经是串行 + 30s 超时）。符号链接那 9 条默认跳过；想在本机真跑，开启 Windows 开发人员模式或以管理员身份运行即可，`electron/symlink-capability.test-support.ts` 会自动探测到。基线与上表不符请到 **#40** 报告。
+遇到超时类失败先原样复跑一遍 `npm test`（它已经是串行 + 30s 超时）。符号链接那 9 条默认跳过；想在本机真跑，开启 Windows 开发人员模式或以管理员身份运行即可，`electron/symlink-capability.test-support.ts` 会自动探测到。#40 已关闭；基线与上表不符请新开一个 issue（标 `area:test` 和对应的 `env:*`）。
 
 ## Node 版本：本机必须跟 CI 一致（22）
 
@@ -54,8 +54,8 @@ Caused by: Error: Worker exited unexpectedly
 多久、为什么。**不要调大 `XINGMANG_FIXTURE_READY_TIMEOUT_MS` 来回避这条**，绿跑用不到它的
 四分之一，调大只会让真坏掉的夹具更晚红。
 
-还没接 `openFixturePage` 的套件（`features/acceleration`、`features/shell` 等，它们接了挂载
-预算但没接重试）遇到上表第二行的形状，仍然按原样重跑一次；连着两轮同一处才当真。
+现在 renderer-v2 的各个浏览器套件（含 `features/acceleration`、`features/shell`）都已接上
+`openFixturePage`。仍遇到上表第二行的形状，按原样重跑一次；连着两轮同一处才当真。
 
 整步超时是另一回事：日志末尾是 `The action 'Run the renderer-v2-browser-N shard' has timed out
 after 18 minutes.`，前面的用例全过。那是机器慢（#873 那三次，每条用例都按差不多同一个倍数变慢）
@@ -73,6 +73,6 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 有一条门禁钉住不许再长回来）。仓库里若干处「Defender 下冷启动慢」的注释对 CI 而言是民间
 传说，排查 CI 不稳时不要从那里起手。
 
-> 云端/CI 容器提示：e2e 里 2 个 Playwright 布局用例要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，指个可用的 executablePath 复跑即绿（vitest 与 scripts 套件不受影响）。
+> 云端/CI 容器提示：`test:browser` 里的 Playwright 套件要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，指个可用的 executablePath 复跑即绿（vitest 与 scripts 套件不受影响）。
 
 > 底线：**不要引入新失败**。

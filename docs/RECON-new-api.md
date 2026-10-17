@@ -1,6 +1,8 @@
 # new-api 对接技术侦察（xm.solov.cc）
 
 > 侦察日期 2026-08-09；方式：QuantumNous/new-api（原 Calcium-Ion，组织已迁移）源码与官方文档只读检索 + 对生产实例单次 `GET /api/status`。无注册/登录/写操作。
+> **最近一次核实**：2026-10-13 对上游 rc.42、rc.43、rc.44 tag 源码核过提示语言的变化（见 C 节第 10 条）；线上实例版本会跟上游漂移，以当次实测为准。下面两段是 8 月的快照。
+>
 > 实例版本 `v1.0.0-rc.22-solov1`（定制分支，上游同期已到 rc.24，近 3 周连发 4 版，迭代快）。
 >
 > **更新 2026-08-10（W4a 实测）**：生产实例已升级到 `v1.0.0-rc.24`（不再明显落后上游）。`usd_exchange_rate` 由 7.3 变为 1，但 `quota_per_unit` 仍为 500000（美元换算只依赖 `quota_per_unit`，此变化不影响）。以下端点已对 rc.24 源码逐行核实：`GET /api/user/self`（`buildSelfUserData`，故意不返 access_token/密码/PAT）、`GET /api/log/self`（分页 `p`/`page_size`，服务端 clamp≤100，响应 `{page,page_size,total,items}`）、充值页 SPA 路由 `/wallet`、邀请链接参数 `?aff=<code>`。下文 rc.22 时点的字段快照与陷阱叙述仍保留作侦察历史。
@@ -53,7 +55,7 @@
 
 ## D. 建议鉴权流
 
-登录 `POST /api/user/login`（Turnstile 按运行时 `/api/status` 决定）→ access_token 存内存/系统安全存储，请求带双头；401 时凭 refresh cookie 静默续期。需要 CLI key 时走三连调，取到明文**立即写入目标 CLI 配置文件**，星芒自身不二次落盘明文（I3 同源原则）。登录方式/验证码开关一律运行时读 `/api/status`；若 OAuth 将来开启，走系统浏览器 + 既有 `xingmang://` 回调协议，不做常驻内嵌 webview。
+登录 `POST /api/user/login`（Turnstile 按运行时 `/api/status` 决定）→ access_token 存内存/系统安全存储，请求带双头；401 时凭 refresh cookie 静默续期。需要 CLI key 时走三连调，取到明文**立即写入目标 CLI 配置文件**。原计划星芒自身不二次落盘明文；后来 `managed-cli-key-store.ts` 用 `safeStorage` 加密缓存了托管 CLI Key（PR #81），目的是复用、不是保护：列表接口只回掩码 Key，不缓存的话每次登录或切账号都要重签或走 reveal。这是 AGENTS.md 第 7 节登记过的例外。登录方式/验证码开关一律运行时读 `/api/status`；若 OAuth 将来开启，走系统浏览器 + 既有 `xingmang://` 回调协议，不做常驻内嵌 webview。
 
 ## 注册方式可用性对照（对齐产品需求）
 
