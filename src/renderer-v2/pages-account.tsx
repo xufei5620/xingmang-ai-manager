@@ -343,6 +343,7 @@ export function AccountPage({
   onOpenHelp,
   onOpenHealth,
   onTabChange,
+  onLogout,
   active,
 }: {
   api: V2Bridge
@@ -382,6 +383,8 @@ export function AccountPage({
   onOpenHealth?: () => void
   /** 现在摆出来的是哪个页签，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
   onTabChange?: (tab: AccountTab) => void
+  /** 概览「退出登录」交给外壳退，外壳才不把自己退出说成「登录已结束」（#1098）；缺省 = 直接让主进程退出。 */
+  onLogout?: () => Promise<void>
   /** 外壳说的「现在显示的是不是这一页」；缺省 = 只按页签算（旧行为）。 */
   active?: boolean
 }) {
@@ -533,6 +536,7 @@ export function AccountPage({
             devicesChanged={devicesChanged}
             onNavigate={openLanding}
             onSwitchAccount={onSwitchAccount}
+            onLogout={onLogout}
             active={(active ?? true) && activeTab === 'overview'}
             changed={changed}
           />

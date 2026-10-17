@@ -593,7 +593,11 @@ const methods = {
   setRememberedAccountLogin: async () => {},
   loginAccount: async (input) => { const resolvedSite = input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov'); session = { authenticated: true, account, ...(resolvedSite === 'solov-api' ? sub2ApiMetadata : { siteId: 'solov' as const }) }; return { ...session, account, accessExpiresAt: null } },
   registerAccount: async () => {},
-  logoutAccount: async () => { session = { ...session, authenticated: false, account: null } },
+  // 同主进程：会话变化的事件先到界面，退出这次调用后返回（#1098）。
+  logoutAccount: async () => {
+    session = { ...session, authenticated: false, account: null }
+    window.v2Test.emit('onAccountSessionChanged', session)
+  },
   // codexOlderSessions：Codex 聊过两次，只是都比首页取的最近 60 条旧，列表里一条也没有（已知40）。
   listProviderSessions: async () => ({ items: query.has('recentWorkspaces') ? recentWorkspaceSessions.map((item) => ({ ...item })) : [], page: 1, pageSize: 60, total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : 0, pages: 1, stats: { total: query.has('recentWorkspaces') ? recentWorkspaceSessions.length : query.has('codexOlderSessions') ? 2 : 0, byProvider: { claude: query.has('recentWorkspaces') ? 3 : 0, codex: query.has('recentWorkspaces') ? 1 : query.has('codexOlderSessions') ? 2 : 0, gemini: query.has('recentWorkspaces') ? 1 : 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
   openProviderSessionDirectory: async () => true,

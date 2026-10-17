@@ -29,6 +29,21 @@ const COS_ERROR_CODES = new Set(['RequestTimeout', 'BadDigest', 'InvalidDigest',
 const COS_ERROR_BODY_STATUSES = new Set(['recognized-code', 'unrecognized-code', 'missing-code', 'empty-body', 'invalid-utf8', 'invalid-xml', 'unsupported-field', 'duplicate-field', 'invalid-entity', 'unsupported-encoding', 'invalid-content-length', 'declared-too-large', 'body-too-large', 'body-timeout', 'body-stream-failed', 'length-mismatch'])
 const COS_ERROR_CONTENT_TYPES = new Set(['missing', 'xml', 'json', 'html', 'text', 'other'])
 const MAX_COS_ERROR_BYTES = 4096
+// Outcomes of the sync scripts' own checks. Their fixed Chinese messages stay in
+// memory like every other message; the log carries only these codes (#1084).
+const CHECK_FAILURE_CODES = new Set(['platform-invalid', 'version-invalid', 'metadata-invalid', 'version-regressed', 'source-url-rejected', 'head-invalid',
+  'download-mismatch', 'source-changed', 'package-format-invalid', 'package-identity-mismatch', 'package-signature-invalid',
+  'license-identity-mismatch', 'inspector-unavailable', 'inspector-failed', 'inspection-unparsable', 'cos-index-invalid',
+  'cos-index-changed', 'cos-object-mismatch', 'temp-path-rejected'])
+// What a package check actually read: names, versions, architectures and the
+// signer of a vendor's public package, plus how a local inspector process
+// ended. None of these come from the runner's environment, COS or a URL.
+const OBSERVED_STRING_FIELDS = new Set(['expectedVersion', 'packageName', 'packageVersion', 'packageArchitecture', 'packagePublisher',
+  'signatureStatus', 'signerName', 'signerSubject', 'signerIssuer', 'signerOrganization', 'teamIdentifier', 'bundleIdentifier',
+  'installerTeamIdentifier', 'installerSignatureStatus', 'inspectorReason', 'inspectorErrorCode'])
+const OBSERVED_BOOLEAN_FIELDS = new Set(['containsPackageSignature', 'timedOut'])
+const OBSERVED_INTEGER_FIELDS = new Set(['exitCode'])
+const MAX_OBSERVED_STRING_LENGTH = 256
 const failureDetails = new WeakMap()
 
 function transferFailure(code, message, details = {}) {
@@ -37,11 +52,61 @@ function transferFailure(code, message, details = {}) {
   return error
 }
 
+function checkFailure(code, message, observed) {
+  if (!CHECK_FAILURE_CODES.has(code)) throw new Error('同步检查失败代码无效')
+  const error = new Error(message)
+  failureDetails.set(error, observed === undefined ? { code } : { code, observed })
+  return error
+}
+
+// How a local inspector process ended, never what it printed: its exit status,
+// Node's spawn error code, or the kill at its timeout.
+function observedProcessFailure(error) {
+  const code = error?.code
+  return { exitCode: Number.isSafeInteger(code) ? code : undefined,
+    inspectorErrorCode: typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(code) ? code : undefined,
+    timedOut: error?.killed === true }
+}
+
+// The architectures a package check read (lipo, a bundle's Mach-O slices) as one
+// space-separated value; a list holding anything but plain names is dropped.
+function observedArchitectures(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 8
+    || !value.every(function (item) { return typeof item === 'string' && /^[A-Za-z0-9_]{1,32}$/.test(item) })) return undefined
+  return value.join(' ')
+}
+
+function readObservedValue(name, value) {
+  if (OBSERVED_BOOLEAN_FIELDS.has(name)) return typeof value === 'boolean' ? value : undefined
+  if (OBSERVED_INTEGER_FIELDS.has(name)) return Number.isSafeInteger(value) && Math.abs(value) <= 0xffffffff ? value : undefined
+  // A control character could forge log lines, and nothing a check reads is a URL.
+  if (!OBSERVED_STRING_FIELDS.has(name) || typeof value !== 'string' || !value || value.length > MAX_OBSERVED_STRING_LENGTH
+    || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value) || value.includes('://')) return undefined
+  return value
+}
+
+function readSafeObserved(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const result = {}
+  for (const name of Object.keys(value)) {
+    // Data properties only: a getter must not run while a failure is reported.
+    const descriptor = Object.getOwnPropertyDescriptor(value, name)
+    const safe = descriptor && Object.hasOwn(descriptor, 'value') ? readObservedValue(name, descriptor.value) : undefined
+    if (safe !== undefined) result[name] = safe
+  }
+  return Object.keys(result).length ? result : null
+}
+
 function readSafeSyncFailure(error, seen, depth) {
   const value = failureDetails.get(error)
-  if (!value || !FAILURE_CODES.has(value.code) || seen.has(error) || depth > 3) return { code: 'operation-failed' }
+  if (!value || !FAILURE_CODES.has(value.code) && !CHECK_FAILURE_CODES.has(value.code) || seen.has(error) || depth > 3) return { code: 'operation-failed' }
   seen.add(error)
   const result = { code: value.code }
+  if (CHECK_FAILURE_CODES.has(value.code)) {
+    const observed = readSafeObserved(value.observed)
+    if (observed) result.observed = observed
+    return result
+  }
   if (['GET', 'HEAD', 'PUT', 'POST', 'DELETE'].includes(value.method)) result.method = value.method
   if (['init', 'part', 'complete', 'abort'].includes(value.multipartOperation)) result.multipartOperation = value.multipartOperation
   if (['not-completed', 'complete-unconfirmed'].includes(value.multipartState)) result.multipartState = value.multipartState
@@ -758,6 +823,7 @@ module.exports = {
   MAX_FILE_BYTES,
   buildCosAuthorization,
   buildCosSigningMaterial,
+  checkFailure,
   createCosStore,
   downloadResource,
   fetchJson,
@@ -765,6 +831,8 @@ module.exports = {
   hashFile,
   inspectResource,
   isTransientTransferFailure,
+  observedArchitectures,
+  observedProcessFailure,
   readBoundedRegularFile,
   readCosConfiguration,
   readCosLocation,

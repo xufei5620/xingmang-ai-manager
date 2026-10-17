@@ -80,6 +80,7 @@ function serviceStub(): SystemService {
     saveConfig: vi.fn(async (): Promise<NativeConfigSaveResult> => ({ backups: [], files: [] })),
     switchToOfficialAccount: vi.fn((): NativeConfigSaveResult => ({ backups: [], files: [] })),
     adoptRestoredConfig: vi.fn(async () => undefined),
+    alignRestoredAccountSource: vi.fn(async () => undefined),
     scanSystem: vi.fn() as never,
     recentScan: vi.fn(() => null),
     cachedScan: vi.fn(async (): Promise<SystemSnapshot | null> => null),
@@ -2603,6 +2604,8 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'codex', 'official')).rejects.toThrow('已恢复到切换前的配置')
     expect(restore).toHaveBeenCalledWith('backup-1', null)
     expect(service.adoptRestoredConfig).toHaveBeenCalledWith('codex', expect.any(Function))
+    // The rollback puts the official marker and credentials back to their pre-switch state itself.
+    expect(service.alignRestoredAccountSource).not.toHaveBeenCalled()
   })
 
   it('returns only an API key preview through config:get', () => {
@@ -7574,6 +7577,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
     })
 
+    it('picks the default model from the published model table', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-6-astra', 'gpt-7'])
+      const cliModelHints = vi.fn(async () => ({ codex: { default: 'gpt-7' } }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { cliModelHints })
+
+      await electronMocks.handlers.get('account:configure-managed-clis')!(trustedEvent(), { providers: ['codex'], preferredModels: {} })
+
+      expect(cliModelHints).toHaveBeenCalled()
+      expect(service.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ provider: 'codex', model: 'gpt-7' }), false, expect.any(Function), { source: 'account', automatic: true })
+    })
+
     it('keeps a restorable backup before a managed-key reset and refuses to reset without one', async () => {
       const service = serviceStub()
       const accountService = accountServiceStub()
@@ -8004,6 +8029,11 @@ describe('backup handlers and account key ownership', () => {
     expect(isAccountKey('sk-someone-else')).toBe(false)
     // Only a backup the user picked here may turn the skill off it restores into theirs.
     expect(adoptOptions).toEqual({ fromBackupsPage: true })
+    // The official marker follows the restored config only after its source is recorded,
+    // so the Codex skill record is settled before the marker flips.
+    expect(service.alignRestoredAccountSource).toHaveBeenCalledWith('codex')
+    expect(vi.mocked(service.alignRestoredAccountSource).mock.invocationCallOrder[0])
+      .toBeGreaterThan(vi.mocked(service.adoptRestoredConfig).mock.invocationCallOrder[0])
   })
 
   it('stops trusting the key cache when the account changes during a restore', async () => {
@@ -8027,6 +8057,18 @@ describe('backup handlers and account key ownership', () => {
     const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
     expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能登记'), expect.objectContaining({ provider: 'codex' }))
+    expect(service.alignRestoredAccountSource).toHaveBeenCalledWith('codex')
+  })
+
+  it('still reports a completed restore when the official marker cannot follow it', async () => {
+    const backupStore = backupStoreStub()
+    const service = serviceStub()
+    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方 Key 没能挪开'))
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
+    await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能跟着对齐'), expect.objectContaining({
+      provider: 'codex', reason: expect.stringContaining('官方 Key 没能挪开'),
+    }))
   })
 
   it('rejects a malformed restore id before touching any file', () => {

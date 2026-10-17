@@ -802,7 +802,7 @@ export async function syncXingmangAiSkill(
     return {
       ready: false,
       installed,
-      reason: imageGroup ? '星芒AI 生图 Key 未完成初始化' : '当前账号没有可用的 Codex 或图片模型 Key',
+      reason: imageGroup ? '星芒AI 生图密钥未完成初始化' : '当前账号没有可用的 Codex 或图片模型密钥',
       ...(warnings.length ? { directoryWarnings: warnings } : {}),
     }
   }

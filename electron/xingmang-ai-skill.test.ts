@@ -378,6 +378,24 @@ describe('xingmang-ai-skill', () => {
     expect(parsed.apiKey).toBeUndefined()
   })
 
+  // 这句原样上首页提示条，按界面叫法说「密钥」，不说 Key。
+  it('reports a missing skill key in the home-notice wording when neither key can be issued', async () => {
+    const provision = vi.fn(async () => { throw new Error('当前账号不可使用分组「GPT」') })
+    const noImageGroup = loggedInAccount({ groups: [{ name: 'default' }], provision })
+    await expect(syncXingmangAiSkill({
+      accountService: noImageGroup.accountService,
+      bundledRoot,
+      userHome: await temporaryHome(),
+    })).resolves.toMatchObject({ ready: false, reason: '当前账号没有可用的 Codex 或图片模型密钥' })
+
+    const withImageGroup = loggedInAccount({ provision })
+    await expect(syncXingmangAiSkill({
+      accountService: withImageGroup.accountService,
+      bundledRoot,
+      userHome: await temporaryHome(),
+    })).resolves.toMatchObject({ ready: false, reason: '星芒AI 生图密钥未完成初始化' })
+  })
+
   it('follows the published group map once the image and Codex groups are renamed on the site', async () => {
     const userHome = await temporaryHome()
     const { accountService, provisionCliKey } = loggedInAccount({

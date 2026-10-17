@@ -4,6 +4,22 @@ import { parseDocument, stringify } from 'yaml'
 export const MAX_ACCELERATION_CLASH_BYTES = 2 * 1024 * 1024
 const MAX_NODE_COUNT = 512
 
+// rule 模式下 mihomo 不会自己放过局域网：路由器、NAS、打印机、公司内网 IP 会被送去海外共享节点，
+// 打不开，内网的明文登录还要经过第三方（#1058 第 2 项）。no-resolve 只认直接写 IP 的请求，
+// 不为了匹配去解析域名；解析到内网 IP 的公司域名（oa.xxx.com）因此拦不住，要拦就得让内核做 DNS。
+// 内核关着 IPv6（下面 ipv6: false），IPv6 内网地址直连也拨不出去，但至少不再送去第三方节点。
+const privateNetworkRules = [
+  'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve',
+  'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
+  'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
+  'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
+  'IP-CIDR,169.254.0.0/16,DIRECT,no-resolve',
+  'IP-CIDR,100.64.0.0/10,DIRECT,no-resolve',
+  'IP-CIDR6,::1/128,DIRECT,no-resolve',
+  'IP-CIDR6,fc00::/7,DIRECT,no-resolve',
+  'IP-CIDR6,fe80::/10,DIRECT,no-resolve',
+]
+
 interface Hysteria2Connection {
   type: 'hysteria2'
   server: string
@@ -246,6 +262,7 @@ export function buildIsolatedMihomoConfig(profile: AccelerationClashProfile, opt
     // 系统代理，这样四个工具和本软件自己连中转都是同一条直连的路。
     rules: [...directHosts.map((host) => `DOMAIN,${host},DIRECT`),
       ...directIps.map((ip) => `${isIP(ip) === 4 ? 'IP-CIDR' : 'IP-CIDR6'},${ip}/${isIP(ip) === 4 ? 32 : 128},DIRECT,no-resolve`),
+      ...privateNetworkRules,
       'MATCH,XINGMANG'],
   }
   if (options.controllerPort !== undefined) {
