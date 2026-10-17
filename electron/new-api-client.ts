@@ -2546,10 +2546,16 @@ export interface NewApiExistingCliKeyMatch {
 
 const chatKeyNameSuffix = '对话'
 
+// 分组名很长时，50 字节一截「-对话」就没了，可能跟同组工具那把同名：这种不用，照旧用随机的 xingmang-chat-*。
+function buildChatKeyName(username: string, group: string): string | null {
+  const name = buildAccountKeyName(username, group, chatKeyNameSuffix)
+  return name?.endsWith(`-${chatKeyNameSuffix}`) ? name : null
+}
+
 // AI 对话签过的 Key 叫什么：#1106 起是「用户名-分组-对话」，更早是随机的 xingmang-chat-*，
 // 历史账号那套固定叫 xingmang-chat。对话缓存里不是这几种的，是以前按分组复用拿到的工具那把（#1077）。
 export function isChatKeyName(name: string, username: string, group: string): boolean {
-  return name === buildAccountKeyName(username, group, chatKeyNameSuffix) || /^xingmang-chat(?:-|$)/.test(name)
+  return name === buildChatKeyName(username, group) || /^xingmang-chat(?:-|$)/.test(name)
 }
 
 // reusable: which names this caller may take over. Matching on group alone
@@ -3795,7 +3801,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // （ipc.ts 靠它认是哪个工具）：以前签好的都叫它，认额度上限时两个名字一起认。对话传的是随机名，
       // 它自己那把的上限由 chat-credential-coordinator.ts 认，这里照旧不按名字拦。
       const chat = input.purpose === 'chat'
-      const name = (group && buildAccountKeyName(current.profile.username, group, chat ? chatKeyNameSuffix : undefined)) || requested
+      const name = (group && (chat
+        ? buildChatKeyName(current.profile.username, group)
+        : buildAccountKeyName(current.profile.username, group))) || requested
       const names = name === requested || chat ? [requested] : [requested, name]
       if (group) {
         if (group.length > 128) throw new Error('CLI Key 分组格式错误')

@@ -49,7 +49,7 @@ import {
   parseTopupOrdersPage,
   type NewApiFetch,
 } from './new-api-client'
-import { managedCliKeyProfiles } from './catalog'
+import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
 import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
@@ -3430,6 +3430,32 @@ describe('provisionCliKey reuse stays on its own side', () => {
     expect(isChatKeyName('tester-vip-对话', 'tester', 'codex-pro')).toBe(false)
     expect(isChatKeyName(managedCliKeyProfiles.codex.keyName, 'tester', 'codex-pro')).toBe(false)
     expect(isChatKeyName('xingmang-chatter', 'tester', 'codex-pro')).toBe(false)
+  })
+
+  // 分组名很长时「-对话」会被 50 字节截掉，跟工具那把撞名；撞了就不算对话的名字。
+  it('never takes a tool key name for a chat key name when a long group cuts off the suffix', () => {
+    const group = 'g'.repeat(43)
+    const tool = buildAccountKeyName('tester', group)
+    expect(buildAccountKeyName('tester', group, '对话')).toBe(tool)
+    expect(isChatKeyName(tool!, 'tester', group)).toBe(false)
+  })
+
+  it('falls back to its random name when a long group would cut the chat suffix off', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const group = 'g'.repeat(43)
+    const tool = { ...usable, group, id: 3, name: buildAccountKeyName('tester', group) }
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { [group]: { desc: '长分组', ratio: 1 } } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 1, items: [tool] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+        tool, { ...usable, group, id: 5, name: 'xingmang-chat-abc' },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-long-group' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group, purpose: 'chat' }))
+      .resolves.toEqual({ id: 5, name: 'xingmang-chat-abc', key: 'sk-chat-long-group' })
   })
 
   it('takes over only names the caller accepts and skips keys limited to some models or IPs', () => {
