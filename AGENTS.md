@@ -8,7 +8,7 @@
 - 不要往这里写计数（多少个模块 / 用例 / 通道）和行号。计数会过期，行号会漂移。
   引用代码位置一律用符号名（函数名、常量名），grep 一次就到，且永不过期。
 - 会随阶段变化的内容放第 10 节，或搬进 .claude/rules/（按路径触发）与 docs/（按需读）。
-- 目标：控制在 280 行上下。官方建议 200 行，但第 4 节 I1-I15 与第 5 节 T1-T13
+- 目标：控制在 280 行上下。官方建议 200 行，但第 4 节 I1-I15 与第 5 节 T1-T14
   占了一半篇幅，它们是这个仓库最不该丢的资产，不压缩。要加新内容，先想能不能放 docs/ 或 rules/。
 -->
 
@@ -16,29 +16,30 @@
 
 ## 1. 这是什么项目
 
-**星芒AI管理工具** — 面向 Windows 的 Electron 桌面客户端（Mac 适配进行中），是 AI API 中转服务商（`xm.solov.cc`）发给付费客户的配套软件。
+**星芒AI管理工具** — 面向 Windows 与 macOS 的 Electron 桌面客户端（Linux 在做），是 AI API 中转服务商星芒发给付费客户的配套软件。
 
 **它解决的问题**：普通用户想用 Claude Code、Codex CLI 这类 AI 编程工具，得先装 Node.js、再用 npm 装 CLI、再手工编辑配置文件填 API Key 和 base URL——门槛太高。本工具把整条链路包成图形界面。
 
-**商业定位**：不是通用工具。四个 CLI 的 base URL 全部硬编码指向 `xm.solov.cc`（2026-08-10 起中转与账号后端统一到同一 new-api 实例，原 `api.solov.cc` 退役），onboarding 填的是"安装授权码"。**它的价值 = 降低客户接入门槛、减少客服成本。这条链路断了，用户就退款。**
+**商业定位**：不是通用工具。CLI 的 base URL 不让用户填，由登录的账号站点决定（`relay-sites.ts`）：星芒账号是 `xm.solov.cc`（new-api，2026-08-10 起中转与账号后端同一实例），历史账号是 `api.solov.cc`（sub2api，**仍在服役，没有退役**）。每个站点两条线路：线路1 是 CF 入口，线路2 是洛杉矶直连（`xm-direct` / `api-direct`），设置值和日志名仍叫 `primary` / `direct`；选「自动」时星芒账号先走线路2，历史账号先走线路1。主流程是登录星芒账号，登录后自动签发密钥写进工具（也能手动填密钥）。**它的价值 = 降低客户接入门槛、减少客服成本。这条链路断了，用户就退款。**
 
-**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端。Gemini CLI（`@google/gemini-cli`）2026-10-14 下线：界面不显示、不再装、不再改它的配置，老客户电脑上的不卸不删；代码里它仍是 `ProviderId`，挂在 `catalog.ts` 的退役名单 `retiredProviderIds` 上，「替每个工具做点什么」的地方一律走 `activeProviderIds`。
+**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端；另有三个外部桌面客户端 Claude Desktop、WorkBuddy、OpenCode（`external-client-*`，只管安装、配置和打开，不是 `ProviderId`）。Gemini CLI（`@google/gemini-cli`）2026-10-14 下线：界面不显示、不再装、不再改它的配置，老客户电脑上的不卸不删；代码里它仍是 `ProviderId`，挂在 `catalog.ts` 的退役名单 `retiredProviderIds` 上，「替每个工具做点什么」的地方一律走 `activeProviderIds`。
 
-**内置的两块新能力**（2026-08 集成）：
-- **星芒账号**：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值外链，登录后自动签发 CLI Key 并写进 CLI 配置。
-- **无限画布 + AI 工作区**：本仓自研的节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程，与 CLI 共用同一账号额度。
+**内置的几块能力**：
+- **星芒账号**（2026-08）：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值，登录后自动签发 CLI Key 并写进 CLI 配置。历史账号站 `api.solov.cc` 走 sub2api（`sub2api-*`），两个账号域由 `realm-account*` 隔开。
+- **无限画布 + AI 工作区**（2026-08）：本仓自研的节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程，与 CLI 共用同一账号额度。
+- **线路自动切换与游戏加速**：客户端在线路1、线路2 之间自己切（`relay-route-controller.ts` / `relay-line-fetch.ts`）；游戏加速是本机 Mihomo 系统代理（`acceleration-*`，见 `docs/GLOBAL-ACCELERATION.md`）。
 
-**技术栈**：Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 账号后端 `xm.solov.cc`（new-api 生产实例，实测 v1.0.0-rc.24，端点事实见 `docs/RECON-new-api.md`）。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台；Linux（只出 deb）已能打包并在 CI 里真装真开，第一版功能已做完（不带加速），发布开关还关着，见 `docs/LINUX.md`。
+**技术栈**：Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 两个账号后端（`xm.solov.cc` 是 new-api 生产实例，版本会跟上游漂移；`api.solov.cc` 是 sub2api），new-api 端点事实见 `docs/RECON-new-api.md`。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台；Linux（只出 deb）已能打包并在 CI 里真装真开，第一版功能已做完（不带加速），发布开关还关着，见 `docs/LINUX.md`。
 
 ---
 
 ## 2. 代码地图：改代码前必须知道的三条
 
-完整模块地图（主进程各模块职责、渲染进程结构、macOS 相关模块）在 `docs/MODULE-MAP.md`，找文件时再读。常驻要点只有三条：
+完整模块地图（主进程按子系统、`electron/platform/`、renderer-v2、macOS / Linux 模块）在 `docs/MODULE-MAP.md`，找文件时再读。常驻要点只有三条：
 
-- **`ipc-contract.ts` 是唯一的跨进程类型真相源**；`preload.ts` 里的通道表是 sandbox 约束下的有意重复（见 I7、T1）。
+- **跨进程通道有三套，各自一组「契约 + preload + 注册」**：主窗口业务通道 `ipc-contract.ts` + `preload.ts` + `ipc.ts`；主窗口系统设置与通知 `platform/contract.ts` + `platform/preload.ts` + `platform/ipc.ts`（`xingmang-platform:*`）；画布窗口 `canvas-contract.ts` + `canvas-preload.ts` + `canvas-window.ts`（`canvas-host:*`）。三个 preload 里的通道表都是 sandbox 约束下的有意重复（见 I7、T1）。
 - **本项目的复杂度不在业务，在提权、可信路径与原子写入这套边界上**——`command-runner.ts` / `windows-elevation.ts` / `windows-machine-paths.ts` / `trusted-temp.ts` / `config-files.ts`（见第 4 节）。
-- **画布是全项目唯一运行第三方前端代码的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。
+- **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另一个加载外部网页的是充值的支付窗口 `payment-window.ts`，它不挂 preload（见 I15）。
 
 **改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
@@ -49,11 +50,11 @@
 ## 3. 命令与硬门槛
 
 ```bash
-npm run typecheck   # 四连检：根 tsconfig（src）+ 主进程 tsconfig + electron 测试 tsconfig + renderer-v2 tsconfig
-npm test            # test:vitest（electron+src，关文件级并行 + 30s 超时）+ test:scripts + test:browser
+npm run typecheck   # 四连检：根 tsconfig（src）+ 主进程 tsconfig + electron 测试 tsconfig + renderer-v2 tsconfig（不含 canvas-v2，它在 canvas:prepare 第一步自查）
+npm test            # test:vitest + test:scripts + test:browser；test:vitest 的 `electron src` 按路径子串过滤，实际跑 electron/、src/（含 renderer-v2）和 canvas-v2/src，关文件级并行 + 30s 超时
 npm run test:scripts    # 单跑 scripts/*.test.cjs（构建、CI、发布脚本）
-npm run test:browser    # 单跑 e2e 里随 npm test 走的两个浏览器套件（串行起 Chromium）
-npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 会执行
+npm run test:browser    # 单跑 e2e 里随 npm test 走的那几个浏览器套件（串行起 Chromium）
+npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 拆开跑：单测那半已含在 test:vitest 里，浏览器那半分片跑
 npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
 npm run compile:legacy  # 显式构建 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
@@ -85,7 +86,7 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 `toNativeConfigSummary` 解构剥离 `apiKey`；明文仅走 `config:reveal-api-key`。**账号凭据同理**：`accessToken` / refresh cookie 在 IPC 契约里 0 处返回给渲染层（渲染层只拿登录态快照），加密落盘走 `account-session-store.ts`。
 *违反后果*：用户一次"导出反馈"就把付费 Key 发到客服群。
 
-*已登记的例外*：「记住密码」的明文密码走 `account:get-remembered-login` / `account:set-remembered-login` 一对专用通道跨 IPC——这是**有意的产品取舍**（勾了就要看见填好的登录框，渲染层没别的途径拿到它），落盘由 `account-credential-store.ts` 以 `safeStorage` 加密，两条通道都在 `ipc.ts` 的日志静默名单里（同 I13）。约束与 `config:reveal-api-key` 相同：**只能是这两条专用通道**，明文永不许搭普通查询（登录态快照、账号资料、诊断导出）的便车。
+*已登记的例外*：明文跨 IPC 只走这几条专用通道，全都在 `ipc.ts` 的日志静默名单里（同 I13）：`config:reveal-api-key`；`account:reveal-key`（复制账号密钥时取一次明文）；`account:reset-password` 的返回值（服务端生成的新密码）与 `account:copy-reset-password` 的入参；「记住密码」的 `account:get-remembered-login` / `account:set-remembered-login`——这一对是**有意的产品取舍**（勾了就要看见填好的登录框，渲染层没别的途径拿到它），落盘由 `account-credential-store.ts` 以 `safeStorage` 加密。**只能是专用通道**，明文永不许搭普通查询（登录态快照、账号资料、诊断导出）的便车；新增一条要在这里登记。
 
 **I4. 所有 `ipcMain.handle` 必须经 `registerTrustedHandler`。**
 它统一做 sender URL 校验、结构化日志、dispose 注册。**两处例外，都只服务一个窗口、且校验比它更窄**：`canvas-host:*` 由 `canvas-window.ts` 的 `registerCanvasHandler` 注册（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender，主窗口调会被拒）；`xingmang-platform:*` 由 `platform/ipc.ts` 的 `registerPlatformHandlers` 注册（`assertPlatformOwner` 只放行主窗口主框架）。两者都要自己补齐日志这一半：platform 侧走 `registerPlatformHandlers` 的 `log` 回调，由 `platform/runtime-log-bridge.ts` 接到 `runtimeLog`（handler 比 `RuntimeLogStore` 先注册，中间这段缓冲后补发）。新通道不许效仿，除非同样只服务一个隔离窗口。
@@ -95,11 +96,12 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 *违反后果*：`skills:uninstall` 收到 `../../../` 就删用户任意文件。
 
 **I6. `ipc-contract.ts` 只能 `import type`，值导出只能来自无 Node 依赖的模块。**
-`src/types.ts` 是 `export *`（值级别），Vite 会把它真的打进渲染 bundle。目前唯一值导出是 `providerIds`（来自零依赖的 `catalog.ts`）。
+`src/types.ts` 是 `export *`（值级别），Vite 会把它真的打进渲染 bundle。目前的值导出来自两个零依赖模块：`catalog.ts`（`providerIds`、`managedCliKeyProfiles`）和 `relay-sites.ts`（站点与线路表及几个纯函数）。
+renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守这条边界的是门禁 `scripts/verify-renderer-boundary.test.cjs`：渲染层能值导入的主进程模块只能是它 `valueImportable` 名单上的，名单上的每个模块都不许依赖 Node；只被 `import type` 的放 `typeImportableOnly`。要让渲染层值导入一个新的主进程模块，就是改这张名单，并在旁边写明它为什么不碰 Node。
 *违反后果*：加一个 `export { xxx } from './system-service'` → Vite 尝试打包 `node:fs` → 构建失败，或更糟：主进程逻辑泄进渲染进程。
 
-**I7. `preload.ts` 是 sandbox 脚本，不能 import 本地运行时模块。**
-这是通道表被复制两份的**唯一原因**。
+**I7. 三个 preload（`preload.ts`、`platform/preload.ts`、`canvas-preload.ts`）都是 sandbox 脚本，不能 import 本地运行时模块。**
+这是每套通道表都被复制两份的**唯一原因**（契约里一份、preload 里一份字面量，由各自的测试钉住）。
 *违反后果*：preload 加载失败 → `window.xingmang` undefined → 白屏，且打包版禁用了 devtools 难以排查。
 
 **I8. 本地文件读写必须走 `safe-local-data` / `bounded-*` 系列。**
@@ -120,7 +122,7 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 *已登记的例外*：WorkBuddy、Claude Desktop、OpenCode 三个桌面客户端的「打开」（`external-client-runtime.ts` 的 `launch`，2026-10-16 yoyo 真机报「装着 Claude Code 点 Claude Desktop 全卡住」）。它只读这一家自己的安装位置和签名、交给资源管理器（Mac 上是 `open`），别的工具装到一半碰不到它，开机盘点这三家本来也不排队；所以不进队列，只等同一家正在装的那一次，反过来点安装前已经在打开的，安装等它交出去再动手（两边都只等先来的那一次，不会互相等死）。命令行工具和 Codex 桌面端的「打开」照旧排队，它们读的正是安装会原子替换的目录。不要把这个例外扩到它们身上。
 
 **I12. 渲染进程导航与外链必须过白名单，外链要 `href` 全等匹配。**
-刻意做全等而非前缀匹配，因为前缀匹配会被 `https://xm.solov.cc.evil.com` 绕过。画布窗口同样受此约束（`canvas-window.ts` 的 `will-navigate` / `setWindowOpenHandler` 都过白名单）；充值页 `/wallet` 已在白名单内。
+刻意做全等而非前缀匹配，因为前缀匹配会被 `https://xm.solov.cc.evil.com` 绕过。画布窗口同样受此约束（`canvas-window.ts` 的 `will-navigate` / `setWindowOpenHandler` 都过白名单）。充值不开外部浏览器：在个人中心下单，付款页由 `payment-window.ts` 的独立窗口打开（见 I15），`/wallet` 不在外链白名单里。
 
 **I13. 日志、诊断、导出必须脱敏。**
 三层：`redactCommandText`（Bearer/sk-/api_key=）、`redactHomeDirectory`（路径→`%USERPROFILE%`）、`sanitizeValue`（按 key 名）。账号侧的 refresh cookie **值**也已并入 secrets 名单。
@@ -132,33 +134,37 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 画布窗口与主窗口**不共享 rendererRoot**、协议解析必须委托 `resolvePackagedApplicationFile`，且 `xingmang-canvas://` 的 CSP 必须由主进程响应头强制注入。**API Key 只在主进程按账号与分组解析，绝不进入渲染进程**（`chat-credential-coordinator.ts`）——这是 2026-08-12 架构统一（PR #85）的核心：画布发的是"请求"，不是"带着 Key 的请求"。给画布加任何新能力前先回答：**画布被供应链投毒后，这个能力能干什么？** 文件读写必须走原生对话框（用户选路径）+ `bounded-*`/原子写，外链必须过白名单，入参必须过 `canvas-request-parser.ts` 的字段白名单。唯一的文件路径例外是 OS 拖放：路径只能由隔离 preload 的 `webUtils.getPathForFile(File)` 取得，主进程仍须执行绝对路径、reparse、单链接普通文件校验，最终资产 store 再以 open + fstat 复核。宿主桥的通道清单以 `canvas-contract.ts` 的 `canvasHostChannels` 为准，已完成通道级投毒审计。**不得新增第二个由 renderer 提供绝对路径的通道。**
 *违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它既摸不到主进程 IPC，也拿不到 Key。
 
+支付窗口（`payment-window.ts`）是另一个加载外部网页的窗口，付款页来自支付商、不归我们控制。它守的是更严的一条：**不挂 preload**（页面拿不到任何宿主桥）、`sandbox` 加每次随机的 `partition`、权限请求与下载一律拒绝、导航和新窗口只放行白名单 origin。给它加 preload 或放宽导航前，先回答同一个问题：付款页被换掉以后，这个能力能干什么？
+
 ---
 
 ## 5. 改动陷阱清单
 
-**T1. 加/删 IPC 通道 → `ipc-contract.ts`、`ipc.ts`、`preload.ts` 三处必须一致。**
-`ipc.test.ts` 把 `ipc.ts` 实际注册的通道和 `ipcInvokeChannels` 排序后比对，漏注册、多注册、重复注册都会红；`preload.test.ts` 钉住 preload 里那份通道表副本。三处都**不看先后顺序**，新通道放在哪一行都行，并行加通道不用排队。`ipc-contract.ts` 列在 `.github/CODEOWNERS` 里，通道数就是渲染进程能碰到的主进程入口（I5），加通道要让 yoyo 看得见。
+**T1. 加/删 IPC 通道 → 同一套的契约、注册、preload 三处必须一致。**
+主窗口业务通道是 `ipc-contract.ts`、`ipc.ts`、`preload.ts`：`ipc.test.ts` 把 `ipc.ts` 实际注册的通道和 `ipcInvokeChannels` 排序后比对，漏注册、多注册、重复注册都会红；`preload.test.ts` 钉住 preload 里那份通道表副本。三处都**不看先后顺序**，新通道放在哪一行都行，并行加通道不用排队。
+另两套各自成组：`platform/contract.ts` 的 `platformChannels` + `platform/ipc.ts` + `platform/preload.ts`（`platform/ipc.test.ts`、`platform/preload.test.ts` 钉住）；`canvas-contract.ts` 的 `canvasHostChannels` + `canvas-window.ts` + `canvas-preload.ts`（`canvas-window.test.ts` 钉住）。
+三个契约文件都列在 `.github/CODEOWNERS` 里：通道数就是渲染进程能碰到的主进程入口（I5），加通道要让 yoyo 看得见。
 
 **T2. 给 `ProviderId` 加第 5 个 CLI → 改动点已收口，编译器/测试会带你走完。**
 
-顺序：`catalog.ts` 的 `providerIds` / `cliCatalog` / `managedCliKeyProfiles` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 claude/codex/gemini/grok 与管理序 codex/claude/gemini/grok，差异只在头两位、是有意为之，各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts` 的 `providers`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx` 的来源标签等，全是编译错）。
+顺序：`catalog.ts` 的 `providerIds` / `cliCatalog` / `managedCliKeyProfiles` 三处 → `config-files.ts` 里的各个 `switch (provider)`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 claude/codex/gemini/grok 与管理序 codex/claude/gemini/grok，差异只在头两位、是有意为之，各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts` 的 `providers`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx` 的来源标签等，全是编译错）。
 
-v2 渲染层同样已收口，且**只有一套展示顺序**（v3.1.1 起，以 `registry/tools.ts` 的 `tools` 数组次序为准，`registry/tools.test.ts` 钉住；上面那两套顺序只服务已冻结的 legacy 树）：`src/renderer-v2/registry/tools.ts` 的 `ToolDef.id` 是 `ProviderId | 'codexDesktop'`，`officialAccountNames` 是无 default 的 `Record<ProviderId, string | null>`，npm 包名与配置目录名从 `catalog.ts` 派生，漏键是编译错，`registry/tools.test.ts` 另有覆盖断言（R-S11）。
+v2 渲染层同样已收口，且**只有一套展示顺序**（v3.1.1 起，以 `registry/tools.ts` 的 `tools` 数组次序为准，`registry/tools.test.ts` 钉住；上面那两套顺序只服务已冻结的 legacy 树）：`src/renderer-v2/registry/tools.ts` 的 `ToolDef.id` 是 `ActiveProviderId | 'codexDesktop'`，`officialAccountNames` 是无 default 的 `Record<ActiveProviderId, string | null>`（下线的 Gemini 不在里面），npm 包名与配置目录名从 `catalog.ts` 派生，漏键是编译错，`registry/tools.test.ts` 另有覆盖断言（R-S11）。
 
 历史包袱：这里曾有 5 处编译器沉默点（各页面自写 provider 联合类型/字面量数组），已随 #32 全部收口进 registry。**新的展示顺序数组只能定义在 registry 里，不要在页面里写字面量**。遗留手工点：概览页 `Dashboard.tsx` 的「N/5 个工具已安装」分母仍是硬编码。
 
 **T3. 改 `system-service.ts` → 先确认改的是纯函数区还是闭包区。**
 `createSystemService` 之前是纯函数库（全部 export、测试直接调用），它之后是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。这是全仓最大、也最容易撞车的文件。
 
-**T4. 动 `trustedCommandEnvironment` → 只能加禁止项，不能加放行项。**
-三张表是白名单式收紧，每条对应一个具体攻击。放行任何变量前，先在测试里写出"该变量为什么安全"。
+**T4. 动 `trustedCommandEnvironment` → 只能收紧，不能放宽。**
+`unsafeKeys` / `unsafePrefixes` 两张禁止表只能加不能减，每条对应一个具体攻击。第三张 `safeGitOverrides` 是放行表，但只放行几个固定值（让 git 不读系统和全局配置、不弹密码提示的那几个），往里加的只能是让子进程更保守的固定值。放行任何变量或值前，先在测试里写出"为什么安全"。
 
 **T5. 修跨平台问题 → macOS 的路径信任问的不是 Windows 那个问题，别照搬。**
 Windows 问「低于 Administrator 的主体能不能写这里」，因为那边程序可能持有提权令牌；**macOS 上本程序从不提权**，边界换成「除 root 与当前用户之外的主体能否改动它解析后的目标」。三个函数在 macOS 上的语义、两个最容易误读的点、刻意不做的事与仍然欠着的事，见 `.claude/rules/macos-platform.md`——改到 `electron/macos-*` / `darwin-*` / `platform-capabilities.ts` / `src/platform-presentation.ts` 时会自动加载。
 **Linux 问的也是 macOS 那个问题，但组可写目录的判法不同**（按 `/etc/group` 的实际成员，不照搬 macOS 的 gid 0/80），另有拒绝 root 运行、画布沙箱检查，见 `.claude/rules/linux-platform.md`——改到 `electron/linux-*` / `platform-capabilities.ts` 时自动加载。
 
 **T6. 渲染进程加异步数据加载 → 必须用竞态守卫。**
-三个现成工具：`scan-coordinator.ts`（扫描）、`latest-request.ts`（按 key 的页面数据）、`provider-extension-coordinator.ts`（切 provider）。直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。
+直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。renderer-v2 的写法：组件或 hook 里一个请求计数器（`const request = useRef(0)`，每发一次请求和卸载时加一，响应回来时计数对不上就丢掉），或 effect 里的 `let current = true` 取消标记；纯逻辑的控制器里用 revision / epoch。`scan-coordinator.ts` / `latest-request.ts` / `provider-extension-coordinator.ts` 三个工具在冻结的 legacy 树里，v2 没有用它们。
 
 **T7. 给 `src/` 加组件测试 → 用 `renderToStaticMarkup`，不要加 DOM 环境。**
 仓库**有 `vitest.config.ts`**（三个 project：`legacy` 覆盖 `src/**` 与 `electron/**`、`renderer-v2`、`canvas`，都挂了 `@vitejs/plugin-react`，legacy 另把 React 别名指向 `tooling/legacy-renderer/`）。但三个 project **都没设 `environment`，跑的仍是默认的 `node`**，依赖里也没有 jsdom / happy-dom / @testing-library。现有 `src/**/*.test.tsx` 绝大多数走 `react-dom/server` 的 `renderToStaticMarkup`，断言渲染出的 HTML（`data-testid`、role、class），**零处 `render()`**。新组件测试照这个写法走。
@@ -169,14 +175,14 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 **T9. 给 `electron/` 加新模块 → 会被 typecheck 查多遍。**
 `tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。四段都串在 `npm run typecheck` 里，跑这一条即可。
 
-**T10. 改 `providerConfigPaths` 或配置格式 → 同时影响备份、恢复、诊断、启动前校验。**
-消费者：`backups.ts`、`config-files.ts`、`diagnostics.ts`、`system-service.ts`、`main.ts`（启动前校验），以及**渲染层的第 6 个消费者** `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
+**T10. 改配置位置或配置格式 → 同时影响读写、备份、恢复、诊断。**
+配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files.ts`（`providerConfigPaths`）、`backups.ts`、`diagnostics.ts`、`ipc.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
 
-**T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 那是已知 bug 的产物，直接删除，不要提交。**
-`managed-cli.test.ts` 在非 Windows 平台每跑一次就泄漏若干个。
+**T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 删掉，不要提交，当回归排查。**
+泄漏源 `managed-cli.test.ts` 已改用 `os.tmpdir()` 并在 `afterEach` 清理，正常不会再出现。
 
 **T12. 改账号对接 → 端点事实以 `docs/RECON-new-api.md` 为准，别按 new-api 文档想当然。**
-关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token（线上 rc.40 起还要先 `POST /api/verify` 换一次性凭证，放进 PUT 的 `X-Security-Proof` 头）、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层与主进程各有一份密码长度等字面量是**有意重复**（electron 不 import src，同 I6/I7 的理由）。
+关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token（线上 rc.40 起还要先 `POST /api/verify` 换一次性凭证，放进 PUT 的 `X-Security-Proof` 头）、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层（`features/auth/state.ts`）与主进程各有一份密码长度等字面量。legacy 树不 import electron，所以那边只能重复；renderer-v2 能值导入 `valueImportable` 名单上的主进程模块（I6），要合成一份就把常量放进名单上的零依赖模块。
 
 **T13. 画布相关改动 → 分清源码与产物，且认清"执行发生在主进程"。**
 画布**源码**在 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成的**构建产物**，不入 git。改画布行为只改 `canvas-v2/`，**不要**改 `dist-canvas/` 里的产物文件。
@@ -252,14 +258,14 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - ❌ **不要用 zod / valibot / ajv 替换 `ipc.ts` 的手写 parse 函数** — 它们产出的是能直接上屏的中文错误文案
 - ❌ **不要开 `noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`** — 实测前者会新增近百条错误，抽查全是已被前置校验保护的下标访问，**零个真 bug**。现在的 `strict: true` 已经足够
 - ❌ **不要顺手加 jsdom / happy-dom** — 组件测试已经有 `renderToStaticMarkup` 这条不需要 DOM 环境的路子（见 T7），换 DOM 环境是需要跨 agent 对齐的基础设施改动。`e2e/` 的套件已经是更高性价比的替代
-- ❌ **不要做路由级 code-splitting / React.lazy** — JS 从本地磁盘加载且开了 `codeCache`，收益为负
+- ❌ **不要把路由级 code-splitting / React.lazy 铺开** — JS 从本地磁盘加载且开了 `codeCache`，一般页面拆了收益为负。已有的例外：renderer-v2 `App.tsx` 对聊天、业务页、加速页三个重页面按需加载，首屏 JS 实测少约两成（README「启动性能状态」）；再加要拿同样的实测说话
 - ❌ **不要引入 react-window / react-virtualized** — 最长的会话列表已在 SQL 层分页到每页 ≤100
 - ❌ **不要给主进程上 bundler** — 会模糊信任链模块的边界，那是本项目的核心可审计资产
 - ❌ **不要为了让测试在非 Windows 通过而改断言** — 用平台门控，否则会弱化对 Windows 行为的验证；画布边界门禁脚本同理，不要为了让它过而改断言
 - ❌ **不要绕过 npm 官方源的 SHA-512 对账** — 那是防镜像投毒的核心设计
 - ❌ **不要动 Codex 桌面端的镜像实现** — 那是全项目网络处理做得最对的一块
-- ❌ **不要"消除" `preload.ts` 里重复的通道表** — 那是 sandbox 约束下的有意重复，且被 `satisfies` 类型钉死，拼错会当场编译报错
-- ❌ **不要把 `config-files.ts` 的六个 switch 重构成策略类层级** — 无 `default` 分支正是新增 provider 时的穷尽性保障
+- ❌ **不要"消除" 三个 preload 里重复的通道表** — 那是 sandbox 约束下的有意重复（I7），主窗口那份被 `satisfies` 类型钉死、另两份由测试钉死，拼错当场就红
+- ❌ **不要把 `config-files.ts` 的 `switch (provider)` 重构成策略类层级** — 无 `default` 分支正是新增 provider 时的穷尽性保障
 - ❌ **不要给 API Key 加 DPAPI / keytar 加密存储** — 本程序的全部职责就是把 Key 写进 CLI 的明文配置文件，再加密一份攻击面一点没变。⚠️ 这条针对的是 **relay API Key 的"以加密求保护"**；两个已实装的例外别拆：登录 session token 用 `safeStorage` 加密（`account-session-store.ts`）是正确做法；`managed-cli-key-store.ts` 对托管 CLI Key 的 safeStorage 缓存（PR #81）**目的不是保护而是复用**——new-api 列表只回掩码 Key，无本地缓存则每次登录/切账号都要重新签发或走服务端 reveal，缓存消除的是服务端 token 堆积与限流面
 - ❌ **不要在 legacy 树上做新功能、界面调整或一般缺陷修复** — 2026-09-19 已冻结，只接受安全修复，其余一律在 `src/renderer-v2/` 做（见 T14）。反过来也不要顺手删 legacy 代码或停掉它的测试，冻结不是退役
 - ❌ **不要提交 `\tmp\xingmang-managed-cli-*` 目录**
@@ -268,7 +274,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 ## 8. 开发流程
 
-**分工**（2026-10-10 起）：云端是主开发；Claude·win 只做真机验证、找问题、提 issue，不写功能代码，按 yoyo 触发；发版的两次批准、装机验收、业务取舍归 yoyo。细则见 `docs/COLLABORATION.md` §7。云端的两条硬要求：**断言仓库或线上状态之前，必须去读**；**Windows 专属的东西（第 4 节 I1~I15）不要盲设计**，由 yoyo 或 Claude·win 主导，云端可以审。
+**分工**（2026-10-10 起）：云端是主开发；Claude·win 只做真机验证、找问题、提 issue，不写功能代码，按 yoyo 触发；发版的两次批准、装机验收、业务取舍归 yoyo。细则见 `docs/COLLABORATION.md` §7。2026-10-17 起另一个云端项目「Claude-mac」与云端轮换开发，规矩相同（见 `docs/COLLABORATION.md` §1）。云端的两条硬要求：**断言仓库或线上状态之前，必须去读**；**Windows 专属的东西（第 4 节 I1~I15）不要盲设计**，由 yoyo 或 Claude·win 主导，云端可以审。
 
 **改动前**：读第 4、5 节（不变量与陷阱）；从最新 `main` 拉分支。多人并行时在对应 Issue 上留言认领。
 
@@ -310,4 +316,4 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 **legacy 回滚版已冻结**（2026-09-19，`R-S12`）：只接受安全修复，新功能与一般缺陷只在 `src/renderer-v2/` 做，代码与两条 `:legacy` 入口都不删。完整口径见 T14；#30（拆 legacy `App.tsx`）已按这条决定关闭。
 
-**规模概览**（只为让你心里有数，不要依赖具体数字）：主进程与渲染层各约两百个 TS 文件，vitest 数千个用例，`npm test` 还串带 `scripts/` 与 `e2e/` 下的 node --test 套件。IPC 通道数以 `ipc-contract.ts` 的 `ipcInvokeChannels` 为准，画布宿主通道以 `canvas-contract.ts` 的 `canvasHostChannels` 为准。
+**规模概览**（只为让你心里有数）：主进程与渲染层各有几百个 TS 文件，vitest 数千个用例，`npm test` 还串带 `scripts/` 与 `e2e/` 下的 node --test 套件；具体数字以 `ls` / 测试输出为准。IPC 通道数以 `ipc-contract.ts` 的 `ipcInvokeChannels` 为准，画布宿主通道以 `canvas-contract.ts` 的 `canvasHostChannels` 为准。

@@ -13,6 +13,7 @@
 | 角色 | 环境 | 职责 |
 |---|---|---|
 | 云端 Claude | 云端会话 | **主开发**：功能设计与实现；发版的定版、合并、触发 `publish-release`；跨仓库方案（教程站那类）；规范文档维护（分工细则与两条硬要求见 §7） |
+| Claude-mac | 另一个项目里的云端会话 | 2026-10-17 起与云端**轮换开发**同一个仓库，规矩和云端相同；两边看不到对方的项目文件和记忆，仓库是唯一共用的地方。开工前先看开着的 PR、最近合进 `main` 的提交和 `claude/` 开头的分支，对方开着的不碰；Claude-mac 开的 PR 正文第一行写明「Claude-mac」 |
 | Claude·win（Claude Code） | 本地 Windows | **真机验证、找问题、提 issue，不再写功能代码**；按 yoyo 触发，不是每个 PR 的必经关卡（见 §7.1） |
 | Claude Code | 本地 macOS | Mac 适配、跨平台任务 |
 | Codex | 本地 | 与平台无关的任务、新产品线 |
@@ -76,9 +77,9 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 ```
 <github-用户名>/<ai>-<端>/<简短描述>
 
-例：peaker520/claude-mac/fix-cross-platform-tests
-    peaker520/claude-win/mirror-fallback
-    peaker520/claude-cloud/add-claude-md
+例：xufei5620/claude-mac/fix-cross-platform-tests
+    xufei5620/claude-win/mirror-fallback
+    xufei5620/claude-cloud/add-claude-md
     <对方用户名>/codex/provider-registry
 ```
 
@@ -87,8 +88,10 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 ```
 [<用户名>·<ai>·<端>] <类型>: <描述>
 
-例：[peaker520·claude·mac] fix: 给 Windows 专有测试加平台门控
-    [peaker520·claude·cloud] docs: 增加 CLAUDE.md
+例：[xufei5620·claude·mac] fix: 给 Windows 专有测试加平台门控
+    [xufei5620·claude·cloud] docs: 增加 CLAUDE.md
+
+云端会话由平台指定分支名（`claude/<描述>-<随机后缀>`），照平台给的用，不必改成上面的格式。
 ```
 
 `<类型>` 用约定式提交：`feat` / `fix` / `docs` / `refactor` / `test` / `chore` / `perf`
@@ -121,13 +124,13 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ### 4.1 必须串行的改动（标 `serial-only`）
 
-**① 修改 `src/styles.css`（约 8000 行）**
+**① 修改 `src/styles.css`**
 
-单文件、无模块化、全局作用域。两个 agent 同时加样式几乎必冲突。
+单文件、无模块化、全局作用域。两个 agent 同时加样式几乎必冲突。（已随 legacy 冻结，见 ③。）
 
 **② 大范围重构枢纽文件**
 
-`electron/system-service.ts`（约 2900 行）、`src/App.tsx`（约 1800 行）的结构性改动。
+`electron/system-service.ts`、`src/App.tsx` 的结构性改动（后者已随 legacy 冻结，见 ③）。
 
 **③ legacy 渲染层已冻结**
 
@@ -135,11 +138,14 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ### 4.2 热点文件警示
 
-| 文件 | 行数（2026-08-10 实测） | 说明 |
-|---|---|---|
-| `src/styles.css` | 7984 | 全局样式，无模块化 |
-| `electron/system-service.ts` | 2935 | Codex 桌面端部分已按 #34 搬入 `codex-desktop-service.ts` |
-| `src/App.tsx` | 1793 | 全局状态枢纽；内嵌组件已拆到 `src/components/` 各子目录 |
+> 行数会过期，这里不写，以 `wc -l` 为准。
+
+| 文件 | 说明 |
+|---|---|
+| `electron/system-service.ts` | 全仓最大的文件；Codex 桌面端部分已按 #34 搬入 `codex-desktop-service.ts` |
+| `electron/ipc.ts` / `config-files.ts` / `main.ts` / `new-api-client.ts` | 主进程里另外几个大文件，很多改动都会碰到 |
+| `src/renderer-v2/pages-management.tsx` / `pages-maintenance.tsx` / `pages-account.tsx` / `App.tsx` | v2 界面的大文件 |
+| `src/styles.css` / `src/App.tsx` | legacy 的两个巨型文件，已冻结（§4.1 ③），只在安全修复时会碰 |
 
 **分配任务时，尽量不要让两个 agent 同时改同一个热点文件。**
 
@@ -170,7 +176,7 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 | `npm run typecheck` | ✅ | ✅ | ✅ |
 | `npm test` | ✅ 全绿 | ✅ 全绿 | ✅ 全绿 |
 | `npm run compile` | ✅ | ✅ | ✅ |
-| `npm run build`（打包） | ✅ Windows 包 | ✅ mac 包（`build:mac:dir`） | ❌ |
+| `npm run build`（打包） | ✅ Windows 包 | ✅ mac 包（`build:mac:dir`） | ✅ deb 测试包（`build:linux`，更新器关着；CI 有 `linux-package` 作业真装真开，发布开关还关着，见 `docs/LINUX.md`） |
 | e2e smoke | ✅ | ✅（CI `macos-test` job 跑 dev-origin 与免费分发构建） | ⚠️ 需本机 chromium（容器版本不符时设 `XINGMANG_E2E_CHROMIUM=<chromium 路径>` 复跑） |
 
 > （2026-08-10 校准：历史上 Linux 的 1 个已知失败已随 `sameLocalPathIdentity` 重写修复，三平台 vitest 应全绿。）
@@ -204,8 +210,8 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 
 **同一时间，同一热点文件只能有一个人。** 因为不再有「各管一摊」的天然隔离，这条比以前更关键：
 
-- `src/styles.css`（6027 行）→ `serial-only`
-- `system-service.ts`(3300) / `App.tsx`(2855) 的结构性改动 → `serial-only`
+- `system-service.ts` 的结构性改动 → `serial-only`
+- legacy 的 `src/styles.css`、`src/App.tsx` 已冻结（§4.1 ③），不再做结构性改动
 
 ### 6.3 最后看熟悉度
 

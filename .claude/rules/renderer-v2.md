@@ -2,7 +2,6 @@
 paths:
   - "src/renderer-v2/**"
   - "ui-spec/**"
-  - "tooling/legacy-renderer/**"
   - "electron/platform/**"
 ---
 
