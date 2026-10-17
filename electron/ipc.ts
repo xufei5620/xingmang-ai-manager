@@ -3611,7 +3611,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       // 缺 Node.js 的那句要不要上首页，渲染层跟着运行环境卡对 Node.js 的说法定，这里只把原因带过去。
       const imageMcpNeedsNode = (skill.imageMcpWarnings ?? []).includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)
       if (skill.ready) return imageMcpWarning ? { ...summary, imageMcpWarning, ...(imageMcpNeedsNode ? { imageMcpNeedsNode } : {}) } : summary
-      const imageSkillWarning = skill.reason || '星芒AI 生图 Key 未完成初始化'
+      const imageSkillWarning = skill.reason || '星芒AI 生图密钥未完成初始化'
       options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', imageSkillWarning)
       return { ...summary, imageSkillWarning }
     } catch (error) {
