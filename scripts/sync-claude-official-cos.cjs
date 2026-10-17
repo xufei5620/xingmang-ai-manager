@@ -8,6 +8,7 @@ const { performance } = require('node:perf_hooks')
 const { createHash, randomUUID } = require('node:crypto')
 const { getConfirmedMacSource, validateConfirmedMacSourceRecord, sameConfirmedMacSourceResolution } = require('./claude-mac-confirmed-sources.cjs')
 const { createClaudeStageRunner, safeClaudeSyncFailure } = require('./claude-sync-diagnostics.cjs')
+const { checkFailure, observedArchitectures, observedProcessFailure } = require('./cos-sync-utils.cjs')
 const { SOURCE_MODE: MAC_UPDATE_SOURCE_MODE, createMacUpdateSourceDependencies, resolveMacUpdateReleaseCandidates,
   validateMacUpdateSourceRecord, sameMacUpdateSourceResolution, validateMacUpdatePackageVersion, revalidateMacUpdateReleaseCandidates } = require('./claude-mac-update-source.cjs')
 
@@ -39,35 +40,35 @@ function parsePlatforms(value = 'all') {
   if (typeof value === 'string' && Object.hasOwn(aliases, value)) return [...aliases[value]]
   const values = Array.isArray(value) ? value : String(value).split(',')
   const ids = [...new Set(values.map(function (item) { return String(item).trim() }))]
-  if (!ids.length || ids.some(function (id) { return !Object.hasOwn(SOURCES, id) })) throw new Error('Claude 官方包平台无效；支持 all/windows/macos/linux 或精确平台 ID')
+  if (!ids.length || ids.some(function (id) { return !Object.hasOwn(SOURCES, id) })) throw checkFailure('platform-invalid', 'Claude 官方包平台无效；支持 all/windows/macos/linux 或精确平台 ID')
   return ids
 }
 
 function validateOfficialUrl(value) {
   let url
-  try { url = new URL(value) } catch { throw new Error('Claude 官方来源地址无效') }
+  try { url = new URL(value) } catch { throw checkFailure('source-url-rejected', 'Claude 官方来源地址无效') }
   if (!OFFICIAL_HOSTS.includes(url.hostname)) {
-    const error = new Error('Claude 下载重定向到了尚未核实的主机，已停止')
+    const error = checkFailure('source-url-rejected', 'Claude 下载重定向到了尚未核实的主机，已停止')
     error.code = 'CLAUDE_UNVERIFIED_SOURCE_HOST'
     error.hostname = url.hostname
     throw error
   }
   if (url.protocol !== 'https:' || !OFFICIAL_HOSTS.includes(url.hostname) || url.port || url.username || url.password || url.search || url.hash
     || (url.hostname === 'claude.ai' ? !url.pathname.startsWith('/api/desktop/') : !/^\/(?:claude-desktop\/|releases\/)/.test(url.pathname))) {
-    throw new Error('Claude 下载地址或重定向未通过固定官方 HTTPS 范围校验；未知 CDN 需要另行核实')
+    throw checkFailure('source-url-rejected', 'Claude 下载地址或重定向未通过固定官方 HTTPS 范围校验；未知 CDN 需要另行核实')
   }
   return url
 }
 
 function validateHead(value) {
-  if (!value || !Number.isSafeInteger(value.bytes) || value.bytes < 8 || value.bytes > MAX_PACKAGE_BYTES) throw new Error('Claude 安装包大小无效或超过上限')
-  if (typeof value.etag !== 'string' || !value.etag || value.etag.length > 256 || /[\r\n]/.test(value.etag)) throw new Error('Claude 安装包缺少安全的 ETag')
+  if (!value || !Number.isSafeInteger(value.bytes) || value.bytes < 8 || value.bytes > MAX_PACKAGE_BYTES) throw checkFailure('head-invalid', 'Claude 安装包大小无效或超过上限')
+  if (typeof value.etag !== 'string' || !value.etag || value.etag.length > 256 || /[\r\n]/.test(value.etag)) throw checkFailure('head-invalid', 'Claude 安装包缺少安全的 ETag')
   return { bytes: value.bytes, etag: value.etag, lastModified: typeof value.lastModified === 'string' ? value.lastModified : null }
 }
 
 function validateVersion(value) {
   if (typeof value !== 'string' || value.length > 64 || !/^\d+\.\d+\.\d+(?:\.\d+)?(?:-\d+)?$/.test(value)
-    || value.split(/[.-]/).some(function (part) { return !Number.isSafeInteger(Number(part)) })) throw new Error('Claude 包内或官方索引版本格式尚未支持，已停止发布')
+    || value.split(/[.-]/).some(function (part) { return !Number.isSafeInteger(Number(part)) })) throw checkFailure('version-invalid', 'Claude 包内或官方索引版本格式尚未支持，已停止发布')
   return value
 }
 
@@ -126,7 +127,7 @@ async function requestHead(url, options = {}) {
 
 async function requestRedirectHeaders(url, options = {}) {
   const target = validateOfficialUrl(url).href
-  if (!isDocumentedRedirectUrl(target)) throw new Error('Claude GET 响应头探测仅允许固定的官方下载入口')
+  if (!isDocumentedRedirectUrl(target)) throw checkFailure('source-url-rejected', 'Claude GET 响应头探测仅允许固定的官方下载入口')
   return requestHeadersOnly(target, 'GET', options)
 }
 
@@ -138,22 +139,22 @@ async function resolveOfficialPackage(requestUrl, options = {}) {
   const visited = new Set()
   const started = performance.now()
   for (let hop = 0; hop <= 3; hop += 1) {
-    if (visited.has(current) || performance.now() - started > 120000) throw new Error('Claude 官方下载重定向循环或总超时')
+    if (visited.has(current) || performance.now() - started > 120000) throw checkFailure('source-url-rejected', 'Claude 官方下载重定向循环或总超时')
     visited.add(current)
     const result = await (isDocumentedRedirectUrl(current) ? redirectHeaders : head)(current, options)
     if ([301, 302, 303, 307, 308].includes(result.status)) {
-      if (hop === 3 || typeof result.headers.location !== 'string' || result.headers.location.length > 4096) throw new Error('Claude 官方下载重定向超过上限或无效')
+      if (hop === 3 || typeof result.headers.location !== 'string' || result.headers.location.length > 4096) throw checkFailure('source-url-rejected', 'Claude 官方下载重定向超过上限或无效')
       const next = validateOfficialUrl(new URL(result.headers.location, current).href).href
       redirects.push({ from: current, to: next, status: result.status })
       current = next
       continue
     }
-    if (result.status !== 200 || result.headers['content-encoding'] && result.headers['content-encoding'] !== 'identity') throw new Error('Claude 官方完整包未返回 HTTP 200 未压缩正文')
+    if (result.status !== 200 || result.headers['content-encoding'] && result.headers['content-encoding'] !== 'identity') throw checkFailure('head-invalid', 'Claude 官方完整包未返回 HTTP 200 未压缩正文')
     const length = result.headers['content-length']
-    if (typeof length !== 'string' || !/^[1-9][0-9]*$/.test(length)) throw new Error('Claude 官方包 Content-Length 无效')
+    if (typeof length !== 'string' || !/^[1-9][0-9]*$/.test(length)) throw checkFailure('head-invalid', 'Claude 官方包 Content-Length 无效')
     return { requestUrl, url: current, redirects, ...validateHead({ bytes: Number(length), etag: result.headers.etag, lastModified: result.headers['last-modified'] }) }
   }
-  throw new Error('Claude 官方下载地址无法安全解析')
+  throw checkFailure('source-url-rejected', 'Claude 官方下载地址无法安全解析')
 }
 
 function parseFields(text) {
@@ -161,14 +162,14 @@ function parseFields(text) {
   for (const line of text.split(/\r?\n/)) {
     if (!line || /^[ \t]/.test(line)) continue
     const match = /^([A-Za-z][A-Za-z0-9-]*):[ \t]*(.*)$/.exec(line)
-    if (!match || Object.hasOwn(fields, match[1])) throw new Error('Claude Linux 包元数据字段无效或重复')
+    if (!match || Object.hasOwn(fields, match[1])) throw checkFailure('metadata-invalid', 'Claude Linux 包元数据字段无效或重复')
     fields[match[1]] = match[2]
   }
   return fields
 }
 
 function parseDebianPackages(text, architecture) {
-  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_METADATA_BYTES || !['amd64', 'arm64'].includes(architecture)) throw new Error('Claude Linux 官方索引超限或架构无效')
+  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_METADATA_BYTES || !['amd64', 'arm64'].includes(architecture)) throw checkFailure('metadata-invalid', 'Claude Linux 官方索引超限或架构无效')
   const selected = []
   for (const paragraph of text.trim().split(/\r?\n\s*\r?\n/)) {
     const fields = parseFields(paragraph)
@@ -176,13 +177,13 @@ function parseDebianPackages(text, architecture) {
     const version = validateVersion(fields.Version)
     if (fields.Architecture !== architecture || !/^[1-9][0-9]*$/.test(fields.Size || '') || Number(fields.Size) > MAX_PACKAGE_BYTES
       || !/^[a-f0-9]{64}$/.test(fields.SHA256 || '')
-      || !new RegExp(`^pool/main/c/claude-desktop/claude-desktop_[0-9A-Za-z.+~-]+_${architecture}\\.deb$`).test(fields.Filename || '')) throw new Error('Claude Linux 官方包身份、摘要或固定目录无效')
+      || !new RegExp(`^pool/main/c/claude-desktop/claude-desktop_[0-9A-Za-z.+~-]+_${architecture}\\.deb$`).test(fields.Filename || '')) throw checkFailure('metadata-invalid', 'Claude Linux 官方包身份、摘要或固定目录无效')
     const url = validateOfficialUrl(new URL(fields.Filename, APT_ROOT).href).href
     selected.push({ version, url, bytes: Number(fields.Size), expectedSha256: fields.SHA256, packageArchitecture: architecture })
   }
-  if (!selected.length || selected.length > 512) throw new Error('Claude Linux 官方索引缺少可验证包或数量超限')
+  if (!selected.length || selected.length > 512) throw checkFailure('metadata-invalid', 'Claude Linux 官方索引缺少可验证包或数量超限')
   selected.sort(function (left, right) { return compareVersions(right.version, left.version) })
-  if (selected[1] && compareVersions(selected[0].version, selected[1].version) === 0) throw new Error('Claude Linux 同版本官方包存在歧义')
+  if (selected[1] && compareVersions(selected[0].version, selected[1].version) === 0) throw checkFailure('metadata-invalid', 'Claude Linux 同版本官方包存在歧义')
   return selected[0]
 }
 
@@ -213,7 +214,7 @@ function sameMacSourceResolution(left, right) {
 
 function validateIndex(value, publicUrl) {
   if (value === null || value === undefined) return null
-  if (!value || value.schemaVersion !== 1 || value.product !== 'claude-desktop' || !Array.isArray(value.files) || !value.files.length || value.files.length > Object.keys(SOURCES).length) throw new Error('COS Claude 版本索引格式无效')
+  if (!value || value.schemaVersion !== 1 || value.product !== 'claude-desktop' || !Array.isArray(value.files) || !value.files.length || value.files.length > Object.keys(SOURCES).length) throw checkFailure('cos-index-invalid', 'COS Claude 版本索引格式无效')
   const seen = new Set()
   for (const file of value.files) {
     const id = file?.platformId
@@ -222,44 +223,56 @@ function validateIndex(value, publicUrl) {
       || file.kind !== 'installer' || file.format !== source.format || file.type !== source.type || file.verification !== source.verification
       || file.key !== artifactKey(id, file.sha256) || file.url !== publicUrl(file.key) || !file.source
       || !Number.isInteger(file.source.redirectCount) || file.source.redirectCount < 0 || file.source.redirectCount > 3
-      || !OFFICIAL_HOSTS.includes(file.source.resolvedHost) || typeof file.cosEtag !== 'string' || !file.cosEtag || file.cosEtag.length > 256 || /[\r\n]/.test(file.cosEtag)) throw new Error('COS Claude 版本索引包含无效平台、对象或校验记录')
+      || !OFFICIAL_HOSTS.includes(file.source.resolvedHost) || typeof file.cosEtag !== 'string' || !file.cosEtag || file.cosEtag.length > 256 || /[\r\n]/.test(file.cosEtag)) throw checkFailure('cos-index-invalid', 'COS Claude 版本索引包含无效平台、对象或校验记录')
     validateVersion(file.version)
     validateHead(file.source)
-    if (file.size !== file.source.bytes) throw new Error('COS Claude 版本索引大小不一致')
+    if (file.size !== file.source.bytes) throw checkFailure('cos-index-invalid', 'COS Claude 版本索引大小不一致')
     const allowedSourceFields = new Set(['requestUrl', 'bytes', 'etag', 'lastModified', 'resolvedHost', 'redirectCount', 'metadataUrl', 'version', 'expectedSha256', 'packageArchitecture', 'sourceResolution'])
     if (Object.keys(file.source).some(function (key) { return !allowedSourceFields.has(key) })
       || !Object.hasOwn(file.source, 'sourceResolution') && file.source.requestUrl !== (source.requestUrl || source.metadataUrl)
-      || source.metadataUrl && file.source.metadataUrl !== source.metadataUrl) throw new Error('COS Claude 官方来源记录不匹配或包含非公开字段')
+      || source.metadataUrl && file.source.metadataUrl !== source.metadataUrl) throw checkFailure('cos-index-invalid', 'COS Claude 官方来源记录不匹配或包含非公开字段')
     if (Object.hasOwn(file.source, 'sourceResolution')) {
-      if (source.platform !== 'macos' || file.source.redirectCount !== 0 || file.source.resolvedHost !== 'downloads.claude.ai') throw new Error('COS Claude 已确认来源平台或跳转记录无效')
+      if (source.platform !== 'macos' || file.source.redirectCount !== 0 || file.source.resolvedHost !== 'downloads.claude.ai') throw checkFailure('cos-index-invalid', 'COS Claude 已确认来源平台或跳转记录无效')
       validateMacSourceRecord(file.source, id, file.version, file.sha256)
     }
-    if (source.metadataUrl && (file.source.version !== file.version || file.source.expectedSha256 !== file.sha256 || file.source.packageArchitecture !== source.packageArchitecture)) throw new Error('COS Claude Linux 官方摘要、版本或架构记录不匹配')
+    if (source.metadataUrl && (file.source.version !== file.version || file.source.expectedSha256 !== file.sha256 || file.source.packageArchitecture !== source.packageArchitecture)) throw checkFailure('cos-index-invalid', 'COS Claude Linux 官方摘要、版本或架构记录不匹配')
     seen.add(id)
   }
   return value
 }
 
+// Public identity and signer of Anthropic's package, logged when a check fails (#1084).
+function observedWindowsInspection(report) {
+  return { packageName: report?.identity?.name, packageVersion: report?.identity?.version, packageArchitecture: report?.identity?.architecture,
+    packagePublisher: report?.identity?.publisherCanonical, containsPackageSignature: report?.identity?.containsPackageSignature,
+    signatureStatus: report?.signature?.status, signerName: report?.signature?.simpleName, signerSubject: report?.signature?.subjectCanonical }
+}
+
 function validateWindowsInspection(report, architecture) {
-  if (!report || report.identity?.name !== 'Claude' || report.identity.architecture !== architecture || report.signature?.status !== 'Valid'
-    || report.signature.simpleName !== 'Anthropic, PBC' || report.identity.publisherCanonical !== report.signature.subjectCanonical
-    || typeof report.identity.publisherCanonical !== 'string' || !report.identity.publisherCanonical || report.identity.containsPackageSignature !== true) throw new Error('Claude Windows 完整包身份或 Anthropic 签名不匹配')
+  if (!report || report.identity?.name !== 'Claude' || report.identity.architecture !== architecture
+    || typeof report.identity.publisherCanonical !== 'string' || !report.identity.publisherCanonical || report.identity.containsPackageSignature !== true) throw checkFailure('package-identity-mismatch', 'Claude Windows 完整包身份或 Anthropic 签名不匹配', observedWindowsInspection(report))
+  if (report.signature?.status !== 'Valid' || report.signature.simpleName !== 'Anthropic, PBC'
+    || report.identity.publisherCanonical !== report.signature.subjectCanonical) throw checkFailure('package-signature-invalid', 'Claude Windows 完整包身份或 Anthropic 签名不匹配', observedWindowsInspection(report))
   const version = validateVersion(report.identity.version)
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(version) || version.split('.').some(function (part) { return Number(part) > 65535 })) throw new Error('Claude Windows MSIX 四段版本无效')
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(version) || version.split('.').some(function (part) { return Number(part) > 65535 })) throw checkFailure('version-invalid', 'Claude Windows MSIX 四段版本无效')
   return { version, verification: SOURCES[`windows-${architecture}`].verification, packageIdentity: 'Claude', signatureStatus: 'Valid' }
 }
 
 function validateInspection(report, source, expectedVersion) {
   if (source.platform === 'windows') return validateWindowsInspection(report, source.architecture)
   if (source.platform === 'linux') {
-    if (report?.package !== 'claude-desktop' || report.architecture !== source.packageArchitecture || report.version !== expectedVersion) throw new Error('Claude DEB 包头与官方索引身份或架构不匹配')
+    if (report?.package !== 'claude-desktop' || report.architecture !== source.packageArchitecture || report.version !== expectedVersion) throw checkFailure('package-identity-mismatch', 'Claude DEB 包头与官方索引身份或架构不匹配',
+      { expectedVersion, packageName: report?.package, packageVersion: report?.version, packageArchitecture: report?.architecture })
     return { version: validateVersion(report.version), verification: source.verification, aptSignatureVerified: false }
   }
-  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== CLAUDE_MAC_ORGANIZATION) throw new Error('Claude Mac 安装包 Anthropic 签名不匹配')
+  const observed = { packageVersion: report?.version, bundleIdentifier: report?.bundleIdentifier, packageArchitecture: observedArchitectures(report?.architectures),
+    signatureStatus: report?.signatureStatus, signerOrganization: report?.signerOrganization,
+    teamIdentifier: report?.teamIdentifier, installerTeamIdentifier: report?.installerTeamIdentifier, installerSignatureStatus: report?.installerSignatureStatus }
+  if (report?.signatureStatus !== 'Valid' || report.signerOrganization !== CLAUDE_MAC_ORGANIZATION) throw checkFailure('package-signature-invalid', 'Claude Mac 安装包 Anthropic 签名不匹配', observed)
   if (report.bundleIdentifier !== 'com.anthropic.claudefordesktop' || !Array.isArray(report.architectures)
-    || report.teamIdentifier !== CLAUDE_MAC_TEAM || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64')) throw new Error('Claude Mac 应用身份、固定 Team 或 Universal 架构不匹配')
+    || report.teamIdentifier !== CLAUDE_MAC_TEAM || !report.architectures.includes('arm64') || !report.architectures.includes('x86_64')) throw checkFailure('package-identity-mismatch', 'Claude Mac 应用身份、固定 Team 或 Universal 架构不匹配', observed)
   if (source.format === 'pkg' && (report.architectureProof !== 'native-payload-mach-o' || report.installerTeamIdentifier !== CLAUDE_MAC_TEAM
-    || report.installerSignatureStatus !== 'Valid')) throw new Error('Claude Mac 企业 PKG 原生签名或实际架构记录无效')
+    || report.installerSignatureStatus !== 'Valid')) throw checkFailure('package-signature-invalid', 'Claude Mac 企业 PKG 原生签名或实际架构记录无效', observed)
   return { version: validateVersion(report.version), verification: source.verification, signatureStatus: 'Valid', teamIdentifier: CLAUDE_MAC_TEAM,
     architectures: ['arm64', 'x86_64'], ...(source.format === 'pkg' ? { architectureProof: report.architectureProof, installerTeamIdentifier: CLAUDE_MAC_TEAM, installerSignatureStatus: 'Valid' } : {}) }
 }
@@ -277,13 +290,13 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
     if (source.metadataUrl) {
       const metadata = await stage('source-resolve', { platform: id }, async function (onProgress) { return parseDebianPackages(await dependencies.fetchText({ url: source.metadataUrl, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_METADATA_BYTES, onProgress }), source.packageArchitecture) })
       const head = await stage('source-head', { platform: id, expectedBytes: metadata.bytes }, async function () { return validateHead(await dependencies.inspectResource({ url: metadata.url, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES })) })
-      if (head.bytes !== metadata.bytes) throw new Error('Claude Linux 索引与 HEAD 大小不一致')
+      if (head.bytes !== metadata.bytes) throw checkFailure('head-invalid', 'Claude Linux 索引与 HEAD 大小不一致')
       resource = { ...metadata, ...head, metadataUrl: source.metadataUrl, redirects: [] }
     } else resource = await stage('source-resolve', source.platform === 'macos' ? {} : { platform: id }, async function () { return dependencies.resolveOfficialPackage(source.requestUrl) })
     await stage('source-head', { platform: id }, async function () {
       validateOfficialUrl(resource.url)
       validateHead(resource)
-      if (resource.version && existing.has(id) && compareVersions(resource.version, existing.get(id).version) < 0) throw new Error('Claude 官方版本倒退，已拒绝同步')
+      if (resource.version && existing.has(id) && compareVersions(resource.version, existing.get(id).version) < 0) throw checkFailure('version-regressed', 'Claude 官方版本倒退，已拒绝同步')
     })
     resolved.set(id, resource)
   }
@@ -313,7 +326,7 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
       const downloaded = await stage('source-download', { platform: id, expectedBytes: resource.bytes }, async function (onProgress) {
         const result = await dependencies.downloadResource({ url: resource.url, filePath, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES, expectedBytes: resource.bytes, expectedEtag: resource.etag, onProgress, ...(resource.expectedSha256 ? { expectedSha256: resource.expectedSha256 } : {}) })
         if (result.bytes !== resource.bytes || result.etag !== resource.etag || !/^[a-f0-9]{64}$/.test(result.sha256)
-          || resource.expectedSha256 && resource.expectedSha256 !== result.sha256) throw new Error('Claude 官方完整下载大小、ETag 或 SHA256 不一致')
+          || resource.expectedSha256 && resource.expectedSha256 !== result.sha256) throw checkFailure('download-mismatch', 'Claude 官方完整下载大小、ETag 或 SHA256 不一致')
         return result
       })
       const inspected = await stage('native-inspect', { platform: id, expectedBytes: resource.bytes }, async function () {
@@ -326,7 +339,7 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
           validateMacSourceRecord(sourceRecord(source, resource), id, result.version, downloaded.sha256)
           if (resource.sourceResolution.mode === MAC_UPDATE_SOURCE_MODE) validateMacUpdatePackageVersion(resource, result.version)
         }
-        if (existing.has(id) && compareVersions(result.version, existing.get(id).version) < 0) throw new Error('Claude 包内版本倒退，已拒绝同步')
+        if (existing.has(id) && compareVersions(result.version, existing.get(id).version) < 0) throw checkFailure('version-regressed', 'Claude 包内版本倒退，已拒绝同步')
         return result
       })
       prepared.push({ id, source, resource, filePath, downloaded, inspection })
@@ -337,12 +350,12 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
       const key = artifactKey(item.id, item.downloaded.sha256)
       const published = await stage('cos-publish-package', { platform: item.id, expectedBytes: item.downloaded.bytes }, async function (onProgress) {
         const result = await store.publishFile(key, item.filePath, { expectedBytes: item.downloaded.bytes, expectedSha256: item.downloaded.sha256, contentType: item.source.type, cacheControl: 'public, max-age=31536000, immutable', onProgress })
-        if (result.bytes !== item.downloaded.bytes || result.sha256 !== item.downloaded.sha256 || result.url !== store.publicUrl(key) || result.contentType?.split(';')[0] !== item.source.type) throw new Error('Claude COS 全匿名字节回读与已验完整包不一致')
+        if (result.bytes !== item.downloaded.bytes || result.sha256 !== item.downloaded.sha256 || result.url !== store.publicUrl(key) || result.contentType?.split(';')[0] !== item.source.type) throw checkFailure('cos-object-mismatch', 'Claude COS 全匿名字节回读与已验完整包不一致')
         return result
       })
       const head = await stage('cos-head-package', { platform: item.id, expectedBytes: item.downloaded.bytes }, async function () {
         const result = await store.inspect(key)
-        if (!result || result.bytes !== item.downloaded.bytes || result.etag !== published.etag || result.sha256 !== item.downloaded.sha256 || typeof result.etag !== 'string' || !result.etag) throw new Error('Claude COS 上传回读后的对象指纹发生变化')
+        if (!result || result.bytes !== item.downloaded.bytes || result.etag !== published.etag || result.sha256 !== item.downloaded.sha256 || typeof result.etag !== 'string' || !result.etag) throw checkFailure('cos-object-mismatch', 'Claude COS 上传回读后的对象指纹发生变化')
         return result
       })
       files.set(item.id, { platformId: item.id, fileName: item.source.fileName, version: item.inspection.version, platform: item.source.platform, architecture: item.source.architecture,
@@ -364,21 +377,21 @@ async function synchronizeOfficialClaude({ store, platforms = 'all', dependencie
       if (!resource.sourceResolution || resource.sourceResolution.mode === MAC_UPDATE_SOURCE_MODE) continue
       await stage('source-recheck', { platform: id, expectedBytes: resource.bytes }, async function () {
         const current = validateHead(await dependencies.inspectResource({ url: resource.url, allowedHosts: OFFICIAL_HOSTS, maxBytes: MAX_PACKAGE_BYTES, expectedBytes: resource.bytes, expectedEtag: resource.etag }))
-        if (current.bytes !== resource.bytes || current.etag !== resource.etag || current.lastModified !== resource.lastModified) throw new Error('Claude Mac 已确认来源在同步期间变化，已保留原索引')
+        if (current.bytes !== resource.bytes || current.etag !== resource.etag || current.lastModified !== resource.lastModified) throw checkFailure('source-changed', 'Claude Mac 已确认来源在同步期间变化，已保留原索引')
       })
     }
     const candidateDigest = createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
     await stage('cos-publish-candidate', {}, async function () { return store.publishJson(`${OFFLINE_PREFIX}/indexes/${candidateDigest}.json`, manifest, { cacheControl: 'public, max-age=31536000, immutable' }) })
     await stage('cos-recheck-latest', {}, async function () {
       const current = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
-      if (JSON.stringify(current) !== JSON.stringify(old)) throw new Error('Claude COS 最新索引在同步期间变化，已保留现有指针')
+      if (JSON.stringify(current) !== JSON.stringify(old)) throw checkFailure('cos-index-changed', 'Claude COS 最新索引在同步期间变化，已保留现有指针')
     })
     latestState = 'write-unconfirmed'
     try { await stage('cos-publish-latest', {}, async function () { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate' }) }) }
     catch {}
     await stage('cos-confirm-latest', {}, async function () {
       const actual = validateIndex(await store.readJson(LATEST_KEY), store.publicUrl)
-      if (JSON.stringify(actual) !== JSON.stringify(manifest)) throw new Error('Claude COS 最新指针写入未确认；已回读，未重复写入或盲目回滚')
+      if (JSON.stringify(actual) !== JSON.stringify(manifest)) throw checkFailure('cos-object-mismatch', 'Claude COS 最新指针写入未确认；已回读，未重复写入或盲目回滚')
     })
     latestState = 'published-and-read-back'
     return { changed: true, manifest, platforms: ids }
@@ -420,7 +433,7 @@ function safeChildEnvironment(directory) {
 }
 
 async function runInspection(executable, args, directory, run = promisify(execFile)) {
-  try { return await run(executable, args, { env: safeChildEnvironment(directory), windowsHide: true, timeout: 120000, maxBuffer: MAX_METADATA_BYTES }) } catch { throw new Error('Claude 原生只读包检查失败，未执行安装或包内脚本') }
+  try { return await run(executable, args, { env: safeChildEnvironment(directory), windowsHide: true, timeout: 120000, maxBuffer: MAX_METADATA_BYTES }) } catch (error) { throw checkFailure('inspector-failed', 'Claude 原生只读包检查失败，未执行安装或包内脚本', observedProcessFailure(error)) }
 }
 
 async function validatePackageMagic(filePath, format, bytes) {
@@ -431,12 +444,12 @@ async function validatePackageMagic(filePath, format, bytes) {
     if (format === 'dmg' && (bytes < 512 || magic.subarray(0, 4).toString('ascii') !== 'koly')
       || format === 'pkg' && magic.subarray(0, 4).toString('ascii') !== 'xar!'
       || format === 'deb' && magic.toString('ascii') !== '!<arch>\n'
-      || format === 'msix' && magic.readUInt32LE(0) !== 0x04034b50) throw new Error('Claude 完整包格式无效')
+      || format === 'msix' && magic.readUInt32LE(0) !== 0x04034b50) throw checkFailure('package-format-invalid', 'Claude 完整包格式无效')
   } finally { await handle.close() }
 }
 
 function darwinClaudeRequirement(teamIdentifier) {
-  if (teamIdentifier !== CLAUDE_MAC_TEAM) throw new Error('Claude Mac 签名 Team 候选无效')
+  if (teamIdentifier !== CLAUDE_MAC_TEAM) throw checkFailure('package-signature-invalid', 'Claude Mac 签名 Team 候选无效')
   return ['identifier "com.anthropic.claudefordesktop"', 'anchor apple generic',
     'certificate 1[field.1.2.840.113635.100.6.2.6] exists',
     'certificate leaf[field.1.2.840.113635.100.6.1.13] exists',
@@ -453,18 +466,18 @@ async function inspectDmgMount(mountPoint, workDirectory, run) {
     await fs.writeFile(statePath, state.stdout, { flag: 'wx', mode: 0o600 })
     const converted = await runInspection('/usr/bin/plutil', ['-convert', 'json', '-o', '-', statePath], workDirectory, run)
     const parsed = JSON.parse(converted.stdout)
-    if (!Array.isArray(parsed.images) || parsed.images.length > 256) throw new Error('Claude DMG 挂载状态结构无效')
+    if (!Array.isArray(parsed.images) || parsed.images.length > 256) throw checkFailure('inspection-unparsable', 'Claude DMG 挂载状态结构无效')
     // A successful native unmount may remove its mount directory. Resolve the
     // still-owned parent so absence of that directory is not mistaken for an
     // unknown mount state, while /var and /private/var aliases still compare.
     const canonical = path.join(await fs.realpath(path.dirname(mountPoint)), path.basename(mountPoint))
     for (const image of parsed.images) {
       const entities = image?.['system-entities']
-      if (!Array.isArray(entities) || entities.length > 1024) throw new Error('Claude DMG 挂载项结构无效')
+      if (!Array.isArray(entities) || entities.length > 1024) throw checkFailure('inspection-unparsable', 'Claude DMG 挂载项结构无效')
       for (const entity of entities) {
         const mounted = entity?.['mount-point']
         if (mounted === undefined) continue
-        if (typeof mounted !== 'string' || mounted.length > 4096 || mounted.includes('\0')) throw new Error('Claude DMG 挂载路径无效')
+        if (typeof mounted !== 'string' || mounted.length > 4096 || mounted.includes('\0')) throw checkFailure('inspection-unparsable', 'Claude DMG 挂载路径无效')
         if (path.normalize(mounted) === path.normalize(mountPoint) || path.normalize(mounted) === path.normalize(canonical)
           || await fs.realpath(mounted) === canonical) return true
       }
@@ -480,27 +493,27 @@ function unconfirmedDmgUnmount() {
 }
 
 function validateDarwinClaudeInstallerSignature(text) {
-  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_METADATA_BYTES) throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
+  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_METADATA_BYTES) throw checkFailure('package-signature-invalid', 'Claude Mac PKG 官方安装者签名或可信链无效')
   const status = /^\s*Status:\s*([^\r\n]+)$/m.exec(text)?.[1]
   const chain = [...text.matchAll(/^\s*\d+\.\s*([^\r\n]+)$/gm)].map(function (match) { return match[1] })
   if (!['signed by a certificate trusted by macOS', 'signed by a developer certificate issued by Apple for distribution'].includes(status)
     || chain.length !== 3 || chain[0] !== `Developer ID Installer: ${CLAUDE_MAC_ORGANIZATION} (${CLAUDE_MAC_TEAM})`
-    || chain[1] !== 'Developer ID Certification Authority' || chain[2] !== 'Apple Root CA') throw new Error('Claude Mac PKG 官方安装者签名或可信链无效')
+    || chain[1] !== 'Developer ID Certification Authority' || chain[2] !== 'Apple Root CA') throw checkFailure('package-signature-invalid', 'Claude Mac PKG 官方安装者签名或可信链无效')
 }
 
 async function inspectDarwinClaudeApplication(application, workDirectory, run, allowedPayloadRoot) {
   const metadata = await runInspection('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(application, 'Contents', 'Info.plist')], workDirectory, run)
   const info = JSON.parse(metadata.stdout)
-  if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._-]+$/.test(info.CFBundleExecutable)) throw new Error('Claude Mac 可执行文件名称无效')
+  if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._-]+$/.test(info.CFBundleExecutable)) throw checkFailure('package-identity-mismatch', 'Claude Mac 可执行文件名称无效')
   const executable = path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)
   if (allowedPayloadRoot) {
     const canonical = await fs.realpath(executable)
     const stat = await fs.lstat(executable)
-    if (!canonical.startsWith(allowedPayloadRoot + path.sep) || !stat.isFile() || stat.nlink !== 1) throw new Error('Claude PKG Mach-O 越出私有目录或不是单链接普通文件')
+    if (!canonical.startsWith(allowedPayloadRoot + path.sep) || !stat.isFile() || stat.nlink !== 1) throw checkFailure('package-format-invalid', 'Claude PKG Mach-O 越出私有目录或不是单链接普通文件')
   }
   const identity = await runInspection('/usr/bin/codesign', ['--display', '--verbose=4', application], workDirectory, run)
   const matches = [...identity.stderr.matchAll(/^Authority=Developer ID Application: Anthropic PBC \((Q6L2SF6YDW)\)$/gm)]
-  if (matches.length !== 1) throw new Error('Claude Mac 签名 Team 候选缺失或存在歧义')
+  if (matches.length !== 1) throw checkFailure('package-signature-invalid', 'Claude Mac 签名 Team 候选缺失或存在歧义')
   // Display text only selects the pinned identity. Trust still requires the
   // unchanged Apple anchor, Developer ID OIDs and strict deep native verify.
   await runInspection('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinClaudeRequirement(matches[0][1])}`, application], workDirectory, run)
@@ -514,9 +527,9 @@ async function findDarwinClaudePayloadApplication(expanded) {
   const candidates = []
   let visited = 0
   async function collect(directory, depth = 0) {
-    if (depth > 8 || ++visited > 2048) throw new Error('Claude PKG 展开目录超过限制')
+    if (depth > 8 || ++visited > 2048) throw checkFailure('package-format-invalid', 'Claude PKG 展开目录超过限制')
     const entries = await fs.readdir(directory, { withFileTypes: true })
-    if (entries.length > 2048) throw new Error('Claude PKG 展开目录项超过限制')
+    if (entries.length > 2048) throw checkFailure('package-format-invalid', 'Claude PKG 展开目录项超过限制')
     for (const entry of entries) {
       // Framework symlinks are normal, but never traverse them while locating
       // the payload app. A package cannot redirect this search outside staging.
@@ -527,30 +540,30 @@ async function findDarwinClaudePayloadApplication(expanded) {
     }
   }
   await collect(expanded)
-  if (candidates.length !== 1) throw new Error('Claude PKG 必须包含唯一的实际 Claude.app')
+  if (candidates.length !== 1) throw checkFailure('package-format-invalid', 'Claude PKG 必须包含唯一的实际 Claude.app')
   const application = candidates[0]
   const common = require('./cos-sync-utils.cjs')
   const infoPath = path.join(application, 'Contents', 'Info.plist')
   await common.readBoundedRegularFile(infoPath, { maxBytes: 256 * 1024 })
-  if (!(await fs.realpath(infoPath)).startsWith(canonicalRoot + path.sep)) throw new Error('Claude PKG 应用元数据越出私有目录')
+  if (!(await fs.realpath(infoPath)).startsWith(canonicalRoot + path.sep)) throw checkFailure('package-format-invalid', 'Claude PKG 应用元数据越出私有目录')
   return application
 }
 
 async function inspectPackage({ filePath, source, workDirectory, run = promisify(execFile), platform = process.platform }) {
   if (source.platform === 'windows') {
-    if (platform !== 'win32') throw new Error('Claude Windows 签名检查必须在 Windows runner 运行')
+    if (platform !== 'win32') throw checkFailure('inspector-unavailable', 'Claude Windows 签名检查必须在 Windows runner 运行')
     const script = path.join(workDirectory, 'inspect-claude-msix.ps1')
     try { await fs.writeFile(script, WINDOWS_INSPECTION_SCRIPT, { flag: 'wx', mode: 0o600 }) } catch (error) { if (error.code !== 'EEXIST') throw error }
     const result = await runInspection('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-PackagePath', filePath], workDirectory, run)
-    return JSON.parse(result.stdout.replace(/^\uFEFF/, ''))
+    try { return JSON.parse(result.stdout.replace(/^\uFEFF/, '')) } catch { throw checkFailure('inspection-unparsable', 'Claude Windows 包检查结果无法解析') }
   }
   if (source.platform === 'linux') {
-    if (platform !== 'linux') throw new Error('Claude Linux DEB 元数据检查必须在 Linux runner 运行')
+    if (platform !== 'linux') throw checkFailure('inspector-unavailable', 'Claude Linux DEB 元数据检查必须在 Linux runner 运行')
     const result = await runInspection('/usr/bin/dpkg-deb', ['--field', filePath, 'Package', 'Version', 'Architecture'], workDirectory, run)
     const fields = parseFields(result.stdout)
     return { package: fields.Package, version: fields.Version, architecture: fields.Architecture }
   }
-  if (platform !== 'darwin') throw new Error('Claude Mac 签名和版本检查必须在 macOS runner 运行')
+  if (platform !== 'darwin') throw checkFailure('inspector-unavailable', 'Claude Mac 签名和版本检查必须在 macOS runner 运行')
   if (source.format === 'pkg') {
     const signature = await runInspection('/usr/sbin/pkgutil', ['--check-signature', filePath], workDirectory, run)
     validateDarwinClaudeInstallerSignature(signature.stdout)
@@ -605,14 +618,14 @@ function createRuntimeDependencies(common, platforms = 'all') {
     createWorkDirectory: async function () { return fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-claude-cos-')) },
     removeWorkDirectory: async function (directory) {
       const resolved = path.resolve(directory)
-      if (path.dirname(resolved) !== await fs.realpath(os.tmpdir()) || !path.basename(resolved).startsWith('xingmang-claude-cos-')) throw new Error('拒绝删除 Claude 同步临时目录以外的路径')
+      if (path.dirname(resolved) !== await fs.realpath(os.tmpdir()) || !path.basename(resolved).startsWith('xingmang-claude-cos-')) throw checkFailure('temp-path-rejected', '拒绝删除 Claude 同步临时目录以外的路径')
       await fs.rm(resolved, { recursive: true, force: true })
     },
   }
 }
 
 async function main(argv = process.argv.slice(2)) {
-  if (argv.length > 1 || argv.some(function (arg) { return !arg.startsWith('--platforms=') })) throw new Error('用法：sync-claude-official-cos.cjs --platforms=windows|macos|linux|all')
+  if (argv.length > 1 || argv.some(function (arg) { return !arg.startsWith('--platforms=') })) throw checkFailure('platform-invalid', '用法：sync-claude-official-cos.cjs --platforms=windows|macos|linux|all')
   const common = require('./cos-sync-utils.cjs')
   const platforms = parsePlatforms(argv[0]?.slice('--platforms='.length) || process.env.CLAUDE_SYNC_PLATFORMS || 'all')
   const config = common.readCosConfiguration(process.env)

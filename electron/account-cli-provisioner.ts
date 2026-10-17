@@ -1,5 +1,5 @@
 import { activeProviderIds, resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
-import { resolveDefaultCliModel } from './cli-model-defaults'
+import { resolveDefaultCliModel, type CliModelHints } from './cli-model-defaults'
 import { isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { loadManagedCliGroups, subscriptionsBindKeyGroups, type ManagedCliGroupAccountService } from './managed-cli-groups'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
@@ -73,6 +73,13 @@ type ManagedKeyAccountService = Pick<RelayBackendClient,
   'getSessionState' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listUsableGroups'>
   & Partial<Pick<RelayBackendClient, 'getSubscriptionSelf'>>
   & Pick<ManagedCliGroupAccountService, 'getAccountGroupHints'>
+  & {
+    /**
+     * 服务状态文件里的型号表（service-status.ts 的 cliModels），挑默认型号时先看它。从不拒绝，读不到给 null；
+     * 缺省 = 只用程序自带的那份。挂在这里是因为分组对照也挂在这里：两样都只搭启动时那次读取的便车。
+     */
+    getCliModelHints?: () => Promise<CliModelHints | null>
+  }
 
 class AccountSessionChangedError extends Error {
   constructor() {
@@ -283,6 +290,15 @@ export async function syncManagedCliKeySummary(
   }
 }
 
+async function loadCliModelHints(accountService: ManagedKeyAccountService): Promise<CliModelHints | null> {
+  if (typeof accountService.getCliModelHints !== 'function') return null
+  try {
+    return await accountService.getCliModelHints()
+  } catch {
+    return null
+  }
+}
+
 export async function configureManagedClis(
   accountService: ManagedKeyAccountService,
   systemService: Pick<SystemService, 'fetchAvailableModels' | 'saveConfig'>,
@@ -296,6 +312,8 @@ export async function configureManagedClis(
   if (providers.length === 0) return { configured: [], failed: [] }
   const capture = authenticatedSession(accountService)
   const userId = capture.userId
+  // 和签 Key 一起等；真到挑型号那一步才用得上。
+  const pendingModelHints = loadCliModelHints(accountService)
   const synchronized = await resolveManagedCliKeys(accountService, capture, keyStore)
   assertSameAuthenticatedUser(accountService, capture)
   const keys = new Map(synchronized.keys.map((entry) => [entry.provider, entry]))
@@ -355,7 +373,7 @@ export async function configureManagedClis(
       }
       assertSameAuthenticatedUser(accountService, capture)
       if (models.length === 0) throw new Error('当前分组未返回可用模型')
-      const model = resolveDefaultCliModel(provider, models, preferredModels[provider])
+      const model = resolveDefaultCliModel(provider, models, preferredModels[provider], await pendingModelHints)
       if (!model) throw new Error('当前分组未返回可用于交互的默认模型，请选择其他分组或手动配置模型')
       const payload: ConfigSavePayload = { provider, apiKey: managedKey.key, model, mode }
       assertSameAuthenticatedUser(accountService, capture)

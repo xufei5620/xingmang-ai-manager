@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
 const { test } = require('node:test')
 const { FAILURE_THRESHOLD, RUN_PAGE_SIZE, alertMarker, summarizeNeeds, hasNewerFinishedRun, countPreviousFailures, findAlertIssue, failedJobNames,
   formatBeijingTime, buildAlertBody, planAlertAction, createGitHubClient, readAlertEnvironment, runCosSyncAlert } = require('./cos-sync-alert.cjs')
@@ -115,7 +117,8 @@ test('failed job names are limited to finished failures and stripped before they
 })
 
 test('the alert body names the product, streak, Beijing time, run link and how to read the log', () => {
-  const body = buildAlertBody({ workflowFile: WORKFLOW, product: 'Claude 桌面端', streak: 9, truncated: false, since: '2026-10-07T23:14:00Z',
+  const claude = readAlertEnvironment(env(failedNeeds))
+  const body = buildAlertBody({ workflowFile: WORKFLOW, product: claude.product, impact: claude.impact, streak: 9, truncated: false, since: '2026-10-07T23:14:00Z',
     runNumber: 31, runUrl: `https://github.com/${REPOSITORY}/actions/runs/${RUN_ID}`, failedJobs: ['sync (macos, macos-latest)'] })
   assert.ok(body.startsWith(alertMarker(WORKFLOW)))
   assert.match(body, /\*\*Claude 桌面端离线包\*\*/)
@@ -124,7 +127,8 @@ test('the alert body names the product, streak, Beijing time, run link and how t
   assert.match(body, /\[第 31 次运行\]\(https:\/\/github\.com\/xufei5620\/xingmang-ai-manager\/actions\/runs\/9001\)/)
   assert.match(body, /`sync \(macos, macos-latest\)`/)
   assert.match(body, /stage-failed/)
-  assert.match(body, /自动更新和星芒一键安装都不经过 COS/)
+  assert.match(body, /`failure\.observed` 里是实际读到的值/)
+  assert.match(body, /\*\*影响\*\*：星芒替客户装 Claude 桌面端时第一路就从桶里下/)
   assert.match(buildAlertBody({ workflowFile: WORKFLOW, product: 'Codex 桌面端', streak: 51, truncated: true, since: 'bad', runNumber: 1, runUrl: 'u', failedJobs: [] }), /至少 \*\*51 次\*\*.*时间未知/)
   const catalog = readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-codex-plugins-cos.yml' }))
   const catalogBody = buildAlertBody({ workflowFile: catalog.workflowFile, product: catalog.product, impact: catalog.impact, streak: 2, truncated: false,
@@ -132,6 +136,24 @@ test('the alert body names the product, streak, Beijing time, run link and how t
   assert.match(catalogBody, /\*\*影响\*\*：星芒替客户下 Codex 插件目录时，桶里还是上一次同步成功的那一版/)
   assert.doesNotMatch(catalogBody, /下载按钮/)
   assert.equal(formatBeijingTime('2026-10-10T16:30:00Z'), '2026-10-11 00:30')
+})
+
+test('every alerted product names its own impact because the client downloads each one from the bucket first', () => {
+  const workflowDirectory = path.join(__dirname, '..', '.github', 'workflows')
+  const alerted = fs.readdirSync(workflowDirectory).filter((name) => name.endsWith('.yml'))
+    .map((name) => /SYNC_WORKFLOW_FILE: (\S+)/.exec(fs.readFileSync(path.join(workflowDirectory, name), 'utf8'))?.[1])
+    .filter(Boolean)
+  assert.deepEqual([...alerted].sort(), ['sync-chatgpt-official-cos.yml', 'sync-claude-official-cos.yml', 'sync-codex-plugins-cos.yml', 'sync-grok-cos.yml', 'sync-opencode-cos.yml'])
+  for (const file of alerted) {
+    const { impact } = readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: file }))
+    assert.equal(typeof impact, 'string')
+    assert.ok(impact.length > 20, file)
+    // The old default told maintainers one-click installs never touch COS, which is false for every product here.
+    assert.doesNotMatch(impact, /不经过 COS|不受影响/, file)
+  }
+  for (const file of ['sync-chatgpt-official-cos.yml', 'sync-claude-official-cos.yml']) {
+    assert.match(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: file })).impact, /第一路就从桶里下.*改走.*原来的路/)
+  }
 })
 
 test('one failure stays quiet, the second opens the alert, later failures edit it and a success closes it', () => {

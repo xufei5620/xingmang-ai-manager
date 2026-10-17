@@ -38,7 +38,7 @@ import {
 } from './diagnostics'
 import type { NodeTlsOutcome } from './certificate-trust-probe'
 import { readProjectInstructionsTemplate } from './project-instructions'
-import { macosShellOverrideVariables } from './system-service'
+import { launchExcludedEnvironmentVariables, macosShellOverrideVariables } from './system-service'
 
 const temporaryDirectories: string[] = []
 
@@ -1368,6 +1368,21 @@ describe('diagnostics', () => {
     it('leaves every variable that takes a CLI off the current account to the macOS launcher to drop', async () => {
       const home = temporaryHome()
       const dropped = new Set(providerIds.flatMap((provider) => macosShellOverrideVariables(provider, 'relay')))
+      const breaking: string[] = []
+      for (const name of environmentOverrideNames) {
+        const input = dependencies(home)
+        input.env = { [name]: 'https://must-not-leak.example.com/elsewhere' }
+        if (overrideItem(await runDiagnostics(input))?.state === 'fail') breaking.push(name)
+      }
+
+      expect(breaking.length).toBeGreaterThan(0)
+      expect(breaking.filter((name) => !dropped.has(name))).toEqual([])
+    })
+
+    // #1081：Windows、Linux 上从星芒打开时也不带这些，和 Mac 一样，只在用星芒账号时。
+    it('leaves every variable that takes a CLI off the current account out of what every platform hands it on the Xingmang account', async () => {
+      const home = temporaryHome()
+      const dropped = new Set(providerIds.flatMap((provider) => launchExcludedEnvironmentVariables(provider, 'relay')))
       const breaking: string[] = []
       for (const name of environmentOverrideNames) {
         const input = dependencies(home)

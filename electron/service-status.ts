@@ -1,5 +1,7 @@
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
+import { activeProviderIds } from './catalog'
+import { isCliModelName, type CliModelHint, type CliModelHints } from './cli-model-defaults'
 import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from './managed-cli-groups'
 
 /**
@@ -14,7 +16,8 @@ import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from
  * 这份文件只能让客户端「少做」或「多说一句」，不能让它多拿任何能力：读不到、格式
  * 不对、字段缺失，一律当作没有这份文件——没在维护，客户端照常工作。它绝不能因为
  * 这份文件读不到而报错或拖慢启动。分组对照（accountGroups）也守这一条：它只在服务端
- * 已经允许这个账号用的分组里挑，不能让客户端用上任何它本来用不了的分组。
+ * 已经允许这个账号用的分组里挑，不能让客户端用上任何它本来用不了的分组。型号表（cliModels）同理：
+ * 只在账号模型列表里真有的型号里挑，下架名单也只换掉账号已经不再列出的型号。
  */
 export const serviceStatusFileName = 'service-status.json'
 
@@ -56,6 +59,12 @@ export interface ServiceStatus {
    * 发版就跟过去。没写、写错的那样用途照旧按写死的名字和工具专属词认。0.2.19 起的客户端认。
    */
   accountGroups?: AccountGroupHints
+  /**
+   * 各工具的型号表：claude / codex / grok 各自的默认型号、上一代默认、已下架（cli-model-defaults.ts 的
+   * CliModelHint），和程序自带的那份合并。型号换代、站上下架不用发版。没写、写错的那一项照旧用自带的。
+   * 0.2.20 起的客户端认。
+   */
+  cliModels?: CliModelHints
 }
 
 export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
@@ -218,6 +227,44 @@ function readAccountGroups(value: unknown): AccountGroupHints | null {
   return any ? hints : null
 }
 
+// 上一代列两三个就够，下架名单留宽一点；上限只防一份写坏的文件塞进一长串。
+const maxPreviousCliModels = 8
+const maxRetiredCliModels = 32
+
+function readCliModelNames(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return []
+  const names: string[] = []
+  for (const entry of value) {
+    const name = typeof entry === 'string' ? entry.trim() : ''
+    if (!isCliModelName(name) || names.includes(name)) continue
+    names.push(name)
+    if (names.length === limit) break
+  }
+  return names
+}
+
+// 只认还在管的工具（Gemini CLI 已下线）；名字不合格的那一个丢掉，同一项里写对的照用。
+function readCliModels(value: unknown): CliModelHints | null {
+  if (!isRecord(value)) return null
+  const hints: CliModelHints = {}
+  let any = false
+  for (const provider of activeProviderIds) {
+    const entry = value[provider]
+    if (!isRecord(entry)) continue
+    const hint: CliModelHint = {}
+    const preferred = typeof entry.default === 'string' ? entry.default.trim() : ''
+    if (isCliModelName(preferred)) hint.default = preferred
+    const previous = readCliModelNames(entry.previous, maxPreviousCliModels)
+    if (previous.length) hint.previous = previous
+    const retired = readCliModelNames(entry.retired, maxRetiredCliModels)
+    if (retired.length) hint.retired = retired
+    if (!hint.default && !hint.previous && !hint.retired) continue
+    hints[provider] = hint
+    any = true
+  }
+  return any ? hints : null
+}
+
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
 export function parseServiceStatus(text: string, now: Date): ServiceStatus {
   return parseServiceStatusDocument(text, now) ?? emptyServiceStatus
@@ -236,6 +283,7 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
   }
   if (!isRecord(parsed)) return null
   const accountGroups = readAccountGroups(parsed.accountGroups)
+  const cliModels = readCliModels(parsed.cliModels)
   return {
     maintenance: readMaintenance(parsed.maintenance, now),
     badVersions: readBadVersions(parsed.badVersions),
@@ -243,6 +291,7 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
     minimumVersion: readMinimumVersion(parsed.minimumVersion),
     ...(parsed.toolRouteRewrite === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}),
     ...(accountGroups ? { accountGroups } : {}),
+    ...(cliModels ? { cliModels } : {}),
   }
 }
 
@@ -306,7 +355,7 @@ export interface ServiceStatusMonitor {
   settled(): Promise<ServiceStatus | null>
   /**
    * 最近一次读成功的那份；一次也没读成功过是 null。维护提示读不到就当没在维护，分组对照不能这样：
-   * 站上删了老名字以后对照是唯一认得出新名字的办法，一次定时读失败不该让签 Key 退回老名字。
+   * 站上删了老名字以后对照是唯一认得出新名字的办法，一次定时读失败不该让签 Key 退回老名字。型号表同理。
    */
   lastKnown(): ServiceStatus | null
   dispose(): void
