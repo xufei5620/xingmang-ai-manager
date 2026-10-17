@@ -38,3 +38,6 @@ canvas-v2/qa-*.png
 dl-landing.config.json
 # 由 dl-landing/nginx/*.conf.example 渲染出的、带真实主机与端口的本地副本
 dl-landing/nginx/*.conf
+# 落地页的安装包清单是 dl:publish 上传后写出的产物，源站那份才是真的；
+# 仓库里留一份旧的，整目录同步上线时就会把源站清单盖回旧版本（P-15）
+dl-landing/latest.json

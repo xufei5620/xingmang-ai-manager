@@ -53,6 +53,17 @@ async function readBody(request, limit = 8 * 1024) {
 }
 
 async function handleMockApi(request, response, url) {
+  // 仓库里不再放 latest.json（它由 dl:publish 上传后写出，见 .gitignore），
+  // 预览时给一份假清单，注册成功页和下载区才有东西可看。
+  if (url.pathname === '/latest.json' && request.method === 'GET') {
+    sendJson(response, 200, {
+      version: '本地预览',
+      win: '/files/latest/Xingmang-Setup-preview.exe',
+      macArm64: '/files/latest/Xingmang-preview-arm64.dmg',
+      macX64: '/files/latest/Xingmang-preview-x64.dmg'
+    })
+    return true
+  }
   if (url.pathname === '/api/status' && request.method === 'GET') {
     sendJson(response, 200, { success: true, data: { email_verification: true } })
     return true

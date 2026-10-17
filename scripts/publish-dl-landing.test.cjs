@@ -465,6 +465,16 @@ test('keeps the production origin out of the public repository', () => {
   assert.match(proxy, /__ACCOUNT_UPSTREAM__/)
 })
 
+test('P-15: keeps the landing manifest out of the repository', () => {
+  // dl:publish writes dl-landing/latest.json after every upload. A tracked copy
+  // goes stale with the next release, and syncing the directory to the origin
+  // would then put an old version back in front of customers.
+  const ignored = fs.readFileSync(path.join(__dirname, '..', '.gitignore'), 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+  assert.ok(ignored.includes('dl-landing/latest.json'), '.gitignore must ignore the landing manifest')
+})
+
 test('P-27: pins the origin host key and refuses a known_hosts file it cannot trust', () => {
   const directory = scratch()
   try {
