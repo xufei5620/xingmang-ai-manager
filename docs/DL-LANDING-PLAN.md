@@ -71,7 +71,7 @@ https://dl.solov.cc/sign-up?aff=6B4j
 }
 ```
 
-落地页源码已在本仓 `dl-landing/`（`index.html` / `styles.css` / `app.js` / `latest.json`）。本地预览：`node dl-landing/preview.mjs`，打开 `http://127.0.0.1:4173/sign-up?aff=6B4j`。预览服只 mock 注册三接口，不打生产。上线时 scp/rsync 到站点根目录，不要带 `preview.mjs`。不要在服务器上长期手改。
+落地页源码已在本仓 `dl-landing/`（`index.html` / `styles.css` / `app.js`）。`latest.json` **不进仓库**（`.gitignore` 已忽略）：它只由 `npm run dl:publish` 在安装包传完后写到源站，并在本机 `dl-landing/` 留一份副本；仓库里曾留着一份 0.1.28 的旧清单，整目录同步上线就会把源站清单盖回旧版本（审查总表 P-15）。本地预览：`node dl-landing/preview.mjs`，打开 `http://127.0.0.1:4173/sign-up?aff=6B4j`。预览服只 mock 注册三接口和一份假的 `latest.json`，不打生产。上线时 scp/rsync 到站点根目录，不要带 `preview.mjs`，也不要带本机的 `latest.json`（以源站那份为准）。不要在服务器上长期手改。
 
 macOS 构建还会打出 arm64/x64 的 zip 与 blockmap，供 `latest-mac.yml` 自动更新。那些文件可以另放更新目录（现有 `updatesnew.shenfengwl.fun` 或以后的 `/files/update/`），**不要出现在注册成功页**。
 
