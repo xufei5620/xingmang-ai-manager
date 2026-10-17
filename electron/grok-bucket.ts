@@ -4,14 +4,14 @@ import { parseGrokStableVersion, resolveGrokInstallVersion } from './grok-update
 
 /**
  * 星芒存储桶里的 Windows 版 Grok：scripts/sync-grok-cos.cjs 定时问 xAI 现在的 stable，连同星芒的推荐版本，
- * 把 xAI 签过名的 grok.exe 原样传上来（在 GitHub 的 Windows 机器上核过 X.AI LLC 的签名才传），清单里写着
+ * 把 xAI 签过名的 grok.exe 原样传上来（在 GitHub 的 Windows 机器上核过 xAI 的签名才传），清单里写着
  * 每一版每种芯片的大小和 SHA-256。装 Grok 时先从这里下：国内快，用不着加速（yoyo 2026-10-14「放桶」）。
  * 读不到、没有要的那一版、对不上都抛 DesktopBucketUnavailableError，调用方悄悄换回 xAI 那一路。
  *
  * Trust: the bucket origin and the index key are constants, and every request goes through
  * fetchDesktopBucketResource, which pins the host and path and refuses redirects (I10). The
  * index only names an object key with exactly the layout the sync script writes. Its size and
- * SHA-256 bind the download, and the caller still runs the same X.AI LLC Authenticode check it
+ * SHA-256 bind the download, and the caller still runs the same xAI Authenticode check it
  * runs on xAI's own copy before anything is installed. Whoever could rewrite the bucket could
  * at most serve a different xAI-signed build under this version's name; the version.json the
  * installer writes would then be wrong until the next update, but unsigned code never runs.
