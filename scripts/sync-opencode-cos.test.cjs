@@ -9,6 +9,7 @@ const {
   packageSourceUrl, packageKey, validateHop, parseFeed, validateLatest, resolveAssetUrl, darwinOpenCodeRequirement, requestHead, inspectPackage,
   synchronizeOpenCode, createRuntimeDependencies, safeOpenCodeSyncFailure,
 } = require('./sync-opencode-cos.cjs')
+const { safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 const ASSET = 'https://release-assets.githubusercontent.com/github-production-release-asset/1/abc'
 
@@ -231,6 +232,8 @@ test('a package the client would refuse is never uploaded and the diagnostic lea
   await assert.rejects(mislabelled.run(), (error) => {
     assert.match(error.message, /版本和 latest\.json 不一致/)
     assert.equal(safeOpenCodeSyncFailure(error).stage, 'verify-package')
+    assert.deepEqual(safeOpenCodeSyncFailure(error).failure, { code: 'package-identity-mismatch',
+      observed: { expectedVersion: '1.18.34', packageVersion: '1.18.33', bundleIdentifier: 'ai.opencode.desktop' } })
     return true
   })
   assert.equal(mislabelled.publications.length, 0)
@@ -320,19 +323,21 @@ test('the package check unpacks with bsdtar and asks codesign, Gatekeeper and li
     for (const call of good.calls) assert.equal(call.options.env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin')
     await assert.rejects(fs.access(path.join(directory, 'extract-arm64')), { code: 'ENOENT' })
 
-    for (const [options, message] of [
-      [{ entries: ['OpenCode.app', 'Evil.app'] }, /只有 OpenCode\.app/],
-      [{ entries: ['Other.app'] }, /只有 OpenCode\.app/],
-      [{ info: { CFBundleIdentifier: 'com.evil.app', CFBundleExecutable: 'OpenCode' } }, /bundle id/],
-      [{ info: { CFBundleIdentifier: 'ai.opencode.desktop', CFBundleExecutable: '../../bin/sh' } }, /可执行文件名/],
-      [{ failing: '/usr/bin/codesign' }, /5NZ4Q7NXJ4/],
-      [{ failing: '/usr/sbin/spctl' }, /Gatekeeper/],
-      [{ archs: 'x86_64' }, /芯片/],
+    for (const [options, message, code] of [
+      [{ entries: ['OpenCode.app', 'Evil.app'] }, /只有 OpenCode\.app/, 'package-format-invalid'],
+      [{ entries: ['Other.app'] }, /只有 OpenCode\.app/, 'package-format-invalid'],
+      [{ info: { CFBundleIdentifier: 'com.evil.app', CFBundleExecutable: 'OpenCode' } }, /bundle id/, 'package-identity-mismatch'],
+      [{ info: { CFBundleIdentifier: 'ai.opencode.desktop', CFBundleExecutable: '../../bin/sh' } }, /可执行文件名/, 'package-identity-mismatch'],
+      [{ failing: '/usr/bin/codesign' }, /5NZ4Q7NXJ4/, 'package-signature-invalid'],
+      [{ failing: '/usr/sbin/spctl' }, /Gatekeeper/, 'package-signature-invalid'],
+      [{ archs: 'x86_64' }, /芯片/, 'package-identity-mismatch'],
     ]) {
       const refused = runner(options)
       await assert.rejects(inspectPackage(path.join(directory, 'opencode.tar.gz'), directory, 'arm64', refused.run, 'darwin'), (error) => {
         assert.match(error.message, message)
         assert.doesNotMatch(error.message, /SECRET/)
+        assert.equal(safeSyncFailure(error).code, code)
+        assert.doesNotMatch(JSON.stringify(safeSyncFailure(error)), /SECRET/)
         return true
       })
       await assert.rejects(fs.access(path.join(directory, 'extract-arm64')), { code: 'ENOENT' })

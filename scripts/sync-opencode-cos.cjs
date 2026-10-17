@@ -5,7 +5,7 @@ const https = require('node:https')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
-const { safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 // Mac 上一键装 OpenCode 从 GitHub 下官方的 .app.tar.gz（electron/macos-desktop-app-installer.ts），国内时好时坏，
 // 以前靠加速。yoyo 2026-10-14 定「做」：和 Codex、Claude 桌面端一样放进星芒的腾讯云存储桶，客户端先从桶里下
@@ -68,19 +68,19 @@ function packageKey(platformId, sha256) {
 // GitHub's asset hosts, which serve the bytes behind a short-lived signed query.
 function validateHop(value) {
   let url
-  try { url = new URL(value) } catch { throw new Error('OpenCode 下载地址格式无效') }
-  if (url.protocol !== 'https:' || url.port || url.username || url.password || url.hash) throw new Error('OpenCode 下载地址不是允许的 HTTPS 地址')
+  try { url = new URL(value) } catch { throw checkFailure('source-url-rejected', 'OpenCode 下载地址格式无效') }
+  if (url.protocol !== 'https:' || url.port || url.username || url.password || url.hash) throw checkFailure('source-url-rejected', 'OpenCode 下载地址不是允许的 HTTPS 地址')
   if (url.hostname === 'github.com' && url.pathname.startsWith(RELEASE_PATH_PREFIX) && !url.search) return url
   if (ASSET_HOSTS.includes(url.hostname)) return url
-  throw new Error(`OpenCode 下载被转到了不认识的地址（${url.hostname}）`)
+  throw checkFailure('source-url-rejected', `OpenCode 下载被转到了不认识的地址（${url.hostname}）`)
 }
 
 /** Same rule as selectOpenCodeRelease in electron/macos-desktop-app-installer.ts. */
 function parseFeed(value) {
-  if (!isRecord(value) || !isRecord(value.platforms) || typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version)) throw new Error('OpenCode 的 latest.json 格式无效')
+  if (!isRecord(value) || !isRecord(value.platforms) || typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version)) throw checkFailure('metadata-invalid', 'OpenCode 的 latest.json 格式无效')
   for (const platformId of PLATFORM_IDS) {
     const entry = value.platforms[PLATFORMS[platformId].feedKey]
-    if (!isRecord(entry) || entry.url !== packageSourceUrl(value.version, platformId)) throw new Error('OpenCode 的 latest.json 没有写这一版的 Mac 安装包')
+    if (!isRecord(entry) || entry.url !== packageSourceUrl(value.version, platformId)) throw checkFailure('metadata-invalid', 'OpenCode 的 latest.json 没有写这一版的 Mac 安装包')
   }
   return value.version
 }
@@ -89,7 +89,7 @@ function validateLatest(value, publicUrl) {
   if (value === null || value === undefined) return null
   if (!isRecord(value) || value.schemaVersion !== 1 || value.product !== PRODUCT || typeof value.generatedAt !== 'string'
     || typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version) || !isRecord(value.source) || value.source.feedUrl !== FEED_URL
-    || !Array.isArray(value.files) || value.files.length !== PLATFORM_IDS.length) throw new Error('COS 现有 OpenCode 清单格式无效，已保留现有清单')
+    || !Array.isArray(value.files) || value.files.length !== PLATFORM_IDS.length) throw checkFailure('cos-index-invalid', 'COS 现有 OpenCode 清单格式无效，已保留现有清单')
   const platforms = new Set()
   for (const file of value.files) {
     const spec = isRecord(file) ? PLATFORMS[file.platformId] : null
@@ -99,8 +99,8 @@ function validateLatest(value, publicUrl) {
       || !SHA256_PATTERN.test(file.sha256 || '') || file.key !== packageKey(file.platformId, file.sha256)
       || typeof file.url !== 'string' || (publicUrl && file.url !== publicUrl(file.key))
       || !Number.isSafeInteger(file.size) || file.size < MIN_PACKAGE_BYTES || file.size > MAX_PACKAGE_BYTES
-      || file.sourceUrl !== packageSourceUrl(value.version, file.platformId)) throw new Error('COS 现有 OpenCode 清单的文件记录无效')
-    if (typeof file.cosEtag !== 'string' || !file.cosEtag || file.cosEtag.length > 256 || /[\r\n]/.test(file.cosEtag)) throw new Error('COS 现有 OpenCode 清单缺少已核验对象指纹')
+      || file.sourceUrl !== packageSourceUrl(value.version, file.platformId)) throw checkFailure('cos-index-invalid', 'COS 现有 OpenCode 清单的文件记录无效')
+    if (typeof file.cosEtag !== 'string' || !file.cosEtag || file.cosEtag.length > 256 || /[\r\n]/.test(file.cosEtag)) throw checkFailure('cos-index-invalid', 'COS 现有 OpenCode 清单缺少已核验对象指纹')
     platforms.add(file.platformId)
   }
   return value
@@ -154,13 +154,13 @@ async function resolveAssetUrl(url, dependencies) {
   const visited = new Set()
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     if (ASSET_HOSTS.includes(current.hostname)) return current.href
-    if (visited.has(current.href)) throw new Error('OpenCode 下载发生了循环重定向')
+    if (visited.has(current.href)) throw checkFailure('source-url-rejected', 'OpenCode 下载发生了循环重定向')
     visited.add(current.href)
     const result = await dependencies.requestHead(current.href)
-    if (![301, 302, 303, 307, 308].includes(result.status) || typeof result.location !== 'string' || result.location.length > 4096) throw new Error(`GitHub 没有给出 OpenCode 下载地址（HTTP ${Number.isInteger(result.status) ? result.status : 0}）`)
+    if (![301, 302, 303, 307, 308].includes(result.status) || typeof result.location !== 'string' || result.location.length > 4096) throw checkFailure('source-url-rejected', `GitHub 没有给出 OpenCode 下载地址（HTTP ${Number.isInteger(result.status) ? result.status : 0}）`)
     current = validateHop(new URL(result.location, current).href)
   }
-  throw new Error('OpenCode 下载重定向次数过多')
+  throw checkFailure('source-url-rejected', 'OpenCode 下载重定向次数过多')
 }
 
 async function verifyUnchangedArtifact(store, file) {
@@ -197,22 +197,22 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
       const downloaded = await stage('source-download', context, async function (onProgress) {
         const assetUrl = await resolveAssetUrl(sourceUrl, dependencies)
         const result = await dependencies.downloadResource({ url: assetUrl, filePath, allowedHosts: ASSET_HOSTS, maxBytes: MAX_PACKAGE_BYTES, headers: { accept: 'application/octet-stream', 'user-agent': 'xingmang-opencode-cos-sync/1' }, onProgress })
-        if (!result || !Number.isSafeInteger(result.bytes) || result.bytes < MIN_PACKAGE_BYTES || result.bytes > MAX_PACKAGE_BYTES || !SHA256_PATTERN.test(result.sha256 || '')) throw new Error('OpenCode 安装包大小或摘要无效')
+        if (!result || !Number.isSafeInteger(result.bytes) || result.bytes < MIN_PACKAGE_BYTES || result.bytes > MAX_PACKAGE_BYTES || !SHA256_PATTERN.test(result.sha256 || '')) throw checkFailure('download-mismatch', 'OpenCode 安装包大小或摘要无效')
         return { bytes: result.bytes, sha256: result.sha256 }
       })
       await stage('verify-package', { ...context, expectedBytes: downloaded.bytes }, async function () {
         const inspected = await dependencies.inspectPackage(filePath, workDirectory, PLATFORMS[platformId].machine)
-        if (inspected.version !== version) throw new Error('OpenCode 应用里写的版本和 latest.json 不一致')
+        if (inspected.version !== version) throw checkFailure('package-identity-mismatch', 'OpenCode 应用里写的版本和 latest.json 不一致', { expectedVersion: version, packageVersion: inspected.version, bundleIdentifier: inspected.bundleIdentifier })
       })
       const key = packageKey(platformId, downloaded.sha256)
       const published = await stage('cos-publish-package', { ...context, expectedBytes: downloaded.bytes }, async function (onProgress) {
         const result = await store.publishFile(key, filePath, { expectedBytes: downloaded.bytes, expectedSha256: downloaded.sha256, contentType: CONTENT_TYPE, cacheControl: 'public, max-age=31536000, immutable', onProgress })
-        if (result.bytes !== downloaded.bytes || result.sha256 !== downloaded.sha256) throw new Error('COS OpenCode 安装包公共下载校验结果不一致')
+        if (result.bytes !== downloaded.bytes || result.sha256 !== downloaded.sha256) throw checkFailure('cos-object-mismatch', 'COS OpenCode 安装包公共下载校验结果不一致')
         return result
       })
       const head = await stage('cos-head-package', context, async function () {
         const result = await store.inspect(key)
-        if (!result || result.bytes !== downloaded.bytes || typeof result.etag !== 'string' || result.etag !== published.etag) throw new Error('COS OpenCode 安装包发布后的 HEAD 与已核验正文不一致')
+        if (!result || result.bytes !== downloaded.bytes || typeof result.etag !== 'string' || result.etag !== published.etag) throw checkFailure('cos-object-mismatch', 'COS OpenCode 安装包发布后的 HEAD 与已核验正文不一致')
         return result
       })
       await dependencies.removeFile(filePath)
@@ -226,7 +226,7 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
     await stage('validate-latest', {}, async function () { validateLatest(manifest, store.publicUrl) })
     await stage('cos-recheck-latest', {}, async function () {
       const current = validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
-      if (JSON.stringify(current) !== JSON.stringify(old)) throw new Error('COS OpenCode 清单在同步期间发生变化，停止发布以保留现有状态')
+      if (JSON.stringify(current) !== JSON.stringify(old)) throw checkFailure('cos-index-changed', 'COS OpenCode 清单在同步期间发生变化，停止发布以保留现有状态')
     })
     latestState = 'write-unconfirmed'
     await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
@@ -289,28 +289,28 @@ function safeChildEnvironment(directory) {
  * are read too, so a package cannot be filed under the wrong version or chip.
  */
 async function inspectPackage(filePath, workDirectory, machine, run = promisify(execFile), platform = process.platform) {
-  if (platform !== 'darwin') throw new Error('OpenCode 签名检查必须在 macOS runner 运行')
+  if (platform !== 'darwin') throw checkFailure('inspector-unavailable', 'OpenCode 签名检查必须在 macOS runner 运行')
   const extractDirectory = path.join(workDirectory, `extract-${machine}`)
   await fs.mkdir(extractDirectory, { mode: 0o700 })
-  async function inspect(executable, args, failure) {
-    try { return await run(executable, args, { env: safeChildEnvironment(workDirectory), timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 }) } catch { throw new Error(failure) }
+  async function inspect(executable, args, code, failure) {
+    try { return await run(executable, args, { env: safeChildEnvironment(workDirectory), timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 }) } catch (error) { throw checkFailure(code, failure, observedProcessFailure(error)) }
   }
   try {
-    await inspect('/usr/bin/tar', ['-xzf', filePath, '-C', extractDirectory], 'OpenCode 安装包解不开')
+    await inspect('/usr/bin/tar', ['-xzf', filePath, '-C', extractDirectory], 'package-format-invalid', 'OpenCode 安装包解不开')
     const entries = await fs.readdir(extractDirectory)
-    if (entries.length !== 1 || entries[0] !== APPLICATION) throw new Error(`OpenCode 安装包里应当只有 ${APPLICATION}`)
+    if (entries.length !== 1 || entries[0] !== APPLICATION) throw checkFailure('package-format-invalid', `OpenCode 安装包里应当只有 ${APPLICATION}`)
     const application = path.join(extractDirectory, APPLICATION)
     const stats = await fs.lstat(application)
-    if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error(`${APPLICATION} 不是普通目录`)
-    const metadata = await inspect('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(application, 'Contents', 'Info.plist')], 'OpenCode 的 Info.plist 读不出来')
+    if (!stats.isDirectory() || stats.isSymbolicLink()) throw checkFailure('package-format-invalid', `${APPLICATION} 不是普通目录`)
+    const metadata = await inspect('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(application, 'Contents', 'Info.plist')], 'inspection-unparsable', 'OpenCode 的 Info.plist 读不出来')
     let info
-    try { info = JSON.parse(metadata.stdout) } catch { throw new Error('OpenCode 的 Info.plist 读不出来') }
-    if (!isRecord(info) || info.CFBundleIdentifier !== BUNDLE_IDENTIFIER) throw new Error(`OpenCode 的 bundle id 不是 ${BUNDLE_IDENTIFIER}`)
-    if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._ -]{1,128}$/.test(info.CFBundleExecutable)) throw new Error('OpenCode 的可执行文件名无效')
-    await inspect('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinOpenCodeRequirement()}`, application], `OpenCode 的签名不是 ${TEAM_IDENTIFIER} 团队的 Developer ID`)
-    await inspect('/usr/sbin/spctl', ['--assess', '--type', 'execute', application], 'Gatekeeper 没有放行 OpenCode')
-    const architectures = await inspect('/usr/bin/lipo', ['-archs', path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)], 'OpenCode 主程序的芯片读不出来')
-    if (!architectures.stdout.trim().split(/\s+/).includes(machine)) throw new Error('OpenCode 主程序的芯片和文件名不一致')
+    try { info = JSON.parse(metadata.stdout) } catch { throw checkFailure('inspection-unparsable', 'OpenCode 的 Info.plist 读不出来') }
+    if (!isRecord(info) || info.CFBundleIdentifier !== BUNDLE_IDENTIFIER) throw checkFailure('package-identity-mismatch', `OpenCode 的 bundle id 不是 ${BUNDLE_IDENTIFIER}`, { bundleIdentifier: isRecord(info) ? info.CFBundleIdentifier : undefined })
+    if (typeof info.CFBundleExecutable !== 'string' || !/^[A-Za-z0-9._ -]{1,128}$/.test(info.CFBundleExecutable)) throw checkFailure('package-identity-mismatch', 'OpenCode 的可执行文件名无效')
+    await inspect('/usr/bin/codesign', ['--verify', '--strict', '--deep', `-R=${darwinOpenCodeRequirement()}`, application], 'package-signature-invalid', `OpenCode 的签名不是 ${TEAM_IDENTIFIER} 团队的 Developer ID`)
+    await inspect('/usr/sbin/spctl', ['--assess', '--type', 'execute', application], 'package-signature-invalid', 'Gatekeeper 没有放行 OpenCode')
+    const architectures = await inspect('/usr/bin/lipo', ['-archs', path.join(application, 'Contents', 'MacOS', info.CFBundleExecutable)], 'inspection-unparsable', 'OpenCode 主程序的芯片读不出来')
+    if (!architectures.stdout.trim().split(/\s+/).includes(machine)) throw checkFailure('package-identity-mismatch', 'OpenCode 主程序的芯片和文件名不一致')
     return { version: info.CFBundleShortVersionString, bundleIdentifier: info.CFBundleIdentifier, minimumSystemVersion: info.LSMinimumSystemVersion ?? null }
   } finally {
     await fs.rm(extractDirectory, { recursive: true, force: true })
@@ -328,7 +328,7 @@ function createRuntimeDependencies(common) {
     removeWorkDirectory: async function (directory) {
       const resolved = path.resolve(directory)
       const temporaryRoot = await fs.realpath(os.tmpdir())
-      if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith('xingmang-opencode-cos-')) throw new Error('拒绝删除临时同步目录以外的路径')
+      if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith('xingmang-opencode-cos-')) throw checkFailure('temp-path-rejected', '拒绝删除临时同步目录以外的路径')
       await fs.rm(resolved, { recursive: true, force: true })
     },
   }
@@ -336,7 +336,7 @@ function createRuntimeDependencies(common) {
 
 async function main() {
   const common = require('./cos-sync-utils.cjs')
-  if (process.argv.length > 2) throw new Error('OpenCode 同步不接受命令行参数')
+  if (process.argv.length > 2) throw checkFailure('platform-invalid', 'OpenCode 同步不接受命令行参数')
   const config = common.readCosConfiguration(process.env)
   const result = await synchronizeOpenCode({ store: common.createCosStore(config), dependencies: createRuntimeDependencies(common),
     progress: function (event) { console.log(`[opencode-sync] ${JSON.stringify(event)}`) } })

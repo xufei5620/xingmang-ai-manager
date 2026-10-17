@@ -9,6 +9,7 @@ const { test } = require('node:test')
 const {
   buildCosAuthorization,
   buildCosSigningMaterial,
+  checkFailure,
   createCosStore,
   downloadResource,
   fetchJson,
@@ -16,12 +17,47 @@ const {
   hashFile,
   inspectResource,
   isTransientTransferFailure,
+  observedProcessFailure,
   readBoundedRegularFile,
   readCosConfiguration,
   validateObjectKey,
   safeSyncFailure,
 } = require('./cos-sync-utils.cjs')
 const { RETRY_POLICIES } = require('./cos-transfer-retry.cjs')
+
+test('check failures log their fixed code and only the public values a check read', () => {
+  let getterRan = false
+  const observed = {
+    expectedVersion: '26.1013.4894.0', packageVersion: '26.1013.3656.0', containsPackageSignature: true, exitCode: 3221225477,
+    signerIssuer: 'CN=Microsoft Marketplace CA G 022, OU=AOC, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+    signerName: 'Anthropic, PBC',
+    packageName: 'forged\n[chatgpt-sync] {"event":"stage-complete"}', packagePublisher: 'https://user:SECRET@host/', signerSubject: 'x'.repeat(257),
+    timedOut: 'yes', inspectorReason: '', notAField: 'SECRET', teamIdentifier: { nested: 'SECRET' },
+  }
+  Object.defineProperty(observed, 'bundleIdentifier', { enumerable: true, get() { getterRan = true; return 'com.example' } })
+  const error = checkFailure('package-identity-mismatch', '中文固定句 SECRET', observed)
+  assert.equal(error.message, '中文固定句 SECRET')
+  assert.deepEqual(safeSyncFailure(error), { code: 'package-identity-mismatch', observed: {
+    expectedVersion: '26.1013.4894.0', packageVersion: '26.1013.3656.0', containsPackageSignature: true, exitCode: 3221225477,
+    signerIssuer: 'CN=Microsoft Marketplace CA G 022, OU=AOC, O=Microsoft Corporation, L=Redmond, S=Washington, C=US', signerName: 'Anthropic, PBC',
+  } })
+  assert.equal(getterRan, false)
+  assert.doesNotMatch(JSON.stringify(safeSyncFailure(error)), /SECRET|中文固定句/)
+  assert.deepEqual(safeSyncFailure(checkFailure('version-regressed', '倒退')), { code: 'version-regressed' })
+  assert.deepEqual(safeSyncFailure(checkFailure('inspector-failed', '失败', { notAField: 1 })), { code: 'inspector-failed' })
+  assert.throws(() => checkFailure('made-up-code', 'x'), /代码无效/)
+  // A plain Error with the same message is still unowned.
+  assert.deepEqual(safeSyncFailure(new Error('中文固定句 SECRET')), { code: 'operation-failed' })
+})
+
+test('inspector process failures keep the exit status, spawn code and timeout but not the output', () => {
+  assert.deepEqual(observedProcessFailure(Object.assign(new Error('Command failed: SECRET'), { code: 1, killed: false, stdout: 'SECRET', stderr: 'SECRET' })),
+    { exitCode: 1, inspectorErrorCode: undefined, timedOut: false })
+  assert.deepEqual(observedProcessFailure(Object.assign(new Error('spawn'), { code: 'ENOENT' })), { exitCode: undefined, inspectorErrorCode: 'ENOENT', timedOut: false })
+  assert.deepEqual(observedProcessFailure(Object.assign(new Error('timeout'), { code: null, killed: true, signal: 'SIGTERM' })), { exitCode: undefined, inspectorErrorCode: undefined, timedOut: true })
+  assert.deepEqual(observedProcessFailure(Object.assign(new Error('odd'), { code: 'not a code; SECRET' })), { exitCode: undefined, inspectorErrorCode: undefined, timedOut: false })
+  assert.deepEqual(observedProcessFailure(undefined), { exitCode: undefined, inspectorErrorCode: undefined, timedOut: false })
+})
 
 test('safe diagnostics recognize owned errors and never trust forged fields or raw transport details', async () => {
   const forged = new Error('Bearer SECRET signed-url')
