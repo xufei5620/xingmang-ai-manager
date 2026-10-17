@@ -138,6 +138,11 @@ export interface DiagnosticsDependencies {
   homeDirectory?: string
   platform?: NodeJS.Platform
   arch?: string
+  /**
+   * Mac 上本进程是不是经 Rosetta 转换运行（app.runningUnderARM64Translation）。Apple 芯片上装了
+   * Intel 版时 arch 是 x64，「操作系统」一项不能照它说成 Intel 芯片（#1155）。缺省 = 不是。
+   */
+  macRosetta?: boolean
   release?: string
   /** Linux 发行版名字；缺省时在 Linux 上读 /etc/os-release。 */
   readLinuxSystemName?: () => Promise<string | null>
@@ -2226,10 +2231,13 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         const linuxSystemName = platform === 'linux'
           ? await (dependencies.readLinuxSystemName ?? readLinuxSystemName)().catch(() => null)
           : null
+        const macRosetta = platform === 'darwin' && dependencies.macRosetta === true
+        const details: Record<string, string | boolean> = { supported: supportedPlatform }
+        if (platform === 'darwin') Object.assign(details, { appArch: arch, rosetta: macRosetta })
         return {
           state: supportedPlatform ? 'pass' : 'warn',
-          summary: operatingSystemSummary(platform, release, arch, linuxSystemName),
-          details: { supported: supportedPlatform },
+          summary: operatingSystemSummary(platform, release, macRosetta ? 'arm64' : arch, linuxSystemName),
+          details,
         }
       },
     },

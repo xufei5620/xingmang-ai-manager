@@ -147,6 +147,25 @@ describe('diagnostics', () => {
     expect(inspectPowerShell).not.toHaveBeenCalled()
   })
 
+  it('names the Mac chip from the hardware, not from the build that happens to run on it', async () => {
+    const home = temporaryHome()
+    const input = { ...dependencies(home), platform: 'darwin' as const, arch: 'x64', release: '22.6.0' }
+    const operatingSystem = async (macRosetta?: boolean) => (await runDiagnostics({ ...input, macRosetta }))
+      .items.find((item) => item.code === 'OPERATING_SYSTEM')
+
+    expect(await operatingSystem()).toMatchObject({
+      summary: 'macOS 13（Intel 芯片）',
+      details: { supported: true, appArch: 'x64', rosetta: false },
+    })
+    expect(await operatingSystem(true)).toMatchObject({
+      summary: 'macOS 13（Apple 芯片）',
+      details: { supported: true, appArch: 'x64', rosetta: true },
+    })
+    // Rosetta 只在 Mac 上有；Windows 上的转换层由「电脑芯片」那一项说。
+    expect((await runDiagnostics({ ...input, platform: 'win32', release: '10.0.22631', macRosetta: true }))
+      .items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({ summary: 'Windows 11（64 位）', details: { supported: true } })
+  })
+
   it('names the terminal program Linux will open tools in, and fails with a fix when there is none', async () => {
     const home = temporaryHome()
     const inspectPowerShell = vi.fn(dependencies(home).inspectPowerShell)
