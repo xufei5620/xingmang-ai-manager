@@ -54,6 +54,33 @@ const channels = {
   cancelCloseTasks: 'canvas-host:cancel-close-tasks',
 } as const
 
+// Electron rejects a failed invoke with "Error invoking remote method
+// '<channel>': <ClassName>: <reason>". The channel and class name are
+// implementation details, yet the canvas puts error.message on nodes and
+// banners verbatim, and canvas-v2 itself stays untouched, so the wrapper is
+// peeled here before the error crosses the bridge. Same pattern as
+// renderer-v2's rawErrorMessage (business-common.tsx), copied because a
+// sandboxed preload cannot import it (I7). Only one class name is taken per
+// layer, right after the channel and with a space after its colon, so a reason
+// that itself starts with `EPERM:` or a `C:\` path keeps it.
+const ipcErrorPrefix = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z_][A-Za-z0-9_]*:\s+)?/
+
+function hostError(error: unknown) {
+  // Duck-typed: tests run this file in a separate VM realm whose Error differs.
+  if (!error || typeof error !== 'object' || typeof (error as { message?: unknown }).message !== 'string') return error
+  const original = (error as { message: string }).message
+  let message = original
+  // 一个 handler 再 invoke 另一个通道时前缀会嵌套多层，逐层剥净
+  while (ipcErrorPrefix.test(message)) message = message.replace(ipcErrorPrefix, '')
+  return message && message !== original ? new Error(message) : error
+}
+
+function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+  return ipcRenderer.invoke(channel, ...args).catch((error: unknown) => {
+    throw hostError(error)
+  })
+}
+
 function subscribeCloseRequest(channel: string, listener: (request: { requestId: string }) => void) {
   const wrapped = (_event: unknown, payload: unknown) => {
     if (!payload || typeof payload !== 'object') return
@@ -89,55 +116,55 @@ function subscribeAccountChange(listener: (change: { userId: number | null; prev
 
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   saveFile: (suggestedName: string, content: string) => (
-    ipcRenderer.invoke(channels.saveFile, suggestedName, content)
+    invoke(channels.saveFile, suggestedName, content)
   ),
-  pickFile: () => ipcRenderer.invoke(channels.pickFile),
-  notify: (title: string, body?: string) => ipcRenderer.invoke(channels.notify, title, body),
-  openExternal: (url: string) => ipcRenderer.invoke(channels.openExternal, url),
-  listGroups: () => ipcRenderer.invoke(channels.listGroups),
-  prepareGroup: (group: string) => ipcRenderer.invoke(channels.prepareGroup, group),
-  generateImage: (input: unknown) => ipcRenderer.invoke(channels.generateImage, input),
-  editImage: (input: unknown) => ipcRenderer.invoke(channels.editImage, input),
-  generateVideo: (input: unknown) => ipcRenderer.invoke(channels.generateVideo, input),
-  resumeVideoTask: (taskId: string) => ipcRenderer.invoke(channels.resumeVideoTask, taskId),
-  cancelRequest: (requestId: string) => ipcRenderer.invoke(channels.cancelRequest, requestId),
-  copyAsset: (assetId: string) => ipcRenderer.invoke(channels.copyAsset, assetId),
-  saveAsset: (assetId: string) => ipcRenderer.invoke(channels.saveAsset, assetId),
-  showAssetMenu: (assetId: string) => ipcRenderer.invoke(channels.showAssetMenu, assetId),
-  listAssets: (query?: unknown) => ipcRenderer.invoke(channels.listAssets, query),
-  renameAsset: (input: unknown) => ipcRenderer.invoke(channels.renameAsset, input),
-  updateAssetMetadata: (input: unknown) => ipcRenderer.invoke(channels.updateAssetMetadata, input),
-  markAssetUsed: (assetId: string) => ipcRenderer.invoke(channels.markAssetUsed, assetId),
-  deleteAsset: (assetId: string) => ipcRenderer.invoke(channels.deleteAsset, assetId),
-  restoreAsset: (assetId: string) => ipcRenderer.invoke(channels.restoreAsset, assetId),
-  purgeAsset: (assetId: string, currentProjectContent: string) => ipcRenderer.invoke(channels.purgeAsset, assetId, currentProjectContent),
-  inspectAssetReferences: (assetId: string, currentProjectContent: string) => ipcRenderer.invoke(channels.inspectAssetReferences, assetId, currentProjectContent),
-  pickAsset: () => ipcRenderer.invoke(channels.pickAsset),
+  pickFile: () => invoke(channels.pickFile),
+  notify: (title: string, body?: string) => invoke(channels.notify, title, body),
+  openExternal: (url: string) => invoke(channels.openExternal, url),
+  listGroups: () => invoke(channels.listGroups),
+  prepareGroup: (group: string) => invoke(channels.prepareGroup, group),
+  generateImage: (input: unknown) => invoke(channels.generateImage, input),
+  editImage: (input: unknown) => invoke(channels.editImage, input),
+  generateVideo: (input: unknown) => invoke(channels.generateVideo, input),
+  resumeVideoTask: (taskId: string) => invoke(channels.resumeVideoTask, taskId),
+  cancelRequest: (requestId: string) => invoke(channels.cancelRequest, requestId),
+  copyAsset: (assetId: string) => invoke(channels.copyAsset, assetId),
+  saveAsset: (assetId: string) => invoke(channels.saveAsset, assetId),
+  showAssetMenu: (assetId: string) => invoke(channels.showAssetMenu, assetId),
+  listAssets: (query?: unknown) => invoke(channels.listAssets, query),
+  renameAsset: (input: unknown) => invoke(channels.renameAsset, input),
+  updateAssetMetadata: (input: unknown) => invoke(channels.updateAssetMetadata, input),
+  markAssetUsed: (assetId: string) => invoke(channels.markAssetUsed, assetId),
+  deleteAsset: (assetId: string) => invoke(channels.deleteAsset, assetId),
+  restoreAsset: (assetId: string) => invoke(channels.restoreAsset, assetId),
+  purgeAsset: (assetId: string, currentProjectContent: string) => invoke(channels.purgeAsset, assetId, currentProjectContent),
+  inspectAssetReferences: (assetId: string, currentProjectContent: string) => invoke(channels.inspectAssetReferences, assetId, currentProjectContent),
+  pickAsset: () => invoke(channels.pickAsset),
   importAssetFile: (file: File) => {
     const filePath = webUtils.getPathForFile(file)
     if (!filePath) return Promise.reject(new Error('无法读取拖入的本地文件'))
-    return ipcRenderer.invoke(channels.importAssetFile, filePath)
+    return invoke(channels.importAssetFile, filePath)
   },
-  listPromptPresets: () => ipcRenderer.invoke(channels.listPromptPresets),
-  createPromptPreset: (input: unknown) => ipcRenderer.invoke(channels.createPromptPreset, input),
-  updatePromptPreset: (input: unknown) => ipcRenderer.invoke(channels.updatePromptPreset, input),
-  deletePromptPreset: (id: string) => ipcRenderer.invoke(channels.deletePromptPreset, id),
-  startRun: (input: unknown) => ipcRenderer.invoke(channels.startRun, input),
-  cancelRun: (runId: string) => ipcRenderer.invoke(channels.cancelRun, runId),
-  listRuns: () => ipcRenderer.invoke(channels.listRuns),
-  exportProject: (suggestedName: string, content: string) => ipcRenderer.invoke(channels.exportProject, suggestedName, content),
-  previewProject: () => ipcRenderer.invoke(channels.previewProject),
-  importProject: (previewId: string) => ipcRenderer.invoke(channels.importProject, previewId),
-  listProjects: () => ipcRenderer.invoke(channels.listProjects),
-  createProject: (name: string) => ipcRenderer.invoke(channels.createProject, name),
-  openProject: (projectId: string) => ipcRenderer.invoke(channels.openProject, projectId),
-  saveProject: (projectId: string, content: string) => ipcRenderer.invoke(channels.saveProject, projectId, content),
-  renameProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.renameProject, projectId, name),
-  duplicateProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.duplicateProject, projectId, name),
-  setProjectArchived: (projectId: string, archived: boolean) => ipcRenderer.invoke(channels.setProjectArchived, projectId, archived),
+  listPromptPresets: () => invoke(channels.listPromptPresets),
+  createPromptPreset: (input: unknown) => invoke(channels.createPromptPreset, input),
+  updatePromptPreset: (input: unknown) => invoke(channels.updatePromptPreset, input),
+  deletePromptPreset: (id: string) => invoke(channels.deletePromptPreset, id),
+  startRun: (input: unknown) => invoke(channels.startRun, input),
+  cancelRun: (runId: string) => invoke(channels.cancelRun, runId),
+  listRuns: () => invoke(channels.listRuns),
+  exportProject: (suggestedName: string, content: string) => invoke(channels.exportProject, suggestedName, content),
+  previewProject: () => invoke(channels.previewProject),
+  importProject: (previewId: string) => invoke(channels.importProject, previewId),
+  listProjects: () => invoke(channels.listProjects),
+  createProject: (name: string) => invoke(channels.createProject, name),
+  openProject: (projectId: string) => invoke(channels.openProject, projectId),
+  saveProject: (projectId: string, content: string) => invoke(channels.saveProject, projectId, content),
+  renameProject: (projectId: string, name: string) => invoke(channels.renameProject, projectId, name),
+  duplicateProject: (projectId: string, name: string) => invoke(channels.duplicateProject, projectId, name),
+  setProjectArchived: (projectId: string, archived: boolean) => invoke(channels.setProjectArchived, projectId, archived),
   onAccountChange: (listener: (change: { userId: number | null; previousUserId: number | null; siteId?: 'solov' | 'solov-api' }) => void) => subscribeAccountChange(listener),
-  finishClose: (requestId: string, allowed: boolean) => ipcRenderer.invoke(channels.finishClose, requestId, allowed),
-  cancelCloseTasks: (requestId: string) => ipcRenderer.invoke(channels.cancelCloseTasks, requestId),
+  finishClose: (requestId: string, allowed: boolean) => invoke(channels.finishClose, requestId, allowed),
+  cancelCloseTasks: (requestId: string) => invoke(channels.cancelCloseTasks, requestId),
   onCloseRequested: (listener: (request: { requestId: string }) => void) => subscribeCloseRequest(channels.closeRequested, listener),
   onCloseCancelled: (listener: (request: { requestId: string }) => void) => subscribeCloseRequest(channels.closeCancelled, listener),
   onAppearanceChange: (listener: (appearance: { theme: 'light' | 'dark'; uiSkin?: 'dawn' | 'obsidian' | 'mist' | 'aurora'; reducedMotion?: boolean }) => void) => {
