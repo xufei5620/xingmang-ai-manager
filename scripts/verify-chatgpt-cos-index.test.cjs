@@ -43,6 +43,22 @@ test('all success requires four Windows and macOS entries and the two producer-v
   assert.throws(() => validateOfficialIndex(manifest, 'windows-arm64'), /许可/)
 })
 
+test('a selected Windows architecture still on the previous version fails the final check', () => {
+  const { publicBaseUrl } = readCosLocation({})
+  const manifest = manifestFixture()
+  const previous = '26.929.100.0'
+  const entry = manifest.platforms['windows-arm64']
+  const key = artifactKey('windows-arm64', previous, entry.artifact.sha256)
+  const licenseKey = `chatgpt/windows-arm64/${previous}/ChatGPT-License.xml`
+  Object.assign(entry, { packageVersion: previous })
+  Object.assign(entry.artifact, { key, url: `${publicBaseUrl}/${key}` })
+  Object.assign(entry.license, { key: licenseKey, url: `${publicBaseUrl}/${licenseKey}` })
+  assert.throws(() => validateOfficialIndex(manifest), /上一版/)
+  assert.throws(() => validateOfficialIndex(manifest, 'windows'), /上一版/)
+  assert.deepEqual(validateOfficialIndex(manifest, 'windows-x64').platforms, ['windows-x64'])
+  assert.deepEqual(validateOfficialIndex(manifest, 'macos').platforms, ['macos-arm64', 'macos-x64'])
+})
+
 test('final validation rejects foreign download URLs and producer schema changes', () => {
   const manifest = manifestFixture()
   manifest.platforms['linux-rpm-arm64'].artifact.url = 'https://evil.invalid/package'

@@ -247,7 +247,10 @@ function validatePreviousManifest(value) {
     validateHead(entry.source, MAX_PACKAGE_BYTES)
     if (source.platform === 'windows') {
       parseWindowsVersion(entry.packageVersion)
-      if (!value.windows || compareWindowsVersions(entry.packageVersion, value.windows.buildVersion) !== 0 || entry.artifact.verification !== 'windows-authenticode') throw checkFailure('cos-index-invalid', 'COS 现有 Windows 包版本或验签记录无效')
+      // Each Windows architecture carries its own verified package version. One
+      // that has not caught up yet keeps its older entry; none may be newer than
+      // the official metadata the index was published under.
+      if (!value.windows || compareWindowsVersions(entry.packageVersion, value.windows.buildVersion) > 0 || entry.artifact.verification !== 'windows-authenticode') throw checkFailure('cos-index-invalid', 'COS 现有 Windows 包版本或验签记录无效')
       const expectedLicenseKey = `chatgpt/${id}/${entry.packageVersion}/ChatGPT-License.xml`
       if (!entry.license || entry.license.key !== expectedLicenseKey || !/^[a-f0-9]{64}$/.test(entry.license.sha256) || entry.license.source?.url !== LICENSE_SOURCE.url) throw checkFailure('cos-index-invalid', 'COS 现有离线许可记录无效')
       validateHead(entry.license.source, MAX_LICENSE_BYTES)
@@ -429,11 +432,10 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
     }
     // A failed package or license must leave the prior pointer untouched. All
     // packages are locally validated before the first remote publication.
+    // 工作流一个平台一个作业。x64 先传上新版时，ARM64 那条留着它上一次核过的包，等它自己的作业
+    // 成功再换。以前这里把它删掉，ARM64 那次传不完（#1047 第 47、48 次）时 ARM 客户在桶里一份
+    // 都没有，只能退回商店和官网（#1061 第 8 条）。
     const entries = { ...(old?.platforms || {}), ...reusable }
-    if (old?.windows && metadata && compareWindowsVersions(metadata.buildVersion, old.windows.buildVersion) > 0) {
-      // Do not advertise old Windows packages under the new shared metadata.
-      for (const id of Object.keys(entries)) if (SOURCES[id].platform === 'windows' && !ids.includes(id)) delete entries[id]
-    }
     for (const item of prepared) {
       const source = sources[item.id]
       const published = await stage('cos-publish-package', { platform: item.id, expectedBytes: item.bytes }, async function (onProgress) {

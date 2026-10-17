@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import { readBoundedResponseText } from './bounded-response'
+import { compareWindowsPackageVersions } from './codex-desktop'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 
 /**
@@ -176,7 +177,9 @@ function parseJsonRecord(text: string): Record<string, unknown> | null {
 
 /**
  * chatgpt/latest.json：platforms 下按平台一条，artifact 是桶里那个文件。Windows 的目录是包版本，
- * 版本还得和清单顶上的 windows.buildVersion 一致；Mac 的目录是 SHA-256，文件名里带版本。
+ * 版本不能比清单顶上的 windows.buildVersion 新；Mac 的目录是 SHA-256，文件名里带版本。
+ * 两个 Windows 架构各同步各的：x64 先传上新版、ARM64 那次没传完时，ARM64 那条还是它上一版，
+ * 照样能从桶里装（#1061 第 8 条）。
  */
 function parseCodexEntry(root: Record<string, unknown>, spec: CodexWindowsSpec | CodexMacSpec, id: DesktopBucketPackageId): DesktopBucketPackage | null {
   if (root.schemaVersion !== 1 || root.product !== 'chatgpt' || !isRecord(root.platforms)) return null
@@ -198,7 +201,9 @@ function parseCodexEntry(root: Record<string, unknown>, spec: CodexWindowsSpec |
       || !windowsPackageVersionPattern.test(entry.packageVersion)
       || !isRecord(windows)
       || windows.packageIdentity !== 'OpenAI.Codex'
-      || windows.buildVersion !== entry.packageVersion
+      || typeof windows.buildVersion !== 'string'
+      || !windowsPackageVersionPattern.test(windows.buildVersion)
+      || (compareWindowsPackageVersions(entry.packageVersion, windows.buildVersion) ?? 1) > 0
     ) return null
     version = entry.packageVersion
     key = `chatgpt/${spec.platformId}/${version}/ChatGPT-${spec.architecture}.msix`
