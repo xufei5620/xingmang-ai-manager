@@ -2033,6 +2033,19 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
     ...(options.cliModelHints ? { getCliModelHints: options.cliModelHints } : {}),
+    // 分组没了换组签了新密钥、新的已写进工具以后，删掉星芒签的旧那把（account-cli-provisioner.ts 的
+    // retireReplacedKey，#1074）。删不掉照样往外抛，那边只当没删成。
+    revokeKey: async (id: number) => {
+      const userId = accountService.getSessionState().account?.userId
+      try {
+        await accountService.revokeKey(id)
+      } catch (error) {
+        options.runtimeLog.exception('account', 'managed-cli.old-key-revoke-failed', error, { keyId: id })
+        throw error
+      }
+      options.runtimeLog.log('info', 'account', 'managed-cli.old-key-revoked', '分组没了，换上新密钥后删掉了星芒签的旧那把', { keyId: id })
+      if (userId) await invalidateAccountKeyCaches(userId, id)
+    },
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()

@@ -11,10 +11,16 @@ import {
   type ProviderId,
 } from './catalog'
 import {
+  accountGroupHintsFingerprint,
   configureManagedClis,
+  isCachedGroupCheckDue,
+  isManagedToolKeyName,
+  movesFullyCachedKey,
+  retiresReplacedKey,
   syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
+import type { AccountGroupHints } from './managed-cli-groups'
 import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
 import type { SafeStorageLike } from './account-session-store'
 import { NewApiNetworkError } from './new-api-client'
@@ -1050,7 +1056,7 @@ describe('managed CLI groups resolved from the account backend', () => {
       .toEqual(activeProviderIds.map((provider) => managedCliKeyProfiles[provider].group).sort())
   })
 
-  it('asks the backend for nothing when every key is already cached', async () => {
+  it('asks the backend for the groups at most once a day when every key is already cached', async () => {
     const listUsableGroups = vi.fn(async () => [])
     const provisionCliKey = vi.fn()
     const accountService = {
@@ -1061,9 +1067,10 @@ describe('managed CLI groups resolved from the account backend', () => {
     const store = memoryStore(activeProviderIds.map((provider) => managedKey(provider)))
 
     const summary = await syncManagedCliKeySummary(accountService, store)
+    await syncManagedCliKeySummary(accountService, store)
 
     expect(summary.failed).toEqual([])
-    expect(listUsableGroups).not.toHaveBeenCalled()
+    expect(listUsableGroups).toHaveBeenCalledTimes(1)
     expect(provisionCliKey).not.toHaveBeenCalled()
   })
 
@@ -1199,7 +1206,8 @@ describe('history-account subscriptions decide the managed key group', () => {
 
     expect(summary.regrouped).toBeUndefined()
     expect(getSubscriptionSelf).not.toHaveBeenCalled()
-    expect(listUsableGroups).not.toHaveBeenCalled()
+    // Only the daily group check, which cannot read this list and keeps the cache.
+    expect(listUsableGroups).toHaveBeenCalledTimes(1)
     expect(provisionCliKey).not.toHaveBeenCalled()
   })
 })
@@ -1322,7 +1330,8 @@ describe('dynamic groups with the encrypted managed key store', () => {
     } as unknown as AccountService
     const second = await syncManagedCliKeySummary(offlineService, reopened)
     expect(second).toEqual(first)
-    expect(offlineService.listUsableGroups).not.toHaveBeenCalled()
+    // The daily group check fails offline; the cached keys are used as they are.
+    expect(offlineService.listUsableGroups).toHaveBeenCalledTimes(1)
     expect(offlineService.provisionCliKey).not.toHaveBeenCalled()
   })
 
@@ -1474,5 +1483,301 @@ describe('dynamic groups with the encrypted managed key store', () => {
     expect(result).toEqual({ configured: ['codex'], failed: [] })
     expect(issueKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: groups.codex })
     expect((await new ManagedCliKeyStore(filePath, storage()).read(73))[0].group).toBe(groups.codex)
+  })
+})
+
+describe('groups deleted or remapped while every key is cached (#1074)', () => {
+  const xm = profilesBySite.solov
+  const day = 24 * 60 * 60 * 1000
+  const codexModels = ['gpt-6-astra']
+  const deletedGroupRejection = '模型查询失败，服务返回 403：无权访问 GPT 分组'
+
+  function xmAccountService(options: {
+    listed: string[]
+    hints?: AccountGroupHints | null
+    username?: string
+    revokeKey?: ReturnType<typeof vi.fn>
+  }) {
+    let nextId = 500
+    const state = { listed: options.listed, hints: options.hints ?? null }
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
+      id: nextId++,
+      name: input.name ?? 'xingmang-desktop',
+      key: `sk-${input.group}-replacement-secret-123456`,
+    }))
+    const listUsableGroups = vi.fn(async () => state.listed.map((name) => ({ name })))
+    const revokeKey = options.revokeKey ?? vi.fn(async () => undefined)
+    const accountService = {
+      getSessionState: vi.fn(() => ({
+        authenticated: true,
+        account: { userId: 73, ...(options.username ? { username: options.username } : {}) },
+      })),
+      getActiveSiteId: () => 'solov',
+      provisionCliKey,
+      listUsableGroups,
+      revokeKey,
+      getAccountGroupHints: vi.fn(async () => state.hints),
+    } as unknown as AccountService
+    return { accountService, provisionCliKey, listUsableGroups, revokeKey, state }
+  }
+
+  function xmCache(overrides: Partial<Record<ProviderId, Partial<StoredManagedCliKey>>> = {}) {
+    return recordingKeyStore(activeProviderIds.map((provider) => ({
+      ...siteManagedKey('solov', provider),
+      ...overrides[provider],
+    })), 'solov')
+  }
+
+  function configService(options: {
+    saveConfig?: ReturnType<typeof vi.fn>
+    rejected?: { key: string; message: string }
+  } = {}) {
+    const saveConfig = options.saveConfig ?? vi.fn(async () => ({ backups: [], files: [] }))
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      if (key === options.rejected?.key) throw new Error(options.rejected.message)
+      return codexModels
+    })
+    return { service: { fetchAvailableModels, saveConfig } as unknown as ConfigurationService, saveConfig }
+  }
+
+  const oldCodex = siteManagedKey('solov', 'codex')
+  // GPT 被删了，站上新开的 GPT-Plus 靠工具专属词认出来。
+  const afterGptDeleted = [xm.claude.group, 'GPT-Plus', xm.grok.group]
+
+  it('moves a cached key out of a deleted group and deletes the old key only after the new one is written', async () => {
+    const { accountService, provisionCliKey, revokeKey } = xmAccountService({ listed: afterGptDeleted })
+    const store = xmCache()
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: xm.codex.keyName, group: 'GPT-Plus' }])
+    expect(summary.regrouped).toEqual(['codex'])
+    expect(store.cached.find((entry) => entry.provider === 'codex')).toMatchObject({ group: 'GPT-Plus', id: 500 })
+    expect(revokeKey).not.toHaveBeenCalled()
+
+    const { service, saveConfig } = configService()
+    const result = await configureManagedClis(accountService, service, ['codex'], {}, false, store)
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex', apiKey: 'sk-GPT-Plus-replacement-secret-123456' }),
+      false, expect.any(Function), expect.any(Object),
+    )
+    expect(revokeKey.mock.calls).toEqual([[oldCodex.id]])
+    expect(saveConfig.mock.invocationCallOrder[0]).toBeLessThan(revokeKey.mock.invocationCallOrder[0])
+    // 删过一次就不再删。
+    await configureManagedClis(accountService, service, ['codex'], {}, false, store)
+    expect(revokeKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the old key while the new one has not been written into the tool', async () => {
+    const { accountService, revokeKey } = xmAccountService({ listed: afterGptDeleted })
+    const store = xmCache()
+    await syncManagedCliKeySummary(accountService, store)
+
+    const failing = configService({ saveConfig: vi.fn(async () => { throw new Error('配置文件被占用') }) })
+    const failed = await configureManagedClis(accountService, failing.service, ['codex'], {}, false, store)
+    expect(failed.failed.map((entry) => entry.message)).toEqual(['配置文件被占用'])
+    expect(revokeKey).not.toHaveBeenCalled()
+
+    const written = await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
+    expect(written.configured).toEqual(['codex'])
+    expect(revokeKey.mock.calls).toEqual([[oldCodex.id]])
+  })
+
+  it('never deletes a key the customer made by hand', async () => {
+    const { accountService, revokeKey } = xmAccountService({ listed: afterGptDeleted })
+    const store = xmCache({ codex: { name: '我自己建的' } })
+    await syncManagedCliKeySummary(accountService, store)
+
+    const result = await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
+
+    expect(result.configured).toEqual(['codex'])
+    expect(revokeKey).not.toHaveBeenCalled()
+  })
+
+  it('deletes the username-group key the xm site issued for the tool', async () => {
+    const { accountService, revokeKey } = xmAccountService({ listed: afterGptDeleted, username: 'yoyo' })
+    const store = xmCache({ codex: { name: 'yoyo-GPT' } })
+    await syncManagedCliKeySummary(accountService, store)
+
+    await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
+
+    expect(revokeKey.mock.calls).toEqual([[oldCodex.id]])
+  })
+
+  it('still reports the tool as configured when the old key cannot be deleted', async () => {
+    const revokeKey = vi.fn(async () => { throw new Error('连接服务器失败') })
+    const { accountService } = xmAccountService({ listed: afterGptDeleted, revokeKey })
+    const store = xmCache()
+    await syncManagedCliKeySummary(accountService, store)
+
+    const result = await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(revokeKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('follows a changed group mapping but keeps the old key while its group still exists', async () => {
+    const { accountService, provisionCliKey, revokeKey } = xmAccountService({
+      listed: [xm.claude.group, xm.codex.group, 'GPT-新', xm.grok.group],
+      hints: { codex: ['GPT-新'] },
+    })
+    const store = xmCache()
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+    await configureManagedClis(accountService, configService().service, ['codex'], {}, false, store)
+
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: xm.codex.keyName, group: 'GPT-新' }])
+    expect(summary.regrouped).toEqual(['codex'])
+    expect(revokeKey).not.toHaveBeenCalled()
+  })
+
+  it('does not move a cached key on a guess while the backend still offers its group', async () => {
+    const { accountService, provisionCliKey } = xmAccountService({
+      listed: [xm.claude.group, 'Pro专线', 'GPT-Plus', xm.grok.group],
+    })
+    const store = xmCache({ codex: { group: 'Pro专线' } })
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(summary.regrouped).toBeUndefined()
+    expect(summary.ready.find((entry) => entry.provider === 'codex')?.group).toBe('Pro专线')
+  })
+
+  it('keeps using the old key and retries soon when the mapped group cannot be issued yet', async () => {
+    const { accountService, provisionCliKey, listUsableGroups } = xmAccountService({
+      listed: [xm.claude.group, xm.codex.group, 'GPT-新', xm.grok.group],
+      hints: { codex: ['GPT-新'] },
+    })
+    provisionCliKey.mockRejectedValueOnce(new Error('CLI Key 创建失败'))
+    const store = xmCache()
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      const summary = await syncManagedCliKeySummary(accountService, store)
+
+      expect(summary.failed).toEqual([])
+      expect(summary.regrouped).toBeUndefined()
+      expect(summary.ready.find((entry) => entry.provider === 'codex')?.group).toBe(xm.codex.group)
+      expect(store.cached).toEqual(activeProviderIds.map((provider) => siteManagedKey('solov', provider)))
+
+      clock.mockReturnValue(now + 10 * 60_000)
+      const retried = await syncManagedCliKeySummary(accountService, store)
+      expect(listUsableGroups).toHaveBeenCalledTimes(2)
+      expect(retried.regrouped).toEqual(['codex'])
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('stops treating a key whose group is gone as connected when no replacement can be issued', async () => {
+    const { accountService, provisionCliKey, listUsableGroups } = xmAccountService({ listed: afterGptDeleted })
+    provisionCliKey.mockRejectedValue(new Error('当前账号不可使用分组「GPT-Plus」'))
+    const store = xmCache()
+
+    const first = await syncManagedCliKeySummary(accountService, store)
+    const second = await syncManagedCliKeySummary(accountService, store)
+
+    expect(first.failed.map((entry) => entry.provider)).toEqual(['codex'])
+    expect(first.ready.map((entry) => entry.provider)).not.toContain('codex')
+    expect(store.cached.map((entry) => entry.provider)).not.toContain('codex')
+    // 缓存不全了，往后每一轮都照常查分组、重签、照实报。
+    expect(second.failed.map((entry) => entry.provider)).toEqual(['codex'])
+    expect(listUsableGroups).toHaveBeenCalledTimes(2)
+  })
+
+  it('checks again before the day is over once the published group mapping changes', async () => {
+    const { accountService, listUsableGroups, state } = xmAccountService({
+      listed: [xm.claude.group, xm.codex.group, xm.grok.group],
+    })
+    const store = xmCache()
+
+    await syncManagedCliKeySummary(accountService, store)
+    await syncManagedCliKeySummary(accountService, store)
+    expect(listUsableGroups).toHaveBeenCalledTimes(1)
+
+    state.hints = { codex: ['GPT-新', xm.codex.group] }
+    await syncManagedCliKeySummary(accountService, store)
+    expect(listUsableGroups).toHaveBeenCalledTimes(2)
+  })
+
+  it('moves a key the backend rejects for its group and deletes the old one after writing', async () => {
+    const { accountService, provisionCliKey, revokeKey, state } = xmAccountService({
+      listed: [xm.claude.group, xm.codex.group, xm.grok.group],
+    })
+    const store = xmCache()
+    // 早上那次查分组时 GPT 还在；中午站上删了它，当天不会再查一次。
+    await syncManagedCliKeySummary(accountService, store)
+    state.listed = afterGptDeleted
+
+    const { service, saveConfig } = configService({ rejected: { key: oldCodex.key, message: deletedGroupRejection } })
+    const result = await configureManagedClis(accountService, service, ['codex'], {}, false, store)
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: xm.codex.keyName, group: 'GPT-Plus' }])
+    expect(saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex', apiKey: 'sk-GPT-Plus-replacement-secret-123456' }),
+      false, expect.any(Function), expect.any(Object),
+    )
+    expect(revokeKey.mock.calls).toEqual([[oldCodex.id]])
+  })
+
+  it('reports the rejection as it is when no other group can take the key', async () => {
+    const { accountService, provisionCliKey, revokeKey, state } = xmAccountService({
+      listed: [xm.claude.group, xm.codex.group, xm.grok.group],
+    })
+    const store = xmCache()
+    await syncManagedCliKeySummary(accountService, store)
+    state.listed = [xm.claude.group, xm.grok.group]
+
+    const { service, saveConfig } = configService({ rejected: { key: oldCodex.key, message: deletedGroupRejection } })
+    const result = await configureManagedClis(accountService, service, ['codex'], {}, false, store)
+
+    expect(result.failed).toEqual([{ provider: 'codex', message: deletedGroupRejection }])
+    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(saveConfig).not.toHaveBeenCalled()
+    expect(revokeKey).not.toHaveBeenCalled()
+  })
+
+  it('times the cached group check by day, by a short retry after a failure, and by the mapping', () => {
+    const now = 10 * day
+    expect(isCachedGroupCheckDue(undefined, '', now)).toBe(true)
+    expect(isCachedGroupCheckDue({ at: now - day + 1, succeeded: true, hints: '' }, '', now)).toBe(false)
+    expect(isCachedGroupCheckDue({ at: now - day, succeeded: true, hints: '' }, '', now)).toBe(true)
+    expect(isCachedGroupCheckDue({ at: now - 60_000, succeeded: false, hints: '' }, '', now)).toBe(false)
+    expect(isCachedGroupCheckDue({ at: now - 10 * 60_000, succeeded: false, hints: '' }, '', now)).toBe(true)
+    expect(isCachedGroupCheckDue({ at: now - 60_000, succeeded: true, hints: '' }, '[["GPT"]]', now)).toBe(true)
+    // 系统时间往回拨过。
+    expect(isCachedGroupCheckDue({ at: now + 60_000, succeeded: true, hints: '' }, '', now)).toBe(true)
+    expect(accountGroupHintsFingerprint(null)).toBe('')
+    expect(accountGroupHintsFingerprint({ codex: ['GPT'], image: ['生图'] }))
+      .toBe(accountGroupHintsFingerprint({ codex: ['GPT'], image: ['画图'] }))
+    expect(accountGroupHintsFingerprint({ codex: ['GPT'] })).not.toBe(accountGroupHintsFingerprint({ codex: ['GPT-新'] }))
+  })
+
+  it('moves a fully cached key only on an explicit signal or when its group is gone', () => {
+    const listed = ['GPT', 'GPT-Plus']
+    expect(movesFullyCachedKey({ group: 'GPT-Plus', source: 'mapped' }, 'GPT', listed)).toBe(true)
+    expect(movesFullyCachedKey({ group: 'GPT', source: 'preferred' }, 'Pro专线', listed)).toBe(true)
+    expect(movesFullyCachedKey({ group: 'GPT-Plus', source: 'detected' }, 'GPT', listed)).toBe(false)
+    expect(movesFullyCachedKey({ group: 'GPT-Plus', source: 'alias' }, 'GPT', listed)).toBe(false)
+    expect(movesFullyCachedKey({ group: 'GPT-Plus', source: 'detected' }, 'GPT-旧', listed)).toBe(true)
+    expect(movesFullyCachedKey({ group: 'GPT', source: 'fallback' }, 'GPT-旧', listed)).toBe(false)
+  })
+
+  it('deletes only an app-issued key whose group is gone, and never on the history account', () => {
+    const previous = { id: 2, name: 'xingmang-desktop-codex', group: 'GPT' }
+    const replacement = { id: 500, group: 'GPT-Plus' }
+    expect(retiresReplacedKey(previous, replacement, ['GPT-Plus'], 'solov', undefined)).toBe(true)
+    expect(retiresReplacedKey(previous, replacement, ['GPT', 'GPT-Plus'], 'solov', undefined)).toBe(false)
+    expect(retiresReplacedKey(previous, replacement, ['GPT-Plus'], 'solov-api', undefined)).toBe(false)
+    expect(retiresReplacedKey(previous, { id: 2, group: 'GPT-Plus' }, ['GPT-Plus'], 'solov', undefined)).toBe(false)
+    expect(retiresReplacedKey({ ...previous, name: '我自己建的' }, replacement, ['GPT-Plus'], 'solov', 'yoyo')).toBe(false)
+    expect(isManagedToolKeyName('yoyo-GPT', 'GPT', 'yoyo')).toBe(true)
+    expect(isManagedToolKeyName('yoyo-GPT', 'GPT', undefined)).toBe(false)
+    expect(isManagedToolKeyName('别人-GPT', 'GPT', 'yoyo')).toBe(false)
+    expect(isManagedToolKeyName('yoyo-GPT-对话', 'GPT', 'yoyo')).toBe(false)
   })
 })
