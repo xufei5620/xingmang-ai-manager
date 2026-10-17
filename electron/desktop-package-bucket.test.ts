@@ -139,6 +139,15 @@ describe('desktop package bucket indexes', () => {
     expect(parseDesktopBucketIndex(codexIndex(), 'codex-macos-x64')?.version).toBe('26.1003.2')
   })
 
+  it('reads a Windows architecture that is still on its previous version after the other one moved on', () => {
+    // x64 synced the new version; the ARM64 job has not, so its entry keeps the last verified package.
+    const previous = '26.1003.4500.0'
+    const key = `chatgpt/windows-arm64/${previous}/ChatGPT-arm64.msix`
+    const index = codexIndex({}, { 'windows-arm64': codexWindowsEntry('arm64', { packageVersion: previous }, { key, url: objectUrl(key) }) })
+    expect(parseDesktopBucketIndex(index, 'codex-windows-arm64')).toMatchObject({ version: previous, url: objectUrl(key) })
+    expect(parseDesktopBucketIndex(index, 'codex-windows-x64')?.version).toBe(windowsVersion)
+  })
+
   it('reads each Claude package the sync script publishes and ignores the DMG', () => {
     expect(parseDesktopBucketIndex(claudeIndex(), 'claude-windows-x64')).toEqual({
       id: 'claude-windows-x64', version: '1.1.2345.0', bytes: 150 * mib, sha256: sha, contentType: 'application/vnd.ms-appx',
@@ -177,7 +186,9 @@ describe('desktop package bucket indexes', () => {
     ['no platforms', codexIndex({ platforms: null })],
     ['a missing platform', codexIndex({}, { 'windows-x64': undefined })],
     ['another package identity', codexIndex({ windows: { buildVersion: windowsVersion, packageIdentity: 'OpenAI.Other' } })],
-    ['a build version that differs from the package', codexIndex({ windows: { buildVersion: '26.1003.4513.0', packageIdentity: 'OpenAI.Codex' } })],
+    ['a package newer than the shared build version', codexIndex({ windows: { buildVersion: '26.1003.4511.0', packageIdentity: 'OpenAI.Codex' } })],
+    ['a malformed shared build version', codexIndex({ windows: { buildVersion: '26.1003', packageIdentity: 'OpenAI.Codex' } })],
+    ['no shared build version', codexIndex({ windows: { packageIdentity: 'OpenAI.Codex' } })],
     ['a malformed package version', codexIndex({}, { 'windows-x64': codexWindowsEntry('x64', { packageVersion: '26.1003' }) })],
     ['the wrong architecture', codexIndex({}, { 'windows-x64': codexWindowsEntry('arm64') })],
     ['another format', codexIndex({}, { 'windows-x64': codexWindowsEntry('x64', { format: 'appx' }) })],

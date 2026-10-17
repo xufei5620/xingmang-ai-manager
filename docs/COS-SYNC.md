@@ -133,7 +133,7 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 
 若运行已经写入部分不可变包、最后一个平台失败，先核对失败阶段和远端对象状态。可选精确标识（例如 `macos-arm64`）定位恢复，再运行 `all` 完成验收。单项同步会保留已有索引中的其它平台和许可；首次没有索引时，单项成功仅代表该平台已入库，不能当成四个 Windows/macOS 平台全部成功。
 
-每个平台验证和完整公共回读成功后才累计发布它自己的索引条目，因此四项不是同一个原子版本快照。首轮运行途中可暂时只有部分平台；后续失败保留已确认的其它平台，新 Windows 共享版本会按既有规则移除尚未刷新到新版本的另一架构，直到它自己的作业成功。两个 Windows 许可各随对应平台单独校验保存；其它平台的验证标签不升级为尚未完成的原生签名验证。所选作业全成功后，还会通过不带凭据的固定 HTTPS 公共读取与生产者 schema 验收最终索引；`all` 必须包含四个 Windows/macOS 平台及配对的两份 Windows 许可，因长时间版本切换缺项时仍失败并保留部分索引，按精确平台恢复，不把四项曾经各自成功当作最终索引完整。
+每个平台验证和完整公共回读成功后才累计发布它自己的索引条目，因此四项不是同一个原子版本快照。首轮运行途中可暂时只有部分平台；后续失败保留已确认的其它平台。两个 Windows 架构各带自己的包版本：x64 先同步到新版时，ARM64 那条保留它上一次核过的包和许可，直到它自己的作业成功再换成新版（以前是直接删掉，ARM64 那次传不完时 ARM 客户在桶里一份都没有，#1061 第 8 条）；任何一条都不能比清单顶上的 `windows.buildVersion` 新。两个 Windows 许可各随对应平台单独校验保存；其它平台的验证标签不升级为尚未完成的原生签名验证。所选作业全成功后，还会通过不带凭据的固定 HTTPS 公共读取与生产者 schema 验收最终索引；`all` 必须包含四个 Windows/macOS 平台及配对的两份 Windows 许可，选中的 Windows 平台还都得是 `windows.buildVersion` 那一版（串行作业之间官方又出了新版、前一个架构留在上一版时，这一步失败），缺项或留在上一版时都失败并保留部分索引，按精确平台恢复，不把四项曾经各自成功当作最终索引完整。
 
 安全错误分类区分响应头超时、正文超时、HTTP 状态、断流、ETag/大小/摘要不一致，以及 PUT 与公共完整回读的各自原因。`latestState: write-unconfirmed` 表示最新索引写入结果未知，需要先读取远端状态；`published-and-read-back` 表示索引已发布并回读确认，即使随后临时目录清理失败。清理失败不会盖掉此前的主错误。
 
@@ -254,7 +254,7 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 星芒在 Windows、Mac 上一键安装或更新 Codex 桌面端、Claude Desktop 时，先读 `chatgpt/latest.json` 或 `xingmang/offline/claude/latest.json`，从这个桶下同一个官方包；没走通才照旧走原来的路（Windows：Codex 是微软商店、OpenAI 官网、国内镜像，Claude 是系统自带的安装组件、Claude 官网；Mac：问官方的更新信息）。代码在 `electron/desktop-package-bucket.ts`。
 
 - 桶的地址写死在代码里，设置、环境变量、清单内容都改不了它。清单只指对象路径：路径必须和同步脚本写的样子一模一样，下载地址必须正好是桶地址加这个路径，跳转一律不跟。
-- 客户端认的对象：Codex 是 `platforms` 下的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-arm64`、`macos-x64`（完整应用 ZIP）；Claude 是 `files` 里的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-pkg-universal`（通用 PKG：先用 `pkgutil --check-signature` 核安装包签名是 Anthropic 的 Developer ID Installer，再用 `pkgutil --expand-full` 只展开、不安装；DMG 不用）。每条要核的字段：路径、地址、大小、SHA-256、`contentType`/`type`、`verification`、版本号格式；Codex Windows 还要求 `windows.packageIdentity` 为 `OpenAI.Codex`、`windows.buildVersion` 等于包版本。
+- 客户端认的对象：Codex 是 `platforms` 下的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-arm64`、`macos-x64`（完整应用 ZIP）；Claude 是 `files` 里的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-pkg-universal`（通用 PKG：先用 `pkgutil --check-signature` 核安装包签名是 Anthropic 的 Developer ID Installer，再用 `pkgutil --expand-full` 只展开、不安装；DMG 不用）。每条要核的字段：路径、地址、大小、SHA-256、`contentType`/`type`、`verification`、版本号格式；Codex Windows 还要求 `windows.packageIdentity` 为 `OpenAI.Codex`、包版本不比 `windows.buildVersion` 新（另一架构先同步到新版时，这一架构还是上一版，照样从桶里装；0.2.19 及以前的客户端要求两者相等，这时不认这一条，改走原来的路）。
 - 下载按清单的大小和 SHA-256 核对，下完再照官方那一路核包身份、发布者、签名（Windows 另要求包版本和清单一致；Mac 照旧核 bundle id、最低系统、Team ID 签名和 Gatekeeper）。
 - 读不到清单、清单对不上、下得太慢（照当时的速度还要 10 分钟以上）、包对不上或核不过，都悄悄换回原来的路，客户看不出换了路，原因只写进运行日志（`desktop-bucket.fallback`）。下好、核过的包交给 Windows 却没装上时，也照旧走后面几路：商店、系统自带的安装组件和它不一定是同一种装法。客户点取消就停；取消了授权、Mac 上盘写满了照直说。
 - 桶那一路国内直连，不接下载加速线路；只有退回官方那几路时才照旧接。
