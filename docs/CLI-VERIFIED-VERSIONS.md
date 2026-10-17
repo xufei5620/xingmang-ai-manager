@@ -325,7 +325,7 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.296`（2026-10-13） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296 的依据见下文 |
+| Claude Code | `2.1.302`（2026-10-17） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302 的依据见下文 |
 | Codex CLI | `0.162.1`（2026-10-13） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1 的依据见下文 |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
 | Grok CLI | `1.0.52`（2026-10-13） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52 各一遍，见下文） |
@@ -461,6 +461,52 @@ other than 400, or together with a second beta*；2.1.291 修了 2.1.288 起退�
 
 沙箱同上：`claude -p "hi"` 的请求与 2.1.291 逐字相同（同一组 beta 头、20 个工具、只带 `Authorization`）；
 `/context` 仍是 `2k / 1m`。没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
+**2.1.296 → 2.1.302（2026-10-17）：2.1.296 会把中转 Key 顺带发给 Anthropic，2.1.299 起不再发。**
+npm `latest` 是 2.1.302（10-16 发布）；2.1.297、2.1.298 没发过。2.1.299~2.1.302 逐条读过，没有一条是
+「自某版起」的网关回归。和接中转有关的：
+
+- 2.1.299：*Fixed feature flag, startup, fast mode, profile and feedback requests to Anthropic carrying the API
+  key configured for a third-party gateway (`ANTHROPIC_BASE_URL`); Anthropic API keys are still sent*。
+  **这就是这次要抬的原因**：按这条原文，2.1.296 打开时这几类发往 Anthropic 的请求带着客户的中转 Key。
+  上游没写从哪一版开始带，所以没有加 `blocked` 区间。
+- 2.1.299：*Fixed streams through a custom `ANTHROPIC_BASE_URL` being aborted after 180 seconds with no data
+  arriving; they now wait 300 seconds*——中转排队或上游慢时，长时间没出字不会三分钟就断。
+- 2.1.299：*Fixed sessions on a gateway-specific model name behind a custom `ANTHROPIC_BASE_URL` ending with
+  "Prompt is too long · automatic compaction failed" near 200K tokens*；同版还修了 managed settings 文件里写
+  `ANTHROPIC_BASE_URL` 时管理设置请求带上网关 Key（本软件不写 managed settings，碰不到）。
+- 2.1.300：*Fixed a conversation failing on every turn with a 400 error when the API rejected an MCP tool's input
+  schema*，现在改为不带参数发这个工具。
+- 2.1.301：*Fixed conversations being compacted over and over, on a model you didn't pick, behind an LLM gateway
+  whose responses name a different model than the one requested*。中转回的型号名和请求的不一样时才会碰到
+  （推断：取决于渠道的型号映射，本软件这边看不出）。
+
+看着会咬到我们、实际不会的：
+
+- 2.1.302 让没设权限模式的 `claude -p` 与 Agent SDK 会话在第三方 provider 上从 `default` 模式开始——模板写死
+  `permissions.defaultMode: 'bypassPermissions'`，开机补缺也会补上，不受影响。
+- 2.1.300 起发往 `api.anthropic.com` 的大请求用 gzip 压缩。沙箱里带 11 万字的追加系统提示跑 `claude -p`，
+  发到自定义地址的 185 KB 请求**没有** `Content-Encoding`，中转不用认 gzip 请求体。
+- 2.1.302 修了切到 Vertex / Bedrock 后请求报 `diagnostics: Extra inputs are not permitted`；发往自定义地址
+  的请求体里没有 `diagnostics` 字段（字段表见下）。
+
+**要留意的一点（没改模板）**：2.1.299 在终端里加了「空闲压缩」：20 万 token 以上的对话放着约 54 分钟不动，
+会赶在提示缓存过期前先压缩一次，会花一次请求的额度。开不开、怎么压由 Anthropic 远程开关
+（二进制里的 `tengu_sunny_locket`）决定，客户端看不出；`settings.json` 写 `"idleCompaction": false` 可以关。
+要不要替客户关，等 yoyo 定。
+
+沙箱实测（空 HOME、非 root、`env -i`，`settings.json` 按本产品模板写，`ANTHROPIC_BASE_URL` 指本地假接口；
+出网代理是本地起的 TLS 终结代理，只记录、一条都不往外转）与 2.1.296 对照：`claude -p "hi"` 两版都拿到假接口
+的回复；请求体字段一样（`model`、`messages`、`system`、`tools`、`metadata`、`max_tokens`、`thinking`、
+`context_management`、`output_config`、`stream`），写了 deny 后都是 20 个工具、没有 `Artifact` /
+`DesignSync`，工具 schema 只有 `Agent` 的 `effort` 一段说明文字变了；请求头的名字一样，鉴权只有
+`Authorization`；`anthropic-beta` 头 2.1.302 少了 `mid-conversation-system-2026-04-07`，没有新增。
+`/context` 仍是 `2.1k / 1m`，写了 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 是 `2.1k / 200k`；`claude doctor` 仍是
+`Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`。npm 包的 `package.json` 结构、`install.cjs`、
+`cli-wrapper.cjs` 与 2.1.296 逐字相同，安装路径不用动。
+`-p` 与 `doctor` 两条路上两版发往 `api.anthropic.com` 的请求（MCP 目录、事件上报）都不带 Key；带 Key 的是
+交互式启动那几类请求，沙箱里没跑交互式会话，2.1.299 那条以上游 changelog 为准。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定

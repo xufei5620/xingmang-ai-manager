@@ -96,13 +96,15 @@ describe('versionInBlockedRange', () => {
 
 describe('cliVerifiedVersions coverage', () => {
   it('pins Claude Code past both gateway regressions', () => {
-    // 2.1.278-2.1.296 shipped no new third-party base URL regression, and the
+    // 2.1.278-2.1.302 shipped no new third-party base URL regression, and the
     // range fixes stream handling behind proxies (a cleanly closed stream reported
-    // as complete, duplicated stream events running a tool call twice). A sandbox
-    // capture against a local fake endpoint sent the same request fields and the
-    // same tool list as 2.1.277 (2.1.296 matches 2.1.291 byte for byte).
-    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.296')
-    expect(findBlockedCliVersion('claude', '2.1.296')).toBeNull()
+    // as complete, duplicated stream events running a tool call twice). 2.1.299
+    // stopped startup, feature flag and profile requests to Anthropic from
+    // carrying the key configured for a third-party gateway. A sandbox capture
+    // against a local fake endpoint sent the same request fields and the same
+    // tool list as 2.1.277 (2.1.302 matches 2.1.296 apart from one description).
+    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.302')
+    expect(findBlockedCliVersion('claude', '2.1.302')).toBeNull()
     expect(findBlockedCliVersion('claude', '2.1.276')?.fixed).toBe('2.1.277')
   })
 
