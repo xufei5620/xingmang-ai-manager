@@ -19,6 +19,8 @@ import {
   describeAccountBootstrapResult,
   sessionChangeKeepsBootstrap,
   skippedNamedProviders,
+  staleAccountKeys,
+  subscriptionSwitchResult,
   type AccountBootstrapBridge,
   type AccountBootstrapProgress,
   type AccountBootstrapResult,
@@ -1209,5 +1211,128 @@ describe('session changes while an account bootstrap runs', () => {
   it('has nothing to keep when no bootstrap is running', () => {
     expect(sessionChangeKeepsBootstrap(undefined, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
     expect(sessionChangeKeepsBootstrap(null, { authenticated: true, siteId: 'solov', account: member })).toBe(false)
+  })
+})
+
+// #1079：上一轮换了 Key（买了订阅换组、订阅到期、Key 重签）却没写进配置，下一轮缓存分组已经对上、主进程不再报换组。
+describe('account keys left unwritten by an earlier round', () => {
+  const owned = (matched: boolean | undefined) => ({
+    exists: true,
+    hasApiKey: true,
+    matchesRelay: true,
+    configurationOwnership: 'account' as const,
+    ...(matched === undefined ? {} : { configurationAccountMatched: matched }),
+    baseUrl: 'https://xm.solov.cc/v1',
+    actualBaseUrl: 'https://xm.solov.cc/v1',
+    model: 'fixture-model',
+    apiKeyPreview: 'sk-***',
+    dataDirectory: 'C:\\home',
+    dataDirectoryExists: true,
+    files: [],
+    updatedAt: null,
+  })
+  const ready = (...providers: ProviderId[]) => providers.map((provider) => ({ provider, group: 'group', name: provider }))
+  const member = { authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } }
+
+  function fixture(sync: Awaited<ReturnType<AccountBootstrapBridge['syncManagedCliKeys']>>, configure: AccountBootstrapBridge['configureManagedCliKeys']) {
+    const current = config()
+    current.providers.claude = owned(false)
+    current.providers.codex = owned(true)
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => member),
+      syncManagedCliKeys: vi.fn(async () => sync),
+      scanSystem: vi.fn(async () => system(['claude', 'codex'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(configure),
+    }
+    return { current, api }
+  }
+
+  it('flags an owned connected config whose key is no longer the cached one', () => {
+    const current = config()
+    current.providers.claude = owned(false)
+    current.providers.codex = owned(true)
+    current.providers.grok = owned(undefined)
+    expect(staleAccountKeys(current, { ready: ready('claude', 'codex', 'grok') })).toEqual(['claude'])
+  })
+
+  it('does not trust the comparison when the cache could not vouch for it', () => {
+    const current = config()
+    current.providers.claude = owned(false)
+    // 同步整轮没成、缓存没存上、缓存里压根没有这家：读到的缓存说明不了配置旧了。
+    expect(staleAccountKeys(current, null)).toEqual([])
+    expect(staleAccountKeys(current, { ready: ready('claude'), storageWarning: '本地 API Key 保存失败' })).toEqual([])
+    expect(staleAccountKeys(current, { ready: ready('codex') })).toEqual([])
+    expect(staleAccountKeys({ ...current, ownershipPending: true }, { ready: ready('claude') })).toEqual([])
+  })
+
+  it('leaves edited, manual and foreign configs alone', () => {
+    const current = config()
+    for (const ownership of ['changed', 'manual', 'unknown'] as const) {
+      current.providers.claude = { ...owned(false), configurationOwnership: ownership }
+      expect(staleAccountKeys(current, { ready: ready('claude') })).toEqual([])
+    }
+    current.providers.claude = { ...owned(false), matchesRelay: false }
+    expect(staleAccountKeys(current, { ready: ready('claude') })).toEqual([])
+  })
+
+  it('rewrites the stale tool on restore and reports it as switched', async () => {
+    const progress: AccountBootstrapProgress[] = []
+    const { current, api } = fixture({ ready: ready('claude', 'codex'), failed: [] }, async () => {
+      current.providers.claude = owned(true)
+      return { configured: ['claude' as ProviderId], failed: [] }
+    })
+
+    const result = await bootstrapAccountTools(api, 17, (entry) => progress.push(entry), 'restore', undefined, memoryStorage())
+
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude'] }))
+    expect(progress.find((entry) => entry.phase === 'inspecting')?.connectedKeyChanges).toEqual(['claude'])
+    expect(result).toMatchObject({ configured: ['claude'], regrouped: ['claude'] })
+    expect(result.keyChangeFailed).toBeUndefined()
+    expect(bootstrapOnlyFollowedRoute(result)).toBe(false)
+    expect(subscriptionSwitchResult(result)).toEqual(['claude'])
+  })
+
+  it('leaves a login to its usual rewrite of every connected tool', async () => {
+    const { api } = fixture({ ready: ready('claude', 'codex'), failed: [] }, async (input) => ({ configured: [...input.providers], failed: [] }))
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, memoryStorage())
+
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith(expect.objectContaining({ providers: ['claude', 'codex'] }))
+    expect(result.regrouped).toBeUndefined()
+  })
+
+  it('reports a regrouped tool whose configuration write failed instead of calling it settled', async () => {
+    const { api } = fixture({ ready: ready('claude', 'codex'), failed: [], regrouped: ['codex'] }, async () => ({
+      configured: ['claude' as ProviderId],
+      failed: [{ provider: 'codex' as ProviderId, message: '当前分组未返回可用模型' }],
+    }))
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(result.regrouped).toEqual(['claude'])
+    expect(result.keyChangeFailed).toEqual([{ provider: 'codex', message: '当前分组未返回可用模型' }])
+    expect(() => subscriptionSwitchResult(result)).toThrow('当前分组未返回可用模型。')
+  })
+
+  it('reports a connected tool whose new key could not be issued', async () => {
+    const { current, api } = fixture({
+      ready: ready('codex'),
+      failed: [{ provider: 'claude' as ProviderId, group: 'claude-subscription', message: '网络连接失败' }],
+    }, async () => ({ configured: [], failed: [] }))
+    current.providers.claude = owned(true)
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, memoryStorage())
+
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(result.keyChangeFailed).toEqual([{ provider: 'claude', message: '网络连接失败' }])
+    expect(() => subscriptionSwitchResult(result)).toThrow(/^Claude Code：/)
+  })
+
+  it('keeps saying nothing changed when no connected key had to move', () => {
+    expect(subscriptionSwitchResult(undefined)).toEqual([])
+    expect(subscriptionSwitchResult({})).toEqual([])
+    expect(subscriptionSwitchResult({ regrouped: [] })).toEqual([])
   })
 })

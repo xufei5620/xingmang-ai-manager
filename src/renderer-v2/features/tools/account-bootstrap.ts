@@ -99,6 +99,16 @@ export function skippedNamedProviders(result: Pick<AccountBootstrapResult, 'skip
   return (result?.skipped ?? []).filter((entry) => providers.includes(entry.provider))
 }
 
+/**
+ * 订阅开通后那一轮的结论（App 的 applySubscriptionToTools）：换好的工具名单。该换 Key 的工具没换成
+ * （新 Key 没签下来、写配置失败）就抛错，充值页据此说「工具还没换过去」，不说「不用重新设置」（#1079）。
+ */
+export function subscriptionSwitchResult(result: Pick<AccountBootstrapResult, 'regrouped' | 'keyChangeFailed'> | undefined): ActiveProviderId[] {
+  const unswitched = result?.keyChangeFailed ?? []
+  if (unswitched.length) throw new Error(`${unswitched.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；')}。`)
+  return result?.regrouped ?? []
+}
+
 export interface AccountBootstrapPlan {
   /** 只会是还在用的工具：类型上就排除已下线的那几个，编译器不让它们被交给主进程写 Key。 */
   targets: ActiveProviderId[]
@@ -125,8 +135,16 @@ export interface AccountBootstrapResult {
   networkBlockedByCertificate?: boolean
   /** 这一轮顺手修好的「Codex 认不出」的配置，首页据此轻轻说一句。缺省 = 没有。 */
   repairedShadowed?: ActiveProviderId[]
-  /** 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具；缺省 = 没有。 */
+  /**
+   * 这一轮因为 Key 换了分组（买了订阅、订阅到期）而改写的工具，上一轮换了 Key 没写进配置、这一轮补上的
+   * 也算（#1079）；缺省 = 没有。
+   */
   regrouped?: ActiveProviderId[]
+  /**
+   * 这一轮该给已连好的工具换 Key（换了分组，或上一轮没写成）却没换成的（#1079）：新 Key 没签下来，
+   * 或者写配置失败。订阅开通后据此说「工具还没换过去」，不再说「不用重新设置」。缺省 = 没有。
+   */
+  keyChangeFailed?: Array<{ provider: ActiveProviderId; message: string }>
   /**
    * 这一轮跟着连接线路改了配置的工具，开没开都算（#941）。只换了线路的那几个首页不说「已完成…」
    * （bootstrapOnlyFollowedRoute），运行日志照记。缺省 = 这一轮没改线路。
@@ -251,13 +269,35 @@ export function accountRoutesPending(
   return activeProviderIds.some((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
 }
 
+/**
+ * 已连好的工具里，配置那把 Key 已经不是本机缓存给它的那把（#1079）：上一轮换了分组（买了订阅、订阅
+ * 到期、分组改名）或重签了 Key，新 Key 存进了缓存，写配置那一步却没成（拉型号时网络抖、写文件出错、
+ * 写到一半关了软件）。下一轮缓存里的分组已经对上，主进程不再报「换了分组」，以前就一直当「已连好」
+ * 跳过，工具拿着旧 Key 接着扣余额。
+ * 只认星芒替当前账号写下、之后没人动过的配置（来源记录对得上）；手填、被改过的照旧不碰。这一轮同步
+ * 没跑成、缓存没存上、缓存里没有这家工具的 Key 时一概不认：那时读到的缓存说明不了配置旧了，认了会
+ * 每次开机都重写一遍。
+ */
+export function staleAccountKeys(
+  config: AppConfigSummary,
+  synchronized: Pick<Awaited<ReturnType<AccountBootstrapBridge['syncManagedCliKeys']>>, 'ready' | 'storageWarning'> | null,
+): ActiveProviderId[] {
+  if (!synchronized || synchronized.storageWarning || config.ownershipPending) return []
+  return activeProviderIds.filter((provider) => {
+    const current = config.providers[provider]
+    return current.configurationOwnership === 'account' && current.hasApiKey && current.matchesRelay
+      && current.configurationAccountMatched === false
+      && synchronized.ready.some((entry) => entry.provider === provider)
+  })
+}
+
 export function accountBootstrapPlan(
   system: SystemSnapshot,
   config: AppConfigSummary,
   settings: AppSettingsV2,
   mode: AccountBootstrapMode = 'login',
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
-  regrouped: readonly ProviderId[] = [],
+  keyChanges: readonly ProviderId[] = [],
 ): AccountBootstrapPlan {
   const explicitOfficial = new Set(settings.officialProviders ?? [])
   const targets: ActiveProviderId[] = []
@@ -351,9 +391,9 @@ export function accountBootstrapPlan(
       })
       continue
     }
-    // 已连好的工具开机时不重写，除非 Key 换了分组，或显式选择的线路已经重启生效。
+    // 已连好的工具开机时不重写，除非 Key 换了分组或上一轮没写成（keyChanges），或显式选择的线路已经重启生效。
     if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage)
-      && !regrouped.includes(provider) && !accountRouteMigrationNeeded(current, provider, settings, storage)) {
+      && !keyChanges.includes(provider) && !accountRouteMigrationNeeded(current, provider, settings, storage)) {
       skipped.push({
         provider,
         reason: 'configured',
@@ -444,12 +484,15 @@ export async function bootstrapAccountTools(
   // 先读本次启动的线路与新鲜配置，再宣布哪些工具能先打开，避免带着旧地址抢跑。
   const [config, settings] = await Promise.all([api.getConfig(), api.getSettings()])
   const routeChanges = activeProviderIds.filter((provider) => accountRouteMigrationNeeded(config.providers[provider], provider, settings, storage))
-  const keyChanges = mode === 'restore' ? { connectedKeyChanges: [...new Set([...(synchronized?.regrouped ?? []), ...routeChanges])] } : {}
-  onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40, ...keyChanges })
+  // 这一轮换了分组的，加上上一轮换了 Key 没写进配置的（#1079）：开机恢复时已连好也照样重写。登录、点名重写两档本来就重写。
+  const stale = mode === 'restore' ? staleAccountKeys(config, synchronized) : []
+  const keyChanges = [...new Set([...(synchronized?.regrouped ?? []), ...stale])]
+  const connectedChanges = mode === 'restore' ? { connectedKeyChanges: [...new Set([...keyChanges, ...routeChanges])] } : {}
+  onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40, ...connectedChanges })
   // scanSystem 从不缓存安装状态，无需强制清掉下载源与网络位置缓存。
   const system = await api.scanSystem()
   await assertAccount(api, expectedUserId, expectedSiteId)
-  const planned = accountBootstrapPlan(system, config, settings, mode, storage, synchronized?.regrouped ?? [])
+  const planned = accountBootstrapPlan(system, config, settings, mode, storage, keyChanges)
   const permitted = onlyProviders ? new Set(onlyProviders) : null
   const plan = permitted
     ? { ...planned, targets: planned.targets.filter((provider) => permitted.has(provider)) }
@@ -466,7 +509,7 @@ export async function bootstrapAccountTools(
       phase: 'configuring',
       label: `正在给 ${plan.targets.length} 个工具写入密钥`,
       percent: 65,
-      ...keyChanges,
+      ...connectedChanges,
     })
     outcome = await api.configureManagedCliKeys({
       providers: plan.targets,
@@ -478,7 +521,7 @@ export async function bootstrapAccountTools(
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
-  onProgress({ phase: 'verifying', label: '正在复核密钥、服务地址和模型', percent: 88, ...keyChanges })
+  onProgress({ phase: 'verifying', label: '正在复核密钥、服务地址和模型', percent: 88, ...connectedChanges })
   const verified = await api.getConfig()
   await assertAccount(api, expectedUserId, expectedSiteId)
 
@@ -554,6 +597,13 @@ export async function bootstrapAccountTools(
   ]
 
   const repairedShadowed = configured.filter((provider) => plan.shadowRepairs?.includes(provider))
+  const keyChangeFailed = [
+    ...failed.filter((entry) => keyChanges.includes(entry.provider)),
+    // 已连好、这一轮却签不出新 Key 的：缓存里没有能接着用的那把才会去签（换了分组、缓存丢了），配置里还是旧那把。
+    ...syncFailed
+      .filter((entry) => plan.skipped.some((skip) => skip.provider === entry.provider && skip.reason === 'configured'))
+      .map(({ provider, message }) => ({ provider, message })),
+  ]
   return {
     readyKeys,
     configured,
@@ -563,9 +613,10 @@ export async function bootstrapAccountTools(
     networkBlocked: networkBlockedFailures(failureSignals),
     ...(certificateBlockedFailures(failureSignals) ? { networkBlockedByCertificate: true } : {}),
     ...(repairedShadowed.length ? { repairedShadowed } : {}),
-    ...(synchronized?.regrouped?.length
-      ? { regrouped: configured.filter((provider) => synchronized?.regrouped?.includes(provider)) }
+    ...(keyChanges.length
+      ? { regrouped: configured.filter((provider) => keyChanges.includes(provider)) }
       : {}),
+    ...(keyChangeFailed.length ? { keyChangeFailed } : {}),
     ...(followed.length ? { routeFollowed: followed } : {}),
     ...(synchronized?.imageMcpWarning && synchronized.imageMcpNeedsNode
       ? { drawingNeedsNode: synchronized.imageMcpWarning }
