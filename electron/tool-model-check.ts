@@ -1,4 +1,4 @@
-import { isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel, type CliModelHints } from './cli-model-defaults'
+import { isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel, resolveRetiredCliModelReplacement, type CliModelHints } from './cli-model-defaults'
 import type { ProviderId } from './catalog'
 
 /**
@@ -150,7 +150,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     target: ToolModelCheckTarget,
     models: readonly string[],
     guard: ReturnType<typeof currentGuard>,
-    beforeRefresh?: () => void,
+    beforeRefresh?: () => void | Promise<void>,
   ): Promise<'refreshed' | 'unchanged' | 'stale'> {
     const name = toolNames[provider]
     let outdated: boolean
@@ -163,7 +163,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     if (!outdated) return 'unchanged'
     if (!guard.stillCurrent()) return 'stale'
     try {
-      beforeRefresh?.()
+      await beforeRefresh?.()
       await deps.refreshPicker(provider, target.model, guard.assertCurrent)
     } catch (error) {
       deps.log?.('warn', 'tool-models.picker-refresh-failed', `${name} 的模型菜单没能刷新`, { provider, reason: errorText(error) })
@@ -177,7 +177,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
    * 默认模型是两站都下架了的（cli-model-defaults.ts 的下架名单），当前账号也确实不再列它：
    * 开机那轮直接换成现在的默认，不等打开前那一问。从开始菜单、终端、VS Code 打开 Codex 的客户
    * 走不到那一问，每一轮都报「该模型无可用渠道」。别的「用不了」照旧留给打开前去问，那可能只是
-   * 分组一时没配好。写入和刷新菜单是同一道（refreshPicker）：先备份，写一半回滚照旧。
+   * 分组一时没配好。换成哪个由 resolveRetiredCliModelReplacement 挑，挑不出拿得准的（只剩别的系列）
+   * 也留给那一问。写入和刷新菜单是同一道（refreshPicker）：先备份，写一半回滚照旧。
    */
   async function replaceRetiredModel(
     provider: ProviderId,
@@ -188,8 +189,12 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     beforeReplace?: () => void | Promise<void>,
   ): Promise<boolean> {
     if (!isRetiredCliModel(provider, target.model, hints)) return false
-    const replacement = resolveDefaultCliModel(provider, models, undefined, hints)
-    if (!replacement) return false
+    const name = toolNames[provider]
+    const replacement = resolveRetiredCliModelReplacement(provider, target.model, models, hints)
+    if (!replacement) {
+      deps.log?.('info', 'tool-models.retired-kept', `${name} 的默认模型已经下架，当前账号里挑不出拿得准的型号，这次不自己换，打开前再问`, { provider, model: target.model })
+      return false
+    }
     if (!guard.stillCurrent()) {
       logStale(provider)
       return false
@@ -200,7 +205,6 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       if (deps.target(provider)?.model === replacement) return
       guard.assertCurrent()
     }
-    const name = toolNames[provider]
     try {
       await beforeReplace?.()
       await deps.refreshPicker(provider, replacement, assertCurrent)
@@ -257,7 +261,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     const hints = await withTimeout(pendingHints, launchHintsWaitMs).catch(() => null)
     if (!guard.stillCurrent()) return staleResult()
     if (!modelOffered(provider, target.model, models)) {
-      const replacement = resolveDefaultCliModel(provider, models, undefined, hints)
+      // 原来那个型号也交进去：账号不列它了，就先在它的系列里挑（Sonnet 换 Sonnet），不劝客户换去别的档。
+      const replacement = resolveDefaultCliModel(provider, models, target.model, hints)
       deps.log?.('warn', 'tool-models.unavailable', '工具里的默认模型当前账号已经用不了', { provider, model: target.model, replacement })
       return { status: 'unavailable', model: target.model, replacement }
     }
@@ -273,9 +278,10 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
    * 开机时只把菜单对一遍（system-service.ts）：客户升级后多半直接从开始菜单打开 Codex
    * 桌面端，不经过打开前那次核对，新型号就一直进不了菜单。这里不劝换模型、也不占当天
    * 那次核对，默认模型已经用不了的留给打开前那次去问；只有两站都下架了的直接换掉
-   * （replaceRetiredModel）。返回菜单是否真的刷新了。
+   * （replaceRetiredModel）。beforeRefresh 在问完中转、真写之前跑，抛错就不写（system-service.ts 在这里先备份，
+   * 再看一眼 Codex 开没开）。返回菜单是否真的刷新了。
    */
-  async function syncPicker(provider: ProviderId, options: { beforeRefresh?: () => void } = {}): Promise<boolean> {
+  async function syncPicker(provider: ProviderId, options: { beforeRefresh?: () => void | Promise<void> } = {}): Promise<boolean> {
     if (!hasModelPicker(provider)) return false
     const target = deps.target(provider)
     if (!target) return false

@@ -1127,6 +1127,21 @@ describe('createSystemService', () => {
     expect(backup).not.toHaveBeenCalled()
   })
 
+  // #1154：账号里只剩别的系列时不悄悄换成 Haiku，留给打开前那一问。
+  it('leaves a retired Claude Code model alone at startup when the account only lists another family', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-haiku-4-5']
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.fetchModels.mock.calls.length).toBeGreaterThan(1), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(backup).not.toHaveBeenCalled()
+  })
+
   it('does not look at running tools or ask the relay at startup when no configured model is retired', async () => {
     const f = retiredClaudeFixture()
     f.hints.value = null
@@ -1170,6 +1185,24 @@ describe('createSystemService', () => {
     expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
     await vi.waitFor(() => expect(f.configuredModel()).toBe('claude-opus-5-5'), backgroundStartupWait)
     expect(backup).toHaveBeenCalledWith('claude')
+  })
+
+  it('does not bring the catalog up to the account at startup if Codex was opened while the relay was asked', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    // 开机那一眼还关着，问中转那几秒里客户打开了 Codex 桌面端。
+    f.running
+      .mockResolvedValueOnce({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+      .mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(2), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+    expect(backup).not.toHaveBeenCalled()
   })
 
   it('leaves the catalog for a later try while Codex may still be open, and says it is still owed', async () => {

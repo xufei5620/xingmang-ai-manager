@@ -506,6 +506,60 @@ describe('tool model check', () => {
       expect(notOurs.deps.listModels).not.toHaveBeenCalled()
     })
 
+    // #1154：开机那轮是不问客户直接写，挑不出同系列的就不写，打开前那一问再按 Opus > Sonnet > Haiku 劝。
+    it('does not silently move a retired Claude Code model to another family, and suggests the strongest one before a launch', async () => {
+      const { deps, checker } = setup({
+        listModels: vi.fn(async () => ['claude-haiku-4-5', 'claude-sonnet-5']),
+        modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
+      }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
+      const beforeReplace = vi.fn()
+      await expect(checker.replaceRetired('claude', { beforeReplace })).resolves.toBe(false)
+      expect(beforeReplace).not.toHaveBeenCalled()
+      expect(deps.refreshPicker).not.toHaveBeenCalled()
+      expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.retired-kept', expect.stringContaining('Claude Code'), { provider: 'claude', model: 'claude-opus-5' })
+
+      await expect(checker.check('claude')).resolves.toEqual({ status: 'unavailable', model: 'claude-opus-5', replacement: 'claude-sonnet-5' })
+      expect(deps.refreshPicker).not.toHaveBeenCalled()
+    })
+
+    it('swaps a retired Claude Code model for the newest one of its family at startup', async () => {
+      const { deps, checker } = setup({
+        listModels: vi.fn(async () => ['claude-haiku-4-5', 'claude-opus-4-8', 'claude-sonnet-5']),
+        modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
+      }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
+      await expect(checker.replaceRetired('claude')).resolves.toBe(true)
+      expect(deps.refreshPicker).toHaveBeenCalledWith('claude', 'claude-opus-4-8', expect.any(Function))
+    })
+
+    it('keeps a Sonnet customer on Sonnet when it suggests a replacement before a launch', async () => {
+      const { checker } = setup({
+        listModels: vi.fn(async () => ['claude-haiku-4-5', 'claude-opus-4-8', 'claude-sonnet-5']),
+      }, { claude: { apiKey: 'sk', model: 'claude-sonnet-4-5', identity: 'x' } })
+      await expect(checker.check('claude')).resolves.toEqual({ status: 'unavailable', model: 'claude-sonnet-4-5', replacement: 'claude-sonnet-5' })
+    })
+
+    it('waits for an async pre-write check before refreshing the Codex menu at startup, and does not write when it refuses', async () => {
+      const order: string[] = []
+      function outdatedCodex() {
+        return setup({
+          listModels: vi.fn(async () => ['gpt-6-astra', 'gpt-6.1-sol']),
+          pickerOutdated: vi.fn(() => true),
+          refreshPicker: vi.fn(async () => { order.push('write') }),
+        }, { codex: { apiKey: 'sk', model: 'gpt-6-astra', identity: 'x' } })
+      }
+      async function closed(): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        order.push('checked')
+      }
+      await expect(outdatedCodex().checker.syncPicker('codex', { beforeRefresh: closed })).resolves.toBe(true)
+      expect(order).toEqual(['checked', 'write'])
+
+      const open = outdatedCodex()
+      await expect(open.checker.syncPicker('codex', { beforeRefresh: async () => { throw new Error('Codex 可能正开着，这次先不写') } })).resolves.toBe(false)
+      expect(open.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(open.deps.log).toHaveBeenCalledWith('warn', 'tool-models.picker-refresh-failed', expect.any(String), { provider: 'codex', reason: 'Codex 可能正开着，这次先不写' })
+    })
+
     it('does not swap at startup for an account that took over while the list was loading', async () => {
       let finish!: (models: string[]) => void
       const target = { apiKey: 'sk-account-a', model: 'claude-opus-5', identity: 'A' }

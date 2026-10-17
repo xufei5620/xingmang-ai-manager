@@ -90,8 +90,11 @@ describe('external client defaults', () => {
   it('keeps a detected model only when the key lists it and it fits the client', () => {
     const claudeList = ['claude-haiku-5-5', 'claude-opus-5-5']
     expect(detectedClientModel('claudeDesktop', 'claude-opus-5-5', claudeList)).toBe('claude-opus-5-5')
-    expect(detectedClientModel('claudeDesktop', '', claudeList)).toBe('claude-haiku-5-5')
-    expect(detectedClientModel('claudeDesktop', 'claude-sonnet-5-5', claudeList)).toBe('claude-haiku-5-5')
+    // #1154：挑 Claude Code 那个默认，不按字母序拿到 Haiku；没有默认时按 Opus > Sonnet > Haiku，先留在原来那个系列。
+    expect(detectedClientModel('claudeDesktop', '', claudeList)).toBe('claude-opus-5-5')
+    expect(detectedClientModel('claudeDesktop', 'claude-sonnet-5-5', claudeList)).toBe('claude-opus-5-5')
+    expect(detectedClientModel('claudeDesktop', '', ['claude-haiku-4-5', 'claude-sonnet-5', 'gpt-6.1-sol'])).toBe('claude-sonnet-5')
+    expect(detectedClientModel('claudeDesktop', 'claude-sonnet-4-5', ['claude-haiku-4-5', 'claude-opus-4-8', 'claude-sonnet-5'])).toBe('claude-sonnet-5')
     // 0.2.19 测试包：Codex 的密钥列出 gpt-6.1-sol，也不替 Claude Desktop 拿主意，让他自己挑。
     expect(detectedClientModel('claudeDesktop', 'gpt-6.1-sol', ['gpt-6.1-sol', 'gpt-6-astra'])).toBeNull()
     expect(detectedClientModel('claudeDesktop', 'gpt-6.1-sol', ['gpt-6.1-sol', 'claude-opus-5-5'])).toBe('claude-opus-5-5')

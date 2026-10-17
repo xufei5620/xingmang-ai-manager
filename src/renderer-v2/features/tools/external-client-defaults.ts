@@ -1,3 +1,4 @@
+import { resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import type { AccountKey, AppConfigSummary, ExternalToolId, ProviderId } from '../../../../electron/ipc-contract'
 
 type Providers = AppConfigSummary['providers']
@@ -44,10 +45,12 @@ export function configuredSourceModel(tool: ExternalToolId, source: string, prov
 }
 
 /**
- * 检测完替用户选哪个型号。原来就填着、这把密钥也能用、又合这个客户端的，留着；Claude Desktop 退一步找
- * 列表里的 Claude 型号。都不成就是 null：界面先摆第一项，但不替他保存，让他自己挑。
+ * 检测完替用户选哪个型号。原来就填着、这把密钥也能用、又合这个客户端的，留着；Claude Desktop 退一步在
+ * 列表里的 Claude 型号里按 Claude Code 那套挑（默认、上一代、同系列，再 Opus > Sonnet > Haiku），不按字母序
+ * 拿第一个，那会挑到 Haiku（#1154）。都不成就是 null：界面先摆第一项，但不替他保存，让他自己挑。
  */
 export function detectedClientModel(tool: ExternalToolId, current: string, values: readonly string[]): string | null {
   if (current && values.includes(current) && modelFitsClient(tool, current)) return current
-  return tool === 'claudeDesktop' ? values.find((id) => modelFitsClient(tool, id)) ?? null : null
+  if (tool !== 'claudeDesktop') return null
+  return resolveDefaultCliModel('claude', values.filter((id) => modelFitsClient(tool, id)), current || undefined)
 }
