@@ -285,4 +285,58 @@ describe('managed CLI paths', () => {
     expect(fs.existsSync(unverified)).toBe(false)
     expect(fs.readFileSync(path.join(verified, 'superseded-prefix', 'version.txt'), 'utf8')).toBe('v1')
   })
+
+  it('finishes a recovery that stopped after moving the unverified prefix aside', async () => {
+    const options = layoutOptionsForThisPlatform()
+    const layout = await ensureManagedNpmLayout(options)
+    fs.writeFileSync(path.join(layout.prefix, 'version.txt'), 'old', 'utf8')
+    const transaction = path.join(layout.cacheRoot, 'npm-transaction-Ab12Cd')
+    fs.mkdirSync(transaction)
+    fs.renameSync(layout.prefix, path.join(transaction, 'previous-prefix'))
+    // The earlier recovery moved the unverified prefix aside and then stopped before
+    // putting the previous one back, so no prefix is left at all.
+    fs.mkdirSync(path.join(transaction, 'interrupted-prefix'))
+    fs.writeFileSync(path.join(transaction, 'interrupted-prefix', 'version.txt'), 'new', 'utf8')
+
+    await ensureManagedNpmLayout(options)
+
+    expect(fs.readFileSync(path.join(layout.prefix, 'version.txt'), 'utf8')).toBe('old')
+    expect(fs.existsSync(transaction)).toBe(false)
+  })
+
+  it('leaves everything untouched when both the prefix and an interrupted copy exist', async () => {
+    const options = layoutOptionsForThisPlatform()
+    const layout = await ensureManagedNpmLayout(options)
+    const transaction = path.join(layout.cacheRoot, 'npm-transaction-Ab12Cd')
+    for (const [name, version] of [['previous-prefix', 'old'], ['interrupted-prefix', 'new']]) {
+      fs.mkdirSync(path.join(transaction, name), { recursive: true })
+      fs.writeFileSync(path.join(transaction, name, 'version.txt'), version, 'utf8')
+    }
+    fs.writeFileSync(path.join(layout.prefix, 'version.txt'), 'current', 'utf8')
+
+    await expect(ensureManagedNpmLayout(options)).rejects.toThrow('恢复目录已存在冲突')
+
+    expect(fs.readFileSync(path.join(layout.prefix, 'version.txt'), 'utf8')).toBe('current')
+    expect(fs.readFileSync(path.join(transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
+    expect(fs.readFileSync(path.join(transaction, 'interrupted-prefix', 'version.txt'), 'utf8')).toBe('new')
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses to finish a recovery whose interrupted copy is a symlink', async () => {
+    const options = layoutOptionsForThisPlatform()
+    const layout = await ensureManagedNpmLayout(options)
+    fs.writeFileSync(path.join(layout.prefix, 'version.txt'), 'old', 'utf8')
+    const transaction = path.join(layout.cacheRoot, 'npm-transaction-Ab12Cd')
+    fs.mkdirSync(transaction)
+    fs.renameSync(layout.prefix, path.join(transaction, 'previous-prefix'))
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-npm-outside-')))
+    temporaryDirectories.push(outside)
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'keep', 'utf8')
+    fs.symlinkSync(outside, path.join(transaction, 'interrupted-prefix'), 'dir')
+
+    await expect(ensureManagedNpmLayout(options)).rejects.toThrow('不是普通目录')
+
+    expect(fs.existsSync(layout.prefix)).toBe(false)
+    expect(fs.readFileSync(path.join(transaction, 'previous-prefix', 'version.txt'), 'utf8')).toBe('old')
+    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('keep')
+  })
 })
