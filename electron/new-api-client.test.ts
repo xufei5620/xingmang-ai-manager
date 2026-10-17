@@ -844,6 +844,8 @@ describe('login failures', () => {
     ['证书被替换', new Error('net::ERR_CERT_AUTHORITY_INVALID'), 'tls'],
     ['连接被切断', new Error('net::ERR_CONNECTION_RESET'), 'refused'],
     ['系统代理连不上', new Error('net::ERR_PROXY_CONNECTION_FAILED'), 'proxy'],
+    // Electron 的 net.fetch 碰到跳转不交回 opaqueredirect，只报这一句（#1064）。
+    ['跳转被拦下', new Error('Redirect was cancelled'), 'intercepted'],
   ] as const)('tells the user what a restricted network actually did: %s', async (_label, failure, reason) => {
     const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(failure)
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
