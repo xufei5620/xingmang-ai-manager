@@ -218,6 +218,7 @@ import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, 
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import type { AccountGroupHints } from './managed-cli-groups'
+import type { CliModelHints } from './cli-model-defaults'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath, removeDirectoryFromWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
@@ -1529,6 +1530,7 @@ if (!hasSingleInstanceLock) {
       },
       getExternalClientAccountId: () => readExternalClientAccountId(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
+      cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
       windowsExecutionMode: windowsCliExecutionMode,
@@ -2085,6 +2087,7 @@ if (!hasSingleInstanceLock) {
             maintenance: Boolean(status?.maintenance),
             toolRouteRewrite: toolRouteRewriteMode,
             ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
+            ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
           })
         },
       })
@@ -2095,6 +2098,12 @@ if (!hasSingleInstanceLock) {
       if (!serviceStatusMonitor) return null
       await serviceStatusMonitor.settled()
       return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
+    }
+    // 型号表同上：默认型号、上一代、下架名单，读不到就用程序自带的那份（cli-model-defaults.ts）。
+    async function readCliModelHints(): Promise<CliModelHints | null> {
+      if (!serviceStatusMonitor) return null
+      await serviceStatusMonitor.settled()
+      return serviceStatusMonitor.lastKnown()?.cliModels ?? null
     }
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
@@ -3332,6 +3341,7 @@ if (!hasSingleInstanceLock) {
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,
+      cliModelHints: readCliModelHints,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
