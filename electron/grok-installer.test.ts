@@ -16,7 +16,7 @@ import {
 } from './grok-installer'
 import { desktopPackageBucketOrigin } from './desktop-package-bucket'
 import type { GrokVersionFetch } from './grok-update'
-import type { VerifiedNativeCliFile } from './trusted-native-cli'
+import { NativeCliPublisherMismatchError, type VerifiedNativeCliFile } from './trusted-native-cli'
 
 const temporaryDirectories: string[] = []
 
@@ -169,6 +169,44 @@ describe('Grok signed binary installer', () => {
 
     expect(result).toMatchObject({ version: '0.2.110', sourceUrl: artifactUrl })
     expect(String(fetchImpl.mock.calls[1][0])).toBe(artifactUrl)
+  })
+
+  describe('when the xAI download fails its signature check', () => {
+    function xaiSetup() {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
+      temporaryDirectories.push(directory)
+      const binary = Buffer.alloc(1024 * 1024, 0x5c)
+      const requested: string[] = []
+      const fetchImpl = vi.fn<GrokVersionFetch>(async (input) => {
+        const url = String(input)
+        requested.push(url)
+        if (url === 'https://x.ai/cli/stable') return new Response('1.0.62\n', { status: 200, headers: { 'Content-Type': 'text/plain' } })
+        return new Response(binary, { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length) } })
+      })
+      const verifyBinary = vi.fn(fakeVerification)
+      return {
+        requested,
+        verifyBinary,
+        options: { fetchImpl, architecture: 'x64' as const, createTemporaryDirectory: async () => directory, verifyBinary },
+      }
+    }
+
+    it('stops after the first download when the signature is valid but from another publisher', async () => {
+      const f = xaiSetup()
+      f.verifyBinary.mockRejectedValue(new NativeCliPublisherMismatchError())
+      await expect(downloadLatestGrokBinary(f.options))
+        .rejects.toThrow('Grok 官方二进制下载或签名校验失败：x.ai：原生 CLI 数字签名发布者与官方发布者不一致')
+      expect(f.requested).toEqual(['https://x.ai/cli/stable', 'https://x.ai/cli/grok-1.0.62-windows-x86_64.exe'])
+      expect(f.verifyBinary).toHaveBeenCalledTimes(1)
+    })
+
+    it('still tries the next official address when the file is not validly signed', async () => {
+      const f = xaiSetup()
+      f.verifyBinary.mockRejectedValueOnce(new Error('原生 CLI 没有有效的 Authenticode 签名'))
+      const result = await downloadLatestGrokBinary(f.options)
+      expect(result.sourceUrl).toBe('https://x.ai/cli/grok-1.0.62-windows-x86_64')
+      expect(f.verifyBinary).toHaveBeenCalledTimes(2)
+    })
   })
 
   describe('from the Xingmang bucket', () => {
