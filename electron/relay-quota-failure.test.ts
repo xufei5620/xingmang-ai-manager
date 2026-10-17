@@ -3,6 +3,8 @@ import {
   classifyRelayQuotaFailure,
   extractRelayErrorDetail,
   matchRelayQuotaFailureMessage,
+  modelProbeFailurePrefix,
+  relayQuotaFailureInMessage,
   relayQuotaFailureMessages,
 } from './relay-quota-failure'
 
@@ -47,6 +49,31 @@ describe('relay quota failure classification', () => {
     expect(matchRelayQuotaFailureMessage(relayQuotaFailureMessages.balance)).toBe('balance')
     expect(matchRelayQuotaFailureMessage(`Error invoking remote method 'ai-image:generate': Error: ${relayQuotaFailureMessages.keyLimit}`)).toBe('keyLimit')
     expect(matchRelayQuotaFailureMessage('账号余额或 API Key 额度不足，请充值后重试')).toBeNull()
+  })
+
+  it.each([
+    ['模型查询失败，服务返回 401：无效的令牌 (request id: 2)', 'keyInvalid'],
+    ['模型查询失败，服务返回 401', 'keyInvalid'],
+    ['模型查询失败，服务返回 403：API key 已过期', 'keyInvalid'],
+    ['模型查询失败，服务返回 401：该令牌额度已用尽 TokenStatusExhausted[sk-***]', 'keyLimit'],
+    ['模型查询失败，服务返回 403：token quota is not enough, token remain quota: ＄0.001000', 'keyLimit'],
+    ['模型查询失败，服务返回 429：API key 额度已用完', 'keyLimit'],
+    ['模型查询失败，服务返回 403：用户额度不足, 剩余额度: ＄0.000000', 'balance'],
+    // 一键改用和写 Key 失败会把这句包在自己的话里。
+    ['Claude Code 改用当前账号没有完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。', 'keyInvalid'],
+    ['Claude Code 的 Key 没配上：模型查询失败，服务返回 403：Insufficient account balance', 'balance'],
+  ] as const)('reads the model probe sentence "%s" as %s', (message, expected) => {
+    expect(relayQuotaFailureInMessage(message)).toBe(expected)
+  })
+
+  it('reads only the model probe sentence, not any 401 the account API returns', () => {
+    expect(relayQuotaFailureInMessage('账号接口返回 401 Unauthorized')).toBeNull()
+    expect(relayQuotaFailureInMessage('登录状态已失效，请重新登录')).toBeNull()
+    expect(relayQuotaFailureInMessage('模型查询失败，服务返回 403：无权访问 vip 分组')).toBeNull()
+    expect(relayQuotaFailureInMessage('模型查询失败，服务返回 522')).toBeNull()
+    expect(relayQuotaFailureInMessage('模型查询失败，服务返回 4010')).toBeNull()
+    expect(relayQuotaFailureInMessage('模型查询超时，请检查网络后重试')).toBeNull()
+    expect(modelProbeFailurePrefix).toBe('模型查询失败，服务返回')
   })
 
   it('never names a site and always says what to do next', () => {
