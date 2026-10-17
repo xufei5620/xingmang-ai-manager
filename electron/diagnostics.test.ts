@@ -317,7 +317,7 @@ describe('diagnostics', () => {
       const input = dependencies(home)
       const site = line === 'direct' ? directSite : primarySite
       input.relaySite = site
-      input.relayRoute = { line, automatic: true, settled, primarySite, reportPreferredFailure: vi.fn() }
+      input.relayRoute = { line, automatic: true, settled, primarySite, reportLineFailure: vi.fn() }
       input.inspectProvider = (provider) => ({
         ...inspection(provider, home, 'sk-test'),
         actualBaseUrl: provider === 'codex' ? codexBaseUrl : site.providerBaseUrls[provider],
@@ -357,7 +357,7 @@ describe('diagnostics', () => {
       const legacyPrimary = requireRelaySite('solov-api', 'primary')
       const legacyDirect = requireRelaySite('solov-api', 'direct')
       input.relaySite = legacyDirect
-      input.relayRoute = { line: 'direct', automatic: true, settled: true, primarySite: legacyPrimary, reportPreferredFailure: vi.fn() }
+      input.relayRoute = { line: 'direct', automatic: true, settled: true, primarySite: legacyPrimary, reportLineFailure: vi.fn() }
       input.inspectProvider = (provider) => ({ ...inspection(provider, home, 'sk-test'), actualBaseUrl: legacyPrimary.providerBaseUrls[provider] })
 
       const item = codexItem(await runDiagnostics(input))
@@ -803,12 +803,12 @@ describe('diagnostics', () => {
         return new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
       }
 
-      function onRoute(route: Omit<DiagnosticsRelayRoute, 'primarySite' | 'reportPreferredFailure'>) {
+      function onRoute(route: Omit<DiagnosticsRelayRoute, 'primarySite' | 'reportLineFailure'>) {
         const input = dependencies(temporaryHome())
-        const reportPreferredFailure = vi.fn<(reason: string) => void>()
+        const reportLineFailure = vi.fn<(reason: string) => void>()
         input.relaySite = route.line === 'direct' ? directSite : primarySite
-        input.relayRoute = { ...route, primarySite, reportPreferredFailure }
-        return { input, reportPreferredFailure }
+        input.relayRoute = { ...route, primarySite, reportLineFailure }
+        return { input, reportLineFailure }
       }
 
       function networkItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
@@ -866,7 +866,7 @@ describe('diagnostics', () => {
       })
 
       it('says the check used direct when auto is on direct and direct answers', async () => {
-        const { input, reportPreferredFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        const { input, reportLineFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         const fetchImpl = vi.fn(async (_url: string | URL | Request) => statusJson())
         input.fetch = fetchImpl
 
@@ -879,11 +879,11 @@ describe('diagnostics', () => {
         })
         expect(network?.details).not.toHaveProperty('fellBack')
         expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(['https://xm-direct.solov.cc/api/status'])
-        expect(reportPreferredFailure).not.toHaveBeenCalled()
+        expect(reportLineFailure).not.toHaveBeenCalled()
       })
 
       it('checks the default line when direct cannot be reached under auto and says it moved there', async () => {
-        const { input, reportPreferredFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        const { input, reportLineFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         const log = vi.fn()
         input.log = log
         const fetchImpl = vi.fn(async (url: string | URL | Request) => {
@@ -903,12 +903,12 @@ describe('diagnostics', () => {
           'https://xm-direct.solov.cc/api/status',
           'https://xm.solov.cc/api/status',
         ])
-        expect(reportPreferredFailure).toHaveBeenCalledWith('ECONNREFUSED')
+        expect(reportLineFailure).toHaveBeenCalledWith('ECONNREFUSED')
         expect(log).toHaveBeenCalledWith('info', 'diagnostics.network.fallback', expect.any(String), { reason: 'refused' })
       })
 
       it('checks the default line when the direct share of the time runs out, and asks the line to check itself', async () => {
-        const { input, reportPreferredFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        const { input, reportLineFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         const signals: Array<AbortSignal | null | undefined> = []
         input.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
           signals.push(init?.signal)
@@ -922,7 +922,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
         // 状态接口只回几百字节，几秒里一个字都没回来就是这会儿不通：叫线路那边查一轮（#941 第 3 节）。
-        expect(reportPreferredFailure).toHaveBeenCalledWith('timeout')
+        expect(reportLineFailure).toHaveBeenCalledWith('timeout')
         // 直连那一次另有一个更短的时限，默认线路用的是整项的时限。
         expect(signals).toHaveLength(2)
         expect(signals[0]).not.toBe(signals[1])
@@ -935,7 +935,7 @@ describe('diagnostics', () => {
           : statusJson())
 
         expect(networkItem(await runDiagnostics(gateway.input))).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
-        expect(gateway.reportPreferredFailure).toHaveBeenCalledWith('http-502')
+        expect(gateway.reportLineFailure).toHaveBeenCalledWith('http-502')
 
         const service = onRoute({ line: 'direct', automatic: true, settled: true })
         const fetchImpl = vi.fn(async () => new Response('{"success":false,"message":"busy"}', {
@@ -948,7 +948,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({ state: 'fail', details: { endpoint: 'https://xm-direct.solov.cc/api/status', status: 503 } })
         expect(fetchImpl).toHaveBeenCalledTimes(1)
-        expect(service.reportPreferredFailure).not.toHaveBeenCalled()
+        expect(service.reportLineFailure).not.toHaveBeenCalled()
       })
 
       it('moves on when the proxy refuses the direct address or something other than the service answers on direct', async () => {
@@ -961,16 +961,16 @@ describe('diagnostics', () => {
           { direct: () => new Response('<html>Access denied</html>', { status: 403, headers: { 'content-type': 'text/html' } }), reported: 'intercepted' },
         ]
         for (const { direct, reported } of answers) {
-          const { input, reportPreferredFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+          const { input, reportLineFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
           input.fetch = vi.fn(async (url: string | URL | Request) => String(url) === 'https://xm-direct.solov.cc/api/status' ? direct() : statusJson())
 
           expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { line: 'primary', fellBack: true } })
-          expect(reportPreferredFailure).toHaveBeenCalledWith(reported)
+          expect(reportLineFailure).toHaveBeenCalledWith(reported)
         }
       })
 
       it('keeps the direct verdict when the default line does not answer either', async () => {
-        const { input, reportPreferredFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
+        const { input, reportLineFailure } = onRoute({ line: 'direct', automatic: true, settled: true })
         input.fetch = vi.fn(async () => { throw refused() })
 
         const network = networkItem(await runDiagnostics(input))
@@ -980,7 +980,7 @@ describe('diagnostics', () => {
           summary: networkFailureMessages.refused,
           details: { endpoint: 'https://xm-direct.solov.cc/api/status', reason: 'refused', siteId: 'solov' },
         })
-        expect(reportPreferredFailure).toHaveBeenCalledTimes(1)
+        expect(reportLineFailure).toHaveBeenCalledTimes(1)
       })
 
       it('reports a connection timeout when direct served a gateway page and the default line never answers', async () => {
@@ -1000,7 +1000,7 @@ describe('diagnostics', () => {
       })
 
       it('leaves a line the customer pinned alone', async () => {
-        const { input, reportPreferredFailure } = onRoute({ line: 'direct', automatic: false, settled: true })
+        const { input, reportLineFailure } = onRoute({ line: 'direct', automatic: false, settled: true })
         const fetchImpl = vi.fn(async () => { throw refused() })
         input.fetch = fetchImpl
 
@@ -1008,7 +1008,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({ state: 'fail', details: { endpoint: 'https://xm-direct.solov.cc/api/status', reason: 'refused' } })
         expect(fetchImpl).toHaveBeenCalledTimes(1)
-        expect(reportPreferredFailure).not.toHaveBeenCalled()
+        expect(reportLineFailure).not.toHaveBeenCalled()
       })
 
       it('says auto already moved to the default line when it settled there earlier', async () => {
@@ -1026,6 +1026,25 @@ describe('diagnostics', () => {
         })
         expect(network?.details).not.toHaveProperty('fellBack')
         expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual(['https://xm.solov.cc/api/status'])
+      })
+
+      // 已经退到默认线路、它也没查通：结论照它说，报给线路那边两条一起查（#1053）；答得上来就不报。
+      it('reports the default line when auto already moved there and it fails too, without probing direct again', async () => {
+        const failing = onRoute({ line: 'primary', automatic: true, settled: true })
+        const failingFetch = vi.fn(async (_url: string | URL | Request) => { throw refused() })
+        failing.input.fetch = failingFetch
+
+        expect(networkItem(await runDiagnostics(failing.input))).toMatchObject({
+          state: 'fail',
+          details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'refused' },
+        })
+        expect(failingFetch.mock.calls.map(([url]) => String(url))).toEqual(['https://xm.solov.cc/api/status'])
+        expect(failing.reportLineFailure).toHaveBeenCalledWith('ECONNREFUSED')
+
+        const answering = onRoute({ line: 'primary', automatic: true, settled: true })
+        answering.input.fetch = vi.fn(async () => statusJson())
+        expect(networkItem(await runDiagnostics(answering.input))).toMatchObject({ state: 'pass' })
+        expect(answering.reportLineFailure).not.toHaveBeenCalled()
       })
 
       it('names the default line while auto has not settled yet and when the customer pinned it', async () => {
@@ -1064,10 +1083,10 @@ describe('diagnostics', () => {
 
       function onHistoricalRoute(route: Pick<DiagnosticsRelayRoute, 'line' | 'automatic' | 'settled'>) {
         const input = dependencies(temporaryHome())
-        const reportPreferredFailure = vi.fn<(reason: string) => void>()
+        const reportLineFailure = vi.fn<(reason: string) => void>()
         input.relaySite = route.line === 'direct' ? historicalDirect : historicalPrimary
-        input.relayRoute = { ...route, primarySite: historicalPrimary, preferredLine: 'primary', backupSite: historicalDirect, reportPreferredFailure }
-        return { input, reportPreferredFailure }
+        input.relayRoute = { ...route, primarySite: historicalPrimary, preferredLine: 'primary', backupSite: historicalDirect, reportLineFailure }
+        return { input, reportLineFailure }
       }
 
       function networkItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
@@ -1079,7 +1098,7 @@ describe('diagnostics', () => {
       }
 
       it('checks direct when the default line cannot be reached under auto and says it moved there', async () => {
-        const { input, reportPreferredFailure } = onHistoricalRoute({ line: 'primary', automatic: true, settled: true })
+        const { input, reportLineFailure } = onHistoricalRoute({ line: 'primary', automatic: true, settled: true })
         const fetchImpl = vi.fn(async (url: string | URL | Request) => {
           if (String(url) === 'https://api.solov.cc/api/v1/settings/public') throw refused()
           return statusJson()
@@ -1095,7 +1114,7 @@ describe('diagnostics', () => {
           'https://api.solov.cc/api/v1/settings/public',
           'https://api-direct.solov.cc/api/v1/settings/public',
         ])
-        expect(reportPreferredFailure).toHaveBeenCalledWith('ECONNREFUSED')
+        expect(reportLineFailure).toHaveBeenCalledWith('ECONNREFUSED')
       })
 
       it('uses only the default line while it answers, and says auto already moved to direct when it settled there', async () => {
@@ -1104,15 +1123,16 @@ describe('diagnostics', () => {
         first.input.fetch = firstFetch
         expect(networkItem(await runDiagnostics(first.input))).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是线路1', details: { line: 'primary' } })
         expect(firstFetch.mock.calls.map(([url]) => String(url))).toEqual(['https://api.solov.cc/api/v1/settings/public'])
-        expect(first.reportPreferredFailure).not.toHaveBeenCalled()
+        expect(first.reportLineFailure).not.toHaveBeenCalled()
 
         const moved = onHistoricalRoute({ line: 'direct', automatic: true, settled: true })
         const movedFetch = vi.fn(async (_url: string | URL | Request) => { throw refused() })
         moved.input.fetch = movedFetch
-        // 已经在备用的直连上：直连没通不再回头查默认线路，也不报。
+        // 已经在备用的直连上：直连没通不回头查默认线路，结论照直连说；但要报给线路那边，两条一起查一轮、
+        // 默认线路通了当场切回去（#1053）。
         expect(networkItem(await runDiagnostics(moved.input))).toMatchObject({ state: 'fail', details: { endpoint: 'https://api-direct.solov.cc/api/v1/settings/public', reason: 'refused' } })
         expect(movedFetch).toHaveBeenCalledTimes(1)
-        expect(moved.reportPreferredFailure).not.toHaveBeenCalled()
+        expect(moved.reportLineFailure).toHaveBeenCalledWith('ECONNREFUSED')
         moved.input.fetch = vi.fn(async () => statusJson())
         const network = networkItem(await runDiagnostics(moved.input))
         expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务。线路1这会儿连不上，已自动改走线路2', details: { line: 'direct' } })
@@ -1150,6 +1170,15 @@ describe('diagnostics', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
       expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'first-launch', at }))
         .toBe('1月3日 08:00，第一次开机查到线路2没连上，改走线路1')
+    })
+
+    // 两条一起查的那一轮（开机、唤醒、换网、重新检测）当场换的，也不能说成「连着 3 次」（#1053）。
+    it('says a change from a check of both lines happened on the spot, in either direction', () => {
+      const at = new Date(2026, 0, 3, 8, 0).getTime()
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'line-down', trigger: 'network', at }))
+        .toBe('1月3日 08:00，查到线路2没连上、线路1能连上，当场改走线路1')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at }))
+        .toBe('1月3日 08:00，查到线路1没连上、线路2能连上，当场改走线路2')
     })
   })
 
@@ -1684,7 +1713,7 @@ describe('diagnostics', () => {
       function onRoute(line: 'direct' | 'primary', automatic: boolean, env: NodeJS.ProcessEnv) {
         const input = dependencies(temporaryHome())
         input.relaySite = line === 'direct' ? directSite : primarySite
-        input.relayRoute = { line, automatic, settled: true, primarySite, reportPreferredFailure: vi.fn() }
+        input.relayRoute = { line, automatic, settled: true, primarySite, reportLineFailure: vi.fn() }
         input.env = env
         input.platform = 'win32'
         return input

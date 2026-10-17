@@ -271,7 +271,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     const failures: ToolRouteStoredState['failures'] = {}
     const change = legacy?.changes.solov
     const at = now()
-    if (change && change.reason === 'health-failed' && change.from === 'direct' && change.at <= at && at - change.at < toolRouteFailureWindowMs) {
+    if (change && (change.reason === 'health-failed' || change.reason === 'line-down') && change.from === 'direct' && change.at <= at && at - change.at < toolRouteFailureWindowMs) {
       failures.direct = [change.at]
     }
     return { state: { line, failures, notices: {} }, firstRun: true }

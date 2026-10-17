@@ -12,15 +12,27 @@
  * GitHub both redirect), the Claude Desktop MSIX entry point, npmmirror's
  * Node.js mirror.
  *
+ * The account, relay and probe requests ask for 'manual' too, for the opposite
+ * reason: none of their endpoints ever redirects, so a 3xx is how they recognise
+ * a captive portal or an interception page and refuse to carry a session token
+ * or an API key to another host (new-api-client.ts, relay-line-fetch.ts,
+ * proxy-bypass.ts). Under net.fetch they only ever saw "Redirect was
+ * cancelled", so a portal on the direct line read as an unknown error and the
+ * read was never moved to the other line (#1064). main.ts therefore wraps every
+ * Chromium session fetch it hands out, logins and chat requests included.
+ *
  * This wraps a fetch so that 'manual' behaves the way undici's does: a redirect
  * comes back as a bodiless 3xx Response carrying the Location, and the request
  * is cancelled right there, so nothing is fetched from the new location until
- * the caller has checked it and asked again. Every other mode, and any request
- * with a body, goes to the wrapped fetch untouched.
+ * the caller has checked it and asked again. Every other mode goes to the
+ * wrapped fetch untouched.
  *
- * The response half mirrors Electron's own net-fetch.ts, so a non-redirect
- * answer streams and aborts exactly as net.fetch's would. Like net.fetch's, its
- * `url` is empty; callers already only check `response.url` when it is set.
+ * Both halves mirror Electron's own net-fetch.ts: a request body is streamed
+ * into the ClientRequest (which buffers it whole before it starts), and a
+ * non-redirect answer streams and aborts exactly as net.fetch's would. Like
+ * net.fetch's, its `url` is empty; callers already only check `response.url`
+ * when it is set. A redirect stops the request before anything is sent to the
+ * new location, so a POST is never replayed there.
  */
 import { Readable } from 'node:stream'
 
@@ -43,6 +55,7 @@ export interface ManualRedirectIncomingMessage {
 /** The part of Electron's ClientRequest this module drives. */
 export interface ManualRedirectClientRequest {
   setHeader(name: string, value: string): void
+  write(chunk: Buffer): void
   on(event: 'redirect', listener: (statusCode: number, method: string, redirectUrl: string) => void): this
   on(event: 'response', listener: (response: ManualRedirectIncomingMessage) => void): this
   on(event: 'error', listener: (error: Error) => void): this
@@ -72,6 +85,7 @@ function fetchWithManualRedirect(request: Request, start: ManualRedirectRequestF
   if (signal.aborted) return Promise.reject(abortReason(signal))
   return new Promise<Response>((resolve, reject) => {
     let settled = false
+    let bodyReader: ReadableStreamDefaultReader<Uint8Array> | null = null
     function settle(outcome: () => void): void {
       if (settled) return
       settled = true
@@ -89,6 +103,7 @@ function fetchWithManualRedirect(request: Request, start: ManualRedirectRequestF
     function onAbort(): void {
       settle(() => reject(abortReason(signal)))
       clientRequest.abort()
+      bodyReader?.cancel(abortReason(signal)).catch(() => undefined)
     }
     signal.addEventListener('abort', onAbort, { once: true })
     for (const [name, value] of request.headers) clientRequest.setHeader(name, value)
@@ -110,7 +125,27 @@ function fetchWithManualRedirect(request: Request, start: ManualRedirectRequestF
       resolve(new Response(body, { status: message.statusCode, statusText: message.statusMessage, headers: responseHeaders(message.headers) }))
     })
     clientRequest.on('error', (error) => settle(() => reject(error)))
-    clientRequest.end()
+    const body = request.body
+    if (!body) {
+      clientRequest.end()
+      return
+    }
+    const reader = body.getReader()
+    bodyReader = reader
+    async function sendBody(): Promise<void> {
+      for (;;) {
+        const chunk = await reader.read()
+        // Aborted or already answered (an error, a redirect): nothing more goes out.
+        if (settled) return
+        if (chunk.done) break
+        clientRequest.write(Buffer.from(chunk.value.buffer, chunk.value.byteOffset, chunk.value.byteLength))
+      }
+      clientRequest.end()
+    }
+    sendBody().catch((error: unknown) => {
+      settle(() => reject(error))
+      clientRequest.abort()
+    })
   })
 }
 
@@ -123,8 +158,6 @@ export function createManualRedirectFetch(fetchImplementation: typeof fetch, sta
     } catch (error) {
       return Promise.reject(error)
     }
-    // Downloads never send a body; anything that does keeps the wrapped fetch's behaviour.
-    if (request.body !== null) return fetchImplementation(input, init)
     return fetchWithManualRedirect(request, start)
   }
 }

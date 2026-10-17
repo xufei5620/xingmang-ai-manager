@@ -155,7 +155,34 @@ function bootFixture(config) {
   }
   net.fetch = fetchMock
   globalThis.fetch = fetchMock
-  net.request = () => deny('electron-net', 'request')
+  // 要拿到跳转本身（redirect: 'manual'）的请求，main.ts 让它们走 net.request（manual-redirect-fetch.ts，#1064）。
+  // 打到两个站的照样交给上面那套答复（Set-Cookie 照 Electron 交成数组），别的地址照旧当场拒绝。
+  const { EventEmitter } = require('node:events')
+  const { PassThrough } = require('node:stream')
+  net.request = (options) => {
+    const target = typeof options === 'string' ? options : options.url
+    if (![...xmOrigins, 'https://api.solov.cc'].includes(new URL(target).origin)) return deny('electron-net', 'request')
+    const request = new EventEmitter()
+    const headers = new Headers()
+    const chunks = []
+    let aborted = false
+    request.setHeader = (name, value) => { headers.set(name, value) }
+    request.write = (chunk) => { chunks.push(Buffer.from(chunk)) }
+    request.abort = () => { aborted = true }
+    request.end = () => {
+      const body = chunks.length ? Buffer.concat(chunks).toString('utf8') : undefined
+      fetchMock(target, { method: options.method ?? 'GET', headers, body }).then(async (response) => {
+        const bytes = Buffer.from(await response.arrayBuffer())
+        if (aborted) return
+        const head = {}
+        for (const [name, value] of response.headers) head[name] = name === 'set-cookie' ? response.headers.getSetCookie() : value
+        const message = Object.assign(new PassThrough(), { statusCode: response.status, statusMessage: response.statusText, headers: head })
+        request.emit('response', message)
+        message.end(bytes)
+      }, (error) => { if (!aborted) request.emit('error', error) })
+    }
+    return request
+  }
   shell.openExternal = async () => deny('external-browser', 'open')
   for (const protocol of ['node:http', 'node:https']) {
     const transport = require(protocol)

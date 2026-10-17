@@ -588,9 +588,11 @@ function requestUrl(input: string | URL | Request): string {
   return input instanceof URL ? input.href : input.url
 }
 
-// 回网页、回跳转的是半路上别人答的（公司网的拦截页、上网认证、网关的错误页），不是星芒的回话。
+// 回网页、回跳转的是半路上别人答的（公司网的拦截页、上网认证、网关的错误页），不是星芒的回话。星芒的接口
+// 从来不跳转；main.ts 给 Chromium 会话包的 manual-redirect-fetch.ts 把跳转原样交回成 3xx（#1064）。
 function answeredBySomeoneElse(response: Response): boolean {
-  return response.type === 'opaqueredirect' || isHtmlContentType(response.headers.get('content-type'))
+  return response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)
+    || isHtmlContentType(response.headers.get('content-type'))
 }
 
 /**
