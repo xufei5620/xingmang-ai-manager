@@ -324,6 +324,23 @@ describe('Codex Desktop locale content', () => {
     })).toBe(false)
   })
 
+  it('keeps comments, leaves a backup, and skips the write when the language is already set', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-locale-backup-'))
+    const configPath = path.join(root, 'config.toml')
+    const original = '# 客户自己写的说明\nmodel = "gpt-5" # 常用\n'
+    fs.writeFileSync(configPath, original, 'utf8')
+    const backups = () => fs.readdirSync(root).filter((name) => name.startsWith('config.toml.bak.'))
+
+    await writeCodexDesktopLocale({ codexHome: root }, 'zh-CN')
+    expect(fs.readFileSync(configPath, 'utf8').startsWith(original)).toBe(true)
+    expect(readCodexDesktopLocale(fs.readFileSync(configPath, 'utf8'))).toBe('zh-CN')
+    expect(backups()).toHaveLength(1)
+    expect(fs.readFileSync(path.join(root, backups()[0]), 'utf8')).toBe(original)
+
+    await writeCodexDesktopLocale({ codexHome: root }, 'zh-CN')
+    expect(backups()).toHaveLength(1)
+  })
+
   it('keeps the original file untouched if an existing configuration is malformed', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-locale-invalid-'))
     const configPath = path.join(root, 'config.toml')

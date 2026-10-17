@@ -30,6 +30,13 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
 import { tomlErrorLocation } from './toml-error-location'
+import { configBackupSuffix } from './config-file-backups'
+import {
+  editTomlArrayTableText,
+  editTomlTableText,
+  mutateCodexConfigToml,
+  type CodexTomlMutation,
+} from './codex-config-toml'
 import { describeBrokenConfig } from './broken-config-advice'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
@@ -44,7 +51,6 @@ const MAX_SKILL_IMPORT_DEPTH = 32
 const MAX_CONFIG_BYTES = 2 * 1024 * 1024
 const MAX_MANIFEST_BYTES = 512 * 1024
 const MAX_SKILL_DEFINITION_BYTES = 2 * 1024 * 1024
-const TOML_WRITE_QUEUES = new Map<string, Promise<void>>()
 
 export type McpOrigin = 'user' | 'plugin' | 'system'
 export type McpTransportType = 'stdio' | 'http'
@@ -534,135 +540,28 @@ function parseTomlFile(filePath: string): Record<string, unknown> {
   }
 }
 
-function backupSuffix(): string {
-  return new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 17)
-}
-
-function uniqueBackupPath(filePath: string): string {
-  const base = `${filePath}.bak.${backupSuffix()}`
-  let candidate = base
-  let index = 1
-  while (true) {
-    try {
-      const info = fs.lstatSync(candidate)
-      if (info.isSymbolicLink()) {
-        candidate = `${base}-${index++}`
-        continue
-      }
-      candidate = `${base}-${index++}`
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return candidate
-      throw error
-    }
-  }
-}
-
 function configRewriteNotice(backupPath: string | null): string {
   return backupPath
     ? `配置文件已整体重写，手写注释可能丢失，备份位于 ${backupPath}`
     : '配置文件已整体重写，手写注释可能丢失'
 }
 
-const MAX_BACKUPS_PER_FILE = 5
-
-// 备份后缀是时间戳，字典序即时间序；清理失败只静默跳过，绝不影响已成功的写入。
-function pruneBackups(filePath: string, keep = MAX_BACKUPS_PER_FILE): void {
-  const directory = path.dirname(filePath)
-  const prefix = `${path.basename(filePath)}.bak.`
-  let entries: string[]
-  try {
-    entries = fs.readdirSync(directory)
-  } catch {
-    return
-  }
-  const backups = entries.filter((name) => name.startsWith(prefix)).sort()
-  for (const name of backups.slice(0, Math.max(0, backups.length - keep))) {
-    const backupPath = path.join(directory, name)
-    try {
-      const info = fs.lstatSync(backupPath)
-      if (!info.isFile() || info.isSymbolicLink()) continue
-      fs.rmSync(backupPath)
-    } catch {
-      continue
-    }
-  }
-}
-
-function writeUtf8Exclusive(filePath: string, content: string): void {
-  const descriptor = fs.openSync(filePath, 'wx', 0o600)
-  try {
-    fs.writeFileSync(descriptor, content, 'utf8')
-    fs.fsyncSync(descriptor)
-  } finally {
-    fs.closeSync(descriptor)
-  }
-}
-
-// 不存在时返回 false；存在就必须是单链接普通文件，路径上也不能经过链接。
-function assertReplaceableTomlFile(filePath: string): boolean {
-  assertNoSymlinkComponents(filePath, 'Codex 配置路径')
-  let existing: fs.Stats
-  try {
-    existing = fs.lstatSync(filePath)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw error
-  }
-  if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1) {
-    throw new Error('Codex config.toml 必须是单链接普通文件')
-  }
-  return true
-}
-
-function performAtomicTomlMutation(
-  filePath: string,
-  mutate: (config: Record<string, unknown>) => void,
-): string | null {
-  assertNoSymlinkComponents(filePath, 'Codex 配置路径')
-  const config = parseTomlFile(filePath)
-  mutate(config)
-  const content = TOML.stringify(config as Parameters<typeof TOML.stringify>[0])
-  const directory = path.dirname(filePath)
-  const temporaryPath = path.join(directory, `.${path.basename(filePath)}.${randomUUID()}.tmp`)
-  fs.mkdirSync(directory, { recursive: true })
-  let backupPath: string | null = null
-  try {
-    writeUtf8Exclusive(temporaryPath, content)
-    if (assertReplaceableTomlFile(filePath)) {
-      backupPath = uniqueBackupPath(filePath)
-      fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL)
-    }
-    // Windows 上安全软件正扫着 config.toml 或刚写好的临时文件时，换过去会被拒
-    // （EPERM / EBUSY），过一会儿就好，等一下再试（第三十七批 C）。每次试之前再查一遍：
-    // 等的那一下，路径可能被换成联接，文件也可能多了硬链接。
-    renameWithTransientRetrySync(temporaryPath, filePath, () => {
-      assertReplaceableTomlFile(filePath)
-    })
-  } finally {
-    try {
-      fs.rmSync(temporaryPath)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-  }
-  // 成功落盘后才清理旧备份，失败路径仍能靠最新 .bak 恢复。
-  pruneBackups(filePath)
-  return backupPath
-}
-
-function atomicTomlMutation(
-  filePath: string,
-  mutate: (config: Record<string, unknown>) => void,
-): Promise<string | null> {
-  const key = normalizedPathKey(filePath)
-  const previous = TOML_WRITE_QUEUES.get(key) ?? Promise.resolve()
-  const operation = previous.then(() => performAtomicTomlMutation(filePath, mutate))
-  const tail = operation.then(() => undefined, () => undefined)
-  TOML_WRITE_QUEUES.set(key, tail)
-  void tail.then(() => {
-    if (TOML_WRITE_QUEUES.get(key) === tail) TOML_WRITE_QUEUES.delete(key)
+/**
+ * 读、改、写、备份都交给 codex-config-toml.ts，和星芒画图技能、桌面端语言那几处同一套（#1068）。
+ * 只动了几行时不提示；没能只动几行、整份重写了才告诉客户注释可能没了、备份在哪。
+ */
+function mutateConfigToml(
+  configPath: string,
+  mutation: Pick<CodexTomlMutation, 'mutate' | 'editText'>,
+): string | undefined {
+  const result = mutateCodexConfigToml(configPath, {
+    ...mutation,
+    label: 'Codex config.toml',
+    // 和读的时候同一句：只报行号，不抄出旁边几行（第三十批 B，I13）。
+    unreadable: (error) => describeBrokenConfig('Codex', tomlErrorLocation(error)),
+    createIfMissing: true,
   })
-  return operation
+  return result.rewritten ? configRewriteNotice(result.backupPath) : undefined
 }
 
 function mcpUserNames(configPath: string): Set<string> {
@@ -1023,7 +922,7 @@ function moveToTrash(source: string, trashDirectory: string): string {
   fs.mkdirSync(trashDirectory, { recursive: true })
   const target = path.join(
     trashDirectory,
-    `${path.basename(path.dirname(source))}-${backupSuffix()}-${randomUUID()}`,
+    `${path.basename(path.dirname(source))}-${configBackupSuffix()}-${randomUUID()}`,
   )
   const sourceDirectory = path.dirname(source)
   try {
@@ -1229,16 +1128,22 @@ export class CodexExtensionService {
     if (!before.plugins.some((plugin) => plugin.pluginId === selector && plugin.installed)) {
       throw new Error('只能启停已安装的 Plugin')
     }
-    const backupPath = await atomicTomlMutation(this.configPath, (config) => {
-      if (!isRecord(config.plugins)) config.plugins = {}
-      const plugins = config.plugins as Record<string, unknown>
-      if (!isRecord(plugins[selector])) plugins[selector] = {}
-      ;(plugins[selector] as Record<string, unknown>).enabled = enabled
+    const rewriteNotice = mutateConfigToml(this.configPath, {
+      mutate: (config) => {
+        if (!isRecord(config.plugins)) config.plugins = {}
+        const plugins = config.plugins as Record<string, unknown>
+        if (!isRecord(plugins[selector])) plugins[selector] = {}
+        const entry = plugins[selector] as Record<string, unknown>
+        if (entry.enabled === enabled) return false
+        entry.enabled = enabled
+        return true
+      },
+      editText: (source, before, after) => editTomlTableText(source, ['plugins', selector], before, after),
     })
     const catalog = await this.listPlugins()
     const plugin = catalog.plugins.find((entry) => entry.pluginId === selector && entry.installed)
     if (!plugin || plugin.enabled !== enabled) throw new Error('Plugin 状态写入后未通过 Codex 对账')
-    catalog.rewriteNotice = configRewriteNotice(backupPath)
+    if (rewriteNotice) catalog.rewriteNotice = rewriteNotice
     return catalog
   }
 
@@ -1296,24 +1201,32 @@ export class CodexExtensionService {
     enabled: boolean,
   ): Promise<{ skills: SkillDto[]; rewriteNotice?: string }> {
     const target = await this.requireManagedSkill(skillPath)
-    const backupPath = await atomicTomlMutation(this.configPath, (config) => {
-      if (!isRecord(config.skills)) config.skills = {}
-      const skills = config.skills as Record<string, unknown>
-      if (!Array.isArray(skills.config)) skills.config = []
-      const entries = skills.config as unknown[]
-      const key = normalizedPathKey(target.path)
-      const existing = entries.find((entry) => (
-        isRecord(entry)
-        && typeof entry.path === 'string'
-        && normalizedPathKey(entry.path) === key
-      ))
-      if (isRecord(existing)) existing.enabled = enabled
-      else entries.push({ path: target.path, enabled })
+    const rewriteNotice = mutateConfigToml(this.configPath, {
+      mutate: (config) => {
+        if (!isRecord(config.skills)) config.skills = {}
+        const skills = config.skills as Record<string, unknown>
+        if (!Array.isArray(skills.config)) skills.config = []
+        const entries = skills.config as unknown[]
+        const key = normalizedPathKey(target.path)
+        const existing = entries.find((entry) => (
+          isRecord(entry)
+          && typeof entry.path === 'string'
+          && normalizedPathKey(entry.path) === key
+        ))
+        if (!isRecord(existing)) {
+          entries.push({ path: target.path, enabled })
+          return true
+        }
+        if (existing.enabled === enabled) return false
+        existing.enabled = enabled
+        return true
+      },
+      editText: (source, before, after) => editTomlArrayTableText(source, ['skills', 'config'], before, after),
     })
     const skills = await this.listSkills()
     const reconciled = skills.find((skill) => skill.id === target.id)
     if (!reconciled || reconciled.enabled !== enabled) throw new Error('Skill 状态写入后对账失败')
-    return { skills, rewriteNotice: configRewriteNotice(backupPath) }
+    return rewriteNotice ? { skills, rewriteNotice } : { skills }
   }
 
   async importSkill(input: ImportSkillInput): Promise<SkillDto[]> {

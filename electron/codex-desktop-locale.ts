@@ -1,12 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
+import { mutateCodexConfigToml, renderTomlEdit } from './codex-config-toml'
 import {
   assertNoReparseComponents,
   ensureSafeDataDirectory,
   readSafeUtf8FileSync,
-  writeAtomicSafeUtf8File,
 } from './safe-local-data'
 
 const maximumCodexConfigBytes = 2 * 1024 * 1024
@@ -114,6 +113,19 @@ function replaceInlineTomlKey(line: string, value: string): string {
   return match ? `${match[1]}${quoteTomlString(value)}${match[2]}` : `localeOverride = ${quoteTomlString(value)}`
 }
 
+const unreadableConfigMessage = 'Codex config.toml 无法解析，未修改语言设置'
+
+/** 返回是否真改了：已经是这个语言就不写，免得白留一份备份。 */
+function applyCodexDesktopLocale(config: Record<string, unknown>, locale: CodexDesktopLocale): boolean {
+  const desktop = config.desktop
+  if (desktop !== undefined && (!desktop || typeof desktop !== 'object' || Array.isArray(desktop) || desktop instanceof Date)) {
+    throw new Error('Codex config.toml 的 desktop 不是配置表，未修改语言设置')
+  }
+  if ((desktop as Record<string, unknown> | undefined)?.[localeOverrideKey] === locale) return false
+  config.desktop = { ...(desktop as Record<string, unknown> | undefined), [localeOverrideKey]: locale }
+  return true
+}
+
 /**
  * Updates only the [desktop] localeOverride line. Keeping this as a line
  * operation preserves comments for ordinary and quoted table/key spellings.
@@ -129,13 +141,13 @@ export function updateCodexDesktopLocaleContent(
   try {
     expected = TOML.parse(content.replace(/^\uFEFF/, '')) as Record<string, unknown>
   } catch {
-    throw new Error('Codex config.toml 无法解析，未修改语言设置')
+    throw new Error(unreadableConfigMessage)
   }
-  const desktop = expected.desktop
-  if (desktop !== undefined && (!desktop || typeof desktop !== 'object' || Array.isArray(desktop) || desktop instanceof Date)) {
-    throw new Error('Codex config.toml 的 desktop 不是配置表，未修改语言设置')
-  }
-  expected.desktop = { ...(desktop as Record<string, unknown> | undefined), [localeOverrideKey]: locale }
+  applyCodexDesktopLocale(expected, locale)
+  return renderTomlEdit(content, expected, editCodexDesktopLocaleLines(content, locale)).content
+}
+
+function editCodexDesktopLocaleLines(content: string, locale: CodexDesktopLocale): string {
   const newline = content.includes('\r\n') ? '\r\n' : '\n'
   const hadTrailingNewline = /(?:\r\n|\n)$/.test(content)
   const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/)
@@ -174,14 +186,7 @@ export function updateCodexDesktopLocaleContent(
   }
 
   const result = lines.join(newline)
-  const candidate = result ? `${result}${newline}` : ''
-  try {
-    if (isDeepStrictEqual(TOML.parse(candidate), expected)) return candidate
-  } catch {
-    // Legal inline/dotted tables cannot always be updated one line at a time.
-  }
-  const serialized = TOML.stringify(expected as Parameters<typeof TOML.stringify>[0])
-  return newline === '\r\n' ? serialized.replace(/\r?\n/g, newline) : serialized
+  return result ? `${result}${newline}` : ''
 }
 
 function directoryNames(directory: string): string[] {
@@ -343,15 +348,12 @@ export async function writeCodexDesktopLocale(
   assertNoReparseComponents(input.codexHome, 'Codex Home')
   ensureSafeDataDirectory(input.codexHome, 'Codex Home')
   assertNoReparseComponents(path.dirname(configPath), 'Codex 配置路径')
-  const existing = readSafeUtf8FileSync(configPath, 'Codex config.toml', maximumCodexConfigBytes) ?? ''
-  let updated: string
-  try {
-    updated = updateCodexDesktopLocaleContent(existing, locale)
-    TOML.parse(updated || '')
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('未修改')) throw error
-    throw new Error(`Codex config.toml 写入内容无效，未修改：${error instanceof Error ? error.message : String(error)}`)
-  }
-  await writeAtomicSafeUtf8File(configPath, updated, 'Codex config.toml')
+  mutateCodexConfigToml(configPath, {
+    label: 'Codex config.toml',
+    unreadable: unreadableConfigMessage,
+    createIfMissing: true,
+    mutate: (config) => applyCodexDesktopLocale(config, locale),
+    editText: (source) => editCodexDesktopLocaleLines(source, locale),
+  })
   return configPath
 }

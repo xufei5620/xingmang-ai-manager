@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { managedCliKeyProfiles, providerBaseUrls } from './catalog'
+import { writeCodexDesktopLocale } from './codex-desktop-locale'
 import { classifyCodexConfigProfile, codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
 import type { RelayBackendClient } from './relay-backend'
 import {
@@ -622,6 +623,43 @@ describe('xingmang-ai-skill', () => {
     })).resolves.toEqual({ changed: false, enabled: true })
   })
 
+  it('keeps what another writer saved to config.toml while it was reading its own record', async () => {
+    const userHome = await temporaryHome()
+    const codexHome = path.join(userHome, '.codex')
+    const configPath = path.join(codexHome, 'config.toml')
+    const statePath = path.join(codexHome, XINGMANG_AI_CODEX_SKILL_STATE_FILE)
+    await mkdir(codexHome, { recursive: true })
+    await writeFile(configPath, '# 客户自己写的说明\nmodel = "gpt-5.4"\n', 'utf8')
+    await writeFile(statePath, '{"version":1,"offByXingmang":false}\n', 'utf8')
+    const originalOpen = fs.promises.open.bind(fs.promises)
+    let interleaved = false
+    const open = vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+      // config.toml has been read for the decision; Codex Desktop's language is
+      // switched in exactly the gap before the skill is written (#1068).
+      if (!interleaved && path.resolve(String(file)) === statePath) {
+        interleaved = true
+        await writeCodexDesktopLocale({ codexHome }, 'zh-CN')
+      }
+      return originalOpen(file, flags, mode)
+    })
+    try {
+      await expect(syncXingmangAiSkillCodexAvailability({ userHome, officialCodex: true, configPath }))
+        .resolves.toEqual({ changed: true, enabled: false })
+    } finally {
+      open.mockRestore()
+    }
+
+    expect(interleaved).toBe(true)
+    const content = await readFile(configPath, 'utf8')
+    expect(TOML.parse(content)).toEqual({
+      model: 'gpt-5.4',
+      desktop: { localeOverride: 'zh-CN' },
+      skills: { config: [{ path: resolveXingmangAiCodexSkillPath(userHome), enabled: false }] },
+    })
+    expect(content.startsWith('# 客户自己写的说明\nmodel = "gpt-5.4"\n')).toBe(true)
+    expect(fs.readdirSync(codexHome).filter((name) => name.startsWith('config.toml.bak.'))).toHaveLength(2)
+  })
+
   it('does not invent a Codex config.toml just to keep the skill enabled', async () => {
     const userHome = await temporaryHome()
     await expect(syncXingmangAiSkillCodexAvailability({
@@ -868,12 +906,12 @@ describe('xingmang-ai-skill across Codex account switches', () => {
     await accounts.useChatGptBeforeXingmang()
     await accounts.sync(true)
     saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'merge', accounts.roots, {}, providerBaseUrls)
-    const originalRename = fs.promises.rename.bind(fs.promises)
-    const rename = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+    const originalRename = fs.renameSync.bind(fs)
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
       if (path.basename(String(to)) === 'config.toml') {
         throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' })
       }
-      return originalRename(from, to)
+      originalRename(from, to)
     })
     await expect(accounts.sync(false)).rejects.toThrow()
     rename.mockRestore()
