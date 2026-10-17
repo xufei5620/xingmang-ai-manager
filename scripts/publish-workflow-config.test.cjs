@@ -1652,3 +1652,28 @@ test('re-running the publish of a withdrawn version after a rollback stops befor
   assert.equal(noStatus.status, 0, noStatus.output)
   assert.match(noStatus.output, /没有撤回名单/)
 })
+
+// 发布的 macos-build 跑在 Apple 芯片上，原来那次启动冒烟只挑本机架构的 M 芯片版。
+// 直到 0.2.19，Intel 版发出去之前一次都没被启动过（2026-10-17 查客户 Intel Mac
+// 装不上时发现）。两份要发出去的包都得先启动过，而且都在上传 artifact 之前。
+test('both macOS release packages are launched before they reach the publish job', () => {
+  const commands = macosJob.steps.map((step) => String(step.run || ''))
+  const hostIndex = commands.indexOf('node e2e/macos-launch-smoke.mjs "release-free-$PACKAGE_VERSION"')
+  const rosettaIndex = commands.findIndex((command) => command.includes('--install-rosetta'))
+  const intelIndex = commands.indexOf('node e2e/macos-launch-smoke.mjs "release-free-$PACKAGE_VERSION" --arch x64')
+  const uploadIndex = macosJob.steps.findIndex((step) => String(step.uses || '').includes('upload-artifact'))
+  const revokeIndex = commands.findIndex((command) => command.includes('macos-release-keychain.cjs --release'))
+
+  assert.equal(macosJob['runs-on'], 'macos-15')
+  assert.notEqual(hostIndex, -1)
+  assert.notEqual(intelIndex, -1)
+  assert.ok(hostIndex < rosettaIndex && rosettaIndex < intelIndex)
+  assert.ok(intelIndex < uploadIndex)
+  // 撤销 keychain 是 always() 的收尾，排在两次启动之后，不能被新加的步骤挤到前面去。
+  assert.ok(intelIndex < revokeIndex)
+  for (const index of [rosettaIndex, intelIndex]) {
+    assert.ok(macosJob.steps[index]['timeout-minutes'] > 0)
+    // 只装 Rosetta、只启动包：碰不到发布证书。
+    assert.equal(/secrets\./.test(JSON.stringify(macosJob.steps[index])), false)
+  }
+})

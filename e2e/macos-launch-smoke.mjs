@@ -8,11 +8,17 @@
 //
 // It takes the directory `scripts/run-macos-free-build.cjs --ci-keep-package`
 // leaves behind, or a path to a .app, extracts the ZIP for the host
-// architecture and launches the packaged binary in an isolated HOME with its
-// own user-data directory. A launch failure of this kind is immediate, so the
-// verdict is: the process reported itself ready, or it was still alive when
-// the budget ran out (pass), or it exited on its own (fail, with whatever dyld
-// or the app printed on the way out).
+// architecture (or the one `--arch` names) and launches the packaged binary in
+// an isolated HOME with its own user-data directory. A launch failure of this
+// kind is immediate, so the verdict is: the process reported itself ready, or
+// it was still alive when the budget ran out (pass), or it exited on its own
+// (fail, with whatever dyld or the app printed on the way out).
+//
+// Every job that builds a Mac package runs on Apple silicon, so up to 0.2.19
+// the Intel package went out without ever having been started: this smoke only
+// picked the host's own ZIP. `--arch x64` on an Apple silicon Mac starts the
+// Intel package through Rosetta, which runs the same x86_64 binaries through
+// the same dyld and code-signing checks an Intel Mac would.
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs/promises'
@@ -50,10 +56,44 @@ function hostArchitecture() {
   throw new Error(`不支持在 ${process.arch} 上运行 macOS 启动冒烟`)
 }
 
-async function resolveApplicationBundle(target, temporaryRoot) {
+function parseArguments(argv) {
+  let target
+  let architecture
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index]
+    if (token === '--arch') {
+      if (architecture !== undefined) throw new Error('--arch 只能出现一次')
+      architecture = argv[index + 1]
+      if (architecture !== 'arm64' && architecture !== 'x64') throw new Error('--arch 只接受 arm64 或 x64')
+      index += 1
+      continue
+    }
+    if (token.startsWith('--') || target !== undefined) throw new Error(`无法识别的参数：${token}`)
+    target = token
+  }
+  return { target, architecture: architecture ?? hostArchitecture() }
+}
+
+// An x86_64 slice runs on Apple silicon only through Rosetta, and only an Intel
+// Mac can run it natively; an arm64 slice runs on nothing but Apple silicon.
+// `arch -x86_64` rather than a plain spawn so that a package which wrongly
+// carried an arm64 slice too could not quietly be started as arm64 instead.
+function resolveLauncher(architecture) {
+  const host = hostArchitecture()
+  if (architecture === host) return { prefix: [], translated: false }
+  if (host === 'arm64' && architecture === 'x64') {
+    const probe = spawnSync('/usr/bin/arch', ['-x86_64', '/usr/bin/true'], { shell: false })
+    if (probe.error || probe.status !== 0) {
+      throw new Error('这台 Mac 没装 Rosetta，启动不了 Intel 版：先运行 sudo softwareupdate --install-rosetta --agree-to-license')
+    }
+    return { prefix: ['/usr/bin/arch', '-x86_64'], translated: true }
+  }
+  throw new Error(`${host} 的 Mac 启动不了 ${architecture} 版`)
+}
+
+async function resolveApplicationBundle(target, temporaryRoot, architecture) {
   if (target.endsWith('.app')) return path.resolve(target)
   const directory = path.resolve(target)
-  const architecture = hostArchitecture()
   const names = (await fs.readdir(directory))
     .filter((name) => name.endsWith(`-${architecture}.zip`))
   // A directory holding two ZIPs for one architecture, or none, means the
@@ -167,22 +207,31 @@ async function waitForPlatformBridge(runtimeLogPath) {
 async function main() {
   if (process.platform !== 'darwin') throw new Error('macOS 启动冒烟只能在 macOS 上运行')
   const version = require(path.resolve('package.json')).version
-  const target = process.argv[2] || `release-free-ci-${version}`
+  const options = parseArguments(process.argv.slice(2))
+  const target = options.target || `release-free-ci-${version}`
+  // Before anything is extracted: a missing Rosetta is a fact about this Mac,
+  // not about the package, and should say so without a 150 MB detour.
+  const launcher = resolveLauncher(options.architecture)
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-macos-launch-'))
   const userDataDirectory = path.join(temporaryRoot, 'user-data')
   const isolatedHome = path.join(temporaryRoot, 'home')
   await fs.mkdir(isolatedHome, { recursive: true })
   const runtimeLogPath = path.join(userDataDirectory, 'logs', 'runtime.jsonl')
 
-  const applicationPath = await resolveApplicationBundle(target, temporaryRoot)
+  const applicationPath = await resolveApplicationBundle(target, temporaryRoot, options.architecture)
   const executablePath = await resolveApplicationExecutable(applicationPath)
+  const [launchExecutable, ...launchArgs] = [...launcher.prefix, executablePath, `--user-data-dir=${userDataDirectory}`]
+  const label = options.architecture === 'x64' ? 'Intel' : 'Apple 芯片'
+  process.stdout.write(`启动 ${label} 版（${launcher.translated ? '经 Rosetta 转译' : '本机原生'}）：${applicationPath}\n`)
   // Printed rather than asserted: verify-macos-free-artifacts.cjs already
   // decides whether this signature and these entitlements go together. Here it
   // is the evidence that turns a failure into a diagnosis instead of a hunt.
   process.stdout.write(`${runCommand('/usr/bin/codesign', ['-d', '--verbose=4', applicationPath])}\n`)
 
   const output = { text: '' }
-  const child = spawn(executablePath, [`--user-data-dir=${userDataDirectory}`], {
+  // `arch` hands itself over to the app with posix_spawn's SETEXEC, so the pid
+  // and process group below are the app's own either way.
+  const child = spawn(launchExecutable, launchArgs, {
     env: { ...process.env, HOME: isolatedHome },
     stdio: ['ignore', 'pipe', 'pipe'],
     // Its own process group, so stopApplication can reach every helper the app
