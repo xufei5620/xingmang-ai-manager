@@ -941,7 +941,10 @@ export function createUpdaterService(
   let macInstallHandoffRegistered = false
   let disposed = false
   let lastProgressAt = 0
-  let serviceStatus: ServiceStatus | null = null
+  // 撤回名单和分批放量是发版的安全网，只认最近一次读成功的那份：网差的电脑这一次没读到状态文件、
+  // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。维护提示和最低版本照旧跟着
+  // 这一次读到的走，读不到就不提示、不拦人。打开软件后一次都没读到过时仍按不撤回、不限量算。
+  let releaseGuard: { badVersions: readonly string[]; rollout: ServiceRollout | null } = { badVersions: [], rollout: null }
   let manualCheck = false
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
@@ -995,7 +998,7 @@ export function createUpdaterService(
   client.logger = null
 
   function isWithdrawn(version: string | null | undefined): boolean {
-    return Boolean(version) && (serviceStatus?.badVersions ?? []).includes(String(version).trim().replace(/^v/i, ''))
+    return Boolean(version) && releaseGuard.badVersions.includes(String(version).trim().replace(/^v/i, ''))
   }
 
   // 撤回名单与分批放量都在 electron-updater 判断「有没有可用更新」的那一步生效：
@@ -1005,8 +1008,8 @@ export function createUpdaterService(
     const decision = decideUpdateOffer({
       version: info.version,
       currentVersion: runtime.currentVersion,
-      badVersions: serviceStatus?.badVersions ?? [],
-      rollout: serviceStatus?.rollout ?? null,
+      badVersions: releaseGuard.badVersions,
+      rollout: releaseGuard.rollout,
       // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
       // 看的是本机低不低于最低版本，不是那道门亮没亮：Linux 的门要等有了提议才亮。
       manual: manualCheck || Boolean(minimumRequired),
@@ -1079,7 +1082,7 @@ export function createUpdaterService(
   }
 
   const applyServiceStatus = (status: ServiceStatus | null) => {
-    serviceStatus = status
+    if (status) releaseGuard = { badVersions: status.badVersions ?? [], rollout: status.rollout ?? null }
     const maintenance = status?.maintenance ? { message: status.maintenance.message } : null
     const patch: Partial<UpdateSnapshot> = {}
     if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {

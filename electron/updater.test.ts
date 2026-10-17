@@ -2,6 +2,7 @@ import { generateKeyPairSync, sign } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
+import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
 import { createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
@@ -1386,6 +1387,55 @@ describe('withdrawn versions and staged rollout', () => {
     await service.check()
     expect(offered).toEqual([false, false, true, false, true, false])
     expect(defaultRollout).toHaveBeenCalledWith(expect.objectContaining({ version: '1.1.0', stagingPercentage: 20 }))
+    service.dispose()
+  })
+
+  it('keeps the last withdrawn list and rollout it read when a later read fails', async () => {
+    const client = new FakeUpdater()
+    client.isUserWithinRollout = vi.fn(async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50)
+    let status: ServiceStatus | null = null
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus: async () => status })
+    const hook = client.isUserWithinRollout
+    const offered: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      offered.push(await hook!(updateInfo('1.1.0')))
+      offered.push(await hook!(updateInfo('1.2.0')))
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+
+    // 打开软件后一次都没读到过：仍按不撤回、不限量算。
+    await service.check()
+    status = { maintenance: { message: '升级中' }, badVersions: ['1.2.0'], rollout: { version: '1.1.0', percent: 20 } }
+    await service.check()
+    // 这一次没读到：维护提示跟着这一次走，撤回名单和放量沿用上一次读成功的那份。
+    status = null
+    await service.check()
+    expect(service.getState().serviceMaintenance).toBeNull()
+    service.setServiceStatus(null)
+    await service.check()
+    // 读到了放开的那份才放开。
+    status = { maintenance: null, badVersions: [], rollout: null }
+    await service.check()
+    expect(offered).toEqual([true, true, false, false, false, false, false, false, true, true])
+    service.dispose()
+  })
+
+  it('still offers the way back off a withdrawn version when a later read fails', async () => {
+    const client = new FakeUpdater()
+    const statuses: Array<ServiceStatus | null> = [{ maintenance: null, badVersions: ['1.0.0'], rollout: null }]
+    const allowDowngradeSeen: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      allowDowngradeSeen.push(client.allowDowngrade)
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus: async () => statuses.shift() ?? null })
+
+    await service.check()
+    service.setServiceStatus(null)
+    expect(service.getState().currentVersionWithdrawn).toBe(true)
+    await service.check()
+    expect(allowDowngradeSeen).toEqual([true, true])
+    expect(service.getState().currentVersionWithdrawn).toBe(true)
     service.dispose()
   })
 
