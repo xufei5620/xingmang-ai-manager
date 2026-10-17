@@ -1109,6 +1109,24 @@ describe('createSystemService', () => {
     expect(f.running).toHaveBeenCalledWith(['claude'])
   })
 
+  it('does not swap a retired Claude Code model at startup if it was opened while the relay was asked', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    // 开机那一眼还关着，问中转那几秒里客户从终端打开了它。
+    f.running
+      .mockResolvedValueOnce({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+      .mockResolvedValue({ running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(2), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(backup).not.toHaveBeenCalled()
+  })
+
   it('does not look at running tools or ask the relay at startup when no configured model is retired', async () => {
     const f = retiredClaudeFixture()
     f.hints.value = null

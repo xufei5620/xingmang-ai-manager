@@ -459,6 +459,26 @@ describe('tool model check', () => {
       expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.retired-replaced', expect.stringContaining('Grok'), { provider: 'grok', model: 'grok-4.6', replacement: 'grok-4.7' })
     })
 
+    it('waits for an async pre-write check at startup and does not write when it refuses', async () => {
+      const order: string[] = []
+      const { deps, checker } = setup({
+        listModels: vi.fn(async () => ['grok-4.7']),
+        modelHints: vi.fn(async () => ({ grok: { default: 'grok-4.7', retired: ['grok-4.6'] } })),
+        refreshPicker: vi.fn(async () => { order.push('write') }),
+      }, { grok: { apiKey: 'sk', model: 'grok-4.6', identity: 'x' } })
+      async function closed(): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        order.push('checked')
+      }
+      await expect(checker.replaceRetired('grok', { beforeReplace: closed })).resolves.toBe(true)
+      expect(order).toEqual(['checked', 'write'])
+
+      deps.refreshPicker.mockClear()
+      await expect(checker.replaceRetired('grok', { beforeReplace: async () => { throw new Error('工具可能正开着，这次先不换') } })).resolves.toBe(false)
+      expect(deps.refreshPicker).not.toHaveBeenCalled()
+      expect(deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-replace-failed', expect.any(String), expect.objectContaining({ provider: 'grok', reason: '工具可能正开着，这次先不换' }))
+    })
+
     it('leaves a model alone at startup unless it is retired and the account no longer lists it', async () => {
       const notRetired = setup({ modelHints: vi.fn(async () => null) }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
       await expect(notRetired.checker.replaceRetired('claude')).resolves.toBe(false)

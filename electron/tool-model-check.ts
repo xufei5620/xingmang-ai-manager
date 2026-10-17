@@ -185,7 +185,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     models: readonly string[],
     guard: ReturnType<typeof currentGuard>,
     hints: CliModelHints | null,
-    beforeReplace?: () => void,
+    beforeReplace?: () => void | Promise<void>,
   ): Promise<boolean> {
     if (!isRetiredCliModel(provider, target.model, hints)) return false
     const replacement = resolveDefaultCliModel(provider, models, undefined, hints)
@@ -202,7 +202,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     }
     const name = toolNames[provider]
     try {
-      beforeReplace?.()
+      await beforeReplace?.()
       await deps.refreshPicker(provider, replacement, assertCurrent)
     } catch (error) {
       deps.log?.('warn', 'tool-models.retired-replace-failed', `${name} 的默认模型已经下架，这次没能换掉`, { provider, model: target.model, replacement, reason: errorText(error) })
@@ -304,9 +304,10 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
   /**
    * 开机那轮只换掉已下架的默认型号，不动菜单：给 Claude Code 和 Grok 用（Codex 走 syncPicker，菜单一起对）。
    * 配置里的型号不在下架名单上就什么都不做、也不问中转；在名单上、而当前账号确实不再列它才换，
-   * 规矩同 replaceRetiredModel。返回是否真换了。
+   * 规矩同 replaceRetiredModel。beforeReplace 在问完中转、真写之前跑，抛错就不写（system-service.ts 在这里
+   * 再看一眼工具开没开）。返回是否真换了。
    */
-  async function replaceRetired(provider: ProviderId, options: { beforeReplace?: () => void } = {}): Promise<boolean> {
+  async function replaceRetired(provider: ProviderId, options: { beforeReplace?: () => void | Promise<void> } = {}): Promise<boolean> {
     const target = deps.target(provider)
     if (!target) return false
     const hints = await loadHints()

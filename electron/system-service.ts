@@ -8133,7 +8133,7 @@ export function createSystemService(
    * 可以由服务状态文件加（cli-model-defaults.ts），站上下架一个型号不用等发版。只碰当前账号写的配置：
    * 配置里的型号不在名单上就什么都不做，不起进程看工具开没开；在名单上、工具开着或看不出开没开的这次不换，
    * 交回去记成还欠着，与补设置同一套规矩。真换由 toolModelChecker.replaceRetired 在后台做：先问一遍中转，
-   * 账号确实不再列它才换，先备份。返回这次欠下的工具。
+   * 账号确实不再列它、写之前再看一眼工具还关着才换，先备份。返回这次欠下的工具。
    */
   async function replaceRetiredCliModels(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<ProviderId[]> {
     const candidates = round.providers.filter((provider) => provider === 'claude' || provider === 'grok')
@@ -8166,7 +8166,15 @@ export function createSystemService(
         pending.push(provider)
         continue
       }
-      void toolModelChecker.replaceRetired(provider, { beforeReplace: () => backup?.(provider) }).catch(() => undefined)
+      void toolModelChecker.replaceRetired(provider, {
+        // 问中转那几秒里客户可能刚从终端打开工具：写之前再看一眼，开着或看不出就这次不写。这时开机那轮
+        // 已经交了差，不再记成欠着；下次开机再换，从星芒打开的打开前那一问也会劝换。
+        beforeReplace: async () => {
+          const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)([provider])
+          if (latest.running.includes(provider) || latest.unknown.includes(provider)) throw new Error('工具可能正开着，这次先不换')
+          backup?.(provider)
+        },
+      }).catch(() => undefined)
     }
     return pending
   }
