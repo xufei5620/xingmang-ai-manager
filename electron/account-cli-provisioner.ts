@@ -299,6 +299,31 @@ async function loadCliModelHints(accountService: ManagedKeyAccountService): Prom
   }
 }
 
+// 失效重签只换缓存里这一家的那条。手上的 keys 只有在用的工具，拿它整份存回去会丢掉下线工具（Gemini）
+// 以前签的那把和别处刚换好的条目，所以照缓存现在的样子改一条，跟同步那一轮保存的口径一致（#1093 第 6 条）。
+// 新 Key 已经签好了：缓存没存上只是下次同步再签一把，不该让这把写不进配置。
+async function cacheReplacementKey(
+  keyStore: ManagedCliKeyStoreLike,
+  userId: number,
+  replacement: StoredManagedCliKey,
+  assertSession: () => void,
+): Promise<void> {
+  try {
+    const stored = await keyStore.read(userId)
+    const revision = keyStore.captureRevision?.()
+    assertSession()
+    const cachedKeys = providerIds.flatMap((provider) => {
+      if (provider === replacement.provider) return [replacement]
+      const entry = stored.find((item) => item.provider === provider)
+      return entry ? [entry] : []
+    })
+    if (revision === undefined) await keyStore.save(userId, cachedKeys)
+    else await keyStore.save(userId, cachedKeys, revision)
+  } catch (error) {
+    rethrowAccountSessionChange(error)
+  }
+}
+
 export async function configureManagedClis(
   accountService: ManagedKeyAccountService,
   systemService: Pick<SystemService, 'fetchAvailableModels' | 'saveConfig'>,
@@ -342,7 +367,8 @@ export async function configureManagedClis(
           throw new Error(managedKeyQuotaExhaustedMessage)
         }
         if (!isCredentialFailure(error)) throw error
-        if (keyStore) await keyStore.remove(userId, managedKey.id)
+        // 先从缓存拿掉失效的那把，下面重签没成也不会下次再拿它去试；拿不掉只是多试一次，不挡重签。
+        if (keyStore) await keyStore.remove(userId, managedKey.id).catch(() => undefined)
         assertSameAuthenticatedUser(accountService, capture)
         const profile = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())[provider]
         // 失效也可能是分组改名；重签前先问服务端。组列表暂不可用时沿用
@@ -361,14 +387,7 @@ export async function configureManagedClis(
           key: replacement.key,
         }
         keys.set(provider, managedKey)
-        if (keyStore) {
-          const replacementRevision = keyStore.captureRevision?.()
-          if (replacementRevision === undefined) {
-            await keyStore.save(userId, [...keys.values()])
-          } else {
-            await keyStore.save(userId, [...keys.values()], replacementRevision)
-          }
-        }
+        if (keyStore) await cacheReplacementKey(keyStore, userId, managedKey, () => assertSameAuthenticatedUser(accountService, capture))
         models = await systemService.fetchAvailableModels(managedKey.key, { bypassCache: true })
       }
       assertSameAuthenticatedUser(accountService, capture)
