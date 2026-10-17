@@ -32,6 +32,7 @@ vi.mock('electron', () => ({
       mainFrame,
       getURL: () => mainFrame.url,
       isDestroyed: () => false,
+      isCrashed: vi.fn(() => false),
       send: vi.fn(),
       executeJavaScript: vi.fn(async () => true),
       setWindowOpenHandler: vi.fn(),
@@ -1576,6 +1577,63 @@ describe('canvas close confirmation', () => {
     on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, { reason: 'crashed', exitCode: 1 })
     expect(await closing).toBe(false)
     expect(electronMocks.latestBrowserWindow!.close).not.toHaveBeenCalled()
+  })
+
+  it('reloads a crashed canvas from an entry URL with the current appearance', async () => {
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const loadURL = window.loadURL as ReturnType<typeof vi.fn>
+    expect(new URL(loadURL.mock.calls[0]![0] as string).searchParams.get('theme')).toBe('dark')
+    controller.setTheme('light')
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, { reason: 'crashed', exitCode: 1 })
+
+    expect(loadURL).toHaveBeenCalledTimes(2)
+    const reloaded = new URL(loadURL.mock.calls[1]![0] as string)
+    expect(reloaded.pathname).toBe('/')
+    expect(reloaded.searchParams.get('theme')).toBe('light')
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'process.gone.reload', '画布界面进程退出后自动重新加载')
+  })
+
+  it('stops reloading a canvas that keeps crashing and reloads it when the user opens it again', async () => {
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const webContents = electronMocks.latestWebContents!
+    const loadURL = window.loadURL as ReturnType<typeof vi.fn>
+    const gone = (webContents.on as ReturnType<typeof vi.fn>).mock.calls.find(([event]) => event === 'render-process-gone')![1]
+    gone({}, { reason: 'crashed', exitCode: 1 })
+    gone({}, { reason: 'crashed', exitCode: 1 })
+    gone({}, { reason: 'crashed', exitCode: 1 })
+    expect(loadURL).toHaveBeenCalledTimes(3)
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'process.gone.reload-limit', '画布界面接连退出，不再自动重新加载')
+
+    ;(webContents.isCrashed as ReturnType<typeof vi.fn>).mockReturnValue(true)
+    await controller.open()
+    expect(loadURL).toHaveBeenCalledTimes(4)
+    expect(window.focus).toHaveBeenCalled()
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'canvas', 'process.gone.reopen-reload', '重新打开画布时重新加载界面')
+  })
+
+  it('only focuses a healthy canvas when it is opened again', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    await controller.open()
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledOnce()
+    expect(electronMocks.latestBrowserWindow!.focus).toHaveBeenCalledOnce()
+  })
+
+  it('does not bring back a canvas whose renderer exits during app shutdown', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const gone = (electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>).mock.calls.find(([event]) => event === 'render-process-gone')![1]
+    controller.dispose()
+    gone({}, { reason: 'killed', exitCode: 1 })
+    expect(window.loadURL).toHaveBeenCalledOnce()
   })
 
   it('records a preload failure and invalidates an in-flight close handshake', async () => {
