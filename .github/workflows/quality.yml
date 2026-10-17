@@ -121,15 +121,15 @@ jobs:
           - shard: node
             command: npm run test:scripts && npm run test:browser
             timeout: 10
-          # test:v2 stays on the shipping platform; test:canvas and the legacy
-          # test:ui suites live in linux-test, because neither asserts anything
-          # platform-specific and these are the least stable runners. Its two
-          # halves are wildly lopsided — the vitest one is seconds, the browser
-          # one is effectively all of test:v2's ~9 minutes — so only the
-          # browser one is split further.
-          - shard: renderer-v2
-            command: npm run test:v2:vitest
-            timeout: 10
+          # test:v2's browser half stays on the shipping platform, split below;
+          # the legacy test:ui suites live in linux-test, because they assert
+          # nothing platform-specific and these are the least stable runners.
+          # test:v2's vitest half and test:canvas need no runner of their own:
+          # vitest keeps every file whose path contains one of its arguments,
+          # so the `src` in test:vitest already takes in src/renderer-v2 and
+          # canvas-v2/src, and the three shards above run all of them. A
+          # renderer-v2 shard here ran its 152 files a second time until #1066.
+          #
           # The fixture browser-checks, cut in three. app-check.mjs is two
           # thirds of their time and gains ~20 tests a day, so a cut by file
           # always left one runner holding all of it: #873 ran out the 18
@@ -625,13 +625,16 @@ jobs:
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
           bash scripts/ci-install-chromium-deps.sh
       - run: npm run typecheck
+      # Also the renderer v2 and canvas unit suites: test:vitest's `src`
+      # argument takes in src/renderer-v2 and canvas-v2/src. Separate
+      # test:v2:vitest and test:canvas steps after it ran those 226 files a
+      # second time until #1066.
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no
-      # Electron and no display server here. These two steps and
-      # linux-renderer-v2-browser's two shards add up to exactly `npm run test:v2`.
-      - run: npm run test:v2:vitest
+      # Electron and no display server here. This step and
+      # linux-renderer-v2-browser's two shards add up to exactly
+      # `npm run test:v2:browser`, the half of test:v2 `npm test` does not run.
       - run: npm run test:v2:browser:e2e
-      - run: npm run test:canvas
       # The legacy rollback UI suites. They assert rendered markup only, so one
       # platform answers the question three platforms used to.
       - run: npm run test:ui
