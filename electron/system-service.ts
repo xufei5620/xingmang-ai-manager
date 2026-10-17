@@ -2856,12 +2856,20 @@ export function providerCommandEnvironment(
 }
 
 /**
- * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进）。用星芒账号时，客户自己设的 ANTHROPIC_MODEL 这类
- * 选型号的变量会让 Claude Code 去要当前账号没有的型号；接账号时 settings.json 里的同名项已经挪开
- * （config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。用自己的 Claude 账号时照旧带。
+ * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进，#1081）。只管 Claude Code 用星芒账号的时候：
+ * - 检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：ANTHROPIC_API_KEY 会换掉 Key，
+ *   CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。这一次不交给工具不等于改客户的电脑，他系统里的设置
+ *   一个字不动，所以 Windows、Linux 和 Mac 一样不带，不再只靠检查页提示。
+ * - 选型号的那几个：客户自己设的 ANTHROPIC_MODEL 这类会让 Claude Code 去要当前账号没有的型号；接账号时
+ *   settings.json 里的同名项已经挪开（config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。
+ * 用自己的 Claude 账号时照旧都带：这些可能就是客户自己的 Key、登录和型号（切回官方账号时星芒也把他原来的
+ * ANTHROPIC_API_KEY 放回 settings.json）。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的
+ * env 段，不在里面。
  */
+const claudeRelayLaunchExcludedVariables: readonly string[] = ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys]
+
 export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
-  return provider === 'claude' && accountMode === 'relay' ? claudeForeignModelEnvKeys : []
+  return provider === 'claude' && accountMode === 'relay' ? claudeRelayLaunchExcludedVariables : []
 }
 
 /** 名字不分大小写：Windows 上 `anthropic_model` 和大写是同一个变量（同 providerCommandEnvironment）。 */
@@ -2875,10 +2883,7 @@ export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: reado
  * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
  * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
  * 都在里面，另加 Mac 才要的：
- * - Claude Code：只在用星芒账号时去掉检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：
- *   ANTHROPIC_API_KEY 会换掉 Key，CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。用自己的 Claude 账号时
- *   这两个可能就是客户自己的 Key 和登录（切回官方账号时星芒也把他原来的 ANTHROPIC_API_KEY 放回 settings.json），
- *   不动。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，也不动。
+ * - Claude Code：没有另加的，Key、配置目录和选型号的那几个三个平台一样，只在用星芒账号时去掉。
  * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
  *   里的，要给的值启动时另给。
  * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
@@ -2886,9 +2891,7 @@ export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: reado
 export function macosShellOverrideVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
   switch (provider) {
     case 'claude':
-      return accountMode === 'relay'
-        ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...launchExcludedEnvironmentVariables(provider, accountMode)]
-        : []
+      return launchExcludedEnvironmentVariables(provider, accountMode)
     case 'gemini':
       return managedGeminiVariables
     case 'codex':

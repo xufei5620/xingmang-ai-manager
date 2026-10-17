@@ -4844,13 +4844,17 @@ describe('Darwin CLI launch planning', () => {
 })
 
 describe('variables kept from tools opened on every platform', () => {
-  it('keeps the model choices from Claude Code only while it is on the Xingmang account', () => {
-    expect(launchExcludedEnvironmentVariables('claude', 'relay')).toEqual(claudeForeignModelEnvKeys)
+  // #1081：Key 和配置目录这两个原来只有 Mac 的启动脚本去掉，现在三个平台一样。
+  it('keeps the key, config folder and model choices from Claude Code only while it is on the Xingmang account', () => {
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
     expect(launchExcludedEnvironmentVariables('claude', 'relay'))
       .toEqual(expect.arrayContaining(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']))
-    expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_API_KEY')
-    // 用自己的 Claude 账号时，这些可能就是客户自己选的型号。
+    // ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，照旧带。
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_BASE_URL')
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_AUTH_TOKEN')
+    // 用自己的 Claude 账号时，这些可能就是客户自己的 Key、登录和型号；别家中转的那种账号也不动。
     expect(launchExcludedEnvironmentVariables('claude', 'official')).toEqual([])
+    expect(launchExcludedEnvironmentVariables('claude', 'unknown')).toEqual([])
   })
 
   it('keeps nothing from the other tools', () => {
@@ -6792,11 +6796,13 @@ describe('opening a CLI on Linux', () => {
     expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
   })
 
-  // 已知45 跟进：用星芒账号时，客户环境里选型号的变量不交给 Claude Code；交给已经开着的命令窗口程序时，
-  // 脚本里还要再 unset 一次（linux-terminal.ts）。
-  it.runIf(process.platform !== 'win32')('keeps the model choices in the environment away from Claude Code on the Xingmang account', async () => {
+  // 已知45 跟进、#1081：用星芒账号时，客户环境里的 Key、配置目录和选型号的变量不交给 Claude Code；交给已经
+  // 开着的命令窗口程序时，脚本里还要再 unset 一次（linux-terminal.ts）。
+  it.runIf(process.platform !== 'win32')('keeps the key, config folder and model choices in the environment away from Claude Code on the Xingmang account', async () => {
     vi.stubEnv('ANTHROPIC_MODEL', 'deepseek-chat')
     vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', 'deepseek-chat')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-other-relay')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/home/tester/.claude-other')
     const { userHome, workspace } = project('xingmang-linux-open-models-')
     const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
       terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
@@ -6808,11 +6814,15 @@ describe('opening a CLI on Linux', () => {
     const plan = launchLinuxTerminal.mock.calls[0]?.[0]
     expect(plan?.env).not.toHaveProperty('ANTHROPIC_MODEL')
     expect(plan?.env).not.toHaveProperty('CLAUDE_CODE_SUBAGENT_MODEL')
-    expect(plan?.clearedEnvironmentKeys).toEqual(claudeForeignModelEnvKeys)
+    expect(plan?.env).not.toHaveProperty('ANTHROPIC_API_KEY')
+    expect(plan?.env).not.toHaveProperty('CLAUDE_CONFIG_DIR')
+    expect(plan?.clearedEnvironmentKeys).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
   })
 
-  it.runIf(process.platform !== 'win32')('hands the model choices over as before while Claude Code is on the customer’s own account', async () => {
+  it.runIf(process.platform !== 'win32')('hands the key, config folder and model choices over as before while Claude Code is on the customer’s own account', async () => {
     vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-own')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/home/tester/.claude-work')
     const { userHome, workspace } = project('xingmang-linux-open-official-')
     const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
       terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
@@ -6824,6 +6834,8 @@ describe('opening a CLI on Linux', () => {
 
     const plan = launchLinuxTerminal.mock.calls[0]?.[0]
     expect(plan?.env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+    expect(plan?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-own')
+    expect(plan?.env?.CLAUDE_CONFIG_DIR).toBe('/home/tester/.claude-work')
     expect(plan).not.toHaveProperty('clearedEnvironmentKeys')
   })
 
@@ -7073,8 +7085,25 @@ describe('opening a CLI on Windows', () => {
     expect(Object.keys(env).filter((key) => /^anthropic_(model|small_fast_model)$/i.test(key))).toEqual([])
   })
 
-  it('hands the model choices over as before while Claude Code is on the customer’s own account', async () => {
+  // #1081：照别家中转教程在系统里设过的 Key 和配置目录，用星芒账号时这一次也不交给 Claude Code，系统里的设置不动。
+  it('keeps the key and config folder set on the computer away from Claude Code on the Xingmang account', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-other-relay')
+    vi.stubEnv('claude_config_dir', 'C:\\Users\\tester\\.claude-other')
+    const { userHome, workspace } = project('xingmang-windows-open-key-')
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
+
+    await windowsLaunchService(userHome, launchCliPowerShell).launchProvider('claude', workspace)
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    const env = launchCliPowerShell.mock.calls[0]?.[0].env ?? {}
+    expect(Object.keys(env).filter((key) => /^(anthropic_api_key|claude_config_dir)$/i.test(key))).toEqual([])
+    expect(process.env.ANTHROPIC_API_KEY).toBe('sk-other-relay')
+  })
+
+  it('hands the key, config folder and model choices over as before while Claude Code is on the customer’s own account', async () => {
     vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-own')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', 'C:\\Users\\tester\\.claude-work')
     const { userHome, workspace } = project('xingmang-windows-open-official-')
     const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
     const official = { actualBaseUrl: '', hasApiKey: false, matchesRelay: false, apiKey: '' }
@@ -7082,7 +7111,10 @@ describe('opening a CLI on Windows', () => {
     await windowsLaunchService(userHome, launchCliPowerShell, undefined, official).launchProvider('claude', workspace)
 
     expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
-    expect(launchCliPowerShell.mock.calls[0]?.[0].env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+    const env = launchCliPowerShell.mock.calls[0]?.[0].env
+    expect(env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+    expect(env?.ANTHROPIC_API_KEY).toBe('sk-ant-own')
+    expect(env?.CLAUDE_CONFIG_DIR).toBe('C:\\Users\\tester\\.claude-work')
   })
 })
 
