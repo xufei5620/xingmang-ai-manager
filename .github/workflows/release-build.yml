@@ -173,14 +173,12 @@ jobs:
         # 用例必挂在 "Executable doesn't exist"。
         run: npx --no-install playwright install chromium
 
-      - name: Build canvas-v2 as the packaged canvas
-        # 云端 runner 没有兄弟仓 xingmang-canvas 的 v1 产物,不现场构建 v2 的话
-        # 正式包里将完全没有画布,点「无限画布」只会看到中文报错。
-        run: |
-          cd canvas-v2
-          npm ci --registry=https://registry.npmjs.org/
-          npm run build
-
+      # 画布不在这里单独构建:发布门禁的 compile 先跑 precompile:runtime →
+      # canvas:prepare,用根仓 node_modules 现场构建 canvas-v2 再打进包,与
+      # test-build / publish-release 同一条链路。这里曾经另起一遍
+      # `cd canvas-v2 && npm ci && npm run build`,产物随即被 canvas:prepare
+      # 覆盖,白跑之外还让持有签名证书的 runner 执行一套没人审计过的依赖树的
+      # 安装脚本(审查总表 P-10)。
       - name: Build the signed installer through the full release gate
         run: npm run release:build
         env:
@@ -189,7 +187,6 @@ jobs:
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           XINGMANG_SIGNING_PUBLISHER: ${{ secrets.XINGMANG_SIGNING_PUBLISHER }}
           XINGMANG_UPDATE_URL: ${{ inputs.update_url }}
-          XINGMANG_CANVAS_DIST: canvas-v2/dist
 
       - name: Print artifact checksums
         shell: pwsh

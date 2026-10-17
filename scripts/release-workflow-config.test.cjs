@@ -80,3 +80,16 @@ test('the signing path is still exercised end to end', () => {
   assert.equal(buildStep.env.XINGMANG_SIGNING_PUBLISHER, '${{ secrets.XINGMANG_SIGNING_PUBLISHER }}')
   assert.doesNotMatch(JSON.stringify(workflow.jobs), /dl:publish|--publish always/)
 })
+
+test('the canvas is built only by the release gate, not by a separate install on the signing runner', () => {
+  // P-10: compile runs canvas:prepare, which rebuilds canvas-v2 from the root
+  // node_modules and overwrites canvas-v2/dist. A separate `cd canvas-v2 && npm ci`
+  // here produced nothing that reached the installer, yet ran the lifecycle
+  // scripts of an unaudited dependency tree on the runner that holds the
+  // signing certificate.
+  const canvasInstalls = installerJob.steps.filter((step) => /canvas-v2/.test(String(step.run || '')))
+  assert.deepEqual(canvasInstalls.map((step) => step.name), [])
+  for (const step of installerJob.steps) {
+    assert.equal(step.env?.XINGMANG_CANVAS_DIST, undefined, `${step.name || step.uses} must not override the canvas build`)
+  }
+})
