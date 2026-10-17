@@ -97,6 +97,13 @@ describe('restricted network failure classification', () => {
       .toBe('intercepted')
   })
 
+  // Electron 的 net.fetch 在 redirect:'manual' 下不交回 opaqueredirect，碰到跳转直接
+  // 报这一句（#1064）。账号和中转请求都是这么发的，认不出来就既没有中文也不退回备用线路。
+  it('reads the redirect Electron net.fetch gives up on under redirect:manual as a captive portal', () => {
+    expect(classifyNetworkFailure(new Error('Redirect was cancelled'))).toBe('intercepted')
+    expect(classifyNetworkFailure(new TypeError('fetch failed', { cause: new Error('Redirect was cancelled') }))).toBe('intercepted')
+  })
+
   it('stops walking causes instead of following a cycle', () => {
     const outer: { message: string; cause?: unknown } = { message: 'outer' }
     outer.cause = outer
