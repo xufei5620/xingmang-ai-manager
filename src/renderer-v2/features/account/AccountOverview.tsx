@@ -95,6 +95,7 @@ export function AccountOverview({
   devicesChanged,
   onNavigate,
   onSwitchAccount,
+  onLogout,
   active = true,
   changed,
 }: {
@@ -110,6 +111,8 @@ export function AccountOverview({
   onNavigate: (landing: AccountLanding) => void
   /** 打开「切换账号」框；缺省 = 那颗按钮灰着。 */
   onSwitchAccount?: () => void
+  /** 「退出登录」那颗按钮真正去退的那一下；缺省 = 直接调 api.logoutAccount。 */
+  onLogout?: () => Promise<void>
   /** 概览是不是现在那个页签；从别的页签切回来时重读密钥把数。缺省 = 一直算在前台、不重读。 */
   active?: boolean
   changed: () => void
@@ -258,7 +261,7 @@ export function AccountOverview({
                 void operation.execute(
                   'logout',
                   async () => {
-                    await api.logoutAccount()
+                    await (onLogout ? onLogout() : api.logoutAccount())
                     setLogout(false)
                     changed()
                   },
