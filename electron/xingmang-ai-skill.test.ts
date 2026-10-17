@@ -198,6 +198,32 @@ describe('xingmang-ai-skill', () => {
     }
   })
 
+  it('switches the Codex skill only once the config write queue it is handed gets to it', async () => {
+    const userHome = await temporaryHome()
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    await mkdir(path.dirname(configPath), { recursive: true })
+    await writeFile(configPath, 'model = "gpt-5.4"\n', 'utf8')
+    let release!: () => void
+    const busy = new Promise<void>((resolve) => { release = resolve })
+    let queued = 0
+    async function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
+      queued += 1
+      await busy
+      return operation()
+    }
+
+    const installing = installXingmangAiSkillFiles(bundledRoot, userHome, { officialCodex: true, serializeConfigWrite })
+    await vi.waitFor(() => expect(queued).toBe(1))
+    // A save holding the queue must still find config.toml as it left it (#1061 item 1).
+    expect(await readFile(configPath, 'utf8')).toBe('model = "gpt-5.4"\n')
+    release()
+
+    await expect(installing).resolves.toMatchObject({ warnings: [] })
+    expect(TOML.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      skills: { config: [{ path: resolveXingmangAiCodexSkillPath(userHome), enabled: false }] },
+    })
+  })
+
   it('skips directories whose bundled files already match the template', async () => {
     const userHome = await temporaryHome()
     await installXingmangAiSkillFiles(bundledRoot, userHome)

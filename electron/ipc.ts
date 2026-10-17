@@ -3614,6 +3614,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         // the editable native URL or a preference awaiting an app restart.
         baseUrl: new URL(service.getConfig(false).providers.codex.baseUrl).origin,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
+        serializeConfigWrite: service.serializeToolConfigWrite,
         syncImageMcp: options.xingmangAiSkill.syncImageMcp,
         fetchAvailableModels: (apiKey) => service.fetchAvailableModels(apiKey),
         loadAccountGroupHints: () => loadAccountGroupHints(automaticProvisioning),

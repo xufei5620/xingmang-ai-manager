@@ -1070,6 +1070,12 @@ export interface SystemService {
    * 对不齐抛错，配置照样是恢复出来的那份。
    */
   alignRestoredAccountSource(provider: ProviderId): Promise<void>
+  /**
+   * 排进保存配置那一队再改工具配置（#1061 第 1 条）：主进程别处替客户改配置的（画图工具登记、
+   * 星芒AI技能跟着账号开关）用它，不然保存查模型那一会儿改了文件，保存就报配置在检测期间变了。
+   * operation 里不能再排这一队，那会自己等自己。可选 = 旧实现不提供，调用方直接写。
+   */
+  serializeToolConfigWrite?<T>(operation: () => Promise<T>): Promise<T>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
   recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
@@ -3121,6 +3127,9 @@ const codexModelCatalogGuardReaders: Record<CodexModelCatalogGuardTrigger, Codex
 /** 打开 Codex 之前在本机看一眼型号名单，最多等这么久。 */
 const codexModelCatalogLaunchGuardMs = 3_000
 
+/** 打开工具前替客户补写配置（目录信任、Codex 权限缺省、桌面端中文），排在保存配置后面最多等这么久。 */
+const toolLaunchConfigWriteWaitMs = 3_000
+
 /**
  * 补设置这一轮看哪些：开机那轮（连同联网后、开通订阅后补跑的那几次）什么都看；渲染层
  * 隔一阵来补做（retry）时只看开机那轮因为工具可能开着而欠下的（第二十六批 E）。
@@ -3140,6 +3149,40 @@ export function settleWithin(promise: Promise<unknown>, ms: number): Promise<voi
       resolve()
     }
     promise.then(done, done)
+  })
+}
+
+/**
+ * 把 write 排进 enqueue 那一队，最多等 ms 毫秒：到点还没轮到就按 gaveUp 那句拒绝，之后轮到了也不再做。
+ * 轮到了就等它做完。给打开工具前那几样补写用（#1061 第 1 条）：打开的人在等，排不上就这次不写；
+ * 也不能留到工具起来以后再写，那时工具自己也在写同一个文件。
+ */
+export function writeQueuedWithin<T>(
+  enqueue: (operation: () => Promise<T>) => Promise<T>,
+  write: () => T | Promise<T>,
+  ms: number,
+  gaveUp: string,
+): Promise<T> {
+  let started = false
+  let abandoned = false
+  const queued = enqueue(async () => {
+    if (abandoned) throw new Error(gaveUp)
+    started = true
+    return write()
+  })
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (started) return
+      abandoned = true
+      reject(new Error(gaveUp))
+    }, ms)
+    queued.then((value) => {
+      clearTimeout(timer)
+      resolve(value)
+    }, (error: unknown) => {
+      clearTimeout(timer)
+      reject(error)
+    })
   })
 }
 
@@ -3265,6 +3308,13 @@ export function createSystemService(
     const next = configWriteQueue.then(operation, operation)
     configWriteQueue = next.catch(() => undefined)
     return next
+  }
+  // 打开工具前替客户补的那几样也排进保存配置这一队（#1061 第 1 条）。保存要先联网查模型，查完核对
+  // 配置没被动过才写（sameNativeConfigSnapshot 连修改时间一起比）；以前这一两秒里点「打开」，补写
+  // 一改 config.toml，保存就报「工具配置在模型检测期间发生变化」。这几样都是写不进去也不挡打开的，
+  // 排不上就这次不写：下次打开再补，目录信任 CLI 自己还会问。
+  function writeBeforeLaunch<T>(write: () => T | Promise<T>): Promise<T> {
+    return writeQueuedWithin(serializeConfigWrite, write, toolLaunchConfigWriteWaitMs, '保存配置还没做完，这次打开先不写')
   }
   const codexEnv = serviceOptions.codexEnv
     ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
@@ -6027,9 +6077,11 @@ export function createSystemService(
     try {
       // Only normalize configs managed by Xingmang. An official/custom Codex
       // profile is user-owned and must remain byte-for-byte untouched here.
-      if (inspectNativeProviderConfig('codex').matchesRelay) {
-        ensureCodexPermissionDefaults(providerRoots)
-      }
+      // Decide inside the queue: a save that was in flight may just have
+      // switched the profile.
+      await writeBeforeLaunch(() => {
+        if (inspectNativeProviderConfig('codex').matchesRelay) ensureCodexPermissionDefaults(providerRoots)
+      })
     } catch {
       // The launch path remains available; malformed configs are reported by
       // Codex itself and by the dedicated permission inspection below.
@@ -6068,7 +6120,7 @@ export function createSystemService(
           // and only the web view's Statsig gate needs the runtime patch.
           // `writeCodexDesktopLocale` re-validates the safe path and TOML, so a
           // malformed or redirected config can never be silently overwritten.
-          await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, 'zh-CN')
+          await writeBeforeLaunch(() => writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, 'zh-CN'))
         }
       } catch {
         // The normal launch remains available if a locale probe is temporarily
@@ -6120,7 +6172,7 @@ export function createSystemService(
     // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
     if (!workspaceSensitivity) {
       try {
-        const trust = trustManagedWorkspace(provider, providerRoots, workspace)
+        const trust = await writeBeforeLaunch(() => trustManagedWorkspace(provider, providerRoots, workspace))
         if (trust.changed) {
           runtimeLog?.log('info', 'config', 'workspace.trust.written', `${definition.name} 已信任所选工作目录`, {
             provider,
@@ -6425,7 +6477,8 @@ export function createSystemService(
     } catch {
       throw new Error('Codex 工作目录不存在，请重新选择')
     }
-    const result = trustCodexWorkspace(providerRoots, workspace)
+    // 客户点的按钮，等保存做完再写，不像打开前那几样排不上就算了；重开桌面端放在队外（它自己还要排队）。
+    const result = await serializeConfigWrite(async () => trustCodexWorkspace(providerRoots, workspace))
     let restarted = false
     // 只在 Windows 上替人重开：Mac 上主进程一律拒绝重启 Codex（codex-desktop-service.ts），
     // 信任这时已经写进去了，再去重启只会把「已保存」变成一个报错框（第二十九批 A 的同一个原因）。
@@ -6455,7 +6508,7 @@ export function createSystemService(
       throw new Error('当前 Codex Desktop 安装包没有本地简体中文资源，请先通过镜像更新 Codex Desktop')
     }
     const changed = codexDesktopLocaleNeedsChange(before.configuredLocale, locale)
-    if (changed) await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale)
+    if (changed) await serializeConfigWrite(() => writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale))
     // This call is the explicit switch for the runtime patch, so it is also the
     // only place that grants or withdraws consent for the debugging port. Store
     // it before the restart: a failed restart must not leave the later ordinary
@@ -8423,6 +8476,7 @@ export function createSystemService(
     getConfig: buildConfigSummary,
     revealApiKey,
     saveConfig,
+    serializeToolConfigWrite: serializeConfigWrite,
     repairCliHooks,
     autoRepairStaleCliHooks,
     switchToOfficialAccount,
