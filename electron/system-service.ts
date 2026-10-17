@@ -51,6 +51,7 @@ import {
 } from './cli-process-probe'
 import { cliProcessProbeRoots, emptyRunningToolsReport, inspectRunningTools as inspectRunningToolsWith, toolRouteRestartNeeds, type RunningToolsReport, type ToolRouteRestartHint } from './running-tools'
 import { createToolModelChecker, type ToolModelCheck, type ToolModelCheckTarget } from './tool-model-check'
+import { isRetiredCliModel, type CliModelHints } from './cli-model-defaults'
 import {
   npmPrefixGlobalRoot,
   resolveSameUserNpmPrefix,
@@ -2691,6 +2692,11 @@ export interface SystemServiceOptions {
    * （渲染层照旧跑同步 Key）。来自服务状态文件，出问题不用发版就能切回。
    */
   getToolRouteRewriteMode?: () => 'targeted' | 'merge'
+  /**
+   * 服务状态文件里的型号表（service-status.ts 的 cliModels）：默认型号、上一代、已下架。从不拒绝，
+   * 读不到给 null。缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
+   */
+  cliModelHints?: () => Promise<CliModelHints | null>
   /** 换线路自动改了工具配置、出了重开提示、外部客户端换成了：叫一声，界面重读（main.ts 发 network:relay-route-changed）。 */
   onToolRouteFollowed?: () => void
   /** 测试注入：换线路那几个定时器；缺省 setTimeout（unref）。 */
@@ -7964,6 +7970,7 @@ export function createSystemService(
     refreshPicker: async (provider, model, assertCurrent) => {
       await saveConfig({ provider, apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
+    ...(serviceOptions.cliModelHints ? { modelHints: serviceOptions.cliModelHints } : {}),
     upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
     markUpgradeOffered: async (provider, model) => {
       await store.update({ version: 2, offeredModelUpgrades: [`${provider}:${model}`] })
@@ -8122,6 +8129,49 @@ export function createSystemService(
   }
 
   /**
+   * 开机那轮替 Claude Code、Grok 换掉已下架的默认型号（Codex 由上面的 syncPicker 连菜单一起管）。下架名单
+   * 可以由服务状态文件加（cli-model-defaults.ts），站上下架一个型号不用等发版。只碰当前账号写的配置：
+   * 配置里的型号不在名单上就什么都不做，不起进程看工具开没开；在名单上、工具开着或看不出开没开的这次不换，
+   * 交回去记成还欠着，与补设置同一套规矩。真换由 toolModelChecker.replaceRetired 在后台做：先问一遍中转，
+   * 账号确实不再列它才换，先备份。返回这次欠下的工具。
+   */
+  async function replaceRetiredCliModels(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<ProviderId[]> {
+    const candidates = round.providers.filter((provider) => provider === 'claude' || provider === 'grok')
+    if (!candidates.length) return []
+    let hints: CliModelHints | null = null
+    if (serviceOptions.cliModelHints) {
+      const loadHints = serviceOptions.cliModelHints
+      try {
+        hints = await unlessStopped(() => loadHints().catch(() => null), stopped)
+      } catch {
+        // 换账号叫停：没看过就谈不上欠，下次开机再看。
+        return []
+      }
+    }
+    const due = candidates.filter((provider) => {
+      const target = modelCheckTarget(provider, true)
+      return target !== null && isRetiredCliModel(provider, target.model, hints)
+    })
+    if (!due.length) return []
+    let report: RunningToolsReport
+    try {
+      report = await unlessStopped(() => (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(due), stopped)
+    } catch {
+      return due
+    }
+    const pending: ProviderId[] = []
+    for (const provider of due) {
+      if (report.running.includes(provider) || report.unknown.includes(provider)) {
+        runtimeLog?.log('info', 'config', 'tool-models.retired-deferred', '工具可能正开着，已下架的默认模型这次先不换', { provider, ...(round.retry ? { retry: true } : {}) })
+        pending.push(provider)
+        continue
+      }
+      void toolModelChecker.replaceRetired(provider, { beforeReplace: () => backup?.(provider) }).catch(() => undefined)
+    }
+    return pending
+  }
+
+  /**
    * 开机那次：先补设置，再在本机看 Codex 开没开、型号名单欠不欠，两样都算进 pending 交回去；
    * 按账号核对型号名单要先问一遍中转，补设置那句提示不等它。retry = 渲染层隔一阵来补做
    * （第二十六批 E）：只做开机那轮欠下的，换了账号就什么都不做。
@@ -8139,10 +8189,12 @@ export function createSystemService(
       result = await fillToolTemplateDefaults(backup, round, stopped)
     } catch (error) {
       void syncCodexModelCatalog(backup, round, stopped).catch(() => false)
+      void replaceRetiredCliModels(backup, round, stopped).catch(() => [])
       throw error
     }
     const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
-    const skipped = result.pending ?? []
+    const retiredOwed = await replaceRetiredCliModels(backup, round, stopped).catch((): ProviderId[] => [])
+    const skipped = [...new Set([...(result.pending ?? []), ...retiredOwed])]
     templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
     const pending = activeProviderIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
     // 客服看报告分得清是工具开着没补，还是给换账号让了路。

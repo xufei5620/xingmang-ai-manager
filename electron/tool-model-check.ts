@@ -1,4 +1,4 @@
-import { isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
+import { isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel, type CliModelHints } from './cli-model-defaults'
 import type { ProviderId } from './catalog'
 
 /**
@@ -8,7 +8,8 @@ import type { ProviderId } from './catalog'
  *
  * 所以每天第一次打开工具时核对一次：菜单悄悄刷新，默认模型用不了就把换成什么交给
  * 界面去问，用户点了才换。核对失败绝不挡住打开，就当没核。两站都下架了的型号例外：
- * 开机那轮直接换掉（replaceRetiredModel）。
+ * 开机那轮直接换掉（replaceRetiredModel）。默认型号、上一代、下架名单可以由服务状态文件改
+ * （cli-model-defaults.ts 的 CliModelHints），读不到就用程序自带的那份。
  *
  * 有菜单要刷新的是 Claude Code（settings.json 里的 /model 菜单，claude-model-picker.ts）
  * 和 Codex（本软件写的型号名单，命令行和桌面端共用，codex-model-catalog.ts）。
@@ -49,8 +50,14 @@ export interface ToolModelCheckDependencies {
    * assertCurrent 要在真正落盘前再调一次：核对和写入之间隔着网络请求，账号随时会切走，
    * 写入那一刻认的必须还是开始核对时那个账号那份配置（#538）。
    * model 是写进去的默认型号：刷新菜单时就是原来那个，换掉下架型号时是换上去的那个。
+   * 换掉下架型号时 provider 也可能是没有菜单的 Grok，那就只是改型号。
    */
-  refreshPicker(provider: ModelPickerProvider, model: string, assertCurrent: () => void): Promise<void>
+  refreshPicker(provider: ProviderId, model: string, assertCurrent: () => void): Promise<void>
+  /**
+   * 服务状态文件里的型号表（service-status.ts 的 cliModels）。从不拒绝：读不到给 null，用程序自带的那份。
+   * 缺省 = 只用自带的。
+   */
+  modelHints?(): Promise<CliModelHints | null>
   /** 这个工具的这个新型号问没问过（记在应用设置里，重启、换账号都不再问）。缺省 = 不问。 */
   upgradeOffered?(provider: ProviderId, model: string): boolean
   /** 记下已经问过；记不下来就这次也不问，免得每次打开都弹。 */
@@ -62,7 +69,7 @@ export interface ToolModelCheckDependencies {
 
 export type ModelPickerProvider = 'claude' | 'codex'
 
-const pickerNames: Record<ModelPickerProvider, string> = { claude: 'Claude Code', codex: 'Codex' }
+const toolNames: Record<ProviderId, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', grok: 'Grok' }
 
 export function hasModelPicker(provider: ProviderId): provider is ModelPickerProvider {
   return provider === 'claude' || provider === 'codex'
@@ -71,6 +78,11 @@ export function hasModelPicker(provider: ProviderId): provider is ModelPickerPro
 const checkIntervalMs = 24 * 60 * 60 * 1000
 /** 核对没成（断网、接口慢）时隔一小时再试，免得每次打开都白等一遍超时。 */
 const failedRetryMs = 60 * 60 * 1000
+/**
+ * 打开前那次核对，模型列表回来以后最多再等型号表这么久：服务状态文件正好在读、又读得慢时，
+ * 不能让点「打开」的人多等一个超时。等不到就按程序自带的那份挑，只影响劝换成哪个型号。
+ */
+const launchHintsWaitMs = 1_000
 
 /**
  * 写配置时 Gemini 的 3.7 / 3.8 flash 会补成 `-high`（config-files.ts 的
@@ -120,6 +132,15 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     return withTimeout(deps.listModels(target.apiKey), deps.listTimeoutMs ?? 5_000)
   }
 
+  async function loadHints(): Promise<CliModelHints | null> {
+    if (!deps.modelHints) return null
+    try {
+      return await deps.modelHints()
+    } catch {
+      return null
+    }
+  }
+
   /**
    * 菜单对不上就悄悄重写。读不出、写不成都只记日志：明天第一次打开（或下次开机）再试。
    * beforeRefresh 在真要重写之前调（开机那次用来先备份），它抛错就不重写。
@@ -131,7 +152,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     guard: ReturnType<typeof currentGuard>,
     beforeRefresh?: () => void,
   ): Promise<'refreshed' | 'unchanged' | 'stale'> {
-    const name = pickerNames[provider]
+    const name = toolNames[provider]
     let outdated: boolean
     try {
       outdated = await deps.pickerOutdated(provider, models, target.model)
@@ -153,20 +174,21 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
   }
 
   /**
-   * 默认模型是两站都下架了的（cli-model-defaults.ts 的 retiredCliModels），当前账号也确实不再列它：
+   * 默认模型是两站都下架了的（cli-model-defaults.ts 的下架名单），当前账号也确实不再列它：
    * 开机那轮直接换成现在的默认，不等打开前那一问。从开始菜单、终端、VS Code 打开 Codex 的客户
    * 走不到那一问，每一轮都报「该模型无可用渠道」。别的「用不了」照旧留给打开前去问，那可能只是
    * 分组一时没配好。写入和刷新菜单是同一道（refreshPicker）：先备份，写一半回滚照旧。
    */
   async function replaceRetiredModel(
-    provider: ModelPickerProvider,
+    provider: ProviderId,
     target: ToolModelCheckTarget,
     models: readonly string[],
     guard: ReturnType<typeof currentGuard>,
+    hints: CliModelHints | null,
     beforeReplace?: () => void,
   ): Promise<boolean> {
-    if (!isRetiredCliModel(provider, target.model)) return false
-    const replacement = resolveDefaultCliModel(provider, models)
+    if (!isRetiredCliModel(provider, target.model, hints)) return false
+    const replacement = resolveDefaultCliModel(provider, models, undefined, hints)
     if (!replacement) return false
     if (!guard.stillCurrent()) {
       logStale(provider)
@@ -178,7 +200,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       if (deps.target(provider)?.model === replacement) return
       guard.assertCurrent()
     }
-    const name = pickerNames[provider]
+    const name = toolNames[provider]
     try {
       beforeReplace?.()
       await deps.refreshPicker(provider, replacement, assertCurrent)
@@ -190,8 +212,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     return true
   }
 
-  async function offerUpgrade(provider: ProviderId, model: string, models: readonly string[]): Promise<ToolModelCheck | null> {
-    const replacement = resolveCliModelUpgrade(provider, model, models)
+  async function offerUpgrade(provider: ProviderId, model: string, models: readonly string[], hints: CliModelHints | null): Promise<ToolModelCheck | null> {
+    const replacement = resolveCliModelUpgrade(provider, model, models, hints)
     if (!replacement || !deps.upgradeOffered || !deps.markUpgradeOffered) return null
     try {
       if (deps.upgradeOffered(provider, replacement)) return null
@@ -215,6 +237,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     }
     const now = deps.now()
     if ((nextCheckAt.get(key) ?? 0) > now) return { status: 'skipped' }
+    // 和模型列表一起等：型号表只搭服务状态文件那次读取的便车，不另发请求。
+    const pendingHints = loadHints()
     let models: string[]
     try {
       models = await listModels(target)
@@ -230,12 +254,14 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       return { status: 'skipped' }
     }
     nextCheckAt.set(key, now + checkIntervalMs)
+    const hints = await withTimeout(pendingHints, launchHintsWaitMs).catch(() => null)
+    if (!guard.stillCurrent()) return staleResult()
     if (!modelOffered(provider, target.model, models)) {
-      const replacement = resolveDefaultCliModel(provider, models)
+      const replacement = resolveDefaultCliModel(provider, models, undefined, hints)
       deps.log?.('warn', 'tool-models.unavailable', '工具里的默认模型当前账号已经用不了', { provider, model: target.model, replacement })
       return { status: 'unavailable', model: target.model, replacement }
     }
-    const upgrade = await offerUpgrade(provider, target.model, models)
+    const upgrade = await offerUpgrade(provider, target.model, models, hints)
     if (upgrade) return guard.stillCurrent() ? upgrade : staleResult()
     if (!hasModelPicker(provider)) return { status: 'ok', pickerRefreshed: false }
     const refreshed = await refreshPickerIfOutdated(provider, target, models, guard)
@@ -266,10 +292,39 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       return false
     }
     if (models.length === 0) return false
-    if (!modelOffered(provider, target.model, models)) return replaceRetiredModel(provider, target, models, guard, options.beforeRefresh)
+    if (!modelOffered(provider, target.model, models)) {
+      const hints = await loadHints()
+      return replaceRetiredModel(provider, target, models, guard, hints, options.beforeRefresh)
+    }
     const refreshed = await refreshPickerIfOutdated(provider, target, models, guard, options.beforeRefresh)
     if (refreshed === 'stale') logStale(provider)
     return refreshed === 'refreshed'
+  }
+
+  /**
+   * 开机那轮只换掉已下架的默认型号，不动菜单：给 Claude Code 和 Grok 用（Codex 走 syncPicker，菜单一起对）。
+   * 配置里的型号不在下架名单上就什么都不做、也不问中转；在名单上、而当前账号确实不再列它才换，
+   * 规矩同 replaceRetiredModel。返回是否真换了。
+   */
+  async function replaceRetired(provider: ProviderId, options: { beforeReplace?: () => void } = {}): Promise<boolean> {
+    const target = deps.target(provider)
+    if (!target) return false
+    const hints = await loadHints()
+    if (!isRetiredCliModel(provider, target.model, hints)) return false
+    const guard = currentGuard(provider, target.identity)
+    let models: string[]
+    try {
+      models = await listModels(target)
+    } catch (error) {
+      deps.log?.('warn', 'tool-models.retired-check-failed', '开机时没能核对当前账号能用的模型，已下架的默认模型这次没换', { provider, reason: errorText(error) })
+      return false
+    }
+    if (!guard.stillCurrent()) {
+      logStale(provider)
+      return false
+    }
+    if (models.length === 0 || modelOffered(provider, target.model, models)) return false
+    return replaceRetiredModel(provider, target, models, guard, hints, options.beforeReplace)
   }
 
   /**
@@ -282,5 +337,5 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
     }
   }
 
-  return { check, syncPicker, forget }
+  return { check, syncPicker, replaceRetired, forget }
 }

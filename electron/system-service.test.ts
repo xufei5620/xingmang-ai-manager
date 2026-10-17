@@ -28,12 +28,14 @@ import {
   claudeForeignModelEnvKeys,
   codexAuthSnapshotPaths,
   codexConfigSnapshotPaths,
+  defaultCodexRelayProvider,
   inspectProviderConfig,
   providerConfigPaths,
   saveProviderConfig,
   type NativeConfigInspection,
 } from './config-files'
 import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } from './codex-model-catalog'
+import type { CliModelHints } from './cli-model-defaults'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
@@ -791,7 +793,7 @@ describe('createSystemService', () => {
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
   })
 
-  function codexCatalogFixture() {
+  function codexCatalogFixture(cliModelHints?: () => Promise<CliModelHints | null>) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-catalog-save-'))
     temporaryDirectories.push(root)
     const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
@@ -818,6 +820,7 @@ describe('createSystemService', () => {
       inspectCodexDesktopForModelCatalog: desktopProbe,
       inspectRunningToolsForTemplateFill: running,
       getExternalClientAccountId: () => session.account,
+      ...(cliModelHints ? { cliModelHints } : {}),
     })
     function installCodexCli(version: string): void {
       cli.installation = {
@@ -1012,6 +1015,27 @@ describe('createSystemService', () => {
     expect(backups).toEqual([{ provider: 'codex', model: 'gpt-5.5' }])
   })
 
+  it('swaps a Codex model the published table retires for its published default, and the WebSocket switch follows the model', async () => {
+    const f = codexCatalogFixture(async () => ({ codex: { default: 'deepseek-v4-flash', retired: ['gpt-6.1-sol'] } }))
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    function configured(): Record<string, unknown> {
+      return asTomlRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8')))
+    }
+    function websockets(): unknown {
+      return asTomlRecord(asTomlRecord(configured().model_providers)[defaultCodexRelayProvider]).supports_websockets
+    }
+    expect(websockets()).toBe(true)
+    f.account.models = ['deepseek-v4-flash', 'gpt-6-astra']
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(configured().model).toBe('deepseek-v4-flash')
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(websockets()).toBe(false)
+  })
+
   it('leaves a retired gpt-5.5 alone at startup in a Codex config the account did not write', async () => {
     const f = codexCatalogFixture()
     await f.save('gpt-5.5')
@@ -1043,6 +1067,91 @@ describe('createSystemService', () => {
     expect(await service.checkToolModels!('claude')).toEqual({ status: 'ok', pickerRefreshed: true })
 
     expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  function retiredClaudeFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-retired-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5'] }
+    const fetchModels = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchModels)
+    const running = vi.fn(async () => ({ running: [] as ProviderId[], unknown: [] as ProviderId[], codexDesktopRunning: false as boolean | null, canRestartCodexDesktop: false }))
+    const hints = { value: { claude: { default: 'claude-opus-5-5', retired: ['claude-sonnet-5'] } } as CliModelHints | null }
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      inspectRunningToolsForTemplateFill: running,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+      cliModelHints: async () => hints.value,
+    })
+    function configuredModel(): unknown {
+      return (JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as Record<string, unknown>).model
+    }
+    return { account, fetchModels, running, hints, service, configuredModel }
+  }
+
+  it('swaps a Claude Code model the published table retires at startup once it is closed, backing the config up first', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    // 两站都下架了这个型号：模型列表不再列它。
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    const backups: Array<{ provider: ProviderId; model: unknown }> = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, model: f.configuredModel() }) })).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(f.configuredModel()).toBe('claude-opus-5-5')
+      expect(f.service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'claude', model: 'claude-sonnet-5' }])
+    expect(f.running).toHaveBeenCalledWith(['claude'])
+  })
+
+  it('does not look at running tools or ask the relay at startup when no configured model is retired', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    const requests = f.fetchModels.mock.calls.length
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(f.running).not.toHaveBeenCalled()
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+  })
+
+  it('leaves a retired Claude Code model alone at startup in a config the account did not write', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false)
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(f.running).not.toHaveBeenCalled()
+  })
+
+  it('owes the swap while Claude Code may be open and makes it on a later try once it is closed', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    f.running.mockResolvedValue({ running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [], pending: ['claude'] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(backup).not.toHaveBeenCalled()
+
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+    await vi.waitFor(() => expect(f.configuredModel()).toBe('claude-opus-5-5'), backgroundStartupWait)
+    expect(backup).toHaveBeenCalledWith('claude')
   })
 
   it('leaves the catalog for a later try while Codex may still be open, and says it is still owed', async () => {

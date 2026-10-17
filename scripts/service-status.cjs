@@ -15,6 +15,14 @@ const ACCOUNT_GROUP_ROLES = ['claude', 'codex', 'grok', 'image']
 const ACCOUNT_GROUP_LABELS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', image: '画图' }
 const MAX_GROUP_NAME_LENGTH = 128
 const MAX_GROUP_CANDIDATES = 8
+// 型号表的工具与写法与客户端 electron/cli-model-defaults.ts（isCliModelName）、每样最多几个与
+// service-status.ts 的 readCliModels 一致。Gemini CLI 已下线，不收。
+const CLI_MODEL_TOOLS = ['claude', 'codex', 'grok']
+const CLI_MODEL_TOOL_LABELS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok' }
+const CLI_MODEL_FIELDS = ['default', 'previous', 'retired']
+const CLI_MODEL_NAME = /^[A-Za-z0-9][\w.:/@+-]{0,127}$/
+const MAX_PREVIOUS_CLI_MODELS = 8
+const MAX_RETIRED_CLI_MODELS = 32
 
 class StatusInputError extends Error {}
 
@@ -180,6 +188,83 @@ function applyAccountGroups(current, input) {
   return Object.keys(next).length ? next : undefined
 }
 
+function cliModelName(tool, value) {
+  const name = value.trim()
+  if (!name) throw new StatusInputError(`${tool} 那一项里有空的型号名字（两个 | 挨着了？）`)
+  if (!CLI_MODEL_NAME.test(name)) throw new StatusInputError(`型号名字只能用字母、数字和 . _ - : / @ +，最多 128 个字：${name}`)
+  return name
+}
+
+/**
+ * 型号表：「codex.default=gpt-7; codex.previous=gpt-6-astra; codex.retired=gpt-5.5|gpt-6-luna」。
+ * default 是新配的工具用哪个型号，previous 是上一代默认（账号还没上新默认时先用它，配置还是它的打开前
+ * 问一次要不要换），retired 是两个站都下架了的（开机替客户换成默认）。几个名字用 | 隔开，写到的那一样
+ * 整样换掉，没写到的照线上保留；「codex.retired=none」去掉一样，「codex=none」去掉一个工具，整个写 none 清空。
+ * 名字写错、彼此矛盾（默认又写进下架）直接报错——客户端遇到会悄悄跳过，发布者得当场知道。
+ */
+function applyCliModels(current, input) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return current
+  if (raw.toLowerCase() === 'none') return undefined
+  const next = {}
+  if (isRecord(current)) {
+    for (const tool of CLI_MODEL_TOOLS) {
+      if (!isRecord(current[tool])) continue
+      const entry = {}
+      if (typeof current[tool].default === 'string') entry.default = current[tool].default
+      for (const field of ['previous', 'retired']) {
+        if (Array.isArray(current[tool][field])) entry[field] = current[tool][field].filter((name) => typeof name === 'string')
+      }
+      next[tool] = entry
+    }
+  }
+  for (const segment of raw.split(/[;；\n]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    const match = segment.match(/^([A-Za-z]+)(?:\s*[.。]\s*([A-Za-z]+))?\s*[=＝]\s*(.*)$/)
+    if (!match) throw new StatusInputError(`型号表要写成「codex.default=gpt-7」，几样之间用分号隔开：${segment}`)
+    const tool = match[1].toLowerCase()
+    if (!CLI_MODEL_TOOLS.includes(tool)) throw new StatusInputError(`型号表只认 ${CLI_MODEL_TOOLS.join(' / ')}：${match[1]}`)
+    const value = match[3].trim()
+    if (match[2] === undefined) {
+      if (value.toLowerCase() !== 'none') throw new StatusInputError(`要写明改哪一样（${CLI_MODEL_FIELDS.join(' / ')}），例如「${tool}.default=…」：${segment}`)
+      delete next[tool]
+      continue
+    }
+    const field = match[2].toLowerCase()
+    if (!CLI_MODEL_FIELDS.includes(field)) throw new StatusInputError(`型号表每个工具只有 ${CLI_MODEL_FIELDS.join(' / ')} 三样：${match[2]}`)
+    const entry = next[tool] ?? {}
+    next[tool] = entry
+    if (value.toLowerCase() === 'none') {
+      delete entry[field]
+      continue
+    }
+    const names = [...new Set(value.split(/[|｜]/).map((name) => cliModelName(tool, name)))]
+    if (field === 'default') {
+      if (names.length !== 1) throw new StatusInputError(`${tool}.default 只能写一个型号：${value}`)
+      entry.default = names[0]
+      continue
+    }
+    const limit = field === 'previous' ? MAX_PREVIOUS_CLI_MODELS : MAX_RETIRED_CLI_MODELS
+    if (names.length > limit) throw new StatusInputError(`${tool}.${field} 最多写 ${limit} 个型号`)
+    entry[field] = names
+  }
+  for (const tool of Object.keys(next)) {
+    const entry = next[tool]
+    for (const field of ['previous', 'retired']) {
+      if (Array.isArray(entry[field]) && entry[field].length === 0) delete entry[field]
+    }
+    if (Object.keys(entry).length === 0) {
+      delete next[tool]
+      continue
+    }
+    const retired = entry.retired ?? []
+    if (entry.default && retired.includes(entry.default)) throw new StatusInputError(`${tool} 的默认型号 ${entry.default} 同时写在下架名单里，客户端会不认这个默认`)
+    if (entry.default && (entry.previous ?? []).includes(entry.default)) throw new StatusInputError(`${tool} 的默认型号 ${entry.default} 不用再写进上一代`)
+    const both = (entry.previous ?? []).filter((name) => retired.includes(name))
+    if (both.length) throw new StatusInputError(`${tool} 的 ${both.join('、')} 既写在上一代又写在下架名单里，二选一`)
+  }
+  return Object.keys(next).length ? next : undefined
+}
+
 /**
  * maintenance: 'on' | 'off' | 'keep'。message / until 只在打开维护时有意义；
  * 关掉维护时整段删掉，下次打开从干净的一段开始。
@@ -218,6 +303,9 @@ function applyStatusChanges(current, changes, now = new Date()) {
   const accountGroups = applyAccountGroups(next.accountGroups, changes['account-groups'])
   if (accountGroups === undefined) delete next.accountGroups
   else next.accountGroups = accountGroups
+  const cliModels = applyCliModels(next.cliModels, changes['cli-models'])
+  if (cliModels === undefined) delete next.cliModels
+  else next.cliModels = cliModels
   next.updatedAt = now.toISOString()
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
@@ -239,6 +327,20 @@ function describeAccountGroups(groups) {
   return `分组对照：${parts.join('；')}（只有 0.2.19 及以后的客户端认）`
 }
 
+function describeCliModels(models) {
+  const tools = isRecord(models) ? CLI_MODEL_TOOLS.filter((tool) => isRecord(models[tool])) : []
+  if (tools.length === 0) return '型号表：无（客户端用程序自带的）'
+  const parts = tools.map((tool) => {
+    const entry = models[tool]
+    const fields = []
+    if (typeof entry.default === 'string') fields.push(`默认 ${entry.default}`)
+    if (Array.isArray(entry.previous) && entry.previous.length) fields.push(`上一代 ${entry.previous.join('、')}`)
+    if (Array.isArray(entry.retired) && entry.retired.length) fields.push(`已下架 ${entry.retired.join('、')}`)
+    return `${CLI_MODEL_TOOL_LABELS[tool]} ${fields.join('，')}`
+  })
+  return `型号表：${parts.join('；')}（没写的照程序自带的，只有 0.2.20 及以后的客户端认）`
+}
+
 function describeStatus(status) {
   const lines = []
   const maintenance = isRecord(status.maintenance) && status.maintenance.active === true ? status.maintenance : null
@@ -247,6 +349,7 @@ function describeStatus(status) {
   lines.push(describeRollout(status.rollout))
   lines.push(typeof status.minimumVersion === 'string' ? `最低版本：${status.minimumVersion}（更低的必须先更新，只有 0.2.11 及以后的客户端认）` : '最低版本：无')
   lines.push(status.toolRouteRewrite === 'merge' ? '换线路时：整份重写工具配置（老办法，只有 0.2.18 及以后的客户端认）' : '换线路时：只改工具配置里的地址')
+  lines.push(describeCliModels(status.cliModels))
   lines.push(describeAccountGroups(status.accountGroups))
   return lines
 }
@@ -266,7 +369,7 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …] [--cli-models …]')
   // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
   const next = applyStatusChanges(parseCurrentStatus(currentText), options)
@@ -283,4 +386,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { StatusInputError, applyAccountGroups, applyBadVersions, applyMinimumVersion, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }
+module.exports = { StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyMinimumVersion, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }

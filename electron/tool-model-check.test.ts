@@ -392,4 +392,111 @@ describe('tool model check', () => {
       await expect(checker.check('claude')).resolves.toEqual({ status: 'skipped' })
     })
   })
+
+  describe('published model table', () => {
+    it('suggests the published default when the configured model is gone, and offers it to configs on a previous default', async () => {
+      const gone = setup({
+        listModels: vi.fn(async () => ['gpt-6-astra', 'gpt-7']),
+        modelHints: vi.fn(async () => ({ codex: { default: 'gpt-7' } })),
+      }, { codex: { apiKey: 'sk', model: 'gpt-5-retired', identity: 'x' } })
+      await expect(gone.checker.check('codex')).resolves.toEqual({ status: 'unavailable', model: 'gpt-5-retired', replacement: 'gpt-7' })
+
+      const previous = setup({
+        listModels: vi.fn(async () => ['gpt-6-astra', 'gpt-7']),
+        modelHints: vi.fn(async () => ({ codex: { default: 'gpt-7' } })),
+        upgradeOffered: () => false,
+        markUpgradeOffered: vi.fn(async () => undefined),
+      }, { codex: { apiKey: 'sk', model: 'gpt-6-astra', identity: 'x' } })
+      await expect(previous.checker.check('codex')).resolves.toEqual({ status: 'upgrade', model: 'gpt-6-astra', replacement: 'gpt-7' })
+    })
+
+    it('falls back to the bundled table when the published one cannot be read', async () => {
+      const { checker } = setup({
+        listModels: vi.fn(async () => ['gpt-6-astra', 'gpt-7']),
+        modelHints: vi.fn(async () => { throw new Error('offline') }),
+      }, { codex: { apiKey: 'sk', model: 'gpt-5-retired', identity: 'x' } })
+      await expect(checker.check('codex')).resolves.toEqual({ status: 'unavailable', model: 'gpt-5-retired', replacement: 'gpt-6-astra' })
+    })
+
+    it('does not hold a launch for long on a slow published table, and suggests from the bundled one instead', async () => {
+      vi.useFakeTimers()
+      try {
+        const { checker } = setup({
+          listModels: vi.fn(async () => ['gpt-6-astra', 'gpt-7']),
+          modelHints: vi.fn(() => new Promise<never>(() => undefined)),
+        }, { codex: { apiKey: 'sk', model: 'gpt-5-retired', identity: 'x' } })
+        const pending = checker.check('codex')
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expect(pending).resolves.toEqual({ status: 'unavailable', model: 'gpt-5-retired', replacement: 'gpt-6-astra' })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('swaps a model the published table retires at startup, through the same backed-up write', async () => {
+      const order: string[] = []
+      const { deps, checker } = setup({
+        listModels: vi.fn(async () => ['gpt-6-astra', 'gpt-7']),
+        modelHints: vi.fn(async () => ({ codex: { default: 'gpt-7', retired: ['gpt-6-luna'] } })),
+        refreshPicker: vi.fn(async () => { order.push('write') }),
+      }, { codex: { apiKey: 'sk', model: 'gpt-6-luna', identity: 'x' } })
+      await expect(checker.syncPicker('codex', { beforeRefresh: () => { order.push('backup') } })).resolves.toBe(true)
+      expect(order).toEqual(['backup', 'write'])
+      expect(deps.refreshPicker).toHaveBeenCalledWith('codex', 'gpt-7', expect.any(Function))
+    })
+
+    it('swaps a retired Claude Code or Grok model at startup without touching a menu', async () => {
+      const order: string[] = []
+      const { deps, checker } = setup({
+        listModels: vi.fn(async () => ['grok-4.7', 'grok-code-fast']),
+        modelHints: vi.fn(async () => ({ grok: { default: 'grok-4.7', retired: ['grok-4.6'] } })),
+        refreshPicker: vi.fn(async () => { order.push('write') }),
+      }, { grok: { apiKey: 'sk', model: 'grok-4.6', identity: 'x' } })
+      await expect(checker.replaceRetired('grok', { beforeReplace: () => { order.push('backup') } })).resolves.toBe(true)
+      expect(order).toEqual(['backup', 'write'])
+      expect(deps.refreshPicker).toHaveBeenCalledWith('grok', 'grok-4.7', expect.any(Function))
+      expect(deps.pickerOutdated).not.toHaveBeenCalled()
+      expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.retired-replaced', expect.stringContaining('Grok'), { provider: 'grok', model: 'grok-4.6', replacement: 'grok-4.7' })
+    })
+
+    it('leaves a model alone at startup unless it is retired and the account no longer lists it', async () => {
+      const notRetired = setup({ modelHints: vi.fn(async () => null) }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
+      await expect(notRetired.checker.replaceRetired('claude')).resolves.toBe(false)
+      expect(notRetired.deps.listModels).not.toHaveBeenCalled()
+
+      const stillListed = setup({
+        listModels: vi.fn(async () => ['claude-opus-5', 'claude-opus-5-5']),
+        modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
+      }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
+      await expect(stillListed.checker.replaceRetired('claude')).resolves.toBe(false)
+      expect(stillListed.deps.refreshPicker).not.toHaveBeenCalled()
+
+      const offline = setup({
+        listModels: vi.fn(async () => { throw new Error('offline') }),
+        modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
+      }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
+      await expect(offline.checker.replaceRetired('claude')).resolves.toBe(false)
+      expect(offline.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(offline.deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-check-failed', expect.any(String), { provider: 'claude', reason: 'offline' })
+
+      const notOurs = setup({ modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })) }, { claude: null })
+      await expect(notOurs.checker.replaceRetired('claude')).resolves.toBe(false)
+      expect(notOurs.deps.listModels).not.toHaveBeenCalled()
+    })
+
+    it('does not swap at startup for an account that took over while the list was loading', async () => {
+      let finish!: (models: string[]) => void
+      const target = { apiKey: 'sk-account-a', model: 'claude-opus-5', identity: 'A' }
+      const { deps, checker } = setup({
+        listModels: vi.fn(() => new Promise<string[]>((resolve) => { finish = resolve })),
+        modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
+      }, { claude: target })
+      const pending = checker.replaceRetired('claude')
+      await vi.waitFor(() => expect(deps.listModels).toHaveBeenCalled())
+      target.identity = 'B'
+      finish(['claude-opus-5-5'])
+      await expect(pending).resolves.toBe(false)
+      expect(deps.refreshPicker).not.toHaveBeenCalled()
+    })
+  })
 })

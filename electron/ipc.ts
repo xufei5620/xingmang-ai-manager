@@ -132,6 +132,7 @@ import { normalizeRealmLoginIdentifier } from './realm-account-vault'
 import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
 import { loadAccountGroupHints, loadManagedCliGroups, markRecommendedChatGroup, type AccountGroupHints } from './managed-cli-groups'
+import type { CliModelHints } from './cli-model-defaults'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -312,6 +313,9 @@ export interface IpcRegistrationOptions {
   // 服务状态文件里的分组对照（service-status.ts 的 accountGroups）：签 Key、画图技能、AI 对话默认分组
   // 先看它，站上改了分组本名也跟得上。缺省 = 不看对照，照旧按写死的名字和工具专属词认。
   accountGroupHints?: () => Promise<AccountGroupHints | null>
+  // 服务状态文件里的型号表（service-status.ts 的 cliModels）：登录后签 Key、写配置时挑默认型号先看它。
+  // 缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
+  cliModelHints?: () => Promise<CliModelHints | null>
   // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
   // 换新时照抄。缺省用内存版：测试与预览不落盘。
   keyReplacements?: ManagedKeyReplacementStore
@@ -2028,6 +2032,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
+    ...(options.cliModelHints ? { getCliModelHints: options.cliModelHints } : {}),
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()

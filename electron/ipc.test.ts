@@ -7519,6 +7519,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
     })
 
+    it('picks the default model from the published model table', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-6-astra', 'gpt-7'])
+      const cliModelHints = vi.fn(async () => ({ codex: { default: 'gpt-7' } }))
+      register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { cliModelHints })
+
+      await electronMocks.handlers.get('account:configure-managed-clis')!(trustedEvent(), { providers: ['codex'], preferredModels: {} })
+
+      expect(cliModelHints).toHaveBeenCalled()
+      expect(service.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ provider: 'codex', model: 'gpt-7' }), false, expect.any(Function), { source: 'account', automatic: true })
+    })
+
     it('keeps a restorable backup before a managed-key reset and refuses to reset without one', async () => {
       const service = serviceStub()
       const accountService = accountServiceStub()
