@@ -231,7 +231,7 @@ export interface IpcRegistrationOptions {
   // The server-owned payment form stays in the main process. IPC receives
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
-  paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
+  paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'close' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
   // Resolves once main.ts's startup session-restore attempt (see
   // account-session-store.ts's restoreAccountSessionOnStartup) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
@@ -3547,7 +3547,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     })
   })
   registerTrustedHandler('account:close-payment-window', () => {
-    options.paymentWindow.destroy()
+    // 和点支付窗口右上角的 × 一样：付过款的订单在后台接着确认到账。
+    // destroy() 会把这份确认一起停掉，只留给换账号、退出这类场合。
+    options.paymentWindow.close()
   })
   registerTrustedHandler('account:list-topup-orders', (_event, input: unknown) => (
     accountService.listTopupOrders(parseAccountTopupOrdersQuery(input))

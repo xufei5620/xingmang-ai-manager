@@ -435,6 +435,10 @@ describe('v2 business boundaries', () => {
     expect(errorMessage(new Error('request failed with 401 unauthorized'))).toContain(
       '登录已过期',
     )
+    // #1095：Windows 上 .NET 的文件拒绝访问不是登录过期。
+    expect(
+      errorMessage(new Error("System.UnauthorizedAccessException: Access to the path 'C:\\Users\\someone\\.codex\\config.toml' is denied.")),
+    ).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
       '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。',
