@@ -3,6 +3,7 @@ import {
   createRelayLineFetch,
   createRelayObservedFetch,
   relayLineFailureAnswer,
+  relayLineAnswerWaitMs,
   relayLineFailureReason,
   reportedRelayLineFailure,
   type RelayLineRouter,
@@ -14,9 +15,14 @@ function fakeRouter(line: RelayEndpointId = 'direct', automatic = true) {
   const state = { line, automatic }
   const listeners = new Set<(siteId: RelayRouteSiteId) => void>()
   const reports: Array<[RelayRouteSiteId, string]> = []
+  // 报的是哪条线路上的失败，和 reports 一一对应。
+  const reportedLines: RelayEndpointId[] = []
   const router: RelayLineRouter = {
     route: () => ({ line: state.line, automatic: state.automatic }),
-    reportPreferredFailure: (siteId, reason) => { reports.push([siteId, reason]) },
+    reportFailure: (siteId, reportedLine, reason) => {
+      reports.push([siteId, reason])
+      reportedLines.push(reportedLine)
+    },
     subscribe: (listener) => {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
@@ -26,7 +32,7 @@ function fakeRouter(line: RelayEndpointId = 'direct', automatic = true) {
     state.line = next
     for (const listener of [...listeners]) listener(siteId)
   }
-  return { router, reports, listeners, moveTo }
+  return { router, reports, reportedLines, listeners, moveTo }
 }
 
 function networkError(code: string): Error {
@@ -47,6 +53,10 @@ function opaqueRedirect(): Response {
   return response
 }
 
+function portalRedirect(): Response {
+  return new Response(null, { status: 302, headers: { location: 'http://portal.example/login' } })
+}
+
 // 回了话、正文读到一半断了，跟 AI 回复写到一半连接断了一样。
 function cutReply(onPull?: () => void): Response {
   let sent = false
@@ -59,6 +69,26 @@ function cutReply(onPull?: () => void): Response {
     },
   })
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+
+// 每条线路上的请求都挂着，测试按主机名放回应或失败；被掐掉的记下主机名。
+function hangingLines() {
+  const pending = new Map<string, { resolve: (response: Response) => void; reject: (error: unknown) => void }>()
+  const aborted: string[] = []
+  const base = vi.fn<typeof fetch>((input, init) => new Promise<Response>((resolve, reject) => {
+    const host = new URL(String(input)).host
+    pending.set(host, { resolve, reject })
+    init?.signal?.addEventListener('abort', () => {
+      aborted.push(host)
+      reject(new DOMException('aborted', 'AbortError'))
+    })
+  }))
+  return {
+    base,
+    aborted,
+    answer(host: string, response: Response) { pending.get(host)?.resolve(response) },
+    fail(host: string, error: unknown) { pending.get(host)?.reject(error) },
+  }
 }
 
 function sentUrls(base: ReturnType<typeof vi.fn>): string[] {
@@ -143,6 +173,8 @@ describe('createRelayLineFetch', () => {
       { answer: () => page(403), fellBack: true, reported: 'intercepted' },
       { answer: () => page(500), fellBack: true, reported: 'intercepted' },
       { answer: opaqueRedirect, fellBack: true, reported: 'intercepted' },
+      // main.ts 给每个 Chromium 会话包的 manual-redirect-fetch.ts 把跳转原样交回：不带正文的 3xx（#1064）。
+      { answer: portalRedirect, fellBack: true, reported: 'intercepted' },
       { answer: () => json(404, { error: 'Invalid URL' }), fellBack: false, reported: null },
       { answer: () => json(503, { error: 'busy' }), fellBack: false, reported: null },
       { answer: () => json(401), fellBack: false, reported: null },
@@ -193,6 +225,10 @@ describe('createRelayLineFetch', () => {
     expect(intercepted.outcome).toBe(200)
     expect(intercepted.sent).toHaveLength(1)
     expect(intercepted.reports).toEqual([['solov', 'intercepted']])
+    const redirected = await post(portalRedirect())
+    expect(redirected.outcome).toBe(302)
+    expect(redirected.sent).toHaveLength(1)
+    expect(redirected.reports).toEqual([['solov', 'intercepted']])
     const blocked = await post(page(404))
     expect(blocked.outcome).toBe(200)
     expect(blocked.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
@@ -393,20 +429,89 @@ describe('createRelayLineFetch', () => {
     expect(listeners.size).toBe(0)
   })
 
-  it('lets a slow read finish on direct without telling the line check', async () => {
+  // 被丢包的线路连回应头都等不来，Chromium 自己要等二十秒以上才报超时（#1053）：只读的等满
+  // relayLineAnswerWaitMs 就在另一条上也发一次，走着的这一次照样等着，谁先回了能用的话用谁。
+  it('also sends a read that has had no answer for a while on the other line, and keeps a slow answer on the current line', async () => {
     vi.useFakeTimers()
     const { router, reports } = fakeRouter()
-    let answer: (response: Response) => void = () => undefined
-    const base = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { answer = resolve }))
-    const pending = createRelayLineFetch(router, base, { abortMeansNoAnswer: true })('https://xm.solov.cc/api/user/self')
+    const log = vi.fn()
+    const lines = hangingLines()
+    const pending = createRelayLineFetch(router, lines.base, { log, abortMeansNoAnswer: true })('https://xm.solov.cc/api/log/self')
 
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(reports).toEqual([])
-    answer(json(200))
+    await vi.advanceTimersByTimeAsync(relayLineAnswerWaitMs - 1)
+    expect(lines.base).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sentUrls(lines.base)).toEqual(['https://xm-direct.solov.cc/api/log/self', 'https://xm.solov.cc/api/log/self'])
+    expect(log).toHaveBeenCalledWith('info', 'relay.line.hedge', expect.any(String),
+      { siteId: 'solov', from: 'direct', to: 'primary', waitMs: relayLineAnswerWaitMs, method: 'GET', path: '/api/log/self' })
 
-    expect((await pending).status).toBe(200)
-    expect(base).toHaveBeenCalledTimes(1)
+    // 服务端查得慢（用量明细）：走着的直连过了一阵照样回来，用它，另一条掐掉，也不报给线路那边。
+    await vi.advanceTimersByTimeAsync(30_000)
+    lines.answer('xm-direct.solov.cc', json(200, { data: 'direct' }))
+    const response = await pending
+    expect(await response.json()).toEqual({ data: 'direct' })
+    expect(requestDiagnosticsOf(response)).toEqual({ line: 'direct' })
+    expect(lines.aborted).toEqual(['xm.solov.cc'])
     expect(reports).toEqual([])
+  })
+
+  it('takes the other line when it answers first and tells the line check the current line never answered', async () => {
+    vi.useFakeTimers()
+    const { router, reports, reportedLines, listeners } = fakeRouter()
+    const lines = hangingLines()
+    const pending = createRelayLineFetch(router, lines.base)('https://xm.solov.cc/api/user/self')
+    await vi.advanceTimersByTimeAsync(relayLineAnswerWaitMs)
+    lines.answer('xm.solov.cc', json(200, { data: 'primary' }))
+    const response = await pending
+    expect(await response.json()).toEqual({ data: 'primary' })
+    expect(requestDiagnosticsOf(response)).toEqual({ line: 'primary' })
+    expect(lines.aborted).toEqual(['xm-direct.solov.cc'])
+    expect(reports).toEqual([['solov', 'no-answer']])
+    expect(reportedLines).toEqual(['direct'])
+    expect(listeners.size).toBe(0)
+  })
+
+  it('keeps waiting on the current line when the other one answers with a page, and hands that page back only if the current line fails too', async () => {
+    vi.useFakeTimers()
+    const waiting = fakeRouter()
+    const answered = hangingLines()
+    const kept = createRelayLineFetch(waiting.router, answered.base)('https://xm.solov.cc/api/user/self')
+    await vi.advanceTimersByTimeAsync(relayLineAnswerWaitMs)
+    answered.answer('xm.solov.cc', page(502))
+    await vi.advanceTimersByTimeAsync(0)
+    answered.answer('xm-direct.solov.cc', json(200))
+    expect((await kept).status).toBe(200)
+    expect(waiting.reports).toEqual([])
+
+    const failing = fakeRouter()
+    const both = hangingLines()
+    const lost = createRelayLineFetch(failing.router, both.base)('https://xm.solov.cc/api/user/self')
+    await vi.advanceTimersByTimeAsync(relayLineAnswerWaitMs)
+    both.answer('xm.solov.cc', page(502))
+    await vi.advanceTimersByTimeAsync(0)
+    both.fail('xm-direct.solov.cc', networkError('ERR_CONNECTION_RESET'))
+    const response = await lost
+    expect(response.status).toBe(502)
+    expect(requestDiagnosticsOf(response)).toEqual({ line: 'primary' })
+    expect(failing.reports).toEqual([['solov', 'ERR_CONNECTION_RESET']])
+    expect(both.base).toHaveBeenCalledTimes(2)
+  })
+
+  it('never sends a write or a mail request twice while it waits', async () => {
+    vi.useFakeTimers()
+    for (const [url, init] of [
+      ['https://xm.solov.cc/api/user/login', { method: 'POST', body: '{}' }],
+      ['https://xm.solov.cc/api/verification?email=a%40example.test', undefined],
+    ] as const) {
+      const { router, reports } = fakeRouter()
+      const lines = hangingLines()
+      const pending = createRelayLineFetch(router, lines.base)(url, init)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(lines.base).toHaveBeenCalledTimes(1)
+      lines.answer('xm-direct.solov.cc', json(200))
+      expect((await pending).status).toBe(200)
+      expect(reports).toEqual([])
+    }
   })
 
   // 客户说登不上时，日志要记得出这一次实际走的哪条线路（三线路 7b）：退回默认线路重发的记默认线路。
@@ -447,8 +552,8 @@ describe('createRelayLineFetch', () => {
   })
 
   // 历史账号先走默认线路（api 的 CF），直连备用（yoyo 10-14）：两条对调。
-  it('resends a historical read once on direct when the default line fails, and leaves it alone once it is on direct', async () => {
-    const { router, reports } = fakeRouter('primary')
+  it('resends a historical read on direct when the default line fails, and back on the default line once direct fails too', async () => {
+    const { router, reports, reportedLines } = fakeRouter('primary')
     const log = vi.fn()
     const base = vi.fn<typeof fetch>()
       .mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED'))
@@ -459,15 +564,41 @@ describe('createRelayLineFetch', () => {
     expect(sentUrls(base)).toEqual(['https://api.solov.cc/api/v1/auth/me', 'https://api-direct.solov.cc/api/v1/auth/me'])
     expect(requestDiagnosticsOf(response)).toEqual({ line: 'direct' })
     expect(reports).toEqual([['solov-api', 'ERR_NAME_NOT_RESOLVED']])
+    expect(reportedLines).toEqual(['primary'])
     expect(log).toHaveBeenCalledWith('info', 'relay.line.fallback', expect.any(String),
       { siteId: 'solov-api', from: 'primary', to: 'direct', reason: 'ERR_NAME_NOT_RESOLVED', method: 'GET', path: '/api/v1/auth/me' })
 
-    // 已经退到直连：直连上没走通不再换回默认线路，也不报。
+    // 已经退到直连、直连自己也坏了（#1053）：换回默认线路重发，报的是直连。
     const onDirect = fakeRouter('direct')
-    const directBase = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED'))
-    await expect(createRelayLineFetch(onDirect.router, directBase)('https://api.solov.cc/api/v1/auth/me')).rejects.toThrow('fetch failed')
-    expect(sentUrls(directBase)).toEqual(['https://api-direct.solov.cc/api/v1/auth/me'])
-    expect(onDirect.reports).toEqual([])
+    const directBase = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED'))
+      .mockResolvedValueOnce(json(200))
+    const resent = await createRelayLineFetch(onDirect.router, directBase)('https://api.solov.cc/api/v1/auth/me')
+    expect(resent.status).toBe(200)
+    expect(sentUrls(directBase)).toEqual(['https://api-direct.solov.cc/api/v1/auth/me', 'https://api.solov.cc/api/v1/auth/me'])
+    expect(requestDiagnosticsOf(resent)).toEqual({ line: 'primary' })
+    expect(onDirect.reports).toEqual([['solov-api', 'ERR_NAME_NOT_RESOLVED']])
+    expect(onDirect.reportedLines).toEqual(['direct'])
+  })
+
+  // 星芒账号退到默认线路以后，换了网络常常是默认线路先坏（#1053）：只读的换回直连重发，报的是默认线路。
+  it('resends an xm read on direct when the default line it fell back to fails', async () => {
+    const { router, reports, reportedLines } = fakeRouter('primary')
+    const base = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_CONNECTION_REFUSED'))
+      .mockResolvedValueOnce(json(200))
+    const response = await createRelayLineFetch(router, base)('https://xm.solov.cc/api/user/self')
+    expect(response.status).toBe(200)
+    expect(sentUrls(base)).toEqual(['https://xm.solov.cc/api/user/self', 'https://xm-direct.solov.cc/api/user/self'])
+    expect(requestDiagnosticsOf(response)).toEqual({ line: 'direct' })
+    expect(reports).toEqual([['solov', 'ERR_CONNECTION_REFUSED']])
+    expect(reportedLines).toEqual(['primary'])
+
+    // 白名单只在直连上有：默认线路回的网页 404 照原样交回去，不换线路。
+    const notFound = fakeRouter('primary')
+    const notFoundBase = vi.fn<typeof fetch>().mockResolvedValueOnce(page(404))
+    expect((await createRelayLineFetch(notFound.router, notFoundBase)('https://xm.solov.cc/api/status')).status).toBe(404)
+    expect(notFoundBase).toHaveBeenCalledTimes(1)
   })
 
   it('falls back from the historical default line for gateway and intercepted pages, but hands a page-shaped 404 back since only direct has an allowlist', async () => {
@@ -527,11 +658,11 @@ describe('createRelayLineFetch', () => {
     expect(pinnedBase).toHaveBeenCalledTimes(1)
     expect(pinned.reports).toEqual([])
 
-    const onPrimary = fakeRouter('primary')
+    const pinnedPrimary = fakeRouter('primary', false)
     const primaryBase = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_NAME_NOT_RESOLVED'))
-    await expect(createRelayLineFetch(onPrimary.router, primaryBase)('https://xm-direct.solov.cc/api/status')).rejects.toThrow('fetch failed')
+    await expect(createRelayLineFetch(pinnedPrimary.router, primaryBase)('https://xm-direct.solov.cc/api/status')).rejects.toThrow('fetch failed')
     expect(sentUrls(primaryBase)).toEqual(['https://xm.solov.cc/api/status'])
-    expect(onPrimary.reports).toEqual([])
+    expect(pinnedPrimary.reports).toEqual([])
   })
 })
 
@@ -656,12 +787,20 @@ describe('createRelayObservedFetch with the tool line', () => {
     await expect(createRelayObservedFetch(app.router, base, { toolLine: pinned.observer })('https://xm-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
     expect(pinned.reports).toEqual([])
 
-    // 历史账号报给应用线路，只报先走的默认线路；直连是它的备用，不报。
-    await expect(observed('https://api-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
-    expect(app.reports).toEqual([])
+    // 历史账号报给应用线路，报这会儿走的那条（这里已经退到直连），不在走着的那条上的不报。
     await expect(observed('https://api.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect(app.reports).toEqual([])
+    await expect(observed('https://api-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
     expect(app.reports).toEqual([['solov-api', 'ERR_CONNECTION_REFUSED']])
+    expect(app.reportedLines).toEqual(['direct'])
     expect(onDirect.reports).toEqual(['check:ERR_CONNECTION_REFUSED'])
+
+    const onDefault = fakeRouter('primary')
+    const legacy = createRelayObservedFetch(onDefault.router, base, { toolLine: onDirect.observer })
+    await expect(legacy('https://api-direct.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    await expect(legacy('https://api.solov.cc/v1/models')).rejects.toThrow('fetch failed')
+    expect(onDefault.reports).toEqual([['solov-api', 'ERR_CONNECTION_REFUSED']])
+    expect(onDefault.reportedLines).toEqual(['primary'])
   })
 })
 

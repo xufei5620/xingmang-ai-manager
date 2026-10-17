@@ -185,6 +185,16 @@ describe('tool route controller', () => {
     await settle()
     expect(run.controller.line()).toBe('primary')
     expect(run.snapshots).toEqual([])
+
+    // 两条一起查时当场换下来的（#1053）一样算洛杉矶刚没连上过。
+    const onTheSpot = harness({
+      legacy: {
+        lines: { solov: 'primary' },
+        changes: { solov: { from: 'direct', to: 'primary', reason: 'line-down', trigger: 'network', at: startedAt - hourMs } },
+      },
+    })
+    await settle()
+    expect(onTheSpot.writes[0]).toMatchObject({ line: 'primary', failures: { direct: [startedAt - hourMs] } })
   })
 
   it('ignores an old app line change and defaults to Los Angeles without any conclusion', async () => {

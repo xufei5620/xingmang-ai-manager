@@ -383,8 +383,11 @@ export interface DiagnosticsRelayRoute {
    */
   preferredLine?: RelayEndpointId
   backupSite?: RelaySite
-  /** 先走那条上没查通，报给线路那边查一轮（relay-route-controller.ts 的 reportPreferredFailure）。 */
-  reportPreferredFailure(reason: string): void
+  /**
+   * 「自动」这会儿走的那条（line）上没查通，报给线路那边查一轮（relay-route-controller.ts 的 reportFailure）：
+   * 先走的那条照三次的规矩查，已经退到备用那条就两条一起查（#1053）。
+   */
+  reportLineFailure(reason: string): void
   /** 「自动」最近一次换线路（relay-route-controller.ts 的 lastChange），详情里说给客户和客服听。 */
   lastChange?: RelayRouteChange | null
 }
@@ -1612,11 +1615,13 @@ export function describeRelayRouteChange(change: RelayRouteChange): string {
   const to = relayLineNames[change.to]
   const reason = change.reason === 'recovered'
     ? `${to}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${to}`
-    : change.reason === 'health-failed'
-      ? change.trigger === firstLaunchTrigger
-        ? `第一次开机查到${from}没连上，改走${to}`
-        : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
-      : `查到${to}能连上，走${to}`
+    : change.reason === 'line-down'
+      ? `查到${from}没连上、${to}能连上，当场改走${to}`
+      : change.reason === 'health-failed'
+        ? change.trigger === firstLaunchTrigger
+          ? `第一次开机查到${from}没连上，改走${to}`
+          : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
+        : `查到${to}能连上，走${to}`
   return `${time}，${reason}`
 }
 
@@ -2514,8 +2519,14 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         let line: RelayEndpointId | null = route?.line ?? null
         let fellBack = false
         const preferredFailure = route && preferredFirst ? relayLineFailure(probe) : null
+        if (route?.automatic && !preferredFirst) {
+          // 已经退到备用那条：它也没查通就报给线路那边，两条一起查一轮，先走的那条通了当场切回去（#1053）。
+          // 这一次不回头查先走的那条，查的是这会儿用的那条，结论照它说。
+          const backupFailure = relayLineFailure(probe)
+          if (backupFailure && reportsRelayLineFailure(probe)) route.reportLineFailure(backupFailure)
+        }
         if (route && preferredFailure) {
-          if (reportsRelayLineFailure(probe)) route.reportPreferredFailure(preferredFailure)
+          if (reportsRelayLineFailure(probe)) route.reportLineFailure(preferredFailure)
           // 先走那条回的网关错误页不算「网络通了」：备用那条这次要是一直没人回，照样按连接超时说。
           relayAnswered = false
           const retry = await probeStatus(route.backupSite ?? route.primarySite, signal).catch(() => null)

@@ -12,6 +12,7 @@ import {
 // nobody follows dies with "Redirect was cancelled" unless the listener aborted.
 class FakeClientRequest extends EventEmitter implements ManualRedirectClientRequest {
   readonly headers = new Map<string, string>()
+  readonly written: Buffer[] = []
   aborted = false
   ended = false
 
@@ -21,6 +22,10 @@ class FakeClientRequest extends EventEmitter implements ManualRedirectClientRequ
 
   setHeader(name: string, value: string): void {
     this.headers.set(name, value)
+  }
+
+  write(chunk: Buffer): void {
+    this.written.push(chunk)
   }
 
   abort(): void {
@@ -149,12 +154,66 @@ describe('manual redirect fetch', () => {
     expect(requests[1].aborted).toBe(true)
   })
 
-  it('keeps requests with a body on the wrapped fetch', async () => {
+  // 登录、建密钥、AI 对话都是带正文的 POST，也要按 'manual' 拿回跳转（#1064）：正文整个写进去才开始请求，
+  // 跳转当场掐掉，正文不会被送去新地址。
+  it('sends a request body before starting and hands a redirect of a POST back the same way', async () => {
     const { requests, wrapped, fetchWithRedirects } = harness()
 
-    await fetchWithRedirects('https://example.test/', { method: 'POST', body: 'x', redirect: 'manual' })
+    const pending = fetchWithRedirects('https://xm-direct.solov.cc/api/user/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'fixture', password: 'fixture-password' }),
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'omit',
+      redirect: 'manual',
+    })
+    const request = requests[0]
+    await vi.waitFor(() => expect(request.ended).toBe(true))
+    expect(Buffer.concat(request.written).toString()).toBe('{"username":"fixture","password":"fixture-password"}')
+    expect(request.options).toMatchObject({ method: 'POST', redirect: 'manual', credentials: 'omit' })
+    expect(request.headers.get('content-type')).toBe('application/json')
+    request.redirect(302, 'http://portal.example/login')
+    const response = await pending
 
-    expect(wrapped).toHaveBeenCalledTimes(1)
-    expect(requests).toHaveLength(0)
+    expect(wrapped).not.toHaveBeenCalled()
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('http://portal.example/login')
+    expect(request.aborted).toBe(true)
+  })
+
+  it('streams a POST answer like any other', async () => {
+    const { requests, fetchWithRedirects } = harness()
+
+    const pending = fetchWithRedirects('https://xm.solov.cc/v1/chat/completions', {
+      method: 'POST',
+      body: new TextEncoder().encode('{"stream":true}'),
+      redirect: 'manual',
+    })
+    await vi.waitFor(() => expect(requests[0].ended).toBe(true))
+    requests[0].respond(200, { 'content-type': 'text/event-stream' }, ['data: 1\n\n', 'data: [DONE]\n\n'])
+    const response = await pending
+
+    expect(Buffer.concat(requests[0].written).toString()).toBe('{"stream":true}')
+    expect(await response.text()).toBe('data: 1\n\ndata: [DONE]\n\n')
+  })
+
+  it('stops sending the body and rejects when the caller cancels while it is still going out', async () => {
+    const { requests, fetchWithRedirects } = harness()
+    const caller = new AbortController()
+    let pulled = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1
+        if (pulled === 1) controller.enqueue(new TextEncoder().encode('first'))
+        // 第二块一直不来：调用方在这时候放弃。
+      },
+    })
+
+    const pending = fetchWithRedirects('https://example.test/upload', { method: 'POST', body, duplex: 'half', redirect: 'manual', signal: caller.signal } as RequestInit)
+    await vi.waitFor(() => expect(requests[0].written).toHaveLength(1))
+    caller.abort(new Error('stopped'))
+
+    await expect(pending).rejects.toThrow('stopped')
+    expect(requests[0].aborted).toBe(true)
+    expect(requests[0].ended).toBe(false)
   })
 })
