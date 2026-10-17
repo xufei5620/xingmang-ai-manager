@@ -25,6 +25,10 @@ const SOURCES = Object.freeze({
   'linux-rpm-arm64': Object.freeze({ fileName: 'chatgpt.aarch64.rpm', url: `${OFFICIAL_ROOT}linux/rpm/latest/chatgpt.aarch64.rpm`, platform: 'linux', architecture: 'arm64', format: 'rpm', contentType: 'application/x-rpm' }),
 })
 const LICENSE_SOURCE = Object.freeze({ fileName: 'ChatGPT-License.xml', url: `${OFFICIAL_ROOT}ChatGPT-License.xml`, contentType: 'application/xml' })
+// Windows ARM64 包约 1 GB，实测传到 COS 只有 190~290 KB/s，七十五分钟的默认期限
+// 传到约 850 MB 就撞线中止，一出新版就失败（#1082）。工作流给这个作业 150 分钟，
+// 余下的时间留给下载、Windows 校验和完整回读。
+const MULTIPART_DEADLINE_MS = 120 * 60 * 1000
 const officialFailures = new WeakMap()
 
 function safeOfficialSyncFailure(error) {
@@ -526,13 +530,17 @@ function createRuntimeDependencies(common) {
   }
 }
 
+function createOfficialCosStore(common, config) {
+  return common.createCosStore(config, { multipartDeadlineMs: MULTIPART_DEADLINE_MS })
+}
+
 async function main() {
   const common = require('./cos-sync-utils.cjs')
   const args = process.argv.slice(2)
   if (args.some(function (arg) { return !arg.startsWith('--platforms=') }) || args.length > 1) throw checkFailure('platform-invalid', '仅支持 --platforms=windows-x64,windows-arm64 或 --platforms=all')
   const platforms = parsePlatforms(args[0]?.slice('--platforms='.length) ?? process.env.CHATGPT_SYNC_PLATFORMS)
   const config = common.readCosConfiguration(process.env)
-  const result = await synchronizeOfficialChatgpt({ store: common.createCosStore(config), platforms, dependencies: createRuntimeDependencies(common), progress: function (event) { console.log(`[chatgpt-sync] ${JSON.stringify(event)}`) } })
+  const result = await synchronizeOfficialChatgpt({ store: createOfficialCosStore(common, config), platforms, dependencies: createRuntimeDependencies(common), progress: function (event) { console.log(`[chatgpt-sync] ${JSON.stringify(event)}`) } })
   console.log(JSON.stringify({ changed: result.changed, platforms: result.platforms, windowsVersion: result.manifest.windows?.buildVersion ?? null }))
 }
 
@@ -543,4 +551,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE, DEFAULT_PLATFORMS, MAX_PACKAGE_BYTES, MAX_LICENSE_BYTES, LATEST_KEY, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, parseWindowsVersion, compareWindowsVersions, validateWindowsMetadata, validateHead, sameFingerprint, artifactKey, parseMacAppcast, validatePreviousManifest, validateWindowsInspection, validateLicenseInspection, sanitizedWindowsEnvironment, inspectWindowsFile, validatePackageMagic, validateDownloaded, synchronizeOfficialChatgpt, createRuntimeDependencies, safeOfficialSyncFailure }
+module.exports = { OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE, DEFAULT_PLATFORMS, MAX_PACKAGE_BYTES, MAX_LICENSE_BYTES, LATEST_KEY, MULTIPART_DEADLINE_MS, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, parseWindowsVersion, compareWindowsVersions, validateWindowsMetadata, validateHead, sameFingerprint, artifactKey, parseMacAppcast, validatePreviousManifest, validateWindowsInspection, validateLicenseInspection, sanitizedWindowsEnvironment, inspectWindowsFile, validatePackageMagic, validateDownloaded, synchronizeOfficialChatgpt, createRuntimeDependencies, createOfficialCosStore, safeOfficialSyncFailure }

@@ -5,12 +5,14 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
 const { hashFile, readBoundedRegularFile, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { TOTAL_UPLOAD_MS } = require('./cos-multipart-upload.cjs')
 const {
   OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE,
   LATEST_KEY, MAX_PACKAGE_BYTES, WINDOWS_INSPECTION_SCRIPT, parsePlatforms,
   compareWindowsVersions, validateWindowsMetadata, validateHead, parseMacAppcast,
   validateWindowsInspection, sanitizedWindowsEnvironment, synchronizeOfficialChatgpt,
   validatePackageMagic, createRuntimeDependencies, safeOfficialSyncFailure, inspectWindowsFile, validateLicenseInspection,
+  MULTIPART_DEADLINE_MS, createOfficialCosStore,
 } = require('./sync-chatgpt-official-cos.cjs')
 
 test('runtime temp aliases resolve to safe files and cleanup preserves neighboring directories', async function () {
@@ -616,4 +618,15 @@ test('Windows inspection has bounded XML readers and excludes COS secrets from s
   assert.match(WINDOWS_INSPECTION_SCRIPT, /DtdProcessing = \[Xml\.DtdProcessing\]::Prohibit/)
   assert.match(WINDOWS_INSPECTION_SCRIPT, /Get-AuthenticodeSignature -LiteralPath \$PackagePath/)
   assert.doesNotMatch(WINDOWS_INSPECTION_SCRIPT, /Add-AppxPackage|Add-AppxProvisionedPackage/)
+})
+
+test('official package uploads get a 120-minute multipart deadline instead of the 75-minute default', function () {
+  // A 1 GB Windows ARM64 package at the 190 KB/s seen in real runs needs about 90 minutes (#1082).
+  assert.equal(MULTIPART_DEADLINE_MS, 120 * 60 * 1000)
+  assert.ok(MULTIPART_DEADLINE_MS > TOTAL_UPLOAD_MS)
+  const created = []
+  const store = {}
+  const config = { bucket: 'bucket-1250000000' }
+  assert.equal(createOfficialCosStore({ createCosStore(value, options) { created.push([value, options]); return store } }, config), store)
+  assert.deepEqual(created, [[config, { multipartDeadlineMs: 120 * 60 * 1000 }]])
 })
