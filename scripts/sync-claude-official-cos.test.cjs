@@ -9,7 +9,9 @@ const path = require('node:path')
 const { SOURCES, APT_ROOT, OFFICIAL_HOSTS, LATEST_KEY, MAX_PACKAGE_BYTES, WINDOWS_INSPECTION_SCRIPT,
   parsePlatforms, validateOfficialUrl, validateHead, compareVersions, resolveOfficialPackage, requestHead, requestRedirectHeaders,
   parseDebianPackages, artifactKey, validateIndex, validateWindowsInspection, synchronizeOfficialClaude,
-  safeChildEnvironment, validatePackageMagic, darwinClaudeRequirement, inspectPackage } = require('./sync-claude-official-cos.cjs')
+  safeChildEnvironment, validatePackageMagic, darwinClaudeRequirement, inspectPackage, validateInspection } = require('./sync-claude-official-cos.cjs')
+const { safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { safeClaudeSyncFailure } = require('./claude-sync-diagnostics.cjs')
 
 function clone(value) { return value === undefined ? undefined : structuredClone(value) }
 
@@ -241,6 +243,43 @@ test('requires genuine Claude identity, signer, architecture, and publisher-DN e
   }
 })
 
+test('identity and signer mismatches log their own code and the public values that were read', () => {
+  const renamed = windowsReport('x64')
+  renamed.identity.name = 'Attacker'
+  assert.throws(() => validateWindowsInspection(renamed, 'x64'), (error) => {
+    const failure = safeSyncFailure(error)
+    assert.equal(failure.code, 'package-identity-mismatch')
+    assert.equal(failure.observed.packageName, 'Attacker')
+    return true
+  })
+  const resigned = windowsReport('x64')
+  resigned.signature.simpleName = 'Someone Else'
+  assert.throws(() => validateWindowsInspection(resigned, 'x64'), (error) => {
+    const failure = safeSyncFailure(error)
+    assert.equal(failure.code, 'package-signature-invalid')
+    assert.equal(failure.observed.signerName, 'Someone Else')
+    assert.equal(failure.observed.signatureStatus, 'Valid')
+    return true
+  })
+  const mac = SOURCES['macos-dmg-universal']
+  assert.throws(() => validateInspection({ signatureStatus: 'Valid', signerOrganization: 'Someone Else' }, mac), (error) => {
+    assert.deepEqual(safeSyncFailure(error), { code: 'package-signature-invalid', observed: { signatureStatus: 'Valid', signerOrganization: 'Someone Else' } })
+    return true
+  })
+  assert.throws(() => validateInspection({ signatureStatus: 'Valid', signerOrganization: 'Anthropic PBC', bundleIdentifier: 'com.anthropic.claudefordesktop',
+    teamIdentifier: 'Q6L2SF6YDW', architectures: ['x86_64'] }, mac), (error) => {
+    const failure = safeSyncFailure(error)
+    assert.equal(failure.code, 'package-identity-mismatch')
+    assert.equal(failure.observed.packageArchitecture, 'x86_64')
+    return true
+  })
+  const deb = SOURCES['linux-deb-x64']
+  assert.throws(() => validateInspection({ package: 'claude-desktop', architecture: deb.packageArchitecture, version: '1.1.41' }, deb, '1.1.42'), (error) => {
+    assert.deepEqual(safeSyncFailure(error).observed, { expectedVersion: '1.1.42', packageName: 'claude-desktop', packageVersion: '1.1.41', packageArchitecture: deb.packageArchitecture })
+    return true
+  })
+})
+
 test('downloads and validates all candidates before any upload then publishes immutable objects and latest last', async () => {
   const value = fixture()
   const result = await value.run('all')
@@ -316,7 +355,11 @@ test('rejects downgrade even after native version inspection and preserves the p
   const old = clone(value.latest)
   value.windowsVersion = '1.1.40.0'
   value.heads.get('windows-x64').etag = '"changed"'
-  await assert.rejects(value.run('windows'), /版本倒退/)
+  await assert.rejects(value.run('windows'), (error) => {
+    assert.match(error.message, /版本倒退/)
+    assert.deepEqual(safeClaudeSyncFailure(error).failure, { code: 'version-regressed' })
+    return true
+  })
   assert.deepEqual(value.latest, old)
 })
 

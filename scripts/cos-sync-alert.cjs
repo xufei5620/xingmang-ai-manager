@@ -13,9 +13,13 @@ const ISSUE_PAGES = 3
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_NEEDS_BYTES = 64 * 1024
 const REQUEST_TIMEOUT_MS = 20000
+// 这几样客户端都先从桶里下（electron/desktop-package-bucket.ts 和它的调用方、codex-plugin-catalog-bucket.ts），
+// 所以每样都写自己的「影响」、不给默认句：以前的默认句说一键安装不经过 COS，对两个桌面端是错的（#1084）。
 const WORKFLOWS = Object.freeze({
-  'sync-claude-official-cos.yml': Object.freeze({ product: 'Claude 桌面端' }),
-  'sync-chatgpt-official-cos.yml': Object.freeze({ product: 'Codex 桌面端' }),
+  'sync-claude-official-cos.yml': Object.freeze({ product: 'Claude 桌面端',
+    impact: '星芒替客户装 Claude 桌面端时第一路就从桶里下：失败期间桶里还是上一次同步成功的那一版，新装的客户照样从桶里装到这一版；某个平台在桶里一份都没有时，客户端改走系统自带的安装组件或官网这些原来的路，国内慢，有时要开加速。教程页的下载按钮也停在这一版。' }),
+  'sync-chatgpt-official-cos.yml': Object.freeze({ product: 'Codex 桌面端',
+    impact: '星芒替客户装、更新 Codex 桌面端时第一路就从桶里下：失败期间桶里还是上一次同步成功的那一版，新装的客户照样从桶里装到这一版；桶里的不比客户电脑上的新，或者某个平台在桶里一份都没有时，客户端改走微软商店、官网这些原来的路，国内慢，有时要开加速。教程页的下载按钮也停在这一版。' }),
   'sync-codex-plugins-cos.yml': Object.freeze({ product: 'Codex 插件目录',
     impact: '星芒替客户下 Codex 插件目录时，桶里还是上一次同步成功的那一版：客户照样下得到、装得上插件，只是目录旧一些；桶里一份都没有时客户端照旧去 GitHub 下。' }),
   'sync-grok-cos.yml': Object.freeze({ product: 'Grok CLI（Windows）',
@@ -117,11 +121,11 @@ function buildAlertBody({ workflowFile, product, impact, streak, truncated, sinc
     alertMarker(workflowFile),
     `**${product}离线包**往腾讯云 COS 的定时同步已经连续失败 ${truncated ? '至少 ' : ''}**${streak} 次**，最早一次是 ${formatBeijingTime(since)}（北京时间）。`,
     '',
-    `**影响**：${impact || `教程页上 ${product}的下载按钮停在上一次同步成功的版本。客户的自动更新和星芒一键安装都不经过 COS，不受影响。`}`,
+    `**影响**：${impact}`,
     '',
     `**最近一次失败**：[第 ${runNumber} 次运行](${runUrl})，失败的作业：${jobs}。`,
     '',
-    '**怎么看原因**：打开上面的链接，点红色的作业，在日志里搜 `stage-failed`：`stage` 是卡在哪一步，`failure.code` 是原因。只有一个平台的作业红时，只是那个平台没更新，其它平台照常。',
+    '**怎么看原因**：打开上面的链接，点红色的作业，在日志里搜 `stage-failed`：`stage` 是卡在哪一步，`failure.code` 是原因；版本、签名这类对不上时，`failure.observed` 里是实际读到的值。只有一个平台的作业红时，只是那个平台没更新，其它平台照常。',
     '',
     `这条 issue 由 \`${workflowFile}\` 自动开：之后每次失败只更新这段文字，不另开新的；下一次定时同步成功会自动留言并关闭。`,
   ].join('\n')
