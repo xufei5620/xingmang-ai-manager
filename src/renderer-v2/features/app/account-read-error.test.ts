@@ -23,6 +23,17 @@ describe('account read error presentation', () => {
     expect(message).not.toMatch(/检查网络|重新登录/)
   })
 
+  it('asks to sign in again when the account API says the login is gone in its own words', () => {
+    // #1095：new-api 的 401 原话翻成中文后不带「重新登录」，以前落到「请稍后重试」，重读多少次都一样。
+    for (const raw of [
+      "Error invoking remote method 'account:get-balance': NewApiAuthenticationError: 无权进行此操作，access token 无效",
+      '无权进行此操作，未登录且未提供 access token',
+      '访问令牌已过期',
+    ]) {
+      expect(formatAccountReadError(new Error(raw), 'balance')).toBe('当前登录已失效，请重新登录。')
+    }
+  })
+
   it('offers a way to sign in again only when the message asks for it', () => {
     expect(accountReadErrorAction(formatAccountReadError(new Error('请先登录账号'), 'session') ?? '')).toBe('relogin')
     expect(accountReadErrorAction(formatAccountReadError(new Error('Failed to fetch'), 'session') ?? '')).toBe('retry')

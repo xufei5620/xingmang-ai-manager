@@ -2682,6 +2682,25 @@ test('a payment window closed before settlement keeps confirming and points to t
   } finally { await page.close() }
 })
 
+test('the recharge page close button keeps confirming a paid order like the window close button', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    await page.getByTestId('account-recharge-submit').click()
+    await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
+    await page.getByText('等待支付结果', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '关闭支付窗口', exact: true }).click()
+    const notice = page.getByTestId('account-payment-notice')
+    await notice.getByText('正在确认订单 XM-VISUAL-TOPUP 是否到账…', { exact: true }).waitFor()
+    assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
+    assert.equal((await calls(page)).filter((call) => call.name === 'close-payment-window').length, 1)
+
+    await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'XM-VISUAL-TOPUP' }))
+    await page.getByText('订单 XM-VISUAL-TOPUP 已到账，余额已更新。', { exact: true }).waitFor()
+    await page.getByText('当前余额 $14.00', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
 test('an unconfirmed payment opens my orders with its order number', async () => {
   const page = await fixture('page=account')
   try {
