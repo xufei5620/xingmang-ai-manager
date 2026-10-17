@@ -870,6 +870,91 @@ describe('relay-site-specific managed CLI key groups', () => {
       mode: 'merge',
     })
   })
+
+  it('replaces only the rejected entry in the cache and keeps the retired Gemini key', async () => {
+    const stale = { ...siteManagedKey('solov', 'codex'), id: 20, key: 'sk-solov-codex-revoked-123456' }
+    const gemini = siteManagedKey('solov', 'gemini')
+    const store = recordingKeyStore([siteManagedKey('solov', 'claude'), stale, siteManagedKey('solov', 'grok'), gemini])
+    const provisionCliKey = siteAwareProvisioner('solov')
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      if (key === stale.key) throw new Error('模型查询失败，服务返回 401')
+      return ['codex-model']
+    })
+
+    const result = await configureManagedClis(
+      siteAwareAccountService(provisionCliKey, () => 'solov'),
+      { fetchAvailableModels, saveConfig: vi.fn(async () => ({ backups: [], files: [] })) } as unknown as ConfigurationService,
+      ['codex'], {}, false, store,
+    )
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(provisionCliKey).toHaveBeenCalledTimes(1)
+    expect(store.cached).toEqual([
+      siteManagedKey('solov', 'claude'),
+      siteManagedKey('solov', 'codex'),
+      siteManagedKey('solov', 'grok'),
+      gemini,
+    ])
+  })
+
+  it('still writes the replacement key into the config when the local cache cannot be updated', async () => {
+    const stale = { ...siteManagedKey('solov', 'codex'), id: 20, key: 'sk-solov-codex-revoked-123456' }
+    const store = recordingKeyStore([siteManagedKey('solov', 'claude'), stale, siteManagedKey('solov', 'grok')])
+    vi.mocked(store.remove).mockRejectedValue(new Error('系统安全存储不可用，无法持久化托管 API Key'))
+    vi.mocked(store.save).mockRejectedValue(new Error('系统安全存储不可用，无法持久化托管 API Key'))
+    const provisionCliKey = siteAwareProvisioner('solov')
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      if (key === stale.key) throw new Error('模型查询失败，服务返回 401')
+      return ['codex-model']
+    })
+    const saveConfig = vi.fn(async () => ({ backups: [], files: [] }))
+
+    const result = await configureManagedClis(
+      siteAwareAccountService(provisionCliKey, () => 'solov'),
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      ['codex'], {}, false, store,
+    )
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(store.save).toHaveBeenCalledTimes(1)
+    expect(saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex', apiKey: siteManagedKey('solov', 'codex').key }),
+      false, expect.any(Function), expect.any(Object),
+    )
+  })
+
+  it('stops when the account changes while the replacement is being cached', async () => {
+    const stale = { ...siteManagedKey('solov', 'codex'), id: 20, key: 'sk-solov-codex-revoked-123456' }
+    const store = recordingKeyStore([siteManagedKey('solov', 'claude'), stale, siteManagedKey('solov', 'grok')])
+    let userId = 73
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })),
+      getActiveSiteId: () => 'solov',
+      provisionCliKey: siteAwareProvisioner('solov'),
+    } as unknown as AccountService
+    let reads = 0
+    vi.mocked(store.read).mockImplementation(async () => {
+      reads += 1
+      // The first read belongs to the sync; the second is the replacement's re-read.
+      if (reads === 2) userId = 74
+      return store.cached.map((entry) => ({ ...entry }))
+    })
+    const saveConfig = vi.fn()
+
+    await expect(configureManagedClis(
+      accountService,
+      {
+        fetchAvailableModels: vi.fn(async (key: string) => {
+          if (key === stale.key) throw new Error('模型查询失败，服务返回 401')
+          return ['codex-model']
+        }),
+        saveConfig,
+      } as unknown as ConfigurationService,
+      ['codex'], {}, false, store,
+    )).rejects.toThrow('星芒账号已切换')
+    expect(store.save).not.toHaveBeenCalled()
+    expect(saveConfig).not.toHaveBeenCalled()
+  })
 })
 
 describe('managed CLI groups resolved from the account backend', () => {
@@ -1330,6 +1415,38 @@ describe('dynamic groups with the encrypted managed key store', () => {
       group: groups.codex,
       key: 'sk-codex-dynamic-secret-123456',
     })
+  })
+
+  it('keeps the retired Gemini key in the encrypted cache after replacing a rejected key', async () => {
+    const filePath = storePath()
+    const dynamicKey = (provider: ProviderId) => ({
+      ...managedKey(provider), group: groups[provider], key: `sk-${provider}-dynamic-secret-123456`,
+    })
+    const oldKey = { ...dynamicKey('codex'), id: 20, key: 'sk-codex-old-secret-123456' }
+    await new ManagedCliKeyStore(filePath, storage()).save(73, [dynamicKey('claude'), oldKey, dynamicKey('grok'), dynamicKey('gemini')])
+    const issueKey = provisioner()
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey: issueKey,
+      listUsableGroups: vi.fn(async () => activeProviderIds.map((provider) => ({ name: groups[provider] }))),
+    } as unknown as AccountService
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      if (key === oldKey.key) throw new Error('模型查询失败，服务返回 401')
+      return ['codex-model']
+    })
+
+    const result = await configureManagedClis(
+      accountService,
+      { fetchAvailableModels, saveConfig: vi.fn(async () => ({ backups: [], files: [] })) } as unknown as ConfigurationService,
+      ['codex'], {}, false, new ManagedCliKeyStore(filePath, storage()),
+    )
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(issueKey).toHaveBeenCalledTimes(1)
+    expect(await new ManagedCliKeyStore(filePath, storage()).read(73)).toEqual(
+      providerIds.map((provider) => dynamicKey(provider)),
+    )
   })
 
   it('replaces a revoked dynamic-group key when the group list is temporarily unavailable', async () => {
