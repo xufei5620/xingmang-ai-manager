@@ -301,8 +301,8 @@ export function editTomlTableText(
 }
 
 /**
- * [[keyPath]] 一条一段：已有的那几条按位置逐个改键，多出来的接在文件末尾。条数变少、删了键
- * 或改了子表返回 null。
+ * [[keyPath]] 一条一段：已有的那几条按位置逐个改键，多出来的接在文件末尾；只删了几条、剩下的
+ * 一点没动时，把删掉的那几段整段拿掉。又删又改、删了键或改了子表返回 null。
  */
 export function editTomlArrayTableText(
   source: string,
@@ -311,8 +311,10 @@ export function editTomlArrayTableText(
   after: Record<string, unknown>,
 ): string | null {
   const was = tomlValueAt(before, keyPath) ?? []
-  const now = tomlValueAt(after, keyPath)
-  if (!Array.isArray(was) || !Array.isArray(now) || now.length < was.length) return null
+  // 最后一条也删了的时候，调用方连这个键一起删掉，解析回去才对得上。
+  const now = tomlValueAt(after, keyPath) ?? []
+  if (!Array.isArray(was) || !Array.isArray(now)) return null
+  if (now.length < was.length) return removeTomlArrayEntriesText(source, keyPath, was, now)
   let content: string | null = source
   for (let index = 0; index < was.length && content !== null; index += 1) {
     const entry = was[index]
@@ -324,6 +326,54 @@ export function editTomlArrayTableText(
   if (content === null) return null
   const added = now.slice(was.length)
   return added.length > 0 ? appendTomlText(content, nestTomlValue(keyPath, added)) : content
+}
+
+/** now 必须是 was 按原顺序去掉几条，剩下的原样不动；不是就返回 null。 */
+function removeTomlArrayEntriesText(
+  source: string,
+  keyPath: readonly string[],
+  was: readonly unknown[],
+  now: readonly unknown[],
+): string | null {
+  const removed: number[] = []
+  let kept = 0
+  for (const [index, entry] of was.entries()) {
+    if (kept < now.length && isDeepStrictEqual(entry, now[kept])) kept += 1
+    else removed.push(index)
+  }
+  if (kept !== now.length) return null
+  let content: string | null = source
+  // 从后往前删，前面那几段还是第几段不变。
+  for (const index of removed.reverse()) {
+    if (content === null) return null
+    content = removeTomlSectionText(content, { keyPath, index })
+  }
+  return content
+}
+
+/**
+ * 拿掉一段：表头到这张表最后一个键，连同紧跟着的空行。再往后的注释多半是写给下一张表的，留着；
+ * 这段是文件里最后的东西时，前面的空行也一起去掉。
+ */
+function removeTomlSectionText(source: string, section: { keyPath: readonly string[]; index?: number }): string | null {
+  const lines = source.split(/(?<=\n)/)
+  const range = findTomlSection(lines, section.keyPath, section.index)
+  if (!range) return null
+  const blank = (line: number) => !lineText(lines[line] ?? '').trim()
+  let last = range.header
+  for (let line = range.end - 1; line > range.header; line -= 1) {
+    const text = lineText(lines[line] ?? '').trim()
+    if (text && !text.startsWith('#')) {
+      last = line
+      break
+    }
+  }
+  let end = last + 1
+  while (end < range.end && blank(end)) end += 1
+  let start = range.header
+  if (end === lines.length) while (start > 0 && blank(start - 1)) start -= 1
+  lines.splice(start, end - start)
+  return lines.join('')
 }
 
 function editTomlEntryText(

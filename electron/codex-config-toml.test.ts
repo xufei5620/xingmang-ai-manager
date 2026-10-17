@@ -94,10 +94,31 @@ describe('appendTomlText', () => {
 })
 
 describe('editTomlTableText and editTomlArrayTableText', () => {
-  it('declines removed keys and shrinking arrays so the caller rewrites', () => {
+  it('declines removed keys, and array entries that were both dropped and changed, so the caller rewrites', () => {
     const before = { a: { x: 1, y: 2 }, list: [{ k: 1 }, { k: 2 }] }
     expect(editTomlTableText('[a]\nx = 1\ny = 2\n', ['a'], before, { a: { x: 1 } })).toBeNull()
+    const source = '[[list]]\nk = 1\n\n[[list]]\nk = 2\n'
+    expect(editTomlArrayTableText(source, ['list'], before, { list: [{ k: 3 }] })).toBeNull()
     expect(editTomlArrayTableText('', ['list'], before, { list: [{ k: 1 }] })).toBeNull()
+  })
+
+  it('drops only the removed array entries and keeps the comments that introduce the next table', () => {
+    const source = '# 说明\n[[list]]\nk = 1\n\n[[list]] # 第二条\nk = 2\n# 第二条的说明\nnote = "x"\n\n# 下面是 b\n[b]\ny = 2\n\n[[list]]\nk = 3\n'
+    const before = TOML.parse(source)
+    const after = TOML.parse(source)
+    ;(record(after).list as unknown[]).splice(1, 1)
+    const edited = editTomlArrayTableText(source, ['list'], before, after)
+
+    expect(edited).toBe('# 说明\n[[list]]\nk = 1\n\n# 下面是 b\n[b]\ny = 2\n\n[[list]]\nk = 3\n')
+    expect(TOML.parse(edited ?? '')).toEqual(after)
+  })
+
+  it('takes the blank lines before the last entry with it, keeps CRLF, and empties the array cleanly', () => {
+    const source = 'model = "m"\r\n\r\n[[list]]\r\nk = 1\r\n\r\n[[list]]\r\nk = 2\r\n'
+    const before = TOML.parse(source)
+    expect(editTomlArrayTableText(source, ['list'], before, { model: 'm', list: [{ k: 1 }] }))
+      .toBe('model = "m"\r\n\r\n[[list]]\r\nk = 1\r\n')
+    expect(editTomlArrayTableText(source, ['list'], before, { model: 'm' })).toBe('model = "m"\r\n')
   })
 })
 

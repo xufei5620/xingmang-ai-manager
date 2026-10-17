@@ -61,7 +61,7 @@
 - `codex-config-syntax.ts` — 判断 Codex 自己读不读得了 `config.toml`（读不了时桌面端停在「无法加载组织设置」，首页写「配置文件坏了」）。本软件用的 `@iarna/toml` 只懂 TOML 0.5、Codex 读 TOML 1.1，所以只认两边都拒绝的那几类，比对记录在文件头
 - `codex-context-limits.ts` / `codex-config-migration.ts` — 一次性清掉 0.2.5 以前模板写进 `config.toml` 的两项上下文限制：只删值和当年模板一模一样的，客户自己改过的留着；完成记号按 CODEX_HOME 记在数据目录，从不为了记状态去新建 Codex 配置
 - `codex-sessions.ts` — Codex 会话的权威源是 `CODEX_HOME/state_5.sqlite` 的 `threads` 表（只读打开）；认不出的 schema 写操作一律关掉，归档、删除带操作日志与备份
-- `codex-config-toml.ts` — 保存配置以外单改 Codex `config.toml`（和存着的那份星芒配置）的统一入口 `mutateCodexConfigToml`：从读到写整段同步，本进程里谁也插不进来；改前留 `.bak`；能只动几行就只动几行，解析回去对不上才整份重写。扩展页启停插件和技能、星芒画图技能开关、桌面端语言在用（#1068）
+- `codex-config-toml.ts` — 保存配置以外单改 Codex `config.toml`（和存着的那份星芒配置）的统一入口 `mutateCodexConfigToml`：从读到写整段同步，本进程里谁也插不进来；改前留 `.bak`；能只动几行就只动几行，解析回去对不上才整份重写。扩展页启停插件和技能（卸载、导入技能时清掉它的启停记录，#1093 第 9 条）、星芒画图技能开关、桌面端语言在用（#1068）
 - `codex-extensions.ts` — Codex 专用的 MCP / 插件 / 市场 / Skill 管理（经 Codex 自己的命令行）；DTO 只暴露 env **变量名**不暴露值（I3）
 - `codex-plugin-catalog.ts` — 替 Codex 下官方插件目录快照（`$CODEX_HOME/.tmp/plugins`），国内它自己同步不下来；只在快照不存在时写，从不覆盖 Codex 自己的完整快照
 - `codex-plugin-catalog-bucket.ts` — 插件目录先从星芒腾讯云存储桶下（`scripts/sync-codex-plugins-cos.cjs` 定时同步），读不到、对不上、太慢就换回 GitHub

@@ -753,6 +753,29 @@ function skillEnabled(config: Record<string, unknown>, skillPath: string): boole
 }
 
 /**
+ * 删掉 skillEnabled 会认到这个技能头上的每一条启停记录。删空了连 skills.config 一起删，
+ * 这样 [[skills.config]] 那几段整段拿掉以后，解析回去和这里改完的一模一样，不用整份重写。
+ */
+function removeSkillConfigEntries(config: Record<string, unknown>, skillPath: string): boolean {
+  const skills = config.skills
+  if (!isRecord(skills) || !Array.isArray(skills.config)) return false
+  const target = normalizedPathKey(skillPath)
+  const kept = skills.config.filter((entry) => !(
+    isRecord(entry)
+    && typeof entry.path === 'string'
+    && normalizedPathKey(entry.path) === target
+  ))
+  if (kept.length === skills.config.length) return false
+  if (kept.length > 0) {
+    skills.config = kept
+  } else {
+    delete skills.config
+    if (Object.keys(skills).length === 0) delete config.skills
+  }
+  return true
+}
+
+/**
  * 外接工具页的通用技能列表也要知道哪些技能在 config.toml 里被停用了，
  * 否则停用过的技能照样显示「已启用」（#490）。配置读不出来时按 Codex 的
  * 缺省（全部启用）算，不让一份坏配置拖垮整张列表。
@@ -1256,6 +1279,9 @@ export class CodexExtensionService {
       throw new Error('Skill 目标路径越界')
     }
     if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
+    // 这里还没有这个技能，config.toml 里它的启停记录只会是以前卸载（旧版本卸载不删）或手删目录
+    // 留下的，不清掉的话新导入的一进来就是「已停用」（#1093 第 9 条）。
+    this.forgetSkillEnablement(path.join(target, 'SKILL.md'))
     fs.mkdirSync(root, { recursive: true })
     try {
       copySkillTree(sourceDirectory, target)
@@ -1269,7 +1295,24 @@ export class CodexExtensionService {
   async uninstallSkill(skillPath: string): Promise<{ skills: SkillDto[]; trashPath: string }> {
     const target = await this.requireManagedSkill(skillPath)
     const trashPath = moveToTrash(target.path, this.trashDirectory)
+    // 挪走以后再删启停记录：先删的话挪不动时技能还在，客户关掉的却被打开了（#1093 第 9 条）。
+    this.forgetSkillEnablement(target.path)
     return { skills: await this.listSkills(), trashPath }
+  }
+
+  /**
+   * 技能已经不在了，这一步失败不该让卸载、导入报错：记录留着顶多让同一路径再导入的那一份显示
+   * 「已停用」，下次导入前还会再清一次。和启停一样，能只删那几段就只删那几段，并留备份。
+   */
+  private forgetSkillEnablement(skillPath: string): void {
+    try {
+      mutateConfigToml(this.configPath, {
+        mutate: (config) => removeSkillConfigEntries(config, skillPath),
+        editText: (source, before, after) => editTomlArrayTableText(source, ['skills', 'config'], before, after),
+      })
+    } catch {
+      // 原因见上面的说明。
+    }
   }
 
   private async requireManagedSkill(skillPath: string): Promise<SkillDto> {
