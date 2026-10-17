@@ -3131,6 +3131,7 @@ if (!hasSingleInstanceLock) {
     })
     void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir(), {
       officialCodex: (systemService.readStoredConfig().officialProviders ?? []).includes('codex'),
+      serializeConfigWrite: systemService.serializeToolConfigWrite,
     }).then((result) => {
       for (const warning of result.warnings) {
         runtimeLog.log('warn', 'account', 'xingmang-ai-skill.install', warning)
@@ -3473,9 +3474,11 @@ if (!hasSingleInstanceLock) {
           const nodeExecutable = await findExecutable('node', { env: process.env })
           if (!nodeExecutable) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
           const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
-          return syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
+          // 改的是 Codex、Grok 的 config.toml 和 Claude 的 settings.json、.claude.json，和保存配置排同一队（#1061 第 1 条）。
+          const register = async () => syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
             codex: !input.officialCodex,
           }).warnings
+          return systemService.serializeToolConfigWrite ? systemService.serializeToolConfigWrite(register) : register()
         },
       },
       ...(manualUninstallVisualFixtureEnabled

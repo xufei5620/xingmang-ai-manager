@@ -95,6 +95,8 @@ export interface XingmangAiSkillSyncOptions {
   baseUrl?: string
   officialCodex?: boolean
   codexHome?: string
+  /** 同 XingmangAiSkillInstallOptions 的那一项。 */
+  serializeConfigWrite?: XingmangAiSkillInstallOptions['serializeConfigWrite']
   /**
    * Registers the 星芒画图 MCP tool once a skill directory holds both the fresh
    * config and the bundled server script. Returns warnings to surface in the log.
@@ -117,6 +119,11 @@ export interface XingmangAiSkillSyncOptions {
 export interface XingmangAiSkillInstallOptions {
   officialCodex?: boolean
   codexHome?: string
+  /**
+   * 改 Codex config.toml 里技能开关那一下排进保存配置那一队（system-service 的
+   * serializeToolConfigWrite，#1061 第 1 条）。缺省 = 直接改。
+   */
+  serializeConfigWrite?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
 export function resolveXingmangAiBundledSkillRoot(
@@ -406,13 +413,15 @@ async function applyXingmangAiSkillCodexAvailabilitySafely(
   options: XingmangAiSkillInstallOptions,
   warnings: string[],
 ): Promise<void> {
-  if (typeof options.officialCodex !== 'boolean') return
+  const officialCodex = options.officialCodex
+  if (typeof officialCodex !== 'boolean') return
+  const sync = () => syncXingmangAiSkillCodexAvailability({
+    userHome,
+    officialCodex,
+    configPath: options.codexHome ? path.join(options.codexHome, 'config.toml') : undefined,
+  })
   try {
-    await syncXingmangAiSkillCodexAvailability({
-      userHome,
-      officialCodex: options.officialCodex,
-      configPath: options.codexHome ? path.join(options.codexHome, 'config.toml') : undefined,
-    })
+    await (options.serializeConfigWrite ? options.serializeConfigWrite(sync) : sync())
   } catch (error) {
     warnings.push(directoryFailureMessage(error))
   }
@@ -779,6 +788,7 @@ export async function syncXingmangAiSkill(
   const { installed, warnings } = await installXingmangAiSkillFiles(bundledRoot, options.userHome, {
     officialCodex: options.officialCodex,
     codexHome: options.codexHome,
+    serializeConfigWrite: options.serializeConfigWrite,
   })
 
   const [groups, hints] = await Promise.all([
