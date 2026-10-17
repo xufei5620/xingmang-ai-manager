@@ -69,6 +69,16 @@ export interface ServiceStatus {
 
 export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
 
+/**
+ * 撤回名单和分批放量：发版的安全网。客户端只认最近一次读成功的那份，还记在本地，下次打开软件时
+ * 状态文件没读到也照样算数（#1055）。最低版本不在里面：它会把人挡在门外，发布者撤掉以后，读不到
+ * 状态文件的电脑不能还一直被拦着。
+ */
+export interface ReleaseGuard {
+  badVersions: readonly string[]
+  rollout: ServiceRollout | null
+}
+
 // 一份只写着几个开关的 JSON 远用不到这么大；上限是给「这个地址被换成了别的东西」
 // 准备的，免得把一整张网页读进内存再去解析。
 const maxStatusBytes = 16 * 1024
@@ -173,6 +183,15 @@ function readRollout(value: unknown): ServiceRollout | null {
   const percent = value.percent
   if (!version || typeof percent !== 'number' || !Number.isFinite(percent)) return null
   return { version, percent: Math.min(100, Math.max(0, percent)) }
+}
+
+/**
+ * 记在本地的那份撤回名单和分批放量，按状态文件的同一套口径重新校验：写错的条目丢掉，整份不是
+ * 对象返回 null（当作从没读到过）。
+ */
+export function parseReleaseGuard(value: unknown): ReleaseGuard | null {
+  if (!isRecord(value)) return null
+  return { badVersions: readBadVersions(value.badVersions), rollout: readRollout(value.rollout) }
 }
 
 // 最低版本会把人挡在门外，所以比撤回名单读得更严：只认纯 x.y.z，带预发布后缀的

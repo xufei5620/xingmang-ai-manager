@@ -1439,6 +1439,100 @@ describe('withdrawn versions and staged rollout', () => {
     service.dispose()
   })
 
+  it('starts from the withdrawn list and rollout remembered from an earlier run until a read succeeds', async () => {
+    const client = new FakeUpdater()
+    client.isUserWithinRollout = vi.fn(async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50)
+    let status: ServiceStatus | null = null
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      refreshServiceStatus: async () => status,
+      releaseGuardAtLaunch: { badVersions: ['1.2.0'], rollout: { version: '1.1.0', percent: 20 } },
+    })
+    const hook = client.isUserWithinRollout
+    const offered: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      offered.push(await hook!(updateInfo('1.1.0')))
+      offered.push(await hook!(updateInfo('1.2.0')))
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+
+    // 这次打开软件后一次都没读到：按上次记下的那份算。
+    await service.check()
+    service.setServiceStatus(null)
+    await service.check()
+    // 读到了放开的那份才放开。
+    status = { maintenance: null, badVersions: [], rollout: null }
+    await service.check()
+    expect(offered).toEqual([false, false, false, false, true, true])
+    service.dispose()
+  })
+
+  it('reports a remembered withdrawal of the running version at launch and still offers the way back', async () => {
+    const client = new FakeUpdater()
+    const allowDowngradeSeen: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      allowDowngradeSeen.push(client.allowDowngrade)
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      refreshServiceStatus: async () => null,
+      releaseGuardAtLaunch: { badVersions: ['1.0.0'], rollout: null },
+    })
+
+    expect(service.getState().currentVersionWithdrawn).toBe(true)
+    await service.check()
+    expect(allowDowngradeSeen).toEqual([true])
+    expect(service.getState().currentVersionWithdrawn).toBe(true)
+    service.dispose()
+  })
+
+  it('hands a read withdrawn list and rollout over to be remembered only when they change', async () => {
+    const client = new FakeUpdater()
+    const remembered: unknown[] = []
+    let failNext = false
+    const rememberReleaseGuard = vi.fn(async (guard: unknown) => {
+      if (failNext) {
+        failNext = false
+        throw new Error('disk full')
+      }
+      remembered.push(guard)
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      releaseGuardAtLaunch: { badVersions: ['0.9.0'], rollout: null },
+      rememberReleaseGuard,
+    })
+    const flush = () => new Promise((resolve) => { setTimeout(resolve, 0) })
+
+    // 读不到、读到的跟记着的一样：都不写。
+    service.setServiceStatus(null)
+    service.setServiceStatus({ maintenance: { message: '升级中' }, badVersions: ['0.9.0'], rollout: null })
+    await flush()
+    expect(rememberReleaseGuard).not.toHaveBeenCalled()
+    // 变了才写；维护提示变了不算。
+    service.setServiceStatus({ maintenance: null, badVersions: ['0.9.0', '1.1.0'], rollout: { version: '1.2.0', percent: 20 } })
+    service.setServiceStatus({ maintenance: { message: '升级中' }, badVersions: ['0.9.0', '1.1.0'], rollout: { version: '1.2.0', percent: 20 } })
+    await flush()
+    expect(remembered).toEqual([{ badVersions: ['0.9.0', '1.1.0'], rollout: { version: '1.2.0', percent: 20 } }])
+    // 没记下来：下次读成功时再交一次。
+    failNext = true
+    service.setServiceStatus({ maintenance: null, badVersions: [], rollout: null })
+    await flush()
+    service.setServiceStatus(null)
+    service.setServiceStatus({ maintenance: null, badVersions: [], rollout: null })
+    await flush()
+    expect(rememberReleaseGuard).toHaveBeenCalledTimes(3)
+    expect(remembered).toEqual([
+      { badVersions: ['0.9.0', '1.1.0'], rollout: { version: '1.2.0', percent: 20 } },
+      { badVersions: [], rollout: null },
+    ])
+    service.dispose()
+  })
+
   it('takes back an offer that is withdrawn after it was found or downloaded', async () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin' })
