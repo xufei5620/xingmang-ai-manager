@@ -37,6 +37,7 @@ function setup(
     tasks?: AiVideoTaskStore
     dnsLookup?: (hostname: string) => Promise<readonly string[]>
     requestTimeoutMs?: number
+    maximumPollOutageMs?: number
   } = {},
 ) {
   const credentials = {
@@ -93,6 +94,7 @@ function setup(
       pollIntervalMs: 1, maximumPollIntervalMs: 2, maximumWaitMs: 2_000,
       dnsLookup: options.dnsLookup ?? publicDnsLookup,
       ...(options.requestTimeoutMs ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
+      ...(options.maximumPollOutageMs ? { maximumPollOutageMs: options.maximumPollOutageMs } : {}),
     }),
   }
 }
@@ -889,24 +891,123 @@ describe('createAiVideoService', () => {
     }
   })
 
-  it('times out a status poll whose JSON body stalls after the headers', async () => {
+  it('retries a status poll whose JSON body stalls, and gives up with the timeout only after the outage window', async () => {
     vi.useFakeTimers()
     try {
       const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
         if (init?.method === 'POST') return jsonResponse({ id: 'video_poll_stall', status: 'queued' })
         return stalledBodyResponse('application/json')
       }) as unknown as typeof fetch
-      const { service, tasks } = setup(fetchImpl, { requestTimeoutMs: 100 })
+      const { service, tasks } = setup(fetchImpl, { requestTimeoutMs: 100, maximumPollOutageMs: 300 })
       const pending = service.generate(41, {
         requestId: 'poll-stall', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
       }).catch((error: unknown) => error)
-      await vi.advanceTimersByTimeAsync(500)
+      await vi.advanceTimersByTimeAsync(600)
       expect(await pending).toMatchObject({ message: '视频接口请求超时' })
       await service.whenIdle()
+      const polls = vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method !== 'POST')
+      expect(polls.length).toBeGreaterThanOrEqual(3)
+      expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
       expect(tasks.remove).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('keeps polling through a dropped connection, a gateway page, a 5xx and a rate limit, then saves the clip once', async () => {
+    // Regression for #1076: one blip used to fail the run while the server
+    // kept generating the paid clip, and the suggested retry paid again.
+    const answers: (() => Response)[] = [
+      () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }) },
+      () => new Response('<html><body>502 Bad Gateway</body></html>', { status: 502, headers: { 'Content-Type': 'text/html' } }),
+      () => jsonResponse({ error: { message: 'database is locked' } }, 500),
+      () => jsonResponse({ error: { message: 'rate limited' } }, 429, { 'Retry-After': '1' }),
+      () => jsonResponse({ id: 'video_blip', status: 'in_progress' }),
+      () => jsonResponse({ id: 'video_blip', status: 'completed' }),
+    ]
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_blip', status: 'queued' })
+      if (String(input).endsWith('/content')) return mp4Response()
+      const answer = answers.shift()
+      if (!answer) throw new Error('polled after completion')
+      return answer()
+    }) as unknown as typeof fetch
+    const { service, tasks, assets } = setup(fetchImpl)
+
+    await expect(service.generate(41, {
+      requestId: 'poll-blip', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).resolves.toMatchObject({ taskId: 'video_blip', mimeType: 'video/mp4' })
+    expect(answers).toHaveLength(0)
+    expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+    expect(assets.storeMp4).toHaveBeenCalledOnce()
+    expect(tasks.remove).toHaveBeenCalledOnce()
+    expect(tasks.remove).toHaveBeenCalledWith(7, 'video_blip')
+  })
+
+  it('stops polling after failures outlast the outage window but keeps the task for the next launch', async () => {
+    const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? jsonResponse({ id: 'video_outage', status: 'queued' })
+        : jsonResponse({ error: { message: 'bad gateway' } }, 502)
+    )) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl, { maximumPollOutageMs: 20 })
+
+    await expect(service.generate(41, {
+      requestId: 'poll-outage', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).rejects.toThrow('视频服务暂时不可用')
+    expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method !== 'POST').length).toBeGreaterThan(1)
+    expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+    expect(tasks.remove).not.toHaveBeenCalled()
+  })
+
+  it('stops at once on a definite answer such as an unknown task', async () => {
+    const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? jsonResponse({ id: 'video_gone', status: 'queued' })
+        : jsonResponse({ error: { message: 'task_not_exist' } }, 404)
+    )) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+
+    await expect(service.generate(41, {
+      requestId: 'poll-gone', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).rejects.toThrow('task_not_exist')
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('resumes a persisted task through a failed status query without submitting again', async () => {
+    const stored: StoredAiVideoTask = {
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_resume_blip', group: 'grok', model: 'grok-imagine-video',
+      requestId: 'old-request', createdAt: '2026-08-14T00:00:00.000Z',
+    }
+    let polls = 0
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      expect(init?.method).not.toBe('POST')
+      if (String(input).endsWith('/content')) return mp4Response()
+      polls += 1
+      if (polls === 1) throw new TypeError('fetch failed', { cause: { code: 'ENETUNREACH' } })
+      return jsonResponse({ id: 'video_resume_blip', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl, { pending: [stored] })
+
+    await expect(service.resumeVideoTask(41, 7, stored.taskId)).resolves.toMatchObject({ taskId: 'video_resume_blip' })
+    expect(polls).toBe(2)
+    expect(tasks.remove).toHaveBeenCalledWith(7, 'video_resume_blip')
+  })
+
+  it('lets 「停止」 end the wait while status queries keep failing', async () => {
+    const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_stop_blip', status: 'queued' })
+      throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } })
+    }) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    const pending = service.generate(41, {
+      requestId: 'poll-stop-blip', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })
+    await vi.waitFor(() => expect(vi.mocked(fetchImpl).mock.calls.length).toBeGreaterThanOrEqual(3))
+
+    expect(service.cancel(41, 'poll-stop-blip')).toEqual({ canceled: true, mayStillComplete: true })
+    await expect(pending).rejects.toThrow('服务端可能仍在生成视频')
+    expect(tasks.remove).not.toHaveBeenCalled()
   })
 
   it('treats a stalled submit body as ambiguous instead of hanging the paid request', async () => {

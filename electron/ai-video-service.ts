@@ -16,11 +16,13 @@ import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
 import type { AiVideoTaskStore, StoredAiVideoTask } from './ai-video-task-store'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
+import { isServiceUnavailableResponse } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
 const DEFAULT_MAXIMUM_POLL_INTERVAL_MS = 10_000
 const DEFAULT_MAXIMUM_WAIT_MS = 30 * 60_000
+const DEFAULT_MAXIMUM_POLL_OUTAGE_MS = 5 * 60_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
 const MAXIMUM_JSON_BYTES = 2 * 1024 * 1024
 const MAXIMUM_VIDEO_BYTES = 512 * 1024 * 1024
@@ -198,6 +200,13 @@ function ambiguousVideoSubmission(): Error {
   return new Error('视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交')
 }
 
+/**
+ * 服务端对这次状态查询给了明确答复（任务不存在、密钥失效、没有权限）：再查一遍还是
+ * 这个答复，轮询就此停下。别的失败——网断了一下、等回应超时、5xx、429、网关页——
+ * 只说明这一次没问到，任务在服务端照常生成。
+ */
+class VideoPollRejected extends Error {}
+
 interface ResponseBodyGuard {
   signal: AbortSignal
   // Called after every chunk so a slow but moving download is judged on
@@ -367,6 +376,8 @@ export function createAiVideoService(options: {
   pollIntervalMs?: number
   maximumPollIntervalMs?: number
   maximumWaitMs?: number
+  /** 状态查询连续查不到多久就不再等；任务记录照样留着。 */
+  maximumPollOutageMs?: number
   requestTimeoutMs?: number
   dnsLookup?: AiVideoDnsLookup
   now?: () => Date
@@ -377,12 +388,14 @@ export function createAiVideoService(options: {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const maximumPollIntervalMs = options.maximumPollIntervalMs ?? DEFAULT_MAXIMUM_POLL_INTERVAL_MS
   const maximumWaitMs = options.maximumWaitMs ?? DEFAULT_MAXIMUM_WAIT_MS
+  const maximumPollOutageMs = options.maximumPollOutageMs ?? DEFAULT_MAXIMUM_POLL_OUTAGE_MS
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
   const now = options.now ?? (() => new Date())
   const dnsLookup = options.dnsLookup ?? defaultVideoDnsLookup
   if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1
     || !Number.isSafeInteger(maximumPollIntervalMs) || maximumPollIntervalMs < pollIntervalMs
     || !Number.isSafeInteger(maximumWaitMs) || maximumWaitMs < 1
+    || !Number.isSafeInteger(maximumPollOutageMs) || maximumPollOutageMs < 1
     || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) throw new Error('视频服务超时配置无效')
   const active = new Map<string, ActiveVideoRequest>()
 
@@ -522,23 +535,23 @@ export function createAiVideoService(options: {
     }
   }
 
-  async function authorizedJson(
-    pathName: string,
-    apiKey: string,
-    signal: AbortSignal,
-    init: RequestInit = {},
-  ): Promise<Record<string, unknown>> {
-    return fetchAndRead(new URL(pathName, baseUrl), {
-      ...init,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      },
+  async function queryTask(taskId: string, apiKey: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+    return fetchAndRead(new URL(`${AI_CHAT_ENDPOINTS.videos}/${encodeURIComponent(taskId)}`, baseUrl), {
+      headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
     }, signal, async (response, guard) => {
-      const payload = await responseJson(response, { signal: guard.signal })
-      if (!response.ok) throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'))
-      return payload
+      if (response.ok) return responseJson(response, { signal: guard.signal })
+      // A gateway's 502 page is HTML; the status alone has to decide, the
+      // same way downloadTask treats an unreadable error body.
+      let payload: Record<string, unknown> | undefined
+      try {
+        payload = await responseJson(response, { signal: guard.signal })
+      } catch (error) {
+        if (guard.signal.aborted) throw error
+      }
+      const failure = videoRequestFailure(response.status, payload ? errorDetail(payload) : '', response.headers.get('retry-after'))
+      if (response.status >= 500 || response.status === 429
+        || isServiceUnavailableResponse({ status: response.status, json: payload !== undefined, headers: response.headers })) throw failure
+      throw new VideoPollRejected(failure.message)
     })
   }
 
@@ -550,9 +563,25 @@ export function createAiVideoService(options: {
   ): Promise<Record<string, unknown>> {
     const startedAt = Date.now()
     let interval = pollIntervalMs
+    let failingSince: number | undefined
     for (;;) {
       if (Date.now() - startedAt > maximumWaitMs) throw new Error('已停止等待视频生成；服务端任务已保留，可在下次启动时继续查询')
-      const payload = await authorizedJson(`${AI_CHAT_ENDPOINTS.videos}/${encodeURIComponent(task.taskId)}`, apiKey, signal)
+      let payload: Record<string, unknown>
+      try {
+        payload = await queryTask(task.taskId, apiKey, signal)
+      } catch (error) {
+        if (signal.aborted || error instanceof VideoPollRejected) throw error
+        // 这单已经提交、已经扣了钱（new-api 提交时预扣，失败才退）。查询网一抖、网关回个 502 就判
+        // 失败，客户照着「稍后重试」重跑，等于同一段视频付两次钱（#1076）。所以按原来的节奏接着查，
+        // 一直查不到才停；本地任务记录留着，下次启动还会续查。从这一轮失败结束时起算，而不是从
+        // 上次查到时起算：电脑睡醒后第一次查询多半连不上，那段睡眠不能算进去。
+        failingSince ??= Date.now()
+        if (Date.now() - failingSince >= maximumPollOutageMs) throw error
+        await delayVideoPoll(interval, signal)
+        interval = Math.min(maximumPollIntervalMs, interval * 2)
+        continue
+      }
+      failingSince = undefined
       if (requiredTaskId(payload.id) !== task.taskId) throw new Error('视频任务状态与请求不匹配')
       const status = typeof payload.status === 'string' ? payload.status.toLowerCase() : ''
       const update = miniMaxProgress(payload)
