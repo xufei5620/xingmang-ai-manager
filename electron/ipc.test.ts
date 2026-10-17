@@ -19,7 +19,7 @@ import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
-import { XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
+import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 import { noteRequestDiagnostics } from './request-diagnostics'
 
 const electronMocks = vi.hoisted(() => ({
@@ -1202,6 +1202,49 @@ describe('registerIpcHandlers', () => {
       // The image tool draws with the newest OpenAI model the account's own key can list.
       expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-ipc-must-not-return-this-secret-key')
       expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe('gpt-image-2.5-flare')
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
+  // 画图技能签 Codex Key 跟工具那一轮走同一层包装：读不到撤销后待补的额度记录就不签，不能绕过去另签一把不限额的。
+  it('does not let the image Skill issue a Codex key the tool round would hold back', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7, name: input?.name ?? 'key', key: 'sk-ipc-fixture-only-skill-key',
+    }))
+    vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-image-2'])
+    const cached = providerIds.map((provider, index) => ({
+      id: index + 1,
+      provider,
+      group: managedCliKeyProfiles[provider].group,
+      name: managedCliKeyProfiles[provider].keyName,
+      key: `sk-cached-${provider}-not-for-ipc`,
+    }))
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn(), captureRevision: vi.fn(() => 1),
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    }, {
+      keyReplacements: {
+        get: vi.fn(async () => { throw new Error('密钥换新记录读取失败') }),
+        set: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+        reset: vi.fn(async () => undefined),
+      },
+    })
+
+    try {
+      await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
+      expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: managedCliKeyProfiles.codex.keyName }))
+      expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({ name: XINGMANG_AI_SKILL_KEY_NAME }))
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }

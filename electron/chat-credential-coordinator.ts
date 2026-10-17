@@ -1,4 +1,4 @@
-import { buildCliKeyName } from './new-api-client'
+import { buildCliKeyName, isChatKeyName } from './new-api-client'
 import { chatKeyQuotaExhaustedMessage, findAccountKeyById, isKeyQuotaExhaustedMessage } from './account-key-quota'
 import { isCappedKeyUsedUp } from './connection-check'
 import { selectAiChatModelsForGroup } from './ai-chat-protocol'
@@ -132,7 +132,11 @@ export function createChatCredentialCoordinator(options: {
       throw new Error(`当前账号不可使用分组「${group}」`)
     }
 
-    const cached = (await keyStore.read(userId)).find((entry) => entry.group === group)
+    const username = accountService.getSessionState().account?.username ?? ''
+    // 以前对话按分组复用，缓存里可能是同组工具那把（#1077）：不再用它，下面签一把对话自己的，存回去时顶掉这条。
+    const cached = (await keyStore.read(userId)).find((entry) => (
+      entry.group === group && isChatKeyName(entry.keyName, username, group)
+    ))
     assertSameSession(accountService, userId, revision)
     if (cached) {
       try {
