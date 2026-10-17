@@ -7,21 +7,23 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function fixture() {
+function fixture(withPrompt = true) {
   let clock = 1_000_000
   const answer = deferred<RendererCrashChoice>()
   const logged: RendererCrashEvent[] = []
   const reload = vi.fn()
   const prompt = vi.fn(() => answer.promise)
   const onError = vi.fn()
-  const recovery = createRendererCrashRecovery({ reload, prompt, onError, log: (event) => { logged.push(event) }, now: () => clock })
+  const recovery = createRendererCrashRecovery({
+    reload, onError, log: (event) => { logged.push(event) }, now: () => clock,
+    ...(withPrompt ? { prompt } : {}),
+  })
   return { recovery, reload, prompt, onError, answer, logged, advance: (ms: number) => { clock += ms } }
 }
 
 async function settle() {
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
+  // A macrotask turn drains the whole answer chain, `finally` included.
+  await new Promise((resolve) => { setImmediate(resolve) })
 }
 
 describe('renderer crash recovery', () => {
@@ -76,6 +78,63 @@ describe('renderer crash recovery', () => {
     expect(prompt).not.toHaveBeenCalled()
   })
 
+  it('reloads a blank window the user brings back after dismissing the question', async () => {
+    const { recovery, reload, answer, logged } = fixture()
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    answer.resolve('dismiss')
+    await settle()
+    recovery.handleReopen(true)
+    expect(reload).toHaveBeenCalledTimes(3)
+    expect(logged.at(-1)).toBe('reload.reopen')
+  })
+
+  it('leaves a healthy window alone when it is brought back', () => {
+    const { recovery, reload, logged } = fixture()
+    recovery.handleReopen(false)
+    expect(reload).not.toHaveBeenCalled()
+    expect(logged).toEqual([])
+  })
+
+  it('lets the open question decide instead of reloading behind it', async () => {
+    const { recovery, reload, answer } = fixture()
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    recovery.handleReopen(true)
+    expect(reload).toHaveBeenCalledTimes(2)
+    answer.resolve('reload')
+    await settle()
+    expect(reload).toHaveBeenCalledTimes(3)
+  })
+
+  it('starts a fresh count after a reload the user asked for by reopening', async () => {
+    const { recovery, reload, prompt, answer } = fixture()
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    answer.resolve('dismiss')
+    await settle()
+    recovery.handleReopen(true)
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    expect(reload).toHaveBeenCalledTimes(4)
+    expect(prompt).toHaveBeenCalledOnce()
+  })
+
+  it('stops after two automatic reloads when there is nobody to ask, until the window is reopened', () => {
+    const { recovery, reload, logged } = fixture(false)
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    recovery.handleGone('crashed')
+    expect(reload).toHaveBeenCalledTimes(2)
+    expect(logged).toEqual(['reload.auto', 'reload.auto', 'reload.limit'])
+    recovery.handleReopen(true)
+    expect(reload).toHaveBeenCalledTimes(3)
+    expect(logged.at(-1)).toBe('reload.reopen')
+  })
+
   it('does nothing after the window is gone and survives a failing reload', () => {
     const { recovery, reload, onError } = fixture()
     reload.mockImplementationOnce(() => { throw new Error('destroyed') })
@@ -83,6 +142,7 @@ describe('renderer crash recovery', () => {
     expect(onError).toHaveBeenCalledOnce()
     recovery.dispose()
     recovery.handleGone('crashed')
+    recovery.handleReopen(true)
     expect(reload).toHaveBeenCalledOnce()
   })
 })

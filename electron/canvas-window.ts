@@ -28,6 +28,7 @@ import type { SystemService } from './system-service'
 import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
+import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
 import { canvasHostChannels, type CanvasAppearance } from './canvas-contract'
 import {
   createLinuxRendererSandboxGate,
@@ -271,6 +272,7 @@ export function createCanvasWindowController(
   }
   const handleChannels: string[] = []
   let canvasWindow: BrowserWindow | null = null
+  let canvasCrashRecovery: RendererCrashRecovery | null = null
   let pendingOpen: Promise<void> | null = null
   const storedSettings = options.systemService.readStoredConfig()
   let currentTheme: AppTheme = storedSettings.theme
@@ -1099,6 +1101,19 @@ export function createCanvasWindowController(
     }
   }
 
+  function canvasEntryUrl(): string {
+    // Load the bare protocol root (pathname '/'), not '/index.html'. The canvas
+    // SPA uses createBrowserRouter and only registers '/', so a '/index.html'
+    // path 404s in its router; the protocol handler's catch-all still serves
+    // index.html for '/', letting the app boot on its home route.
+    const canvasUrl = new URL(canvasPackagedBaseUrl)
+    canvasUrl.searchParams.set('theme', currentTheme)
+    if (options.accountService.getActiveSiteId) canvasUrl.searchParams.set('siteId', options.accountService.getActiveSiteId())
+    if (currentAppearance.uiSkin) canvasUrl.searchParams.set('skin', currentAppearance.uiSkin)
+    if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
+    return canvasUrl.href
+  }
+
   async function createWindow(): Promise<void> {
     assertCanvasDistPresent()
     const sandbox = await inspectRendererSandbox()
@@ -1131,6 +1146,24 @@ export function createCanvasWindowController(
     canvasWindow = window
     const senderId = window.webContents.id
     let preloadCheckGeneration = 0
+    // 画布界面进程崩了以后只记日志的话，窗口一直是空白的。没有询问框（不加新字）：
+    // 一分钟里自动重载两次，再崩就停在那里，用户再点「打开画布」时重载。
+    const crashRecovery = createRendererCrashRecovery({
+      // The page reads theme, skin and account site from its URL only at boot,
+      // so rebuild the entry URL from the current values instead of reload().
+      reload: () => {
+        void window.loadURL(canvasEntryUrl()).catch((error) => {
+          options.runtimeLog.exception('canvas', 'process.gone.recover-failed', error)
+        })
+      },
+      log: (event) => {
+        if (event === 'reload.auto') { options.runtimeLog.log('warn', 'canvas', 'process.gone.reload', '画布界面进程退出后自动重新加载'); return }
+        if (event === 'reload.limit') { options.runtimeLog.log('warn', 'canvas', 'process.gone.reload-limit', '画布界面接连退出，不再自动重新加载'); return }
+        if (event === 'reload.reopen') options.runtimeLog.log('info', 'canvas', 'process.gone.reopen-reload', '重新打开画布时重新加载界面')
+      },
+      onError: (cause) => { options.runtimeLog.exception('canvas', 'process.gone.recover-failed', cause) },
+    })
+    canvasCrashRecovery = crashRecovery
 
     window.once('ready-to-show', () => {
       window.center()
@@ -1152,6 +1185,8 @@ export function createCanvasWindowController(
       generationAdmission.releaseOwner(senderId)
       pendingProjects.delete(senderId)
       activeProjects.delete(senderId)
+      crashRecovery.dispose()
+      if (canvasCrashRecovery === crashRecovery) canvasCrashRecovery = null
       if (canvasWindow === window) canvasWindow = null
     })
     // Deny every popup by default; the only ones ever legitimate are the
@@ -1231,6 +1266,7 @@ export function createCanvasWindowController(
         reason: details.reason,
         exitCode: details.exitCode,
       })
+      if (!disposed && !window.isDestroyed()) crashRecovery.handleGone(details.reason)
     })
     window.webContents.on('did-start-loading', () => {
       // A full navigation gets a fresh preload. Do not let a failed previous
@@ -1243,17 +1279,8 @@ export function createCanvasWindowController(
       if (pendingClose?.window === window) finishPendingClose(false, '画布页面已重新加载，请重新确认关闭')
     })
 
-    // Load the bare protocol root (pathname '/'), not '/index.html'. The canvas
-    // SPA uses createBrowserRouter and only registers '/', so a '/index.html'
-    // path 404s in its router; the protocol handler's catch-all still serves
-    // index.html for '/', letting the app boot on its home route.
-    const canvasUrl = new URL(canvasPackagedBaseUrl)
-    canvasUrl.searchParams.set('theme', currentTheme)
-    if (options.accountService.getActiveSiteId) canvasUrl.searchParams.set('siteId', options.accountService.getActiveSiteId())
-    if (currentAppearance.uiSkin) canvasUrl.searchParams.set('skin', currentAppearance.uiSkin)
-    if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
     try {
-      await window.loadURL(canvasUrl.href)
+      await window.loadURL(canvasEntryUrl())
     } catch (error) {
       rendererReady = false
       markRendererUnavailable('画布主页面加载失败', error)
@@ -1269,6 +1296,7 @@ export function createCanvasWindowController(
         if (canvasWindow.isMinimized()) canvasWindow.restore()
         canvasWindow.show()
         canvasWindow.focus()
+        canvasCrashRecovery?.handleReopen(canvasWindow.webContents.isCrashed())
         return
       }
       if (!pendingOpen) {
