@@ -30,3 +30,4 @@
   CI 会拒绝。唯一的例外是发版时的汇总提交（它会同时删掉分片文件）。
 - 本地自查：`npm run changelog:check`。
 - 发版时由发布者执行 `npm run changelog:collect`，步骤见 `docs/RELEASING.md`。
+  `publish-release` 触发时会核对这个目录已经清空（只剩本文件和模板），还有分片就不发。

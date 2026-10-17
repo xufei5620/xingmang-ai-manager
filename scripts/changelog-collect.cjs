@@ -83,16 +83,34 @@ function parseFragment(name, source) {
   return entries
 }
 
-function readFragments(root) {
+function pendingFragmentNames(root) {
   const directory = path.join(root, fragmentDirectory)
   if (!fs.existsSync(directory)) return []
   return fs.readdirSync(directory)
     .filter((name) => name.endsWith('.md') && !reservedFragmentNames.has(name))
     .sort()
-    .map((name) => ({
-      name,
-      entries: parseFragment(name, fs.readFileSync(path.join(directory, name), 'utf8')),
-    }))
+}
+
+function readFragments(root) {
+  return pendingFragmentNames(root).map((name) => ({
+    name,
+    entries: parseFragment(name, fs.readFileSync(path.join(root, fragmentDirectory, name), 'utf8')),
+  }))
+}
+
+// A release collects every fragment away, so one still here when a public
+// release is dispatched was merged after the collect, or missed by it. Its
+// change ships in this build all the same, while the notes customers read say
+// nothing and CHANGELOG.md later files it under the next version (#1086). This
+// asks the same question collect does, so the two can never disagree about
+// what a fragment is.
+function assertAllCollected(root) {
+  const pending = pendingFragmentNames(root)
+  if (pending.length === 0) return
+  throw new Error(
+    `${fragmentDirectory} 下还有 ${pending.length} 个没汇总的分片：${pending.join('、')}。`
+    + '这些改动会进这次的包，发版前先运行 npm run changelog:collect，把它们并进这一版的更新说明。',
+  )
 }
 
 function sectionBounds(lines, section) {
@@ -219,9 +237,12 @@ if (require.main === module) {
   // Both npm scripts run from the repository root; resolving from cwd is what
   // lets the tests exercise this entry point against a fixture tree.
   const root = process.cwd()
-  const checkOnly = process.argv.slice(2).includes('--check')
+  const argv = process.argv.slice(2)
   try {
-    if (checkOnly) {
+    if (argv.includes('--assert-collected')) {
+      assertAllCollected(root)
+      console.log(`${fragmentDirectory} 下的分片都已汇总`)
+    } else if (argv.includes('--check')) {
       const fragments = checkChanges(root)
       console.log(fragments.length === 0
         ? '变更分片校验通过：本次没有分片'
@@ -243,6 +264,7 @@ if (require.main === module) {
 
 module.exports = {
   appendToUnreleasedSection,
+  assertAllCollected,
   assertNoDirectUnreleasedEdit,
   changedFileStatuses,
   checkChanges,
