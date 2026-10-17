@@ -166,6 +166,7 @@ CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执�
 
 - 在 `package.json` 提升版本号，版本必须高于已发布版本。
 - 执行 `npm run changelog:collect`：把 `changes/unreleased/` 下的分片按 `## 用户` / `## 开发` 分别汇入 `release-notes.md` 的「未发布」段与 `CHANGELOG.md` 的 `## Unreleased` 段，并删除已汇总的分片文件。
+- 定版之后、发完之前合进 main 的改动如果带了分片，要在这一版里补收：再跑一次 `changelog:collect`，把汇出来的「未发布」「## Unreleased」两段并进这一版那一节。`publish-release` 一开始就核对 `changes/unreleased/` 已经清空，还有分片就停下、什么都不动（#1086）：那些改动照样会进这次的包，不补收的话客户的更新说明里一句不提，CHANGELOG 还会把它们记到下一版。
 - 汇总后把这两个标题改成本次版本号（`未发布` → `0.2.7`，`## Unreleased` → `## 0.2.7 - <日期>`），按需润色文案。`release-notes.md` 的内容会在打包时写入更新清单并显示在客户端更新页面。
 - 客户从旧版升上来、而旧版的更新方式和新版不一样时（比如 0.2.10 没有自动更新，要客户自己点「下载更新」「重启安装」、过一次 Windows 授权窗口），把**怎么装这个更新**写在这一版说明的第一条：旧版客户端的更新页直接显示新版这份说明，这是唯一能教到他们的地方。分片文件名以 `000-` 开头，汇总时就排在最前；客服话术用同一句。
 - `npm run compile` 的最后一步（`scripts/bundle-release-notes.cjs`）会把 `release-notes.md` 顶上那一节写进包内的 `dist-electron/release-notes.json`，客户端更新装完后第一次启动时据此显示「已更新到 x.y.z」和这一版的改动（不走网络）。只有文件第一行等于 `package.json` 版本号时才带内容，否则写 `notes: null`、客户端不显示改动，所以**先改好标题再编译**；`verify-packaged-hardening.cjs` 会核对包里这份文件存在且版本一致。
@@ -287,6 +288,8 @@ git push origin v0.2.6
 
 然后它会：先把这一版的 tag 占在本次出包的 commit 上（见下面「触发时就占 tag」）→ 出 Windows 包（走 `release:build:unsigned` 的完整发布门禁，带私有加速线路）→ 出 macOS 双架构包（用已发布的那张签名证书，见 2.2）→ 出 Linux 的 x64 与 arm64 两个 deb（见下面「Linux 开关」）→ **先传安装包与 blockmap → 逐字节复核能从客户会用的地址下载下来 → 最后才覆盖 `latest.yml` / `latest-mac.yml`（以及 Linux 的两份清单）** → 每个平台各跑一次 `update:verify-feed` → 在占好的 tag 上建 GitHub Release。
 
+这次选了 Windows 或 macOS，它的出包作业没有成功（失败、超时被取消都算），publish 作业就不跑，不会悄悄只发另一个平台、让这个平台的客户收不到这一版（#1090）。Linux 算不算数看下面的开关。
+
 **Linux 开关。** Linux 的包每次选 `all` 或 `linux` 都会出（`linux-checks` 先在 x64 上跑一遍类型检查和全部测试，`linux-build` 两个架构各自过 `npm run release:package:linux` 的出包门禁、apt 真装、普通用户真开、卸干净），但**传不传到更新目录和 GitHub Release，看仓库变量 `XINGMANG_PUBLISH_LINUX`**：
 
 - 不是 `true`（包括没建这个变量，现在就是没建）：publish 作业不下载 Linux 的包，客户看不到任何 Linux 的东西；Linux 两个作业红了**不代表这次发布失败**，也不挡 Windows / macOS；只选 `linux` 时 publish 作业整个跳过，不会停下来等批准。Linux 包留在那次运行的 Actions artifact（`linux-release-<架构>-<版本>`）里 14 天，可以下下来装机验收。
@@ -297,10 +300,11 @@ git push origin v0.2.6
 
 这个顺序是发布正确性的一部分，不是风格问题：清单先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。`scripts/publish-workflow-config.test.cjs` 把它钉住了。
 
-**触发时就占 tag。** 第一个作业 `release-tag` 先看这一版的 tag 该建、该留还是该挪（判断逻辑在 `scripts/release-tag-plan.cjs`），再照做，出包作业都等它。它是批准之前唯一拿着写权限的作业，所以不装任何依赖，只跑 `gh`、`curl` 和仓库里两个不依赖第三方包的脚本。通常触发后一两分钟就跑完；排在前一次发布后面时，要等那一次跑完才轮到它。几种情况：
+**触发时就占 tag。** 第一个作业 `release-tag` 先看这一版的 tag 该建、该留还是该挪（判断逻辑在 `scripts/release-tag-plan.cjs`），再照做，出包作业都等它。它是批准之前唯一拿着写权限的作业，所以不装任何依赖，只跑 `gh`、`curl` 和仓库里几个不依赖第三方包的脚本。通常触发后一两分钟就跑完；排在前一次发布后面时，要等那一次跑完才轮到它。几种情况：
 
 - 这个版本号已经从别的 commit 发过（GitHub 上有它的 Release，或者线上清单已经是它）、线上清单已经比它高、或者它在撤回名单里：直接停下，不出包、不用批。原来要等一个多小时出完包、批过一次，到上传前那道关才发现。同一个 commit 上重跑、补发另一个平台照常放行。
 - 上一次触发占了 tag、没发出去就取消了（补进来重出包），合进修复后从 main 重新触发：tag 会挪到新的 commit 上。挪之前同样要确认那一版没有 Release、线上清单都比它旧。
+- `changes/unreleased/` 里还有没汇总的分片：直接停下，不查 tag、不出包，怎么补收见第 3 节。只选 `linux` 而 Linux 开关没开时不查：main 上平时总有分片，只出包给自己装的那种运行不该被挡。
 - 这一步报「GitHub 不让在 … 上建 …」：触发之后、轮到它之前，main 又合进了改工作流的提交。什么都还没发，从最新的 main 重新触发就好。
 - 正式发布要从 main 触发，从别的分支或 tag 触发直接拒绝，免得 tag 占在一个发不出去的 commit 上。只选 `linux` 而 Linux 开关没开时不占 tag。
 - 出包期间有人把 tag 删了：上传前那道关检查都过了以后先补建，再往线上传；补建不了就停下，线上什么都不改。
