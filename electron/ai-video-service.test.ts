@@ -914,7 +914,7 @@ describe('createAiVideoService', () => {
     }
   })
 
-  it('keeps polling through a dropped connection, a gateway page, a 5xx and a rate limit, then saves the clip once', async () => {
+  it('keeps polling through a dropped connection, gateway and challenge pages, a 5xx, a 408 and a rate limit, then saves the clip once', async () => {
     // Regression for #1076: one blip used to fail the run while the server
     // kept generating the paid clip, and the suggested retry paid again.
     const answers: (() => Response)[] = [
@@ -922,6 +922,9 @@ describe('createAiVideoService', () => {
       () => new Response('<html><body>502 Bad Gateway</body></html>', { status: 502, headers: { 'Content-Type': 'text/html' } }),
       () => jsonResponse({ error: { message: 'database is locked' } }, 500),
       () => jsonResponse({ error: { message: 'rate limited' } }, 429, { 'Retry-After': '1' }),
+      // A challenge page whose cf-mitigated and Server headers a proxy stripped.
+      () => new Response('<!DOCTYPE html><title>Just a moment...</title>', { status: 403, headers: { 'Content-Type': 'text/html' } }),
+      () => jsonResponse({ error: { message: 'request timeout' } }, 408),
       () => jsonResponse({ id: 'video_blip', status: 'in_progress' }),
       () => jsonResponse({ id: 'video_blip', status: 'completed' }),
     ]

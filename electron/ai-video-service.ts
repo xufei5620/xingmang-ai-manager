@@ -202,8 +202,8 @@ function ambiguousVideoSubmission(): Error {
 
 /**
  * 服务端对这次状态查询给了明确答复（任务不存在、密钥失效、没有权限）：再查一遍还是
- * 这个答复，轮询就此停下。别的失败——网断了一下、等回应超时、5xx、429、网关页——
- * 只说明这一次没问到，任务在服务端照常生成。
+ * 这个答复，轮询就此停下。别的失败——网断了一下、等回应超时、5xx、408、429、网关页、
+ * 中间哪一层回的网页——只说明这一次没问到，任务在服务端照常生成。
  */
 class VideoPollRejected extends Error {}
 
@@ -540,8 +540,10 @@ export function createAiVideoService(options: {
       headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
     }, signal, async (response, guard) => {
       if (response.ok) return responseJson(response, { signal: guard.signal })
-      // A gateway's 502 page is HTML; the status alone has to decide, the
-      // same way downloadTask treats an unreadable error body.
+      // new-api answers every /v1 error as a JSON object. An HTML or empty
+      // 4xx came from something in between (a CDN challenge that stripped its
+      // headers, a proxy's block page), so it says nothing about the task and
+      // only a JSON 4xx counts as a definite answer.
       let payload: Record<string, unknown> | undefined
       try {
         payload = await responseJson(response, { signal: guard.signal })
@@ -549,8 +551,8 @@ export function createAiVideoService(options: {
         if (guard.signal.aborted) throw error
       }
       const failure = videoRequestFailure(response.status, payload ? errorDetail(payload) : '', response.headers.get('retry-after'))
-      if (response.status >= 500 || response.status === 429
-        || isServiceUnavailableResponse({ status: response.status, json: payload !== undefined, headers: response.headers })) throw failure
+      if (!payload || response.status >= 500 || response.status === 408 || response.status === 429
+        || isServiceUnavailableResponse({ status: response.status, json: true, headers: response.headers })) throw failure
       throw new VideoPollRejected(failure.message)
     })
   }
