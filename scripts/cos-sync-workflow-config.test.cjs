@@ -103,7 +103,7 @@ test('official package writes require the enabled owner repository and default b
 
 test('Windows signature checks run on Windows and credentials are scoped to the upload step', () => {
   assert.equal(job['runs-on'], 'windows-latest')
-  assert.equal(job['timeout-minutes'], 90)
+  assert.equal(job['timeout-minutes'], 150)
   assert.equal(job.env, undefined)
   const credentialSteps = job.steps.filter((step) => Object.keys(step.env || {}).some((key) => key.startsWith('COS_SECRET_')))
   assert.equal(credentialSteps.length, 1)
