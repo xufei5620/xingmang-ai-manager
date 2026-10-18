@@ -2217,6 +2217,7 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
   const cases = [
     ['unownedClaude=1', 'claude', '打开', '密钥可能不是当前账号的'],
     ['unknownClaude=1', 'claude', '改用当前账号', '不是当前账号的密钥'],
+    ['allInstalled=1&changedClaude=1', 'claude', '重新写入密钥', '配置被改过'],
     ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
     ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
   ]
