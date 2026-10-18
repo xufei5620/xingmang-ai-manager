@@ -97,6 +97,33 @@ describe('redactSecretFields', () => {
     expect(redactSecretFields('authorization=Token plain-fake-value')).toBe('authorization=[REDACTED]')
     expect(redactSecretPatterns(`Authorization: Bearer ${fakeRelayKey}`)).not.toContain(fakeRelayKey)
   })
+
+  it('redacts cookie and credential values in every spelling the crash reporter already hid', () => {
+    expect(redactSecretFields('cookie=plain-fake-a credential: plain-fake-b'))
+      .toBe('cookie=[REDACTED] credential: [REDACTED]')
+    expect(redactSecretFields('{"refresh_cookie":"plain-fake-a","credentials":"plain-fake-b"}'))
+      .toBe('{"refresh_cookie":"[REDACTED]","credentials":"[REDACTED]"}')
+    expect(redactSecretFields("{'cookies': 'plain-fake-a', 'credential': 'plain-fake-b'}"))
+      .toBe("{'cookies': '[REDACTED]', 'credential': '[REDACTED]'}")
+  })
+
+  it('redacts every pair of a Cookie header but leaves Set-Cookie flags and the sentence readable', () => {
+    expect(redactSecretFields('Cookie: session=plain-fake-a; refresh=plain-fake-b'))
+      .toBe('Cookie: [REDACTED]')
+    expect(redactSecretFields('Set-Cookie: sid=plain-fake-a; Path=/; HttpOnly; Secure'))
+      .toBe('Set-Cookie: [REDACTED]; HttpOnly; Secure')
+    expect(redactSecretFields('cookie=plain-fake-a; then the request failed'))
+      .toBe('cookie=[REDACTED]; then the request failed')
+  })
+
+  it('leaves names that only contain a cookie or credential word readable', () => {
+    for (const text of [
+      'git config credential.helper=manager',
+      'credentialStore missing, cookie jar empty',
+    ]) {
+      expect(redactSecretFields(text)).toBe(text)
+    }
+  })
 })
 
 describe('credentialArgumentValues', () => {
@@ -158,5 +185,17 @@ describe('shared redaction table', () => {
   ])('%s hides credentials named only by their command-line flag', (_name, redact) => {
     const result = redact('npx some-server --token plain-fake-flag --key=plain-fake-assigned\nAuthorization: Basic plain-fake-basic')
     for (const secret of ['plain-fake-flag', 'plain-fake-assigned', 'plain-fake-basic']) expect(result).not.toContain(secret)
+  })
+
+  // The crash reporter hid these two names long before the other four did.
+  it.each([
+    ['redactSecretPatterns', (value: string) => redactSecretPatterns(value)],
+    ['redactCommandText', (value: string) => redactCommandText(value)],
+    ['redactStartupSecrets', (value: string) => redactStartupSecrets(value)],
+    ['redactDiagnosticText', (value: string) => redactDiagnosticText(value)],
+    ['redactCrashText', (value: string) => redactCrashText(value, '/home/fake-user')],
+  ])('%s hides cookie and credential values', (_name, redact) => {
+    const result = redact('cookie=plain-fake-cookie {"credential":"plain-fake-credential"}')
+    for (const secret of ['plain-fake-cookie', 'plain-fake-credential']) expect(result).not.toContain(secret)
   })
 })
