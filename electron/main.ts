@@ -1762,6 +1762,7 @@ if (!hasSingleInstanceLock) {
           ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
           windowsProcessor: await systemService.inspectWindowsProcessor(),
+          macRosetta: process.platform === 'darwin' && app.runningUnderARM64Translation,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -2003,6 +2004,9 @@ if (!hasSingleInstanceLock) {
         return previousAutoInstallFailureMessage(process.platform)
       },
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // electron-updater 按 `uname -a`（带电脑名）判断 Apple 芯片，Intel Mac 会被挑上 arm64 包（#1155）。
+      // Intel 版在 Apple 芯片上经 Rosetta 跑时 process.arch 是 x64，这时照样算能跑 arm64，让它换回 M 系列芯片版。
+      ...(process.platform === 'darwin' ? { macRunsArm64: process.arch === 'arm64' || app.runningUnderARM64Translation } : {}),
       // 未签名通道里只有 Windows 的清单由发布者 Ed25519 签过（update-package-signature.ts），
       // 没有 Authenticode 就只认它。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签；Linux 的 deb
       // 同样走未签名通道，但它的清单还没签，接上会让所有 Linux 更新都被拒装。
@@ -2215,6 +2219,9 @@ if (!hasSingleInstanceLock) {
       return buildFeedbackRuntimeLines({
         snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
         platform: process.platform,
+        mac: process.platform === 'darwin'
+          ? { systemVersion: process.getSystemVersion(), appArch: process.arch, translated: app.runningUnderARM64Translation }
+          : null,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,

@@ -170,10 +170,25 @@ export interface FeedbackRuntimeSnapshot {
   region: NetworkRegion
 }
 
+/**
+ * Mac 的系统版本和芯片。报告头那行「系统」只有内核号和本进程的架构：Apple 芯片上装了 Intel 版时
+ * 那里也写 x64，客服分不出是 Intel 机器还是装错了包（#1155）。
+ */
+export interface FeedbackMacHardware {
+  /** process.getSystemVersion()，如 13.6.1；读不到传 null。 */
+  systemVersion: string | null
+  /** process.arch：装的是哪一版。 */
+  appArch: string
+  /** 本进程是不是经 Rosetta 转换运行（app.runningUnderARM64Translation）。 */
+  translated: boolean
+}
+
 export interface FeedbackRuntimeInput {
   /** 上一次扫描的快照；还没扫过时传 null，工具与网络几行都写「未能读取」。 */
   snapshot: FeedbackRuntimeSnapshot | null
   platform: NodeJS.Platform
+  /** 只有 Mac 传；缺省时 macOS 版本、Mac 芯片两行不出。 */
+  mac?: FeedbackMacHardware | null
   /** 只有 Windows 有意义；其他平台传 null，这一行不出。 */
   executionMode: WindowsCliExecutionMode | null
   /**
@@ -243,6 +258,14 @@ function codexDesktopText(status: FeedbackCodexDesktop): string {
   const version = status.appVersion?.trim() || status.version?.trim()
   const head = version ? `已安装 ${version}` : '已安装（版本未知）'
   return status.running ? `${head}，正在运行` : head
+}
+
+function macChipText(mac: FeedbackMacHardware): string {
+  // Intel 版只有在 Apple 芯片上才需要 Rosetta，经 Rosetta 跑本身就说明这台是 Apple 芯片。
+  if (mac.translated) return 'Apple 芯片，装的是 Intel 版（经 Rosetta 转换运行）'
+  if (mac.appArch === 'arm64') return 'Apple 芯片，装的是 M 系列芯片版'
+  if (mac.appArch === 'x64') return 'Intel 处理器，装的是 Intel 版'
+  return mac.appArch
 }
 
 function executionModeText(
@@ -331,6 +354,10 @@ export function resolveFeedbackToolRoute(toolRouting: RelayEndpointRoutingSnapsh
 export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[] {
   const lines: string[] = []
   const snapshot = input.snapshot
+  if (input.platform === 'darwin' && input.mac) {
+    lines.push(`macOS 版本: ${input.mac.systemVersion?.trim() || unreadable}`)
+    lines.push(`Mac 芯片: ${macChipText(input.mac)}`)
+  }
   for (const key of Object.keys(runtimeToolNames) as Array<keyof SystemSnapshot['runtime']>) {
     const status = snapshot?.runtime[key]
     lines.push(`${runtimeToolNames[key]}: ${status ? runtimeToolText(status) : unreadable}`)

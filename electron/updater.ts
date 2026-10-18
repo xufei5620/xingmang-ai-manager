@@ -344,6 +344,12 @@ export interface UpdaterRuntime {
    * keeps the digest-only behaviour; providing it makes a missing signature fatal.
    */
   verifyPackageSignature?: (version: string, entry: Readonly<Record<string, unknown>>) => UpdateSignatureVerdict
+  /**
+   * 只在 Mac 上有意义：这台 Mac 能不能跑 arm64 版（Apple 芯片，包括 Intel 版经 Rosetta 跑着的）。
+   * false 时清单里的 arm64 包一律不要（见 buildIntelMacUpdateInfo）。不传＝不知道，按 electron-updater
+   * 自己挑（旧行为）。
+   */
+  macRunsArm64?: boolean
   installedRelease?: InstalledRelease | null
   /**
    * 每次检查前重读一遍更新目录上的状态文件，撤回名单与分批放量都以最新的为准。
@@ -786,6 +792,35 @@ function manifestPackageDigest(info: UpdateInfo, downloadedFile: string): string
   return legacy || null
 }
 
+// Same substring MacUpdater.filterFilesForArch looks for, so both sides agree
+// on which manifest entries are arm64 packages.
+function isArm64Package(url: unknown): boolean {
+  return typeof url === 'string' && url.includes('arm64')
+}
+
+/**
+ * 去掉清单里的 arm64 包，给跑不了 arm64 的 Mac（Intel 芯片）用。
+ *
+ * electron-updater 的 MacUpdater 拿 `uname -a` 里有没有「ARM」判断这台 Mac 是不是 Apple 芯片，
+ * 可 `uname -a` 里带着电脑名：Intel Mac 叫「ARM-…」「CHARM…」时，清单里只要有 arm64 包它就挑
+ * arm64 的，装上打不开；客户重装 Intel 版，下次自动更新又被换回去（#1155）。清单里没有 arm64 包时
+ * 它只能挑 Intel 版。
+ *
+ * 老字段 path / sha512 在 files 为空时才会被读，可我们发的清单里它们指的正是 arm64 包，一起换成
+ * 留下的第一项，免得又从这里挑回去。
+ */
+export function buildIntelMacUpdateInfo<T extends UpdateInfo>(info: T): T {
+  const files = Array.isArray(info.files) ? info.files : []
+  const kept = files.filter((entry) => !isArm64Package(entry?.url))
+  const legacyArm64 = isArm64Package(info.path)
+  if (kept.length === files.length && !legacyArm64) return info
+  return {
+    ...info,
+    files: kept,
+    ...(legacyArm64 ? { path: kept[0]?.url ?? '', sha512: kept[0]?.sha512 ?? '' } : {}),
+  }
+}
+
 function digestFailureDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   return message.replace(/\s+/g, ' ').trim().slice(0, 200) || '未知错误'
@@ -945,6 +980,7 @@ export function createUpdaterService(
   }
   const verifyPackageDigest = runtime.verifyPackageDigest
   const verifyPackageSignature = runtime.verifyPackageSignature
+  const intelMac = platform === 'darwin' && runtime.macRunsArm64 === false
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
   let installRequested = false
@@ -1312,7 +1348,10 @@ export function createUpdaterService(
       )
       return
     }
-    const expected = manifestPackageDigest(event, downloadedFile)
+    // 下载前已经把 arm64 包从清单里拿掉了（见 update-available）。这里按同一条规则再核一次：
+    // 哪天 electron-updater 不再从那份清单下载，跑不了的 arm64 包也对不上任何核对值，照样拒装。
+    const manifest = intelMac ? buildIntelMacUpdateInfo(event) : event
+    const expected = manifestPackageDigest(manifest, downloadedFile)
     if (!expected) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISSING',
@@ -1346,7 +1385,7 @@ export function createUpdaterService(
       // Windows 安装包没有 Authenticode 签名，清单又和安装包同放一个桶：拿到上传密钥
       // 的人可以把两者一起换掉，上面的 SHA-512 照样对得上。只有发布者私钥签过的清单项
       // 才算数，缺签名同样拒装，绝不当成「没签就放行」。
-      const entry = manifestPackageEntry(event, downloadedFile)
+      const entry = manifestPackageEntry(manifest, downloadedFile)
       const verdict = entry
         ? verifyPackageSignature(String(event.version ?? ''), { ...entry })
         : { ok: false as const, code: 'UPDATE_SIGNATURE_MISSING' as const, message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服。' }
@@ -1363,6 +1402,9 @@ export function createUpdaterService(
     'checking-for-update': () => emit({ phase: 'checking', progress: null, error: null }),
     'update-not-available': (info: UpdateInfo) => applyInfo('not-available', info),
     'update-available': (info: UpdateInfo) => {
+      // electron-updater 下载时用的就是发这个事件的那个对象（AppUpdater 把它存在
+      // updateInfoAndProvider 里），换个新对象它看不见，只能就地改。
+      if (intelMac) Object.assign(info, buildIntelMacUpdateInfo(info))
       offeredPackageBytes = resolveUpdatePackageBytes(info)
       applyInfo('available', info, { diskShortfall: null })
     },
