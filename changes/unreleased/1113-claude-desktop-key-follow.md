@@ -13,6 +13,6 @@
   改写归属时照旧记着原来的来源（`rewrite`）。换 Key 先 `stageKey` 记下新那把再改客户端，改完才挪成正式那一把，
   中间断了两把都认，不会让客户端换上了新 Key、首页却不认它。
 - Claude Desktop 开着就先不写，等它退出再换：沿用换线路 C11 那套每 5 分钟看一眼、回到星芒窗口时看一眼，两个站都等；
-  界面上不另加字（卡上的提示和撤销确认框那句是 #1113 第 3 条，另交 yoyo 定字）。
+  这次界面上不加字，卡上提示下一个 PR 加。
 - `main.ts` 把当前账号的托管 Key 缓存交给系统服务（`readCurrentManagedCliKeys`），明文只在主进程里用（I3）。
-- 没做：WorkBuddy、OpenCode 借 Codex 的 Key 时同样不跟着换，这次只管 Claude Desktop。
+- 没做：WorkBuddy、OpenCode 借别的工具的 Key 时还不跟着换，下一个 PR 做。
