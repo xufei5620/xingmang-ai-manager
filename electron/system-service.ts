@@ -111,8 +111,10 @@ import {
   rewriteManagedCliHooks,
   saveProviderConfig,
   applyProviderModelReplace,
+  applyProviderPickerRefresh,
   applyProviderRouteFollow,
   planProviderModelReplace,
+  planProviderPickerRefresh,
   planProviderRouteFollow,
   codexOfficialAliasPending,
   fillRelayTemplateDefaults,
@@ -7827,6 +7829,39 @@ export function createSystemService(
     })
   }
 
+  /**
+   * 打开前、开机核对时刷新型号菜单（tool-model-check.ts 的 refreshPickerIfOutdated）：只改菜单那几处，
+   * Claude Code 的 modelPicker 和没写过的「Default」，Codex 的型号名单和指向它的那一行（#1154 后续）。以前走
+   * saveConfig 的整份合并，Codex 客户自己定的 review_model、打开的检查更新、注释，Claude Code 放开的 deny 项
+   * 和另指的「Default」都被改回模板的样子。闸同 replaceToolModel；来源记录、模板版本号都不动。
+   */
+  async function refreshToolPicker(provider: ProviderId, model: string, assertBeforeWrite: () => void): Promise<void> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    function assertOwner(): void {
+      assertBeforeWrite()
+      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，这次不刷新')
+    }
+    await serializeConfigWrite(async () => {
+      assertOwner()
+      if (store.read().officialProviders?.includes(provider)) throw new Error('工具已选择官方账号，已保留原配置')
+      const before = inspectNativeProviderConfig(provider)
+      if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
+      const apiKey = before.apiKey?.trim() ?? ''
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      const activeSite = providerRelaySite(provider, before)
+      const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
+      if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}`)
+      const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
+      assertOwner()
+      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不刷新')
+      if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))) throw new Error('工具配置在模型检测期间发生变化，已保留现有配置')
+      const plan = planProviderPickerRefresh(provider, model, availableModels, providerRoots, codexModelCatalog)
+      if (plan.status === 'current') return
+      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具里的型号已经改了，这次不刷新' : '工具配置里找不到型号菜单写在哪，这次不刷新')
+      applyProviderPickerRefresh(provider, plan, providerRoots)
+    })
+  }
+
   // ---- 换线路时定点改写工具配置（xm 三线路 C9、C10、C11、C19） ----
   //
   // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改。地址取的是
@@ -8108,7 +8143,7 @@ export function createSystemService(
   }
 
   // 打开前的模型核对（tool-model-check.ts）。只认本软件用当前账号写的配置：官方账号、
-  // 手填、被改动过的都不碰；刷新菜单走 saveConfig 的自动写入那道闸，与开机同步 Key
+  // 手填、被改动过的都不碰；刷新菜单走 refreshToolPicker 定点改写，闸与开机同步 Key
   // 同一套所有权规则，写一半回滚（I9）也照旧。
   function modelCheckTarget(provider: ProviderId, accountOwnedOnly: boolean): ToolModelCheckTarget | null {
     if (store.read().officialProviders?.includes(provider)) return null
@@ -8126,18 +8161,16 @@ export function createSystemService(
   const toolModelChecker = createToolModelChecker({
     now: () => Date.now(),
     target: (provider) => modelCheckTarget(provider, true),
-    // 写入当中认人时不看来源记录：saveConfig 写之前会先把记录改成「手动」（写失败就停在受
-    // 保护的状态），按记录认人的话刷新永远在写到一半时作废，记录还留在「手动」（#562 起
-    // Claude Code 的菜单就是这样一次没刷成过）。来源是不是当前账号，由 saveConfig 的自动写入
-    // 那道闸进锁时自己把关。
+    // 写入当中认人时不看来源记录：来源是不是当前账号，由写入那道闸（refreshToolPicker、
+    // replaceToolModel）进锁时自己把关。刷新以前走 saveConfig，写之前先把记录改成「手动」，
+    // 按记录认人的话刷新永远在写到一半时作废，记录还留在「手动」（#562 起 Claude Code 的菜单
+    // 就是这样一次没刷成过）。
     identity: (provider) => modelCheckTarget(provider, false)?.identity ?? null,
     listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
     pickerOutdated: (provider, models, model) => provider === 'claude'
       ? claudeModelPickerNeedsRefresh(models, model, providerRoots)
       : codexModelCatalogOutdated(models, model),
-    refreshPicker: async (provider, model, assertCurrent) => {
-      await saveConfig({ provider, apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
-    },
+    refreshPicker: (provider, model, assertCurrent) => refreshToolPicker(provider, model, assertCurrent),
     replaceModel: (provider, from, to, assertCurrent) => replaceToolModel(provider, from, to, assertCurrent),
     ...(serviceOptions.cliModelHints ? { modelHints: serviceOptions.cliModelHints } : {}),
     upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),

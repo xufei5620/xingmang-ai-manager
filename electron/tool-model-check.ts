@@ -38,9 +38,9 @@ export interface ToolModelCheckDependencies {
   target(provider: ProviderId): ToolModelCheckTarget | null
   /**
    * 这份配置现在是谁的（同 target 的 identity），只是不管它还该不该碰；缺省就取 target 的。
-   * 只给交到 refreshPicker 手里的 assertCurrent 用：那次写入会先把来源记录改成别的再写
-   * （system-service.ts 的 saveConfig），写入当中再按 target 认人，就会以为换了人，菜单
-   * 永远刷不成（#562 起）。写之前的几道核对照旧按 target。
+   * 只给交到 refreshPicker 手里的 assertCurrent 用：写入当中只认人，来源记录归写入那道闸把关
+   * （以前那次写入走 saveConfig，会先把来源记录改成别的再写，按 target 认人菜单永远刷不成，#562）。
+   * 写之前的几道核对照旧按 target。
    */
   identity?(provider: ProviderId): string | null
   listModels(apiKey: string): Promise<string[]>
@@ -49,6 +49,7 @@ export interface ToolModelCheckDependencies {
   /**
    * assertCurrent 要在真正落盘前再调一次：核对和写入之间隔着网络请求，账号随时会切走，
    * 写入那一刻认的必须还是开始核对时那个账号那份配置（#538）。model 是配置里原来那个默认型号。
+   * 只改菜单那几处，别的一个字不动（#1154 后续，system-service.ts 的 refreshToolPicker）。
    */
   refreshPicker(provider: ProviderId, model: string, assertCurrent: () => void): Promise<void>
   /**
