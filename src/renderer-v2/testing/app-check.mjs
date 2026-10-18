@@ -2246,6 +2246,37 @@ test('a pending CLI launch locks only its row and keeps the launch action visibl
   } finally { await page.close() }
 })
 
+// #1104 第 3 条：点「打开」以后先读配置、核对默认模型，要好几秒。这几步一开始就该挂上「打开中」，
+// 不能等它们走完才挂，否则卡片一动不动，再点一下也没反应。
+test('a CLI launch shows its opening state while it is still reading the configuration', async () => {
+  const page = await open()
+  try {
+    const button = page.getByTestId('tool-codex-primary')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-codex-primary"]')?.textContent === '打开'
+      && !document.querySelector('[data-testid="tool-codex-primary"]')?.hasAttribute('disabled'))
+    await page.evaluate(() => window.v2Test.holdNextConfigRead())
+    const before = await page.evaluate(() => window.v2Test.calls.length)
+    await button.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-codex-primary"]')?.getAttribute('aria-busy') === 'true')
+    assert.equal(await button.innerText(), '打开中')
+    assert.equal(await button.isDisabled(), true)
+    assert.equal(await page.getByTestId('tool-claude-primary').isDisabled(), true)
+    await page.getByTestId('tool-row-codex').getByText('正在打开工具', { exact: true }).waitFor()
+    const preparing = await page.evaluate(start => window.v2Test.calls.slice(start).map((entry) => entry.method), before)
+    assert.equal(preparing.includes('getConfig'), true)
+    assert.equal(preparing.includes('chooseWorkspace'), false)
+    assert.equal(preparing.includes('launchCli'), false)
+    await page.evaluate(() => window.v2Test.releaseConfigRead())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-codex-primary"]')?.getAttribute('aria-busy') !== 'true')
+    assert.equal(await button.innerText(), '打开')
+    const methods = await page.evaluate(start => window.v2Test.calls.slice(start).map((entry) => entry.method), before)
+    assert.equal(methods.filter((method) => method === 'chooseWorkspace').length, 1)
+    assert.equal(methods.filter((method) => method === 'launchCli').length, 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('tool probe failures show a retry state instead of a third-party configuration state', async () => {
   const page = await open('detectionFailed=1')
   try {
