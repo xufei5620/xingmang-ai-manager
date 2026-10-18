@@ -8131,6 +8131,92 @@ describe('runtime-logs:preview-feedback size budget', () => {
   })
 })
 
+// AGENTS.md I3 登记了能让明文跨 IPC 的那几条专用通道，并写明它们全都在日志静默名单里。
+// 以前只有文档这么说，谁再加一条、或者把其中一条挪出静默名单，没有测试会红（#1069 第 6 条）。
+// 这一段把同一份名单钉在三处：文档的登记、契约里的通道、成功时不进运行日志。
+describe('plaintext IPC channels registered under AGENTS.md I3', () => {
+  const plaintextChannels = [
+    'account:copy-reset-password',
+    'account:get-remembered-login',
+    'account:reset-password',
+    'account:reveal-key',
+    'account:set-remembered-login',
+    'config:reveal-api-key',
+  ]
+
+  it('matches the exception list written under I3 in AGENTS.md', () => {
+    const agents = fs.readFileSync(path.join(__dirname, '..', 'AGENTS.md'), 'utf8')
+    const section = agents.slice(agents.indexOf('**I3.'), agents.indexOf('**I4.'))
+    const exceptions = section.split('\n').find((line) => line.startsWith('*已登记的例外*'))
+    expect(exceptions, 'AGENTS.md 的 I3 里找不到「已登记的例外」那一段').toBeDefined()
+    const registered = [...new Set([...exceptions!.matchAll(/`([a-z-]+:[a-z-]+)`/g)].map((match) => match[1]))].sort()
+    expect(registered).toEqual(plaintextChannels)
+  })
+
+  it('are all channels of the invoke contract', () => {
+    expect(Object.values(ipcInvokeChannels)).toEqual(expect.arrayContaining(plaintextChannels))
+  })
+
+  it('never writes a success line or the plaintext itself to the runtime log', async () => {
+    const secrets = {
+      apiKey: 'sk-i3-config-reveal-secret',
+      accountKey: 'sk-i3-account-reveal-secret',
+      resetPassword: 'i3-reset-generated-secret',
+      copiedPassword: 'i3-copied-reset-secret',
+      rememberedPassword: 'i3-remembered-secret',
+      typedPassword: 'i3-typed-remember-secret',
+    }
+    const service = serviceStub()
+    vi.mocked(service.revealApiKey).mockReturnValue(secrets.apiKey)
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.revealKey).mockResolvedValue(secrets.accountKey)
+    vi.mocked(accountService.resetPassword).mockResolvedValue({ newPassword: secrets.resetPassword })
+    const accountCredentials = {
+      read: vi.fn(async () => ({ version: 1 as const, identifier: 'boss@example.test', password: secrets.rememberedPassword })),
+      save: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined),
+    }
+    const { runtimeLog, dispose } = register(service, undefined, undefined, accountService, accountCredentials)
+    const invoke = (channel: string, ...args: unknown[]) => electronMocks.handlers.get(channel)!(trustedEvent(), ...args)
+    try {
+      // 每条都要真走到成功那一步，静默名单才算被测到；名单变了这张表也得跟着补。
+      const successes: Record<string, () => Promise<void>> = {
+        'config:reveal-api-key': async () => {
+          expect(await invoke('config:reveal-api-key', 'codex')).toBe(secrets.apiKey)
+        },
+        'account:reveal-key': async () => {
+          expect(await invoke('account:reveal-key', 42)).toBe(secrets.accountKey)
+        },
+        'account:reset-password': async () => {
+          expect(await invoke('account:reset-password', { email: 'boss@example.test', token: 'reset-code' }))
+            .toEqual({ newPassword: secrets.resetPassword })
+        },
+        'account:copy-reset-password': async () => {
+          await invoke('account:copy-reset-password', secrets.copiedPassword)
+          expect(electronMocks.writeText).toHaveBeenCalledWith(secrets.copiedPassword)
+        },
+        'account:get-remembered-login': async () => {
+          expect(await invoke('account:get-remembered-login'))
+            .toEqual({ identifier: 'boss@example.test', password: secrets.rememberedPassword })
+        },
+        'account:set-remembered-login': async () => {
+          await invoke('account:set-remembered-login', { identifier: 'boss@example.test', password: secrets.typedPassword })
+          expect(accountCredentials.save).toHaveBeenCalledWith('boss@example.test', secrets.typedPassword)
+        },
+      }
+      expect(Object.keys(successes).sort()).toEqual(plaintextChannels)
+      for (const channel of plaintextChannels) await successes[channel]()
+
+      const loggedEvents = runtimeLog.log.mock.calls.map((call) => call[2])
+      for (const channel of plaintextChannels) expect(loggedEvents).not.toContain(channel)
+      const logged = JSON.stringify([runtimeLog.log.mock.calls, runtimeLog.exception.mock.calls])
+      for (const secret of Object.values(secrets)) expect(logged).not.toContain(secret)
+    } finally {
+      dispose()
+    }
+  })
+})
+
 describe('config:open-directory', () => {
   const temporary: string[] = []
 
