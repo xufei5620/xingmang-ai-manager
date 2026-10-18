@@ -144,6 +144,17 @@ describe('tutorial wording that follows the current app', () => {
     expect(entry?.detail).toContain('的星芒图标 →「已安装的工具」→「Codex 桌面端」');
     expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
   });
+
+  // 桌面端的「聊天」「工作」要 ChatGPT 账号，用密钥发会报这句英文；客户拿原话搜得到，并被引到「Codex」那一栏。
+  it('explains the desktop chat and work submit error and sends key users to Codex', () => {
+    const entry = step('trouble', '回首页打开 Codex');
+    expect(entry.detail).toContain('Work browser access requires an authenticated account');
+    expect(entry.title).toContain('提交消息时出错');
+    expect(entry.bullets?.[0]).toContain('切到「Codex」');
+    expect(entry.extra?.[0].detail).toContain('「…」→「配置…」里选「ChatGPT 账号」');
+    expect(step('start', '回首页打开 Codex').bullets?.[0]).toContain('切到「Codex」');
+    expect(step('launch', '返回首页打开桌面端').bullets?.[0]).toContain('切到「Codex」');
+  });
 });
 
 describe('linux tutorials', () => {

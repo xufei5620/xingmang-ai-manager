@@ -606,7 +606,7 @@ test('the setup result keeps installation, billing and first-task completion as 
     assert.match(await page.getByTestId('guide-result-install').innerText(), /已装好/)
     assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号[\s\S]*设置已读到/)
     assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
-    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试/)
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedFirstTask = value } } }))
     await page.getByTestId('guide-first-task-copy').click()
     // 复制成功只弹一句短提示，框里不再留一行字。
@@ -617,7 +617,7 @@ test('the setup result keeps installation, billing and first-task completion as 
     await page.getByTestId('guide-open-tool').click()
     await page.getByTestId('guide-error').waitFor()
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
-    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后把下面这句话发给它试试/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试/)
     assert.equal((await calls(page)).some((entry) => entry.method === 'complete'), false)
     await page.getByTestId('guide-retry').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
