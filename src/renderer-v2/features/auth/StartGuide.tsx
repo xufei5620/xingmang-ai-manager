@@ -77,7 +77,8 @@ export interface StartGuideProps {
   onRegister?: () => void
   /** newFolder：不弹目录选择器，替用户新建一个项目文件夹再打开（只对命令行工具有意义）。 */
   onLaunch: (route: GuideRoute, newFolder?: boolean) => Promise<boolean | void>
-  onComplete: (route: GuideRoute) => void
+  /** landing：走完以后进哪一页。只有「去聊天」进聊天页，「进入首页」「打开 X」「去充值」都先回首页。 */
+  onComplete: (route: GuideRoute, landing: 'home' | 'chat') => void
   onBack?: () => void
   onHelp?: () => void
   /** 账号、版本、系统；给了才在红字旁出「复制给客服」（和错误框同一份内容）。 */
@@ -408,9 +409,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     switchAccount()
   }, [signedIn, locked, step, route])
   const move = (nextStep: GuideStep) => { setStep(nextStep); if (route) saveProgress(route, nextStep) }
-  const complete = (chosen: GuideRoute) => { clearGuideProgress(getGuideStorage(), resumeKey); onComplete(chosen) }
+  const complete = (chosen: GuideRoute, landing: 'home' | 'chat') => { clearGuideProgress(getGuideStorage(), resumeKey); onComplete(chosen, landing) }
   // 去充值就算走完引导：否则下次登录引导又从头弹出来，客户以为刚才没弄好。
-  const recharge = (chosen: GuideRoute) => { if (locked) return; complete(chosen); onFailureAction?.('recharge') }
+  const recharge = (chosen: GuideRoute) => { if (locked) return; complete(chosen, 'home'); onFailureAction?.('recharge') }
   const run = async (action: string, work: () => Promise<void>) => {
     if (lock.current || busy) return
     const ticket = owner.current
@@ -465,7 +466,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     void run('打开工具', async () => {
       const ticket = owner.current
       const launched = await onLaunch(chosen, newFolder)
-      if (launched !== false && ticket === owner.current) complete(chosen)
+      if (launched !== false && ticket === owner.current) complete(chosen, chosen === 'chat' ? 'chat' : 'home')
     })
   }
   // Codex 桌面端自己管工作区，只有命令行工具打开时要选文件夹。
@@ -553,7 +554,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           <div className="auth-guide-ready-actions">
             {!signedIn && !readyToOpen && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
             <Button variant={signedIn || readyToOpen ? 'primary' : 'secondary'} icon={route === 'chat' ? MessageSquare : FolderOpen} loading={pending === '打开工具'} disabled={locked || !readyToOpen} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '去聊天' : `打开 ${name}`}</Button>
-            <Button variant="secondary" disabled={locked || !route || !readyToOpen} onClick={() => { if (route) complete(route) }} testId="guide-home">进入首页</Button>
+            <Button variant="secondary" disabled={locked || !route || !readyToOpen} onClick={() => { if (route) complete(route, 'home') }} testId="guide-home">进入首页</Button>
             {showRecharge && route && <span className="auth-guide-recharge" data-testid="guide-recharge"><Button variant="ghost" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></span>}
             {!signedIn && readyToOpen && <Button variant="secondary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
             {!signedIn && onRegister && <Button variant="secondary" icon={UserPlus} disabled={locked} onClick={onRegister} testId="guide-ready-register">注册新账号</Button>}
