@@ -110,22 +110,45 @@ export function removeClaudeRelayModelPicker(parsed: Record<string, unknown>, en
   if (env) delete env.ANTHROPIC_DEFAULT_MODEL
 }
 
+/** 刷新菜单时要改的那几处；哪一项缺省就是那一项不用改。 */
+export interface ClaudeModelPickerUpdates {
+  defaultModel?: string
+  modelPicker?: ClaudeModelPickerSetting
+}
+
 /**
- * 菜单只在保存配置时写一次，账号能用的型号之后变了它不会跟着变（第十二批候选 5）。
- * 这里判断现在这份 settings.json 按最新的型号清单重写会不会不一样：Default 指向不是
- * 当前型号、或本软件管的菜单（没写过也算）和新生成的对不上。用户自己写的菜单照旧不认。
+ * 菜单只在保存配置时写一次，账号能用的型号之后变了它不会跟着变（第十二批候选 5）。打开前、
+ * 开机核对时按最新的型号清单只刷新这两处（config-files.ts 的 planProviderPickerRefresh），
+ * 不像保存配置那样整份重写（#1154 后续）：
+ * - Default 指向只在没写时补成当前型号（老版本写的配置没有这一项）。写了别的型号就是客户
+ *   自己指的，或者客户用 /model 换了型号，都不跟着改，同开机换下架型号那条（#1154 第 4 条）。
+ * - 本软件管的菜单（没写过也算）和新生成的对不上就换成新的。用户自己写的菜单照旧不认。
  */
+export function claudeRelayModelPickerUpdates(
+  parsed: Record<string, unknown>,
+  availableModels: readonly string[],
+  currentModel: string,
+): ClaudeModelPickerUpdates {
+  const env = parsed.env && typeof parsed.env === 'object' && !Array.isArray(parsed.env)
+    ? parsed.env as Record<string, unknown>
+    : null
+  const updates: ClaudeModelPickerUpdates = {}
+  const defaultModel = env?.ANTHROPIC_DEFAULT_MODEL
+  if (defaultModel === undefined || (typeof defaultModel === 'string' && !defaultModel.trim())) updates.defaultModel = currentModel
+  const picker = buildClaudeRelayModelPicker(availableModels, currentModel)
+  if (picker && (parsed.modelPicker === undefined || isManagedClaudeModelPicker(parsed.modelPicker))
+    && JSON.stringify(parsed.modelPicker) !== JSON.stringify(picker)) {
+    updates.modelPicker = picker
+  }
+  return updates
+}
+
+/** 现在这份 settings.json 按最新的型号清单刷新会不会变（规矩见 claudeRelayModelPickerUpdates）。 */
 export function claudeRelayModelPickerOutdated(
   parsed: Record<string, unknown>,
   availableModels: readonly string[],
   currentModel: string,
 ): boolean {
-  const env = parsed.env && typeof parsed.env === 'object' && !Array.isArray(parsed.env)
-    ? parsed.env as Record<string, unknown>
-    : null
-  if (env?.ANTHROPIC_DEFAULT_MODEL !== currentModel) return true
-  const picker = buildClaudeRelayModelPicker(availableModels, currentModel)
-  if (!picker) return false
-  if (parsed.modelPicker !== undefined && !isManagedClaudeModelPicker(parsed.modelPicker)) return false
-  return JSON.stringify(parsed.modelPicker) !== JSON.stringify(picker)
+  const updates = claudeRelayModelPickerUpdates(parsed, availableModels, currentModel)
+  return updates.defaultModel !== undefined || updates.modelPicker !== undefined
 }

@@ -203,6 +203,21 @@ jobs:
           PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
         run: node e2e/macos-launch-smoke.mjs "release-free-ci-$PACKAGE_VERSION"
 
+      # 同 publish-release.yml 的 macos-build：上面那次在这台 Apple 芯片 runner 上只
+      # 启动了 M 芯片版，交给人装的 Intel 版也要先经 Rosetta 启动过一次。
+      - name: Make sure Rosetta can run the Intel package on this Apple silicon runner
+        timeout-minutes: 10
+        run: |
+          if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Launch the Intel package through Rosetta and require it to stay alive
+        timeout-minutes: 6
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: node e2e/macos-launch-smoke.mjs "release-free-ci-$PACKAGE_VERSION" --arch x64
+
       - name: Print artifact checksums
         env:
           PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}

@@ -110,7 +110,11 @@ import {
   restoreClaudeConsoleKey,
   rewriteManagedCliHooks,
   saveProviderConfig,
+  applyProviderModelReplace,
+  applyProviderPickerRefresh,
   applyProviderRouteFollow,
+  planProviderModelReplace,
+  planProviderPickerRefresh,
   planProviderRouteFollow,
   codexOfficialAliasPending,
   fillRelayTemplateDefaults,
@@ -138,6 +142,7 @@ import {
 } from './project-instructions'
 import { classifyWorkspace, resolveRememberedWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import {
+  claudePlatformSwitches,
   describeOverride,
   inspectWorkspaceConfigOverrides,
   launchOverrideNotice,
@@ -195,7 +200,7 @@ import {
 } from './install-cancellation'
 import { inspectCcSwitchInstalled, resolveCcSwitchLeftover, type CcSwitchLeftover } from './cc-switch-leftover'
 import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership, type ToolTemplateFillResult } from './tool-config-ownership'
-import type { StoredManagedCliKey } from './managed-cli-key-store'
+import { isReplacedManagedKey, type StoredManagedCliKey } from './managed-cli-key-store'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
 import {
   assertTrustedElevatedCliCommand,
@@ -1070,6 +1075,12 @@ export interface SystemService {
    * 对不齐抛错，配置照样是恢复出来的那份。
    */
   alignRestoredAccountSource(provider: ProviderId): Promise<void>
+  /**
+   * 排进保存配置那一队再改工具配置（#1061 第 1 条）：主进程别处替客户改配置的（画图工具登记、
+   * 星芒AI技能跟着账号开关）用它，不然保存查模型那一会儿改了文件，保存就报配置在检测期间变了。
+   * operation 里不能再排这一队，那会自己等自己。可选 = 旧实现不提供，调用方直接写。
+   */
+  serializeToolConfigWrite?<T>(operation: () => Promise<T>): Promise<T>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   /** 手上现成的扫描结果（正在跑的，或 `maxAgeMs` 以内跑完且之后没装卸过东西的）；没有就是 null，不会新起一轮。 */
   recentScan(maxAgeMs: number): Promise<SystemSnapshot> | null
@@ -1804,6 +1815,21 @@ export function describeNpmCommandFailure(error: unknown): string {
   if (error.code === 'TIMED_OUT') return npmDownloadTimedOutMessage
   const highlights = npmFailureHighlights(error.stderr)
   return highlights ? `${error.message}（${highlights}）` : error.message
+}
+
+/**
+ * 换一个 npm 源，换的只是从哪儿下，换不了这台电脑（#1057 第 5a 条）。以前哪一步失败都记成
+ * 「这个源不行」，换下一个源从头再下一遍（最长 30 分钟），下面两种最后报的还是同一个错：
+ * - 盘满了（ENOSPC）：这一轮下的东西删掉以后，下一个源要写的还是那么多，哪一步报的都一样。
+ * - 往正在用的工具目录里写的那一步，文件被占用或者没有权限（EBUSY、ETXTBSY、EPERM、EACCES）：
+ *   下一个源写的还是那个目录，开着的工具也还开着。
+ * 写进暂存目录（管理员身份、macOS、Linux）时撞上的占用不算：开着的工具用的是正在用的那份，
+ * 不是这份；每个源都新建一份暂存目录，换个源照旧可能就过去了。
+ * 先把正在用的工具目录复制进暂存目录的那一步不用这里判：它跟源无关，安装流程见它失败就停（#1157 第 14 条）。
+ */
+export function isMachineBoundNpmFailure(detail: string, writingFolderInUse: boolean): boolean {
+  if (/\bENOSPC\b/.test(detail)) return true
+  return writingFolderInUse && /\b(?:EBUSY|ETXTBSY|EPERM|EACCES)\b/.test(detail)
 }
 
 /**
@@ -2868,11 +2894,20 @@ export function providerCommandEnvironment(
  *   一个字不动，所以 Windows、Linux 和 Mac 一样不带，不再只靠检查页提示。
  * - 选型号的那几个：客户自己设的 ANTHROPIC_MODEL 这类会让 Claude Code 去要当前账号没有的型号；接账号时
  *   settings.json 里的同名项已经挪开（config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。
+ * - 改走云厂商的那几个开关（workspace-config-overrides.ts 的 claudePlatformSwitches，#1157 第 11 条）：
+ *   CLAUDE_CODE_USE_BEDROCK 这类一打开，Claude Code 连地址带登录都换成云厂商的，星芒写的 settings.json
+ *   里没有同名项，盖不住它。客户给自己终端里的 Claude Code 用 Bedrock、Vertex 照旧，这里只是这一次不带。
+ *   settings.json 里客户自己写的同名项不挪（那是他设的值，挪不挪要 yoyo 定）。
  * 用自己的 Claude 账号时照旧都带：这些可能就是客户自己的 Key、登录和型号（切回官方账号时星芒也把他原来的
  * ANTHROPIC_API_KEY 放回 settings.json）。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的
  * env 段，不在里面。
  */
-const claudeRelayLaunchExcludedVariables: readonly string[] = ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys]
+const claudeRelayLaunchExcludedVariables: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CONFIG_DIR',
+  ...claudeForeignModelEnvKeys,
+  ...claudePlatformSwitches,
+]
 
 export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
   return provider === 'claude' && accountMode === 'relay' ? claudeRelayLaunchExcludedVariables : []
@@ -2889,7 +2924,7 @@ export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: reado
  * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
  * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
  * 都在里面，另加 Mac 才要的：
- * - Claude Code：没有另加的，Key、配置目录和选型号的那几个三个平台一样，只在用星芒账号时去掉。
+ * - Claude Code：没有另加的，Key、配置目录、选型号和改走云厂商的那几个三个平台一样，只在用星芒账号时去掉。
  * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
  *   里的，要给的值启动时另给。
  * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
@@ -3121,6 +3156,9 @@ const codexModelCatalogGuardReaders: Record<CodexModelCatalogGuardTrigger, Codex
 /** 打开 Codex 之前在本机看一眼型号名单，最多等这么久。 */
 const codexModelCatalogLaunchGuardMs = 3_000
 
+/** 打开工具前替客户补写配置（目录信任、Codex 权限缺省、桌面端中文），排在保存配置后面最多等这么久。 */
+const toolLaunchConfigWriteWaitMs = 3_000
+
 /**
  * 补设置这一轮看哪些：开机那轮（连同联网后、开通订阅后补跑的那几次）什么都看；渲染层
  * 隔一阵来补做（retry）时只看开机那轮因为工具可能开着而欠下的（第二十六批 E）。
@@ -3140,6 +3178,40 @@ export function settleWithin(promise: Promise<unknown>, ms: number): Promise<voi
       resolve()
     }
     promise.then(done, done)
+  })
+}
+
+/**
+ * 把 write 排进 enqueue 那一队，最多等 ms 毫秒：到点还没轮到就按 gaveUp 那句拒绝，之后轮到了也不再做。
+ * 轮到了就等它做完。给打开工具前那几样补写用（#1061 第 1 条）：打开的人在等，排不上就这次不写；
+ * 也不能留到工具起来以后再写，那时工具自己也在写同一个文件。
+ */
+export function writeQueuedWithin<T>(
+  enqueue: (operation: () => Promise<T>) => Promise<T>,
+  write: () => T | Promise<T>,
+  ms: number,
+  gaveUp: string,
+): Promise<T> {
+  let started = false
+  let abandoned = false
+  const queued = enqueue(async () => {
+    if (abandoned) throw new Error(gaveUp)
+    started = true
+    return write()
+  })
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (started) return
+      abandoned = true
+      reject(new Error(gaveUp))
+    }, ms)
+    queued.then((value) => {
+      clearTimeout(timer)
+      resolve(value)
+    }, (error: unknown) => {
+      clearTimeout(timer)
+      reject(error)
+    })
   })
 }
 
@@ -3265,6 +3337,13 @@ export function createSystemService(
     const next = configWriteQueue.then(operation, operation)
     configWriteQueue = next.catch(() => undefined)
     return next
+  }
+  // 打开工具前替客户补的那几样也排进保存配置这一队（#1061 第 1 条）。保存要先联网查模型，查完核对
+  // 配置没被动过才写（sameNativeConfigSnapshot 连修改时间一起比）；以前这一两秒里点「打开」，补写
+  // 一改 config.toml，保存就报「工具配置在模型检测期间发生变化」。这几样都是写不进去也不挡打开的，
+  // 排不上就这次不写：下次打开再补，目录信任 CLI 自己还会问。
+  function writeBeforeLaunch<T>(write: () => T | Promise<T>): Promise<T> {
+    return writeQueuedWithin(serializeConfigWrite, write, toolLaunchConfigWriteWaitMs, '保存配置还没做完，这次打开先不写')
   }
   const codexEnv = serviceOptions.codexEnv
     ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
@@ -5154,6 +5233,10 @@ export function createSystemService(
           )
         }
         const attemptRoot = path.join(transaction, `attempt-${index}`)
+        // 正在往正在用的工具目录里写；这一步失败时它还是 true（见 isMachineBoundNpmFailure）。
+        let writingFolderInUse = false
+        // 正在把正在用的工具目录复制进暂存目录；这一步失败时它还是 true。
+        let copyingFolderInUse = false
         try {
           const resolution = path.join(attemptRoot, 'resolution')
           const cache = path.join(attemptRoot, 'cache')
@@ -5236,11 +5319,13 @@ export function createSystemService(
             )
           }
           if (managedNpmLayout && attemptPrefix) {
+            copyingFolderInUse = true
             await fs.promises.cp(managedNpmLayout.prefix, attemptPrefix, {
               recursive: true,
               force: false,
               errorOnExist: true,
             })
+            copyingFolderInUse = false
           }
           const plan = buildCliMaintenancePlan(
             provider,
@@ -5295,7 +5380,9 @@ export function createSystemService(
               cancellation?.seal(managedPrefixSwapSealReason)
             }
             try {
+              writingFolderInUse = writesInPlace
               await lifecycle()
+              writingFolderInUse = false
               // 在这一个源里就查：缺了就记成这个源失败，接着换下一个源再下一次，
               // 而不是带着装不全的程序走到替换托管目录那一步。
               const stagedPrefix = attemptPrefix ?? sameUserNpmPrefix?.prefix ?? null
@@ -5324,6 +5411,18 @@ export function createSystemService(
           // 这个源下了一半的东西先删掉再换源：下载最长能等 30 分钟，留到整次安装结束才删，
           // 盘快满时下一个源更容易写不下。删不掉就算了，结束时 finally 还会整个再删一次。
           await fs.promises.rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined)
+          // 复制正在用的工具目录这一步跟从哪个源下的无关，换个源下完还是复制同一份、撞上同一个错（多半是
+          // 没有权限读，#1157 第 14 条），所以这一步怎么失败的都不换源。
+          if (copyingFolderInUse || isMachineBoundNpmFailure(detail, writingFolderInUse)) {
+            runtimeLog?.log(
+              'warn',
+              'install',
+              'cli.install.machine-bound-failure',
+              `${definition.name} 写不进本机（盘满、文件被占用或没有权限），换 npm 源也一样，不再换源`,
+              { provider, registry, writingFolderInUse, copyingFolderInUse },
+            )
+            break
+          }
         }
       }
       if (!installed) {
@@ -6027,9 +6126,11 @@ export function createSystemService(
     try {
       // Only normalize configs managed by Xingmang. An official/custom Codex
       // profile is user-owned and must remain byte-for-byte untouched here.
-      if (inspectNativeProviderConfig('codex').matchesRelay) {
-        ensureCodexPermissionDefaults(providerRoots)
-      }
+      // Decide inside the queue: a save that was in flight may just have
+      // switched the profile.
+      await writeBeforeLaunch(() => {
+        if (inspectNativeProviderConfig('codex').matchesRelay) ensureCodexPermissionDefaults(providerRoots)
+      })
     } catch {
       // The launch path remains available; malformed configs are reported by
       // Codex itself and by the dedicated permission inspection below.
@@ -6068,7 +6169,7 @@ export function createSystemService(
           // and only the web view's Statsig gate needs the runtime patch.
           // `writeCodexDesktopLocale` re-validates the safe path and TOML, so a
           // malformed or redirected config can never be silently overwritten.
-          await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, 'zh-CN')
+          await writeBeforeLaunch(() => writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, 'zh-CN'))
         }
       } catch {
         // The normal launch remains available if a locale probe is temporarily
@@ -6120,7 +6221,7 @@ export function createSystemService(
     // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
     if (!workspaceSensitivity) {
       try {
-        const trust = trustManagedWorkspace(provider, providerRoots, workspace)
+        const trust = await writeBeforeLaunch(() => trustManagedWorkspace(provider, providerRoots, workspace))
         if (trust.changed) {
           runtimeLog?.log('info', 'config', 'workspace.trust.written', `${definition.name} 已信任所选工作目录`, {
             provider,
@@ -6425,7 +6526,8 @@ export function createSystemService(
     } catch {
       throw new Error('Codex 工作目录不存在，请重新选择')
     }
-    const result = trustCodexWorkspace(providerRoots, workspace)
+    // 客户点的按钮，等保存做完再写，不像打开前那几样排不上就算了；重开桌面端放在队外（它自己还要排队）。
+    const result = await serializeConfigWrite(async () => trustCodexWorkspace(providerRoots, workspace))
     let restarted = false
     // 只在 Windows 上替人重开：Mac 上主进程一律拒绝重启 Codex（codex-desktop-service.ts），
     // 信任这时已经写进去了，再去重启只会把「已保存」变成一个报错框（第二十九批 A 的同一个原因）。
@@ -6455,7 +6557,7 @@ export function createSystemService(
       throw new Error('当前 Codex Desktop 安装包没有本地简体中文资源，请先通过镜像更新 Codex Desktop')
     }
     const changed = codexDesktopLocaleNeedsChange(before.configuredLocale, locale)
-    if (changed) await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale)
+    if (changed) await serializeConfigWrite(() => writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale))
     // This call is the explicit switch for the runtime patch, so it is also the
     // only place that grants or withdraws consent for the debugging port. Store
     // it before the restart: a failed restart must not leave the later ordinary
@@ -7111,6 +7213,8 @@ export function createSystemService(
             configurationOwnership: configOwnership.read(id, current, owner),
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
+            configurationKeyReplaced: Boolean(owner) && current.hasApiKey && current.matchesRelay
+              && isReplacedManagedKey(id, current.apiKey, cachedKeys),
             ...ccSwitchLeftoverField(resolveCcSwitchLeftover(current, ccSwitchInstalled)),
             ...cliHooksSummaryFields(hooks),
             ...cliHooksAutoRepairedField(!previewOnboarding && autoRepairedCliHooks.has(id), hooks?.stale === true),
@@ -7127,6 +7231,7 @@ export function createSystemService(
         hasApiKey: false,
         matchesRelay: false,
         configurationAccountMatched: false,
+        configurationKeyReplaced: false,
         ccSwitchLeftover: undefined,
         apiKeyPreview: null,
         officialAccountEmail: null,
@@ -7691,6 +7796,72 @@ export function createSystemService(
     })
   }
 
+  /**
+   * 开机换掉已下架的型号（tool-model-check.ts 的 replaceRetiredModel）：配置里只把 from 换成 to，Codex 客户
+   * 自己定的 review_model、Grok 的出图地址、注释这些一个字不动（#1154 第 4 条）。以前走 saveConfig 的整份合并，
+   * 模板里的每一项都按当前版本重写一遍。闸照自动写入那道：只认当前账号写的、没选官方账号的，账号确实能用
+   * to 才写。来源记录不动：它认的是路径、地址和 Key（toolConfigIdentity），型号不在里面，换完照旧是「当前账号」。
+   */
+  async function replaceToolModel(provider: ProviderId, from: string, to: string, assertBeforeWrite: () => void): Promise<void> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    function assertOwner(): void {
+      assertBeforeWrite()
+      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，这次不换')
+    }
+    await serializeConfigWrite(async () => {
+      assertOwner()
+      if (store.read().officialProviders?.includes(provider)) throw new Error('工具已选择官方账号，已保留原配置')
+      const before = inspectNativeProviderConfig(provider)
+      if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
+      const apiKey = before.apiKey?.trim() ?? ''
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      const activeSite = providerRelaySite(provider, before)
+      const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
+      if (!availableModels.includes(to)) throw new Error(`当前 API Key 不支持模型 ${to}`)
+      // 要问一遍 Codex 命令行是哪一版，放在「校验没变」之前，同 saveConfig。
+      const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, to) : undefined
+      assertOwner()
+      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不换')
+      if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))) throw new Error('工具配置在模型检测期间发生变化，已保留现有配置')
+      const plan = planProviderModelReplace(provider, from, to, providerRoots, codexModelCatalog)
+      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具里的型号已经改了，这次不换' : '工具配置里找不到型号写在哪，这次不换')
+      applyProviderModelReplace(provider, plan, providerRoots)
+    })
+  }
+
+  /**
+   * 打开前、开机核对时刷新型号菜单（tool-model-check.ts 的 refreshPickerIfOutdated）：只改菜单那几处，
+   * Claude Code 的 modelPicker 和没写过的「Default」，Codex 的型号名单和指向它的那一行（#1154 后续）。以前走
+   * saveConfig 的整份合并，Codex 客户自己定的 review_model、打开的检查更新、注释，Claude Code 放开的 deny 项
+   * 和另指的「Default」都被改回模板的样子。闸同 replaceToolModel；来源记录、模板版本号都不动。
+   */
+  async function refreshToolPicker(provider: ProviderId, model: string, assertBeforeWrite: () => void): Promise<void> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    function assertOwner(): void {
+      assertBeforeWrite()
+      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，这次不刷新')
+    }
+    await serializeConfigWrite(async () => {
+      assertOwner()
+      if (store.read().officialProviders?.includes(provider)) throw new Error('工具已选择官方账号，已保留原配置')
+      const before = inspectNativeProviderConfig(provider)
+      if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
+      const apiKey = before.apiKey?.trim() ?? ''
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      const activeSite = providerRelaySite(provider, before)
+      const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
+      if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}`)
+      const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
+      assertOwner()
+      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不刷新')
+      if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))) throw new Error('工具配置在模型检测期间发生变化，已保留现有配置')
+      const plan = planProviderPickerRefresh(provider, model, availableModels, providerRoots, codexModelCatalog)
+      if (plan.status === 'current') return
+      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具里的型号已经改了，这次不刷新' : '工具配置里找不到型号菜单写在哪，这次不刷新')
+      applyProviderPickerRefresh(provider, plan, providerRoots)
+    })
+  }
+
   // ---- 换线路时定点改写工具配置（xm 三线路 C9、C10、C11、C19） ----
   //
   // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改。地址取的是
@@ -7972,7 +8143,7 @@ export function createSystemService(
   }
 
   // 打开前的模型核对（tool-model-check.ts）。只认本软件用当前账号写的配置：官方账号、
-  // 手填、被改动过的都不碰；刷新菜单走 saveConfig 的自动写入那道闸，与开机同步 Key
+  // 手填、被改动过的都不碰；刷新菜单走 refreshToolPicker 定点改写，闸与开机同步 Key
   // 同一套所有权规则，写一半回滚（I9）也照旧。
   function modelCheckTarget(provider: ProviderId, accountOwnedOnly: boolean): ToolModelCheckTarget | null {
     if (store.read().officialProviders?.includes(provider)) return null
@@ -7990,18 +8161,17 @@ export function createSystemService(
   const toolModelChecker = createToolModelChecker({
     now: () => Date.now(),
     target: (provider) => modelCheckTarget(provider, true),
-    // 写入当中认人时不看来源记录：saveConfig 写之前会先把记录改成「手动」（写失败就停在受
-    // 保护的状态），按记录认人的话刷新永远在写到一半时作废，记录还留在「手动」（#562 起
-    // Claude Code 的菜单就是这样一次没刷成过）。来源是不是当前账号，由 saveConfig 的自动写入
-    // 那道闸进锁时自己把关。
+    // 写入当中认人时不看来源记录：来源是不是当前账号，由写入那道闸（refreshToolPicker、
+    // replaceToolModel）进锁时自己把关。刷新以前走 saveConfig，写之前先把记录改成「手动」，
+    // 按记录认人的话刷新永远在写到一半时作废，记录还留在「手动」（#562 起 Claude Code 的菜单
+    // 就是这样一次没刷成过）。
     identity: (provider) => modelCheckTarget(provider, false)?.identity ?? null,
     listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
     pickerOutdated: (provider, models, model) => provider === 'claude'
       ? claudeModelPickerNeedsRefresh(models, model, providerRoots)
       : codexModelCatalogOutdated(models, model),
-    refreshPicker: async (provider, model, assertCurrent) => {
-      await saveConfig({ provider, apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
-    },
+    refreshPicker: (provider, model, assertCurrent) => refreshToolPicker(provider, model, assertCurrent),
+    replaceModel: (provider, from, to, assertCurrent) => replaceToolModel(provider, from, to, assertCurrent),
     ...(serviceOptions.cliModelHints ? { modelHints: serviceOptions.cliModelHints } : {}),
     upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
     markUpgradeOffered: async (provider, model) => {
@@ -8156,7 +8326,14 @@ export function createSystemService(
       return true
     }
     if (round.retry) runtimeLog?.log('info', 'config', 'codex-model-catalog.sync-resumed', 'Codex 已经关了，型号名单补做一次按账号核对')
-    void toolModelChecker.syncPicker('codex', { beforeRefresh: () => backup?.('codex') }).catch(() => undefined)
+    void toolModelChecker.syncPicker('codex', {
+      // 问中转、问 Codex 版本那几秒里客户可能刚打开了它：写之前再看一眼，规矩同下面 Claude Code、Grok 那条（#1154）。
+      beforeRefresh: async () => {
+        const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex'])
+        if (latest.running.includes('codex') || latest.unknown.includes('codex') || latest.codexDesktopRunning !== false) throw new Error('Codex 可能正开着，这次先不写')
+        backup?.('codex')
+      },
+    }).catch(() => undefined)
     return false
   }
 
@@ -8423,6 +8600,7 @@ export function createSystemService(
     getConfig: buildConfigSummary,
     revealApiKey,
     saveConfig,
+    serializeToolConfigWrite: serializeConfigWrite,
     repairCliHooks,
     autoRepairStaleCliHooks,
     switchToOfficialAccount,

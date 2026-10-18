@@ -4,6 +4,7 @@ const path = require('node:path')
 const { test } = require('node:test')
 const YAML = require('yaml')
 const { buildOfficialPackageMatrix } = require('./cos-chatgpt-platform-matrix.cjs')
+const { MULTIPART_DEADLINE_MS } = require('./sync-chatgpt-official-cos.cjs')
 
 test('all platforms become four Windows and macOS sequential independent jobs and group recovery stays within those identities', () => {
   const all = buildOfficialPackageMatrix()
@@ -24,7 +25,10 @@ test('protected workflow serializes jobs under its existing group and requires e
   assert.equal(workflow.jobs.sync.strategy['fail-fast'], false)
   assert.equal(workflow.jobs.sync.strategy.matrix, '${{ fromJSON(needs.select.outputs.matrix) }}')
   assert.equal(workflow.jobs.sync['runs-on'], 'windows-latest')
-  assert.equal(workflow.jobs.sync['timeout-minutes'], 90)
+  assert.equal(workflow.jobs.sync['timeout-minutes'], 150)
+  // GitHub kills an overdue job without aborting its multipart session, so the
+  // upload deadline must end well before the job does (#1082).
+  assert.ok(workflow.jobs.sync['timeout-minutes'] * 60 * 1000 - MULTIPART_DEADLINE_MS >= 30 * 60 * 1000)
   assert.equal(workflow.jobs.sync.environment, 'cos-sync')
   assert.equal(workflow.jobs.sync['continue-on-error'], undefined)
   for (const job of [workflow.jobs.select, workflow.jobs.sync]) assert.equal(job.if, "${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}")

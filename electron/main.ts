@@ -218,6 +218,7 @@ import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, 
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { createReleaseGuardStore } from './release-guard-store'
+import { createCliModelHintsStore, resolveCliModelHints } from './cli-model-hints-store'
 import type { AccountGroupHints } from './managed-cli-groups'
 import type { CliModelHints } from './cli-model-defaults'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
@@ -1655,6 +1656,7 @@ if (!hasSingleInstanceLock) {
       repositoryRoot: storedSettings.workspace,
       trashDirectory: path.join(managerDataDirectory, 'trash', 'skills'),
       windowsExecutionMode: windowsCliExecutionMode,
+      serializeConfigWrite: systemService.serializeToolConfigWrite,
     })
     const providerExtensionService = new ProviderExtensionService({
       ...rootedOptions.providerExtensions,
@@ -1762,6 +1764,7 @@ if (!hasSingleInstanceLock) {
           ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
           windowsProcessor: await systemService.inspectWindowsProcessor(),
+          macRosetta: process.platform === 'darwin' && app.runningUnderARM64Translation,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -2003,6 +2006,9 @@ if (!hasSingleInstanceLock) {
         return previousAutoInstallFailureMessage(process.platform)
       },
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // electron-updater 按 `uname -a`（带电脑名）判断 Apple 芯片，Intel Mac 会被挑上 arm64 包（#1155）。
+      // Intel 版在 Apple 芯片上经 Rosetta 跑时 process.arch 是 x64，这时照样算能跑 arm64，让它换回 M 系列芯片版。
+      ...(process.platform === 'darwin' ? { macRunsArm64: process.arch === 'arm64' || app.runningUnderARM64Translation } : {}),
       // 未签名通道里只有 Windows 的清单由发布者 Ed25519 签过（update-package-signature.ts），
       // 没有 Authenticode 就只认它。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签；Linux 的 deb
       // 同样走未签名通道，但它的清单还没签，接上会让所有 Linux 更新都被拒装。
@@ -2097,6 +2103,9 @@ if (!hasSingleInstanceLock) {
     const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
       : locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
+    // 型号表也记在本地（#1154 第 6 条）：开机那轮换下架型号时状态文件还没读成功，也按上次读成功的那份算。
+    const cliModelHintsStore = createCliModelHintsStore({ filePath: path.join(managerDataDirectory, 'cli-model-hints.json') })
+    const cliModelsAtLaunch = serviceStatusUrl ? cliModelHintsStore.read() : null
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
         // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
@@ -2113,6 +2122,12 @@ if (!hasSingleInstanceLock) {
             ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
             ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
           })
+          // 读成功的才记，没写型号表的那次记成没有；没读到（null）不动记下的那份。
+          if (status) {
+            cliModelHintsStore.write(status.cliModels ?? null).catch((cause: unknown) => {
+              runtimeLog.exception('updater', 'cli-models.save-failed', cause)
+            })
+          }
         },
       })
       : null
@@ -2123,11 +2138,18 @@ if (!hasSingleInstanceLock) {
       await serviceStatusMonitor.settled()
       return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
     }
-    // 型号表同上：默认型号、上一代、下架名单，读不到就用程序自带的那份（cli-model-defaults.ts）。
+    // 同上但不等：这次启动还没读成过就是 undefined，说不准对照改没改（account-cli-provisioner.ts，#1157 第 8 条）。
+    function peekAccountGroupHints(): AccountGroupHints | null | undefined {
+      if (!serviceStatusMonitor) return null
+      const known = serviceStatusMonitor.lastKnown()
+      return known ? known.accountGroups ?? null : undefined
+    }
+    // 型号表跟分组对照一样等这一次读完：默认型号、上一代、下架名单。这次打开以后一次也没读成功过，
+    // 就用上次记下的那份；从来没读成功过才用程序自带的（cli-model-defaults.ts）。
     async function readCliModelHints(): Promise<CliModelHints | null> {
       if (!serviceStatusMonitor) return null
       await serviceStatusMonitor.settled()
-      return serviceStatusMonitor.lastKnown()?.cliModels ?? null
+      return resolveCliModelHints(serviceStatusMonitor.lastKnown(), cliModelsAtLaunch)
     }
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
@@ -2215,6 +2237,9 @@ if (!hasSingleInstanceLock) {
       return buildFeedbackRuntimeLines({
         snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
         platform: process.platform,
+        mac: process.platform === 'darwin'
+          ? { systemVersion: process.getSystemVersion(), appArch: process.arch, translated: app.runningUnderARM64Translation }
+          : null,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
@@ -3131,6 +3156,7 @@ if (!hasSingleInstanceLock) {
     })
     void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir(), {
       officialCodex: (systemService.readStoredConfig().officialProviders ?? []).includes('codex'),
+      serializeConfigWrite: systemService.serializeToolConfigWrite,
     }).then((result) => {
       for (const warning of result.warnings) {
         runtimeLog.log('warn', 'account', 'xingmang-ai-skill.install', warning)
@@ -3367,6 +3393,7 @@ if (!hasSingleInstanceLock) {
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,
+      peekAccountGroupHints,
       cliModelHints: readCliModelHints,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
@@ -3473,9 +3500,11 @@ if (!hasSingleInstanceLock) {
           const nodeExecutable = await findExecutable('node', { env: process.env })
           if (!nodeExecutable) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
           const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
-          return syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
+          // 改的是 Codex、Grok 的 config.toml 和 Claude 的 settings.json、.claude.json，和保存配置排同一队（#1061 第 1 条）。
+          const register = async () => syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
             codex: !input.officialCodex,
           }).warnings
+          return systemService.serializeToolConfigWrite ? systemService.serializeToolConfigWrite(register) : register()
         },
       },
       ...(manualUninstallVisualFixtureEnabled

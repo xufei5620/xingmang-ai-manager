@@ -76,7 +76,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, sessionChangeKeepsBootstrap, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, sessionChangeKeepsBootstrap, skippedNamedProviders, subscriptionSwitchResult, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -550,7 +550,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!session.authenticated || !session.account) return []
     const outcome = await runAccountBootstrap(session.account.userId, 'restore', true)
     if (outcome?.error) throw new Error(outcome.error)
-    return outcome?.result?.regrouped ?? []
+    return subscriptionSwitchResult(outcome?.result)
   }, [runAccountBootstrap, session.account, session.authenticated])
   /**
    * 首页「就用现在这份」：用户自己改过配置又不想被提醒时，把这个工具记成手动来源。

@@ -1,5 +1,5 @@
-import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
+import { renderTomlEdit } from './codex-config-toml'
 
 // 0.2.5 之前的模板写过这两项（#104 加、#124 撤），一次性清理只认值和当年模板一样的那一份。
 // 客户自己在 Codex 里设成别的数，就是客户自己的设置，留着（#834 F04）。
@@ -31,14 +31,6 @@ export function removeCodexContextLimits(content: string): { content: string; ch
     if (/^\s*\[/.test(line)) inRoot = false
     return !inRoot || !assignment.test(line)
   }).join('')
-  try {
-    if (isDeepStrictEqual(TOML.parse(candidate), expected)) return { content: candidate, changed: true }
-  } catch {
-    // Nonstandard key spellings and multiline values use the parsed object.
-  }
-  const serialized = TOML.stringify(expected as Parameters<typeof TOML.stringify>[0])
-  return {
-    content: source.includes('\r\n') ? serialized.replace(/\r?\n/g, '\r\n') : serialized,
-    changed: true,
-  }
+  // Nonstandard key spellings and multiline values use the parsed object.
+  return { content: renderTomlEdit(source, expected, candidate).content, changed: true }
 }

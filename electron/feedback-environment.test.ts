@@ -250,6 +250,30 @@ describe('buildFeedbackRuntimeLines', () => {
     ])
   })
 
+  it('opens with the macOS version and tells an Intel Mac apart from the Intel build under Rosetta', () => {
+    const mac = (appArch: string, translated: boolean) => buildFeedbackRuntimeLines(runtimeInput({
+      platform: 'darwin',
+      executionMode: null,
+      mac: { systemVersion: '13.6.1', appArch, translated },
+    })).slice(0, 2)
+
+    expect(mac('x64', false)).toEqual(['macOS 版本: 13.6.1', 'Mac 芯片: Intel 处理器，装的是 Intel 版'])
+    expect(mac('x64', true)).toEqual(['macOS 版本: 13.6.1', 'Mac 芯片: Apple 芯片，装的是 Intel 版（经 Rosetta 转换运行）'])
+    expect(mac('arm64', false)).toEqual(['macOS 版本: 13.6.1', 'Mac 芯片: Apple 芯片，装的是 M 系列芯片版'])
+    expect(buildFeedbackRuntimeLines(runtimeInput({
+      platform: 'darwin',
+      executionMode: null,
+      mac: { systemVersion: ' ', appArch: 'x64', translated: false },
+    }))[0]).toBe('macOS 版本: 未能读取')
+  })
+
+  it('adds no Mac lines off the Mac or when the host passes none', () => {
+    const mac = { systemVersion: '13.6.1', appArch: 'x64', translated: false }
+    for (const input of [runtimeInput({ mac }), runtimeInput({ platform: 'darwin', executionMode: null })]) {
+      expect(buildFeedbackRuntimeLines(input).some((line) => line.startsWith('macOS 版本') || line.startsWith('Mac 芯片'))).toBe(false)
+    }
+  })
+
   it('names the route this run uses right below the network location, ahead of the certificate line', () => {
     const lines = buildFeedbackRuntimeLines(runtimeInput({ relayRoute: '只用线路2', certificateTrust: '这台电脑装了公司或安全软件的证书。' }))
     const at = lines.indexOf('网络位置: 中国大陆')

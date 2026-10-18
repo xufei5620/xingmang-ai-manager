@@ -2290,6 +2290,20 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), '../codex')).rejects.toThrow('未知的 CLI 类型')
   })
 
+  it('hands the published model table to the renderer and treats a missing or failing read as none', async () => {
+    const hints = { claude: { default: 'claude-opus-6' } }
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { cliModelHints: async () => hints })
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.getCliModelHints)!(trustedEvent())).resolves.toEqual(hints)
+
+    electronMocks.handlers.clear()
+    register(serviceStub())
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.getCliModelHints)!(trustedEvent())).resolves.toBeNull()
+
+    electronMocks.handlers.clear()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { cliModelHints: async () => { throw new Error('offline') } })
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.getCliModelHints)!(trustedEvent())).resolves.toBeNull()
+  })
+
   it('backs up each tool before filling template defaults and reports what was filled', async () => {
     const service = serviceStub()
     service.fillToolTemplateDefaults = vi.fn(async (backup?: (provider: 'codex') => void) => {
@@ -6140,6 +6154,49 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       )
     })
 
+    it('deletes the old app-issued key of a deleted group once the replacement is written, and clears both caches', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.revokeKey).mockResolvedValue(undefined)
+      // 站上删了 GPT，开了 GPT-Plus。
+      vi.mocked(accountService.listUsableGroups).mockResolvedValue([{ name: 'GPT-Plus', description: '', ratio: 1 }])
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 100, total: 1, keys: [{
+        id: 7, name: managedCliKeyProfiles.codex.keyName, maskedKey: 'sk-***', group: managedCliKeyProfiles.codex.group, status: 1,
+        remainQuota: 0, unlimitedQuota: true, usedQuota: 0, createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null,
+      }] })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 99, name: input?.name ?? 'managed-key', key: `sk-new-${input?.group}`,
+      }))
+      const service = serviceStub()
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-6-astra'])
+      const codex = managedCliKeyProfiles.codex
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => [{ id: 7, provider: 'codex' as const, group: codex.group, name: codex.keyName, key: 'sk-old' }]),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      const { runtimeLog } = register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, { chatKeyStore })
+
+      await expect(electronMocks.handlers.get('account:configure-managed-clis')!(
+        trustedEvent(),
+        { providers: ['codex'], preferredModels: {}, mode: 'merge' },
+      )).resolves.toEqual({ configured: ['codex'], failed: [] })
+
+      expect(service.saveConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'codex', apiKey: 'sk-new-GPT-Plus' }), false, expect.any(Function), expect.any(Object),
+      )
+      expect(accountService.revokeKey).toHaveBeenCalledWith(7)
+      expect(vi.mocked(service.saveConfig).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(accountService.revokeKey).mock.invocationCallOrder[0])
+      expect(managedCliKeys.remove).toHaveBeenCalledWith(42, 7)
+      expect(chatKeyStore.removeByKeyId).toHaveBeenCalledWith(42, 7)
+      expect(runtimeLog.log).toHaveBeenCalledWith('info', 'account', 'managed-cli.old-key-revoked', expect.any(String), { keyId: 7 })
+    })
+
     describe('replacing a limited key a tool is using', () => {
       const account = { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 }
       const codex = managedCliKeyProfiles.codex
@@ -7703,6 +7760,54 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })).toThrow('CLI 配置目标不能重复')
       expect(accountService.provisionCliKey).not.toHaveBeenCalled()
       expect(service.fetchAvailableModels).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+
+    // #1159：换线路这一轮只交工具名，Key 留在主进程，空 Key 交给 saveConfig 沿用配置里那把。
+    it('keeps the configured key for the tools named in keepKeys and writes the managed key for the rest', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+
+      const result = await electronMocks.handlers.get('account:configure-managed-clis')!(trustedEvent(), {
+        providers: ['claude', 'codex'],
+        preferredModels: { claude: 'kept-model', codex: 'gpt-5.6-sol' },
+        keepKeys: ['claude'],
+      })
+
+      expect(result).toEqual({ configured: ['claude', 'codex'], failed: [] })
+      expect(vi.mocked(service.saveConfig).mock.calls.map(([payload, , , ownership]) => [payload, ownership])).toEqual([
+        [{ provider: 'claude', apiKey: '', model: 'kept-model', mode: 'merge' }, { source: 'account', automatic: true }],
+        [{ provider: 'codex', apiKey: 'sk-internal-GPT', model: 'gpt-5.6-sol', mode: 'merge' }, { source: 'account', automatic: true }],
+      ])
+    })
+
+    it('rejects keepKeys that are malformed, repeated, outside the round, or paired with an explicit rewrite', () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+      const input = { providers: ['claude'], preferredModels: { claude: 'kept-model' } }
+
+      for (const keepKeys of ['claude', null, {}]) {
+        expect(() => handler(trustedEvent(), { ...input, keepKeys })).toThrow('CLI 配置目标格式错误')
+      }
+      for (const keepKeys of [['codex'], ['gemini'], ['unknown']]) {
+        expect(() => handler(trustedEvent(), { ...input, keepKeys })).toThrow('沿用现有密钥的工具不在这次的配置目标里')
+      }
+      expect(() => handler(trustedEvent(), { ...input, keepKeys: ['claude', 'claude'] })).toThrow('CLI 配置目标不能重复')
+      expect(() => handler(trustedEvent(), { ...input, intent: 'explicit', keepKeys: ['claude'] })).toThrow('CLI 配置意图无效')
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
 

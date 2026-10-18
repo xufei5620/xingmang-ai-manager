@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { CommandRunnerError, runCommand, trustedCommandEnvironment, type CommandSpec } from './command-runner'
-import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { readMacosExecutableArchitectures } from './macos-executable-architectures'
 import { describeProbeFailure } from './probe-failure'
 
@@ -16,25 +16,25 @@ const applicationDiscoveryBudgetMs = 2_000
 export const commandTimeoutMs = 5_000
 /**
  * `codesign --verify --deep` is the one probe in this module whose cost scales
- * with bundle size instead of completing in milliseconds: measured at 1.79s
- * against the 1.4 GB Codex.app on an Apple Silicon machine with a warm page
- * cache, and 2.35s cold. Neither leaves much headroom under the shared 5s
- * commandTimeoutMs on a slower x64 machine or one under load — and since the
- * three-state fix, hitting that timeout no longer reports a false "not
- * installed", it downgrades the desktop card to an amber, retryable state.
- * That is a real cost, just a smaller one than a false negative, and this
- * wider budget exists to make it rare rather than to eliminate it structurally.
+ * with bundle size instead of completing in milliseconds: 1.79s against the
+ * 1.4 GB Codex.app on Apple silicon with a warm page cache, but 22.77s on a
+ * customer's Intel Mac. It used to get 15s here while installing the very same
+ * bundle got the full darwinDeepVerificationTimeoutMs, so that Mac installed
+ * Codex and then reported every detection as unfinished, retries included: a
+ * timeout kills the walk and the next one starts over from the first file.
+ * Detection now gets the installer's budget (see macos-code-signing.ts).
  *
  * Widening only this one call is affordable because it is rarely paid:
- * verifiedBundles below caches a pass for up to verificationCacheTtlMs, so in
- * steady state a bundle's deep verification — and this budget — is exercised
- * at most once every 5 minutes, not on every scan. Every other probe here
- * (plutil, sysctl, arch, mdfind, osascript, and any future non-deep codesign call)
- * stays on the narrow commandTimeoutMs: none of them are ever slow, and
- * widening a budget that is actually spent on every scan would just make a
- * genuine hang take longer to surface.
+ * verifiedBundles below caches a pass for up to verificationCacheTtlMs and
+ * pendingVerifications lets concurrent callers share one walk, so in steady
+ * state a bundle's deep verification is exercised at most once every 5
+ * minutes, not on every scan. Every other probe here (plutil, sysctl, arch,
+ * mdfind, osascript, and any future non-deep codesign call) stays on the
+ * narrow commandTimeoutMs: none of them are ever slow, and widening a budget
+ * that is actually spent on every scan would just make a genuine hang take
+ * longer to surface.
  */
-export const deepVerificationTimeoutMs = 15_000
+export const deepVerificationTimeoutMs = darwinDeepVerificationTimeoutMs
 
 /**
  * Routes by the --deep flag rather than by executable alone, so a future
@@ -61,6 +61,16 @@ export function resolveSystemCommandTimeoutMs(executable: string, argv: readonly
  */
 const verificationCacheTtlMs = 5 * 60_000
 const verifiedBundles = new Map<string, { fingerprint: string; verifiedAt: number }>()
+/**
+ * Deep verifications still running, by bundle and fingerprint. The home page
+ * scan, the Codex model-catalog check and a launch can all ask about the same
+ * bundle within the same few seconds after startup. On a slow Mac every extra
+ * walk competes for the same disk and CPU and pushes all of them toward the
+ * timeout, so a caller that finds one running for the same bundle state waits
+ * for it instead of starting another. That is the standard verifiedBundles
+ * already applies to a finished pass, applied a little earlier.
+ */
+const pendingVerifications = new Map<string, Promise<void>>()
 
 function bundleFingerprint(
   bundleStats: fs.Stats,
@@ -77,6 +87,29 @@ function bundleFingerprint(
 /** Drops every cached verification. Exists so tests do not leak state into each other. */
 export function resetMacosCodexAppVerificationCache(): void {
   verifiedBundles.clear()
+  pendingVerifications.clear()
+}
+
+function verifyBundleSignature(canonical: string, fingerprint: string, command: SystemCommandRunner): Promise<void> {
+  const key = `${canonical}\0${fingerprint}`
+  const pending = pendingVerifications.get(key)
+  if (pending) return pending
+  const verification = (async () => {
+    await command('/usr/bin/codesign', darwinDeveloperIdVerificationArgv(
+      openAiTeamIdentifier,
+      canonical,
+      { bundleIdentifier, deep: true },
+    ))
+    // Only a pass is remembered. A failure must be retried on the next scan, or a
+    // single transient error would be cached as if the bundle were rejected.
+    verifiedBundles.set(canonical, { fingerprint, verifiedAt: Date.now() })
+  })()
+  pendingVerifications.set(key, verification)
+  const forget = () => {
+    if (pendingVerifications.get(key) === verification) pendingVerifications.delete(key)
+  }
+  verification.then(forget, forget)
+  return verification
 }
 
 export interface MacosCodexAppInfo {
@@ -394,16 +427,7 @@ async function inspectCandidate(
     const stillVerified = cached !== undefined
       && cached.fingerprint === fingerprint
       && Date.now() - cached.verifiedAt < verificationCacheTtlMs
-    if (!stillVerified) {
-      await command('/usr/bin/codesign', darwinDeveloperIdVerificationArgv(
-        openAiTeamIdentifier,
-        canonical,
-        { bundleIdentifier, deep: true },
-      ))
-      // Only a pass is remembered. A failure must be retried on the next scan, or a
-      // single transient error would be cached as if the bundle were rejected.
-      verifiedBundles.set(canonical, { fingerprint, verifiedAt: Date.now() })
-    }
+    if (!stillVerified) await verifyBundleSignature(canonical, fingerprint, command)
 
     let version: string | null = null
     try {

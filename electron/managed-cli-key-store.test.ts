@@ -8,6 +8,8 @@ import {
   decodePersistedManagedCliKeys,
   encodePersistedManagedCliKeys,
   isPersistedManagedCliKeys,
+  isReplacedManagedKey,
+  managedKeyDigest,
   type PersistedManagedCliKeys,
   type StoredManagedCliKey,
 } from './managed-cli-key-store'
@@ -388,5 +390,163 @@ describe('group names the xm site retired', () => {
     const store = new ManagedCliKeyStore(filePath, storage, 'solov-api')
     await store.save(7, keys)
     expect(await store.read(7)).toEqual(keys)
+  })
+})
+
+// #1153：开机补写只认「缓存以前给这家、后来换掉的那把」，客户自己选的那把要认得出不是。
+describe('keys the cache replaced', () => {
+  const replacement = (provider: ProviderId, suffix: string): StoredManagedCliKey => ({
+    ...managedKey(provider), id: 100 + suffix.length, key: `sk-${provider}-${suffix}-secret-123456`,
+  })
+
+  it('remembers which key each tool had before, newest first and at most three', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    const others = providerIds.filter((provider) => provider !== 'claude').map((provider) => managedKey(provider))
+    const sequence = ['first', 'second', 'third', 'fourth', 'fifth'].map((suffix) => replacement('claude', suffix))
+    for (const entry of sequence) await store.save(42, [entry, ...others])
+
+    const keys = await store.read(42)
+    expect(keys.find((entry) => entry.provider === 'claude')?.replacedKeyDigests)
+      .toEqual(['fourth', 'third', 'second'].map((suffix) => managedKeyDigest(replacement('claude', suffix).key)))
+    // 没换过的那几家什么也不附。
+    for (const provider of providerIds.filter((entry) => entry !== 'claude')) {
+      expect(keys.find((entry) => entry.provider === provider)).toEqual(managedKey(provider))
+    }
+  })
+
+  it('keeps the history out of the saved entries and never stores an old key itself', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const store = new ManagedCliKeyStore(filePath, storage)
+    await store.save(42, [managedKey('codex')])
+    const [current] = await store.read(42)
+    await store.save(42, [{ ...current, key: replacement('codex', 'new').key, replacedKeyDigests: ['0'.repeat(64)] }])
+
+    const record = decodePersistedManagedCliKeys(fs.readFileSync(filePath, 'utf8'), storage)
+    expect(record?.accounts[0].keys[0]).not.toHaveProperty('replacedKeyDigests')
+    expect(record?.accounts[0].replacedKeys).toEqual({ codex: [managedKeyDigest(managedKey('codex').key)] })
+    expect(JSON.stringify(record)).not.toContain(managedKey('codex').key)
+  })
+
+  it('still remembers a key it dropped before the next one was issued', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    await store.save(42, [managedKey('codex'), managedKey('claude')])
+    // 分组被删：旧那把先从缓存里拿掉，下一轮才签出新的。
+    await store.save(42, [managedKey('claude')])
+    await store.save(42, [replacement('codex', 'new'), managedKey('claude')])
+    expect((await store.read(42)).find((entry) => entry.provider === 'codex')?.replacedKeyDigests)
+      .toEqual([managedKeyDigest(managedKey('codex').key)])
+
+    // 失效重签：先 remove 再存新的。
+    await store.remove(42, managedKey('claude').id)
+    await store.save(42, [replacement('codex', 'new'), replacement('claude', 'new')])
+    expect((await store.read(42)).find((entry) => entry.provider === 'claude')?.replacedKeyDigests)
+      .toEqual([managedKeyDigest(managedKey('claude').key)])
+  })
+
+  it('does not count the key a tool is using now, even if it was replaced before', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    await store.save(42, [managedKey('codex')])
+    await store.save(42, [replacement('codex', 'new')])
+    await store.save(42, [managedKey('codex')])
+    expect((await store.read(42))[0].replacedKeyDigests).toEqual([managedKeyDigest(replacement('codex', 'new').key)])
+    // 同一把 Key 只是改了分组名，不算换掉。
+    await store.save(42, [{ ...managedKey('codex'), group: 'GPT' }])
+    expect((await store.read(42))[0].replacedKeyDigests).toEqual([managedKeyDigest(replacement('codex', 'new').key)])
+  })
+
+  it('reads a cache whose history it cannot make sense of instead of discarding every key', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const record = persistedRecord()
+    record.siteId = 'solov'
+    // 别的版本或损坏写下的形状，类型上本来就不该写得出来。
+    const account = record.accounts[0] as unknown as Record<string, unknown>
+    account.replacedKeys = { codex: ['not-a-digest', 42], claude: 'nope', unknown: [managedKeyDigest('sk-x')] }
+    writeRecord(filePath, record, storage)
+    expect(await new ManagedCliKeyStore(filePath, storage, 'solov').read(42)).toEqual(providerIds.map((provider) => managedKey(provider)))
+
+    account.replacedKeys = ['codex']
+    expect(isPersistedManagedCliKeys(record, 'solov')).toBe(false)
+  })
+
+  it('recognises only a replaced key of the same tool that is not the current one', () => {
+    const old = managedKey('codex').key
+    const cached = [{ ...replacement('codex', 'new'), replacedKeyDigests: [managedKeyDigest(old)] }]
+    expect(isReplacedManagedKey('codex', old, cached)).toBe(true)
+    expect(isReplacedManagedKey('codex', 'sk-customer-chosen-secret-123456', cached)).toBe(false)
+    expect(isReplacedManagedKey('codex', cached[0].key, cached)).toBe(false)
+    expect(isReplacedManagedKey('claude', old, cached)).toBe(false)
+    expect(isReplacedManagedKey('codex', old, [])).toBe(false)
+    expect(isReplacedManagedKey('codex', '', cached)).toBe(false)
+  })
+})
+
+describe('the cached group check (#1157 item 8)', () => {
+  const check = { at: Date.parse('2026-10-18T02:00:00.000Z'), succeeded: true, hints: managedKeyDigest('hints') }
+
+  it('remembers the last group check across a restart without bumping the key revision', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const keys = providerIds.map((provider) => managedKey(provider))
+    const store = new ManagedCliKeyStore(filePath, storage)
+    await store.save(42, keys)
+    await store.read(42)
+    const revision = store.captureRevision()
+
+    await store.saveGroupCheck(42, check)
+
+    expect(store.captureRevision()).toBe(revision)
+    await expect(new ManagedCliKeyStore(filePath, storage).readGroupCheck(42)).resolves.toEqual(check)
+    // 同步那一轮记下查过以后再存换好的 Key，不能被当成「缓存被别的操作改过」。
+    await expect(store.save(42, [{ ...managedKey('codex'), id: 500, key: 'sk-codex-replacement-secret-123456' }], revision)).resolves.toBe(true)
+    await expect(store.readGroupCheck(42)).resolves.toEqual(check)
+    await store.remove(42, 500)
+    await expect(store.readGroupCheck(42)).resolves.toEqual(check)
+  })
+
+  it('records nothing for an account without cached keys and keeps checks apart per account', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    await store.saveGroupCheck(42, check)
+    await expect(store.readGroupCheck(42)).resolves.toBeUndefined()
+
+    await store.save(42, [managedKey('codex')])
+    await store.save(7, [managedKey('claude')])
+    await store.saveGroupCheck(42, check)
+    await expect(store.readGroupCheck(42)).resolves.toEqual(check)
+    await expect(store.readGroupCheck(7)).resolves.toBeUndefined()
+  })
+
+  it('reads a check it cannot make sense of as never checked, keeping every key', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    for (const groupCheck of [
+      'yesterday',
+      { ...check, at: -1 },
+      { ...check, at: 1.5 },
+      { ...check, succeeded: 'yes' },
+      { ...check, hints: '[["GPT"]]' },
+    ]) {
+      const record = persistedRecord()
+      ;(record.accounts[0] as unknown as Record<string, unknown>).groupCheck = groupCheck
+      writeRecord(filePath, record, storage)
+      const store = new ManagedCliKeyStore(filePath, storage)
+      await expect(store.read(42)).resolves.toEqual(providerIds.map((provider) => managedKey(provider)))
+      await expect(store.readGroupCheck(42)).resolves.toBeUndefined()
+    }
+    // 没对照时指纹是空串。
+    const record = persistedRecord()
+    record.accounts[0].groupCheck = { ...check, hints: '' }
+    writeRecord(filePath, record, storage)
+    await expect(new ManagedCliKeyStore(filePath, storage).readGroupCheck(42)).resolves.toEqual({ ...check, hints: '' })
+  })
+
+  it('answers never checked when the cache cannot be read', async () => {
+    const filePath = temporaryFilePath()
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, 'not ciphertext')
+    await expect(new ManagedCliKeyStore(filePath, fakeSafeStorage()).readGroupCheck(42)).resolves.toBeUndefined()
+    await expect(new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false })).readGroupCheck(42))
+      .resolves.toBeUndefined()
   })
 })

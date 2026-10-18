@@ -1,10 +1,18 @@
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { createRequire } from 'node:module'
+import type { UpdateInfo } from 'builder-util-runtime'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+
+// What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
+interface ResolvedUpdateFile {
+  url: URL
+  info: { url: string }
+}
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -1533,6 +1541,37 @@ describe('withdrawn versions and staged rollout', () => {
     service.dispose()
   })
 
+  it('does not let an older copy of the status file roll the withdrawn list and rollout back (#1157 item 10)', async () => {
+    const client = new FakeUpdater()
+    const rememberReleaseGuard = vi.fn(async () => undefined)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      releaseGuardAtLaunch: { badVersions: ['1.1.0'], rollout: null, updatedAt: '2026-10-18T02:00:00.000Z' },
+      rememberReleaseGuard,
+    })
+    const flush = () => new Promise((resolve) => { setTimeout(resolve, 0) })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+
+    // 某条线路给的旧副本：撤回还没写进去。不跟着它放开，也不拿它盖掉记着的那份。
+    service.setServiceStatus({ maintenance: null, badVersions: [], rollout: null, updatedAt: '2026-10-17T02:00:00.000Z' })
+    await flush()
+    expect(rememberReleaseGuard).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null })
+
+    // 同一时间或更新的照常换上；没写时间的照旧以新读到的为准。
+    service.setServiceStatus({ maintenance: null, badVersions: ['1.1.0', '1.2.0'], rollout: null, updatedAt: '2026-10-18T03:00:00.000Z' })
+    service.setServiceStatus({ maintenance: null, badVersions: ['1.1.0'], rollout: null, updatedAt: '2026-10-18T02:30:00.000Z' })
+    await flush()
+    expect(rememberReleaseGuard.mock.calls).toEqual([[{ badVersions: ['1.1.0', '1.2.0'], rollout: null, updatedAt: '2026-10-18T03:00:00.000Z' }]])
+    service.setServiceStatus({ maintenance: null, badVersions: [], rollout: null })
+    await flush()
+    expect(rememberReleaseGuard).toHaveBeenLastCalledWith({ badVersions: [], rollout: null })
+    service.dispose()
+  })
+
   it('takes back an offer that is withdrawn after it was found or downloaded', async () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin' })
@@ -1920,6 +1959,106 @@ describe('downloaded package digest verification', () => {
     expect(service.getState().installedRelease).toEqual({ justUpdated: true, previousVersion: '0.9.0', notes: ['一条改动。'] })
     // 旧调用方不传时快照里是 null，界面照旧只显示待下载版本的说明。
     expect(createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: true }).getState().installedRelease).toBeNull()
+    service.dispose()
+  })
+})
+
+describe('Mac update package architecture', () => {
+  const arm64Zip = 'XingMang-AI-Manager-1.1.0-Apple-Silicon-arm64.zip'
+  const x64Zip = 'XingMang-AI-Manager-1.1.0-Intel-x64.zip'
+  // The shape rename-macos-chip-artifacts.cjs publishes: both chips in files[],
+  // the legacy path/sha512 pointing at the arm64 package.
+  const macManifest = () => ({
+    ...updateInfo(),
+    files: [
+      { url: arm64Zip, sha512: 'arm64-digest', size: 120 },
+      { url: x64Zip, sha512: 'x64-digest', size: 110 },
+    ],
+    path: arm64Zip,
+    sha512: 'arm64-digest',
+  })
+  const load = createRequire(__filename)
+  const { MacUpdater } = load('electron-updater/out/MacUpdater') as {
+    MacUpdater: { filterFilesForArch: (files: ResolvedUpdateFile[], isArm64Mac: boolean) => ResolvedUpdateFile[] }
+  }
+  const { resolveFiles } = load('electron-updater/out/providers/Provider') as {
+    resolveFiles: (info: UpdateInfo, baseUrl: URL) => ResolvedUpdateFile[]
+  }
+  const feed = new URL('https://updates.example.test/xingmang-manager/')
+  const pickedBy = (info: UpdateInfo, isArm64Mac: boolean) => (
+    MacUpdater.filterFilesForArch(resolveFiles(info, feed), isArm64Mac).map((file) => file.info.url)
+  )
+
+  it('leaves electron-updater nothing but the Intel package to pick', () => {
+    // A computer name containing "ARM" makes electron-updater believe an Intel Mac is arm64.
+    expect(pickedBy(macManifest(), true)).toEqual([arm64Zip])
+    const narrowed = buildIntelMacUpdateInfo(macManifest())
+    expect(pickedBy(narrowed, true)).toEqual([x64Zip])
+    expect(pickedBy(narrowed, false)).toEqual([x64Zip])
+    expect(narrowed).toMatchObject({ path: x64Zip, sha512: 'x64-digest' })
+  })
+
+  it('does not fall back to the legacy arm64 path when the manifest has no Intel package', () => {
+    const narrowed = buildIntelMacUpdateInfo({ ...macManifest(), files: [macManifest().files[0]] })
+    expect(narrowed).toMatchObject({ files: [], path: '', sha512: '' })
+    expect(pickedBy(narrowed, true).some((url) => url.includes('arm64'))).toBe(false)
+  })
+
+  it('returns a manifest without arm64 packages unchanged', () => {
+    const manifest = { ...updateInfo(), files: [{ url: x64Zip, sha512: 'x64-digest', size: 110 }], path: x64Zip, sha512: 'x64-digest' }
+    expect(buildIntelMacUpdateInfo(manifest)).toBe(manifest)
+  })
+
+  it('strips arm64 packages from the offer electron-updater will download on an Intel Mac', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin', macRunsArm64: false })
+    const info = macManifest()
+
+    client.emit('update-available', info)
+    expect(info.files.map((entry) => entry.url)).toEqual([x64Zip])
+    expect(info).toMatchObject({ path: x64Zip, sha512: 'x64-digest' })
+    expect(service.getState()).toMatchObject({ phase: 'available', availableVersion: '1.1.0' })
+    service.dispose()
+  })
+
+  it('keeps the arm64 package for Macs that can run it and off the Mac', () => {
+    for (const runtime of [
+      { platform: 'darwin' as const, macRunsArm64: true },
+      { platform: 'darwin' as const },
+      { platform: 'win32' as const, macRunsArm64: false },
+    ]) {
+      const client = new FakeUpdater()
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, ...runtime })
+      const info = macManifest()
+      client.emit('update-available', info)
+      expect(info.files.map((entry) => entry.url)).toEqual([arm64Zip, x64Zip])
+      expect(info.path).toBe(arm64Zip)
+      service.dispose()
+    }
+  })
+
+  it('refuses an arm64 package that still reached an Intel Mac', async () => {
+    const client = new FakeUpdater()
+    const verifyPackageDigest = vi.fn(async (file: string, expected: string) => (
+      (file.includes('arm64') ? 'arm64-digest' : 'x64-digest') === expected
+    ))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'darwin',
+      macRunsArm64: false,
+      verifyPackageDigest,
+    })
+
+    client.emit('update-downloaded', { ...macManifest(), downloadedFile: `/Users/tester/Library/Caches/xingmang-updater/pending/${arm64Zip}` })
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(verifyPackageDigest).not.toHaveBeenCalledWith(expect.any(String), 'arm64-digest')
+    expect(service.getState().error?.code).toBe('UPDATE_PACKAGE_DIGEST_MISMATCH')
+    expect(() => service.install()).toThrow('尚未下载')
+
+    client.emit('update-downloaded', { ...macManifest(), downloadedFile: `/Users/tester/Library/Caches/xingmang-updater/pending/${x64Zip}` })
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    expect(verifyPackageDigest).toHaveBeenLastCalledWith(expect.stringContaining(x64Zip), 'x64-digest')
     service.dispose()
   })
 })

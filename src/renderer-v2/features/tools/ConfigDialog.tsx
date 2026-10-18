@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Archive, Check, Copy, Eye, FolderOpen, KeyRound, RefreshCw, Save, ShieldCheck } from 'lucide-react'
-import type { AccountKey, AccountSourceSwitchResult, AppConfigSummary, CodexDesktopLocaleStatus, CodexWorkspacePermissionStatus } from '../../../../electron/ipc-contract'
-import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
+import type { AccountKey, AccountSourceSwitchResult, AppConfigSummary, CliModelHints, CodexDesktopLocaleStatus, CodexWorkspacePermissionStatus } from '../../../../electron/ipc-contract'
+import { resolveCliModelDefault, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import { BrandIcon, Button, Dialog, Input, Pill, Segment, Select, useToast } from '../../ui'
 import { officialAccountNames, officialAccountNotes, tools } from '../../registry/tools'
 import { brokenConfigOf, brokenConfigRepairTarget, codexNeedsRepair, foreignKeyKind, isToolId, providerFor, sourceFor, switchAccountLabel, type ToolId } from './model'
@@ -75,6 +75,9 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   const [keys, setKeys] = useState<AccountKey[]>([])
   const [models, setModels] = useState<string[]>([])
   const [modelsDetected, setModelsDetected] = useState(false)
+  // 服务状态文件里的型号表：没设型号的工具预选哪个、检测完替他挑哪个，跟登录自动配置一个口径（#1154 附录）。
+  // 读到之前（和读不到）按程序自带的那份。
+  const [modelHints, setModelHints] = useState<CliModelHints | null>(null)
   // 「保存并检测」的检测这一步没读成：已有密钥的照旧能直接保存，按钮换回「保存配置」。
   const [detectTried, setDetectTried] = useState(false)
   // 打开时自动读的那一次的编号，0 = 没在读。按编号清：先发的那次晚到时，关不掉后发那次的转圈。
@@ -117,7 +120,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     // 「被改过」在这个对话框里和「来源未确认」走同一条路：都要先让用户挑一个来源，
     // 挑完保存就把所有权重新写清楚。
     source: initialSource === 'missing' ? 'account' : initialSource === 'changed' ? 'unknown' : initialSource,
-    keyId: initialKeyChoice(native), secret: '', model: native.model || defaultCliModels[provider], validatedSecret: '', dirty: false,
+    keyId: initialKeyChoice(native), secret: '', model: native.model || resolveCliModelDefault(provider, modelHints), validatedSecret: '', dirty: false,
   }
   const selectedKey = keys.find((key) => String(key.id) === draft.keyId && key.status === 1)
   const usingCurrentKey = draft.keyId === CURRENT_KEY
@@ -138,6 +141,11 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     setResetAsk(false)
   }
   useEffect(() => { active.current = true; return () => { active.current = false; request.current++; metadataRequest.current++ } }, [])
+  useEffect(() => {
+    let current = true
+    void api.cliModelHints().then((value) => { if (current) setModelHints(value) })
+    return () => { current = false }
+  }, [api])
   useEffect(() => {
     if (!signedIn) return
     let current = true
@@ -198,7 +206,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   }
   /** 检测完替用户选好型号：自己填的密钥按读到的挑；已经选了的、工具里本来就配着的不动。 */
   function detectedDraft(target: ConfigDraft, result: string[]): ConfigDraft {
-    const suggested = resolveDefaultCliModel(provider, result, target.model) ?? ''
+    const suggested = resolveDefaultCliModel(provider, result, target.model, modelHints) ?? ''
     if (target.source === 'manual') return { ...target, validatedSecret: target.secret, model: suggested }
     if (!target.model || (!native.model && !result.includes(target.model))) return { ...target, model: suggested }
     return target
@@ -329,7 +337,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (!active.current || id !== request.current) return
       setModels(result)
       setModelsDetected(true)
-      const suggested = result.includes(savedModel) ? savedModel : resolveDefaultCliModel(provider, result, savedModel) ?? ''
+      const suggested = result.includes(savedModel) ? savedModel : resolveDefaultCliModel(provider, result, savedModel, modelHints) ?? ''
       if (suggested && suggested !== savedModel) setEdited({ ...savedDraft, model: suggested, dirty: true })
       if (markerWarning) setWarning(markerWarning)
       setNotice('密钥已准备好并保存。想换模型就在上面选，选完再点「保存配置」。')

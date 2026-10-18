@@ -475,7 +475,7 @@ test('the release store may spend two hours on one installer and its retries rea
   const utilities = { ...require('./cos-sync-utils.cjs'), createCosStore(config, options) { created.push(options); return store } }
   const events = []
   await syncManagerRelease({ ...local, utilities, config: { publicBaseUrl: PUBLIC_BASE }, onDiagnostic: event => events.push(event) })
-  // Longer than the 75-minute default of the 90-minute official package jobs.
+  // Longer than the 75-minute default of the 90-minute Claude official package jobs.
   assert.deepEqual(created, [{ multipartDeadlineMs: 120 * 60 * 1000 }])
   const retries = events.filter(event => event.event === 'retry')
   assert.deepEqual([...new Set(retries.map(event => event.stage))], ['cos-read-latest', 'cos-publish-file', 'cos-recheck-latest', 'cos-publish-candidate', 'cos-recheck-candidate-state', 'cos-publish-latest'])

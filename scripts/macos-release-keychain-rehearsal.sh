@@ -116,6 +116,12 @@ if [ "$with_release_build" = '1' ]; then
   # 每一项产物校验都绿、装上去却被 dyld 当场杀掉——2026-09-19 就是这样，
   # 只有真的把它启动起来才看得见。
   node e2e/macos-launch-smoke.mjs "$output"
+  # 上面那次只启动本机架构那一份，Apple 芯片上就是只验了 M 芯片版：直到 0.2.19，
+  # Intel 版发出去之前一次都没被启动过（2026-10-17 查客户 Intel Mac 装不上时发现）。
+  # 发布那边的 macos-build 同样在 Apple 芯片上经 Rosetta 再启动一次 Intel 版。
+  if [ "$(uname -m)" = 'arm64' ]; then
+    node e2e/macos-launch-smoke.mjs "$output" --arch x64
+  fi
   rm -rf "$output"
 fi
 

@@ -38,6 +38,7 @@
 ## 配置与备份
 
 - `config-files.ts` — 各 CLI 配置文件的读写：**两阶段提交 + .bak 备份 + 失败回滚**（I9，Codex 一次要同时改 `config.toml` 和 `auth.json`）；`toNativeConfigSummary` 剥掉 `apiKey`，明文只走 `config:reveal-api-key`（I3）；切官方账号、路由跟随、钩子、状态行、工作区信任（字段实测见 `docs/WORKSPACE-TRUST.md`）、退役 Gemini 的清理也在这里。按 provider 分支的几个 `switch` **没有 default 分支**，是新增 provider 时的穷尽性保障，别重构成策略类（T2）；用户自己设过的值不动；改 `providerConfigPaths` 要顾及备份、诊断、启动前校验等消费者（T10）
+- `config-file-backups.ts` — 配置文件旁边那份 `.bak.<时间戳>` 怎么起名、「每个文件只留最近 5 份」该删哪几份；`config-files.ts` 的保存事务和 `codex-config-toml.ts` 往同一个目录放、一起数，名字只能出自这里（#1068）
 - `backups.ts` — 配置备份与恢复（手动 / 保存前 / 恢复前三种），`ConfigBackupStore` 在用户数据目录下按 manifest 存每个文件的原样与 sha256；v2 manifest 额外记 Key 的 sha256（`apiKeyDigest`），恢复前能告诉用户备份里那把 Key 是不是当前账号的、会不会恢复出一把已作废的 Key；必须兼容老版本留下的 v1 备份（T10）
 - `config-directory.ts` — 「打开配置文件夹」前的校验：拒绝经过符号链接/联接的路径，免得资源管理器被引去攻击者指定的位置（I8）；刻意不替用户建目录，"还没生成"就如实说。只有 `ipc.ts` 用
 

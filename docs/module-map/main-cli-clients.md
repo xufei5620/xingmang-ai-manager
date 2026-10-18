@@ -7,6 +7,7 @@
 - `cli-verified-versions.ts` — 四个 CLI 的推荐版本与已知坏版本区间：安装、更新默认装推荐版而不是 latest，因为这些 CLI 针对第三方地址的回归反复出现，客户一更新整条链路就断。零 Node 依赖，建议文案经 `ipc-contract.ts` 的类型进渲染层（I6）；名单怎么维护见 `docs/CLI-VERIFIED-VERSIONS.md`
 - `cli-update-history.ts` — 每个工具最近一次更新「从哪版到哪版」，落盘在数据目录；更新后 14 天内首页多一个「退回更新前的版本」。读坏了当没记录，不挡别的
 - `cli-model-defaults.ts` — 各工具新配时的默认型号、上一代、两站都已下架的型号三张表（Codex 默认 gpt-6-astra，gpt-5.5 在下架名单里）；服务状态文件的 `cliModels` 可以覆盖，读不到就用程序自带的。只 `import type`，渲染层老引导也引它
+- `cli-model-hints-store.ts` — 把最近一次读成功的型号表记到本地 `cli-model-hints.json`（#1154 第 6 条），这次打开以后状态文件一次也没读成功过时用它；没写型号表的那次记成没有。读回来的内容用状态文件同一个解析器重新校验
 - `versions.ts` — 版本号小工具：只认精确版本（拒 npm 范围、标签和像命令行参数的串）、Node.js 最低 20、新旧比较；零依赖，渲染层也直接引
 
 ## CLI 安装、定位与运行环境
@@ -61,6 +62,7 @@
 - `codex-config-syntax.ts` — 判断 Codex 自己读不读得了 `config.toml`（读不了时桌面端停在「无法加载组织设置」，首页写「配置文件坏了」）。本软件用的 `@iarna/toml` 只懂 TOML 0.5、Codex 读 TOML 1.1，所以只认两边都拒绝的那几类，比对记录在文件头
 - `codex-context-limits.ts` / `codex-config-migration.ts` — 一次性清掉 0.2.5 以前模板写进 `config.toml` 的两项上下文限制：只删值和当年模板一模一样的，客户自己改过的留着；完成记号按 CODEX_HOME 记在数据目录，从不为了记状态去新建 Codex 配置
 - `codex-sessions.ts` — Codex 会话的权威源是 `CODEX_HOME/state_5.sqlite` 的 `threads` 表（只读打开）；认不出的 schema 写操作一律关掉，归档、删除带操作日志与备份
+- `codex-config-toml.ts` — 保存配置以外单改 Codex `config.toml`（和存着的那份星芒配置）的统一入口 `mutateCodexConfigToml`：从读到写整段同步，本进程里谁也插不进来；改前留 `.bak`；能只动几行就只动几行，解析回去对不上才整份重写。扩展页启停插件和技能（卸载、导入技能时清掉它的启停记录，#1093 第 9 条）、星芒画图技能开关、桌面端语言在用（#1068）
 - `codex-extensions.ts` — Codex 专用的 MCP / 插件 / 市场 / Skill 管理（经 Codex 自己的命令行）；DTO 只暴露 env **变量名**不暴露值（I3）
 - `codex-plugin-catalog.ts` — 替 Codex 下官方插件目录快照（`$CODEX_HOME/.tmp/plugins`），国内它自己同步不下来；只在快照不存在时写，从不覆盖 Codex 自己的完整快照
 - `codex-plugin-catalog-bucket.ts` — 插件目录先从星芒腾讯云存储桶下（`scripts/sync-codex-plugins-cos.cjs` 定时同步），读不到、对不上、太慢就换回 GitHub

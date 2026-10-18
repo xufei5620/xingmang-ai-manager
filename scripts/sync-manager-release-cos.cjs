@@ -22,8 +22,8 @@ const MAX_RELEASE_FILES = 24
 const MAX_HISTORY_VERSIONS = 3
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable'
 // Release files go up one after another in a job allowed 330 minutes, so one
-// slow installer may use more than the 75 minutes that the 90-minute official
-// package jobs keep as their default before cleanly aborting their session.
+// slow installer may use more than the 75 minutes that the 90-minute Claude
+// official package jobs keep as their default before cleanly aborting their session.
 const MULTIPART_DEADLINE_MS = 120 * 60 * 1000
 
 function validateManagerVersion(version) {
