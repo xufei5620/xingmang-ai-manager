@@ -160,7 +160,7 @@ async function readBoundedText(response) {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-function createGitHubClient({ token, repository, fetchImpl = fetch }) {
+function createGitHubClient({ token, repository, fetchImpl = fetch, userAgent = 'xingmang-cos-sync-alert' }) {
   if (typeof token !== 'string' || !token || /[\r\n\s]/.test(token)) throw new Error('缺少 GITHUB_TOKEN')
   const prefix = `/repos/${repository}/`
   async function request(method, path, body) {
@@ -174,7 +174,7 @@ function createGitHubClient({ token, repository, fetchImpl = fetch }) {
         headers: {
           accept: 'application/vnd.github+json',
           authorization: `Bearer ${token}`,
-          'user-agent': 'xingmang-cos-sync-alert',
+          'user-agent': userAgent,
           'x-github-api-version': '2022-11-28',
           ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         },
@@ -280,5 +280,5 @@ if (require.main === module) {
   })
 }
 
-module.exports = { FAILURE_THRESHOLD, RUN_PAGE_SIZE, ALERT_JOB_NAME, alertMarker, summarizeNeeds, hasNewerFinishedRun, countPreviousFailures, findAlertIssue, failedJobNames,
-  formatBeijingTime, buildAlertBody, planAlertAction, createGitHubClient, readAlertEnvironment, runCosSyncAlert }
+module.exports = { FAILURE_THRESHOLD, RUN_PAGE_SIZE, ALERT_JOB_NAME, alertMarker, summarizeNeeds, validateRuns, hasNewerFinishedRun, countPreviousFailures, findAlertIssue,
+  failedJobNames, formatBeijingTime, buildAlertBody, planAlertAction, createGitHubClient, readAlertEnvironment, listOpenBotIssues, runCosSyncAlert }
