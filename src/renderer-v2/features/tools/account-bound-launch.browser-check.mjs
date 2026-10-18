@@ -63,7 +63,10 @@ test('a config read from the previous account cannot start a CLI', async () => {
     await page.evaluate(() => window.v2Test.holdNextConfigRead())
     await page.getByTestId('tool-codex-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getConfig'))
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-codex-primary"]')?.getAttribute('aria-busy') === 'true')
     await switchAccount(page)
+    // 旧账号那一次还卡在读配置上：卡片不陪它挂着「打开中」，新账号的「打开」也不被它挡住（#1104 第 3 条）。
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-codex-primary"]')?.getAttribute('aria-busy') !== 'true')
     await page.evaluate(() => window.v2Test.releaseConfigRead())
     await settle(page)
     assert.deepEqual(await launchCalls(page), [])
