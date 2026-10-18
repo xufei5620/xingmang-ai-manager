@@ -15,6 +15,7 @@ import {
   isUserWritablePath,
   runCommand,
   runWithTrustedWindowsProcessEnvironment,
+  sanitizeUpstreamDetail,
   trustedCommandEnvironment,
   windowsSystemExecutable,
 } from './command-runner'
@@ -987,6 +988,26 @@ describe('Linux trust boundary', () => {
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true })
     }
+  })
+})
+
+describe('sanitizeUpstreamDetail', () => {
+  it('redacts the key, strips control characters and truncates', () => {
+    const apiKey = 'sk-xingmang-selfcheck-secret-value'
+    const detail = sanitizeUpstreamDetail(`失败\u0007 key=${apiKey}\n第二行`, [apiKey])
+    expect(detail).not.toContain(apiKey)
+    expect(detail).not.toContain('\u0007')
+    expect(detail).toContain('[REDACTED]')
+    expect(detail).toBe('失败 key=[REDACTED] 第二行')
+    expect(sanitizeUpstreamDetail('x'.repeat(500), []).length).toBe(300)
+  })
+
+  it('drops terminal colour codes instead of leaving their tails on screen', () => {
+    expect(sanitizeUpstreamDetail('\u001B[31m分组不可用\u001B[0m', [])).toBe('分组不可用')
+  })
+
+  it('returns an empty string for an empty message', () => {
+    expect(sanitizeUpstreamDetail('', ['secret'])).toBe('')
   })
 })
 

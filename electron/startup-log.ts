@@ -49,6 +49,33 @@ export function redactLinuxUserPaths(value: string): string {
 }
 
 /**
+ * Every spelling a root directory takes in the text we redact: as given and
+ * resolved, with either separator, with escaped forward slashes (`C:\/Users\/al`,
+ * from serializers that escape them) and JSON-escaped (a path inside a
+ * serialized payload). The runtime log and the diagnostics export used to build
+ * a list each, the runtime log's the shorter one, so a spelling the export
+ * already hid could still reach support through the log. `resolved` comes from
+ * the caller because the export resolves Windows paths as Windows paths on any
+ * platform, which `path.resolve` does not.
+ */
+export function pathRootSpellings(root: string, resolved: string): string[] {
+  const slashRoot = root.replaceAll('\\', '/')
+  const slashResolved = resolved.replaceAll('\\', '/')
+  const spellings = new Set([
+    root,
+    resolved,
+    slashRoot,
+    root.replaceAll('/', '\\'),
+    slashResolved,
+    resolved.replaceAll('/', '\\'),
+    slashRoot.replaceAll('/', '\\/'),
+    slashResolved.replaceAll('/', '\\/'),
+  ])
+  for (const spelling of [...spellings]) spellings.add(JSON.stringify(spelling).slice(1, -1))
+  return [...spellings].filter(Boolean)
+}
+
+/**
  * Replaces the user's home directory in any spelling: with `%USERPROFILE%` on Windows and
  * macOS, and with `~` on Linux, where the Windows name only confuses support. On Linux
  * the match also has to end at a path boundary, so home /home/al does not turn
@@ -62,19 +89,13 @@ export function redactHomeDirectory(
   const home = homeDirectory.trim()
   const linux = platform !== 'win32' && platform !== 'darwin'
   if (!home) return linux ? redactLinuxUserPaths(value) : value
-  const candidates = new Set([
-    home,
-    path.resolve(home),
-    home.replaceAll('\\', '/'),
-    home.replaceAll('/', '\\'),
-    JSON.stringify(home).slice(1, -1),
-  ])
+  const candidates = pathRootSpellings(home, path.resolve(home))
   const caseInsensitive = /^[A-Za-z]:[\\/]/.test(home) || home.startsWith('\\\\')
   const posixHome = linux && !caseInsensitive
   const label = posixHome ? '~' : '%USERPROFILE%'
   const boundary = posixHome ? '(?![A-Za-z0-9._-])' : ''
   let result = value
-  for (const candidate of [...candidates].filter(Boolean).sort((left, right) => right.length - left.length)) {
+  for (const candidate of candidates.sort((left, right) => right.length - left.length)) {
     result = result.replace(
       new RegExp(`${escapeRegExp(candidate)}${boundary}`, caseInsensitive ? 'gi' : 'g'),
       label,
