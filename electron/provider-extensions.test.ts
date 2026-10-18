@@ -2099,6 +2099,104 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     expect(calls).toHaveLength(0)
   })
 
+  // Shapes copied from `grok mcp list --json` / `grok plugin list --available --json` on 1.0.52 and 1.0.62:
+  // MCP rows carry their own layer, plugin rows carry none because every plugin lives under ~/.grok.
+  const grokMcpList = JSON.stringify([
+    { command: 'echo', args: ['hi'], enabled: true, name: 'mine', scope: 'user' },
+    { command: 'echo', args: ['proj'], enabled: true, name: 'shared', scope: 'project' },
+    { url: 'https://example.com/mcp', enabled: true, name: 'remote', scope: 'project' },
+    { command: 'echo', args: [], enabled: true, name: 'legacy' },
+  ])
+  const grokPluginList = JSON.stringify([
+    { status: 'installed', name: 'demo', repo_key: 'demo-99a3b289', version: '0.1.0', path: '/home/u/.grok/installed-plugins/demo-99a3b289', source: 'owner/demo', marketplace: null },
+  ])
+
+  it('lists Grok MCP servers from inside the project and removes each one from the layer it lives in', async () => {
+    const repository = temporaryDirectory()
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return grokMcpList
+      if (argv.join(' ') === 'plugin list --available --json') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), repositoryRoot: repository, invoke })
+
+    const servers = (await service.list('grok')).items.filter((item) => item.kind === 'mcp')
+    expect(calls.find((call) => call.argv.join(' ') === 'mcp list --json')!.cwd).toBe(repository)
+    expect(servers.map((item) => [item.id, item.scope]).sort()).toEqual([
+      ['legacy', 'user'],
+      ['mine', 'user'],
+      ['remote', 'project'],
+      ['shared', 'project'],
+    ])
+
+    for (const item of servers.filter((server) => server.id === 'shared' || server.id === 'mine')) {
+      calls.length = 0
+      await service.mutate({ provider: 'grok', kind: 'mcp', action: 'uninstall', id: item.id, scope: item.scope === 'project' ? 'project' : 'user' })
+      const remove = calls.find((call) => call.argv[1] === 'remove')!
+      expect(remove.argv).toEqual(['mcp', 'remove', '--scope', item.scope, item.id])
+      expect(remove.cwd).toBe(repository)
+    }
+  })
+
+  it('adds a project Grok MCP server inside the project and asks for the project folder when none is picked', async () => {
+    const repository = temporaryDirectory()
+    const { calls, invoke } = recordingInvoke(() => '[]')
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), repositoryRoot: repository, invoke })
+
+    await service.mutate({
+      provider: 'grok',
+      kind: 'mcp',
+      action: 'install',
+      id: 'project-db',
+      scope: 'project',
+      mcp: { type: 'stdio', command: 'npx', args: ['-y', 'demo-mcp'] },
+    })
+    const add = calls.find((call) => call.argv[1] === 'add')!
+    expect(add.argv).toEqual(['mcp', 'add', '--scope', 'project', 'project-db', '--', 'npx', '-y', 'demo-mcp'])
+    expect(add.cwd).toBe(repository)
+
+    calls.length = 0
+    service.setRepositoryRoot(null)
+    await expect(service.mutate({
+      provider: 'grok',
+      kind: 'mcp',
+      action: 'install',
+      id: 'project-db',
+      scope: 'project',
+      mcp: { type: 'http', url: 'https://example.com/mcp' },
+    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('files every Grok plugin under the user layer and refuses a project layer the CLI cannot honour', async () => {
+    const repository = temporaryDirectory()
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'plugin list --available --json') return grokPluginList
+      if (argv.join(' ') === 'mcp list --json') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), repositoryRoot: repository, invoke })
+
+    const plugins = (await service.list('grok')).items.filter((item) => item.kind === 'plugin')
+    expect(plugins.map((item) => [item.id, item.scope])).toEqual([['demo', 'user']])
+
+    calls.length = 0
+    await expect(service.mutate({
+      provider: 'grok',
+      kind: 'plugin',
+      action: 'install',
+      source: 'owner/demo',
+      scope: 'project',
+      trust: true,
+    })).rejects.toThrow('不支持该原生操作')
+    expect(calls).toHaveLength(0)
+
+    await service.mutate({ provider: 'grok', kind: 'plugin', action: 'disable', id: 'demo', scope: 'user' })
+    const disable = calls.find((call) => call.argv[1] === 'disable')!
+    expect(disable.argv).toEqual(['plugin', 'disable', 'demo'])
+    expect(disable.cwd).toBeUndefined()
+  })
+
   it('shows Codex skills disabled in config.toml as disabled', async () => {
     const home = temporaryDirectory()
     const codexHome = temporaryDirectory()
