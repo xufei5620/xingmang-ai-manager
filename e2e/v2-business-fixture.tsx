@@ -27,6 +27,14 @@ declare global {
     endTopupPromotion: () => void
     // 外壳切走 / 切回个人中心（App.tsx 的 active）；不调就不传，同旧夹具。
     setPageActive: (active: boolean) => void
+    // 停在充值页时从首页活动卡片又点了一档（App.tsx 的 accountRechargeAmount + accountTabRequest）。
+    pickRechargeTier: (amount: number) => void
+    // 下一次试算挂着，等 release() 才回、fail() 就报错：看「正在确认价格…」那段时间页面怎么样。
+    topupQuoteHarness: {
+      holdNext(): void
+      release(): void
+      fail(message: string): void
+    }
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     failNextRead: (read: 'profile' | 'subscriptions') => void
     // extensionHold：除卸载以外的扩展改动（开关、更新）挂着，等这里放开才回。
@@ -72,6 +80,13 @@ function topupPromotionRunning(): boolean {
 }
 function fixtureTopupDiscounts(): Record<string, number> {
   return topupPromotionRunning() ? { 20: 0.8 } : {}
+}
+let holdNextTopupQuote = false
+let heldTopupQuote: { release: () => void; fail: (message: string) => void } | null = null
+window.topupQuoteHarness = {
+  holdNext() { holdNextTopupQuote = true },
+  release() { heldTopupQuote?.release(); heldTopupQuote = null },
+  fail(message) { heldTopupQuote?.fail(message); heldTopupQuote = null },
 }
 const calls: Array<{ name: string; args: unknown }> = []
 const record = (name: string, args?: unknown) => {
@@ -758,10 +773,19 @@ const apiMethods = {
   } },
   quoteAccountTopupAmount: async (
     input: Parameters<V2Bridge['quoteAccountTopupAmount']>[0],
-  ) => ({
-    amount: input.amount,
-    payableAmount: topupPromotionRunning() && input.amount === 20 ? 16 : input.amount,
-  }),
+  ) => {
+    if (holdNextTopupQuote) {
+      holdNextTopupQuote = false
+      record('quote-topup-held', input)
+      await new Promise<void>((resolve, reject) => {
+        heldTopupQuote = { release: resolve, fail: (message) => reject(new Error(message)) }
+      })
+    }
+    return {
+      amount: input.amount,
+      payableAmount: topupPromotionRunning() && input.amount === 20 ? 16 : input.amount,
+    }
+  },
   createAccountTopupPayment: async (
     input: Parameters<V2Bridge['createAccountTopupPayment']>[0],
   ) => {
@@ -779,6 +803,7 @@ const apiMethods = {
   },
   redeemAccountTopupCode: async (code: string) => {
     record('redeem-code', code)
+    if (fail === 'redeem') throw new Error('充值码无效或已被使用')
     const type = query.get('redemptionType')
     if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
     return { quotaAdded: 5 }
@@ -1341,6 +1366,8 @@ const root = createRoot(document.getElementById('root')!)
 // 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
 let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'grok'; sequence: number } | null = null
 let pageActive: boolean | undefined
+let rechargeAmount = query.has('rechargeAmount') ? Number(query.get('rechargeAmount')) : undefined
+let rechargeRequest: number | undefined
 // switcher：和 App.tsx 一样，「切换账号」打开装着保存账号的弹窗（v4 起个人中心不再自带这张卡）。
 // 切完不自动关，好看清切换结果。
 let switcherOpen = false
@@ -1384,7 +1411,8 @@ const renderFixture = (paymentReturn?: {
                   typeof BusinessPage
                 >[0]['accountTab']) ?? undefined)
           }
-          accountRechargeAmount={query.has('rechargeAmount') ? Number(query.get('rechargeAmount')) : undefined}
+          accountTabRequest={rechargeRequest}
+          accountRechargeAmount={rechargeAmount}
           paymentReturn={paymentReturn}
           navigate={(next, section) => record('navigate', section === undefined ? next : [next, section])}
           openLogin={() => record('login')}
@@ -1432,6 +1460,11 @@ window.rerenderFixture = () => renderFixture()
 window.setPageActive = (active) => {
   pageActive = active
   flushSync(() => renderFixture())
+}
+window.pickRechargeTier = (amount) => {
+  rechargeAmount = amount
+  rechargeRequest = (rechargeRequest ?? 0) + 1
+  renderFixture()
 }
 window.addEventListener('test-tool-config-confirmed', (event) => {
   const provider = (event as CustomEvent<'claude' | 'codex' | 'grok'>).detail
