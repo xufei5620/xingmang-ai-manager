@@ -394,30 +394,74 @@ export async function followExternalToolRoute(
     if (!edits.length) configError('在换线路前已变化')
     return commitExternalToolFiles(files, [{ path: files.target.path, content: applyConfigEdits(files.target.content, edits, true) }], hooks)
   }
+  return commitExternalToolFiles(files, openCodeFieldPlans(files, { baseUrl: from, apiKey }, 'baseURL', to, '换线路'), hooks)
+}
+
+/**
+ * 换 Key（#1113）：星芒替某个工具换了 Key，借它那把的 WorkBuddy、OpenCode 跟着换，只把星芒替当前账号写的
+ * 那几处 Key 从 from 换成 to，地址、型号、协议都不动，规矩同 followExternalToolRoute。WorkBuddy 是地址为
+ * baseUrl、Key 是 from 的每一条；OpenCode 是星芒那一段里当前型号生效的 Key。
+ */
+export async function followExternalToolKey(
+  tool: ExternalToolId,
+  platform: ExternalToolPlatform,
+  rootsInput: ExternalToolPathRoots,
+  change: { baseUrl: string; from: string; to: string },
+  hooks: NativeConfigWriteHooks = {},
+): Promise<ExternalToolConfigSaveResult> {
+  assertExternalToolImplemented(tool)
+  const { baseUrl, apiKey: to } = normalizedOptions(tool, { baseUrl: change.baseUrl, apiKey: change.to })
+  if (!to) configError('API Key无效')
+  const files = readExternalToolFiles(tool, platform, rootsInput)
+  if (tool === 'workbuddy') {
+    const current = parseConfig(tool, files.target.content)
+    const prefix = Array.isArray(current) ? [] : ['models']
+    const edits = workBuddyModels(current).flatMap((record, index): ConfigEdit[] => typeof record.url === 'string'
+      && record.url.replace(/\/+$/, '') === `${baseUrl}/chat/completions` && record.apiKey === change.from
+      ? [{ path: [...prefix, index, 'apiKey'], value: to }] : [])
+    if (!edits.length) configError('在换密钥前已变化')
+    return commitExternalToolFiles(files, [{ path: files.target.path, content: applyConfigEdits(files.target.content, edits, true) }], hooks)
+  }
+  return commitExternalToolFiles(files, openCodeFieldPlans(files, { baseUrl, apiKey: change.from }, 'apiKey', to, '换密钥'), hooks)
+}
+
+/**
+ * OpenCode 星芒那一段里当前型号生效的 field 换成 value：provider 和这个型号自己覆盖的那一处，是 expected 里那个值的
+ * 都换，改的是最后定义它的那个文件，不往客户别的文件里加字段。生效的地址和 Key 已经不是 expected（客户刚改过）
+ * 就一个字不写。
+ */
+function openCodeFieldPlans(
+  files: ReturnType<typeof readExternalToolFiles>,
+  expected: { baseUrl: string; apiKey: string | undefined },
+  field: 'baseURL' | 'apiKey',
+  value: string,
+  action: string,
+): { path: string; content: string }[] {
   const current = mergedOpenCodeConfig(files.snapshots)
   const model = typeof current.model === 'string' && current.model.startsWith('xingmang/') ? current.model.slice('xingmang/'.length) : null
   const provider = optionalObject(optionalObject(current.provider, 'provider').xingmang, '星芒 provider')
   const models = optionalObject(provider.models, 'models')
-  if (!model || models[model] === undefined) configError('在换线路前已变化')
+  if (!model || models[model] === undefined) configError(`在${action}前已变化`)
   const providerOptions = optionalObject(provider.options, 'provider options')
   const modelOptions = optionalObject(optionalObject(models[model], '所选模型').options, 'model options')
   const effective = { ...providerOptions, ...modelOptions }
-  const atFrom = (value: unknown) => typeof value === 'string' && value.replace(/\/+$/, '') === from
-  if (!atFrom(effective.baseURL) || effective.apiKey !== apiKey) configError('在换线路前已变化')
+  const atBase = (entry: unknown) => typeof entry === 'string' && entry.replace(/\/+$/, '') === expected.baseUrl
+  if (!atBase(effective.baseURL) || effective.apiKey !== expected.apiKey) configError(`在${action}前已变化`)
+  const owned = field === 'baseURL' ? atBase : (entry: unknown) => entry === expected.apiKey
   // 几个文件按顺序合并，后面的盖前面的：哪一处生效，就改最后定义它的那个文件。
-  const parsed = files.snapshots.map((snapshot) => snapshot.content === null ? null : parseConfig(tool, snapshot.content))
+  const parsed = files.snapshots.map((snapshot) => snapshot.content === null ? null : parseConfig('opencode', snapshot.content))
   const edits = new Map<number, ConfigEdit[]>()
-  for (const [keys, value] of [[['options', 'baseURL'], providerOptions.baseURL], [['models', model, 'options', 'baseURL'], modelOptions.baseURL]] as const) {
-    if (!atFrom(value)) continue
+  for (const [keys, entry] of [[['options', field], providerOptions[field]], [['models', model, 'options', field], modelOptions[field]]] as const) {
+    if (!owned(entry)) continue
     const editPath = ['provider', 'xingmang', ...keys]
     let index = parsed.length - 1
     while (index >= 0 && valueAt(parsed[index], editPath) === undefined) index--
-    if (index < 0) configError('在换线路前已变化')
-    edits.set(index, [...edits.get(index) ?? [], { path: editPath, value: to }])
+    if (index < 0) configError(`在${action}前已变化`)
+    edits.set(index, [...edits.get(index) ?? [], { path: editPath, value }])
   }
-  return commitExternalToolFiles(files, [...edits].sort(([left], [right]) => left - right).map(([index, fileEdits]) => ({
+  return [...edits].sort(([left], [right]) => left - right).map(([index, fileEdits]) => ({
     path: files.snapshots[index].path, content: applyConfigEdits(files.snapshots[index].content, fileEdits, true),
-  })), hooks)
+  }))
 }
 
 /** 合并前单个文件里这一路径上的值；中间哪一层不是对象就当没写。 */

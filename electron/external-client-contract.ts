@@ -51,6 +51,11 @@ export interface ExternalClientConnectionStatus {
    */
   routeRecheck?: boolean
   /**
+   * 星芒替它借的那个工具换了 Key，这一份要跟着换，客户端开着所以这次没换（#1113）。星芒每 5 分钟、回到星芒窗口时
+   * 看一眼它关没关，关了就自动换，两个站都这样。缺省 = 没有要换的。
+   */
+  keyPending?: boolean
+  /**
    * Claude Desktop 选的是官方登录（用客户自己的 Claude 账号），第三方配置留着也不读。缺省 = 不是
    * （旧行为）。只有 Claude Desktop 会有。
    */
