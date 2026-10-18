@@ -47,8 +47,8 @@ export function macosDesktopInstallFailedMessage(name: string): string {
 }
 
 /**
- * 装到一半磁盘写满了（装之前已经查过空间，很少见）。和装之前就查出来的那句
- * （disk-space.ts 的 describeInsufficientDiskSpace）同一个说法，只是量不到还剩多少；
+ * 装到一半磁盘写满了（装之前已经查过空间，很少见）。只在 Mac 上用，和装之前就查出来的那句
+ * （disk-space.ts 的 describeInsufficientDiskSpace）都说「磁盘空间不足」，只是量不到还剩多少；
  * 渲染层按「磁盘空间不足」归到「磁盘空间不够」，不配「看安装指南」：自己下载也一样放不下。
  */
 export function macosDesktopDiskFullMessage(name: string): string {

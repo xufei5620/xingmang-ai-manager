@@ -110,6 +110,22 @@ describe('deciding whether an install may start', () => {
     expect(describeInsufficientDiskSpace(null)).toBeNull()
   })
 
+  // #1157 第 13 条：量的是系统临时目录和托管目录里最紧的那块，Windows 上下载的临时
+  // 文件在系统盘；只说「安装目录所在磁盘」，客户会去清另一块盘。
+  it('names the Windows drive that ran short instead of pointing at the install folder', () => {
+    expect(describeInsufficientDiskSpace(reading(300 * 1024 ** 2, { measuredPath: 'C:\\Users\\yoyo\\AppData\\Local\\Temp' })))
+      .toBe('C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试')
+    expect(describeInsufficientDiskSpace(reading(300 * 1024 ** 2, { measuredPath: 'd:\\ProgramData\\XingmangManager' })))
+      .toBe('D 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 D 盘再试')
+  })
+
+  it('says 磁盘 when the measured path carries no drive letter', () => {
+    const generic = '磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试'
+    expect(describeInsufficientDiskSpace(reading(300 * 1024 ** 2))).toBe(generic)
+    expect(describeInsufficientDiskSpace(reading(300 * 1024 ** 2, { measuredPath: '/Users/yoyo/Library/Caches' }))).toBe(generic)
+    expect(describeInsufficientDiskSpace(reading(300 * 1024 ** 2, { measuredPath: '\\\\server\\share\\temp' }))).toBe(generic)
+  })
+
   it('judges by the tightest disk an install touches', () => {
     const tightest = tightestDiskSpace([reading(40 * gigabyte), null, reading(200 * 1024 ** 2)])
 

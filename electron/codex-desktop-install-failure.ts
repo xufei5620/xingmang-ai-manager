@@ -72,7 +72,7 @@ export function classifyCodexDesktopInstallFailure(detail: string): CodexDesktop
  * 换回当初装它的 Windows 账户），套上「没装上」反而把那一步盖掉，所以原样放行。
  */
 export function isPlainCodexDesktopInstallMessage(message: string): boolean {
-  return /磁盘|请勿重复操作|已取消管理员授权|未获得管理员权限|macOS|仅支持 Windows|读不到/.test(message)
+  return /磁盘|[A-Z] 盘空间不足|请勿重复操作|已取消管理员授权|未获得管理员权限|macOS|仅支持 Windows|读不到/.test(message)
 }
 
 export interface CodexDesktopInstallFailureContext {
