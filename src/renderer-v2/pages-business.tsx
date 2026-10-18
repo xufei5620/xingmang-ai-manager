@@ -53,6 +53,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onSubscriptionPurchased?: () => void
   /** 个人中心「退出登录」走外壳那一条，外壳才认得出是自己退的（#1098）；缺省 = 页面直接让主进程退出。 */
   onLogout?: Parameters<typeof AccountPage>[0]['onLogout']
+  /** 个人中心退出登录确认框里补的那句（有工具正在装、卸时）；缺省 = 只说原来那句。 */
+  logoutNote?: Parameters<typeof AccountPage>[0]['logoutNote']
 }
 
 export function BusinessPage({
@@ -76,6 +78,7 @@ export function BusinessPage({
   onSubscriptionPurchased,
   onAccountTabChange,
   onLogout,
+  logoutNote,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -103,6 +106,7 @@ export function BusinessPage({
         onOpenHelp={actions.openHelp}
         onTabChange={onAccountTabChange}
         onLogout={onLogout}
+        logoutNote={logoutNote}
         active={actions.active}
       />
     )

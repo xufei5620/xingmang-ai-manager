@@ -24,7 +24,7 @@ import { Home, type ToolInstallIntent } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
-import { clientLaunchWaitLabel, launchWaitLabel, launchWarning } from './features/tools/launch-notice'
+import { clientLaunchWaitLabel, launchWaitLabel, launchWarning, logoutJobsNote } from './features/tools/launch-notice'
 import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapOffer, modelSwapQuestion, modelSwapTitle, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
@@ -1864,7 +1864,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
-            logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
@@ -1892,7 +1892,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => visitedPages[id] === scope || id === page).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id === 'health' ? `health:${healthRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} active={page === id} onLogout={logoutVoluntarily} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} active={page === id} onLogout={logoutVoluntarily} logoutNote={logoutJobsNote(toolbox.jobs, jobToolName)} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
                   accelerating={acceleration.snapshot.state?.phase === 'active'}

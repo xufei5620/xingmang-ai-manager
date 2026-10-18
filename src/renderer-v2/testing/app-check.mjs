@@ -5991,6 +5991,47 @@ test('logging out yourself does not warn that the login ended from either entry 
   }
 })
 
+// #1097 第 2 部分：有工具正在装时退出登录，确认框在「已配好的工具会保留。」后面补一句会继续装完；
+// 没在装时一个字不加（v4 交接包定的）。个人中心和命令面板两个入口都要有。
+test('the logout prompt says an install in progress keeps going, from either entry point', async () => {
+  for (const entry of ['account', 'command']) {
+    const page = await open()
+    async function logoutDialog() {
+      if (entry === 'account') {
+        await page.getByTestId('sidebar-account-open').click()
+        await page.getByTestId('account-overview-logout').click()
+      } else {
+        await page.keyboard.press('Control+k')
+        await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
+        await page.getByTestId('command-result-account:logout').click()
+      }
+      const dialog = page.getByRole('dialog', { name: '退出登录？', exact: true })
+      await dialog.waitFor()
+      return dialog
+    }
+    try {
+      const row = page.getByTestId('tool-row-grok')
+      await row.getByText('未安装').waitFor()
+      await page.evaluate(() => window.v2Test.holdNextInstall())
+      await page.getByTestId('tool-grok-primary').click()
+      await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+      let dialog = await logoutDialog()
+      await expect(dialog).toContainText('已配好的工具会保留。正在安装的 Grok CLI 会继续装完。')
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      await dialog.waitFor({ state: 'hidden' })
+      await page.getByTestId('nav-home').click()
+      await page.evaluate(() => window.v2Test.releaseInstall())
+      await row.getByTestId('tool-grok-source').waitFor()
+      await expect(row.getByText(/正在/)).toHaveCount(0)
+      dialog = await logoutDialog()
+      await dialog.getByText('已配好的工具会保留。', { exact: true }).waitFor()
+      await expect(dialog).not.toContainText('会继续')
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 test('explicit historical login uses returned account ownership with customer account-source labels', async () => {
   const page = await open('guest=1&sub2api=1')
   try {

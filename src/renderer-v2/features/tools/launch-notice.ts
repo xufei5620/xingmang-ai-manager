@@ -1,4 +1,5 @@
 import type { CliLaunchResult, CodexDesktopLaunchResult } from '../../../../electron/ipc-contract'
+import { spacedName } from './model'
 
 const unverifiedChineseLocale = 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。'
 
@@ -72,4 +73,31 @@ export function clientLaunchWaitLabel(
 ): string {
   const own = jobs[client]
   return launchWaitLabel(own ? { [client]: own } : {}, nameOf, '正在打开客户端')
+}
+
+// Git 不在工具表里，和 Node.js、Python 一样挂在首页「运行环境」那张卡上，名字只能在这里给。
+const runtimeNames: Record<string, string> = { node: 'Node.js', python: 'Python', git: 'Git' }
+
+/**
+ * 退出登录确认框在「已配好的工具会保留。」后面补的那句（#1097 第 2 部分）。退出不打断
+ * 正在装、卸的工具，装完也不会再替原来的账号写密钥（第 1 部分），说一句免得以为装了一半
+ * 的会被丢掉。「打开」「改用当前账号」这类几秒就完的不算；都没有时回空串，确认框照旧只有
+ * 原来那句（v4 交接包定的）。
+ */
+export function logoutJobsNote(
+  jobs: Record<string, { kind?: 'uninstall' }>,
+  nameOf: (key: string) => string | undefined,
+): string {
+  const installing: string[] = []
+  const uninstalling: string[] = []
+  for (const [key, job] of Object.entries(jobs)) {
+    if (notWaitedOn.some((prefix) => key.startsWith(prefix))) continue
+    const name = runtimeNames[key] ?? nameOf(key)
+    if (!name) continue
+    if (job.kind === 'uninstall') uninstalling.push(name)
+    else installing.push(name)
+  }
+  const installNote = installing.length ? `正在安装的 ${spacedName(installing.join('、'))}会继续装完。` : ''
+  const uninstallNote = uninstalling.length ? `正在卸载的 ${spacedName(uninstalling.join('、'))}会继续卸完。` : ''
+  return installNote + uninstallNote
 }
