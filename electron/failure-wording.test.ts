@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loggedFailureNextStep, npmFailureSentence, npmSourceFailure, toolLaunchFailureMessage } from './failure-wording'
+import { errorCodeClause, errorCodeOf, loggedFailureNextStep, npmFailureSentence, npmSourceFailure, toolLaunchFailureMessage } from './failure-wording'
 
 describe('toolLaunchFailureMessage', () => {
   it('keeps a reason that is already Chinese', () => {
@@ -44,5 +44,16 @@ describe('npm failure sentences', () => {
     expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: denied }])).toBe('Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EPERM）。')
     const unknown = npmSourceFailure('命令执行失败（退出码 1）：npm', { commandFailed: true, uninstall: true })
     expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: unknown }])).toBe(`Codex CLI 卸载失败：卸载命令没有成功。${loggedFailureNextStep}`)
+  })
+})
+
+describe('errorCodeOf', () => {
+  it('prefers the errno Node attached and falls back to a code in the message', () => {
+    expect(errorCodeOf(Object.assign(new Error('rename failed'), { code: 'EPERM' }))).toBe('EPERM')
+    expect(errorCodeOf(new Error("EBUSY: resource busy or locked, rename 'C:\\x'"))).toBe('EBUSY')
+    expect(errorCodeOf(Object.assign(new Error('x'), { code: 'ERR_INVALID_ARG_TYPE' }))).toBe('ERR_INVALID_ARG_TYPE')
+    expect(errorCodeOf(new Error('配置文件不是合法 JSON'))).toBeNull()
+    expect(errorCodeClause(new Error('配置文件不是合法 JSON'))).toBe('')
+    expect(errorCodeClause(Object.assign(new Error('x'), { code: 'ENOSPC' }))).toBe('（错误码 ENOSPC）')
   })
 })

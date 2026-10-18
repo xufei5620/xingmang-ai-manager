@@ -1500,7 +1500,7 @@ describe('createSystemService', () => {
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
     await f.store.setOfficialProvider('claude', true)
 
-    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/官方 Key 没能挪开，配置没有改动/)
+    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，配置没有改动。关掉 Claude Code 后再试；还不行请找客服/)
 
     expect(fs.existsSync(f.settingsPath)).toBe(false)
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
@@ -1515,7 +1515,7 @@ describe('createSystemService', () => {
 
     const error = await f.service.saveConfig(f.payload, false).catch((reason: unknown) => reason)
     expect(error).toBeInstanceOf(Error)
-    expect(String(error)).not.toMatch(/官方 Key/)
+    expect(String(error)).not.toMatch(/官方 Key|官方密钥/)
 
     expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
     expect(fs.readFileSync(f.snapshotPath, 'utf8')).toBe('')
@@ -1527,8 +1527,8 @@ describe('createSystemService', () => {
     await f.service.saveConfig(f.payload, false)
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
 
-    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
-    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
+    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/^Claude Code 原来的官方密钥没能放回原处。关掉 Claude Code 后再点一次「切回官方账号」/)
+    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方密钥没能放回原处/)
 
     expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
@@ -1596,7 +1596,7 @@ describe('createSystemService', () => {
     await f.store.setOfficialProvider('claude', true)
     saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
 
-    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/官方 Key 没能挪开/)
+    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」/)
 
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')

@@ -57,8 +57,8 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { isChineseSentence } from './chinese-sentence'
-import { npmFailureSentence, npmSourceFailure, toolLaunchFailureMessage, type NpmFailurePart } from './failure-wording'
-import { npmDownloadTimedOutReason, npmErrorCodeIn, npmErrorCodesClause } from './npm-failure-reasons'
+import { errorCodeClause, npmFailureSentence, npmSourceFailure, toolLaunchFailureMessage, type NpmFailurePart } from './failure-wording'
+import { npmDownloadTimedOutReason, npmErrorCodesClause } from './npm-failure-reasons'
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
@@ -2193,10 +2193,8 @@ export async function replaceManagedNpmPrefixAtomically(
       const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
       // 上屏只说结果和下一步，「回滚失败」四个字留着：渲染层靠它不盖安抚文案（operation-error.ts 的 undoFailed）。
       // 原话连同新版没装上的那个原因挂在 cause 上进运行日志（#1100 第1条）。
-      const errno = (rollbackError as NodeJS.ErrnoException | null)?.code
-      const code = typeof errno === 'string' && /^E[A-Z0-9_]+$/.test(errno) ? errno : npmErrorCodeIn(detail)
       throw new ManagedNpmRollbackError(
-        `这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服${code ? `（错误码 ${code}）` : ''}。`,
+        `这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服${errorCodeClause(rollbackError)}。`,
         { cause: new Error(`托管 npm 更新失败，且旧版本回滚失败：${detail}`, { cause: error }) },
       )
     }
@@ -8461,6 +8459,10 @@ export function createSystemService(
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
+  function officialKeyRestoreFailedMessage(error: unknown): string {
+    return `Claude Code 原来的官方密钥没能放回原处。关掉 Claude Code 后再点一次「切回官方账号」；还不行请找客服${errorCodeClause(error)}。`
+  }
+
   function credentialFailureReason(error: unknown): string {
     return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
   }
@@ -8490,7 +8492,8 @@ export function createSystemService(
     } catch (error) {
       const reason = credentialFailureReason(error)
       runtimeLog?.log('warn', 'config', 'official-credentials.move-failed', 'Claude Code 的官方 Console Key 没能挪开，本次配置没有写入', { provider: 'claude', reason })
-      throw new Error(`Claude Code 原来登录留下的官方 Key 没能挪开，配置没有改动：${reason}`)
+      // 原话已经记进上面那条日志，上屏只说结果和下一步（#1100 第1条）。
+      throw new Error(`Claude Code 原来登录留下的官方密钥没能挪开，配置没有改动。关掉 Claude Code 后再试；还不行请找客服${errorCodeClause(error)}。`, { cause: error })
     }
   }
 
@@ -8501,7 +8504,7 @@ export function createSystemService(
     } catch (error) {
       const reason = credentialFailureReason(error)
       runtimeLog?.log('warn', 'config', 'official-credentials.restore-failed', 'Claude Code 的官方 Console Key 没能放回原处', { provider: 'claude', reason })
-      throw new Error(`Claude Code 原来的官方 Key 没能放回原处：${reason}`)
+      throw new Error(officialKeyRestoreFailedMessage(error), { cause: error })
     }
   }
 
@@ -8572,7 +8575,7 @@ export function createSystemService(
       const official = side === 'official'
       // 和 saveConfig / switchToOfficialAccount 一样：接中转的挪开官方 Console Key（不挪它会顶掉中转的 Key，
       // 一用就是无效令牌），官方的放回来。配置已经是恢复出来的那份了，挪不动也照样往下对齐记号。
-      let credentialFailure: string | null = null
+      let credentialFailure: unknown = null
       if (provider === 'claude') {
         try {
           const changed = official ? restoreClaudeConsoleKey(providerRoots) : moveClaudeConsoleKeyAside(providerRoots)
@@ -8582,7 +8585,10 @@ export function createSystemService(
               { provider })
           }
         } catch (error) {
-          credentialFailure = credentialFailureReason(error)
+          credentialFailure = error
+          runtimeLog?.log('warn', 'config', official ? 'official-credentials.restore-failed' : 'official-credentials.move-failed',
+            official ? '恢复备份后 Claude Code 的官方 Console Key 没能放回原处' : '恢复备份后 Claude Code 的官方 Console Key 没能挪开',
+            { provider, reason: credentialFailureReason(error) })
         }
       }
       if ((store.read().officialProviders ?? []).includes(provider) !== official) {
@@ -8590,9 +8596,11 @@ export function createSystemService(
         if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(official)
       }
       if (credentialFailure) {
+        // 「无效令牌」留着：account-cli-provisioner.ts 的 isCredentialFailure 认它。
         throw new Error(official
-          ? `Claude Code 原来的官方 Key 没能放回原处：${credentialFailure}`
-          : `Claude Code 原来登录留下的官方 Key 没能挪开，打开会报无效令牌：${credentialFailure}`)
+          ? officialKeyRestoreFailedMessage(credentialFailure)
+          : `Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」；还不行请找客服${errorCodeClause(credentialFailure)}。`,
+        { cause: credentialFailure })
       }
     })
   }

@@ -14,6 +14,22 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? '')
 }
 
+/**
+ * 留在句尾「（错误码 X）」里的那个码：Node 挂在 code 上的 errno（EPERM、ENOSPC），没有就从原话里找。
+ * 界面的错误分类（磁盘满、没权限、文件被占用）靠它认。
+ */
+export function errorCodeOf(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code
+  if (typeof code === 'string' && /^E[A-Z0-9_]+$/.test(code)) return code
+  return npmErrorCodeIn(errorText(error))
+}
+
+/** 「（错误码 X）」；没有码就是空串。 */
+export function errorCodeClause(error: unknown): string {
+  const code = errorCodeOf(error)
+  return code ? `（错误码 ${code}）` : ''
+}
+
 /** 首页点「打开」没打开时上屏那句。 */
 export function toolLaunchFailureMessage(name: string, error: unknown): string {
   const detail = errorText(error).trim()

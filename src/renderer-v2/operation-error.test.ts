@@ -187,7 +187,7 @@ describe('renderer-v2 operation error classification', () => {
   it('blames the download source, not the Xingmang servers, when an install cannot fetch', () => {
     for (const sourceError of [
       'Claude Code 安装失败：npm 官方源：命令执行失败（退出码 1）：npm-cli.js（E500；500 Internal Server Error - GET https://registry.npmjs.org/x）',
-      'Node.js 自动安装失败：下载安装包时服务器回了 HTTP 503',
+      'Node.js 自动安装失败：下载安装包时下载源那边出错（错误码 HTTP 503）。过几分钟再点「重试」。',
       'Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）',
     ]) expect([sourceError, classifyOperationError(sourceError)]).toEqual([sourceError, 'downloadSourceError'])
     const source = presentOperationError('Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）')

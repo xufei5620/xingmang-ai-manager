@@ -8212,11 +8212,11 @@ describe('backup handlers and account key ownership', () => {
   it('still reports a completed restore when the official marker cannot follow it', async () => {
     const backupStore = backupStoreStub()
     const service = serviceStub()
-    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方 Key 没能挪开'))
+    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」；还不行请找客服（错误码 EPERM）。'))
     const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
     expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能跟着对齐'), expect.objectContaining({
-      provider: 'codex', reason: expect.stringContaining('官方 Key 没能挪开'),
+      provider: 'codex', reason: expect.stringContaining('官方密钥没能挪开'),
     }))
   })
 
