@@ -6,6 +6,7 @@ import { AppSettingsStore, type RelayToolRouteStatus } from './app-settings'
 import type { ProviderId } from './catalog'
 import { inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, relayProviderBaseUrls, type RelayEndpointId } from './relay-sites'
+import type { RelayRouteChange } from './relay-route-controller'
 import type { RunningToolsReport } from './running-tools'
 import { createSystemService, type SystemServiceOptions, type ToolRouteFollowRequest } from './system-service'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
@@ -274,5 +275,127 @@ describe('tool line separate from the app line', () => {
   it('keeps the old snapshot when no tool line is wired', async () => {
     const f = await fixture()
     expect(f.service.readStoredConfig()).not.toHaveProperty('relayToolRouteLines')
+  })
+})
+
+// #1061 第 2 条：历史账号的工具配置跟应用线路，换线路由界面整份写入跟过去（saveConfig）。因为连不上换的，
+// 这一轮写完（noteRouteFollowRestart）照星芒账号那样提示重开。
+describe('legacy account restart hint after a whole rewrite', () => {
+  const legacyOwner = JSON.stringify(['solov-api', 9])
+
+  async function legacyFixture(options: {
+    providers?: ProviderId[]
+    siteId?: 'solov' | 'solov-api'
+    change?: RelayRouteChange | null
+    report?: RunningToolsReport
+  } = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-legacy-route-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const siteId = options.siteId ?? 'solov-api'
+    const from = relayProviderBaseUrls(siteId, 'primary')
+    const ownership = new ToolConfigOwnershipStore(path.join(root, 'tool-config-ownership'))
+    const providers = options.providers ?? ['codex']
+    for (const provider of providers) {
+      saveProviderConfig(provider, 'sk-route-fixture', 'fixture-model', 'reset', roots, {}, from)
+      await ownership.write(provider, inspectProviderConfig(provider, roots, from), 'account', legacyOwner, 2)
+    }
+    const clock = { now: 1_000_000_000_000 }
+    const account = { owner: legacyOwner as string | null }
+    const change = options.change === undefined
+      ? { from: 'primary' as const, to: 'direct' as const, reason: 'health-failed' as const, at: clock.now - 60_000 }
+      : options.change
+    const lastChange = vi.fn((_siteId: string) => change)
+    const followed = vi.fn()
+    const report = options.report ?? { running: ['codex', 'grok'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }
+    const inspectRunning = vi.fn(async (_providers: readonly ProviderId[]) => report)
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      managerDataDirectory: root,
+      providerRoots: roots,
+      getExternalClientAccountId: () => account.owner,
+      getRelaySiteId: () => siteId,
+      relayEndpointRouting: createRelayEndpointRoutingSnapshot({}, () => ({ [siteId]: { line: 'direct', settled: true } })),
+      relayRouteLastChange: lastChange,
+      relayFetch: vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] })),
+      resolveCliInstallation: async () => null,
+      inspectCodexDesktopForModelCatalog: async () => ({ installed: false, version: null }),
+      inspectRunningToolsForRouteHint: inspectRunning,
+      getToolRouteRewriteMode: () => 'merge',
+      onToolRouteFollowed: followed,
+      toolRouteNow: () => clock.now,
+    })
+    async function rewrite(provider: ProviderId) {
+      await service.saveConfig({ provider, apiKey: '', model: 'fixture-model', mode: 'merge' }, false, undefined, { source: 'account', automatic: true })
+      expect(service.getConfig(false).providers[provider].actualBaseUrl).toBe(relayProviderBaseUrls(siteId, 'direct')[provider])
+    }
+    async function finish() {
+      if (!service.noteRouteFollowRestart) throw new Error('noteRouteFollowRestart missing')
+      await service.noteRouteFollowRestart()
+    }
+    return { service, rewrite, finish, clock, account, lastChange, followed, inspectRunning }
+  }
+
+  it('asks open tools to restart once the round after a fault switch is written, in one hint', async () => {
+    const f = await legacyFixture({ providers: ['claude', 'codex', 'grok'] })
+    for (const provider of ['claude', 'codex', 'grok'] satisfies ProviderId[]) await f.rewrite(provider)
+    // 写一家说一家会一句盖一句：整轮写完才说。
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    await f.finish()
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({
+      id: f.clock.now, codex: { cli: true, desktop: null, canRestartDesktop: false }, grok: 'running',
+    })
+    // Claude Code 每次请求都重读配置，不问也不提。
+    expect(f.inspectRunning).toHaveBeenCalledTimes(1)
+    expect(f.inspectRunning).toHaveBeenCalledWith(['codex', 'grok'])
+    expect(f.followed).toHaveBeenCalledTimes(1)
+    expect(f.lastChange).toHaveBeenCalledWith('solov-api')
+
+    // 说过的不再说：下一轮什么也没跟过去。
+    f.clock.now += 1000
+    await f.finish()
+    expect(f.inspectRunning).toHaveBeenCalledTimes(1)
+    expect(f.followed).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    { label: 'the switch back to the preferred line', change: { from: 'direct', to: 'direct', reason: 'recovered', at: 1_000_000_000_000 - 60_000 } },
+    { label: 'the first settled line of a run', change: { from: 'primary', to: 'direct', reason: 'startup', at: 1_000_000_000_000 - 60_000 } },
+    { label: 'a fault switch older than half an hour', change: { from: 'primary', to: 'direct', reason: 'line-down', at: 1_000_000_000_000 - 31 * 60_000 } },
+    { label: 'a fault switch onto another line than the one written', change: { from: 'direct', to: 'primary', reason: 'health-failed', at: 1_000_000_000_000 - 60_000 } },
+    { label: 'no switch at all (a fixed line)', change: null },
+  ] satisfies Array<{ label: string; change: RelayRouteChange | null }>)('does not ask after $label', async ({ change }) => {
+    const f = await legacyFixture({ change })
+    await f.rewrite('codex')
+    await f.finish()
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    expect(f.inspectRunning).not.toHaveBeenCalled()
+    expect(f.followed).not.toHaveBeenCalled()
+  })
+
+  it('asks after a line-down switch too', async () => {
+    const f = await legacyFixture({ change: { from: 'primary', to: 'direct', reason: 'line-down', at: 1_000_000_000_000 - 60_000 } })
+    await f.rewrite('codex')
+    await f.finish()
+    expect(f.service.readStoredConfig().toolRouteRestartHint?.codex).toEqual({ cli: true, desktop: null, canRestartDesktop: false })
+  })
+
+  it('leaves the xm account to followToolRoutes even on the old whole-rewrite path', async () => {
+    const f = await legacyFixture({ siteId: 'solov' })
+    await f.rewrite('codex')
+    await f.finish()
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    expect(f.lastChange).not.toHaveBeenCalled()
+  })
+
+  it('drops what was written for an account that changed before the round finished', async () => {
+    const f = await legacyFixture()
+    await f.rewrite('codex')
+    f.account.owner = JSON.stringify(['solov-api', 10])
+    await f.finish()
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    // 也不带到下一轮。
+    f.account.owner = legacyOwner
+    await f.finish()
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
   })
 })

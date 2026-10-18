@@ -1540,6 +1540,8 @@ if (!hasSingleInstanceLock) {
       getExternalClientAccountId: () => readExternalClientAccountId(),
       readCurrentManagedCliKeys: () => readCurrentManagedCliKeys(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
+      // 历史账号的工具配置跟应用线路：因为连不上换了、整份写入跟过去以后，照星芒账号那样提示重开（#1061 第 2 条）。
+      relayRouteLastChange: (siteId) => relayRouteController.lastChange(siteId),
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
