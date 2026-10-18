@@ -9,7 +9,9 @@ import {
   relayRouteFailureProbeGapMs,
   relayRouteFailureRecheckGapMs,
   relayRouteFirstLaunchPreferDirectMs,
+  relayRouteLineDownConfirmMs,
   relayRouteMinSwitchGapMs,
+  relayRouteNetworkSettleMs,
   relayRouteRecheckIntervalMs,
   relayRouteRecoveryMs,
   relayRouteRecoveryProbeIntervalMs,
@@ -92,6 +94,15 @@ function harness(options: HarnessOptions = {}) {
     async fireTimer() {
       const [timer] = timers
       if (!timer) throw new Error('no timer pending')
+      timers.delete(timer)
+      clock += timer.delayMs
+      timer.callback()
+      await settle()
+    },
+    // 放挂着的那个这么长的计时器：两条一起查里再查一次前的等待、唤醒以后等网络稳下来那一下。
+    async fireTimerOf(delayMs: number) {
+      const timer = [...timers].find((pending) => pending.delayMs === delayMs)
+      if (!timer) throw new Error(`no ${delayMs} ms timer pending`)
       timers.delete(timer)
       clock += timer.delayMs
       timer.callback()
@@ -772,6 +783,7 @@ describe('relay route controller', () => {
     })
     stored.controller.start()
     await settle()
+    await stored.fireTimerOf(relayRouteLineDownConfirmMs)
     expect(stored.controller.lines().solov).toEqual({ line: 'primary', settled: true })
 
     // 定时查那一轮照三次阈值数。
@@ -792,39 +804,118 @@ describe('relay route controller', () => {
     expect(scheduled.controller.lines().solov).toEqual({ line: 'primary', settled: true })
   })
 
-  // #1053：开机（有结论时）两条一起查，走着的那条不通、另一条通就当场换，不等三次。
-  it('switches a stored line right away when the startup check finds it down and the other line up', async () => {
+  // #1053：开机（有结论时）两条一起查，走着的那条不通、另一条通，隔几秒再查一次走着的那条，还不通就换，
+  // 不等三次（#1156）。
+  it('switches a stored line when the startup check finds it down twice and the other line up', async () => {
     const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
     run.reachable.direct = false
     run.controller.start()
     await settle()
     expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
+    expect(run.changes).toEqual([])
+    expect(run.delays()).toEqual([relayRouteLineDownConfirmMs])
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary'], ['solov', 'direct']])
     expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
     expect(run.changes).toEqual([['solov', { line: 'primary', settled: true }]])
-    const change = { from: 'direct', to: 'primary', reason: 'line-down', trigger: 'startup', at: startedAt }
+    const at = startedAt + relayRouteLineDownConfirmMs
+    const change = { from: 'direct', to: 'primary', reason: 'line-down', trigger: 'startup', at }
     expect(run.controller.lastChange('solov')).toEqual(change)
     expect(run.writes).toEqual([{ lines: { solov: 'primary' }, changes: { solov: change } }])
     expect(run.events('relay.route.check-failed')).toEqual([{ siteId: 'solov', line: 'direct', trigger: 'startup', bothLines: true }])
     expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
 
-    // 历史账号反过来：先走的默认线路不通、直连通就当场换到直连。
+    // 历史账号反过来：先走的默认线路不通、直连通就换到直连。
     const historical = harness({ preferences: { 'solov-api': 'auto' }, conclusions: { 'solov-api': 'primary' } })
     historical.reachable.primary = false
     historical.controller.start()
     await settle()
-    expect(historical.probes).toEqual([['solov-api', 'primary'], ['solov-api', 'direct']])
-    expect(historical.controller.lastChange('solov-api')).toEqual({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at: startedAt })
+    await historical.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(historical.probes).toEqual([['solov-api', 'primary'], ['solov-api', 'direct'], ['solov-api', 'primary']])
+    expect(historical.controller.lastChange('solov-api')).toEqual({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at })
   })
 
-  // 退到备用那条以后它自己坏了（换了网络常常是它先坏）：不等那 10 分钟，先走的那条通就当场换回去。
-  it('goes back to the preferred line right away when the backup line it fell back to is down', async () => {
+  // #1156：唤醒、换网那几秒里走着的那条一次没通、紧接着就通了，不换线。
+  it('keeps the line when it fails one check and answers the check right after', async () => {
+    let directFailures = 0
+    const probes: Array<[RelayRouteSiteId, RelayEndpointId]> = []
+    const run = harness({
+      preferences: { solov: 'auto' },
+      conclusions: { solov: 'direct' },
+      probe: async (siteId, line) => {
+        probes.push([siteId, line])
+        if (line !== 'direct' || directFailures === 0) return true
+        directFailures -= 1
+        throw new TypeError('net::ERR_CONNECTION_RESET')
+      },
+    })
+    run.controller.start()
+    await settle()
+    directFailures = 1
+    probes.length = 0
+    run.controller.recheck('resume')
+    await run.fireTimerOf(relayRouteNetworkSettleMs)
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(probes).toEqual([['solov', 'direct'], ['solov', 'primary'], ['solov', 'direct']])
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(run.changes).toEqual([])
+    expect(run.controller.lastChange('solov')).toBeNull()
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+  })
+
+  // #1156：报「网络变了」那几种错的算没查准，另一条通了也不换。
+  it.each(['ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_NETWORK_IO_SUSPENDED'])('does not switch away from a line that fails with %s', async (code) => {
+    const run = harness({
+      preferences: { solov: 'auto' },
+      conclusions: { solov: 'direct' },
+      probe: async (_siteId, line) => {
+        if (line === 'direct') throw new TypeError(`net::${code}`)
+        return true
+      },
+    })
+    run.controller.start()
+    await settle()
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(run.changes).toEqual([])
+    expect(run.events('relay.route.check-failed')).toEqual([{ siteId: 'solov', line: 'direct', trigger: 'startup', bothLines: true, unsure: true }])
+    expect(run.events('relay.route.unsure')).toEqual([{ siteId: 'solov', line: 'direct', trigger: 'startup' }])
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+  })
+
+  // 一次没查准、再查一次是真没通：换。
+  it('switches when a check that could not tell is followed by one that fails', async () => {
+    let first = true
+    const run = harness({
+      preferences: { solov: 'auto' },
+      conclusions: { solov: 'direct' },
+      probe: async (_siteId, line) => {
+        if (line !== 'direct') return true
+        if (first) {
+          first = false
+          throw new TypeError('net::ERR_NETWORK_CHANGED')
+        }
+        return false
+      },
+    })
+    run.controller.start()
+    await settle()
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.controller.lastChange('solov')).toMatchObject({ from: 'direct', to: 'primary', reason: 'line-down', trigger: 'startup' })
+  })
+
+  // 退到备用那条以后它自己坏了（换了网络常常是它先坏）：不等那 10 分钟，先走的那条通就换回去。
+  it('goes back to the preferred line without the ten minutes when the backup line it fell back to is down', async () => {
     const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'primary' } })
     run.reachable.primary = false
     run.controller.start()
     await settle()
-    expect(run.probes).toEqual([['solov', 'primary'], ['solov', 'direct']])
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.probes).toEqual([['solov', 'primary'], ['solov', 'direct'], ['solov', 'primary']])
     expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
-    expect(run.controller.lastChange('solov')).toEqual({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at: startedAt })
+    expect(run.controller.lastChange('solov')).toEqual({
+      from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at: startedAt + relayRouteLineDownConfirmMs,
+    })
     expect(run.events('relay.route.check-failed')).toEqual([{ siteId: 'solov', line: 'primary', trigger: 'startup', bothLines: true }])
     expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
   })
@@ -847,12 +938,13 @@ describe('relay route controller', () => {
     run.probes.length = 0
     run.controller.reportFailure('solov', 'primary', 'ERR_NAME_NOT_RESOLVED')
     await settle()
-    expect(run.probes).toEqual([['solov', 'primary'], ['solov', 'direct']])
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.probes).toEqual([['solov', 'primary'], ['solov', 'direct'], ['solov', 'primary']])
     expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
     expect(run.controller.lastChange('solov')).toMatchObject({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'ERR_NAME_NOT_RESOLVED' })
   })
 
-  it('checks both lines on resume, network changes and a manual recheck, and switches as soon as the current line is down', async () => {
+  it('checks both lines on resume, network changes and a manual recheck, and switches once the current line is down', async () => {
     const run = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' }, conclusions: { solov: 'direct', 'solov-api': 'primary' } })
     run.controller.start()
     await settle()
@@ -866,21 +958,55 @@ describe('relay route controller', () => {
       { siteId: 'solov', line: 'direct', trigger: 'network' },
       { siteId: 'solov-api', line: 'primary', trigger: 'network' },
     ])
+    // 先等网络稳下来（#1156）。
+    expect(run.probes).toEqual([])
+    await run.fireTimerOf(relayRouteNetworkSettleMs)
     expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary'], ['solov-api', 'primary'], ['solov-api', 'direct']])
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.probes.slice(4)).toEqual([['solov', 'direct']])
     expect(run.controller.lines()).toEqual({ solov: { line: 'primary', settled: true }, 'solov-api': { line: 'primary', settled: true } })
     expect(run.changes).toEqual([['solov', { line: 'primary', settled: true }]])
-    expect(run.controller.lastChange('solov')).toEqual({ from: 'direct', to: 'primary', reason: 'line-down', trigger: 'network', at: startedAt })
+    const switchedAt = startedAt + relayRouteNetworkSettleMs + relayRouteLineDownConfirmMs
+    expect(run.controller.lastChange('solov')).toEqual({ from: 'direct', to: 'primary', reason: 'line-down', trigger: 'network', at: switchedAt })
 
-    // 两次切换至少隔 5 分钟照旧：刚换过去，默认线路接着坏了，到点再两条一起查一轮才换。
+    // 两次切换至少隔 5 分钟照旧：刚换过去，默认线路接着坏了，到点再两条一起查一轮才换。「重新检测」不等网络稳下来。
     run.reachable.direct = true
     run.reachable.primary = false
     run.advance(60_000)
+    run.probes.length = 0
     run.controller.recheck('manual')
     await settle()
+    expect(run.probes).toEqual([['solov', 'primary'], ['solov', 'direct'], ['solov-api', 'primary'], ['solov-api', 'direct']])
+    while (run.delays().includes(relayRouteLineDownConfirmMs)) await run.fireTimerOf(relayRouteLineDownConfirmMs)
     expect(run.controller.lines().solov.line).toBe('primary')
-    const waitMs = relayRouteMinSwitchGapMs - 60_000
+    const waitMs = relayRouteMinSwitchGapMs - 60_000 - relayRouteLineDownConfirmMs
     expect(run.events('relay.route.held')).toEqual([{ siteId: 'solov', line: 'primary', waitMs }])
     expect(run.delays()).toContain(waitMs)
+  })
+
+  // #1156：唤醒以后系统接连报几次网络变化，等稳下来只查一次。
+  it('waits for the network to settle after a resume or network change and checks once', async () => {
+    const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
+    run.controller.start()
+    await settle()
+    run.probes.length = 0
+    run.controller.recheck('resume')
+    run.advance(3_000)
+    run.controller.recheck('network')
+    await settle()
+    expect(run.probes).toEqual([])
+    expect(run.delays().filter((delay) => delay === relayRouteNetworkSettleMs)).toHaveLength(1)
+    await run.fireTimerOf(relayRouteNetworkSettleMs)
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+
+    // 点「重新检测」不等，还在等的那次也不用再查了。
+    run.probes.length = 0
+    run.controller.recheck('network')
+    run.controller.recheck('manual')
+    await settle()
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
   })
 
   // 唤醒、网络恢复时切回去的那 10 分钟从头数：睡前那几次不跟醒来连成「一直查得通」。点「重新检测」不清。
@@ -894,6 +1020,7 @@ describe('relay route controller', () => {
       // 开机一次加两次，已经连着查通三次。
       run.controller.recheck(trigger)
       await settle()
+      if (trigger === 'resume') await run.fireTimerOf(relayRouteNetworkSettleMs)
       expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
       const left = trigger === 'resume' ? recoveryProbes : recoveryProbes - 3
       for (let probe = 1; probe < left; probe++) await run.fireTimer()
@@ -930,6 +1057,79 @@ describe('relay route controller', () => {
     await settle()
     expect(run.controller.lines().solov.line).toBe('primary')
     expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
+  })
+
+  // 开机没联网、两条都没连上的历史账号还没定下线路：网络恢复那一下也两条一起查，不走三次的规矩。
+  it('checks both lines on a recheck before the historical site has settled a line', async () => {
+    const run = harness({ preferences: { 'solov-api': 'auto' } })
+    run.reachable.primary = false
+    run.reachable.direct = false
+    run.controller.start()
+    await settle()
+    await failTwiceMore(run)
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
+    expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+
+    run.reachable.direct = true
+    run.probes.length = 0
+    run.controller.recheck('network')
+    await run.fireTimerOf(relayRouteNetworkSettleMs)
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.probes).toEqual([['solov-api', 'primary'], ['solov-api', 'direct'], ['solov-api', 'primary']])
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+    expect(run.controller.lastChange('solov-api')).toEqual({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'network', at: run.now() })
+  })
+
+  it('drops the wait between failed checks for a check of both lines when a recheck comes in', async () => {
+    const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
+    run.controller.start()
+    await settle()
+    run.reachable.direct = false
+    await run.fireTimer()
+    expect(run.delays()).toEqual([relayRouteFailureProbeGapMs])
+
+    run.probes.length = 0
+    run.controller.recheck('manual')
+    await settle()
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
+    expect(run.delays()).toEqual([relayRouteLineDownConfirmMs])
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(run.controller.lastChange('solov')).toMatchObject({ from: 'direct', to: 'primary', reason: 'line-down', trigger: 'manual' })
+    expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
+  })
+
+  // 唤醒那一刻，睡着时到点的切回检查往往同时起来，它只查先走的那条：唤醒要的两条一起查等它回来马上补上，
+  // 不然走着的备用那条坏了也查不出来。
+  it('checks both lines once a probe still out when a recheck came in returns', async () => {
+    const pending = deferred<boolean>()
+    let hold = false
+    const reachable: Record<RelayEndpointId, boolean> = { direct: true, primary: true }
+    const probes: Array<[RelayRouteSiteId, RelayEndpointId]> = []
+    const run = harness({
+      preferences: { solov: 'auto' },
+      conclusions: { solov: 'primary' },
+      probe: (siteId, line) => {
+        probes.push([siteId, line])
+        return hold && line === 'direct' ? pending.promise : Promise.resolve(reachable[line])
+      },
+    })
+    run.controller.start()
+    await settle()
+    hold = true
+    await run.fireTimer()
+    expect(probes).toEqual([['solov', 'primary'], ['solov', 'direct'], ['solov', 'direct']])
+
+    reachable.primary = false
+    run.controller.recheck('resume')
+    await run.fireTimerOf(relayRouteNetworkSettleMs)
+    expect(probes).toHaveLength(3)
+    pending.resolve(true)
+    await settle()
+    expect(probes.slice(3)).toEqual([['solov', 'primary'], ['solov', 'direct']])
+    await run.fireTimerOf(relayRouteLineDownConfirmMs)
+    expect(probes.slice(5)).toEqual([['solov', 'primary']])
+    expect(run.controller.lines().solov).toEqual({ line: 'direct', settled: true })
+    expect(run.controller.lastChange('solov')).toMatchObject({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'resume' })
   })
 
   it('remembers the last change from an earlier run', () => {
