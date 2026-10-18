@@ -198,7 +198,7 @@ jobs:
       - name: Restore the Electron download for this version
         if: matrix.electron
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -210,7 +210,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: matrix.electron && github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
@@ -257,7 +257,7 @@ jobs:
       # The same three Electron steps as windows-test, for the smokes below.
       - name: Restore the Electron download for this version
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -266,7 +266,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
@@ -368,7 +368,7 @@ jobs:
       - run: node e2e/asar-tamper-smoke.mjs release/win-unpacked
       - name: Upload smoke-test artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-smoke-artifacts
           # Smokes that write their evidence into a subdirectory of artifacts/
@@ -434,7 +434,7 @@ jobs:
       # The same three Electron steps as windows-test.
       - name: Restore the Electron download for this version
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -443,7 +443,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/electron
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
@@ -632,7 +632,7 @@ jobs:
       # The same three Electron steps as windows-test.
       - name: Restore the Electron download for this version
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -641,7 +641,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
