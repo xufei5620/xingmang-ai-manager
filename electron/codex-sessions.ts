@@ -14,6 +14,7 @@ import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
 } from './safe-local-data'
+import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
 const OPERATION_JOURNAL_LABEL = 'Codex 会话操作日志'
@@ -642,39 +643,6 @@ async function streamMessages(
   return stats
 }
 
-async function writeChunk(output: fs.WriteStream, text: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    output.write(text, 'utf8', (error) => error ? reject(error) : resolve())
-  })
-}
-
-function safeMarkdownFileName(title: string, sessionId: string): string {
-  const safe = title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim().slice(0, 80)
-  return `${safe || 'Codex-session'}-${sessionId.slice(0, 8)}.md`
-}
-
-function markdownHeadingText(value: string, maximum = 160): string {
-  // Newlines or '## ' fragments inside a heading would break the exported
-  // document structure, so headings are collapsed to one bounded line.
-  const cleaned = value.replace(/\s+/g, ' ').trim()
-  return cleaned.length > maximum ? `${cleaned.slice(0, maximum)}…` : cleaned
-}
-
-function roleLabel(role: string): string {
-  if (role === 'user') return '用户'
-  if (role === 'assistant') return 'Codex'
-  if (role === 'developer') return '开发者指令'
-  if (role === 'system') return '系统'
-  return role || '其他'
-}
-
-async function endStream(output: fs.WriteStream): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    output.end(resolve)
-    output.once('error', reject)
-  })
-}
-
 /**
  * `moveFileDurably` reserves the target with a hard link before unlinking the
  * source, so an interrupted move can leave both names on a single inode.
@@ -977,42 +945,20 @@ export class CodexSessionsService {
   async exportMarkdown(sessionId: string, destinationPath: string): Promise<CodexSessionExportResult> {
     const { row } = this.readThread(sessionId)
     const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
-    let outputPath = path.resolve(destinationPath)
-    try {
-      if ((await fsPromises.stat(outputPath)).isDirectory()) {
-        outputPath = path.join(outputPath, safeMarkdownFileName(row.title, row.id))
-      }
-    } catch {
-      if (!path.extname(outputPath)) outputPath = path.join(outputPath, safeMarkdownFileName(row.title, row.id))
-    }
-    if (path.extname(outputPath).toLowerCase() !== '.md') throw new Error('会话导出文件必须使用 .md 扩展名')
-    await fsPromises.mkdir(path.dirname(outputPath), { recursive: true })
-    // 先写同目录临时文件，成功后 rename 原子覆盖，避免失败时破坏用户已有文件。
-    const tempPath = `${outputPath}.${randomUUID()}.tmp`
-    const outputHandle = await fsPromises.open(tempPath, 'wx', 0o600)
-    const output = outputHandle.createWriteStream({ encoding: 'utf8' })
-    try {
-      await writeChunk(output, `# ${markdownHeadingText(row.title || row.id)}\n\n`)
-      await writeChunk(output, `- 会话 ID：\`${row.id}\`\n`)
-      if (row.cwd) await writeChunk(output, `- 工作目录：\`${row.cwd.replaceAll('`', '\\`')}\`\n`)
-      if (row.model) await writeChunk(output, `- 模型：\`${row.model.replaceAll('`', '\\`')}\`\n`)
-      await writeChunk(output, '\n---\n\n')
-      const stats = await streamMessages(rolloutPath, this.maxJsonLineBytes, async (message) => {
-        await writeChunk(output, `## ${markdownHeadingText(roleLabel(message.role))}\n\n${message.text}\n\n`)
-      })
-      // 与其它工具的导出同一句话（provider-sessions.ts）：用户拿它当备份，缺了内容必须写在文件里。
-      const truncated = stats.invalidLines > 0
-      if (truncated) {
-        await writeChunk(output, '> 注意：源会话超过安全读取上限或含有损坏记录，本导出文件已明确标记为不完整。\n')
-      }
-      await endStream(output)
-      await fsPromises.rename(tempPath, outputPath)
-      return { sessionId, outputPath, messages: stats.total, truncated }
-    } catch (error) {
-      output.destroy()
-      await fsPromises.rm(tempPath, { force: true })
-      throw error
-    }
+    const exported = await exportSessionMarkdown({
+      destinationPath,
+      fileName: sessionMarkdownFileName(row.title, 'Codex-session', row.id),
+      title: row.title || row.id,
+      identity: [['会话 ID', row.id]],
+      cwd: row.cwd,
+      model: row.model,
+      assistantLabel: 'Codex',
+      writeMessages: async (write) => {
+        const stats = await streamMessages(rolloutPath, this.maxJsonLineBytes, write)
+        return { messages: stats.total, truncated: stats.invalidLines > 0 }
+      },
+    })
+    return { sessionId, ...exported }
   }
 
   archive(sessionId: string): Promise<CodexSessionMutationResult> {
