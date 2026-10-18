@@ -43,7 +43,7 @@
 - `windows-cli-shell-access.ts` — 让客户自己的终端能直接敲 `claude`：删掉 npm 生成的 `.ps1` 启动文件（Windows 默认执行策略会拦它，删了 PowerShell 就落到 `.cmd`，不用放宽执行策略），只认 cmd-shim 指向本包的那份；装完把 npm 目录加进用户 PATH、卸空后撤掉。提权令牌下只碰管理员所有的托管目录，用户可写目录一律不动（I8）；Mac/Linux 的对应动作由宿主注入
 - `windows-live-path.ts` — 读注册表里整台电脑 + 当前账号的 PATH（异步 reg.exe），拼出「现在新开终端会拿到的」PATH；只给推 Grok 跑钩子用哪个 shell、从星芒打开 Grok 时补新段用，不改 `process.env`，不进提权路径解析
 - `windows-processor.ts` — 认出 ARM 版 Windows：x64 星芒在 ARM 上被模拟时 `process.arch` 和本进程环境变量都报 x64，只有注册表里机器级的那份说真话；另读 PE 头判断某个 exe 是哪种架构，据此选 Node.js 安装包架构；诊断与 `system-service.ts` 用
-- `windows-store-app-launch.ts` — 问「这台电脑有没有微软商店」（LTSC、精简版、组策略关掉的都没有），只有确定没有时才跳过商店那条安装路；`codex-desktop-service.ts` 用。文件名是历史遗留：原先的「内置 Administrator / 关了 UAC 可能打不开」判断已于 2026-10-02 撤掉，文件头写了恢复它的前提
+- `windows-store-availability.ts` — 问「这台电脑有没有微软商店」（LTSC、精简版、组策略关掉的都没有），只有确定没有时才跳过商店那条安装路；`codex-desktop-service.ts` 用。原名 `windows-store-app-launch.ts`，原先的「内置 Administrator / 关了 UAC 可能打不开」判断已于 2026-10-02 撤掉，文件头写了恢复它的前提
 
 ## 加速（Windows 与 macOS；只接管系统代理、不开 TUN。文件名里的 `development` 是历史名字，正式包也走这一套，链路见总述）
 - `acceleration-service.ts` — **主进程里加速的唯一门面**：把后端包成按账号 scope 排队的服务，记住「这次是谁连的」（用户点的 vs 打开 Codex 桌面端时软件替他连的 `autoStartedBy`，后者不进 `AccelerationApi`，渲染层冒充不了），状态变化推给托盘与提醒；`createUserAccelerationApi` 是给 IPC 的那半边，看不见软件替他连的会话；Windows 关机时据 `hasPossibleSession` 推迟关机先还原代理

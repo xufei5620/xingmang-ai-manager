@@ -5,7 +5,7 @@ import {
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAvailability,
   parseWindowsStoreAvailability,
-} from './windows-store-app-launch'
+} from './windows-store-availability'
 
 describe('powershell module import statement', () => {
   it('imports every module by quoted name before the first cmdlet runs', () => {
