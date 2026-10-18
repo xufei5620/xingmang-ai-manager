@@ -244,6 +244,71 @@ describe('git-runtime-install', () => {
     expect(events.some((event) => event.message === '网络断了一下，正在从国内镜像接着下载 Git')).toBe(true)
   })
 
+  it('downloads over each real redirect route with a fetch that reports every hop, and resumes through the redirect again', async () => {
+    const body = installerBytes(7)
+    const cut = 5 * 1024 * 1024
+    const digest = createHash('sha256').update(body).digest('hex')
+    const [mirror, official] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const cdn = `https://cdn.npmmirror.com/binaries/git-for-windows/${gitForWindowsTag}/${gitForWindowsInstallerFileName('x64')}`
+    const objects = 'https://objects.githubusercontent.com/github-production-release-asset-2e65be/23216272/0f1e2d3c'
+      + '?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20261018%2Fus-east-1%2Fs3%2Faws4_request'
+      + '&X-Amz-Signature=deadbeef&response-content-disposition=attachment%3B%20filename%3DGit.exe'
+    const releaseAssets = 'https://release-assets.githubusercontent.com/github-production-release-asset/23216272/0f1e2d3c'
+      + '?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-18T14%3A30%3A00Z&rscd=attachment%3B+filename%3DGit.exe&sig=a%2Bb%3D'
+    const routes = [
+      // npmmirror's fixed CDN mapping, with the Location written the way a server might: upper-case host, default port.
+      { region: 'mainland-china' as const, source: 'npmmirror', entry: mirror.url, location: cdn.replace('https://cdn.npmmirror.com/', 'HTTPS://CDN.NPMMIRROR.COM:443/'), landing: cdn },
+      { region: 'outside-mainland-china' as const, source: 'official', entry: official.url, location: objects, landing: objects },
+      { region: 'outside-mainland-china' as const, source: 'official', entry: official.url, location: releaseAssets, landing: releaseAssets },
+    ]
+    for (const route of routes) {
+      const requested: string[] = []
+      const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+        expect(init?.redirect).toBe('manual')
+        const url = String(input)
+        requested.push(url)
+        let response: Response
+        if (url === route.entry) {
+          response = new Response(null, { status: 302, headers: { location: route.location } })
+        } else if (url === route.landing) {
+          const range = new Headers(init?.headers).get('range')
+          let sent = false
+          response = range
+            ? new Response(new Uint8Array(body.subarray(cut)), {
+              status: 206,
+              headers: { 'content-range': `bytes ${cut}-${body.byteLength - 1}/${body.byteLength}` },
+            })
+            : new Response(new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (sent) {
+                  controller.error(new TypeError('fetch failed'))
+                  return
+                }
+                sent = true
+                controller.enqueue(new Uint8Array(body.subarray(0, cut)))
+              },
+            }), { status: 200, headers: { 'content-length': String(body.byteLength), etag: '"git"' } })
+        } else {
+          response = new Response('not found', { status: 404 })
+        }
+        // Like undici with manual redirects: the URL that was asked for.
+        Object.defineProperty(response, 'url', { value: new URL(url).href })
+        return response
+      })
+      const deps = dependencies({
+        fetch: fetch as unknown as typeof globalThis.fetch,
+        expectedSha256: () => digest,
+        waitBeforeResume: async () => undefined,
+      })
+
+      const result = await installGitRuntimeWith('x64', { networkRegion: route.region, temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps)
+      expect(result.source, route.landing).toBe(route.source)
+      // The resumed request starts over at the source and follows its redirect again.
+      expect(requested).toEqual([route.entry, route.landing, route.entry, route.landing])
+      expect(deps.plans).toHaveLength(1)
+    }
+  })
+
   it('reports both sources in plain words when neither works', async () => {
     const fetch = vi.fn(async (url: string) => streamResponse(Buffer.alloc(0), url, 404))
     const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
