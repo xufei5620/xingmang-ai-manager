@@ -2952,10 +2952,12 @@ export function ExtensionsPage({
         footer={
           <>
             <Button onClick={() => setDeletion(null)}>取消</Button>
+            {/* 只有删除自己在跑才转圈；页面上别的操作（安装、更新、授权……）还没完时按钮灰着，正文下面说一句为什么（#1099 第 3 条）。 */}
             <Button
               variant="danger"
               icon={Trash2}
-              loading={Boolean(operation.busy)}
+              loading={operation.busy === 'delete'}
+              disabled={Boolean(operation.busy) && operation.busy !== 'delete'}
               onClick={() => {
                 if (deletion)
                   void operation.execute(
@@ -2987,6 +2989,13 @@ export function ExtensionsPage({
             ? '插件里带的技能、命令和外接工具会一起移除。'
             : '其他工具里的不受影响。以后可以在官方目录或精选里重新添加。'}
         </p>
+        {operation.busy && operation.busy !== 'delete' && (
+          <p role="status" data-testid={`${page}-delete-busy`}>
+            {kind === 'plugin'
+              ? '上一个操作还没完成，完成后才能卸载。'
+              : '上一个操作还没完成，完成后才能移除。'}
+          </p>
+        )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       {/* 详情从抽屉换成弹窗（v4 不用抽屉），testId 沿用。 */}

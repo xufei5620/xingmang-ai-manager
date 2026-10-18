@@ -781,10 +781,13 @@ test('a replaced manual client key cannot save the previous key first detected m
     await pickOption(page, 'external-client-source', 'manual')
     await page.getByTestId('external-client-secret').fill('sk-fixture-first-key-0001')
     await page.getByTestId('external-client-save').click()
-    // 第一把密钥读到的型号没有一个拿得准，只替他填上第一项，不保存。
+    // 第一把密钥读到的型号没有一个拿得准，只替他填上第一项，不保存；说一句还没保存，焦点放到「默认模型」上。
     await expect(page.getByTestId('external-client-save')).toHaveText('保存配置')
     assert.equal(await page.getByTestId('external-client-model').inputValue(), 'fixture-model')
+    assert.equal(await page.getByTestId('external-client-pick-model').innerText(), '还没保存。请在「默认模型」里选一个模型，再点「保存配置」。')
+    await expect(page.getByTestId('external-client-model')).toBeFocused()
     await page.getByTestId('external-client-secret').fill('sk-fixture-second-key-0002')
+    assert.equal(await page.getByTestId('external-client-pick-model').count(), 0)
     await expect(page.getByTestId('external-client-save')).toHaveText('保存并检测')
     await page.getByTestId('external-client-save').click()
     // 换了密钥，上一把替他填的第一项不算「原来就配着的」：检测完照旧停下让他自己挑。
@@ -5868,6 +5871,22 @@ test('relogin on an expired saved account opens the login dialog on that account
     await page.getByRole('dialog', { name: '切换账号', exact: true }).getByTestId('account-add').click()
     await page.getByRole('heading', { name: '登录星芒账号' }).waitFor()
     assert.equal(await page.getByTestId('login-account').inputValue(), '')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('configuring a tool from the key page says so when the key has no models', async () => {
+  const page = await open('keyOptions=1&emptyKeyModels=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.getByTestId('sidebar-account-open').click()
+    await page.getByTestId('account-overview-balance').waitFor()
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByRole('button', { name: '把密钥 custom-key 配置到工具', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^Codex CLI/ }).click()
+    const dialog = page.getByRole('dialog', { name: '把「custom-key」写进 Codex CLI？', exact: true })
+    await dialog.getByText('这把密钥没有可用模型，请换一把密钥，或编辑它换个分组。', { exact: true }).waitFor()
+    assert.equal(await dialog.getByRole('button', { name: '写入并改用当前账号', exact: true }).isDisabled(), true)
     await clean(page)
   } finally { await page.close() }
 })

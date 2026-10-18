@@ -868,6 +868,8 @@ function AccountKeys({
   const [selected, setSelected] = useState<{ key: AccountKey; provider: Provider } | null>(null)
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')
+  // 这把密钥的模型读完了没有：读完是空的要说一句，读的时候也要说一句，不然只看到一个灰着的空下拉框（#1104 第 2 条）。
+  const [modelsLoaded, setModelsLoaded] = useState(false)
   const modelRequest = useRef(0)
   const toolTargets = keyTools ?? defaultKeyTools()
   useEffect(() => () => { groupsRequest.current++ }, [api, siteId])
@@ -1012,6 +1014,7 @@ function AccountKeys({
     setSelected({ key, provider })
     setModels([])
     setModel('')
+    setModelsLoaded(false)
     const requestId = ++modelRequest.current
     void operation.execute(
       'models',
@@ -1020,6 +1023,7 @@ function AccountKeys({
         if (requestId !== modelRequest.current) return
         setModels(values)
         setModel(values[0] ?? '')
+        setModelsLoaded(true)
       },
       '',
     )
@@ -1457,6 +1461,14 @@ function AccountKeys({
           options={models.map((value) => ({ value, label: value }))}
           value={model}
           onChange={(event) => setModel(event.target.value)}
+          hint={
+            operation.busy === 'models'
+              ? '正在读取可用模型…'
+              : modelsLoaded && models.length === 0
+                ? '这把密钥没有可用模型，请换一把密钥，或编辑它换个分组。'
+                : undefined
+          }
+          testId="account-key-configure-model"
         />
       </Dialog>
     </>
