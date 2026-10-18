@@ -2,8 +2,9 @@ import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { absoluteWindowsDirectory, pathWithinWindowsRoot, resolveWindowsSystemRoot } from './windows-system-root'
 
-const SYSTEM_ROOT_DEVICE_PATH = '\\\\?\\GLOBALROOT\\SystemRoot'
+export { deriveWindowsSystemRoot, pathWithinWindowsRoot } from './windows-system-root'
 
 export interface WindowsMachinePaths {
   systemRoot: string
@@ -119,63 +120,6 @@ export interface WindowsMachinePathPrimeOptions {
     machinePaths: WindowsMachinePaths,
   ) => Promise<unknown>
   aclCache?: ProgramFilesAclCache
-}
-
-function absoluteDirectory(value: string | null | undefined, label: string): string {
-  const candidate = value?.trim()
-  if (!candidate || candidate.includes('\0') || !path.win32.isAbsolute(candidate)) {
-    throw new Error(`无法解析可信的 Windows ${label} 目录`)
-  }
-  return path.win32.normalize(candidate).replace(/[\\/]$/, '')
-}
-
-function systemRootFromObjectManager(): string {
-  try {
-    return fs.realpathSync.native(SYSTEM_ROOT_DEVICE_PATH)
-  } catch {
-    throw new Error('无法通过 Windows 系统设备路径解析真实 SystemRoot')
-  }
-}
-
-function loadedSharedObjects(): readonly string[] {
-  try {
-    const report = process.report.getReport() as { sharedObjects?: unknown }
-    return Array.isArray(report.sharedObjects)
-      ? report.sharedObjects.filter((entry): entry is string => typeof entry === 'string')
-      : []
-  } catch {
-    return []
-  }
-}
-
-export function deriveWindowsSystemRoot(
-  options: Pick<WindowsMachinePathResolutionOptions, 'platform' | 'sharedObjects'> = {},
-): string {
-  const platform = options.platform ?? process.platform
-  if (platform !== 'win32') throw new Error('Windows 真实系统目录解析仅支持 Windows')
-  const candidates = new Map<string, Set<string>>()
-  for (const filePath of options.sharedObjects ?? loadedSharedObjects()) {
-    if (!path.win32.isAbsolute(filePath)) continue
-    const fileName = path.win32.basename(filePath).toLowerCase()
-    if (fileName !== 'ntdll.dll' && fileName !== 'kernel32.dll') continue
-    const system32 = path.win32.dirname(filePath)
-    if (path.win32.basename(system32).toLowerCase() !== 'system32') continue
-    const root = path.win32.dirname(system32)
-    const key = root.toLowerCase()
-    const modules = candidates.get(key) ?? new Set<string>()
-    modules.add(fileName)
-    candidates.set(key, modules)
-    if (modules.has('ntdll.dll') && modules.has('kernel32.dll')) return path.win32.normalize(root)
-  }
-  throw new Error('无法从已加载的 Windows 核心模块解析真实系统目录')
-}
-
-function trustedSystemRoot(options: WindowsMachinePathResolutionOptions): string {
-  try {
-    return deriveWindowsSystemRoot(options)
-  } catch {
-    return systemRootFromObjectManager()
-  }
 }
 
 function parseKnownFolders(output: string): Partial<Pick<
@@ -317,23 +261,22 @@ export function resolveWindowsMachinePaths(
     && options.resolveKnownFolders === undefined
   if (useCache && cachedMachinePaths) return cachedMachinePaths
 
-  const systemRoot = absoluteDirectory(
-    (options.resolveSystemRoot ?? (() => trustedSystemRoot(options)))(),
-    'SystemRoot',
-  )
+  const systemRoot = options.resolveSystemRoot
+    ? absoluteWindowsDirectory(options.resolveSystemRoot(), 'SystemRoot')
+    : resolveWindowsSystemRoot(options)
   const systemDrive = path.win32.parse(systemRoot).root
   const knownFolders = (options.resolveKnownFolders ?? resolveWindowsKnownFolders)(systemRoot)
   const result: WindowsMachinePaths = {
     systemRoot,
     system32: path.win32.join(systemRoot, 'System32'),
-    programFiles: absoluteDirectory(
+    programFiles: absoluteWindowsDirectory(
       knownFolders.programFiles ?? path.win32.join(systemDrive, 'Program Files'),
       'Program Files',
     ),
     programFilesX86: knownFolders.programFilesX86?.trim()
-      ? absoluteDirectory(knownFolders.programFilesX86, 'Program Files (x86)')
+      ? absoluteWindowsDirectory(knownFolders.programFilesX86, 'Program Files (x86)')
       : null,
-    programData: absoluteDirectory(
+    programData: absoluteWindowsDirectory(
       knownFolders.programData ?? path.win32.join(systemDrive, 'ProgramData'),
       'ProgramData',
     ),
@@ -343,13 +286,6 @@ export function resolveWindowsMachinePaths(
 }
 
 export const windowsMachinePaths = resolveWindowsMachinePaths
-
-export function pathWithinWindowsRoot(candidate: string, root: string): boolean {
-  if (!path.win32.isAbsolute(candidate) || !path.win32.isAbsolute(root)) return false
-  const candidateKey = path.win32.normalize(candidate).replace(/[\\/]+$/, '').toLowerCase()
-  const rootKey = path.win32.normalize(root).replace(/[\\/]+$/, '').toLowerCase()
-  return candidateKey === rootKey || candidateKey.startsWith(`${rootKey}\\`)
-}
 
 function stringArray(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length > 256) return null
