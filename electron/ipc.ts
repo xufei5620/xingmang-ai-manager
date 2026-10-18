@@ -1222,7 +1222,21 @@ function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliCon
   }
   if (value.intent !== undefined && value.intent !== 'automatic' && value.intent !== 'explicit') throw new Error('CLI 配置意图无效')
   if (value.intent === 'explicit' && providers.length !== 1) throw new Error('请逐个确认需要替换的工具配置')
-  return { providers, preferredModels, ...(value.mode === undefined ? {} : { mode: value.mode }), ...(value.intent === undefined ? {} : { intent: value.intent }) }
+  if (value.keepKeys !== undefined && !Array.isArray(value.keepKeys)) throw new Error('CLI 配置目标格式错误')
+  const keepKeys = (value.keepKeys ?? []).map((provider) => {
+    if (!isActiveProviderId(provider) || !providers.includes(provider)) throw new Error('沿用现有密钥的工具不在这次的配置目标里')
+    return provider
+  })
+  if (new Set(keepKeys).size !== keepKeys.length) throw new Error('CLI 配置目标不能重复')
+  // 点名重写是客户要换成自动那把，和「沿用现有密钥」相反，一起来说明渲染层算错了。
+  if (value.intent === 'explicit' && keepKeys.length) throw new Error('CLI 配置意图无效')
+  return {
+    providers,
+    preferredModels,
+    ...(value.mode === undefined ? {} : { mode: value.mode }),
+    ...(value.intent === undefined ? {} : { intent: value.intent }),
+    ...(keepKeys.length ? { keepKeys } : {}),
+  }
 }
 
 // account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
@@ -3662,6 +3676,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.managedCliKeys,
       parsed.mode,
       parsed.intent,
+      parsed.keepKeys,
     ).then((outcome) => {
       logManagedCliFailures(outcome)
       return outcome

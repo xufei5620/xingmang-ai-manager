@@ -116,6 +116,11 @@ export interface AccountBootstrapPlan {
   preferredModels: Partial<Record<ActiveProviderId, string>>
   /** targets 里那几个 Codex 认不出连接设置、没有归属记录也照样自动修的工具（第十七批 1b）。 */
   shadowRepairs?: ActiveProviderId[]
+  /**
+   * targets 里只因为换了连接线路才写、Key 沿用配置里那把的几家（#1159）：配置里那把既不是缓存里的托管 Key，
+   * 也不是缓存换掉过的，是客户在密钥页、配置窗口自己选的。缺省 = 没有。
+   */
+  keepKeys?: ActiveProviderId[]
 }
 
 export interface AccountBootstrapResult {
@@ -305,6 +310,7 @@ export function accountBootstrapPlan(
   const skipped: AccountBootstrapSkip[] = []
   const preferredModels: Partial<Record<ActiveProviderId, string>> = {}
   const shadowRepairs: ActiveProviderId[] = []
+  const keepKeys: ActiveProviderId[] = []
 
   // 已下线的工具（Gemini）配置里还留着，这里一概不碰：不签 Key、不写配置、不算「没装」。
   for (const provider of activeProviderIds) {
@@ -394,13 +400,19 @@ export function accountBootstrapPlan(
     }
     // 已连好的工具开机时不重写，除非 Key 换了分组或上一轮没写成（keyChanges），或显式选择的线路已经重启生效。
     if (source === 'account' && mode === 'restore' && connectionReady(current, provider, storage)
-      && !keyChanges.includes(provider) && !accountRouteMigrationNeeded(current, provider, settings, storage)) {
-      skipped.push({
-        provider,
-        reason: 'configured',
-        message: `${nameOf(provider)} 已连接星芒账号`,
-      })
-      continue
+      && !keyChanges.includes(provider)) {
+      if (!accountRouteMigrationNeeded(current, provider, settings, storage)) {
+        skipped.push({
+          provider,
+          reason: 'configured',
+          message: `${nameOf(provider)} 已连接星芒账号`,
+        })
+        continue
+      }
+      // 只为换线路写的这一轮，配置里那把不是自动签的（缓存里眼下那把、缓存换掉过的都不是）：客户在密钥页、
+      // 配置窗口自己选的，Key 原样留着只换地址，不然额度上限、扣费分组跟着线路一换就悄悄变了（#1159）。
+      // 换了分组的（keyChanges）不走这里，买了订阅照旧换进订阅分组。
+      if (current.configurationAccountMatched !== true && current.configurationKeyReplaced !== true) keepKeys.push(provider)
     }
 
     targets.push(provider)
@@ -408,7 +420,13 @@ export function accountBootstrapPlan(
     if (model) preferredModels[provider] = model
   }
 
-  return { targets, skipped, preferredModels, ...(shadowRepairs.length ? { shadowRepairs } : {}) }
+  return {
+    targets,
+    skipped,
+    preferredModels,
+    ...(shadowRepairs.length ? { shadowRepairs } : {}),
+    ...(keepKeys.length ? { keepKeys } : {}),
+  }
 }
 
 /**
@@ -496,8 +514,13 @@ export async function bootstrapAccountTools(
   const planned = accountBootstrapPlan(system, config, settings, mode, storage, keyChanges)
   const permitted = onlyProviders ? new Set(onlyProviders) : null
   const plan = permitted
-    ? { ...planned, targets: planned.targets.filter((provider) => permitted.has(provider)) }
+    ? {
+        ...planned,
+        targets: planned.targets.filter((provider) => permitted.has(provider)),
+        keepKeys: planned.keepKeys?.filter((provider) => permitted.has(provider)),
+      }
     : planned
+  const keepKeys = plan.keepKeys?.length ? { keepKeys: plan.keepKeys } : {}
 
   // 换了连接线路的工具开着也照样改（#941）：以前开着的先不改，客户不关工具、不点「重新同步」，它就一直
   // 停在原来那条线路上。开着的进程重开以后就走新地址；线路的事不在首页提示（yoyo 10-8）。
@@ -518,6 +541,7 @@ export async function bootstrapAccountTools(
       // 被改动过的配置在主进程那一侧也受「来源未确认就不自动改写」拦着，
       // 用户点名的这一次要说清楚是他自己要求的，才能穿过那道闸。
       ...(mode === 'rewrite' ? { intent: 'explicit' as const } : {}),
+      ...keepKeys,
     })
   }
 

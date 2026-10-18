@@ -504,6 +504,11 @@ export interface AccountManagedCliConfigurationInput {
   preferredModels: Partial<Record<ProviderId, string>>
   mode?: ConfigSavePayload['mode']
   intent?: 'automatic' | 'explicit'
+  /**
+   * providers 里只跟着连接线路换地址、Key 沿用配置里那把的几家（#1159）：配置里那把不是自动签的托管 Key，
+   * 是客户在密钥页、配置窗口自己选的。只传工具名，Key 不跨进程。缺省 = 一律写托管 Key。
+   */
+  keepKeys?: ProviderId[]
 }
 
 export type RendererLogLevel = 'info' | 'warn' | 'error'

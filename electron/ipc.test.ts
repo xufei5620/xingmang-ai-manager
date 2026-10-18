@@ -7749,6 +7749,54 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
+    // #1159：换线路这一轮只交工具名，Key 留在主进程，空 Key 交给 saveConfig 沿用配置里那把。
+    it('keeps the configured key for the tools named in keepKeys and writes the managed key for the rest', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+
+      const result = await electronMocks.handlers.get('account:configure-managed-clis')!(trustedEvent(), {
+        providers: ['claude', 'codex'],
+        preferredModels: { claude: 'kept-model', codex: 'gpt-5.6-sol' },
+        keepKeys: ['claude'],
+      })
+
+      expect(result).toEqual({ configured: ['claude', 'codex'], failed: [] })
+      expect(vi.mocked(service.saveConfig).mock.calls.map(([payload, , , ownership]) => [payload, ownership])).toEqual([
+        [{ provider: 'claude', apiKey: '', model: 'kept-model', mode: 'merge' }, { source: 'account', automatic: true }],
+        [{ provider: 'codex', apiKey: 'sk-internal-GPT', model: 'gpt-5.6-sol', mode: 'merge' }, { source: 'account', automatic: true }],
+      ])
+    })
+
+    it('rejects keepKeys that are malformed, repeated, outside the round, or paired with an explicit rewrite', () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+      const input = { providers: ['claude'], preferredModels: { claude: 'kept-model' } }
+
+      for (const keepKeys of ['claude', null, {}]) {
+        expect(() => handler(trustedEvent(), { ...input, keepKeys })).toThrow('CLI 配置目标格式错误')
+      }
+      for (const keepKeys of [['codex'], ['gemini'], ['unknown']]) {
+        expect(() => handler(trustedEvent(), { ...input, keepKeys })).toThrow('沿用现有密钥的工具不在这次的配置目标里')
+      }
+      expect(() => handler(trustedEvent(), { ...input, keepKeys: ['claude', 'claude'] })).toThrow('CLI 配置目标不能重复')
+      expect(() => handler(trustedEvent(), { ...input, intent: 'explicit', keepKeys: ['claude'] })).toThrow('CLI 配置意图无效')
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+
     it('rejects malformed, unknown, blank, non-string, or oversized preferred models', () => {
       const service = serviceStub()
       const accountService = accountServiceStub()
