@@ -646,6 +646,20 @@ describe('ensureCodexPluginCatalog', () => {
     }
   })
 
+  it('leaves a 3xx outside the five redirect statuses unfollowed, as a network failure', async () => {
+    for (const status of [300, 304, 305, 306]) {
+      const codexHome = temporaryCodexHome()
+      const calls: string[] = []
+      const odd: typeof fetch = async (input) => {
+        calls.push(String(input))
+        return new Response(null, { status, headers: { location: `https://codeload.github.com/openai/plugins/tar.gz/${commit}` } })
+      }
+
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: odd }), String(status)).rejects.toThrow(codexPluginCatalogNetworkMessage)
+      expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
+    }
+  })
+
   it('accepts a response reporting the requested address in another spelling', async () => {
     const codexHome = temporaryCodexHome()
     const spelled: typeof fetch = async () => withResponseUrl(

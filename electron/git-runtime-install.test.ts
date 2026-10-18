@@ -351,7 +351,7 @@ describe('git-runtime-install', () => {
     expect(calls).toEqual([official.url, asset])
   })
 
-  it('refuses bytes reported from an unapproved address and accepts the same hop spelled differently', async () => {
+  it('refuses bytes reported from anywhere but the hop it asked for and accepts the same hop spelled differently', async () => {
     const body = installerBytes(6)
     const digest = createHash('sha256').update(body).digest('hex')
     const [mirror] = gitRuntimeDownloadSources('mainland-china', 'x64')
@@ -361,6 +361,12 @@ describe('git-runtime-install', () => {
 
     await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
       fetch: reporting('https://evil.example/Git.exe') as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    }))).rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
+
+    // An approved host is not enough: the bytes must come from the hop that was asked for.
+    await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
+      fetch: reporting(mirror.url.replace('https://npmmirror.com/mirrors/', 'https://cdn.npmmirror.com/binaries/')) as unknown as typeof globalThis.fetch,
       expectedSha256: () => digest,
     }))).rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
 

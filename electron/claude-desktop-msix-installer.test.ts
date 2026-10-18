@@ -293,7 +293,12 @@ describe('Claude Desktop official MSIX installation', () => {
       Object.defineProperty(response, 'url', { value: 'https://evil.example/Claude.msix' })
       return response
     })
-    await expect(installClaudeDesktopFromOfficial(f.options)).rejects.toThrow('绕过了受限的重定向规则')
+    // The reported address is held to the allow-list first, as every other download does, so the
+    // log names the address check; the customer's sentence is the same either way.
+    const failure = await installClaudeDesktopFromOfficial(f.options).then(() => null, (error: Error) => error)
+    expect(failure?.message).toBe('Claude 官网下载重定向到了没核实过的地址')
+    expect(classifyClaudeDesktopInstallFailure(failure?.message ?? '')).toBe('unreachable')
+    expect(f.fetch).toHaveBeenCalledOnce()
     expect(f.installPackage).not.toHaveBeenCalled()
   })
 
