@@ -115,7 +115,7 @@ export function guideOfficialLoginRequired(provider: ProviderId, source: GuideTo
   return provider === 'codex' && source === 'official' && summary?.codexAuthMode !== 'chatgpt'
 }
 
-const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'permission'])
+const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'downloadUnreachable', 'downloadSourceError', 'officialRegistryUnreachable', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'permission'])
 
 /**
  * 引导红字的三样东西，和错误框一个规矩（#670）：上屏那句、认出来的原因（认不出为空）、

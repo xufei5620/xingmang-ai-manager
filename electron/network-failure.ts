@@ -69,6 +69,12 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
 }
 
 /**
+ * 装工具前到 npm 官方源核对安装清单那一步没连上时，主进程那句里的固定一段（#1057 第5b条）。这一步
+ * 只能走官方源，换国内镜像绕不过去；渲染层认这一段出「连不上 npm 官方源」，两边用这一个常量。
+ */
+export const officialRegistryUnreachableMarker = '这一步没连上'
+
+/**
  * 工具那一侧（npm、Claude Code、Gemini CLI 这些 Node 程序）报「证书被换掉」，而星芒
  * 自己已经让它们也信任这台电脑装的证书之后，仍然失败的两种可以说清的情况。判断在
  * 主进程（system-certificate-trust.ts），这里只放那一句话：主进程把它接在安装失败

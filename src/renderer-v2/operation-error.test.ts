@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { classifyOperationError, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
-import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
+import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
@@ -45,6 +45,11 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。' },
   installBlocked: { sample: 'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录' },
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
+  // 主进程按 npm 的错误码写好的中文原因，错误码留在句尾（#1100 第1、3条）。
+  downloadUnreachable: { sample: 'Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）' },
+  downloadSourceError: { sample: 'Claude Code 安装失败：国内 npm 镜像：下载源那边出错（错误码 E503）' },
+  // 主进程装之前到官方源核对安装清单那一步没连上（#1057 第5b条）。
+  officialRegistryUnreachable: { sample: `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。` },
   // config-files 写 Key 前的校验（safe-local-data）原话。
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
@@ -169,7 +174,46 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('Codex CLI 安装失败：下载 ETIMEDOUT')
     expect(hint?.title).toBe('下载超时')
     expect(hint?.body).toBe('下载没有完成，已安装的工具不受影响。')
-    expect(hint?.actions).toEqual([{ id: 'retry', label: '换官方源重试' }])
+    // 以前是「换官方源重试」，可有时连不上的正是官方源（#1100 第3条）。
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }])
+  })
+
+  // 下载源自己出错、连不上，不再借账号那边的「星芒服务器」「服务暂时不可用」，也不再一律说成「下载超时」（#1100 第3条）。
+  it('blames the download source, not the Xingmang servers, when an install cannot fetch', () => {
+    for (const sourceError of [
+      'Claude Code 安装失败：npm 官方源：命令执行失败（退出码 1）：npm-cli.js（E500；500 Internal Server Error - GET https://registry.npmjs.org/x）',
+      'Node.js 自动安装失败：下载安装包时服务器回了 HTTP 503',
+      'Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）',
+    ]) expect([sourceError, classifyOperationError(sourceError)]).toEqual([sourceError, 'downloadSourceError'])
+    const source = presentOperationError('Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）')
+    expect(source).toMatchObject({ title: '下载源暂时出错', actions: [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }] })
+
+    for (const unreachable of [
+      'Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）',
+      'Claude Code 安装失败：npm 官方源：和下载源的连接被切断（错误码 ECONNRESET）',
+      'Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。检查网络后再点「重试」。',
+    ]) expect([unreachable, classifyOperationError(unreachable)]).toEqual([unreachable, 'downloadUnreachable'])
+    expect(presentOperationError('Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）')).toMatchObject({
+      title: '连不上下载源', actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
+    })
+    // 真的超时照旧是「下载超时」，主进程新写的那句也认得出、标题不再被原话吞掉。
+    const timedOut = presentOperationError('Claude Code 安装失败：npm 官方源：下载太久没有完成，超时中止（错误码 ETIMEDOUT）')
+    expect(timedOut?.title).toBe('下载超时')
+
+    // 登录、账号这些场合照旧。
+    expect(classifyOperationError('星芒服务返回 500 Internal Server Error')).toBe('server')
+    expect(classifyOperationError('星芒服务返回 502 Bad Gateway')).toBe('serviceUnavailable')
+    expect(classifyOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')).toBe('timeout')
+  })
+
+  it('says the official npm registry is the only way through when the manifest check cannot connect', () => {
+    const message = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。`
+    expect(presentOperationError(message)).toMatchObject({
+      key: 'officialRegistryUnreachable',
+      title: '连不上 npm 官方源',
+      body: '这一步只能走官方源，换国内镜像也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。',
+      actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
+    })
   })
 
   // 「Key 失效」的「一键修复」以前落到「找客服」：目录里写好了这颗按钮，表里没有
@@ -538,9 +582,9 @@ describe('renderer-v2 operation error classification', () => {
   it('reads a handshake the network cut as a failed connection, not a replaced certificate', () => {
     expect(classifyOperationError('检查网络时出错：net::ERR_SSL_PROTOCOL_ERROR')).toBe('timeout')
     expect(classifyOperationError('账号接口请求失败：net::ERR_QUIC_HANDSHAKE_FAILED')).toBe('timeout')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：npm error code ERR_SSL_WRONG_VERSION_NUMBER')).toBe('downloadTimeout')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：npm error code ERR_SSL_WRONG_VERSION_NUMBER')).toBe('downloadUnreachable')
     // OpenSSL 原文里的十六进制串不能被按状态码认的那几条抢走。
-    expect(classifyOperationError('Grok CLI 安装失败：ERR_SSL_WRONG_VERSION_NUMBER 40C7B5F8E5240000:error:0A00010B:SSL routines')).toBe('downloadTimeout')
+    expect(classifyOperationError('Grok CLI 安装失败：ERR_SSL_WRONG_VERSION_NUMBER 40C7B5F8E5240000:error:0A00010B:SSL routines')).toBe('downloadUnreachable')
     expect(classifyOperationError(`重新写入 Key 没有完成：${networkFailureMessages.refused}`)).toBe('timeout')
     // 证书真对不上的照旧是「连接被网络拦截」。
     expect(classifyOperationError("账号接口请求失败：Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")).toBe('tlsIntercepted')
