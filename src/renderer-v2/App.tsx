@@ -222,6 +222,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const pendingManagedSwitch = useRef<((confirmed: boolean) => void) | null>(null)
   /** 换模型弹框还开着时切了账号，要替用户点掉：那是上一个账号的提问（#538）。 */
   const pendingModelSwap = useRef<((choice: ModelSwapChoice) => void) | null>(null)
+  /** 还在准备（主进程那边还没开始打开）的「打开中」，按工具记着怎么放掉；见 holdLaunch。 */
+  const preparingLaunches = useRef(new Map<ToolId, () => void>())
   const [chineseDialog, setChineseDialog] = useState(false)
   const chineseDecline = useRef<HTMLButtonElement>(null)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
@@ -277,6 +279,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const restoring = sessionRestoring(session)
   const restoreRetrying = sessionRestoreRetrying(session)
   function cancelPendingLaunchDialogs() {
+    // 上一个账号点的「打开」后面每一步都会自己停下（launchIsCurrent），卡片上的「打开中」不陪它
+    // 等完读配置、核对模型，新账号点「打开」也不被它挡住。主进程已经在打开的不放，照旧等它做完。
+    const releases = [...preparingLaunches.current.values()]
+    preparingLaunches.current.clear()
+    for (const release of releases) release()
     pendingModelSwap.current?.('cancel')
     pendingModelSwap.current = null
     setModelSwap(null)
@@ -1264,7 +1271,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   /**
    * 真打开之前那几道关：检测出没出错、装没装、Codex 老配置先修、没连好账号先去连、核对默认模型。
-   * 首页「打开」「接着聊」走 launch()，记录页「接着聊」自己叫主进程打开，两边都先过这里
+   * 首页「打开」「接着聊」走 openTool()，记录页「接着聊」自己叫主进程打开，两边都先过这里
    * （第四十批 B：记录页以前一道都没过）。返回打开前读到的快照、配置和工具；null = 不往下走
    * （问话框里关掉了，或者中途换了账号），什么都不打开，也不报错。
    */
@@ -1340,48 +1347,65 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
   }
   /**
+   * 首页「打开」一点下去就挂上「正在打开工具」（#1104 第 3 条）：读配置、核对默认模型要好几秒，
+   * 以前等这几步走完才挂，卡片一动不动，再点一下又被 launchRequest 悄悄挡掉，客户以为没点上。
+   * 同一个 key 的任务只放一个（toolbox.run 的锁），所以只在最外层挂一次：requestLaunch 和
+   * launch() 各自挂，里面那几步走 openTool，不再自己挂。准备到一半换了账号，这一次当场放掉
+   * （cancelPendingLaunchDialogs）。
+   */
+  function holdLaunch(id: ToolId, work: () => Promise<void>): Promise<boolean> {
+    return toolbox.run(`launch:${id}`, launchWaitLabel(toolbox.jobs, jobToolName), () => new Promise<void>((resolve, reject) => {
+      const release = () => resolve()
+      preparingLaunches.current.set(id, release)
+      work().then(resolve, reject).finally(() => { if (preparingLaunches.current.get(id) === release) preparingLaunches.current.delete(id) })
+    }))
+  }
+  /**
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',各家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
    */
   async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, folder: LaunchFolder = 'choose', epoch = accountEpoch.current): Promise<boolean> {
+    const outcome = { opened: false }
     try {
-      const prepared = await prepareToolLaunch(id, epoch)
-      if (!prepared) return false
-      const { current, config, tool } = prepared
-      let workspace = config.workspace
-      if (id !== 'codexDesktop') {
-        // 不弹选择器的两种：主进程在「文档」下替用户建一个空的项目文件夹；第一次点「打开」
-        // 时先用主进程记着的（上次建好了却没打开成），建不成再弹选择器（已知40）。
-        const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(folder === 'choose' ? undefined
-          : folder === 'create' ? { createStarter: true } : { createStarter: true, firstOpen: true })
-        if (!launchIsCurrent(epoch) || !selectedWorkspace) return false
-        workspace = selectedWorkspace
-      }
-      if (!launchIsCurrent(epoch)) return false
-      const waitLabel = launchWaitLabel(toolbox.jobs, jobToolName)
-      let connectionDeferred = false
-      const started = await toolbox.run(`launch:${id}`, waitLabel, async () => {
-        if (!launchIsCurrent(epoch)) return
-        if (waitForAccountConnection(tool)) { connectionDeferred = true; return }
-        const result = await toolsApi.launch(id, workspace, mode)
-        const warning = launchWarning(result)
-        if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
-        // 刚选的文件夹主进程已经记下，随打开结果带回来；首页按钮马上写「打开 它」，其余工具也不再问。
-        if (launchIsCurrent(epoch) && result && 'rememberedWorkspace' in result) {
-          const rememberedWorkspace = result.rememberedWorkspace ?? undefined
-          toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
-            ? { ...current, config: { ...current.config, rememberedWorkspace } }
-            : current)
-          // 开机检测还没跑完就打开的（首页摆的还是上次的结果）：那一轮落地时带的是打开前读的配置，
-          // 会把刚记下的目录盖回去。重读一次配置，落地时就用这份新的（见 useToolbox 的 configRevision）。
-          if (current.system.cachedAt) void toolbox.refreshSavedConfig(() => launchIsCurrent(epoch)).catch(() => undefined)
-        }
-      })
-      return launchIsCurrent(epoch) && started && !connectionDeferred
+      const started = await holdLaunch(id, async () => { outcome.opened = await openTool(id, mode, remembered, folder, epoch) })
+      return launchIsCurrent(epoch) && started && outcome.opened
     } catch (cause) {
       if (!launchIsCurrent(epoch)) return false
       throw cause
     }
+  }
+  /** launch() 去掉挂任务那一层，只在已经挂着「正在打开工具」的时候调。 */
+  async function openTool(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice, remembered: string | undefined, folder: LaunchFolder, epoch: number): Promise<boolean> {
+    const prepared = await prepareToolLaunch(id, epoch)
+    if (!prepared) return false
+    const { current, config, tool } = prepared
+    let workspace = config.workspace
+    if (id !== 'codexDesktop') {
+      // 不弹选择器的两种：主进程在「文档」下替用户建一个空的项目文件夹；第一次点「打开」
+      // 时先用主进程记着的（上次建好了却没打开成），建不成再弹选择器（已知40）。
+      const selectedWorkspace = remembered ?? await toolsApi.chooseWorkspace(folder === 'choose' ? undefined
+        : folder === 'create' ? { createStarter: true } : { createStarter: true, firstOpen: true })
+      if (!launchIsCurrent(epoch) || !selectedWorkspace) return false
+      workspace = selectedWorkspace
+    }
+    if (!launchIsCurrent(epoch)) return false
+    if (waitForAccountConnection(tool)) return false
+    // 从这里起是主进程在打开，换了账号也要等它做完，「打开中」不再提前放掉。
+    preparingLaunches.current.delete(id)
+    const result = await toolsApi.launch(id, workspace, mode)
+    const warning = launchWarning(result)
+    if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
+    // 刚选的文件夹主进程已经记下，随打开结果带回来；首页按钮马上写「打开 它」，其余工具也不再问。
+    if (launchIsCurrent(epoch) && result && 'rememberedWorkspace' in result) {
+      const rememberedWorkspace = result.rememberedWorkspace ?? undefined
+      toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
+        ? { ...current, config: { ...current.config, rememberedWorkspace } }
+        : current)
+      // 开机检测还没跑完就打开的（首页摆的还是上次的结果）：那一轮落地时带的是打开前读的配置，
+      // 会把刚记下的目录盖回去。重读一次配置，落地时就用这份新的（见 useToolbox 的 configRevision）。
+      if (current.system.cachedAt) void toolbox.refreshSavedConfig(() => launchIsCurrent(epoch)).catch(() => undefined)
+    }
+    return launchIsCurrent(epoch)
   }
   /**
    * The Chinese runtime patch is what makes Codex start with a local debugging
@@ -1421,16 +1445,20 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     launchRequest.current = request
     void perform('打开工具', async () => {
       try {
-        if (!launchIsCurrent(request.epoch)) return
-        if (id === 'codexDesktop') {
-          const status = await native.getCodexDesktopStatus()
+        // Codex 桌面端先查在不在运行、问不问中文，也算在「正在打开工具」里；要弹框问的，
+        // 这一次就到这里，框里的按钮走 launch() 再挂一次。
+        await holdLaunch(id, async () => {
           if (!launchIsCurrent(request.epoch)) return
-          if (offersCodexDesktopRestartOnOpen(os, status.running)) { setRestartDialog(true); return }
-          const asking = await askForChineseRuntimePatch(request.epoch)
-          if (!launchIsCurrent(request.epoch) || asking) return
-        }
-        if (remembered) await launchRemembered(id, remembered, mode, request.epoch)
-        else await launch(id, mode, undefined, folder, request.epoch)
+          if (id === 'codexDesktop') {
+            const status = await native.getCodexDesktopStatus()
+            if (!launchIsCurrent(request.epoch)) return
+            if (offersCodexDesktopRestartOnOpen(os, status.running)) { setRestartDialog(true); return }
+            const asking = await askForChineseRuntimePatch(request.epoch)
+            if (!launchIsCurrent(request.epoch) || asking) return
+          }
+          if (remembered) await launchRemembered(id, remembered, mode, request.epoch)
+          else await openTool(id, mode, undefined, folder, request.epoch)
+        })
       } catch (cause) {
         if (launchIsCurrent(request.epoch)) throw cause
       }
@@ -1438,16 +1466,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
-   * 「打开」仍然能走到底，而不是只收到一条错误（N7）。
+   * 「打开」仍然能走到底，而不是只收到一条错误（N7）。只在 requestLaunch 挂着的那次任务里调。
    */
   async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchChoice = 'new', epoch = accountEpoch.current): Promise<boolean> {
-    try { return await launch(id, mode, remembered, 'choose', epoch) }
+    try { return await openTool(id, mode, remembered, 'choose', epoch) }
     catch (cause) {
       if (!launchIsCurrent(epoch)) return false
       if (!isMissingWorkspace(cause)) throw cause
       // 目录没了就没有「上次那条对话」可接,退回选择器开新的,总比只甩一条错误强。
       toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
-      return launch(id, 'open', undefined, 'choose', epoch)
+      return openTool(id, 'open', undefined, 'choose', epoch)
     }
   }
   /**
