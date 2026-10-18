@@ -3461,6 +3461,9 @@ export function createSystemService(
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   const installCancellations = new InstallCancellationRegistry()
+  // 登记着取消句柄的那次 CLI 安装点名的版本（undefined = 没点名）。只在句柄还登记着时读，
+  // 每次登记句柄都会先覆盖它，所以句柄放掉以后留着旧值也不会被读到。
+  const installRequestedVersions = new Map<ProviderId, string | undefined>()
   // 桌面端（Codex、Claude）先从星芒自己的存储桶下（yoyo 2026-10-10）；桶那一路为什么没走通只进日志。
   const desktopBucketDownloads: DesktopBucketOptions = {
     onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
@@ -5638,11 +5641,18 @@ export function createSystemService(
     // 这时再装一次 Claude Code 会走到这里,另排一次取消不了的安装;界面上同一个工具
     // 一次只放一个安装(useToolbox 的 run 按工具加锁),碰不到。
     if (installCancellations.has(key)) {
+      // 复用只对同一个版本成立：「回到某个版本」并进正在跑的「更新」，会跟着报成功，
+      // 装上的却是新版（#1061 第 9 条）。版本不同就直接拒，等这一次装完再点。
+      // 不发进度：进度按工具发，发一条失败会写到正在跑的那次的进度行上。
+      if (installRequestedVersions.get(provider) !== version) {
+        return Promise.reject(new Error(`${cliCatalog[provider].name} 正在安装中`))
+      }
       return installationQueue.enqueue(key, () => installCliOperation(provider, target, version))
     }
     // 句柄在入队之前登记:排在别人后面等待的那次安装也要能取消,
     // 否则用户只能干等前一个工具装完。
     const cancellation = installCancellations.begin(key)
+    installRequestedVersions.set(provider, version)
     let started = false
     const finished = installationQueue.enqueue(
       key,
