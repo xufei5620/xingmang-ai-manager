@@ -2121,7 +2121,9 @@ export function parseAccountDashboardData(
   const entries = Array.isArray(payload) ? payload : []
   const maxRows = 20_000
   const discardedCount = Math.max(0, entries.length - maxRows)
-  const bucketSeconds = Math.max(0, query.endTimestamp - query.startTimestamp) <= 24 * 60 * 60
+  // 用量账单的「24 小时」从 24 小时前所在的整点问起（new-api 的看板行只记到整点，起点落在半点上
+  // 最早那一小时整行不回，#1093 第 4 条），跨度最多 24 小时 59 分 59 秒，仍要按小时分桶画图。
+  const bucketSeconds = Math.max(0, query.endTimestamp - query.startTimestamp) <= 25 * 60 * 60
     ? 60 * 60
     : 24 * 60 * 60
   const buckets = new Map<number, NewApiAccountDashboardBucket>()

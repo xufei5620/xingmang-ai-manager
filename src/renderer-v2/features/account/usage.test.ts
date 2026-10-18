@@ -41,10 +41,20 @@ function bucket(at: Date, quota: number): AccountDashboardData['buckets'][number
 }
 
 describe('usage', () => {
-  it('starts the day ranges at local midnight and the 24 hour range a day ago', () => {
-    expect(usageRangeStart('1', now)).toBe(seconds(now) - 86_400)
+  it('starts the day ranges at local midnight and the 24 hour range no later than a day ago', () => {
+    expect(usageRangeStart('1', now)).toBeLessThanOrEqual(seconds(now) - 86_400)
     expect(usageRangeStart('7', now)).toBe(seconds(new Date(2026, 9, 9)))
     expect(usageRangeStart('30', now)).toBe(seconds(new Date(2026, 8, 16)))
+  })
+
+  it('backs the 24 hour range off to the whole hour so the oldest hourly row still comes back', () => {
+    // new-api 把看板数据记在整点上（created_at - created_at % 3600），只回 created_at >= 起点的行。
+    const at = new Date(Date.UTC(2026, 9, 15, 2, 34, 55))
+    const start = usageRangeStart('1', at)
+    expect(start).toBe(Date.UTC(2026, 9, 14, 2) / 1000)
+    const used = seconds(at) - 86_400 + 60
+    expect(used - used % 3_600).toBeGreaterThanOrEqual(start)
+    expect(usageRangeStart('1', new Date(Date.UTC(2026, 9, 15, 2)))).toBe(Date.UTC(2026, 9, 14, 2) / 1000)
   })
 
   it('gives the week one bar per local day, titled like the overview without the amount', () => {
