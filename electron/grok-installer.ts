@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { readBoundedUtf8File } from './bounded-file'
 import { downloadDesktopBucketPackage, type DesktopBucketOptions } from './desktop-package-bucket'
+import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 import { readGrokBucketRelease } from './grok-bucket'
 import { sameLocalPathIdentity } from './path-identity'
 import { isNewerVersion } from './versions'
@@ -43,6 +44,9 @@ export interface GrokDownloadProgress {
   percent: number
 }
 
+/** 测试接缝：从 xAI 下载断线后等多久、多久没数据算停住。 */
+export type GrokResumeOptions = Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'>
+
 export interface DownloadedGrokBinary {
   directory: string
   binaryPath: string
@@ -81,6 +85,7 @@ export interface DownloadLatestGrokOptions {
    * 调用方别再把整个安装包进线路:那样存储桶那一路也会走加速。
    */
   withVendorDownloadRoute?<T>(operation: () => Promise<T>): Promise<T>
+  resumeOptions?: GrokResumeOptions
 }
 
 export interface InstallDownloadedGrokOptions {
@@ -172,7 +177,7 @@ export function validateGrokArtifactResponseUrl(responseUrl: string, expectedUrl
 
 function compactError(error: unknown): string {
   const candidate = error as { name?: unknown; message?: unknown }
-  if (candidate?.name === 'AbortError') return '连接或下载超时'
+  if (candidate?.name === 'AbortError' || error instanceof DownloadStalledError) return '连接或下载超时'
   const message = typeof candidate?.message === 'string' ? candidate.message : String(error)
   return message.replace(/\s+/g, ' ').trim().slice(0, 300) || '下载失败'
 }
@@ -193,90 +198,80 @@ function assertPlainSingleLinkFile(filePath: string): void {
   }
 }
 
+/**
+ * 以前这里自己写单次下载：45 秒没数据就换下一个地址从 0 开始。桶过期或没走通时 xAI 是唯一的路，
+ * 弱网客户 170 MB 的包轮几个地址都可能下不完（#1061 第 3 条）。现在先在同一个地址从断开处接着下；
+ * 地址不支持续传、连着几次接不上，照旧交回去换下一个地址。地址、类型、大小、SHA-256 和签名核对一条没少。
+ */
 async function downloadArtifact(
   url: string,
   destination: string,
   fetchImpl: GrokVersionFetch,
   onProgress: (progress: GrokDownloadProgress) => void,
   cancelSignal?: AbortSignal,
+  resumeOptions?: GrokResumeOptions,
 ): Promise<{ size: number; sha256Hex: string }> {
-  const controller = new AbortController()
-  const connectionTimeout = setTimeout(() => controller.abort(), connectionTimeoutMs)
-  connectionTimeout.unref?.()
-  // 取消和超时是两个独立的中止源,合成一个信号交给 fetch,
-  // 免得取消后还要等连接超时才真正断开。
-  const abortOnCancel = () => controller.abort(cancelSignal?.reason)
-  if (cancelSignal?.aborted) abortOnCancel()
-  cancelSignal?.addEventListener('abort', abortOnCancel, { once: true })
-  let file: fs.promises.FileHandle | null = null
+  let total = 0
+  let lastPercent = -1
   try {
-    const response = await fetchImpl(url, {
-      method: 'GET',
-      headers: { Accept: 'application/octet-stream' },
-      redirect: 'error',
-      signal: controller.signal,
-    })
-    clearTimeout(connectionTimeout)
-    if (!response.ok) throw new Error(`返回 HTTP ${response.status}`)
-    validateGrokArtifactResponseUrl(response.url, url)
-    const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? ''
-    if (!['application/octet-stream', 'binary/octet-stream', 'application/x-msdownload'].includes(contentType)) {
-      throw new Error(`返回的不是 Windows 可执行文件（Content-Type: ${contentType || '缺失'}）`)
-    }
-    const declaredLength = response.headers.get('content-length')
-    if (!declaredLength || !/^\d+$/.test(declaredLength)) {
-      throw new Error('响应缺少有效的 Content-Length')
-    }
-    const total = Number(declaredLength)
-    if (!Number.isSafeInteger(total) || total < minimumBinaryBytes || total > maximumBinaryBytes) {
-      throw new Error('Grok 二进制文件大小超出 1 MiB 至 512 MiB 安全范围')
-    }
-    if (!response.body) throw new Error('没有响应正文')
-
-    file = await fs.promises.open(destination, 'wx', 0o600)
-    const reader = response.body.getReader()
-    const hash = createHash('sha256')
-    let transferred = 0
-    let lastPercent = -1
-    while (true) {
-      const idleTimeout = setTimeout(() => controller.abort(), idleTimeoutMs)
-      idleTimeout.unref?.()
-      let chunk: ReadableStreamReadResult<Uint8Array>
-      try {
-        chunk = await reader.read()
-      } finally {
-        clearTimeout(idleTimeout)
-      }
-      if (chunk.done) break
-      if (!chunk.value?.byteLength) continue
-      transferred += chunk.value.byteLength
-      if (transferred > total || transferred > maximumBinaryBytes) {
-        throw new Error('下载数据超过声明的文件大小')
-      }
-      hash.update(chunk.value)
-      await file.write(chunk.value)
-      const percent = Math.min(100, Math.floor((transferred / total) * 100))
-      if (percent !== lastPercent) {
+    const download = await downloadWithResume({
+      targetPath: destination,
+      fileMode: 0o600,
+      maximumBytes: maximumBinaryBytes,
+      oversizeMessage: '下载数据超过声明的文件大小',
+      ...(cancelSignal ? { signal: cancelSignal } : {}),
+      responseTimeoutMs: connectionTimeoutMs,
+      idleTimeoutMs,
+      ...resumeOptions,
+      request: async (headers, signal) => {
+        const response = await fetchImpl(url, {
+          method: 'GET',
+          headers: { Accept: 'application/octet-stream', ...headers },
+          redirect: 'error',
+          signal,
+        })
+        // Checked on every request, resumes included: the first response's
+        // acceptResponse is not run again for the ranges that follow it.
+        try {
+          validateGrokArtifactResponseUrl(response.url, url)
+        } catch (error) {
+          await response.body?.cancel().catch(() => undefined)
+          throw error
+        }
+        return response
+      },
+      acceptResponse: (response) => {
+        if (!response.ok) throw new Error(`返回 HTTP ${response.status}`)
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ?? ''
+        if (!['application/octet-stream', 'binary/octet-stream', 'application/x-msdownload'].includes(contentType)) {
+          throw new Error(`返回的不是 Windows 可执行文件（Content-Type: ${contentType || '缺失'}）`)
+        }
+        const declaredLength = response.headers.get('content-length')
+        if (!declaredLength || !/^\d+$/.test(declaredLength)) {
+          throw new Error('响应缺少有效的 Content-Length')
+        }
+        const declared = Number(declaredLength)
+        if (!Number.isSafeInteger(declared) || declared < minimumBinaryBytes || declared > maximumBinaryBytes) {
+          throw new Error('Grok 二进制文件大小超出 1 MiB 至 512 MiB 安全范围')
+        }
+        if (!response.body) throw new Error('没有响应正文')
+        total = declared
+        return declared
+      },
+      onProgress: (transferred) => {
+        const percent = Math.min(100, Math.floor((transferred / total) * 100))
+        if (percent === lastPercent) return
         lastPercent = percent
         onProgress({ transferred, total, percent })
-      }
+      },
+    })
+    if (download.size !== total) {
+      throw new Error(`下载不完整：应为 ${total} 字节，实际 ${download.size} 字节`)
     }
-    if (transferred !== total) {
-      throw new Error(`下载不完整：应为 ${total} 字节，实际 ${transferred} 字节`)
-    }
-    await file.sync()
-    await file.close()
-    file = null
-    return { size: transferred, sha256Hex: hash.digest('hex') }
+    return { size: download.size, sha256Hex: download.sha256.toString('hex') }
   } catch (error) {
-    await file?.close().catch(() => undefined)
-    file = null
     await fs.promises.rm(destination, { force: true }).catch(() => undefined)
     throw error
-  } finally {
-    clearTimeout(connectionTimeout)
-    cancelSignal?.removeEventListener('abort', abortOnCancel)
-    await file?.close().catch(() => undefined)
   }
 }
 
@@ -352,6 +347,7 @@ async function downloadFromXai(
         fetchImpl,
         options.onProgress ?? (() => undefined),
         options.signal,
+        options.resumeOptions,
       )
       const verified = await verifyBinary('grok', binaryPath)
       if (verified.size !== downloaded.size || verified.sha256Hex !== downloaded.sha256Hex) {
