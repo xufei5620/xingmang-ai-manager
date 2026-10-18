@@ -81,7 +81,7 @@
 - `canvas-prompt-preset-store.ts` — 画布提示词预设（按账号，有条数与体积上限），走 safe-local-data 原子写
 
 ### 漫剧（画布里的剧本分镜）
-- `drama-model.ts` / `drama-parse-prompt.ts` / `drama-parse.ts` — 漫剧节点的数据模型与上限、给模型的"把剧本解析成角色/场景/道具/镜头表"系统提示、对模型输出的容错解析与校验（剥控制字符、截断、去重）。三者与 `canvas-v2/src/library/` 下同名文件逐字相同，主进程不 import 画布源码所以各留一份；未见测试钉住两边一致
+- `drama-model.ts` / `drama-parse-prompt.ts` / `drama-parse.ts` — 漫剧节点的数据模型与上限、给模型的"把剧本解析成角色/场景/道具/镜头表"系统提示、对模型输出的容错解析与校验（剥控制字符、截断、去重）。三者与 `canvas-v2/src/library/` 下同名文件逐字相同，主进程不 import 画布源码所以各留一份；`scripts/verify-drama-parse-parity.test.cjs` 钉住两边逐字一致（画布那份 `drama-parse-prompt.ts` 没有 import，只为两边一致而留）
 
 ### AI 服务（聊天、生图、生视频，与 CLI 共用同一账号额度）
 - `ai-chat-protocol.ts` — AI 请求的协议层：端点（`/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`）、各种上限、型号能力表 `resolveAiModelCapability` 与请求体构造；聊天、生图、生视频、画布指纹和执行器都依赖它
