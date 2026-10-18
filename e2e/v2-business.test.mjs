@@ -1563,6 +1563,8 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
     await page.getByTestId('plugins-add').first().click()
     const form = page.getByRole('dialog', { name: '给 Grok CLI 添加插件', exact: true })
     await form.waitFor()
+    // Grok 的插件命令没有范围参数，选「当前项目」也装进全局（#1092），所以只给「我的（全局）」。
+    assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）'])
     await form.getByTestId('plugins-source').fill('owner/repo')
     await form.getByTestId('plugins-form-submit').click()
     const confirm = page.getByRole('dialog', { name: '给 Grok CLI 装这个插件？', exact: true })
@@ -1587,6 +1589,7 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
     await page.getByRole('tab', { name: /^Claude Code/ }).click()
     await page.getByTestId('plugins-add').first().click()
     const claudeForm = page.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true })
+    assert.deepEqual(await claudeForm.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
     await claudeForm.getByTestId('plugins-source').fill('owner/repo')
     await claudeForm.getByTestId('plugins-form-submit').click()
     await claudeForm.waitFor({ state: 'detached' })

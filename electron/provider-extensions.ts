@@ -309,7 +309,10 @@ interface RawMcpServer {
   args: string[]
   url: string | null
   enabled: boolean
-  /** 只有从配置文件读出来的才知道落在哪一层；CLI 自己列的缺省为 null。 */
+  /**
+   * 从配置文件读出来的知道落在哪一层；CLI 自己列的只有 Grok 会带（`scope: user / project`，
+   * 1.0.52、1.0.62 实测），Codex 不带，缺省为 null。
+   */
   scope?: ProviderExtensionScope | null
 }
 
@@ -583,12 +586,14 @@ function rawMcpFromJson(value: unknown): RawMcpServer {
   const name = safeIdentifier(text(value.name), 'MCP 名称')
   const command = nullableText(transport.command)
   const url = displayUrl(nullableText(transport.url))
+  const scope = nullableText(value.scope)?.toLowerCase() ?? null
   return {
     name,
     command,
     args: stringArray(transport.args),
     url,
     enabled: value.enabled !== false && transport.enabled !== false,
+    ...(scope === 'user' || scope === 'project' ? { scope } : {}),
   }
 }
 
@@ -2005,7 +2010,15 @@ export class ProviderExtensionService {
       const argv = mcpListArgv(provider)
       let servers: RawMcpServer[]
       if (argv) {
-        servers = parseMcpJson(await this.invoke(provider, argv, { maxOutputBytes: MAX_OUTPUT_BYTES }))
+        // Grok 的项目层是命令在哪个项目里跑就读哪个项目的 .grok/config.toml，不在项目里跑就列不出来；
+        // 没带 scope 的条目按它自己的缺省 user 算（#1092）。Codex 的连接只有全局一层，照旧。
+        const listed = parseMcpJson(await this.invoke(provider, argv, {
+          cwd: provider === 'grok' ? this.repositoryRoot ?? undefined : undefined,
+          maxOutputBytes: MAX_OUTPUT_BYTES,
+        }))
+        servers = provider === 'grok'
+          ? listed.map((server) => ({ ...server, scope: server.scope ?? 'user' }))
+          : listed
       } else {
         const configured = await readConfiguredMcpServers(provider as 'claude' | 'gemini', this.homeDirectory, this.repositoryRoot)
         servers = configured.servers
@@ -2051,7 +2064,8 @@ export class ProviderExtensionService {
         checkedAt,
         // Gemini 的扩展装在用户目录下，启停不带 scope 时 CLI 也按 user 算；
         // 这里如实标 user，免得界面带着猜出来的 workspace 去启停（#488）。
-        provider === 'gemini' ? 'user' : null,
+        // Grok 的插件命令没有范围参数，装、卸、启停都落在 ~/.grok 里（1.0.52、1.0.62 实测，#1092）。
+        provider === 'gemini' || provider === 'grok' ? 'user' : null,
         provider === 'claude' ? this.repositoryRoot : undefined,
       )
       if (provider === 'codex') await describeCodexCatalogPlugins(plugins, this.codexHome)
@@ -2243,6 +2257,10 @@ export class ProviderExtensionService {
     if (input.provider === 'codex') {
       return { argv: ['plugin', input.action === 'install' ? 'add' : 'remove', id ?? safeSource(input.source), '--json'], secrets: [] }
     }
+    // Grok 的插件命令没有范围参数（1.0.52、1.0.62），要的是项目那一层也只会落到 ~/.grok 那份（#1092）。
+    if (input.provider === 'grok' && input.scope && input.scope !== 'user') {
+      throw new Error('当前 Provider 不支持该原生操作')
+    }
     const command = input.provider === 'gemini' ? 'extensions' : 'plugin'
     if (input.action === 'install') {
       const argv = [command, 'install', safeSource(id ?? input.source)]
@@ -2303,9 +2321,12 @@ export class ProviderExtensionService {
     const geminiSkill = await this.resolveGeminiSkill(input, repositoryRoot)
     const { argv, secrets } = this.mutationArgv(input, geminiSkill)
     const scope = geminiSkill ? geminiSkill.scope : input.scope
-    const projectBound = input.provider === 'claude' || input.provider === 'gemini'
-    // 这两家的 project / local / workspace 都是「命令在哪个项目里跑就改哪个项目」，
-    // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。
+    const projectBound = input.provider === 'claude'
+      || input.provider === 'gemini'
+      || (input.provider === 'grok' && input.kind === 'mcp')
+    // 这几家的 project / local / workspace 都是「命令在哪个项目里跑就改哪个项目」，
+    // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。Grok 的连接写的是
+    // 命令所在目录的 .grok/config.toml，以前不带目录，就写进了星芒自己的启动目录（#1092）。
     if (projectBound && scope && scope !== 'user' && !repositoryRoot) {
       throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
     }

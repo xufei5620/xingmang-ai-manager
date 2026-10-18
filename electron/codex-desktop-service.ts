@@ -66,7 +66,9 @@ import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions
 import {
   describeDesktopBucketFallback,
   downloadDesktopBucketPackage,
+  measureDesktopDownloadSpeed,
   readDesktopBucketPackage,
+  type DesktopAlternativeSpeed,
   type DesktopBucketDownloadOptions,
   type DesktopBucketDownloadProgress,
   type DesktopBucketDownloadResult,
@@ -1257,6 +1259,22 @@ export function buildCodexDesktopOfficialPackageSource(architecture: 'x64' | 'ar
   }
 }
 
+/**
+ * 存储桶那一路太慢时，测一下 OpenAI 官网的离线安装包有多快（只读几秒、不落盘，见 desktop-package-bucket.ts
+ * 的 probeAlternative）。桶后面先是商店，商店的速度测不了，拿官网同一个包代它：两路都在海外。跳转照
+ * 官网那一路的规矩核。没接下载线路，接上只会更快，测得偏慢就偏向接着下桶。
+ */
+export function measureCodexDesktopOfficialSpeed(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  return measureDesktopDownloadSpeed((probeSignal) => fetchTrustedCodexDesktopResource(codexDesktopOfficialPackageUrls[architecture], {
+    headers: { Accept: 'application/vnd.ms-appx, application/octet-stream' },
+    signal: probeSignal,
+  }, fetchImplementation), signal)
+}
+
 export interface CodexDesktopOfficialDownloadOptions {
   architecture: 'x64' | 'arm64'
   destination: string
@@ -1381,6 +1399,8 @@ export async function downloadCodexDesktopBucketPackage(
     ...(signal ? { signal } : {}),
     ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
     onProgress: (progress) => options.onProgress?.(release.version, progress),
+    // 桶太慢时先比一比官网那一路，确实更快才换（#1061 第 6 条）。
+    probeAlternative: (probeSignal) => measureCodexDesktopOfficialSpeed(architecture, fetchImplementation, probeSignal),
   })
   try {
     signal?.throwIfAborted()
