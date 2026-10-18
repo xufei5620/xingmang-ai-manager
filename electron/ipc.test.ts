@@ -1018,6 +1018,36 @@ describe('registerIpcHandlers', () => {
       requestId: 'image-bad', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', imageResolution: '8K',
     })).toThrow('生图清晰度格式错误')
 
+    // Exactly what the chat page sends: all seven fields, quality left undefined
+    // for models without a quality picker, and a multi-line prompt.
+    imageService.generate.mockClear()
+    await expect(generateImage(trustedEvent(undefined, 17), {
+      requestId: 'image-2', group: '生图分组', model: 'gpt-image-2', prompt: '海浪\n\t远处有船',
+      size: '1024x1024', quality: undefined, imageResolution: '1K',
+    })).resolves.toEqual([])
+    expect(imageService.generate).toHaveBeenCalledWith(17, {
+      requestId: 'image-2', group: '生图分组', model: 'gpt-image-2', prompt: '海浪\n\t远处有船',
+      size: '1024x1024', imageResolution: '1K', expectedUserId: 7,
+    })
+
+    // The chat page now holds the canvas standard: a field it never sends, such
+    // as a smuggled account id, is refused instead of silently dropped.
+    imageService.generate.mockClear()
+    const base = { requestId: 'image-3', group: '生图分组', model: 'gpt-image-2', prompt: '海浪' }
+    for (const [input, message] of [
+      [{ ...base, expectedUserId: 99 }, '生图请求格式错误'],
+      [{ ...base, projectId: 'p' }, '生图请求格式错误'],
+      [{ ...base, model: 'gpt-image-2\n' }, '生图模型格式错误'],
+      [{ ...base, model: 'm'.repeat(129) }, '生图模型格式错误'],
+      [{ ...base, size: 'x'.repeat(33) }, '生图尺寸格式错误'],
+      [{ ...base, prompt: '海浪\x1B[31m' }, '生图提示词格式错误'],
+      [{ ...base, quality: ['high'] }, '生图画质格式错误'],
+      [{ ...base, imageResolution: ['4K'] }, '生图清晰度格式错误'],
+    ] as const) {
+      expect(() => generateImage(trustedEvent(undefined, 17), input)).toThrow(message)
+    }
+    expect(imageService.generate).not.toHaveBeenCalled()
+
     const cancel = electronMocks.handlers.get('chat:cancel')!
     expect(cancel(trustedEvent(undefined, 22), 'request-1')).toEqual({
       canceled: true,

@@ -60,7 +60,7 @@
 - `canvas-contract.ts` — 宿主通道名 `canvasHostChannels` 与各通道入参/返回类型的单一来源（主进程侧），通道清单以它为准
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
-- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。只被 `canvas-window.ts` 使用
+- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度
 - `canvas-account-lifecycle.ts` — 账号切换时取消旧账号的生成与运行、给新账号续视频任务并初始化运行索引；同样的逻辑现在直接写在 `main.ts` 的账号切换里（推断：未见引用）
 
