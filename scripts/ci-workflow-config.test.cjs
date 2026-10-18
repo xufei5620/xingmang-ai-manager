@@ -680,6 +680,30 @@ test('the advisory job caches nothing because it installs nothing', () => {
   assert.deepEqual(runSteps('audit'), ['npm run audit:production', 'npm run audit:ci'])
 })
 
+test('setup-node never turns a dependency cache on by itself', () => {
+  // From v5 on, setup-node caches npm with no `cache:` input at all once
+  // package.json names npm in `packageManager` or `devEngines.packageManager`.
+  // No workflow asks for that cache, and the release and sync jobs hold the
+  // signing and upload secrets, so a restored cache must never appear there
+  // because of a package.json edit. A step opts out with
+  // `package-manager-cache: false`; until every step does, the trigger stays
+  // out of package.json.
+  const workflowDirectory = path.join(root, '.github', 'workflows')
+  const setupNodeSteps = fs.readdirSync(workflowDirectory)
+    .filter((name) => name.endsWith('.yml'))
+    .flatMap((name) => {
+      const parsed = YAML.parse(fs.readFileSync(path.join(workflowDirectory, name), 'utf8'))
+      return Object.values(parsed.jobs).flatMap((job) => job.steps || [])
+    })
+    .filter((step) => String(step.uses || '').startsWith('actions/setup-node@'))
+  const unguarded = setupNodeSteps.filter((step) => step.with?.cache === undefined && step.with?.['package-manager-cache'] !== false)
+
+  assert.ok(setupNodeSteps.length > 0)
+  if (unguarded.length === 0) return
+  assert.equal(packageJson.packageManager, undefined, 'packageManager would switch on setup-node\'s npm cache in every workflow')
+  assert.equal(packageJson.devEngines?.packageManager, undefined, 'devEngines.packageManager would switch on setup-node\'s npm cache in every workflow')
+})
+
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
   const macJob = workflow.jobs['macos-test']
   const commands = runSteps('macos-test')
