@@ -8,7 +8,9 @@ import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions
 import {
   DesktopBucketUnavailableError,
   downloadDesktopBucketPackage,
+  measureDesktopDownloadSpeed,
   readDesktopBucketPackage,
+  type DesktopAlternativeSpeed,
   type DesktopBucketPackage,
 } from './desktop-package-bucket'
 import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
@@ -352,6 +354,21 @@ async function downloadClaudeDesktopPackage(
   }
 }
 
+/**
+ * 存储桶那一路太慢时，测一下 Claude 官网的离线安装包有多快（只读几秒、不落盘，见 desktop-package-bucket.ts
+ * 的 probeAlternative）。桶后面先是系统自带的安装组件，它的速度测不了，拿官网同一个包代它。跳转照官网
+ * 那一路的规矩核。没接下载线路，接上只会更快，测得偏慢就偏向接着下桶。
+ */
+export function measureClaudeDesktopOfficialSpeed(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  return measureDesktopDownloadSpeed(async (probeSignal) => (await fetchClaudeDesktopPackage(
+    claudeDesktopMsixEntryUrl(architecture), true, {}, probeSignal, fetchImplementation,
+  )).response, signal)
+}
+
 async function inspectClaudeDesktopPackage(
   packagePath: string,
   architecture: 'x64' | 'arm64',
@@ -491,6 +508,8 @@ export async function installClaudeDesktopFromBucket(options: ClaudeDesktopBucke
         ...(options.signal ? { signal: options.signal } : {}),
         ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
         onProgress: ({ percent }) => reportProgress(options, { phase: 'downloading', percent, message: downloading }),
+        // 桶太慢时先比一比官网那一路，确实更快才换（#1061 第 6 条）。
+        probeAlternative: (probeSignal) => measureClaudeDesktopOfficialSpeed(architecture, options.fetch, probeSignal),
       })
       reportProgress(options, { phase: 'checking', percent: null, message: '正在检查下载下来的安装包是不是完整的官方版' })
       inspected = await inspectClaudeDesktopPackage(packagePath, architecture, mode, machinePaths, options)
