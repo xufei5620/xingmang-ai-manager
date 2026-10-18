@@ -366,6 +366,22 @@ test('external clients recognize complete manual configurations without claiming
   } finally { await page.close() }
 })
 
+// #1111 第 1 条：Claude Desktop 改用当前账号时原来那份连接用不上了，弹连接框之前先说一句为什么弹。
+test('switching Claude Desktop back to the account says why the connection dialog opens', async () => {
+  const page = await open('externalInstalled=1&externalReady=claudeDesktop&externalAccountOwned=claudeDesktop&externalReconnect=1')
+  try {
+    const source = page.getByTestId('tool-claudeDesktop-source')
+    await source.click()
+    await page.getByTestId('tool-claudeDesktop-source-official').click()
+    await source.filter({ hasText: '官方账号' }).waitFor()
+    await source.click()
+    await page.getByTestId('tool-claudeDesktop-source-account').click()
+    await waitForToast(page, '原来那份连接用不上了，在弹出的窗口里保存一次，就改用当前账号')
+    await page.getByTestId('external-client-dialog').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第三十一批 C：打开以后那一行先写「运行中」，后台悄悄核一次，三行按钮不跟着变灰、右上角不转圈。
 test('opening a desktop client marks its row running and leaves the client rows usable while it rechecks', async () => {
   const page = await open('externalInstalled=1&externalReady=workbuddy')

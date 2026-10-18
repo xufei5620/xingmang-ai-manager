@@ -1236,8 +1236,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
     const result = outcome.result
     if (!result || !mounted.current || epoch !== accountEpoch.current) return
-    if (result.outcome === 'reconnect') setExternalClient(id)
-    else toast.show(result.message, 'ok')
+    if (result.outcome === 'reconnect') {
+      // 弹框前先说一句为什么弹（#1111 第 1 条）：客户点的是「改用当前账号」，看到的却是一个配置框。
+      // 不点按钮名：配置框的主按钮会跟着检测结果在「保存并检测」「保存配置」之间变。
+      toast.show('原来那份连接用不上了，在弹出的窗口里保存一次，就改用当前账号', 'neutral')
+      setExternalClient(id)
+    } else toast.show(result.message, 'ok')
   }
   function finishExternalConfigSave() {
     const epoch = accountEpoch.current
