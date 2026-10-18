@@ -49,7 +49,7 @@ import {
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
 import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
-import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, type RelayRouteChange } from './relay-route-controller'
+import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, requestFailuresTrigger, type RelayRouteChange } from './relay-route-controller'
 import {
   relayApiProbeBaseUrl, relayEndpointForUrl, relayProviderBaseUrlEquals, relaySiteEndpointChoices, requireRelaySite, resolveRelaySite,
   type RelayEndpointId, type RelayRouteLines, type RelaySite,
@@ -1636,7 +1636,9 @@ export function describeRelayRouteChange(change: RelayRouteChange): string {
       : change.reason === 'health-failed'
         ? change.trigger === firstLaunchTrigger
           ? `第一次开机查到${from}没连上，改走${to}`
-          : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
+          : change.trigger === requestFailuresTrigger
+            ? `${from}上的请求接连断在半路、等不来回话，改走${to}`
+            : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
         : `查到${to}能连上，走${to}`
   return `${time}，${reason}`
 }

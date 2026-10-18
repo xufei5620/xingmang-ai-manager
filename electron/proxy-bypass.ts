@@ -22,6 +22,7 @@
 
 import { readBoundedResponseText } from './bounded-response'
 import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, parsesAsJsonObject, type NetworkFailureReason } from './network-failure'
+import { isRelayLineCancel, relayAnswerMayRedirect } from './relay-line-fetch'
 import { watchResponseBody } from './response-body-watch'
 
 export type ProxyBypassOutcome =
@@ -589,10 +590,11 @@ function requestUrl(input: string | URL | Request): string {
 }
 
 // 回网页、回跳转的是半路上别人答的（公司网的拦截页、上网认证、网关的错误页），不是星芒的回话。星芒的接口
-// 从来不跳转；main.ts 给 Chromium 会话包的 manual-redirect-fetch.ts 把跳转原样交回成 3xx（#1064）。
-function answeredBySomeoneElse(response: Response): boolean {
-  return response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)
-    || isHtmlContentType(response.headers.get('content-type'))
+// 除了下载视频成片那一个都不跳转（relay-line-fetch.ts 的 redirectingPaths，它回的跳转连同那点网页正文都是
+// 星芒的回话，#1157 第 3 条）；main.ts 给 Chromium 会话包的 manual-redirect-fetch.ts 把跳转原样交回成 3xx（#1064）。
+function answeredBySomeoneElse(response: Response, url: string): boolean {
+  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) return !relayAnswerMayRedirect(url)
+  return isHtmlContentType(response.headers.get('content-type'))
 }
 
 /**
@@ -609,10 +611,14 @@ export function createSiteFetch(
   options: SiteFetchOptions = {},
 ): typeof fetch {
   return async (input, init) => {
-    const route = bypass.routeSiteRequest(requestUrl(input))
+    const url = requestUrl(input)
+    const route = bypass.routeSiteRequest(url)
     if (route === null) return viaSession(input, init)
-    // 调用方自己中止的（点了「停止」）不算直连不通，账号请求除外（见 SiteFetchOptions）。
+    // 调用方自己中止的（点了「停止」）不算直连不通，账号请求除外（见 SiteFetchOptions）。线路那层
+    // （relay-line-fetch.ts）自己掐掉的那一次谁都不算：另一条线路先回了话、线路改了，不是这一路不通，
+    // 不然代理一探碰巧通了，请求就被交回不转发星芒的代理（#1157 第 4 条）。
     const failed = (): void => {
+      if (isRelayLineCancel(init?.signal?.reason)) return
       if (options.abortMeansUnreachable || !init?.signal?.aborted) bypass.siteRouteFailed(route)
     }
     let response: Response
@@ -623,7 +629,7 @@ export function createSiteFetch(
       throw error
     }
     // 回应原样交给调用方，它自己会认出这不是星芒的回话；这里只管让这一路再看一次。
-    if (answeredBySomeoneElse(response)) {
+    if (answeredBySomeoneElse(response, url)) {
       bypass.siteRouteFailed(route)
       return response
     }
