@@ -1181,6 +1181,12 @@ describe('Claude Desktop follows the key 星芒 replaced in Claude Code (#1113)'
     return f.runtimeLog.log.mock.calls.filter(([, , event]) => event.startsWith('external-client.key.'))
   }
 
+  // 换 Key 不等它：写完客户端那份还要改写归属、记日志，日志是最后一步，等到它才算换完（Windows 上写文件慢，
+  // 只等文件变了会在归属改写完之前就往下查）。
+  async function followed(f: Fixture) {
+    await vi.waitFor(() => expect(keyLogs(f).map(([, , event]) => event)).toContain('external-client.key.followed'), { timeout: 10_000 })
+  }
+
   function desktopKeyOf(file: string): unknown {
     return JSON.parse(fs.readFileSync(file, 'utf8')).inferenceGatewayApiKey
   }
@@ -1190,7 +1196,8 @@ describe('Claude Desktop follows the key 星芒 replaced in Claude Code (#1113)'
     const { file, before } = await connectBoth(f)
 
     expect(await revokeClaudeCodeKey(f)).toEqual({ configured: ['claude'], failed: [] })
-    await vi.waitFor(() => expect(desktopKeyOf(file)).toBe(newKey), { timeout: 10_000 })
+    await followed(f)
+    expect(desktopKeyOf(file)).toBe(newKey)
     expect(fs.readFileSync(file, 'utf8')).toBe(before.replace(`"${oldKey}"`, `"${newKey}"`))
     expect(keyLogs(f)).toEqual([['info', 'config', 'external-client.key.followed', expect.any(String), { tool: 'claudeDesktop', route: 'primary' }]])
     // 首页照旧认它是当前账号那份，换下来的旧那把不再算。
@@ -1213,7 +1220,8 @@ describe('Claude Desktop follows the key 星芒 replaced in Claude Code (#1113)'
 
     const outcome = await configureManagedClis(accountService('solov'), f.service, ['claude'], {}, false, f.keyStore!, 'merge', 'automatic')
     expect(outcome).toEqual({ configured: ['claude'], failed: [] })
-    await vi.waitFor(() => expect(desktopKeyOf(file)).toBe(newKey), { timeout: 10_000 })
+    await followed(f)
+    expect(desktopKeyOf(file)).toBe(newKey)
   })
 
   it('moves Claude Desktop into the subscription with Claude Code on the history account', async () => {
@@ -1222,7 +1230,8 @@ describe('Claude Desktop follows the key 星芒 replaced in Claude Code (#1113)'
 
     const outcome = await configureManagedClis(accountService('solov-api', true), f.service, ['claude'], {}, false, f.keyStore!, 'merge', 'automatic')
     expect(outcome).toEqual({ configured: ['claude'], failed: [] })
-    await vi.waitFor(() => expect(desktopKeyOf(file)).toBe(newKey), { timeout: 10_000 })
+    await followed(f)
+    expect(desktopKeyOf(file)).toBe(newKey)
     expect(fs.readFileSync(file, 'utf8')).toBe(before.replace(`"${oldKey}"`, `"${newKey}"`))
   })
 
@@ -1267,7 +1276,8 @@ describe('Claude Desktop follows the key 星芒 replaced in Claude Code (#1113)'
     const f = fixture({ managedKeys: true })
     const { file } = await connectBoth(f, undefined)
     await revokeClaudeCodeKey(f)
-    await vi.waitFor(() => expect(desktopKeyOf(file)).toBe(newKey), { timeout: 10_000 })
+    await followed(f)
+    expect(desktopKeyOf(file)).toBe(newKey)
   })
 
   it('leaves a key the customer typed into Claude Desktop alone, even when it is the one Claude Code had', async () => {
@@ -1362,12 +1372,19 @@ describe('WorkBuddy and OpenCode follow the key 星芒 replaced in the tool they
     return f.runtimeLog.log.mock.calls.filter(([, , event]) => event.startsWith('external-client.key.'))
   }
 
+  // 换 Key 不等它：写完客户端那份还要改写归属、记日志，日志是最后一步，等到它才算换完（Windows 上写文件慢，
+  // 只等文件变了会在归属改写完之前就往下查）。
+  async function followed(f: Fixture) {
+    await vi.waitFor(() => expect(keyLogs(f).map(([, , event]) => event)).toContain('external-client.key.followed'), { timeout: 10_000 })
+  }
+
   it.each(['workbuddy', 'opencode'] as const)('follows Codex into %s after the customer revokes its key, changing nothing but the key', async (tool) => {
     const f = fixture({ managedKeys: true })
     const { file, before } = await connect(f, tool)
 
     expect(await revoke(f)).toEqual({ configured: ['codex'], failed: [] })
-    await vi.waitFor(() => expect(fs.readFileSync(file, 'utf8')).toBe(before.replaceAll(`"${oldKey}"`, `"${newKey}"`)), { timeout: 10_000 })
+    await followed(f)
+    expect(fs.readFileSync(file, 'utf8')).toBe(before.replaceAll(`"${oldKey}"`, `"${newKey}"`))
     expect(before).toContain(oldKey)
     expect(keyLogs(f)).toEqual([['info', 'config', 'external-client.key.followed', `已把 ${externalClientNames[tool]} 换成 Codex CLI 现在用的密钥`, { tool, route: 'primary' }]])
     expect((await f.service.scanExternalClients()).find((client) => client.tool === tool)).toMatchObject({ configured: true, configurationSource: 'xingmang', model })
@@ -1379,7 +1396,8 @@ describe('WorkBuddy and OpenCode follow the key 星芒 replaced in the tool they
     const { file, before } = await connect(f, 'opencode', { borrow: 'claude' })
 
     await revoke(f, 'claude')
-    await vi.waitFor(() => expect(fs.readFileSync(file, 'utf8')).toBe(before.replaceAll(`"${claudeOldKey}"`, `"${claudeNewKey}"`)), { timeout: 10_000 })
+    await followed(f)
+    expect(fs.readFileSync(file, 'utf8')).toBe(before.replaceAll(`"${claudeOldKey}"`, `"${claudeNewKey}"`))
     expect(keyLogs(f)).toEqual([['info', 'config', 'external-client.key.followed', '已把 OpenCode 换成 Claude Code 现在用的密钥', expect.objectContaining({ tool: 'opencode' })]])
   })
 
