@@ -427,8 +427,9 @@ export async function measureDesktopDownloadSpeed(
       received += chunk.value.byteLength
     }
   } catch {
-    // 测的那几秒到了：读到多少算多少。调用方那边停了（下完、太慢换路、客户取消）就不用测了。
-    if (signal.aborted) return null
+    // 测的那几秒到了：读到多少算多少。读到一半断了算测不出来（头几块再快，断了的那一路换过去也未必下得完）；
+    // 调用方那边停了（下完、太慢换路、客户取消）就不用测了。
+    if (!deadline.aborted || signal.aborted) return null
   } finally {
     await reader.cancel().catch(() => undefined)
   }

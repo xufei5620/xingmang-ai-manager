@@ -1231,6 +1231,17 @@ describe('measuring the vendor route on a Mac', () => {
     ])
   })
 
+  it('counts the time spent reading the feed, which a switch would read again', async () => {
+    const network = fakeNetwork()
+    const slowFeed: typeof fetch = async (input, init) => {
+      if (String(input) === feedUrl) await new Promise((resolve) => setTimeout(resolve, 250))
+      return network.fetch(input, init)
+    }
+    const speed = await measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, slowFeed, signal)
+    expect(speed?.bytesPerMs).toBeGreaterThan(0)
+    expect(speed?.bytesPerMs).toBeLessThanOrEqual(archiveBytes.byteLength / 200)
+  })
+
   it('cannot measure when the feed offers nothing for this Mac, and asks for no package', async () => {
     const network = fakeNetwork({ feedBody: feed({ platforms: {} }) })
     await expect(measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, network.fetch, signal)).resolves.toBeNull()

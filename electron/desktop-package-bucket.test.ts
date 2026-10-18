@@ -589,6 +589,17 @@ describe('measuring the other route', () => {
     await expect(measureDesktopDownloadSpeed(request, signal)).resolves.toBeNull()
   })
 
+  it('cannot measure a route whose body breaks off before the window closes', async () => {
+    let pulls = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        if (pulls++ === 0) stream.enqueue(new Uint8Array(mib))
+        else stream.error(new TypeError('terminated'))
+      },
+    }, { highWaterMark: 0 })
+    await expect(measureDesktopDownloadSpeed(async () => packageResponse(body), signal)).resolves.toBeNull()
+  })
+
   it('gives up when the download it was measuring for has ended', async () => {
     const controller = new AbortController()
     let pulls = 0

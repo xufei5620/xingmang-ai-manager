@@ -758,7 +758,8 @@ async function expandPackageBundle(
 
 /**
  * 存储桶那一路太慢时，测一下官方那一路有多快：先读官方版本信息挑出这台 Mac 的包，再只读几秒、不落盘
- * （见 desktop-package-bucket.ts 的 probeAlternative）。挑不出包、这台 Mac 的系统装不了那一版、读不到，
+ * （见 desktop-package-bucket.ts 的 probeAlternative）。读版本信息的时间也算在测的那几秒里：真换过去，
+ * downloadFromVendor 要再读一遍，读得慢就是这一路慢。挑不出包、这台 Mac 的系统装不了那一版、读不到，
  * 都当测不出来，接着下桶。地址和跳转照官方那一路的规矩核。没接加速线路，接上只会更快，测得偏慢就偏向
  * 接着下桶。
  */
@@ -770,14 +771,14 @@ export async function measureMacosDesktopVendorSpeed(
 ): Promise<DesktopAlternativeSpeed | null> {
   const source = sources[tool]
   if (!source) return null
-  try {
-    const release = source.selectRelease(await fetchFeed(tool, source, context, fetchImplementation, signal), context)
-    if (!release) return null
-    if (release.minimumSystemVersion && context.systemVersion && isMacosVersionBelow(context.systemVersion, release.minimumSystemVersion)) return null
-    return await measureDesktopDownloadSpeed((probeSignal) => fetchMacosDesktopResource(tool, release.url, { signal: probeSignal }, fetchImplementation), signal)
-  } catch {
-    return null
-  }
+  return measureDesktopDownloadSpeed(async (probeSignal) => {
+    const release = source.selectRelease(await fetchFeed(tool, source, context, fetchImplementation, probeSignal), context)
+    if (!release) throw new Error('官方版本信息里没有这台 Mac 能用的安装包')
+    if (release.minimumSystemVersion && context.systemVersion && isMacosVersionBelow(context.systemVersion, release.minimumSystemVersion)) {
+      throw new Error('这台 Mac 的系统装不了官方这一版')
+    }
+    return fetchMacosDesktopResource(tool, release.url, { signal: probeSignal }, fetchImplementation)
+  }, signal)
 }
 
 /**
