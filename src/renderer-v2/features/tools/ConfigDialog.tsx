@@ -510,7 +510,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
         <div className="xm-field"><span className="v2-field-label">Codex 界面语言</span><Segment label="Codex 界面语言" testId="tool-codex-language" activation="manual" value={locale?.installed ? locale.configuredLocale === 'zh-CN' ? 'zh-CN' : 'system' : ''}
           options={[{ value: 'zh-CN', label: '启用中文界面' }, { value: 'system', label: '跟随系统语言' }]} onChange={changeLocale} />
           {os === 'mac' ? <p className="v2-field-note">{macLocaleNote}</p> : <><p className="v2-field-note">中文界面只在从星芒打开 Codex 时生效；从开始菜单或任务栏直接打开还是英文。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
-            <p className="v2-field-note">要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，关掉 Codex 就关上。不想要这个通道，选「跟随系统语言」即可。</p></>}</div>
+            <p className="v2-field-note">要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个本机通道，关掉 Codex 就关上。通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex。和别人共用这台电脑的，或者不想要这个通道，选「跟随系统语言」即可。</p></>}</div>
         {localeText && <p role="status" data-testid="tool-locale-status">{localeText}</p>}
         <div className="v2-config-perm">{permission?.trustLevel === 'trusted' && <ShieldCheck size={15} aria-hidden="true" />}{permissionText && <span>{permissionText}</span>}
           <button type="button" className="v2-link-button" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setPermission(result) })}>查看文件夹权限</button>

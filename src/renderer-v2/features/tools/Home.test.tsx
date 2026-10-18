@@ -117,7 +117,7 @@ describe('renderer-v2 home partial read failures (R-S8)', () => {
 
   it('marks the connection column unknown rather than claiming the key is missing', () => {
     const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
-    expect(markup).toContain('配置暂未读到')
+    expect(markup).toContain('>配置未读到<')
     expect(markup).not.toContain('已装好，还没连上当前账号')
     expect(markup).toContain('重新配置')
   })
@@ -134,6 +134,7 @@ describe('renderer-v2 home partial read failures (R-S8)', () => {
     const markup = render({})
     expect(markup).not.toContain('data-testid="home-config-failure"')
     expect(markup).not.toContain('配置暂未读到')
+    expect(markup).not.toContain('>配置未读到<')
   })
 })
 
@@ -769,6 +770,18 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'], ...overrides }),
   })
 
+  // #1104 第 7 条：新客户第一次登录、一个工具都没装时，不说「正在给 工具写入密钥」。
+  it('says it is preparing the account key when no installed tool takes one', () => {
+    const missing = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
+    const progress = { phase: 'syncing' as const, label: '正在同步账号专属密钥', percent: 15, scope: 'scope' }
+    const base = snapshot({ claude: missing, codex: missing, grok: missing, gemini: missing })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const fresh = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot, bootstrap: progress })
+    expect(fresh).toContain('正在准备账号密钥（15%）')
+    expect(fresh).not.toContain('写入密钥（')
+    expect(render({}, undefined, { bootstrap: progress })).toMatch(/正在给 \d+ 个工具写入密钥（15%）/)
+  })
+
   it('shows no progress while it quietly moves the tools to the current line', () => {
     const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在给 1 个工具写入密钥', percent: 65, scope: 'scope', quiet: true } })
     expect(markup).not.toContain('正在给 1 个工具写入密钥')
@@ -1338,11 +1351,11 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('names CC Switch and offers to switch the tool to the current account', () => {
       const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider'), onSwitchAccount: () => undefined, onKeepConfig: () => undefined })
-      expect(markup).toContain('CC Switch 的设置')
+      expect(markup).toContain('>被接管<')
       expect(markup).toContain('还在用 CC Switch 里选的连接，没有用当前账号')
       expect(markup).toContain('data-testid="tool-claude-replace-cc-switch"')
       expect(markup).toContain('改用当前账号')
-      expect(markup).not.toContain('用的是别处的配置')
+      expect(markup).not.toContain('>别处的配置<')
       expect(markup).not.toContain('solov')
     })
 
@@ -1358,7 +1371,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('keeps the old neutral row when the host offers no switch action', () => {
       const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider') })
-      expect(markup).toContain('CC Switch 的设置')
+      expect(markup).toContain('>被接管<')
       expect(markup).not.toContain('data-testid="tool-claude-replace-cc-switch"')
     })
   })
@@ -1376,23 +1389,23 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('says a key from another site is not the current account\'s and offers to switch by name', () => {
       const markup = render({}, undefined, { snapshot: foreignSnapshot({ matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }), onSwitchAccount: () => undefined })
-      expect(markup).toContain('不是当前账号的密钥')
+      expect(markup).toContain('>打不开<')
       expect(markup).toContain('在这里打不开，改用你的账号就能用')
       expect(markup).toContain('data-testid="tool-claude-use-account"')
       expect(markup).not.toContain('elsewhere.example')
-      expect(markup).not.toContain('用的是别处的配置')
+      expect(markup).not.toContain('>别处的配置<')
     })
 
     it('warns that a key on the current site may bill another account', () => {
       const markup = render({}, undefined, { snapshot: foreignSnapshot({}), onSwitchAccount: () => undefined })
-      expect(markup).toContain('密钥可能不是当前账号的')
+      expect(markup).toContain('>密钥待确认<')
       expect(markup).toContain('用量可能算到别的账号上')
       expect(markup).toContain('data-testid="tool-claude-use-account"')
     })
 
     it('leaves the switch button out when the host offers no switch action', () => {
       const markup = render({}, undefined, { snapshot: foreignSnapshot({ matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }) })
-      expect(markup).toContain('不是当前账号的密钥')
+      expect(markup).toContain('>打不开<')
       expect(markup).not.toContain('data-testid="tool-claude-use-account"')
     })
   })
@@ -1412,7 +1425,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it.each(['unknown', 'changed'] as const)('shows a relay-matching %s configuration as ready, not as edited or third-party', (ownership) => {
       const markup = render({}, undefined, { snapshot: pendingSnapshot(ownership), onRewriteKey: () => undefined, onKeepConfig: () => undefined })
       expect(markup).not.toContain('配置被改过')
-      expect(markup).not.toContain('用的是别处的配置')
+      expect(markup).not.toContain('>别处的配置<')
       expect(markup).not.toContain('不是当前账号的')
       expect(markup).not.toContain('rewrite-key')
       expect(markup).toContain('data-testid="tool-claude-source"')
@@ -1420,7 +1433,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('still reports a configuration pointing somewhere else, which no account could claim', () => {
       const markup = render({}, undefined, { snapshot: pendingSnapshot('unknown', { matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }) })
-      expect(markup).toContain('不是当前账号的密钥')
+      expect(markup).toContain('>打不开<')
     })
 
     it('goes back to the real verdict once the re-read config no longer carries the pending mark', () => {

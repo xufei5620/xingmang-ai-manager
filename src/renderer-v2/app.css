@@ -49,6 +49,8 @@
 .v2-home-recent-dir { min-width: 0; overflow: hidden; color: var(--text-3); font: var(--font-micro) var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .v2-home-recent-time { color: var(--text-3); font-size: var(--font-small-compact); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .v2-home-recent-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+/* 「接着聊」换成了同一文件夹刚有的新对话、这次没打开时，列表上面那一句。 */
+.v2-home-recent-note { padding: 2px 12px 6px; color: var(--text-2); font-size: var(--font-small); }
 .v2-home-recent-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px 12px; color: var(--text-3); font-size: var(--font-small); }
 /* 卡片「…」里「接着之前的对话」那个窗口：一行一个文件夹，和「接着上次」同一种行，只是都是同一个工具，不放图标。
    各行共用一套列宽（subgrid），「文件夹已不存在」比日期宽时，那一行的文件夹名不往左错开。 */

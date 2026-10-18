@@ -24,7 +24,7 @@ import { Home, type ToolInstallIntent } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
-import { clientLaunchWaitLabel, launchWaitLabel, launchWarning } from './features/tools/launch-notice'
+import { clientLaunchWaitLabel, launchWaitLabel, launchWarning, logoutJobsNote } from './features/tools/launch-notice'
 import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapOffer, modelSwapQuestion, modelSwapTitle, type ModelSwapChoice, type ModelSwapOffer } from './features/tools/model-check'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './features/tools/codex-desktop-open'
@@ -1237,8 +1237,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
     const result = outcome.result
     if (!result || !mounted.current || epoch !== accountEpoch.current) return
-    if (result.outcome === 'reconnect') setExternalClient(id)
-    else toast.show(result.message, 'ok')
+    if (result.outcome === 'reconnect') {
+      // 弹框前先说一句为什么弹（#1111 第 1 条）：客户点的是「改用当前账号」，看到的却是一个配置框。
+      // 不点按钮名：配置框的主按钮会跟着检测结果在「保存并检测」「保存配置」之间变。
+      toast.show('原来那份连接用不上了，在弹出的窗口里保存一次，就改用当前账号', 'neutral')
+      setExternalClient(id)
+    } else toast.show(result.message, 'ok')
   }
   function finishExternalConfigSave() {
     const epoch = accountEpoch.current
@@ -1861,7 +1865,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
-            logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
@@ -1889,7 +1893,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => visitedPages[id] === scope || id === page).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id === 'health' ? `health:${healthRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} active={page === id} onLogout={logoutVoluntarily} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} active={page === id} onLogout={logoutVoluntarily} logoutNote={logoutJobsNote(toolbox.jobs, jobToolName)} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
                   accelerating={acceleration.snapshot.state?.phase === 'active'}
@@ -2032,7 +2036,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {chineseDialog && <Dialog open title="要让 Codex 的界面显示中文吗？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} initialFocus={chineseDecline} footer={<>
       <Button ref={chineseDecline} testId="codex-chinese-decline" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>先不用</Button>
       <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
-    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个只有这台电脑自己能连的通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
+    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个本机通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
       <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
     {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5、第十五批 6）；关掉对话框 = 这次先不打开。 */}
     {modelSwap && <Dialog open title={modelSwapTitle(modelSwap.offer)} onClose={() => modelSwap.answer('cancel')} footer={<>

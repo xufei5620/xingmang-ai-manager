@@ -2693,6 +2693,11 @@ if (!hasSingleInstanceLock) {
           earlierWorksLeftInDocuments: aiOutputPlacement.earlierWorksLeftInDocuments,
         })
       }
+      if (aiOutputPlacement.earlierWorksLeftInSyncedDocuments) {
+        runtimeLog.log('info', 'ai-chat', 'asset.output-directory.earlier-works-in-synced-documents', '「文档」开了云盘同步，以前的 AI 作品还在「文档」里', {
+          cloud: aiOutputPlacement.earlierWorksLeftInSyncedDocuments,
+        })
+      }
       // 以前这六个菜单出错时一行日志都不记，客服事后查不到；错误框里只说中文（assetMenuFailureDialog）。
       function showAssetMenuFailure(source: 'ai-chat' | 'canvas', mediaType: AssetMenuMediaType, action: string, error: unknown): void {
         runtimeLog.exception(source, 'asset.menu.failed', error, { mediaType, action })

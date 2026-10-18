@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clientLaunchWaitLabel, launchDeclined, launchWaitLabel, launchWarning, resumeSessionNotice } from './launch-notice'
+import { clientLaunchWaitLabel, launchDeclined, launchWaitLabel, launchWarning, logoutJobsNote, resumeSessionNotice } from './launch-notice'
 import type { DesktopAppStatus } from '../../../../electron/ipc-contract'
 
 const status = { installed: true } as DesktopAppStatus
@@ -105,5 +105,26 @@ describe('clientLaunchWaitLabel', () => {
   it('names the client\'s own install when that is what the launch waits for', () => {
     expect(clientLaunchWaitLabel({ claude: { label: '正在安装' }, workbuddy: { label: '正在下载' } }, 'workbuddy', nameOf))
       .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
+  })
+})
+
+describe('logoutJobsNote', () => {
+  const names: Record<string, string> = { claude: 'Claude Code', workbuddy: 'WorkBuddy' }
+  const nameOf = (key: string) => names[key]
+
+  it('stays empty when nothing is installing, so the logout prompt keeps its single sentence', () => {
+    expect(logoutJobsNote({}, nameOf)).toBe('')
+    expect(logoutJobsNote({ 'launch:claude': {}, 'switch:workbuddy': {}, 'repair-hooks:codex': {}, 'repair-config:claude': {} }, nameOf)).toBe('')
+  })
+
+  it('names what keeps installing, runtimes included, joined with the Chinese list comma', () => {
+    expect(logoutJobsNote({ claude: {} }, nameOf)).toBe('正在安装的 Claude Code 会继续装完。')
+    expect(logoutJobsNote({ claude: {}, node: {} }, nameOf)).toBe('正在安装的 Claude Code、Node.js 会继续装完。')
+    expect(logoutJobsNote({ codexDesktop: {} }, (key) => key === 'codexDesktop' ? 'Codex 桌面端' : undefined)).toBe('正在安装的 Codex 桌面端会继续装完。')
+  })
+
+  it('says uninstalls finish separately and skips keys it cannot name', () => {
+    expect(logoutJobsNote({ claude: {}, workbuddy: { kind: 'uninstall' }, mystery: {} }, nameOf))
+      .toBe('正在安装的 Claude Code 会继续装完。正在卸载的 WorkBuddy 会继续卸完。')
   })
 })

@@ -366,6 +366,22 @@ test('external clients recognize complete manual configurations without claiming
   } finally { await page.close() }
 })
 
+// #1111 第 1 条：Claude Desktop 改用当前账号时原来那份连接用不上了，弹连接框之前先说一句为什么弹。
+test('switching Claude Desktop back to the account says why the connection dialog opens', async () => {
+  const page = await open('externalInstalled=1&externalReady=claudeDesktop&externalAccountOwned=claudeDesktop&externalReconnect=1')
+  try {
+    const source = page.getByTestId('tool-claudeDesktop-source')
+    await source.click()
+    await page.getByTestId('tool-claudeDesktop-source-official').click()
+    await source.filter({ hasText: '官方账号' }).waitFor()
+    await source.click()
+    await page.getByTestId('tool-claudeDesktop-source-account').click()
+    await waitForToast(page, '原来那份连接用不上了，在弹出的窗口里保存一次，就改用当前账号')
+    await page.getByTestId('external-client-dialog').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第三十一批 C：打开以后那一行先写「运行中」，后台悄悄核一次，三行按钮不跟着变灰、右上角不转圈。
 test('opening a desktop client marks its row running and leaves the client rows usable while it rechecks', async () => {
   const page = await open('externalInstalled=1&externalReady=workbuddy')
@@ -619,7 +635,7 @@ test('WorkBuddy loses current-account readiness when switching saved accounts on
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
     assert.equal(await row.getByTestId('tool-workbuddy-source').count(), 0)
     await page.evaluate(() => window.v2Test.releaseExternalScan())
-    await row.getByText('用的是别处的配置', { exact: true }).waitFor()
+    await row.getByText('别处的配置', { exact: true }).waitFor()
     await row.getByText('v1.2.3 · fixture-model', { exact: true }).waitFor()
     assert.equal(await row.getByTestId('tool-workbuddy-source').count(), 0)
     const session = await page.evaluate(() => window.xingmang.getAccountSession())
@@ -639,13 +655,13 @@ test('a delayed ready WorkBuddy scan cannot restore the previous account badge a
     await page.getByTestId('home-rescan').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
-    await row.getByText('用的是别处的配置', { exact: true }).waitFor()
+    await row.getByText('别处的配置', { exact: true }).waitFor()
     await page.evaluate(async () => {
       window.v2Test.releaseExternalScan()
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
     assert.equal(await row.getByTestId('tool-workbuddy-source').count(), 0)
-    assert.equal(await row.getByText('用的是别处的配置', { exact: true }).count(), 1)
+    assert.equal(await row.getByText('别处的配置', { exact: true }).count(), 1)
     // 命令行那三张（Claude Code、Codex CLI、Codex 桌面端）照旧连着当前账号。
     for (const tool of ['claude', 'codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
     await clean(page)
@@ -671,13 +687,13 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
     await page.locator('[data-guide-step="ready"]').waitFor()
     await page.getByTestId('guide-home').click()
-    await row.getByText('用的是别处的配置', { exact: true }).waitFor()
+    await row.getByText('别处的配置', { exact: true }).waitFor()
     await page.evaluate(async () => {
       window.v2Test.releaseExternalScan()
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
     assert.equal(await row.getByTestId('tool-workbuddy-source').count(), 0)
-    assert.equal(await row.getByText('用的是别处的配置', { exact: true }).count(), 1)
+    assert.equal(await row.getByText('别处的配置', { exact: true }).count(), 1)
     assert.equal(await row.getByText('v1.2.3 · fixture-model', { exact: true }).count(), 1)
     const session = await page.evaluate(() => window.xingmang.getAccountSession())
     assert.equal(session.authenticated, false)
@@ -1109,6 +1125,28 @@ test('the card menu lists earlier chats of that tool, one per folder, and resume
   } finally { await page.close() }
 })
 
+// #1111 第 3 条：窗口里点「接着聊」才发现同一文件夹刚有新对话，这次不打开，行内说一句已换成最新那条。
+test('the earlier-chats window says it swapped in the newest chat of a folder instead of silently not opening', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    await page.getByTestId('tool-claude-conversations').click()
+    const dialog = page.getByTestId('tool-conversations-dialog')
+    await page.getByTestId('tool-conversation-row-claude:1').waitFor()
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await page.getByTestId('tool-conversation-resume-claude:1').click()
+    await page.getByTestId('tool-conversation-row-claude:6').waitFor()
+    assert.equal(await dialog.getByTestId('tool-conversations-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「接着聊」')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
+    await page.getByTestId('tool-conversation-resume-claude:6').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await expect(dialog).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the earlier-chats window can go to all records or start a new chat instead', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   async function openChats() {
@@ -1456,6 +1494,8 @@ test('home 接着聊 checks the newest records first and holds back when a newer
     assert.equal(await homeReads(), reads + 1)
     assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
+    // 没打开要说一句为什么（#1111 第 3 条），不然只看到按钮转一下、那行标题悄悄换掉。
+    assert.equal(await page.getByTestId('home-recent-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「接着聊」')
     // 挪过去的那颗还是最近的，照常打开。
     await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:6"]')?.disabled === false)
     await page.getByTestId('home-recent-resume-claude:6').click()
@@ -1463,6 +1503,7 @@ test('home 接着聊 checks the newest records first and holds back when a newer
     assert.equal(await homeReads(), reads + 2)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args)),
       [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(await page.getByTestId('home-recent-replaced').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -2218,8 +2259,8 @@ test('tool probe failures show a retry state instead of a third-party configurat
 // 按钮上的字一个不少；官方安装器那句提示不冲出卡片；「重新检测」不配下载箭头。
 test('a squeezed tool card shortens its status badge, never its button, and keeps its notes inside', async () => {
   const cases = [
-    ['unownedClaude=1', 'claude', '打开', '密钥可能不是当前账号的'],
-    ['unknownClaude=1', 'claude', '改用当前账号', '不是当前账号的密钥'],
+    ['unownedClaude=1', 'claude', '打开', '密钥待确认'],
+    ['unknownClaude=1', 'claude', '改用当前账号', '打不开'],
     ['allInstalled=1&changedClaude=1', 'claude', '重新写入密钥', '配置被改过'],
     ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
     ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
@@ -2738,7 +2779,7 @@ test('restored login repairs missing tool configs without overwriting official o
     const input = await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'configureManagedCliKeys').args[0])
     // 已下线的 Gemini CLI 装着、配置也缺，同样不替它写。
     assert.deepEqual(input.providers, ['grok'])
-    await page.getByTestId('tool-row-claude').getByText('不是当前账号的密钥', { exact: true }).waitFor()
+    await page.getByTestId('tool-row-claude').getByText('打不开', { exact: true }).waitFor()
     await page.getByTestId('tool-row-codex').getByText('官方账号', { exact: true }).waitFor()
     await connectedBadge(page, 'grok').waitFor()
     assert.equal(await page.getByTestId('tool-row-gemini').count(), 0)
@@ -2823,7 +2864,7 @@ test('read-only account matches respect local manual markers and preserve incomp
 test('read-only account matches remain third-party when the host cannot match an account', async () => {
   const page = await open('readOnlyAccountMatch=1&allInstalled=1&matchedUnavailable=1')
   try {
-    await matchedToolBadges(page, '密钥可能不是当前账号的')
+    await matchedToolBadges(page, '密钥待确认')
     await settleMatchedBootstrap(page)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
@@ -2863,12 +2904,12 @@ for (const transition of ['same-site', 'cross-site']) test(`read-only account ma
       siteId: kind === 'cross-site' ? 'solov-api' : 'solov', realmId: kind === 'cross-site' ? 'api-account' : 'xm-account',
       account: { userId: kind === 'cross-site' ? 17 : 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 },
     }), transition)
-    await matchedToolBadges(page, '密钥可能不是当前账号的')
+    await matchedToolBadges(page, '密钥待确认')
     await page.evaluate(async () => {
       window.v2Test.releaseConfigRead()
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     })
-    await matchedToolBadges(page, '密钥可能不是当前账号的')
+    await matchedToolBadges(page, '密钥待确认')
     for (const id of matchedToolIds) assert.equal(await connectedBadge(page, id).count(), 0)
     await assertNoMatchedKeyOperations(page)
     await clean(page)
@@ -2956,9 +2997,9 @@ test('a slow startup restore opens the home page first and settles ownership aft
     await connectedBadge(page, 'claude').waitFor()
     await page.getByText('正在恢复登录').first().waitFor()
     assert.equal(await page.getByText('配置被改过').count(), 0)
-    assert.equal(await page.getByText('用的是别处的配置').count(), 0)
-    assert.equal(await page.getByText('不是当前账号的密钥', { exact: true }).count(), 0)
-    assert.equal(await page.getByText('密钥可能不是当前账号的').count(), 0)
+    assert.equal(await page.getByText('别处的配置', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('打不开', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('密钥待确认', { exact: true }).count(), 0)
     assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
     assert.equal(await page.getByTestId('welcome-login').count(), 0)
     // 工具列表整块重读（useToolbox.read）才会连带读平台能力；Key 同步那一步自己的
@@ -3331,7 +3372,7 @@ test('read-only account matches switch only explicitly selected CLI providers on
     await page.getByTestId('nav-home').click()
     for (const tool of ['claude', 'codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
     // 没勾的那个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
-    for (const tool of ['grok']) await page.getByTestId(`tool-row-${tool}`).getByText('密钥可能不是当前账号的', { exact: true }).waitFor()
+    for (const tool of ['grok']) await page.getByTestId(`tool-row-${tool}`).getByText('密钥待确认', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
     await clean(page)
   } finally { await page.close() }
@@ -4920,7 +4961,7 @@ test('a key from another site is named for the account and switched from the row
   const page = await open('unknown=1')
   try {
     const row = page.getByTestId('tool-row-codex')
-    await row.getByText('不是当前账号的密钥', { exact: true }).waitFor()
+    await row.getByText('打不开', { exact: true }).waitFor()
     assert.equal(await row.getByText('other.example.test').count(), 0)
     // v4 不再带用户名（字表批04「改用当前账号」）。
     assert.equal((await page.getByTestId('tool-codex-use-account').textContent())?.trim(), '改用当前账号')
@@ -6063,6 +6104,47 @@ test('logging out yourself does not warn that the login ended from either entry 
   }
 })
 
+// #1097 第 2 部分：有工具正在装时退出登录，确认框在「已配好的工具会保留。」后面补一句会继续装完；
+// 没在装时一个字不加（v4 交接包定的）。个人中心和命令面板两个入口都要有。
+test('the logout prompt says an install in progress keeps going, from either entry point', async () => {
+  for (const entry of ['account', 'command']) {
+    const page = await open()
+    async function logoutDialog() {
+      if (entry === 'account') {
+        await page.getByTestId('sidebar-account-open').click()
+        await page.getByTestId('account-overview-logout').click()
+      } else {
+        await page.keyboard.press('Control+k')
+        await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
+        await page.getByTestId('command-result-account:logout').click()
+      }
+      const dialog = page.getByRole('dialog', { name: '退出登录？', exact: true })
+      await dialog.waitFor()
+      return dialog
+    }
+    try {
+      const row = page.getByTestId('tool-row-grok')
+      await row.getByText('未安装').waitFor()
+      await page.evaluate(() => window.v2Test.holdNextInstall())
+      await page.getByTestId('tool-grok-primary').click()
+      await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+      let dialog = await logoutDialog()
+      await expect(dialog).toContainText('已配好的工具会保留。正在安装的 Grok CLI 会继续装完。')
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      await dialog.waitFor({ state: 'hidden' })
+      await page.getByTestId('nav-home').click()
+      await page.evaluate(() => window.v2Test.releaseInstall())
+      await row.getByTestId('tool-grok-source').waitFor()
+      await expect(row.getByText(/正在/)).toHaveCount(0)
+      dialog = await logoutDialog()
+      await dialog.getByText('已配好的工具会保留。', { exact: true }).waitFor()
+      await expect(dialog).not.toContainText('会继续')
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 test('explicit historical login uses returned account ownership with customer account-source labels', async () => {
   const page = await open('guest=1&sub2api=1')
   try {
@@ -6584,7 +6666,10 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     }
     const question = await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText()
     assert.doesNotMatch(question, /调试端口/)
-    assert.match(question, /关掉 Codex，通道也跟着关上。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
+    assert.match(question, /关掉 Codex，通道也跟着关上。/)
+    // 照实说同机别的程序和账户也连得上（#1067），共用电脑的劝先不用。
+    assert.match(question, /通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
+    assert.doesNotMatch(question, /只有这台电脑自己能连/)
 
     await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))

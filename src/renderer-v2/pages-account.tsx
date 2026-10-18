@@ -335,6 +335,7 @@ export function AccountPage({
   onOpenHealth,
   onTabChange,
   onLogout,
+  logoutNote,
   active,
 }: {
   api: V2Bridge
@@ -376,6 +377,8 @@ export function AccountPage({
   onTabChange?: (tab: AccountTab) => void
   /** 概览「退出登录」交给外壳退，外壳才不把自己退出说成「登录已结束」（#1098）；缺省 = 直接让主进程退出。 */
   onLogout?: () => Promise<void>
+  /** 概览退出登录确认框里另起一段说的话（有工具正在装、卸时，#1097）；缺省 = 只说「已配好的工具会保留。」。 */
+  logoutNote?: string
   /** 外壳说的「现在显示的是不是这一页」；缺省 = 只按页签算（旧行为）。 */
   active?: boolean
 }) {
@@ -528,6 +531,7 @@ export function AccountPage({
             onNavigate={openLanding}
             onSwitchAccount={onSwitchAccount}
             onLogout={onLogout}
+            logoutNote={logoutNote}
             active={(active ?? true) && activeTab === 'overview'}
             changed={changed}
           />

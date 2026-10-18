@@ -2942,6 +2942,22 @@ describe('runDiagnostics documents folder', () => {
     expect(item?.summary).toContain('以前的作品还在')
   })
 
+  it('says earlier works are still in a documents folder that cloud sync took over, in each platform\'s own words', async () => {
+    const summaries: Record<string, string | undefined> = {}
+    for (const cloud of ['onedrive', 'icloud'] as const) {
+      const report = await runDiagnostics({
+        ...dependencies(temporaryHome()),
+        probeAiOutput: async () => undefined,
+        aiOutputPlacement: () => ({ movedFromDocuments: false, earlierWorksLeftInDocuments: false, earlierWorksLeftInSyncedDocuments: cloud }),
+      })
+      const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')
+      expect(item).toMatchObject({ state: 'pass', details: { openFolder: 'ai-output' } })
+      summaries[cloud] = item?.summary
+    }
+    expect(summaries.onedrive).toBe('AI 生成的图片和视频能正常保存。「文档」开了 OneDrive 同步，新作品改存在个人文件夹里的 XingmangAI；以前的作品还在「文档」里的 XingmangAI，没有丢，也没有搬动')
+    expect(summaries.icloud).toBe('AI 生成的图片和视频能正常保存。「文稿」开了 iCloud 同步，新作品改存在个人文件夹里的 XingmangAI；以前的作品还在「文稿」里的 XingmangAI，没有丢，也没有搬动')
+  })
+
   it('checks the documents folder only on Windows and only when the host passes it', async () => {
     const home = temporaryHome()
     const inspectDocuments = vi.fn(() => ({ state: 'writable' as const }))
