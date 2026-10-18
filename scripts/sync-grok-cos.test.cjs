@@ -195,14 +195,19 @@ test('when x.ai refuses the runner, the stable answer and the binaries come from
   assert.equal(broken.pointers.length, 0)
 })
 
-test('an unchanged stable with intact objects means no download and no write', async () => {
+test('an unchanged stable with intact objects means no download and only a fresh checkedAt', async () => {
   const fixture = createFixture()
   await fixture.run()
-  const result = await fixture.run()
+  const before = clone(fixture.latest)
+  assert.equal(before.checkedAt, '2026-10-14T16:00:00.000Z')
+  const result = await fixture.run({ now: function () { return '2026-10-14T22:00:00.000Z' } })
   assert.equal(result.changed, false)
   assert.equal(fixture.downloads.length, 4)
   assert.equal(fixture.publications.length, 4)
-  assert.equal(fixture.pointers.length, 1)
+  // The index is rewritten anyway: clients stop trusting its "latest" once checkedAt is a day old (#1061 item 7).
+  assert.equal(fixture.pointers.length, 2)
+  assert.deepEqual(fixture.latest, { ...before, checkedAt: '2026-10-14T22:00:00.000Z' })
+  assert.equal(validateLatest(fixture.latest, fixture.store.publicUrl), fixture.latest)
 })
 
 test('a new stable is added on top of the history and a damaged object is uploaded again', async () => {

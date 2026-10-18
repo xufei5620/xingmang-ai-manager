@@ -114,4 +114,33 @@ describe('Grok bucket index requests', () => {
     })
     await expect(readGrokBucketRelease('x64', undefined, fetch, controller.signal)).rejects.toBe(reason)
   })
+
+  // The sync asks xAI for its stable and refreshes checkedAt every 6 hours, even when nothing
+  // changed. A day without it means xAI may have moved on (#1061 item 7).
+  function indexFetch(checkedAt: string | undefined) {
+    const text = grokIndex(undefined, checkedAt === undefined ? {} : { checkedAt })
+    return vi.fn<typeof globalThis.fetch>(async () => new Response(text, { status: 200, headers: { 'content-type': 'application/json', date: 'Sun, 18 Oct 2026 10:00:00 GMT' } }))
+  }
+
+  it.each([undefined, 'latest', ' latest '])('installs the bucket stable for %j while the index was checked within a day', async (requested) => {
+    await expect(readGrokBucketRelease('x64', requested, indexFetch('2026-10-17T10:00:00.000Z'))).resolves.toMatchObject({
+      version: '1.0.52', checkedAt: '2026-10-17T10:00:00.000Z',
+    })
+  })
+
+  it.each([
+    ['checked more than a day ago', '2026-10-17T09:59:59.000Z'],
+    ['never checked', undefined],
+  ])('sends the latest install to xAI when the index was %s', async (_label, checkedAt) => {
+    for (const requested of [undefined, 'latest']) {
+      const failure = await readGrokBucketRelease('arm64', requested, indexFetch(checkedAt)).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt ?? '没写'}），桶里的可能不是最新版`)
+    }
+  })
+
+  it('still installs a named version from an old index, it is the same xAI file', async () => {
+    await expect(readGrokBucketRelease('x64', '1.0.46', indexFetch('2026-10-01T00:00:00.000Z'))).resolves.toMatchObject({ version: '1.0.46' })
+    await expect(readGrokBucketRelease('x64', '1.0.52', indexFetch(undefined))).resolves.toMatchObject({ version: '1.0.52' })
+  })
 })

@@ -227,6 +227,7 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 - 上传显式指定 Content-Type，包括 MSIX 的 `application/vnd.ms-appx`，避免 COS 默认识别为 `text/plain`。
 - 先保存版本文件，通过公开地址完整读回、核对大小和 SHA-256。Windows 官方包在上传前还需要有效系统签名。
 - 所需文件全部验证通过后，最后更新固定 latest 索引。旧版本对象保留；拒绝版本倒退和不可变路径的内容冲突。
+- Codex 桌面端（`chatgpt/latest.json`）和 Windows 版 Grok（`xingmang/offline/grok/latest.json`）的索引带 `checkedAt`：这次同步问过官方、核对过的时间（ISO 8601，UTC）。包一个都没变也照样重写一次索引、只刷新它，大文件不下。Codex 一个作业只核自己那个平台，所以写在 `platforms` 下各条上，没跑或失败的平台留着它上一次的时间；Grok 一次核完两个芯片，写在顶层。客户端装最新版时，这个时间离桶回应的 `Date` 超过 24 小时（连着四次定时同步没成功）就不从桶里装（#1061 第 7 条），见下文「星芒客户端怎么用这两份清单」。所以同步停了（包括关掉 `XINGMANG_COS_SYNC_ENABLED`）一天以后，客户装这两样最新版会改走官方那几路，慢一些、可能要借加速，但不会装上旧版。
 - 同类工作流串行执行；切换前重读最新索引，发现变更则停止。人工 CLI 不应与 Actions 同时发布同类索引。本实现没有宣称普通 COS PUT 支持目标对象的条件写入/CAS。
 - **切换前失败**：不会写 latest，可修复后重跑。
 - **latest 写入结果未知**：先读取远端确认，不盲目覆盖或自动回滚；只有连接根本没建立时自动重发。工作流失败时，检查索引和运行日志后决定重跑。网络错误不证明远端写入没有发生。
@@ -259,12 +260,13 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 - 读不到清单、清单对不上、下得太慢（照当时的速度还要 10 分钟以上）、包对不上或核不过，都悄悄换回原来的路，客户看不出换了路，原因只写进运行日志（`desktop-bucket.fallback`）。下好、核过的包交给 Windows 却没装上时，也照旧走后面几路：商店、系统自带的安装组件和它不一定是同一种装法。客户点取消就停；取消了授权、Mac 上盘写满了照直说。
 - 桶那一路国内直连，不接下载加速线路；只有退回官方那几路时才照旧接。
 - Codex 更新时，桶里那一版不比本机新（桶是定时同步的，会晚一些）就不下，照旧走商店那几路。
+- Codex（Windows、Mac 都算）那一条的 `checkedAt` 没写、写得不对，或者离桶回应的 `Date` 超过 24 小时（读不出 `Date` 才用本机时间），当作桶跟不上官网，照旧走原来的路：同步停了几天时桶里还是旧版，从桶里装会停在中间版本，提示「已更新」后界面仍显示有更新（#1061 第 7 条）。Claude、OpenCode 的同步还不写这个时间，这两份清单照旧不看。
 
 改同步脚本时别改动上面这些字段的写法，改了客户端会全部退回原来的路（装得上，只是慢、费加速流量）。确实要改清单格式时，先改客户端认新旧两种，发版放量以后再改同步。
 
 Codex 插件目录同理（`electron/codex-plugin-catalog-bucket.ts`）：客户在「插件 → 市场 → Codex」点「下载插件目录」时，先读 `xingmang/offline/codex-plugins/latest.json`。认的字段：`schemaVersion` 为 1、`product` 为 `codex-plugin-catalog`；`source` 的 `repository`、`ref`、40 位小写 `commit`；`artifact` 的 `key`（必须正好是上节那个路径）、`url`（桶地址加 `key`）、`bytes`、`sha256`、`contentType`（`application/gzip`）、`verification`（`github-commit-archive-manifests`）。下载按大小和 SHA-256 核，解开以后照 GitHub 那一份的规矩再核一遍，压缩包里的提交号还要和清单一致。读不到、对不上、太慢（过了头半分钟照当时速度还要 2 分钟以上，或者半分钟没收到数据）都悄悄改去 GitHub，原因只写进运行日志（`codex-plugin-catalog.bucket-fallback`）；只有改去 GitHub 时才借下载加速线路。
 
-Windows 版 Grok（`electron/grok-bucket.ts`）：装 Grok 时先读 `xingmang/offline/grok/latest.json`。认的字段：`schemaVersion` 为 1、`product` 为 `grok-cli`；`stable.version`；`releases[]` 里每版的 `version` 和 `files[]`，每个文件的 `platformId`、`platform`（`windows`）、`architecture`、`key`（必须正好是上节那个路径）、`url`（桶地址加 `key`）、`bytes`、`sha256`、`contentType`（`application/octet-stream`）、`verification`（`windows-authenticode-xai`）。要装哪一版：点了名的（推荐版本、退回）桶里有就装它，比桶里的 stable 新或桶里没有就整个改去 xAI，由 xAI 那一路按真正的 stable 定；没点名（打开了「总是装最新版」）装桶里的 stable，但这是一次更新、桶里那一版又不比本机新时直接去 xAI，因为桶比 xAI 晚一个同步间隔。下载按大小和 SHA-256 核，下完照 xAI 那一份同一道签名核对（有效、xAI 的两张证书之一），一行没放宽。读不到、对不上、太慢、签名不对都悄悄改去 xAI，原因只写进运行日志（`grok-bucket.fallback`）；只有改去 xAI 时才借下载加速线路。
+Windows 版 Grok（`electron/grok-bucket.ts`）：装 Grok 时先读 `xingmang/offline/grok/latest.json`。认的字段：`schemaVersion` 为 1、`product` 为 `grok-cli`；`stable.version`；`releases[]` 里每版的 `version` 和 `files[]`，每个文件的 `platformId`、`platform`（`windows`）、`architecture`、`key`（必须正好是上节那个路径）、`url`（桶地址加 `key`）、`bytes`、`sha256`、`contentType`（`application/octet-stream`）、`verification`（`windows-authenticode-xai`）。要装哪一版：点了名的（推荐版本、退回）桶里有就装它，比桶里的 stable 新或桶里没有就整个改去 xAI，由 xAI 那一路按真正的 stable 定；没点名（打开了「总是装最新版」）装桶里的 stable，但这是一次更新、桶里那一版又不比本机新时直接去 xAI，因为桶比 xAI 晚一个同步间隔；清单顶层的 `checkedAt` 没写或离桶回应的 `Date` 超过 24 小时，也直接去 xAI，首次安装也一样（#1061 第 7 条）。点了名的不看这个时间：桶里那一版和 xAI 的是同一个文件。下载按大小和 SHA-256 核，下完照 xAI 那一份同一道签名核对（有效、xAI 的两张证书之一），一行没放宽。读不到、对不上、太慢、签名不对都悄悄改去 xAI，原因只写进运行日志（`grok-bucket.fallback`）；只有改去 xAI 时才借下载加速线路。
 
 Mac 版 OpenCode 和 Codex、Claude 桌面端走同一套（`electron/desktop-package-bucket.ts` 的 `files` 清单）：认 `xingmang/offline/opencode/latest.json` 的 `schemaVersion` 1、`product` `opencode-desktop`、`files` 里的 `macos-arm64`、`macos-x64`（`kind` `app-archive`、`format` `tar.gz`、`type` `application/gzip`、`verification` `macos-developer-id-notarized`）。下完解开以后照 GitHub 那一路核 bundle id、最低系统、Team ID 签名和 Gatekeeper；没走通悄悄改去 GitHub（`desktop-bucket.fallback`），只有改去 GitHub 时才借加速。
 

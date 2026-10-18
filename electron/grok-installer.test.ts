@@ -215,7 +215,8 @@ describe('Grok signed binary installer', () => {
     const digest = createHash('sha256').update(binary).digest('hex')
     const bucketKey = `xingmang/offline/grok/windows-x64/sha256-${digest}/grok-1.0.46-windows-x86_64.exe`
 
-    function bucketIndex(): string {
+    // The sync refreshes checkedAt every 6 hours; a fresh one by default (#1061 item 7).
+    function bucketIndex(checkedAt: string | null = new Date().toISOString()): string {
       const file = (version: string, platformId: string, architecture: string, artifact: string) => {
         const key = `xingmang/offline/grok/${platformId}/sha256-${digest}/grok-${version}-${artifact}.exe`
         return {
@@ -228,10 +229,11 @@ describe('Grok signed binary installer', () => {
         releases: ['1.0.52', '1.0.46'].map((version) => ({
           version, files: [file(version, 'windows-x64', 'x64', 'windows-x86_64'), file(version, 'windows-arm64', 'arm64', 'windows-aarch64')],
         })),
+        ...(checkedAt === null ? {} : { checkedAt }),
       })
     }
 
-    function bucketSetup(options: { indexStatus?: number, onBinaryRequest?: () => void, xaiStable?: string } = {}) {
+    function bucketSetup(options: { indexStatus?: number, onBinaryRequest?: () => void, xaiStable?: string, checkedAt?: string | null } = {}) {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
       temporaryDirectories.push(directory)
       const requested: string[] = []
@@ -240,7 +242,7 @@ describe('Grok signed binary installer', () => {
       const fetchImpl = vi.fn<GrokVersionFetch>(async (input, init) => {
         const url = String(input)
         requested.push(url)
-        if (url === bucketIndexUrl) return new Response(bucketIndex(), { status: options.indexStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
+        if (url === bucketIndexUrl) return new Response(bucketIndex(options.checkedAt), { status: options.indexStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
         if (url.startsWith(desktopPackageBucketOrigin)) {
           options.onBinaryRequest?.()
           init?.signal?.throwIfAborted()
@@ -314,6 +316,25 @@ describe('Grok signed binary installer', () => {
       expect(f.requested).toEqual([bucketIndexUrl, 'https://x.ai/cli/stable', 'https://x.ai/cli/grok-1.0.53-windows-x86_64.exe'])
       expect(f.routed).toEqual(['start', 'end'])
       expect(f.fallbacks).toEqual(['grok-windows-x64：桶里的 1.0.52 不比本机的 1.0.52 新'])
+    })
+
+    it.each([
+      ['a first install', null],
+      ['an update', '1.0.46'],
+    ])('asks xAI for %s of the latest when the bucket index was not checked for over a day', async (_label, installedVersion) => {
+      const f = bucketSetup({ xaiStable: '1.0.53', checkedAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString() })
+      const result = await downloadLatestGrokBinary({ ...f.options, version: undefined, installedVersion })
+      expect(result).toMatchObject({ version: '1.0.53', sourceUrl: 'https://x.ai/cli/grok-1.0.53-windows-x86_64.exe' })
+      expect(f.requested).toEqual([bucketIndexUrl, 'https://x.ai/cli/stable', 'https://x.ai/cli/grok-1.0.53-windows-x86_64.exe'])
+      expect(f.routed).toEqual(['start', 'end'])
+      expect(f.fallbacks).toEqual([expect.stringMatching(/^grok-windows-x64：存储桶清单超过 24 小时没和官方核对过/)])
+    })
+
+    it('still takes a named version from a bucket index that was not checked for over a day', async () => {
+      const f = bucketSetup({ checkedAt: null })
+      const result = await downloadLatestGrokBinary(f.options)
+      expect(result.sourceUrl).toBe(`${desktopPackageBucketOrigin}/${bucketKey}`)
+      expect(f.routed).toEqual([])
     })
 
     it('ignores the installed version when a version is named, so a rollback still comes from the bucket', async () => {

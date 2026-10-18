@@ -2962,7 +2962,7 @@ describe('Codex Desktop from the Xingmang bucket', () => {
   function bucketMetadata(version: string, overrides: Partial<{ name: string; architecture: string; publisher: string; hasSignature: boolean }> = {}) {
     return { name: 'OpenAI.Codex', version, architecture: 'x64', publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B', hasSignature: true, ...overrides }
   }
-  function bucketFetch(options: { version?: string; indexStatus?: number; body?: Buffer } = {}) {
+  function bucketFetch(options: { version?: string; indexStatus?: number; body?: Buffer; checkedAt?: string } = {}) {
     const version = options.version ?? '26.1003.4512.0'
     const requested: string[] = []
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -2982,6 +2982,8 @@ describe('Codex Desktop from the Xingmang bucket', () => {
                 key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: bytes.byteLength, sha256: digest,
                 contentType: 'application/vnd.ms-appx', verification: 'windows-authenticode', cosEtag: '"etag"',
               },
+              // The sync refreshes it every 6 hours (#1061 item 7).
+              checkedAt: options.checkedAt ?? new Date().toISOString(),
             },
           },
         }), { status: options.indexStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
@@ -3049,6 +3051,20 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
     expect((failure as Error).message).toBe('存储桶清单返回 HTTP 404')
     expect(requested).toEqual([indexUrl])
+  })
+
+  it('leaves the install to the store and the official package when the index was not checked for over a day', async () => {
+    // A stopped sync would otherwise install an in-between build and still show an update afterwards (#1061 item 7).
+    const checkedAt = new Date(Date.now() - 25 * 60 * 60_000).toISOString()
+    for (const installedVersion of [null, '26.1002.0.0']) {
+      const { requested, fetchMock } = bucketFetch({ checkedAt })
+      const failure = await downloadCodexDesktopBucketPackage({
+        architecture: 'x64', destination: bucketDestination(), installedVersion, fetchImplementation: fetchMock,
+      }).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt}），桶里的可能不是最新版`)
+      expect(requested).toEqual([indexUrl])
+    }
   })
 
   it('deletes the download when its bytes are not the ones the index lists', async () => {

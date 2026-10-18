@@ -1,5 +1,8 @@
 import { readBoundedResponseText } from './bounded-response'
-import { DesktopBucketUnavailableError, desktopPackageBucketOrigin, fetchDesktopBucketResource } from './desktop-package-bucket'
+import {
+  describeStaleDesktopBucketIndex, desktopBucketResponseTime, DesktopBucketUnavailableError, desktopPackageBucketOrigin,
+  fetchDesktopBucketResource, isDesktopBucketIndexStale,
+} from './desktop-package-bucket'
 import { parseGrokStableVersion, resolveGrokInstallVersion } from './grok-update'
 
 /**
@@ -39,6 +42,8 @@ export interface GrokBucketRelease {
   /** Lower-case hex. */
   sha256: string
   contentType: typeof binaryContentType
+  /** 同步作业最后一次问过 xAI 的 stable、核过这份清单的时间（ISO 8601），清单没写就没有。 */
+  checkedAt?: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -92,12 +97,15 @@ export function parseGrokBucketIndex(text: string, architecture: NodeJS.Architec
     || bytes < minimumBinaryBytes
     || bytes > maximumBinaryBytes
   ) return null
-  return { version, url: objectUrl(key), bytes, sha256, contentType: binaryContentType }
+  return {
+    version, url: objectUrl(key), bytes, sha256, contentType: binaryContentType,
+    ...(typeof root.checkedAt === 'string' ? { checkedAt: root.checkedAt } : {}),
+  }
 }
 
 /**
  * 读桶里的清单，挑出这台电脑要装的那一版。读不到、太慢、桶里没有这一版都抛 DesktopBucketUnavailableError；
- * 客户点了取消就原样抛 signal 的 reason。
+ * 没点名版本（装最新）时清单过期也是（isDesktopBucketIndexStale）。客户点了取消就原样抛 signal 的 reason。
  */
 export async function readGrokBucketRelease(
   architecture: NodeJS.Architecture,
@@ -117,6 +125,11 @@ export async function readGrokBucketRelease(
     }
     const release = parseGrokBucketIndex(await readBoundedResponseText(response, maximumIndexBytes, 'Grok 清单'), architecture, requestedVersion)
     if (!release) throw new Error('存储桶里没有要装的这一版 Grok，或清单格式对不上')
+    // 点了名的版本，桶里那一份和 xAI 的是同一个文件，清单旧了也照样能用；装最新的才看清单新不新。
+    const wanted = requestedVersion?.trim()
+    if ((!wanted || wanted === 'latest') && isDesktopBucketIndexStale(release.checkedAt, desktopBucketResponseTime(response))) {
+      throw new Error(describeStaleDesktopBucketIndex(release.checkedAt))
+    }
     return release
   } catch (error) {
     if (signal?.aborted) throw signal.reason ?? new Error('下载已取消')

@@ -28,6 +28,10 @@ const filesIndexes = {
 } as const
 const maximumIndexBytes = 256 * 1024
 const indexTimeoutMs = 10_000
+// 同步作业每 6 小时跑一次，每次成功都把它核过的那几条的 checkedAt 刷成那一刻，包没变也刷。这么久
+// 没刷过，说明同步连着停了好几轮，桶里的「最新」多半已经落后官方：要装最新的就不从桶里装，照旧去
+// 官方那几路，免得装上一个中间版本、提示「已更新」后界面仍显示有更新（#1061 第 7 条）。
+export const desktopBucketIndexMaximumAgeMs = 24 * 60 * 60_000
 // 同 codex-desktop-service.ts 的安装包上下限：再小不是安装包，再大管理员安装那一步也会拒收。
 const minimumPackageBytes = 10 * 1024 * 1024
 const maximumWindowsPackageBytes = 1_500 * 1024 * 1024
@@ -71,6 +75,11 @@ export interface DesktopBucketPackage {
   sha256: string
   /** The Content-Type the sync uploaded the object with. */
   contentType: string
+  /**
+   * 同步作业最后一次核对这一条还和官方一致的时间（ISO 8601），清单没写就没有。目前只有 Codex 那份
+   * 清单写，readDesktopBucketPackage 据此判断过期。
+   */
+  checkedAt?: string
 }
 
 export interface DesktopBucketOptions {
@@ -235,7 +244,10 @@ function parseCodexEntry(root: Record<string, unknown>, spec: CodexWindowsSpec |
     || artifact.verification !== verification
     || !isPackageSize(artifact.bytes, maximumBytes)
   ) return null
-  return { id, version, url: objectUrl(key), bytes: artifact.bytes, sha256: artifact.sha256, contentType }
+  return {
+    id, version, url: objectUrl(key), bytes: artifact.bytes, sha256: artifact.sha256, contentType,
+    ...(typeof entry.checkedAt === 'string' ? { checkedAt: entry.checkedAt } : {}),
+  }
 }
 
 /** xingmang/offline/claude/latest.json、xingmang/offline/opencode/latest.json：files 里按平台一条，目录是 SHA-256。 */
@@ -316,6 +328,28 @@ export async function fetchDesktopBucketResource(
   return response
 }
 
+/**
+ * 清单里那一条最后核对的时间离 now 超过 desktopBucketIndexMaximumAgeMs，或者没写、写得不对，都算过期。
+ * 时间写在将来（同步机器和桶的时钟差几秒）不算过期。
+ */
+export function isDesktopBucketIndexStale(checkedAt: string | undefined, now: number): boolean {
+  const checked = typeof checkedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(checkedAt)
+    ? Date.parse(checkedAt)
+    : Number.NaN
+  return !Number.isFinite(checked) || now - checked > desktopBucketIndexMaximumAgeMs
+}
+
+/** 判断过期用桶自己回的 Date：客户电脑的时钟可能差好几天。读不出来才用本机时间。 */
+export function desktopBucketResponseTime(response: Response, now: () => number = Date.now): number {
+  const date = Date.parse(response.headers.get('date') ?? '')
+  return Number.isFinite(date) ? date : now()
+}
+
+/** 过期时记进运行日志的那句原话（不上屏）。时间是清单里的原文，只留开头一段。 */
+export function describeStaleDesktopBucketIndex(checkedAt: string | undefined): string {
+  return `存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt === undefined ? '没写' : checkedAt.slice(0, 40)}），桶里的可能不是最新版`
+}
+
 function abortedBy(signal: AbortSignal | undefined): unknown {
   return signal?.reason ?? new Error('下载已取消')
 }
@@ -341,6 +375,10 @@ export async function readDesktopBucketPackage(
     }
     const release = parseDesktopBucketIndex(await readBoundedResponseText(response, maximumIndexBytes, '存储桶清单'), id)
     if (!release) throw new Error('存储桶清单里没有这台电脑能用的安装包，或清单格式对不上')
+    // 装 Codex 桌面端总是装最新的。Claude 桌面端和 OpenCode 的同步还不写 checkedAt，照旧不看。
+    if (packageSpecs[id].index === 'codex' && isDesktopBucketIndexStale(release.checkedAt, desktopBucketResponseTime(response))) {
+      throw new Error(describeStaleDesktopBucketIndex(release.checkedAt))
+    }
     return release
   } catch (error) {
     if (signal?.aborted) throw abortedBy(signal)
