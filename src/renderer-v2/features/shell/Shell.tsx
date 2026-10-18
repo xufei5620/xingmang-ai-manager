@@ -502,7 +502,9 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
       </div>}
       <p className="v2-command-hint" data-testid="command-hint"><span><kbd>↑↓</kbd>选择</span><span><kbd>Enter</kbd>打开</span><span><kbd>Esc</kbd>关闭</span></p>
     </Dialog>}
-    <Coachmark open={Boolean(tourOpen && !command)} target={tour.target} placement={'placement' in tour ? tour.placement : undefined}
+    {/* 导览只在首页放（#1104 第 12 条）：第二步讲的是首页的工具卡片，开在别的页上只能指着侧栏的「首页」念卡片的说明。
+        引导里点了「去聊天」「去充值」就先不出来，等回到首页再放，不把人从刚选的那一页拽走；放到一半去了别的页也先收起，回首页接着放。 */}
+    <Coachmark open={Boolean(tourOpen && !command && activePage === 'home')} target={tour.target} placement={'placement' in tour ? tour.placement : undefined}
       body={typeof tour.body === 'string' ? tour.body : platform === 'mac' ? tour.body.mac : tour.body.win} label={`界面导览，第 ${tourStep + 1} 步`}
       step={tourStep + 1} count={shellTour.length} onNext={() => tourStep + 1 === shellTour.length ? onTourClose?.() : setTourStep((value) => value + 1)} onClose={() => onTourClose?.()} testId="shell-guide-tip" />
   </div>
