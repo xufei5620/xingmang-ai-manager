@@ -1,10 +1,10 @@
 import { readBoundedResponseBytes } from './bounded-response'
+import { fetchLandingWithRedirectAllowlist } from './redirect-allowlist-fetch'
 import { isNewerVersion } from './versions'
 
 const grokStablePrimaryUrl = 'https://x.ai/cli/stable'
 const grokStableFallbackUrl = 'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable'
 const allowedGrokStableUrls = new Set([grokStablePrimaryUrl, grokStableFallbackUrl])
-const redirectStatuses = new Set([301, 302, 303, 307, 308])
 const defaultTimeoutMs = 6_000
 const maximumResponseBytes = 1024
 const maximumRedirects = 2
@@ -98,37 +98,26 @@ async function fetchSource(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   timeout.unref?.()
-  let current = validateOfficialUrl(sourceUrl)
-  const visited = new Set<string>()
   try {
-    for (let redirectCount = 0; redirectCount <= maximumRedirects; redirectCount += 1) {
-      if (visited.has(current.href)) throw new Error('Grok 版本服务返回了循环重定向')
-      visited.add(current.href)
-      const response = await fetchImpl(current, {
-        method: 'GET',
-        headers: { Accept: 'text/plain' },
-        redirect: 'manual',
-        signal: controller.signal,
-      })
-      if (response.url) {
-        const responseUrl = validateOfficialUrl(response.url)
-        if (responseUrl.href !== current.href) {
-          throw new Error('Grok 版本服务绕过了受限重定向策略')
-        }
-      }
-      if (redirectStatuses.has(response.status)) {
-        if (redirectCount === maximumRedirects) throw new Error('Grok 版本服务重定向次数过多')
-        const location = response.headers.get('location')
-        if (!location) throw new Error('Grok 版本服务重定向缺少 Location')
-        current = validateOfficialUrl(new URL(location, current).href)
-        continue
-      }
-      if (!response.ok) throw new Error(`Grok 版本服务返回 HTTP ${response.status}`)
-      const version = parseGrokStableVersion(await readBoundedText(response))
-      if (!version) throw new Error('Grok 版本服务返回了无效版本文本')
-      return { version, sourceUrl: current.href }
-    }
-    throw new Error('Grok 版本服务重定向次数过多')
+    // sourceUrl picks the official directory the binary comes from (buildGrokArtifactUrls),
+    // so it is the hop that answered, not the one first asked.
+    const { response, url } = await fetchLandingWithRedirectAllowlist(sourceUrl, {
+      method: 'GET',
+      headers: { Accept: 'text/plain' },
+      signal: controller.signal,
+    }, fetchImpl, {
+      label: 'Grok 版本服务',
+      maximumRedirects,
+      validate: validateOfficialUrl,
+      messages: {
+        loop: 'Grok 版本服务返回了循环重定向',
+        bypass: 'Grok 版本服务绕过了受限重定向策略',
+      },
+    })
+    if (!response.ok) throw new Error(`Grok 版本服务返回 HTTP ${response.status}`)
+    const version = parseGrokStableVersion(await readBoundedText(response))
+    if (!version) throw new Error('Grok 版本服务返回了无效版本文本')
+    return { version, sourceUrl: url.href }
   } finally {
     clearTimeout(timeout)
   }

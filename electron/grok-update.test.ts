@@ -216,6 +216,27 @@ describe('Grok stable version redirects', () => {
     expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
   })
 
+  it('drops the body of every redirect it follows or refuses', async () => {
+    const cancelled: string[] = []
+    function trackedHop(status: number, location: string | null, url: string): Response {
+      const response = new Response(new ReadableStream<Uint8Array>({ cancel: () => { cancelled.push(url) } }), {
+        status,
+        headers: location === null ? {} : { Location: location },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    }
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(trackedHop(302, fallbackUrl, primaryUrl))
+      .mockResolvedValueOnce(trackedHop(302, null, fallbackUrl))
+      .mockResolvedValueOnce(trackedHop(302, 'https://attacker.example/cli/stable', fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).rejects.toThrow(
+      'Grok 官方版本查询失败：x.ai：Grok 版本服务重定向缺少 Location；storage.googleapis.com：Grok 版本查询拒绝不受信任的地址：https://attacker.example',
+    )
+    expect(cancelled).toEqual([primaryUrl, fallbackUrl, fallbackUrl])
+  })
+
   it('serves the version straight from the Google Storage endpoint, which answers without redirecting', async () => {
     const fetchImpl = vi.fn<GrokVersionFetch>()
       .mockRejectedValueOnce(new TypeError('fetch failed'))

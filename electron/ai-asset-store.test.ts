@@ -745,6 +745,34 @@ describe('AiAssetStore remote image redirects', () => {
     expect(onCancel).toHaveBeenCalledOnce()
   })
 
+  it('checks a reported URL against the allow-list before comparing it with the hop', async () => {
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => {
+        const response = new Response(png(20, 30), imageInit)
+        Object.defineProperty(response, 'url', { value: 'http://a.example/image.png' })
+        return response
+      },
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png'))
+      .rejects.toThrow(/^图片远程地址必须是公开且不含凭据的 HTTPS 地址$/)
+  })
+
+  it('drops the body of a redirect past the limit', async () => {
+    const onCancel = vi.fn()
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => hop(302, 'https://b.example/image.png'),
+      'https://b.example/image.png': () => hop(302, 'https://c.example/image.png'),
+      'https://c.example/image.png': () => hop(302, 'https://d.example/image.png'),
+      'https://d.example/image.png': () => hop(302, 'https://e.example/image.png', { onCancel }),
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(/^图片下载重定向次数过多$/)
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
   it('accepts an image that reports exactly the hop it asked', async () => {
     const fetchImpl = chainFetch({
       'https://a.example/image.png': () => hop(302, 'https://b.example/image.png', { url: 'https://a.example/image.png' }),

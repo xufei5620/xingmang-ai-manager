@@ -15,6 +15,7 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 import { readBoundedResponseBytes } from './bounded-response'
+import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
@@ -24,7 +25,6 @@ const MAXIMUM_REDIRECTS = 3
 const MAXIMUM_REVISED_PROMPT_LENGTH = 40_000
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const FILE_LABEL = 'AI 图片资产'
 const PROXY_AWARE_IMAGE_HOSTS = new Set(['imgen.x.ai'])
 const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
@@ -439,6 +439,27 @@ async function defaultPinnedAiAssetFetch(
   })
 }
 
+/**
+ * The fetch the redirect helper calls for every hop, choosing per hop by that hop's own host
+ * so a redirect can neither escape the DNS pin nor borrow the proxy-aware path.
+ */
+function imageHopFetch(
+  fetchImpl: AiAssetFetch,
+  trustedProxyFetchImpl: AiAssetProxyFetch,
+  dnsLookup: AiAssetDnsLookup,
+): typeof globalThis.fetch {
+  return async (input, init = {}) => {
+    const hop = new URL(input instanceof Request ? input.url : input)
+    // imgen.x.ai is the xAI API's observed result host. Let Electron's
+    // proxy-aware network stack resolve this exact HTTPS host so Fake-IP
+    // proxies work regardless of their virtual address range. Every other
+    // host remains DNS-pinned and private-address-blocked.
+    return PROXY_AWARE_IMAGE_HOSTS.has(hop.hostname.toLowerCase())
+      ? trustedProxyFetchImpl(hop.href, init)
+      : fetchImpl(hop.href, init, await assertPublicRemoteHost(hop, dnsLookup))
+  }
+}
+
 async function fetchRemoteImage(
   sourceUrl: string,
   fetchImpl: AiAssetFetch,
@@ -450,57 +471,34 @@ async function fetchRemoteImage(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   timer.unref?.()
-  let current = validateAiAssetRemoteUrl(sourceUrl)
-  const visited = new Set<string>()
   try {
-    for (let redirectCount = 0; redirectCount <= MAXIMUM_REDIRECTS; redirectCount += 1) {
-      if (visited.has(current.href)) throw new Error('图片下载发生循环重定向')
-      visited.add(current.href)
-      const requestInit: RequestInit = {
-        method: 'GET',
-        headers: { Accept: 'image/png,image/jpeg,image/webp' },
-        redirect: 'manual',
-        signal: controller.signal,
-      }
-      // imgen.x.ai is the xAI API's observed result host. Let Electron's
-      // proxy-aware network stack resolve this exact HTTPS host so Fake-IP
-      // proxies work regardless of their virtual address range. Every other
-      // host remains DNS-pinned and private-address-blocked below.
-      const response = PROXY_AWARE_IMAGE_HOSTS.has(current.hostname.toLowerCase())
-        ? await trustedProxyFetchImpl(current.href, requestInit)
-        : await fetchImpl(
-          current.href,
-          requestInit,
-          await assertPublicRemoteHost(current, dnsLookup),
-        )
-      if (response.url && response.url !== current.href) {
-        await response.body?.cancel().catch(() => undefined)
-        throw new Error('图片下载绕过了受限重定向策略')
-      }
-      if (REDIRECT_STATUSES.has(response.status)) {
-        if (redirectCount === MAXIMUM_REDIRECTS) throw new Error('图片下载重定向次数过多')
-        const location = response.headers.get('location')
-        await response.body?.cancel().catch(() => undefined)
-        if (!location) throw new Error('图片下载重定向缺少 Location')
-        current = validateAiAssetRemoteUrl(new URL(location, current).href)
-        continue
-      }
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined)
-        throw new Error(`图片下载失败，服务返回 ${response.status}`)
-      }
-      const contentType = normalizeDeclaredMime(response.headers.get('content-type'))
-      if (contentType && !['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'application/octet-stream'].includes(contentType)) {
-        await response.body?.cancel().catch(() => undefined)
-        throw new Error('图片下载响应类型不受支持')
-      }
-      const bytes = await readBoundedResponseBytes(response, maximumBytes, '图片下载', {
-        oversizeMessage: '单张图片超过 64 MB 安全上限',
-        requireNonEmpty: { missingBodyMessage: '图片下载响应没有内容', emptyMessage: '图片下载响应为空' },
-      })
-      return { bytes, declaredMime: contentType }
+    const response = await fetchWithRedirectAllowlist(sourceUrl, {
+      method: 'GET',
+      headers: { Accept: 'image/png,image/jpeg,image/webp' },
+      signal: controller.signal,
+    }, imageHopFetch(fetchImpl, trustedProxyFetchImpl, dnsLookup), {
+      label: '图片下载',
+      maximumRedirects: MAXIMUM_REDIRECTS,
+      validate: validateAiAssetRemoteUrl,
+      messages: {
+        loop: '图片下载发生循环重定向',
+        bypass: '图片下载绕过了受限重定向策略',
+      },
+    })
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new Error(`图片下载失败，服务返回 ${response.status}`)
     }
-    throw new Error('图片下载重定向次数过多')
+    const contentType = normalizeDeclaredMime(response.headers.get('content-type'))
+    if (contentType && !['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'application/octet-stream'].includes(contentType)) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new Error('图片下载响应类型不受支持')
+    }
+    const bytes = await readBoundedResponseBytes(response, maximumBytes, '图片下载', {
+      oversizeMessage: '单张图片超过 64 MB 安全上限',
+      requireNonEmpty: { missingBodyMessage: '图片下载响应没有内容', emptyMessage: '图片下载响应为空' },
+    })
+    return { bytes, declaredMime: contentType }
   } catch (error) {
     if (controller.signal.aborted) throw new Error('图片下载超时')
     throw error
