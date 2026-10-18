@@ -8,6 +8,7 @@
 - `preload.ts` — 主窗口的 sandbox 桥，暴露 `window.xingmang`。sandbox 下不能 require 本地模块，所以**手抄了一份通道表**，用 `satisfies` 钉住契约类型，`preload.test.ts` 钉住内容；这份重复是有意的，别"消除"（I7、T1）
 - `ipc.ts` — `registerIpcHandlers` 注册全部 `ipcInvokeChannels` 的处理器：每个都经 `registerTrustedHandler`（校验 sender URL、结构化日志、统一 dispose，I4），入参一律用本文件的手写 `parse*` 函数校验、出中文错误（I5，别换成 zod）；`config:reveal-api-key`、记住密码两条通道和聊天记录读写在日志静默名单里（I3、I13）。`ipc.test.ts` 把实际注册的通道和契约排序比对，漏注册、多注册都会红
 - `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版拒绝 `--inspect` / `--remote-debugging-*` 启动
+- `input-guards.ts` — 最基础的输入检查（`isRecord`、`isStringArray`、`filterStrings`、`isPromiseLike`），零依赖、渲染层也能值导入（I6）；只判断不出报错文案。新代码从这里取，旧文件里各自那份等拆分时（#1070）顺手换（#1071 第 3 条）
 
 ## 命令执行与安全边界（本项目真正的复杂度在这里）
 
