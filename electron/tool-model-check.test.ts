@@ -14,6 +14,7 @@ function setup(overrides: Partial<ToolModelCheckDependencies> = {}, targets: Par
     listModels: vi.fn(async () => ['claude-opus-5', 'claude-sonnet-5', 'gpt-6-astra']),
     pickerOutdated: vi.fn(() => false),
     refreshPicker: vi.fn(async () => undefined),
+    replaceModel: vi.fn(async () => undefined),
     log: vi.fn(),
     ...overrides,
   }
@@ -267,11 +268,13 @@ describe('tool model check', () => {
       const order: string[] = []
       const { deps, checker } = setup({
         listModels: vi.fn(async () => listed),
-        refreshPicker: vi.fn(async () => { order.push('write') }),
+        replaceModel: vi.fn(async () => { order.push('write') }),
       }, { codex })
       await expect(checker.syncPicker('codex', { beforeRefresh: () => { order.push('backup') } })).resolves.toBe(true)
       expect(order).toEqual(['backup', 'write'])
-      expect(deps.refreshPicker).toHaveBeenCalledWith('codex', 'gpt-6-astra', expect.any(Function))
+      expect(deps.replaceModel).toHaveBeenCalledWith('codex', 'gpt-5.5', 'gpt-6-astra', expect.any(Function))
+      // 只改型号那几处，不再走整份合并的那道写入（#1154 第 4 条）。
+      expect(deps.refreshPicker).not.toHaveBeenCalled()
       expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.retired-replaced', expect.stringContaining('Codex'), { provider: 'codex', model: 'gpt-5.5', replacement: 'gpt-6-astra' })
     })
 
@@ -279,33 +282,33 @@ describe('tool model check', () => {
       const codex = { apiKey: 'sk-fixture', model: 'gpt-5.5', identity: 'x' }
       const { deps, checker } = setup({ listModels: vi.fn(async () => ['codex-auto-review', 'gpt-6.1-sol']) }, { codex })
       await expect(checker.syncPicker('codex')).resolves.toBe(true)
-      expect(deps.refreshPicker).toHaveBeenCalledWith('codex', 'gpt-6.1-sol', expect.any(Function))
+      expect(deps.replaceModel).toHaveBeenCalledWith('codex', 'gpt-5.5', 'gpt-6.1-sol', expect.any(Function))
     })
 
     it('keeps a retired model the account still lists, and leaves other missing models to the question before a launch', async () => {
       const stillListed = setup({ listModels: vi.fn(async () => ['gpt-5.5', ...listed]) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
       await expect(stillListed.checker.syncPicker('codex')).resolves.toBe(false)
-      expect(stillListed.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(stillListed.deps.replaceModel).not.toHaveBeenCalled()
 
       const notRetired = setup({ listModels: vi.fn(async () => listed) }, { codex: { apiKey: 'sk', model: 'gpt-5.6-sol', identity: 'x' } })
       await expect(notRetired.checker.syncPicker('codex')).resolves.toBe(false)
-      expect(notRetired.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(notRetired.deps.replaceModel).not.toHaveBeenCalled()
 
       const nothingToUse = setup({ listModels: vi.fn(async () => ['codex-auto-review']) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
       await expect(nothingToUse.checker.syncPicker('codex')).resolves.toBe(false)
-      expect(nothingToUse.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(nothingToUse.deps.replaceModel).not.toHaveBeenCalled()
     })
 
     it('still only asks before a launch, without changing anything itself', async () => {
       const { deps, checker } = setup({ listModels: vi.fn(async () => listed) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
       await expect(checker.check('codex')).resolves.toEqual({ status: 'unavailable', model: 'gpt-5.5', replacement: 'gpt-6-astra' })
-      expect(deps.refreshPicker).not.toHaveBeenCalled()
+      expect(deps.replaceModel).not.toHaveBeenCalled()
     })
 
     it('does not swap when the backup fails or the account switched while the list was loading', async () => {
       const failed = setup({ listModels: vi.fn(async () => listed) }, { codex: { apiKey: 'sk', model: 'gpt-5.5', identity: 'x' } })
       await expect(failed.checker.syncPicker('codex', { beforeRefresh: () => { throw new Error('备份失败') } })).resolves.toBe(false)
-      expect(failed.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(failed.deps.replaceModel).not.toHaveBeenCalled()
       expect(failed.deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-replace-failed', expect.any(String), { provider: 'codex', model: 'gpt-5.5', replacement: 'gpt-6-astra', reason: '备份失败' })
 
       let finish!: (models: string[]) => void
@@ -316,7 +319,7 @@ describe('tool model check', () => {
       target.identity = 'B'
       finish(listed)
       await expect(pending).resolves.toBe(false)
-      expect(switched.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(switched.deps.replaceModel).not.toHaveBeenCalled()
     })
 
     it('hands the writer a guard that holds through its own write but fails once the account has moved on', async () => {
@@ -325,7 +328,7 @@ describe('tool model check', () => {
       const { checker } = setup({
         listModels: vi.fn(async () => listed),
         identity: vi.fn(() => config.identity),
-        refreshPicker: vi.fn(async (_provider: string, _model: string, assertCurrent: () => void) => { guard = assertCurrent }),
+        replaceModel: vi.fn(async (_provider: string, _from: string, _to: string, assertCurrent: () => void) => { guard = assertCurrent }),
       }, { codex: config })
       await checker.syncPicker('codex')
       expect(() => guard()).not.toThrow()
@@ -438,11 +441,11 @@ describe('tool model check', () => {
       const { deps, checker } = setup({
         listModels: vi.fn(async () => ['gpt-6-astra', 'gpt-7']),
         modelHints: vi.fn(async () => ({ codex: { default: 'gpt-7', retired: ['gpt-6-luna'] } })),
-        refreshPicker: vi.fn(async () => { order.push('write') }),
+        replaceModel: vi.fn(async () => { order.push('write') }),
       }, { codex: { apiKey: 'sk', model: 'gpt-6-luna', identity: 'x' } })
       await expect(checker.syncPicker('codex', { beforeRefresh: () => { order.push('backup') } })).resolves.toBe(true)
       expect(order).toEqual(['backup', 'write'])
-      expect(deps.refreshPicker).toHaveBeenCalledWith('codex', 'gpt-7', expect.any(Function))
+      expect(deps.replaceModel).toHaveBeenCalledWith('codex', 'gpt-6-luna', 'gpt-7', expect.any(Function))
     })
 
     it('swaps a retired Claude Code or Grok model at startup without touching a menu', async () => {
@@ -450,11 +453,11 @@ describe('tool model check', () => {
       const { deps, checker } = setup({
         listModels: vi.fn(async () => ['grok-4.7', 'grok-code-fast']),
         modelHints: vi.fn(async () => ({ grok: { default: 'grok-4.7', retired: ['grok-4.6'] } })),
-        refreshPicker: vi.fn(async () => { order.push('write') }),
+        replaceModel: vi.fn(async () => { order.push('write') }),
       }, { grok: { apiKey: 'sk', model: 'grok-4.6', identity: 'x' } })
       await expect(checker.replaceRetired('grok', { beforeReplace: () => { order.push('backup') } })).resolves.toBe(true)
       expect(order).toEqual(['backup', 'write'])
-      expect(deps.refreshPicker).toHaveBeenCalledWith('grok', 'grok-4.7', expect.any(Function))
+      expect(deps.replaceModel).toHaveBeenCalledWith('grok', 'grok-4.6', 'grok-4.7', expect.any(Function))
       expect(deps.pickerOutdated).not.toHaveBeenCalled()
       expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.retired-replaced', expect.stringContaining('Grok'), { provider: 'grok', model: 'grok-4.6', replacement: 'grok-4.7' })
     })
@@ -465,7 +468,7 @@ describe('tool model check', () => {
         return setup({
           listModels: vi.fn(async () => ['grok-4.7']),
           modelHints: vi.fn(async () => ({ grok: { default: 'grok-4.7', retired: ['grok-4.6'] } })),
-          refreshPicker: vi.fn(async () => { order.push('write') }),
+          replaceModel: vi.fn(async () => { order.push('write') }),
         }, { grok: { apiKey: 'sk', model: 'grok-4.6', identity: 'x' } })
       }
       async function closed(): Promise<void> {
@@ -477,7 +480,7 @@ describe('tool model check', () => {
 
       const open = retiredGrok()
       await expect(open.checker.replaceRetired('grok', { beforeReplace: async () => { throw new Error('工具可能正开着，这次先不换') } })).resolves.toBe(false)
-      expect(open.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(open.deps.replaceModel).not.toHaveBeenCalled()
       expect(open.deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-replace-failed', expect.any(String), expect.objectContaining({ provider: 'grok', reason: '工具可能正开着，这次先不换' }))
     })
 
@@ -491,14 +494,14 @@ describe('tool model check', () => {
         modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
       }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
       await expect(stillListed.checker.replaceRetired('claude')).resolves.toBe(false)
-      expect(stillListed.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(stillListed.deps.replaceModel).not.toHaveBeenCalled()
 
       const offline = setup({
         listModels: vi.fn(async () => { throw new Error('offline') }),
         modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
       }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
       await expect(offline.checker.replaceRetired('claude')).resolves.toBe(false)
-      expect(offline.deps.refreshPicker).not.toHaveBeenCalled()
+      expect(offline.deps.replaceModel).not.toHaveBeenCalled()
       expect(offline.deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-check-failed', expect.any(String), { provider: 'claude', reason: 'offline' })
 
       const notOurs = setup({ modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })) }, { claude: null })
@@ -515,11 +518,11 @@ describe('tool model check', () => {
       const beforeReplace = vi.fn()
       await expect(checker.replaceRetired('claude', { beforeReplace })).resolves.toBe(false)
       expect(beforeReplace).not.toHaveBeenCalled()
-      expect(deps.refreshPicker).not.toHaveBeenCalled()
+      expect(deps.replaceModel).not.toHaveBeenCalled()
       expect(deps.log).toHaveBeenCalledWith('info', 'tool-models.retired-kept', expect.stringContaining('Claude Code'), { provider: 'claude', model: 'claude-opus-5' })
 
       await expect(checker.check('claude')).resolves.toEqual({ status: 'unavailable', model: 'claude-opus-5', replacement: 'claude-sonnet-5' })
-      expect(deps.refreshPicker).not.toHaveBeenCalled()
+      expect(deps.replaceModel).not.toHaveBeenCalled()
     })
 
     it('swaps a retired Claude Code model for the newest one of its family at startup', async () => {
@@ -528,7 +531,7 @@ describe('tool model check', () => {
         modelHints: vi.fn(async () => ({ claude: { retired: ['claude-opus-5'] } })),
       }, { claude: { apiKey: 'sk', model: 'claude-opus-5', identity: 'x' } })
       await expect(checker.replaceRetired('claude')).resolves.toBe(true)
-      expect(deps.refreshPicker).toHaveBeenCalledWith('claude', 'claude-opus-4-8', expect.any(Function))
+      expect(deps.replaceModel).toHaveBeenCalledWith('claude', 'claude-opus-5', 'claude-opus-4-8', expect.any(Function))
     })
 
     it('keeps a Sonnet customer on Sonnet when it suggests a replacement before a launch', async () => {
@@ -572,7 +575,7 @@ describe('tool model check', () => {
       target.identity = 'B'
       finish(['claude-opus-5-5'])
       await expect(pending).resolves.toBe(false)
-      expect(deps.refreshPicker).not.toHaveBeenCalled()
+      expect(deps.replaceModel).not.toHaveBeenCalled()
     })
   })
 })

@@ -1044,6 +1044,55 @@ describe('createSystemService', () => {
     expect(websockets()).toBe(false)
   })
 
+  // #1154 第 4 条：换下架型号只改型号那几处，客户自己定的审查型号、写的注释原样留着。
+  it('keeps the customer\'s own review model and comments in Codex when it swaps a retired model at startup', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-5.5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [config] = providerConfigPaths('codex', f.roots)
+    const written = fs.readFileSync(config, 'utf8')
+    expect(written).toContain('review_model = "gpt-5.5"')
+    const customized = `# 我自己的注释\n${written.replace('review_model = "gpt-5.5"', 'review_model = "gpt-6.1-sol"')}`
+    fs.writeFileSync(config, customized)
+    f.account.models = ['claude-opus-5', 'gpt-6-astra', 'gpt-6.1-sol']
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(fs.readFileSync(config, 'utf8')).toBe(customized.replace('model = "gpt-5.5"', 'model = "gpt-6-astra"'))
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol'])
+    }, backgroundStartupWait)
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('keeps where Grok sends images when it swaps a retired Grok model at startup', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-retired-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['grok-4.6', 'grok-4.7'] }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 })))
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      inspectRunningToolsForTemplateFill: async () => ({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }),
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+      cliModelHints: async () => ({ grok: { default: 'grok-4.7', retired: ['grok-4.6'] } }),
+    })
+    await service.saveConfig({ provider: 'grok', apiKey: 'sk-grok', model: 'grok-4.6', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [config] = providerConfigPaths('grok', roots)
+    const written = fs.readFileSync(config, 'utf8')
+    const relayImages = written.match(/^xai_api_base_url = .*$/m)?.[0]
+    if (!relayImages) throw new Error('fixture needs the image address the app wrote')
+    const customized = `# 出图走我自己的地址\n${written.replace(relayImages, 'xai_api_base_url = "https://images.example.com/v1"')}`
+    fs.writeFileSync(config, customized)
+    account.models = ['grok-4.7']
+
+    expect(await service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(fs.readFileSync(config, 'utf8')).toBe(customized.replace('model = "grok-4.6"', 'model = "grok-4.7"')), backgroundStartupWait)
+    expect(service.getConfig(false).providers.grok.configurationOwnership).toBe('account')
+  })
+
   it('leaves a retired gpt-5.5 alone at startup in a Codex config the account did not write', async () => {
     const f = codexCatalogFixture()
     await f.save('gpt-5.5')

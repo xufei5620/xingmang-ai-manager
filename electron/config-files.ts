@@ -5,7 +5,7 @@ import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlEquals, relayProviderBaseUrlMatches, relaySiteEndpointIdForBaseUrl, relaySites } from './relay-sites'
-import { readEnvLineValue, readJsonString, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, type StringValueEdit } from './tool-route-rewrite'
+import { readEnvLineValue, readJsonString, readTomlBoolean, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, rewriteTomlValues, type StringValueEdit, type ValueEdit } from './tool-route-rewrite'
 import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
 import { isCodexConfigBroken } from './codex-config-syntax'
 import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
@@ -3364,6 +3364,123 @@ export function applyProviderRouteFollow(
       if (requireRawConfigText(plan.file, '工具配置') !== plan.original) throw new Error('工具配置在改线路时被别的程序改了，这次先不改')
     },
   }, providerRoot, 'discard')
+}
+
+/**
+ * 开机换掉已下架型号时定点改写的打算（#1154 第 4 条）。rewrite = 要改，original 是改之前的原文，
+ * catalog 是 Codex 跟着要重写的型号名单；changed = 配置里的型号已经不是要换的那个（客户刚改过、
+ * 别的程序写过）；unlocated = 认不出型号写在哪；missing = 配置文件不在。除了 rewrite 都一个字不动。
+ */
+export type ProviderModelPlan =
+  | { status: 'rewrite'; file: string; original: string; content: string; catalog?: FileWritePlan }
+  | { status: 'changed' | 'unlocated' | 'missing' }
+
+export type ProviderModelRewrite = Extract<ProviderModelPlan, { status: 'rewrite' }>
+
+interface ProviderModelLocation {
+  current: string | null
+  edits: ValueEdit[]
+  rewrite(content: string): string | null
+}
+
+function sameModelName(value: string | null, model: string): boolean {
+  return value !== null && value.trim() === model
+}
+
+function locateProviderModel(provider: ProviderId, text: string, from: string, to: string): ProviderModelLocation | 'unlocated' {
+  switch (provider) {
+    case 'claude': {
+      const edits: StringValueEdit[] = [{ path: ['model'], value: to }]
+      // /model 菜单里「Default」那一行指着它（claude-model-picker.ts）；客户另指了别的型号就不碰。
+      if (sameModelName(readJsonString(text, ['env', 'ANTHROPIC_DEFAULT_MODEL']), from)) edits.push({ path: ['env', 'ANTHROPIC_DEFAULT_MODEL'], value: to })
+      return { current: readJsonString(text, ['model']), edits, rewrite: (content) => rewriteJsonStrings(content, edits) }
+    }
+    case 'codex': {
+      const edits: ValueEdit[] = [{ path: ['model'], value: to }]
+      // 模板里 review_model 和 model 写的是同一个；不一样就是客户自己定的审查型号，不跟着换。
+      if (sameModelName(readTomlString(text, ['review_model']), from)) edits.push({ path: ['review_model'], value: to })
+      // WebSocket 开关同 followCodexRelayWebsockets：正好是星芒按旧型号会写的那个值才跟着换，没写的不补。
+      const name = readTomlString(text, ['model_provider'])
+      const websocketsPath = name ? ['model_providers', name, 'supports_websockets'] : null
+      const websockets = websocketsPath ? readTomlBoolean(text, websocketsPath) : null
+      if (websocketsPath && websockets === codexModelUsesRelayWebsockets(from) && websockets !== codexModelUsesRelayWebsockets(to)) {
+        edits.push({ path: websocketsPath, value: !websockets })
+      }
+      return { current: readTomlString(text, ['model']), edits, rewrite: (content) => rewriteTomlValues(content, edits) }
+    }
+    case 'grok': {
+      // 默认模型那张表按 [models].default 找，同 readProviderModel；出图地址那些别的值一概不碰。
+      const name = readTomlString(text, ['models', 'default'])
+      if (!name) return 'unlocated'
+      const edits: StringValueEdit[] = [{ path: ['model', name, 'model'], value: to }]
+      return { current: readTomlString(text, ['model', name, 'model']), edits, rewrite: (content) => rewriteTomlStrings(content, edits) }
+    }
+    case 'gemini':
+      // 已下线（catalog.ts 的 retiredProviderIds），不替它换型号。
+      return 'unlocated'
+  }
+}
+
+/**
+ * 开机换掉已下架的型号时只改型号那几处，文件其余字节原样：整份合并会顺带把 Codex 客户自己定的
+ * review_model、Grok 的出图地址、TOML 注释都改掉（#1154 第 4 条）。要换的型号必须还是配置里那个。
+ * codexModelCatalog 是按新型号算好的 Codex 型号名单（system-service.ts 的 resolveCodexModelCatalog）：
+ * 配置本来就指着本软件的名单文件时一起重写那份文件；该收回那一行、或该补上那一行的这次不动，
+ * 下次核对菜单时再说。这里只算出要写成什么，写由 applyProviderModelReplace 做。
+ */
+export function planProviderModelReplace(
+  provider: ProviderId,
+  from: string,
+  to: string,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  codexModelCatalog?: string | null,
+): ProviderModelPlan {
+  if (!to.trim() || /\r|\n/.test(to)) throw new Error('模型名称不能为空或包含换行符')
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  const paths = providerConfigPaths(provider, roots)
+  for (const filePath of paths) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const file = paths[0]
+  const original = requireRawConfigText(file, '工具配置')
+  if (original === null) return { status: 'missing' }
+  const text = withoutByteOrderMark(original)
+  const location = locateProviderModel(provider, text, from, to.trim())
+  if (location === 'unlocated' || location.current === null) return { status: 'unlocated' }
+  if (!sameModelName(location.current, from)) return { status: 'changed' }
+  const content = location.rewrite(original)
+  if (content === null) return { status: 'unlocated' }
+  let catalog: FileWritePlan | undefined
+  if (provider === 'codex' && typeof codexModelCatalog === 'string' && codexModelCatalogTargetUsable(roots)
+    && isManagedCodexModelCatalogSetting(readTomlString(text, ['model_catalog_json']))) {
+    const catalogPath = codexModelCatalogPath(roots)
+    if (readText(catalogPath) !== codexModelCatalog) catalog = { path: catalogPath, content: codexModelCatalog }
+  }
+  return { status: 'rewrite', file, original, content, ...(catalog ? { catalog } : {}) }
+}
+
+/**
+ * 照 planProviderModelReplace 算好的写下去。照旧走两阶段提交（I9），Codex 的型号名单先落盘（同
+ * createCodexRelayConfigPlans）；替换配置前再读一遍原文，被别的程序改过就整个放弃，名单一起退回去。
+ */
+export function applyProviderModelReplace(
+  provider: ProviderId,
+  plan: ProviderModelRewrite,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): NativeConfigSaveResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  if (providerConfigPaths(provider, roots)[0] !== plan.file) throw new Error('工具配置路径不对，已拒绝写入')
+  if (plan.catalog && (provider !== 'codex' || plan.catalog.path !== codexModelCatalogPath(roots))) throw new Error('型号名单路径不对，已拒绝写入')
+  assertSafeConfigPath(plan.file, providerRoot, 'file')
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  const plans: FilePlan[] = [...(plan.catalog ? [plan.catalog] : []), { path: plan.file, content: plan.content }]
+  return executeFilePlans(plans, {
+    beforeReplace: (filePath) => {
+      if (filePath === plan.file && requireRawConfigText(plan.file, '工具配置') !== plan.original) {
+        throw new Error('工具配置在换型号时被别的程序改了，这次先不换')
+      }
+    },
+  }, providerRoot)
 }
 
 // 模板改进只在「保存配置」那几条路上落盘，而老客户开机走的是恢复账号、一个字不写，

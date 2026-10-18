@@ -4,6 +4,7 @@ import * as TOML from '@iarna/toml'
 /**
  * 换线路时只改配置里的那一个地址，文件其余字节原样（xm 三线路 C9）。整份重写会把客户自己的
  * 注释、键的顺序、空行全冲掉，还要先查一遍模型、同步一遍 Key，任何一步不通工具就卡在旧线路上。
+ * 开机换掉已下架的型号也走这里，只改型号那几处（#1154 第 4 条）。
  *
  * 做法是在原文里找出这个值的字面量，只换那一处，然后整份再解析一遍，和「原来的解析结果只改了
  * 这一个键」逐项比对：完全一样才算数。值碰巧也出现在注释里、别的键里，换错了地方的那几种都
@@ -11,15 +12,20 @@ import * as TOML from '@iarna/toml'
  * 一律返回 null，交给调用方记成「定位不到」，一个字都不改。
  */
 
-export interface StringValueEdit {
+export interface ValueEdit {
   /** 解析后的对象里这个值的位置，比如 ['model_providers', 'XingmangAI', 'base_url']。 */
   path: readonly string[]
+  /** 原来是什么类型就只能换成同一类型：字符串换字符串，开关换开关。 */
+  value: string | boolean
+}
+
+export interface StringValueEdit extends ValueEdit {
   value: string
 }
 
 type Parser = (content: string) => unknown
 /** 原值在文件里可能的写法，和换成新值时对应的写法。 */
-type LiteralForms = (previous: string, next: string) => { find: string; replace: string }[]
+type LiteralForms = (previous: string | boolean, next: string | boolean) => { find: string; replace: string }[]
 
 function valueAt(parsed: unknown, path: readonly string[]): unknown {
   let current = parsed
@@ -31,7 +37,7 @@ function valueAt(parsed: unknown, path: readonly string[]): unknown {
   return current
 }
 
-function withValueAt(parsed: unknown, path: readonly string[], value: string): boolean {
+function withValueAt(parsed: unknown, path: readonly string[], value: string | boolean): boolean {
   let current = parsed
   for (const key of path.slice(0, -1)) {
     if (!current || typeof current !== 'object' || Array.isArray(current)) return false
@@ -58,11 +64,11 @@ function occurrences(content: string, literal: string): number[] {
   return found
 }
 
-function applyEdit(content: string, edit: StringValueEdit, parse: Parser, forms: LiteralForms): string | null {
+function applyEdit(content: string, edit: ValueEdit, parse: Parser, forms: LiteralForms): string | null {
   const parsed = parseOrNull(parse, content)
   if (parsed === null) return null
   const previous = valueAt(parsed, edit.path)
-  if (typeof previous !== 'string') return null
+  if ((typeof previous !== 'string' && typeof previous !== 'boolean') || typeof previous !== typeof edit.value) return null
   if (previous === edit.value) return content
   const expected = parseOrNull(parse, content)
   if (!withValueAt(expected, edit.path, edit.value)) return null
@@ -76,7 +82,7 @@ function applyEdit(content: string, edit: StringValueEdit, parse: Parser, forms:
   return matches.length === 1 ? matches[0] : null
 }
 
-function applyEdits(content: string, edits: readonly StringValueEdit[], parse: Parser, forms: LiteralForms): string | null {
+function applyEdits(content: string, edits: readonly ValueEdit[], parse: Parser, forms: LiteralForms): string | null {
   let current = content
   for (const edit of edits) {
     const next = applyEdit(current, edit, parse, forms)
@@ -91,19 +97,26 @@ function parseToml(content: string): unknown {
 }
 
 // 基本字符串的转义是 JSON 的子集外加几个 TOML 自己的写法；地址里不会有要转义的字符，
-// 真遇上原文换了一种转义写法，比对过不了，落到「定位不到」，不会改错。
-function tomlForms(previous: string, next: string): { find: string; replace: string }[] {
+// 真遇上原文换了一种转义写法，比对过不了，落到「定位不到」，不会改错。开关两边都只有 true / false
+// 一种写法；文件里别处的 true 换了，比对一样过不了。
+function tomlForms(previous: string | boolean, next: string | boolean): { find: string; replace: string }[] {
+  if (typeof previous === 'boolean' || typeof next === 'boolean') return [{ find: String(previous), replace: String(next) }]
   const forms = [{ find: JSON.stringify(previous), replace: JSON.stringify(next) }]
   if (!/['\r\n]/.test(previous) && !/['\r\n]/.test(next)) forms.push({ find: `'${previous}'`, replace: `'${next}'` })
   return forms
 }
 
-function jsonForms(previous: string, next: string): { find: string; replace: string }[] {
+function jsonForms(previous: string | boolean, next: string | boolean): { find: string; replace: string }[] {
   return [{ find: JSON.stringify(previous), replace: JSON.stringify(next) }]
 }
 
 /** TOML 里换几个字符串值；null = 定位不到，原文一个字都没动。 */
 export function rewriteTomlStrings(content: string, edits: readonly StringValueEdit[]): string | null {
+  return applyEdits(content, edits, parseToml, tomlForms)
+}
+
+/** 同 rewriteTomlStrings，还能换开关（Codex 的 supports_websockets 跟着型号走）。 */
+export function rewriteTomlValues(content: string, edits: readonly ValueEdit[]): string | null {
   return applyEdits(content, edits, parseToml, tomlForms)
 }
 
@@ -150,6 +163,12 @@ export function readEnvLineValue(content: string, name: string): string | null {
 export function readTomlString(content: string, path: readonly string[]): string | null {
   const value = valueAt(parseOrNull(parseToml, content), path)
   return typeof value === 'string' ? value : null
+}
+
+/** 读出 TOML 里某个位置的开关；读不懂或不是 true / false = null。 */
+export function readTomlBoolean(content: string, path: readonly string[]): boolean | null {
+  const value = valueAt(parseOrNull(parseToml, content), path)
+  return typeof value === 'boolean' ? value : null
 }
 
 export function readJsonString(content: string, path: readonly string[]): string | null {
