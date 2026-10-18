@@ -218,6 +218,7 @@ import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, 
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { createReleaseGuardStore } from './release-guard-store'
+import { createCliModelHintsStore, resolveCliModelHints } from './cli-model-hints-store'
 import type { AccountGroupHints } from './managed-cli-groups'
 import type { CliModelHints } from './cli-model-defaults'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
@@ -2102,6 +2103,9 @@ if (!hasSingleInstanceLock) {
     const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
       : locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
+    // 型号表也记在本地（#1154 第 6 条）：开机那轮换下架型号时状态文件还没读成功，也按上次读成功的那份算。
+    const cliModelHintsStore = createCliModelHintsStore({ filePath: path.join(managerDataDirectory, 'cli-model-hints.json') })
+    const cliModelsAtLaunch = serviceStatusUrl ? cliModelHintsStore.read() : null
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
         // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
@@ -2118,6 +2122,12 @@ if (!hasSingleInstanceLock) {
             ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
             ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
           })
+          // 读成功的才记，没写型号表的那次记成没有；没读到（null）不动记下的那份。
+          if (status) {
+            cliModelHintsStore.write(status.cliModels ?? null).catch((cause: unknown) => {
+              runtimeLog.exception('updater', 'cli-models.save-failed', cause)
+            })
+          }
         },
       })
       : null
@@ -2134,11 +2144,12 @@ if (!hasSingleInstanceLock) {
       const known = serviceStatusMonitor.lastKnown()
       return known ? known.accountGroups ?? null : undefined
     }
-    // 型号表同上：默认型号、上一代、下架名单，读不到就用程序自带的那份（cli-model-defaults.ts）。
+    // 型号表跟分组对照一样等这一次读完：默认型号、上一代、下架名单。这次打开以后一次也没读成功过，
+    // 就用上次记下的那份；从来没读成功过才用程序自带的（cli-model-defaults.ts）。
     async function readCliModelHints(): Promise<CliModelHints | null> {
       if (!serviceStatusMonitor) return null
       await serviceStatusMonitor.settled()
-      return serviceStatusMonitor.lastKnown()?.cliModels ?? null
+      return resolveCliModelHints(serviceStatusMonitor.lastKnown(), cliModelsAtLaunch)
     }
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
