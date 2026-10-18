@@ -4,12 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandResult } from './command-runner'
-import { desktopBucketIndexUrl, desktopPackageBucketOrigin } from './desktop-package-bucket'
+import { desktopBucketIndexUrl, desktopPackageBucketOrigin, downloadDesktopBucketPackage } from './desktop-package-bucket'
 import {
   fetchMacosDesktopResource,
   installMacosDesktopApp,
   isMacosVersionBelow,
   macosDesktopAppInstallable,
+  measureMacosDesktopVendorSpeed,
   MacosDesktopInstallError,
   type InstallMacosDesktopAppOptions,
   type MacosDesktopAppProcess,
@@ -24,6 +25,12 @@ import {
   macosLegacyChatgptMessage,
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
+
+// The real bucket download runs; the spy only lets a test read back what the installer handed it.
+vi.mock('./desktop-package-bucket', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./desktop-package-bucket')>()
+  return { ...original, downloadDesktopBucketPackage: vi.fn(original.downloadDesktopBucketPackage) }
+})
 
 const feedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json'
 const pinnedFeedUrl = 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/latest.json'
@@ -248,6 +255,53 @@ describe('macOS desktop app installer', () => {
     const looping = (async () => redirect(assetUrl(`hop-${hops++}`))) as typeof globalThis.fetch
     await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, looping)).rejects.toThrow('重定向次数过多')
     await expect(fetchMacosDesktopResource('workbuddy', packageUrl('arm64'), {}, network.fetch)).rejects.toThrow('没有可核对')
+  })
+
+  it('refuses each kind of bad hop before following it', async () => {
+    const refusals: Array<[string, string]> = [
+      ['https://release-assets.githubusercontent.com:8443/a', '不认识的地址'],
+      ['https://user:secret@release-assets.githubusercontent.com/a', '不认识的地址'],
+      ['https://release-assets.githubusercontent.com/a#fragment', '不认识的地址'],
+      ['/someone/else/releases/download/v1/a.tar.gz', 'github.com'],
+    ]
+    for (const [location, message] of refusals) {
+      const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(init?.redirect).toBe('manual')
+        return redirect(location)
+      }) as typeof globalThis.fetch
+      await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, fetchMock)).rejects.toThrow(message)
+      expect(fetchMock).toHaveBeenCalledOnce()
+    }
+
+    const noLocation = vi.fn(async () => new Response(null, { status: 307 })) as typeof globalThis.fetch
+    await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, noLocation)).rejects.toThrow('缺少 Location')
+    expect(noLocation).toHaveBeenCalledOnce()
+
+    const looping = vi.fn(async (url: string | URL | Request) => redirect(
+      String(url) === packageUrl('arm64') ? assetUrl('a') : packageUrl('arm64'),
+    )) as typeof globalThis.fetch
+    await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, looping)).rejects.toThrow('循环重定向')
+    expect(looping).toHaveBeenCalledTimes(2)
+
+    // Allowed, but not the hop that was asked for: a fetch that followed a redirect on its own.
+    const followedQuietly = (async () => Object.defineProperty(new Response('x'), 'url', { value: assetUrl('a') })) as typeof globalThis.fetch
+    await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, followedQuietly)).rejects.toThrow('绕过了受限的重定向策略')
+
+    const neverCalled = vi.fn() as unknown as typeof globalThis.fetch
+    for (const start of ['https://example.com/opencode.tar.gz', 'http://github.com/anomalyco/opencode/releases/download/v1.18.34/a.tar.gz']) {
+      await expect(fetchMacosDesktopResource('opencode', start, {}, neverCalled)).rejects.toThrow('不认识的地址')
+    }
+    expect(neverCalled).not.toHaveBeenCalled()
+  })
+
+  it('never lets the caller turn automatic redirects back on', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual')
+      expect(new Headers(init?.headers).get('range')).toBe('bytes=10-')
+      return new Response('x')
+    }) as typeof globalThis.fetch
+    await fetchMacosDesktopResource('opencode', packageUrl('arm64'), { redirect: 'follow', headers: { Range: 'bytes=10-' } }, fetchMock)
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it.skipIf(process.platform === 'win32')('downloads the official package, verifies its Developer ID and Gatekeeper verdict, then moves it into Applications', async () => {
@@ -877,6 +931,8 @@ function bucketCodexIndex(architecture: string): string {
           key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: bucketBytes.byteLength, sha256: bucketDigest,
           contentType: 'application/zip', verification: 'official-https-sha256', cosEtag: '"etag"',
         },
+        // The sync refreshes it every 6 hours (#1061 item 7).
+        checkedAt: new Date().toISOString(),
       },
     },
   })
@@ -1208,5 +1264,56 @@ describe('macOS OpenCode installer from the Xingmang bucket', () => {
     expect(f.routed).toEqual(['start', 'end'])
     expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
     expect(stagingLeftovers(f.home)).toEqual([])
+  })
+})
+
+describe('measuring the vendor route on a Mac', () => {
+  const signal = new AbortController().signal
+
+  it('reads the feed, then a few seconds of this Mac\'s package under the same address rules', async () => {
+    const network = fakeNetwork()
+    const speed = await measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, network.fetch, signal)
+    expect(speed).toEqual({ bytesPerMs: expect.any(Number), totalBytes: archiveBytes.byteLength })
+    expect(speed?.bytesPerMs).toBeGreaterThan(0)
+    expect(network.requested).toEqual([
+      feedUrl, pinnedFeedUrl, assetUrl('latest.json'), packageUrl('arm64'), assetUrl('opencode-desktop-mac-arm64.app.tar.gz'),
+    ])
+  })
+
+  it('counts the time spent reading the feed, which a switch would read again', async () => {
+    const network = fakeNetwork()
+    const slowFeed: typeof fetch = async (input, init) => {
+      if (String(input) === feedUrl) await new Promise((resolve) => setTimeout(resolve, 250))
+      return network.fetch(input, init)
+    }
+    const speed = await measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, slowFeed, signal)
+    expect(speed?.bytesPerMs).toBeGreaterThan(0)
+    expect(speed?.bytesPerMs).toBeLessThanOrEqual(archiveBytes.byteLength / 200)
+  })
+
+  it('cannot measure when the feed offers nothing for this Mac, and asks for no package', async () => {
+    const network = fakeNetwork({ feedBody: feed({ platforms: {} }) })
+    await expect(measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, network.fetch, signal)).resolves.toBeNull()
+    expect(network.requested.some((url) => url.includes('.app.tar.gz'))).toBe(false)
+  })
+
+  it('cannot measure a release this Mac is too old to install', async () => {
+    const tooOld = fakeVendorNetwork()
+    await expect(measureMacosDesktopVendorSpeed('codexDesktop', { architecture: 'arm64', systemVersion: '12.7' }, tooOld.fetch, signal)).resolves.toBeNull()
+    expect(tooOld.requested).toEqual([`${chatgptRoot}appcast.xml`])
+    const recent = fakeVendorNetwork()
+    await expect(measureMacosDesktopVendorSpeed('codexDesktop', { architecture: 'arm64', systemVersion: '15.1' }, recent.fetch, signal))
+      .resolves.toMatchObject({ totalBytes: archiveBytes.byteLength })
+  })
+
+  it.skipIf(process.platform === 'win32')('measures GitHub, outside the download route, before leaving a slow bucket download', async () => {
+    const f = openCodeBucketSetup()
+    await installMacosDesktopApp(f.options)
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    f.requested.length = 0
+    await expect(handed?.probeAlternative?.(signal)).resolves.toMatchObject({ totalBytes: archiveBytes.byteLength })
+    expect(f.requested[0]).toBe(feedUrl)
+    expect(f.requested.at(-1)).toBe(assetUrl('opencode-desktop-mac-arm64.app.tar.gz'))
+    expect(f.routed).toEqual([])
   })
 })

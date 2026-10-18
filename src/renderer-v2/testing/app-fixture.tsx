@@ -58,7 +58,8 @@ function timelineFixture() {
 let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
   ...(query.has('crashNotice') ? {} : { crashReportingNoticeShown: true as const }),
   ...(query.has('chineseAsk') ? {} : { codexDesktopChineseRuntimePatch: 'enabled' as const }) }
-const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
+// ?longUsername：历史账号没有用户名时界面上写的是邮箱，用一个真实长度的（42 字）。
+const account = { userId: 17, username: query.has('longUsername') ? 'zhangwei.developer2026@company-mail.com.cn' : 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
 const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
 if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
@@ -443,13 +444,13 @@ const methods = {
     if (provider === 'grok') {
       return { ...base, ok: false, layer: 'unconfigured' as const, summary: '还没有给 Grok CLI 写入星芒配置', nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检', endpoint: null, model: null, status: null }
     }
-    // 密钥层失败一次，重写 Key 之后再测就该是正常的——这正是「重新写入 Key」
+    // 密钥层失败一次，重写 Key 之后再测就该是正常的——这正是「重新写入密钥」
     // 按钮要证明的那条路。
     if (query.has('connectionCredential') && provider === 'claude' && !keyRewritten.has('claude')) {
-      return { ...base, ok: false, layer: 'credential' as const, summary: '密钥被拒绝（HTTP 401）', nextStep: '到「账号」页查看这个工具的 Key 是否仍然有效，必要时重新写入', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'invalid_api_key', status: 401 }
+      return { ...base, ok: false, layer: 'credential' as const, summary: '密钥被拒绝（HTTP 401）', nextStep: '到「个人中心 → 密钥管理」看这个工具的密钥是否还有效，必要时重新写入', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'invalid_api_key', status: 401 }
     }
     if (query.has('connectionFailure') && provider === 'claude') {
-      return { ...base, ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '到「账号」页确认套餐仍在有效期内，再点一次「写入 Key」', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503 }
+      return { ...base, ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '到「个人中心」确认这个工具对应的套餐仍在有效期内，再点一次「重新写入密钥」重新签发', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503 }
     }
     if (query.has('connectionUnavailable') && provider === 'codex') throw new Error('自检没能完成')
     return provider === 'codex'

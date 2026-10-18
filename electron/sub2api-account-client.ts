@@ -6,6 +6,7 @@ import { activeProviderIds, sub2ApiManagedCliKeyProfiles, type ProviderId } from
 import { summarizeKeySecret } from './key-secret-summary'
 import { parseSub2ApiAnnouncements, type Sub2ApiAnnouncement } from './sub2api-announcements'
 import { isJsonContentType, isServiceUnavailableResponse } from './network-failure'
+import { readBoundedResponseBytes } from './bounded-response'
 
 export interface Sub2ApiAccountClientOptions {
   /** Required injection; no default production fetch and no renderer-provided base URL. */
@@ -343,7 +344,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
     const url = new URL(`/api/v1${route}`, origin)
     if (url.origin !== origin || url.username || url.password || url.hash) throw new RealmAccountError('INVALID')
     const controller = new AbortController()
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let reply: Response | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
     let rejectStop: (error: Error) => void = () => undefined
     let stopCode: 'TIMEOUT' | 'ABORTED' | undefined
@@ -351,8 +352,8 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
     function stop(code: 'TIMEOUT' | 'ABORTED'): void {
       if (stopCode) return
       stopCode = code
+      // 正在读的响应体跟这个信号赛跑，读不动的流也会被关掉（readBoundedResponseBytes 的 guard）。
       controller.abort()
-      if (reader) void reader.cancel().catch(() => undefined)
       rejectStop(new RealmAccountError(code))
     }
     function onAbort(): void { stop('ABORTED') }
@@ -367,8 +368,12 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
             ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         })
-        reader = response.body?.getReader()
-        if (controller.signal.aborted) throw new RealmAccountError(stopCode ?? 'ABORTED')
+        reply = response
+        if (controller.signal.aborted) {
+          // 停了以后才回来的响应：上面的 finally 早就跑过了，这里自己关。
+          void response.body?.cancel().catch(() => undefined)
+          throw new RealmAccountError(stopCode ?? 'ABORTED')
+        }
         if (response.redirected || (response.status >= 300 && response.status < 400)
           || (response.url && new URL(response.url).href !== url.href)) protocol()
         if (response.status === 401) throw new RealmAccountError('UNAUTHORIZED')
@@ -377,30 +382,20 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
           throw new RealmAccountError(isServiceUnavailableResponse({ status: response.status,
             json: isJsonContentType(response.headers.get('content-type')), headers: response.headers }) ? 'UNAVAILABLE' : 'NETWORK')
         }
-        if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') || !reader) protocol()
+        if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') || !response.body) protocol()
         const declaredLength = response.headers.get('content-length')
         if (declaredLength !== null && !/^\d+$/.test(declaredLength)) protocol()
-        function tooLarge(): never {
-          if (route === '/announcements') throw new Sub2ApiAnnouncementSizeError(responseLimit)
-          return protocol()
-        }
-        if (declaredLength !== null && Number(declaredLength) > responseLimit) tooLarge()
-        const chunks: Uint8Array[] = []
-        let length = 0
         let chunkCount = 0
-        while (true) {
-          const next = await reader.read()
-          if (controller.signal.aborted) throw new RealmAccountError(stopCode ?? 'ABORTED')
-          if (next.done) break
-          length += next.value.byteLength
-          chunkCount += 1
-          if (chunkCount > 65536) protocol()
-          if (length > responseLimit) tooLarge()
-          chunks.push(next.value)
-        }
-        const bytes = new Uint8Array(length)
-        let offset = 0
-        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+        const bytes = await readBoundedResponseBytes(response, responseLimit, '账号接口', {
+          oversizeError: () => route === '/announcements' ? new Sub2ApiAnnouncementSizeError(responseLimit) : new RealmAccountError('PROTOCOL'),
+          guard: {
+            signal: controller.signal,
+            onChunk() {
+              chunkCount += 1
+              if (chunkCount > 65536) protocol()
+            },
+          },
+        })
         let payload: unknown
         try { payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch { protocol() }
         if (!isRealmRecord(payload) || payload.code !== 0 || !Object.hasOwn(payload, 'data')) protocol()
@@ -414,7 +409,8 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)
       controller.abort()
-      if (reader) void reader.cancel().catch(() => undefined)
+      // 状态码、类型不对没读就退出的，也把响应体关掉；读过的已经关了或读完了，这里不再报错。
+      void reply?.body?.cancel().catch(() => undefined)
     }
   }
 

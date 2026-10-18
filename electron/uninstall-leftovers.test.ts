@@ -208,15 +208,76 @@ describe('removeUninstallLeftovers', () => {
   it('keeps a file whose delete fails so the next attempt can try it again', async () => {
     const layout = leftoverDirectory()
     const leftovers = captureUninstallLeftovers([layout.program], hostOptions())
-    vi.spyOn(fs.promises, 'unlink').mockRejectedValueOnce(Object.assign(new Error('resource busy'), { code: 'EBUSY' }))
+    const busy = vi.spyOn(fs.promises, 'unlink').mockRejectedValue(Object.assign(new Error('resource busy'), { code: 'EBUSY' }))
 
     const first = await removeUninstallLeftovers(leftovers, hostOptions())
+    busy.mockRestore()
     expect(first).toEqual({ removed: 0, reused: 0, kept: [{ leftover: leftovers[0], reason: 'delete-failed', code: 'EBUSY' }] })
     expect(exists(layout.program)).toBe(true)
 
     await expect(removeUninstallLeftovers(first.kept.map((entry) => entry.leftover), hostOptions())).resolves
       .toEqual({ removed: 1, reused: 0, kept: [] })
     expect(exists(layout.program)).toBe(false)
+  })
+
+  it('tries a delete Windows refused again a moment later, as when the program has only just closed', async () => {
+    const layout = leftoverDirectory()
+    const windows = hostOptions({ platform: 'win32', ownerUid: undefined })
+    const leftovers = captureUninstallLeftovers([layout.program], windows)
+    const unlink = vi.spyOn(fs.promises, 'unlink')
+      .mockRejectedValueOnce(Object.assign(new Error('resource busy'), { code: 'EBUSY' }))
+
+    await expect(removeUninstallLeftovers(leftovers, windows)).resolves.toEqual({ removed: 1, reused: 0, kept: [] })
+    expect(unlink).toHaveBeenCalledTimes(2)
+    expect(exists(layout.program)).toBe(false)
+  })
+
+  it('checks a refused file again before each retry and leaves one that changed in between', async () => {
+    const layout = leftoverDirectory()
+    const windows = hostOptions({ platform: 'win32', ownerUid: undefined })
+    const leftovers = captureUninstallLeftovers([layout.program], windows)
+    const unlink = vi.spyOn(fs.promises, 'unlink').mockImplementationOnce(async () => {
+      fs.writeFileSync(layout.program, 'grok binary, rewritten while the delete waited')
+      throw Object.assign(new Error('resource busy'), { code: 'EBUSY' })
+    })
+
+    await expect(removeUninstallLeftovers(leftovers, windows)).resolves.toEqual({
+      removed: 0,
+      reused: 0,
+      kept: [{ leftover: leftovers[0], reason: 'file-changed' }],
+    })
+    expect(unlink).toHaveBeenCalledTimes(1)
+    expect(fs.readFileSync(layout.program, 'utf8')).toBe('grok binary, rewritten while the delete waited')
+  })
+
+  it('stops retrying a delete Windows keeps refusing after a few seconds and keeps the file', async () => {
+    const layout = leftoverDirectory()
+    const windows = hostOptions({ platform: 'win32', ownerUid: undefined })
+    const leftovers = captureUninstallLeftovers([layout.program], windows)
+    const unlink = vi.spyOn(fs.promises, 'unlink')
+      .mockRejectedValue(Object.assign(new Error('operation not permitted'), { code: 'EPERM' }))
+
+    await expect(removeUninstallLeftovers(leftovers, windows)).resolves.toEqual({
+      removed: 0,
+      reused: 0,
+      kept: [{ leftover: leftovers[0], reason: 'delete-failed', code: 'EPERM' }],
+    })
+    // The first try and five retries, about three seconds apart in all.
+    expect(unlink).toHaveBeenCalledTimes(6)
+    expect(exists(layout.program)).toBe(true)
+  })
+
+  it.runIf(posixHost)('does not wait on a refused delete outside Windows', async () => {
+    const layout = leftoverDirectory()
+    const leftovers = captureUninstallLeftovers([layout.program], hostOptions())
+    const unlink = vi.spyOn(fs.promises, 'unlink')
+      .mockRejectedValueOnce(Object.assign(new Error('resource busy'), { code: 'EBUSY' }))
+
+    await expect(removeUninstallLeftovers(leftovers, hostOptions())).resolves.toMatchObject({
+      removed: 0,
+      kept: [{ reason: 'delete-failed', code: 'EBUSY' }],
+    })
+    expect(unlink).toHaveBeenCalledTimes(1)
   })
 
   it('counts a file it may not delete only while that file is still there', async () => {

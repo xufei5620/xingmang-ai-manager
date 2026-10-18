@@ -33,7 +33,7 @@
 
 **凭据落盘**：多账号库是 `realm-accounts-v2.dat`（`realm-account-vault-file.ts`）；老的 `saved-accounts.dat`、`account-session.dat` 只读不写，留给迁移。所有用 `safeStorage` 的文件（账号库、记住密码、托管 CLI Key、对话 Key）都经 `safe-storage-backend.ts`，它决定 Linux 没有密钥环时只存内存。
 
-**渲染层与主进程的边界**：renderer-v2 可以直接值导入一批 `electron/*` 模块，但只能是 `scripts/verify-renderer-boundary.test.cjs` 里 `valueImportable` 名单上的零 Node 依赖模块（AGENTS.md I6）。legacy 树只经 `src/types.ts` 拿类型和 `ipc-contract.ts` 的少数值导出。
+**渲染层与主进程的边界**：renderer-v2 可以直接值导入一批 `electron/*` 模块，但只能是 `scripts/verify-renderer-boundary.test.cjs` 里 `valueImportable` 名单上的零 Node 依赖模块（AGENTS.md I6），这些文件第一行都带 `@renderer-importable` 标记。legacy 树只经 `src/types.ts` 拿类型和 `ipc-contract.ts` 的少数值导出。
 
 **几条跨多个文件的链路**：
 
@@ -47,7 +47,7 @@
 
 - `installation-queue.ts` 是 I11 要求的安装、卸载、启动队列；`bounded-operation-queue.ts` 是图片生成和扫描探测用的通用并发队列，不能拿来替代前者。
 - 服务端的两份状态文件：更新目录（R2）上的 `service-status.json`（`service-status.ts` 读）和站点上的 `/xm-route-status.json`（`route-status-file.ts` 读）。本地的四份：`relay-route-lines.json`（应用线路）、`tool-route-state.json`（工具线路）、`release-guard.json`（撤回名单与放量）、`cli-model-hints.json`（型号表）。
-- `platform-capabilities.ts` 是判断「当前平台支持什么」的单一入口；`platform/facade.ts` / `registry.ts` / `index.ts` 目前只有测试在用，渲染层的平台能力来自 `ipc.ts` 的 `platform:get-capabilities`。
+- `platform-capabilities.ts` 是判断「当前平台支持什么」的单一入口，渲染层的平台能力来自 `ipc.ts` 的 `platform:get-capabilities`。
 
 ## 自查：有没有模块没进地图
 

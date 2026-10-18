@@ -22,6 +22,7 @@ import {
   ListReadFailure,
   Pagination,
   PlaceholderBar,
+  quotaMoney,
   RelativeTime,
   ResultNotice,
   useOperation,
@@ -45,6 +46,7 @@ import { buildBalanceRunway } from '../app/balance-runway'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import type { AccountSummary } from './AccountOverview'
+import { shortDate } from './account-center'
 import { paymentMethodLabel } from './payment-method-label'
 import { creditedMoney, describeTopupTier, isQuotableAmount, payableSymbol, sameTopupInfo, useTopupQuotes } from './topup-tier'
 import {
@@ -52,6 +54,7 @@ import {
   billingPreferenceNote,
   buildSubscriptionPaymentInput,
   orderPaidText,
+  ordersSearchEmpty,
   orderStateFor,
   orderTail,
   orderTitle,
@@ -113,7 +116,8 @@ function PayChoices({ name, choices, value, onChange, stacked }: { name: string;
   return (
     <div role="radiogroup" aria-label="支付方式" className={`v2-recharge-pay${stacked ? ' is-stacked' : ''}`}>
       {choices.map((choice) => (
-        <label className={`v2-recharge-pay-option${value === choice.value ? ' is-selected' : ''}${choice.disabled ? ' is-disabled' : ''}`} key={choice.value}>
+        // 整张卡上盖着那颗透明的单选框，悬停看全名的 title 只能挂在卡上（名字太长时省略）。
+        <label className={`v2-recharge-pay-option${value === choice.value ? ' is-selected' : ''}${choice.disabled ? ' is-disabled' : ''}`} key={choice.value} title={choice.label}>
           <input
             type="radio"
             aria-label={choice.label}
@@ -247,7 +251,7 @@ export function AccountRecharge({
     if (!presetAmount) return
     setPresetValue(presetAmount)
     setCustom('')
-    setQuote(null)
+    dropQuote()
   }, [presetAmount, presetRequest])
   const [method, setMethod] = useState('')
   const [code, setCode] = useState('')
@@ -257,6 +261,13 @@ export function AccountRecharge({
   const [quote, setQuote] = useState<(AccountTopupAmountQuote & {
     offer: Pick<AccountTopupInfo, 'discounts' | 'creditMultiplier'> | null
   }) | null>(null)
+  // 每问一次价加一，换档位、金额、渠道也加一：问价途中金额被换掉（停在这页时从活动卡片又点了
+  // 一档），回来的那次报价按的是旧金额，不认它，不然确认框和付款都照旧金额走。
+  const quoteRequest = useRef(0)
+  function dropQuote() {
+    quoteRequest.current += 1
+    setQuote(null)
+  }
   const [purchase, setPurchase] = useState<Plan | null>(null)
   const [purchaseMethod, setPurchaseMethod] = useState('balance')
   const [redeemOpen, setRedeemOpen] = useState(false)
@@ -398,7 +409,8 @@ export function AccountRecharge({
   })
   const quoteCredited = quote ? topupCreditedUsd(quote.amount, quote.offer?.creditMultiplier ?? multiplier) : null
   const quoteGift = quote?.offer ? topupGift(quote.amount, quote.offer) : null
-  const quoteTopup = () =>
+  const quoteTopup = () => {
+    const request = ++quoteRequest.current
     void operation.execute(
       'quote',
       async () => {
@@ -412,10 +424,13 @@ export function AccountRecharge({
           api.quoteAccountTopupAmount({ amount: value }),
         ])
         if (fresh && !sameTopupInfo(info.data, fresh)) info.setData(fresh)
+        // 金额在问价途中换了：不弹确认框，按钮回到「充值」，客户照新金额再点一次。
+        if (request !== quoteRequest.current) return
         setQuote({ ...next, offer: fresh ? { discounts: fresh.discounts, creditMultiplier: fresh.creditMultiplier } : null })
       },
       '',
     )
+  }
   const pay = () => {
     if (!quote || !paymentMethod) return
     const opened: Omit<PendingPayment, 'tradeNo'> = {
@@ -481,14 +496,21 @@ export function AccountRecharge({
       purchaseMethod === 'balance' ? `${plan.title}已开通` : '已打开支付窗口',
     )
   }
+  // 报价、充值码、买套餐三个弹窗共用一个 operation：打开时先清掉上一回的报错，弹窗里也只摆
+  // 自己那个动作的失败。先点的别的动作（算价、存扣费顺序）赶在弹窗开着时才失败，只上页头那条。
+  function dialogFailure(name: string) {
+    return operation.failed === name ? { error: operation.error, detail: operation.detail } : {}
+  }
   function openPurchase(plan: Plan) {
     const channels = subscriptionPaymentMethods(plan, methods, info.data ?? undefined)
     const short = balancePurchaseLine(balanceUsd, plan).short
+    operation.clear()
     setPurchase(plan)
     setPurchaseMethod(plan.allowBalancePay && (!short || channels.length === 0) ? 'balance' : channels[0]?.type ?? '')
   }
   function openRedeem() {
     setCodeError('')
+    operation.clear()
     setRedeemOpen(true)
   }
   const redeem = () => {
@@ -644,8 +666,8 @@ export function AccountRecharge({
                   )}
                 />
               )}
-              {/* 没有支付渠道时档位、金额和支付方式整块变灰，点不了；等着付款时也先锁住，免得报价对不上。 */}
-              <fieldset className="v2-business-recharge-form v2-recharge-form" disabled={noMethods || Boolean(payment)}>
+              {/* 没有支付渠道时档位、金额和支付方式整块变灰，点不了；正在确认价格、等着付款时也先锁住，免得报价对不上。 */}
+              <fieldset className="v2-business-recharge-form v2-recharge-form" disabled={noMethods || Boolean(payment) || operation.busy === 'quote'}>
                 <div className="v2-recharge-label">快捷金额</div>
                 <div className="v2-recharge-tiers">
                   {presetAmounts.map((value) => {
@@ -658,7 +680,7 @@ export function AccountRecharge({
                         className={`v2-recharge-tier${selected ? ' is-selected' : ''}`}
                         aria-label={tier.label}
                         aria-pressed={selected}
-                        onClick={() => { setPresetValue(value); setCustom(''); setQuote(null) }}
+                        onClick={() => { setPresetValue(value); setCustom(''); dropQuote() }}
                       >
                         {tier.bonus && <span className="v2-recharge-tier-gift">{tier.bonus}</span>}
                         <span className="v2-recharge-tier-credited"><small>到账</small>{tier.credited}</span>
@@ -682,7 +704,7 @@ export function AccountRecharge({
                   error={amountBad ? topupAmountError(topupMinimum) : undefined}
                   onChange={(event) => {
                     setCustom(event.target.value)
-                    setQuote(null)
+                    dropQuote()
                   }}
                 />
                 {/* 一个渠道都没有时上面那条提示已经说了，这里不留一块空的选择区。 */}
@@ -697,7 +719,7 @@ export function AccountRecharge({
                       onChange={(next) => {
                         const nextMethod = methods.find((item) => item.type === next)
                         setMethod(next)
-                        setQuote(null)
+                        dropQuote()
                         if (!nextMethod) return
                         const reset = resetTopupQuoteForMethod(amountText, nextMethod, info.data?.minTopup ?? 1).amount
                         if (reset === amountText) return
@@ -825,8 +847,8 @@ export function AccountRecharge({
                     : period.limitState === 'unknown' ? '限额暂未提供'
                     : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}`}
                 </span>)}
-                <span>到期 {displayDate(subscription.endsAt)}</span>
-              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · 到期 ${displayDate(subscription.endsAt)}`}
+                <span>{subscriptionExpiry(subscription.endsAt)}</span>
+              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · ${subscriptionExpiry(subscription.endsAt)}`}
             />
           ))
         ) : (
@@ -915,7 +937,7 @@ export function AccountRecharge({
           </div>
         )}
         <p className="v2-acct-note">实际扣款以支付页面为准。付完后支付窗口会自动关闭，余额自动刷新。</p>
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice {...dialogFailure('payment')} />
       </Dialog>
       <Dialog
         open={redeemOpen}
@@ -955,7 +977,7 @@ export function AccountRecharge({
           autoComplete="off"
         />
         <p className="v2-acct-note">兑换到当前账号，余额和权益会自动更新。一个码只能用一次。</p>
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice {...dialogFailure('redeem')} />
       </Dialog>
       <Dialog
         open={Boolean(purchase)}
@@ -985,17 +1007,17 @@ export function AccountRecharge({
         )}
         <div className="v2-recharge-label">支付方式</div>
         <PayChoices name="account-subscription-payment" choices={purchaseChoices} value={purchaseMethod} onChange={setPurchaseMethod} stacked />
-        <ResultNotice error={operation.error} detail={operation.detail} />
+        <ResultNotice {...dialogFailure('subscribe')} />
       </Dialog>
     </>
   )
 }
 
-// 没读到的金额写「—」，不写「暂未读到」：小标签上是「已用 —」「剩余 —」（同 pages-account 的 quotaMoney）。
-function quotaMoney(quota: number | null | undefined, balance: AccountBalance | null) {
-  return balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
-    ? dollars(quota / balance.quotaPerUnit)
-    : '—'
+// 「我的订阅」每份订阅那一行的到期：和账号概览、密钥行同一个写法（「10月1日到期」，#1133 第 6 条）；
+// 读不出日期时照旧写原样。
+function subscriptionExpiry(endsAt: string): string {
+  const day = shortDate(endsAt)
+  return day ? `${day}到期` : `到期 ${displayDate(endsAt)}`
 }
 
 /**
@@ -1093,7 +1115,7 @@ export function AccountOrders({
         ) : resource.loading ? (
           <Empty icon={CreditCard} title="正在查询订单…" description="" />
         ) : keyword.trim() ? (
-          <Empty icon={CreditCard} title="没有找到这个订单" description="核对一下订单号，或者清空搜索看全部订单。" />
+          <Empty icon={CreditCard} {...ordersSearchEmpty(keyword, Boolean(multiplierAccount))} />
         ) : (
           <Empty icon={CreditCard} title="还没有订单" description="充值后，订单会出现在这里。" />
         )}

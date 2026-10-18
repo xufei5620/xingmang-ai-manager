@@ -66,7 +66,9 @@ import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions
 import {
   describeDesktopBucketFallback,
   downloadDesktopBucketPackage,
+  measureDesktopDownloadSpeed,
   readDesktopBucketPackage,
+  type DesktopAlternativeSpeed,
   type DesktopBucketDownloadOptions,
   type DesktopBucketDownloadProgress,
   type DesktopBucketDownloadResult,
@@ -1257,6 +1259,22 @@ export function buildCodexDesktopOfficialPackageSource(architecture: 'x64' | 'ar
   }
 }
 
+/**
+ * 存储桶那一路太慢时，测一下 OpenAI 官网的离线安装包有多快（只读几秒、不落盘，见 desktop-package-bucket.ts
+ * 的 probeAlternative）。桶后面先是商店，商店的速度测不了，拿官网同一个包代它：两路都在海外。跳转照
+ * 官网那一路的规矩核。没接下载线路，接上只会更快，测得偏慢就偏向接着下桶。
+ */
+export function measureCodexDesktopOfficialSpeed(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  return measureDesktopDownloadSpeed((probeSignal) => fetchTrustedCodexDesktopResource(codexDesktopOfficialPackageUrls[architecture], {
+    headers: { Accept: 'application/vnd.ms-appx, application/octet-stream' },
+    signal: probeSignal,
+  }, fetchImplementation), signal)
+}
+
 export interface CodexDesktopOfficialDownloadOptions {
   architecture: 'x64' | 'arm64'
   destination: string
@@ -1381,6 +1399,8 @@ export async function downloadCodexDesktopBucketPackage(
     ...(signal ? { signal } : {}),
     ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
     onProgress: (progress) => options.onProgress?.(release.version, progress),
+    // 桶太慢时先比一比官网那一路，确实更快才换（#1061 第 6 条）。
+    probeAlternative: (probeSignal) => measureCodexDesktopOfficialSpeed(architecture, fetchImplementation, probeSignal),
   })
   try {
     signal?.throwIfAborted()
@@ -2587,7 +2607,10 @@ export interface CodexDesktopLaunchOptions {
    * running processes have been closed and before the next launch.
    */
   repairPermissionModeVisibility?: boolean
-  /** 排在安装后面的这段不算账号工作，轮到它执行时才算；换账号时还在排队的直接出队（#1085）。 */
+  /**
+   * 排在安装后面的这段不算账号工作，轮到它执行、到发出启动请求为止才算，之后等窗口那段也不算；
+   * 换账号时还在排队的直接出队（#1085）。
+   */
   accountWork?: QueuedAccountWork
 }
 
@@ -2609,6 +2632,27 @@ export interface CodexDesktopService {
 
 function runWithoutDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
   return operation()
+}
+
+/**
+ * 打开 Codex 桌面端分两段（#1085）：start 做到发出启动请求为止，算账号工作；它交回来的那段只等本机的
+ * Codex 进程起来、给它换中文，Windows 上最长一分多钟，换账号、退出不陪它等。start 跑的时候开始换账号，
+ * 照旧报「账号上下文已变化，请重试」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
+ * 还在起来就放别的安装、卸载进来换同一个包（I11）。
+ */
+export async function launchThenWaitOutsideAccountWork<T>(
+  accountWork: QueuedAccountWork | undefined,
+  start: () => Promise<() => Promise<T>>,
+): Promise<T> {
+  if (!accountWork) return (await start())()
+  const started: { waitForWindow?: () => Promise<T> } = {}
+  try {
+    await accountWork.run(async () => { started.waitForWindow = await start() })
+  } catch (error) {
+    if (started.waitForWindow) await started.waitForWindow().catch(() => undefined)
+    throw error
+  }
+  return started.waitForWindow!()
 }
 
 /**
@@ -3756,12 +3800,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     catch { return noCodexDesktopStartupRoute }
   }
 
+  /** 做到发出启动请求为止，返回剩下的等窗口、换中文；为什么分两段见 launchThenWaitOutsideAccountWork。 */
   async function launchCodexDesktopOperation(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
     launchOptions: CodexDesktopLaunchOptions = {},
     heartbeat?: CodexDesktopLaunchHeartbeat,
-  ): Promise<CodexDesktopLaunchResult> {
+  ): Promise<() => Promise<CodexDesktopLaunchResult>> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中，请稍后再试')
     if (platform === 'darwin' && mode === 'restart') {
       throw new Error('macOS 不支持重启 Codex，请使用打开操作唤起现有应用')
@@ -3802,7 +3847,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
       const status = await inspectCodexDesktop()
       if (status.running) sendCodexDesktopStatus(target, 'running', status)
-      return { restarted: false, status }
+      return async () => ({ restarted: false, status })
     }
     if (platform !== 'win32') throw new Error('Codex 桌面端启动目前仅支持 Windows')
 
@@ -3981,72 +4026,78 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
 
-    heartbeat?.setStage('waiting-window')
-    let startedProcesses = await waitForCodexDesktopSessionProcesses(
-      activatedViaAppModel || workspaceLaunchDelivered
-        ? codexDesktopLaunchInitialWaitMs
-        : codexDesktopLaunchFallbackWaitMs,
-      packageFamilyName,
-    )
+    return async () => {
+      heartbeat?.setStage('waiting-window')
+      let startedProcesses = await waitForCodexDesktopSessionProcesses(
+        activatedViaAppModel || workspaceLaunchDelivered
+          ? codexDesktopLaunchInitialWaitMs
+          : codexDesktopLaunchFallbackWaitMs,
+        packageFamilyName,
+      )
 
-    const processFromActivationPid = async (): Promise<number[]> => {
-      if (activationProcessId === null || !await waitForProcessId(activationProcessId, 2_000)) return []
-      return [activationProcessId]
-    }
-    if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
+      const processFromActivationPid = async (): Promise<number[]> => {
+        if (activationProcessId === null || !await waitForProcessId(activationProcessId, 2_000)) return []
+        return [activationProcessId]
+      }
+      if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
 
-    if (!startedProcesses.length && workspaceLaunchDelivered) {
-      // COM activation can be unavailable for a per-user Store registration
-      // while Explorer still knows how to activate the package. Retry only
-      // the plain AppsFolder route; sending codex:// to Explorer can open the
-      // selected workspace as a File Explorer window.
-      cdpPort = null
-      cdpActivationProcessId = null
-      // 这一路同样带不上启动参数，理由同上。
-      if (startupRoute.kind === 'tunnel') await startupRoute.fallback('没等到 Codex 窗口，改从开始菜单那一路再开一次')
-      try {
-        await launchWithExplorer()
-        startedProcesses = await waitForCodexDesktopSessionProcesses(
-          codexDesktopLaunchFallbackWaitMs, packageFamilyName,
-        )
-      } catch {
-        // The common error below reports this attempt as well.
+      if (!startedProcesses.length && workspaceLaunchDelivered) {
+        // COM activation can be unavailable for a per-user Store registration
+        // while Explorer still knows how to activate the package. Retry only
+        // the plain AppsFolder route; sending codex:// to Explorer can open the
+        // selected workspace as a File Explorer window.
+        cdpPort = null
+        cdpActivationProcessId = null
+        // 这一路同样带不上启动参数，理由同上。这会儿已经不算账号工作：点「打开」以后换过账号、或者正在换，
+        // 就不替上一个账号连加速（换账号一开始就把加速停了），这次只照普通方式再开一次。
+        if (startupRoute.kind === 'tunnel') {
+          if (launchOptions.accountWork?.isCurrent() ?? true) await startupRoute.fallback('没等到 Codex 窗口，改从开始菜单那一路再开一次')
+          else console.info('[codex-launch] 点「打开」以后换过账号，没等到窗口时不再补连加速')
+        }
+        try {
+          await launchWithExplorer()
+          startedProcesses = await waitForCodexDesktopSessionProcesses(
+            codexDesktopLaunchFallbackWaitMs, packageFamilyName,
+          )
+        } catch {
+          // The common error below reports this attempt as well.
+        }
       }
-    }
-    // AppX activation returns the application PID even when WMI is slow or
-    // temporarily unable to expose the packaged executable path. The first
-    // PID check normally settles this; repeat after Explorer only in case the
-    // process was still crossing the AppModel boundary at the first check.
-    if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
-    if (!startedProcesses.length) {
-      // 先停心跳：失败框弹出之前工具行不该再冒一句「还在等」。
-      const waitedSeconds = heartbeat?.elapsedSeconds()
-      heartbeat?.stop()
-      throw new Error(describeCodexDesktopLaunchFailure(
-        waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
-        resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
-      ))
-    }
-    if (cdpPort !== null) {
-      // Codex 已经起来了：下面等的是给它换中文（等调试端口、核对端口归属），不是等窗口。
-      heartbeat?.setStage('switching-language')
-      try {
-        const injection = await injectCodexDesktopChineseLocale(cdpPort, {
-          expectedProcessId: cdpActivationProcessId,
-        })
-        chineseLocale = { status: 'verified' }
-        console.info(`[codex-locale] 已注入 Codex Desktop 中文运行时补丁（${injection.injectedTargets} 个页面）`)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        // A failed enhancement must not leave a successfully launched client
-        // looking broken. config.toml remains authoritative for future builds.
-        console.warn(`[codex-locale] 中文运行时补丁未生效，保留已启动客户端：${message}`)
-        chineseLocale = { status: 'failed', message: codexDesktopChineseUnverifiedMessage }
+      // AppX activation returns the application PID even when WMI is slow or
+      // temporarily unable to expose the packaged executable path. The first
+      // PID check normally settles this; repeat after Explorer only in case the
+      // process was still crossing the AppModel boundary at the first check.
+      if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
+      if (!startedProcesses.length) {
+        // 先停心跳：失败框弹出之前工具行不该再冒一句「还在等」。
+        const waitedSeconds = heartbeat?.elapsedSeconds()
+        heartbeat?.stop()
+        throw new Error(describeCodexDesktopLaunchFailure(
+          waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
+          resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
+        ))
       }
+      if (cdpPort !== null) {
+        // Codex 已经起来了：下面等的是给它换中文（等调试端口、核对端口归属），不是等窗口。
+        heartbeat?.setStage('switching-language')
+        try {
+          const injection = await injectCodexDesktopChineseLocale(cdpPort, {
+            expectedProcessId: cdpActivationProcessId,
+          })
+          chineseLocale = { status: 'verified' }
+          console.info(`[codex-locale] 已注入 Codex Desktop 中文运行时补丁（${injection.injectedTargets} 个页面）`)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          // A failed enhancement must not leave a successfully launched client
+          // looking broken. config.toml remains authoritative for future builds.
+          console.warn(`[codex-locale] 中文运行时补丁未生效，保留已启动客户端：${message}`)
+          chineseLocale = { status: 'failed', message: codexDesktopChineseUnverifiedMessage }
+        }
+      }
+      const runningStatus = { ...desktopApp, running: true }
+      sendCodexDesktopStatus(target, 'running', runningStatus)
+      return { restarted, status: runningStatus, ...(chineseLocale ? { chineseLocale } : {}) }
     }
-    const runningStatus = { ...desktopApp, running: true }
-    sendCodexDesktopStatus(target, 'running', runningStatus)
-    return { restarted, status: runningStatus, ...(chineseLocale ? { chineseLocale } : {}) }
   }
 
   /**
@@ -4063,21 +4114,23 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     target: RendererMessageTarget,
     launchOptions: CodexDesktopLaunchOptions = {},
   ): Promise<CodexDesktopLaunchResult> {
+    const { accountWork } = launchOptions
     async function launch(): Promise<CodexDesktopLaunchResult> {
       // 只有 Windows 这一路会等窗口等到近一分钟；macOS 交给系统打开，几秒就回来。
       const heartbeat = platform === 'win32'
         ? startCodexDesktopLaunchHeartbeat((progress) => sendCodexDesktopLaunchProgress(target, progress))
         : undefined
       try {
-        return await launchCodexDesktopOperation(mode, target, launchOptions, heartbeat)
+        // 等窗口、换中文照旧占着安装队列（I11），只是不再算账号工作。
+        return await launchThenWaitOutsideAccountWork(accountWork,
+          () => launchCodexDesktopOperation(mode, target, launchOptions, heartbeat))
       } finally {
         heartbeat?.stop()
       }
     }
-    const { accountWork } = launchOptions
     return installationQueue.enqueue(
       `desktop:codex:launch:${mode}:${launchOptions.injectChinese ? 'zh-CN' : 'default'}`,
-      () => accountWork ? accountWork.run(launch) : launch(),
+      launch,
       { signal: accountWork?.signal },
     )
   }

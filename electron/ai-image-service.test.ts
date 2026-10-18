@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { relayQuotaFailureMessages } from './relay-quota-failure'
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -10,7 +11,7 @@ function response(body: unknown, status = 200): Response {
 
 function setup(
   fetchImpl: typeof fetch,
-  queueOptions: { maxActive?: number; maxQueued?: number; timeoutMs?: number } = {},
+  queueOptions: { maxActive?: number; maxQueued?: number; timeoutMs?: number; backend?: 'new-api' | 'sub2api' } = {},
 ) {
   const credentials = {
     resolveCredential: vi.fn(async (group: string) => ({
@@ -414,10 +415,15 @@ describe('AI image service', () => {
 
   it.each([
     [400, { error: { message: "Invalid size '1025x1024'" } }, '不支持这个图片尺寸'],
+    // 参考图文件太大不是尺寸不对，审核的英文原话也不上屏（#1101 第4条）。
+    [400, { error: { message: 'Invalid image: file size must be less than 20 MB.' } }, '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'],
+    [400, { error: { message: 'Your request was rejected as a result of our safety system.', code: 'moderation_blocked' } },
+      '这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。'],
+    [400, { error: { message: 'Request rejected', code: 'content_policy_violation' } }, '这次的描述或参考图没通过安全审核'],
     [403, { error: { message: 'Project does not have access to model' } }, '暂无该生图模型权限'],
     [403, { error: { message: '用户额度不足, 剩余额度: ＄0.000000 (request id: r1)', code: 'insufficient_user_quota' } }, '当前账号余额不足，充值后再试就行'],
     [403, { error: { message: 'token quota is not enough, token remain quota: ＄0.001000, need quota: ＄0.050000', code: 'pre_consume_token_quota_failed' } }, '额度上限用完了'],
-    [401, { error: { message: '无效的令牌 (request id: r2)', type: 'new_api_error', code: '' } }, 'Key 已失效，再发一次就会自动换一把新的'],
+    [401, { error: { message: '无效的令牌 (request id: r2)', type: 'new_api_error', code: '' } }, '密钥已失效，再发一次就会自动换一把新的'],
     [429, { error: { message: 'API key 额度已用完', type: 'insufficient_quota', code: 'insufficient_quota' } }, '额度上限用完了'],
     [429, { error: { message: 'rate limited' } }, '上游限流'],
     [503, { error: { message: 'upstream unavailable' } }, '结果不明确'],
@@ -427,6 +433,21 @@ describe('AI image service', () => {
     await expect(service.generate(4, {
       requestId: `failure-${status}`, group: '生图分组', model: 'gpt-image-2', prompt: '图',
     })).rejects.toThrow(expected)
+  })
+
+  // 历史账号站提交前计费复查没过（#1240）：英文原话不上屏，换成余额不足那句，聊天页据此给「去充值」。
+  it('points the history-account site to recharging when the billing re-check fails', async () => {
+    const payload = { error: { message: 'insufficient balance', type: 'billing_error' } }
+    const fetchImpl = vi.fn(async () => response(payload, 403)) as unknown as typeof fetch
+    const { service } = setup(fetchImpl, { backend: 'sub2api' })
+    await expect(service.generate(4, {
+      requestId: 'sub2api-balance', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })).rejects.toThrow(relayQuotaFailureMessages.balance)
+    // xm 站出现同一句只可能是渠道上游转回来的，那不是客户该充值的事。
+    const relayed = setup(vi.fn(async () => response(payload, 403)) as unknown as typeof fetch)
+    await expect(relayed.service.generate(4, {
+      requestId: 'new-api-relayed', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })).rejects.not.toThrow(relayQuotaFailureMessages.balance)
   })
 
   it('cancels only an owned request and warns that it may still complete', async () => {

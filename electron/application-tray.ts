@@ -7,10 +7,10 @@ import { resolveUsableSubscription, subscriptionSummaryText } from './subscripti
 export interface ApplicationTraySnapshot {
   accountLabel?: string | null
   balanceUsd?: number | null
-  /** 「剩余 USD 12.30 · 10 月 3 日到期」；没有能用的订阅时缺省，菜单就不多这一行。 */
+  /** 「剩余 USD 12.30 · 10月3日到期」；没有能用的订阅时缺省，菜单就不多这一行。 */
   subscriptionLabel?: string | null
   installedTools: readonly { id: string; label: string; enabled?: boolean }[]
-  /** 缺省或 null：软件不知道有新版本，菜单里只有一项普通的「软件更新」。 */
+  /** 缺省或 null：软件不知道有新版本，菜单里只有一项普通的「版本更新」。 */
   update?: TrayUpdateEntry | null
   /** 缺省表示这个构建没有接加速，菜单里就不出现这两行。 */
   acceleration?: TrayAccelerationEntry | null
@@ -78,23 +78,23 @@ function updateItem(
   run: (action: TrayAction) => void,
 ): MenuItemConstructorOptions {
   const openPage = () => navigate('updates')
-  if (!entry) return { label: '软件更新', click: openPage }
+  if (!entry) return { label: '版本更新', click: openPage }
   const version = menuLabel(entry.version, '')
   const named = version ? `新版本 ${version} ` : '新版本'
   switch (entry.kind) {
     case 'available':
       return entry.waitingForDisk
-        ? { label: `软件更新：${named}等电脑腾出空间再下载`, click: openPage }
-        : { label: `软件更新：有${named}`.trimEnd(), click: openPage }
+        ? { label: `版本更新：${named}等电脑腾出空间再下载`, click: openPage }
+        : { label: `版本更新：有${named}`.trimEnd(), click: openPage }
     case 'downloading':
-      return { label: `软件更新：正在下载${named}`.trimEnd(), click: openPage }
+      return { label: `版本更新：正在下载${named}`.trimEnd(), click: openPage }
     case 'downloaded':
       // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
       return install
         ? { label: `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
-        : { label: `软件更新：${named}已下载好`, click: openPage }
+        : { label: `版本更新：${named}已下载好`, click: openPage }
     case 'failed':
-      return { label: `软件更新：${named}没更新成功，点开看看`, click: openPage }
+      return { label: `版本更新：${named}没更新成功，点开看看`, click: openPage }
   }
 }
 

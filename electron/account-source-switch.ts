@@ -101,6 +101,11 @@ function errorText(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error)
 }
 
+/** 接在「……没有完成：」后面再补句号的那一段：原话自己带句号时不再叠一个（「后再试。。」）。 */
+function reasonClause(error: unknown): string {
+  return errorText(error).replace(/[。.]+$/, '')
+}
+
 /** 正在运行的 CLI 与 Codex 桌面端都把凭据缓存在内存里，不重开不会换账号。 */
 export function restartHint(provider: ProviderId): string {
   return provider === 'codex'
@@ -168,7 +173,7 @@ export async function switchAccountSource(
     try {
       await deps.writeOfficialConfig(provider)
     } catch (error) {
-      throw failure(`切回官方账号没有完成：${errorText(error)}。`, await rollBack())
+      throw failure(`切回官方账号没有完成：${reasonClause(error)}。`, await rollBack())
     }
     const present = deps.officialLoginPresent(provider)
     const loginRequired = present === false
@@ -188,7 +193,7 @@ export async function switchAccountSource(
       deps.log?.('warn', 'account-source.service-unavailable', `${toolName(provider)} 切到当前账号时服务暂时不可用，配置没有改动`, { provider, backupId })
       throw new Error(`改用当前账号没有完成：${error.message}原来的配置没有改动。`)
     }
-    throw failure(`改用当前账号没有完成：${errorText(error)}。`, await rollBack())
+    throw failure(`改用当前账号没有完成：${reasonClause(error)}。`, await rollBack())
   }
 
   let check: ConnectionCheckResult | null = null

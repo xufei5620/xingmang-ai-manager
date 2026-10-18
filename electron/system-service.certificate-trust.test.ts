@@ -153,6 +153,8 @@ describe('installing a CLI behind a certificate the machine trusts', () => {
     const message = await installError(fixture)
     expect(message).toContain(toolCertificateMessages.outdatedNode)
     expect(message).not.toContain(networkFailureMessages.tls)
+    // 上屏只剩中文原因和错误码，证书说明照旧接在后面（#1100 第1条）。
+    expect(message).toContain(`npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。${toolCertificateMessages.outdatedNode}`)
   })
 
   it.runIf(process.platform !== 'win32')('adds nothing when Node.js already reads the store, so the machine itself rejects the certificate', async () => {

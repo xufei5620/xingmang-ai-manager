@@ -46,7 +46,7 @@ export class ManagedKeyReplacementUnreadableError extends Error {
 }
 
 /** 撤销时记录读坏了：「稍后再试」没用，得先让用户亲手重新写入一次 Key 把坏记录清掉。 */
-export const managedKeyReplacementUnreadableRevokeMessage = '之前记下的密钥额度设置读不出来，这次先没撤销。到「账号」页「密钥」里确认一下各工具的额度，点一次「重新写入 Key」，再回来撤销。'
+export const managedKeyReplacementUnreadableRevokeMessage = '之前记下的密钥额度设置读不出来，这次先没撤销。到「个人中心 → 密钥管理」确认一下各工具的额度，点一次「重新写入密钥」，再回来撤销。'
 
 interface StoredReplacements {
   version: 1
@@ -127,7 +127,7 @@ export function createManagedKeyReplacementStore(options: { filePath: string }):
     set: (slot, limit) => enqueue(async () => {
       // 读坏了也不许从空记录起写：坏文件里可能记着另一个工具还没换新的限制，覆盖掉
       // 它，那个工具下次就会签出不限额的 Key（#475 复核 F03）。照样抛错，由调用方停下
-      // 说清楚；只有用户看过密钥页后亲手「重新写入 Key」才 reset()。
+      // 说清楚；只有用户看过密钥页后亲手「重新写入密钥」才 reset()。
       const stored = await load()
       const entries = Object.create(null) as Record<string, PendingKeyLimit>
       for (const [key, entry] of Object.entries(stored.entries)) {

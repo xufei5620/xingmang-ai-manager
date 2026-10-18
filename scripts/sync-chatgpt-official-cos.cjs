@@ -391,8 +391,10 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
       if (intact && licenseIntact) reusable[id] = existing
     }
   }
-  if (ids.every(function (id) { return reusable[id] })) return { changed: false, manifest: old, platforms: ids }
-  const workDirectory = await stage('prepare-temp', {}, function () { return dependencies.createWorkDirectory() })
+  // 包都没变也照样把清单写一遍，刷新这次核过的那几条的 checkedAt：客户端靠它判断桶还跟不跟得上官网，
+  // 太久没核过就不从桶里装（#1061 第 7 条）。这时大文件一个都不用下，临时目录也不用建。
+  const unchanged = ids.every(function (id) { return reusable[id] })
+  const workDirectory = unchanged ? null : await stage('prepare-temp', {}, function () { return dependencies.createWorkDirectory() })
   let primaryError
   try {
     const prepared = []
@@ -468,6 +470,10 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
       }
       entries[item.id] = entry
     }
+    // Each job vouches only for the platforms it checked against the official
+    // source just now; the other entries keep the time their own job last did.
+    const checkedAt = now()
+    for (const id of ids) entries[id] = { ...entries[id], checkedAt }
     const manifest = { schemaVersion: 1, product: 'chatgpt', generatedAt: now(), ...(metadata ? { windows: metadata } : {}), platforms: entries }
     await stage('validate-latest', {}, async function () { validatePreviousManifest(manifest) })
     // Linux's public "latest" URLs are mutable. A long upload must not turn a
@@ -499,12 +505,12 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
     latestState = 'write-unconfirmed'
     await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
     latestState = 'published-and-read-back'
-    return { changed: true, manifest, platforms: ids }
+    return { changed: !unchanged, manifest, platforms: ids }
   } catch (error) {
     primaryError = error
     throw error
   } finally {
-    try { await stage('cleanup-temp', {}, function () { return dependencies.removeWorkDirectory(workDirectory) }) } catch (error) {
+    if (workDirectory) try { await stage('cleanup-temp', {}, function () { return dependencies.removeWorkDirectory(workDirectory) }) } catch (error) {
       // A cleanup failure is secondary if synchronization already failed.
       // Its safe stage event remains visible without replacing the real cause.
       if (!primaryError) throw error

@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto'
 import { lookup as nodeLookup } from 'node:dns/promises'
 import { BlockList, isIP } from 'node:net'
 import { isPublicAiAssetAddress } from './ai-asset-store'
+import { raceAbort, readBoundedResponseBytes, type ResponseBodyGuard } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
@@ -207,68 +208,12 @@ function ambiguousVideoSubmission(): Error {
  */
 class VideoPollRejected extends Error {}
 
-interface ResponseBodyGuard {
-  signal: AbortSignal
-  // Called after every chunk so a slow but moving download is judged on
-  // inactivity, not on its total duration.
-  onChunk?: () => void
-}
-
-/**
- * Settles with the promise, or rejects with the signal's reason as soon as the
- * signal aborts. A response body that ignores its request signal (a mock, or a
- * stream a proxy keeps open) must still let a timeout or 「停止」 finish the
- * operation instead of hanging whenIdle() and the account switch behind it.
- */
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) {
-    void promise.catch(() => undefined)
-    return Promise.reject(signal.reason)
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      void promise.catch(() => undefined)
-      reject(signal.reason)
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then((value) => {
-      signal.removeEventListener('abort', onAbort)
-      resolve(value)
-    }, (error: unknown) => {
-      signal.removeEventListener('abort', onAbort)
-      reject(error)
-    })
+function readBoundedBytes(response: Response, maximumBytes: number, label: string, guard?: ResponseBodyGuard): Promise<Buffer> {
+  return readBoundedResponseBytes(response, maximumBytes, label, {
+    oversizeMessage: `${label}超过安全上限`,
+    requireNonEmpty: { missingBodyMessage: `${label}没有内容`, emptyMessage: `${label}为空` },
+    guard,
   })
-}
-
-async function readBoundedBytes(response: Response, maximumBytes: number, label: string, guard?: ResponseBodyGuard): Promise<Buffer> {
-  const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maximumBytes) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(`${label}超过安全上限`)
-  }
-  if (!response.body) throw new Error(`${label}没有内容`)
-  const reader = response.body.getReader()
-  const chunks: Buffer[] = []
-  let received = 0
-  try {
-    for (;;) {
-      const chunk = guard ? await raceAbort(reader.read(), guard.signal) : await reader.read()
-      if (chunk.done) break
-      guard?.onChunk?.()
-      received += chunk.value.byteLength
-      if (received > maximumBytes) {
-        await reader.cancel().catch(() => undefined)
-        throw new Error(`${label}超过安全上限`)
-      }
-      chunks.push(Buffer.from(chunk.value))
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => undefined)
-    throw error
-  }
-  if (received === 0) throw new Error(`${label}为空`)
-  return Buffer.concat(chunks, received)
 }
 
 interface VideoDownloadDescriptor {
@@ -578,7 +523,12 @@ export function createAiVideoService(options: {
         // 一直查不到才停；本地任务记录留着，下次启动还会续查。从这一轮失败结束时起算，而不是从
         // 上次查到时起算：电脑睡醒后第一次查询多半连不上，那段睡眠不能算进去。
         failingSince ??= Date.now()
-        if (Date.now() - failingSince >= maximumPollOutageMs) throw error
+        if (Date.now() - failingSince >= maximumPollOutageMs) {
+          // 这时上屏的原话（「视频服务暂时不可用，请稍后重试」「视频接口请求超时」、英文的 fetch failed）
+          // 都在叫客户重来，可这单已经提交、服务端多半还在生成，重来就是再付一次钱（#1076 第2条）。
+          // 换成同一句，原话挂在 cause 上进日志。终态的错（failed、cancelled、JSON 4xx）不走这里。
+          throw new Error(`暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 ${task.taskId}）。`, { cause: error })
+        }
         await delayVideoPoll(interval, signal)
         interval = Math.min(maximumPollIntervalMs, interval * 2)
         continue

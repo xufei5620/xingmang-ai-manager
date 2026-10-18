@@ -35,14 +35,20 @@ const valueImportable = [
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
   'electron/cli-model-defaults',
+  // 工具配置文件是个链接时那句话的标志，主进程拼、错误框照它认出来配「配置文件是个链接」（#1100 第 2 条）。
+  'electron/config-link-refusal',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
   'electron/external-url-blocked',
   'electron/git-runtime',
+  // isRecord 这类最基础的输入检查，主进程和渲染层共用一份（#1071 第 3 条）；文件本身什么都不 import。
+  'electron/input-guards',
   'electron/ipc-contract',
   // Mac 上一键装桌面端没装成的那几句话，主进程拼、错误框照它认出来配「看安装指南」。
   'electron/macos-desktop-install-failure',
   'electron/network-failure',
+  // npm 没装成那句里「整句自己说清了下一步」的几类错误码，主进程拼、错误框照它认（#1100 第 1 条）。
+  'electron/npm-failure-reasons',
   // 错误框「给客服看的原话」和「复制给客服」要和日志、反馈报告用同一张 Key 打码表（第二十批 2、3）。
   'electron/redaction-patterns',
   'electron/relay-quota-failure',
@@ -59,15 +65,22 @@ const typeImportableOnly = [
   'electron/relay-backend',
 ]
 
+// Reading a listed file on its own should already say that it ends up in the
+// renderer bundle (#1073 item 11), so every module on valueImportable opens with
+// exactly this line and nothing else under electron/ carries the tag. Editing the
+// list or a file header without the other fails below, in either direction.
+const rendererImportableTag = '@renderer-importable'
+const rendererImportableMarker = `// ${rendererImportableTag}: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).`
+
 const sourceExtensions = ['.ts', '.tsx']
 // Brand assets and the version manifest are inlined as data, never executed.
 const assetExtensions = new Set(['.css', '.gif', '.jpeg', '.jpg', '.json', '.png', '.svg', '.webp'])
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)])
 
-function rendererSourceFiles(directory, collected = []) {
+function nonTestSourceFiles(directory, collected = []) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const candidate = path.join(directory, entry.name)
-    if (entry.isDirectory()) rendererSourceFiles(candidate, collected)
+    if (entry.isDirectory()) nonTestSourceFiles(candidate, collected)
     // Tests run in Node rather than in the bundle, so they may reach for anything.
     else if (sourceExtensions.includes(path.extname(entry.name)) && !/\.test\.tsx?$/.test(entry.name)) collected.push(candidate)
   }
@@ -112,6 +125,17 @@ function collectImports(file) {
   return found
 }
 
+function markerViolations(sources, allowList) {
+  const violations = []
+  for (const [id, text] of sources) {
+    const listed = allowList.includes(id)
+    if (listed && text.split(/\r?\n/, 1)[0] !== rendererImportableMarker) violations.push(`${id} is on valueImportable in scripts/verify-renderer-boundary.test.cjs but its first line is not the ${rendererImportableTag} marker`)
+    else if (!listed && text.includes(rendererImportableTag)) violations.push(`${id} carries the ${rendererImportableTag} marker but is not on valueImportable in scripts/verify-renderer-boundary.test.cjs`)
+  }
+  for (const id of allowList) if (!sources.has(id)) violations.push(`${id} is on valueImportable but has no source file to carry the ${rendererImportableTag} marker`)
+  return violations
+}
+
 function describeViolation(origin, specifier, typeOnly, target) {
   if (nodeBuiltins.has(specifier) || specifier === 'electron') return `${origin} imports the main-process module ${specifier}`
   if (!specifier.startsWith('.') || assetExtensions.has(path.extname(specifier))) return null
@@ -128,7 +152,7 @@ function describeViolation(origin, specifier, typeOnly, target) {
 }
 
 test('keeps the renderer sources inside the modules the bundle may carry', () => {
-  for (const file of rendererSourceFiles(path.join(projectRoot, 'src'))) {
+  for (const file of nonTestSourceFiles(path.join(projectRoot, 'src'))) {
     const origin = moduleId(file)
     for (const { specifier, typeOnly } of collectImports(file)) {
       const target = specifier.startsWith('.') ? resolveModule(file, specifier) : specifier
@@ -149,10 +173,41 @@ test('keeps every renderer-importable main-process module free of Node dependenc
     for (const { specifier, typeOnly } of collectImports(file)) {
       // Type-only edges are erased, so they carry no Node dependency into the bundle.
       if (typeOnly) continue
-      if (specifier.startsWith('.')) pending.push(resolveModule(file, specifier))
-      else assert.ok(!nodeBuiltins.has(specifier) && specifier !== 'electron', `${current} reaches the renderer bundle but depends on ${specifier}`)
+      if (specifier.startsWith('.')) {
+        const target = resolveModule(file, specifier)
+        // What a listed module value-imports is bundled as well, so it must be listed and marked too.
+        assert.ok(valueImportable.includes(target), `${current} carries ${target} into the renderer bundle; audit it for Node dependencies and add it to valueImportable in scripts/verify-renderer-boundary.test.cjs`)
+        pending.push(target)
+      } else assert.ok(!nodeBuiltins.has(specifier) && specifier !== 'electron', `${current} reaches the renderer bundle but depends on ${specifier}`)
     }
   }
+})
+
+test('keeps the renderer-importable marker on exactly the modules the allow list names', () => {
+  const sources = new Map(nonTestSourceFiles(path.join(projectRoot, 'electron')).map((file) => [moduleId(file), fs.readFileSync(file, 'utf8')]))
+  assert.deepEqual(markerViolations(sources, valueImportable), [])
+})
+
+test('flags a marker that disagrees with the allow list', () => {
+  const sources = new Map([
+    ['electron/listed', `${rendererImportableMarker}\n\nexport const a = 1\n`],
+    ['electron/listed-crlf', `${rendererImportableMarker}\r\n\r\nexport const b = 2\r\n`],
+    ['electron/unmarked', 'export const c = 3\n'],
+    ['electron/second-line', `// header\n${rendererImportableMarker}\n`],
+    ['electron/reworded', `// ${rendererImportableTag}\nexport const d = 4\n`],
+    ['electron/unlisted', `${rendererImportableMarker}\n\nimport fs from 'node:fs'\n`],
+    ['electron/mentions', `// copied from a file tagged ${rendererImportableTag}\n`],
+    ['electron/plain', 'export const e = 5\n'],
+  ])
+  const listed = ['electron/listed', 'electron/listed-crlf', 'electron/unmarked', 'electron/second-line', 'electron/reworded', 'electron/missing']
+  assert.deepEqual(markerViolations(sources, listed).map((violation) => violation.split(' ')[0]), [
+    'electron/unmarked',
+    'electron/second-line',
+    'electron/reworded',
+    'electron/unlisted',
+    'electron/mentions',
+    'electron/missing',
+  ])
 })
 
 test('keeps the type-only allow list pointing at real modules', () => {

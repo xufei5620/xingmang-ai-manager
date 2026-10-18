@@ -9,11 +9,16 @@ import {
   buildNodeRuntimeInstallPlan,
   buildNodeRuntimeUacBrokerScript,
   buildNodeRuntimeWingetPlan,
+  createNodeDownloadDeadline,
   downloadNodeRuntimePackage,
   fetchTrustedNodeResource,
   installNodeRuntime,
+  nodeDownloadCeilingMs,
+  nodeDownloadStallTimeoutMs,
   nodeRuntimeDownloadSources,
   normalizeNodeRuntimeArchitecture,
+  describeNodeInstallFailure,
+  describeNodeStagingFailure,
   parseAuthenticodeSignature,
   parseNodeReleaseIndex,
   parseNodeShasums,
@@ -106,6 +111,19 @@ describe('Node.js LTS release parsing', () => {
     expect(parseNodeReleaseIndex('[{"version":"latest","lts":"Jod","files":["win-x64-msi"]}]', 'x64')).toBeNull()
     expect(parseNodeReleaseIndex('[{"version":"v22.0.0","lts":false,"files":["win-x64-msi"]}]', 'x64')).toBeNull()
     expect(parseNodeReleaseIndex('[{"version":"v22.0.0","lts":"Jod","files":["win-x64-zip"]}]', 'x64')).toBeNull()
+  })
+
+  it('accepts only canonical vX.Y.Z release names and picks the numerically highest one', () => {
+    const entry = (version: string, lts = 'Jod') => ({ version, lts, files: ['win-x64-msi'] })
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v22.9.0'), entry('v22.10.0'), entry('v22.9.1')]), 'x64')?.version)
+      .toBe('v22.10.0')
+    for (const rejected of ['22.10.0', 'V22.10.0', 'v022.10.0', 'v22.010.0', 'v22.10.00', 'v22.10.0-rc.1', 'v22.10', ' v22.10.0', 'v22.10.0 ', 'v9007199254740993.0.0']) {
+      expect(parseNodeReleaseIndex(JSON.stringify([entry(rejected)]), 'x64'), rejected).toBeNull()
+    }
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v99.0.0-rc.1'), entry('v24.0.0'), entry('V99.0.0')]), 'x64')?.version)
+      .toBe('v24.0.0')
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v9007199254740991.0.0')]), 'x64')?.version).toBe('v9007199254740991.0.0')
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v22.1.0', 'First'), entry('v22.1.0', 'Second')]), 'x64')?.lts).toBe('First')
   })
 
   it('reads exactly one matching SHA-256 and rejects ambiguous or unsafe filenames', () => {
@@ -298,7 +316,7 @@ describe('Node.js installer routing and process plans', () => {
         createTemporaryDirectory: async () => 'D:\\ProgramData\\XingMangAI\\InstallerCache\\test',
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败')
+    })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(runProcess).not.toHaveBeenCalled()
     expect(progress).toContain(
@@ -348,7 +366,7 @@ describe('Node.js installer routing and process plans', () => {
       throw new Error('offline')
     }) as unknown as typeof fetch
 
-    await expect(installNodeRuntime({
+    const failure = await installNodeRuntime({
       networkRegion: 'unknown',
       dependencies: {
         resolveWingetExecutable: async () => ({
@@ -361,8 +379,13 @@ describe('Node.js installer routing and process plans', () => {
         createTemporaryDirectory: async () => 'D:\\ProgramData\\XingMangAI\\InstallerCache\\test',
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow(/winget：安装后的 Node\.js 版本 v18\.20\.0 低于最低要求 v20\.0\.0/)
+    }).catch((error: unknown) => error)
 
+    // winget 那一步只进运行日志，上屏那句按备用源的原因说（#1100 第1条）。
+    expect(failure instanceof Error ? failure.message : null)
+      .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+    expect(failure instanceof Error ? (failure.cause as Error).message : null)
+      .toContain('winget：安装后的 Node.js 版本 v18.20.0 低于最低要求 v20.0.0')
     expect(runProcess).toHaveBeenCalledTimes(1)
     expect(inspectInstalledNodeRuntime).toHaveBeenCalledOnce()
     expect(fetchMock).toHaveBeenCalled()
@@ -493,6 +516,79 @@ describe('Node.js response URL validation', () => {
       .rejects.toThrow('未经批准')
     expect(hostileFetch).toHaveBeenCalledOnce()
   })
+
+  it('refuses every hop that leaves the pinned resource', async () => {
+    const source = 'https://nodejs.org/dist/index.json'
+    function redirectingTo(location: string | null) {
+      return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(init?.redirect).toBe('manual')
+        return new Response(null, { status: 302, headers: location === null ? {} : { Location: location } })
+      }) as typeof fetch
+    }
+    const refusals: Array<[string | null, string]> = [
+      ['https://nodejs.org/dist/other.json', '资源路径'],
+      ['other.json', '资源路径'],
+      ['../download/index.json', '未经批准的 HTTPS 主机'],
+      ['https://nodejs.org/dist/index.json?x=1', '未经批准'],
+      ['http://nodejs.org/dist/index.json', '未经批准'],
+      ['https://nodejs.org:8443/dist/index.json', '未经批准'],
+      ['https://user:secret@nodejs.org/dist/index.json', '未经批准'],
+      ['https://nodejs.org/dist/index.json#top', '未经批准'],
+      ['https://cdn.npmmirror.com/binaries/node/index.json', '资源路径'],
+      [null, 'Location'],
+    ]
+    for (const [location, message] of refusals) {
+      const fetchMock = redirectingTo(location)
+      await expect(fetchTrustedNodeResource(source, { method: 'GET' }, fetchMock)).rejects.toThrow(message)
+      expect(fetchMock).toHaveBeenCalledOnce()
+    }
+
+    const neverCalled = vi.fn() as unknown as typeof fetch
+    for (const start of ['http://nodejs.org/dist/index.json', 'https://evil.example/dist/index.json', 'https://nodejs.org/download/index.json']) {
+      await expect(fetchTrustedNodeResource(start, { method: 'GET' }, neverCalled)).rejects.toThrow('未经批准')
+    }
+    expect(neverCalled).not.toHaveBeenCalled()
+  })
+
+  it('refuses a redirect loop between the two mirror hosts', async () => {
+    const source = 'https://npmmirror.com/mirrors/node/index.json'
+    const cdn = 'https://cdn.npmmirror.com/binaries/node/index.json'
+    const fetchMock = vi.fn(async (url: string | URL | Request) => new Response(null, {
+      status: 301,
+      headers: { Location: String(url) === source ? cdn : source },
+    })) as typeof fetch
+    await expect(fetchTrustedNodeResource(source, { method: 'GET' }, fetchMock)).rejects.toThrow('循环重定向')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a response that came from anywhere but the hop it asked for', async () => {
+    const source = 'https://npmmirror.com/mirrors/node/index.json'
+    function answeredFrom(url: string) {
+      return (async () => Object.defineProperty(new Response('[]'), 'url', { value: url })) as typeof fetch
+    }
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('https://evil.example/x'))).rejects.toThrow('未经批准')
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('https://cdn.npmmirror.com/binaries/node/other.json')))
+      .rejects.toThrow('资源路径')
+    // The CDN copy of the same file is a fine next hop, but only after a redirect this code read.
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('https://cdn.npmmirror.com/binaries/node/index.json')))
+      .rejects.toThrow('Node.js 下载绕过了受限的重定向策略')
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom(source))).resolves.toMatchObject({ status: 200 })
+    // Both sides are compared after URL parsing, so spelling alone never fails a download.
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('HTTPS://NPMMIRROR.COM:443/mirrors/node/index.json')))
+      .resolves.toMatchObject({ status: 200 })
+    await expect(fetchTrustedNodeResource('https://NodeJS.org:443/dist/index.json', {}, answeredFrom('https://nodejs.org/dist/index.json')))
+      .resolves.toMatchObject({ status: 200 })
+  })
+
+  it('never lets the caller turn automatic redirects back on', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual')
+      expect(init?.method).toBe('HEAD')
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    await fetchTrustedNodeResource('https://nodejs.org/dist/index.json', { method: 'HEAD', redirect: 'follow' }, fetchMock)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
 })
 
 describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
@@ -522,7 +618,7 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
           await fs.promises.rm(directory, { recursive: true, force: true })
         },
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败')
+    })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(fetchMock).toHaveBeenCalled()
     expect(removed).toHaveLength(1)
@@ -546,7 +642,7 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
         },
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败。安装包暂存目录：当前进程没有管理员权限，无法创建受保护的安装目录')
+    })).rejects.toThrow('Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去。清理一下磁盘或重启电脑后再点「重试」。')
     expect(progress.some((entry) => entry.startsWith('error:'))).toBe(true)
   })
 
@@ -685,6 +781,217 @@ describe('Node.js package download after a dropped connection', () => {
       fs.rmSync(directory, { recursive: true, force: true })
     }
   })
+
+  it('downloads over the domestic mirror and its CDN redirect with a fetch that reports every hop', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-mirror-'))
+    const target = path.join(directory, 'node.msi')
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 9)
+    const cut = 600 * 1024
+    const mirror = nodeRuntimeDownloadSources('mainland-china')[0]
+    expect(mirror.id).toBe('npmmirror')
+    const file = 'v22.17.0/node-v22.17.0-x64.msi'
+    const mirrorUrl = `${mirror.baseUrl}${file}`
+    const cdnUrl = `https://cdn.npmmirror.com/binaries/node/${file}`
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual')
+      const url = String(input)
+      requested.push(url)
+      let response: Response
+      if (url === mirrorUrl) {
+        // Written the way a server might: upper-case host and the default port spelled out.
+        response = new Response(null, { status: 302, headers: { location: `HTTPS://CDN.NPMMIRROR.COM:443/binaries/node/${file}` } })
+      } else if (url === cdnUrl) {
+        const range = new Headers(init?.headers).get('range')
+        response = range
+          ? new Response(new Uint8Array(bytes.subarray(cut)), {
+            status: 206,
+            headers: { 'content-range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}` },
+          })
+          : new Response(brokenAfter(bytes, cut), {
+            status: 200,
+            headers: { 'content-length': String(bytes.byteLength), etag: '"node"' },
+          })
+      } else {
+        response = new Response('not found', { status: 404 })
+      }
+      // Like undici and Electron's net.fetch with manual redirects: the URL that was asked for.
+      Object.defineProperty(response, 'url', { value: new URL(url).href })
+      return response
+    }) as unknown as typeof fetch
+
+    try {
+      const result = await downloadNodeRuntimePackage(fetchMock, mirrorUrl, target, {}, mirror, async () => undefined)
+      expect(result).toEqual({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.byteLength })
+      expect(fs.readFileSync(target).equals(bytes)).toBe(true)
+      // The resumed request goes back through the mirror and follows its redirect again.
+      expect(requested).toEqual([mirrorUrl, cdnUrl, mirrorUrl, cdnUrl])
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
+// #1061 第5条：以前满 10 分钟就掐断，换个源从 0 开始；现在没进展才停，另有 30 分钟兜底。
+describe('Node.js package download deadline', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('keeps a download that is still receiving bytes alive past the old ten-minute limit', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    for (let minute = 1; minute <= 20; minute += 1) {
+      await vi.advanceTimersByTimeAsync(60_000)
+      deadline.progressed(minute * 1024)
+    }
+    expect(expire).not.toHaveBeenCalled()
+    deadline.stop()
+  })
+
+  it('ends the download once no new bytes have arrived for the stall window', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    await vi.advanceTimersByTimeAsync(60_000)
+    deadline.progressed(4096)
+    // 字节数没变（续传前后报的同一个数）不算进展。
+    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs - 1_000)
+    deadline.progressed(4096)
+    expect(expire).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(expire).toHaveBeenCalledTimes(1)
+    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
+  })
+
+  it('still ends a download that trickles forever at the ceiling', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    let transferred = 0
+    for (let elapsed = 30_000; elapsed < nodeDownloadCeilingMs; elapsed += 30_000) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      transferred += 1
+      deadline.progressed(transferred)
+    }
+    expect(expire).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(expire).toHaveBeenCalledTimes(1)
+    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
+    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs)
+    expect(expire).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing once the download has finished', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    deadline.stop()
+    deadline.progressed(1)
+    await vi.advanceTimersByTimeAsync(nodeDownloadCeilingMs * 2)
+    expect(expire).not.toHaveBeenCalled()
+  })
+
+  describe('through the real download', () => {
+    const chunkBytes = 64 * 1024
+    const chunkEveryMs = 40_000
+
+    // One chunk every 40 seconds: never quiet long enough for the per-request idle
+    // timer (45 seconds), so only the whole-download limits decide the outcome.
+    function slowBody(size: number, fill: number): ReadableStream<Uint8Array> {
+      let offset = 0
+      return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, chunkEveryMs))
+          if (offset >= size) {
+            controller.close()
+            return
+          }
+          const length = Math.min(chunkBytes, size - offset)
+          controller.enqueue(new Uint8Array(length).fill(fill))
+          offset += length
+        },
+      })
+    }
+
+    function slowFetch(size: number, fill: number): typeof fetch {
+      return vi.fn(async (input: string | URL | Request) => {
+        const response = new Response(slowBody(size, fill), {
+          status: 200,
+          headers: { 'content-length': String(size) },
+        })
+        Object.defineProperty(response, 'url', { value: String(input) })
+        return response
+      }) as unknown as typeof fetch
+    }
+
+    // Only the timers are fake; the file is still written for real. The clock moves one
+    // chunk at a time and waits (in real time) for that chunk to reach the disk, so a slow
+    // real write never shows up as minutes of fake time without progress.
+    async function driveChunkByChunk<T>(work: Promise<T>, received: () => number): Promise<T> {
+      let settled = false
+      work.then(() => { settled = true }, () => { settled = true })
+      for (let chunk = 1; !settled; chunk += 1) {
+        await vi.advanceTimersByTimeAsync(chunkEveryMs)
+        for (let turn = 0; turn < 10_000 && !settled && received() < chunk * chunkBytes; turn += 1) {
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+      }
+      return work
+    }
+
+    it('finishes a slow but steady download that takes longer than ten minutes', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-slow-'))
+      const target = path.join(directory, 'node.msi')
+      const bytes = Buffer.alloc(2 * 1024 * 1024, 5)
+      const url = 'https://nodejs.org/dist/v22.17.0/node-v22.17.0-x64.msi'
+      const startedAt = Date.now()
+      let received = 0
+      try {
+        const result = await driveChunkByChunk(downloadNodeRuntimePackage(
+          slowFetch(bytes.byteLength, 5),
+          url,
+          target,
+          { onProgress: (event) => { received = event.transferredBytes ?? received } },
+          nodeRuntimeDownloadSources('outside-mainland-china')[0],
+          async () => undefined,
+        ), () => received)
+        expect(Date.now() - startedAt).toBeGreaterThan(10 * 60_000)
+        expect(result).toEqual({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.byteLength })
+        expect(fs.readFileSync(target).equals(bytes)).toBe(true)
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
+    })
+
+    it('gives up at the ceiling and removes the partial package', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-ceiling-'))
+      const target = path.join(directory, 'node.msi')
+      // At one chunk every 40 seconds this would need well over the ceiling to finish.
+      const declaredLength = 100 * 1024 * 1024
+      const url = 'https://nodejs.org/dist/v22.17.0/node-v22.17.0-x64.msi'
+      const startedAt = Date.now()
+      let received = 0
+      try {
+        await expect(driveChunkByChunk(downloadNodeRuntimePackage(
+          slowFetch(declaredLength, 3),
+          url,
+          target,
+          { onProgress: (event) => { received = event.transferredBytes ?? received } },
+          nodeRuntimeDownloadSources('outside-mainland-china')[0],
+          async () => undefined,
+        ), () => received)).rejects.toThrow('安装包下载超时')
+        expect(Date.now() - startedAt).toBe(nodeDownloadCeilingMs)
+        expect(received).toBeGreaterThan(0)
+        expect(fs.existsSync(target)).toBe(false)
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
+    })
+  })
 })
 
 // winget 自己下载、不走下载专用线路：Windows 上只在退到下安装包时才借线路，借到以后再定先走哪个源（第二十八批 D）。
@@ -757,7 +1064,7 @@ describe('Node.js installer and the download route on Windows', () => {
         },
         fetch: fetchMock,
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败')
+    })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(routeCalls).toBe(1)
     expect(events.slice(0, 3)).toEqual([
@@ -826,7 +1133,7 @@ describe('Node.js MSI install while Windows Installer is busy with another insta
 
   it.runIf(process.platform === 'win32')('stops at the first download source instead of downloading the package again', async () => {
     const { failure, requested, msiRuns, progress } = await installWhileMsiExitsWith(1618)
-    const message = `Node.js LTS 自动安装失败。国内镜像：${installerBusy}`
+    const message = `Node.js 自动安装失败：${installerBusy}。`
 
     expect(failure).toBeInstanceOf(Error)
     expect(failure instanceof Error ? failure.message : null).toBe(message)
@@ -842,7 +1149,34 @@ describe('Node.js MSI install while Windows Installer is busy with another insta
 
     expect(msiRuns).toHaveLength(2)
     expect(requested.some((url) => url.startsWith('https://nodejs.org/'))).toBe(true)
+    // 上屏只说一个原因，每个源的原话都在 cause 里进运行日志（#1100 第1条）。
     expect(failure instanceof Error ? failure.message : null)
+      .toMatch(/^Node\.js 自动安装失败：Windows Installer 安装失败（错误 1603）。/)
+    expect(failure instanceof Error ? (failure.cause as Error).message : null)
       .toContain('；Node.js 官方源：Windows Installer 安装失败（错误 1603）')
+  })
+})
+
+describe('the sentence a failed Node.js install leaves on screen', () => {
+  it('says one reason with the next step and leaves the raw steps to the log', () => {
+    const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:443'), { code: 'ECONNREFUSED' }) })
+    expect(describeNodeInstallFailure([refused, new Error('fetch failed')]))
+      .toBe('Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。检查网络后再点「重试」。')
+    expect(describeNodeInstallFailure([new Error('fetch failed')])).toBe('Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。')
+    expect(describeNodeInstallFailure([new Error('HTTP 503')])).toBe('Node.js 自动安装失败：下载安装包时下载源那边出错（错误码 HTTP 503）。过几分钟再点「重试」。')
+    expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('Node.js 安装包 SHA-256 校验失败')]))
+      .toBe('Node.js 自动安装失败：下载的安装包没通过校验，已经删掉。再点「重试」；一直这样换个网络。')
+    expect(describeNodeInstallFailure([new Error('无法解析安装后的 Node.js 可执行文件：ENOENT')]))
+      .toBe('Node.js 自动安装失败：装完没找到能用的 Node.js。重启电脑后再看一次；还不行请找客服。')
+    expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('命令执行失败（退出码 1603）：powershell.exe')]))
+      .toMatch(/^Node\.js 自动安装失败：Windows Installer 安装失败（错误 1603）。请先重启 Windows/)
+    expect(describeNodeInstallFailure([new Error('something odd')]))
+      .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+    expect(describeNodeInstallFailure([])).toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+  })
+
+  it('names the code when the staging folder could not be made', () => {
+    expect(describeNodeStagingFailure(Object.assign(new Error("EPERM: operation not permitted, mkdir 'C:\\x'"), { code: 'EPERM' })))
+      .toBe('Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去（错误码 EPERM）。清理一下磁盘或重启电脑后再点「重试」。')
   })
 })

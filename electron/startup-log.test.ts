@@ -1,10 +1,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   drainStartupFailures,
   formatStartupFailure,
+  pathRootSpellings,
   recordStartupFailure,
   redactHomeDirectory,
   redactLinuxUserPaths,
@@ -12,6 +13,7 @@ import {
   resolveStartupLogDirectory,
   resolveStartupLogPath,
 } from './startup-log'
+import { canCreateSymbolicLink } from './symlink-capability.test-support'
 
 const temporaryDirectories: string[] = []
 
@@ -22,6 +24,7 @@ function temporaryDirectory(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -151,6 +154,94 @@ describe('startup failure records', () => {
     })).toBeNull()
   })
 
+  it('starts over once the log outgrows its budget', () => {
+    const root = temporaryDirectory()
+    const filePath = resolveStartupLogPath({ userDataDirectory: root })
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, 'x'.repeat(129 * 1024))
+
+    expect(recordStartupFailure(new Error('boom'), { phase: 'whenReady' }, {
+      userDataDirectory: root,
+    })).toBe(filePath)
+    const contents = fs.readFileSync(filePath, 'utf8')
+    expect(contents).toContain('boom')
+    expect(contents).not.toContain('xxxx')
+  })
+
+  it('writes a fresh file instead of through a second hard link', () => {
+    const root = temporaryDirectory()
+    recordStartupFailure(new Error('boom one'), { phase: 'whenReady' }, { userDataDirectory: root })
+    const filePath = resolveStartupLogPath({ userDataDirectory: root })
+    const elsewhere = path.join(root, 'elsewhere.txt')
+    fs.linkSync(filePath, elsewhere)
+    const before = fs.readFileSync(elsewhere, 'utf8')
+
+    expect(recordStartupFailure(new Error('boom two'), { phase: 'whenReady' }, {
+      userDataDirectory: root,
+    })).toBe(filePath)
+    // The other name keeps exactly what it had; only our own name moved on.
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe(before)
+    const contents = fs.readFileSync(filePath, 'utf8')
+    expect(contents).toContain('boom two')
+    expect(contents).not.toContain('boom one')
+    expect(fs.lstatSync(filePath).nlink).toBe(1)
+  })
+
+  it.runIf(canCreateSymbolicLink)('writes a fresh file instead of through a planted symlink', () => {
+    const root = temporaryDirectory()
+    const existingTarget = path.join(root, 'protected.txt')
+    const missingTarget = path.join(root, 'missing.txt')
+    fs.writeFileSync(existingTarget, 'do not touch')
+    const filePath = resolveStartupLogPath({ userDataDirectory: root })
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+
+    for (const target of [existingTarget, missingTarget]) {
+      fs.symlinkSync(target, filePath)
+      expect(recordStartupFailure(new Error('boom'), { phase: 'whenReady' }, {
+        userDataDirectory: root,
+      })).toBe(filePath)
+      expect(fs.lstatSync(filePath).isSymbolicLink()).toBe(false)
+      expect(fs.readFileSync(filePath, 'utf8')).toContain('boom')
+      fs.rmSync(filePath)
+    }
+    expect(fs.readFileSync(existingTarget, 'utf8')).toBe('do not touch')
+    // A dangling link must not get its target created either.
+    expect(fs.existsSync(missingTarget)).toBe(false)
+  })
+
+  it.runIf(canCreateSymbolicLink)('does not write through a symlink swapped in after the check', () => {
+    const root = temporaryDirectory()
+    recordStartupFailure(new Error('boom one'), { phase: 'whenReady' }, { userDataDirectory: root })
+    const filePath = resolveStartupLogPath({ userDataDirectory: root })
+    const target = path.join(root, 'protected.txt')
+    fs.writeFileSync(target, 'do not touch')
+    const lstat = fs.lstatSync
+    // The name is a plain file when it is checked and a link by the time it is opened.
+    vi.spyOn(fs, 'lstatSync').mockImplementationOnce((value) => {
+      const stats = lstat(value, { bigint: true })
+      fs.rmSync(filePath)
+      fs.symlinkSync(target, filePath)
+      return stats as never
+    })
+
+    expect(recordStartupFailure(new Error('boom two'), { phase: 'whenReady' }, {
+      userDataDirectory: root,
+    })).toBeNull()
+    expect(fs.readFileSync(target, 'utf8')).toBe('do not touch')
+  })
+
+  it('leaves a directory holding the log name alone', () => {
+    const root = temporaryDirectory()
+    const filePath = resolveStartupLogPath({ userDataDirectory: root })
+    fs.mkdirSync(filePath, { recursive: true })
+    fs.writeFileSync(path.join(filePath, 'keep.txt'), 'keep')
+
+    expect(recordStartupFailure(new Error('boom'), { phase: 'whenReady' }, {
+      userDataDirectory: root,
+    })).toBeNull()
+    expect(fs.readFileSync(path.join(filePath, 'keep.txt'), 'utf8')).toBe('keep')
+  })
+
   it('drains the file so the runtime log adopts each record exactly once', () => {
     const root = temporaryDirectory()
     recordStartupFailure(new Error('boom'), { phase: 'whenReady' }, { userDataDirectory: root })
@@ -235,5 +326,22 @@ describe('home directory redaction on Linux', () => {
       .toBe('%USERPROFILE%\\x /media/alice/z')
     // A Windows-shaped home keeps its label wherever the redaction runs.
     expect(redactHomeDirectory('C:\\Users\\Al\\x', 'C:\\Users\\Al', 'linux')).toBe('%USERPROFILE%\\x')
+  })
+})
+
+describe('home directory spellings', () => {
+  it('hides the escaped-slash spelling the diagnostics export already hid', () => {
+    const text = '{"cwd":"C:\\\\Users\\\\Al\\\\x","url":"C:\\/Users\\/Al\\/y"}'
+    expect(redactHomeDirectory(text, 'C:\\Users\\Al', 'win32'))
+      .toBe('{"cwd":"%USERPROFILE%\\\\x","url":"%USERPROFILE%\\/y"}')
+    expect(redactHomeDirectory('"\\/Users\\/al\\/x"', '/Users/al', 'darwin')).toBe('"%USERPROFILE%\\/x"')
+  })
+
+  it('lists each spelling once and never an empty one', () => {
+    const spellings = pathRootSpellings('C:/Users/Al', 'C:\\Users\\Al')
+    expect(spellings).toEqual([...new Set(spellings)])
+    expect(spellings).toContain('C:\\\\Users\\\\Al')
+    expect(spellings).toContain('C:\\/Users\\/Al')
+    expect(pathRootSpellings('', '')).toEqual([])
   })
 })

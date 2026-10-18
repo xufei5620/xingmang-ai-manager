@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 import { activeProviderIds, buildAccountKeyName, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 import type { AccountKey, AccountKeyUpdateInput } from './ipc-contract'
@@ -55,7 +57,7 @@ export function isKeyQuotaExhaustedMessage(message: string): boolean {
  * 上限到了就停：签一把新 Key 会悄悄绕过这个上限，所以重签、自动换新都在这里止步，
  * 把话说给用户听。
  */
-export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「账号」页「密钥」里调高这个工具的额度后再试。'
+export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「个人中心 → 密钥管理」的「每个工具的额度上限」里调高后再试。'
 
 /**
  * AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。用的是

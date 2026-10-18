@@ -5,12 +5,15 @@ import { transpileModule, ModuleKind } from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
 import { accelerationEntryMode, accelerationWorkerArgument } from './acceleration-worker-entry'
 import { linuxLaunchRefusal, linuxLaunchRefusalNotice } from './linux-launch-guard'
+import { hasDisallowedPackagedDebugSwitch } from './security'
 import { uninstallCleanupArgument, uninstallCleanupEntryMode } from './uninstall-cleanup-entry'
 
 interface EntryIdentity {
   /** Omitted means the process has no geteuid, as on Windows. */
   effectiveUid?: number
   env?: Record<string, string>
+  /** Omitted means a development run, where Electron reports isPackaged false. */
+  packaged?: boolean
 }
 
 function runEntry(argv: string[], connected: boolean, platform = 'win32', identity: EntryIdentity = {}) {
@@ -44,11 +47,13 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32', identi
     require(name: string) {
       if (name === '../acceleration-worker-entry') return { accelerationEntryMode }
       if (name === '../linux-launch-guard') return { linuxLaunchRefusal, linuxLaunchRefusalNotice }
+      if (name === '../security') return { hasDisallowedPackagedDebugSwitch }
       if (name === '../uninstall-cleanup-entry') return { uninstallCleanupEntryMode }
       if (name === '../uninstall-cleanup') return { startUninstallCleanup }
       if (name === 'electron') {
         return {
           app: {
+            isPackaged: identity.packaged === true,
             setActivationPolicy,
             disableHardwareAcceleration: () => events.push('gpu:off'),
             setPath: (name: string, value: string) => events.push(`path:${name}=${value}`),
@@ -149,5 +154,41 @@ describe('packaged acceleration worker entry', () => {
     expect(result.loaded).toEqual(['./desktop-entry'])
     expect(result.showErrorBox).not.toHaveBeenCalled()
     expect(result.env.HOME).toBe('/home/alice')
+  })
+})
+
+describe('packaged launch switch guard', () => {
+  it.each([
+    ['the desktop', 'win32', ['/remote-debugging-port=9222'], false, {}],
+    ['the uninstall cleanup', 'win32', [uninstallCleanupArgument, '-remote-debugging-port=9222'], false, {}],
+    ['an IPC-connected helper', 'darwin', [accelerationWorkerArgument, '--gpu-launcher=/bin/sh'], true, {}],
+    ['a refused Linux root launch', 'linux', ['--renderer-cmd-prefix=sh'], false, { effectiveUid: 0 }],
+  ] as const)('exits before %s when a packaged launch carries a blocked switch', async (_label, platform, extraArgs, connected, identity) => {
+    const result = runEntry(['app', ...extraArgs], connected, platform, { ...identity, packaged: true })
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(result.exit).toHaveBeenCalledExactlyOnceWith(1)
+    expect(result.loaded).toEqual([])
+    expect(result.events).toEqual([])
+    expect(result.startUninstallCleanup).not.toHaveBeenCalled()
+    expect(result.isolateAccelerationElectronProfile).not.toHaveBeenCalled()
+    expect(result.showErrorBox).not.toHaveBeenCalled()
+  })
+
+  it('opens the packaged desktop as before without a blocked switch', () => {
+    const result = runEntry(['app.exe', '--launched-at-login'], false, 'win32', { packaged: true })
+    expect(result.loaded).toEqual(['./desktop-entry'])
+    expect(result.exit).not.toHaveBeenCalled()
+  })
+
+  it('reads a leading slash as a switch only on Windows', () => {
+    expect(runEntry(['app', '/remote-debugging-port=9222'], false, 'darwin', { packaged: true }).loaded).toEqual(['./desktop-entry'])
+    expect(runEntry(['app', '/remote-debugging-port=9222'], false, 'win32', { packaged: true }).loaded).toEqual([])
+  })
+
+  it('leaves development runs free to debug', () => {
+    const result = runEntry(['app', '--remote-debugging-port=9222'], false, 'win32')
+    expect(result.loaded).toEqual(['./desktop-entry'])
+    expect(result.exit).not.toHaveBeenCalled()
   })
 })

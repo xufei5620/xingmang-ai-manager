@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, ChoiceMenu, Confirm, Dialog, Input, Logo, Menu, Pill, SearchInput, Segment, Textarea, useToast } from '../../ui'
+import { PageLoading } from '../app/PageLoading'
 import { canReadImages, chatLimits, createChatApi, inspectModel, type ChatApi } from './api'
 import { activeConversation, chatErrorAction, chatErrorMessage, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace } from './state'
 import { ParametersDialog } from './ParametersDialog'
@@ -48,18 +49,19 @@ function ChatScope(props: ChatScopeProps) {
   }, [props.api, props.scope])
   // While the old record cannot be read, nothing is written to it. Reading it again only swaps in a new view
   // once it reads cleanly, carrying over what was said meanwhile; a reply still arriving would be cut off, so
-  // the swap waits until nothing is generating.
-  const reload = async (session: () => ChatWorkspace) => {
+  // the swap waits until nothing is generating. A read that still fails hands its reason back to be said again.
+  const reload = async (session: () => ChatWorkspace): Promise<string | undefined> => {
     const loaded = await loadChatHistory(props.api, window.localStorage, props.scope)
+    if (loaded.warning) return loaded.warning
     const latest = session()
-    if (loaded.warning || latest.conversations.some(isGenerating) || isGenerating(latest.draftConversation)) return
+    if (latest.conversations.some(isGenerating) || isGenerating(latest.draftConversation)) return
     setHistory((previous) => ({ loaded: { ...loaded, state: mergeSessionIntoHistory(loaded.state, latest) }, generation: (previous?.generation ?? 0) + 1 }))
   }
-  if (!history) return <section className="chat-page" hidden={!props.active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={props.scope} data-loading="true" aria-busy="true" />
+  if (!history) return <section className="chat-page" hidden={!props.active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={props.scope} data-loading="true" aria-busy="true"><PageLoading /></section>
   return <ChatView key={history.generation} {...props} history={history.loaded} onReloadHistory={reload} />
 }
 
-function ChatView({ api, scope, active, onOpenAccount, openParameters, onParametersOpened, history, onReloadHistory }: ChatScopeProps & { history: LoadedChatHistory; onReloadHistory: (session: () => ChatWorkspace) => Promise<void> }) {
+function ChatView({ api, scope, active, onOpenAccount, openParameters, onParametersOpened, history, onReloadHistory }: ChatScopeProps & { history: LoadedChatHistory; onReloadHistory: (session: () => ChatWorkspace) => Promise<string | undefined> }) {
   const chat = useChatController(api, scope, history, active)
   const toast = useToast()
   const { conversation, preparations } = chat
@@ -175,7 +177,11 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const reloadHistory = async () => {
     const ticket = owner.current
     setReloading(true)
-    try { await onReloadHistory(() => latestState.current) } finally { if (owner.current === ticket) setReloading(false) }
+    try {
+      const warning = await onReloadHistory(() => latestState.current)
+      // 还是读不出来时红条原样不变，转一下圈就停，客户分不清读过没有：把读不出来的原因再说一遍。
+      if (warning && owner.current === ticket) toast.show(warning, 'warn')
+    } finally { if (owner.current === ticket) setReloading(false) }
   }
   const fillExample = (text: string) => {
     chat.setDraft(text)

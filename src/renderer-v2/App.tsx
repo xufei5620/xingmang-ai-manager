@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { BookOpen, Download, ListChecks, MessageSquare, RefreshCw, RotateCcw, Zap } from 'lucide-react'
+import { BookOpen, Download, ListChecks, MessageSquare, RotateCcw, Zap } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
 import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
@@ -38,7 +38,7 @@ import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './fea
 import { RestartReminder, RuntimeRestartDialog } from './features/tools/RuntimeRestartDialog'
 import { guideJobProgress, installedToolSyncLabel, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, manualUninstallState, type ManualUninstallState } from './features/tools/ManualUninstall'
-import { operationLogSection, operationTargetOf, presentOperationFailure, type OperationActionId } from './operation-error'
+import { operationLogSection, operationTargetOf, presentOperationFailure, rewriteKeyAction, type OperationActionId } from './operation-error'
 import { accountTabs, macDesktopTutorialTopic, resolveAccountLanding, resolveFeedbackLanding, settingsGroups, settingsItemAvailable, settingsItems, autoUpdateBubbleBody, updateBubbleRepeatsUpdatesPage, updateBubbleTitle, updateDiskShortfallText, updateFailureLabel, updatesTutorialTopic, type SettingsGroupId, type SettingsItem } from './registry/business'
 import { homeToolOrder, shortcutTools, tools } from './registry/tools'
 import { activeProviderIds, type ActiveProviderId } from '../../electron/catalog'
@@ -48,7 +48,7 @@ import type { FeedbackRequest, FeedbackSupport, ToolInstallOutcome } from './pag
 import type { ToolConfigConfirmation } from './pages-account'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
-import { errorMessage, operationFailureFrom, pendingBusinessOperations, userFacingErrorMessage } from './business-common'
+import { dollars, errorMessage, operationFailureFrom, pendingBusinessOperations, userFacingErrorMessage } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
 import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
@@ -60,6 +60,7 @@ import { useNetworkLocation } from './features/shell/useNetworkLocation'
 import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
+import { PageLoading } from './features/app/PageLoading'
 import { OperationErrorDialog, supportFailureOf, type OperationFailure } from './features/app/OperationErrorDialog'
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
@@ -94,7 +95,7 @@ import './business.css'
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
 const ChatPage = lazy(() => import('./features/chat').then((module) => ({ default: module.ChatPage })))
 const AccelerationPage = lazy(() => import('./features/acceleration/AccelerationPage').then((module) => ({ default: module.AccelerationPage })))
-const pageLoading = <div className="v2-business-loading" role="status" data-testid="route-loading"><RefreshCw size={24} className="xm-spin" aria-hidden="true" /><strong>正在加载页面...</strong></div>
+const pageLoading = <PageLoading />
 
 type AccountTab = typeof accountTabs[number]['value']
 /**
@@ -465,7 +466,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setAccountBootstrap({ ...progress, scope: bootstrapScope, ...(quiet ? { quiet } : {}) })
     }
     updateProgress({ phase: 'syncing', label: '正在同步账号专属密钥', percent: 5 })
-    // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入 Key」
+    // 结论要能被调用方读到：这个函数自己把失败收进首页的横幅，而「重新写入密钥」
     // 的人正站在「检查」页上，横幅在他看不见的地方。用对象而不是 let，是因为赋值
     // 发生在闭包里，TypeScript 会把 let 的类型收窄成初始值。
     const outcome: { result?: AccountBootstrapResult; error?: string } = {}
@@ -496,7 +497,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         }
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setAccountBootstrap((current) => current && current.scope === bootstrapScope
-          ? { ...current, phase: 'verifying', label: result.failed.length ? 'Key 同步完成，部分工具待处理' : 'Key 已写入，正在刷新工具状态', percent: 100, result, finishedAt: Date.now() }
+          ? { ...current, phase: 'verifying', label: result.failed.length ? '密钥同步完成，部分工具待处理' : '密钥已写入，正在刷新工具状态', percent: 100, result, finishedAt: Date.now() }
           : current)
         setWorkspaceEntered(true)
         // 只重读配置，不再把整轮环境探测走第二遍：跟着 Key 变的只有配置状态，
@@ -506,14 +507,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         // 原样在哪找回。点名重写的那一档由调用方自己报结果，这里不重复。
         if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修好 Codex 的配置文件，坏掉的那份已备份', 'ok')
       } catch (cause) {
-        outcome.error = errorMessage(cause, '账号 Key 初始化没有完成')
+        outcome.error = errorMessage(cause, '账号密钥没有配好')
         logAccountBootstrap(describeAccountBootstrapFailure(mode, outcome.error))
         if (!mounted.current || epoch !== bootstrapEpoch.current) return
         setWorkspaceEntered(true)
         setAccountBootstrap((current) => ({
-          ...(current ?? { phase: 'verifying', label: 'Key 初始化没有完成', percent: 100, scope: bootstrapScope }),
+          ...(current ?? { phase: 'verifying', label: '密钥没有配好', percent: 100, scope: bootstrapScope }),
           scope: bootstrapScope,
-          error: errorMessage(cause, '账号 Key 初始化没有完成'),
+          error: errorMessage(cause, '账号密钥没有配好'),
         }))
       }
     })()
@@ -525,7 +526,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     return outcome
   }, [native, settings, toast.show, toolbox.refreshConfig, siteId, noteStartupCheck, templateFillRetry])
   /**
-   * 「重新写入 Key」与「Key 失效」的「一键修复」共用的入口：跑的就是装完工具后
+   * 「重新写入密钥」与「密钥失效」的「一键修复」共用的入口：跑的就是装完工具后
    * 那条同样的重写流程（syncAfterToolInstalled 里的这一行），只是限定到指定的工具。
    * 主进程说不成的原因原样抛回给调用方，由它决定显示在哪，不在这里吞掉。
    */
@@ -835,7 +836,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => native.onAccountVaultRecovered?.(() => noteStartupCheck(vaultRecoveredNotice())), [native, noteStartupCheck])
   // tool 只是把「这次失败关系到哪个工具」记下来；具体目录在渲染那一刻从当时的
   // 快照里取，装完又失败的第二次点击才不会拿到上一次的旧路径。
-  // 改用账号、重新写入 Key 这几件写的是配置文件，错误框按配置文件说（已知29）。
+  // 改用账号、重新写入密钥 这几件写的是配置文件，错误框按配置文件说（已知29）。
   const perform = useCallback(async function run(label: string, work: () => Promise<unknown>, tool?: ToolId): Promise<void> {
     setOperationError(null)
     try { await work() }
@@ -960,7 +961,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'relogin') setAuth('login')
     // 目录里 keyInvalid 的「一键修复」就是这件事：对当前账号把已配置的工具重新
     // 写一次 Key。一次点击只重写一次，连续失败的出口仍旧是「找客服」。
-    else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
+    else if (action === 'repair') void perform(rewriteKeyAction, () => rewriteAccountKeys())
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
@@ -980,7 +981,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else if (action === 'log') navigate('feedback', 'log')
     else if (action === 'network') navigate('health')
     else if (action === 'relogin') setAuth('login')
-    else if (action === 'repair') void perform('重新写入 Key', () => rewriteAccountKeys())
+    else if (action === 'repair') void perform(rewriteKeyAction, () => rewriteAccountKeys())
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(retry)
     else if (action === 'useCodexCli') switchToCodexCli()
@@ -1816,7 +1817,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {!session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         onHistoryLogin={() => { setAuthTarget({ siteId: 'solov-api', identifier: '' }); setAuth('login') }} theme={settings?.theme} onThemeToggle={toggleTheme}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
-        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoreRetrying ? '暂时连不上，登录还在' : restoring ? '正在恢复登录' : session.account?.username, email: restoreRetrying ? '稍后自动重试，不用重新登录' : restoring ? '网络慢时要多等一会儿' : undefined, restoring: restoreRetrying ? 'retrying' : restoring ? 'pending' : undefined, sourceTag: siteId === 'solov-api' ? accountSources[siteId].label : undefined, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, subscription: subscription ? `订阅：${subscriptionSummaryText(subscription, (usd) => `$${usd.toFixed(2)}`)}` : undefined, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error,
+        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoreRetrying ? '暂时连不上，登录还在' : restoring ? '正在恢复登录' : session.account?.username, email: restoreRetrying ? '稍后自动重试，不用重新登录' : restoring ? '网络慢时要多等一会儿' : undefined, restoring: restoreRetrying ? 'retrying' : restoring ? 'pending' : undefined, sourceTag: siteId === 'solov-api' ? accountSources[siteId].label : undefined, balance: balanceAmount === null ? undefined : dollars(balanceAmount), subscription: subscription ? `订阅：${subscriptionSummaryText(subscription, dollars)}` : undefined, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error,
             plan: session.authenticated && !restoring && balanceAmount !== null ? subscription ? subscription.name ?? undefined : '按量付费' : undefined, runway }} platform={os}
           accountTab={page === 'account' ? shownAccountTab : undefined} theme={settings?.theme} announcementOpen={announcementOpen}
           update={update && !update.error ? update.phase === 'downloaded' ? 'ready' : update.phase === 'available' || update.phase === 'downloading' ? 'available' : undefined : undefined}
@@ -1878,7 +1879,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onShowInstallFailure={(id) => { const failure = installFailures[id]?.failure; if (failure) setOperationError(failure) }}
               restart={toolsApi.restartWindows} onNoticeSlot={setHomeNoticeSlot} onNoticeRoom={setHomeNoticeRoom}
               onCancelInstall={(id) => void perform('取消安装', () => cancelHomeInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
-              onRewriteKey={(id) => void perform('重新写入 Key', async () => {
+              onRewriteKey={(id) => void perform(rewriteKeyAction, async () => {
                 if (await rewriteAccountKeys([providerFor(id)]) && mounted.current) toast.show(`已重新写入 ${spacedName(tools.find((tool) => tool.id === id)?.name ?? '工具')}的密钥，改动前的配置已备份`, 'ok')
               }, id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
@@ -1928,7 +1929,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
-      onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
+      onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
       connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {

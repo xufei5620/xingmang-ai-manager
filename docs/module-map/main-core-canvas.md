@@ -7,7 +7,8 @@
 - `ipc-contract.ts` — **主窗口业务通道的类型真相源**（另两套见总述）：`ipcInvokeChannels` / `ipcEventChannels` 两张通道表 + `XingmangApi` 接口，`as const satisfies` 让通道表和接口对齐。只许 `import type`；值导出只能来自零 Node 依赖的模块（现在是 `catalog.ts` 的 `providerIds` / `managedCliKeyProfiles` 和 `relay-sites.ts` 的一组站点常量），否则 Vite 会把 `node:fs` 打进渲染包（I6）。列在 CODEOWNERS 里，加通道要让 yoyo 看见（T1）
 - `preload.ts` — 主窗口的 sandbox 桥，暴露 `window.xingmang`。sandbox 下不能 require 本地模块，所以**手抄了一份通道表**，用 `satisfies` 钉住契约类型，`preload.test.ts` 钉住内容；这份重复是有意的，别"消除"（I7、T1）
 - `ipc.ts` — `registerIpcHandlers` 注册全部 `ipcInvokeChannels` 的处理器：每个都经 `registerTrustedHandler`（校验 sender URL、结构化日志、统一 dispose，I4），入参一律用本文件的手写 `parse*` 函数校验、出中文错误（I5，别换成 zod）；`config:reveal-api-key`、记住密码两条通道和聊天记录读写在日志静默名单里（I3、I13）。`ipc.test.ts` 把实际注册的通道和契约排序比对，漏注册、多注册都会红
-- `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版拒绝 `--inspect` / `--remote-debugging-*` 启动
+- `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版由 `platform/entry.ts` 在分出任何一支之前调用，拒绝 `--inspect` / `--remote-debugging-*` 和能让 Chromium 拉起命令的 `--gpu-launcher`、`--*-cmd-prefix`、`--browser-subprocess-path`；照 Chromium 的读法，单短横线和 Windows 上的斜杠写法同样拦。它是黑名单，残余风险写在源码注释里（#1065）
+- `input-guards.ts` — 最基础的输入检查（`isRecord`、`isStringArray`、`filterStrings`、`isPromiseLike`），零依赖、渲染层也能值导入（I6）；只判断不出报错文案。新代码从这里取，旧文件里各自那份等拆分时（#1070）顺手换（#1071 第 3 条）
 
 ## 命令执行与安全边界（本项目真正的复杂度在这里）
 
@@ -25,7 +26,9 @@
 - `bounded-file.ts` — 有上限地读文件、独占复制文件：要求单链接普通文件（`nlink === 1`），读前读后比对 dev/ino/大小/时间戳，路径校验期间被换掉就报错，防硬链接与 TOCTOU 重定向（I8）
 - `bounded-directory.ts` — 有上限地列目录（`readDirectoryEntries*`），条目超过上限抛 `DirectoryEntryLimitError`，防被塞爆的目录拖垮主进程
 - `bounded-response.ts` — 有上限地读 HTTP 响应体（`readBoundedResponseText/Bytes`），先看 content-length 再边读边数，超了就取消；I10 四件套里"响应体上限"那一件
+- `redirect-allowlist-fetch.ts` — 逐跳跟随下载跳转（`fetchWithRedirectAllowlist`）：强制 `redirect: 'manual'`，第一跳、每个 Location、响应自报的地址都过调用方给的校验，响应地址还必须正好是这一跳，另管循环与次数上限；I10 四件套里"重定向策略"那一件。`fetchLandingWithRedirectAllowlist` 另交回答话的那一跳（生产下载用的 fetch 不填 `response.url`），续传可设 `beyondLimit: 'return'` 不跟跳转；客户看得到的报错可用 `messages` 沿用原话。Node 运行时、Mac 桌面端安装器、Codex 插件目录、Git 运行时、Claude Desktop MSIX 在用；Codex 桌面端那份按 AGENTS 第 7 节不收
 - `bounded-operation-queue.ts` — 有并发上限和排队上限、可取消（AbortSignal）的通用任务队列；图片生成（`ai-image-service.ts`）和首页扫描的探测子进程（`system-service.ts`）在用。注意它不是 I11 的 `InstallationQueue`，安装类操作不能拿它代替
+- `schedule-timeout.ts` — 后台控制器默认用的延时器（`scheduleTimeout`，返回取消函数，计时器 `unref`）：应用线路、工具线路、系统代理复查、加速到期和中断提醒五处共用，测试各自注入假的；新控制器照用，别再抄一份（`schedule-timeout.test.ts` 钉住只此一份）
 - `safe-storage-backend.ts` — `safeStorage.isEncryptionAvailable()` 只说明"能调"，不说明"有保护"：Linux 没有密钥环时 Chromium 退到 `basic_text`，密钥是编进程序里的常量。这里把这种情况认成 `plaintext` 并拒绝落盘，Linux 上改成只在本次运行内存里保存（`resolveCredentialPersistence`）。登录会话、记住密码、托管 CLI Key 缓存、聊天 Key 缓存、多账号保险箱都经它判断
 
 ## CLI 服务与首页扫描
@@ -60,9 +63,8 @@
 - `canvas-contract.ts` — 宿主通道名 `canvasHostChannels` 与各通道入参/返回类型的单一来源（主进程侧），通道清单以它为准
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
-- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。只被 `canvas-window.ts` 使用
+- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度
-- `canvas-account-lifecycle.ts` — 账号切换时取消旧账号的生成与运行、给新账号续视频任务并初始化运行索引；同样的逻辑现在直接写在 `main.ts` 的账号切换里（推断：未见引用）
 
 ### 运行引擎（都在主进程）
 - `canvas-run-contract.ts` — 画布运行的数据契约：节点种类（含漫剧节点）、运行范围、尝试与候选产物、事件时间线、运行记录
@@ -80,7 +82,7 @@
 - `canvas-prompt-preset-store.ts` — 画布提示词预设（按账号，有条数与体积上限），走 safe-local-data 原子写
 
 ### 漫剧（画布里的剧本分镜）
-- `drama-model.ts` / `drama-parse-prompt.ts` / `drama-parse.ts` — 漫剧节点的数据模型与上限、给模型的"把剧本解析成角色/场景/道具/镜头表"系统提示、对模型输出的容错解析与校验（剥控制字符、截断、去重）。三者与 `canvas-v2/src/library/` 下同名文件逐字相同，主进程不 import 画布源码所以各留一份；未见测试钉住两边一致
+- `drama-model.ts` / `drama-parse-prompt.ts` / `drama-parse.ts` — 漫剧节点的数据模型与上限、给模型的"把剧本解析成角色/场景/道具/镜头表"系统提示、对模型输出的容错解析与校验（剥控制字符、截断、去重）。三者与 `canvas-v2/src/library/` 下同名文件逐字相同，主进程不 import 画布源码所以各留一份；`scripts/verify-drama-parse-parity.test.cjs` 钉住两边逐字一致（画布那份 `drama-parse-prompt.ts` 没有 import，只为两边一致而留）
 
 ### AI 服务（聊天、生图、生视频，与 CLI 共用同一账号额度）
 - `ai-chat-protocol.ts` — AI 请求的协议层：端点（`/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`）、各种上限、型号能力表 `resolveAiModelCapability` 与请求体构造；聊天、生图、生视频、画布指纹和执行器都依赖它
@@ -110,7 +112,7 @@
 > **`platform/entry.ts` 才是程序真正的入口**（`package.json` 的 `main` 是 `dist-electron/platform/entry.js`），`main.ts` 是最后才被 `platform/desktop-entry.ts` require 进来的。这一层还自带一套**和 `ipc-contract.ts` / `preload.ts` / `ipc.ts` 无关的第二套 IPC 三件组**：`platform/contract.ts`（`xingmang-platform:*` 通道契约）+ `platform/preload.ts`（自带字面量通道表，暴露 `window.xingmangPlatform`）+ `platform/ipc.ts`（`registerPlatformHandlers` 注册，`assertPlatformOwner` 只放行主窗口主框架，I4 的登记例外）。改系统设置类通道（主题、高对比度、开机自启、通知偏好、代理状态）改的是这一套，不是主窗口那套；它只在新界面（renderer-v2）时安装。
 
 ### 入口
-- `platform/entry.ts` — **程序入口**，在加载任何桌面模块之前按顺序分流：Linux 上以 root 或替别人运行就报一句原因后退出（Chromium 的缓存先指到临时目录，免得在客户主目录留下 root 文件）→ 卸载清理模式 → 加速辅助进程模式 → 都不是才 require `desktop-entry`。辅助进程不拿单实例锁、不开窗口、不注册渲染 IPC
+- `platform/entry.ts` — **程序入口**，在加载任何桌面模块之前按顺序分流：打包版带了调试或拉起命令的开关就直接退出（#1065）→ Linux 上以 root 或替别人运行就报一句原因后退出（Chromium 的缓存先指到临时目录，免得在客户主目录留下 root 文件）→ 卸载清理模式 → 加速辅助进程模式 → 都不是才 require `desktop-entry`。辅助进程不拿单实例锁、不开窗口、不注册渲染 IPC
 - `platform/desktop-entry.ts` — 桌面进程入口：判定用新界面还是旧回滚界面（文件构建看产物里的 `renderer-v2.flag`，只有 dev server 才看环境变量），新界面时装上 `renderer-v2.ts` 与 `install-system-api.ts`，然后 require `../main`
 - `platform/renderer-v2.ts` — 新界面的主窗口外观：建窗口前换成 v4 外框，按窗口宽度和用户的缩放偏好设缩放（监听 `settings.json` 变化），Windows 上同步标题栏按钮那一条的高度，F11 / ⌃⌘F 切全屏
 - `platform/frame-navigation.ts` — 主窗口里子框架（iframe）的导航守卫：除 `about:blank` / `about:srcdoc` 外一律拦下，主框架导航仍交给 `security.ts` 的白名单（I12）；由 `main.ts` 装在主窗口上
@@ -137,7 +139,4 @@
 
 ### 外观与平台事实
 - `platform/zoom.ts` — 平台层对缩放公式的叫法，**只能委托** `window-preferences.ts` 的 `calculateUiZoom`：两个应用缩放的地方同时监听同一批事件，各留一份公式会由监听注册顺序决定用户看到哪个
-- `platform/types.ts` — 平台层的类型（平台家族、缩放偏好、原生能力、界面登记项）
-- `platform/registry.ts` — 各平台的界面事实（标题栏高度、快捷键修饰符、路径示例、终端名）；只被 `facade.ts` / `index.ts` 引用，生产代码未用到（推断：未见引用）
-- `platform/facade.ts` — 合成只读的平台快照（能力 + 原生能力默认全关 + 界面登记），README 说是给 v2 适配层用的，但渲染层实际经 `platform:get-capabilities` 拿能力，只有测试在调它（推断：未见引用）
-- `platform/index.ts` — 平台层的汇总导出（facade / registry / zoom / types），没有任何模块 import 它（推断：未见引用）
+- `platform/types.ts` — 平台层的类型（缩放偏好）

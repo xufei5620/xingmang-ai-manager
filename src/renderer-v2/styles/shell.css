@@ -113,6 +113,10 @@ button, input, select, textarea { font: inherit; }
 .v2-statusbar > span, .v2-statusbar > button { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .v2-statusbar > button:hover:not(:disabled) { color: var(--text-2); }
 .v2-status-spacer { flex: 1; }
+/* 历史账号没有用户名时这里写邮箱（最长 256 字）。最宽 220、放不下先省略它，全文在悬停说明里；
+   收缩比重压得很大，状态栏再挤也是它先让，网络状态和加速线路名不先被吃成「网…」（#1133 第 3 条）。 */
+.v2-statusbar .v2-status-user { flex-shrink: 100; min-width: 0; max-width: 220px; }
+.v2-status-user > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .v2-statusbar .v2-network-location { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 .v2-network-location > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .v2-network-location > svg { flex: none; }
@@ -170,13 +174,23 @@ button, input, select, textarea { font: inherit; }
 .v2-command-group { margin: 0; padding: 8px 10px 4px; color: var(--text-3); font-size: var(--font-small-compact); }
 .v2-command-empty { display: grid; justify-items: start; gap: 8px; padding: 14px 18px; color: var(--text-3); font-size: 13px; }
 .v2-command-empty > p { margin: 0; }
-/* 窗口矮（按缩放折算不到 660）时导航每行 34 → 30，分组小标题和分隔线的空隙收一半，侧栏放得下。 */
+/* 窗口矮（按缩放折算不到 660）时导航每行 34 → 30，分组小标题和分隔线的空隙收一半，侧栏放得下；收起成窄条时也一样。 */
 @media (max-height: 659px) {
   .v2-nav-item { height: 30px; }
   .v2-nav-group-label { padding-top: 8px; }
   .v2-nav-separator { margin-block: 6px; }
   .v2-sidebar-pinned { padding-top: 6px; }
   .v2-account-balance { margin-top: 8px; }
+  /* 收起的窄条也要放得下（#1133 第 4 条）：110% 缩放的最小窗口只剩 566 高，原来只收了展开的侧栏，
+     窄条差 36（Mac 顶上还要让红黄绿三个点，差 68），「反馈与客服」滚出去，「检查」被渐隐盖得像按不动。
+     这里图标行 30 → 28、分组线上下空隙减半，标志和账号头像那块的空隙也收一点，Mac 也放得下。 */
+  .sidebar-collapsed .v2-nav-item { height: 28px; }
+  .sidebar-collapsed :is(.v2-nav-group-label, .v2-nav-separator) { margin-block: 4px; }
+  .sidebar-collapsed .v2-brand { height: 28px; margin-bottom: 4px; }
+  .sidebar-collapsed .v2-sidebar-pinned { padding-top: 4px; }
+  .sidebar-collapsed .v2-account-entry { margin-top: 4px; }
+  .sidebar-collapsed .v2-account-main { padding-block: 2px; }
+  .sidebar-collapsed .v2-account-rail { margin-top: 0; }
 }
 /* 铃铛下面的公告小框（v4）：320 宽，标题一行带「全部已读」，每条是标签、标题、日期和第一句，没读的左边一个金点。 */
 .v2-announcement-popover { position: fixed; inset: auto; margin: 0; width: 320px; max-width: calc(100vw - 16px); max-height: min(440px, calc(100vh - 120px)); overflow: auto; padding: 6px; border: 0; border-radius: 12px; background: var(--pop); color: var(--text); box-shadow: inset 0 0 0 1px var(--pop-line), var(--shadow-pop); }

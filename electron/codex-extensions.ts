@@ -149,6 +149,8 @@ export interface RepositoryContext {
 export interface CodexInvocationOptions {
   sensitiveValues?: readonly string[]
   timeoutMs?: number
+  /** 中途停下（扩展页「登录授权」旁的「取消」）：交给 runCommand，连子进程一起结束。 */
+  signal?: AbortSignal
 }
 
 export type CodexInvoker = (
@@ -511,6 +513,7 @@ function defaultInvoker(options: CodexExtensionServiceOptions): CodexInvoker {
       timeoutMs: invocationOptions.timeoutMs ?? 60_000,
       maxOutputBytes: 4 * 1024 * 1024,
       sensitiveValues: invocationOptions.sensitiveValues,
+      signal: invocationOptions.signal,
       machinePaths: options.machinePaths,
     }
     try {
@@ -574,6 +577,15 @@ function mcpUserNames(configPath: string): Set<string> {
   const config = parseTomlFile(configPath)
   const servers = config.mcp_servers
   return new Set(isRecord(servers) ? Object.keys(servers) : [])
+}
+
+/**
+ * 一份 config.toml 的 [mcp_servers] 表，按名字取各条原样写的内容，文件不在算空。扩展页拿它给
+ * `codex mcp list` 列出来的连接分层（#1092）；路径和文件的检查与读用户那份同一套。
+ */
+export function readCodexMcpServerEntries(configPath: string): Map<string, unknown> {
+  const servers = parseTomlFile(configPath).mcp_servers
+  return new Map(isRecord(servers) ? Object.entries(servers) : [])
 }
 
 function sanitizeMcpServer(
@@ -981,6 +993,8 @@ export class CodexExtensionService {
   private readonly trashDirectory: string
   private readonly configPath: string
   private readonly invoke: CodexInvoker
+  // 正在等浏览器授权的 `codex mcp login`，按名称记下，「取消」时一起停掉。
+  private readonly mcpLogins = new Map<string, Set<AbortController>>()
   private readonly serializeConfigWrite: <T>(operation: () => Promise<T>) => Promise<T>
 
   constructor(options: CodexExtensionServiceOptions = {}) {
@@ -1119,8 +1133,31 @@ export class CodexExtensionService {
     const argv = ['mcp', 'login', name]
     const normalizedScopes = scopes.map((scope) => assertNoNul(scope, 'OAuth Scope').trim()).filter(Boolean)
     if (normalizedScopes.length) argv.push('--scopes', normalizedScopes.join(','))
-    await this.invoke(argv, { timeoutMs: 180_000 })
+    // 第一个 await 之前登记好：紧跟着到的「取消」要能找到它。
+    const controller = new AbortController()
+    const pending = this.mcpLogins.get(name) ?? new Set<AbortController>()
+    pending.add(controller)
+    this.mcpLogins.set(name, pending)
+    try {
+      await this.invoke(argv, { timeoutMs: 180_000, signal: controller.signal })
+    } catch (error) {
+      // 客户自己点了「取消」是正常结束，照常回列表，不当失败报红条、记错误日志（#1099 第 1 条）。
+      // 认的是这次登录自己的停止标记，不认错误原话：原话哪天改了，取消也不会变回失败。
+      if (!controller.signal.aborted) throw error
+    } finally {
+      pending.delete(controller)
+      if (!pending.size && this.mcpLogins.get(name) === pending) this.mcpLogins.delete(name)
+    }
     return this.listMcpServers()
+  }
+
+  /** 停掉这个名称正在等浏览器授权的登录；没有在等的返回 false。 */
+  cancelMcpLogin(name: string): boolean {
+    assertSimpleName(name, 'MCP 名称')
+    const pending = this.mcpLogins.get(name)
+    if (!pending?.size) return false
+    for (const controller of pending) controller.abort()
+    return true
   }
 
   async logoutMcpServer(name: string): Promise<McpServerDto[]> {

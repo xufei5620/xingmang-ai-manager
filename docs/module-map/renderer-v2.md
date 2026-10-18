@@ -10,7 +10,6 @@
 - `bridge.ts` — 取 `window.xingmang`（preload 暴露的主进程桥，类型是 ipc-contract 的 `XingmangApi`）；不在 Electron 里时返回 null，浏览器夹具据此换成假桥。
 - `platform-api.ts` — 取第二座桥 `window.xingmangPlatform`（`electron/platform/contract`，只 `import type`），把系统深浅色、高对比度同步到根节点；用 revision 计数丢掉比推送更晚回来的初次读取。
 - `types.ts` — 新界面自己的几个类型别名（`V2Bridge` 就是 `XingmangApi`、`V2Page`、主题、平台），全部从 ipc-contract 与 registry 只取类型。
-- `index.ts` — 对外汇总导出（App、Shell、ui、页面与图标注册表）。（推断：未见引用）
 
 ## 跨页面共用的底座
 - `business-common.tsx` — **各页共用的错误话术与数据钩子**：剥掉 Electron 包在 IPC 拒绝外面的「Error invoking remote method '通道名'」前缀和类名、路径换成占位词、Key 过 `electron/redaction-patterns` 打码再上屏（I13）；`useResource` 用 useRef 序号丢弃迟到的读取（T6），另有 `useOperation`、`ResultNotice`、相对时间与金额格式。和 legacy 的 `src/error-message.ts` 是两棵树各一份，有意重复（I6/I7 同理）。
@@ -221,7 +220,6 @@
 - `registry/clients.ts` — 外接客户端的种类标签与能借用哪个工具的 Key（不含下线的 Gemini）。
 - `registry/status.ts` — 各类状态牌的字和语气色（工具、运行环境、密钥、订单、任务）。
 - `registry/icons.ts` — 常用动作（打开、安装、刷新、配置……）的图标映射。
-- `registry/index.ts` — 注册表汇总导出。（推断：未见引用）
 
 ## ui/ 组件层（照 ui-spec 原型抄的，通篇带分号）
 - `ui/README.md` — 组件层约定：按职责分文件、不做一个组件一个文件夹（R-B3）、组件拒收 className / style、Dialog 用原生 showModal、Menu/Popover 用原生 popover、Toast 时长规则；附浏览器检查命令。
@@ -262,7 +260,7 @@
 ## 要点
 
 - **入口链路**：根目录 `index.html` → `vite.config.ts` 的 `transformIndexHtml` 把 `/src/main.tsx` 换成 `/src/renderer-v2/main.tsx`（`XINGMANG_RENDERER` 不是 legacy 时）→ `main.tsx` 以 StrictMode 挂 `App.tsx` 的 `RendererV2App`。依据：`vite.config.ts`、`main.tsx`。
-- **守这条边界的门禁**是 `scripts/verify-renderer-boundary.test.cjs`（随 `npm test` 的 test:scripts 跑）：`valueImportable` / `typeImportableOnly` 两张清单，清单外的 electron 模块、node 内置模块、`electron` 包一律红；renderer-v2 引 `src/` 下 legacy 文件也红；还会顺着清单里每个模块的值依赖一路查到底，确认没有 Node 依赖（I6）。它补的是 `vite.config.ts` 里 `generateBundle` 那道只在 `vite build` 时、只看 Rollup 留下的模块的检查。依据：两份文件的注释。
+- **守这条边界的门禁**是 `scripts/verify-renderer-boundary.test.cjs`（随 `npm test` 的 test:scripts 跑）：`valueImportable` / `typeImportableOnly` 两张清单，清单外的 electron 模块、node 内置模块、`electron` 包一律红；renderer-v2 引 `src/` 下 legacy 文件也红；还会顺着清单里每个模块的值依赖一路查到底，确认没有 Node 依赖、走到的主进程模块也都在清单上（I6）；清单上的模块第一行都是同一句 `@renderer-importable` 标记，`electron/` 下有标记的和清单上的必须完全一致。它补的是 `vite.config.ts` 里 `generateBundle` 那道只在 `vite build` 时、只看 Rollup 留下的模块的检查。依据：两份文件的注释。
 - **渲染层防竞态的写法**：v2 一处都没用 legacy 的 `src/scan-coordinator.ts`、`src/latest-request.ts`、`src/provider-extension-coordinator.ts`（门禁本来也禁止 v2 引 legacy 树）。实际用的是：① useRef 计数器——`business-common.tsx` 的 `useResource`（`sequence` 序号）、`App.tsx` 的 `accountEpoch` / `bootstrapEpoch` / `sessionEvents`、`features/tools/useToolbox.ts` 的 `request` / `externalRequest` / `configRevision` / `desktopRevision`；② effect 里的 `let current = true` 取消标记（如 `features/auth/LegalDocument.tsx`）；③ 纯控制器里的 revision / epoch（`platform-api.ts`、`features/acceleration/lines-controller.ts`、`features/shell/network-controller.ts`）；④ `features/tools/ttl-cache.ts` 作废时让在飞请求不写回；⑤ 账号作用域变了就按 scope 重建（聊天控制器）。回归由 `features/tools/account-bound-launch.browser-check.mjs` 钉住。AGENTS.md T6 点名的三个工具只适用于冻结的 legacy 树，总述里该改成指向这些写法。依据：上述文件。
 - **两座桥、各功能自己包一层 api**：`window.xingmang`（`bridge.ts`，ipc-contract 的 `XingmangApi`）和 `window.xingmangPlatform`（`platform-api.ts`，平台层契约，只取类型）；IPC 调用按功能封在 `features/app/api.ts`、`features/auth/api.ts`、`features/chat/api.ts`、`features/tools/api.ts`、`features/acceleration/api.ts` 里，页面里另有直接用 bridge 的。依据：这几个 api.ts 与 `features/auth/README.md`。
 - **账号 → 写 Key 是一条链**：`App.tsx` 调度 → `features/tools/account-bootstrap.ts`（登录/恢复/点名重写三档）→ `features/tools/source-marker.ts`（手选来源标记）、`features/tools/key-sync-failure.ts`（失败话术）、`features/tools/online-resync.ts`（网回来补跑）；切账号时另走 `account-switch-sync.ts` + `SavedAccounts.tsx`。AuthFlow 只管认证、不碰 Key。依据：各文件头注释与 `features/auth/README.md`。

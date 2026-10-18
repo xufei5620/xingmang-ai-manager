@@ -14,12 +14,14 @@ import {
   extensionToolNames,
   groupExtensionItems,
   extensionFailureTarget,
+  extensionFormOffersProject,
   extensionInstallNeedsTrust,
   extensionRowState,
   fillCuratedPlaceholders,
   findNativeSkill,
   mcpCommandRuntime,
   mcpHealthView,
+  mcpNamesInScope,
   preferredExtensionProvider,
   parseCommandArguments,
   parseEnvironmentVariables,
@@ -434,6 +436,31 @@ describe('Grok plugin trust prompt', () => {
   })
 })
 
+// #1092：用户层和项目层可以各有一条同名的连接，撞名只看要装进去的那一层。
+describe('the name clash check for a custom connection', () => {
+  it('only counts connections in the layer being added to', () => {
+    const items = [
+      listItem({ provider: 'grok', kind: 'mcp', id: 'db', scope: 'user' }),
+      listItem({ provider: 'grok', kind: 'mcp', id: 'repo-db', scope: 'project' }),
+      listItem({ provider: 'grok', kind: 'mcp', id: 'bare', scope: null }),
+      listItem({ provider: 'grok', kind: 'plugin', id: 'plugin-db', scope: 'user' }),
+    ]
+    expect(mcpNamesInScope(items, 'user')).toEqual(['db', 'bare'])
+    expect(mcpNamesInScope(items, 'project')).toEqual(['repo-db'])
+  })
+})
+
+// #1092：Grok 的插件命令没有范围参数，选「当前项目」也装进全局，所以表单不给这一项。
+describe('the 当前项目 choice in the add form', () => {
+  it('is offered only where the CLI can install into the project', () => {
+    expect(extensionFormOffersProject('claude', 'plugin')).toBe(true)
+    for (const provider of ['codex', 'grok'] as const)
+      expect([provider, extensionFormOffersProject(provider, 'plugin')]).toEqual([provider, false])
+    for (const provider of ['claude', 'codex', 'grok'] as const)
+      expect([provider, extensionFormOffersProject(provider, 'skill')]).toEqual([provider, true])
+  })
+})
+
 describe('extension row actions', () => {
   it('sends the scope a project copy was listed under, so the user copy is left alone', async () => {
     const api = extensionApi()
@@ -606,12 +633,24 @@ describe('installed extension groups', () => {
 
   it('puts everything in the one group of a tool that has a single layer', () => {
     const groups = groupExtensionItems(
-      [listItem({ provider: 'codex', kind: 'mcp', id: 'a', scope: null }), listItem({ provider: 'codex', kind: 'mcp', id: 'b', scope: 'user' })],
-      extensionScopeGroups.mcp.codex,
+      [listItem({ provider: 'codex', id: 'a', scope: null }), listItem({ provider: 'codex', id: 'b', scope: 'user' })],
+      extensionScopeGroups.plugin.codex,
     )
     expect(groups).toHaveLength(1)
-    expect(groups[0]).toMatchObject({ title: '全局', description: '所有项目共用' })
+    expect(groups[0]).toMatchObject({ title: '已安装', description: '所有项目都能用' })
     expect(groups[0].items.map((item) => item.id)).toEqual(['a', 'b'])
+  })
+
+  // #1092：Codex 只往全局加连接，但受信任项目里写的它也列出来，主进程对照配置文件标成 project。
+  it('files Codex connections from a trusted project under 项目', () => {
+    const groups = groupExtensionItems(
+      [listItem({ provider: 'codex', kind: 'mcp', id: 'repo-db', scope: 'project' }), listItem({ provider: 'codex', kind: 'mcp', id: 'mine', scope: 'user' })],
+      extensionScopeGroups.mcp.codex,
+    )
+    expect(groups.map((group) => [group.title, group.description, group.items.map((entry) => entry.id)])).toEqual([
+      ['全局', '所有项目共用', ['mine']],
+      ['项目', '只在这个项目里用', ['repo-db']],
+    ])
   })
 
   it('puts the read-only Codex skills under 系统内置 whatever scope the list gave them', () => {
@@ -624,6 +663,26 @@ describe('installed extension groups', () => {
       ['用户', ['mine']],
       ['系统内置', ['system']],
     ])
+  })
+
+  // #1092：Grok 的连接列表带回 user / project 两层，插件只有用户一层、列表不带 scope。
+  it('splits Grok connections by the layer the CLI reports and keeps Grok plugins in one group', () => {
+    const connections = groupExtensionItems(
+      [
+        listItem({ provider: 'grok', kind: 'mcp', id: 'repo-db', scope: 'project' }),
+        listItem({ provider: 'grok', kind: 'mcp', id: 'mine', scope: 'user' }),
+      ],
+      extensionScopeGroups.mcp.grok,
+    )
+    expect(connections.map((group) => [group.title, group.description, group.items.map((entry) => entry.id)])).toEqual([
+      ['用户', '所有项目都能用', ['mine']],
+      ['项目', '只在这个项目里用', ['repo-db']],
+    ])
+    const plugins = groupExtensionItems(
+      [listItem({ provider: 'grok', kind: 'plugin', id: 'demo', scope: 'user' }), listItem({ provider: 'grok', kind: 'plugin', id: 'bare', scope: null })],
+      extensionScopeGroups.plugin.grok,
+    )
+    expect(plugins.map((group) => [group.title, group.items.map((entry) => entry.id)])).toEqual([['用户', ['demo', 'bare']]])
   })
 
   // 表里没有的层不能被分组弄丢：另起一组，标题用详情里那套范围叫法。

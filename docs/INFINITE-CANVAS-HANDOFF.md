@@ -757,7 +757,7 @@ UI 已经统一为一个创作库，但底层仍是四套数据源：节点注�
 - `electron/byte-range.ts`：视频和音频本地协议的单段字节范围解析。
 - `electron/canvas-project-package.ts`：`.xingcanvas` 项目包校验与重映射。
 - `electron/canvas-prompt-preset-store.ts`：账号专属用户提示词。
-- `electron/canvas-account-lifecycle.ts`：账号切换取消与索引初始化。
+- `electron/canvas-account-lifecycle.ts`：账号切换取消与索引初始化（已删，这段逻辑直接写在 `main.ts` 的账号切换里，#1140）。
 
 ### 9.1 hero8152 行为研究的独立实现
 

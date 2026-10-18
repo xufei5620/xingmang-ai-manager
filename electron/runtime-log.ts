@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { redactCommandText } from './command-runner'
+import { maskEmailAddresses } from './redaction-patterns'
 import { drainStartupFailures, redactHomeDirectory, STARTUP_LOG_FILE_NAME } from './startup-log'
 import {
   appendSafeUtf8File,
@@ -120,8 +121,10 @@ const MAX_UNSAVED_ENTRIES = 200
 // so existing callers keep their import path.
 export { redactHomeDirectory }
 
+// 邮箱只留第一个字和 @ 后面（a***@qq.com）：客服让客户报一下邮箱就对得上，日志和
+// 反馈报告里却不再有完整地址（#1073 第 5 条 c）。读旧日志也过这里，老条目照样遮。
 function safeText(value: string): string {
-  return redactCommandText(value).slice(0, MAX_TEXT_LENGTH)
+  return maskEmailAddresses(redactCommandText(value)).slice(0, MAX_TEXT_LENGTH)
 }
 
 function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {

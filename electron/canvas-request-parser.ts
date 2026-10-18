@@ -2,6 +2,7 @@ import type { CanvasAssetQuery, CanvasImageEditInput, CanvasImageGenerateInput, 
 import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
 import type { CanvasRunGraph, CanvasRunNodeKind, CanvasRunScope } from './canvas-run-contract'
+import type { AiImageGenerateInput } from './ipc-contract'
 
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 const videoTaskIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
@@ -90,29 +91,43 @@ export function requiredCanvasText(value: unknown, label: string, maximumBytes: 
   return value
 }
 
-export function parseCanvasImageGenerateInput(value: unknown): CanvasImageGenerateInput {
-  if (!isRecord(value)) throw new Error('画布生图请求格式错误')
-  const requestId = requiredCanvasString(value.requestId, '画布生图请求标识', 160)
-  const group = requiredCanvasString(value.group, '画布生图分组', 128)
-  const model = requiredCanvasString(value.model, '画布生图模型', 200)
-  const prompt = requiredCanvasPrompt(value.prompt, '画布生图提示词', 40_000)
-  const size = value.size === undefined ? undefined : requiredCanvasString(value.size, '画布生图尺寸', 64)
+export interface ImageGenerateInputLabels {
+  /** Every error starts with it, so each page keeps the wording its users already see. */
+  prefix: string
+  unknownFields: string
+}
+
+const imageGenerateFields = new Set(['requestId', 'group', 'model', 'prompt', 'size', 'quality', 'imageResolution'])
+
+// 对话页和画布发的是同一个付费生图请求，以前各写一份解析、标准还不一样（#1071）：对话页不拒多余字段、
+// 画质和清晰度先转字符串再比、标识里只拒 \0；画布的型号和尺寸又放得比对话页长。合成这一份，每项取较严的。
+export function parseImageGenerateInput(value: unknown, labels: ImageGenerateInputLabels): AiImageGenerateInput {
+  const { prefix } = labels
+  if (!isRecord(value)) throw new Error(`${prefix}请求格式错误`)
+  const requestId = requiredCanvasString(value.requestId, `${prefix}请求标识`, 160)
+  const group = requiredCanvasString(value.group, `${prefix}分组`, 128)
+  const model = requiredCanvasString(value.model, `${prefix}模型`, 128)
+  const prompt = requiredCanvasPrompt(value.prompt, `${prefix}提示词`, 40_000)
+  const size = value.size === undefined ? undefined : requiredCanvasString(value.size, `${prefix}尺寸`, 32)
   const quality = value.quality
   if (quality !== undefined && quality !== 'low' && quality !== 'medium' && quality !== 'high' && quality !== 'auto') {
-    throw new Error('画布生图画质格式错误')
+    throw new Error(`${prefix}画质格式错误`)
   }
   const imageResolution = value.imageResolution
   if (imageResolution !== undefined && imageResolution !== '1K' && imageResolution !== '2K' && imageResolution !== '4K') {
-    throw new Error('画布生图清晰度格式错误')
+    throw new Error(`${prefix}清晰度格式错误`)
   }
-  const allowed = new Set(['requestId', 'group', 'model', 'prompt', 'size', 'quality', 'imageResolution'])
-  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error('画布生图请求包含未知字段')
+  if (Object.keys(value).some((key) => !imageGenerateFields.has(key))) throw new Error(labels.unknownFields)
   return {
     requestId, group, model, prompt,
     ...(size ? { size } : {}),
     ...(quality ? { quality } : {}),
     ...(imageResolution ? { imageResolution } : {}),
   }
+}
+
+export function parseCanvasImageGenerateInput(value: unknown): CanvasImageGenerateInput {
+  return parseImageGenerateInput(value, { prefix: '画布生图', unknownFields: '画布生图请求包含未知字段' })
 }
 
 export function parseCanvasImageEditInput(value: unknown): CanvasImageEditInput {

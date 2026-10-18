@@ -67,6 +67,7 @@ import {
   downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
   downloadCodexDesktopBucketPackage,
+  measureCodexDesktopOfficialSpeed,
   shouldContinueAfterCodexDesktopBucketInstall,
   buildCodexDesktopOfficialPackageSource,
   codexDesktopOfficialDownloadLimitMs,
@@ -77,6 +78,7 @@ import {
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
+  launchThenWaitOutsideAccountWork,
   parseCodexDesktopCombinedProbeJson,
   validateCodexDesktopResourceUrl,
   toCodexDesktopMacInstallFailure,
@@ -85,10 +87,18 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
-import { desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError } from './desktop-package-bucket'
+import {
+  desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
+} from './desktop-package-bucket'
 import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
 import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+
+// The real bucket download runs; the spy only lets a test read back what this service handed it.
+vi.mock('./desktop-package-bucket', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./desktop-package-bucket')>()
+  return { ...original, downloadDesktopBucketPackage: vi.fn(original.downloadDesktopBucketPackage) }
+})
 
 const temporaryDirectories: string[] = []
 
@@ -1927,6 +1937,59 @@ describe('Codex Desktop launch queueing', () => {
     expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledTimes(1)
   })
 
+  // #1085：Windows 上等窗口、换中文最长一分多钟，发出启动请求以后换账号不该陪它等到 30 秒超时。
+  it('stops counting a launch as account work once the launch request is sent, while the window wait goes on', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    let sendRequest!: () => void
+    const requestSent = new Promise<void>((resolve) => { sendRequest = resolve })
+    let showWindow!: () => void
+    const windowShown = new Promise<void>((resolve) => { showWindow = resolve })
+    const launch = launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      await requestSent
+      return async () => { await windowShown; return 'opened' }
+    })
+
+    let drained = false
+    const drain = accountWork.whenIdle().then(() => { drained = true })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(drained).toBe(false)
+    sendRequest()
+    await drain
+    revision++
+    showWindow()
+    await expect(launch).resolves.toBe('opened')
+  })
+
+  // 启动请求已经发出去了：安装队列要等 Codex 起来再放别的安装进来（I11），账号换了照旧报出来。
+  it('still waits for the window before reporting an account change that began while the launch request was being sent', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    let showWindow!: () => void
+    const windowShown = new Promise<void>((resolve) => { showWindow = resolve })
+    let waited = false
+    const launch = launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      revision++
+      return async () => { await windowShown; waited = true; return 'opened' }
+    })
+    let settled = false
+    void launch.then(() => { settled = true }, () => { settled = true })
+
+    await accountWork.whenIdle()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(settled).toBe(false)
+    showWindow()
+    await expect(launch).rejects.toThrow('账号上下文已变化')
+    expect(waited).toBe(true)
+  })
+
+  it('does not wait for a window when the launch request could not be sent', async () => {
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+    await expect(launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      throw new Error('无法发送 Codex 桌面端启动请求')
+    })).rejects.toThrow('无法发送 Codex 桌面端启动请求')
+  })
+
   it('merges a repeated identical launch but keeps a different mode or locale intent separate', async () => {
     const fixture = queuedCodexDesktopFixture()
     const requests = [
@@ -2899,7 +2962,7 @@ describe('Codex Desktop from the Xingmang bucket', () => {
   function bucketMetadata(version: string, overrides: Partial<{ name: string; architecture: string; publisher: string; hasSignature: boolean }> = {}) {
     return { name: 'OpenAI.Codex', version, architecture: 'x64', publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B', hasSignature: true, ...overrides }
   }
-  function bucketFetch(options: { version?: string; indexStatus?: number; body?: Buffer } = {}) {
+  function bucketFetch(options: { version?: string; indexStatus?: number; body?: Buffer; checkedAt?: string | null } = {}) {
     const version = options.version ?? '26.1003.4512.0'
     const requested: string[] = []
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -2919,6 +2982,8 @@ describe('Codex Desktop from the Xingmang bucket', () => {
                 key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: bytes.byteLength, sha256: digest,
                 contentType: 'application/vnd.ms-appx', verification: 'windows-authenticode', cosEtag: '"etag"',
               },
+              // The sync refreshes it every 6 hours (#1061 item 7); null leaves it out like an index written before that.
+              ...(options.checkedAt === null ? {} : { checkedAt: options.checkedAt ?? new Date().toISOString() }),
             },
           },
         }), { status: options.indexStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
@@ -2988,6 +3053,30 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(requested).toEqual([indexUrl])
   })
 
+  it('leaves the install to the store and the official package when the index was not checked for over a day', async () => {
+    // A stopped sync would otherwise install an in-between build and still show an update afterwards (#1061 item 7).
+    const checkedAt = new Date(Date.now() - 25 * 60 * 60_000).toISOString()
+    for (const installedVersion of [null, '26.1002.0.0']) {
+      const { requested, fetchMock } = bucketFetch({ checkedAt })
+      const failure = await downloadCodexDesktopBucketPackage({
+        architecture: 'x64', destination: bucketDestination(), installedVersion, fetchImplementation: fetchMock,
+      }).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt}），桶里的可能不是最新版`)
+      expect(requested).toEqual([indexUrl])
+    }
+  })
+
+  it('still downloads from an index written before the sync learned checkedAt', async () => {
+    const { requested, fetchMock, version } = bucketFetch({ checkedAt: null })
+    const result = await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, fetchImplementation: fetchMock,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    expect(result).toMatchObject({ status: 'downloaded', version })
+    expect(requested).toEqual([indexUrl, packageUrl(version)])
+  })
+
   it('deletes the download when its bytes are not the ones the index lists', async () => {
     const destination = bucketDestination()
     const inspectPackage = vi.fn(async () => bucketMetadata('26.1003.4512.0'))
@@ -3026,6 +3115,24 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(requested).toEqual([])
   })
 
+  it('measures the OpenAI package, not the bucket, before leaving a slow bucket download', async () => {
+    const { fetchMock, version } = bucketFetch()
+    const officialUrl = buildCodexDesktopOfficialPackageSource('x64').url
+    const official: string[] = []
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) !== officialUrl) return fetchMock(input, init)
+      official.push(String(input))
+      return new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.byteLength) } })
+    })
+    await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, fetchImplementation,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toMatchObject({ totalBytes: bytes.byteLength })
+    expect(official).toEqual([officialUrl])
+  })
+
   it('goes on to the Store and the other routes when Windows refuses the verified bucket package', () => {
     // The Store does not sideload, so a machine that blocks sideloading may still get Codex from it.
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'))).toBe(true)
@@ -3037,6 +3144,24 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(shouldContinueAfterCodexDesktopBucketInstall(new InstallCancelledError())).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('已取消管理员授权，Codex 桌面端安装未开始。'))).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Codex 桌面端安装失败：磁盘空间不足'))).toBe(false)
+  })
+})
+
+describe('measuring the Codex Desktop official route', () => {
+  it('reads the OpenAI package for this processor without following it anywhere else', async () => {
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      requested.push(String(input))
+      expect(init).toMatchObject({ redirect: 'manual' })
+      return new Response(null, { status: 302, headers: { location: 'https://evil.example/ChatGPT-arm64.msix' } })
+    })
+    await expect(measureCodexDesktopOfficialSpeed('arm64', fetchMock, new AbortController().signal)).resolves.toBeNull()
+    expect(requested).toEqual([buildCodexDesktopOfficialPackageSource('arm64').url])
+  })
+
+  it('cannot measure a page that is not the package', async () => {
+    const fetchMock = vi.fn(async () => new Response('<html>blocked</html>', { headers: { 'Content-Type': 'text/html' } }))
+    await expect(measureCodexDesktopOfficialSpeed('x64', fetchMock, new AbortController().signal)).resolves.toBeNull()
   })
 })
 

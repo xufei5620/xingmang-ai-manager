@@ -34,8 +34,16 @@ const claudeLayers: readonly ExtensionScopeGroup[] = [
 export const extensionScopeGroups: Record<ExtensionKindId, Record<ActiveProviderId, readonly ExtensionScopeGroup[]>> = {
   mcp: {
     claude: claudeLayers,
-    codex: [{ scope: 'all', title: '全局', description: '所有项目共用' }],
-    grok: [{ scope: 'all', title: '用户', description: '所有项目都能用' }],
+    // Codex 只往全局加连接，但受信任项目里 .codex/config.toml 写的它也认；主进程对照配置文件标出层（#1092）。
+    codex: [
+      { scope: 'user', title: '全局', description: '所有项目共用' },
+      { scope: 'project', title: '项目', description: '只在这个项目里用' },
+    ],
+    // Grok 的连接分 ~/.grok/config.toml 和项目里的 .grok/config.toml 两层，列表带回各自的 scope（#1092）。
+    grok: [
+      { scope: 'user', title: '用户', description: '所有项目都能用' },
+      { scope: 'project', title: '项目', description: '只在这个项目里用' },
+    ],
   },
   skill: {
     claude: [
@@ -52,10 +60,8 @@ export const extensionScopeGroups: Record<ExtensionKindId, Record<ActiveProvider
   plugin: {
     claude: claudeLayers,
     codex: [{ scope: 'all', title: '已安装', description: '所有项目都能用' }],
-    grok: [
-      { scope: 'user', title: '用户', description: '所有项目都能用' },
-      { scope: 'project', title: '项目', description: '只在这个项目里用' },
-    ],
+    // Grok 的插件命令没有范围参数，装、卸、启停都在 ~/.grok 里，只有这一层（1.0.52、1.0.62 实测，#1092）。
+    grok: [{ scope: 'all', title: '用户', description: '所有项目都能用' }],
   },
 };
 

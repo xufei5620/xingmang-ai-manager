@@ -1327,6 +1327,32 @@ describe('withdrawn versions and staged rollout', () => {
     expect(isOlderVersion('garbage', '1.0.0')).toBe(false)
   })
 
+  it('reads only the leading x.y.z of a release version and ignores prerelease tags or anything after it', () => {
+    expect(isOlderVersion('0.3.0-beta.1', '0.3.0')).toBe(false)
+    expect(isOlderVersion('0.3.0', '0.3.0-beta.1')).toBe(false)
+    expect(isOlderVersion('v0.2.9', '0.2.10')).toBe(true)
+    expect(isOlderVersion('0.2.9', 'v0.2.10')).toBe(true)
+    expect(isOlderVersion(' 0.2.9\n', '0.2.10')).toBe(true)
+    expect(isOlderVersion('V0.2.9', '0.2.10')).toBe(false)
+    expect(isOlderVersion('0.2.9abc', '0.2.10')).toBe(true)
+    expect(isOlderVersion('1.2.3.9', '1.2.4')).toBe(true)
+    expect(isOlderVersion('1.2.3.9', '1.2.3.1')).toBe(false)
+    expect(isOlderVersion('00.02.09', '0.2.10')).toBe(true)
+    expect(isOlderVersion('0.2.010', '0.2.9')).toBe(false)
+    expect(isOlderVersion('release 0.2.9', '0.2.10')).toBe(false)
+    expect(isOlderVersion('0.2', '0.3.0')).toBe(false)
+    expect(isOlderVersion('', '1.0.0')).toBe(false)
+    expect(isOlderVersion('1.0.0', '99999999999999999999.0.0')).toBe(true)
+    expect(resolveRequiredVersion('0.3.0-beta.1', '0.3.0')).toBeNull()
+    expect(resolveRequiredVersion('v0.2.12', '0.2.13')).toBe('0.2.13')
+    expect(resolveRequiredVersion('0.2.12', 'v0.2.13')).toBe('v0.2.13')
+    expect(resolveGatedRequiredVersion({ minimumRequired: '1.2.0', installMethod: 'system-installer', availableVersion: '1.2.0-beta.1', rollback: false })).toBe('1.2.0')
+    const offer = { currentVersion: '0.2.11', badVersions: [], rollout: null, manual: false }
+    expect(decideUpdateOffer({ ...offer, version: 'V0.2.8' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...offer, version: 'nightly' })).toEqual({ offer: true })
+    expect(decideUpdateOffer({ ...offer, version: '0.2.11-beta.1' })).toEqual({ offer: true })
+  })
+
   it('reads the status file before every check and allows a downgrade only off a withdrawn version', async () => {
     const client = new FakeUpdater()
     const statuses = [
@@ -2284,7 +2310,7 @@ describe('describeUnrecognizedUpdateFailure', () => {
 
   it('does not take an English failure for Chinese because of a Chinese name in its path', () => {
     // Windows 的中文用户名、Mac 上的「星芒AI管理工具」都在路径里。以前这几句被当成中文整句交给界面，
-    // 脱敏后客户看到的是「EPERM: operation not permitted, open '本地配置文件」（第三十批跟进项）。
+    // 脱敏后客户看到的是「EPERM: operation not permitted, open '本机路径」（第三十批跟进项）。
     expect(describeUnrecognizedUpdateFailure("EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\temp-XingMang-AI-Manager-0.2.15-Setup.exe'"))
       .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
     expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked, unlink C:\\Users\\张 三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\update.exe'))

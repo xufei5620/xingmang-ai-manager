@@ -316,7 +316,7 @@ describe('renderer tool source', () => {
     expect(claude?.error).toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。')
     expect(claude?.error).not.toContain('EPERM')
     // 主进程本来就说中文的照旧显示，只把路径脱敏（R-S7b）。
-    expect(rows.find((row) => row.id === 'codexDesktop')?.error).toBe('读取 本地配置文件 失败')
+    expect(rows.find((row) => row.id === 'codexDesktop')?.error).toBe('读取 本机路径 失败')
     // 探测失败但主进程没给原因时,原来的中文兜底文案不变。
     expect(rows.find((row) => row.id === 'codex')?.error).toBe('工具检测没有完成')
     expect(rows.find((row) => row.id === 'grok')?.error).toBeNull()
@@ -778,12 +778,12 @@ describe('renderer subscription warning', () => {
   })
 
   it('names the end date or the remaining amount once the wallet is low', () => {
-    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10 月 3 日到期，到期后会从余额扣费。')
+    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10月3日到期，到期后会从余额扣费。')
     expect(subscriptionWarning({ ...base, lowRemaining: true }, 1)).toBe('订阅只剩 $3.00，用完后会从余额扣费。')
   })
 
   it('warns regardless of the wallet when only the subscription is spent', () => {
-    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10 月 3 日到期，到期后工具就用不了了，续费后可继续使用。')
+    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10月3日到期，到期后工具就用不了了，续费后可继续使用。')
   })
 })
 

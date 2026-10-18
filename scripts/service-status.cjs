@@ -6,6 +6,8 @@
 // 那一份，只改这次填了的字段，其余原样保留，再把结果交给工作流上传。「留空 =
 // 不改」是有意的：发布者只想关掉维护时，不该顺手把别的开关一起抹掉。
 const fs = require('node:fs')
+// 只用它的版本比较；它顶层只引 node 自带模块和两份同目录脚本，preview 那段不装依赖也能跑。
+const { compareReleaseVersions } = require('./update-release-utils.cjs')
 
 const MAX_MESSAGE_LENGTH = 200
 const MAX_STATUS_BYTES = 16 * 1024
@@ -23,6 +25,8 @@ const CLI_MODEL_FIELDS = ['default', 'previous', 'retired']
 const CLI_MODEL_NAME = /^[A-Za-z0-9][\w.:/@+-]{0,127}$/
 const MAX_PREVIOUS_CLI_MODELS = 8
 const MAX_RETIRED_CLI_MODELS = 32
+// #1114：最低版本指着出来还不满一天的包时提醒批准的人。0.2.19 发出去 12 分钟就被设成最低版本。
+const FRESH_RELEASE_MS = 24 * 60 * 60 * 1000
 
 class StatusInputError extends Error {}
 
@@ -117,15 +121,6 @@ function applyRollout(current, input) {
   return { version: plainVersion(match[1]), percent }
 }
 
-function compareVersions(left, right) {
-  const a = left.split('.').map(Number)
-  const b = right.split('.').map(Number)
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1
-  }
-  return 0
-}
-
 /**
  * 「0.2.12」= 低于 0.2.12 的客户端必须先更新；none = 取消。
  *
@@ -139,7 +134,7 @@ function applyMinimumVersion(current, input, publishedVersions = []) {
   const version = plainVersion(raw)
   const published = publishedVersions.map((entry) => plainVersion(entry))
   if (published.length === 0) throw new StatusInputError('读不到线上的更新清单，不知道现在发的是哪个版本，为免把客户挡在门外，这次不设最低版本')
-  const newest = published.filter((entry) => compareVersions(version, entry) > 0)
+  const newest = published.filter((entry) => compareReleaseVersions(version, entry) > 0)
   if (newest.length) {
     throw new StatusInputError(`最低版本 ${version} 比线上正在发的 ${published.join('、')} 还高：低于它的客户找不到可装的新版本。请先发布 ${version}，再设最低版本`)
   }
@@ -314,10 +309,14 @@ function applyStatusChanges(current, changes, now = new Date()) {
 
 // 0 是手动灰度那一档（docs/SERVICE-STATUS.md「分批放量」）：自动检查一个都不推，
 // 「先给 0% 的电脑」读起来像没生效，日志里直接说清谁拿得到。
+function summarizeRollout(rollout) {
+  if (rollout.percent === 0) return `${rollout.version} 先不自动推，只给自己点「检查更新」的人`
+  return `${rollout.version} 先给 ${rollout.percent}% 的电脑`
+}
+
 function describeRollout(rollout) {
   if (!isRecord(rollout)) return '分批放量：无（新版本全部放开）'
-  if (rollout.percent === 0) return `分批放量：${rollout.version} 先不自动推，只给自己点「检查更新」的人`
-  return `分批放量：${rollout.version} 先给 ${rollout.percent}% 的电脑`
+  return `分批放量：${summarizeRollout(rollout)}`
 }
 
 function describeAccountGroups(groups) {
@@ -354,6 +353,67 @@ function describeStatus(status) {
   return lines
 }
 
+/**
+ * 工作流读更新清单时顺带交来的出包时间：「0.2.19=2026-10-16T18:40:00.000Z 0.2.19=…」，取自各平台
+ * latest*.yml 的 releaseDate。同一版本有几份取最新的那份。只用来提醒，读不懂的那一项跳过、不报错。
+ */
+function parsePublishedDates(input) {
+  const dates = new Map()
+  for (const token of String(input ?? '').split(/\s+/).filter(Boolean)) {
+    const separator = token.indexOf('=')
+    if (separator <= 0) continue
+    const version = token.slice(0, separator).replace(/^v/i, '')
+    const time = Date.parse(token.slice(separator + 1))
+    if (!PLAIN_VERSION.test(version) || !Number.isFinite(time)) continue
+    dates.set(version, Math.max(dates.get(version) ?? time, time))
+  }
+  return dates
+}
+
+/**
+ * #1114：两种改法照样放行，只是多打一行醒目提示，让批准的人看清自己批的是什么。0.2.19 那次一次运行
+ * 就清掉了「先给两成」、又把最低版本抬到发出去 12 分钟的版本，所有低于它的电脑当天都被强制更新。
+ * 服务端先改了、旧版本已经不能用的时候这样做是对的（docs/RELEASING.md），所以不拦。
+ * 只看这次真改了最低版本的运行：原样重填一遍，客户那边什么都不变。
+ */
+function describeStatusWarnings(current, next, changes, now = new Date()) {
+  const minimum = next.minimumVersion
+  if (typeof minimum !== 'string' || minimum === current.minimumVersion) return []
+  const warnings = []
+  const releasedAt = parsePublishedDates(changes['published-dates']).get(minimum)
+  if (releasedAt !== undefined && now.getTime() - releasedAt < FRESH_RELEASE_MS) {
+    const hours = Math.floor((now.getTime() - releasedAt) / (60 * 60 * 1000))
+    const age = hours < 1 ? '还不到 1 小时' : `才 ${hours} 小时`
+    warnings.push(`最低版本 ${minimum} 的包出来${age}（按更新清单里的出包时间算），还没在客户手里跑满一天。批下去以后，低于它的电脑（0.2.11 及以后）都会被拦着先更新，关了自动更新的也一样；这一版要是有问题，分批放量也停不住，只能撤回。服务端已经先改了、照 docs/RELEASING.md「服务端已经先改了、旧版本不能用了」那几步在测试电脑上演过的，可以批；不然先 Reject，等它跑满一天再设。`)
+  }
+  const removed = current.rollout
+  if (isRecord(removed) && next.rollout === undefined && typeof removed.version === 'string' && typeof removed.percent === 'number' && removed.percent < 100) {
+    warnings.push(`这一次把分批放量（原来是「${summarizeRollout(removed)}」）清掉、全部放开，同时又把最低版本设成 ${minimum}：新版本一次就到所有人手上，分批观察这一步等于跳过。不是非这样不可的，先 Reject，分两次跑：先放开观察，再设最低版本。`)
+  }
+  return warnings
+}
+
+// GitHub 的工作流命令按行解析，这几个字符要转义，否则「20%」这类内容可能被吃掉。
+function escapeWorkflowCommand(text) {
+  return text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
+}
+
+/**
+ * 预览作业写进运行页面的摘要。service-status 每次都要在 release 环境点批准，而批准发生在发布作业
+ * 开跑之前：只打在发布作业里的提示，批的人点下去以后才看得到。预览不碰凭据、不写线上，先跑完，
+ * 批的人在同一个页面上看到「批了以后线上是什么样」和提示，再决定批不批。
+ */
+function buildApprovalSummary(lines, warnings) {
+  const parts = ['### 批准以后，线上的状态文件会是这样', '']
+  for (const line of lines) parts.push(`- ${line}`)
+  parts.push('', '按现在线上那一份算的。批之前要是别的运行改过它，发布时会照改过的重算一遍。')
+  if (warnings.length) {
+    parts.push('', '#### ⚠️ 批之前看一眼', '')
+    for (const warning of warnings) parts.push(`- ${warning}`)
+  }
+  return `${parts.join('\n')}\n`
+}
+
 function parseArguments(argv) {
   const options = {}
   for (let index = 0; index < argv.length; index += 1) {
@@ -369,12 +429,18 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …] [--cli-models …]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--published-dates …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …] [--cli-models …] [--summary <file>]')
   // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
-  const next = applyStatusChanges(parseCurrentStatus(currentText), options)
+  const now = new Date()
+  const current = parseCurrentStatus(currentText)
+  const next = applyStatusChanges(current, options, now)
   fs.writeFileSync(options.output, `${JSON.stringify(next, null, 2)}\n`)
-  for (const line of describeStatus(next)) console.log(line)
+  const lines = describeStatus(next)
+  for (const line of lines) console.log(line)
+  const warnings = describeStatusWarnings(current, next, options, now)
+  for (const warning of warnings) console.log(`::warning::${escapeWorkflowCommand(warning)}`)
+  if (options.summary) fs.appendFileSync(options.summary, buildApprovalSummary(lines, warnings))
 }
 
 if (require.main === module) {
@@ -386,4 +452,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyMinimumVersion, applyRollout, applyStatusChanges, describeStatus, normalizeMessage, normalizeUntil, parseCurrentStatus }
+module.exports = { StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyMinimumVersion, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }

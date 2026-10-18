@@ -11,7 +11,7 @@ function check(
   extras: { status?: number, detail?: string } = {},
 ): ConnectionCheckResult {
   return {
-    provider: 'claude', siteId: 'solov', ok, layer, summary, nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
+    provider: 'claude', siteId: 'solov', ok, layer, summary, nextStep: '先重新登录，再在首页重新写入一次密钥',
     endpoint: null, model: null, detail: extras.detail ?? null, status: extras.status ?? (ok ? 200 : 401), durationMs: 1, checkedAt: '2026-09-22T00:00:00.000Z',
   }
 }
@@ -55,6 +55,14 @@ describe('switchAccountSource', () => {
     expect(steps).toContain('preference:false')
   })
 
+  it('does not stack a second full stop after a reason that already ends a sentence', async () => {
+    const reason = 'config.toml 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。'
+    const { deps } = dependencies({ writeAccountConfig: async () => { throw new Error(reason) } })
+    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(`改用当前账号没有完成：${reason}已恢复到切换前的配置。`)
+    const official = dependencies({ writeOfficialConfig: async () => { throw new Error(reason) } })
+    await expect(switchAccountSource(official.deps, 'codex', 'official')).rejects.toThrow(`切回官方账号没有完成：${reason}已恢复到切换前的配置。`)
+  })
+
   it.each(['network', 'unknown'] as const)('keeps the switch when the %s layer fails, but says it is unverified', async (layer) => {
     const { deps, steps } = dependencies({ checkConnection: async () => check(false, layer, '网络暂时连不上', { status: 500 }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
@@ -89,11 +97,11 @@ describe('switchAccountSource', () => {
   it('keeps the switch and passes on the quota advice when the quota ran out', async () => {
     const { deps, steps } = dependencies({ checkConnection: async () => ({
       ...check(false, 'quota', 'Codex 的额度用完了（HTTP 401），这是给这个工具设的上限', { status: 401, detail: '该令牌额度已用尽' }),
-      nextStep: '到「账号」页「密钥」里调高这个工具的额度，调好后再自检一次',
+      nextStep: '到「个人中心 → 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
     }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(steps).not.toContain('restore:backup-1')
-    expect(result.message).toContain('不过Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「账号」页「密钥」里调高这个工具的额度')
+    expect(result.message).toContain('不过Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「个人中心 → 密钥管理」的「每个工具的额度上限」里调高这个工具的额度')
     expect(result.message).not.toContain('密钥被拒绝')
   })
 

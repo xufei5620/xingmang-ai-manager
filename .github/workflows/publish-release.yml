@@ -102,11 +102,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -327,11 +327,11 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -378,7 +378,7 @@ jobs:
         run: npm run release:build:unsigned
 
       - name: Upload the release artifacts for the publish job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-release-${{ steps.metadata.outputs.version }}
           path: |
@@ -400,11 +400,11 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -512,7 +512,7 @@ jobs:
         run: cat "release-free-$PACKAGE_VERSION/SHA256SUMS"
 
       - name: Upload the macOS release artifacts for the publish job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-release-${{ steps.metadata.outputs.version }}
           path: |
@@ -533,11 +533,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -602,11 +602,11 @@ jobs:
     env:
       PACKAGE_ARCH: ${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -679,7 +679,7 @@ jobs:
         run: sha256sum "release-$PACKAGE_VERSION"/*.deb "release-$PACKAGE_VERSION"/latest-linux*.yml
 
       - name: Upload the Linux release artifacts for the publish job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-release-${{ matrix.arch }}-${{ steps.metadata.outputs.version }}
           path: |
@@ -745,9 +745,9 @@ jobs:
       # R2 桶里的前缀，也是 R2 凭据被限制到的那个前缀。
       OBJECT_PREFIX: xingmang-manager
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -771,13 +771,13 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ needs.windows-build.result == 'success' }}
         with:
           name: windows-release-${{ needs.windows-build.outputs.version }}
           path: release-artifacts
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ needs.macos-build.result == 'success' }}
         with:
           name: macos-release-${{ needs.macos-build.outputs.version }}
@@ -786,7 +786,7 @@ jobs:
       # Linux 开关关着时不下载 Linux 的包，下面每一步就都碰不到它：护栏、上传、复核、
       # 清单和 Release 附件都只按 release-artifacts 里实际有什么来做。
       - id: linux-artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
         with:
           pattern: linux-release-*-${{ needs.linux-build.outputs.version }}
@@ -1197,9 +1197,9 @@ jobs:
     env:
       PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version || needs.linux-build.outputs.version }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -1209,19 +1209,19 @@ jobs:
       # publish 发了哪些平台，这里就同步哪些。Windows / macOS 只看出包结果，整次运行里不会
       # 变，条件和 publish 的一字不差；Linux 照 publish 当时实际下没下（outputs.linux），
       # 不再看开关。
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ needs.windows-build.result == 'success' }}
         with:
           name: windows-release-${{ needs.windows-build.outputs.version }}
           path: release-artifacts
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ needs.macos-build.result == 'success' }}
         with:
           name: macos-release-${{ needs.macos-build.outputs.version }}
           path: release-artifacts
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: ${{ needs.publish.outputs.linux == 'true' }}
         with:
           pattern: linux-release-*-${{ needs.linux-build.outputs.version }}

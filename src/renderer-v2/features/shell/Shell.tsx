@@ -237,7 +237,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     }
   }
   const balanceStatus = balanceStatusText({ ...account, offline })
-  const balanceTitle = `${account.balance ?? '暂未读到'}；${balanceStatus}`
+  const balanceTitle = `${account.balance ?? '余额暂时没有读到'}；${balanceStatus}`
   // 还在恢复登录、头一回读余额：放灰色占位条；读过了没读到写「—」，不写「暂未读到」那么长一串。
   const balanceAmount = account.restoring || (account.signedIn && !account.balance && account.balanceLoading)
     ? <span className="v2-account-balance-placeholder" aria-hidden="true" data-testid="sidebar-balance-placeholder" />
@@ -245,7 +245,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
       ? <strong>{account.balance}</strong>
       : <strong title={account.signedIn ? '余额暂时没有读到，点刷新再试' : undefined} data-testid="sidebar-balance-unread">—</strong>
   const accountName = account.displayName ?? '未登录'
-  const accountNote = account.email ?? (account.signedIn ? undefined : '登录后自动配 Key')
+  const accountNote = account.email ?? (account.signedIn ? undefined : '登录后自动配密钥')
   const runway = account.signedIn ? account.runway ?? null : null
   const runwayLine = balanceRunwayText(runway)
   const lowBalance = Boolean(runway?.low)
@@ -391,6 +391,8 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const accountTabLabel = activePage === 'account' ? accountTabs.find((tab) => tab.value === accountTab)?.label : undefined
   const environmentLabel = offline ? '没网' : environment?.label ?? '环境待检测'
   const environmentDot = offline ? ' is-bad' : environment?.tone === 'ok' ? ' is-ok' : environment?.tone === 'warn' ? ' is-warn' : ''
+  // 历史账号没有用户名时是邮箱，状态栏放不下会省略，悬停看全文（#1133 第 3 条）。
+  const userLine = account.signedIn ? `已登录 ${account.displayName}` : account.displayName ?? '未登录'
   const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 重启后更新' : ''}` : '版本读取中'
   const tour = shellTour[tourStep]
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
@@ -455,7 +457,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
         <footer className="v2-statusbar" data-testid="shell-statusbar">
           <button type="button" onClick={adapter.openHealth} title={environment?.detail} data-testid="statusbar-environment"><i className={`v2-dot${environmentDot}`} />{environmentLabel}</button>
           {environment?.node && <span data-testid="statusbar-node">{environment.node}</span>}
-          <button type="button" className="v2-status-user" onClick={adapter.openAccount}><span>{account.signedIn ? `已登录 ${account.displayName}` : account.displayName ?? '未登录'}</span></button>
+          <button type="button" className="v2-status-user" onClick={adapter.openAccount} title={userLine} data-testid="statusbar-user"><span>{userLine}</span></button>
           {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={account.subscription ? `${account.subscription}；${balanceStatus}` : balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">{balanceFailureLabel(offline)}</span>}</button>}
           {/* 断网时只说「没网」，不再写一句「网络正常」。网络位置的全文（国家和 IP）在悬停说明里。
               加速中点它进「设置 › 网络加速」（v4 原型），不再是刷新网络位置；后台正测着位置时也点得动（#1104 第 10 条）。 */}
@@ -502,7 +504,9 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
       </div>}
       <p className="v2-command-hint" data-testid="command-hint"><span><kbd>↑↓</kbd>选择</span><span><kbd>Enter</kbd>打开</span><span><kbd>Esc</kbd>关闭</span></p>
     </Dialog>}
-    <Coachmark open={Boolean(tourOpen && !command)} target={tour.target} placement={'placement' in tour ? tour.placement : undefined}
+    {/* 导览只在首页放（#1104 第 12 条）：第二步讲的是首页的工具卡片，开在别的页上只能指着侧栏的「首页」念卡片的说明。
+        引导里点了「去聊天」「去充值」就先不出来，等回到首页再放，不把人从刚选的那一页拽走；放到一半去了别的页也先收起，回首页接着放。 */}
+    <Coachmark open={Boolean(tourOpen && !command && activePage === 'home')} target={tour.target} placement={'placement' in tour ? tour.placement : undefined}
       body={typeof tour.body === 'string' ? tour.body : platform === 'mac' ? tour.body.mac : tour.body.win} label={`界面导览，第 ${tourStep + 1} 步`}
       step={tourStep + 1} count={shellTour.length} onNext={() => tourStep + 1 === shellTour.length ? onTourClose?.() : setTourStep((value) => value + 1)} onClose={() => onTourClose?.()} testId="shell-guide-tip" />
   </div>

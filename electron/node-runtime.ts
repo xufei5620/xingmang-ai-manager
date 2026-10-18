@@ -30,7 +30,10 @@ import {
   windowsPowerShellExecutable,
   type WindowsElevationCapability,
 } from './windows-elevation'
-import { minimumSupportedNodeVersion, nodeVersionStatus } from './versions'
+import { compareVersionsBy, minimumSupportedNodeVersion, nodeVersionStatus, parseNodeReleaseVersion } from './versions'
+import { errorCodeClause, loggedFailureNextStep } from './failure-wording'
+import { classifyNetworkFailure, networkFailureCode } from './network-failure'
+import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
 export type NodeRuntimeNetworkRegion =
   | 'mainland-china'
@@ -161,7 +164,13 @@ export interface InstalledNodeRuntimeInspection {
 }
 
 const metadataTimeoutMs = 30_000
-const downloadTimeoutMs = 10 * 60_000
+/**
+ * #1061 第5条：以前整次下载限死 10 分钟，慢网下到一半到点就掐断，换个源从 0 开始。现在只要还在来数据
+ * 就接着下，3 分钟一个字节都没来才停；下得再慢也有个头，30 分钟兜底（I10 的超时还在）。两个数和
+ * 装工具时 npm 那一步（npmDownloadStallTimeoutMs / npmDownloadCeilingMs）一样。
+ */
+export const nodeDownloadStallTimeoutMs = 3 * 60_000
+export const nodeDownloadCeilingMs = 30 * 60_000
 const wingetTimeoutMs = 15 * 60_000
 const installerTimeoutMs = 15 * 60_000
 const maximumIndexBytes = 4 * 1024 * 1024
@@ -171,7 +180,6 @@ const minimumMsiBytes = 1024 * 1024
 const appInstallerPackageName = 'Microsoft.DesktopAppInstaller'
 const appInstallerPackageFamily = 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe'
 const maximumNodeRedirects = 2
-const nodeRedirectStatuses = new Set([301, 302, 303, 307, 308])
 
 // The two probes below get 10 s each under trustedCommandEnvironment(), where a
 // cmdlet left to autoloading costs the whole System32 module scan (see
@@ -422,26 +430,49 @@ function errorText(reason: unknown): string {
   return '未知错误'
 }
 
+/**
+ * Node.js 自动安装没装成时上屏那句（#1100 第1条）。以前把每一步的原话拼在一起（「winget：命令执行失败
+ * （退出码 -1978335212）：winget.exe；Node.js 官方源：fetch failed；…」），客户读不懂；现在只说一个原因和
+ * 下一步，原话挂在 cause 上进运行日志。winget 那一步（先试的系统组件）不再上屏。几个下载源各有原因时，
+ * 取最能动手的那一种：Windows Installer 自己那几句（取消授权、1925、1603、1618，本来就是中文）、
+ * 装完没找到能用的、安装包没过校验、网络不通、下载源出错，最后才是说不清的。
+ */
+export function describeNodeInstallFailure(errors: readonly unknown[]): string {
+  const described = errors.map(nodeInstallFailureReason).sort((left, right) => left.rank - right.rank)
+  const sentence = described[0]?.sentence ?? loggedFailureNextStep
+  return `Node.js 自动安装失败：${sentence}`
+}
+
+/** 放安装包的临时文件夹建不起来时那句。 */
+export function describeNodeStagingFailure(error: unknown): string {
+  return `Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去${errorCodeClause(error)}。清理一下磁盘或重启电脑后再点「重试」。`
+}
+
+function withFullStop(sentence: string): string {
+  return /[。！？]$/.test(sentence) ? sentence : `${sentence}。`
+}
+
+const windowsInstallerSentences = /^(?:已取消管理员授权|Windows Installer|Windows 正在安装别的程序)/
+
+function nodeInstallFailureReason(error: unknown): { rank: number; sentence: string } {
+  const reason = errorText(error)
+  if (windowsInstallerSentences.test(reason)) return { rank: 0, sentence: withFullStop(reason) }
+  if (/安装后的 Node\.js/.test(reason)) return { rank: 1, sentence: '装完没找到能用的 Node.js。重启电脑后再看一次；还不行请找客服。' }
+  if (/SHA-256|数字签名|签名|校验后发生变化|安装包大小无效|内容过小|下载不完整|超过 160 MB/.test(reason)) {
+    return { rank: 2, sentence: '下载的安装包没通过校验，已经删掉。再点「重试」；一直这样换个网络。' }
+  }
+  const status = /^HTTP (\d{3})$/.exec(reason)?.[1]
+  // 连上了、下载源那边自己出错，跟这台电脑的网络无关；说成「网络不通」会和错误框「下载源暂时出错」打架。
+  if (status && status.startsWith('5')) return { rank: 4, sentence: `下载安装包时下载源那边出错（错误码 HTTP ${status}）。过几分钟再点「重试」。` }
+  if (classifyNetworkFailure(error) || /fetch failed|请求超时|服务器返回了空响应|服务器没有返回安装包内容/.test(reason)) {
+    const code = networkFailureCode(error)
+    return { rank: 3, sentence: `下载安装包时网络不通${code ? `（错误码 ${code}）` : ''}。检查网络后再点「重试」。` }
+  }
+  return { rank: 5, sentence: loggedFailureNextStep }
+}
+
 function sourceUrl(baseUrl: string, relativePath: string): string {
   return new URL(relativePath, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString()
-}
-
-function semverParts(version: string): [number, number, number] | null {
-  const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version)
-  if (!match) return null
-  const parts = match.slice(1).map(Number)
-  if (parts.some((part) => !Number.isSafeInteger(part))) return null
-  return [parts[0], parts[1], parts[2]]
-}
-
-function compareVersions(left: string, right: string): number {
-  const leftParts = semverParts(left)
-  const rightParts = semverParts(right)
-  if (!leftParts || !rightParts) return 0
-  for (let index = 0; index < 3; index += 1) {
-    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index]
-  }
-  return 0
 }
 
 export function normalizeNodeRuntimeArchitecture(
@@ -518,7 +549,7 @@ export function parseNodeReleaseIndex(
       const files = record.files
       if (
         typeof record.version !== 'string'
-        || !semverParts(record.version)
+        || !parseNodeReleaseVersion(record.version)
         || typeof record.lts !== 'string'
         || !record.lts.trim()
         || !Array.isArray(files)
@@ -532,7 +563,7 @@ export function parseNodeReleaseIndex(
         fileName: nodeRuntimePackageFileName(record.version, architecture, kind),
       })
     }
-    releases.sort((left, right) => compareVersions(right.version, left.version))
+    releases.sort((left, right) => compareVersionsBy(parseNodeReleaseVersion, right.version, left.version) ?? 0)
     return releases[0] ?? null
   } catch {
     return null
@@ -662,12 +693,16 @@ function nodeResourceIdentity(value: string): NodeResourceIdentity {
 }
 
 /** Accept only the exact resource on the official host or npmmirror's fixed CDN mapping. */
-export function validateNodeResponseUrl(responseUrl: string, expectedUrl: string): void {
-  const actual = nodeResourceIdentity(responseUrl)
-  const expected = nodeResourceIdentity(expectedUrl)
+function validateNodeResourceUrl(value: string, expected: NodeResourceIdentity): URL {
+  const actual = nodeResourceIdentity(value)
   if (actual.family !== expected.family || actual.suffix !== expected.suffix) {
     throw new Error('Node.js 下载重定向到了未经批准的资源路径')
   }
+  return new URL(value)
+}
+
+export function validateNodeResponseUrl(responseUrl: string, expectedUrl: string): void {
+  validateNodeResourceUrl(responseUrl, nodeResourceIdentity(expectedUrl))
 }
 
 export async function fetchTrustedNodeResource(
@@ -675,26 +710,12 @@ export async function fetchTrustedNodeResource(
   init: RequestInit,
   fetchImplementation: typeof globalThis.fetch,
 ): Promise<Response> {
-  nodeResourceIdentity(url)
-  let current = url
-  const visited = new Set<string>()
-  for (let redirectCount = 0; redirectCount <= maximumNodeRedirects; redirectCount += 1) {
-    if (visited.has(current)) throw new Error('Node.js 下载发生了循环重定向')
-    visited.add(current)
-    const response = await fetchImplementation(current, { ...init, redirect: 'manual' })
-    if (response.url) validateNodeResponseUrl(response.url, current)
-    if (!nodeRedirectStatuses.has(response.status)) return response
-    if (redirectCount === maximumNodeRedirects) {
-      throw new Error('Node.js 下载重定向次数过多')
-    }
-    const location = response.headers.get('location')
-    if (!location) throw new Error('Node.js 下载重定向缺少 Location')
-    await response.body?.cancel().catch(() => undefined)
-    const next = new URL(location, current).href
-    validateNodeResponseUrl(next, url)
-    current = next
-  }
-  throw new Error('Node.js 下载重定向次数过多')
+  const expected = nodeResourceIdentity(url)
+  return fetchWithRedirectAllowlist(url, init, fetchImplementation, {
+    label: 'Node.js 下载',
+    maximumRedirects: maximumNodeRedirects,
+    validate: (candidate) => validateNodeResourceUrl(candidate, expected),
+  })
 }
 
 export function buildNodeRuntimeInstallPlan(
@@ -1181,6 +1202,50 @@ async function fetchLimitedText(
   )
 }
 
+export interface NodeDownloadDeadline {
+  /** Restarts the stall window, but only when the byte count actually grew. */
+  progressed(transferred: number): void
+  stop(): void
+}
+
+/**
+ * downloadWithResume already ends a single request that goes quiet for 45 seconds and
+ * resumes it; this watches the download as a whole, so a slow link that keeps delivering
+ * is never cut off at a fixed time. The stall window is a backstop for any quiet stretch
+ * the per-request timer does not see, and the ceiling bounds a link that trickles just
+ * fast enough never to look idle. Neither keeps a broken route alive: a route whose
+ * resumes keep failing is still handed back by downloadWithResume after its own few
+ * retries, and the caller moves on to the next source as before. Both end the download
+ * with the reason the old fixed limit used, so what the customer is told does not change.
+ */
+export function createNodeDownloadDeadline(expire: (reason: Error) => void): NodeDownloadDeadline {
+  let stopped = false
+  let transferred = 0
+  let stall = setTimeout(timeOut, nodeDownloadStallTimeoutMs)
+  const ceiling = setTimeout(timeOut, nodeDownloadCeilingMs)
+
+  function stop(): void {
+    stopped = true
+    clearTimeout(stall)
+    clearTimeout(ceiling)
+  }
+
+  function timeOut(): void {
+    stop()
+    expire(new Error('安装包下载超时'))
+  }
+
+  return {
+    progressed(next) {
+      if (stopped || next <= transferred) return
+      transferred = next
+      clearTimeout(stall)
+      stall = setTimeout(timeOut, nodeDownloadStallTimeoutMs)
+    },
+    stop,
+  }
+}
+
 async function downloadMsi(
   dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch' | 'waitBeforeResume'>,
   url: string,
@@ -1191,7 +1256,7 @@ async function downloadMsi(
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
-  const timeout = setTimeout(() => controller.abort(new Error('安装包下载超时')), downloadTimeoutMs)
+  const deadline = createNodeDownloadDeadline((reason) => controller.abort(reason))
   const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
@@ -1219,14 +1284,17 @@ async function downloadMsi(
         }
         return declaredLength
       },
-      onProgress: (size, total) => report(options, {
-        phase: 'downloading',
-        source: source.id,
-        message: `正在从${source.label}下载 Node.js LTS`,
-        percent: percentOf(size, total),
-        transferredBytes: size,
-        totalBytes: total,
-      }),
+      onProgress: (size, total) => {
+        deadline.progressed(size)
+        report(options, {
+          phase: 'downloading',
+          source: source.id,
+          message: `正在从${source.label}下载 Node.js LTS`,
+          percent: percentOf(size, total),
+          transferredBytes: size,
+          totalBytes: total,
+        })
+      },
       onResume: (size, total) => report(options, {
         phase: 'downloading',
         source: source.id,
@@ -1240,7 +1308,7 @@ async function downloadMsi(
     if (download.total !== null && download.size !== download.total) throw new Error('安装包下载不完整')
     return { sha256: download.sha256.toString('hex'), size: download.size }
   } finally {
-    clearTimeout(timeout)
+    deadline.stop()
     options.signal?.removeEventListener('abort', abort)
   }
 }
@@ -1400,6 +1468,8 @@ export async function installNodeRuntime(
   }
   throwIfAborted(options.signal)
   const failures: string[] = []
+  // 各下载源没装成的原错误：上屏那句从这里挑一个原因说（describeNodeInstallFailure）。
+  const sourceErrors: unknown[] = []
   if (options.preferWinget !== false) {
     report(options, {
       phase: 'checking',
@@ -1464,9 +1534,9 @@ export async function installNodeRuntime(
     temporaryDirectory = await dependencies.createTemporaryDirectory()
   } catch (error) {
     failures.push(`安装包暂存目录：${errorText(error)}`)
-    const message = `Node.js LTS 自动安装失败。${failures.join('；')}`
+    const message = describeNodeStagingFailure(error)
     report(options, { phase: 'error', source: null, message, percent: null })
-    throw new Error(message)
+    throw new Error(message, { cause: new Error(`Node.js LTS 自动安装失败。${failures.join('；')}`, { cause: error }) })
   }
   try {
     // 到这里才真要下载，这时才借下载专用线路，借到以后再问先走哪个源（第二十八批 D）。
@@ -1491,6 +1561,7 @@ export async function installNodeRuntime(
         } catch (error) {
           const reason = errorText(error)
           failures.push(`${source.label}：${reason}`)
+          sourceErrors.push(error)
           if (options.signal?.aborted) throw error
           // 换个源再下几十 MB，Windows 那边还在装别的，照样是 1618。
           if (reason === windowsInstallerBusyMessage) break
@@ -1511,7 +1582,8 @@ export async function installNodeRuntime(
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory).catch(() => undefined)
   }
-  const message = `Node.js LTS 自动安装失败。${failures.join('；')}`
+  const message = describeNodeInstallFailure(sourceErrors)
   report(options, { phase: 'error', source: null, message, percent: null })
-  throw new Error(message)
+  // 每一步的原话（winget 那一步也在）进运行日志，给客服看。
+  throw new Error(message, { cause: new Error(`Node.js LTS 自动安装失败。${failures.join('；')}`) })
 }

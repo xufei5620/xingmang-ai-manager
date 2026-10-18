@@ -97,6 +97,12 @@ function backupNames(parent: string): string[] {
     && name !== 'plugins-xingmang-backup-notes')
 }
 
+/** Response.url is read-only and empty on a constructed Response; real fetches fill it in. */
+function withResponseUrl(response: Response, url: string): Response {
+  Object.defineProperty(response, 'url', { value: url })
+  return response
+}
+
 function servingFetch(body: Buffer, calls: string[] = []): typeof fetch {
   return async (input) => {
     calls.push(String(input))
@@ -513,6 +519,155 @@ describe('ensureCodexPluginCatalog', () => {
       .rejects.toThrow(codexPluginCatalogNetworkMessage)
     expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
     expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('follows a codeload redirect whose responses report the URL that was requested', async () => {
+    const codexHome = temporaryCodexHome()
+    const pinned = `https://codeload.github.com/openai/plugins/tar.gz/${commit}`
+    const calls: string[] = []
+    const redirecting: typeof fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      // Node's own fetch fills in response.url even with redirect: 'manual'.
+      if (url === CODEX_PLUGIN_CATALOG_URL) {
+        return withResponseUrl(new Response(null, { status: 302, headers: { location: `/openai/plugins/tar.gz/${commit}#top` } }), url)
+      }
+      return withResponseUrl(new Response(new Uint8Array(gzipCatalog()), { status: 200 }), url)
+    }
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: redirecting })).resolves.toBe('downloaded')
+    expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, pinned])
+  })
+
+  it('stops a redirect loop instead of asking for an address it already visited', async () => {
+    const codexHome = temporaryCodexHome()
+    const other = `https://codeload.github.com/openai/plugins/tar.gz/${commit}`
+    const calls: string[] = []
+    const looping: typeof fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      return new Response(null, { status: 302, headers: { location: url === CODEX_PLUGIN_CATALOG_URL ? other : CODEX_PLUGIN_CATALOG_URL } })
+    }
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: looping }))
+      .rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, other])
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('rejects bytes whose response came from an address other than the one requested', async () => {
+    const codexHome = temporaryCodexHome()
+    let cancelled = false
+    // A fetch that followed redirects by itself: the body is a valid catalog, but it came from elsewhere.
+    const following: typeof fetch = async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(gzipCatalog()))
+          controller.close()
+        },
+        cancel() { cancelled = true },
+      })
+      return withResponseUrl(new Response(body, { status: 200 }), 'https://evil.test/openai/plugins.tgz')
+    }
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: following }))
+      .rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(cancelled).toBe(true)
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('rejects a response reporting another codeload path than the hop it answered', async () => {
+    const codexHome = temporaryCodexHome()
+    const unchecked: typeof fetch = async () => withResponseUrl(
+      new Response(new Uint8Array(gzipCatalog()), { status: 200 }),
+      'https://codeload.github.com/someone/else/tar.gz/refs/heads/main',
+    )
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: unchecked }))
+      .rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('follows up to three codeload redirects of each kind and refuses a fourth', async () => {
+    const hop = (index: number) => `https://codeload.github.com/openai/plugins/tar.gz/hop-${index}`
+    for (const status of [301, 302, 303, 307, 308]) {
+      const codexHome = temporaryCodexHome()
+      const calls: string[] = []
+      const inits: RequestInit[] = []
+      const chain: typeof fetch = async (input, init) => {
+        const url = String(input)
+        calls.push(url)
+        inits.push(init ?? {})
+        const index = url === CODEX_PLUGIN_CATALOG_URL ? 0 : Number(url.slice(url.lastIndexOf('-') + 1))
+        if (index < 3) return new Response(null, { status, headers: { location: hop(index + 1) } })
+        return new Response(new Uint8Array(gzipCatalog()), { status: 200 })
+      }
+
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: chain })).resolves.toBe('downloaded')
+      expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, hop(1), hop(2), hop(3)])
+      for (const init of inits) {
+        expect(init.redirect).toBe('manual')
+        expect(init.signal).toBeInstanceOf(AbortSignal)
+      }
+    }
+
+    const codexHome = temporaryCodexHome()
+    const calls: string[] = []
+    const endless: typeof fetch = async (input) => {
+      calls.push(String(input))
+      return new Response(null, { status: 302, headers: { location: hop(calls.length) } })
+    }
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: endless })).rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, hop(1), hop(2), hop(3)])
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('refuses a redirect without a target or off https codeload, and drops its body', async () => {
+    for (const location of [
+      null,
+      'http://codeload.github.com/openai/plugins/tar.gz/main',
+      'https://codeload.github.com:8443/openai/plugins/tar.gz/main',
+      'https://user@codeload.github.com/openai/plugins/tar.gz/main',
+      'https://github.com/openai/plugins/archive/refs/heads/main.tar.gz',
+    ]) {
+      const codexHome = temporaryCodexHome()
+      const calls: string[] = []
+      let cancelled = 0
+      const redirecting: typeof fetch = async (input) => {
+        calls.push(String(input))
+        const body = new ReadableStream<Uint8Array>({ cancel() { cancelled += 1 } })
+        return new Response(body, { status: 302, headers: location === null ? {} : { location } })
+      }
+
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: redirecting }), String(location))
+        .rejects.toThrow(codexPluginCatalogNetworkMessage)
+      expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
+      expect(cancelled).toBe(1)
+    }
+  })
+
+  it('leaves a 3xx outside the five redirect statuses unfollowed, as a network failure', async () => {
+    for (const status of [300, 304, 305, 306]) {
+      const codexHome = temporaryCodexHome()
+      const calls: string[] = []
+      const odd: typeof fetch = async (input) => {
+        calls.push(String(input))
+        return new Response(null, { status, headers: { location: `https://codeload.github.com/openai/plugins/tar.gz/${commit}` } })
+      }
+
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: odd }), String(status)).rejects.toThrow(codexPluginCatalogNetworkMessage)
+      expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
+    }
+  })
+
+  it('accepts a response reporting the requested address in another spelling', async () => {
+    const codexHome = temporaryCodexHome()
+    const spelled: typeof fetch = async () => withResponseUrl(
+      new Response(new Uint8Array(gzipCatalog()), { status: 200 }),
+      'HTTPS://CODELOAD.GITHUB.COM:443/openai/plugins/tar.gz/refs/heads/main',
+    )
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: spelled })).resolves.toBe('downloaded')
   })
 
   it('reports an unreachable network in plain words and leaves nothing behind', async () => {

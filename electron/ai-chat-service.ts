@@ -11,7 +11,7 @@ import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { classifyNetworkFailure, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
-import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -143,6 +143,8 @@ export type AiChatServiceOptions = {
   emit(senderId: number, event: AiChatStreamEvent): void
   fetchImpl?: FetchImplementation
   baseUrl?: string
+  /** 这个站的账号后端。缺省按 new-api，Sub2API 计费复查那句余额不足不认（见 classifySub2apiBillingFailure）。 */
+  backend?: 'new-api' | 'sub2api'
   clock?: AiChatServiceClock
   log?: (entry: AiChatStreamLogEntry) => void
   limits?: Partial<AiChatStreamLimits>
@@ -315,18 +317,18 @@ function responseOriginIsTrusted(response: Response, expectedOrigin: string): bo
 /**
  * The error body is read (bounded) only so the three quota cases can be told
  * apart; its text never leaves this function's caller as-is. An oversized or
- * undecodable body degrades to '', which keeps the old status-only wording.
+ * undecodable body degrades to null, which keeps the old status-only wording.
  */
-async function readBoundedErrorDetail(
+async function readBoundedErrorPayload(
   response: Response,
   maximumBytes: number,
-): Promise<string> {
+): Promise<unknown> {
   const declaredLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
     await response.body?.cancel().catch(() => undefined)
-    return ''
+    return null
   }
-  if (!response.body) return ''
+  if (!response.body) return null
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let received = 0
@@ -338,37 +340,72 @@ async function readBoundedErrorDetail(
       received += chunk.value.byteLength
       if (received > maximumBytes) {
         await reader.cancel().catch(() => undefined)
-        return ''
+        return null
       }
       chunks.push(chunk.value)
     }
   } catch {
-    return ''
+    return null
   } finally {
     reader.releaseLock()
   }
   try {
-    return extractRelayErrorDetail(JSON.parse(Buffer.concat(chunks, received).toString('utf8')) as unknown)
+    return JSON.parse(Buffer.concat(chunks, received).toString('utf8')) as unknown
   } catch {
-    return ''
+    return null
   }
 }
 
 /**
+ * 服务端说清了是哪一种的 400 / 404（#1101 第2条）。以前一律是「AI 服务暂时无法完成请求」，客户照着
+ * 「稍后再试」，对话太长、内容被拦、型号没了都是怎么等都一样。认的是服务端原话里的关键词，原话本身不上屏。
+ */
+const rejectedRequestMessages: readonly { test: RegExp; message: string }[] = [
+  {
+    test: /context_length_exceeded|maximum context length|context length|context window|prompt is too long|too many tokens|上下文[^。]{0,8}(?:超|过长|上限)/i,
+    message: '这段对话太长了，超过了这个模型一次能读的长度。开一个新对话接着聊，或者换一个能读更长内容的模型。',
+  },
+  {
+    test: /content_policy_violation|content[_ ]policy|safety system|content[_ ]filter|content_management|sensitive[_ ]words?|敏感词|内容[^。]{0,8}(?:审核|违规|不合规)/i,
+    message: '这次的内容没通过 AI 服务的安全审核，没有回复。改一改说法再发；一直被拦就换个模型。',
+  },
+  { test: /model_not_found|\bmodel\b[^.。]{0,80}(?:does not exist|not found)|模型[^。]{0,20}不存在/i, message: SAFE_ERROR_MESSAGES['model-unavailable'] },
+]
+
+/** new-api 在所选分组下这个型号没有可用渠道时回 JSON 503「当前分组 x 下对于模型 y 无可用渠道」。 */
+const noChannelPattern = /无可用(?:的)?渠道|no available channel/i
+
+/**
  * 维护、网关错误和防护层验证页要排在额度与 401/403 之前认：防护层的验证页正是 403，
  * 照下面那条会被说成「API Key 无权使用」，用户于是去换 Key、换分组。
+ * 「无可用渠道」又要排在维护前面（#1093 第12b条）：它也是 503，可说的是这个分组下这个型号用不了，
+ * 换个型号或分组马上就能发，说成「维护、稍后再试」客户只会干等。认法同 connection-check.ts 的 groupAnswer。
  */
-function safeHttpFailure(status: number, headers: Headers, detail = ''): StreamFailure {
-  if (isServiceUnavailableResponse({ status, json: isJsonContentType(headers.get('content-type')), headers })) {
+function safeHttpFailure(status: number, headers: Headers, payload: unknown, backend: AiChatServiceOptions['backend']): StreamFailure {
+  const detail = extractRelayErrorDetail(payload)
+  const json = isJsonContentType(headers.get('content-type'))
+  if (status === 503 && json && noChannelPattern.test(detail)) {
+    return new StreamFailure('upstream-http-error', '所选分组下这个模型暂时用不了。换个模型或分组再发；一直这样请找客服。')
+  }
+  if (isServiceUnavailableResponse({ status, json, headers })) {
     return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
   }
+  // 历史账号站开流之前计费复查没过也是 403，原话那套认不出（#1240）。
   const quota = classifyRelayQuotaFailure(status, detail)
+    ?? (backend === 'sub2api' && status === 403 ? classifySub2apiBillingFailure(payload) : null)
   if (quota) return new StreamFailure('upstream-http-error', relayQuotaFailureMessages[quota])
   if (status === 401 || status === 403) {
     return new StreamFailure('upstream-http-error', '当前 API Key 无权使用所选模型或分组')
   }
   if (status === 429) {
     return new StreamFailure('upstream-http-error', '请求过于频繁，请稍后重试')
+  }
+  if (status === 400 || status === 404) {
+    const rejected = rejectedRequestMessages.find((entry) => entry.test.test(detail))
+    if (rejected) return new StreamFailure('upstream-http-error', rejected.message)
+  }
+  if (status === 400) {
+    return new StreamFailure('upstream-http-error', 'AI 服务没接受这次请求（HTTP 400）。换个模型，或者把参数调回默认再试；一直这样请找客服。')
   }
   return new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
 }
@@ -410,6 +447,7 @@ function eventData(frame: string): string | null {
 class BoundedSseParser {
   private readonly decoder = new TextDecoder('utf-8', { fatal: true })
   private buffer = ''
+  private bareJsonFrame = ''
 
   constructor(private readonly maximumEventBytes: number) {}
 
@@ -433,6 +471,16 @@ class BoundedSseParser {
     return this.drain(true)
   }
 
+  /** 最后一段不是 SSE 事件、看着像 JSON 的文本（见 streamClosedFailure），解析不了给 null。 */
+  bareJson(): unknown {
+    if (!this.bareJsonFrame) return null
+    try {
+      return JSON.parse(this.bareJsonFrame) as unknown
+    } catch {
+      return null
+    }
+  }
+
   private drain(includeTrailingFrame: boolean): string[] {
     const result: string[] = []
     for (;;) {
@@ -441,19 +489,27 @@ class BoundedSseParser {
       const frame = this.buffer.slice(0, delimiter.index)
       this.buffer = this.buffer.slice(delimiter.index + delimiter.length)
       this.assertEventBound(frame)
-      const data = eventData(frame)
-      if (data !== null) result.push(data)
+      this.collect(frame, result)
     }
     if (includeTrailingFrame && this.buffer) {
       const frame = this.buffer
       this.buffer = ''
       this.assertEventBound(frame)
-      const data = eventData(frame)
-      if (data !== null) result.push(data)
+      this.collect(frame, result)
     } else if (byteLength(this.buffer) > this.maximumEventBytes) {
       throw new StreamFailure('event-limit-exceeded', SAFE_ERROR_MESSAGES['event-limit-exceeded'])
     }
     return result
+  }
+
+  private collect(frame: string, result: string[]): void {
+    const data = eventData(frame)
+    if (data !== null) {
+      result.push(data)
+      return
+    }
+    const text = frame.trim()
+    if (text.startsWith('{')) this.bareJsonFrame = text
   }
 
   private assertEventBound(frame: string): void {
@@ -463,7 +519,20 @@ class BoundedSseParser {
   }
 }
 
-function parsedDelta(data: string): { content: string; reasoning: string; finished: boolean } {
+/**
+ * 流没等到结束标记就断了。Sub2API 的 Claude 兼容分组排队时已经回过 200 和心跳，复查计费没过却照普通
+ * 请求回 JSON（gateway_handler_chat_completions.go 的 chatCompletionsErrorResponse 不看 streamStarted），
+ * 这段不带 data: 前缀接在心跳后面，SSE 只取 data: 行，以前就说成「提前结束」，客户照着重试，排队一样、
+ * 结果一样（#1240 第2条）。只在历史账号站认，只认余额不足那一句，其余照旧。
+ */
+function streamClosedFailure(parser: BoundedSseParser, backend: AiChatServiceOptions['backend']): StreamFailure {
+  const quota = backend === 'sub2api' ? classifySub2apiBillingFailure(parser.bareJson()) : null
+  return quota
+    ? new StreamFailure('upstream-http-error', relayQuotaFailureMessages[quota])
+    : new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
+}
+
+function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { content: string; reasoning: string; finished: boolean } {
   if (byteLength(data) === 0) return { content: '', reasoning: '', finished: false }
   let payload: unknown
   try {
@@ -476,7 +545,8 @@ function parsedDelta(data: string): { content: string; reasoning: string; finish
   }
   const record = payload as Record<string, unknown>
   if (record.error !== undefined || record.type === 'error' || record.type === 'upstream_error') {
-    throw new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
+    const quota = backend === 'sub2api' ? classifySub2apiBillingFailure(record) : null
+    throw new StreamFailure('upstream-http-error', quota ? relayQuotaFailureMessages[quota] : SAFE_ERROR_MESSAGES['upstream-http-error'])
   }
   const choices = record.choices
   if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '', finished: false }
@@ -733,7 +803,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       complete(request)
       return true
     }
-    const delta = parsedDelta(data)
+    const delta = parsedDelta(data, options.backend)
     appendDelta(request, delta.content, delta.reasoning)
     if (!delta.finished) return false
     complete(request)
@@ -792,7 +862,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       if (!response.ok) {
-        throw safeHttpFailure(response.status, response.headers, await readBoundedErrorDetail(response, limits.errorBytes))
+        throw safeHttpFailure(response.status, response.headers, await readBoundedErrorPayload(response, limits.errorBytes), options.backend)
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {
@@ -838,7 +908,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         reader.releaseLock()
       }
       if (receivedDone || request.completed) return
-      throw new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
+      throw streamClosedFailure(parser, options.backend)
     } catch (error) {
       if (request.completed) return
       const failure = error instanceof StreamFailure
@@ -925,7 +995,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       if (!response.ok) {
-        throw safeHttpFailure(response.status, response.headers, await readBoundedErrorDetail(response, limits.errorBytes))
+        throw safeHttpFailure(response.status, response.headers, await readBoundedErrorPayload(response, limits.errorBytes), options.backend)
       }
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {
@@ -954,7 +1024,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
           }
           for (const data of frames) {
             if (data.trim() === '[DONE]') return text
-            const delta = parsedDelta(data)
+            const delta = parsedDelta(data, options.backend)
             const added = byteLength(delta.content)
             if (added > limits.fragmentBytes) {
               throw new StreamFailure('fragment-limit-exceeded', SAFE_ERROR_MESSAGES['fragment-limit-exceeded'])
@@ -973,7 +1043,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         streamReader.releaseLock()
       }
       // 没等到结束标记连接就断了：手里只是半截，交给调用方当成完整结果会被当真。
-      throw new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
+      throw streamClosedFailure(parser, options.backend)
     } catch (error) {
       // 时限先认：超时后取消读取会让读取以「连接提前结束」收尾，那不是真正的原因。
       // 这条路径从不交回半截结果，所以只用「什么都没拿到」那一句。

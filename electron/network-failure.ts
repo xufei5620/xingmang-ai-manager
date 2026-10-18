@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * 受限网络（校园网、公司网、公共 Wi-Fi）下的失败长得各不相同：域名被劫持解析
  * 不出来、只放行 80/443、透明代理换掉证书、必须先在浏览器过一次门户认证。可是
@@ -67,6 +69,12 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
   intercepted: '当前网络把这次请求拦到了别的页面，多半是校园网或公共 Wi-Fi 要求先在浏览器完成上网认证。认证之后再试，或者改用手机热点。',
   serviceUnavailable: '更新服务器暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。',
 }
+
+/**
+ * 装工具前到 npm 官方源核对安装清单那一步没连上时，主进程那句里的固定一段（#1057 第5b条）。这一步
+ * 只能走官方源，换国内镜像绕不过去；渲染层认这一段出「连不上 npm 官方源」，两边用这一个常量。
+ */
+export const officialRegistryUnreachableMarker = '这一步没连上'
 
 /**
  * 工具那一侧（npm、Claude Code、Gemini CLI 这些 Node 程序）报「证书被换掉」，而星芒

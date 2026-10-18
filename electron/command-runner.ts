@@ -882,6 +882,27 @@ export function redactCommandText(value: string, sensitiveValues: readonly strin
   return redactSecretPatterns(redacted)
 }
 
+const CONTROL_CHARACTER_PATTERN = new RegExp(
+  '[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) + String.fromCharCode(127) + ']',
+  'g',
+)
+
+/**
+ * A relay's or account server's own error text, made safe to put on screen and
+ * into the runtime log: redacted, on one line, at most 300 characters. The
+ * connection check and the New-Api client each used to carry a copy, identical
+ * to the character, so the next rule added to one would have been missing from
+ * the other.
+ */
+export function sanitizeUpstreamDetail(value: string, secrets: readonly string[]): string {
+  if (!value) return ''
+  return redactCommandText(value, secrets)
+    .replace(CONTROL_CHARACTER_PATTERN, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300)
+}
+
 function validateSpec(spec: CommandSpec): void {
   if (!spec.executable || spec.executable.includes('\0')) {
     throw new TypeError('executable must be a non-empty path without NUL bytes')

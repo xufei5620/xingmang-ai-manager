@@ -2,7 +2,7 @@ import { useRef, type ReactNode } from 'react'
 import { Copy, Info } from 'lucide-react'
 import type { AccountBalance, AccountUsageRecord } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Pill } from '../../ui'
-import { RelativeTime, ResultNotice, useOperation } from '../../business-common'
+import { ClockTime, ResultNotice, useOperation } from '../../business-common'
 import { normalizedUsageTier, usageBillingMode, usageMoney, usageNumber, usagePerMillion, usagePriceFields, usageRatioText, usageTierCondition, usageUnitPrice } from './usage-detail-view'
 import { usageFailedFree, usageStatus } from './usage'
 
@@ -32,8 +32,8 @@ export function UsageDetails({ record, balance, onClose }: { record: AccountUsag
   }
   const info: Array<[string, ReactNode]> = [
     ['请求 ID', record.requestId ? <span className="v2-usage-detail-copy"><span className="v2-usage-detail-mono">{record.requestId}</span><Button variant="ghost" size="xs" icon={Copy} aria-label="复制请求 ID" title="复制请求 ID" onClick={copyRequestId} /></span> : '未提供'],
-    ['时间', <RelativeTime value={record.createdAt} />],
-    ['来自', record.tokenName || '未提供'],
+    ['时间', <ClockTime value={record.createdAt} />],
+    ['密钥', record.tokenName || '未提供'],
     ['分组', record.group ? groupRatio !== null ? `${record.group}，倍率 ${usageRatioText(groupRatio)}` : record.group : '未提供'],
     ['用时', `${usageNumber(record.useTimeSeconds)} 秒`],
     ['首字响应', details.firstResponseTimeMs === null ? '未提供' : `${usageNumber(details.firstResponseTimeMs)} ms`],
@@ -83,7 +83,7 @@ export function UsageDetails({ record, balance, onClose }: { record: AccountUsag
     <span className="v2-usage-detail-spacer" />
     <Button onClick={onClose}>关闭</Button>
   </>}>
-    <div className="v2-usage-detail-summary" ref={initialFocus} tabIndex={-1}><Pill tone={status.tone}>{status.label}</Pill><Pill>{record.modelName || '未知模型'}</Pill></div>
+    <div className="v2-usage-detail-summary" ref={initialFocus} tabIndex={-1}><Pill tone={status.tone}>{status.label}</Pill><Pill><span title={record.modelName || '未知模型'}>{record.modelName || '未知模型'}</span></Pill></div>
     <DetailRows rows={info} />
     {usageFailedFree(record) && <p className="v2-usage-detail-warn"><Info size={15} aria-hidden="true" />这次调用没有完成，没有扣费。工具一般会自动重试。</p>}
     <section className="v2-usage-detail-section" aria-label="计费明细"><h3>计费明细</h3>

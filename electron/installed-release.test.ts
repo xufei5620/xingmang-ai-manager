@@ -32,6 +32,23 @@ describe('installed release', () => {
     expect(compareReleaseVersions('0.2.9', '')).toBeNull()
   })
 
+  it('reads only bare x.y.z with up to six digits a segment and returns the first difference', () => {
+    expect(compareReleaseVersions('0.2.10', '0.2.7')).toBe(3)
+    expect(compareReleaseVersions('2.0.0', '0.9.9')).toBe(2)
+    expect(compareReleaseVersions('0.2.9', '0.3.0')).toBe(-1)
+    expect(compareReleaseVersions('00.02.09', '0.2.9')).toBe(0)
+    expect(compareReleaseVersions('123456.0.0', '0.0.0')).toBe(123456)
+    expect(compareReleaseVersions('1234567.0.0', '0.0.0')).toBeNull()
+    for (const value of ['v0.2.9', ' 0.2.9', '0.2.9\n', '0.2', '0.2.9.1', '0.2.9+build']) {
+      expect(compareReleaseVersions(value, '0.2.9')).toBeNull()
+      expect(compareReleaseVersions('0.2.9', value)).toBeNull()
+    }
+    expect(resolveInstalledRelease({ currentVersion: '0.2.9', recordedVersion: 'v0.2.8', hadPriorRun: true, notes: null }))
+      .toEqual({ justUpdated: true, previousVersion: null, notes: null })
+    expect(resolveInstalledRelease({ currentVersion: 'v0.2.9', recordedVersion: null, hadPriorRun: true, notes: null }))
+      .toEqual({ justUpdated: false, previousVersion: null, notes: null })
+  })
+
   it('treats a higher version than last run as just updated and names the previous one', () => {
     expect(resolveInstalledRelease({ currentVersion: '0.2.9', recordedVersion: '0.2.8', hadPriorRun: true, notes: ['改动'] }))
       .toEqual({ justUpdated: true, previousVersion: '0.2.8', notes: ['改动'] })

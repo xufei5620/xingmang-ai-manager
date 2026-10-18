@@ -116,8 +116,8 @@ describe('install stage wording', () => {
 
   it('keeps the Electron IPC wrapper out of the middle of the sentence', () => {
     // 拼进句子中间以后，上屏前的 errorMessage 只剥开头，剥不到这里。
-    const rejected = new Error("Error invoking remote method 'runtime:install-node': Error: Node.js LTS 自动安装失败。国内镜像：fetch failed")
+    const rejected = new Error("Error invoking remote method 'runtime:install-node': Error: Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。")
     expect(runtimeStageFailureMessage('node', 'Claude Code', rejected))
-      .toBe('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js LTS 自动安装失败。国内镜像：fetch failed')
+      .toBe('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。')
   })
 })

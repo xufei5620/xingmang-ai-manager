@@ -88,7 +88,7 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
     assert.equal(await usage.getByLabel('开始日期', { exact: true }).count(), 0)
     await toggle.click()
     assert.equal(await toggle.innerText(), '收起筛选')
-    for (const label of ['开始时间', '结束时间', '令牌名称', '分组', '请求 ID', '上游请求 ID', '日志类型', 'Key ID', '分组 ID']) {
+    for (const label of ['开始时间', '结束时间', '密钥名称', '分组', '请求 ID', '上游请求 ID', '日志类型', 'Key ID', '分组 ID']) {
       assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0)
     }
     await usage.getByLabel('开始日期', { exact: true }).fill('2026-09-08')
@@ -112,6 +112,79 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
     await toggle.click()
     assert.equal(await toggle.innerText(), '展开筛选 · 5')
     assert.equal(await usage.getByLabel('密钥编号', { exact: true }).count(), 0)
+  } finally { await page.close() }
+})
+
+test('Sub2API usage left open overnight still asks for the last 7 days up to today', async () => {
+  // 页签只藏不卸、关窗只缩到托盘：没手选日期时默认那 7 天按每次读的时候现算，不停在第一次打开那天（#1093 第 1 条）。
+  const page = await fixture('page=account&accountTab=usage&sub2apiReliability=1', (next) => next.clock.install({ time: new Date('2026-10-17T12:00:00Z') }))
+  const shift = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
+  const today = () => page.evaluate(() => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()))
+  const usageQueries = async () => (await calls(page)).filter((call) => call.name === 'query-usage').map((call) => call.args)
+  async function refreshOnDay(time) {
+    await page.clock.setSystemTime(new Date(time))
+    const count = (await usageQueries()).length
+    await page.getByTestId('account-refresh').click()
+    await page.waitForFunction((seen) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-usage').length > seen, count)
+    return (await usageQueries()).at(-1)
+  }
+  try {
+    const usage = page.getByTestId('account-usage-section')
+    await usage.waitFor()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage'))
+    const first = (await usageQueries()).at(-1)
+    assert.equal(first.endDate, await today())
+    assert.equal(first.startDate, shift(first.endDate, -6))
+
+    const next = await refreshOnDay('2026-10-18T12:00:00Z')
+    assert.equal(next.endDate, shift(first.endDate, 1))
+    assert.equal(next.startDate, shift(first.startDate, 1))
+    // 筛选框里的默认日期跟着换到今天，也不算用户加的条件。
+    const toggle = usage.getByTestId('account-filters-toggle')
+    assert.equal(await toggle.innerText(), '展开筛选')
+    await toggle.click()
+    assert.equal(await usage.getByLabel('开始日期', { exact: true }).inputValue(), next.startDate)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), next.endDate)
+
+    // 只加一个密钥编号、日期没动：日期还是跟着日子走。
+    await usage.getByLabel('密钥编号', { exact: true }).fill('4')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.apiKeyId === 4))
+    const keyed = await refreshOnDay('2026-10-19T12:00:00Z')
+    assert.equal(keyed.apiKeyId, 4)
+    assert.equal(keyed.endDate, shift(next.endDate, 1))
+    assert.equal(keyed.startDate, shift(next.startDate, 1))
+
+    // 自己选了日期就照选的查，过了夜也不动；只改了开始日期，结束日期那一格也不跟着跳，框里写的就是查的。
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), keyed.endDate)
+    await usage.getByLabel('开始日期', { exact: true }).fill('2026-10-01')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startDate === '2026-10-01'))
+    const picked = await refreshOnDay('2026-10-20T12:00:00Z')
+    assert.equal(picked.startDate, '2026-10-01')
+    assert.equal(picked.endDate, keyed.endDate)
+    assert.equal(picked.apiKeyId, 4)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), keyed.endDate)
+    assert.equal(await toggle.innerText(), '收起筛选')
+
+    // 选过日期以后框里的默认是停住的：过几天把开始日期改回跟它一样，也是自己选的，照这段查，不换成今天往前 7 天。
+    await usage.getByLabel('开始日期', { exact: true }).fill(keyed.startDate)
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction((start) => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startDate === start), keyed.startDate)
+    const typedBack = await refreshOnDay('2026-10-21T12:00:00Z')
+    assert.equal(typedBack.startDate, keyed.startDate)
+    assert.equal(typedBack.endDate, keyed.endDate)
+
+    // 「重置筛选」回到跟着日子走的默认：今天往前 7 天，框里也写这一段。
+    const beforeReset = (await usageQueries()).length
+    await usage.getByRole('button', { name: '重置筛选', exact: true }).click()
+    await page.waitForFunction((seen) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-usage').length > seen, beforeReset)
+    const reset = (await usageQueries()).at(-1)
+    assert.equal(reset.endDate, await today())
+    assert.equal(reset.startDate, shift(reset.endDate, -6))
+    assert.equal(reset.apiKeyId, undefined)
+    assert.equal(await usage.getByLabel('开始日期', { exact: true }).inputValue(), reset.startDate)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), reset.endDate)
   } finally { await page.close() }
 })
 
@@ -164,14 +237,17 @@ test('the usage range drives the stats, one bar per local day or week and the ca
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-dashboard').length > count, week.length)
     const day = (await dashboards()).slice(week.length)
     assert.equal(day.length, 1)
-    assert.equal(day[0].endTimestamp - day[0].startTimestamp, 86_400)
+    // 起点退到 24 小时前所在的整点：后台看板只记到整点，起点落在半点上，最早那一小时整行不回（#1093 第 4 条）。
+    const span = day[0].endTimestamp - day[0].startTimestamp
+    assert.equal(day[0].startTimestamp % 3_600, 0)
+    assert.ok(span >= 86_400 && span < 86_400 + 3_600, String(span))
     await page.waitForFunction((start) => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startTimestamp === start), day[0].startTimestamp)
     await stats.getByText('$5.00', { exact: true }).first().waitFor()
 
     await range.getByRole('button', { name: '30 天', exact: true }).click()
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-dashboard').length >= count + 5, week.length + 1)
     await page.waitForFunction(() => document.querySelectorAll('.v2-usage-chart-col').length === 5)
-    assert.match(await bars.first().getAttribute('title'), /^\d+ 月 \d+ 日至\d+ 月 \d+ 日：\$5\.00$/)
+    assert.match(await bars.first().getAttribute('title'), /^\d+月\d+日至\d+月\d+日：\$5\.00$/)
 
     // 快捷筛选「失败」：只查错误记录，空着时说这段时间没有失败的调用。
     await page.getByTestId('account-usage-section').getByRole('button', { name: '失败', exact: true }).click()
@@ -277,6 +353,43 @@ test('usage details retain ordinary cache prices and distinguish missing prices 
       }
     } finally { await page.close() }
   }
+})
+
+// 后台给的名字撑没撑出外框：里面那块的左右两边都得落在外框里（留 1px 给小数取整）。
+async function staysInside(inner, outer) {
+  const [a, b] = await Promise.all([inner.boundingBox(), outer.boundingBox()])
+  return a.x >= b.x - 1 && a.x + a.width <= b.x + b.width + 1
+}
+
+test('names the server sends too long to break stay inside their card, cut short with the full name on hover', async () => {
+  const page = await fixture('page=account&usageDetail=tiered&longNames')
+  try {
+    const cutShort = (locator) => locator.evaluate((element) => element.scrollWidth > element.clientWidth)
+    // 密钥行：分组牌放不下就换到标题下面一行，最宽一整行，再长才省略（#1133 第 7 条）。
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const row = page.getByTestId('account-key-row-1')
+    const group = row.locator('.xm-row-title .xm-pill > span').first()
+    await group.waitFor()
+    assert.equal(await staysInside(group, row.locator('.xm-row-main')), true)
+    assert.match(await group.getAttribute('title'), /^default-SuperLong\w+XYZ$/)
+
+    // 充值：支付方式名只占一行，悬停整张卡看全名。
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const option = page.locator('.v2-recharge-pay-option').first()
+    await option.waitFor()
+    const name = option.locator('.v2-recharge-pay-copy strong')
+    assert.equal(await staysInside(name, option), true)
+    assert.equal(await cutShort(name), true)
+    assert.match(await option.getAttribute('title'), /^Stripe-SuperLong\w+XYZ$/)
+
+    // 调用详情：状态牌照常，模型名牌缩到弹窗放得下。
+    const dialog = await openUsageDetails(page)
+    const model = dialog.locator('.v2-usage-detail-summary .xm-pill > span')
+    assert.equal(await staysInside(model, dialog.locator('.v2-usage-detail-summary')), true)
+    assert.equal(await cutShort(model), true)
+    assert.match(await model.getAttribute('title'), /^gpt-SuperLong\w+XYZ$/)
+    assert.equal(await cutShort(dialog.locator('.v2-usage-detail-summary .xm-pill').first()), false)
+  } finally { await page.close() }
 })
 
 test('account exposes the six v4 tabs and keeps server orders and keys visible', async () => {
@@ -428,7 +541,7 @@ test('the usage and task filters fold behind one button on the toolbar and count
     const usage = page.getByTestId('account-usage-section')
     const toggle = usage.getByTestId('account-filters-toggle')
     await toggle.waitFor()
-    for (const label of ['开始时间', '结束时间', '模型名称', '分组', '日志类型', '令牌名称', '请求 ID', '上游请求 ID']) {
+    for (const label of ['开始时间', '结束时间', '模型名称', '分组', '日志类型', '密钥名称', '请求 ID', '上游请求 ID']) {
       assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0, `${label} 先收着`)
     }
     assert.equal(await usage.getByRole('button', { name: '重置筛选', exact: true }).count(), 0)
@@ -667,6 +780,45 @@ test('tool key limits list only the tools that have a key and name the ones stil
     const line = none.getByTestId('tool-key-limits')
     await line.waitFor()
     assert.equal(await line.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
+  } finally {
+    await none.close()
+  }
+})
+
+test('tool key limits that could not be read can be read again without leaving the page', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    // 概览数密钥把数也按 100 一页读，等它读完再让下一次失败，失败的才是这张卡。
+    await page.locator('.v2-acct-kv').filter({ hasText: '2 把' }).waitFor()
+    await page.evaluate(() => window.failNextRead('toolKeyLimits'))
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = page.getByTestId('tool-key-limits')
+    const alert = card.getByRole('alert')
+    await alert.getByText('密钥服务暂时不可用').waitFor()
+    assert.equal(await card.getByTestId('tool-key-limit-claude').count(), 0)
+    await alert.getByRole('button', { name: '重新加载', exact: true }).click()
+    await card.getByTestId('tool-key-limit-claude').waitFor()
+    await card.getByTestId('tool-key-limit-codex').waitFor()
+    assert.equal(await card.getByRole('alert').count(), 0)
+  } finally {
+    await page.close()
+  }
+  // 读到过「一个工具都没配」、页头刷新又没读到：不能还收成那行灰字，把红条和「重新加载」藏掉。
+  const none = await fixture('page=account')
+  try {
+    await none.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = none.getByTestId('tool-key-limits')
+    const emptyLine = none.locator('.v2-business-key-limits-empty')
+    await emptyLine.waitFor()
+    await none.evaluate(() => window.failNextRead('toolKeyLimits'))
+    await none.getByTestId('account-refresh').click()
+    const alert = card.getByRole('alert')
+    await alert.getByText('密钥服务暂时不可用').waitFor()
+    assert.equal(await emptyLine.count(), 0)
+    await alert.getByRole('button', { name: '重新加载', exact: true }).click()
+    await emptyLine.waitFor()
+    assert.equal(await emptyLine.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
+    assert.equal(await card.getByRole('alert').count(), 0)
   } finally {
     await none.close()
   }
@@ -932,6 +1084,30 @@ test('revoking a key no tool is using only says it cannot be undone and never re
     await dialog.getByRole('button', { name: '撤销', exact: true }).click()
     await waitForToast(page, '已撤销「Test key」')
     assert.equal((await calls(page)).some((call) => call.name === 'rewriteKey'), false)
+  } finally { await page.close() }
+})
+
+// 撤销一发出去就收不回：执行中「取消」、×、Esc 都关不掉弹窗，免得看着像取消了、过几秒又弹「已撤销」（#1099 第 2 条）。
+test('the revoke dialog stays open and cannot be cancelled while the revoke is running', async () => {
+  const page = await fixture('page=account&keyInUse=1&revokeHold=1')
+  try {
+    const dialog = await revokeTestKey(page)
+    const cancel = dialog.getByRole('button', { name: '取消', exact: true })
+    const close = dialog.getByRole('button', { name: '关闭', exact: true })
+    assert.equal(await cancel.isDisabled(), false)
+    assert.equal(await close.isDisabled(), false)
+    await dialog.getByRole('button', { name: '撤销', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'revokeAccountKey'))
+    assert.equal(await cancel.isDisabled(), true)
+    assert.equal(await close.isDisabled(), true)
+    await dialog.focus()
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+    assert.equal(await dialog.isVisible(), true)
+    await page.evaluate(() => window.releaseRevoke())
+    await waitForToast(page, '已撤销「Test key」，Claude Code 已换用新的密钥')
+    await dialog.waitFor({ state: 'hidden' })
+    assert.equal((await calls(page)).filter((call) => call.name === 'revokeAccountKey').length, 1)
   } finally { await page.close() }
 })
 
@@ -1230,6 +1406,35 @@ test('extension toggle preserves original state and reports mutation failure', a
   }
 })
 
+test('waiting for MCP browser authorization can be cancelled without a failure banner', async () => {
+  const page = await fixture('page=mcp&installedProviders=codex&mcpAuth')
+  try {
+    const row = page.getByTestId('mcp-row-test-extension')
+    await row.getByTestId('mcp-auth-test-extension').click()
+    await row.getByText('等你在浏览器里授权', { exact: true }).waitFor()
+    // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一行。
+    const cancel = row.getByRole('button', { name: '停止等待 测试扩展 授权', exact: true })
+    assert.equal(await cancel.textContent(), '取消')
+    await cancel.click()
+    await row.getByText('正在停止', { exact: true }).waitFor()
+    await waitForToast(page, '已取消，测试扩展 还没有授权')
+    await row.getByText('登录授权', { exact: true }).waitFor()
+    assert.equal(await row.getByTestId('mcp-auth-cancel-test-extension').count(), 0)
+    assert.equal(await row.getByTestId('mcp-auth-test-extension').isEnabled(), true)
+    // 取消是正常结束：不弹红条，也不说「已授权」。
+    assert.equal(await page.getByText('未完成', { exact: false }).count(), 0)
+    assert.equal(
+      await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text === '测试扩展 已授权')),
+      false,
+    )
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'mcp-login').map((call) => call.args), ['test-extension'])
+    assert.deepEqual(recorded.filter((call) => call.name === 'mcp-cancel-login').map((call) => call.args), ['test-extension'])
+  } finally {
+    await page.close()
+  }
+})
+
 test('each MCP connection carries its own checked answer and the reason behind it', async () => {
   const page = await fixture('page=mcp')
   try {
@@ -1510,6 +1715,8 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
     await page.getByTestId('plugins-add').first().click()
     const form = page.getByRole('dialog', { name: '给 Grok CLI 添加插件', exact: true })
     await form.waitFor()
+    // Grok 的插件命令没有范围参数，选「当前项目」也装进全局（#1092），所以只给「我的（全局）」。
+    assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）'])
     await form.getByTestId('plugins-source').fill('owner/repo')
     await form.getByTestId('plugins-form-submit').click()
     const confirm = page.getByRole('dialog', { name: '给 Grok CLI 装这个插件？', exact: true })
@@ -1534,6 +1741,7 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
     await page.getByRole('tab', { name: /^Claude Code/ }).click()
     await page.getByTestId('plugins-add').first().click()
     const claudeForm = page.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true })
+    assert.deepEqual(await claudeForm.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
     await claudeForm.getByTestId('plugins-source').fill('owner/repo')
     await claudeForm.getByTestId('plugins-form-submit').click()
     await claudeForm.waitFor({ state: 'detached' })
@@ -1960,9 +2168,9 @@ test('backup rows are named by the time they were taken and the tool, never by a
 test('backup list names whose key a backup holds and warns before restoring another account key', async () => {
   const page = await fixture('page=backups&backupOtherKey')
   try {
-    await page.getByTestId('backups-key-backup-1').getByText('账号 old-user 的 Key').waitFor()
+    await page.getByTestId('backups-key-backup-1').getByText('账号 old-user 的密钥').waitFor()
     await page.getByRole('button', { name: '预览', exact: true }).click()
-    await page.getByTestId('backup-preview-key').getByText('账号 old-user 的 Key').waitFor()
+    await page.getByTestId('backup-preview-key').getByText('账号 old-user 的密钥').waitFor()
     await page
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
@@ -2705,6 +2913,115 @@ test('changing the recharge channel invalidates the previous quote', async () =>
     // 支付宝最低 20：金额跟着挪到 20 那一档。
     assert.equal(await page.getByLabel('自定义金额').inputValue(), '')
     assert.equal(await page.getByRole('button', { name: /^到账 \$20/ }).getAttribute('aria-pressed'), 'true')
+  } finally {
+    await page.close()
+  }
+})
+
+// 「正在确认价格…」那一段：试算挂着，等测试放开。
+async function holdTopupQuote(page) {
+  await page.evaluate(() => window.topupQuoteHarness.holdNext())
+  await page.getByTestId('account-recharge-submit').click()
+  await page.locator('[data-testid="account-recharge-submit"][aria-busy="true"]').waitFor()
+}
+const topupPaymentAmounts = async (page) =>
+  (await calls(page)).filter((call) => call.name === 'create-topup-payment').map((call) => call.args.amount)
+
+test('the recharge form is locked while the price is being confirmed, so the quote and payment keep the chosen tier', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1')
+  try {
+    const ten = page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true })
+    const twenty = page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true })
+    await ten.waitFor()
+    await twenty.click()
+    await holdTopupQuote(page)
+    assert.equal(await ten.isDisabled(), true)
+    assert.equal(await page.getByLabel('自定义金额').isDisabled(), true)
+    assert.equal(await page.getByRole('radio', { name: 'Stripe', exact: true }).isDisabled(), true)
+    // 算价途中点另一档：点不动，选中的还是 20。
+    await ten.click({ force: true })
+    assert.equal(await twenty.getAttribute('aria-pressed'), 'true')
+
+    await page.evaluate(() => window.topupQuoteHarness.release())
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.waitFor()
+    assert.match(await flat(quote), /到账 \$20 其中活动赠送 \$4（多送 25%） 应付金额 16\.00/)
+    await quote.getByRole('button', { name: '打开支付窗口' }).click()
+    await page.getByText('等待支付结果', { exact: true }).waitFor()
+    assert.deepEqual(await topupPaymentAmounts(page), [20])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a tier picked on the home activity card while the price is being confirmed drops the stale quote', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1')
+  try {
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
+    await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).click()
+    await holdTopupQuote(page)
+    // 停在充值页时从首页活动卡片又点了 10 那一档。
+    await page.evaluate(() => window.pickRechargeTier(10))
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true, pressed: true }).waitFor()
+
+    // 按 20 问回来的那次不认：不弹确认框，按钮回到「充值」。
+    await page.evaluate(() => window.topupQuoteHarness.release())
+    await page.locator('[data-testid="account-recharge-submit"]:not([aria-busy])').waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
+
+    // 照新档位再点一次：确认框和付款都按 10。
+    await page.getByTestId('account-recharge-submit').click()
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.waitFor()
+    assert.match(await flat(quote), /到账 \$10 应付金额 10\.00/)
+    await quote.getByRole('button', { name: '打开支付窗口' }).click()
+    await page.getByText('等待支付结果', { exact: true }).waitFor()
+    assert.deepEqual(await topupPaymentAmounts(page), [10])
+  } finally {
+    await page.close()
+  }
+})
+
+test('each recharge dialog opens without the error left by the previous one', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&fail=redeem')
+  try {
+    const redeem = page.getByRole('dialog', { name: '兑换充值码' })
+    await page.getByTestId('account-recharge-redeem-open').click()
+    await redeem.getByLabel('充值码', { exact: true }).fill('USED-CARD')
+    await redeem.getByTestId('account-redeem').click()
+    await redeem.getByText('充值码无效或已被使用', { exact: true }).waitFor()
+    await redeem.getByRole('button', { name: '取消', exact: true }).click()
+    await redeem.waitFor({ state: 'hidden' })
+
+    // 换去买套餐：弹窗里不再挂着充值码那句。
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.waitFor()
+    assert.equal(await purchase.getByText('充值码无效或已被使用', { exact: true }).count(), 0)
+    await purchase.getByRole('button', { name: '取消', exact: true }).click()
+    await purchase.waitFor({ state: 'hidden' })
+
+    // 再打开充值码弹窗也是干净的。
+    await page.getByTestId('account-recharge-redeem-open').click()
+    await redeem.waitFor()
+    assert.equal(await redeem.getByText('充值码无效或已被使用', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a price check that fails while the redeem dialog is open stays out of that dialog', async () => {
+  const page = await fixture('page=account&accountTab=recharge')
+  try {
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
+    await holdTopupQuote(page)
+    await page.getByTestId('account-recharge-redeem-open').click()
+    const redeem = page.getByRole('dialog', { name: '兑换充值码' })
+    await redeem.waitFor()
+    await page.evaluate(() => window.topupQuoteHarness.fail('报价服务暂时不可用'))
+    // 只上页头那条，充值码弹窗里不摆。
+    await page.getByText('报价服务暂时不可用', { exact: true }).waitFor()
+    assert.equal(await redeem.getByText('报价服务暂时不可用', { exact: true }).count(), 0)
   } finally {
     await page.close()
   }

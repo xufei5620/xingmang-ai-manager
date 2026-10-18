@@ -11,12 +11,12 @@ type Subscription = AccountSubscriptionSelf['activeSubscriptions'][number]
 const dayMs = 86_400_000
 const weekdayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const
 
-/** 「10 月 3 日」；不是今年的写上年份，免得把明年到期看成今年。 */
+/** 「10月3日」；不是今年的写上年份，免得把明年到期看成今年（日期写法统一不带空格，#1133 第 6 条）。 */
 export function shortDate(value: string | number | Date, now: Date = new Date()): string {
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  const day = `${date.getMonth() + 1} 月 ${date.getDate()} 日`
-  return date.getFullYear() === now.getFullYear() ? day : `${date.getFullYear()} 年 ${day}`
+  const day = `${date.getMonth() + 1}月${date.getDate()}日`
+  return date.getFullYear() === now.getFullYear() ? day : `${date.getFullYear()}年${day}`
 }
 
 export interface SpendDay {
@@ -57,10 +57,10 @@ export function spendSegmentQuery(segment: Pick<SpendDay, 'start' | 'end'>, last
   return { startTimestamp, endTimestamp: Math.max(startTimestamp, Math.floor(segment.end / 1000) - (last ? 0 : 1)) }
 }
 
-/** 悬停在一根柱子上的那句：「10 月 3 日 周五：$1.20」。 */
+/** 悬停在一根柱子上的那句：「10月3日 周五：$1.20」。 */
 export function spendDayTitle(day: Pick<SpendDay, 'start'>, amount: string): string {
   const date = new Date(day.start)
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${weekdayNames[date.getDay()]}：${amount}`
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdayNames[date.getDay()]}：${amount}`
 }
 
 /** 每根柱子的高度（百分比）：最多的那天算满；有花费的再少也留一点，看得出不是 0。 */

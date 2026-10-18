@@ -110,7 +110,7 @@ describe('renderer-v2 sidebar account card', () => {
   it('keeps the signed-out note', () => {
     const markup = renderAccount({ signedIn: false })
     expect(markup).toContain('未登录')
-    expect(markup).toContain('登录后自动配 Key')
+    expect(markup).toContain('登录后自动配密钥')
   })
 })
 
@@ -265,5 +265,11 @@ describe('renderer-v2 sidebar pages per computer', () => {
   it('leaves the pages that moved elsewhere out of the sidebar', () => {
     const markup = renderShell()
     for (const id of ['acceleration', 'backups', 'updates', 'maintenance']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
+  })
+
+  // #1104 第 12 条：第二步讲的是首页的工具卡片，开在别的页上就先不放。
+  it('shows the interface tour only on the home page', () => {
+    expect(renderShell({ tourOpen: true })).toContain('data-testid="shell-guide-tip"')
+    for (const activePage of ['chat', 'account', 'settings'] as const) expect(renderShell({ tourOpen: true, activePage })).not.toContain('data-testid="shell-guide-tip"')
   })
 })

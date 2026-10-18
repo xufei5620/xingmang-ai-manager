@@ -28,7 +28,7 @@ export type AccountBootstrapPhase =
   | 'configuring'
   | 'verifying'
 /**
- * `rewrite` 是用户点名某个工具按「重新写入 Key」时走的那一档：只有它会去覆盖
+ * `rewrite` 是用户点名某个工具按「重新写入密钥」时走的那一档：只有它会去覆盖
  * 一份「我们写过、之后被改动」的配置，登录和恢复这两档一律绕开，免得用户手改
  * 过的配置在下次开机时被悄悄改回去。
  */
@@ -394,7 +394,7 @@ export function accountBootstrapPlan(
       skipped.push({
         provider,
         reason: ready ? 'configured' : 'unknown',
-        message: ready ? `${nameOf(provider)} 已连接星芒账号` : `${nameOf(provider)} 保留已有账号配置，待手动补全`,
+        message: ready ? `${nameOf(provider)} 已经连着当前账号，这次没有改动` : `${nameOf(provider)} 保留已有账号配置，待手动补全`,
       })
       continue
     }
@@ -405,7 +405,7 @@ export function accountBootstrapPlan(
         skipped.push({
           provider,
           reason: 'configured',
-          message: `${nameOf(provider)} 已连接星芒账号`,
+          message: `${nameOf(provider)} 已连接当前账号`,
         })
         continue
       }
@@ -468,7 +468,7 @@ async function assertAccount(
 ) {
   const session = await api.getAccountSession()
   if (!session.authenticated || session.account?.userId !== expectedUserId || (expectedSiteId !== undefined && accountSiteId(session) !== expectedSiteId)) {
-    throw new Error('星芒账号已变化，已停止本次密钥配置')
+    throw new Error('账号已变化，已停止本次密钥配置')
   }
   return accountSiteId(session)
 }

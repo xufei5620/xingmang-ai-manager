@@ -249,6 +249,29 @@ describe('RuntimeLogStore', () => {
     expect(report.text).toContain('[REDACTED]')
   })
 
+  it('half-hides email addresses on disk, in the UI snapshot and in the feedback report, old entries included', async () => {
+    const store = createStore()
+    fs.writeFileSync(store.filePath, `${JSON.stringify({
+      id: 'legacy-entry', timestamp: '2026-09-07T00:00:00.000Z', level: 'warn', source: 'legacy', event: 'old-client',
+      message: '旧日志里的 carol@legacy.example.com', detail: null,
+    })}\n`, 'utf8')
+    store.attachEnvironmentDescriber(async () => ['Git: user.email dave@example.org'])
+    store.log('warn', 'account', 'login.failed', '登录 alice@qq.com 失败', { email: 'bob@example.com' })
+    const snapshot = JSON.stringify(await store.snapshot())
+    await store.idle()
+    const onDisk = fs.readFileSync(store.filePath, 'utf8')
+    const report = (await store.captureFeedbackReport()).text
+
+    for (const text of [snapshot, report]) {
+      for (const address of ['alice@qq.com', 'bob@example.com', 'carol@legacy.example.com']) expect(text).not.toContain(address)
+      for (const masked of ['a***@qq.com', 'b***@example.com', 'c***@legacy.example.com']) expect(text).toContain(masked)
+    }
+    expect(onDisk).not.toContain('alice@qq.com')
+    expect(onDisk).not.toContain('bob@example.com')
+    expect(report).not.toContain('dave@example.org')
+    expect(report).toContain('d***@example.org')
+  })
+
   it('bounds nested or self-referential Error metadata instead of overflowing the stack', async () => {
     const store = createStore()
     const error = Object.assign(new Error('retry failed'), { credential: 'private-error-credential' }) as Error & { self?: Error }

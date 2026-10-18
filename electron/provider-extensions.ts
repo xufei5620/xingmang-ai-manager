@@ -9,7 +9,7 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
 import { activeProviderIds, cliCatalog, providerIds, type ProviderId } from './catalog'
-import { readCodexSkillEnablement } from './codex-extensions'
+import { readCodexMcpServerEntries, readCodexSkillEnablement } from './codex-extensions'
 import {
   CODEX_API_CURATED_MARKETPLACE_NAME,
   ensureCodexPluginCatalog,
@@ -309,8 +309,13 @@ interface RawMcpServer {
   args: string[]
   url: string | null
   enabled: boolean
-  /** 只有从配置文件读出来的才知道落在哪一层；CLI 自己列的缺省为 null。 */
+  /**
+   * 从配置文件读出来的知道落在哪一层；CLI 自己列的只有 Grok 会带（`scope: user / project`，
+   * 1.0.52、1.0.62 实测），Codex 的靠对照配置文件补上（placeCodexMcpServers），缺省为 null。
+   */
   scope?: ProviderExtensionScope | null
+  /** CLI 的移除命令删不到它（Codex 项目里、插件带的连接）。缺省 = 能删（旧行为）。 */
+  removable?: boolean
 }
 
 interface ParsedPackageSource {
@@ -583,12 +588,14 @@ function rawMcpFromJson(value: unknown): RawMcpServer {
   const name = safeIdentifier(text(value.name), 'MCP 名称')
   const command = nullableText(transport.command)
   const url = displayUrl(nullableText(transport.url))
+  const scope = nullableText(value.scope)?.toLowerCase() ?? null
   return {
     name,
     command,
     args: stringArray(transport.args),
     url,
     enabled: value.enabled !== false && transport.enabled !== false,
+    ...(scope === 'user' || scope === 'project' ? { scope } : {}),
   }
 }
 
@@ -639,6 +646,14 @@ function configMcpEntries(
   }))
 }
 
+function isExistingDirectory(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 function equivalentProjectPath(left: string, right: string): boolean {
   const pathApi = process.platform === 'win32' ? path.win32 : path.posix
   const normalize = (value: string) => {
@@ -661,12 +676,13 @@ async function readConfiguredMcpServers(
   const claudeRootConfig = path.join(homeDirectory, '.claude.json')
   // 每个文件对应 CLI 里的一层 scope。移除时必须带着它，否则 `mcp remove`
   // 会去默认那一层找，项目里的连接删不掉，同名的全局连接反倒被删了（#488）。
+  // Claude Code 只认 ~/.claude.json 和项目的 .mcp.json，两份 settings.json 里写的 mcpServers
+  // 它不读（官方设置项里没有这个键；2.1.302 实测 mcp list、mcp get 都不列，mcp remove 哪一层都说找不到）。
+  // 以前把它们也列出来，「移除」点了删不掉；同名时还盖住真正生效的那条（#1093 第 11 条）。
   const files: Array<{ path: string; scope: ProviderExtensionScope } | null> = provider === 'claude'
     ? [
         { path: claudeRootConfig, scope: 'user' },
-        { path: path.join(homeDirectory, '.claude', 'settings.json'), scope: 'user' },
         repositoryRoot ? { path: path.join(repositoryRoot, '.mcp.json'), scope: 'project' } : null,
-        repositoryRoot ? { path: path.join(repositoryRoot, '.claude', 'settings.json'), scope: 'project' } : null,
       ]
     : [
         { path: path.join(homeDirectory, '.gemini', 'settings.json'), scope: 'user' },
@@ -730,8 +746,89 @@ function mcpItem(provider: ProviderId, server: RawMcpServer): MutableExtensionIt
     update: sourceUnknown
       ? defaultUpdate('source-unknown', '无法从 MCP 启动命令识别 npm、PyPI 或 Git 来源')
       : defaultUpdate('unsupported', '尚未查询远端版本'),
-    operations: nativeOperations(provider, 'mcp'),
+    operations: server.removable === false
+      ? { ...nativeOperations(provider, 'mcp'), uninstall: false }
+      : nativeOperations(provider, 'mcp'),
   }
+}
+
+/**
+ * Codex 读项目配置的那几层：工作目录一路往上到 Git 根，每层的 .codex/config.toml；往上找不到 .git
+ * 就只看工作目录本身。CODEX_HOME 那份是用户层，不算在里面。哪一层受信任 Codex 才读哪一层（自己有
+ * trust_level 的看自己，没有的看 Git 根，0.162.1 实测），这里不照抄这套规则，交给 placeCodexMcpServers
+ * 拿列表对照。
+ */
+function codexProjectConfigPaths(repositoryRoot: string, codexHome: string): string[] {
+  const start = path.resolve(repositoryRoot)
+  const directories: string[] = []
+  let current = start
+  while (!fs.existsSync(path.join(current, '.git'))) {
+    directories.push(current)
+    const parent = path.dirname(current)
+    if (parent === current) return codexConfigPathsOutsideHome([start], codexHome)
+    current = parent
+  }
+  directories.push(current)
+  return codexConfigPathsOutsideHome(directories, codexHome)
+}
+
+function codexConfigPathsOutsideHome(directories: readonly string[], codexHome: string): string[] {
+  return directories
+    .map((directory) => path.join(directory, '.codex'))
+    .filter((directory) => !equivalentProjectPath(directory, codexHome))
+    .map((directory) => path.join(directory, 'config.toml'))
+}
+
+// 读不了的那份（解析不了、不是单链接普通文件）当作不知道：分层只管显示在哪组、给不给「移除」，
+// 不该让整张连接列表报错。
+function readCodexMcpEntriesOrNull(configPath: string): Map<string, unknown> | null {
+  try {
+    return readCodexMcpServerEntries(configPath)
+  } catch {
+    return null
+  }
+}
+
+function sameCodexMcpEntry(server: RawMcpServer, entry: unknown): boolean {
+  if (!isRecord(entry)) return false
+  const args = stringArray(entry.args)
+  return server.command === nullableText(entry.command)
+    && server.url === displayUrl(nullableText(entry.url))
+    && server.args.length === args.length
+    && server.args.every((argument, index) => argument === args[index])
+}
+
+/**
+ * Codex 0.162.1 的 `mcp list --json` 把用户 config.toml、受信任的项目层和插件带的连接合在一起列，不带层，
+ * 同名时项目那份盖过用户那份；`codex mcp remove` 只改用户那份，别的名字只回一句「No MCP server named …
+ * found.」照样退出 0（#1092）。所以对照文件分层：用户那份里没有、项目文件里有的归项目。两边都有同名的，只有
+ * 列出来的跟用户那份一样、跟项目里的都不一样，才断定是用户那份（项目层没受信任）；跟两边都一样就分不清——只比
+ * 命令、参数、地址，环境变量、请求头、开关这些可能正是两份不同的地方——按项目算、不给移除，免得删掉看不见的那份。
+ * 不在用户那份里的都不给移除，免得点了「移除」什么都没删还报成功。用户那份读不了时照旧给移除，交给 CLI 自己报。
+ */
+function placeCodexMcpServers(
+  servers: readonly RawMcpServer[],
+  codexHome: string,
+  repositoryRoot: string | null,
+): RawMcpServer[] {
+  const userEntries = readCodexMcpEntriesOrNull(path.join(codexHome, 'config.toml'))
+  const projectEntries = new Map<string, unknown[]>()
+  for (const configPath of repositoryRoot ? codexProjectConfigPaths(repositoryRoot, codexHome) : []) {
+    for (const [name, entry] of readCodexMcpEntriesOrNull(configPath) ?? new Map<string, unknown>()) {
+      projectEntries.set(name, [...(projectEntries.get(name) ?? []), entry])
+    }
+  }
+  return servers.map((server) => {
+    const userEntry = userEntries?.get(server.name)
+    const inProject = projectEntries.get(server.name)
+    const project = inProject !== undefined && !(
+      userEntry !== undefined
+      && sameCodexMcpEntry(server, userEntry)
+      && !inProject.some((entry) => sameCodexMcpEntry(server, entry))
+    )
+    const removable = !project && (!userEntries || userEntries.has(server.name))
+    return { ...server, scope: project ? 'project' : 'user', ...(removable ? {} : { removable: false }) }
+  })
 }
 
 function yamlFrontmatter(content: string): Record<string, unknown> {
@@ -2005,7 +2102,19 @@ export class ProviderExtensionService {
       const argv = mcpListArgv(provider)
       let servers: RawMcpServer[]
       if (argv) {
-        servers = parseMcpJson(await this.invoke(provider, argv, { maxOutputBytes: MAX_OUTPUT_BYTES }))
+        // Grok 和 Codex 都是命令在哪个项目里跑就读哪个项目的配置，不在项目里跑就列不出来（#1092）。
+        // Grok 没带 scope 的条目按它自己的缺省 user 算；Codex 不带层，对照配置文件补上。工作目录不在了
+        // （删了、换了盘）就不进去跑：列不出项目那层，总比整张连接列表报错强。
+        const repositoryRoot = this.repositoryRoot && isExistingDirectory(this.repositoryRoot)
+          ? this.repositoryRoot
+          : null
+        const listed = parseMcpJson(await this.invoke(provider, argv, {
+          cwd: repositoryRoot ?? undefined,
+          maxOutputBytes: MAX_OUTPUT_BYTES,
+        }))
+        servers = provider === 'grok'
+          ? listed.map((server) => ({ ...server, scope: server.scope ?? 'user' }))
+          : placeCodexMcpServers(listed, this.codexHome, repositoryRoot)
       } else {
         const configured = await readConfiguredMcpServers(provider as 'claude' | 'gemini', this.homeDirectory, this.repositoryRoot)
         servers = configured.servers
@@ -2051,7 +2160,8 @@ export class ProviderExtensionService {
         checkedAt,
         // Gemini 的扩展装在用户目录下，启停不带 scope 时 CLI 也按 user 算；
         // 这里如实标 user，免得界面带着猜出来的 workspace 去启停（#488）。
-        provider === 'gemini' ? 'user' : null,
+        // Grok 的插件命令没有范围参数，装、卸、启停都落在 ~/.grok 里（1.0.52、1.0.62 实测，#1092）。
+        provider === 'gemini' || provider === 'grok' ? 'user' : null,
         provider === 'claude' ? this.repositoryRoot : undefined,
       )
       if (provider === 'codex') await describeCodexCatalogPlugins(plugins, this.codexHome)
@@ -2218,9 +2328,13 @@ export class ProviderExtensionService {
     if (input.kind === 'mcp') {
       if (input.action === 'install') return this.mcpInstallArgv(input, safeIdentifier(input.id, 'MCP 名称'))
       if (input.action === 'uninstall') {
-        return input.provider === 'codex'
-          ? { argv: ['mcp', 'remove', id!], secrets: [] }
-          : { argv: ['mcp', 'remove', '--scope', scope, id!], secrets: [] }
+        if (input.provider === 'codex') {
+          // `codex mcp remove` 只改用户 config.toml，项目里那条它删不到，还照样退出 0（#1092）。
+          // 界面不会给项目那条「移除」，这里只是兜底。
+          if (scope === 'project') throw new Error('当前 Provider 不支持该原生操作')
+          return { argv: ['mcp', 'remove', id!], secrets: [] }
+        }
+        return { argv: ['mcp', 'remove', '--scope', scope, id!], secrets: [] }
       }
       return { argv: ['mcp', input.action, id!], secrets: [] }
     }
@@ -2242,6 +2356,10 @@ export class ProviderExtensionService {
 
     if (input.provider === 'codex') {
       return { argv: ['plugin', input.action === 'install' ? 'add' : 'remove', id ?? safeSource(input.source), '--json'], secrets: [] }
+    }
+    // Grok 的插件命令没有范围参数（1.0.52、1.0.62），要的是项目那一层也只会落到 ~/.grok 那份（#1092）。
+    if (input.provider === 'grok' && input.scope && input.scope !== 'user') {
+      throw new Error('当前 Provider 不支持该原生操作')
     }
     const command = input.provider === 'gemini' ? 'extensions' : 'plugin'
     if (input.action === 'install') {
@@ -2303,9 +2421,12 @@ export class ProviderExtensionService {
     const geminiSkill = await this.resolveGeminiSkill(input, repositoryRoot)
     const { argv, secrets } = this.mutationArgv(input, geminiSkill)
     const scope = geminiSkill ? geminiSkill.scope : input.scope
-    const projectBound = input.provider === 'claude' || input.provider === 'gemini'
-    // 这两家的 project / local / workspace 都是「命令在哪个项目里跑就改哪个项目」，
-    // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。
+    const projectBound = input.provider === 'claude'
+      || input.provider === 'gemini'
+      || (input.provider === 'grok' && input.kind === 'mcp')
+    // 这几家的 project / local / workspace 都是「命令在哪个项目里跑就改哪个项目」，
+    // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。Grok 的连接写的是
+    // 命令所在目录的 .grok/config.toml，以前不带目录，就写进了星芒自己的启动目录（#1092）。
     if (projectBound && scope && scope !== 'user' && !repositoryRoot) {
       throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
     }

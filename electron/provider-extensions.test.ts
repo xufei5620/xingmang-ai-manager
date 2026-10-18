@@ -572,9 +572,10 @@ describe('ProviderExtensionService list facade', () => {
 
   it('degrades an oversized local MCP config to a warning without disabling the whole list', async () => {
     const home = temporaryDirectory()
-    write(path.join(home, '.claude', 'settings.json'), 'x'.repeat(2 * 1024 * 1024 + 1))
+    const repository = temporaryDirectory()
+    write(path.join(repository, '.mcp.json'), 'x'.repeat(2 * 1024 * 1024 + 1))
     write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { alive: { command: 'node' } } }))
-    const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]' })
+    const service = new ProviderExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke: async () => '[]' })
 
     const snapshot = await service.list('claude')
 
@@ -2085,6 +2086,33 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     expect(remove.cwd).toBe(repository)
   })
 
+  it('leaves out Claude MCP entries written into settings.json, which Claude Code never loads', async () => {
+    // 2.1.302: `mcp list` / `mcp get` skip both settings.json files and `mcp remove` reports
+    // "No MCP server named …" in every scope, so a row from there could never be removed.
+    const home = temporaryDirectory()
+    const repository = temporaryDirectory()
+    const userSettings = JSON.stringify({ mcpServers: { ghost: { command: 'ignored' }, shared: { command: 'settings-copy' } } })
+    const projectSettings = JSON.stringify({ mcpServers: { 'project-ghost': { command: 'ignored' } } })
+    write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { shared: { command: 'real-server' } } }))
+    write(path.join(home, '.claude', 'settings.json'), userSettings)
+    write(path.join(repository, '.claude', 'settings.json'), projectSettings)
+    const { invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'plugin list --available --json') return '[]'
+      if (argv.join(' ') === 'plugin marketplace list --json') return registeredMarketplaceList
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke })
+
+    const snapshot = await service.list('claude')
+    const servers = snapshot.items.filter((item) => item.kind === 'mcp')
+    expect(servers.map((item) => [item.id, item.scope])).toEqual([['shared', 'user']])
+    expect(servers[0].description).toContain('real-server')
+    expect(servers[0].operations.uninstall).toBe(true)
+    expect(snapshot.warnings.filter((warning) => warning.includes('MCP'))).toEqual([])
+    expect(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).toBe(userSettings)
+    expect(fs.readFileSync(path.join(repository, '.claude', 'settings.json'), 'utf8')).toBe(projectSettings)
+  })
+
   it('asks for the project folder before touching a project-scoped item', async () => {
     const { calls, invoke } = recordingInvoke(() => undefined)
     const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
@@ -2097,6 +2125,209 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       scope: 'project',
     })).rejects.toThrow('请先在工作目录里选好这个项目')
     expect(calls).toHaveLength(0)
+  })
+
+  // Shapes copied from `grok mcp list --json` / `grok plugin list --available --json` on 1.0.52 and 1.0.62:
+  // MCP rows carry their own layer, plugin rows carry none because every plugin lives under ~/.grok.
+  const grokMcpList = JSON.stringify([
+    { command: 'echo', args: ['hi'], enabled: true, name: 'mine', scope: 'user' },
+    { command: 'echo', args: ['proj'], enabled: true, name: 'shared', scope: 'project' },
+    { url: 'https://example.com/mcp', enabled: true, name: 'remote', scope: 'project' },
+    { command: 'echo', args: [], enabled: true, name: 'legacy' },
+  ])
+  const grokPluginList = JSON.stringify([
+    { status: 'installed', name: 'demo', repo_key: 'demo-99a3b289', version: '0.1.0', path: '/home/u/.grok/installed-plugins/demo-99a3b289', source: 'owner/demo', marketplace: null },
+  ])
+
+  it('lists Grok MCP servers from inside the project and removes each one from the layer it lives in', async () => {
+    const repository = temporaryDirectory()
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return grokMcpList
+      if (argv.join(' ') === 'plugin list --available --json') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), repositoryRoot: repository, invoke })
+
+    const servers = (await service.list('grok')).items.filter((item) => item.kind === 'mcp')
+    expect(calls.find((call) => call.argv.join(' ') === 'mcp list --json')!.cwd).toBe(repository)
+    expect(servers.map((item) => [item.id, item.scope]).sort()).toEqual([
+      ['legacy', 'user'],
+      ['mine', 'user'],
+      ['remote', 'project'],
+      ['shared', 'project'],
+    ])
+
+    for (const item of servers.filter((server) => server.id === 'shared' || server.id === 'mine')) {
+      calls.length = 0
+      await service.mutate({ provider: 'grok', kind: 'mcp', action: 'uninstall', id: item.id, scope: item.scope === 'project' ? 'project' : 'user' })
+      const remove = calls.find((call) => call.argv[1] === 'remove')!
+      expect(remove.argv).toEqual(['mcp', 'remove', '--scope', item.scope, item.id])
+      expect(remove.cwd).toBe(repository)
+    }
+  })
+
+  it('adds a project Grok MCP server inside the project and asks for the project folder when none is picked', async () => {
+    const repository = temporaryDirectory()
+    const { calls, invoke } = recordingInvoke(() => '[]')
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), repositoryRoot: repository, invoke })
+
+    await service.mutate({
+      provider: 'grok',
+      kind: 'mcp',
+      action: 'install',
+      id: 'project-db',
+      scope: 'project',
+      mcp: { type: 'stdio', command: 'npx', args: ['-y', 'demo-mcp'] },
+    })
+    const add = calls.find((call) => call.argv[1] === 'add')!
+    expect(add.argv).toEqual(['mcp', 'add', '--scope', 'project', 'project-db', '--', 'npx', '-y', 'demo-mcp'])
+    expect(add.cwd).toBe(repository)
+
+    calls.length = 0
+    service.setRepositoryRoot(null)
+    await expect(service.mutate({
+      provider: 'grok',
+      kind: 'mcp',
+      action: 'install',
+      id: 'project-db',
+      scope: 'project',
+      mcp: { type: 'http', url: 'https://example.com/mcp' },
+    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('files every Grok plugin under the user layer and refuses a project layer the CLI cannot honour', async () => {
+    const repository = temporaryDirectory()
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'plugin list --available --json') return grokPluginList
+      if (argv.join(' ') === 'mcp list --json') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), repositoryRoot: repository, invoke })
+
+    const plugins = (await service.list('grok')).items.filter((item) => item.kind === 'plugin')
+    expect(plugins.map((item) => [item.id, item.scope])).toEqual([['demo', 'user']])
+
+    calls.length = 0
+    await expect(service.mutate({
+      provider: 'grok',
+      kind: 'plugin',
+      action: 'install',
+      source: 'owner/demo',
+      scope: 'project',
+      trust: true,
+    })).rejects.toThrow('不支持该原生操作')
+    expect(calls).toHaveLength(0)
+
+    await service.mutate({ provider: 'grok', kind: 'plugin', action: 'disable', id: 'demo', scope: 'user' })
+    const disable = calls.find((call) => call.argv[1] === 'disable')!
+    expect(disable.argv).toEqual(['plugin', 'disable', 'demo'])
+    expect(disable.cwd).toBeUndefined()
+  })
+
+  // Shape copied from `codex mcp list --json` on 0.162.1: user, trusted-project and plugin servers come back merged,
+  // with no layer, and `codex mcp remove` only reaches the user config.toml.
+  function codexMcpList(...names: string[]): string {
+    return JSON.stringify(names.map((name) => ({
+      name,
+      enabled: true,
+      disabled_reason: null,
+      transport: { type: 'stdio', command: 'echo', args: [name], env: null, env_vars: [], cwd: null },
+      startup_timeout_sec: null,
+      tool_timeout_sec: null,
+      auth_status: 'unsupported',
+    })))
+  }
+
+  it('lists Codex MCP servers inside the project, files trusted-project ones under project and removes only user ones', async () => {
+    const codexHome = temporaryDirectory()
+    const repository = temporaryDirectory()
+    const workspace = path.join(repository, 'app')
+    write(
+      path.join(codexHome, 'config.toml'),
+      '[mcp_servers.mine]\ncommand = "echo"\nargs = ["mine"]\n\n[mcp_servers.shared]\ncommand = "echo"\n\n'
+        + '[mcp_servers.same]\ncommand = "echo"\nargs = ["same"]\n\n'
+        + '[mcp_servers.twin]\ncommand = "echo"\nargs = ["twin"]\nenv = { MODE = "user" }\n',
+    )
+    fs.mkdirSync(path.join(repository, '.git'), { recursive: true })
+    write(path.join(repository, '.codex', 'config.toml'), '[mcp_servers.shared]\ncommand = "echo"\n\n[mcp_servers.repo-db]\ncommand = "echo"\n')
+    write(
+      path.join(workspace, '.codex', 'config.toml'),
+      '[mcp_servers.deep]\ncommand = "echo"\n\n[mcp_servers.same]\ncommand = "other"\n\n'
+        + '[mcp_servers.twin]\ncommand = "echo"\nargs = ["twin"]\nenv = { MODE = "project" }\n',
+    )
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return codexMcpList('mine', 'shared', 'repo-db', 'deep', 'same', 'twin', 'from-plugin')
+      if (argv[0] === 'plugin') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), codexHome, repositoryRoot: workspace, invoke })
+
+    const servers = (await service.list('codex')).items.filter((item) => item.kind === 'mcp')
+    expect(calls.find((call) => call.argv.join(' ') === 'mcp list --json')!.cwd).toBe(workspace)
+    expect(servers.map((item) => [item.id, item.scope, item.operations.uninstall]).sort()).toEqual([
+      ['deep', 'project', false],
+      ['from-plugin', 'user', false],
+      ['mine', 'user', true],
+      ['repo-db', 'project', false],
+      // Listed exactly as the user wrote it: the project layer holding the same name is not trusted.
+      ['same', 'user', true],
+      // Listed unlike the user copy: the project one shadows it, and remove would only reach the user one.
+      ['shared', 'project', false],
+      // Both copies share the command and arguments and differ only in what the comparison does not look at,
+      // so nothing says which one Codex picked: keep it under project and out of reach of remove.
+      ['twin', 'project', false],
+    ])
+
+    calls.length = 0
+    await service.mutate({ provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'mine', scope: 'user' })
+    expect(calls.find((call) => call.argv[1] === 'remove')!.argv).toEqual(['mcp', 'remove', 'mine'])
+
+    calls.length = 0
+    await expect(service.mutate({ provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'repo-db', scope: 'project' }))
+      .rejects.toThrow('不支持该原生操作')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('reads only the folder itself as the Codex project layer when no Git root sits above it', async () => {
+    const codexHome = temporaryDirectory()
+    const parent = temporaryDirectory()
+    const workspace = path.join(parent, 'project')
+    write(path.join(codexHome, 'config.toml'), '[mcp_servers.mine]\ncommand = "echo"\n')
+    write(path.join(parent, '.codex', 'config.toml'), '[mcp_servers.parent-one]\ncommand = "echo"\n')
+    write(path.join(workspace, '.codex', 'config.toml'), '[mcp_servers.own]\ncommand = "echo"\n')
+    const { invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return codexMcpList('mine', 'own', 'parent-one')
+      if (argv[0] === 'plugin') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), codexHome, repositoryRoot: workspace, invoke })
+
+    const servers = (await service.list('codex')).items.filter((item) => item.kind === 'mcp')
+    expect(servers.map((item) => [item.id, item.scope, item.operations.uninstall]).sort()).toEqual([
+      ['mine', 'user', true],
+      ['own', 'project', false],
+      ['parent-one', 'user', false],
+    ])
+  })
+
+  it('still lists Codex and Grok MCP servers when the chosen project folder is gone', async () => {
+    const codexHome = temporaryDirectory()
+    write(path.join(codexHome, 'config.toml'), '[mcp_servers.mine]\ncommand = "echo"\n')
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return codexMcpList('mine')
+      if (argv[0] === 'plugin') return '[]'
+      return undefined
+    })
+    const missing = path.join(temporaryDirectory(), 'deleted-project')
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), codexHome, repositoryRoot: missing, invoke })
+
+    for (const provider of ['codex', 'grok'] as const) {
+      const snapshot = await service.list(provider)
+      expect(snapshot.capabilities.mcp.list).toBe(true)
+      expect(snapshot.items.filter((item) => item.kind === 'mcp').map((item) => [item.id, item.scope])).toEqual([['mine', 'user']])
+    }
+    expect(calls.filter((call) => call.argv.join(' ') === 'mcp list --json').map((call) => call.cwd)).toEqual([undefined, undefined])
   })
 
   it('shows Codex skills disabled in config.toml as disabled', async () => {

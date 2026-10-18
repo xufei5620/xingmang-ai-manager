@@ -4,6 +4,7 @@ import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import { isOlderReleaseGuard, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
+import { compareVersionsBy, parseUpdateVersion } from './versions'
 
 export type UpdatePhase =
   | 'disabled'
@@ -614,20 +615,9 @@ function isDownloadCancellation(error: unknown): boolean {
   return error instanceof UpdateDownloadAborted || (error instanceof Error && error.message === 'cancelled')
 }
 
-function versionParts(version: string): number[] | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim())
-  return match ? match.slice(1, 4).map(Number) : null
-}
-
 /** 只比 x.y.z；比不出来（版本号写法不认识）按「不更旧」处理。 */
 export function isOlderVersion(candidate: string, current: string): boolean {
-  const left = versionParts(candidate)
-  const right = versionParts(current)
-  if (!left || !right) return false
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] < right[index]
-  }
-  return false
+  return (compareVersionsBy(parseUpdateVersion, candidate, current) ?? 0) < 0
 }
 
 /**
@@ -635,7 +625,7 @@ export function isOlderVersion(candidate: string, current: string): boolean {
  * 都当作不低于：这一项会把人挡在门外，拿不准就不拦。
  */
 export function resolveRequiredVersion(currentVersion: string, minimumVersion: string | null | undefined): string | null {
-  if (!minimumVersion || !versionParts(minimumVersion) || !versionParts(currentVersion)) return null
+  if (!minimumVersion || !parseUpdateVersion(minimumVersion) || !parseUpdateVersion(currentVersion)) return null
   return isOlderVersion(currentVersion, minimumVersion) ? minimumVersion : null
 }
 
@@ -658,7 +648,7 @@ export function resolveGatedRequiredVersion(input: {
   if (!minimum) return null
   if (input.installMethod !== 'system-installer') return minimum
   const offered = input.availableVersion
-  if (!offered || input.rollback || !versionParts(offered)) return null
+  if (!offered || input.rollback || !parseUpdateVersion(offered)) return null
   return isOlderVersion(offered, minimum) ? null : minimum
 }
 
@@ -694,7 +684,7 @@ export function decideUpdateOffer(input: {
   if (bad.has(version)) return { offer: false }
   if (
     isOlderVersion(version, input.currentVersion)
-    && (!versionParts(version) || isOlderVersion(version, input.rollbackFloor ?? rollbackFloorVersion))
+    && (!parseUpdateVersion(version) || isOlderVersion(version, input.rollbackFloor ?? rollbackFloorVersion))
   ) return { offer: false }
   const currentWithdrawn = bad.has(input.currentVersion)
   if (input.rollout && input.rollout.version === version && !input.manual && !currentWithdrawn) {
@@ -879,7 +869,7 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
     source.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@'),
   )).slice(0, 500)
   // 原话里夹着系统给的中文原因，交给 describeUnrecognizedUpdateFailure 会被当成「本来就是
-  // 中文」整句上屏，客户看到半句英文和一个被打码成「本地配置文件」的路径。
+  // 中文」整句上屏，客户看到半句英文和一个被打码成「本机路径」的路径。
   if (platform === 'darwin' && isMacUpdateSignatureRejection(source)) {
     return { code: updateSignatureRejectedCode, message: updateSignatureRejectedMessage, detail: redacted }
   }
@@ -912,7 +902,7 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
  * 直接上屏客户看不懂。认得出的按原因说人话，认不出的也不贴原文，只说原话记进日志了；
  * 本来就是中文的（主进程自己抛的那些）原样保留。原话放在 detail 里进 runtime.jsonl。
  * 是不是中文要去掉路径再看：Windows 的中文用户名、Mac 上的「星芒AI管理工具.app」都在
- * 路径里，以前带着它们的英文原话整句上屏，脱敏后成了「…, open '本地配置文件」（第三十批跟进项）。
+ * 路径里，以前带着它们的英文原话整句上屏，脱敏后成了「…, open '本机路径」（第三十批跟进项）。
  */
 export function describeUnrecognizedUpdateFailure(source: string): string {
   if (!source || isChineseSentence(source)) return source

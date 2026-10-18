@@ -21,6 +21,7 @@ import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevoke
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 import { noteRequestDiagnostics } from './request-diagnostics'
+import { PaymentCheckoutRejected } from './payment-window'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -273,6 +274,7 @@ function register(
     addMcpServer: vi.fn(),
     removeMcpServer: vi.fn(),
     loginMcpServer: vi.fn(),
+    cancelMcpLogin: vi.fn(),
     logoutMcpServer: vi.fn(),
     listSkills: vi.fn(),
     importSkill: vi.fn(),
@@ -1015,6 +1017,36 @@ describe('registerIpcHandlers', () => {
     expect(() => generateImage(trustedEvent(undefined, 17), {
       requestId: 'image-bad', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', imageResolution: '8K',
     })).toThrow('生图清晰度格式错误')
+
+    // Exactly what the chat page sends: all seven fields, quality left undefined
+    // for models without a quality picker, and a multi-line prompt.
+    imageService.generate.mockClear()
+    await expect(generateImage(trustedEvent(undefined, 17), {
+      requestId: 'image-2', group: '生图分组', model: 'gpt-image-2', prompt: '海浪\n\t远处有船',
+      size: '1024x1024', quality: undefined, imageResolution: '1K',
+    })).resolves.toEqual([])
+    expect(imageService.generate).toHaveBeenCalledWith(17, {
+      requestId: 'image-2', group: '生图分组', model: 'gpt-image-2', prompt: '海浪\n\t远处有船',
+      size: '1024x1024', imageResolution: '1K', expectedUserId: 7,
+    })
+
+    // The chat page now holds the canvas standard: a field it never sends, such
+    // as a smuggled account id, is refused instead of silently dropped.
+    imageService.generate.mockClear()
+    const base = { requestId: 'image-3', group: '生图分组', model: 'gpt-image-2', prompt: '海浪' }
+    for (const [input, message] of [
+      [{ ...base, expectedUserId: 99 }, '生图请求格式错误'],
+      [{ ...base, projectId: 'p' }, '生图请求格式错误'],
+      [{ ...base, model: 'gpt-image-2\n' }, '生图模型格式错误'],
+      [{ ...base, model: 'm'.repeat(129) }, '生图模型格式错误'],
+      [{ ...base, size: 'x'.repeat(33) }, '生图尺寸格式错误'],
+      [{ ...base, prompt: '海浪\x1B[31m' }, '生图提示词格式错误'],
+      [{ ...base, quality: ['high'] }, '生图画质格式错误'],
+      [{ ...base, imageResolution: ['4K'] }, '生图清晰度格式错误'],
+    ] as const) {
+      expect(() => generateImage(trustedEvent(undefined, 17), input)).toThrow(message)
+    }
+    expect(imageService.generate).not.toHaveBeenCalled()
 
     const cancel = electronMocks.handlers.get('chat:cancel')!
     expect(cancel(trustedEvent(undefined, 22), 'request-1')).toEqual({
@@ -3578,7 +3610,7 @@ describe('registerIpcHandlers', () => {
       usedQuota: null,
     }
     // Starts out reporting signed-out, as the shared client does before
-    // main.ts's startup restoreAccountSessionOnStartup() has mutated its
+    // main.ts's startup restoreActive() (realm-account-service.ts) has mutated its
     // in-memory session. Only flips to signed-in once resolveReady() below
     // fires, standing in for that restore having finished -- if the handler
     // ever regressed to reading getSessionState() *before* awaiting
@@ -3705,6 +3737,19 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => electronMocks.handlers.get('backups:inspect')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
       expect(() => electronMocks.handlers.get('mcp:remove')!(trustedEvent(), '')).toThrow('MCP 名称格式错误')
+    })
+
+    it('validates the MCP name before cancelling a waiting login', () => {
+      const { extensionService } = register()
+      extensionService.cancelMcpLogin.mockReturnValue(true)
+      const handler = electronMocks.handlers.get('mcp:cancel-login')!
+
+      expect(handler(trustedEvent(), ' remote-server ')).toBe(true)
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledWith('remote-server')
+      for (const bad of [42, null, '', 'server\0name', 'a'.repeat(129)]) {
+        expect(() => handler(trustedEvent(), bad)).toThrow('MCP 名称格式错误')
+      }
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -5973,7 +6018,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('diagnostics:check-connection on a rejected managed key', () => {
     const rejected = {
       ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
-      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号', nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
+      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号', nextStep: '先重新登录，再在首页重新写入一次密钥',
       endpoint: 'https://example.test/v1/messages', model: 'm', detail: '无效的令牌',
       status: 401, durationMs: 12, checkedAt: '2026-09-22T00:00:00.000Z',
     }
@@ -6927,11 +6972,34 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         tradeNo: 'attacker-trade',
       })
 
-      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+      // 客户只看到一句能照着做的话，校验原话挂在 cause 上进运行日志（#1100 第5条）。
+      const failure = await Promise.resolve(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
         amount: 10,
         paymentMethod: 'alipay',
-      })).rejects.toThrow('支付来源与支付地址不匹配')
+      })).catch((error: unknown) => error)
+      expect(failure).toMatchObject({
+        message: '支付通道暂时异常，没有扣款，请联系客服。',
+        cause: { message: '支付来源与支付地址不匹配' },
+      })
       expect(paymentWindow.open).not.toHaveBeenCalled()
+    })
+
+    it('words a rejected subscription checkout the same way but leaves other payment failures as they are', async () => {
+      const accountService = accountServiceStub()
+      const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+      vi.mocked(accountService.createSubscriptionPayment).mockResolvedValue({
+        kind: 'url', url: 'https://checkout.example.com/session', tradeNo: 'subscription-trade-1', expiresAt: null,
+      })
+      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new PaymentCheckoutRejected('支付地址必须是不含账号密码和片段的 HTTPS 地址'))
+      await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe',
+      })).rejects.toThrow(/^支付通道暂时异常，没有扣款，请联系客服。$/)
+
+      // 网络打不开支付页、账号中途变了，各有各的下一步，不能一起吞成「联系客服」。
+      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试'))
+      await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe',
+      })).rejects.toThrow(/^支付页面打开失败，请稍后重试$/)
     })
 
     it('rejects malformed subscription payment inputs before dispatch', async () => {
@@ -8063,6 +8131,93 @@ describe('runtime-logs:preview-feedback size budget', () => {
   })
 })
 
+// AGENTS.md I3 登记了能让明文跨 IPC 的那几条专用通道，并写明它们全都在日志静默名单里。
+// 以前只有文档这么说，谁在 I3 再登记一条却没放进静默名单、或者把其中一条挪出静默名单，没有测试会红
+// （#1069 第 6 条）。这一段把同一份名单钉在三处：文档的登记、契约里的通道、成功时不进运行日志。
+// 连 I3 都没登记的新明文通道这里认不出来：哪条通道带明文，代码里没有一份权威的分类可比。
+describe('plaintext IPC channels registered under AGENTS.md I3', () => {
+  const plaintextChannels = [
+    'account:copy-reset-password',
+    'account:get-remembered-login',
+    'account:reset-password',
+    'account:reveal-key',
+    'account:set-remembered-login',
+    'config:reveal-api-key',
+  ]
+
+  it('matches the exception list written under I3 in AGENTS.md', () => {
+    const agents = fs.readFileSync(path.join(__dirname, '..', 'AGENTS.md'), 'utf8')
+    const section = agents.slice(agents.indexOf('**I3.'), agents.indexOf('**I4.'))
+    const exceptions = section.split('\n').find((line) => line.startsWith('*已登记的例外*'))
+    expect(exceptions, 'AGENTS.md 的 I3 里找不到「已登记的例外」那一段').toBeDefined()
+    const registered = [...new Set([...exceptions!.matchAll(/`([a-z-]+:[a-z-]+)`/g)].map((match) => match[1]))].sort()
+    expect(registered).toEqual(plaintextChannels)
+  })
+
+  it('are all channels of the invoke contract', () => {
+    expect(Object.values(ipcInvokeChannels)).toEqual(expect.arrayContaining(plaintextChannels))
+  })
+
+  it('never writes a success line or the plaintext itself to the runtime log', async () => {
+    const secrets = {
+      apiKey: 'sk-i3-config-reveal-secret',
+      accountKey: 'sk-i3-account-reveal-secret',
+      resetPassword: 'i3-reset-generated-secret',
+      copiedPassword: 'i3-copied-reset-secret',
+      rememberedPassword: 'i3-remembered-secret',
+      typedPassword: 'i3-typed-remember-secret',
+    }
+    const service = serviceStub()
+    vi.mocked(service.revealApiKey).mockReturnValue(secrets.apiKey)
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.revealKey).mockResolvedValue(secrets.accountKey)
+    vi.mocked(accountService.resetPassword).mockResolvedValue({ newPassword: secrets.resetPassword })
+    const accountCredentials = {
+      read: vi.fn(async () => ({ version: 1 as const, identifier: 'boss@example.test', password: secrets.rememberedPassword })),
+      save: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined),
+    }
+    const { runtimeLog, dispose } = register(service, undefined, undefined, accountService, accountCredentials)
+    const invoke = (channel: string, ...args: unknown[]) => electronMocks.handlers.get(channel)!(trustedEvent(), ...args)
+    try {
+      // 每条都要真走到成功那一步，静默名单才算被测到；名单变了这张表也得跟着补。
+      const successes: Record<string, () => Promise<void>> = {
+        'config:reveal-api-key': async () => {
+          expect(await invoke('config:reveal-api-key', 'codex')).toBe(secrets.apiKey)
+        },
+        'account:reveal-key': async () => {
+          expect(await invoke('account:reveal-key', 42)).toBe(secrets.accountKey)
+        },
+        'account:reset-password': async () => {
+          expect(await invoke('account:reset-password', { email: 'boss@example.test', token: 'reset-code' }))
+            .toEqual({ newPassword: secrets.resetPassword })
+        },
+        'account:copy-reset-password': async () => {
+          await invoke('account:copy-reset-password', secrets.copiedPassword)
+          expect(electronMocks.writeText).toHaveBeenCalledWith(secrets.copiedPassword)
+        },
+        'account:get-remembered-login': async () => {
+          expect(await invoke('account:get-remembered-login'))
+            .toEqual({ identifier: 'boss@example.test', password: secrets.rememberedPassword })
+        },
+        'account:set-remembered-login': async () => {
+          await invoke('account:set-remembered-login', { identifier: 'boss@example.test', password: secrets.typedPassword })
+          expect(accountCredentials.save).toHaveBeenCalledWith('boss@example.test', secrets.typedPassword)
+        },
+      }
+      expect(Object.keys(successes).sort()).toEqual(plaintextChannels)
+      for (const channel of plaintextChannels) await successes[channel]()
+
+      const loggedEvents = runtimeLog.log.mock.calls.map((call) => call[2])
+      for (const channel of plaintextChannels) expect(loggedEvents).not.toContain(channel)
+      const logged = JSON.stringify([runtimeLog.log.mock.calls, runtimeLog.exception.mock.calls])
+      for (const secret of Object.values(secrets)) expect(logged).not.toContain(secret)
+    } finally {
+      dispose()
+    }
+  })
+})
+
 describe('config:open-directory', () => {
   const temporary: string[] = []
 
@@ -8214,11 +8369,11 @@ describe('backup handlers and account key ownership', () => {
   it('still reports a completed restore when the official marker cannot follow it', async () => {
     const backupStore = backupStoreStub()
     const service = serviceStub()
-    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方 Key 没能挪开'))
+    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」；还不行请找客服（错误码 EPERM）。'))
     const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
     expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能跟着对齐'), expect.objectContaining({
-      provider: 'codex', reason: expect.stringContaining('官方 Key 没能挪开'),
+      provider: 'codex', reason: expect.stringContaining('官方密钥没能挪开'),
     }))
   })
 

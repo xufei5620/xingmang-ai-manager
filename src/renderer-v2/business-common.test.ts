@@ -36,7 +36,7 @@ describe('rawErrorMessage', () => {
     // 躲得过盘符那条脱敏，账号名就上屏了（I13）。
     const leak = new Error("Error invoking remote method 'config:save': C:\\Users\\张三\\.codex\\config.toml 写不进去")
     expect(rawErrorMessage(leak)).toBe('C:\\Users\\张三\\.codex\\config.toml 写不进去')
-    expect(userFacingErrorMessage(leak)).toBe('本地配置文件 写不进去')
+    expect(userFacingErrorMessage(leak)).toBe('本机路径 写不进去')
   })
 
   it('keeps a business message that happens to start with an error class name', () => {
@@ -97,20 +97,20 @@ describe('userFacingErrorMessage', () => {
       + '配置事务源不是单链接普通文件，已拒绝写入：C:\\Users\\张三\\.codex\\config.toml',
     )
 
-    expect(userFacingErrorMessage(leak)).toBe('配置事务源不是单链接普通文件，已拒绝写入：本地配置文件')
+    expect(userFacingErrorMessage(leak)).toBe('配置事务源不是单链接普通文件，已拒绝写入：本机路径')
     expect(userFacingErrorMessage(leak)).not.toContain('张三')
   })
 
   it('redacts macOS and Linux home paths', () => {
     expect(userFacingErrorMessage(new Error('备份失败：/Users/zhangsan/.codex/config.toml')))
-      .toBe('备份失败：本地配置文件')
+      .toBe('备份失败：本机路径')
     expect(userFacingErrorMessage(new Error('备份失败：/home/zhangsan/.codex/config.toml')))
-      .toBe('备份失败：本地配置文件')
+      .toBe('备份失败：本机路径')
   })
 
   it('redacts a UNC path', () => {
     expect(userFacingErrorMessage(new Error('拒绝写入：\\\\fileserver\\share\\config.toml')))
-      .toBe('拒绝写入：本地配置文件')
+      .toBe('拒绝写入：本机路径')
   })
 
   it('redacts the whole path when the account name has spaces in it', () => {
@@ -119,35 +119,35 @@ describe('userFacingErrorMessage', () => {
       "Error invoking remote method 'config:switch-account-source': Error: "
       + "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\Zhang San\\.claude\\settings.json'。已恢复到切换前的配置。",
     )
-    expect(userFacingErrorMessage(leak)).toBe("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件。已恢复到切换前的配置。")
-    expect(userFacingErrorMessage(new Error('C:\\Users\\Mary Ann Smith\\.codex\\config.toml 写不进去'))).toBe('本地配置文件 写不进去')
-    expect(userFacingErrorMessage(new Error('拒绝写入：C:\\Users\\张 三\\.claude\\settings.json，请重试'))).toBe('拒绝写入：本地配置文件，请重试')
-    expect(userFacingErrorMessage(new Error('\\\\?\\C:\\Users\\Zhang San\\x.json 打不开'))).toBe('本地配置文件 打不开')
+    expect(userFacingErrorMessage(leak)).toBe("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径。已恢复到切换前的配置。")
+    expect(userFacingErrorMessage(new Error('C:\\Users\\Mary Ann Smith\\.codex\\config.toml 写不进去'))).toBe('本机路径 写不进去')
+    expect(userFacingErrorMessage(new Error('拒绝写入：C:\\Users\\张 三\\.claude\\settings.json，请重试'))).toBe('拒绝写入：本机路径，请重试')
+    expect(userFacingErrorMessage(new Error('\\\\?\\C:\\Users\\Zhang San\\x.json 打不开'))).toBe('本机路径 打不开')
   })
 
   it('redacts folder names with spaces on macOS, Linux and network shares', () => {
     expect(userFacingErrorMessage(new Error("EACCES: permission denied, open '/Users/zhangsan/Library/Application Support/xingmang-ai-manager/backups/a.json'")))
-      .toBe("EACCES: permission denied, open '本地配置文件")
+      .toBe("EACCES: permission denied, open '本机路径")
     expect(userFacingErrorMessage(new Error("EACCES: permission denied, mkdir '/home/zhangsan/Pictures/星芒 AI 作品/user-7'")))
-      .toBe("EACCES: permission denied, mkdir '本地配置文件")
+      .toBe("EACCES: permission denied, mkdir '本机路径")
     expect(userFacingErrorMessage(new Error('拒绝写入：\\\\fileserver\\Shared Docs\\张三\\config.toml')))
-      .toBe('拒绝写入：本地配置文件')
+      .toBe('拒绝写入：本机路径')
   })
 
   it('keeps the words after a path with spaces in it', () => {
     // 过了最后一个分隔符，空格照旧算路径结束：后面的错误码、中文原因、下一个路径都还在。
-    expect(userFacingErrorMessage(new Error('spawn C:\\Program Files\\nodejs\\node.exe ENOENT'))).toBe('spawn 本地配置文件 ENOENT')
-    expect(userFacingErrorMessage(new Error('读取 /Users/yoyo/Library/Application Support/config.json 失败'))).toBe('读取 本地配置文件 失败')
+    expect(userFacingErrorMessage(new Error('spawn C:\\Program Files\\nodejs\\node.exe ENOENT'))).toBe('spawn 本机路径 ENOENT')
+    expect(userFacingErrorMessage(new Error('读取 /Users/yoyo/Library/Application Support/config.json 失败'))).toBe('读取 本机路径 失败')
     expect(userFacingErrorMessage(new Error('C:\\Users\\Zhang San\\a.json 与 C:\\Users\\Zhang San\\b.json 都写不进去')))
-      .toBe('本地配置文件 与 本地配置文件 都写不进去')
+      .toBe('本机路径 与 本机路径 都写不进去')
     expect(userFacingErrorMessage(new Error("EPERM: operation not permitted, rename 'C:\\Users\\Zhang San\\a.tmp' -> 'C:\\Users\\Zhang San\\a.json'")))
-      .toBe("EPERM: operation not permitted, rename '本地配置文件 -> '本地配置文件")
+      .toBe("EPERM: operation not permitted, rename '本机路径 -> '本机路径")
     expect(userFacingErrorMessage(new Error('磁盘 C:\\ 已满'))).toBe('磁盘 C:\\ 已满')
   })
 
   it('keeps the sentence that follows the path intact', () => {
     expect(userFacingErrorMessage(new Error('配置路径越过 Provider 根目录，已拒绝写入：C:\\Users\\张三\\x.toml，请重新选择目录')))
-      .toBe('配置路径越过 Provider 根目录，已拒绝写入：本地配置文件，请重新选择目录')
+      .toBe('配置路径越过 Provider 根目录，已拒绝写入：本机路径，请重新选择目录')
   })
 
   it('collapses control characters so a stack fragment cannot reshape the dialog', () => {
@@ -172,7 +172,7 @@ describe('errorMessage', () => {
       + '保存 Codex 配置失败：C:\\Users\\张三\\.codex\\config.toml',
     )
 
-    expect(errorMessage(leak)).toBe('保存 Codex 配置失败：本地配置文件')
+    expect(errorMessage(leak)).toBe('保存 Codex 配置失败：本机路径')
   })
 
   it('keeps the precise new-api wording ahead of the heuristics', () => {
@@ -207,7 +207,7 @@ describe('errorMessage', () => {
   })
 
   it('does not take an English failure for Chinese because of a redacted path', () => {
-    // 脱敏后的占位词「本地配置文件」本身是汉字。以前这几句都以半个引号的英文原样上屏（第三十批 A）。
+    // 脱敏后的占位词「本机路径」本身是汉字。以前这几句都以半个引号的英文原样上屏（第三十批 A）。
     const ipc = (reason: string) => new Error(`Error invoking remote method 'config:save': Error: ${reason}`)
     const failures = [
       "EPERM: operation not permitted, open 'C:\\Users\\yoyo\\.codex\\config.toml'",
@@ -245,12 +245,12 @@ describe('errorMessage', () => {
 
 describe('speaksChinese', () => {
   it('reads the sentence itself, not the path placeholder, quoted parts or a Chinese user name', () => {
-    expect(speaksChinese("EPERM: operation not permitted, open '本地配置文件")).toBe(false)
-    expect(speaksChinese("ENOENT: no such file or directory, open '本地配置文件 三\\.codex\\config.toml'")).toBe(false)
+    expect(speaksChinese("EPERM: operation not permitted, open '本机路径")).toBe(false)
+    expect(speaksChinese("ENOENT: no such file or directory, open '本机路径 三\\.codex\\config.toml'")).toBe(false)
     expect(speaksChinese('Error: user "张三" not found')).toBe(false)
-    expect(speaksChinese('spawn 本地配置文件 三\\AppData\\Roaming\\npm\\codex.cmd ENOENT')).toBe(false)
-    expect(speaksChinese('保存 Codex 配置失败：本地配置文件')).toBe(true)
-    expect(speaksChinese('配置文件 本地配置文件 不是单链接普通文件')).toBe(true)
+    expect(speaksChinese('spawn 本机路径 三\\AppData\\Roaming\\npm\\codex.cmd ENOENT')).toBe(false)
+    expect(speaksChinese('保存 Codex 配置失败：本机路径')).toBe(true)
+    expect(speaksChinese('配置文件 本机路径 不是单链接普通文件')).toBe(true)
     expect(speaksChinese('Codex config.toml 无法解析，未执行修改（第 4 行附近）')).toBe(true)
     expect(speaksChinese('当前账号不可使用分组「GPT-中转/订阅」')).toBe(true)
   })
@@ -261,8 +261,8 @@ describe('snapshotErrorMessage', () => {
     // describeProbeFailure hands Error.message through untouched, so a failed
     // stat lands on screen with the Windows account name in it.
     expect(snapshotErrorMessage("ENOENT: no such file or directory, open 'C:\\Users\\yoyo\\AppData\\Roaming\\claude.json'"))
-      .toBe("ENOENT: no such file or directory, open '本地配置文件")
-    expect(snapshotErrorMessage('读取 /Users/yoyo/.codex/config.toml 失败')).toBe('读取 本地配置文件 失败')
+      .toBe("ENOENT: no such file or directory, open '本机路径")
+    expect(snapshotErrorMessage('读取 /Users/yoyo/.codex/config.toml 失败')).toBe('读取 本机路径 失败')
   })
 
   it('keeps a Chinese reason that names no path', () => {
@@ -307,12 +307,12 @@ describe('detectionFailureMessage', () => {
 
   it('keeps a reason that was written in Chinese, with its path redacted', () => {
     expect(detectionFailureMessage('读取 Node.js 安装位置时被拒绝')).toBe('读取 Node.js 安装位置时被拒绝')
-    expect(detectionFailureMessage('读取 /Users/yoyo/.codex/config.toml 失败')).toBe('读取 本地配置文件 失败')
+    expect(detectionFailureMessage('读取 /Users/yoyo/.codex/config.toml 失败')).toBe('读取 本机路径 失败')
     expect(detectionFailureMessage('无法确认当前安装状态：/Applications/Codex.app')).toBe('无法确认当前安装状态：/Applications/Codex.app')
   })
 
   it('does not take an English error for Chinese because of the path placeholder or a Chinese user name', () => {
-    // 脱敏把路径换成了「本地配置文件」，中文用户名也只在路径里：句子本身还是英文。
+    // 脱敏把路径换成了「本机路径」，中文用户名也只在路径里：句子本身还是英文。
     expect(detectionFailureMessage("EPERM: operation not permitted, scandir 'C:\\Users\\张三\\AppData\\Roaming\\npm'")).toBe(permission)
     // 用户名带空格时整段路径照样换掉，句子本身还是英文。
     expect(detectionFailureMessage("EACCES: permission denied, open 'C:\\Users\\张 三\\AppData\\Roaming\\npm'")).toBe(permission)
@@ -345,19 +345,19 @@ describe('operationFailureFrom', () => {
   it('folds an English failure that names a file into detail instead of showing it', () => {
     // 错误框以前把这句当成中文放在醒目处，不留 detail（第三十批 A）。
     const cause = new Error("Error invoking remote method 'config:rewrite-key': Error: EPERM: operation not permitted, open 'C:\\Users\\张三\\.codex\\config.toml'")
-    expect(operationFailureFrom(cause, '重新写入 Key')).toEqual({
-      message: '重新写入 Key没有完成',
-      detail: "EPERM: operation not permitted, open '本地配置文件",
+    expect(operationFailureFrom(cause, '重新写入密钥')).toEqual({
+      message: '重新写入密钥没有完成',
+      detail: "EPERM: operation not permitted, open '本机路径",
     })
   })
 
   it('leaves no detail when the message already explains the cause', () => {
     expect(operationFailureFrom(new Error('配置文件写入失败：磁盘只读'), '保存')).toEqual({ message: '配置文件写入失败：磁盘只读' })
-    expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
+    expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '网络连不上，请检查网络后重试。' })
   })
 
   it('masks keys in the original before it reaches the screen', () => {
-    const failure = operationFailureFrom(new Error('EBUSY: resource busy Bearer sk-abcdefghijklmnop api_key=abc123'), '重新写入 Key')
+    const failure = operationFailureFrom(new Error('EBUSY: resource busy Bearer sk-abcdefghijklmnop api_key=abc123'), '重新写入密钥')
     expect(failure.detail).toBeDefined()
     expect(failure.detail).not.toMatch(/sk-abcdef|abcdefghijklmnop|abc123/)
     expect(failure.detail).toContain('EBUSY')
@@ -382,7 +382,7 @@ describe('failureWithDetail', () => {
 
   it('leaves no detail when the shown sentence already explains the cause', () => {
     expect(failureWithDetail(new Error('配置文件写入失败：磁盘只读'))).toEqual({ message: '配置文件写入失败：磁盘只读' })
-    expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
+    expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '网络连不上，请检查网络后重试。' })
     expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。' })
   })
 })

@@ -10,6 +10,8 @@ import { classifyNetworkFailure } from './network-failure'
 import type { NewApiPaymentForm, NewApiTopupOrderStatus } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import {
+  PaymentCheckoutRejected,
+  buildPaymentWindowTitle,
   createPaymentWindowController,
   detectPaymentWindowTerminalStatus,
   isAllowedPaymentNavigationUrl,
@@ -127,7 +129,8 @@ describe('validatePaymentForm', () => {
     ['origin mismatch', { allowedOrigin: 'https://attacker.example' }],
     ['origin with a path', { allowedOrigin: 'https://pay.example.com/not-an-origin' }],
   ])('rejects %s', (_name, overrides) => {
-    expect(() => validatePaymentForm(paymentForm(overrides))).toThrow()
+    // 归成校验没过这一类，下单那两个 IPC 才认得出、换成给客户看的那句（#1100 第5条）。
+    expect(() => validatePaymentForm(paymentForm(overrides))).toThrow(PaymentCheckoutRejected)
   })
 
   it('enforces field count, names, individual values, total payload and trade number limits', () => {
@@ -175,6 +178,7 @@ describe('validatePaymentUrl', () => {
     'javascript:alert(1)',
   ])('rejects an unsafe checkout URL: %s', (url) => {
     expect(() => validatePaymentUrl(url)).toThrow('支付地址')
+    expect(() => validatePaymentUrl(url)).toThrow(PaymentCheckoutRejected)
   })
 })
 
@@ -188,6 +192,30 @@ describe('payment navigation policy', () => {
     expect(isAllowedPaymentNavigationUrl('http://pay.example.com/result', origins)).toBe(false)
     expect(isAllowedPaymentNavigationUrl('https://pay.example.com.evil.test/', origins)).toBe(false)
     expect(isAllowedPaymentNavigationUrl('javascript:alert(1)', origins)).toBe(false)
+  })
+})
+
+describe('payment window title', () => {
+  // #1069 第4条：付款地址是后端给的，标题带上实际所在的域名，客户才看得出在哪个网站上付钱。
+  it('names the host of a third-party payment page, port included', () => {
+    expect(buildPaymentWindowTitle('https://pay.example.com/submit?channel=alipay&sign=private'))
+      .toBe('安全支付 - 星芒AI（当前网页：pay.example.com）')
+    expect(buildPaymentWindowTitle('https://pay.example.com:8443/submit'))
+      .toBe('安全支付 - 星芒AI（当前网页：pay.example.com:8443）')
+  })
+
+  it('shows look-alike international domains in their punycode form', () => {
+    expect(buildPaymentWindowTitle('https://例子.测试/pay'))
+      .toBe('安全支付 - 星芒AI（当前网页：xn--fsqu00a.xn--0zwm56d）')
+  })
+
+  it('keeps the plain title for our own sites, the drawn QR page and unparsable addresses', () => {
+    for (const url of [
+      'https://xm.solov.cc/console/topup',
+      'https://api.solov.cc/payment/return',
+      'data:text/html;charset=utf-8,%3Ctitle%3E',
+      'not a url',
+    ]) expect(buildPaymentWindowTitle(url)).toBe('安全支付 - 星芒AI')
   })
 })
 
@@ -252,7 +280,7 @@ describe('createPaymentWindowController', () => {
       parent,
       modal: true,
       show: false,
-      title: '安全支付 - 星芒AI',
+      title: '安全支付 - 星芒AI（当前网页：pay.example.com）',
       icon: '/app/assets/brand/v3/app-icon.png',
       webPreferences: expect.objectContaining({
         contextIsolation: true,
@@ -278,8 +306,39 @@ describe('createPaymentWindowController', () => {
     const pageTitleEvent = { preventDefault: vi.fn() }
     harness.windowEvents.get('page-title-updated')?.(pageTitleEvent)
     expect(pageTitleEvent.preventDefault).toHaveBeenCalledOnce()
-    expect(harness.window.setTitle).toHaveBeenCalledWith('安全支付 - 星芒AI')
+    expect(harness.window.setTitle).toHaveBeenCalledWith('安全支付 - 星芒AI（当前网页：pay.example.com）')
     expect(harness.controller.isOpen()).toBe(true)
+  })
+
+  it('retitles the window with the committed host after every navigation and keeps page titles out', async () => {
+    const harness = createHarness()
+    await harness.controller.openUrl('https://checkout.example.com/session')
+    expect(harness.createWindow).toHaveBeenCalledWith(expect.objectContaining({
+      title: '安全支付 - 星芒AI（当前网页：checkout.example.com）',
+    }))
+    const navigated = harness.webContentsEvents.get('did-navigate')!
+    const pageTitleUpdated = harness.windowEvents.get('page-title-updated')!
+
+    navigated({}, 'https://xm.solov.cc/console/topup')
+    expect(harness.window.setTitle).toHaveBeenLastCalledWith('安全支付 - 星芒AI')
+    pageTitleUpdated({ preventDefault: vi.fn() })
+    expect(harness.window.setTitle).toHaveBeenLastCalledWith('安全支付 - 星芒AI')
+
+    navigated({}, 'https://checkout.example.com/complete?id=1')
+    expect(harness.window.setTitle).toHaveBeenLastCalledWith('安全支付 - 星芒AI（当前网页：checkout.example.com）')
+    const pageTitleEvent = { preventDefault: vi.fn() }
+    pageTitleUpdated(pageTitleEvent)
+    expect(pageTitleEvent.preventDefault).toHaveBeenCalledOnce()
+    expect(harness.window.setTitle).toHaveBeenLastCalledWith('安全支付 - 星芒AI（当前网页：checkout.example.com）')
+  })
+
+  it('keeps the drawn QR page title free of any host', async () => {
+    const harness = createHarness()
+    await harness.controller.openQrCode(qrPayment())
+    expect(harness.createWindow).toHaveBeenCalledWith(expect.objectContaining({ title: '安全支付 - 星芒AI' }))
+    harness.webContentsEvents.get('did-navigate')!({}, harness.window.loadURL.mock.calls[0]![0])
+    harness.windowEvents.get('page-title-updated')!({ preventDefault: vi.fn() })
+    expect(harness.window.setTitle.mock.calls.every(([title]) => title === '安全支付 - 星芒AI')).toBe(true)
   })
 
   it('closes the window and reports the matching trade number when the provider page expires', async () => {

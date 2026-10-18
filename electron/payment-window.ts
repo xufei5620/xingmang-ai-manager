@@ -12,6 +12,11 @@ import { RealmAccountError } from './realm-account'
 const accountOrigin = 'https://xm.solov.cc'
 const paymentCallbackOrigin = 'https://api.solov.cc'
 const paymentWindowTitle = '安全支付 - 星芒AI'
+// 星芒自己的两个站点不把域名写进标题：界面上不出现站点名，这两个站点被冒充时标题也帮不上忙。
+const ownSiteHostnames: ReadonlySet<string> = new Set([
+  new URL(accountOrigin).hostname,
+  new URL(paymentCallbackOrigin).hostname,
+])
 const paymentWindowMonitorIntervalMs = 1_000
 const paymentOrderMonitorIntervalMs = 3_000
 const paymentWindowMaxLifetimeMs = 10 * 60_000
@@ -98,24 +103,37 @@ export const paymentQrLimits = Object.freeze({
   amount: 1_000_000,
 })
 
+/**
+ * 服务端给的付款信息没过下面这道校验（地址、表单、二维码的格式不对）。这些原话对客户没用，还会让人
+ * 以为钱扣了；下单那两个 IPC 统一换成 paymentCheckoutRejectedMessage，原话挂在 cause 上进运行日志
+ * （#1100 第5条）。只有校验没过归这一类：网络打不开支付页、账号中途变了照旧各说各的。校验本身不变。
+ */
+export class PaymentCheckoutRejected extends Error {}
+
+export const paymentCheckoutRejectedMessage = '支付通道暂时异常，没有扣款，请联系客服。'
+
+export function toCustomerPaymentError(error: unknown): unknown {
+  return error instanceof PaymentCheckoutRejected ? new Error(paymentCheckoutRejectedMessage, { cause: error }) : error
+}
+
 export function validatePaymentQrCode(input: PaymentQrCodeInput): PaymentQrCodeInput {
-  if (!input || typeof input !== 'object') throw new Error('二维码支付信息格式异常')
+  if (!input || typeof input !== 'object') throw new PaymentCheckoutRejected('二维码支付信息格式异常')
   if (typeof input.code !== 'string' || input.code.length === 0 || input.code.length > paymentQrLimits.codeLength) {
-    throw new Error('二维码内容格式异常')
+    throw new PaymentCheckoutRejected('二维码内容格式异常')
   }
   let parsed: URL
-  try { parsed = new URL(input.code) } catch { throw new Error('二维码内容格式异常') }
+  try { parsed = new URL(input.code) } catch { throw new PaymentCheckoutRejected('二维码内容格式异常') }
   if (!((parsed.protocol === 'https:' || parsed.protocol === 'weixin:') && !parsed.username && !parsed.password)) {
-    throw new Error('二维码仅允许 HTTPS 或 weixin 地址')
+    throw new PaymentCheckoutRejected('二维码仅允许 HTTPS 或 weixin 地址')
   }
   if (typeof input.amount !== 'number' || !Number.isFinite(input.amount) || input.amount <= 0 || input.amount > paymentQrLimits.amount) {
-    throw new Error('二维码金额格式异常')
+    throw new PaymentCheckoutRejected('二维码金额格式异常')
   }
   if (typeof input.currency !== 'string' || !/^[A-Za-z]{1,8}$/u.test(input.currency) || input.currency.length > paymentQrLimits.currencyLength) {
-    throw new Error('二维码币种格式异常')
+    throw new PaymentCheckoutRejected('二维码币种格式异常')
   }
-  if (input.tradeNo !== null && (typeof input.tradeNo !== 'string' || input.tradeNo.length > paymentFormLimits.tradeNoLength)) throw new Error('支付订单号格式异常')
-  if (input.expiresAt !== null && (typeof input.expiresAt !== 'string' || input.expiresAt.length > paymentQrLimits.expiresAtLength || Number.isNaN(Date.parse(input.expiresAt)))) throw new Error('二维码到期时间格式异常')
+  if (input.tradeNo !== null && (typeof input.tradeNo !== 'string' || input.tradeNo.length > paymentFormLimits.tradeNoLength)) throw new PaymentCheckoutRejected('支付订单号格式异常')
+  if (input.expiresAt !== null && (typeof input.expiresAt !== 'string' || input.expiresAt.length > paymentQrLimits.expiresAtLength || Number.isNaN(Date.parse(input.expiresAt)))) throw new PaymentCheckoutRejected('二维码到期时间格式异常')
   return Object.freeze({ ...input, code: parsed.href, currency: input.currency.toUpperCase() })
 }
 
@@ -152,13 +170,13 @@ export function isPaymentWindowReady(value: unknown): boolean {
 
 function parseCredentialFreeHttpsUrl(value: unknown, label: string, allowFragment = false): URL {
   if (typeof value !== 'string' || value.length === 0 || value.length > paymentFormLimits.actionLength) {
-    throw new Error(`${label}格式异常`)
+    throw new PaymentCheckoutRejected(`${label}格式异常`)
   }
   let parsed: URL
   try {
     parsed = new URL(value)
   } catch {
-    throw new Error(`${label}格式异常`)
+    throw new PaymentCheckoutRejected(`${label}格式异常`)
   }
   if (
     parsed.protocol !== 'https:'
@@ -166,7 +184,7 @@ function parseCredentialFreeHttpsUrl(value: unknown, label: string, allowFragmen
     || parsed.password !== ''
     || (!allowFragment && parsed.hash !== '')
   ) {
-    throw new Error(`${label}必须是不含账号密码和片段的 HTTPS 地址`)
+    throw new PaymentCheckoutRejected(`${label}必须是不含账号密码和片段的 HTTPS 地址`)
   }
   return parsed
 }
@@ -186,12 +204,12 @@ export function validatePaymentUrl(value: string): ValidatedPaymentUrl {
 
 function validateFields(value: unknown): readonly Readonly<NewApiPaymentFormField>[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > paymentFormLimits.fieldCount) {
-    throw new Error('支付表单字段数量异常')
+    throw new PaymentCheckoutRejected('支付表单字段数量异常')
   }
 
   let totalLength = 0
   return value.map((candidate) => {
-    if (!candidate || typeof candidate !== 'object') throw new Error('支付表单字段格式异常')
+    if (!candidate || typeof candidate !== 'object') throw new PaymentCheckoutRejected('支付表单字段格式异常')
     const field = candidate as { name?: unknown; value?: unknown }
     if (
       typeof field.name !== 'string'
@@ -199,13 +217,13 @@ function validateFields(value: unknown): readonly Readonly<NewApiPaymentFormFiel
       || field.name.length > paymentFormLimits.fieldNameLength
       || !paymentFieldNamePattern.test(field.name)
     ) {
-      throw new Error('支付表单字段名称异常')
+      throw new PaymentCheckoutRejected('支付表单字段名称异常')
     }
     if (typeof field.value !== 'string' || field.value.length > paymentFormLimits.fieldValueLength) {
-      throw new Error('支付表单字段内容异常')
+      throw new PaymentCheckoutRejected('支付表单字段内容异常')
     }
     totalLength += Buffer.byteLength(field.name, 'utf8') + Buffer.byteLength(field.value, 'utf8')
-    if (totalLength > paymentFormLimits.totalLength) throw new Error('支付表单内容超过安全上限')
+    if (totalLength > paymentFormLimits.totalLength) throw new PaymentCheckoutRejected('支付表单内容超过安全上限')
     return Object.freeze({ name: field.name, value: field.value })
   })
 }
@@ -215,8 +233,8 @@ function validateFields(value: unknown): readonly Readonly<NewApiPaymentFormFiel
  * The renderer never builds payment HTML or receives a scriptable payload.
  */
 export function validatePaymentForm(form: NewApiPaymentForm): ValidatedPaymentForm {
-  if (!form || typeof form !== 'object') throw new Error('支付表单格式异常')
-  if (form.method !== 'POST') throw new Error('支付表单仅允许 POST 提交')
+  if (!form || typeof form !== 'object') throw new PaymentCheckoutRejected('支付表单格式异常')
+  if (form.method !== 'POST') throw new PaymentCheckoutRejected('支付表单仅允许 POST 提交')
 
   const action = parseCredentialFreeHttpsUrl(form.action, '支付地址')
   const declaredOrigin = parseCredentialFreeHttpsUrl(form.allowedOrigin, '支付来源')
@@ -226,7 +244,7 @@ export function validatePaymentForm(form: NewApiPaymentForm): ValidatedPaymentFo
     || declaredOrigin.search !== ''
     || declaredOrigin.hash !== ''
   ) {
-    throw new Error('支付来源与支付地址不匹配')
+    throw new PaymentCheckoutRejected('支付来源与支付地址不匹配')
   }
 
   const fields = validateFields(form.fields)
@@ -234,10 +252,10 @@ export function validatePaymentForm(form: NewApiPaymentForm): ValidatedPaymentFo
     ? null
     : typeof form.tradeNo === 'string' && form.tradeNo.length <= paymentFormLimits.tradeNoLength
       ? form.tradeNo
-      : (() => { throw new Error('支付订单号格式异常') })()
+      : (() => { throw new PaymentCheckoutRejected('支付订单号格式异常') })()
   const encodedBody = new URLSearchParams(fields.map((field) => [field.name, field.value])).toString()
   if (Buffer.byteLength(encodedBody, 'utf8') > paymentFormLimits.totalLength) {
-    throw new Error('支付表单编码后内容超过安全上限')
+    throw new PaymentCheckoutRejected('支付表单编码后内容超过安全上限')
   }
 
   return Object.freeze({
@@ -248,6 +266,23 @@ export function validatePaymentForm(form: NewApiPaymentForm): ValidatedPaymentFo
     fields: Object.freeze(fields),
     tradeNo,
   })
+}
+
+/**
+ * 付款地址是后端给的，后端被冒充时，标题写着「安全支付 - 星芒AI」的窗口就能用来钓鱼。
+ * 所以标题后面带上付款页实际所在的域名，客户能看出自己在哪个网站上付钱（#1069 第4条）。
+ * 域名照 URL 解析后的写法：中文域名显示成 xn-- 开头的那种，长得像的字混不过去。
+ * 星芒自己画的扫码页是 data: 地址，没有域名，照旧只写「安全支付 - 星芒AI」。
+ */
+export function buildPaymentWindowTitle(url: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return paymentWindowTitle
+  }
+  if (parsed.host === '' || ownSiteHostnames.has(parsed.hostname)) return paymentWindowTitle
+  return `${paymentWindowTitle}（当前网页：${parsed.host}）`
 }
 
 export function isAllowedPaymentNavigationUrl(
@@ -380,6 +415,7 @@ export function createPaymentWindowController(
     if (paymentWindow && !paymentWindow.isDestroyed()) destroySilently(paymentWindow)
     const orderStatusReader = tradeNo ? options.createOrderStatusReader?.(tradeNo) : undefined
     const generation = monitorGeneration
+    let windowTitle = buildPaymentWindowTitle(targetUrl)
     const window = createWindow({
       parent,
       modal: Boolean(parent),
@@ -390,7 +426,7 @@ export function createPaymentWindowController(
       show: false,
       autoHideMenuBar: true,
       backgroundColor: '#f5f6f7',
-      title: paymentWindowTitle,
+      title: windowTitle,
       ...(options.iconPath ? { icon: options.iconPath } : {}),
       webPreferences: {
         contextIsolation: true,
@@ -430,7 +466,12 @@ export function createPaymentWindowController(
     })
     window.on('page-title-updated', (event) => {
       event.preventDefault()
-      if (!window.isDestroyed()) window.setTitle(paymentWindowTitle)
+      if (!window.isDestroyed()) window.setTitle(windowTitle)
+    })
+    // 跳转、重定向落地以后按实际地址换标题。同一个网页里改地址（did-navigate-in-page）换不了域名，不用听。
+    window.webContents.on('did-navigate', (_event, url) => {
+      windowTitle = buildPaymentWindowTitle(url)
+      if (!window.isDestroyed()) window.setTitle(windowTitle)
     })
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (!isAllowedPaymentNavigationUrl(url, allowedOrigins)) options.onBlockedNavigation?.(url)

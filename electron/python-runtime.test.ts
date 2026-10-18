@@ -68,6 +68,29 @@ describe('Python 3.12 release validation', () => {
     ])
   })
 
+  it('orders 3.12 patch releases numerically and keeps equal versions in feed order', () => {
+    const release = (patch: string, id: number) => ({
+      name: `Python 3.12.${patch}`,
+      resource_uri: `https://www.python.org/api/v2/downloads/release/${id}/`,
+      is_published: true,
+      pre_release: false,
+    })
+    expect(parsePythonReleaseIndex(JSON.stringify([
+      release('9', 1),
+      release('10', 2),
+      release('0', 3),
+      release('10', 4),
+      release('01', 5),
+      release('99999999999999999999', 6),
+    ]))).toEqual([
+      { version: '3.12.99999999999999999999', releaseId: 6 },
+      { version: '3.12.10', releaseId: 2 },
+      { version: '3.12.10', releaseId: 4 },
+      { version: '3.12.9', releaseId: 1 },
+      { version: '3.12.0', releaseId: 3 },
+    ])
+  })
+
   it.each([
     ['x64', 'Windows installer (64-bit)', 'python-3.12.9-amd64.exe'],
     ['arm64', 'Windows installer (ARM64)', 'python-3.12.9-arm64.exe'],
@@ -193,6 +216,37 @@ describe.runIf(process.platform === 'win32')('Python 3.12 installation flow', ()
     } })).resolves.toMatchObject({ method: 'exe', source: 'python-org', version: 'Python 3.12' })
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(runProcess).toHaveBeenCalledTimes(3)
+  })
+
+  it('stops reading python.org release metadata once it crosses the size limit', async () => {
+    // 64 MB with no Content-Length: the old reader buffered all of it before
+    // it looked at the size.
+    let pulledChunks = 0
+    let cancelled = false
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) => response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledChunks += 1
+        controller.enqueue(new Uint8Array(256 * 1024))
+        if (pulledChunks === 256) controller.close()
+      },
+      cancel() {
+        cancelled = true
+      },
+    }), String(input)))
+
+    await expect(installPythonRuntime({
+      preferWinget: false,
+      dependencies: {
+        fetch: fetchMock,
+        runProcess: async (plan) => commandResult(plan.executable, plan.argv),
+        inspectInstalledPythonRuntime: async () => installedInspection(),
+        createTemporaryDirectory: async () => 'C:/Temp/unused',
+        removeTemporaryDirectory: async () => undefined,
+      },
+    })).rejects.toThrow('Python 发布信息响应过大')
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(cancelled).toBe(true)
+    expect(pulledChunks).toBeLessThan(8)
   })
 
   it('continues a dropped python.org download on the same official address', async () => {

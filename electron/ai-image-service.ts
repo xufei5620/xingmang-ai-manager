@@ -9,10 +9,11 @@ import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
+import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
-import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
 const DEFAULT_TIMEOUT_MS = 320_000
 const DEFAULT_MAX_ACTIVE = 2
@@ -119,10 +120,22 @@ function safeUpstreamMessage(value: unknown): string {
   return redacted.slice(0, MAXIMUM_ERROR_MESSAGE)
 }
 
+// 生图被内容审核拦下：上游原话是英文（Your request was rejected as a result of our safety system），以前原样上屏（#1101 第4条）。
+const imageModerationPattern = /content_policy_violation|moderation_blocked|safety system|safety_violations?|content[_ ]policy|content[_ ]filter|sensitive[_ ]words?|敏感词|安全审核|内容[^。]{0,8}(?:违规|不合规)/i
+// 参考图的文件太大（file size must be less than 20 MB 这类）。原话里也有 size，以前被下面那条说成「尺寸不支持」，
+// 客户换了尺寸照样失败。只认带「文件」或字节单位的说法：尺寸不对的原话写的是 1024x1024 这类，不带 MB。
+const referenceTooLargePattern = /\bfile\b[^.]{0,40}\b(?:size|large|limit)|\d+(?:\.\d+)?\s*(?:mb|kb|mib|kib|bytes)\b|payload too large|entity too large|文件[^。]{0,10}(?:过大|太大|超过)|图片[^。]{0,6}(?:过大|太大)/i
+
 // `evidence` carries the error code next to the message; it is only matched,
 // never shown, because `detail` alone is what may reach the screen below.
 function imageRequestFailure(status: number, detail: string, evidence = detail): Error {
   const normalized = detail.toLowerCase()
+  if (status >= 400 && status < 500 && imageModerationPattern.test(`${detail} ${evidence}`)) {
+    return new Error('这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。')
+  }
+  if (status === 400 && referenceTooLargePattern.test(detail)) {
+    return new Error('参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。')
+  }
   if (status === 400 && normalized.includes('size')) {
     return new Error('当前模型不支持这个图片尺寸，请更换尺寸后重试')
   }
@@ -146,31 +159,6 @@ function ambiguousImageSubmission(): Error {
 function isAssetDownloadError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object'
     && (error as { code?: unknown }).code === AI_ASSET_DOWNLOAD_ERROR_CODE)
-}
-
-async function readBoundedResponseBytes(response: Response, maximumBytes: number): Promise<Buffer> {
-  const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maximumBytes) throw new Error('生图响应超过安全上限')
-  if (!response.body) return Buffer.alloc(0)
-  const reader = response.body.getReader()
-  const chunks: Buffer[] = []
-  let received = 0
-  try {
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      if (!chunk.value?.byteLength) continue
-      received += chunk.value.byteLength
-      if (received > maximumBytes) {
-        await reader.cancel().catch(() => undefined)
-        throw new Error('生图响应超过安全上限')
-      }
-      chunks.push(Buffer.from(chunk.value))
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  return Buffer.concat(chunks, received)
 }
 
 function responseEntries(payload: unknown): Array<{
@@ -229,6 +217,8 @@ function chatCompletionImageEntries(payload: unknown): Array<{
 
 export function createAiImageService(options: {
   baseUrl: string
+  /** 这个站的账号后端。缺省按 new-api，Sub2API 计费复查那句余额不足不认（见 classifySub2apiBillingFailure）。 */
+  backend?: 'new-api' | 'sub2api'
   credentials: Pick<ChatCredentialCoordinator, 'resolveCredential'>
   assets: AiImageAssetWriter
   fetchImpl?: typeof fetch
@@ -294,7 +284,9 @@ export function createAiImageService(options: {
         await progress?.onStage('downloading')
         let bytes: Buffer
         try {
-          bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES)
+          bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES, '生图', {
+            oversizeMessage: '生图响应超过安全上限',
+          })
         } catch {
           if (signal.aborted) throw signal.reason
           if (!response.ok && response.status < 500) throw imageRequestFailure(response.status, '')
@@ -313,6 +305,9 @@ export function createAiImageService(options: {
             : {}
           const detail = safeUpstreamMessage(error.error?.message ?? error.message)
           if (response.status >= 500) throw ambiguousImageSubmission()
+          // 历史账号站提交前计费复查没过回 403「insufficient balance」，以前英文原话直接上屏（#1240）。
+          const billing = options.backend === 'sub2api' && response.status === 403 ? classifySub2apiBillingFailure(payload) : null
+          if (billing) throw new Error(relayQuotaFailureMessages[billing])
           throw imageRequestFailure(response.status, detail, extractRelayErrorDetail(payload))
         }
         let entries: ReturnType<typeof responseEntries>

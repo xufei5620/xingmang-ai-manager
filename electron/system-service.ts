@@ -57,6 +57,9 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { isChineseSentence } from './chinese-sentence'
+import { errorCodeClause, npmFailureSentence, npmSourceFailure, toolLaunchFailureMessage, type NpmFailurePart } from './failure-wording'
+import { npmDownloadTimedOutReason, npmErrorCodesClause } from './npm-failure-reasons'
+import { platformCapabilitiesFor } from './platform-capabilities'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
@@ -256,7 +259,8 @@ import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
 import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
-  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelaySite } from './relay-sites'
+  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelayRouteSiteId, type RelaySite } from './relay-sites'
+import type { RelayRouteChange } from './relay-route-controller'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -327,7 +331,7 @@ import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
-import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, officialRegistryUnreachableMarker, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
 import { modelProbeFailurePrefix } from './relay-quota-failure'
 import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { NewApiNetworkError } from './new-api-client'
@@ -1148,6 +1152,11 @@ export interface SystemService {
    * 调用方当什么都没改。
    */
   followToolRoutes?(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport>
+  /**
+   * 整份写入那一轮写完了（account-cli-provisioner.ts 的 configureManagedClis），written 是这一轮写好的几家：其中
+   * 因为连不上换了线路、跟过去的一次提示重开，不一家一句（历史账号，#1061 第 2 条）。可选 = 旧实现不提供。
+   */
+  noteRouteFollowRestart?(written: readonly ProviderId[]): Promise<void>
   /** ipc.ts 注册时交进来，注销时交 null。 */
   bindToolRouteAccount?(hooks: ToolRouteAccountHooks | null): void
   /** 星芒窗口回到前台：等着外部客户端退出再换线路的，看一眼退了没有（同一个客户端两次至少隔 2 分钟）。 */
@@ -1625,7 +1634,11 @@ export function npmRegistryLabel(registry: string): string {
  * not that there is a lot of work to do. Ten minutes is a ceiling for that
  * case rather than an expected duration; five was killing connections that
  * were slow but still making progress. npm prints nothing throughout, which
- * is why this step used to look like a hang.
+ * is why this step used to look like a hang. A connection that delivers
+ * nothing at all is ended sooner, by the same stall window as the download:
+ * the packuments fetched here stream into the cache's temp files just like
+ * tarballs do, so a slow resolution keeps the cache changing and only a dead
+ * one stops it.
  */
 export const npmResolutionTimeoutMs = 10 * 60_000
 export const npmDownloadTimeoutMs = 5 * 60_000
@@ -1678,8 +1691,11 @@ export function npmDownloadHeartbeatMessage(registry: string, elapsedMs: number)
   return `仍在${source}下载…（已用时 ${formatElapsedDuration(elapsedMs)}）`
 }
 
-/** 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按它归成「下载超时」）。 */
-const npmDownloadTimedOutMessage = '下载超时，长时间没有完成，已中止'
+/**
+ * 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按「超时」归成「下载超时」）。以前写的是
+ *「下载超时，长时间没有完成，已中止」，句子里含着目录标题「下载超时」，错误框就不出提示（#1100 第1条）。
+ */
+const npmDownloadTimedOutMessage = npmDownloadTimedOutReason
 
 /**
  * Bytes under `directory`, counted without following links. Entries that vanish
@@ -1811,6 +1827,14 @@ export function createNpmDownloadStallWatch(
  * command running long is not always a network problem. Inside an npm install
  * it is: npm spends its time downloading, so here it is said plainly.
  */
+/**
+ * npm 自己退出非 0：命令运行器那句「命令执行失败（退出码 1）：npm-cli.js」看着是中文，后面接的却是 npm 的
+ * 英文要点，不能当中文原话照旧上屏（#1100 第1条）。
+ */
+export function isNpmExitFailure(error: unknown): boolean {
+  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO'
+}
+
 export function describeNpmCommandFailure(error: unknown): string {
   if (!(error instanceof CommandRunnerError)) {
     return error instanceof Error ? error.message : String(error)
@@ -2180,7 +2204,12 @@ export async function replaceManagedNpmPrefixAtomically(
     }
     if (rollbackError) {
       const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-      throw new ManagedNpmRollbackError(`托管 npm 更新失败，且旧版本回滚失败：${detail}`, { cause: error })
+      // 上屏只说结果和下一步，「回滚失败」四个字留着：渲染层靠它不盖安抚文案（operation-error.ts 的 undoFailed）。
+      // 原话连同新版没装上的那个原因挂在 cause 上进运行日志（#1100 第1条）。
+      throw new ManagedNpmRollbackError(
+        `这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服${errorCodeClause(rollbackError)}。`,
+        { cause: new Error(`托管 npm 更新失败，且旧版本回滚失败：${detail}`, { cause: error }) },
+      )
     }
     throw error
   }
@@ -2733,6 +2762,11 @@ export interface SystemServiceOptions {
    * （渲染层照旧跑同步 Key）。来自服务状态文件，出问题不用发版就能切回。
    */
   getToolRouteRewriteMode?: () => 'targeted' | 'merge'
+  /**
+   * 「自动」线路最近一次换线（relay-route-controller.ts 的 lastChange）。历史账号的工具配置跟的就是这条，界面
+   * 整份写入跟过去以后据此判断要不要提示重开（#1061 第 2 条）。缺省 = 不提示。
+   */
+  relayRouteLastChange?: (siteId: RelayRouteSiteId) => RelayRouteChange | null
   /**
    * 服务状态文件里的型号表（service-status.ts 的 cliModels）：默认型号、上一代、已下架。从不拒绝，
    * 读不到给 null。缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
@@ -3442,6 +3476,9 @@ export function createSystemService(
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   const installCancellations = new InstallCancellationRegistry()
+  // 登记着取消句柄的那次 CLI 安装点名的版本（undefined = 没点名）。只在句柄还登记着时读，
+  // 每次登记句柄都会先覆盖它，所以句柄放掉以后留着旧值也不会被读到。
+  const installRequestedVersions = new Map<ProviderId, string | undefined>()
   // 桌面端（Codex、Claude）先从星芒自己的存储桶下（yoyo 2026-10-10）；桶那一路为什么没走通只进日志。
   const desktopBucketDownloads: DesktopBucketOptions = {
     onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
@@ -3705,15 +3742,16 @@ export function createSystemService(
    * 「也信任这台电脑的证书」去跑、仍然失败的，原文不动，交给渲染层「连接被网络拦截」
    * 那条。Node 版本读 PATH 上的 node：npm 就是由它跑起来的。读不出版本就不下结论。
    */
-  async function withToolCertificateHint(message: string): Promise<string> {
-    if (classifyNetworkFailure(message) !== 'tls') return message
+  async function withToolCertificateHint(message: string, raw = message): Promise<string> {
+    // 上屏那句只剩中文原因和错误码，拿 npm 的原话认（#1100 第1条连带 2）。
+    if (classifyNetworkFailure(raw) !== 'tls') return message
     const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
     let nodeVersion: string | null = null
     if (!trustedOnly) {
       try { nodeVersion = (await inspectTool('node')).version } catch { nodeVersion = null }
     }
     const kind = toolCertificateFailureKind({ trustedOnly, nodeVersion })
-    return kind ? `${message}。${toolCertificateMessages[kind]}` : message
+    return kind ? `${message.replace(/。$/, '')}。${toolCertificateMessages[kind]}` : message
   }
 
   async function inspectNode(): Promise<ToolStatus> {
@@ -4344,11 +4382,14 @@ export function createSystemService(
           // The installer still has its own verified fallback and will report
           // the actual Windows Installer result if the probe is unavailable.
           restartStatus = { required: false, reasons: [] }
+          // 进度那一行只说结果，系统回的英文原话进运行日志（#1100 第1条）。
+          const message = '没查清 Windows 是否在等重启，先接着装'
+          runtimeLog?.log('warn', 'install', 'node.install.restart-probe-failed', message, { reason: error instanceof Error ? error.message : String(error) })
           if (!target.isDestroyed()) {
             target.send('runtime:node-install-progress', {
               phase: 'checking',
               source: null,
-              message: `无法确认 Windows 待重启状态，将继续安装：${error instanceof Error ? error.message : String(error)}`,
+              message,
               percent: null,
             })
           }
@@ -5206,6 +5247,13 @@ export function createSystemService(
             { stage: 'download', elapsedMs },
           )
         }, npmResolutionHeartbeatMs)
+        // 国内没开加速时，连官方源这一步常常一个字节也收不到，以前要干等满 10 分钟（#1057 第5b条）。
+        // 这一步拉的包信息同样边收边写进缓存的临时文件，所以照下载那一步看目录：3 分钟一点没变就停，
+        // 慢但一直在收的照旧等到 10 分钟。缓存目录要等 executeNpm 建，没建好之前量不到，量不到不算卡住。
+        const stallWatch = createNpmDownloadStallWatch(async () => (
+          await measureDirectoryBytes(resolution) + await measureDirectoryBytes(cache)
+        ))
+        const watchStartedAt = performance.now()
         try {
           await executeNpm([
             'install',
@@ -5213,9 +5261,26 @@ export function createSystemService(
             '--ignore-scripts',
             '--omit=dev',
             `--registry=${registry}`,
-          ], resolution, cache, npmResolutionTimeoutMs)
+          ], resolution, cache, npmResolutionTimeoutMs, stallWatch.signal)
+        } catch (error) {
+          if (!stallWatch.stalled) throw error
+          runtimeLog?.log(
+            'warn',
+            'install',
+            'cli.install.resolution-stalled',
+            `${definition.name} 在${npmRegistryLabel(registry)}解析依赖图 ${formatElapsedDuration(npmDownloadStallTimeoutMs)}没有进展，已中止`,
+            {
+              provider,
+              registry,
+              elapsedMs: Math.round(performance.now() - watchStartedAt),
+              attemptBytes: stallWatch.bytes,
+            },
+          )
+          // 和满 10 分钟超时是同一句（describeNpmCommandFailure 对 TIMED_OUT 给的也是它），后面的报错照旧。
+          throw new Error(npmDownloadTimedOutMessage, { cause: error })
         } finally {
           clearInterval(ticker)
+          stallWatch.stop()
         }
       }
 
@@ -5227,7 +5292,18 @@ export function createSystemService(
       } catch (error) {
         if (isInstallCancelledError(error)) throw error
         cancellation?.throwIfCancelled()
-        throw new Error(await withToolCertificateHint(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`))
+        const raw = describeNpmCommandFailure(error)
+        const reason = npmSourceFailure(redactCommandText(raw), { commandFailed: isNpmExitFailure(error) })
+        // 这一步只走官方源，换镜像绕不过去；连不上时说清这一点和下一步（#1057 第5b条）。加速已经开着、
+        // 或者这个平台没有加速（Linux）时，叫人开加速没用，改说换个网络。
+        if (reason.kind === 'network') {
+          const nextStep = platformCapabilitiesFor(platform).acceleration && acceleratedDownloads === 0
+            ? '到「设置 › 网络加速」开启加速后再试。'
+            : '换个网络（比如手机热点）后再试。'
+          throw new Error(`${definition.name} 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}${npmErrorCodesClause([reason])}。${nextStep}`, { cause: error })
+        }
+        const message = npmFailureSentence(`${definition.name} 安装失败：`, [{ label: 'npm 官方源', reason }])
+        throw new Error(await withToolCertificateHint(message, raw), { cause: error })
       }
       const officialLock = await readBoundedUtf8File(
         path.join(officialResolution, 'package-lock.json'),
@@ -5237,6 +5313,7 @@ export function createSystemService(
       assertNpmReleaseMatchesOfficialLock(trustedRelease, officialLock)
       const registries = npmInstallRegistries(networkRegion)
       const installErrors: string[] = []
+      const installFailures: NpmFailurePart[] = []
       let installed = false
       let verification: Awaited<ReturnType<typeof inspectCliTool>> | null = null
       for (const [index, registry] of registries.entries()) {
@@ -5424,9 +5501,10 @@ export function createSystemService(
           if (isInstallCancelledError(error)) throw error
           cancellation?.throwIfCancelled()
           const detail = describeNpmCommandFailure(error)
-          installErrors.push(
-            `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}：${redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'}`,
-          )
+          const label = registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'
+          const redacted = redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'
+          installErrors.push(`${label}：${redacted}`)
+          installFailures.push({ label, reason: npmSourceFailure(redacted, { commandFailed: isNpmExitFailure(error) }) })
           // 这个源下了一半的东西先删掉再换源：下载最长能等 30 分钟，留到整次安装结束才删，
           // 盘快满时下一个源更容易写不下。删不掉就算了，结束时 finally 还会整个再删一次。
           await fs.promises.rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined)
@@ -5449,7 +5527,11 @@ export function createSystemService(
         // npm 替换正在运行的工具时报的是 EBUSY / EPERM,两者的原文都读不出「谁
         // 占着这个文件」。这里重新数一遍进程,数到了才改写成「文件被占用」。
         const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall ? '更新' : '安装')
-        throw new Error(occupied ?? await withToolCertificateHint(`${definition.name} 安装失败：${detail}`))
+        // 每个源只说中文原因，错误码留在句尾给界面认；npm 的英文原话进运行日志（#1100 第1条）。
+        const message = installFailures.length
+          ? npmFailureSentence(`${definition.name} 安装失败：`, installFailures)
+          : `${definition.name} 安装失败：${detail}`
+        throw new Error(occupied ?? await withToolCertificateHint(message, detail), { cause: new Error(detail) })
       }
       sendInstallProgress(target, provider, 'output', `${definition.name} 已安装，正在检查安装结果`, undefined, { stage: 'final-check' })
       invalidateCliUpdateCache(provider)
@@ -5598,11 +5680,18 @@ export function createSystemService(
     // 这时再装一次 Claude Code 会走到这里,另排一次取消不了的安装;界面上同一个工具
     // 一次只放一个安装(useToolbox 的 run 按工具加锁),碰不到。
     if (installCancellations.has(key)) {
+      // 复用只对同一个版本成立：「回到某个版本」并进正在跑的「更新」，会跟着报成功，
+      // 装上的却是新版（#1061 第 9 条）。版本不同就直接拒，等这一次装完再点。
+      // 不发进度：进度按工具发，发一条失败会写到正在跑的那次的进度行上。
+      if (installRequestedVersions.get(provider) !== version) {
+        return Promise.reject(new Error(`${cliCatalog[provider].name} 正在安装中`))
+      }
       return installationQueue.enqueue(key, () => installCliOperation(provider, target, version))
     }
     // 句柄在入队之前登记:排在别人后面等待的那次安装也要能取消,
     // 否则用户只能干等前一个工具装完。
     const cancellation = installCancellations.begin(key)
+    installRequestedVersions.set(provider, version)
     let started = false
     const finished = installationQueue.enqueue(
       key,
@@ -5952,7 +6041,9 @@ export function createSystemService(
               platform === 'darwin' ? null : plan.packageRoot,
               '卸载',
             )
-            throw Object.assign(new Error(occupied ?? `${cliCatalog[provider].name} 卸载失败：${detail}`), { cause: error })
+            // 不是开着的话只说中文原因和错误码（EPERM、EACCES 说成文件删不掉），原话照旧在 cause 里（#1100 第1条）。
+            const reason = npmSourceFailure(redactCommandText(detail), { commandFailed: isNpmExitFailure(error), uninstall: true })
+            throw Object.assign(new Error(occupied ?? npmFailureSentence(`${cliCatalog[provider].name} 卸载失败：`, [{ reason }])), { cause: error })
           } finally {
             if (cache) await fs.promises.rm(cache, { recursive: true, force: true }).catch(() => undefined)
           }
@@ -6362,8 +6453,7 @@ export function createSystemService(
             message: message && redactHomeDirectory(message, providerRoots.userHome),
           })
         }
-        const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+        throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
       }
       return launchResult
     }
@@ -6387,10 +6477,9 @@ export function createSystemService(
           macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error)
         // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
         // 随这次失败一起进运行日志。
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`, { cause: error })
+        throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
       }
       return launchResult
     }
@@ -6426,8 +6515,7 @@ export function createSystemService(
           ...(error.reason ? { reason: redactHomeDirectory(error.reason, providerRoots.userHome) } : {}),
         })
       }
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+      throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
     }
     return launchResult
   }
@@ -7961,6 +8049,9 @@ export function createSystemService(
           readback: relayProviderBaseUrlEquals(inspectNativeProviderConfig(payload.provider).actualBaseUrl, activeSite.providerBaseUrls[payload.provider]),
         })
       }
+      // 这一家刚写的这一笔是不是因为连不上换线、跟过去的：是就等这一轮写完提示重开，不是就把以前记下的作废。
+      if (followedRoute && accountRouteFaultFollowed(activeSite.id, followedRoute)) accountRouteFollowed.set(payload.provider, owner)
+      else accountRouteFollowed.delete(payload.provider)
       // 整份写过一遍、来源重新记成了这次的：之前「被别的软件改回过」的结论作废，换线路照常跟。
       if (toolRouteFollow.read().providers[payload.provider]?.managedElsewhere) {
         await writeToolRouteRecord(payload.provider, ({ managedElsewhere: _managedElsewhere, reverts: _reverts, ...rest }) => rest)
@@ -8052,7 +8143,7 @@ export function createSystemService(
 
   // ---- 换线路时定点改写工具配置（xm 三线路 C9、C10、C11、C19） ----
   //
-  // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改。地址取的是
+  // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改（重开提示见 noteRouteFollowRestart）。地址取的是
   // relayRouting 这次运行生效的线路（开机定下的偏好，设置里改了没重启的不算），所以「改了设置没重启」
   // 那段时间工具配置照样跟着当前生效的线路走（(f)）。和整份写入排同一个 serializeConfigWrite 队。
   const toolRouteNow = serviceOptions.toolRouteNow ?? Date.now
@@ -8242,6 +8333,38 @@ export function createSystemService(
     for (const provider of hinted) await writeToolRouteRecord(provider, (current) => ({ ...current, hintAt: now }))
     runtimeLog?.log('info', 'config', 'route.restart-hint', '连接线路因为连不上换了，提示客户重开工具', { providers: hinted, tagged: tools.filter((provider) => !hinted.includes(provider)) })
     return true
+  }
+
+  // 历史账号的工具配置跟应用线路走，换了以后由界面整份写入跟过去（saveConfig 的 followedRoute），不走上面的
+  // 定点改写，以前因此一直不提示重开（#1061 第 2 条）。这一轮写完（noteRouteFollowRestart）再一次说完，只说这一轮
+  // 自己写的那几家：同时跑着的另一轮（客户自己点的换来源、换账号）不会把它们提前说掉。记着是哪个账号写的：账号
+  // 中途换了，那一轮整轮作废、走不到说完那一步，留下的不带到下一个账号那一轮。
+  const accountRouteFollowed = new Map<ProviderId, string | null>()
+
+  /**
+   * 整份写入跟过去的这条线路，是不是半小时内「自动」因为连不上换过来的那条。按换线时刻算、不按这次运行：上次
+   * 运行刚换完线就退出、这次开机才跟过去的也算；更早的、写死线路的、切回先走那条的不算。
+   */
+  function accountRouteFaultFollowed(siteId: string, line: RelayEndpointId): boolean {
+    // 星芒账号由 followToolRoutes 自己提示（R6 切回整份写入时它的工具线路也不在应用线路这里）。
+    if (siteId !== 'solov-api') return false
+    const change = serviceOptions.relayRouteLastChange?.(siteId)
+    if (!change || change.to !== line || (change.reason !== 'health-failed' && change.reason !== 'line-down')) return false
+    const age = toolRouteNow() - change.at
+    return age >= 0 && age < toolRouteHintTtlMs
+  }
+
+  async function noteRouteFollowRestart(written: readonly ProviderId[]): Promise<void> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const followed = written.filter((provider) => accountRouteFollowed.has(provider) && accountRouteFollowed.get(provider) === owner)
+    for (const provider of written) accountRouteFollowed.delete(provider)
+    if (!followed.length) return
+    // 配置已经写好了：提示没出成只进日志，不能把这一轮写入算成失败。
+    try {
+      if (await noteToolRouteRestart(followed)) serviceOptions.onToolRouteFollowed?.()
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'route.restart-hint-failed', '换线路的重开提示这次没出成，不影响工具使用', { providers: followed, reason: credentialFailureReason(error) })
+    }
   }
 
   async function followToolRoutes(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport> {
@@ -8607,6 +8730,10 @@ export function createSystemService(
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
+  function officialKeyRestoreFailedMessage(error: unknown): string {
+    return `Claude Code 原来的官方密钥没能放回原处。关掉 Claude Code 后再点一次「切回官方账号」；还不行请找客服${errorCodeClause(error)}。`
+  }
+
   function credentialFailureReason(error: unknown): string {
     return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
   }
@@ -8636,7 +8763,8 @@ export function createSystemService(
     } catch (error) {
       const reason = credentialFailureReason(error)
       runtimeLog?.log('warn', 'config', 'official-credentials.move-failed', 'Claude Code 的官方 Console Key 没能挪开，本次配置没有写入', { provider: 'claude', reason })
-      throw new Error(`Claude Code 原来登录留下的官方 Key 没能挪开，配置没有改动：${reason}`)
+      // 原话已经记进上面那条日志，上屏只说结果和下一步（#1100 第1条）。
+      throw new Error(`Claude Code 原来登录留下的官方密钥没能挪开，配置没有改动。关掉 Claude Code 后再试；还不行请找客服${errorCodeClause(error)}。`, { cause: error })
     }
   }
 
@@ -8647,7 +8775,7 @@ export function createSystemService(
     } catch (error) {
       const reason = credentialFailureReason(error)
       runtimeLog?.log('warn', 'config', 'official-credentials.restore-failed', 'Claude Code 的官方 Console Key 没能放回原处', { provider: 'claude', reason })
-      throw new Error(`Claude Code 原来的官方 Key 没能放回原处：${reason}`)
+      throw new Error(officialKeyRestoreFailedMessage(error), { cause: error })
     }
   }
 
@@ -8718,7 +8846,7 @@ export function createSystemService(
       const official = side === 'official'
       // 和 saveConfig / switchToOfficialAccount 一样：接中转的挪开官方 Console Key（不挪它会顶掉中转的 Key，
       // 一用就是无效令牌），官方的放回来。配置已经是恢复出来的那份了，挪不动也照样往下对齐记号。
-      let credentialFailure: string | null = null
+      let credentialFailure: unknown = null
       if (provider === 'claude') {
         try {
           const changed = official ? restoreClaudeConsoleKey(providerRoots) : moveClaudeConsoleKeyAside(providerRoots)
@@ -8728,7 +8856,10 @@ export function createSystemService(
               { provider })
           }
         } catch (error) {
-          credentialFailure = credentialFailureReason(error)
+          credentialFailure = error
+          runtimeLog?.log('warn', 'config', official ? 'official-credentials.restore-failed' : 'official-credentials.move-failed',
+            official ? '恢复备份后 Claude Code 的官方 Console Key 没能放回原处' : '恢复备份后 Claude Code 的官方 Console Key 没能挪开',
+            { provider, reason: credentialFailureReason(error) })
         }
       }
       if ((store.read().officialProviders ?? []).includes(provider) !== official) {
@@ -8736,9 +8867,11 @@ export function createSystemService(
         if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(official)
       }
       if (credentialFailure) {
+        // 「无效令牌」留着：account-cli-provisioner.ts 的 isCredentialFailure 认它。
         throw new Error(official
-          ? `Claude Code 原来的官方 Key 没能放回原处：${credentialFailure}`
-          : `Claude Code 原来登录留下的官方 Key 没能挪开，打开会报无效令牌：${credentialFailure}`)
+          ? officialKeyRestoreFailedMessage(credentialFailure)
+          : `Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」；还不行请找客服${errorCodeClause(credentialFailure)}。`,
+        { cause: credentialFailure })
       }
     })
   }
@@ -8781,6 +8914,7 @@ export function createSystemService(
     updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
       ...routeLineSnapshotFields(), ...toolRouteSnapshotFields() }),
     followToolRoutes,
+    noteRouteFollowRestart,
     bindToolRouteAccount: (hooks) => { toolRouteAccount = hooks },
     recheckPendingExternalRoutes,
     disposeToolRoutes,

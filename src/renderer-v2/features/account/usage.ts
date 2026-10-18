@@ -29,15 +29,21 @@ const hourMs = 3_600_000
 const blockHours = 4
 
 function monthDay(date: Date): string {
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日`
+  return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 /**
  * 这个范围从什么时候算起（秒）。「7 天」「30 天」从本地零点算，跟首页、账号概览的「近 7 天」
- * 一样是今天加前面几天，每根柱子正好一天或一周；「24 小时」就是往前 24 小时。
+ * 一样是今天加前面几天，每根柱子正好一天或一周；「24 小时」从 24 小时前所在的那个整点算。
  */
 export function usageRangeStart(range: UsageRange, now: Date): number {
-  if (range === '1') return Math.floor(now.getTime() / 1000) - 86_400
+  if (range === '1') {
+    // 后台看板数据只记到整点（created_at 先抹掉不满一小时的零头），查的是 created_at 不早于起点的行：
+    // 起点落在 10:34，昨天 10 点那一行整个不回，10:34 到 11 点的花费看板上没有，下面调用明细却有
+    // （#1093 第 4 条）。退到那个整点，看板和调用明细查的是同一段。
+    const dayAgo = Math.floor(now.getTime() / 1000) - 86_400
+    return dayAgo - dayAgo % 3_600
+  }
   const days = localSpendDays(now, Number(range))
   return Math.floor(days[0].start / 1000)
 }

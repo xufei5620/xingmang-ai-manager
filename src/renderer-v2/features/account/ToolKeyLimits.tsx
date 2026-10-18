@@ -152,8 +152,9 @@ export function ToolKeyLimits({
       '额度上限已保存',
     )
   const layout = toolKeyLimitLayout(resource.data ?? [])
-  // 一个工具都还没配：整张卡收成一行灰字，不摆四行点不动的空行。
-  if (resource.data && !layout.rows.length && !operation.error)
+  // 一个工具都还没配：整张卡收成一行灰字，不摆四行点不动的空行。读到过空的、刷新又没读到时
+  // 照常出卡片，红条和「重新加载」才看得见。
+  if (resource.data && !layout.rows.length && !operation.error && !resource.error)
     return (
       <p className="v2-business-key-limits-empty" data-testid="tool-key-limits">
         工具配好后，可以在这里给每个工具设额度上限。
@@ -165,7 +166,14 @@ export function ToolKeyLimits({
       meta="留空表示不限额。上限是这个工具还能再用多少，用完只停这一个工具，其余照常；额度不会自动恢复，重新填写即可放开。"
       testId="tool-key-limits"
     >
-      <ResultNotice error={resource.error || operation.error} detail={resource.error ? resource.detail : operation.detail} message={operation.message} />
+      <ResultNotice
+        error={resource.error || operation.error}
+        detail={resource.error ? resource.detail : operation.detail}
+        message={operation.message}
+        // 读不出来时就地再读一次，不用离开个人中心再回来（#1104 第 8 条）；保存失败那条不给，
+        // 改的数还在格子里，再点「保存」就是重试。
+        retry={resource.error ? { label: '重新加载', onClick: () => void resource.reload() } : undefined}
+      />
       {resource.loading && !resource.data ? (
         <Skeleton rows={4} />
       ) : (

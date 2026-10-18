@@ -41,25 +41,35 @@ function bucket(at: Date, quota: number): AccountDashboardData['buckets'][number
 }
 
 describe('usage', () => {
-  it('starts the day ranges at local midnight and the 24 hour range a day ago', () => {
-    expect(usageRangeStart('1', now)).toBe(seconds(now) - 86_400)
+  it('starts the day ranges at local midnight and the 24 hour range no later than a day ago', () => {
+    expect(usageRangeStart('1', now)).toBeLessThanOrEqual(seconds(now) - 86_400)
     expect(usageRangeStart('7', now)).toBe(seconds(new Date(2026, 9, 9)))
     expect(usageRangeStart('30', now)).toBe(seconds(new Date(2026, 8, 16)))
+  })
+
+  it('backs the 24 hour range off to the whole hour so the oldest hourly row still comes back', () => {
+    // new-api 把看板数据记在整点上（created_at - created_at % 3600），只回 created_at >= 起点的行。
+    const at = new Date(Date.UTC(2026, 9, 15, 2, 34, 55))
+    const start = usageRangeStart('1', at)
+    expect(start).toBe(Date.UTC(2026, 9, 14, 2) / 1000)
+    const used = seconds(at) - 86_400 + 60
+    expect(used - used % 3_600).toBeGreaterThanOrEqual(start)
+    expect(usageRangeStart('1', new Date(Date.UTC(2026, 9, 15, 2)))).toBe(Date.UTC(2026, 9, 14, 2) / 1000)
   })
 
   it('gives the week one bar per local day, titled like the overview without the amount', () => {
     const days = usageSegments('7', now)
     expect(days).toHaveLength(7)
     expect(days[6]).toMatchObject({ label: '今天', start: new Date(2026, 9, 15).getTime(), end: now.getTime() })
-    expect(days[6].title).toBe('10 月 15 日 周四')
+    expect(days[6].title).toBe('10月15日 周四')
     expect(days[0].start).toBe(new Date(2026, 9, 9).getTime())
   })
 
   it('gives the month one bar per week counted back from today, the oldest one shorter', () => {
     const weeks = usageSegments('30', now)
     expect(weeks).toHaveLength(5)
-    expect(weeks[4]).toMatchObject({ label: '10/9', title: '10 月 9 日至10 月 15 日', end: now.getTime() })
-    expect(weeks[0]).toMatchObject({ label: '9/16', title: '9 月 16 日至9 月 17 日' })
+    expect(weeks[4]).toMatchObject({ label: '10/9', title: '10月9日至10月15日', end: now.getTime() })
+    expect(weeks[0]).toMatchObject({ label: '9/16', title: '9月16日至9月17日' })
     expect(weeks[1].start).toBe(weeks[0].end)
   })
 
@@ -79,7 +89,7 @@ describe('usage', () => {
       bucket(new Date(2026, 9, 14, 13), 5),
     ])
     expect(blocks[0]).toMatchObject({ label: '8 点', start: new Date(2026, 9, 14, 8).getTime(), quota: 0 })
-    expect(blocks.at(-1)).toMatchObject({ label: '8 点', title: '10 月 15 日 8 点', quota: 50 })
+    expect(blocks.at(-1)).toMatchObject({ label: '8 点', title: '10月15日 8 点', quota: 50 })
     expect(blocks.find((block) => block.start === new Date(2026, 9, 14, 12).getTime())?.quota).toBe(5)
     expect(blocks).toHaveLength(7)
   })

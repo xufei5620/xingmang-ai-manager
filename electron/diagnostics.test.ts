@@ -2515,6 +2515,17 @@ describe('diagnostics', () => {
     expect(exported).not.toContain('process.env')
   })
 
+  it('half-hides email addresses in the export but not in the report the check page shows', async () => {
+    const home = temporaryHome()
+    const report = await runDiagnostics(dependencies(home))
+    report.items[0].details = { account: 'alice@qq.com' }
+    const exported = createDiagnosticsExport(report, { homeDirectory: home })
+    expect(exported).not.toContain('alice@qq.com')
+    expect(exported).toContain('a***@qq.com')
+    expect(report.items[0].details).toEqual({ account: 'alice@qq.com' })
+    expect(redactDiagnosticText('alice@qq.com')).toBe('alice@qq.com')
+  })
+
   it('redacts slash, backslash, and JSON-escaped variants of both roots from exports', async () => {
     const fixtureHome = temporaryHome()
     const userHome = '/Users/private/diagnostic-user'

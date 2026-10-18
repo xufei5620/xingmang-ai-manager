@@ -8,6 +8,7 @@ import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { AppSettingsStore } from './app-settings'
 import { CommandRunnerError } from './command-runner'
 import type { InstallProgress } from './ipc-contract'
+import { officialRegistryUnreachableMarker } from './network-failure'
 import {
   createNpmDownloadStallWatch,
   createSystemService,
@@ -39,7 +40,7 @@ afterEach(() => {
 const integrity = `sha512-${Buffer.alloc(64, 0x37).toString('base64')}`
 const officialRegistry = 'https://registry.npmjs.org'
 const mirrorRegistry = 'https://registry.npmmirror.com'
-const timedOutDetail = '下载超时，长时间没有完成，已中止'
+const timedOutDetail = '下载太久没有完成，超时中止'
 
 function temporaryDirectory(prefix: string): string {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
@@ -306,6 +307,24 @@ interface DownloadAttempt {
   attemptDirectories: string[]
 }
 
+/** 装之前到官方源核对的那一次（official），还是每个源自己的那一次（attempt）。 */
+type ResolutionKind = 'official' | 'attempt'
+
+interface ResolutionAttempt {
+  kind: ResolutionKind
+  registry: string
+  cwd: string
+  cache: string
+  timeoutMs: number | undefined
+  startedAt: number
+  abortedAt: number | null
+}
+
+interface DownloadFixtureOptions {
+  /** 每次 npm install --package-lock-only 怎么收场；缺省都立刻解析好。 */
+  resolution?: (kind: ResolutionKind) => 'succeed' | 'hang' | 'time-out'
+}
+
 function abortedCommand(spec: CommandSpecLike): CommandRunnerError {
   return new CommandRunnerError('命令已取消：node', {
     code: 'ABORTED',
@@ -321,12 +340,61 @@ function abortedCommand(spec: CommandSpecLike): CommandRunnerError {
   })
 }
 
+function timedOutCommand(spec: CommandSpecLike): CommandRunnerError {
+  return new CommandRunnerError('命令执行时间过长，已中止：node', {
+    code: 'TIMED_OUT',
+    executable: spec.executable,
+    argv: [...spec.argv],
+    exitCode: null,
+    signal: 'SIGTERM',
+    stdout: '',
+    stderr: '',
+    outputBytes: 0,
+    maxOutputBytes: 8 * 1024 * 1024,
+    durationMs: 1,
+  })
+}
+
+/** 照命令运行器被信号中止时的样子抛错；是客户取消还是卡住被掐，由安装流程自己分辨。 */
+function hangUntilAborted(spec: CommandSpecLike, options: CommandOptionsLike, attempt: { abortedAt: number | null }): Promise<never> {
+  return new Promise((_, reject) => {
+    const abort = () => {
+      attempt.abortedAt = performance.now()
+      reject(abortedCommand(spec))
+    }
+    if (options.signal?.aborted) abort()
+    else options.signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+/** 等「第 N 次已经起来」这件事本身，不隔一段墙钟去轮询（同 install-cancel 的理由）。 */
+function createStartTracker(started: readonly unknown[]) {
+  const waiters: Array<{ count: number, resolve: () => void }> = []
+  return {
+    notify(): void {
+      for (const waiter of waiters) {
+        if (started.length >= waiter.count) waiter.resolve()
+      }
+    },
+    started(count: number): Promise<void> {
+      if (started.length >= count) return Promise.resolve()
+      const waiter = deferred<void>()
+      waiters.push({ count, resolve: waiter.resolve })
+      return waiter.promise
+    },
+  }
+}
+
 /**
  * 能跑到 `npm ci` 的最小安装（同 install-cancel 那份）：依赖图立刻解析好，npm ci 要么一直
  * 不结束、直到它收到的信号停下它（下得动下不动由测试往缓存目录里写字节决定），要么立刻
  * 成功、后面「装到本机」那一步按 offlineStderr 失败，用来看那一步拿到的时长和失败后换不换源。
  */
-function createDownloadFixture(downloadBehavior: 'hang' | 'succeed', offlineStderr = 'npm error code E500\n') {
+function createDownloadFixture(
+  downloadBehavior: 'hang' | 'succeed',
+  offlineStderr = 'npm error code E500\n',
+  options: DownloadFixtureOptions = {},
+) {
   const root = temporaryDirectory('xingmang-download-stall-')
   const homeDirectory = path.join(root, 'home')
   const runtimeBin = path.join(homeDirectory, '.local', 'bin')
@@ -352,20 +420,31 @@ function createDownloadFixture(downloadBehavior: 'hang' | 'succeed', offlineStde
   }))
 
   const downloads: DownloadAttempt[] = []
+  const resolutions: ResolutionAttempt[] = []
   const offlineInstalls: CommandOptionsLike[] = []
-  const waiters: Array<{ count: number, resolve: () => void }> = []
-  // 等「第 N 次 npm ci 已经起来」这件事本身，不隔一段墙钟去轮询（同 install-cancel 的理由）。
-  function downloadStarted(count: number): Promise<void> {
-    if (downloads.length >= count) return Promise.resolve()
-    const waiter = deferred<void>()
-    waiters.push({ count, resolve: waiter.resolve })
-    return waiter.promise
-  }
-  const runCommand = vi.fn(async (spec: CommandSpecLike, options: CommandOptionsLike = {}) => {
+  const downloadTracker = createStartTracker(downloads)
+  const resolutionTracker = createStartTracker(resolutions)
+  const runCommand = vi.fn(async (spec: CommandSpecLike, commandOptions: CommandOptionsLike = {}) => {
     if (spec.executable !== npmExecutable) throw new Error(`Unexpected command: ${spec.executable}`)
     if (spec.argv.includes('--package-lock-only')) {
-      const cwd = options.cwd
+      const cwd = commandOptions.cwd
       if (!cwd) throw new Error('Fake npm requires cwd')
+      const cache = spec.argv.find((argument) => argument.startsWith('--cache='))?.slice('--cache='.length)
+      if (!cache) throw new Error('npm resolution ran without its own cache')
+      const resolution: ResolutionAttempt = {
+        kind: path.basename(cwd) === 'official-resolution' ? 'official' : 'attempt',
+        registry: spec.argv.find((argument) => argument.startsWith('--registry='))?.slice('--registry='.length) ?? '',
+        cwd,
+        cache,
+        timeoutMs: commandOptions.timeoutMs,
+        startedAt: performance.now(),
+        abortedAt: null,
+      }
+      resolutions.push(resolution)
+      resolutionTracker.notify()
+      const behavior = options.resolution?.(resolution.kind) ?? 'succeed'
+      if (behavior === 'hang') await hangUntilAborted(spec, commandOptions, resolution)
+      if (behavior === 'time-out') throw timedOutCommand(spec)
       const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
         name: string
         version: string
@@ -388,28 +467,16 @@ function createDownloadFixture(downloadBehavior: 'hang' | 'succeed', offlineStde
       const attempt: DownloadAttempt = {
         registry: spec.argv.find((argument) => argument.startsWith('--registry='))?.slice('--registry='.length) ?? '',
         cache,
-        timeoutMs: options.timeoutMs,
+        timeoutMs: commandOptions.timeoutMs,
         startedAt: performance.now(),
         abortedAt: null,
         attemptDirectories: fs.readdirSync(transaction).filter((name) => name.startsWith('attempt-')).sort(),
       }
       downloads.push(attempt)
-      for (const waiter of waiters) {
-        if (downloads.length >= waiter.count) waiter.resolve()
-      }
-      if (downloadBehavior === 'hang') {
-        // 照命令运行器被信号中止时的样子抛错；是客户取消还是卡住被掐，由安装流程自己分辨。
-        await new Promise((_, reject) => {
-          const abort = () => {
-            attempt.abortedAt = performance.now()
-            reject(abortedCommand(spec))
-          }
-          if (options.signal?.aborted) abort()
-          else options.signal?.addEventListener('abort', abort, { once: true })
-        })
-      }
+      downloadTracker.notify()
+      if (downloadBehavior === 'hang') await hangUntilAborted(spec, commandOptions, attempt)
     } else if (spec.argv.includes('--offline')) {
-      offlineInstalls.push(options)
+      offlineInstalls.push(commandOptions)
       throw new CommandRunnerError('命令执行失败（退出码 1）：node', {
         code: 'EXIT_NON_ZERO',
         executable: spec.executable,
@@ -450,7 +517,17 @@ function createDownloadFixture(downloadBehavior: 'hang' | 'succeed', offlineStde
       runtimeLog,
     },
   )
-  return { service, target, runCommand, runtimeLog, downloads, offlineInstalls, downloadStarted }
+  return {
+    service,
+    target,
+    runCommand,
+    runtimeLog,
+    downloads,
+    resolutions,
+    offlineInstalls,
+    downloadStarted: downloadTracker.started,
+    resolutionStarted: resolutionTracker.started,
+  }
 }
 
 /** 假时钟往前拨一次检查的间隔，再让真实的读盘（量目录、删目录）跑完。 */
@@ -459,8 +536,8 @@ async function advanceOneCheck(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 30))
 }
 
-/** 一直拨到这次下载被停下；拨到上限还没停就让用例当场红，而不是干等超时。 */
-async function advanceUntilAborted(attempt: DownloadAttempt, limitMs: number): Promise<void> {
+/** 一直拨到这次下载（或解析）被停下；拨到上限还没停就让用例当场红，而不是干等超时。 */
+async function advanceUntilAborted(attempt: { abortedAt: number | null }, limitMs: number): Promise<void> {
   for (let elapsed = 0; attempt.abortedAt === null; elapsed += npmDownloadProgressCheckMs) {
     if (elapsed > limitMs) throw new Error(`下载过了 ${elapsed / 1000} 秒还没被停下`)
     await advanceOneCheck()
@@ -513,7 +590,7 @@ describe('a CLI download that stops moving', () => {
     const error = await install
     expect(error).toBeInstanceOf(Error)
     const message = (error as Error).message
-    expect(message).toBe(`Claude Code 安装失败：npm 官方源：${timedOutDetail}；国内 npm 镜像：${timedOutDetail}`)
+    expect(message).toBe(`Claude Code 安装失败：npm 官方源：${timedOutDetail}；国内 npm 镜像：${timedOutDetail}。`)
     expect(classifyOperationError(message)).toBe('downloadTimeout')
     expect(fixture.target.send).not.toHaveBeenCalledWith(
       'cli:install-progress',
@@ -606,6 +683,118 @@ describe('a CLI download that stops moving', () => {
       .filter(([spec]) => spec.argv.includes('--package-lock-only'))
       .map(([, options]) => options?.timeoutMs)
     expect(resolutions).toEqual([npmResolutionTimeoutMs, npmResolutionTimeoutMs, npmResolutionTimeoutMs])
+  })
+})
+
+/** 装之前到官方源核对那一步没连上时的整句（Linux 没有加速，下一步说换网络）。 */
+const officialUnreachableMessage = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}。换个网络（比如手机热点）后再试。`
+
+// #1057 第5b条：国内没开加速时，到官方源核对依赖这一步常常一点数据也收不到，以前要等满 10 分钟。
+// 同上，只在 macOS / Linux 主机上跑。
+describe('a dependency resolution that stops moving', () => {
+  it.runIf(process.platform !== 'win32')('gives up on the official registry after three minutes without progress instead of ten', async () => {
+    useWatchClock()
+    const fixture = createDownloadFixture('succeed', undefined, { resolution: () => 'hang' })
+    const install = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+
+    await fixture.resolutionStarted(1)
+    const [official] = fixture.resolutions
+    expect(official).toMatchObject({ kind: 'official', registry: officialRegistry })
+    // Ten minutes stays as the backstop for a resolution that keeps trickling.
+    expect(official.timeoutMs).toBe(npmResolutionTimeoutMs)
+    await advanceUntilAborted(official, 2 * npmDownloadStallTimeoutMs)
+    const stalledAfter = (official.abortedAt ?? 0) - official.startedAt
+    expect(stalledAfter).toBeGreaterThanOrEqual(npmDownloadStallTimeoutMs)
+    expect(stalledAfter).toBeLessThanOrEqual(npmDownloadStallTimeoutMs + 3 * npmDownloadProgressCheckMs)
+
+    const error = await install
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toBe(officialUnreachableMessage)
+    expect(classifyOperationError(message)).toBe('officialRegistryUnreachable')
+    // The mirror cannot stand in for this step, so nothing else is tried.
+    expect(fixture.resolutions).toHaveLength(1)
+    expect(fixture.downloads).toEqual([])
+    expect(fixture.runtimeLog.log).toHaveBeenCalledWith(
+      'warn',
+      'install',
+      'cli.install.resolution-stalled',
+      expect.stringContaining('没有进展'),
+      expect.objectContaining({ provider: 'claude', registry: officialRegistry }),
+    )
+    expect(fixture.target.send).not.toHaveBeenCalledWith(
+      'cli:install-progress',
+      expect.objectContaining({ message: expect.stringContaining('安装已取消') }),
+    )
+  })
+
+  it.runIf(process.platform !== 'win32')('says exactly what the ten-minute timeout says', async () => {
+    const fixture = createDownloadFixture('succeed', undefined, { resolution: () => 'time-out' })
+
+    const error = await fixture.service.installCli('claude', fixture.target).catch((failure: unknown) => failure)
+    expect((error as Error).message).toBe(officialUnreachableMessage)
+    expect(fixture.runtimeLog.log.mock.calls.some(([, , event]) => event === 'cli.install.resolution-stalled')).toBe(false)
+  })
+
+  it.runIf(process.platform !== 'win32')('keeps a slow resolution going past three minutes for as long as data keeps arriving', async () => {
+    useWatchClock()
+    const fixture = createDownloadFixture('succeed', undefined, { resolution: () => 'hang' })
+    const install = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+
+    await fixture.resolutionStarted(1)
+    const [official] = fixture.resolutions
+    // npm streams each package's metadata into a temp file in its cache as it arrives.
+    const partial = path.join(official.cache, '_cacache', 'tmp', 'partial')
+    fs.mkdirSync(path.dirname(partial), { recursive: true })
+    let lastGrowthAt = official.startedAt
+    for (let elapsed = 0; elapsed < 2 * npmDownloadStallTimeoutMs; elapsed += npmDownloadProgressCheckMs) {
+      fs.appendFileSync(partial, Buffer.alloc(256))
+      lastGrowthAt = performance.now()
+      await advanceOneCheck()
+    }
+    expect(official.abortedAt).toBeNull()
+
+    // Then it stops moving: three minutes from the last change, not from the start.
+    await advanceUntilAborted(official, 2 * npmDownloadStallTimeoutMs)
+    expect((official.abortedAt ?? 0) - lastGrowthAt).toBeGreaterThanOrEqual(npmDownloadStallTimeoutMs)
+    expect((official.abortedAt ?? 0) - lastGrowthAt).toBeLessThanOrEqual(npmDownloadStallTimeoutMs + 4 * npmDownloadProgressCheckMs)
+    expect(((await install) as Error).message).toBe(officialUnreachableMessage)
+  })
+
+  it.runIf(process.platform !== 'win32')('moves on to the next registry when one stalls while resolving its own graph', async () => {
+    useWatchClock()
+    const fixture = createDownloadFixture('succeed', undefined, {
+      resolution: (kind) => (kind === 'attempt' ? 'hang' : 'succeed'),
+    })
+    const install = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+
+    await fixture.resolutionStarted(2)
+    const official = fixture.resolutions[1]
+    expect(official).toMatchObject({ kind: 'attempt', registry: officialRegistry })
+    await advanceUntilAborted(official, 2 * npmDownloadStallTimeoutMs)
+
+    await fixture.resolutionStarted(3)
+    const mirror = fixture.resolutions[2]
+    expect(mirror).toMatchObject({ kind: 'attempt', registry: mirrorRegistry })
+    await advanceUntilAborted(mirror, 2 * npmDownloadStallTimeoutMs)
+
+    const message = ((await install) as Error).message
+    expect(message).toBe(`Claude Code 安装失败：npm 官方源：${timedOutDetail}；国内 npm 镜像：${timedOutDetail}。`)
+    expect(classifyOperationError(message)).toBe('downloadTimeout')
+    expect(fixture.downloads).toEqual([])
+  })
+
+  it.runIf(process.platform !== 'win32')('still treats the customer cancelling during the resolution as a cancel', async () => {
+    useWatchClock()
+    const fixture = createDownloadFixture('succeed', undefined, { resolution: () => 'hang' })
+    const install = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+
+    await fixture.resolutionStarted(1)
+    await advanceOneCheck()
+    expect(fixture.service.cancelCliInstall('claude')).toEqual({ cancelled: true, reason: null })
+    expect(((await install) as Error).message).toBe('Claude Code 安装已取消')
+    expect(fixture.resolutions[0].abortedAt).not.toBeNull()
+    expect(fixture.runtimeLog.log.mock.calls.some(([, , event]) => event === 'cli.install.resolution-stalled')).toBe(false)
   })
 })
 

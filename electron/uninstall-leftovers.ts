@@ -319,6 +319,23 @@ async function removeLeftover(
   return removePinnedLeftover(leftover, options, live)
 }
 
+// 客户关掉工具马上点「帮我清理」时，Windows（或正扫着这个文件的杀毒软件）可能还要一小会儿才
+// 放开工具刚跑过的那个文件，删除被拒（EBUSY / EPERM），界面就会叫已经关掉的客户「关掉所有窗口
+// 后再点一次」（#1152）。所以 Windows 上被拒的那几个等一下再试，前后约 3 秒；每次试都把上面那几项
+// 核对从头做一遍，不只是重试 unlink。工具真还开着的，只是晚这么一会儿才告诉客户。
+const windowsReleaseRetryDelaysMs = [100, 200, 400, 800, 1500]
+
+function isReleaseRefusal(outcome: Omit<UninstallLeftoverKept, 'leftover'>): boolean {
+  return outcome.reason === 'delete-failed'
+    && (outcome.code === 'EBUSY' || outcome.code === 'EPERM' || outcome.code === 'EACCES')
+}
+
+function waitForRelease(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs)
+  })
+}
+
 /** Deletes whichever recorded leftovers still match their pin; one failure never stops the rest. */
 export async function removeUninstallLeftovers(
   leftovers: readonly UninstallLeftover[],
@@ -326,11 +343,21 @@ export async function removeUninstallLeftovers(
 ): Promise<UninstallLeftoverCleanup> {
   const live = liveProgramIdentities(options.liveCommandLinks ?? [])
   const cleanup: UninstallLeftoverCleanup = { removed: 0, reused: 0, kept: [] }
-  for (const leftover of leftovers) {
-    const outcome = await removeLeftover(leftover, options, live)
-    if (outcome === 'removed') cleanup.removed += 1
-    else if (outcome === 'reused') cleanup.reused += 1
-    else if (outcome !== 'gone') cleanup.kept.push({ leftover, ...outcome })
+  const retryDelays = options.platform === 'win32' ? windowsReleaseRetryDelaysMs : []
+  let pending: readonly UninstallLeftover[] = leftovers
+  for (let attempt = 0; pending.length > 0; attempt += 1) {
+    const retryDelay = retryDelays[attempt]
+    const refused: UninstallLeftover[] = []
+    for (const leftover of pending) {
+      const outcome = await removeLeftover(leftover, options, live)
+      if (outcome === 'removed') cleanup.removed += 1
+      else if (outcome === 'reused') cleanup.reused += 1
+      else if (outcome === 'gone') continue
+      else if (retryDelay !== undefined && isReleaseRefusal(outcome)) refused.push(leftover)
+      else cleanup.kept.push({ leftover, ...outcome })
+    }
+    if (retryDelay !== undefined && refused.length > 0) await waitForRelease(retryDelay)
+    pending = refused
   }
   return cleanup
 }

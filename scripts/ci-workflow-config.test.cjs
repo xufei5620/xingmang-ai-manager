@@ -680,6 +680,30 @@ test('the advisory job caches nothing because it installs nothing', () => {
   assert.deepEqual(runSteps('audit'), ['npm run audit:production', 'npm run audit:ci'])
 })
 
+test('setup-node never turns a dependency cache on by itself', () => {
+  // From v5 on, setup-node caches npm with no `cache:` input at all once
+  // package.json names npm in `packageManager` or `devEngines.packageManager`.
+  // No workflow asks for that cache, and the release and sync jobs hold the
+  // signing and upload secrets, so a restored cache must never appear there
+  // because of a package.json edit. A step opts out with
+  // `package-manager-cache: false`; until every step does, the trigger stays
+  // out of package.json.
+  const workflowDirectory = path.join(root, '.github', 'workflows')
+  const setupNodeSteps = fs.readdirSync(workflowDirectory)
+    .filter((name) => name.endsWith('.yml'))
+    .flatMap((name) => {
+      const parsed = YAML.parse(fs.readFileSync(path.join(workflowDirectory, name), 'utf8'))
+      return Object.values(parsed.jobs).flatMap((job) => job.steps || [])
+    })
+    .filter((step) => String(step.uses || '').startsWith('actions/setup-node@'))
+  const unguarded = setupNodeSteps.filter((step) => step.with?.cache === undefined && step.with?.['package-manager-cache'] !== false)
+
+  assert.ok(setupNodeSteps.length > 0)
+  if (unguarded.length === 0) return
+  assert.equal(packageJson.packageManager, undefined, 'packageManager would switch on setup-node\'s npm cache in every workflow')
+  assert.equal(packageJson.devEngines?.packageManager, undefined, 'devEngines.packageManager would switch on setup-node\'s npm cache in every workflow')
+})
+
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
   const macJob = workflow.jobs['macos-test']
   const commands = runSteps('macos-test')
@@ -1106,6 +1130,37 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   // still has to report success rather than inherit their skip.
   assert.equal(fold_('false', { 'windows-test': 'skipped', 'windows-package': 'skipped' }), true)
   assert.equal(fold_('false', {}), false)
+})
+
+test('a red run on main opens an alert issue from the only job that can write issues', () => {
+  const alert = workflow.jobs['main-alert']
+  assert.deepEqual(alert.needs, ['changes', 'quality-gate'])
+  // `!cancelled()` rather than `always()`: a run a newer merge superseded is the
+  // cancellation yoyo kept on purpose (2026-10-03), not main going red, and it
+  // must stay silent. A gate that fails or runs out of its own time still
+  // reaches the job, because only the gate job, not the run, was cancelled.
+  assert.equal(alert.if, "${{ !cancelled() && github.event_name == 'push' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' }}")
+  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+  assert.equal(alert['runs-on'], 'ubuntu-latest')
+  assert.ok(alert['timeout-minutes'] > 0 && alert['timeout-minutes'] <= 5)
+  assert.equal(alert.environment, undefined)
+  assert.deepEqual(alert.permissions, { actions: 'read', contents: 'read', issues: 'write' })
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name !== 'main-alert') assert.equal(job.permissions, undefined, `${name} keeps the read-only workflow token`)
+  }
+  assert.deepEqual(workflow.permissions, { contents: 'read' })
+  // The verdict it reports is the required aggregate's, so nothing waits on it.
+  for (const job of Object.values(workflow.jobs)) assert.equal([].concat(job.needs || []).includes('main-alert'), false)
+  const checkout = alert.steps.find((step) => /actions\/checkout@/.test(step.uses || ''))
+  assert.equal(checkout.with['persist-credentials'], false)
+  for (const step of alert.steps.filter((entry) => entry.uses)) assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+  assert.deepEqual(runSteps('main-alert'), ['node scripts/quality-main-alert.cjs'])
+  const report = alert.steps.find((step) => step.run)
+  assert.deepEqual(report.env, { GITHUB_TOKEN: '${{ github.token }}', QUALITY_GATE_RESULT: '${{ needs.quality-gate.result }}' })
+  assert.doesNotMatch(JSON.stringify(alert), /secrets\./)
+  const { ALERT_JOB } = require('./quality-main-alert.cjs')
+  assert.equal(ALERT_JOB, 'main-alert')
+  assert.ok(`${packageJson.scripts['test:scripts']} ${packageJson.scripts['posttest:scripts']}`.includes('scripts/quality-main-alert.test.cjs'))
 })
 
 test('change classification does not skip code, workflow, or unknown revisions', () => {

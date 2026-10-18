@@ -8,10 +8,13 @@ import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions
 import {
   DesktopBucketUnavailableError,
   downloadDesktopBucketPackage,
+  measureDesktopDownloadSpeed,
   readDesktopBucketPackage,
+  type DesktopAlternativeSpeed,
   type DesktopBucketPackage,
 } from './desktop-package-bucket'
 import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
+import { fetchLandingWithRedirectAllowlist } from './redirect-allowlist-fetch'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import {
   encodeWindowsPowerShellCommand,
@@ -35,7 +38,6 @@ const claudeDesktopMsixEntryUrls = {
   x64: 'https://claude.ai/api/desktop/win32/x64/msix/latest/redirect',
   arm64: 'https://claude.ai/api/desktop/win32/arm64/msix/latest/redirect',
 } as const
-const claudeDesktopRedirectStatuses = new Set([301, 302, 303, 307, 308])
 const maximumClaudeDesktopRedirects = 3
 const minimumClaudeDesktopPackageBytes = 10 * 1024 * 1024
 // 与 codex-desktop-appx.ts 提权副本那一步的上限一致，超过它管理员安装那一步也会拒收。
@@ -248,31 +250,25 @@ async function fetchClaudeDesktopPackage(
   signal: AbortSignal,
   fetchImplementation: typeof fetch,
 ): Promise<{ response: Response; url: string }> {
-  let current = validateClaudeDesktopDownloadUrl(url)
-  const visited = new Set<string>()
-  for (let hop = 0; hop <= maximumClaudeDesktopRedirects; hop += 1) {
-    if (visited.has(current.href)) throw new Error('Claude 官网下载出现了循环重定向')
-    visited.add(current.href)
-    const response = await fetchImplementation(current.href, {
-      headers: { Accept: 'application/vnd.ms-appx, application/octet-stream, */*', ...headers },
-      redirect: 'manual',
-      credentials: 'omit',
-      signal,
-    })
-    if (response.url && response.url !== current.href) {
-      await response.body?.cancel().catch(() => undefined)
-      throw new Error('Claude 官网下载绕过了受限的重定向规则')
-    }
-    if (!claudeDesktopRedirectStatuses.has(response.status)) return { response, url: current.href }
-    await response.body?.cancel().catch(() => undefined)
+  const landing = await fetchLandingWithRedirectAllowlist(url, {
+    headers: { Accept: 'application/vnd.ms-appx, application/octet-stream, */*', ...headers },
+    credentials: 'omit',
+    signal,
+  }, fetchImplementation, {
+    label: 'Claude 官网下载',
+    validate: validateClaudeDesktopDownloadUrl,
     // 接着下时只找上一次落到的那个文件：入口这时可能已经指向了新版本，拼起来就是两个包。
-    if (!followRedirects) return { response, url: current.href }
-    if (hop === maximumClaudeDesktopRedirects) throw new Error('Claude 官网下载重定向次数过多')
-    const location = response.headers.get('location')
-    if (!location) throw new Error('Claude 官网下载重定向缺少目标地址')
-    current = validateClaudeDesktopDownloadUrl(new URL(location, current).href)
-  }
-  throw new Error('Claude 官网下载重定向次数过多')
+    // 那个文件要是也跳了，不跟过去，原样交回：downloadWithResume 认出续不上，按上一次断开的原因报错。
+    maximumRedirects: followRedirects ? maximumClaudeDesktopRedirects : 0,
+    beyondLimit: followRedirects ? 'refuse' : 'return',
+    // 运行日志里一直是这几句，换共用函数时没改；次数过多那句本来就和共用的说法一样。
+    messages: {
+      loop: 'Claude 官网下载出现了循环重定向',
+      bypass: 'Claude 官网下载绕过了受限的重定向规则',
+      missingLocation: 'Claude 官网下载重定向缺少目标地址',
+    },
+  })
+  return { response: landing.response, url: landing.url.href }
 }
 
 async function downloadClaudeDesktopPackage(
@@ -350,6 +346,21 @@ async function downloadClaudeDesktopPackage(
     }
     throw error
   }
+}
+
+/**
+ * 存储桶那一路太慢时，测一下 Claude 官网的离线安装包有多快（只读几秒、不落盘，见 desktop-package-bucket.ts
+ * 的 probeAlternative）。桶后面先是系统自带的安装组件，它的速度测不了，拿官网同一个包代它。跳转照官网
+ * 那一路的规矩核。没接下载线路，接上只会更快，测得偏慢就偏向接着下桶。
+ */
+export function measureClaudeDesktopOfficialSpeed(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  return measureDesktopDownloadSpeed(async (probeSignal) => (await fetchClaudeDesktopPackage(
+    claudeDesktopMsixEntryUrl(architecture), true, {}, probeSignal, fetchImplementation,
+  )).response, signal)
 }
 
 async function inspectClaudeDesktopPackage(
@@ -491,6 +502,8 @@ export async function installClaudeDesktopFromBucket(options: ClaudeDesktopBucke
         ...(options.signal ? { signal: options.signal } : {}),
         ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
         onProgress: ({ percent }) => reportProgress(options, { phase: 'downloading', percent, message: downloading }),
+        // 桶太慢时先比一比官网那一路，确实更快才换（#1061 第 6 条）。
+        probeAlternative: (probeSignal) => measureClaudeDesktopOfficialSpeed(architecture, options.fetch, probeSignal),
       })
       reportProgress(options, { phase: 'checking', percent: null, message: '正在检查下载下来的安装包是不是完整的官方版' })
       inspected = await inspectClaudeDesktopPackage(packagePath, architecture, mode, machinePaths, options)

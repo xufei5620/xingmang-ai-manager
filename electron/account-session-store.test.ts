@@ -1,19 +1,15 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   AccountSessionStore,
   decodePersistedAccountSession,
   encodePersistedAccountSession,
   isPersistedAccountSession,
-  restoreAccountSessionOnStartup,
   type PersistedAccountSession,
-  type RestoreAccountSessionDeps,
-  type RuntimeLogLike,
   type SafeStorageLike,
 } from './account-session-store'
-import type { NewApiClientService } from './new-api-client'
 
 const temporaryDirectories: string[] = []
 
@@ -51,16 +47,6 @@ function fakeSafeStorage(overrides: Partial<SafeStorageLike> = {}): SafeStorageL
 
 function session(overrides: Partial<PersistedAccountSession> = {}): PersistedAccountSession {
   return { version: 1, userId: 42, cookies: ['refresh_token=abc123'], ...overrides }
-}
-
-function runtimeLogStub(): RuntimeLogLike & { calls: Array<{ level: string; event: string; message: string }> } {
-  const calls: Array<{ level: string; event: string; message: string }> = []
-  return {
-    calls,
-    log: vi.fn((level, _source, event, message) => {
-      calls.push({ level, event, message })
-    }),
-  }
 }
 
 describe('isPersistedAccountSession', () => {
@@ -199,95 +185,5 @@ describe('AccountSessionStore', () => {
     // credential sitting on disk just because its own write happened to
     // reach the filesystem first.
     await expect(store.read()).resolves.toBeNull()
-  })
-})
-
-function restoreDeps(overrides: Partial<RestoreAccountSessionDeps> = {}): RestoreAccountSessionDeps & {
-  accountService: { restoreSession: ReturnType<typeof vi.fn> }
-  store: { read: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn> }
-  runtimeLog: ReturnType<typeof runtimeLogStub>
-} {
-  return {
-    accountService: { restoreSession: vi.fn(async () => true) } as unknown as Pick<NewApiClientService, 'restoreSession'> as never,
-    store: { read: vi.fn(async () => null), clear: vi.fn(async () => undefined) } as never,
-    runtimeLog: runtimeLogStub(),
-    ...overrides,
-  } as never
-}
-
-describe('restoreAccountSessionOnStartup', () => {
-  it('does nothing (and never calls accountService) when there is no persisted session', async () => {
-    const deps = restoreDeps()
-
-    await restoreAccountSessionOnStartup(deps)
-
-    expect(deps.accountService.restoreSession).not.toHaveBeenCalled()
-    expect(deps.store.clear).not.toHaveBeenCalled()
-    expect(deps.runtimeLog.calls).toEqual([])
-  })
-
-  it('logs success and leaves the file alone when restoreSession succeeds', async () => {
-    const persisted = session()
-    const deps = restoreDeps({
-      store: { read: vi.fn(async () => persisted), clear: vi.fn(async () => undefined) } as never,
-    })
-
-    await restoreAccountSessionOnStartup(deps)
-
-    expect(deps.accountService.restoreSession).toHaveBeenCalledWith(persisted)
-    expect(deps.store.clear).not.toHaveBeenCalled()
-    expect(deps.runtimeLog.calls).toEqual([
-      { level: 'info', event: 'session.restored', message: '已恢复登录状态' },
-    ])
-  })
-
-  it('clears the persisted file when the credential is definitively invalid', async () => {
-    const deps = restoreDeps({
-      accountService: { restoreSession: vi.fn(async () => false) } as never,
-      store: { read: vi.fn(async () => session()), clear: vi.fn(async () => undefined) } as never,
-    })
-
-    await restoreAccountSessionOnStartup(deps)
-
-    expect(deps.store.clear).toHaveBeenCalledTimes(1)
-    expect(deps.runtimeLog.calls).toEqual([
-      { level: 'info', event: 'session.restore.invalid', message: '登录状态已失效，需重新登录' },
-    ])
-  })
-
-  it('leaves the persisted file alone (does not clear it) on a network/timeout failure', async () => {
-    const deps = restoreDeps({
-      accountService: { restoreSession: vi.fn(async () => { throw new Error('请求超时') }) } as never,
-      store: { read: vi.fn(async () => session()), clear: vi.fn(async () => undefined) } as never,
-    })
-
-    await restoreAccountSessionOnStartup(deps)
-
-    expect(deps.store.clear).not.toHaveBeenCalled()
-    expect(deps.runtimeLog.calls).toEqual([
-      { level: 'warn', event: 'session.restore.failed', message: '登录状态恢复失败（可能是网络问题），本次以未登录启动' },
-    ])
-  })
-
-  it('never throws even if store.read() itself rejects', async () => {
-    const deps = restoreDeps({
-      store: { read: vi.fn(async () => { throw new Error('disk error') }), clear: vi.fn(async () => undefined) } as never,
-    })
-
-    await expect(restoreAccountSessionOnStartup(deps)).resolves.toBeUndefined()
-    expect(deps.accountService.restoreSession).not.toHaveBeenCalled()
-  })
-
-  it('never throws even if the clear() following an invalid credential itself rejects', async () => {
-    const deps = restoreDeps({
-      accountService: { restoreSession: vi.fn(async () => false) } as never,
-      store: {
-        read: vi.fn(async () => session()),
-        clear: vi.fn(async () => { throw new Error('disk error') }),
-      } as never,
-    })
-
-    await expect(restoreAccountSessionOnStartup(deps)).resolves.toBeUndefined()
-    expect(deps.runtimeLog.calls.some((entry) => entry.event === 'session.clear.failed')).toBe(true)
   })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyRelayQuotaFailure,
+  classifySub2apiBillingFailure,
   extractRelayErrorDetail,
   matchRelayQuotaFailureMessage,
   modelProbeFailurePrefix,
@@ -43,6 +44,18 @@ describe('relay quota failure classification', () => {
     expect(extractRelayErrorDetail({ error: 'bad key' })).toBe('bad key')
     expect(extractRelayErrorDetail(['x'])).toBe('')
     expect(extractRelayErrorDetail(null)).toBe('')
+  })
+
+  it('reads the balance sentence from the Sub2API billing re-check and nothing broader', () => {
+    expect(classifySub2apiBillingFailure({ error: { type: 'billing_error', message: 'insufficient balance' } })).toBe('balance')
+    expect(classifySub2apiBillingFailure({ type: 'error', error: { type: 'billing_error', message: ' Insufficient Balance ' } })).toBe('balance')
+    // 其余计费复查（订阅日限、Key 的 5 小时窗口）充值也解决不了；别家的类型或原话可能是上游转回来的。
+    expect(classifySub2apiBillingFailure({ error: { type: 'billing_error', message: 'daily usage limit exceeded' } })).toBeNull()
+    expect(classifySub2apiBillingFailure({ error: { type: 'billing_error', message: 'api key 5小时限额已用完' } })).toBeNull()
+    expect(classifySub2apiBillingFailure({ error: { type: 'unknown_error', message: 'Insufficient Balance' } })).toBeNull()
+    expect(classifySub2apiBillingFailure({ error: { message: '用户额度不足', code: 'insufficient_user_quota' } })).toBeNull()
+    expect(classifySub2apiBillingFailure({ error: 'insufficient balance' })).toBeNull()
+    expect(classifySub2apiBillingFailure(null)).toBeNull()
   })
 
   it('recognises its own sentences even inside an IPC rejection wrapper', () => {

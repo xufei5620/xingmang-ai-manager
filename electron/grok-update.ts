@@ -1,3 +1,4 @@
+import { readBoundedResponseBytes } from './bounded-response'
 import { isNewerVersion } from './versions'
 
 const grokStablePrimaryUrl = 'https://x.ai/cli/stable'
@@ -75,37 +76,10 @@ async function readBoundedText(response: Response): Promise<string> {
   const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
   if (contentType !== 'text/plain') throw new Error('Grok 版本服务未返回纯文本')
   const declaredLength = response.headers.get('content-length')
-  if (declaredLength !== null) {
-    if (!/^\d+$/.test(declaredLength)) throw new Error('Grok 版本响应 Content-Length 无效')
-    if (Number(declaredLength) > maximumResponseBytes) {
-      throw new Error('Grok 版本响应超过 1 KiB 安全上限')
-    }
-  }
-  if (!response.body) return ''
-  const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
-  let received = 0
-  try {
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      if (!chunk.value?.byteLength) continue
-      received += chunk.value.byteLength
-      if (received > maximumResponseBytes) {
-        await reader.cancel().catch(() => undefined)
-        throw new Error('Grok 版本响应超过 1 KiB 安全上限')
-      }
-      chunks.push(chunk.value)
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  const bytes = new Uint8Array(received)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
+  if (declaredLength !== null && !/^\d+$/.test(declaredLength)) throw new Error('Grok 版本响应 Content-Length 无效')
+  const bytes = await readBoundedResponseBytes(response, maximumResponseBytes, 'Grok 版本', {
+    oversizeMessage: 'Grok 版本响应超过 1 KiB 安全上限',
+  })
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
 }
 

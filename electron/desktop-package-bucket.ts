@@ -28,6 +28,11 @@ const filesIndexes = {
 } as const
 const maximumIndexBytes = 256 * 1024
 const indexTimeoutMs = 10_000
+// 同步作业每 6 小时跑一次，每次成功都把它核过的那几条的 checkedAt 刷成那一刻，包没变也刷。这么久
+// 没刷过，说明同步连着停了好几轮，桶里的「最新」多半已经落后官方：要装最新的就不从桶里装，照旧去
+// 官方那几路，免得装上一个中间版本、提示「已更新」后界面仍显示有更新（#1061 第 7 条）。连着两次
+// 定时同步失败会开 issue 报警（cos-sync-alert），离这条线还有十来个小时。
+export const desktopBucketIndexMaximumAgeMs = 24 * 60 * 60_000
 // 同 codex-desktop-service.ts 的安装包上下限：再小不是安装包，再大管理员安装那一步也会拒收。
 const minimumPackageBytes = 10 * 1024 * 1024
 const maximumWindowsPackageBytes = 1_500 * 1024 * 1024
@@ -36,10 +41,20 @@ const maximumMacPackageBytes = 2 * 1024 * 1024 * 1024
 const maximumOpenCodePackageBytes = 640 * 1024 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 // 桶那一路照目前的平均速度还要这么久以上才下得完，就不等了，换原来那几路（同 Codex 桌面端
-// 官网那一路的 10 分钟）。在国外的客户连上海的桶可能很慢，原来那几路对他们反而快。
+// 官网那一路的 10 分钟）。在国外的客户连上海的桶可能很慢，原来那几路对他们反而快。可国内客户
+// 碰上桶一时慢，换过去往往更慢，所以调用方给了 probeAlternative 时先测一下再定（#1061 第 6 条）。
 export const desktopBucketDownloadLimitMs = 10 * 60_000
 // 刚开始那半分钟速度还没稳（建连接、TCP 慢启动），不据此放弃。
 const slowDownloadGraceMs = 30_000
+// 测另一路时最多读这么多、这么久就停，读到的全丢掉：够看出快慢，又不白占客户太多流量。
+const alternativeProbeBytes = 4 * 1024 * 1024
+const alternativeProbeMs = 8_000
+// 换过去要从 0 开始下，测的那几秒桶还在下、两路抢同一根网线：另一路照测出来的速度下完整个包，
+// 也要比桶剩下那段快一倍以上才换，拿不准就接着下桶。
+const alternativeSpeedMargin = 2
+// 测出来不够快（或测不出来）就接着下桶；之后还是太慢，隔一会儿再测，一次下载最多测这么几次。
+const alternativeProbeIntervalMs = 2 * 60_000
+const maximumAlternativeProbes = 3
 
 export type DesktopBucketPackageId =
   | 'codex-windows-x64'
@@ -61,6 +76,11 @@ export interface DesktopBucketPackage {
   sha256: string
   /** The Content-Type the sync uploaded the object with. */
   contentType: string
+  /**
+   * 同步作业最后一次核对这一条还和官方一致的时间（ISO 8601），清单没写就没有。目前只有 Codex 那份
+   * 清单写，readDesktopBucketPackage 据此判断过期（isDesktopBucketIndexStale）。
+   */
+  checkedAt?: string
 }
 
 export interface DesktopBucketOptions {
@@ -225,7 +245,10 @@ function parseCodexEntry(root: Record<string, unknown>, spec: CodexWindowsSpec |
     || artifact.verification !== verification
     || !isPackageSize(artifact.bytes, maximumBytes)
   ) return null
-  return { id, version, url: objectUrl(key), bytes: artifact.bytes, sha256: artifact.sha256, contentType }
+  return {
+    id, version, url: objectUrl(key), bytes: artifact.bytes, sha256: artifact.sha256, contentType,
+    ...(typeof entry.checkedAt === 'string' ? { checkedAt: entry.checkedAt } : {}),
+  }
 }
 
 /** xingmang/offline/claude/latest.json、xingmang/offline/opencode/latest.json：files 里按平台一条，目录是 SHA-256。 */
@@ -306,6 +329,28 @@ export async function fetchDesktopBucketResource(
   return response
 }
 
+/**
+ * 清单里那一条最后核对的时间离 now 超过 desktopBucketIndexMaximumAgeMs 才算过期。没写、读不出来就判断
+ * 不了，照没有这道检查时那样用桶：新的同步脚本没跑过之前，线上的清单都没有这个时间，算过期的话
+ * 所有客户都会被推去慢的官方那几路。时间写在将来（同步机器和桶的时钟差几秒）也不算过期。
+ */
+export function isDesktopBucketIndexStale(checkedAt: string | undefined, now: number): boolean {
+  if (typeof checkedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(checkedAt)) return false
+  const checked = Date.parse(checkedAt)
+  return Number.isFinite(checked) && now - checked > desktopBucketIndexMaximumAgeMs
+}
+
+/** 判断过期用桶自己回的 Date：客户电脑的时钟可能差好几天。读不出来才用本机时间。 */
+export function desktopBucketResponseTime(response: Response, now: () => number = Date.now): number {
+  const date = Date.parse(response.headers.get('date') ?? '')
+  return Number.isFinite(date) ? date : now()
+}
+
+/** 过期时记进运行日志的那句原话（不上屏）。 */
+export function describeStaleDesktopBucketIndex(checkedAt: string | undefined): string {
+  return `存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt ?? '没写'}），桶里的可能不是最新版`
+}
+
 function abortedBy(signal: AbortSignal | undefined): unknown {
   return signal?.reason ?? new Error('下载已取消')
 }
@@ -331,6 +376,10 @@ export async function readDesktopBucketPackage(
     }
     const release = parseDesktopBucketIndex(await readBoundedResponseText(response, maximumIndexBytes, '存储桶清单'), id)
     if (!release) throw new Error('存储桶清单里没有这台电脑能用的安装包，或清单格式对不上')
+    // 装 Codex 桌面端总是装最新的。Claude 桌面端和 OpenCode 的同步还不写 checkedAt，照旧不看。
+    if (packageSpecs[id].index === 'codex' && isDesktopBucketIndexStale(release.checkedAt, desktopBucketResponseTime(response))) {
+      throw new Error(describeStaleDesktopBucketIndex(release.checkedAt))
+    }
     return release
   } catch (error) {
     if (signal?.aborted) throw abortedBy(signal)
@@ -352,6 +401,88 @@ export function isDesktopBucketDownloadTooSlow(elapsedMs: number, transferred: n
   return remaining === null || remaining > limitMs
 }
 
+/** 另一路测下来的速度。 */
+export interface DesktopAlternativeSpeed {
+  /** 每毫秒多少字节。 */
+  bytesPerMs: number
+  /** 那一路的安装包多大（它的响应头写的）；没写是 null，按桶里这个包的大小算。 */
+  totalBytes: number | null
+}
+
+/** 另一路照测出来的速度、从 0 开始下完整个包，是不是比桶剩下那段快一倍以上。 */
+export function isDesktopAlternativeClearlyFaster(
+  elapsedMs: number,
+  transferred: number,
+  total: number,
+  alternative: DesktopAlternativeSpeed,
+): boolean {
+  if (!(alternative.bytesPerMs > 0)) return false
+  const remaining = remainingMs(elapsedMs, transferred, total)
+  // 桶这一路半分钟一个字节都没收到：另一路只要真有数据就比它快。
+  if (remaining === null) return true
+  return (alternative.totalBytes ?? total) / alternative.bytesPerMs * alternativeSpeedMargin < remaining
+}
+
+/**
+ * 测一路下载有多快：request 发一次请求（地址、跳转照那一路自己的规矩核），最多读
+ * alternativeProbeBytes、alternativeProbeMs 就停，读到的直接丢掉、不落盘。连不上、不是 200、
+ * 回的是网页或报错、一个字节都没收到都是 null。计时从发请求算起，连接和跳转的时间也算在里头，
+ * 只会测得偏慢。
+ */
+export async function measureDesktopDownloadSpeed(
+  request: (signal: AbortSignal) => Promise<Response>,
+  signal: AbortSignal,
+  now: () => number = Date.now,
+): Promise<DesktopAlternativeSpeed | null> {
+  const deadline = AbortSignal.timeout(alternativeProbeMs)
+  const probeSignal = AbortSignal.any([signal, deadline])
+  // Not every body stream is wired to the request's signal (same as download-retry.ts).
+  const aborted = new Promise<never>((_resolve, reject) => {
+    probeSignal.addEventListener('abort', () => reject(probeSignal.reason), { once: true })
+  })
+  aborted.catch(() => undefined)
+  const startedAt = now()
+  const pending = Promise.resolve().then(() => request(probeSignal))
+  let response: Response
+  try {
+    response = await Promise.race([pending, aborted])
+  } catch {
+    // 停了以后才回来的响应也要关掉，不留着一条没人读的连接。
+    void pending.then((late) => late.body?.cancel(), () => undefined).catch(() => undefined)
+    return null
+  }
+  const type = mediaType(response.headers.get('content-type'))
+  if (response.status !== 200 || !response.body || /^text\/|json|xml|html/.test(type)) {
+    await response.body?.cancel().catch(() => undefined)
+    return null
+  }
+  const declared = Number(response.headers.get('content-length'))
+  const reader = response.body.getReader()
+  let received = 0
+  try {
+    while (received < alternativeProbeBytes && now() - startedAt < alternativeProbeMs) {
+      const chunk = await Promise.race([reader.read(), aborted])
+      if (chunk.done) break
+      received += chunk.value.byteLength
+    }
+  } catch {
+    // 测的那几秒到了：读到多少算多少。读到一半断了算测不出来（头几块再快，断了的那一路换过去也未必下得完）；
+    // 调用方那边停了（下完、太慢换路、客户取消）就不用测了。
+    if (!deadline.aborted || signal.aborted) return null
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+  if (signal.aborted || received <= 0) return null
+  return {
+    bytesPerMs: received / Math.max(1, now() - startedAt),
+    totalBytes: Number.isSafeInteger(declared) && declared > 0 ? declared : null,
+  }
+}
+
+function describeMinutes(milliseconds: number): string {
+  return `${Math.max(1, Math.ceil(milliseconds / 60_000))} 分钟`
+}
+
 export interface DesktopBucketDownloadProgress {
   transferred: number
   total: number
@@ -367,6 +498,12 @@ export interface DesktopBucketDownloadOptions {
   signal?: AbortSignal
   /** 百分比变了才回调，免得一次下载发出几千条进度。 */
   onProgress?(progress: DesktopBucketDownloadProgress): void
+  /**
+   * 测一下桶没走通时要换去的那一路有多快（多半用 measureDesktopDownloadSpeed），测不出来给 null。
+   * 给了它，判出桶太慢时桶照下，同时测一下：那一路确实更快（isDesktopAlternativeClearlyFaster）才放弃桶，
+   * 否则接着下桶。不给照旧：一判出太慢就放弃。signal 在这次下载结束（下完、放弃、客户取消）时触发。
+   */
+  probeAlternative?(signal: AbortSignal): Promise<DesktopAlternativeSpeed | null>
   /** 测试接缝：断线后等多久、多久没数据算停住、判「太慢」用的时钟和门槛。 */
   resumeOptions?: Pick<ResumableDownloadOptions, 'wait' | 'idleTimeoutMs'>
   now?: () => number
@@ -383,8 +520,9 @@ function mediaType(value: string | null): string {
 }
 
 /**
- * 把清单里的那个包下到 destination：大小、类型、SHA-256 一处对不上、太慢、断得接不上，都删掉
- * 半个文件、抛 DesktopBucketUnavailableError。客户点了取消就原样抛 signal 的 reason。
+ * 把清单里的那个包下到 destination：大小、类型、SHA-256 一处对不上、太慢（给了 probeAlternative 时
+ * 是另一路确实更快）、断得接不上，都删掉半个文件、抛 DesktopBucketUnavailableError。客户点了取消就
+ * 原样抛 signal 的 reason。
  */
 export async function downloadDesktopBucketPackage(
   release: Pick<DesktopBucketPackage, 'url' | 'bytes' | 'sha256' | 'contentType'>,
@@ -395,10 +533,35 @@ export async function downloadDesktopBucketPackage(
   const limitMs = options.limitMs ?? desktopBucketDownloadLimitMs
   const slow = new AbortController()
   const signal = options.signal ? AbortSignal.any([options.signal, slow.signal]) : slow.signal
+  // 这次下载一结束就停掉还在测的那一路。
+  const finished = new AbortController()
+  const probeSignal = AbortSignal.any([signal, finished.signal])
   const startedAt = now()
   let lastPercent = -1
+  let latestTransferred = 0
+  let probing = false
+  let probes = 0
+  let nextProbeAt = 0
   function percentOf(transferred: number): number {
     return Math.min(100, Math.floor(transferred / release.bytes * 100))
+  }
+  /** 桶太慢时测一下另一路；那一路确实更快才让桶这一路停下，其余情形一律接着下桶。 */
+  async function compareWithAlternative(probe: NonNullable<DesktopBucketDownloadOptions['probeAlternative']>): Promise<void> {
+    let alternative: DesktopAlternativeSpeed | null = null
+    try {
+      alternative = await probe(probeSignal)
+    } catch {
+      // 测不出来就当那一路不比桶快。
+    }
+    probing = false
+    const elapsedMs = now() - startedAt
+    nextProbeAt = elapsedMs + alternativeProbeIntervalMs
+    if (probeSignal.aborted || !alternative || !isDesktopAlternativeClearlyFaster(elapsedMs, latestTransferred, release.bytes, alternative)) return
+    const remaining = remainingMs(elapsedMs, latestTransferred, release.bytes)
+    const alternativeMs = (alternative.totalBytes ?? release.bytes) / alternative.bytesPerMs
+    slow.abort(new DesktopBucketUnavailableError(
+      `从存储桶下载太慢：${remaining === null ? '一直没收到数据' : `照目前的速度还要 ${describeMinutes(remaining)}`}，另一路测下来 ${describeMinutes(alternativeMs)}就能下完`,
+    ))
   }
   try {
     const download = await downloadWithResume({
@@ -429,9 +592,19 @@ export async function downloadDesktopBucketPackage(
         return declared
       },
       onProgress: (transferred) => {
-        if (!slow.signal.aborted && isDesktopBucketDownloadTooSlow(now() - startedAt, transferred, release.bytes, limitMs)) {
-          slow.abort(new DesktopBucketUnavailableError('从存储桶下载太慢'))
-          return
+        latestTransferred = transferred
+        const elapsedMs = now() - startedAt
+        if (!slow.signal.aborted && isDesktopBucketDownloadTooSlow(elapsedMs, transferred, release.bytes, limitMs)) {
+          const probe = options.probeAlternative
+          if (!probe) {
+            slow.abort(new DesktopBucketUnavailableError('从存储桶下载太慢'))
+            return
+          }
+          if (!probing && probes < maximumAlternativeProbes && elapsedMs >= nextProbeAt) {
+            probing = true
+            probes += 1
+            void compareWithAlternative(probe)
+          }
         }
         const percent = percentOf(transferred)
         if (percent === lastPercent) return
@@ -453,6 +626,8 @@ export async function downloadDesktopBucketPackage(
       throw new DesktopBucketUnavailableError('从存储桶下载时连接或下载超时', error)
     }
     throw new DesktopBucketUnavailableError(error instanceof Error ? error.message : String(error), error)
+  } finally {
+    finished.abort()
   }
 }
 

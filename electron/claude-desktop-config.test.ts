@@ -1,11 +1,21 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildClaudeDesktopGatewayConfig, createClaudeDesktopConfigService, legacyClaudeDesktopSelectedModel,
   type ClaudeDesktopGatewayInput, type ClaudeDesktopConfigOptions,
 } from './claude-desktop-config'
+import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
+
+// Pass-through: every save still commits for real; the recorded calls show which files each
+// write checked for outside edits and what it saw in them.
+vi.mock('./claude-desktop-local-transaction', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./claude-desktop-local-transaction')>()
+  return { ...original, commitClaudeDesktopFiles: vi.fn(original.commitClaudeDesktopFiles) }
+})
+const commit = vi.mocked(commitClaudeDesktopFiles)
 
 const temporaryDirectories: string[] = []
 const input: ClaudeDesktopGatewayInput = {
@@ -919,13 +929,18 @@ describe('Claude Desktop official login switch', () => {
     write(path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`), { ...read(saved.path), inferenceGatewayApiKey: 'sk-someone-else' })
     write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '别人的' }] })
     const previous = snapshot([f.configPath, f.metadataPath])
-    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('在切换前已变化')
-    await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).rejects.toThrow('在切换前已变化')
+    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
+    await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
     expectSnapshot(previous)
 
     write(f.metadataPath, metadata)
     await f.service.useOfficialLogin()
-    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('在切换前已变化')
+    const again = await f.service.useOfficialLogin(belongs).catch((error: unknown) => error)
+    // 客户看到的只说再点一次；哪一条没对上挂在 cause 上进运行日志（#1111 第4条）。
+    expect(again).toMatchObject({
+      message: 'Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。',
+      cause: { message: 'Claude Desktop 第三方推理配置：deploymentMode 已经是 1p' },
+    })
     expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
   })
 
@@ -938,8 +953,8 @@ describe('Claude Desktop official login switch', () => {
     // 首页认它是「当前账号」，切官方也得认，不然点了只会报「已变化」。
     expect(await f.service.inspectConnection(input.baseUrl, belongs)).toMatchObject({ configured: true })
     const previous = snapshot([f.configPath, f.metadataPath])
-    await expect(f.service.useOfficialLogin()).rejects.toThrow('在切换前已变化')
-    await expect(f.service.useOfficialLogin(() => false)).rejects.toThrow('在切换前已变化')
+    await expect(f.service.useOfficialLogin()).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
+    await expect(f.service.useOfficialLogin(() => false)).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
     expectSnapshot(previous)
 
     await f.service.useOfficialLogin(belongs)
@@ -962,6 +977,178 @@ describe('Claude Desktop official login switch', () => {
     switched = false
     assertUnmanaged.mockRejectedValueOnce(new Error('检测到管理策略'))
     await expect(f.service.useOfficialLogin()).rejects.toThrow('管理策略')
+    expectSnapshot(previous)
+  })
+})
+
+// #1073 评论第1条：五处写入各自抄了一份「读一遍、记下读到的」。这里钉住每一处交给提交的是哪几个文件、
+// 什么顺序、读到的什么内容，以及写哪几个文件——提交时正是拿这份记录核对有没有别的程序改过、给哪几个
+// 文件留 .bak、失败时还原成什么。
+describe('Claude Desktop write snapshots', () => {
+  const belongs = (key: string) => key === input.apiKey
+
+  function onDisk(files: readonly string[]): [string, string | null][] {
+    return files.map((file) => [file, fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null])
+  }
+  function committed(): { plans: string[]; snapshots: [string, string | null][] } {
+    expect(commit).toHaveBeenCalledTimes(1)
+    const [plans, snapshots] = commit.mock.calls[0]
+    return { plans: plans.map((plan) => plan.path), snapshots: [...snapshots] }
+  }
+  function developerSettings(f: ReturnType<typeof fixture>): string[] {
+    return [path.join(f.profileDirectory, 'developer_settings.json'), path.join(f.developerDirectory, 'developer_settings.json')]
+  }
+  function copyApplied(f: ReturnType<typeof fixture>, saved: string): string {
+    const copyPath = path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`)
+    write(copyPath, read(saved))
+    const metadata = read(f.metadataPath) as { entries: unknown[] }
+    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '自己的' }] })
+    return copyPath
+  }
+
+  it('records every file a first save reads, including the ones that do not exist yet', async () => {
+    const f = fixture()
+    const marker = path.join(f.dataDirectory, 'external-clients', 'claude-desktop',
+      `${createHash('sha256').update(process.platform === 'win32' ? f.profileDirectory.toLowerCase() : f.profileDirectory).digest('hex')}.json`)
+    commit.mockClear()
+    const saved = await f.service.saveGateway(input)
+    const order = [f.metadataPath, marker, saved.path, f.configPath, ...developerSettings(f)]
+    expect(committed()).toEqual({
+      plans: [saved.path, ...developerSettings(f), f.configPath, f.metadataPath, marker],
+      snapshots: order.map((file) => [file, null]),
+    })
+  })
+
+  it('records what a later save read from each file before replacing it', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    write(f.configPath, { deploymentMode: '1p', preferences: { theme: 'dark' } })
+    const before = onDisk([f.metadataPath, markerPath(f), saved.path, f.configPath, ...developerSettings(f)])
+    commit.mockClear()
+    await f.service.saveGateway({ ...input, apiKey: 'sk-next' })
+    expect(committed()).toEqual({
+      plans: [saved.path, ...developerSettings(f), f.configPath, f.metadataPath, markerPath(f)],
+      snapshots: before,
+    })
+  })
+
+  it('records the owner marker and the toolbox profile for the legacy model repair', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: ['claude-sonnet-5', 'claude-fable-5', 'claude-opus-5-5'] })
+    const before = onDisk([markerPath(f), saved.path])
+    commit.mockClear()
+    expect(await f.service.repairLegacyModelList([input.baseUrl])).toMatchObject({ status: 'repaired' })
+    expect(committed()).toEqual({ plans: [saved.path], snapshots: before })
+  })
+
+  it.each([
+    ['route', (service: ReturnType<typeof fixture>['service']) => service.followRoute(input.baseUrl, 'https://xm-direct.solov.cc', input.apiKey)],
+    ['key', (service: ReturnType<typeof fixture>['service']) => service.followKey(input.baseUrl, input.apiKey, 'sk-next')],
+  ])('records the client settings, library, marker and toolbox profile when following the %s', async (_case, follow) => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    const before = onDisk([f.configPath, f.metadataPath, markerPath(f), saved.path])
+    commit.mockClear()
+    await follow(f.service)
+    expect(committed()).toEqual({ plans: [saved.path], snapshots: before })
+  })
+
+  it('records the client settings, library and marker when switching the toolbox profile to the official login', async () => {
+    const f = fixture()
+    await f.service.saveGateway(input)
+    const before = onDisk([f.configPath, f.metadataPath, markerPath(f)])
+    commit.mockClear()
+    await f.service.useOfficialLogin(belongs)
+    expect(committed()).toEqual({ plans: [f.configPath], snapshots: before })
+  })
+
+  it('also records the applied copy when switching a copy of the current account to the official login', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    const copyPath = copyApplied(f, saved.path)
+    const before = onDisk([f.configPath, f.metadataPath, markerPath(f), copyPath])
+    commit.mockClear()
+    await f.service.useOfficialLogin(belongs)
+    expect(committed()).toEqual({ plans: [f.configPath], snapshots: before })
+  })
+
+  it('records the client settings, library, marker and toolbox profile when switching back from the official login', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    await f.service.useOfficialLogin()
+    const before = onDisk([f.configPath, f.metadataPath, markerPath(f), saved.path])
+    commit.mockClear()
+    expect(await f.service.useGatewayLogin(input.baseUrl, belongs)).toMatchObject({ outcome: 'switched' })
+    expect(committed()).toEqual({ plans: [f.configPath], snapshots: before })
+  })
+})
+
+describe('Claude Desktop deployment mode edits', () => {
+  const belongs = (key: string) => key === input.apiKey
+
+  it('adds the official login to client settings that never chose one, in the layout Claude Desktop wrote', async () => {
+    const f = fixture()
+    await f.service.saveGateway(input)
+    fs.writeFileSync(f.configPath, JSON.stringify({ preferences: { theme: 'dark' } }, null, 4).replaceAll('\n', '\r\n'), 'utf8')
+    await f.service.useOfficialLogin()
+    expect(fs.readFileSync(f.configPath, 'utf8'))
+      .toBe('{\r\n    "preferences": {\r\n        "theme": "dark"\r\n    },\r\n    "deploymentMode": "1p"\r\n}')
+
+    // A file with no line breaks at all comes back laid out with two spaces and LF.
+    fs.writeFileSync(f.configPath, '{"preferences":{"theme":"dark"}}', 'utf8')
+    await f.service.useOfficialLogin()
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe('{\n  "preferences": {\n    "theme": "dark"\n  },\n  "deploymentMode": "1p"\n}')
+  })
+
+  it('switches back by changing only the deployment mode and keeps the layout Claude Desktop wrote', async () => {
+    const f = fixture()
+    await f.service.saveGateway(input)
+    const before = JSON.stringify({ deploymentMode: '1p', mcpServers: { example: { command: 'example' } } }, null, 4).replaceAll('\n', '\r\n')
+    fs.writeFileSync(f.configPath, before, 'utf8')
+    expect(await f.service.useGatewayLogin(input.baseUrl, belongs)).toMatchObject({ outcome: 'switched' })
+    expect(fs.readFileSync(f.configPath, 'utf8')).toBe(before.replace('"1p"', '"3p"'))
+  })
+})
+
+// 读进来不超过上限、改完却超了的那一笔：一个字不写。
+describe('Claude Desktop write size limit', () => {
+  const limit = 512 * 1024
+
+  it('refuses a save whose rewritten profile would outgrow the limit and writes nothing', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    // Compact on disk, but the save writes it back indented.
+    fs.writeFileSync(saved.path, JSON.stringify({ ...read(saved.path), custom: new Array(200_000).fill(0) }), 'utf8')
+    const previous = snapshot([saved.path, f.metadataPath, f.configPath, markerPath(f), ...[f.profileDirectory, f.developerDirectory].map((directory) => path.join(directory, 'developer_settings.json'))])
+    await expect(f.service.saveGateway({ ...input, apiKey: 'sk-next' })).rejects.toThrow('Claude Desktop 第三方推理配置超过文件大小上限')
+    expectSnapshot(previous)
+  })
+
+  it('refuses a legacy model repair that would outgrow the limit and writes nothing', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: ['claude-sonnet-5', 'claude-fable-5', 'claude-opus-5-5'] })
+    fs.writeFileSync(saved.path, JSON.stringify({ ...read(saved.path), custom: new Array(200_000).fill(0) }), 'utf8')
+    const previous = snapshot([saved.path])
+    await expect(f.service.repairLegacyModelList([input.baseUrl])).rejects.toThrow('Claude Desktop 第三方推理配置超过文件大小上限')
+    expectSnapshot(previous)
+  })
+
+  it('refuses a key follow that would outgrow the limit and writes nothing', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    const compact = JSON.stringify({ ...read(saved.path), custom: '' })
+    fs.writeFileSync(saved.path, compact.replace('"custom":""', `"custom":"${'x'.repeat(limit - compact.length - 4)}"`), 'utf8')
+    const previous = snapshot([saved.path])
+    await expect(f.service.followKey(input.baseUrl, input.apiKey, `${input.apiKey}-longer`)).rejects.toThrow('Claude Desktop 第三方推理配置超过文件大小上限')
+    expectSnapshot(previous)
+  })
+
+  it('refuses an official login switch that would outgrow the limit and writes nothing', async () => {
+    const f = fixture()
+    await f.service.saveGateway(input)
+    fs.writeFileSync(f.configPath, `{"pad":"${'x'.repeat(limit - 15)}"}`, 'utf8')
+    const previous = snapshot([f.configPath])
+    await expect(f.service.useOfficialLogin()).rejects.toThrow('Claude Desktop 第三方推理配置超过文件大小上限')
     expectSnapshot(previous)
   })
 })

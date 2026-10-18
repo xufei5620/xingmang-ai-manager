@@ -6,14 +6,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classifyClaudeDesktopInstallFailure } from './claude-desktop-install-failure'
 import {
   buildClaudeDesktopPackageInspectionScript, claudeDesktopMsixEntryUrl, describeClaudeDesktopMsixDownload,
-  installClaudeDesktopFromBucket, installClaudeDesktopFromOfficial, validateClaudeDesktopDownloadUrl,
+  installClaudeDesktopFromBucket, installClaudeDesktopFromOfficial, measureClaudeDesktopOfficialSpeed, validateClaudeDesktopDownloadUrl,
   validateClaudeDesktopPackageInspection, windowsPackagePublisherId, type ClaudeDesktopMsixInstallOptions,
   type ClaudeDesktopMsixProgress,
 } from './claude-desktop-msix-installer'
 import { claudeAppxProduct } from './codex-desktop-appx'
 import { CommandRunnerError, type CommandSpec, type runCommand } from './command-runner'
-import { desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError } from './desktop-package-bucket'
+import {
+  desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
+} from './desktop-package-bucket'
 import { decodeWindowsPowerShellCommand } from './windows-elevation'
+
+// The real bucket download runs; the spy only lets a test read back what the installer handed it.
+vi.mock('./desktop-package-bucket', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./desktop-package-bucket')>()
+  return { ...original, downloadDesktopBucketPackage: vi.fn(original.downloadDesktopBucketPackage) }
+})
 
 // No real Claude package is downloaded or installed: fetch, PowerShell and the
 // MSIX installer are all replaced. The repository does not carry Anthropic's
@@ -285,8 +293,62 @@ describe('Claude Desktop official MSIX installation', () => {
       Object.defineProperty(response, 'url', { value: 'https://evil.example/Claude.msix' })
       return response
     })
-    await expect(installClaudeDesktopFromOfficial(f.options)).rejects.toThrow('绕过了受限的重定向规则')
+    // The reported address is held to the allow-list first, as every other download does, so the
+    // log names the address check; the customer's sentence is the same either way.
+    const failure = await installClaudeDesktopFromOfficial(f.options).then(() => null, (error: Error) => error)
+    expect(failure?.message).toBe('Claude 官网下载重定向到了没核实过的地址')
+    expect(classifyClaudeDesktopInstallFailure(failure?.message ?? '')).toBe('unreachable')
+    expect(f.fetch).toHaveBeenCalledOnce()
     expect(f.installPackage).not.toHaveBeenCalled()
+  })
+
+  it('keeps each redirect refusal in its old words, all read as an unreachable website', async () => {
+    const loop = await fixture()
+    loop.fetch.mockImplementation(async () => redirect(claudeDesktopMsixEntryUrl('x64')))
+    const endless = await fixture()
+    let hop = 0
+    endless.fetch.mockImplementation(async () => redirect(`https://downloads.claude.ai/releases/hop-${hop++}.msix`))
+    const missing = await fixture()
+    missing.fetch.mockImplementation(async () => redirect(null, 302))
+    // Allowed, but not the hop that was asked for: a fetch that followed the entry by itself.
+    const elsewhere = await fixture()
+    elsewhere.fetch.mockImplementation(async () => Object.defineProperty(packageResponse(), 'url', { value: releaseUrl }))
+    for (const [f, message] of [
+      [loop, 'Claude 官网下载出现了循环重定向'],
+      [endless, 'Claude 官网下载重定向次数过多'],
+      [missing, 'Claude 官网下载重定向缺少目标地址'],
+      [elsewhere, 'Claude 官网下载绕过了受限的重定向规则'],
+    ] as const) {
+      const failure = await installClaudeDesktopFromOfficial(f.options).then(() => null, (error: Error) => error)
+      expect(failure?.message).toBe(message)
+      expect(classifyClaudeDesktopInstallFailure(failure?.message ?? '')).toBe('unreachable')
+      expect(f.installPackage).not.toHaveBeenCalled()
+    }
+    expect(loop.fetch).toHaveBeenCalledOnce()
+    expect(missing.fetch).toHaveBeenCalledOnce()
+    expect(elsewhere.fetch).toHaveBeenCalledOnce()
+  })
+
+  it('follows each of the five redirect statuses and leaves any other 3xx to the response check', async () => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      const f = await fixture()
+      f.fetch.mockImplementation(async (input) => requestUrl(input) === claudeDesktopMsixEntryUrl('x64') ? redirect(releaseUrl, status) : packageResponse())
+      await expect(installClaudeDesktopFromOfficial(f.options)).resolves.toEqual({ version: '1.1.2345.0' })
+      expect(f.fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([claudeDesktopMsixEntryUrl('x64'), releaseUrl])
+    }
+    const f = await fixture()
+    f.fetch.mockImplementation(async (input) => requestUrl(input) === claudeDesktopMsixEntryUrl('x64') ? redirect(releaseUrl, 300) : packageResponse())
+    await expect(installClaudeDesktopFromOfficial(f.options)).rejects.toThrow('Claude 官网返回 HTTP 300')
+    expect(f.fetch).toHaveBeenCalledOnce()
+  })
+
+  it('accepts a response that reports exactly the hop it asked for', async () => {
+    const f = await fixture()
+    f.fetch.mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      return Object.defineProperty(url === claudeDesktopMsixEntryUrl('x64') ? redirect(releaseUrl) : packageResponse(), 'url', { value: url })
+    })
+    await expect(installClaudeDesktopFromOfficial(f.options)).resolves.toEqual({ version: '1.1.2345.0' })
   })
 
   it.each([
@@ -555,5 +617,34 @@ describe('Claude Desktop from the Xingmang bucket', () => {
     expect(await bucketFailure(ia32)).toBeInstanceOf(DesktopBucketUnavailableError)
     expect(mac.fetch).not.toHaveBeenCalled()
     expect(ia32.fetch).not.toHaveBeenCalled()
+  })
+
+  it('measures the official route, not the bucket, before leaving a slow bucket download', async () => {
+    const f = await bucketFixture()
+    await installClaudeDesktopFromBucket(f.options)
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    f.fetch.mockClear()
+    f.fetch.mockImplementation(async (input) => (requestUrl(input) === claudeDesktopMsixEntryUrl('x64') ? redirect(releaseUrl) : packageResponse()))
+    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toMatchObject({ totalBytes: payload.byteLength })
+    expect(f.fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([claudeDesktopMsixEntryUrl('x64'), releaseUrl])
+  })
+})
+
+describe('measuring the Claude official route', () => {
+  it('follows the entry to the release file under the same rules and reports the speed', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => (
+      requestUrl(input) === claudeDesktopMsixEntryUrl('arm64') ? redirect(releaseUrl) : packageResponse()
+    ))
+    const speed = await measureClaudeDesktopOfficialSpeed('arm64', fetch, new AbortController().signal)
+    expect(speed).toEqual({ bytesPerMs: expect.any(Number), totalBytes: payload.byteLength })
+    expect(speed?.bytesPerMs).toBeGreaterThan(0)
+    expect(fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([claudeDesktopMsixEntryUrl('arm64'), releaseUrl])
+    for (const [, init] of fetch.mock.calls) expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+  })
+
+  it('cannot measure a route that redirects somewhere unverified, and never goes there', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => redirect('https://evil.example/Claude.msix'))
+    await expect(measureClaudeDesktopOfficialSpeed('x64', fetch, new AbortController().signal)).resolves.toBeNull()
+    expect(fetch).toHaveBeenCalledOnce()
   })
 })

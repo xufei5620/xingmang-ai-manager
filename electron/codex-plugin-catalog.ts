@@ -8,6 +8,7 @@ import { readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseBytes } from './bounded-response'
 import { downloadCodexPluginCatalogFromBucket, type CodexPluginCatalogBucketOptions } from './codex-plugin-catalog-bucket'
 import type { DesktopBucketOptions } from './desktop-package-bucket'
+import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 import { assertNoReparseComponents, assertSafeDataFile, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
@@ -300,32 +301,35 @@ export function parseCodexPluginCatalogTar(tar: Buffer): CodexPluginCatalogArchi
   return { commit, directories: [...directories], files }
 }
 
-function assertCatalogUrl(url: string): void {
-  const parsed = new URL(url)
+/**
+ * 只认 codeload.github.com 上的 https 地址。片段不会发给服务器，响应自带的地址也不含它；
+ * 去掉再比，免得同一个地址认成两个。
+ */
+function validateCatalogUrl(value: string): URL {
+  const parsed = new URL(value)
   if (parsed.protocol !== 'https:' || parsed.hostname !== allowedCatalogHost || parsed.username || parsed.password || parsed.port) {
     throw new Error('插件目录的下载地址不在允许范围内')
   }
+  parsed.hash = ''
+  return parsed
 }
 
-/** 只跟 codeload.github.com 自己的跳转，带着任何东西跳去别的主机都拒绝。 */
+/**
+ * 只跟 codeload.github.com 自己的跳转，带着任何东西跳去别的主机都拒绝；逐跳核对、循环和
+ * 次数上限交给共用的 fetchWithRedirectAllowlist。它报的错客户看不到，downloadCatalogArchive
+ * 一律换成「网络连不上」那句。
+ */
 async function fetchCatalogArchive(fetchImplementation: typeof fetch, signal: AbortSignal): Promise<Buffer> {
-  let current = CODEX_PLUGIN_CATALOG_URL
-  for (let redirects = 0; ; redirects += 1) {
-    assertCatalogUrl(current)
-    const response = await fetchImplementation(current, { redirect: 'manual', signal })
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel().catch(() => undefined)
-      const location = response.headers.get('location')
-      if (!location || redirects >= maximumCatalogRedirects) throw new Error(codexPluginCatalogNetworkMessage)
-      current = new URL(location, current).href
-      continue
-    }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined)
-      throw new Error(codexPluginCatalogNetworkMessage)
-    }
-    return readBoundedResponseBytes(response, maximumCompressedBytes, 'Codex 插件目录')
+  const response = await fetchWithRedirectAllowlist(CODEX_PLUGIN_CATALOG_URL, { signal }, fetchImplementation, {
+    label: '插件目录下载',
+    maximumRedirects: maximumCatalogRedirects,
+    validate: validateCatalogUrl,
+  })
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(codexPluginCatalogNetworkMessage)
   }
+  return readBoundedResponseBytes(response, maximumCompressedBytes, 'Codex 插件目录')
 }
 
 async function writeCatalogDirectory(target: string, archive: CodexPluginCatalogArchive): Promise<void> {

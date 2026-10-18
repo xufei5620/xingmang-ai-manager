@@ -41,11 +41,11 @@ jobs:
       - name: Let a burst of merges to main settle before the matrix starts
         if: github.event_name == 'push'
         run: sleep 600
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       # The guard diffs the unreleased sections against the base, hence the
@@ -171,10 +171,10 @@ jobs:
             timeout: 10
     name: windows-test (${{ matrix.shard }})
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -198,7 +198,7 @@ jobs:
       - name: Restore the Electron download for this version
         if: matrix.electron
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -210,7 +210,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: matrix.electron && github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
@@ -246,10 +246,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -257,7 +257,7 @@ jobs:
       # The same three Electron steps as windows-test, for the smokes below.
       - name: Restore the Electron download for this version
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -266,7 +266,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/electron/Cache
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
@@ -368,7 +368,7 @@ jobs:
       - run: node e2e/asar-tamper-smoke.mjs release/win-unpacked
       - name: Upload smoke-test artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: electron-smoke-artifacts
           # Smokes that write their evidence into a subdirectory of artifacts/
@@ -423,10 +423,10 @@ jobs:
     # needed most of the old cap.
     timeout-minutes: 42
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -434,7 +434,7 @@ jobs:
       # The same three Electron steps as windows-test.
       - name: Restore the Electron download for this version
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -443,7 +443,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/electron
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
@@ -529,10 +529,10 @@ jobs:
     # 它与 macos-test 并行，所以这十几分钟不落在流水线的关键路径上。
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -586,10 +586,10 @@ jobs:
       # Rosetta。在出包之前就认清楚。
       - name: Confirm this runner is an Intel Mac
         run: test "$(uname -m)" = x86_64
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -621,10 +621,10 @@ jobs:
     # uses, so nothing is skipped and nothing is run twice.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -632,7 +632,7 @@ jobs:
       # The same three Electron steps as windows-test.
       - name: Restore the Electron download for this version
         id: electron-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
@@ -641,7 +641,7 @@ jobs:
         run: node scripts/ci-ensure-electron-binary.cjs
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
           key: ${{ steps.electron-cache.outputs.cache-primary-key }}
@@ -725,10 +725,10 @@ jobs:
             command: npm run test:v2:browser:fixture:linux:2
     name: linux-renderer-v2-browser (${{ matrix.shard }})
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -781,10 +781,10 @@ jobs:
       PACKAGE_ARCH: ${{ matrix.arch }}
       UNPACKED_DIRECTORY: release/${{ matrix.unpacked }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -861,10 +861,10 @@ jobs:
     # probed CLIs and two sites is four requests, each bounded at two minutes.
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -880,10 +880,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           # No `cache: npm` on purpose (P-32): this job never runs `npm ci`,
@@ -907,13 +907,13 @@ jobs:
     # One image pull and one scan of a handful of commits; a few minutes at most.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # TruffleHog walks the change's own commits one by one, not the merge
           # result, so they and the base have to be in the checkout.
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - name: Scan the commits this change adds for leaked keys
@@ -949,3 +949,29 @@ jobs:
           // on every change.
           if (jobs['secret-scan'].result !== 'success') process.exit(1)
           NODE
+
+  # main 上完整跑完却没过就开一条 issue 报警（指派给仓库负责人），main 再红只改这一条，下一次在
+  # main 上完整跑完并通过就留言并关闭（#1090 第 5 条）。被后来的合并取消的运行不算：整次运行被取消
+  # 时 `!cancelled()` 让这个作业不跑，取消策略本身不动（见文件开头）。拉取请求上不跑。只有这个作业
+  # 能写 issue，它不读任何 secret，也不装依赖。
+  main-alert:
+    needs: [changes, quality-gate]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Open, update or close the main CI alert issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          QUALITY_GATE_RESULT: ${{ needs.quality-gate.result }}
+        run: node scripts/quality-main-alert.cjs

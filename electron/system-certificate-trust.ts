@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * 公司的上网审计、安全软件的网页扫描、家长控制，会把自己的根证书装进这台电脑的
  * 证书库，再替换所有 HTTPS 连接的证书。星芒走 Chromium，本来就信这台电脑的证书库，

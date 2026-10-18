@@ -34,7 +34,7 @@ describe('home week spend', () => {
   it('names each bar by its weekday and the last one 今天', () => {
     expect(weekSpendLabel(new Date(2026, 9, 15).getTime(), false)).toBe('周四')
     expect(weekSpendLabel(new Date(2026, 9, 15).getTime(), true)).toBe('今天')
-    expect(weekSpendHint(new Date(2026, 9, 8).getTime(), 1.2)).toBe('10 月 8 日 周四：$1.20')
+    expect(weekSpendHint(new Date(2026, 9, 8).getTime(), 1.2)).toBe('10月8日 周四：$1.20')
   })
 
   it('asks for each day once and afterwards only for today', async () => {

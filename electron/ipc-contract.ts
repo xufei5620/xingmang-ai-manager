@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
 import type { WindowCloseReport } from './window-close-query'
 import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
@@ -999,6 +1001,8 @@ export interface XingmangInvokeContract {
   addMcpServer: IpcInvokeDefinition<'mcp:add', [input: McpCreateInput], McpServer[]>
   removeMcpServer: IpcInvokeDefinition<'mcp:remove', [name: string], McpServer[]>
   loginMcpServer: IpcInvokeDefinition<'mcp:login', [name: string], McpServer[]>
+  /** 停掉这个名称正在等浏览器授权的登录；被停的那次 mcp:login 照常回列表，不报错。没有在等的回 false。 */
+  cancelMcpLogin: IpcInvokeDefinition<'mcp:cancel-login', [name: string], boolean>
   logoutMcpServer: IpcInvokeDefinition<'mcp:logout', [name: string], McpServer[]>
   listSkills: IpcInvokeDefinition<'skills:list', [], SkillItem[]>
   importSkill: IpcInvokeDefinition<'skills:import', [input: ImportSkillInput], SkillItem[]>
@@ -1429,6 +1433,7 @@ export const ipcInvokeChannels = {
   addMcpServer: 'mcp:add',
   removeMcpServer: 'mcp:remove',
   loginMcpServer: 'mcp:login',
+  cancelMcpLogin: 'mcp:cancel-login',
   logoutMcpServer: 'mcp:logout',
   listSkills: 'skills:list',
   importSkill: 'skills:import',

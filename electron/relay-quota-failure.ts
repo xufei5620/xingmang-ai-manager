@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * 余额用完、Key 额度上限用完、Key 失效，在中转那里是三件完全不同的事，用户要做的也
  * 完全不同：第一件去充值，第二件去调高上限，第三件换一把 Key。以前软件自己的对话把
@@ -29,9 +31,9 @@
 export type RelayQuotaFailure = 'balance' | 'keyLimit' | 'keyInvalid'
 
 export const relayQuotaFailureMessages: Readonly<Record<RelayQuotaFailure, string>> = {
-  balance: '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写 Key',
-  keyLimit: '这把 Key 设置的额度上限用完了，到「账号 → 密钥」调高上限后再试',
-  keyInvalid: '当前账号的 Key 已失效，再发一次就会自动换一把新的',
+  balance: '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写密钥',
+  keyLimit: '这把密钥设置的额度上限用完了，到「个人中心 → 密钥管理」调高上限后再试',
+  keyInvalid: '当前账号的密钥已失效，再发一次就会自动换一把新的',
 }
 
 const balancePattern = /insufficient_user_quota|用户额度不足|预扣费额度失败|订阅额度不足|user quota is not enough|INSUFFICIENT_BALANCE|insufficient account balance/i
@@ -69,6 +71,33 @@ export function extractRelayErrorDetail(payload: unknown): string {
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
   if (!nested && typeof record.error === 'string') parts.unshift(record.error)
   return parts.join(' ')
+}
+
+/**
+ * Sub2API 计费复查没过时的那句余额不足（#1093 第12a条、#1240）。对过 Wei-Shaw/sub2api 270eac6 与 b0a02a3：
+ * 过了鉴权以后 handler 还要复查一次计费（openai_chat_completions.go、openai_images.go 等的
+ * CheckBillingEligibility，以及在途余额预留 reserveInflightBalance），没过回的是
+ * `{"error":{"type":"billing_error","message":"insufficient balance"}}`（billingErrorDetails；原话是
+ * redeem_service.go 的 ErrInsufficientBalance，跟鉴权中间件那句「Insufficient account balance」不同，
+ * 也不带 INSUFFICIENT_BALANCE，所以上面那套认不出）。同一句有三种到法：
+ * - 开流之前：HTTP 403 加这段 JSON（billing_error 一律配 403）。调用方自己先看状态码是不是 403。
+ * - 流到一半：流式请求排队等并发槽位超过 10 秒，它先回 200 和 SSE 心跳占住连接，拿到槽位后复查没过，
+ *   只能就地发一帧（handleStreamingAwareErrorWithCode）。
+ * - Claude 兼容分组排队回过心跳以后：gateway_handler_chat_completions.go 用普通 JSON 回错、不看
+ *   streamStarted，这段 JSON 不带 data: 前缀直接接在心跳后面。
+ *
+ * 只在历史账号站上认它。new-api 预扣费在开流之前（rc.45 controller/relay.go 的 PrepareRequestBilling），
+ * 开流后只结算不报错，自己的余额不足说的是上面 balancePattern 那几句；xm 站出现这句，只可能是渠道
+ * 上游原样转回来的（stream_scanner 照转上游的 data 行，HTTP 错误也带上游原话），那是服务端欠费，
+ * 叫客户充值就错了。别的复查没过（订阅日限、订阅失效）也回 billing_error，充值解决不了，不认。
+ */
+export function classifySub2apiBillingFailure(payload: unknown): RelayQuotaFailure | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const error = (payload as Record<string, unknown>).error
+  if (!error || typeof error !== 'object' || Array.isArray(error)) return null
+  const { type, message } = error as Record<string, unknown>
+  if (type !== 'billing_error' || typeof message !== 'string') return null
+  return message.trim().toLowerCase() === 'insufficient balance' ? 'balance' : null
 }
 
 const relayQuotaFailures: readonly RelayQuotaFailure[] = ['balance', 'keyLimit', 'keyInvalid']

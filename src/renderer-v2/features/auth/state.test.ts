@@ -165,12 +165,39 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error('服务返回 HTTP 502'), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
     expect(authErrorMessage(new Error(`账号服务说：${'很长的原因'.repeat(20)}`), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
   })
+  it('peels the IPC wrapper off whichever error class the main process threw', () => {
+    // #1073 第9条：剥前缀改用渲染层共用的那一份，这几种主进程类名剥完要和以前一字不差。
+    const login = (text: string) => authFailure(new Error(`Error invoking remote method 'account:login': ${text}`), '登录')
+    expect(login('RealmAccountError: 账号服务响应格式不兼容')).toEqual({ message: '登录没有成功：账号服务响应格式不兼容。', kind: 'unknown' })
+    expect(login('NewApiSessionChangedError: 账号已切换，本次请求结果已丢弃，请重试')).toEqual({ message: '登录没有成功：账号已切换，本次请求结果已丢弃，请重试。', kind: 'unknown' })
+    expect(login('账号服务正在升级  ')).toEqual({ message: '登录没有成功：账号服务正在升级。', kind: 'unknown' })
+    expect(login('Error: unexpected response')).toEqual({ message: '登录没有成功，输入已保留，请稍后重试', kind: 'unknown' })
+    expect(sendCode('550 5.1.1 User unknown')).toEqual({ message: verificationMailboxMissingMessage, kind: 'final' })
+    expect(authFailure(new Error("Error invoking remote method 'account:send-verification-code': NewApiAuthenticationError: 421 too many connections"), '发送验证码').kind).toBe('wait')
+  })
+  it('does not tell a customer choosing a new password that the account or password is wrong for an unrelated failure', () => {
+    // #1236：通道名 account:change-password / account:reset-password 里的 password 和主进程兜底句里的「密码」
+    // 以前都会落到「账号或密码不正确」，可这两步客户根本没输过账号密码。
+    const fail = (channel: string, text: string, action: string) => authFailure(new Error(`Error invoking remote method '${channel}': Error: ${text}`), action)
+    expect(fail('account:change-password', '服务暂时繁忙', '设新密码')).toEqual({ message: '设新密码没有成功：服务暂时繁忙。', kind: 'unknown' })
+    expect(fail('account:reset-password', '账号服务响应格式不兼容', '重置密码')).toEqual({ message: '重置密码没有成功：账号服务响应格式不兼容。', kind: 'unknown' })
+    expect(fail('account:change-password', '修改密码失败，服务返回 HTTP 502', '设新密码')).toEqual({ message: '设新密码没有成功，输入已保留，请稍后重试', kind: 'unknown' })
+    expect(fail('account:reset-password', '重置密码失败，服务返回 HTTP 500', '重置密码')).toEqual({ message: '重置密码没有成功，输入已保留，请稍后重试', kind: 'unknown' })
+    // 设新密码那步先拿临时密码登录，主进程那句「账号或密码错误」原样带出来，照样看得懂。
+    expect(fail('account:login', '账号或密码错误，请检查后重试', '设新密码')).toEqual({ message: '设新密码没有成功：账号或密码错误，请检查后重试。', kind: 'unknown' })
+    // 服务端说的准话照旧认得。
+    expect(fail('account:change-password', 'Original password is incorrect', '设新密码').message).toBe('原密码错误，请重新输入')
+    expect(fail('account:reset-password', 'Password reset link is invalid or has expired', '重置密码').kind).toBe('code')
+    // 登录照旧：主进程那句「账号或密码错误」还是叫人检查密码。
+    expect(fail('account:login', 'invalid password', '登录').kind).toBe('credentials')
+    expect(fail('account:login', '账号或密码错误，请检查后重试', '登录')).toEqual({ message: '账号或密码不正确，请检查后重试', kind: 'credentials' })
+  })
   it('does not let the broad network heuristics call a replaced certificate a timeout', () => {
     expect(authErrorMessage(new Error(networkFailureMessages.tls), '登录')).toBe(networkFailureMessages.tls)
     expect(authErrorMessage(new Error(networkFailureMessages.intercepted), '登录')).not.toContain('超时')
   })
   it('identifies local account storage failures without exposing details or blaming the password', () => {
-    const expected = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
+    const expected = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。'
     expect(authErrorMessage(new Error('账号安全存储不可用，原记录未修改'), '登录')).toBe(expected)
     expect(authErrorMessage('本地账号存储恢复失败：password credential diagnostic detail', '登录')).toBe(expected)
     expect(authErrorMessage(new Error('账号或密码不正确'), '登录')).toBe('账号或密码不正确，请检查后重试')

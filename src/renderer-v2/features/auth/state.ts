@@ -1,5 +1,6 @@
 import { classifyNetworkFailure, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import { matchAccountError } from './account-errors'
+import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
 
 export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
 export type RegistrationErrors = Partial<Record<keyof RegistrationDraft, string>>
@@ -189,12 +190,12 @@ export interface AuthFailure {
 // 超时、连接被切断这两种，客户那边最常见的真实原因是开着加速器或翻墙软件，
 // 和注册窗读设置那一路（registrationUnreachableMessage）同一个说法。
 export const authOfflineMessage = '这台电脑现在没连上网。连上网后再试一次。'
-export const authUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。'
+export const authUnreachableMessage = '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。'
 const authNetworkFallbackMessage = '连不上账号服务，请检查网络后再试一次。'
 
-/** 去掉 IPC 包装（「Error invoking remote method …」和一层层 Error: 前缀），剩下服务端或主进程的原话。 */
+/** 去掉 IPC 包装（「Error invoking remote method …」和紧跟着的错误类名），剩下服务端或主进程的原话。 */
 function unwrappedReason(message: string): string {
-  return message.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(\w*Error:\s*)+/, '').trim()
+  return stripIpcErrorPrefix(message).trim()
 }
 
 /**
@@ -232,11 +233,13 @@ function verificationMailFailure(message: string): AuthFailure | null {
 }
 
 export function authFailure(error: unknown, action: string, online = true): AuthFailure {
-  const message = errorText(error)
+  // 通道名和类名不参与下面的判断：account:change-password、account:reset-password 里的 password
+  // 会被「用户名|密码」那条认走，重置、设新密码认不出的失败一律成了「账号或密码不正确」（#1236）。
+  const message = stripIpcErrorPrefix(errorText(error))
   // 本机账号库存满（全面检测 Q40）。放在「安全存储」之前：以前满了也报存储不可用，
   // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
   if (/保存的账号已满/.test(message)) return { message: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。', kind: 'final' }
-  if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。', kind: 'support' }
+  if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。', kind: 'support' }
   // 两步验证第二步的几句已经是给用户看的话，原样上屏；不然会被下面「验证码」「频繁」两条宽正则改写。
   const twoFactor = twoFactorMessages.find((text) => message.includes(text))
   if (twoFactor) return { message: twoFactor, kind: 'final' }
@@ -267,7 +270,10 @@ export function authFailure(error: unknown, action: string, online = true): Auth
   // 只因为带着「验证码」三个字，以前被说成验证码不对。
   if (!sendingCode && /验证码|verification code/i.test(message)) return { message: '验证码不正确或已过期，请重新获取', kind: 'code' }
   if (/重置/.test(action) && /token|重置码|expired|过期/i.test(message)) return { message: '重置码已失效，请重新获取邮件', kind: 'code' }
-  if (/用户名|密码|credential|password|unauthorized/i.test(message)) return { message: '账号或密码不正确，请检查后重试', kind: 'credentials' }
+  // 重置、设新密码这两步客户没输过账号密码，「密码不对」只信上面服务端那张表里的准话（原密码错误等）：
+  // 主进程自己的兜底「重置密码失败，服务返回 HTTP 500」句子里就带「密码」，不能拿来认。
+  const choosingPassword = action === '重置密码' || action === '设新密码'
+  if (!choosingPassword && /用户名|密码|credential|password|unauthorized/i.test(message)) return { message: '账号或密码不正确，请检查后重试', kind: 'credentials' }
   if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return { message: authNetworkFallbackMessage, kind: 'unreachable' }
   if (/turnstile|人机/i.test(message)) return { message: '服务端需要完成安全验证，请在浏览器完成后再试', kind: 'final' }
   const plain = plainChineseReason(message)
@@ -286,11 +292,11 @@ export function authErrorMessage(error: unknown, action: string): string {
  * 读不到时怎么说、要不要自动再试，集中在这里：
  * - 这台电脑本身没网：直说没网，等系统报「网络回来了」再自动重读，不叫人去点按钮；
  * - 超时 / 被切断 / 域名解析不到：多半是一时的，先自动再试一次再报红；
- * - 超时、被切断这两种最常见的真实原因是客户开着加速器或翻墙软件，所以只在注册窗里
- *   多说一句「先关掉它」。network-failure.ts 那张表是全局共用的，不在那里改。
+ * - 超时、被切断这两种最常见的真实原因是客户开着别的加速器或翻墙软件（星芒自己也带加速，
+ *   所以说「别的」），先叫人关掉，还不行再照 network-failure.ts 那张表叫人换个网络。
  */
 export const registrationOfflineMessage = '这台电脑现在没连上网。连上网后会自动重新读取。'
-export const registrationUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再点「重新读取」。'
+export const registrationUnreachableMessage = '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点），再点「重新读取」。'
 
 export interface RegistrationStatusFailure {
   message: string

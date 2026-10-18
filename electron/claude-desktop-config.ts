@@ -6,6 +6,15 @@ import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
 
 const label = 'Claude Desktop 第三方推理配置'
+
+/**
+ * 首页「切回官方账号」「改用当前账号」时，那份配置不是点按钮前看到的样子（#1111 第4条）。客户看到的只说
+ * 「刚被改过、再点一次」：失败后首页会把卡片重新读一遍，按钮跟着变，再点不会带错。哪一条没对上挂在 cause
+ * 上，随这次失败进运行日志（ipc.ts 记失败时连同 cause 一起写），客服才分得清是哪一种。
+ */
+function switchRefused(reason: string): Error {
+  return new Error('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。', { cause: new Error(`${label}：${reason}`) })
+}
 const maximumBytes = 512 * 1024
 // Claude Desktop 在登录页选「用 Claude 账号登录」时，第三方目录的 claude_desktop_config.json 里记成这个值，
 // 之后开机就进官方登录、第三方配置留着也不读。官方文档只写了登录页上有这个选择，没写记成什么；这个值
@@ -216,6 +225,34 @@ function gatewayConfigurationReady(config: JsonObject): boolean {
   } catch { return false }
 }
 
+/**
+ * 一笔写之前要看的文件都经 capture 读：读到什么（不存在记 null）按读的顺序记进 snapshots。提交时拿这份
+ * 记录核对有没有别的程序改过，也照它给改到的文件留 .bak、失败时还原，所以漏经它读的文件就没人守着。
+ */
+function createFileSnapshots(read: (filePath: string) => string | null): {
+  snapshots: Map<string, string | null>
+  capture: (filePath: string) => string | null
+} {
+  const snapshots = new Map<string, string | null>()
+  function capture(filePath: string): string | null {
+    const content = read(filePath)
+    snapshots.set(filePath, content)
+    return content
+  }
+  return { snapshots, capture }
+}
+
+function assertWithinSizeLimit(content: string): void {
+  if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+}
+
+/** 只改一个顶层字段，别的字段和排版照原样；只有往整份挤在一行的文件里加字段时，才会摊开成两格缩进。 */
+function setTopLevelField(original: string, key: string, value: unknown): string {
+  return applyEdits(original, modify(original, [key], value, {
+    formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+  }))
+}
+
 export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOptions) {
   for (const directory of [options.dataDirectory, options.profileDirectory, ...(options.developerDirectories ?? [])]) {
     if (!path.isAbsolute(directory)) throw new Error(`${label}保存目录必须是绝对路径`)
@@ -296,12 +333,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       await options.assertUnmanaged?.()
       await beforeCommit?.()
       assertContext()
-      const snapshots = new Map<string, string | null>()
-      const capture = (filePath: string) => {
-        const content = read(filePath)
-        snapshots.set(filePath, content)
-        return content
-      }
+      const { snapshots, capture } = createFileSnapshots(read)
       const desktop = parseObject(capture(configPath))
       const metadata = parseMetadata(capture(metadataPath))
       const owner = parseOwner(capture(markerPath), profileDirectory)
@@ -309,15 +341,13 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const original = gatewayPath ? capture(gatewayPath) : null
       const gateway = parseObject(original)
       if (!owner || !gatewayPath || original === null || metadata.appliedId !== owner.id || metadata.hybridPointer
-        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p') || !gatewayConfigurationReady(gateway)
+        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode) || !gatewayConfigurationReady(gateway)
         || typeof gateway.inferenceGatewayBaseUrl !== 'string' || !sameBaseUrl(gateway.inferenceGatewayBaseUrl, expected.baseUrl)
         || gateway.inferenceGatewayApiKey !== expected.apiKey) {
         throw new Error(`${label}在${action}前已变化，未执行修改`)
       }
-      const content = applyEdits(original, modify(original, [field], value(), {
-        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
-      }))
-      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const content = setTopLevelField(original, field, value())
+      assertWithinSizeLimit(content)
       const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
       return { path: gatewayPath, backups: saved.backups }
     })
@@ -335,12 +365,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
      * 开机时多跑一个进程。
      */
     repairLegacyModelList: (relayBaseUrls: readonly string[]): Promise<ClaudeDesktopModelRepairOutcome> => serial(async () => {
-      const snapshots = new Map<string, string | null>()
-      const capture = (filePath: string) => {
-        const content = read(filePath)
-        snapshots.set(filePath, content)
-        return content
-      }
+      const { snapshots, capture } = createFileSnapshots(read)
       // 读不出来（被占用、读到一半变了、目录联接这次不放行）往外抛，算这次没修成、下次开机
       // 再试；读出来了却解析不了，是文件本身坏了或被别人改过，认不准，不再看。
       const ownerContent = capture(markerPath)
@@ -362,7 +387,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
         return { status: 'unrecognized', reason: 'gateway' }
       }
       const content = json({ ...gateway, inferenceModels: [model] })
-      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      assertWithinSizeLimit(content)
       const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, () => undefined)
       return { status: 'repaired', model, backups: saved.backups }
     }),
@@ -391,7 +416,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
         const metadata = parseMetadata(read(metadataPath))
         const owner = parseOwner(read(markerPath), profileDirectory)
         if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer
-          || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p')) return null
+          || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) return null
         const gateway = parseObject(read(path.join(libraryDirectory, `${owner.id}.json`)))
         const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
         if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || typeof apiKey !== 'string' || !apiKey.trim()) return null
@@ -431,12 +456,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       assertContext()
       await options.assertUnmanaged?.()
       assertContext()
-      const snapshots = new Map<string, string | null>()
-      const capture = (filePath: string) => {
-        const content = read(filePath)
-        snapshots.set(filePath, content)
-        return content
-      }
+      const { snapshots, capture } = createFileSnapshots(read)
       const original = capture(configPath)
       const desktop = parseObject(original)
       const metadata = parseMetadata(capture(metadataPath))
@@ -446,14 +466,14 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const applied = !ownedInUse && appliedId && belongsToCurrentAccount
         ? parseObject(capture(path.join(libraryDirectory, `${appliedId}.json`))).inferenceGatewayApiKey : undefined
       const accountInUse = ownedInUse || (typeof applied === 'string' && Boolean(belongsToCurrentAccount?.(applied)))
-      if (original === null || !accountInUse || metadata.hybridPointer
-        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) {
-        throw new Error(`${label}在切换前已变化，未执行修改`)
+      if (original === null) throw switchRefused('claude_desktop_config.json 不在')
+      if (!accountInUse) throw switchRefused('正在用的不是当前账号那份配置')
+      if (metadata.hybridPointer) throw switchRefused('配置清单里有 hybridPointer')
+      if (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode) {
+        throw switchRefused(`deploymentMode 已经是 ${String(desktop.deploymentMode)}`)
       }
-      const content = applyEdits(original, modify(original, ['deploymentMode'], claudeDesktopOfficialDeploymentMode, {
-        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
-      }))
-      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const content = setTopLevelField(original, 'deploymentMode', claudeDesktopOfficialDeploymentMode)
+      assertWithinSizeLimit(content)
       const saved = commitClaudeDesktopFiles([{ path: configPath, content }], snapshots, assertContext)
       return { path: configPath, backups: saved.backups }
     }),
@@ -466,16 +486,12 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       assertContext()
       await options.assertUnmanaged?.()
       assertContext()
-      const snapshots = new Map<string, string | null>()
-      const capture = (filePath: string) => {
-        const content = read(filePath)
-        snapshots.set(filePath, content)
-        return content
-      }
+      const { snapshots, capture } = createFileSnapshots(read)
       const original = capture(configPath)
       const desktop = parseObject(original)
-      if (original === null || desktop.deploymentMode !== claudeDesktopOfficialDeploymentMode) {
-        throw new Error(`${label}在切换前已变化，未执行修改`)
+      if (original === null) throw switchRefused('claude_desktop_config.json 不在')
+      if (desktop.deploymentMode !== claudeDesktopOfficialDeploymentMode) {
+        throw switchRefused(`deploymentMode 是 ${String(desktop.deploymentMode)}，不是官方登录`)
       }
       const metadata = parseMetadata(capture(metadataPath))
       const owner = parseOwner(capture(markerPath), profileDirectory)
@@ -484,10 +500,8 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
       if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || !sameBaseUrl(baseUrl, expectedBaseUrl)
         || typeof apiKey !== 'string' || !apiKey.trim() || !belongsToCurrentAccount(apiKey)) return { outcome: 'reconnect' }
-      const content = applyEdits(original, modify(original, ['deploymentMode'], claudeDesktopGatewayDeploymentMode, {
-        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
-      }))
-      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const content = setTopLevelField(original, 'deploymentMode', claudeDesktopGatewayDeploymentMode)
+      assertWithinSizeLimit(content)
       const saved = commitClaudeDesktopFiles([{ path: configPath, content }], snapshots, assertContext)
       return { outcome: 'switched', path: configPath, backups: saved.backups }
     }),
@@ -496,12 +510,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       assertContext()
       await options.assertUnmanaged?.()
       assertContext()
-      const snapshots = new Map<string, string | null>()
-      const capture = (filePath: string) => {
-        const content = read(filePath)
-        snapshots.set(filePath, content)
-        return content
-      }
+      const { snapshots, capture } = createFileSnapshots(read)
       const metadata = parseMetadata(capture(metadataPath))
       const owner = parseOwner(capture(markerPath), profileDirectory)
       const id = owner?.id ?? randomUUID()
@@ -529,11 +538,11 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
           const developerPath = path.join(directory, 'developer_settings.json')
           return { path: developerPath, content: json({ ...parseObject(capture(developerPath)), allowDevTools: true }) }
         }),
-        { path: configPath, content: json({ ...desktop, deploymentMode: '3p' }) },
+        { path: configPath, content: json({ ...desktop, deploymentMode: claudeDesktopGatewayDeploymentMode }) },
         { path: metadataPath, content: json(nextMetadata) },
         { path: markerPath, content: json({ version: 1, profileDirectory: identity, id } satisfies OwnedProfile) },
       ]
-      for (const plan of plans) if (Buffer.byteLength(plan.content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      for (const plan of plans) assertWithinSizeLimit(plan.content)
       await options.assertUnmanaged?.()
       assertContext()
       const saved = commitClaudeDesktopFiles(plans, snapshots, assertContext)

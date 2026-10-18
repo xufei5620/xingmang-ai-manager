@@ -14,18 +14,18 @@ export interface BackupKeyView {
 export function backupKeyView(backup: Pick<ConfigBackupSummary, 'keyOwnership' | 'keyAccountName'>): BackupKeyView | null {
   switch (backup.keyOwnership) {
     case 'current':
-      return { tone: 'ok', label: '当前账号的 Key', restoreWarning: null }
+      return { tone: 'ok', label: '当前账号的密钥', restoreWarning: null }
     case 'other': {
       const name = backup.keyAccountName
-      const lead = name ? `这份备份里是账号 ${name} 的 Key` : '这份备份里的 Key 不是当前账号的'
+      const lead = name ? `这份备份里是账号 ${name} 的密钥` : '这份备份里的密钥不是当前账号的'
       return {
         tone: 'warn',
-        label: name ? `账号 ${name} 的 Key` : '不是当前账号的 Key',
-        restoreWarning: `${lead}。恢复后这个工具会改用那把 Key，用量不会记在当前账号上，那把 Key 失效了还会连不上。`,
+        label: name ? `账号 ${name} 的密钥` : '不是当前账号的密钥',
+        restoreWarning: `${lead}。恢复后这个工具会改用那把密钥，用量不会记在当前账号上，那把密钥失效了还会连不上。`,
       }
     }
     case 'none':
-      return { tone: 'neutral', label: '没有 Key', restoreWarning: null }
+      return { tone: 'neutral', label: '没有密钥', restoreWarning: null }
     default:
       return null
   }

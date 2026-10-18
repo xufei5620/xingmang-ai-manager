@@ -2261,6 +2261,7 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
   const cases = [
     ['unownedClaude=1', 'claude', '打开', '密钥待确认'],
     ['unknownClaude=1', 'claude', '改用当前账号', '打不开'],
+    ['allInstalled=1&changedClaude=1', 'claude', '重新写入密钥', '配置被改过'],
     ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
     ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
   ]
@@ -3302,7 +3303,7 @@ test('an updated tool row stays on the running install until the rescan lands', 
     await page.evaluate(() => window.v2Test.holdNextScan())
     await update.click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
-    await row.getByText('安装完成，正在同步账号 Key 并刷新状态').waitFor()
+    await row.getByText('安装完成，正在同步账号密钥并刷新状态').waitFor()
     assert.equal(await update.count(), 0, '刷新落地之前不能把「更新」按钮放回来')
     assert.equal(await row.getByText('v1.2.3', { exact: false }).count(), 0, '刷新落地之前不能把旧版本号放回来')
     await page.evaluate(() => window.v2Test.releaseScan())
@@ -3322,7 +3323,7 @@ test('cancelling during the key sync after an install says the step can no longe
     await update.waitFor()
     await page.evaluate(() => window.v2Test.holdNextScan())
     await update.click()
-    await row.getByText('安装完成，正在同步账号 Key 并刷新状态').waitFor()
+    await row.getByText('安装完成，正在同步账号密钥并刷新状态').waitFor()
     await row.getByTestId('tool-claude-cancel').click()
     await waitForToast(page, '这一步已经不能取消了。')
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelCliInstall').length), 0)
@@ -5028,6 +5029,97 @@ test('a Claude Code settings file it cannot read is reset on the current account
     const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
     assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'reset', intent: 'explicit' }])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// #1073 评论第 2 条：命令行工具和 Claude Desktop 卡片上「用哪个账号」菜单的字收成一份以后，
+// 两张卡上看得见的每一个字（来源牌、读屏念的那句、标题、每一项和说明、勾在哪、哪项点不动）都和原来一样。
+async function sourceMenuEntries(page, tool) {
+  const chip = page.getByTestId(`tool-${tool}-source`)
+  const shown = { chip: (await chip.innerText()).trim(), label: await chip.getAttribute('aria-label') }
+  await chip.click()
+  const menu = page.getByTestId(`tool-${tool}-source-menu`).getByRole('menu')
+  await menu.waitFor()
+  shown.menu = await menu.getAttribute('aria-label')
+  shown.entries = await menu.evaluate((panel) => [...panel.children].map((node) => {
+    if (node.tagName === 'HR') return 'divider'
+    if (node.classList.contains('xm-menu-heading')) return { heading: node.textContent }
+    if (node.classList.contains('xm-menu-note')) return { note: node.textContent }
+    const text = node.querySelector('.xm-menu-text')
+    return { label: text ? text.querySelector('span').textContent : node.textContent, description: text?.querySelector('small').textContent ?? null,
+      checked: node.getAttribute('aria-checked'), disabled: node.disabled, testId: node.getAttribute('data-testid') }
+  }))
+  await page.keyboard.press('Escape')
+  await menu.waitFor({ state: 'detached' })
+  return shown
+}
+function sourceChoice(tool, kind, label, description, checked) {
+  return { label, description, checked: String(checked), disabled: false, testId: `tool-${tool}-source-${kind}` }
+}
+function shownSourceMenu(label, chip, choices) {
+  return { chip, label, menu: label, entries: [{ heading: '用哪个账号使用 AI' }, ...choices, 'divider',
+    { label: '更多配置…', description: null, checked: null, disabled: false, testId: null }] }
+}
+const codexSharedNote = { note: 'Codex CLI 和 Codex 桌面端共用这份配置' }
+
+test('the which-account menus on the CLI and Claude Desktop cards keep every word they showed before sharing one copy', async () => {
+  let page = await open('allInstalled=1')
+  try {
+    assert.deepEqual(await sourceMenuEntries(page, 'claude'), shownSourceMenu('Claude Code 现在用当前账号，点击切换', '当前账号', [
+      sourceChoice('claude', 'account', '当前账号', '按用量从当前账号扣费', true),
+      sourceChoice('claude', 'official', 'Claude 账号', '用你自己的官方订阅登录', false),
+      sourceChoice('claude', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+    ]))
+    for (const [tool, label] of [['codex', 'Codex CLI 现在用当前账号，点击切换'], ['codexDesktop', 'Codex 桌面端现在用当前账号，点击切换']]) {
+      assert.deepEqual(await sourceMenuEntries(page, tool), shownSourceMenu(label, '当前账号', [
+        sourceChoice(tool, 'account', '当前账号', '按用量从当前账号扣费', true),
+        sourceChoice(tool, 'official', 'ChatGPT 账号', '用你自己的官方订阅登录', false),
+        sourceChoice(tool, 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+        codexSharedNote,
+      ]))
+    }
+    assert.deepEqual(await sourceMenuEntries(page, 'grok'), shownSourceMenu('Grok CLI 现在用当前账号，点击切换', '当前账号', [
+      sourceChoice('grok', 'account', '当前账号', '按用量从当前账号扣费', true),
+      sourceChoice('grok', 'official', 'Grok 账号', '用你自己的官方订阅登录', false),
+      sourceChoice('grok', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+    ]))
+    await clean(page)
+  } finally { await page.close() }
+  page = await open('manualClaude=1')
+  try {
+    assert.deepEqual(await sourceMenuEntries(page, 'claude'), shownSourceMenu('Claude Code 现在用自己的密钥，点击切换', '自己的密钥', [
+      sourceChoice('claude', 'account', '当前账号', '按用量从当前账号扣费', false),
+      sourceChoice('claude', 'official', 'Claude 账号', '用你自己的官方订阅登录', false),
+      sourceChoice('claude', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', true),
+    ]))
+    await clean(page)
+  } finally { await page.close() }
+  for (const [query, officialDescription] of [['official=1', '用你自己的官方订阅登录'], ['official=1&officialEmail=1', 'chatgpt@example.test，Plus']]) {
+    page = await open(query)
+    try {
+      assert.deepEqual(await sourceMenuEntries(page, 'codex'), shownSourceMenu('Codex CLI 现在用官方账号，点击切换', '官方账号', [
+        sourceChoice('codex', 'account', '当前账号', '按用量从当前账号扣费', false),
+        sourceChoice('codex', 'official', 'ChatGPT 账号', officialDescription, true),
+        sourceChoice('codex', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+        codexSharedNote,
+      ]))
+      await clean(page)
+    } finally { await page.close() }
+  }
+  page = await open('externalInstalled=1&externalReady=claudeDesktop')
+  try {
+    assert.deepEqual(await sourceMenuEntries(page, 'claudeDesktop'), shownSourceMenu('Claude Desktop 现在用当前账号，点击切换', '当前账号', [
+      sourceChoice('claudeDesktop', 'account', '当前账号', '按用量从当前账号扣费', true),
+      sourceChoice('claudeDesktop', 'official', 'Claude 账号', '用你自己的官方订阅登录', false),
+    ]))
+    await page.getByTestId('tool-claudeDesktop-source').click()
+    await page.getByTestId('tool-claudeDesktop-source-official').click()
+    await expect(page.getByTestId('tool-claudeDesktop-source')).toHaveText('官方账号')
+    assert.deepEqual(await sourceMenuEntries(page, 'claudeDesktop'), shownSourceMenu('Claude Desktop 现在用官方账号，点击切换', '官方账号', [
+      sourceChoice('claudeDesktop', 'account', '当前账号', '按用量从当前账号扣费', false),
+      sourceChoice('claudeDesktop', 'official', 'Claude 账号', '用你自己的官方订阅登录', true),
+    ]))
     await clean(page)
   } finally { await page.close() }
 })
@@ -7368,7 +7460,7 @@ test('the self-check key layer rewrites the current account Key in place and re-
     const claude = page.getByTestId('health-connection-result-claude')
     await expect(claude.getByRole('img', { name: '有问题', exact: true })).toHaveClass(/is-bad/)
     await expect(claude.locator('.v2-health-line-text')).toHaveText('Claude Code：密钥被拒绝（HTTP 401）')
-    // 账号页上并没有「写入 Key」这颗按钮，所以这一层不再给「去处理」。
+    // 账号页上并没有「重新写入密钥」这颗按钮，所以这一层不再给「去处理」。
     assert.equal(await page.getByTestId('health-connection-fix-claude').count(), 0)
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
     await page.getByTestId('health-connection-rewrite-claude').click()
@@ -7408,7 +7500,7 @@ test('the one-click repair on an invalid key runs the same rewrite', async () =>
     await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：令牌已失效' })
     await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('operation-error').waitFor()
-    await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把 Key', { exact: true }).waitFor()
+    await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把密钥', { exact: true }).waitFor()
     const before = await page.evaluate(() => {
       window.v2Test.fail = ''
       window.v2Test.failMessage = ''
@@ -7427,6 +7519,23 @@ async function openAboutSettings(page) {
   await settings.waitFor()
   await settings.getByRole('tab', { name: '版本更新', exact: true }).click()
   return settings
+}
+
+// 从设置重开四步新手引导，选好开始方式，一路点到最后一步。
+async function walkGuideToReady(page, route) {
+  await openAboutSettings(page)
+  await page.getByTestId('settings-start-guide').click()
+  const guide = page.getByTestId('start-guide')
+  await guide.waitFor()
+  await page.getByTestId(`guide-route-${route}`).check()
+  for (let turn = 0; turn < 4; turn++) {
+    const step = await guide.getAttribute('data-guide-step')
+    if (step === 'ready') return guide
+    await page.getByTestId('guide-next').click()
+    await page.waitForFunction((previous) => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') !== previous, step)
+  }
+  await expect(guide).toHaveAttribute('data-guide-step', 'ready')
+  return guide
 }
 
 test('settings reopens the onboarding guide, and the interface tour replays until it is actually finished (A8)', async () => {
@@ -7463,6 +7572,63 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
     await page.getByTestId('settings-start-guide').click()
     await page.getByTestId('start-guide').waitFor()
     assert.equal(await page.getByTestId('page-tutorial').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// #1104 第 12 条：引导里点「去聊天」，导览原来开在聊天页上，第二步只能指着侧栏的「首页」念
+// 「每个工具一张卡片。点左下角的账号标签…」，左下角正好是侧栏的账号卡。现在导览只在首页放。
+test('the interface tour waits for the home page instead of pointing its tool card step at the sidebar', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await walkGuideToReady(page, 'chat')
+    await page.getByTestId('guide-chat').click()
+    // 客户选的是聊天：留在聊天页，导览先不出来。
+    await page.getByTestId('page-chat').waitFor()
+    const tour = page.getByTestId('shell-guide-tip')
+    assert.equal(await tour.count(), 0)
+    const target = page.locator('[data-coach-target="true"]')
+    await page.getByTestId('nav-home').click()
+    await tour.waitFor()
+    await expect(tour.locator('small')).toHaveText('1 / 3')
+    await expect(target).toHaveClass(/v2-command-trigger/)
+    await tour.getByRole('button', { name: '下一步', exact: true }).click()
+    await expect(target).toHaveAttribute('data-testid', 'tool-row-claude')
+    // 放到一半去了别的页：先收起，回首页接着放这一步。
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('page-chat').waitFor()
+    assert.equal(await tour.count(), 0)
+    assert.equal(await page.locator('[data-coach-target]').count(), 0)
+    await page.getByTestId('nav-home').click()
+    await expect(tour.locator('small')).toHaveText('2 / 3')
+    await expect(target).toHaveAttribute('data-testid', 'tool-row-claude')
+    await expect(tour).toHaveAttribute('data-side', 'right')
+    await tour.getByRole('button', { name: '下一步', exact: true }).click()
+    await expect(target).toHaveAttribute('data-testid', 'account-entry')
+    await tour.getByRole('button', { name: '知道了', exact: true }).click()
+    await tour.waitFor({ state: 'detached' })
+    await page.reload()
+    await waitForFixtureReady(page)
+    await page.getByTestId('tool-row-claude').waitFor()
+    assert.equal(await tour.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 引导里选了「先在星芒里聊天」，「进入首页」以前跟旁边的「去聊天」一样进了聊天页。
+test('the guide home button lands on the home page even when chat was chosen', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const guide = await walkGuideToReady(page, 'chat')
+    await page.getByTestId('guide-home').click()
+    await guide.waitFor({ state: 'detached' })
+    await page.getByTestId('page-home').waitFor()
+    assert.equal(await page.getByTestId('page-chat').count(), 0)
+    await expect(page.getByTestId('window-titlebar')).toHaveText('首页')
+    // 回的是首页，导览就在这里放。
+    await page.getByTestId('shell-guide-tip').waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -8468,6 +8634,45 @@ test('a window narrower than the design collapses the sidebar by itself, says wh
     assert.equal((await box(page, '[data-testid="sidebar"]')).width, 224)
     await clean(page)
   } finally { await page.close() }
+})
+
+// #1133 第 3、4 条：最小窗口选 110% 只剩 970×566 逻辑大小。收成窄条的侧栏一项不少地放得下，不滚、不渐隐
+// （Mac 顶上还要让红黄绿三个点）；状态栏里历史账号那种长邮箱先省略、悬停看全文，网络状态一个字不少。
+test('the smallest window at 110% fits the collapsed sidebar and shortens a long email before the network status', async () => {
+  for (const os of ['windows', 'mac']) {
+    const page = await open(os === 'mac' ? 'longUsername=1&os=mac' : 'longUsername=1')
+    try {
+      await page.setViewportSize({ width: 970, height: 566 })
+      await expect.poll(() => page.locator('.v2-shell').getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal(await page.locator('.v2-root').getAttribute('data-os'), os === 'mac' ? 'mac' : 'win')
+      const scroller = page.getByTestId('sidebar-scroll')
+      await expect.poll(() => scroller.getAttribute('data-fade')).toBe(null)
+      const sidebar = await scroller.evaluate((element) => ({
+        overflow: element.scrollHeight - element.clientHeight,
+        bottom: element.getBoundingClientRect().bottom,
+        feedback: document.querySelector('[data-testid="nav-feedback"]').getBoundingClientRect().bottom,
+        settings: document.querySelector('[data-testid="nav-settings"]').getBoundingClientRect().top,
+      }))
+      assert.ok(sidebar.overflow <= 0, `${os}: the collapsed sidebar overflows by ${sidebar.overflow}px`)
+      assert.ok(sidebar.feedback <= sidebar.bottom && sidebar.bottom <= sidebar.settings, `${os}: every entry is in view above 设置: ${JSON.stringify(sidebar)}`)
+      const email = '已登录 zhangwei.developer2026@company-mail.com.cn'
+      const status = await page.getByTestId('shell-statusbar').evaluate((bar) => {
+        const user = bar.querySelector('[data-testid="statusbar-user"]')
+        const network = bar.querySelector('[data-testid="shell-network-location"] > span')
+        return {
+          barOverflow: bar.scrollWidth - bar.clientWidth,
+          userWidth: user.getBoundingClientRect().width, userCut: user.firstElementChild.scrollWidth > user.firstElementChild.clientWidth,
+          userText: user.textContent, userTitle: user.getAttribute('title'),
+          network: network.textContent, networkCut: network.scrollWidth > network.clientWidth,
+        }
+      })
+      assert.ok(status.barOverflow <= 0, `${os}: the status bar overflows by ${status.barOverflow}px`)
+      assert.ok(status.userWidth <= 220.5 && status.userCut, `${os}: the long email is shortened: ${JSON.stringify(status)}`)
+      assert.deepEqual([status.userText, status.userTitle], [email, email], `${os}: the full email stays on hover`)
+      assert.deepEqual([status.network, status.networkCut], ['网络正常', false], `${os}: the network status is shown in full`)
+      await clean(page)
+    } finally { await page.close() }
+  }
 })
 
 test('startup cards no longer carry the dialog shadow that the scroll area cut into a block', async () => {

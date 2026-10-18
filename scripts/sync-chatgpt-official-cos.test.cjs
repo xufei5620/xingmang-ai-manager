@@ -12,7 +12,7 @@ const {
   compareWindowsVersions, validateWindowsMetadata, validateHead, parseMacAppcast,
   validateWindowsInspection, sanitizedWindowsEnvironment, synchronizeOfficialChatgpt,
   validatePackageMagic, createRuntimeDependencies, safeOfficialSyncFailure, inspectWindowsFile, validateLicenseInspection,
-  MULTIPART_DEADLINE_MS, createOfficialCosStore,
+  MULTIPART_DEADLINE_MS, createOfficialCosStore, validatePreviousManifest,
 } = require('./sync-chatgpt-official-cos.cjs')
 
 test('runtime temp aliases resolve to safe files and cleanup preserves neighboring directories', async function () {
@@ -343,11 +343,28 @@ test('unchanged upstream fingerprints and intact COS objects skip large download
   const downloadCount = fixture.downloads.length
   const pointerCount = fixture.pointers.length
   const directoryCount = fixture.directories.length
-  const result = await fixture.run()
+  const publicationCount = fixture.publications.length
+  const before = clone(fixture.latest)
+  const result = await synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, now: function () { return '2026-10-03T06:00:00.000Z' } })
   assert.equal(result.changed, false)
   assert.equal(fixture.downloads.length, downloadCount)
-  assert.equal(fixture.pointers.length, pointerCount)
+  assert.equal(fixture.publications.length, publicationCount)
   assert.equal(fixture.directories.length, directoryCount)
+  // The index is still rewritten so every checked entry carries a fresh checkedAt (#1061 item 7).
+  assert.equal(fixture.pointers.length, pointerCount + 1)
+  for (const [id, entry] of Object.entries(fixture.latest.platforms)) {
+    assert.equal(before.platforms[id].checkedAt, '2026-10-02T12:00:00.000Z')
+    assert.deepEqual(entry, { ...before.platforms[id], checkedAt: '2026-10-03T06:00:00.000Z' })
+  }
+})
+
+test('each job refreshes checkedAt only on the platforms it checked', async function () {
+  const fixture = createFixture()
+  await fixture.run()
+  await synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, platforms: ['windows-x64'], now: function () { return '2026-10-03T06:00:00.000Z' } })
+  assert.equal(fixture.latest.platforms['windows-x64'].checkedAt, '2026-10-03T06:00:00.000Z')
+  for (const id of ['windows-arm64', 'macos-arm64', 'macos-x64']) assert.equal(fixture.latest.platforms[id].checkedAt, '2026-10-02T12:00:00.000Z')
+  assert.deepEqual(validatePreviousManifest(clone(fixture.latest)), fixture.latest)
 })
 
 test('checks a changed ETag even when official Windows version is unchanged', async function () {

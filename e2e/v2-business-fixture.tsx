@@ -27,10 +27,21 @@ declare global {
     endTopupPromotion: () => void
     // 外壳切走 / 切回个人中心（App.tsx 的 active）；不调就不传，同旧夹具。
     setPageActive: (active: boolean) => void
+    // 停在充值页时从首页活动卡片又点了一档（App.tsx 的 accountRechargeAmount + accountTabRequest）。
+    pickRechargeTier: (amount: number) => void
+    // 下一次试算挂着，等 release() 才回、fail() 就报错：看「正在确认价格…」那段时间页面怎么样。
+    topupQuoteHarness: {
+      holdNext(): void
+      release(): void
+      fail(message: string): void
+    }
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
-    failNextRead: (read: 'profile' | 'subscriptions') => void
+    // toolKeyLimits：下一次按 100 一页读密钥（「每个工具的额度上限」那张卡）没读到。
+    failNextRead: (read: 'profile' | 'subscriptions' | 'toolKeyLimits') => void
     // extensionHold：除卸载以外的扩展改动（开关、更新）挂着，等这里放开才回。
     releaseExtension: () => void
+    // revokeHold：撤销密钥挂着，等这里放开才回。
+    releaseRevoke: () => void
     // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
     profileReadHarness: {
       deferNext(): void
@@ -73,6 +84,13 @@ function topupPromotionRunning(): boolean {
 function fixtureTopupDiscounts(): Record<string, number> {
   return topupPromotionRunning() ? { 20: 0.8 } : {}
 }
+let holdNextTopupQuote = false
+let heldTopupQuote: { release: () => void; fail: (message: string) => void } | null = null
+window.topupQuoteHarness = {
+  holdNext() { holdNextTopupQuote = true },
+  release() { heldTopupQuote?.release(); heldTopupQuote = null },
+  fail(message) { heldTopupQuote?.fail(message); heldTopupQuote = null },
+}
 const calls: Array<{ name: string; args: unknown }> = []
 const record = (name: string, args?: unknown) => {
   calls.push({ name, args })
@@ -109,6 +127,48 @@ let codexCatalogReady = false
 let codexCatalogAttempts = 0
 // mcpHealthFail 让第一次连接检测没跑完，验证「这次没检测成」和「重新检测」。
 let mcpHealthAttempts = 0
+// mcpAuth：Codex 那条连接要登录授权；点了「登录授权」就一直等，直到点「取消」（#1099 第 1 条）。
+let finishMcpLogin: (() => void) | null = null
+function codexMcpServers(authStatus: string) {
+  return [
+    {
+      name: 'test-extension',
+      enabled: true,
+      disabledReason: null,
+      transportType: 'http' as const,
+      command: null,
+      args: [],
+      cwd: null,
+      url: 'https://example.test/mcp',
+      envNames: [],
+      inheritedEnvNames: [],
+      httpHeaderNames: [],
+      inheritedHttpHeaderNames: [],
+      bearerTokenEnvVar: null,
+      startupTimeoutSec: null,
+      toolTimeoutSec: null,
+      authStatus,
+      origin: 'user' as const,
+      editable: true,
+    },
+  ]
+}
+const mcpAuthMethods = {
+  listMcpServers: async () => codexMcpServers('not_logged_in'),
+  loginMcpServer: async (name: string) => {
+    record('mcp-login', name)
+    await new Promise<void>((resolve) => {
+      finishMcpLogin = resolve
+    })
+    return codexMcpServers('not_logged_in')
+  },
+  cancelMcpLogin: async (name: string) => {
+    record('mcp-cancel-login', name)
+    // 主进程停掉登录命令、再读一遍列表要一会儿：留出「正在停止」看得见的那一下。
+    setTimeout(() => finishMcpLogin?.(), 400)
+    return true
+  },
+} satisfies Partial<V2Bridge>
 const codexCatalogPlugin = {
   provider: 'codex' as const,
   kind: 'plugin' as const,
@@ -271,11 +331,13 @@ const backup = {
     ? { keyOwnership: 'other' as const, keyAccountName: 'old-user' }
     : { keyOwnership: 'current' as const, keyAccountName: null }),
 }
+// longNames：后台给出不能断行的超长分组名、支付方式名、模型名，看它们撑不撑出卡片（#1133 第 7 条）。
+const longName = query.has('longNames') ? 'SuperLongIdentifierWithoutAnySpacesOrBreakOpportunities_20261017_ABCDEFGHIJKLMNOPQRSTUVWXYZ' : ''
 const key = {
   id: 1,
   name: 'Test key',
   maskedKey: 'sk-****abcd',
-  group: 'default',
+  group: longName ? `default-${longName}` : 'default',
   status: 1,
   remainQuota: 1000,
   unlimitedQuota: false,
@@ -292,6 +354,9 @@ const keyInUse = query.has('keyInUse')
 let replaceFailures = Number(query.get('replaceFails') ?? 0)
 // replaceSkipped：那个工具的配置是手填的，自动换新把它跳过（#478）。
 const replaceSkipped = query.has('replaceSkipped')
+// revokeHold：撤销密钥的请求挂着不回，好看执行中这几秒弹窗还能不能关（#1099 第 2 条）。
+let releaseHeldRevoke: (() => void) | undefined
+window.releaseRevoke = () => { releaseHeldRevoke?.(); releaseHeldRevoke = undefined }
 async function rewriteKey(provider: ProviderId) {
   record('rewriteKey', provider)
   if (replaceSkipped) throw new KeyRewriteSkippedError([{ provider, reason: 'manual', message: 'Claude Code 保留手动填写的密钥' }])
@@ -549,6 +614,8 @@ const apiMethods = {
     }
   },
   getAccountKeys: async (input?: { page?: number; pageSize?: number; keyword?: string }) => {
+    // 额度上限卡按 100 一页翻（loadManagedCliKeys），密钥列表按 20；概览数把数也按 100，测试要等概览读完再设。
+    if (input?.pageSize === 100 && failingOnce('toolKeyLimits')) throw new Error('密钥服务暂时不可用')
     if (pagedKeys) {
       const page = input?.page ?? 1
       const pageSize = input?.pageSize ?? 20
@@ -567,6 +634,7 @@ const apiMethods = {
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
+    if (query.has('revokeHold')) await new Promise<void>((resolve) => { releaseHeldRevoke = resolve })
     const index = pagedKeys?.findIndex((entry) => entry.id === id) ?? -1
     if (pagedKeys && index >= 0) pagedKeys.splice(index, 1)
   },
@@ -640,7 +708,9 @@ const apiMethods = {
     page: 1,
     pageSize: 20,
     total: query.has('usageDetail') ? 1 : 0,
-    records: query.has('usageDetail') ? [usageDetailFixture(query.get('usageDetail') || 'tiered')] : [],
+    records: query.has('usageDetail')
+      ? [{ ...usageDetailFixture(query.get('usageDetail') || 'tiered'), ...(longName ? { modelName: `gpt-${longName}` } : {}) }]
+      : [],
     stats: { quota: 0, rpm: 0, tpm: 0 },
   } },
   getAccountTopupOrders: async (
@@ -700,7 +770,7 @@ const apiMethods = {
         ]
       : [
           {
-            name: 'Stripe',
+            name: longName ? `Stripe-${longName}` : 'Stripe',
             type: 'stripe',
             provider: 'stripe' as const,
             color: null,
@@ -716,10 +786,19 @@ const apiMethods = {
   } },
   quoteAccountTopupAmount: async (
     input: Parameters<V2Bridge['quoteAccountTopupAmount']>[0],
-  ) => ({
-    amount: input.amount,
-    payableAmount: topupPromotionRunning() && input.amount === 20 ? 16 : input.amount,
-  }),
+  ) => {
+    if (holdNextTopupQuote) {
+      holdNextTopupQuote = false
+      record('quote-topup-held', input)
+      await new Promise<void>((resolve, reject) => {
+        heldTopupQuote = { release: resolve, fail: (message) => reject(new Error(message)) }
+      })
+    }
+    return {
+      amount: input.amount,
+      payableAmount: topupPromotionRunning() && input.amount === 20 ? 16 : input.amount,
+    }
+  },
   createAccountTopupPayment: async (
     input: Parameters<V2Bridge['createAccountTopupPayment']>[0],
   ) => {
@@ -737,6 +816,7 @@ const apiMethods = {
   },
   redeemAccountTopupCode: async (code: string) => {
     record('redeem-code', code)
+    if (fail === 'redeem') throw new Error('充值码无效或已被使用')
     const type = query.get('redemptionType')
     if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
     return { quotaAdded: 5 }
@@ -949,6 +1029,7 @@ const apiMethods = {
     record('add-mcp', input)
     return []
   },
+  ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   listBackups: async () => (empty ? [] : [backup]),
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)
@@ -1298,6 +1379,8 @@ const root = createRoot(document.getElementById('root')!)
 // 首页设置窗口保存并读回之后发给密钥页的信号（#546）；测试用事件模拟它。
 let toolConfigConfirmed: { provider: 'claude' | 'codex' | 'grok'; sequence: number } | null = null
 let pageActive: boolean | undefined
+let rechargeAmount = query.has('rechargeAmount') ? Number(query.get('rechargeAmount')) : undefined
+let rechargeRequest: number | undefined
 // switcher：和 App.tsx 一样，「切换账号」打开装着保存账号的弹窗（v4 起个人中心不再自带这张卡）。
 // 切完不自动关，好看清切换结果。
 let switcherOpen = false
@@ -1341,7 +1424,8 @@ const renderFixture = (paymentReturn?: {
                   typeof BusinessPage
                 >[0]['accountTab']) ?? undefined)
           }
-          accountRechargeAmount={query.has('rechargeAmount') ? Number(query.get('rechargeAmount')) : undefined}
+          accountTabRequest={rechargeRequest}
+          accountRechargeAmount={rechargeAmount}
           paymentReturn={paymentReturn}
           navigate={(next, section) => record('navigate', section === undefined ? next : [next, section])}
           openLogin={() => record('login')}
@@ -1389,6 +1473,11 @@ window.rerenderFixture = () => renderFixture()
 window.setPageActive = (active) => {
   pageActive = active
   flushSync(() => renderFixture())
+}
+window.pickRechargeTier = (amount) => {
+  rechargeAmount = amount
+  rechargeRequest = (rechargeRequest ?? 0) + 1
+  renderFixture()
 }
 window.addEventListener('test-tool-config-confirmed', (event) => {
   const provider = (event as CustomEvent<'claude' | 'codex' | 'grok'>).detail
