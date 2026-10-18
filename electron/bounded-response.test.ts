@@ -30,6 +30,25 @@ describe('bounded HTTP response reader', () => {
       .rejects.toThrow('测试接口响应超过 4 KB 安全上限')
   })
 
+  it('keeps the oversize message a caller passes for both the declared and the streamed length', async () => {
+    const declared = new Response('small', { headers: { 'content-length': '4097' } })
+    await expect(readBoundedResponseText(declared, 4096, '测试接口', { oversizeMessage: '测试接口响应过大' }))
+      .rejects.toThrow(/^测试接口响应过大$/)
+
+    let cancelled = false
+    const streamed = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(Buffer.alloc(3072, 0x61))
+      },
+      cancel() {
+        cancelled = true
+      },
+    }))
+    await expect(readBoundedResponseText(streamed, 4096, '测试接口', { oversizeMessage: '测试接口响应过大' }))
+      .rejects.toThrow(/^测试接口响应过大$/)
+    expect(cancelled).toBe(true)
+  })
+
   it('rejects invalid limits', async () => {
     await expect(readBoundedResponseText(new Response(''), 0, '测试接口'))
       .rejects.toThrow('测试接口响应读取上限无效')
