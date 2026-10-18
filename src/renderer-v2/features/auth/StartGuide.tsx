@@ -156,8 +156,8 @@ export function guideInstallFailure(error: unknown, name: string, canReplaceNode
     const shown = `${name} 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。`
     return { message: shown, reason: errors[key].title, detail: guideDetail(error, shown) }
   }
-  // 目录里「超时」那条的标题写的是「连不上星芒服务器」，安装走的是下载源，
-  // 照搬会把人指错方向；账号、计费那几类在安装里不会出现，也不借。
+  // 安装走的是下载源，「超时」只能说网络连不上，不能指向星芒服务器（目录里那条的标题
+  // 现在也是这么写的，这里单写一份，目录再改也不跟着走）；账号、计费那几类在安装里不会出现，也不借。
   const reason = key === 'timeout' ? '网络连不上' : installFailureKeys.has(key) ? errors[key].title : undefined
   const detail = guideDetail(error, '')
   const why = reason ? `（${reason}）` : detail ? unrecognized : ''
@@ -180,8 +180,8 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
   if (network) return { message: network, reason: network, detail: guideDetail(error, network) }
   // 「改用当前账号」写的是工具的配置文件，没权限时不叫人去查安装目录（已知29）。
   const key = classifyOperationError(message, operationTargetOf(action))
-  // 目录里「超时」那条的标题是「连不上星芒服务器」，这几步多半连的是下载源或本机，
-  // 照搬会把人指错方向。
+  // 这几步多半连的是下载源或本机，「超时」只能说网络连不上，不能指向星芒服务器
+  //（同上，不借目录里那条的标题）。
   if (key === 'timeout') return { message: `${action}没有成功：网络连不上。检查网络后点「再试一次」。`, reason: '网络连不上', detail: guideDetail(error, '') }
   // 目录里那句叫人点错误框的「重试」「找客服」，引导里这两颗按钮叫「再试一次」「复制给客服」。
   if (key === 'configPermission') {
@@ -479,13 +479,13 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 来源没确认时按 Key 的归属分三种说法；没接「改用」的调用方仍走旧的「打开配置」那条路。
   const foreign = tool?.source === 'unknown' && onSwitchAccount ? tool.keyState ?? 'otherSite' : null
   const codexShared = route === 'codex' || route === 'codexDesktop' ? 'Codex CLI 和 Codex 桌面端共用这份设置，会一起改。' : ''
-  const foreignLead = { otherSite: `${name} 现在用的不是当前账号的 Key。`, otherAccount: `${name} 现在用的 Key 可能不是当前账号的。`, changed: `${name} 的配置在软件之外被改动过。` }
+  const foreignLead = { otherSite: `${name} 现在用的不是当前账号的密钥。`, otherAccount: `${name} 现在用的密钥可能不是当前账号的。`, changed: `${name} 的配置在软件之外被改动过。` }
   const switchButton = signedIn ? switchLabel : '登录后改用我的账号'
   const foreignCallout = { otherSite: `点「${switchButton}」就能接着往下走。改之前会先把现在的设置备份一份。`, otherAccount: `能直接用，但用量可能算到别的账号上。点「${switchButton}」换成你自己的，改之前会先备份。`, changed: `现在还能用。想恢复成你账号的设置，点「${switchButton}」，改之前会先备份。` }
   // 官方账号本来就能用，「改用」只是旁边一颗次要按钮；没登录时不给，免得点了先弹登录。
   const offerSwitch = Boolean(onSwitchAccount && (foreign || (tool?.source === 'official' && signedIn)))
   const switchedHere = switched && switched.route === route ? switched.result : null
-  const sourceLabel = tool?.source === 'official' ? tool.officialLoginRequired ? `${officialName}（未登录）` : officialName : tool?.source === 'account' ? '星芒账号' : tool?.source === 'manual' ? '手动填写密钥' : tool?.source === 'unknown' ? '用的是别处的配置' : '尚未选择连接方式'
+  const sourceLabel = tool?.source === 'official' ? tool.officialLoginRequired ? `${officialName}（未登录）` : officialName : tool?.source === 'account' ? '当前账号' : tool?.source === 'manual' ? '自己的密钥' : tool?.source === 'unknown' ? '用的是别处的配置' : '尚未选择连接方式'
   // 切换的回执：失败时原因一定要留着（余额不足、网络不通），只去掉和标题重复的开头；
   // 真有备份编号才说能找回。
   function switchReceipt(result: AccountSourceSwitchResult) {
@@ -502,7 +502,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const connectCard = !route || route === 'chat' || foreign || tool?.officialLoginRequired || !readiness.prepared ? null
     : tool?.source === 'official' ? <GuideStateCard tone="ok" icon={Check} title={`已用${spaceBefore(officialName)}连好 ${name}`}>额度走你自己的官方订阅，不扣当前账号的余额。想改用当前账号，在首页的工具卡片上切换。</GuideStateCard>
       : tool?.source === 'account' && readiness.connected && signedIn ? <GuideStateCard tone="ok" icon={Check} title={`已用当前账号连好 ${name}`}>账号专属密钥已写入，额度和余额共用，不需要你再填任何东西。</GuideStateCard>
-        : !signedIn && !readiness.connected ? <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录星芒账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>
+        : !signedIn && !readiness.connected ? <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>
           : null
   const notPrepared = route && route !== 'chat' && !readiness.prepared ? <GuideStateCard tone="off" icon={Download} title={`${spaceAfter(name)}还没装好`}>回上一步装好，再来这里连接。</GuideStateCard> : null
   const readyToOpen = readiness.prepared && readiness.connected
@@ -536,9 +536,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           <div><Button variant="ghost" size="sm" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-installed-rescan">我已装好，重新检测</Button></div>
         </>}
         {step === 'prepare' && !signedIn && <p className="auth-guide-note"><Info size={15} aria-hidden="true" /><span>登录后会自动连接账号。</span></p>}
-        {step === 'connect' && route === 'chat' && <>{signedIn ? <GuideStateCard tone="ok" icon={Check} title="账号已就绪">聊天和工具共用同一份余额。</GuideStateCard> : <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录星芒账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>}{!signedIn && <div className="auth-form-actions"><Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button></div>}</>}
+        {step === 'connect' && route === 'chat' && <>{signedIn ? <GuideStateCard tone="ok" icon={Check} title="账号已就绪">聊天和工具共用同一份余额。</GuideStateCard> : <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>}{!signedIn && <div className="auth-form-actions"><Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button></div>}</>}
         {step === 'connect' && route && route !== 'chat' && readiness.prepared && <>
-          {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用星芒账号的密钥。` : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
+          {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用当前账号。` : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
           {officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}
           <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
           {!connectCard && result && <GuideResultCard result={result} />}

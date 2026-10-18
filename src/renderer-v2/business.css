@@ -1094,6 +1094,7 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-usage-toolbar > h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
 .v2-usage-toolbar-gap { flex: 1; }
 .v2-usage-mono { font-family: var(--mono); font-size: 12.5px; }
+.v2-usage-nowrap { white-space: nowrap; }
 .v2-business-filters.is-folded { display: contents; }
 .v2-business-filters-panel { display: grid; flex-basis: 100%; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel); }
 .v2-business-filters.is-folded > .v2-business-notice { flex-basis: 100%; }

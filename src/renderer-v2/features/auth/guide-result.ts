@@ -71,7 +71,7 @@ function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billin
     }
   }
   if (source === 'manual') return {
-    row: { value: '自己填的密钥', detail: readiness.connected ? '设置已读到，打开工具试一次。' : '请检查填的密钥和模型。', tone: readiness.connected ? 'neutral' : 'warn' },
+    row: { value: '自己的密钥', detail: readiness.connected ? '设置已读到，打开工具试一次。' : '请检查填的密钥和模型。', tone: readiness.connected ? 'neutral' : 'warn' },
     billing: '花的是这把密钥所在账号的余额，不一定是当前账号。',
   }
   if (source === 'unknown') return {

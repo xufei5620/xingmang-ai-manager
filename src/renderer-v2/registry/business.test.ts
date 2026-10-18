@@ -106,7 +106,7 @@ describe('renderer-v2 notification settings registry', () => {
     ]);
     expect(notificationOptions.filter(option => option.description).map(option => [option.value, option.description])).toEqual([
       ['balance', '余额低于 $5 时提醒'],
-      ['spend', '一小时内花费超过平时 5 倍时提醒'],
+      ['spend', '一小时内花费超过平时 5 倍且至少 $5 时提醒'],
     ]);
   });
 });
@@ -210,6 +210,8 @@ describe('renderer-v2 settings rows registry', () => {
     expect(ids('连接线路')).toEqual(['relay-route-solov', 'relay-route-solov-api', 'tool-route-restart-hints']);
     expect(ids('外观显示 默认')).toEqual(['restore-appearance']);
     expect(ids('VPN')).toEqual(ids('vpn'));
+    expect(ids('黑金')).toEqual(['theme']);
+    expect(ids('晨曦金')).toEqual(['theme']);
     expect(ids('没有这种设置')).toEqual([]);
   });
 

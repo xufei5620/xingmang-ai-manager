@@ -29,7 +29,7 @@ const hourMs = 3_600_000
 const blockHours = 4
 
 function monthDay(date: Date): string {
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日`
+  return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 /**

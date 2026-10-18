@@ -163,17 +163,59 @@ export function isAllowedExternalUrl(targetUrl: string, allowlist: readonly stri
   })
 }
 
-const blockedPackagedDebugSwitches = new Set([
-  '--inspect',
-  '--inspect-brk',
-  '--remote-debugging-port',
-  '--remote-debugging-pipe',
+// Packaged builds refuse to start with a switch that opens a debugger or makes
+// Chromium run a command of the caller's choosing. A same-user process can add
+// arguments to a shortcut; once the user picks "Run as administrator", those
+// arguments would run with the elevated token (#1065).
+//
+// Residual risk: this is a blocklist, so a dangerous switch missing from it
+// still works, and the check runs after Chromium has parsed the command line,
+// so a switch consumed before the main script runs (for example by a child
+// process launched that early) is not undone by exiting here. Accepting only
+// known arguments is the follow-up step in #1065.
+const blockedPackagedSwitchNames = new Set([
+  // Node inspector. The nodeCliInspect fuse is the first lock; this is the second.
+  'inspect',
+  'inspect-brk',
+  'inspect-brk-node',
+  'inspect-wait',
+  // Chromium DevTools protocol.
+  'remote-debugging-port',
+  'remote-debugging-pipe',
+  // Chromium runs these as, or in front of, a child process command line.
+  'browser-subprocess-path',
+  'gpu-launcher',
+  'renderer-cmd-prefix',
+  'utility-cmd-prefix',
+  'zygote-cmd-prefix',
 ])
 
-export function hasDisallowedPackagedDebugSwitch(argv: readonly string[]): boolean {
+// Chromium trims base::kWhitespaceWide before parsing; \s covers all of it
+// except U+0085.
+const switchSurroundingWhitespace = /^[\s\u0085]+|[\s\u0085]+$/g
+
+function switchPrefixes(platform: NodeJS.Platform): readonly string[] {
+  return platform === 'win32' ? ['--', '-', '/'] : ['--', '-']
+}
+
+// Reads a switch name the way base/command_line.cc does: trim, take the first
+// matching prefix, stop at the first "=". Chromium lowercases names only on
+// Windows; lowercasing everywhere can only block more. Arguments after a bare
+// "--" are still checked even though Chromium stops reading switches there.
+function resolveSwitchName(argument: string, platform: NodeJS.Platform): string | null {
+  const trimmed = argument.replace(switchSurroundingWhitespace, '')
+  const prefix = switchPrefixes(platform).find((candidate) => trimmed.startsWith(candidate))
+  if (!prefix) return null
+  return trimmed.slice(prefix.length).split('=', 1)[0].toLowerCase()
+}
+
+export function hasDisallowedPackagedDebugSwitch(
+  argv: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   return argv.some((argument) => {
     if (typeof argument !== 'string') return false
-    const switchName = argument.split('=', 1)[0].toLowerCase()
-    return blockedPackagedDebugSwitches.has(switchName)
+    const switchName = resolveSwitchName(argument, platform)
+    return switchName !== null && blockedPackagedSwitchNames.has(switchName)
   })
 }

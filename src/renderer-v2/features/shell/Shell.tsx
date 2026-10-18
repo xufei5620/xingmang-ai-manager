@@ -237,7 +237,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     }
   }
   const balanceStatus = balanceStatusText({ ...account, offline })
-  const balanceTitle = `${account.balance ?? '暂未读到'}；${balanceStatus}`
+  const balanceTitle = `${account.balance ?? '余额暂时没有读到'}；${balanceStatus}`
   // 还在恢复登录、头一回读余额：放灰色占位条；读过了没读到写「—」，不写「暂未读到」那么长一串。
   const balanceAmount = account.restoring || (account.signedIn && !account.balance && account.balanceLoading)
     ? <span className="v2-account-balance-placeholder" aria-hidden="true" data-testid="sidebar-balance-placeholder" />
@@ -245,7 +245,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
       ? <strong>{account.balance}</strong>
       : <strong title={account.signedIn ? '余额暂时没有读到，点刷新再试' : undefined} data-testid="sidebar-balance-unread">—</strong>
   const accountName = account.displayName ?? '未登录'
-  const accountNote = account.email ?? (account.signedIn ? undefined : '登录后自动配 Key')
+  const accountNote = account.email ?? (account.signedIn ? undefined : '登录后自动配密钥')
   const runway = account.signedIn ? account.runway ?? null : null
   const runwayLine = balanceRunwayText(runway)
   const lowBalance = Boolean(runway?.low)

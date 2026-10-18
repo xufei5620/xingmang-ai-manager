@@ -162,7 +162,7 @@ interface ConnectionRow {
   id: string
   name: string
   /**
-   * 只有 CLI 能就地「重新写入 Key」。外部客户端的密钥是用户在配置对话框里自己
+   * 只有 CLI 能就地「重新写入密钥」。外部客户端的密钥是用户在配置对话框里自己
    * 选的，本软件不替他重签，所以这一列对客户端是 null（见 docs/EXTERNAL-CLIENT-CONFIG.md）。
    */
   provider: Provider | null
@@ -231,7 +231,7 @@ export type BusinessActions = {
    */
   toolJobs?: Readonly<Record<string, ToolJob>>
   /**
-   * 连接自检的密钥 / 分组层给出的「重新写入 Key」：复用装完工具后那条同样的重写
+   * 连接自检的密钥 / 分组层给出的「重新写入密钥」：复用装完工具后那条同样的重写
    * 流程（App 的 syncAfterToolInstalled），失败时把主进程的原话抛出来，页面照实显示。
    */
   onRewriteKey?: (provider: Provider) => Promise<boolean>

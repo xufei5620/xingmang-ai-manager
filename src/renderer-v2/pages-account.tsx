@@ -39,7 +39,6 @@ import {
 } from './ui'
 import {
   displayDate,
-  dollars,
   errorMessage,
   failureWithDetail,
   FailureReason,
@@ -48,6 +47,7 @@ import {
   Pagination,
   PlaceholderBar,
   overflowedPage,
+  quotaMoney,
   ResultNotice,
   useOperation,
   useRefreshRequest,
@@ -144,15 +144,6 @@ function keyToolName(provider: Provider): string {
 // 主进程按本机缓存给密钥标的「在用」若是它，也不显示、撤销后不替它换新。
 function isProvider(id: unknown): id is ActiveProviderId {
   return isActiveProviderId(id)
-}
-// 没读到的金额写「—」，不写「暂未读到」：小标签上是「消耗 —」「剩余 —」。
-function quotaMoney(
-  quota: number | null | undefined,
-  balance: Balance | null,
-) {
-  return balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
-    ? dollars(quota / balance.quotaPerUnit)
-    : '—'
 }
 
 export { passwordFormDirty, type PasswordFormState } from './features/account/AccountSecurity'

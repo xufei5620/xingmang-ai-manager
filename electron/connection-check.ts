@@ -22,7 +22,7 @@ import type { RelaySite } from './relay-sites'
  *
  * `service` is the relay itself being down (maintenance, a gateway error, an
  * edge challenge page). It is its own layer so nothing downstream -- the
- * result strip's 「重新写入 Key」, the account-switch rollback -- mistakes a
+ * result strip's 「重新写入密钥」, the account-switch rollback -- mistakes a
  * maintenance window for a broken key.
  */
 export type ConnectionCheckLayer =
@@ -492,7 +492,7 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'credential',
       summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号',
-      nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
+      nextStep: '先重新登录，再在首页重新写入一次密钥',
     }
   }
   // new-api answers a group with no usable channel as a JSON 503 naming the
@@ -509,7 +509,7 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'credential',
       summary: `密钥被拒绝（HTTP ${status}），可能已被禁用`,
-      nextStep: '到「账号」页查看这个工具的 Key 是否仍然有效，必要时重新写入',
+      nextStep: '到「个人中心 → 密钥管理」看这个工具的密钥是否还有效，必要时重新写入',
     }
   }
   if (status === 402) return outOfQuota(status)
@@ -518,7 +518,7 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'quota',
       summary: `请求过于频繁或已达用量上限（HTTP ${status}）`,
-      nextStep: '稍等片刻再试；若一直如此，请到「账号」页查看余额和用量',
+      nextStep: '稍等片刻再试；若一直如此，请到「个人中心」查看余额和用量',
     }
   }
   if (groupAnswer || (hasGroupHint && !hasModelHint)) {
@@ -538,7 +538,7 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'credential',
       summary: `密钥被拒绝（HTTP ${status}）`,
-      nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
+      nextStep: '先重新登录，再在首页重新写入一次密钥',
     }
   }
   if (status === 404 || status === 405) {
@@ -676,7 +676,7 @@ function keyQuotaExhausted(name: string, status: number): LayerOutcome & { ok: b
     ok: false,
     layer: 'quota',
     summary: `${name} 的额度用完了（HTTP ${status}），这是给这个工具设的上限`,
-    nextStep: '到「账号」页「密钥」里调高这个工具的额度，调好后再自检一次',
+    nextStep: '到「个人中心 → 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
   }
 }
 
@@ -685,7 +685,7 @@ function outOfQuota(status: number): LayerOutcome & { ok: boolean } {
     ok: false,
     layer: 'quota',
     summary: `账号额度不足（HTTP ${status}）`,
-    nextStep: '到「账号」页查看余额，充值后即可继续使用',
+    nextStep: '到「个人中心」查看余额，充值后即可继续使用',
   }
 }
 
@@ -694,7 +694,7 @@ function noAvailableChannel(status: number): LayerOutcome & { ok: boolean } {
     ok: false,
     layer: 'group',
     summary: `当前账号分组下没有可用渠道（HTTP ${status}）`,
-    nextStep: '到「账号」页确认这个工具对应的套餐仍在有效期内，再点一次「写入 Key」让客户端重新签发',
+    nextStep: '到「个人中心」确认这个工具对应的套餐仍在有效期内，再点一次「重新写入密钥」重新签发',
   }
 }
 

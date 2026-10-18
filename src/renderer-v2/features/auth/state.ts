@@ -189,7 +189,7 @@ export interface AuthFailure {
 // 超时、连接被切断这两种，客户那边最常见的真实原因是开着加速器或翻墙软件，
 // 和注册窗读设置那一路（registrationUnreachableMessage）同一个说法。
 export const authOfflineMessage = '这台电脑现在没连上网。连上网后再试一次。'
-export const authUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。'
+export const authUnreachableMessage = '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。'
 const authNetworkFallbackMessage = '连不上账号服务，请检查网络后再试一次。'
 
 /** 去掉 IPC 包装（「Error invoking remote method …」和一层层 Error: 前缀），剩下服务端或主进程的原话。 */
@@ -286,11 +286,11 @@ export function authErrorMessage(error: unknown, action: string): string {
  * 读不到时怎么说、要不要自动再试，集中在这里：
  * - 这台电脑本身没网：直说没网，等系统报「网络回来了」再自动重读，不叫人去点按钮；
  * - 超时 / 被切断 / 域名解析不到：多半是一时的，先自动再试一次再报红；
- * - 超时、被切断这两种最常见的真实原因是客户开着加速器或翻墙软件，所以只在注册窗里
- *   多说一句「先关掉它」。network-failure.ts 那张表是全局共用的，不在那里改。
+ * - 超时、被切断这两种最常见的真实原因是客户开着别的加速器或翻墙软件（星芒自己也带加速，
+ *   所以说「别的」），先叫人关掉，还不行再照 network-failure.ts 那张表叫人换个网络。
  */
 export const registrationOfflineMessage = '这台电脑现在没连上网。连上网后会自动重新读取。'
-export const registrationUnreachableMessage = '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再点「重新读取」。'
+export const registrationUnreachableMessage = '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点），再点「重新读取」。'
 
 export interface RegistrationStatusFailure {
   message: string

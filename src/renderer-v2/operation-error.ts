@@ -15,7 +15,7 @@ export interface OperationAction { id: OperationActionId; label: string }
 /**
  * 这次失败要写的是什么；缺省 = 只按原话认（旧行为）。
  * 同样一句 EPERM，写安装目录时下一步是看目录权限、复制路径；写的是工具的配置文件
- * （改用当前账号、重新写入 Key、保存配置、恢复备份、扩展页……）时，多半是安全软件
+ * （改用当前账号、重新写入密钥、保存配置、恢复备份、扩展页……）时，多半是安全软件
  * 拦了或者文件正被别的程序占着，安装目录跟它没关系（已知29）。原话里分不出是哪一种：
  * 路径上屏前都换成了「本机路径」，只有调用方知道自己在写什么。
  */
@@ -190,8 +190,11 @@ export function classifyOperationError(message: string, target?: OperationTarget
   return key === 'permission' ? 'configPermission' : key === 'diskFull' ? 'configDiskFull' : key
 }
 
+// 「重新写入密钥」这件事交给 perform 的动作名：错误框、「复制给客服」里都照它写，下面那张表也按它认。
+export const rewriteKeyAction = '重新写入密钥'
+
 // 首页这几件事改的是工具的配置文件，不碰安装目录；名字就是 App 里交给 perform 的动作名。
-const configWritingActions: ReadonlySet<string> = new Set(['改用当前账号', '切回官方账号', '重新写入 Key', '修提醒设置', '重置为初始状态'])
+const configWritingActions: ReadonlySet<string> = new Set(['改用当前账号', '切回官方账号', rewriteKeyAction, '修提醒设置', '重置为初始状态'])
 
 export function operationTargetOf(action: string): OperationTarget | undefined {
   return configWritingActions.has(action) ? 'config' : undefined

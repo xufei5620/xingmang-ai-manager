@@ -28,12 +28,12 @@ describe('saved account list labels', () => {
 })
 
 describe('saved account switch sync defaults', () => {
-  const candidate = (provider: 'claude' | 'codex' | 'grok', reason: string, eligible = reason === '星芒密钥' || reason === '手动填写密钥') =>
+  const candidate = (provider: 'claude' | 'codex' | 'grok', reason: string, eligible = reason === '当前账号' || reason === '自己的密钥') =>
     ({ provider, name: provider, eligible, reason, model: '' })
   const candidates = [
-    candidate('claude', '星芒密钥'),
-    candidate('codex', '手动填写密钥'),
-    candidate('grok', '星芒密钥'),
+    candidate('claude', '当前账号'),
+    candidate('codex', '自己的密钥'),
+    candidate('grok', '当前账号'),
   ]
   it('switches tools already on the account key along with the account unless the user unticks them', () => {
     expect(defaultSyncSelection(candidates, {})).toEqual(['claude', 'grok'])
@@ -43,7 +43,7 @@ describe('saved account switch sync defaults', () => {
     expect(defaultSyncSelection(candidates, { codex: true })).toEqual(['claude', 'codex', 'grok'])
   })
   it('never selects a tool that cannot be switched, whatever the stored choice says', () => {
-    const withOfficial = [candidate('claude', '星芒密钥'), candidate('codex', '官方账号'), candidate('grok', '尚未安装')]
+    const withOfficial = [candidate('claude', '当前账号'), candidate('codex', '官方账号'), candidate('grok', '尚未安装')]
     expect(defaultSyncSelection(withOfficial, { codex: true, grok: true })).toEqual(['claude'])
   })
 })

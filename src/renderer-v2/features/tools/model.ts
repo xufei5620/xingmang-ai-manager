@@ -1,5 +1,5 @@
 import type { AccountSourceTarget, AppConfigSummary, CliStatus, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
-import { detectionFailureMessage, snapshotErrorMessage } from '../../business-common'
+import { detectionFailureMessage, dollars, snapshotErrorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../../../../electron/codex-desktop-known-issues'
 import { relayProviderBaseUrlMatches } from '../../../../electron/relay-sites'
@@ -600,7 +600,7 @@ export function subscriptionWarning(subscription: UsableSubscription, walletDoll
   if (!subscription.subscriptionOnly && (walletDollars === null || walletDollars >= 5)) return null
   const after = subscription.subscriptionOnly ? '工具就用不了了，续费后可继续使用' : '会从余额扣费'
   if (subscription.expiringSoon) return `订阅 ${subscriptionEndDate(subscription.endsAt)}到期，到期后${after}。`
-  if (subscription.lowRemaining && subscription.remainingUsd !== null) return `订阅只剩 $${subscription.remainingUsd.toFixed(2)}，用完后${after}。`
+  if (subscription.lowRemaining && subscription.remainingUsd !== null) return `订阅只剩 ${dollars(subscription.remainingUsd)}，用完后${after}。`
   return null
 }
 

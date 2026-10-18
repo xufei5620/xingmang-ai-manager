@@ -18,7 +18,7 @@ import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } 
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
 import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
-import { errorMessage } from '../../business-common'
+import { dollars as money, errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId } from '../../../../electron/catalog'
 import { isCertificateFailureText, isNetworkFailureText } from './online-resync'
@@ -272,11 +272,7 @@ export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['run
  * 算不出最近用量（新账号、看不了用量）时退回这一句，按 $5 报（v4 方案问 6）。
  */
 export function lowBalanceText(dollars: number) {
-  return dollars <= 0 ? '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。' : `余额只剩 $${dollars.toFixed(2)}，充值后可继续使用。`
-}
-
-function money(usd: number): string {
-  return `$${usd.toFixed(2)}`
+  return dollars <= 0 ? '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。' : `余额只剩 ${money(dollars)}，充值后可继续使用。`
 }
 
 /** 「约还能用 N 天」那半句；天数算不出来时 null。 */
@@ -873,7 +869,7 @@ export function Home(props: HomeProps) {
       ? <Button variant="secondary" size="sm" loading={repairBusy} title="改之前会先备份原来的设置" onClick={() => props.onRepairConfig?.(tool.id)} testId={`tool-${tool.id}-repair-config`}>{repairBusy ? '正在修复' : '修好它'}</Button>
       : status === 'configChanged' && props.onRewriteKey
         // 写密钥那一轮在跑（点了这颗、或别处触发的）时转圈，不让再点。
-        ? <Button variant="secondary" size="sm" loading={bootstrapBusy} disabled={bootstrapBusy} onClick={() => props.onRewriteKey?.(tool.id)} testId={`tool-${tool.id}-rewrite-key`}>{bootstrapBusy ? '正在写入' : '重新写入'}</Button>
+        ? <Button variant="secondary" size="sm" loading={bootstrapBusy} disabled={bootstrapBusy} onClick={() => props.onRewriteKey?.(tool.id)} testId={`tool-${tool.id}-rewrite-key`}>{bootstrapBusy ? '正在写入' : '重新写入密钥'}</Button>
       : status === 'ccSwitch' && props.onSwitchAccount
         ? <Button variant="secondary" size="sm" onClick={() => props.onSwitchAccount?.(tool.id, 'account')} testId={`tool-${tool.id}-replace-cc-switch`}>{useAccountLabel}</Button>
       : status === 'otherSiteKey' && props.onSwitchAccount

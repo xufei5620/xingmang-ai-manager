@@ -1,5 +1,6 @@
 import type { XingmangApi } from '../../../../electron/ipc-contract'
 import { accountScope } from '../../account-context'
+import { dollars } from '../../business-common'
 import { createTtlCache } from './ttl-cache'
 
 /**
@@ -33,10 +34,10 @@ export function weekSpendLabel(start: number, today: boolean): string {
   return today ? '今天' : weekdayNames[new Date(start).getDay()]
 }
 
-/** 指到柱子上的那句：「10 月 8 日 周四：$1.20」。 */
+/** 指到柱子上的那句：「10月8日 周四：$1.20」。 */
 export function weekSpendHint(start: number, usd: number): string {
   const date = new Date(start)
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${weekdayNames[date.getDay()]}：$${usd.toFixed(2)}`
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdayNames[date.getDay()]}：${dollars(usd)}`
 }
 
 export interface WeekSpend {

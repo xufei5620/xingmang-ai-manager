@@ -116,6 +116,23 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 3. **验证方式写明「零行为变化」**：现有测试全绿 + e2e smoke 通过，不新增也不修改断言（除非断言本身跟着文件路径走）。
 4. review 时的判据：**如果 reviewer 需要理解业务逻辑才能确认这个 PR 安全，那它就不是纯搬运，退回重拆。** 纯搬运应该「肉眼扫一遍就知道没动逻辑」。
 
+### 一次性探测工作流
+
+容器里做不到、只能在 GitHub 托管 runner 上看一眼的事（下载官方安装包拆开看、在 Windows runner 上跑一条命令看输出），可以在 agent 分支上临时放一个工作流跑一次。它只用来核对事实，不产出任何要发出去的东西。先例：`claude/project-thread-14ti64` 上的 `tmp-claude-desktop-locales.yml`，核 Claude Desktop 安装包带不带中文界面，核完删了工作流，但分支一直留着（第 8 条要补的就是这个）。
+
+为什么要立规矩：工作流文件跟着分支走，往任意分支推一个就会跑；而仓库级 secret（巡检密钥、访问统计令牌，没挂 environment，2026-10-18 定了照旧）任何分支上的工作流都读得到。下面这些边界只能靠约定守，**只许收紧，不许放宽**：
+
+1. **单独一条分支，不进 `main`**。文件名 `.github/workflows/tmp-<用途>.yml`，第一行注释写「临时：核什么，核完就删」。不要放在要开 PR 的分支上；已经放了的，合并前删掉，PR 的最终 diff 里不能有它。
+2. **只用 `push` 触发**，`branches:` 只写这条分支自己的名字。
+3. **只读**：顶层写 `permissions: contents: read`，哪个作业都不加 `write`。
+4. **不挂 `environment:`**。`release`、`cos-sync` 这些 environment 里放着签名、发布和上传用的密钥。
+5. **不读 secret**：文件里不出现 `secrets.`，包括 `secrets.GITHUB_TOKEN`。`actions/checkout` 默认带的令牌已被第 3 条限成只读。
+6. **不往外写**：不上传到 COS / R2 / 更新目录，不发 Release，不推别的分支，不开 issue、不发评论；不对生产 `xm.solov.cc` / `api.solov.cc` 发请求（同 `AGENTS.md` 第 1 节「自动化测试绝不对生产实例发真实请求」）。结果只看运行日志。仓库是公开的，日志谁都看得到，别往日志里打印账号、密钥、本机用户名这类东西。
+7. **写 `timeout-minutes`**；用到的 action 照仓库其它工作流钉到完整提交号。能用 `ubuntu-latest` 就别占 macOS runner，那是最紧张的。
+8. **用完就删**：核完先提交一次删掉这个工作流，再删远端分支（`git push origin --delete <分支>`）。删不了分支（比如会话只许推自己那条），就在结论里写明留下了哪条、等谁删。结论连同运行链接写进用到它的 PR 正文或交接里。
+
+要写东西的（发包、同步、改线上状态）一律不走这条路，走正式工作流和它的审批。
+
 ---
 
 ## 4. 冲突规避（重要）
@@ -177,7 +194,7 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 | `npm test` | ✅ 全绿 | ✅ 全绿 | ✅ 全绿 |
 | `npm run compile` | ✅ | ✅ | ✅ |
 | `npm run build`（打包） | ✅ Windows 包 | ✅ mac 包（`build:mac:dir`） | ✅ deb 测试包（`build:linux`，更新器关着；CI 有 `linux-package` 作业真装真开，发布开关还关着，见 `docs/LINUX.md`） |
-| e2e smoke | ✅ | ✅（CI `macos-test` job 跑 dev-origin 与免费分发构建） | ⚠️ 需本机 chromium（容器版本不符时设 `XINGMANG_E2E_CHROMIUM=<chromium 路径>` 复跑） |
+| e2e smoke | ✅ | ✅（CI `macos-test` job 跑 dev-origin 与免费分发构建） | ⚠️ 需本机 chromium（容器版本不符时设 `XINGMANG_E2E_CHROMIUM=<chromium 路径>` 复跑，云端容器的写法见 `AGENTS.md` 第 3 节） |
 
 > （2026-08-10 校准：历史上 Linux 的 1 个已知失败已随 `sameLocalPathIdentity` 重写修复，三平台 vitest 应全绿。）
 > 无论在哪个平台，**都要对比改动前后的失败数是否一致**——现在基线是 0，红了就是新失败。

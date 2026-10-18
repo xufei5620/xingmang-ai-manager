@@ -28,7 +28,7 @@ const fixedLabels: Readonly<Record<string, string>> = {
   path: '位置',
   supported: '在支持范围内',
   exists: '配置文件存在',
-  hasApiKey: '已填写 Key',
+  hasApiKey: '已填写密钥',
   matchesRelay: '接的是当前账号',
   model: '模型',
   enabled: '已开启',
