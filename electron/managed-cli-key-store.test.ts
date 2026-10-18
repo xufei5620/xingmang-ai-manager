@@ -481,3 +481,72 @@ describe('keys the cache replaced', () => {
     expect(isReplacedManagedKey('codex', '', cached)).toBe(false)
   })
 })
+
+describe('the cached group check (#1157 item 8)', () => {
+  const check = { at: Date.parse('2026-10-18T02:00:00.000Z'), succeeded: true, hints: managedKeyDigest('hints') }
+
+  it('remembers the last group check across a restart without bumping the key revision', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const keys = providerIds.map((provider) => managedKey(provider))
+    const store = new ManagedCliKeyStore(filePath, storage)
+    await store.save(42, keys)
+    await store.read(42)
+    const revision = store.captureRevision()
+
+    await store.saveGroupCheck(42, check)
+
+    expect(store.captureRevision()).toBe(revision)
+    await expect(new ManagedCliKeyStore(filePath, storage).readGroupCheck(42)).resolves.toEqual(check)
+    // 同步那一轮记下查过以后再存换好的 Key，不能被当成「缓存被别的操作改过」。
+    await expect(store.save(42, [{ ...managedKey('codex'), id: 500, key: 'sk-codex-replacement-secret-123456' }], revision)).resolves.toBe(true)
+    await expect(store.readGroupCheck(42)).resolves.toEqual(check)
+    await store.remove(42, 500)
+    await expect(store.readGroupCheck(42)).resolves.toEqual(check)
+  })
+
+  it('records nothing for an account without cached keys and keeps checks apart per account', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    await store.saveGroupCheck(42, check)
+    await expect(store.readGroupCheck(42)).resolves.toBeUndefined()
+
+    await store.save(42, [managedKey('codex')])
+    await store.save(7, [managedKey('claude')])
+    await store.saveGroupCheck(42, check)
+    await expect(store.readGroupCheck(42)).resolves.toEqual(check)
+    await expect(store.readGroupCheck(7)).resolves.toBeUndefined()
+  })
+
+  it('reads a check it cannot make sense of as never checked, keeping every key', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    for (const groupCheck of [
+      'yesterday',
+      { ...check, at: -1 },
+      { ...check, at: 1.5 },
+      { ...check, succeeded: 'yes' },
+      { ...check, hints: '[["GPT"]]' },
+    ]) {
+      const record = persistedRecord()
+      ;(record.accounts[0] as unknown as Record<string, unknown>).groupCheck = groupCheck
+      writeRecord(filePath, record, storage)
+      const store = new ManagedCliKeyStore(filePath, storage)
+      await expect(store.read(42)).resolves.toEqual(providerIds.map((provider) => managedKey(provider)))
+      await expect(store.readGroupCheck(42)).resolves.toBeUndefined()
+    }
+    // 没对照时指纹是空串。
+    const record = persistedRecord()
+    record.accounts[0].groupCheck = { ...check, hints: '' }
+    writeRecord(filePath, record, storage)
+    await expect(new ManagedCliKeyStore(filePath, storage).readGroupCheck(42)).resolves.toEqual({ ...check, hints: '' })
+  })
+
+  it('answers never checked when the cache cannot be read', async () => {
+    const filePath = temporaryFilePath()
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, 'not ciphertext')
+    await expect(new ManagedCliKeyStore(filePath, fakeSafeStorage()).readGroupCheck(42)).resolves.toBeUndefined()
+    await expect(new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false })).readGroupCheck(42))
+      .resolves.toBeUndefined()
+  })
+})

@@ -27,6 +27,15 @@ describe('release guard store', () => {
     expect(createReleaseGuardStore({ filePath }).read()).toEqual({ badVersions: ['0.2.10', '0.2.20'], rollout: { version: '0.2.21', percent: 20 } })
   })
 
+  it('remembers which status file the record came from, and reads a record without it as before', async () => {
+    const filePath = temporaryFile()
+    const guard = { badVersions: ['0.2.20'], rollout: null, updatedAt: '2026-10-18T02:00:00.000Z' }
+    await createReleaseGuardStore({ filePath }).write(guard)
+    expect(createReleaseGuardStore({ filePath }).read()).toEqual(guard)
+    expect(parseStoredReleaseGuard(JSON.stringify({ version: 1, badVersions: ['0.2.20'], rollout: null })))
+      .toEqual({ badVersions: ['0.2.20'], rollout: null })
+  })
+
   it('keeps the later of two writes issued back to back', async () => {
     const filePath = temporaryFile()
     const store = createReleaseGuardStore({ filePath })

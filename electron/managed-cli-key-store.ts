@@ -43,6 +43,20 @@ export interface PersistedManagedCliKeyAccount {
    * 拿掉的也记：分组被删、旧那把从缓存里去掉，下一轮才签出新的，中间隔着一次保存。
    */
   replacedKeys?: Partial<Record<ProviderId, string[]>>
+  /**
+   * 三把都在缓存里时上一次去问服务端分组是什么时候、问成了没有（account-cli-provisioner.ts 的
+   * isCachedGroupCheckDue，#1157 第 8 条）。以前只记在内存里，每次开机第一轮同步都算「该查了」，
+   * 要联网、要等状态文件，首页「打开」跟着等。缺省 = 这台电脑上还没查过。
+   */
+  groupCheck?: ManagedCliGroupCheck
+}
+
+export interface ManagedCliGroupCheck {
+  at: number
+  /** 那次问成了没有。没问成（离线、超时、接口出错）隔一会儿就再试，不等满一天。 */
+  succeeded: boolean
+  /** 那次用的分组对照的指纹（accountGroupHintsFingerprint）。发布者一改对照就不等满一天。 */
+  hints: string
 }
 
 export interface PersistedManagedCliKeys {
@@ -101,17 +115,28 @@ function nextReplacedKeys(
   return result
 }
 
+// 指纹是 sha256 的十六进制，没有对照时是空串；时间不能是负数。认不出的当没查过，不为它挪走整份缓存。
+export function readManagedCliGroupCheck(value: unknown): ManagedCliGroupCheck | undefined {
+  if (!isRecord(value)) return undefined
+  const { at, succeeded, hints } = value
+  if (typeof at !== 'number' || !Number.isSafeInteger(at) || at < 0 || typeof succeeded !== 'boolean') return undefined
+  if (typeof hints !== 'string' || !/^(?:[0-9a-f]{64})?$/.test(hints)) return undefined
+  return { at, succeeded, hints }
+}
+
 function persistedAccount(
   userId: number,
   keys: readonly StoredManagedCliKey[],
   previous: PersistedManagedCliKeyAccount | undefined,
 ): PersistedManagedCliKeyAccount {
   const replacedKeys = nextReplacedKeys(previous, keys)
+  const groupCheck = readManagedCliGroupCheck(previous?.groupCheck)
   return {
     userId,
     updatedAt: new Date().toISOString(),
     keys: keys.map(({ replacedKeyDigests: _replacedKeyDigests, ...entry }) => ({ ...entry })),
     ...(Object.keys(replacedKeys).length ? { replacedKeys } : {}),
+    ...(groupCheck ? { groupCheck } : {}),
   }
 }
 
@@ -273,6 +298,35 @@ export class ManagedCliKeyStore {
       await this.writeRecord(record)
       this.revision = record.revision ?? this.revision + 1
       return true
+    })
+  }
+
+  /** 读不到、读坏了、认不出都当这台电脑上还没查过：多问一次服务端而已。 */
+  async readGroupCheck(userId: number): Promise<ManagedCliGroupCheck | undefined> {
+    try {
+      this.assertEncryptionAvailable()
+      await this.writeQueue.catch(() => undefined)
+      const record = await this.readRecord()
+      return readManagedCliGroupCheck(record?.accounts.find((entry) => entry.userId === userId)?.groupCheck)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 只改这一项，不动 Key，也不加 revision：同步那一轮先记下查过、再存换好的 Key，revision 一变那次保存就会
+   * 当成「缓存被别的操作改过」而放弃，新签的 Key 存不上。缓存里没有这个账号时不记（没有 Key 就不走这一查）。
+   */
+  saveGroupCheck(userId: number, check: ManagedCliGroupCheck): Promise<void> {
+    return this.enqueue(async () => {
+      this.assertEncryptionAvailable()
+      const record = await this.readRecord()
+      const account = record?.accounts.find((entry) => entry.userId === userId)
+      if (!record || !account) return
+      await this.writeRecord({
+        ...record,
+        accounts: record.accounts.map((entry) => entry === account ? { ...entry, groupCheck: { ...check } } : entry),
+      })
     })
   }
 

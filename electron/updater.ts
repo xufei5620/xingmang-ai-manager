@@ -2,7 +2,7 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
-import type { ReleaseGuard, ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
+import { isOlderReleaseGuard, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 
 export type UpdatePhase =
@@ -1131,6 +1131,8 @@ export function createUpdaterService(
   }
 
   const adoptReleaseGuard = (guard: ReleaseGuard) => {
+    // 某条线路、某个 CDN 节点给了一份比手上旧的状态文件：撤回名单和放量不跟着它退回去（#1157 第 10 条）。
+    if (isOlderReleaseGuard(guard, releaseGuard)) return
     releaseGuard = guard
     const remember = runtime.rememberReleaseGuard
     const key = JSON.stringify(guard)
@@ -1142,7 +1144,13 @@ export function createUpdaterService(
   }
 
   const applyServiceStatus = (status: ServiceStatus | null) => {
-    if (status) adoptReleaseGuard({ badVersions: status.badVersions ?? [], rollout: status.rollout ?? null })
+    if (status) {
+      adoptReleaseGuard({
+        badVersions: status.badVersions ?? [],
+        rollout: status.rollout ?? null,
+        ...(status.updatedAt ? { updatedAt: status.updatedAt } : {}),
+      })
+    }
     const maintenance = status?.maintenance ? { message: status.maintenance.message } : null
     const patch: Partial<UpdateSnapshot> = {}
     if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {

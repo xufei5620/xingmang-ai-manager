@@ -1897,6 +1897,96 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
     expect(listUsableGroups).toHaveBeenCalledTimes(2)
   })
 
+  describe('the cached group check across restarts (#1157 item 8)', () => {
+    const directories: string[] = []
+    const cipher: SafeStorageLike = {
+      isEncryptionAvailable: () => true,
+      encryptString: (plainText) => Buffer.from(`fixture-cipher:${plainText}`),
+      decryptString: (ciphertext) => ciphertext.toString('utf8').slice('fixture-cipher:'.length),
+    }
+
+    afterEach(() => {
+      for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+    })
+
+    async function cachedStoreFile(): Promise<string> {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-group-check-'))
+      directories.push(directory)
+      const filePath = path.join(directory, 'managed-cli-keys.dat')
+      await new ManagedCliKeyStore(filePath, cipher, 'solov').save(73, activeProviderIds.map((provider) => siteManagedKey('solov', provider)))
+      return filePath
+    }
+
+    // 重开软件：新的缓存对象、手上还没读到状态文件，等它就一直等下去。
+    function restartedService(service: AccountService, peeked: AccountGroupHints | null | undefined) {
+      return Object.assign(Object.create(service) as AccountService, {
+        getAccountGroupHints: vi.fn(() => new Promise<AccountGroupHints | null>(() => undefined)),
+        peekAccountGroupHints: vi.fn(() => peeked),
+      })
+    }
+
+    it('does not ask the backend or wait for the status file again on a launch within the day', async () => {
+      const filePath = await cachedStoreFile()
+      const { accountService, listUsableGroups, provisionCliKey } = xmAccountService({
+        listed: [xm.claude.group, xm.codex.group, xm.grok.group],
+      })
+      await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+      expect(listUsableGroups).toHaveBeenCalledTimes(1)
+
+      const restarted = restartedService(accountService, undefined)
+      const summary = await syncManagedCliKeySummary(restarted, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+
+      expect(listUsableGroups).toHaveBeenCalledTimes(1)
+      expect(restarted.getAccountGroupHints).not.toHaveBeenCalled()
+      expect(provisionCliKey).not.toHaveBeenCalled()
+      expect(summary.failed).toEqual([])
+      expect(summary.ready.map((entry) => entry.provider)).toEqual([...activeProviderIds])
+    })
+
+    it('asks again after a day, and soon after a check that could not reach the backend', async () => {
+      const filePath = await cachedStoreFile()
+      const { accountService, listUsableGroups } = xmAccountService({
+        listed: [xm.claude.group, xm.codex.group, xm.grok.group],
+      })
+      const now = Date.now()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+      try {
+        listUsableGroups.mockRejectedValueOnce(new Error('连接服务器失败'))
+        await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+        clock.mockReturnValue(now + 10 * 60_000)
+        await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+        expect(listUsableGroups).toHaveBeenCalledTimes(2)
+
+        clock.mockReturnValue(now + 10 * 60_000 + day - 1)
+        await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+        expect(listUsableGroups).toHaveBeenCalledTimes(2)
+        clock.mockReturnValue(now + 10 * 60_000 + day)
+        await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+        expect(listUsableGroups).toHaveBeenCalledTimes(3)
+      } finally {
+        clock.mockRestore()
+      }
+    })
+
+    it('still checks right away when the mapping already in hand is not the one used last time', async () => {
+      const filePath = await cachedStoreFile()
+      const { accountService, listUsableGroups, provisionCliKey } = xmAccountService({
+        listed: [xm.claude.group, xm.codex.group, 'GPT-新', xm.grok.group],
+      })
+      await syncManagedCliKeySummary(accountService, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+
+      const restarted = Object.assign(restartedService(accountService, { codex: ['GPT-新'] }), {
+        getAccountGroupHints: vi.fn(async () => ({ codex: ['GPT-新'] })),
+      })
+      const summary = await syncManagedCliKeySummary(restarted, new ManagedCliKeyStore(filePath, cipher, 'solov'))
+
+      expect(listUsableGroups).toHaveBeenCalledTimes(2)
+      expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: xm.codex.keyName, group: 'GPT-新' }])
+      expect(summary.regrouped).toEqual(['codex'])
+      expect(summary.storageWarning).toBeUndefined()
+    })
+  })
+
   it('moves a key the backend rejects for its group and deletes the old one after writing', async () => {
     const { accountService, provisionCliKey, revokeKey, state } = xmAccountService({
       listed: [xm.claude.group, xm.codex.group, xm.grok.group],
