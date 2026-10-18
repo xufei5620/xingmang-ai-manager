@@ -6,6 +6,8 @@
 // 那一份，只改这次填了的字段，其余原样保留，再把结果交给工作流上传。「留空 =
 // 不改」是有意的：发布者只想关掉维护时，不该顺手把别的开关一起抹掉。
 const fs = require('node:fs')
+// 只用它的版本比较；它顶层只引 node 自带模块和两份同目录脚本，preview 那段不装依赖也能跑。
+const { compareReleaseVersions } = require('./update-release-utils.cjs')
 
 const MAX_MESSAGE_LENGTH = 200
 const MAX_STATUS_BYTES = 16 * 1024
@@ -119,15 +121,6 @@ function applyRollout(current, input) {
   return { version: plainVersion(match[1]), percent }
 }
 
-function compareVersions(left, right) {
-  const a = left.split('.').map(Number)
-  const b = right.split('.').map(Number)
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1
-  }
-  return 0
-}
-
 /**
  * 「0.2.12」= 低于 0.2.12 的客户端必须先更新；none = 取消。
  *
@@ -141,7 +134,7 @@ function applyMinimumVersion(current, input, publishedVersions = []) {
   const version = plainVersion(raw)
   const published = publishedVersions.map((entry) => plainVersion(entry))
   if (published.length === 0) throw new StatusInputError('读不到线上的更新清单，不知道现在发的是哪个版本，为免把客户挡在门外，这次不设最低版本')
-  const newest = published.filter((entry) => compareVersions(version, entry) > 0)
+  const newest = published.filter((entry) => compareReleaseVersions(version, entry) > 0)
   if (newest.length) {
     throw new StatusInputError(`最低版本 ${version} 比线上正在发的 ${published.join('、')} 还高：低于它的客户找不到可装的新版本。请先发布 ${version}，再设最低版本`)
   }
