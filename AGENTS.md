@@ -66,7 +66,16 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 
 **提交前必须两条都过**：`npm run typecheck` 和 `npm test`。动了 renderer-v2 的再加 `npm run check:v2` 和 `npm run test:v2`。
 
-**测试基线**：三平台都应为 **0 失败**（#40）。Windows 上需要 `SeCreateSymbolicLinkPrivilege` 的 9 条用例，在没有该特权的机器（非管理员且未开开发人员模式）上会**自动跳过**——跳过不算失败，CI 的 runner 有该特权、照常执行。红了就是回归，不要再按「环境相关」放过。云端容器里 e2e 的 Playwright 用例会报 `Executable doesn't exist`，是容器 Chromium 版本问题不是回归。各平台明细与复核命令见 `docs/TEST-BASELINE.md`。
+**测试基线**：三平台都应为 **0 失败**（#40）。Windows 上需要 `SeCreateSymbolicLinkPrivilege` 的 9 条用例，在没有该特权的机器（非管理员且未开开发人员模式）上会**自动跳过**——跳过不算失败，CI 的 runner 有该特权、照常执行。红了就是回归，不要再按「环境相关」放过。各平台明细与复核命令见 `docs/TEST-BASELINE.md`。
+
+**云端容器跑浏览器用例**：容器预装的 Chromium 往往跟 `@playwright/test` 要的版本对不上，直接跑 `npm test` / `npm run test:v2`，浏览器套件会报 `Executable doesn't exist`。这是环境问题不是回归，**但也不算跑过**：设 `XINGMANG_E2E_CHROMIUM` 指向容器里那份 Chromium 重跑，门槛不变，同样要 0 失败。Claude Code 云端容器里的写法：
+
+```bash
+XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test
+XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:v2
+```
+
+别的容器路径可能不同，到 `$PLAYWRIGHT_BROWSERS_PATH` 下找 `chromium` 那份。`npm test` 和 `test:v2` 里起浏览器的套件都认这个变量（`e2e/harness.mjs` 的 `launchFixtureBrowser`、各个 `browser-check.mjs` / `app-check.mjs`，以及 vitest 里的 `electron/codex-desktop-cdp.browser.test.ts`）；CI 不设它，用 Playwright 自己装的那份。
 
 ---
 
@@ -284,7 +293,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 **写变更日志**：在 `changes/unreleased/` 下放一个分片文件（`## 用户` 进 `release-notes.md`，`## 开发` 进 `CHANGELOG.md`，写法见该目录 README），发版时 `npm run changelog:collect` 汇总。**不要直接改两份文件的「未发布」段**——并行 PR 都往那一段加行必冲突，而带冲突的 PR GitHub 不触发 CI，CI 会拒绝这种改动。
 
-**提交**：分支命名与 PR 规范见 `docs/COLLABORATION.md`。
+**提交**：分支命名与 PR 规范见 `docs/COLLABORATION.md`。要借 GitHub Actions 临时跑一次探测（容器里做不到的核对），边界见同一份文档 §3 的「一次性探测工作流」：只读、不挂 environment、不读 secret、用完删分支。
 
 ---
 

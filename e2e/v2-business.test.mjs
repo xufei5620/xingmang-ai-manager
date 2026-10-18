@@ -115,6 +115,79 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
   } finally { await page.close() }
 })
 
+test('Sub2API usage left open overnight still asks for the last 7 days up to today', async () => {
+  // 页签只藏不卸、关窗只缩到托盘：没手选日期时默认那 7 天按每次读的时候现算，不停在第一次打开那天（#1093 第 1 条）。
+  const page = await fixture('page=account&accountTab=usage&sub2apiReliability=1', (next) => next.clock.install({ time: new Date('2026-10-17T12:00:00Z') }))
+  const shift = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
+  const today = () => page.evaluate(() => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()))
+  const usageQueries = async () => (await calls(page)).filter((call) => call.name === 'query-usage').map((call) => call.args)
+  async function refreshOnDay(time) {
+    await page.clock.setSystemTime(new Date(time))
+    const count = (await usageQueries()).length
+    await page.getByTestId('account-refresh').click()
+    await page.waitForFunction((seen) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-usage').length > seen, count)
+    return (await usageQueries()).at(-1)
+  }
+  try {
+    const usage = page.getByTestId('account-usage-section')
+    await usage.waitFor()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage'))
+    const first = (await usageQueries()).at(-1)
+    assert.equal(first.endDate, await today())
+    assert.equal(first.startDate, shift(first.endDate, -6))
+
+    const next = await refreshOnDay('2026-10-18T12:00:00Z')
+    assert.equal(next.endDate, shift(first.endDate, 1))
+    assert.equal(next.startDate, shift(first.startDate, 1))
+    // 筛选框里的默认日期跟着换到今天，也不算用户加的条件。
+    const toggle = usage.getByTestId('account-filters-toggle')
+    assert.equal(await toggle.innerText(), '展开筛选')
+    await toggle.click()
+    assert.equal(await usage.getByLabel('开始日期', { exact: true }).inputValue(), next.startDate)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), next.endDate)
+
+    // 只加一个密钥编号、日期没动：日期还是跟着日子走。
+    await usage.getByLabel('密钥编号', { exact: true }).fill('4')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.apiKeyId === 4))
+    const keyed = await refreshOnDay('2026-10-19T12:00:00Z')
+    assert.equal(keyed.apiKeyId, 4)
+    assert.equal(keyed.endDate, shift(next.endDate, 1))
+    assert.equal(keyed.startDate, shift(next.startDate, 1))
+
+    // 自己选了日期就照选的查，过了夜也不动；只改了开始日期，结束日期那一格也不跟着跳，框里写的就是查的。
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), keyed.endDate)
+    await usage.getByLabel('开始日期', { exact: true }).fill('2026-10-01')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startDate === '2026-10-01'))
+    const picked = await refreshOnDay('2026-10-20T12:00:00Z')
+    assert.equal(picked.startDate, '2026-10-01')
+    assert.equal(picked.endDate, keyed.endDate)
+    assert.equal(picked.apiKeyId, 4)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), keyed.endDate)
+    assert.equal(await toggle.innerText(), '收起筛选')
+
+    // 选过日期以后框里的默认是停住的：过几天把开始日期改回跟它一样，也是自己选的，照这段查，不换成今天往前 7 天。
+    await usage.getByLabel('开始日期', { exact: true }).fill(keyed.startDate)
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction((start) => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startDate === start), keyed.startDate)
+    const typedBack = await refreshOnDay('2026-10-21T12:00:00Z')
+    assert.equal(typedBack.startDate, keyed.startDate)
+    assert.equal(typedBack.endDate, keyed.endDate)
+
+    // 「重置筛选」回到跟着日子走的默认：今天往前 7 天，框里也写这一段。
+    const beforeReset = (await usageQueries()).length
+    await usage.getByRole('button', { name: '重置筛选', exact: true }).click()
+    await page.waitForFunction((seen) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-usage').length > seen, beforeReset)
+    const reset = (await usageQueries()).at(-1)
+    assert.equal(reset.endDate, await today())
+    assert.equal(reset.startDate, shift(reset.endDate, -6))
+    assert.equal(reset.apiKeyId, undefined)
+    assert.equal(await usage.getByLabel('开始日期', { exact: true }).inputValue(), reset.startDate)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), reset.endDate)
+  } finally { await page.close() }
+})
+
 test('the usage dashboard splits spending across the tools that have a managed key', async () => {
   const page = await fixture('page=account&managedKeys=1')
   try {
@@ -667,6 +740,45 @@ test('tool key limits list only the tools that have a key and name the ones stil
     const line = none.getByTestId('tool-key-limits')
     await line.waitFor()
     assert.equal(await line.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
+  } finally {
+    await none.close()
+  }
+})
+
+test('tool key limits that could not be read can be read again without leaving the page', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    // 概览数密钥把数也按 100 一页读，等它读完再让下一次失败，失败的才是这张卡。
+    await page.locator('.v2-acct-kv').filter({ hasText: '2 把' }).waitFor()
+    await page.evaluate(() => window.failNextRead('toolKeyLimits'))
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = page.getByTestId('tool-key-limits')
+    const alert = card.getByRole('alert')
+    await alert.getByText('密钥服务暂时不可用').waitFor()
+    assert.equal(await card.getByTestId('tool-key-limit-claude').count(), 0)
+    await alert.getByRole('button', { name: '重新加载', exact: true }).click()
+    await card.getByTestId('tool-key-limit-claude').waitFor()
+    await card.getByTestId('tool-key-limit-codex').waitFor()
+    assert.equal(await card.getByRole('alert').count(), 0)
+  } finally {
+    await page.close()
+  }
+  // 读到过「一个工具都没配」、页头刷新又没读到：不能还收成那行灰字，把红条和「重新加载」藏掉。
+  const none = await fixture('page=account')
+  try {
+    await none.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = none.getByTestId('tool-key-limits')
+    const emptyLine = none.locator('.v2-business-key-limits-empty')
+    await emptyLine.waitFor()
+    await none.evaluate(() => window.failNextRead('toolKeyLimits'))
+    await none.getByTestId('account-refresh').click()
+    const alert = card.getByRole('alert')
+    await alert.getByText('密钥服务暂时不可用').waitFor()
+    assert.equal(await emptyLine.count(), 0)
+    await alert.getByRole('button', { name: '重新加载', exact: true }).click()
+    await emptyLine.waitFor()
+    assert.equal(await emptyLine.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
+    assert.equal(await card.getByRole('alert').count(), 0)
   } finally {
     await none.close()
   }

@@ -58,7 +58,7 @@ export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | Reti
   tutorial: ['帮助', '怎么用', '说明', '新手'],
   // 「安装卸载」页拆掉以后，Node.js、Python、Git 在这一页装（第 10 批）。
   health: ['检测', '诊断', '体检', '环境', '运行环境', 'Node.js', 'Python', 'Git', '装不上', '代理', '证书', '测试连接'],
-  feedback: ['客服', '报告', '日志', '运行日志', '投诉', '留言', '建议', '二维码', '微信'],
+  feedback: ['客服', '报告', '日志', '运行日志', '安装记录', '投诉', '留言', '建议', '二维码', '微信'],
   settings: ['选项', '偏好'],
   account: ['账号', '我的', '个人信息'],
 };

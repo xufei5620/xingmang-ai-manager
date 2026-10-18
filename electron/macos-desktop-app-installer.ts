@@ -7,7 +7,9 @@ import {
   describeDesktopBucketFallback,
   DesktopBucketUnavailableError,
   downloadDesktopBucketPackage,
+  measureDesktopDownloadSpeed,
   readDesktopBucketPackage,
+  type DesktopAlternativeSpeed,
   type DesktopBucketOptions,
   type DesktopBucketPackageId,
 } from './desktop-package-bucket'
@@ -755,6 +757,31 @@ async function expandPackageBundle(
 }
 
 /**
+ * 存储桶那一路太慢时，测一下官方那一路有多快：先读官方版本信息挑出这台 Mac 的包，再只读几秒、不落盘
+ * （见 desktop-package-bucket.ts 的 probeAlternative）。读版本信息的时间也算在测的那几秒里：真换过去，
+ * downloadFromVendor 要再读一遍，读得慢就是这一路慢。挑不出包、这台 Mac 的系统装不了那一版、读不到，
+ * 都当测不出来，接着下桶。地址和跳转照官方那一路的规矩核。没接加速线路，接上只会更快，测得偏慢就偏向
+ * 接着下桶。
+ */
+export async function measureMacosDesktopVendorSpeed(
+  tool: MacosDesktopAppId,
+  context: MacosDesktopFeedContext,
+  fetchImplementation: typeof globalThis.fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  const source = sources[tool]
+  if (!source) return null
+  return measureDesktopDownloadSpeed(async (probeSignal) => {
+    const release = source.selectRelease(await fetchFeed(tool, source, context, fetchImplementation, probeSignal), context)
+    if (!release) throw new Error('官方版本信息里没有这台 Mac 能用的安装包')
+    if (release.minimumSystemVersion && context.systemVersion && isMacosVersionBelow(context.systemVersion, release.minimumSystemVersion)) {
+      throw new Error('这台 Mac 的系统装不了官方这一版')
+    }
+    return fetchMacosDesktopResource(tool, release.url, { signal: probeSignal }, fetchImplementation)
+  }, signal)
+}
+
+/**
  * 先从星芒自己的存储桶下同一个官方包，国内直连就快，不接加速线路。解开以后和官方那一路一样核
  * bundle id、最低系统、Team ID 签名和 Gatekeeper。读不到清单、没下成、对不上、核不过都删掉、
  * 返回 null，照旧问官方，原因只进日志；客户点的取消原样抛出；盘写满了也照直抛：换一路重下一遍
@@ -763,6 +790,7 @@ async function expandPackageBundle(
 async function unpackFromBucket(
   source: MacosDesktopAppSource,
   architecture: MacosDesktopArchitecture,
+  context: MacosDesktopFeedContext,
   staging: string,
   options: InstallMacosDesktopAppOptions,
   readSystemVersion: () => Promise<string>,
@@ -790,6 +818,8 @@ async function unpackFromBucket(
         resuming ? `网络断了一下，正在接着下载 ${source.name} ${release.version}` : downloading,
         Math.min(99, percent),
       ),
+      // 桶太慢时先比一比官方那一路，确实更快才换（#1061 第 6 条）。
+      probeAlternative: (probeSignal) => measureMacosDesktopVendorSpeed(options.tool, context, options.fetch, probeSignal),
     })
     report('checking', '正在检查下载下来的安装包是不是完整的官方版')
     options.signal?.throwIfAborted()
@@ -922,7 +952,7 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     stage = 'download'
     const stagingDirectory = staging
     // 先从星芒自己的存储桶下；没走通再问官方，只有问官方那一路接加速线路。
-    const unpacked = await unpackFromBucket(source, architecture, stagingDirectory, options, readSystemVersion, report)
+    const unpacked = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report)
       ?? await (options.withVendorDownloadRoute ?? runDirectly)(() => downloadFromVendor(stagingDirectory, context))
 
     options.signal?.throwIfAborted()

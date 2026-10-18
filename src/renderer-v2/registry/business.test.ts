@@ -210,6 +210,8 @@ describe('renderer-v2 settings rows registry', () => {
     expect(ids('连接线路')).toEqual(['relay-route-solov', 'relay-route-solov-api', 'tool-route-restart-hints']);
     expect(ids('外观显示 默认')).toEqual(['restore-appearance']);
     expect(ids('VPN')).toEqual(ids('vpn'));
+    expect(ids('黑金')).toEqual(['theme']);
+    expect(ids('晨曦金')).toEqual(['theme']);
     expect(ids('没有这种设置')).toEqual([]);
   });
 

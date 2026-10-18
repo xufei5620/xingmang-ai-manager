@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { BarChart3, Copy, ListX, RefreshCw } from 'lucide-react'
 import { Button, Card, Dialog, Empty, Notice, Pill, Segment, Select, Table } from '../../ui'
 import {
@@ -264,6 +264,10 @@ function ViewSwitch({ view, both, onChange }: { view: UsageView; both: boolean; 
   )
 }
 
+function sameDates(left: { startDate: string; endDate: string }, right: { startDate: string; endDate: string }) {
+  return left.startDate === right.startDate && left.endDate === right.endDate
+}
+
 function AccountCalls({
   api,
   balance,
@@ -285,7 +289,10 @@ function AccountCalls({
   switcher: ReactNode
 }) {
   const calendar = siteId === 'solov-api'
-  const defaultDates = useMemo(() => usageDateRange({}), [])
+  // 历史账号默认最近 7 个日历日。页签只藏不卸、关窗只缩到托盘，挂上时算一次的话过了夜默认范围里就没有今天
+  // （#1093 第 1 条）：每次读都按当时现算（load 里），筛选框里显示的默认日期跟着最近一次读换。
+  const [defaultDates, setDefaultDates] = useState(() => usageDateRange({}))
+  const timezone = defaultDates.timezone
   const [page, setPage] = useState(1)
   // 换了上面的时间范围就回第一页：停在「30 天」的第 3 页切到「24 小时」，那边可能根本没有第 3 页，
   // 列表空着、分页条也不出来，回不去。渲染时就对上，不先拿旧页码多问一次。
@@ -295,17 +302,21 @@ function AccountCalls({
     setPage(1)
   }
   const [pageSize, setPageSize] = useState(20)
-  const [filter, setFilter] = useState<AccountUsageQuery>(calendar ? defaultDates : {})
+  // 历史账号的 filter 只在用户自己选了日期时才带日期，没带就是默认那 7 天。
+  const [filter, setFilter] = useState<AccountUsageQuery>({})
   const [quick, setQuick] = useState<UsageQuickFilter>('all')
   const [selected, setSelected] = useState<AccountUsageRecord | null>(null)
   // 星芒账号没填起止时间时跟着上面「24 小时 / 7 天 / 30 天」走，「这段时间没有调用」才说得通；
-  // 历史账号按整日查，默认最近 7 个日历日（usageDateRange）。
+  // 历史账号按整日查，没选日期时是读的这一刻往前数的最近 7 个日历日（usageDateRange）。
+  // 自己选了日期的不换框里的默认：没动的那一格会跟着变，跟实际查的对不上。
   const load = useCallback(() => {
-    const ranged = trends && !calendar && filter.startTimestamp === undefined && filter.endTimestamp === undefined
+    const today = calendar && filter.startDate === undefined && filter.endDate === undefined ? usageDateRange({ timezone }) : null
+    if (today) setDefaultDates((current) => sameDates(current, today) ? current : today)
+    const ranged = today ?? (trends && !calendar && filter.startTimestamp === undefined && filter.endTimestamp === undefined
       ? { startTimestamp: usageRangeStart(range, new Date()), endTimestamp: Math.floor(Date.now() / 1000) }
-      : {}
+      : {})
     return api.getAccountUsage({ ...ranged, ...filter, ...quickFilterQuery(quick), page, pageSize })
-  }, [api, page, pageSize, filter, quick, trends, calendar, range])
+  }, [api, page, pageSize, filter, quick, trends, calendar, range, timezone])
   const resource = useResource(load)
   useRefreshRequest(refreshRequest, () => void resource.reload())
   const failed = Boolean(resource.error) && !resource.loading
@@ -317,7 +328,7 @@ function AccountCalls({
     ...(calendar ? [] : [{ value: 'fail', label: '失败' }]),
   ]
   const records = resource.data?.records ?? []
-  const filtered = quick !== 'all' || Object.entries(filter).some(([key, value]) => value !== undefined && value !== '' && !(calendar && value === defaultDates[key as keyof typeof defaultDates]))
+  const filtered = quick !== 'all' || Object.values(filter).some((value) => value !== undefined && value !== '')
   const empty = usageEmptyText(filtered, quick === 'fail' || filter.type === 5)
   return (
     <>
@@ -338,10 +349,15 @@ function AccountCalls({
           fields={calendar ? sub2ApiUsageFilterFields : usageFilterFields}
           primary={[]}
           initialValues={calendar ? defaultDates : undefined}
-          note={calendar ? `按整日统计（时区 ${defaultDates.timezone}），包含结束日期全天。默认最近 7 个日历日。` : undefined}
+          note={calendar ? `按整日统计（时区 ${timezone}），包含结束日期全天。默认最近 7 个日历日。` : undefined}
           onApply={(values) => {
             if (calendar) {
-              setFilter({ ...usageDateRange({ ...values, timezone: defaultDates.timezone }), modelName: values.modelName,
+              const dates = usageDateRange({ ...values, timezone })
+              // 两格都清空了，或者本来就跟着日子走、框里的默认没动过：不记日期，读的时候照样按当天现算。
+              // 选过日期以后框里的默认是停住的，再改回跟它一样也是自己选的，不能拿它来猜（「重置筛选」走 onReset）。
+              const following = (!values.startDate && !values.endDate)
+                || (filter.startDate === undefined && filter.endDate === undefined && sameDates(dates, defaultDates))
+              setFilter({ ...(following ? {} : dates), modelName: values.modelName,
                 apiKeyId: sub2ApiFilterId(values.apiKeyId), groupId: sub2ApiFilterId(values.groupId),
                 ...(values.billingType === '0' || values.billingType === '1' ? { billingType: Number(values.billingType) as 0 | 1 } : {}) })
             } else {
@@ -359,6 +375,10 @@ function AccountCalls({
             if (values.modelName || values.type) setQuick('all')
             setPage(1)
           }}
+          onReset={calendar ? () => {
+            setFilter({})
+            setPage(1)
+          } : undefined}
         />
       </div>
       <Card padding="none">

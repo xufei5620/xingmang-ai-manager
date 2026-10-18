@@ -26,7 +26,7 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 
 ## 用哪个模型
 
-只用 OpenAI 的 gpt-image 系列（2026-10 起去掉了即梦和 Gemini）。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE` 挑：列表里有 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`，写进 `config.json` 的 `model`。两把都没查到就不写，画图照旧用 `gpt-image-2`。`gpt-image-2.5-sunburst` 慢、偏精修，不当默认，AI 可以自己点名。
+只用 OpenAI 的 gpt-image 系列（2026-10 起去掉了即梦和 Gemini）。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE` 挑：列表里有 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`，写进 `config.json` 的 `model`。这两个都没有时，再按 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS` 从画图脚本 `ALLOWED_MODELS` 也认的型号里挑列表里有的（`gpt-image-2.5-sunburst`，再 `gpt-image-1`；`gpt-image-1.5` 站上没开放，不挑）。两把都没查到、或查到了但一个能挑的都没有，就不写，画图照旧用 `gpt-image-2`，日志记一句。`gpt-image-2.5-sunburst` 慢、偏精修，前两个在时不当默认，AI 可以自己点名。
 
 画图工具把这个 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，中转明确回了错误（没渠道、没定价这类）会自动换 `gpt-image-2` 再试一次；连不上、超时不换。AI 点名要别的型号就只用那个。技能脚本 `generate.mjs` 同一套规则，`--model` 只收 `gpt-image-*`。
 
