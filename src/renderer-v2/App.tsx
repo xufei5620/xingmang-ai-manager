@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { BookOpen, Download, ListChecks, MessageSquare, RefreshCw, RotateCcw, Zap } from 'lucide-react'
+import { BookOpen, Download, ListChecks, MessageSquare, RotateCcw, Zap } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import QRCode from 'qrcode'
 import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, NetworkSettingsKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
@@ -60,6 +60,7 @@ import { useNetworkLocation } from './features/shell/useNetworkLocation'
 import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
+import { PageLoading } from './features/app/PageLoading'
 import { OperationErrorDialog, supportFailureOf, type OperationFailure } from './features/app/OperationErrorDialog'
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
 import { canReplaceNode, describeNodeReplaceOutcome } from './features/tools/node-replace'
@@ -94,7 +95,7 @@ import './business.css'
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
 const ChatPage = lazy(() => import('./features/chat').then((module) => ({ default: module.ChatPage })))
 const AccelerationPage = lazy(() => import('./features/acceleration/AccelerationPage').then((module) => ({ default: module.AccelerationPage })))
-const pageLoading = <div className="v2-business-loading" role="status" data-testid="route-loading"><RefreshCw size={24} className="xm-spin" aria-hidden="true" /><strong>正在加载页面...</strong></div>
+const pageLoading = <PageLoading />
 
 type AccountTab = typeof accountTabs[number]['value']
 /**

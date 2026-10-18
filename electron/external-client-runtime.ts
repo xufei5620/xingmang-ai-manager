@@ -195,7 +195,10 @@ export interface ExternalClientMacVerificationFailure {
 }
 
 export interface ExternalClientScanOptions {
-  /** 用户亲手点「重新检测」：不用缓存里那份，但仍与正在跑的那次合并。 */
+  /**
+   * 用户亲手点「重新检测」：不用缓存，也不拿正在跑的那次交差。那次可能起在客户刚去官网装好、
+   * 刚把客户端关掉之前，等它跑完，再并进那之后起的一轮或者另起一轮（#1093 第 8 条）。
+   */
   force?: boolean
   /**
    * 要一轮这次调用之后才开始的盘点（换线路动客户端配置之前看它开没开）：正在跑的那次可能是在
@@ -583,11 +586,12 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   // 正在打开的那几家：连点两下合成一次；同一家的安装要等它打开完再动手（见 install）。
   const launches = new Map<ExternalToolId, Promise<void>>()
   const installCancellations = new InstallCancellationRegistry()
-  let inFlightScan: Promise<ExternalClientRuntimeStatus[]> | null = null
+  let inFlightScan: { promise: Promise<ExternalClientRuntimeStatus[]>; generation: number } | null = null
   const now = options.now ?? Date.now
   const scanCacheTtlMs = options.scanCacheTtlMs ?? defaultScanCacheTtlMs
   let cachedScan: { statuses: ExternalClientRuntimeStatus[]; at: number } | null = null
-  // 装、卸、打开都会让在飞的那次盘点过时：它的结果照样交给等它的人，但不落进缓存。
+  // 装、卸、打开都会让在飞的那次盘点过时：它的结果照样交给已经在等它的人，但不落进缓存，
+  // 之后再来要结果的也不再并进它。
   let scanGeneration = 0
   const knownSignatures = new Map<string, KnownExternalClientSignature>()
   // The macOS half of knownSignatures: a Gatekeeper/codesign pass is remembered
@@ -804,13 +808,24 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     cachedScan = null
   }
   function scan(scanOptions: ExternalClientScanOptions = {}): Promise<ExternalClientRuntimeStatus[]> {
-    if (inFlightScan && scanOptions.fresh) {
+    const running = inFlightScan
+    if (running && (scanOptions.force || scanOptions.fresh)) {
       // 正在跑的那次一结束（它自己先清掉 inFlightScan），之后再有正在跑的也是这次调用之后起的。
-      const after = () => scan({ force: true })
-      return inFlightScan.then(after, after)
+      const after = () => currentScan()
+      return running.promise.then(after, after)
     }
-    if (inFlightScan) return inFlightScan
-    if (!scanOptions.force && !scanOptions.fresh && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
+    if (!running && !scanOptions.force && !scanOptions.fresh && cachedScan && now() - cachedScan.at < scanCacheTtlMs) return Promise.resolve(cachedScan.statuses)
+    return currentScan()
+  }
+  // 并进正在跑的那次；它起跑之后作废过的（刚装好、刚卸掉、刚打开），读的是那之前的机器，
+  // 刚装好的还会显示「安装」：等它跑完再来。没在跑的另起一轮。
+  function currentScan(): Promise<ExternalClientRuntimeStatus[]> {
+    const running = inFlightScan
+    if (running && running.generation === scanGeneration) return running.promise
+    if (running) {
+      const after = () => currentScan()
+      return running.promise.then(after, after)
+    }
     const generation = scanGeneration
     const promise = Promise.all([inspect({ reuseSignatures: true }), resolveWinget()]).then(([inspection, winget]) => {
       const statuses = tools.map((tool) => status(tool, inspection, winget))
@@ -818,8 +833,9 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       if (generation === scanGeneration && statuses.every((entry) => !entry.detectionError)) cachedScan = { statuses, at: now() }
       return statuses
     })
-    inFlightScan = promise
-    void promise.then(() => { if (inFlightScan === promise) inFlightScan = null }, () => { if (inFlightScan === promise) inFlightScan = null })
+    const started = { promise, generation }
+    inFlightScan = started
+    void promise.then(() => { if (inFlightScan === started) inFlightScan = null }, () => { if (inFlightScan === started) inFlightScan = null })
     return promise
   }
   /**

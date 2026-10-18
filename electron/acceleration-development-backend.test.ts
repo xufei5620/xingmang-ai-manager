@@ -1212,7 +1212,7 @@ describe('acceleration start failure classification', () => {
   it('classifies by phase once the core is up', () => {
     expect(classifyAccelerationStartFailure(new Error('加速内核启动失败'), 'verify')).toBe('runtime-invalid')
     expect(classifyAccelerationStartFailure(new Error('加速内核启动失败'), 'ledger')).toBe('ledger-write')
-    expect(classifyAccelerationStartFailure(new Error('系统代理组件不可用，请重新安装或联系支持'), 'proxy')).toBe('proxy-helper')
+    expect(classifyAccelerationStartFailure(new Error('系统代理组件不可用，请重新安装星芒；还不行请联系客服。'), 'proxy')).toBe('proxy-helper')
     expect(classifyAccelerationStartFailure(new Error('设置系统代理失败'), 'proxy')).toBe('proxy-enable')
   })
 
@@ -1270,7 +1270,7 @@ describe('acceleration start failure reporting', () => {
 
   it('separates a system proxy failure from a core failure', async () => {
     const test = await setup()
-    test.proxy.enable.mockRejectedValueOnce(new Error('系统代理组件不可用，请重新安装或联系支持'))
+    test.proxy.enable.mockRejectedValueOnce(new Error('系统代理组件不可用，请重新安装星芒；还不行请联系客服。'))
     await test.backend.startAcceleration(scope, 'system-proxy')
     expect(test.onStartDiagnostic.mock.calls).toEqual([['proxy-helper']])
   })

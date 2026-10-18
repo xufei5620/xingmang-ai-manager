@@ -662,7 +662,7 @@ describe('account managed Key bootstrap', () => {
 
     const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
 
-    expect(result.warnings).toContain('密钥同步阶段：写入托管 Key 失败：本地配置文件')
+    expect(result.warnings).toContain('密钥同步阶段：写入托管 Key 失败：本机路径')
     expect(result.warnings.join(' ')).not.toContain('张三')
     expect(result.warnings.join(' ')).not.toContain('invoking remote method')
   })

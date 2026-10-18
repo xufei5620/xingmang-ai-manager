@@ -355,11 +355,36 @@ async function readBoundedErrorDetail(
 }
 
 /**
+ * 服务端说清了是哪一种的 400 / 404（#1101 第2条）。以前一律是「AI 服务暂时无法完成请求」，客户照着
+ * 「稍后再试」，对话太长、内容被拦、型号没了都是怎么等都一样。认的是服务端原话里的关键词，原话本身不上屏。
+ */
+const rejectedRequestMessages: readonly { test: RegExp; message: string }[] = [
+  {
+    test: /context_length_exceeded|maximum context length|context length|context window|prompt is too long|too many tokens|上下文[^。]{0,8}(?:超|过长|上限)/i,
+    message: '这段对话太长了，超过了这个模型一次能读的长度。开一个新对话接着聊，或者换一个能读更长内容的模型。',
+  },
+  {
+    test: /content_policy_violation|content[_ ]policy|safety system|content[_ ]filter|content_management|sensitive[_ ]words?|敏感词|内容[^。]{0,8}(?:审核|违规|不合规)/i,
+    message: '这次的内容没通过 AI 服务的安全审核，没有回复。改一改说法再发；一直被拦就换个模型。',
+  },
+  { test: /model_not_found|\bmodel\b[^.。]{0,80}(?:does not exist|not found)|模型[^。]{0,20}不存在/i, message: SAFE_ERROR_MESSAGES['model-unavailable'] },
+]
+
+/** new-api 在所选分组下这个型号没有可用渠道时回 JSON 503「当前分组 x 下对于模型 y 无可用渠道」。 */
+const noChannelPattern = /无可用(?:的)?渠道|no available channel/i
+
+/**
  * 维护、网关错误和防护层验证页要排在额度与 401/403 之前认：防护层的验证页正是 403，
  * 照下面那条会被说成「API Key 无权使用」，用户于是去换 Key、换分组。
+ * 「无可用渠道」又要排在维护前面（#1093 第12b条）：它也是 503，可说的是这个分组下这个型号用不了，
+ * 换个型号或分组马上就能发，说成「维护、稍后再试」客户只会干等。认法同 connection-check.ts 的 groupAnswer。
  */
 function safeHttpFailure(status: number, headers: Headers, detail = ''): StreamFailure {
-  if (isServiceUnavailableResponse({ status, json: isJsonContentType(headers.get('content-type')), headers })) {
+  const json = isJsonContentType(headers.get('content-type'))
+  if (status === 503 && json && noChannelPattern.test(detail)) {
+    return new StreamFailure('upstream-http-error', '所选分组下这个模型暂时用不了。换个模型或分组再发；一直这样请找客服。')
+  }
+  if (isServiceUnavailableResponse({ status, json, headers })) {
     return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
   }
   const quota = classifyRelayQuotaFailure(status, detail)
@@ -369,6 +394,13 @@ function safeHttpFailure(status: number, headers: Headers, detail = ''): StreamF
   }
   if (status === 429) {
     return new StreamFailure('upstream-http-error', '请求过于频繁，请稍后重试')
+  }
+  if (status === 400 || status === 404) {
+    const rejected = rejectedRequestMessages.find((entry) => entry.test.test(detail))
+    if (rejected) return new StreamFailure('upstream-http-error', rejected.message)
+  }
+  if (status === 400) {
+    return new StreamFailure('upstream-http-error', 'AI 服务没接受这次请求（HTTP 400）。换个模型，或者把参数调回默认再试；一直这样请找客服。')
   }
   return new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
 }

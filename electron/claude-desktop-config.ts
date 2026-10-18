@@ -6,6 +6,15 @@ import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
 
 const label = 'Claude Desktop 第三方推理配置'
+
+/**
+ * 首页「切回官方账号」「改用当前账号」时，那份配置不是点按钮前看到的样子（#1111 第4条）。客户看到的只说
+ * 「刚被改过、再点一次」：失败后首页会把卡片重新读一遍，按钮跟着变，再点不会带错。哪一条没对上挂在 cause
+ * 上，随这次失败进运行日志（ipc.ts 记失败时连同 cause 一起写），客服才分得清是哪一种。
+ */
+function switchRefused(reason: string): Error {
+  return new Error('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。', { cause: new Error(`${label}：${reason}`) })
+}
 const maximumBytes = 512 * 1024
 // Claude Desktop 在登录页选「用 Claude 账号登录」时，第三方目录的 claude_desktop_config.json 里记成这个值，
 // 之后开机就进官方登录、第三方配置留着也不读。官方文档只写了登录页上有这个选择，没写记成什么；这个值
@@ -446,9 +455,11 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const applied = !ownedInUse && appliedId && belongsToCurrentAccount
         ? parseObject(capture(path.join(libraryDirectory, `${appliedId}.json`))).inferenceGatewayApiKey : undefined
       const accountInUse = ownedInUse || (typeof applied === 'string' && Boolean(belongsToCurrentAccount?.(applied)))
-      if (original === null || !accountInUse || metadata.hybridPointer
-        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) {
-        throw new Error(`${label}在切换前已变化，未执行修改`)
+      if (original === null) throw switchRefused('claude_desktop_config.json 不在')
+      if (!accountInUse) throw switchRefused('正在用的不是当前账号那份配置')
+      if (metadata.hybridPointer) throw switchRefused('配置清单里有 hybridPointer')
+      if (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode) {
+        throw switchRefused(`deploymentMode 已经是 ${String(desktop.deploymentMode)}`)
       }
       const content = applyEdits(original, modify(original, ['deploymentMode'], claudeDesktopOfficialDeploymentMode, {
         formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
@@ -474,8 +485,9 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       }
       const original = capture(configPath)
       const desktop = parseObject(original)
-      if (original === null || desktop.deploymentMode !== claudeDesktopOfficialDeploymentMode) {
-        throw new Error(`${label}在切换前已变化，未执行修改`)
+      if (original === null) throw switchRefused('claude_desktop_config.json 不在')
+      if (desktop.deploymentMode !== claudeDesktopOfficialDeploymentMode) {
+        throw switchRefused(`deploymentMode 是 ${String(desktop.deploymentMode)}，不是官方登录`)
       }
       const metadata = parseMetadata(capture(metadataPath))
       const owner = parseOwner(capture(markerPath), profileDirectory)

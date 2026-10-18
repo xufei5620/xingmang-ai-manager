@@ -6,6 +6,7 @@ import { guideRecommendedTool, guideRecommendedToolFor, officialAccountNames, of
 import { FirstRunSteps } from '../tools/FirstRun'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
 import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
+import { configLinkRefusalIn } from '../../../../electron/config-link-refusal'
 import { classifyOperationError, operationTargetOf, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
 import { speaksChinese, supportDetailOf, userFacingErrorMessage } from '../../business-common'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
@@ -115,7 +116,7 @@ export function guideOfficialLoginRequired(provider: ProviderId, source: GuideTo
   return provider === 'codex' && source === 'official' && summary?.codexAuthMode !== 'chatgpt'
 }
 
-const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'permission'])
+const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'downloadUnreachable', 'downloadSourceError', 'officialRegistryUnreachable', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'permission'])
 
 /**
  * 引导红字的三样东西，和错误框一个规矩（#670）：上屏那句、认出来的原因（认不出为空）、
@@ -187,11 +188,18 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
     const tail = copyable ? '还不行就点「复制给客服」发给客服。' : '还不行就点「需要帮助」。'
     return { message: `${action}没有成功：${title}。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，${tail}`, reason: title, detail: guideDetail(error, '') }
   }
+  // 配置文件是个链接（#1100 第2条）：是哪个文件、换成什么，只有主进程那句里有。目录正文叫人看「下面这句话」，
+  // 引导里原话折在「给客服看的原话」里，所以把那一句取出来放上红字，外面包的「改用当前账号没有完成：」不重复。
+  const linked = key === 'configLink' ? configLinkRefusalIn(message) : null
+  if (linked) {
+    const tail = copyable ? '不会弄就点「复制给客服」发给客服。' : '不会弄就点「需要帮助」。'
+    return { message: `${action}没有成功：${linked}${tail}`, reason: errors.configLink.title, detail: guideDetail(error, linked) }
+  }
   if (key !== 'unknown') {
     const { title, body } = errors[key]
     return { message: `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`, reason: title, detail: guideDetail(error, '') }
   }
-  // 脱完路径的占位词「本地配置文件」本身是汉字，带路径的英文不能因为它就算成中文（第三十批 A）。
+  // 脱完路径的占位词「本机路径」本身是汉字，带路径的英文不能因为它就算成中文（第三十批 A）。
   if (speaksChinese(message)) return { message: redactSecretPatterns(message) }
   const detail = guideDetail(error, '')
   return { message: `${action}没有成功${detail ? unrecognized : ''}。${guideFailureTail(Boolean(detail), copyable)}`, detail }

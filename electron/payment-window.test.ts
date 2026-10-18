@@ -10,6 +10,7 @@ import { classifyNetworkFailure } from './network-failure'
 import type { NewApiPaymentForm, NewApiTopupOrderStatus } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import {
+  PaymentCheckoutRejected,
   createPaymentWindowController,
   detectPaymentWindowTerminalStatus,
   isAllowedPaymentNavigationUrl,
@@ -127,7 +128,8 @@ describe('validatePaymentForm', () => {
     ['origin mismatch', { allowedOrigin: 'https://attacker.example' }],
     ['origin with a path', { allowedOrigin: 'https://pay.example.com/not-an-origin' }],
   ])('rejects %s', (_name, overrides) => {
-    expect(() => validatePaymentForm(paymentForm(overrides))).toThrow()
+    // 归成校验没过这一类，下单那两个 IPC 才认得出、换成给客户看的那句（#1100 第5条）。
+    expect(() => validatePaymentForm(paymentForm(overrides))).toThrow(PaymentCheckoutRejected)
   })
 
   it('enforces field count, names, individual values, total payload and trade number limits', () => {
@@ -175,6 +177,7 @@ describe('validatePaymentUrl', () => {
     'javascript:alert(1)',
   ])('rejects an unsafe checkout URL: %s', (url) => {
     expect(() => validatePaymentUrl(url)).toThrow('支付地址')
+    expect(() => validatePaymentUrl(url)).toThrow(PaymentCheckoutRejected)
   })
 })
 

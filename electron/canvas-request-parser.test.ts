@@ -12,6 +12,7 @@ import {
   parseCanvasStartRunInput,
   parseCanvasVideoGenerateInput,
   parseCanvasVideoTaskId,
+  parseImageGenerateInput,
   canvasNotificationText,
   canvasSaveFileName,
   requiredCanvasString,
@@ -147,6 +148,40 @@ describe('canvas request parser', () => {
     expect(() => parseCanvasImageGenerateInput({
       requestId: 'run-1', group: 'g', model: 'model\nwith-break', prompt: '正常提示词',
     })).toThrow('模型格式错误')
+  })
+
+  it('holds canvas image requests to the stricter chat-page bounds', () => {
+    const base = { requestId: 'run-1', group: 'g', prompt: 'p' }
+    expect(parseCanvasImageGenerateInput({ ...base, model: 'm'.repeat(128), size: 's'.repeat(32) }))
+      .toEqual({ ...base, model: 'm'.repeat(128), size: 's'.repeat(32) })
+    expect(() => parseCanvasImageGenerateInput({ ...base, model: 'm'.repeat(129) })).toThrow('画布生图模型格式错误')
+    expect(() => parseCanvasImageGenerateInput({ ...base, model: 'm', size: 's'.repeat(33) })).toThrow('画布生图尺寸格式错误')
+  })
+
+  it('applies one image standard to the chat page and the canvas, each with its own wording', () => {
+    const chat = { prefix: '生图', unknownFields: '生图请求格式错误' }
+    const base = { requestId: 'run-1', group: 'g', model: 'm', prompt: 'p' }
+    const hostile: Array<[Record<string, unknown>, string]> = [
+      [{ ...base, apiKey: 'secret' }, '请求'],
+      [{ ...base, requestId: 'run\t1' }, '请求标识格式错误'],
+      [{ ...base, group: 'g'.repeat(129) }, '分组格式错误'],
+      [{ ...base, model: 'm\x7F' }, '模型格式错误'],
+      [{ ...base, prompt: 'bad\x0Cvalue' }, '提示词格式错误'],
+      [{ ...base, size: '1024x1024\n' }, '尺寸格式错误'],
+      [{ ...base, quality: ['high'] }, '画质格式错误'],
+      [{ ...base, imageResolution: { toString: () => '4K' } }, '清晰度格式错误'],
+    ]
+    for (const [input, suffix] of hostile) {
+      expect(() => parseImageGenerateInput(input, chat)).toThrow(suffix)
+      expect(() => parseCanvasImageGenerateInput(input)).toThrow(suffix)
+    }
+    expect(() => parseImageGenerateInput({ ...base, apiKey: 'secret' }, chat)).toThrow(/^生图请求格式错误$/)
+    expect(() => parseImageGenerateInput([], chat)).toThrow(/^生图请求格式错误$/)
+    expect(() => parseImageGenerateInput({ ...base, model: '' }, chat)).toThrow(/^生图模型格式错误$/)
+
+    const accepted = { ...base, prompt: '多行\n\t提示词', size: '1024x1024', quality: 'auto', imageResolution: '2K' }
+    expect(parseImageGenerateInput(accepted, chat)).toEqual(accepted)
+    expect(parseCanvasImageGenerateInput(accepted)).toEqual(accepted)
   })
 
   it('rejects unsupported quality values', () => {

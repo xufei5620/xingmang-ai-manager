@@ -14,8 +14,11 @@ const {
   applyRollout,
   applyStatusChanges,
   describeStatus,
+  describeStatusWarnings,
+  escapeWorkflowCommand,
   normalizeUntil,
   parseCurrentStatus,
+  parsePublishedDates,
 } = require('./service-status.cjs')
 
 const now = new Date('2026-09-23T08:00:00.000Z')
@@ -94,7 +97,7 @@ test('the workflow keeps free text out of the shell and publishes only the statu
   const job = workflow.jobs.publish
   assert.equal(job.environment, 'release')
   assert.deepEqual(workflow.permissions, { contents: 'read' })
-  for (const step of job.steps) {
+  for (const step of Object.values(workflow.jobs).flatMap((entry) => entry.steps)) {
     assert.doesNotMatch(step.run ?? '', /\$\{\{\s*(inputs|github\.event)\./, `${step.name} must read inputs through env`)
   }
   const uploads = job.steps.filter((step) => /aws s3/.test(step.run ?? ''))
@@ -269,4 +272,135 @@ test('the workflow offers the model table and hands it to the script through the
   const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
   assert.equal(build.env.CLI_MODELS, '${{ inputs.cli_models }}')
   assert.match(build.run, /--cli-models "\$CLI_MODELS"/)
+})
+
+test('release dates from the manifests keep the newest per version and skip what they cannot read', () => {
+  const dates = parsePublishedDates(' 0.2.19=2026-10-16T18:00:00.000Z v0.2.19=2026-10-16T18:40:00.000Z 0.2.18=2026-10-10T00:00:00Z =2026-10-16T00:00:00Z 0.2.20= 0.2=2026-10-16T00:00:00Z 0.2.21=yesterday')
+  assert.deepEqual([...dates], [['0.2.19', Date.parse('2026-10-16T18:40:00.000Z')], ['0.2.18', Date.parse('2026-10-10T00:00:00Z')]])
+  assert.equal(parsePublishedDates(undefined).size, 0)
+})
+
+// #1114：0.2.19 发出去 12 分钟，一次运行就清掉「先给两成」、又把最低版本抬到 0.2.19。
+const releasedAt = '2026-10-16T18:40:00.000Z'
+function minutesAfterRelease(minutes) {
+  return new Date(Date.parse(releasedAt) + minutes * 60 * 1000)
+}
+
+test('raising the minimum to a package that is not a day old warns but still publishes', () => {
+  const current = { minimumVersion: '0.2.11' }
+  const changes = { 'minimum-version': '0.2.19', 'published-versions': '0.2.19 0.2.19', 'published-dates': `0.2.19=${releasedAt} 0.2.19=2026-10-16T18:20:00.000Z` }
+  const next = applyStatusChanges(current, changes, minutesAfterRelease(29))
+  assert.equal(next.minimumVersion, '0.2.19')
+  const [warning, ...rest] = describeStatusWarnings(current, next, changes, minutesAfterRelease(29))
+  assert.deepEqual(rest, [])
+  assert.match(warning, /^最低版本 0\.2\.19 的包出来还不到 1 小时（按更新清单里的出包时间算）/)
+  assert.match(warning, /服务端已经先改了、旧版本不能用了/)
+  assert.match(describeStatusWarnings(current, next, changes, minutesAfterRelease(23 * 60 + 59))[0], /出来才 23 小时/)
+  assert.deepEqual(describeStatusWarnings(current, next, changes, minutesAfterRelease(24 * 60)), [])
+})
+
+test('the fresh minimum warning stays quiet when nothing about the minimum changes or its age is unknown', () => {
+  const changes = { 'minimum-version': '0.2.19', 'published-versions': '0.2.19', 'published-dates': `0.2.19=${releasedAt}` }
+  const now = minutesAfterRelease(12)
+  // 原样重填一遍：客户那边什么都不变。
+  const same = { minimumVersion: '0.2.19' }
+  assert.deepEqual(describeStatusWarnings(same, applyStatusChanges(same, changes, now), changes, now), [])
+  // 取消最低版本、这次没碰最低版本，都不提醒。
+  assert.deepEqual(describeStatusWarnings(same, applyStatusChanges(same, { 'minimum-version': 'none' }, now), {}, now), [])
+  assert.deepEqual(describeStatusWarnings(same, applyStatusChanges(same, { maintenance: 'off' }, now), {}, now), [])
+  // 清单里没有出包时间，或者最低版本比线上正在发的旧：看不出它出来多久，不猜。
+  const older = { 'minimum-version': '0.2.18', 'published-versions': '0.2.19', 'published-dates': `0.2.19=${releasedAt}` }
+  assert.deepEqual(describeStatusWarnings({}, applyStatusChanges({}, older, now), older, now), [])
+  const undated = { ...changes, 'published-dates': '0.2.19=' }
+  assert.deepEqual(describeStatusWarnings({}, applyStatusChanges({}, undated, now), undated, now), [])
+})
+
+test('clearing a staged rollout in the same run that sets a minimum warns and names the rollout it removed', () => {
+  const now = minutesAfterRelease(24 * 60 * 3)
+  const changes = { rollout: 'none', 'minimum-version': '0.2.19', 'published-versions': '0.2.19', 'published-dates': `0.2.19=${releasedAt}` }
+  for (const [rollout, label] of [[{ version: '0.2.19', percent: 20 }, '0.2.19 先给 20% 的电脑'], [{ version: '0.2.19', percent: 0 }, '0.2.19 先不自动推，只给自己点「检查更新」的人']]) {
+    const current = { rollout }
+    const next = applyStatusChanges(current, changes, now)
+    assert.equal(next.rollout, undefined)
+    assert.deepEqual(describeStatusWarnings(current, next, changes, now), [`这一次把分批放量（原来是「${label}」）清掉、全部放开，同时又把最低版本设成 0.2.19：新版本一次就到所有人手上，分批观察这一步等于跳过。不是非这样不可的，先 Reject，分两次跑：先放开观察，再设最低版本。`])
+  }
+  // 已经全放开的、线上本来就没有放量的、只清放量不设最低版本的，都不提醒。
+  for (const [current, input] of [[{ rollout: { version: '0.2.19', percent: 100 } }, changes], [{}, changes], [{ rollout: { version: '0.2.19', percent: 20 } }, { rollout: 'none' }]]) {
+    assert.deepEqual(describeStatusWarnings(current, applyStatusChanges(current, input, now), input, now), [], JSON.stringify([current, input]))
+  }
+})
+
+test('the 0.2.19 run raises both warnings', () => {
+  const current = { rollout: { version: '0.2.19', percent: 20 }, minimumVersion: '0.2.11' }
+  const changes = { rollout: 'none', 'minimum-version': '0.2.19', 'published-versions': '0.2.19 0.2.19 0.2.19', 'published-dates': `0.2.19=${releasedAt} 0.2.19=${releasedAt}` }
+  const now = minutesAfterRelease(12)
+  const warnings = describeStatusWarnings(current, applyStatusChanges(current, changes, now), changes, now)
+  assert.equal(warnings.length, 2)
+  assert.match(warnings[0], /^最低版本 0\.2\.19 的包出来还不到 1 小时/)
+  assert.match(warnings[1], /^这一次把分批放量（原来是「0\.2\.19 先给 20% 的电脑」）清掉/)
+})
+
+test('the script prints the warnings as workflow annotations and writes the approval summary', () => {
+  assert.equal(escapeWorkflowCommand('先给 20% 的电脑\r\n下一行'), '先给 20%25 的电脑%0D%0A下一行')
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-status-'))
+  try {
+    const current = path.join(directory, 'current.json')
+    const output = path.join(directory, 'service-status.json')
+    const summary = path.join(directory, 'summary.md')
+    const script = path.join(__dirname, 'service-status.cjs')
+    fs.writeFileSync(current, JSON.stringify({ rollout: { version: '0.2.19', percent: 20 } }))
+    const released = new Date(Date.now() - 2 * 60 * 60 * 1000 - 60 * 1000).toISOString()
+    const run = spawnSync(process.execPath, [script, '--current', current, '--output', output, '--rollout', 'none', '--minimum-version', '0.2.19', '--published-versions', ' 0.2.19', '--published-dates', ` 0.2.19=${released}`, '--summary', summary], { encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr)
+    assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')).minimumVersion, '0.2.19')
+    const annotations = run.stdout.split('\n').filter((line) => line.startsWith('::warning::'))
+    assert.equal(annotations.length, 2)
+    assert.match(annotations[0], /^::warning::最低版本 0\.2\.19 的包出来才 2 小时/)
+    assert.match(annotations[1], /「0\.2\.19 先给 20%25 的电脑」/)
+    const markdown = fs.readFileSync(summary, 'utf8')
+    assert.match(markdown, /^### 批准以后，线上的状态文件会是这样\n\n- 维护：关闭\n/)
+    assert.match(markdown, /\n- 最低版本：0\.2\.19（/)
+    assert.match(markdown, /\n#### ⚠️ 批之前看一眼\n\n- 最低版本 0\.2\.19 的包出来才 2 小时/)
+    assert.match(markdown, /「0\.2\.19 先给 20% 的电脑」/)
+
+    // 没什么要提醒的：只有摘要，没有警告。
+    fs.rmSync(summary)
+    const quiet = spawnSync(process.execPath, [script, '--current', current, '--output', output, '--maintenance', 'off', '--summary', summary], { encoding: 'utf8' })
+    assert.equal(quiet.status, 0, quiet.stderr)
+    assert.doesNotMatch(quiet.stdout, /::warning::/)
+    assert.doesNotMatch(fs.readFileSync(summary, 'utf8'), /批之前看一眼/)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a preview job shows the approver what will be published before the approval gate, without any credentials', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'service-status.yml'), 'utf8'))
+  const { preview, publish } = workflow.jobs
+  // 批准挂在 publish 上、等预览跑完才开始等；预览自己不挂环境、不碰 secret、不写线上，权限照全局只读。
+  assert.equal(publish.needs, 'preview')
+  assert.equal(publish.environment, 'release')
+  assert.equal(preview.environment, undefined)
+  assert.equal(preview.permissions, undefined)
+  assert.equal(preview.concurrency, undefined)
+  assert.doesNotMatch(JSON.stringify(preview), /secrets\.|aws |s3:\/\/|AWS_|R2_/)
+  for (const step of preview.steps) {
+    assert.doesNotMatch(step.run ?? '', /\$\{\{\s*(inputs|github\.event)\./, `${step.name} must read inputs through env`)
+  }
+  // 读线上的几步与 publish 一字不差，预览算的才是批了以后 publish 会算的。
+  for (const name of ['Resolve the address clients read the status file from', 'Fetch the status file that is live now', 'Read the versions the feed is publishing now']) {
+    const ours = preview.steps.find((step) => step.name === name)
+    assert.ok(ours, name)
+    assert.deepEqual(ours, publish.steps.find((step) => step.name === name), name)
+  }
+  const build = publish.steps.find((step) => step.name === 'Build the new status file')
+  const show = preview.steps.find((step) => step.name === 'Show the approver what this run would publish')
+  assert.deepEqual(show.env, build.env)
+  const argumentsOf = (run) => run.match(/--[a-z-]+ "[^"]*"/g)
+  assert.deepEqual(argumentsOf(show.run), [...argumentsOf(build.run), '--summary "$GITHUB_STEP_SUMMARY"'])
+  assert.equal(build.env.PUBLISHED_DATES, '${{ steps.published.outputs.dates }}')
+  assert.match(build.run, /--published-dates "\$PUBLISHED_DATES"/)
+  const manifests = publish.steps.find((step) => step.id === 'published')
+  assert.match(manifests.run, /released=\$\(sed -n 's\/\^releaseDate:/)
+  assert.match(manifests.run, /echo "dates=\$dates" >> "\$GITHUB_OUTPUT"/)
 })

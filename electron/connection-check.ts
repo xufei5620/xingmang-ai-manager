@@ -1,6 +1,6 @@
 import { cliCatalog, type ProviderId } from './catalog'
 import { defaultCliModels } from './cli-model-defaults'
-import { redactCommandText } from './command-runner'
+import { sanitizeUpstreamDetail } from './command-runner'
 import { isKeyQuotaExhaustedMessage } from './account-key-quota'
 import { readBoundedResponseText } from './bounded-response'
 import { geminiCliCompatibleModel, type NativeConfigInspection } from './config-files'
@@ -171,10 +171,6 @@ export interface ConnectionCheckDependencies {
 const defaultTimeoutMs = 20_000
 const defaultMaxResponseBytes = 64 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
-const controlCharacterPattern = new RegExp(
-  '[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) + String.fromCharCode(127) + ']',
-  'g',
-)
 
 interface ProbeShape {
   protocol: ConnectionProbeProtocol
@@ -428,15 +424,6 @@ export function buildGatewayMessagesProbe(
   apiKey: string,
 ): ConnectionProbeBuild {
   return planProbe(name, baseUrl, gatewayMessagesShape(), model, apiKey)
-}
-
-export function sanitizeUpstreamDetail(value: string, secrets: readonly string[]): string {
-  if (!value) return ''
-  return redactCommandText(value, secrets)
-    .replace(controlCharacterPattern, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300)
 }
 
 function includesAny(haystack: string, needles: readonly string[]): boolean {

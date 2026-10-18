@@ -1,8 +1,10 @@
 import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desktop-install-failure'
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
+import { configLinkRefusalIn } from '../../electron/config-link-refusal'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
-import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
+import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
+import { npmFailureExplainsItself } from '../../electron/npm-failure-reasons'
 import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
 import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
@@ -15,7 +17,7 @@ export interface OperationAction { id: OperationActionId; label: string }
  * 同样一句 EPERM，写安装目录时下一步是看目录权限、复制路径；写的是工具的配置文件
  * （改用当前账号、重新写入密钥、保存配置、恢复备份、扩展页……）时，多半是安全软件
  * 拦了或者文件正被别的程序占着，安装目录跟它没关系（已知29）。原话里分不出是哪一种：
- * 路径上屏前都换成了「本地配置文件」，只有调用方知道自己在写什么。
+ * 路径上屏前都换成了「本机路径」，只有调用方知道自己在写什么。
  */
 export type OperationTarget = 'config'
 export interface OperationErrorHint {
@@ -132,10 +134,13 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'toolCertElevated', match: (message) => toolCertificateFailureForMessage(message) === 'elevated' },
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
   // 握手被网络掐断的原文（ERR_SSL_PROTOCOL_ERROR 这类）不是证书被换了（#1060），和 ECONNRESET 一样落到
-  // 连不上那两张卡。占的是它以前归 tlsIntercepted 时的位置：OpenSSL 原文里的十六进制串会被下面按
-  // 状态码认的几条（50x、52x）误认。
-  { key: 'downloadTimeout', match: (message) => downloadContext(message) && isTlsHandshakeFailure(message) },
+  // 连不上那两张卡（装东西时是「连不上下载源」，#1100 第3条）。占的是它以前归 tlsIntercepted 时的位置：
+  // OpenSSL 原文里的十六进制串会被下面按状态码认的几条（50x、52x）误认。
+  { key: 'downloadUnreachable', match: (message) => downloadContext(message) && isTlsHandshakeFailure(message) },
   { key: 'timeout', match: (message) => isTlsHandshakeFailure(message) },
+  // 工具的配置文件本身是链接（dotfiles 工具做的符号链接、硬链接，#1100 第2条）。主进程那句已经写明是哪个文件、
+  // 该换成什么，这里只给标题和按钮。排在 folderRelocated 之前：那条说的是被搬走的文件夹，客户去「检查」页找不到这个文件。
+  { key: 'configLink', match: (message) => configLinkRefusalIn(message) !== null },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。
@@ -148,6 +153,17 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 话。「无可用渠道」以前归 keyInvalid，可上游渠道被自动禁用时 new-api 报的恰好是
   // 这句，那时换 Key 毫无用处。已经写好整句的（features/auth/account-errors.ts 的
   // 「服务暂时不可用，请稍后重试」、主进程那句）由 presentOperationError 按标题原样放行。
+  // npm 没装成、句尾的码全是找不到版本、被下载源拒绝、文件没过校验、组件对不上这几类时，主进程那句已经
+  // 说清下一步（#1100 第1条），不配标题；那句里的「换个网络」会被下面认成「连不上下载源」，所以排在前面。
+  { key: 'unknown', match: (message) => npmFailureExplainsItself(message) },
+  // 装之前到 npm 官方源核对安装清单那一步没连上（#1057 第5b条）。这一步只走官方源，换镜像绕不过去；
+  // 主进程那句已经按平台写好下一步（开加速或换网络），这里只给标题和按钮。
+  { key: 'officialRegistryUnreachable', match: (message) => message.includes(officialRegistryUnreachableMarker) },
+  // 下载源（npm 镜像、Node.js、Git 的下载源）自己出错、或者连不上（#1100 第3条）。以前借的是账号那边的
+  //「星芒服务器暂时出错」「服务暂时不可用」，客户以为星芒坏了；连不上又被说成「下载超时」，按钮叫人换官方源。
+  // 只在安装、下载这类场合认，登录、账号、对话照旧走下面那几条。真超时留给最后的 downloadTimeout。
+  { key: 'downloadSourceError', match: (message) => downloadContext(message) && /(^|\D)(500|502|503|504|52[0-6])(\D|$)|bad gateway|service unavailable|gateway time-?out|internal server error/i.test(message) },
+  { key: 'downloadUnreachable', match: (message) => downloadContext(message) && networkFailure(message) && !timedOut(message) },
   { key: 'serviceUnavailable', match: (message) => /(^|\D)(502|503|504|52[0-6])(\D|$)|bad gateway|service unavailable|gateway time-?out|无可用(的)?渠道/i.test(message) },
   { key: 'server', match: (message) => /(^|\D)500(\D|$)|internal server error|服务器(内部)?错误/i.test(message) },
   { key: 'downloadTimeout', match: (message) => downloadContext(message) && networkFailure(message) },
@@ -158,13 +174,20 @@ function downloadContext(message: string): boolean {
   return /下载|安装|更新包|npm|registry|镜像/i.test(message)
 }
 
+function timedOut(message: string): boolean {
+  return /ETIMEDOUT|ESOCKETTIMEDOUT|超时|timed? ?out/i.test(message)
+}
+
 function networkFailure(message: string): boolean {
   return /ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|超时|连接(失败|不上)|网络(不可用|异常|受限)?/i.test(message)
 }
 
 export function classifyOperationError(message: string, target?: OperationTarget): OperationErrorKey {
   const key = rules.find((rule) => rule.match(message))?.key ?? 'unknown'
-  return key === 'permission' && target === 'config' ? 'configPermission' : key
+  if (target !== 'config') return key
+  // 写的是工具的配置文件时，磁盘满说的是配置所在的那块盘（一般是系统盘），不是安装目录，
+  // 也没有安装目录可复制（#1100 第6条）。
+  return key === 'permission' ? 'configPermission' : key === 'diskFull' ? 'configDiskFull' : key
 }
 
 // 「重新写入密钥」这件事交给 perform 的动作名：错误框、「复制给客服」里都照它写，下面那张表也按它认。
@@ -198,7 +221,6 @@ export function operationTargetOf(action: string): OperationTarget | undefined {
  */
 const actionIds: Record<string, OperationActionId | undefined> = {
   重试: 'retry',
-  换官方源重试: 'retry',
   重新下载: 'retry',
   查看日志: 'log',
   看日志: 'log',

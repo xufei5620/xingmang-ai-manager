@@ -170,7 +170,7 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error(networkFailureMessages.intercepted), '登录')).not.toContain('超时')
   })
   it('identifies local account storage failures without exposing details or blaming the password', () => {
-    const expected = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
+    const expected = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。'
     expect(authErrorMessage(new Error('账号安全存储不可用，原记录未修改'), '登录')).toBe(expected)
     expect(authErrorMessage('本地账号存储恢复失败：password credential diagnostic detail', '登录')).toBe(expected)
     expect(authErrorMessage(new Error('账号或密码不正确'), '登录')).toBe('账号或密码不正确，请检查后重试')

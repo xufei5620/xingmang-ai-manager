@@ -65,6 +65,12 @@ export function rawErrorMessage(error: unknown) {
 }
 
 /**
+ * 报错里的本机路径上屏前换成的占位词（I13）。以前写的是「本地配置文件」，可换掉的不只是配置文件，还有安装目录、
+ * 工作目录（「已移除 1 个安装：本地配置文件」），客户会以为配置坏了（#1100 第6条）。
+ */
+export const redactedPathPlaceholder = '本机路径'
+
+/**
  * Renderer-facing errors must not expose absolute home/config paths. The main
  * process names the file it failed on (config-files.ts, backups.ts) and on
  * Windows that path carries the account name, so I13's redaction has to hold on
@@ -72,7 +78,7 @@ export function rawErrorMessage(error: unknown) {
  *
  * 空格后面还有分隔符，路径就没完：Windows 的账户名、Mac 的「Application Support」
  * 都带空格，以前到第一个空格就停，账户名的后半截跟着上了屏
- * （`本地配置文件 San\.claude\settings.json`）。文件夹名里不收 Windows 不许用在
+ * （`本机路径 San\.claude\settings.json`）。文件夹名里不收 Windows 不许用在
  * 文件名里的字符、引号和断句标点，所以不会一路吞进路径后面那句话或下一个带引号
  * 的路径。最后一节照旧到空格为止：过了最后一个分隔符，分不出哪是文件名、哪是句子。
  */
@@ -80,9 +86,9 @@ export function userFacingErrorMessage(error: unknown) {
   return rawErrorMessage(error)
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .trim()
-    .replace(/[A-Za-z]:\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, '本地配置文件')
-    .replace(/\\\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, '本地配置文件')
-    .replace(/\/(?:Users|home)\/(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\/)*[^\s;；，。！？]*/g, '本地配置文件')
+    .replace(/[A-Za-z]:\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, redactedPathPlaceholder)
+    .replace(/\\\\(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\\)*[^\s;；，。！？]*/g, redactedPathPlaceholder)
+    .replace(/\/(?:Users|home)\/(?=[^\s;；，。！？])(?:[^\\/<>:"|?*';；，。！？]*\/)*[^\s;；，。！？]*/g, redactedPathPlaceholder)
     .slice(0, 1_000)
 }
 
@@ -106,7 +112,7 @@ const detectionFailureCopy = {
 }
 
 /**
- * 原话是不是中文，不能直接看脱敏后的句子：路径已经换成了「本地配置文件」，这个占位词本身
+ * 原话是不是中文，不能直接看脱敏后的句子：路径已经换成了「本机路径」，这个占位词本身
  * 就是汉字，看整句的话英文报错一样会被当成中文。占位词换回一个斜杠再交给主进程更新失败那句
  * 也在用的 isChineseSentence（去掉引号段和路径再看）：它本来就站在路径的位置上，用户名带空格时
  * 脱敏只剥到空格为止，紧跟在后面的那截（「三\.codex\…」）要靠它才算同一条路径。判不准时宁可
@@ -116,7 +122,7 @@ const detectionFailureCopy = {
  * （errorMessage）、新手引导、Key 同步原因都按它判（第三十批 A），别再各写一个「有没有汉字」。
  */
 export function speaksChinese(safe: string) {
-  return isChineseSentence(safe.replaceAll('本地配置文件', '/'))
+  return isChineseSentence(safe.replaceAll(redactedPathPlaceholder, '/'))
 }
 
 /**
@@ -146,7 +152,7 @@ export function errorMessage(error: unknown, fallback = genericFailure) {
   const known = matchAccountErrorMessage(rawErrorMessage(error))
   if (known) return known
   // 判断语言与类别之前先脱敏：主进程抛的中文错误常带着绝对路径，不脱敏就会把用户名
-  // 连同“原因”一起端上屏。是不是中文要按 speaksChinese 判：占位词「本地配置文件」本身
+  // 连同“原因”一起端上屏。是不是中文要按 speaksChinese 判：占位词「本机路径」本身
   // 就是汉字，只看有没有汉字的话，「EPERM: operation not permitted, open 'C:\…」这类
   // 带路径的英文会被当成中文原样上屏（第三十批 A）。原样上屏的中文也过一遍 Key 打码表：
   // 主进程把第三方的原话拼在中文后面时，不能连 Key 一起端上屏（第三十批 B，I13）。

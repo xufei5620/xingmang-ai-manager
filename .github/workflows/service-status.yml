@@ -58,7 +58,112 @@ permissions:
   contents: read
 
 jobs:
+  # 批准之前先跑这一段（#1114）：照这次填的算一遍「批了以后线上是什么样」，连同要看一眼的提示，
+  # 写到运行页面上。release 环境的批准发生在 publish 开跑之前，只打在 publish 里的提示，批的人点下去
+  # 以后才看得到。这一段不挂环境、不引用任何 secret，权限照全局只有 contents: read；读的只是客户端
+  # 也在读的公开状态文件和更新清单，算出来的文件留在这台机器上，不上传。真正写线上的仍是下面的
+  # publish，批准照旧；填错了（版本号写错、最低版本比线上还高）这一段就红，不用白批一次。
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      # 这一段只用 node 自带的模块，不装依赖。
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Resolve the address clients read the status file from
+        id: feed
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
+          echo "url=${base%/}/service-status.json" >> "$GITHUB_OUTPUT"
+
+      # 线上那份读不到（404）就从空白开始；别的失败一律停下，免得用一份空白的
+      # 覆盖掉线上别的开关。
+      - name: Fetch the status file that is live now
+        env:
+          STATUS_URL: ${{ steps.feed.outputs.url }}
+        run: |
+          set -euo pipefail
+          code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/current.json" --write-out '%{http_code}' "$STATUS_URL")
+          case "$code" in
+            200) echo "线上现有内容："; cat "$RUNNER_TEMP/current.json"; echo ;;
+            404) echo "线上还没有状态文件，从空白开始"; rm -f "$RUNNER_TEMP/current.json" ;;
+            *) echo "::error::读取线上状态文件失败（HTTP $code），为免覆盖别的开关，这次不改"; exit 1 ;;
+          esac
+
+      # 最低版本不许高于线上正在发的版本，否则低于它的人找不到可装的新版本、被挡在门外。
+      # 只在这次要设最低版本时读各平台的更新清单（Linux 两个架构各一份，没发过就 404 跳过）；
+      # 读到的版本号交给脚本比较，出包时间（releaseDate）交给脚本判断要不要提醒（#1114）。
+      - name: Read the versions the feed is publishing now
+        id: published
+        env:
+          STATUS_URL: ${{ steps.feed.outputs.url }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
+        run: |
+          set -euo pipefail
+          versions=""
+          dates=""
+          trimmed=$(printf '%s' "$MINIMUM_VERSION" | tr -d '[:space:]')
+          if [ -n "$trimmed" ] && [ "$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')" != "none" ]; then
+            base="${STATUS_URL%/*}"
+            for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
+              code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/$manifest" --write-out '%{http_code}' "$base/$manifest")
+              case "$code" in
+                200)
+                  version=$(sed -n 's/^version:[[:space:]]*//p' "$RUNNER_TEMP/$manifest" | head -n 1 | tr -d "'\"[:space:]")
+                  released=$(sed -n 's/^releaseDate:[[:space:]]*//p' "$RUNNER_TEMP/$manifest" | head -n 1 | tr -d "'\"[:space:]")
+                  echo "线上 $manifest 的版本：$version（出包时间 ${released:-看不出}）"
+                  versions="$versions $version"
+                  dates="$dates $version=$released" ;;
+                404) echo "线上没有 $manifest，跳过这个平台" ;;
+                *) echo "::error::读取线上 $manifest 失败（HTTP $code），为免把客户挡在门外，这次不改"; exit 1 ;;
+              esac
+            done
+          fi
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "dates=$dates" >> "$GITHUB_OUTPUT"
+
+      # 输入一律经环境变量传给脚本，不拼进命令行：「给用户看的一句话」是自由文本。
+      - name: Show the approver what this run would publish
+        env:
+          MAINTENANCE_CHOICE: ${{ inputs.maintenance }}
+          MAINTENANCE_MESSAGE: ${{ inputs.message }}
+          MAINTENANCE_UNTIL: ${{ inputs.until }}
+          BAD_VERSIONS: ${{ inputs.bad_versions }}
+          ROLLOUT: ${{ inputs.rollout }}
+          MINIMUM_VERSION: ${{ inputs.minimum_version }}
+          PUBLISHED_VERSIONS: ${{ steps.published.outputs.versions }}
+          PUBLISHED_DATES: ${{ steps.published.outputs.dates }}
+          TOOL_ROUTE_REWRITE: ${{ inputs.tool_route_rewrite }}
+          ACCOUNT_GROUPS: ${{ inputs.account_groups }}
+          CLI_MODELS: ${{ inputs.cli_models }}
+        run: |
+          set -euo pipefail
+          node scripts/service-status.cjs \
+            --current "$RUNNER_TEMP/current.json" \
+            --output "$RUNNER_TEMP/service-status.json" \
+            --maintenance "${MAINTENANCE_CHOICE%%:*}" \
+            --message "$MAINTENANCE_MESSAGE" \
+            --until "$MAINTENANCE_UNTIL" \
+            --bad-versions "$BAD_VERSIONS" \
+            --rollout "$ROLLOUT" \
+            --minimum-version "$MINIMUM_VERSION" \
+            --published-versions "$PUBLISHED_VERSIONS" \
+            --published-dates "$PUBLISHED_DATES" \
+            --tool-route-rewrite "${TOOL_ROUTE_REWRITE%%:*}" \
+            --account-groups "$ACCOUNT_GROUPS" \
+            --cli-models "$CLI_MODELS" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          echo "批准以后将要发布（按现在线上那一份算）："
+          cat "$RUNNER_TEMP/service-status.json"
+
   publish:
+    # 等预览跑完才开始等批准：批的人点开运行时，页面上已经有这次要发布的内容和提示。
+    needs: preview
     # 与 publish-release 的 publish 作业、rollback-release 共用一个并发组：三者都是
     # 「先读线上、再写回去」，交错执行会让后写的盖掉先写的（#492）。
     concurrency:
@@ -118,7 +223,7 @@ jobs:
 
       # 最低版本不许高于线上正在发的版本，否则低于它的人找不到可装的新版本、被挡在门外。
       # 只在这次要设最低版本时读各平台的更新清单（Linux 两个架构各一份，没发过就 404 跳过）；
-      # 读到的版本号交给脚本比较。
+      # 读到的版本号交给脚本比较，出包时间（releaseDate）交给脚本判断要不要提醒（#1114）。
       - name: Read the versions the feed is publishing now
         id: published
         env:
@@ -127,6 +232,7 @@ jobs:
         run: |
           set -euo pipefail
           versions=""
+          dates=""
           trimmed=$(printf '%s' "$MINIMUM_VERSION" | tr -d '[:space:]')
           if [ -n "$trimmed" ] && [ "$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')" != "none" ]; then
             base="${STATUS_URL%/*}"
@@ -135,14 +241,17 @@ jobs:
               case "$code" in
                 200)
                   version=$(sed -n 's/^version:[[:space:]]*//p' "$RUNNER_TEMP/$manifest" | head -n 1 | tr -d "'\"[:space:]")
-                  echo "线上 $manifest 的版本：$version"
-                  versions="$versions $version" ;;
+                  released=$(sed -n 's/^releaseDate:[[:space:]]*//p' "$RUNNER_TEMP/$manifest" | head -n 1 | tr -d "'\"[:space:]")
+                  echo "线上 $manifest 的版本：$version（出包时间 ${released:-看不出}）"
+                  versions="$versions $version"
+                  dates="$dates $version=$released" ;;
                 404) echo "线上没有 $manifest，跳过这个平台" ;;
                 *) echo "::error::读取线上 $manifest 失败（HTTP $code），为免把客户挡在门外，这次不改"; exit 1 ;;
               esac
             done
           fi
           echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "dates=$dates" >> "$GITHUB_OUTPUT"
 
       # 输入一律经环境变量传给脚本，不拼进命令行：「给用户看的一句话」是自由文本。
       - name: Build the new status file
@@ -154,6 +263,7 @@ jobs:
           ROLLOUT: ${{ inputs.rollout }}
           MINIMUM_VERSION: ${{ inputs.minimum_version }}
           PUBLISHED_VERSIONS: ${{ steps.published.outputs.versions }}
+          PUBLISHED_DATES: ${{ steps.published.outputs.dates }}
           TOOL_ROUTE_REWRITE: ${{ inputs.tool_route_rewrite }}
           ACCOUNT_GROUPS: ${{ inputs.account_groups }}
           CLI_MODELS: ${{ inputs.cli_models }}
@@ -169,6 +279,7 @@ jobs:
             --rollout "$ROLLOUT" \
             --minimum-version "$MINIMUM_VERSION" \
             --published-versions "$PUBLISHED_VERSIONS" \
+            --published-dates "$PUBLISHED_DATES" \
             --tool-route-rewrite "${TOOL_ROUTE_REWRITE%%:*}" \
             --account-groups "$ACCOUNT_GROUPS" \
             --cli-models "$CLI_MODELS"

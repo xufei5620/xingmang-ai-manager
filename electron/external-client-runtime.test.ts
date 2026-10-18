@@ -393,11 +393,69 @@ describe('external desktop client lifecycle', () => {
     const inFlight = f.runtime.scan({ force: true })
     f.setInventory([candidate('opencode')])
     const fresh = f.runtime.scan({ fresh: true })
-    expect(f.runtime.scan({ force: true })).toBe(inFlight)
+    const forced = f.runtime.scan({ force: true })
     gate.resolve(commandResult({ executable: powershell, argv: [] }, JSON.stringify({ clients: [candidate('opencode', { running: true })], errors: {} })))
     expect((await inFlight)[2].running).toBe(true)
     expect((await fresh)[2].running).toBe(false)
+    // 同时等着的两次并进同一轮新的，不各盘点一遍。
+    expect((await forced)[2].running).toBe(false)
     expect(f.execute).toHaveBeenCalledTimes(4)
+  })
+
+  // #1093 第 8 条：客户自己去官网装好，点「重新检测」时开机那轮还没跑完。那轮读的是装好之前的机器，
+  // 卡片会接着显示「安装」；要等它跑完再盘点一轮。
+  it('answers a forced rescan with an inventory taken after the click, not the scan already running', async () => {
+    const f = fixture()
+    const gate = deferred<ReturnType<typeof commandResult>>()
+    f.execute.mockImplementationOnce(() => gate.promise)
+    const startup = f.runtime.scan()
+    f.setInventory([candidate('opencode')])
+    const recheck = f.runtime.scan({ force: true })
+    expect(recheck).not.toBe(startup)
+    gate.resolve(commandResult({ executable: powershell, argv: [] }, '{"clients":[],"errors":{}}'))
+    expect((await startup)[2].installed).toBe(false)
+    expect((await recheck)[2].installed).toBe(true)
+    expect(f.execute).toHaveBeenCalledTimes(2)
+    // 等完那一轮新的成了缓存：之后的普通读取不再盘点。
+    expect((await f.runtime.scan())[2].installed).toBe(true)
+    expect(f.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not hand a scan started before an install finished to callers who ask after it', async () => {
+    const f = fixture()
+    const gate = deferred<ReturnType<typeof commandResult>>()
+    f.execute.mockImplementationOnce(() => gate.promise)
+    const stale = f.runtime.scan()
+    f.setInventory([candidate('opencode')])
+    await f.runtime.install('opencode')
+    // 装完以后界面那次普通刷新和「确认连接」前那次读取：都不该拿到装好之前起的那一轮。
+    const refresh = f.runtime.scan()
+    const beforeSave = f.runtime.scan()
+    expect(refresh).not.toBe(stale)
+    gate.resolve(commandResult({ executable: powershell, argv: [] }, '{"clients":[],"errors":{}}'))
+    expect((await stale)[2].installed).toBe(false)
+    expect((await refresh)[2].installed).toBe(true)
+    expect((await beforeSave)[2].installed).toBe(true)
+    const scans = f.execute.mock.calls.filter(([spec]) => spec.executable === powershell).length
+    // 只是排在后面，不是每来一个就多盘点一轮。
+    expect((await f.runtime.scan())[2].installed).toBe(true)
+    expect(f.execute.mock.calls.filter(([spec]) => spec.executable === powershell)).toHaveLength(scans)
+  })
+
+  it('still lets a quiet refresh after a launch see the client running when a scan was already in flight', async () => {
+    const f = fixture()
+    f.setInventory([candidate('opencode')])
+    await f.runtime.scan()
+    const gate = deferred<ReturnType<typeof commandResult>>()
+    const inventory = JSON.stringify({ clients: [candidate('opencode')], errors: {} })
+    f.execute.mockImplementationOnce(() => gate.promise)
+    const stale = f.runtime.scan({ force: true })
+    await f.runtime.launch('opencode')
+    f.setInventory([candidate('opencode', { running: true })])
+    const quiet = f.runtime.scan()
+    gate.resolve(commandResult({ executable: powershell, argv: [] }, inventory))
+    expect((await stale)[2].running).toBe(false)
+    expect((await quiet)[2].running).toBe(true)
   })
 
   it('does not cache a scan that could not tell whether a client is installed', async () => {

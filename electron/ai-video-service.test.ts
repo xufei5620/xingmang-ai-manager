@@ -903,7 +903,12 @@ describe('createAiVideoService', () => {
         requestId: 'poll-stall', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
       }).catch((error: unknown) => error)
       await vi.advanceTimersByTimeAsync(600)
-      expect(await pending).toMatchObject({ message: '视频接口请求超时' })
+      // 这单已经提交：不叫客户「重试」再付一次钱，原话留在 cause 上进日志（#1076 第2条）。
+      const failure = await pending
+      expect(failure).toMatchObject({
+        message: '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 video_poll_stall）。',
+        cause: { message: '视频接口请求超时' },
+      })
       await service.whenIdle()
       const polls = vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method !== 'POST')
       expect(polls.length).toBeGreaterThanOrEqual(3)
@@ -955,9 +960,13 @@ describe('createAiVideoService', () => {
     )) as unknown as typeof fetch
     const { service, tasks } = setup(fetchImpl, { maximumPollOutageMs: 20 })
 
-    await expect(service.generate(41, {
+    const failure = await service.generate(41, {
       requestId: 'poll-outage', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
-    })).rejects.toThrow('视频服务暂时不可用')
+    }).catch((error: unknown) => error)
+    expect(failure).toMatchObject({
+      message: '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 video_outage）。',
+      cause: { message: '视频服务暂时不可用，请稍后重试' },
+    })
     expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method !== 'POST').length).toBeGreaterThan(1)
     expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
     expect(tasks.remove).not.toHaveBeenCalled()

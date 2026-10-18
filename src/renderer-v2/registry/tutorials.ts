@@ -1005,7 +1005,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
           { title: errors.permission.title, detail: '检查当前用户是否能写入安装目录，以及安全软件是否拦截。本软件以普通权限运行，不会自动提权。' },
           { title: errors.installBlocked.title, detail: '检查杀毒软件的隔离记录；确认文件可信后恢复，并将可信的安装目录加入信任。' },
           { title: errors.toolRunning.title, detail: '正在使用的工具占用了文件。先保存工作并关闭对应工具窗口，再重试。' },
-          { title: errors.downloadTimeout.title, detail: '已经安装的工具不受这次下载失败影响。检查网络，或点「换官方源重试」。' },
+          { title: errors.downloadTimeout.title, detail: '已经安装的工具不受这次下载失败影响。检查网络后点「重试」。' },
         ],
         action: '查看安装与更新结果',
         page: 'feedback',
@@ -1115,7 +1115,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'health',
       },
       {
-        title: '预览报告后联系支持',
+        title: '预览报告后找客服',
         where: '反馈与客服 → 预览反馈报告',
         detail: '把「点了哪里、出现什么」和报告一起提供给客服。',
         bullets: ['预览报告，核对后复制或下载。', '通过右上角「帮助与客服」发送报告、报错截图和操作步骤。'],

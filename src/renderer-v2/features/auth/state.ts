@@ -236,7 +236,7 @@ export function authFailure(error: unknown, action: string, online = true): Auth
   // 本机账号库存满（全面检测 Q40）。放在「安全存储」之前：以前满了也报存储不可用，
   // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
   if (/保存的账号已满/.test(message)) return { message: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。', kind: 'final' }
-  if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。', kind: 'support' }
+  if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。', kind: 'support' }
   // 两步验证第二步的几句已经是给用户看的话，原样上屏；不然会被下面「验证码」「频繁」两条宽正则改写。
   const twoFactor = twoFactorMessages.find((text) => message.includes(text))
   if (twoFactor) return { message: twoFactor, kind: 'final' }

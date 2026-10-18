@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { classifyOperationError, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
-import { networkFailureMessages, toolCertificateMessages } from '../../electron/network-failure'
+import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
+import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
 import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 import {
@@ -45,12 +46,21 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。' },
   installBlocked: { sample: 'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录' },
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
+  // 主进程按 npm 的错误码写好的中文原因，错误码留在句尾（#1100 第1、3条）。
+  downloadUnreachable: { sample: 'Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）' },
+  downloadSourceError: { sample: 'Claude Code 安装失败：国内 npm 镜像：下载源那边出错（错误码 E503）' },
+  // 主进程装之前到官方源核对安装清单那一步没连上（#1057 第5b条）。
+  officialRegistryUnreachable: { sample: `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。` },
+  // config-files 认出工具的配置文件本身是链接时那句（#1100 第2条）。
+  configLink: { sample: configLinkRefusalMessage('用户文件夹里的 .claude/settings.json', 'file'), target: 'config' },
   // config-files 写 Key 前的校验（safe-local-data）原话。
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
-  configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本地配置文件'", target: 'config' },
+  configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
+  // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
+  configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
   // 主进程（system-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
@@ -169,7 +179,57 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('Codex CLI 安装失败：下载 ETIMEDOUT')
     expect(hint?.title).toBe('下载超时')
     expect(hint?.body).toBe('下载没有完成，已安装的工具不受影响。')
-    expect(hint?.actions).toEqual([{ id: 'retry', label: '换官方源重试' }])
+    // 以前是「换官方源重试」，可有时连不上的正是官方源（#1100 第3条）。
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }])
+  })
+
+  // 下载源自己出错、连不上，不再借账号那边的「星芒服务器」「服务暂时不可用」，也不再一律说成「下载超时」（#1100 第3条）。
+  it('blames the download source, not the Xingmang servers, when an install cannot fetch', () => {
+    for (const sourceError of [
+      'Claude Code 安装失败：npm 官方源：命令执行失败（退出码 1）：npm-cli.js（E500；500 Internal Server Error - GET https://registry.npmjs.org/x）',
+      'Node.js 自动安装失败：下载安装包时下载源那边出错（错误码 HTTP 503）。过几分钟再点「重试」。',
+      'Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）',
+    ]) expect([sourceError, classifyOperationError(sourceError)]).toEqual([sourceError, 'downloadSourceError'])
+    const source = presentOperationError('Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）')
+    expect(source).toMatchObject({ title: '下载源暂时出错', actions: [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }] })
+
+    for (const unreachable of [
+      'Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）',
+      'Claude Code 安装失败：npm 官方源：和下载源的连接被切断（错误码 ECONNRESET）',
+      'Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。检查网络后再点「重试」。',
+    ]) expect([unreachable, classifyOperationError(unreachable)]).toEqual([unreachable, 'downloadUnreachable'])
+    expect(presentOperationError('Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）')).toMatchObject({
+      title: '连不上下载源', actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
+    })
+    // 真的超时照旧是「下载超时」，主进程新写的那句也认得出、标题不再被原话吞掉。
+    const timedOut = presentOperationError('Claude Code 安装失败：npm 官方源：下载太久没有完成，超时中止（错误码 ETIMEDOUT）')
+    expect(timedOut?.title).toBe('下载超时')
+
+    // 登录、账号这些场合照旧。
+    expect(classifyOperationError('星芒服务返回 500 Internal Server Error')).toBe('server')
+    expect(classifyOperationError('星芒服务返回 502 Bad Gateway')).toBe('serviceUnavailable')
+    expect(classifyOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')).toBe('timeout')
+  })
+
+  it('points a full disk at the config file, not the install folder, when a config write fails', () => {
+    const hint = presentOperationError("改用当前账号没有完成：ENOSPC: no space left on device, write '本机路径'", 'config')
+    expect(hint).toMatchObject({
+      key: 'configDiskFull',
+      title: '磁盘空间不够',
+      body: '配置文件所在的磁盘（一般是系统盘）没有空间了，原来的设置没有动。清理出一些空间后再点「重试」。',
+      actions: [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }],
+    })
+    expect(classifyOperationError('Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write')).toBe('diskFull')
+  })
+
+  it('says the official npm registry is the only way through when the manifest check cannot connect', () => {
+    const message = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。`
+    expect(presentOperationError(message)).toMatchObject({
+      key: 'officialRegistryUnreachable',
+      title: '连不上 npm 官方源',
+      body: '这一步只能走官方源，换国内镜像也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。',
+      actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
+    })
   })
 
   // 「Key 失效」的「一键修复」以前落到「找客服」：目录里写好了这颗按钮，表里没有
@@ -222,10 +282,10 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('treats a .NET UnauthorizedAccessException as a denied file, not an expired login', () => {
-    const raw = "System.UnauthorizedAccessException: Access to the path '本地配置文件 is denied."
+    const raw = "System.UnauthorizedAccessException: Access to the path '本机路径 is denied."
     expect(classifyOperationError(raw)).toBe('permission')
     expect(classifyOperationError(raw, 'config')).toBe('configPermission')
-    expect(classifyOperationError("Access to the path '本地配置文件 is denied.", 'config')).toBe('configPermission')
+    expect(classifyOperationError("Access to the path '本机路径 is denied.", 'config')).toBe('configPermission')
   })
 
   it('sends a permission failure to the directory and the log, never to an elevated retry', () => {
@@ -238,7 +298,7 @@ describe('renderer-v2 operation error classification', () => {
 
   it('says the config file could not be written when the caller writes one, never the install directory', () => {
     // 已知29：改用当前账号、重新写入密钥 这些写的是配置文件，以前也叫人去看安装目录、复制安装目录的路径。
-    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件'"
+    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径'"
     const hint = presentOperationError(raw, 'config')
     expect(hint?.key).toBe('configPermission')
     expect(hint?.title).toBe('写不进配置文件')
@@ -248,10 +308,10 @@ describe('renderer-v2 operation error classification', () => {
     expect(presentOperationFailure({ message: '重新写入密钥 没有完成', detail: 'EACCES: permission denied', target: 'config' })?.key).toBe('configPermission')
     // 不说写的是什么时照旧（装工具、更新工具）。
     expect(presentOperationError(raw)?.title).toBe('写不进安装目录')
-    // 只换权限这一类：文件被占用、搬过的文件夹、磁盘满还是原来那几句。
+    // 文件被占用、搬过的文件夹还是原来那几句；磁盘满换成说配置所在那块盘（#1100 第6条）。
     expect(classifyOperationError('写入失败：文件被占用', 'config')).toBe('toolRunning')
     expect(classifyOperationError('Provider 配置根目录不能经过符号链接或目录联接（EPERM）', 'config')).toBe('folderRelocated')
-    expect(classifyOperationError('写入配置失败：ENOSPC', 'config')).toBe('diskFull')
+    expect(classifyOperationError('写入配置失败：ENOSPC', 'config')).toBe('configDiskFull')
     // 日志照旧落「反馈与客服」的运行日志：那里记得全。
     expect(operationLogSection({ message: raw, tool: 'claude' })).toBe('log')
   })
@@ -432,6 +492,21 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'network', label: '打开检查页' }, { id: 'support', label: '找客服' }])
   })
 
+  it('tells a dotfiles-linked config apart from a relocated folder and keeps where it sits on screen', () => {
+    for (const [location, kind] of [['用户文件夹里的 .claude\\settings.json', 'file'], ['用户文件夹里的 .codex/config.toml', 'file'], ['config.toml', 'file'], ['用户文件夹里的 .claude', 'folder']] as const) {
+      const message = configLinkRefusalMessage(location, kind)
+      const failure = operationFailureFrom(new Error(`Error invoking remote method 'config:save': Error: ${message}`), '改用当前账号')
+      // 位置躲得过脱敏，原样上屏；主进程那句已经写明换成什么，错误框只配标题和按钮。
+      expect(failure.message).toBe(message)
+      const hint = presentOperationFailure({ ...failure, target: 'config' })
+      expect(hint?.key).toBe('configLink')
+      expect(hint?.title).toBe('配置文件是个链接')
+      expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'support', label: '找客服' }])
+    }
+    // 文件夹被搬走（联接、整个工具文件夹被链走）照旧说「文件夹被搬到了别的位置」。
+    expect(classifyOperationError('配置路径不能经过符号链接或目录联接', 'config')).toBe('folderRelocated')
+  })
+
   it('sends a failed undo to the backups action whether the message names the new or the old place', () => {
     for (const where of ['「设置 › 备份迁移」', '「备份」']) {
       const hint = presentOperationError(`改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到${where}里恢复切换前那一份。`)
@@ -534,13 +609,33 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 
+  // 主进程按 npm 原因表写好的句子（#1100 第1条）：码留在句尾，认得出的照旧配目录那一类，整句自己说清下一步的不配。
+  it('reads the Chinese npm sentences by the codes left at the end', () => {
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：磁盘空间不足（错误码 ENOSPC）。')).toBe('diskFull')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安装目录拒绝访问（错误码 EPERM）。')).toBe('permission')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：文件被占用（错误码 EBUSY）。')).toBe('toolRunning')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止。')).toBe('downloadTimeout')
+    expect(presentOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止。')?.title).toBe('下载超时')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：解析不出下载源的地址（错误码 ENOTFOUND）。')).toBe('downloadUnreachable')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：和下载源的连接被切断（错误码 ECONNRESET）。')).toBe('downloadUnreachable')
+    expect(classifyOperationError('Codex CLI 安装失败：国内 npm 镜像：下载源那边出错（错误码 E503）。')).toBe('downloadSourceError')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。')).toBe('tlsIntercepted')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书没通过校验（错误码 CERT_HAS_EXPIRED）。')).toBe('certDate')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止；国内 npm 镜像：找不到要装的版本（错误码 ETIMEDOUT、E404）。过一会儿再点「重试」；一直这样请找客服。')).toBe('downloadTimeout')
+    for (const message of [
+      'Codex CLI 安装失败：npm 官方源：下载源拒绝了这次下载（错误码 E403）。换个网络后再点「重试」；一直这样请找客服。',
+      'Codex CLI 安装失败：npm 官方源：下载下来的文件没通过校验，已经丢掉（错误码 EINTEGRITY）。再点「重试」；一直这样换个网络。',
+      'Codex CLI 安装失败：npm 官方源：要装的版本和它用到的组件对不上（错误码 ERESOLVE）。过一会儿再点「重试」；一直这样请找客服。',
+    ]) expect([message, presentOperationError(message)]).toEqual([message, null])
+  })
+
   // 网络把握手掐断不是证书被换了（#1060）：和连接被重置一样落到连不上那几张卡片。
   it('reads a handshake the network cut as a failed connection, not a replaced certificate', () => {
     expect(classifyOperationError('检查网络时出错：net::ERR_SSL_PROTOCOL_ERROR')).toBe('timeout')
     expect(classifyOperationError('账号接口请求失败：net::ERR_QUIC_HANDSHAKE_FAILED')).toBe('timeout')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：npm error code ERR_SSL_WRONG_VERSION_NUMBER')).toBe('downloadTimeout')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：npm error code ERR_SSL_WRONG_VERSION_NUMBER')).toBe('downloadUnreachable')
     // OpenSSL 原文里的十六进制串不能被按状态码认的那几条抢走。
-    expect(classifyOperationError('Grok CLI 安装失败：ERR_SSL_WRONG_VERSION_NUMBER 40C7B5F8E5240000:error:0A00010B:SSL routines')).toBe('downloadTimeout')
+    expect(classifyOperationError('Grok CLI 安装失败：ERR_SSL_WRONG_VERSION_NUMBER 40C7B5F8E5240000:error:0A00010B:SSL routines')).toBe('downloadUnreachable')
     expect(classifyOperationError(`重新写入密钥 没有完成：${networkFailureMessages.refused}`)).toBe('timeout')
     // 证书真对不上的照旧是「连接被网络拦截」。
     expect(classifyOperationError("账号接口请求失败：Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")).toBe('tlsIntercepted')

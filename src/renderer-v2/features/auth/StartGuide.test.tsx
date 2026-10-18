@@ -349,16 +349,27 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('写不进安装目录')
   })
 
+  it('puts the linked config file and what to do about it on the red line instead of the folded raw text', () => {
+    // 主进程那句（electron/config-link-refusal.ts）经 account-source-switch 包一层后的样子（#1100 第2条）。
+    const raw = '改用当前账号没有完成：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。已恢复到切换前的配置。'
+    const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
+    expect(failure.message).toBe('改用当前账号没有成功：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。不会弄就点「复制给客服」发给客服。')
+    expect(failure.reason).toBe('配置文件是个链接')
+    // 包在外面的那层（已恢复到切换前的配置）还在给客服看的原话里。
+    expect(failure.detail).toBe(raw)
+    expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/不会弄就点「需要帮助」。$/)
+  })
+
   it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
     expect(guideStepFailure(new Error('请先确认账号连接，再打开工具。'), '打开工具').message).toBe('请先确认账号连接，再打开工具。')
     expect(guideStepFailure(new Error('找不到 C:\\Users\\alice\\.codex\\config.toml'), '确认连接').message).not.toContain('alice')
   })
 
   it('does not show an English failure as is because its redacted path reads as Chinese', () => {
-    // 脱敏后的占位词「本地配置文件」本身是汉字，以前这句英文整句上屏（第三十批 A）。
+    // 脱敏后的占位词「本机路径」本身是汉字，以前这句英文整句上屏（第三十批 A）。
     const failure = guideStepFailure(new Error("ENOENT: no such file or directory, open 'C:\\Users\\张三\\.codex\\auth.json'"), '确认连接', true)
     expect(failure.message).toBe('确认连接没有成功（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。')
-    expect(failure.detail).toBe("ENOENT: no such file or directory, open '本地配置文件")
+    expect(failure.detail).toBe("ENOENT: no such file or directory, open '本机路径")
   })
 
   it('never borrows the login wording', () => {
