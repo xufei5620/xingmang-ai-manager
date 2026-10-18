@@ -58,7 +58,14 @@ export function createReleaseGuardStore(options: { filePath: string }): ReleaseG
       }
     },
     write(guard) {
-      const content = `${JSON.stringify({ version: 1, badVersions: guard.badVersions, rollout: guard.rollout })}\n`
+      // 记下这份出自哪一版状态文件：以后读到更旧的副本就不拿它盖这份（#1157 第 10 条）。0.2.20 以前的版本
+      // 读这个文件时不认 updatedAt，照旧能用。
+      const content = `${JSON.stringify({
+        version: 1,
+        badVersions: guard.badVersions,
+        rollout: guard.rollout,
+        ...(guard.updatedAt ? { updatedAt: guard.updatedAt } : {}),
+      })}\n`
       const result = queue.then(async () => {
         ensureSafeDataDirectory(path.dirname(options.filePath), storeLabel)
         await writeAtomicSafeUtf8File(options.filePath, content, storeLabel)

@@ -602,6 +602,48 @@ describe('Skill discovery and managed mutations', () => {
     expect(backups.length).toBeLessThanOrEqual(5)
   })
 
+  it('waits behind a config save in the queue before switching a plugin or skill (#1157 item 9)', async () => {
+    const home = temporaryDirectory()
+    const skillPath = path.join(home, '.agents', 'skills', 'alpha', 'SKILL.md')
+    const configPath = path.join(home, '.codex', 'config.toml')
+    write(skillPath, '---\nname: Alpha\ndescription: Test\n---\n')
+    const original = 'model = "gpt-test"\n[plugins."sample@curated"]\nenabled = false\n'
+    write(configPath, original)
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[1] !== 'list') return marketplaces()
+      const pluginEntry = asRecord(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).plugins)?.['sample@curated'])
+      return pluginCatalog([plugin('sample@curated', true, Boolean(pluginEntry?.enabled))])
+    }
+    // 保存 Codex 配置正占着这一队、在等模型检测。
+    let releaseSave = (): void => undefined
+    let queue: Promise<unknown> = new Promise<void>((resolve) => { releaseSave = resolve })
+    let queued = 0
+    function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
+      queued += 1
+      const next = queue.then(operation, operation)
+      queue = next.catch(() => undefined)
+      return next
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, configPath, invoke, serializeConfigWrite })
+
+    const pluginSwitch = service.setPluginEnabled('sample@curated', true)
+    const skillSwitch = service.setSkillEnabled(skillPath, false)
+    await vi.waitFor(() => expect(queued).toBe(2))
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(original)
+
+    releaseSave()
+    expect((await pluginSwitch).plugins[0].enabled).toBe(true)
+    expect((await skillSwitch).skills[0].enabled).toBe(false)
+    const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(asRecord(asRecord(parsed.plugins)?.['sample@curated'])?.enabled).toBe(true)
+    expect(asRecord(parsed.skills)?.config).toEqual([{ path: skillPath, enabled: false }])
+
+    // 卸载时删启停记录也排同一队。
+    await service.uninstallSkill(skillPath)
+    expect(queued).toBe(3)
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).skills)?.config ?? []).toEqual([])
+  })
+
   it('refuses to mutate config.toml through a directory junction', async () => {
     const home = temporaryDirectory()
     const outside = temporaryDirectory()

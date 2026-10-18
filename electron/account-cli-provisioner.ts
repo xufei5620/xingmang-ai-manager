@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { activeProviderIds, buildAccountKeyName, resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel, type CliModelHints } from './cli-model-defaults'
 import { findAccountKeyById, isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
@@ -10,7 +11,7 @@ import {
   type ManagedCliGroupListing,
   type ResolvedManagedCliGroup,
 } from './managed-cli-groups'
-import type { StoredManagedCliKey } from './managed-cli-key-store'
+import type { ManagedCliGroupCheck, StoredManagedCliKey } from './managed-cli-key-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
@@ -68,6 +69,9 @@ export interface ManagedCliKeyStoreLike {
   remove(userId: number, keyId: number): Promise<void>
   captureRevision?: () => number
   getSiteId?: () => string
+  /** 三把都缓存时上一次问服务端分组的记录（#1157 第 8 条）。缺省 = 只记在内存里，软件重开就忘。 */
+  readGroupCheck?: (userId: number) => Promise<ManagedCliGroupCheck | undefined>
+  saveGroupCheck?: (userId: number, check: ManagedCliGroupCheck) => Promise<void>
 }
 
 interface ResolvedManagedCliKeys {
@@ -87,6 +91,12 @@ type ManagedKeyAccountService = Pick<RelayBackendClient,
      * 缺省 = 只用程序自带的那份。挂在这里是因为分组对照也挂在这里：两样都只搭启动时那次读取的便车。
      */
     getCliModelHints?: () => Promise<CliModelHints | null>
+    /**
+     * 不等、手上现有的分组对照：状态文件这次启动还没读成过给 undefined（说不准对照改没改），读成过给那份里的
+     * 对照（没写对照是 null）。三把都缓存、还没到该查的时候只拿它比一下对照改没改，不为它等状态文件（#1157
+     * 第 8 条）。缺省 = 照旧等 getAccountGroupHints。
+     */
+    peekAccountGroupHints?: () => AccountGroupHints | null | undefined
   }
 
 class AccountSessionChangedError extends Error {
@@ -149,21 +159,17 @@ function isGroupRejection(error: unknown): boolean {
 const cachedGroupCheckIntervalMs = 24 * 60 * 60 * 1000
 const cachedGroupRetryIntervalMs = 10 * 60 * 1000
 
-export interface CachedGroupCheck {
-  at: number
-  /** 那次问成了没有。没问成（离线、超时、接口出错）隔一会儿就再试，不等满一天。 */
-  succeeded: boolean
-  /** 那次用的分组对照（accountGroupHintsFingerprint）。发布者一改对照就不等满一天。 */
-  hints: string
-}
+export type CachedGroupCheck = ManagedCliGroupCheck
 
+// 记进加密缓存里，所以存摘要不存原文：几家各列几个候选名，16 个账号攒起来会撑破缓存的大小上限。
 export function accountGroupHintsFingerprint(hints: AccountGroupHints | null): string {
   if (!hints) return ''
-  return JSON.stringify(activeProviderIds.map((provider) => hints[provider] ?? []))
+  return createHash('sha256').update(JSON.stringify(activeProviderIds.map((provider) => hints[provider] ?? []))).digest('hex')
 }
 
-export function isCachedGroupCheckDue(previous: CachedGroupCheck | undefined, hints: string, now: number): boolean {
-  if (!previous || previous.hints !== hints) return true
+/** hints 给 undefined = 手上还没有对照、说不准改没改：只按时间算，不为它把还没到点的那一查提前。 */
+export function isCachedGroupCheckDue(previous: CachedGroupCheck | undefined, hints: string | undefined, now: number): boolean {
+  if (!previous || (hints !== undefined && previous.hints !== hints)) return true
   const elapsed = now - previous.at
   // 系统时间往回拨过：记下的那次说明不了什么，当作该查了。
   if (elapsed < 0) return true
@@ -214,7 +220,8 @@ interface PendingKeyRetirement {
   replacementId: number
 }
 
-// 按缓存那个对象记：同步和写配置是两次调用、各自的账号包装也不一定是同一个，缓存是同一个。
+// 按缓存那个对象记：同步和写配置是两次调用、各自的账号包装也不一定是同一个，缓存是同一个。缓存会落盘的
+// （readGroupCheck / saveGroupCheck）也记一份在这里：同一次启动里不用每轮都去解一遍缓存文件。
 const cachedGroupChecks = new WeakMap<ManagedCliKeyStoreLike, Map<string, CachedGroupCheck>>()
 // 等新 Key 写进工具再删的旧 Key，只记在内存里：软件关了就忘，旧那把留在账号里，宁可不删（失败不删）。
 const pendingKeyRetirements = new WeakMap<ManagedCliKeyStoreLike, Map<string, PendingKeyRetirement>>()
@@ -226,6 +233,45 @@ function storeScopedMap<T>(registry: WeakMap<ManagedCliKeyStoreLike, Map<string,
     registry.set(keyStore, entries)
   }
   return entries
+}
+
+async function previousGroupCheck(
+  keyStore: ManagedCliKeyStoreLike,
+  checks: Map<string, CachedGroupCheck>,
+  scope: string,
+  userId: number,
+): Promise<CachedGroupCheck | undefined> {
+  const known = checks.get(scope)
+  if (known || typeof keyStore.readGroupCheck !== 'function') return known
+  const stored = await keyStore.readGroupCheck(userId).catch(() => undefined)
+  if (stored && !checks.has(scope)) checks.set(scope, stored)
+  return checks.get(scope)
+}
+
+// 记不下来只是下次开机再问一次，不让这一轮同步失败。
+async function rememberGroupCheck(
+  keyStore: ManagedCliKeyStoreLike,
+  checks: Map<string, CachedGroupCheck>,
+  scope: string,
+  userId: number,
+  record: CachedGroupCheck,
+): Promise<void> {
+  checks.set(scope, record)
+  if (typeof keyStore.saveGroupCheck === 'function') await keyStore.saveGroupCheck(userId, record).catch(() => undefined)
+}
+
+// 没到点时只拿手上现有的对照比，不等状态文件；没有不等的那条路时照旧等。
+async function knownGroupHintsFingerprint(accountService: ManagedKeyAccountService): Promise<string | undefined> {
+  if (typeof accountService.peekAccountGroupHints !== 'function') {
+    return accountGroupHintsFingerprint(await loadAccountGroupHints(accountService))
+  }
+  if (accountService.getActiveSiteId?.() === 'solov-api') return accountGroupHintsFingerprint(null)
+  try {
+    const hints = accountService.peekAccountGroupHints()
+    return hints === undefined ? undefined : accountGroupHintsFingerprint(hints)
+  } catch {
+    return undefined
+  }
 }
 
 function retirementSlot(siteId: string | undefined, userId: number, provider: ProviderId): string {
@@ -339,12 +385,15 @@ async function resolveManagedCliKeys(
     } else if (keyStore) {
       const checks = storeScopedMap(cachedGroupChecks, keyStore)
       const scope = `${activeSiteId ?? ''}:${userId}`
-      const hints = accountGroupHintsFingerprint(await loadAccountGroupHints(accountService))
+      const previous = await previousGroupCheck(keyStore, checks, scope, userId)
+      const knownHints = await knownGroupHintsFingerprint(accountService)
       assertSameAuthenticatedUser(accountService, capture)
-      if (isCachedGroupCheckDue(checks.get(scope), hints, Date.now())) {
+      if (isCachedGroupCheckDue(previous, knownHints, Date.now())) {
         listing = await loadManagedCliGroupListing(accountService)
+        // 记的是这次查分组真用上的那份对照：查的时候已经等过状态文件，这里不再多等。
+        const hints = accountGroupHintsFingerprint(await loadAccountGroupHints(accountService))
         groupCheck = { checks, scope, record: { at: Date.now(), succeeded: listing !== null, hints } }
-        checks.set(scope, groupCheck.record)
+        await rememberGroupCheck(keyStore, checks, scope, userId, groupCheck.record)
       }
     }
     const resolvedGroups = listing?.resolved ?? null
@@ -407,7 +456,7 @@ async function resolveManagedCliKeys(
           if (listing.names.includes(previous.group)) {
             // 三把都缓存、对照改了却没换过去：旧那把的分组还在、照样能用，接着用它，过一会儿再试。
             keys.set(provider, previous)
-            groupCheck.checks.set(groupCheck.scope, { ...groupCheck.record, succeeded: false })
+            if (keyStore) await rememberGroupCheck(keyStore, groupCheck.checks, groupCheck.scope, userId, { ...groupCheck.record, succeeded: false })
             continue
           }
           // 分组没了，旧那把已经用不了：从缓存里拿掉，下一轮照常重签、照实报失败，不再拿它当「已连好」。

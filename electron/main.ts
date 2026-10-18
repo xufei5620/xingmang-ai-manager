@@ -1656,6 +1656,7 @@ if (!hasSingleInstanceLock) {
       repositoryRoot: storedSettings.workspace,
       trashDirectory: path.join(managerDataDirectory, 'trash', 'skills'),
       windowsExecutionMode: windowsCliExecutionMode,
+      serializeConfigWrite: systemService.serializeToolConfigWrite,
     })
     const providerExtensionService = new ProviderExtensionService({
       ...rootedOptions.providerExtensions,
@@ -2137,8 +2138,14 @@ if (!hasSingleInstanceLock) {
       await serviceStatusMonitor.settled()
       return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
     }
-    // 型号表同上：默认型号、上一代、下架名单。这次打开以后一次也没读成功过，就用上次记下的那份；
-    // 从来没读成功过才用程序自带的（cli-model-defaults.ts）。
+    // 同上但不等：这次启动还没读成过就是 undefined，说不准对照改没改（account-cli-provisioner.ts，#1157 第 8 条）。
+    function peekAccountGroupHints(): AccountGroupHints | null | undefined {
+      if (!serviceStatusMonitor) return null
+      const known = serviceStatusMonitor.lastKnown()
+      return known ? known.accountGroups ?? null : undefined
+    }
+    // 型号表跟分组对照一样等这一次读完：默认型号、上一代、下架名单。这次打开以后一次也没读成功过，
+    // 就用上次记下的那份；从来没读成功过才用程序自带的（cli-model-defaults.ts）。
     async function readCliModelHints(): Promise<CliModelHints | null> {
       if (!serviceStatusMonitor) return null
       await serviceStatusMonitor.settled()
@@ -3386,6 +3393,7 @@ if (!hasSingleInstanceLock) {
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,
+      peekAccountGroupHints,
       cliModelHints: readCliModelHints,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,

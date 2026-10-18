@@ -65,6 +65,12 @@ export interface ServiceStatus {
    * 0.2.20 起的客户端认。
    */
   cliModels?: CliModelHints
+  /**
+   * 发布者改这份文件的时间（GitHub 按钮写的 `updatedAt`），ISO 格式。只拿来比撤回名单和放量哪份更新：
+   * 某条线路、某个 CDN 节点给了一份旧的，不让它盖掉本机记着的新的（#1157 第 10 条）。没写、写错、比本机
+   * 时钟晚一天以上都当没写。
+   */
+  updatedAt?: string
 }
 
 export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
@@ -77,6 +83,8 @@ export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: nu
 export interface ReleaseGuard {
   badVersions: readonly string[]
   rollout: ServiceRollout | null
+  /** 这份出自哪一版状态文件（ServiceStatus.updatedAt）；缺省 = 那份没写，比不出新旧。 */
+  updatedAt?: string
 }
 
 // 一份只写着几个开关的 JSON 远用不到这么大；上限是给「这个地址被换成了别的东西」
@@ -185,13 +193,38 @@ function readRollout(value: unknown): ServiceRollout | null {
   return { version, percent: Math.min(100, Math.max(0, percent)) }
 }
 
+// 时间写在未来太远的当没写：不然一份手误写到明年的文件，会让之后每一份都显得比它旧、谁也盖不掉它。
+// 留一天给两边时钟的偏差。
+const maxUpdatedAtLeadMs = 24 * 60 * 60 * 1000
+
+function readUpdatedAt(value: unknown, now: Date): string | null {
+  if (typeof value !== 'string') return null
+  const at = Date.parse(value)
+  if (!Number.isFinite(at) || at > now.getTime() + maxUpdatedAtLeadMs) return null
+  return new Date(at).toISOString()
+}
+
 /**
  * 记在本地的那份撤回名单和分批放量，按状态文件的同一套口径重新校验：写错的条目丢掉，整份不是
  * 对象返回 null（当作从没读到过）。
  */
-export function parseReleaseGuard(value: unknown): ReleaseGuard | null {
+export function parseReleaseGuard(value: unknown, now: Date = new Date()): ReleaseGuard | null {
   if (!isRecord(value)) return null
-  return { badVersions: readBadVersions(value.badVersions), rollout: readRollout(value.rollout) }
+  const updatedAt = readUpdatedAt(value.updatedAt, now)
+  return {
+    badVersions: readBadVersions(value.badVersions),
+    rollout: readRollout(value.rollout),
+    ...(updatedAt ? { updatedAt } : {}),
+  }
+}
+
+/**
+ * 新读到的这份撤回名单和放量是不是比手上的旧（#1157 第 10 条）。两份都写了时间才比得出来；有一份没写
+ * （手改的文件、0.2.20 以前记下的）就照旧以新读到的为准。
+ */
+export function isOlderReleaseGuard(next: Pick<ReleaseGuard, 'updatedAt'>, current: Pick<ReleaseGuard, 'updatedAt'>): boolean {
+  if (!next.updatedAt || !current.updatedAt) return false
+  return Date.parse(next.updatedAt) < Date.parse(current.updatedAt)
 }
 
 // 最低版本会把人挡在门外，所以比撤回名单读得更严：只认纯 x.y.z，带预发布后缀的
@@ -289,6 +322,7 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
   if (!isRecord(parsed)) return null
   const accountGroups = readAccountGroups(parsed.accountGroups)
   const cliModels = readCliModels(parsed.cliModels)
+  const updatedAt = readUpdatedAt(parsed.updatedAt, now)
   return {
     maintenance: readMaintenance(parsed.maintenance, now),
     badVersions: readBadVersions(parsed.badVersions),
@@ -297,6 +331,7 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
     ...(parsed.toolRouteRewrite === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}),
     ...(accountGroups ? { accountGroups } : {}),
     ...(cliModels ? { cliModels } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
   }
 }
 

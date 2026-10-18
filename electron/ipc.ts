@@ -313,6 +313,9 @@ export interface IpcRegistrationOptions {
   // 服务状态文件里的分组对照（service-status.ts 的 accountGroups）：签 Key、画图技能、AI 对话默认分组
   // 先看它，站上改了分组本名也跟得上。缺省 = 不看对照，照旧按写死的名字和工具专属词认。
   accountGroupHints?: () => Promise<AccountGroupHints | null>
+  // 同上，但不等：状态文件这次启动还没读成过给 undefined。三把 Key 都缓存的开机同步拿它看对照改没改，
+  // 不为它等状态文件（#1157 第 8 条）。缺省 = 照旧等 accountGroupHints。
+  peekAccountGroupHints?: () => AccountGroupHints | null | undefined
   // 服务状态文件里的型号表（service-status.ts 的 cliModels）：登录后签 Key、写配置时挑默认型号先看它。
   // 缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
   cliModelHints?: () => Promise<CliModelHints | null>
@@ -2047,6 +2050,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
     listKeys: accountService.listKeys.bind(accountService),
     ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
+    ...(options.peekAccountGroupHints ? { peekAccountGroupHints: options.peekAccountGroupHints } : {}),
     ...(options.cliModelHints ? { getCliModelHints: options.cliModelHints } : {}),
     // 分组没了换组签了新密钥、新的已写进工具以后，删掉星芒签的旧那把（account-cli-provisioner.ts 的
     // retireReplacedKey，#1074）。删不掉照样往外抛，那边只当没删成。

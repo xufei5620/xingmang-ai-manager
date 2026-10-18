@@ -169,6 +169,12 @@ export interface CodexExtensionServiceOptions {
   invoke?: CodexInvoker
   machinePaths?: WindowsMachinePaths
   windowsExecutionMode?: WindowsCliExecutionMode
+  /**
+   * 保存配置那一队（system-service.ts 的 serializeToolConfigWrite）。启停插件、技能直接改 config.toml，
+   * 保存 Codex 配置正在队里等模型检测时插进来，那边核对配置没被动过就对不上，报「工具配置在模型检测期间
+   * 发生变化」（#1157 第 9 条）。缺省 = 不排队，直接写。
+   */
+  serializeConfigWrite?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
 interface SkillRoot {
@@ -975,6 +981,7 @@ export class CodexExtensionService {
   private readonly trashDirectory: string
   private readonly configPath: string
   private readonly invoke: CodexInvoker
+  private readonly serializeConfigWrite: <T>(operation: () => Promise<T>) => Promise<T>
 
   constructor(options: CodexExtensionServiceOptions = {}) {
     this.userHome = path.resolve(options.userHome ?? options.homeDirectory ?? os.homedir())
@@ -985,6 +992,11 @@ export class CodexExtensionService {
     )
     this.configPath = path.resolve(options.configPath ?? path.join(this.codexHome, 'config.toml'))
     this.invoke = options.invoke ?? defaultInvoker(options)
+    this.serializeConfigWrite = options.serializeConfigWrite ?? ((operation) => operation())
+  }
+
+  private writeConfigToml(mutation: Pick<CodexTomlMutation, 'mutate' | 'editText'>): Promise<string | undefined> {
+    return this.serializeConfigWrite(async () => mutateConfigToml(this.configPath, mutation))
   }
 
   getRepositoryContext(): RepositoryContext {
@@ -1151,7 +1163,7 @@ export class CodexExtensionService {
     if (!before.plugins.some((plugin) => plugin.pluginId === selector && plugin.installed)) {
       throw new Error('只能启停已安装的 Plugin')
     }
-    const rewriteNotice = mutateConfigToml(this.configPath, {
+    const rewriteNotice = await this.writeConfigToml({
       mutate: (config) => {
         if (!isRecord(config.plugins)) config.plugins = {}
         const plugins = config.plugins as Record<string, unknown>
@@ -1224,7 +1236,7 @@ export class CodexExtensionService {
     enabled: boolean,
   ): Promise<{ skills: SkillDto[]; rewriteNotice?: string }> {
     const target = await this.requireManagedSkill(skillPath)
-    const rewriteNotice = mutateConfigToml(this.configPath, {
+    const rewriteNotice = await this.writeConfigToml({
       mutate: (config) => {
         if (!isRecord(config.skills)) config.skills = {}
         const skills = config.skills as Record<string, unknown>
@@ -1281,7 +1293,7 @@ export class CodexExtensionService {
     if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
     // 这里还没有这个技能，config.toml 里它的启停记录只会是以前卸载（旧版本卸载不删）或手删目录
     // 留下的，不清掉的话新导入的一进来就是「已停用」（#1093 第 9 条）。
-    this.forgetSkillEnablement(path.join(target, 'SKILL.md'))
+    await this.forgetSkillEnablement(path.join(target, 'SKILL.md'))
     fs.mkdirSync(root, { recursive: true })
     try {
       copySkillTree(sourceDirectory, target)
@@ -1296,7 +1308,7 @@ export class CodexExtensionService {
     const target = await this.requireManagedSkill(skillPath)
     const trashPath = moveToTrash(target.path, this.trashDirectory)
     // 挪走以后再删启停记录：先删的话挪不动时技能还在，客户关掉的却被打开了（#1093 第 9 条）。
-    this.forgetSkillEnablement(target.path)
+    await this.forgetSkillEnablement(target.path)
     return { skills: await this.listSkills(), trashPath }
   }
 
@@ -1304,9 +1316,9 @@ export class CodexExtensionService {
    * 技能已经不在了，这一步失败不该让卸载、导入报错：记录留着顶多让同一路径再导入的那一份显示
    * 「已停用」，下次导入前还会再清一次。和启停一样，能只删那几段就只删那几段，并留备份。
    */
-  private forgetSkillEnablement(skillPath: string): void {
+  private async forgetSkillEnablement(skillPath: string): Promise<void> {
     try {
-      mutateConfigToml(this.configPath, {
+      await this.writeConfigToml({
         mutate: (config) => removeSkillConfigEntries(config, skillPath),
         editText: (source, before, after) => editTomlArrayTableText(source, ['skills', 'config'], before, after),
       })
