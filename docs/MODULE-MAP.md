@@ -33,7 +33,7 @@
 
 **凭据落盘**：多账号库是 `realm-accounts-v2.dat`（`realm-account-vault-file.ts`）；老的 `saved-accounts.dat`、`account-session.dat` 只读不写，留给迁移。所有用 `safeStorage` 的文件（账号库、记住密码、托管 CLI Key、对话 Key）都经 `safe-storage-backend.ts`，它决定 Linux 没有密钥环时只存内存。
 
-**渲染层与主进程的边界**：renderer-v2 可以直接值导入一批 `electron/*` 模块，但只能是 `scripts/verify-renderer-boundary.test.cjs` 里 `valueImportable` 名单上的零 Node 依赖模块（AGENTS.md I6）。legacy 树只经 `src/types.ts` 拿类型和 `ipc-contract.ts` 的少数值导出。
+**渲染层与主进程的边界**：renderer-v2 可以直接值导入一批 `electron/*` 模块，但只能是 `scripts/verify-renderer-boundary.test.cjs` 里 `valueImportable` 名单上的零 Node 依赖模块（AGENTS.md I6），这些文件第一行都带 `@renderer-importable` 标记。legacy 树只经 `src/types.ts` 拿类型和 `ipc-contract.ts` 的少数值导出。
 
 **几条跨多个文件的链路**：
 

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
@@ -17,6 +17,7 @@ import type {
   ProviderSessionProbeState,
 } from './provider-session-probe-cache'
 import { ProviderSessionProbeCache } from './provider-session-probe-cache'
+import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
 export const providerSessionProviders = ['codex', 'claude', 'gemini', 'grok'] as const
 
@@ -771,32 +772,6 @@ function codexSummary(summary: CodexSessionPage['items'][number], readonly: bool
   }
 }
 
-function roleLabel(role: string): string {
-  if (role === 'user') return '用户'
-  if (role === 'assistant') return 'AI'
-  if (role === 'developer') return '开发者指令'
-  if (role === 'system') return '系统'
-  return role || '其他'
-}
-
-async function writeChunk(output: fs.WriteStream, text: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    output.write(text, 'utf8', (error) => error ? reject(error) : resolve())
-  })
-}
-
-async function endStream(output: fs.WriteStream): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    output.end(resolve)
-    output.once('error', reject)
-  })
-}
-
-function safeMarkdownFileName(summary: ProviderSessionSummary): string {
-  const safe = summary.title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim().slice(0, 80)
-  return `${safe || `${summary.provider}-session`}-${summary.nativeId.slice(0, 8)}.md`
-}
-
 function providerFromId(id: string): ProviderSessionProvider {
   const separator = id.indexOf(':')
   const provider = separator > 0 ? id.slice(0, separator) : ''
@@ -1124,47 +1099,20 @@ export class ProviderSessionsService {
       return { id, provider, outputPath: exported.outputPath, messages: exported.messages, truncated: exported.truncated === true }
     }
     const session = await this.resolveExternalSummary(provider, id)
-    let outputPath = path.resolve(destinationPath)
-    try {
-      if ((await fsPromises.stat(outputPath)).isDirectory()) outputPath = path.join(outputPath, safeMarkdownFileName(session))
-    } catch {
-      if (!path.extname(outputPath)) outputPath = path.join(outputPath, safeMarkdownFileName(session))
-    }
-    if (path.extname(outputPath).toLowerCase() !== '.md') throw new Error('会话导出文件必须使用 .md 扩展名')
-    await fsPromises.mkdir(path.dirname(outputPath), { recursive: true })
-    // 先写同目录临时文件，成功后 rename 原子覆盖，避免失败时破坏用户已有文件。
-    const tempPath = `${outputPath}.${randomUUID()}.tmp`
-    const handle = await fsPromises.open(tempPath, 'wx', 0o600)
-    const output = handle.createWriteStream({ encoding: 'utf8' })
-    try {
-      // Titles come from untrusted session content; a newline or '## ' inside
-      // one would break the exported Markdown structure.
-      await writeChunk(output, `# ${cleanText(session.title)}\n\n`)
-      await writeChunk(output, `- Provider：\`${session.provider}\`\n- 会话 ID：\`${session.nativeId}\`\n`)
-      if (session.cwd) await writeChunk(output, `- 工作目录：\`${session.cwd.replaceAll('`', '\\`')}\`\n`)
-      if (session.model) await writeChunk(output, `- 模型：\`${session.model.replaceAll('`', '\\`')}\`\n`)
-      await writeChunk(output, '\n---\n\n')
-      const content = await this.readExternalMessages(session, async (message) => {
-        await writeChunk(output, `## ${cleanText(roleLabel(message.role))}\n\n${message.text}\n\n`)
-      }, 0)
-      const truncated = content.sourceTruncated || content.stats.invalidLines > 0
-      if (truncated) {
-        await writeChunk(output, '> 注意：源会话超过安全读取上限或含有损坏记录，本导出文件已明确标记为不完整。\n')
-      }
-      await endStream(output)
-      await fsPromises.rename(tempPath, outputPath)
-      return {
-        id,
-        provider,
-        outputPath,
-        messages: content.stats.total,
-        truncated,
-      }
-    } catch (error) {
-      output.destroy()
-      await fsPromises.rm(tempPath, { force: true })
-      throw error
-    }
+    const exported = await exportSessionMarkdown({
+      destinationPath,
+      fileName: sessionMarkdownFileName(session.title, `${session.provider}-session`, session.nativeId),
+      title: session.title,
+      identity: [['Provider', session.provider], ['会话 ID', session.nativeId]],
+      cwd: session.cwd,
+      model: session.model,
+      assistantLabel: 'AI',
+      writeMessages: async (write) => {
+        const content = await this.readExternalMessages(session, write, 0)
+        return { messages: content.stats.total, truncated: content.sourceTruncated || content.stats.invalidLines > 0 }
+      },
+    })
+    return { id, provider, ...exported }
   }
 
   /**

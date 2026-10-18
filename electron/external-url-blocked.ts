@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 // Zero-dependency on purpose: the v2 renderer imports this module to recognise
 // the rejection, so it must never pull in Node or Electron.
 

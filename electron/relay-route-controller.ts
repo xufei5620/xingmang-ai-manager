@@ -37,6 +37,7 @@ import path from 'node:path'
 import { readBoundedResponseText } from './bounded-response'
 import { isJsonContentType, networkFailureCode, parsesAsJsonObject } from './network-failure'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
+import { scheduleTimeout } from './schedule-timeout'
 import {
   relayAutoBackupLine,
   relayAutoPreferredLines,
@@ -223,12 +224,6 @@ const triggerPattern = /^[A-Za-z0-9_.:-]{1,64}$/
 
 /** 全新安装开机那一轮直连没通、改走默认线路时记的 trigger：检查报告据此不说「连着 3 次」。 */
 export const firstLaunchTrigger = 'first-launch'
-
-function scheduleTimeout(callback: () => void, delayMs: number): () => void {
-  const timer = setTimeout(callback, delayMs)
-  timer.unref?.()
-  return () => clearTimeout(timer)
-}
 
 // 0.2.18 及以前两个站都先走直连，历史账号那时存下的「直连」是查通了就定的，不是默认线路连不上退过去的。
 // 现在历史账号先走默认线路（yoyo 10-14），这种结论连同那次切换一起不认，开机照没有结论办：先走默认线路，

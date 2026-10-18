@@ -593,6 +593,112 @@ describe('ProviderSessionsService', () => {
     expect(fs.readFileSync(notesPath, 'utf8')).toBe('用户原有内容')
   })
 
+  // #1073: the export writer is shared with the Codex export; these pin the
+  // bytes the other tools' exports already had before it was moved.
+  it('keeps the exported Markdown and its default file name exactly as before', async () => {
+    const data = fixture()
+    const sessionId = 'abcdef12-3456'
+    writeJsonLines(path.join(data.claude, 'project', 'transcript.jsonl'), [
+      { type: 'custom-title', customTitle: 'Claude 导出: a/b', sessionId },
+      { type: 'user', sessionId, cwd: 'C:/my `project`', message: { role: 'user', content: '你好' } },
+      {
+        type: 'assistant',
+        sessionId,
+        message: { role: 'assistant', model: 'claude-`sonnet`', content: [{ type: 'text', text: '回答' }] },
+      },
+      { type: 'user', sessionId, message: { role: 'developer', content: '开发者说明' } },
+      { type: 'user', sessionId, message: { role: 'system', content: '系统提示' } },
+      { type: 'user', sessionId, message: { role: 'Reviewer', content: '自定义角色\n\n## 原样保留' } },
+      '{broken-json',
+    ])
+    const sessions = service(data, codexReader([]))
+    const page = await sessions.list({ provider: 'claude' })
+    const exportsDirectory = path.join(data.root, 'exports')
+    fs.mkdirSync(exportsDirectory)
+
+    const exported = await sessions.exportMarkdown(page.items[0].id, exportsDirectory)
+
+    const expectedPath = path.join(exportsDirectory, 'Claude 导出_ a_b-abcdef12.md')
+    expect(exported).toEqual({
+      id: page.items[0].id,
+      provider: 'claude',
+      outputPath: expectedPath,
+      messages: 5,
+      truncated: true,
+    })
+    expect(fs.readFileSync(expectedPath, 'utf8')).toBe([
+      '# Claude 导出: a/b',
+      '',
+      '- Provider：`claude`',
+      '- 会话 ID：`abcdef12-3456`',
+      '- 工作目录：`C:/my \\`project\\``',
+      '- 模型：`claude-\\`sonnet\\``',
+      '',
+      '---',
+      '',
+      '## 用户',
+      '',
+      '你好',
+      '',
+      '## AI',
+      '',
+      '回答',
+      '',
+      '## 开发者指令',
+      '',
+      '开发者说明',
+      '',
+      '## 系统',
+      '',
+      '系统提示',
+      '',
+      '## reviewer',
+      '',
+      '自定义角色\n\n## 原样保留',
+      '',
+      '> 注意：源会话超过安全读取上限或含有损坏记录，本导出文件已明确标记为不完整。',
+      '',
+    ].join('\n'))
+    expect(fs.readdirSync(exportsDirectory)).toEqual(['Claude 导出_ a_b-abcdef12.md'])
+  })
+
+  it('treats an extensionless export path as a folder and leaves out empty facts', async () => {
+    const data = fixture()
+    writeJsonLines(path.join(data.grok, 'grok-session', 'chat_history.jsonl'), [
+      { type: 'user', content: '第一句' },
+      { type: 'assistant', content: '第二句' },
+    ])
+    const sessions = service(data, codexReader([]))
+    const page = await sessions.list({ provider: 'grok' })
+    const session = page.items[0]
+    const folder = path.join(data.root, 'exports', 'by-name')
+
+    const exported = await sessions.exportMarkdown(session.id, folder)
+
+    const expectedPath = path.join(folder, '第一句-grok-ses.md')
+    expect(exported).toEqual({ id: session.id, provider: 'grok', outputPath: expectedPath, messages: 2, truncated: false })
+    expect(fs.readFileSync(expectedPath, 'utf8')).toBe([
+      '# 第一句',
+      '',
+      '- Provider：`grok`',
+      '- 会话 ID：`grok-session`',
+      '',
+      '---',
+      '',
+      '## 用户',
+      '',
+      '第一句',
+      '',
+      '## AI',
+      '',
+      '第二句',
+      '',
+      '',
+    ].join('\n'))
+    await expect(sessions.exportMarkdown(session.id, path.join(data.root, 'notes.txt')))
+      .rejects.toThrow(new Error('会话导出文件必须使用 .md 扩展名'))
+  })
+
   it('reuses probe results for unchanged session files across listings', async () => {
     const data = fixture()
     seedExternalSessions(data)

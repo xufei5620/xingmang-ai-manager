@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * 买了订阅的客户，钱包常常是 0：请求实际扣的是订阅，AI 工具照常能用，可首页、
  * 托盘和通知只看钱包，一直说「余额只剩 $0」，客户以为还得再充一笔（第十五批 2）。

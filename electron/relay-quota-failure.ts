@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * 余额用完、Key 额度上限用完、Key 失效，在中转那里是三件完全不同的事，用户要做的也
  * 完全不同：第一件去充值，第二件去调高上限，第三件换一把 Key。以前软件自己的对话把

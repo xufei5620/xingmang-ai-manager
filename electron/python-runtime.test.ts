@@ -68,6 +68,29 @@ describe('Python 3.12 release validation', () => {
     ])
   })
 
+  it('orders 3.12 patch releases numerically and keeps equal versions in feed order', () => {
+    const release = (patch: string, id: number) => ({
+      name: `Python 3.12.${patch}`,
+      resource_uri: `https://www.python.org/api/v2/downloads/release/${id}/`,
+      is_published: true,
+      pre_release: false,
+    })
+    expect(parsePythonReleaseIndex(JSON.stringify([
+      release('9', 1),
+      release('10', 2),
+      release('0', 3),
+      release('10', 4),
+      release('01', 5),
+      release('99999999999999999999', 6),
+    ]))).toEqual([
+      { version: '3.12.99999999999999999999', releaseId: 6 },
+      { version: '3.12.10', releaseId: 2 },
+      { version: '3.12.10', releaseId: 4 },
+      { version: '3.12.9', releaseId: 1 },
+      { version: '3.12.0', releaseId: 3 },
+    ])
+  })
+
   it.each([
     ['x64', 'Windows installer (64-bit)', 'python-3.12.9-amd64.exe'],
     ['arm64', 'Windows installer (ARM64)', 'python-3.12.9-arm64.exe'],

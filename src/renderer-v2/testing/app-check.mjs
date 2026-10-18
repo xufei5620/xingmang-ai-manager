@@ -8551,6 +8551,45 @@ test('a window narrower than the design collapses the sidebar by itself, says wh
   } finally { await page.close() }
 })
 
+// #1133 第 3、4 条：最小窗口选 110% 只剩 970×566 逻辑大小。收成窄条的侧栏一项不少地放得下，不滚、不渐隐
+// （Mac 顶上还要让红黄绿三个点）；状态栏里历史账号那种长邮箱先省略、悬停看全文，网络状态一个字不少。
+test('the smallest window at 110% fits the collapsed sidebar and shortens a long email before the network status', async () => {
+  for (const os of ['windows', 'mac']) {
+    const page = await open(os === 'mac' ? 'longUsername=1&os=mac' : 'longUsername=1')
+    try {
+      await page.setViewportSize({ width: 970, height: 566 })
+      await expect.poll(() => page.locator('.v2-shell').getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal(await page.locator('.v2-root').getAttribute('data-os'), os === 'mac' ? 'mac' : 'win')
+      const scroller = page.getByTestId('sidebar-scroll')
+      await expect.poll(() => scroller.getAttribute('data-fade')).toBe(null)
+      const sidebar = await scroller.evaluate((element) => ({
+        overflow: element.scrollHeight - element.clientHeight,
+        bottom: element.getBoundingClientRect().bottom,
+        feedback: document.querySelector('[data-testid="nav-feedback"]').getBoundingClientRect().bottom,
+        settings: document.querySelector('[data-testid="nav-settings"]').getBoundingClientRect().top,
+      }))
+      assert.ok(sidebar.overflow <= 0, `${os}: the collapsed sidebar overflows by ${sidebar.overflow}px`)
+      assert.ok(sidebar.feedback <= sidebar.bottom && sidebar.bottom <= sidebar.settings, `${os}: every entry is in view above 设置: ${JSON.stringify(sidebar)}`)
+      const email = '已登录 zhangwei.developer2026@company-mail.com.cn'
+      const status = await page.getByTestId('shell-statusbar').evaluate((bar) => {
+        const user = bar.querySelector('[data-testid="statusbar-user"]')
+        const network = bar.querySelector('[data-testid="shell-network-location"] > span')
+        return {
+          barOverflow: bar.scrollWidth - bar.clientWidth,
+          userWidth: user.getBoundingClientRect().width, userCut: user.firstElementChild.scrollWidth > user.firstElementChild.clientWidth,
+          userText: user.textContent, userTitle: user.getAttribute('title'),
+          network: network.textContent, networkCut: network.scrollWidth > network.clientWidth,
+        }
+      })
+      assert.ok(status.barOverflow <= 0, `${os}: the status bar overflows by ${status.barOverflow}px`)
+      assert.ok(status.userWidth <= 220.5 && status.userCut, `${os}: the long email is shortened: ${JSON.stringify(status)}`)
+      assert.deepEqual([status.userText, status.userTitle], [email, email], `${os}: the full email stays on hover`)
+      assert.deepEqual([status.network, status.networkCut], ['网络正常', false], `${os}: the network status is shown in full`)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 test('startup cards no longer carry the dialog shadow that the scroll area cut into a block', async () => {
   const page = await open('justUpdated=1&noticeCollection=1')
   try {

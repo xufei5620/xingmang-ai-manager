@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 import { cliCatalog, type ProviderId } from './catalog'
 import type { CliProcessProbe } from './cli-process-probe'
 import type { CliInstallation } from './tool-installation'
