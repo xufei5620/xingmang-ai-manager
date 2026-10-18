@@ -3,7 +3,7 @@ import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReaso
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { speaksChinese, userFacingErrorMessage } from '../../business-common'
+import { rawErrorMessage, speaksChinese, userFacingErrorMessage } from '../../business-common'
 import { canReadImages, chatLimits } from './api'
 
 export type ChatMode = 'text' | 'image'
@@ -234,7 +234,8 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
 }
 
 export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  // 主进程抛的错隔着一层 IPC 前缀，剥掉以后下面带 ^ 的那条才认得出主进程的原话。
+  const message = rawErrorMessage(error)
   if (code === 'connection-timeout') return 'AI 服务响应较慢，本次等待已超时，请重试'
   // 主进程知道停下前已经发来了什么，会说清上面是不是半截、可能已经计费，原话上屏。
   if (code === 'idle-timeout') return message || 'AI 服务太久没有返回内容，已经停下，请重试'
@@ -253,12 +254,15 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (unwritable >= 0) return message.slice(unwritable)
   // 生图、视频的付费请求可能已经发出去时，主进程的原话都带「请勿重复提交」，还说清了是
   // 超时、已生成没下载下来还是没存下来。必须排在下面「超时 / 网络」那条前面，否则会被改成
-  // 「请检查网络后重试」，照做就再扣一次钱。IPC 前缀是英文，从第一个汉字开始截。
-  if (/重复提交/.test(message)) return message.slice(Math.max(0, message.search(/[\u4e00-\u9fff]/)))
+  // 「请检查网络后重试」，照做就再扣一次钱。
+  if (/重复提交/.test(message)) return message
   // 主进程已经把余额不足、Key 额度上限、Key 失效分开说好了，这里原样放行；否则下面那条
   // 宽泛的「余额」正则会把「额度上限用完」又改回「请充值」。
   const quota = matchRelayQuotaFailureMessage(message)
   if (quota) return relayQuotaFailureMessages[quota]
+  // 本来就是说给客户听的话原样上屏，必须排在下面按字面猜的几条前面：从没登录过时主进程说
+  // 「请先登录星芒账号」，里面有「登录」两个字，以前被 /登录|密钥/ 改成「已失效，请重新登录」。
+  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^生成图片时还不能带图片/.test(message)) return message
   if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值或更换可用分组后重试'
   if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后准备分组'
   if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'
@@ -268,7 +272,6 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (/quality|画质/.test(message)) return '当前模型不支持这个画质档位，请调整后重试'
   if (/invalid.parameter|parameter|参数/.test(message)) return '参数超出可用范围，请检查后重试'
   if (/可能仍|结果不明确/.test(message)) return '请求提交结果不明确，服务端可能仍在处理，请勿立即重复提交'
-  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^生成图片时还不能带图片/.test(message)) return message
   if (/cannot read images/.test(message)) return noImageModelMessage
   return '本次请求没有完成，已保留内容，请稍后重试'
 }

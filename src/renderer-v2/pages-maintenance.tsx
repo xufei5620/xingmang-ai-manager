@@ -1193,12 +1193,15 @@ export function buildFeedbackMessage(input: {
   identity?: string
   lastFailure?: string
   report?: string
+  /** 勾了「附带诊断报告」但这次没生成出来：末尾说一句，客服不会当成客户忘了勾。缺省 = 不说。 */
+  reportMissing?: boolean
 }): string {
   const lines = [`留言反馈 · ${input.type}`, input.description.trim()]
   const contact = input.contact.trim()
   if (contact) lines.push(`联系方式：${contact}`)
   if (input.identity) lines.push(input.identity)
   if (input.lastFailure) lines.push(input.lastFailure)
+  if (input.reportMissing) lines.push('诊断报告：这次没生成出来')
   const head = redactSecretPatterns(lines.join('\n'))
   return input.report ? `${head}\n\n${input.report}` : head
 }
@@ -1222,6 +1225,7 @@ export function FeedbackPage({
   // 错误框「查看日志」把人带回这一页时，刚出的那个错要在「运行日志」最上面，不用再点「刷新」。
   useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
+  const toast = useToast()
   const [tab, setTab] = useState<FeedbackTabValue>(feedbackRequest?.tab ?? 'form')
   const [query, setQuery] = useState('')
   const [level, setLevel] = useState(anyRuntimeLogValue)
@@ -1298,8 +1302,17 @@ export function FeedbackPage({
       return
     }
     void operation.execute('send', async () => {
-      // 每次复制都现取一份报告：几分钟前预览的那份里没有刚才那次出错。
-      const attached = attachReport ? (await api.getFeedbackReport()).text : undefined
+      // 每次复制都现取一份报告：几分钟前预览的那份里没有刚才那次出错。报告生成不出来时
+      // 照样把客户写的复制出去、打开客服窗口，不能让一份报告把整条留言卡住（#1104 第 1 条）。
+      let attached: string | undefined
+      let reportMissing = false
+      if (attachReport) {
+        try {
+          attached = (await api.getFeedbackReport()).text
+        } catch {
+          reportMissing = true
+        }
+      }
       await navigator.clipboard.writeText(buildFeedbackMessage({
         type: typeLabel,
         description,
@@ -1307,10 +1320,13 @@ export function FeedbackPage({
         identity: support?.identity,
         lastFailure: support?.lastFailure,
         report: attached,
+        reportMissing,
       }))
       setCopied(true)
       support?.open()
-    }, '已复制，发给客服就行')
+      if (reportMissing) toast.show('诊断报告没生成出来，只复制了你写的内容，发给客服就行', 'warn')
+      return reportMissing
+    }, (reportMissing) => reportMissing ? '' : '已复制，发给客服就行')
   }
   const tries = [
     { id: 'health', title: '工具装不上，或者打开就闪退', action: '先跑一遍检查', go: () => navigate?.('health') },

@@ -713,7 +713,7 @@ const methods = {
       group: keyId === 201 ? 'Codex_pro' : keyId === 202 ? 'Custom group' : null },
       automatic: { name: automatic.keyName, group: automatic.group } }
   },
-  listAccountKeyModels: async (id: number) => id === 201 ? ['gpt-5.6-sol'] : ['fixture-model', 'fixture-other'],
+  listAccountKeyModels: async (id: number) => id === 201 ? ['gpt-5.6-sol'] : query.has('emptyKeyModels') ? [] : ['fixture-model', 'fixture-other'],
   saveConfigWithAccountKey: async (input) => {
     selectedKeyIds.set(input.provider, input.keyId)
     config.providers[input.provider] = { ...config.providers[input.provider], configurationOwnership: 'account', model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }

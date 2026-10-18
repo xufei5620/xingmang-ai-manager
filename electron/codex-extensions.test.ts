@@ -286,6 +286,93 @@ describe('Codex MCP contract and secret boundary', () => {
     })).rejects.toThrow('环境变量名无效')
     expect(calls).toEqual([['mcp', 'list', '--json'], ['plugin', 'list', '--json']])
   })
+
+  it('stops a login still waiting for the browser and returns the list instead of failing', async () => {
+    const home = temporaryDirectory()
+    const calls: string[][] = []
+    let loginSignal: AbortSignal | undefined
+    const invoke: CodexInvoker = async (argv, options) => {
+      calls.push([...argv])
+      if (argv[0] === 'plugin') return pluginCatalog()
+      if (argv[1] === 'login') {
+        loginSignal = options?.signal
+        // Same as runCommand: an aborted command rejects with its own wording.
+        return await new Promise<string>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(new Error('命令已取消：codex')), { once: true })
+        })
+      }
+      return mcpList([httpMcp('remote_server')])
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    const login = service.loginMcpServer('remote_server')
+    expect(service.cancelMcpLogin('remote_server')).toBe(true)
+
+    await expect(login).resolves.toEqual([expect.objectContaining({ name: 'remote_server' })])
+    expect(loginSignal?.aborted).toBe(true)
+    expect(calls[0]).toEqual(['mcp', 'login', 'remote_server'])
+    // The finished login is forgotten, so a late cancel finds nothing to stop.
+    expect(service.cancelMcpLogin('remote_server')).toBe(false)
+  })
+
+  it('still fails a login that ends on its own and only cancels the named server', async () => {
+    const home = temporaryDirectory()
+    let finish: ((error: Error) => void) | undefined
+    const signals: AbortSignal[] = []
+    const invoke: CodexInvoker = async (argv, options) => {
+      if (argv[1] !== 'login') return mcpList([])
+      if (options?.signal) signals.push(options.signal)
+      return await new Promise<string>((_resolve, reject) => {
+        finish = reject
+      })
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    const login = service.loginMcpServer('remote_server')
+    expect(service.cancelMcpLogin('other_server')).toBe(false)
+    expect(signals.map((signal) => signal.aborted)).toEqual([false])
+    finish?.(new Error('命令执行时间过长，已中止：codex'))
+
+    await expect(login).rejects.toThrow('命令执行时间过长')
+    expect(() => service.cancelMcpLogin('../remote_server')).toThrow('MCP 名称只能包含字母、数字、下划线和连字符')
+  })
+})
+
+describe('Codex MCP login through the real command runner', () => {
+  it('kills the waiting login command when the customer cancels', async () => {
+    const home = temporaryDirectory()
+    const packageRoot = path.join(home, 'node_modules', '@openai', 'codex')
+    const marker = path.join(home, 'login-started')
+    write(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@openai/codex' }))
+    // `mcp login` waits for a browser that never answers; everything else lists nothing.
+    write(
+      path.join(packageRoot, 'bin', 'codex.js'),
+      [
+        "const fs = require('node:fs')",
+        "if (process.argv[3] === 'login') {",
+        `  fs.writeFileSync(${JSON.stringify(marker)}, String(process.pid))`,
+        '  setInterval(() => {}, 1000)',
+        '} else {',
+        "  console.log('[]')",
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const service = new CodexExtensionService({
+      homeDirectory: home,
+      codexPackageRoot: packageRoot,
+      env: process.env,
+      windowsExecutionMode: 'same-user',
+    })
+
+    const login = service.loginMcpServer('remote_server')
+    await vi.waitFor(() => expect(fs.existsSync(marker)).toBe(true), { timeout: 10_000 })
+    const pid = Number(fs.readFileSync(marker, 'utf8'))
+    expect(service.cancelMcpLogin('remote_server')).toBe(true)
+
+    await expect(login).resolves.toEqual([])
+    expect(() => process.kill(pid, 0)).toThrow()
+  }, 20_000)
 })
 
 describe('Codex Plugin and marketplace contracts', () => {

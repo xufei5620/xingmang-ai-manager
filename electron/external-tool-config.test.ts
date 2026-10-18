@@ -6,10 +6,12 @@ import { parse } from 'jsonc-parser'
 import {
   createExternalToolConfig,
   externalToolConfigPath,
+  followExternalToolKey,
   followExternalToolRoute,
   mergeExternalToolConfig,
   saveExternalToolConfig,
   inspectExternalToolConnection,
+  resolveExternalToolProbeCredential,
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
@@ -478,6 +480,95 @@ describe('followExternalToolRoute (batch 43 A)', () => {
     const original = workBuddy([`${from}/chat/completions`, `${from}/chat/completions`])
     const { home, target } = existingConfig('workbuddy', original)
     await expect(followExternalToolRoute('workbuddy', platform, { userHome: home }, { from, to, apiKey: 'sk-owned' }, {
+      beforeReplace() { fs.writeFileSync(target, '[]', 'utf8') },
+    })).rejects.toThrow('在保存前已变化')
+    expect(fs.readFileSync(target, 'utf8')).toBe('[]')
+  })
+})
+
+describe('followExternalToolKey (#1113)', () => {
+  const baseUrl = 'https://xm-direct.solov.cc/v1'
+  const change = { baseUrl, from: 'sk-old', to: 'sk-new' }
+
+  function backups(target: string): string[] {
+    return fs.readdirSync(path.dirname(target)).filter((name) => name.includes('.bak.'))
+  }
+
+  // 两条是星芒用旧 Key 存在这个地址上的，一条是同一个地址别的 Key，一条是同一把 Key 别的地址。
+  function workBuddy(keys: [string, string]): string {
+    const entry = (id: string, url: string, apiKey: string, extra = '') => `{"id":"${id}","url":"${url}","apiKey":"${apiKey}"${extra}}`
+    return `{"availableModels":["gpt-5.4"],"models":[${entry('gpt-5.4', `${baseUrl}/chat/completions`, keys[0], ',"supportsImages":true')},`
+      + `${entry('claude-sonnet-4-6', `${baseUrl}/chat/completions/`, keys[1])},${entry('mine', `${baseUrl}/chat/completions`, 'sk-someone-else')},`
+      + `${entry('elsewhere', 'https://other.example/v1/chat/completions', 'sk-old')}]}`
+  }
+
+  it('changes the key of every WorkBuddy entry saved with the old key on that address and nothing else', async () => {
+    const original = workBuddy(['sk-old', 'sk-old'])
+    const { home, target } = existingConfig('workbuddy', original)
+    const result = await followExternalToolKey('workbuddy', platform, { userHome: home }, change)
+
+    expect(fs.readFileSync(target, 'utf8')).toBe(workBuddy(['sk-new', 'sk-new']))
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
+  })
+
+  it('changes the OpenCode key where it is set, keeping comments, address, SDK and model', async () => {
+    const original = [
+      '{',
+      '  // 客户自己的注释',
+      '  "model": "xingmang/selected",',
+      '  "provider": {',
+      '    "xingmang": {',
+      '      "npm": "@ai-sdk/openai",',
+      `      "options": { "baseURL": "${baseUrl}/", "apiKey": "sk-old", "timeout": 5000 },`,
+      '      "models": { "selected": { "options": { "apiKey": "sk-old", "temperature": 0.2 } }, "other": { "options": { "apiKey": "sk-mine" } } }',
+      '    }',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const { home, target } = existingConfig('opencode', original, 'opencode.jsonc')
+    const result = await followExternalToolKey('opencode', platform, { userHome: home }, change)
+
+    expect(fs.readFileSync(target, 'utf8')).toBe(original.replaceAll('"apiKey": "sk-old"', '"apiKey": "sk-new"'))
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
+    expect(resolveExternalToolProbeCredential('opencode', platform, { userHome: home }, baseUrl)).toEqual({ apiKey: 'sk-new', model: 'selected' })
+  })
+
+  it('edits the OpenCode file that sets the key and adds nothing to the customer\'s other file', async () => {
+    const lower = `{\n  "model": "xingmang/selected",\n  "provider": {\n    "xingmang": {\n      "options": { "baseURL": "${baseUrl}", "apiKey": "sk-old" },\n      "models": { "selected": {} }\n    }\n  }\n}\n`
+    const { home, target } = existingConfig('opencode', '{ "share": "manual" }', 'opencode.jsonc')
+    const lowerPath = path.join(path.dirname(target), 'opencode.json')
+    fs.writeFileSync(lowerPath, lower, 'utf8')
+    const result = await followExternalToolKey('opencode', platform, { userHome: home }, change)
+
+    expect(result.files).toEqual([lowerPath])
+    expect(fs.readFileSync(lowerPath, 'utf8')).toBe(lower.replace('sk-old', 'sk-new'))
+    expect(fs.readFileSync(target, 'utf8')).toBe('{ "share": "manual" }')
+  })
+
+  it.each<[string, ExternalToolId, string]>([
+    ['WorkBuddy has no entry left with the old key', 'workbuddy', workBuddy(['sk-hand-edited', 'sk-hand-edited']).replace('"sk-old"', '"sk-gone"')],
+    ['OpenCode uses another key', 'opencode', JSON.stringify({ model: 'xingmang/selected', provider: { xingmang: { options: { baseURL: baseUrl, apiKey: 'sk-hand-edited' }, models: { selected: {} } } } })],
+    ['the selected OpenCode model overrides the key', 'opencode', JSON.stringify({ model: 'xingmang/selected', provider: { xingmang: { options: { baseURL: baseUrl, apiKey: 'sk-old' }, models: { selected: { options: { apiKey: 'sk-mine' } } } } } })],
+    ['OpenCode now points elsewhere', 'opencode', JSON.stringify({ model: 'xingmang/selected', provider: { xingmang: { options: { baseURL: 'https://other.example/v1', apiKey: 'sk-old' }, models: { selected: {} } } } })],
+  ])('writes nothing when %s', async (_case, tool, original) => {
+    const { home, target } = existingConfig(tool, original, tool === 'opencode' ? 'opencode.jsonc' : undefined)
+    await expect(followExternalToolKey(tool, platform, { userHome: home }, change)).rejects.toThrow('在换密钥前已变化')
+    expect(fs.readFileSync(target, 'utf8')).toBe(original)
+    expect(backups(target)).toEqual([])
+  })
+
+  it('refuses an unusable replacement key without touching the file', async () => {
+    const original = workBuddy(['sk-old', 'sk-old'])
+    const { home, target } = existingConfig('workbuddy', original)
+    await expect(followExternalToolKey('workbuddy', platform, { userHome: home }, { ...change, to: 'sk-bad\nkey' })).rejects.toThrow('apiKey必须是非空单行字符串')
+    expect(fs.readFileSync(target, 'utf8')).toBe(original)
+  })
+
+  it('does not clobber a change made between reading and replacing the configuration', async () => {
+    const { home, target } = existingConfig('workbuddy', workBuddy(['sk-old', 'sk-old']))
+    await expect(followExternalToolKey('workbuddy', platform, { userHome: home }, change, {
       beforeReplace() { fs.writeFileSync(target, '[]', 'utf8') },
     })).rejects.toThrow('在保存前已变化')
     expect(fs.readFileSync(target, 'utf8')).toBe('[]')

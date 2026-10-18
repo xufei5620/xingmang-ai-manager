@@ -578,6 +578,8 @@ test('removing the selected group preserves selection/history and prevents send 
     assert.equal(await page.getByRole('button', { name: '重新生成', exact: true }).isDisabled(), true)
     await page.getByTestId('chat-composer-input').press('Enter')
     assert.equal((await calls(page, 'start')).length, 1)
+    // Enter follows the greyed-out send button: nothing is sent and no red line blames the group.
+    assert.equal(await page.locator('.chat-banner').count(), 0)
     assert.equal((await calls(page, 'prepare')).length, prepared)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after revoked group')
     assert.equal(await page.locator('.chat-message[data-role="user"]').getByText('saved question', { exact: true }).count(), 1)
@@ -586,6 +588,39 @@ test('removing the selected group preserves selection/history and prevents send 
     assert.equal(await page.getByTestId('chat-group-unavailable').count(), 0)
     assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after revoked group')
+  } finally { await page.close() }
+})
+
+test('a remembered group the site has since removed falls back to the recommended one and says the billing group changed', async () => {
+  const state = storedWorkspace()
+  state.conversations[0].settings = { ...state.conversations[0].settings, group: 'retired-group' }
+  const page = await open('', { [storedChatKey]: JSON.stringify(state) })
+  try {
+    await ready(page)
+    assert.equal((await picked(page)).group, 'group-a')
+    assert.equal(await page.locator('.chat-banner[data-tone="neutral"] > span').innerText(), '原来的分组「retired-group」已不可用，已换成「group-a」，之后按「group-a」分组计费。')
+    assert.equal(await page.getByTestId('chat-group-unavailable').count(), 0)
+    await page.getByTestId('chat-composer-input').fill('asked in the new group')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
+    assert.equal((await calls(page, 'start')).at(-1).input.group, 'group-a')
+    assert.equal(await page.locator('.chat-banner').count(), 0)
+  } finally { await page.close() }
+})
+
+test('regenerating before the group has its models says they are still being prepared', async () => {
+  const state = storedWorkspace()
+  state.conversations[0].messages = [
+    { id: 'saved-question', role: 'user', content: 'saved question', reasoning: '', status: 'complete', createdAt: 1 },
+    { id: 'saved-answer', role: 'assistant', content: 'saved answer', reasoning: '', status: 'complete', createdAt: 2 },
+  ]
+  const page = await open('deferPreparation=1', { [storedChatKey]: JSON.stringify(state) })
+  try {
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'prepare'))
+    await page.getByRole('button', { name: '重新生成', exact: true }).click()
+    await page.getByTestId('chat-confirm').getByRole('button', { name: '重新生成', exact: true }).click()
+    assert.equal(await page.locator('.chat-banner > span').innerText(), '正在准备模型，准备好再发送')
+    assert.equal((await calls(page, 'start')).length, 0)
   } finally { await page.close() }
 })
 

@@ -586,7 +586,9 @@ export function Home(props: HomeProps) {
     return () => window.clearTimeout(timer)
   }, [hijackUntil])
   const routeTexts = toolRouteHomeTexts(props.toolRouteStatus, routeClock)
-  const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
+  // 命令行工具和 Codex 桌面端的「打开」一次只放一个（App.tsx 的 launchRequest）。外接客户端的打开不算：
+  // 主进程里它们和别人互不等待（I11 的登记例外），那一行只看自己那家的打开（#1085）。
+  const launchBusy = toolRegistry.some((tool) => jobs[`launch:${tool.id}`])
   const launchWaitingForAccount = useCallback((provider: ProviderId): boolean => {
     const tool = tools.find((entry) => entry.provider === provider)
     if (!tool || tool.source === 'official' || tool.source === 'manual') return false
@@ -966,14 +968,14 @@ export function Home(props: HomeProps) {
     const actions = installJob?.cancellable && props.onCancelInstallExternal
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
       : installJob ? null
-        : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || launchBusy || unsupported || Boolean(switchJob)} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+        : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || unsupported || Boolean(switchJob)} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
           icon={tool.action === 'install' && !unsupported && !manualInstall ? Download : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>
     return <ToolCard key={tool.id} tool={tool.id} off={!tool.status.installed && !installJob && !tool.status.detectionError} meta={meta} metaTone={metaTone} metaTitle={meta}
       badge={badge} actions={actions} progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处；主按钮已经是「确认连接」时菜单里不再重复，换成「打开」（还没连上也能先打开看看）。
         ...(tool.action === 'configure'
-          ? [{ label: '打开', disabled: !tool.status.launchSupported || launchBusy || externalCached, testId: `tool-${tool.id}-open`, onSelect: () => props.onLaunchExternal(tool.id) }]
+          ? [{ label: '打开', disabled: !tool.status.launchSupported || externalCached, testId: `tool-${tool.id}-open`, onSelect: () => props.onLaunchExternal(tool.id) }]
           : [{ label: '配置…', disabled: externalCached, testId: `home-client-${tool.id}`, onSelect: () => props.onConfigureExternal(tool.id) }]),
         ...(switchable ? [status === 'official'
           ? { label: useAccountLabel, disabled: externalCached, testId: `tool-${tool.id}-switch-account`, onSelect: () => props.onSwitchExternalSource?.(tool.id, 'account') }

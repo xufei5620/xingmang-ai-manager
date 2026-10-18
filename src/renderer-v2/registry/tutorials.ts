@@ -254,7 +254,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     lead: '以前用过 Claude 或 ChatGPT 官方账号的，一键就能改用当前账号，也能一键切回去。不用自己备份，也不用重新安装。',
     category: 'account',
     minutes: 2,
-    keywords: ['切换', '官方账号', '当前账号', 'ChatGPT', 'Claude 账号', '中转', '切回', '登录', '401', 'Please run /login', '报错', '备份'],
+    keywords: ['切换', '官方账号', '当前账号', 'ChatGPT', 'Claude 账号', '中转', '切回', '登录', '401', 'Please run /login', '报错', '备份', 'Claude Desktop'],
     steps: [
       {
         title: '看卡片上写的是哪个账号',
@@ -269,8 +269,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '点小标签或「…」切换',
         where: '工具箱首页 → 卡片左下角的小标签，或右下角 … → 改用当前账号 / 切回官方账号',
-        detail: '点一下就行，工具箱会替你做完：先备份原来的配置，再把会冲突的旧登录挪到一边，写好新配置，最后自动测一次能不能连上。',
-        bullets: ['改用前要先登录左下角的账号。', '测下来连不上时会自动恢复原样，并说一句原因。'],
+        detail: '点一下就行，工具箱会替你做完：先备份原来的配置，再把会冲突的旧登录挪到一边，写好新配置，最后自动测一次能不能连上。Claude Desktop 只换它的登录方式（同样先备份），不会自动测。',
+        bullets: ['改用前要先登录左下角的账号。', '测下来连不上时会自动恢复原样，并说一句原因。', 'Claude Desktop 原来那份配置用不上时（比如换过星芒账号），会弹出「连接 Claude Desktop」，点「保存并检测」保存一次就改用当前账号。'],
         expected: '右下角提示「已改用当前账号」或「已切回官方账号」。',
         extra: [{ title: '原来的配置去哪了？', detail: '切换前的配置自动放进「设置 › 备份迁移」，想退回去可以在那里恢复。挪开的官方登录只是换了个位置，切回官方时会放回原处。' }],
         action: '去首页切换',
@@ -278,18 +278,18 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '把已经开着的工具关掉重开',
-        where: 'Claude Code / Codex 窗口',
-        detail: '已经打开的工具还记着旧账号，要关掉重开才会换过来。Codex 桌面端也一样。',
-        bullets: ['先保存手头的工作，再关掉工具窗口。', '回到首页点「打开」。'],
+        where: 'Claude Code / Codex / Claude Desktop 窗口',
+        detail: '已经打开的工具还记着旧账号，要关掉重开才会换过来。Codex 桌面端也一样；Claude Desktop 要完全退出再打开。',
+        bullets: ['先保存手头的工作，再关掉工具窗口。', 'Claude Desktop 只关窗口不算：Mac 上按 Command + Q，Windows 上还要退出屏幕右下角托盘里的 Claude 图标。', '回到首页点「打开」。'],
         expected: '重开后能正常回复。',
         action: '回首页打开工具',
         page: 'home',
       },
       {
         title: '切回官方后提示要登录',
-        where: 'Claude Code / Codex 窗口',
+        where: 'Claude Code / Codex / Claude Desktop 窗口',
         detail: '这台电脑没登录过官方账号时，切回后要在工具里登录一次。',
-        bullets: ['Claude Code：打开后输入 /login，按提示登录 Claude 账号。', 'Codex：打开后按提示用 ChatGPT 账号登录。', '提示「refresh token has expired」时，在 Codex 里退出后重新登录。'],
+        bullets: ['Claude Code：打开后输入 /login，按提示登录 Claude 账号。', 'Codex：打开后按提示用 ChatGPT 账号登录。', 'Claude Desktop：重新打开后，在它的登录页用 Claude 账号登录。用星芒时的聊天记录不会删，切回当前账号还能看到。', '提示「refresh token has expired」时，在 Codex 里退出后重新登录。'],
         expected: '工具里显示已登录，能正常回复。',
         extra: [{ title: '切完还是报 401 或「Please run /login」？', detail: '到「检查」页重新检查一次，看「电脑里另外设过的工具地址或密钥」有没有提示：电脑里另外设过的密钥会盖过当前账号的设置。' }],
         action: '去检查页',
@@ -1220,9 +1220,18 @@ const linuxLaunchTroubleTutorialStep: TutorialStep = {
   page: 'home',
 };
 
-// 沿用的章节里只有这几句讲 Codex 桌面端，Linux 上删掉。原文改了这里就对不上，
-// tutorials.test.ts 会因 Linux 版里又出现「桌面端」而失败。
-const linuxRemovedTutorialSentences = ['Codex 桌面端也一样。', 'Codex CLI 和 Codex 桌面端共用一份设置，会一起改。', 'Codex CLI 与桌面端共用配置，修改会影响两者；'] as const;
+// 沿用的章节里只有这几句讲 Codex 桌面端和 Claude Desktop（两个都没有 Linux 版），Linux 上删掉。原文改了这里就
+// 对不上，tutorials.test.ts 会因 Linux 版里又出现「桌面端」「Claude Desktop」而失败。整条要点删空了就不留那一行。
+const linuxRemovedTutorialSentences = [
+  'Codex 桌面端也一样；Claude Desktop 要完全退出再打开。',
+  'Codex CLI 和 Codex 桌面端共用一份设置，会一起改。',
+  'Codex CLI 与桌面端共用配置，修改会影响两者；',
+  'Claude Desktop 只换它的登录方式（同样先备份），不会自动测。',
+  'Claude Desktop 原来那份配置用不上时（比如换过星芒账号），会弹出「连接 Claude Desktop」，点「保存并检测」保存一次就改用当前账号。',
+  'Claude Desktop 只关窗口不算：Mac 上按 Command + Q，Windows 上还要退出屏幕右下角托盘里的 Claude 图标。',
+  'Claude Desktop：重新打开后，在它的登录页用 Claude 账号登录。用星芒时的聊天记录不会删，切回当前账号还能看到。',
+  ' / Claude Desktop',
+] as const;
 
 function withoutLinuxSentences(text: string): string {
   return linuxRemovedTutorialSentences.reduce((result, sentence) => result.split(sentence).join(''), text);
@@ -1234,8 +1243,9 @@ function linuxTutorialText(topic: TutorialTopic): TutorialTopic {
     lead: withoutLinuxSentences(topic.lead),
     steps: topic.steps.map((step) => ({
       ...step,
+      ...(step.where ? { where: withoutLinuxSentences(step.where) } : {}),
       detail: withoutLinuxSentences(step.detail),
-      ...(step.bullets ? { bullets: step.bullets.map(withoutLinuxSentences) } : {}),
+      ...(step.bullets ? { bullets: step.bullets.map(withoutLinuxSentences).filter(Boolean) } : {}),
       ...(step.extra ? { extra: step.extra.map((entry) => ({ title: entry.title === '已有安装或正在使用 Codex 桌面端？' ? '已经装过这个工具？' : entry.title, detail: withoutLinuxSentences(entry.detail) })) } : {}),
     })),
   };
