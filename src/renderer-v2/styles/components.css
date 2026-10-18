@@ -81,7 +81,10 @@
 .xm-list-row.is-openable:has(.xm-row-open:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; }
 .xm-row-icon { width: 32px; height: 32px; border-radius: var(--radius-input); background: var(--panel-2); display: grid; place-items: center; color: var(--text-2); flex: none; }
 .xm-row-main { flex: 1; min-width: 0; }
-.xm-row-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: var(--font-body); }
+/* 后台给的名字再长也不撑出卡片（issue 1133 第 7 条）：一行放不下时牌子换到下一行，不能断行的长标题也照样折行；
+   牌子最宽一整行，装后台名字的那块（密钥分组、账号名）字包一层带 title 的 span，还放不下就省略、悬停看全名。 */
+.xm-row-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; font-weight: 600; font-size: var(--font-body); overflow-wrap: anywhere; }
+.xm-row-title > .xm-pill > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .xm-row-desc { color: var(--text-3); font-size: var(--font-micro); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; }
 .xm-row-meta { font-size: var(--font-micro); color: var(--text-3); }
 .xm-row-actions { display: flex; align-items: center; gap: 6px; flex: none; }

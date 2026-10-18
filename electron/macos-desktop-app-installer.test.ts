@@ -257,6 +257,53 @@ describe('macOS desktop app installer', () => {
     await expect(fetchMacosDesktopResource('workbuddy', packageUrl('arm64'), {}, network.fetch)).rejects.toThrow('没有可核对')
   })
 
+  it('refuses each kind of bad hop before following it', async () => {
+    const refusals: Array<[string, string]> = [
+      ['https://release-assets.githubusercontent.com:8443/a', '不认识的地址'],
+      ['https://user:secret@release-assets.githubusercontent.com/a', '不认识的地址'],
+      ['https://release-assets.githubusercontent.com/a#fragment', '不认识的地址'],
+      ['/someone/else/releases/download/v1/a.tar.gz', 'github.com'],
+    ]
+    for (const [location, message] of refusals) {
+      const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(init?.redirect).toBe('manual')
+        return redirect(location)
+      }) as typeof globalThis.fetch
+      await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, fetchMock)).rejects.toThrow(message)
+      expect(fetchMock).toHaveBeenCalledOnce()
+    }
+
+    const noLocation = vi.fn(async () => new Response(null, { status: 307 })) as typeof globalThis.fetch
+    await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, noLocation)).rejects.toThrow('缺少 Location')
+    expect(noLocation).toHaveBeenCalledOnce()
+
+    const looping = vi.fn(async (url: string | URL | Request) => redirect(
+      String(url) === packageUrl('arm64') ? assetUrl('a') : packageUrl('arm64'),
+    )) as typeof globalThis.fetch
+    await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, looping)).rejects.toThrow('循环重定向')
+    expect(looping).toHaveBeenCalledTimes(2)
+
+    // Allowed, but not the hop that was asked for: a fetch that followed a redirect on its own.
+    const followedQuietly = (async () => Object.defineProperty(new Response('x'), 'url', { value: assetUrl('a') })) as typeof globalThis.fetch
+    await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, followedQuietly)).rejects.toThrow('绕过了受限的重定向策略')
+
+    const neverCalled = vi.fn() as unknown as typeof globalThis.fetch
+    for (const start of ['https://example.com/opencode.tar.gz', 'http://github.com/anomalyco/opencode/releases/download/v1.18.34/a.tar.gz']) {
+      await expect(fetchMacosDesktopResource('opencode', start, {}, neverCalled)).rejects.toThrow('不认识的地址')
+    }
+    expect(neverCalled).not.toHaveBeenCalled()
+  })
+
+  it('never lets the caller turn automatic redirects back on', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual')
+      expect(new Headers(init?.headers).get('range')).toBe('bytes=10-')
+      return new Response('x')
+    }) as typeof globalThis.fetch
+    await fetchMacosDesktopResource('opencode', packageUrl('arm64'), { redirect: 'follow', headers: { Range: 'bytes=10-' } }, fetchMock)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
   it.skipIf(process.platform === 'win32')('downloads the official package, verifies its Developer ID and Gatekeeper verdict, then moves it into Applications', async () => {
     const f = setup()
     // Left behind by an interrupted earlier run: cleaned up before this one starts.

@@ -21,11 +21,11 @@
 | 组件 | 主要 props | 备注 |
 |---|---|---|
 | `Button` | `variant: primary\|secondary\|ghost\|danger\|accent\|balance` · `size` · `icon` · `iconRight` · `loading` · `disabled` · `onClick` · `kbd?` | `balance` 变体内部读余额档位决定颜色 |
-| `Pill` | `tone` · `dot?: boolean` · `children` | 只展示，不可点 |
+| `Pill` | `tone` · `dot?: boolean` · `children` | 只展示，不可点。装后台给的名字（分组、型号、账号名）时字包一层 `<span title={全名}>`：牌子是 inline-flex，不包这层放不下时是硬截、没有省略号 |
 | `Card` | `title?` · `meta?` · `actions?: ReactNode` · `collapsible?` · `defaultOpen?`（默认 true）· `onOpenChange?` · `padding: 'none'\|'md'` | 有 `title` 才渲染 card-head；可折叠的卡要记住收起时，页面用 `defaultOpen` 和 `onOpenChange` 自己存；标题不折行。`meta` 是超过 24 个字的字符串时放进卡片第一行单独成段（`xm-card-lead`），短的跟在标题后面、放不下打省略号。卡片里直接放 ListRow / ToolRow / 表头时，行和分隔线通到卡片两边，第一行上面不画线 |
 | `ToolRow` | `tool: ToolId` · `status: ToolStatus` · `version?` · `route?` · `model?` · `extraAction?` · `primaryAction` · `menu?: MenuItem[]` · `menuLabel?` · `progress?: number` | 六列网格，第四格（`extraAction`）按内容放宽，放不下时状态牌和它各自打省略号、不叠字（v4 批04）；名字下面那行小字按「线路 · 版本 · 模型」排，`route` 是首页的「线路2」这类标签，排最前免得被长版本挤掉；`menuLabel` 是「…」的鼠标提示和读屏名，缺省「更多操作」 |
 | `ToolCard` | `tool: ToolId` · `meta: ReactNode` · `metaTone?: 'warn'\|'bad'` · `metaTitle?` · `link?: ReactNode` · `badge?: ReactNode` · `actions?: ReactNode` · `menu?` · `menuLabel?` · `progress?: number` · `off?: boolean` | v4 首页的工具卡片（批04）：上面图标、名字和「厂商 · 命令行工具 / 桌面应用」，中间一行说明（`metaTone` 上色，`link` 是下面那行小字链接，如「可更新到 v…」），底下左边一块牌子（来源牌、状态小牌、灰字「未安装」），右边按钮和「…」；有 `progress` 时牌子换成进度条和百分比。底下一行弹性排开，牌子可缩、按钮不缩，两边永不叠字。`off` = 没装，卡片变淡，`data-installed` 跟着写 |
-| `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` · `onOpen?` · `openTestId?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码）。给了 `onOpen` 整行都能点（标题是按钮，键盘和读屏从它进），鼠标停上去变色；`actions` 里的按钮各管各的，不触发整行 |
+| `ListRow` | `icon` · `title` · `badge?` · `desc?` · `descMono?` · `meta?` · `actions` · `off?` · `anchor?` · `onOpen?` · `openTestId?` | 通用行；`anchor` 写成 `data-anchor`，供别处跳来时翻到这一行（检查页按检查项代码）。给了 `onOpen` 整行都能点（标题是按钮，键盘和读屏从它进），鼠标停上去变色；`actions` 里的按钮各管各的，不触发整行。标题和 `badge` 一行放不下时牌子换到标题下一行（行距 4），不能断行的长标题也照样折行；牌子最宽一整行，再长才省略 |
 | `SessionRow` | `tool` · `title` · `path` · `model` · `count` · `when` · `archived?` · `onOpen` | |
 | `Segment` | `options: {value,label,icon?,disabled?}[]` · `value` · `onChange` · `activation?: 'automatic'\|'manual'` | ≤ 5 项；缺省方向键移到哪项就选哪项，`manual` 只挪焦点、回车或空格才选——选了马上有动作的（Codex 界面语言会重开 Codex）用它 |
 | `Chips` | `options: {value,label,count?,leading?,testId?}[]` · `value` · `onChange` · `label?` | v4 组件规范里的「分类」：一排 28 高的圆角按钮（`aria-pressed`），后面带数量，`leading` 放工具图标（只给眼睛看，读屏不念）；`label` 是整组的读屏名。记录页按工具、教程页按类别在用 |
