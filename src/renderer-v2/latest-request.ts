@@ -8,6 +8,11 @@ import { useEffect, useState } from 'react'
 export interface LatestRequest {
   /** 开始一次新请求。返回的函数只在这次仍是最后一次时为真。 */
   begin(): () => boolean
+  /**
+   * 不开始新请求，只记下这一刻：之后有人 begin()、invalidate() 或组件卸载，返回的函数才变假。
+   * 几件事各记各的、互不作废，一换账号全部作废，用这个（App 的 accountEpoch）。
+   */
+  capture(): () => boolean
   /** 不发新请求，只把手上的全部作废：换了账号或参数、关掉弹窗时用。 */
   invalidate(): void
 }
@@ -17,6 +22,10 @@ export function createLatestRequest(): LatestRequest {
   return {
     begin() {
       const id = ++sequence
+      return () => id === sequence
+    },
+    capture() {
+      const id = sequence
       return () => id === sequence
     },
     invalidate() {

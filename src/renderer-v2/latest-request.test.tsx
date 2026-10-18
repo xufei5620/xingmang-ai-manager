@@ -74,6 +74,25 @@ describe('renderer-v2 latest request', () => {
     expect(later()).toBe(false)
   })
 
+  it('lets several captures share one moment until something newer happens', () => {
+    const account = createLatestRequest()
+    const launch = account.capture()
+    const install = account.capture()
+    // Capturing again must not invalidate the earlier capture: both belong to the same account.
+    expect(launch()).toBe(true)
+    expect(install()).toBe(true)
+    account.invalidate()
+    expect(launch()).toBe(false)
+    expect(install()).toBe(false)
+    const reload = account.begin()
+    const afterReload = account.capture()
+    expect(reload()).toBe(true)
+    expect(afterReload()).toBe(true)
+    account.begin()
+    expect(reload()).toBe(false)
+    expect(afterReload()).toBe(false)
+  })
+
   it('keeps separate trackers independent', () => {
     const groups = createLatestRequest()
     const models = createLatestRequest()

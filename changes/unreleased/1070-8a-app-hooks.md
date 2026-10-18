@@ -1,0 +1,4 @@
+## 开发
+
+- 拆 renderer-v2 的 `App.tsx`（#1070 第 8 步）：界面主组件从 2075 行降到 601 行，只剩把各块接起来和摆页面。状态和副作用按块搬进 19 个 hook（17 个文件）：`features/app/` 下的 `useAppBoot`（开机读取）、`useStartupNotices` / `useStartupChecks`（角落提示与开机检查）、`useAppOnlineStatus`（断网横幅）、`useAppNavigation`（页面与落点）、`useAccountBootstrap`（登录后写密钥、断网补跑）、`useRelayRouteSync`（线路跟随）、`useAccountSessionSync`（换账号、退出）、`useAppearance`、`useSupportContact`、`useToolUpdateNotice` / `useBalanceWatch`、`useUpdateBubble`、`useDeepLinks`、`useFailureActions`、`useAppEntryPoints`（托盘、通知、快捷键），`features/tools/` 下的 `useToolInstall`、`useToolLaunch`、`useToolAccountActions`。纯搬运，界面和文字一个字没变。
+- `App.tsx` 里三个手写的防慢响应计数器换成 `useLatestRequest`：`accountEpoch`、`bootstrapEpoch`、`sessionEvents`。`latest-request.ts` 加 `capture()`：只记下这一刻、不作废别人，几件事各记各的、一换账号一起作废（`accountEpoch` 的用法）。其余文件里的计数器下一个 PR 换。
