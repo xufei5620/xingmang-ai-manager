@@ -368,6 +368,36 @@ describe('chooseAiOutputRoot', () => {
     expect(chooseAiOutputRoot(placementOptions(home, full)).movedFromDocuments).toBe(false)
   })
 
+  // #1091：后来才打开云盘同步，作品从那次启动起存到主目录下，以前的还在「文档」里，检查页要说在哪。
+  it.runIf(process.platform === 'win32')('points at earlier works left behind when OneDrive took over documents', () => {
+    const home = temporaryDirectory()
+    const documents = path.join(home, 'OneDrive', 'Documents')
+    fs.mkdirSync(path.join(documents, aiOutputFolderName, 'user-7'), { recursive: true })
+    const options = { isPackaged: true, documentsDirectory: documents, location: { platform: 'win32' as const, home, env: { OneDrive: path.join(home, 'OneDrive') } }, probe: () => undefined }
+
+    expect(chooseAiOutputRoot(options)).toEqual({
+      root: path.join(home, aiOutputFolderName),
+      movedFromDocuments: false,
+      earlierWorksLeftInDocuments: false,
+      earlierWorksLeftInSyncedDocuments: 'onedrive',
+    })
+  })
+
+  it.runIf(process.platform !== 'win32')('points at earlier works left behind when iCloud took over documents, and only when there are some', () => {
+    const home = temporaryDirectory()
+    const documents = path.join(home, 'Documents')
+    fs.mkdirSync(path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'Documents'), { recursive: true })
+    fs.mkdirSync(path.join(documents, aiOutputFolderName), { recursive: true })
+    const options = { isPackaged: true, documentsDirectory: documents, location: { platform: 'darwin' as const, home, env: {} }, probe: () => undefined }
+    const nothingLeft = { root: path.join(home, aiOutputFolderName), movedFromDocuments: false, earlierWorksLeftInDocuments: false }
+
+    expect(chooseAiOutputRoot(options)).toEqual(nothingLeft)
+    fs.mkdirSync(path.join(documents, aiOutputFolderName, 'user-7'))
+    expect(chooseAiOutputRoot(options)).toEqual({ ...nothingLeft, earlierWorksLeftInSyncedDocuments: 'icloud' })
+    // 账号那一套位置（realms/…）两边一起换，只看当前账号自己的那份。
+    expect(chooseAiOutputRoot({ ...options, scope: (root) => path.join(root, 'realms', 'api-account') }).earlierWorksLeftInSyncedDocuments).toBeUndefined()
+  })
+
   it('never probes in development or when the location is already the home folder', () => {
     const home = temporaryDirectory()
     const probed: string[] = []

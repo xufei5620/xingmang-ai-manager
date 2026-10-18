@@ -43,6 +43,12 @@ export interface AiOutputPlacement {
   movedFromDocuments: boolean
   /** 改存之后「文档」那边还有以前的作品：没有搬（多半也删不掉），检查页提一句。 */
   earlierWorksLeftInDocuments: boolean
+  /**
+   * 「文档」被云盘同步（Windows 的 OneDrive、Mac 的 iCloud），作品一开始就存在用户主目录下，
+   * 而「文档」那边还有以前的作品（多半是开同步之前存的）：检查页说一句在哪（#1091）。
+   * 缺省 = 没有这种情况。
+   */
+  earlierWorksLeftInSyncedDocuments?: 'onedrive' | 'icloud'
 }
 
 export interface ChooseAiOutputRootOptions extends ResolveAiOutputRootOptions {
@@ -65,9 +71,10 @@ export interface ChooseAiOutputRootOptions extends ResolveAiOutputRootOptions {
 export function chooseAiOutputRoot(options: ChooseAiOutputRootOptions): AiOutputPlacement {
   const scope = options.scope ?? ((root: string) => root)
   const preferred = scope(resolveAiOutputRoot(options))
-  const unchanged: AiOutputPlacement = { root: preferred, movedFromDocuments: false, earlierWorksLeftInDocuments: false }
-  if (!options.isPackaged) return unchanged
+  if (!options.isPackaged) return { root: preferred, movedFromDocuments: false, earlierWorksLeftInDocuments: false }
   const impl = options.location.platform === 'win32' ? path.win32 : path.posix
+  const synced = earlierWorksInSyncedDocuments(options, preferred, scope)
+  const unchanged: AiOutputPlacement = { root: preferred, movedFromDocuments: false, earlierWorksLeftInDocuments: false, ...(synced ? { earlierWorksLeftInSyncedDocuments: synced } : {}) }
   const fallback = scope(impl.join(options.location.home, aiOutputFolderName))
   if (fallback === preferred) return unchanged
   try {
@@ -77,6 +84,21 @@ export function chooseAiOutputRoot(options: ChooseAiOutputRootOptions): AiOutput
     if (!isWritePermissionError(error)) return unchanged
   }
   return { root: fallback, movedFromDocuments: true, earlierWorksLeftInDocuments: hasAccountFolders(preferred) }
+}
+
+/**
+ * 客户后来才打开 OneDrive 的文档备份或 iCloud 的「桌面与文稿」：resolveAiOutputRoot 从那次启动起
+ * 改放用户主目录，以前存在「文档/XingmangAI」的作品还在原处，作品库里却显示找不到。
+ * 只看那边有没有账号文件夹，不搬：云盘里的文件可能只是个占位，搬动会触发整份下载。
+ */
+function earlierWorksInSyncedDocuments(options: ChooseAiOutputRootOptions, preferred: string, scope: (root: string) => string): 'onedrive' | 'icloud' | null {
+  const platform = options.location.platform
+  if ((platform !== 'win32' && platform !== 'darwin') || !options.documentsDirectory) return null
+  const impl = platform === 'win32' ? path.win32 : path.posix
+  if (!impl.isAbsolute(options.documentsDirectory)) return null
+  const inDocuments = scope(impl.join(options.documentsDirectory, aiOutputFolderName))
+  if (inDocuments === preferred || !hasAccountFolders(inDocuments)) return null
+  return platform === 'win32' ? 'onedrive' : 'icloud'
 }
 
 function probeAiOutputDirectory(directory: string): void {

@@ -260,7 +260,7 @@ export interface DiagnosticsDependencies {
    * 启动时 AI 作品位置是不是因为「文档」不让写改到了个人文件夹（ai-output-location.ts
    * 的 chooseAiOutputRoot）。给了且换过，「AI 作品保存位置」一项照实说作品在哪。
    */
-  aiOutputPlacement?: () => { movedFromDocuments: boolean, earlierWorksLeftInDocuments: boolean } | null
+  aiOutputPlacement?: () => { movedFromDocuments: boolean, earlierWorksLeftInDocuments: boolean, earlierWorksLeftInSyncedDocuments?: 'onedrive' | 'icloud' } | null
   /**
    * 系统「文档」目录（app.getPath('documents')）；拿不到传 null。给了（含 null）才在
    * Windows 上有「「文档」文件夹能不能写」这一项。
@@ -2763,6 +2763,16 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             state: 'pass',
             summary: '「文档」文件夹不让写，AI 生成的图片和视频改存在个人文件夹里的 XingmangAI'
               + (placement.earlierWorksLeftInDocuments ? '。以前的作品还在「文档」里的 XingmangAI，没有搬动' : ''),
+            details: { openFolder: 'ai-output' },
+          }
+        }
+        // Mac 的访达里这个文件夹叫「文稿」，开关叫「桌面与文稿」，所以那边写「文稿」。
+        if (placement?.earlierWorksLeftInSyncedDocuments) {
+          const [folder, cloud] = placement.earlierWorksLeftInSyncedDocuments === 'icloud' ? ['文稿', 'iCloud'] : ['文档', 'OneDrive']
+          return {
+            state: 'pass',
+            summary: `AI 生成的图片和视频能正常保存。「${folder}」开了 ${cloud} 同步，新作品改存在个人文件夹里的 XingmangAI；`
+              + `以前的作品还在「${folder}」里的 XingmangAI，没有丢，也没有搬动`,
             details: { openFolder: 'ai-output' },
           }
         }
