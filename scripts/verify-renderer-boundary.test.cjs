@@ -39,6 +39,8 @@ const valueImportable = [
   'electron/disk-space-copy',
   'electron/external-url-blocked',
   'electron/git-runtime',
+  // isRecord 这类最基础的输入检查，主进程和渲染层共用一份（#1071 第 3 条）；文件本身什么都不 import。
+  'electron/input-guards',
   'electron/ipc-contract',
   // Mac 上一键装桌面端没装成的那几句话，主进程拼、错误框照它认出来配「看安装指南」。
   'electron/macos-desktop-install-failure',
