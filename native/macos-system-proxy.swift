@@ -97,7 +97,8 @@ func isRecordedOriginal(_ original: [String: Any]) -> Bool {
     let enable = original[prefix + "Enable"], host = original[prefix + "Proxy"], port = original[prefix + "Port"]
     guard isSwitch(enable), isPort(port) else { return false }
     guard let value = host else { continue }
-    // A disabled endpoint is inert; an enabled one must name a host.
+    // A disabled endpoint is inert. An enabled one with no host is no endpoint
+    // either, and refusing that quirk would strand the user on the loopback.
     guard let name = value as? String, name.isEmpty || !equal(enable, 1) || isProxyHost(name) else { return false }
   }
   return isSwitch(original["ProxyAutoConfigEnable"]) && isSwitch(original["ProxyAutoDiscoveryEnable"])
@@ -147,7 +148,9 @@ final class SystemBackend: Backend {
   }
   func end() { if preferencesLocked, let prefs = prefs { SCPreferencesUnlock(prefs) }; preferencesLocked = false; prefs = nil; services = [:] }
   // Called only between transactions, never while prefs still holds the ref.
-  func forgetAuthorization() { if let auth = auth { AuthorizationFree(auth, []) }; auth = nil }
+  // Destroy rather than release: a plain free can leave the rights shared in
+  // the session, and a new reference would then be granted without a prompt.
+  func forgetAuthorization() { if let auth = auth { AuthorizationFree(auth, [.destroyRights]) }; auth = nil }
   func read() throws -> [String: [String: Any]] {
     guard let prefs = prefs, let list = SCNetworkServiceCopyAll(prefs) as? [SCNetworkService] else { throw Failure.configuration }
     guard let currentSet = SCNetworkSetCopyCurrent(prefs), let active = SCNetworkSetCopyServices(currentSet) as? [SCNetworkService] else { throw Failure.configuration }
