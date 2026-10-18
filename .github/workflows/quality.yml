@@ -8,15 +8,28 @@ on:
     branches: [main]
   pull_request:
 
-# A superseded run only holds runners that open pull requests are queueing
-# for. main is included on purpose: every merge was already checked as its
-# pull request's merge commit before it landed, so after a burst of merges
-# only the final state needs another run. This used to be marked for review
-# once releases started; on 2026-10-03, with releases going out, yoyo kept it
-# and added the wait at the top of `changes` so a burst cancels cheaply.
+# On a pull request a superseded run only holds runners that other pull
+# requests are queueing for, so a new push cancels it.
+#
+# main used to cancel the same way, on the grounds that every merge was
+# already checked as its pull request's merge commit and only the final state
+# of a burst needed another run (kept by yoyo on 2026-10-03, with the wait at
+# the top of `changes` added so a burst cancelled cheaply). That held while
+# merges came in bursts with quiet gaps. Once they came steadily, every run was
+# cancelled by the next merge before it finished: the 89 runs on main after
+# run 39098216782 (12:45 Beijing on 2026-10-18), with merges a median five
+# and a half minutes apart, were all cancelled, so main went more than eleven
+# hours without a verdict and the main-alert job below never ran once.
+#
+# So a run on main is never cancelled once it has started. GitHub keeps at
+# most one run of a group waiting behind the one in progress and cancels an
+# older waiting run when a newer one queues, so however many merges land while
+# a run is going, exactly one run follows it, on the newest commit, and it
+# covers them all. The cost is that main's matrix now runs to the end every
+# time; the wait in `changes` keeps it from running back to back.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -35,9 +48,15 @@ jobs:
       # merge a few minutes later cancelled it part way: 65 of the 104 main
       # runs in the three days to 2026-10-03 were superseded like that, each
       # still holding a dozen runners (two of them macOS, the scarcest) while
-      # open pull requests queued behind it. Waiting here first means a burst
-      # of merges cancels only this one cheap job, and the matrix runs once,
-      # for the last merge. Pull requests never wait.
+      # open pull requests queued behind it. This wait was added so a burst
+      # cancelled only this one cheap job.
+      #
+      # main no longer cancels a started run (see `concurrency` at the top),
+      # so the wait now does the other half of that job: merges landing while
+      # it runs collapse into the one run waiting behind it, and main's matrix
+      # (about 14 minutes) starts at most once every 24 or so. Through a day of
+      # steady merges it holds the shared runners a little over half the time
+      # rather than all of it. Pull requests never wait.
       - name: Let a burst of merges to main settle before the matrix starts
         if: github.event_name == 'push'
         run: sleep 600
@@ -390,13 +409,13 @@ jobs:
   # documentation-only change, which is what the aggregate below relies on.
   test:
     # `!cancelled()` rather than `always()`: a superseded run — this workflow
-    # cancels those on every new push — would otherwise run this job anyway,
-    # find the shards cancelled, and post a red `test` against a commit nobody
-    # is looking at any more. A job that blows its own `timeout-minutes` is
-    # cancelled at the job level, not the workflow level, so that still lands
-    # here as a failure. When the whole run is cancelled this job is skipped,
-    # and the aggregate below refuses a skipped `test`, so a cancelled run
-    # still cannot read as a pass.
+    # cancels those on every new push to a pull request — would otherwise run
+    # this job anyway, find the shards cancelled, and post a red `test`
+    # against a commit nobody is looking at any more. A job that blows its own
+    # `timeout-minutes` is cancelled at the job level, not the workflow level,
+    # so that still lands here as a failure. When the whole run is cancelled
+    # this job is skipped, and the aggregate below refuses a skipped `test`,
+    # so a cancelled run still cannot read as a pass.
     if: ${{ !cancelled() }}
     needs: [changes, windows-test, windows-package]
     runs-on: ubuntu-latest
@@ -951,9 +970,10 @@ jobs:
           NODE
 
   # main 上完整跑完却没过就开一条 issue 报警（指派给仓库负责人），main 再红只改这一条，下一次在
-  # main 上完整跑完并通过就留言并关闭（#1090 第 5 条）。被后来的合并取消的运行不算：整次运行被取消
-  # 时 `!cancelled()` 让这个作业不跑，取消策略本身不动（见文件开头）。拉取请求上不跑。只有这个作业
-  # 能写 issue，它不读任何 secret，也不装依赖。
+  # main 上完整跑完并通过就留言并关闭（#1090 第 5 条）。main 上开跑的运行不再被后来的合并取消（见
+  # 文件开头），每一轮都会走到这里；还没开跑就被更新的合并顶掉的、有人手动取消的不算：整次运行被
+  # 取消时 `!cancelled()` 让这个作业不跑。拉取请求上不跑。只有这个作业能写 issue，它不读任何
+  # secret，也不装依赖。
   main-alert:
     needs: [changes, quality-gate]
     if: ${{ !cancelled() && github.event_name == 'push' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' }}
