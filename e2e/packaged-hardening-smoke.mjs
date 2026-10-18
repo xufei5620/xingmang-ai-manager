@@ -162,18 +162,26 @@ try {
     }
   }
 
-  application = spawn(executablePath, [
-    `--user-data-dir=${path.join(temporaryRoot, 'user-data-debug')}`,
+  // Chromium 把单短横线、Windows 上的斜杠也当开关读，换个写法不能绕过（#1065）。
+  const debugSwitchSpellings = [
     '--remote-debugging-port=9222',
-  ], {
-    stdio: 'ignore',
-    windowsHide: true,
-    env: childEnvironment,
-  })
-  const debugExitCode = await waitForExit(application, 5_000)
-  if (debugExitCode === null) throw new Error('生产程序没有拒绝远程调试参数')
-  if (debugExitCode === 0) throw new Error('生产程序拒绝远程调试参数时返回了成功退出码')
-  application = null
+    '-remote-debugging-port=9222',
+    ...(process.platform === 'win32' ? ['/remote-debugging-port=9222'] : []),
+  ]
+  for (const [index, spelling] of debugSwitchSpellings.entries()) {
+    application = spawn(executablePath, [
+      `--user-data-dir=${path.join(temporaryRoot, `user-data-debug-${index}`)}`,
+      spelling,
+    ], {
+      stdio: 'ignore',
+      windowsHide: true,
+      env: childEnvironment,
+    })
+    const debugExitCode = await waitForExit(application, 5_000)
+    if (debugExitCode === null) throw new Error(`生产程序没有拒绝远程调试参数 ${spelling}`)
+    if (debugExitCode === 0) throw new Error(`生产程序拒绝远程调试参数 ${spelling} 时返回了成功退出码`)
+    application = null
+  }
 } catch (error) {
   failure = error
 }

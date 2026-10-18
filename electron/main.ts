@@ -186,7 +186,6 @@ import {
   withManualUninstallVisualFixture,
 } from './manual-uninstall-visual-fixture'
 import {
-  hasDisallowedPackagedDebugSwitch,
   isAllowedAppNavigationUrl,
   resolvePackagedApplicationFile,
   type ApplicationUrlPolicy,
@@ -657,10 +656,6 @@ function focusExistingWindow(): boolean {
 function reloadIfRendererGone(window: BrowserWindow): void {
   if (window.webContents.isDestroyed()) return
   rendererCrashRecoveries.get(window.webContents)?.handleReopen(window.webContents.isCrashed())
-}
-
-if (app.isPackaged && hasDisallowedPackagedDebugSwitch(process.argv)) {
-  process.exit(1)
 }
 
 // cancelId 指向的按钮也在 choices 里，所以按 Esc 和点那颗按钮走同一条路。
