@@ -503,6 +503,74 @@ describe('Node.js response URL validation', () => {
       .rejects.toThrow('未经批准')
     expect(hostileFetch).toHaveBeenCalledOnce()
   })
+
+  it('refuses every hop that leaves the pinned resource', async () => {
+    const source = 'https://nodejs.org/dist/index.json'
+    function redirectingTo(location: string | null) {
+      return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(init?.redirect).toBe('manual')
+        return new Response(null, { status: 302, headers: location === null ? {} : { Location: location } })
+      }) as typeof fetch
+    }
+    const refusals: Array<[string | null, string]> = [
+      ['https://nodejs.org/dist/other.json', '资源路径'],
+      ['other.json', '资源路径'],
+      ['../download/index.json', '未经批准的 HTTPS 主机'],
+      ['https://nodejs.org/dist/index.json?x=1', '未经批准'],
+      ['http://nodejs.org/dist/index.json', '未经批准'],
+      ['https://nodejs.org:8443/dist/index.json', '未经批准'],
+      ['https://user:secret@nodejs.org/dist/index.json', '未经批准'],
+      ['https://nodejs.org/dist/index.json#top', '未经批准'],
+      ['https://cdn.npmmirror.com/binaries/node/index.json', '资源路径'],
+      [null, 'Location'],
+    ]
+    for (const [location, message] of refusals) {
+      const fetchMock = redirectingTo(location)
+      await expect(fetchTrustedNodeResource(source, { method: 'GET' }, fetchMock)).rejects.toThrow(message)
+      expect(fetchMock).toHaveBeenCalledOnce()
+    }
+
+    const neverCalled = vi.fn() as unknown as typeof fetch
+    for (const start of ['http://nodejs.org/dist/index.json', 'https://evil.example/dist/index.json', 'https://nodejs.org/download/index.json']) {
+      await expect(fetchTrustedNodeResource(start, { method: 'GET' }, neverCalled)).rejects.toThrow('未经批准')
+    }
+    expect(neverCalled).not.toHaveBeenCalled()
+  })
+
+  it('refuses a redirect loop between the two mirror hosts', async () => {
+    const source = 'https://npmmirror.com/mirrors/node/index.json'
+    const cdn = 'https://cdn.npmmirror.com/binaries/node/index.json'
+    const fetchMock = vi.fn(async (url: string | URL | Request) => new Response(null, {
+      status: 301,
+      headers: { Location: String(url) === source ? cdn : source },
+    })) as typeof fetch
+    await expect(fetchTrustedNodeResource(source, { method: 'GET' }, fetchMock)).rejects.toThrow('循环重定向')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a response that came from anywhere but the hop it asked for', async () => {
+    const source = 'https://npmmirror.com/mirrors/node/index.json'
+    function answeredFrom(url: string) {
+      return (async () => Object.defineProperty(new Response('[]'), 'url', { value: url })) as typeof fetch
+    }
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('https://evil.example/x'))).rejects.toThrow('未经批准')
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('https://cdn.npmmirror.com/binaries/node/other.json')))
+      .rejects.toThrow('资源路径')
+    // The CDN copy of the same file is a fine next hop, but only after a redirect this code read.
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('https://cdn.npmmirror.com/binaries/node/index.json')))
+      .rejects.toThrow('Node.js 下载绕过了受限的重定向策略')
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom(source))).resolves.toMatchObject({ status: 200 })
+  })
+
+  it('never lets the caller turn automatic redirects back on', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual')
+      expect(init?.method).toBe('HEAD')
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    await fetchTrustedNodeResource('https://nodejs.org/dist/index.json', { method: 'HEAD', redirect: 'follow' }, fetchMock)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
 })
 
 describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
