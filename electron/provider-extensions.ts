@@ -800,9 +800,10 @@ function sameCodexMcpEntry(server: RawMcpServer, entry: unknown): boolean {
 /**
  * Codex 0.162.1 的 `mcp list --json` 把用户 config.toml、受信任的项目层和插件带的连接合在一起列，不带层，
  * 同名时项目那份盖过用户那份；`codex mcp remove` 只改用户那份，别的名字只回一句「No MCP server named …
- * found.」照样退出 0（#1092）。所以对照文件分层：用户那份里没有、项目文件里有的归项目；两边都有的，列出来的
- * 跟用户那份一样就还是用户那份（项目层没受信任，或两份写得一样），不一样才是项目那份盖过了它。不在用户那份
- * 里的都不给移除，免得点了「移除」什么都没删还报成功。用户那份读不了时照旧都给移除，交给 CLI 自己报。
+ * found.」照样退出 0（#1092）。所以对照文件分层：用户那份里没有、项目文件里有的归项目。两边都有同名的，只有
+ * 列出来的跟用户那份一样、跟项目里的都不一样，才断定是用户那份（项目层没受信任）；跟两边都一样就分不清——只比
+ * 命令、参数、地址，环境变量、请求头、开关这些可能正是两份不同的地方——按项目算、不给移除，免得删掉看不见的那份。
+ * 不在用户那份里的都不给移除，免得点了「移除」什么都没删还报成功。用户那份读不了时照旧给移除，交给 CLI 自己报。
  */
 function placeCodexMcpServers(
   servers: readonly RawMcpServer[],
@@ -810,14 +811,20 @@ function placeCodexMcpServers(
   repositoryRoot: string | null,
 ): RawMcpServer[] {
   const userEntries = readCodexMcpEntriesOrNull(path.join(codexHome, 'config.toml'))
-  const projectNames = new Set(repositoryRoot
-    ? codexProjectConfigPaths(repositoryRoot, codexHome)
-      .flatMap((configPath) => [...(readCodexMcpEntriesOrNull(configPath)?.keys() ?? [])])
-    : [])
+  const projectEntries = new Map<string, unknown[]>()
+  for (const configPath of repositoryRoot ? codexProjectConfigPaths(repositoryRoot, codexHome) : []) {
+    for (const [name, entry] of readCodexMcpEntriesOrNull(configPath) ?? new Map<string, unknown>()) {
+      projectEntries.set(name, [...(projectEntries.get(name) ?? []), entry])
+    }
+  }
   return servers.map((server) => {
     const userEntry = userEntries?.get(server.name)
-    const project = projectNames.has(server.name)
-      && !(userEntry !== undefined && sameCodexMcpEntry(server, userEntry))
+    const inProject = projectEntries.get(server.name)
+    const project = inProject !== undefined && !(
+      userEntry !== undefined
+      && sameCodexMcpEntry(server, userEntry)
+      && !inProject.some((entry) => sameCodexMcpEntry(server, entry))
+    )
     const removable = !project && (!userEntries || userEntries.has(server.name))
     return { ...server, scope: project ? 'project' : 'user', ...(removable ? {} : { removable: false }) }
   })

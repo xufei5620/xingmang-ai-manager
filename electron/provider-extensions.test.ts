@@ -2218,13 +2218,18 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     write(
       path.join(codexHome, 'config.toml'),
       '[mcp_servers.mine]\ncommand = "echo"\nargs = ["mine"]\n\n[mcp_servers.shared]\ncommand = "echo"\n\n'
-        + '[mcp_servers.same]\ncommand = "echo"\nargs = ["same"]\n',
+        + '[mcp_servers.same]\ncommand = "echo"\nargs = ["same"]\n\n'
+        + '[mcp_servers.twin]\ncommand = "echo"\nargs = ["twin"]\nenv = { MODE = "user" }\n',
     )
     fs.mkdirSync(path.join(repository, '.git'), { recursive: true })
     write(path.join(repository, '.codex', 'config.toml'), '[mcp_servers.shared]\ncommand = "echo"\n\n[mcp_servers.repo-db]\ncommand = "echo"\n')
-    write(path.join(workspace, '.codex', 'config.toml'), '[mcp_servers.deep]\ncommand = "echo"\n\n[mcp_servers.same]\ncommand = "other"\n')
+    write(
+      path.join(workspace, '.codex', 'config.toml'),
+      '[mcp_servers.deep]\ncommand = "echo"\n\n[mcp_servers.same]\ncommand = "other"\n\n'
+        + '[mcp_servers.twin]\ncommand = "echo"\nargs = ["twin"]\nenv = { MODE = "project" }\n',
+    )
     const { calls, invoke } = recordingInvoke((argv) => {
-      if (argv.join(' ') === 'mcp list --json') return codexMcpList('mine', 'shared', 'repo-db', 'deep', 'same', 'from-plugin')
+      if (argv.join(' ') === 'mcp list --json') return codexMcpList('mine', 'shared', 'repo-db', 'deep', 'same', 'twin', 'from-plugin')
       if (argv[0] === 'plugin') return '[]'
       return undefined
     })
@@ -2241,6 +2246,9 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       ['same', 'user', true],
       // Listed unlike the user copy: the project one shadows it, and remove would only reach the user one.
       ['shared', 'project', false],
+      // Both copies share the command and arguments and differ only in what the comparison does not look at,
+      // so nothing says which one Codex picked: keep it under project and out of reach of remove.
+      ['twin', 'project', false],
     ])
 
     calls.length = 0
