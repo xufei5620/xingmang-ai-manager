@@ -342,6 +342,9 @@ describe('Claude Code native uninstall', () => {
 
       running.kill()
       await ended
+      // One call right after `exit`, like a user who clicks clean-up the moment
+      // they close Claude Code: Windows can still hold the file for a moment
+      // then, and the cleanup itself has to wait that out (#1152).
       const afterClose = await removeUninstallLeftovers(whileOpen.kept.map((entry) => entry.leftover), options)
       expect(afterClose).toEqual({ removed: 1, reused: 0, kept: [] })
       expect(exists(renamed)).toBe(false)
