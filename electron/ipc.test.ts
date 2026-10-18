@@ -9,6 +9,7 @@ import type { NativeConfigSaveResult } from './config-files'
 import type { ConnectionCheckResult } from './connection-check'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
+import { ipcChannelPolicies } from './ipc-channel-policy'
 import { listedProviderSessionProviders, providerSessionProviders } from './provider-sessions'
 import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
@@ -8186,6 +8187,77 @@ describe('plaintext IPC channels registered under AGENTS.md I3', () => {
     } finally {
       dispose()
     }
+  })
+})
+
+// 每条通道在日志里记什么、要不要等账号，现在都照 ipc-channel-policy.ts 那张表办（#1071 第 1 条）。表的键由编译器
+// 对着契约钉住；这几条钉的是 ipc.ts 真照表办事，下面那条钉的是表里最容易被顺手抄错的一种。
+describe('IPC channel log and account policies', () => {
+  it('hands a secret-input channel no input when it logs the success', async () => {
+    // A backup code can spell a tool id. If the input reached the log formatters, the success line would
+    // name that tool, so this proves the input is withheld rather than merely ignored by each formatter.
+    const completeTwoFactorLogin = vi.fn(async () => ({ account: { userId: 7 }, siteId: 'solov' }))
+    const { runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { completeTwoFactorLogin } as never })
+    await electronMocks.handlers.get('account:submit-two-factor-code')!(trustedEvent(), 'codex')
+    expect(completeTwoFactorLogin).toHaveBeenCalledWith('codex')
+    const success = runtimeLog.log.mock.calls.filter((call) => call[2] === 'account:submit-two-factor-code')
+    expect(success).toEqual([['info', 'ipc', 'account:submit-two-factor-code', '星芒账号两步验证登录完成', expect.any(Object)]])
+    expect(success[0][4]).not.toHaveProperty('provider')
+  })
+
+  it('keeps a silent channel out of the log even when it fails, while a quiet-success channel still logs its failure', () => {
+    const service = serviceStub()
+    vi.mocked(service.revealApiKey).mockImplementation(() => { throw new Error('读不到配置') })
+    const { runtimeLog } = register(service)
+    expect(() => electronMocks.handlers.get('chat:prepare-group')!(trustedEvent(), '分组')).toThrow('AI聊天服务未就绪')
+    expect(() => electronMocks.handlers.get('config:reveal-api-key')!(trustedEvent(), 'codex')).toThrow('读不到配置')
+    const lines = runtimeLog.log.mock.calls.map((call) => [call[0], call[2], call[3]])
+    expect(lines.filter((line) => line[1] === 'chat:prepare-group')).toEqual([])
+    expect(lines.filter((line) => line[1] === 'config:reveal-api-key')).toEqual([['error', 'config:reveal-api-key', 'API Key 明文读取失败：读不到配置']])
+  })
+
+  it('lets the two calls that may end the session finish after the account moves, and discards any other account call', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    const accountService = accountServiceStub()
+    const sid = '123e4567-e89b-42d3-a456-426614174000'
+    vi.mocked(accountService.changePassword).mockImplementation(async () => { revision += 1; return { changed: true } })
+    vi.mocked(accountService.revokeLoginSession).mockImplementation(async () => { revision += 1; return { revokedSid: sid, current: false } })
+    vi.mocked(accountService.revokeOtherLoginSessions).mockImplementation(async () => { revision += 1; return { revokedCount: 1 } })
+    register(serviceStub(), undefined, undefined, accountService, undefined, undefined, { accountWork })
+    const invoke = (channel: string, ...args: unknown[]) => electronMocks.handlers.get(channel)!(trustedEvent(), ...args)
+
+    await expect(invoke('account:change-password', { originalPassword: 'current-password-1', newPassword: 'new-password-2' }))
+      .resolves.toEqual({ changed: true })
+    await expect(invoke('account:revoke-login-session', sid)).resolves.toEqual({ revokedSid: sid, current: false })
+    await expect(invoke('account:revoke-other-login-sessions')).rejects.toThrow('账号上下文已变化，请重试')
+  })
+
+  // 以前 account:、chat:、config:、models: 开头的通道默认都等账号，只有本身就在管登录的这些除外。改成每条通道
+  // 自己表态以后，照抄邻居一行写成 none 也编译得过；这份名单让那种改动当场变红，要放行就得在这里点名。
+  it('keeps every account, chat, config and models channel waiting for the account except the ones that manage the session', () => {
+    const unscoped = Object.entries(ipcChannelPolicies)
+      .filter(([channel, policy]) => /^(?:account|chat|config|models):/.test(channel) && policy.account === 'none')
+      .map(([channel]) => channel)
+      .sort()
+    expect(unscoped).toEqual([
+      'account:copy-reset-password',
+      'account:get-legal-document',
+      'account:get-remembered-login',
+      'account:get-session',
+      'account:get-status',
+      'account:list-saved',
+      'account:login',
+      'account:logout',
+      'account:register',
+      'account:remove-saved',
+      'account:reset-password',
+      'account:send-reset-code',
+      'account:send-verification-code',
+      'account:set-remembered-login',
+      'account:submit-two-factor-code',
+      'account:switch-saved',
+    ])
   })
 })
 
