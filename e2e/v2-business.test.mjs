@@ -935,6 +935,30 @@ test('revoking a key no tool is using only says it cannot be undone and never re
   } finally { await page.close() }
 })
 
+// 撤销一发出去就收不回：执行中「取消」、×、Esc 都关不掉弹窗，免得看着像取消了、过几秒又弹「已撤销」（#1099 第 2 条）。
+test('the revoke dialog stays open and cannot be cancelled while the revoke is running', async () => {
+  const page = await fixture('page=account&keyInUse=1&revokeHold=1')
+  try {
+    const dialog = await revokeTestKey(page)
+    const cancel = dialog.getByRole('button', { name: '取消', exact: true })
+    const close = dialog.getByRole('button', { name: '关闭', exact: true })
+    assert.equal(await cancel.isDisabled(), false)
+    assert.equal(await close.isDisabled(), false)
+    await dialog.getByRole('button', { name: '撤销', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'revokeAccountKey'))
+    assert.equal(await cancel.isDisabled(), true)
+    assert.equal(await close.isDisabled(), true)
+    await dialog.focus()
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+    assert.equal(await dialog.isVisible(), true)
+    await page.evaluate(() => window.releaseRevoke())
+    await waitForToast(page, '已撤销「Test key」，Claude Code 已换用新的密钥')
+    await dialog.waitFor({ state: 'hidden' })
+    assert.equal((await calls(page)).filter((call) => call.name === 'revokeAccountKey').length, 1)
+  } finally { await page.close() }
+})
+
 test('key editor re-reads available groups every time a new or existing key is opened', async () => {
   const page = await fixture('page=account')
   try {

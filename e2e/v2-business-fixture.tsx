@@ -31,6 +31,8 @@ declare global {
     failNextRead: (read: 'profile' | 'subscriptions') => void
     // extensionHold：除卸载以外的扩展改动（开关、更新）挂着，等这里放开才回。
     releaseExtension: () => void
+    // revokeHold：撤销密钥挂着，等这里放开才回。
+    releaseRevoke: () => void
     // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
     profileReadHarness: {
       deferNext(): void
@@ -334,6 +336,9 @@ const keyInUse = query.has('keyInUse')
 let replaceFailures = Number(query.get('replaceFails') ?? 0)
 // replaceSkipped：那个工具的配置是手填的，自动换新把它跳过（#478）。
 const replaceSkipped = query.has('replaceSkipped')
+// revokeHold：撤销密钥的请求挂着不回，好看执行中这几秒弹窗还能不能关（#1099 第 2 条）。
+let releaseHeldRevoke: (() => void) | undefined
+window.releaseRevoke = () => { releaseHeldRevoke?.(); releaseHeldRevoke = undefined }
 async function rewriteKey(provider: ProviderId) {
   record('rewriteKey', provider)
   if (replaceSkipped) throw new KeyRewriteSkippedError([{ provider, reason: 'manual', message: 'Claude Code 保留手动填写的密钥' }])
@@ -609,6 +614,7 @@ const apiMethods = {
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
+    if (query.has('revokeHold')) await new Promise<void>((resolve) => { releaseHeldRevoke = resolve })
     const index = pagedKeys?.findIndex((entry) => entry.id === id) ?? -1
     if (pagedKeys && index >= 0) pagedKeys.splice(index, 1)
   },
