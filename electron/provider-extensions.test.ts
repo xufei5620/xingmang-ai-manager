@@ -1229,6 +1229,50 @@ describe('ProviderExtensionService native mutations', () => {
       expect(snapshot.provider).toBe(provider)
     },
   )
+
+  it.each([
+    { provider: 'grok' as const, trust: true, expected: ['plugin', 'install', 'owner/repo', '--trust'] },
+    { provider: 'grok' as const, trust: undefined, expected: ['plugin', 'install', 'owner/repo'] },
+    { provider: 'grok' as const, trust: false, expected: ['plugin', 'install', 'owner/repo'] },
+    // Only Grok has a --trust gate; other CLIs never get the flag even if a caller sends it.
+    { provider: 'claude' as const, trust: true, expected: ['plugin', 'install', 'owner/repo'] },
+  ])('builds the $provider plugin install argv for trust $trust', async ({ provider, trust, expected }) => {
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      return argv[1] === 'marketplace' ? registeredMarketplaceList : '[]'
+    })
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      invoke,
+      findExecutable: async () => null,
+    })
+
+    await service.mutate({
+      provider,
+      kind: 'plugin',
+      action: 'install',
+      source: 'owner/repo',
+      ...(trust === undefined ? {} : { trust }),
+    })
+
+    expect(calls.filter((argv) => argv[1] === 'install')).toEqual([expected])
+  })
+
+  it('never adds --trust to Grok plugin operations other than install', async () => {
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      return '[]'
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+
+    for (const action of ['uninstall', 'enable', 'disable', 'update'] as const) {
+      await service.mutate({ provider: 'grok', kind: 'plugin', action, id: 'demo-plugin', trust: true })
+    }
+
+    expect(calls.filter((argv) => argv.includes('--trust'))).toEqual([])
+  })
 })
 
 describe('Claude Code official marketplace', () => {

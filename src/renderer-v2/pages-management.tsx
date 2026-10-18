@@ -356,6 +356,15 @@ export function extensionMutationScope(
 }
 
 /**
+ * Grok 装插件不带 --trust 一律拒绝（1.0.52、1.0.62 实测，有没有终端都一样）；带上以后插件里的
+ * 命令和外接工具每次打开 Grok 都会自己跑。所以先弹框问，用户点了「信任并安装」才带（yoyo 10-17 定）。
+ * 别家装插件没有这一问。
+ */
+export function extensionInstallNeedsTrust(provider: Provider, kind: ExtensionKind): boolean {
+  return provider === 'grok' && kind === 'plugin'
+}
+
+/**
  * 扩展页的动作改的都是工具自己的配置（MCP、技能、插件、插件市场），没权限时说「写不进配置文件」
  * （已知29）。只有「安装 Python」装的是运行环境，照旧按原话认。
  */
@@ -1779,6 +1788,8 @@ export function ExtensionsPage({
   // 「自定义连接」给哪几个工具加；打开时只勾当前这个。
   const [formTools, setFormTools] = useState<Provider[]>([])
   const [deletion, setDeletion] = useState<ExtensionItem | null>(null)
+  // 「添加插件」表单点了「添加」、等用户在确认框里点「信任并安装」（只有 Grok 有这一步）。
+  const [trusting, setTrusting] = useState(false)
   const [selected, setSelected] = useState<ExtensionItem | null>(null)
   // 待确认的精选条目，以及已经把表单填好、等用户补上路径的那一条。
   const [curated, setCurated] = useState<CuratedExtension | null>(null)
@@ -2006,7 +2017,13 @@ export function ExtensionsPage({
     }
     return { name, tools: done }
   }
-  const add = () =>
+  const add = (trusted = false) => {
+    // 来源空着照旧在表单里报「请填写来源」，不先弹一个没有来源的确认框。
+    if (!trusted && form === 'add' && extensionInstallNeedsTrust(provider, kind) && source.trim()) {
+      operation.clear()
+      setTrusting(true)
+      return
+    }
     void operation.execute(
       'add',
       async () => {
@@ -2033,7 +2050,9 @@ export function ExtensionsPage({
             action: 'install',
             source: source.trim(),
             scope: formScope,
+            ...(trusted ? { trust: true } : {}),
           })
+        setTrusting(false)
         setForm(null)
         await reloadList()
         return null
@@ -2043,6 +2062,7 @@ export function ExtensionsPage({
           ? `已添加「${added.name}」，给 ${extensionToolNames(added.tools)} 使用，下次打开工具时生效`
           : '已添加，列表已更新',
     )
+  }
   const addButton = (
     <Button
       variant={kind === 'plugin' ? 'primary' : 'secondary'}
@@ -2705,7 +2725,7 @@ export function ExtensionsPage({
             <Button
               variant="primary"
               icon={Plus}
-              onClick={add}
+              onClick={() => add()}
               loading={operation.busy === 'add'}
               disabled={kind === 'mcp' && form === 'add' && formTargets.length === 0}
               testId={`${page}-form-submit`}
@@ -2939,6 +2959,43 @@ export function ExtensionsPage({
             ) : undefined}
           />
         )}
+        <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
+      </Dialog>
+      {/* 叠在「添加插件」表单上面：点「先不装」回到表单，填过的来源还在。 */}
+      <Dialog
+        open={trusting}
+        title={`给 ${toolName} 装这个插件？`}
+        testId="plugins-trust-confirm"
+        busy={operation.busy === 'add'}
+        onClose={() => setTrusting(false)}
+        footer={
+          <>
+            <Button
+              onClick={() => setTrusting(false)}
+              disabled={operation.busy === 'add'}
+            >
+              先不装
+            </Button>
+            <Button
+              variant="primary"
+              icon={Download}
+              loading={operation.busy === 'add'}
+              onClick={() => add(true)}
+              testId="plugins-trust-confirm-submit"
+            >
+              信任并安装
+            </Button>
+          </>
+        }
+      >
+        <p>
+          插件里带的技能、命令和外接工具，装好后每次打开 {toolName} 都会自动运行，能像你本人一样读写这台电脑上的文件。
+        </p>
+        <dl className="v2-business-kv">
+          <dt>来源</dt>
+          <dd>{source.trim()}</dd>
+        </dl>
+        <p>只装你认识、信得过的来源；拿不准就先别装。</p>
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
