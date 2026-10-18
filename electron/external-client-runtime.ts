@@ -112,7 +112,7 @@ export interface ExternalClientRuntimeOptions {
   fetch?: typeof fetch
   /** 把星芒自己下官方安装包的那次下载包进临时加速线路（同命令行工具的安装）；缺省直接下。 */
   withDownloadRoute?: <T>(operation: () => Promise<T>) => Promise<T>
-  /** 下载之前先看一眼盘，不够时抛出那句「磁盘空间不足」。 */
+  /** 下载之前先看一眼盘，不够时抛出那句「磁盘空间不足」（Windows 上是「C 盘空间不足」）。 */
   assertDiskSpace?: (subject: string) => Promise<void>
   installMacosDesktopApp?: typeof installMacosDesktopApp
   getuid?: () => number

@@ -161,3 +161,92 @@ describe('Codex shadowed relay inspection', () => {
     expect(inspectProviderConfig('codex', roots, providerBaseUrls).codexProviderShadowed).toBe(false)
   })
 })
+
+describe('Codex provider tables that carry their own credentials', () => {
+  const packy = '[model_providers.packy]\nname = "packy"\nbase_url = "https://packy.example/v1"\nwire_api = "responses"\nenv_key = "PACKY_KEY"\n'
+
+  function withKey(content: string) {
+    const created = fixture(content)
+    fs.writeFileSync(path.join(created.roots.codexHome, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'fixture-key', auth_mode: 'apikey' }))
+    return created
+  }
+
+  function providerTables(file: string) {
+    return readConfig(file).model_providers as Record<string, Record<string, unknown>>
+  }
+
+  it('starts a relay table of its own and leaves the customer table untouched', () => {
+    const { roots, config } = fixture(`model_provider = "packy"\nmodel = "their-model"\n${packy}`)
+    const original = providerTables(config).packy
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    const parsed = readConfig(config)
+    expect(parsed.model_provider).toBe('XingmangAI')
+    expect(providerTables(config).packy).toEqual(original)
+    expect(providerTables(config).XingmangAI).toEqual(expect.objectContaining({ base_url: providerBaseUrls.codex, requires_openai_auth: true }))
+    expect(providerTables(config).XingmangAI).not.toHaveProperty('env_key')
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ codexProviderName: 'XingmangAI', matchesRelay: true })
+  })
+
+  it.each([
+    ['env_key', 'env_key = "OTHER_KEY"'],
+    ['env_key_instructions', 'env_key_instructions = "export OTHER_KEY"'],
+    ['experimental_bearer_token', 'experimental_bearer_token = "PROXY_MANAGED"'],
+    ['http_headers', 'http_headers = { Authorization = "Bearer other" }'],
+    ['env_http_headers', 'env_http_headers = { Authorization = "OTHER_TOKEN" }'],
+    ['query_params', 'query_params = { api-version = "2025-04-01" }'],
+    ['auth', '[model_providers.other.auth]\ncommand = "other-token"'],
+  ])('does not adopt an active table with %s', (_key, line) => {
+    const { roots, config } = fixture(`model_provider = "other"\n[model_providers.other]\nbase_url = "https://other.example/v1"\n${line}\n`)
+    const original = providerTables(config).other
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(readConfig(config).model_provider).toBe('XingmangAI')
+    expect(providerTables(config).other).toEqual(original)
+  })
+
+  it('still adopts an active table that only points somewhere else', () => {
+    const { roots, config } = fixture('model_provider = "packy"\n[model_providers.packy]\nbase_url = "https://packy.example/v1"\nrequest_max_retries = 3\n')
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(readConfig(config).model_provider).toBe('packy')
+    expect(providerTables(config).packy).toEqual(expect.objectContaining({ base_url: providerBaseUrls.codex, request_max_retries: 3 }))
+  })
+
+  it('skips a free-looking relay name whose table carries credentials', () => {
+    const { roots, config } = fixture(`model_provider = "packy"\n${packy}[model_providers.XingmangAI]\nbase_url = "${providerBaseUrls.codex}"\nenv_key = "CUSTOMER_KEY"\n`)
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(readConfig(config).model_provider).toBe('XingmangAI-2')
+    expect(providerTables(config).XingmangAI).toEqual({ base_url: providerBaseUrls.codex, env_key: 'CUSTOMER_KEY' })
+  })
+
+  it('does not move a reserved relay table that carries credentials', () => {
+    const { roots, config } = fixture(`model_provider = "openai"\n[model_providers.openai]\nbase_url = "${providerBaseUrls.codex}"\nenv_key = "CUSTOMER_KEY"\n`)
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(readConfig(config).model_provider).toBe('XingmangAI')
+    expect(providerTables(config).openai).toEqual({ base_url: providerBaseUrls.codex, env_key: 'CUSTOMER_KEY' })
+    expect(providerTables(config).XingmangAI).not.toHaveProperty('env_key')
+  })
+
+  it('does not report a table taken over by an older release as configured, and the next save repairs it', () => {
+    const takenOver = `model_provider = "packy"\nmodel = "fixture-model"\n[model_providers.packy]\nname = "packy"\nbase_url = "${providerBaseUrls.codex}"\nwire_api = "responses"\nrequires_openai_auth = true\nenv_key = "PACKY_KEY"\n`
+    const { roots, config } = withKey(takenOver)
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ codexProviderName: 'packy', hasApiKey: true, matchesRelay: false })
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(providerTables(config).packy.env_key).toBe('PACKY_KEY')
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ codexProviderName: 'XingmangAI', matchesRelay: true })
+  })
+
+  it('repairs a stored relay snapshot written by an older release when switching back', () => {
+    const { roots, config } = withKey(`model_provider = "packy"\n${packy}`)
+    fs.writeFileSync(codexConfigSnapshotPaths(roots).relay, `model_provider = "packy"\nmodel = "fixture-model"\n[model_providers.packy]\nbase_url = "${providerBaseUrls.codex}"\nenv_key = "PACKY_KEY"\n`)
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'merge', roots, {}, providerBaseUrls)
+    expect(readConfig(config).model_provider).toBe('XingmangAI')
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).matchesRelay).toBe(true)
+  })
+
+  it('keeps the active name on reset, where the template drops the other settings', () => {
+    const { roots, config } = fixture(`model_provider = "packy"\n${packy}`)
+    saveProviderConfig('codex', 'fixture-key', 'fixture-model', 'reset', roots, {}, providerBaseUrls)
+    expect(readConfig(config).model_provider).toBe('packy')
+    expect(providerTables(config)).toEqual({ packy: expect.objectContaining({ base_url: providerBaseUrls.codex }) })
+    expect(providerTables(config).packy).not.toHaveProperty('env_key')
+  })
+})

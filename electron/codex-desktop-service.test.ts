@@ -1867,10 +1867,10 @@ describe('Codex Desktop install disk space precheck', () => {
 
   it('stops before downloading anything when the install disk is nearly full', async () => {
     const fixture = diskSpaceFixture(async (subject) => {
-      throw new Error(`${subject}：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试`)
+      throw new Error(`${subject}：C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试`)
     })
 
-    await expect(fixture.service.installCodexDesktop(fixture.target)).rejects.toThrow('磁盘空间不足')
+    await expect(fixture.service.installCodexDesktop(fixture.target)).rejects.toThrow('C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试')
   })
 
   it('goes on with the install when the precheck lets it through', async () => {
@@ -2323,7 +2323,7 @@ describe('Codex Desktop install on macOS', () => {
   })
 
   it('says why a Mac install failed in plain words, keeping the ones already written for customers', () => {
-    const disk = new Error('Codex 桌面端安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')
+    const disk = new Error('Codex 桌面端安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')
     expect(toCodexDesktopMacInstallFailure(disk)).toBe(disk)
     const failure = toCodexDesktopMacInstallFailure(new Error('HTTP 503'))
     expect(failure.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')

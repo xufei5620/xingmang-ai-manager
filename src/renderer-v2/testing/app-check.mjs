@@ -2211,6 +2211,48 @@ test('tool probe failures show a retry state instead of a third-party configurat
     await clean(page)
   } finally { await page.close() }
 })
+// #1132：四列卡片在任何窗口下都只有 235 上下宽。底栏放不下时省略左边的牌子（悬停看全文），
+// 按钮上的字一个不少；官方安装器那句提示不冲出卡片；「重新检测」不配下载箭头。
+test('a squeezed tool card shortens its status badge, never its button, and keeps its notes inside', async () => {
+  const cases = [
+    ['unownedClaude=1', 'claude', '打开', '密钥可能不是当前账号的'],
+    ['unknownClaude=1', 'claude', '改用当前账号', '不是当前账号的密钥'],
+    ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
+    ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
+  ]
+  for (const [query, tool, label, status] of cases) {
+    const page = await open(query)
+    try {
+      const row = page.getByTestId(`tool-row-${tool}`)
+      await row.locator('.xm-tool-card-actions > .xm-btn').filter({ hasText: label }).waitFor()
+      // 默认窗口，和最小窗口自动缩到 0.9 以后的实际大小。
+      for (const viewport of [{ width: 1280, height: 820 }, { width: 1067, height: 622 }]) {
+        await page.setViewportSize(viewport)
+        const layout = await row.evaluate((card) => {
+          const box = (element) => element?.getBoundingClientRect() ?? null
+          const button = card.querySelector('.xm-tool-card-actions > .xm-btn')
+          const text = button.querySelector(':scope > span')
+          const badge = card.querySelector('.xm-tool-card-badge .xm-pill > span')
+          const note = card.querySelector('.v2-tool-external-note')
+          return {
+            card: box(card), actions: box(card.querySelector('.xm-tool-card-actions')), badge: box(card.querySelector('.xm-tool-card-badge')),
+            buttonClipped: text.scrollWidth > text.clientWidth, download: Boolean(button.querySelector('.lucide-download')),
+            badgeText: badge?.textContent ?? null, badgeTitle: badge?.getAttribute('title') ?? null, note: box(note),
+          }
+        })
+        const where = `${query} at ${viewport.width}`
+        assert.ok(layout.card.width < 245, `${where}: the card is ${layout.card.width}px wide`)
+        assert.equal(layout.buttonClipped, false, `${where}: 「${label}」 is shown in full`)
+        assert.ok(layout.badge.right <= layout.actions.left + 0.5, `${where}: the badge ends before the buttons`)
+        assert.ok(layout.actions.right <= layout.card.right + 0.5, `${where}: the buttons stay inside the card`)
+        if (status) assert.deepEqual([layout.badgeText, layout.badgeTitle], [status, status], `${where}: a cut badge keeps its full text on hover`)
+        if (tool === 'codex') assert.ok(layout.note && layout.note.right <= layout.card.right - 13.5, `${where}: the installer note stays inside the card`)
+        assert.equal(layout.download, false, `${where}: 「${label}」 carries no download arrow`)
+      }
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
 // 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，换成一句中文。
 test('an English probe failure reads as a plain Chinese sentence on the home row', async () => {
   const page = await open('detectionFailed=eperm')
@@ -2586,6 +2628,49 @@ test('the home card being installed shows plain progress, a bar once there is a 
     await row.getByTestId('tool-grok-cancel').waitFor({ state: 'detached' })
     await row.getByText('未安装').waitFor()
     assert.equal(await row.locator('.xm-tool-card-progress').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+// #1097：装到一半退出登录，主进程那边照样装完。欢迎页不能被换成未登录的首页；再登录回来，
+// 那张卡不能还停在「正在安装」、按钮全灰，关窗也不能还被这次早就装完的安装拦着。
+test('an install that finishes while signed out keeps the welcome page and leaves nothing installing', async () => {
+  const page = await open()
+  let closeRequest = 0
+  async function closeBlocked() {
+    const requestId = `fixture-close-${++closeRequest}`
+    await page.evaluate((id) => window.v2Test.emit('onWindowCloseRequest', { requestId: id }), requestId)
+    await page.waitForFunction((id) => window.v2Test.calls.some((entry) => entry.method === 'replyWindowClose' && entry.args[0] === id), requestId)
+    return page.evaluate((id) => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose' && entry.args[0] === id).args[1].blockingTask, requestId)
+  }
+  try {
+    const row = page.getByTestId('tool-row-grok')
+    await row.getByText('未安装').waitFor()
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await page.getByTestId('tool-grok-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    assert.equal(await closeBlocked(), true)
+    await page.getByTestId('sidebar-account-open').click()
+    await page.getByRole('button', { name: '退出登录', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByTestId('welcome-login').waitFor()
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    await expect.poll(closeBlocked).toBe(false)
+    // 装完不替退出的那个账号同步 Key：那一轮只会被「账号已变化」拦下，还会把欢迎页换成未登录的首页。
+    await expect(page.getByTestId('welcome-login')).toBeVisible()
+    const writesBefore = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await row.getByTestId('tool-grok-source').waitFor()
+    // 再登录那一轮把装好的 Grok 一起配上。
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, writesBefore)
+    assert.ok((await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').at(-1).args[0].providers)).includes('grok'))
+    assert.equal(await row.getByText(/正在安装/).count(), 0)
+    assert.equal(await row.getByTestId('tool-grok-cancel').count(), 0)
+    await expect(page.getByTestId('tool-grok-primary')).toBeEnabled()
+    assert.equal(await closeBlocked(), false)
     await clean(page)
   } finally { await page.close() }
 })

@@ -352,7 +352,7 @@ describe('renderer-v2 operation error classification', () => {
       }
     }
     // 授权、磁盘这几句各有自己的下一步，主进程原样放行，这里也不归到这一类。
-    expect(classifyOperationError('Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError('Claude Desktop 安装失败：C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试')).toBe('diskFull')
     expect(classifyOperationError('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。')).not.toBe('claudeDesktopInstallFailed')
   })
 
@@ -388,7 +388,7 @@ describe('renderer-v2 operation error classification', () => {
       expect(operationLogSection({ message })).toBe('log')
     }
     // 磁盘不够还是「磁盘空间不够」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
-    expect(classifyOperationError('OpenCode 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError('OpenCode 安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')).toBe('diskFull')
     expect(classifyOperationError(macosDesktopDiskFullMessage('OpenCode'))).toBe('diskFull')
   })
 
@@ -492,6 +492,22 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write')
     expect(hint?.title).toBe('磁盘空间不够')
     expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
+  })
+
+  // #1157 第 13 条：装之前查盘那句在 Windows 上写出盘符，不再带「磁盘」两个字。
+  // 句子照 electron/disk-space.test.ts 钉住的原样抄。
+  it('files the pre-install disk check under 磁盘空间不够 whichever drive it names', () => {
+    for (const shortfall of [
+      'C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试',
+      'D 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 D 盘再试',
+      '磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试',
+    ]) {
+      for (const subject of ['Claude Code 安装失败', 'Claude Desktop 安装失败', 'Codex 桌面端安装失败', 'OpenCode 安装失败']) {
+        const message = `${subject}：${shortfall}`
+        expect([message, presentOperationError(message)?.key]).toEqual([message, 'diskFull'])
+      }
+    }
+    expect(errors.diskFull.body).toBe('磁盘没有空间了。安装时先下到系统盘的临时文件夹，再装进安装目录，这两处所在的盘都要留出空间，清理后再试。')
   })
 
   // Q13：主进程以前只交出「命令执行失败（退出码 1）：node」，上面那几条分类一条

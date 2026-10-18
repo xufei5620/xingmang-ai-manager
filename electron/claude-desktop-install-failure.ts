@@ -51,7 +51,7 @@ export function classifyClaudeDesktopInstallFailure(detail: string): ClaudeDeskt
  * 套上「没装上」反而把那一步盖掉，所以原样放行。
  */
 export function isPlainClaudeDesktopInstallMessage(message: string): boolean {
-  return /磁盘|已取消管理员授权|未获得管理员权限|安装已取消/.test(message)
+  return /磁盘|[A-Z] 盘空间不足|已取消管理员授权|未获得管理员权限|安装已取消/.test(message)
 }
 
 export function buildClaudeDesktopInstallFailureMessage(
