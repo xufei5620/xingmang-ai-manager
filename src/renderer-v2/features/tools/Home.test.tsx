@@ -749,6 +749,18 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'], ...overrides }),
   })
 
+  // #1104 第 7 条：新客户第一次登录、一个工具都没装时，不说「正在给 工具写入密钥」。
+  it('says it is preparing the account key when no installed tool takes one', () => {
+    const missing = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
+    const progress = { phase: 'syncing' as const, label: '正在同步账号专属密钥', percent: 15, scope: 'scope' }
+    const base = snapshot({ claude: missing, codex: missing, grok: missing, gemini: missing })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const fresh = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot, bootstrap: progress })
+    expect(fresh).toContain('正在准备账号密钥（15%）')
+    expect(fresh).not.toContain('写入密钥（')
+    expect(render({}, undefined, { bootstrap: progress })).toMatch(/正在给 \d+ 个工具写入密钥（15%）/)
+  })
+
   it('shows no progress while it quietly moves the tools to the current line', () => {
     const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在给 1 个工具写入密钥', percent: 65, scope: 'scope', quiet: true } })
     expect(markup).not.toContain('正在给 1 个工具写入密钥')

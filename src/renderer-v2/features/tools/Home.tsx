@@ -1099,7 +1099,9 @@ export function Home(props: HomeProps) {
   if (props.bootstrap && !props.bootstrap.result && !props.bootstrap.error && !props.bootstrap.quiet) {
     // 写的是哪几家：装着、用当前账号（或还没连上）的命令行工具。Codex 两行共用一份配置，算一个。
     const targets = tools.filter((tool) => tool.status.installed && tool.source !== 'official' && tool.source !== 'manual').map((tool) => tool.provider)
-    statusNotices.push(<HomeNotice key="bootstrap" busy testId="home-bootstrap-progress" icon={<Spinner />}>{`正在给 ${spacedName(keyTargetsLabel(targets))}写入密钥（${props.bootstrap.percent}%）`}</HomeNotice>)
+    // 一个要写的工具都没有（新客户还没装，或装着的都用官方账号、自己的密钥）时，不说「正在给 工具写入密钥」（#1104 第 7 条）。
+    const progressText = targets.length ? `正在给 ${spacedName(keyTargetsLabel(targets))}写入密钥` : '正在准备账号密钥'
+    statusNotices.push(<HomeNotice key="bootstrap" busy testId="home-bootstrap-progress" icon={<Spinner />}>{`${progressText}（${props.bootstrap.percent}%）`}</HomeNotice>)
   }
   if (bootstrapResult && bootstrapNoticeShown && bootstrapNoticeWanted && !bootstrapNeedsAction) {
     statusNotices.push(<HomeNotice key="bootstrap-done" tone="ok" testId="home-bootstrap-done" icon={<Check size={15} aria-hidden="true" />}>{configuredKeysText(keyTargetsLabel(bootstrapResult.configured))}</HomeNotice>)
