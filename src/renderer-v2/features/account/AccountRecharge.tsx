@@ -54,6 +54,7 @@ import {
   billingPreferenceNote,
   buildSubscriptionPaymentInput,
   orderPaidText,
+  ordersSearchEmpty,
   orderStateFor,
   orderTail,
   orderTitle,
@@ -1114,7 +1115,7 @@ export function AccountOrders({
         ) : resource.loading ? (
           <Empty icon={CreditCard} title="正在查询订单…" description="" />
         ) : keyword.trim() ? (
-          <Empty icon={CreditCard} title="没有找到这个订单" description="核对一下订单号，或者清空搜索看全部订单。" />
+          <Empty icon={CreditCard} {...ordersSearchEmpty(keyword, Boolean(multiplierAccount))} />
         ) : (
           <Empty icon={CreditCard} title="还没有订单" description="充值后，订单会出现在这里。" />
         )}
