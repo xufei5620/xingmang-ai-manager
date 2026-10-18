@@ -7382,6 +7382,56 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
   } finally { await page.close() }
 })
 
+// #1104 第 12 条：引导里点「去聊天」，导览原来开在聊天页上，第二步只能指着侧栏的「首页」念
+// 「每个工具一张卡片。点左下角的账号标签…」，左下角正好是侧栏的账号卡。现在导览只在首页放。
+test('the interface tour waits for the home page instead of pointing its tool card step at the sidebar', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await openAboutSettings(page)
+    await page.getByTestId('settings-start-guide').click()
+    const guide = page.getByTestId('start-guide')
+    await guide.waitFor()
+    await page.getByTestId('guide-route-chat').check()
+    for (let turn = 0; turn < 4; turn++) {
+      const step = await guide.getAttribute('data-guide-step')
+      if (step === 'ready') break
+      await page.getByTestId('guide-next').click()
+      await page.waitForFunction((previous) => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') !== previous, step)
+    }
+    await page.getByTestId('guide-chat').click()
+    // 客户选的是聊天：留在聊天页，导览先不出来。
+    await page.getByTestId('page-chat').waitFor()
+    const tour = page.getByTestId('shell-guide-tip')
+    assert.equal(await tour.count(), 0)
+    const target = page.locator('[data-coach-target="true"]')
+    await page.getByTestId('nav-home').click()
+    await tour.waitFor()
+    await expect(tour.locator('small')).toHaveText('1 / 3')
+    await expect(target).toHaveClass(/v2-command-trigger/)
+    await tour.getByRole('button', { name: '下一步', exact: true }).click()
+    await expect(target).toHaveAttribute('data-testid', 'tool-row-claude')
+    // 放到一半去了别的页：先收起，回首页接着放这一步。
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('page-chat').waitFor()
+    assert.equal(await tour.count(), 0)
+    assert.equal(await page.locator('[data-coach-target]').count(), 0)
+    await page.getByTestId('nav-home').click()
+    await expect(tour.locator('small')).toHaveText('2 / 3')
+    await expect(target).toHaveAttribute('data-testid', 'tool-row-claude')
+    await expect(tour).toHaveAttribute('data-side', 'right')
+    await tour.getByRole('button', { name: '下一步', exact: true }).click()
+    await expect(target).toHaveAttribute('data-testid', 'account-entry')
+    await tour.getByRole('button', { name: '知道了', exact: true }).click()
+    await tour.waitFor({ state: 'detached' })
+    await page.reload()
+    await waitForFixtureReady(page)
+    await page.getByTestId('tool-row-claude').waitFor()
+    assert.equal(await tour.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 整个元素都在内容区看得见的范围里（内容区自己滚，不是窗口在滚）。
 function insidePageViewport(locator) {
   return locator.evaluate((element) => {
