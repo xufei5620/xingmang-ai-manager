@@ -53,6 +53,7 @@ import {
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
 import { requestDiagnosticsOf } from './request-diagnostics'
+import { parseImageGenerateInput } from './canvas-request-parser'
 import { relayRoutePreferenceAllowed, relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
@@ -146,7 +147,6 @@ import type {
   AccountKey,
   AccountKeysPage,
   AiChatStartInput,
-  AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
   ChooseWorkspaceOptions,
   LegalDocumentKind,
@@ -1386,27 +1386,6 @@ function parseAiChatStartInput(value: unknown): AiChatStartInput {
     model: requiredString(value.model, 'AI聊天模型', 128),
     messages,
     ...(Object.keys(parsedParameters).length ? { parameters: parsedParameters } : {}),
-  }
-}
-
-function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
-  if (!isRecord(value)) throw new Error('生图请求格式错误')
-  const quality = value.quality
-  if (quality !== undefined && !['low', 'medium', 'high', 'auto'].includes(String(quality))) {
-    throw new Error('生图画质格式错误')
-  }
-  const imageResolution = value.imageResolution
-  if (imageResolution !== undefined && !['1K', '2K', '4K'].includes(String(imageResolution))) {
-    throw new Error('生图清晰度格式错误')
-  }
-  return {
-    requestId: requiredString(value.requestId, '生图请求标识', 160),
-    group: requiredString(value.group, '生图分组', 128),
-    model: requiredString(value.model, '生图模型', 128),
-    prompt: requiredString(value.prompt, '生图提示词', 40_000),
-    ...(value.size === undefined ? {} : { size: requiredString(value.size, '生图尺寸', 32) }),
-    ...(quality === undefined ? {} : { quality: quality as AiImageGenerateInput['quality'] }),
-    ...(imageResolution === undefined ? {} : { imageResolution: imageResolution as AiImageGenerateInput['imageResolution'] }),
   }
 }
 
@@ -4041,7 +4020,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!options.imageService) throw new Error('生图服务未就绪')
     observeChatSender(event.sender)
     return options.imageService.generate(event.sender.id, {
-      ...parseAiImageGenerateInput(input),
+      // 对话页从没出过「包含未知字段」这句，多余字段沿用现成的「生图请求格式错误」，上屏的字不变。
+      ...parseImageGenerateInput(input, { prefix: '生图', unknownFields: '生图请求格式错误' }),
       expectedUserId: currentChatUserId(),
     })
   })
