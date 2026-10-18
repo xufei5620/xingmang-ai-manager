@@ -209,6 +209,188 @@ describe('Grok signed binary installer', () => {
     })
   })
 
+  describe('when the xAI download breaks part way', () => {
+    const firstUrl = 'https://x.ai/cli/grok-1.0.62-windows-x86_64.exe'
+    const secondUrl = 'https://x.ai/cli/grok-1.0.62-windows-x86_64'
+    const binary = Buffer.alloc(2 * 1024 * 1024)
+    for (let index = 0; index < binary.length; index += 1) binary[index] = index % 251
+    const half = binary.length / 2
+
+    function binaryResponse(body: BodyInit, headers: Record<string, string> = {}, status = 200): Response {
+      return new Response(body, {
+        status,
+        headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length), ...headers },
+      })
+    }
+
+    /** Hands out the first half, then either fails like a reset connection or goes quiet. */
+    function halfBody(after: 'reset' | 'stall'): ReadableStream<Uint8Array> {
+      let pulls = 0
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulls++ === 0) {
+            controller.enqueue(new Uint8Array(binary.subarray(0, half)))
+            return undefined
+          }
+          if (after === 'reset') {
+            controller.error(new TypeError('terminated'))
+            return undefined
+          }
+          return new Promise<void>(() => undefined)
+        },
+      })
+    }
+
+    function rangeResponse(headers: Record<string, string> = {}): Response {
+      return binaryResponse(binary.subarray(half), {
+        'Content-Length': String(binary.length - half),
+        'Content-Range': `bytes ${half}-${binary.length - 1}/${binary.length}`,
+        ETag: '"grok"',
+        ...headers,
+      }, 206)
+    }
+
+    function setup(answer: (url: string, range: string | null, call: number) => Response) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
+      temporaryDirectories.push(directory)
+      const requests: Array<{ url: string; range: string | null; ifRange: string | null }> = []
+      const fetchImpl = vi.fn<GrokVersionFetch>(async (input, init) => {
+        const url = String(input)
+        if (url === 'https://x.ai/cli/stable') return new Response('1.0.62\n', { status: 200, headers: { 'Content-Type': 'text/plain' } })
+        expect(init?.redirect).toBe('error')
+        const headers = new Headers(init?.headers)
+        requests.push({ url, range: headers.get('range'), ifRange: headers.get('if-range') })
+        return answer(url, headers.get('range'), requests.length)
+      })
+      const progress: Array<{ transferred: number; total: number; percent: number }> = []
+      const waits: number[] = []
+      return {
+        requests,
+        progress,
+        waits,
+        options: {
+          fetchImpl,
+          architecture: 'x64' as const,
+          createTemporaryDirectory: async () => directory,
+          verifyBinary: fakeVerification,
+          onProgress: (event: { transferred: number; total: number; percent: number }) => progress.push(event),
+          resumeOptions: {
+            idleTimeoutMs: 50,
+            wait: async (milliseconds: number) => {
+              waits.push(milliseconds)
+            },
+          },
+        },
+      }
+    }
+
+    it('picks a reset download up where it stopped on the same address', async () => {
+      const f = setup((_url, range) => range === null
+        ? binaryResponse(halfBody('reset'), { ETag: '"grok"' })
+        : rangeResponse())
+
+      const result = await downloadLatestGrokBinary(f.options)
+
+      expect(result).toMatchObject({ sourceUrl: firstUrl, size: binary.length })
+      expect(result.sha256Hex).toBe(createHash('sha256').update(binary).digest('hex'))
+      expect(fs.readFileSync(result.binaryPath).equals(binary)).toBe(true)
+      expect(f.requests).toEqual([
+        { url: firstUrl, range: null, ifRange: null },
+        { url: firstUrl, range: `bytes=${half}-`, ifRange: '"grok"' },
+      ])
+      expect(f.progress[0]).toEqual({ transferred: half, total: binary.length, percent: 50 })
+      expect(f.progress.at(-1)).toEqual({ transferred: binary.length, total: binary.length, percent: 100 })
+    })
+
+    it('picks a download that went quiet up instead of starting the next address from zero', async () => {
+      const f = setup((_url, range) => range === null
+        ? binaryResponse(halfBody('stall'), { ETag: '"grok"' })
+        : rangeResponse())
+
+      const result = await downloadLatestGrokBinary(f.options)
+
+      expect(result.sourceUrl).toBe(firstUrl)
+      expect(fs.readFileSync(result.binaryPath).equals(binary)).toBe(true)
+      expect(f.requests.map((request) => request.range)).toEqual([null, `bytes=${half}-`])
+    })
+
+    it('moves on to the next address at once when this one answers a resume with the whole file', async () => {
+      const f = setup((_url, range, call) => {
+        if (call === 1) return binaryResponse(halfBody('reset'), { ETag: '"grok"' })
+        if (range !== null) return binaryResponse(binary, { ETag: '"grok"' })
+        return binaryResponse(binary)
+      })
+
+      const result = await downloadLatestGrokBinary(f.options)
+
+      expect(result.sourceUrl).toBe(secondUrl)
+      expect(fs.readFileSync(result.binaryPath).equals(binary)).toBe(true)
+      expect(f.requests).toEqual([
+        { url: firstUrl, range: null, ifRange: null },
+        { url: firstUrl, range: `bytes=${half}-`, ifRange: '"grok"' },
+        { url: secondUrl, range: null, ifRange: null },
+      ])
+      expect(f.waits).toHaveLength(1)
+    })
+
+    it('does not splice a resumed range that came from somewhere else', async () => {
+      const f = setup((url, range) => {
+        if (url === secondUrl) return binaryResponse(binary)
+        if (range === null) return binaryResponse(halfBody('reset'), { ETag: '"grok"' })
+        const moved = rangeResponse()
+        Object.defineProperty(moved, 'url', { value: 'https://evil.example/grok.exe' })
+        return moved
+      })
+
+      const result = await downloadLatestGrokBinary(f.options)
+
+      expect(result.sourceUrl).toBe(secondUrl)
+      expect(fs.readFileSync(result.binaryPath).equals(binary)).toBe(true)
+      expect(f.requests.filter((request) => request.url === firstUrl).length).toBeGreaterThan(1)
+    })
+
+    it('still moves on at once when an address goes quiet before sending anything', async () => {
+      const f = setup((url) => url === firstUrl
+        ? binaryResponse(new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined) }))
+        : binaryResponse(binary))
+
+      const result = await downloadLatestGrokBinary(f.options)
+
+      expect(result.sourceUrl).toBe(secondUrl)
+      expect(f.requests.map((request) => request.url)).toEqual([firstUrl, secondUrl])
+      expect(f.waits).toEqual([])
+    })
+
+    it('reports a download that keeps going quiet as a timeout, as before', async () => {
+      const f = setup(() => binaryResponse(new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined) })))
+
+      await expect(downloadLatestGrokBinary(f.options))
+        .rejects.toThrow('Grok 官方二进制下载或签名校验失败：x.ai：连接或下载超时')
+    })
+
+    it('stops without trying the next address when the customer cancels while waiting to resume', async () => {
+      const cancel = new AbortController()
+      const reason = new Error('客户取消了')
+      const f = setup((_url, range) => range === null
+        ? binaryResponse(halfBody('reset'), { ETag: '"grok"' })
+        : rangeResponse())
+
+      const failure = await downloadLatestGrokBinary({
+        ...f.options,
+        signal: cancel.signal,
+        resumeOptions: {
+          wait: async (_milliseconds: number, signal?: AbortSignal) => {
+            cancel.abort(reason)
+            throw signal?.reason
+          },
+        },
+      }).catch((error: unknown) => error)
+
+      expect(failure).toBe(reason)
+      expect(f.requests.map((request) => request.url)).toEqual([firstUrl])
+    })
+  })
+
   describe('from the Xingmang bucket', () => {
     const bucketIndexUrl = `${desktopPackageBucketOrigin}/xingmang/offline/grok/latest.json`
     const binary = Buffer.alloc(1024 * 1024, 0x5b)
