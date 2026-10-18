@@ -259,7 +259,8 @@ import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
 import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
-  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelaySite } from './relay-sites'
+  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelayRouteSiteId, type RelaySite } from './relay-sites'
+import type { RelayRouteChange } from './relay-route-controller'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -1151,6 +1152,11 @@ export interface SystemService {
    * 调用方当什么都没改。
    */
   followToolRoutes?(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport>
+  /**
+   * 整份写入那一轮写完了（account-cli-provisioner.ts 的 configureManagedClis），written 是这一轮写好的几家：其中
+   * 因为连不上换了线路、跟过去的一次提示重开，不一家一句（历史账号，#1061 第 2 条）。可选 = 旧实现不提供。
+   */
+  noteRouteFollowRestart?(written: readonly ProviderId[]): Promise<void>
   /** ipc.ts 注册时交进来，注销时交 null。 */
   bindToolRouteAccount?(hooks: ToolRouteAccountHooks | null): void
   /** 星芒窗口回到前台：等着外部客户端退出再换线路的，看一眼退了没有（同一个客户端两次至少隔 2 分钟）。 */
@@ -2752,6 +2758,11 @@ export interface SystemServiceOptions {
    * （渲染层照旧跑同步 Key）。来自服务状态文件，出问题不用发版就能切回。
    */
   getToolRouteRewriteMode?: () => 'targeted' | 'merge'
+  /**
+   * 「自动」线路最近一次换线（relay-route-controller.ts 的 lastChange）。历史账号的工具配置跟的就是这条，界面
+   * 整份写入跟过去以后据此判断要不要提示重开（#1061 第 2 条）。缺省 = 不提示。
+   */
+  relayRouteLastChange?: (siteId: RelayRouteSiteId) => RelayRouteChange | null
   /**
    * 服务状态文件里的型号表（service-status.ts 的 cliModels）：默认型号、上一代、已下架。从不拒绝，
    * 读不到给 null。缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
@@ -8010,6 +8021,9 @@ export function createSystemService(
           readback: relayProviderBaseUrlEquals(inspectNativeProviderConfig(payload.provider).actualBaseUrl, activeSite.providerBaseUrls[payload.provider]),
         })
       }
+      // 这一家刚写的这一笔是不是因为连不上换线、跟过去的：是就等这一轮写完提示重开，不是就把以前记下的作废。
+      if (followedRoute && accountRouteFaultFollowed(activeSite.id, followedRoute)) accountRouteFollowed.set(payload.provider, owner)
+      else accountRouteFollowed.delete(payload.provider)
       // 整份写过一遍、来源重新记成了这次的：之前「被别的软件改回过」的结论作废，换线路照常跟。
       if (toolRouteFollow.read().providers[payload.provider]?.managedElsewhere) {
         await writeToolRouteRecord(payload.provider, ({ managedElsewhere: _managedElsewhere, reverts: _reverts, ...rest }) => rest)
@@ -8101,7 +8115,7 @@ export function createSystemService(
 
   // ---- 换线路时定点改写工具配置（xm 三线路 C9、C10、C11、C19） ----
   //
-  // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改。地址取的是
+  // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改（重开提示见 noteRouteFollowRestart）。地址取的是
   // relayRouting 这次运行生效的线路（开机定下的偏好，设置里改了没重启的不算），所以「改了设置没重启」
   // 那段时间工具配置照样跟着当前生效的线路走（(f)）。和整份写入排同一个 serializeConfigWrite 队。
   const toolRouteNow = serviceOptions.toolRouteNow ?? Date.now
@@ -8291,6 +8305,38 @@ export function createSystemService(
     for (const provider of hinted) await writeToolRouteRecord(provider, (current) => ({ ...current, hintAt: now }))
     runtimeLog?.log('info', 'config', 'route.restart-hint', '连接线路因为连不上换了，提示客户重开工具', { providers: hinted, tagged: tools.filter((provider) => !hinted.includes(provider)) })
     return true
+  }
+
+  // 历史账号的工具配置跟应用线路走，换了以后由界面整份写入跟过去（saveConfig 的 followedRoute），不走上面的
+  // 定点改写，以前因此一直不提示重开（#1061 第 2 条）。这一轮写完（noteRouteFollowRestart）再一次说完，只说这一轮
+  // 自己写的那几家：同时跑着的另一轮（客户自己点的换来源、换账号）不会把它们提前说掉。记着是哪个账号写的：账号
+  // 中途换了，那一轮整轮作废、走不到说完那一步，留下的不带到下一个账号那一轮。
+  const accountRouteFollowed = new Map<ProviderId, string | null>()
+
+  /**
+   * 整份写入跟过去的这条线路，是不是半小时内「自动」因为连不上换过来的那条。按换线时刻算、不按这次运行：上次
+   * 运行刚换完线就退出、这次开机才跟过去的也算；更早的、写死线路的、切回先走那条的不算。
+   */
+  function accountRouteFaultFollowed(siteId: string, line: RelayEndpointId): boolean {
+    // 星芒账号由 followToolRoutes 自己提示（R6 切回整份写入时它的工具线路也不在应用线路这里）。
+    if (siteId !== 'solov-api') return false
+    const change = serviceOptions.relayRouteLastChange?.(siteId)
+    if (!change || change.to !== line || (change.reason !== 'health-failed' && change.reason !== 'line-down')) return false
+    const age = toolRouteNow() - change.at
+    return age >= 0 && age < toolRouteHintTtlMs
+  }
+
+  async function noteRouteFollowRestart(written: readonly ProviderId[]): Promise<void> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const followed = written.filter((provider) => accountRouteFollowed.has(provider) && accountRouteFollowed.get(provider) === owner)
+    for (const provider of written) accountRouteFollowed.delete(provider)
+    if (!followed.length) return
+    // 配置已经写好了：提示没出成只进日志，不能把这一轮写入算成失败。
+    try {
+      if (await noteToolRouteRestart(followed)) serviceOptions.onToolRouteFollowed?.()
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'route.restart-hint-failed', '换线路的重开提示这次没出成，不影响工具使用', { providers: followed, reason: credentialFailureReason(error) })
+    }
   }
 
   async function followToolRoutes(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport> {
@@ -8840,6 +8886,7 @@ export function createSystemService(
     updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
       ...routeLineSnapshotFields(), ...toolRouteSnapshotFields() }),
     followToolRoutes,
+    noteRouteFollowRestart,
     bindToolRouteAccount: (hooks) => { toolRouteAccount = hooks },
     recheckPendingExternalRoutes,
     disposeToolRoutes,
