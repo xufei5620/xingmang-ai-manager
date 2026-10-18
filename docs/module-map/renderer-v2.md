@@ -10,7 +10,6 @@
 - `bridge.ts` — 取 `window.xingmang`（preload 暴露的主进程桥，类型是 ipc-contract 的 `XingmangApi`）；不在 Electron 里时返回 null，浏览器夹具据此换成假桥。
 - `platform-api.ts` — 取第二座桥 `window.xingmangPlatform`（`electron/platform/contract`，只 `import type`），把系统深浅色、高对比度同步到根节点；用 revision 计数丢掉比推送更晚回来的初次读取。
 - `types.ts` — 新界面自己的几个类型别名（`V2Bridge` 就是 `XingmangApi`、`V2Page`、主题、平台），全部从 ipc-contract 与 registry 只取类型。
-- `index.ts` — 对外汇总导出（App、Shell、ui、页面与图标注册表）。（推断：未见引用）
 
 ## 跨页面共用的底座
 - `business-common.tsx` — **各页共用的错误话术与数据钩子**：剥掉 Electron 包在 IPC 拒绝外面的「Error invoking remote method '通道名'」前缀和类名、路径换成占位词、Key 过 `electron/redaction-patterns` 打码再上屏（I13）；`useResource` 用 useRef 序号丢弃迟到的读取（T6），另有 `useOperation`、`ResultNotice`、相对时间与金额格式。和 legacy 的 `src/error-message.ts` 是两棵树各一份，有意重复（I6/I7 同理）。
@@ -221,7 +220,6 @@
 - `registry/clients.ts` — 外接客户端的种类标签与能借用哪个工具的 Key（不含下线的 Gemini）。
 - `registry/status.ts` — 各类状态牌的字和语气色（工具、运行环境、密钥、订单、任务）。
 - `registry/icons.ts` — 常用动作（打开、安装、刷新、配置……）的图标映射。
-- `registry/index.ts` — 注册表汇总导出。（推断：未见引用）
 
 ## ui/ 组件层（照 ui-spec 原型抄的，通篇带分号）
 - `ui/README.md` — 组件层约定：按职责分文件、不做一个组件一个文件夹（R-B3）、组件拒收 className / style、Dialog 用原生 showModal、Menu/Popover 用原生 popover、Toast 时长规则；附浏览器检查命令。
