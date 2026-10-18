@@ -958,20 +958,26 @@ test('a branch push with an open pull request triggers exactly one run', () => {
   assert.deepEqual(Object.keys(triggers).sort(), ['pull_request', 'push'])
 })
 
-test('superseded runs are cancelled instead of billing a full matrix each', () => {
+test('a pull request cancels its superseded run, and main finishes every run it starts', () => {
+  // Keyed by ref, so main and each pull request queue apart and a merge never
+  // cancels a pull request's run or the other way round.
   assert.equal(workflow.concurrency.group, '${{ github.workflow }}-${{ github.ref }}')
-  // Includes main: every merge was checked as its pull request's merge commit
-  // before it landed, so a burst of merges only needs its final state run
-  // again. yoyo kept this once releases had started (2026-10-03).
-  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+  // main used to cancel too (kept by yoyo on 2026-10-03). Once merges came
+  // steadily every run on main was cancelled before it finished: 89 in a row
+  // on 2026-10-18 with no verdict. GitHub still cancels an older run that is
+  // only waiting when a newer one queues, so main runs once per stretch of
+  // merges, on the newest commit, instead of once per merge.
+  assert.equal(workflow.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}")
 })
 
-test('a burst of merges to main reaches the matrix once, and pull requests never wait', () => {
+test('main paces its matrix with one wait, and pull requests never wait', () => {
   const job = workflow.jobs.changes
   const [wait] = job.steps
 
-  // First in the only job everything else needs, so a newer merge cancels a
-  // runner that is asleep rather than one that has started checking.
+  // First in the only job everything else needs. main no longer cancels a
+  // started run, so the wait no longer saves a cancelled matrix; it spaces
+  // main's matrix out instead, and merges landing during it collapse into the
+  // one run waiting behind this one.
   assert.equal(wait.run, 'sleep 600')
   assert.equal(wait.if, "github.event_name == 'push'", 'pull requests must not wait')
   for (const [name, entry] of Object.entries(workflow.jobs)) {
@@ -980,9 +986,7 @@ test('a burst of merges to main reaches the matrix once, and pull requests never
   }
   // The wait is spent inside the job's own bound; the rest took seconds.
   assert.ok(job['timeout-minutes'] >= 13, 'the job bound must leave room after the ten-minute wait')
-  // The wait is only cheap if the next merge actually cancels it, and it is
-  // for merges to main, not a way to pace anything else.
-  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+  // It is for merges to main, not a way to pace anything else.
   const sleepers = Object.entries(workflow.jobs)
     .filter(([, entry]) => entry.steps.some((step) => /\bsleep\b/i.test(String(step.run || ''))))
     .map(([name]) => name)
@@ -1135,12 +1139,15 @@ test('the required aggregate fails for incomplete checks and accepts documentati
 test('a red run on main opens an alert issue from the only job that can write issues', () => {
   const alert = workflow.jobs['main-alert']
   assert.deepEqual(alert.needs, ['changes', 'quality-gate'])
-  // `!cancelled()` rather than `always()`: a run a newer merge superseded is the
-  // cancellation yoyo kept on purpose (2026-10-03), not main going red, and it
-  // must stay silent. A gate that fails or runs out of its own time still
-  // reaches the job, because only the gate job, not the run, was cancelled.
+  // `!cancelled()` rather than `always()`: a run that never started because a
+  // newer merge took its place in the queue, or that someone cancelled by
+  // hand, is not main going red and must stay silent. A gate that fails or
+  // runs out of its own time still reaches the job, because only the gate
+  // job, not the run, was cancelled.
   assert.equal(alert.if, "${{ !cancelled() && github.event_name == 'push' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' }}")
-  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+  // A merge never cancels a run main has started, so every one of them gets
+  // this far with a verdict. Under the old policy this job never ran once.
+  assert.equal(workflow.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}")
   assert.equal(alert['runs-on'], 'ubuntu-latest')
   assert.ok(alert['timeout-minutes'] > 0 && alert['timeout-minutes'] <= 5)
   assert.equal(alert.environment, undefined)

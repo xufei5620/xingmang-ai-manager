@@ -1,8 +1,8 @@
 // main 上的 quality 完整跑完却没过时开一条 issue 报警，main 再红只改这条 issue，下一次在 main
-// 上完整跑完并通过就留言并关闭。合并一多，main 上的运行大多被后来的合并取消（quality.yml 开头的
-// concurrency，yoyo 10-03 定了保留），真跑完变红的那次只躺在 Actions 列表里，没人知道（#1090
-// 第 5 条）。被取消的运行这里一律不算。只用本次运行自带的 GITHUB_TOKEN（作业级 actions: read +
-// issues: write），GitHub 客户端和 issue 列表与 cos-sync-alert.cjs 共用。
+// 上完整跑完并通过就留言并关闭。以前真跑完变红的那次只躺在 Actions 列表里，没人知道（#1090
+// 第 5 条）。main 上开跑的运行不再被后来的合并取消（quality.yml 开头的 concurrency），还没开跑
+// 就被更新的合并顶掉的、有人手动取消的，这里一律不算。只用本次运行自带的 GITHUB_TOKEN（作业级
+// actions: read + issues: write），GitHub 客户端和 issue 列表与 cos-sync-alert.cjs 共用。
 const { createGitHubClient, failedJobNames, formatBeijingTime, listOpenBotIssues, validateRuns, RUN_PAGE_SIZE } = require('./cos-sync-alert.cjs')
 
 const SERVER_ORIGIN = 'https://github.com'
