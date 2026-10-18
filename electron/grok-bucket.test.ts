@@ -128,14 +128,17 @@ describe('Grok bucket index requests', () => {
     })
   })
 
-  it.each([
-    ['checked more than a day ago', '2026-10-17T09:59:59.000Z'],
-    ['never checked', undefined],
-  ])('sends the latest install to xAI when the index was %s', async (_label, checkedAt) => {
+  it('sends the latest install to xAI when the index was checked more than a day ago', async () => {
     for (const requested of [undefined, 'latest']) {
-      const failure = await readGrokBucketRelease('arm64', requested, indexFetch(checkedAt)).catch((error: unknown) => error)
+      const failure = await readGrokBucketRelease('arm64', requested, indexFetch('2026-10-17T09:59:59.000Z')).catch((error: unknown) => error)
       expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
-      expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt ?? '没写'}），桶里的可能不是最新版`)
+      expect((failure as Error).message).toBe('存储桶清单超过 24 小时没和官方核对过（上次是 2026-10-17T09:59:59.000Z），桶里的可能不是最新版')
+    }
+  })
+
+  it('keeps installing the latest from an index written before the sync learned checkedAt', async () => {
+    for (const requested of [undefined, 'latest']) {
+      await expect(readGrokBucketRelease('arm64', requested, indexFetch(undefined))).resolves.toMatchObject({ version: '1.0.52' })
     }
   })
 

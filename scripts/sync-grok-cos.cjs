@@ -264,6 +264,9 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
     return validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
   })
   const stable = await stage('source-stable', {}, function () { return resolveStable(dependencies) })
+  // checkedAt is when xAI told us its stable, not when the uploads finished: if xAI moves on
+  // mid-run, the index must not vouch for the old stable any longer than it has to.
+  const checkedAt = now()
   const versions = targetVersions(stable.version, parseVersion(recommendedVersion))
   const workDirectory = await stage('prepare-temp', {}, function () { return dependencies.createWorkDirectory() })
   let primaryError
@@ -305,8 +308,7 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
       for (const platformId of PLATFORM_IDS) files.push(await synchronizeFile(version, platformId))
       current.push({ version, files })
     }
-    const checkedAt = now()
-    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: checkedAt, stable, releases: mergeReleases(current, old), checkedAt }
+    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: now(), stable, releases: mergeReleases(current, old), checkedAt }
     await stage('validate-latest', {}, async function () { validateLatest(manifest, store.publicUrl) })
     // 没变也照样写一遍，只换 checkedAt：客户端靠它判断桶还跟不跟得上 xAI 的 stable，太久没核过就不从桶里
     // 装最新的（#1061 第 7 条）。

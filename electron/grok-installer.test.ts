@@ -331,10 +331,18 @@ describe('Grok signed binary installer', () => {
     })
 
     it('still takes a named version from a bucket index that was not checked for over a day', async () => {
-      const f = bucketSetup({ checkedAt: null })
+      const f = bucketSetup({ checkedAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString() })
       const result = await downloadLatestGrokBinary(f.options)
       expect(result.sourceUrl).toBe(`${desktopPackageBucketOrigin}/${bucketKey}`)
       expect(f.routed).toEqual([])
+    })
+
+    it('takes the latest from a bucket index written before the sync learned checkedAt', async () => {
+      const f = bucketSetup({ checkedAt: null })
+      const result = await downloadLatestGrokBinary({ ...f.options, version: undefined, installedVersion: null })
+      expect(result).toMatchObject({ version: '1.0.52', sourceUrl: `${desktopPackageBucketOrigin}/xingmang/offline/grok/windows-x64/sha256-${digest}/grok-1.0.52-windows-x86_64.exe` })
+      expect(f.routed).toEqual([])
+      expect(f.fallbacks).toEqual([])
     })
 
     it('ignores the installed version when a version is named, so a rollback still comes from the bucket', async () => {

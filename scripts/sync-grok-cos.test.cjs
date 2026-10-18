@@ -210,6 +210,16 @@ test('an unchanged stable with intact objects means no download and only a fresh
   assert.equal(validateLatest(fixture.latest, fixture.store.publicUrl), fixture.latest)
 })
 
+test('checkedAt is the moment xAI named its stable, not the end of the uploads', async () => {
+  const fixture = createFixture()
+  // Downloading and uploading four binaries takes a while; xAI may move on in between.
+  const result = await fixture.run({ now: function () { return fixture.downloads.length === 0 ? '2026-10-14T16:00:00.000Z' : '2026-10-14T16:40:00.000Z' } })
+  assert.equal(result.changed, true)
+  assert.equal(fixture.downloads.length, 4)
+  assert.equal(fixture.latest.checkedAt, '2026-10-14T16:00:00.000Z')
+  assert.equal(fixture.latest.generatedAt, '2026-10-14T16:40:00.000Z')
+})
+
 test('a new stable is added on top of the history and a damaged object is uploaded again', async () => {
   const fixture = createFixture()
   await fixture.run()

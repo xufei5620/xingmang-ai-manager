@@ -30,7 +30,8 @@ const maximumIndexBytes = 256 * 1024
 const indexTimeoutMs = 10_000
 // 同步作业每 6 小时跑一次，每次成功都把它核过的那几条的 checkedAt 刷成那一刻，包没变也刷。这么久
 // 没刷过，说明同步连着停了好几轮，桶里的「最新」多半已经落后官方：要装最新的就不从桶里装，照旧去
-// 官方那几路，免得装上一个中间版本、提示「已更新」后界面仍显示有更新（#1061 第 7 条）。
+// 官方那几路，免得装上一个中间版本、提示「已更新」后界面仍显示有更新（#1061 第 7 条）。连着两次
+// 定时同步失败会开 issue 报警（cos-sync-alert），离这条线还有十来个小时。
 export const desktopBucketIndexMaximumAgeMs = 24 * 60 * 60_000
 // 同 codex-desktop-service.ts 的安装包上下限：再小不是安装包，再大管理员安装那一步也会拒收。
 const minimumPackageBytes = 10 * 1024 * 1024
@@ -77,7 +78,7 @@ export interface DesktopBucketPackage {
   contentType: string
   /**
    * 同步作业最后一次核对这一条还和官方一致的时间（ISO 8601），清单没写就没有。目前只有 Codex 那份
-   * 清单写，readDesktopBucketPackage 据此判断过期。
+   * 清单写，readDesktopBucketPackage 据此判断过期（isDesktopBucketIndexStale）。
    */
   checkedAt?: string
 }
@@ -329,14 +330,14 @@ export async function fetchDesktopBucketResource(
 }
 
 /**
- * 清单里那一条最后核对的时间离 now 超过 desktopBucketIndexMaximumAgeMs，或者没写、写得不对，都算过期。
- * 时间写在将来（同步机器和桶的时钟差几秒）不算过期。
+ * 清单里那一条最后核对的时间离 now 超过 desktopBucketIndexMaximumAgeMs 才算过期。没写、读不出来就判断
+ * 不了，照没有这道检查时那样用桶：新的同步脚本没跑过之前，线上的清单都没有这个时间，算过期的话
+ * 所有客户都会被推去慢的官方那几路。时间写在将来（同步机器和桶的时钟差几秒）也不算过期。
  */
 export function isDesktopBucketIndexStale(checkedAt: string | undefined, now: number): boolean {
-  const checked = typeof checkedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(checkedAt)
-    ? Date.parse(checkedAt)
-    : Number.NaN
-  return !Number.isFinite(checked) || now - checked > desktopBucketIndexMaximumAgeMs
+  if (typeof checkedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(checkedAt)) return false
+  const checked = Date.parse(checkedAt)
+  return Number.isFinite(checked) && now - checked > desktopBucketIndexMaximumAgeMs
 }
 
 /** 判断过期用桶自己回的 Date：客户电脑的时钟可能差好几天。读不出来才用本机时间。 */
@@ -345,9 +346,9 @@ export function desktopBucketResponseTime(response: Response, now: () => number 
   return Number.isFinite(date) ? date : now()
 }
 
-/** 过期时记进运行日志的那句原话（不上屏）。时间是清单里的原文，只留开头一段。 */
+/** 过期时记进运行日志的那句原话（不上屏）。 */
 export function describeStaleDesktopBucketIndex(checkedAt: string | undefined): string {
-  return `存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt === undefined ? '没写' : checkedAt.slice(0, 40)}），桶里的可能不是最新版`
+  return `存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt ?? '没写'}），桶里的可能不是最新版`
 }
 
 function abortedBy(signal: AbortSignal | undefined): unknown {

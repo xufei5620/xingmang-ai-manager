@@ -350,15 +350,22 @@ describe('desktop package bucket index requests', () => {
     }
   })
 
+  it('falls back from a Codex entry checked more than a day before the bucket answered', async () => {
+    for (const id of ['codex-windows-x64', 'codex-macos-arm64'] as const) {
+      const failure = await readDesktopBucketPackage(id, indexFetch(checkedCodexIndex('2026-10-17T09:59:59.000Z'))).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect((failure as Error).message).toBe('存储桶清单超过 24 小时没和官方核对过（上次是 2026-10-17T09:59:59.000Z），桶里的可能不是最新版')
+    }
+  })
+
+  // Every index online today was written before the sync learned checkedAt. Calling those stale
+  // would send every customer to the slow official routes until the next sync run.
   it.each([
-    ['checked more than a day before the bucket answered', '2026-10-17T09:59:59.000Z'],
     ['never checked', undefined],
     ['checked at an unreadable time', 'yesterday'],
-  ])('falls back from a Codex entry %s', async (_label, checkedAt) => {
+  ])('keeps using a Codex entry %s, as before this check existed', async (_label, checkedAt) => {
     for (const id of ['codex-windows-x64', 'codex-macos-arm64'] as const) {
-      const failure = await readDesktopBucketPackage(id, indexFetch(checkedCodexIndex(checkedAt))).catch((error: unknown) => error)
-      expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
-      expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt ?? '没写'}），桶里的可能不是最新版`)
+      await expect(readDesktopBucketPackage(id, indexFetch(checkedCodexIndex(checkedAt)))).resolves.toMatchObject({ id })
     }
   })
 
@@ -391,8 +398,8 @@ describe('desktop package bucket index age', () => {
     expect(isDesktopBucketIndexStale('2026-10-18T10:00:05.000Z', now)).toBe(false)
   })
 
-  it.each([undefined, '', '2026-10-18', '2026-10-18 10:00:00', '2026-10-18T10:00:00+08:00', '2026-13-40T99:00:00.000Z'])('treats %j as never checked', (value) => {
-    expect(isDesktopBucketIndexStale(value, now)).toBe(true)
+  it.each([undefined, '', '2026-10-01', '2026-10-01 10:00:00', '2026-10-01T10:00:00+08:00', '2026-13-40T99:00:00.000Z'])('cannot judge %j and does not call it stale', (value) => {
+    expect(isDesktopBucketIndexStale(value, now)).toBe(false)
   })
 
   it('takes the time from the bucket response before the local clock', () => {

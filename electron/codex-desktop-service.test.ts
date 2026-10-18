@@ -2962,7 +2962,7 @@ describe('Codex Desktop from the Xingmang bucket', () => {
   function bucketMetadata(version: string, overrides: Partial<{ name: string; architecture: string; publisher: string; hasSignature: boolean }> = {}) {
     return { name: 'OpenAI.Codex', version, architecture: 'x64', publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B', hasSignature: true, ...overrides }
   }
-  function bucketFetch(options: { version?: string; indexStatus?: number; body?: Buffer; checkedAt?: string } = {}) {
+  function bucketFetch(options: { version?: string; indexStatus?: number; body?: Buffer; checkedAt?: string | null } = {}) {
     const version = options.version ?? '26.1003.4512.0'
     const requested: string[] = []
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -2982,8 +2982,8 @@ describe('Codex Desktop from the Xingmang bucket', () => {
                 key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: bytes.byteLength, sha256: digest,
                 contentType: 'application/vnd.ms-appx', verification: 'windows-authenticode', cosEtag: '"etag"',
               },
-              // The sync refreshes it every 6 hours (#1061 item 7).
-              checkedAt: options.checkedAt ?? new Date().toISOString(),
+              // The sync refreshes it every 6 hours (#1061 item 7); null leaves it out like an index written before that.
+              ...(options.checkedAt === null ? {} : { checkedAt: options.checkedAt ?? new Date().toISOString() }),
             },
           },
         }), { status: options.indexStatus ?? 200, headers: { 'Content-Type': 'application/json' } })
@@ -3065,6 +3065,16 @@ describe('Codex Desktop from the Xingmang bucket', () => {
       expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt}），桶里的可能不是最新版`)
       expect(requested).toEqual([indexUrl])
     }
+  })
+
+  it('still downloads from an index written before the sync learned checkedAt', async () => {
+    const { requested, fetchMock, version } = bucketFetch({ checkedAt: null })
+    const result = await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, fetchImplementation: fetchMock,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    expect(result).toMatchObject({ status: 'downloaded', version })
+    expect(requested).toEqual([indexUrl, packageUrl(version)])
   })
 
   it('deletes the download when its bytes are not the ones the index lists', async () => {
