@@ -173,6 +173,72 @@ test('both copies settle on the same SystemRoot for every loader report and obje
   assert.deepEqual([...seen].sort(), ['loader report', 'object manager', 'refused'])
 })
 
+// The comparison above only says the two copies agree; this pins what they
+// agree on, so that folding them into one cannot quietly move the answer for
+// both at once. Each loader report either settles SystemRoot by itself (the
+// root, or 'refused') without asking the object manager, or settles nothing
+// (null) and leaves it to the object manager, whose answer is then held to the
+// same check. The real process report is left out: off Windows it settles
+// nothing, on the Windows runner it names the runner's own root.
+const settledByLoaderReport = {
+  'nothing loaded': null,
+  'both core modules': 'C:\\Windows',
+  'mixed case': 'D:\\WINDOWS',
+  'forward slashes': 'C:\\Windows',
+  'dot segments': 'C:\\Windows',
+  'a parent segment in only one of the pair': null,
+  'a trailing space on the root': 'C:\\Windows',
+  'a UNC root': '\\\\host\\share',
+  'a device-prefixed root': '\\\\?\\C:\\Windows',
+  'a Windows directory at the drive root': 'C:',
+  'only ntdll': null,
+  'only kernel32': null,
+  'the pair split across roots': null,
+  'two complete pairs': 'E:\\Other',
+  'the pair outside System32': null,
+  'a look-alike System32': null,
+  'a look-alike kernel32': null,
+  'a look-alike ntdll': null,
+  'relative module paths': null,
+  'decoys around the pair': 'C:\\Windows',
+}
+
+const settledByObjectManager = {
+  unavailable: 'refused',
+  'a plain directory': 'E:\\Windows',
+  'a trailing separator': 'E:\\Windows',
+  'surrounding whitespace': 'E:\\Windows',
+  'a device-prefixed path': '\\\\?\\E:\\Windows',
+  'a drive root': 'E:',
+  'a relative path': 'refused',
+  'an empty answer': 'refused',
+  'an embedded NUL': 'refused',
+}
+
+function expectedOutcome(report, answerName) {
+  const settled = settledByLoaderReport[report]
+  const outcome = settled === null ? settledByObjectManager[answerName] : settled
+  const asked = settled === null ? ['\\\\?\\GLOBALROOT\\SystemRoot'] : []
+  return outcome === 'refused' ? { refused: true, asked } : { systemRoot: outcome, asked }
+}
+
+test('the client settles SystemRoot where it always has for every loader report and object-manager answer', () => {
+  assert.deepEqual(
+    Object.keys(settledByLoaderReport),
+    Object.keys(loaderReports).filter((report) => report !== 'the real process report'),
+  )
+  assert.deepEqual(Object.keys(settledByObjectManager), Object.keys(objectManagerAnswers))
+  for (const report of Object.keys(settledByLoaderReport)) {
+    for (const [answerName, answer] of Object.entries(objectManagerAnswers)) {
+      assert.deepEqual(
+        clientSystemRoot(loaderReports[report], answer),
+        expectedOutcome(report, answerName),
+        `${report} / object manager: ${answerName}`,
+      )
+    }
+  }
+})
+
 test('both copies consult the same object-manager device path', () => {
   const release = releaseSystemRoot([], () => 'E:\\Windows')
   const client = clientSystemRoot([], () => 'E:\\Windows')
@@ -259,6 +325,13 @@ test('both copies refuse to resolve SystemRoot off Windows', () => {
       sharedObjects,
       resolveKnownFolders: () => fixedKnownFolders,
     }), Error, platform)
+  }
+})
+
+test('the client refuses a core-module pair under a NUL root without asking the object manager', () => {
+  const sharedObjects = ['C:\\Win\0dows\\System32\\ntdll.dll', 'C:\\Win\0dows\\System32\\kernel32.dll']
+  for (const [answerName, answer] of Object.entries(objectManagerAnswers)) {
+    assert.deepEqual(clientSystemRoot(sharedObjects, answer), { refused: true, asked: [] }, answerName)
   }
 })
 
