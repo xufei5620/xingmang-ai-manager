@@ -1238,11 +1238,13 @@ export interface NodeDownloadDeadline {
 
 /**
  * downloadWithResume already ends a single request that goes quiet for 45 seconds and
- * resumes it; this watches the download as a whole. The stall window also covers what
- * that per-request timer cannot see (the waits between resumes, resumes that deliver
- * nothing), and the ceiling bounds a link that trickles just fast enough never to look
- * idle. Both end the download with the reason the old fixed limit used, so what the
- * customer is told does not change.
+ * resumes it; this watches the download as a whole, so a slow link that keeps delivering
+ * is never cut off at a fixed time. The stall window is a backstop for any quiet stretch
+ * the per-request timer does not see, and the ceiling bounds a link that trickles just
+ * fast enough never to look idle. Neither keeps a broken route alive: a route whose
+ * resumes keep failing is still handed back by downloadWithResume after its own few
+ * retries, and the caller moves on to the next source as before. Both end the download
+ * with the reason the old fixed limit used, so what the customer is told does not change.
  */
 export function createNodeDownloadDeadline(expire: (reason: Error) => void): NodeDownloadDeadline {
   let stopped = false
