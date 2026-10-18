@@ -157,6 +157,14 @@ describe('linux tutorials', () => {
     expect(updateDiskCleanupStepsFor('mac')).toBe(updateDiskCleanupSteps);
   });
 
+  it('switches accounts on Linux in the same four steps without the Claude Desktop lines or an empty bullet', () => {
+    const switching = linux.find((topic) => topic.id === 'switch-account');
+    const original = tutorialTopics.find((topic) => topic.id === 'switch-account');
+    expect(switching?.steps.map((entry) => entry.where)).toEqual(['工具箱首页 → 工具卡片左下角', '工具箱首页 → 卡片左下角的小标签，或右下角 … → 改用当前账号 / 切回官方账号', 'Claude Code / Codex 窗口', 'Claude Code / Codex 窗口']);
+    expect(switching?.steps.map((entry) => entry.bullets?.length)).toEqual(original?.steps.map((entry) => (entry.bullets?.length ?? 0) - (entry.bullets?.filter((bullet) => bullet.startsWith('Claude Desktop')).length ?? 0)));
+    expect(switching?.steps[2].detail).toBe('已经打开的工具还记着旧账号，要关掉重开才会换过来。');
+  });
+
   it('drops the Codex desktop, acceleration and Mac-only chapters and keeps everything else in order', () => {
     const ids = linux.map((topic) => topic.id);
     const hidden = ['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic];
@@ -168,7 +176,7 @@ describe('linux tutorials', () => {
   });
 
   it('never points a Linux reader at Windows, a Mac, the desktop app or game acceleration', () => {
-    expect(visible).not.toMatch(/Windows|Mac|桌面端|Homebrew|访达|PowerShell|开始菜单|废纸篓|游戏加速|C 盘|钥匙串/);
+    expect(visible).not.toMatch(/Windows|Mac|桌面端|Homebrew|访达|PowerShell|开始菜单|废纸篓|游戏加速|C 盘|钥匙串|Claude Desktop/);
     expect(visible).not.toMatch(/npm|PATH|TOML/i);
     expect(visible.replace(/(Codex|Grok) CLI/g, '')).not.toMatch(/CLI/);
   });
