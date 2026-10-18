@@ -365,6 +365,14 @@ export function extensionInstallNeedsTrust(provider: Provider, kind: ExtensionKi
 }
 
 /**
+ * 技能、插件的「添加」表单给不给「当前项目」。Codex 的插件只有全局一层；Grok 的插件命令没有范围参数，
+ * 选了项目照样装进 ~/.grok（1.0.52、1.0.62 实测，#1092）。外接工具按勾了哪几个工具另算（mcpGlobalOnly）。
+ */
+export function extensionFormOffersProject(provider: Provider, kind: ExtensionKind): boolean {
+  return kind !== 'plugin' || (provider !== 'codex' && provider !== 'grok')
+}
+
+/**
  * 扩展页的动作改的都是工具自己的配置（MCP、技能、插件、插件市场），没权限时说「写不进配置文件」
  * （已知29）。只有「安装 Python」装的是运行环境，照旧按原话认。
  */
@@ -1966,7 +1974,8 @@ export function ExtensionsPage({
   // Codex CLI 的连接只有全局一层，submitMcpInstall 给它的范围会被丢掉。勾上它时整张表就只能装到「我的（全局）」，
   // 不然框里写着装进当前项目，Codex CLI 那边其实是全局的。
   const mcpGlobalOnly = kind === 'mcp' && formTargets.includes('codex')
-  const mcpScope = mcpGlobalOnly ? 'user' : formScope
+  const formOffersProject = kind === 'mcp' ? !mcpGlobalOnly : extensionFormOffersProject(provider, kind)
+  const shownScope = formOffersProject ? formScope : 'user'
   const addMcp = async () => {
     const name = formName.trim()
     const problem = customMcpProblem({
@@ -2005,7 +2014,7 @@ export function ExtensionsPage({
     const done: Provider[] = []
     try {
       for (const target of formTargets) {
-        await submitMcpInstall(api, target, name, mcp, mcpScope, advanced)
+        await submitMcpInstall(api, target, name, mcp, shownScope, advanced)
         done.push(target)
       }
     } finally {
@@ -2049,7 +2058,7 @@ export function ExtensionsPage({
             kind,
             action: 'install',
             source: source.trim(),
-            scope: formScope,
+            scope: shownScope,
             ...(trusted ? { trust: true } : {}),
           })
         setTrusting(false)
@@ -2874,12 +2883,10 @@ export function ExtensionsPage({
             aria-label={kind === 'mcp' ? undefined : '添加范围'}
             options={[
               { value: 'user', label: '我的（全局）' },
-              // Codex 的连接和插件只有全局一层；几个工具一起加时，勾了 Codex CLI 就不给这一项。
-              ...((kind === 'mcp' ? mcpGlobalOnly : provider === 'codex' && kind !== 'skill')
-                ? []
-                : [{ value: 'project', label: '当前项目' }]),
+              // Codex 的连接和插件、Grok 的插件只有全局一层；几个工具一起加连接时，勾了 Codex CLI 就不给这一项。
+              ...(formOffersProject ? [{ value: 'project', label: '当前项目' }] : []),
             ]}
-            value={kind === 'mcp' ? mcpScope : formScope}
+            value={shownScope}
             onChange={(event) =>
               setFormScope(
                 event.target.value === 'project' ? 'project' : 'user',
