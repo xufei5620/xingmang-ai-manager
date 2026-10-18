@@ -2589,6 +2589,49 @@ test('the home card being installed shows plain progress, a bar once there is a 
     await clean(page)
   } finally { await page.close() }
 })
+// #1097：装到一半退出登录，主进程那边照样装完。欢迎页不能被换成未登录的首页；再登录回来，
+// 那张卡不能还停在「正在安装」、按钮全灰，关窗也不能还被这次早就装完的安装拦着。
+test('an install that finishes while signed out keeps the welcome page and leaves nothing installing', async () => {
+  const page = await open()
+  let closeRequest = 0
+  async function closeBlocked() {
+    const requestId = `fixture-close-${++closeRequest}`
+    await page.evaluate((id) => window.v2Test.emit('onWindowCloseRequest', { requestId: id }), requestId)
+    await page.waitForFunction((id) => window.v2Test.calls.some((entry) => entry.method === 'replyWindowClose' && entry.args[0] === id), requestId)
+    return page.evaluate((id) => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose' && entry.args[0] === id).args[1].blockingTask, requestId)
+  }
+  try {
+    const row = page.getByTestId('tool-row-grok')
+    await row.getByText('未安装').waitFor()
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await page.getByTestId('tool-grok-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
+    assert.equal(await closeBlocked(), true)
+    await page.getByTestId('sidebar-account-open').click()
+    await page.getByRole('button', { name: '退出登录', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByTestId('welcome-login').waitFor()
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    await expect.poll(closeBlocked).toBe(false)
+    // 装完不替退出的那个账号同步 Key：那一轮只会被「账号已变化」拦下，还会把欢迎页换成未登录的首页。
+    await expect(page.getByTestId('welcome-login')).toBeVisible()
+    const writesBefore = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await row.getByTestId('tool-grok-source').waitFor()
+    // 再登录那一轮把装好的 Grok 一起配上。
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, writesBefore)
+    assert.ok((await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').at(-1).args[0].providers)).includes('grok'))
+    assert.equal(await row.getByText(/正在安装/).count(), 0)
+    assert.equal(await row.getByTestId('tool-grok-cancel').count(), 0)
+    await expect(page.getByTestId('tool-grok-primary')).toBeEnabled()
+    assert.equal(await closeBlocked(), false)
+    await clean(page)
+  } finally { await page.close() }
+})
 // 第 44 条：「安装指南」落到装它的那一章，不再是教程第一章。第 10 批起这颗按钮在检查页 Node.js 那一行。
 test('the runtime install guide on the check page opens the chapter that installs it', async () => {
   for (const [query, chapter] of [['desktopOnly=1&runtimeExternal=1&os=mac', 'Mac 上准备 Node.js 和 Python'], ['desktopOnly=1&runtimeExternal=1', '进阶：安装与使用命令行工具']]) {
