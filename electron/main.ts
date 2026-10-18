@@ -2553,6 +2553,8 @@ if (!hasSingleInstanceLock) {
       legacy: credentialPersistence === 'durable' ? { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),
         readActive: () => accountSessionStore.read() } : undefined,
       quiesce: async () => {
+        // 排在安装后面还没轮到的「打开」当场出队，不陪前面的安装等到超时（#1085）。
+        accountWork.abortQueued()
         await acceleration?.stopAll()
         const previous = businesses.get(accounts.getSiteId())
         previous?.chatService.cancelAll()

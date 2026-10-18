@@ -7,6 +7,7 @@ import type { MacosCodexAppInspection } from './macos-codex-app'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
+import { createAccountWorkGate } from './account-work-gate'
 import { CommandRunnerError } from './command-runner'
 import { InstallCancelledError, isInstallCancelledError } from './install-cancellation'
 import { parseWindowsProcessesJson } from './codex-desktop'
@@ -1900,6 +1901,30 @@ describe('Codex Desktop launch queueing', () => {
     await install
     await expect(launch).rejects.toThrow('仅支持 Windows')
     expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledWith('codex')
+  })
+
+  // #1085：排在安装后面的这段不算账号工作；换账号一开始还没轮到的就出队，一行都不跑。
+  it('counts a launch as account work only once the queue starts it, and leaves the queue when the account changes first', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    const queue = new InstallationQueue()
+    let releaseBlocker = (): void => {}
+    const blocking = queue.enqueue('cli:install:claude', () => new Promise<void>((resolve) => { releaseBlocker = resolve }))
+    const fixture = queuedCodexDesktopFixture(queue)
+
+    const started = fixture.service.launchCodexDesktop('open', fixture.target, { accountWork: accountWork.queue() })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await accountWork.whenIdle()
+    revision++
+    accountWork.abortQueued()
+    await expect(started).rejects.toThrow('账号上下文已变化')
+    expect(queue.snapshot().pendingKeys).toEqual([])
+
+    const next = fixture.service.launchCodexDesktop('open', fixture.target, { accountWork: accountWork.queue() })
+    releaseBlocker()
+    await blocking
+    await expect(next).rejects.toThrow('仅支持 Windows')
+    expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledTimes(1)
   })
 
   it('merges a repeated identical launch but keeps a different mode or locale intent separate', async () => {
