@@ -4,8 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  describeDesktopBucketFallback, desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError,
-  downloadDesktopBucketPackage, fetchDesktopBucketResource, isDesktopAlternativeClearlyFaster, isDesktopBucketDownloadTooSlow,
+  describeDesktopBucketFallback, desktopBucketIndexMaximumAgeMs, desktopBucketIndexUrl, desktopBucketResponseTime,
+  desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage, fetchDesktopBucketResource,
+  isDesktopAlternativeClearlyFaster, isDesktopBucketDownloadTooSlow, isDesktopBucketIndexStale,
   measureDesktopDownloadSpeed, parseDesktopBucketIndex, readDesktopBucketPackage, validateDesktopBucketUrl,
   type DesktopAlternativeSpeed, type DesktopBucketDownloadProgress, type DesktopBucketPackage, type DesktopBucketPackageId,
 } from './desktop-package-bucket'
@@ -326,6 +327,86 @@ describe('desktop package bucket index requests', () => {
       throw new DOMException('aborted', 'AbortError')
     })
     await expect(readDesktopBucketPackage('codex-windows-x64', fetch, controller.signal)).rejects.toBe(reason)
+  })
+
+  // The sync refreshes checkedAt on every successful run (every 6 hours), so a day without it means
+  // the bucket's "latest" may be behind OpenAI's (#1061 item 7).
+  function checkedCodexIndex(checkedAt: string | undefined): string {
+    const stamp = checkedAt === undefined ? {} : { checkedAt }
+    return codexIndex({}, {
+      'windows-x64': codexWindowsEntry('x64', stamp),
+      'macos-arm64': codexMacEntry('arm64', stamp),
+    })
+  }
+  function indexFetch(text: string, date = 'Sun, 18 Oct 2026 10:00:00 GMT') {
+    return vi.fn<typeof globalThis.fetch>(async () => new Response(text, { status: 200, headers: { 'content-type': 'application/json', date } }))
+  }
+
+  it('reads a Codex entry the sync checked within the last day, judged by the bucket clock', async () => {
+    for (const id of ['codex-windows-x64', 'codex-macos-arm64'] as const) {
+      await expect(readDesktopBucketPackage(id, indexFetch(checkedCodexIndex('2026-10-17T10:00:00.000Z')))).resolves.toMatchObject({
+        id, checkedAt: '2026-10-17T10:00:00.000Z',
+      })
+    }
+  })
+
+  it('falls back from a Codex entry checked more than a day before the bucket answered', async () => {
+    for (const id of ['codex-windows-x64', 'codex-macos-arm64'] as const) {
+      const failure = await readDesktopBucketPackage(id, indexFetch(checkedCodexIndex('2026-10-17T09:59:59.000Z'))).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect((failure as Error).message).toBe('存储桶清单超过 24 小时没和官方核对过（上次是 2026-10-17T09:59:59.000Z），桶里的可能不是最新版')
+    }
+  })
+
+  // Every index online today was written before the sync learned checkedAt. Calling those stale
+  // would send every customer to the slow official routes until the next sync run.
+  it.each([
+    ['never checked', undefined],
+    ['checked at an unreadable time', 'yesterday'],
+  ])('keeps using a Codex entry %s, as before this check existed', async (_label, checkedAt) => {
+    for (const id of ['codex-windows-x64', 'codex-macos-arm64'] as const) {
+      await expect(readDesktopBucketPackage(id, indexFetch(checkedCodexIndex(checkedAt)))).resolves.toMatchObject({ id })
+    }
+  })
+
+  it('uses the local clock only when the bucket sends no readable date', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-18T10:00:00.000Z'))
+    await expect(readDesktopBucketPackage('codex-windows-x64', indexFetch(checkedCodexIndex('2026-10-17T10:00:00.000Z'), 'not a date'))).resolves.toMatchObject({ version: windowsVersion })
+    const stale = await readDesktopBucketPackage('codex-windows-x64', indexFetch(checkedCodexIndex('2026-10-17T09:00:00.000Z'), '')).catch((error: unknown) => error)
+    expect(stale).toBeInstanceOf(DesktopBucketUnavailableError)
+  })
+
+  it('leaves the Claude and OpenCode indexes alone, their sync does not write checkedAt yet', async () => {
+    await expect(readDesktopBucketPackage('claude-windows-x64', indexFetch(claudeIndex()))).resolves.toMatchObject({ version: '1.1.2345.0' })
+    expect(parseDesktopBucketIndex(claudeIndex(), 'claude-windows-x64')).not.toHaveProperty('checkedAt')
+  })
+})
+
+describe('desktop package bucket index age', () => {
+  const now = Date.parse('2026-10-18T10:00:00.000Z')
+
+  it('counts an entry as stale once its last check is more than a day old', () => {
+    expect(desktopBucketIndexMaximumAgeMs).toBe(24 * 60 * 60_000)
+    expect(isDesktopBucketIndexStale('2026-10-18T09:59:00.000Z', now)).toBe(false)
+    expect(isDesktopBucketIndexStale('2026-10-17T10:00:00.000Z', now)).toBe(false)
+    expect(isDesktopBucketIndexStale('2026-10-17T10:00:00Z', now)).toBe(false)
+    expect(isDesktopBucketIndexStale('2026-10-17T09:59:59.999Z', now)).toBe(true)
+    expect(isDesktopBucketIndexStale('2026-10-01T00:00:00.000Z', now)).toBe(true)
+  })
+
+  it('does not count a few seconds of clock skew between the sync runner and the bucket', () => {
+    expect(isDesktopBucketIndexStale('2026-10-18T10:00:05.000Z', now)).toBe(false)
+  })
+
+  it.each([undefined, '', '2026-10-01', '2026-10-01 10:00:00', '2026-10-01T10:00:00+08:00', '2026-13-40T99:00:00.000Z'])('cannot judge %j and does not call it stale', (value) => {
+    expect(isDesktopBucketIndexStale(value, now)).toBe(false)
+  })
+
+  it('takes the time from the bucket response before the local clock', () => {
+    const local = vi.fn(() => now)
+    expect(desktopBucketResponseTime(new Response('', { headers: { date: 'Sat, 17 Oct 2026 08:00:00 GMT' } }), local)).toBe(Date.parse('2026-10-17T08:00:00.000Z'))
+    expect(local).not.toHaveBeenCalled()
+    expect(desktopBucketResponseTime(new Response(''), local)).toBe(now)
   })
 })
 

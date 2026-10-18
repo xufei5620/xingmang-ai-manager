@@ -254,7 +254,7 @@ function mergeReleases(current, old) {
 }
 
 function contentOf(manifest) {
-  return manifest ? JSON.stringify({ ...manifest, generatedAt: null }) : null
+  return manifest ? JSON.stringify({ ...manifest, generatedAt: null, checkedAt: null }) : null
 }
 
 async function synchronizeGrok({ store, dependencies, recommendedVersion, progress, now = function () { return new Date().toISOString() } }) {
@@ -264,6 +264,9 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
     return validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
   })
   const stable = await stage('source-stable', {}, function () { return resolveStable(dependencies) })
+  // checkedAt is when xAI told us its stable, not when the uploads finished: if xAI moves on
+  // mid-run, the index must not vouch for the old stable any longer than it has to.
+  const checkedAt = now()
   const versions = targetVersions(stable.version, parseVersion(recommendedVersion))
   const workDirectory = await stage('prepare-temp', {}, function () { return dependencies.createWorkDirectory() })
   let primaryError
@@ -305,17 +308,20 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
       for (const platformId of PLATFORM_IDS) files.push(await synchronizeFile(version, platformId))
       current.push({ version, files })
     }
-    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: now(), stable, releases: mergeReleases(current, old) }
+    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: now(), stable, releases: mergeReleases(current, old), checkedAt }
     await stage('validate-latest', {}, async function () { validateLatest(manifest, store.publicUrl) })
-    if (contentOf(manifest) === contentOf(old)) return { changed: false, manifest: old, versions }
+    // 没变也照样写一遍，只换 checkedAt：客户端靠它判断桶还跟不跟得上 xAI 的 stable，太久没核过就不从桶里
+    // 装最新的（#1061 第 7 条）。
+    const changed = contentOf(manifest) !== contentOf(old)
+    const published = changed ? manifest : { ...old, checkedAt }
     await stage('cos-recheck-latest', {}, async function () {
       const latest = validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
       if (JSON.stringify(latest) !== JSON.stringify(old)) throw new Error('COS Grok 清单在同步期间发生变化，停止发布以保留现有状态')
     })
     latestState = 'write-unconfirmed'
-    await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
+    await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, published, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
     latestState = 'published-and-read-back'
-    return { changed: true, manifest, versions }
+    return { changed, manifest: published, versions }
   } catch (error) {
     primaryError = error
     throw error
