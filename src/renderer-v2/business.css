@@ -81,6 +81,9 @@
   white-space: pre-wrap;
 }
 .v2-usage-detail-summary { display: flex; align-items: center; gap: 10px; overflow-wrap: anywhere; }
+/* 后台给的模型名再长也留在弹窗里（#1133 第 7 条）：状态牌不缩，模型名牌缩到放得下为止，字省略、悬停看全名。 */
+.v2-usage-detail-summary > .xm-pill:last-child { min-width: 0; }
+.v2-usage-detail-summary > .xm-pill > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .v2-usage-detail-section { min-width: 0; }
 .v2-usage-detail-section h3 { margin: 0 0 10px; font-size: var(--font-body); }
 .v2-usage-detail-kv { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); font-size: var(--font-small); }
@@ -1021,8 +1024,9 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-recharge-pay-option.is-selected .v2-recharge-radio { box-shadow: inset 0 0 0 1.5px var(--gold); }
 .v2-recharge-pay-option.is-selected .v2-recharge-radio::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); }
 .v2-recharge-pay-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; background: var(--panel); box-shadow: var(--tile-ring); color: var(--text-2); }
-.v2-recharge-pay-copy { display: grid; flex: 1; gap: 2px; min-width: 0; }
-.v2-recharge-pay-copy strong { font-size: 13.5px; font-weight: 600; }
+.v2-recharge-pay-copy { display: grid; flex: 1; grid-template-columns: minmax(0, 1fr); gap: 2px; min-width: 0; }
+/* 支付方式名是后台给的：再长也只占一行，省略后悬停整张卡看全名（#1133 第 7 条）。 */
+.v2-recharge-pay-copy strong { overflow: hidden; font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .v2-recharge-pay-copy small { color: var(--text-3); font-size: 12px; overflow-wrap: anywhere; }
 .v2-recharge-aside { gap: 12px; }
 .v2-recharge-aside > h2 { margin: 0; font-size: 14px; font-weight: 600; }

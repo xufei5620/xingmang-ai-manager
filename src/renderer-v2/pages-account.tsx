@@ -1166,7 +1166,8 @@ function AccountKeys({
                 testId={`account-key-row-${key.id}`}
                 badge={
                   <>
-                    <Pill>{key.group || '默认分组'}</Pill>
+                    {/* 分组名是后台给的：字包一层 span，太长时省略、悬停看全名（components.css 的 .xm-row-title）。 */}
+                    <Pill><span title={key.group || '默认分组'}>{key.group || '默认分组'}</span></Pill>
                     {inUse && (
                       <Pill tone="ok" dot testId={`account-key-in-use-${key.id}`}>
                         {keyToolName(inUse)} 在用

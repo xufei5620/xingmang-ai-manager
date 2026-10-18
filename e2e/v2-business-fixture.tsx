@@ -331,11 +331,13 @@ const backup = {
     ? { keyOwnership: 'other' as const, keyAccountName: 'old-user' }
     : { keyOwnership: 'current' as const, keyAccountName: null }),
 }
+// longNames：后台给出不能断行的超长分组名、支付方式名、模型名，看它们撑不撑出卡片（#1133 第 7 条）。
+const longName = query.has('longNames') ? 'SuperLongIdentifierWithoutAnySpacesOrBreakOpportunities_20261017_ABCDEFGHIJKLMNOPQRSTUVWXYZ' : ''
 const key = {
   id: 1,
   name: 'Test key',
   maskedKey: 'sk-****abcd',
-  group: 'default',
+  group: longName ? `default-${longName}` : 'default',
   status: 1,
   remainQuota: 1000,
   unlimitedQuota: false,
@@ -706,7 +708,9 @@ const apiMethods = {
     page: 1,
     pageSize: 20,
     total: query.has('usageDetail') ? 1 : 0,
-    records: query.has('usageDetail') ? [usageDetailFixture(query.get('usageDetail') || 'tiered')] : [],
+    records: query.has('usageDetail')
+      ? [{ ...usageDetailFixture(query.get('usageDetail') || 'tiered'), ...(longName ? { modelName: `gpt-${longName}` } : {}) }]
+      : [],
     stats: { quota: 0, rpm: 0, tpm: 0 },
   } },
   getAccountTopupOrders: async (
@@ -766,7 +770,7 @@ const apiMethods = {
         ]
       : [
           {
-            name: 'Stripe',
+            name: longName ? `Stripe-${longName}` : 'Stripe',
             type: 'stripe',
             provider: 'stripe' as const,
             color: null,
