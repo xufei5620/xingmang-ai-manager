@@ -12,7 +12,6 @@ import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { listedProviderSessionProviders, providerSessionProviders } from './provider-sessions'
 import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
-import { createWindowCloseQuery } from './window-close-query'
 import { createAccountWorkGate, type QueuedAccountWork } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
@@ -213,7 +212,7 @@ function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
 }
 
 type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
-  'accountCredentialsForSite' | 'realmAccounts' | 'accountWork' | 'accountSessionReady' | 'announcementReads' | 'acceleration' | 'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink' | 'onRendererError'>>
+  'accountCredentialsForSite' | 'realmAccounts' | 'accountWork' | 'accountSessionReady' | 'announcementReads' | 'acceleration' | 'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'takeExternalDeepLink' | 'onRendererError'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -765,35 +764,7 @@ describe('registerIpcHandlers', () => {
     })
   })
 
-  describe('window close nonce and sender forwarding', () => {
-    it('preserves WebContents ownership, validates display state and rejects stale nonces', async () => {
-      const owner = trustedEvent()
-      const send = vi.fn()
-      const query = createWindowCloseQuery(send)
-      const replyWindowClose: NonNullable<Parameters<typeof registerIpcHandlers>[0]['replyWindowClose']> = vi.fn((sender, requestId, report) => sender === (owner.sender as unknown) ? query.reply(requestId, report) : false)
-      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { replyWindowClose })
-      const handler = electronMocks.handlers.get('window:close-report')!
-      const pending = query.request()
-      void pending.catch(() => undefined)
-      const nonce = send.mock.calls[0][0]
-      try {
-        expect(handler(trustedEvent(), nonce, { blockingTask: false, unsavedChanges: false })).toBe(false)
-        expect(handler(owner, 'stale-nonce', { blockingTask: false, unsavedChanges: false })).toBe(false)
-        expect(() => handler(owner, nonce, { blockingTask: 'false', unsavedChanges: false })).toThrow('格式错误')
-        expect(() => handler(trustedEvent('https://attacker.example/'), nonce, { blockingTask: false, unsavedChanges: false })).toThrow('非应用页面')
-        expect(handler(owner, nonce, { blockingTask: true, unsavedChanges: false, token: 'discard-me' })).toBe(true)
-        await expect(pending).resolves.toEqual({ blockingTask: true, unsavedChanges: false })
-        expect(replyWindowClose).toHaveBeenLastCalledWith(owner.sender, nonce, { blockingTask: true, unsavedChanges: false })
-        expect(handler(owner, nonce, { blockingTask: false, unsavedChanges: false })).toBe(false)
-        const next = query.request()
-        void next.catch(() => undefined)
-        expect(send.mock.calls[1][0]).not.toBe(nonce)
-        expect(handler(owner, nonce, { blockingTask: false, unsavedChanges: false })).toBe(false)
-        expect(handler(owner, send.mock.calls[1][0], { blockingTask: false, unsavedChanges: true })).toBe(true)
-        await expect(next).resolves.toEqual({ blockingTask: false, unsavedChanges: true })
-      } finally { query.dispose() }
-    })
-
+  describe('deep link sender forwarding', () => {
     it('returns null for unavailable deep links and delegates the exact sender when supported', () => {
       register()
       expect(electronMocks.handlers.get('navigation:take-deep-link')!(trustedEvent())).toBeNull()

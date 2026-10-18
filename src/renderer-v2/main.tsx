@@ -24,19 +24,5 @@ document.documentElement.dataset.os = initialWindowOs(undefined, navigator.platf
 root.dataset.renderer = __XINGMANG_RENDERER__
 attachWindowIdleMarker(document, window)
 const native = window.xingmang
-if (native) {
-  attachRuntimeReporting(native)
-  // RuntimeApp installs the full close report after its bootstrap effects run.
-  // Answer native close requests during the splash/reload gap so Electron
-  // never waits for the 15-second query timeout while no user-editable state
-  // exists yet. Once RuntimeApp marks itself ready, this listener deliberately
-  // yields to its richer task/dirty-state report.
-  native.onWindowCloseRequest(({ requestId }) => {
-    if (document.documentElement.dataset.rendererReady === 'true') return
-    void native.replyWindowClose(requestId, {
-      blockingTask: false,
-      unsavedChanges: false,
-    }).catch(() => undefined)
-  })
-}
+if (native) attachRuntimeReporting(native)
 createRoot(root).render(<StrictMode><RendererV2App /></StrictMode>)

@@ -7,7 +7,6 @@
 - `main-service-options.ts` — 把同一份 `CodexHomeContext`（用户主目录、`CODEX_HOME`、Codex 环境变量）一次派生成 system / sessions / backups / 扩展 / 诊断各服务的根路径，保证各服务对「Codex 配置在哪」答案一致；只有 `main.ts` 用
 - `window-lifecycle.ts` — 点关闭时的决策：按「关闭行为」偏好缩到托盘 / 退出 / 询问（可「记住选择」），托盘不可用时不藏窗；退出前只问一句（有安装在跑就拦，或问要不要顺手装已下好的更新），选了装更新先置 quitting 再拉安装器，免得被自己再拦一遍
 - `quit-blocking-tasks.ts` — 判断哪些排队任务值得在退出前拦一下：只有安装类（CLI、Node/Python/Git、Codex 桌面端、三个外部客户端），因为打断虽不留半成品（I11 原子替换）但白下；启动、卸载不拦。与 `install-keep-awake.ts` 认的是同一批，两边要一起改；另给自动更新算「退出时能不能装」
-- `window-close-query.ts` — 渲染层回报「有没有阻塞任务 / 未保存改动」的 `window:close-report` 入参校验（`parseWindowCloseReport`，`ipc.ts` 用）。（推断：同文件的 `createWindowCloseQuery` 只在测试里用，`main.ts` 也没给 `ipc.ts` 接 `replyWindowClose`，该通道目前恒返回 false）
 - `window-preferences.ts` — 窗口尺寸与缩放的纯函数：UI 设计宽度、自动缩放上下限（v4 起最低 0.9、用户 90% 再低一档但不低于 0.85）、按显示器工作区算初始位置、拔掉显示器后的找回坐标、窗口状态的解析；`app-settings.ts` 与 `platform/zoom.ts` 共用
 - `window-presentation.ts` — 窗口外观与对用户的几句话：Windows/Linux 标题栏覆盖层高度与配色（legacy 36 高 vs v4 并进 44 高顶栏，`platform/renderer-v2.ts` 切到 v4）、启动失败的中文兜底句、资源右键菜单失败弹框、各平台窗口图标文件名
 - `window-recovery.ts` — 窗口停在已拔掉的显示器上时挪回主屏居中（最大化的先还原再挪再最大化）；只在马上要显示时调，对隐藏窗口 `unmaximize()` 在 Windows 上会把它顺手显示出来

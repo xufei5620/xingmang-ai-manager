@@ -1,7 +1,6 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
-import type { WindowCloseReport } from './window-close-query'
 import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
@@ -920,7 +919,6 @@ export interface XingmangInvokeContract {
   /** Mac 上卸载星芒：收回写进工具里的提醒设置，再把星芒移到废纸篓并退出。 */
   uninstallApp: IpcInvokeDefinition<'window:uninstall-app', [request: AppUninstallRequest], AppUninstallResult>
   takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
-  replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
   /** 系统代理连不上时，只让星芒自己改走直连试一次；电脑的代理设置不动。 */
   bypassBrokenProxy: IpcInvokeDefinition<'network:bypass-broken-proxy', [], ProxyBypassOutcome>
@@ -1281,7 +1279,6 @@ export interface XingmangEventContract {
   /** 本机账号存储被重建。载荷为空：备份文件名与账号内容都不跨 IPC。 */
   onAccountVaultRecovered: IpcEventDefinition<'account:vault-recovered', undefined>
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
-  onWindowCloseRequest: IpcEventDefinition<'window:close-request', { requestId: string }>
   onExternalDeepLink: IpcEventDefinition<'navigation:deep-link-pending', undefined>
   onLaunchTool: IpcEventDefinition<'window:launch-tool', ProviderId | 'codexDesktop'>
   onNodeRuntimeInstallProgress: IpcEventDefinition<
@@ -1393,7 +1390,6 @@ export const ipcInvokeChannels = {
   relaunchApp: 'window:relaunch',
   uninstallApp: 'window:uninstall-app',
   takeExternalDeepLink: 'navigation:take-deep-link',
-  replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
   bypassBrokenProxy: 'network:bypass-broken-proxy',
   openNetworkSettings: 'network:open-settings',
@@ -1546,7 +1542,6 @@ export const ipcEventChannels = {
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',
   onNavigate: 'navigation:open-page',
-  onWindowCloseRequest: 'window:close-request',
   onExternalDeepLink: 'navigation:deep-link-pending',
   onLaunchTool: 'window:launch-tool',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',

@@ -48,7 +48,7 @@ import type { FeedbackRequest, FeedbackSupport, ToolInstallOutcome } from './pag
 import type { ToolConfigConfirmation } from './pages-account'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
-import { dollars, errorMessage, operationFailureFrom, pendingBusinessOperations, userFacingErrorMessage } from './business-common'
+import { dollars, errorMessage, operationFailureFrom, userFacingErrorMessage } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
 import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
@@ -1607,10 +1607,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     const unsubscribe = native.onExternalDeepLink(receive)
     receive()
-    return () => {
-      delete document.documentElement.dataset.rendererReady
-      unsubscribe()
-    }
+    return unsubscribe
   }, [native])
   useEffect(() => {
     if (!pendingLink || boot !== 'ready' || auth || configTool || confirmation || switcher || restartDialog) return
@@ -1634,18 +1631,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     else navigate(target)
   }), [native, navigate, session])
   useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) void requestLaunchInLastWorkspace(id) }), [native, toolbox.snapshot, session.authenticated])
+  // 界面挂好了的标记，e2e/macos-visual-qa.mjs 等到它才开始量。
   useEffect(() => {
-    const unsubscribe = native.onWindowCloseRequest(({ requestId }) => {
-      void native.replyWindowClose(requestId, {
-        blockingTask: Object.keys(toolbox.jobs).length > 0 || confirmBusy || pendingBusinessOperations().length > 0
-          || Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
-          || Boolean(document.querySelector('[data-busy="true"]')),
-        unsavedChanges: Boolean(document.querySelector('dialog[open], [data-unsaved="true"]')),
-      }).catch(() => undefined)
-    })
     document.documentElement.dataset.rendererReady = 'true'
-    return unsubscribe
-  }, [native, toolbox.jobs, confirmBusy, accountBootstrap, scope])
+    return () => { delete document.documentElement.dataset.rendererReady }
+  }, [])
   useEffect(() => {
     function onShortcut(event: KeyboardEvent) {
       // 放大缩小对整个窗口都有效，弹窗开着也照样能调；Mac 上这里拦下后菜单里的「放大」就不会再动一遍。

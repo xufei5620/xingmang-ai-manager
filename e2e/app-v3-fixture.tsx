@@ -23,9 +23,9 @@ let current: AccountSessionState = search.get('logged') === 'true' ? { authentic
 const update: UpdateSnapshot = { phase: 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }
 const balance = { quota: 2_000_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 4 }
 const saved = [1, 2].map((userId) => ({ id: String(userId).repeat(64), userId, username: profile(userId).username, origin: 'https://xm.solov.cc', updatedAt: '2026-09-07T00:00:00Z' }))
-declare global { interface Window { appHarness: { calls: string[]; unexpected: string[]; errors: string[]; failSetting: string | null; failSwitch: boolean; closeReports: unknown[]; deepLink: ExternalDeepLink | null; emit(name: string, payload: unknown): void } } }
+declare global { interface Window { appHarness: { calls: string[]; unexpected: string[]; errors: string[]; failSetting: string | null; failSwitch: boolean; deepLink: ExternalDeepLink | null; emit(name: string, payload: unknown): void } } }
 window.appHarness = {
-  calls: [], unexpected: [], errors: [], failSetting: null, failSwitch: false, closeReports: [],
+  calls: [], unexpected: [], errors: [], failSetting: null, failSwitch: false,
   deepLink: search.get('invite') ? { kind: 'invite', code: search.get('invite')! } : null,
   emit(name, payload) { listeners.get(name)?.forEach((listener) => listener(payload)) },
 }
@@ -82,7 +82,6 @@ const api = {
   listPlugins: async () => ({ plugins: [], marketplaces: [] }),
   chooseWorkspace: async () => settings.workspace,
   openExternal: async () => true,
-  replyWindowClose: async (requestId, report) => { window.appHarness.closeReports.push({ requestId, ...report }); return true },
   // info / warn 是渲染层留给运行日志的排障记录（例如 Key 自动配置的结论），不是故障。
   reportRendererError: async (input) => { if ((input.level ?? 'error') === 'error') window.appHarness.errors.push(input.message) },
   launchCli: async () => ({}),

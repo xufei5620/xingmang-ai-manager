@@ -2679,29 +2679,24 @@ test('the home card being installed shows plain progress, a bar once there is a 
   } finally { await page.close() }
 })
 // #1097：装到一半退出登录，主进程那边照样装完。欢迎页不能被换成未登录的首页；再登录回来，
-// 那张卡不能还停在「正在安装」、按钮全灰，关窗也不能还被这次早就装完的安装拦着。
+// 那张卡不能还停在「正在安装」、按钮全灰。
 test('an install that finishes while signed out keeps the welcome page and leaves nothing installing', async () => {
   const page = await open()
-  let closeRequest = 0
-  async function closeBlocked() {
-    const requestId = `fixture-close-${++closeRequest}`
-    await page.evaluate((id) => window.v2Test.emit('onWindowCloseRequest', { requestId: id }), requestId)
-    await page.waitForFunction((id) => window.v2Test.calls.some((entry) => entry.method === 'replyWindowClose' && entry.args[0] === id), requestId)
-    return page.evaluate((id) => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose' && entry.args[0] === id).args[1].blockingTask, requestId)
-  }
   try {
     const row = page.getByTestId('tool-row-grok')
     await row.getByText('未安装').waitFor()
     await page.evaluate(() => window.v2Test.holdNextInstall())
     await page.getByTestId('tool-grok-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
-    assert.equal(await closeBlocked(), true)
+    await row.getByTestId('tool-grok-cancel').waitFor()
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
+    const scansBefore = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanSystem').length)
     await page.evaluate(() => window.v2Test.releaseInstall())
-    await expect.poll(closeBlocked).toBe(false)
+    // 装完那一轮最后才重新检测：等到它，要同步 Key 的话早就同步过了。
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanSystem').length > count, scansBefore)
     // 装完不替退出的那个账号同步 Key：那一轮只会被「账号已变化」拦下，还会把欢迎页换成未登录的首页。
     await expect(page.getByTestId('welcome-login')).toBeVisible()
     const writesBefore = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
@@ -2717,7 +2712,6 @@ test('an install that finishes while signed out keeps the welcome page and leave
     assert.equal(await row.getByText(/正在安装/).count(), 0)
     assert.equal(await row.getByTestId('tool-grok-cancel').count(), 0)
     await expect(page.getByTestId('tool-grok-primary')).toBeEnabled()
-    assert.equal(await closeBlocked(), false)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3792,8 +3786,6 @@ test('a first login network failure can change routes without losing its draft o
     await expect(page.getByTestId('auth-agree')).toBeChecked()
     await page.getByTestId('auth-connection-settings').click()
     await expectRoute(route, 'direct')
-    await page.evaluate(() => window.v2Test.emit('onWindowCloseRequest', { requestId: 'fixture-route-relaunch' }))
-    await expect.poll(() => page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose' && entry.args[0] === 'fixture-route-relaunch')?.args[1]?.unsavedChanges)).toBe(true)
     await page.evaluate(() => { window.xingmang.relaunchApp = async () => false })
     await panel.getByTestId('settings-relay-relaunch-now').click()
     // 登录框里问的是没填完的登录信息，不是「登录状态不变」。
@@ -5215,7 +5207,7 @@ test('a manual relay key saved over a third-party config survives the next login
   }
 })
 
-test('chat retains its task across navigation and reports work to native close protection', async () => {
+test('chat retains its task across navigation', async () => {
   const page = await open()
   try {
     await page.getByTestId('nav-chat').click()
@@ -5227,9 +5219,7 @@ test('chat retains its task across navigation and reports work to native close p
     assert.equal(size.width, 1056)
     assert.ok(size.height > 600)
     await page.getByTestId('nav-home').click()
-    await page.evaluate(() => window.v2Test.emit('onWindowCloseRequest', { requestId: 'fixture-close' }))
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'replyWindowClose'))
-    assert.equal(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'replyWindowClose').args[1].blockingTask), true)
+    await page.getByTestId('page-home').waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'cancelAiChat')), false)
     await page.getByTestId('nav-chat').click()
     await page.getByTestId('chat-stop').click()

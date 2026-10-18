@@ -18,8 +18,8 @@ import { createSmokeRuntime } from './smoke-runtime.mjs'
 // 同一件事的两个可观察结果：关窗走到了自己的退出（before-quit），而且从头到尾没有向
 // 界面发过退出询问。等退出只用每一步都有的防挂死预算，不再当作行为断言。
 
-// The channel the old close handshake asked the renderer on (ipc-contract.ts
-// onWindowCloseRequest). The close path must never use it.
+// The channel the old close handshake asked the renderer on. It is gone from
+// ipc-contract.ts; this guard keeps the close path from ever sending it again.
 const closeRequestChannel = 'window:close-request'
 
 const { stepBudgetMs, progress, withDeadline, trackProcessIds, attachEvidence, run } = createSmokeRuntime({
