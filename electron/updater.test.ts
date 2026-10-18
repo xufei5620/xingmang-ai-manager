@@ -1327,6 +1327,32 @@ describe('withdrawn versions and staged rollout', () => {
     expect(isOlderVersion('garbage', '1.0.0')).toBe(false)
   })
 
+  it('reads only the leading x.y.z of a release version and ignores prerelease tags or anything after it', () => {
+    expect(isOlderVersion('0.3.0-beta.1', '0.3.0')).toBe(false)
+    expect(isOlderVersion('0.3.0', '0.3.0-beta.1')).toBe(false)
+    expect(isOlderVersion('v0.2.9', '0.2.10')).toBe(true)
+    expect(isOlderVersion('0.2.9', 'v0.2.10')).toBe(true)
+    expect(isOlderVersion(' 0.2.9\n', '0.2.10')).toBe(true)
+    expect(isOlderVersion('V0.2.9', '0.2.10')).toBe(false)
+    expect(isOlderVersion('0.2.9abc', '0.2.10')).toBe(true)
+    expect(isOlderVersion('1.2.3.9', '1.2.4')).toBe(true)
+    expect(isOlderVersion('1.2.3.9', '1.2.3.1')).toBe(false)
+    expect(isOlderVersion('00.02.09', '0.2.10')).toBe(true)
+    expect(isOlderVersion('0.2.010', '0.2.9')).toBe(false)
+    expect(isOlderVersion('release 0.2.9', '0.2.10')).toBe(false)
+    expect(isOlderVersion('0.2', '0.3.0')).toBe(false)
+    expect(isOlderVersion('', '1.0.0')).toBe(false)
+    expect(isOlderVersion('1.0.0', '99999999999999999999.0.0')).toBe(true)
+    expect(resolveRequiredVersion('0.3.0-beta.1', '0.3.0')).toBeNull()
+    expect(resolveRequiredVersion('v0.2.12', '0.2.13')).toBe('0.2.13')
+    expect(resolveRequiredVersion('0.2.12', 'v0.2.13')).toBe('v0.2.13')
+    expect(resolveGatedRequiredVersion({ minimumRequired: '1.2.0', installMethod: 'system-installer', availableVersion: '1.2.0-beta.1', rollback: false })).toBe('1.2.0')
+    const offer = { currentVersion: '0.2.11', badVersions: [], rollout: null, manual: false }
+    expect(decideUpdateOffer({ ...offer, version: 'V0.2.8' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...offer, version: 'nightly' })).toEqual({ offer: true })
+    expect(decideUpdateOffer({ ...offer, version: '0.2.11-beta.1' })).toEqual({ offer: true })
+  })
+
   it('reads the status file before every check and allows a downgrade only off a withdrawn version', async () => {
     const client = new FakeUpdater()
     const statuses = [
