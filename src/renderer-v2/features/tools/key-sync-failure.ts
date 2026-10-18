@@ -14,7 +14,7 @@ const unavailableGroupPatterns: readonly RegExp[] = [
  * Key 同步失败时给人看的那半句原因（全面检测 Q31）。主进程原文可能是英文网络
  * 报错，也可能带着含用户名的配置文件路径：先脱敏（I13），能归类的说目录里的
  * 标题，认不出的中文原话本身就是写给人看的，原样留着（打过码）；认不出的英文不上屏。
- * 是不是中文按 speaksChinese 判：脱完路径的占位词「本地配置文件」本身是汉字，
+ * 是不是中文按 speaksChinese 判：脱完路径的占位词「本机路径」本身是汉字，
  * 只看有没有汉字的话带路径的英文会原样上屏（第三十批 A）。
  */
 export function keySyncFailureReason(message: string): string {

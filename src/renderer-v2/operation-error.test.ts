@@ -54,8 +54,10 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
-  configPermission: { sample: "重新写入 Key 没有完成：EPERM: operation not permitted, rename '本地配置文件'", target: 'config' },
+  configPermission: { sample: "重新写入 Key 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
+  // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
+  configDiskFull: { sample: "重新写入 Key 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
   // 主进程（system-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
@@ -206,6 +208,17 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')).toBe('timeout')
   })
 
+  it('points a full disk at the config file, not the install folder, when a config write fails', () => {
+    const hint = presentOperationError("改用当前账号没有完成：ENOSPC: no space left on device, write '本机路径'", 'config')
+    expect(hint).toMatchObject({
+      key: 'configDiskFull',
+      title: '磁盘空间不够',
+      body: '配置文件所在的磁盘（一般是系统盘）没有空间了，原来的设置没有动。清理出一些空间后再点「重试」。',
+      actions: [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }],
+    })
+    expect(classifyOperationError('Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write')).toBe('diskFull')
+  })
+
   it('says the official npm registry is the only way through when the manifest check cannot connect', () => {
     const message = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。`
     expect(presentOperationError(message)).toMatchObject({
@@ -266,10 +279,10 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('treats a .NET UnauthorizedAccessException as a denied file, not an expired login', () => {
-    const raw = "System.UnauthorizedAccessException: Access to the path '本地配置文件 is denied."
+    const raw = "System.UnauthorizedAccessException: Access to the path '本机路径 is denied."
     expect(classifyOperationError(raw)).toBe('permission')
     expect(classifyOperationError(raw, 'config')).toBe('configPermission')
-    expect(classifyOperationError("Access to the path '本地配置文件 is denied.", 'config')).toBe('configPermission')
+    expect(classifyOperationError("Access to the path '本机路径 is denied.", 'config')).toBe('configPermission')
   })
 
   it('sends a permission failure to the directory and the log, never to an elevated retry', () => {
@@ -282,7 +295,7 @@ describe('renderer-v2 operation error classification', () => {
 
   it('says the config file could not be written when the caller writes one, never the install directory', () => {
     // 已知29：改用当前账号、重新写入 Key 这些写的是配置文件，以前也叫人去看安装目录、复制安装目录的路径。
-    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本地配置文件'"
+    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径'"
     const hint = presentOperationError(raw, 'config')
     expect(hint?.key).toBe('configPermission')
     expect(hint?.title).toBe('写不进配置文件')
@@ -292,10 +305,10 @@ describe('renderer-v2 operation error classification', () => {
     expect(presentOperationFailure({ message: '重新写入 Key 没有完成', detail: 'EACCES: permission denied', target: 'config' })?.key).toBe('configPermission')
     // 不说写的是什么时照旧（装工具、更新工具）。
     expect(presentOperationError(raw)?.title).toBe('写不进安装目录')
-    // 只换权限这一类：文件被占用、搬过的文件夹、磁盘满还是原来那几句。
+    // 文件被占用、搬过的文件夹还是原来那几句；磁盘满换成说配置所在那块盘（#1100 第6条）。
     expect(classifyOperationError('写入失败：文件被占用', 'config')).toBe('toolRunning')
     expect(classifyOperationError('Provider 配置根目录不能经过符号链接或目录联接（EPERM）', 'config')).toBe('folderRelocated')
-    expect(classifyOperationError('写入配置失败：ENOSPC', 'config')).toBe('diskFull')
+    expect(classifyOperationError('写入配置失败：ENOSPC', 'config')).toBe('configDiskFull')
     // 日志照旧落「反馈与客服」的运行日志：那里记得全。
     expect(operationLogSection({ message: raw, tool: 'claude' })).toBe('log')
   })

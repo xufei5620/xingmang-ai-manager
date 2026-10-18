@@ -191,7 +191,7 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
     const { title, body } = errors[key]
     return { message: `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`, reason: title, detail: guideDetail(error, '') }
   }
-  // 脱完路径的占位词「本地配置文件」本身是汉字，带路径的英文不能因为它就算成中文（第三十批 A）。
+  // 脱完路径的占位词「本机路径」本身是汉字，带路径的英文不能因为它就算成中文（第三十批 A）。
   if (speaksChinese(message)) return { message: redactSecretPatterns(message) }
   const detail = guideDetail(error, '')
   return { message: `${action}没有成功${detail ? unrecognized : ''}。${guideFailureTail(Boolean(detail), copyable)}`, detail }

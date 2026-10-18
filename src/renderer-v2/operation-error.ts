@@ -15,7 +15,7 @@ export interface OperationAction { id: OperationActionId; label: string }
  * 同样一句 EPERM，写安装目录时下一步是看目录权限、复制路径；写的是工具的配置文件
  * （改用当前账号、重新写入 Key、保存配置、恢复备份、扩展页……）时，多半是安全软件
  * 拦了或者文件正被别的程序占着，安装目录跟它没关系（已知29）。原话里分不出是哪一种：
- * 路径上屏前都换成了「本地配置文件」，只有调用方知道自己在写什么。
+ * 路径上屏前都换成了「本机路径」，只有调用方知道自己在写什么。
  */
 export type OperationTarget = 'config'
 export interface OperationErrorHint {
@@ -176,7 +176,10 @@ function networkFailure(message: string): boolean {
 
 export function classifyOperationError(message: string, target?: OperationTarget): OperationErrorKey {
   const key = rules.find((rule) => rule.match(message))?.key ?? 'unknown'
-  return key === 'permission' && target === 'config' ? 'configPermission' : key
+  if (target !== 'config') return key
+  // 写的是工具的配置文件时，磁盘满说的是配置所在的那块盘（一般是系统盘），不是安装目录，
+  // 也没有安装目录可复制（#1100 第6条）。
+  return key === 'permission' ? 'configPermission' : key === 'diskFull' ? 'configDiskFull' : key
 }
 
 // 首页这几件事改的是工具的配置文件，不碰安装目录；名字就是 App 里交给 perform 的动作名。
