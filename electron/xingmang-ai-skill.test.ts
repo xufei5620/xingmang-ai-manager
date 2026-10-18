@@ -16,6 +16,8 @@ import {
   XINGMANG_AI_MANAGED_MANIFEST_FILE,
   XINGMANG_AI_DEFAULT_BASE_URL,
   XINGMANG_AI_DEFAULT_IMAGE_MODEL,
+  XINGMANG_AI_IMAGE_MODEL_FALLBACKS,
+  XINGMANG_AI_IMAGE_MODEL_PREFERENCE,
   XINGMANG_AI_SKILL_DIRECTORY,
   XINGMANG_AI_SKILL_KEY_NAME,
   XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
@@ -115,12 +117,29 @@ describe('xingmang-ai-skill', () => {
     ])).toBe('图片模型中转')
   })
 
-  it('picks the newest OpenAI image model the account can use and otherwise keeps gpt-image-2', () => {
+  it('picks the newest OpenAI image model the account can use', () => {
     expect(selectXingmangAiImageModel(['gpt-5.5', 'gpt-image-2', 'gpt-image-2.5-flare'])).toBe('gpt-image-2.5-flare')
     expect(selectXingmangAiImageModel(['gpt-image-2', 'gemini-3.1-flash-image'])).toBe('gpt-image-2')
-    // Sunburst is slower and meant for careful edits; the AI may still name it.
-    expect(selectXingmangAiImageModel(['gpt-image-2.5-sunburst'])).toBe(XINGMANG_AI_DEFAULT_IMAGE_MODEL)
-    expect(selectXingmangAiImageModel([])).toBe(XINGMANG_AI_DEFAULT_IMAGE_MODEL)
+    // Sunburst is slower and meant for careful edits: never the default while GPT Image 2 is there.
+    expect(selectXingmangAiImageModel(['gpt-image-2.5-sunburst', 'gpt-image-2'])).toBe(XINGMANG_AI_DEFAULT_IMAGE_MODEL)
+  })
+
+  it('falls back to another listed model the drawing script accepts instead of an absent gpt-image-2', () => {
+    expect(selectXingmangAiImageModel(['gpt-image-1', 'gpt-image-2.5-sunburst'])).toBe('gpt-image-2.5-sunburst')
+    expect(selectXingmangAiImageModel([' gpt-image-1 ', 'gpt-image-1.5'])).toBe('gpt-image-1')
+    // gpt-image-1.5 is listed by some keys but not served; unknown gpt-image names are not in the script allow-list.
+    expect(selectXingmangAiImageModel(['gpt-image-1.5', 'gpt-image-3', 'gemini-3.1-flash-image'])).toBeNull()
+    expect(selectXingmangAiImageModel([])).toBeNull()
+  })
+
+  it('only ever picks a model the bundled drawing script accepts', async () => {
+    const script = await readFile(path.join(bundledRoot, 'scripts', 'mcp-server.mjs'), 'utf8')
+    const allowList = /const ALLOWED_MODELS = new Set\(\[([^\]]*)\]\)/.exec(script)?.[1] ?? ''
+    const allowed = [...allowList.matchAll(/'([^']+)'/g)].map((match) => match[1])
+    expect(allowed.length).toBeGreaterThan(0)
+    for (const model of [...XINGMANG_AI_IMAGE_MODEL_PREFERENCE, ...XINGMANG_AI_IMAGE_MODEL_FALLBACKS]) {
+      expect(allowed, model).toContain(model)
+    }
   })
 
   it('keeps an OpenAI image model in the config and drops anything else', () => {
@@ -487,6 +506,31 @@ describe('xingmang-ai-skill', () => {
     await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
 
     expect(parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome))).model).toBe('gpt-image-2')
+  })
+
+  it('records a listed fallback model when the account has neither preferred one', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const fetchAvailableModels = vi.fn(async (apiKey: string) => (
+      apiKey === 'sk-test-image-group-secret-12345678' ? ['gpt-image-2.5-sunburst', 'jimeng_high_aes_general_v21_L'] : ['gpt-5.5']
+    ))
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
+
+    expect(result.directoryWarnings).toBeUndefined()
+    expect(parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome))).model).toBe('gpt-image-2.5-sunburst')
+  })
+
+  it('leaves the model out and logs it when the listed models offer nothing the script can draw with', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const fetchAvailableModels = vi.fn(async () => ['gpt-5.5', 'gemini-3.1-flash-image', 'gpt-image-1.5'])
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
+
+    expect(result.ready).toBe(true)
+    expect(result.directoryWarnings).toEqual([`没查到当前账号能用的图片模型，画图先用 ${XINGMANG_AI_DEFAULT_IMAGE_MODEL}`])
+    expect(JSON.parse(await readInstalledConfig(userHome))).not.toHaveProperty('model')
   })
 
   it('leaves the model out and only logs it when no key could list its models', async () => {
