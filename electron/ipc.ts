@@ -234,7 +234,7 @@ export interface IpcRegistrationOptions {
   // this isolated window controller without serializing its signed fields.
   paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'close' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
   // Resolves once main.ts's startup session-restore attempt (see
-  // account-session-store.ts's restoreAccountSessionOnStartup) has settled,
+  // realm-account-service.ts's restoreActive) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
   // very first query on mount never races the async refresh-then-self round
   // trip restoreSession() performs (docs/RECON-new-api.md section D). Never

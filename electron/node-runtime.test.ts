@@ -113,6 +113,19 @@ describe('Node.js LTS release parsing', () => {
     expect(parseNodeReleaseIndex('[{"version":"v22.0.0","lts":"Jod","files":["win-x64-zip"]}]', 'x64')).toBeNull()
   })
 
+  it('accepts only canonical vX.Y.Z release names and picks the numerically highest one', () => {
+    const entry = (version: string, lts = 'Jod') => ({ version, lts, files: ['win-x64-msi'] })
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v22.9.0'), entry('v22.10.0'), entry('v22.9.1')]), 'x64')?.version)
+      .toBe('v22.10.0')
+    for (const rejected of ['22.10.0', 'V22.10.0', 'v022.10.0', 'v22.010.0', 'v22.10.00', 'v22.10.0-rc.1', 'v22.10', ' v22.10.0', 'v22.10.0 ', 'v9007199254740993.0.0']) {
+      expect(parseNodeReleaseIndex(JSON.stringify([entry(rejected)]), 'x64'), rejected).toBeNull()
+    }
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v99.0.0-rc.1'), entry('v24.0.0'), entry('V99.0.0')]), 'x64')?.version)
+      .toBe('v24.0.0')
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v9007199254740991.0.0')]), 'x64')?.version).toBe('v9007199254740991.0.0')
+    expect(parseNodeReleaseIndex(JSON.stringify([entry('v22.1.0', 'First'), entry('v22.1.0', 'Second')]), 'x64')?.lts).toBe('First')
+  })
+
   it('reads exactly one matching SHA-256 and rejects ambiguous or unsafe filenames', () => {
     const hash = 'a'.repeat(64)
     expect(parseNodeShasums(`${hash}  node-v22.17.0-x64.msi\n${'b'.repeat(64)}  other.zip`, 'node-v22.17.0-x64.msi')).toBe(hash)

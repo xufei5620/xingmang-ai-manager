@@ -106,7 +106,7 @@ XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:v2
 
 **I6. `ipc-contract.ts` 只能 `import type`，值导出只能来自无 Node 依赖的模块。**
 `src/types.ts` 是 `export *`（值级别），Vite 会把它真的打进渲染 bundle。目前的值导出来自两个零依赖模块：`catalog.ts`（`providerIds`、`managedCliKeyProfiles`）和 `relay-sites.ts`（站点与线路表及几个纯函数）。
-renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守这条边界的是门禁 `scripts/verify-renderer-boundary.test.cjs`：渲染层能值导入的主进程模块只能是它 `valueImportable` 名单上的，名单上的每个模块都不许依赖 Node；只被 `import type` 的放 `typeImportableOnly`。要让渲染层值导入一个新的主进程模块，就是改这张名单，并在旁边写明它为什么不碰 Node。
+renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守这条边界的是门禁 `scripts/verify-renderer-boundary.test.cjs`：渲染层能值导入的主进程模块只能是它 `valueImportable` 名单上的，名单上的每个模块都不许依赖 Node；只被 `import type` 的放 `typeImportableOnly`。名单上的每个模块第一行都是同一句 `// @renderer-importable: …` 标记，门禁核对标记和名单完全一致、名单上模块值导入的主进程模块也都在名单上，所以光看文件头就知道它会进渲染层。要让渲染层值导入一个新的主进程模块，就是改这张名单、在旁边写明它为什么不碰 Node，再把门禁里那整行标记照抄到模块第一行。
 *违反后果*：加一个 `export { xxx } from './system-service'` → Vite 尝试打包 `node:fs` → 构建失败，或更糟：主进程逻辑泄进渲染进程。
 
 **I7. 三个 preload（`preload.ts`、`platform/preload.ts`、`canvas-preload.ts`）都是 sandbox 脚本，不能 import 本地运行时模块。**
@@ -173,7 +173,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 **Linux 问的也是 macOS 那个问题，但组可写目录的判法不同**（按 `/etc/group` 的实际成员，不照搬 macOS 的 gid 0/80），另有拒绝 root 运行、画布沙箱检查，见 `.claude/rules/linux-platform.md`——改到 `electron/linux-*` / `platform-capabilities.ts` 时自动加载。
 
 **T6. 渲染进程加异步数据加载 → 必须用竞态守卫。**
-直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。renderer-v2 的写法：组件或 hook 里一个请求计数器（`const request = useRef(0)`，每发一次请求和卸载时加一，响应回来时计数对不上就丢掉），或 effect 里的 `let current = true` 取消标记；纯逻辑的控制器里用 revision / epoch。`scan-coordinator.ts` / `latest-request.ts` / `provider-extension-coordinator.ts` 三个工具在冻结的 legacy 树里，v2 没有用它们。
+直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。renderer-v2 的写法：组件或 hook 里用 `src/renderer-v2/latest-request.ts` 的 `useLatestRequest()`——每发一次请求先 `const current = latest.begin()`，响应回来 `if (!current()) return`；换了账号或参数、不发新请求时 `latest.invalidate()`；卸载时它自己作废。只在一个 effect 里发、随 effect 清理的请求，也可以用 effect 里的 `let current = true` 取消标记；纯逻辑的控制器里用 revision / epoch（`createLatestRequest()` 是同一套的非 hook 版）。v2 里现有三十来处手写的 `useRef(0)` 计数器是同一个套路，等 #1070 拆分时一并换成 hook，**新代码别再手抄**。冻结的 legacy 树里另有 `src/scan-coordinator.ts` / `src/latest-request.ts` / `src/provider-extension-coordinator.ts` 三个工具（`src/latest-request.ts` 跟 v2 这份同名不同物），v2 不 import 它们。
 
 **T7. 给 `src/` 加组件测试 → 用 `renderToStaticMarkup`，不要加 DOM 环境。**
 仓库**有 `vitest.config.ts`**（三个 project：`legacy` 覆盖 `src/**` 与 `electron/**`、`renderer-v2`、`canvas`，都挂了 `@vitejs/plugin-react`，legacy 另把 React 别名指向 `tooling/legacy-renderer/`）。但三个 project **都没设 `environment`，跑的仍是默认的 `node`**，依赖里也没有 jsdom / happy-dom / @testing-library。现有 `src/**/*.test.tsx` 绝大多数走 `react-dom/server` 的 `renderToStaticMarkup`，断言渲染出的 HTML（`data-testid`、role、class），**零处 `render()`**。新组件测试照这个写法走。

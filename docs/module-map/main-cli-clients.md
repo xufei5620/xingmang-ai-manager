@@ -8,7 +8,7 @@
 - `cli-update-history.ts` — 每个工具最近一次更新「从哪版到哪版」，落盘在数据目录；更新后 14 天内首页多一个「退回更新前的版本」。读坏了当没记录，不挡别的
 - `cli-model-defaults.ts` — 各工具新配时的默认型号、上一代、两站都已下架的型号三张表（Codex 默认 gpt-6-astra，gpt-5.5 在下架名单里）；服务状态文件的 `cliModels` 可以覆盖，读不到就用程序自带的。只 `import type`，渲染层老引导也引它
 - `cli-model-hints-store.ts` — 把最近一次读成功的型号表记到本地 `cli-model-hints.json`（#1154 第 6 条），这次打开以后状态文件一次也没读成功过时用它；没写型号表的那次记成没有。读回来的内容用状态文件同一个解析器重新校验
-- `versions.ts` — 版本号小工具：只认精确版本（拒 npm 范围、标签和像命令行参数的串）、Node.js 最低 20、新旧比较；零依赖，渲染层也直接引
+- `versions.ts` — 版本号小工具：只认精确版本（拒 npm 范围、标签和像命令行参数的串）、Node.js 最低 20、新旧比较；主进程判断版本新旧只走这里的 `compareVersionNumbers`，更新器、上次运行记录、Node / Python 发布索引各自的认法是这里的几个 `parse*Version`（Codex 桌面端四段包版本除外，在 `codex-desktop.ts`）；零依赖，渲染层也直接引
 
 ## CLI 安装、定位与运行环境
 - `tool-installation.ts` — **认「这个工具装在哪、从哪装的、怎么起」的核心**：分清 npm 包与官方原生安装器（首页据此写「官方安装器」还是「其他来源」）、能不能卸、新开和续聊的启动参数；`resolveCliCommand` 在起进程前核原生可执行文件（Windows 走 `trusted-native-cli.ts` 的签名与暂存，Mac 走 codesign 加 `darwin-cli-staging.ts`）。npm 装、更新这一步本身在 `system-service.ts`

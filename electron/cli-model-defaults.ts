@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 import type { ProviderId } from './catalog'
 
 export const DEFAULT_CODEX_MODEL = 'gpt-6-astra'

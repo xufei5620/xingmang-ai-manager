@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowRight, BookOpen, Check, ChevronDown, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
+import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
 import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
-import { BrandIcon, Button, Card, ListRow, Menu, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
+import { BrandIcon, Button, Card, ListRow, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
 import { accountSwitchTarget, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, brokenConfigDetails, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, officialAccountSubtitle, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, spacedName, toolUpdateOffer, updateButtonHint, updatesOutsideApp, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
@@ -34,6 +34,7 @@ import { RuntimeRestartDialog } from './RuntimeRestartDialog'
 import { OfficialQuotaDialog } from './OfficialQuotaDialog'
 import { ToolConversationsDialog } from './ToolConversationsDialog'
 import { buildUninstallGuide, UninstallGuideDialog, type UninstallGuide, type UninstallGuideTool } from './UninstallGuide'
+import { buildSourceMenuItems, SourceMenu, sourceChipLabels } from './SourceMenu'
 import { weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
 import { currentWindowOs, windowOsFor } from '../app/window-os'
 
@@ -701,7 +702,7 @@ export function Home(props: HomeProps) {
     const officialPending = tool.provider === 'codex' && config?.codexAuthMode !== 'chatgpt' && !config?.officialAccountPlan
     // 配置里实际写的星芒线路（xm 三线路 C12）；codexDesktop 读的是 Codex 那份配置，标签跟着一起显示。
     const routeLabel = config && !broken && !ownershipPending ? toolRouteLabel(config, tool.source) : null
-    const sourceLabel = tool.source === 'official' ? '官方账号' : tool.source === 'manual' ? '自己的密钥' : '当前账号'
+    const sourceLabel = sourceChipLabels[tool.source === 'official' || tool.source === 'manual' ? tool.source : 'account']
     return { installJob, launchJob, switchJob, repairJob, job, config, configUnavailable, status, broken, ccSwitch, foreignKey, shadowed, openable,
       hooksStale, hooksDetail, hooksAutoRepaired, hooksMissing, installFailure, opensWorkspace, workspaces, lastWorkspace, startsFresh, manualInstall,
       elevationHint, waitingForScan, waitingForAccount, primaryLabel, primary, primaryDisabled, officialLine, officialPending, routeLabel, sourceLabel,
@@ -722,22 +723,16 @@ export function Home(props: HomeProps) {
   function sourceMenu(tool: ToolPresentation, state: ToolState): ReactNode {
     const name = toolRegistry.find((entry) => entry.id === tool.id)?.name ?? tool.name
     const switchable = Boolean(props.onSwitchAccount) && !state.ownershipPending && !state.configUnavailable && !state.broken && !tool.error
-    const officialName = officialAccountNames[tool.provider] ?? '官方账号'
     const config = state.config
-    const officialDescription = config?.officialAccountEmail ? [config.officialAccountEmail, config.officialAccountPlan].filter(Boolean).join('，') : '用你自己的官方订阅登录'
-    const items: Array<MenuItem | MenuNote | 'divider'> = [
-      { label: '当前账号', description: '按用量从当前账号扣费', checked: tool.source === 'account', disabled: !switchable && tool.source !== 'account',
-        testId: `tool-${tool.id}-source-account`, onSelect: () => { if (tool.source !== 'account') props.onSwitchAccount?.(tool.id, 'account') } },
-      { label: officialName, description: officialDescription, checked: tool.source === 'official', disabled: !switchable && tool.source !== 'official',
-        testId: `tool-${tool.id}-source-official`, onSelect: () => { if (tool.source !== 'official') props.onSwitchAccount?.(tool.id, 'official') } },
-      { label: '自己填写密钥', description: '粘贴你在星芒创建的密钥', checked: tool.source === 'manual', testId: `tool-${tool.id}-source-manual`, onSelect: () => props.onConfigure(tool.id) },
-      ...(tool.provider === 'codex' ? [{ note: 'Codex CLI 和 Codex 桌面端共用这份配置' }] : []),
-      'divider',
-      { label: '更多配置…', onSelect: () => props.onConfigure(tool.id) },
-    ]
-    return <Menu align="start" heading="用哪个账号使用 AI" label={`${spacedName(name)}现在用${state.sourceLabel}，点击切换`} testId={`tool-${tool.id}-source-menu`} items={items}
-      anchor={<button type="button" className="v2-source-chip" data-testid={`tool-${tool.id}-source`} aria-label={`${spacedName(name)}现在用${state.sourceLabel}，点击切换`}>
-        <span>{state.sourceLabel}</span><ChevronDown size={13} aria-hidden="true" /></button>} />
+    const items = buildSourceMenuItems({ tool: tool.id, provider: tool.provider,
+      account: { checked: tool.source === 'account', disabled: !switchable && tool.source !== 'account',
+        onSelect: () => { if (tool.source !== 'account') props.onSwitchAccount?.(tool.id, 'account') } },
+      official: { checked: tool.source === 'official', disabled: !switchable && tool.source !== 'official',
+        signedIn: config?.officialAccountEmail ? [config.officialAccountEmail, config.officialAccountPlan].filter(Boolean).join('，') : null,
+        onSelect: () => { if (tool.source !== 'official') props.onSwitchAccount?.(tool.id, 'official') } },
+      manual: { checked: tool.source === 'manual', onSelect: () => props.onConfigure(tool.id) },
+      more: { onSelect: () => props.onConfigure(tool.id) } })
+    return <SourceMenu tool={tool.id} name={name} chip={state.sourceLabel} items={items} />
   }
 
   /**
@@ -919,21 +914,13 @@ export function Home(props: HomeProps) {
       menu={toolMenu(tool, state)} menuLabel={`${spacedName(name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 
-  /** Claude Desktop 卡上的来源牌：和命令行工具那块同一套字，只给当前账号和 Claude 账号两项。 */
+  /** Claude Desktop 卡上的来源牌：和命令行工具那块同一套字（SourceMenu.tsx），只给当前账号和 Claude 账号两项。 */
   function externalSourceMenu(tool: ExternalPresentation, official: boolean): ReactNode {
-    const name = spacedName(tool.name)
-    const sourceLabel = official ? '官方账号' : '当前账号'
-    const items: Array<MenuItem | MenuNote | 'divider'> = [
-      { label: '当前账号', description: '按用量从当前账号扣费', checked: !official, disabled: externalCached && official, testId: `tool-${tool.id}-source-account`,
-        onSelect: () => { if (official) props.onSwitchExternalSource?.(tool.id, 'account') } },
-      { label: officialAccountNames.claude ?? '官方账号', description: '用你自己的官方订阅登录', checked: official, disabled: externalCached && !official, testId: `tool-${tool.id}-source-official`,
-        onSelect: () => { if (!official) props.onSwitchExternalSource?.(tool.id, 'official') } },
-      'divider',
-      { label: '更多配置…', disabled: externalCached, onSelect: () => props.onConfigureExternal(tool.id) },
-    ]
-    return <Menu align="start" heading="用哪个账号使用 AI" label={`${name}现在用${sourceLabel}，点击切换`} testId={`tool-${tool.id}-source-menu`} items={items}
-      anchor={<button type="button" className="v2-source-chip" data-testid={`tool-${tool.id}-source`} aria-label={`${name}现在用${sourceLabel}，点击切换`}>
-        <span>{sourceLabel}</span><ChevronDown size={13} aria-hidden="true" /></button>} />
+    const items = buildSourceMenuItems({ tool: tool.id, provider: 'claude',
+      account: { checked: !official, disabled: externalCached && official, onSelect: () => { if (official) props.onSwitchExternalSource?.(tool.id, 'account') } },
+      official: { checked: official, disabled: externalCached && !official, onSelect: () => { if (!official) props.onSwitchExternalSource?.(tool.id, 'official') } },
+      more: { disabled: externalCached, onSelect: () => props.onConfigureExternal(tool.id) } })
+    return <SourceMenu tool={tool.id} name={tool.name} chip={sourceChipLabels[official ? 'official' : 'account']} items={items} />
   }
 
   function renderExternal(tool: ExternalPresentation) {
@@ -963,7 +950,7 @@ export function Home(props: HomeProps) {
     const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : status === 'missing' ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
       : switchable ? externalSourceMenu(tool, status === 'official')
-      : status === 'ready' && tool.status.configurationSource === 'xingmang' ? <span className="v2-source-chip is-static" title="额度从当前账号的余额里扣" data-testid={`tool-${tool.id}-source`}>当前账号</span>
+      : status === 'ready' && tool.status.configurationSource === 'xingmang' ? <span className="v2-source-chip is-static" title="额度从当前账号的余额里扣" data-testid={`tool-${tool.id}-source`}>{sourceChipLabels.account}</span>
         : <Pill tone={statuses.tool[status][1]} dot><span title={statuses.tool[status][0]}>{statuses.tool[status][0]}</span></Pill>
     const actions = installJob?.cancellable && props.onCancelInstallExternal
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>

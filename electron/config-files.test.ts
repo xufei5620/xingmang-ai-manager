@@ -157,6 +157,30 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('gemini', 'sk-fixture', 'gemini-3.8-flash-high', 'merge', roots, {}, providerBaseUrls)
     expect(inspectProviderConfig('gemini', roots, providerBaseUrls).model).toBe('gemini-3.8-flash-high')
   })
+  it('reads the first exact NAME= line of the Gemini .env and reports a missing line as empty', () => {
+    const roots = providerRoots(temporaryHome())
+    const [, envPath] = providerConfigPaths('gemini', roots)
+    fs.mkdirSync(path.dirname(envPath), { recursive: true })
+    fs.writeFileSync(envPath, [
+      '# comment',
+      'GEMINI_API_KEY =sk-spaced',
+      '  GEMINI_API_KEY= "sk-quoted" ',
+      'GEMINI_API_KEY=sk-second',
+      "GOOGLE_GEMINI_BASE_URL='https://xm.solov.cc'",
+      'GEMINI_MODEL="gemini-3.5-flash\'',
+      '',
+    ].join('\r\n'))
+    expect(inspectProviderConfig('gemini', roots, providerBaseUrls)).toMatchObject({
+      apiKey: 'sk-quoted',
+      actualBaseUrl: 'https://xm.solov.cc',
+      model: '"gemini-3.5-flash\'',
+    })
+
+    fs.writeFileSync(envPath, 'OTHER=1\n')
+    expect(inspectProviderConfig('gemini', roots, providerBaseUrls)).toMatchObject({ apiKey: '', actualBaseUrl: '', model: '' })
+    fs.rmSync(envPath)
+    expect(inspectProviderConfig('gemini', roots, providerBaseUrls)).toMatchObject({ apiKey: '', actualBaseUrl: '', model: '' })
+  })
   it('diagnoses the Codex permission picker from trust and approval settings', () => {
     const config = [
       'approval_policy = "unless-trusted"',

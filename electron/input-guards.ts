@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 // Imports nothing on purpose: the renderer may value-import this file (registered in
 // scripts/verify-renderer-boundary.test.cjs), so it must stay free of Node APIs (I6).
 

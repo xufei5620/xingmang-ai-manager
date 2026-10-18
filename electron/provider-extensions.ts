@@ -676,12 +676,13 @@ async function readConfiguredMcpServers(
   const claudeRootConfig = path.join(homeDirectory, '.claude.json')
   // 每个文件对应 CLI 里的一层 scope。移除时必须带着它，否则 `mcp remove`
   // 会去默认那一层找，项目里的连接删不掉，同名的全局连接反倒被删了（#488）。
+  // Claude Code 只认 ~/.claude.json 和项目的 .mcp.json，两份 settings.json 里写的 mcpServers
+  // 它不读（官方设置项里没有这个键；2.1.302 实测 mcp list、mcp get 都不列，mcp remove 哪一层都说找不到）。
+  // 以前把它们也列出来，「移除」点了删不掉；同名时还盖住真正生效的那条（#1093 第 11 条）。
   const files: Array<{ path: string; scope: ProviderExtensionScope } | null> = provider === 'claude'
     ? [
         { path: claudeRootConfig, scope: 'user' },
-        { path: path.join(homeDirectory, '.claude', 'settings.json'), scope: 'user' },
         repositoryRoot ? { path: path.join(repositoryRoot, '.mcp.json'), scope: 'project' } : null,
-        repositoryRoot ? { path: path.join(repositoryRoot, '.claude', 'settings.json'), scope: 'project' } : null,
       ]
     : [
         { path: path.join(homeDirectory, '.gemini', 'settings.json'), scope: 'user' },

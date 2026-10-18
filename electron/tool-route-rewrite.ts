@@ -126,7 +126,7 @@ export function rewriteJsonStrings(content: string, edits: readonly StringValueE
 }
 
 /**
- * .env 里第一行 `名字=` 的值，认法和 config-files.ts 的 readEnvValue 一样（Gemini 读到的也是这一行）。
+ * .env 里第一行 `名字=` 的值，认法和 readEnvLineValue 一样（config-files.ts 读 Gemini 配置也用它，Gemini 读到的也是这一行）。
  * 原来带引号的照旧带同一种引号，行首缩进、行尾空白、换行符都不动。null = 没有这一行或写法认不出。
  */
 export function rewriteEnvValue(content: string, name: string, value: string): string | null {

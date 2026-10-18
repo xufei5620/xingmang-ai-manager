@@ -9,6 +9,7 @@ import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
+import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
@@ -160,31 +161,6 @@ function isAssetDownloadError(error: unknown): boolean {
     && (error as { code?: unknown }).code === AI_ASSET_DOWNLOAD_ERROR_CODE)
 }
 
-async function readBoundedResponseBytes(response: Response, maximumBytes: number): Promise<Buffer> {
-  const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maximumBytes) throw new Error('生图响应超过安全上限')
-  if (!response.body) return Buffer.alloc(0)
-  const reader = response.body.getReader()
-  const chunks: Buffer[] = []
-  let received = 0
-  try {
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      if (!chunk.value?.byteLength) continue
-      received += chunk.value.byteLength
-      if (received > maximumBytes) {
-        await reader.cancel().catch(() => undefined)
-        throw new Error('生图响应超过安全上限')
-      }
-      chunks.push(Buffer.from(chunk.value))
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  return Buffer.concat(chunks, received)
-}
-
 function responseEntries(payload: unknown): Array<{
   url?: string
   b64Json?: string
@@ -306,7 +282,9 @@ export function createAiImageService(options: {
         await progress?.onStage('downloading')
         let bytes: Buffer
         try {
-          bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES)
+          bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES, '生图', {
+            oversizeMessage: '生图响应超过安全上限',
+          })
         } catch {
           if (signal.aborted) throw signal.reason
           if (!response.ok && response.status < 500) throw imageRequestFailure(response.status, '')

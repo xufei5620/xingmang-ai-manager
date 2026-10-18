@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 export const AI_CHAT_ENDPOINTS = {
   chatCompletions: '/v1/chat/completions',
   imageGenerations: '/v1/images/generations',

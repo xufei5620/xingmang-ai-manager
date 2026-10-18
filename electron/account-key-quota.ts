@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 import { activeProviderIds, buildAccountKeyName, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 import type { AccountKey, AccountKeyUpdateInput } from './ipc-contract'

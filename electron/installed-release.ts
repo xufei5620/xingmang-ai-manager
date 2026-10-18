@@ -20,6 +20,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { InstalledRelease } from './updater'
+import { compareVersionsBy, parseInstalledReleaseVersion } from './versions'
 
 export type { InstalledRelease }
 
@@ -30,26 +31,14 @@ const MAX_NOTES = 60
 const MAX_NOTE_LENGTH = 1000
 const storeLabel = '上次运行版本记录'
 const MAX_STORE_BYTES = 4 * 1024
-const VERSION_PATTERN = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function versionParts(version: string): [number, number, number] | null {
-  const match = VERSION_PATTERN.exec(version)
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null
-}
-
 /** a 比 b 新返回正数；任一边不是 x.y.z 返回 null。 */
 export function compareReleaseVersions(a: string, b: string): number | null {
-  const left = versionParts(a)
-  const right = versionParts(b)
-  if (!left || !right) return null
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] - right[index]
-  }
-  return 0
+  return compareVersionsBy(parseInstalledReleaseVersion, a, b)
 }
 
 /**
@@ -112,9 +101,9 @@ export function resolveInstalledRelease(input: {
   hadPriorRun: boolean
   notes: string[] | null
 }): InstalledRelease {
-  const recorded = input.recordedVersion !== null && versionParts(input.recordedVersion) ? input.recordedVersion : null
+  const recorded = input.recordedVersion !== null && parseInstalledReleaseVersion(input.recordedVersion) ? input.recordedVersion : null
   if (recorded === null) {
-    return { justUpdated: input.hadPriorRun && versionParts(input.currentVersion) !== null, previousVersion: null, notes: input.notes }
+    return { justUpdated: input.hadPriorRun && parseInstalledReleaseVersion(input.currentVersion) !== null, previousVersion: null, notes: input.notes }
   }
   const comparison = compareReleaseVersions(input.currentVersion, recorded)
   return { justUpdated: comparison !== null && comparison > 0, previousVersion: recorded, notes: input.notes }
@@ -135,13 +124,13 @@ export function createLastRunVersionStore(options: { filePath: string }): LastRu
         if (content === null) return null
         const value: unknown = JSON.parse(content)
         if (!isRecord(value) || value.version !== 1 || typeof value.lastRunVersion !== 'string') return null
-        return versionParts(value.lastRunVersion) ? value.lastRunVersion : null
+        return parseInstalledReleaseVersion(value.lastRunVersion) ? value.lastRunVersion : null
       } catch {
         return null
       }
     },
     async write(version) {
-      if (!versionParts(version)) throw new Error('版本号格式无效。')
+      if (!parseInstalledReleaseVersion(version)) throw new Error('版本号格式无效。')
       ensureSafeDataDirectory(path.dirname(options.filePath), storeLabel)
       await writeAtomicSafeUtf8File(options.filePath, `${JSON.stringify({ version: 1, lastRunVersion: version })}\n`, storeLabel)
     },

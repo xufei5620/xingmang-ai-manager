@@ -387,6 +387,16 @@ describe('sub2api user-account adapter', () => {
     await assert.rejects(fixture([reply], { timeoutMs: 20 }).client.authenticate(input, signal()), hasCode('TIMEOUT'))
     assert.equal(canceled, true)
   })
+  it('closes a response that only arrives after the request has timed out', async () => {
+    let canceled = false
+    let deliver: (response: Response) => void = () => undefined
+    const late = new Promise<Response>((resolve) => { deliver = resolve })
+    const client = createSub2ApiAccountClient({ timeoutMs: 20, fetchImpl: async () => late })
+    await assert.rejects(client.authenticate(input, signal()), hasCode('TIMEOUT'))
+    deliver(new Response(new ReadableStream<Uint8Array>({ cancel() { canceled = true } }), { headers: { 'content-type': 'application/json' } }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.equal(canceled, true)
+  })
   it('does not start a request with an already aborted signal', async () => {
     const example = fixture([]); const controller = new AbortController(); controller.abort()
     await assert.rejects(example.client.authenticate(input, controller.signal), hasCode('ABORTED'))

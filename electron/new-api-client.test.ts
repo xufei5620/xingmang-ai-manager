@@ -2385,6 +2385,17 @@ describe('getDashboard', () => {
     expect(data).toMatchObject({ quota: 13, count: 4, tokens: 10, discardedCount: 0 })
   })
 
+  it('keeps hourly buckets when the 24 hour range starts at the whole hour before a day ago', () => {
+    const start = 1_760_738_400
+    const data = parseAccountDashboardData([
+      { created_at: start, model_name: 'a', token_used: 1, count: 1, quota: 2 },
+      { created_at: start + 3_600, model_name: 'a', token_used: 1, count: 1, quota: 3 },
+    ], { startTimestamp: start, endTimestamp: start + 86_400 + 3_599 })
+    expect(data.buckets.map((bucket) => bucket.timestamp)).toEqual([start, start + 3_600])
+    const week = parseAccountDashboardData([{ created_at: start + 3_600, quota: 1 }], { startTimestamp: start, endTimestamp: start + 7 * 86_400 })
+    expect(week.buckets.map((bucket) => bucket.timestamp)).toEqual([start - start % 86_400])
+  })
+
   it('requires an authenticated account session', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })

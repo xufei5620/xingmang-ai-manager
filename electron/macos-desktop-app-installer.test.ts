@@ -931,6 +931,8 @@ function bucketCodexIndex(architecture: string): string {
           key, url: `${desktopPackageBucketOrigin}/${key}`, bytes: bucketBytes.byteLength, sha256: bucketDigest,
           contentType: 'application/zip', verification: 'official-https-sha256', cosEtag: '"etag"',
         },
+        // The sync refreshes it every 6 hours (#1061 item 7).
+        checkedAt: new Date().toISOString(),
       },
     },
   })

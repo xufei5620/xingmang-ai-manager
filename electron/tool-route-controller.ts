@@ -20,6 +20,7 @@ import path from 'node:path'
 import { classifyRouteFailure, type LegitimateAddresses, type RouteFailureLabel } from './route-failure-classifier'
 import { routeIncidentActive, routeStatusAllowsHongKong, type RouteStatus } from './route-status-file'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
+import { scheduleTimeout } from './schedule-timeout'
 import { toolPathFailureCounted, toolPathTlsRejected, type ToolPathCertificate, type ToolPathFailureKind } from './tool-path-probe'
 import type { RelayRouteConclusions } from './relay-route-controller'
 import type { RelayEndpointId, RelayRoutePreference } from './relay-sites'
@@ -163,12 +164,6 @@ export interface ToolRouteController {
 
 const triggerPattern = /^[A-Za-z0-9_.:-]{1,64}$/
 const maxFailureRecords = 16
-
-function scheduleTimeout(callback: () => void, delayMs: number): () => void {
-  const timer = setTimeout(callback, delayMs)
-  timer.unref?.()
-  return () => clearTimeout(timer)
-}
 
 function isEndpoint(value: unknown): value is RelayEndpointId {
   return value === 'direct' || value === 'primary'

@@ -572,9 +572,10 @@ describe('ProviderExtensionService list facade', () => {
 
   it('degrades an oversized local MCP config to a warning without disabling the whole list', async () => {
     const home = temporaryDirectory()
-    write(path.join(home, '.claude', 'settings.json'), 'x'.repeat(2 * 1024 * 1024 + 1))
+    const repository = temporaryDirectory()
+    write(path.join(repository, '.mcp.json'), 'x'.repeat(2 * 1024 * 1024 + 1))
     write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { alive: { command: 'node' } } }))
-    const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]' })
+    const service = new ProviderExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke: async () => '[]' })
 
     const snapshot = await service.list('claude')
 
@@ -2083,6 +2084,33 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     const remove = calls.find((call) => call.argv[1] === 'remove')!
     expect(remove.argv).toEqual(['mcp', 'remove', '--scope', 'project', 'shared'])
     expect(remove.cwd).toBe(repository)
+  })
+
+  it('leaves out Claude MCP entries written into settings.json, which Claude Code never loads', async () => {
+    // 2.1.302: `mcp list` / `mcp get` skip both settings.json files and `mcp remove` reports
+    // "No MCP server named …" in every scope, so a row from there could never be removed.
+    const home = temporaryDirectory()
+    const repository = temporaryDirectory()
+    const userSettings = JSON.stringify({ mcpServers: { ghost: { command: 'ignored' }, shared: { command: 'settings-copy' } } })
+    const projectSettings = JSON.stringify({ mcpServers: { 'project-ghost': { command: 'ignored' } } })
+    write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { shared: { command: 'real-server' } } }))
+    write(path.join(home, '.claude', 'settings.json'), userSettings)
+    write(path.join(repository, '.claude', 'settings.json'), projectSettings)
+    const { invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'plugin list --available --json') return '[]'
+      if (argv.join(' ') === 'plugin marketplace list --json') return registeredMarketplaceList
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke })
+
+    const snapshot = await service.list('claude')
+    const servers = snapshot.items.filter((item) => item.kind === 'mcp')
+    expect(servers.map((item) => [item.id, item.scope])).toEqual([['shared', 'user']])
+    expect(servers[0].description).toContain('real-server')
+    expect(servers[0].operations.uninstall).toBe(true)
+    expect(snapshot.warnings.filter((warning) => warning.includes('MCP'))).toEqual([])
+    expect(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).toBe(userSettings)
+    expect(fs.readFileSync(path.join(repository, '.claude', 'settings.json'), 'utf8')).toBe(projectSettings)
   })
 
   it('asks for the project folder before touching a project-scoped item', async () => {

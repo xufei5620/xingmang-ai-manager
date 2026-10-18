@@ -391,6 +391,8 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const accountTabLabel = activePage === 'account' ? accountTabs.find((tab) => tab.value === accountTab)?.label : undefined
   const environmentLabel = offline ? '没网' : environment?.label ?? '环境待检测'
   const environmentDot = offline ? ' is-bad' : environment?.tone === 'ok' ? ' is-ok' : environment?.tone === 'warn' ? ' is-warn' : ''
+  // 历史账号没有用户名时是邮箱，状态栏放不下会省略，悬停看全文（#1133 第 3 条）。
+  const userLine = account.signedIn ? `已登录 ${account.displayName}` : account.displayName ?? '未登录'
   const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 重启后更新' : ''}` : '版本读取中'
   const tour = shellTour[tourStep]
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
@@ -455,7 +457,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
         <footer className="v2-statusbar" data-testid="shell-statusbar">
           <button type="button" onClick={adapter.openHealth} title={environment?.detail} data-testid="statusbar-environment"><i className={`v2-dot${environmentDot}`} />{environmentLabel}</button>
           {environment?.node && <span data-testid="statusbar-node">{environment.node}</span>}
-          <button type="button" className="v2-status-user" onClick={adapter.openAccount}><span>{account.signedIn ? `已登录 ${account.displayName}` : account.displayName ?? '未登录'}</span></button>
+          <button type="button" className="v2-status-user" onClick={adapter.openAccount} title={userLine} data-testid="statusbar-user"><span>{userLine}</span></button>
           {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={account.subscription ? `${account.subscription}；${balanceStatus}` : balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">{balanceFailureLabel(offline)}</span>}</button>}
           {/* 断网时只说「没网」，不再写一句「网络正常」。网络位置的全文（国家和 IP）在悬停说明里。
               加速中点它进「设置 › 网络加速」（v4 原型），不再是刷新网络位置；后台正测着位置时也点得动（#1104 第 10 条）。 */}
