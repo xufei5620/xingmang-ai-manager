@@ -30,6 +30,9 @@ function noRecheck() {}
 let failHistoryWrites = false
 // 主进程读记录失败（比如被别的程序占着）；之后能读了，「重新读取」才读得出来。
 let failHistoryReads = query.has('historyReadFail')
+// 读记录一直不回（比如磁盘正忙）：第一次进聊天页先看到「正在加载页面」，放行以后才出现输入框。
+let openHistoryReads: (() => void) | undefined
+const heldHistoryReads = query.has('historyReadHold') ? new Promise<void>((resolve) => { openHistoryReads = resolve }) : undefined
 function historyDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('chat-history-fixture', 1)
@@ -87,13 +90,13 @@ const bridge: ChatBridge = {
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
   pickAiChatImages: async (remaining) => { record('pick-images', remaining); return query.has('pickCancel') ? [] : [{ ...imageAsset, assetId: `p${String(calls.length).padStart(42, '0')}`, fileName: 'picked.png' }] },
   pasteAiChatImage: async () => { record('paste-image'); return query.has('emptyClipboard') ? null : { ...imageAsset, assetId: `v${String(calls.length).padStart(42, '0')}`, fileName: 'pasted.png' } },
-  readAiChatHistory: async (scope) => { record('read-history', scope); if (failHistoryReads) throw new Error('reparse point'); return historyFiles(scope) },
+  readAiChatHistory: async (scope) => { record('read-history', scope); if (heldHistoryReads) await heldHistoryReads; if (failHistoryReads) throw new Error('reparse point'); return historyFiles(scope) },
   writeAiChatHistory: (input) => writeHistoryFiles(input),
   exportAiChatConversation: async (input) => { record('export-text', input); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Desktop\\${input.title}.txt` } },
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; openParameters: () => void } }
+  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
@@ -110,6 +113,7 @@ function Fixture() {
     savedWorkspace,
     failHistoryWrites: (fail) => { failHistoryWrites = fail },
     failHistoryReads: (fail) => { failHistoryReads = fail },
+    releaseHistoryReads: () => openHistoryReads?.(),
     openParameters: () => setOpenParameters(true),
   }
   return <ToastProvider testId="chat-toasts"><OnlineStatusContext.Provider value={{ offline: !online, checking: false, recheck: noRecheck }}><ChatPage bridge={bridge as XingmangApi} accountScope={scope} active={active} openParameters={openParameters} onParametersOpened={() => setOpenParameters(false)} /></OnlineStatusContext.Provider></ToastProvider>

@@ -31,6 +31,8 @@ import {
   type WindowsElevationCapability,
 } from './windows-elevation'
 import { minimumSupportedNodeVersion, nodeVersionStatus } from './versions'
+import { errorCodeClause, loggedFailureNextStep } from './failure-wording'
+import { classifyNetworkFailure, networkFailureCode } from './network-failure'
 
 export type NodeRuntimeNetworkRegion =
   | 'mainland-china'
@@ -420,6 +422,47 @@ function errorText(reason: unknown): string {
   if (/\b1618\b/.test(raw)) return windowsInstallerBusyMessage
   if (raw) return raw
   return '未知错误'
+}
+
+/**
+ * Node.js 自动安装没装成时上屏那句（#1100 第1条）。以前把每一步的原话拼在一起（「winget：命令执行失败
+ * （退出码 -1978335212）：winget.exe；Node.js 官方源：fetch failed；…」），客户读不懂；现在只说一个原因和
+ * 下一步，原话挂在 cause 上进运行日志。winget 那一步（先试的系统组件）不再上屏。几个下载源各有原因时，
+ * 取最能动手的那一种：Windows Installer 自己那几句（取消授权、1925、1603、1618，本来就是中文）、
+ * 装完没找到能用的、安装包没过校验、网络不通、下载源出错，最后才是说不清的。
+ */
+export function describeNodeInstallFailure(errors: readonly unknown[]): string {
+  const described = errors.map(nodeInstallFailureReason).sort((left, right) => left.rank - right.rank)
+  const sentence = described[0]?.sentence ?? loggedFailureNextStep
+  return `Node.js 自动安装失败：${sentence}`
+}
+
+/** 放安装包的临时文件夹建不起来时那句。 */
+export function describeNodeStagingFailure(error: unknown): string {
+  return `Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去${errorCodeClause(error)}。清理一下磁盘或重启电脑后再点「重试」。`
+}
+
+function withFullStop(sentence: string): string {
+  return /[。！？]$/.test(sentence) ? sentence : `${sentence}。`
+}
+
+const windowsInstallerSentences = /^(?:已取消管理员授权|Windows Installer|Windows 正在安装别的程序)/
+
+function nodeInstallFailureReason(error: unknown): { rank: number; sentence: string } {
+  const reason = errorText(error)
+  if (windowsInstallerSentences.test(reason)) return { rank: 0, sentence: withFullStop(reason) }
+  if (/安装后的 Node\.js/.test(reason)) return { rank: 1, sentence: '装完没找到能用的 Node.js。重启电脑后再看一次；还不行请找客服。' }
+  if (/SHA-256|数字签名|签名|校验后发生变化|安装包大小无效|内容过小|下载不完整|超过 160 MB/.test(reason)) {
+    return { rank: 2, sentence: '下载的安装包没通过校验，已经删掉。再点「重试」；一直这样换个网络。' }
+  }
+  const status = /^HTTP (\d{3})$/.exec(reason)?.[1]
+  // 连上了、下载源那边自己出错，跟这台电脑的网络无关；说成「网络不通」会和错误框「下载源暂时出错」打架。
+  if (status && status.startsWith('5')) return { rank: 4, sentence: `下载安装包时下载源那边出错（错误码 HTTP ${status}）。过几分钟再点「重试」。` }
+  if (classifyNetworkFailure(error) || /fetch failed|请求超时|服务器返回了空响应|服务器没有返回安装包内容/.test(reason)) {
+    const code = networkFailureCode(error)
+    return { rank: 3, sentence: `下载安装包时网络不通${code ? `（错误码 ${code}）` : ''}。检查网络后再点「重试」。` }
+  }
+  return { rank: 5, sentence: loggedFailureNextStep }
 }
 
 function sourceUrl(baseUrl: string, relativePath: string): string {
@@ -1400,6 +1443,8 @@ export async function installNodeRuntime(
   }
   throwIfAborted(options.signal)
   const failures: string[] = []
+  // 各下载源没装成的原错误：上屏那句从这里挑一个原因说（describeNodeInstallFailure）。
+  const sourceErrors: unknown[] = []
   if (options.preferWinget !== false) {
     report(options, {
       phase: 'checking',
@@ -1464,9 +1509,9 @@ export async function installNodeRuntime(
     temporaryDirectory = await dependencies.createTemporaryDirectory()
   } catch (error) {
     failures.push(`安装包暂存目录：${errorText(error)}`)
-    const message = `Node.js LTS 自动安装失败。${failures.join('；')}`
+    const message = describeNodeStagingFailure(error)
     report(options, { phase: 'error', source: null, message, percent: null })
-    throw new Error(message)
+    throw new Error(message, { cause: new Error(`Node.js LTS 自动安装失败。${failures.join('；')}`, { cause: error }) })
   }
   try {
     // 到这里才真要下载，这时才借下载专用线路，借到以后再问先走哪个源（第二十八批 D）。
@@ -1491,6 +1536,7 @@ export async function installNodeRuntime(
         } catch (error) {
           const reason = errorText(error)
           failures.push(`${source.label}：${reason}`)
+          sourceErrors.push(error)
           if (options.signal?.aborted) throw error
           // 换个源再下几十 MB，Windows 那边还在装别的，照样是 1618。
           if (reason === windowsInstallerBusyMessage) break
@@ -1511,7 +1557,8 @@ export async function installNodeRuntime(
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory).catch(() => undefined)
   }
-  const message = `Node.js LTS 自动安装失败。${failures.join('；')}`
+  const message = describeNodeInstallFailure(sourceErrors)
   report(options, { phase: 'error', source: null, message, percent: null })
-  throw new Error(message)
+  // 每一步的原话（winget 那一步也在）进运行日志，给客服看。
+  throw new Error(message, { cause: new Error(`Node.js LTS 自动安装失败。${failures.join('；')}`) })
 }

@@ -414,6 +414,11 @@ describe('AI image service', () => {
 
   it.each([
     [400, { error: { message: "Invalid size '1025x1024'" } }, '不支持这个图片尺寸'],
+    // 参考图文件太大不是尺寸不对，审核的英文原话也不上屏（#1101 第4条）。
+    [400, { error: { message: 'Invalid image: file size must be less than 20 MB.' } }, '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'],
+    [400, { error: { message: 'Your request was rejected as a result of our safety system.', code: 'moderation_blocked' } },
+      '这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。'],
+    [400, { error: { message: 'Request rejected', code: 'content_policy_violation' } }, '这次的描述或参考图没通过安全审核'],
     [403, { error: { message: 'Project does not have access to model' } }, '暂无该生图模型权限'],
     [403, { error: { message: '用户额度不足, 剩余额度: ＄0.000000 (request id: r1)', code: 'insufficient_user_quota' } }, '当前账号余额不足，充值后再试就行'],
     [403, { error: { message: 'token quota is not enough, token remain quota: ＄0.001000, need quota: ＄0.050000', code: 'pre_consume_token_quota_failed' } }, '额度上限用完了'],

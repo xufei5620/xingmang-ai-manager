@@ -2284,7 +2284,7 @@ describe('describeUnrecognizedUpdateFailure', () => {
 
   it('does not take an English failure for Chinese because of a Chinese name in its path', () => {
     // Windows 的中文用户名、Mac 上的「星芒AI管理工具」都在路径里。以前这几句被当成中文整句交给界面，
-    // 脱敏后客户看到的是「EPERM: operation not permitted, open '本地配置文件」（第三十批跟进项）。
+    // 脱敏后客户看到的是「EPERM: operation not permitted, open '本机路径」（第三十批跟进项）。
     expect(describeUnrecognizedUpdateFailure("EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\temp-XingMang-AI-Manager-0.2.15-Setup.exe'"))
       .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
     expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked, unlink C:\\Users\\张 三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\update.exe'))

@@ -578,7 +578,12 @@ export function createAiVideoService(options: {
         // 一直查不到才停；本地任务记录留着，下次启动还会续查。从这一轮失败结束时起算，而不是从
         // 上次查到时起算：电脑睡醒后第一次查询多半连不上，那段睡眠不能算进去。
         failingSince ??= Date.now()
-        if (Date.now() - failingSince >= maximumPollOutageMs) throw error
+        if (Date.now() - failingSince >= maximumPollOutageMs) {
+          // 这时上屏的原话（「视频服务暂时不可用，请稍后重试」「视频接口请求超时」、英文的 fetch failed）
+          // 都在叫客户重来，可这单已经提交、服务端多半还在生成，重来就是再付一次钱（#1076 第2条）。
+          // 换成同一句，原话挂在 cause 上进日志。终态的错（failed、cancelled、JSON 4xx）不走这里。
+          throw new Error(`暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 ${task.taskId}）。`, { cause: error })
+        }
         await delayVideoPoll(interval, signal)
         interval = Math.min(maximumPollIntervalMs, interval * 2)
         continue

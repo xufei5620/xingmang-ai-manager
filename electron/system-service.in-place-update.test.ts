@@ -52,6 +52,10 @@ interface InPlaceUpdateOptions {
   downloadFails?: (attempt: number) => Error | undefined
   /** 第 n 次 npm install --global 动工具目录之前先做的事：等测试放行，或者直接失败。 */
   beforeFolderWrite?: (attempt: number, signal: AbortSignal | undefined) => Promise<void>
+  /** 到这个源核对安装清单（npm install --package-lock-only）时抛的错；缺省都成功。 */
+  resolutionFails?: (registry: string) => Error | undefined
+  /** 这次下载走在加速线路上。 */
+  accelerated?: boolean
 }
 
 // 有推荐版本就装推荐版本，名单空了才落回 latest（这里的假元数据把 latest 答成 9.9.9）。
@@ -216,6 +220,8 @@ function createInPlaceUpdateFixture(options: InPlaceUpdateOptions) {
           downloadsWithPlatformBuild.add(registry)
         }
       } else {
+        const failure = options.resolutionFails?.(registry)
+        if (failure) throw failure
         fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
           name: manifest.name,
           version: manifest.version,
@@ -284,6 +290,9 @@ function createInPlaceUpdateFixture(options: InPlaceUpdateOptions) {
       findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmExecutable : null),
       resolveCliInstallation: resolveInstallation,
       runtimeLog,
+      ...(options.accelerated
+        ? { acquireDownloadAcceleration: async () => ({ endpoint: null, accelerated: true, release: async () => undefined }) }
+        : {}),
     },
   )
   return { service, target, runtimeLog, commands, reached, installedVersion, livePackage }
@@ -317,7 +326,7 @@ describe('isMachineBoundNpmFailure', () => {
     for (const detail of [
       '命令执行失败（退出码 1）：node（ECONNRESET；network aborted）',
       '命令执行失败（退出码 1）：node（E500；500 Internal Server Error）',
-      '下载超时，长时间没有完成，已中止',
+      '下载太久没有完成，超时中止',
       'Codex CLI 的主程序没有下载完整，多半是网络不稳定。请关掉代理或换个网络后再装一次',
     ]) {
       expect(isMachineBoundNpmFailure(detail, true)).toBe(false)
@@ -460,7 +469,9 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
 
     expect(fixture.commands).toEqual([`download ${officialRegistry}`])
     const message = (error as Error).message
-    expect(message).toBe(`Codex CLI 安装失败：npm 官方源：命令执行失败（退出码 1）：node（ENOSPC；nospc ENOSPC: no space left on device, write）`)
+    expect(message).toBe('Codex CLI 安装失败：npm 官方源：磁盘空间不足（错误码 ENOSPC）。')
+    // npm 的原话进运行日志，不上屏（#1100 第1条）。
+    expect(((error as Error).cause as Error).message).toBe('npm 官方源：命令执行失败（退出码 1）：node（ENOSPC；nospc ENOSPC: no space left on device, write）')
     expect(classifyOperationError(message)).toBe('diskFull')
     expect(fixture.installedVersion()).toBe(previousVersion)
     expect(fixture.runtimeLog.log).toHaveBeenCalledWith(
@@ -491,5 +502,59 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
       `write ${officialRegistry}`,
       `download ${mirrorRegistry}`,
     ])
+  })
+})
+
+const registryTimeoutStderr = [
+  'npm error code ETIMEDOUT',
+  'npm error errno ETIMEDOUT',
+  'npm error network request to https://registry.npmjs.org/@openai%2fcodex failed, reason: connect ETIMEDOUT 104.16.0.35:443',
+  '',
+].join('\n')
+
+// 装之前到官方源核对安装清单那一步只能走官方源，连不上时要说清这一点和下一步（#1057 第5b条），
+// 别的原因按 npm 原因表说（#1100 第1条）。同上，只在 macOS / Linux 主机上跑。
+describe.runIf(process.platform !== 'win32')('checking the install manifest against the official registry', () => {
+  it('says the official registry was unreachable and points at acceleration when it is off', async () => {
+    const fixture = createInPlaceUpdateFixture({
+      provider: 'codex',
+      resolutionFails: (registry) => registry === officialRegistry ? npmFailure(registryTimeoutStderr) : undefined,
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
+
+    const message = (error as Error).message
+    expect(message).toBe('Codex CLI 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。')
+    expect(classifyOperationError(message)).toBe('officialRegistryUnreachable')
+    expect(((error as Error).cause as CommandRunnerError).stderr).toBe(registryTimeoutStderr)
+    expect(fixture.installedVersion()).toBe(previousVersion)
+  })
+
+  it('says to switch networks when acceleration was already on', async () => {
+    const fixture = createInPlaceUpdateFixture({
+      provider: 'codex',
+      accelerated: true,
+      resolutionFails: (registry) => registry === officialRegistry ? npmFailure(registryTimeoutStderr) : undefined,
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
+
+    expect((error as Error).message).toBe('Codex CLI 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。换个网络（比如手机热点）后再试。')
+  })
+
+  it('names a version the registry does not have in Chinese and says what to do', async () => {
+    const fixture = createInPlaceUpdateFixture({
+      provider: 'codex',
+      resolutionFails: (registry) => registry === officialRegistry
+        ? npmFailure(['npm error code ETARGET', 'npm error notarget No matching version found for @openai/codex@0.0.1.', ''].join('\n'))
+        : undefined,
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
+
+    const message = (error as Error).message
+    expect(message).toBe('Codex CLI 安装失败：npm 官方源：找不到要装的版本（错误码 ETARGET）。过一会儿再点「重试」；一直这样请找客服。')
+    // 整句自己说清了下一步，错误框不另配标题。
+    expect(classifyOperationError(message)).toBe('unknown')
   })
 })

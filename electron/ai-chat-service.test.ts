@@ -382,6 +382,50 @@ describe('AI chat streaming service', () => {
     expect(events).toEqual([expect.objectContaining({ message: '当前 API Key 无权使用所选模型或分组' })])
   })
 
+  // 服务端说清了是哪一种的，按它说下一步；原话本身不上屏（#1101 第2条、#1093 第12b条）。
+  it.each([
+    ['a conversation over the context window', 400,
+      { error: { message: "This model's maximum context length is 128000 tokens. However, your messages resulted in 130512 tokens.", type: 'invalid_request_error', code: 'context_length_exceeded' } },
+      '这段对话太长了，超过了这个模型一次能读的长度。开一个新对话接着聊，或者换一个能读更长内容的模型。'],
+    ['a prompt the upstream calls too long', 400, { error: { message: 'prompt is too long: 210000 tokens > 200000 maximum', type: 'invalid_request_error' } },
+      '这段对话太长了，超过了这个模型一次能读的长度。开一个新对话接着聊，或者换一个能读更长内容的模型。'],
+    ['a moderation refusal', 400, { error: { message: 'Your request was rejected as a result of our safety system.', code: 'content_policy_violation' } },
+      '这次的内容没通过 AI 服务的安全审核，没有回复。改一改说法再发；一直被拦就换个模型。'],
+    ['the relay sensitive-word filter', 400, { error: { message: 'sensitive words detected', type: 'new_api_error', code: 'sensitive_words_detected' } },
+      '这次的内容没通过 AI 服务的安全审核，没有回复。改一改说法再发；一直被拦就换个模型。'],
+    ['a model the upstream does not know', 404, { error: { message: 'The model `gpt-old` does not exist or you do not have access to it.', code: 'model_not_found' } },
+      '当前模型不在所选分组的可用列表中，请刷新后重新选择'],
+    ['any other bad request', 400, { error: { message: 'Unsupported parameter: temperature', type: 'invalid_request_error' } },
+      'AI 服务没接受这次请求（HTTP 400）。换个模型，或者把参数调回默认再试；一直这样请找客服。'],
+    ['a group without a channel for the model', 503, { error: { message: '当前分组 default 下对于模型 gpt-x 无可用渠道 (request id: r3)', type: 'new_api_error', code: 'model_not_found' } },
+      '所选分组下这个模型暂时用不了。换个模型或分组再发；一直这样请找客服。'],
+  ])('says what to do next for %s', async (_label, status, payload, expected) => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => new Response(JSON.stringify(payload), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: expected })])
+  })
+
+  it('keeps the old wording for a rejection it cannot name', async () => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => new Response('{"error":{"message":"entity too large"}}', { status: 413, headers: { 'content-type': 'application/json' } })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ code: 'upstream-http-error', message: 'AI 服务暂时无法完成请求' })])
+  })
+
   it.each([
     ['a gateway error page', 502, { 'content-type': 'text/html' }],
     ['an edge origin timeout', 522, { 'content-type': 'text/html' }],

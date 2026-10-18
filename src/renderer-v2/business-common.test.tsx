@@ -21,7 +21,7 @@ describe('renderer-v2 result notice', () => {
   it('names the failure from the original it folded away, without showing the original', () => {
     // useOperation 把带路径的英文换成通用兜底句以后，标题要靠原话认出来（第三十批 A）。
     const shown = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
-    const original = "EBUSY: resource busy or locked, rename '本地配置文件 -> '本地配置文件"
+    const original = "EBUSY: resource busy or locked, rename '本机路径 -> '本机路径"
     const markup = renderToStaticMarkup(<ResultNotice error={shown} detail={original} />)
     expect(markup).toContain('工具正在运行')
     expect(markup).toContain(shown)
@@ -85,7 +85,7 @@ describe('renderer-v2 result notice lead', () => {
 
   it('says the config file could not be written when the page writes a tool config', () => {
     // 已知29：恢复备份、扩展页、配置窗口写的是配置文件，不是安装目录。
-    const error = "恢复备份失败：EPERM: operation not permitted, open '本地配置文件'"
+    const error = "恢复备份失败：EPERM: operation not permitted, open '本机路径'"
     const markup = renderToStaticMarkup(<ResultNotice error={error} target="config" />)
     expect(markup).toContain('<strong>写不进配置文件</strong>，常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
     expect(markup).not.toContain('写不进安装目录')
