@@ -83,7 +83,7 @@ export function UsageDetails({ record, balance, onClose }: { record: AccountUsag
     <span className="v2-usage-detail-spacer" />
     <Button onClick={onClose}>关闭</Button>
   </>}>
-    <div className="v2-usage-detail-summary" ref={initialFocus} tabIndex={-1}><Pill tone={status.tone}>{status.label}</Pill><Pill>{record.modelName || '未知模型'}</Pill></div>
+    <div className="v2-usage-detail-summary" ref={initialFocus} tabIndex={-1}><Pill tone={status.tone}>{status.label}</Pill><Pill><span title={record.modelName || '未知模型'}>{record.modelName || '未知模型'}</span></Pill></div>
     <DetailRows rows={info} />
     {usageFailedFree(record) && <p className="v2-usage-detail-warn"><Info size={15} aria-hidden="true" />这次调用没有完成，没有扣费。工具一般会自动重试。</p>}
     <section className="v2-usage-detail-section" aria-label="计费明细"><h3>计费明细</h3>

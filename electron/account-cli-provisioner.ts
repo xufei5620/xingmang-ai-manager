@@ -564,7 +564,7 @@ async function cacheReplacementKey(
 
 export async function configureManagedClis(
   accountService: ManagedKeyAccountService,
-  systemService: Pick<SystemService, 'fetchAvailableModels' | 'saveConfig'>,
+  systemService: Pick<SystemService, 'fetchAvailableModels' | 'saveConfig' | 'noteRouteFollowRestart'>,
   providers: readonly ProviderId[],
   preferredModels: Partial<Record<ProviderId, string>>,
   previewOnboarding: boolean,
@@ -683,6 +683,8 @@ export async function configureManagedClis(
       outcome.failed.push(failedConfiguration(provider, error))
     }
   }
+  // 换线路以后跟过去的这一轮写完了：开着的工具要重开才走新线路，这一轮一次说完（历史账号，#1061 第 2 条）。
+  await systemService.noteRouteFollowRestart?.(outcome.configured)
   return outcome
 }
 

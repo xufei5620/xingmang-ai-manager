@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { accelerationShutdownRetryDelayMs, accelerationStartFailureMessages, automaticSessionDrainMs, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { accelerationCheckpointIntervalMs, accelerationShutdownRetryDelayMs, accelerationStartFailureMessages, automaticSessionDrainMs, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
@@ -37,6 +37,9 @@ async function setup(
   let running = false
   const events: string[] = []
   const scheduled = new Set<{ at: number; callback: () => void }>()
+  const checkpoints = new Set<{ at: number; callback: () => void }>()
+  // An hour before the fixture epoch: by default nothing below restarted the computer.
+  let booted: number | null = epoch - 3_600_000
   const onDiagnostic = vi.fn()
   const onStartDiagnostic = vi.fn()
   const onConflictDiagnostic = vi.fn()
@@ -59,6 +62,12 @@ async function setup(
       scheduled.add(timer)
       return () => { scheduled.delete(timer) }
     },
+    scheduleCheckpoint(callback, milliseconds) {
+      const timer = { at: monotonic + milliseconds, callback }
+      checkpoints.add(timer)
+      return () => { checkpoints.delete(timer) }
+    },
+    bootedAt: () => booted,
   })
   cleanup.push(async () => {
     proxy.restore.mockImplementation(async () => {})
@@ -66,9 +75,10 @@ async function setup(
     await backend.dispose().catch(() => undefined)
   })
   return {
-    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic, onStartDiagnostic, onConflictDiagnostic, onRuntimeInterrupted,
+    backend, runtime, proxy, events, ledgerPath, scheduled, checkpoints, onDiagnostic, onStartDiagnostic, onConflictDiagnostic, onRuntimeInterrupted,
     setRunning: (value: boolean) => { running = value },
     setWall: (value: number) => { wall = value },
+    setBootedAt: (value: number | null) => { booted = value },
     elapse(milliseconds: number) { wall += milliseconds; monotonic += milliseconds },
     async advance(milliseconds: number) {
       wall += milliseconds
@@ -76,10 +86,13 @@ async function setup(
       for (const timer of [...scheduled]) {
         if (timer.at <= monotonic) { scheduled.delete(timer); timer.callback() }
       }
+      for (const timer of [...checkpoints]) {
+        if (timer.at <= monotonic) { checkpoints.delete(timer); timer.callback() }
+      }
       // A queue barrier, deliberately not getState (which also checks expiry).
       await backend.recover()
     },
-    async readLedger() { return JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as { version: number; accounts: Record<string, { usedMs: number; startedAt: number | null; bonusRedeemed?: true }> } },
+    async readLedger() { return JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as { version: number; accounts: Record<string, { usedMs: number; startedAt: number | null; bonusRedeemed?: true; checkpointAt?: number; checkpointMs?: number }> } },
   }
 }
 
@@ -166,7 +179,7 @@ describe('local development acceleration backend', () => {
     test.elapse(1500)
     expect(await test.backend.getAccelerationState(scope)).toMatchObject({ remainingSeconds: accelerationTrialSeconds - 1, sessionSeconds: 1 })
     expect(test.events).toEqual(['runtime:start', 'proxy:enable'])
-    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch + 12_000 })
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch + 12_000, checkpointAt: epoch + 12_000, checkpointMs: 0 })
   })
 
   it('restores proxy before stopping the core, persists exact milliseconds and resumes the remainder', async () => {
@@ -520,6 +533,125 @@ describe('local development acceleration backend', () => {
     const crashed = await setup()
     await fs.writeFile(crashed.ledgerPath, JSON.stringify({ version: 1, accounts: { [scope]: { usedMs: 0, startedAt: epoch + 1000 } } }))
     expect(await crashed.backend.getAccelerationState(scope)).toMatchObject({ phase: 'exhausted', remainingSeconds: 0 })
+  })
+
+  it('checkpoints a billed session every minute, leaves sleep out and drops the checkpoint once settled', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(test.checkpoints.size).toBe(1)
+    await test.advance(accelerationCheckpointIntervalMs)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch, checkpointAt: epoch + 60_000, checkpointMs: 60_000 })
+    test.backend.suspend()
+    test.elapse(3_600_000)
+    await test.backend.resume()
+    await test.advance(accelerationCheckpointIntervalMs)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch, checkpointAt: epoch + 3_720_000, checkpointMs: 120_000 })
+    expect(test.checkpoints.size).toBe(1)
+    await test.backend.stopAcceleration(scope)
+    expect(test.checkpoints.size).toBe(0)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 120_000, startedAt: null })
+  })
+
+  it('settles a session cut off by a power loss at its last checkpoint instead of the hours the computer was off', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    for (let minute = 0; minute < 5; minute += 1) await test.advance(accelerationCheckpointIntervalMs)
+    test.elapse(30_000)
+    // The next morning, after a cold boot that came later than the last checkpoint.
+    const restarted = await setup(test.ledgerPath)
+    restarted.setWall(epoch + 86_400_000)
+    restarted.setBootedAt(epoch + 86_400_000 - 120_000)
+    await restarted.backend.recover()
+    expect(restarted.proxy.restore).toHaveBeenCalled()
+    // The unknown tail after the last checkpoint is charged as a whole interval.
+    expect((await restarted.readLedger()).accounts[scope]).toEqual({ usedMs: 360_000, startedAt: null })
+    expect(await restarted.backend.getAccelerationState(scope)).toMatchObject({ phase: 'idle', remainingSeconds: accelerationTrialSeconds - 360 })
+  })
+
+  it('also settles a power loss during connecting at one checkpoint interval at most', async () => {
+    const test = await setup()
+    const pending = deferred<void>()
+    test.proxy.enable.mockImplementationOnce(async () => { await pending.promise })
+    const starting = test.backend.startAcceleration(scope, 'system-proxy')
+    await vi.waitFor(() => expect(test.proxy.enable).toHaveBeenCalledOnce())
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch, checkpointAt: epoch, checkpointMs: 0 })
+    const restarted = await setup(test.ledgerPath)
+    restarted.setWall(epoch + 86_400_000)
+    restarted.setBootedAt(epoch + 86_400_000 - 120_000)
+    await restarted.backend.recover()
+    expect((await restarted.readLedger()).accounts[scope]).toEqual({ usedMs: accelerationCheckpointIntervalMs, startedAt: null })
+    pending.resolve()
+    await starting
+  })
+
+  it('keeps charging the wall clock after a crash without a restart, since the core may have kept serving', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    for (let minute = 0; minute < 5; minute += 1) await test.advance(accelerationCheckpointIntervalMs)
+    const restarted = await setup(test.ledgerPath)
+    restarted.setWall(epoch + 600_000)
+    await restarted.backend.recover()
+    expect((await restarted.readLedger()).accounts[scope]).toEqual({ usedMs: 600_000, startedAt: null })
+    // Without a readable boot time there is no evidence of a restart either.
+    const unknownBoot = await setup()
+    await unknownBoot.backend.startAcceleration(scope, 'system-proxy')
+    await unknownBoot.advance(accelerationCheckpointIntervalMs)
+    const reopened = await setup(unknownBoot.ledgerPath)
+    reopened.setWall(epoch + 600_000)
+    reopened.setBootedAt(null)
+    await reopened.backend.recover()
+    expect((await reopened.readLedger()).accounts[scope]).toEqual({ usedMs: 600_000, startedAt: null })
+  })
+
+  it('charges at least what the last checkpoint recorded when the clock is moved back before reopening', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    for (let minute = 0; minute < 5; minute += 1) await test.advance(accelerationCheckpointIntervalMs)
+    const restarted = await setup(test.ledgerPath)
+    restarted.setWall(epoch + 120_000)
+    // A clock moved back also moves the derived boot time: no restart discount either.
+    restarted.setBootedAt(epoch + 100_000)
+    await restarted.backend.recover()
+    expect((await restarted.readLedger()).accounts[scope]).toEqual({ usedMs: 300_000, startedAt: null })
+  })
+
+  it('keeps accelerating when a checkpoint cannot be written and catches up on the next one', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.events.length = 0
+    const write = vi.spyOn(safe, 'writeAtomicSafeUtf8File').mockRejectedValueOnce(new Error('private-fs-path'))
+    await test.advance(accelerationCheckpointIntervalMs)
+    expect(write).toHaveBeenCalledOnce()
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'active', error: null, remainingSeconds: accelerationTrialSeconds - 60 })
+    expect(test.events).toEqual([])
+    expect(test.onDiagnostic).not.toHaveBeenCalled()
+    expect((await test.readLedger()).accounts[scope]).toMatchObject({ checkpointAt: epoch, checkpointMs: 0 })
+    await test.advance(accelerationCheckpointIntervalMs)
+    expect((await test.readLedger()).accounts[scope]).toMatchObject({ checkpointAt: epoch + 120_000, checkpointMs: 120_000 })
+  })
+
+  it('never checkpoints an automatic session that draws nothing from the allowance', async () => {
+    const test = await setup()
+    await test.backend.startAutomaticAcceleration(scope, 'system-proxy')
+    expect(test.checkpoints.size).toBe(0)
+    await test.advance(accelerationCheckpointIntervalMs)
+    await expect(fs.readFile(test.ledgerPath, 'utf8')).rejects.toThrow()
+  })
+
+  it.each([
+    ['a settled entry', { version: 2, accounts: { [scope]: { usedMs: 0, startedAt: null, checkpointAt: epoch, checkpointMs: 0 } } }],
+    ['a version 1 ledger', { version: 1, accounts: { [scope]: { usedMs: 0, startedAt: epoch, checkpointAt: epoch, checkpointMs: 0 } } }],
+    ['half a pair', { version: 2, accounts: { [scope]: { usedMs: 0, startedAt: epoch, checkpointAt: epoch } } }],
+    ['more than the allowance', { version: 2, accounts: { [scope]: { usedMs: 0, startedAt: epoch, checkpointAt: epoch, checkpointMs: 1_200_001 } } }],
+    ['a negative instant', { version: 2, accounts: { [scope]: { usedMs: 0, startedAt: epoch, checkpointAt: -1, checkpointMs: 0 } } }],
+    ['a fractional duration', { version: 2, accounts: { [scope]: { usedMs: 0, startedAt: epoch, checkpointAt: epoch, checkpointMs: 0.5 } } }],
+  ])('fails closed on a checkpoint in %s', async (_name, ledger) => {
+    const test = await setup()
+    const original = JSON.stringify(ledger)
+    await fs.writeFile(test.ledgerPath, original)
+    await expect(test.backend.getAccelerationState(scope)).rejects.toThrow('本机测试时长无法读取或保存')
+    expect(await fs.readFile(test.ledgerPath, 'utf8')).toBe(original)
+    expect(test.runtime.start).not.toHaveBeenCalled()
   })
 
   it('fails closed on corrupted ledgers and never starts a core with an unreadable allowance', async () => {
@@ -1010,7 +1142,7 @@ describe('device-local acceleration bonus redemption', () => {
     expect(test.runtime.start).toHaveBeenCalledOnce()
     expect(test.scheduled.has(oldTimer)).toBe(false)
     expect([...test.scheduled].map((timer) => timer.at)).toEqual([extendedSeconds * 1000])
-    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch, bonusRedeemed: true })
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch, checkpointAt: epoch, checkpointMs: 0, bonusRedeemed: true })
 
     await test.advance(accelerationTrialSeconds * 1000 - 12_345)
     expect(test.runtime.isRunning()).toBe(true)

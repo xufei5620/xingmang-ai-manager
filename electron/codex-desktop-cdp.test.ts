@@ -806,6 +806,33 @@ describe('Codex Desktop Chinese CDP injection', () => {
     })).rejects.toThrow('未找到可注入的页面')
     expect(attempts).toBe(30)
   })
+
+  it('stops reading a target list once it crosses the size limit', async () => {
+    let largestRead = 0
+    let cancelled = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
+      // 16 MB with no Content-Length: the old reader buffered all of it
+      // before it looked at the size, on every discovery attempt.
+      fetch: async () => {
+        let pulledChunks = 0
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulledChunks += 1
+            largestRead = Math.max(largestRead, pulledChunks)
+            controller.enqueue(new Uint8Array(1024 * 1024))
+            if (pulledChunks === 16) controller.close()
+          },
+          cancel() {
+            cancelled += 1
+          },
+        }))
+      },
+      delay: async () => undefined,
+    })).rejects.toThrow('CDP 目标响应过大')
+    expect(cancelled).toBe(30)
+    expect(largestRead).toBeLessThan(6)
+  })
 })
 
 describe('Codex Desktop CDP debugging port ownership', () => {

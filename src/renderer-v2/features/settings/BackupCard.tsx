@@ -89,7 +89,8 @@ function RestoreCheckNotice({ check, navigate }: { check: RestoreCheck; navigate
 function BackupKeyPill({ backup }: { backup: Backup }) {
   const view = backup.valid ? backupKeyView(backup) : null
   if (!view) return null
-  return <Pill tone={view.tone} testId={`backups-key-${backup.id}`}>{view.label}</Pill>
+  // 「账号 xxx 的密钥」里是账号名，太长时省略、悬停看全文（components.css 的 .xm-row-title）。
+  return <Pill tone={view.tone} testId={`backups-key-${backup.id}`}><span title={view.label}>{view.label}</span></Pill>
 }
 
 /**

@@ -1,18 +1,21 @@
 // Backend-agnostic contract for a relay (AI-API-proxy) account backend. The
 // desktop app talks to a customer's paid relay account through this
-// interface everywhere except new-api-client.ts itself: today the only
-// implementation is createNewApiClient() (new-api-client.ts), which talks to
-// xm.solov.cc (QuantumNous/new-api). A second backend (sub2api -- a Go/Gin
-// relay whose management API is not compatible with new-api's, starting as a
-// paste-a-key-only integration) can implement this same interface without
-// touching ipc.ts, canvas-window.ts, or main.ts's assembly -- those consume
-// RelayBackendClient, not the concrete new-api type, by design.
+// interface everywhere except the two implementations themselves, one per
+// account site (relay-sites.ts's accountBackend): createNewApiClient()
+// (new-api-client.ts) for xm.solov.cc (QuantumNous/new-api), and
+// createSub2ApiRelayBackend() (sub2api-relay-backend.ts) for the 历史账号
+// site api.solov.cc, a sub2api relay whose management API is not
+// compatible with new-api's. main.ts supplies the per-site client factory
+// and realm-account-service.ts forwards to the active client; ipc.ts and
+// canvas-window.ts consume RelayBackendClient, never a concrete type, by
+// design. A change to this contract therefore lands in both
+// implementations.
 //
 // The method list here is deliberately the *exact* set today's real callers
 // use -- ipc.ts's account:* handlers, chat-credential-coordinator.ts's
-// main-process key resolution for the canvas, and main.ts's startup session
-// restore (via account-session-store.ts's restoreAccountSessionOnStartup) --
-// not new-api-client.ts's full surface.
+// main-process key resolution for the canvas, and the saved-login restore
+// main.ts wires into realm-account-service.ts (restoreActive at startup,
+// switchSavedAccount later) -- not new-api-client.ts's full surface.
 // Two NewApiClientService methods are intentionally excluded because
 // nothing outside new-api-client.ts (and its own tests) calls them today:
 // isAuthenticated(), refreshAccessToken(). Add a
@@ -20,10 +23,11 @@
 // guidance against speculative surface.
 //
 // DTO types are imported from new-api-client.ts rather than duplicated or
-// renamed -- this wave only introduces the interface seam, not a renamed
-// backend-neutral vocabulary for every field (that is a larger refactor for
-// whenever a second backend actually lands). That reuse makes this file's
-// type imports circular with new-api-client.ts's own `import type` of
+// renamed: sub2api-relay-backend.ts maps its own responses onto these same
+// NewApi* shapes, so the names say where a shape was first defined, not
+// which backend produced a value. A backend-neutral vocabulary for every
+// field is a larger refactor nothing has needed yet. That reuse makes this
+// file's type imports circular with new-api-client.ts's own `import type` of
 // RelayBackendClient/RelayBackendCapabilities (see that file). Both sides
 // import only *types*, which TypeScript erases completely at compile time --
 // there is no runtime require() cycle, and interface declarations (unlike
@@ -167,8 +171,8 @@ export interface RelayBackendCapabilities {
  * The subset of a relay backend's account client that today's real callers
  * use: ipc.ts's account:* handlers, chat-credential-coordinator.ts (the
  * canvas's key resolution, which happens in the main process -- the canvas
- * renderer never holds a key, see AGENTS.md's I15), and main.ts's startup
- * flow (restoreAccountSessionOnStartup in account-session-store.ts). Each
+ * renderer never holds a key, see AGENTS.md's I15), and the saved-login
+ * restore main.ts wires into realm-account-service.ts. Each
  * method below notes its consumer(s); see
  * new-api-client.ts's NewApiClientService for the full per-method
  * implementation contract (request/response shape, error semantics) -- kept
@@ -273,7 +277,10 @@ export interface RelayBackendClient {
   revokeOtherLoginSessions(): Promise<NewApiRevokeOtherLoginSessionsResult>
   /** ipc.ts: account:provision-cli-key; chat-credential-coordinator.ts (mints the canvas's per-group key) */
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
-  /** main.ts's startup flow, via account-session-store.ts's restoreAccountSessionOnStartup */
+  /**
+   * main.ts's xm handle for realm-account-service.ts (startup restoreActive, saved-account switching).
+   * sub2api-relay-backend.ts restores through its own handle and leaves this unsupported.
+   */
   restoreSession(persisted: NewApiPersistableSession): Promise<boolean>
   /** Main-process-only saved-account switching; credentials must never cross IPC. */
   switchSession?(persisted: NewApiPersistableSession): Promise<boolean>

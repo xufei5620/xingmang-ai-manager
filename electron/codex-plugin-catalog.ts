@@ -307,17 +307,35 @@ function assertCatalogUrl(url: string): void {
   }
 }
 
-/** 只跟 codeload.github.com 自己的跳转，带着任何东西跳去别的主机都拒绝。 */
+/** 片段不会发给服务器，响应自带的地址也不含它；去掉再比，免得同一个地址认成两个。 */
+function catalogRequestUrl(url: string, base?: string): string {
+  const parsed = new URL(url, base)
+  parsed.hash = ''
+  return parsed.href
+}
+
+/**
+ * 只跟 codeload.github.com 自己的跳转，带着任何东西跳去别的主机都拒绝。走过的地址记下来，
+ * 绕回去就停；响应带着地址时必须正是这一跳请求的那个，和 Node 运行时、macOS 安装器那几份一样。
+ */
 async function fetchCatalogArchive(fetchImplementation: typeof fetch, signal: AbortSignal): Promise<Buffer> {
   let current = CODEX_PLUGIN_CATALOG_URL
+  const visited = new Set<string>()
   for (let redirects = 0; ; redirects += 1) {
     assertCatalogUrl(current)
+    if (visited.has(current)) throw new Error('插件目录下载发生了循环跳转')
+    visited.add(current)
     const response = await fetchImplementation(current, { redirect: 'manual', signal })
+    // A fetch that followed redirects on its own would hide where the bytes came from.
+    if (response.url && catalogRequestUrl(response.url) !== current) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new Error('插件目录下载绕过了受限的跳转策略')
+    }
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel().catch(() => undefined)
       const location = response.headers.get('location')
       if (!location || redirects >= maximumCatalogRedirects) throw new Error(codexPluginCatalogNetworkMessage)
-      current = new URL(location, current).href
+      current = catalogRequestUrl(location, current)
       continue
     }
     if (!response.ok) {

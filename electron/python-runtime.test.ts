@@ -195,6 +195,37 @@ describe.runIf(process.platform === 'win32')('Python 3.12 installation flow', ()
     expect(runProcess).toHaveBeenCalledTimes(3)
   })
 
+  it('stops reading python.org release metadata once it crosses the size limit', async () => {
+    // 64 MB with no Content-Length: the old reader buffered all of it before
+    // it looked at the size.
+    let pulledChunks = 0
+    let cancelled = false
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) => response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledChunks += 1
+        controller.enqueue(new Uint8Array(256 * 1024))
+        if (pulledChunks === 256) controller.close()
+      },
+      cancel() {
+        cancelled = true
+      },
+    }), String(input)))
+
+    await expect(installPythonRuntime({
+      preferWinget: false,
+      dependencies: {
+        fetch: fetchMock,
+        runProcess: async (plan) => commandResult(plan.executable, plan.argv),
+        inspectInstalledPythonRuntime: async () => installedInspection(),
+        createTemporaryDirectory: async () => 'C:/Temp/unused',
+        removeTemporaryDirectory: async () => undefined,
+      },
+    })).rejects.toThrow('Python 发布信息响应过大')
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(cancelled).toBe(true)
+    expect(pulledChunks).toBeLessThan(8)
+  })
+
   it('continues a dropped python.org download on the same official address', async () => {
     const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-python-test-'))
     temporaryDirectories.push(directory)
