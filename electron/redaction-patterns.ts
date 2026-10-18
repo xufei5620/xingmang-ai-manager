@@ -54,7 +54,10 @@ const CREDENTIAL_FLAG_IN_TEXT = new RegExp(
 /**
  * Values recognised by the name in front of them. `api[_-]?key` also covers the
  * `x-api-key` and `x-goog-api-key` request headers, since the rule is not
- * anchored at the start of the name.
+ * anchored at the start of the name. `cookie` and `credential` are the two
+ * names the crash reporter already hid while the runtime log and the feedback
+ * export kept them (#1073): a session cookie is a login, whatever text it is
+ * printed in.
  */
 export function redactSecretFields(value: string): string {
   return value
@@ -68,14 +71,19 @@ export function redactSecretFields(value: string): string {
     // `Basic` credential (base64 of user:password) readable. A `Bearer` value
     // the shape rules already turned into `[REDACTED]` cannot match again.
     .replace(/(authorization\s*[:=]\s*)[A-Za-z][A-Za-z0-9-]*\s+[A-Za-z0-9._~+/=-]{6,}/gi, `$1${REDACTED}`)
+    // A Cookie header joins its pairs with `; `, where the unquoted rule below
+    // stops, so `Cookie: session=…; refresh=…` would lose only its first pair.
+    // Only `name=value` segments are taken, which leaves `Set-Cookie` flags such
+    // as `HttpOnly` and the rest of a sentence readable.
+    .replace(/(cookies?\s*[:=]\s*)[^\s,;"']+(?:;\s*[^\s,;"'=]+=[^\s,;"']*)+/gi, `$1${REDACTED}`)
     // The quoted spellings need their own rules: in `{"access_token":"…"}` the
     // unquoted rule can never match, because `\s*` does not cross the quote
     // that closes the key name, so any CLI writing JSON to stderr leaked its
     // secrets verbatim into the runtime log and the feedback export. Redacting
     // between the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, `$1"${REDACTED}"`)
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, `$1'${REDACTED}'`)
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, `$1${REDACTED}`)
+    .replace(/((?:api[_-]?key|authorization|token|secret|password|cookies?|credentials?)"\s*[:=]\s*)"[^"]*"/gi, `$1"${REDACTED}"`)
+    .replace(/((?:api[_-]?key|authorization|token|secret|password|cookies?|credentials?)'\s*[:=]\s*)'[^']*'/gi, `$1'${REDACTED}'`)
+    .replace(/((?:api[_-]?key|authorization|token|secret|password|cookies?|credentials?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, `$1${REDACTED}`)
 }
 
 /**
