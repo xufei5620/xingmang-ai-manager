@@ -18,7 +18,7 @@ import {
   type InstallCancellationHandle, type InstallCancellationOutcome,
 } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
-import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv, darwinGatekeeperAssessmentTimeoutMs } from './macos-code-signing'
 import { installMacosDesktopApp, macosDesktopAppInstallable } from './macos-desktop-app-installer'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { sameLocalPathIdentity } from './path-identity'
@@ -754,8 +754,10 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             try {
               // LaunchServices performs the launch as the current user. Gatekeeper
               // checks the entire application; no guessed Team ID is used as proof.
-              await execute({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', canonical] }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
-              if (tool === 'workbuddy') await execute({ executable: '/usr/bin/codesign', argv: darwinDeveloperIdVerificationArgv('FN2V63AD2J', canonical, { deep: true, bundleIdentifier: definition.bundleId }) }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
+              // Both walk the whole bundle, so they get the installer's budgets: a
+              // slow Mac can take longer than the 20s they used to get (macos-code-signing.ts).
+              await execute({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', canonical] }, { ...systemOptions(), trustedOnly: false, timeoutMs: darwinGatekeeperAssessmentTimeoutMs })
+              if (tool === 'workbuddy') await execute({ executable: '/usr/bin/codesign', argv: darwinDeveloperIdVerificationArgv('FN2V63AD2J', canonical, { deep: true, bundleIdentifier: definition.bundleId }) }, { ...systemOptions(), trustedOnly: false, timeoutMs: darwinDeepVerificationTimeoutMs })
             } catch (error) {
               // 现验没过就忘掉上次那份：不然下一次展示用的检测会拿旧的「通过」把它报成好的。
               verifiedBundles.delete(canonical)
