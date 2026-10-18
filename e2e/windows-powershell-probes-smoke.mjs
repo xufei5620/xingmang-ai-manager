@@ -694,17 +694,21 @@ try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catc
 // except that its Start-Process starts a hidden, waited-for cmd.exe in place of
 // the terminal, so the runner keeps no window; cmd records where it was started.
 // Unescaped, the same broker must still fail: that is the premise of the
-// escaping, and the failure is the one the customer's error dialog quotes, so it
-// must come back as the cause alone, in plain text that reads back as UTF-8.
+// escaping, and the failure is the one the customer's error dialog quotes (on a Chinese
+// Windows) and the log keeps, so it must come back as the cause alone, in plain
+// text that reads back as UTF-8.
 // Both shells the app may pick are tried.
 const {
   buildCliLaunchPlan,
+  buildWindowsCliLaunchOutput,
   decodeWindowsPowerShellCommand,
   describeWindowsCliLaunchError,
   parseStartedWindowsProcessId,
+  parseWindowsCliLaunchCause,
   powerShellLiteral,
   windowsPowerShellCandidates,
 } = compiled('windows-elevation')
+const { isChineseSentence } = compiled('chinese-sentence')
 const launchBrokerMarker = path.join(scratch, 'launch-broker-cwd.txt')
 
 function withLaunchedCmd(broker) {
@@ -757,10 +761,18 @@ checks.push(['the CLI launch broker opens a folder whose name has brackets, and 
     assert.ok(!unescaped.stderr.includes('<S S="Error">'), `${name} reported the failure itself: ${unescaped.stderr}`)
     assert.match(unescaped.stderr, /wildcard|通配符/i, `${name}: ${unescaped.stderr}`)
     assert.ok(unescaped.stderr.includes('作'), `${name} did not report the folder's name as UTF-8: ${unescaped.stderr}`)
-    // What the error dialog would say, given what execFileAsync hands launchCliPowerShell.
-    const dialog = describeWindowsCliLaunchError(Object.assign(unescaped.error, { stdout: unescaped.stdout, stderr: unescaped.stderr }))
-    assert.ok(dialog.startsWith('Windows 无法启动 PowerShell：') && dialog.includes('作业'), `${name}: ${dialog}`)
+    // What the error dialog would say, given what execFileAsync hands launchCliPowerShell. The
+    // cause is quoted only when PowerShell said it in Chinese; an English runner's stays in the
+    // log with the rest of the output (#1100 第1、4条).
+    const failure = Object.assign(unescaped.error, { stdout: unescaped.stdout, stderr: unescaped.stderr })
+    const dialog = describeWindowsCliLaunchError(failure)
+    if (isChineseSentence(parseWindowsCliLaunchCause(unescaped.stderr) ?? '')) {
+      assert.ok(dialog.startsWith('Windows 无法启动 PowerShell：') && dialog.includes('作业'), `${name}: ${dialog}`)
+    } else {
+      assert.equal(dialog, 'Windows 没能启动 PowerShell，原因已经记进运行日志。', `${name}: ${dialog}`)
+    }
     assert.doesNotMatch(dialog, /Command failed|EncodedCommand|CLIXML|<S /, `${name}: ${dialog}`)
+    assert.ok(buildWindowsCliLaunchOutput(failure).stderr?.includes('作'), `${name}: the log lost the folder's name: ${unescaped.stderr}`)
 
     // Printed only: whether this runner would garble the same cause without the switch.
     const withoutSwitch = await runLaunchBroker(shell, unescapedBroker.slice(unescapedBroker.indexOf('Import-Module')), folder)
