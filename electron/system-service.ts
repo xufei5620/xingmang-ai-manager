@@ -138,6 +138,7 @@ import {
 } from './project-instructions'
 import { classifyWorkspace, resolveRememberedWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import {
+  claudePlatformSwitches,
   describeOverride,
   inspectWorkspaceConfigOverrides,
   launchOverrideNotice,
@@ -1820,6 +1821,7 @@ export function describeNpmCommandFailure(error: unknown): string {
  *   下一个源写的还是那个目录，开着的工具也还开着。
  * 写进暂存目录（管理员身份、macOS、Linux）时撞上的占用不算：开着的工具用的是正在用的那份，
  * 不是这份；每个源都新建一份暂存目录，换个源照旧可能就过去了。
+ * 先把正在用的工具目录复制进暂存目录的那一步不用这里判：它跟源无关，安装流程见它失败就停（#1157 第 14 条）。
  */
 export function isMachineBoundNpmFailure(detail: string, writingFolderInUse: boolean): boolean {
   if (/\bENOSPC\b/.test(detail)) return true
@@ -2888,11 +2890,20 @@ export function providerCommandEnvironment(
  *   一个字不动，所以 Windows、Linux 和 Mac 一样不带，不再只靠检查页提示。
  * - 选型号的那几个：客户自己设的 ANTHROPIC_MODEL 这类会让 Claude Code 去要当前账号没有的型号；接账号时
  *   settings.json 里的同名项已经挪开（config-files.ts 的 claudeForeignModelEnvKeys），环境里的这里一并不带。
+ * - 改走云厂商的那几个开关（workspace-config-overrides.ts 的 claudePlatformSwitches，#1157 第 11 条）：
+ *   CLAUDE_CODE_USE_BEDROCK 这类一打开，Claude Code 连地址带登录都换成云厂商的，星芒写的 settings.json
+ *   里没有同名项，盖不住它。客户给自己终端里的 Claude Code 用 Bedrock、Vertex 照旧，这里只是这一次不带。
+ *   settings.json 里客户自己写的同名项不挪（那是他设的值，挪不挪要 yoyo 定）。
  * 用自己的 Claude 账号时照旧都带：这些可能就是客户自己的 Key、登录和型号（切回官方账号时星芒也把他原来的
  * ANTHROPIC_API_KEY 放回 settings.json）。ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的
  * env 段，不在里面。
  */
-const claudeRelayLaunchExcludedVariables: readonly string[] = ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys]
+const claudeRelayLaunchExcludedVariables: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CONFIG_DIR',
+  ...claudeForeignModelEnvKeys,
+  ...claudePlatformSwitches,
+]
 
 export function launchExcludedEnvironmentVariables(provider: ProviderId, accountMode: ProviderAccountMode): readonly string[] {
   return provider === 'claude' && accountMode === 'relay' ? claudeRelayLaunchExcludedVariables : []
@@ -2909,7 +2920,7 @@ export function withoutEnvironmentVariables(env: NodeJS.ProcessEnv, names: reado
  * 的变量一路带给工具；星芒是从访达打开的，自己的环境里看不到它们，上面那步管不到（已知45，同第三十四批 B）。
  * 启动脚本先把这里列的 unset 掉，再写星芒自己的值。三个平台都不带的（launchExcludedEnvironmentVariables）
  * 都在里面，另加 Mac 才要的：
- * - Claude Code：没有另加的，Key、配置目录和选型号的那几个三个平台一样，只在用星芒账号时去掉。
+ * - Claude Code：没有另加的，Key、配置目录、选型号和改走云厂商的那几个三个平台一样，只在用星芒账号时去掉。
  * - Gemini CLI：同 Windows、Linux 上的 providerCommandEnvironment，星芒管的这五个不论哪种账号都不用客户 shell
  *   里的，要给的值启动时另给。
  * - Codex：CODEX_HOME 星芒每次都自己写，OPENAI_* 盖不过 config.toml。Grok 没实测过，不猜。
@@ -5220,6 +5231,8 @@ export function createSystemService(
         const attemptRoot = path.join(transaction, `attempt-${index}`)
         // 正在往正在用的工具目录里写；这一步失败时它还是 true（见 isMachineBoundNpmFailure）。
         let writingFolderInUse = false
+        // 正在把正在用的工具目录复制进暂存目录；这一步失败时它还是 true。
+        let copyingFolderInUse = false
         try {
           const resolution = path.join(attemptRoot, 'resolution')
           const cache = path.join(attemptRoot, 'cache')
@@ -5302,11 +5315,13 @@ export function createSystemService(
             )
           }
           if (managedNpmLayout && attemptPrefix) {
+            copyingFolderInUse = true
             await fs.promises.cp(managedNpmLayout.prefix, attemptPrefix, {
               recursive: true,
               force: false,
               errorOnExist: true,
             })
+            copyingFolderInUse = false
           }
           const plan = buildCliMaintenancePlan(
             provider,
@@ -5392,13 +5407,15 @@ export function createSystemService(
           // 这个源下了一半的东西先删掉再换源：下载最长能等 30 分钟，留到整次安装结束才删，
           // 盘快满时下一个源更容易写不下。删不掉就算了，结束时 finally 还会整个再删一次。
           await fs.promises.rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined)
-          if (isMachineBoundNpmFailure(detail, writingFolderInUse)) {
+          // 复制正在用的工具目录这一步跟从哪个源下的无关，换个源下完还是复制同一份、撞上同一个错（多半是
+          // 没有权限读，#1157 第 14 条），所以这一步怎么失败的都不换源。
+          if (copyingFolderInUse || isMachineBoundNpmFailure(detail, writingFolderInUse)) {
             runtimeLog?.log(
               'warn',
               'install',
               'cli.install.machine-bound-failure',
               `${definition.name} 写不进本机（盘满、文件被占用或没有权限），换 npm 源也一样，不再换源`,
-              { provider, registry, writingFolderInUse },
+              { provider, registry, writingFolderInUse, copyingFolderInUse },
             )
             break
           }

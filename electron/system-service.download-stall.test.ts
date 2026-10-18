@@ -642,4 +642,28 @@ describe('a CLI install that fails while writing the staged folder', () => {
     expect(fixture.downloads.map((attempt) => attempt.registry)).toEqual([officialRegistry, mirrorRegistry])
     expect(fixture.offlineInstalls).toHaveLength(2)
   })
+
+  // #1157 第 14 条：复制的是正在用的那份，跟从哪个源下的无关，换个源下完还是撞上同一个错。
+  it.runIf(process.platform !== 'win32')('stops at the first registry when the folder in use cannot be copied into the staged folder', async () => {
+    const fixture = createDownloadFixture('succeed')
+    const copy = vi.spyOn(fs.promises, 'cp').mockRejectedValue(
+      Object.assign(new Error("EACCES: permission denied, opendir '/opt/xingmang/npm/lib'"), { code: 'EACCES' }),
+    )
+
+    const error = await fixture.service.installCli('claude', fixture.target).catch((failure: unknown) => failure)
+
+    expect(copy).toHaveBeenCalledOnce()
+    expect(fixture.downloads.map((attempt) => attempt.registry)).toEqual([officialRegistry])
+    expect(fixture.offlineInstalls).toEqual([])
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('EACCES')
+    expect(classifyOperationError((error as Error).message)).toBe('permission')
+    expect(fixture.runtimeLog.log).toHaveBeenCalledWith(
+      'warn',
+      'install',
+      'cli.install.machine-bound-failure',
+      expect.any(String),
+      { provider: 'claude', registry: officialRegistry, writingFolderInUse: false, copyingFolderInUse: true },
+    )
+  })
 })

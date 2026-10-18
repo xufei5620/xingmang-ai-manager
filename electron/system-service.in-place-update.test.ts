@@ -430,7 +430,7 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
       'install',
       'cli.install.machine-bound-failure',
       expect.any(String),
-      { provider: 'codex', registry: officialRegistry, writingFolderInUse: true },
+      { provider: 'codex', registry: officialRegistry, writingFolderInUse: true, copyingFolderInUse: false },
     )
   })
 
@@ -468,7 +468,7 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
       'install',
       'cli.install.machine-bound-failure',
       expect.any(String),
-      { provider: 'codex', registry: officialRegistry, writingFolderInUse: false },
+      { provider: 'codex', registry: officialRegistry, writingFolderInUse: false, copyingFolderInUse: false },
     )
   })
 

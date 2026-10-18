@@ -10,6 +10,7 @@ import { createRelayEndpointRoutingSnapshot, relaySiteProviderBaseUrlVariants, r
 import {
   clockSkewMs,
   buildWindowsArmSummary,
+  clearableEnvironmentOverrides,
   clockSyncGuidance,
   createDiagnosticsExport,
   describeRelayRouteChange,
@@ -39,6 +40,7 @@ import {
 import type { NodeTlsOutcome } from './certificate-trust-probe'
 import { readProjectInstructionsTemplate } from './project-instructions'
 import { launchExcludedEnvironmentVariables, macosShellOverrideVariables } from './system-service'
+import { claudePlatformSwitches } from './workspace-config-overrides'
 
 const temporaryDirectories: string[] = []
 
@@ -1411,6 +1413,40 @@ describe('diagnostics', () => {
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
     })
 
+    // #1157 第 11 条：这几个开关一打开，Claude Code 改走云厂商；设成 0、false 的等于没设。
+    it('treats a switch that sends Claude Code to a cloud provider as a finding, but not one that is off', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = { CLAUDE_CODE_USE_BEDROCK: '1' }
+
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'fail',
+        summary: '电脑里另外设了 CLAUDE_CODE_USE_BEDROCK，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
+        details: { count: 1, variable1: 'CLAUDE_CODE_USE_BEDROCK（Claude Code，会绕开当前账号）' },
+      })
+
+      input.env = { CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false', CLAUDE_CODE_USE_FOUNDRY: '' }
+      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
+        state: 'pass',
+        summary: '没有另外设过工具地址或密钥',
+        details: { count: 0 },
+      })
+    })
+
+    // 设它的人多半自己在终端里用 Bedrock、Vertex；从星芒打开时已经不带了，删不删得他自己定。
+    it('does not offer to clear a cloud provider switch on Windows', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.platform = 'win32'
+      input.env = { CLAUDE_CODE_USE_VERTEX: 'true' }
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item?.state).toBe('fail')
+      expect(item?.details?.fix).toBeUndefined()
+      expect(clearableEnvironmentOverrides(input.env, [], home)).toEqual([])
+    })
+
     // Mac 上这些多半写在 ~/.zshrc 里，检查页看不见，靠启动脚本在用星芒账号时去掉（已知45）。
     // 以后哪个变量实测改成会绕开当前账号，那边的名单得一起加上。
     it('leaves every variable that takes a CLI off the current account to the macOS launcher to drop', async () => {
@@ -1533,11 +1569,22 @@ describe('diagnostics', () => {
 
         const details = overrideItem(await runDiagnostics(macosInput(home)))?.details
 
-        expect(details).toMatchObject({ count: 2 })
+        expect(details).toMatchObject({ count: 7 })
         expect(Object.entries(details ?? {}).filter(([key]) => key.startsWith('variable')).map(([, label]) => label)).toEqual([
           'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
           'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.zshrc）',
+          ...claudePlatformSwitches.map((name) => `${name}（Claude Code，在 ~/.zshrc）`),
         ])
+      })
+
+      it.runIf(posixHost)('names a cloud provider switch the shell settings turn on, and skips one turned off', async () => {
+        const home = realHome()
+        writeShellSettings(home, '.zshrc', 'export CLAUDE_CODE_USE_BEDROCK=1\nexport CLAUDE_CODE_USE_VERTEX=0\n')
+
+        expect(overrideItem(await runDiagnostics(macosInput(home)))).toMatchObject({
+          state: 'warn',
+          details: { count: 1, variable1: 'CLAUDE_CODE_USE_BEDROCK（Claude Code，在 ~/.zshrc）' },
+        })
       })
 
       it.runIf(posixHost)('leaves the shell settings alone on Windows and Linux', async () => {
@@ -1684,8 +1731,8 @@ describe('diagnostics', () => {
             checked.push(`${name} ${mode}`)
           }
         }
-        // ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR 各三种账号。
-        expect(checked).toHaveLength(6)
+        // ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR 和改走云厂商的五个开关，各三种账号。
+        expect(checked).toHaveLength(21)
       })
     })
 

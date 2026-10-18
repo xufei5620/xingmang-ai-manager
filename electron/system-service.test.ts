@@ -23,6 +23,7 @@ import {
   type runCommand as productionRunCommand,
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
+import { claudePlatformSwitches } from './workspace-config-overrides'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import {
   claudeForeignModelEnvKeys,
@@ -4936,9 +4937,12 @@ describe('Darwin CLI launch planning', () => {
 describe('variables kept from tools opened on every platform', () => {
   // #1081：Key 和配置目录这两个原来只有 Mac 的启动脚本去掉，现在三个平台一样。
   it('keeps the key, config folder and model choices from Claude Code only while it is on the Xingmang account', () => {
-    expect(launchExcludedEnvironmentVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
     expect(launchExcludedEnvironmentVariables('claude', 'relay'))
       .toEqual(expect.arrayContaining(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']))
+    // #1157 第 11 条：改走云厂商的开关打开后，星芒写的地址和 Key 都用不上。
+    expect(launchExcludedEnvironmentVariables('claude', 'relay'))
+      .toEqual(expect.arrayContaining(['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']))
     // ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，照旧带。
     expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_BASE_URL')
     expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_AUTH_TOKEN')
@@ -4967,7 +4971,7 @@ describe('variables kept from tools opened on every platform', () => {
 describe('login-shell variables kept from tools opened on macOS', () => {
   // 前两个是检查页实测会绕开当前账号的；ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，不在里面。
   it('drops the Claude Code key, config folder and model choices only while Claude Code is on the Xingmang account', () => {
-    expect(macosShellOverrideVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+    expect(macosShellOverrideVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
     // 用自己的 Claude 账号时，这些可能就是客户自己的 Key、登录和型号。
     expect(macosShellOverrideVariables('claude', 'official')).toEqual([])
   })
@@ -6893,6 +6897,7 @@ describe('opening a CLI on Linux', () => {
     vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', 'deepseek-chat')
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-other-relay')
     vi.stubEnv('CLAUDE_CONFIG_DIR', '/home/tester/.claude-other')
+    vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1')
     const { userHome, workspace } = project('xingmang-linux-open-models-')
     const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
       terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
@@ -6906,7 +6911,8 @@ describe('opening a CLI on Linux', () => {
     expect(plan?.env).not.toHaveProperty('CLAUDE_CODE_SUBAGENT_MODEL')
     expect(plan?.env).not.toHaveProperty('ANTHROPIC_API_KEY')
     expect(plan?.env).not.toHaveProperty('CLAUDE_CONFIG_DIR')
-    expect(plan?.clearedEnvironmentKeys).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+    expect(plan?.env).not.toHaveProperty('CLAUDE_CODE_USE_BEDROCK')
+    expect(plan?.clearedEnvironmentKeys).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
   })
 
   it.runIf(process.platform !== 'win32')('hands the key, config folder and model choices over as before while Claude Code is on the customer’s own account', async () => {
@@ -7063,7 +7069,7 @@ describe('opening a CLI on macOS', () => {
 
     expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
     expect(launchMacosTerminal.mock.calls[0]?.[0].clearedEnvironmentKeys)
-      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
   })
 
   it.runIf(process.platform !== 'win32')('leaves the login shell alone while Claude Code is on the customer’s own account', async () => {

@@ -86,9 +86,11 @@ import {
   type WindowsElevationCapability,
 } from './windows-elevation'
 import {
+  claudePlatformSwitches,
   describeOverride,
   inspectWorkspaceConfigOverrides,
   summarizeWorkspaceOverrides,
+  truthySwitch,
 } from './workspace-config-overrides'
 
 export type DiagnosticState = 'pass' | 'warn' | 'fail' | 'error'
@@ -1054,7 +1056,8 @@ export function withAppProxyRoute(
   }
 }
 
-type EnvironmentOverrideKind = 'baseUrl' | 'secret' | 'directory' | 'model' | 'other'
+/** switch：开关，设成 0、false 这类的等于没设（同 workspace-config-overrides.ts 的 truthySwitch）。 */
+type EnvironmentOverrideKind = 'baseUrl' | 'secret' | 'directory' | 'model' | 'switch' | 'other'
 
 interface EnvironmentOverrideVariable {
   name: string
@@ -1098,6 +1101,9 @@ interface EnvironmentOverrideMatch {
  *   ANTHROPIC_API_KEY 会多带一个 `x-api-key` 头，而 new-api 在 /v1/messages 上拿
  *   它顶掉 Authorization（middleware/auth.go），等于换了一把 Key。
  *   CLAUDE_CONFIG_DIR 让 Claude 去别的目录找配置，本程序写的 ~/.claude 整个不读。
+ *   CLAUDE_CODE_USE_BEDROCK 这几个开关（claudePlatformSwitches）打开后它改走云厂商，地址和登录都不是当前
+ *   账号的。实测的是写在项目设置文件 env 段里的（workspace-config-overrides.ts），进程环境里没单独测，
+ *   按同理算（#1157 第 11 条）：星芒写的 settings.json 里没有同名项，盖不住它。
  * - Codex：自定义 model provider 不认 OPENAI_BASE_URL / OPENAI_API_KEY（设了照旧打
  *   config.toml 里的地址、带 auth.json 的 Key）。CODEX_HOME 本程序自己也认
  *   （codex-home.ts），配置就写在它指的地方，所以也不算。
@@ -1108,8 +1114,8 @@ interface EnvironmentOverrideMatch {
  *
  * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
  * （system-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
- * （diagnostics.test.ts 钉着），其中 Claude 的两个只在用星芒账号时去掉。Windows、Linux 上从星芒打开时
- * Claude 的这两个同样不带（launchExcludedEnvironmentVariables，#1081）。检查页在 Mac 上另去读那几个终端
+ * （diagnostics.test.ts 钉着），其中 Claude 的那几个只在用星芒账号时去掉。Windows、Linux 上从星芒打开时
+ * Claude 的这几个同样不带（launchExcludedEnvironmentVariables，#1081）。检查页在 Mac 上另去读那几个终端
  * 设置文件，只找 breaksAccount 的那几个（collectMacosShellOverrides）。
  * 改这里的取值时那边一起看。
  */
@@ -1118,6 +1124,7 @@ const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
   { name: 'ANTHROPIC_AUTH_TOKEN', provider: 'claude', kind: 'secret', breaksAccount: false },
   { name: 'ANTHROPIC_API_KEY', provider: 'claude', kind: 'secret', breaksAccount: true },
   { name: 'CLAUDE_CONFIG_DIR', provider: 'claude', kind: 'directory', breaksAccount: true },
+  ...claudePlatformSwitches.map((name): EnvironmentOverrideVariable => ({ name, provider: 'claude', kind: 'switch', breaksAccount: true })),
   { name: 'OPENAI_BASE_URL', provider: 'codex', kind: 'baseUrl', breaksAccount: false },
   { name: 'OPENAI_API_KEY', provider: 'codex', kind: 'secret', breaksAccount: false },
   { name: 'CODEX_HOME', provider: 'codex', kind: 'directory', breaksAccount: false },
@@ -1168,6 +1175,7 @@ function collectEnvironmentOverrides(
   for (const variable of ENVIRONMENT_OVERRIDE_VARIABLES) {
     const value = environmentValueFor(env, variable.name)
     if (!value) continue
+    if (variable.kind === 'switch' && !truthySwitch(value)) continue
     // CODEX_HOME 是本程序自己解析出来再注入进 codexEnv 的（codex-home.ts），所以
     // 诊断拿到的 env 里它永远有值。指到默认位置就是本程序自己写的那份，报它等于
     // 每次检查都给一条假警报；只有指到别处才是用户真的改过。
@@ -1253,6 +1261,7 @@ function overridesFromShellSettings(
 ): boolean {
   if (value === null) return true
   if (value === '') return false
+  if (variable.kind === 'switch') return truthySwitch(value)
   if (variable.kind === 'directory') return !isProviderConfigDirectory(variable.provider, value, userHome)
   if (variable.kind === 'baseUrl') return !accountBaseUrls.some((urls) => sameHostAs(value, urls[variable.provider]))
   return true
@@ -1313,6 +1322,8 @@ function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySe
  * 检查页「删掉这几项设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
  * 指向别的文件夹的那两个（CLAUDE_CONFIG_DIR、CODEX_HOME）不删：它们指着用户自己的
  * 一整份配置，删了等于把他原来的设置、记录换了个地方，这个得他自己决定。
+ * 改走云厂商的开关也不删：设它的人多半自己在终端里用 Bedrock、Vertex，从星芒打开时已经不带了
+ * （#1157 第 11 条），删掉会让他自己那套用不了，同样得他自己决定。
  */
 export function clearableEnvironmentOverrides(
   env: NodeJS.ProcessEnv,
@@ -1320,7 +1331,7 @@ export function clearableEnvironmentOverrides(
   userHome: string,
 ): string[] {
   return collectEnvironmentOverrides(env, accountBaseUrls, userHome)
-    .filter((match) => match.overriding && match.kind !== 'directory')
+    .filter((match) => match.overriding && match.kind !== 'directory' && match.kind !== 'switch')
     .map((match) => match.name)
 }
 
