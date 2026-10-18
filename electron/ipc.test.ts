@@ -3164,7 +3164,8 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get('config:configure-external-tool')!
     const result = await handler(trustedEvent(), 'opencode', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', protocol: 'responses', baseUrl: 'https://attacker.invalid', apiKey: 'sk-injected' })
     expect(result).toEqual(safeResult)
-    expect(service.configureExternalTool).toHaveBeenCalledWith('opencode', { apiKey: 'sk-known-secret-value', model: 'fixture-model', protocol: 'responses' }, expect.any(Function))
+    // 来源也交下去记着：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
+    expect(service.configureExternalTool).toHaveBeenCalledWith('opencode', { apiKey: 'sk-known-secret-value', model: 'fixture-model', protocol: 'responses' }, expect.any(Function), 'configured')
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('sk-known-secret-value')
     expect(JSON.stringify(result)).not.toContain('sk-known-secret-value')
     expect(() => handler(trustedEvent('https://untrusted.example/'), 'opencode', {})).toThrow('已拒绝')

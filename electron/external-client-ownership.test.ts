@@ -113,6 +113,53 @@ describe('external client configuration ownership', () => {
     expect(fs.readdirSync(f.root)).toEqual([])
   })
 
+  it('remembers where the key came from and keeps it when the same configuration moves (#1113)', async () => {
+    const f = fixture()
+    await f.store.write('claudeDesktop', owner, endpoint, apiKey, 'manual')
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, apiKey)).toEqual({ source: 'manual' })
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, 'sk-another-key')).toBeNull()
+    await f.store.rewrite('claudeDesktop', owner, 'https://xm-direct.solov.cc/v1', apiKey)
+    expect(f.store.matches('claudeDesktop', owner, endpoint, apiKey)).toBe(false)
+    expect(f.store.inspect('claudeDesktop', owner, 'https://xm-direct.solov.cc/v1', apiKey)).toEqual({ source: 'manual' })
+    expect(fs.readFileSync(f.recordPath(), 'utf8')).not.toContain(apiKey)
+
+    // 0.2.20 以前写的没记来源：认得出归属，来源是空的。
+    await f.store.write('claudeDesktop', owner, endpoint, apiKey)
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, apiKey)).toEqual({})
+    await f.store.rewrite('claudeDesktop', owner, endpoint, 'sk-rotated-test-secret')
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, 'sk-rotated-test-secret')).toEqual({})
+  })
+
+  it('accepts both keys while a key change is staged and only the new one once it is recorded', async () => {
+    const f = fixture()
+    const nextKey = 'sk-rotated-test-secret'
+    await f.store.write('claudeDesktop', owner, endpoint, apiKey, 'configured')
+    await f.store.stageKey('claudeDesktop', owner, endpoint, apiKey, nextKey)
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, apiKey)).toEqual({ source: 'configured' })
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, nextKey)).toEqual({ source: 'configured' })
+    expect(fs.readFileSync(f.recordPath(), 'utf8')).not.toContain(nextKey)
+    await f.store.rewrite('claudeDesktop', owner, endpoint, nextKey)
+    expect(f.store.matches('claudeDesktop', owner, endpoint, apiKey)).toBe(false)
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, nextKey)).toEqual({ source: 'configured' })
+  })
+
+  it('refuses to stage a key change for a configuration it does not own', async () => {
+    const f = fixture()
+    await f.store.write('claudeDesktop', owner, endpoint, apiKey)
+    const before = fs.readFileSync(f.recordPath(), 'utf8')
+    await expect(f.store.stageKey('claudeDesktop', owner, endpoint, 'sk-hand-edited', 'sk-next')).rejects.toThrow('归属已变化')
+    await expect(f.store.stageKey('claudeDesktop', 'solov:100000008', endpoint, apiKey, 'sk-next')).rejects.toThrow('归属已变化')
+    expect(fs.readFileSync(f.recordPath(), 'utf8')).toBe(before)
+  })
+
+  it('ignores an unknown recorded source without disowning the configuration', async () => {
+    const f = fixture()
+    await f.store.write('claudeDesktop', owner, endpoint, apiKey, 'manual')
+    const record = JSON.parse(fs.readFileSync(f.recordPath(), 'utf8'))
+    fs.writeFileSync(f.recordPath(), JSON.stringify({ ...record, source: 'robot' }), 'utf8')
+    expect(f.store.inspect('claudeDesktop', owner, endpoint, apiKey)).toEqual({})
+  })
+
   it('refuses hard-linked ownership records for reads and writes', async () => {
     const f = fixture()
     await f.store.write('workbuddy', owner, endpoint, apiKey)

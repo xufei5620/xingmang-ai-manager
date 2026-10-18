@@ -2297,7 +2297,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       apiKey = service.revealApiKey(provider, options.previewOnboarding)
     } else apiKey = parsed.credential.apiKey
     assertCurrent()
-    return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
+    // 记下这把是从哪来的：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
+    return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent, parsed.credential.kind)
   })
   registerTrustedHandler('external-clients:scan', async (_event, force: unknown, input: unknown) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')

@@ -201,7 +201,7 @@ import {
 import { inspectCcSwitchInstalled, resolveCcSwitchLeftover, type CcSwitchLeftover } from './cc-switch-leftover'
 import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership, type ToolTemplateFillResult } from './tool-config-ownership'
 import { isReplacedManagedKey, type StoredManagedCliKey } from './managed-cli-key-store'
-import { ExternalClientOwnershipStore } from './external-client-ownership'
+import { ExternalClientOwnershipStore, type ExternalClientKeySource } from './external-client-ownership'
 import {
   assertTrustedElevatedCliCommand,
   launchCliPowerShell,
@@ -1153,7 +1153,7 @@ export interface SystemService {
   disposeToolRoutes?(): void
   /** routed：星芒自己用的（AI 工作区），「自动」时直连没走通当场改走默认线路；缺省查的是工具会用的那条线路。 */
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean; routed?: boolean }): Promise<string[]>
-  configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
+  configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void, keySource?: ExternalClientKeySource): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
   /**
    * 本次启动还没真检测过客户端时，给出上次落盘的结果（每条带 `cachedAt`）；检测过了、或没有可用的
@@ -2721,6 +2721,11 @@ export interface SystemServiceOptions {
   /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
   getExternalClientAccountId?: () => string | null
   /**
+   * 当前账号的托管 Key 缓存（managed-cli-key-store.ts），读出来带着每家被换掉的那几把的指纹。Claude Desktop
+   * 跟着 Claude Code 换 Key 要用（#1113）；明文只在主进程里用，永不跨 IPC（I3）。缺省 = 不跟着换。
+   */
+  readCurrentManagedCliKeys?: () => Promise<readonly StoredManagedCliKey[]>
+  /**
    * R6：换线路时工具配置怎么改。缺省 targeted = 主进程定点只改地址；merge = 退回整份写入的老路
    * （渲染层照旧跑同步 Key）。来自服务状态文件，出问题不用发版就能切回。
    */
@@ -3307,6 +3312,13 @@ export function buildExternalClientMacVerificationLogDetail(failure: ExternalCli
 /** 检测失败时 PowerShell 的原话进运行日志的那几项：读签名报的错里常带着客户端的完整路径。 */
 export function buildExternalClientDetectionErrorLogDetail(failure: ExternalClientDetectionErrorDetail, userHome: string) {
   return { ...failure, message: redactHomeDirectory(failure.message, userHome) }
+}
+
+/** Claude Desktop 要跟上的那把（#1113）：Claude Code 现在用的托管 Key 和读出来的缓存。主进程内部专用（I3）。 */
+interface ClaudeDesktopKeyTarget {
+  owner: string
+  apiKey: string
+  cachedKeys: readonly StoredManagedCliKey[]
 }
 
 /** 比两个线路地址时不计末尾的斜杠：Claude Desktop 设置窗口里存的地址可能带一个。 */
@@ -6857,6 +6869,7 @@ export function createSystemService(
     tool: ExternalToolId,
     requested: ExternalToolConfigOptions,
     assertBeforeWrite?: () => void,
+    keySource?: ExternalClientKeySource,
   ): Promise<ExternalClientConfigResult> {
     const work = async (): Promise<ExternalClientConfigResult> => {
       assertBeforeWrite?.()
@@ -6883,7 +6896,7 @@ export function createSystemService(
         const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
         const result = await gateway.saveGateway(input)
         assertContext()
-        if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey)
+        if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey, keySource)
         const connection = await verifySavedExternalClient(tool, status)
         return { tool, model, path: result.path, files: result.files, backups: result.backups,
           outcome: 'configured', message: result.warnings.join(' '),
@@ -6899,7 +6912,7 @@ export function createSystemService(
         protocol: tool === 'workbuddy' ? 'chat-completions' : requested.protocol ?? 'responses',
       }, { beforeReplace: assertContext })
       assertContext()
-      if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey)
+      if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey, keySource)
       const connection = await verifySavedExternalClient(tool, latestExternalClients?.find((entry) => entry.tool === tool))
       return { tool, model, path: result.path, files: result.files, backups: result.backups, outcome: 'configured',
         message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。'
@@ -6960,17 +6973,22 @@ export function createSystemService(
   // 星芒窗口回到前台时也看一眼（同一个客户端两次至少隔 2 分钟）；退了就整轮检测一次，换线路在那一轮里做，
   // 写之前照旧再盘点一次（followExternalClientRoute 的 recheck）。一直看到换成、线路又变、换账号或星芒退出，
   // 不设次数上限：Claude Desktop 往往整天开着。看不出开没开的（检测失败）退成每 15 分钟整轮检测一次。
+  // 跟着 Claude Code 换 Key 开着等的（#1113）也记在这里，两个站都等，界面上不另加字。
   const externalRoutePending = new Map<ExternalToolId, { path: string; checkedAt: number; scannedAt: number }>()
   let cancelExternalRouteRecheck: (() => void) | null = null
   const externalRouteRecheckMs = 5 * 60 * 1000
   const externalRouteFocusGapMs = 2 * 60 * 1000
   const externalRouteFullScanMs = 15 * 60 * 1000
 
-  function noteExternalRoutePending(statuses: readonly ExternalClientRuntimeStatus[], clients: readonly ExternalClientStatus[]): void {
+  function noteExternalRoutePending(
+    statuses: readonly ExternalClientRuntimeStatus[],
+    clients: readonly ExternalClientStatus[],
+    keyPending: ReadonlySet<ExternalToolId> = new Set(),
+  ): void {
     const now = toolRouteNow()
     for (const client of clients) {
       const clientPath = statuses.find((status) => status.tool === client.tool)?.path ?? null
-      if (client.routePending && client.routeRecheck && clientPath) {
+      if (((client.routePending && client.routeRecheck) || keyPending.has(client.tool)) && clientPath) {
         const known = externalRoutePending.get(client.tool)
         externalRoutePending.set(client.tool, known?.path === clientPath ? known : { path: clientPath, checkedAt: now, scannedAt: now })
       } else {
@@ -7025,17 +7043,22 @@ export function createSystemService(
   async function followExternalClientRoutes(statuses: readonly ExternalClientRuntimeStatus[]): Promise<ExternalClientStatus[]> {
     const describe = () => Promise.all(statuses.map(describeExternalClient))
     const to = relayRouting.selection(activeRelaySite().id)
-    if (to === undefined) return describe()
+    if (to === undefined && !await claudeDesktopKeyTarget(statuses)) {
+      const clients = await describe()
+      // 之前开着等换 Key 的，现在不用换了（客户自己重配过、Claude Code 又换了别的）：别再隔 5 分钟看一眼。
+      if (externalRoutePending.size) noteExternalRoutePending(statuses, clients)
+      return clients
+    }
     const work = async () => {
       const clients = await describe()
+      const updated = new Map<ExternalToolId, ExternalClientStatus>()
       // 已经在当前线路上的不用再读一遍（Windows 商店版读 Claude Desktop 配置要起一次 PowerShell）；
       // 没装上的看不出开没开，不碰。
-      const candidates = statuses.flatMap((status) => {
+      const candidates = to === undefined ? [] : statuses.flatMap((status) => {
         const client = clients.find((entry) => entry.tool === status.tool)
-        return client && status.installed && !status.detectionError && client.configurationSource === 'other' ? [{ status, client }] : []
+        return client && status.installed && !status.detectionError && client.configurationSource === 'other' ? [{ status, client, to }] : []
       })
-      const updated = new Map<ExternalToolId, ExternalClientStatus>()
-      for (const { status, client } of candidates) {
+      for (const { status, client, to } of candidates) {
         try {
           const next = await followExternalClientRoute(status, client, to)
           if (next) updated.set(status.tool, next)
@@ -7045,13 +7068,110 @@ export function createSystemService(
           })
         }
       }
+      // 换 Key 放在换线路之后：两样都要换时，这一轮先换地址；旧 Key 在新线路上不认、地址没换成的，Key 照样换，
+      // 地址下一轮再换。排队这会儿 Claude Code 可能又换过，所以进了队再看一次。
+      const keyPending = new Set<ExternalToolId>()
+      const keyTarget = await claudeDesktopKeyTarget(statuses)
+      const desktop = statuses.find((status) => status.tool === 'claudeDesktop')
+      const desktopClient = updated.get('claudeDesktop') ?? clients.find((client) => client.tool === 'claudeDesktop')
+      if (keyTarget && desktop && desktopClient) {
+        const followed = await followClaudeDesktopKey(desktop, desktopClient, keyTarget)
+        if (followed.client) updated.set('claudeDesktop', followed.client)
+        if (followed.pending) keyPending.add('claudeDesktop')
+      }
       const result = clients.map((client) => updated.get(client.tool) ?? client)
-      noteExternalRoutePending(statuses, result)
+      noteExternalRoutePending(statuses, result, keyPending)
       return result
     }
     const task = externalConfigQueue.then(work, work)
     externalConfigQueue = task.catch(() => undefined)
     return task
+  }
+  /** 这一轮要不要看 Claude Desktop 跟没跟上 Claude Code 的 Key：没装上、看不出装没装的不看（#1113）。 */
+  async function claudeDesktopKeyTarget(statuses: readonly ExternalClientRuntimeStatus[]): Promise<ClaudeDesktopKeyTarget | null> {
+    const status = statuses.find((entry) => entry.tool === 'claudeDesktop')
+    return status?.installed && !status.detectionError ? claudeCodeKeyTarget() : null
+  }
+  /**
+   * #1113：Claude Desktop 默认借 Claude Code 那把星芒密钥（「使用 Claude Code 当前的星芒密钥」）。星芒替 Claude Code
+   * 换了 Key（撤销后换新、失效重签、换组）以后，Claude Desktop 要跟上的就是 Claude Code 现在用的那把，连同缓存
+   * 一起交出。不用跟回 null：没登录、这台电脑上 Claude Code 的托管 Key 从没换过，或者 Claude Code 自己还没换上
+   * 缓存里那把（写配置没成、客户换成了别的 Key），这时不替 Claude Desktop 做主。主进程内部专用，密钥永不跨 IPC（I3）。
+   */
+  async function claudeCodeKeyTarget(): Promise<ClaudeDesktopKeyTarget | null> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (owner === null || !serviceOptions.readCurrentManagedCliKeys) return null
+    const cachedKeys = await serviceOptions.readCurrentManagedCliKeys().catch(() => [])
+    const current = cachedKeys.find((entry) => entry.provider === 'claude')
+    if (!current?.replacedKeyDigests?.length) return null
+    const claudeCode = inspectNativeProviderConfig('claude')
+    if (!claudeCode.hasApiKey || !claudeCode.matchesRelay || claudeCode.apiKey !== current.key) return null
+    if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return null
+    return { owner, apiKey: current.key, cachedKeys }
+  }
+  /**
+   * 把 Claude Desktop 那份换成 Claude Code 现在的 Key（#1113），只换 Key，地址、型号和别的设置都不动。全都对上才换：
+   * 正在用的是星芒那份；它那把是缓存记着「被换掉」的 Claude Code 旧 Key；归属是当前账号、地址是这个站的线路；
+   * 不是客户自己填的（保存时记下的来源，0.2.20 以前保存的没记，凭「就是 Claude Code 换下来的那把」认）；新 Key
+   * 认它写着的型号。客户端开着就先不写，等它退出再换（同换线路 C11），pending 交回去记着。
+   */
+  async function followClaudeDesktopKey(
+    status: ExternalClientRuntimeStatus,
+    client: ExternalClientStatus,
+    target: ClaudeDesktopKeyTarget,
+  ): Promise<{ client: ExternalClientStatus | null; pending: boolean }> {
+    const tool = 'claudeDesktop'
+    const name = externalClientNames[tool]
+    const activeSite = activeRelaySite()
+    const { owner } = target
+    const assertContext = () => {
+      if (activeRelaySite().id !== activeSite.id || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) {
+        throw new Error('账号已变化，这次不换密钥')
+      }
+    }
+    const gateway = await claudeDesktopConfig(status).then((service) => service.inspectOwnedRoute()).catch(() => null)
+    if (!gateway || gateway.apiKey === target.apiKey || !isReplacedManagedKey('claude', gateway.apiKey, target.cachedKeys)) {
+      return { client: null, pending: false }
+    }
+    const route = relaySiteProviderBaseUrlVariants(activeSite.id, 'claude').find((variant) => sameRouteUrl(gateway.baseUrl, variant.baseUrl))
+    const recorded = route && (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
+      ? externalOwnership.inspect(tool, owner, route.baseUrl, gateway.apiKey) : null
+    // 客户自己在 Claude Desktop 里填的那把，哪怕就是 Claude Code 的旧 Key 也不动。
+    if (!route || !recorded || recorded.source === 'manual') return { client: null, pending: false }
+    const detail = { tool, route: route.endpointId }
+    if (status.running) {
+      runtimeLog?.log('info', 'config', 'external-client.key.deferred', `${name} 还开着，先不换密钥，退出后再换`, detail)
+      return { client: null, pending: true }
+    }
+    const latest = { status }
+    try {
+      // 新 Key 认它写着的型号才换，不替客户换型号；没写型号（由 Claude Desktop 自动获取）的，新 Key 能用就够了。
+      const models = await fetchAvailableModels(target.apiKey, { bypassCache: true, site: activeSite })
+      assertContext()
+      if (gateway.model !== null && !models.includes(gateway.model)) throw new Error('新密钥不支持 Claude Desktop 现在用的型号')
+      // 同换线路：动文件之前再盘点一次开没开，要的是拉清单之后才开始的那一轮。
+      const recheck = async () => {
+        latest.status = (await externalClientRuntime.scan({ fresh: true })).find((entry) => entry.tool === tool) ?? { ...status, installed: false }
+        if (latest.status.running) throw new Error(`${name} 还开着，已保留原配置`)
+        if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
+        assertContext()
+      }
+      await externalOwnership.stageKey(tool, owner, route.baseUrl, gateway.apiKey, target.apiKey)
+      await (await claudeDesktopConfig(status, assertContext)).followKey(gateway.baseUrl, gateway.apiKey, target.apiKey, recheck)
+      await externalOwnership.rewrite(tool, owner, route.baseUrl, target.apiKey)
+      runtimeLog?.log('info', 'config', 'external-client.key.followed', `已把 ${name} 换成 Claude Code 现在用的密钥`, detail)
+      return { client: await describeExternalClient(latest.status), pending: false }
+    } catch (error) {
+      if (latest.status.running) {
+        runtimeLog?.log('info', 'config', 'external-client.key.deferred', `${name} 还开着，先不换密钥，退出后再换`, detail)
+        return { client: { ...client, ...latest.status }, pending: true }
+      }
+      // 拉不到模型清单、型号不在了、写之前客户刚改过配置都走这里：这次不动，下次检测再看。
+      runtimeLog?.log('warn', 'config', 'external-client.key.failed', `${name} 的密钥这次没换成，下次检测再试`, {
+        ...detail, reason: credentialFailureReason(error),
+      })
+      return { client: { ...client, ...latest.status }, pending: false }
+    }
   }
   /** followExternalClientRoutes 里的一个客户端：那一行要换成什么就回什么，不用动时回 null。 */
   async function followExternalClientRoute(
@@ -7087,7 +7207,7 @@ export function createSystemService(
       // 地址已经在当前线路上，归属还记在原来那条：上回换完没记上（记归属那一步失败，或者星芒
       // 正好在两步之间退出）。客户端那份不用再动，补记归属就行。
       assertContext()
-      await externalOwnership.write(tool, owner, baseUrl, found.apiKey)
+      await externalOwnership.rewrite(tool, owner, baseUrl, found.apiKey)
       runtimeLog?.log('info', 'config', 'external-client.route.recorded', `${name} 已在当前连接线路上，补记归属`, detail)
       return await describeExternalClient(status)
     }
@@ -7113,7 +7233,7 @@ export function createSystemService(
       await moveExternalClientRoute(status, { from: found.baseUrl, to: baseUrl, apiKey: found.apiKey }, assertContext, recheck)
       latest.moved = true
       externalRoutesFollowed.set(followedKey, { from: found.from, baseUrl: found.baseUrl, apiKey: found.apiKey })
-      await externalOwnership.write(tool, owner, baseUrl, found.apiKey)
+      await externalOwnership.rewrite(tool, owner, baseUrl, found.apiKey)
       runtimeLog?.log('info', 'config', 'external-client.route.followed', `已把 ${name} 换到当前连接线路`, detail)
       return await describeExternalClient(latest.status)
     } catch (error) {
@@ -7691,7 +7811,8 @@ export function createSystemService(
       assertBeforeWrite?.()
       if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
     }
-    return serializeConfigWrite(async () => {
+    let claudeKeyReplaced = false
+    const saved = await serializeConfigWrite(async () => {
       assertOwner()
       if (ownership?.source === 'account' && !owner) throw new Error('请先登录账号再配置账号密钥')
       const before = inspectNativeProviderConfig(payload.provider)
@@ -7792,8 +7913,20 @@ export function createSystemService(
       assertOwner()
       await store.setOfficialProvider(payload.provider, false)
       if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
+      claudeKeyReplaced = payload.provider === 'claude' && ownership?.source === 'account' && apiKey !== before.apiKey
       return result
     })
+    // #1113：星芒刚替 Claude Code 换了 Key（撤销后换新、失效重签、换组），Claude Desktop 那份马上看一眼要不要
+    // 跟着换，不等下次检测。不等它：换 Key 那一步出岔子只进日志，不算这次保存失败。
+    if (claudeKeyReplaced) {
+      // 先只看缓存和 Claude Code：这台电脑上 Claude Code 的 Key 从没被星芒换过时，不为它盘点一遍本机客户端。
+      void claudeCodeKeyTarget().then((target) => target ? scanExternalClients() : undefined).catch((error: unknown) => {
+        runtimeLog?.log('warn', 'config', 'external-client.key.failed', 'Claude Desktop 的密钥这次没换成，下次检测再试', {
+          tool: 'claudeDesktop', reason: credentialFailureReason(error),
+        })
+      })
+    }
+    return saved
   }
 
   /**
