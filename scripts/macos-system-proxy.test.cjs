@@ -17,6 +17,13 @@ function launch(dir) {
 function fixture() { const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xm-proxy-'))); fs.writeFileSync(path.join(dir, 'store'), JSON.stringify({ services: { wifi: { HTTPEnable: 0, ProxyAutoConfigEnable: 1, ProxyAutoConfigURLString: 'https://example.invalid/pac', ExceptionsList: ['local'], Custom: 'keep' } } })); return dir }
 function read(dir) { return JSON.parse(fs.readFileSync(path.join(dir, 'store'))) }
 function write(dir, data) { fs.writeFileSync(path.join(dir, 'store'), JSON.stringify(data)) }
+// A journal entry stores its dictionaries as property lists; XML is enough here.
+function plist(dict) {
+  const body = Object.entries(dict).map(([key, value]) => `<key>${key}</key>${typeof value === 'number' ? `<integer>${value}</integer>` : `<string>${value}</string>`}`).join('')
+  return Buffer.from(`<?xml version="1.0"?><plist version="1.0"><dict>${body}</dict></plist>`).toString('base64')
+}
+function editJournal(dir, edit) { const file = path.join(dir, 'journal'); const journal = JSON.parse(fs.readFileSync(file)); edit(journal); fs.writeFileSync(file, JSON.stringify(journal)) }
+const attacker = { HTTPEnable: 1, HTTPProxy: 'attacker.invalid', HTTPPort: 8080, HTTPSEnable: 1, HTTPSProxy: 'attacker.invalid', HTTPSPort: 8080 }
 test('waits for asynchronously published proxy state before deciding enable failed', { skip: !supported }, async t => {
   const dir = fixture()
   const data = read(dir)
@@ -146,4 +153,93 @@ test('queued request flood cancels bounded native work without proxy mutation', 
   await exited
   assert.equal(fs.readFileSync(path.join(dir, 'store'), 'utf8'), before)
   assert.equal(fs.existsSync(path.join(dir, 'journal')), false)
+})
+test('owning helper restores its own snapshot even when the journal is edited or removed', { skip: !supported }, async t => {
+  const dir = fixture(); const h = launch(dir)
+  t.after(() => { h.child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }) })
+  assert.equal((await h.rpc('enable', 17890)).ok, true)
+  editJournal(dir, journal => { journal.entries.wifi.original = plist(attacker) })
+  assert.equal((await h.rpc('restore')).ok, true)
+  let data = read(dir)
+  assert.equal(data.services.wifi.HTTPProxy, undefined)
+  assert.equal(data.services.wifi.HTTPEnable, 0)
+  assert.equal(data.services.wifi.ProxyAutoConfigEnable, 1)
+  assert.equal(fs.existsSync(path.join(dir, 'journal')), false)
+  assert.equal((await h.rpc('enable', 17890)).ok, true)
+  fs.unlinkSync(path.join(dir, 'journal'))
+  assert.equal((await h.rpc('restore')).ok, true)
+  data = read(dir)
+  assert.equal(data.services.wifi.HTTPEnable, 0)
+  assert.equal(data.services.wifi.ProxyAutoConfigEnable, 1)
+  await h.rpc('stop')
+})
+test('a journal the helper did not keep never borrows authorization it still holds', { skip: !supported }, async t => {
+  const dir = fixture(); const h = launch(dir)
+  t.after(() => { h.child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }) })
+  assert.equal((await h.rpc('enable', 17890)).ok, true)
+  const planted = fs.readFileSync(path.join(dir, 'journal'))
+  assert.equal((await h.rpc('restore')).ok, true)
+  // Another local proxy now holds the same loopback endpoint, so a planted
+  // journal matches what the system shows.
+  const data = read(dir)
+  for (const prefix of ['HTTP', 'HTTPS', 'SOCKS']) Object.assign(data.services.wifi, { [`${prefix}Enable`]: 1, [`${prefix}Proxy`]: '127.0.0.1', [`${prefix}Port`]: 17890 })
+  Object.assign(data.services.wifi, { ProxyAutoConfigEnable: 0, ProxyAutoDiscoveryEnable: 0 })
+  data.denyAuthorization = true
+  write(dir, data)
+  fs.writeFileSync(path.join(dir, 'journal'), planted)
+  editJournal(dir, journal => { journal.entries.wifi.original = plist(attacker) })
+  const before = fs.readFileSync(path.join(dir, 'store'), 'utf8')
+  const reply = await h.rpc('restore')
+  assert.equal(reply.ok, false)
+  assert.equal(reply.error, 'authorization')
+  assert.equal(fs.readFileSync(path.join(dir, 'store'), 'utf8'), before)
+  assert.equal(fs.existsSync(path.join(dir, 'journal')), true)
+})
+test('crash recovery authorizes a journal once and retries from that snapshot', { skip: !supported }, async t => {
+  const dir = fixture(); const h = launch(dir); let next
+  t.after(() => { h.child.kill('SIGKILL'); next?.child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }) })
+  assert.equal((await h.rpc('enable', 17890)).ok, true)
+  await new Promise(resolve => { h.child.once('exit', resolve); h.child.kill('SIGKILL') })
+  let data = read(dir); data.failWrite = true; write(dir, data)
+  next = launch(dir)
+  assert.equal((await next.rpc('recover')).ok, false)
+  assert.equal(fs.existsSync(path.join(dir, 'journal')), true)
+  editJournal(dir, journal => { journal.entries.wifi.original = plist(attacker) })
+  data = read(dir); data.failWrite = false; data.denyAuthorization = true; write(dir, data)
+  assert.equal((await next.rpc('recover')).ok, true)
+  data = read(dir)
+  assert.equal(data.services.wifi.HTTPProxy, undefined)
+  assert.equal(data.services.wifi.ProxyAutoConfigEnable, 1)
+  assert.equal(fs.existsSync(path.join(dir, 'journal')), false)
+  await next.rpc('stop')
+})
+test('crash recovery accepts only switches, ports and host names as recorded originals', { skip: !supported }, async t => {
+  const dir = fixture(); const h = launch(dir); let next
+  t.after(() => { h.child.kill('SIGKILL'); next?.child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }) })
+  assert.equal((await h.rpc('enable', 17890)).ok, true)
+  await new Promise(resolve => { h.child.once('exit', resolve); h.child.kill('SIGKILL') })
+  const before = fs.readFileSync(path.join(dir, 'store'), 'utf8')
+  next = launch(dir)
+  for (const original of [
+    { HTTPEnable: 1, HTTPProxy: 'proxy.invalid;open', HTTPPort: 8080 },
+    { HTTPEnable: 1, HTTPProxy: '-proxy.invalid', HTTPPort: 8080 },
+    { HTTPSEnable: 1, HTTPSProxy: 42, HTTPSPort: 8080 },
+    { SOCKSEnable: 1, SOCKSProxy: 'proxy.invalid', SOCKSPort: 70000 },
+    { HTTPEnable: 0, HTTPPort: -1 },
+    { HTTPEnable: 2, HTTPProxy: 'proxy.invalid', HTTPPort: 8080 },
+    { ProxyAutoConfigEnable: 7 },
+  ]) {
+    editJournal(dir, journal => { journal.entries.wifi.original = plist(original) })
+    assert.equal((await next.rpc('recover')).ok, false, JSON.stringify(original))
+    assert.equal(fs.readFileSync(path.join(dir, 'store'), 'utf8'), before)
+    assert.equal(fs.existsSync(path.join(dir, 'journal')), true)
+  }
+  editJournal(dir, journal => { journal.entries.wifi.original = plist({ HTTPEnable: 1, HTTPProxy: 'proxy.example.com', HTTPPort: 3128, HTTPSEnable: 1, HTTPSProxy: '10.0.0.8', HTTPSPort: 3128, SOCKSEnable: 1, SOCKSProxy: 'fd00::8', SOCKSPort: 1080, ProxyAutoConfigEnable: 0, ProxyAutoDiscoveryEnable: 0 }) })
+  assert.equal((await next.rpc('recover')).ok, true)
+  const data = read(dir)
+  assert.equal(data.services.wifi.HTTPProxy, 'proxy.example.com')
+  assert.equal(data.services.wifi.HTTPSProxy, '10.0.0.8')
+  assert.equal(data.services.wifi.SOCKSProxy, 'fd00::8')
+  assert.equal(fs.existsSync(path.join(dir, 'journal')), false)
+  await next.rpc('stop')
 })
