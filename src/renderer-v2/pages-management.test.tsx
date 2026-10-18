@@ -633,12 +633,24 @@ describe('installed extension groups', () => {
 
   it('puts everything in the one group of a tool that has a single layer', () => {
     const groups = groupExtensionItems(
-      [listItem({ provider: 'codex', kind: 'mcp', id: 'a', scope: null }), listItem({ provider: 'codex', kind: 'mcp', id: 'b', scope: 'user' })],
-      extensionScopeGroups.mcp.codex,
+      [listItem({ provider: 'codex', id: 'a', scope: null }), listItem({ provider: 'codex', id: 'b', scope: 'user' })],
+      extensionScopeGroups.plugin.codex,
     )
     expect(groups).toHaveLength(1)
-    expect(groups[0]).toMatchObject({ title: '全局', description: '所有项目共用' })
+    expect(groups[0]).toMatchObject({ title: '已安装', description: '所有项目都能用' })
     expect(groups[0].items.map((item) => item.id)).toEqual(['a', 'b'])
+  })
+
+  // #1092：Codex 只往全局加连接，但受信任项目里写的它也列出来，主进程对照配置文件标成 project。
+  it('files Codex connections from a trusted project under 项目', () => {
+    const groups = groupExtensionItems(
+      [listItem({ provider: 'codex', kind: 'mcp', id: 'repo-db', scope: 'project' }), listItem({ provider: 'codex', kind: 'mcp', id: 'mine', scope: 'user' })],
+      extensionScopeGroups.mcp.codex,
+    )
+    expect(groups.map((group) => [group.title, group.description, group.items.map((entry) => entry.id)])).toEqual([
+      ['全局', '所有项目共用', ['mine']],
+      ['项目', '只在这个项目里用', ['repo-db']],
+    ])
   })
 
   it('puts the read-only Codex skills under 系统内置 whatever scope the list gave them', () => {

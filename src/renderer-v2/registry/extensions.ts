@@ -34,7 +34,11 @@ const claudeLayers: readonly ExtensionScopeGroup[] = [
 export const extensionScopeGroups: Record<ExtensionKindId, Record<ActiveProviderId, readonly ExtensionScopeGroup[]>> = {
   mcp: {
     claude: claudeLayers,
-    codex: [{ scope: 'all', title: '全局', description: '所有项目共用' }],
+    // Codex 只往全局加连接，但受信任项目里 .codex/config.toml 写的它也认；主进程对照配置文件标出层（#1092）。
+    codex: [
+      { scope: 'user', title: '全局', description: '所有项目共用' },
+      { scope: 'project', title: '项目', description: '只在这个项目里用' },
+    ],
     // Grok 的连接分 ~/.grok/config.toml 和项目里的 .grok/config.toml 两层，列表带回各自的 scope（#1092）。
     grok: [
       { scope: 'user', title: '用户', description: '所有项目都能用' },
