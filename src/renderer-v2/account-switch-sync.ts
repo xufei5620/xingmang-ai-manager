@@ -74,6 +74,10 @@ function unchangedPreviousRelay(
   return (['actualBaseUrl', 'apiKeyPreview', 'updatedAt', 'model', 'codexAuthMode', 'officialAccountEmail'] as const)
     .every((field) => before[field] === after[field])
 }
+// 「同步到工具」每个工具下面那行小字。能不能勾、默认勾不勾也按它认（SavedAccounts 的
+// defaultSyncSelection），所以收成常量，改字时两边一起变。
+export const accountSyncAccountReason = '当前账号'
+export const accountSyncManualReason = '自己的密钥'
 export interface AccountSyncCandidate {
   provider: Provider
   name: string
@@ -136,17 +140,17 @@ export function accountSyncCandidates(
           : official
             ? '官方账号'
             : manual
-              ? '手动填写密钥'
+              ? accountSyncManualReason
             : !config.hasApiKey
               ? '还没有配置密钥'
               : !config.matchesRelay
                 ? '用的是别处的配置'
-                : '星芒密钥'
+                : accountSyncAccountReason
       return [
         {
           provider,
           name: tool.name,
-          eligible: reason === '星芒密钥' || reason === '手动填写密钥',
+          eligible: reason === accountSyncAccountReason || reason === accountSyncManualReason,
           reason,
           model: config.model,
         },

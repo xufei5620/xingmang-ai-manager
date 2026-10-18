@@ -345,19 +345,19 @@ describe('operationFailureFrom', () => {
   it('folds an English failure that names a file into detail instead of showing it', () => {
     // 错误框以前把这句当成中文放在醒目处，不留 detail（第三十批 A）。
     const cause = new Error("Error invoking remote method 'config:rewrite-key': Error: EPERM: operation not permitted, open 'C:\\Users\\张三\\.codex\\config.toml'")
-    expect(operationFailureFrom(cause, '重新写入 Key')).toEqual({
-      message: '重新写入 Key没有完成',
+    expect(operationFailureFrom(cause, '重新写入密钥')).toEqual({
+      message: '重新写入密钥没有完成',
       detail: "EPERM: operation not permitted, open '本机路径",
     })
   })
 
   it('leaves no detail when the message already explains the cause', () => {
     expect(operationFailureFrom(new Error('配置文件写入失败：磁盘只读'), '保存')).toEqual({ message: '配置文件写入失败：磁盘只读' })
-    expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
+    expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '网络连不上，请检查网络后重试。' })
   })
 
   it('masks keys in the original before it reaches the screen', () => {
-    const failure = operationFailureFrom(new Error('EBUSY: resource busy Bearer sk-abcdefghijklmnop api_key=abc123'), '重新写入 Key')
+    const failure = operationFailureFrom(new Error('EBUSY: resource busy Bearer sk-abcdefghijklmnop api_key=abc123'), '重新写入密钥')
     expect(failure.detail).toBeDefined()
     expect(failure.detail).not.toMatch(/sk-abcdef|abcdefghijklmnop|abc123/)
     expect(failure.detail).toContain('EBUSY')
@@ -382,7 +382,7 @@ describe('failureWithDetail', () => {
 
   it('leaves no detail when the shown sentence already explains the cause', () => {
     expect(failureWithDetail(new Error('配置文件写入失败：磁盘只读'))).toEqual({ message: '配置文件写入失败：磁盘只读' })
-    expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '连不上星芒服务器，请检查网络后重试。' })
+    expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '网络连不上，请检查网络后重试。' })
     expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。' })
   })
 })

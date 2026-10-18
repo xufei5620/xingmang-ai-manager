@@ -74,9 +74,9 @@ describe('resolveUsableSubscription', () => {
 describe('subscriptionSummaryText', () => {
   it('writes the remaining amount and the local end date', () => {
     const endsAt = new Date(2026, 9, 3, 12).toISOString()
-    expect(subscriptionEndDate(endsAt)).toBe('10 月 3 日')
+    expect(subscriptionEndDate(endsAt)).toBe('10月3日')
     const base = { name: null, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
-    expect(subscriptionSummaryText({ ...base, remainingUsd: 12.3 }, (usd) => `$${usd.toFixed(2)}`)).toBe('剩余 $12.30 · 10 月 3 日到期')
-    expect(subscriptionSummaryText({ ...base, remainingUsd: null }, (usd) => `$${usd}`)).toBe('10 月 3 日到期')
+    expect(subscriptionSummaryText({ ...base, remainingUsd: 12.3 }, (usd) => `$${usd.toFixed(2)}`)).toBe('剩余 $12.30 · 10月3日到期')
+    expect(subscriptionSummaryText({ ...base, remainingUsd: null }, (usd) => `$${usd}`)).toBe('10月3日到期')
   })
 })

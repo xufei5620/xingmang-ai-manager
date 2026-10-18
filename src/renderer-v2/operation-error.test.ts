@@ -57,10 +57,10 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
-  configPermission: { sample: "重新写入 Key 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
+  configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
-  configDiskFull: { sample: "重新写入 Key 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
+  configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
   // 主进程（system-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
@@ -236,7 +236,7 @@ describe('renderer-v2 operation error classification', () => {
   // 它，用户读完「需要换一把 Key」只剩加客服微信这一条路。
   it('honours the one-click repair on an invalid key', () => {
     const hint = presentOperationError('模型查询失败，服务返回 403：令牌已失效')
-    expect(hint?.title).toBe('Key 失效')
+    expect(hint?.title).toBe('密钥失效')
     expect(hint?.actions).toEqual([{ id: 'repair', label: '一键修复' }])
   })
 
@@ -297,7 +297,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('says the config file could not be written when the caller writes one, never the install directory', () => {
-    // 已知29：改用当前账号、重新写入 Key 这些写的是配置文件，以前也叫人去看安装目录、复制安装目录的路径。
+    // 已知29：改用当前账号、重新写入密钥 这些写的是配置文件，以前也叫人去看安装目录、复制安装目录的路径。
     const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径'"
     const hint = presentOperationError(raw, 'config')
     expect(hint?.key).toBe('configPermission')
@@ -305,7 +305,7 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.body).toBe('常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '找客服' }])
     // 原话认不出、要看 detail 的那一种也一样。
-    expect(presentOperationFailure({ message: '重新写入 Key 没有完成', detail: 'EACCES: permission denied', target: 'config' })?.key).toBe('configPermission')
+    expect(presentOperationFailure({ message: '重新写入密钥 没有完成', detail: 'EACCES: permission denied', target: 'config' })?.key).toBe('configPermission')
     // 不说写的是什么时照旧（装工具、更新工具）。
     expect(presentOperationError(raw)?.title).toBe('写不进安装目录')
     // 文件被占用、搬过的文件夹还是原来那几句；磁盘满换成说配置所在那块盘（#1100 第6条）。
@@ -317,7 +317,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('treats exactly the home actions that rewrite a tool config as config writes', () => {
-    for (const action of ['改用当前账号', '切回官方账号', '重新写入 Key', '修提醒设置', '重置为初始状态']) expect([action, operationTargetOf(action)]).toEqual([action, 'config'])
+    for (const action of ['改用当前账号', '切回官方账号', '重新写入密钥', '修提醒设置', '重置为初始状态']) expect([action, operationTargetOf(action)]).toEqual([action, 'config'])
     for (const action of ['安装工具', '卸载工具', '退回工具版本', '保留当前配置', '打开工具', '准备环境']) expect([action, operationTargetOf(action)]).toEqual([action, undefined])
   })
 
@@ -602,7 +602,7 @@ describe('renderer-v2 operation error classification', () => {
       '检查网络时出错：net::ERR_CERT_AUTHORITY_INVALID',
       'DEPTH_ZERO_SELF_SIGNED_CERT',
       // 主进程自己写好的那句中文同样归这一类：两边口径是同一份表，不是各写各的。
-      `重新写入 Key 没有完成：${networkFailureMessages.tls}`,
+      `重新写入密钥 没有完成：${networkFailureMessages.tls}`,
     ]) expect([intercepted, classifyOperationError(intercepted)]).toEqual([intercepted, 'tlsIntercepted'])
     const hint = presentOperationError('Grok CLI 安装失败：unable to get local issuer certificate')
     expect(hint?.title).toBe('连接被网络拦截')
@@ -636,7 +636,7 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：npm error code ERR_SSL_WRONG_VERSION_NUMBER')).toBe('downloadUnreachable')
     // OpenSSL 原文里的十六进制串不能被按状态码认的那几条抢走。
     expect(classifyOperationError('Grok CLI 安装失败：ERR_SSL_WRONG_VERSION_NUMBER 40C7B5F8E5240000:error:0A00010B:SSL routines')).toBe('downloadUnreachable')
-    expect(classifyOperationError(`重新写入 Key 没有完成：${networkFailureMessages.refused}`)).toBe('timeout')
+    expect(classifyOperationError(`重新写入密钥 没有完成：${networkFailureMessages.refused}`)).toBe('timeout')
     // 证书真对不上的照旧是「连接被网络拦截」。
     expect(classifyOperationError("账号接口请求失败：Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")).toBe('tlsIntercepted')
   })
@@ -661,7 +661,7 @@ describe('renderer-v2 operation error classification', () => {
       'Claude Code 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: certificate has expired',
       'CERT_NOT_YET_VALID',
       // 主进程自己写好的那句中文同样归这一类（同 tlsIntercepted，口径只有一份）。
-      `重新写入 Key 没有完成：${networkFailureMessages.certDate}`,
+      `重新写入密钥 没有完成：${networkFailureMessages.certDate}`,
     ]) expect([dated, classifyOperationError(dated)]).toEqual([dated, 'certDate'])
     const hint = presentOperationError('账号接口请求失败：net::ERR_CERT_DATE_INVALID')
     expect(hint?.title).toBe('证书日期对不上')
@@ -681,7 +681,7 @@ describe('renderer-v2 operation error classification', () => {
     it('sends a failure that never touched an install to the runtime log', () => {
       for (const message of [
         '连接检查失败：net::ERR_CERT_AUTHORITY_INVALID',
-        '重新写入 Key 没有完成：账号接口返回 401 Unauthorized',
+        '重新写入密钥 没有完成：账号接口返回 401 Unauthorized',
         '打开工具没有完成：找不到可用的终端',
       ]) expect([message, operationLogSection({ message })]).toEqual([message, 'log'])
     })
@@ -717,7 +717,7 @@ describe('renderer-v2 operation error classification', () => {
 describe('presentOperationFailure', () => {
   it('reads the cause from the kept original when the message is only the fallback', () => {
     expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成', detail: 'ENOSPC: no space left on device' })?.key).toBe('diskFull')
-    expect(presentOperationFailure({ message: '重新写入 Key没有完成', detail: 'EBUSY: resource busy or locked' })?.key).toBe('toolRunning')
+    expect(presentOperationFailure({ message: '重新写入密钥没有完成', detail: 'EBUSY: resource busy or locked' })?.key).toBe('toolRunning')
     expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' })).toBeNull()
     expect(presentOperationFailure({ message: '打开 Codex 桌面端没有完成' })).toBeNull()
   })

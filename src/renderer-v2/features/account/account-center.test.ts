@@ -36,7 +36,7 @@ describe('account center spend bars', () => {
   })
 
   it('titles a bar with its date and weekday', () => {
-    expect(spendDayTitle({ start: new Date(2026, 9, 9).getTime() }, '$1.20')).toBe('10 月 9 日 周五：$1.20')
+    expect(spendDayTitle({ start: new Date(2026, 9, 9).getTime() }, '$1.20')).toBe('10月9日 周五：$1.20')
   })
 
   it('scales bars to the busiest day and keeps small spends visible', () => {
@@ -53,8 +53,8 @@ describe('account center wording', () => {
   })
 
   it('adds the year only to dates outside this year', () => {
-    expect(shortDate(new Date(2026, 9, 3), now)).toBe('10 月 3 日')
-    expect(shortDate(new Date(2027, 0, 2), now)).toBe('2027 年 1 月 2 日')
+    expect(shortDate(new Date(2026, 9, 3), now)).toBe('10月3日')
+    expect(shortDate(new Date(2027, 0, 2), now)).toBe('2027年1月2日')
     expect(shortDate('not a date', now)).toBe('')
   })
 
@@ -117,8 +117,8 @@ describe('account center subscription card', () => {
   })
 
   it('writes the plan line with or without a plan name', () => {
-    expect(subscriptionOverviewText({ name: '月卡', endsAt: new Date(2026, 10, 1).toISOString() }, now)).toBe('月卡，11 月 1 日到期')
-    expect(subscriptionOverviewText({ name: null, endsAt: new Date(2026, 10, 1).toISOString() }, now)).toBe('11 月 1 日到期')
+    expect(subscriptionOverviewText({ name: '月卡', endsAt: new Date(2026, 10, 1).toISOString() }, now)).toBe('月卡，11月1日到期')
+    expect(subscriptionOverviewText({ name: null, endsAt: new Date(2026, 10, 1).toISOString() }, now)).toBe('11月1日到期')
   })
 })
 
@@ -154,7 +154,7 @@ describe('account center keys', () => {
   it('describes a key by what it used, what is left, when it ends and when it was made', () => {
     const money = (quota: number) => `$${(quota / 100).toFixed(2)}`
     const key = { usedQuota: 150, remainQuota: 850, unlimitedQuota: false, expiredAt: new Date(2026, 11, 31).toISOString(), createdAt: new Date(2026, 8, 1).toISOString() }
-    expect(keyMetaParts(key, money, now)).toEqual(['已用 $1.50', '剩余 $8.50', '12 月 31 日到期', '9 月 1 日创建'])
+    expect(keyMetaParts(key, money, now)).toEqual(['已用 $1.50', '剩余 $8.50', '12月31日到期', '9月1日创建'])
     expect(keyMetaParts({ ...key, unlimitedQuota: true, expiredAt: null, createdAt: '' }, money, now)).toEqual(['已用 $1.50', '不限额度', '永不过期'])
     expect(currentExpiryText(null, now)).toBe('永不过期')
   })

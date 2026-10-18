@@ -249,8 +249,8 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
             </p>
             <p className={preview.valid ? 'v2-backup-preview-check' : 'v2-backup-preview-check is-bad'}>{preview.valid ? '已校验，文件完整' : preview.error}</p>
             <dl className="v2-business-kv">
-              <dt>Key</dt>
-              <dd data-testid="backup-preview-key">{previewKey?.label ?? '这份备份没有记下 Key 属于哪个账号'}</dd>
+              <dt>密钥</dt>
+              <dd data-testid="backup-preview-key">{previewKey?.label ?? '这份备份没有记下密钥属于哪个账号'}</dd>
             </dl>
             {preview.files.map((file) => (
               <ListRow
@@ -304,7 +304,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
       >
         <p>当前配置会先另存一份，恢复后需要重新打开工具。</p>
         {restoringKey?.restoreWarning && (
-          <Notice tone="warn" title="Key 不是当前账号的" body={restoringKey.restoreWarning} testId="backups-restore-key-warning" />
+          <Notice tone="warn" title="密钥不是当前账号的" body={restoringKey.restoreWarning} testId="backups-restore-key-warning" />
         )}
         <ResultNotice error={operation.error} detail={operation.detail} target={restoreFailureTarget} />
       </Dialog>

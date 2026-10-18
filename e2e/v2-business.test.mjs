@@ -88,7 +88,7 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
     assert.equal(await usage.getByLabel('开始日期', { exact: true }).count(), 0)
     await toggle.click()
     assert.equal(await toggle.innerText(), '收起筛选')
-    for (const label of ['开始时间', '结束时间', '令牌名称', '分组', '请求 ID', '上游请求 ID', '日志类型', 'Key ID', '分组 ID']) {
+    for (const label of ['开始时间', '结束时间', '密钥名称', '分组', '请求 ID', '上游请求 ID', '日志类型', 'Key ID', '分组 ID']) {
       assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0)
     }
     await usage.getByLabel('开始日期', { exact: true }).fill('2026-09-08')
@@ -244,7 +244,7 @@ test('the usage range drives the stats, one bar per local day or week and the ca
     await range.getByRole('button', { name: '30 天', exact: true }).click()
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-dashboard').length >= count + 5, week.length + 1)
     await page.waitForFunction(() => document.querySelectorAll('.v2-usage-chart-col').length === 5)
-    assert.match(await bars.first().getAttribute('title'), /^\d+ 月 \d+ 日至\d+ 月 \d+ 日：\$5\.00$/)
+    assert.match(await bars.first().getAttribute('title'), /^\d+月\d+日至\d+月\d+日：\$5\.00$/)
 
     // 快捷筛选「失败」：只查错误记录，空着时说这段时间没有失败的调用。
     await page.getByTestId('account-usage-section').getByRole('button', { name: '失败', exact: true }).click()
@@ -501,7 +501,7 @@ test('the usage and task filters fold behind one button on the toolbar and count
     const usage = page.getByTestId('account-usage-section')
     const toggle = usage.getByTestId('account-filters-toggle')
     await toggle.waitFor()
-    for (const label of ['开始时间', '结束时间', '模型名称', '分组', '日志类型', '令牌名称', '请求 ID', '上游请求 ID']) {
+    for (const label of ['开始时间', '结束时间', '模型名称', '分组', '日志类型', '密钥名称', '请求 ID', '上游请求 ID']) {
       assert.equal(await usage.getByLabel(label, { exact: true }).count(), 0, `${label} 先收着`)
     }
     assert.equal(await usage.getByRole('button', { name: '重置筛选', exact: true }).count(), 0)
@@ -2128,9 +2128,9 @@ test('backup rows are named by the time they were taken and the tool, never by a
 test('backup list names whose key a backup holds and warns before restoring another account key', async () => {
   const page = await fixture('page=backups&backupOtherKey')
   try {
-    await page.getByTestId('backups-key-backup-1').getByText('账号 old-user 的 Key').waitFor()
+    await page.getByTestId('backups-key-backup-1').getByText('账号 old-user 的密钥').waitFor()
     await page.getByRole('button', { name: '预览', exact: true }).click()
-    await page.getByTestId('backup-preview-key').getByText('账号 old-user 的 Key').waitFor()
+    await page.getByTestId('backup-preview-key').getByText('账号 old-user 的密钥').waitFor()
     await page
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()

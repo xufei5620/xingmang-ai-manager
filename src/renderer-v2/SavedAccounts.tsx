@@ -10,6 +10,7 @@ import {
 import type { V2Bridge } from './types'
 import {
   accountSwitchRestartHint,
+  accountSyncAccountReason,
   accountSyncCandidates,
   preserveAccountSwitchResult,
   previousAccountSwitchResult,
@@ -326,7 +327,7 @@ export function defaultSyncSelection(
   choices: Partial<Record<SyncProvider, boolean>>,
 ): SyncProvider[] {
   return candidates
-    .filter((candidate) => candidate.eligible && (choices[candidate.provider] ?? candidate.reason === '星芒密钥'))
+    .filter((candidate) => candidate.eligible && (choices[candidate.provider] ?? candidate.reason === accountSyncAccountReason))
     .map((candidate) => candidate.provider)
 }
 

@@ -22,6 +22,7 @@ import {
   ListReadFailure,
   Pagination,
   PlaceholderBar,
+  quotaMoney,
   RelativeTime,
   ResultNotice,
   useOperation,
@@ -45,6 +46,7 @@ import { buildBalanceRunway } from '../app/balance-runway'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import type { AccountSummary } from './AccountOverview'
+import { shortDate } from './account-center'
 import { paymentMethodLabel } from './payment-method-label'
 import { creditedMoney, describeTopupTier, isQuotableAmount, payableSymbol, sameTopupInfo, useTopupQuotes } from './topup-tier'
 import {
@@ -843,8 +845,8 @@ export function AccountRecharge({
                     : period.limitState === 'unknown' ? '限额暂未提供'
                     : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}`}
                 </span>)}
-                <span>到期 {displayDate(subscription.endsAt)}</span>
-              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · 到期 ${displayDate(subscription.endsAt)}`}
+                <span>{subscriptionExpiry(subscription.endsAt)}</span>
+              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · ${subscriptionExpiry(subscription.endsAt)}`}
             />
           ))
         ) : (
@@ -1009,11 +1011,11 @@ export function AccountRecharge({
   )
 }
 
-// 没读到的金额写「—」，不写「暂未读到」：小标签上是「已用 —」「剩余 —」（同 pages-account 的 quotaMoney）。
-function quotaMoney(quota: number | null | undefined, balance: AccountBalance | null) {
-  return balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
-    ? dollars(quota / balance.quotaPerUnit)
-    : '—'
+// 「我的订阅」每份订阅那一行的到期：和账号概览、密钥行同一个写法（「10月1日到期」，#1133 第 6 条）；
+// 读不出日期时照旧写原样。
+function subscriptionExpiry(endsAt: string): string {
+  const day = shortDate(endsAt)
+  return day ? `${day}到期` : `到期 ${displayDate(endsAt)}`
 }
 
 /**

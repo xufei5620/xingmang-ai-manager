@@ -2220,6 +2220,7 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
   const cases = [
     ['unownedClaude=1', 'claude', '打开', '密钥可能不是当前账号的'],
     ['unknownClaude=1', 'claude', '改用当前账号', '不是当前账号的密钥'],
+    ['allInstalled=1&changedClaude=1', 'claude', '重新写入密钥', '配置被改过'],
     ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
     ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
   ]
@@ -3261,7 +3262,7 @@ test('an updated tool row stays on the running install until the rescan lands', 
     await page.evaluate(() => window.v2Test.holdNextScan())
     await update.click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCli'))
-    await row.getByText('安装完成，正在同步账号 Key 并刷新状态').waitFor()
+    await row.getByText('安装完成，正在同步账号密钥并刷新状态').waitFor()
     assert.equal(await update.count(), 0, '刷新落地之前不能把「更新」按钮放回来')
     assert.equal(await row.getByText('v1.2.3', { exact: false }).count(), 0, '刷新落地之前不能把旧版本号放回来')
     await page.evaluate(() => window.v2Test.releaseScan())
@@ -3281,7 +3282,7 @@ test('cancelling during the key sync after an install says the step can no longe
     await update.waitFor()
     await page.evaluate(() => window.v2Test.holdNextScan())
     await update.click()
-    await row.getByText('安装完成，正在同步账号 Key 并刷新状态').waitFor()
+    await row.getByText('安装完成，正在同步账号密钥并刷新状态').waitFor()
     await row.getByTestId('tool-claude-cancel').click()
     await waitForToast(page, '这一步已经不能取消了。')
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelCliInstall').length), 0)
@@ -7283,7 +7284,7 @@ test('the self-check key layer rewrites the current account Key in place and re-
     const claude = page.getByTestId('health-connection-result-claude')
     await expect(claude.getByRole('img', { name: '有问题', exact: true })).toHaveClass(/is-bad/)
     await expect(claude.locator('.v2-health-line-text')).toHaveText('Claude Code：密钥被拒绝（HTTP 401）')
-    // 账号页上并没有「写入 Key」这颗按钮，所以这一层不再给「去处理」。
+    // 账号页上并没有「重新写入密钥」这颗按钮，所以这一层不再给「去处理」。
     assert.equal(await page.getByTestId('health-connection-fix-claude').count(), 0)
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
     await page.getByTestId('health-connection-rewrite-claude').click()
@@ -7323,7 +7324,7 @@ test('the one-click repair on an invalid key runs the same rewrite', async () =>
     await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：令牌已失效' })
     await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('operation-error').waitFor()
-    await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把 Key', { exact: true }).waitFor()
+    await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把密钥', { exact: true }).waitFor()
     const before = await page.evaluate(() => {
       window.v2Test.fail = ''
       window.v2Test.failMessage = ''

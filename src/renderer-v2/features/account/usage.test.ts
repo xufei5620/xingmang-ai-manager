@@ -51,15 +51,15 @@ describe('usage', () => {
     const days = usageSegments('7', now)
     expect(days).toHaveLength(7)
     expect(days[6]).toMatchObject({ label: '今天', start: new Date(2026, 9, 15).getTime(), end: now.getTime() })
-    expect(days[6].title).toBe('10 月 15 日 周四')
+    expect(days[6].title).toBe('10月15日 周四')
     expect(days[0].start).toBe(new Date(2026, 9, 9).getTime())
   })
 
   it('gives the month one bar per week counted back from today, the oldest one shorter', () => {
     const weeks = usageSegments('30', now)
     expect(weeks).toHaveLength(5)
-    expect(weeks[4]).toMatchObject({ label: '10/9', title: '10 月 9 日至10 月 15 日', end: now.getTime() })
-    expect(weeks[0]).toMatchObject({ label: '9/16', title: '9 月 16 日至9 月 17 日' })
+    expect(weeks[4]).toMatchObject({ label: '10/9', title: '10月9日至10月15日', end: now.getTime() })
+    expect(weeks[0]).toMatchObject({ label: '9/16', title: '9月16日至9月17日' })
     expect(weeks[1].start).toBe(weeks[0].end)
   })
 
@@ -79,7 +79,7 @@ describe('usage', () => {
       bucket(new Date(2026, 9, 14, 13), 5),
     ])
     expect(blocks[0]).toMatchObject({ label: '8 点', start: new Date(2026, 9, 14, 8).getTime(), quota: 0 })
-    expect(blocks.at(-1)).toMatchObject({ label: '8 点', title: '10 月 15 日 8 点', quota: 50 })
+    expect(blocks.at(-1)).toMatchObject({ label: '8 点', title: '10月15日 8 点', quota: 50 })
     expect(blocks.find((block) => block.start === new Date(2026, 9, 14, 12).getTime())?.quota).toBe(5)
     expect(blocks).toHaveLength(7)
   })

@@ -71,7 +71,7 @@ describe('renderer-v2 operation error dialog', () => {
   })
 
   it('names the config file and offers retry and support instead of the install directory when a config write is refused', () => {
-    // 已知29：改用当前账号、重新写入 Key 写的是配置文件，安装目录跟它没关系，不出「复制路径」。
+    // 已知29：改用当前账号、重新写入密钥 写的是配置文件，安装目录跟它没关系，不出「复制路径」。
     const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径'"
     const directory = 'C:\\Users\\peaker\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code'
     const failure = { message: raw, tool: 'claude' as const, target: 'config' as const, retry: () => undefined }

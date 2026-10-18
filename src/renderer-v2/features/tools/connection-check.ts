@@ -58,10 +58,10 @@ const rewritableLayers: ReadonlySet<ConnectionCheckLayer> = new Set<ConnectionCh
  * 端到用户面前时，再让他先去别的页面就是自相矛盾。所以只有在给得出这颗按钮时
  * 才换这句话，其余情况仍旧原样转述主进程的结论。
  */
-const rewriteNextStep = '当前账号的 Key 需要重新写一次。点「重新写入密钥」，写完会自动再测一遍连接。'
+const rewriteNextStep = '当前账号的密钥需要重新写一次。点「重新写入密钥」，写完会自动再测一遍连接。'
 
 /**
- * 「重新写入 Key」只对星芒来源的工具给得出来：重写流程本身会跳过官方账号与
+ * 「重新写入密钥」只对星芒来源的工具给得出来：重写流程本身会跳过官方账号与
  * 手填密钥（account-bootstrap.ts 的 accountBootstrapPlan），对这些工具画一颗
  * 按钮出来，用户点下去什么都不会发生。
  */

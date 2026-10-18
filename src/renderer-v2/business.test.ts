@@ -157,7 +157,7 @@ describe('v2 business boundaries', () => {
       { key: 'start', label: '开始时间' },
       { key: 'modelName', label: '模型名称' },
       { key: 'group', label: '分组' },
-      { key: 'tokenName', label: '令牌名称' },
+      { key: 'tokenName', label: '密钥名称' },
     ]
     expect(hiddenFilterCount(fields, ['start', 'modelName'], {})).toBe(0)
     expect(hiddenFilterCount(fields, ['start', 'modelName'], { start: '2026-10-01T00:00', modelName: 'gpt' })).toBe(0)

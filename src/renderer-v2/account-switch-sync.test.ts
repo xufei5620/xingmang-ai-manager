@@ -256,7 +256,7 @@ describe('saved account explicit CLI key sync', () => {
       expect.objectContaining({
         provider: 'claude',
         eligible: true,
-        reason: '手动填写密钥',
+        reason: '自己的密钥',
       }),
     )
   })
@@ -264,7 +264,7 @@ describe('saved account explicit CLI key sync', () => {
     const h = setup()
     h.context.configs.claude.configurationOwnership = 'manual'
     expect(accountSyncCandidates(h.context, null)).toContainEqual(expect.objectContaining({
-      provider: 'claude', eligible: true, reason: '手动填写密钥',
+      provider: 'claude', eligible: true, reason: '自己的密钥',
     }))
     h.context.configs.claude.matchesRelay = false
     expect(accountSyncCandidates(h.context, null)).toContainEqual(expect.objectContaining({
