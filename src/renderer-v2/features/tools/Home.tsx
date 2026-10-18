@@ -864,7 +864,8 @@ export function Home(props: HomeProps) {
     const { installJob, job, status } = state
     const name = toolRegistry.find((entry) => entry.id === tool.id)?.name ?? tool.name
     const [statusText, statusTone] = statuses.tool[status]
-    const statusPill = <Pill tone={statusTone} dot>{statusText}</Pill>
+    // 字包一层 span 才有省略号（components.css 的 .xm-tool-card-badge），被截时悬停看全文。
+    const statusPill = <Pill tone={statusTone} dot><span title={statusText}>{statusText}</span></Pill>
     const repairBusy = Boolean(state.repairJob)
     const fixButton = status === 'configBroken' && props.onRepairConfig
       ? <Button variant="secondary" size="sm" loading={repairBusy} title="改之前会先备份原来的设置" onClick={() => props.onRepairConfig?.(tool.id)} testId={`tool-${tool.id}-repair-config`}>{repairBusy ? '正在修复' : '修好它'}</Button>
@@ -903,10 +904,11 @@ export function Home(props: HomeProps) {
       : status === 'missing' ? <span className="v2-tool-card-off">{statusText}</span>
       : status === 'ready' || status === 'official' ? sourceMenu(tool, state)
         : statusPill
+    // 检测失败时按钮是「重新检测」，不配下载箭头（#1132）。
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(state.launchJob)}
       disabled={state.primaryDisabled}
       title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined}
-      icon={!tool.status.installed && !state.manualInstall && !state.installFailure ? Download : undefined}
+      icon={!tool.status.installed && !tool.error && !state.manualInstall && !state.installFailure ? Download : undefined}
       onClick={state.primary} testId={`tool-${tool.id}-primary`}>{state.primaryLabel}</Button>
     const actions = installJob ? installJob.cancellable
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
@@ -964,7 +966,7 @@ export function Home(props: HomeProps) {
       : status === 'missing' ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
       : switchable ? externalSourceMenu(tool, status === 'official')
       : status === 'ready' && tool.status.configurationSource === 'xingmang' ? <span className="v2-source-chip is-static" title="额度从当前账号的余额里扣" data-testid={`tool-${tool.id}-source`}>当前账号</span>
-        : <Pill tone={statuses.tool[status][1]} dot>{statuses.tool[status][0]}</Pill>
+        : <Pill tone={statuses.tool[status][1]} dot><span title={statuses.tool[status][0]}>{statuses.tool[status][0]}</span></Pill>
     const actions = installJob?.cancellable && props.onCancelInstallExternal
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstallExternal?.(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
       : installJob ? null

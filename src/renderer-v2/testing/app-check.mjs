@@ -2211,6 +2211,48 @@ test('tool probe failures show a retry state instead of a third-party configurat
     await clean(page)
   } finally { await page.close() }
 })
+// #1132：四列卡片在任何窗口下都只有 235 上下宽。底栏放不下时省略左边的牌子（悬停看全文），
+// 按钮上的字一个不少；官方安装器那句提示不冲出卡片；「重新检测」不配下载箭头。
+test('a squeezed tool card shortens its status badge, never its button, and keeps its notes inside', async () => {
+  const cases = [
+    ['unownedClaude=1', 'claude', '打开', '密钥可能不是当前账号的'],
+    ['unknownClaude=1', 'claude', '改用当前账号', '不是当前账号的密钥'],
+    ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
+    ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
+  ]
+  for (const [query, tool, label, status] of cases) {
+    const page = await open(query)
+    try {
+      const row = page.getByTestId(`tool-row-${tool}`)
+      await row.locator('.xm-tool-card-actions > .xm-btn').filter({ hasText: label }).waitFor()
+      // 默认窗口，和最小窗口自动缩到 0.9 以后的实际大小。
+      for (const viewport of [{ width: 1280, height: 820 }, { width: 1067, height: 622 }]) {
+        await page.setViewportSize(viewport)
+        const layout = await row.evaluate((card) => {
+          const box = (element) => element?.getBoundingClientRect() ?? null
+          const button = card.querySelector('.xm-tool-card-actions > .xm-btn')
+          const text = button.querySelector(':scope > span')
+          const badge = card.querySelector('.xm-tool-card-badge .xm-pill > span')
+          const note = card.querySelector('.v2-tool-external-note')
+          return {
+            card: box(card), actions: box(card.querySelector('.xm-tool-card-actions')), badge: box(card.querySelector('.xm-tool-card-badge')),
+            buttonClipped: text.scrollWidth > text.clientWidth, download: Boolean(button.querySelector('.lucide-download')),
+            badgeText: badge?.textContent ?? null, badgeTitle: badge?.getAttribute('title') ?? null, note: box(note),
+          }
+        })
+        const where = `${query} at ${viewport.width}`
+        assert.ok(layout.card.width < 245, `${where}: the card is ${layout.card.width}px wide`)
+        assert.equal(layout.buttonClipped, false, `${where}: 「${label}」 is shown in full`)
+        assert.ok(layout.badge.right <= layout.actions.left + 0.5, `${where}: the badge ends before the buttons`)
+        assert.ok(layout.actions.right <= layout.card.right + 0.5, `${where}: the buttons stay inside the card`)
+        if (status) assert.deepEqual([layout.badgeText, layout.badgeTitle], [status, status], `${where}: a cut badge keeps its full text on hover`)
+        if (tool === 'codex') assert.ok(layout.note && layout.note.right <= layout.card.right - 13.5, `${where}: the installer note stays inside the card`)
+        assert.equal(layout.download, false, `${where}: 「${label}」 carries no download arrow`)
+      }
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
 // 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，换成一句中文。
 test('an English probe failure reads as a plain Chinese sentence on the home row', async () => {
   const page = await open('detectionFailed=eperm')
