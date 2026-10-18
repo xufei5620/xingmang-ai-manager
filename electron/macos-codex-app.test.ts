@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandErrorCode } from './command-runner'
+import { darwinDeepVerificationTimeoutMs } from './macos-code-signing'
 import {
   buildMacosCodexAppLaunchPlan,
   commandTimeoutMs,
@@ -214,6 +215,14 @@ describe('resolveSystemCommandTimeoutMs', () => {
     expect(resolveSystemCommandTimeoutMs('/usr/bin/mdfind', [
       'kMDItemCFBundleIdentifier == "com.openai.codex"',
     ])).toBe(commandTimeoutMs)
+  })
+
+  // A customer's Intel Mac needed 22.77s for the deep walk over Codex.app and was
+  // stuck behind a 15s budget that installation never had: Codex installed, then
+  // every detection timed out, retries included, because each one starts over.
+  it('gives detection the same deep-verification budget as installation', () => {
+    expect(deepVerificationTimeoutMs).toBe(darwinDeepVerificationTimeoutMs)
+    expect(deepVerificationTimeoutMs).toBeGreaterThanOrEqual(60_000)
   })
 
   // Routing must key off the --deep flag itself, not just the executable name:
@@ -1144,6 +1153,102 @@ describe('inspectMacosCodexApp', () => {
     })
     await expect(scan()).resolves.toMatchObject({ app: { version: '26.727.51351' } })
 
+    expect(codesignCalls).toBe(2)
+  })
+
+  // The home page scan, the model-catalog check and a launch can all reach the
+  // same bundle at startup. On a slow Mac a second walk would compete for the
+  // same disk and push both past the budget.
+  it('shares one deep verification between concurrent scans of the same bundle', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    let finishCodesign = () => {}
+    let startedHook = () => {}
+    const codesignStarted = new Promise<void>((resolve) => { startedHook = resolve })
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/codesign') {
+        startedHook()
+        await new Promise<void>((resolve) => { finishCodesign = resolve })
+        return ''
+      }
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    const first = scan()
+    await codesignStarted
+    const second = scan()
+    await vi.waitFor(() => {
+      const plutilCalls = runSystemCommand.mock.calls.filter(([executable]) => executable === '/usr/bin/plutil')
+      // Two identity reads from each scan: the second one has reached the signature step.
+      expect(plutilCalls.length).toBeGreaterThanOrEqual(4)
+    })
+    finishCodesign()
+
+    await expect(first).resolves.toMatchObject({ app: { version: '26.727.51351' } })
+    await expect(second).resolves.toMatchObject({ app: { version: '26.727.51351' } })
+    expect(runSystemCommand.mock.calls.filter(([executable]) => executable === '/usr/bin/codesign')).toHaveLength(1)
+  })
+
+  it('hands a shared verification failure to every waiter and walks again on the next scan', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    let codesignCalls = 0
+    let failCodesign = () => {}
+    let startedHook = () => {}
+    const codesignStarted = new Promise<void>((resolve) => { startedHook = resolve })
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/codesign') {
+        codesignCalls += 1
+        if (codesignCalls > 1) return ''
+        startedHook()
+        await new Promise<void>((resolve) => { failCodesign = resolve })
+        throw commandRunnerError('TIMED_OUT', '命令执行时间过长，已中止：codesign')
+      }
+      if (executable === '/usr/bin/mdfind') return ''
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    const first = scan()
+    await codesignStarted
+    const second = scan()
+    await vi.waitFor(() => {
+      const plutilCalls = runSystemCommand.mock.calls.filter(([executable]) => executable === '/usr/bin/plutil')
+      expect(plutilCalls.length).toBeGreaterThanOrEqual(4)
+    })
+    failCodesign()
+
+    const unfinished = { app: null, detectionFailed: true, detectionError: '命令执行时间过长，已中止：codesign' }
+    await expect(first).resolves.toEqual(unfinished)
+    await expect(second).resolves.toEqual(unfinished)
+    expect(codesignCalls).toBe(1)
+
+    await expect(scan()).resolves.toMatchObject({ app: { version: '26.727.51351' } })
     expect(codesignCalls).toBe(2)
   })
 })
