@@ -105,6 +105,48 @@ let codexCatalogReady = false
 let codexCatalogAttempts = 0
 // mcpHealthFail 让第一次连接检测没跑完，验证「这次没检测成」和「重新检测」。
 let mcpHealthAttempts = 0
+// mcpAuth：Codex 那条连接要登录授权；点了「登录授权」就一直等，直到点「取消」（#1099 第 1 条）。
+let finishMcpLogin: (() => void) | null = null
+function codexMcpServers(authStatus: string) {
+  return [
+    {
+      name: 'test-extension',
+      enabled: true,
+      disabledReason: null,
+      transportType: 'http' as const,
+      command: null,
+      args: [],
+      cwd: null,
+      url: 'https://example.test/mcp',
+      envNames: [],
+      inheritedEnvNames: [],
+      httpHeaderNames: [],
+      inheritedHttpHeaderNames: [],
+      bearerTokenEnvVar: null,
+      startupTimeoutSec: null,
+      toolTimeoutSec: null,
+      authStatus,
+      origin: 'user' as const,
+      editable: true,
+    },
+  ]
+}
+const mcpAuthMethods = {
+  listMcpServers: async () => codexMcpServers('not_logged_in'),
+  loginMcpServer: async (name: string) => {
+    record('mcp-login', name)
+    await new Promise<void>((resolve) => {
+      finishMcpLogin = resolve
+    })
+    return codexMcpServers('not_logged_in')
+  },
+  cancelMcpLogin: async (name: string) => {
+    record('mcp-cancel-login', name)
+    // 主进程停掉登录命令、再读一遍列表要一会儿：留出「正在停止」看得见的那一下。
+    setTimeout(() => finishMcpLogin?.(), 400)
+    return true
+  },
+} satisfies Partial<V2Bridge>
 const codexCatalogPlugin = {
   provider: 'codex' as const,
   kind: 'plugin' as const,
@@ -944,6 +986,7 @@ const apiMethods = {
     record('add-mcp', input)
     return []
   },
+  ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   listBackups: async () => (empty ? [] : [backup]),
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)

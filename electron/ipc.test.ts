@@ -273,6 +273,7 @@ function register(
     addMcpServer: vi.fn(),
     removeMcpServer: vi.fn(),
     loginMcpServer: vi.fn(),
+    cancelMcpLogin: vi.fn(),
     logoutMcpServer: vi.fn(),
     listSkills: vi.fn(),
     importSkill: vi.fn(),
@@ -3705,6 +3706,19 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => electronMocks.handlers.get('backups:inspect')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
       expect(() => electronMocks.handlers.get('mcp:remove')!(trustedEvent(), '')).toThrow('MCP 名称格式错误')
+    })
+
+    it('validates the MCP name before cancelling a waiting login', () => {
+      const { extensionService } = register()
+      extensionService.cancelMcpLogin.mockReturnValue(true)
+      const handler = electronMocks.handlers.get('mcp:cancel-login')!
+
+      expect(handler(trustedEvent(), ' remote-server ')).toBe(true)
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledWith('remote-server')
+      for (const bad of [42, null, '', 'server\0name', 'a'.repeat(129)]) {
+        expect(() => handler(trustedEvent(), bad)).toThrow('MCP 名称格式错误')
+      }
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledTimes(1)
     })
   })
 

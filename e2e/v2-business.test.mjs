@@ -1230,6 +1230,35 @@ test('extension toggle preserves original state and reports mutation failure', a
   }
 })
 
+test('waiting for MCP browser authorization can be cancelled without a failure banner', async () => {
+  const page = await fixture('page=mcp&installedProviders=codex&mcpAuth')
+  try {
+    const row = page.getByTestId('mcp-row-test-extension')
+    await row.getByTestId('mcp-auth-test-extension').click()
+    await row.getByText('等你在浏览器里授权', { exact: true }).waitFor()
+    // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一行。
+    const cancel = row.getByRole('button', { name: '停止等待 测试扩展 授权', exact: true })
+    assert.equal(await cancel.textContent(), '取消')
+    await cancel.click()
+    await row.getByText('正在停止', { exact: true }).waitFor()
+    await waitForToast(page, '已取消，测试扩展 还没有授权')
+    await row.getByText('登录授权', { exact: true }).waitFor()
+    assert.equal(await row.getByTestId('mcp-auth-cancel-test-extension').count(), 0)
+    assert.equal(await row.getByTestId('mcp-auth-test-extension').isEnabled(), true)
+    // 取消是正常结束：不弹红条，也不说「已授权」。
+    assert.equal(await page.getByText('未完成', { exact: false }).count(), 0)
+    assert.equal(
+      await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text === '测试扩展 已授权')),
+      false,
+    )
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'mcp-login').map((call) => call.args), ['test-extension'])
+    assert.deepEqual(recorded.filter((call) => call.name === 'mcp-cancel-login').map((call) => call.args), ['test-extension'])
+  } finally {
+    await page.close()
+  }
+})
+
 test('each MCP connection carries its own checked answer and the reason behind it', async () => {
   const page = await fixture('page=mcp')
   try {
