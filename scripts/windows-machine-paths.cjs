@@ -1,7 +1,40 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const vm = require('node:vm')
 
-const SYSTEM_ROOT_DEVICE_PATH = '\\\\?\\GLOBALROOT\\SystemRoot'
+// Which directory is the real SystemRoot is decided once, in
+// electron/windows-system-root.ts, and the client builds every machine path on
+// the same file, so the PowerShell this gate trusts is the one the client
+// would trust (#1225). The gate has to run without a compiled main process
+// (npm run release:verify on a fresh checkout), so the file is loaded from
+// source rather than from dist-electron/. It is a leaf on purpose: it may
+// require node: built-ins and nothing else, and the loader refuses anything
+// more. Loading waits for the first lookup, so an unsigned or non-Windows run
+// never reads it.
+const SHARED_SYSTEM_ROOT_SOURCE = path.join(__dirname, '..', 'electron', 'windows-system-root.ts')
+let sharedSystemRootModule = null
+
+function sharedSystemRoot() {
+  if (sharedSystemRootModule) return sharedSystemRootModule
+  const ts = require('typescript')
+  const { outputText } = ts.transpileModule(fs.readFileSync(SHARED_SYSTEM_ROOT_SOURCE, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    fileName: SHARED_SYSTEM_ROOT_SOURCE,
+  })
+  const module = { exports: {} }
+  vm.compileFunction(outputText, ['require', 'module', 'exports'], { filename: SHARED_SYSTEM_ROOT_SOURCE })(
+    function requireBuiltin(id) {
+      if (!id.startsWith('node:')) {
+        throw new Error(`electron/windows-system-root.ts 只能引用 node: 内置模块，不能引用 ${id}`)
+      }
+      return require(id)
+    },
+    module,
+    module.exports,
+  )
+  sharedSystemRootModule = module.exports
+  return sharedSystemRootModule
+}
 
 function pathError(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined)
@@ -9,51 +42,24 @@ function pathError(code, message, cause) {
   return error
 }
 
-function absoluteWindowsDirectory(value, label) {
-  const candidate = typeof value === 'string' ? value.trim() : ''
-  if (!candidate || candidate.includes('\0') || !path.win32.isAbsolute(candidate)) {
-    throw pathError('WINDOWS_SYSTEM_ROOT_UNTRUSTED', `无法解析可信的 Windows ${label} 目录`)
+function resolveWindowsSystemRoot(options = {}) {
+  const platform = options.platform || process.platform
+  if (platform !== 'win32') {
+    throw pathError('WINDOWS_PLATFORM_UNSUPPORTED', 'Windows 机器路径解析仅支持 Windows')
   }
-  return path.win32.normalize(candidate).replace(/[\\/]$/, '')
-}
-
-function loadedSharedObjects() {
+  const shared = sharedSystemRoot()
+  // The shared module takes strings only, which a real loader report is
+  // filtered down to. A list handed in here has no such guarantee, and this
+  // gate has always passed over entries that are not strings.
+  const sharedObjects = options.sharedObjects
+    ? options.sharedObjects.filter((entry) => typeof entry === 'string')
+    : undefined
   try {
-    const report = process.report.getReport()
-    return Array.isArray(report.sharedObjects)
-      ? report.sharedObjects.filter((entry) => typeof entry === 'string')
-      : []
-  } catch {
-    return []
-  }
-}
-
-function deriveWindowsSystemRoot(sharedObjects) {
-  const candidates = new Map()
-  for (const filePath of sharedObjects) {
-    if (typeof filePath !== 'string' || !path.win32.isAbsolute(filePath)) continue
-    const fileName = path.win32.basename(filePath).toLowerCase()
-    if (fileName !== 'ntdll.dll' && fileName !== 'kernel32.dll') continue
-    const system32 = path.win32.dirname(filePath)
-    if (path.win32.basename(system32).toLowerCase() !== 'system32') continue
-    const root = path.win32.dirname(system32)
-    const key = root.toLowerCase()
-    const modules = candidates.get(key) || new Set()
-    modules.add(fileName)
-    candidates.set(key, modules)
-    if (modules.has('ntdll.dll') && modules.has('kernel32.dll')) {
-      return absoluteWindowsDirectory(root, 'SystemRoot')
-    }
-  }
-  throw pathError(
-    'WINDOWS_SYSTEM_ROOT_UNTRUSTED',
-    '无法从已加载的 Windows 核心模块解析真实 SystemRoot',
-  )
-}
-
-function systemRootFromObjectManager(realpathSystemRoot = fs.realpathSync.native) {
-  try {
-    return absoluteWindowsDirectory(realpathSystemRoot(SYSTEM_ROOT_DEVICE_PATH), 'SystemRoot')
+    return shared.resolveWindowsSystemRoot({
+      platform,
+      sharedObjects,
+      realpathSystemRoot: options.realpathSystemRoot,
+    })
   } catch (cause) {
     throw pathError(
       'WINDOWS_SYSTEM_ROOT_UNTRUSTED',
@@ -63,23 +69,8 @@ function systemRootFromObjectManager(realpathSystemRoot = fs.realpathSync.native
   }
 }
 
-function resolveWindowsSystemRoot(options = {}) {
-  const platform = options.platform || process.platform
-  if (platform !== 'win32') {
-    throw pathError('WINDOWS_PLATFORM_UNSUPPORTED', 'Windows 机器路径解析仅支持 Windows')
-  }
-  try {
-    return deriveWindowsSystemRoot(options.sharedObjects || loadedSharedObjects())
-  } catch {
-    return systemRootFromObjectManager(options.realpathSystemRoot)
-  }
-}
-
 function pathWithinWindowsRoot(candidate, root) {
-  if (!path.win32.isAbsolute(candidate) || !path.win32.isAbsolute(root)) return false
-  const candidateKey = path.win32.normalize(candidate).replace(/[\\/]+$/, '').toLowerCase()
-  const rootKey = path.win32.normalize(root).replace(/[\\/]+$/, '').toLowerCase()
-  return candidateKey === rootKey || candidateKey.startsWith(`${rootKey}\\`)
+  return sharedSystemRoot().pathWithinWindowsRoot(candidate, root)
 }
 
 function resolveTrustedWindowsPowerShell(options = {}) {
@@ -109,8 +100,6 @@ function resolveTrustedWindowsPowerShell(options = {}) {
 }
 
 module.exports = {
-  SYSTEM_ROOT_DEVICE_PATH,
-  deriveWindowsSystemRoot,
   pathWithinWindowsRoot,
   resolveTrustedWindowsPowerShell,
   resolveWindowsSystemRoot,

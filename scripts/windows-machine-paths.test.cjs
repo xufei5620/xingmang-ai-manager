@@ -8,11 +8,11 @@ const releaseCopy = require('./windows-machine-paths.cjs')
 
 const projectRoot = path.resolve(__dirname, '..')
 
-// 发版校验（verify-release-artifacts.cjs）要在没编译主程序时也能跑，所以自带一份「Windows
-// 系统目录在哪」的解析，抄自 electron/windows-machine-paths.ts。两份以前没人对账：哪天只改了
-// 一边，发版脚本拿去验签名的 PowerShell 就可能不是客户端认的那一个（#1073 第 7 条）。这里只
-// 给两份喂同一组输入、比结果，两份实现一行都不改；以哪份为准、要不要合成一份是另一回事
-// （#1073 第 7 条 b）。
+// 发版校验（verify-release-artifacts.cjs）要在没编译主程序时也能跑，以前自带一份「Windows
+// 系统目录在哪」的解析，抄自 electron/windows-machine-paths.ts，两份在核心模块路径带 NUL 时
+// 认法不同（#1225）。现在两边都用 electron/windows-system-root.ts 这一份：客户端照常 import，
+// 发版脚本从源码现转。这里仍给两个入口喂同一组输入、比结果，再把结果钉成绝对值，防的是哪天
+// 有一边绕开了共用的那份、或者共用的那份悄悄改了认法。
 
 // The client copy reaches the object manager through fs.realpathSync.native
 // with no injection point of its own, so it is loaded with an fs whose native
@@ -36,7 +36,7 @@ const clientModules = new Map()
 
 function clientModule(name) {
   if (clientModules.has(name)) return clientModules.get(name)
-  assert.ok(['windows-machine-paths', 'powershell-module-imports'].includes(name), name)
+  assert.ok(['windows-machine-paths', 'windows-system-root', 'powershell-module-imports'].includes(name), name)
   const file = path.join(projectRoot, 'electron', `${name}.ts`)
   const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
@@ -173,10 +173,76 @@ test('both copies settle on the same SystemRoot for every loader report and obje
   assert.deepEqual([...seen].sort(), ['loader report', 'object manager', 'refused'])
 })
 
+// The comparison above only says the two copies agree; this pins what they
+// agree on, so that folding them into one cannot quietly move the answer for
+// both at once. Each loader report either settles SystemRoot by itself (the
+// root, or 'refused') without asking the object manager, or settles nothing
+// (null) and leaves it to the object manager, whose answer is then held to the
+// same check. The real process report is left out: off Windows it settles
+// nothing, on the Windows runner it names the runner's own root.
+const settledByLoaderReport = {
+  'nothing loaded': null,
+  'both core modules': 'C:\\Windows',
+  'mixed case': 'D:\\WINDOWS',
+  'forward slashes': 'C:\\Windows',
+  'dot segments': 'C:\\Windows',
+  'a parent segment in only one of the pair': null,
+  'a trailing space on the root': 'C:\\Windows',
+  'a UNC root': '\\\\host\\share',
+  'a device-prefixed root': '\\\\?\\C:\\Windows',
+  'a Windows directory at the drive root': 'C:',
+  'only ntdll': null,
+  'only kernel32': null,
+  'the pair split across roots': null,
+  'two complete pairs': 'E:\\Other',
+  'the pair outside System32': null,
+  'a look-alike System32': null,
+  'a look-alike kernel32': null,
+  'a look-alike ntdll': null,
+  'relative module paths': null,
+  'decoys around the pair': 'C:\\Windows',
+}
+
+const settledByObjectManager = {
+  unavailable: 'refused',
+  'a plain directory': 'E:\\Windows',
+  'a trailing separator': 'E:\\Windows',
+  'surrounding whitespace': 'E:\\Windows',
+  'a device-prefixed path': '\\\\?\\E:\\Windows',
+  'a drive root': 'E:',
+  'a relative path': 'refused',
+  'an empty answer': 'refused',
+  'an embedded NUL': 'refused',
+}
+
+function expectedOutcome(report, answerName) {
+  const settled = settledByLoaderReport[report]
+  const outcome = settled === null ? settledByObjectManager[answerName] : settled
+  const asked = settled === null ? ['\\\\?\\GLOBALROOT\\SystemRoot'] : []
+  return outcome === 'refused' ? { refused: true, asked } : { systemRoot: outcome, asked }
+}
+
+test('the client settles SystemRoot where it always has for every loader report and object-manager answer', () => {
+  assert.deepEqual(
+    Object.keys(settledByLoaderReport),
+    Object.keys(loaderReports).filter((report) => report !== 'the real process report'),
+  )
+  assert.deepEqual(Object.keys(settledByObjectManager), Object.keys(objectManagerAnswers))
+  for (const report of Object.keys(settledByLoaderReport)) {
+    for (const [answerName, answer] of Object.entries(objectManagerAnswers)) {
+      assert.deepEqual(
+        clientSystemRoot(loaderReports[report], answer),
+        expectedOutcome(report, answerName),
+        `${report} / object manager: ${answerName}`,
+      )
+    }
+  }
+})
+
 test('both copies consult the same object-manager device path', () => {
   const release = releaseSystemRoot([], () => 'E:\\Windows')
   const client = clientSystemRoot([], () => 'E:\\Windows')
-  assert.deepEqual(release.asked, [releaseCopy.SYSTEM_ROOT_DEVICE_PATH])
+  assert.deepEqual(release.asked, ['\\\\?\\GLOBALROOT\\SystemRoot'])
   assert.deepEqual(client.asked, release.asked)
 })
 
@@ -262,16 +328,33 @@ test('both copies refuse to resolve SystemRoot off Windows', () => {
   }
 })
 
-// A loader report cannot hold a NUL on a real machine, so this has never
-// mattered in practice, but the copies disagree on it: the release copy
-// rejects the NUL root inside its derivation and falls back to the object
-// manager, while the client derives the root first and rejects it afterwards,
-// outside its fallback, so it refuses outright. Which one is right is not this
-// suite's call (#1225); the case stays here so the two are seen to agree once
-// that is settled.
-test('both copies treat a core-module pair under a NUL root the same way', {
-  todo: '#1225: the release copy falls back to the object manager, the client refuses',
-}, () => {
+// A real loader report is filtered down to strings before either copy reads
+// it, so only a hand-built list can hold anything else. The release gate has
+// always passed over such entries; it keeps doing so in front of the shared
+// module, which is typed for strings only.
+test('the release gate passes over loader entries that are not strings', () => {
+  const pair = loaderReports['both core modules']
+  for (const sharedObjects of [[42, ...pair], [null, ...pair], [...pair, {}]]) {
+    assert.deepEqual(releaseSystemRoot(sharedObjects, objectManagerAnswers['a plain directory']), {
+      systemRoot: 'C:\\Windows',
+      asked: [],
+    })
+  }
+})
+
+test('the client refuses a core-module pair under a NUL root without asking the object manager', () => {
+  const sharedObjects = ['C:\\Win\0dows\\System32\\ntdll.dll', 'C:\\Win\0dows\\System32\\kernel32.dll']
+  for (const [answerName, answer] of Object.entries(objectManagerAnswers)) {
+    assert.deepEqual(clientSystemRoot(sharedObjects, answer), { refused: true, asked: [] }, answerName)
+  }
+})
+
+// A loader report cannot hold a NUL on a real machine, so this never mattered
+// in practice, but it is where the two copies used to part: the release copy
+// rejected the NUL root inside its derivation and fell back to the object
+// manager, while the client refuses it outright. The client's answer stands
+// (#1225): a root the core modules do name is not traded for a second opinion.
+test('both copies treat a core-module pair under a NUL root the same way', () => {
   const sharedObjects = ['C:\\Win\0dows\\System32\\ntdll.dll', 'C:\\Win\0dows\\System32\\kernel32.dll']
   for (const [answerName, answer] of Object.entries(objectManagerAnswers)) {
     assert.deepEqual(

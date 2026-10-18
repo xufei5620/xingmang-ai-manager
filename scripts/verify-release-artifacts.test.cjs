@@ -8,8 +8,8 @@ const { gzipSync } = require('node:zlib')
 const { spawnSync } = require('node:child_process')
 const YAML = require('yaml')
 const {
-  deriveWindowsSystemRoot,
   resolveTrustedWindowsPowerShell,
+  resolveWindowsSystemRoot,
 } = require('./windows-machine-paths.cjs')
 const { verifyAuthenticode } = require('./verify-release-artifacts.cjs')
 
@@ -85,7 +85,7 @@ test('derives SystemRoot from loaded core modules instead of polluted environmen
   process.env.SystemRoot = 'E:\\attacker\\Windows'
   process.env.WINDIR = 'E:\\attacker\\Windows'
   try {
-    assert.equal(deriveWindowsSystemRoot(sharedObjects), 'D:\\Windows')
+    assert.equal(resolveWindowsSystemRoot({ platform: 'win32', sharedObjects }), 'D:\\Windows')
     const resolved = resolveTrustedWindowsPowerShell({
       platform: 'win32',
       sharedObjects,
