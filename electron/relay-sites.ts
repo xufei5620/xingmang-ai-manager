@@ -4,12 +4,13 @@
 // fail the build (or worse, leak main-process code into the renderer).
 //
 // A "relay site" is a CLI-facing AI-API-proxy endpoint: it owns the base
-// URLs the four CLIs are pointed at, plus the marketing/keys pages a user is
-// sent to from the app. This is a distinct axis from RelayBackendClient
-// (relay-backend.ts), which is the *account* backend (login/balance/key
-// management) a site delegates to -- accountBackend/accountBaseUrl below
-// name which one, but the actual account API calls still go through
-// new-api-client.ts today.
+// URLs the managed CLIs are pointed at (keyed by ProviderId, which still
+// names the retired Gemini CLI -- see catalog.ts's retiredProviderIds), plus
+// the marketing/keys pages a user is sent to from the app. This is a
+// distinct axis from RelayBackendClient (relay-backend.ts), which is the
+// *account* backend (login/balance/key management) a site delegates to --
+// accountBackend/accountBaseUrl below name which one: 'new-api' is
+// new-api-client.ts, 'sub2api' is sub2api-relay-backend.ts.
 import { providerBaseUrls, type ProviderId } from './catalog'
 
 export type RelayEndpointId = 'primary' | 'direct'
@@ -60,7 +61,6 @@ export type RelayRouteLines = Readonly<Record<RelayRouteSiteId, Readonly<RelayRo
 
 export interface RelayEndpoint {
   id: RelayEndpointId
-  label: string
   origin: string
   /** Retained native configuration identities; never automatic account failover targets. */
   aliases?: readonly string[]
@@ -186,18 +186,18 @@ export const defaultRelaySiteId: string = relaySites[0].id
 
 const siteEndpoints = new Map<string, readonly RelayEndpoint[]>([
   ['solov', Object.freeze([
-    Object.freeze({ id: 'primary' as const, label: '默认线路', origin: 'https://xm.solov.cc' }),
+    Object.freeze({ id: 'primary' as const, origin: 'https://xm.solov.cc' }),
     // 直连走自己的域名（证书是公共签发的，照常校验），服务器 IP 只在服务端 DNS 里，换 IP 不用发版。
     // 38.147.105.28:8443 是服务端的临时测试入口，域名版发出去以后关掉：只留作别名，认得出、迁得走
     // 按它写过的旧配置，新配置一律写域名，加速规则也不带它。
-    Object.freeze({ id: 'direct' as const, label: '备用直连', origin: 'https://xm-direct.solov.cc',
+    Object.freeze({ id: 'direct' as const, origin: 'https://xm-direct.solov.cc',
       aliases: Object.freeze(['https://38.147.105.28:8443']) }),
   ])],
   ['solov-api', Object.freeze([
-    Object.freeze({ id: 'primary' as const, label: '默认线路', origin: 'https://api.solov.cc' }),
+    Object.freeze({ id: 'primary' as const, origin: 'https://api.solov.cc' }),
     // 历史账号的直连：服务端给的域名，白名单里放着星芒用到的历史账号接口（sub2api-relay-backend.ts
     // 写死的是默认线路的地址，改走直连靠 relay-line-fetch.ts 换请求地址，那个文件不动）。
-    Object.freeze({ id: 'direct' as const, label: '备用直连', origin: 'https://api-direct.solov.cc' }),
+    Object.freeze({ id: 'direct' as const, origin: 'https://api-direct.solov.cc' }),
   ])],
 ])
 

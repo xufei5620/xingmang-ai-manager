@@ -259,7 +259,8 @@ import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
 import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
-  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelaySite } from './relay-sites'
+  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelayRouteSiteId, type RelaySite } from './relay-sites'
+import type { RelayRouteChange } from './relay-route-controller'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -1151,6 +1152,11 @@ export interface SystemService {
    * 调用方当什么都没改。
    */
   followToolRoutes?(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport>
+  /**
+   * 整份写入那一轮写完了（account-cli-provisioner.ts 的 configureManagedClis），written 是这一轮写好的几家：其中
+   * 因为连不上换了线路、跟过去的一次提示重开，不一家一句（历史账号，#1061 第 2 条）。可选 = 旧实现不提供。
+   */
+  noteRouteFollowRestart?(written: readonly ProviderId[]): Promise<void>
   /** ipc.ts 注册时交进来，注销时交 null。 */
   bindToolRouteAccount?(hooks: ToolRouteAccountHooks | null): void
   /** 星芒窗口回到前台：等着外部客户端退出再换线路的，看一眼退了没有（同一个客户端两次至少隔 2 分钟）。 */
@@ -1628,7 +1634,11 @@ export function npmRegistryLabel(registry: string): string {
  * not that there is a lot of work to do. Ten minutes is a ceiling for that
  * case rather than an expected duration; five was killing connections that
  * were slow but still making progress. npm prints nothing throughout, which
- * is why this step used to look like a hang.
+ * is why this step used to look like a hang. A connection that delivers
+ * nothing at all is ended sooner, by the same stall window as the download:
+ * the packuments fetched here stream into the cache's temp files just like
+ * tarballs do, so a slow resolution keeps the cache changing and only a dead
+ * one stops it.
  */
 export const npmResolutionTimeoutMs = 10 * 60_000
 export const npmDownloadTimeoutMs = 5 * 60_000
@@ -2753,6 +2763,11 @@ export interface SystemServiceOptions {
    */
   getToolRouteRewriteMode?: () => 'targeted' | 'merge'
   /**
+   * 「自动」线路最近一次换线（relay-route-controller.ts 的 lastChange）。历史账号的工具配置跟的就是这条，界面
+   * 整份写入跟过去以后据此判断要不要提示重开（#1061 第 2 条）。缺省 = 不提示。
+   */
+  relayRouteLastChange?: (siteId: RelayRouteSiteId) => RelayRouteChange | null
+  /**
    * 服务状态文件里的型号表（service-status.ts 的 cliModels）：默认型号、上一代、已下架。从不拒绝，
    * 读不到给 null。缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
    */
@@ -3461,6 +3476,9 @@ export function createSystemService(
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   const installCancellations = new InstallCancellationRegistry()
+  // 登记着取消句柄的那次 CLI 安装点名的版本（undefined = 没点名）。只在句柄还登记着时读，
+  // 每次登记句柄都会先覆盖它，所以句柄放掉以后留着旧值也不会被读到。
+  const installRequestedVersions = new Map<ProviderId, string | undefined>()
   // 桌面端（Codex、Claude）先从星芒自己的存储桶下（yoyo 2026-10-10）；桶那一路为什么没走通只进日志。
   const desktopBucketDownloads: DesktopBucketOptions = {
     onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
@@ -5229,6 +5247,13 @@ export function createSystemService(
             { stage: 'download', elapsedMs },
           )
         }, npmResolutionHeartbeatMs)
+        // 国内没开加速时，连官方源这一步常常一个字节也收不到，以前要干等满 10 分钟（#1057 第5b条）。
+        // 这一步拉的包信息同样边收边写进缓存的临时文件，所以照下载那一步看目录：3 分钟一点没变就停，
+        // 慢但一直在收的照旧等到 10 分钟。缓存目录要等 executeNpm 建，没建好之前量不到，量不到不算卡住。
+        const stallWatch = createNpmDownloadStallWatch(async () => (
+          await measureDirectoryBytes(resolution) + await measureDirectoryBytes(cache)
+        ))
+        const watchStartedAt = performance.now()
         try {
           await executeNpm([
             'install',
@@ -5236,9 +5261,26 @@ export function createSystemService(
             '--ignore-scripts',
             '--omit=dev',
             `--registry=${registry}`,
-          ], resolution, cache, npmResolutionTimeoutMs)
+          ], resolution, cache, npmResolutionTimeoutMs, stallWatch.signal)
+        } catch (error) {
+          if (!stallWatch.stalled) throw error
+          runtimeLog?.log(
+            'warn',
+            'install',
+            'cli.install.resolution-stalled',
+            `${definition.name} 在${npmRegistryLabel(registry)}解析依赖图 ${formatElapsedDuration(npmDownloadStallTimeoutMs)}没有进展，已中止`,
+            {
+              provider,
+              registry,
+              elapsedMs: Math.round(performance.now() - watchStartedAt),
+              attemptBytes: stallWatch.bytes,
+            },
+          )
+          // 和满 10 分钟超时是同一句（describeNpmCommandFailure 对 TIMED_OUT 给的也是它），后面的报错照旧。
+          throw new Error(npmDownloadTimedOutMessage, { cause: error })
         } finally {
           clearInterval(ticker)
+          stallWatch.stop()
         }
       }
 
@@ -5638,11 +5680,18 @@ export function createSystemService(
     // 这时再装一次 Claude Code 会走到这里,另排一次取消不了的安装;界面上同一个工具
     // 一次只放一个安装(useToolbox 的 run 按工具加锁),碰不到。
     if (installCancellations.has(key)) {
+      // 复用只对同一个版本成立：「回到某个版本」并进正在跑的「更新」，会跟着报成功，
+      // 装上的却是新版（#1061 第 9 条）。版本不同就直接拒，等这一次装完再点。
+      // 不发进度：进度按工具发，发一条失败会写到正在跑的那次的进度行上。
+      if (installRequestedVersions.get(provider) !== version) {
+        return Promise.reject(new Error(`${cliCatalog[provider].name} 正在安装中`))
+      }
       return installationQueue.enqueue(key, () => installCliOperation(provider, target, version))
     }
     // 句柄在入队之前登记:排在别人后面等待的那次安装也要能取消,
     // 否则用户只能干等前一个工具装完。
     const cancellation = installCancellations.begin(key)
+    installRequestedVersions.set(provider, version)
     let started = false
     const finished = installationQueue.enqueue(
       key,
@@ -8000,6 +8049,9 @@ export function createSystemService(
           readback: relayProviderBaseUrlEquals(inspectNativeProviderConfig(payload.provider).actualBaseUrl, activeSite.providerBaseUrls[payload.provider]),
         })
       }
+      // 这一家刚写的这一笔是不是因为连不上换线、跟过去的：是就等这一轮写完提示重开，不是就把以前记下的作废。
+      if (followedRoute && accountRouteFaultFollowed(activeSite.id, followedRoute)) accountRouteFollowed.set(payload.provider, owner)
+      else accountRouteFollowed.delete(payload.provider)
       // 整份写过一遍、来源重新记成了这次的：之前「被别的软件改回过」的结论作废，换线路照常跟。
       if (toolRouteFollow.read().providers[payload.provider]?.managedElsewhere) {
         await writeToolRouteRecord(payload.provider, ({ managedElsewhere: _managedElsewhere, reverts: _reverts, ...rest }) => rest)
@@ -8091,7 +8143,7 @@ export function createSystemService(
 
   // ---- 换线路时定点改写工具配置（xm 三线路 C9、C10、C11、C19） ----
   //
-  // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改。地址取的是
+  // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改（重开提示见 noteRouteFollowRestart）。地址取的是
   // relayRouting 这次运行生效的线路（开机定下的偏好，设置里改了没重启的不算），所以「改了设置没重启」
   // 那段时间工具配置照样跟着当前生效的线路走（(f)）。和整份写入排同一个 serializeConfigWrite 队。
   const toolRouteNow = serviceOptions.toolRouteNow ?? Date.now
@@ -8281,6 +8333,38 @@ export function createSystemService(
     for (const provider of hinted) await writeToolRouteRecord(provider, (current) => ({ ...current, hintAt: now }))
     runtimeLog?.log('info', 'config', 'route.restart-hint', '连接线路因为连不上换了，提示客户重开工具', { providers: hinted, tagged: tools.filter((provider) => !hinted.includes(provider)) })
     return true
+  }
+
+  // 历史账号的工具配置跟应用线路走，换了以后由界面整份写入跟过去（saveConfig 的 followedRoute），不走上面的
+  // 定点改写，以前因此一直不提示重开（#1061 第 2 条）。这一轮写完（noteRouteFollowRestart）再一次说完，只说这一轮
+  // 自己写的那几家：同时跑着的另一轮（客户自己点的换来源、换账号）不会把它们提前说掉。记着是哪个账号写的：账号
+  // 中途换了，那一轮整轮作废、走不到说完那一步，留下的不带到下一个账号那一轮。
+  const accountRouteFollowed = new Map<ProviderId, string | null>()
+
+  /**
+   * 整份写入跟过去的这条线路，是不是半小时内「自动」因为连不上换过来的那条。按换线时刻算、不按这次运行：上次
+   * 运行刚换完线就退出、这次开机才跟过去的也算；更早的、写死线路的、切回先走那条的不算。
+   */
+  function accountRouteFaultFollowed(siteId: string, line: RelayEndpointId): boolean {
+    // 星芒账号由 followToolRoutes 自己提示（R6 切回整份写入时它的工具线路也不在应用线路这里）。
+    if (siteId !== 'solov-api') return false
+    const change = serviceOptions.relayRouteLastChange?.(siteId)
+    if (!change || change.to !== line || (change.reason !== 'health-failed' && change.reason !== 'line-down')) return false
+    const age = toolRouteNow() - change.at
+    return age >= 0 && age < toolRouteHintTtlMs
+  }
+
+  async function noteRouteFollowRestart(written: readonly ProviderId[]): Promise<void> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const followed = written.filter((provider) => accountRouteFollowed.has(provider) && accountRouteFollowed.get(provider) === owner)
+    for (const provider of written) accountRouteFollowed.delete(provider)
+    if (!followed.length) return
+    // 配置已经写好了：提示没出成只进日志，不能把这一轮写入算成失败。
+    try {
+      if (await noteToolRouteRestart(followed)) serviceOptions.onToolRouteFollowed?.()
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'route.restart-hint-failed', '换线路的重开提示这次没出成，不影响工具使用', { providers: followed, reason: credentialFailureReason(error) })
+    }
   }
 
   async function followToolRoutes(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport> {
@@ -8830,6 +8914,7 @@ export function createSystemService(
     updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
       ...routeLineSnapshotFields(), ...toolRouteSnapshotFields() }),
     followToolRoutes,
+    noteRouteFollowRestart,
     bindToolRouteAccount: (hooks) => { toolRouteAccount = hooks },
     recheckPendingExternalRoutes,
     disposeToolRoutes,

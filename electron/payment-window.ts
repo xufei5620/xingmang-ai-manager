@@ -12,6 +12,11 @@ import { RealmAccountError } from './realm-account'
 const accountOrigin = 'https://xm.solov.cc'
 const paymentCallbackOrigin = 'https://api.solov.cc'
 const paymentWindowTitle = '安全支付 - 星芒AI'
+// 星芒自己的两个站点不把域名写进标题：界面上不出现站点名，这两个站点被冒充时标题也帮不上忙。
+const ownSiteHostnames: ReadonlySet<string> = new Set([
+  new URL(accountOrigin).hostname,
+  new URL(paymentCallbackOrigin).hostname,
+])
 const paymentWindowMonitorIntervalMs = 1_000
 const paymentOrderMonitorIntervalMs = 3_000
 const paymentWindowMaxLifetimeMs = 10 * 60_000
@@ -263,6 +268,23 @@ export function validatePaymentForm(form: NewApiPaymentForm): ValidatedPaymentFo
   })
 }
 
+/**
+ * 付款地址是后端给的，后端被冒充时，标题写着「安全支付 - 星芒AI」的窗口就能用来钓鱼。
+ * 所以标题后面带上付款页实际所在的域名，客户能看出自己在哪个网站上付钱（#1069 第4条）。
+ * 域名照 URL 解析后的写法：中文域名显示成 xn-- 开头的那种，长得像的字混不过去。
+ * 星芒自己画的扫码页是 data: 地址，没有域名，照旧只写「安全支付 - 星芒AI」。
+ */
+export function buildPaymentWindowTitle(url: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return paymentWindowTitle
+  }
+  if (parsed.host === '' || ownSiteHostnames.has(parsed.hostname)) return paymentWindowTitle
+  return `${paymentWindowTitle}（当前网页：${parsed.host}）`
+}
+
 export function isAllowedPaymentNavigationUrl(
   value: string,
   allowedOrigins: ReadonlySet<string>,
@@ -393,6 +415,7 @@ export function createPaymentWindowController(
     if (paymentWindow && !paymentWindow.isDestroyed()) destroySilently(paymentWindow)
     const orderStatusReader = tradeNo ? options.createOrderStatusReader?.(tradeNo) : undefined
     const generation = monitorGeneration
+    let windowTitle = buildPaymentWindowTitle(targetUrl)
     const window = createWindow({
       parent,
       modal: Boolean(parent),
@@ -403,7 +426,7 @@ export function createPaymentWindowController(
       show: false,
       autoHideMenuBar: true,
       backgroundColor: '#f5f6f7',
-      title: paymentWindowTitle,
+      title: windowTitle,
       ...(options.iconPath ? { icon: options.iconPath } : {}),
       webPreferences: {
         contextIsolation: true,
@@ -443,7 +466,12 @@ export function createPaymentWindowController(
     })
     window.on('page-title-updated', (event) => {
       event.preventDefault()
-      if (!window.isDestroyed()) window.setTitle(paymentWindowTitle)
+      if (!window.isDestroyed()) window.setTitle(windowTitle)
+    })
+    // 跳转、重定向落地以后按实际地址换标题。同一个网页里改地址（did-navigate-in-page）换不了域名，不用听。
+    window.webContents.on('did-navigate', (_event, url) => {
+      windowTitle = buildPaymentWindowTitle(url)
+      if (!window.isDestroyed()) window.setTitle(windowTitle)
     })
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (!isAllowedPaymentNavigationUrl(url, allowedOrigins)) options.onBlockedNavigation?.(url)

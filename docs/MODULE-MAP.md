@@ -47,7 +47,7 @@
 
 - `installation-queue.ts` 是 I11 要求的安装、卸载、启动队列；`bounded-operation-queue.ts` 是图片生成和扫描探测用的通用并发队列，不能拿来替代前者。
 - 服务端的两份状态文件：更新目录（R2）上的 `service-status.json`（`service-status.ts` 读）和站点上的 `/xm-route-status.json`（`route-status-file.ts` 读）。本地的四份：`relay-route-lines.json`（应用线路）、`tool-route-state.json`（工具线路）、`release-guard.json`（撤回名单与放量）、`cli-model-hints.json`（型号表）。
-- `platform-capabilities.ts` 是判断「当前平台支持什么」的单一入口；`platform/facade.ts` / `registry.ts` / `index.ts` 目前只有测试在用，渲染层的平台能力来自 `ipc.ts` 的 `platform:get-capabilities`。
+- `platform-capabilities.ts` 是判断「当前平台支持什么」的单一入口，渲染层的平台能力来自 `ipc.ts` 的 `platform:get-capabilities`。
 
 ## 自查：有没有模块没进地图
 

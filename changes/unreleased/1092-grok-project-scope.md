@@ -14,5 +14,3 @@
   `scope: user/project`，没带的按 Grok 的缺省 user 算；`registry/extensions.ts` 里 Grok 连接分「用户」「项目」两组。
 - 插件：Grok 插件列表的缺省层标 user（以前是 null，界面上归进一组叫「未提供」的）；分组改成一组；添加表单不给「当前项目」
   （`extensionFormOffersProject`）；主进程收到 Grok 插件的非 user 层直接拒，不再悄悄装成全局。
-- 没改：Codex 0.162.1 的 `mcp list --json` 在受信任项目里会把项目 `.codex/config.toml` 的连接也列出来、且不带层，`codex mcp`
-  也没有范围参数；星芒列 Codex 连接时不带目录，所以那些连接看不到。要不要列、怎么删，另做。

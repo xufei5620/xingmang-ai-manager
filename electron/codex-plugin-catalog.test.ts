@@ -97,6 +97,12 @@ function backupNames(parent: string): string[] {
     && name !== 'plugins-xingmang-backup-notes')
 }
 
+/** Response.url is read-only and empty on a constructed Response; real fetches fill it in. */
+function withResponseUrl(response: Response, url: string): Response {
+  Object.defineProperty(response, 'url', { value: url })
+  return response
+}
+
 function servingFetch(body: Buffer, calls: string[] = []): typeof fetch {
   return async (input) => {
     calls.push(String(input))
@@ -512,6 +518,73 @@ describe('ensureCodexPluginCatalog', () => {
     await expect(ensureCodexPluginCatalog({ codexHome, fetch: redirecting }))
       .rejects.toThrow(codexPluginCatalogNetworkMessage)
     expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('follows a codeload redirect whose responses report the URL that was requested', async () => {
+    const codexHome = temporaryCodexHome()
+    const pinned = `https://codeload.github.com/openai/plugins/tar.gz/${commit}`
+    const calls: string[] = []
+    const redirecting: typeof fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      // Node's own fetch fills in response.url even with redirect: 'manual'.
+      if (url === CODEX_PLUGIN_CATALOG_URL) {
+        return withResponseUrl(new Response(null, { status: 302, headers: { location: `/openai/plugins/tar.gz/${commit}#top` } }), url)
+      }
+      return withResponseUrl(new Response(new Uint8Array(gzipCatalog()), { status: 200 }), url)
+    }
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: redirecting })).resolves.toBe('downloaded')
+    expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, pinned])
+  })
+
+  it('stops a redirect loop instead of asking for an address it already visited', async () => {
+    const codexHome = temporaryCodexHome()
+    const other = `https://codeload.github.com/openai/plugins/tar.gz/${commit}`
+    const calls: string[] = []
+    const looping: typeof fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      return new Response(null, { status: 302, headers: { location: url === CODEX_PLUGIN_CATALOG_URL ? other : CODEX_PLUGIN_CATALOG_URL } })
+    }
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: looping }))
+      .rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, other])
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('rejects bytes whose response came from an address other than the one requested', async () => {
+    const codexHome = temporaryCodexHome()
+    let cancelled = false
+    // A fetch that followed redirects by itself: the body is a valid catalog, but it came from elsewhere.
+    const following: typeof fetch = async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(gzipCatalog()))
+          controller.close()
+        },
+        cancel() { cancelled = true },
+      })
+      return withResponseUrl(new Response(body, { status: 200 }), 'https://evil.test/openai/plugins.tgz')
+    }
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: following }))
+      .rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(cancelled).toBe(true)
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('rejects a response reporting another codeload path than the hop it answered', async () => {
+    const codexHome = temporaryCodexHome()
+    const unchecked: typeof fetch = async () => withResponseUrl(
+      new Response(new Uint8Array(gzipCatalog()), { status: 200 }),
+      'https://codeload.github.com/someone/else/tar.gz/refs/heads/main',
+    )
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: unchecked }))
+      .rejects.toThrow(codexPluginCatalogNetworkMessage)
     expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
   })
 

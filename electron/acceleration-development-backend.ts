@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
@@ -46,6 +47,10 @@ export interface AccelerationDevelopmentBackendOptions {
   now?: () => number
   monotonicNow?: () => number
   schedule?: (callback: () => void, milliseconds: number) => () => void
+  /** 只给检查点用的定时器，缺省与 schedule 相同。单独一格，到期、收尾这几个定时器在测试里才看得清。 */
+  scheduleCheckpoint?: (callback: () => void, milliseconds: number) => () => void
+  /** 这台电脑最近一次开机的墙钟时刻；拿不到返回 null，崩溃结算就照旧只看墙钟。 */
+  bootedAt?: () => number | null
   /** Credential-free line metadata supplied by the host/worker. */
   listLines?: () => Promise<AccelerationLine[]>
   /** Optional host-side latency probe. */
@@ -112,8 +117,18 @@ function assertLineId(lineId: unknown): asserts lineId is string {
   if (typeof lineId !== 'string' || !/^[a-z\d_.-]{1,80}$/i.test(lineId)) throw new Error('加速线路参数无效。')
 }
 
-interface AccountUsage { usedMs: number; startedAt: number | null; bonusRedeemed?: true }
+interface AccountUsage {
+  usedMs: number
+  startedAt: number | null
+  bonusRedeemed?: true
+  /** 最近一次检查点的墙钟时刻。和 checkpointMs 成对，只在会话还没结算（startedAt 有值）时有。 */
+  checkpointAt?: number
+  /** 写那次检查点时这次会话已经计掉的时长，睡眠那段不在里面。 */
+  checkpointMs?: number
+}
 // Older builds must reject the new format rather than silently erase a claim.
+// The checkpoint pair needs no new version: a build that drops it settles a
+// crash by the wall clock alone, which can only charge more, never less.
 interface Ledger { version: 2; accounts: Record<string, AccountUsage> }
 interface ParsedLedger { ledger: Ledger; needsRewrite: boolean }
 interface Session {
@@ -153,6 +168,12 @@ export const downloadRouteBillsFreeAllowance = false
  * 用户自己点的、计时的加速停下时不留：时长到点就该停。
  */
 export const automaticSessionDrainMs = 10 * 60_000
+
+/**
+ * 计时的加速开着时，多久把「这次已经用了多久」落一次盘（#1061 第 10 条）。断电、蓝屏
+ * 以后再打开，按最后一次检查点再加一个间隔结算，关机那几个小时不再算进免费时长。
+ */
+export const accelerationCheckpointIntervalMs = 60_000
 
 /**
  * 主程序没了、辅助进程还原网络设置一直失败时，下一次重试等多久。每轮要起
@@ -203,6 +224,23 @@ function connectionFailure(error: unknown, phase: AccelerationStartFailurePhase)
 const stopFailure = '加速尚未完全停止，正在保留恢复状态，请再次点击停止。'
 const exitFailure = '加速意外断开了，网络已恢复正常，可以重新连接。'
 
+/** 墙钟减去开机以来的时长。拿不到就是 null，崩溃结算退回只看墙钟。 */
+function systemBootedAt(nowMs: number): number | null {
+  try {
+    const uptimeMs = os.uptime() * 1000
+    return Number.isFinite(uptimeMs) && uptimeMs >= 0 ? nowMs - uptimeMs : null
+  } catch { return null }
+}
+
+function isLedgerInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000
+}
+
+/** 结算过的账目不带检查点：留着的话，下一次会话崩溃时会拿上一次的数去算。 */
+function settledUsage(entry: AccountUsage, usedMs: number): AccountUsage {
+  return { usedMs, startedAt: null, ...(entry.bonusRedeemed === true ? { bonusRedeemed: true } : {}) }
+}
+
 function assertScope(scope: string) {
   if (!/^(?:xm-account|api-account):[1-9]\d{0,15}$/.test(scope)
     || !Number.isSafeInteger(Number(scope.split(':')[1]))) throw new Error('加速账号参数无效。')
@@ -225,9 +263,13 @@ function parseLedger(raw: string | null): ParsedLedger {
     const maximumUsedMs = object.version === 1 ? legacyVersion1MaximumUsedMs : accountTotalMs(entry)
     if (!Number.isSafeInteger(entry.usedMs) || entry.usedMs < 0 || entry.usedMs > maximumUsedMs
       || (entry.startedAt !== null && (!Number.isSafeInteger(entry.startedAt) || entry.startedAt < 0 || entry.startedAt > 8_640_000_000_000_000))) throw new Error(ledgerFailure)
+    const checkpointed = Object.prototype.hasOwnProperty.call(entry, 'checkpointAt') || Object.prototype.hasOwnProperty.call(entry, 'checkpointMs')
+    if (checkpointed && (object.version === 1 || entry.startedAt === null || !isLedgerInteger(entry.checkpointAt)
+      || !isLedgerInteger(entry.checkpointMs) || entry.checkpointMs > accountTotalMs(entry))) throw new Error(ledgerFailure)
     accounts[scope] = {
       usedMs: Math.min(accountTotalMs(entry), entry.usedMs), startedAt: entry.startedAt,
       ...(entry.bonusRedeemed === true ? { bonusRedeemed: true } : {}),
+      ...(checkpointed ? { checkpointAt: entry.checkpointAt, checkpointMs: entry.checkpointMs } : {}),
     }
   }
   return { ledger: { version: 2, accounts }, needsRewrite }
@@ -290,6 +332,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     timer.unref()
     return () => clearTimeout(timer)
   })
+  const scheduleCheckpoint = options.scheduleCheckpoint ?? schedule
+  const bootedAt = options.bootedAt ?? (() => systemBootedAt(now()))
   let ledger: Ledger | null = null
   let ledgerNeedsRewrite = false
   let needsRecovery = true
@@ -298,6 +342,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   let queue: Promise<unknown> = Promise.resolve()
   let cancelTimer: (() => void) | null = null
   let timerGeneration = 0
+  let cancelCheckpoint: (() => void) | null = null
+  let checkpointGeneration = 0
   let closing = false
   let disposed = false
   let probeNeedsCleanup = false
@@ -353,10 +399,25 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     current.pausedMs += Math.max(0, monotonicNow() - current.pausedMono)
     current.pausedMono = null
   }
-  function crashElapsed(startedAt: number, totalMs: number): number {
-    const difference = Math.floor(now() - startedAt)
+  /**
+   * 上次没结算完的会话按多久算。检查点只在这台电脑在它之后重启过时才拿来扣掉关机那段：
+   * 内核是单独的进程，主程序崩了它可能还开着、系统代理也还指着它，用户一直在用，只能
+   * 按墙钟算；重启过，内核最晚在开机那一刻就没了。最后一次检查点之后那段不知道多长，
+   * 但不超过一个间隔，整个算上，崩一次永远省不下时间。
+   */
+  function crashElapsed(entry: AccountUsage, totalMs: number): number {
+    if (entry.startedAt === null) return 0
+    const difference = Math.floor(now() - entry.startedAt)
     // A clock rollback cannot mint another trial after an unclean shutdown.
-    return difference < 0 ? totalMs : Math.min(totalMs, difference)
+    if (difference < 0) return totalMs
+    if (entry.checkpointAt === undefined || entry.checkpointMs === undefined) return Math.min(totalMs, difference)
+    // What the last checkpoint recorded is spent whatever the clock says now.
+    // A clock moved back past the checkpoint also moves the derived boot time,
+    // so the restart test only counts while the clock ran forward throughout.
+    const booted = entry.startedAt <= entry.checkpointAt && entry.checkpointAt <= now() ? bootedAt() : null
+    const restarted = booted !== null && Number.isFinite(booted) && booted > entry.checkpointAt
+    const tail = restarted ? Math.min(difference, entry.checkpointMs + accelerationCheckpointIntervalMs) : difference
+    return Math.min(totalMs, Math.max(entry.checkpointMs, tail))
   }
   async function save(next: Ledger) {
     try {
@@ -367,7 +428,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     } catch { throw new Error(ledgerFailure) }
   }
   async function saveAccount(scope: string, entry: AccountUsage) {
-    await save({ version: 2, accounts: { ...ledger!.accounts, [scope]: { ...usage(scope), ...entry } } })
+    const merged: AccountUsage = { ...usage(scope), ...entry }
+    await save({ version: 2, accounts: { ...ledger!.accounts, [scope]: merged.startedAt === null ? settledUsage(merged, merged.usedMs) : merged } })
   }
   async function load() {
     if (ledger) return
@@ -399,7 +461,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       for (const [scope, entry] of Object.entries(accounts)) {
         if (entry.startedAt !== null) {
           const totalMs = accountTotalMs(entry)
-          accounts[scope] = { ...entry, usedMs: Math.min(totalMs, entry.usedMs + crashElapsed(entry.startedAt, totalMs)), startedAt: null }
+          accounts[scope] = settledUsage(entry, Math.min(totalMs, entry.usedMs + crashElapsed(entry, totalMs)))
           changed = true
         }
       }
@@ -417,7 +479,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     const entry = usage(scope)
     const totalMs = accountTotalMs(entry)
     const totalSeconds = totalMs / 1000
-    const spent = current ? billedElapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt, totalMs) : 0
+    const spent = current ? billedElapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry, totalMs) : 0
     const remainingMs = Math.max(0, totalMs - entry.usedMs - spent)
     const error = current?.error ?? recoveryError ?? lastErrors.get(scope) ?? null
     const conflicts = current ? [] : lastConflicts.get(scope) ?? []
@@ -438,6 +500,31 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     return result
   }
   function clearTimer() { timerGeneration += 1; cancelTimer?.(); cancelTimer = null }
+  function clearCheckpoint() { checkpointGeneration += 1; cancelCheckpoint?.(); cancelCheckpoint = null }
+  /**
+   * 计时的会话每隔 accelerationCheckpointIntervalMs 落一次检查点。写不进去不碍加速：
+   * 内存里的计时照旧，下一轮再写，最坏是断电后按更早的那次检查点结算。和到期、停止、
+   * 兑换走同一个队列，所以不会和它们的写入交错，也不会盖掉账本里别的账号。
+   */
+  function armCheckpoint(current: Session) {
+    clearCheckpoint()
+    if (!current.billed) return
+    const generation = checkpointGeneration
+    cancelCheckpoint = scheduleCheckpoint(() => {
+      if (generation !== checkpointGeneration) return
+      cancelCheckpoint = null
+      void enqueue(async () => {
+        if (generation !== checkpointGeneration || session !== current || disposed) return
+        const entry = usage(current.scope)
+        if (entry.startedAt !== null) {
+          try {
+            await saveAccount(current.scope, { ...entry, checkpointAt: now(), checkpointMs: Math.min(accountTotalMs(entry), billedElapsed(current)) })
+          } catch { /* 下一轮再写。 */ }
+        }
+        armCheckpoint(current)
+      }).catch(() => undefined)
+    }, accelerationCheckpointIntervalMs)
+  }
   async function stopStage<T>(stage: AccelerationStopFailureStage, operation: () => Promise<T>): Promise<T> {
     try { return await operation() } catch (error) {
       try { options.onDiagnostic?.(stage) } catch { /* Reporting must not change recovery behavior. */ }
@@ -596,6 +683,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       if (current.billed) lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(elapsed(current) / 1000)))
       lastErrors.delete(current.scope)
       lastConflicts.delete(current.scope)
+      clearCheckpoint()
       session = null
     } catch {
       current.error = stopFailure
@@ -667,11 +755,13 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         try { await options.runtime.stop() } catch { /* 下面的 start 会把失败重新报出来。 */ }
       }
       // Persist intent before touching OS state. A crash in the startup gap
-      // is conservatively billed; an ordinary failed start clears it unpaid.
+      // is conservatively billed (by the wall clock, or one checkpoint interval
+      // after a restart); an ordinary failed start clears it unpaid.
       // An unbilled session never records intent, so a crash charges it nothing;
       // proxy restoration on recovery does not depend on the ledger.
       if (billed) {
-        try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
+        const intendedAt = now()
+        try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: intendedAt, checkpointAt: intendedAt, checkpointMs: 0 }) }
         catch (error) { reportStartFailure(error, 'ledger'); lastErrors.set(scope, ledgerFailure); return state(scope) }
       }
       session = { scope, phase: 'connecting', line: null, port: null, connectedAt: null, startedMono: null, stoppedMono: null, pausedMono: null, pausedMs: 0, billed, error: null }
@@ -695,9 +785,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         const startedAt = now()
         session.connectedAt = new Date(startedAt).toISOString()
         phase = 'ledger'
-        if (billed) await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt })
+        if (billed) await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt, checkpointAt: startedAt, checkpointMs: 0 })
         session.phase = 'active'
         armExpiry(session)
+        armCheckpoint(session)
         return state(scope)
       } catch (error) {
         reportStartFailure(error, phase)
@@ -885,6 +976,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           } catch { arm(5000); throw new Error(stopFailure) }
         }
         clearTimer()
+        clearCheckpoint()
         cancelCleanupRetry?.()
         cancelCleanupRetry = null
         disposed = true

@@ -9,7 +9,7 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
 import { activeProviderIds, cliCatalog, providerIds, type ProviderId } from './catalog'
-import { readCodexSkillEnablement } from './codex-extensions'
+import { readCodexMcpServerEntries, readCodexSkillEnablement } from './codex-extensions'
 import {
   CODEX_API_CURATED_MARKETPLACE_NAME,
   ensureCodexPluginCatalog,
@@ -311,9 +311,11 @@ interface RawMcpServer {
   enabled: boolean
   /**
    * 从配置文件读出来的知道落在哪一层；CLI 自己列的只有 Grok 会带（`scope: user / project`，
-   * 1.0.52、1.0.62 实测），Codex 不带，缺省为 null。
+   * 1.0.52、1.0.62 实测），Codex 的靠对照配置文件补上（placeCodexMcpServers），缺省为 null。
    */
   scope?: ProviderExtensionScope | null
+  /** CLI 的移除命令删不到它（Codex 项目里、插件带的连接）。缺省 = 能删（旧行为）。 */
+  removable?: boolean
 }
 
 interface ParsedPackageSource {
@@ -644,6 +646,14 @@ function configMcpEntries(
   }))
 }
 
+function isExistingDirectory(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 function equivalentProjectPath(left: string, right: string): boolean {
   const pathApi = process.platform === 'win32' ? path.win32 : path.posix
   const normalize = (value: string) => {
@@ -735,8 +745,89 @@ function mcpItem(provider: ProviderId, server: RawMcpServer): MutableExtensionIt
     update: sourceUnknown
       ? defaultUpdate('source-unknown', '无法从 MCP 启动命令识别 npm、PyPI 或 Git 来源')
       : defaultUpdate('unsupported', '尚未查询远端版本'),
-    operations: nativeOperations(provider, 'mcp'),
+    operations: server.removable === false
+      ? { ...nativeOperations(provider, 'mcp'), uninstall: false }
+      : nativeOperations(provider, 'mcp'),
   }
+}
+
+/**
+ * Codex 读项目配置的那几层：工作目录一路往上到 Git 根，每层的 .codex/config.toml；往上找不到 .git
+ * 就只看工作目录本身。CODEX_HOME 那份是用户层，不算在里面。哪一层受信任 Codex 才读哪一层（自己有
+ * trust_level 的看自己，没有的看 Git 根，0.162.1 实测），这里不照抄这套规则，交给 placeCodexMcpServers
+ * 拿列表对照。
+ */
+function codexProjectConfigPaths(repositoryRoot: string, codexHome: string): string[] {
+  const start = path.resolve(repositoryRoot)
+  const directories: string[] = []
+  let current = start
+  while (!fs.existsSync(path.join(current, '.git'))) {
+    directories.push(current)
+    const parent = path.dirname(current)
+    if (parent === current) return codexConfigPathsOutsideHome([start], codexHome)
+    current = parent
+  }
+  directories.push(current)
+  return codexConfigPathsOutsideHome(directories, codexHome)
+}
+
+function codexConfigPathsOutsideHome(directories: readonly string[], codexHome: string): string[] {
+  return directories
+    .map((directory) => path.join(directory, '.codex'))
+    .filter((directory) => !equivalentProjectPath(directory, codexHome))
+    .map((directory) => path.join(directory, 'config.toml'))
+}
+
+// 读不了的那份（解析不了、不是单链接普通文件）当作不知道：分层只管显示在哪组、给不给「移除」，
+// 不该让整张连接列表报错。
+function readCodexMcpEntriesOrNull(configPath: string): Map<string, unknown> | null {
+  try {
+    return readCodexMcpServerEntries(configPath)
+  } catch {
+    return null
+  }
+}
+
+function sameCodexMcpEntry(server: RawMcpServer, entry: unknown): boolean {
+  if (!isRecord(entry)) return false
+  const args = stringArray(entry.args)
+  return server.command === nullableText(entry.command)
+    && server.url === displayUrl(nullableText(entry.url))
+    && server.args.length === args.length
+    && server.args.every((argument, index) => argument === args[index])
+}
+
+/**
+ * Codex 0.162.1 的 `mcp list --json` 把用户 config.toml、受信任的项目层和插件带的连接合在一起列，不带层，
+ * 同名时项目那份盖过用户那份；`codex mcp remove` 只改用户那份，别的名字只回一句「No MCP server named …
+ * found.」照样退出 0（#1092）。所以对照文件分层：用户那份里没有、项目文件里有的归项目。两边都有同名的，只有
+ * 列出来的跟用户那份一样、跟项目里的都不一样，才断定是用户那份（项目层没受信任）；跟两边都一样就分不清——只比
+ * 命令、参数、地址，环境变量、请求头、开关这些可能正是两份不同的地方——按项目算、不给移除，免得删掉看不见的那份。
+ * 不在用户那份里的都不给移除，免得点了「移除」什么都没删还报成功。用户那份读不了时照旧给移除，交给 CLI 自己报。
+ */
+function placeCodexMcpServers(
+  servers: readonly RawMcpServer[],
+  codexHome: string,
+  repositoryRoot: string | null,
+): RawMcpServer[] {
+  const userEntries = readCodexMcpEntriesOrNull(path.join(codexHome, 'config.toml'))
+  const projectEntries = new Map<string, unknown[]>()
+  for (const configPath of repositoryRoot ? codexProjectConfigPaths(repositoryRoot, codexHome) : []) {
+    for (const [name, entry] of readCodexMcpEntriesOrNull(configPath) ?? new Map<string, unknown>()) {
+      projectEntries.set(name, [...(projectEntries.get(name) ?? []), entry])
+    }
+  }
+  return servers.map((server) => {
+    const userEntry = userEntries?.get(server.name)
+    const inProject = projectEntries.get(server.name)
+    const project = inProject !== undefined && !(
+      userEntry !== undefined
+      && sameCodexMcpEntry(server, userEntry)
+      && !inProject.some((entry) => sameCodexMcpEntry(server, entry))
+    )
+    const removable = !project && (!userEntries || userEntries.has(server.name))
+    return { ...server, scope: project ? 'project' : 'user', ...(removable ? {} : { removable: false }) }
+  })
 }
 
 function yamlFrontmatter(content: string): Record<string, unknown> {
@@ -2010,15 +2101,19 @@ export class ProviderExtensionService {
       const argv = mcpListArgv(provider)
       let servers: RawMcpServer[]
       if (argv) {
-        // Grok 的项目层是命令在哪个项目里跑就读哪个项目的 .grok/config.toml，不在项目里跑就列不出来；
-        // 没带 scope 的条目按它自己的缺省 user 算（#1092）。Codex 的连接只有全局一层，照旧。
+        // Grok 和 Codex 都是命令在哪个项目里跑就读哪个项目的配置，不在项目里跑就列不出来（#1092）。
+        // Grok 没带 scope 的条目按它自己的缺省 user 算；Codex 不带层，对照配置文件补上。工作目录不在了
+        // （删了、换了盘）就不进去跑：列不出项目那层，总比整张连接列表报错强。
+        const repositoryRoot = this.repositoryRoot && isExistingDirectory(this.repositoryRoot)
+          ? this.repositoryRoot
+          : null
         const listed = parseMcpJson(await this.invoke(provider, argv, {
-          cwd: provider === 'grok' ? this.repositoryRoot ?? undefined : undefined,
+          cwd: repositoryRoot ?? undefined,
           maxOutputBytes: MAX_OUTPUT_BYTES,
         }))
         servers = provider === 'grok'
           ? listed.map((server) => ({ ...server, scope: server.scope ?? 'user' }))
-          : listed
+          : placeCodexMcpServers(listed, this.codexHome, repositoryRoot)
       } else {
         const configured = await readConfiguredMcpServers(provider as 'claude' | 'gemini', this.homeDirectory, this.repositoryRoot)
         servers = configured.servers
@@ -2232,9 +2327,13 @@ export class ProviderExtensionService {
     if (input.kind === 'mcp') {
       if (input.action === 'install') return this.mcpInstallArgv(input, safeIdentifier(input.id, 'MCP 名称'))
       if (input.action === 'uninstall') {
-        return input.provider === 'codex'
-          ? { argv: ['mcp', 'remove', id!], secrets: [] }
-          : { argv: ['mcp', 'remove', '--scope', scope, id!], secrets: [] }
+        if (input.provider === 'codex') {
+          // `codex mcp remove` 只改用户 config.toml，项目里那条它删不到，还照样退出 0（#1092）。
+          // 界面不会给项目那条「移除」，这里只是兜底。
+          if (scope === 'project') throw new Error('当前 Provider 不支持该原生操作')
+          return { argv: ['mcp', 'remove', id!], secrets: [] }
+        }
+        return { argv: ['mcp', 'remove', '--scope', scope, id!], secrets: [] }
       }
       return { argv: ['mcp', input.action, id!], secrets: [] }
     }

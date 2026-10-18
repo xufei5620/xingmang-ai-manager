@@ -224,15 +224,25 @@ describe('xingmang-ai-skill', () => {
     await writeFile(configPath, 'model = "gpt-5.4"\n', 'utf8')
     let release!: () => void
     const busy = new Promise<void>((resolve) => { release = resolve })
+    let entered!: () => void
+    const queuedUp = new Promise<void>((resolve) => { entered = resolve })
     let queued = 0
     async function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
       queued += 1
+      entered()
       await busy
       return operation()
     }
 
     const installing = installXingmangAiSkillFiles(bundledRoot, userHome, { officialCodex: true, serializeConfigWrite })
-    await vi.waitFor(() => expect(queued).toBe(1))
+    // Wait for the switch to reach the queue, not for a fixed second: copying the
+    // skill into every tool home first can take longer than that on a busy
+    // Windows runner (#1162). An install that settles first fails here with its
+    // own error instead of waiting on a queue it never reached.
+    await Promise.race([queuedUp, installing.then(() => {
+      throw new Error('the install finished without handing the switch to the config write queue')
+    })])
+    expect(queued).toBe(1)
     // A save holding the queue must still find config.toml as it left it (#1061 item 1).
     expect(await readFile(configPath, 'utf8')).toBe('model = "gpt-5.4"\n')
     release()
