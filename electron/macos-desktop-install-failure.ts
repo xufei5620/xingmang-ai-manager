@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * Mac 上一键装桌面端没装成时，客户看到的那句话。
  *

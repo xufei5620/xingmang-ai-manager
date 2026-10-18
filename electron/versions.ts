@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 interface ParsedVersion {
   numbers: [number, number, number]
   prerelease: string | null

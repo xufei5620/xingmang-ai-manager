@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 // The one table of secret shapes that every log, diagnostics, crash and
 // feedback redactor applies. It must stay free of imports: startup-log and
 // crash-report redact while recording a failure of some other module, so the

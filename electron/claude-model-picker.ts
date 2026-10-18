@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 // Claude Code 的 /model 菜单写死了官方阵容：Default（Opus 5 · 1M 上下文）、Opus、Fable、
 // Sonnet、Haiku……每一行还标着官方美元单价。接中转后这份菜单与当前账号实际能用的模型对不上：
 // 选到分组里没有的型号就是一句「无可用渠道」，看到的价格也不是中转的计费。

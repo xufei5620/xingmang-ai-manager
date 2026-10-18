@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * Git is optional for this product. On Windows the app installs it on request
  * (git-runtime-install.ts, a pinned Git for Windows for the current user); on
