@@ -76,7 +76,7 @@ import { rememberTourPending, rememberTourSeen, tourReplayPending } from './feat
 import { onboardingPreviewEnabled } from './features/app/dev-preview'
 import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { SupportIdentity, buildLastFailureLine, buildSupportBundle, buildSupportIdentityLine, linuxSystemDetail, type SupportFailure } from './features/app/SupportIdentity'
-import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, sessionChangeKeepsBootstrap, skippedNamedProviders, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { KeyRewriteSkippedError, accountKeyChangeInProgress, accountRoutesPending, bootstrapAccountTools, sessionChangeKeepsBootstrap, skippedNamedProviders, subscriptionSwitchResult, describeAccountBootstrapFailure, describeAccountBootstrapResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './features/tools/source-marker'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from './features/tools/online-resync'
@@ -263,6 +263,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 会话变化事件来过几次。启动那次读取可能在事件之后才落地（账号恢复超时先放行
   // 时两者会赛跑），那时手上的会话已经比它新，不能再拿它盖回去。
   const sessionEvents = useRef(0)
+  // 自己点的「退出登录」正在进行。主进程退完就广播会话变化，还要清完星芒AI Skill 的密钥
+  // 才回话，所以事件总比退出这次调用的返回先到，光看事件分不出是自己退的还是登录被
+  // 结束了（#1098）。退出期间记一笔，事件看到它就不说「当前登录已结束」。
+  const voluntaryLogout = useRef(false)
   const scope = sessionScope(session)
   // 开机账号恢复超过了启动画面的等待上限：先进首页，按正在恢复的账号显示，
   // 恢复结束再补读一次配置（见 onAccountSessionChanged）。
@@ -546,7 +550,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!session.authenticated || !session.account) return []
     const outcome = await runAccountBootstrap(session.account.userId, 'restore', true)
     if (outcome?.error) throw new Error(outcome.error)
-    return outcome?.result?.regrouped ?? []
+    return subscriptionSwitchResult(outcome?.result)
   }, [runAccountBootstrap, session.account, session.authenticated])
   /**
    * 首页「就用现在这份」：用户自己改过配置又不想被提醒时，把这个工具记成手动来源。
@@ -795,6 +799,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (next.authenticated) await balanceStore.refresh('foreground')
     else { setGuide(false); setPage('home'); setWorkspaceEntered(false) }
   }, [app, balanceStore, scope])
+  const logoutVoluntarily = useCallback(async function logout(): Promise<void> {
+    voluntaryLogout.current = true
+    try { await app.logout() }
+    finally { voluntaryLogout.current = false }
+  }, [app])
   useEffect(() => native.onAccountSessionChanged?.((next) => {
     sessionEvents.current++
     accountEpoch.current++
@@ -814,7 +823,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     if (!next.authenticated) {
       setGuide(false); setPage('home'); setWorkspaceEntered(false)
-      if (session.authenticated) toast.show('当前登录已结束，请重新登录。', 'warn')
+      if (session.authenticated && !voluntaryLogout.current) toast.show('当前登录已结束，请重新登录。', 'warn')
     }
     else void balanceStore.refresh('foreground')
   }), [native, balanceStore, restoring, session.authenticated, toast, toolbox.refreshConfig])
@@ -1846,7 +1855,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
-            logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await app.logout(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: '已配好的工具会保留。', label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
@@ -1874,7 +1883,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => visitedPages[id] === scope || id === page).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id === 'health' ? `health:${healthRequest}` : id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
-                <BusinessPage api={native} page={id} active={page === id} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+                <BusinessPage api={native} page={id} active={page === id} onLogout={logoutVoluntarily} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountSummary={accountSummary} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
                   accelerating={acceleration.snapshot.state?.phase === 'active'}

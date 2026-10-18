@@ -22,6 +22,27 @@ const developerIdAuthorityMarker = 'certificate 1[field.1.2.840.113635.100.6.2.6
 /** Apple's Developer ID Application leaf marker OID. */
 const developerIdApplicationMarker = 'certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
 
+/**
+ * How long one `codesign --verify --deep` of a desktop application may run, when it
+ * is installed and every time it is detected afterwards. The walk hashes every file
+ * of a bundle of several hundred MB to well over a GB, so its cost follows the disk
+ * and CPU of the machine, not the request: 1.79s for the 1.4 GB Codex.app on Apple
+ * silicon, 22.77s for the same check on a customer's Intel Mac (2026-10-18).
+ *
+ * A budget below what a machine needs does not make the check any weaker, it makes
+ * it never finish: a timeout kills the walk, and the next attempt starts again from
+ * the first file, so retrying cannot get past it. Detection used to allow 15s while
+ * installation allowed this, so that Mac installed Codex and then could never
+ * detect it. The bound exists to surface a genuine hang, not to rank machines.
+ */
+export const darwinDeepVerificationTimeoutMs = 3 * 60_000
+
+/**
+ * How long one `spctl --assess` of a desktop application may run. Gatekeeper
+ * evaluates the whole bundle's signature too, so it scales the same way.
+ */
+export const darwinGatekeeperAssessmentTimeoutMs = 2 * 60_000
+
 const teamIdentifierPattern = /^[A-Z0-9]{10}$/
 const bundleIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/
 

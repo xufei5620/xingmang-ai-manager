@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { currentAccountGroupName, isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
+import { createHash } from 'node:crypto'
+import { currentAccountGroupName, isProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { isManagedCliGroupName } from './managed-cli-groups'
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
@@ -16,6 +17,8 @@ const MAX_FILE_BYTES = 64 * 1024
 const MAX_CACHED_ACCOUNTS = 16
 const FILE_LABEL = '托管 CLI API Key'
 const MAX_QUARANTINED_RECORDS = 3
+// 换掉的那几把记几条：连着换两次组、中间都没写进配置，也还认得出最早那把。
+const MAX_REPLACED_KEYS = 3
 
 export interface StoredManagedCliKey {
   id: number
@@ -23,12 +26,37 @@ export interface StoredManagedCliKey {
   group: string
   name: string
   key: string
+  /**
+   * 读出来时由缓存附上：这家工具以前缓存过、后来被换掉的托管 Key 的指纹（managedKeyDigest），新的在前。
+   * 存回去时不看这一项，换没换由缓存自己比出来。缺省 = 这台电脑上没换过。
+   */
+  replacedKeyDigests?: string[]
 }
 
 export interface PersistedManagedCliKeyAccount {
   userId: number
   updatedAt: string
   keys: StoredManagedCliKey[]
+  /**
+   * 每家工具被换掉、被拿掉的托管 Key 的指纹（#1153）。配置里那把正好在这里，才说明是「上一轮换了 Key
+   * 没写进配置」；客户在密钥页、配置窗口自己选的那把从来不在缓存里，不会被开机补写换掉。
+   * 拿掉的也记：分组被删、旧那把从缓存里去掉，下一轮才签出新的，中间隔着一次保存。
+   */
+  replacedKeys?: Partial<Record<ProviderId, string[]>>
+  /**
+   * 三把都在缓存里时上一次去问服务端分组是什么时候、问成了没有（account-cli-provisioner.ts 的
+   * isCachedGroupCheckDue，#1157 第 8 条）。以前只记在内存里，每次开机第一轮同步都算「该查了」，
+   * 要联网、要等状态文件，首页「打开」跟着等。缺省 = 这台电脑上还没查过。
+   */
+  groupCheck?: ManagedCliGroupCheck
+}
+
+export interface ManagedCliGroupCheck {
+  at: number
+  /** 那次问成了没有。没问成（离线、超时、接口出错）隔一会儿就再试，不等满一天。 */
+  succeeded: boolean
+  /** 那次用的分组对照的指纹（accountGroupHintsFingerprint）。发布者一改对照就不等满一天。 */
+  hints: string
 }
 
 export interface PersistedManagedCliKeys {
@@ -45,6 +73,71 @@ interface LegacyPersistedManagedCliKeys extends PersistedManagedCliKeyAccount {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** 托管 Key 的指纹：只用来认「配置里这把是不是缓存以前的那把」，缓存里不留旧 Key 本身。 */
+export function managedKeyDigest(key: string): string {
+  return createHash('sha256').update(key).digest('hex')
+}
+
+/**
+ * 配置里这把 Key 是不是这家工具以前缓存过、后来被换掉的托管 Key（#1153）。缓存里眼下没有这家的 Key、
+ * 或者配置里就是眼下那把时不算。
+ */
+export function isReplacedManagedKey(provider: ProviderId, key: string, cachedKeys: readonly StoredManagedCliKey[]): boolean {
+  const entry = cachedKeys.find((item) => item.provider === provider)
+  if (!entry || !key || entry.key === key) return false
+  return entry.replacedKeyDigests?.includes(managedKeyDigest(key)) === true
+}
+
+function replacedDigests(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((digest): digest is string => typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest))
+}
+
+// 这次保存以后每家工具换掉过的那几把：上一份里有、这一份里没了或换了的，排到最前面。眼下还在用的那把不记。
+function nextReplacedKeys(
+  previous: PersistedManagedCliKeyAccount | undefined,
+  keys: readonly StoredManagedCliKey[],
+): Partial<Record<ProviderId, string[]>> {
+  const result: Partial<Record<ProviderId, string[]>> = {}
+  for (const provider of providerIds) {
+    const before = previous?.keys.find((entry) => entry.provider === provider)
+    const current = keys.find((entry) => entry.provider === provider)
+    const currentDigest = current ? managedKeyDigest(current.key) : null
+    const history = [
+      ...(before && before.key !== current?.key ? [managedKeyDigest(before.key)] : []),
+      ...replacedDigests(previous?.replacedKeys?.[provider]),
+    ]
+    const kept = [...new Set(history)].filter((digest) => digest !== currentDigest).slice(0, MAX_REPLACED_KEYS)
+    if (kept.length) result[provider] = kept
+  }
+  return result
+}
+
+// 指纹是 sha256 的十六进制，没有对照时是空串；时间不能是负数。认不出的当没查过，不为它挪走整份缓存。
+export function readManagedCliGroupCheck(value: unknown): ManagedCliGroupCheck | undefined {
+  if (!isRecord(value)) return undefined
+  const { at, succeeded, hints } = value
+  if (typeof at !== 'number' || !Number.isSafeInteger(at) || at < 0 || typeof succeeded !== 'boolean') return undefined
+  if (typeof hints !== 'string' || !/^(?:[0-9a-f]{64})?$/.test(hints)) return undefined
+  return { at, succeeded, hints }
+}
+
+function persistedAccount(
+  userId: number,
+  keys: readonly StoredManagedCliKey[],
+  previous: PersistedManagedCliKeyAccount | undefined,
+): PersistedManagedCliKeyAccount {
+  const replacedKeys = nextReplacedKeys(previous, keys)
+  const groupCheck = readManagedCliGroupCheck(previous?.groupCheck)
+  return {
+    userId,
+    updatedAt: new Date().toISOString(),
+    keys: keys.map(({ replacedKeyDigests: _replacedKeyDigests, ...entry }) => ({ ...entry })),
+    ...(Object.keys(replacedKeys).length ? { replacedKeys } : {}),
+    ...(groupCheck ? { groupCheck } : {}),
+  }
 }
 
 // 不分站点的老文件（0.2.12 以前写的）只认出厂的分组名。xm 站 10-16 删了老名字，出厂名换成了新名字，
@@ -80,6 +173,8 @@ function isPersistedManagedCliKeyAccount(
   if (typeof value.userId !== 'number' || !Number.isInteger(value.userId) || value.userId <= 0) return false
   if (typeof value.updatedAt !== 'string' || Number.isNaN(Date.parse(value.updatedAt))) return false
   if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every((entry) => isStoredManagedCliKey(entry, siteId, scoped))) return false
+  // 换掉过的那几把只是线索：认不出的条目读的时候丢掉就是，不为它把整份缓存当坏的挪走、重签一遍 Key。
+  if (value.replacedKeys !== undefined && !isRecord(value.replacedKeys)) return false
   return new Set(value.keys.map((entry) => entry.provider)).size === value.keys.length
 }
 
@@ -157,11 +252,17 @@ export class ManagedCliKeyStore {
     this.assertEncryptionAvailable()
     await this.writeQueue.catch(() => undefined)
     const record = await this.readRecord()
+    const account = record?.accounts.find((entry) => entry.userId === userId)
     // xm 站删老分组名之前把老名字下的 Key 全挂到了新名字下（Key 不变），本机记的老名字照着换，
     // 开机时就不会因为「分组对不上」去重签一把、再重写一遍配置。文件里的老名字等下次保存时自然换掉。
-    return record?.accounts.find((entry) => entry.userId === userId)?.keys.map((entry) => (
-      this.siteId === 'solov' ? { ...entry, group: currentAccountGroupName(entry.group) } : { ...entry }
-    )) ?? []
+    return account?.keys.map((entry) => {
+      const replaced = replacedDigests(account.replacedKeys?.[entry.provider])
+      return {
+        ...entry,
+        ...(this.siteId === 'solov' ? { group: currentAccountGroupName(entry.group) } : {}),
+        ...(replaced.length ? { replacedKeyDigests: replaced } : {}),
+      }
+    }) ?? []
   }
 
   captureRevision(): number {
@@ -183,11 +284,7 @@ export class ManagedCliKeyStore {
         await this.quarantineCorruptRecord()
       }
       if (expectedRevision !== undefined && expectedRevision !== this.revision) return false
-      const account: PersistedManagedCliKeyAccount = {
-        userId,
-        updatedAt: new Date().toISOString(),
-        keys: keys.map((entry) => ({ ...entry })),
-      }
+      const account = persistedAccount(userId, keys, existing?.accounts.find((entry) => entry.userId === userId))
       const accounts = [
         account,
         ...(existing?.accounts.filter((entry) => entry.userId !== userId) ?? []),
@@ -204,6 +301,35 @@ export class ManagedCliKeyStore {
     })
   }
 
+  /** 读不到、读坏了、认不出都当这台电脑上还没查过：多问一次服务端而已。 */
+  async readGroupCheck(userId: number): Promise<ManagedCliGroupCheck | undefined> {
+    try {
+      this.assertEncryptionAvailable()
+      await this.writeQueue.catch(() => undefined)
+      const record = await this.readRecord()
+      return readManagedCliGroupCheck(record?.accounts.find((entry) => entry.userId === userId)?.groupCheck)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 只改这一项，不动 Key，也不加 revision：同步那一轮先记下查过、再存换好的 Key，revision 一变那次保存就会
+   * 当成「缓存被别的操作改过」而放弃，新签的 Key 存不上。缓存里没有这个账号时不记（没有 Key 就不走这一查）。
+   */
+  saveGroupCheck(userId: number, check: ManagedCliGroupCheck): Promise<void> {
+    return this.enqueue(async () => {
+      this.assertEncryptionAvailable()
+      const record = await this.readRecord()
+      const account = record?.accounts.find((entry) => entry.userId === userId)
+      if (!record || !account) return
+      await this.writeRecord({
+        ...record,
+        accounts: record.accounts.map((entry) => entry === account ? { ...entry, groupCheck: { ...check } } : entry),
+      })
+    })
+  }
+
   async remove(userId: number, keyId: number): Promise<void> {
     await this.enqueue(async () => {
       this.assertEncryptionAvailable()
@@ -215,11 +341,7 @@ export class ManagedCliKeyStore {
         siteId: this.siteId,
         revision: this.revision + 1,
         accounts: record.accounts.map((entry) => entry.userId === userId
-          ? {
-              ...entry,
-              updatedAt: new Date().toISOString(),
-              keys: entry.keys.filter((key) => key.id !== keyId),
-            }
+          ? persistedAccount(userId, entry.keys.filter((key) => key.id !== keyId), entry)
           : entry),
       }
       await this.writeRecord(updated)

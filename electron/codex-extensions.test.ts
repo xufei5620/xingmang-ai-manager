@@ -320,14 +320,16 @@ describe('Codex Plugin and marketplace contracts', () => {
   it('writes plugin enabled state structurally, backs up, and preserves unrelated TOML', async () => {
     const home = temporaryDirectory()
     const configPath = path.join(home, '.codex', 'config.toml')
-    write(configPath, [
+    const original = [
+      '# 客户自己写的说明',
       'model = "gpt-test"',
       '[features]',
       'goals = true',
-      '[plugins."sample@curated"]',
-      'enabled = false',
+      '[plugins."sample@curated"] # 试用中',
+      'enabled = false # 先关着',
       '',
-    ].join('\n'))
+    ].join('\n')
+    write(configPath, original)
     const invoke: CodexInvoker = async (argv) => {
       if (argv[1] === 'list') {
         const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
@@ -346,8 +348,56 @@ describe('Codex Plugin and marketplace contracts', () => {
     expect(parsed.model).toBe('gpt-test')
     expect(asRecord(parsed.features)?.goals).toBe(true)
     expect(asRecord(asRecord(parsed.plugins)?.['sample@curated'])?.enabled).toBe(true)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(original.replace('enabled = false # 先关着', 'enabled = true # 先关着'))
+    expect(catalog.rewriteNotice).toBeUndefined()
+    const backups = fs.readdirSync(path.dirname(configPath)).filter((name) => name.startsWith('config.toml.bak.'))
+    expect(backups).toHaveLength(1)
+    expect(fs.readFileSync(path.join(path.dirname(configPath), backups[0]), 'utf8')).toBe(original)
+  })
+
+  it('appends a new Plugin table without touching the rest of the file', async () => {
+    const home = temporaryDirectory()
+    const configPath = path.join(home, '.codex', 'config.toml')
+    const original = '# 客户自己写的说明\r\nmodel = "gpt-test"\r\n[features]\r\ngoals = true\r\n'
+    write(configPath, original)
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[1] === 'list') {
+        const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+        const enabled = Boolean(asRecord(asRecord(parsed.plugins)?.['sample@curated'])?.enabled)
+        return pluginCatalog([plugin('sample@curated', true, enabled)])
+      }
+      return marketplaces()
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, configPath, invoke })
+
+    const catalog = await service.setPluginEnabled('sample@curated', true)
+
+    expect(catalog.rewriteNotice).toBeUndefined()
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(`${original}\r\n[plugins."sample@curated"]\r\nenabled = true\r\n`)
+  })
+
+  it('rewrites the whole file and says so when the Plugin table is written inline', async () => {
+    const home = temporaryDirectory()
+    const configPath = path.join(home, '.codex', 'config.toml')
+    write(configPath, '# 说明\nmodel = "gpt-test"\nplugins = { "sample@curated" = { enabled = false } }\n')
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[1] === 'list') {
+        const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+        const enabled = Boolean(asRecord(asRecord(parsed.plugins)?.['sample@curated'])?.enabled)
+        return pluginCatalog([plugin('sample@curated', true, enabled)])
+      }
+      return marketplaces()
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, configPath, invoke })
+
+    const catalog = await service.setPluginEnabled('sample@curated', true)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({
+      model: 'gpt-test',
+      plugins: { 'sample@curated': { enabled: true } },
+    })
     expect(catalog.rewriteNotice).toContain('手写注释可能丢失')
-    expect(fs.readdirSync(path.dirname(configPath)).some((name) => name.startsWith('config.toml.bak.'))).toBe(true)
+    expect(catalog.rewriteNotice).toContain('config.toml.bak.')
   })
 
   it('waits out a scanner briefly holding config.toml while switching a Plugin', async () => {
@@ -515,7 +565,8 @@ describe('Skill discovery and managed mutations', () => {
     const skillPath = path.join(home, '.agents', 'skills', 'alpha', 'SKILL.md')
     const configPath = path.join(home, '.codex', 'config.toml')
     write(skillPath, '---\nname: Alpha\ndescription: Test\n---\n')
-    write(configPath, 'model = "gpt-test"\n[features]\ngoals = true\n')
+    const original = 'model = "gpt-test" # 默认型号\n[features]\ngoals = true\n'
+    write(configPath, original)
     const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
 
     const { skills, rewriteNotice } = await service.setSkillEnabled(skillPath, false)
@@ -525,8 +576,13 @@ describe('Skill discovery and managed mutations', () => {
     expect(parsed.model).toBe('gpt-test')
     expect(asRecord(parsed.features)?.goals).toBe(true)
     expect(asRecord(parsed.skills)?.config).toEqual([{ path: skillPath, enabled: false }])
+    expect(fs.readFileSync(configPath, 'utf8').startsWith(`${original}\n[[skills.config]]\n`)).toBe(true)
     expect(fs.readdirSync(path.dirname(configPath)).some((name) => name.startsWith('config.toml.bak.'))).toBe(true)
-    expect(rewriteNotice).toContain('手写注释可能丢失')
+    expect(rewriteNotice).toBeUndefined()
+
+    await service.setSkillEnabled(skillPath, true)
+    expect(fs.readFileSync(configPath, 'utf8').startsWith(original)).toBe(true)
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).skills)?.config).toEqual([{ path: skillPath, enabled: true }])
   })
 
   it('prunes old config.toml backups while keeping the most recent ones', async () => {
@@ -544,6 +600,48 @@ describe('Skill discovery and managed mutations', () => {
       .filter((name) => name.startsWith('config.toml.bak.'))
     expect(backups.length).toBeGreaterThan(0)
     expect(backups.length).toBeLessThanOrEqual(5)
+  })
+
+  it('waits behind a config save in the queue before switching a plugin or skill (#1157 item 9)', async () => {
+    const home = temporaryDirectory()
+    const skillPath = path.join(home, '.agents', 'skills', 'alpha', 'SKILL.md')
+    const configPath = path.join(home, '.codex', 'config.toml')
+    write(skillPath, '---\nname: Alpha\ndescription: Test\n---\n')
+    const original = 'model = "gpt-test"\n[plugins."sample@curated"]\nenabled = false\n'
+    write(configPath, original)
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[1] !== 'list') return marketplaces()
+      const pluginEntry = asRecord(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).plugins)?.['sample@curated'])
+      return pluginCatalog([plugin('sample@curated', true, Boolean(pluginEntry?.enabled))])
+    }
+    // 保存 Codex 配置正占着这一队、在等模型检测。
+    let releaseSave = (): void => undefined
+    let queue: Promise<unknown> = new Promise<void>((resolve) => { releaseSave = resolve })
+    let queued = 0
+    function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
+      queued += 1
+      const next = queue.then(operation, operation)
+      queue = next.catch(() => undefined)
+      return next
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, configPath, invoke, serializeConfigWrite })
+
+    const pluginSwitch = service.setPluginEnabled('sample@curated', true)
+    const skillSwitch = service.setSkillEnabled(skillPath, false)
+    await vi.waitFor(() => expect(queued).toBe(2))
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(original)
+
+    releaseSave()
+    expect((await pluginSwitch).plugins[0].enabled).toBe(true)
+    expect((await skillSwitch).skills[0].enabled).toBe(false)
+    const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(asRecord(asRecord(parsed.plugins)?.['sample@curated'])?.enabled).toBe(true)
+    expect(asRecord(parsed.skills)?.config).toEqual([{ path: skillPath, enabled: false }])
+
+    // 卸载时删启停记录也排同一队。
+    await service.uninstallSkill(skillPath)
+    expect(queued).toBe(3)
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).skills)?.config ?? []).toEqual([])
   })
 
   it('refuses to mutate config.toml through a directory junction', async () => {
@@ -701,6 +799,83 @@ describe('Skill discovery and managed mutations', () => {
     expect(result.skills).toEqual([])
     expect(fs.existsSync(path.join(result.trashPath, 'SKILL.md'))).toBe(true)
     expect(isPathInside(trash, result.trashPath)).toBe(true)
+  })
+
+  it('forgets a disabled Skill on uninstall, so importing it again starts enabled', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const source = path.join(sourceRoot, 'portable-skill')
+    const other = path.join(home, '.agents', 'skills', 'other', 'SKILL.md')
+    const configPath = path.join(home, '.codex', 'config.toml')
+    write(path.join(source, 'SKILL.md'), '---\nname: Portable\n---\n')
+    write(other, '---\nname: Other\n---\n')
+    const original = [
+      '# 客户自己写的说明',
+      'model = "gpt-test" # 默认型号',
+      '',
+      '[[skills.config]]',
+      `path = ${JSON.stringify(other)}`,
+      'enabled = false',
+      '',
+    ].join('\n')
+    write(configPath, original)
+    const service = new CodexExtensionService({ homeDirectory: home, trashDirectory: path.join(home, 'app-trash'), invoke: async () => '' })
+
+    const imported = (await service.importSkill({ sourcePath: source })).find((skill) => skill.name === 'Portable')
+    await service.setSkillEnabled(imported?.path ?? '', false)
+    await service.uninstallSkill(imported?.path ?? '')
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(original)
+    const again = await service.importSkill({ sourcePath: source })
+    expect(again.find((skill) => skill.name === 'Portable')).toMatchObject({ enabled: true })
+    expect(again.find((skill) => skill.name === 'Other')).toMatchObject({ enabled: false })
+  })
+
+  it('clears a record an older uninstall left behind before importing into the same place', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const source = path.join(sourceRoot, 'portable-skill')
+    const target = path.join(home, '.agents', 'skills', 'portable-skill', 'SKILL.md')
+    const configPath = path.join(home, '.codex', 'config.toml')
+    write(path.join(source, 'SKILL.md'), '---\nname: Portable\n---\n')
+    write(configPath, [
+      'model = "gpt-test"',
+      '',
+      '[[skills.config]]',
+      `path = ${JSON.stringify(target)}`,
+      'enabled = false',
+      '',
+    ].join('\n'))
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    expect(await service.importSkill({ sourcePath: source })).toEqual([
+      expect.objectContaining({ name: 'Portable', enabled: true }),
+    ])
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "gpt-test"\n')
+  })
+
+  it('still uninstalls when the leftover record cannot be written away', async () => {
+    const home = temporaryDirectory()
+    const skillDirectory = path.join(home, '.agents', 'skills', 'alpha')
+    const skillPath = path.join(skillDirectory, 'SKILL.md')
+    const configPath = path.join(home, '.codex', 'config.toml')
+    write(skillPath, '---\nname: Alpha\n---\n')
+    write(configPath, 'model = "gpt-test"\n')
+    const service = new CodexExtensionService({ homeDirectory: home, trashDirectory: path.join(home, 'app-trash'), invoke: async () => '' })
+    await service.setSkillEnabled(skillPath, false)
+    const disabled = fs.readFileSync(configPath, 'utf8')
+    const originalRename = fs.renameSync.bind(fs)
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (path.resolve(String(to)) === path.resolve(configPath)) throw heldError()
+      originalRename(from, to)
+    })
+
+    const result = await service.uninstallSkill(skillPath)
+
+    expect(result.skills).toEqual([])
+    expect(fs.existsSync(skillDirectory)).toBe(false)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(disabled)
+    expect(temporaryNames(path.dirname(configPath))).toEqual([])
   })
 })
 

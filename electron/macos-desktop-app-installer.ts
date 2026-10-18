@@ -13,7 +13,7 @@ import {
 } from './desktop-package-bucket'
 import { downloadWithResume } from './download-retry'
 import type { ExternalToolId } from './external-tool-config'
-import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv, darwinGatekeeperAssessmentTimeoutMs } from './macos-code-signing'
 import {
   macosDesktopDiskFullMessage,
   macosDesktopDownloadFailedMessage,
@@ -181,9 +181,6 @@ const maximumRedirects = 5
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 const extractTimeoutMs = 10 * 60_000
 const probeTimeoutMs = 30_000
-// A first deep verification hashes every file of a bundle of several hundred MB.
-const signatureTimeoutMs = 3 * 60_000
-const gatekeeperTimeoutMs = 2 * 60_000
 const copyTimeoutMs = 10 * 60_000
 const stagingDirectoryName = 'DesktopApps'
 const stagingPrefix = 'staging-'
@@ -582,14 +579,14 @@ async function verifyExtractedBundle(
     await runProcess({
       executable: '/usr/bin/codesign',
       argv: darwinDeveloperIdVerificationArgv(source.teamIdentifier, bundle, { deep: true, bundleIdentifier: source.bundleIdentifier }),
-      timeoutMs: signatureTimeoutMs,
+      timeoutMs: darwinDeepVerificationTimeoutMs,
     })
   } catch (error) {
     if (rejectedByCheck(error)) throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, `签名不是 ${source.teamIdentifier} 团队的 Developer ID`, error)
     throw error
   }
   try {
-    await runProcess({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', bundle], timeoutMs: gatekeeperTimeoutMs })
+    await runProcess({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', bundle], timeoutMs: darwinGatekeeperAssessmentTimeoutMs })
   } catch (error) {
     if (rejectedByCheck(error)) throw new MacosDesktopInstallError(macosDesktopNotOfficialMessage, 'Gatekeeper 没有放行（没有公证或签名已被吊销）', error)
     throw error

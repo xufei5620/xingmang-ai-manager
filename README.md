@@ -19,7 +19,7 @@ npm run dev
 
 登录后，在顶部“搜索、打开、跳转”输入 `XM-NEBULA-10M-7Q9K`，按 Enter 或点击“领取 10 分钟加速时长”，可增加 600 秒加速时间。忽略英文大小写与首尾空白；每个账号在本机领取一次，按账号来源隔离，重启后保留。已有用量不清零，正在加速时会延长到期时间；这是本机加速权益，不同步到其他设备。
 
-Windows 主程序使用 `requestedExecutionLevel: asInvoker`。四个 CLI 的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。Codex Desktop MSIX 如因打包服务返回 `0x80073D28`，仅本次安装请求 UAC；取消即停止，日常启动不提权。
+Windows 主程序使用 `requestedExecutionLevel: asInvoker`。命令行工具（Claude Code、Codex CLI、Grok CLI；Gemini CLI 已于 2026-10-14 下线）的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。Codex Desktop MSIX 如因打包服务返回 `0x80073D28`，仅本次安装请求 UAC；取消即停止，日常启动不提权。
 
 完整验证命令：
 
@@ -113,7 +113,9 @@ npm run dev
 | 账号站点 | Codex / Grok / OpenCode 基础地址 | Claude Code / Claude Desktop gateway 基础地址 |
 | --- | --- | --- |
 | 星芒AI（账号登录） | `https://xm.solov.cc/v1` | `https://xm.solov.cc` |
-| 星芒AI（Sub2API 账号） | `https://api.solov.cc/v1` | `https://api.solov.cc` |
+| 星芒AI（历史账号） | `https://api.solov.cc/v1` | `https://api.solov.cc` |
+
+上表是线路1（CF）的地址；每个站点另有线路2（洛杉矶直连，`xm-direct.solov.cc` / `api-direct.solov.cc`），客户端按设置里的线路选择自动切换，见 `electron/relay-sites.ts`。
 
 WorkBuddy 使用对应站点的 `/v1/chat/completions` 完整地址，默认写入 `~/.workbuddy/models.json`。新文件为数组，兼容保留已有 `models/availableModels` 对象结构；新模型使用 `vendor: "Custom"`。保存前重新检测所选 Key 的模型权限；模型不在授权列表、账号切换或站点变化时拒绝写入。
 
@@ -132,7 +134,7 @@ Codex CLI 与 Codex 桌面端共用 `%USERPROFILE%\.codex` 配置。已有配置
 
 此前 WorkBuddy 写入 `.codebuddy/models.json` 是桌面未加载配置的直接原因，原 `vendor: "OpenAI"` 和对象根格式本身并非无效。保存后重新进入 WorkBuddy 模型设置页确认，必要时自行重启客户端；工具不会自动结束会话。源码证据见 [WorkBuddy 5.5.6 桌面配置契约](artifacts/workbuddy-model-contract-2026-09-18/report.md)。
 
-Windows 外部桌面客户端的一键安装使用系统 winget 的精确包 `Tencent.WorkBuddy`、`Anthropic.Claude`、`SST.OpenCodeDesktop`，完成后重新检测安装结果。WorkBuddy 当前安装源为 x64；Claude Desktop/OpenCode 支持 x64 与 arm64。缺少受信任的 winget 时显示修复提示。macOS 当前支持检测和打开已安装的官方应用，自动安装尚未实现，需先从官网下载并放入 Applications。安装源、签名和本机检测证据见 [官方安装来源记录](artifacts/external-client-install-sources.md)；本轮未实际安装这三个客户端。
+Windows 上三个外部桌面客户端各走各的：WorkBuddy 由客户自己去腾讯官网下载（2026-10-13 起），装好回来重新检测；Claude Desktop 和 OpenCode 用系统 winget 的精确包 `Anthropic.Claude`、`SST.OpenCodeDesktop` 一键安装，Claude Desktop 没有受信任的 winget 时改从官网下离线 MSIX（`claude-desktop-msix-installer.ts`），OpenCode 没有 winget 时给官网下载链接；两者支持 x64 与 arm64。macOS 上 Claude Desktop 和 OpenCode 可一键安装（只装核对过 Team ID、签名与公证的官方包，`macos-desktop-app-installer.ts`），WorkBuddy 需先从官网下载并放入 Applications。安装源、签名和本机检测证据见 [官方安装来源记录](artifacts/external-client-install-sources.md)；本轮未实际安装这三个客户端。
 
 使用步骤与配置细节见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)和 [Codex 账号与模型配置](docs/CODEX-ACCOUNT-CONFIG.md)，实施记录见 [进度记录](docs/IMPLEMENTATION-PROGRESS-2026-09-17.md)。
 

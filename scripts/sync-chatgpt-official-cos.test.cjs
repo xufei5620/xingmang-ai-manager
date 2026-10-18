@@ -4,13 +4,15 @@ const { createHash } = require('node:crypto')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
-const { hashFile, readBoundedRegularFile } = require('./cos-sync-utils.cjs')
+const { hashFile, readBoundedRegularFile, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { TOTAL_UPLOAD_MS } = require('./cos-multipart-upload.cjs')
 const {
   OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE,
   LATEST_KEY, MAX_PACKAGE_BYTES, WINDOWS_INSPECTION_SCRIPT, parsePlatforms,
   compareWindowsVersions, validateWindowsMetadata, validateHead, parseMacAppcast,
   validateWindowsInspection, sanitizedWindowsEnvironment, synchronizeOfficialChatgpt,
-  validatePackageMagic, createRuntimeDependencies, safeOfficialSyncFailure,
+  validatePackageMagic, createRuntimeDependencies, safeOfficialSyncFailure, inspectWindowsFile, validateLicenseInspection,
+  MULTIPART_DEADLINE_MS, createOfficialCosStore,
 } = require('./sync-chatgpt-official-cos.cjs')
 
 test('runtime temp aliases resolve to safe files and cleanup preserves neighboring directories', async function () {
@@ -126,7 +128,7 @@ function createFixture() {
       if (input.license) return { license: { rootName: 'License', namespace: 'urn:schemas-microsoft-com:windows:store:licensing:ls', productId: '9PLM9XGG6VKS', packageFamily: 'openai.codex_2p2nqsd0c76g0' } }
       const architecture = input.filePath.includes('arm64') ? 'arm64' : 'x64'
       return {
-        manifest: { name: 'OpenAI.Codex', version: fixture.metadata.buildVersion, architecture, publisher: WINDOWS_PUBLISHER, containsPackageSignature: true },
+        manifest: { name: 'OpenAI.Codex', version: fixture.packageVersion || fixture.metadata.buildVersion, architecture, publisher: WINDOWS_PUBLISHER, containsPackageSignature: true },
         signature: { status: fixture.badSignatureArchitecture === architecture ? 'HashMismatch' : 'Valid', signerSubject: WINDOWS_PUBLISHER, signerIssuer: 'CN=Microsoft Marketplace CA G 028, O=Microsoft Corporation, C=US' },
       }
     },
@@ -432,7 +434,99 @@ test('rejects signature failure in any architecture before publishing any packag
 test('rejects a valid unrelated signer despite matching package identity', function () {
   const fixture = createFixture()
   const report = { manifest: { name: 'OpenAI.Codex', version: fixture.metadata.buildVersion, architecture: 'x64', publisher: WINDOWS_PUBLISHER, containsPackageSignature: true }, signature: { status: 'Valid', signerSubject: 'CN=Attacker', signerIssuer: 'O=Microsoft Corporation' } }
-  assert.throws(function () { validateWindowsInspection(report, fixture.metadata, 'x64') }, /可信签名/)
+  assert.throws(function () { validateWindowsInspection(report, fixture.metadata, 'x64') }, function (error) {
+    assert.match(error.message, /可信签名/)
+    const failure = safeSyncFailure(error)
+    assert.equal(failure.code, 'package-signature-invalid')
+    assert.equal(failure.observed.signerSubject, 'CN=Attacker')
+    assert.equal(failure.observed.signerIssuer, 'O=Microsoft Corporation')
+    return true
+  })
+})
+
+// 2026-10-17 第 51 次运行：官方更新清单已写 26.1013.4894.0，两个 MSIX 还是 26.1013.3656.0，日志里只有 operation-failed。
+test('an official package that still carries the previous version logs both versions instead of operation-failed', async function () {
+  const fixture = createFixture()
+  fixture.metadata.buildVersion = '26.1013.4894.0'
+  fixture.packageVersion = '26.1013.3656.0'
+  const events = []
+  await assert.rejects(synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, platforms: 'windows-arm64', progress: (event) => events.push(event) }), function (error) {
+    assert.deepEqual(safeOfficialSyncFailure(error), {
+      stage: 'verify-windows-package', platform: 'windows-arm64', latestState: 'not-written-by-this-run',
+      failure: { code: 'package-identity-mismatch', observed: {
+        expectedVersion: '26.1013.4894.0', packageName: 'OpenAI.Codex', packageVersion: '26.1013.3656.0', packageArchitecture: 'arm64',
+        packagePublisher: WINDOWS_PUBLISHER, containsPackageSignature: true, signatureStatus: 'Valid', signerSubject: WINDOWS_PUBLISHER,
+        signerIssuer: 'CN=Microsoft Marketplace CA G 028, O=Microsoft Corporation, C=US',
+      } },
+    })
+    return true
+  })
+  const failed = events.find((event) => event.event === 'stage-failed')
+  assert.equal(failed.diagnostic.failure.code, 'package-identity-mismatch')
+  assert.doesNotMatch(JSON.stringify(events), /校验失败/)
+  assert.equal(fixture.publications.length, 0)
+  assert.equal(fixture.pointers.length, 0)
+})
+
+test('signature, license and format failures each log their own code', async function () {
+  const signature = createFixture()
+  signature.badSignatureArchitecture = 'arm64'
+  await assert.rejects(signature.run('windows-arm64'), function (error) {
+    const diagnostic = safeOfficialSyncFailure(error)
+    assert.equal(diagnostic.failure.code, 'package-signature-invalid')
+    assert.equal(diagnostic.failure.observed.signatureStatus, 'HashMismatch')
+    return true
+  })
+  assert.throws(function () { validateLicenseInspection({ license: { rootName: 'License' } }) }, function (error) { return safeSyncFailure(error).code === 'license-identity-mismatch' })
+  const format = createFixture()
+  format.dependencies.validatePackageMagic = async function (filePath, packageFormat, bytes) { return validatePackageMagic(filePath, packageFormat, bytes) }
+  format.dependencies.downloadResource = async function (input) {
+    const result = format.resources.get(input.url)
+    await fs.writeFile(input.filePath, Buffer.alloc(result.bytes))
+    return { ...result }
+  }
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'official-format-code-'))
+  format.dependencies.createWorkDirectory = async function () { return directory }
+  try {
+    await assert.rejects(format.run('linux-deb-x64'), function (error) {
+      assert.deepEqual(safeOfficialSyncFailure(error).failure, { code: 'package-format-invalid' })
+      return true
+    })
+  } finally { await fs.rm(directory, { recursive: true, force: true }) }
+})
+
+test('the Windows inspector reports where it stopped without logging what it printed', { skip: process.platform === 'win32' }, async function () {
+  await assert.rejects(inspectWindowsFile({ filePath: 'C:\\package.msix', workDirectory: os.tmpdir() }), function (error) {
+    assert.deepEqual(safeSyncFailure(error), { code: 'inspector-unavailable' })
+    return true
+  })
+})
+
+test('the Windows inspector names its own fixed throw and the exit status, never its output', { skip: process.platform !== 'win32' }, async function () {
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'official-inspector-code-'))
+  try {
+    async function failing() {
+      const error = new Error('Command failed: SECRET-COMMAND-LINE')
+      Object.assign(error, { code: 1, killed: false, stderr: 'Package Identity missing\r\nAt D:\\SECRET\\inspect-official-package.ps1:26 char:3' })
+      throw error
+    }
+    await assert.rejects(inspectWindowsFile({ filePath: path.join(directory, 'a.msix'), workDirectory: directory, run: failing }), function (error) {
+      const failure = safeSyncFailure(error)
+      assert.deepEqual(failure, { code: 'inspector-failed', observed: { exitCode: 1, timedOut: false, inspectorReason: 'identity-missing' } })
+      assert.doesNotMatch(JSON.stringify(failure), /SECRET/)
+      return true
+    })
+    async function timedOut() { throw Object.assign(new Error('timeout'), { code: null, killed: true, signal: 'SIGTERM', stderr: '' }) }
+    await assert.rejects(inspectWindowsFile({ filePath: path.join(directory, 'b.msix'), workDirectory: directory, run: timedOut }), function (error) {
+      assert.deepEqual(safeSyncFailure(error), { code: 'inspector-failed', observed: { timedOut: true } })
+      return true
+    })
+    async function garbled() { return { stdout: 'not json' } }
+    await assert.rejects(inspectWindowsFile({ filePath: path.join(directory, 'c.msix'), workDirectory: directory, run: garbled }), function (error) {
+      assert.deepEqual(safeSyncFailure(error), { code: 'inspection-unparsable' })
+      return true
+    })
+  } finally { await fs.rm(directory, { recursive: true, force: true }) }
 })
 
 test('rejects HEAD and GET changes and checksum failures without switching the pointer', async function () {
@@ -524,4 +618,15 @@ test('Windows inspection has bounded XML readers and excludes COS secrets from s
   assert.match(WINDOWS_INSPECTION_SCRIPT, /DtdProcessing = \[Xml\.DtdProcessing\]::Prohibit/)
   assert.match(WINDOWS_INSPECTION_SCRIPT, /Get-AuthenticodeSignature -LiteralPath \$PackagePath/)
   assert.doesNotMatch(WINDOWS_INSPECTION_SCRIPT, /Add-AppxPackage|Add-AppxProvisionedPackage/)
+})
+
+test('official package uploads get a 120-minute multipart deadline instead of the 75-minute default', function () {
+  // A 1 GB Windows ARM64 package at the 190 KB/s seen in real runs needs about 90 minutes (#1082).
+  assert.equal(MULTIPART_DEADLINE_MS, 120 * 60 * 1000)
+  assert.ok(MULTIPART_DEADLINE_MS > TOTAL_UPLOAD_MS)
+  const created = []
+  const store = {}
+  const config = { bucket: 'bucket-1250000000' }
+  assert.equal(createOfficialCosStore({ createCosStore(value, options) { created.push([value, options]); return store } }, config), store)
+  assert.deepEqual(created, [[config, { multipartDeadlineMs: 120 * 60 * 1000 }]])
 })

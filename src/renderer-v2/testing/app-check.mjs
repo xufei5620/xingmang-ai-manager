@@ -824,6 +824,26 @@ test('Codex non-GPT menu requires a detected non-GPT model before saving', async
   } finally { await page.close() }
 })
 
+// #1154 附录：服务状态文件改了 Codex 默认，「换用别家模型」里那条「Codex 默认」也跟着换，不再只认程序自带的。
+test('Codex non-GPT menu offers the published Codex default as the way back', async () => {
+  const page = await open('clientModels=1&cliModelHints=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.waitFor()
+    await row.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
+    await page.getByTestId('home-codex-models').click()
+    const list = page.getByTestId('tool-codex-model-filter')
+    await list.getByRole('radio', { name: /gpt-fixture/ }).waitFor()
+    const choices = await list.getByRole('radio').allTextContents()
+    assert.equal(choices.length, 3)
+    assert.match(choices[0], /gpt-fixture[\s\S]*Codex 默认/)
+    assert.equal(choices.filter((label) => label.includes('Codex 默认')).length, 1)
+    await page.keyboard.press('Escape')
+    await page.getByTestId('codex-other-models-dialog').waitFor({ state: 'hidden' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Codex model lists leave out grok-4.6 while the Grok CLI still offers it', async () => {
   const page = await open('codexGrokModels=1&allInstalled=1')
   try {
@@ -5820,6 +5840,31 @@ test('Sub2API keeps fractional key limits and changing its password returns to l
 })
 
 
+// 自己点的退出：会话变化的事件比退出的返回先到，不能当成「登录被结束」去提醒（#1098）。
+// 改密码后被登出那条（上面）照样要提醒。个人中心和命令面板两个入口都走这一条。
+test('logging out yourself does not warn that the login ended from either entry point', async () => {
+  for (const entry of ['account', 'command']) {
+    const page = await open()
+    try {
+      await page.getByTestId('tool-row-codex').waitFor()
+      if (entry === 'account') {
+        await page.getByTestId('sidebar-account-open').click()
+        await page.getByTestId('account-overview-logout').click()
+      } else {
+        await page.keyboard.press('Control+k')
+        await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
+        await page.getByTestId('command-result-account:logout').click()
+      }
+      await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+      await page.getByTestId('welcome-login').waitFor()
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 1)
+      await assertNoToast(page, '当前登录已结束，请重新登录。')
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 test('explicit historical login uses returned account ownership with customer account-source labels', async () => {
   const page = await open('guest=1&sub2api=1')
   try {
@@ -5938,6 +5983,24 @@ for (const existing of [false, true]) for (const { tool, provider, model } of de
     } finally { await page.close() }
   })
 }
+
+// #1154 附录：没设型号的工具，配置窗口预选的默认跟登录自动配置一样看服务状态文件的型号表，不只认程序自带的。
+test('the configuration dialog defaults a tool without a model to the published default', async () => {
+  const page = await open('guest=1&existing=1&allInstalled=1&keyOptions=1&cliDefaultModels=1&cliMissingModels=1&cliModelHints=1')
+  try {
+    await openGuestToolConfiguration(page, 'claude', false)
+    await expect(page.getByLabel('默认模型')).toHaveValue('claude-opus-6')
+    await page.getByTestId('tool-detect-models').click()
+    await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
+    assert.equal(await page.getByLabel('默认模型').inputValue(), 'claude-opus-6')
+    await page.getByTestId('tool-save-config').click()
+    await waitForSavedConfiguration(page)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').map((entry) => entry.args[0])), [
+      { provider: 'claude', apiKey: '', model: 'claude-opus-6', mode: 'merge' },
+    ])
+    await clean(page)
+  } finally { await page.close() }
+})
 
 // Gemini CLI 下线（yoyo 2026-10-14）：原来挂在它「官方账号」旁边的那句企业版限制也跟着没了；
 // 装着它也一样。v4 起配置窗口只管点开的那一个工具，没有工具页签。

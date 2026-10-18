@@ -88,6 +88,8 @@ export type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 export type { RunningToolsReport } from './running-tools'
 import type { ToolModelCheck } from './tool-model-check'
 export type { ToolModelCheck } from './tool-model-check'
+import type { CliModelHints } from './cli-model-defaults'
+export type { CliModelHints } from './cli-model-defaults'
 import type { ToolTemplateFillResult } from './tool-config-ownership'
 export type { ToolTemplateFillResult } from './tool-config-ownership'
 import type {
@@ -504,6 +506,11 @@ export interface AccountManagedCliConfigurationInput {
   preferredModels: Partial<Record<ProviderId, string>>
   mode?: ConfigSavePayload['mode']
   intent?: 'automatic' | 'explicit'
+  /**
+   * providers 里只跟着连接线路换地址、Key 沿用配置里那把的几家（#1159）：配置里那把不是自动签的托管 Key，
+   * 是客户在密钥页、配置窗口自己选的。只传工具名，Key 不跨进程。缺省 = 一律写托管 Key。
+   */
+  keepKeys?: ProviderId[]
 }
 
 export type RendererLogLevel = 'info' | 'warn' | 'error'
@@ -823,6 +830,11 @@ export interface XingmangInvokeContract {
    * 悄悄刷新；默认模型用不了时只报回来，换不换由用户点。核对不成一律 skipped，不抛错。
    */
   checkToolModels: IpcInvokeDefinition<'tools:check-models', [provider: ProviderId], ToolModelCheck>
+  /**
+   * 服务状态文件里的型号表（service-status.ts 的 cliModels），一次也没读到过是 null。配置窗口给工具挑默认型号
+   * 也看它，跟登录自动配置挑的是同一个（#1154 附录）。只读、不带入参，不归哪个账号，所以不进账号那道闸。
+   */
+  getCliModelHints: IpcInvokeDefinition<'tools:cli-model-hints', [], CliModelHints | null>
   /**
    * 开机恢复账号后，给当前账号写过、但模板版本落后的工具配置补缺省项（用户写过的值不动）。
    * 失败只进日志，不抛错；返回真的改了文件的工具，首页据此说一次。工具可能正开着、这次没动的
@@ -1343,6 +1355,7 @@ export const ipcInvokeChannels = {
   repairCliHooks: 'config:repair-cli-hooks',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
+  getCliModelHints: 'tools:cli-model-hints',
   fillToolTemplateDefaults: 'config:fill-template-defaults',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',

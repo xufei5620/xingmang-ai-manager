@@ -19,6 +19,10 @@
  * - 先走的那条连续 3 次没查通、备用那条查通了才改走备用那条；两条都不通（比如开机时还没联网）就不改，
  *   免得工具配置来回换，过一阵再查。
  * - 退到备用那条以后隔两分钟查一次先走的那条，连续 10 分钟都查得通才切回来。
+ * - 开机（有存下的结论时）、唤醒、网络恢复、点「重新检测」，和退到备用以后它上面的请求也没走通时，
+ *   两条一起查：走着的那条不通、另一条通了就当场换过去，不等三次也不等那 10 分钟（#1053）。三次阈值
+ *   防的是两条都能用时来回横跳，这时走着的那条刚没查通、另一条刚查通，不是横跳；不这样的话，换了
+ *   网络以后要一分多钟才退得出坏掉的那条，备用那条自己坏了更是要等满 10 分钟。
  * - 两次切换至少隔 5 分钟：每切一次工具配置都要跟着改，开着的工具要重开。
  *
  * 结论和每个站最近一次切换落盘（relay-route-lines.json），下次开机先用结论，诊断页说得出最近一次
@@ -82,9 +86,10 @@ const maxProbeBytes = 256 * 1024
 
 /**
  * 为什么改的线路：startup = 这次开机第一次定下来，先走的那条查通了；health-failed = 先走的那条连续几次
- * 健康检查没通过、备用那条查通了，改走备用那条；recovered = 退到备用以后先走的那条一直查得通，切回去。
+ * 健康检查没通过、备用那条查通了，改走备用那条；line-down = 两条一起查的那一轮里走着的那条没通、另一条
+ * 通了，当场换过去（哪个方向都可能）；recovered = 退到备用以后先走的那条一直查得通，切回去。
  */
-export type RelayRouteChangeReason = 'startup' | 'health-failed' | 'recovered'
+export type RelayRouteChangeReason = 'startup' | 'health-failed' | 'line-down' | 'recovered'
 
 /** 一个站最近一次改线路。只记线路 id 和原因，不记地址。 */
 export interface RelayRouteChange {
@@ -92,8 +97,9 @@ export interface RelayRouteChange {
   to: RelayEndpointId
   reason: RelayRouteChangeReason
   /**
-   * 改走备用那条那一轮检查是怎么起的：startup = 开机，scheduled = 定时查，别的是星芒自己的请求在
-   * 先走的那条上碰到的失败（错误码，比如 ERR_CONNECTION_RESET）。切到先走的那条时没有。
+   * 换线路那一轮检查是怎么起的：startup = 开机，scheduled = 定时查，resume / network / manual = 唤醒、
+   * 网络恢复、点「重新检测」，别的是星芒自己的请求在走着的那条上碰到的失败（错误码，比如
+   * ERR_CONNECTION_RESET）。连着查通 10 分钟切回先走的那条时没有。
    */
   trigger?: string
   /** 毫秒时间戳。 */
@@ -135,10 +141,16 @@ export interface RelayRouteController {
   /** 开机后在后台查「自动」的站。 */
   start(): void
   /**
-   * 星芒自己的一次请求在「自动」先走的那条线路上没走通：马上查一轮那条，不等下一次定时的。只是叫这里
-   * 去查，改不改线路照样只看健康检查。已经退到备用那条时不管。
+   * 星芒自己的一次请求在「自动」的站这会儿走的那条线路上没走通：马上查一轮，不等下一次定时的。只是叫
+   * 这里去查，改不改线路照样只看健康检查。走的是先走的那条就照三次的规矩查；已经退到备用那条就两条一起
+   * 查，备用那条不通、先走的那条通了当场切回去。报的不是这会儿走的那条（线路刚换过）就不管。
    */
-  reportPreferredFailure(siteId: RelayRouteSiteId, reason: string): void
+  reportFailure(siteId: RelayRouteSiteId, line: RelayEndpointId, reason: string): void
+  /**
+   * 唤醒、网络恢复、客户点「重新检测」：每个「自动」的站马上两条一起查一轮，走着的那条不通、另一条通就
+   * 当场换过去。唤醒、网络恢复时，退到备用以后攒下的「一直查得通」从头数：睡前那几次不该跟醒来连成一段。
+   */
+  recheck(trigger: 'resume' | 'network' | 'manual'): void
   /** 线路改了就叫一声，返回取消订阅。 */
   subscribe(listener: (siteId: RelayRouteSiteId, line: RelayRouteLine) => void): () => void
   dispose(): void
@@ -178,15 +190,15 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
 
 // 0.2.18 及以前两个站都先走直连，历史账号那时存下的「直连」是查通了就定的，不是默认线路连不上退过去的。
 // 现在历史账号先走默认线路（yoyo 10-14），这种结论连同那次切换一起不认，开机照没有结论办：先走默认线路，
-// 查通了定下来，工具配置跟着迁回来。按现在的规矩退到直连的，最近一次切换一定记着「health-failed、改走
-// 直连」，照旧认。先走的就是直连的站（星芒账号）规矩没变，结论原样用。
+// 查通了定下来，工具配置跟着迁回来。按现在的规矩退到直连的，最近一次切换一定记着「health-failed（或
+// line-down）、改走直连」，照旧认。先走的就是直连的站（星芒账号）规矩没变，结论原样用。
 function retireDirectFirstConclusions(stored: RelayRouteConclusions): RelayRouteConclusions {
   const lines = { ...stored.lines }
   const changes = { ...stored.changes }
   for (const siteId of relayRouteSiteIds) {
     if (relayAutoPreferredLines[siteId] === 'direct' || lines[siteId] !== 'direct') continue
     const change = changes[siteId]
-    if (change?.to === 'direct' && change.reason === 'health-failed') continue
+    if (change?.to === 'direct' && (change.reason === 'health-failed' || change.reason === 'line-down')) continue
     delete lines[siteId]
     delete changes[siteId]
   }
@@ -319,11 +331,19 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     }
   }
 
-  function beginRound(siteId: RelayRouteSiteId, state: SiteState, trigger: string): void {
+  // bothLines：两条一起查（checkBothLines）。退到备用那条以后起的一轮都是两条一起查。
+  function beginRound(siteId: RelayRouteSiteId, state: SiteState, trigger: string, bothLines = false): void {
     if (disposed || state.round || state.checking) return
     state.round = { trigger, failures: 0 }
     if (state.firstLaunch) void checkFirstLaunch(siteId, state)
+    else if (bothLines || state.line !== relayAutoPreferredLines[siteId]) void checkBothLines(siteId, state)
     else void checkPreferred(siteId, state)
+  }
+
+  // 两条一起查以后接着看：走先走的那条照常隔一阵查一次；退到备用那条时切回去的计时照旧，已经挂着的
+  // 那次不往后推，不然请求接连失败、一轮轮查下来，切回去那两分钟一次的检查就一直排不上。
+  function keepWatching(siteId: RelayRouteSiteId, state: SiteState): void {
+    if (state.line === relayAutoPreferredLines[siteId] || !state.cancelTimer) watch(siteId, state)
   }
 
   // 一轮里查一次先走的那条。通了：没定下来的定在它上面，走着它的接着走。没通：连着够 3 次再查备用那条，
@@ -430,10 +450,75 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
   }
 
+  // 两条一起查（#1053）：开机（有存下的结论时）、唤醒、网络恢复、点「重新检测」，和退到备用以后它上面的
+  // 请求也没走通。走着的那条不通、另一条通了就当场换过去，不等三次（文件头）；两次切换至少隔 5 分钟照旧。
+  // 都通就不动：退到备用时先走的那条通了也不在这里切回去，切回去照旧要连着查通 10 分钟，这一轮只有开机
+  // 那次算进去（和原来一样），别的时候查出先走的那条没通就从头数。健康检查只读，两条一起查没有副作用；
+  // 两个检查不经 check()，理由同 checkFirstLaunch。
+  async function checkBothLines(siteId: RelayRouteSiteId, state: SiteState): Promise<void> {
+    const round = state.round
+    if (!round) return
+    const preferred = relayAutoPreferredLines[siteId]
+    const current = state.line
+    const other = current === preferred ? relayAutoBackupLine(siteId) : preferred
+    function probeLine(line: RelayEndpointId): Promise<boolean> {
+      try {
+        return dependencies.probe(siteId, line).then((reachable) => reachable === true, () => false)
+      } catch {
+        return Promise.resolve(false)
+      }
+    }
+    state.checking = true
+    let currentUp = false
+    let otherUp = false
+    try {
+      [currentUp, otherUp] = await Promise.all([probeLine(current), probeLine(other)])
+    } finally {
+      state.checking = false
+    }
+    if (disposed || state.round !== round) return
+    state.round = null
+    if (current !== preferred) {
+      if (!otherUp) state.recovered = 0
+      else if (round.trigger === 'startup') state.recovered += 1
+    }
+    if (currentUp) {
+      if (!state.settled) {
+        settle(siteId, state, current, 'startup')
+        return
+      }
+      keepWatching(siteId, state)
+      return
+    }
+    log('info', 'relay.route.check-failed', current === preferred ? '先走的那条线路这次健康检查没通过' : '备用那条线路这次健康检查没通过', {
+      siteId, line: current, trigger: round.trigger, bothLines: true,
+    })
+    if (!otherUp) {
+      log('warn', 'relay.route.unreachable', '线路1和线路2这会儿都没连上，线路先不改', {
+        siteId, line: state.line, settled: state.settled, trigger: round.trigger,
+      })
+      if (current === preferred) setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
+      else keepWatching(siteId, state)
+      return
+    }
+    const wait = switchWait(state)
+    if (wait > 0) {
+      log('info', 'relay.route.held', '走着的那条没查通，离上次切换还不够久，到点再查一轮', { siteId, line: state.line, waitMs: wait })
+      setTimer(state, wait, () => beginRound(siteId, state, round.trigger, true))
+      return
+    }
+    settle(siteId, state, other, 'line-down', round.trigger)
+  }
+
   // 退到备用那条以后查一次先走的那条：连着查通 recoveryStreak 次才切回去，中间一次没通就从头数。
   async function checkRecovery(siteId: RelayRouteSiteId, state: SiteState): Promise<void> {
     const preferred = relayAutoPreferredLines[siteId]
-    if (state.line === preferred || !state.settled || state.checking) return
+    if (state.line === preferred || !state.settled) return
+    // 两条一起查的那一轮还没回来：这次先不查，过两分钟再来，不然切回去这条计时就断了。
+    if (state.checking || state.round) {
+      watch(siteId, state)
+      return
+    }
     const reachable = await check(state, siteId, preferred)
     if (reachable === null || state.line === preferred) return
     state.recovered = reachable ? state.recovered + 1 : 0
@@ -457,20 +542,31 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     },
     start() {
       for (const [siteId, state] of states) {
-        // 上次退到了备用那条：照切回的规矩来，开机这一次算头一次。
-        if (state.settled && state.line !== relayAutoPreferredLines[siteId]) void checkRecovery(siteId, state)
-        else beginRound(siteId, state, 'startup')
+        // 有存下的结论：两条一起查，换了网络时走着的那条不通、另一条通就当场换过去（#1053）。上次退到了
+        // 备用那条的，切回去照旧按切回的规矩，开机这一次算头一次。没有结论的照原来：星芒账号走
+        // checkFirstLaunch，历史账号先查默认线路。
+        beginRound(siteId, state, 'startup', state.settled && !state.firstLaunch)
       }
     },
-    reportPreferredFailure(siteId, reason) {
+    reportFailure(siteId, line, reason) {
       const state = states.get(siteId)
-      if (disposed || !state || state.line !== relayAutoPreferredLines[siteId] || state.round || state.checking) return
+      if (disposed || !state || state.line !== line || state.round || state.checking) return
       const at = now()
       if (state.failureCheckedAt !== null && at - state.failureCheckedAt >= 0
         && at - state.failureCheckedAt < relayRouteFailureRecheckGapMs) return
       state.failureCheckedAt = at
-      log('info', 'relay.route.direct-failed', '先走的那条线路上请求没走通，马上查一轮', { siteId, line: state.line, reason })
-      beginRound(siteId, state, triggerPattern.test(reason) ? reason : 'request')
+      const preferred = line === relayAutoPreferredLines[siteId]
+      log('info', preferred ? 'relay.route.direct-failed' : 'relay.route.backup-failed',
+        preferred ? '先走的那条线路上请求没走通，马上查一轮' : '备用那条线路上请求也没走通，两条一起查一轮', { siteId, line, reason })
+      beginRound(siteId, state, triggerPattern.test(reason) ? reason : 'request', !preferred)
+    },
+    recheck(trigger) {
+      if (disposed) return
+      for (const [siteId, state] of states) {
+        if (trigger !== 'manual') state.recovered = 0
+        log('info', 'relay.route.recheck', '唤醒、网络恢复或点了重新检测，马上查一轮线路', { siteId, line: state.line, trigger })
+        beginRound(siteId, state, trigger, state.settled && !state.firstLaunch)
+      }
     },
     subscribe(listener) {
       listeners.add(listener)
@@ -495,7 +591,7 @@ function parseConclusionLine(value: unknown): RelayEndpointId | undefined {
 }
 
 function isRelayRouteChangeReason(value: unknown): value is RelayRouteChangeReason {
-  return value === 'startup' || value === 'health-failed' || value === 'recovered'
+  return value === 'startup' || value === 'health-failed' || value === 'line-down' || value === 'recovered'
 }
 
 function parseRelayRouteChange(value: unknown): RelayRouteChange | undefined {

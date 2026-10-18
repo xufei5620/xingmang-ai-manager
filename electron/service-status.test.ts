@@ -4,7 +4,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createServiceStatusMonitor,
+  isOlderReleaseGuard,
   locateServiceStatusUrl,
+  parseReleaseGuard,
   parseServiceStatus,
   readServiceStatus,
   resolveServiceStatusUrl,
@@ -161,6 +163,69 @@ describe('parseServiceStatus', () => {
     for (const accountGroups of [null, [], 'claude=x', {}, { claude: [] }, { claude: [''] }]) {
       expect(parseServiceStatus(JSON.stringify({ accountGroups }), now)).not.toHaveProperty('accountGroups')
     }
+  })
+
+  it('reads the CLI model table for the tools it still manages', () => {
+    const text = JSON.stringify({
+      cliModels: {
+        codex: { default: ' gpt-7 ', previous: ['gpt-6-astra', 'gpt-6-astra'], retired: ['gpt-5.5', 'gpt-6-luna'] },
+        claude: { previous: ['claude-opus-5-5'] },
+        grok: { retired: ['grok-4.6'] },
+      },
+    })
+    expect(parseServiceStatus(text, now).cliModels).toEqual({
+      codex: { default: 'gpt-7', previous: ['gpt-6-astra'], retired: ['gpt-5.5', 'gpt-6-luna'] },
+      claude: { previous: ['claude-opus-5-5'] },
+      grok: { retired: ['grok-4.6'] },
+    })
+  })
+
+  it('drops model names it cannot use without voiding the rest of a tool', () => {
+    const text = JSON.stringify({
+      cliModels: {
+        codex: { default: 'gpt 7', previous: ['gpt-6-astra"', 12, null, '', 'gpt-6-astra'], retired: Array.from({ length: 40 }, (_, index) => `gpt-old-${index}`) },
+        claude: { default: ['claude-opus-6'], retired: 'claude-opus-5' },
+        gemini: { default: 'gemini-4' },
+        image: { default: 'gpt-image-3' },
+      },
+    })
+    const models = parseServiceStatus(text, now).cliModels
+    expect(models?.codex?.default).toBeUndefined()
+    expect(models?.codex?.previous).toEqual(['gpt-6-astra'])
+    expect(models?.codex?.retired).toHaveLength(32)
+    expect(models).not.toHaveProperty('claude')
+    expect(models).not.toHaveProperty('gemini')
+    expect(models).not.toHaveProperty('image')
+  })
+
+  it('treats a model table with nothing usable as no table at all', () => {
+    for (const cliModels of [null, [], 'codex.default=gpt-7', {}, { codex: null }, { codex: {} }, { codex: { default: '' } }, { codex: { previous: [] } }]) {
+      expect(parseServiceStatus(JSON.stringify({ cliModels }), now)).not.toHaveProperty('cliModels')
+    }
+  })
+
+  it('reads when the publisher last changed the file, ignoring a time it cannot use (#1157 item 10)', () => {
+    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-23T07:59:00.000Z' }), now).updatedAt).toBe('2026-09-23T07:59:00.000Z')
+    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-23T16:00:00+08:00' }), now).updatedAt).toBe('2026-09-23T08:00:00.000Z')
+    // 留一天给时钟偏差；再往后就是写错了，当没写，免得它压住之后每一份。
+    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-24T07:59:00.000Z' }), now).updatedAt).toBe('2026-09-24T07:59:00.000Z')
+    for (const updatedAt of ['2026-09-24T08:01:00.000Z', 'yesterday', 1_758_614_400_000, null]) {
+      expect(parseServiceStatus(JSON.stringify({ updatedAt }), now)).not.toHaveProperty('updatedAt')
+    }
+    expect(parseReleaseGuard({ badVersions: ['0.2.10'], rollout: null, updatedAt: '2026-09-23T07:00:00.000Z' }, now))
+      .toEqual({ badVersions: ['0.2.10'], rollout: null, updatedAt: '2026-09-23T07:00:00.000Z' })
+    expect(parseReleaseGuard({ badVersions: [], rollout: null, updatedAt: '2027-01-01T00:00:00.000Z' }, now))
+      .toEqual({ badVersions: [], rollout: null })
+  })
+
+  it('calls a release guard older only when both copies say when they were written', () => {
+    const earlier = { updatedAt: '2026-09-23T07:00:00.000Z' }
+    const later = { updatedAt: '2026-09-23T08:00:00.000Z' }
+    expect(isOlderReleaseGuard(earlier, later)).toBe(true)
+    expect(isOlderReleaseGuard(later, earlier)).toBe(false)
+    expect(isOlderReleaseGuard(later, later)).toBe(false)
+    expect(isOlderReleaseGuard({}, later)).toBe(false)
+    expect(isOlderReleaseGuard(earlier, {})).toBe(false)
   })
 })
 

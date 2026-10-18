@@ -7,6 +7,7 @@ const test = require('node:test')
 
 const {
   appendToUnreleasedSection,
+  assertAllCollected,
   assertNoDirectUnreleasedEdit,
   changedFileStatuses,
   collectChanges,
@@ -272,6 +273,30 @@ test('the collect command reports what it merged and what it removed', () => {
     assert.match(result.stdout, /已删除 1 个分片：n4\.md/)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a release is only clear once every fragment has been collected', () => {
+  // #1086：publish-release 占 tag 之前跑这一条。说明和模板常驻，不算漏收。
+  const empty = fixture()
+  const pending = fixture({ 'p-10.md': '## 开发\n\n- 条目。\n', 'n4.md': '## 用户\n\n- 条目。\n' })
+  try {
+    assert.doesNotThrow(() => assertAllCollected(empty))
+    assert.throws(() => assertAllCollected(pending), /还有 2 个没汇总的分片：n4\.md、p-10\.md/)
+
+    const clear = run(empty, ['--assert-collected'])
+    assert.equal(clear.status, 0, clear.stderr)
+    assert.match(clear.stdout, /分片都已汇总/)
+    const refused = run(pending, ['--assert-collected'])
+    assert.notEqual(refused.status, 0)
+    assert.match(refused.stderr, /n4\.md、p-10\.md/)
+    assert.match(refused.stderr, /npm run changelog:collect/)
+    // 只报不改：汇总要人在定版分支上做，顺手删掉分片就成了悄悄丢条目。
+    assert.deepEqual(fs.readdirSync(path.join(pending, 'changes', 'unreleased')).sort(), ['README.md', 'TEMPLATE.md.example', 'n4.md', 'p-10.md'])
+    assert.equal(fs.readFileSync(path.join(pending, 'release-notes.md'), 'utf8'), releaseNotes)
+  } finally {
+    fs.rmSync(empty, { recursive: true, force: true })
+    fs.rmSync(pending, { recursive: true, force: true })
   }
 })
 

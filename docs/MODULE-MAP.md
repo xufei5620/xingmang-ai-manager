@@ -1,122 +1,61 @@
 # 模块地图
 
 > 从 `AGENTS.md` 第 3 节搬出，目的：让每个会话的固定上下文只装「改代码前必须知道的事」，模块清单按需再读。
-> 括号里的行数是 2026-09-18 在 `bf12904` 上的快照，只用来判断模块大小，**一律以代码为准**。不要把它当成能引用的位置。
+> 2026-10-17 按子系统重写（#1072）：本页是总述和索引，每个模块一句话的清单分在 `docs/module-map/` 下的分册里，找文件时只读相关的那一册。
+> **一律以代码为准。** 这里不写行数、文件数和行号，它们会过期；要看大小用 `wc -l`。
 
-## macOS 相关模块
+## 分册
 
-- `electron/macos-platform.ts` — macOS 终端启动器与平台能力
-- `electron/macos-codex.ts` / `macos-codex-app.ts` — Codex CLI 与桌面端的 macOS 实现
-- `electron/macos-grok.ts` — Grok 的 macOS 安装
-- `electron/macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装外部桌面端（目前只收录核对过官方 Mac 包的 OpenCode）：官方 feed 与逐跳限定的重定向、codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」；先从星芒存储桶下同一个官方包（`desktop-package-bucket.ts`，OpenCode 由 `scripts/sync-opencode-cos.cjs` 定时同步），没走通才问官方；失败的那几句话主进程与渲染层共用
-- `electron/darwin-path-trust.ts` / `darwin-cli-staging.ts` / `macos-code-signing.ts` — 路径信任判定、CLI 私有暂存、codesign/Team ID 校验
-- `electron/shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
-- `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
-- `src/platform-presentation.ts` — 渲染层的平台差异表达
+| 分册 | 管什么 |
+|---|---|
+| [`module-map/main-account-route.md`](./module-map/main-account-route.md) | 主进程：两个账号站与线路、账号后端对接、双账号域与凭据落盘、密钥签发、计费充值、服务状态文件、星芒技能 |
+| [`module-map/main-runtime.md`](./module-map/main-runtime.md) | 主进程：生命周期与窗口、启动失败与崩溃、诊断与日志、Windows 提权与可信路径、游戏加速、网络与代理、托盘、更新与发布、设置 |
+| [`module-map/main-core-canvas.md`](./module-map/main-core-canvas.md) | 主进程：IPC 边界、命令执行、本地文件与有界读写、首页扫描、配置与备份、会话、扩展、无限画布与 AI 工作区，以及 `electron/platform/` 平台层 |
+| [`module-map/main-cli-clients.md`](./module-map/main-cli-clients.md) | 主进程：CLI 安装与运行环境、卸载、Grok、Codex 与 Codex 桌面端、外部桌面客户端（WorkBuddy / Claude Desktop / OpenCode）、macOS 与 Linux 平台模块 |
+| [`module-map/renderer-v2.md`](./module-map/renderer-v2.md) | 当前界面 `src/renderer-v2/`：入口与外壳、各页面、`features/`、`registry/`、`ui/`、样式与浏览器回归 |
+| [`module-map/legacy-renderer.md`](./module-map/legacy-renderer.md) | 已冻结的 legacy 回滚界面（`src/` 下除 renderer-v2 以外），存量地图 |
 
-**改跨平台代码前先读 `platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
+## 总述：先知道这几件事
 
-## Linux 相关模块
+**进程入口不是 `main.ts`。** `package.json` 的 `main` 指向 `dist-electron/platform/entry.js`，所以入口是 `electron/platform/entry.ts`，它按顺序分流：Linux 上以 root 运行就拒绝（`linux-launch-guard.ts`）→ 卸载清理模式（`uninstall-cleanup-entry.ts`）→ 加速辅助进程模式（`acceleration-worker-entry.ts`）→ 都不是才进 `platform/desktop-entry.ts`，装好 renderer-v2 的平台层后 `require('../main')`。`main.ts` 是装配中心：建窗口、注册协议、把各个服务接起来。
 
-- `electron/linux-path-trust.ts` — 路径信任判定（组可写按 `/etc/group` 实际成员判），规则见 `.claude/rules/linux-platform.md`
-- `electron/linux-launch-guard.ts` — 拒绝以 root 或替别的账号运行，`platform/entry.ts` 最先调用
-- `electron/linux-renderer-sandbox.ts` — 画布打开前确认渲染进程的系统沙箱（`Seccomp: 2`）真的生效
-- `electron/linux-node-runtime.ts` — Linux 上代下 Node.js：钉版本与每个架构的 SHA-256，只用 root 所有的系统 tar 解进 `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`，核对后原子替换（Linux 版拆分 ②）
-- `electron/linux-platform.ts` — Linux 上找 node / npm / CLI 的目录顺序（本软件的 Node.js 排在继承 PATH 前面，和 macOS 相反）
-- `electron/linux-shell-profile.ts` — 客户自己开的终端里直接敲 claude / codex / grok：每个托管工具一个小启动器，`~/.bashrc` / `~/.zshrc` / `~/.profile` 末尾的标记段与 fish 的 conf.d 文件，卸掉最后一个时逐字撤掉（Linux 版拆分 ④）
-- `electron/linux-terminal.ts` — Linux 上「打开」工具：找命令窗口程序（按桌面、系统默认、再按表）、写一次性 sh 启动脚本、等脚本删掉自己才算打开；启动脚本文件的写入与清理和 macOS 共用 `electron/terminal-launcher-files.ts`（Linux 版拆分 ⑤）
-- `electron/linux-tray-host.ts` — 启动时问会话总线有没有托盘接收方（`org.kde.StatusNotifierWatcher`），只跑固定路径的 dbus-send / gdbus；没有就不建托盘、关窗直接退出（Linux 版拆分 ⑩）
-- `electron/linux-autostart.ts` — Linux 的开机自动启动：写 XDG autostart 里的 .desktop 文件，读写走 safe-local-data（Linux 版拆分 ⑩）
-- `electron/linux-ime.ts` — Wayland 会话下给 Chromium 开文字输入协议的启动开关，中文输入法才收得到输入（Linux 版拆分 ⑩）
-- `electron/linux-os-release.ts` — 读 `/etc/os-release` 得到发行版名字，给检查页、复制给客服和启动日志（Linux 版拆分 ⑩）
-- `electron/linux-grok.ts` — Grok 的 Linux 安装核对与卸载：没有 codesign，改为和 npm 官方锁校验过的平台包逐字节对账，再核版本；链接快照与回滚复用 `macos-grok.ts`（Linux 版拆分 ③）
+**跨进程通道有三套，各自一组「契约 + preload + 注册」**（AGENTS.md T1、I4、I7）：
 
-## `electron/` 主进程
+| 哪一套 | 契约（真相源） | preload（有意重复的字面量通道表） | 注册与校验 | 渲染层拿到的 |
+|---|---|---|---|---|
+| 主窗口业务 | `ipc-contract.ts` | `preload.ts` | `ipc.ts`，经 `registerTrustedHandler` | `window.xingmang` |
+| 主窗口系统设置与通知（只在新界面安装） | `platform/contract.ts` | `platform/preload.ts` | `platform/ipc.ts`，`assertPlatformOwner` 只放行主窗口主框架 | `window.xingmangPlatform` |
+| 画布窗口 | `canvas-contract.ts` | `canvas-preload.ts` | `canvas-window.ts`，`assertTrustedCanvasSender` 只放行画布窗口 | `window.xingmangCanvasHost` |
 
-**进程入口与 IPC 边界**
-- `main.ts` (1490) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 与 `xingmang-canvas://` 协议注册、外链白名单、装配服务
-- `ipc-contract.ts` (1023) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
-- `preload.ts` (387) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
-- `ipc.ts` — 全部 `ipcInvokeChannels` 通道的处理器注册与参数校验（通道数以契约为准）
+**两个账号站，每站两条线路**（详见 `main-account-route.md` 开头的对照表）：星芒账号 `solov`（`xm.solov.cc`，new-api，`new-api-client.ts`）和历史账号 `solov-api`（`api.solov.cc`，sub2api，`sub2api-*.ts`），由 `realm-account*.ts` 隔成两个账号域。线路1 是 CF 入口（设置值 `primary`），线路2 是洛杉矶直连（`direct`）。线路分两套：管理工具自己的请求走「应用线路」（`relay-route-controller.ts` + `relay-line-fetch.ts`，两个站都有）；写进 AI 工具配置的是「工具线路」（`tool-route-*.ts`，只有星芒账号有）。站点和线路地址只能来自 `relay-sites.ts`。
 
-**命令执行与安全边界**（这里是本项目真正的复杂度所在）
-- `command-runner.ts` (1178) — **全仓最关键模块**。`runCommand` 硬编码 `shell:false`；`trustedCommandEnvironment` 剥离 60+ 可注入环境变量并重建机器级 PATH；`findExecutable` 不调用 `where`/`which`/shell
-- `security.ts` (179) — URL 策略。外链白名单要求 `href` **全等**匹配
-- `windows-elevation.ts` (462) — 提权模式判定、可信命令断言、PowerShell 启动计划
-- `windows-machine-paths.ts` (532) — 从注册表推导真实系统根 + ACL 校验
-- `windows-live-path.ts` — 读注册表里整台电脑 + 当前账号的 PATH（异步 reg.exe），只给推 Grok 跑钩子的 shell 与从星芒打开 Grok 用，不进提权路径解析
-- `trusted-temp.ts` (494) — 受 ACL 保护的临时目录
-- `managed-path-trust.ts` / `system-shell.ts`
+**对外出网的模块都要守 I10**（超时、体积上限、重定向策略、URL 校验）：账号后端是 `new-api-client.ts`（xm 站，I10 的参考实现）和 `sub2api-account-client.ts`（历史账号站），外面包一层 `relay-line-fetch.ts` 换线路；另有 `service-status.ts`（更新目录上的服务状态文件）、`route-status-file.ts`（服务端线路状态）、`official-account-usage.ts`（ChatGPT 官方限额）、更新器那条链，以及各安装渠道的下载。
 
-**CLI 安装与运行时**
-- `system-service.ts` (3751) — **最大模块**。`createSystemService` 之前是纯函数库（可直接单测），它之后是闭包工厂
-- `tool-installation.ts` (705) / `node-runtime.ts` (1198) / `grok-installer.ts` (662) / `grok-update.ts` (161)
-- `grok-bucket.ts` — Windows 装 Grok 先从星芒腾讯云存储桶下同一个 xAI 签名的 `grok.exe`（`scripts/sync-grok-cos.cjs` 定时同步），签名核对不变；读不到、没有这一版、对不上就换回 xAI
-- `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
-- `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名。Mac 上只在除 root 和当前用户外没人能改的目录里删
-- `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面
+**凭据落盘**：多账号库是 `realm-accounts-v2.dat`（`realm-account-vault-file.ts`）；老的 `saved-accounts.dat`、`account-session.dat` 只读不写，留给迁移。所有用 `safeStorage` 的文件（账号库、记住密码、托管 CLI Key、对话 Key）都经 `safe-storage-backend.ts`，它决定 Linux 没有密钥环时只存内存。
 
-**配置与数据**
-- `config-files.ts` (1673) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**；打开目录时替用户写下的工作区信任也在这里，字段实测记录见 `docs/WORKSPACE-TRUST.md`
-- `codex-config-syntax.ts` — 判断 Codex 自己读不读得了 `config.toml`（读不了时桌面端停在「无法加载组织设置」，首页写「配置文件坏了」）。本软件用的 `@iarna/toml` 只懂 TOML 0.5、Codex 读 TOML 1.1，所以只认两边都拒绝的那几类，比对记录在文件头
-- `cli-config-health.ts` — 判断 Claude Code、Gemini CLI 自己读不读得了 `settings.json`，Codex 读不读得了 `auth.json`（读不了时首页同样写「配置文件坏了」）。本软件自己的读法比这几个工具都宽，读得出 Key 不代表工具读得了；每条都拿真工具试过，版本写在各函数注释里
-- `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
-- `claude-model-picker.ts` — Claude Code 的 `/model` 菜单：接当前账号时按 Key 实际可用的模型生成 `modelPicker` 与 `ANTHROPIC_DEFAULT_MODEL`、认出本软件写的菜单、切回官方时收回
-- `codex-model-catalog.ts` — Codex（命令行与桌面端共用）的型号名单：随包官方名单（`bundled-catalog/codex-models`，按 sha256 钉住）按账号挑出能用的型号，写成 `CODEX_HOME/xingmang-models.json` 并在 `config.toml` 顶层指向它；本机命令行或桌面端太旧、默认型号不在名单里就不写。何时重写见 `tool-model-check.ts`，版本变了在本机就地收回见 `system-service.ts` 的 `takeBackUnreadableCodexModelCatalog`
-- `tool-model-check.ts` — 打开工具前每天核一次账号能用的型号：默认型号下架了交给界面问，Claude Code 菜单与 Codex 型号名单悄悄刷新；开机另对一次 Codex 型号名单（`syncPicker`）
-- `app-settings.ts` (453) / `backups.ts` (891)
-- `codex-sessions.ts` (1427) — Codex 会话权威源是 `~/.codex/state_5.sqlite` 的 `threads` 表；未知 schema 自动降级只读
-- `provider-sessions.ts` (1199) — 四工具统一会话视图
-- `codex-desktop.ts` (497) — 桌面端清单/包解析的纯函数层
-- `codex-desktop-service.ts` (2211) — 桌面端探测、OpenAI 官网离线安装包与镜像下载、包校验与关停的服务层（从 system-service.ts 拆出）；Windows 上的安装顺序是微软商店 → 官网离线安装包 → 国内镜像
-- `claude-desktop-msix-installer.ts` / `claude-desktop-install-failure.ts` — Windows 上 Claude Desktop 的第二路：系统 winget 装不上或没有时，从 Claude 官网下离线 MSIX（只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）；失败那句话主进程与渲染层共用
+**渲染层与主进程的边界**：renderer-v2 可以直接值导入一批 `electron/*` 模块，但只能是 `scripts/verify-renderer-boundary.test.cjs` 里 `valueImportable` 名单上的零 Node 依赖模块（AGENTS.md I6）。legacy 树只经 `src/types.ts` 拿类型和 `ipc-contract.ts` 的少数值导出。
 
-**账号与计费（新增）**
-- `new-api-client.ts` (3377) — **唯一对账号后端出网的模块**，I10 的参考实现：`performRequest` 超时 + 体积上限 + `redirect:'manual'` 且拒绝 3xx 且校验响应 origin（三重）+ 强制 https 拒内嵌凭据；上游文案 `redactCommandText` 脱敏 + 剥控制字符 + 截 300 字
-- `account-session-store.ts` (201) — 登录 session 用 `safeStorage`（Windows 底层 DPAPI）加密落盘；损坏/解密失败静默降级为未登录，永不抛错
-- `probe-failure.ts` (14) — 探测失败的可区分状态
+**几条跨多个文件的链路**：
 
-**无限画布 + AI 工作区（全项目唯一运行第三方前端代码的地方）**
+- 星芒自身更新：`update-feed-route.ts` 选源 → `update-request-guard.ts` 管请求 → `update-package-digest.ts`（SHA-512）→ Windows 上 `update-signature.ts`（Authenticode）或无签名通道的 `update-package-signature.ts`（Ed25519）→ `auto-update-install.ts` 决定何时装 → `installed-release.ts` 下次启动说「已更新」，由 `main.ts` 接进 `updater.ts`。
+- 游戏加速：`acceleration-service.ts`（主进程门面）→ `acceleration-development-host.ts`（拉起辅助进程；文件名里的 development 是历史名字，正式包也走它）→ 辅助进程 `acceleration-development-worker.ts` → `acceleration-development-backend.ts` + `acceleration-mihomo-runtime.ts` + `platform/windows-system-proxy.ts` / `platform/macos-system-proxy.ts`。只在 Windows 和 macOS 上有。
+- AI 对话与生成：画布或聊天的请求 → `canvas-request-parser.ts` 或 `ipc.ts` 校验 → `ai-chat-service.ts` / `ai-image-service.ts` / `ai-video-service.ts` → 密钥只在主进程由 `chat-credential-coordinator.ts` 给出（I15）→ 产物进 `ai-asset-store.ts` 等 → 经 `xingmang-asset://` 显示。
+- 画布运行：`canvas-window.ts` → `canvas-run-service.ts` → `canvas-run-engine.ts` → `canvas-node-executors.ts` → 上面的 AI 服务，记录落在 `canvas-run-store.ts`。
+- 登录后写工具：`account-cli-provisioner.ts` 按分组签密钥 → `config-files.ts` 两阶段写入（I9）→ `xingmang-ai-skill.ts` 写星芒技能配置。
 
-> 架构在 PR #85（2026-08-12）统一：**画布再也拿不到 API Key**。此前的做法是把 relay Key 注入画布 localStorage、由画布自己出网（`canvas-auth.ts` / `canvas-ai-config.ts` / `canvas-v2` 内的 relay 客户端），这三者已删除。现在全部 AI 调用都在主进程完成，画布只能经 `canvas-host:*` 通道请求。**改画布相关代码前先理解这条边界**：它是 I15 的兑现方式——被投毒的画布连 Key 都摸不到，因为它从来没有过。
+**容易混的几对**：
 
-- `canvas-window.ts` — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 `canvas-host:*` 宿主通道（清单以 `canvas-contract.ts` 的 `canvasHostChannels` 为准，I4 的例外）
-- `canvas-protocol.ts` (85) — `xingmang-canvas://` 解析。穿越/根包含检查**全部委托**主窗口同款 `resolvePackagedApplicationFile`，SPA 回退用字面量 `'index.html'` 重走同一函数，**绝不手工拼路径**；与主窗口不共享 rendererRoot
-- `canvas-preload.ts` — 宿主桥暴露 invoke 能力并接收主进程推送，拿不到 `window.xingmang`。通道名与 `canvas-contract.ts` 是有意重复的字面量（I7），由测试钉死
-- `canvas-contract.ts` — 宿主通道名的单一真相源（主进程侧）
-- `canvas-request-parser.ts` / `canvas-run-contract.ts` / `canvas-run-engine.ts` / `canvas-node-executors.ts` — 入参白名单校验、运行契约、DAG 运行引擎与节点执行器（**都在主进程**）
-- `canvas-account-lifecycle.ts` / `canvas-fingerprint.ts` — 账号切换隔离与画布指纹
-- `canvas-project-package.ts` / `canvas-prompt-preset-store.ts` — 项目导入导出（导出会清理凭据/本机路径/远端 URL）与提示词预设
-- `ai-chat-service.ts` (930) / `ai-image-service.ts` (494) / `ai-chat-protocol.ts` / `ai-asset-store.ts` / `ai-output-location.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘（保存位置在「文档/XingmangAI」，「文档」不让写时启动即改用主目录下的 XingmangAI（`chooseAiOutputRoot`，试写与权限判定在 `documents-fallback.ts`）；启动时把老版本安装目录旁 output 里的作品搬过来）
-- `ai-chat-history-store.ts` — AI 聊天记录的文件存储（`userData/chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写入和大小上限
-- `ai-chat-attachments.ts` — AI 聊天里附带的图片：只从系统选文件框和剪贴板在主进程里取，太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片资产目录；发送时按账号读回转成 data URI（`chat:pick-images` / `chat:paste-image`）
-- `chat-credential-coordinator.ts` (211) — **按分组按需签发并缓存 Key**（`xingmang-chat-*`）：命中缓存先验、失效自愈（被吊销就重签）、账号切换即失效。这是 2026-08-12 画布 503（令牌分组下无可用渠道）的根治方案
-- `canvas-v2/` 是当前画布源码；`dist-canvas/` 是构建产物**不入 git**。`npm run canvas:prepare` 构建源码并由 `scripts/copy-canvas-assets.mjs` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖）。云端测试包与 CI 正式包都现场构建 `canvas-v2` 打入
+- `installation-queue.ts` 是 I11 要求的安装、卸载、启动队列；`bounded-operation-queue.ts` 是图片生成和扫描探测用的通用并发队列，不能拿来替代前者。
+- 服务端的两份状态文件：更新目录（R2）上的 `service-status.json`（`service-status.ts` 读）和站点上的 `/xm-route-status.json`（`route-status-file.ts` 读）。本地的四份：`relay-route-lines.json`（应用线路）、`tool-route-state.json`（工具线路）、`release-guard.json`（撤回名单与放量）、`cli-model-hints.json`（型号表）。
+- `platform-capabilities.ts` 是判断「当前平台支持什么」的单一入口；`platform/facade.ts` / `registry.ts` / `index.ts` 目前只有测试在用，渲染层的平台能力来自 `ipc.ts` 的 `platform:get-capabilities`。
 
-**扩展生态**
-- `provider-extensions.ts` (1585) — 四工具统一的 MCP/Skill/Plugin 抽象
-- `codex-plugin-catalog.ts` — 替 Codex 下载官方插件目录快照（`$CODEX_HOME/.tmp/plugins`），国内它自己同步不下来
-- `codex-plugin-catalog-bucket.ts` — 插件目录先从星芒腾讯云存储桶下（`scripts/sync-codex-plugins-cos.cjs` 定时同步），读不到、对不上、太慢就换回 GitHub
-- `codex-extensions.ts` (1254) — Codex 专用。DTO 只暴露 env **变量名**不暴露值
+## 自查：有没有模块没进地图
 
-**更新、诊断、工具库**
-- `updater.ts` (484) / `update-signature.ts` (238)
-- `diagnostics.ts` (874) / `runtime-log.ts` (352) / `models.ts`
-- `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报。前者全是纯函数（DSN 校验、脱敏、Sentry 事件与 envelope 构造），后者负责发送（按会话去重限量、超时、重定向拒绝）。没有用 `@sentry/electron`，原因见 `changes/unreleased/sentry.md`；开关是 `AppSettings.crashReporting`，缺省开启
-- `catalog.ts`（provider 单一定义源；下线的 Gemini CLI 在 `retiredProviderIds`，按工具做事的地方用 `activeProviderIds`）/ `versions.ts` / `installation-queue.ts` / `path-identity.ts`（跨平台路径身份比对）
-- `safe-local-data.ts` / `bounded-file.ts` / `bounded-directory.ts` / `bounded-response.ts`
+加了新模块就在对应分册补一行。下面这条命令列出还没出现在任何分册里的主进程模块和 renderer-v2 文件（不含测试）：
 
-## `src/` 渲染进程
-
-> **`src/renderer-v2/` 以外的部分是 legacy 回滚版，2026-09-19 起冻结，只接受安全修复**（`R-S12`，yoyo 拍板）。新功能、界面调整与一般/建议级缺陷只在 `src/renderer-v2/` 做；代码与 `compile:legacy` / `dev:legacy` 不删，既有测试继续跑。完整口径见 `AGENTS.md` T14 与 `.claude/rules/legacy-renderer.md`。下面这张表因此是**存量地图**，不是待办清单。
-
-- `main.tsx` — 挂载 React + 全局错误上报
-- `App.tsx` (2782) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但账号体系与 AI 聊天又把它喂大了：App() 本体数十处 `useState`，页面切换仍是一条长三元链。**#30 已随 legacy 冻结关闭（2026-09-19）**：这个文件不再拆，只在安全修复时改；等价的拆分问题在 v2 侧看 `pages-account.tsx` / `pages-maintenance.tsx` / `pages-management.tsx`
-- `app-shared.ts` / `provider-meta.ts` / `navigation.ts` / `provider-registry.ts` — 共享底座：纯工具函数与空快照 / provider 视觉元数据 / 侧边栏页面清单 / **provider 身份与两种展示顺序的单一来源**（rank 表派生，见 T2）
-- `styles.css` (11045) — **另一个巨型枢纽文件**
-- `components/` — 通用件 `AppFrame` / `Sidebar` / `Toast` / `Dialog` / `ProviderTabs` / `RuntimeCell` / `StatusMark` / `StartupSplash` / `ErrorBoundary`；从 App.tsx 搬出的 `onboarding/`（含 `NodeInstallGuide`）、`config/`（`ConfigDialog` 等 4 件）、`dashboard/`（`Dashboard` / `CodexDesktopCard` / `NextStepsCard`）
-- `components/account/`— 账号体系全部 UI：`AccountCenterPage`(712，个人中心) / 登录 / 注册 / 找回密码 / 写 Key 确认弹窗 / `AccountArea`(侧边栏账号区)，纯逻辑拆在 `account-center.ts` / `account-errors.ts`(错误中文化) / `validation.ts`
-- `components/welcome/WelcomePage.tsx` — 欢迎页（`startup-gate.ts` 决定老用户直进工作台）
-- `pages/` — 十余个页面（含 `AiChatPage`），最大的 `MaintenancePage` `PluginsPage` `McpPage`
-- **纯逻辑层（测试都打在这里）** — `scan-coordinator.ts` / `latest-request.ts` / `provider-extension-coordinator.ts` / `onboarding-flow.ts` / `onboarding-runtime.ts` / `startup-settings.ts` / `startup-gate.ts` / `account-provisioning.ts`(账号→写 Key 链) / `renderer-error-report.ts` / `error-message.ts` / `local-path-display.ts`
-- `types.ts` — `export *` 转发 ipc-contract 的类型
+```bash
+for f in $(git ls-files 'electron/*.ts' 'electron/platform/*.ts' 'src/renderer-v2/**' | grep -v '\.test\.' | grep -v '/README.md$'); do
+  case "$f" in electron/platform/*) key="platform/${f#electron/platform/}" ;; electron/*) key="${f#electron/}" ;; *) key="${f#src/renderer-v2/}" ;; esac
+  grep -qF "\`$key\`" docs/module-map/*.md || echo "$f"
+done
+```

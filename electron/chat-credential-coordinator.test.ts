@@ -24,7 +24,7 @@ function setup(overrides: {
   let cached = overrides.cached ?? []
   let revision = 0
   const accountService = {
-    getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })),
+    getSessionState: vi.fn(() => ({ authenticated: true, account: { userId, username: 'tester' } })),
     getSessionRevision: vi.fn(() => sessionRevision),
     getActiveSiteId: vi.fn(() => overrides.siteId ?? 'solov'),
     listUsableGroups: vi.fn(async () => (overrides.groups ?? ['codex-pro', '生图分组'])
@@ -79,7 +79,7 @@ describe('chat credential coordinator', () => {
       userId: 7,
       group: 'codex-pro',
       keyId: 3,
-      keyName: 'cached',
+      keyName: 'xingmang-chat-cached',
       key: 'sk-cached-secret',
     }
     const { coordinator, accountService, modelService } = setup({ cached: [cached] })
@@ -91,6 +91,30 @@ describe('chat credential coordinator', () => {
     expect(accountService.provisionCliKey).not.toHaveBeenCalled()
     expect(modelService.fetchAvailableModels).toHaveBeenCalledWith(cached.key, { bypassCache: true })
   })
+
+  it('uses a cached key named after the account, the group and 对话', async () => {
+    const cached: StoredChatKey = { userId: 7, group: 'codex-pro', keyId: 3, keyName: 'tester-codex-pro-对话', key: 'sk-chat-secret' }
+    const { coordinator, accountService } = setup({ cached: [cached] })
+
+    await expect(coordinator.resolveCredential('codex-pro')).resolves.toMatchObject({ keyCreated: false, keyId: 3 })
+    expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  // 以前对话按分组复用，缓存里存的可能是同组工具那把：两边额度会互相连累（#1077）。
+  it.each(['tester-codex-pro', 'xingmang-desktop-codex', 'hand-made'])(
+    'issues a chat key of its own instead of a cached %s key it once took over by group',
+    async (keyName) => {
+      const cached: StoredChatKey = { userId: 7, group: 'codex-pro', keyId: 3, keyName, key: 'sk-tool-secret' }
+      const { coordinator, accountService, modelService, store } = setup({ cached: [cached] })
+
+      const credential = await coordinator.resolveCredential('codex-pro')
+
+      expect(credential).toMatchObject({ keyCreated: true, keyId: 10, apiKey: 'sk-7-codex-pro' })
+      expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({ group: 'codex-pro', purpose: 'chat' }))
+      expect(modelService.fetchAvailableModels).not.toHaveBeenCalledWith(cached.key, expect.anything())
+      await expect(store.read(7)).resolves.toEqual([expect.objectContaining({ group: 'codex-pro', keyId: 10 })])
+    },
+  )
 
   it('provisions and saves a missing group once for concurrent callers', async () => {
     const { coordinator, accountService, store } = setup()
@@ -217,7 +241,7 @@ describe('chat credential coordinator', () => {
       userId: 7,
       group: 'codex-pro',
       keyId: 3,
-      keyName: 'expired',
+      keyName: 'xingmang-chat-expired',
       key: 'sk-expired-secret',
     }
     const context = setup({ cached: [cached] })
@@ -275,7 +299,7 @@ describe('chat credential coordinator', () => {
       userId: 7,
       group: 'codex-pro',
       keyId: 3,
-      keyName: 'cached',
+      keyName: 'xingmang-chat-cached',
       key: 'sk-cached-secret',
     }
     const context = setup({ cached: [cached] })
@@ -294,7 +318,7 @@ describe('chat credential coordinator', () => {
       userId: 7,
       group: 'codex-pro',
       keyId: 3,
-      keyName: 'restricted',
+      keyName: 'xingmang-chat-restricted',
       key: 'sk-restricted-secret',
     }
     const context = setup({ cached: [cached] })

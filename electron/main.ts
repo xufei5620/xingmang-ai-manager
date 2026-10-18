@@ -217,7 +217,10 @@ import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
 import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
+import { createReleaseGuardStore } from './release-guard-store'
+import { createCliModelHintsStore, resolveCliModelHints } from './cli-model-hints-store'
 import type { AccountGroupHints } from './managed-cli-groups'
+import type { CliModelHints } from './cli-model-defaults'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
 import { ensureDirectoryOnWindowsUserPath, removeDirectoryFromWindowsUserPath } from './windows-cli-shell-access'
 import { ensureMacosShellProfile } from './macos-shell-profile'
@@ -743,6 +746,18 @@ async function presentStartupFailure(error: unknown, logPath: string | null): Pr
 // of startup errors.
 let reportCrashSendFailure: ((error: unknown) => void) | null = null
 
+/**
+ * 一个 Chromium 会话的 fetch。net.fetch 碰到 redirect: 'manual' 不交回跳转，直接报「Redirect was
+ * cancelled」，账号、AI、探测请求靠拿到跳转本身认出门户认证、拒绝被带去别的主机，全都看不见它（#1064）。
+ * 主进程交出去的会话 fetch 一律包这一层，跳转照 Node 的 fetch 那样交回去（manual-redirect-fetch.ts）。
+ */
+function chromiumSessionFetch(target: Electron.Session): typeof fetch {
+  return createManualRedirectFetch(
+    (input, init) => target.fetch(input instanceof URL ? input.href : input, init),
+    (options) => net.request({ ...options, session: target }),
+  )
+}
+
 /** `app` metadata is a nicety here; never let reading it become the crash. */
 function appValue<T>(read: () => T, fallback: T): T {
   try {
@@ -788,7 +803,7 @@ const crashReporter = createCrashReporter({
   // net.fetch follows the session's proxy settings, which is what a user
   // behind a corporate proxy needs -- but it only exists once the app is
   // ready, and a startup crash happens before that.
-  fetchImpl: (url, init) => (app.isReady() ? net.fetch(url, init) : fetch(url, init)),
+  fetchImpl: (url, init) => (app.isReady() ? chromiumSessionFetch(session.defaultSession)(url, init) : fetch(url, init)),
   onSendFailure: (error) => { reportCrashSendFailure?.(error) },
 })
 
@@ -1160,15 +1175,13 @@ if (!hasSingleInstanceLock) {
     const accelerationPreferences = createAccelerationPreferenceStore({
       filePath: path.join(managerDataDirectory, 'acceleration-preferences.json'),
     })
-    const sessionFetch: typeof fetch = (input, init) => net.fetch(
-      input instanceof URL ? input.href : input,
-      init,
-    )
+    const sessionFetch = chromiumSessionFetch(session.defaultSession)
     // 代理软件活着、只是不转发星芒站点时，连星芒站点的请求（账号、余额、AI 聊天画图、连通
     // 检查）改走的直连会话；默认会话照旧跟随系统代理，装工具、拉插件、检查页都不受影响。
     // 非 persist: 前缀 = 内存分区，不落盘；这些请求自己带凭据（Key，或者账号那边
     // credentials: 'omit' 的 cookie），换会话不影响登录。
     const siteDirectSession = session.fromPartition('xingmang-site-direct')
+    const siteDirectSessionFetch = chromiumSessionFetch(siteDirectSession)
     let siteDirectProxy: Promise<void> | null = null
     const siteDirectFetch: typeof fetch = (input, init) => {
       // 设不上就下次再设，别把一次失败记一整个运行。
@@ -1176,11 +1189,12 @@ if (!hasSingleInstanceLock) {
         siteDirectProxy = null
         throw error
       })
-      return siteDirectProxy.then(() => siteDirectSession.fetch(input instanceof URL ? input.href : input, init))
+      return siteDirectProxy.then(() => siteDirectSessionFetch(input, init))
     }
     // 整个改了直连以后默认会话不再经过系统代理，看代理软件是不是又好了，得另走一个只跟随
     // 系统代理的会话。同样是内存分区，只用来探那一下。
     const systemProxySession = session.fromPartition('xingmang-system-proxy')
+    const systemProxySessionFetch = chromiumSessionFetch(systemProxySession)
     let systemProxyMode: Promise<void> | null = null
     function ensureSystemProxyMode(): Promise<void> {
       systemProxyMode ??= systemProxySession.setProxy({ mode: 'system' }).catch((error: unknown) => {
@@ -1190,7 +1204,7 @@ if (!hasSingleInstanceLock) {
       return systemProxyMode
     }
     const systemProxyFetch: typeof fetch = (input, init) => (
-      ensureSystemProxyMode().then(() => systemProxySession.fetch(input instanceof URL ? input.href : input, init))
+      ensureSystemProxyMode().then(() => systemProxySessionFetch(input, init))
     )
     // 工具线路探测问「系统代理对星芒这个地址生不生效」（PAC、绕过列表都算在内），问的是同一个会话。
     function resolveSystemProxy(url: string): Promise<string> {
@@ -1273,20 +1287,20 @@ if (!hasSingleInstanceLock) {
     }
     // 每个环境变量代理一个内存分区（不落盘）；候选最多六个（三份环境 × 两个变量），超了清掉重记。
     // 分区名只增不复用：拿 size 起名的话，删掉一个以后新代理会落到别的代理正在用的分区上，把它的规则改掉。
-    const toolProxySessions = new Map<string, { target: Electron.Session; ready: Promise<void> }>()
+    const toolProxySessions = new Map<string, { fetch: typeof fetch; ready: Promise<void> }>()
     let toolProxyPartitions = 0
     function toolProxyFetch(proxy: string): typeof fetch {
       let entry = toolProxySessions.get(proxy)
       if (!entry) {
         if (toolProxySessions.size >= 6) toolProxySessions.clear()
         const target = session.fromPartition(`xingmang-tool-proxy-${toolProxyPartitions++}`)
-        const created = { target, ready: target.setProxy({ proxyRules: proxy }) }
+        const created = { fetch: chromiumSessionFetch(target), ready: target.setProxy({ proxyRules: proxy }) }
         created.ready.catch(() => { if (toolProxySessions.get(proxy) === created) toolProxySessions.delete(proxy) })
         toolProxySessions.set(proxy, created)
         entry = created
       }
-      const { target, ready } = entry
-      return (input, init) => ready.then(() => target.fetch(input instanceof URL ? input.href : input, init))
+      const { fetch: proxied, ready } = entry
+      return (input, init) => ready.then(() => proxied(input, init))
     }
     // 开发构建可以把工具线路的各个计时缩短 60 倍（需求 5.8，给 V14 这种 24 小时的测试用），打包版不认。
     const toolRouteTimeScale = !app.isPackaged && process.env.XINGMANG_TOOL_ROUTE_FAST === '1' ? 60 : 1
@@ -1529,6 +1543,7 @@ if (!hasSingleInstanceLock) {
       },
       getExternalClientAccountId: () => readExternalClientAccountId(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
+      cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
       windowsExecutionMode: windowsCliExecutionMode,
@@ -1563,7 +1578,7 @@ if (!hasSingleInstanceLock) {
       ...rootedOptions.system,
       relayFetch: observedRelayFetch,
       relayRoutedFetch: routedRelayFetch,
-      networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
+      networkLocationFetch: sessionFetch,
       // Re-read the existing session/system proxy selection without changing
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
@@ -1599,21 +1614,24 @@ if (!hasSingleInstanceLock) {
       if (lineChanged || readAccountSiteId() === 'solov') notifyRelayRouteChanged()
     })
     toolRouteController.start()
-    // 唤醒、网络恢复都马上查一轮工具线路（需求 5.1.4）。加速那边的 resume 监听只在有加速时注册，不能挂在
-    // 它上面。网络恢复没有现成的事件，隔 15 秒看一眼 net.isOnline()（只读本机状态，不出网）。
-    function recheckToolRoute(trigger: 'resume' | 'network' | 'manual'): void {
+    // 唤醒、网络恢复、点「重新检测」都马上查一轮工具线路（需求 5.1.4）和管理工具自己的应用线路（#1053：
+    // 以前只查工具线路，换了网络以后账号、余额要等定时检查或者某次请求失败才开始换）。加速那边的 resume
+    // 监听只在有加速时注册，不能挂在它上面。网络恢复没有现成的事件，隔 15 秒看一眼 net.isOnline()（只读
+    // 本机状态，不出网）。
+    function recheckRoutes(trigger: 'resume' | 'network' | 'manual'): void {
       toolEnvironmentProxies = null
       toolRouteController.recheck(trigger)
+      relayRouteController.recheck(trigger)
     }
-    const onToolRouteResume = () => recheckToolRoute('resume')
-    powerMonitor.on('resume', onToolRouteResume)
-    let toolRouteOnline = net.isOnline()
-    const toolRouteOnlineTimer = setInterval(() => {
+    const onRouteResume = () => recheckRoutes('resume')
+    powerMonitor.on('resume', onRouteResume)
+    let routeOnline = net.isOnline()
+    const routeOnlineTimer = setInterval(() => {
       const online = net.isOnline()
-      if (online && !toolRouteOnline) recheckToolRoute('network')
-      toolRouteOnline = online
+      if (online && !routeOnline) recheckRoutes('network')
+      routeOnline = online
     }, 15_000)
-    toolRouteOnlineTimer.unref?.()
+    routeOnlineTimer.unref?.()
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
       ...rootedOptions.sessions,
@@ -1638,6 +1656,7 @@ if (!hasSingleInstanceLock) {
       repositoryRoot: storedSettings.workspace,
       trashDirectory: path.join(managerDataDirectory, 'trash', 'skills'),
       windowsExecutionMode: windowsCliExecutionMode,
+      serializeConfigWrite: systemService.serializeToolConfigWrite,
     })
     const providerExtensionService = new ProviderExtensionService({
       ...rootedOptions.providerExtensions,
@@ -1681,7 +1700,7 @@ if (!hasSingleInstanceLock) {
         primarySite: requireRelaySite(routeSiteId),
         preferredLine: relayAutoPreferredLines[routeSiteId],
         backupSite: requireRelaySite(routeSiteId, relayAutoBackupLine(routeSiteId)),
-        reportPreferredFailure: (reason) => relayRouteController.reportPreferredFailure(routeSiteId, reason),
+        reportLineFailure: (reason) => relayRouteController.reportFailure(routeSiteId, line, reason),
         lastChange: relayRouteController.lastChange(routeSiteId),
       }
     }
@@ -1745,6 +1764,7 @@ if (!hasSingleInstanceLock) {
           ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
           windowsExecution: windowsCliExecution,
           windowsProcessor: await systemService.inspectWindowsProcessor(),
+          macRosetta: process.platform === 'darwin' && app.runningUnderARM64Translation,
           // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
           // 留在 runtime.jsonl 里。
           log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
@@ -1899,6 +1919,10 @@ if (!hasSingleInstanceLock) {
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
     const pendingUpdateStore = createPendingUpdateStore({ filePath: path.join(managerDataDirectory, 'pending-update.json') })
     const pendingUpdateAtLaunch = pendingUpdateStore.read()
+    // 撤回名单和分批放量记在本地（#1055），同样在更新服务之前读好：开机那次检查时状态文件
+    // 还没读到、或者读不到，也按上次读成功的那份算。
+    const releaseGuardStore = createReleaseGuardStore({ filePath: path.join(managerDataDirectory, 'release-guard.json') })
+    const releaseGuardAtLaunch = releaseGuardStore.read()
     let pendingUpdateRecord = { ...pendingUpdateAtLaunch }
     // 开机自启时在后台装新版本（见下面打开时装），安装器把它重新拉起的这一次照开机自启
     // 那样待在后台。这条记录只认一次，读到就清掉；已经装上的这一版也从记录里清掉，免得
@@ -1982,6 +2006,9 @@ if (!hasSingleInstanceLock) {
         return previousAutoInstallFailureMessage(process.platform)
       },
       verifyPackageDigest: verifyUpdatePackageDigest,
+      // electron-updater 按 `uname -a`（带电脑名）判断 Apple 芯片，Intel Mac 会被挑上 arm64 包（#1155）。
+      // Intel 版在 Apple 芯片上经 Rosetta 跑时 process.arch 是 x64，这时照样算能跑 arm64，让它换回 M 系列芯片版。
+      ...(process.platform === 'darwin' ? { macRunsArm64: process.arch === 'arm64' || app.runningUnderARM64Translation } : {}),
       // 未签名通道里只有 Windows 的清单由发布者 Ed25519 签过（update-package-signature.ts），
       // 没有 Authenticode 就只认它。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签；Linux 的 deb
       // 同样走未签名通道，但它的清单还没签，接上会让所有 Linux 更新都被拒装。
@@ -2023,6 +2050,11 @@ if (!hasSingleInstanceLock) {
       },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
+      releaseGuardAtLaunch,
+      rememberReleaseGuard: (guard) => releaseGuardStore.write(guard).catch((cause: unknown) => {
+        runtimeLog.exception('updater', 'release-guard.save-failed', cause)
+        throw cause
+      }),
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
       macInstallHandoff: process.platform === 'darwin'
         ? {
@@ -2056,7 +2088,7 @@ if (!hasSingleInstanceLock) {
               if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
               const failure = classifyDirectFeedFailure(error)
               if (!failure) return false
-              if (failure.lineFailure) relayRouteController.reportPreferredFailure('solov', failure.reason)
+              if (failure.lineFailure) relayRouteController.reportFailure('solov', 'direct', failure.reason)
               useUpdateFeedLine('primary')
               runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在线路2上没走通，改走线路1再查一次', { reason: failure.reason })
               return true
@@ -2071,12 +2103,15 @@ if (!hasSingleInstanceLock) {
     const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
       ? null
       : locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
+    // 型号表也记在本地（#1154 第 6 条）：开机那轮换下架型号时状态文件还没读成功，也按上次读成功的那份算。
+    const cliModelHintsStore = createCliModelHintsStore({ filePath: path.join(managerDataDirectory, 'cli-model-hints.json') })
+    const cliModelsAtLaunch = serviceStatusUrl ? cliModelHintsStore.read() : null
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
         // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
         read: () => readServiceStatus({
           url: directUpdateFeed && updateFeedLine === 'direct' ? directUpdateFeed.serviceStatusUrl : serviceStatusUrl,
-          fetch: (url, init) => autoUpdater.netSession.fetch(url, init),
+          fetch: chromiumSessionFetch(autoUpdater.netSession),
         }),
         onChange: (status) => {
           updaterService.setServiceStatus(status)
@@ -2085,7 +2120,14 @@ if (!hasSingleInstanceLock) {
             maintenance: Boolean(status?.maintenance),
             toolRouteRewrite: toolRouteRewriteMode,
             ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
+            ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
           })
+          // 读成功的才记，没写型号表的那次记成没有；没读到（null）不动记下的那份。
+          if (status) {
+            cliModelHintsStore.write(status.cliModels ?? null).catch((cause: unknown) => {
+              runtimeLog.exception('updater', 'cli-models.save-failed', cause)
+            })
+          }
         },
       })
       : null
@@ -2096,6 +2138,19 @@ if (!hasSingleInstanceLock) {
       await serviceStatusMonitor.settled()
       return serviceStatusMonitor.lastKnown()?.accountGroups ?? null
     }
+    // 同上但不等：这次启动还没读成过就是 undefined，说不准对照改没改（account-cli-provisioner.ts，#1157 第 8 条）。
+    function peekAccountGroupHints(): AccountGroupHints | null | undefined {
+      if (!serviceStatusMonitor) return null
+      const known = serviceStatusMonitor.lastKnown()
+      return known ? known.accountGroups ?? null : undefined
+    }
+    // 型号表跟分组对照一样等这一次读完：默认型号、上一代、下架名单。这次打开以后一次也没读成功过，
+    // 就用上次记下的那份；从来没读成功过才用程序自带的（cli-model-defaults.ts）。
+    async function readCliModelHints(): Promise<CliModelHints | null> {
+      if (!serviceStatusMonitor) return null
+      await serviceStatusMonitor.settled()
+      return resolveCliModelHints(serviceStatusMonitor.lastKnown(), cliModelsAtLaunch)
+    }
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
@@ -2104,6 +2159,8 @@ if (!hasSingleInstanceLock) {
       signatureVerification: unsignedChannel ? 'none' : 'strict',
       requestGuard: updateRequests !== null,
       updateFeedRoute: directUpdateFeed ? updateFeedLine : 'packaged',
+      // 开机时有没有上次记下的撤回名单和分批放量：状态文件读不到时，客服靠这一项看出还拦着没有。
+      storedReleaseGuard: releaseGuardAtLaunch !== null,
     })
     if (unsignedChannel) {
       runtimeLog.log(
@@ -2180,6 +2237,9 @@ if (!hasSingleInstanceLock) {
       return buildFeedbackRuntimeLines({
         snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
         platform: process.platform,
+        mac: process.platform === 'darwin'
+          ? { systemVersion: process.getSystemVersion(), appArch: process.arch, translated: app.runningUnderARM64Translation }
+          : null,
         executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
         executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
         certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
@@ -2633,7 +2693,7 @@ if (!hasSingleInstanceLock) {
         // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
         // 画布项目：新项目的作品存在用户自己选的文件夹里。
         unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
-        trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
+        trustedProxyFetchImpl: sessionFetch,
         nativeOperations: {
           copyImage: (bytes) => {
             const image = nativeImage.createFromBuffer(bytes)
@@ -2722,7 +2782,7 @@ if (!hasSingleInstanceLock) {
         const images = new AiAssetStore({
           outputRoot,
           unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
-          trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
+          trustedProxyFetchImpl: sessionFetch,
           nativeOperations: {
             copyImage: (bytes) => {
               const image = nativeImage.createFromBuffer(bytes)
@@ -3096,6 +3156,7 @@ if (!hasSingleInstanceLock) {
     })
     void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir(), {
       officialCodex: (systemService.readStoredConfig().officialProviders ?? []).includes('codex'),
+      serializeConfigWrite: systemService.serializeToolConfigWrite,
     }).then((result) => {
       for (const warning of result.warnings) {
         runtimeLog.log('warn', 'account', 'xingmang-ai-skill.install', warning)
@@ -3332,6 +3393,8 @@ if (!hasSingleInstanceLock) {
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,
+      peekAccountGroupHints,
+      cliModelHints: readCliModelHints,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
@@ -3419,7 +3482,7 @@ if (!hasSingleInstanceLock) {
       },
       takeExternalDeepLink: (sender) => managedMainWindow?.webContents === sender ? deepLinkInbox.take() : null,
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
-      onRouteRecheckRequested: () => recheckToolRoute('manual'),
+      onRouteRecheckRequested: () => recheckRoutes('manual'),
       startupQuiet,
       onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
       onAccountSubscription: (subscription) => { latestTraySubscription = subscription; applicationTray?.updateSnapshot() },
@@ -3437,9 +3500,11 @@ if (!hasSingleInstanceLock) {
           const nodeExecutable = await findExecutable('node', { env: process.env })
           if (!nodeExecutable) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
           const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
-          return syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
+          // 改的是 Codex、Grok 的 config.toml 和 Claude 的 settings.json、.claude.json，和保存配置排同一队（#1061 第 1 条）。
+          const register = async () => syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
             codex: !input.officialCodex,
           }).warnings
+          return systemService.serializeToolConfigWrite ? systemService.serializeToolConfigWrite(register) : register()
         },
       },
       ...(manualUninstallVisualFixtureEnabled
@@ -3462,8 +3527,8 @@ if (!hasSingleInstanceLock) {
       relayRouteController.dispose()
       // 退出时偏稳：工具线路只停计时器，不做回升（需求 5.1.6）。
       toolRouteController.dispose()
-      powerMonitor.off('resume', onToolRouteResume)
-      clearInterval(toolRouteOnlineTimer)
+      powerMonitor.off('resume', onRouteResume)
+      clearInterval(routeOnlineTimer)
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()

@@ -2,7 +2,7 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
-import type { ServiceMaintenance, ServiceRollout, ServiceStatus } from './service-status'
+import { isOlderReleaseGuard, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 
 export type UpdatePhase =
@@ -344,12 +344,28 @@ export interface UpdaterRuntime {
    * keeps the digest-only behaviour; providing it makes a missing signature fatal.
    */
   verifyPackageSignature?: (version: string, entry: Readonly<Record<string, unknown>>) => UpdateSignatureVerdict
+  /**
+   * 只在 Mac 上有意义：这台 Mac 能不能跑 arm64 版（Apple 芯片，包括 Intel 版经 Rosetta 跑着的）。
+   * false 时清单里的 arm64 包一律不要（见 buildIntelMacUpdateInfo）。不传＝不知道，按 electron-updater
+   * 自己挑（旧行为）。
+   */
+  macRunsArm64?: boolean
   installedRelease?: InstalledRelease | null
   /**
    * 每次检查前重读一遍更新目录上的状态文件，撤回名单与分批放量都以最新的为准。
    * 读不到返回 null（当作没有那份文件），不能抛错。
    */
   refreshServiceStatus?: () => Promise<ServiceStatus | null>
+  /**
+   * 上次读成功时记在本地的撤回名单和分批放量（#1055）。这次打开软件后状态文件还没读到、
+   * 或者一直读不到，就按它算；读到了以后以读到的为准。不传或 null＝从没读到过，不撤回、不限量。
+   */
+  releaseGuardAtLaunch?: ReleaseGuard | null
+  /**
+   * 状态文件读到的撤回名单或分批放量跟本地记着的不一样时调用，宿主把它记下来。reject 了
+   * 下次读成功时再交一次。不传＝只在内存里记。
+   */
+  rememberReleaseGuard?: (guard: ReleaseGuard) => Promise<void>
   /**
    * 下载好（或命中本地缓存）一个版本时问一句：上次运行是不是已经自动装过它、却没装上
    * （见 auto-update-install.ts 的 resolvePreviousAutoInstallFailure）。返回给用户看的
@@ -776,6 +792,35 @@ function manifestPackageDigest(info: UpdateInfo, downloadedFile: string): string
   return legacy || null
 }
 
+// Same substring MacUpdater.filterFilesForArch looks for, so both sides agree
+// on which manifest entries are arm64 packages.
+function isArm64Package(url: unknown): boolean {
+  return typeof url === 'string' && url.includes('arm64')
+}
+
+/**
+ * 去掉清单里的 arm64 包，给跑不了 arm64 的 Mac（Intel 芯片）用。
+ *
+ * electron-updater 的 MacUpdater 拿 `uname -a` 里有没有「ARM」判断这台 Mac 是不是 Apple 芯片，
+ * 可 `uname -a` 里带着电脑名：Intel Mac 叫「ARM-…」「CHARM…」时，清单里只要有 arm64 包它就挑
+ * arm64 的，装上打不开；客户重装 Intel 版，下次自动更新又被换回去（#1155）。清单里没有 arm64 包时
+ * 它只能挑 Intel 版。
+ *
+ * 老字段 path / sha512 在 files 为空时才会被读，可我们发的清单里它们指的正是 arm64 包，一起换成
+ * 留下的第一项，免得又从这里挑回去。
+ */
+export function buildIntelMacUpdateInfo<T extends UpdateInfo>(info: T): T {
+  const files = Array.isArray(info.files) ? info.files : []
+  const kept = files.filter((entry) => !isArm64Package(entry?.url))
+  const legacyArm64 = isArm64Package(info.path)
+  if (kept.length === files.length && !legacyArm64) return info
+  return {
+    ...info,
+    files: kept,
+    ...(legacyArm64 ? { path: kept[0]?.url ?? '', sha512: kept[0]?.sha512 ?? '' } : {}),
+  }
+}
+
 function digestFailureDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   return message.replace(/\s+/g, ' ').trim().slice(0, 200) || '未知错误'
@@ -935,6 +980,7 @@ export function createUpdaterService(
   }
   const verifyPackageDigest = runtime.verifyPackageDigest
   const verifyPackageSignature = runtime.verifyPackageSignature
+  const intelMac = platform === 'darwin' && runtime.macRunsArm64 === false
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
   let installRequested = false
@@ -942,9 +988,12 @@ export function createUpdaterService(
   let disposed = false
   let lastProgressAt = 0
   // 撤回名单和分批放量是发版的安全网，只认最近一次读成功的那份：网差的电脑这一次没读到状态文件、
-  // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。维护提示和最低版本照旧跟着
-  // 这一次读到的走，读不到就不提示、不拦人。打开软件后一次都没读到过时仍按不撤回、不限量算。
-  let releaseGuard: { badVersions: readonly string[]; rollout: ServiceRollout | null } = { badVersions: [], rollout: null }
+  // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。这份记在本地，打开软件时先用
+  // 上次记下的。维护提示和最低版本照旧跟着这一次读到的走，读不到就不提示、不拦人。从来没读成功过
+  // 的电脑仍按不撤回、不限量算。
+  let releaseGuard: ReleaseGuard = runtime.releaseGuardAtLaunch ?? { badVersions: [], rollout: null }
+  // 本地记着的那份；读到的跟它一样就不再写盘。没记下来时清掉，下次读成功再写。
+  let rememberedReleaseGuard: string | null = JSON.stringify(releaseGuard)
   let manualCheck = false
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
@@ -979,7 +1028,7 @@ export function createUpdaterService(
     autoUpdateSupported,
     installedRelease: cloneInstalledRelease(runtime.installedRelease),
     serviceMaintenance: null,
-    currentVersionWithdrawn: false,
+    currentVersionWithdrawn: isWithdrawn(runtime.currentVersion),
     rollback: false,
     diskShortfall: null,
     requiredVersion: null,
@@ -1081,8 +1130,27 @@ export function createUpdaterService(
     })
   }
 
+  const adoptReleaseGuard = (guard: ReleaseGuard) => {
+    // 某条线路、某个 CDN 节点给了一份比手上旧的状态文件：撤回名单和放量不跟着它退回去（#1157 第 10 条）。
+    if (isOlderReleaseGuard(guard, releaseGuard)) return
+    releaseGuard = guard
+    const remember = runtime.rememberReleaseGuard
+    const key = JSON.stringify(guard)
+    if (!remember || key === rememberedReleaseGuard) return
+    rememberedReleaseGuard = key
+    void Promise.resolve().then(() => remember(guard)).catch(() => {
+      if (rememberedReleaseGuard === key) rememberedReleaseGuard = null
+    })
+  }
+
   const applyServiceStatus = (status: ServiceStatus | null) => {
-    if (status) releaseGuard = { badVersions: status.badVersions ?? [], rollout: status.rollout ?? null }
+    if (status) {
+      adoptReleaseGuard({
+        badVersions: status.badVersions ?? [],
+        rollout: status.rollout ?? null,
+        ...(status.updatedAt ? { updatedAt: status.updatedAt } : {}),
+      })
+    }
     const maintenance = status?.maintenance ? { message: status.maintenance.message } : null
     const patch: Partial<UpdateSnapshot> = {}
     if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {
@@ -1288,7 +1356,10 @@ export function createUpdaterService(
       )
       return
     }
-    const expected = manifestPackageDigest(event, downloadedFile)
+    // 下载前已经把 arm64 包从清单里拿掉了（见 update-available）。这里按同一条规则再核一次：
+    // 哪天 electron-updater 不再从那份清单下载，跑不了的 arm64 包也对不上任何核对值，照样拒装。
+    const manifest = intelMac ? buildIntelMacUpdateInfo(event) : event
+    const expected = manifestPackageDigest(manifest, downloadedFile)
     if (!expected) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISSING',
@@ -1322,7 +1393,7 @@ export function createUpdaterService(
       // Windows 安装包没有 Authenticode 签名，清单又和安装包同放一个桶：拿到上传密钥
       // 的人可以把两者一起换掉，上面的 SHA-512 照样对得上。只有发布者私钥签过的清单项
       // 才算数，缺签名同样拒装，绝不当成「没签就放行」。
-      const entry = manifestPackageEntry(event, downloadedFile)
+      const entry = manifestPackageEntry(manifest, downloadedFile)
       const verdict = entry
         ? verifyPackageSignature(String(event.version ?? ''), { ...entry })
         : { ok: false as const, code: 'UPDATE_SIGNATURE_MISSING' as const, message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服。' }
@@ -1339,6 +1410,9 @@ export function createUpdaterService(
     'checking-for-update': () => emit({ phase: 'checking', progress: null, error: null }),
     'update-not-available': (info: UpdateInfo) => applyInfo('not-available', info),
     'update-available': (info: UpdateInfo) => {
+      // electron-updater 下载时用的就是发这个事件的那个对象（AppUpdater 把它存在
+      // updateInfoAndProvider 里），换个新对象它看不见，只能就地改。
+      if (intelMac) Object.assign(info, buildIntelMacUpdateInfo(info))
       offeredPackageBytes = resolveUpdatePackageBytes(info)
       applyInfo('available', info, { diskShortfall: null })
     },

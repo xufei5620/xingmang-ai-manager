@@ -11,7 +11,7 @@
 在本地任意目录开 Claude Code / Codex，把下面整段粘进去（**自包含，不需要提前 clone**）：
 
 ```
-项目仓库：https://github.com/peaker520/xingmang-ai-manager
+项目仓库：https://github.com/xufei5620/xingmang-ai-manager
 
 请按以下步骤执行：
 1. 如果当前目录不是这个仓库，把它 clone 下来并 cd 进去；已有则 git checkout main && git pull
@@ -34,8 +34,8 @@
 ## 项目坐标
 
 ```
-仓库：https://github.com/peaker520/xingmang-ai-manager
-任务索引：https://github.com/peaker520/xingmang-ai-manager/issues/27
+仓库：https://github.com/xufei5620/xingmang-ai-manager
+任务索引：https://github.com/xufei5620/xingmang-ai-manager/issues/27
 ```
 
 ---
@@ -48,7 +48,7 @@
 
 ```bash
 # 如果还没有本地副本
-git clone https://github.com/peaker520/xingmang-ai-manager.git
+git clone https://github.com/xufei5620/xingmang-ai-manager.git
 cd xingmang-ai-manager
 
 # 如果已经有了，确保是最新的
@@ -85,13 +85,13 @@ gh auth status     # 必须已登录，且对本仓库有 write 权限（能评�
 npm test 2>&1 | tail -5    # 记下失败数
 ```
 
-**当前基线**（2026-08-10 校准）：**三平台 vitest 应全绿**（0 失败；平台门控用例显示 skipped，Windows 与 mac/Linux 跳过的是不同批）。`quality.yml` 的 windows / macos / linux 三个 test job 常驻验证这一点；`npm test` 本身就是串行 + 30s 超时（为消除 Defender 扫描导致的假超时），三平台跑的是同一条命令。
+**当前基线**：**三平台 vitest 应全绿**（0 失败；平台门控用例显示 skipped，Windows 与 mac/Linux 跳过的是不同批）。`quality.yml` 的 windows / macos / linux 三个 test job 常驻验证这一点；`npm test` 本身就是串行 + 30s 超时（为消除 Defender 扫描导致的假超时），三平台跑的是同一条命令。
 
 - 历史上的「Windows 9 失败 / Linux 1 失败」基线已随批次 0 与 `sameLocalPathIdentity` 重写全部清零，相关旧表述作废。
 - 耗时差异仍在：**Windows 因 Defender 实时扫描明显慢于 Linux**，不是卡死。
 - **你的平台上红了 = 新失败**，先在干净基线上复跑确认，再排查自己的改动。
 
-如果实际数字与上表不符：Windows 上报到 **#40**，Linux 上报到 **#2**，macOS 上**新开一个 issue**。不要直接开始改。
+如果实际数字与上面不符：先对照 [`docs/TEST-BASELINE.md`](./TEST-BASELINE.md) 排除已知的环境问题，仍不符就**新开一个 issue**（标 `area:test` 和对应的 `env:*`）。#40（Windows）和 #2（Linux）都已关闭，不要报到那里。不要直接开始改。
 
 ---
 
@@ -114,7 +114,7 @@ node -e "console.log(process.platform)"   # win32 → win，darwin → mac
 按顺序：
 
 1. **`docs/ROADMAP.md`** —— 整个项目在做什么、为什么。**这是背景，理解它再动手。**
-2. **`AGENTS.md`** —— 代码架构、15 条关键不变量（I1-I15，破坏后不报错、只会静默变漏洞）、13 条改动陷阱（T1-T13）。**这是保命的，必须读完。**
+2. **`AGENTS.md`** —— 代码架构、关键不变量（I1-I15，破坏后不报错、只会静默变漏洞）、改动陷阱（T1-T14，其中 T14 是 legacy 冻结）。**这是保命的，必须读完。**
 3. **`docs/COLLABORATION.md`** —— 分支/PR 格式、冲突规避、验证门槛。
 
 读完再往下。
@@ -221,10 +221,9 @@ gh pr create \
 
 标了 `serial-only` 的任务，**同一时间只能有一个人做**。涉及：
 
-- **`src/styles.css`**
-- **`system-service.ts` / `App.tsx` 的结构性改动**
+- **`electron/system-service.ts` 的结构性改动**（全仓最大的文件，行数以 `wc -l` 为准）
 
-**为什么**：`src/styles.css` 是全局作用域、无模块化的单文件，`system-service.ts` / `App.tsx` 是枢纽文件，两个人同时动几乎必冲突。
+**为什么**：枢纽文件两个人同时动几乎必冲突。原来列在这里的 legacy `src/styles.css` / `src/App.tsx` 已随 2026-09-19 冻结不再做结构性改动（`AGENTS.md` T14），不再是冲突点。
 
 **怎么协调**（没有中央调度，靠约定）：
 
@@ -268,7 +267,7 @@ gh pr create \
 
 ## 建议的起手顺序（第一周）
 
-（2026-08-10 校准：本节曾列的历史起手顺序——#5、#2、#37 #38、#30 及其串行约束——已全部完成并删除。当前待办以 `docs/IMPROVEMENT-PLAN.md` 各批次状态横幅与 `HANDOFF.md` ②栏为准。）
+（2026-08-10 校准：本节曾列的历史起手顺序——#5、#2、#37 #38、#30 及其串行约束——已全部完成并删除。当前待办看 GitHub 上开着的 issue；任务索引 #27 只更新到 2026-10-08，`HANDOFF.md` 停在 2026-09-18，两者都以 issue 列表本身为准。）
 
 ---
 

@@ -9,6 +9,7 @@ const {
   StatusInputError,
   applyAccountGroups,
   applyBadVersions,
+  applyCliModels,
   applyMinimumVersion,
   applyRollout,
   applyStatusChanges,
@@ -120,7 +121,7 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.throws(() => applyRollout(undefined, '0.2.11'), /版本号 空格 百分比/)
   assert.throws(() => applyRollout(undefined, '0.2.11 150'), /最多 100/)
   const next = applyStatusChanges({}, { rollout: '0.2.11 20' }, now)
-  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '分组对照：无（客户端按写死的名字认）'])
+  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '型号表：无（客户端用程序自带的）', '分组对照：无（客户端按写死的名字认）'])
 })
 
 test('a zero rollout reads as manual checks only', () => {
@@ -221,4 +222,51 @@ test('the workflow offers the account group map and hands it to the script throu
   const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
   assert.equal(build.env.ACCOUNT_GROUPS, '${{ inputs.account_groups }}')
   assert.match(build.run, /--account-groups "\$ACCOUNT_GROUPS"/)
+})
+
+test('the model table sets only the fields it names and keeps the rest of the live file', () => {
+  const current = { badVersions: ['0.2.10'], cliModels: { claude: { previous: ['claude-opus-5'] }, codex: { default: 'gpt-6-astra', retired: ['gpt-5.5'] } } }
+  const next = applyStatusChanges(current, { 'cli-models': 'codex.default=gpt-7； codex.previous = gpt-6-astra ; grok.retired=grok-4.6|grok-4.5' }, now)
+  assert.deepEqual(next.cliModels, {
+    claude: { previous: ['claude-opus-5'] },
+    codex: { default: 'gpt-7', retired: ['gpt-5.5'], previous: ['gpt-6-astra'] },
+    grok: { retired: ['grok-4.6', 'grok-4.5'] },
+  })
+  assert.deepEqual(next.badVersions, ['0.2.10'])
+  assert.equal(describeStatus(next).at(-2), '型号表：Claude Code 上一代 claude-opus-5；Codex 默认 gpt-7，上一代 gpt-6-astra，已下架 gpt-5.5；Grok 已下架 grok-4.6、grok-4.5（没写的照程序自带的，只有 0.2.20 及以后的客户端认）')
+  assert.deepEqual(applyStatusChanges(next, {}, now).cliModels, next.cliModels)
+})
+
+test('the model table drops a field, a tool or the whole table on none', () => {
+  const current = { claude: { default: 'claude-opus-5-5', previous: ['claude-opus-5'] }, codex: { default: 'gpt-7' } }
+  assert.deepEqual(applyCliModels(current, 'claude.previous=none'), { claude: { default: 'claude-opus-5-5' }, codex: { default: 'gpt-7' } })
+  assert.deepEqual(applyCliModels(current, 'claude=none'), { codex: { default: 'gpt-7' } })
+  assert.equal(applyCliModels({ codex: { default: 'gpt-7' } }, 'codex.default=none'), undefined)
+  const cleared = applyStatusChanges({ cliModels: current }, { 'cli-models': 'none' }, now)
+  assert.equal('cliModels' in cleared, false)
+  assert.equal(describeStatus(cleared).at(-2), '型号表：无（客户端用程序自带的）')
+})
+
+test('the model table refuses anything the client would quietly skip or contradict', () => {
+  for (const input of [
+    'gemini.default=gemini-4', 'image.default=gpt-image-3', 'codex', 'codex=gpt-7', 'codex.latest=gpt-7',
+    'codex.default=gpt-7|gpt-8', 'codex.default=gpt 7', 'codex.previous=gpt-6-astra||gpt-6-sol', 'codex.retired=gpt-5.5"',
+    `codex.default=${'x'.repeat(129)}`, `codex.previous=${Array.from({ length: 9 }, (_, index) => `gpt-${index}`).join('|')}`,
+    'codex.default=gpt-7; codex.retired=gpt-7', 'codex.default=gpt-7; codex.previous=gpt-7', 'codex.previous=gpt-6; codex.retired=gpt-6',
+  ]) {
+    assert.throws(() => applyCliModels({}, input), StatusInputError, input)
+  }
+  // 和线上已有的那几样合起来才矛盾，也要当场报出来。
+  assert.throws(() => applyCliModels({ codex: { default: 'gpt-7' } }, 'codex.retired=gpt-7'), /同时写在下架名单里/)
+})
+
+test('the workflow offers the model table and hands it to the script through the environment', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'service-status.yml'), 'utf8'))
+  const inputs = workflow.on.workflow_dispatch.inputs
+  assert.equal(inputs.cli_models.type, 'string')
+  assert.equal(inputs.cli_models.required, false)
+  assert.ok(Object.keys(inputs).length <= 10)
+  const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
+  assert.equal(build.env.CLI_MODELS, '${{ inputs.cli_models }}')
+  assert.match(build.run, /--cli-models "\$CLI_MODELS"/)
 })

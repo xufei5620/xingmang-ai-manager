@@ -32,7 +32,33 @@ function bootSignedOutSmoke(config) {
   }
   net.fetch = fetchMock
   globalThis.fetch = fetchMock
-  net.request = () => deny('electron-net')
+  // 要拿到跳转本身（redirect: 'manual'）的请求，main.ts 让它们走 net.request（manual-redirect-fetch.ts，#1064）。
+  // 打到星芒站点的照样交给上面那份答复，别的地址照旧当场拒绝。
+  const { EventEmitter } = require('node:events')
+  const { PassThrough } = require('node:stream')
+  net.request = (options) => {
+    const target = typeof options === 'string' ? options : options.url
+    if (!['https://xm-direct.solov.cc', 'https://xm.solov.cc'].includes(new URL(target).origin)) return deny('electron-net')
+    const request = new EventEmitter()
+    const headers = new Headers()
+    const chunks = []
+    let aborted = false
+    request.setHeader = (name, value) => { headers.set(name, value) }
+    request.write = (chunk) => { chunks.push(Buffer.from(chunk)) }
+    request.abort = () => { aborted = true }
+    request.end = () => {
+      const body = chunks.length ? Buffer.concat(chunks).toString('utf8') : undefined
+      fetchMock(target, { method: options.method ?? 'GET', headers, body }).then(async (response) => {
+        const bytes = Buffer.from(await response.arrayBuffer())
+        if (aborted) return
+        const message = Object.assign(new PassThrough(), { statusCode: response.status, statusMessage: response.statusText,
+          headers: Object.fromEntries(response.headers) })
+        request.emit('response', message)
+        message.end(bytes)
+      }, (error) => { if (!aborted) request.emit('error', error) })
+    }
+    return request
+  }
   shell.openExternal = async () => deny('external-browser')
   for (const protocol of ['node:http', 'node:https']) {
     const transport = require(protocol)

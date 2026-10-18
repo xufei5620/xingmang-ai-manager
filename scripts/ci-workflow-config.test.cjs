@@ -53,6 +53,55 @@ function shardStepIndex() {
   return workflow.jobs['windows-test'].steps.findIndex((step) => String(step.run || '').includes('matrix.command'))
 }
 
+// Every command quality.yml runs, matrix entries included, cut at `&&` so a
+// suite chained behind another still counts.
+function qualityCommands() {
+  return Object.values(workflow.jobs).flatMap((job) => [
+    ...(job.steps || []).map((step) => step.run),
+    ...(job.strategy?.matrix?.include || []).map((entry) => entry.command),
+  ])
+    .filter((command) => typeof command === 'string')
+    .flatMap((command) => command.split('&&').map((part) => part.trim()))
+}
+
+function vitestRun(script) {
+  const tokens = packageJson.scripts[script].trim().split(/\s+/)
+  const run = tokens.findIndex((token, index) => token === 'vitest' && tokens[index + 1] === 'run')
+  assert.notEqual(run, -1, `${script} must be a vitest run`)
+  const rest = tokens.slice(run + 2)
+  const firstOption = rest.findIndex((token) => token.startsWith('-'))
+  return {
+    filters: firstOption === -1 ? rest : rest.slice(0, firstOption),
+    options: firstOption === -1 ? [] : rest.slice(firstOption),
+  }
+}
+
+// vitest keeps a test file when its path, relative to the root and lowercased,
+// contains one of the run's positional arguments (filterFiles in vitest's
+// cli-api). So when every argument of `part` contains an argument of `whole`,
+// every file `part` runs, `whole` runs too. That only holds while neither picks
+// projects, another root or config, or leaves files out, and while the
+// arguments are plain relative paths: vitest also matches an absolute one by
+// prefix and a normalised form of each, which this reasoning does not follow.
+function assertVitestRunCovers(whole, part) {
+  const outer = vitestRun(whole)
+  const inner = vitestRun(part)
+  for (const [script, { options }] of [[whole, outer], [part, inner]]) {
+    for (const option of options) {
+      assert.doesNotMatch(option, /^(--(project|root|dir|config|exclude|changed|related)\b|-[rc]$)/,
+        `${script} must not change which files it selects with ${option}`)
+    }
+  }
+  assert.ok(outer.filters.length === 0 || inner.filters.length > 0, `${part} runs every file, which ${whole} does not`)
+  for (const filter of [...outer.filters, ...inner.filters]) {
+    assert.match(filter, /^[\w-]+(\/[\w-]+)*$/, `${filter} must be a plain relative path`)
+  }
+  for (const filter of inner.filters) {
+    assert.ok(outer.filters.some((outerFilter) => filter.toLowerCase().includes(outerFilter.toLowerCase())),
+      `every file ${part} selects with ${filter} must also be selected by ${whole}`)
+  }
+}
+
 // The npm scripts the Windows release build runs before it packages. They are
 // kept apart from windowsCommands(): several gates ask whether the release
 // build runs something the required CI job does not, and folding these in would
@@ -229,9 +278,11 @@ test('the Windows required job tests and compiles the default renderer v2', () =
   const shardSteps = workflow.jobs['windows-test'].steps
   const dirtyCheckIndex = shardSteps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
 
-  // Both halves of test:v2 still run on the shipping platform; they are simply
-  // no longer queued behind `npm test` on the same runner.
-  assert.ok(shardCommands.includes('npm run test:v2:vitest'), 'Windows CI must run the renderer v2 unit suite')
+  // Both halves of test:v2 still run on the shipping platform. The vitest half
+  // runs inside test:vitest's three shards, which the split test below pins, so
+  // it is not dispatched to a runner of its own as well (#1066).
+  assertVitestRunCovers('test:vitest', 'test:v2:vitest')
+  assert.ok(!shardCommands.includes('npm run test:v2:vitest'), 'test:vitest already runs the renderer v2 unit suite on Windows')
   assert.ok(shardCommands.some((command) => command.startsWith('npm run test:v2:browser')),
     'Windows CI must run the renderer v2 browser suites')
   assert.notEqual(dirtyCheckIndex, -1, 'every Windows shard must guard against a dirty working tree')
@@ -509,9 +560,10 @@ test('the Linux job carries the shipping renderer coverage the Windows job used 
   // made linux-test the pipeline's wall clock. The fixture browser suites run
   // in linux-renderer-v2-browser along the seam the Windows matrix already
   // uses, as shards of their own; the split test above pins that the shards
-  // add up to test:v2:browser:fixture.
+  // add up to test:v2:browser:fixture. Its vitest half and test:canvas need no
+  // step of their own: linux-test's `npm test` already runs them (#1066).
   const placement = {
-    'linux-test': ['npm run test:v2:vitest', 'npm run test:v2:browser:e2e', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2'],
+    'linux-test': ['npm test', 'npm run test:v2:browser:e2e', 'npm run test:ui', 'npm run check:v2'],
     'linux-renderer-v2-browser': ['${{ matrix.command }}'],
   }
   for (const [jobName, expected] of Object.entries(placement)) {
@@ -535,9 +587,8 @@ test('the Linux job carries the shipping renderer coverage the Windows job used 
   for (const whole of ['npm run test:v2', 'npm run test:v2:browser']) {
     assert.equal(linuxCommands.includes(whole), false, `${whole} must not also run whole on Linux`)
   }
-  for (const part of ['npm run test:v2:vitest', 'npm run test:v2:browser:e2e']) {
-    assert.equal(linuxCommands.filter((command) => command === part).length, 1, `Linux must run ${part} exactly once`)
-  }
+  assert.equal(linuxCommands.filter((command) => command === 'npm run test:v2:browser:e2e').length, 1,
+    'Linux must run npm run test:v2:browser:e2e exactly once')
   assert.equal(linuxCommands.includes('npm run test:v2:browser:fixture'), false,
     'test:v2:browser:fixture must not also run whole on Linux beside its shards')
   for (const command of linuxFixtureShardCommands()) {
@@ -550,6 +601,31 @@ test('the Linux job carries the shipping renderer coverage the Windows job used 
   // files into the tree and fail every run.
   assert.equal(packageJson.scripts['check:v2'].includes('--report'), false)
   assert.equal(commands.some((command) => command.includes('check:v2 -- --report')), false)
+})
+
+test('each platform runs every vitest file once, through npm test or its shards', () => {
+  // #1066: the comments here, and the jobs they described, assumed `npm test`
+  // left out the renderer v2 and canvas unit suites, so Windows gave
+  // test:v2:vitest a runner of its own and Linux ran test:v2:vitest and
+  // test:canvas after `npm test`. test:vitest's `src` argument takes in both
+  // trees, so those were second runs of 152 files on Windows and 226 on Linux.
+  assertVitestRunCovers('test:vitest', 'test:v2:vitest')
+  assertVitestRunCovers('test:vitest', 'test:canvas')
+  assert.equal(packageJson.scripts.test.split('&&')[0].trim(), 'npm run test:vitest')
+
+  // Each platform runs the whole of test:vitest: Windows as the three shards the
+  // split test above pins, Linux and macOS inside `npm test`.
+  for (let index = 1; index <= 3; index += 1) {
+    assert.ok(windowsShardCommands().includes(`npm run test:vitest:${index}`), `Windows must dispatch test:vitest:${index}`)
+  }
+  assert.ok(runSteps('linux-test').includes('npm test'), 'linux-test must run npm test')
+  assert.ok(runSteps('macos-test').includes('npm test'), 'macos-test must run npm test')
+
+  // So nothing in quality.yml may run those suites again beside it.
+  const commands = qualityCommands()
+  for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
+    assert.equal(commands.includes(repeat), false, `${repeat} repeats files test:vitest already runs on every platform`)
+  }
 })
 
 test('the legacy rollback UI suites are verified on exactly one platform', () => {
@@ -642,6 +718,12 @@ test('the release path itself is rehearsed on every pull request, not only when 
   assert.ok(prepareIndex < commands.indexOf('npm run compile'))
   assert.ok(commands.includes('npm run test:mac:release-path'))
   assert.match(packageJson.scripts['test:mac:release-path'], /macos-release-keychain-rehearsal\.sh --with-release-build/)
+  // 排练在 Apple 芯片上还要经 Rosetta 启动 Intel 版（与发布的 macos-build 一样），
+  // 所以 Rosetta 得在排练之前装好。
+  const rosettaIndex = commands.findIndex((command) => command.includes('--install-rosetta'))
+  assert.ok(rosettaIndex >= 0 && rosettaIndex < commands.indexOf('npm run test:mac:release-path'))
+  const rehearsalScript = fs.readFileSync(path.join(root, 'scripts', 'macos-release-keychain-rehearsal.sh'), 'utf8')
+  assert.match(rehearsalScript, /node e2e\/macos-launch-smoke\.mjs "\$output" --arch x64/)
   // 一次性签名那条路是另一回事（自定义 sign 钩子），它由 macos-test 覆盖。这里
   // 要验的恰恰是发布路径独有的那一段，两者不能互相顶替。
   assert.equal(commands.some((command) => command.includes('--ci-temporary-signing')), false)
@@ -651,6 +733,33 @@ test('the release path itself is rehearsed on every pull request, not only when 
   assert.ok(Number.isInteger(rehearsal['timeout-minutes']))
   assert.ok(rehearsal['timeout-minutes'] < job['timeout-minutes'])
   // 不读任何 secret 是这个作业能挂在 PR 上的前提。
+  assert.equal(/secrets\./.test(JSON.stringify(job)), false)
+})
+
+// Every other macOS job runs on Apple silicon, and the launch smoke picks the
+// host's own ZIP, so up to 0.2.19 the Intel package shipped without ever having
+// been started. Rosetta now starts it there too, but only an Intel Mac runs it
+// natively.
+test('the Intel package is built and launched natively on an Intel runner', () => {
+  const job = workflow.jobs['macos-intel']
+  const commands = runSteps('macos-intel')
+
+  assert.equal(job['runs-on'], 'macos-15-intel')
+  // A label that resolved to an Apple silicon machine would quietly turn the
+  // native launch below into a Rosetta one; the job refuses before building.
+  assert.equal(commands[0], 'test "$(uname -m)" = x86_64')
+  // --ci-temporary-signing leaves compiling to its caller.
+  const compileIndex = commands.indexOf('npm run compile')
+  const buildIndex = commands.indexOf('node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package')
+  const launchIndex = commands.indexOf('node e2e/macos-launch-smoke.mjs --arch x64')
+  assert.ok(compileIndex >= 0 && compileIndex < buildIndex)
+  assert.ok(buildIndex < launchIndex)
+  for (const index of [buildIndex, launchIndex]) {
+    const step = job.steps.find((entry) => entry.run === commands[index])
+    assert.ok(step['timeout-minutes'] > 0 && step['timeout-minutes'] < job['timeout-minutes'])
+  }
+  // Native means native: no Rosetta anywhere in this job.
+  assert.equal(commands.some((command) => /rosetta|arch -x86_64/.test(command)), false)
   assert.equal(/secrets\./.test(JSON.stringify(job)), false)
 })
 
@@ -872,7 +981,7 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
   }
@@ -914,7 +1023,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -924,7 +1033,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   }
   const verify = (code, changeResult, results) => {
     const jobs = { changes: { outputs: { code }, result: changeResult } }
-    for (const name of ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
+    for (const name of ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
     jobs.test = { result: results.test || 'success' }
@@ -944,6 +1053,10 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('false', 'failure', {}), false)
   assert.equal(verify('', 'success', {}), false)
   assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'failure' }), false)
+  // The only job that starts the Intel package on an Intel Mac; a skip would
+  // read as "Intel never checked" all over again.
+  assert.equal(verify('true', 'success', { 'macos-intel': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'macos-intel': 'skipped' }), false)
   // One red architecture fails the whole matrix job, which is what this sees.
   assert.equal(verify('true', 'success', { 'linux-package': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'linux-package': 'skipped' }), false)
@@ -952,7 +1065,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'skipped' }), false)
   const documentationOnly = Object.fromEntries(
-    ['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
+    ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
   )
   assert.equal(verify('false', 'success', documentationOnly), true)
   // The relay probe runs only when the verified-version list moves, so its

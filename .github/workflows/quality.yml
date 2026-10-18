@@ -121,15 +121,15 @@ jobs:
           - shard: node
             command: npm run test:scripts && npm run test:browser
             timeout: 10
-          # test:v2 stays on the shipping platform; test:canvas and the legacy
-          # test:ui suites live in linux-test, because neither asserts anything
-          # platform-specific and these are the least stable runners. Its two
-          # halves are wildly lopsided — the vitest one is seconds, the browser
-          # one is effectively all of test:v2's ~9 minutes — so only the
-          # browser one is split further.
-          - shard: renderer-v2
-            command: npm run test:v2:vitest
-            timeout: 10
+          # test:v2's browser half stays on the shipping platform, split below;
+          # the legacy test:ui suites live in linux-test, because they assert
+          # nothing platform-specific and these are the least stable runners.
+          # test:v2's vitest half and test:canvas need no runner of their own:
+          # vitest keeps every file whose path contains one of its arguments,
+          # so the `src` in test:vitest already takes in src/renderer-v2 and
+          # canvas-v2/src, and the three shards above run all of them. A
+          # renderer-v2 shard here ran its 152 files a second time until #1066.
+          #
           # The fixture browser-checks, cut in three. app-check.mjs is two
           # thirds of their time and gains ~20 tests a day, so a cut by file
           # always left one runner holding all of it: #873 ran out the 18
@@ -553,6 +553,14 @@ jobs:
       # electron-builder 打的是编译产物。发布那条路径由 dist:mac:free 自己跑这一步，
       # 排练跳过了检查，所以要自己补上。
       - run: npm run compile
+      # 排练启动完 M 芯片版，还要经 Rosetta 再启动一次 Intel 版，与发布那边的
+      # macos-build 一样（见 scripts/macos-release-keychain-rehearsal.sh）。
+      - name: Make sure Rosetta can run the Intel package on this Apple silicon runner
+        timeout-minutes: 10
+        run: |
+          if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
       - name: Rehearse the whole release path on a throwaway certificate
         # 两个架构各跑一遍 electron-builder，再加产物校验与一次真启动。步骤自己有
         # 上界，否则一处 codesign 卡住会在作业上限才失败，而且说不出卡在哪一步。
@@ -561,6 +569,40 @@ jobs:
           REHEARSAL_ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
           REHEARSAL_ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
         run: npm run test:mac:release-path
+
+  # macos-test、macos-release-rehearsal 和发布用的 macos-build 都跑在 Apple 芯片的
+  # macos-15 上，启动冒烟只挑本机架构那一份，所以直到 0.2.19，Intel 版发出去之前
+  # 从没被启动过（2026-10-17 查客户 Intel Mac 装不上时发现）。那几处现在经 Rosetta
+  # 再启动一次 Intel 版，但 Rosetta 跑通不能代替原生 Intel 验收
+  # （docs/CODEX-OFFICIAL-PLUGIN-BUNDLE-PLAN.md），所以这里在 GitHub 的 Intel 机器上
+  # 原生出包、原生启动。出包与 macos-test 是同一条命令。
+  macos-intel:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      # 标签对不上时作业也可能落到 Apple 芯片的机器上，那里启动冒烟会悄悄改走
+      # Rosetta。在出包之前就认清楚。
+      - name: Confirm this runner is an Intel Mac
+        run: test "$(uname -m)" = x86_64
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      # --ci-temporary-signing 不替调用方编译（见 package-for-testing.yml 那一步的说明），
+      # macos-test 是靠 test:mac:dev-origin 顺带编译的，这里没有那一步。
+      - run: npm run compile
+      - name: Build and verify free macOS distribution with ephemeral signing
+        timeout-minutes: 20
+        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package
+      - name: Launch the Intel package natively and require it to stay alive
+        timeout-minutes: 6
+        run: node e2e/macos-launch-smoke.mjs --arch x64
 
   linux-test:
     needs: changes
@@ -625,13 +667,16 @@ jobs:
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
           bash scripts/ci-install-chromium-deps.sh
       - run: npm run typecheck
+      # Also the renderer v2 and canvas unit suites: test:vitest's `src`
+      # argument takes in src/renderer-v2 and canvas-v2/src. Separate
+      # test:v2:vitest and test:canvas steps after it ran those 226 files a
+      # second time until #1066.
       - run: npm test
       # The renderer v2 browser suites are plain Chromium, so they need no
-      # Electron and no display server here. These two steps and
-      # linux-renderer-v2-browser's two shards add up to exactly `npm run test:v2`.
-      - run: npm run test:v2:vitest
+      # Electron and no display server here. This step and
+      # linux-renderer-v2-browser's two shards add up to exactly
+      # `npm run test:v2:browser`, the half of test:v2 `npm test` does not run.
       - run: npm run test:v2:browser:e2e
-      - run: npm run test:canvas
       # The legacy rollback UI suites. They assert rendered markup only, so one
       # platform answers the question three platforms used to.
       - run: npm run test:ui
@@ -876,7 +921,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-relay-probe, secret-scan]
+    needs: [changes, test, macos-test, macos-release-rehearsal, macos-intel, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-relay-probe, secret-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -889,7 +934,7 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['macos-test', 'macos-release-rehearsal', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
           // `test` folds the Windows shards together and applies that same
           // expectation itself, so it reports success — never "skipped" — for a
           // documentation-only change.

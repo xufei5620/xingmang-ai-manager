@@ -4,7 +4,7 @@ const os = require('node:os')
 const { performance } = require('node:perf_hooks')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
-const { safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 const OFFICIAL_HOST = 'persistent.oaistatic.com'
 const OFFICIAL_ROOT = `https://${OFFICIAL_HOST}/codex-app-prod/`
@@ -25,6 +25,10 @@ const SOURCES = Object.freeze({
   'linux-rpm-arm64': Object.freeze({ fileName: 'chatgpt.aarch64.rpm', url: `${OFFICIAL_ROOT}linux/rpm/latest/chatgpt.aarch64.rpm`, platform: 'linux', architecture: 'arm64', format: 'rpm', contentType: 'application/x-rpm' }),
 })
 const LICENSE_SOURCE = Object.freeze({ fileName: 'ChatGPT-License.xml', url: `${OFFICIAL_ROOT}ChatGPT-License.xml`, contentType: 'application/xml' })
+// Windows ARM64 包约 1 GB，实测传到 COS 只有 190~290 KB/s，七十五分钟的默认期限
+// 传到约 850 MB 就撞线中止，一出新版就失败（#1082）。工作流给这个作业 150 分钟，
+// 余下的时间留给下载、Windows 校验和完整回读。
+const MULTIPART_DEADLINE_MS = 120 * 60 * 1000
 const officialFailures = new WeakMap()
 
 function safeOfficialSyncFailure(error) {
@@ -127,15 +131,15 @@ function parsePlatforms(value) {
   const values = Array.isArray(value) ? value : String(value).split(',')
   const result = [...new Set(values.map(function (item) { return String(item).trim() }))]
   if (!result.length || result.some(function (item) { return !Object.hasOwn(SOURCES, item) })) {
-    throw new Error('官方安装包平台无效，请使用 all、windows、macos、linux 或受支持的精确平台标识')
+    throw checkFailure('platform-invalid', '官方安装包平台无效，请使用 all、windows、macos、linux 或受支持的精确平台标识')
   }
   return result
 }
 
 function parseWindowsVersion(version) {
-  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+\.\d+$/.test(version)) throw new Error('官方 Windows 版本号必须为四段数字')
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+\.\d+$/.test(version)) throw checkFailure('version-invalid', '官方 Windows 版本号必须为四段数字')
   const parts = version.split('.').map(Number)
-  if (parts.some(function (part) { return !Number.isSafeInteger(part) || part > 65535 })) throw new Error('官方 Windows 版本号超出 MSIX 范围')
+  if (parts.some(function (part) { return !Number.isSafeInteger(part) || part > 65535 })) throw checkFailure('version-invalid', '官方 Windows 版本号超出 MSIX 范围')
   return parts
 }
 
@@ -150,15 +154,15 @@ function compareWindowsVersions(left, right) {
 
 function validateWindowsMetadata(value) {
   if (!value || value.schemaVersion !== 1 || value.packageIdentity !== 'OpenAI.Codex' || value.storeProductId !== '9PLM9XGG6VKS') {
-    throw new Error('官方 Windows 更新清单身份不匹配')
+    throw checkFailure('metadata-invalid', '官方 Windows 更新清单身份不匹配')
   }
   parseWindowsVersion(value.buildVersion)
   return { schemaVersion: 1, buildVersion: value.buildVersion, packageIdentity: value.packageIdentity, storeProductId: value.storeProductId }
 }
 
 function validateHead(head, maxBytes) {
-  if (!head || !Number.isSafeInteger(head.bytes) || head.bytes <= 0 || head.bytes > maxBytes) throw new Error('官方安装包 HEAD 大小无效或超过限制')
-  if (typeof head.etag !== 'string' || !head.etag || head.etag.length > 256 || /[\r\n]/.test(head.etag)) throw new Error('官方安装包缺少安全的 ETag')
+  if (!head || !Number.isSafeInteger(head.bytes) || head.bytes <= 0 || head.bytes > maxBytes) throw checkFailure('head-invalid', '官方安装包 HEAD 大小无效或超过限制')
+  if (typeof head.etag !== 'string' || !head.etag || head.etag.length > 256 || /[\r\n]/.test(head.etag)) throw checkFailure('head-invalid', '官方安装包缺少安全的 ETag')
   return { bytes: head.bytes, etag: head.etag, lastModified: typeof head.lastModified === 'string' ? head.lastModified : null }
 }
 
@@ -180,9 +184,9 @@ function parseXmlAttributes(fragment) {
     if (!fragment.slice(position).trim()) break
     expression.lastIndex = position
     const match = expression.exec(fragment)
-    if (!match || Object.hasOwn(result, match[1])) throw new Error('官方 Mac 更新清单 XML 属性无效或重复')
+    if (!match || Object.hasOwn(result, match[1])) throw checkFailure('metadata-invalid', '官方 Mac 更新清单 XML 属性无效或重复')
     const rawValue = match[2] ?? match[3]
-    if (/&(?!amp;|quot;|apos;|lt;|gt;)/.test(rawValue)) throw new Error('官方 Mac 更新清单 XML 实体无效')
+    if (/&(?!amp;|quot;|apos;|lt;|gt;)/.test(rawValue)) throw checkFailure('metadata-invalid', '官方 Mac 更新清单 XML 实体无效')
     result[match[1]] = rawValue.replace(/&(amp|quot|apos|lt|gt);/g, function (_, name) { return { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' }[name] })
     position = expression.lastIndex
   }
@@ -191,79 +195,89 @@ function parseXmlAttributes(fragment) {
 
 function validateMacPackageUrl(rawUrl, architecture, appVersion) {
   let url
-  try { url = new URL(rawUrl) } catch { throw new Error('官方 Mac 更新包地址无效') }
+  try { url = new URL(rawUrl) } catch { throw checkFailure('metadata-invalid', '官方 Mac 更新包地址无效') }
   const expectedFile = `ChatGPT-darwin-${architecture}-${appVersion}.zip`
-  if (url.protocol !== 'https:' || url.hostname !== OFFICIAL_HOST || url.port || url.username || url.password || url.search || url.hash || url.pathname !== `/codex-app-prod/${expectedFile}`) throw new Error('官方 Mac 更新包必须为固定官方主机上的完整 ZIP')
+  if (url.protocol !== 'https:' || url.hostname !== OFFICIAL_HOST || url.port || url.username || url.password || url.search || url.hash || url.pathname !== `/codex-app-prod/${expectedFile}`) throw checkFailure('metadata-invalid', '官方 Mac 更新包必须为固定官方主机上的完整 ZIP')
   return { url: url.href, fileName: expectedFile }
 }
 
 function parseMacAppcast(text, architecture) {
-  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 256 * 1024 || /<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('官方 Mac 更新清单超限或包含不允许的 XML 结构')
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 256 * 1024 || /<!DOCTYPE|<!ENTITY/i.test(text)) throw checkFailure('metadata-invalid', '官方 Mac 更新清单超限或包含不允许的 XML 结构')
   const cleanText = text.replace(/<!--[\s\S]*?-->/g, '')
-  if (cleanText.includes('<!--')) throw new Error('官方 Mac 更新清单注释未闭合')
+  if (cleanText.includes('<!--')) throw checkFailure('metadata-invalid', '官方 Mac 更新清单注释未闭合')
   const items = [...cleanText.matchAll(/<item(?:\s[^<>]*)?>([\s\S]*?)<\/item>/g)]
-  if (!items.length) throw new Error('官方 Mac 更新清单缺少 item')
+  if (!items.length) throw checkFailure('metadata-invalid', '官方 Mac 更新清单缺少 item')
   const candidates = []
   for (const item of items) {
     const fullItem = item[1].replace(/<sparkle:deltas(?:\s[^<>]*)?>[\s\S]*?<\/sparkle:deltas>/g, '')
     const buildElements = [...fullItem.matchAll(/<sparkle:version>\s*(\d+)\s*<\/sparkle:version>/g)]
     const appElements = [...fullItem.matchAll(/<sparkle:shortVersionString>\s*(\d+\.\d+\.\d+)\s*<\/sparkle:shortVersionString>/g)]
-    if (buildElements.length !== 1 || appElements.length !== 1) throw new Error('官方 Mac item 缺少唯一的版本子元素')
+    if (buildElements.length !== 1 || appElements.length !== 1) throw checkFailure('metadata-invalid', '官方 Mac item 缺少唯一的版本子元素')
     const buildVersion = buildElements[0][1]
     const appVersion = appElements[0][1]
     const enclosures = [...fullItem.matchAll(/<enclosure(\s[^<>]*?)\s*\/>/g)]
     for (const enclosure of enclosures) {
       const attributes = parseXmlAttributes(enclosure[1])
       if (attributes['sparkle:deltaFrom'] !== undefined) continue
-      if (attributes['sparkle:version'] !== undefined && attributes['sparkle:version'] !== buildVersion || attributes['sparkle:shortVersionString'] !== undefined && attributes['sparkle:shortVersionString'] !== appVersion || !/^\d+$/.test(attributes.length || '')) throw new Error('官方 Mac 完整更新包版本或大小无效')
+      if (attributes['sparkle:version'] !== undefined && attributes['sparkle:version'] !== buildVersion || attributes['sparkle:shortVersionString'] !== undefined && attributes['sparkle:shortVersionString'] !== appVersion || !/^\d+$/.test(attributes.length || '')) throw checkFailure('metadata-invalid', '官方 Mac 完整更新包版本或大小无效')
       const bytes = Number(attributes.length)
-      if (!Number.isSafeInteger(Number(buildVersion)) || !Number.isSafeInteger(bytes) || bytes <= 0 || bytes > MAX_PACKAGE_BYTES) throw new Error('官方 Mac 完整更新包版本或大小超限')
+      if (!Number.isSafeInteger(Number(buildVersion)) || !Number.isSafeInteger(bytes) || bytes <= 0 || bytes > MAX_PACKAGE_BYTES) throw checkFailure('metadata-invalid', '官方 Mac 完整更新包版本或大小超限')
       candidates.push({ ...validateMacPackageUrl(attributes.url, architecture, appVersion), buildVersion, appVersion, declaredBytes: bytes })
     }
   }
-  if (!candidates.length) throw new Error('官方 Mac 更新清单缺少完整 ZIP 包')
+  if (!candidates.length) throw checkFailure('metadata-invalid', '官方 Mac 更新清单缺少完整 ZIP 包')
   candidates.sort(function (left, right) { return Number(right.buildVersion) - Number(left.buildVersion) })
-  if (candidates[1]?.buildVersion === candidates[0].buildVersion) throw new Error('官方 Mac 同版本完整包存在歧义')
+  if (candidates[1]?.buildVersion === candidates[0].buildVersion) throw checkFailure('metadata-invalid', '官方 Mac 同版本完整包存在歧义')
   return candidates[0]
 }
 
 function validatePreviousManifest(value) {
   if (value === null || value === undefined) return null
-  if (!value || value.schemaVersion !== 1 || value.product !== 'chatgpt' || !value.platforms || typeof value.platforms !== 'object' || Array.isArray(value.platforms)) throw new Error('COS 现有官方包清单格式无效，已保留现有清单')
+  if (!value || value.schemaVersion !== 1 || value.product !== 'chatgpt' || !value.platforms || typeof value.platforms !== 'object' || Array.isArray(value.platforms)) throw checkFailure('cos-index-invalid', 'COS 现有官方包清单格式无效，已保留现有清单')
   if (value.windows) validateWindowsMetadata(value.windows)
   for (const [id, entry] of Object.entries(value.platforms)) {
     const source = SOURCES[id]
-    if (!source || !entry || !entry.artifact || !/^[a-f0-9]{64}$/.test(entry.artifact.sha256)) throw new Error('COS 现有官方包清单包含无效产物')
+    if (!source || !entry || !entry.artifact || !/^[a-f0-9]{64}$/.test(entry.artifact.sha256)) throw checkFailure('cos-index-invalid', 'COS 现有官方包清单包含无效产物')
     let fileName = source.fileName
     if (source.platform === 'macos') {
-      if (entry.source?.metadataUrl !== source.metadataUrl || !/^\d+\.\d+\.\d+$/.test(entry.appVersion || '') || !/^\d+$/.test(entry.buildVersion || '')) throw new Error('COS 现有 Mac 来源或版本无效')
+      if (entry.source?.metadataUrl !== source.metadataUrl || !/^\d+\.\d+\.\d+$/.test(entry.appVersion || '') || !/^\d+$/.test(entry.buildVersion || '')) throw checkFailure('cos-index-invalid', 'COS 现有 Mac 来源或版本无效')
       fileName = validateMacPackageUrl(entry.source.url, source.architecture, entry.appVersion).fileName
-    } else if (entry.source?.url !== source.url) throw new Error('COS 现有官方包来源无效')
-    if (source.platform !== 'windows' && entry.artifact.verification !== 'official-https-sha256') throw new Error('COS 非 Windows 包来源校验记录无效')
+    } else if (entry.source?.url !== source.url) throw checkFailure('cos-index-invalid', 'COS 现有官方包来源无效')
+    if (source.platform !== 'windows' && entry.artifact.verification !== 'official-https-sha256') throw checkFailure('cos-index-invalid', 'COS 非 Windows 包来源校验记录无效')
     validateHead(entry.source, MAX_PACKAGE_BYTES)
     if (source.platform === 'windows') {
       parseWindowsVersion(entry.packageVersion)
-      if (!value.windows || compareWindowsVersions(entry.packageVersion, value.windows.buildVersion) !== 0 || entry.artifact.verification !== 'windows-authenticode') throw new Error('COS 现有 Windows 包版本或验签记录无效')
+      if (!value.windows || compareWindowsVersions(entry.packageVersion, value.windows.buildVersion) !== 0 || entry.artifact.verification !== 'windows-authenticode') throw checkFailure('cos-index-invalid', 'COS 现有 Windows 包版本或验签记录无效')
       const expectedLicenseKey = `chatgpt/${id}/${entry.packageVersion}/ChatGPT-License.xml`
-      if (!entry.license || entry.license.key !== expectedLicenseKey || !/^[a-f0-9]{64}$/.test(entry.license.sha256) || entry.license.source?.url !== LICENSE_SOURCE.url) throw new Error('COS 现有离线许可记录无效')
+      if (!entry.license || entry.license.key !== expectedLicenseKey || !/^[a-f0-9]{64}$/.test(entry.license.sha256) || entry.license.source?.url !== LICENSE_SOURCE.url) throw checkFailure('cos-index-invalid', 'COS 现有离线许可记录无效')
       validateHead(entry.license.source, MAX_LICENSE_BYTES)
-      if (entry.license.bytes !== entry.license.source.bytes || entry.license.contentType !== LICENSE_SOURCE.contentType || entry.license.verification !== 'official-https-sha256-and-product-identity') throw new Error('COS 现有离线许可校验记录无效')
+      if (entry.license.bytes !== entry.license.source.bytes || entry.license.contentType !== LICENSE_SOURCE.contentType || entry.license.verification !== 'official-https-sha256-and-product-identity') throw checkFailure('cos-index-invalid', 'COS 现有离线许可校验记录无效')
     }
-    if (entry.artifact.key !== artifactKey(id, entry.packageVersion, entry.artifact.sha256, fileName) || entry.artifact.bytes !== entry.source.bytes || entry.artifact.contentType !== source.contentType) throw new Error('COS 现有官方包路径或大小无效')
-    if (typeof entry.artifact.cosEtag !== 'string' || !entry.artifact.cosEtag || entry.artifact.cosEtag.length > 256 || /[\r\n]/.test(entry.artifact.cosEtag)) throw new Error('COS 现有包缺少已核验对象指纹')
-    if (entry.license && (typeof entry.license.cosEtag !== 'string' || !entry.license.cosEtag || entry.license.cosEtag.length > 256 || /[\r\n]/.test(entry.license.cosEtag))) throw new Error('COS 现有许可缺少已核验对象指纹')
+    if (entry.artifact.key !== artifactKey(id, entry.packageVersion, entry.artifact.sha256, fileName) || entry.artifact.bytes !== entry.source.bytes || entry.artifact.contentType !== source.contentType) throw checkFailure('cos-index-invalid', 'COS 现有官方包路径或大小无效')
+    if (typeof entry.artifact.cosEtag !== 'string' || !entry.artifact.cosEtag || entry.artifact.cosEtag.length > 256 || /[\r\n]/.test(entry.artifact.cosEtag)) throw checkFailure('cos-index-invalid', 'COS 现有包缺少已核验对象指纹')
+    if (entry.license && (typeof entry.license.cosEtag !== 'string' || !entry.license.cosEtag || entry.license.cosEtag.length > 256 || /[\r\n]/.test(entry.license.cosEtag))) throw checkFailure('cos-index-invalid', 'COS 现有许可缺少已核验对象指纹')
   }
   return value
 }
 
+// The package's identity and signer are public, so a mismatch logs what was
+// actually read: a version the official metadata names before the package is
+// replaced, and a new signer, call for different actions.
+function observedWindowsInspection(report, metadata) {
+  return { expectedVersion: metadata?.buildVersion, packageName: report?.manifest?.name, packageVersion: report?.manifest?.version,
+    packageArchitecture: report?.manifest?.architecture, packagePublisher: report?.manifest?.publisher,
+    containsPackageSignature: report?.manifest?.containsPackageSignature, signatureStatus: report?.signature?.status,
+    signerSubject: report?.signature?.signerSubject, signerIssuer: report?.signature?.signerIssuer }
+}
+
 function validateWindowsInspection(report, metadata, architecture) {
-  if (!report || report.manifest?.name !== metadata.packageIdentity || report.manifest?.version !== metadata.buildVersion || report.manifest?.architecture !== architecture || report.manifest?.publisher !== WINDOWS_PUBLISHER || report.manifest?.containsPackageSignature !== true) throw new Error('Windows 安装包身份、版本、架构或发布者校验失败')
-  if (report.signature?.status !== 'Valid' || report.signature?.signerSubject !== WINDOWS_PUBLISHER || typeof report.signature?.signerIssuer !== 'string' || !report.signature.signerIssuer.includes('O=Microsoft Corporation')) throw new Error('Windows 安装包可信签名校验失败')
+  if (!report || report.manifest?.name !== metadata.packageIdentity || report.manifest?.version !== metadata.buildVersion || report.manifest?.architecture !== architecture || report.manifest?.publisher !== WINDOWS_PUBLISHER || report.manifest?.containsPackageSignature !== true) throw checkFailure('package-identity-mismatch', 'Windows 安装包身份、版本、架构或发布者校验失败', observedWindowsInspection(report, metadata))
+  if (report.signature?.status !== 'Valid' || report.signature?.signerSubject !== WINDOWS_PUBLISHER || typeof report.signature?.signerIssuer !== 'string' || !report.signature.signerIssuer.includes('O=Microsoft Corporation')) throw checkFailure('package-signature-invalid', 'Windows 安装包可信签名校验失败', observedWindowsInspection(report, metadata))
   return 'windows-authenticode'
 }
 
 function validateLicenseInspection(report) {
-  if (report?.license?.rootName !== 'License' || report.license.namespace !== 'urn:schemas-microsoft-com:windows:store:licensing:ls' || report.license.productId !== '9PLM9XGG6VKS' || report.license.packageFamily !== 'openai.codex_2p2nqsd0c76g0') throw new Error('Windows 离线许可产品身份校验失败')
+  if (report?.license?.rootName !== 'License' || report.license.namespace !== 'urn:schemas-microsoft-com:windows:store:licensing:ls' || report.license.productId !== '9PLM9XGG6VKS' || report.license.packageFamily !== 'openai.codex_2p2nqsd0c76g0') throw checkFailure('license-identity-mismatch', 'Windows 离线许可产品身份校验失败')
 }
 
 function sanitizedWindowsEnvironment(directory) {
@@ -274,8 +288,22 @@ function sanitizedWindowsEnvironment(directory) {
   return result
 }
 
+// The inspection script's own fixed throw texts. stderr itself is never logged.
+const INSPECTOR_REASONS = Object.freeze([
+  ['Package manifest missing, ambiguous, or oversized', 'manifest-missing'],
+  ['Package Identity missing', 'identity-missing'],
+  ['License oversized', 'license-oversized'],
+  ['License product identity missing', 'license-identity-missing'],
+])
+
+function observedInspectorFailure(error) {
+  const stderr = typeof error?.stderr === 'string' ? error.stderr : ''
+  const reason = INSPECTOR_REASONS.find(function ([text]) { return stderr.includes(text) })
+  return { ...observedProcessFailure(error), inspectorReason: reason?.[1] }
+}
+
 async function inspectWindowsFile({ filePath, license = false, workDirectory, run = promisify(execFile) }) {
-  if (process.platform !== 'win32') throw new Error('Windows 官方包同步必须在 Windows 上完成可信签名校验')
+  if (process.platform !== 'win32') throw checkFailure('inspector-unavailable', 'Windows 官方包同步必须在 Windows 上完成可信签名校验')
   const executable = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
   const scriptPath = path.join(workDirectory, 'inspect-official-package.ps1')
   try { await fs.writeFile(scriptPath, WINDOWS_INSPECTION_SCRIPT, { flag: 'wx', mode: 0o600 }) } catch (error) { if (error.code !== 'EEXIST') throw error }
@@ -284,8 +312,8 @@ async function inspectWindowsFile({ filePath, license = false, workDirectory, ru
   try {
     const result = await run(executable, args, { windowsHide: true, timeout: 120000, maxBuffer: 128 * 1024, env: sanitizedWindowsEnvironment(workDirectory) })
     stdout = result.stdout
-  } catch { throw new Error('Windows 安装包或离线许可检查程序失败') }
-  try { return JSON.parse(stdout.replace(/^\uFEFF/, '').trim()) } catch { throw new Error('Windows 安装包检查结果无法解析') }
+  } catch (error) { throw checkFailure('inspector-failed', 'Windows 安装包或离线许可检查程序失败', observedInspectorFailure(error)) }
+  try { return JSON.parse(stdout.replace(/^\uFEFF/, '').trim()) } catch { throw checkFailure('inspection-unparsable', 'Windows 安装包检查结果无法解析') }
 }
 
 async function validatePackageMagic(filePath, format, bytes) {
@@ -293,20 +321,20 @@ async function validatePackageMagic(filePath, format, bytes) {
   try {
     const magic = Buffer.alloc(8)
     if (format === 'dmg') {
-      if (bytes < 512) throw new Error('官方 DMG 文件过小')
+      if (bytes < 512) throw checkFailure('package-format-invalid', '官方 DMG 文件过小')
       await handle.read(magic, 0, 4, bytes - 512)
-      if (magic.subarray(0, 4).toString('ascii') !== 'koly') throw new Error('官方 DMG 文件格式无效')
+      if (magic.subarray(0, 4).toString('ascii') !== 'koly') throw checkFailure('package-format-invalid', '官方 DMG 文件格式无效')
     } else {
       await handle.read(magic, 0, 8, 0)
-      if (format === 'zip' && magic.readUInt32LE(0) !== 0x04034b50) throw new Error('官方 Mac ZIP 文件格式无效')
-      if (format === 'deb' && magic.toString('ascii') !== '!<arch>\n') throw new Error('官方 DEB 文件格式无效')
-      if (format === 'rpm' && magic.readUInt32BE(0) !== 0xedabeedb) throw new Error('官方 RPM 文件格式无效')
+      if (format === 'zip' && magic.readUInt32LE(0) !== 0x04034b50) throw checkFailure('package-format-invalid', '官方 Mac ZIP 文件格式无效')
+      if (format === 'deb' && magic.toString('ascii') !== '!<arch>\n') throw checkFailure('package-format-invalid', '官方 DEB 文件格式无效')
+      if (format === 'rpm' && magic.readUInt32BE(0) !== 0xedabeedb) throw checkFailure('package-format-invalid', '官方 RPM 文件格式无效')
     }
   } finally { await handle.close() }
 }
 
 function validateDownloaded(result, head) {
-  if (!result || result.bytes !== head.bytes || result.etag !== head.etag || !/^[a-f0-9]{64}$/.test(result.sha256)) throw new Error('官方安装包 HEAD 与下载结果不一致')
+  if (!result || result.bytes !== head.bytes || result.etag !== head.etag || !/^[a-f0-9]{64}$/.test(result.sha256)) throw checkFailure('download-mismatch', '官方安装包 HEAD 与下载结果不一致')
 }
 
 async function verifyUnchangedArtifact(store, artifact) {
@@ -322,14 +350,14 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
   const old = await stage('cos-read-latest', {}, async function () {
     const manifest = validatePreviousManifest(await store.readJson(LATEST_KEY, { missingOk: true }))
     for (const entry of Object.values(manifest?.platforms || {})) {
-      if (entry.artifact.url !== store.publicUrl(entry.artifact.key) || entry.license && entry.license.url !== store.publicUrl(entry.license.key)) throw new Error('COS 现有包清单下载地址与当前存储桶不一致')
+      if (entry.artifact.url !== store.publicUrl(entry.artifact.key) || entry.license && entry.license.url !== store.publicUrl(entry.license.key)) throw checkFailure('cos-index-invalid', 'COS 现有包清单下载地址与当前存储桶不一致')
     }
     return manifest
   })
   const windowsNeeded = ids.some(function (id) { return SOURCES[id].platform === 'windows' })
   const metadata = windowsNeeded ? await stage('source-windows-metadata', {}, async function () {
     const current = validateWindowsMetadata(await dependencies.fetchJson({ url: WINDOWS_METADATA_URL, allowedHosts: [OFFICIAL_HOST], maxBytes: 65536 }))
-    if (old?.windows && compareWindowsVersions(current.buildVersion, old.windows.buildVersion) < 0) throw new Error('官方 Windows 版本低于已发布版本，拒绝倒退')
+    if (old?.windows && compareWindowsVersions(current.buildVersion, old.windows.buildVersion) < 0) throw checkFailure('version-regressed', '官方 Windows 版本低于已发布版本，拒绝倒退')
     return current
   }) : old?.windows
   const sources = {}
@@ -340,7 +368,7 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
         const text = await dependencies.fetchText({ url: source.metadataUrl, allowedHosts: [OFFICIAL_HOST], maxBytes: 256 * 1024 })
         const resolved = { ...source, ...parseMacAppcast(text, source.architecture) }
         const previousVersion = old?.platforms[id]?.buildVersion
-        if (previousVersion && Number(resolved.buildVersion) < Number(previousVersion)) throw new Error('官方 Mac 版本低于已发布版本，拒绝倒退')
+        if (previousVersion && Number(resolved.buildVersion) < Number(previousVersion)) throw checkFailure('version-regressed', '官方 Mac 版本低于已发布版本，拒绝倒退')
         return resolved
       })
     } else sources[id] = source
@@ -349,7 +377,7 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
   for (const id of ids) {
     heads[id] = await stage('source-head-package', { platform: id }, async function () {
       const head = validateHead(await dependencies.inspectResource({ url: sources[id].url, allowedHosts: [OFFICIAL_HOST], maxBytes: MAX_PACKAGE_BYTES }), MAX_PACKAGE_BYTES)
-      if (sources[id].declaredBytes !== undefined && sources[id].declaredBytes !== head.bytes) throw new Error('官方 Mac 清单与完整包 HEAD 大小不一致')
+      if (sources[id].declaredBytes !== undefined && sources[id].declaredBytes !== head.bytes) throw checkFailure('head-invalid', '官方 Mac 清单与完整包 HEAD 大小不一致')
       return head
     })
   }
@@ -410,12 +438,12 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
       const source = sources[item.id]
       const published = await stage('cos-publish-package', { platform: item.id, expectedBytes: item.bytes }, async function (onProgress) {
         const result = await store.publishFile(item.key, item.filePath, { expectedBytes: item.bytes, expectedSha256: item.sha256, contentType: source.contentType, cacheControl: 'public, max-age=31536000, immutable', onProgress })
-        if (result.bytes !== item.bytes || result.sha256 !== item.sha256) throw new Error('COS 安装包公共下载校验结果不一致')
+        if (result.bytes !== item.bytes || result.sha256 !== item.sha256) throw checkFailure('cos-object-mismatch', 'COS 安装包公共下载校验结果不一致')
         return result
       })
       const cosHead = await stage('cos-head-package', { platform: item.id }, async function () {
         const head = validateHead(await store.inspect(item.key), MAX_PACKAGE_BYTES)
-        if (head.bytes !== item.bytes || head.etag !== published.etag) throw new Error('COS 安装包发布后的 HEAD 与已核验正文不一致')
+        if (head.bytes !== item.bytes || head.etag !== published.etag) throw checkFailure('cos-object-mismatch', 'COS 安装包发布后的 HEAD 与已核验正文不一致')
         return head
       })
       const entry = { platform: source.platform, architecture: source.architecture, format: source.format, source: { url: source.url, ...(source.metadataUrl ? { metadataUrl: source.metadataUrl } : {}), ...heads[item.id] }, artifact: { key: item.key, url: store.publicUrl(item.key), bytes: item.bytes, sha256: item.sha256, contentType: source.contentType, verification: item.verification, cosEtag: cosHead.etag } }
@@ -427,12 +455,12 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
         const licenseKey = `chatgpt/${item.id}/${metadata.buildVersion}/ChatGPT-License.xml`
         const licensePublished = await stage('cos-publish-license', { platform: item.id, expectedBytes: preparedLicense.bytes }, async function (onProgress) {
           const result = await store.publishFile(licenseKey, preparedLicense.filePath, { expectedBytes: preparedLicense.bytes, expectedSha256: preparedLicense.sha256, contentType: LICENSE_SOURCE.contentType, cacheControl: 'public, max-age=31536000, immutable', onProgress })
-          if (result.bytes !== preparedLicense.bytes || result.sha256 !== preparedLicense.sha256) throw new Error('COS 离线许可公共下载校验结果不一致')
+          if (result.bytes !== preparedLicense.bytes || result.sha256 !== preparedLicense.sha256) throw checkFailure('cos-object-mismatch', 'COS 离线许可公共下载校验结果不一致')
           return result
         })
         const licenseCosHead = await stage('cos-head-license', { platform: item.id }, async function () {
           const head = validateHead(await store.inspect(licenseKey), MAX_LICENSE_BYTES)
-          if (head.bytes !== preparedLicense.bytes || head.etag !== licensePublished.etag) throw new Error('COS 离线许可发布后的 HEAD 与已核验正文不一致')
+          if (head.bytes !== preparedLicense.bytes || head.etag !== licensePublished.etag) throw checkFailure('cos-object-mismatch', 'COS 离线许可发布后的 HEAD 与已核验正文不一致')
           return head
         })
         entry.packageVersion = metadata.buildVersion
@@ -447,12 +475,12 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
     for (const id of ids) {
       await stage('source-recheck-package', { platform: id }, async function () {
         const head = validateHead(await dependencies.inspectResource({ url: sources[id].url, allowedHosts: [OFFICIAL_HOST], maxBytes: MAX_PACKAGE_BYTES }), MAX_PACKAGE_BYTES)
-        if (!sameFingerprint(head, heads[id])) throw new Error('官方包来源在同步期间发生变化，未发布最新索引，请重新同步')
+        if (!sameFingerprint(head, heads[id])) throw checkFailure('source-changed', '官方包来源在同步期间发生变化，未发布最新索引，请重新同步')
       })
       if (sources[id].platform === 'macos') {
         await stage('source-recheck-metadata', { platform: id }, async function () {
           const current = parseMacAppcast(await dependencies.fetchText({ url: sources[id].metadataUrl, allowedHosts: [OFFICIAL_HOST], maxBytes: 256 * 1024 }), sources[id].architecture)
-          if (current.url !== sources[id].url || current.buildVersion !== sources[id].buildVersion) throw new Error('官方 Mac 当前版本在同步期间变化，未发布最新索引')
+          if (current.url !== sources[id].url || current.buildVersion !== sources[id].buildVersion) throw checkFailure('source-changed', '官方 Mac 当前版本在同步期间变化，未发布最新索引')
         })
       }
     }
@@ -460,13 +488,13 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
       await stage('source-recheck-windows', {}, async function () {
         const current = validateWindowsMetadata(await dependencies.fetchJson({ url: WINDOWS_METADATA_URL, allowedHosts: [OFFICIAL_HOST], maxBytes: 65536 }))
         const currentLicense = validateHead(await dependencies.inspectResource({ url: LICENSE_SOURCE.url, allowedHosts: [OFFICIAL_HOST], maxBytes: MAX_LICENSE_BYTES }), MAX_LICENSE_BYTES)
-        if (current.buildVersion !== metadata.buildVersion || !sameFingerprint(currentLicense, licenseHead)) throw new Error('官方 Windows 当前版本或许可在同步期间变化，未发布最新索引')
+        if (current.buildVersion !== metadata.buildVersion || !sameFingerprint(currentLicense, licenseHead)) throw checkFailure('source-changed', '官方 Windows 当前版本或许可在同步期间变化，未发布最新索引')
       })
     }
     await stage('cos-recheck-latest', {}, async function () {
       const current = validatePreviousManifest(await store.readJson(LATEST_KEY, { missingOk: true }))
-      if (metadata && current?.windows && compareWindowsVersions(metadata.buildVersion, current.windows.buildVersion) < 0) throw new Error('COS 最新 Windows 版本已更新，拒绝发布较旧清单')
-      if (JSON.stringify(current) !== JSON.stringify(old)) throw new Error('COS 最新清单在同步期间发生变化，停止发布以保留现有状态')
+      if (metadata && current?.windows && compareWindowsVersions(metadata.buildVersion, current.windows.buildVersion) < 0) throw checkFailure('cos-index-changed', 'COS 最新 Windows 版本已更新，拒绝发布较旧清单')
+      if (JSON.stringify(current) !== JSON.stringify(old)) throw checkFailure('cos-index-changed', 'COS 最新清单在同步期间发生变化，停止发布以保留现有状态')
     })
     latestState = 'write-unconfirmed'
     await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
@@ -496,19 +524,23 @@ function createRuntimeDependencies(common) {
     removeWorkDirectory: async function (directory) {
       const resolved = path.resolve(directory)
       const temporaryRoot = await fs.realpath(os.tmpdir())
-      if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith('xingmang-official-cos-')) throw new Error('拒绝删除临时同步目录以外的路径')
+      if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith('xingmang-official-cos-')) throw checkFailure('temp-path-rejected', '拒绝删除临时同步目录以外的路径')
       await fs.rm(resolved, { recursive: true, force: true })
     },
   }
 }
 
+function createOfficialCosStore(common, config) {
+  return common.createCosStore(config, { multipartDeadlineMs: MULTIPART_DEADLINE_MS })
+}
+
 async function main() {
   const common = require('./cos-sync-utils.cjs')
   const args = process.argv.slice(2)
-  if (args.some(function (arg) { return !arg.startsWith('--platforms=') }) || args.length > 1) throw new Error('仅支持 --platforms=windows-x64,windows-arm64 或 --platforms=all')
+  if (args.some(function (arg) { return !arg.startsWith('--platforms=') }) || args.length > 1) throw checkFailure('platform-invalid', '仅支持 --platforms=windows-x64,windows-arm64 或 --platforms=all')
   const platforms = parsePlatforms(args[0]?.slice('--platforms='.length) ?? process.env.CHATGPT_SYNC_PLATFORMS)
   const config = common.readCosConfiguration(process.env)
-  const result = await synchronizeOfficialChatgpt({ store: common.createCosStore(config), platforms, dependencies: createRuntimeDependencies(common), progress: function (event) { console.log(`[chatgpt-sync] ${JSON.stringify(event)}`) } })
+  const result = await synchronizeOfficialChatgpt({ store: createOfficialCosStore(common, config), platforms, dependencies: createRuntimeDependencies(common), progress: function (event) { console.log(`[chatgpt-sync] ${JSON.stringify(event)}`) } })
   console.log(JSON.stringify({ changed: result.changed, platforms: result.platforms, windowsVersion: result.manifest.windows?.buildVersion ?? null }))
 }
 
@@ -519,4 +551,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE, DEFAULT_PLATFORMS, MAX_PACKAGE_BYTES, MAX_LICENSE_BYTES, LATEST_KEY, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, parseWindowsVersion, compareWindowsVersions, validateWindowsMetadata, validateHead, sameFingerprint, artifactKey, parseMacAppcast, validatePreviousManifest, validateWindowsInspection, validateLicenseInspection, sanitizedWindowsEnvironment, inspectWindowsFile, validatePackageMagic, validateDownloaded, synchronizeOfficialChatgpt, createRuntimeDependencies, safeOfficialSyncFailure }
+module.exports = { OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE, DEFAULT_PLATFORMS, MAX_PACKAGE_BYTES, MAX_LICENSE_BYTES, LATEST_KEY, MULTIPART_DEADLINE_MS, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, parseWindowsVersion, compareWindowsVersions, validateWindowsMetadata, validateHead, sameFingerprint, artifactKey, parseMacAppcast, validatePreviousManifest, validateWindowsInspection, validateLicenseInspection, sanitizedWindowsEnvironment, inspectWindowsFile, validatePackageMagic, validateDownloaded, synchronizeOfficialChatgpt, createRuntimeDependencies, createOfficialCosStore, safeOfficialSyncFailure }

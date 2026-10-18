@@ -339,8 +339,8 @@ test('a single-platform publish does not silently skip the publish job', () => {
   assert.deepEqual(publishJob.needs, ['release-tag', 'windows-build', 'macos-build', 'linux-checks', 'linux-build'])
   assert.match(String(publishJob.if), /!cancelled\(\)/)
   assert.match(String(publishJob.if), /needs\.release-tag\.result == 'success'/)
-  assert.match(String(publishJob.if), /windows-build\.result != 'failure'/)
-  assert.match(String(publishJob.if), /macos-build\.result != 'failure'/)
+  // 只挡 failure 会放过超时（cancelled），见「every platform the run asked for …」那条。
+  assert.doesNotMatch(String(publishJob.if), /result != 'failure'/)
   assert.match(String(publishJob.if), /== 'success'/)
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.platforms.options, ['all', 'both', 'windows', 'macos', 'linux'])
   assert.equal(workflow.on.workflow_dispatch.inputs.platforms.default, 'all')
@@ -383,6 +383,42 @@ test('each platform choice builds exactly its own jobs', () => {
   }
   // linux-build 没有自己的 if：linux-checks 被跳过或失败，它就跟着跳过。
   assert.equal(linuxBuildJob.if, undefined)
+})
+
+test('every platform the run asked for has to build before anything is published', () => {
+  // #1090 第 1 项：作业超过自己的 timeout-minutes 结束时是 cancelled，不是 failure。只挡
+  // failure 的话，Windows 超时这一版就悄悄只发 Mac，Windows 客户收不到更新，反过来也一样。
+  const publishes = (platforms, needs, vars = {}) => evaluateCondition(publishJob.if, {
+    needs: { 'release-tag': 'success', ...needs },
+    vars,
+    inputs: { platforms },
+  })
+  assert.equal(publishes('both', { 'windows-build': 'cancelled', 'macos-build': 'success' }), false)
+  assert.equal(publishes('both', { 'windows-build': 'success', 'macos-build': 'cancelled' }), false)
+  assert.equal(publishes('windows', { 'windows-build': 'cancelled' }), false)
+  assert.equal(publishes('macos', { 'macos-build': 'cancelled' }), false)
+
+  // 哪个选项选了哪个平台，照各出包作业自己的 if 算：两边各写一份，改了一边对不上就红。
+  const on = { XINGMANG_PUBLISH_LINUX: 'true' }
+  for (const platforms of workflow.on.workflow_dispatch.inputs.platforms.options) {
+    const selected = ['windows-build', 'macos-build']
+      .filter((id) => evaluateCondition(workflow.jobs[id].if, { inputs: { platforms } }))
+    const linuxSelected = evaluateCondition(linuxChecksJob.if, { inputs: { platforms } })
+    const allBuilt = {
+      ...Object.fromEntries(selected.map((id) => [id, 'success'])),
+      ...(linuxSelected ? { 'linux-checks': 'success', 'linux-build': 'success' } : {}),
+    }
+    for (const vars of [{}, on]) {
+      const label = `${platforms}，开关 ${JSON.stringify(vars)}`
+      // 没选的平台本来就是 skipped，不算没出包；Linux 开关关着时只选 linux 什么都不发。
+      assert.equal(publishes(platforms, allBuilt, vars), selected.length > 0 || (linuxSelected && vars === on), label)
+      for (const id of selected) {
+        for (const result of ['failure', 'cancelled']) {
+          assert.equal(publishes(platforms, { ...allBuilt, [id]: result }, vars), false, `${label}：${id} ${result}`)
+        }
+      }
+    }
+  }
 })
 
 test('Linux only reaches customers once the repository switch is on', () => {
@@ -653,12 +689,18 @@ function runPlanStep({
   releasesFail = false,
   live = {},
   liveCodes = {},
+  fragments = [],
 } = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-plan-'))
   const binDirectory = path.join(workspace, 'bin')
   const served = path.join(workspace, 'served')
-  for (const directory of [binDirectory, served]) fs.mkdirSync(directory)
+  const changes = path.join(workspace, 'changes', 'unreleased')
+  for (const directory of [binDirectory, served, changes]) fs.mkdirSync(directory, { recursive: true })
   fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ version }))
+  // 和仓库里一样，说明和模板一直在，它们不算分片。
+  for (const name of ['README.md', 'TEMPLATE.md.example', ...fragments]) {
+    fs.writeFileSync(path.join(changes, name), '## 开发\n\n- 条目。\n')
+  }
   fs.symlinkSync(copyScriptsWithoutDependencies(), path.join(workspace, 'scripts'))
   for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(served, name), text)
   const logPath = path.join(workspace, 'commands.log')
@@ -795,6 +837,22 @@ test('a release is only dispatched from main, for the version package.json decla
   assert.notEqual(malformed.status, 0)
   assert.match(malformed.output, /::error::0\.2 不是有效的版本号/)
   assert.equal(malformed.log, '')
+})
+
+test('a release with change fragments left uncollected stops before any tag is looked at', posixOnly, () => {
+  // #1086：定版时 changelog:collect 把分片全部汇总走。触发时还留着的分片，改动会进这次的
+  // 包，客户看到的更新说明却一句不提，CHANGELOG 还会把它记到下一版。
+  const run = runPlanStep({ fragments: ['p-10.md', 'key-name-username-group.md'] })
+  assert.notEqual(run.status, 0)
+  assert.match(run.output, /还有 2 个没汇总的分片：key-name-username-group\.md、p-10\.md/)
+  assert.match(run.output, /::error::changes\/unreleased 里还有没汇总进这一版更新说明的分片/)
+  assert.equal(run.log, '', '查 tag、读线上清单之前就停下')
+  assert.deepEqual(run.outputs, {})
+
+  // 只出 Linux 的包、不对外发的运行照常出包：main 上平时总有分片，那种运行不该被挡。
+  const linuxOnly = runPlanStep({ platforms: 'linux', fragments: ['p-10.md'] })
+  assert.equal(linuxOnly.status, 0, linuxOnly.output)
+  assert.deepEqual(linuxOnly.outputs, { action: 'none' })
 })
 
 test('the first run of a new version plans to create its tag', posixOnly, () => {
@@ -1593,4 +1651,29 @@ test('re-running the publish of a withdrawn version after a rollback stops befor
   const noStatus = runGuardStep({ live: { 'latest.yml': restored }, artifacts: { 'latest.yml': bad } })
   assert.equal(noStatus.status, 0, noStatus.output)
   assert.match(noStatus.output, /没有撤回名单/)
+})
+
+// 发布的 macos-build 跑在 Apple 芯片上，原来那次启动冒烟只挑本机架构的 M 芯片版。
+// 直到 0.2.19，Intel 版发出去之前一次都没被启动过（2026-10-17 查客户 Intel Mac
+// 装不上时发现）。两份要发出去的包都得先启动过，而且都在上传 artifact 之前。
+test('both macOS release packages are launched before they reach the publish job', () => {
+  const commands = macosJob.steps.map((step) => String(step.run || ''))
+  const hostIndex = commands.indexOf('node e2e/macos-launch-smoke.mjs "release-free-$PACKAGE_VERSION"')
+  const rosettaIndex = commands.findIndex((command) => command.includes('--install-rosetta'))
+  const intelIndex = commands.indexOf('node e2e/macos-launch-smoke.mjs "release-free-$PACKAGE_VERSION" --arch x64')
+  const uploadIndex = macosJob.steps.findIndex((step) => String(step.uses || '').includes('upload-artifact'))
+  const revokeIndex = commands.findIndex((command) => command.includes('macos-release-keychain.cjs --release'))
+
+  assert.equal(macosJob['runs-on'], 'macos-15')
+  assert.notEqual(hostIndex, -1)
+  assert.notEqual(intelIndex, -1)
+  assert.ok(hostIndex < rosettaIndex && rosettaIndex < intelIndex)
+  assert.ok(intelIndex < uploadIndex)
+  // 撤销 keychain 是 always() 的收尾，排在两次启动之后，不能被新加的步骤挤到前面去。
+  assert.ok(intelIndex < revokeIndex)
+  for (const index of [rosettaIndex, intelIndex]) {
+    assert.ok(macosJob.steps[index]['timeout-minutes'] > 0)
+    // 只装 Rosetta、只启动包：碰不到发布证书。
+    assert.equal(/secrets\./.test(JSON.stringify(macosJob.steps[index])), false)
+  }
 })

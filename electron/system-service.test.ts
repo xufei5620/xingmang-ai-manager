@@ -23,17 +23,20 @@ import {
   type runCommand as productionRunCommand,
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
+import { claudePlatformSwitches } from './workspace-config-overrides'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import {
   claudeForeignModelEnvKeys,
   codexAuthSnapshotPaths,
   codexConfigSnapshotPaths,
+  defaultCodexRelayProvider,
   inspectProviderConfig,
   providerConfigPaths,
   saveProviderConfig,
   type NativeConfigInspection,
 } from './config-files'
 import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } from './codex-model-catalog'
+import type { CliModelHints } from './cli-model-defaults'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
@@ -723,6 +726,14 @@ describe('createSystemService', () => {
     expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
   })
 
+  // #1159：换线路这一轮沿用客户自己选的那把（account-cli-provisioner 的 keepKeys），空 Key 就是沿用配置里那把。
+  it('keeps the configured key when an automatic route migration reuses it', async () => {
+    const f = await automaticRouteFixture()
+    await f.save()
+    expect(f.service.revealApiKey('codex', false)).toBe('sk-migration-fixture')
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
+  })
+
   it('logs which line a followed configuration came from and went to, without addresses', async () => {
     const log = vi.fn()
     const f = await automaticRouteFixture({ runtimeLog: { log } })
@@ -791,7 +802,7 @@ describe('createSystemService', () => {
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
   })
 
-  function codexCatalogFixture() {
+  function codexCatalogFixture(cliModelHints?: () => Promise<CliModelHints | null>) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-catalog-save-'))
     temporaryDirectories.push(root)
     const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
@@ -818,6 +829,7 @@ describe('createSystemService', () => {
       inspectCodexDesktopForModelCatalog: desktopProbe,
       inspectRunningToolsForTemplateFill: running,
       getExternalClientAccountId: () => session.account,
+      ...(cliModelHints ? { cliModelHints } : {}),
     })
     function installCodexCli(version: string): void {
       cli.installation = {
@@ -981,7 +993,7 @@ describe('createSystemService', () => {
 
     expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, slugs: f.catalogSlugs() }) })).toEqual({ filled: [] })
 
-    // 名单落盘之后来源记录还要再写一次才改回「账号」，两样都到位才算这次同步做完。
+    // 刷新菜单只重写名单文件，来源记录照旧是「账号」（#1154 后续之前要等整份重写完再写回一次）。
     await vi.waitFor(() => {
       expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
       expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
@@ -1010,6 +1022,76 @@ describe('createSystemService', () => {
     expect(configured().review_model).toBe('gpt-6-astra')
     expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol'])
     expect(backups).toEqual([{ provider: 'codex', model: 'gpt-5.5' }])
+  })
+
+  it('swaps a Codex model the published table retires for its published default, and the WebSocket switch follows the model', async () => {
+    const f = codexCatalogFixture(async () => ({ codex: { default: 'deepseek-v4-flash', retired: ['gpt-6.1-sol'] } }))
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    function configured(): Record<string, unknown> {
+      return asTomlRecord(TOML.parse(fs.readFileSync(providerConfigPaths('codex', f.roots)[0], 'utf8')))
+    }
+    function websockets(): unknown {
+      return asTomlRecord(asTomlRecord(configured().model_providers)[defaultCodexRelayProvider]).supports_websockets
+    }
+    expect(websockets()).toBe(true)
+    f.account.models = ['deepseek-v4-flash', 'gpt-6-astra']
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(configured().model).toBe('deepseek-v4-flash')
+      expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(websockets()).toBe(false)
+  })
+
+  // #1154 第 4 条：换下架型号只改型号那几处，客户自己定的审查型号、写的注释原样留着。
+  it('keeps the customer\'s own review model and comments in Codex when it swaps a retired model at startup', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-5.5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [config] = providerConfigPaths('codex', f.roots)
+    const written = fs.readFileSync(config, 'utf8')
+    expect(written).toContain('review_model = "gpt-5.5"')
+    const customized = `# 我自己的注释\n${written.replace('review_model = "gpt-5.5"', 'review_model = "gpt-6.1-sol"')}`
+    fs.writeFileSync(config, customized)
+    f.account.models = ['claude-opus-5', 'gpt-6-astra', 'gpt-6.1-sol']
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(fs.readFileSync(config, 'utf8')).toBe(customized.replace('model = "gpt-5.5"', 'model = "gpt-6-astra"'))
+      expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol'])
+    }, backgroundStartupWait)
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('keeps where Grok sends images when it swaps a retired Grok model at startup', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-retired-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['grok-4.6', 'grok-4.7'] }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 })))
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      inspectRunningToolsForTemplateFill: async () => ({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }),
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+      cliModelHints: async () => ({ grok: { default: 'grok-4.7', retired: ['grok-4.6'] } }),
+    })
+    await service.saveConfig({ provider: 'grok', apiKey: 'sk-grok', model: 'grok-4.6', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [config] = providerConfigPaths('grok', roots)
+    const written = fs.readFileSync(config, 'utf8')
+    const relayImages = written.match(/^xai_api_base_url = .*$/m)?.[0]
+    if (!relayImages) throw new Error('fixture needs the image address the app wrote')
+    const customized = `# 出图走我自己的地址\n${written.replace(relayImages, 'xai_api_base_url = "https://images.example.com/v1"')}`
+    fs.writeFileSync(config, customized)
+    account.models = ['grok-4.7']
+
+    expect(await service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(fs.readFileSync(config, 'utf8')).toBe(customized.replace('model = "grok-4.6"', 'model = "grok-4.7"')), backgroundStartupWait)
+    expect(service.getConfig(false).providers.grok.configurationOwnership).toBe('account')
   })
 
   it('leaves a retired gpt-5.5 alone at startup in a Codex config the account did not write', async () => {
@@ -1043,6 +1125,195 @@ describe('createSystemService', () => {
     expect(await service.checkToolModels!('claude')).toEqual({ status: 'ok', pickerRefreshed: true })
 
     expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  // #1154 后续：刷新菜单以前也走整份合并，模板里的每一项都按当前版本重写一遍。
+  it('keeps what the customer changed in Claude Code when it refreshes the /model menu before a launch', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-picker-only-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['claude-opus-5', 'claude-sonnet-5'] }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 })))
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+    })
+    await service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { env: Record<string, unknown>; permissions: Record<string, unknown> }
+    // 客户放开了星芒拦掉的工具，「Default」那一行指去别的型号，还换成了四格缩进。
+    settings.permissions.deny = []
+    settings.env.ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-5'
+    const customized = `${JSON.stringify(settings, null, 4)}\n`
+    fs.writeFileSync(settingsPath, customized)
+    account.models.push('claude-haiku-5')
+
+    expect(await service.checkToolModels!('claude')).toEqual({ status: 'ok', pickerRefreshed: true })
+
+    const after = fs.readFileSync(settingsPath, 'utf8')
+    const refreshed = JSON.parse(after) as { modelPicker: { options: Array<{ model: string }> } }
+    expect(refreshed.modelPicker.options.map((option) => option.model)).toEqual(['claude-haiku-5', 'claude-opus-5', 'claude-sonnet-5'])
+    expect(refreshed).toEqual({ ...settings, modelPicker: refreshed.modelPicker })
+    const untilPicker = customized.indexOf('"modelPicker"')
+    expect(after.slice(0, untilPicker)).toBe(customized.slice(0, untilPicker))
+    expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  it('keeps the customer\'s own review model and comments in Codex when it refreshes the model menu before a launch', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [config] = providerConfigPaths('codex', f.roots)
+    const written = fs.readFileSync(config, 'utf8')
+    expect(written).toContain('review_model = "gpt-6.1-sol"')
+    const customized = `# 我自己的注释\n${written
+      .replace('review_model = "gpt-6.1-sol"', 'review_model = "gpt-5.5"')
+      .replace('check_for_update_on_startup = false', 'check_for_update_on_startup = true')}`
+    fs.writeFileSync(config, customized)
+    f.account.models.push('gpt-6-astra')
+
+    expect(await f.service.checkToolModels!('codex')).toEqual({ status: 'ok', pickerRefreshed: true })
+
+    expect(fs.readFileSync(config, 'utf8')).toBe(customized)
+    expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  function retiredClaudeFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-retired-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5'] }
+    const fetchModels = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchModels)
+    const running = vi.fn(async () => ({ running: [] as ProviderId[], unknown: [] as ProviderId[], codexDesktopRunning: false as boolean | null, canRestartCodexDesktop: false }))
+    const hints = { value: { claude: { default: 'claude-opus-5-5', retired: ['claude-sonnet-5'] } } as CliModelHints | null }
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      inspectRunningToolsForTemplateFill: running,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+      cliModelHints: async () => hints.value,
+    })
+    function configuredModel(): unknown {
+      return (JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as Record<string, unknown>).model
+    }
+    return { account, fetchModels, running, hints, service, configuredModel }
+  }
+
+  it('swaps a Claude Code model the published table retires at startup once it is closed, backing the config up first', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    // 两站都下架了这个型号：模型列表不再列它。
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    const backups: Array<{ provider: ProviderId; model: unknown }> = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, model: f.configuredModel() }) })).toEqual({ filled: [] })
+
+    await vi.waitFor(() => {
+      expect(f.configuredModel()).toBe('claude-opus-5-5')
+      expect(f.service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+    }, backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'claude', model: 'claude-sonnet-5' }])
+    expect(f.running).toHaveBeenCalledWith(['claude'])
+  })
+
+  it('does not swap a retired Claude Code model at startup if it was opened while the relay was asked', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    // 开机那一眼还关着，问中转那几秒里客户从终端打开了它。
+    f.running
+      .mockResolvedValueOnce({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+      .mockResolvedValue({ running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(2), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(backup).not.toHaveBeenCalled()
+  })
+
+  // #1154：账号里只剩别的系列时不悄悄换成 Haiku，留给打开前那一问。
+  it('leaves a retired Claude Code model alone at startup when the account only lists another family', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-haiku-4-5']
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.fetchModels.mock.calls.length).toBeGreaterThan(1), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(backup).not.toHaveBeenCalled()
+  })
+
+  it('does not look at running tools or ask the relay at startup when no configured model is retired', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    const requests = f.fetchModels.mock.calls.length
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(f.running).not.toHaveBeenCalled()
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+  })
+
+  it('leaves a retired Claude Code model alone at startup in a config the account did not write', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false)
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(f.running).not.toHaveBeenCalled()
+  })
+
+  it('owes the swap while Claude Code may be open and makes it on a later try once it is closed', async () => {
+    const f = retiredClaudeFixture()
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models = ['claude-opus-5', 'claude-opus-5-5']
+    f.running.mockResolvedValue({ running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [], pending: ['claude'] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.configuredModel()).toBe('claude-sonnet-5')
+    expect(backup).not.toHaveBeenCalled()
+
+    f.running.mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    expect(await f.service.fillToolTemplateDefaults!(backup, true)).toEqual({ filled: [] })
+    await vi.waitFor(() => expect(f.configuredModel()).toBe('claude-opus-5-5'), backgroundStartupWait)
+    expect(backup).toHaveBeenCalledWith('claude')
+  })
+
+  it('does not bring the catalog up to the account at startup if Codex was opened while the relay was asked', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('gpt-6-astra')
+    // 开机那一眼还关着，问中转那几秒里客户打开了 Codex 桌面端。
+    f.running
+      .mockResolvedValueOnce({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+      .mockResolvedValue({ running: [], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledTimes(2), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+    expect(backup).not.toHaveBeenCalled()
   })
 
   it('leaves the catalog for a later try while Codex may still be open, and says it is still owed', async () => {
@@ -1273,6 +1544,63 @@ describe('createSystemService', () => {
 
     expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
     expect(f.store.read().officialProviders).toContain('claude')
+  })
+
+  it('moves the Console key aside and drops the official marker when a relay backup is restored', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-relay-')
+    // On the official Console account, the backups page puts back the settings.json from the relay days.
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console', theme: 'dark' }), 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
+
+    await f.service.alignRestoredAccountSource('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ theme: 'dark' })
+    expect(JSON.parse(fs.readFileSync(f.snapshotPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(f.store.read().officialProviders ?? []).not.toContain('claude')
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
+  })
+
+  it('puts the Console key back and marks the official account when an official backup is restored', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-official-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.service.saveConfig(f.payload, false)
+    fs.writeFileSync(f.settingsPath, JSON.stringify({ env: { DISABLE_AUTOUPDATER: '1' } }), 'utf8')
+
+    await f.service.alignRestoredAccountSource('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(fs.readFileSync(f.snapshotPath, 'utf8')).toBe('')
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
+  it('leaves the Console key and official marker alone for a third-party backup', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-other-')
+    fs.writeFileSync(f.rootConfigPath, JSON.stringify({ primaryApiKey: 'sk-ant-console' }), 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+    fs.mkdirSync(path.dirname(f.settingsPath), { recursive: true })
+    fs.writeFileSync(f.settingsPath, JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://relay.example.com', ANTHROPIC_AUTH_TOKEN: 'sk-someone-else' },
+    }), 'utf8')
+
+    await f.service.alignRestoredAccountSource('claude')
+
+    expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
+    expect(fs.existsSync(f.snapshotPath)).toBe(false)
+    expect(f.store.read().officialProviders).toContain('claude')
+  })
+
+  it('still drops the official marker when the Console key cannot be moved after a restore', async () => {
+    const f = claudeConsoleKeyFixture('xingmang-console-key-restored-stuck-')
+    fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
+    await f.store.setOfficialProvider('claude', true)
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
+
+    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/官方 Key 没能挪开/)
+
+    expect(f.store.read().officialProviders ?? []).not.toContain('claude')
+    expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
+    expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
   })
 
   it('passes official reset through to the selected Codex root and persists its account source', async () => {
@@ -4717,13 +5045,20 @@ describe('Darwin CLI launch planning', () => {
 })
 
 describe('variables kept from tools opened on every platform', () => {
-  it('keeps the model choices from Claude Code only while it is on the Xingmang account', () => {
-    expect(launchExcludedEnvironmentVariables('claude', 'relay')).toEqual(claudeForeignModelEnvKeys)
+  // #1081：Key 和配置目录这两个原来只有 Mac 的启动脚本去掉，现在三个平台一样。
+  it('keeps the key, config folder and model choices from Claude Code only while it is on the Xingmang account', () => {
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
     expect(launchExcludedEnvironmentVariables('claude', 'relay'))
       .toEqual(expect.arrayContaining(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']))
-    expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_API_KEY')
-    // 用自己的 Claude 账号时，这些可能就是客户自己选的型号。
+    // #1157 第 11 条：改走云厂商的开关打开后，星芒写的地址和 Key 都用不上。
+    expect(launchExcludedEnvironmentVariables('claude', 'relay'))
+      .toEqual(expect.arrayContaining(['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']))
+    // ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，照旧带。
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_BASE_URL')
+    expect(launchExcludedEnvironmentVariables('claude', 'relay')).not.toContain('ANTHROPIC_AUTH_TOKEN')
+    // 用自己的 Claude 账号时，这些可能就是客户自己的 Key、登录和型号；别家中转的那种账号也不动。
     expect(launchExcludedEnvironmentVariables('claude', 'official')).toEqual([])
+    expect(launchExcludedEnvironmentVariables('claude', 'unknown')).toEqual([])
   })
 
   it('keeps nothing from the other tools', () => {
@@ -4746,7 +5081,7 @@ describe('variables kept from tools opened on every platform', () => {
 describe('login-shell variables kept from tools opened on macOS', () => {
   // 前两个是检查页实测会绕开当前账号的；ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN 盖不过 settings.json 的 env 段，不在里面。
   it('drops the Claude Code key, config folder and model choices only while Claude Code is on the Xingmang account', () => {
-    expect(macosShellOverrideVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+    expect(macosShellOverrideVariables('claude', 'relay')).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
     // 用自己的 Claude 账号时，这些可能就是客户自己的 Key、登录和型号。
     expect(macosShellOverrideVariables('claude', 'official')).toEqual([])
   })
@@ -6665,11 +7000,14 @@ describe('opening a CLI on Linux', () => {
     expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
   })
 
-  // 已知45 跟进：用星芒账号时，客户环境里选型号的变量不交给 Claude Code；交给已经开着的命令窗口程序时，
-  // 脚本里还要再 unset 一次（linux-terminal.ts）。
-  it.runIf(process.platform !== 'win32')('keeps the model choices in the environment away from Claude Code on the Xingmang account', async () => {
+  // 已知45 跟进、#1081：用星芒账号时，客户环境里的 Key、配置目录和选型号的变量不交给 Claude Code；交给已经
+  // 开着的命令窗口程序时，脚本里还要再 unset 一次（linux-terminal.ts）。
+  it.runIf(process.platform !== 'win32')('keeps the key, config folder and model choices in the environment away from Claude Code on the Xingmang account', async () => {
     vi.stubEnv('ANTHROPIC_MODEL', 'deepseek-chat')
     vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', 'deepseek-chat')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-other-relay')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/home/tester/.claude-other')
+    vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1')
     const { userHome, workspace } = project('xingmang-linux-open-models-')
     const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
       terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
@@ -6681,11 +7019,16 @@ describe('opening a CLI on Linux', () => {
     const plan = launchLinuxTerminal.mock.calls[0]?.[0]
     expect(plan?.env).not.toHaveProperty('ANTHROPIC_MODEL')
     expect(plan?.env).not.toHaveProperty('CLAUDE_CODE_SUBAGENT_MODEL')
-    expect(plan?.clearedEnvironmentKeys).toEqual(claudeForeignModelEnvKeys)
+    expect(plan?.env).not.toHaveProperty('ANTHROPIC_API_KEY')
+    expect(plan?.env).not.toHaveProperty('CLAUDE_CONFIG_DIR')
+    expect(plan?.env).not.toHaveProperty('CLAUDE_CODE_USE_BEDROCK')
+    expect(plan?.clearedEnvironmentKeys).toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
   })
 
-  it.runIf(process.platform !== 'win32')('hands the model choices over as before while Claude Code is on the customer’s own account', async () => {
+  it.runIf(process.platform !== 'win32')('hands the key, config folder and model choices over as before while Claude Code is on the customer’s own account', async () => {
     vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-own')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/home/tester/.claude-work')
     const { userHome, workspace } = project('xingmang-linux-open-official-')
     const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
       terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
@@ -6697,6 +7040,8 @@ describe('opening a CLI on Linux', () => {
 
     const plan = launchLinuxTerminal.mock.calls[0]?.[0]
     expect(plan?.env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+    expect(plan?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-own')
+    expect(plan?.env?.CLAUDE_CONFIG_DIR).toBe('/home/tester/.claude-work')
     expect(plan).not.toHaveProperty('clearedEnvironmentKeys')
   })
 
@@ -6834,7 +7179,7 @@ describe('opening a CLI on macOS', () => {
 
     expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
     expect(launchMacosTerminal.mock.calls[0]?.[0].clearedEnvironmentKeys)
-      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys])
+      .toEqual(['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', ...claudeForeignModelEnvKeys, ...claudePlatformSwitches])
   })
 
   it.runIf(process.platform !== 'win32')('leaves the login shell alone while Claude Code is on the customer’s own account', async () => {
@@ -6946,8 +7291,25 @@ describe('opening a CLI on Windows', () => {
     expect(Object.keys(env).filter((key) => /^anthropic_(model|small_fast_model)$/i.test(key))).toEqual([])
   })
 
-  it('hands the model choices over as before while Claude Code is on the customer’s own account', async () => {
+  // #1081：照别家中转教程在系统里设过的 Key 和配置目录，用星芒账号时这一次也不交给 Claude Code，系统里的设置不动。
+  it('keeps the key and config folder set on the computer away from Claude Code on the Xingmang account', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-other-relay')
+    vi.stubEnv('claude_config_dir', 'C:\\Users\\tester\\.claude-other')
+    const { userHome, workspace } = project('xingmang-windows-open-key-')
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
+
+    await windowsLaunchService(userHome, launchCliPowerShell).launchProvider('claude', workspace)
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
+    const env = launchCliPowerShell.mock.calls[0]?.[0].env ?? {}
+    expect(Object.keys(env).filter((key) => /^(anthropic_api_key|claude_config_dir)$/i.test(key))).toEqual([])
+    expect(process.env.ANTHROPIC_API_KEY).toBe('sk-other-relay')
+  })
+
+  it('hands the key, config folder and model choices over as before while Claude Code is on the customer’s own account', async () => {
     vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-own')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', 'C:\\Users\\tester\\.claude-work')
     const { userHome, workspace } = project('xingmang-windows-open-official-')
     const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
     const official = { actualBaseUrl: '', hasApiKey: false, matchesRelay: false, apiKey: '' }
@@ -6955,7 +7317,10 @@ describe('opening a CLI on Windows', () => {
     await windowsLaunchService(userHome, launchCliPowerShell, undefined, official).launchProvider('claude', workspace)
 
     expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
-    expect(launchCliPowerShell.mock.calls[0]?.[0].env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+    const env = launchCliPowerShell.mock.calls[0]?.[0].env
+    expect(env?.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+    expect(env?.ANTHROPIC_API_KEY).toBe('sk-ant-own')
+    expect(env?.CLAUDE_CONFIG_DIR).toBe('C:\\Users\\tester\\.claude-work')
   })
 })
 

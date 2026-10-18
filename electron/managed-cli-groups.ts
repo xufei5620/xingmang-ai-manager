@@ -293,6 +293,16 @@ export function activeSubscriptionGroupNames(snapshot: ManagedCliSubscriptionSna
   }))
 }
 
+export interface ManagedCliGroupListing {
+  resolved: Record<ProviderId, ResolvedManagedCliGroup>
+  /**
+   * 服务端此刻列出的可用分组名（去重、校验过）。new-api 列的正是 Key 能用的那些（rc.40 的
+   * controller/group.go GetUserGroups 与 middleware/auth.go TokenAuth 是同一个条件），
+   * 不在里面的分组，放在里面的 Key 一调用就是 403「无权访问 … 分组」或「分组 … 已被弃用」。
+   */
+  names: string[]
+}
+
 /**
  * 读一次服务端的可用分组并解析。拿不到（离线、鉴权过期、接口异常）返回 null，
  * 由调用方退回写死名单——那正是加入动态识别之前的行为，所以这条路径不引入新的失败方式。
@@ -300,9 +310,9 @@ export function activeSubscriptionGroupNames(snapshot: ManagedCliSubscriptionSna
  * 否则一次读失败就会把已经在扣订阅的工具换回扣余额。
  * 星芒账号一并读分组对照；对照读不到只是少一档认法，不让整次返回 null。
  */
-export async function loadManagedCliGroups(
+export async function loadManagedCliGroupListing(
   accountService: ManagedCliGroupAccountService,
-): Promise<Record<ProviderId, ResolvedManagedCliGroup> | null> {
+): Promise<ManagedCliGroupListing | null> {
   if (typeof accountService.listUsableGroups !== 'function') return null
   const siteId = accountService.getActiveSiteId?.()
   try {
@@ -315,8 +325,17 @@ export async function loadManagedCliGroups(
     ])
     // 读分组这段时间里切了站点，这份结果就不属于当前账号了，按「没拿到」处理。
     if (accountService.getActiveSiteId?.() !== siteId) return null
-    return resolveManagedCliGroups(groups, siteId, subscribedGroups, hints)
+    return {
+      resolved: resolveManagedCliGroups(groups, siteId, subscribedGroups, hints),
+      names: normalizeGroupNames(groups),
+    }
   } catch {
     return null
   }
+}
+
+export async function loadManagedCliGroups(
+  accountService: ManagedCliGroupAccountService,
+): Promise<Record<ProviderId, ResolvedManagedCliGroup> | null> {
+  return (await loadManagedCliGroupListing(accountService))?.resolved ?? null
 }

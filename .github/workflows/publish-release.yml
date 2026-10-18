@@ -89,10 +89,10 @@ concurrency:
 
 jobs:
   # 第零步，一开始跑就把这一版的 tag 占上（为什么见 scripts/release-tag-plan.cjs 开头）。
-  # 出包作业都等它，顺带把「这个版本号已经发过、被撤回」挡在出包之前，原来要等一个多小时
-  # 出完包、批过一次才知道。
+  # 出包作业都等它，顺带把「这个版本号已经发过、被撤回」和「还有没汇总的更新说明分片」
+  # 挡在出包之前，原来要等一个多小时出完包、批过一次才知道（后一件原来根本没人查）。
   #
-  # 这是批准之前唯一拿着写权限的作业，所以它不装任何依赖：只跑 gh、curl 和仓库里两个
+  # 这是批准之前唯一拿着写权限的作业，所以它不装任何依赖：只跑 gh、curl 和仓库里几个
   # 不依赖第三方包的脚本。判断和动手放在同一个作业里，重跑时一起重来，不会拿上一次的
   # 判断去动 tag。
   # 不设 if：它被跳过会把后面的作业全部带着跳过。
@@ -138,6 +138,13 @@ jobs:
           version=$(node -p "require('./package.json').version")
           if [ "$version" != "$CONFIRM_VERSION" ]; then
             echo "::error::版本不一致：package.json 是 $version，本次触发填的是 $CONFIRM_VERSION"
+            exit 1
+          fi
+          # 定版时 changelog:collect 会把 changes/unreleased 里的分片全部汇总走（#1086）。触发
+          # 这一刻还留着的，是定版之后又合进来、或者汇总时漏掉的：改动照样进这次的包，客户看到的
+          # 更新说明却一句不提，CHANGELOG 还会把它记到下一版。在查 tag、出包之前就停下。
+          if ! node scripts/changelog-collect.cjs --assert-collected; then
+            echo '::error::changes/unreleased 里还有没汇总进这一版更新说明的分片（文件名见上一行）；什么都没动。跑 npm run changelog:collect，把汇出来的「未发布」「## Unreleased」两段并进这一版那一节，合进 main 后重新触发'
             exit 1
           fi
           # 下一步要把 tag 名拼进接口地址，这里先按整串对一遍格式。
@@ -471,6 +478,23 @@ jobs:
           PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
         run: node e2e/macos-launch-smoke.mjs "release-free-$PACKAGE_VERSION"
 
+      # 上面那次只启动本机架构那一份，而这台 runner 是 Apple 芯片：直到 0.2.19，
+      # Intel 版发出去之前一次都没被启动过（2026-10-17 查客户 Intel Mac 装不上时
+      # 发现）。经 Rosetta 再启动一次要发出去的那份 Intel 包；原生 Intel 机器上的
+      # 那一遍在 quality.yml 的 macos-intel，每个 PR 都跑。
+      - name: Make sure Rosetta can run the Intel package on this Apple silicon runner
+        timeout-minutes: 10
+        run: |
+          if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Launch the Intel package through Rosetta and require it to stay alive
+        timeout-minutes: 6
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: node e2e/macos-launch-smoke.mjs "release-free-$PACKAGE_VERSION" --arch x64
+
       - name: Revoke the signing keychain and its trust setting
         # 失败、取消都要走到这里：用户 keychain 搜索列表是全局状态，不能停在指向一个
         # 已被回收的 keychain 上。
@@ -667,21 +691,27 @@ jobs:
   publish:
     needs: [release-tag, windows-build, macos-build, linux-checks, linux-build]
     # 只发一个平台时另一个作业是 skipped，而被跳过的 needs 默认会把依赖它的作业也
-    # 跳过。这里显式写出「没取消、tag 已经占好、没有失败的依赖、至少有一个出了包」。
+    # 跳过。这里显式写出「没取消、tag 已经占好、这次选了的平台都出了包、至少有一个出了包」。
     # tag 没占好时出包作业本来就全被跳过，这里再写一遍，是不让收尾那一步在没有 tag
     # 的情况下跑起来。
     #
+    # 选了的平台要求出包作业成功，而不只是「没失败」：作业超过自己的 timeout-minutes 结束
+    # 时结果是 cancelled 而不是 failure，只挡 failure 的话 Windows 超时，这一版就悄悄只发
+    # Mac（反过来也一样），那个平台的客户收不到更新（#1090 第 1 项）。哪个选项选了哪个平台，
+    # 和各出包作业自己的 if 一致，由 scripts/publish-workflow-config.test.cjs 对着它们核。
+    #
     # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 两个作业
     # 红了也不挡 Windows / macOS，它的包也不会被下载；只选了 linux 又关着，这个作业
-    # 整个跳过，连批准都不会要。开着且这次选了 Linux 时，要求 linux-build 成功，而不只
-    # 是「没失败」：超时的作业结果是 cancelled 而不是 failure，linux-checks 失败或超时
-    # 时 linux-build 又是 skipped，只挡 failure 会让 Windows / macOS 悄悄不带 Linux 发出去。
+    # 整个跳过，连批准都不会要。开着且这次选了 Linux 时，同样要求 linux-build 成功：
+    # linux-checks 失败或超时时 linux-build 是 skipped，也得挡住。
     # GitHub 比较字符串不分大小写，TRUE、True 也算打开。
     if: >-
       ${{ !cancelled()
       && needs.release-tag.result == 'success'
-      && needs.windows-build.result != 'failure'
-      && needs.macos-build.result != 'failure'
+      && ((inputs.platforms != 'all' && inputs.platforms != 'both' && inputs.platforms != 'windows')
+        || needs.windows-build.result == 'success')
+      && ((inputs.platforms != 'all' && inputs.platforms != 'both' && inputs.platforms != 'macos')
+        || needs.macos-build.result == 'success')
       && (vars.XINGMANG_PUBLISH_LINUX != 'true'
         || (inputs.platforms != 'all' && inputs.platforms != 'linux')
         || needs.linux-build.result == 'success')

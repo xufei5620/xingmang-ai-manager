@@ -2,9 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { AppSettingsStore } from './app-settings'
 import { cliVerifiedVersions } from './cli-verified-versions'
-import { createSystemService, type SystemServiceOptions } from './system-service'
+import { CommandRunnerError } from './command-runner'
+import { createSystemService, isMachineBoundNpmFailure, type SystemServiceOptions } from './system-service'
 import type { resolveCliInstallation } from './tool-installation'
 
 const temporaryDirectories: string[] = []
@@ -46,6 +48,8 @@ interface InPlaceUpdateOptions {
   downloadHasPlatformBuild?: (attempt: number) => boolean
   /** 第 n 次 npm ci 一直不结束，直到安装被取消。 */
   downloadHangs?: (attempt: number) => boolean
+  /** 第 n 次 npm ci 失败时抛的错；缺省都成功。 */
+  downloadFails?: (attempt: number) => Error | undefined
   /** 第 n 次 npm install --global 动工具目录之前先做的事：等测试放行，或者直接失败。 */
   beforeFolderWrite?: (attempt: number, signal: AbortSignal | undefined) => Promise<void>
 }
@@ -60,6 +64,48 @@ function deferred<T>() {
   const promise = new Promise<T>((settle) => { resolve = settle })
   return { promise, resolve }
 }
+
+/** npm 退出码 1 时命令运行器抛的样子，stderr 照 npm 10 的原样。 */
+function npmFailure(stderr: string): CommandRunnerError {
+  return new CommandRunnerError('命令执行失败（退出码 1）：node', {
+    code: 'EXIT_NON_ZERO',
+    executable: 'npm',
+    argv: [],
+    exitCode: 1,
+    signal: null,
+    stdout: '',
+    stderr,
+    outputBytes: stderr.length,
+    maxOutputBytes: 8 * 1024 * 1024,
+    durationMs: 1,
+  })
+}
+
+const folderBusyStderr = [
+  'npm error code EBUSY',
+  'npm error syscall rename',
+  'npm error path C:\\nodejs\\node_modules\\@openai\\codex',
+  'npm error errno -4082',
+  "npm error EBUSY: resource busy or locked, rename 'C:\\nodejs\\node_modules\\@openai\\codex'",
+  '',
+].join('\n')
+
+const folderDeniedStderr = [
+  'npm error code EPERM',
+  'npm error syscall rename',
+  'npm error errno -4048',
+  "npm error Error: EPERM: operation not permitted, rename 'C:\\nodejs\\node_modules\\@openai\\codex'",
+  '',
+].join('\n')
+
+const diskFullStderr = [
+  'npm error code ENOSPC',
+  'npm error syscall write',
+  'npm error errno -28',
+  'npm error nospc ENOSPC: no space left on device, write',
+  'npm error nospc There appears to be insufficient space on your system to finish.',
+  '',
+].join('\n')
 
 function writePackage(packageRoot: string, name: string, version: string, platformBuild: string | null): void {
   fs.rmSync(packageRoot, { recursive: true, force: true })
@@ -154,6 +200,8 @@ function createInPlaceUpdateFixture(options: InPlaceUpdateOptions) {
       const version = manifest.dependencies[definition.name]
       if (spec.argv[0] === 'ci') {
         const attempt = record(`download ${registry}`)
+        const failure = options.downloadFails?.(attempt)
+        if (failure) throw failure
         if (options.downloadHangs?.(attempt)) {
           // 真实的 npm ci 会跑好几分钟；这里只等取消信号，等到了就照 execFile 被中止时的样子抛错。
           await new Promise((_, reject) => {
@@ -226,6 +274,7 @@ function createInPlaceUpdateFixture(options: InPlaceUpdateOptions) {
     : null)
 
   const target = { isDestroyed: () => false, send: vi.fn() }
+  const runtimeLog = { log: vi.fn() }
   const service = createSystemService(
     new AppSettingsStore(path.join(root, 'settings.json'), root),
     {
@@ -234,9 +283,10 @@ function createInPlaceUpdateFixture(options: InPlaceUpdateOptions) {
       runCommand: runCommand as unknown as SystemServiceOptions['runCommand'],
       findExecutable: vi.fn(async (command: string) => command === 'npm' ? npmExecutable : null),
       resolveCliInstallation: resolveInstallation,
+      runtimeLog,
     },
   )
-  return { service, target, commands, reached, installedVersion, livePackage }
+  return { service, target, runtimeLog, commands, reached, installedVersion, livePackage }
 }
 
 function progressMessages(target: { send: ReturnType<typeof vi.fn> }) {
@@ -244,6 +294,40 @@ function progressMessages(target: { send: ReturnType<typeof vi.fn> }) {
     .filter(([channel]) => channel === 'cli:install-progress')
     .map(([, event]) => event as { state: string; message: string; stage?: string })
 }
+
+describe('isMachineBoundNpmFailure', () => {
+  it('treats a full disk as the same on every registry, whichever step reported it', () => {
+    expect(isMachineBoundNpmFailure('命令执行失败（退出码 1）：node（ENOSPC；nospc ENOSPC: no space left on device, write）', false)).toBe(true)
+    expect(isMachineBoundNpmFailure("ENOSPC: no space left on device, copyfile 'a' -> 'b'", false)).toBe(true)
+  })
+
+  it('treats a locked or denied folder in use as the same on every registry', () => {
+    for (const code of ['EBUSY', 'ETXTBSY', 'EPERM', 'EACCES']) {
+      expect(isMachineBoundNpmFailure(`命令执行失败（退出码 1）：node（${code}；${code}: rename）`, true)).toBe(true)
+    }
+  })
+
+  it('lets the next registry try again when the lock was on a fresh staging folder or another step', () => {
+    for (const code of ['EBUSY', 'ETXTBSY', 'EPERM', 'EACCES']) {
+      expect(isMachineBoundNpmFailure(`命令执行失败（退出码 1）：node（${code}；${code}: rename）`, false)).toBe(false)
+    }
+  })
+
+  it('lets the next registry try again after a network or registry failure', () => {
+    for (const detail of [
+      '命令执行失败（退出码 1）：node（ECONNRESET；network aborted）',
+      '命令执行失败（退出码 1）：node（E500；500 Internal Server Error）',
+      '下载超时，长时间没有完成，已中止',
+      'Codex CLI 的主程序没有下载完整，多半是网络不稳定。请关掉代理或换个网络后再装一次',
+    ]) {
+      expect(isMachineBoundNpmFailure(detail, true)).toBe(false)
+    }
+  })
+
+  it('does not read a code out of a longer word', () => {
+    expect(isMachineBoundNpmFailure('XEBUSYX ENOSPCY', true)).toBe(false)
+  })
+})
 
 // 注入的 platform 管不到更新前那次进程检测：它读的是真实的 process.platform，在 Windows 主机上
 // 会起一个真的 PowerShell，单元测试不许这样做；假 npm 也是 POSIX 脚本。所以只在 macOS / Linux
@@ -321,6 +405,71 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
     expect((error as Error).message).toContain('安装已取消')
     expect(fixture.commands).toEqual([`download ${officialRegistry}`])
     expect(fixture.installedVersion()).toBe(previousVersion)
+  })
+
+  it('stops at the first source when the folder in use is locked instead of downloading again', async () => {
+    const fixture = createInPlaceUpdateFixture({
+      provider: 'codex',
+      beforeFolderWrite: async () => { throw npmFailure(folderBusyStderr) },
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
+
+    // 以前接着从镜像从头再下一遍，再撞上同一把锁。
+    expect(fixture.commands).toEqual([`download ${officialRegistry}`, `write ${officialRegistry}`])
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toContain('文件被占用')
+    expect(message).toContain('EBUSY')
+    expect(message).not.toContain('国内 npm 镜像')
+    expect(classifyOperationError(message)).toBe('toolRunning')
+    expect(fixture.installedVersion()).toBe(previousVersion)
+    expect(progressMessages(fixture.target)).not.toContainEqual(expect.objectContaining({ stage: 'switch-route' }))
+    expect(fixture.runtimeLog.log).toHaveBeenCalledWith(
+      'warn',
+      'install',
+      'cli.install.machine-bound-failure',
+      expect.any(String),
+      { provider: 'codex', registry: officialRegistry, writingFolderInUse: true, copyingFolderInUse: false },
+    )
+  })
+
+  it('stops at the first source when the folder in use refuses the write', async () => {
+    const fixture = createInPlaceUpdateFixture({
+      provider: 'codex',
+      beforeFolderWrite: async () => { throw npmFailure(folderDeniedStderr) },
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
+
+    expect(fixture.commands).toEqual([`download ${officialRegistry}`, `write ${officialRegistry}`])
+    const message = (error as Error).message
+    expect(message).toContain('EPERM')
+    // EPERM 没数到工具的进程就不说成「文件被占用」，照旧归到权限那一类。
+    expect(classifyOperationError(message)).toBe('permission')
+    expect(fixture.installedVersion()).toBe(previousVersion)
+  })
+
+  it('stops at the first source when the disk fills up during the download', async () => {
+    const fixture = createInPlaceUpdateFixture({
+      provider: 'codex',
+      downloadFails: () => npmFailure(diskFullStderr),
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
+
+    expect(fixture.commands).toEqual([`download ${officialRegistry}`])
+    const message = (error as Error).message
+    expect(message).toBe(`Codex CLI 安装失败：npm 官方源：命令执行失败（退出码 1）：node（ENOSPC；nospc ENOSPC: no space left on device, write）`)
+    expect(classifyOperationError(message)).toBe('diskFull')
+    expect(fixture.installedVersion()).toBe(previousVersion)
+    expect(fixture.runtimeLog.log).toHaveBeenCalledWith(
+      'warn',
+      'install',
+      'cli.install.machine-bound-failure',
+      expect.any(String),
+      { provider: 'codex', registry: officialRegistry, writingFolderInUse: false, copyingFolderInUse: false },
+    )
   })
 
   it('lets the next source be cancelled again after writing into the folder failed on the first', async () => {

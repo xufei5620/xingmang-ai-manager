@@ -12,4 +12,7 @@
 
 # IPC 通道清单：通道数就是渲染进程能碰到的主进程入口（I5）。ipc.test.ts
 # 不再按顺序比对之后，加通道不会再因为顺序让 CI 变红，改由这里点名审查。
+# 三套通道各有一个契约文件（AGENTS.md T1）：主窗口业务、主窗口系统设置与通知、画布窗口。
 /electron/ipc-contract.ts @xufei5620
+/electron/platform/contract.ts @xufei5620
+/electron/canvas-contract.ts @xufei5620

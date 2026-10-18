@@ -53,7 +53,8 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     runs-on: windows-latest
     environment: cos-sync
-    timeout-minutes: 90
+    # 分块上传期限 120 分钟（scripts/sync-chatgpt-official-cos.cjs），余下 30 分钟给下载、校验和完整回读（#1082）。
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 

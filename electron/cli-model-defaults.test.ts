@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel } from './cli-model-defaults'
+import { isCliModelName, isRetiredCliModel, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -53,6 +53,59 @@ describe('resolveDefaultCliModel', () => {
     expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-opus-5-5'])).toBe('claude-opus-5-5')
     expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-opus-5-5'], 'claude-opus-5')).toBe('claude-opus-5')
   })
+
+  // #1154：模型列表按字母排，只拿第一个会把 Claude Code 配成 Haiku。
+  it('ranks Claude models Opus over Sonnet over Haiku instead of alphabetically when no known default is listed', () => {
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-sonnet-5'])).toBe('claude-sonnet-5')
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-sonnet-5'])).toBe('claude-sonnet-5')
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-4-1-20250805', 'claude-opus-4-8', 'claude-sonnet-5'])).toBe('claude-opus-4-8')
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5-20251001', 'claude-sonnet-4-5', 'claude-sonnet-4-5-20250929'])).toBe('claude-sonnet-4-5')
+    expect(resolveDefaultCliModel('claude', ['claude-3-5-sonnet-20241022', 'claude-haiku-4-5'])).toBe('claude-3-5-sonnet-20241022')
+    expect(resolveDefaultCliModel('claude', ['deepseek-v4-flash', 'claude-haiku-4-5'])).toBe('claude-haiku-4-5')
+    expect(resolveDefaultCliModel('claude', ['deepseek-v4-flash'])).toBe('deepseek-v4-flash')
+  })
+
+  it('stays in the family of the model being replaced before moving to another one', () => {
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-4-8', 'claude-sonnet-5'], 'claude-sonnet-4-5')).toBe('claude-sonnet-5')
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-4-8', 'claude-sonnet-5'], 'claude-haiku-3')).toBe('claude-haiku-4-5')
+    // 默认还在就照旧换成默认。
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5-5', 'claude-sonnet-5'], 'claude-sonnet-4-5')).toBe('claude-opus-5-5')
+    expect(resolveDefaultCliModel('grok', ['grok-3-mini', 'grok-4.7', 'grok-code-fast-1'], 'grok-4.6')).toBe('grok-4.7')
+    expect(resolveDefaultCliModel('grok', ['grok-3-mini', 'grok-4.5', 'grok-4.7', 'grok-code-fast-1'])).toBe('grok-4.7')
+    expect(resolveDefaultCliModel('grok', ['grok-3-mini', 'grok-code-fast-1'])).toBe('grok-3-mini')
+  })
+
+  it('keeps the Codex fallback as it was', () => {
+    expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'deepseek-v4-flash', 'gpt-5.4'], 'gpt-5.5')).toBe('deepseek-v4-flash')
+  })
+})
+
+describe('resolveRetiredCliModelReplacement', () => {
+  const opusRetired = { claude: { retired: ['claude-opus-5'] } }
+
+  it('swaps a retired Claude Code model only for a known default or the same family', () => {
+    expect(resolveRetiredCliModelReplacement('claude', 'claude-opus-5', ['claude-opus-5-5', 'claude-sonnet-5'], opusRetired)).toBe('claude-opus-5-5')
+    expect(resolveRetiredCliModelReplacement('claude', 'claude-opus-5', ['claude-haiku-4-5', 'claude-opus-4-8', 'claude-sonnet-5'], opusRetired)).toBe('claude-opus-4-8')
+    expect(resolveRetiredCliModelReplacement('claude', 'claude-sonnet-4-5', ['claude-haiku-4-5', 'claude-sonnet-5'], { claude: { retired: ['claude-sonnet-4-5'] } })).toBe('claude-sonnet-5')
+  })
+
+  it('leaves the swap to the question before a launch when only another family is listed', () => {
+    expect(resolveRetiredCliModelReplacement('claude', 'claude-opus-5', ['claude-haiku-4-5', 'claude-sonnet-5'], opusRetired)).toBeNull()
+    expect(resolveRetiredCliModelReplacement('claude', 'claude-opus-5', ['claude-haiku-4-5'], opusRetired)).toBeNull()
+    expect(resolveRetiredCliModelReplacement('grok', 'grok-4.6', ['grok-3-mini', 'grok-code-fast-1'], { grok: { retired: ['grok-4.6'] } })).toBeNull()
+    expect(resolveRetiredCliModelReplacement('grok', 'grok-4.6', ['grok-3-mini', 'grok-4.7'], { grok: { retired: ['grok-4.6'] } })).toBe('grok-4.7')
+  })
+
+  it('never swaps in a model the same table retires', () => {
+    const hints = { claude: { retired: ['claude-opus-5', 'claude-opus-4-8'] } }
+    expect(resolveRetiredCliModelReplacement('claude', 'claude-opus-5', ['claude-opus-4-8', 'claude-sonnet-5'], hints)).toBeNull()
+  })
+
+  it('keeps the Codex swap that has been running since gpt-5.5 was retired', () => {
+    expect(resolveRetiredCliModelReplacement('codex', 'gpt-5.5', ['codex-auto-review', 'gpt-6-astra', 'gpt-6.1-sol'])).toBe('gpt-6-astra')
+    expect(resolveRetiredCliModelReplacement('codex', 'gpt-5.5', ['codex-auto-review', 'gpt-6.1-sol'])).toBe('gpt-6.1-sol')
+    expect(resolveRetiredCliModelReplacement('codex', 'gpt-5.5', ['codex-auto-review'])).toBeNull()
+  })
 })
 
 describe('resolveCliModelUpgrade', () => {
@@ -76,5 +129,100 @@ describe('isRetiredCliModel', () => {
     expect(isRetiredCliModel('codex', 'gpt-5.6-sol')).toBe(false)
     expect(isRetiredCliModel('codex', 'gpt-6-astra')).toBe(false)
     expect(isRetiredCliModel('claude', 'gpt-5.5')).toBe(false)
+  })
+})
+
+describe('cli model hints from the service status file', () => {
+  it('lets the published table move the default while the bundled default stays a fallback', () => {
+    const hints = { codex: { default: 'gpt-7' } }
+    expect(resolveDefaultCliModel('codex', ['gpt-6-astra', 'gpt-7'], undefined, hints)).toBe('gpt-7')
+    // 账号分组里还没上新默认：退回程序自带的默认，不按字母序挑。
+    expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'gpt-5.6-sol', 'gpt-6-astra'], undefined, hints)).toBe('gpt-6-astra')
+    expect(resolveDefaultCliModel('codex', ['gpt-6-astra', 'gpt-7'], 'gpt-6-astra', hints)).toBe('gpt-6-astra')
+    expect(resolveDefaultCliModel('codex', ['gpt-6-astra', 'gpt-7'])).toBe('gpt-6-astra')
+  })
+
+  it('tries the published previous defaults in order before the bundled ones', () => {
+    const hints = { claude: { default: 'claude-opus-6', previous: ['claude-sonnet-6'] } }
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-5', 'claude-sonnet-6'], undefined, hints)).toBe('claude-sonnet-6')
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-5', 'claude-opus-5-5'], undefined, hints)).toBe('claude-opus-5-5')
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-5'], undefined, hints)).toBe('claude-opus-5')
+  })
+
+  it('adds published retired models to the bundled ones and never picks them as a default', () => {
+    const hints = { claude: { retired: ['claude-opus-5'] }, grok: { retired: ['grok-4.6'] } }
+    expect(isRetiredCliModel('claude', 'claude-opus-5', hints)).toBe(true)
+    expect(isRetiredCliModel('claude', 'claude-opus-5')).toBe(false)
+    expect(isRetiredCliModel('codex', 'gpt-5.5', hints)).toBe(true)
+    // 新配时 Haiku 是这个分组唯一能用的；开机自动替换不会换成它（resolveRetiredCliModelReplacement）。
+    expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-5'], undefined, hints)).toBe('claude-haiku-4-5')
+    expect(resolveDefaultCliModel('grok', ['grok-4.6', 'grok-4.7'], undefined, hints)).toBe('grok-4.7')
+    expect(resolveDefaultCliModel('grok', ['grok-4.6'], undefined, hints)).toBeNull()
+  })
+
+  it('ignores a published default that the same table retires, and cannot bring back a bundled retired model', () => {
+    expect(resolveDefaultCliModel('codex', ['gpt-6-astra', 'gpt-7'], undefined, { codex: { default: 'gpt-7', retired: ['gpt-7'] } })).toBe('gpt-6-astra')
+    expect(resolveDefaultCliModel('codex', ['gpt-5.5', 'gpt-6.1-sol'], undefined, { codex: { default: 'gpt-5.5' } })).toBe('gpt-6.1-sol')
+    expect(isRetiredCliModel('codex', 'gpt-5.5', { codex: { retired: [] } })).toBe(true)
+  })
+
+  it('offers the published default to configs still on a previous default, the bundled one included', () => {
+    const hints = { codex: { default: 'gpt-7', previous: ['gpt-6.1-sol'] } }
+    expect(resolveCliModelUpgrade('codex', 'gpt-6-astra', ['gpt-6-astra', 'gpt-7'], hints)).toBe('gpt-7')
+    expect(resolveCliModelUpgrade('codex', 'gpt-6.1-sol', ['gpt-6.1-sol', 'gpt-7'], hints)).toBe('gpt-7')
+    expect(resolveCliModelUpgrade('codex', 'gpt-6-astra', ['gpt-6-astra'], hints)).toBeNull()
+    expect(resolveCliModelUpgrade('codex', 'gpt-7', ['gpt-7'], hints)).toBeNull()
+    expect(resolveCliModelUpgrade('codex', 'gpt-6-astra', ['gpt-6-astra', 'gpt-7'])).toBeNull()
+    // 新默认被同一份表下架时一律不问。
+    expect(resolveCliModelUpgrade('claude', 'claude-opus-5', ['claude-opus-5', 'claude-opus-5-5'], { claude: { retired: ['claude-opus-5-5'] } })).toBeNull()
+  })
+
+  it('keeps bundled behavior for tools the published table leaves out', () => {
+    const hints = { codex: { default: 'gpt-7' } }
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-opus-5-5'], undefined, hints)).toBe('claude-opus-5-5')
+    expect(resolveCliModelUpgrade('claude', 'claude-opus-5', ['claude-opus-5', 'claude-opus-5-5'], hints)).toBe('claude-opus-5-5')
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5-5'], undefined, null)).toBe('claude-opus-5-5')
+  })
+})
+
+describe('resolveCliModelDefault', () => {
+  it('names the bundled default when no table was published', () => {
+    expect(resolveCliModelDefault('codex')).toBe('gpt-6-astra')
+    expect(resolveCliModelDefault('claude', null)).toBe('claude-opus-5-5')
+    expect(resolveCliModelDefault('grok', { codex: { default: 'gpt-7' } })).toBe('grok-4.6')
+  })
+
+  it('follows the published default, the same one sign-in provisioning picks', () => {
+    const hints = { claude: { default: 'claude-opus-6' }, codex: { default: 'gpt-7' } }
+    expect(resolveCliModelDefault('claude', hints)).toBe('claude-opus-6')
+    expect(resolveCliModelDefault('codex', hints)).toBe('gpt-7')
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5-5', 'claude-opus-6'], undefined, hints)).toBe(resolveCliModelDefault('claude', hints))
+  })
+
+  it('ignores a published default that the same table retires', () => {
+    expect(resolveCliModelDefault('claude', { claude: { default: 'claude-opus-6', retired: ['claude-opus-6'] } })).toBe('claude-opus-5-5')
+  })
+})
+
+describe('resolveNewestModelOfFamily', () => {
+  it('picks the newest version in the same family instead of the alphabetically first model', () => {
+    const models = ['gpt-5.4', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-sol-thinking']
+    expect(resolveNewestModelOfFamily(models, 'gpt-5.6-sol')).toBe('gpt-6.1-sol')
+  })
+
+  it('returns null when nothing in the list shares the family', () => {
+    expect(resolveNewestModelOfFamily(['gpt-5.4', 'gpt-6-astra'], 'gpt-5.6-sol')).toBeNull()
+    expect(resolveNewestModelOfFamily([], 'gpt-5.6-sol')).toBeNull()
+  })
+})
+
+describe('isCliModelName', () => {
+  it('accepts the model ids relays list and rejects anything that could escape a config value', () => {
+    for (const name of ['gpt-6-astra', 'claude-opus-5-5', 'grok-4.6', 'openai/gpt-7', 'vendor:model_v2', 'model@2026+fast']) {
+      expect(isCliModelName(name)).toBe(true)
+    }
+    for (const name of ['', ' gpt-7', 'gpt 7', 'gpt-7"', "gpt-7'", 'gpt-7\n', '-gpt-7', '_x', 'claude-opus-4-8[1m]', 'x'.repeat(129)]) {
+      expect(isCliModelName(name)).toBe(false)
+    }
   })
 })

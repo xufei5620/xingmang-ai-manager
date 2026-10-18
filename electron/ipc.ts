@@ -132,6 +132,7 @@ import { normalizeRealmLoginIdentifier } from './realm-account-vault'
 import { realmForExplicitSite } from './realm-account'
 import { resolveAccountKeyOptions } from './account-key-options'
 import { loadAccountGroupHints, loadManagedCliGroups, markRecommendedChatGroup, type AccountGroupHints } from './managed-cli-groups'
+import type { CliModelHints } from './cli-model-defaults'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -312,6 +313,12 @@ export interface IpcRegistrationOptions {
   // 服务状态文件里的分组对照（service-status.ts 的 accountGroups）：签 Key、画图技能、AI 对话默认分组
   // 先看它，站上改了分组本名也跟得上。缺省 = 不看对照，照旧按写死的名字和工具专属词认。
   accountGroupHints?: () => Promise<AccountGroupHints | null>
+  // 同上，但不等：状态文件这次启动还没读成过给 undefined。三把 Key 都缓存的开机同步拿它看对照改没改，
+  // 不为它等状态文件（#1157 第 8 条）。缺省 = 照旧等 accountGroupHints。
+  peekAccountGroupHints?: () => AccountGroupHints | null | undefined
+  // 服务状态文件里的型号表（service-status.ts 的 cliModels）：登录后签 Key、写配置时挑默认型号先看它。
+  // 缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
+  cliModelHints?: () => Promise<CliModelHints | null>
   // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
   // 换新时照抄。缺省用内存版：测试与预览不落盘。
   keyReplacements?: ManagedKeyReplacementStore
@@ -1218,7 +1225,21 @@ function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliCon
   }
   if (value.intent !== undefined && value.intent !== 'automatic' && value.intent !== 'explicit') throw new Error('CLI 配置意图无效')
   if (value.intent === 'explicit' && providers.length !== 1) throw new Error('请逐个确认需要替换的工具配置')
-  return { providers, preferredModels, ...(value.mode === undefined ? {} : { mode: value.mode }), ...(value.intent === undefined ? {} : { intent: value.intent }) }
+  if (value.keepKeys !== undefined && !Array.isArray(value.keepKeys)) throw new Error('CLI 配置目标格式错误')
+  const keepKeys = (value.keepKeys ?? []).map((provider) => {
+    if (!isActiveProviderId(provider) || !providers.includes(provider)) throw new Error('沿用现有密钥的工具不在这次的配置目标里')
+    return provider
+  })
+  if (new Set(keepKeys).size !== keepKeys.length) throw new Error('CLI 配置目标不能重复')
+  // 点名重写是客户要换成自动那把，和「沿用现有密钥」相反，一起来说明渲染层算错了。
+  if (value.intent === 'explicit' && keepKeys.length) throw new Error('CLI 配置意图无效')
+  return {
+    providers,
+    preferredModels,
+    ...(value.mode === undefined ? {} : { mode: value.mode }),
+    ...(value.intent === undefined ? {} : { intent: value.intent }),
+    ...(keepKeys.length ? { keepKeys } : {}),
+  }
 }
 
 // account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
@@ -1413,6 +1434,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
   'tools:inspect-running': '换账号后检查哪些工具还开着',
   'tools:check-models': '打开工具前核对当前账号能用的模型',
+  'tools:cli-model-hints': '读取服务状态文件里的型号表',
   'config:fill-template-defaults': '给工具配置补齐新版设置',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
   'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
@@ -2027,7 +2049,23 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     getActiveSiteId: accountService.getActiveSiteId?.bind(accountService),
     listUsableGroups: accountService.listUsableGroups.bind(accountService),
     getSubscriptionSelf: accountService.getSubscriptionSelf.bind(accountService),
+    listKeys: accountService.listKeys.bind(accountService),
     ...(options.accountGroupHints ? { getAccountGroupHints: options.accountGroupHints } : {}),
+    ...(options.peekAccountGroupHints ? { peekAccountGroupHints: options.peekAccountGroupHints } : {}),
+    ...(options.cliModelHints ? { getCliModelHints: options.cliModelHints } : {}),
+    // 分组没了换组签了新密钥、新的已写进工具以后，删掉星芒签的旧那把（account-cli-provisioner.ts 的
+    // retireReplacedKey，#1074）。删不掉照样往外抛，那边只当没删成。
+    revokeKey: async (id: number) => {
+      const userId = accountService.getSessionState().account?.userId
+      try {
+        await accountService.revokeKey(id)
+      } catch (error) {
+        options.runtimeLog.exception('account', 'managed-cli.old-key-revoke-failed', error, { keyId: id })
+        throw error
+      }
+      options.runtimeLog.log('info', 'account', 'managed-cli.old-key-revoked', '分组没了，换上新密钥后删掉了星芒签的旧那把', { keyId: id })
+      if (userId) await invalidateAccountKeyCaches(userId, id)
+    },
     provisionCliKey: async (input = {}) => {
       const userId = accountService.getSessionState().account?.userId
       const siteId = accountService.getActiveSiteId?.()
@@ -2395,6 +2433,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (!service.checkToolModels) return { status: 'skipped' }
     return service.checkToolModels(provider)
+  })
+  // 读不到就当没有：配置窗口照旧按程序自带的那份挑，不为它报错。
+  registerTrustedHandler('tools:cli-model-hints', async (): Promise<CliModelHints | null> => {
+    if (!options.cliModelHints) return null
+    try { return await options.cliModelHints() } catch { return null }
   })
   registerTrustedHandler('config:fill-template-defaults', async (_event, retry: unknown): Promise<ToolTemplateFillResult> => {
     if (retry !== undefined && typeof retry !== 'boolean') throw new Error('补设置参数格式错误')
@@ -3219,6 +3262,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           reason: error instanceof Error ? error.message : String(error),
         })
       }
+      // 恢复的是当前账号的配置还是官方登录，「选了官方账号」的记号和 Claude 的官方 Key 跟着换（#1080）。
+      // 同上，恢复已经落盘，对不齐只记日志。
+      try {
+        await service.alignRestoredAccountSource(result.provider)
+      } catch (error) {
+        options.runtimeLog.log('warn', 'ipc', 'backups:restore', '配置已恢复，但官方账号的记号或官方 Key 没能跟着对齐', {
+          provider: result.provider,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
       return result
     })()
   })
@@ -3591,13 +3644,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!options.xingmangAiSkill || accountService.getActiveSiteId?.() === 'solov-api') return summary
     try {
       const skill = await syncXingmangAiSkill({
-        accountService,
+        // 跟上面工具那一轮同一层包装：撤销后待补的额度设置照抄，读不到记录就停下，不另签一把不限额的 Codex Key。
+        accountService: automaticProvisioning,
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
         // The expected endpoint comes from the active main-process route, not
         // the editable native URL or a preference awaiting an app restart.
         baseUrl: new URL(service.getConfig(false).providers.codex.baseUrl).origin,
         officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
+        serializeConfigWrite: service.serializeToolConfigWrite,
         syncImageMcp: options.xingmangAiSkill.syncImageMcp,
         fetchAvailableModels: (apiKey) => service.fetchAvailableModels(apiKey),
         loadAccountGroupHints: () => loadAccountGroupHints(automaticProvisioning),
@@ -3631,6 +3686,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.managedCliKeys,
       parsed.mode,
       parsed.intent,
+      parsed.keepKeys,
     ).then((outcome) => {
       logManagedCliFailures(outcome)
       return outcome

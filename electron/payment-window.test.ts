@@ -363,11 +363,11 @@ describe('createPaymentWindowController', () => {
     expect(harness.onBlockedNavigation).toHaveBeenCalledTimes(2)
   })
 
-  it('supports graceful close and force destroy', async () => {
+  it('closes for the in-app button and force destroys', async () => {
     const graceful = createHarness()
     await graceful.controller.open(paymentForm())
     graceful.controller.close()
-    expect(graceful.window.close).toHaveBeenCalledOnce()
+    expect(graceful.window.destroy).toHaveBeenCalledOnce()
     expect(graceful.onTerminalState).not.toHaveBeenCalled()
     expect(graceful.controller.isOpen()).toBe(false)
 
@@ -698,6 +698,21 @@ describe('background order confirmation after the payment window closes', () => 
     expect(oldReader).toHaveBeenCalledOnce()
     expect(onTerminalState).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }), expect.anything())
     controller.destroy()
+  })
+
+  // #1157 第 15 条：付款页的 beforeunload 能让 close() 不了了之，界面上却已经说关了。
+  it('really closes the window for the in-app button even when the payment page refuses to unload', async () => {
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => async () => 'pending' })
+    await harness.controller.openQrCode(qrPayment())
+    harness.window.close.mockImplementation(() => undefined)
+
+    harness.controller.close()
+
+    expect(harness.window.close).not.toHaveBeenCalled()
+    expect(harness.window.destroy).toHaveBeenCalledOnce()
+    expect(harness.window.isDestroyed()).toBe(true)
+    expect(harness.controller.isOpen()).toBe(false)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'closed', tradeNo: 'sub2-qr-1', confirming: true }, inWindow)
   })
 
   it('says nothing about background confirmation when there is no order to ask about', async () => {

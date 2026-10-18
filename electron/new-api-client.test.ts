@@ -5,6 +5,8 @@ import {
   createNewApiClient,
   extractSessionCookies,
   findCliKeyIdByName,
+  findNewestUsableCliKeyByGroup,
+  isChatKeyName,
   loginIssuanceLimitMessage,
   loginRateLimitedMessage,
   loginSessionLimitMessage,
@@ -47,7 +49,7 @@ import {
   parseTopupOrdersPage,
   type NewApiFetch,
 } from './new-api-client'
-import { managedCliKeyProfiles } from './catalog'
+import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
 import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
@@ -3413,6 +3415,153 @@ describe('provisionCliKey naming', () => {
     await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
       .resolves.toEqual({ id: 6, name: managedCliKeyProfiles.codex.keyName, key: 'sk-older-value' })
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST' && String(init.body ?? '').includes('"name"'))).toBe(false)
+  })
+})
+
+// 对话和命令行工具各用各的 Key：以前只按分组挑，对话一开就拿到同组 Codex 那把，两边额度互相连累（#1077）。
+describe('provisionCliKey reuse stays on its own side', () => {
+  const usable = { group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+
+  it('tells AI chat key names apart from tool key names', () => {
+    expect(isChatKeyName('tester-codex-pro-对话', 'tester', 'codex-pro')).toBe(true)
+    expect(isChatKeyName('xingmang-chat-mvbyybt3-be1d5adce5a6', 'tester', 'codex-pro')).toBe(true)
+    expect(isChatKeyName('xingmang-chat', 'tester', 'codex-pro')).toBe(true)
+    expect(isChatKeyName('tester-codex-pro', 'tester', 'codex-pro')).toBe(false)
+    expect(isChatKeyName('tester-vip-对话', 'tester', 'codex-pro')).toBe(false)
+    expect(isChatKeyName(managedCliKeyProfiles.codex.keyName, 'tester', 'codex-pro')).toBe(false)
+    expect(isChatKeyName('xingmang-chatter', 'tester', 'codex-pro')).toBe(false)
+  })
+
+  // 分组名很长时「-对话」会被 50 字节截掉，跟工具那把撞名；撞了就不算对话的名字。
+  it('never takes a tool key name for a chat key name when a long group cuts off the suffix', () => {
+    const group = 'g'.repeat(43)
+    const tool = buildAccountKeyName('tester', group)
+    expect(buildAccountKeyName('tester', group, '对话')).toBe(tool)
+    expect(isChatKeyName(tool!, 'tester', group)).toBe(false)
+  })
+
+  it('falls back to its random name when a long group would cut the chat suffix off', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const group = 'g'.repeat(43)
+    const tool = { ...usable, group, id: 3, name: buildAccountKeyName('tester', group) }
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { [group]: { desc: '长分组', ratio: 1 } } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 1, items: [tool] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+        tool, { ...usable, group, id: 5, name: 'xingmang-chat-abc' },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-long-group' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group, purpose: 'chat' }))
+      .resolves.toEqual({ id: 5, name: 'xingmang-chat-abc', key: 'sk-chat-long-group' })
+  })
+
+  it('takes over only names the caller accepts and skips keys limited to some models or IPs', () => {
+    const records = [
+      { ...usable, id: 4, name: 'tester-codex-pro' },
+      { ...usable, id: 7, name: 'tester-codex-pro', model_limits_enabled: true, model_limits: 'gpt-5.4' },
+      { ...usable, id: 8, name: 'tester-codex-pro', allow_ips: '203.0.113.7' },
+      { ...usable, id: 9, name: 'hand-made' },
+    ]
+    const tool = (name: string) => name === 'tester-codex-pro'
+    expect(findNewestUsableCliKeyByGroup(records, 'codex-pro', tool)).toEqual({ id: 4, name: 'tester-codex-pro' })
+    expect(findNewestUsableCliKeyByGroup([{ ...records[2], allow_ips: ' ' }], 'codex-pro', tool)).toEqual({ id: 8, name: 'tester-codex-pro' })
+    expect(findNewestUsableCliKeyByGroup([{ ...records[1], model_limits_enabled: false }], 'codex-pro', tool)).toEqual({ id: 7, name: 'tester-codex-pro' })
+    expect(findNewestUsableCliKeyByGroup(records, 'codex-pro', () => false)).toBeNull()
+  })
+
+  it('issues an AI chat its own key instead of the tool key of the same group', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const tools = [
+      { ...usable, id: 3, name: managedCliKeyProfiles.codex.keyName },
+      { ...usable, id: 4, name: 'tester-codex-pro' },
+    ]
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: tools } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 3, items: [
+        ...tools, { ...usable, id: 5, name: 'tester-codex-pro-对话' },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-own' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group: 'codex-pro', purpose: 'chat' }))
+      .resolves.toEqual({ id: 5, name: 'tester-codex-pro-对话', key: 'sk-chat-own' })
+    expect(String(fetchImpl.mock.calls[4][0])).toBe(`${testBaseUrl}/api/token/5/key`)
+  })
+
+  it.each(['tester-codex-pro-对话', 'xingmang-chat-mvbyybt3-be1d5adce5a6'])('lets an AI chat reuse its own earlier key %s', async (name) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+        { ...usable, id: 6, name },
+        { ...usable, id: 9, name: 'tester-codex-pro' },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-earlier' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group: 'codex-pro', purpose: 'chat' }))
+      .resolves.toEqual({ id: 6, name, key: 'sk-chat-earlier' })
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST' && String(init.body ?? '').includes('"name"'))).toBe(false)
+  })
+
+  it('never hands a tool the AI chat key or a key the user made on the web', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const others = [
+      { ...usable, id: 8, name: 'xingmang-chat-abc' },
+      { ...usable, id: 9, name: 'tester-codex-pro-对话' },
+      { ...usable, id: 10, name: '给同事的' },
+    ]
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 3, items: others } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 4, items: [
+        ...others, { ...usable, id: 11, name: 'tester-codex-pro' },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-tool-own' } }))
+
+    await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 11, name: 'tester-codex-pro', key: 'sk-tool-own' })
+  })
+
+  it.each([managedCliKeyProfiles.codex.keyName, 'tester-codex-pro', 'xingmang-desktop-l8x2k-0123456789ab'])(
+    'lets a tool reuse its own earlier key %s',
+    async (name) => {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl
+        .mockResolvedValueOnce(usableGroupsResponse())
+        .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+          { ...usable, id: 6, name },
+          { ...usable, id: 9, name: 'tester-codex-pro-对话' },
+        ] } }))
+        .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-tool-earlier' } }))
+
+      await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
+        .resolves.toEqual({ id: 6, name, key: 'sk-tool-earlier' })
+    },
+  )
+
+  // 工具设了上限还没用完时，以前缓存一丢就会去复用同组更新、不限额的对话那把，等于绕过了上限。
+  it('keeps a tool on its own capped key rather than a newer unlimited AI chat key', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [
+        { ...usable, id: 3, name: 'tester-codex-pro', unlimited_quota: false, remain_quota: 300 },
+        { ...usable, id: 9, name: 'tester-codex-pro-对话' },
+      ] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-tool-capped' } }))
+
+    await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 3, name: 'tester-codex-pro', key: 'sk-tool-capped' })
   })
 })
 

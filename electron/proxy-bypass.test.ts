@@ -1510,6 +1510,8 @@ describe('site fetch', () => {
     ['a company gateway\'s block page', () => new Response('<html>访问受限</html>', { status: 403, headers: { 'Content-Type': 'text/html; charset=utf-8' } })],
     ['a sign-in portal\'s page', () => new Response('<html>登录</html>', { status: 200, headers: { 'Content-Type': 'text/html' } })],
     ['a redirect it was not allowed to follow', () => ({ type: 'opaqueredirect', status: 0, headers: new Headers(), body: null }) as unknown as Response],
+    // main.ts 给 Chromium 会话包的 manual-redirect-fetch.ts 交回的是不带正文的 3xx（#1064）。
+    ['a redirect handed back with its location', () => new Response(null, { status: 302, headers: { location: 'http://portal.example/login' } })],
   ])('reports %s on the direct session as not getting through, and hands it to the caller as it came', async (_case, answer) => {
     const { bypass, viaSession, viaDirect } = routes(1)
     const page = answer()
