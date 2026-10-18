@@ -131,7 +131,7 @@ describe('acceleration error strip', () => {
   })
 
   it('names the cause rather than one sentence for every failure', () => {
-    for (const reason of ['helper-temp', 'proxy-owned', 'proxy-locked', 'local-data'] as const) {
+    for (const reason of ['helper-temp', 'proxy-owned', 'proxy-locked', 'proxy-declined', 'local-data'] as const) {
       const message = accelerationFailureMessages[reason]
       expect([reason, render(null, { error: message }).includes(message)]).toEqual([reason, true])
     }

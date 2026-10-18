@@ -207,6 +207,59 @@ describe('development acceleration worker host', () => {
     expect(onDiagnostic).toHaveBeenCalledTimes(3)
   })
 
+  it('forwards a closed proxy cause with the restore stage and a withheld startup restore', async () => {
+    const worker = new FakeWorker()
+    mocks.fork.mockReturnValue(worker)
+    const onDiagnostic = vi.fn()
+    const onRecoveryWithheld = vi.fn()
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onDiagnostic, onRecoveryWithheld })
+    const request = host.getAccelerationState('xm-account:1')
+    await flush()
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'stop.failed', stage: 'proxy-restore', cause: 'declined' })
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'stop.failed', stage: 'proxy-restore', cause: 'private-secret' })
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'recover.withheld', stage: 'deferred' })
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'recover.withheld', stage: 'private-secret' })
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'recover.withheld', stage: 'declined', cause: 'declined' })
+    expect(onDiagnostic.mock.calls).toEqual([['proxy-restore', 'declined']])
+    expect(onRecoveryWithheld.mock.calls).toEqual([['deferred']])
+    worker.respond(2, true, { phase: 'idle' })
+    await expect(request).resolves.toEqual({ phase: 'idle' })
+  })
+
+  // A customer's Mac raised a new password dialog for every helper the host
+  // relaunched after the first refusal (2026-10-18).
+  it('relaunches quietly after a failed recovery until the user clicks start or stop', async () => {
+    const workers = [new FakeWorker(), new FakeWorker(), new FakeWorker()]
+    for (const worker of workers.slice(0, 2)) worker.autoInit = false
+    for (const worker of workers) mocks.fork.mockReturnValueOnce(worker)
+    const onHelperFailure = vi.fn()
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onHelperFailure })
+    function init(worker: FakeWorker) { return worker.sent.find((message) => message.operation === 'init')! }
+    function refuse(worker: FakeWorker) {
+      worker.emit('message', { id: init(worker).id, ok: false, reason: 'proxy-declined', cause: 'declined' })
+    }
+    const first = host.getAccelerationState('xm-account:1').catch((error: unknown) => error)
+    await flush()
+    expect(init(workers[0]).quietRecovery).toBeUndefined()
+    refuse(workers[0])
+    const failure = await first as Error & { accelerationReason?: string; proxyCause?: string }
+    expect([failure.accelerationReason, failure.proxyCause]).toEqual(['proxy-declined', 'declined'])
+    expect(onHelperFailure.mock.calls[0][0]).toBe('proxy-declined')
+    workers[0].emit('exit', 0)
+    const second = host.getAccelerationState('xm-account:1').catch((error: unknown) => error)
+    await flush()
+    expect(init(workers[1]).quietRecovery).toBe(true)
+    refuse(workers[1])
+    await second
+    workers[1].emit('exit', 0)
+    const start = host.startAcceleration('xm-account:1', 'system-proxy')
+    await flush()
+    expect(init(workers[2]).quietRecovery).toBeUndefined()
+    const startRequest = workers[2].sent.find((message) => message.operation === 'start')!
+    workers[2].respond(Number(startRequest.id), true, { phase: 'active' })
+    await expect(start).resolves.toEqual({ phase: 'active' })
+  })
+
   it('forwards only known start stages and never the worker\u2019s own error text', async () => {
     const worker = new FakeWorker()
     mocks.fork.mockReturnValue(worker)

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
-import { createMacosSystemProxy, planMacosProxyHelperCleanup, prepareMacosProxyHelper } from './macos-system-proxy'
+import { MACOS_PROXY_HELPER_DISPLAY_NAME, createMacosSystemProxy, planMacosProxyHelperCleanup, prepareMacosProxyHelper } from './macos-system-proxy'
 
 function transport() {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true, unref: () => undefined })
@@ -36,6 +36,9 @@ describe('macOS system proxy adapter', () => {
       await fs.writeFile(source, 'first trusted helper', { mode: 0o700 })
       const first = await prepareMacosProxyHelper(source, cache)
       expect(first.startsWith(`${cache}${path.sep}`)).toBe(true)
+      // The password dialog names the copy by its file name.
+      expect(path.basename(first)).toBe('星芒AI管理工具')
+      expect(MACOS_PROXY_HELPER_DISPLAY_NAME).toBe('星芒AI管理工具')
       expect(await fs.readFile(first, 'utf8')).toBe('first trusted helper')
       const original = await fs.stat(first)
       expect(await prepareMacosProxyHelper(source, cache)).not.toBe(first)
@@ -149,6 +152,55 @@ describe('macOS system proxy adapter', () => {
     expect(t.requests[1].op).toBe('restore')
     t.reply(1, false)
     await expect(second).rejects.toThrow('系统代理授权未完成')
+  })
+  it('tags each helper failure with a closed cause for the log and keeps the text fixed', async () => {
+    const t = transport()
+    const proxy = createMacosSystemProxy({ journalPath: '/safe/journal', helperPath: '/safe/helper', validateHelper: () => {}, prepareHelper: async source => source, spawnHelper: () => t.child })
+    const cases = [
+      ['authorization', 'declined', 'MACOS_PROXY_AUTHORIZATION'],
+      ['deferred', 'deferred', 'MACOS_PROXY_DEFERRED'],
+      ['conflict', 'conflict', undefined],
+      ['configuration', 'configuration', undefined],
+      ['busy', 'busy', undefined],
+      ['https://user:secret@private-proxy.test', 'other', undefined],
+    ] as const
+    for (const [index, [error, cause, code]] of cases.entries()) {
+      const pending = proxy.restore().catch((failure: unknown) => failure)
+      await new Promise(resolve => setImmediate(resolve))
+      t.child.stdout.write(JSON.stringify({ id: t.requests[index].id, ok: false, error }) + '\n')
+      const failure = await pending as Error & { proxyCause?: string; code?: string }
+      expect([error, failure.proxyCause, failure.code]).toEqual([error, cause, code])
+      expect(failure.message).not.toContain('private-proxy')
+    }
+  })
+  it('restores quietly on request and lets a helper go so the next request starts a new one', async () => {
+    const first = transport(), second = transport()
+    let launches = 0
+    const proxy = createMacosSystemProxy({ journalPath: '/safe/journal', helperPath: '/safe/helper', validateHelper: () => {}, prepareHelper: async source => source, spawnHelper: () => ++launches === 1 ? first.child : second.child })
+    const quiet = proxy.restoreQuietly()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(first.requests[0].op).toBe('restore-quiet')
+    first.reply(0)
+    await quiet
+    let released = false
+    const release = proxy.release().then(() => { released = true })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(first.child.stdin.writableEnded).toBe(true)
+    expect(released).toBe(false)
+    first.child.emit('exit', 1)
+    await release
+    const restore = proxy.restore()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(launches).toBe(2)
+    expect(second.requests[0].op).toBe('restore')
+    second.reply(0)
+    await restore
+  })
+  it('reports a timed out helper as a helper failure', async () => {
+    const t = transport()
+    const proxy = createMacosSystemProxy({ journalPath: '/safe/journal', helperPath: '/safe/helper', timeoutMs: 10, validateHelper: () => {}, prepareHelper: async source => source, spawnHelper: () => t.child })
+    const failure = await proxy.restore().catch((error: unknown) => error) as Error & { proxyCause?: string }
+    expect(failure.proxyCause).toBe('helper')
   })
   it('rejects invalid ports before spawning', async () => {
     const proxy = createMacosSystemProxy({ journalPath: '/safe/journal', helperPath: '/safe/helper', spawnHelper: () => { throw Error('must not spawn') } })

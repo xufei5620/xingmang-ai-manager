@@ -25,7 +25,7 @@ import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from '.
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService, createUserAccelerationApi, userAccelerationState } from './acceleration-service'
-import { accelerationConflictDescriptions, accelerationFailureMessages, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from './acceleration-contract'
+import { accelerationConflictDescriptions, accelerationFailureMessages, accelerationProxyFailureCause, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from './acceleration-contract'
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
@@ -1479,6 +1479,9 @@ if (!hasSingleInstanceLock) {
       // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
       // 认不准的也按这种算，等桌面端退出再断。读配置抛错由守护按「一直要」处理。
       onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
+      // Mac 上连一次、断一次各要一次电脑密码，系统只记 30 秒：用星芒密钥的 20 秒后看到桌面端在跑就断，
+      // 断开不用再输一次（2026-10-18 客户 Mac 一直弹）。Windows 不要密码，照旧两分钟。
+      ...(process.platform === 'darwin' ? { startupDisconnectMs: 20_000 } : {}),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
     function codexDesktopUsesStarKeyOnly(): boolean {
@@ -1500,6 +1503,7 @@ if (!hasSingleInstanceLock) {
     const codexDesktopStartupRoute = createCodexDesktopStartupRouteCoordinator({
       launchArgumentsSupported: process.platform === 'win32' || process.platform === 'darwin',
       fastFailSupported: process.platform === 'win32',
+      skipAccelerationWhenRunning: process.platform === 'darwin',
       onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
       issueTicket: () => issueCodexStartupTicket(),
       tunnelUrls: () => codexStartupTunnelUrls(),
@@ -3242,8 +3246,13 @@ if (!hasSingleInstanceLock) {
       const accelerationConfig = read.config
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
-        onDiagnostic: (stage) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
-          '加速停止尚未完成，将保留恢复记录并重试', { stage }),
+        // cause 只有系统代理那一步才有：被拒、没去问、别的程序改过、没生效……2026-10-18 客户 Mac
+        // 一直弹密码框时日志里只有 proxy-restore，第一次为什么没成一个字都查不到。
+        onDiagnostic: (stage, cause) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
+          '加速停止尚未完成，将保留恢复记录并重试', { stage, ...(cause ? { cause } : {}) }),
+        onRecoveryWithheld: (cause) => runtimeLog.log('warn', 'network', 'acceleration.recover.withheld',
+          cause === 'declined' ? '上次加速的网络设置没改回：用户在密码框上点了取消，等他点开启或停止时再问'
+            : '上次加速的网络设置没改回：这一次不弹密码框，等用户点开启或停止时再问', { cause }),
         // A failed connect resolves with an error-carrying state rather than
         // rejecting, so the IPC layer records it as a success. Without this the
         // only trace of a machine that can never connect is a sentence on
@@ -3261,6 +3270,7 @@ if (!hasSingleInstanceLock) {
         // 压缩产物才定位到。原因与底层错误都留在这里（日志会脱敏路径，I13）。
         onHelperFailure: (reason, error) => runtimeLog.exception('network', 'acceleration.helper.failed', error, {
           reason,
+          ...(accelerationProxyFailureCause(error) === 'other' ? {} : { cause: accelerationProxyFailureCause(error) }),
           // errno 单列一格：光看 message 分不清「目录建不出来」报的是没空间、
           // 没权限还是路径不存在，而这恰恰是客服要问用户的下一句话。
           ...(typeof (error as NodeJS.ErrnoException | null)?.code === 'string' ? { code: (error as NodeJS.ErrnoException).code } : {}),
@@ -3286,7 +3296,8 @@ if (!hasSingleInstanceLock) {
     // acceleration port would never recover: the dead proxy blocks the sign-in
     // that would have produced the first scoped request.
     if (developmentAcceleration) void developmentAcceleration.recover().catch((error) => {
-      runtimeLog.exception('network', 'acceleration.recover.failed', error)
+      const cause = accelerationProxyFailureCause(error)
+      runtimeLog.exception('network', 'acceleration.recover.failed', error, cause === 'other' ? undefined : { cause })
     })
     readAccelerationAccountScope = () => {
       const state = accountService.getSessionState()

@@ -65,6 +65,7 @@ const failureSummaries: Record<AccelerationFailureReason, string> = {
   'proxy-owned': '上次加速仍占用着网络设置',
   'proxy-locked': '系统策略限制，无法修改网络设置',
   'proxy-restore': '上次的网络设置还没还原完',
+  'proxy-declined': '网络设置还没改回，要输电脑密码',
   'local-data': '本机时长记录读写失败',
   unknown: '连接未成功，请稍后重试',
 }

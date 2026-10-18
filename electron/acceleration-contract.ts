@@ -73,6 +73,7 @@ export const accelerationFailureReasons = [
   'proxy-owned',
   'proxy-locked',
   'proxy-restore',
+  'proxy-declined',
   'local-data',
   'unknown',
 ] as const
@@ -94,9 +95,38 @@ export const accelerationFailureMessages: Record<AccelerationFailureReason, stri
   'proxy-owned': '上次加速还没有完全退出，仍占用着本机网络设置。请完全退出软件（含托盘图标）后重新打开。',
   'proxy-locked': '本机系统策略限制，加速无法修改网络设置。请联系电脑管理员放行本软件后重试。',
   'proxy-restore': '上次加速的网络设置还没有还原完成，请稍后重试；若仍不行，请完全退出软件后重新打开。',
+  // 只有 macOS 会这样：改回网络设置要电脑密码，他在密码框上点了「取消」，或者后台那一次不许
+  // 弹框。之后后台不再自己弹（2026-10-18 客户 Mac 一直弹），这句话要告诉他什么时候会再问。
+  'proxy-declined': '上次加速改的网络设置还没改回。点「开启加速」或「停止加速」时会再问一次电脑密码，输入后就能改回。',
   'local-data': '本机免费时长记录读写失败，请检查磁盘剩余空间与本地数据目录后重试。',
   // 认不出的原因保留原来那句话：它现在只覆盖真正没归类的失败。
   unknown: '加速服务暂不可用，请稍后重试。',
+}
+
+/**
+ * 改系统代理没成的底层原因，只进日志。和上面的原因一样是封闭集合：辅助进程只把这几个名字交给
+ * 宿主，原文留在辅助进程里（I13）。2026-10-18 一台客户 Mac 一直弹密码框，日志里只有
+ * proxy-restore，分不清是他点了取消、别的程序改过设置，还是系统没生效。
+ * - declined：他在密码框上点了取消。
+ * - deferred：后台那一次不许弹框，而确实有设置要改，就没去问。
+ * - conflict：设置还指着加速的端口，但别的程序改过同一项，改回或丢掉记录都不安全。
+ * - busy：另一份加速还握着这份记录。
+ * - storage：恢复记录读写失败。
+ * - configuration：系统没接受改动，或改了没生效。
+ * - helper：系统代理组件起不来、超时或中途退出。
+ */
+export const accelerationProxyFailureCauses = ['declined', 'deferred', 'conflict', 'busy', 'storage', 'configuration', 'helper', 'other'] as const
+export type AccelerationProxyFailureCause = (typeof accelerationProxyFailureCauses)[number]
+
+export function isAccelerationProxyFailureCause(value: unknown): value is AccelerationProxyFailureCause {
+  return accelerationProxyFailureCauses.some((cause) => cause === value)
+}
+
+/** 读错误上带着的底层原因；不是本仓写上去的一律算 other。 */
+export function accelerationProxyFailureCause(error: unknown): AccelerationProxyFailureCause {
+  if (!(error instanceof Error)) return 'other'
+  const cause = (error as Error & { proxyCause?: unknown }).proxyCause
+  return isAccelerationProxyFailureCause(cause) ? cause : 'other'
 }
 
 export interface AccelerationFailure extends Error {

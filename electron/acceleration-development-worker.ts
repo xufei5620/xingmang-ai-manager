@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { accelerationDevelopmentDirectory, accelerationProxyJournalPath, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource } from './acceleration-development-host'
-import { accelerationShutdownRetryDelayMs, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
+import { accelerationShutdownRetryDelayMs, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend, isProxyRestoreWithheld } from './acceleration-development-backend'
+import { accelerationProxyFailureCause } from './acceleration-contract'
 import { createAccelerationConflictDetector } from './acceleration-conflict'
 import { accelerationLinesFromProfile, createMihomoRuntime } from './acceleration-mihomo-runtime'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
@@ -14,6 +15,28 @@ let shuttingDown = false
 let pendingProxyRecovery: (() => Promise<void>) | null = null
 let accelerationProfile: Awaited<ReturnType<typeof readAccelerationWorkerProfile>> | null = null
 let disposeProxy: (() => Promise<void>) | null = null
+let releaseProxy: (() => Promise<void>) | null = null
+let runtimeRunning: () => boolean = () => false
+// 最近一次还原没去改系统代理：他拒过密码，或者那一次不许弹框（只有 macOS）。成功一次就清掉。
+let restoreWithheld = false
+
+/** 没有内核在跑时，退出前的清理最多试这么多次。以前没有上限，主程序退了它还一直在后台试，
+ *  每一次都可能弹一次密码框（2026-10-18 客户 Mac）。记录留着，下次打开软件再还原。 */
+const shutdownAttemptsWithoutCore = 4
+
+function sendDiagnostic(message: Record<string, unknown>): void {
+  if (process.connected) process.send?.({ type: 'acceleration-diagnostic', ...message }, () => undefined)
+}
+
+/** Remembers whether the last restore left the proxy alone on purpose, so the
+ *  shutdown loop can tell a refusal from a failure worth retrying. */
+async function tracked(restore: () => Promise<void>): Promise<void> {
+  try { await restore() } catch (error) {
+    restoreWithheld = isProxyRestoreWithheld(error)
+    throw error
+  }
+  restoreWithheld = false
+}
 
 function belongsToAnotherWorker(error: unknown): boolean {
   // restorePending checks this before any write. This worker has never acquired
@@ -46,13 +69,24 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
   const windowsProxy = macProxy ? null : createWindowsSystemProxy({ journalPath })
   const proxy = macProxy ?? windowsProxy
   if (!proxy) throw new Error('开发加速进程初始化无效。')
-  if (macProxy) disposeProxy = () => macProxy.dispose()
-  pendingProxyRecovery = () => proxy.recover()
-  try { await proxy.recover() } catch (error) {
-    if (belongsToAnotherWorker(error)) pendingProxyRecovery = null
-    throw error
+  if (macProxy) {
+    disposeProxy = () => macProxy.dispose()
+    releaseProxy = () => macProxy.release()
   }
-  pendingProxyRecovery = null
+  // 退出前那一次补救不弹框：初始化那一次已经问过了，没改回的记录留给下次打开软件再问。
+  pendingProxyRecovery = macProxy ? () => tracked(() => macProxy.restoreQuietly()) : () => proxy.recover()
+  // 宿主说这次运行里还原已经没成过：后台拉起的这一个先别问，等他自己点开启或停止（见 host 的 recoveryQuiet）。
+  const quietRecovery = macProxy !== null && message.quietRecovery === true
+  let recoveryWithheld = false
+  try { await tracked(() => quietRecovery && macProxy ? macProxy.restoreQuietly() : proxy.recover()) } catch (error) {
+    if (belongsToAnotherWorker(error)) pendingProxyRecovery = null
+    // 他没输密码（或这一次不许问）：照常起来，加速页说清楚还没改回、下次什么时候问；
+    // 不再弹框。以前在这里失败，宿主隔几秒拉一个新的，每一个都弹一次。
+    if (!isProxyRestoreWithheld(error)) throw error
+    recoveryWithheld = true
+    sendDiagnostic({ event: 'recover.withheld', stage: accelerationProxyFailureCause(error) })
+  }
+  if (!recoveryWithheld) pendingProxyRecovery = null
   const runtime = createMihomoRuntime({
     corePath: config.corePath, coreSha256: config.coreSha256,
     runtimeDirectory: path.join(directory, 'runtime'),
@@ -64,12 +98,12 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     platform: process.platform,
     ...(windowsProxy ? { inspectWindowsProxy: () => windowsProxy.inspect() } : {}),
   })
+  runtimeRunning = () => runtime.isRunning()
   backend = createAccelerationDevelopmentBackend({
     ledgerPath: path.join(directory, 'trial-ledger.json'),
     entitlementSource,
-    onDiagnostic: (stage) => {
-      if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'stop.failed', stage }, () => undefined)
-    },
+    restoreQuietlyFromStart: recoveryWithheld,
+    onDiagnostic: (stage, cause) => sendDiagnostic({ event: 'stop.failed', stage, ...(cause ? { cause } : {}) }),
     onStartDiagnostic: (stage) => {
       if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'start.failed', stage }, () => undefined)
     },
@@ -84,11 +118,12 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     proxy: {
       enable: (port) => proxy.enable(port),
       async restore() {
-        try { await proxy.restore() } catch (error) {
+        try { await tracked(() => proxy.restore()) } catch (error) {
           if (belongsToAnotherWorker(error)) anotherOwnerDuringInitialization = true
           throw error
         }
       },
+      ...(macProxy ? { restoreQuietly: () => tracked(() => macProxy.restoreQuietly()) } : {}),
     },
     runtime: {
       async start(lineId?: string) {
@@ -119,7 +154,8 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     // checks. No start request has run yet, so this helper owns no live core or
     // proxy; leave that owner's network alone instead of retrying indefinitely.
     if (anotherOwnerDuringInitialization && !runtime.isRunning()) backend = null
-    throw error
+    // 同上：没改回只是没去问，加速页上已经写着那一句（backend 的 recoveryFailure）。
+    if (!restoreWithheld) throw error
   }
 }
 
@@ -164,6 +200,7 @@ async function shutdown(): Promise<void> {
   shuttingDown = true
   let stopped = false
   let failedAttempts = 0
+  let released = false
   // Parent crashes cannot leave the proxy pointing at an orphaned helper.
   // Failed restoration stays alive for retry instead of killing the live core.
   while (!stopped) {
@@ -180,6 +217,15 @@ async function shutdown(): Promise<void> {
       stopped = true
     } catch {
       failedAttempts += 1
+      // 内核不在了，系统代理就没指着这里的东西：他拒过密码就不再试，别的失败试几次也就放手，
+      // 恢复记录留给下次打开软件。
+      if (!runtimeRunning() && (restoreWithheld || failedAttempts >= shutdownAttemptsWithoutCore)) break
+      // 内核还在、网络照常走它，只是他没输密码：组件进程先退场，把锁和记录交出去，下次打开软件
+      // 的那一个才能当面问一次（不然只会报「另一实例正在使用系统代理」）。这边接着悄悄地试。
+      if (restoreWithheld && releaseProxy && !released) {
+        released = true
+        await releaseProxy().catch(() => undefined)
+      }
       await new Promise((resolve) => setTimeout(resolve, accelerationShutdownRetryDelayMs(failedAttempts)))
     }
   }
@@ -202,7 +248,8 @@ if (process.send) {
       // The reason, never the message: the host maps it onto a sentence of its
       // own, and a stray path or proxy detail can never ride along (I13).
       (error: unknown) => {
-        if (process.connected) process.send?.({ id, ok: false, reason: classifyAccelerationWorkerFailure(error) }, () => undefined)
+        const cause = accelerationProxyFailureCause(error)
+        if (process.connected) process.send?.({ id, ok: false, reason: classifyAccelerationWorkerFailure(error), ...(cause === 'other' ? {} : { cause }) }, () => undefined)
       },
     )
   })

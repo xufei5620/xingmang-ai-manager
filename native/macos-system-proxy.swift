@@ -4,7 +4,10 @@ import Security
 import Darwin
 
 // The production executable has no fixture switch or arbitrary configuration RPC.
-enum Failure: String, Error { case invalid, busy, authorization, storage, configuration }
+// conflict: a service still points an enabled endpoint at this helper's port
+// but was changed since, so neither restoring nor dropping it is safe. deferred:
+// a restore that may not raise the password dialog found something to write.
+enum Failure: String, Error { case invalid, busy, authorization, storage, configuration, conflict, deferred }
 let managed = ["HTTPEnable", "HTTPProxy", "HTTPPort", "HTTPSEnable", "HTTPSProxy", "HTTPSPort", "SOCKSEnable", "SOCKSProxy", "SOCKSPort", "ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable"]
 func equal(_ a: Any?, _ b: Any?) -> Bool {
   if a == nil && b == nil { return true }
@@ -103,6 +106,43 @@ func isRecordedOriginal(_ original: [String: Any]) -> Bool {
   }
   return isSwitch(original["ProxyAutoConfigEnable"]) && isSwitch(original["ProxyAutoDiscoveryEnable"])
 }
+// SCHelper asks authd for the right again on every lock, commit and apply, and
+// the admin credential behind it lasts 30 seconds (authenticate-admin-nonshared),
+// so each of these calls can raise the password dialog on its own. A refused
+// dialog is the user saying no, not a broken configuration: report it as such,
+// so neither this helper nor its parent retries straight into the next dialog.
+// The status codes are an untyped C enum while SCError() is Int32: widen both.
+func preferencesFailure() -> Failure { Int(SCError()) == Int(kSCStatusAccessError) ? .authorization : .configuration }
+struct Plan { var updates: [String: [String: Any]] = [:]; var targets: [String: [String: Any]] = [:]; var remove = Set<String>() }
+// What restoring `entries` over `current` takes, worked out from a read alone so
+// it can run before anything asks for a password.
+func plan(_ entries: [String: Entry], _ current: [String: [String: Any]]) throws -> Plan {
+  var result = Plan()
+  for (id, entry) in entries {
+    guard var config = current[id] else { continue }
+    let expected = try unpacked(entry.expected), original = try unpacked(entry.original)
+    if managed.allSatisfy({ equal(config[$0], original[$0]) }) { result.targets[id] = config; continue }
+    // Treat endpoint and activation keys as one ownership unit: never splice an
+    // old host/port into another client's new configuration.
+    guard managed.allSatisfy({ equal(config[$0], expected[$0]) }) else {
+      // Never release recovery while an enabled endpoint may still depend on
+      // this core. Only this helper's own loopback port can: Clash and the like
+      // listen on 127.0.0.1 too, and counting the host alone kept a customer's
+      // restore failing after every password prompt (2026-10-18).
+      let ours = ["HTTP", "HTTPS", "SOCKS"].contains { prefix in
+        let active = !equal(config[prefix + "Enable"], 0) && config[prefix + "Enable"] != nil
+        return active && equal(config[prefix + "Proxy"], "127.0.0.1") && equal(config[prefix + "Port"], expected[prefix + "Port"])
+      }
+      if ours { throw Failure.conflict }
+      continue
+    }
+    for key in managed { config[key] = original[key] }
+    result.updates[id] = config
+    result.targets[id] = config
+    if !entry.hadProtocol && config.isEmpty { result.remove.insert(id) }
+  }
+  return result
+}
 struct Journal: Codable { let version: Int; let pid: Int32; let identity: String; let entries: [String: Entry] }
 protocol Backend {
   func begin(_ write: Bool) throws
@@ -113,6 +153,8 @@ protocol Backend {
   func eligible(_ id: String) -> Bool
   func write(_ values: [String: [String: Any]], remove: Set<String>) throws
   func applyAndVerify(_ values: [String: [String: Any]]) throws
+  // Read-only: whether the live Setup state already shows these values.
+  func published(_ values: [String: [String: Any]]) -> Bool
 }
 final class SystemBackend: Backend {
   var auth: AuthorizationRef?
@@ -142,7 +184,7 @@ final class SystemBackend: Backend {
     // Reading preferences needs no lock or authorization; acquiring the write
     // lock itself may require privileges, even before any mutation.
     if write {
-      guard SCPreferencesLock(prefs, false) else { self.prefs = nil; throw Failure.configuration }
+      guard SCPreferencesLock(prefs, false) else { self.prefs = nil; throw preferencesFailure() }
       preferencesLocked = true
     }
   }
@@ -174,11 +216,13 @@ final class SystemBackend: Backend {
       if !hasProtocol(id) { guard SCNetworkServiceAddProtocolType(service, kSCNetworkProtocolTypeProxies) else { throw Failure.configuration } }
       guard let proto = SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeProxies), SCNetworkProtocolSetConfiguration(proto, value as CFDictionary) else { throw Failure.configuration }
     }
-    guard SCPreferencesCommitChanges(prefs) else { throw Failure.configuration }
+    guard SCPreferencesCommitChanges(prefs) else { throw preferencesFailure() }
     SCPreferencesSynchronize(prefs)
   }
   func applyAndVerify(_ values: [String: [String: Any]]) throws {
-    guard let prefs = prefs, SCPreferencesApplyChanges(prefs), let store = SCDynamicStoreCreate(nil, "XingMang Proxy Verification" as CFString, nil, nil) else { throw Failure.configuration }
+    guard let prefs = prefs else { throw Failure.configuration }
+    guard SCPreferencesApplyChanges(prefs) else { throw preferencesFailure() }
+    guard let store = SCDynamicStoreCreate(nil, "XingMang Proxy Verification" as CFString, nil, nil) else { throw Failure.configuration }
     // Preferences commit is not proof of application. Verify the published
     // per-service Setup state, including retries whose disk snapshot is original.
     // Apply queues a configd notification; its successful return does not mean
@@ -191,6 +235,13 @@ final class SystemBackend: Backend {
       }
     }
   }
+  func published(_ values: [String: [String: Any]]) -> Bool {
+    guard let store = SCDynamicStoreCreate(nil, "XingMang Proxy Verification" as CFString, nil, nil) else { return false }
+    return values.allSatisfy { entry in
+      let applied = SCDynamicStoreCopyValue(store, "Setup:/Network/Service/\(entry.key)/Proxies" as CFString) as? [String: Any]
+      return (try? verifyApplied(entry.value, applied, active: eligible(entry.key), hasProtocol: hasProtocol(entry.key))) != nil
+    }
+  }
 }
 #if PROXY_TEST_BACKEND
 final class FixtureBackend: Backend {
@@ -200,7 +251,15 @@ final class FixtureBackend: Backend {
   var authorized = false
   init(_ path: String) { self.path = path }
   func begin(_ write: Bool) throws {
-    guard write, !authorized else { return }
+    guard write else { return }
+    // Models SCHelper checking a credential that has outlived its 30 seconds:
+    // the next write asks the user again even though rights were granted.
+    if try object()["authorizationExpired"] as? Bool == true { authorized = false }
+    guard !authorized else { return }
+    // Counted beside the store, which some tests require to stay byte-identical.
+    let requests = path + ".authorizations"
+    let asked = (try readFile(requests)).flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
+    try writeFile(requests, Data(String(asked + 1).utf8))
     if let delay = try object()["authorizationDelayMs"] as? Int { Thread.sleep(forTimeInterval: Double(min(max(delay, 0), 1000)) / 1000) }
     if try object()["denyAuthorization"] as? Bool == true { throw Failure.authorization }
     authorized = true
@@ -234,6 +293,10 @@ final class FixtureBackend: Backend {
     let applied = value["applied"] as? [String: [String: Any]] ?? [:]
     for (id, expected) in values { try verifyApplied(expected, applied[id], active: eligible(id), hasProtocol: hasProtocol(id)) }
   }
+  func published(_ values: [String: [String: Any]]) -> Bool {
+    let applied = (try? object())?["applied"] as? [String: [String: Any]] ?? [:]
+    return values.allSatisfy { entry in (try? verifyApplied(entry.value, applied[entry.key], active: eligible(entry.key), hasProtocol: hasProtocol(entry.key))) != nil }
+  }
   func eligible(_ id: String) -> Bool { let inactive = (try? object())?["inactiveServices"] as? [String] ?? []; return !inactive.contains(id) }
   func hasProtocol(_ id: String) -> Bool { true }
   func write(_ values: [String: [String: Any]], remove: Set<String>) throws { var value = try object(); if value["failWrite"] as? Bool == true { throw Failure.configuration }; var services = try read(); for (id, config) in values { services[id] = config; if value["partialWrite"] as? Bool == true { break } }; value["services"] = services; try writeFile(path, JSONSerialization.data(withJSONObject: value)); if value["partialWrite"] as? Bool == true { throw Failure.configuration } }
@@ -258,6 +321,10 @@ final class Controller {
   // once. The journal file stays writable by every same-user process while this
   // helper keeps its authorization until exit, so restoration never re-reads it.
   var owned: [String: Entry]?
+  // The last restore ended without the user's yes: the dialog was refused, or
+  // this helper was told not to raise one. Until an operation succeeds, nothing
+  // this process does on its own asks again.
+  var declined = false
   init(_ path: String, _ lockPath: String, _ backend: Backend, _ connection: ConnectionState) { self.path = path; self.lockPath = lockPath; self.backend = backend; self.connection = connection }
   func acquire() throws {
     if lock >= 0 { return }
@@ -289,50 +356,46 @@ final class Controller {
     if j.pid != getpid(), let current = identity(j.pid), current == j.identity { throw Failure.busy }
     return j
   }
-  func restore() throws {
+  // SCHelper raises the password dialog for every write, so restore() reads
+  // first and asks only when there is something to write. A journal whose
+  // services were all handed back, or taken over by another proxy client, is
+  // dropped without one; a service changed under this helper's endpoint is
+  // refused before one. `quiet` never asks: it is for retries after the user
+  // said no, and reports .deferred when a write is due.
+  func restore(quiet: Bool = false) throws {
     let entries: [String: Entry]
+    var recovered: [String: Entry]?
     if let owned = owned { try acquire(); entries = owned } else {
       // No journal means no authorization UI, including routine startup recovery.
       guard try readFile(path) != nil else { release(); return }
       try acquire()
       guard let j = try journal() else { return }
+      entries = j.entries
+      recovered = j.entries
+    }
+    do {
+      try backend.begin(false)
+      defer { backend.end() }
+      let preview = try plan(entries, backend.read())
+      if preview.updates.isEmpty && backend.published(preview.targets) { try finish(); return }
+    } catch { if owned == nil { release() }; throw error }
+    if quiet { if owned == nil { release() }; throw Failure.deferred }
+    if let adopted = recovered {
       // A journal this process did not write is crash recovery. Ask again rather
       // than apply it with authorization retained from earlier work; adopting it
       // first means a failed attempt is retried from these same entries.
       backend.forgetAuthorization()
-      owned = j.entries
-      entries = j.entries
+      owned = adopted
     }
     try backend.begin(true); defer { backend.end() }
-    let current = try backend.read()
-    var updates: [String: [String: Any]] = [:]
-    var applicationTargets: [String: [String: Any]] = [:]
-    var remove = Set<String>()
-    for (id, entry) in entries {
-      guard var config = current[id] else { continue }
-      let expected = try unpacked(entry.expected), original = try unpacked(entry.original)
-      if managed.allSatisfy({ equal(config[$0], original[$0]) }) { applicationTargets[id] = config; continue }
-      // Treat endpoint and activation keys as one ownership unit: never splice an
-      // old host/port into another client's new configuration.
-      guard managed.allSatisfy({ equal(config[$0], expected[$0]) }) else {
-        // Never release recovery while an enabled endpoint may still depend on
-        // this core. This also catches partial host/port/enable writes.
-        let ambiguous = ["HTTP", "HTTPS", "SOCKS"].contains { prefix in
-          let active = !equal(config[prefix + "Enable"], 0) && config[prefix + "Enable"] != nil
-          return active && (equal(config[prefix + "Proxy"], "127.0.0.1") || equal(config[prefix + "Port"], expected[prefix + "Port"]))
-        }
-        if ambiguous { throw Failure.configuration }
-        continue
-      }
-      for key in managed { config[key] = original[key] }
-      updates[id] = config
-      applicationTargets[id] = config
-      if !entry.hadProtocol && config.isEmpty { remove.insert(id) }
-    }
-    if !updates.isEmpty { try backend.write(updates, remove: remove) }
-    try backend.applyAndVerify(applicationTargets)
+    let work = try plan(entries, backend.read())
+    if !work.updates.isEmpty { try backend.write(work.updates, remove: work.remove) }
+    try backend.applyAndVerify(work.targets)
     let verified = try backend.read()
-    for (id, config) in updates { guard let actual = verified[id], NSDictionary(dictionary: config).isEqual(to: actual) else { throw Failure.configuration } }
+    for (id, config) in work.updates { guard let actual = verified[id], NSDictionary(dictionary: config).isEqual(to: actual) else { throw Failure.configuration } }
+    try finish()
+  }
+  func finish() throws {
     guard unlink(path) == 0 || errno == ENOENT else { throw Failure.storage }
     owned = nil
     release()
@@ -393,7 +456,19 @@ func main() throws {
   // Foundation/SystemConfiguration work is performed in a signal handler.
   let queue = DispatchQueue(label: "xingmang.proxy")
   var disconnected = false
-  func cleanup() { disconnected = true; do { try controller.restore(); exit(0) } catch Failure.authorization { exit(1) } catch { /* Retain auth and journal; retry while disconnected. */ } }
+  var cleanupAttempts = 0
+  // A departing parent leaves restoration to this helper. It asks at most once,
+  // and not at all once the user has said no: asking again every five seconds is
+  // what kept a customer's Mac prompting without end (2026-10-18). A refusal, or
+  // an answer no retry can change, ends it with the journal kept for the next
+  // launch. Anything else gets two more tries, inside the 30 seconds an admin
+  // credential lasts, so they cost no new dialog either.
+  func cleanup() {
+    disconnected = true
+    do { try controller.restore(quiet: controller.declined); exit(0) }
+    catch Failure.authorization, Failure.deferred, Failure.conflict, Failure.busy { exit(1) }
+    catch { cleanupAttempts += 1; if cleanupAttempts >= 3 { exit(1) } }
+  }
   var sources: [DispatchSourceSignal] = []
   for sig in [SIGTERM, SIGINT, SIGHUP] { signal(sig, SIG_IGN); let source = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.global()); source.setEventHandler { connection.cancel(); queue.async { cleanup() } }; source.resume(); sources.append(source) }
   signal(SIGPIPE, SIG_IGN)
@@ -418,15 +493,21 @@ func main() throws {
           id = requestId
           switch op {
           case "enable": guard let port = request["port"] as? Int else { throw Failure.invalid }; try controller.enable(port)
-          case "restore", "recover", "stop": try controller.restore()
+          case "restore", "recover": try controller.restore()
+          case "restore-quiet": try controller.restore(quiet: true)
+          case "stop": try controller.restore(quiet: controller.declined)
           case "inspect": try backend.begin(false); defer { backend.end() }; _ = try backend.read()
           default: throw Failure.invalid
           }
+          if op != "inspect" { controller.declined = false }
           reply = ["id": id, "ok": true]
           if let output = try? JSONSerialization.data(withJSONObject: reply) { FileHandle.standardOutput.write(output + Data([10])) }
           if op == "stop" { exit(0) }
           return
-        } catch { reply = ["id": id, "ok": false, "error": (error as? Failure)?.rawValue ?? "storage"] }
+        } catch {
+          if let failure = error as? Failure, failure == .authorization || failure == .deferred { controller.declined = true }
+          reply = ["id": id, "ok": false, "error": (error as? Failure)?.rawValue ?? "storage"]
+        }
         if let output = try? JSONSerialization.data(withJSONObject: reply) { FileHandle.standardOutput.write(output + Data([10])) }
       }
     }

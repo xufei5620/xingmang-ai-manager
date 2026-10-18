@@ -379,6 +379,12 @@ export interface CodexDesktopStartupRouteOptions {
   launchArgumentsSupported: boolean
   /** 立刻失败只在 Windows 上实测过（#976），别的平台不做。 */
   fastFailSupported: boolean
+  /**
+   * Codex 已经开着、又只在启动时要（用星芒密钥）：不连加速。中文开关在它冷启动那一刻就读过了，这时
+   * 连上也改不了什么。Mac 上连一次、断一次各要一次电脑密码（2026-10-18 客户 Mac 一直弹），所以只在
+   * Mac 上给；缺省 = 旧行为，照旧连。
+   */
+  skipAccelerationWhenRunning?: boolean
   /** 同 codex-desktop-acceleration.ts 的 onlyNeededAtStartup：认不准按「一直要」，不走这里。 */
   onlyNeededAtStartup(): boolean | Promise<boolean>
   /** 向星芒服务器换通行票；没登录、站点没有这个服务时抛错。 */
@@ -499,6 +505,10 @@ export function createCodexDesktopStartupRouteCoordinator(
   }
 
   async function prepare(launchArgumentsUsable: boolean): Promise<CodexDesktopStartupRoute> {
+    if (!launchArgumentsUsable && options.skipAccelerationWhenRunning && await startupOnly()) {
+      log('info', 'codex-desktop.startup-route.already-running', 'Codex 已经开着，中文开关在它启动时已经读过，不连加速')
+      return noCodexDesktopStartupRoute
+    }
     if (!launchArgumentsUsable || !options.launchArgumentsSupported || !await startupOnly()) {
       await accelerate()
       return noCodexDesktopStartupRoute
