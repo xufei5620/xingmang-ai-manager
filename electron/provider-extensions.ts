@@ -216,6 +216,11 @@ export interface ProviderExtensionMutation {
   source?: string
   scope?: ProviderExtensionScope
   mcp?: ProviderMcpInstallConfiguration
+  /**
+   * 用户在确认框里点过「信任并安装」。目前只有 Grok 装插件认它（带上 `--trust`）；
+   * 缺省 = 不带，Grok 会拒绝安装（旧行为）。
+   */
+  trust?: boolean
 }
 
 export interface ProviderCliInvocationOptions {
@@ -2243,6 +2248,11 @@ export class ProviderExtensionService {
       const argv = [command, 'install', safeSource(id ?? input.source)]
       // 不带 --scope 时 Claude Code 装进 user；用户在表单里选了「当前项目」就得带上。
       if (input.provider === 'claude' && input.scope) argv.push('--scope', scope)
+      // Grok refuses every plugin install without --trust, terminal or not (1.0.52 and
+      // 1.0.62 exit 1 after printing the warning): a trusted plugin's hooks and MCP
+      // servers run on every later Grok start. The flag is the user's own answer from
+      // the confirmation dialog, never a default.
+      if (input.provider === 'grok' && input.trust === true) argv.push('--trust')
       return { argv, secrets: [] }
     }
     if (input.provider === 'gemini') {

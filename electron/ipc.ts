@@ -610,6 +610,10 @@ function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutati
   if (scope !== undefined && !['user', 'project', 'local', 'workspace'].includes(scope)) {
     throw new Error('扩展范围错误')
   }
+  // Only a literal true counts as the user's answer; "true" or 1 must not slip a --trust in.
+  if (value.trust !== undefined && typeof value.trust !== 'boolean') {
+    throw new Error('扩展操作格式错误')
+  }
 
   let mcp: ProviderExtensionMutation['mcp']
   if (value.mcp !== undefined) {
@@ -648,6 +652,7 @@ function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutati
     source: optionalString(value.source, '扩展来源'),
     scope: scope as ProviderExtensionMutation['scope'],
     mcp,
+    ...(value.trust === true ? { trust: true } : {}),
   }
 }
 
