@@ -57,7 +57,11 @@ async function open(query = '', clock = false, initScript = null) {
     noticeReads.set(scope, next)
     return next
   })
-  if (clock) {
+  if (clock === 'fixed') {
+    // Date.now stands still but timers keep running: React reveals a lazily
+    // loaded page on a timer, which a paused clock never fires.
+    await page.clock.setFixedTime(new Date('2026-09-12T04:00:01Z'))
+  } else if (clock) {
     await page.clock.install({ time: new Date('2026-09-12T04:00:00Z') })
     await page.clock.pauseAt(new Date('2026-09-12T04:00:01Z'))
   }
@@ -5901,7 +5905,7 @@ test('consumption completion refreshes after two seconds and merges notification
 
 // v4 的账号卡平时只摆余额，没有刷新键：首页和个人中心的刷新、状态栏、账号卡读的是同一份余额。
 test('manual balance refresh is shared by the sidebar card, footer, home and personal center', async () => {
-  const page = await open('sub2api=1')
+  const page = await open('sub2api=1', 'fixed')
   const reads = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length)
   try {
     await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
