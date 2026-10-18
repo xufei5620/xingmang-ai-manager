@@ -163,7 +163,13 @@ export interface InstalledNodeRuntimeInspection {
 }
 
 const metadataTimeoutMs = 30_000
-const downloadTimeoutMs = 10 * 60_000
+/**
+ * #1061 第5条：以前整次下载限死 10 分钟，慢网下到一半到点就掐断，换个源从 0 开始。现在只要还在来数据
+ * 就接着下，3 分钟一个字节都没来才停；下得再慢也有个头，30 分钟兜底（I10 的超时还在）。两个数和
+ * 装工具时 npm 那一步（npmDownloadStallTimeoutMs / npmDownloadCeilingMs）一样。
+ */
+export const nodeDownloadStallTimeoutMs = 3 * 60_000
+export const nodeDownloadCeilingMs = 30 * 60_000
 const wingetTimeoutMs = 15 * 60_000
 const installerTimeoutMs = 15 * 60_000
 const maximumIndexBytes = 4 * 1024 * 1024
@@ -1224,6 +1230,48 @@ async function fetchLimitedText(
   )
 }
 
+export interface NodeDownloadDeadline {
+  /** Restarts the stall window, but only when the byte count actually grew. */
+  progressed(transferred: number): void
+  stop(): void
+}
+
+/**
+ * downloadWithResume already ends a single request that goes quiet for 45 seconds and
+ * resumes it; this watches the download as a whole. The stall window also covers what
+ * that per-request timer cannot see (the waits between resumes, resumes that deliver
+ * nothing), and the ceiling bounds a link that trickles just fast enough never to look
+ * idle. Both end the download with the reason the old fixed limit used, so what the
+ * customer is told does not change.
+ */
+export function createNodeDownloadDeadline(expire: (reason: Error) => void): NodeDownloadDeadline {
+  let stopped = false
+  let transferred = 0
+  let stall = setTimeout(timeOut, nodeDownloadStallTimeoutMs)
+  const ceiling = setTimeout(timeOut, nodeDownloadCeilingMs)
+
+  function stop(): void {
+    stopped = true
+    clearTimeout(stall)
+    clearTimeout(ceiling)
+  }
+
+  function timeOut(): void {
+    stop()
+    expire(new Error('安装包下载超时'))
+  }
+
+  return {
+    progressed(next) {
+      if (stopped || next <= transferred) return
+      transferred = next
+      clearTimeout(stall)
+      stall = setTimeout(timeOut, nodeDownloadStallTimeoutMs)
+    },
+    stop,
+  }
+}
+
 async function downloadMsi(
   dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch' | 'waitBeforeResume'>,
   url: string,
@@ -1234,7 +1282,7 @@ async function downloadMsi(
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
-  const timeout = setTimeout(() => controller.abort(new Error('安装包下载超时')), downloadTimeoutMs)
+  const deadline = createNodeDownloadDeadline((reason) => controller.abort(reason))
   const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
@@ -1262,14 +1310,17 @@ async function downloadMsi(
         }
         return declaredLength
       },
-      onProgress: (size, total) => report(options, {
-        phase: 'downloading',
-        source: source.id,
-        message: `正在从${source.label}下载 Node.js LTS`,
-        percent: percentOf(size, total),
-        transferredBytes: size,
-        totalBytes: total,
-      }),
+      onProgress: (size, total) => {
+        deadline.progressed(size)
+        report(options, {
+          phase: 'downloading',
+          source: source.id,
+          message: `正在从${source.label}下载 Node.js LTS`,
+          percent: percentOf(size, total),
+          transferredBytes: size,
+          totalBytes: total,
+        })
+      },
       onResume: (size, total) => report(options, {
         phase: 'downloading',
         source: source.id,
@@ -1283,7 +1334,7 @@ async function downloadMsi(
     if (download.total !== null && download.size !== download.total) throw new Error('安装包下载不完整')
     return { sha256: download.sha256.toString('hex'), size: download.size }
   } finally {
-    clearTimeout(timeout)
+    deadline.stop()
     options.signal?.removeEventListener('abort', abort)
   }
 }

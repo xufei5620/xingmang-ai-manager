@@ -9,9 +9,12 @@ import {
   buildNodeRuntimeInstallPlan,
   buildNodeRuntimeUacBrokerScript,
   buildNodeRuntimeWingetPlan,
+  createNodeDownloadDeadline,
   downloadNodeRuntimePackage,
   fetchTrustedNodeResource,
   installNodeRuntime,
+  nodeDownloadCeilingMs,
+  nodeDownloadStallTimeoutMs,
   nodeRuntimeDownloadSources,
   normalizeNodeRuntimeArchitecture,
   describeNodeInstallFailure,
@@ -691,6 +694,168 @@ describe('Node.js package download after a dropped connection', () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+// #1061 第5条：以前满 10 分钟就掐断，换个源从 0 开始；现在没进展才停，另有 30 分钟兜底。
+describe('Node.js package download deadline', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('keeps a download that is still receiving bytes alive past the old ten-minute limit', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    for (let minute = 1; minute <= 20; minute += 1) {
+      await vi.advanceTimersByTimeAsync(60_000)
+      deadline.progressed(minute * 1024)
+    }
+    expect(expire).not.toHaveBeenCalled()
+    deadline.stop()
+  })
+
+  it('ends the download once no new bytes have arrived for the stall window', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    await vi.advanceTimersByTimeAsync(60_000)
+    deadline.progressed(4096)
+    // 字节数没变（续传前后报的同一个数）不算进展。
+    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs - 1_000)
+    deadline.progressed(4096)
+    expect(expire).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(expire).toHaveBeenCalledTimes(1)
+    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
+  })
+
+  it('still ends a download that trickles forever at the ceiling', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    let transferred = 0
+    for (let elapsed = 30_000; elapsed < nodeDownloadCeilingMs; elapsed += 30_000) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      transferred += 1
+      deadline.progressed(transferred)
+    }
+    expect(expire).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(expire).toHaveBeenCalledTimes(1)
+    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
+    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs)
+    expect(expire).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing once the download has finished', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const expire = vi.fn()
+    const deadline = createNodeDownloadDeadline(expire)
+    deadline.stop()
+    deadline.progressed(1)
+    await vi.advanceTimersByTimeAsync(nodeDownloadCeilingMs * 2)
+    expect(expire).not.toHaveBeenCalled()
+  })
+
+  describe('through the real download', () => {
+    const chunkBytes = 64 * 1024
+    const chunkEveryMs = 40_000
+
+    // One chunk every 40 seconds: never quiet long enough for the per-request idle
+    // timer (45 seconds), so only the whole-download limits decide the outcome.
+    function slowBody(size: number, fill: number): ReadableStream<Uint8Array> {
+      let offset = 0
+      return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, chunkEveryMs))
+          if (offset >= size) {
+            controller.close()
+            return
+          }
+          const length = Math.min(chunkBytes, size - offset)
+          controller.enqueue(new Uint8Array(length).fill(fill))
+          offset += length
+        },
+      })
+    }
+
+    function slowFetch(size: number, fill: number): typeof fetch {
+      return vi.fn(async (input: string | URL | Request) => {
+        const response = new Response(slowBody(size, fill), {
+          status: 200,
+          headers: { 'content-length': String(size) },
+        })
+        Object.defineProperty(response, 'url', { value: String(input) })
+        return response
+      }) as unknown as typeof fetch
+    }
+
+    // Only the timers are fake; the file is still written for real. The clock moves one
+    // chunk at a time and waits (in real time) for that chunk to reach the disk, so a slow
+    // real write never shows up as minutes of fake time without progress.
+    async function driveChunkByChunk<T>(work: Promise<T>, received: () => number): Promise<T> {
+      let settled = false
+      work.then(() => { settled = true }, () => { settled = true })
+      for (let chunk = 1; !settled; chunk += 1) {
+        await vi.advanceTimersByTimeAsync(chunkEveryMs)
+        for (let turn = 0; turn < 10_000 && !settled && received() < chunk * chunkBytes; turn += 1) {
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+      }
+      return work
+    }
+
+    it('finishes a slow but steady download that takes longer than ten minutes', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-slow-'))
+      const target = path.join(directory, 'node.msi')
+      const bytes = Buffer.alloc(2 * 1024 * 1024, 5)
+      const url = 'https://nodejs.org/dist/v22.17.0/node-v22.17.0-x64.msi'
+      const startedAt = Date.now()
+      let received = 0
+      try {
+        const result = await driveChunkByChunk(downloadNodeRuntimePackage(
+          slowFetch(bytes.byteLength, 5),
+          url,
+          target,
+          { onProgress: (event) => { received = event.transferredBytes ?? received } },
+          nodeRuntimeDownloadSources('outside-mainland-china')[0],
+          async () => undefined,
+        ), () => received)
+        expect(Date.now() - startedAt).toBeGreaterThan(10 * 60_000)
+        expect(result).toEqual({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.byteLength })
+        expect(fs.readFileSync(target).equals(bytes)).toBe(true)
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
+    })
+
+    it('gives up at the ceiling and removes the partial package', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-ceiling-'))
+      const target = path.join(directory, 'node.msi')
+      // At one chunk every 40 seconds this would need well over the ceiling to finish.
+      const declaredLength = 100 * 1024 * 1024
+      const url = 'https://nodejs.org/dist/v22.17.0/node-v22.17.0-x64.msi'
+      const startedAt = Date.now()
+      let received = 0
+      try {
+        await expect(driveChunkByChunk(downloadNodeRuntimePackage(
+          slowFetch(declaredLength, 3),
+          url,
+          target,
+          { onProgress: (event) => { received = event.transferredBytes ?? received } },
+          nodeRuntimeDownloadSources('outside-mainland-china')[0],
+          async () => undefined,
+        ), () => received)).rejects.toThrow('安装包下载超时')
+        expect(Date.now() - startedAt).toBe(nodeDownloadCeilingMs)
+        expect(received).toBeGreaterThan(0)
+        expect(fs.existsSync(target)).toBe(false)
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
+    })
   })
 })
 
