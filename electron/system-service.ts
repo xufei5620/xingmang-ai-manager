@@ -110,7 +110,9 @@ import {
   restoreClaudeConsoleKey,
   rewriteManagedCliHooks,
   saveProviderConfig,
+  applyProviderModelReplace,
   applyProviderRouteFollow,
+  planProviderModelReplace,
   planProviderRouteFollow,
   codexOfficialAliasPending,
   fillRelayTemplateDefaults,
@@ -7792,6 +7794,39 @@ export function createSystemService(
     })
   }
 
+  /**
+   * 开机换掉已下架的型号（tool-model-check.ts 的 replaceRetiredModel）：配置里只把 from 换成 to，Codex 客户
+   * 自己定的 review_model、Grok 的出图地址、注释这些一个字不动（#1154 第 4 条）。以前走 saveConfig 的整份合并，
+   * 模板里的每一项都按当前版本重写一遍。闸照自动写入那道：只认当前账号写的、没选官方账号的，账号确实能用
+   * to 才写。来源记录不动：它认的是路径、地址和 Key（toolConfigIdentity），型号不在里面，换完照旧是「当前账号」。
+   */
+  async function replaceToolModel(provider: ProviderId, from: string, to: string, assertBeforeWrite: () => void): Promise<void> {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    function assertOwner(): void {
+      assertBeforeWrite()
+      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，这次不换')
+    }
+    await serializeConfigWrite(async () => {
+      assertOwner()
+      if (store.read().officialProviders?.includes(provider)) throw new Error('工具已选择官方账号，已保留原配置')
+      const before = inspectNativeProviderConfig(provider)
+      if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
+      const apiKey = before.apiKey?.trim() ?? ''
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      const activeSite = providerRelaySite(provider, before)
+      const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
+      if (!availableModels.includes(to)) throw new Error(`当前 API Key 不支持模型 ${to}`)
+      // 要问一遍 Codex 命令行是哪一版，放在「校验没变」之前，同 saveConfig。
+      const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, to) : undefined
+      assertOwner()
+      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不换')
+      if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))) throw new Error('工具配置在模型检测期间发生变化，已保留现有配置')
+      const plan = planProviderModelReplace(provider, from, to, providerRoots, codexModelCatalog)
+      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具里的型号已经改了，这次不换' : '工具配置里找不到型号写在哪，这次不换')
+      applyProviderModelReplace(provider, plan, providerRoots)
+    })
+  }
+
   // ---- 换线路时定点改写工具配置（xm 三线路 C9、C10、C11、C19） ----
   //
   // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改。地址取的是
@@ -8103,6 +8138,7 @@ export function createSystemService(
     refreshPicker: async (provider, model, assertCurrent) => {
       await saveConfig({ provider, apiKey: '', model, mode: 'merge' }, false, assertCurrent, { source: 'account', automatic: true })
     },
+    replaceModel: (provider, from, to, assertCurrent) => replaceToolModel(provider, from, to, assertCurrent),
     ...(serviceOptions.cliModelHints ? { modelHints: serviceOptions.cliModelHints } : {}),
     upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
     markUpgradeOffered: async (provider, model) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readEnvLineValue, readJsonString, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings } from './tool-route-rewrite'
+import { readEnvLineValue, readJsonString, readTomlBoolean, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, rewriteTomlValues } from './tool-route-rewrite'
 
 const fromUrl = 'https://xm.solov.cc/v1'
 const toUrl = 'https://xm-direct.solov.cc/v1'
@@ -19,6 +19,28 @@ describe('tool-route-rewrite', () => {
     ].join('\n')
     const next = rewriteTomlStrings(content, [{ path: ['model_providers', 'XingmangAI', 'base_url'], value: toUrl }])
     expect(next).toBe(content.replace(`base_url = "${fromUrl}"`, `base_url = "${toUrl}"`))
+  })
+
+  it('flips only the addressed TOML switch and refuses to change a value into another type', () => {
+    const content = [
+      '# supports_websockets = true',
+      'model = "gpt-5.5"',
+      '',
+      '[model_providers.XingmangAI]',
+      'requires_openai_auth = true',
+      'supports_websockets = true',
+      '',
+      '[features]',
+      'goals = true',
+      '',
+    ].join('\n')
+    const path = ['model_providers', 'XingmangAI', 'supports_websockets']
+    expect(readTomlBoolean(content, path)).toBe(true)
+    const next = rewriteTomlValues(content, [{ path: ['model'], value: 'deepseek-v4-flash' }, { path, value: false }])
+    expect(next).toBe(content.replace('model = "gpt-5.5"', 'model = "deepseek-v4-flash"').replace('supports_websockets = true\n\n', 'supports_websockets = false\n\n'))
+    expect(rewriteTomlValues(content, [{ path, value: 'false' }])).toBeNull()
+    expect(rewriteTomlValues(content, [{ path: ['model'], value: true }])).toBeNull()
+    expect(readTomlBoolean(content, ['model'])).toBeNull()
   })
 
   it('finds a value under a quoted or dotted table name', () => {

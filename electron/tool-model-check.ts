@@ -48,11 +48,14 @@ export interface ToolModelCheckDependencies {
   pickerOutdated(provider: ModelPickerProvider, models: readonly string[], model: string): boolean | Promise<boolean>
   /**
    * assertCurrent 要在真正落盘前再调一次：核对和写入之间隔着网络请求，账号随时会切走，
-   * 写入那一刻认的必须还是开始核对时那个账号那份配置（#538）。
-   * model 是写进去的默认型号：刷新菜单时就是原来那个，换掉下架型号时是换上去的那个。
-   * 换掉下架型号时 provider 也可能是没有菜单的 Grok，那就只是改型号。
+   * 写入那一刻认的必须还是开始核对时那个账号那份配置（#538）。model 是配置里原来那个默认型号。
    */
   refreshPicker(provider: ProviderId, model: string, assertCurrent: () => void): Promise<void>
+  /**
+   * 换掉下架型号：配置里只把 from 换成 to，别的一个字不动（#1154 第 4 条，system-service.ts 的
+   * replaceToolModel）。assertCurrent 规矩同 refreshPicker。provider 也可能是没有菜单的 Grok。
+   */
+  replaceModel(provider: ProviderId, from: string, to: string, assertCurrent: () => void): Promise<void>
   /**
    * 服务状态文件里的型号表（service-status.ts 的 cliModels）。从不拒绝：读不到给 null，用程序自带的那份。
    * 缺省 = 只用自带的。
@@ -178,7 +181,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
    * 开机那轮直接换成现在的默认，不等打开前那一问。从开始菜单、终端、VS Code 打开 Codex 的客户
    * 走不到那一问，每一轮都报「该模型无可用渠道」。别的「用不了」照旧留给打开前去问，那可能只是
    * 分组一时没配好。换成哪个由 resolveRetiredCliModelReplacement 挑，挑不出拿得准的（只剩别的系列）
-   * 也留给那一问。写入和刷新菜单是同一道（refreshPicker）：先备份，写一半回滚照旧。
+   * 也留给那一问。只改型号那几处（replaceModel），不整份合并：先备份，写一半回滚照旧。
    */
   async function replaceRetiredModel(
     provider: ProviderId,
@@ -200,14 +203,14 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
       return false
     }
     // 写完以后配置里就是 replacement 了，按换之前那份认人一定对不上。写完那一下账号换没换，
-    // 写入那边（system-service.ts 的 saveConfig）自己还会再核一次。
+    // 写入那边（system-service.ts 的 replaceToolModel）自己还会再核一次。
     function assertCurrent(): void {
       if (deps.target(provider)?.model === replacement) return
       guard.assertCurrent()
     }
     try {
       await beforeReplace?.()
-      await deps.refreshPicker(provider, replacement, assertCurrent)
+      await deps.replaceModel(provider, target.model, replacement, assertCurrent)
     } catch (error) {
       deps.log?.('warn', 'tool-models.retired-replace-failed', `${name} 的默认模型已经下架，这次没能换掉`, { provider, model: target.model, replacement, reason: errorText(error) })
       return false
