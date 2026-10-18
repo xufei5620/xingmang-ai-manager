@@ -160,6 +160,7 @@ import type {
   AppUninstallRequest,
   AppUninstallResult,
 } from './ipc-contract'
+import { ipcChannelPolicies, type IpcInvokeChannel } from './ipc-channel-policy'
 import { isDiagnosticFolderTarget, type DiagnosticFolderTarget, type DiagnosticsReport, type DiagnosticsRunOptions } from './diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult, type ConnectionProbeReport } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
@@ -1387,150 +1388,6 @@ function parseAiChatStartInput(value: unknown): AiChatStartInput {
   }
 }
 
-const ipcOperationLabels: Readonly<Record<string, string>> = {
-  'system:scan': '本机环境与 AI 工具检测',
-  'system:refresh-network-location': '当前网络位置刷新',
-  'startup:codex-readiness': 'Codex 启动状态检测',
-  'config:get': '工具配置读取',
-  'config:reveal-api-key': 'API Key 明文读取',
-  'config:save': '工具配置保存',
-  'config:open-directory': '工具配置目录打开',
-  'external-clients:scan': '外部客户端检测',
-  'external-clients:install': '外部客户端安装',
-  'external-clients:cancel-install': '外部客户端安装取消',
-  'external-clients:launch': '外部客户端启动',
-  'external-clients:switch-source': '外部客户端账号切换',
-  'workspace:choose': '工作目录选择',
-  'repository:get-context': '仓库上下文读取',
-  'runtime:install-node': 'Node.js LTS 自动安装',
-  'runtime:install-python': 'Python 3.12 自动安装',
-  'cli:install': 'CLI 安装或更新',
-  'cli:uninstall': 'CLI 卸载',
-  'cli:clean-uninstall-leftovers': 'CLI 卸载残留清理',
-  'cli:check-update': 'CLI 单项更新检查',
-  'setup:codex-status': 'Codex 初始化状态检测',
-  'desktop:install-codex': 'Codex 桌面端安装',
-  'desktop:uninstall-codex': 'Codex 桌面端卸载',
-  'desktop:reset-codex': 'Codex 桌面端重置',
-  'desktop:check-update-codex': 'Codex 桌面端更新检查',
-  'cli:launch': 'CLI 终端启动',
-  'desktop:codex-status': 'Codex 桌面端运行状态检测',
-  'tools:inspect-running': '换账号后检查哪些工具还开着',
-  'tools:check-models': '打开工具前核对当前账号能用的模型',
-  'tools:cli-model-hints': '读取服务状态文件里的型号表',
-  'config:fill-template-defaults': '给工具配置补齐新版设置',
-  'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
-  'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
-  'desktop:trust-workspace': 'Codex Desktop 工作区信任设置',
-  'desktop:set-codex-locale': 'Codex Desktop 语言设置',
-  'desktop:launch-codex': 'Codex 桌面端启动',
-  'models:list': '可用模型读取',
-  'models:list-configured': '已配置 CLI 可用模型读取',
-  'window:set-mode': '窗口模式切换',
-  'window:set-theme': '界面主题切换',
-  'external:open': '外部链接打开',
-  'network:bypass-broken-proxy': '代理连不上时改走直连',
-  'network:open-settings': '打开系统网络设置',
-  'update:get-state': '主程序更新状态读取',
-  'update:startup': '主程序启动更新',
-  'update:check': '主程序更新检查',
-  'update:download': '主程序更新下载',
-  'update:install': '主程序更新安装',
-  'sessions:list': 'Codex 会话列表读取',
-  'sessions:detail': 'Codex 会话详情读取',
-  'sessions:export': 'Codex 会话导出',
-  'sessions:archive': 'Codex 会话归档',
-  'sessions:restore': 'Codex 会话恢复',
-  'provider-sessions:list': 'AI 工具会话列表读取',
-  'provider-sessions:detail': 'AI 工具会话详情读取',
-  'provider-sessions:export': 'AI 工具会话导出',
-  'provider-sessions:open-directory': 'AI 工具会话工作目录打开',
-  'provider-sessions:delete': 'AI 工具会话彻底删除',
-  'settings:get': '应用设置读取',
-  'settings:save': '应用设置保存',
-  'diagnostics:run': '系统诊断',
-  'diagnostics:check-connection': '连接自检',
-  'diagnostics:probe-codex-responses': 'Codex 干活检查',
-  'diagnostics:check-external-connection': '客户端连接自检',
-  'diagnostics:export': '诊断报告导出',
-  'diagnostics:clear-stale-proxy': '清掉旧的代理设置',
-  'diagnostics:open-folder': '检查页打开文件夹',
-  'diagnostics:fix': '检查页一键处理',
-  'extensions:choose-directory': '外接工具选择文件夹',
-  'runtime-logs:list': '运行日志读取',
-  'runtime-logs:copy-feedback': '脱敏反馈文本复制',
-  'runtime-logs:export-feedback': '反馈报告导出',
-  'exports:reveal-file': '导出文件定位',
-  'runtime-logs:open-directory': '日志目录打开',
-  'runtime-logs:clear': '运行日志清空',
-  'runtime-logs:renderer-error': '渲染进程异常上报',
-  'backups:list': '配置备份列表读取',
-  'backups:create': '配置备份创建',
-  'backups:inspect': '配置备份详情读取',
-  'backups:restore': '配置备份恢复',
-  'backups:delete': '配置备份删除',
-  'mcp:list': 'MCP 列表读取',
-  'mcp:add': 'MCP 添加',
-  'mcp:remove': 'MCP 删除',
-  'mcp:login': 'MCP 登录',
-  'mcp:cancel-login': '取消 MCP 登录',
-  'mcp:logout': 'MCP 退出登录',
-  'skills:list': 'Skills 列表读取',
-  'skills:import': 'Skill 导入',
-  'skills:toggle': 'Skill 启用状态修改',
-  'skills:uninstall': 'Skill 卸载',
-  'plugins:list': 'Plugins 列表读取',
-  'plugins:add': 'Plugin 安装',
-  'plugins:remove': 'Plugin 卸载',
-  'plugins:toggle': 'Plugin 启用状态修改',
-  'marketplaces:add': '扩展市场添加',
-  'marketplaces:upgrade': '扩展市场更新',
-  'marketplaces:remove': '扩展市场删除',
-  'extensions:list': 'AI 工具扩展列表读取',
-  'extensions:list-all': '全部 AI 工具扩展读取',
-  'extensions:mutate': 'AI 工具扩展操作',
-  'extensions:ensure-marketplace': '官方插件市场添加',
-  'extensions:check-mcp-health': 'MCP 连接状态检测',
-  'account:get-status': '星芒账号服务状态读取',
-  'account:get-legal-document': '星芒账号法律文档读取',
-  'account:login': '星芒账号登录',
-  'account:submit-two-factor-code': '星芒账号两步验证登录',
-  'account:logout': '星芒账号退出登录',
-  'account:get-session': '星芒账号会话状态读取',
-  'account:get-balance': '星芒账号余额查询',
-  'account:sync-managed-cli-keys': '四组 CLI Key 初始化',
-  'account:configure-managed-clis': '四组 CLI 配置写入',
-  'account:register': '星芒账号注册',
-  'account:send-verification-code': '星芒账号邮箱验证码发送',
-  'account:send-reset-code': '星芒账号密码重置邮件发送',
-  'account:reset-password': '星芒账号密码重置',
-  'account:get-profile': '星芒账号资料读取',
-  'account:get-usage': '星芒账号用量明细读取',
-  'account:get-dashboard': '星芒账号数据看板读取',
-  'account:get-tasks': '星芒账号任务日志读取',
-  'account:list-keys': '星芒账号 Key 列表读取',
-  'account:list-groups': '星芒账号可用分组读取',
-  'account:revoke-key': '星芒账号 Key 撤销',
-  'account:copy-key': '星芒账号 Key 复制',
-  'account:copy-reset-password': '找回密码后的新密码复制',
-  'account:reveal-key': '星芒账号 Key 明文读取',
-  'account:list-key-models': '星芒账号 Key 可用模型读取',
-  'account:configure-cli-with-key': '星芒账号 Key 写入 CLI 配置',
-  'account:change-password': '星芒账号密码修改',
-  'canvas:open': '无限画布窗口打开',
-  'account:get-remembered-login': '记住的登录凭据读取',
-  'account:set-remembered-login': '记住的登录凭据更新',
-  'account:create-key': '星芒账号 Key 创建',
-  'account:update-key': '星芒账号 Key 更新',
-  'chat:pick-images': '聊天图片选择',
-  'chat:paste-image': '聊天截图粘贴',
-  'chat-history:read': '聊天记录读取',
-  'chat-history:write': '聊天记录保存',
-  'chat-history:export-text': '聊天对话导出',
-  'data-transfer:export': '聊天记录与设置导出',
-  'data-transfer:import': '聊天记录与设置导入',
-}
-
 /** 只收已知工具，去重；一次问的个数不超过工具总数（I5）。 */
 export function parseRunningToolsProviders(value: unknown): ProviderId[] {
   if (!Array.isArray(value) || value.length > activeProviderIds.length) throw new Error('工具列表格式错误')
@@ -1593,109 +1450,6 @@ export function externalClientDetectionFailures(statuses: readonly Pick<External
   }))
 }
 
-const quietIpcSuccessChannels = new Set([
-  // Chat history carries whole conversations and autosaves after every edit:
-  // a success line would flood the log, and the payload must never reach it
-  // (I13). Failures still log, with the Chinese reason only.
-  'chat-history:read',
-  'chat-history:write',
-  'account:get-key-options',
-  'system:scan',
-  'system:refresh-network-location',
-  'startup:codex-readiness',
-  'config:get',
-  'config:reveal-api-key',
-  'repository:get-context',
-  'setup:codex-status',
-  'desktop:codex-status',
-  'desktop:codex-locale-status',
-  'desktop:codex-permissions-status',
-  'window:set-mode',
-  'window:set-theme',
-  'update:get-state',
-  'update:startup',
-  'settings:get',
-  'runtime-logs:list',
-  'runtime-logs:renderer-error',
-  // Frequent read-style checks stay quiet, while managed CLI configuration
-  // handles secrets internally and account:reveal-key deliberately returns a
-  // short-lived plaintext secret to the renderer. Logging any of those
-  // success details risks putting account data or a CLI key on disk (I3/I13).
-  'account:get-status',
-  'account:get-legal-document',
-  'account:get-session',
-  'account:get-balance',
-  'account:sync-managed-cli-keys',
-  'account:configure-managed-clis',
-  // account:reset-password's result carries a server-generated plaintext
-  // password (NewApiResetPasswordResult) -- exactly as sensitive as the CLI
-  // key above, same I3/I13 reasoning.
-  'account:reset-password',
-  // get-profile's result carries email/aff_code -- PII, not a secret exactly,
-  // but still not something that belongs in the plaintext runtime log
-  // (I13). get-usage's result has its own `total` field, which
-  // collectionSize() would otherwise surface into the log via itemCount; not
-  // sensitive on its own, but grouped here for the same "account:* reads stay
-  // quiet" consistency as get-status/get-session/get-balance above.
-  'account:get-profile',
-  'account:get-usage',
-  'account:get-dashboard',
-  'account:get-tasks',
-  // list-keys' DTO is metadata-only (I3 -- see NewApiAccountKey's own
-  // comment for the whitelist), so nothing here is secret either; grouped in
-  // for the same "account:* reads stay quiet" consistency as get-usage
-  // immediately above rather than being the one account:* read that logs
-  // differently from its siblings.
-  'account:list-keys',
-  'account:list-groups',
-  'account:copy-key',
-  // The input is the plaintext password the reset just produced.
-  'account:copy-reset-password',
-  'account:reveal-key',
-  'account:list-key-models',
-  'account:configure-cli-with-key',
-  // change-password's *input* carries two plaintext passwords (args[0], not
-  // the result -- the result is just {changed:true}, I3-safe on its own).
-  // ipcLogDetail/ipcSuccessMessage happen to never spread args[0] generically
-  // today, but that is true by omission, not by contract -- quieting this
-  // channel outright removes the need to keep re-verifying that invariant
-  // every time either function gains a new per-channel branch (I13).
-  'account:change-password',
-  // get-remembered-login's result and set-remembered-login's input both carry
-  // a plaintext password (the "记住密码" credential) -- the same dedicated
-  // reveal-channel pattern as config:reveal-api-key, and the same I3/I13
-  // reason to keep both fully out of the runtime log.
-  'account:get-remembered-login',
-  'account:set-remembered-login',
-  'chat:list-groups',
-  'chat:prepare-group',
-  'chat:start',
-  'chat:generate-image',
-  'chat:cancel',
-  'chat:copy-asset',
-  'chat:save-asset',
-  'chat:asset-menu',
-  'chat:pick-images',
-  'chat:paste-image',
-])
-
-// Channels whose *input* is a secret but whose success is still worth a line
-// in the log. recordSuccess hands the formatters below an empty argument list
-// for these, so the input cannot reach the log by construction rather than by
-// every formatter happening to ignore it (I13). The two-factor code is a live
-// one-time code (or a single-use backup code); it used to be fully quiet,
-// which left a "我输了验证码还是登不上" ticket without even a sign of whether
-// the second step went through (三线路 7b).
-const secretInputIpcChannels = new Set([
-  'account:submit-two-factor-code',
-])
-
-const quietIpcFailureChannels = new Set([
-  'chat:prepare-group',
-  'chat:start',
-  'chat:generate-image',
-])
-
 function providerDisplayName(value: unknown): string | null {
   return isProviderId(value) ? cliCatalog[value].name : null
 }
@@ -1709,8 +1463,8 @@ function collectionSize(value: unknown): number | null {
   return typeof value.total === 'number' && Number.isFinite(value.total) ? value.total : null
 }
 
-function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): string {
-  const label = ipcOperationLabels[channel] ?? channel
+function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], result: unknown): string {
+  const label = ipcChannelPolicies[channel].label ?? channel
   const provider = providerDisplayName(args[0])
     ?? (isRecord(args[0]) ? providerDisplayName(args[0].provider) : null)
   const count = collectionSize(result)
@@ -1848,20 +1602,7 @@ function ipcSuccessLevel(channel: string): 'debug' | 'info' {
   return /:(?:get|get-state|list|list-all|detail|status|inspect)$/.test(channel) ? 'debug' : 'info'
 }
 
-/**
- * 公告、公告已读同步、订阅这三样，登录后每隔几分钟自己读一次。每次成功都记一条 info
- * 的话，电脑开几天不关，反馈报告附的最近 600 条里就几乎只剩它们（第二十六批 B：一份
- * Mac 报告里三样一共占了 508 条，耗时中位 12 毫秒）。成功降到调试级：照样落盘，只是
- * 报告不附，要数一共成功几次去看本机日志文件。有两种成功照记 info，排查要用：慢的，
- * 报告里一眼看得出线路慢不慢；上一次失败之后的第一次成功，看得出什么时候恢复的。失败
- * 照旧一律记 error。已读同步除了跟着公告刷新，客户点开一条公告时也走它；那一下成功了
- * 同样不必进报告，没成功照样记 error。
- */
-const pollingIpcChannels = new Set([
-  'account:get-notice',
-  'account:sync-local-notice-reads',
-  'account:get-subscription-self',
-])
+// 轮询通道（ipc-channel-policy.ts 里 log: 'polling'）的成功慢过这么久，照记 info。
 const SLOW_POLLING_SUCCESS_MS = 3_000
 
 export function registerIpcHandlers(options: IpcRegistrationOptions): () => void {
@@ -1882,12 +1623,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     exportedFiles.push(filePath)
     if (exportedFiles.length > MAX_REMEMBERED_EXPORTS) exportedFiles.shift()
   }
-  const registerTrustedHandler = (channel: string, handler: TrustedIpcHandler): void => {
+  const registerTrustedHandler = (channel: IpcInvokeChannel, handler: TrustedIpcHandler): void => {
     registeredChannels.push(channel)
+    const policy = ipcChannelPolicies[channel]
     ipcMain.handle(channel, (event, ...args) => {
       const startedAt = Date.now()
       const recordSuccess = (result: unknown) => {
-        if (quietIpcSuccessChannels.has(channel)) return
+        if (policy.log === 'quiet-success' || policy.log === 'silent') return
         if (channel === 'acceleration:get-state') {
           const key = accelerationStateLogKey(result)
           if (key !== null && key === lastAccelerationStateLogKey) return
@@ -1901,10 +1643,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           return
         }
         const durationMs = Date.now() - startedAt
-        const polling = pollingIpcChannels.has(channel)
+        const polling = policy.log === 'polling'
         const recovered = polling && failedPollingChannels.delete(channel)
         const routinePoll = polling && !recovered && durationMs < SLOW_POLLING_SUCCESS_MS
-        const loggedArgs = secretInputIpcChannels.has(channel) ? [] : args
+        const loggedArgs = policy.log === 'secret-input' ? [] : args
         options.runtimeLog.log(
           routinePoll ? 'debug' : ipcSuccessLevel(channel),
           'ipc',
@@ -1914,10 +1656,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         )
       }
       const recordFailure = (error: unknown) => {
-        if (pollingIpcChannels.has(channel)) failedPollingChannels.add(channel)
-        if (quietIpcFailureChannels.has(channel)) return
+        if (policy.log === 'polling') failedPollingChannels.add(channel)
+        if (policy.log === 'silent') return
         const reason = error instanceof Error ? error.message : String(error)
-        const label = ipcOperationLabels[channel] ?? channel
+        const label = policy.label ?? channel
         // 受限网络下最贵的排查成本是「日志里只写了一句请求失败」。归得出原因就
         // 单列一个字段，客服和诊断导出不用再从错误文本里猜 DNS 还是证书。
         const networkFailure = classifyNetworkFailure(error)
@@ -1941,19 +1683,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         throw new Error('已拒绝来自非应用页面的操作请求')
       }
       try {
-        const publicAccountChannels = new Set(['account:login', 'account:submit-two-factor-code', 'account:logout', 'account:get-session',
-          'account:switch-saved', 'account:remove-saved', 'account:list-saved', 'account:get-status',
-          'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
-          'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password',
-          'account:copy-reset-password'])
-        const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
-          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'external-clients:switch-source' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
-          && !publicAccountChannels.has(channel) && !readsCachedExternalClientsOnly(channel, args)
-        // 这两种「打开」要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作，处理函数
-        // 交给队列时才拿 accountWork.queue()，轮到它执行才算进去（#1085）；开机照旧先等账号恢复完。
-        const queuesItsOwnAccountWork = channel === 'cli:launch' || channel === 'desktop:launch-codex'
-        const invoke = () => scoped && options.accountWork && !queuesItsOwnAccountWork
-          ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
+        const scoped = policy.account !== 'none' && !readsCachedExternalClientsOnly(channel, args)
+        // scoped-queued 的处理函数交给安装队列时自己拿 accountWork.queue()（#1085），这里不再包一层。
+        const invoke = () => scoped && options.accountWork && policy.account !== 'scoped-queued'
+          ? options.accountWork.run(() => handler(event, ...args), { checkRevision: policy.account !== 'scoped-may-end-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
         // config read must not turn an in-progress restore into a failed boot.
         // Only the bootstrap config read may stop waiting at the startup
