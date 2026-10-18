@@ -48,6 +48,7 @@ import {
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
 import { redactSecretPatterns } from './redaction-patterns'
+import { pathRootSpellings } from './startup-log'
 import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
 import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, requestFailuresTrigger, type RelayRouteChange } from './relay-route-controller'
 import {
@@ -489,23 +490,9 @@ function rootReplacements(roots: { userHome?: string, codexHome?: string }): Roo
     [roots.userHome?.trim(), '~'],
   ] as const) {
     if (!root) continue
-    const resolved = resolvePathLike(root)
-    const slashRoot = root.replaceAll('\\', '/')
-    const slashResolved = resolved.replaceAll('\\', '/')
-    const variants = new Set([
-      root,
-      resolved,
-      slashRoot,
-      root.replaceAll('/', '\\'),
-      slashResolved,
-      resolved.replaceAll('/', '\\'),
-      slashRoot.replaceAll('/', '\\/'),
-      slashResolved.replaceAll('/', '\\/'),
-    ])
-    for (const variant of [...variants]) variants.add(JSON.stringify(variant).slice(1, -1))
     const caseInsensitive = /^[A-Za-z]:[\\/]/.test(root) || root.startsWith('\\\\')
-    for (const candidate of variants) {
-      if (!candidate || replacements.has(candidate)) continue
+    for (const candidate of pathRootSpellings(root, resolvePathLike(root))) {
+      if (replacements.has(candidate)) continue
       replacements.set(candidate, { candidate, label, caseInsensitive })
     }
   }

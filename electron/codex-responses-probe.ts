@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
+import { sanitizeUpstreamDetail } from './command-runner'
 import {
   classifyConnectionFailure,
   classifyConnectionResponse,
   extractUpstreamMessage,
   runConnectionProbe,
-  sanitizeUpstreamDetail,
   type ConnectionProbeBuild,
   type ConnectionProbeDependencies,
   type ConnectionProbeReport,

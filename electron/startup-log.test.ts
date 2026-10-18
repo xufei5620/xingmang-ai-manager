@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   drainStartupFailures,
   formatStartupFailure,
+  pathRootSpellings,
   recordStartupFailure,
   redactHomeDirectory,
   redactLinuxUserPaths,
@@ -235,5 +236,22 @@ describe('home directory redaction on Linux', () => {
       .toBe('%USERPROFILE%\\x /media/alice/z')
     // A Windows-shaped home keeps its label wherever the redaction runs.
     expect(redactHomeDirectory('C:\\Users\\Al\\x', 'C:\\Users\\Al', 'linux')).toBe('%USERPROFILE%\\x')
+  })
+})
+
+describe('home directory spellings', () => {
+  it('hides the escaped-slash spelling the diagnostics export already hid', () => {
+    const text = '{"cwd":"C:\\\\Users\\\\Al\\\\x","url":"C:\\/Users\\/Al\\/y"}'
+    expect(redactHomeDirectory(text, 'C:\\Users\\Al', 'win32'))
+      .toBe('{"cwd":"%USERPROFILE%\\\\x","url":"%USERPROFILE%\\/y"}')
+    expect(redactHomeDirectory('"\\/Users\\/al\\/x"', '/Users/al', 'darwin')).toBe('"%USERPROFILE%\\/x"')
+  })
+
+  it('lists each spelling once and never an empty one', () => {
+    const spellings = pathRootSpellings('C:/Users/Al', 'C:\\Users\\Al')
+    expect(spellings).toEqual([...new Set(spellings)])
+    expect(spellings).toContain('C:\\\\Users\\\\Al')
+    expect(spellings).toContain('C:\\/Users\\/Al')
+    expect(pathRootSpellings('', '')).toEqual([])
   })
 })
