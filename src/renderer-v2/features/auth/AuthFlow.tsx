@@ -3,6 +3,7 @@ import { ArrowRight, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Headset, Info
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Input, Segment } from '../../ui'
 import { sessionOnlyLoginNotice } from '../app/remembered-login'
+import { useLatestRequest } from '../../latest-request'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
@@ -109,14 +110,14 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const twoFactorLogin = useRef<LoginAttempt | null>(null)
   const [busy, setBusy] = useState(false)
   const locked = useRef(false)
-  const epoch = useRef(0)
+  const epoch = useLatestRequest()
   const loginTouched = useRef(Boolean(initialIdentifier))
   // 用户名默认跟着邮箱 @ 前那段走，用户亲手改过就不再覆盖；清空了则重新跟随。
   const usernameFollowsEmail = useRef(true)
   const focusedStep = useRef('')
   const registerCooldown = useCooldown()
   const resetCooldown = useCooldown()
-  useEffect(() => () => { epoch.current++; locked.current = false }, [])
+  useEffect(() => () => { locked.current = false }, [])
   useEffect(() => {
     if (legal || routesOpen) { focusedStep.current = ''; return }
     if (busy) return
@@ -177,8 +178,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   useEffect(() => {
     if (mode !== 'login') return
     let active = true
-    const owner = epoch.current
-    void api.getRemembered(siteId).then((value) => { if (active && epoch.current === owner && !loginTouched.current && value) { setIdentifier(value.identifier); setPassword(value.password); setRemember(true) } }, () => undefined)
+    const owner = epoch.capture()
+    void api.getRemembered(siteId).then((value) => { if (active && owner() && !loginTouched.current && value) { setIdentifier(value.identifier); setPassword(value.password); setRemember(true) } }, () => undefined)
     return () => { active = false }
   }, [api, siteId, mode])
 
@@ -191,7 +192,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
 
   const changeSource = (value: string) => {
     if (locked.current || (value !== 'solov' && value !== 'solov-api') || value === siteId) return
-    epoch.current++
+    epoch.invalidate()
     setSiteId(value); setPassword(''); setRemember(false); setError(''); setMessage(''); setFailure(null); setBrowserAuthentication(false); leaveTwoFactor()
     setRecoveryStep(1); setRecoveryText(''); clearRecoveredPassword()
     loginTouched.current = false
@@ -204,7 +205,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
 
   const changeMode = (next: AuthMode, nextIdentifier?: string) => {
     if (locked.current) return
-    epoch.current++
+    epoch.invalidate()
     setMode(next); setError(''); setMessage(''); setFailure(null); setBrowserAuthentication(false); setFieldErrors({}); leaveTwoFactor(); clearRecoveredPassword()
     if (next === 'register') { setSiteId('solov'); setPassword(''); setRemember(false) }
     if (nextIdentifier !== undefined) { setIdentifier(nextIdentifier); setPassword(''); loginTouched.current = true }
@@ -213,7 +214,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const close = () => {
     if (locked.current) { setMessage('正在处理，请稍候'); return }
     if (recovered) { continueWithTempPassword(); return }
-    epoch.current++; setPassword(''); clearRecoveredPassword(); leaveTwoFactor(); onClose()
+    epoch.invalidate(); setPassword(''); clearRecoveredPassword(); leaveTwoFactor(); onClose()
   }
   const showFailure = (reason: unknown, action: string) => {
     const result = authFailure(reason, action, navigator.onLine)
@@ -221,8 +222,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   }
   const run = async (action: string, work: (isCurrent: () => boolean) => Promise<void>) => {
     if (locked.current) return
-    const owner = epoch.current
-    const current = () => epoch.current === owner
+    const current = epoch.capture()
     locked.current = true; setBusy(true); setError(''); setMessage(''); setFailure(null)
     try { await work(current) } catch (reason) { if (current()) showFailure(reason, action) }
     finally { if (current()) { locked.current = false; setBusy(false) } }

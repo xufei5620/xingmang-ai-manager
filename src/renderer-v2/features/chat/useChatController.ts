@@ -4,13 +4,14 @@ import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-c
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
 import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, planTurn, resolveChatGroup, resolveDefaultChatModel, removeDraftImage, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
+import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { isWindowInFront } from '../tools/install-notice'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
 interface CarriedDraft { conversationId: string; text: string; fromDraft: boolean }
 interface SendOptions { prompt?: string; retryId?: string; editId?: string }
-interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
+interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: () => boolean; cancelRequested?: boolean; failureDuringCancel?: unknown }
 
 export function useChatController(api: ChatApi, scope: string, initial: LoadedChatHistory, active = true) {
   const [writer] = useState(() => createHistoryWriter(api, initial.saved, initial.afterFirstSave))
@@ -29,13 +30,13 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const offlineRef = useRef(false)
   offlineRef.current = useOnlineStatus().offline
   const alive = useRef(false)
-  const epoch = useRef(0)
+  const epoch = useLatestRequest()
   const requests = useRef(new Map<string, PendingRequest>())
   const prepareAttempts = useRef(new Map<string, number>())
-  const groupAttempt = useRef(0)
+  const groupAttempt = useLatestRequest()
   const groupsRef = useRef<AiChatGroupSummary[]>([])
   const groupsInitialized = useRef(false)
-  const groupFlight = useRef<{ epoch: number; promise: Promise<boolean> } | null>(null)
+  const groupFlight = useRef<{ epoch: () => boolean; promise: Promise<boolean> } | null>(null)
   const interactionTimer = useRef<number | undefined>(undefined)
   const persist = useRef(!initial.warning)
   // 被上限拦下的那句话。编辑重发时它在编辑框里而不在输入框，得单独记住才搬得走。
@@ -51,13 +52,13 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   // 交回准备好的模型；分组不可用、准备失败或被更新的准备盖掉时是 null。
   const prepareGroup = async (group: string): Promise<string[] | null> => {
     if (!group || !groupsRef.current.some((item) => item.name === group)) return null
-    const owner = epoch.current
+    const owner = epoch.capture()
     const attempt = (prepareAttempts.current.get(group) ?? 0) + 1
     prepareAttempts.current.set(group, attempt)
     setPreparations((current) => ({ ...current, [group]: { phase: 'loading', models: current[group]?.models ?? [] } }))
     try {
       const prepared = await api.prepareGroup(group)
-      if (!alive.current || owner !== epoch.current || prepareAttempts.current.get(group) !== attempt) return null
+      if (!alive.current || !owner() || prepareAttempts.current.get(group) !== attempt) return null
       if (prepared.group !== group) throw new Error('所选分组与返回分组不一致')
       const models = [...new Set(prepared.models)].filter((model) => { try { const cap = inspectModel(model); return cap.available && !cap.hidden && cap.kind !== 'video' } catch { return false } })
       setPreparations((current) => ({ ...current, [group]: { phase: 'ready', models, warning: prepared.storageWarning ? '分组已准备，但本机密钥缓存未能保存，下次可能需要重新准备' : undefined } }))
@@ -71,18 +72,18 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       commit((current) => ({ ...current, conversations: current.conversations.map(updateModel), draftConversation: updateModel(current.draftConversation) }))
       return models
     } catch (reason) {
-      if (alive.current && owner === epoch.current && prepareAttempts.current.get(group) === attempt) setPreparations((current) => ({ ...current, [group]: { phase: 'error', models: [], error: chatErrorMessage(reason) } }))
+      if (alive.current && owner() && prepareAttempts.current.get(group) === attempt) setPreparations((current) => ({ ...current, [group]: { phase: 'error', models: [], error: chatErrorMessage(reason) } }))
       return null
     }
   }
   const refreshGroups = (): Promise<boolean> => {
-    if (groupFlight.current?.epoch === epoch.current) return groupFlight.current.promise
-    const owner = epoch.current, attempt = ++groupAttempt.current
+    if (groupFlight.current?.epoch()) return groupFlight.current.promise
+    const owner = epoch.capture(), attempt = groupAttempt.begin()
     setGroupLoading(true); setGroupError('')
     const promise = Promise.resolve().then(async () => {
       try {
         const result = await api.listGroups()
-        if (!alive.current || owner !== epoch.current || attempt !== groupAttempt.current) return false
+        if (!alive.current || !owner() || !attempt()) return false
         groupsRef.current = result
         setGroups(result); setGroupsLoaded(true)
         // Background refresh is metadata-only. It must not reset a user's
@@ -102,10 +103,10 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
         }
         return true
       } catch (reason) {
-        if (alive.current && owner === epoch.current && attempt === groupAttempt.current) setGroupError(chatErrorMessage(reason))
+        if (alive.current && owner() && attempt()) setGroupError(chatErrorMessage(reason))
         return false
       } finally {
-        if (alive.current && owner === epoch.current && attempt === groupAttempt.current) setGroupLoading(false)
+        if (alive.current && owner() && attempt()) setGroupLoading(false)
         if (groupFlight.current?.promise === promise) groupFlight.current = null
       }
     })
@@ -129,16 +130,16 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }
   useEffect(() => {
     alive.current = true
-    const owner = ++epoch.current
+    const owner = epoch.begin()
     const unsubscribe = api.subscribe((event) => {
-      if (!alive.current || epoch.current !== owner || !requests.current.has(event.requestId)) return
+      if (!alive.current || !owner() || !requests.current.has(event.requestId)) return
       commit((current) => applyStreamEvent(current, event))
       if (event.type === 'complete' && !isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `chat:${event.requestId}`).catch(() => undefined)
       if (event.type === 'complete' || event.type === 'error' || event.type === 'canceled') requests.current.delete(event.requestId)
     })
     void refreshGroups()
     return () => {
-      alive.current = false; epoch.current++; groupAttempt.current++; unsubscribe()
+      alive.current = false; epoch.invalidate(); groupAttempt.invalidate(); unsubscribe()
       window.clearTimeout(interactionTimer.current); interactionTimer.current = undefined
       for (const requestId of requests.current.keys()) void api.cancel(requestId).catch(() => undefined)
       requests.current.clear()
@@ -205,7 +206,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }
   const send = async (options: SendOptions = {}) => {
     const current = activeConversation(stateRef.current)
-    const owner = epoch.current
+    const owner = epoch.capture()
     if (!alive.current || isGenerating(current)) return
     // 断网时当场说，草稿原样留在输入框里，不先挂一条等超时的消息。
     if (offlineRef.current) { offlineRetry.current = { conversationId: current.id, options }; setError(offlineSendMessage); return }
@@ -228,7 +229,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       try {
         if (plan.settings.mode === 'image') {
           const assets = await api.generateImage(imageInput)
-          if (alive.current && epoch.current === owner && requests.current.has(plan.requestId)) {
+          if (alive.current && owner() && requests.current.has(plan.requestId)) {
             if (!assets.length) throw new Error('没有收到生成的图片')
             commit((workspace) => completeImages(workspace, plan.requestId, assets))
             if (!isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `image:${plan.requestId}`).catch(() => undefined)
@@ -236,10 +237,10 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
           }
         } else {
           await api.start(textInput)
-          if (!alive.current || epoch.current !== owner) void api.cancel(plan.requestId).catch(() => undefined)
+          if (!alive.current || !owner()) void api.cancel(plan.requestId).catch(() => undefined)
         }
       } catch (reason) {
-        if (alive.current && epoch.current === owner && requests.current.has(plan.requestId)) {
+        if (alive.current && owner() && requests.current.has(plan.requestId)) {
           const request = requests.current.get(plan.requestId)!
           if (request.cancelRequested) { request.failureDuringCancel = reason; return }
           commit((workspace) => applyStreamEvent(workspace, { requestId: plan.requestId, type: 'error', message: chatErrorMessage(reason) }))
@@ -265,13 +266,13 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const current = activeConversation(stateRef.current)
     const message = current.messages.find((item) => item.requestId && (item.status === 'pending' || item.status === 'streaming'))
     if (!message?.requestId) return
-    const requestId = message.requestId, owner = epoch.current
+    const requestId = message.requestId, owner = epoch.capture()
     const request = requests.current.get(requestId)
     if (!request || request.cancelRequested) return
     request.cancelRequested = true
     try {
       const result = await api.cancel(requestId)
-      if (!alive.current || epoch.current !== owner) return
+      if (!alive.current || !owner()) return
       if (result.canceled) {
         commit((workspace) => updateRequest(workspace, requestId, (item) => item.status === 'complete' || item.status === 'error' ? item : ({ ...item, status: 'canceled', mayStillComplete: result.mayStillComplete || item.mayStillComplete })))
         requests.current.delete(requestId)
@@ -286,7 +287,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       }
     } catch {
       request.cancelRequested = false
-      if (alive.current && epoch.current === owner) {
+      if (alive.current && owner()) {
         if ('failureDuringCancel' in request) {
           commit((workspace) => applyStreamEvent(workspace, { requestId, type: 'error', message: chatErrorMessage(request.failureDuringCancel) }))
           requests.current.delete(requestId)
@@ -299,18 +300,18 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   // 发起时的那个对话，中途切走了也不会贴错地方。
   const attachImages = async (work: (remaining: number) => Promise<AiChatAsset[]>) => {
     const current = activeConversation(stateRef.current)
-    const owner = epoch.current
+    const owner = epoch.capture()
     const remaining = chatLimits.imagesPerMessage - (current.draftImages?.length ?? 0)
     if (remaining <= 0) { setError(`一条消息最多带 ${chatLimits.imagesPerMessage} 张图片`); return }
     if (attachingRef.current) return
     attachingRef.current = true; setAttaching(true)
     try {
       const assets = await work(remaining)
-      if (!alive.current || owner !== epoch.current || !assets.length) return
+      if (!alive.current || !owner() || !assets.length) return
       commit((workspace) => changeConversation(workspace, current.id, (item) => addDraftImages(item, assets)))
       setError('')
     } catch (reason) {
-      if (alive.current && owner === epoch.current) setError(attachmentErrorMessage(reason))
+      if (alive.current && owner()) setError(attachmentErrorMessage(reason))
     } finally {
       attachingRef.current = false
       if (alive.current) setAttaching(false)

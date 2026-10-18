@@ -14,6 +14,7 @@ import { DialogExitButton, DialogExitLink, RadioCards, type RadioCardOption } fr
 import { OptionPicker, type PickerOption } from './OptionPicker'
 import { OtherModelsDialog } from './OtherModelsDialog'
 import { errorMessage, FailureReason, failureWithDetail } from '../../business-common'
+import { useLatestRequest } from '../../latest-request'
 import { currentWindowOs } from '../app/window-os'
 
 type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
@@ -80,8 +81,8 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   const [modelHints, setModelHints] = useState<CliModelHints | null>(null)
   // 「保存并检测」的检测这一步没读成：已有密钥的照旧能直接保存，按钮换回「保存配置」。
   const [detectTried, setDetectTried] = useState(false)
-  // 打开时自动读的那一次的编号，0 = 没在读。按编号清：先发的那次晚到时，关不掉后发那次的转圈。
-  const [autoDetectId, setAutoDetectId] = useState(0)
+  // 打开时自动读的那一次，null = 没在读。只清自己那次：先发的那次晚到时，关不掉后发那次的转圈。
+  const [autoDetect, setAutoDetect] = useState<object | null>(null)
   const [keyError, setKeyError] = useState('')
   const [keyRevision, setKeyRevision] = useState(0)
   const [keysLoading, setKeysLoading] = useState(false)
@@ -97,10 +98,10 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   const [locale, setLocale] = useState<CodexDesktopLocaleStatus | null>(null)
   const [permission, setPermission] = useState<CodexWorkspacePermissionStatus | null>(null)
   const [localeText, setLocaleText] = useState('')
-  const request = useRef(0)
+  const request = useLatestRequest()
   const active = useRef(true)
   const locked = useRef(false)
-  const metadataRequest = useRef(0)
+  const metadataRequest = useLatestRequest()
   const lastKeyRefresh = useRef(0)
   const desktopLoaded = useRef(false)
   const toast = useToast()
@@ -140,7 +141,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     setNotice('')
     setResetAsk(false)
   }
-  useEffect(() => { active.current = true; return () => { active.current = false; request.current++; metadataRequest.current++ } }, [])
+  useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   useEffect(() => {
     let current = true
     void api.cliModelHints().then((value) => { if (current) setModelHints(value) })
@@ -157,25 +158,25 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     return () => { current = false }
   }, [api, signedIn, keyRevision])
   useEffect(() => {
-    const owner = ++metadataRequest.current
+    const owner = metadataRequest.begin()
     if (!signedIn) return
     setMetadataLoading(true)
     setMetadataError('')
     void api.readKeyOptions(tool).then((value) => {
-      if (active.current && owner === metadataRequest.current) setMetadata(value)
+      if (active.current && owner()) setMetadata(value)
     }).catch((cause) => {
-      if (active.current && owner === metadataRequest.current) setMetadataError(errorMessage(cause, '当前密钥信息暂时没有读到'))
+      if (active.current && owner()) setMetadataError(errorMessage(cause, '当前密钥信息暂时没有读到'))
     }).finally(() => {
-      if (active.current && owner === metadataRequest.current) setMetadataLoading(false)
+      if (active.current && owner()) setMetadataLoading(false)
     })
-    return () => { metadataRequest.current++ }
+    return metadataRequest.invalidate
   }, [api, signedIn, tool, keyRevision])
   useEffect(() => {
-    request.current++
+    request.invalidate()
     setModels([])
     setModelsDetected(false)
     setDetectTried(false)
-    setAutoDetectId(0)
+    setAutoDetect(null)
     setError('')
   }, [draft.source, draft.keyId, draft.secret])
   // 下拉框里只有已选的那一个型号时，客户会以为只能用它（「为什么没有 6.1 Sol」）。
@@ -185,14 +186,15 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   // Mac 界面检查拿占位 Key 去请求正式服务。
   useEffect(() => {
     if (!signedIn || draft.source !== 'account' || !usingCurrentKey || !native.hasApiKey || !native.matchesRelay) return
-    const id = ++request.current
-    setAutoDetectId(id)
+    const id = request.begin()
+    const flight = {}
+    setAutoDetect(flight)
     void api.configuredModels(tool).then(offeredModels).then((result) => {
-      if (!active.current || id !== request.current) return
+      if (!active.current || !id()) return
       setModels(result)
       setModelsDetected(true)
     }).catch(() => undefined).finally(() => {
-      if (active.current) setAutoDetectId((current) => current === id ? 0 : current)
+      if (active.current) setAutoDetect((current) => current === flight ? null : current)
     })
   }, [])
   /** 读到的型号先过一遍：Codex 不列 grok-4.6（isHiddenCodexModel），别的工具照原样。 */
@@ -227,19 +229,19 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     if (locked.current || !readyToDetect(draft)) return
     const target = draft
     locked.current = true
-    const id = ++request.current
+    const id = request.begin()
     setModelsDetected(false)
     setBusy('检测模型'); setError('')
     try {
       const result = await listModels(target)
-      if (!active.current || id !== request.current) return
+      if (!active.current || !id()) return
       setModels(result)
       setModelsDetected(true)
       const next = detectedDraft(target, result)
       if (next !== target) change(next)
       if (!result.length) setError('这把密钥没有可用模型，请换一把密钥后重新检测。')
     } catch (cause) {
-      if (active.current && id === request.current) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) }
+      if (active.current && id()) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) }
     }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
@@ -249,14 +251,14 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     if (locked.current || !readyToDetect(draft)) return
     const target = draft
     locked.current = true
-    const id = ++request.current
+    const id = request.begin()
     setModelsDetected(false)
     setBusy('保存并检测'); setError(''); setWarning(''); setNotice('')
     let result: string[] | null = null
     try { result = await listModels(target) }
-    catch (cause) { if (active.current && id === request.current) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) } }
+    catch (cause) { if (active.current && id()) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) } }
     finally { locked.current = false; if (active.current) setBusy('') }
-    if (!result || !active.current || id !== request.current) return
+    if (!result || !active.current || !id()) return
     setModels(result)
     setModelsDetected(true)
     const next = detectedDraft(target, result)
@@ -313,7 +315,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   async function saveAndDetectModels() {
     if (locked.current || !usingAutomaticKey || !readyToSave(draft, models)) return
     locked.current = true
-    const id = ++request.current
+    const id = request.begin()
     setModelsDetected(false)
     setBusy('保存并检测'); setError(''); setWarning(''); setNotice('')
     let saved = false
@@ -334,7 +336,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       const savedDraft = { ...draft, model: savedModel, dirty: false }
       setEdited(savedDraft)
       const result = offeredModels(await api.configuredModels(tool))
-      if (!active.current || id !== request.current) return
+      if (!active.current || !id()) return
       setModels(result)
       setModelsDetected(true)
       const suggested = result.includes(savedModel) ? savedModel : resolveDefaultCliModel(provider, result, savedModel, modelHints) ?? ''
@@ -342,7 +344,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (markerWarning) setWarning(markerWarning)
       setNotice('密钥已准备好并保存。想换模型就在上面选，选完再点「保存配置」。')
     } catch (cause) {
-      if (!active.current || id !== request.current) return
+      if (!active.current || !id()) return
       // 写进去了就要说清楚，否则用户会以为什么都没改、再去点一遍。
       setError(saved ? `配置已保存，但模型列表暂时没读到：${errorMessage(cause, '请稍后再点一次')}` : failureWithDetail(cause, '保存并检测没有成功'))
     }
@@ -447,7 +449,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     ...(!usingCurrentKey && !usingAutomaticKey && !selectedKey ? [{ value: draft.keyId, label: '所选密钥已不可用，请重新选择', disabled: true }] : []),
   ]
   const detectedForDraft = modelsDetected && (draft.source !== 'manual' || draft.validatedSecret === draft.secret)
-  const detecting = busy === '检测模型' || autoDetectId !== 0
+  const detecting = busy === '检测模型' || autoDetect !== null
   const modelCount = new Set(models.filter(Boolean)).size
   const settledSource = currentSource === 'account' || currentSource === 'official' || currentSource === 'manual'
   // 没改动、来源也清楚的，底栏就是「完成」：点了只是关上，不再写一遍。工具里还没配模型、

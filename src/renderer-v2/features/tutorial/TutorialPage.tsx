@@ -3,6 +3,7 @@ import { AppWindow, Archive, ArrowLeft, ArrowLeftRight, ArrowRight, BookOpen, Ch
 import { Button, Card, Chips, Empty, PageHead, Pill, SearchInput } from '../../ui'
 import type { BusinessActions } from '../../pages-maintenance'
 import { tutorialCategories, tutorialTopicsFor, type TutorialCategoryFilter, type TutorialTopic } from '../../registry/tutorials'
+import { useLatestRequest } from '../../latest-request'
 import { currentWindowOs, type WindowOs } from '../app/window-os'
 import type { V2Page } from '../../types'
 import { TutorialIllustration } from './TutorialIllustration'
@@ -74,19 +75,18 @@ function Hits({ text, words }: { text: string; words: readonly string[] }) {
 
 function TutorialExample({ text, firstMessage, words, testId }: { text: string; firstMessage: boolean; words: readonly string[]; testId: string }) {
   const [status, setStatus] = useState<'idle' | 'copying' | 'success' | 'error'>('idle')
-  const lifetime = useRef(0)
+  const lifetime = useLatestRequest()
   const pending = useRef(false)
-  useEffect(() => () => { lifetime.current += 1 }, [])
   async function copy() {
     if (pending.current) return
-    const ticket = lifetime.current
+    const ticket = lifetime.capture()
     pending.current = true
     setStatus('copying')
     try {
       await navigator.clipboard.writeText(text)
-      if (ticket === lifetime.current) setStatus('success')
+      if (ticket()) setStatus('success')
     } catch {
-      if (ticket === lifetime.current) setStatus('error')
+      if (ticket()) setStatus('error')
     } finally { pending.current = false }
   }
   return <div className="v2-tutorial-example">

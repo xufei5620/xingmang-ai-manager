@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, ChoiceMenu, Confirm, Dialog, Input, Logo, Menu, Pill, SearchInput, Segment, Textarea, useToast } from '../../ui'
+import { useLatestRequest } from '../../latest-request'
 import { PageLoading } from '../app/PageLoading'
 import { canReadImages, chatLimits, createChatApi, inspectModel, type ChatApi } from './api'
 import { activeConversation, chatErrorAction, chatErrorMessage, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace } from './state'
@@ -83,8 +84,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const lastDisplayedConversation = useRef<string | null>(null)
   const scrolls = useRef(new Map<string, number>())
   const stickToBottom = useRef(true)
-  const owner = useRef(0)
-  useEffect(() => () => { owner.current++ }, [])
+  const owner = useLatestRequest()
   useEffect(() => {
     if (!active) return
     const frame = requestAnimationFrame(() => {
@@ -126,26 +126,26 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   }
   const candidates = useMemo(() => active ? filterConversations(chat.state.conversations, search) : [], [active, chat.state.conversations, search])
   const task = async (work: () => Promise<unknown>, done: string) => {
-    const ticket = owner.current
-    try { await work(); if (ticket === owner.current) chat.setNotice(done) }
-    catch (reason) { if (ticket === owner.current) chat.setError(chatErrorMessage(reason)) }
+    const ticket = owner.capture()
+    try { await work(); if (ticket()) chat.setNotice(done) }
+    catch (reason) { if (ticket()) chat.setError(chatErrorMessage(reason)) }
   }
   const copyText = async (text: string, done = '已复制') => {
-    const ticket = owner.current
-    try { await api.copyText(text); if (ticket === owner.current) toast.show(done, 'ok') }
-    catch { if (ticket === owner.current) setCopyFallback(text) }
+    const ticket = owner.capture()
+    try { await api.copyText(text); if (ticket()) toast.show(done, 'ok') }
+    catch { if (ticket()) setCopyFallback(text) }
   }
   const copyCode = async (text: string) => {
-    const ticket = owner.current
-    try { await api.copyText(text); if (ticket === owner.current) toast.show('代码已复制', 'ok'); return true }
-    catch { if (ticket === owner.current) setCopyFallback(text); return false }
+    const ticket = owner.capture()
+    try { await api.copyText(text); if (ticket()) toast.show('代码已复制', 'ok'); return true }
+    catch { if (ticket()) setCopyFallback(text); return false }
   }
   const copyCodeRef = useRef(copyCode)
   copyCodeRef.current = copyCode
   const copyLink = async (url: string) => {
-    const ticket = owner.current
-    try { await api.copyText(url); if (ticket === owner.current) toast.show('网址已复制，粘贴到浏览器地址栏就能打开', 'ok') }
-    catch { if (ticket === owner.current) setCopyFallback(url) }
+    const ticket = owner.capture()
+    try { await api.copyText(url); if (ticket()) toast.show('网址已复制，粘贴到浏览器地址栏就能打开', 'ok') }
+    catch { if (ticket()) setCopyFallback(url) }
   }
   const copyLinkRef = useRef(copyLink)
   copyLinkRef.current = copyLink
@@ -155,9 +155,9 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   // Only replies get formulas: what the user typed shows exactly as typed.
   const replyComponents = useMemo<Components>(() => ({ ...markdownComponents, code: ({ children, className }) => { const math = readChatMath(children); return math ? <ChatFormula math={math} /> : <code className={className}>{children}</code> } }), [markdownComponents])
   const saveAsset = async (assetId: string) => {
-    const ticket = owner.current
-    try { const result = await api.saveAsset(assetId); if (ticket === owner.current && result.saved) chat.setNotice('图片已保存') }
-    catch { if (ticket === owner.current) chat.setError('图片没有保存成功，可以重试') }
+    const ticket = owner.capture()
+    try { const result = await api.saveAsset(assetId); if (ticket() && result.saved) chat.setNotice('图片已保存') }
+    catch { if (ticket()) chat.setError('图片没有保存成功，可以重试') }
   }
   // Rows are memoized, so they get one stable object that always calls the
   // latest handlers instead of fresh closures that would re-render all of them.
@@ -167,21 +167,21 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const exportConversation = async (id: string) => {
     const item = chat.state.conversations.find((candidate) => candidate.id === id)
     if (!item) return
-    const ticket = owner.current
+    const ticket = owner.capture()
     try {
       const result = await api.exportText({ title: item.title, text: conversationPlainText(item) })
-      if (ticket === owner.current && result) chat.setNotice('这段对话已存成文本文件')
-    } catch { if (ticket === owner.current) chat.setError('这段对话没有导出成功，可以重试') }
+      if (ticket() && result) chat.setNotice('这段对话已存成文本文件')
+    } catch { if (ticket()) chat.setError('这段对话没有导出成功，可以重试') }
   }
-  const stop = async () => { const ticket = owner.current; setStopping(true); await chat.stop(); if (owner.current === ticket) setStopping(false) }
+  const stop = async () => { const ticket = owner.capture(); setStopping(true); await chat.stop(); if (ticket()) setStopping(false) }
   const reloadHistory = async () => {
-    const ticket = owner.current
+    const ticket = owner.capture()
     setReloading(true)
     try {
       const warning = await onReloadHistory(() => latestState.current)
       // 还是读不出来时红条原样不变，转一下圈就停，客户分不清读过没有：把读不出来的原因再说一遍。
-      if (warning && owner.current === ticket) toast.show(warning, 'warn')
-    } finally { if (owner.current === ticket) setReloading(false) }
+      if (warning && ticket()) toast.show(warning, 'warn')
+    } finally { if (ticket()) setReloading(false) }
   }
   const fillExample = (text: string) => {
     chat.setDraft(text)
@@ -217,10 +217,10 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const modelLabel = !chat.groupsLoaded && chat.groupLoading ? '正在读取分组' : !conversation.settings.group ? chat.groups.length ? '请选择分组' : '暂无可用分组' : conversation.settings.model && !selectedModelMissing ? conversation.settings.model : preparation?.phase === 'loading' ? '正在准备模型' : '请选择模型'
   const modelsEmpty = !conversation.settings.group ? chat.groups.length ? '请选择分组' : '暂无可用分组' : preparation?.phase === 'loading' ? '正在准备模型' : preparation?.phase === 'error' ? preparation.error : preparation?.phase === 'ready' ? `这个分组暂未提供${textMode ? '聊天' : '图片'}模型，请切换分组。` : '请选择模型'
   const refreshModels = async () => {
-    const ticket = owner.current
+    const ticket = owner.capture()
     const group = conversation.settings.group
     const prepared = await chat.refreshGroupsAndModels()
-    if (ticket !== owner.current || !prepared) return
+    if (!ticket() || !prepared) return
     const mode = activeConversation(latestState.current).settings.mode
     toast.show(`已刷新：${group}分组有 ${prepared.filter((model) => inspectModel(model).kind === (mode === 'image' ? 'image' : 'chat')).length} 个模型可用`, 'ok')
   }

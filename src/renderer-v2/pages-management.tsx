@@ -80,6 +80,7 @@ import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice, re
 import { launchDeclined, resumeSessionNotice } from './features/tools/launch-notice'
 import { runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import type { OperationTarget } from './operation-error'
+import { useLatestRequest } from './latest-request'
 import type { V2Bridge, V2Page } from './types'
 import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
 import './extensions.css'
@@ -1622,16 +1623,16 @@ export function SessionsPage({
 function useMcpHealth(api: V2Bridge, provider: Provider, enabled: boolean) {
   const [report, setReport] = useState<McpHealthReport | null>(null)
   const [checking, setChecking] = useState(false)
-  const sequence = useRef(0)
+  const sequence = useLatestRequest()
   const check = useCallback(async () => {
-    const id = ++sequence.current
+    const id = sequence.begin()
     setReport(null)
     setChecking(true)
     try {
       const result = await api.checkProviderMcpHealth(provider)
-      if (id === sequence.current) setReport(result)
+      if (id()) setReport(result)
     } catch (cause) {
-      if (id === sequence.current) {
+      if (id()) {
         setReport({
           provider,
           checkedAt: new Date().toISOString(),
@@ -1641,21 +1642,19 @@ function useMcpHealth(api: V2Bridge, provider: Provider, enabled: boolean) {
         })
       }
     } finally {
-      if (id === sequence.current) setChecking(false)
+      if (id()) setChecking(false)
     }
-  }, [api, provider])
+  }, [api, provider, sequence])
   useEffect(() => {
     if (!enabled) {
-      sequence.current += 1
+      sequence.invalidate()
       setReport(null)
       setChecking(false)
       return
     }
     void check()
-    return () => {
-      sequence.current += 1
-    }
-  }, [check, enabled])
+    return sequence.invalidate
+  }, [check, enabled, sequence])
   return { report, checking, check }
 }
 

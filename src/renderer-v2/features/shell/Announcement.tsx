@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Bell, ChevronRight, ExternalLink, Gift, X } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
+import { useLatestRequest } from '../../latest-request'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
 import { writeLocalPreference } from '../app/preferences'
 import { useOnlineStatus } from './useOnlineStatus'
@@ -1027,7 +1028,8 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const [readErrors, setReadErrors] = useState<Record<string, string>>({})
   const [markingIds, setMarkingIds] = useState<string[]>([])
   const [blockedLink, setBlockedLink] = useState<BlockedLinkNotice | null>(null)
-  const revision = useRef(0)
+  const revision = useLatestRequest()
+  // 正在标已读的那几条，每读一轮换一份：上一轮还没回来的，不挡这一轮再点同一条。
   const pendingReads = useRef(new Set<string>())
   const rows = useRef(new Map<string, HTMLButtonElement>())
   const detailHeading = useRef<HTMLHeadingElement>(null)
@@ -1103,14 +1105,15 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }, [scope, read, syncLocalReads, withTimeline])
   useEffect(() => {
     let current = true
-    revision.current += 1
+    revision.invalidate()
+    pendingReads.current = new Set()
     setAnnouncement(null); setError(null); setLoading(true); setSelectedId(null)
     setReadErrors({}); setMarkingIds([])
     returnToRow.current = null
     setReadId(readLegacyAnnouncementId(scope))
     lastSilentLoad.current = Date.now()
     void loadNotice(() => current).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
-    return () => { current = false; revision.current += 1 }
+    return () => { current = false; revision.invalidate() }
   }, [scope, loadNotice, attempt])
   // 后台再读不打断用户：不清空、不转圈，读失败就保留眼前的内容，下一轮再试。
   // 公告窗口开着时不读，那里有「重新读取」，免得正在看的内容被换掉。
@@ -1126,8 +1129,8 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     lastSilentLoad.current = Date.now()
     silentLoad.current = true
     let active = true
-    const startRevision = revision.current
-    const isCurrent = () => active && revision.current === startRevision
+    const sameRevision = revision.capture()
+    const isCurrent = () => active && sameRevision()
     void loadNotice(isCurrent, 'cached').then((value) => {
       if (!isCurrent()) return
       setAnnouncement((previous) => sameAnnouncementSnapshot(previous, value) ? previous : value)
@@ -1253,10 +1256,10 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
 
   async function markEntryRead(entry: NonNullable<Announcement['entries']>[number]) {
     if (!announcement || entry.read) return
-    const capturedRevision = revision.current
-    const key = `${capturedRevision}:${entry.id}`
-    if (pendingReads.current.has(key)) return
-    pendingReads.current.add(key)
+    const capturedRevision = revision.capture()
+    const pending = pendingReads.current
+    if (pending.has(entry.id)) return
+    pending.add(entry.id)
     setMarkingIds((current) => [...current, entry.id])
     setReadErrors((current) => ({ ...current, [entry.id]: '' }))
     try {
@@ -1270,15 +1273,15 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
         if (!markRemoteRead) throw new Error('公告已读状态暂时无法保存，请稍后重试。')
         await markRemoteRead(announcement.id, entry.id)
       }
-      if (revision.current !== capturedRevision) return
+      if (!capturedRevision()) return
       setAnnouncement((current) => current?.id === announcement.id ? {
         ...current, entries: current.entries?.map((item) => item.id === entry.id ? { ...item, read: true } : item),
       } : current)
     } catch (cause) {
-      if (revision.current === capturedRevision) setReadErrors((current) => ({ ...current, [entry.id]: formatAnnouncementError(cause).message }))
+      if (capturedRevision()) setReadErrors((current) => ({ ...current, [entry.id]: formatAnnouncementError(cause).message }))
     } finally {
-      pendingReads.current.delete(key)
-      if (revision.current === capturedRevision) setMarkingIds((current) => current.filter((id) => id !== entry.id))
+      pending.delete(entry.id)
+      if (capturedRevision()) setMarkingIds((current) => current.filter((id) => id !== entry.id))
     }
   }
   function openEntry(entry: NonNullable<Announcement['entries']>[number]) {
@@ -1310,21 +1313,21 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   }
   async function markLegacyRead(closeAfter = false) {
     if (!announcement || entries) return
-    const capturedRevision = revision.current
+    const capturedRevision = revision.capture()
     try {
       if (syncLocalReads) {
         const id = await legacyAnnouncementReadId(announcement.id)
-        if (revision.current !== capturedRevision) return
+        if (!capturedRevision()) return
         await syncLocalReads(scope, [id])
         writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)
       } else if (!writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)) {
         throw new Error('本机没有保存已读状态，下次打开时可能再次提醒。')
       }
     } catch (cause) {
-      if (revision.current === capturedRevision) setError(formatAnnouncementError(cause))
+      if (capturedRevision()) setError(formatAnnouncementError(cause))
       return
     }
-    if (revision.current !== capturedRevision) return
+    if (!capturedRevision()) return
     setReadId(announcement.id)
     setError(null)
     if (closeAfter) closeDialog()

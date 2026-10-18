@@ -6,6 +6,7 @@ import { pageRegistry, type PageId } from '../../registry/pages'
 import { accountTabs, type SettingsItem } from '../../registry/business'
 import '../../styles/shell.css'
 import { errorMessage } from '../../business-common'
+import { useLatestRequest } from '../../latest-request'
 import { LocalAvatar } from '../../LocalAvatar'
 import type { AvatarIdentity } from '../../local-avatar'
 import type { EnvironmentStatus } from '../app/environment-status'
@@ -177,7 +178,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const [selection, setSelection] = useState(0)
   const [bonusBusy, setBonusBusy] = useState(false)
   const [bonusFeedback, setBonusFeedback] = useState<{ error: boolean; text: string } | null>(null)
-  const commandEpoch = useRef(0)
+  const commandEpoch = useLatestRequest()
   const bonusFlight = useRef<object | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
@@ -191,16 +192,16 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   }, tutorialTopicsFor(platform))
   const bonusAction = Boolean(adapter.redeemAccelerationCode && isAccelerationBonusCode(query))
   const resultCount = bonusAction ? 1 : results.length
-  useEffect(() => () => { commandEpoch.current++; bonusFlight.current = null }, [])
+  useEffect(() => () => { bonusFlight.current = null }, [])
   // 结果比列表高时，用方向键选到下面的项也要滚进来。
   useEffect(() => {
     resultsRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' })
   }, [selection])
   function openCommand() {
-    commandEpoch.current++
+    commandEpoch.invalidate()
     setCommand(true); setQuery(''); setSelection(0); setBonusFeedback(null)
   }
-  function closeCommand() { commandEpoch.current++; setCommand(false) }
+  function closeCommand() { commandEpoch.invalidate(); setCommand(false) }
   function openResult(item: CommandResult) {
     closeCommand()
     if (item.action === 'check') { if (adapter.startCheck) adapter.startCheck(); else adapter.navigate?.('health') }
@@ -219,19 +220,19 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     if (bonusFlight.current || !isAccelerationBonusCode(query) || !adapter.redeemAccelerationCode) return
     if (offline) { setBonusFeedback({ error: true, text: offlineActionMessage }); return }
     const flight = {}
-    const epoch = commandEpoch.current
+    const epoch = commandEpoch.capture()
     bonusFlight.current = flight
     setBonusBusy(true); setBonusFeedback(null)
     try {
       const result = await adapter.redeemAccelerationCode(query.trim().toUpperCase())
-      if (commandEpoch.current !== epoch || !result) return
+      if (!epoch() || !result) return
       setBonusFeedback(result.status === 'redeemed'
         ? { error: false, text: `领取成功，已增加 ${result.addedSeconds / 60} 分钟加速时长。` }
         : result.status === 'already-redeemed'
           ? { error: false, text: '当前账号已在本机领取过该口令。' }
           : { error: true, text: '口令无效，请核对后重试。' })
     } catch (cause) {
-      if (commandEpoch.current === epoch) setBonusFeedback({ error: true, text: errorMessage(cause, '领取失败，请稍后重试。') })
+      if (epoch()) setBonusFeedback({ error: true, text: errorMessage(cause, '领取失败，请稍后重试。') })
     } finally {
       if (bonusFlight.current === flight) { bonusFlight.current = null; setBonusBusy(false) }
     }
@@ -477,7 +478,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     </div>
     {/* 没有标题行（读屏照样念「搜索或跳转」）；框顶钉在窗口约六分之一处，打字时不跳。 */}
     {command && <Dialog open headless title={commandTitle} onClose={closeCommand} width={640} initialFocus={searchRef} testId="command-palette">
-      <div className="v2-command-search"><Search size={17} aria-hidden="true" /><Input ref={searchRef} type="search" aria-label={commandTitle} placeholder={commandPlaceholder} value={query} onChange={(event) => { commandEpoch.current++; setQuery(event.target.value); setSelection(0); setBonusFeedback(null) }} onKeyDown={(event) => {
+      <div className="v2-command-search"><Search size={17} aria-hidden="true" /><Input ref={searchRef} type="search" aria-label={commandTitle} placeholder={commandPlaceholder} value={query} onChange={(event) => { commandEpoch.invalidate(); setQuery(event.target.value); setSelection(0); setBonusFeedback(null) }} onKeyDown={(event) => {
         if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
         if (event.key === 'ArrowDown') { event.preventDefault(); setSelection((current) => resultCount ? (current + 1) % resultCount : 0) }
         else if (event.key === 'ArrowUp') { event.preventDefault(); setSelection((current) => resultCount ? (current + resultCount - 1) % resultCount : 0) }
