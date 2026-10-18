@@ -4992,6 +4992,97 @@ test('a Claude Code settings file it cannot read is reset on the current account
   } finally { await page.close() }
 })
 
+// #1073 评论第 2 条：命令行工具和 Claude Desktop 卡片上「用哪个账号」菜单的字收成一份以后，
+// 两张卡上看得见的每一个字（来源牌、读屏念的那句、标题、每一项和说明、勾在哪、哪项点不动）都和原来一样。
+async function sourceMenuEntries(page, tool) {
+  const chip = page.getByTestId(`tool-${tool}-source`)
+  const shown = { chip: (await chip.innerText()).trim(), label: await chip.getAttribute('aria-label') }
+  await chip.click()
+  const menu = page.getByTestId(`tool-${tool}-source-menu`).getByRole('menu')
+  await menu.waitFor()
+  shown.menu = await menu.getAttribute('aria-label')
+  shown.entries = await menu.evaluate((panel) => [...panel.children].map((node) => {
+    if (node.tagName === 'HR') return 'divider'
+    if (node.classList.contains('xm-menu-heading')) return { heading: node.textContent }
+    if (node.classList.contains('xm-menu-note')) return { note: node.textContent }
+    const text = node.querySelector('.xm-menu-text')
+    return { label: text ? text.querySelector('span').textContent : node.textContent, description: text?.querySelector('small').textContent ?? null,
+      checked: node.getAttribute('aria-checked'), disabled: node.disabled, testId: node.getAttribute('data-testid') }
+  }))
+  await page.keyboard.press('Escape')
+  await menu.waitFor({ state: 'detached' })
+  return shown
+}
+function sourceChoice(tool, kind, label, description, checked) {
+  return { label, description, checked: String(checked), disabled: false, testId: `tool-${tool}-source-${kind}` }
+}
+function shownSourceMenu(label, chip, choices) {
+  return { chip, label, menu: label, entries: [{ heading: '用哪个账号使用 AI' }, ...choices, 'divider',
+    { label: '更多配置…', description: null, checked: null, disabled: false, testId: null }] }
+}
+const codexSharedNote = { note: 'Codex CLI 和 Codex 桌面端共用这份配置' }
+
+test('the which-account menus on the CLI and Claude Desktop cards keep every word they showed before sharing one copy', async () => {
+  let page = await open('allInstalled=1')
+  try {
+    assert.deepEqual(await sourceMenuEntries(page, 'claude'), shownSourceMenu('Claude Code 现在用当前账号，点击切换', '当前账号', [
+      sourceChoice('claude', 'account', '当前账号', '按用量从当前账号扣费', true),
+      sourceChoice('claude', 'official', 'Claude 账号', '用你自己的官方订阅登录', false),
+      sourceChoice('claude', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+    ]))
+    for (const [tool, label] of [['codex', 'Codex CLI 现在用当前账号，点击切换'], ['codexDesktop', 'Codex 桌面端现在用当前账号，点击切换']]) {
+      assert.deepEqual(await sourceMenuEntries(page, tool), shownSourceMenu(label, '当前账号', [
+        sourceChoice(tool, 'account', '当前账号', '按用量从当前账号扣费', true),
+        sourceChoice(tool, 'official', 'ChatGPT 账号', '用你自己的官方订阅登录', false),
+        sourceChoice(tool, 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+        codexSharedNote,
+      ]))
+    }
+    assert.deepEqual(await sourceMenuEntries(page, 'grok'), shownSourceMenu('Grok CLI 现在用当前账号，点击切换', '当前账号', [
+      sourceChoice('grok', 'account', '当前账号', '按用量从当前账号扣费', true),
+      sourceChoice('grok', 'official', 'Grok 账号', '用你自己的官方订阅登录', false),
+      sourceChoice('grok', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+    ]))
+    await clean(page)
+  } finally { await page.close() }
+  page = await open('manualClaude=1')
+  try {
+    assert.deepEqual(await sourceMenuEntries(page, 'claude'), shownSourceMenu('Claude Code 现在用自己的密钥，点击切换', '自己的密钥', [
+      sourceChoice('claude', 'account', '当前账号', '按用量从当前账号扣费', false),
+      sourceChoice('claude', 'official', 'Claude 账号', '用你自己的官方订阅登录', false),
+      sourceChoice('claude', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', true),
+    ]))
+    await clean(page)
+  } finally { await page.close() }
+  for (const [query, officialDescription] of [['official=1', '用你自己的官方订阅登录'], ['official=1&officialEmail=1', 'chatgpt@example.test，Plus']]) {
+    page = await open(query)
+    try {
+      assert.deepEqual(await sourceMenuEntries(page, 'codex'), shownSourceMenu('Codex CLI 现在用官方账号，点击切换', '官方账号', [
+        sourceChoice('codex', 'account', '当前账号', '按用量从当前账号扣费', false),
+        sourceChoice('codex', 'official', 'ChatGPT 账号', officialDescription, true),
+        sourceChoice('codex', 'manual', '自己填写密钥', '粘贴你在星芒创建的密钥', false),
+        codexSharedNote,
+      ]))
+      await clean(page)
+    } finally { await page.close() }
+  }
+  page = await open('externalInstalled=1&externalReady=claudeDesktop')
+  try {
+    assert.deepEqual(await sourceMenuEntries(page, 'claudeDesktop'), shownSourceMenu('Claude Desktop 现在用当前账号，点击切换', '当前账号', [
+      sourceChoice('claudeDesktop', 'account', '当前账号', '按用量从当前账号扣费', true),
+      sourceChoice('claudeDesktop', 'official', 'Claude 账号', '用你自己的官方订阅登录', false),
+    ]))
+    await page.getByTestId('tool-claudeDesktop-source').click()
+    await page.getByTestId('tool-claudeDesktop-source-official').click()
+    await expect(page.getByTestId('tool-claudeDesktop-source')).toHaveText('官方账号')
+    assert.deepEqual(await sourceMenuEntries(page, 'claudeDesktop'), shownSourceMenu('Claude Desktop 现在用官方账号，点击切换', '官方账号', [
+      sourceChoice('claudeDesktop', 'account', '当前账号', '按用量从当前账号扣费', false),
+      sourceChoice('claudeDesktop', 'official', 'Claude 账号', '用你自己的官方订阅登录', true),
+    ]))
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a Codex login file Codex cannot read is reset from either Codex row', async () => {
   const page = await open('codexAuthBroken=1')
   try {
