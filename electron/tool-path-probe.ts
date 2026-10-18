@@ -5,7 +5,7 @@ import tls, { type PeerCertificate, type TLSSocket } from 'node:tls'
 import { X509Certificate } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import { readBoundedResponseText } from './bounded-response'
-import { classifyNetworkFailure } from './network-failure'
+import { classifyNetworkFailure, isTlsHandshakeFailure } from './network-failure'
 import { relayEndpointOrigin } from './relay-sites'
 import type { StaleProxyVariableName } from './stale-proxy-environment'
 
@@ -490,7 +490,10 @@ export async function probeToolPathThroughFetch(fetchImpl: typeof fetch, origin:
     })
   } catch (error) {
     const reason = classifyNetworkFailure(error)
-    const kind: ToolPathFailureKind = reason === 'dns' ? 'dns' : reason === 'timeout' ? 'timeout' : reason === 'refused' ? 'refused'
+    // 握手被掐断和不经代理那条一样算 tls（toolPathFailureKind），不算证书错误：不然经代理时会把它
+    // 说成「安全软件接管」（#1060）。
+    const kind: ToolPathFailureKind = isTlsHandshakeFailure(error) ? 'tls'
+      : reason === 'dns' ? 'dns' : reason === 'timeout' ? 'timeout' : reason === 'refused' ? 'refused'
       : reason === 'tls' || reason === 'certDate' || reason === 'intercepted' ? 'certificate' : 'reset'
     return { ok: false, kind, addresses: [], attempts: [] }
   }

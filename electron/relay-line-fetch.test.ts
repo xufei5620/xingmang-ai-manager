@@ -205,7 +205,9 @@ describe('createRelayLineFetch', () => {
     }
 
     // 代理回绝了直连这个地址（ERR_TUNNEL_CONNECTION_FAILED）：连接都没建起来。
-    for (const code of ['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TUNNEL_CONNECTION_FAILED']) {
+    // 握手被掐断现在和连接被重置说同一句（#1060），可它仍和证书失败一样算没送到。
+    for (const code of ['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TUNNEL_CONNECTION_FAILED',
+      'ERR_SSL_PROTOCOL_ERROR', 'ERR_QUIC_HANDSHAKE_FAILED']) {
       const result = await post(networkError(code))
       expect(result.outcome).toBe(200)
       expect(result.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
@@ -856,6 +858,7 @@ describe('relayLineFailureReason', () => {
     expect(relayLineFailureReason(networkError('ERR_NAME_NOT_RESOLVED'))).toBe('dns')
     expect(relayLineFailureReason(networkError('ERR_CERT_DATE_INVALID'))).toBe('certDate')
     expect(relayLineFailureReason(networkError('ERR_CONNECTION_RESET'))).toBe('refused')
+    expect(relayLineFailureReason(networkError('ERR_SSL_PROTOCOL_ERROR'))).toBe('refused')
     expect(relayLineFailureReason(networkError('ERR_INTERNET_DISCONNECTED'))).toBe('offline')
     // 代理回绝了这个地址，换一条线路有可能放行；代理软件本身没开换哪条都一样。
     expect(relayLineFailureReason(networkError('ERR_TUNNEL_CONNECTION_FAILED'))).toBe('proxy')
