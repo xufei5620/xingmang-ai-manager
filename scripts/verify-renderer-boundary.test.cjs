@@ -35,6 +35,8 @@ const valueImportable = [
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
   'electron/cli-model-defaults',
+  // 工具配置文件是个链接时那句话的标志，主进程拼、错误框照它认出来配「配置文件是个链接」（#1100 第 2 条）。
+  'electron/config-link-refusal',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
   'electron/external-url-blocked',
@@ -43,6 +45,8 @@ const valueImportable = [
   // Mac 上一键装桌面端没装成的那几句话，主进程拼、错误框照它认出来配「看安装指南」。
   'electron/macos-desktop-install-failure',
   'electron/network-failure',
+  // npm 没装成那句里「整句自己说清了下一步」的几类错误码，主进程拼、错误框照它认（#1100 第 1 条）。
+  'electron/npm-failure-reasons',
   // 错误框「给客服看的原话」和「复制给客服」要和日志、反馈报告用同一张 Key 打码表（第二十批 2、3）。
   'electron/redaction-patterns',
   'electron/relay-quota-failure',

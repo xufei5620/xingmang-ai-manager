@@ -177,7 +177,7 @@ export function createMacosSystemProxy(options: MacosSystemProxyOptions) {
       const preparedPath = await (options.prepareHelper ?? prepareMacosProxyHelper)(helperPath)
       validate(preparedPath)
       child = (options.spawnHelper ?? spawnHelper)(preparedPath, ['--journal', options.journalPath])
-    } catch { throw new Error('系统代理组件不可用，请重新安装或联系支持') }
+    } catch { throw new Error('系统代理组件不可用，请重新安装星芒；还不行请联系客服。') }
     const active = child
     active.stderr.resume()
     active.stdin.on('error', () => { if (child === active) disconnect(new Error('系统代理连接已中断，正在尝试恢复')) })

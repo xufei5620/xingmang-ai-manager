@@ -10,6 +10,7 @@ import {
   trustedCommandEnvironment,
   type CommandSpec,
 } from './command-runner'
+import { isChineseSentence } from './chinese-sentence'
 import { cliExitHintLines } from './cli-exit-hint'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -764,9 +765,11 @@ export function describeWindowsCliLaunchError(error: unknown): string {
   if (/directory (?:name )?is invalid|cannot find.*path|找不到.*路径|目录.*(?:无效|不存在)/i.test(detail)) {
     return '工作目录已失效或无法访问，请重新选择工作目录'
   }
-  return detail
+  // 中文 Windows 上 PowerShell 的原话本来就是中文，照旧接上；英文的（spawn … EMFILE、英文系统的报错）和
+  // 什么都没说的，只说原因已经记进运行日志：原话在 system-service.ts 的 terminal.failed 那条里（#1100 第1、4条）。
+  return detail && isChineseSentence(detail)
     ? `Windows 无法启动 PowerShell：${detail}`
-    : 'Windows 无法启动 PowerShell，请查看反馈与诊断日志'
+    : 'Windows 没能启动 PowerShell，原因已经记进运行日志。'
 }
 
 /** What the broker and Node reported about a launch that failed, for the log only. */
