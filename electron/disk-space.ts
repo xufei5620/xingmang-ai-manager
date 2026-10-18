@@ -120,8 +120,13 @@ export function tightestDiskSpace(
 
 /**
  * 安装前的判断。读不到空间返回 null（放行），只有确实低于门槛才给出那句拦住
- * 安装的话。措辞里的「磁盘空间不足」是刻意的：渲染层 operation-error.ts 靠它
- * 把这次失败归进已有的「磁盘空间不够」一类，不另立新类。
+ * 安装的话。措辞里的「磁盘空间不足」「C 盘空间不足」是刻意的：渲染层
+ * operation-error.ts 和两个桌面端的失败分类靠它把这次失败归进已有的「磁盘空间
+ * 不够」一类，不另立新类，改字要一起改那几处。
+ *
+ * Windows 上写出实际不够的那个盘（#1157 第 13 条）：量的是系统临时目录和托管
+ * 目录两处里最紧的那块，以前一律说「安装目录所在磁盘」，下载的临时文件其实在
+ * 系统盘，客户照着去清安装目录那块盘，清完还是装不上。
  */
 export function describeInsufficientDiskSpace(
   reading: DiskSpaceReading | null,
@@ -129,8 +134,10 @@ export function describeInsufficientDiskSpace(
 ): string | null {
   if (!reading) return null
   if (reading.availableBytes >= minimumBytes) return null
-  return `安装目录所在磁盘空间不足，只剩 ${formatFreeSpace(reading.availableBytes)}，`
-    + `至少需要 ${formatFreeSpace(minimumBytes)}，请先清理磁盘再试`
+  const remaining = `只剩 ${formatFreeSpace(reading.availableBytes)}，至少需要 ${formatFreeSpace(minimumBytes)}`
+  const drive = /^([A-Za-z]):(?:[\\/]|$)/.exec(reading.measuredPath)?.[1]?.toUpperCase()
+  if (drive) return `${drive} 盘空间不足，${remaining}，请先清理 ${drive} 盘再试`
+  return `磁盘空间不足，${remaining}，请先清理磁盘再试`
 }
 
 /**

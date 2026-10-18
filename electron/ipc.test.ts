@@ -4555,6 +4555,26 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       }))
     })
 
+    it('passes trust through only as a literal true', () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      handler(trustedEvent(), { provider: 'grok', kind: 'plugin', action: 'install', source: 'owner/repo', trust: true })
+      expect(providerExtensionService.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ trust: true }))
+
+      handler(trustedEvent(), { provider: 'grok', kind: 'plugin', action: 'install', source: 'owner/repo', trust: false })
+      expect(providerExtensionService.mutate).toHaveBeenLastCalledWith(expect.not.objectContaining({ trust: expect.anything() }))
+    })
+
+    it.each(['true', 1, null, {}])('rejects a non-boolean trust value %j', (trust) => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'grok', kind: 'plugin', action: 'install', source: 'owner/repo', trust,
+      })).toThrow('扩展操作格式错误')
+    })
+
     it('rejects a non-record payload or an unknown provider', () => {
       register()
       const handler = electronMocks.handlers.get('extensions:mutate')!

@@ -1502,6 +1502,50 @@ test('the add dialogs name the tool they add to and label their choices', async 
   }
 })
 
+// Grok 装插件不带 --trust 一律被拒；带上以后插件里的命令每次打开 Grok 都会跑，所以先弹框问（yoyo 10-17 定）。
+test('a Grok plugin installs with --trust only after the user confirms, and other tools never ask', async () => {
+  const page = await fixture('page=plugins&extensionOk')
+  try {
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
+    await page.getByTestId('plugins-add').first().click()
+    const form = page.getByRole('dialog', { name: '给 Grok CLI 添加插件', exact: true })
+    await form.waitFor()
+    await form.getByTestId('plugins-source').fill('owner/repo')
+    await form.getByTestId('plugins-form-submit').click()
+    const confirm = page.getByRole('dialog', { name: '给 Grok CLI 装这个插件？', exact: true })
+    await confirm.waitFor()
+    await confirm.getByText('插件里带的技能、命令和外接工具，装好后每次打开 Grok CLI 都会自动运行，能像你本人一样读写这台电脑上的文件。', { exact: true }).waitFor()
+    await confirm.getByText('owner/repo', { exact: true }).waitFor()
+    await confirm.getByText('只装你认识、信得过的来源；拿不准就先别装。', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0, '点「添加」只弹框，不装')
+    // 先不装：回到表单，填过的来源还在，什么都没装。
+    await confirm.getByRole('button', { name: '先不装', exact: true }).click()
+    await confirm.waitFor({ state: 'detached' })
+    assert.equal(await form.getByTestId('plugins-source').inputValue(), 'owner/repo')
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    await form.getByTestId('plugins-form-submit').click()
+    await confirm.getByTestId('plugins-trust-confirm-submit').click()
+    await form.waitFor({ state: 'detached' })
+    assert.equal(await confirm.count(), 0)
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args), [
+      { provider: 'grok', kind: 'plugin', action: 'install', source: 'owner/repo', scope: 'user', trust: true },
+    ])
+    // Claude Code 没有这一问，也不带 trust。
+    await page.getByRole('tab', { name: /^Claude Code/ }).click()
+    await page.getByTestId('plugins-add').first().click()
+    const claudeForm = page.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true })
+    await claudeForm.getByTestId('plugins-source').fill('owner/repo')
+    await claudeForm.getByTestId('plugins-form-submit').click()
+    await claudeForm.waitFor({ state: 'detached' })
+    assert.equal(await page.getByTestId('plugins-trust-confirm').count(), 0)
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'plugin', action: 'install', source: 'owner/repo', scope: 'user',
+    })
+  } finally {
+    await page.close()
+  }
+})
+
 // 第五部分第 27、28 条：不能在这里导入的工具，说清楚怎么放，空着时给「重新加载」。
 test('a tool whose skills cannot be imported here says how to place them and offers a reload', async () => {
   const page = await fixture('page=skills&empty')

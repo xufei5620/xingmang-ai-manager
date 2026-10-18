@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   classifyNetworkFailure,
   isHtmlContentType,
+  isTlsHandshakeFailure,
   isJsonContentType,
   isServiceUnavailableResponse,
   matchNetworkFailureMessage,
@@ -17,7 +18,8 @@ const chromiumFailures: [string, NetworkFailureReason][] = [
   ['net::ERR_NAME_NOT_RESOLVED', 'dns'],
   ['net::ERR_CERT_AUTHORITY_INVALID', 'tls'],
   ['net::ERR_CERT_DATE_INVALID', 'certDate'],
-  ['net::ERR_SSL_PROTOCOL_ERROR', 'tls'],
+  ['net::ERR_SSL_PROTOCOL_ERROR', 'refused'],
+  ['net::ERR_QUIC_HANDSHAKE_FAILED', 'refused'],
   ['net::ERR_CONNECTION_REFUSED', 'refused'],
   ['net::ERR_CONNECTION_RESET', 'refused'],
   ['net::ERR_EMPTY_RESPONSE', 'refused'],
@@ -71,16 +73,70 @@ describe('restricted network failure classification', () => {
     expect(classifyNetworkFailure(new Error(message))).toBe('certDate')
   })
 
-  // 新增一类只许截走日期那几句，别的证书失败必须还在 tls。
+  // 新增一类只许截走日期那几句，别的证书失败必须还在 tls。握手失败拆出去（#1060）也不许带走
+  // 任何一种证书对不上：签发者不认、主机名不符、钉住的公钥不在链上、证书中途换了。
   it.each([
     'net::ERR_CERT_AUTHORITY_INVALID',
     'net::ERR_CERT_COMMON_NAME_INVALID',
-    'net::ERR_SSL_PROTOCOL_ERROR',
+    'net::ERR_CERTIFICATE_TRANSPARENCY_REQUIRED',
+    'net::ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN',
+    'net::ERR_SSL_SERVER_CERT_CHANGED',
+    'net::ERR_SSL_SERVER_CERT_BAD_FORMAT',
+    'net::ERR_SSL_BAD_PEER_PUBLIC_KEY',
+    'net::ERR_SSL_KEY_USAGE_INCOMPATIBLE',
+    'net::ERR_TLS13_DOWNGRADE_DETECTED',
+    'net::ERR_BAD_SSL_CLIENT_AUTH_CERT',
+    "Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames",
     'DEPTH_ZERO_SELF_SIGNED_CERT',
     'self signed certificate in certificate chain',
     'unable to get local issuer certificate',
   ])('leaves every other certificate failure on the replaced-certificate answer: %s', (message) => {
     expect(classifyNetworkFailure(new Error(message))).toBe('tls')
+    expect(isTlsHandshakeFailure(new Error(message))).toBe(false)
+  })
+
+  it('reads a Node hostname mismatch carried on the error code as a replaced certificate', () => {
+    expect(classifyNetworkFailure(Object.assign(new Error('request failed'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }))).toBe('tls')
+  })
+
+  // 网络把握手掐断不是证书被换了（#1060）：跟连接被重置说同一句，不叫人别输密码。
+  it.each([
+    'net::ERR_SSL_PROTOCOL_ERROR',
+    'net::ERR_SSL_VERSION_OR_CIPHER_MISMATCH',
+    'net::ERR_SSL_VERSION_INTERFERENCE',
+    'net::ERR_SSL_HANDSHAKE_NOT_COMPLETED',
+    'net::ERR_QUIC_HANDSHAKE_FAILED',
+  ])('reads a handshake the network cut as a cut connection, not a replaced certificate: %s', (message) => {
+    const error = new TypeError('fetch failed', { cause: new Error(message) })
+    expect(classifyNetworkFailure(error)).toBe('refused')
+    expect(isTlsHandshakeFailure(error)).toBe(true)
+    expect(networkFailureMessages.refused).not.toContain('密码')
+  })
+
+  it.each(['ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE', 'ERR_TLS_HANDSHAKE_TIMEOUT'])(
+    'reads the Node handshake code %s as a cut connection',
+    (code) => {
+      const error = Object.assign(new Error('request failed'), { code })
+      expect(classifyNetworkFailure(error)).toBe('refused')
+      expect(isTlsHandshakeFailure(error)).toBe(true)
+    },
+  )
+
+  it('tells a cut handshake apart from the other ways a connection gets cut', () => {
+    expect(isTlsHandshakeFailure(new Error('net::ERR_CONNECTION_RESET'))).toBe(false)
+    expect(isTlsHandshakeFailure(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }))).toBe(false)
+    expect(isTlsHandshakeFailure(new Error('net::ERR_CERT_DATE_INVALID'))).toBe(false)
+    // 主进程写好的那句中文看不出是哪一种。
+    expect(isTlsHandshakeFailure(new Error(networkFailureMessages.refused))).toBe(false)
+    expect(isTlsHandshakeFailure(null)).toBe(false)
+    expect(isTlsHandshakeFailure('')).toBe(false)
+  })
+
+  // 拆出来以后它仍排在 tls 原来的位置：比代理、解析、门户、断网几行都先认。
+  it('keeps a cut handshake ahead of the rows the certificate row used to beat', () => {
+    expect(classifyNetworkFailure(new Error('net::ERR_SSL_PROTOCOL_ERROR net::ERR_PROXY_CONNECTION_FAILED'))).toBe('refused')
+    expect(isTlsHandshakeFailure(new Error('net::ERR_SSL_PROTOCOL_ERROR net::ERR_NETWORK_CHANGED'))).toBe(true)
+    expect(classifyNetworkFailure(new Error('net::ERR_SSL_PROTOCOL_ERROR net::ERR_CERT_AUTHORITY_INVALID'))).toBe('tls')
   })
 
   it('reaches the real reason through the cause chain fetch wraps it in', () => {
@@ -119,7 +175,8 @@ describe('restricted network failure classification', () => {
   })
 
   it('prefers the certificate answer when an interception also reports a reset', () => {
-    expect(classifyNetworkFailure(new Error('net::ERR_SSL_PROTOCOL_ERROR ECONNRESET'))).toBe('tls')
+    expect(classifyNetworkFailure(new Error('net::ERR_CERT_AUTHORITY_INVALID ECONNRESET'))).toBe('tls')
+    expect(classifyNetworkFailure(new Error('net::ERR_SSL_PROTOCOL_ERROR ECONNRESET'))).toBe('refused')
   })
 
   it('only reads the head of an oversized body so a captured page cannot drive the answer', () => {

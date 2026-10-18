@@ -14,6 +14,7 @@ import {
   extensionToolNames,
   groupExtensionItems,
   extensionFailureTarget,
+  extensionInstallNeedsTrust,
   extensionRowState,
   fillCuratedPlaceholders,
   findNativeSkill,
@@ -419,6 +420,17 @@ describe('extension failure wording', () => {
       expect([failed, extensionFailureTarget(failed)]).toEqual([failed, 'config'])
     expect(extensionFailureTarget('python')).toBeUndefined()
     expect(extensionFailureTarget('')).toBeUndefined()
+  })
+})
+
+describe('Grok plugin trust prompt', () => {
+  it('asks before installing a Grok plugin and never for any other tool or kind', () => {
+    // Grok refuses a plugin install without --trust, and the flag lets the plugin's commands run on every start.
+    expect(extensionInstallNeedsTrust('grok', 'plugin')).toBe(true)
+    for (const provider of ['claude', 'codex'] as const)
+      expect([provider, extensionInstallNeedsTrust(provider, 'plugin')]).toEqual([provider, false])
+    for (const kind of ['mcp', 'skill'] as const)
+      expect([kind, extensionInstallNeedsTrust('grok', kind)]).toEqual([kind, false])
   })
 })
 

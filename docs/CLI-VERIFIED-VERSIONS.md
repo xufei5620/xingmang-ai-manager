@@ -268,6 +268,14 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   `allowed_models = ["grok"]` 后只剩中转那一项。把中转型号改成一个内置目录里没有的名字，在伪终端
   里连聊两轮：标题、主对话、每轮小结、输入建议一共 8 次请求，全部是中转型号。`hidden_models` /
   `disabled_models` 会按 `model` 字段把中转那一项一起藏掉，不能用。
+- **Grok 1.0.52、1.0.62 装插件的 `--trust` —— 跑起来看到了**（2026-10-18，空 `HOME`、stdin 接
+  `/dev/null`，和星芒扩展页一样不给终端）。`grok plugin install <来源>` 不带 `--trust` 时，本地目录和
+  市场里的插件名都一样：打印「…requires confirmation. Plugins can run hooks, MCP servers, and skills on
+  your machine…」后退出码 1，什么都不写。带上以后插件拷进 `~/.grok/installed-plugins/`、`[plugins]
+  enabled` 记上它，`grok inspect` 列出它的钩子和 MCP；接本地假接口跑一次 `grok -p`，插件的
+  `SessionStart` 钩子和 MCP 启动命令都真的执行了。卸载、启用、停用、更新都不需要 `--trust`。所以
+  星芒只在用户点过确认框的「信任并安装」后才带它（`extensionInstallNeedsTrust`）。**抬 Grok 版本时
+  重核**：不带 `--trust` 仍然拒装，带了仍然一次装好。
 - **Gemini CLI 0.60.0 的使用统计 —— 跑起来看到了**。出网代理记录每一次去官方主机的连接：星芒配置
   下唯一的官方连接是每次运行一次 `CONNECT play.googleapis.com:443`，不拖慢启动；同时发给中转的
   每个请求都带 `x-gemini-api-privileged-user-id: <安装 ID>`。写上

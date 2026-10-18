@@ -352,7 +352,7 @@ describe('renderer-v2 operation error classification', () => {
       }
     }
     // 授权、磁盘这几句各有自己的下一步，主进程原样放行，这里也不归到这一类。
-    expect(classifyOperationError('Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError('Claude Desktop 安装失败：C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试')).toBe('diskFull')
     expect(classifyOperationError('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。')).not.toBe('claudeDesktopInstallFailed')
   })
 
@@ -388,7 +388,7 @@ describe('renderer-v2 operation error classification', () => {
       expect(operationLogSection({ message })).toBe('log')
     }
     // 磁盘不够还是「磁盘空间不够」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
-    expect(classifyOperationError('OpenCode 安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1 GB，请先清理磁盘再试')).toBe('diskFull')
+    expect(classifyOperationError('OpenCode 安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')).toBe('diskFull')
     expect(classifyOperationError(macosDesktopDiskFullMessage('OpenCode'))).toBe('diskFull')
   })
 
@@ -494,6 +494,22 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 
+  // #1157 第 13 条：装之前查盘那句在 Windows 上写出盘符，不再带「磁盘」两个字。
+  // 句子照 electron/disk-space.test.ts 钉住的原样抄。
+  it('files the pre-install disk check under 磁盘空间不够 whichever drive it names', () => {
+    for (const shortfall of [
+      'C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试',
+      'D 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 D 盘再试',
+      '磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试',
+    ]) {
+      for (const subject of ['Claude Code 安装失败', 'Claude Desktop 安装失败', 'Codex 桌面端安装失败', 'OpenCode 安装失败']) {
+        const message = `${subject}：${shortfall}`
+        expect([message, presentOperationError(message)?.key]).toEqual([message, 'diskFull'])
+      }
+    }
+    expect(errors.diskFull.body).toBe('磁盘没有空间了。安装时先下到系统盘的临时文件夹，再装进安装目录，这两处所在的盘都要留出空间，清理后再试。')
+  })
+
   // Q13：主进程以前只交出「命令执行失败（退出码 1）：node」，上面那几条分类一条
   // 都命中不了。这里钉的是主进程 describeNpmCommandFailure 现在真正拼出来的句子。
   it('classifies the install failures the main process now spells out from npm stderr', () => {
@@ -516,6 +532,18 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('Grok CLI 安装失败：unable to get local issuer certificate')
     expect(hint?.title).toBe('连接被网络拦截')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
+  })
+
+  // 网络把握手掐断不是证书被换了（#1060）：和连接被重置一样落到连不上那几张卡片。
+  it('reads a handshake the network cut as a failed connection, not a replaced certificate', () => {
+    expect(classifyOperationError('检查网络时出错：net::ERR_SSL_PROTOCOL_ERROR')).toBe('timeout')
+    expect(classifyOperationError('账号接口请求失败：net::ERR_QUIC_HANDSHAKE_FAILED')).toBe('timeout')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：npm error code ERR_SSL_WRONG_VERSION_NUMBER')).toBe('downloadTimeout')
+    // OpenSSL 原文里的十六进制串不能被按状态码认的那几条抢走。
+    expect(classifyOperationError('Grok CLI 安装失败：ERR_SSL_WRONG_VERSION_NUMBER 40C7B5F8E5240000:error:0A00010B:SSL routines')).toBe('downloadTimeout')
+    expect(classifyOperationError(`重新写入 Key 没有完成：${networkFailureMessages.refused}`)).toBe('timeout')
+    // 证书真对不上的照旧是「连接被网络拦截」。
+    expect(classifyOperationError("账号接口请求失败：Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")).toBe('tlsIntercepted')
   })
 
   it('tells an outdated Node.js or an elevated app apart from a certificate the machine itself rejects', () => {

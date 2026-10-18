@@ -97,11 +97,27 @@ export function toolCertificateFailureForMessage(text: unknown): ToolCertificate
  * strings. Both spellings appear here because the account layer is fed
  * net.fetch in production and a plain fetch in tests.
  *
- * Order matters: a TLS interception failure spells out both ERR_SSL and, on
- * some paths, a connection reset, and the certificate answer is the one the
- * user must act on.
+ * Order matters: a certificate failure can also spell out a connection reset on
+ * some paths, and the certificate answer is the one the user must act on.
  */
-const failurePatterns: readonly { reason: NetworkFailureReason; test: RegExp }[] = [
+interface FailurePattern {
+  reason: NetworkFailureReason
+  test: RegExp
+}
+
+/**
+ * 握手做到一半被掐断（ERR_SSL_PROTOCOL_ERROR、QUIC 握手失败这类）不是证书被换了：证书对不上
+ * Chromium 报 ERR_CERT_*，Node 报 ERR_TLS_CERT_ALTNAME_INVALID 和 OpenSSL 那几句散句，都在上面
+ * tls 那一行。国内网络掐断握手很常见，说成「证书被替换、别输密码」，客户会以为账号被劫持、直接
+ * 停用（#1060）。所以它和连接被重置说同一句（refused），与工具线路的口径一致
+ * （tool-route-controller.ts 的 outageReason）。
+ *
+ * 排在 tls 后面、其余各行前面，就是它原来在 tls 那一行里的位置：一句话里同时带着证书错误码时
+ * 照旧算证书，跟别的原因撞上时谁先谁后也不变。
+ */
+const handshakeFailurePattern: FailurePattern = { reason: 'refused', test: /ERR_SSL|ERR_TLS|ERR_QUIC_HANDSHAKE_FAILED/i }
+
+const failurePatterns: readonly FailurePattern[] = [
   { reason: 'timeout', test: /ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT|ETIMEDOUT|ESOCKETTIMEDOUT/i },
   // 必须排在 tls 之前：下面那条的 ERR_CERT 前缀会把 ERR_CERT_DATE_INVALID 一起吞掉。
   // 日期类的原文同样有两套写法——Chromium 的 ERR_CERT_DATE_INVALID，以及 Node /
@@ -110,7 +126,12 @@ const failurePatterns: readonly { reason: NetworkFailureReason; test: RegExp }[]
   // npm / OpenSSL 说的是同一件事，但用的是另一套词：走 npm 的那条路（装 CLI、查
   // 最新版）只会吐出 `self signed certificate in certificate chain` 这类英文散句，
   // 只认 errno 风格的写法会让同一个公司网关在账号那侧认得出、在安装那侧认不出。
-  { reason: 'tls', test: /ERR_CERT|ERR_SSL|ERR_BAD_SSL|ERR_TLS|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|CERT_UNTRUSTED|HOSTNAME_MISMATCH|ERR_QUIC_HANDSHAKE_FAILED|self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate/i },
+  // ERR_SSL_ / ERR_TLS_ 开头的里面，说的是证书或证书里那把公钥的也留在这里：钉住的公钥不在证书链上
+  // （ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN）、主机名对不上（Node 的 ERR_TLS_CERT_ALTNAME_INVALID）、
+  // 证书换了（ERR_SSL_SERVER_CERT_CHANGED）、TLS 1.3 被降级（ERR_TLS13_DOWNGRADE_DETECTED，路上有
+  // 设备在解密）。其余的是握手被掐断，归下一行。
+  { reason: 'tls', test: /ERR_CERT|ERR_BAD_SSL|ERR_(?:SSL|TLS)\w*?(?:CERT|PEER_PUBLIC_KEY|KEY_USAGE|DOWNGRADE)|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|CERT_UNTRUSTED|HOSTNAME_MISMATCH|self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate/i },
+  handshakeFailurePattern,
   { reason: 'proxy', test: /ERR_PROXY|ERR_TUNNEL_CONNECTION_FAILED|ERR_MANDATORY_PROXY_CONFIGURATION_FAILED|ERR_UNEXPECTED_PROXY_AUTH/i },
   { reason: 'dns', test: /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_DNS|ENOTFOUND|EAI_AGAIN/i },
   // A captive portal answers with a redirect to its own login page. Callers
@@ -196,7 +217,23 @@ export function networkFailureReasonForMessage(text: unknown): NetworkFailureRea
 export function classifyNetworkFailure(error: unknown): NetworkFailureReason | null {
   const text = collectFailureText(error)
   if (!text) return null
-  return networkFailureReasonForMessage(text) ?? failurePatterns.find((pattern) => pattern.test.test(text))?.reason ?? null
+  return networkFailureReasonForMessage(text) ?? matchingPattern(text)?.reason ?? null
+}
+
+function matchingPattern(text: string): FailurePattern | undefined {
+  return failurePatterns.find((pattern) => pattern.test.test(text))
+}
+
+/**
+ * 归到 refused 的里面，哪些是握手被掐断（上面 handshakeFailurePattern 那一行认出来的）。它和连接被
+ * 重置说同一句话，但换线重发要分开看：握手失败一直和证书失败一样按「请求还没发出去」算
+ * （relay-line-fetch.ts 的 provablyUnsent），工具线路探测也把它和证书错误分开（tool-path-probe.ts）。
+ * 主进程已经写好的那句中文看不出是哪一种，按不是算。
+ */
+export function isTlsHandshakeFailure(error: unknown): boolean {
+  const text = collectFailureText(error)
+  if (!text || networkFailureReasonForMessage(text)) return false
+  return matchingPattern(text) === handshakeFailurePattern
 }
 
 /** 渲染层用：认出主进程那句话就原样上屏，认不出来交还给调用方兜底。 */

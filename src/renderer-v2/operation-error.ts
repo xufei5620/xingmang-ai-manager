@@ -2,7 +2,7 @@ import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desk
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
-import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
+import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
 import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
@@ -113,7 +113,8 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 磁盘满以前落进「操作没有成功」，用户只看到一句 ENOSPC 英文原文，被指去找客服。
   // 放在 permission 之前：npm 在写不下去时同时报过 EPERM 与 ENOSPC 的情况下，
   // 「清一清磁盘」才是用户真做得到的那一步。
-  { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|磁盘已满|disk full/i.test(message) },
+  // 装之前查盘那句在 Windows 上写出盘符（「C 盘空间不足」，electron/disk-space.ts）。
+  { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|[A-Z] 盘空间不足|磁盘已满|disk full/i.test(message) },
   // 证书「已过期 / 还没生效」必须和「被换掉」分开：前者几乎都是这台电脑的时钟不对
   // （主板电池没电、装完系统没对时、时区改错），照「连接被网络拦截」那句去换网络，
   // 换几个热点都是同一个错。
@@ -130,6 +131,11 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'toolCertOutdatedNode', match: (message) => toolCertificateFailureForMessage(message) === 'outdatedNode' },
   { key: 'toolCertElevated', match: (message) => toolCertificateFailureForMessage(message) === 'elevated' },
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
+  // 握手被网络掐断的原文（ERR_SSL_PROTOCOL_ERROR 这类）不是证书被换了（#1060），和 ECONNRESET 一样落到
+  // 连不上那两张卡。占的是它以前归 tlsIntercepted 时的位置：OpenSSL 原文里的十六进制串会被下面按
+  // 状态码认的几条（50x、52x）误认。
+  { key: 'downloadTimeout', match: (message) => downloadContext(message) && isTlsHandshakeFailure(message) },
+  { key: 'timeout', match: (message) => isTlsHandshakeFailure(message) },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。
