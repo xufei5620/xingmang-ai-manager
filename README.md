@@ -2,7 +2,7 @@
 
 面向 Windows 与 macOS 的 Electron 桌面管理工具，用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新；内置星芒账号体系（注册/登录/个人中心/充值外链）与无限画布窗口。
 
-当前 Windows 对外发布固定走无签名模式（`npm run release:build:unsigned`），不需要代码签名证书；无签名包保留自动更新，但改成用户确认式：下载完成后按更新清单的 SHA-512 重新校验安装包，校验值缺失或不一致一律拒绝安装。普通 `npm run build` 仍是关闭自动更新的本机调试构建，不能通过发布门禁。详见 [发布手册](docs/RELEASING.md)；CA 证书到手后要恢复的签名流程归档在 [签名发布流程](docs/archive/RELEASING-signed.md)。
+当前 Windows 对外发布固定走无签名模式（`npm run release:build:unsigned`），不需要代码签名证书；无签名包保留自动更新，跟着「自动更新」开关走：下载完成后按更新清单的 SHA-512 重新校验安装包，再核发布者签名，缺失或不一致一律拒绝安装。普通 `npm run build` 仍是关闭自动更新的本机调试构建，不能通过发布门禁。详见 [发布手册](docs/RELEASING.md)；CA 证书到手后要恢复的签名流程归档在 [签名发布流程](docs/archive/RELEASING-signed.md)。
 
 ## 开发运行
 

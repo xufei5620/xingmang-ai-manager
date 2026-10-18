@@ -221,7 +221,8 @@ describe('manual redirect fetch', () => {
 })
 
 // #1064：生产环境里星芒的请求走的是 main.ts 包了这一层的 Chromium 会话。门户在直连上回跳转时，
-// 只读的请求要换默认线路重发、写请求原样交回 3xx，两种都报给线路那边；以前只拿到「Redirect was cancelled」。
+// 只读的请求换默认线路重发，写请求也换（星芒会改动数据的接口从来不跳转，回了跳转就是没进到服务里，
+// #1157 第 7 条），两种都报给线路那边；以前只拿到「Redirect was cancelled」。
 describe('manual redirect fetch under the relay line fetch', () => {
   function onPortalNetwork() {
     const requests: FakeClientRequest[] = []
@@ -256,13 +257,14 @@ describe('manual redirect fetch under the relay line fetch', () => {
     expect(netFetch).not.toHaveBeenCalled()
   })
 
-  it('hands a write caught by a portal back as the redirect without sending it again', async () => {
+  it('resends a write caught by a portal on direct on the default line, since the service never redirects one', async () => {
     const { requests, reports, routed } = onPortalNetwork()
     const response = await routed('https://xm.solov.cc/api/user/login', { method: 'POST', body: '{"username":"fixture"}', credentials: 'omit', redirect: 'manual' })
-    expect(response.status).toBe(302)
-    expect(response.headers.get('location')).toBe('http://portal.example/login')
-    expect(requests).toHaveLength(1)
-    expect(requests[0].options.method).toBe('POST')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ success: true })
+    expect(requests.map((request) => request.options.url)).toEqual(['https://xm-direct.solov.cc/api/user/login', 'https://xm.solov.cc/api/user/login'])
+    expect(requests.map((request) => request.options.method)).toEqual(['POST', 'POST'])
+    expect(Buffer.concat(requests[1].written).toString()).toBe('{"username":"fixture"}')
     expect(reports).toEqual([['solov', 'direct', 'intercepted']])
   })
 })

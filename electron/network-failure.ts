@@ -137,13 +137,17 @@ const failurePatterns: readonly FailurePattern[] = [
   // A captive portal answers with a redirect to its own login page. Callers
   // that ask for `redirect: 'error'` never see the 3xx itself -- undici turns
   // it into `TypeError: fetch failed` whose cause reads `unexpected redirect`,
-  // and Chromium spells the same refusal `ERR_UNSAFE_REDIRECT`. Electron's
-  // net.fetch never hands back the opaqueredirect that `redirect: 'manual'`
-  // promises: it dies with `Redirect was cancelled` (manual-redirect-fetch.ts),
-  // so the account and relay requests that ask for 'manual' see only that
-  // sentence. Without this row that is the one restricted-network failure with
-  // no answer at all.
-  { reason: 'intercepted', test: /unexpected redirect|ERR_UNSAFE_REDIRECT|ERR_TOO_MANY_REDIRECTS|redirect count exceeded|Redirect was cancelled/i },
+  // Chromium spells the same refusal `ERR_UNSAFE_REDIRECT`, and Electron's
+  // net.fetch dies with `Attempted to redirect, but redirect policy was
+  // 'error'` (net-client-request.ts; the sentence is in the Electron 43.8.0
+  // binary), which is what the model checks, image generation and the service
+  // status read get in production (#1157 item 5). Electron's net.fetch never
+  // hands back the opaqueredirect that `redirect: 'manual'` promises either:
+  // it dies with `Redirect was cancelled` (manual-redirect-fetch.ts), so the
+  // account and relay requests that ask for 'manual' see only that sentence.
+  // Without this row that is the one restricted-network failure with no answer
+  // at all.
+  { reason: 'intercepted', test: /unexpected redirect|ERR_UNSAFE_REDIRECT|ERR_TOO_MANY_REDIRECTS|redirect count exceeded|Redirect was cancelled|Attempted to redirect, but redirect policy was 'error'/i },
   { reason: 'offline', test: /ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ENETDOWN|ENETUNREACH|EHOSTUNREACH/i },
   { reason: 'refused', test: /ERR_CONNECTION_REFUSED|ERR_CONNECTION_RESET|ERR_CONNECTION_ABORTED|ERR_CONNECTION_CLOSED|ERR_CONNECTION_FAILED|ERR_EMPTY_RESPONSE|ERR_ADDRESS_UNREACHABLE|ERR_SOCKET_NOT_CONNECTED|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|socket hang up/i },
 ]
@@ -226,9 +230,9 @@ function matchingPattern(text: string): FailurePattern | undefined {
 
 /**
  * 归到 refused 的里面，哪些是握手被掐断（上面 handshakeFailurePattern 那一行认出来的）。它和连接被
- * 重置说同一句话，但换线重发要分开看：握手失败一直和证书失败一样按「请求还没发出去」算
- * （relay-line-fetch.ts 的 provablyUnsent），工具线路探测也把它和证书错误分开（tool-path-probe.ts）。
- * 主进程已经写好的那句中文看不出是哪一种，按不是算。
+ * 重置说同一句话，但有的地方要分开看：工具线路探测把它和证书错误分开（tool-path-probe.ts），渲染层
+ * 按它把原文落到连不上那几张卡。换线重发不再把它当「请求还没发出去」（relay-line-fetch.ts 的
+ * provablyUnsent，#1157 第 6 条）。主进程已经写好的那句中文看不出是哪一种，按不是算。
  */
 export function isTlsHandshakeFailure(error: unknown): boolean {
   const text = collectFailureText(error)

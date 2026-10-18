@@ -171,6 +171,7 @@ import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stal
 import { isDiagnosticFixKind, type DiagnosticFixKind, type DiagnosticFixResult } from './diagnostic-fixes'
 import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
+import type { QueuedAccountWork } from './account-work-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import { createSensitiveClipboard } from './sensitive-clipboard'
@@ -1970,7 +1971,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
           || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'external-clients:switch-source' || channel === 'cli:launch' || channel === 'desktop:launch-codex' || channel === 'tools:check-models')
           && !publicAccountChannels.has(channel) && !readsCachedExternalClientsOnly(channel, args)
-        const invoke = () => scoped && options.accountWork
+        // 这两种「打开」要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作，处理函数
+        // 交给队列时才拿 accountWork.queue()，轮到它执行才算进去（#1085）；开机照旧先等账号恢复完。
+        const queuesItsOwnAccountWork = channel === 'cli:launch' || channel === 'desktop:launch-codex'
+        const invoke = () => scoped && options.accountWork && !queuesItsOwnAccountWork
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
         // config read must not turn an in-progress restore into a failed boot.
@@ -2302,7 +2306,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       apiKey = service.revealApiKey(provider, options.previewOnboarding)
     } else apiKey = parsed.credential.apiKey
     assertCurrent()
-    return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
+    // 记下这把是从哪来的：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
+    return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent, parsed.credential.kind)
   })
   registerTrustedHandler('external-clients:scan', async (_event, force: unknown, input: unknown) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')
@@ -2781,9 +2786,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
   }
   function launchProviderWith(provider: ProviderId, target: string, launchMode: CliLaunchMode, resumeSessionId: string | null) {
+    const accountWork = options.accountWork?.queue()
+    if (accountWork) return launchQueued(accountWork, () => service.launchProvider(provider, target, launchMode, resumeSessionId, accountWork))
     return resumeSessionId === null
       ? service.launchProvider(provider, target, launchMode)
       : service.launchProvider(provider, target, launchMode, resumeSessionId)
+  }
+  // 点两下同一个「打开」时第二下跟着第一下那份排队，它自己那份从没交给队列：请求一结束就交还。
+  function launchQueued<T>(accountWork: QueuedAccountWork & { release(): void }, launch: () => Promise<T>): Promise<T> {
+    try {
+      return Promise.resolve(launch()).finally(() => accountWork.release())
+    } catch (error) {
+      accountWork.release()
+      throw error
+    }
   }
   registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown, recordId: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
@@ -2907,7 +2923,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     consumeConfirmedSensitiveWorkspace(replacement)
     await rememberWorkspace(replacement)
-    return service.launchProvider(provider, replacement, launchMode)
+    return launchProviderWith(provider, replacement, launchMode, null)
   }
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
@@ -2918,9 +2934,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('desktop:set-codex-locale', (event, locale: unknown) => (
     service.setCodexDesktopLocale(parseCodexDesktopLocale(locale), event.sender)
   ))
-  registerTrustedHandler('desktop:launch-codex', (event, mode: unknown) => (
-    service.launchCodexDesktop(parseDesktopLaunchMode(mode), event.sender)
-  ))
+  registerTrustedHandler('desktop:launch-codex', (event, mode: unknown) => {
+    const launchMode = parseDesktopLaunchMode(mode)
+    const accountWork = options.accountWork?.queue()
+    return accountWork
+      ? launchQueued(accountWork, () => service.launchCodexDesktop(launchMode, event.sender, { accountWork }))
+      : service.launchCodexDesktop(launchMode, event.sender)
+  })
   registerTrustedHandler('models:list', (_event, apiKey: unknown) => {
     if (typeof apiKey !== 'string' || apiKey.length > 4_096) {
       throw new Error('API Key 格式错误')

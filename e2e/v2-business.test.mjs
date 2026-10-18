@@ -1707,6 +1707,26 @@ test('removing a connection says which tool it leaves and that the others keep t
   }
 })
 
+test('the remove confirmation waits for another extension change and says why instead of spinning', async () => {
+  const page = await fixture('page=mcp&extensionOk&extensionHold')
+  try {
+    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'extension'))
+    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
+    const remove = dialog.getByRole('button', { name: '移除', exact: true })
+    assert.equal(await dialog.getByTestId('mcp-delete-busy').innerText(), '上一个操作还没完成，完成后才能移除。')
+    assert.equal(await remove.isDisabled(), true)
+    assert.equal(await remove.getAttribute('aria-busy'), null)
+    await page.evaluate(() => window.releaseExtension())
+    await dialog.getByTestId('mcp-delete-busy').waitFor({ state: 'detached' })
+    assert.equal(await remove.isDisabled(), false)
+  } finally {
+    await page.close()
+  }
+})
+
 test('a custom connection checks its name first and then goes to every tool picked', async () => {
   const page = await fixture('page=mcp&extensionOk')
   try {
@@ -2002,6 +2022,24 @@ test('feedback opens on the message form and copies what the customer wrote toge
     // 换了类型也一样。
     await page.getByTestId('feedback-type').getByRole('button', { name: '其他', exact: true }).click()
     assert.equal(await form.getAttribute('data-unsaved'), 'true')
+  } finally {
+    await page.close()
+  }
+})
+
+test('feedback still copies what the customer wrote when the diagnostic report cannot be made', async () => {
+  const page = await fixture('page=feedback&fail=feedbackReport')
+  try {
+    await page.getByTestId('feedback-form').waitFor()
+    await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
+    await page.getByTestId('feedback-send').click()
+    await waitForToast(page, '诊断报告没生成出来，只复制了你写的内容，发给客服就行')
+    const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').map((call) => call.args)
+    assert.equal(copied.length, 1)
+    assert.match(copied[0], /^留言反馈 · 遇到问题\n点「打开」后终端闪一下就关了\n/)
+    assert.match(copied[0], /\n诊断报告：这次没生成出来$/)
+    assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page still opens')
+    assert.equal(await page.getByTestId('feedback-form').getAttribute('data-unsaved'), null)
   } finally {
     await page.close()
   }

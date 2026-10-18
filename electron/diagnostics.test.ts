@@ -1193,6 +1193,13 @@ describe('diagnostics', () => {
         .toBe('1月3日 08:00，第一次开机查到线路2没连上，改走线路1')
     })
 
+    // 先走的那条健康检查查得通、上面的请求却接连没走通才换的，也不能说成「连着 3 次没连上」（#1157 第 1 条）。
+    it('says a change came from requests that kept failing on the line', () => {
+      const at = new Date(2026, 0, 3, 8, 0).getTime()
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'request-failures', at }))
+        .toBe('1月3日 08:00，线路2上的请求接连断在半路、等不来回话，改走线路1')
+    })
+
     // 两条一起查的那一轮（开机、唤醒、换网、重新检测）当场换的，也不能说成「连着 3 次」（#1053）。
     it('says a change from a check of both lines happened on the spot, in either direction', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()

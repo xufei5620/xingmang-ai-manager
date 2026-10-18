@@ -43,6 +43,7 @@ import {
   type NativeConfigInspection,
 } from './config-files'
 import type { InstallationQueue } from './installation-queue'
+import type { QueuedAccountWork } from './account-work-gate'
 import {
   InstallCancellationRegistry,
   InstallCancelledError,
@@ -2586,6 +2587,8 @@ export interface CodexDesktopLaunchOptions {
    * running processes have been closed and before the next launch.
    */
   repairPermissionModeVisibility?: boolean
+  /** 排在安装后面的这段不算账号工作，轮到它执行时才算；换账号时还在排队的直接出队（#1085）。 */
+  accountWork?: QueuedAccountWork
 }
 
 export interface CodexDesktopService {
@@ -4060,19 +4063,22 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     target: RendererMessageTarget,
     launchOptions: CodexDesktopLaunchOptions = {},
   ): Promise<CodexDesktopLaunchResult> {
+    async function launch(): Promise<CodexDesktopLaunchResult> {
+      // 只有 Windows 这一路会等窗口等到近一分钟；macOS 交给系统打开，几秒就回来。
+      const heartbeat = platform === 'win32'
+        ? startCodexDesktopLaunchHeartbeat((progress) => sendCodexDesktopLaunchProgress(target, progress))
+        : undefined
+      try {
+        return await launchCodexDesktopOperation(mode, target, launchOptions, heartbeat)
+      } finally {
+        heartbeat?.stop()
+      }
+    }
+    const { accountWork } = launchOptions
     return installationQueue.enqueue(
       `desktop:codex:launch:${mode}:${launchOptions.injectChinese ? 'zh-CN' : 'default'}`,
-      async () => {
-        // 只有 Windows 这一路会等窗口等到近一分钟；macOS 交给系统打开，几秒就回来。
-        const heartbeat = platform === 'win32'
-          ? startCodexDesktopLaunchHeartbeat((progress) => sendCodexDesktopLaunchProgress(target, progress))
-          : undefined
-        try {
-          return await launchCodexDesktopOperation(mode, target, launchOptions, heartbeat)
-        } finally {
-          heartbeat?.stop()
-        }
-      },
+      () => accountWork ? accountWork.run(launch) : launch(),
+      { signal: accountWork?.signal },
     )
   }
 

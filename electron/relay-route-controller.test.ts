@@ -15,6 +15,9 @@ import {
   relayRouteRecheckIntervalMs,
   relayRouteRecoveryMs,
   relayRouteRecoveryProbeIntervalMs,
+  relayRouteRequestFailureThreshold,
+  relayRouteRequestFailureWindowMs,
+  requestFailuresTrigger,
   type RelayRouteChange,
   type RelayRouteConclusions,
   type RelayRouteControllerDependencies,
@@ -685,6 +688,124 @@ describe('relay route controller', () => {
     run.controller.reportFailure('solov', 'direct', 'ECONNRESET')
     await settle()
     expect(probes).toHaveLength(5)
+  })
+
+  // 直连被限速、长连接被掐：健康检查只拉几 KB，照样查得通，AI 回复却次次断在半路（#1157 第 1 条）。
+  it('moves off the line it prefers when its requests keep breaking off although its health check passes', async () => {
+    const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
+    run.controller.reportFailure('solov', 'direct', 'body')
+    await settle()
+    expect(run.probes).toEqual([['solov', 'direct']])
+    run.advance(60_000)
+    run.controller.reportFailure('solov', 'direct', 'no-answer')
+    await settle()
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'direct']])
+    expect(run.controller.lines().solov.line).toBe('direct')
+
+    // 第三次：不再查直连自己（它照样查得通），只查备用那条，通了就换。
+    run.advance(10_000)
+    run.controller.reportFailure('solov', 'direct', 'body')
+    await settle()
+    expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'direct'], ['solov', 'primary']])
+    expect(run.controller.lines().solov).toEqual({ line: 'primary', settled: true })
+    expect(run.events('relay.route.requests-failed')).toEqual([{
+      siteId: 'solov', line: 'direct', failures: relayRouteRequestFailureThreshold, windowMs: relayRouteRequestFailureWindowMs,
+    }])
+    expect(run.events('relay.route.changed')).toEqual([{ siteId: 'solov', from: 'direct', to: 'primary', reason: 'health-failed', trigger: requestFailuresTrigger }])
+    expect(run.controller.lastChange('solov')).toMatchObject({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: requestFailuresTrigger })
+    // 切回去照旧要连着查通 10 分钟。
+    expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
+  })
+
+  it('does the same for the historical account, which prefers line 1', async () => {
+    const run = harness({ preferences: { 'solov-api': 'auto' }, conclusions: { 'solov-api': 'primary' } })
+    for (let index = 0; index < relayRouteRequestFailureThreshold; index++) {
+      run.controller.reportFailure('solov-api', 'primary', 'body')
+      await settle()
+      run.advance(10_000)
+    }
+    expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+    expect(run.controller.lastChange('solov-api')).toMatchObject({ from: 'primary', to: 'direct', reason: 'health-failed', trigger: requestFailuresTrigger })
+  })
+
+  it('counts only replies cut midway and missing answers, and only when they come close together', async () => {
+    const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
+    // 连不上一类的失败健康检查查得出来，照旧只叫这里查一轮，不攒。
+    for (const reason of ['ECONNRESET', 'ERR_CONNECTION_REFUSED', 'intercepted', 'http-502']) {
+      run.controller.reportFailure('solov', 'direct', reason)
+      await settle()
+      run.advance(relayRouteFailureRecheckGapMs)
+    }
+    // 隔得太开的连不成一段。
+    for (let index = 0; index < 4; index++) {
+      run.controller.reportFailure('solov', 'direct', 'body')
+      await settle()
+      run.advance(relayRouteRequestFailureWindowMs / 2)
+    }
+    expect(run.events('relay.route.requests-failed')).toEqual([])
+    expect(run.probes.every(([, line]) => line === 'direct')).toBe(true)
+    expect(run.controller.lines().solov.line).toBe('direct')
+  })
+
+  it('stays on the line it prefers when the other one is down too, and counts again from nothing', async () => {
+    const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'direct' } })
+    run.reachable.primary = false
+    for (let index = 0; index < relayRouteRequestFailureThreshold; index++) {
+      run.controller.reportFailure('solov', 'direct', 'body')
+      await settle()
+      run.advance(10_000)
+    }
+    expect(run.controller.lines().solov.line).toBe('direct')
+    expect(run.events('relay.route.unreachable')).toEqual([{ siteId: 'solov', line: 'direct', settled: true, trigger: requestFailuresTrigger }])
+
+    // 攒下的已经用掉：再报一次只照常查一轮直连。
+    run.advance(relayRouteFailureRecheckGapMs)
+    run.controller.reportFailure('solov', 'direct', 'body')
+    await settle()
+    expect(run.probes.slice(-2)).toEqual([['solov', 'primary'], ['solov', 'direct']])
+    expect(run.events('relay.route.requests-failed')).toHaveLength(1)
+  })
+
+  // 退到备用那条以后它上面的请求没走通本来就两条一起查（#1053），不攒；切回先走的那条照旧要连着查通 10 分钟。
+  it('does not count requests on the backup line', async () => {
+    const run = harness({ preferences: { solov: 'auto' }, conclusions: { solov: 'primary' } })
+    for (let index = 0; index < relayRouteRequestFailureThreshold + 1; index++) {
+      run.controller.reportFailure('solov', 'primary', 'body')
+      await settle()
+      run.advance(relayRouteFailureRecheckGapMs)
+    }
+    expect(run.events('relay.route.requests-failed')).toEqual([])
+    expect(run.controller.lines().solov.line).toBe('primary')
+    expect(run.changes).toEqual([])
+  })
+
+  it('waits for a check still out, then acts on the next failure, and drops a round waiting between its checks', async () => {
+    const pending = deferred<boolean>()
+    const probes: Array<[RelayRouteSiteId, RelayEndpointId]> = []
+    const run = harness({
+      preferences: { solov: 'auto' },
+      conclusions: { solov: 'direct' },
+      probe: (siteId, line) => {
+        probes.push([siteId, line])
+        return probes.length === 1 ? pending.promise : Promise.resolve(line === 'primary')
+      },
+    })
+    for (let index = 0; index < relayRouteRequestFailureThreshold; index++) {
+      run.controller.reportFailure('solov', 'direct', 'body')
+      run.advance(10_000)
+    }
+    await settle()
+    expect(probes).toEqual([['solov', 'direct']])
+
+    // 那次查回来没通：这一轮等着隔 15 秒再查。下一次请求失败不等它，直接查备用那条。
+    pending.resolve(false)
+    await settle()
+    expect(run.delays()).toEqual([relayRouteFailureProbeGapMs])
+    run.controller.reportFailure('solov', 'direct', 'no-answer')
+    await settle()
+    expect(probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
+    expect(run.controller.lines().solov.line).toBe('primary')
+    expect(run.delays()).toEqual([relayRouteRecoveryProbeIntervalMs])
   })
 
   it('records a reported reason that is not a plain code as a request failure', async () => {

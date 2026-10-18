@@ -229,6 +229,26 @@ describe('renderer-v2 home install cancellation', () => {
     expect(switching).not.toContain('点击切换')
   })
 
+  // #1085：外接客户端那一行只看自己那家的打开；命令行工具那几张卡也不因外接客户端在打开而变灰。
+  it('keeps desktop client buttons usable while a command-line tool is opening, and the other way round', () => {
+    const connected = { ...claudeDesktop, installed: true, version: '2.42304.0', launchSupported: true, configured: true, configurationReady: true,
+      model: 'claude-opus-5-5', configurationSource: 'xingmang', configurationError: null } as typeof claudeDesktop
+    function buttonTag(markup: string, testId: string): string {
+      const tag = new RegExp(`<button[^>]*data-testid="${testId}"[^>]*>`).exec(markup)?.[0]
+      expect(tag, `没有渲染出 ${testId}`).toBeDefined()
+      return tag ?? ''
+    }
+    const cliOpening = render({ 'launch:codex': { label: '正在打开工具', log: [] } }, undefined, { externalClients: [connected] })
+    expect(buttonTag(cliOpening, 'tool-claudeDesktop-primary')).not.toContain('disabled')
+    expect(cliOpening).toContain('aria-label="Claude Desktop 更多操作"')
+    // 命令行工具照旧一次只开一个。
+    expect(buttonTag(cliOpening, 'tool-claude-primary')).toContain('disabled')
+
+    const clientOpening = render({ 'launch:claudeDesktop': { label: '正在打开客户端', log: [] } }, undefined, { externalClients: [connected] })
+    expect(buttonTag(clientOpening, 'tool-claudeDesktop-primary')).toContain('aria-busy="true"')
+    expect(buttonTag(clientOpening, 'tool-claude-primary')).not.toContain('disabled')
+  })
+
   it('offers 取消 on a desktop client row while its install can still be stopped', () => {
     const noop = () => undefined
     const markup = render({ claudeDesktop: { label: '正在从 Claude 官网下载离线安装包（42%）', log: [], cancellable: true } }, undefined, {

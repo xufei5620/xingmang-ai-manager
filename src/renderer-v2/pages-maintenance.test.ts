@@ -184,6 +184,10 @@ describe('buildFeedbackMessage', () => {
     expect(buildFeedbackMessage({ type: '功能建议', description: '想要深色图标', contact: '  ' })).toBe('留言反馈 · 功能建议\n想要深色图标')
   })
 
+  it('says at the end that the report could not be made, so support does not take it for an unticked box', () => {
+    expect(buildFeedbackMessage({ type: '遇到问题', description: '打不开', contact: '', reportMissing: true })).toBe('留言反馈 · 遇到问题\n打不开\n诊断报告：这次没生成出来')
+  })
+
   it('masks a key the customer pasted into the description', () => {
     const text = buildFeedbackMessage({ type: '其他', description: '我的 key 是 sk-abcdefghijklmnopqrstuvwxyz0123456789', contact: '' })
     expect(text).not.toContain('sk-abcdefghijklmnopqrstuvwxyz0123456789')

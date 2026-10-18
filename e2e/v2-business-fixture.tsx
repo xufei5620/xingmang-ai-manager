@@ -29,6 +29,8 @@ declare global {
     setPageActive: (active: boolean) => void
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     failNextRead: (read: 'profile' | 'subscriptions') => void
+    // extensionHold：除卸载以外的扩展改动（开关、更新）挂着，等这里放开才回。
+    releaseExtension: () => void
     // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
     profileReadHarness: {
       deferNext(): void
@@ -78,6 +80,8 @@ const record = (name: string, args?: unknown) => {
 }
 const failOnce = new Set<string>()
 window.failNextRead = (read) => { failOnce.add(read) }
+let releaseHeldExtension: (() => void) | undefined
+window.releaseExtension = () => { releaseHeldExtension?.(); releaseHeldExtension = undefined }
 function failingOnce(read: string) {
   return failOnce.delete(read)
 }
@@ -935,6 +939,7 @@ const apiMethods = {
     input: Parameters<V2Bridge['mutateProviderExtension']>[0],
   ) => {
     record('extension', input)
+    if (query.has('extensionHold') && input.action !== 'uninstall') await new Promise<void>((resolve) => { releaseHeldExtension = resolve })
     // extensionOk：改动照常成功，用来看成功以后那句提示。
     if (query.has('extensionOk')) return extensionList(input.provider)
     throw new Error('扩展操作失败，已有配置保留')
@@ -1073,12 +1078,15 @@ const apiMethods = {
     record('clear-logs')
     logsCleared = true
   },
-  getFeedbackReport: async () => ({
-    id: 'report-snapshot-7',
-    text: '固定的脱敏报告内容',
-    entries: 1,
-    selfChecked: !query.has('selfCheckMissing'),
-  }),
+  getFeedbackReport: async () => {
+    if (fail === 'feedbackReport') throw new Error('诊断报告生成失败')
+    return {
+      id: 'report-snapshot-7',
+      text: '固定的脱敏报告内容',
+      entries: 1,
+      selfChecked: !query.has('selfCheckMissing'),
+    }
+  },
   copyFeedbackReport: async (id?: string) => {
     record('copy-report', id)
     return { entries: 1 }
