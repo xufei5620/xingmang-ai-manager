@@ -2,8 +2,8 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { accelerationCheckpointIntervalMs, accelerationShutdownRetryDelayMs, accelerationStartFailureMessages, automaticSessionDrainMs, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend } from './acceleration-development-backend'
-import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
+import { accelerationCheckpointIntervalMs, accelerationShutdownRetryDelayMs, accelerationStartFailureMessages, automaticSessionDrainMs, classifyAccelerationStartFailure, classifyAccelerationWorkerFailure, createAccelerationDevelopmentBackend, proxyRestoreQuietRetryMs } from './acceleration-development-backend'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationConflictNotice, accelerationFailureMessages, accelerationTrialSeconds, type AccelerationConflictKind } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
 const scope = 'xm-account:1'
@@ -11,6 +11,13 @@ const secondScope = 'api-account:2'
 const epoch = Date.parse('2026-09-14T00:00:00Z')
 const line = { id: 'line-1', name: '开发线路', region: 'JP', latencyMs: 12 }
 const cleanup: Array<() => Promise<void>> = []
+
+function declined(): Error {
+  return Object.assign(new Error('系统代理授权未完成，请授权后重试'), { code: 'MACOS_PROXY_AUTHORIZATION', proxyCause: 'declined' })
+}
+function notAsked(): Error {
+  return Object.assign(new Error('系统代理授权未完成，请授权后重试'), { code: 'MACOS_PROXY_DEFERRED', proxyCause: 'deferred' })
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -24,6 +31,7 @@ async function setup(
   pingLine?: (lineId: string) => Promise<typeof line>,
   entitlementSource?: 'local-device' | 'local-development',
   detectConflicts?: () => Promise<AccelerationConflictKind[]>,
+  extra: { quiet?: boolean; quietFromStart?: boolean } = {},
 ) {
   const directory = existingPath ? path.dirname(existingPath) : await fs.mkdtemp(path.join(os.tmpdir(), 'xm-dev-acceleration-test-'))
   if (!existingPath) cleanup.push(async () => {
@@ -52,9 +60,12 @@ async function setup(
   const proxy = {
     enable: vi.fn(async (_port: number) => { events.push('proxy:enable') }),
     restore: vi.fn(async () => { events.push('proxy:restore') }),
+    restoreQuietly: vi.fn(async () => { events.push('proxy:restore-quietly') }),
   }
   const backend = createAccelerationDevelopmentBackend({
-    runtime, proxy, ledgerPath, now: () => wall, monotonicNow: () => monotonic,
+    runtime, proxy: extra.quiet ? proxy : { enable: proxy.enable, restore: proxy.restore },
+    ...(extra.quietFromStart ? { restoreQuietlyFromStart: true } : {}),
+    ledgerPath, now: () => wall, monotonicNow: () => monotonic,
     listLines: async () => [line], pingLine, entitlementSource, onDiagnostic, onStartDiagnostic, onConflictDiagnostic, onRuntimeInterrupted,
     ...(detectConflicts ? { detectConflicts } : {}),
     schedule(callback, milliseconds) {
@@ -71,6 +82,7 @@ async function setup(
   })
   cleanup.push(async () => {
     proxy.restore.mockImplementation(async () => {})
+    proxy.restoreQuietly.mockImplementation(async () => {})
     runtime.stop.mockImplementation(async () => { running = false })
     await backend.dispose().catch(() => undefined)
   })
@@ -294,7 +306,7 @@ describe('local development acceleration backend', () => {
     const result = await test.backend.stopAcceleration(scope)
     expect(result.phase).toBe('stopping')
     expect(test.runtime.stop).not.toHaveBeenCalled()
-    expect(test.onDiagnostic.mock.calls).toEqual([['proxy-restore']])
+    expect(test.onDiagnostic.mock.calls).toEqual([['proxy-restore', 'other']])
     expect(result.error).not.toContain('private-proxy')
     expect((await test.backend.stopAcceleration(scope)).phase).toBe('idle')
   })
@@ -343,6 +355,73 @@ describe('local development acceleration backend', () => {
     expect(test.runtime.isRunning()).toBe(false)
     expect((await test.readLedger()).accounts[scope].usedMs).toBe(accelerationTrialSeconds * 1000)
     expect((await test.backend.getAccelerationState(scope)).sessionSeconds).toBe(1200)
+  })
+
+  // macOS asks for the user's password on every proxy write and forgets it after
+  // 30 seconds; a customer who cancelled once got a new dialog every 5 seconds.
+  it('stops background restores from asking again once the user refused the password', async () => {
+    const test = await setup(undefined, undefined, undefined, undefined, { quiet: true })
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.proxy.restore.mockRejectedValueOnce(declined())
+    await test.advance(accelerationTrialSeconds * 1000)
+    expect(test.onDiagnostic.mock.calls).toEqual([['proxy-restore', 'declined']])
+    expect(test.runtime.isRunning()).toBe(true)
+    test.proxy.restoreQuietly.mockRejectedValue(notAsked())
+    await test.advance(5000)
+    await test.advance(proxyRestoreQuietRetryMs)
+    await test.backend.getAccelerationState(scope)
+    // One for the connect, one for the refused expiry.
+    expect(test.proxy.restore).toHaveBeenCalledTimes(2)
+    expect(test.proxy.restoreQuietly).toHaveBeenCalledTimes(2)
+    expect(test.runtime.isRunning()).toBe(true)
+    // Clicking stop is the user acting: that one asks.
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('exhausted')
+    expect(test.proxy.restore).toHaveBeenCalledTimes(3)
+    expect(test.runtime.isRunning()).toBe(false)
+  })
+
+  it('goes quiet after repeated background restore failures, and asks again once a connect succeeds', async () => {
+    const test = await setup(undefined, undefined, undefined, undefined, { quiet: true })
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.proxy.restore.mockRejectedValue(new Error('系统代理操作失败，恢复记录已保留，请重试恢复'))
+    await test.advance(accelerationTrialSeconds * 1000)
+    await test.advance(5000)
+    await test.advance(5000)
+    // The connect's own restore, then three failed background ones.
+    expect(test.proxy.restore).toHaveBeenCalledTimes(4)
+    test.proxy.restoreQuietly.mockRejectedValue(notAsked())
+    await test.advance(5000)
+    expect(test.proxy.restore).toHaveBeenCalledTimes(4)
+    await test.advance(proxyRestoreQuietRetryMs)
+    expect(test.proxy.restore).toHaveBeenCalledTimes(4)
+    expect(test.proxy.restoreQuietly).toHaveBeenCalledOnce()
+    test.proxy.restore.mockImplementation(async () => {})
+    test.proxy.restoreQuietly.mockImplementation(async () => {})
+    await test.advance(proxyRestoreQuietRetryMs)
+    expect((await test.backend.getAccelerationState(scope)).phase).toBe('exhausted')
+    expect(test.runtime.isRunning()).toBe(false)
+  })
+
+  it('without a quiet restore keeps retrying the ordinary way, as on Windows', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.proxy.restore.mockRejectedValueOnce(declined()).mockRejectedValueOnce(declined()).mockRejectedValueOnce(declined()).mockRejectedValueOnce(declined())
+    await test.advance(accelerationTrialSeconds * 1000)
+    for (let attempt = 0; attempt < 4; attempt += 1) await test.advance(5000)
+    expect(test.proxy.restore).toHaveBeenCalledTimes(6)
+    expect(test.runtime.isRunning()).toBe(false)
+  })
+
+  it('starts quiet when the helper was already refused, and says when it will ask', async () => {
+    const test = await setup(undefined, undefined, undefined, undefined, { quiet: true, quietFromStart: true })
+    test.proxy.restoreQuietly.mockRejectedValue(notAsked())
+    const idle = await test.backend.getAccelerationState(scope)
+    expect(idle.error).toBe(accelerationFailureMessages['proxy-declined'])
+    expect(test.proxy.restore).not.toHaveBeenCalled()
+    expect(await test.backend.isIdle()).toBe(false)
+    expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('active')
+    expect(test.proxy.restore).toHaveBeenCalledOnce()
+    expect(test.events.indexOf('proxy:restore')).toBeLessThan(test.events.indexOf('proxy:enable'))
   })
 
   it('restores proxy and settles the session on an unexpected core exit', async () => {
@@ -1633,6 +1712,13 @@ describe('classifyAccelerationWorkerFailure', () => {
       ['开发加速进程未就绪。', 'helper-launch'],
       ['开发数据目录无效。', 'helper-launch'],
     ] as const) expect([message, classifyAccelerationWorkerFailure(new Error(message))]).toEqual([message, reason])
+  })
+
+  it('tells a restore the user refused, or was not asked about, from one that failed', () => {
+    // Same text as an ordinary proxy failure: only the code says nobody tried.
+    expect(classifyAccelerationWorkerFailure(declined())).toBe('proxy-declined')
+    expect(classifyAccelerationWorkerFailure(notAsked())).toBe('proxy-declined')
+    expect(classifyAccelerationWorkerFailure(new Error('系统代理授权未完成，请授权后重试'))).toBe('proxy-restore')
   })
 
   it('reports an unrecognised message as unknown rather than guessing at it', () => {

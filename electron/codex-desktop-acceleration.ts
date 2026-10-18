@@ -74,6 +74,13 @@ export interface CodexDesktopAccelerationOptions {
   /** 多久问一次桌面端还在不在。缺省一分钟：Windows 上每问一次要起一个 PowerShell。 */
   watchIntervalMs?: number
   /**
+   * 给了它，刚连上的那一次隔这么久就先问一次：桌面端在跑、又只在启动时要，当场断开，不再等两次确认。
+   * Mac 上每改一次系统代理都要电脑密码，系统只记 30 秒，连上和断开离得近，断开就不用再输一次；
+   * 等两分钟再断就是第二个密码框（2026-10-18 客户 Mac）。这一下没看到它在跑，照旧按 watchIntervalMs
+   * 往下数。缺省 = 旧行为。
+   */
+  startupDisconnectMs?: number
+  /**
    * 连续几次都确认桌面端在跑之后，改成多久问一次。缺省三分钟：人正开着桌面端写东西
    * 的那几个小时里，每分钟起一个 PowerShell（杀毒软件跟着扫一遍）纯属浪费；一旦
    * 查到不在或查不出来，立刻退回 watchIntervalMs。
@@ -181,6 +188,8 @@ export function createCodexDesktopAccelerationCoordinator(
     unknown: number
     /** 连续确认在跑的次数，决定下一次隔多久问。 */
     steady: number
+    /** 刚连上、还没问过第一次：按 startupDisconnectMs 问，在跑就当场断开。 */
+    quick: boolean
     cancel: (() => void) | null
   }
   let watch: Watch | null = null
@@ -212,12 +221,17 @@ export function createCodexDesktopAccelerationCoordinator(
         watch.gone = 0
         watch.unknown = 0
         watch.steady = 0
+        // 连上已经有一阵了，系统记的那 30 秒早过了：照旧数两次。
+        watch.quick = false
         next(watch)
       }
       return true
     }
     stopWatching()
-    const current: Watch = { scope: state.scope, connectedAt: state.connectedAt, gone: 0, unknown: 0, steady: 0, cancel: null }
+    const current: Watch = {
+      scope: state.scope, connectedAt: state.connectedAt, gone: 0, unknown: 0, steady: 0,
+      quick: !relaunched && options.startupDisconnectMs !== undefined, cancel: null,
+    }
     watch = current
     next(current)
     return true
@@ -241,7 +255,8 @@ export function createCodexDesktopAccelerationCoordinator(
     current.cancel = schedule(() => {
       current.cancel = null
       void check(current).catch(() => undefined)
-    }, current.steady >= desktopSteadyBeforeRelaxing ? relaxedWatchIntervalMs : watchIntervalMs)
+    }, current.quick && options.startupDisconnectMs !== undefined ? options.startupDisconnectMs
+      : current.steady >= desktopSteadyBeforeRelaxing ? relaxedWatchIntervalMs : watchIntervalMs)
   }
 
   async function check(current: Watch): Promise<void> {
@@ -267,11 +282,13 @@ export function createCodexDesktopAccelerationCoordinator(
     catch { running = null }
     if (watch !== current) return
     let cause: 'desktop-started' | 'desktop-exited' | 'desktop-unknown' | null = null
+    const quick = current.quick
+    current.quick = false
     if (running === true) {
       current.gone = 0
       current.unknown = 0
       current.steady += 1
-      if (current.steady >= desktopStartupConfirmations && await neededOnlyAtStartup()) cause = 'desktop-started'
+      if ((quick || current.steady >= desktopStartupConfirmations) && await neededOnlyAtStartup()) cause = 'desktop-started'
       if (watch !== current) return
     } else {
       current.steady = 0

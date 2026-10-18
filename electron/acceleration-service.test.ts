@@ -504,7 +504,7 @@ describe('acceleration failure reasons', () => {
   it('speaks the reason the backend classified instead of one sentence for everything', async () => {
     // 读状态失败以前只有「加速服务暂不可用，请稍后重试。」一句话，临时目录、
     // 被别的实例占着、本机账本损坏在界面和日志里长得一模一样（2026-09-22）。
-    for (const reason of ['helper-temp', 'proxy-owned', 'proxy-locked', 'local-data'] as const) {
+    for (const reason of ['helper-temp', 'proxy-owned', 'proxy-locked', 'proxy-declined', 'local-data'] as const) {
       const backend = createBackend()
       backend.getAccelerationState = vi.fn(async () => {
         throw withAccelerationReason(new Error('本机加速进程启动失败。'), reason)

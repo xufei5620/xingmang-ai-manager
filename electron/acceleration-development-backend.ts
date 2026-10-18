@@ -1,8 +1,8 @@
 import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
-import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
-import { accelerationBonusSeconds, accelerationConflictNotice, accelerationTrialSeconds, isAccelerationBonusCode } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationLine, AccelerationProxyFailureCause, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import { accelerationBonusSeconds, accelerationConflictNotice, accelerationFailureMessages, accelerationProxyFailureCause, accelerationTrialSeconds, isAccelerationBonusCode } from './acceleration-contract'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { AccelerationDownloadRouteResult } from './download-acceleration'
 
@@ -42,7 +42,18 @@ export interface AccelerationDevelopmentBackendOptions {
     stop(): Promise<void>
     isRunning(): boolean
   }
-  proxy: { enable(port: number): Promise<void>; restore(): Promise<void> }
+  proxy: {
+    enable(port: number): Promise<void>
+    restore(): Promise<void>
+    /**
+     * 绝不弹授权框的还原（macOS 的 restore-quiet）。给了它，后台自己发起的还原在他拒过一次密码、
+     * 或者连着几次没成以后都改走这一条，直到哪一次还原成功、或他自己点了开启或停止。Windows
+     * 改系统代理不要密码，不给，行为不变。
+     */
+    restoreQuietly?(): Promise<void>
+  }
+  /** 一开局就走不弹框的那一条：辅助进程初始化时那一次还原已经被拒过（或宿主让它先别问）。 */
+  restoreQuietlyFromStart?: boolean
   ledgerPath: string
   now?: () => number
   monotonicNow?: () => number
@@ -55,8 +66,9 @@ export interface AccelerationDevelopmentBackendOptions {
   listLines?: () => Promise<AccelerationLine[]>
   /** Optional host-side latency probe. */
   pingLine?: (lineId: string) => Promise<AccelerationLine>
-  /** Stage only: native errors can contain private proxy or configuration data. */
-  onDiagnostic?: (stage: AccelerationStopFailureStage) => void
+  /** Stage, plus a closed cause for a proxy failure: native errors can contain
+   *  private proxy or configuration data. */
+  onDiagnostic?: (stage: AccelerationStopFailureStage, cause?: AccelerationProxyFailureCause) => void
   /** Same constraint, for a failed connect or line probe. Until this existed,
    *  a failed start left no trace at all: it resolves with an error-carrying
    *  state instead of rejecting, so the IPC layer above logged it as a success. */
@@ -184,6 +196,22 @@ export function accelerationShutdownRetryDelayMs(failedAttempts: number): number
   return Math.min(300_000, 1_000 * 2 ** Math.max(0, Math.min(failedAttempts - 1, 9)))
 }
 
+/**
+ * macOS 每改一次系统代理都要电脑密码，系统只把输过的密码记 30 秒。还原被拒（他在密码框上点了
+ * 「取消」）以后，后台还每五秒还原一次，于是五秒弹一次框、一直弹（2026-10-18 客户 Mac）。所以后台
+ * 自己发起的还原在被拒、或连着这么多次没成以后改走不弹框的那一条（proxy.restoreQuietly）。
+ */
+export const proxyRestoreQuietAfterFailures = 3
+/** 不弹框以后多久悄悄再看一次：他在系统设置里自己关了代理、或者别的程序接管了，这一下就能收尾。 */
+export const proxyRestoreQuietRetryMs = 60_000
+
+/** 还原没去改系统代理：系统授权被拒（他点了取消），或者这一次不许弹框。只有 macOS 会这样
+ *  （platform/macos-system-proxy.ts 的 replyError）。 */
+export function isProxyRestoreWithheld(error: unknown): boolean {
+  return error instanceof Error && 'code' in error
+    && (error.code === 'MACOS_PROXY_AUTHORIZATION' || error.code === 'MACOS_PROXY_DEFERRED')
+}
+
 const baseTotalMs = accelerationTrialSeconds * 1000
 function accountTotalMs(entry: AccountUsage): number {
   return baseTotalMs + (entry.bonusRedeemed ? accelerationBonusSeconds * 1000 : 0)
@@ -222,6 +250,7 @@ function connectionFailure(error: unknown, phase: AccelerationStartFailurePhase)
   return accelerationStartFailureMessages[classifyAccelerationStartFailure(error, phase)]
 }
 const stopFailure = '加速尚未完全停止，正在保留恢复状态，请再次点击停止。'
+const proxyWithheldFailure = accelerationFailureMessages['proxy-declined']
 const exitFailure = '加速意外断开了，网络已恢复正常，可以重新连接。'
 
 /** 墙钟减去开机以来的时长。拿不到就是 null，崩溃结算退回只看墙钟。 */
@@ -311,6 +340,7 @@ export function classifyAccelerationStartFailure(
  */
 export function classifyAccelerationWorkerFailure(error: unknown): AccelerationFailureReason {
   const message = error instanceof Error ? error.message : ''
+  if (isProxyRestoreWithheld(error)) return 'proxy-declined'
   if (message === '另一实例正在使用系统代理，请先停止该实例的加速。') return 'proxy-owned'
   if (/系统代理(操作锁|正在由另一实例操作)/.test(message)) return 'proxy-locked'
   if (message === ledgerFailure) return 'local-data'
@@ -359,6 +389,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   // 收尾到点后没停掉的内核的重试。单独一格：内核随后自己退出、或下载线路重置时
   // 收尾的持有会被作废，这份清理却还欠着。
   let cancelCleanupRetry: (() => void) | null = null
+  // 后台自己发起的还原改走不弹框的那一条（见 proxyRestoreQuietAfterFailures），以及连着没成的次数。
+  // 还原成功、或者连上加速（他输了密码）就清掉。
+  let restoreQuietly = options.restoreQuietlyFromStart === true && options.proxy.restoreQuietly !== undefined
+  let restoreFailures = 0
   const lastErrors = new Map<string, string>()
   const lastConflicts = new Map<string, AccelerationConflictKind[]>()
   const lastSessionSeconds = new Map<string, number>()
@@ -440,20 +474,41 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     }
     catch { throw new Error(ledgerFailure) }
   }
-  async function recover() {
+  /**
+   * 还原系统代理。`asked`：这一次是他当面要的（开启、停止、兑换、检测线路），照常去问系统。后台
+   * 自己发起的（到期、读状态时顺手的、定时重试、退出）在改走不弹框以后不再碰密码框。
+   */
+  async function restoreProxy(asked: boolean): Promise<void> {
+    const quiet = !asked && restoreQuietly && options.proxy.restoreQuietly !== undefined
+    try { await (quiet ? options.proxy.restoreQuietly?.() : options.proxy.restore()) }
+    catch (error) {
+      if (options.proxy.restoreQuietly) {
+        if (!asked) restoreFailures += 1
+        if (isProxyRestoreWithheld(error) || restoreFailures >= proxyRestoreQuietAfterFailures) restoreQuietly = true
+      }
+      throw error
+    }
+    restoreQuietly = false
+    restoreFailures = 0
+  }
+  /** 停没停成，过多久再试：平常五秒；不弹框以后一分钟悄悄看一次。 */
+  function retryStopLater() {
+    arm(restoreQuietly ? proxyRestoreQuietRetryMs : 5000)
+  }
+  async function recover(asked = false) {
     try { await load() } catch {
       // A corrupt allowance must fail closed, but it must not prevent restoring
       // a stale OS proxy or cleaning up an already-running development core.
       try {
-        await options.proxy.restore()
+        await restoreProxy(asked)
         if (options.runtime.isRunning()) await options.runtime.stop()
         if (options.runtime.isRunning()) throw new Error(stopFailure)
-      } catch { recoveryError = stopFailure; throw new Error(stopFailure) }
+      } catch (error) { recoveryError = recoveryFailure(error); throw new Error(stopFailure) }
       throw new Error(ledgerFailure)
     }
     if (!needsRecovery) return
     try {
-      await options.proxy.restore()
+      await restoreProxy(asked)
       if (options.runtime.isRunning()) await options.runtime.stop()
       if (options.runtime.isRunning()) throw new Error(stopFailure)
       const accounts: Ledger['accounts'] = { ...ledger!.accounts }
@@ -469,10 +524,14 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       ledgerNeedsRewrite = false
       needsRecovery = false
       recoveryError = null
-    } catch {
-      recoveryError = stopFailure
+    } catch (error) {
+      recoveryError = recoveryFailure(error)
       throw new Error(stopFailure)
     }
+  }
+  /** 加速页上那一句：没去改（他没输密码、或这一次不许问）要说清下次什么时候会再问。 */
+  function recoveryFailure(error: unknown): string {
+    return isProxyRestoreWithheld(error) ? proxyWithheldFailure : stopFailure
   }
   function state(scope: string): AccelerationState {
     const current = session?.scope === scope ? session : null
@@ -527,7 +586,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   }
   async function stopStage<T>(stage: AccelerationStopFailureStage, operation: () => Promise<T>): Promise<T> {
     try { return await operation() } catch (error) {
-      try { options.onDiagnostic?.(stage) } catch { /* Reporting must not change recovery behavior. */ }
+      try {
+        if (stage === 'proxy-restore') options.onDiagnostic?.(stage, accelerationProxyFailureCause(error))
+        else options.onDiagnostic?.(stage)
+      } catch { /* Reporting must not change recovery behavior. */ }
       throw error
     }
   }
@@ -571,7 +633,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         // An old expiry can queue while a redemption awaits atomic persistence.
         // Its callback must not stop the same session after the timer is extended.
         if (generation !== timerGeneration || !session || session !== scheduledSession || disposed) return
-        try { await stopSession() } catch { arm(5000) }
+        try { await stopSession() } catch { retryStopLater() }
       }).catch(() => undefined)
     }, Math.max(1, Math.ceil(milliseconds)))
   }
@@ -651,7 +713,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       }).catch(() => undefined)
     }, milliseconds)
   }
-  async function stopSession() {
+  async function stopSession(asked = false) {
     if (!session) {
       if (probeNeedsCleanup) {
         await stopCore()
@@ -667,7 +729,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       if (current.stoppedMono === null) {
         // Keep the core alive until proxy restoration succeeds. Otherwise an
         // incomplete restore could leave every proxied app pointing at a dead port.
-        await stopStage('proxy-restore', () => options.proxy.restore())
+        await stopStage('proxy-restore', () => restoreProxy(asked))
         holdCoreForDrain(current)
         await stopCore()
         current.stoppedMono = monotonicNow()
@@ -715,7 +777,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       try {
         await stopSession()
         if (exited && billed) lastErrors.set(oldScope, exitFailure)
-      } catch { arm(5000) }
+      } catch { retryStopLater() }
       if (exited) reportRuntimeInterrupted()
     }
     return state(scope)
@@ -728,8 +790,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     return enqueue(async () => {
       if (closing || disposed) throw new Error('本机加速服务正在关闭。')
       if (mode !== 'system-proxy') throw new Error('本机开发加速暂不支持 TUN，请关闭 TUN 后重试。')
-      try { await recover() } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
-      if (probeNeedsCleanup) await stopSession()
+      try { await recover(true) } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
+      if (probeNeedsCleanup) await stopSession(true)
       if (session) {
         if (session.scope === scope && session.phase === 'active' && options.runtime.isRunning()) {
           // 用户自己点「开启加速」时连着的若是软件替他在后台连的那一次（加速页上
@@ -737,7 +799,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           // 连一次计时的，从这一刻起归他。时长用完的照旧原样返回，后台那次不动。
           if (session.billed || !billed || usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
         }
-        try { await stopSession() } catch { throw new Error(stopFailure) }
+        try { await stopSession(true) } catch { throw new Error(stopFailure) }
       }
       lastErrors.delete(scope)
       lastConflicts.delete(scope)
@@ -779,6 +841,9 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         session.port = result.proxyPort
         phase = 'proxy'
         await options.proxy.enable(result.proxyPort)
+        // 连上了就是他刚输过密码：这一次会话到期、断开时照常去问。
+        restoreQuietly = false
+        restoreFailures = 0
         phase = 'verify'
         if (!options.runtime.isRunning()) throw new Error(startFailure)
         session.startedMono = monotonicNow()
@@ -793,8 +858,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       } catch (error) {
         reportStartFailure(error, phase)
         // 后台那次连不上只记日志（宿主那边），不在加速页上留一句他没点过的失败。
-        try { await stopSession(); if (billed) lastErrors.set(scope, connectionFailure(error, phase)) }
-        catch { arm(5000) }
+        try { await stopSession(true); if (billed) lastErrors.set(scope, connectionFailure(error, phase)) }
+        catch { retryStopLater() }
         return state(scope)
       }
     })
@@ -813,7 +878,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       assertScope(scope)
       return enqueue(async () => {
         if (closing || disposed) throw new Error('本机加速服务正在关闭。')
-        await recover()
+        await recover(true)
         // Settle a session that expired while the machine slept against its old
         // allowance before adding credit; redemption never restarts its network.
         await inspect(scope)
@@ -848,7 +913,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       assertLineId(lineId)
       return enqueue(async () => {
         if (closing || disposed) throw new Error('本机加速服务正在关闭。')
-        try { await recover() } catch { throw new Error(ledgerFailure) }
+        try { await recover(true) } catch { throw new Error(ledgerFailure) }
         if (session) throw new Error('加速连接进行中，暂不能检测线路。')
         // 只剩收尾握着内核时，给用户当面点的检测让路：交给探测前的清理去停，
         // 停不掉也和探测留下的内核一样，由下一次 start / stop / dispose 再清。
@@ -880,11 +945,11 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     stopAcceleration(scope) {
       assertScope(scope)
       return enqueue(async () => {
-        try { await recover() } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
+        try { await recover(true) } catch { if (!ledger) throw new Error(ledgerFailure); return state(scope) }
         if (session?.scope === scope) {
-          try { await stopSession() } catch { arm(5000) }
+          try { await stopSession(true) } catch { retryStopLater() }
         } else {
-          if (probeNeedsCleanup) await stopSession()
+          if (probeNeedsCleanup) await stopSession(true)
           lastErrors.delete(scope)
           lastConflicts.delete(scope)
         }
@@ -944,7 +1009,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       const scope = session.scope
       const billed = session.billed
       try { await stopSession(); if (billed) lastErrors.set(scope, exitFailure) }
-      catch { arm(5000); throw new Error(stopFailure) }
+      catch { retryStopLater(); throw new Error(stopFailure) }
       finally { reportRuntimeInterrupted() }
     }),
     suspend() {
@@ -968,7 +1033,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
         await recover()
         // 退出时下载线路和收尾都没有豁免：内核必须停干净，端口不能留在机器上。
         forgetCoreHolders()
-        try { await stopSession() } catch { arm(5000); throw new Error(stopFailure) }
+        try { await stopSession() } catch { retryStopLater(); throw new Error(stopFailure) }
         if (options.runtime.isRunning()) {
           try {
             await options.runtime.stop()

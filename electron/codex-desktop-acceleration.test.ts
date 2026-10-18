@@ -164,6 +164,7 @@ describe('codex desktop acceleration exit watch', () => {
     timeoutMs?: number
     onlyNeededAtStartup?: () => boolean | Promise<boolean>
     disconnected?: AccelerationState
+    startupDisconnectMs?: number
   }) {
     const timers: Array<() => void> = []
     const delays: number[] = []
@@ -187,6 +188,7 @@ describe('codex desktop acceleration exit watch', () => {
       disconnect,
       ...(options.onlyNeededAtStartup ? { onlyNeededAtStartup: options.onlyNeededAtStartup } : {}),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.startupDisconnectMs === undefined ? {} : { startupDisconnectMs: options.startupDisconnectMs }),
       schedule: (callback, milliseconds) => {
         timers.push(callback)
         delays.push(milliseconds)
@@ -241,6 +243,44 @@ describe('codex desktop acceleration exit watch', () => {
     await vi.waitFor(() => {
       expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.disconnected', expect.stringContaining('已经打开好了'), { cause: 'desktop-started' })
     })
+  })
+
+  // On a Mac each proxy change asks for the password and the system keeps it 30
+  // seconds: disconnecting inside that window costs no second dialog.
+  it('disconnects at the first check after a quick startup delay when the app is up on a Xingmang key', async () => {
+    const h = watchSetup({ running: [true], onlyNeededAtStartup: () => true, startupDisconnectMs: 20_000 })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
+    expect(h.delays).toEqual([20_000])
+  })
+
+  it('falls back to the ordinary count when the quick check misses the app or the account needs ChatGPT', async () => {
+    const late = watchSetup({ running: [false, true, true], onlyNeededAtStartup: () => true, startupDisconnectMs: 20_000 })
+    await late.coordinator.ensureConnected()
+    for (let index = 0; index < 2; index += 1) await late.tick()
+    expect(late.disconnect).not.toHaveBeenCalled()
+    await late.tick()
+    await vi.waitFor(() => { expect(late.disconnect).toHaveBeenCalledOnce() })
+    expect(late.delays).toEqual([20_000, 60_000, 60_000])
+
+    const chatgpt = watchSetup({ running: [true], onlyNeededAtStartup: () => false, startupDisconnectMs: 20_000 })
+    await chatgpt.coordinator.ensureConnected()
+    for (let index = 0; index < 3; index += 1) await chatgpt.tick()
+    expect(chatgpt.disconnect).not.toHaveBeenCalled()
+    // The quick check that saw it running counts towards relaxing the interval.
+    expect(chatgpt.delays).toEqual([20_000, 60_000, 60_000, 180_000])
+  })
+
+  it('keeps the ordinary count when the app is reopened on a session that is already old', async () => {
+    const h = watchSetup({ running: [true], onlyNeededAtStartup: () => true, startupDisconnectMs: 20_000 })
+    h.setState(automatic)
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'already-connected' })
+    await h.tick()
+    expect(h.disconnect).not.toHaveBeenCalled()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledOnce() })
+    expect(h.delays).toEqual([60_000, 60_000])
   })
 
   it('keeps the session until exit when the desktop app needs it throughout, and asks again each time', async () => {

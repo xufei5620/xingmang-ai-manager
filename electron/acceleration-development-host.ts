@@ -1,8 +1,8 @@
 import path from 'node:path'
 import { lstat } from 'node:fs/promises'
 import { fork, spawn, type ChildProcess, type ForkOptions } from 'node:child_process'
-import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationMode, AccelerationState } from './acceleration-contract'
-import { accelerationFailureReason, isAccelerationConflictKind, isAccelerationFailureReason, withAccelerationReason } from './acceleration-contract'
+import type { AccelerationApi, AccelerationConflictKind, AccelerationFailureReason, AccelerationMode, AccelerationProxyFailureCause, AccelerationState } from './acceleration-contract'
+import { accelerationFailureReason, accelerationProxyFailureCause, isAccelerationConflictKind, isAccelerationFailureReason, isAccelerationProxyFailureCause, withAccelerationReason } from './acceleration-contract'
 import { trustedCommandEnvironment } from './command-runner'
 import { readSafeUtf8File } from './safe-local-data'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
@@ -119,6 +119,18 @@ export const accelerationStartFailureDescriptions: Record<AccelerationStartFailu
  */
 export const accelerationProxyRecoveryRetryDelaysMs: readonly number[] = [5_000, 15_000, 30_000, 60_000, 120_000]
 const stopFailureStages: readonly string[] = ['proxy-restore', 'core-stop', 'ledger-write']
+
+/** 只有用户当面点的这两个请求，才让新拉起的辅助进程在初始化时去问密码（见 recoveryQuiet）。 */
+const askingOperations: readonly string[] = ['start', 'stop']
+
+/** Same rule as the reason: non-enumerable, so it never rides along into a
+ *  serialized error, and only a member of the closed set gets attached. */
+function withProxyCause<T extends Error>(error: T, cause: unknown): T {
+  if (isAccelerationProxyFailureCause(cause)) {
+    Object.defineProperty(error, 'proxyCause', { value: cause, enumerable: false, configurable: true })
+  }
+  return error
+}
 const startFailureStages: readonly string[] = Object.keys(accelerationStartFailureDescriptions)
 
 /** The worker owns the core and proxy lease. Parent IPC loss triggers its cleanup. */
@@ -127,7 +139,13 @@ export function createAccelerationDevelopmentHost(options: {
   dataDirectory: string
   packaged?: boolean
   entitlementSource?: 'local-device'
-  onDiagnostic?(stage: AccelerationStopFailureStage): void
+  /** cause：系统代理那一步没成的底层原因（封闭集合），只有 proxy-restore 才有。 */
+  onDiagnostic?(stage: AccelerationStopFailureStage, cause?: AccelerationProxyFailureCause): void
+  /**
+   * 辅助进程初始化时那一次还原没去改系统代理：他在密码框上点了取消（declined），或者这一次不许
+   * 弹框（deferred）。辅助进程照常起来，等他点开启或停止时再问。
+   */
+  onRecoveryWithheld?(cause: AccelerationProxyFailureCause): void
   onStartDiagnostic?(stage: AccelerationStartFailureStage): void
   onConflictDiagnostic?(kind: AccelerationConflictKind, ignored: boolean): void
   /** Both the closed reason and the error behind it. Unlike the worker-side
@@ -179,6 +197,12 @@ export function createAccelerationDevelopmentHost(options: {
   const releasedWorkers = new WeakSet<ChildProcess>()
   const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>()
   let recoveryRetrying = false
+  // 这次运行里还原已经没成过（被拒、不许问、或问了也没改成）：之后后台拉起的辅助进程初始化时
+  // 都不弹框，只有他点「开启加速」「停止加速」拉起的那一个才问。以前每拉一个就问一次，客户 Mac
+  // 隔几秒弹一次（2026-10-18）。哪一次初始化完整成功就清掉。
+  let recoveryQuiet = false
+  // 初始化照常完成、但那一次还原没去改的辅助进程：它的初始化成功不算「完整成功」。
+  const withheldWorkers = new WeakSet<ChildProcess>()
   let recoveryRetryWait: { timer: ReturnType<typeof setTimeout>; resolve(): void } | null = null
 
   function failPending() {
@@ -339,13 +363,23 @@ export function createAccelerationDevelopmentHost(options: {
       if (!message || typeof message !== 'object' || Array.isArray(message)) return
       const response = message as Record<string, unknown>
       if (response.type === 'acceleration-diagnostic') {
-        if (child !== worker || Object.keys(response).some((key) => !['type', 'event', 'stage', 'ignored'].includes(key))) return
+        if (child !== worker || Object.keys(response).some((key) => !['type', 'event', 'stage', 'ignored', 'cause'].includes(key))) return
         // The worker is the one process allowed to see the underlying error.
         // Only a member of the stage set it is allowed to report crosses here,
         // so a compromised or confused worker cannot turn this into a channel
         // for arbitrary text reaching the log.
-        if (response.event === 'stop.failed' && stopFailureStages.includes(response.stage as string)) {
-          try { options.onDiagnostic?.(response.stage as AccelerationStopFailureStage) } catch { /* Diagnostics must not interrupt recovery. */ }
+        if (response.event === 'stop.failed' && stopFailureStages.includes(response.stage as string)
+          && (response.cause === undefined || isAccelerationProxyFailureCause(response.cause))) {
+          try {
+            if (response.cause === undefined) options.onDiagnostic?.(response.stage as AccelerationStopFailureStage)
+            else options.onDiagnostic?.(response.stage as AccelerationStopFailureStage, response.cause)
+          } catch { /* Diagnostics must not interrupt recovery. */ }
+          return
+        }
+        if (response.event === 'recover.withheld' && isAccelerationProxyFailureCause(response.stage) && response.cause === undefined) {
+          recoveryQuiet = true
+          withheldWorkers.add(worker)
+          try { options.onRecoveryWithheld?.(response.stage) } catch { /* Diagnostics must not interrupt recovery. */ }
           return
         }
         if (response.event === 'start.failed' && startFailureStages.includes(response.stage as string)) {
@@ -373,7 +407,7 @@ export function createAccelerationDevelopmentHost(options: {
         // proxy detail, I13). It sends one member of the closed reason set, so
         // a confused worker cannot turn this into a channel for free text.
         const reason = isAccelerationFailureReason(response.reason) ? response.reason : 'unknown'
-        request.reject(withAccelerationReason(new Error('本机加速操作未完成，请重新检查线路。'), reason))
+        request.reject(withProxyCause(withAccelerationReason(new Error('本机加速操作未完成，请重新检查线路。'), reason), response.cause))
       }
     })
     child.on('error', () => disconnectWorker(worker))
@@ -389,13 +423,17 @@ export function createAccelerationDevelopmentHost(options: {
     child.on('exit', exited)
     child.on('close', exited)
     child.on('disconnect', () => { if (child === worker) failPending() })
-    ready = rpc('init', { config, dataDirectory: options.dataDirectory, ...(entitlementSource ? { entitlementSource } : {}) }).then(() => undefined, (error: unknown) => {
+    ready = rpc('init', {
+      config, dataDirectory: options.dataDirectory, ...(entitlementSource ? { entitlementSource } : {}),
+      ...(recoveryQuiet ? { quietRecovery: true } : {}),
+    }).then(() => { if (!withheldWorkers.has(worker)) recoveryQuiet = false }, (error: unknown) => {
       // Initialization can fail after acquiring or recovering a proxy lease.
       // Parent IPC loss tells the worker to retry its own cleanup before exit.
       disconnectWorker(worker)
       const reason = accelerationFailureReason(error) ?? 'unknown'
+      if (reason === 'proxy-restore' || reason === 'proxy-declined') recoveryQuiet = true
       try { options.onHelperFailure?.(reason, error) } catch { /* Reporting must not change the launch result. */ }
-      throw withAccelerationReason(new Error('本机加速进程初始化未完成。'), reason)
+      throw withProxyCause(withAccelerationReason(new Error('本机加速进程初始化未完成。'), reason), accelerationProxyFailureCause(error))
     })
     scheduleIdleExit()
     return ready
@@ -466,6 +504,7 @@ export function createAccelerationDevelopmentHost(options: {
   }
 
   async function request(operation: string, scope: string, mode?: string, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {
+    if (askingOperations.includes(operation)) recoveryQuiet = false
     await ensureReady()
     if ((operation === 'start' || operation === 'start-automatic') && child) leaseWorkers.add(child)
     // The service above this adapter validates and projects every returned field.

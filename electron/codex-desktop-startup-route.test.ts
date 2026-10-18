@@ -365,6 +365,23 @@ describe('createCodexDesktopStartupRouteCoordinator', () => {
     }
   })
 
+  it('leaves acceleration alone when Codex is already open on a Xingmang key, where it is asked to', async () => {
+    const f = coordinatorFixture({ skipAccelerationWhenRunning: true })
+    await expect(f.coordinator.prepare({ launchArgumentsUsable: false })).resolves.toEqual({ kind: 'none' })
+    expect(f.ensureAccelerated).not.toHaveBeenCalled()
+    expect(f.issueTicket).not.toHaveBeenCalled()
+    expect(f.log).toHaveBeenCalledWith('info', 'codex-desktop.startup-route.already-running', expect.any(String), undefined)
+    // A ChatGPT account needs chatgpt.com all along, and a cold launch still reads the switch.
+    for (const [context, overrides] of [
+      [{ launchArgumentsUsable: false }, { onlyNeededAtStartup: () => false }],
+      [{ launchArgumentsUsable: true }, { launchArgumentsSupported: false }],
+    ] as const) {
+      const other = coordinatorFixture({ skipAccelerationWhenRunning: true, ...overrides })
+      await other.coordinator.prepare(context)
+      expect(other.ensureAccelerated).toHaveBeenCalledTimes(1)
+    }
+  })
+
   it('falls back to acceleration when the service is not deployed, the handshake fails or the port cannot open', async () => {
     const cases: Partial<CodexDesktopStartupRouteOptions>[] = [
       { issueTicket: vi.fn(async () => { throw new Error('Codex 中文启动凭证失败，服务返回 HTTP 404') }) },

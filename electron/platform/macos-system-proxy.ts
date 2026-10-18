@@ -10,6 +10,7 @@ import { copyBoundedFileExclusive, readBoundedFile } from '../bounded-file'
 import { readDirectoryEntries } from '../bounded-directory'
 import { ensureSafeDataDirectory } from '../safe-local-data'
 import { redactHomeDirectory } from '../startup-log'
+import type { AccelerationProxyFailureCause } from '../acceleration-contract'
 
 export interface MacosProxyChild extends EventEmitter {
   stdin: Writable
@@ -38,6 +39,10 @@ const RETAINED_HELPER_COPIES = 2
  * liveness: a copy older than this can only belong to a launch long gone. */
 const HELPER_COPY_GRACE_MS = 24 * 60 * 60 * 1000
 const MAX_HELPER_COPIES_SCANNED = 4096
+/** macOS 的管理员密码框按这个文件名称呼要权限的程序：「“星芒AI管理工具”正在尝试修改
+ * 系统网络配置」。以前副本沿用编译出来的名字 macos-system-proxy，客户认不出是谁在要
+ * 密码，多半点了取消（2026-10-18 客户 Mac 一直弹）。只改副本的名字，随包那份不动。 */
+export const MACOS_PROXY_HELPER_DISPLAY_NAME = '星芒AI管理工具'
 
 export interface MacosProxyHelperCopy {
   name: string
@@ -105,7 +110,7 @@ export async function prepareMacosProxyHelper(
   // A killed writer can leave an incomplete directory. Fresh private names
   // ensure a later start never selects those bytes or blocks on that old copy.
   const directory = await fs.promises.mkdtemp(path.join(cacheDirectory, `${digest}-`))
-  const target = path.join(directory, 'macos-system-proxy')
+  const target = path.join(directory, MACOS_PROXY_HELPER_DISPLAY_NAME)
   try {
     await fs.promises.chmod(directory, 0o700)
     await copyBoundedFileExclusive(sourcePath, target, maximumBytes, label)
@@ -132,10 +137,25 @@ function spawnHelper(helperPath: string, args: string[]): MacosProxyChild {
   return spawn(helperPath, args, { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: process.env.HOME ?? '', LANG: 'en_US.UTF-8' }, shell: false })
 }
 
+/** The text stays fixed per cause; `proxyCause` is the one detail that may
+ * reach the log, as a member of a closed set (I13). */
+function proxyFailure(message: string, proxyCause: AccelerationProxyFailureCause, code?: string): Error {
+  return Object.assign(new Error(message), { proxyCause }, code ? { code } : {})
+}
+
 function replyError(code: unknown): Error {
-  if (code === 'authorization') return Object.assign(new Error('系统代理授权未完成，请授权后重试'), { code: 'MACOS_PROXY_AUTHORIZATION' })
-  if (code === 'busy') return new Error('另一实例正在使用系统代理，请先停止该实例的加速。')
-  return new Error('系统代理操作失败，恢复记录已保留，请重试恢复')
+  if (code === 'authorization') return proxyFailure('系统代理授权未完成，请授权后重试', 'declined', 'MACOS_PROXY_AUTHORIZATION')
+  // 不许弹框的那一次确实有设置要改：和被拒一样，等他自己点了再问。
+  if (code === 'deferred') return proxyFailure('系统代理授权未完成，请授权后重试', 'deferred', 'MACOS_PROXY_DEFERRED')
+  if (code === 'busy') return proxyFailure('另一实例正在使用系统代理，请先停止该实例的加速。', 'busy')
+  if (code === 'conflict' || code === 'storage' || code === 'configuration') {
+    return proxyFailure('系统代理操作失败，恢复记录已保留，请重试恢复', code)
+  }
+  return proxyFailure('系统代理操作失败，恢复记录已保留，请重试恢复', 'other')
+}
+
+function helperFailure(message: string): Error {
+  return proxyFailure(message, 'helper')
 }
 
 export function createMacosSystemProxy(options: MacosSystemProxyOptions) {
@@ -177,18 +197,18 @@ export function createMacosSystemProxy(options: MacosSystemProxyOptions) {
       const preparedPath = await (options.prepareHelper ?? prepareMacosProxyHelper)(helperPath)
       validate(preparedPath)
       child = (options.spawnHelper ?? spawnHelper)(preparedPath, ['--journal', options.journalPath])
-    } catch { throw new Error('系统代理组件不可用，请重新安装星芒；还不行请联系客服。') }
+    } catch { throw helperFailure('系统代理组件不可用，请重新安装星芒；还不行请联系客服。') }
     const active = child
     active.stderr.resume()
-    active.stdin.on('error', () => { if (child === active) disconnect(new Error('系统代理连接已中断，正在尝试恢复')) })
-    active.on('error', () => { if (child === active) disconnect(new Error('系统代理组件启动失败')) })
-    function ended(): void { if (child === active) { disconnect(new Error('系统代理组件已退出，请重试恢复')); retired = undefined } }
+    active.stdin.on('error', () => { if (child === active) disconnect(helperFailure('系统代理连接已中断，正在尝试恢复')) })
+    active.on('error', () => { if (child === active) disconnect(helperFailure('系统代理组件启动失败')) })
+    function ended(): void { if (child === active) { disconnect(helperFailure('系统代理组件已退出，请重试恢复')); retired = undefined } }
     active.on('exit', ended)
     active.on('close', ended)
     active.stdout.on('data', (data: Buffer) => {
       if (child !== active) return
       buffer += data.toString('utf8')
-      if (Buffer.byteLength(buffer) > 8192) { disconnect(new Error('系统代理组件返回异常')); return }
+      if (Buffer.byteLength(buffer) > 8192) { disconnect(helperFailure('系统代理组件返回异常')); return }
       let end: number
       while ((end = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, end)
@@ -201,7 +221,7 @@ export function createMacosSystemProxy(options: MacosSystemProxyOptions) {
           pending = undefined
           if (value.ok) request.resolve()
           else request.reject(replyError('error' in value ? value.error : undefined))
-        } catch { disconnect(new Error('系统代理组件返回异常')); return }
+        } catch { disconnect(helperFailure('系统代理组件返回异常')); return }
       }
     })
     return active
@@ -209,14 +229,14 @@ export function createMacosSystemProxy(options: MacosSystemProxyOptions) {
 
   function request(op: string, port?: number): Promise<void> {
     const task = tail.then(async () => {
-      if (disposed) throw new Error('系统代理组件已关闭')
+      if (disposed) throw helperFailure('系统代理组件已关闭')
       const active = await ensureChild()
       const id = ++sequence
       return new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => disconnect(new Error('系统代理操作超时，正在尝试恢复')), options.timeoutMs ?? 120_000)
+        const timer = setTimeout(() => disconnect(helperFailure('系统代理操作超时，正在尝试恢复')), options.timeoutMs ?? 120_000)
         pending = { id, resolve, reject, timer }
         try { active.stdin.write(JSON.stringify({ id, op, ...(port === undefined ? {} : { port }) }) + '\n') }
-        catch { disconnect(new Error('系统代理连接已中断，正在尝试恢复')) }
+        catch { disconnect(helperFailure('系统代理连接已中断，正在尝试恢复')) }
       })
     })
     tail = task.catch(() => {})
@@ -230,6 +250,23 @@ export function createMacosSystemProxy(options: MacosSystemProxyOptions) {
     },
     restore(): Promise<void> { return request('restore') },
     recover(): Promise<void> { return request('recover') },
+    /** 绝不弹密码框的还原：没有要改的就收尾，有要改的就以 deferred 失败、记录照留。
+     *  他在密码框上点过取消以后，后台自己发起的还原都走这一条。 */
+    restoreQuietly(): Promise<void> { return request('restore-quiet') },
+    /**
+     * 让这一个组件进程退场，下一次请求另起一个。只在还原被拒之后用：组件这时不会再问就退，
+     * 锁和恢复记录交给下一次打开软件的那一个，那一个会当面问一次（不然它只能报「另一实例
+     * 正在使用系统代理」，2026-10-18 客户日志里的 proxy-owned）。
+     */
+    release(): Promise<void> {
+      const task = tail.then(async () => {
+        if (!child) return
+        disconnect(helperFailure('系统代理组件已退出，请重试恢复'))
+        if (retired) { await retired; retired = undefined }
+      })
+      tail = task.catch(() => {})
+      return task
+    },
     async dispose(): Promise<void> {
       if (disposed) return
       await request('stop')
