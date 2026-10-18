@@ -58,7 +58,9 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseUpdateDownloadOptions, parseNodeRuntimeInstallRequest, parseRunningToolsProviders, registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey, registerIpcHandlers } from './ipc'
+import { parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseNodeRuntimeInstallRequest, parseUpdateDownloadOptions } from './ipc/parsers/system'
+import { parseRunningToolsProviders } from './ipc/parsers/tools'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -3656,12 +3658,12 @@ describe('registerIpcHandlers', () => {
   })
 })
 
-// The 15 hand-written parse/validation helpers in ipc.ts (requiredString,
-// optionalString, stringArray, and 12 parse* functions) are module-private
-// and never exported, so they are exercised the same way real IPC callers
-// reach them: through the registered handlers, asserting on the Chinese
-// error text (I5 - all IPC input is hostile and must be validated) and on
-// what gets forwarded to the mocked service layer.
+// The hand-written parse/validation helpers (requiredString, optionalString,
+// stringArray and the parse* functions, now in electron/ipc/parsers/) are
+// exercised here the same way real IPC callers reach them, so these tests
+// also pin which parser each channel runs: through the registered handlers,
+// asserting on the Chinese error text (I5 - all IPC input is hostile and must
+// be validated) and on what gets forwarded to the mocked service layer.
 describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('requiredString (e.g. backups:inspect id, mcp:remove name)', () => {
     it('trims and forwards a valid string', () => {

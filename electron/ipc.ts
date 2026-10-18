@@ -29,9 +29,7 @@ import {
   inspectWorkspaceWritable,
   shouldCheckWorkspaceWritable,
 } from './documents-fallback'
-import { usageDateRange } from './usage-date-range'
-import { parseRelayRoutePreferences, type AppSettingsUpdate, type AppTheme } from './app-settings'
-import { parseWindowState } from './window-preferences'
+import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
 import { ExternalUrlBlockedError } from './external-url-blocked'
@@ -40,8 +38,7 @@ import { apiKeyDigest, type ConfigBackupAccountContext, type ConfigBackupStore }
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi, AccelerationMode, AccelerationPreferenceApi } from './acceleration-contract'
 import { accelerationFailureReason } from './acceleration-contract'
-import { activeProviderIds, cliCatalog, isActiveProviderId, isProviderId, isRetiredProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
-import { isExactCliVersion } from './versions'
+import { cliCatalog, isActiveProviderId, isProviderId, isRetiredProviderId, providerIds, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys, inheritedKeySettings, inheritedKeyExpiredMessage, isUsedUpKeyLimit, managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { createMemoryManagedKeyReplacementStore, ManagedKeyReplacementUnreadableError, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { isInstallCancelledError } from './install-cancellation'
@@ -53,37 +50,20 @@ import {
 } from './account-cli-provisioner'
 import { requestDiagnosticsOf } from './request-diagnostics'
 import { parseImageGenerateInput } from './canvas-request-parser'
-import { relayRoutePreferenceAllowed, relaySites, resolveRelaySite } from './relay-sites'
-import type {
-  AddMarketplaceInput,
-  AddMcpInput,
-  CodexExtensionService,
-  ImportSkillInput,
-} from './codex-extensions'
+import { resolveRelaySite } from './relay-sites'
+import type { CodexExtensionService } from './codex-extensions'
 import {
   ProviderExtensionService,
-  type ProviderExtensionMutation,
   type ProviderExtensionsSnapshot,
 } from './provider-extensions'
-import {
-  type CodexSessionListQuery,
-  CodexSessionsService,
-} from './codex-sessions'
-import {
-  ProviderSessionsService,
-  listedProviderSessionProviders,
-  providerSessionProviders,
-  type ProviderSessionListQuery,
-} from './provider-sessions'
-import type { NativeConfigSaveMode } from './config-files'
+import { CodexSessionsService } from './codex-sessions'
+import { ProviderSessionsService } from './provider-sessions'
 import { AccountSourceServiceUnavailableError, switchAccountSource } from './account-source-switch'
 import { emptyRunningToolsReport } from './running-tools'
 import { redactHomeDirectory } from './startup-log'
-import { isCodexSessionUuid } from './tool-installation'
-import { externalClientNames, isExternalToolId, parseExternalClientConfigRequest, type ExternalClientScanOptions, type ExternalClientStatus } from './external-client-contract'
+import { externalClientNames, isExternalToolId, parseExternalClientConfigRequest, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import type { ExternalClientCheckResult } from './external-client-connection'
-import type { CodexDesktopLocale } from './codex-desktop-locale'
 import {
   isAllowedExternalUrl,
   isTrustedIpcSenderUrl,
@@ -92,10 +72,6 @@ import {
 import type {
   CliLaunchMode,
   CliLaunchResult,
-  CliUninstallOptions,
-  CodexDesktopLaunchMode,
-  ConfigSavePayload,
-  SystemScanOptions,
   SystemSnapshot,
   SystemService,
 } from './system-service'
@@ -106,26 +82,11 @@ import { assertOpenableConfigDirectory } from './config-directory'
 import { resolveOpenableSessionWorkspace } from './session-workspace'
 import { resolveRevealableExportedFile } from './exported-file'
 import { defaultProviderConfigRoots, providerConfigRoot, type ProviderConfigRoots } from './codex-home'
-import type { UpdateDownloadOptions, UpdateSnapshot, UpdaterService } from './updater'
+import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
   validateLoginSessionId,
   NewApiTwoFactorExpiredError,
-  type NewApiAffiliateTransferInput,
-  type NewApiAccountKeysQuery,
-  type NewApiAccountUsageQuery,
-  type NewApiAccountDashboardQuery,
-  type NewApiAccountTaskQuery,
-  type NewApiChangePasswordInput,
-  type NewApiDisplayNameUpdateInput,
-  type NewApiLoginInput,
-  type NewApiRegisterInput,
-  type NewApiResetPasswordInput,
-  type NewApiTopupAmountInput,
-  type NewApiTopupOrdersQuery,
-  type NewApiTopupPaymentInput,
-  type NewApiBillingPreference,
-  type NewApiSubscriptionPaymentInput,
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import { normalizeRealmLoginIdentifier } from './realm-account-vault'
@@ -139,23 +100,13 @@ import type { AiImageService } from './ai-image-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { XINGMANG_IMAGE_MCP_NO_NODE_WARNING, clearXingmangAiSkillSecrets, describeImageMcpWarnings, syncXingmangAiSkill } from './xingmang-ai-skill'
 import type {
-  AccountKeyCliConfigurationInput,
   AccountSessionState,
-  AccountKeyCreateInput,
-  AccountKeyUpdateInput,
   AccountKey,
   AccountKeysPage,
-  AiChatStartInput,
-  AccountManagedCliConfigurationInput,
-  ChooseWorkspaceOptions,
-  LegalDocumentKind,
-  NodeRuntimeInstallRequest,
   RememberedAccountLogin,
   RendererErrorPayload,
-  RendererLogLevel,
   ToolModelCheck,
   ToolTemplateFillResult,
-  UpdateInstallOptions,
   WindowCapabilities,
   AppUninstallRequest,
   AppUninstallResult,
@@ -175,6 +126,65 @@ import type { QueuedAccountWork } from './account-work-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import { createSensitiveClipboard } from './sensitive-clipboard'
+import { isRecord } from './input-guards'
+import { optionalString, requiredString } from './ipc/parsers/common'
+import {
+  parseAppUninstallRequest,
+  parseDiagnosticsRunOptions,
+  parseExternalClientScanOptions,
+  parseNodeRuntimeInstallRequest,
+  parseRendererError,
+  parseSystemScanOptions,
+  parseUpdateDownloadOptions,
+  parseUpdateInstallOptions,
+} from './ipc/parsers/system'
+import { parseSettingsUpdate } from './ipc/parsers/settings'
+import { parseMarketplaceInput, parseMcpInput, parseProviderExtensionMutation, parseSkillInput } from './ipc/parsers/extensions'
+import {
+  parseChooseWorkspaceOptions,
+  parseCliInstallVersion,
+  parseCliLaunchMode,
+  parseCliUninstallOptions,
+  parseCodexDesktopLocale,
+  parseCodexResumeRecordId,
+  parseConfigSavePayload,
+  parseDesktopLaunchMode,
+  parseRunningToolsProviders,
+  parseWorkspace,
+} from './ipc/parsers/tools'
+import { parseProviderSessionListQuery, parseSessionId, parseSessionListQuery } from './ipc/parsers/sessions'
+import {
+  parseAccountChangePasswordInput,
+  parseAccountDisplayNameUpdateInput,
+  parseAccountEmailInput,
+  parseAccountLoginInput,
+  parseAccountPasswordResetInput,
+  parseAccountRegisterInput,
+  parseAccountSiteId,
+  parseLegalDocumentKind,
+  parseRememberedAccountLogin,
+  parseResetPasswordToCopy,
+  parseTwoFactorCode,
+} from './ipc/parsers/account'
+import {
+  parseAccountAffiliateTransferInput,
+  parseAccountBillingPreference,
+  parseAccountSubscriptionPaymentInput,
+  parseAccountTopupAmountInput,
+  parseAccountTopupOrdersQuery,
+  parseAccountTopupPaymentInput,
+  parsePositiveSafeInteger,
+} from './ipc/parsers/account-billing'
+import { parseAccountDashboardQuery, parseAccountTaskQuery, parseAccountUsageQuery } from './ipc/parsers/account-usage'
+import {
+  parseAccountKeyCliConfigurationInput,
+  parseAccountKeyCreateInput,
+  parseAccountKeysQuery,
+  parseAccountKeyUpdateInput,
+  parseAccountRevokeKeyId,
+  parseManagedCliConfigurationInput,
+} from './ipc/parsers/account-keys'
+import { parseAiChatStartInput } from './ipc/parsers/ai-chat'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -349,393 +359,12 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return Boolean(value && (typeof value === 'object' || typeof value === 'function') && 'then' in value)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
-
-function requiredString(value: unknown, label: string, maximum = 4_096): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > maximum || value.includes('\0')) {
-    throw new Error(`${label}格式错误`)
-  }
-  return value.trim()
-}
-
-// Not requiredString: a generated password is copied byte for byte, so it
-// must not be trimmed on the way to the clipboard.
-function parseResetPasswordToCopy(value: unknown): string {
-  if (typeof value !== 'string' || !value || value.length > 256 || value.includes('\0')) throw new Error('新密码格式错误')
-  return value
-}
-
-function optionalString(value: unknown, label: string, maximum = 4_096): string | undefined {
-  if (value === undefined || value === '') return undefined
-  return requiredString(value, label, maximum)
-}
-
-function optionalBoolean(value: unknown, label: string): boolean | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'boolean') throw new Error(`${label}格式错误`)
-  return value
-}
-
-function stringArray(value: unknown, label: string, maximumItems = 128): string[] {
-  if (value === undefined) return []
-  if (!Array.isArray(value) || value.length > maximumItems) throw new Error(`${label}格式错误`)
-  return value.map((entry) => requiredString(entry, label))
-}
-
-export function parseAppUninstallRequest(value: unknown): AppUninstallRequest {
-  if (!isRecord(value)) throw new Error('卸载选项格式错误')
-  return {
-    clearLoginRecords: optionalBoolean(value.clearLoginRecords, '卸载选项') ?? false,
-    removeManagedTools: optionalBoolean(value.removeManagedTools, '卸载选项') ?? false,
-  }
-}
-
-export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOptions {
-  if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'reuseRecentScan')
-    || (value.reuseRecentScan !== undefined && typeof value.reuseRecentScan !== 'boolean')) throw new Error('诊断参数格式错误')
-  return value.reuseRecentScan === true ? { reuseRecentScan: true } : {}
-}
-
-export function parseUpdateDownloadOptions(value: unknown): UpdateDownloadOptions {
-  if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'ignoreDiskSpace')
-    || (value.ignoreDiskSpace !== undefined && typeof value.ignoreDiskSpace !== 'boolean')) throw new Error('下载参数格式错误')
-  return value.ignoreDiskSpace === true ? { ignoreDiskSpace: true } : {}
-}
-
-export function parseUpdateInstallOptions(value: unknown): UpdateInstallOptions {
-  if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'askIfInstalling')
-    || (value.askIfInstalling !== undefined && typeof value.askIfInstalling !== 'boolean')) throw new Error('安装参数格式错误')
-  return value.askIfInstalling === true ? { askIfInstalling: true } : {}
-}
-
-export function parseSystemScanOptions(value: unknown): SystemScanOptions {
-  if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'acceptCached' && key !== 'recheckRoutes')
-    || (value.acceptCached !== undefined && typeof value.acceptCached !== 'boolean')
-    || (value.recheckRoutes !== undefined && typeof value.recheckRoutes !== 'boolean')) throw new Error('检测参数格式错误')
-  return { ...(value.acceptCached === true ? { acceptCached: true } : {}), ...(value.recheckRoutes === true ? { recheckRoutes: true } : {}) }
-}
-
-export function parseExternalClientScanOptions(value: unknown): ExternalClientScanOptions {
-  if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'cachedOnly')
-    || (value.cachedOnly !== undefined && typeof value.cachedOnly !== 'boolean')) throw new Error('客户端检测参数格式错误')
-  return value.cachedOnly === true ? { cachedOnly: true } : {}
-}
-
 /**
  * 开机先摆上次客户端检测结果的那一读（已知13）只读本机文件、跟谁登录着无关，不陪账号恢复等：
  * 恢复要连服务器，网慢的时候首页那几行又要空着等。格式不对的照样进下面的 handler 报错。
  */
 function readsCachedExternalClientsOnly(channel: string, args: readonly unknown[]): boolean {
   return channel === 'external-clients:scan' && isRecord(args[1]) && args[1].cachedOnly === true
-}
-
-export function parseCliUninstallOptions(value: unknown): CliUninstallOptions {
-  if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'reinstall')
-    || (value.reinstall !== undefined && typeof value.reinstall !== 'boolean')) throw new Error('卸载参数格式错误')
-  return value.reinstall === true ? { reinstall: true } : {}
-}
-
-// settings:save carries a field-wise update since ①栏11: absent field = keep
-// the persisted value (the merge itself runs inside app-settings.ts's
-// serialized write queue). A field that IS present is validated exactly as
-// strictly as the old whole-record parser -- partial semantics loosen which
-// fields must appear, never what a present field may contain (I5).
-function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
-  if (!isRecord(value) || value.version !== 2) throw new Error('设置格式错误')
-  if (value.theme !== undefined && value.theme !== 'light' && value.theme !== 'dark') {
-    throw new Error('主题格式错误')
-  }
-  const workspace = value.workspace === undefined
-    ? undefined
-    : requiredString(value.workspace, '工作目录', 32_767)
-  const checkUpdatesOnStartup = optionalBoolean(value.checkUpdatesOnStartup, '设置')
-  const runDiagnosticsOnStartup = optionalBoolean(value.runDiagnosticsOnStartup, '设置')
-  const sidebarMoreExpanded = optionalBoolean(value.sidebarMoreExpanded, '侧边栏展开状态')
-  // Same degrade-don't-throw semantics as app-settings.ts's parseRelaySiteId:
-  // an unknown/stale site id must never brick saving the rest of the
-  // settings, so it is dropped here (and would be dropped again by
-  // app-settings.ts's own validation at persist time -- this hop is the
-  // defense-in-depth I5 copy, not the only line). Under merge semantics
-  // "dropped" now means "keep the persisted site" rather than "reset to the
-  // default", which is the safer degrade for a stale id.
-  const relaySiteId = typeof value.relaySiteId === 'string'
-    && relaySites.some((site) => site.id === value.relaySiteId)
-    ? value.relaySiteId
-    : undefined
-  if (value.relayEndpointIds !== undefined) {
-    if (!isRecord(value.relayEndpointIds)) throw new Error('连接线路设置格式错误')
-    for (const [siteId, preference] of Object.entries(value.relayEndpointIds)) {
-      if (!relayRoutePreferenceAllowed(siteId, preference)) throw new Error('无法使用这条连接线路，请重新选择')
-    }
-  }
-  const relayEndpointIds = parseRelayRoutePreferences(value.relayEndpointIds)
-  // Same degrade-don't-throw passthrough as relaySiteId above. 'auto' is the
-  // explicit clear marker (absence means keep, so it can no longer express a
-  // reset); unknown strings degrade to "keep the persisted policy".
-  const mirrorPolicy = value.mirrorPolicy === 'auto'
-    || value.mirrorPolicy === 'mirror-first'
-    || value.mirrorPolicy === 'official-first'
-    ? value.mirrorPolicy
-    : undefined
-  const officialProviders = value.officialProviders === undefined
-    ? undefined
-    : Array.isArray(value.officialProviders)
-      ? value.officialProviders.filter((entry) => typeof entry === 'string' && isProviderId(entry)) as AppSettingsUpdate['officialProviders']
-      : undefined
-  const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
-  const alwaysInstallLatestCli = optionalBoolean(value.alwaysInstallLatestCli, '命令行工具版本偏好')
-  const crashReporting = optionalBoolean(value.crashReporting, '崩溃上报设置')
-  const crashReportingNoticeShown = optionalBoolean(value.crashReportingNoticeShown, '错误报告告知记录')
-  // Unlike the degrade-don't-throw fields above, an unrecognized value here is
-  // rejected: this one decides whether Codex starts with a local debugging
-  // port, so a typo must not quietly read as "not asked yet" (E-S3).
-  if (value.codexDesktopChineseRuntimePatch !== undefined
-    && value.codexDesktopChineseRuntimePatch !== 'enabled'
-    && value.codexDesktopChineseRuntimePatch !== 'disabled') throw new Error('Codex 中文界面设置格式错误')
-  if (value.uiSkin !== undefined && (typeof value.uiSkin !== 'string' || !['auto', 'dawn', 'obsidian', 'mist', 'aurora'].includes(value.uiSkin))) throw new Error('皮肤格式错误')
-  if (value.uiScale !== undefined && (typeof value.uiScale !== 'string' || !['auto', '90', '100', '110'].includes(value.uiScale))) throw new Error('界面缩放格式错误')
-  if (value.closeBehavior !== undefined && (typeof value.closeBehavior !== 'string' || !['ask', 'tray', 'quit'].includes(value.closeBehavior))) throw new Error('关闭偏好格式错误')
-  const reducedMotion = optionalBoolean(value.reducedMotion, '减少动画设置')
-  const desktopNotifications = optionalBoolean(value.desktopNotifications, '系统通知设置')
-  const autoUpdate = optionalBoolean(value.autoUpdate, '自动更新设置')
-  const hardwareAcceleration = optionalBoolean(value.hardwareAcceleration, '显卡加速显示设置')
-  const largeText = optionalBoolean(value.largeText, '大字设置')
-  const toolRouteRestartHints = optionalBoolean(value.toolRouteRestartHints, '换线路提醒设置')
-  const windowState = value.windowState === null ? null : parseWindowState(value.windowState)
-  if (value.windowState !== undefined && windowState === undefined) throw new Error('窗口位置格式错误')
-  return {
-    version: 2,
-    ...(workspace !== undefined ? { workspace } : {}),
-    ...(value.theme !== undefined ? { theme: value.theme } : {}),
-    ...(checkUpdatesOnStartup !== undefined ? { checkUpdatesOnStartup } : {}),
-    ...(runDiagnosticsOnStartup !== undefined ? { runDiagnosticsOnStartup } : {}),
-    ...(sidebarMoreExpanded !== undefined ? { sidebarMoreExpanded } : {}),
-    ...(relaySiteId !== undefined ? { relaySiteId } : {}),
-    ...(relayEndpointIds !== undefined ? { relayEndpointIds } : {}),
-    ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
-    ...(officialProviders !== undefined ? { officialProviders } : {}),
-    ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
-    ...(alwaysInstallLatestCli !== undefined ? { alwaysInstallLatestCli } : {}),
-    ...(crashReporting !== undefined ? { crashReporting } : {}),
-    ...(crashReportingNoticeShown !== undefined ? { crashReportingNoticeShown } : {}),
-    ...(value.codexDesktopChineseRuntimePatch !== undefined
-      ? { codexDesktopChineseRuntimePatch: value.codexDesktopChineseRuntimePatch as AppSettingsUpdate['codexDesktopChineseRuntimePatch'] }
-      : {}),
-    ...(value.uiSkin !== undefined ? { uiSkin: value.uiSkin as AppSettingsUpdate['uiSkin'] } : {}),
-    ...(value.uiScale !== undefined ? { uiScale: value.uiScale as AppSettingsUpdate['uiScale'] } : {}),
-    ...(value.closeBehavior !== undefined ? { closeBehavior: value.closeBehavior as AppSettingsUpdate['closeBehavior'] } : {}),
-    ...(reducedMotion !== undefined ? { reducedMotion } : {}),
-    ...(desktopNotifications !== undefined ? { desktopNotifications } : {}),
-    ...(autoUpdate !== undefined ? { autoUpdate } : {}),
-    ...(hardwareAcceleration !== undefined ? { hardwareAcceleration } : {}),
-    ...(largeText !== undefined ? { largeText } : {}),
-    ...(toolRouteRestartHints !== undefined ? { toolRouteRestartHints } : {}),
-    ...(windowState !== undefined ? { windowState } : {}),
-  }
-}
-
-function parseMcpInput(value: unknown): AddMcpInput {
-  if (!isRecord(value)) throw new Error('MCP 配置格式错误')
-  const name = requiredString(value.name, 'MCP 名称', 128)
-  if (value.type === 'stdio') {
-    const envValue = value.env
-    if (envValue !== undefined && !isRecord(envValue)) throw new Error('MCP 环境变量格式错误')
-    const envEntries = Object.entries(envValue ?? {})
-    if (envEntries.length > 128) throw new Error('MCP 环境变量数量过多')
-    const env: Record<string, string> = {}
-    for (const [key, entry] of envEntries) {
-      if (typeof entry !== 'string' || entry.length > 4_096) throw new Error('MCP 环境变量格式错误')
-      env[requiredString(key, '环境变量名', 128)] = entry
-    }
-    return {
-      type: 'stdio',
-      name,
-      command: requiredString(value.command, 'MCP 命令'),
-      args: stringArray(value.args, 'MCP 参数'),
-      env,
-    }
-  }
-  if (value.type !== 'http') throw new Error('MCP 类型错误')
-  return {
-    type: 'http',
-    name,
-    url: requiredString(value.url, 'MCP 地址'),
-    bearerTokenEnvVar: optionalString(value.bearerTokenEnvVar, 'Bearer Token 环境变量名', 128),
-    oauthClientId: optionalString(value.oauthClientId, 'OAuth Client ID'),
-    oauthResource: optionalString(value.oauthResource, 'OAuth Resource'),
-  }
-}
-
-function parseMarketplaceInput(value: unknown): AddMarketplaceInput {
-  if (!isRecord(value)) throw new Error('市场配置格式错误')
-  return {
-    source: requiredString(value.source, '市场来源'),
-    ref: optionalString(value.ref, 'Git Ref', 256),
-    sparse: stringArray(value.sparse, 'Sparse 路径'),
-  }
-}
-
-function parseSkillInput(value: unknown): ImportSkillInput {
-  if (!isRecord(value)) throw new Error('Skill 导入格式错误')
-  if (value.scope !== undefined && value.scope !== 'user' && value.scope !== 'repo') {
-    throw new Error('Skill 范围格式错误')
-  }
-  return {
-    sourcePath: requiredString(value.sourcePath, 'Skill 路径', 32_767),
-    scope: value.scope,
-  }
-}
-
-function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutation {
-  if (!isRecord(value) || !isActiveProviderId(value.provider)) {
-    throw new Error('扩展操作格式错误')
-  }
-  const kind = String(value.kind)
-  if (!['mcp', 'skill', 'plugin'].includes(kind)) {
-    throw new Error('扩展类型错误')
-  }
-  const action = String(value.action)
-  if (!['install', 'uninstall', 'enable', 'disable', 'update'].includes(action)) {
-    throw new Error('扩展操作类型错误')
-  }
-  const scope = value.scope === undefined ? undefined : String(value.scope)
-  if (scope !== undefined && !['user', 'project', 'local', 'workspace'].includes(scope)) {
-    throw new Error('扩展范围错误')
-  }
-  // Only a literal true counts as the user's answer; "true" or 1 must not slip a --trust in.
-  if (value.trust !== undefined && typeof value.trust !== 'boolean') {
-    throw new Error('扩展操作格式错误')
-  }
-
-  let mcp: ProviderExtensionMutation['mcp']
-  if (value.mcp !== undefined) {
-    if (!isRecord(value.mcp)) throw new Error('MCP 安装配置格式错误')
-    if (value.mcp.type === 'http') {
-      mcp = {
-        type: 'http',
-        url: requiredString(value.mcp.url, 'MCP 地址'),
-      }
-    } else if (value.mcp.type === 'stdio') {
-      const envValue = value.mcp.env
-      if (envValue !== undefined && !isRecord(envValue)) throw new Error('MCP 环境变量格式错误')
-      const envEntries = Object.entries(envValue ?? {})
-      if (envEntries.length > 128) throw new Error('MCP 环境变量数量过多')
-      const env: Record<string, string> = {}
-      for (const [key, entry] of envEntries) {
-        if (typeof entry !== 'string' || entry.length > 4_096) throw new Error('MCP 环境变量格式错误')
-        env[requiredString(key, '环境变量名', 128)] = entry
-      }
-      mcp = {
-        type: 'stdio',
-        command: requiredString(value.mcp.command, 'MCP 命令'),
-        args: stringArray(value.mcp.args, 'MCP 参数'),
-        env,
-      }
-    } else {
-      throw new Error('MCP 安装配置类型错误')
-    }
-  }
-
-  return {
-    provider: value.provider,
-    kind: kind as ProviderExtensionMutation['kind'],
-    action: action as ProviderExtensionMutation['action'],
-    id: optionalString(value.id, '扩展 ID', 512),
-    source: optionalString(value.source, '扩展来源'),
-    scope: scope as ProviderExtensionMutation['scope'],
-    mcp,
-    ...(value.trust === true ? { trust: true } : {}),
-  }
-}
-
-function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('配置请求格式错误')
-  }
-  const input = payload as {
-    provider?: unknown
-    apiKey?: unknown
-    model?: unknown
-    mode?: unknown
-  }
-  if (!isActiveProviderId(input.provider)) throw new Error('未知的 CLI 类型')
-  if (typeof input.apiKey !== 'string' || input.apiKey.length > 4_096) {
-    throw new Error('API Key 格式错误')
-  }
-  if (typeof input.model !== 'string' || input.model.length > 256) {
-    throw new Error('模型格式错误')
-  }
-  if (input.mode !== 'merge' && input.mode !== 'reset') {
-    throw new Error('配置保存方式错误')
-  }
-  return {
-    provider: input.provider,
-    apiKey: input.apiKey,
-    model: input.model,
-    mode: input.mode as NativeConfigSaveMode,
-  }
-}
-
-function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
-  if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
-  const keys = Object.keys(value)
-  if (keys.some((key) => key !== 'createStarter' && key !== 'firstOpen')) throw new Error('选择工作目录的参数无效')
-  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
-  if (value.firstOpen !== undefined && typeof value.firstOpen !== 'boolean') throw new Error('选择工作目录的参数无效')
-  return {
-    ...(value.createStarter === undefined ? {} : { createStarter: value.createStarter }),
-    ...(value.firstOpen === undefined ? {} : { firstOpen: value.firstOpen }),
-  }
-}
-
-export function parseNodeRuntimeInstallRequest(value: unknown): NodeRuntimeInstallRequest {
-  if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('安装 Node.js 的参数无效')
-  if (Object.keys(value).some((key) => key !== 'reason')) throw new Error('安装 Node.js 的参数无效')
-  if (value.reason === undefined) return {}
-  if (value.reason !== 'certificate') throw new Error('安装 Node.js 的参数无效')
-  return { reason: 'certificate' }
-}
-
-function parseWorkspace(workspace: unknown, fallback: string): string {
-  if (typeof workspace === 'string' && workspace.length > 32_767) {
-    throw new Error('工作目录格式错误')
-  }
-  return typeof workspace === 'string' && workspace.trim() ? workspace.trim() : fallback
-}
-
-function parseDesktopLaunchMode(mode: unknown): CodexDesktopLaunchMode {
-  if (mode !== 'open' && mode !== 'restart') throw new Error('Codex 桌面端启动方式错误')
-  return mode
-}
-
-// 渲染层只能在这两个值之间选,续接参数由主进程按工具固定生成,任何字符串都
-// 不会透传进 argv(I5)。省略 = 开新对话,与加这个参数之前完全一致。
-function parseCliLaunchMode(mode: unknown): CliLaunchMode {
-  if (mode === undefined || mode === null) return 'new'
-  if (mode !== 'new' && mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
-  return mode
-}
-
-// 第四个参数只收 Codex 记录页 / 首页那条记录自己的 id(`codex:<UUID>`),别的工具、
-// 别的启动方式带了它都算错。id 只拿来在主进程自己读出的 Codex 记录里查找,查到后
-// 交给 argv 的也是重新校验过形状的 UUID,渲染层的字符串不会原样进命令行(I5)。
-function parseCodexResumeRecordId(provider: ProviderId, mode: CliLaunchMode, recordId: unknown): string | null {
-  if (recordId === undefined || recordId === null) return null
-  if (provider !== 'codex' || mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
-  if (typeof recordId !== 'string' || !recordId.startsWith('codex:') || !isCodexSessionUuid(recordId.slice('codex:'.length))) {
-    throw new Error('会话 ID 格式错误')
-  }
-  return recordId
 }
 
 function sameLaunchWorkspace(left: string, right: string): boolean {
@@ -746,658 +375,9 @@ function sameLaunchWorkspace(left: string, right: string): boolean {
     : a === b
 }
 
-function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {
-  if (locale !== 'zh-CN' && locale !== 'system') throw new Error('Codex Desktop 语言选项错误')
-  return locale
-}
-
-// 更新和回退都提交精确版本，使用与 registry 读取一致的校验：
-// 'latest'、范围表达式(^1.2.3)和 dist-tag 全部拒绝,它们会让 npm 自己去
-// 决定装什么,绕过名单(I5:IPC 入参一律视为敌意输入)。
-function parseCliInstallVersion(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined
-  if (!isExactCliVersion(value)) {
-    throw new Error('CLI 版本号格式错误')
-  }
-  return value
-}
-
-function parseSessionId(value: unknown): string {
-  if (typeof value !== 'string' || !/^[0-9a-f-]{36}$/i.test(value)) {
-    throw new Error('会话 ID 格式错误')
-  }
-  return value
-}
-
-function parseSessionListQuery(value: unknown): CodexSessionListQuery {
-  if (value === undefined) return {}
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('会话查询格式错误')
-  }
-  const input = value as Record<string, unknown>
-  const archive = input.archive
-  if (archive !== undefined && archive !== 'all' && archive !== 'active' && archive !== 'archived') {
-    throw new Error('会话归档筛选格式错误')
-  }
-  if (input.search !== undefined) {
-    if (typeof input.search !== 'string') throw new Error('会话搜索内容格式错误')
-    if (input.search.length > 256) throw new Error('会话搜索内容过长')
-  }
-  const integer = (entry: unknown, label: string) => {
-    if (entry === undefined) return undefined
-    if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 1) {
-      throw new Error(`${label}格式错误`)
-    }
-    return entry
-  }
-  return {
-    search: typeof input.search === 'string' ? input.search : undefined,
-    archive,
-    page: integer(input.page, '页码'),
-    pageSize: integer(input.pageSize, '分页大小'),
-  }
-}
-
-function parseProviderSessionListQuery(value: unknown): ProviderSessionListQuery {
-  if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('会话查询格式错误')
-  const provider = value.provider
-  if (
-    provider !== undefined
-    && provider !== 'all'
-    && !listedProviderSessionProviders.includes(provider as (typeof providerSessionProviders)[number])
-  ) {
-    throw new Error('会话工具类型错误')
-  }
-  if (value.search !== undefined) {
-    if (typeof value.search !== 'string') throw new Error('会话搜索内容格式错误')
-    if (value.search.length > 256) throw new Error('会话搜索内容过长')
-  }
-  const integer = (entry: unknown, label: string) => {
-    if (entry === undefined) return undefined
-    if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 1) {
-      throw new Error(`${label}格式错误`)
-    }
-    return entry
-  }
-  return {
-    provider: provider as ProviderSessionListQuery['provider'],
-    search: typeof value.search === 'string' ? value.search : undefined,
-    page: integer(value.page, '页码'),
-    pageSize: integer(value.pageSize, '分页大小'),
-  }
-}
-
-function parseRendererLogLevel(value: unknown): RendererLogLevel {
-  if (value === undefined) return 'error'
-  if (value === 'info' || value === 'warn' || value === 'error') return value
-  throw new Error('日志级别无效')
-}
-
-function parseRendererError(value: unknown): { message: string; stack?: string; context?: string; level: RendererLogLevel } {
-  if (!isRecord(value)) throw new Error('渲染进程错误格式无效')
-  return {
-    message: requiredString(value.message, '错误消息', 4_096),
-    stack: optionalString(value.stack, '错误堆栈', 16_384),
-    context: optionalString(value.context, '错误上下文', 256),
-    level: parseRendererLogLevel(value.level),
-  }
-}
-
-function parseAccountSiteId(value: unknown): 'solov' | 'solov-api' {
-  if (value !== 'solov' && value !== 'solov-api') throw new Error('账号来源无效')
-  return value
-}
-
-function parseAccountLoginInput(value: unknown): NewApiLoginInput {
-  if (!isRecord(value)) throw new Error('登录信息格式错误')
-  const username = requiredString(value.username, '用户名或邮箱', 128)
-  // Not requiredString: a password must be forwarded exactly as typed, and
-  // requiredString() both trims it and rejects an all-whitespace value.
-  if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
-    throw new Error('密码格式错误')
-  }
-  return {
-    username,
-    password: value.password,
-    turnstileToken: optionalString(value.turnstileToken, '人机验证 Token', 4_096),
-  }
-}
-
-// 验证器的 6 位数字或一次性备用码。格式对不对交给服务端判断（备用码的写法各版不同），
-// 这里只挡掉明显不是验证码的输入，免得白白消耗服务端那份严格的限流。
-function parseTwoFactorCode(value: unknown): string {
-  if (typeof value !== 'string') throw new Error('验证码格式错误')
-  const code = value.trim()
-  if (!code || code.length > 64 || /[\u0000-\u001f\u007f]/.test(code)) throw new Error('验证码格式错误')
-  return code
-}
-
-// null = 用户取消勾选「记住密码」,清除已存凭据。字段上限与登录入参一致。
-function parseRememberedAccountLogin(value: unknown): RememberedAccountLogin | null {
-  if (value === null) return null
-  if (!isRecord(value)) throw new Error('记住密码信息格式错误')
-  const identifier = requiredString(value.identifier, '用户名或邮箱', 128)
-  // Same as parseAccountLoginInput: forward the password exactly as typed.
-  if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
-    throw new Error('密码格式错误')
-  }
-  return { identifier, password: value.password }
-}
-
-// Deliberately permissive (not full RFC 5322): catches the typos users
-// actually make without rejecting a valid-but-unusual address. Mirrors
-// src/components/account/validation.ts's EMAIL_PATTERN, kept as a separate
-// literal rather than a shared import -- electron/ never imports from src/
-// (renderer code may depend on Node-free bundling; see AGENTS.md I6/I7) --
-// and this is the one account:* input parser that actually needs a format
-// check rather than requiredString()'s bare non-empty test, since a
-// malformed address here would silently fail server-side with no useful
-// per-field feedback back to RegisterDialog.
-const accountEmailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
-function parseAccountEmailInput(value: unknown): string {
-  const email = requiredString(value, '邮箱地址', 254)
-  if (!accountEmailPattern.test(email)) throw new Error('请输入正确的邮箱地址')
-  return email
-}
-
-function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
-  if (!isRecord(value)) throw new Error('注册信息格式错误')
-  const email = parseAccountEmailInput(value.email)
-  // Required, not defaulted from email: new-api enforces uniqueness on
-  // username independently of email (see NewApiRegisterInput's own comment
-  // in new-api-client.ts), and RegisterDialog.tsx now collects a real
-  // username field for the caller to send here.
-  const username = requiredString(value.username, '用户名', 128)
-  // Not requiredString: see parseAccountLoginInput above for why passwords
-  // are forwarded exactly as typed rather than trimmed.
-  if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
-    throw new Error('密码格式错误')
-  }
-  // The account status endpoint can disable email verification. In that mode
-  // the renderer intentionally hides the field and sends an empty value; do
-  // not reject an otherwise valid registration before the service sees it.
-  const verificationCode = optionalString(value.verificationCode, '邮箱验证码', 32) ?? ''
-  return {
-    email,
-    password: value.password,
-    verificationCode,
-    username,
-    affCode: optionalString(value.affCode, '邀请码', 64),
-  }
-}
-
-// account:reset-password's input. token is the opaque value copied out of
-// the emailed reset link's `token=` query parameter (see
-// NewApiResetPasswordInput's own comment in new-api-client.ts) -- bounded
-// generously (256 chars) rather than pinned to the 32-hex-char shape
-// new-api currently generates it as, so a future change to that length on
-// the server side degrades to "wrong code" instead of "rejected before it
-// even reaches the server".
-function parseAccountPasswordResetInput(value: unknown): NewApiResetPasswordInput {
-  if (!isRecord(value)) throw new Error('重置密码信息格式错误')
-  return {
-    email: parseAccountEmailInput(value.email),
-    token: requiredString(value.token, '重置码', 256),
-  }
-}
-
-function parsePositiveSafeInteger(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label}格式错误`)
-  }
-  return value
-}
-
-function parseAccountTopupAmountInput(value: unknown): NewApiTopupAmountInput {
-  if (!isRecord(value)) throw new Error('充值金额信息格式错误')
-  return { amount: parsePositiveSafeInteger(value.amount, '充值数量') }
-}
-
-function parseAccountTopupPaymentInput(value: unknown): NewApiTopupPaymentInput {
-  if (!isRecord(value)) throw new Error('充值支付信息格式错误')
-  if (Object.keys(value).some((key) => key !== 'amount' && key !== 'paymentMethod')) {
-    throw new Error('充值支付信息包含未知字段')
-  }
-  return {
-    ...parseAccountTopupAmountInput(value),
-    paymentMethod: requiredString(value.paymentMethod, '支付方式', 64),
-  }
-}
-
-function parseAccountTopupOrdersQuery(value: unknown): NewApiTopupOrdersQuery {
-  if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('订单查询参数格式错误')
-  const page = value.page
-  if (page !== undefined && (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 || page > 1_000_000)) {
-    throw new Error('订单页码格式错误')
-  }
-  const pageSize = value.pageSize
-  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
-    throw new Error('订单分页大小格式错误')
-  }
-  return {
-    page: page as number | undefined,
-    pageSize: pageSize as number | undefined,
-    keyword: optionalString(value.keyword, '订单搜索词', 128),
-  }
-}
-
-function parseAccountAffiliateTransferInput(value: unknown): NewApiAffiliateTransferInput {
-  if (!isRecord(value)) throw new Error('邀请额度转余额信息格式错误')
-  return { quota: parsePositiveSafeInteger(value.quota, '邀请额度') }
-}
-
-const accountBillingPreferences = new Set<NewApiBillingPreference>([
-  'subscription_first',
-  'wallet_first',
-  'subscription_only',
-  'wallet_only',
-])
-
-function parseAccountBillingPreference(value: unknown): NewApiBillingPreference {
-  if (typeof value !== 'string' || !accountBillingPreferences.has(value as NewApiBillingPreference)) {
-    throw new Error('订阅扣费顺序格式错误')
-  }
-  return value as NewApiBillingPreference
-}
-
-function parseAccountSubscriptionPaymentInput(value: unknown): NewApiSubscriptionPaymentInput {
-  if (!isRecord(value)) throw new Error('订阅支付信息格式错误')
-  if (Object.keys(value).some((key) => !['planId', 'provider', 'paymentMethod'].includes(key))) {
-    throw new Error('订阅支付信息包含未知字段')
-  }
-  const provider = value.provider
-  if (provider !== 'epay' && provider !== 'stripe' && provider !== 'creem' && provider !== 'waffo-pancake') {
-    throw new Error('订阅支付渠道格式错误')
-  }
-  const paymentMethod = optionalString(value.paymentMethod, '订阅支付方式', 64)
-  if (provider === 'epay' && !paymentMethod) throw new Error('订阅支付方式不能为空')
-  if (provider !== 'epay' && paymentMethod !== undefined) throw new Error('当前订阅支付渠道不接受支付方式参数')
-  return { planId: parsePositiveSafeInteger(value.planId, '订阅方案 ID'), provider, paymentMethod }
-}
-
-function parseAccountDisplayNameUpdateInput(value: unknown): NewApiDisplayNameUpdateInput {
-  if (!isRecord(value) || typeof value.displayName !== 'string' || value.displayName.length > 20) {
-    throw new Error('显示名称格式错误')
-  }
-  return { displayName: value.displayName.trim() }
-}
-
-const accountUsageQueryFields = new Set([
-  'page', 'pageSize', 'type', 'startTimestamp', 'endTimestamp',
-  'modelName', 'tokenName', 'group', 'requestId', 'upstreamRequestId',
-  'startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType',
-])
-const accountUsageLogTypes = new Set([0, 1, 2, 3, 4, 5, 6, 7])
-
-function parseOptionalAccountUsageText(value: unknown, label: string, maxLength: number): string | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string') throw new Error(`${label}格式错误`)
-  const trimmed = value.trim()
-  if (trimmed.length > maxLength) throw new Error(`${label}不能超过 ${maxLength} 个字符`)
-  return trimmed || undefined
-}
-
-function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery {
-  if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('用量查询参数格式错误')
-  if (Object.keys(value).some((key) => !accountUsageQueryFields.has(key))) {
-    throw new Error('用量查询参数包含未知字段')
-  }
-  const page = value.page
-  if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
-    throw new Error('页码格式错误')
-  }
-  const pageSize = value.pageSize
-  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
-    throw new Error('分页大小格式错误')
-  }
-  const type = value.type
-  if (type !== undefined && (typeof type !== 'number' || !Number.isInteger(type) || !accountUsageLogTypes.has(type))) {
-    throw new Error('日志类型格式错误')
-  }
-  const startTimestamp = value.startTimestamp
-  const endTimestamp = value.endTimestamp
-  for (const [timestamp, label] of [[startTimestamp, '开始时间'], [endTimestamp, '结束时间']] as const) {
-    if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp > 32_503_680_000)) {
-      throw new Error(`${label}格式错误`)
-    }
-  }
-  if (typeof startTimestamp === 'number' && typeof endTimestamp === 'number' && startTimestamp > endTimestamp) {
-    throw new Error('开始时间不能晚于结束时间')
-  }
-  const hasDates = ['startDate', 'endDate', 'timezone'].some((key) => value[key] !== undefined)
-  if (hasDates && (startTimestamp !== undefined || endTimestamp !== undefined)) throw new Error('日期筛选不能与精确时间混用')
-  const dates = hasDates ? usageDateRange({
-    startDate: parseOptionalAccountUsageText(value.startDate, '开始日期', 10),
-    endDate: parseOptionalAccountUsageText(value.endDate, '结束日期', 10),
-    timezone: parseOptionalAccountUsageText(value.timezone, '时区', 128),
-  }) : {}
-  for (const [id, label] of [[value.apiKeyId, 'Key ID'], [value.groupId, '分组 ID']] as const) {
-    if (id !== undefined && (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) throw new Error(`${label}格式错误`)
-  }
-  if (value.billingType !== undefined && value.billingType !== 0 && value.billingType !== 1) throw new Error('计费来源格式错误')
-  return {
-    ...dates,
-    apiKeyId: value.apiKeyId as number | undefined,
-    groupId: value.groupId as number | undefined,
-    billingType: value.billingType as 0 | 1 | undefined,
-    page: page as number | undefined,
-    pageSize: pageSize as number | undefined,
-    type: type as number | undefined,
-    startTimestamp: startTimestamp as number | undefined,
-    endTimestamp: endTimestamp as number | undefined,
-    modelName: parseOptionalAccountUsageText(value.modelName, '模型名称', 128),
-    tokenName: parseOptionalAccountUsageText(value.tokenName, '令牌名称', 128),
-    group: parseOptionalAccountUsageText(value.group, '分组名称', 128),
-    requestId: parseOptionalAccountUsageText(value.requestId, '请求 ID', 128),
-    upstreamRequestId: parseOptionalAccountUsageText(value.upstreamRequestId, '上游请求 ID', 256),
-  }
-}
-
-function parseAccountDashboardQuery(value: unknown): NewApiAccountDashboardQuery {
-  if (!isRecord(value)) throw new Error('数据看板查询参数格式错误')
-  if (Object.keys(value).some((key) => key !== 'startTimestamp' && key !== 'endTimestamp')) {
-    throw new Error('数据看板查询参数包含未知字段')
-  }
-  const startTimestamp = value.startTimestamp
-  const endTimestamp = value.endTimestamp
-  for (const [timestamp, label] of [[startTimestamp, '开始时间'], [endTimestamp, '结束时间']] as const) {
-    if (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp <= 0 || timestamp > 32_503_680_000) {
-      throw new Error(`${label}格式错误`)
-    }
-  }
-  if ((startTimestamp as number) > (endTimestamp as number)) throw new Error('开始时间不能晚于结束时间')
-  if ((endTimestamp as number) - (startTimestamp as number) > 2_592_000) {
-    throw new Error('数据看板时间跨度不能超过 30 天')
-  }
-  return { startTimestamp: startTimestamp as number, endTimestamp: endTimestamp as number }
-}
-
-const accountTaskQueryFields = new Set([
-  'page', 'pageSize', 'platform', 'taskId', 'status', 'action', 'startTimestamp', 'endTimestamp',
-])
-const accountTaskStatuses = new Set([
-  'NOT_START', 'SUBMITTED', 'QUEUED', 'IN_PROGRESS', 'FAILURE', 'SUCCESS', 'UNKNOWN',
-])
-
-function parseAccountTaskQuery(value: unknown): NewApiAccountTaskQuery {
-  if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('任务查询参数格式错误')
-  if (Object.keys(value).some((key) => !accountTaskQueryFields.has(key))) {
-    throw new Error('任务查询参数包含未知字段')
-  }
-  const page = value.page
-  if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
-    throw new Error('页码格式错误')
-  }
-  const pageSize = value.pageSize
-  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
-    throw new Error('分页大小格式错误')
-  }
-  const startTimestamp = value.startTimestamp
-  const endTimestamp = value.endTimestamp
-  for (const [timestamp, label] of [[startTimestamp, '开始时间'], [endTimestamp, '结束时间']] as const) {
-    if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp > 32_503_680_000)) {
-      throw new Error(`${label}格式错误`)
-    }
-  }
-  if (typeof startTimestamp === 'number' && typeof endTimestamp === 'number' && startTimestamp > endTimestamp) {
-    throw new Error('开始时间不能晚于结束时间')
-  }
-  const status = parseOptionalAccountUsageText(value.status, '任务状态', 32)
-  if (status && !accountTaskStatuses.has(status)) throw new Error('任务状态格式错误')
-  return {
-    page: page as number | undefined,
-    pageSize: pageSize as number | undefined,
-    platform: parseOptionalAccountUsageText(value.platform, '任务平台', 64),
-    taskId: parseOptionalAccountUsageText(value.taskId, '任务 ID', 256),
-    status,
-    action: parseOptionalAccountUsageText(value.action, '任务动作', 64),
-    startTimestamp: startTimestamp as number | undefined,
-    endTimestamp: endTimestamp as number | undefined,
-  }
-}
-
-// account:list-keys' input. Same GetPageQuery-backed pagination family and
-// the same bounds as parseAccountUsageQuery above (common/page_info.go's
-// clamp to 100 regardless of what is sent).
-function parseAccountKeysQuery(value: unknown): NewApiAccountKeysQuery {
-  if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('Key 查询参数格式错误')
-  const page = value.page
-  if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
-    throw new Error('页码格式错误')
-  }
-  const pageSize = value.pageSize
-  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
-    throw new Error('分页大小格式错误')
-  }
-  return {
-    page: page as number | undefined,
-    pageSize: pageSize as number | undefined,
-    keyword: parseOptionalAccountUsageText(value.keyword, '搜索词', 64),
-  }
-}
-
-// account:revoke-key's sole argument. A destructive, id-addressed operation
-// that lands directly in a URL path segment (new-api-client.ts's
-// tokenIdPath) -- must be a genuine positive integer before it gets
-// anywhere near that, same "reject anything that isn't obviously a real id"
-// posture as parseSessionId's UUID regex above (I5, path-traversal-shaped
-// defense even though the value here is numeric, not a path string).
-function parseAccountRevokeKeyId(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER) {
-    throw new Error('Key ID 格式错误')
-  }
-  return value
-}
-
-function parseLegalDocumentKind(value: unknown): LegalDocumentKind {
-  if (value !== 'user-agreement' && value !== 'privacy-policy') {
-    throw new Error('法律文档类型格式错误')
-  }
-  return value
-}
-
-function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliConfigurationInput {
-  if (!isRecord(value) || !Array.isArray(value.providers) || value.providers.length > activeProviderIds.length) {
-    throw new Error('CLI 配置目标格式错误')
-  }
-  const providers = value.providers.map((provider) => {
-    if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
-    return provider
-  })
-  if (new Set(providers).size !== providers.length) throw new Error('CLI 配置目标不能重复')
-  if (value.preferredModels !== undefined && !isRecord(value.preferredModels)) {
-    throw new Error('CLI 首选模型格式错误')
-  }
-  const preferredModels: AccountManagedCliConfigurationInput['preferredModels'] = {}
-  for (const [provider, model] of Object.entries(value.preferredModels ?? {})) {
-    if (!isProviderId(provider)) throw new Error('CLI 首选模型包含未知类型')
-    // 下线的工具（Gemini CLI）不再写配置，渲染层老状态里残留的那一格直接略过。
-    if (isRetiredProviderId(provider)) continue
-    // Renderer state may contain an optional provider slot with an undefined
-    // model. Treat that as absent; null and other non-string values remain
-    // malformed input and are rejected below.
-    if (model === undefined) continue
-    preferredModels[provider] = requiredString(model, 'CLI 首选模型', 512)
-  }
-  if (value.mode !== undefined && value.mode !== 'merge' && value.mode !== 'reset') {
-    throw new Error('未知的配置写入模式')
-  }
-  if (value.intent !== undefined && value.intent !== 'automatic' && value.intent !== 'explicit') throw new Error('CLI 配置意图无效')
-  if (value.intent === 'explicit' && providers.length !== 1) throw new Error('请逐个确认需要替换的工具配置')
-  if (value.keepKeys !== undefined && !Array.isArray(value.keepKeys)) throw new Error('CLI 配置目标格式错误')
-  const keepKeys = (value.keepKeys ?? []).map((provider) => {
-    if (!isActiveProviderId(provider) || !providers.includes(provider)) throw new Error('沿用现有密钥的工具不在这次的配置目标里')
-    return provider
-  })
-  if (new Set(keepKeys).size !== keepKeys.length) throw new Error('CLI 配置目标不能重复')
-  // 点名重写是客户要换成自动那把，和「沿用现有密钥」相反，一起来说明渲染层算错了。
-  if (value.intent === 'explicit' && keepKeys.length) throw new Error('CLI 配置意图无效')
-  return {
-    providers,
-    preferredModels,
-    ...(value.mode === undefined ? {} : { mode: value.mode }),
-    ...(value.intent === undefined ? {} : { intent: value.intent }),
-    ...(keepKeys.length ? { keepKeys } : {}),
-  }
-}
-
-// account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
-// 名称上限(rc.24 controller/token.go);expiredTime -1 = 永不过期哨兵。
-function parseAccountKeyCreateInput(value: unknown, sub2Api = false): AccountKeyCreateInput {
-  if (!isRecord(value)) throw new Error('Key 信息格式错误')
-  const name = requiredString(value.name, 'Key 名称', sub2Api ? 100 : 50)
-  if (typeof value.unlimitedQuota !== 'boolean') throw new Error('额度类型格式错误')
-  if (
-    typeof value.remainQuota !== 'number'
-    || !(sub2Api ? Number.isFinite(value.remainQuota) : Number.isInteger(value.remainQuota))
-    || value.remainQuota < 0
-    || (sub2Api && !value.unlimitedQuota && value.remainQuota === 0)
-    || value.remainQuota > Number.MAX_SAFE_INTEGER
-  ) {
-    throw new Error('额度格式错误')
-  }
-  if (
-    typeof value.expiredTime !== 'number'
-    || !Number.isInteger(value.expiredTime)
-    || (value.expiredTime !== -1 && value.expiredTime <= 0)
-  ) {
-    throw new Error('过期时间格式错误')
-  }
-  return {
-    name,
-    group: requiredString(value.group, 'Key 分组', 128),
-    remainQuota: value.remainQuota,
-    unlimitedQuota: value.unlimitedQuota,
-    expiredTime: value.expiredTime,
-  }
-}
-
-function parseAccountKeyUpdateInput(value: unknown, sub2Api = false): AccountKeyUpdateInput {
-  if (!isRecord(value)) throw new Error('Key 信息格式错误')
-  return {
-    ...parseAccountKeyCreateInput(value, sub2Api),
-    id: parseAccountRevokeKeyId(value.id),
-  }
-}
-
-function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConfigurationInput {
-  if (!isRecord(value)) throw new Error('账号 Key 配置信息格式错误')
-  if (!isActiveProviderId(value.provider)) throw new Error('未知的 CLI 类型')
-  const mode = value.mode
-  if (mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
-  return {
-    provider: value.provider,
-    keyId: parseAccountRevokeKeyId(value.keyId),
-    model: requiredString(value.model, '模型名称', 512),
-    mode,
-  }
-}
-
-// account:change-password's input. MIN/MAX mirror
-// src/components/account/validation.ts's own MIN_PASSWORD_LENGTH /
-// MAX_PASSWORD_LENGTH (confirmed against QuantumNous/new-api's model.User
-// struct tag validate:"min=8,max=20") -- kept as separate literals rather
-// than a shared import, same reasoning as accountEmailPattern above:
-// electron/ never imports from src/ (AGENTS.md I6/I7). originalPassword is
-// only checked for presence (not length-bounded): the server is the actual
-// authority on whether it matches the account's current password, and
-// rejecting it here on a length technicality before the server even gets to
-// say "wrong password" would be a worse failure mode. Neither field is
-// trimmed -- both must be forwarded exactly as typed, same as
-// parseAccountLoginInput's password field.
-const MIN_ACCOUNT_PASSWORD_LENGTH = 8
-const MAX_ACCOUNT_PASSWORD_LENGTH = 20
-
 // The preview travels whole to the renderer and into a read-only textarea.
 const FEEDBACK_REPORT_MAX_LENGTH = 2_000_000
 const MAX_REMEMBERED_EXPORTS = 16
-
-function parseAccountChangePasswordInput(value: unknown, sub2Api = false): NewApiChangePasswordInput {
-  const minimum = sub2Api ? 6 : MIN_ACCOUNT_PASSWORD_LENGTH
-  const maximum = sub2Api ? 256 : MAX_ACCOUNT_PASSWORD_LENGTH
-  if (!isRecord(value)) throw new Error('修改密码信息格式错误')
-  if (
-    typeof value.originalPassword !== 'string'
-    || !value.originalPassword
-    || value.originalPassword.length > 256
-  ) {
-    throw new Error('原密码格式错误')
-  }
-  const newPassword = value.newPassword
-  if (
-    typeof newPassword !== 'string'
-    || newPassword.length < minimum
-    || newPassword.length > maximum
-  ) {
-    throw new Error(`新密码长度需为 ${minimum} 到 ${maximum} 位`)
-  }
-  return { originalPassword: value.originalPassword, newPassword }
-}
-
-function parseAiChatMessageImages(value: unknown, role: unknown): string[] | undefined {
-  if (value === undefined) return undefined
-  if (!Array.isArray(value) || value.length > 4 || (value.length > 0 && role !== 'user')) throw new Error('AI聊天图片格式错误')
-  if (value.length === 0) return undefined
-  const images = value.map((image) => {
-    if (typeof image !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(image)) throw new Error('AI聊天图片格式错误')
-    return image
-  })
-  if (new Set(images).size !== images.length) throw new Error('AI聊天图片格式错误')
-  return images
-}
-
-function parseAiChatStartInput(value: unknown): AiChatStartInput {
-  if (!isRecord(value)) throw new Error('AI聊天请求格式错误')
-  if (!Array.isArray(value.messages) || value.messages.length === 0 || value.messages.length > 100) {
-    throw new Error('AI聊天消息格式错误')
-  }
-  const messages = value.messages.map((message) => {
-    if (!isRecord(message) || !['system', 'user', 'assistant'].includes(String(message.role))) {
-      throw new Error('AI聊天消息格式错误')
-    }
-    const images = parseAiChatMessageImages(message.images, message.role)
-    return {
-      role: message.role as 'system' | 'user' | 'assistant',
-      // 只带图片、不写字的消息是允许的；其余消息仍然必须有字。
-      content: images && message.content === '' ? '' : requiredString(message.content, 'AI聊天消息', 40_000),
-      ...(images ? { images } : {}),
-    }
-  })
-  if (value.parameters !== undefined && !isRecord(value.parameters)) throw new Error('AI聊天参数格式错误')
-  const parameters = value.parameters as Record<string, unknown> | undefined
-  const parsedParameters: AiChatStartInput['parameters'] = {}
-  const parameterNames = ['temperature', 'topP', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed'] as const
-  for (const name of parameterNames) {
-    const entry = parameters?.[name]
-    if (entry === undefined) continue
-    if (typeof entry !== 'number' || !Number.isFinite(entry)) throw new Error('AI聊天参数格式错误')
-    parsedParameters[name] = entry
-  }
-  return {
-    requestId: requiredString(value.requestId, 'AI聊天请求标识', 160),
-    group: requiredString(value.group, 'AI聊天分组', 128),
-    model: requiredString(value.model, 'AI聊天模型', 128),
-    messages,
-    ...(Object.keys(parsedParameters).length ? { parameters: parsedParameters } : {}),
-  }
-}
-
-/** 只收已知工具，去重；一次问的个数不超过工具总数（I5）。 */
-export function parseRunningToolsProviders(value: unknown): ProviderId[] {
-  if (!Array.isArray(value) || value.length > activeProviderIds.length) throw new Error('工具列表格式错误')
-  const providers: ProviderId[] = []
-  for (const item of value) {
-    if (!isActiveProviderId(item)) throw new Error('未知的 CLI 类型')
-    if (!providers.includes(item)) providers.push(item)
-  }
-  return providers
-}
 
 const runtimeToolNames: Readonly<Record<keyof SystemSnapshot['runtime'], string>> = {
   node: 'Node.js',
