@@ -43,7 +43,7 @@ const {
   buildWindowsStoreAvailabilityScript,
   inspectWindowsStoreAvailability,
   parseWindowsStoreAvailability,
-} = compiled('windows-store-app-launch')
+} = compiled('windows-store-availability')
 
 // One budget per probe, not per step: the first call also pays the cold start,
 // and its duration is printed so a slow runner is visible in the log instead of

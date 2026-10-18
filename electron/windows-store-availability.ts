@@ -26,7 +26,7 @@ function parseFlag(candidate: unknown): boolean | null {
   return null
 }
 
-export interface WindowsStoreAppLaunchProbeOptions {
+export interface WindowsStoreAvailabilityProbeOptions {
   timeoutMs?: number
   signal?: AbortSignal
   platform?: NodeJS.Platform
@@ -85,7 +85,7 @@ export function buildWindowsStoreAvailabilityScript(): string {
  * store-first route. Runs asynchronously so it never blocks the main thread.
  */
 export async function inspectWindowsStoreAvailability(
-  options: WindowsStoreAppLaunchProbeOptions = {},
+  options: WindowsStoreAvailabilityProbeOptions = {},
 ): Promise<boolean | null> {
   if ((options.platform ?? process.platform) !== 'win32') return null
   try {

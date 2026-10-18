@@ -2306,7 +2306,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           // 权限，没有「普通启动」可选，软件也已按普通方式做事。国内很多装机版系统默认
           // 登这个账号，一直挂着「建议普通启动」只会让客户以为软件坏了（0.2.8 起就这样）。
           // 0.2.12 起这里曾黄着说「商店装的软件（比如 Codex 桌面端）可能打不开」，是误报，
-          // 已撤掉，原因见 windows-store-app-launch.ts 开头。
+          // 已撤掉，原因见 windows-store-availability.ts 开头。
           return {
             state: 'pass',
             summary: '这台电脑登录的账号本身就带管理员权限，软件每次都是这样打开的，已按平常方式运行，不用处理',

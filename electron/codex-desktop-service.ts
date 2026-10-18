@@ -107,7 +107,7 @@ import {
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
-import { inspectWindowsStoreAvailability } from './windows-store-app-launch'
+import { inspectWindowsStoreAvailability } from './windows-store-availability'
 
 const execFileAsync = promisify(execFile)
 
@@ -219,7 +219,7 @@ export function describeCodexDesktopLaunchFailure(
   knownIssueVersion?: string | null,
 ): string {
   // 这里不再按账户类型下结论（自带 Administrator、关了用户账户控制），原因见
-  // windows-store-app-launch.ts 开头：Codex 桌面端不归 Windows 那条规矩管。
+  // windows-store-availability.ts 开头：Codex 桌面端不归 Windows 那条规矩管。
   // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
   // 直接说清楚，并给命令行版这条路（第十九批 7）。
   if (knownIssueVersion) {
@@ -2569,7 +2569,7 @@ export interface CodexDesktopServiceOptions {
   bucketDownloads?: DesktopBucketOptions
   /**
    * 这台电脑有没有微软商店：false 才跳过商店、直接走国内线路；null（没查出来）
-   * 照旧先走商店。缺省 = windows-store-app-launch.ts 那条异步探测。
+   * 照旧先走商店。缺省 = windows-store-availability.ts 那条异步探测。
    */
   inspectStoreAvailability?: (signal?: AbortSignal) => Promise<boolean | null>
   /**
