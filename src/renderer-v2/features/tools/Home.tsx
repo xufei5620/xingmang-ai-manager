@@ -16,7 +16,7 @@ import { statuses } from '../../registry/status'
 import { FirstRunSteps } from './FirstRun'
 import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
-import { formatRecentTime, recentResumeHint, recentSessionSubtitle } from './recent-display'
+import { formatRecentTime, recentReplacedHint, recentResumeHint, recentSessionSubtitle } from './recent-display'
 import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
 import { errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
@@ -416,6 +416,8 @@ export function Home(props: HomeProps) {
   const [recentAttempt, setRecentAttempt] = useState(0)
   // 「接着聊」点下去以后正在核对的那一条（见 resumeRecent）；null = 没在核对。
   const [resumeChecking, setResumeChecking] = useState<string | null>(null)
+  // 上一次「接着聊」换成了同一文件夹更新的那条、没打开时说的那句（#1111 第 3 条）；再点「接着聊」就清掉。
+  const [resumeReplaced, setResumeReplaced] = useState('')
   // 卡片「…」里「接着之前的对话…」开着的那个工具；null = 窗口没开。
   const [conversationsTool, setConversationsTool] = useState<ToolId | null>(null)
   const [usage, setUsage] = useState<BalanceUsage | null>(() => cachedUsage(props.api, props.accountScope))
@@ -470,6 +472,7 @@ export function Home(props: HomeProps) {
   async function resumeRecent(session: RecentSession) {
     const provider = session.provider
     if (!isActiveProviderId(provider)) return
+    setResumeReplaced('')
     if (resumeNeedsRecheck(session)) {
       setResumeChecking(session.id)
       props.api.invalidateRecent()
@@ -478,7 +481,10 @@ export function Home(props: HomeProps) {
       if (!active.current) return
       setResumeChecking(null)
       if (fresh) setRecent(fresh)
-      if (fresh && !resumeStillLatest(session, fresh.items)) return
+      if (fresh && !resumeStillLatest(session, fresh.items)) {
+        setResumeReplaced(recentReplacedHint(session))
+        return
+      }
     }
     props.onLaunch(provider, session.cwd, resumeLaunchChoice(session))
   }
@@ -1159,6 +1165,7 @@ export function Home(props: HomeProps) {
         {renderHero()}
         <div className="v2-home-recent" data-testid="home-recent-card">
           <div className="v2-home-recent-head"><h3>接着上次</h3><button type="button" className="v2-more-link" onClick={() => props.onNavigate('sessions')}>全部记录<ChevronRight size={13} aria-hidden="true" /></button></div>
+          {resumeReplaced && recent && <div className="v2-home-recent-note" role="status" data-testid="home-recent-replaced">{resumeReplaced}</div>}
           {recentError ? <div className="v2-home-recent-empty" role="status">{recentError}<Button size="xs" variant="ghost" onClick={() => setRecentAttempt((value) => value + 1)}>重新加载</Button></div>
             : !recent ? <div className="v2-home-recent-empty" role="status">正在读取最近记录</div>
               : recent.items.length ? recent.items.slice(0, 3).map(renderRecentRow)

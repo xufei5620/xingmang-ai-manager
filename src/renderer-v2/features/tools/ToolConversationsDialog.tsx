@@ -4,7 +4,7 @@ import type { MultiProviderSessionPage, ProviderId } from '../../../../electron/
 import { Button, Dialog, Pill } from '../../ui'
 import { errorMessage } from '../../business-common'
 import type { ToolsApi } from './api'
-import { formatRecentTime, recentResumeHint } from './recent-display'
+import { formatRecentTime, recentReplacedHint, recentResumeHint } from './recent-display'
 import { folderConversations, resumeNeedsRecheck, resumeStillLatest, workspaceName } from './recent-workspaces'
 
 type SessionSummary = MultiProviderSessionPage['items'][number]
@@ -40,6 +40,8 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
   const [attempt, setAttempt] = useState(0)
   // 「接着聊」点下去以后正在核对的那一条（见 resume）；null = 没在核对。
   const [checking, setChecking] = useState<string | null>(null)
+  // 上一次「接着聊」换成了同一文件夹更新的那条、没打开时说的那句；再点「接着聊」就清掉。
+  const [replaced, setReplaced] = useState('')
   const active = useRef(true)
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   useEffect(() => {
@@ -56,13 +58,17 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
    * 点的这条已经不是它那个文件夹最近的了，就换上新列表、这次不打开。读不到就照旧打开。
    */
   async function resume(session: SessionSummary) {
+    setReplaced('')
     if (resumeNeedsRecheck(session)) {
       setChecking(session.id)
       const fresh = await api.toolSessions(provider).catch(() => null)
       if (!active.current) return
       setChecking(null)
       if (fresh) setPage(fresh)
-      if (fresh && !resumeStillLatest(session, fresh.items)) return
+      if (fresh && !resumeStillLatest(session, fresh.items)) {
+        setReplaced(recentReplacedHint(session))
+        return
+      }
     }
     props.onResume(session)
   }
@@ -74,7 +80,7 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
     </>}>
     {error ? <div className="v2-home-recent-empty" role="status">{error}<Button size="xs" variant="ghost" onClick={() => setAttempt((value) => value + 1)}>重新加载</Button></div>
       : !page ? <div className="v2-home-recent-empty" role="status">正在读取最近记录</div>
-        : rows.length ? <div className="v2-tool-conversations">{rows.map((session) => <div className="v2-home-recent-row" key={session.id} data-testid={`tool-conversation-row-${session.id}`}>
+        : rows.length ? <>{replaced && <div className="v2-home-recent-note" role="status" data-testid="tool-conversations-replaced">{replaced}</div>}<div className="v2-tool-conversations">{rows.map((session) => <div className="v2-home-recent-row" key={session.id} data-testid={`tool-conversation-row-${session.id}`}>
           <span className="v2-recent-title" title={session.title}>{session.title}</span>
           <span className="v2-home-recent-dir" title={session.cwd}>{workspaceName(session.cwd)}</span>
           {session.cwdExists === false ? <Pill tone="warn">文件夹已不存在</Pill> : <span className="v2-home-recent-time">{formatRecentTime(session.updatedAt, Date.now())}</span>}
@@ -82,7 +88,7 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
             <Button size="xs" variant="ghost" icon={Play} loading={checking === session.id} disabled={props.resumeDisabled || checking !== null || session.cwdExists === false}
               title={recentResumeHint(session)} onClick={() => void resume(session)} testId={`tool-conversation-resume-${session.id}`}>接着聊</Button>
           </span>
-        </div>)}</div>
+        </div>)}</div></>
           : <div className="v2-home-recent-empty">还没有对话记录。打开工具聊过之后，最近的会话会出现在这里。</div>}
   </Dialog>
 }

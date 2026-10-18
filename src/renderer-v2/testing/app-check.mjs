@@ -1122,6 +1122,28 @@ test('the card menu lists earlier chats of that tool, one per folder, and resume
   } finally { await page.close() }
 })
 
+// #1111 第 3 条：窗口里点「接着聊」才发现同一文件夹刚有新对话，这次不打开，行内说一句已换成最新那条。
+test('the earlier-chats window says it swapped in the newest chat of a folder instead of silently not opening', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.getByTestId('home-recent-resume-claude:1').waitFor()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await page.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    await page.getByTestId('tool-claude-conversations').click()
+    const dialog = page.getByTestId('tool-conversations-dialog')
+    await page.getByTestId('tool-conversation-row-claude:1').waitFor()
+    await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
+    await page.getByTestId('tool-conversation-resume-claude:1').click()
+    await page.getByTestId('tool-conversation-row-claude:6').waitFor()
+    assert.equal(await dialog.getByTestId('tool-conversations-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「接着聊」')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
+    await page.getByTestId('tool-conversation-resume-claude:6').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await expect(dialog).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the earlier-chats window can go to all records or start a new chat instead', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   async function openChats() {
@@ -1469,6 +1491,8 @@ test('home 接着聊 checks the newest records first and holds back when a newer
     assert.equal(await homeReads(), reads + 1)
     assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
+    // 没打开要说一句为什么（#1111 第 3 条），不然只看到按钮转一下、那行标题悄悄换掉。
+    assert.equal(await page.getByTestId('home-recent-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「接着聊」')
     // 挪过去的那颗还是最近的，照常打开。
     await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:6"]')?.disabled === false)
     await page.getByTestId('home-recent-resume-claude:6').click()
@@ -1476,6 +1500,7 @@ test('home 接着聊 checks the newest records first and holds back when a newer
     assert.equal(await homeReads(), reads + 2)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args)),
       [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.equal(await page.getByTestId('home-recent-replaced').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
