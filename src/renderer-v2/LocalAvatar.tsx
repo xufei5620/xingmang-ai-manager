@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { RotateCcw, Save } from 'lucide-react'
 import { Button, Dialog, Input, Notice } from './ui'
 import { errorMessage } from './business-common'
+import { useLatestRequest } from './latest-request'
 import {
   avatarInitial,
   avatarStorageKey,
@@ -124,21 +125,21 @@ export function LocalAvatarDialog({
   const [error, setError] = useState('')
   const [filename, setFilename] = useState('')
   const preview = useRef<HTMLCanvasElement>(null)
-  const request = useRef(0)
+  const request = useLatestRequest()
   const imageRef = useRef<ImageBitmap | null>(null)
   const activeKey = useRef(avatar.key)
   useEffect(() => {
     activeKey.current = avatar.key
   }, [avatar.key])
   useEffect(() => {
-    request.current++
+    request.invalidate()
     setBitmap(null)
     setFilename('')
     setCrop(defaultAvatarCrop)
     setError('')
     setBusy(false)
     return () => {
-      request.current++
+      request.invalidate()
       imageRef.current?.close()
       imageRef.current = null
     }
@@ -153,13 +154,13 @@ export function LocalAvatarDialog({
   }, [bitmap, crop])
   const choose = async (file: File | undefined) => {
     if (!file) return
-    const id = ++request.current
+    const id = request.begin()
     const owner = avatar.key
     setBusy(true)
     setError('')
     try {
       const image = await decodeAvatarImage(file)
-      if (request.current !== id || owner !== activeKey.current) {
+      if (!id() || owner !== activeKey.current) {
         image.close()
         return
       }
@@ -169,10 +170,10 @@ export function LocalAvatarDialog({
       setBitmap(image)
       setFilename(file.name)
     } catch (cause) {
-      if (request.current === id && owner === activeKey.current)
+      if (id() && owner === activeKey.current)
         setError(errorMessage(cause, '这张图片无法打开，请重新选择。'))
     } finally {
-      if (request.current === id && owner === activeKey.current) setBusy(false)
+      if (id() && owner === activeKey.current) setBusy(false)
     }
   }
   const save = () => {

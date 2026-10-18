@@ -93,6 +93,7 @@ import { redactSecretPatterns } from '../../electron/redaction-patterns'
 import type { ToolJob } from './features/tools/useToolbox'
 import { connectionCheckView } from './features/tools/connection-check'
 import { accountScope, sessionRestoring, signedInSiteId } from './account-context'
+import { useLatestRequest } from './latest-request'
 import { AppUninstallRow } from './features/app/AppUninstall'
 import { BackupCard } from './features/settings/BackupCard'
 import { VersionCard } from './features/settings/VersionCard'
@@ -577,7 +578,7 @@ export function HealthPage({
   const [responsesResult, setResponsesResult] = useState<Awaited<ReturnType<V2Bridge['probeCodexResponses']>> | null>(null)
   const [responsesError, setResponsesError] = useState<string | null>(null)
   const responsesInFlight = useRef(false)
-  const responsesEpoch = useRef(0)
+  const responsesEpoch = useLatestRequest()
   // 装没装、这台电脑能装什么：「Codex 干活检查」只对装了 Codex 的人有意义，运行环境那几行的按钮写「安装」还是
   // 「安装指南」、给不给「换成新版」也看它。没读到时先不显示那张卡、不给那几颗按钮，免得点了只会报错。
   const [machine, setMachine] = useState<MachineState>({ snapshot: null, capability: null })
@@ -610,13 +611,13 @@ export function HealthPage({
   }, [active, resource.loading, resource.reload, revision])
   useEffect(() => {
     const unsubscribe = api.onAccountSessionChanged(() => {
-      responsesEpoch.current += 1
+      responsesEpoch.invalidate()
       setResponsesConsent(false)
       setResponsesResult(null)
       setResponsesError(null)
     })
     return () => {
-      responsesEpoch.current += 1
+      responsesEpoch.invalidate()
       unsubscribe()
     }
   }, [api])
@@ -662,10 +663,10 @@ export function HealthPage({
     setResponsesConsent(false)
     setResponsesResult(null)
     setResponsesError(null)
-    const requestEpoch = ++responsesEpoch.current
+    const requestEpoch = responsesEpoch.begin()
     try {
       const started = await api.getAccountSession()
-      if (requestEpoch !== responsesEpoch.current) return
+      if (!requestEpoch()) return
       // 开机恢复账号的那几秒里，界面已按「正在恢复的账号」显示，主进程却还当成未登录；
       // 这时发出去一定被判成「账号变了」，所以先请用户等恢复完。
       if (sessionRestoring(started)) {
@@ -676,11 +677,11 @@ export function HealthPage({
       const startedScope = accountScope(started)
       const result = await api.probeCodexResponses(true, startedScope)
       const currentScope = accountScope(await api.getAccountSession())
-      if (requestEpoch === responsesEpoch.current && startedScope === currentScope) {
+      if (requestEpoch() && startedScope === currentScope) {
         setResponsesResult(result)
       }
     } catch (error) {
-      if (requestEpoch === responsesEpoch.current) setResponsesError(errorMessage(error))
+      if (requestEpoch()) setResponsesError(errorMessage(error))
     } finally {
       responsesInFlight.current = false
       setResponsesBusy(false)

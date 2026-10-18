@@ -1,8 +1,9 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { ChevronDown, FileText, RefreshCw, Trash2 } from 'lucide-react'
 import { BrandIcon, Button, Card, Dialog, ListRow, Menu, Notice, Pill, Segment, type MenuItem } from '../../ui'
 import { ListState, ResultNotice, displayDate, errorMessage, useOperation, useReloadWhenShown, useResource } from '../../business-common'
 import { formatClockTime } from '../../calendar-time'
+import { useLatestRequest } from '../../latest-request'
 import { tools } from '../../registry/tools'
 import { backupKeyView } from '../tools/backup-key'
 import { connectionCheckView } from '../tools/connection-check'
@@ -122,11 +123,11 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
   const [restoring, setRestoring] = useState<Backup | null>(null)
   const [deletion, setDeletion] = useState<Backup | null>(null)
   const [restoreCheck, setRestoreCheck] = useState<RestoreCheck | null>(null)
-  const checkSequence = useRef(0)
+  const checkSequence = useLatestRequest()
   const now = Date.now()
   // 连着恢复两份时只认最后一次的结论（T6）。
   async function checkRestored(restored: Provider) {
-    const sequence = ++checkSequence.current
+    const sequence = checkSequence.begin()
     setRestoreCheck({ provider: restored, result: null, error: null })
     let next: RestoreCheck
     try {
@@ -134,7 +135,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
     } catch (error) {
       next = { provider: restored, result: null, error: errorMessage(error) }
     }
-    if (checkSequence.current === sequence) setRestoreCheck(next)
+    if (sequence()) setRestoreCheck(next)
   }
   const all = resource.data?.filter((item) => isActiveProviderId(item.provider)) ?? []
   const list = provider === 'all' ? all : all.filter((item) => item.provider === provider)

@@ -4,6 +4,7 @@ import { createToolsApi, withConfigFailure, withToolboxConfig, type ToolboxParti
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
 import { errorMessage } from '../../business-common'
+import { useLatestRequest } from '../../latest-request'
 import { isWindowInFront, resolveInstallNoticeOutcome, type InstallNoticePlan } from './install-notice'
 import { installProgressLabel } from './install-stage-text'
 
@@ -73,20 +74,20 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const [externalClients, setExternalClients] = useState<ExternalClientStatus[]>([])
   const [externalLoading, setExternalLoading] = useState(false)
   const [externalError, setExternalError] = useState('')
-  const externalRequest = useRef(0)
+  const externalRequest = useLatestRequest()
   // 真的检测回来过一次以后，换账号重跑开机那段时不再要上次落盘的那份：主进程那时也只会回空列表。
   const externalScanned = useRef(false)
   const [jobs, setJobs] = useState<Record<string, ToolJob>>({})
-  const request = useRef(0)
+  const request = useLatestRequest()
   const active = useRef(true)
   const locks = useRef(new Set<string>())
   const cancellers = useRef(new Map<string, () => Promise<InstallCancelResult>>())
   const cancelRequests = useRef(new Set<string>())
-  const desktopRevision = useRef(0)
+  const desktopRevision = useLatestRequest()
   const latestDesktop = useRef<DesktopAppStatus | null>(null)
   // 同 desktopRevision 的套路：只重读配置这条路不打断正在跑的扫描，所以要留下
   // 记号，让那遍扫描落地时别拿它开跑前读到的旧配置把新配置盖回去。
-  const configRevision = useRef(0)
+  const configRevision = useLatestRequest()
   const latestConfig = useRef<AppConfigSummary | null>(null)
   // refreshConfig 要在 render 之外判断「手上到底有没有快照」，用 ref 跟住 state。
   const snapshotRef = useRef<ToolboxSnapshot | null>(null)
@@ -94,43 +95,43 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const currentScope = useRef(scope)
   useLayoutEffect(() => {
     currentScope.current = scope
-    request.current++
-    configRevision.current++
+    request.invalidate()
+    configRevision.invalidate()
     latestConfig.current = null
     snapshotRef.current = null
     setSnapshot(null); setError(''); setFailures([]); setLoading(false)
-    externalRequest.current++
+    externalRequest.invalidate()
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
   }, [scope])
   // quiet 只给打开客户端之后那一次：重扫换来的只是那一行的「运行中」，不该让三行按钮一起变灰、
   // 右上角转圈。没读到就留着上次的结果，不出红条（第三十一批 C）。
   const refreshExternal = useCallback(async (force = false, options: { quiet?: boolean } = {}) => {
     if (!bridge || currentScope.current !== scope) return
-    const id = ++externalRequest.current
+    const id = externalRequest.begin()
     if (!options.quiet) { setExternalLoading(true); setExternalError('') }
     try {
       const statuses = await createToolsApi(bridge).readExternal(force)
       externalScanned.current = true
-      if (active.current && currentScope.current === scope && id === externalRequest.current) {
+      if (active.current && currentScope.current === scope && id()) {
         setExternalClients(statuses)
         if (options.quiet) setExternalError('')
       }
     } catch (cause) {
-      const current = active.current && currentScope.current === scope && id === externalRequest.current
+      const current = active.current && currentScope.current === scope && id()
       // 手上只有开机先摆的上次结果（cachedAt）时没读到：撤下旧的，同以前开机没读到一样只留红条和「重新检测」。
       if (current) setExternalClients((rows) => rows.some((entry) => entry.cachedAt) ? [] : rows)
       if (options.quiet) return
       if (current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
       throw cause
-    } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
+    } finally { if (active.current && id()) setExternalLoading(false) }
   }, [bridge, scope])
   // 开机首屏那一次：先摆上次落盘的客户端检测结果（cachedAt），主进程只读文件、不起盘点（已知13）。
   // 真的那轮照旧排在首屏扫描之后。读的这一下里真的那轮已经开始、或手上已经有结果，就不拿旧的盖它。
   const showCachedExternal = useCallback(async () => {
     if (!bridge || externalScanned.current || currentScope.current !== scope) return
-    const id = externalRequest.current
+    const id = externalRequest.capture()
     const statuses = await createToolsApi(bridge).readCachedExternal().catch((): ExternalClientStatus[] => [])
-    if (!statuses.length || !active.current || currentScope.current !== scope || id !== externalRequest.current) return
+    if (!statuses.length || !active.current || currentScope.current !== scope || !id()) return
     setExternalClients((current) => current.length ? current : statuses)
   }, [bridge, scope])
   // 打开客户端以后：先把那一行写成「运行中」，再在后台悄悄核一次（主进程打开后已作废缓存）。
@@ -148,16 +149,16 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     // Login completion can retain this callback from the preceding render.
     // Bind each read to the current account at invocation, not closure creation.
     const requestScope = currentScope.current
-    const id = ++request.current
-    const desktopAtStart = desktopRevision.current
-    const configAtStart = configRevision.current
+    const id = request.begin()
+    const desktopAtStart = desktopRevision.capture()
+    const configAtStart = configRevision.capture()
     scansInFlight.current++
     setLoading(true)
     setError('')
-    const isCurrent = () => active.current && currentScope.current === requestScope && id === request.current
+    const isCurrent = () => active.current && currentScope.current === requestScope && id()
     function withLatest(next: ToolboxSnapshot): ToolboxSnapshot {
-      if (desktopRevision.current !== desktopAtStart && latestDesktop.current) next.system.desktopApps.codex = latestDesktop.current
-      if (configRevision.current !== configAtStart && latestConfig.current) next.config = latestConfig.current
+      if (!desktopAtStart() && latestDesktop.current) next.system.desktopApps.codex = latestDesktop.current
+      if (!configAtStart() && latestConfig.current) next.config = latestConfig.current
       return next
     }
     try {
@@ -193,7 +194,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     const { config, failure } = await createToolsApi(bridge).readConfigPartition()
     if (!active.current || currentScope.current !== requestScope || !isRequestCurrent()) return false
     if (config) {
-      configRevision.current++
+      configRevision.invalidate()
       latestConfig.current = config
       setSnapshot((current) => withToolboxConfig(current, config))
     }
@@ -222,7 +223,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       void showCachedExternal()
       void load(false, true).catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
     }
-    return () => { current = false; active.current = false; request.current++; externalRequest.current++ }
+    return () => { current = false; active.current = false; request.invalidate(); externalRequest.invalidate() }
   }, [enabled, load, refreshExternal, showCachedExternal])
   useEffect(() => {
     if (!bridge) return
@@ -253,7 +254,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       bridge.onCodexDesktopLaunchProgress((event) => update('launch:codexDesktop', event.message)),
       bridge.onExternalClientInstallProgress((event) => update(event.tool, event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopStatus((event) => {
-        desktopRevision.current++
+        desktopRevision.invalidate()
         latestDesktop.current = event.status
         setSnapshot((current) => current ? { ...current, system: { ...current.system, desktopApps: { codex: event.status } } } : current)
       }),

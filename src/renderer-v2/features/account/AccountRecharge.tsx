@@ -42,6 +42,7 @@ import type {
   AccountTopupAmountQuote,
   AccountTopupInfo,
 } from '../../../../electron/ipc-contract'
+import { useLatestRequest } from '../../latest-request'
 import { buildBalanceRunway } from '../app/balance-runway'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -261,11 +262,11 @@ export function AccountRecharge({
   const [quote, setQuote] = useState<(AccountTopupAmountQuote & {
     offer: Pick<AccountTopupInfo, 'discounts' | 'creditMultiplier'> | null
   }) | null>(null)
-  // 每问一次价加一，换档位、金额、渠道也加一：问价途中金额被换掉（停在这页时从活动卡片又点了
-  // 一档），回来的那次报价按的是旧金额，不认它，不然确认框和付款都照旧金额走。
-  const quoteRequest = useRef(0)
+  // 每问一次价开一轮，换档位、金额、渠道就把手上那轮作废：问价途中金额被换掉（停在这页时从活动卡片
+  // 又点了一档），回来的那次报价按的是旧金额，不认它，不然确认框和付款都照旧金额走。
+  const quoteRequest = useLatestRequest()
   function dropQuote() {
-    quoteRequest.current += 1
+    quoteRequest.invalidate()
     setQuote(null)
   }
   const [purchase, setPurchase] = useState<Plan | null>(null)
@@ -410,7 +411,7 @@ export function AccountRecharge({
   const quoteCredited = quote ? topupCreditedUsd(quote.amount, quote.offer?.creditMultiplier ?? multiplier) : null
   const quoteGift = quote?.offer ? topupGift(quote.amount, quote.offer) : null
   const quoteTopup = () => {
-    const request = ++quoteRequest.current
+    const request = quoteRequest.begin()
     void operation.execute(
       'quote',
       async () => {
@@ -425,7 +426,7 @@ export function AccountRecharge({
         ])
         if (fresh && !sameTopupInfo(info.data, fresh)) info.setData(fresh)
         // 金额在问价途中换了：不弹确认框，按钮回到「充值」，客户照新金额再点一次。
-        if (request !== quoteRequest.current) return
+        if (!request()) return
         setQuote({ ...next, offer: fresh ? { discounts: fresh.discounts, creditMultiplier: fresh.creditMultiplier } : null })
       },
       '',

@@ -9,6 +9,7 @@ import { matchNetworkFailureMessage } from '../../../../electron/network-failure
 import { configLinkRefusalIn } from '../../../../electron/config-link-refusal'
 import { classifyOperationError, operationTargetOf, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
 import { speaksChinese, supportDetailOf, userFacingErrorMessage } from '../../business-common'
+import { useLatestRequest } from '../../latest-request'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { buildSupportBundle, type SupportFailure, type SupportIdentityInput } from '../app/SupportIdentity'
 import { errors } from '../../registry/errors'
@@ -344,9 +345,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 在「准备工具」这一步点「安装」成功后记下路线；等检测结果跟上来、工具确实
   // 装好了，就替用户点那一下「下一步」。
   const advanceAfterInstall = useRef<GuideRoute | null>(null)
-  const owner = useRef(0)
+  const owner = useLatestRequest()
   const heading = useRef<HTMLHeadingElement>(null)
-  useEffect(() => () => { owner.current++; lock.current = false }, [])
+  useEffect(() => () => { lock.current = false }, [])
   useEffect(() => { heading.current?.focus() }, [step])
   useEffect(() => { if (restored && restored.route !== 'chat' && restored.step !== 'choose') void run('检测工具', onDetect) }, [])
   const tool = tools.find((item) => item.id === route)
@@ -376,8 +377,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const install = () => {
     if (!route || route === 'chat') return
     const chosen = route
-    const ticket = owner.current
-    void run('安装工具', async () => { await onInstall(chosen); if (ticket === owner.current) advanceAfterInstall.current = chosen })
+    const ticket = owner.capture()
+    void run('安装工具', async () => { await onInstall(chosen); if (ticket()) advanceAfterInstall.current = chosen })
   }
   // 更新不接「装好后替他点下一步」：工具本来就装好了，更新被取消时版本没变，
   // 跟着往下走会让人以为已经更完。
@@ -414,11 +415,11 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const recharge = (chosen: GuideRoute) => { if (locked) return; complete(chosen, 'home'); onFailureAction?.('recharge') }
   const run = async (action: string, work: () => Promise<void>) => {
     if (lock.current || busy) return
-    const ticket = owner.current
+    const ticket = owner.capture()
     lock.current = true; setPending(action); setError(''); setFailed(null); setFailureExits([]); setFailureNote(null); setSupportCopy(null)
     try { await work() }
     catch (reason) {
-      if (ticket !== owner.current) return
+      if (!ticket()) return
       const failure = action === '安装工具' ? guideInstallFailure(reason, name, canReplaceNode, Boolean(support)) : guideStepFailure(reason, action, Boolean(support))
       const note: SupportFailure = { at: new Date(), action: guideSupportAction(action, name), message: failure.message, reason: failure.reason, detail: failure.detail }
       setError(failure.message)
@@ -428,27 +429,27 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
       if (action === '改用当前账号' && onFailureAction) setFailureExits(guideFailureExits(reason))
       else if (guideInstallActions.has(action) && onFailureAction) setFailureExits(guideInstallExits(reason, canReplaceNode))
     }
-    finally { if (ticket === owner.current) { lock.current = false; setPending('') } }
+    finally { if (ticket()) { lock.current = false; setPending('') } }
   }
   const copySupport = () => {
     if (!support || !failureNote) return
     const text = buildSupportBundle(support, failureNote)
-    const ticket = owner.current
+    const ticket = owner.capture()
     // 剪贴板写不进时把同一份摆出来让他自己选中，和错误框一个处理。
     if (!navigator.clipboard?.writeText) { setSupportCopy({ state: 'failed', text }); return }
     void navigator.clipboard.writeText(text).then(
-      () => { if (ticket === owner.current) setSupportCopy({ state: 'ok', text }) },
-      () => { if (ticket === owner.current) setSupportCopy({ state: 'failed', text }) },
+      () => { if (ticket()) setSupportCopy({ state: 'ok', text }) },
+      () => { if (ticket()) setSupportCopy({ state: 'failed', text }) },
     )
   }
   const switchAccount = () => {
     if (!route || route === 'chat' || !onSwitchAccount || locked) return
     const chosen = route
     if (!signedIn) { switchAfterLogin.current = chosen; onLogin(); return }
-    const ticket = owner.current
+    const ticket = owner.capture()
     void run('改用当前账号', async () => {
       const result = await onSwitchAccount(chosen)
-      if (!result || ticket !== owner.current) return
+      if (!result || !ticket()) return
       setSwitched({ route: chosen, result })
       advanceAfterSwitch.current = chosen
     })
@@ -464,9 +465,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     if (!route || !readiness.prepared || !readiness.connected) return
     const chosen = route
     void run('打开工具', async () => {
-      const ticket = owner.current
+      const ticket = owner.capture()
       const launched = await onLaunch(chosen, newFolder)
-      if (launched !== false && ticket === owner.current) complete(chosen, chosen === 'chat' ? 'chat' : 'home')
+      if (launched !== false && ticket()) complete(chosen, chosen === 'chat' ? 'chat' : 'home')
     })
   }
   // Codex 桌面端自己管工作区，只有命令行工具打开时要选文件夹。

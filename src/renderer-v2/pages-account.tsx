@@ -77,6 +77,7 @@ import { accountKeyExpiredTime } from '../../electron/account-key-quota'
 import { AccountFilters, accountTimeRange, type AccountFilterField } from './AccountFilters'
 import { usageDateRange } from '../../electron/usage-date-range'
 import { platformApi } from './platform-api'
+import { useLatestRequest } from './latest-request'
 import {
   resolveRelaySite,
   type AccountPaymentWindowTerminalEvent,
@@ -425,10 +426,10 @@ export function AccountPage({
   // 说一声（同改版前）。换了账号不沿用。
   const keptDetails = useRef<{ scope: string; profile: Profile | null; balance: Balance | null } | null>(null)
   // 和 useResource 一样只认最后发出去的那次：先发后到的旧结果上不了屏，也不能顶掉留着的那份。
-  const detailsRequest = useRef(0)
+  const detailsRequest = useLatestRequest()
   const loadDetails = useCallback(async () => {
     if (!detailsScope) return null
-    const request = ++detailsRequest.current
+    const request = detailsRequest.begin()
     const [profile, balance] = await Promise.allSettled([
       api.getAccountProfile(),
       balanceStore ? balanceStore.refresh('foreground').then(() => {
@@ -444,7 +445,7 @@ export function AccountPage({
       balance: balance.status === 'fulfilled' ? balance.value : kept?.balance ?? null,
       balanceFailure: balance.status === 'rejected' ? failureWithDetail(balance.reason) : null,
     }
-    if (request === detailsRequest.current) {
+    if (request()) {
       keptDetails.current = { scope: detailsScope, profile: next.profile, balance: next.balance }
     }
     return next
@@ -835,8 +836,8 @@ function AccountKeys({
   const [groups, setGroups] = useState<Awaited<ReturnType<V2Bridge['getAccountUsableGroups']>>>([])
   const [groupsLoading, setGroupsLoading] = useState(false)
   const [groupsError, setGroupsError] = useState('')
-  const groupsRequest = useRef(0)
-  const groupsPending = useRef<{ request: number; promise: Promise<void> } | null>(null)
+  const groupsRequest = useLatestRequest()
+  const groupsPending = useRef<{ request: () => boolean; promise: Promise<void> } | null>(null)
   const groupsRequestedAt = useRef(0)
   const [quota, setQuota] = useState('10')
   const [unlimited, setUnlimited] = useState(false)
@@ -865,23 +866,23 @@ function AccountKeys({
   const [model, setModel] = useState('')
   // 这把密钥的模型读完了没有：读完是空的要说一句，读的时候也要说一句，不然只看到一个灰着的空下拉框（#1104 第 2 条）。
   const [modelsLoaded, setModelsLoaded] = useState(false)
-  const modelRequest = useRef(0)
+  const modelRequest = useLatestRequest()
   const toolTargets = keyTools ?? defaultKeyTools()
-  useEffect(() => () => { groupsRequest.current++ }, [api, siteId])
+  useEffect(() => groupsRequest.invalidate, [api, siteId])
   const refreshGroups = (force = false): Promise<void> => {
     if (operation.busy === 'save-key') return Promise.resolve()
-    if (groupsPending.current?.request === groupsRequest.current) return groupsPending.current.promise
+    if (groupsPending.current?.request()) return groupsPending.current.promise
     // Pointer and focus are two events from one opening gesture. Share their
     // request instead of issuing two authenticated requests to the server.
     if (!force && Date.now() - groupsRequestedAt.current < 500) return Promise.resolve()
     groupsRequestedAt.current = Date.now()
-    const request = ++groupsRequest.current
+    const request = groupsRequest.begin()
     setGroupsLoading(true)
     setGroupsError('')
     const promise = (async () => {
       try {
         const latest = await api.getAccountUsableGroups()
-        if (groupsRequest.current !== request) return
+        if (!request()) return
         setGroups(latest)
         // Keep a user's selection during refresh. If it was removed, require
         // another explicit choice instead of silently changing the billed group.
@@ -891,11 +892,11 @@ function AccountKeys({
         // 固定话术会让「登录过期」「请求太频繁」「账号被封禁」三种完全不同的处境看起来
         // 都只是「刷新一下」，用户只能反复点刷新。过 errorMessage 拿到按原因分的文案，
         // 同时沿用它的脱敏（I13：主进程的错误里可能带绝对路径）。
-        if (groupsRequest.current === request) {
+        if (request()) {
           setGroupsError(errorMessage(cause, '分组读取失败，请刷新后重试。'))
         }
       } finally {
-        if (groupsRequest.current === request) setGroupsLoading(false)
+        if (request()) setGroupsLoading(false)
         if (groupsPending.current?.request === request) groupsPending.current = null
       }
     })()
@@ -919,7 +920,7 @@ function AccountKeys({
     }
   }, [editing, created])
   const closeEditor = () => {
-    groupsRequest.current++
+    groupsRequest.invalidate()
     setEditing(null)
     setCreated('')
   }
@@ -945,7 +946,7 @@ function AccountKeys({
       'save-key',
       async () => {
         const amount = Number(quota)
-        if (groupsLoading || groupsError || groupsPending.current?.request === groupsRequest.current) throw new Error('请先获取最新的可用分组。')
+        if (groupsLoading || groupsError || groupsPending.current?.request()) throw new Error('请先获取最新的可用分组。')
         if (!name.trim()) throw new Error('请给密钥起个名字')
         if (!group.trim() || !selectedGroupAvailable)
           throw new Error('当前没有可用分组，暂时无法保存密钥。')
@@ -967,7 +968,7 @@ function AccountKeys({
           closeEditor()
         } else {
           await api.createAccountKey(input)
-          groupsRequest.current++
+          groupsRequest.invalidate()
           setCreated(input.name)
         }
         await resource.reload()
@@ -1010,12 +1011,12 @@ function AccountKeys({
     setModels([])
     setModel('')
     setModelsLoaded(false)
-    const requestId = ++modelRequest.current
+    const requestId = modelRequest.begin()
     void operation.execute(
       'models',
       async () => {
         const values = await api.listAccountKeyModels(key.id)
-        if (requestId !== modelRequest.current) return
+        if (!requestId()) return
         setModels(values)
         setModel(values[0] ?? '')
         setModelsLoaded(true)
@@ -1024,7 +1025,7 @@ function AccountKeys({
     )
   }
   function closeConfigure() {
-    ++modelRequest.current
+    modelRequest.invalidate()
     setSelected(null)
   }
   const list = resource.data?.page.keys ?? []

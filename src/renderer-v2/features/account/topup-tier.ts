@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLatestRequest } from '../../latest-request'
 import { buildTopupBonus } from './topup-bonus'
 
 export type TopupQuoteState = number | 'loading' | 'failed'
@@ -85,12 +86,12 @@ export function useTopupQuotes(input: {
   resetKey: unknown
 }): ReadonlyMap<number, TopupQuoteState> {
   const [quotes, setQuotes] = useState<ReadonlyMap<number, TopupQuoteState>>(() => new Map())
-  const generation = useRef(0)
+  const generation = useLatestRequest()
   const requested = useRef(new Set<number>())
   const quoteRef = useRef(input.quote)
   quoteRef.current = input.quote
 
-  function request(amounts: readonly number[], current: number) {
+  function request(amounts: readonly number[], current: () => boolean) {
     const pending = amounts.filter((amount) => !requested.current.has(amount))
     if (pending.length === 0) return
     for (const amount of pending) requested.current.add(amount)
@@ -101,14 +102,14 @@ export function useTopupQuotes(input: {
     })
     void (async () => {
       for (const amount of pending) {
-        if (generation.current !== current) return
+        if (!current()) return
         let result: TopupQuoteState
         try {
           result = await quoteRef.current(amount)
         } catch {
           result = 'failed'
         }
-        if (generation.current !== current) return
+        if (!current()) return
         if (result === 'failed') requested.current.delete(amount)
         setQuotes((previous) => new Map(previous).set(amount, result))
       }
@@ -117,20 +118,20 @@ export function useTopupQuotes(input: {
 
   const presetKey = input.presets.slice(0, maxPresetQuotes).join(',')
   useEffect(() => {
-    generation.current += 1
+    generation.invalidate()
     requested.current = new Set()
     setQuotes(new Map())
   }, [input.resetKey])
 
   useEffect(() => {
     if (!input.enabled || !presetKey) return
-    request(presetKey.split(',').map(Number), generation.current)
+    request(presetKey.split(',').map(Number), generation.capture())
   }, [input.enabled, presetKey, input.resetKey])
 
   useEffect(() => {
     const amount = input.custom
     if (!input.enabled || amount === null || requested.current.has(amount)) return
-    const current = generation.current
+    const current = generation.capture()
     const timer = setTimeout(() => request([amount], current), customQuoteDelayMs)
     return () => clearTimeout(timer)
   }, [input.enabled, input.custom, input.resetKey])

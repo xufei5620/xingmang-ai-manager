@@ -17,6 +17,7 @@ import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
 import { isChineseSentence } from '../../electron/chinese-sentence'
 import { stripIpcErrorPrefix } from './ipc-error-prefix'
+import { useLatestRequest } from './latest-request'
 
 const pendingOperations = new Map<symbol, string>()
 export function pendingBusinessOperations() {
@@ -248,32 +249,30 @@ export function useResource<T>(load: () => Promise<T>) {
   // 同 useOperation：落到兜底句的读取失败，原话跟着交给 ResultNotice 认类别。
   const [detail, setDetail] = useState('')
   const [loading, setLoading] = useState(true)
-  const sequence = useRef(0)
+  const latest = useLatestRequest()
   const reload = useCallback(async () => {
-    const id = ++sequence.current
+    const current = latest.begin()
     setLoading(true)
     setError('')
     setDetail('')
     try {
       const result = await load()
-      if (id === sequence.current) setData(result)
+      if (current()) setData(result)
     } catch (cause) {
-      if (id === sequence.current) {
+      if (current()) {
         const failure = failureWithDetail(cause)
         setError(failure.message)
         setDetail(failure.detail ?? '')
       }
     } finally {
-      if (id === sequence.current) setLoading(false)
+      if (current()) setLoading(false)
     }
-  }, [load])
+  }, [load, latest])
   useEffect(() => {
     setData(null)
     void reload()
-    return () => {
-      sequence.current++
-    }
-  }, [reload])
+    return latest.invalidate
+  }, [reload, latest])
   return { data, setData, loading, error, detail, reload }
 }
 /**
