@@ -3,6 +3,7 @@ import { classifyOperationError, operationFallbackActions, operationLogSection, 
 import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
+import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
 import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 import {
@@ -50,6 +51,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   downloadSourceError: { sample: 'Claude Code 安装失败：国内 npm 镜像：下载源那边出错（错误码 E503）' },
   // 主进程装之前到官方源核对安装清单那一步没连上（#1057 第5b条）。
   officialRegistryUnreachable: { sample: `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。` },
+  // config-files 认出工具的配置文件本身是链接时那句（#1100 第2条）。
+  configLink: { sample: configLinkRefusalMessage('用户文件夹里的 .claude/settings.json', 'file'), target: 'config' },
   // config-files 写 Key 前的校验（safe-local-data）原话。
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
@@ -487,6 +490,21 @@ describe('renderer-v2 operation error classification', () => {
     const hint = presentOperationError('写入失败：应用设置目录不能经过符号链接或目录联接（EPERM）')
     expect(hint?.key).toBe('folderRelocated')
     expect(hint?.actions).toEqual([{ id: 'network', label: '打开检查页' }, { id: 'support', label: '找客服' }])
+  })
+
+  it('tells a dotfiles-linked config apart from a relocated folder and keeps where it sits on screen', () => {
+    for (const [location, kind] of [['用户文件夹里的 .claude\\settings.json', 'file'], ['用户文件夹里的 .codex/config.toml', 'file'], ['config.toml', 'file'], ['用户文件夹里的 .claude', 'folder']] as const) {
+      const message = configLinkRefusalMessage(location, kind)
+      const failure = operationFailureFrom(new Error(`Error invoking remote method 'config:save': Error: ${message}`), '改用当前账号')
+      // 位置躲得过脱敏，原样上屏；主进程那句已经写明换成什么，错误框只配标题和按钮。
+      expect(failure.message).toBe(message)
+      const hint = presentOperationFailure({ ...failure, target: 'config' })
+      expect(hint?.key).toBe('configLink')
+      expect(hint?.title).toBe('配置文件是个链接')
+      expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'support', label: '找客服' }])
+    }
+    // 文件夹被搬走（联接、整个工具文件夹被链走）照旧说「文件夹被搬到了别的位置」。
+    expect(classifyOperationError('配置路径不能经过符号链接或目录联接', 'config')).toBe('folderRelocated')
   })
 
   it('sends a failed undo to the backups action whether the message names the new or the old place', () => {

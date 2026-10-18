@@ -35,6 +35,8 @@ const valueImportable = [
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
   'electron/cli-model-defaults',
+  // 工具配置文件是个链接时那句话的标志，主进程拼、错误框照它认出来配「配置文件是个链接」（#1100 第 2 条）。
+  'electron/config-link-refusal',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
   'electron/external-url-blocked',

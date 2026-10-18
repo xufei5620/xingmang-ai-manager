@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -50,6 +51,7 @@ import {
   renameWithTransientRetrySync,
 } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
+import { configLinkRefusalMessage } from './config-link-refusal'
 import {
   applyXingmangImageMcpToJson,
   applyXingmangImageMcpToToml,
@@ -314,10 +316,41 @@ function requireRawConfigText(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
   }
-  if (!info.isFile() || info.nlink !== 1 || info.isSymbolicLink()) {
+  if (isLinkedFile(info)) throw linkedConfigError(filePath, 'file', `${label} 必须是单链接普通文件，未执行修改`)
+  if (!info.isFile() || info.nlink !== 1) {
     throw new Error(`${label} 必须是单链接普通文件，未执行修改`)
   }
   return readBoundedUtf8FileSync(filePath, maximumBytes, label)
+}
+
+/** 符号链接、硬链接都算：dotfiles 工具两种都做。 */
+function isLinkedFile(info: fs.Stats): boolean {
+  return info.isSymbolicLink() || (info.isFile() && info.nlink > 1)
+}
+
+/**
+ * 配置文件（或路径上的文件夹）是个链接时给客户看的那句（#1100 第2条）。校验照旧拒绝，只是说法换成
+ * 客户照着做得了的：在哪、为什么不写、怎么办。原来那句（带完整路径）挂在 cause 上进运行日志。
+ */
+function linkedConfigError(filePath: string, kind: 'file' | 'folder', detail: string): Error {
+  const relative = path.relative(os.homedir(), filePath)
+  const insideHome = relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+  return new Error(configLinkRefusalMessage(insideHome ? `用户文件夹里的 ${relative}` : path.basename(filePath), kind), { cause: new Error(detail) })
+}
+
+/**
+ * 配置文件本身是链接时，要赶在下面逐级检查之前认出来：那一步把它报成「不能经过符号链接或目录联接」，
+ * 界面于是说「文件夹被搬到了别的位置」，客户去「检查」页也找不到是哪个文件夹（#1100 第2条）。
+ * 这里只是先认、换个说法，后面的检查一个不少；读不到就交给后面照原样报。
+ */
+function assertConfigFileNotLinked(resolvedPath: string, shownPath: string): void {
+  let info: fs.Stats
+  try {
+    info = fs.lstatSync(resolvedPath)
+  } catch {
+    return
+  }
+  if (isLinkedFile(info)) throw linkedConfigError(shownPath, 'file', `配置目标不是单链接普通文件，已拒绝写入：${resolvedPath}`)
 }
 
 function readJson(filePath: string): Record<string, unknown> | null {
@@ -2959,6 +2992,7 @@ function assertSafeConfigPath(filePath: string, rootDirectory: string, target: '
   }
 
   assertNoReparseComponents(root, 'Provider 配置根目录')
+  if (target === 'file') assertConfigFileNotLinked(resolved, filePath)
   const stopAt = target === 'parent' ? path.dirname(resolved) : resolved
   assertNoReparseComponents(stopAt, '配置路径')
 
@@ -2987,10 +3021,14 @@ function assertSafeConfigPath(filePath: string, rootDirectory: string, target: '
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
       throw error
     }
-    if (info.isSymbolicLink()) throw new Error(`配置路径包含符号链接，已拒绝写入：${current}`)
+    if (info.isSymbolicLink()) {
+      throw linkedConfigError(current, target === 'file' && current === resolved ? 'file' : 'folder', `配置路径包含符号链接，已拒绝写入：${current}`)
+    }
     if (target === 'parent' || current !== resolved) {
       if (!info.isDirectory()) throw new Error(`配置父路径不是目录，已拒绝写入：${current}`)
-    } else if (!info.isFile() || info.nlink > 1) {
+    } else if (isLinkedFile(info)) {
+      throw linkedConfigError(current, 'file', `配置目标不是单链接普通文件，已拒绝写入：${current}`)
+    } else if (!info.isFile()) {
       throw new Error(`配置目标不是单链接普通文件，已拒绝写入：${current}`)
     }
     if (canonicalRoot) {
@@ -3009,7 +3047,8 @@ function assertSafeConfigPath(filePath: string, rootDirectory: string, target: '
   if (target === 'file') {
     try {
       const info = fs.lstatSync(resolved)
-      if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) {
+      if (isLinkedFile(info)) throw linkedConfigError(filePath, 'file', `配置目标不是单链接普通文件，已拒绝写入：${resolved}`)
+      if (!info.isFile()) {
         throw new Error(`配置目标不是单链接普通文件，已拒绝写入：${resolved}`)
       }
     } catch (error) {
@@ -3022,7 +3061,8 @@ function assertSafeExistingFile(filePath: string, providerRoot: string): void {
   assertSafeConfigPath(filePath, providerRoot, 'file')
   try {
     const info = fs.lstatSync(filePath)
-    if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) {
+    if (isLinkedFile(info)) throw linkedConfigError(filePath, 'file', `配置事务源不是单链接普通文件，已拒绝写入：${filePath}`)
+    if (!info.isFile()) {
       throw new Error(`配置事务源不是单链接普通文件，已拒绝写入：${filePath}`)
     }
   } catch (error) {
@@ -3053,7 +3093,8 @@ function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFile
     let existed = false
     try {
       const info = fs.lstatSync(plan.path)
-      if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) {
+      if (isLinkedFile(info)) throw linkedConfigError(plan.path, 'file', `配置目标不是单链接普通文件，已拒绝写入：${plan.path}`)
+      if (!info.isFile()) {
         throw new Error(`配置目标不是单链接普通文件，已拒绝写入：${plan.path}`)
       }
       existed = true

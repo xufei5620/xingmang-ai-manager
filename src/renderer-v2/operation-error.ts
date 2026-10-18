@@ -1,6 +1,7 @@
 import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desktop-install-failure'
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
+import { configLinkRefusalIn } from '../../electron/config-link-refusal'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
@@ -132,10 +133,13 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'toolCertElevated', match: (message) => toolCertificateFailureForMessage(message) === 'elevated' },
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
   // 握手被网络掐断的原文（ERR_SSL_PROTOCOL_ERROR 这类）不是证书被换了（#1060），和 ECONNRESET 一样落到
-  // 连不上那两张卡（装东西时是「连不上下载源」，#1100 第3条）。占的是它以前归 tlsIntercepted 时的位置：OpenSSL 原文里的十六进制串会被下面按
-  // 状态码认的几条（50x、52x）误认。
+  // 连不上那两张卡（装东西时是「连不上下载源」，#1100 第3条）。占的是它以前归 tlsIntercepted 时的位置：
+  // OpenSSL 原文里的十六进制串会被下面按状态码认的几条（50x、52x）误认。
   { key: 'downloadUnreachable', match: (message) => downloadContext(message) && isTlsHandshakeFailure(message) },
   { key: 'timeout', match: (message) => isTlsHandshakeFailure(message) },
+  // 工具的配置文件本身是链接（dotfiles 工具做的符号链接、硬链接，#1100 第2条）。主进程那句已经写明是哪个文件、
+  // 该换成什么，这里只给标题和按钮。排在 folderRelocated 之前：那条说的是被搬走的文件夹，客户去「检查」页找不到这个文件。
+  { key: 'configLink', match: (message) => configLinkRefusalIn(message) !== null },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。

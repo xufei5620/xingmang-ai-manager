@@ -20,6 +20,7 @@ export const errors = {
   tlsIntercepted: { title: '连接被网络拦截', body: '连接的路上有设备把证书换成了别的（运营商、公司或学校的网络常见）。稍等一两分钟再试；还不行就换个网络（比如手机热点），公司或学校的网络请找网络管理员。', actions: ['重试', '查看日志'] },
   toolCertOutdatedNode: { title: 'Node.js 太旧，认不了这台电脑的证书', body: toolCertificateMessages.outdatedNode, actions: ['换成新版 Node.js', '重试', '查看日志'] },
   toolCertElevated: { title: '管理员身份下工具不认这台电脑的证书', body: toolCertificateMessages.elevated, actions: ['重试', '查看日志'] },
+  configLink: { title: '配置文件是个链接', body: '为了安全，星芒不往链接里写，原来的设置没有动。照下面这句话把它换成普通文件，再点「重试」；不会弄就点「找客服」。', actions: ['重试', '找客服'] },
   folderRelocated: { title: '文件夹被搬到了别的位置', body: '为了安全，软件不往被搬过的文件夹里写东西。打开「检查」页能看到是哪个文件夹；把它搬回原来的位置就能恢复。', actions: ['打开检查页', '找客服'] },
   permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查安装目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },
   configPermission: { title: '写不进配置文件', body: '常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。', actions: ['重试', '查看日志', '找客服'] },
