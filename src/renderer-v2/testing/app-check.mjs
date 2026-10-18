@@ -2269,6 +2269,7 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
       // 默认窗口，和最小窗口自动缩到 0.9 以后的实际大小。
       for (const viewport of [{ width: 1280, height: 820 }, { width: 1067, height: 622 }]) {
         await page.setViewportSize(viewport)
+        await expect.poll(() => page.locator('.v2-shell').getAttribute('class')).toBe(viewport.width < 1272 ? 'v2-shell sidebar-collapsed' : 'v2-shell')
         const layout = await row.evaluate((card) => {
           const box = (element) => element?.getBoundingClientRect() ?? null
           const button = card.querySelector('.xm-tool-card-actions > .xm-btn')
@@ -6553,7 +6554,10 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     }
     const question = await page.getByRole('dialog', { name: '要让 Codex 的界面显示中文吗？' }).innerText()
     assert.doesNotMatch(question, /调试端口/)
-    assert.match(question, /关掉 Codex，通道也跟着关上。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
+    assert.match(question, /关掉 Codex，通道也跟着关上。/)
+    // 照实说同机别的程序和账户也连得上（#1067），共用电脑的劝先不用。
+    assert.match(question, /通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
+    assert.doesNotMatch(question, /只有这台电脑自己能连/)
 
     await decline.click()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'launchCodexDesktop'))
