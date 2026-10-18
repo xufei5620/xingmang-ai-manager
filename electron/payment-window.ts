@@ -366,12 +366,6 @@ export function createPaymentWindowController(
     window.destroy()
   }
 
-  function closeSilently(window: BrowserWindow): void {
-    if (window.isDestroyed()) return
-    silentClosures.add(window)
-    window.close()
-  }
-
   async function openTarget(
     targetUrl: string,
     allowedOrigins: ReadonlySet<string>,
@@ -570,7 +564,9 @@ export function createPaymentWindowController(
       const order = activeOrder
       stopMonitoring()
       if (window && !window.isDestroyed()) {
-        closeSilently(window)
+        // 同 finish：close() 会被付款页的 beforeunload 拦下，界面说关了、窗口却还开着（#1157 第 15 条）。
+        destroySilently(window)
+        release(window)
         // 点界面上的「关闭支付窗口」和点窗口右上角的 × 是一回事：付过款的照样等到账。
         // 没有能查的订单时仍旧不出声（旧行为），界面自己收起提示。
         if (order?.window === window) reportClosed(order, order.tradeNo)
