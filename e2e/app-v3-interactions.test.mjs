@@ -64,9 +64,6 @@ test('App settings save uses patches and failed appearance changes restore the c
     await page.getByRole('button', { name: '极光紫', exact: true }).click()
     await page.getByRole('alert').filter({ hasText: 'Fixture settings write failed' }).waitFor()
     await page.waitForFunction(() => document.documentElement.dataset.skin === 'mist')
-    await page.evaluate(() => { window.appHarness.emit('onWindowCloseRequest', { requestId: 'close-test' }) })
-    await page.waitForFunction(() => window.appHarness.closeReports.length > 0)
-    assert.equal((await page.evaluate(() => window.appHarness.closeReports.at(-1))).blockingTask, false)
     await clean(page)
   } finally { await page.close() }
 })

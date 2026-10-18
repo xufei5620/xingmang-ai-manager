@@ -846,7 +846,6 @@ const methods = {
     }
     return session
   },
-  replyWindowClose: async () => true,
   openExternal: async () => {
     // 与主进程 external:open 拒绝时一样：经 IPC 过桥后只剩 toString() 与通道前缀。
     if (query.has('externalBlocked')) throw new Error(`Error invoking remote method 'external:open': ${new ExternalUrlBlockedError().toString()}`)

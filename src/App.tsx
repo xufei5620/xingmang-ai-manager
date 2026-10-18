@@ -300,13 +300,6 @@ function App() {
     return () => { current = false }
   }, [appView])
 
-  useEffect(() => window.xingmang.onWindowCloseRequest?.(({ requestId }) => {
-    const blockingTask = installing.size > 0 || nodeRuntimeInstalling || pythonRuntimeInstalling
-      || codexDesktopInstalling || provisioningBusy || accountBusy
-      || Boolean(document.querySelector('.settings-v3-feedback.saving'))
-    const unsavedChanges = Boolean(document.querySelector('[data-dialog-layer], dialog[open], [data-unsaved="true"]'))
-    void window.xingmang.replyWindowClose(requestId, { blockingTask, unsavedChanges }).catch(() => {})
-  }), [installing, nodeRuntimeInstalling, pythonRuntimeInstalling, codexDesktopInstalling, provisioningBusy, accountBusy])
   const [repositoryContext, setRepositoryContext] = useState<RepositoryContext>({ repositoryRoot: null })
   const [healthReport, setHealthReport] = useState<DiagnosticsReport | null>(null)
   const [startupDiagnosticsAttempted, setStartupDiagnosticsAttempted] = useState(false)

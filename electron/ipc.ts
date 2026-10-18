@@ -32,7 +32,6 @@ import {
 import { usageDateRange } from './usage-date-range'
 import { parseRelayRoutePreferences, type AppSettingsUpdate, type AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
-import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
 import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
 import { ExternalUrlBlockedError } from './external-url-blocked'
@@ -284,7 +283,6 @@ export interface IpcRegistrationOptions {
   /** Renderer-side crashes the host may forward to crash reporting. The
    *  payload is the already-validated one, never the raw IPC value. */
   onRendererError?(error: RendererErrorPayload): void
-  replyWindowClose?(target: WebContents, requestId: string, report: WindowCloseReport): boolean
   onSystemSnapshot?(snapshot: SystemSnapshot): void
   /** 客户点了首页的「重新检测」（system:scan 带 recheckRoutes）：叫工具线路马上查一轮。 */
   onRouteRecheckRequested?(): void
@@ -2965,9 +2963,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return result
   })
   registerTrustedHandler('navigation:take-deep-link', (event) => options.takeExternalDeepLink?.(event.sender) ?? null)
-  registerTrustedHandler('window:close-report', (event, requestId: unknown, report: unknown) => (
-    options.replyWindowClose?.(event.sender, requiredString(requestId, '退出请求标识', 64), parseWindowCloseReport(report)) ?? false
-  ))
   registerTrustedHandler('external:open', async (_event, url: unknown) => {
     if (
       typeof url !== 'string'
