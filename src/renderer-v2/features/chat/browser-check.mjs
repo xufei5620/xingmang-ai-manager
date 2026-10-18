@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createFixtureServer } from '../../../../e2e/harness.mjs'
 import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
-import { recordToasts, waitForToast } from '../../../../e2e/toast-recording.mjs'
+import { assertNoToast, recordToasts, waitForToast } from '../../../../e2e/toast-recording.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-chat-v2')
@@ -899,20 +899,38 @@ test('history that cannot be read is left alone, and reading it again brings it 
     await emit(page, { type: 'complete', requestId: meanwhile.requestId })
     await page.waitForTimeout(400)
     assert.deepEqual(await saved(page), before, 'nothing is written over a record that could not be read')
-    // 还是读不出来：红条和按钮都留着，记录照旧不碰。
+    // 还是读不出来：红条和按钮都留着，记录照旧不碰；读不出来的原因再提示一次，看得出确实读过了。
+    await assertNoToast(page, '以前的聊天记录暂时读不出来，原文件没动')
     await page.getByTestId('chat-history-reload').click()
     await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'read-history').length === 2)
+    await waitForToast(page, '以前的聊天记录暂时读不出来，原文件没动')
     await page.getByTestId('chat-history-reload').waitFor()
     await banner.waitFor()
     await page.evaluate(() => window.chatHarness.failHistoryReads(false))
     await page.getByTestId('chat-history-reload').click()
     await banner.waitFor({ state: 'detached' })
     assert.equal(await page.getByTestId('chat-history-reload').count(), 0)
+    await assertNoToast(page, '以前的聊天记录暂时读不出来，原文件没动')
     assert.equal(await page.locator('.chat-conversation-select').count(), 2)
     await page.getByText('answer meanwhile', { exact: true }).waitFor()
     await waitSaved(page, (workspace) => workspace.conversations.length === 2)
     const merged = await saved(page)
     assert.deepEqual(merged.conversations.map((conversation) => conversation.messages[0].content), ['said meanwhile', 'said before'])
+  } finally { await page.close() }
+})
+
+test('the first read of the history shows the page-loading block instead of a blank page', async () => {
+  const page = await open()
+  try {
+    await page.goto(`${base}/src/renderer-v2/features/chat/browser-fixture.html?historyReadHold=1`)
+    const loading = page.getByTestId('page-chat').getByTestId('route-loading')
+    await loading.waitFor()
+    assert.equal(await loading.textContent(), '正在加载页面...')
+    assert.equal(await page.getByTestId('page-chat').getAttribute('aria-busy'), 'true')
+    assert.equal(await page.getByTestId('chat-composer-input').count(), 0, 'nothing can be typed over a record that is still being read')
+    await page.evaluate(() => window.chatHarness.releaseHistoryReads())
+    await page.getByTestId('chat-composer-input').waitFor()
+    assert.equal(await page.getByTestId('route-loading').count(), 0)
   } finally { await page.close() }
 })
 
