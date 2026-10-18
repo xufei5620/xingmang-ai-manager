@@ -108,3 +108,141 @@ describe('Grok official stable version feed', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('Grok stable version redirects', () => {
+  const [primaryUrl, fallbackUrl] = grokStableVersionUrls
+
+  function hop(status: number, location: string | null, url: string): Response {
+    const response = new Response(null, { status, headers: location === null ? {} : { Location: location } })
+    Object.defineProperty(response, 'url', { value: url })
+    return response
+  }
+
+  function requestedUrls(fetchImpl: ReturnType<typeof vi.fn<GrokVersionFetch>>): string[] {
+    return fetchImpl.mock.calls.map(([url]) => String(url))
+  }
+
+  it.each([301, 302, 303, 307, 308])(
+    'follows a %i from the xAI endpoint to the Google Storage endpoint and reports where the version came from',
+    async (status) => {
+      const fetchImpl = vi.fn<GrokVersionFetch>()
+        .mockResolvedValueOnce(hop(status, fallbackUrl, primaryUrl))
+        .mockResolvedValueOnce(textResponse('1.0.62\n', {}, fallbackUrl))
+
+      await expect(fetchGrokStableVersion({ fetchImpl })).resolves.toEqual({ version: '1.0.62', sourceUrl: fallbackUrl })
+      expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
+      for (const [, init] of fetchImpl.mock.calls) {
+        expect(init).toMatchObject({ method: 'GET', headers: { Accept: 'text/plain' }, redirect: 'manual' })
+        expect(init?.signal).toBeInstanceOf(AbortSignal)
+      }
+    },
+  )
+
+  it('resolves a relative redirect target against the hop that sent it', async () => {
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(hop(302, '//storage.googleapis.com/grok-build-public-artifacts/cli/stable', primaryUrl))
+      .mockResolvedValueOnce(textResponse('1.0.62', {}, fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).resolves.toEqual({ version: '1.0.62', sourceUrl: fallbackUrl })
+    expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
+  })
+
+  it.each([300, 304])('leaves a %i unfollowed and reports it as an HTTP failure', async (status) => {
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(hop(status, fallbackUrl, primaryUrl))
+      .mockResolvedValueOnce(textResponse('', { status: 503 }, fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).rejects.toThrow(
+      `Grok 官方版本查询失败：x.ai：Grok 版本服务返回 HTTP ${status}；storage.googleapis.com：Grok 版本服务返回 HTTP 503`,
+    )
+    expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
+  })
+
+  it('refuses a redirect loop between the two official endpoints from either side', async () => {
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(hop(302, fallbackUrl, primaryUrl))
+      .mockResolvedValueOnce(hop(302, primaryUrl, fallbackUrl))
+      .mockResolvedValueOnce(hop(302, primaryUrl, fallbackUrl))
+      .mockResolvedValueOnce(hop(302, fallbackUrl, primaryUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).rejects.toThrow(
+      'Grok 官方版本查询失败：x.ai：Grok 版本服务返回了循环重定向；storage.googleapis.com：Grok 版本服务返回了循环重定向',
+    )
+    expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl, fallbackUrl, primaryUrl])
+  })
+
+  it('refuses a redirect without a target', async () => {
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(hop(302, null, primaryUrl))
+      .mockResolvedValueOnce(hop(307, null, fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).rejects.toThrow(
+      'Grok 官方版本查询失败：x.ai：Grok 版本服务重定向缺少 Location；storage.googleapis.com：Grok 版本服务重定向缺少 Location',
+    )
+    expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
+  })
+
+  it.each([
+    ['http://x.ai/cli/stable', 'http://x.ai'],
+    ['https://x.ai:8443/cli/stable', 'https://x.ai:8443'],
+    ['https://user:pass@x.ai/cli/stable', 'https://x.ai'],
+    ['https://x.ai/cli/stable?channel=beta', 'https://x.ai'],
+    ['https://x.ai/cli/stable#latest', 'https://x.ai'],
+    ['https://x.ai/cli/latest', 'https://x.ai'],
+    ['https://storage.googleapis.com/someone-else/cli/stable', 'https://storage.googleapis.com'],
+    ['https://x.ai.evil.example/cli/stable', 'https://x.ai.evil.example'],
+  ])('refuses a redirect to %s without requesting it', async (location, origin) => {
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(hop(302, location, primaryUrl))
+      .mockResolvedValueOnce(textResponse('', { status: 503 }, fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).rejects.toThrow(
+      `Grok 官方版本查询失败：x.ai：Grok 版本查询拒绝不受信任的地址：${origin}；storage.googleapis.com：Grok 版本服务返回 HTTP 503`,
+    )
+    expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
+  })
+
+  it.each([
+    [fallbackUrl, 'Grok 版本服务绕过了受限重定向策略'],
+    ['https://attacker.example/cli/stable', 'Grok 版本查询拒绝不受信任的地址：https://attacker.example'],
+  ])('refuses a version that reports it came from %s instead of the hop it asked', async (reportedUrl, message) => {
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(textResponse('1.0.62', {}, reportedUrl))
+      .mockResolvedValueOnce(textResponse('', { status: 503 }, fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).rejects.toThrow(
+      `Grok 官方版本查询失败：x.ai：${message}；storage.googleapis.com：Grok 版本服务返回 HTTP 503`,
+    )
+    expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
+  })
+
+  it('drops the body of every redirect it follows or refuses', async () => {
+    const cancelled: string[] = []
+    function trackedHop(status: number, location: string | null, url: string): Response {
+      const response = new Response(new ReadableStream<Uint8Array>({ cancel: () => { cancelled.push(url) } }), {
+        status,
+        headers: location === null ? {} : { Location: location },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    }
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockResolvedValueOnce(trackedHop(302, fallbackUrl, primaryUrl))
+      .mockResolvedValueOnce(trackedHop(302, null, fallbackUrl))
+      .mockResolvedValueOnce(trackedHop(302, 'https://attacker.example/cli/stable', fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).rejects.toThrow(
+      'Grok 官方版本查询失败：x.ai：Grok 版本服务重定向缺少 Location；storage.googleapis.com：Grok 版本查询拒绝不受信任的地址：https://attacker.example',
+    )
+    expect(cancelled).toEqual([primaryUrl, fallbackUrl, fallbackUrl])
+  })
+
+  it('serves the version straight from the Google Storage endpoint, which answers without redirecting', async () => {
+    const fetchImpl = vi.fn<GrokVersionFetch>()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(textResponse('1.0.62', { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }, fallbackUrl))
+
+    await expect(fetchGrokStableVersion({ fetchImpl })).resolves.toEqual({ version: '1.0.62', sourceUrl: fallbackUrl })
+    expect(requestedUrls(fetchImpl)).toEqual([primaryUrl, fallbackUrl])
+  })
+})

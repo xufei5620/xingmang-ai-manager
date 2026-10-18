@@ -605,3 +605,239 @@ describe('AiAssetStore on a relocated documents folder', () => {
     await expect(new AiAssetStore(storeOptions()).storeLocalFile(42, sourcePath)).rejects.toThrow()
   })
 })
+
+describe('AiAssetStore remote image redirects', () => {
+  const imageInit = { status: 200, headers: { 'Content-Type': 'image/png' } }
+
+  function hop(status: number, location: string | null, options: { onCancel?: () => void; url?: string } = {}): Response {
+    const body = status === 304 ? null : new ReadableStream<Uint8Array>({ cancel: options.onCancel })
+    const response = new Response(body, { status, headers: location === null ? {} : { Location: location } })
+    if (options.url) Object.defineProperty(response, 'url', { value: options.url })
+    return response
+  }
+
+  function chainFetch(responses: Record<string, () => Response>) {
+    return vi.fn(async (input: string) => {
+      const respond = responses[input]
+      if (!respond) throw new Error(`unexpected request ${input}`)
+      return respond()
+    })
+  }
+
+  function requestedUrls(fetchImpl: { mock: { calls: unknown[][] } }): string[] {
+    return fetchImpl.mock.calls.map(([url]) => String(url))
+  }
+
+  it.each([301, 302, 303, 307, 308])('follows a %i across hosts up to three times, checking each host', async (status) => {
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => hop(status, 'https://b.example/image.png'),
+      'https://b.example/image.png': () => hop(status, 'https://c.example/image.png'),
+      'https://c.example/image.png': () => hop(status, 'https://d.example/image.png'),
+      'https://d.example/image.png': () => new Response(png(20, 30), imageInit),
+    })
+    const dnsLookup = vi.fn(async (_hostname: string) => ['93.184.216.34'])
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, dnsLookup })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).resolves.toMatchObject({ width: 20, height: 30 })
+    expect(requestedUrls(fetchImpl)).toEqual([
+      'https://a.example/image.png',
+      'https://b.example/image.png',
+      'https://c.example/image.png',
+      'https://d.example/image.png',
+    ])
+    expect(dnsLookup.mock.calls.map(([hostname]) => hostname)).toEqual(['a.example', 'b.example', 'c.example', 'd.example'])
+    for (const call of fetchImpl.mock.calls as unknown as Array<[string, RequestInit, readonly string[]]>) {
+      expect(call[1]).toMatchObject({
+        method: 'GET',
+        headers: { Accept: 'image/png,image/jpeg,image/webp' },
+        redirect: 'manual',
+      })
+      expect(call[1].signal).toBeInstanceOf(AbortSignal)
+      expect(call[2]).toEqual(['93.184.216.34'])
+    }
+  })
+
+  it.each([301, 302, 303, 307, 308])('refuses a fourth %i without requesting its target', async (status) => {
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => hop(status, 'https://b.example/image.png'),
+      'https://b.example/image.png': () => hop(status, 'https://c.example/image.png'),
+      'https://c.example/image.png': () => hop(status, 'https://d.example/image.png'),
+      'https://d.example/image.png': () => hop(status, 'https://e.example/image.png'),
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(/^图片下载重定向次数过多$/)
+    expect(fetchImpl).toHaveBeenCalledTimes(4)
+  })
+
+  it('refuses a redirect loop before requesting the same image again', async () => {
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => hop(302, 'https://b.example/image.png'),
+      'https://b.example/image.png': () => hop(302, 'https://a.example/image.png'),
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(/^图片下载发生循环重定向$/)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a redirect without a target and drops its body', async () => {
+    const onCancel = vi.fn()
+    const fetchImpl = chainFetch({ 'https://a.example/image.png': () => hop(302, null, { onCancel }) })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(/^图片下载重定向缺少 Location$/)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['http://b.example/image.png', '图片远程地址必须是公开且不含凭据的 HTTPS 地址'],
+    ['https://user:pass@b.example/image.png', '图片远程地址必须是公开且不含凭据的 HTTPS 地址'],
+    ['https://b.example/image.png#preview', '图片远程地址必须是公开且不含凭据的 HTTPS 地址'],
+    ['https://localhost/image.png', '图片远程地址必须是公开且不含凭据的 HTTPS 地址'],
+    ['https://cdn.localhost/image.png', '图片远程地址必须是公开且不含凭据的 HTTPS 地址'],
+    [`https://b.example/${'x'.repeat(4_096)}.png`, '图片远程地址格式错误'],
+    ['https://[::1/image.png', 'Invalid URL'],
+  ])('refuses a redirect to %s without requesting it, and drops its body', async (location, message) => {
+    const onCancel = vi.fn()
+    const fetchImpl = chainFetch({ 'https://a.example/image.png': () => hop(302, location, { onCancel }) })
+    const dnsLookup = vi.fn(async (_hostname: string) => ['93.184.216.34'])
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, dnsLookup })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(message)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(dnsLookup).toHaveBeenCalledTimes(1)
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
+  it('resolves a relative redirect target against the hop that sent it', async () => {
+    const fetchImpl = chainFetch({
+      'https://a.example/v1/image.png': () => hop(302, '/v2/image.png?size=large'),
+      'https://a.example/v2/image.png?size=large': () => new Response(png(20, 30), imageInit),
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/v1/image.png')).resolves.toMatchObject({ width: 20 })
+    expect(requestedUrls(fetchImpl)).toEqual(['https://a.example/v1/image.png', 'https://a.example/v2/image.png?size=large'])
+  })
+
+  it.each([300, 304])('leaves a %i unfollowed and reports it as a failed download', async (status) => {
+    const fetchImpl = chainFetch({ 'https://a.example/image.png': () => hop(status, 'https://b.example/image.png') })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(`图片下载失败，服务返回 ${status}`)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses an image that reports it came from somewhere other than the hop it asked, and drops its body', async () => {
+    const onCancel = vi.fn()
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => {
+        const response = new Response(new ReadableStream<Uint8Array>({ cancel: onCancel }), imageInit)
+        Object.defineProperty(response, 'url', { value: 'https://b.example/image.png' })
+        return response
+      },
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(/^图片下载绕过了受限重定向策略$/)
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
+  it('checks a reported URL against the allow-list before comparing it with the hop', async () => {
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => {
+        const response = new Response(png(20, 30), imageInit)
+        Object.defineProperty(response, 'url', { value: 'http://a.example/image.png' })
+        return response
+      },
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png'))
+      .rejects.toThrow(/^图片远程地址必须是公开且不含凭据的 HTTPS 地址$/)
+  })
+
+  it('drops the body of a redirect past the limit', async () => {
+    const onCancel = vi.fn()
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => hop(302, 'https://b.example/image.png'),
+      'https://b.example/image.png': () => hop(302, 'https://c.example/image.png'),
+      'https://c.example/image.png': () => hop(302, 'https://d.example/image.png'),
+      'https://d.example/image.png': () => hop(302, 'https://e.example/image.png', { onCancel }),
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(/^图片下载重定向次数过多$/)
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
+  it('accepts an image that reports exactly the hop it asked', async () => {
+    const fetchImpl = chainFetch({
+      'https://a.example/image.png': () => hop(302, 'https://b.example/image.png', { url: 'https://a.example/image.png' }),
+      'https://b.example/image.png': () => {
+        const response = new Response(png(20, 30), imageInit)
+        Object.defineProperty(response, 'url', { value: 'https://b.example/image.png' })
+        return response
+      },
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).resolves.toMatchObject({ width: 20 })
+  })
+
+  it('picks the fetch for each hop by its own host: the proxy-aware one for imgen.x.ai, a DNS-checked one elsewhere', async () => {
+    const trustedProxyFetchImpl = vi.fn(async (input: string) => (
+      input === 'https://imgen.x.ai/result.png'
+        ? hop(302, 'https://cdn.example/result.png')
+        : new Response(png(20, 30), imageInit)
+    ))
+    const fetchImpl = chainFetch({
+      'https://cdn.example/result.png': () => new Response(png(20, 30), imageInit),
+      'https://cdn.example/moved.png': () => hop(302, 'https://IMGEN.X.AI/final.png'),
+    })
+    const dnsLookup = vi.fn(async (_hostname: string) => ['93.184.216.34'])
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, trustedProxyFetchImpl, dnsLookup })
+
+    await expect(store.storeRemoteUrl(42, 'https://imgen.x.ai/result.png')).resolves.toMatchObject({ width: 20 })
+    expect(requestedUrls(trustedProxyFetchImpl)).toEqual(['https://imgen.x.ai/result.png'])
+    expect(trustedProxyFetchImpl.mock.calls[0]).toHaveLength(2)
+    expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example/result.png', expect.objectContaining({ redirect: 'manual' }), ['93.184.216.34'])
+    expect(dnsLookup.mock.calls.map(([hostname]) => hostname)).toEqual(['cdn.example'])
+
+    // Fixed random bytes give every stored image the same id, so the second download needs its own store.
+    const secondStore = new AiAssetStore({ ...storeOptions(), fetchImpl, trustedProxyFetchImpl, dnsLookup })
+    await expect(secondStore.storeRemoteUrl(42, 'https://cdn.example/moved.png')).resolves.toMatchObject({ width: 20 })
+    expect(requestedUrls(trustedProxyFetchImpl)).toEqual(['https://imgen.x.ai/result.png', 'https://imgen.x.ai/final.png'])
+    expect(dnsLookup.mock.calls.map(([hostname]) => hostname)).toEqual(['cdn.example', 'cdn.example'])
+  })
+
+  it('downloads a signed storage URL directly and through a redirect, keeping its query exactly as sent', async () => {
+    const signed = 'https://oaidalleapiprodscus.blob.core.windows.net/private/org-1/user-2/img-3.png'
+      + '?st=2026-10-18T15%3A00%3A00Z&se=2026-10-18T17%3A00%3A00Z&sp=r&sv=2024-08-04&sr=b&sig=abc%2Bdef%2F123%3D'
+    const fetchImpl = chainFetch({
+      [signed]: () => new Response(png(20, 30), imageInit),
+      'https://files.relay.example/v1/images/abc': () => hop(302, signed),
+    })
+
+    await expect(new AiAssetStore({ ...storeOptions(), fetchImpl }).storeRemoteUrl(42, signed))
+      .resolves.toMatchObject({ width: 20 })
+    await expect(new AiAssetStore({ ...storeOptions(), fetchImpl }).storeRemoteUrl(42, 'https://files.relay.example/v1/images/abc'))
+      .resolves.toMatchObject({ width: 20 })
+    expect(requestedUrls(fetchImpl)).toEqual([signed, 'https://files.relay.example/v1/images/abc', signed])
+  })
+
+  it('times out a download that stalls after a redirect', async () => {
+    const fetchImpl = vi.fn(async (input: string, init: RequestInit) => {
+      if (input === 'https://a.example/image.png') return hop(302, 'https://b.example/image.png')
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+      })
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, downloadTimeoutMs: 20 })
+
+    await expect(store.storeRemoteUrl(42, 'https://a.example/image.png')).rejects.toThrow(/^图片下载超时$/)
+    expect(requestedUrls(fetchImpl)).toEqual(['https://a.example/image.png', 'https://b.example/image.png'])
+  })
+})
