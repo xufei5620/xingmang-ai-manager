@@ -5,9 +5,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   describeDesktopBucketFallback, desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError,
-  downloadDesktopBucketPackage, fetchDesktopBucketResource, isDesktopBucketDownloadTooSlow, parseDesktopBucketIndex,
-  readDesktopBucketPackage, validateDesktopBucketUrl, type DesktopBucketDownloadProgress, type DesktopBucketPackage,
-  type DesktopBucketPackageId,
+  downloadDesktopBucketPackage, fetchDesktopBucketResource, isDesktopAlternativeClearlyFaster, isDesktopBucketDownloadTooSlow,
+  measureDesktopDownloadSpeed, parseDesktopBucketIndex, readDesktopBucketPackage, validateDesktopBucketUrl,
+  type DesktopAlternativeSpeed, type DesktopBucketDownloadProgress, type DesktopBucketPackage, type DesktopBucketPackageId,
 } from './desktop-package-bucket'
 
 // Nothing here reaches the real bucket: every request goes to a fake fetch, and the
@@ -449,6 +449,159 @@ describe('desktop package bucket downloads', () => {
   })
 })
 
+/**
+ * A body that hands out one chunk per read and moves the fake clock on by stepMs each time. With a
+ * high-water mark of 0 nothing is pulled ahead of a read, so the clock is exactly where the reader is.
+ */
+function pacedBody(payload: Buffer, chunkBytes: number, stepMs: number, clock: { now: number }, onCancel?: () => void): ReadableStream<Uint8Array> {
+  let offset = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      clock.now += stepMs
+      if (offset >= payload.byteLength) {
+        controller.close()
+        return
+      }
+      controller.enqueue(payload.subarray(offset, offset + chunkBytes))
+      offset += chunkBytes
+    },
+    cancel() { onCancel?.() },
+  }, { highWaterMark: 0 })
+}
+
+describe('desktop package bucket downloads compared with the other route', () => {
+  // 8 KiB at 1 KiB a minute: early on the bucket needs more than the 5 minute limit to finish.
+  const payload = Buffer.alloc(8192, 0x5a)
+  const limitMs = 5 * 60_000
+
+  function slowBucket(clock: { now: number }) {
+    return async () => packageResponse(pacedBody(payload, 1024, 60_000, clock), { 'content-length': String(payload.byteLength) })
+  }
+
+  it('lets the other route take over only after measuring it clearly faster', async () => {
+    const clock = { now: 0 }
+    const destination = await temporaryFile()
+    // The whole package in 8 ms: far quicker than what is left on the bucket.
+    const probeAlternative = vi.fn(async () => ({ bytesPerMs: 1024, totalBytes: null }))
+    const failure = await downloadDesktopBucketPackage(release(payload), destination, {
+      fetch: slowBucket(clock), now: () => clock.now, limitMs, probeAlternative,
+    }).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+    // Minutes more on the bucket, under a minute on the other route; only the log carries this line.
+    expect((failure as Error).message).toMatch(/^从存储桶下载太慢：照目前的速度还要 \d+ 分钟，另一路测下来 1 分钟就能下完$/)
+    expect(probeAlternative).toHaveBeenCalledOnce()
+    expect(probeAlternative).toHaveBeenCalledWith(expect.any(AbortSignal))
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+
+  it.each([
+    ['cannot be reached', async (): Promise<DesktopAlternativeSpeed | null> => null],
+    ['cannot be measured', async (): Promise<DesktopAlternativeSpeed | null> => { throw new TypeError('fetch failed') }],
+    // The whole package in 10 minutes: twice that is more than the bucket still needs.
+    ['is not clearly faster', async (): Promise<DesktopAlternativeSpeed | null> => ({ bytesPerMs: 8192 / (10 * 60_000), totalBytes: null })],
+    // Fast, but its own package is so much larger that it would still finish later.
+    ['has a much larger package', async (): Promise<DesktopAlternativeSpeed | null> => ({ bytesPerMs: 1, totalBytes: 2_000_000 })],
+  ] as const)('keeps downloading from the bucket when the other route %s', async (_label, probe) => {
+    const clock = { now: 0 }
+    const destination = await temporaryFile()
+    const probeAlternative = vi.fn(probe)
+    await expect(downloadDesktopBucketPackage(release(payload), destination, {
+      fetch: slowBucket(clock), now: () => clock.now, limitMs, probeAlternative,
+    })).resolves.toEqual({ size: payload.byteLength, sha256Base64: createHash('sha256').update(payload).digest('base64') })
+    expect(probeAlternative).toHaveBeenCalled()
+    expect(await fs.promises.readFile(destination)).toEqual(payload)
+  })
+
+  it('measures again a while later while the bucket stays slow, three times at most', async () => {
+    const clock = { now: 0 }
+    const probeAlternative = vi.fn(async (): Promise<DesktopAlternativeSpeed | null> => null)
+    const longer = Buffer.alloc(16 * 1024, 0x5a)
+    await expect(downloadDesktopBucketPackage(release(longer), await temporaryFile(), {
+      fetch: async () => packageResponse(pacedBody(longer, 1024, 60_000, clock), { 'content-length': String(longer.byteLength) }),
+      // Always too slow once the first half minute is over.
+      now: () => clock.now, limitMs: 1, probeAlternative,
+    })).resolves.toMatchObject({ size: longer.byteLength })
+    // Once the first half minute is over, then two minutes after each answer: 16 slow minutes, three probes.
+    expect(probeAlternative).toHaveBeenCalledTimes(3)
+  })
+
+  it('stops measuring the other route once the bucket download is done', async () => {
+    const clock = { now: 0 }
+    const probeSignals: AbortSignal[] = []
+    const probeAlternative = vi.fn((signal: AbortSignal) => {
+      probeSignals.push(signal)
+      return new Promise<DesktopAlternativeSpeed | null>((resolve) => signal.addEventListener('abort', () => resolve(null), { once: true }))
+    })
+    await expect(downloadDesktopBucketPackage(release(payload), await temporaryFile(), {
+      fetch: slowBucket(clock), now: () => clock.now, limitMs, probeAlternative,
+    })).resolves.toMatchObject({ size: payload.byteLength })
+    expect(probeAlternative).toHaveBeenCalledOnce()
+    expect(probeSignals[0].aborted).toBe(true)
+  })
+
+  it('passes the customer cancel through while the other route is being measured', async () => {
+    const clock = { now: 0 }
+    const destination = await temporaryFile()
+    const controller = new AbortController()
+    const reason = new Error('客户取消了')
+    const probeSignals: AbortSignal[] = []
+    const probeAlternative = vi.fn((signal: AbortSignal) => {
+      probeSignals.push(signal)
+      controller.abort(reason)
+      return new Promise<DesktopAlternativeSpeed | null>(() => undefined)
+    })
+    await expect(downloadDesktopBucketPackage(release(payload), destination, {
+      fetch: slowBucket(clock), now: () => clock.now, limitMs, probeAlternative, signal: controller.signal,
+    })).rejects.toBe(reason)
+    expect(probeSignals[0].aborted).toBe(true)
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+})
+
+describe('measuring the other route', () => {
+  const signal = new AbortController().signal
+
+  it('reads at most 4 MiB, throws the bytes away and reports the speed and the package size', async () => {
+    const clock = { now: 0 }
+    let cancelled = false
+    const body = pacedBody(Buffer.alloc(8 * mib, 1), mib, 500, clock, () => { cancelled = true })
+    const request = vi.fn(async (_signal: AbortSignal) => packageResponse(body, { 'content-type': 'application/octet-stream', 'content-length': String(180 * mib) }))
+    await expect(measureDesktopDownloadSpeed(request, signal, () => clock.now)).resolves.toEqual({ bytesPerMs: 4 * mib / 2000, totalBytes: 180 * mib })
+    expect(request).toHaveBeenCalledWith(expect.any(AbortSignal))
+    expect(cancelled).toBe(true)
+  })
+
+  it('stops after eight seconds and counts what arrived by then', async () => {
+    const clock = { now: 0 }
+    const body = pacedBody(Buffer.alloc(mib, 1), 64 * 1024, 3_000, clock)
+    // Reads at 3 s, 6 s and 9 s; the window closes after the third.
+    await expect(measureDesktopDownloadSpeed(async () => packageResponse(body), signal, () => clock.now))
+      .resolves.toEqual({ bytesPerMs: 3 * 64 * 1024 / 9_000, totalBytes: null })
+  })
+
+  it.each([
+    ['an HTTP error', async () => packageResponse(Buffer.alloc(1024), {}, 404)],
+    ['a web page', async () => packageResponse(Buffer.alloc(1024), { 'content-type': 'text/html; charset=utf-8' })],
+    ['a JSON error', async () => packageResponse(Buffer.alloc(1024), { 'content-type': 'application/json' })],
+    ['an empty body', async () => packageResponse(new Uint8Array(0))],
+    ['a route that cannot be reached', async (): Promise<Response> => { throw new TypeError('fetch failed') }],
+  ] as const)('cannot measure %s', async (_label, request) => {
+    await expect(measureDesktopDownloadSpeed(request, signal)).resolves.toBeNull()
+  })
+
+  it('gives up when the download it was measuring for has ended', async () => {
+    const controller = new AbortController()
+    let pulls = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        if (pulls++ === 0) stream.enqueue(new Uint8Array(1024))
+        else controller.abort(new Error('done'))
+      },
+    }, { highWaterMark: 0 })
+    await expect(measureDesktopDownloadSpeed(async () => packageResponse(body), controller.signal)).resolves.toBeNull()
+  })
+})
+
 describe('desktop package bucket pacing', () => {
   it('waits out the first half minute, then compares the projected remaining time with the limit', () => {
     const limit = 10 * 60_000
@@ -459,6 +612,30 @@ describe('desktop package bucket pacing', () => {
     // 10% in 60 s: 90% more takes 9 minutes.
     expect(isDesktopBucketDownloadTooSlow(60_000, 10, 100, limit)).toBe(false)
     expect(isDesktopBucketDownloadTooSlow(60_000, 100, 100, limit)).toBe(false)
+  })
+})
+
+describe('comparing the bucket with the other route', () => {
+  // 10% in a minute: 9 more minutes on the bucket.
+  const elapsed = 60_000
+  const transferred = 10
+  const total = 100
+
+  it('switches only when the whole package on the other route takes under half of what is left', () => {
+    expect(isDesktopAlternativeClearlyFaster(elapsed, transferred, total, { bytesPerMs: total / (4 * 60_000), totalBytes: null })).toBe(true)
+    expect(isDesktopAlternativeClearlyFaster(elapsed, transferred, total, { bytesPerMs: total / (5 * 60_000), totalBytes: null })).toBe(false)
+  })
+
+  it('times the other route on its own package size when it declares one', () => {
+    const speed = total / (4 * 60_000)
+    expect(isDesktopAlternativeClearlyFaster(elapsed, transferred, total, { bytesPerMs: speed, totalBytes: 2 * total })).toBe(false)
+    expect(isDesktopAlternativeClearlyFaster(elapsed, transferred, total, { bytesPerMs: speed, totalBytes: total / 2 })).toBe(true)
+  })
+
+  it('takes any working route over a bucket that has sent nothing, and never a route that sent nothing', () => {
+    expect(isDesktopAlternativeClearlyFaster(elapsed, 0, total, { bytesPerMs: 0.0001, totalBytes: null })).toBe(true)
+    expect(isDesktopAlternativeClearlyFaster(elapsed, 0, total, { bytesPerMs: 0, totalBytes: null })).toBe(false)
+    expect(isDesktopAlternativeClearlyFaster(elapsed, transferred, total, { bytesPerMs: Number.NaN, totalBytes: null })).toBe(false)
   })
 })
 

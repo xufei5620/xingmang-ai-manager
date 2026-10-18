@@ -4,12 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandResult } from './command-runner'
-import { desktopBucketIndexUrl, desktopPackageBucketOrigin } from './desktop-package-bucket'
+import { desktopBucketIndexUrl, desktopPackageBucketOrigin, downloadDesktopBucketPackage } from './desktop-package-bucket'
 import {
   fetchMacosDesktopResource,
   installMacosDesktopApp,
   isMacosVersionBelow,
   macosDesktopAppInstallable,
+  measureMacosDesktopVendorSpeed,
   MacosDesktopInstallError,
   type InstallMacosDesktopAppOptions,
   type MacosDesktopAppProcess,
@@ -24,6 +25,12 @@ import {
   macosLegacyChatgptMessage,
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
+
+// The real bucket download runs; the spy only lets a test read back what the installer handed it.
+vi.mock('./desktop-package-bucket', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./desktop-package-bucket')>()
+  return { ...original, downloadDesktopBucketPackage: vi.fn(original.downloadDesktopBucketPackage) }
+})
 
 const feedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json'
 const pinnedFeedUrl = 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/latest.json'
@@ -1208,5 +1215,45 @@ describe('macOS OpenCode installer from the Xingmang bucket', () => {
     expect(f.routed).toEqual(['start', 'end'])
     expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
     expect(stagingLeftovers(f.home)).toEqual([])
+  })
+})
+
+describe('measuring the vendor route on a Mac', () => {
+  const signal = new AbortController().signal
+
+  it('reads the feed, then a few seconds of this Mac\'s package under the same address rules', async () => {
+    const network = fakeNetwork()
+    const speed = await measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, network.fetch, signal)
+    expect(speed).toEqual({ bytesPerMs: expect.any(Number), totalBytes: archiveBytes.byteLength })
+    expect(speed?.bytesPerMs).toBeGreaterThan(0)
+    expect(network.requested).toEqual([
+      feedUrl, pinnedFeedUrl, assetUrl('latest.json'), packageUrl('arm64'), assetUrl('opencode-desktop-mac-arm64.app.tar.gz'),
+    ])
+  })
+
+  it('cannot measure when the feed offers nothing for this Mac, and asks for no package', async () => {
+    const network = fakeNetwork({ feedBody: feed({ platforms: {} }) })
+    await expect(measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, network.fetch, signal)).resolves.toBeNull()
+    expect(network.requested.some((url) => url.includes('.app.tar.gz'))).toBe(false)
+  })
+
+  it('cannot measure a release this Mac is too old to install', async () => {
+    const tooOld = fakeVendorNetwork()
+    await expect(measureMacosDesktopVendorSpeed('codexDesktop', { architecture: 'arm64', systemVersion: '12.7' }, tooOld.fetch, signal)).resolves.toBeNull()
+    expect(tooOld.requested).toEqual([`${chatgptRoot}appcast.xml`])
+    const recent = fakeVendorNetwork()
+    await expect(measureMacosDesktopVendorSpeed('codexDesktop', { architecture: 'arm64', systemVersion: '15.1' }, recent.fetch, signal))
+      .resolves.toMatchObject({ totalBytes: archiveBytes.byteLength })
+  })
+
+  it.skipIf(process.platform === 'win32')('measures GitHub, outside the download route, before leaving a slow bucket download', async () => {
+    const f = openCodeBucketSetup()
+    await installMacosDesktopApp(f.options)
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    f.requested.length = 0
+    await expect(handed?.probeAlternative?.(signal)).resolves.toMatchObject({ totalBytes: archiveBytes.byteLength })
+    expect(f.requested[0]).toBe(feedUrl)
+    expect(f.requested.at(-1)).toBe(assetUrl('opencode-desktop-mac-arm64.app.tar.gz'))
+    expect(f.routed).toEqual([])
   })
 })

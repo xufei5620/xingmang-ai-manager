@@ -67,6 +67,7 @@ import {
   downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
   downloadCodexDesktopBucketPackage,
+  measureCodexDesktopOfficialSpeed,
   shouldContinueAfterCodexDesktopBucketInstall,
   buildCodexDesktopOfficialPackageSource,
   codexDesktopOfficialDownloadLimitMs,
@@ -85,10 +86,18 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
-import { desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError } from './desktop-package-bucket'
+import {
+  desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
+} from './desktop-package-bucket'
 import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
 import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+
+// The real bucket download runs; the spy only lets a test read back what this service handed it.
+vi.mock('./desktop-package-bucket', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./desktop-package-bucket')>()
+  return { ...original, downloadDesktopBucketPackage: vi.fn(original.downloadDesktopBucketPackage) }
+})
 
 const temporaryDirectories: string[] = []
 
@@ -3026,6 +3035,24 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(requested).toEqual([])
   })
 
+  it('measures the OpenAI package, not the bucket, before leaving a slow bucket download', async () => {
+    const { fetchMock, version } = bucketFetch()
+    const officialUrl = buildCodexDesktopOfficialPackageSource('x64').url
+    const official: string[] = []
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) !== officialUrl) return fetchMock(input, init)
+      official.push(String(input))
+      return new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.byteLength) } })
+    })
+    await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, fetchImplementation,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toMatchObject({ totalBytes: bytes.byteLength })
+    expect(official).toEqual([officialUrl])
+  })
+
   it('goes on to the Store and the other routes when Windows refuses the verified bucket package', () => {
     // The Store does not sideload, so a machine that blocks sideloading may still get Codex from it.
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'))).toBe(true)
@@ -3037,6 +3064,24 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(shouldContinueAfterCodexDesktopBucketInstall(new InstallCancelledError())).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('已取消管理员授权，Codex 桌面端安装未开始。'))).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Codex 桌面端安装失败：磁盘空间不足'))).toBe(false)
+  })
+})
+
+describe('measuring the Codex Desktop official route', () => {
+  it('reads the OpenAI package for this processor without following it anywhere else', async () => {
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      requested.push(String(input))
+      expect(init).toMatchObject({ redirect: 'manual' })
+      return new Response(null, { status: 302, headers: { location: 'https://evil.example/ChatGPT-arm64.msix' } })
+    })
+    await expect(measureCodexDesktopOfficialSpeed('arm64', fetchMock, new AbortController().signal)).resolves.toBeNull()
+    expect(requested).toEqual([buildCodexDesktopOfficialPackageSource('arm64').url])
+  })
+
+  it('cannot measure a page that is not the package', async () => {
+    const fetchMock = vi.fn(async () => new Response('<html>blocked</html>', { headers: { 'Content-Type': 'text/html' } }))
+    await expect(measureCodexDesktopOfficialSpeed('x64', fetchMock, new AbortController().signal)).resolves.toBeNull()
   })
 })
 
