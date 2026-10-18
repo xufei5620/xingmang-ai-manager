@@ -14,6 +14,7 @@ import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
+import { readBoundedResponseBytes } from './bounded-response'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
@@ -438,35 +439,6 @@ async function defaultPinnedAiAssetFetch(
   })
 }
 
-async function readBoundedResponse(
-  response: Response,
-  maximumBytes: number,
-): Promise<Buffer> {
-  const contentLength = Number(response.headers.get('content-length'))
-  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error('单张图片超过 64 MB 安全上限')
-  }
-  if (!response.body) throw new Error('图片下载响应没有内容')
-  const chunks: Buffer[] = []
-  const reader = response.body.getReader()
-  let total = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      total += value.byteLength
-      if (total > maximumBytes) throw new Error('单张图片超过 64 MB 安全上限')
-      chunks.push(Buffer.from(value))
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => undefined)
-    throw error
-  }
-  if (total === 0) throw new Error('图片下载响应为空')
-  return Buffer.concat(chunks, total)
-}
-
 async function fetchRemoteImage(
   sourceUrl: string,
   fetchImpl: AiAssetFetch,
@@ -522,7 +494,11 @@ async function fetchRemoteImage(
         await response.body?.cancel().catch(() => undefined)
         throw new Error('图片下载响应类型不受支持')
       }
-      return { bytes: await readBoundedResponse(response, maximumBytes), declaredMime: contentType }
+      const bytes = await readBoundedResponseBytes(response, maximumBytes, '图片下载', {
+        oversizeMessage: '单张图片超过 64 MB 安全上限',
+        requireNonEmpty: { missingBodyMessage: '图片下载响应没有内容', emptyMessage: '图片下载响应为空' },
+      })
+      return { bytes, declaredMime: contentType }
     }
     throw new Error('图片下载重定向次数过多')
   } catch (error) {
