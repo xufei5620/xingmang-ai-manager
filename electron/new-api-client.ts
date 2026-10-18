@@ -968,15 +968,15 @@ export interface NewApiClientService extends RelayBackendClient {
   /** Main-process-only ownership intent revision, including pending login/switch attempts. */
   getSessionRevision(): number
   // Re-establishes a session from a persisted {userId, cookies} pair captured
-  // by a previous run (electron/account-session-store.ts), by spending the
+  // by a previous run (a saved login from the account vault), by spending the
   // refresh cookie for a fresh access_token and then re-fetching the profile
   // (a persisted session never carries a profile snapshot -- see
   // NewApiPersistableSession). Resolves false -- session stays unauthenticated,
-  // caller should discard the persisted file -- when the credential is
+  // caller should discard the saved login -- when the credential is
   // definitively dead (server says 401, or the input fails basic shape
   // checks). Rethrows for anything else (network/timeout/unexpected server
   // response), so a caller can tell "this credential is gone" apart from
-  // "couldn't reach the server this time" and keep the file for a later retry
+  // "couldn't reach the server this time" and keep the login for a later retry
   // in the latter case (task requirement: 恢复失败/过期一律干净降级为未登录，
   // 不报错卡启动 -- "failed" and "expired" are handled differently on purpose).
   // No-ops (returns true) if a session already exists.
@@ -2479,10 +2479,11 @@ export function extractSessionCookies(headers: Headers): string[] {
 // value was secret and would let it straight through into the thrown Error's
 // .message -- which two call sites then log verbatim: registerTrustedHandler
 // folds every failed account:* IPC call's error.message into the runtime log
-// (ipc.ts), and restoreAccountSessionOnStartup logs a failed restoreSession()
-// the same way under a `reason` key (account-session-store.ts) that
-// runtime-log.ts's key-name-based sanitizeValue never inspects (the key is
-// "reason", not "cookie"/"token"/etc). Both land in the persisted runtime.jsonl
+// (ipc.ts), and main.ts logs a failed startup restore (restoreActive in
+// realm-account-service.ts) through runtimeLog.exception, which copies
+// error.message into the entry's `message` and keeps the error, cause
+// included, under an `error` key, and runtime-log.ts's key-name-based
+// sanitizeValue redacts neither. Both land in the persisted runtime.jsonl
 // and, from there, in a user's feedback export. Keeping just the value rather
 // than the whole "name=value" pair still redacts the pair when both appear
 // together (the value substring is found and blanked out either way), while
