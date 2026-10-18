@@ -5927,7 +5927,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('diagnostics:check-connection on a rejected managed key', () => {
     const rejected = {
       ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
-      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号', nextStep: '到「账号」页重新登录，然后在首页重新写入一次 Key',
+      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号', nextStep: '先重新登录，再在首页重新写入一次密钥',
       endpoint: 'https://example.test/v1/messages', model: 'm', detail: '无效的令牌',
       status: 401, durationMs: 12, checkedAt: '2026-09-22T00:00:00.000Z',
     }

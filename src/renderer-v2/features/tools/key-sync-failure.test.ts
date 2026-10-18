@@ -3,7 +3,7 @@ import { keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
 
 describe('key sync failure wording', () => {
   it('names the tool and translates raw English failures', () => {
-    expect(keySyncFailureText('codex', 'fetch failed')).toBe('Codex CLI：连不上星芒服务器')
+    expect(keySyncFailureText('codex', 'fetch failed')).toBe('Codex CLI：网络连不上')
     // 写 Key 写的是配置文件，不是安装目录（已知29）。
     expect(keySyncFailureText('claude', 'EPERM: operation not permitted')).toBe('Claude Code：写不进配置文件')
     expect(keySyncFailureText('grok', 'unexpected token in JSON')).toBe('Grok CLI：密钥没有写进去，点「重新同步」再试')

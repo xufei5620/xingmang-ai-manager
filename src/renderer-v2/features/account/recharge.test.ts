@@ -88,9 +88,9 @@ describe('recharge', () => {
 
   it('says how much of a plan is used and when it ends', () => {
     const now = new Date('2026-10-15T08:00:00')
-    expect(planUsageText(subscription(), 100, now)).toBe('已用 $3.20，11 月 13 日到期')
-    expect(planUsageText(subscription({ amountUsed: null }), 100, now)).toBe('11 月 13 日到期')
-    expect(planUsageText(subscription({ endsAt: '2027-01-02T12:00:00' }), 100, now)).toBe('已用 $3.20，2027 年 1 月 2 日到期')
+    expect(planUsageText(subscription(), 100, now)).toBe('已用 $3.20，11月13日到期')
+    expect(planUsageText(subscription({ amountUsed: null }), 100, now)).toBe('11月13日到期')
+    expect(planUsageText(subscription({ endsAt: '2027-01-02T12:00:00' }), 100, now)).toBe('已用 $3.20，2027年1月2日到期')
   })
 
   it('explains each billing order in one sentence', () => {

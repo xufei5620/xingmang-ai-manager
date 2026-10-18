@@ -83,16 +83,16 @@ describe('tray update entry', () => {
       const menu = buildApplicationTrayMenu({ installedTools: [], update }, withInstall ? actions : { ...actions, onInstallUpdate: undefined }, (action) => { void action() })
       return menu.map((entry) => entry.label).find((text) => typeof text === 'string' && /更新|安装新版本/.test(text))
     }
-    expect(label(null)).toBe('软件更新')
-    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: false })).toBe('软件更新：有新版本 0.2.12')
-    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: true })).toBe('软件更新：新版本 0.2.12 等电脑腾出空间再下载')
-    expect(label({ kind: 'downloading', version: '0.2.12' })).toBe('软件更新：正在下载新版本 0.2.12')
-    expect(label({ kind: 'downloading', version: null })).toBe('软件更新：正在下载新版本')
+    expect(label(null)).toBe('版本更新')
+    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: false })).toBe('版本更新：有新版本 0.2.12')
+    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: true })).toBe('版本更新：新版本 0.2.12 等电脑腾出空间再下载')
+    expect(label({ kind: 'downloading', version: '0.2.12' })).toBe('版本更新：正在下载新版本 0.2.12')
+    expect(label({ kind: 'downloading', version: null })).toBe('版本更新：正在下载新版本')
     expect(label({ kind: 'downloaded', version: '0.2.12' })).toBe('重启并安装新版本 0.2.12')
     // Linux hands the package to the system installer: the app only closes, it does not restart itself.
     expect(label({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })).toBe('安装新版本 0.2.12')
-    expect(label({ kind: 'downloaded', version: '0.2.12' }, false)).toBe('软件更新：新版本 0.2.12 已下载好')
-    expect(label({ kind: 'failed', version: '0.2.12' })).toBe('软件更新：新版本 0.2.12 没更新成功，点开看看')
+    expect(label({ kind: 'downloaded', version: '0.2.12' }, false)).toBe('版本更新：新版本 0.2.12 已下载好')
+    expect(label({ kind: 'failed', version: '0.2.12' })).toBe('版本更新：新版本 0.2.12 没更新成功，点开看看')
   })
 
   it('routes the downloaded entry to install and every other entry to the updates page', async () => {
@@ -105,7 +105,7 @@ describe('tray update entry', () => {
     expect(actions.onNavigate).not.toHaveBeenCalled()
     expect(actions.onQuit).not.toHaveBeenCalled()
 
-    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloading', version: '0.2.12' } }, actions, run), '软件更新：正在下载新版本 0.2.12')
+    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloading', version: '0.2.12' } }, actions, run), '版本更新：正在下载新版本 0.2.12')
     await Promise.all(pending)
     expect(actions.onOpen).toHaveBeenCalledOnce()
     expect(actions.onNavigate).toHaveBeenCalledExactlyOnceWith('updates')
@@ -144,7 +144,7 @@ describe('tray summary and native menu', () => {
       installedTools: [{ id: 'codex', label: 'Codex CLI' }, { id: 'claude', label: 'Claude Code', enabled: false }],
       update: { kind: 'available', version: '0.2.0', waitingForDisk: false },
     }, actions, (action) => { void action() })
-    expect(menu.map((entry) => entry.label)).toEqual(expect.arrayContaining(['user@example.com', '余额：USD 4.25', '软件更新：有新版本 0.2.0']))
+    expect(menu.map((entry) => entry.label)).toEqual(expect.arrayContaining(['user@example.com', '余额：USD 4.25', '版本更新：有新版本 0.2.0']))
     const installed = menu.find((entry) => entry.label === '已安装的工具')!.submenu as MenuItemConstructorOptions[]
     expect(installed.map((entry) => [entry.label, entry.enabled])).toEqual([['Codex CLI', true], ['Claude Code', false]])
     click(installed, 'Codex CLI')
@@ -330,7 +330,7 @@ describe('application tray subscription line', () => {
   }
 
   it('summarises a usable subscription and stays empty without one', () => {
-    expect(traySubscriptionLabel(self, 500_000, now)).toBe('剩余 USD 9.00 · 10 月 3 日到期')
+    expect(traySubscriptionLabel(self, 500_000, now)).toBe('剩余 USD 9.00 · 10月3日到期')
     expect(traySubscriptionLabel(null, 500_000, now)).toBeNull()
     expect(traySubscriptionLabel({ ...self, billingPreference: 'wallet_only' }, 500_000, now)).toBeNull()
   })
@@ -338,7 +338,7 @@ describe('application tray subscription line', () => {
   it('adds the subscription row under the balance only when there is one', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
     const labels = (subscriptionLabel?: string) => buildApplicationTrayMenu({ accountLabel: 'u', balanceUsd: 0, subscriptionLabel, installedTools: [] }, actions, () => undefined).map((entry) => entry.label)
-    expect(labels('剩余 USD 9.00 · 10 月 3 日到期').slice(3, 5)).toEqual(['余额：USD 0.00', '订阅：剩余 USD 9.00 · 10 月 3 日到期'])
+    expect(labels('剩余 USD 9.00 · 10月3日到期').slice(3, 5)).toEqual(['余额：USD 0.00', '订阅：剩余 USD 9.00 · 10月3日到期'])
     expect(labels()).not.toContainEqual(expect.stringContaining('订阅'))
   })
 })
@@ -356,12 +356,12 @@ describe('application tray keep-awake line', () => {
   it('shows a greyed-out line under the open entry and at the end of the tooltip, and drops both once sleep is given back', () => {
     const { controller, runtime, handle } = fixture()
     const line = 'Claude Code 正在干活，暂不让电脑自动睡眠'
-    controller.updateSnapshot({ installedTools: [], balanceUsd: 8, subscriptionLabel: '剩余 USD 9.00 · 10 月 3 日到期', keepAwakeLabel: line })
+    controller.updateSnapshot({ installedTools: [], balanceUsd: 8, subscriptionLabel: '剩余 USD 9.00 · 10月3日到期', keepAwakeLabel: line })
     const menu = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
     expect(menu[0].label).toBe('打开星芒AI管理工具')
     expect(menu[1]).toEqual({ label: line, enabled: false })
     expect(menu[2].type).toBe('separator')
-    expect(handle.setToolTip).toHaveBeenLastCalledWith(`星芒AI管理工具\n余额：USD 8.00\n订阅：剩余 USD 9.00 · 10 月 3 日到期\n${line}`)
+    expect(handle.setToolTip).toHaveBeenLastCalledWith(`星芒AI管理工具\n余额：USD 8.00\n订阅：剩余 USD 9.00 · 10月3日到期\n${line}`)
     controller.updateSnapshot({ installedTools: [], balanceUsd: 8, keepAwakeLabel: null })
     const after = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
     expect(after[1].type).toBe('separator')

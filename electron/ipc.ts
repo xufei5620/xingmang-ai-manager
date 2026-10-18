@@ -2042,7 +2042,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         })
     }
   }
-  // explicit：用户亲手点的「重新写入 Key」「再换一次」。只有这一种能越过读坏的记录。
+  // explicit：用户亲手点的「重新写入密钥」「再换一次」。只有这一种能越过读坏的记录。
   const provisioningAccountService = (explicit: boolean): Parameters<typeof configureManagedClis>[0] => ({
     getSessionState: accountService.getSessionState.bind(accountService),
     getSessionRevision: accountService.getSessionRevision?.bind(accountService),
@@ -2080,7 +2080,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         // 分不清原来有没有上限：自动签发一律停下说清楚；用户看过密钥页、亲手再点一次，
         // 才清掉坏记录照常签，免得以后每次都卡在这里。
         if (!explicit) {
-          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「账号」页「密钥」里确认一下它的额度，再点「重新写入 Key」就会换上。')
+          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「个人中心 → 密钥管理」确认一下它的额度，再点「重新写入密钥」就会换上。')
         }
         await keyReplacements.reset().catch(() => undefined)
         pending = null
@@ -3832,7 +3832,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       try {
         await keyReplacements.set(slot, { remainQuota, unlimitedQuota, expiredAt })
       } catch (error) {
-        // 记录读坏了，稍后再试也没用：要先让用户亲手「重新写入 Key」清掉它（见
+        // 记录读坏了，稍后再试也没用：要先让用户亲手「重新写入密钥」清掉它（见
         // provisioningAccountService 的 explicit 分支）。
         if (error instanceof ManagedKeyReplacementUnreadableError) throw new Error(managedKeyReplacementUnreadableRevokeMessage)
         throw new Error('没能记下这把密钥的额度设置，先没撤销。请稍后再试。')

@@ -1017,7 +1017,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).toContain('配置被改过')
       expect(markup).toContain('配置被别的程序改过，没在用当前账号的密钥')
       expect(markup).toContain('data-testid="tool-claude-rewrite-key"')
-      expect(markup).toContain('>重新写入<')
+      expect(markup).toContain('>重新写入密钥<')
       // 站点名永远不上屏，文案以「当前账号」为主语。
       expect(markup).not.toContain('solov')
     })
@@ -1565,13 +1565,13 @@ describe('renderer-v2 home balance for subscription customers', () => {
   it('drops the empty-wallet warning and shows the subscription while one is usable', () => {
     const markup = render({}, undefined, { balance: empty, subscription })
     expect(markup).not.toContain('home-low-balance')
-    expect(markup).toContain('另有月卡 $8.00，10 月 3 日到期')
+    expect(markup).toContain('另有月卡 $8.00，10月3日到期')
     expect(markup).not.toContain('tone-bad')
   })
 
   it('warns about renewal when the subscription is about to end and the wallet cannot take over', () => {
     const markup = render({}, undefined, { balance: empty, subscription: { ...subscription, expiringSoon: true } })
-    expect(markup).toContain('订阅 10 月 3 日到期，到期后会从余额扣费。')
+    expect(markup).toContain('订阅 10月3日到期，到期后会从余额扣费。')
     expect(markup).toContain('去续费')
     expect(markup).not.toContain('home-low-balance')
   })

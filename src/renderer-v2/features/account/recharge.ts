@@ -259,7 +259,7 @@ export function planSubscription(plan: Pick<AccountSubscriptionPlan, 'id'>, subs
   return subscriptions.find((subscription) => subscription.source !== 'sub2api' && subscription.planId === plan.id && subscription.status === 'active') ?? null
 }
 
-/** 套餐卡底下那句：「已用 $3.20，11 月 13 日到期」；已用读不到只写到期。 */
+/** 套餐卡底下那句：「已用 $3.20，11月13日到期」；已用读不到只写到期。 */
 export function planUsageText(subscription: Pick<Subscription, 'amountUsed' | 'endsAt'>, quotaPerUnit: number | null | undefined, now: Date = new Date()): string {
   const ends = shortDate(subscription.endsAt, now)
   const used = typeof subscription.amountUsed === 'number' && quotaPerUnit && quotaPerUnit > 0 ? dollars(subscription.amountUsed / quotaPerUnit) : null

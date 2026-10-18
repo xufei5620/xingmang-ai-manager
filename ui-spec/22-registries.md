@@ -95,7 +95,7 @@ type ToolDef = {
 | 工具 | official | 官方账号 | ok | — |
 | 工具 | unconfigured | 还没配 Key | warn | 配 Key |
 | 工具 | update | 可更新 | warn | 更新 |
-| 工具 | keyRevoked | Key 失效 | bad | 修复 |
+| 工具 | keyRevoked | 密钥失效 | bad | 修复 |
 | 工具 | zeroBalance | 余额为零 | bad | 马上充值 |
 | 工具 | unknownSource | 已有第三方配置 | neutral | 查看处理步骤 |
 | 环境 | ok / missing / optional | 已找到 x / 未安装 / 可选 · 未装 | ok / warn / neutral | 一键安装 / 安装指南 |
@@ -112,12 +112,12 @@ type ToolDef = {
 
 | 来源 | 错误 | 标题 | 说明 | 动作 |
 |---|---|---|---|---|
-| HTTP | 401 `/api/user/self` | 登录已过期 | 工具里已写入的 Key 还能用，余额和用量不再更新 | 重新登录 |
-| HTTP | 401 工具探针 | Key 失效 | 〈工具〉打不开对话，需要换一把 Key | 一键修复 |
+| HTTP | 401 `/api/user/self` | 登录已过期 | 工具里已写入的密钥还能用，余额和用量不再更新 | 重新登录 |
+| HTTP | 401 工具探针 | 密钥失效 | 〈工具〉打不开对话，需要换一把密钥 | 一键修复 |
 | HTTP | 402 / 余额 ≤ 0 | 余额已用完 | 所有请求会被拒绝，充值到账后立即恢复 | 马上充值 |
 | HTTP | 429 | 请求太频繁 | 稍等几秒再试 | 重试 |
 | HTTP | 5xx | 星芒服务器暂时出错 | 已装好的工具照常能用 | 重试 · 看状态 |
-| 网络 | 超时 / DNS | 连不上星芒服务器 | 同上 | 重试 · 检查网络 |
+| 网络 | 超时 / DNS | 网络连不上 | 同上 | 重试 · 检查网络 |
 | npm | EPERM / 被占用 | 安装被杀毒软件拦住了 | 05 §3 | 复制路径 · 重试 |
 | npm | ETIMEDOUT / ECONNRESET | 下载超时 | 05 §3 | 换官方源重试 |
 | npm | EACCES | 需要管理员权限 | 05 §3 | 以管理员身份重试 |

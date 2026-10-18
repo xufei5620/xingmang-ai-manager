@@ -106,7 +106,7 @@ describe('renderer-v2 notification settings registry', () => {
     ]);
     expect(notificationOptions.filter(option => option.description).map(option => [option.value, option.description])).toEqual([
       ['balance', '余额低于 $5 时提醒'],
-      ['spend', '一小时内花费超过平时 5 倍时提醒'],
+      ['spend', '一小时内花费超过平时 5 倍且至少 $5 时提醒'],
     ]);
   });
 });

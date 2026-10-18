@@ -348,7 +348,7 @@ export const usageFilterFields = [
       ),
     ],
   },
-  { key: 'tokenName', label: '令牌名称' },
+  { key: 'tokenName', label: '密钥名称' },
   { key: 'requestId', label: '请求 ID' },
   { key: 'upstreamRequestId', label: '上游请求 ID' },
 ]
@@ -380,7 +380,7 @@ export interface NotificationOption {
 // 「做完了」和「在等你回复」还是一个开关：主进程只有一个 cliTurn 偏好。
 export const notificationOptions: readonly NotificationOption[] = [
   { value: 'balance', label: '余额不足', description: '余额低于 $5 时提醒' },
-  { value: 'spend', label: '花费突然变多', description: '一小时内花费超过平时 5 倍时提醒' },
+  { value: 'spend', label: '花费突然变多', description: '一小时内花费超过平时 5 倍且至少 $5 时提醒' },
   { value: 'cliTurn', label: '终端里的 AI 做完或在等你' },
   { value: 'cliTrouble', label: '终端里没回上' },
   { value: 'install', label: '安装和更新结果' },

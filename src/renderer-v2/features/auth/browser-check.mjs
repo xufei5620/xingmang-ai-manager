@@ -116,7 +116,7 @@ test('registration status read retries once, names proxy software, and explains 
   const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
   try {
     await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
-    await page.getByTestId('register-status-error').filter({ hasText: '先把它关掉' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '开着别的加速器、翻墙或代理软件的话先关掉' }).waitFor()
     assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
     assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
     await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
@@ -892,7 +892,7 @@ test('a network failure on login names proxy software and offers retry and suppo
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。电脑上开着加速器、翻墙或代理软件的话，先把它关掉，再试一次。' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。' }).waitFor()
     assert.equal(await page.getByTestId('auth-exit-forgot').count(), 0)
     await page.getByTestId('auth-exit-help').click()
     assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)

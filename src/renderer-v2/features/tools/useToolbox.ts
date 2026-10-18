@@ -32,7 +32,7 @@ export interface ToolJobOptions {
 export type ToolJobReport = (label: string, percent?: number) => void
 
 /** 安装命令已经返回、但同步 Key 与重新检测还没跑完时，工具行显示的那句话。 */
-export const installedToolSyncLabel = '安装完成，正在同步账号 Key 并刷新状态'
+export const installedToolSyncLabel = '安装完成，正在同步账号密钥并刷新状态'
 
 /**
  * 账号 Key 写完之后这一次刷新该走哪条路。手上已经有快照，或首屏那遍扫描还在跑

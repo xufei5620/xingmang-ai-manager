@@ -778,12 +778,12 @@ describe('renderer subscription warning', () => {
   })
 
   it('names the end date or the remaining amount once the wallet is low', () => {
-    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10 月 3 日到期，到期后会从余额扣费。')
+    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10月3日到期，到期后会从余额扣费。')
     expect(subscriptionWarning({ ...base, lowRemaining: true }, 1)).toBe('订阅只剩 $3.00，用完后会从余额扣费。')
   })
 
   it('warns regardless of the wallet when only the subscription is spent', () => {
-    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10 月 3 日到期，到期后工具就用不了了，续费后可继续使用。')
+    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10月3日到期，到期后工具就用不了了，续费后可继续使用。')
   })
 })
 

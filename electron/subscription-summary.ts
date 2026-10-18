@@ -77,14 +77,14 @@ export function resolveUsableSubscription(
   return best
 }
 
-/** 「10 月 3 日」，按本机时区。 */
+/** 「10月3日」，按本机时区（日期写法统一不带空格，同 calendar-time）。 */
 export function subscriptionEndDate(endsAt: string): string {
   const date = new Date(endsAt)
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日`
+  return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 /**
- * 「剩余 $12.30 · 10 月 3 日到期」；不限额时只说到期日。money 由调用方给，
+ * 「剩余 $12.30 · 10月3日到期」；不限额时只说到期日。money 由调用方给，
  * 托盘和首页的金额写法不一样。
  */
 export function subscriptionSummaryText(subscription: UsableSubscription, money: (usd: number) => string): string {

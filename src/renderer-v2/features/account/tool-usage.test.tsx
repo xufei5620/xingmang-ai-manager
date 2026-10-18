@@ -83,7 +83,7 @@ describe('per-tool usage summary', () => {
   it('reads the usage as not yet available when the account gives no usable quota unit', () => {
     const unusable = summaryOf([key({ id: 1, name: 'xingmang-desktop-claude', usedQuota: 3_000_000 })], 0)
     expect(unusable.used).toBeNull()
-    expect(toolUsageUsed(unusable.rows[0])).toBe('暂未读到')
+    expect(toolUsageUsed(unusable.rows[0])).toBe('—')
     expect(toolUsageHeadline(unusable)).toBe('当前账号的用量暂未读到。')
   })
 })

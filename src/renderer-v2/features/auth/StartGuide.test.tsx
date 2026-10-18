@@ -489,7 +489,7 @@ describe('guide connect step with a key the current account did not write', () =
   it('offers one button named after the account and hides the grey next button for another site', () => {
     stubResumedGuide('codexDesktop', 'connect')
     const markup = render([guideTool({ id: 'codexDesktop', source: 'unknown', configured: false, keyState: 'otherSite' })], switchable)
-    expect(markup).toContain('Codex 桌面端 现在用的不是当前账号的 Key。')
+    expect(markup).toContain('Codex 桌面端 现在用的不是当前账号的密钥。')
     expect(markup).toContain('点「改用 peaker」就能接着往下走')
     expect(markup).toContain('Codex CLI 和 Codex 桌面端共用这份设置，会一起改。')
     expect(markup).toContain('data-testid="guide-switch-account"')
@@ -509,7 +509,7 @@ describe('guide connect step with a key the current account did not write', () =
   it('lets a usable key from another account on this site through, with the switch as a second choice', () => {
     stubResumedGuide('claude', 'connect')
     const markup = render([guideTool({ source: 'unknown', keyState: 'otherAccount' })], switchable)
-    expect(markup).toContain('现在用的 Key 可能不是当前账号的')
+    expect(markup).toContain('现在用的密钥可能不是当前账号的')
     expect(markup).toContain('用量可能算到别的账号上')
     expect(markup).toContain('data-testid="guide-next"')
     expect(markup).not.toMatch(/data-testid="guide-next"[^>]*disabled/)

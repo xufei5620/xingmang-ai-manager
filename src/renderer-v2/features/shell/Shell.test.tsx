@@ -110,7 +110,7 @@ describe('renderer-v2 sidebar account card', () => {
   it('keeps the signed-out note', () => {
     const markup = renderAccount({ signedIn: false })
     expect(markup).toContain('未登录')
-    expect(markup).toContain('登录后自动配 Key')
+    expect(markup).toContain('登录后自动配密钥')
   })
 })
 

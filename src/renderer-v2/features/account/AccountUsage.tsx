@@ -2,13 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { BarChart3, Copy, ListX, RefreshCw } from 'lucide-react'
 import { Button, Card, Dialog, Empty, Notice, Pill, Segment, Select, Table } from '../../ui'
 import {
+  ClockTime,
   displayDate,
   dollars,
   FailureReason,
   ListReadFailure,
   Pagination,
   PlaceholderBar,
-  RelativeTime,
+  quotaMoney,
   ResultNotice,
   useOperation,
   useRefreshRequest,
@@ -46,11 +47,6 @@ import {
 } from './usage'
 
 export type UsageView = 'calls' | 'tasks'
-
-// 没读到的金额写「—」，不写「暂未读到」（同 pages-account 的 quotaMoney）。
-function quotaMoney(quota: number | null | undefined, balance: AccountBalance) {
-  return balance.quotaPerUnit > 0 && typeof quota === 'number' ? dollars(quota / balance.quotaPerUnit) : '—'
-}
 
 const pageSizes = [10, 20, 50, 100]
 /**
@@ -384,11 +380,12 @@ function AccountCalls({
               return {
                 id: String(row.id),
                 label: `${displayDate(row.createdAt)} ${row.modelName}`,
-                when: <RelativeTime value={row.createdAt} />,
+                // 时间、Token、花费三列不折行：模型名长时被挤成「9月12 / 日」就认不出了（#1133 第 2 条）。
+                when: <span className="v2-usage-nowrap"><ClockTime value={row.createdAt} /></span>,
                 model: <span className="v2-usage-mono">{row.modelName}</span>,
                 key: row.tokenName || '—',
-                tokens: `${row.promptTokens.toLocaleString('en-US')} / ${row.completionTokens.toLocaleString('en-US')}`,
-                amount: row.type === 5 && row.quota <= 0 ? '—' : quotaMoney(row.quota, balance),
+                tokens: <span className="v2-usage-nowrap">{`${row.promptTokens.toLocaleString('en-US')} / ${row.completionTokens.toLocaleString('en-US')}`}</span>,
+                amount: <span className="v2-usage-nowrap">{row.type === 5 && row.quota <= 0 ? '—' : quotaMoney(row.quota, balance)}</span>,
                 status: <Pill tone={status.tone}>{status.label}</Pill>,
               }
             })}

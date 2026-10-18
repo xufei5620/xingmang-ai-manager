@@ -293,7 +293,7 @@ describe('classifyConnectionResponse', () => {
   it('maps the 2026-08-12 no-channel failure to the group layer', () => {
     const outcome = classifyConnectionResponse(messagesProbe('m'), 503, '当前分组 default 下对于模型无可用渠道', {})
     expect(outcome.layer).toBe('group')
-    expect(outcome.nextStep).toContain('写入 Key')
+    expect(outcome.nextStep).toContain('重新写入密钥')
   })
 
   it('maps an unknown model to the model layer and names it', () => {

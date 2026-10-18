@@ -12,7 +12,7 @@ import {
 import { Button, Empty, Pill, useToast } from './ui'
 import { errors } from './registry/errors'
 import { presentOperationFailure, type OperationTarget } from './operation-error'
-import { formatCalendarTime } from './calendar-time'
+import { formatCalendarTime, formatClockTime } from './calendar-time'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
 import { isChineseSentence } from '../../electron/chinese-sentence'
@@ -189,10 +189,30 @@ export function RelativeTime({ value, now }: { value: string | number | null | u
   if (!date || !text) return <>{displayDate(value)}</>
   return <time dateTime={date.toISOString()} title={displayDate(value)}>{text}</time>
 }
+/**
+ * 用量明细、调用详情的时间：一页几百条要分得开，所以哪天都带上钟点、也不写「刚刚」
+ * （「今天 14:59」「9月12日 18:40」，#1133 第 1 条）。鼠标提示同 RelativeTime。
+ */
+export function ClockTime({ value, now }: { value: string | number | null | undefined; now?: number }) {
+  const date = value === null || value === undefined || value === '' ? null : parseDisplayDate(value)
+  const text = date ? formatClockTime(date.getTime(), now ?? Date.now()) : null
+  if (!date || !text) return <>{displayDate(value)}</>
+  return <time dateTime={date.toISOString()} title={displayDate(value)}>{text}</time>
+}
+/**
+ * 美元金额只有这一种写法：带千分位、两位小数（$23,456.78，#1133 第 5 条）。首页、侧栏、
+ * 状态栏、个人中心都走它，读不到时一律写「—」，原因由旁边的小字或鼠标提示说（#1073 第 8 条）。
+ */
 export function dollars(amount: number | null | undefined) {
   return typeof amount === 'number' && Number.isFinite(amount)
-    ? `$${amount.toFixed(2)}`
-    : '暂未读到'
+    ? `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : '—'
+}
+/** 后台记的额度（quota）换成美元；换算比例没读到时同样写「—」。 */
+export function quotaMoney(quota: number | null | undefined, balance: { quotaPerUnit: number } | null) {
+  return balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
+    ? dollars(quota / balance.quotaPerUnit)
+    : '—'
 }
 /**
  * 一次按钮操作失败后交给错误框的两样东西：上屏的那句（`message`，同 `errorMessage`），
