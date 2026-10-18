@@ -190,6 +190,7 @@ import {
   type GitRuntimeInstallResult,
 } from './git-runtime-install'
 import { InstallationQueue, type InstallationQueueSnapshot } from './installation-queue'
+import type { QueuedAccountWork } from './account-work-gate'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import {
   InstallCancellationRegistry,
@@ -1111,7 +1112,8 @@ export interface SystemService {
   resetCodexDesktop(): Promise<void>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
   /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
-  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null): Promise<CliLaunchResult>
+  /** accountWork：排在安装后面的这段不算账号工作，轮到它执行时才算（#1085）。 */
+  launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null, accountWork?: QueuedAccountWork): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
   inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
@@ -1123,7 +1125,7 @@ export interface SystemService {
   launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
-    launchOptions?: { injectChinese?: boolean },
+    launchOptions?: { injectChinese?: boolean; accountWork?: QueuedAccountWork },
   ): Promise<CodexDesktopLaunchResult>
   /** 换账号之后看哪些工具还开着（Codex 连同桌面端）；可选 = 旧实现不提供，调用方退回无条件提醒。 */
   inspectRunningTools?(providers: readonly ProviderId[]): Promise<RunningToolsReport>
@@ -6119,7 +6121,7 @@ export function createSystemService(
   async function launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
-    launchOptions: { injectChinese?: boolean } = {},
+    launchOptions: { injectChinese?: boolean; accountWork?: QueuedAccountWork } = {},
   ): Promise<CodexDesktopLaunchResult> {
     // Configs created before the permission picker was introduced often omit
     // both legacy fields. Add only missing defaults so a mirror-installed
@@ -6476,13 +6478,18 @@ export function createSystemService(
     workspace: string,
     mode: CliLaunchMode = 'new',
     resumeSessionId: string | null = null,
+    accountWork?: QueuedAccountWork,
   ): Promise<CliLaunchResult> {
-    return installationQueue.enqueue(
-      buildCliLaunchQueueKey(provider, workspace, mode, resumeSessionId),
-      async () => ({
+    async function launch(): Promise<CliLaunchResult> {
+      return {
         ...await launchProviderOperation(provider, workspace, mode, resumeSessionId),
         rememberedWorkspace: rememberedWorkspaceFor(store.read().workspace),
-      }),
+      }
+    }
+    return installationQueue.enqueue(
+      buildCliLaunchQueueKey(provider, workspace, mode, resumeSessionId),
+      () => accountWork ? accountWork.run(launch) : launch(),
+      { signal: accountWork?.signal },
     )
   }
 
