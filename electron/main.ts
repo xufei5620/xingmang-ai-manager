@@ -180,7 +180,7 @@ import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { createInstallKeepAwake } from './install-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type SettingsSaveIssue, type UnexpectedExitNotice } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type SettingsSaveIssue, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -2207,6 +2207,14 @@ if (!hasSingleInstanceLock) {
     let latestTrayBalance: AccountBalance | null = null
     let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
+    // 账号状态、付款结果（带订单号）、更新状态只发给主窗口（#1069）。画布跑第三方前端代码，
+    // 支付窗口装的是支付商的网页，两边都不靠这几条：画布换账号听自己的 canvas-host:account-changed，
+    // 支付窗口没挂 preload，付完由主进程判断、自己关。挨个窗口发只是把订单号和账号送到它们手边。
+    const sendToMainWindow = <Event extends keyof XingmangEventContract>(event: Event, payload: IpcEventPayload<XingmangEventContract[Event]>) => {
+      const window = managedMainWindow
+      if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
+      window.webContents.send(ipcEventChannels[event], payload)
+    }
     // 客服收到反馈报告的第一句总是「你的工具是什么版本、怎么装的、配置指向哪」。
     // 这几行就答这三件事：只读上一次扫描留下的快照（latestTraySystem），不为了
     // 生成一份报告再发一轮探测；配置按用户当前所在的站点对账（同上面的
@@ -2576,9 +2584,7 @@ if (!hasSingleInstanceLock) {
       },
       onChanged: (siteId, state) => {
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
-        for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
-        }
+        sendToMainWindow('onAccountSessionChanged', state)
         if (!accountIdentity.advance(identity)) return
         // 只在换了人时才让加速作废在路上的请求：续期换凭据、付款后刷新也会走到这里，
         // 那时推进加速的代数会让正在查的状态报「账号已变更」，查询途中还会把正在跑的加速停掉。
@@ -3120,11 +3126,7 @@ if (!hasSingleInstanceLock) {
             hasTradeNo: Boolean(event.tradeNo),
             ...(event.confirming ? { confirming: true } : {}),
           })
-        for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.isDestroyed()) {
-            window.webContents.send(ipcEventChannels.onAccountPaymentWindowTerminal, event)
-          }
-        }
+        sendToMainWindow('onAccountPaymentWindowTerminal', event)
         // 关窗后才到账：人多半已经去干别的了。正看着星芒时界面上那条提示自己会变，不再弹。
         if (context.afterClose && event.status === 'success' && event.tradeNo) {
           const main = managedMainWindow
@@ -3226,10 +3228,7 @@ if (!hasSingleInstanceLock) {
     void accountRestore.catch(() => false).then((restored) => {
       accountRestoreRetry.schedule()
       if (restored || accounts.stalledAccount() || !accountStartupGate.releasedEarly()) return
-      const state = accounts.client.getSessionState()
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
-      }
+      sendToMainWindow('onAccountSessionChanged', accounts.client.getSessionState())
     })
     let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
     // 只看读文件这一步：后面建加速服务失败不是文件坏了，不能叫客户去翻杀毒软件。
@@ -3427,9 +3426,7 @@ if (!hasSingleInstanceLock) {
         if (shouldLogUpdateState(snapshot)) {
           runtimeLog.log(snapshot.error ? 'error' : 'info', 'updater', 'state.changed', `主程序更新状态：${snapshot.phase}`, buildUpdateStateLogDetail(snapshot))
         }
-        for (const window of BrowserWindow.getAllWindows()) {
-          if (!window.isDestroyed()) window.webContents.send('update:state-changed', snapshot)
-        }
+        sendToMainWindow('onUpdateState', snapshot)
         applicationTray?.updateSnapshot()
       },
       // 自带 Administrator、关了 UAC、右键以管理员身份运行：装东西不弹授权窗口，界面别说会弹（已知19）。
