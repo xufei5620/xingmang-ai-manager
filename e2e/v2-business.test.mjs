@@ -237,7 +237,10 @@ test('the usage range drives the stats, one bar per local day or week and the ca
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-dashboard').length > count, week.length)
     const day = (await dashboards()).slice(week.length)
     assert.equal(day.length, 1)
-    assert.equal(day[0].endTimestamp - day[0].startTimestamp, 86_400)
+    // 起点退到 24 小时前所在的整点：后台看板只记到整点，起点落在半点上，最早那一小时整行不回（#1093 第 4 条）。
+    const span = day[0].endTimestamp - day[0].startTimestamp
+    assert.equal(day[0].startTimestamp % 3_600, 0)
+    assert.ok(span >= 86_400 && span < 86_400 + 3_600, String(span))
     await page.waitForFunction((start) => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startTimestamp === start), day[0].startTimestamp)
     await stats.getByText('$5.00', { exact: true }).first().waitFor()
 
