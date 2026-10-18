@@ -265,6 +265,11 @@ function readCliModels(value: unknown): CliModelHints | null {
   return any ? hints : null
 }
 
+/** 记在本地的那份型号表（cli-model-hints-store.ts），按状态文件的同一套口径重新校验（#1154 第 6 条）。 */
+export function parseCliModelHints(value: unknown): CliModelHints | null {
+  return readCliModels(value)
+}
+
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
 export function parseServiceStatus(text: string, now: Date): ServiceStatus {
   return parseServiceStatusDocument(text, now) ?? emptyServiceStatus
