@@ -2901,6 +2901,7 @@ if (!hasSingleInstanceLock) {
         onRequestStarted: onAiRequestStarted,
         readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
         baseUrl: definition.aiBaseUrl,
+        backend: definition.backend,
         credentialCoordinator: chatCredentials,
         fetchImpl: routedRelayFetch,
         emit: (senderId, event) => {

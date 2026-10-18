@@ -369,6 +369,41 @@ describe('AI chat streaming service', () => {
     expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: expected })])
   })
 
+  // Sub2API 等并发槽位时先回 200 和心跳，复查计费没过才在流里发这一帧（relay-quota-failure.ts）。
+  const sub2apiBalanceFrame = ':\n\nevent: error\ndata: {"error":{"message":"insufficient balance","type":"billing_error"}}\n\n'
+
+  it('points the history-account site to recharging when the balance runs short mid-stream', async () => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      backend: 'sub2api',
+      fetchImpl: vi.fn<TestFetch>(async () => sseResponse([encoder.encode(sub2apiBalanceFrame)])),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: relayQuotaFailureMessages.balance })])
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow(relayQuotaFailureMessages.balance)
+  })
+
+  it.each([
+    ['the same frame on new-api, where only an upstream channel can send it', undefined, sub2apiBalanceFrame],
+    ['an upstream channel quota error relayed mid-stream', 'sub2api', 'data: {"error":{"message":"用户额度不足, 剩余额度: ＄0.000000","code":"insufficient_user_quota"}}\n\n'],
+    ['another billing check that is not the balance', 'sub2api', 'event: error\ndata: {"error":{"message":"daily usage limit exceeded","type":"billing_error"}}\n\n'],
+  ] as const)('keeps the old wording for %s', async (_label, backend, frame) => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      backend,
+      fetchImpl: vi.fn<TestFetch>(async () => sseResponse([encoder.encode(frame)])),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: 'AI 服务暂时无法完成请求' })])
+  })
+
   it('falls back to the status-only wording when the error body is oversized', async () => {
     const events: AiChatStreamEvent[] = []
     const body = JSON.stringify({ error: { message: `用户额度不足${'x'.repeat(20 * 1024)}` } })
