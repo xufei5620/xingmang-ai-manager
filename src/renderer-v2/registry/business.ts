@@ -417,7 +417,7 @@ export interface SettingsItem {
  * 点了打开那一组、翻到那一行；页面上的行标题也从这里取，两边不会说成两个名字。
  */
 export const settingsItems: readonly SettingsItem[] = [
-  { id: 'theme', group: 'appearance', label: '主题', keywords: ['深色', '浅色', '夜间', '暗色', '白色', '配色', '皮肤', '跟随系统'] },
+  { id: 'theme', group: 'appearance', label: '主题', keywords: ['深色', '浅色', '夜间', '暗色', '白色', '配色', '皮肤', '跟随系统', '黑金深色', '晨曦金浅色'] },
   { id: 'ui-scale', group: 'appearance', section: 'text-scale', label: '界面缩放', keywords: ['缩放', '放大', '缩小', '太大', '太小'] },
   { id: 'large-text', group: 'appearance', section: 'text-scale', label: '大字', keywords: ['字体', '字号', '字太小', '看不清'] },
   { id: 'language', group: 'appearance', section: 'text-scale', label: '界面语言', keywords: ['中文'] },

@@ -32,6 +32,22 @@ describe('searchCommands', () => {
     expect(searchCommands('运行日志').find((item) => item.group === 'action')).toEqual({ key: 'action:log', group: 'action', label: '运行日志', page: 'feedback', section: 'log' })
   })
 
+  // 「安装卸载」页拆掉以后安装过程记在运行日志里（#1104 第 13 条）：客户按老习惯搜「安装记录」也要找到它。
+  it('finds the run log by the words customers use for install records', () => {
+    const hits = searchCommands('安装记录')
+    expect(hits.find((item) => item.group === 'page')).toMatchObject({ page: 'feedback' })
+    expect(hits.find((item) => item.group === 'action')).toMatchObject({ key: 'action:log', page: 'feedback', section: 'log' })
+  })
+
+  // v4 的两套配色叫「黑金深色」「晨曦金浅色」（#1104 第 13 条）：按配色名搜到主题那一行，和切到另一种的那一条。
+  it('finds the theme by the names of the two color schemes', () => {
+    for (const word of ['黑金', '晨曦', '晨曦金']) expect(searchCommands(word).some((item) => item.key === 'settings-item:theme'), word).toBe(true)
+    expect(searchCommands('黑金', { theme: 'light' }).find((item) => item.group === 'action')).toMatchObject({ label: '切换到深色', action: 'theme' })
+    expect(searchCommands('晨曦', { theme: 'dark' }).find((item) => item.group === 'action')).toMatchObject({ label: '切换到浅色', action: 'theme' })
+    // 已经是黑金深色时，搜「黑金」不给「切换到浅色」。
+    expect(searchCommands('黑金', { theme: 'dark' }).some((item) => item.action === 'theme')).toBe(false)
+  })
+
   it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
     const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'usage' }).filter((item) => item.group === 'action').map((item) => item.label)
     expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '聊天参数设置'])
