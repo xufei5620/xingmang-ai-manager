@@ -68,7 +68,7 @@
 - `realm-data-roots.ts` — 按 realm 算出账号自己的数据目录，包括对话密钥、托管密钥缓存、画布项目/运行/视频任务、缩略图、生成作品。xm 保留历史路径，好原地升级；历史账号一律放在 `realms/api-account/` 下面，这样两个 realm 里同号的用户永远碰不到同一份文件
 - `realm-service-dispatch.ts` — 用 Proxy 把调用转给当前账号所在 realm 的服务实例。每次方法调用只解析一次，方法里 await 到一半切了账号，也不会中途换实例。main.ts 用它包了一大串按账号分开的服务
 - `saved-accounts.ts` — 老版本的「已保存账号」文件（`saved-accounts.dat`，safeStorage 加密，只存 xm 的 cookie）。现在只用作 `realm-account-service.ts` 迁移进新账号库的来源；`savedAccountId` 也被拿来算账号 id
-- `account-session-store.ts` — 老版本的单账号登录凭据（`account-session.dat`，safeStorage 加密，只存 refresh cookie 和 userId，解不开就静默当未登录）。现在 main.ts 只读它做迁移。它导出的 `SafeStorageLike` / `RuntimeLogLike` 两个类型被好几个存储模块共用（推断：`restoreAccountSessionOnStartup` 只剩测试在用，但几处注释仍按它描述开机恢复）
+- `account-session-store.ts` — 老版本的单账号登录凭据（`account-session.dat`，safeStorage 加密，只存 refresh cookie 和 userId，解不开就静默当未登录）。现在 main.ts 只读它做迁移。它导出的 `SafeStorageLike` / `RuntimeLogLike` 两个类型被好几个存储模块共用。
 - `account-credential-store.ts` — 「记住密码」的登录名和密码，safeStorage 加密，存在各 realm 目录下的 `account-credentials.dat`。明文只走 `account:get-remembered-login` / `account:set-remembered-login` 两条专用通道，且不进日志（I3 的已登记例外，I13）
 
 ## 账号生命周期守卫

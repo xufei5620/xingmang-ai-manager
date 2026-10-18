@@ -3610,7 +3610,7 @@ describe('registerIpcHandlers', () => {
       usedQuota: null,
     }
     // Starts out reporting signed-out, as the shared client does before
-    // main.ts's startup restoreAccountSessionOnStartup() has mutated its
+    // main.ts's startup restoreActive() (realm-account-service.ts) has mutated its
     // in-memory session. Only flips to signed-in once resolveReady() below
     // fires, standing in for that restore having finished -- if the handler
     // ever regressed to reading getSessionState() *before* awaiting
