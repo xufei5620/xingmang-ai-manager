@@ -21,6 +21,7 @@ import {
   findNativeSkill,
   mcpCommandRuntime,
   mcpHealthView,
+  mcpNamesInScope,
   preferredExtensionProvider,
   parseCommandArguments,
   parseEnvironmentVariables,
@@ -432,6 +433,20 @@ describe('Grok plugin trust prompt', () => {
       expect([provider, extensionInstallNeedsTrust(provider, 'plugin')]).toEqual([provider, false])
     for (const kind of ['mcp', 'skill'] as const)
       expect([kind, extensionInstallNeedsTrust('grok', kind)]).toEqual([kind, false])
+  })
+})
+
+// #1092：用户层和项目层可以各有一条同名的连接，撞名只看要装进去的那一层。
+describe('the name clash check for a custom connection', () => {
+  it('only counts connections in the layer being added to', () => {
+    const items = [
+      listItem({ provider: 'grok', kind: 'mcp', id: 'db', scope: 'user' }),
+      listItem({ provider: 'grok', kind: 'mcp', id: 'repo-db', scope: 'project' }),
+      listItem({ provider: 'grok', kind: 'mcp', id: 'bare', scope: null }),
+      listItem({ provider: 'grok', kind: 'plugin', id: 'plugin-db', scope: 'user' }),
+    ]
+    expect(mcpNamesInScope(items, 'user')).toEqual(['db', 'bare'])
+    expect(mcpNamesInScope(items, 'project')).toEqual(['repo-db'])
   })
 })
 

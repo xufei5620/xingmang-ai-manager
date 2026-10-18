@@ -374,6 +374,16 @@ export function extensionFormOffersProject(provider: Provider, kind: ExtensionKi
 }
 
 /**
+ * 「自定义连接」撞名只看要装进去的那一层：Claude Code、Grok 都允许用户层和项目层各有一条同名的，
+ * 在这个项目里项目那条盖过用户那条（#1092）。没带 scope 的按用户层算。
+ */
+export function mcpNamesInScope(items: readonly ExtensionItem[], scope: 'user' | 'project'): string[] {
+  return items
+    .filter((item) => item.kind === 'mcp' && (item.scope ?? 'user') === scope)
+    .map((item) => item.id)
+}
+
+/**
  * 扩展页的动作改的都是工具自己的配置（MCP、技能、插件、插件市场），没权限时说「写不进配置文件」
  * （已知29）。只有「安装 Python」装的是运行环境，照旧按原话认。
  */
@@ -1988,7 +1998,7 @@ export function ExtensionsPage({
       transport,
       source,
       existing: formTargets.includes(provider)
-        ? (snapshot?.items ?? []).filter((item) => item.kind === 'mcp').map((item) => item.id)
+        ? mcpNamesInScope(snapshot?.items ?? [], shownScope)
         : [],
     })
     if (problem) throw new Error(problem)
