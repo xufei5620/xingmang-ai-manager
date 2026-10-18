@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 import type { UpdateDiskShortfall } from './updater'
 
 // 没有 Node 依赖：渲染层（更新页、首页气泡）和主进程（系统通知）读同一份说法，

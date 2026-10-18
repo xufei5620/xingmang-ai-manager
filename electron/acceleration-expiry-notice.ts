@@ -20,6 +20,7 @@
  * 不含任何 Electron 依赖：时钟、定时器、通知与状态读取都由宿主注入。
  */
 import { accelerationExpiryWarningSeconds, type AccelerationState } from './acceleration-contract'
+import { scheduleTimeout } from './schedule-timeout'
 
 export type AccelerationExpiryStage = 'expiring' | 'exhausted'
 
@@ -61,11 +62,6 @@ const minimumDelayMs = 1000
 
 function sessionKey(state: AccelerationState): string {
   return `${state.scope}:${state.connectedAt ?? state.measuredAt}`
-}
-
-function scheduleTimeout(callback: () => void, delayMs: number) {
-  const timer = setTimeout(callback, delayMs)
-  return () => clearTimeout(timer)
 }
 
 export function createAccelerationExpiryNotice(options: AccelerationExpiryNoticeOptions): AccelerationExpiryNotice {

@@ -442,6 +442,104 @@ describe('CodexSessionsService', () => {
     expect(fs.readFileSync(outputPath, 'utf8')).toContain('本导出文件已明确标记为不完整')
   })
 
+  // #1073: the export writer is shared with the other tools' exports; these
+  // pin the bytes Codex exports already had before it was moved.
+  it('keeps the exported Markdown and its default file name exactly as before', async () => {
+    const data = fixture('session-1')
+    const extraMessages = [
+      { role: 'developer', text: '开发者说明' },
+      { role: 'system', text: '系统提示' },
+      { role: 'reviewer\n## 注入', text: '自定义角色\n\n## 原样保留' },
+    ].map(({ role, text }) => JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'message', role, content: [{ type: 'input_text', text }] },
+    }))
+    fs.appendFileSync(data.rolloutPath, `${extraMessages.join('\n')}\n{broken-json\n`, 'utf8')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, {
+      id: 'session-1',
+      rolloutPath: data.rolloutPath,
+      title: '导出\n## 标题: a/b',
+      cwd: 'C:/my `project`',
+    })
+    database.close()
+    const exportsDirectory = path.join(data.root, 'exports')
+    fs.mkdirSync(exportsDirectory)
+
+    const exported = await service(data).exportMarkdown('session-1', exportsDirectory)
+
+    const expectedPath = path.join(exportsDirectory, '导出_## 标题_ a_b-session-.md')
+    expect(exported).toEqual({ sessionId: 'session-1', outputPath: expectedPath, messages: 5, truncated: true })
+    expect(fs.readFileSync(expectedPath, 'utf8')).toBe([
+      '# 导出 ## 标题: a/b',
+      '',
+      '- 会话 ID：`session-1`',
+      '- 工作目录：`C:/my \\`project\\``',
+      '- 模型：`gpt-5.6-sol`',
+      '',
+      '---',
+      '',
+      '## 用户',
+      '',
+      '请检查项目',
+      '',
+      '## Codex',
+      '',
+      '检查完成',
+      '',
+      '## 开发者指令',
+      '',
+      '开发者说明',
+      '',
+      '## 系统',
+      '',
+      '系统提示',
+      '',
+      '## reviewer ## 注入',
+      '',
+      '自定义角色\n\n## 原样保留',
+      '',
+      '> 注意：源会话超过安全读取上限或含有损坏记录，本导出文件已明确标记为不完整。',
+      '',
+    ].join('\n'))
+    expect(fs.readdirSync(exportsDirectory)).toEqual(['导出_## 标题_ a_b-session-.md'])
+  })
+
+  it('names an untitled export after Codex and treats an extensionless path as a folder', async () => {
+    const data = fixture('session-2')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-2', rolloutPath: data.rolloutPath, title: '' })
+    database.close()
+    const sessions = service(data)
+    const folder = path.join(data.root, 'exports', 'by-name')
+
+    const exported = await sessions.exportMarkdown('session-2', folder)
+
+    const expectedPath = path.join(folder, 'Codex-session-session-.md')
+    expect(exported).toEqual({ sessionId: 'session-2', outputPath: expectedPath, messages: 2, truncated: false })
+    expect(fs.readFileSync(expectedPath, 'utf8')).toBe([
+      '# session-2',
+      '',
+      '- 会话 ID：`session-2`',
+      '- 工作目录：`C:/project`',
+      '- 模型：`gpt-5.6-sol`',
+      '',
+      '---',
+      '',
+      '## 用户',
+      '',
+      '请检查项目',
+      '',
+      '## Codex',
+      '',
+      '检查完成',
+      '',
+      '',
+    ].join('\n'))
+    await expect(sessions.exportMarkdown('session-2', path.join(data.root, 'notes.txt')))
+      .rejects.toThrow(new Error('会话导出文件必须使用 .md 扩展名'))
+  })
+
   it('does not mark an intact session as incomplete', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)

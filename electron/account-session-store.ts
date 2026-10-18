@@ -1,5 +1,5 @@
 import path from 'node:path'
-import type { NewApiClientService, NewApiPersistableSession } from './new-api-client'
+import type { NewApiPersistableSession } from './new-api-client'
 import { isSafeStorageUsable, type SafeStorageBackendLike } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
@@ -16,6 +16,11 @@ import {
 // NewApiPersistableSession's own doc comment in new-api-client.ts) -- only
 // the refresh cookie + userId are persisted, encrypted at rest, so a
 // returning user does not have to log back in on every launch.
+//
+// Saved logins now live in the realm account vault; main.ts only reads this
+// older single-account file once, through realm-account-service.ts's
+// migrateLegacy(), because its refresh cookie may be newer than the one in
+// the old account list.
 
 // Mirrors the subset of Electron's `safeStorage` module this file needs, so
 // tests can inject a fake implementation instead of (a) touching the real OS
@@ -146,56 +151,4 @@ export class AccountSessionStore {
     this.writeQueue = next.then(() => undefined, () => undefined)
     return next
   }
-}
-
-export interface RestoreAccountSessionDeps {
-  accountService: Pick<NewApiClientService, 'restoreSession'>
-  store: Pick<AccountSessionStore, 'read' | 'clear'>
-  runtimeLog: RuntimeLogLike
-}
-
-/**
- * Orchestrates startup recovery: read the encrypted file, hand it to the
- * client's restoreSession() (refresh + re-fetch profile), and reconcile the
- * file with the outcome. Never throws or rejects -- every awaited step is
- * wrapped so a network hiccup, a corrupted file, or an expired credential all
- * degrade to "app starts logged out" rather than blocking the window from
- * ever appearing (task requirement, see module doc comment above).
- *
- * The one distinction this function *does* preserve: an explicitly dead
- * credential (server said 401, or the file was locally unusable) clears the
- * persisted file so a doomed retry doesn't repeat on every future launch; a
- * mere network/timeout failure leaves the file alone, since the user is
- * still "logged in" as far as they know and the next launch (once the
- * network is back) deserves another attempt rather than a forced re-login.
- */
-export async function restoreAccountSessionOnStartup(deps: RestoreAccountSessionDeps): Promise<void> {
-  const persisted = await deps.store.read().catch(() => null)
-  if (!persisted) return
-
-  let restored: boolean
-  try {
-    restored = await deps.accountService.restoreSession(persisted)
-  } catch (error) {
-    deps.runtimeLog.log(
-      'warn',
-      'account',
-      'session.restore.failed',
-      '登录状态恢复失败（可能是网络问题），本次以未登录启动',
-      { reason: error instanceof Error ? error.message : String(error) },
-    )
-    return
-  }
-
-  if (restored) {
-    deps.runtimeLog.log('info', 'account', 'session.restored', '已恢复登录状态')
-    return
-  }
-
-  deps.runtimeLog.log('info', 'account', 'session.restore.invalid', '登录状态已失效，需重新登录')
-  await deps.store.clear().catch((error) => {
-    deps.runtimeLog.log('warn', 'account', 'session.clear.failed', '登录状态清除失败', {
-      reason: error instanceof Error ? error.message : String(error),
-    })
-  })
 }

@@ -952,13 +952,7 @@ function nestedString(source: Record<string, unknown> | null, keys: string[]): s
 function readEnvValue(filePath: string, name: string): string {
   const content = readText(filePath)
   if (!content) return ''
-  const line = content.split(/\r?\n/).find((entry) => entry.trimStart().startsWith(`${name}=`))
-  if (!line) return ''
-  const value = line.slice(line.indexOf('=') + 1).trim()
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1)
-  }
-  return value
+  return readEnvLineValue(content, name) ?? ''
 }
 
 function readProviderApiKey(provider: ProviderId, paths: string[]): string {

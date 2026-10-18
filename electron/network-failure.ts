@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * 受限网络（校园网、公司网、公共 Wi-Fi）下的失败长得各不相同：域名被劫持解析
  * 不出来、只放行 80/443、透明代理换掉证书、必须先在浏览器过一次门户认证。可是

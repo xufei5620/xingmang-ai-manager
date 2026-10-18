@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 export const providerIds = ['claude', 'codex', 'grok', 'gemini'] as const
 
 export type ProviderId = (typeof providerIds)[number]

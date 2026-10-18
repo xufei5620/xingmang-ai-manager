@@ -1,5 +1,6 @@
 import { classifyNetworkFailure, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import { matchAccountError } from './account-errors'
+import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
 
 export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
 export type RegistrationErrors = Partial<Record<keyof RegistrationDraft, string>>
@@ -192,9 +193,9 @@ export const authOfflineMessage = '这台电脑现在没连上网。连上网后
 export const authUnreachableMessage = '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。'
 const authNetworkFallbackMessage = '连不上账号服务，请检查网络后再试一次。'
 
-/** 去掉 IPC 包装（「Error invoking remote method …」和一层层 Error: 前缀），剩下服务端或主进程的原话。 */
+/** 去掉 IPC 包装（「Error invoking remote method …」和紧跟着的错误类名），剩下服务端或主进程的原话。 */
 function unwrappedReason(message: string): string {
-  return message.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(\w*Error:\s*)+/, '').trim()
+  return stripIpcErrorPrefix(message).trim()
 }
 
 /**
