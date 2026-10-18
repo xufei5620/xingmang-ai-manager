@@ -7345,6 +7345,23 @@ async function openAboutSettings(page) {
   return settings
 }
 
+// 从设置重开四步新手引导，选好开始方式，一路点到最后一步。
+async function walkGuideToReady(page, route) {
+  await openAboutSettings(page)
+  await page.getByTestId('settings-start-guide').click()
+  const guide = page.getByTestId('start-guide')
+  await guide.waitFor()
+  await page.getByTestId(`guide-route-${route}`).check()
+  for (let turn = 0; turn < 4; turn++) {
+    const step = await guide.getAttribute('data-guide-step')
+    if (step === 'ready') return guide
+    await page.getByTestId('guide-next').click()
+    await page.waitForFunction((previous) => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') !== previous, step)
+  }
+  await expect(guide).toHaveAttribute('data-guide-step', 'ready')
+  return guide
+}
+
 test('settings reopens the onboarding guide, and the interface tour replays until it is actually finished (A8)', async () => {
   const page = await open()
   try {
@@ -7389,17 +7406,7 @@ test('the interface tour waits for the home page instead of pointing its tool ca
   const page = await open()
   try {
     await page.getByTestId('tool-row-claude').waitFor()
-    await openAboutSettings(page)
-    await page.getByTestId('settings-start-guide').click()
-    const guide = page.getByTestId('start-guide')
-    await guide.waitFor()
-    await page.getByTestId('guide-route-chat').check()
-    for (let turn = 0; turn < 4; turn++) {
-      const step = await guide.getAttribute('data-guide-step')
-      if (step === 'ready') break
-      await page.getByTestId('guide-next').click()
-      await page.waitForFunction((previous) => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') !== previous, step)
-    }
+    await walkGuideToReady(page, 'chat')
     await page.getByTestId('guide-chat').click()
     // 客户选的是聊天：留在聊天页，导览先不出来。
     await page.getByTestId('page-chat').waitFor()
@@ -7429,6 +7436,23 @@ test('the interface tour waits for the home page instead of pointing its tool ca
     await waitForFixtureReady(page)
     await page.getByTestId('tool-row-claude').waitFor()
     assert.equal(await tour.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 引导里选了「先在星芒里聊天」，「进入首页」以前跟旁边的「去聊天」一样进了聊天页。
+test('the guide home button lands on the home page even when chat was chosen', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const guide = await walkGuideToReady(page, 'chat')
+    await page.getByTestId('guide-home').click()
+    await guide.waitFor({ state: 'detached' })
+    await page.getByTestId('page-home').waitFor()
+    assert.equal(await page.getByTestId('page-chat').count(), 0)
+    await expect(page.getByTestId('window-titlebar')).toHaveText('首页')
+    // 回的是首页，导览就在这里放。
+    await page.getByTestId('shell-guide-tip').waitFor()
     await clean(page)
   } finally { await page.close() }
 })

@@ -6,11 +6,11 @@
 
 | 平台 | 已知失败 | 原因 | Issue |
 |---|---|---|---|
-| **Windows** | **0** | 需要 `SeCreateSymbolicLinkPrivilege` 的 9 条（`safe-local-data` ×4、`runtime-log` ×2、`backups`、`path-identity`、`relocated-folders`）已按能力门控，没有该特权时跳过而非 EPERM 失败；原先那 5 条 5s 超时已随 `test:vitest` 的 `--testTimeout=30000` 消失 | **#40** |
+| **Windows** | **0** | 需要 `SeCreateSymbolicLinkPrivilege` 的 11 条（`safe-local-data` ×4、`runtime-log` ×2、`startup-log` ×2、`backups`、`path-identity`、`relocated-folders`）已按能力门控，没有该特权时跳过而非 EPERM 失败；原先那 5 条 5s 超时已随 `test:vitest` 的 `--testTimeout=30000` 消失 | **#40** |
 | **macOS** | 0 | — | — |
 | **Linux** | 0 | 原 `samePathIdentity` 误删缺陷已修复：launcher 文件清理现走 `terminal-launcher-files.ts` 的 `sameFileIdentity`（追加 size/nlink/mtime/ctime 比对，macOS 与 Linux 共用） | #2 已关闭 |
 
-遇到超时类失败先原样复跑一遍 `npm test`（它已经是串行 + 30s 超时）。符号链接那 9 条默认跳过；想在本机真跑，开启 Windows 开发人员模式或以管理员身份运行即可，`electron/symlink-capability.test-support.ts` 会自动探测到。#40 已关闭；基线与上表不符请新开一个 issue（标 `area:test` 和对应的 `env:*`）。
+遇到超时类失败先原样复跑一遍 `npm test`（它已经是串行 + 30s 超时）。符号链接那 11 条默认跳过；想在本机真跑，开启 Windows 开发人员模式或以管理员身份运行即可，`electron/symlink-capability.test-support.ts` 会自动探测到。#40 已关闭；基线与上表不符请新开一个 issue（标 `area:test` 和对应的 `env:*`）。
 
 ## Node 版本：本机必须跟 CI 一致（22）
 
