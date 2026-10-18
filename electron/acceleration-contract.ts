@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /** Renderer-safe acceleration state; node credentials and tunnel configuration stay in the host. */
 export const accelerationTrialSeconds = 20 * 60
 export const accelerationBonusSeconds = 10 * 60

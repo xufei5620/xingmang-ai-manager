@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 // Zero Node dependency, same as catalog.ts -- this file is imported into the
 // renderer bundle via ipc-contract.ts's value re-export (I6). Pulling in any
 // node:* module here would make Vite try to bundle it for the browser and

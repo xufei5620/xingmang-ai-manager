@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 // Imports only network-failure, itself free of Node APIs: the renderer value-imports this
 // file (registered in scripts/verify-renderer-boundary.test.cjs) to recognise the sentences
 // below, so it must stay that way (I6).

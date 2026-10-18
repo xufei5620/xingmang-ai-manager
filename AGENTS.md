@@ -106,7 +106,7 @@ XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:v2
 
 **I6. `ipc-contract.ts` 只能 `import type`，值导出只能来自无 Node 依赖的模块。**
 `src/types.ts` 是 `export *`（值级别），Vite 会把它真的打进渲染 bundle。目前的值导出来自两个零依赖模块：`catalog.ts`（`providerIds`、`managedCliKeyProfiles`）和 `relay-sites.ts`（站点与线路表及几个纯函数）。
-renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守这条边界的是门禁 `scripts/verify-renderer-boundary.test.cjs`：渲染层能值导入的主进程模块只能是它 `valueImportable` 名单上的，名单上的每个模块都不许依赖 Node；只被 `import type` 的放 `typeImportableOnly`。要让渲染层值导入一个新的主进程模块，就是改这张名单，并在旁边写明它为什么不碰 Node。
+renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守这条边界的是门禁 `scripts/verify-renderer-boundary.test.cjs`：渲染层能值导入的主进程模块只能是它 `valueImportable` 名单上的，名单上的每个模块都不许依赖 Node；只被 `import type` 的放 `typeImportableOnly`。名单上的每个模块第一行都是同一句 `// @renderer-importable: …` 标记，门禁核对标记和名单完全一致、名单上模块值导入的主进程模块也都在名单上，所以光看文件头就知道它会进渲染层。要让渲染层值导入一个新的主进程模块，就是改这张名单、在旁边写明它为什么不碰 Node，再把门禁里那整行标记照抄到模块第一行。
 *违反后果*：加一个 `export { xxx } from './system-service'` → Vite 尝试打包 `node:fs` → 构建失败，或更糟：主进程逻辑泄进渲染进程。
 
 **I7. 三个 preload（`preload.ts`、`platform/preload.ts`、`canvas-preload.ts`）都是 sandbox 脚本，不能 import 本地运行时模块。**

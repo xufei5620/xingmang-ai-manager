@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 /**
  * Codex 桌面端装不上 / 更新不了时，客户看到的那句话（第十九批 5）。
  *
