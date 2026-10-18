@@ -2763,6 +2763,115 @@ test('changing the recharge channel invalidates the previous quote', async () =>
   }
 })
 
+// 「正在确认价格…」那一段：试算挂着，等测试放开。
+async function holdTopupQuote(page) {
+  await page.evaluate(() => window.topupQuoteHarness.holdNext())
+  await page.getByTestId('account-recharge-submit').click()
+  await page.locator('[data-testid="account-recharge-submit"][aria-busy="true"]').waitFor()
+}
+const topupPaymentAmounts = async (page) =>
+  (await calls(page)).filter((call) => call.name === 'create-topup-payment').map((call) => call.args.amount)
+
+test('the recharge form is locked while the price is being confirmed, so the quote and payment keep the chosen tier', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1')
+  try {
+    const ten = page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true })
+    const twenty = page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true })
+    await ten.waitFor()
+    await twenty.click()
+    await holdTopupQuote(page)
+    assert.equal(await ten.isDisabled(), true)
+    assert.equal(await page.getByLabel('自定义金额').isDisabled(), true)
+    assert.equal(await page.getByRole('radio', { name: 'Stripe', exact: true }).isDisabled(), true)
+    // 算价途中点另一档：点不动，选中的还是 20。
+    await ten.click({ force: true })
+    assert.equal(await twenty.getAttribute('aria-pressed'), 'true')
+
+    await page.evaluate(() => window.topupQuoteHarness.release())
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.waitFor()
+    assert.match(await flat(quote), /到账 \$20 其中活动赠送 \$4（多送 25%） 应付金额 16\.00/)
+    await quote.getByRole('button', { name: '打开支付窗口' }).click()
+    await page.getByText('等待支付结果', { exact: true }).waitFor()
+    assert.deepEqual(await topupPaymentAmounts(page), [20])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a tier picked on the home activity card while the price is being confirmed drops the stale quote', async () => {
+  const page = await fixture('page=account&accountTab=recharge&topupBonus=1')
+  try {
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
+    await page.getByRole('button', { name: '到账 $20，实付 16.00，送 25%', exact: true }).click()
+    await holdTopupQuote(page)
+    // 停在充值页时从首页活动卡片又点了 10 那一档。
+    await page.evaluate(() => window.pickRechargeTier(10))
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true, pressed: true }).waitFor()
+
+    // 按 20 问回来的那次不认：不弹确认框，按钮回到「充值」。
+    await page.evaluate(() => window.topupQuoteHarness.release())
+    await page.locator('[data-testid="account-recharge-submit"]:not([aria-busy])').waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
+
+    // 照新档位再点一次：确认框和付款都按 10。
+    await page.getByTestId('account-recharge-submit').click()
+    const quote = page.getByRole('dialog', { name: '确认充值报价' })
+    await quote.waitFor()
+    assert.match(await flat(quote), /到账 \$10 应付金额 10\.00/)
+    await quote.getByRole('button', { name: '打开支付窗口' }).click()
+    await page.getByText('等待支付结果', { exact: true }).waitFor()
+    assert.deepEqual(await topupPaymentAmounts(page), [10])
+  } finally {
+    await page.close()
+  }
+})
+
+test('each recharge dialog opens without the error left by the previous one', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&fail=redeem')
+  try {
+    const redeem = page.getByRole('dialog', { name: '兑换充值码' })
+    await page.getByTestId('account-recharge-redeem-open').click()
+    await redeem.getByLabel('充值码', { exact: true }).fill('USED-CARD')
+    await redeem.getByTestId('account-redeem').click()
+    await redeem.getByText('充值码无效或已被使用', { exact: true }).waitFor()
+    await redeem.getByRole('button', { name: '取消', exact: true }).click()
+    await redeem.waitFor({ state: 'hidden' })
+
+    // 换去买套餐：弹窗里不再挂着充值码那句。
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.waitFor()
+    assert.equal(await purchase.getByText('充值码无效或已被使用', { exact: true }).count(), 0)
+    await purchase.getByRole('button', { name: '取消', exact: true }).click()
+    await purchase.waitFor({ state: 'hidden' })
+
+    // 再打开充值码弹窗也是干净的。
+    await page.getByTestId('account-recharge-redeem-open').click()
+    await redeem.waitFor()
+    assert.equal(await redeem.getByText('充值码无效或已被使用', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a price check that fails while the redeem dialog is open stays out of that dialog', async () => {
+  const page = await fixture('page=account&accountTab=recharge')
+  try {
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
+    await holdTopupQuote(page)
+    await page.getByTestId('account-recharge-redeem-open').click()
+    const redeem = page.getByRole('dialog', { name: '兑换充值码' })
+    await redeem.waitFor()
+    await page.evaluate(() => window.topupQuoteHarness.fail('报价服务暂时不可用'))
+    // 只上页头那条，充值码弹窗里不摆。
+    await page.getByText('报价服务暂时不可用', { exact: true }).waitFor()
+    assert.equal(await redeem.getByText('报价服务暂时不可用', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('confirmed topup completion refreshes balance and cached orders and clears waiting state', async () => {
   for (const fast of [false, true]) {
     const page = await fixture(`page=account${fast ? '&fastPayment=1' : ''}`)
