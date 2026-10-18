@@ -255,6 +255,10 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 超时、已生成没下载下来还是没存下来。必须排在下面「超时 / 网络」那条前面，否则会被改成
   // 「请检查网络后重试」，照做就再扣一次钱。IPC 前缀是英文，从第一个汉字开始截。
   if (/重复提交/.test(message)) return message.slice(Math.max(0, message.search(/[\u4e00-\u9fff]/)))
+  // 生图被服务端拦下的两句（#1101 第4条）主进程已经说清原因和下一步，原样上屏；不然会落到最后那句
+  // 「请稍后重试」，被审核拦下的描述怎么重试都一样。同上，从这句话的开头截掉英文的 IPC 前缀。
+  const imageRejected = message.search(/参考图太大了|这次的描述或参考图没通过安全审核/)
+  if (imageRejected >= 0) return message.slice(imageRejected)
   // 主进程已经把余额不足、Key 额度上限、Key 失效分开说好了，这里原样放行；否则下面那条
   // 宽泛的「余额」正则会把「额度上限用完」又改回「请充值」。
   const quota = matchRelayQuotaFailureMessage(message)
