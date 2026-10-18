@@ -1115,7 +1115,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         page: 'health',
       },
       {
-        title: '预览报告后联系支持',
+        title: '预览报告后找客服',
         where: '反馈与客服 → 预览反馈报告',
         detail: '把「点了哪里、出现什么」和报告一起提供给客服。',
         bullets: ['预览报告，核对后复制或下载。', '通过右上角「帮助与客服」发送报告、报错截图和操作步骤。'],

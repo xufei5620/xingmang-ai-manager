@@ -57,6 +57,7 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { isChineseSentence } from './chinese-sentence'
+import { toolLaunchFailureMessage } from './failure-wording'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
@@ -6344,8 +6345,7 @@ export function createSystemService(
             message: message && redactHomeDirectory(message, providerRoots.userHome),
           })
         }
-        const detail = error instanceof Error ? error.message : String(error)
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+        throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
       }
       return launchResult
     }
@@ -6369,10 +6369,9 @@ export function createSystemService(
           macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error)
         // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
         // 随这次失败一起进运行日志。
-        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`, { cause: error })
+        throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
       }
       return launchResult
     }
@@ -6408,8 +6407,7 @@ export function createSystemService(
           ...(error.reason ? { reason: redactHomeDirectory(error.reason, providerRoots.userHome) } : {}),
         })
       }
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+      throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
     }
     return launchResult
   }

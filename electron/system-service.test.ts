@@ -7244,7 +7244,7 @@ describe('opening a CLI on Windows', () => {
     fs.mkdirSync(workspace)
     const cause = `Cannot perform operation because the wildcard path ${path.join(workspace, '作业[1]')} did not resolve to a file.`
     const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => {
-      throw new WindowsCliLaunchError(`Windows 无法启动 PowerShell：${cause}`, {
+      throw new WindowsCliLaunchError('Windows 没能启动 PowerShell，原因已经记进运行日志。', {
         stderr: cause,
         message: `Command failed: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [REDACTED]\n${cause}`,
         code: 1,
@@ -7255,8 +7255,8 @@ describe('opening a CLI on Windows', () => {
     const log = vi.fn()
 
     const failure = windowsLaunchService(userHome, launchCliPowerShell, { log }).launchProvider('claude', workspace)
-    await expect(failure).rejects.toThrow(`未能打开 Claude Code：Windows 无法启动 PowerShell：${cause}`)
-    await expect(failure).rejects.not.toThrow('Command failed')
+    // PowerShell 的英文原话只进下面那条日志，错误框里只说原因已经记下（#1100 第1条）。
+    await expect(failure).rejects.toThrow(/^未能打开 Claude Code：Windows 没能启动 PowerShell，原因已经记进运行日志。$/)
 
     expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
     expect(launchCliPowerShell.mock.calls[0]?.[0]).toMatchObject({ workspace, title: 'Claude Code · 星芒AI' })
@@ -7787,7 +7787,7 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
       resolveCliCommand,
     })
 
-    await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
+    await expect(service.launchProvider('gemini', workspace)).rejects.toMatchObject({ cause: { message: 'stopped before opening Terminal' } })
 
     expect(resolveCliCommand).toHaveBeenCalledTimes(1)
     const [provider, terminalEnvironment, , launchOptions] = resolveCliCommand.mock.calls[0]
@@ -7829,7 +7829,7 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
       resolveCliCommand,
     })
 
-    await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
+    await expect(service.launchProvider('gemini', workspace)).rejects.toMatchObject({ cause: { message: 'stopped before opening Terminal' } })
 
     expect(resolveCliCommand.mock.calls[0]?.[3]).toEqual({ darwinStagingRetention: 'retained' })
   })
