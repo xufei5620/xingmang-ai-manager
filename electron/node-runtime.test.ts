@@ -560,6 +560,11 @@ describe('Node.js response URL validation', () => {
     await expect(fetchTrustedNodeResource(source, {}, answeredFrom('https://cdn.npmmirror.com/binaries/node/index.json')))
       .rejects.toThrow('Node.js 下载绕过了受限的重定向策略')
     await expect(fetchTrustedNodeResource(source, {}, answeredFrom(source))).resolves.toMatchObject({ status: 200 })
+    // Both sides are compared after URL parsing, so spelling alone never fails a download.
+    await expect(fetchTrustedNodeResource(source, {}, answeredFrom('HTTPS://NPMMIRROR.COM:443/mirrors/node/index.json')))
+      .resolves.toMatchObject({ status: 200 })
+    await expect(fetchTrustedNodeResource('https://NodeJS.org:443/dist/index.json', {}, answeredFrom('https://nodejs.org/dist/index.json')))
+      .resolves.toMatchObject({ status: 200 })
   })
 
   it('never lets the caller turn automatic redirects back on', async () => {
@@ -759,6 +764,55 @@ describe('Node.js package download after a dropped connection', () => {
       expect(messages.some((message) => message.startsWith('网络断了一下，正在从') && message.includes('接着下载'))).toBe(true)
       expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
       expect(messages.every((message) => !/Range|HTTP/.test(message))).toBe(true)
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('downloads over the domestic mirror and its CDN redirect with a fetch that reports every hop', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-mirror-'))
+    const target = path.join(directory, 'node.msi')
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 9)
+    const cut = 600 * 1024
+    const mirror = nodeRuntimeDownloadSources('mainland-china')[0]
+    expect(mirror.id).toBe('npmmirror')
+    const file = 'v22.17.0/node-v22.17.0-x64.msi'
+    const mirrorUrl = `${mirror.baseUrl}${file}`
+    const cdnUrl = `https://cdn.npmmirror.com/binaries/node/${file}`
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual')
+      const url = String(input)
+      requested.push(url)
+      let response: Response
+      if (url === mirrorUrl) {
+        // Written the way a server might: upper-case host and the default port spelled out.
+        response = new Response(null, { status: 302, headers: { location: `HTTPS://CDN.NPMMIRROR.COM:443/binaries/node/${file}` } })
+      } else if (url === cdnUrl) {
+        const range = new Headers(init?.headers).get('range')
+        response = range
+          ? new Response(new Uint8Array(bytes.subarray(cut)), {
+            status: 206,
+            headers: { 'content-range': `bytes ${cut}-${bytes.byteLength - 1}/${bytes.byteLength}` },
+          })
+          : new Response(brokenAfter(bytes, cut), {
+            status: 200,
+            headers: { 'content-length': String(bytes.byteLength), etag: '"node"' },
+          })
+      } else {
+        response = new Response('not found', { status: 404 })
+      }
+      // Like undici and Electron's net.fetch with manual redirects: the URL that was asked for.
+      Object.defineProperty(response, 'url', { value: new URL(url).href })
+      return response
+    }) as unknown as typeof fetch
+
+    try {
+      const result = await downloadNodeRuntimePackage(fetchMock, mirrorUrl, target, {}, mirror, async () => undefined)
+      expect(result).toEqual({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.byteLength })
+      expect(fs.readFileSync(target).equals(bytes)).toBe(true)
+      // The resumed request goes back through the mirror and follows its redirect again.
+      expect(requested).toEqual([mirrorUrl, cdnUrl, mirrorUrl, cdnUrl])
     } finally {
       fs.rmSync(directory, { recursive: true, force: true })
     }
