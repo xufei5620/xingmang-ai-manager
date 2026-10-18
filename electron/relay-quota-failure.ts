@@ -74,19 +74,24 @@ export function extractRelayErrorDetail(payload: unknown): string {
 }
 
 /**
- * 对话流到一半收到的报错帧（#1093 第12a条）。这时状态码早已是 200，上面那套按状态码认的
- * 用不上，只认 Sub2API 自己发的那一帧（对过 Wei-Shaw/sub2api 270eac6 与 b0a02a3）：
- * 流式请求排队等并发槽位超过 10 秒，它先回 200 和 SSE 心跳占住连接；拿到槽位后再复查计费
- * （openai_chat_completions.go 的 CheckBillingEligibility 与在途余额预留），余额不够就只能
- * 就地发 `{"error":{"type":"billing_error","message":"insufficient balance"}}`
- * （handleStreamingAwareErrorWithCode；原话是 redeem_service.go 的 ErrInsufficientBalance，
- * 跟鉴权中间件那句「Insufficient account balance」不同，也不带 INSUFFICIENT_BALANCE）。
+ * Sub2API 计费复查没过时的那句余额不足（#1093 第12a条、#1240）。对过 Wei-Shaw/sub2api 270eac6 与 b0a02a3：
+ * 过了鉴权以后 handler 还要复查一次计费（openai_chat_completions.go、openai_images.go 等的
+ * CheckBillingEligibility，以及在途余额预留 reserveInflightBalance），没过回的是
+ * `{"error":{"type":"billing_error","message":"insufficient balance"}}`（billingErrorDetails；原话是
+ * redeem_service.go 的 ErrInsufficientBalance，跟鉴权中间件那句「Insufficient account balance」不同，
+ * 也不带 INSUFFICIENT_BALANCE，所以上面那套认不出）。同一句有三种到法：
+ * - 开流之前：HTTP 403 加这段 JSON（billing_error 一律配 403）。调用方自己先看状态码是不是 403。
+ * - 流到一半：流式请求排队等并发槽位超过 10 秒，它先回 200 和 SSE 心跳占住连接，拿到槽位后复查没过，
+ *   只能就地发一帧（handleStreamingAwareErrorWithCode）。
+ * - Claude 兼容分组排队回过心跳以后：gateway_handler_chat_completions.go 用普通 JSON 回错、不看
+ *   streamStarted，这段 JSON 不带 data: 前缀直接接在心跳后面。
  *
- * new-api 不会这样：预扣费在开流之前（rc.45 controller/relay.go 的 PrepareRequestBilling），
- * 开流后只结算不报错。xm 站流到一半出现这句，只可能是渠道上游原样转回来的（stream_scanner
- * 把上游的 data 行照转），那是服务端欠费，叫客户充值就错了，所以只在历史账号站上认它。
+ * 只在历史账号站上认它。new-api 预扣费在开流之前（rc.45 controller/relay.go 的 PrepareRequestBilling），
+ * 开流后只结算不报错，自己的余额不足说的是上面 balancePattern 那几句；xm 站出现这句，只可能是渠道
+ * 上游原样转回来的（stream_scanner 照转上游的 data 行，HTTP 错误也带上游原话），那是服务端欠费，
+ * 叫客户充值就错了。别的复查没过（订阅日限、订阅失效）也回 billing_error，充值解决不了，不认。
  */
-export function classifySub2apiStreamQuotaFailure(payload: unknown): RelayQuotaFailure | null {
+export function classifySub2apiBillingFailure(payload: unknown): RelayQuotaFailure | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
   const error = (payload as Record<string, unknown>).error
   if (!error || typeof error !== 'object' || Array.isArray(error)) return null

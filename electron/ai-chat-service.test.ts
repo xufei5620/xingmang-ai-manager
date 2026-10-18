@@ -404,6 +404,88 @@ describe('AI chat streaming service', () => {
     expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: 'AI 服务暂时无法完成请求' })])
   })
 
+  // 开流之前同一句复查没过回的是 HTTP 403 加这段 JSON（#1240）；Claude 兼容分组外面还包一层 type: error。
+  const sub2apiBalanceBody = { error: { message: 'insufficient balance', type: 'billing_error' } }
+
+  it.each([
+    ['the OpenAI envelope', sub2apiBalanceBody],
+    ['the Anthropic envelope', { type: 'error', error: { type: 'billing_error', message: 'insufficient balance' } }],
+  ])('points the history-account site to recharging when the billing re-check fails before the stream (%s)', async (_label, payload) => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      backend: 'sub2api',
+      fetchImpl: vi.fn<TestFetch>(async () => new Response(JSON.stringify(payload), {
+        status: 403,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: relayQuotaFailureMessages.balance })])
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow(relayQuotaFailureMessages.balance)
+  })
+
+  it.each([
+    ['the same body on new-api, where only an upstream channel can send it', undefined, 403, sub2apiBalanceBody],
+    ['another billing check that is not the balance', 'sub2api', 403, { error: { message: 'daily usage limit exceeded', type: 'billing_error' } }],
+    ['the same body on a status the billing re-check never uses', 'sub2api', 400, sub2apiBalanceBody],
+  ] as const)('keeps the status wording for %s', async (_label, backend, status, payload) => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      backend,
+      fetchImpl: vi.fn<TestFetch>(async () => new Response(JSON.stringify(payload), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      })),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ type: 'error', code: 'upstream-http-error' })
+    expect(events[0]).not.toMatchObject({ message: relayQuotaFailureMessages.balance })
+  })
+
+  // Claude 兼容分组排队回过心跳以后，复查没过的 JSON 不带 data: 前缀直接接在流后面（#1240 第2条）。
+  const claudeGroupPings = 'data: {"type": "ping"}\n\n'.repeat(2)
+  const bareBalanceJson = '{"error":{"message":"insufficient balance","type":"billing_error"}}'
+
+  it('points the history-account site to recharging when the balance JSON follows the queue heartbeats', async () => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      backend: 'sub2api',
+      fetchImpl: vi.fn<TestFetch>(async () => sseResponse([encoder.encode(claudeGroupPings), encoder.encode(bareBalanceJson)])),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'upstream-http-error', message: relayQuotaFailureMessages.balance })])
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow(relayQuotaFailureMessages.balance)
+  })
+
+  it.each([
+    ['the same text on new-api', undefined, bareBalanceJson],
+    ['another bare billing error', 'sub2api', '{"error":{"message":"daily usage limit exceeded","type":"billing_error"}}'],
+    ['text that is not JSON', 'sub2api', '{"error":{"message":"insufficient balance"'],
+  ] as const)('still says the stream ended early for %s', async (_label, backend, tail) => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      backend,
+      fetchImpl: vi.fn<TestFetch>(async () => sseResponse([encoder.encode(claudeGroupPings), encoder.encode(tail)])),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'stream-closed', message: 'AI 服务提前结束了本次响应，请重试' })])
+  })
+
   it('falls back to the status-only wording when the error body is oversized', async () => {
     const events: AiChatStreamEvent[] = []
     const body = JSON.stringify({ error: { message: `用户额度不足${'x'.repeat(20 * 1024)}` } })

@@ -13,7 +13,7 @@ import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
-import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
 const DEFAULT_TIMEOUT_MS = 320_000
 const DEFAULT_MAX_ACTIVE = 2
@@ -217,6 +217,8 @@ function chatCompletionImageEntries(payload: unknown): Array<{
 
 export function createAiImageService(options: {
   baseUrl: string
+  /** 这个站的账号后端。缺省按 new-api，Sub2API 计费复查那句余额不足不认（见 classifySub2apiBillingFailure）。 */
+  backend?: 'new-api' | 'sub2api'
   credentials: Pick<ChatCredentialCoordinator, 'resolveCredential'>
   assets: AiImageAssetWriter
   fetchImpl?: typeof fetch
@@ -303,6 +305,9 @@ export function createAiImageService(options: {
             : {}
           const detail = safeUpstreamMessage(error.error?.message ?? error.message)
           if (response.status >= 500) throw ambiguousImageSubmission()
+          // 历史账号站提交前计费复查没过回 403「insufficient balance」，以前英文原话直接上屏（#1240）。
+          const billing = options.backend === 'sub2api' && response.status === 403 ? classifySub2apiBillingFailure(payload) : null
+          if (billing) throw new Error(relayQuotaFailureMessages[billing])
           throw imageRequestFailure(response.status, detail, extractRelayErrorDetail(payload))
         }
         let entries: ReturnType<typeof responseEntries>

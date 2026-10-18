@@ -2949,6 +2949,7 @@ if (!hasSingleInstanceLock) {
         onRequestStarted: onAiRequestStarted,
         fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
+        backend: definition.backend,
         credentials: chatCredentials,
         assets: assetStore,
       })
@@ -2956,6 +2957,7 @@ if (!hasSingleInstanceLock) {
         onRequestStarted: onAiRequestStarted,
         fetchImpl: routedRelayFetch,
         baseUrl: definition.aiBaseUrl,
+        backend: definition.backend,
         credentials: chatCredentials,
         assets: {
           prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
