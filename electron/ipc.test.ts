@@ -8132,8 +8132,9 @@ describe('runtime-logs:preview-feedback size budget', () => {
 })
 
 // AGENTS.md I3 登记了能让明文跨 IPC 的那几条专用通道，并写明它们全都在日志静默名单里。
-// 以前只有文档这么说，谁再加一条、或者把其中一条挪出静默名单，没有测试会红（#1069 第 6 条）。
-// 这一段把同一份名单钉在三处：文档的登记、契约里的通道、成功时不进运行日志。
+// 以前只有文档这么说，谁在 I3 再登记一条却没放进静默名单、或者把其中一条挪出静默名单，没有测试会红
+// （#1069 第 6 条）。这一段把同一份名单钉在三处：文档的登记、契约里的通道、成功时不进运行日志。
+// 连 I3 都没登记的新明文通道这里认不出来：哪条通道带明文，代码里没有一份权威的分类可比。
 describe('plaintext IPC channels registered under AGENTS.md I3', () => {
   const plaintextChannels = [
     'account:copy-reset-password',
