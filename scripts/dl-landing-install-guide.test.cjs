@@ -31,8 +31,11 @@ test('the Mac download entries state the same minimum macOS the installer enforc
 })
 
 test('the Mac guide tells users how to find their chip type', () => {
+  // Intel Mac 的「关于本机」没有「芯片」那一行，写的是「处理器」；只教找「芯片」，Intel 用户会以为自己是 M 芯片（#1155）。
   assert.match(html, /关于本机/)
-  assert.match(html, /“芯片”一行/)
+  assert.match(html, /“芯片 Apple M…”一行就选 M 系列芯片版/)
+  assert.match(html, /“处理器 …Intel…”一行就选 Intel 版/)
+  assert.match(app, /detail: 'Intel 处理器 · /)
 })
 
 test('the install guides avoid jargon customers do not know', () => {

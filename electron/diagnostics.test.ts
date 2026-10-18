@@ -156,7 +156,7 @@ describe('diagnostics', () => {
       .items.find((item) => item.code === 'OPERATING_SYSTEM')
 
     expect(await operatingSystem()).toMatchObject({
-      summary: 'macOS 13（Intel 芯片）',
+      summary: 'macOS 13（Intel 处理器）',
       details: { supported: true, appArch: 'x64', rosetta: false },
     })
     expect(await operatingSystem(true)).toMatchObject({
@@ -3203,7 +3203,7 @@ describe('operatingSystemSummary', () => {
     expect(operatingSystemSummary('win32', '10.0.22631', 'x64')).toBe('Windows 11（64 位）')
     expect(operatingSystemSummary('win32', '10.0.19045', 'x64')).toBe('Windows 10（64 位）')
     expect(operatingSystemSummary('darwin', '24.1.0', 'arm64')).toBe('macOS 15（Apple 芯片）')
-    expect(operatingSystemSummary('darwin', '20.6.0', 'x64')).toBe('macOS 11（Intel 芯片）')
+    expect(operatingSystemSummary('darwin', '20.6.0', 'x64')).toBe('macOS 11（Intel 处理器）')
     expect(operatingSystemSummary('darwin', '25.0.0', 'arm64')).toBe('macOS 26（Apple 芯片）')
   })
 
