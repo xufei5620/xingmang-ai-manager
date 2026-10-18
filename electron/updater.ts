@@ -4,6 +4,7 @@ import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import { isOlderReleaseGuard, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
+import { compareVersionsBy, parseUpdateVersion } from './versions'
 
 export type UpdatePhase =
   | 'disabled'
@@ -614,20 +615,9 @@ function isDownloadCancellation(error: unknown): boolean {
   return error instanceof UpdateDownloadAborted || (error instanceof Error && error.message === 'cancelled')
 }
 
-function versionParts(version: string): number[] | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim())
-  return match ? match.slice(1, 4).map(Number) : null
-}
-
 /** 只比 x.y.z；比不出来（版本号写法不认识）按「不更旧」处理。 */
 export function isOlderVersion(candidate: string, current: string): boolean {
-  const left = versionParts(candidate)
-  const right = versionParts(current)
-  if (!left || !right) return false
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] < right[index]
-  }
-  return false
+  return (compareVersionsBy(parseUpdateVersion, candidate, current) ?? 0) < 0
 }
 
 /**
@@ -635,7 +625,7 @@ export function isOlderVersion(candidate: string, current: string): boolean {
  * 都当作不低于：这一项会把人挡在门外，拿不准就不拦。
  */
 export function resolveRequiredVersion(currentVersion: string, minimumVersion: string | null | undefined): string | null {
-  if (!minimumVersion || !versionParts(minimumVersion) || !versionParts(currentVersion)) return null
+  if (!minimumVersion || !parseUpdateVersion(minimumVersion) || !parseUpdateVersion(currentVersion)) return null
   return isOlderVersion(currentVersion, minimumVersion) ? minimumVersion : null
 }
 
@@ -658,7 +648,7 @@ export function resolveGatedRequiredVersion(input: {
   if (!minimum) return null
   if (input.installMethod !== 'system-installer') return minimum
   const offered = input.availableVersion
-  if (!offered || input.rollback || !versionParts(offered)) return null
+  if (!offered || input.rollback || !parseUpdateVersion(offered)) return null
   return isOlderVersion(offered, minimum) ? null : minimum
 }
 
@@ -694,7 +684,7 @@ export function decideUpdateOffer(input: {
   if (bad.has(version)) return { offer: false }
   if (
     isOlderVersion(version, input.currentVersion)
-    && (!versionParts(version) || isOlderVersion(version, input.rollbackFloor ?? rollbackFloorVersion))
+    && (!parseUpdateVersion(version) || isOlderVersion(version, input.rollbackFloor ?? rollbackFloorVersion))
   ) return { offer: false }
   const currentWithdrawn = bad.has(input.currentVersion)
   if (input.rollout && input.rollout.version === version && !input.manual && !currentWithdrawn) {

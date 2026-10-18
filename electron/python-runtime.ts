@@ -21,6 +21,7 @@ import { sameLocalPathIdentity } from './path-identity'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
 import { windowsPowerShellExecutable } from './windows-elevation'
+import { compareVersionsBy, parsePythonReleaseVersion } from './versions'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
 export type PythonRuntimeArchitecture = 'x64' | 'arm64'
@@ -147,22 +148,6 @@ function errorText(reason: unknown): string {
   return '未知错误'
 }
 
-function semverParts(version: string): [number, number, number] | null {
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version)
-  if (!match) return null
-  return [Number(match[1]), Number(match[2]), Number(match[3])]
-}
-
-function compareVersions(left: string, right: string): number {
-  const leftParts = semverParts(left)
-  const rightParts = semverParts(right)
-  if (!leftParts || !rightParts) return 0
-  for (let index = 0; index < 3; index += 1) {
-    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index]
-  }
-  return 0
-}
-
 export function isPython312RuntimeVersion(version: string | null | undefined): boolean {
   return /^(?:Python\s+)?3\.12(?:\.|$)/i.test(version?.trim() ?? '')
 }
@@ -191,7 +176,7 @@ export function parsePythonReleaseIndex(input: string): PythonRuntimeRelease[] {
       if (!Number.isSafeInteger(releaseId) || releaseId <= 0) continue
       releases.push({ version: match[1], releaseId })
     }
-    releases.sort((left, right) => compareVersions(right.version, left.version))
+    releases.sort((left, right) => compareVersionsBy(parsePythonReleaseVersion, right.version, left.version) ?? 0)
     return releases
   } catch {
     return []
