@@ -165,6 +165,16 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error('服务返回 HTTP 502'), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
     expect(authErrorMessage(new Error(`账号服务说：${'很长的原因'.repeat(20)}`), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
   })
+  it('peels the IPC wrapper off whichever error class the main process threw', () => {
+    // #1073 第9条：剥前缀改用渲染层共用的那一份，这几种主进程类名剥完要和以前一字不差。
+    const login = (text: string) => authFailure(new Error(`Error invoking remote method 'account:login': ${text}`), '登录')
+    expect(login('RealmAccountError: 账号服务响应格式不兼容')).toEqual({ message: '登录没有成功：账号服务响应格式不兼容。', kind: 'unknown' })
+    expect(login('NewApiSessionChangedError: 账号已切换，本次请求结果已丢弃，请重试')).toEqual({ message: '登录没有成功：账号已切换，本次请求结果已丢弃，请重试。', kind: 'unknown' })
+    expect(login('账号服务正在升级  ')).toEqual({ message: '登录没有成功：账号服务正在升级。', kind: 'unknown' })
+    expect(login('Error: unexpected response')).toEqual({ message: '登录没有成功，输入已保留，请稍后重试', kind: 'unknown' })
+    expect(sendCode('550 5.1.1 User unknown')).toEqual({ message: verificationMailboxMissingMessage, kind: 'final' })
+    expect(authFailure(new Error("Error invoking remote method 'account:send-verification-code': NewApiAuthenticationError: 421 too many connections"), '发送验证码').kind).toBe('wait')
+  })
   it('does not let the broad network heuristics call a replaced certificate a timeout', () => {
     expect(authErrorMessage(new Error(networkFailureMessages.tls), '登录')).toBe(networkFailureMessages.tls)
     expect(authErrorMessage(new Error(networkFailureMessages.intercepted), '登录')).not.toContain('超时')
