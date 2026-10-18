@@ -1541,6 +1541,37 @@ describe('withdrawn versions and staged rollout', () => {
     service.dispose()
   })
 
+  it('does not let an older copy of the status file roll the withdrawn list and rollout back (#1157 item 10)', async () => {
+    const client = new FakeUpdater()
+    const rememberReleaseGuard = vi.fn(async () => undefined)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      releaseGuardAtLaunch: { badVersions: ['1.1.0'], rollout: null, updatedAt: '2026-10-18T02:00:00.000Z' },
+      rememberReleaseGuard,
+    })
+    const flush = () => new Promise((resolve) => { setTimeout(resolve, 0) })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+
+    // 某条线路给的旧副本：撤回还没写进去。不跟着它放开，也不拿它盖掉记着的那份。
+    service.setServiceStatus({ maintenance: null, badVersions: [], rollout: null, updatedAt: '2026-10-17T02:00:00.000Z' })
+    await flush()
+    expect(rememberReleaseGuard).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null })
+
+    // 同一时间或更新的照常换上；没写时间的照旧以新读到的为准。
+    service.setServiceStatus({ maintenance: null, badVersions: ['1.1.0', '1.2.0'], rollout: null, updatedAt: '2026-10-18T03:00:00.000Z' })
+    service.setServiceStatus({ maintenance: null, badVersions: ['1.1.0'], rollout: null, updatedAt: '2026-10-18T02:30:00.000Z' })
+    await flush()
+    expect(rememberReleaseGuard.mock.calls).toEqual([[{ badVersions: ['1.1.0', '1.2.0'], rollout: null, updatedAt: '2026-10-18T03:00:00.000Z' }]])
+    service.setServiceStatus({ maintenance: null, badVersions: [], rollout: null })
+    await flush()
+    expect(rememberReleaseGuard).toHaveBeenLastCalledWith({ badVersions: [], rollout: null })
+    service.dispose()
+  })
+
   it('takes back an offer that is withdrawn after it was found or downloaded', async () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin' })

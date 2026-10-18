@@ -4,7 +4,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createServiceStatusMonitor,
+  isOlderReleaseGuard,
   locateServiceStatusUrl,
+  parseReleaseGuard,
   parseServiceStatus,
   readServiceStatus,
   resolveServiceStatusUrl,
@@ -200,6 +202,30 @@ describe('parseServiceStatus', () => {
     for (const cliModels of [null, [], 'codex.default=gpt-7', {}, { codex: null }, { codex: {} }, { codex: { default: '' } }, { codex: { previous: [] } }]) {
       expect(parseServiceStatus(JSON.stringify({ cliModels }), now)).not.toHaveProperty('cliModels')
     }
+  })
+
+  it('reads when the publisher last changed the file, ignoring a time it cannot use (#1157 item 10)', () => {
+    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-23T07:59:00.000Z' }), now).updatedAt).toBe('2026-09-23T07:59:00.000Z')
+    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-23T16:00:00+08:00' }), now).updatedAt).toBe('2026-09-23T08:00:00.000Z')
+    // 留一天给时钟偏差；再往后就是写错了，当没写，免得它压住之后每一份。
+    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-24T07:59:00.000Z' }), now).updatedAt).toBe('2026-09-24T07:59:00.000Z')
+    for (const updatedAt of ['2026-09-24T08:01:00.000Z', 'yesterday', 1_758_614_400_000, null]) {
+      expect(parseServiceStatus(JSON.stringify({ updatedAt }), now)).not.toHaveProperty('updatedAt')
+    }
+    expect(parseReleaseGuard({ badVersions: ['0.2.10'], rollout: null, updatedAt: '2026-09-23T07:00:00.000Z' }, now))
+      .toEqual({ badVersions: ['0.2.10'], rollout: null, updatedAt: '2026-09-23T07:00:00.000Z' })
+    expect(parseReleaseGuard({ badVersions: [], rollout: null, updatedAt: '2027-01-01T00:00:00.000Z' }, now))
+      .toEqual({ badVersions: [], rollout: null })
+  })
+
+  it('calls a release guard older only when both copies say when they were written', () => {
+    const earlier = { updatedAt: '2026-09-23T07:00:00.000Z' }
+    const later = { updatedAt: '2026-09-23T08:00:00.000Z' }
+    expect(isOlderReleaseGuard(earlier, later)).toBe(true)
+    expect(isOlderReleaseGuard(later, earlier)).toBe(false)
+    expect(isOlderReleaseGuard(later, later)).toBe(false)
+    expect(isOlderReleaseGuard({}, later)).toBe(false)
+    expect(isOlderReleaseGuard(earlier, {})).toBe(false)
   })
 })
 
