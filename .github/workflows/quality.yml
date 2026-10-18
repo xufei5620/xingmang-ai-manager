@@ -949,3 +949,29 @@ jobs:
           // on every change.
           if (jobs['secret-scan'].result !== 'success') process.exit(1)
           NODE
+
+  # main 上完整跑完却没过就开一条 issue 报警（指派给仓库负责人），main 再红只改这一条，下一次在
+  # main 上完整跑完并通过就留言并关闭（#1090 第 5 条）。被后来的合并取消的运行不算：整次运行被取消
+  # 时 `!cancelled()` 让这个作业不跑，取消策略本身不动（见文件开头）。拉取请求上不跑。只有这个作业
+  # 能写 issue，它不读任何 secret，也不装依赖。
+  main-alert:
+    needs: [changes, quality-gate]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Open, update or close the main CI alert issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          QUALITY_GATE_RESULT: ${{ needs.quality-gate.result }}
+        run: node scripts/quality-main-alert.cjs

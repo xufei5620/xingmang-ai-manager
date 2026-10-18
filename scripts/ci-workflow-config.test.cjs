@@ -1132,6 +1132,37 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(fold_('false', {}), false)
 })
 
+test('a red run on main opens an alert issue from the only job that can write issues', () => {
+  const alert = workflow.jobs['main-alert']
+  assert.deepEqual(alert.needs, ['changes', 'quality-gate'])
+  // `!cancelled()` rather than `always()`: a run a newer merge superseded is the
+  // cancellation yoyo kept on purpose (2026-10-03), not main going red, and it
+  // must stay silent. A gate that fails or runs out of its own time still
+  // reaches the job, because only the gate job, not the run, was cancelled.
+  assert.equal(alert.if, "${{ !cancelled() && github.event_name == 'push' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' }}")
+  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+  assert.equal(alert['runs-on'], 'ubuntu-latest')
+  assert.ok(alert['timeout-minutes'] > 0 && alert['timeout-minutes'] <= 5)
+  assert.equal(alert.environment, undefined)
+  assert.deepEqual(alert.permissions, { actions: 'read', contents: 'read', issues: 'write' })
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name !== 'main-alert') assert.equal(job.permissions, undefined, `${name} keeps the read-only workflow token`)
+  }
+  assert.deepEqual(workflow.permissions, { contents: 'read' })
+  // The verdict it reports is the required aggregate's, so nothing waits on it.
+  for (const job of Object.values(workflow.jobs)) assert.equal([].concat(job.needs || []).includes('main-alert'), false)
+  const checkout = alert.steps.find((step) => /actions\/checkout@/.test(step.uses || ''))
+  assert.equal(checkout.with['persist-credentials'], false)
+  for (const step of alert.steps.filter((entry) => entry.uses)) assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+  assert.deepEqual(runSteps('main-alert'), ['node scripts/quality-main-alert.cjs'])
+  const report = alert.steps.find((step) => step.run)
+  assert.deepEqual(report.env, { GITHUB_TOKEN: '${{ github.token }}', QUALITY_GATE_RESULT: '${{ needs.quality-gate.result }}' })
+  assert.doesNotMatch(JSON.stringify(alert), /secrets\./)
+  const { ALERT_JOB } = require('./quality-main-alert.cjs')
+  assert.equal(ALERT_JOB, 'main-alert')
+  assert.ok(`${packageJson.scripts['test:scripts']} ${packageJson.scripts['posttest:scripts']}`.includes('scripts/quality-main-alert.test.cjs'))
+})
+
 test('change classification does not skip code, workflow, or unknown revisions', () => {
   const { requiresCodeChecks, changedFiles } = require('./ci-change-scope.cjs')
   assert.equal(requiresCodeChecks(['README.md', 'docs/guide.md']), false)

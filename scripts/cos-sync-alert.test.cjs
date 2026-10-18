@@ -174,6 +174,7 @@ test('the GitHub client stays on api.github.com under this repository, refuses r
   assert.equal(seen[0].url, `https://api.github.com/repos/${REPOSITORY}/issues?state=open`)
   assert.equal(seen[0].init.redirect, 'error')
   assert.equal(seen[0].init.headers.authorization, `Bearer ${TOKEN}`)
+  assert.equal(seen[0].init.headers['user-agent'], 'xingmang-cos-sync-alert')
   assert.ok(seen[0].init.signal instanceof AbortSignal)
   for (const path of ['/repos/other/repo/issues', `//evil.test/repos/${REPOSITORY}/issues`, `/repos/${REPOSITORY}/../../user`, 'https://evil.test/x', `/repos/${REPOSITORY}/issues\r\nx: y`]) {
     await assert.rejects(client.request('GET', path), /请求路径|请求地址/)
