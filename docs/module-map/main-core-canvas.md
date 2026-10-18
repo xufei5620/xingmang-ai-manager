@@ -7,7 +7,7 @@
 - `ipc-contract.ts` — **主窗口业务通道的类型真相源**（另两套见总述）：`ipcInvokeChannels` / `ipcEventChannels` 两张通道表 + `XingmangApi` 接口，`as const satisfies` 让通道表和接口对齐。只许 `import type`；值导出只能来自零 Node 依赖的模块（现在是 `catalog.ts` 的 `providerIds` / `managedCliKeyProfiles` 和 `relay-sites.ts` 的一组站点常量），否则 Vite 会把 `node:fs` 打进渲染包（I6）。列在 CODEOWNERS 里，加通道要让 yoyo 看见（T1）
 - `preload.ts` — 主窗口的 sandbox 桥，暴露 `window.xingmang`。sandbox 下不能 require 本地模块，所以**手抄了一份通道表**，用 `satisfies` 钉住契约类型，`preload.test.ts` 钉住内容；这份重复是有意的，别"消除"（I7、T1）
 - `ipc.ts` — `registerIpcHandlers` 注册全部 `ipcInvokeChannels` 的处理器：每个都经 `registerTrustedHandler`（校验 sender URL、结构化日志、统一 dispose，I4），入参一律用本文件的手写 `parse*` 函数校验、出中文错误（I5，别换成 zod）；`config:reveal-api-key`、记住密码两条通道和聊天记录读写在日志静默名单里（I3、I13）。`ipc.test.ts` 把实际注册的通道和契约排序比对，漏注册、多注册都会红
-- `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版拒绝 `--inspect` / `--remote-debugging-*` 启动
+- `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版由 `platform/entry.ts` 在分出任何一支之前调用，拒绝 `--inspect` / `--remote-debugging-*` 和能让 Chromium 拉起命令的 `--gpu-launcher`、`--*-cmd-prefix`、`--browser-subprocess-path`；照 Chromium 的读法，单短横线和 Windows 上的斜杠写法同样拦。它是黑名单，残余风险写在源码注释里（#1065）
 
 ## 命令执行与安全边界（本项目真正的复杂度在这里）
 
@@ -110,7 +110,7 @@
 > **`platform/entry.ts` 才是程序真正的入口**（`package.json` 的 `main` 是 `dist-electron/platform/entry.js`），`main.ts` 是最后才被 `platform/desktop-entry.ts` require 进来的。这一层还自带一套**和 `ipc-contract.ts` / `preload.ts` / `ipc.ts` 无关的第二套 IPC 三件组**：`platform/contract.ts`（`xingmang-platform:*` 通道契约）+ `platform/preload.ts`（自带字面量通道表，暴露 `window.xingmangPlatform`）+ `platform/ipc.ts`（`registerPlatformHandlers` 注册，`assertPlatformOwner` 只放行主窗口主框架，I4 的登记例外）。改系统设置类通道（主题、高对比度、开机自启、通知偏好、代理状态）改的是这一套，不是主窗口那套；它只在新界面（renderer-v2）时安装。
 
 ### 入口
-- `platform/entry.ts` — **程序入口**，在加载任何桌面模块之前按顺序分流：Linux 上以 root 或替别人运行就报一句原因后退出（Chromium 的缓存先指到临时目录，免得在客户主目录留下 root 文件）→ 卸载清理模式 → 加速辅助进程模式 → 都不是才 require `desktop-entry`。辅助进程不拿单实例锁、不开窗口、不注册渲染 IPC
+- `platform/entry.ts` — **程序入口**，在加载任何桌面模块之前按顺序分流：打包版带了调试或拉起命令的开关就直接退出（#1065）→ Linux 上以 root 或替别人运行就报一句原因后退出（Chromium 的缓存先指到临时目录，免得在客户主目录留下 root 文件）→ 卸载清理模式 → 加速辅助进程模式 → 都不是才 require `desktop-entry`。辅助进程不拿单实例锁、不开窗口、不注册渲染 IPC
 - `platform/desktop-entry.ts` — 桌面进程入口：判定用新界面还是旧回滚界面（文件构建看产物里的 `renderer-v2.flag`，只有 dev server 才看环境变量），新界面时装上 `renderer-v2.ts` 与 `install-system-api.ts`，然后 require `../main`
 - `platform/renderer-v2.ts` — 新界面的主窗口外观：建窗口前换成 v4 外框，按窗口宽度和用户的缩放偏好设缩放（监听 `settings.json` 变化），Windows 上同步标题栏按钮那一条的高度，F11 / ⌃⌘F 切全屏
 - `platform/frame-navigation.ts` — 主窗口里子框架（iframe）的导航守卫：除 `about:blank` / `about:srcdoc` 外一律拦下，主框架导航仍交给 `security.ts` 的白名单（I12）；由 `main.ts` 装在主窗口上

@@ -132,7 +132,7 @@
 
 ## Linux 相关模块（规则见 `.claude/rules/linux-platform.md`；发布开关还关着，见 `docs/LINUX.md`）
 
-- `linux-launch-guard.ts` — 拒绝以 root 或替别的账号运行（Linux 上本软件从不需要 root，没有「管理员模式」可退）；零 import，`platform/entry.ts` 最先调用
+- `linux-launch-guard.ts` — 拒绝以 root 或替别的账号运行（Linux 上本软件从不需要 root，没有「管理员模式」可退）；零 import，`platform/entry.ts` 查完打包版启动开关后最先调用
 - `linux-path-trust.ts` — 路径信任判定：问 macOS 那个问题，但组可写目录按 `/etc/group`、`/etc/passwd` 的实际成员判（LDAP 这类查不清成员的组一律不信），解析后和字面两条链都走；规则见 `.claude/rules/linux-platform.md`
 - `linux-renderer-sandbox.ts` — 画布打开前确认渲染进程的系统沙箱真的生效：启动参数里没有关沙箱的开关，且按画布的隔离设置起一个渲染进程读 `/proc/<pid>/status` 得到 `Seccomp: 2`（I15）
 - `linux-platform.ts` — Linux 上找 node / npm / CLI 的目录顺序，不读 shell 启动文件（本软件的 Node.js 排在继承 PATH 前面，和 macOS 相反；终端启动器目录从继承 PATH 里剔掉，免得被扫成「已安装」）

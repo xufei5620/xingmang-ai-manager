@@ -8,6 +8,9 @@ import {
   type ApplicationUrlPolicy,
 } from './security'
 import { supportServiceUrl } from './relay-sites'
+import { accelerationWorkerArgument } from './acceleration-worker-entry'
+import { loginLaunchArgument } from './login-launch'
+import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 
 const windowsPolicy: ApplicationUrlPolicy = {
   rendererRoot: 'C:\\Program Files\\XingMang API\\resources\\app\\dist',
@@ -236,5 +239,75 @@ describe('packaged debug switch security', () => {
       '--disable-gpu',
     ])).toBe(false)
     expect(hasDisallowedPackagedDebugSwitch(['app.exe', '--inspection-mode'])).toBe(false)
+  })
+
+  it('detects blocked switches written with a single dash on every platform', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      expect(hasDisallowedPackagedDebugSwitch(['app', '-remote-debugging-port=9222'], platform)).toBe(true)
+      expect(hasDisallowedPackagedDebugSwitch(['app', '-Remote-Debugging-Pipe'], platform)).toBe(true)
+      expect(hasDisallowedPackagedDebugSwitch(['app', '-inspect'], platform)).toBe(true)
+    }
+  })
+
+  it('detects blocked switches written with a slash on Windows', () => {
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '/remote-debugging-port=9222'], 'win32')).toBe(true)
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '/REMOTE-DEBUGGING-PIPE'], 'win32')).toBe(true)
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '/gpu-launcher=cmd.exe /c calc'], 'win32')).toBe(true)
+  })
+
+  it('treats a leading slash as a path outside Windows', () => {
+    expect(hasDisallowedPackagedDebugSwitch(['app', '/remote-debugging-port'], 'darwin')).toBe(false)
+    expect(hasDisallowedPackagedDebugSwitch(['app', '/remote-debugging-port'], 'linux')).toBe(false)
+    expect(hasDisallowedPackagedDebugSwitch([
+      '/Applications/星芒AI管理工具.app/Contents/MacOS/星芒AI管理工具',
+    ], 'darwin')).toBe(false)
+  })
+
+  it('detects blocked switches surrounded by whitespace Chromium trims', () => {
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', ' --remote-debugging-port=9222'], 'win32')).toBe(true)
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '\t/gpu-launcher=calc.exe '], 'win32')).toBe(true)
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '\u3000-remote-debugging-pipe'], 'win32')).toBe(true)
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '\u0085--inspect'], 'win32')).toBe(true)
+    expect(hasDisallowedPackagedDebugSwitch(['app', '\n--renderer-cmd-prefix=sh -c id'], 'linux')).toBe(true)
+  })
+
+  it('detects switches that make Chromium launch a command', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      expect(hasDisallowedPackagedDebugSwitch(['app', '--gpu-launcher=cmd.exe /c calc'], platform)).toBe(true)
+      expect(hasDisallowedPackagedDebugSwitch(['app', '--renderer-cmd-prefix=calc.exe'], platform)).toBe(true)
+      expect(hasDisallowedPackagedDebugSwitch(['app', '--utility-cmd-prefix=calc.exe'], platform)).toBe(true)
+      expect(hasDisallowedPackagedDebugSwitch(['app', '--browser-subprocess-path=C:\\evil.exe'], platform)).toBe(true)
+      expect(hasDisallowedPackagedDebugSwitch(['app', '--zygote-cmd-prefix=sh -c id'], platform)).toBe(true)
+    }
+  })
+
+  it('detects the remaining Node inspector spellings', () => {
+    expect(hasDisallowedPackagedDebugSwitch(['app', '--inspect-wait'], 'linux')).toBe(true)
+    expect(hasDisallowedPackagedDebugSwitch(['app', '--inspect-brk-node=9229'], 'win32')).toBe(true)
+  })
+
+  it('still checks arguments after a bare double dash', () => {
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '--', '/remote-debugging-port=9222'], 'win32')).toBe(true)
+  })
+
+  it('allows the arguments the app itself launches with', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      expect(hasDisallowedPackagedDebugSwitch([
+        'app',
+        loginLaunchArgument,
+        accelerationWorkerArgument,
+        uninstallCleanupArgument,
+        uninstallClearLoginArgument,
+        'xingmang://open',
+        '--',
+        '-',
+        '/',
+      ], platform)).toBe(false)
+    }
+    expect(hasDisallowedPackagedDebugSwitch([
+      'C:\\Program Files\\星芒AI管理工具\\星芒AI管理工具.exe',
+      '/c',
+      'C:\\Users\\tester\\Documents\\remote-debugging-port',
+    ], 'win32')).toBe(false)
   })
 })
