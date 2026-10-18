@@ -2617,14 +2617,22 @@ function runWithoutDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
 /**
  * 打开 Codex 桌面端分两段（#1085）：start 做到发出启动请求为止，算账号工作；它交回来的那段只等本机的
  * Codex 进程起来、给它换中文，Windows 上最长一分多钟，换账号、退出不陪它等。start 跑的时候开始换账号，
- * 照旧报「账号上下文已变化，请重试」，后面那段不跑。
+ * 照旧报「账号上下文已变化，请重试」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
+ * 还在起来就放别的安装、卸载进来换同一个包（I11）。
  */
 export async function launchThenWaitOutsideAccountWork<T>(
   accountWork: QueuedAccountWork | undefined,
   start: () => Promise<() => Promise<T>>,
 ): Promise<T> {
-  const waitForWindow = await (accountWork ? accountWork.run(start) : start())
-  return waitForWindow()
+  if (!accountWork) return (await start())()
+  const started: { waitForWindow?: () => Promise<T> } = {}
+  try {
+    await accountWork.run(async () => { started.waitForWindow = await start() })
+  } catch (error) {
+    if (started.waitForWindow) await started.waitForWindow().catch(() => undefined)
+    throw error
+  }
+  return started.waitForWindow!()
 }
 
 /**

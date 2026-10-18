@@ -1952,17 +1952,33 @@ describe('Codex Desktop launch queueing', () => {
     await expect(launch).resolves.toBe('opened')
   })
 
-  it('does not wait for the window when the account changed before the launch request was sent', async () => {
+  // 启动请求已经发出去了：安装队列要等 Codex 起来再放别的安装进来（I11），账号换了照旧报出来。
+  it('still waits for the window before reporting an account change that began while the launch request was being sent', async () => {
     let revision = 0
     const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
-    const wait = vi.fn(async () => 'opened')
+    let showWindow!: () => void
+    const windowShown = new Promise<void>((resolve) => { showWindow = resolve })
+    let waited = false
     const launch = launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
       revision++
-      return wait
+      return async () => { await windowShown; waited = true; return 'opened' }
     })
+    let settled = false
+    void launch.then(() => { settled = true }, () => { settled = true })
 
+    await accountWork.whenIdle()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(settled).toBe(false)
+    showWindow()
     await expect(launch).rejects.toThrow('账号上下文已变化')
-    expect(wait).not.toHaveBeenCalled()
+    expect(waited).toBe(true)
+  })
+
+  it('does not wait for a window when the launch request could not be sent', async () => {
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+    await expect(launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      throw new Error('无法发送 Codex 桌面端启动请求')
+    })).rejects.toThrow('无法发送 Codex 桌面端启动请求')
   })
 
   it('merges a repeated identical launch but keeps a different mode or locale intent separate', async () => {
