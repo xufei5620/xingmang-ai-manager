@@ -579,6 +579,15 @@ function mcpUserNames(configPath: string): Set<string> {
   return new Set(isRecord(servers) ? Object.keys(servers) : [])
 }
 
+/**
+ * 一份 config.toml 的 [mcp_servers] 表，按名字取各条原样写的内容，文件不在算空。扩展页拿它给
+ * `codex mcp list` 列出来的连接分层（#1092）；路径和文件的检查与读用户那份同一套。
+ */
+export function readCodexMcpServerEntries(configPath: string): Map<string, unknown> {
+  const servers = parseTomlFile(configPath).mcp_servers
+  return new Map(isRecord(servers) ? Object.entries(servers) : [])
+}
+
 function sanitizeMcpServer(
   value: unknown,
   userNames: Set<string>,
