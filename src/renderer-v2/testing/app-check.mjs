@@ -2231,6 +2231,8 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
       // 默认窗口，和最小窗口自动缩到 0.9 以后的实际大小。
       for (const viewport of [{ width: 1280, height: 820 }, { width: 1067, height: 622 }]) {
         await page.setViewportSize(viewport)
+        // 侧栏是 matchMedia 变了以后下一轮渲染才收起，没等到就量会量到侧栏还展开时的三列卡片（262 宽）。
+        await expect.poll(() => page.locator('.v2-shell').getAttribute('class')).toBe(viewport.width < 1272 ? 'v2-shell sidebar-collapsed' : 'v2-shell')
         const layout = await row.evaluate((card) => {
           const box = (element) => element?.getBoundingClientRect() ?? null
           const button = card.querySelector('.xm-tool-card-actions > .xm-btn')
