@@ -115,6 +115,60 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
   } finally { await page.close() }
 })
 
+test('Sub2API usage left open overnight still asks for the last 7 days up to today', async () => {
+  // 页签只藏不卸、关窗只缩到托盘：没手选日期时默认那 7 天按每次读的时候现算，不停在第一次打开那天（#1093 第 1 条）。
+  const page = await fixture('page=account&accountTab=usage&sub2apiReliability=1', (next) => next.clock.install({ time: new Date('2026-10-17T12:00:00Z') }))
+  const shift = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
+  const today = () => page.evaluate(() => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()))
+  const usageQueries = async () => (await calls(page)).filter((call) => call.name === 'query-usage').map((call) => call.args)
+  async function refreshOnDay(time) {
+    await page.clock.setSystemTime(new Date(time))
+    const count = (await usageQueries()).length
+    await page.getByTestId('account-refresh').click()
+    await page.waitForFunction((seen) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-usage').length > seen, count)
+    return (await usageQueries()).at(-1)
+  }
+  try {
+    const usage = page.getByTestId('account-usage-section')
+    await usage.waitFor()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage'))
+    const first = (await usageQueries()).at(-1)
+    assert.equal(first.endDate, await today())
+    assert.equal(first.startDate, shift(first.endDate, -6))
+
+    const next = await refreshOnDay('2026-10-18T12:00:00Z')
+    assert.equal(next.endDate, shift(first.endDate, 1))
+    assert.equal(next.startDate, shift(first.startDate, 1))
+    // 筛选框里的默认日期跟着换到今天，也不算用户加的条件。
+    const toggle = usage.getByTestId('account-filters-toggle')
+    assert.equal(await toggle.innerText(), '展开筛选')
+    await toggle.click()
+    assert.equal(await usage.getByLabel('开始日期', { exact: true }).inputValue(), next.startDate)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), next.endDate)
+
+    // 只加一个密钥编号、日期没动：日期还是跟着日子走。
+    await usage.getByLabel('密钥编号', { exact: true }).fill('4')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.apiKeyId === 4))
+    const keyed = await refreshOnDay('2026-10-19T12:00:00Z')
+    assert.equal(keyed.apiKeyId, 4)
+    assert.equal(keyed.endDate, shift(next.endDate, 1))
+    assert.equal(keyed.startDate, shift(next.startDate, 1))
+
+    // 自己选了日期就照选的查，过了夜也不动；只改了开始日期，结束日期那一格也不跟着跳，框里写的就是查的。
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), keyed.endDate)
+    await usage.getByLabel('开始日期', { exact: true }).fill('2026-10-01')
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startDate === '2026-10-01'))
+    const picked = await refreshOnDay('2026-10-20T12:00:00Z')
+    assert.equal(picked.startDate, '2026-10-01')
+    assert.equal(picked.endDate, keyed.endDate)
+    assert.equal(picked.apiKeyId, 4)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), keyed.endDate)
+    assert.equal(await toggle.innerText(), '收起筛选')
+  } finally { await page.close() }
+})
+
 test('the usage dashboard splits spending across the tools that have a managed key', async () => {
   const page = await fixture('page=account&managedKeys=1')
   try {

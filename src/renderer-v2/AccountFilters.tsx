@@ -42,6 +42,22 @@ export function hiddenFilterCount(fields: readonly AccountFilterField[], primary
   return fields.filter((field) => !primary.includes(field.key) && (applied[field.key] ?? '') !== '' && applied[field.key] !== initial[field.key]).length
 }
 
+function sameFilterValues(left: Record<string, string>, right: Record<string, string>): boolean {
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].every((key) => (left[key] ?? '') === (right[key] ?? ''))
+}
+
+/**
+ * 默认值往前走了（历史账号默认最近 7 个日历日，页面挂在托盘里过了夜，#1093 第 1 条）：还停在旧默认上的
+ * 那几格换成新的，用户自己填了别的的不动。
+ */
+export function rollFilterDefaults(values: Record<string, string>, previous: Record<string, string>, next: Record<string, string>): Record<string, string> {
+  const result = { ...values }
+  for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+    if ((values[key] ?? '') === (previous[key] ?? '')) result[key] = next[key] ?? ''
+  }
+  return result
+}
+
 export function AccountFilters({
   fields,
   primary,
@@ -62,6 +78,12 @@ export function AccountFilters({
 }) {
   const [draft, setDraft] = useState<Record<string, string>>(initialValues)
   const [applied, setApplied] = useState<Record<string, string>>(initialValues)
+  const [defaults, setDefaults] = useState(initialValues)
+  if (!sameFilterValues(defaults, initialValues)) {
+    setDefaults(initialValues)
+    setDraft((value) => rollFilterDefaults(value, defaults, initialValues))
+    setApplied((value) => rollFilterDefaults(value, defaults, initialValues))
+  }
   const [open, setOpen] = useState(false)
   const [error, setError] = useState('')
   const collapsible = Boolean(primary) && fields.some((field) => !primary?.includes(field.key))

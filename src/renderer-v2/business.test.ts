@@ -23,7 +23,7 @@ import {
   parseEnvironmentVariables,
   readCodexExtensionMetadata,
 } from './pages-management'
-import { accountTimeRange, hiddenFilterCount } from './AccountFilters'
+import { accountTimeRange, hiddenFilterCount, rollFilterDefaults } from './AccountFilters'
 import {
   beginBusinessOperation,
   errorMessage,
@@ -164,6 +164,17 @@ describe('v2 business boundaries', () => {
     expect(hiddenFilterCount(fields, ['start', 'modelName'], { group: 'vip', tokenName: '', modelName: 'gpt' })).toBe(1)
     // 全部收起时（第一行一个框都不留），带着默认值的日期不算用户加的条件。
     expect(hiddenFilterCount(fields, [], { start: '2026-10-01T00:00', modelName: 'gpt' }, { start: '2026-10-01T00:00' })).toBe(1)
+  })
+
+  it('moves only the filter boxes still showing the old defaults when the defaults move on', () => {
+    const before = { startDate: '2026-10-11', endDate: '2026-10-17', timezone: 'Asia/Shanghai' }
+    const after = { startDate: '2026-10-12', endDate: '2026-10-18', timezone: 'Asia/Shanghai' }
+    expect(rollFilterDefaults({ ...before, apiKeyId: '4' }, before, after)).toEqual({ ...after, apiKeyId: '4' })
+    // 自己改过的日期不动，没改的那一格照样跟着走。
+    expect(rollFilterDefaults({ ...before, startDate: '2026-10-01' }, before, after)).toEqual({ ...after, startDate: '2026-10-01' })
+    // 清空了的格子也算改过，不再填回去。
+    expect(rollFilterDefaults({ ...before, startDate: '', endDate: '' }, before, after)).toEqual({ ...after, startDate: '', endDate: '' })
+    expect(rollFilterDefaults({ modelName: 'gpt' }, {}, {})).toEqual({ modelName: 'gpt' })
   })
 
   it('tells the user what happens after the payment window closes and where to check', () => {
