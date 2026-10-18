@@ -6903,10 +6903,10 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })
 
       // 客户只看到一句能照着做的话，校验原话挂在 cause 上进运行日志（#1100 第5条）。
-      const failure = await electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+      const failure = await Promise.resolve(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
         amount: 10,
         paymentMethod: 'alipay',
-      }).catch((error: unknown) => error)
+      })).catch((error: unknown) => error)
       expect(failure).toMatchObject({
         message: '支付通道暂时异常，没有扣款，请联系客服。',
         cause: { message: '支付来源与支付地址不匹配' },
