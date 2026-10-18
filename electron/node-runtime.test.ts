@@ -350,7 +350,7 @@ describe('Node.js installer routing and process plans', () => {
       throw new Error('offline')
     }) as unknown as typeof fetch
 
-    await expect(installNodeRuntime({
+    const failure = await installNodeRuntime({
       networkRegion: 'unknown',
       dependencies: {
         resolveWingetExecutable: async () => ({
@@ -363,8 +363,13 @@ describe('Node.js installer routing and process plans', () => {
         createTemporaryDirectory: async () => 'D:\\ProgramData\\XingMangAI\\InstallerCache\\test',
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow(/winget：安装后的 Node\.js 版本 v18\.20\.0 低于最低要求 v20\.0\.0/)
+    }).catch((error: unknown) => error)
 
+    // winget 那一步只进运行日志，上屏那句按备用源的原因说（#1100 第1条）。
+    expect(failure instanceof Error ? failure.message : null)
+      .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+    expect(failure instanceof Error ? (failure.cause as Error).message : null)
+      .toContain('winget：安装后的 Node.js 版本 v18.20.0 低于最低要求 v20.0.0')
     expect(runProcess).toHaveBeenCalledTimes(1)
     expect(inspectInstalledNodeRuntime).toHaveBeenCalledOnce()
     expect(fetchMock).toHaveBeenCalled()
