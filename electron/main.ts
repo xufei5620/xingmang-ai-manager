@@ -54,6 +54,7 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
+import { createQuitCleanup } from './bootstrap/lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
@@ -1021,6 +1022,12 @@ if (!hasSingleInstanceLock) {
     }
     process.on('uncaughtExceptionMonitor', onUncaughtException)
     process.on('unhandledRejection', onUnhandledRejection)
+    // 退出清理只挂这一个 will-quit：下面各处按登记先后排进清单（bootstrap/lifecycle.ts），
+    // 顺序由 main.test.ts 钉住，新加的一步登记在它该在的位置，别再另挂 will-quit。
+    const quitCleanup = createQuitCleanup({
+      onStepFailed: (step, error) => runtimeLog.exception('main', 'app.quit-cleanup.failed', error, { step }),
+    })
+    app.once('will-quit', () => quitCleanup.run())
     // 上次是不是意外退出的：读完就记成「说过了」，这次启动里一直挂在窗口能力上，界面据此说一句。
     let unexpectedExit: UnexpectedExitNotice | null = null
     try {
@@ -3388,7 +3395,7 @@ if (!hasSingleInstanceLock) {
       const onResume = () => accelerationPower.resumed()
       powerMonitor.on('suspend', onSuspend)
       powerMonitor.on('resume', onResume)
-      app.once('will-quit', () => {
+      quitCleanup.add('acceleration-power', () => {
         powerMonitor.off('suspend', onSuspend)
         powerMonitor.off('resume', onResume)
       })
@@ -3537,12 +3544,14 @@ if (!hasSingleInstanceLock) {
           }
         : {}),
     })
-    app.once('will-quit', () => {
-      cliHookEvents.dispose()
+    quitCleanup.add('cli-hook-events', () => cliHookEvents.dispose())
+    quitCleanup.add('keep-awake', () => {
       cliKeepAwake.dispose()
       unsubscribeInstallKeepAwakeQueue()
       unsubscribeInstallKeepAwakeUpdate()
       installKeepAwake.dispose()
+    })
+    quitCleanup.add('routes', () => {
       unsubscribeRelayRoute()
       unsubscribeToolRoutes()
       systemService.disposeToolRoutes?.()
@@ -3551,20 +3560,33 @@ if (!hasSingleInstanceLock) {
       toolRouteController.dispose()
       powerMonitor.off('resume', onRouteResume)
       clearInterval(routeOnlineTimer)
+    })
+    quitCleanup.add('acceleration-notices', () => {
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()
+    })
+    // 加速服务、独立加速进程各占一步：前一步同步抛错，也要照样放掉加速进程，由它还原系统代理。
+    quitCleanup.add('acceleration', () => {
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
+    })
+    quitCleanup.add('acceleration-host', () => {
       void developmentAcceleration?.dispose().catch(() => undefined)
+    })
+    quitCleanup.add('runtime-log-hooks', () => {
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')
       process.off('uncaughtExceptionMonitor', onUncaughtException)
       process.off('unhandledRejection', onUnhandledRejection)
+    })
+    quitCleanup.add('updates-and-notifications', () => {
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       serviceStatusMonitor?.dispose()
       unsubscribeDesktopNotifications()
       unsubscribeAutoUpdateInstall()
       desktopNotifications.dispose()
-      unregisterIpcHandlers()
+    })
+    quitCleanup.add('ipc', () => unregisterIpcHandlers())
+    quitCleanup.add('business-services', () => {
       for (const business of businesses.values()) {
         business.chatService.dispose()
         business.imageService.cancelAll()
@@ -3572,11 +3594,13 @@ if (!hasSingleInstanceLock) {
         business.videoService.cancelAll()
         business.canvasRuns.shutdown()
       }
+    })
+    quitCleanup.add('asset-protocol-and-windows', () => {
       protocol.unhandle('xingmang-asset')
       paymentWindow.destroy()
       canvasController.dispose()
-      updaterService.dispose()
     })
+    quitCleanup.add('updater', () => updaterService.dispose())
     // 问不出来也当没有：关窗直接退出、开机自启照常弹窗，窗口不会藏到看不见的地方去。
     const trayHostAvailable = linuxTrayHost ? await linuxTrayHost : true
     if (linuxSystemNameRead) {
@@ -3626,7 +3650,7 @@ if (!hasSingleInstanceLock) {
     }
     screen.on('display-removed', onDisplaysChanged)
     screen.on('display-metrics-changed', onDisplaysChanged)
-    app.once('will-quit', () => {
+    quitCleanup.add('display-watch', () => {
       if (displayChangeTimer) clearTimeout(displayChangeTimer)
       screen.removeListener('display-removed', onDisplaysChanged)
       screen.removeListener('display-metrics-changed', onDisplaysChanged)
@@ -3846,7 +3870,7 @@ if (!hasSingleInstanceLock) {
         })
       }
       powerMonitor.on('shutdown', onPowerOff)
-      app.once('will-quit', () => { powerMonitor.off('shutdown', onPowerOff) })
+      quitCleanup.add('power-off-watch', () => { powerMonitor.off('shutdown', onPowerOff) })
     }
     requestRelaunch = async () => {
       relaunchRequested = true
@@ -3861,7 +3885,7 @@ if (!hasSingleInstanceLock) {
     const simulateUnexpectedExit = process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
     let unexpectedExitStarted = false
     let appWillQuit = false
-    app.once('will-quit', () => { appWillQuit = true })
+    quitCleanup.add('unexpected-exit-flag', () => { appWillQuit = true })
     const onUnexpectedException = (error: Error) => {
       // 用户自己在退出的路上出的错不重开；同一次退出里再出错也只处理第一次。
       if (unexpectedExitStarted || appWillQuit) return
@@ -3898,7 +3922,7 @@ if (!hasSingleInstanceLock) {
       })
     }
     process.on('uncaughtException', onUnexpectedException)
-    app.once('will-quit', () => { process.off('uncaughtException', onUnexpectedException) })
+    quitCleanup.add('unexpected-exit-handler', () => { process.off('uncaughtException', onUnexpectedException) })
     // 真机上演「意外退出」用：打包版也认，设了它启动 30 秒后主进程抛一次没人接的异常。
     // 重开出来的进程带着同一个环境变量，会再退一次，正好演「10 分钟内第二次不再重开」。
     if (simulateUnexpectedExit) {
@@ -4001,7 +4025,7 @@ if (!hasSingleInstanceLock) {
       onQuit: () => lifecycle.requestQuit(),
       onError: (cause) => runtimeLog.exception('window', 'tray.failed', cause),
     })
-    app.once('will-quit', () => { lifecycle.dispose(); applicationTray?.dispose() })
+    quitCleanup.add('window-lifecycle-and-tray', () => { lifecycle.dispose(); applicationTray?.dispose() })
     // The canvas window is a secondary, opt-in surface -- it must not
     // outlive the main window (which would otherwise leave the app running
     // in the background with no way back to the dashboard on Windows/Linux,
