@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { relayQuotaFailureMessages } from './relay-quota-failure'
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -10,7 +11,7 @@ function response(body: unknown, status = 200): Response {
 
 function setup(
   fetchImpl: typeof fetch,
-  queueOptions: { maxActive?: number; maxQueued?: number; timeoutMs?: number } = {},
+  queueOptions: { maxActive?: number; maxQueued?: number; timeoutMs?: number; backend?: 'new-api' | 'sub2api' } = {},
 ) {
   const credentials = {
     resolveCredential: vi.fn(async (group: string) => ({
@@ -432,6 +433,21 @@ describe('AI image service', () => {
     await expect(service.generate(4, {
       requestId: `failure-${status}`, group: '生图分组', model: 'gpt-image-2', prompt: '图',
     })).rejects.toThrow(expected)
+  })
+
+  // 历史账号站提交前计费复查没过（#1240）：英文原话不上屏，换成余额不足那句，聊天页据此给「去充值」。
+  it('points the history-account site to recharging when the billing re-check fails', async () => {
+    const payload = { error: { message: 'insufficient balance', type: 'billing_error' } }
+    const fetchImpl = vi.fn(async () => response(payload, 403)) as unknown as typeof fetch
+    const { service } = setup(fetchImpl, { backend: 'sub2api' })
+    await expect(service.generate(4, {
+      requestId: 'sub2api-balance', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })).rejects.toThrow(relayQuotaFailureMessages.balance)
+    // xm 站出现同一句只可能是渠道上游转回来的，那不是客户该充值的事。
+    const relayed = setup(vi.fn(async () => response(payload, 403)) as unknown as typeof fetch)
+    await expect(relayed.service.generate(4, {
+      requestId: 'new-api-relayed', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })).rejects.not.toThrow(relayQuotaFailureMessages.balance)
   })
 
   it('cancels only an owned request and warns that it may still complete', async () => {
