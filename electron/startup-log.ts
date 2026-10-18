@@ -189,31 +189,101 @@ export function formatStartupFailure(error: unknown, context: StartupFailureCont
 }
 
 /**
+ * O_NOFOLLOW closes the window between the `lstat` and the `open`: a symlink
+ * swapped in after the check makes the open fail instead of following it. The
+ * flag is POSIX-only, so on Windows the `lstat` rejection and the re-check of
+ * the opened descriptor stand alone — Node reports both symlinks and directory
+ * junctions as symbolic links there.
+ */
+function noFollowFlag(): number {
+  const noFollow = fs.constants.O_NOFOLLOW
+  return typeof noFollow === 'number' ? noFollow : 0
+}
+
+/** The only thing this module writes to or reads from: a plain file with one name. */
+function isPlainSingleLinkFile(stats: fs.BigIntStats): boolean {
+  return stats.isFile() && !stats.isSymbolicLink() && stats.nlink === 1n
+}
+
+/**
+ * Opens the startup log for one append, or returns null when the name cannot
+ * be trusted to be the file it looks like.
+ *
+ * The log sits in a user-writable directory and the process writing it may be
+ * elevated, so a symlink or an extra hard link left under our name would turn
+ * the append into a write wherever that link leads. Such a name is dropped the
+ * same way an oversized log is: `rmSync` unlinks the name, never what it points
+ * at, and the record goes into a file created here with O_EXCL, which refuses a
+ * name that reappeared after the unlink instead of following it. An existing
+ * plain file is opened without O_CREAT, so a link swapped in after the `lstat`
+ * is never created through, and the descriptor must still be the file the
+ * `lstat` saw before a byte is written.
+ */
+function openStartupLogForAppend(filePath: string): number | null {
+  let existing: fs.BigIntStats | null = null
+  try {
+    existing = fs.lstatSync(filePath, { bigint: true })
+  } catch {
+    // Missing, or not inspectable: only a file created below gets written.
+  }
+  // Keep only the newest records. A boot loop would otherwise grow this file
+  // without bound, and the oldest entry is the least useful one.
+  if (existing && (!isPlainSingleLinkFile(existing) || existing.size > BigInt(MAX_STARTUP_LOG_BYTES))) {
+    fs.rmSync(filePath, { force: true })
+    existing = null
+  }
+
+  const { O_APPEND, O_CREAT, O_EXCL, O_WRONLY } = fs.constants
+  const flags = existing ? O_WRONLY | O_APPEND : O_WRONLY | O_APPEND | O_CREAT | O_EXCL
+  const descriptor = fs.openSync(filePath, flags | noFollowFlag())
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true })
+    const sameFile = !existing || (opened.dev === existing.dev && opened.ino === existing.ino)
+    if (isPlainSingleLinkFile(opened) && sameFile) return descriptor
+  } catch {
+    // A descriptor that cannot be verified is not written to.
+  }
+  fs.closeSync(descriptor)
+  return null
+}
+
+/**
  * Appends one failure record and returns the file it landed in, or null when
  * even that was impossible. Never throws: this runs on the path where the
  * application is already failing, and a logger that adds a second exception
- * would replace the diagnosis with noise.
+ * would replace the diagnosis with noise. Deliberately bare `fs` rather than
+ * `safe-local-data` — see the module header for why this module imports nothing.
  */
 export function recordStartupFailure(
   error: unknown,
   context: StartupFailureContext,
   location: StartupLogLocationOptions = {},
 ): string | null {
+  let descriptor: number | null = null
   try {
+    const record = Buffer.from(formatStartupFailure(error, context), 'utf8')
     const directory = resolveStartupLogDirectory(location)
     const filePath = path.join(directory, STARTUP_LOG_FILE_NAME)
     fs.mkdirSync(directory, { recursive: true })
-    // Keep only the newest records. A boot loop would otherwise grow this file
-    // without bound, and the oldest entry is the least useful one.
-    try {
-      if (fs.statSync(filePath).size > MAX_STARTUP_LOG_BYTES) fs.rmSync(filePath, { force: true })
-    } catch {
-      // No existing file, or it cannot be inspected; appending still works.
+    descriptor = openStartupLogForAppend(filePath)
+    if (descriptor === null) return null
+    let offset = 0
+    while (offset < record.length) {
+      const bytesWritten = fs.writeSync(descriptor, record, offset, record.length - offset)
+      if (bytesWritten === 0) break
+      offset += bytesWritten
     }
-    fs.appendFileSync(filePath, formatStartupFailure(error, context), { encoding: 'utf8' })
     return filePath
   } catch {
     return null
+  } finally {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor)
+      } catch {
+        // Nothing useful is left to do with a descriptor that will not close.
+      }
+    }
   }
 }
 
@@ -226,17 +296,6 @@ export function recordStartupFailure(
  * and from there into the support export.
  */
 const MAX_STARTUP_LOG_READ_BYTES = MAX_STARTUP_LOG_BYTES + 2 * MAX_RECORD_LENGTH
-
-/**
- * O_NOFOLLOW closes the window between the `lstat` and the `open`: a symlink
- * swapped in after the check makes the open fail instead of following it. The
- * flag is POSIX-only, so on Windows the `lstat` rejection stands alone — Node
- * reports both symlinks and directory junctions as symbolic links there.
- */
-function readOnlyOpenFlags(): number {
-  const noFollow = fs.constants.O_NOFOLLOW
-  return typeof noFollow === 'number' ? fs.constants.O_RDONLY | noFollow : fs.constants.O_RDONLY
-}
 
 /**
  * Reads and clears the startup log so it can be folded into the runtime log.
@@ -253,12 +312,12 @@ export function drainStartupFailures(filePath: string): string | null {
   let descriptor: number | null = null
   try {
     const link = fs.lstatSync(filePath, { bigint: true })
-    if (!link.isFile() || link.isSymbolicLink() || link.nlink !== 1n) return null
+    if (!isPlainSingleLinkFile(link)) return null
     if (link.size > BigInt(MAX_STARTUP_LOG_READ_BYTES)) return null
 
-    descriptor = fs.openSync(filePath, readOnlyOpenFlags())
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollowFlag())
     const opened = fs.fstatSync(descriptor, { bigint: true })
-    if (!opened.isFile() || opened.nlink !== 1n) return null
+    if (!isPlainSingleLinkFile(opened)) return null
     if (opened.size > BigInt(MAX_STARTUP_LOG_READ_BYTES)) return null
     if (opened.dev !== link.dev || opened.ino !== link.ino) return null
 
