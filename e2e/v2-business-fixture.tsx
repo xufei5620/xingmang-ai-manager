@@ -29,6 +29,8 @@ declare global {
     setPageActive: (active: boolean) => void
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     failNextRead: (read: 'profile' | 'subscriptions') => void
+    // extensionHold：除卸载以外的扩展改动（开关、更新）挂着，等这里放开才回。
+    releaseExtension: () => void
     // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
     profileReadHarness: {
       deferNext(): void
@@ -78,6 +80,8 @@ const record = (name: string, args?: unknown) => {
 }
 const failOnce = new Set<string>()
 window.failNextRead = (read) => { failOnce.add(read) }
+let releaseHeldExtension: (() => void) | undefined
+window.releaseExtension = () => { releaseHeldExtension?.(); releaseHeldExtension = undefined }
 function failingOnce(read: string) {
   return failOnce.delete(read)
 }
@@ -105,6 +109,48 @@ let codexCatalogReady = false
 let codexCatalogAttempts = 0
 // mcpHealthFail 让第一次连接检测没跑完，验证「这次没检测成」和「重新检测」。
 let mcpHealthAttempts = 0
+// mcpAuth：Codex 那条连接要登录授权；点了「登录授权」就一直等，直到点「取消」（#1099 第 1 条）。
+let finishMcpLogin: (() => void) | null = null
+function codexMcpServers(authStatus: string) {
+  return [
+    {
+      name: 'test-extension',
+      enabled: true,
+      disabledReason: null,
+      transportType: 'http' as const,
+      command: null,
+      args: [],
+      cwd: null,
+      url: 'https://example.test/mcp',
+      envNames: [],
+      inheritedEnvNames: [],
+      httpHeaderNames: [],
+      inheritedHttpHeaderNames: [],
+      bearerTokenEnvVar: null,
+      startupTimeoutSec: null,
+      toolTimeoutSec: null,
+      authStatus,
+      origin: 'user' as const,
+      editable: true,
+    },
+  ]
+}
+const mcpAuthMethods = {
+  listMcpServers: async () => codexMcpServers('not_logged_in'),
+  loginMcpServer: async (name: string) => {
+    record('mcp-login', name)
+    await new Promise<void>((resolve) => {
+      finishMcpLogin = resolve
+    })
+    return codexMcpServers('not_logged_in')
+  },
+  cancelMcpLogin: async (name: string) => {
+    record('mcp-cancel-login', name)
+    // 主进程停掉登录命令、再读一遍列表要一会儿：留出「正在停止」看得见的那一下。
+    setTimeout(() => finishMcpLogin?.(), 400)
+    return true
+  },
+} satisfies Partial<V2Bridge>
 const codexCatalogPlugin = {
   provider: 'codex' as const,
   kind: 'plugin' as const,
@@ -935,6 +981,7 @@ const apiMethods = {
     input: Parameters<V2Bridge['mutateProviderExtension']>[0],
   ) => {
     record('extension', input)
+    if (query.has('extensionHold') && input.action !== 'uninstall') await new Promise<void>((resolve) => { releaseHeldExtension = resolve })
     // extensionOk：改动照常成功，用来看成功以后那句提示。
     if (query.has('extensionOk')) return extensionList(input.provider)
     throw new Error('扩展操作失败，已有配置保留')
@@ -944,6 +991,7 @@ const apiMethods = {
     record('add-mcp', input)
     return []
   },
+  ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   listBackups: async () => (empty ? [] : [backup]),
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)
@@ -1073,12 +1121,15 @@ const apiMethods = {
     record('clear-logs')
     logsCleared = true
   },
-  getFeedbackReport: async () => ({
-    id: 'report-snapshot-7',
-    text: '固定的脱敏报告内容',
-    entries: 1,
-    selfChecked: !query.has('selfCheckMissing'),
-  }),
+  getFeedbackReport: async () => {
+    if (fail === 'feedbackReport') throw new Error('诊断报告生成失败')
+    return {
+      id: 'report-snapshot-7',
+      text: '固定的脱敏报告内容',
+      entries: 1,
+      selfChecked: !query.has('selfCheckMissing'),
+    }
+  },
   copyFeedbackReport: async (id?: string) => {
     record('copy-report', id)
     return { entries: 1 }

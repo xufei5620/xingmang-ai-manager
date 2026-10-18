@@ -1496,6 +1496,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'mcp:add': 'MCP 添加',
   'mcp:remove': 'MCP 删除',
   'mcp:login': 'MCP 登录',
+  'mcp:cancel-login': '取消 MCP 登录',
   'mcp:logout': 'MCP 退出登录',
   'skills:list': 'Skills 列表读取',
   'skills:import': 'Skill 导入',
@@ -3312,6 +3313,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   registerTrustedHandler('mcp:login', (_event, name: unknown) => (
     options.extensionService.loginMcpServer(requiredString(name, 'MCP 名称', 128))
+  ))
+  registerTrustedHandler('mcp:cancel-login', (_event, name: unknown) => (
+    options.extensionService.cancelMcpLogin(requiredString(name, 'MCP 名称', 128))
   ))
   registerTrustedHandler('mcp:logout', (_event, name: unknown) => (
     options.extensionService.logoutMcpServer(requiredString(name, 'MCP 名称', 128))

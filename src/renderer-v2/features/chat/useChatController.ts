@@ -91,9 +91,13 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
           groupsInitialized.current = true
           const conversation = activeConversation(stateRef.current)
           const remembered = initial.exists || stateRef.current.activeId !== null || Boolean(conversation.settings.model)
-          const selected = remembered && conversation.settings.group ? conversation.settings.group
-            : resolveChatGroup(result, '', /^(api-account|solov-api):/.test(scope) ? 'solov-api' : 'solov')
+          const previous = remembered ? conversation.settings.group : ''
+          // 记住的分组站上已经没了（xm 站 10-16 删过老分组名，#1059）：退回推荐分组，并说一句扣费分组也换了。
+          // 一个分组都读不到时照旧留着原来的，不把它清掉。
+          const resolved = resolveChatGroup(result, previous, /^(api-account|solov-api):/.test(scope) ? 'solov-api' : 'solov')
+          const selected = previous && !resolved ? previous : resolved
           if (selected !== conversation.settings.group) commit((current) => changeConversation(current, conversation.id, (item) => ({ ...item, settings: { ...item.settings, group: selected, model: '' } })))
+          if (previous && selected !== previous) setNotice(`原来的分组「${previous}」已不可用，已换成「${selected}」，之后按「${selected}」分组计费。`)
           if (selected) void prepareGroup(selected)
         }
         return true
@@ -209,9 +213,10 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     if (requests.current.size >= 4) { setError('已有 4 个对话正在处理，请等待一个完成后再试'); return }
     try {
       const plan = planTurn(current, { prompt: options.prompt ?? current.draft, images: current.draftImages, requestId: createId(), assistantId: createId(), userMessageId: createId(), ...options })
-      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError('所选分组已不可用，请选择可用分组后再发送'); return }
+      // 发送按钮灰着时 Enter 也不发，走到这里的是「编辑后重新发送」「重新生成」和断网横幅上的「重试」：按卡在哪一步说。
+      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError(!groupsLoaded && groupLoading ? '正在读取分组，读完再发送' : '所选分组已不可用，请选择可用分组后再发送'); return }
       const prepared = preparations[plan.settings.group]
-      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError('所选分组或模型尚未准备，请重新准备后再试'); return }
+      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '正在准备模型，准备好再发送' : prepared.phase === 'error' ? '模型没准备好，请先点「刷新分组和模型」再发送' : '请先选择分组和模型'); return }
       const textInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, messages: plan.messages, parameters: plan.settings.parameters }
       const capability = inspectModel(plan.settings.model)
       const imageInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, prompt: plan.prompt, size: plan.settings.size, quality: capability.kind === 'image' && capability.qualities.length ? plan.settings.quality : undefined, imageResolution: plan.settings.imageResolution }

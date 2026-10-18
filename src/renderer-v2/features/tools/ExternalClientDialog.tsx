@@ -58,6 +58,9 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   const [keyError, setKeyError] = useState('')
   const [dirty, setDirty] = useState(false)
   const [result, setResult] = useState<ExternalClientConfigResult | null>(null)
+  // 「保存并检测」检测完了但替客户挑不了模型，停在这里还没保存：说一句，焦点放到「默认模型」上（#1104 第 6 条）。
+  const [pickModel, setPickModel] = useState(false)
+  const modelField = useRef<HTMLDivElement>(null)
   const alive = useRef(true)
   const lock = useRef(false)
   const openedWith = useRef(liveConfig)
@@ -94,11 +97,16 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     // 来源没变也重填型号：那个工具的配置可能刚换了型号（比如开机那一轮把下架的换掉）。
     setConfig(liveConfig); setSource(next); setModel(configuredSourceModel(tool, next, liveConfig.providers))
   }, [liveConfig, busy])
+  // 检测时整组控件是灰的，等它放开了再把焦点挪过去。Claude Desktop 停下是因为这把密钥没有 Claude 型号，
+  // 要换的是密钥，焦点不往模型那里挪。
+  useEffect(() => {
+    if (pickModel && !busy && tool !== 'claudeDesktop') modelField.current?.querySelector('select')?.focus()
+  }, [pickModel, busy])
 
   // 切回自家工具那把密钥，型号也回到打开时替他填的那个；换成别的来源照旧清空，检测完再挑。
   function changeSource(next: string) {
     const seeded = next === `configured:${definition.preferredProvider}` ? configuredSourceModel(tool, next, config?.providers ?? null) : ''
-    setSource(next); setModels([]); setModel(seeded); setResult(null); setError(''); setSecretError(''); setDirty(true)
+    setSource(next); setModels([]); setModel(seeded); setResult(null); setError(''); setSecretError(''); setDirty(true); setPickModel(false)
   }
   function credential(): ExternalClientCredential {
     if (source.startsWith('configured:')) return { kind: 'configured', provider: source.slice(11) as ProviderId }
@@ -112,7 +120,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       if (issue) { setSecretError(issue); return null }
     }
     if (lock.current) return null
-    lock.current = true; setBusy('models'); setError(''); setResult(null)
+    lock.current = true; setBusy('models'); setError(''); setResult(null); setPickModel(false)
     try {
       const selected = credential()
       const values = selected.kind === 'configured' ? await api.listConfiguredModels(selected.provider)
@@ -128,7 +136,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   }
   async function save(chosen: string, list: readonly string[]) {
     if (lock.current || !list.includes(chosen)) return
-    lock.current = true; setBusy('save'); setError(''); setResult(null)
+    lock.current = true; setBusy('save'); setError(''); setResult(null); setPickModel(false)
     const finish = beginBusinessOperation(`配置 ${definition.name}`)
     try {
       const saved = await api.configureExternalTool(tool, { credential: credential(), model: chosen, ...(tool === 'opencode' ? { protocol } : {}) })
@@ -142,7 +150,9 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   // 就接着保存；拿不准就停下让用户自己挑，按钮跟着变成「保存配置」。
   async function detectThenSave() {
     const listed = await detect()
-    if (listed?.kept && alive.current) await save(listed.kept, listed.values)
+    if (!listed || !alive.current) return
+    if (listed.kept) await save(listed.kept, listed.values)
+    else if (listed.values.length) setPickModel(true)
   }
   const detected = models.length > 0
   const currentSources = configuredKeySources(clientKeySources, definition.preferredProvider, config?.providers ?? null)
@@ -164,12 +174,15 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       <div className="v2-config-key"><OptionPicker label="访问密钥" value={source} options={sourceOptions} onChange={changeSource} testId="external-client-source" />
         {keyError && <p role="status">{accountKeyListFailureText(keyError)}</p>}
         {source === 'manual' && <Input label="星芒密钥" password mono autoComplete="off" value={secret} error={secretError || undefined} placeholder={strictKeyFormat ? '粘贴你在星芒创建的密钥，以 sk- 开头' : undefined}
-          onChange={(event) => { setSecret(event.target.value); setSecretError(''); setModels([]); setModel(''); setResult(null); setDirty(true) }} testId="external-client-secret" />}
+          onChange={(event) => { setSecret(event.target.value); setSecretError(''); setModels([]); setModel(''); setResult(null); setDirty(true); setPickModel(false) }} testId="external-client-secret" />}
       </div>
-      <div className="xm-field v2-config-model">
-        <div className="v2-config-model-row"><Select label="默认模型" value={model} options={models.length ? models.map((id) => ({ value: id, label: id })) : [{ value: model, label: model || '先检测这把密钥的可用模型' }]} onChange={(event) => { setModel(event.target.value); setDirty(true); setResult(null) }} disabled={!models.length} testId="external-client-model" />
+      <div className="xm-field v2-config-model" ref={modelField}>
+        <div className="v2-config-model-row"><Select label="默认模型" value={model} options={models.length ? models.map((id) => ({ value: id, label: id })) : [{ value: model, label: model || '先检测这把密钥的可用模型' }]} onChange={(event) => { setModel(event.target.value); setDirty(true); setResult(null); setPickModel(false) }} disabled={!models.length} testId="external-client-model" />
           <Button icon={RefreshCw} loading={busy === 'models'} disabled={source === 'manual' && !secret.trim()} onClick={() => void detect()} testId="external-client-detect">{busy === 'models' ? '检测中' : '检测模型'}</Button></div>
-        {detected && models.includes(model) && <p className="v2-ok-line"><Check size={13} aria-hidden="true" />这把密钥能用 {new Set(models).size} 个模型，{model} 可以用</p>}
+        {pickModel ? <p className="v2-field-note" role="status" data-testid="external-client-pick-model">{tool === 'claudeDesktop'
+          ? '这把密钥没有 Claude 型号，Claude Desktop 用不了。请在「访问密钥」里换一把，再点「检测模型」。'
+          : '还没保存。请在「默认模型」里选一个模型，再点「保存配置」。'}</p>
+          : detected && models.includes(model) && <p className="v2-ok-line"><Check size={13} aria-hidden="true" />这把密钥能用 {new Set(models).size} 个模型，{model} 可以用</p>}
       </div>
       {tool === 'opencode' && <div className="xm-field"><Select label="模型类型" value={protocol} options={[{ value: 'responses', label: 'Codex / GPT 系列模型' }, { value: 'chat-completions', label: '其他模型' }]} onChange={(event) => { setProtocol(event.target.value as typeof protocol); setDirty(true); setResult(null) }} testId="external-client-protocol" /><p className="v2-field-note">按上面选的模型挑一项；拿不准就选和模型名对应的那一项。</p></div>}
     </fieldset>
