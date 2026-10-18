@@ -66,7 +66,7 @@ npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着
 
 **提交前必须两条都过**：`npm run typecheck` 和 `npm test`。动了 renderer-v2 的再加 `npm run check:v2` 和 `npm run test:v2`。
 
-**测试基线**：三平台都应为 **0 失败**（#40）。Windows 上需要 `SeCreateSymbolicLinkPrivilege` 的 9 条用例，在没有该特权的机器（非管理员且未开开发人员模式）上会**自动跳过**——跳过不算失败，CI 的 runner 有该特权、照常执行。红了就是回归，不要再按「环境相关」放过。各平台明细与复核命令见 `docs/TEST-BASELINE.md`。
+**测试基线**：三平台都应为 **0 失败**（#40）。Windows 上需要 `SeCreateSymbolicLinkPrivilege` 的 11 条用例，在没有该特权的机器（非管理员且未开开发人员模式）上会**自动跳过**——跳过不算失败，CI 的 runner 有该特权、照常执行。红了就是回归，不要再按「环境相关」放过。各平台明细与复核命令见 `docs/TEST-BASELINE.md`。
 
 **云端容器跑浏览器用例**：容器预装的 Chromium 往往跟 `@playwright/test` 要的版本对不上，直接跑 `npm test` / `npm run test:v2`，浏览器套件会报 `Executable doesn't exist`。这是环境问题不是回归，**但也不算跑过**：设 `XINGMANG_E2E_CHROMIUM` 指向容器里那份 Chromium 重跑，门槛不变，同样要 0 失败。Claude Code 云端容器里的写法：
 
