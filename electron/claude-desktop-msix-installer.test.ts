@@ -297,6 +297,55 @@ describe('Claude Desktop official MSIX installation', () => {
     expect(f.installPackage).not.toHaveBeenCalled()
   })
 
+  it('keeps each redirect refusal in its old words, all read as an unreachable website', async () => {
+    const loop = await fixture()
+    loop.fetch.mockImplementation(async () => redirect(claudeDesktopMsixEntryUrl('x64')))
+    const endless = await fixture()
+    let hop = 0
+    endless.fetch.mockImplementation(async () => redirect(`https://downloads.claude.ai/releases/hop-${hop++}.msix`))
+    const missing = await fixture()
+    missing.fetch.mockImplementation(async () => redirect(null, 302))
+    // Allowed, but not the hop that was asked for: a fetch that followed the entry by itself.
+    const elsewhere = await fixture()
+    elsewhere.fetch.mockImplementation(async () => Object.defineProperty(packageResponse(), 'url', { value: releaseUrl }))
+    for (const [f, message] of [
+      [loop, 'Claude 官网下载出现了循环重定向'],
+      [endless, 'Claude 官网下载重定向次数过多'],
+      [missing, 'Claude 官网下载重定向缺少目标地址'],
+      [elsewhere, 'Claude 官网下载绕过了受限的重定向规则'],
+    ] as const) {
+      const failure = await installClaudeDesktopFromOfficial(f.options).then(() => null, (error: Error) => error)
+      expect(failure?.message).toBe(message)
+      expect(classifyClaudeDesktopInstallFailure(failure?.message ?? '')).toBe('unreachable')
+      expect(f.installPackage).not.toHaveBeenCalled()
+    }
+    expect(loop.fetch).toHaveBeenCalledOnce()
+    expect(missing.fetch).toHaveBeenCalledOnce()
+    expect(elsewhere.fetch).toHaveBeenCalledOnce()
+  })
+
+  it('follows each of the five redirect statuses and leaves any other 3xx to the response check', async () => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      const f = await fixture()
+      f.fetch.mockImplementation(async (input) => requestUrl(input) === claudeDesktopMsixEntryUrl('x64') ? redirect(releaseUrl, status) : packageResponse())
+      await expect(installClaudeDesktopFromOfficial(f.options)).resolves.toEqual({ version: '1.1.2345.0' })
+      expect(f.fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([claudeDesktopMsixEntryUrl('x64'), releaseUrl])
+    }
+    const f = await fixture()
+    f.fetch.mockImplementation(async (input) => requestUrl(input) === claudeDesktopMsixEntryUrl('x64') ? redirect(releaseUrl, 300) : packageResponse())
+    await expect(installClaudeDesktopFromOfficial(f.options)).rejects.toThrow('Claude 官网返回 HTTP 300')
+    expect(f.fetch).toHaveBeenCalledOnce()
+  })
+
+  it('accepts a response that reports exactly the hop it asked for', async () => {
+    const f = await fixture()
+    f.fetch.mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      return Object.defineProperty(url === claudeDesktopMsixEntryUrl('x64') ? redirect(releaseUrl) : packageResponse(), 'url', { value: url })
+    })
+    await expect(installClaudeDesktopFromOfficial(f.options)).resolves.toEqual({ version: '1.1.2345.0' })
+  })
+
   it.each([
     [packageResponse(payload, {}, 404), 'HTTP 404', 'unreachable'],
     [packageResponse(payload, { 'content-type': 'text/html; charset=utf-8' }), 'Content-Type', 'damaged'],
