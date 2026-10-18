@@ -58,7 +58,8 @@ function timelineFixture() {
 let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
   ...(query.has('crashNotice') ? {} : { crashReportingNoticeShown: true as const }),
   ...(query.has('chineseAsk') ? {} : { codexDesktopChineseRuntimePatch: 'enabled' as const }) }
-const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
+// ?longUsername：历史账号没有用户名时界面上写的是邮箱，用一个真实长度的（42 字）。
+const account = { userId: 17, username: query.has('longUsername') ? 'zhangwei.developer2026@company-mail.com.cn' : 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
 const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
 if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
