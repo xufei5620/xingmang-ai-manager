@@ -846,13 +846,18 @@ describe('Claude Desktop official login switch', () => {
     write(path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`), { ...read(saved.path), inferenceGatewayApiKey: 'sk-someone-else' })
     write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '别人的' }] })
     const previous = snapshot([f.configPath, f.metadataPath])
-    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('在切换前已变化')
-    await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).rejects.toThrow('在切换前已变化')
+    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
+    await expect(f.service.useGatewayLogin(input.baseUrl, belongs)).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
     expectSnapshot(previous)
 
     write(f.metadataPath, metadata)
     await f.service.useOfficialLogin()
-    await expect(f.service.useOfficialLogin(belongs)).rejects.toThrow('在切换前已变化')
+    const again = await f.service.useOfficialLogin(belongs).catch((error: unknown) => error)
+    // 客户看到的只说再点一次；哪一条没对上挂在 cause 上进运行日志（#1111 第4条）。
+    expect(again).toMatchObject({
+      message: 'Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。',
+      cause: { message: 'Claude Desktop 第三方推理配置：deploymentMode 已经是 1p' },
+    })
     expect(read(f.configPath)).toEqual({ deploymentMode: '1p' })
   })
 
@@ -865,8 +870,8 @@ describe('Claude Desktop official login switch', () => {
     // 首页认它是「当前账号」，切官方也得认，不然点了只会报「已变化」。
     expect(await f.service.inspectConnection(input.baseUrl, belongs)).toMatchObject({ configured: true })
     const previous = snapshot([f.configPath, f.metadataPath])
-    await expect(f.service.useOfficialLogin()).rejects.toThrow('在切换前已变化')
-    await expect(f.service.useOfficialLogin(() => false)).rejects.toThrow('在切换前已变化')
+    await expect(f.service.useOfficialLogin()).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
+    await expect(f.service.useOfficialLogin(() => false)).rejects.toThrow('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。')
     expectSnapshot(previous)
 
     await f.service.useOfficialLogin(belongs)
