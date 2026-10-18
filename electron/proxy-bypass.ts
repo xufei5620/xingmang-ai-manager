@@ -24,6 +24,7 @@ import { readBoundedResponseText } from './bounded-response'
 import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, parsesAsJsonObject, type NetworkFailureReason } from './network-failure'
 import { isRelayLineCancel, relayAnswerMayRedirect } from './relay-line-fetch'
 import { watchResponseBody } from './response-body-watch'
+import { scheduleTimeout } from './schedule-timeout'
 
 export type ProxyBypassOutcome =
   /** 直连通了：改成直连，代理软件又起来以后再改回去。 */
@@ -139,12 +140,6 @@ export const proxyRecheckDelayMs = 3_000
  * 连得上就交还给它，账号请求不必先在直连上白等满 10 秒；电脑一直没网也不会一直探下去。
  */
 export const siteRecheckDelaysMs: readonly number[] = [3_000, 10_000, 30_000]
-
-function scheduleTimeout(callback: () => void, delayMs: number): () => void {
-  const timer = setTimeout(callback, delayMs)
-  timer.unref?.()
-  return () => clearTimeout(timer)
-}
 
 // 探测自己等满了抛的是 AbortSignal.timeout 的 TimeoutError，classifyNetworkFailure 认不出来。
 function probeFailure(error: unknown): NetworkFailureReason | null {
