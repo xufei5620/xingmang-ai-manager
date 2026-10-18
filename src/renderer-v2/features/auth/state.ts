@@ -233,7 +233,9 @@ function verificationMailFailure(message: string): AuthFailure | null {
 }
 
 export function authFailure(error: unknown, action: string, online = true): AuthFailure {
-  const message = errorText(error)
+  // 通道名和类名不参与下面的判断：account:change-password、account:reset-password 里的 password
+  // 会被「用户名|密码」那条认走，重置、设新密码认不出的失败一律成了「账号或密码不正确」（#1236）。
+  const message = stripIpcErrorPrefix(errorText(error))
   // 本机账号库存满（全面检测 Q40）。放在「安全存储」之前：以前满了也报存储不可用，
   // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
   if (/保存的账号已满/.test(message)) return { message: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。', kind: 'final' }
@@ -268,7 +270,10 @@ export function authFailure(error: unknown, action: string, online = true): Auth
   // 只因为带着「验证码」三个字，以前被说成验证码不对。
   if (!sendingCode && /验证码|verification code/i.test(message)) return { message: '验证码不正确或已过期，请重新获取', kind: 'code' }
   if (/重置/.test(action) && /token|重置码|expired|过期/i.test(message)) return { message: '重置码已失效，请重新获取邮件', kind: 'code' }
-  if (/用户名|密码|credential|password|unauthorized/i.test(message)) return { message: '账号或密码不正确，请检查后重试', kind: 'credentials' }
+  // 重置、设新密码这两步客户没输过账号密码，「密码不对」只信上面服务端那张表里的准话（原密码错误等）：
+  // 主进程自己的兜底「重置密码失败，服务返回 HTTP 500」句子里就带「密码」，不能拿来认。
+  const choosingPassword = action === '重置密码' || action === '设新密码'
+  if (!choosingPassword && /用户名|密码|credential|password|unauthorized/i.test(message)) return { message: '账号或密码不正确，请检查后重试', kind: 'credentials' }
   if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return { message: authNetworkFallbackMessage, kind: 'unreachable' }
   if (/turnstile|人机/i.test(message)) return { message: '服务端需要完成安全验证，请在浏览器完成后再试', kind: 'final' }
   const plain = plainChineseReason(message)
