@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import net from 'node:net'
 import { promisify } from 'node:util'
+import { readBoundedResponseText } from './bounded-response'
 import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -932,8 +933,9 @@ async function listTargets(
     signal: AbortSignal.timeout(cdpDiscoveryTimeoutMs),
   })
   if (!response.ok) throw new Error(`CDP 目标查询返回 HTTP ${response.status}`)
-  const body = await response.text()
-  if (Buffer.byteLength(body, 'utf8') > maximumCdpResponseBytes) throw new Error('CDP 目标响应过大')
+  const body = await readBoundedResponseText(response, maximumCdpResponseBytes, 'CDP 目标', {
+    oversizeMessage: 'CDP 目标响应过大',
+  })
   const value = JSON.parse(body) as unknown
   if (!Array.isArray(value)) throw new Error('CDP 目标响应格式无效')
   return value.filter((entry): entry is CodexDesktopCdpTarget => {

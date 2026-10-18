@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { readBoundedResponseText } from './bounded-response'
 import {
   runCommand,
   trustedCommandEnvironment,
@@ -361,14 +362,6 @@ function verifiedPythonRuntimeWingetPlan(executable: string): NodeRuntimeProcess
   }
 }
 
-async function readBoundedText(response: Response, maximumBytes: number, label: string): Promise<string> {
-  const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maximumBytes) throw new Error(`${label}响应过大`)
-  const text = await response.text()
-  if (Buffer.byteLength(text, 'utf8') > maximumBytes) throw new Error(`${label}响应过大`)
-  return text
-}
-
 async function fetchJsonText(
   url: string,
   maximumBytes: number,
@@ -387,7 +380,9 @@ async function fetchJsonText(
     })
     if (!response.ok) throw new Error(`Python 官方发布接口 HTTP ${response.status}`)
     if (response.url && response.url !== url) throw new Error('Python 发布信息重定向到了未经批准的地址')
-    return await readBoundedText(response, maximumBytes, 'Python 发布信息')
+    return await readBoundedResponseText(response, maximumBytes, 'Python 发布信息', {
+      oversizeMessage: 'Python 发布信息响应过大',
+    })
   } finally {
     clearTimeout(timeout)
     signal?.removeEventListener('abort', abort)

@@ -352,6 +352,43 @@ test('usage details retain ordinary cache prices and distinguish missing prices 
   }
 })
 
+// 后台给的名字撑没撑出外框：里面那块的左右两边都得落在外框里（留 1px 给小数取整）。
+async function staysInside(inner, outer) {
+  const [a, b] = await Promise.all([inner.boundingBox(), outer.boundingBox()])
+  return a.x >= b.x - 1 && a.x + a.width <= b.x + b.width + 1
+}
+
+test('names the server sends too long to break stay inside their card, cut short with the full name on hover', async () => {
+  const page = await fixture('page=account&usageDetail=tiered&longNames')
+  try {
+    const cutShort = (locator) => locator.evaluate((element) => element.scrollWidth > element.clientWidth)
+    // 密钥行：分组牌放不下就换到标题下面一行，最宽一整行，再长才省略（#1133 第 7 条）。
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const row = page.getByTestId('account-key-row-1')
+    const group = row.locator('.xm-row-title .xm-pill > span').first()
+    await group.waitFor()
+    assert.equal(await staysInside(group, row.locator('.xm-row-main')), true)
+    assert.match(await group.getAttribute('title'), /^default-SuperLong\w+XYZ$/)
+
+    // 充值：支付方式名只占一行，悬停整张卡看全名。
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const option = page.locator('.v2-recharge-pay-option').first()
+    await option.waitFor()
+    const name = option.locator('.v2-recharge-pay-copy strong')
+    assert.equal(await staysInside(name, option), true)
+    assert.equal(await cutShort(name), true)
+    assert.match(await option.getAttribute('title'), /^Stripe-SuperLong\w+XYZ$/)
+
+    // 调用详情：状态牌照常，模型名牌缩到弹窗放得下。
+    const dialog = await openUsageDetails(page)
+    const model = dialog.locator('.v2-usage-detail-summary .xm-pill > span')
+    assert.equal(await staysInside(model, dialog.locator('.v2-usage-detail-summary')), true)
+    assert.equal(await cutShort(model), true)
+    assert.match(await model.getAttribute('title'), /^gpt-SuperLong\w+XYZ$/)
+    assert.equal(await cutShort(dialog.locator('.v2-usage-detail-summary .xm-pill').first()), false)
+  } finally { await page.close() }
+})
+
 test('account exposes the six v4 tabs and keeps server orders and keys visible', async () => {
   const page = await fixture('page=account')
   try {

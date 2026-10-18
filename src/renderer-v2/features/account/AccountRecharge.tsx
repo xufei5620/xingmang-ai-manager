@@ -116,7 +116,8 @@ function PayChoices({ name, choices, value, onChange, stacked }: { name: string;
   return (
     <div role="radiogroup" aria-label="支付方式" className={`v2-recharge-pay${stacked ? ' is-stacked' : ''}`}>
       {choices.map((choice) => (
-        <label className={`v2-recharge-pay-option${value === choice.value ? ' is-selected' : ''}${choice.disabled ? ' is-disabled' : ''}`} key={choice.value}>
+        // 整张卡上盖着那颗透明的单选框，悬停看全名的 title 只能挂在卡上（名字太长时省略）。
+        <label className={`v2-recharge-pay-option${value === choice.value ? ' is-selected' : ''}${choice.disabled ? ' is-disabled' : ''}`} key={choice.value} title={choice.label}>
           <input
             type="radio"
             aria-label={choice.label}

@@ -307,7 +307,7 @@ export function claudeDesktopRepairedNotice(
 
 /**
  * 连接线路因为连不上换了，开着的工具要重开才走新线路（xm 三线路 C10，主进程 followToolRoutes 定的
- * 要说哪几样、24 小时一次）。一样一句；Codex 桌面端在 Windows 上开着时给现成的「帮我重开」，别的
+ * 要说哪几样、24 小时一次；历史账号是整份写入跟过去以后 noteRouteFollowRestart 定的，#1061 第 2 条）。一样一句；Codex 桌面端在 Windows 上开着时给现成的「帮我重开」，别的
  * 只能客户自己重开，关掉叉就行。
  */
 export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotice | null {
