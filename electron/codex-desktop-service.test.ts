@@ -77,6 +77,7 @@ import {
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
+  launchThenWaitOutsideAccountWork,
   parseCodexDesktopCombinedProbeJson,
   validateCodexDesktopResourceUrl,
   toCodexDesktopMacInstallFailure,
@@ -1925,6 +1926,43 @@ describe('Codex Desktop launch queueing', () => {
     await blocking
     await expect(next).rejects.toThrow('仅支持 Windows')
     expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledTimes(1)
+  })
+
+  // #1085：Windows 上等窗口、换中文最长一分多钟，发出启动请求以后换账号不该陪它等到 30 秒超时。
+  it('stops counting a launch as account work once the launch request is sent, while the window wait goes on', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    let sendRequest!: () => void
+    const requestSent = new Promise<void>((resolve) => { sendRequest = resolve })
+    let showWindow!: () => void
+    const windowShown = new Promise<void>((resolve) => { showWindow = resolve })
+    const launch = launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      await requestSent
+      return async () => { await windowShown; return 'opened' }
+    })
+
+    let drained = false
+    const drain = accountWork.whenIdle().then(() => { drained = true })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(drained).toBe(false)
+    sendRequest()
+    await drain
+    revision++
+    showWindow()
+    await expect(launch).resolves.toBe('opened')
+  })
+
+  it('does not wait for the window when the account changed before the launch request was sent', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    const wait = vi.fn(async () => 'opened')
+    const launch = launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      revision++
+      return wait
+    })
+
+    await expect(launch).rejects.toThrow('账号上下文已变化')
+    expect(wait).not.toHaveBeenCalled()
   })
 
   it('merges a repeated identical launch but keeps a different mode or locale intent separate', async () => {
