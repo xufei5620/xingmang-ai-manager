@@ -588,6 +588,88 @@ describe('ensureCodexPluginCatalog', () => {
     expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
   })
 
+  it('follows up to three codeload redirects of each kind and refuses a fourth', async () => {
+    const hop = (index: number) => `https://codeload.github.com/openai/plugins/tar.gz/hop-${index}`
+    for (const status of [301, 302, 303, 307, 308]) {
+      const codexHome = temporaryCodexHome()
+      const calls: string[] = []
+      const inits: RequestInit[] = []
+      const chain: typeof fetch = async (input, init) => {
+        const url = String(input)
+        calls.push(url)
+        inits.push(init ?? {})
+        const index = url === CODEX_PLUGIN_CATALOG_URL ? 0 : Number(url.slice(url.lastIndexOf('-') + 1))
+        if (index < 3) return new Response(null, { status, headers: { location: hop(index + 1) } })
+        return new Response(new Uint8Array(gzipCatalog()), { status: 200 })
+      }
+
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: chain })).resolves.toBe('downloaded')
+      expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, hop(1), hop(2), hop(3)])
+      for (const init of inits) {
+        expect(init.redirect).toBe('manual')
+        expect(init.signal).toBeInstanceOf(AbortSignal)
+      }
+    }
+
+    const codexHome = temporaryCodexHome()
+    const calls: string[] = []
+    const endless: typeof fetch = async (input) => {
+      calls.push(String(input))
+      return new Response(null, { status: 302, headers: { location: hop(calls.length) } })
+    }
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: endless })).rejects.toThrow(codexPluginCatalogNetworkMessage)
+    expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL, hop(1), hop(2), hop(3)])
+    expect(fs.existsSync(codexPluginCatalogPaths(codexHome).directory)).toBe(false)
+  })
+
+  it('refuses a redirect without a target or off https codeload, and drops its body', async () => {
+    for (const location of [
+      null,
+      'http://codeload.github.com/openai/plugins/tar.gz/main',
+      'https://codeload.github.com:8443/openai/plugins/tar.gz/main',
+      'https://user@codeload.github.com/openai/plugins/tar.gz/main',
+      'https://github.com/openai/plugins/archive/refs/heads/main.tar.gz',
+    ]) {
+      const codexHome = temporaryCodexHome()
+      const calls: string[] = []
+      let cancelled = 0
+      const redirecting: typeof fetch = async (input) => {
+        calls.push(String(input))
+        const body = new ReadableStream<Uint8Array>({ cancel() { cancelled += 1 } })
+        return new Response(body, { status: 302, headers: location === null ? {} : { location } })
+      }
+
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: redirecting }), String(location))
+        .rejects.toThrow(codexPluginCatalogNetworkMessage)
+      expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
+      expect(cancelled).toBe(1)
+    }
+  })
+
+  it('leaves a 3xx outside the five redirect statuses unfollowed, as a network failure', async () => {
+    for (const status of [300, 304, 305, 306]) {
+      const codexHome = temporaryCodexHome()
+      const calls: string[] = []
+      const odd: typeof fetch = async (input) => {
+        calls.push(String(input))
+        return new Response(null, { status, headers: { location: `https://codeload.github.com/openai/plugins/tar.gz/${commit}` } })
+      }
+
+      await expect(ensureCodexPluginCatalog({ codexHome, fetch: odd }), String(status)).rejects.toThrow(codexPluginCatalogNetworkMessage)
+      expect(calls).toEqual([CODEX_PLUGIN_CATALOG_URL])
+    }
+  })
+
+  it('accepts a response reporting the requested address in another spelling', async () => {
+    const codexHome = temporaryCodexHome()
+    const spelled: typeof fetch = async () => withResponseUrl(
+      new Response(new Uint8Array(gzipCatalog()), { status: 200 }),
+      'HTTPS://CODELOAD.GITHUB.COM:443/openai/plugins/tar.gz/refs/heads/main',
+    )
+
+    await expect(ensureCodexPluginCatalog({ codexHome, fetch: spelled })).resolves.toBe('downloaded')
+  })
+
   it('reports an unreachable network in plain words and leaves nothing behind', async () => {
     const codexHome = temporaryCodexHome()
     const failing: typeof fetch = async () => { throw new TypeError('fetch failed') }

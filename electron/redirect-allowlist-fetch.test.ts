@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fetchWithRedirectAllowlist, type RedirectAllowlist } from './redirect-allowlist-fetch'
+import { fetchLandingWithRedirectAllowlist, fetchWithRedirectAllowlist, type RedirectAllowlist } from './redirect-allowlist-fetch'
 
 const start = 'https://downloads.example/pkg/v1/app.zip'
 
@@ -219,6 +219,72 @@ describe('fetchWithRedirectAllowlist', () => {
     })
     const net = network({ [start]: { status: 302, location: 'https://cdn.example/pkg/v2/app.zip' } })
     await expect(fetchWithRedirectAllowlist(start, {}, net.fetch, pinned)).rejects.toThrow('资源路径变了')
+  })
+
+  it('keeps the wording a caller passes and falls back to the label for the rest', async () => {
+    const worded = allowlist({ messages: { loop: '旧说法：循环', missingLocation: '旧说法：没目标' } })
+    const loop = network({
+      [start]: { status: 302, location: 'https://cdn.example/a' },
+      'https://cdn.example/a': { status: 302, location: start },
+    })
+    await expect(fetchWithRedirectAllowlist(start, {}, loop.fetch, worded)).rejects.toThrow(/^旧说法：循环$/)
+    const missing = network({ [start]: { status: 302 } })
+    await expect(fetchWithRedirectAllowlist(start, {}, missing.fetch, worded)).rejects.toThrow(/^旧说法：没目标$/)
+    const tooMany = network({
+      [start]: { status: 302, location: 'https://cdn.example/a' },
+      'https://cdn.example/a': { status: 302, location: 'https://cdn.example/b' },
+    })
+    await expect(fetchWithRedirectAllowlist(start, {}, tooMany.fetch, { ...worded, maximumRedirects: 1 }))
+      .rejects.toThrow(/^测试下载重定向次数过多$/)
+    const elsewhere = network({ [start]: { url: 'https://cdn.example/a' } })
+    await expect(fetchWithRedirectAllowlist(start, {}, elsewhere.fetch, allowlist({ messages: { bypass: '旧说法：绕过' } })))
+      .rejects.toThrow(/^旧说法：绕过$/)
+    await expect(fetchWithRedirectAllowlist(start, {}, network({ [start]: { status: 302 } }).fetch, allowlist({ messages: { tooMany: '旧说法：太多' } })))
+      .rejects.toThrow(/^测试下载重定向缺少 Location$/)
+  })
+
+  it('says which hop answered, even when the response leaves its own URL empty', async () => {
+    const net = network({
+      [start]: { status: 302, location: 'HTTPS://CDN.EXAMPLE:443/a#part' },
+      'https://cdn.example/a#part': { body: 'payload' },
+    })
+    const landing = await fetchLandingWithRedirectAllowlist(start, {}, net.fetch, allowlist())
+    expect(landing.response.url).toBe('')
+    expect(landing.url.href).toBe('https://cdn.example/a#part')
+    expect(await landing.response.text()).toBe('payload')
+
+    const direct = await fetchLandingWithRedirectAllowlist(start, {}, network({ [start]: {} }).fetch, allowlist())
+    expect(direct.url.href).toBe(start)
+  })
+
+  it('hands a redirect past the limit back unfollowed when asked to, still checking where it came from', async () => {
+    const net = network({ [start]: { status: 307, location: 'https://cdn.example/newer' } })
+    const landing = await fetchLandingWithRedirectAllowlist(start, {}, net.fetch, allowlist({ maximumRedirects: 0, beyondLimit: 'return' }))
+    expect(landing.response.status).toBe(307)
+    expect(landing.url.href).toBe(start)
+    expect(net.requested).toEqual([start])
+    // Untouched: the caller decides what an unfollowed redirect means.
+    expect(net.cancelled).toEqual([])
+
+    const followedOne = network({
+      [start]: { status: 302, location: 'https://cdn.example/a' },
+      'https://cdn.example/a': { status: 302, location: 'https://cdn.example/b' },
+    })
+    const stopped = await fetchLandingWithRedirectAllowlist(start, {}, followedOne.fetch, allowlist({ maximumRedirects: 1, beyondLimit: 'return' }))
+    expect(stopped.response.status).toBe(302)
+    expect(stopped.url.href).toBe('https://cdn.example/a')
+    expect(followedOne.requested).toEqual([start, 'https://cdn.example/a'])
+
+    const elsewhere = network({ [start]: { status: 302, location: 'https://cdn.example/a', url: 'https://cdn.example/z' } })
+    await expect(fetchLandingWithRedirectAllowlist(start, {}, elsewhere.fetch, allowlist({ maximumRedirects: 0, beyondLimit: 'return' })))
+      .rejects.toThrow('绕过')
+    expect(elsewhere.cancelled).toEqual([start])
+
+    const loop = network({
+      [start]: { status: 302, location: 'https://cdn.example/a' },
+      'https://cdn.example/a': { status: 302, location: start },
+    })
+    await expect(fetchLandingWithRedirectAllowlist(start, {}, loop.fetch, allowlist({ beyondLimit: 'return' }))).rejects.toThrow('循环重定向')
   })
 
   it('lets a failed request reject as it is', async () => {

@@ -244,6 +244,71 @@ describe('git-runtime-install', () => {
     expect(events.some((event) => event.message === '网络断了一下，正在从国内镜像接着下载 Git')).toBe(true)
   })
 
+  it('downloads over each real redirect route with a fetch that reports every hop, and resumes through the redirect again', async () => {
+    const body = installerBytes(7)
+    const cut = 5 * 1024 * 1024
+    const digest = createHash('sha256').update(body).digest('hex')
+    const [mirror, official] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const cdn = `https://cdn.npmmirror.com/binaries/git-for-windows/${gitForWindowsTag}/${gitForWindowsInstallerFileName('x64')}`
+    const objects = 'https://objects.githubusercontent.com/github-production-release-asset-2e65be/23216272/0f1e2d3c'
+      + '?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20261018%2Fus-east-1%2Fs3%2Faws4_request'
+      + '&X-Amz-Signature=deadbeef&response-content-disposition=attachment%3B%20filename%3DGit.exe'
+    const releaseAssets = 'https://release-assets.githubusercontent.com/github-production-release-asset/23216272/0f1e2d3c'
+      + '?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-18T14%3A30%3A00Z&rscd=attachment%3B+filename%3DGit.exe&sig=a%2Bb%3D'
+    const routes = [
+      // npmmirror's fixed CDN mapping, with the Location written the way a server might: upper-case host, default port.
+      { region: 'mainland-china' as const, source: 'npmmirror', entry: mirror.url, location: cdn.replace('https://cdn.npmmirror.com/', 'HTTPS://CDN.NPMMIRROR.COM:443/'), landing: cdn },
+      { region: 'outside-mainland-china' as const, source: 'official', entry: official.url, location: objects, landing: objects },
+      { region: 'outside-mainland-china' as const, source: 'official', entry: official.url, location: releaseAssets, landing: releaseAssets },
+    ]
+    for (const route of routes) {
+      const requested: string[] = []
+      const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+        expect(init?.redirect).toBe('manual')
+        const url = String(input)
+        requested.push(url)
+        let response: Response
+        if (url === route.entry) {
+          response = new Response(null, { status: 302, headers: { location: route.location } })
+        } else if (url === route.landing) {
+          const range = new Headers(init?.headers).get('range')
+          let sent = false
+          response = range
+            ? new Response(new Uint8Array(body.subarray(cut)), {
+              status: 206,
+              headers: { 'content-range': `bytes ${cut}-${body.byteLength - 1}/${body.byteLength}` },
+            })
+            : new Response(new ReadableStream<Uint8Array>({
+              pull(controller) {
+                if (sent) {
+                  controller.error(new TypeError('fetch failed'))
+                  return
+                }
+                sent = true
+                controller.enqueue(new Uint8Array(body.subarray(0, cut)))
+              },
+            }), { status: 200, headers: { 'content-length': String(body.byteLength), etag: '"git"' } })
+        } else {
+          response = new Response('not found', { status: 404 })
+        }
+        // Like undici with manual redirects: the URL that was asked for.
+        Object.defineProperty(response, 'url', { value: new URL(url).href })
+        return response
+      })
+      const deps = dependencies({
+        fetch: fetch as unknown as typeof globalThis.fetch,
+        expectedSha256: () => digest,
+        waitBeforeResume: async () => undefined,
+      })
+
+      const result = await installGitRuntimeWith('x64', { networkRegion: route.region, temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps)
+      expect(result.source, route.landing).toBe(route.source)
+      // The resumed request starts over at the source and follows its redirect again.
+      expect(requested).toEqual([route.entry, route.landing, route.entry, route.landing])
+      expect(deps.plans).toHaveLength(1)
+    }
+  })
+
   it('reports both sources in plain words when neither works', async () => {
     const fetch = vi.fn(async (url: string) => streamResponse(Buffer.alloc(0), url, 404))
     const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
@@ -268,6 +333,113 @@ describe('git-runtime-install', () => {
       .rejects.toThrow('未经批准的地址')
     expect(fetch).not.toHaveBeenCalledWith('https://evil.example/Git.exe', expect.anything())
     expect(fetch).toHaveBeenCalledWith(mirror.url, expect.anything())
+  })
+
+  it('refuses each kind of bad redirect target before following it', async () => {
+    const [mirror] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const directory = 'https://cdn.npmmirror.com/binaries/git-for-windows/v2/'
+    for (const location of [
+      'http://cdn.npmmirror.com/binaries/git-for-windows/v2/Git.exe',
+      'https://cdn.npmmirror.com:8443/binaries/git-for-windows/v2/Git.exe',
+      'https://user:secret@cdn.npmmirror.com/binaries/git-for-windows/v2/Git.exe',
+      `${directory}Git.exe#top`,
+      `${directory}Git.exe?sig=1`,
+      'https://npmmirror.com/mirrors/git-for-windows/../node/x.exe',
+      'https://github.com/attacker/git/releases/download/v1/Git.exe',
+      'https://cdn.npmmirror.com.evil.example/binaries/git-for-windows/v2/Git.exe',
+    ]) {
+      const calls: string[] = []
+      const fetch = vi.fn(async (url: string) => {
+        calls.push(url)
+        return url === mirror.url ? redirectResponse(url, location) : streamResponse(Buffer.alloc(0), url, 404)
+      })
+      const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
+
+      await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps), location)
+        .rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
+      expect(calls.filter((url) => url !== mirror.url && !url.startsWith('https://github.com/git-for-windows/'))).toEqual([])
+    }
+  })
+
+  it('stops a redirect loop, a redirect without a target and an endless chain in the words customers already see', async () => {
+    const [mirror] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const cdn = mirror.url.replace('https://npmmirror.com/mirrors/', 'https://cdn.npmmirror.com/binaries/')
+    const hop = (index: number) => `https://cdn.npmmirror.com/binaries/git-for-windows/hop-${index}.exe`
+    const cases: Array<[string, (url: string, calls: string[]) => Response, number]> = [
+      ['Git 安装包下载发生了循环跳转', (url) => redirectResponse(url, url === mirror.url ? cdn : mirror.url), 2],
+      ['Git 安装包下载跳转缺少目标地址', (url) => {
+        const response = new Response(null, { status: 302 })
+        Object.defineProperty(response, 'url', { value: url })
+        return response
+      }, 1],
+      ['Git 安装包下载跳转次数过多', (url, calls) => redirectResponse(url, hop(calls.length)), 6],
+    ]
+    for (const [message, answer, mirrorCalls] of cases) {
+      const calls: string[] = []
+      const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
+        if (url.startsWith('https://github.com/')) return streamResponse(Buffer.alloc(0), url, 404)
+        calls.push(url)
+        return answer(url, calls)
+      })
+      const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
+
+      await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps))
+        .rejects.toThrow(`Git 没装上。国内镜像：${message}；Git 官方源：HTTP 404`)
+      expect(calls).toHaveLength(mirrorCalls)
+      expect(fetch.mock.calls.every(([, init]) => init?.redirect === 'manual')).toBe(true)
+    }
+  })
+
+  it('follows five redirects and installs, including the GitHub release-asset hop with its signed query', async () => {
+    const body = installerBytes(5)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const [, official] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const asset = 'https://release-assets.githubusercontent.com/github-production-release-asset/1?sp=r&sig=a%2Bb'
+    const hop = (index: number) => `https://cdn.npmmirror.com/binaries/git-for-windows/hop-${index}.exe`
+    const calls: string[] = []
+    const fetch = vi.fn(async (url: string) => {
+      calls.push(url)
+      if (url === official.url) return redirectResponse(url, asset)
+      if (url === asset) return streamResponse(body, url)
+      const index = url.startsWith(hop(0).slice(0, -5)) ? Number(url.slice(url.lastIndexOf('-') + 1, -4)) : 0
+      return index < 5 ? redirectResponse(url, hop(index + 1)) : streamResponse(body, url)
+    })
+    const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch, expectedSha256: () => digest })
+
+    const result = await installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps)
+    expect(result.source).toBe('npmmirror')
+    expect(calls).toHaveLength(6)
+
+    calls.length = 0
+    const officialFirst = await installGitRuntimeWith('x64', { networkRegion: 'outside-mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps)
+    expect(officialFirst.source).toBe('official')
+    expect(calls).toEqual([official.url, asset])
+  })
+
+  it('refuses bytes reported from anywhere but the hop it asked for and accepts the same hop spelled differently', async () => {
+    const body = installerBytes(6)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const [mirror] = gitRuntimeDownloadSources('mainland-china', 'x64')
+    const reporting = (reported: string) => vi.fn(async (url: string) => (
+      url === mirror.url ? streamResponse(body, reported) : streamResponse(Buffer.alloc(0), url, 404)
+    ))
+
+    await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
+      fetch: reporting('https://evil.example/Git.exe') as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    }))).rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
+
+    // An approved host is not enough: the bytes must come from the hop that was asked for.
+    await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
+      fetch: reporting(mirror.url.replace('https://npmmirror.com/mirrors/', 'https://cdn.npmmirror.com/binaries/')) as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    }))).rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
+
+    const spelled = mirror.url.replace('https://npmmirror.com/', 'HTTPS://NPMMIRROR.COM:443/')
+    await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
+      fetch: reporting(spelled) as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+    }))).resolves.toMatchObject({ source: 'npmmirror' })
   })
   it('reports the version found after install instead of trusting the installer exit code', async () => {
     const body = installerBytes(4)

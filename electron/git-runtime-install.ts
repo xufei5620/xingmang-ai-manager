@@ -11,6 +11,7 @@ import {
 import type { NodeRuntimeNetworkRegion, NodeRuntimeProcessPlan } from './node-runtime'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { downloadWithResume } from './download-retry'
+import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
 /**
@@ -111,7 +112,6 @@ const installerTimeoutMs = 15 * 60_000
 const minimumInstallerBytes = 20 * 1024 * 1024
 const maximumInstallerBytes = 200 * 1024 * 1024
 const maximumRedirects = 5
-const redirectStatuses = new Set([301, 302, 303, 307, 308])
 
 function report(options: InstallGitRuntimeOptions, progress: GitRuntimeInstallProgress): void {
   options.onProgress?.(progress)
@@ -168,7 +168,7 @@ export function gitRuntimeDownloadSources(
  * that serve Git for Windows. npmmirror answers from its fixed CDN mapping;
  * GitHub answers with a signed, query-bearing URL on its release-asset hosts.
  */
-export function validateGitRuntimeDownloadUrl(value: string): void {
+export function validateGitRuntimeDownloadUrl(value: string): URL {
   let parsed: URL
   try {
     parsed = new URL(value)
@@ -188,8 +188,8 @@ export function validateGitRuntimeDownloadUrl(value: string): void {
     || (host === 'registry.npmmirror.com' && pathname.startsWith('/-/binary/git-for-windows/'))
   const officialPath = host === 'github.com' && pathname.startsWith('/git-for-windows/git/releases/download/')
   const releaseAsset = host === 'objects.githubusercontent.com' || host === 'release-assets.githubusercontent.com'
-  if ((mirrorPath || officialPath) && !parsed.search) return
-  if (releaseAsset) return
+  if ((mirrorPath || officialPath) && !parsed.search) return parsed
+  if (releaseAsset) return parsed
   throw new Error('Git 安装包下载跳转到了未经批准的地址')
 }
 
@@ -198,23 +198,18 @@ async function fetchTrustedGitResource(
   init: RequestInit,
   fetchImplementation: typeof globalThis.fetch,
 ): Promise<Response> {
-  validateGitRuntimeDownloadUrl(url)
-  let current = url
-  const visited = new Set<string>()
-  for (let redirectCount = 0; redirectCount <= maximumRedirects; redirectCount += 1) {
-    if (visited.has(current)) throw new Error('Git 安装包下载发生了循环跳转')
-    visited.add(current)
-    const response = await fetchImplementation(current, { ...init, redirect: 'manual' })
-    if (response.url) validateGitRuntimeDownloadUrl(response.url)
-    if (!redirectStatuses.has(response.status)) return response
-    const location = response.headers.get('location')
-    if (!location) throw new Error('Git 安装包下载跳转缺少目标地址')
-    await response.body?.cancel().catch(() => undefined)
-    const next = new URL(location, current).href
-    validateGitRuntimeDownloadUrl(next)
-    current = next
-  }
-  throw new Error('Git 安装包下载跳转次数过多')
+  return fetchWithRedirectAllowlist(url, init, fetchImplementation, {
+    label: 'Git 安装包下载',
+    maximumRedirects,
+    validate: validateGitRuntimeDownloadUrl,
+    // 这几句会拼进「Git 没装上。国内镜像：…」给客户看，沿用换共用函数之前的说法。
+    messages: {
+      loop: 'Git 安装包下载发生了循环跳转',
+      bypass: 'Git 安装包下载跳转到了未经批准的地址',
+      tooMany: 'Git 安装包下载跳转次数过多',
+      missingLocation: 'Git 安装包下载跳转缺少目标地址',
+    },
+  })
 }
 
 async function downloadInstaller(

@@ -26,7 +26,7 @@
 - `bounded-file.ts` — 有上限地读文件、独占复制文件：要求单链接普通文件（`nlink === 1`），读前读后比对 dev/ino/大小/时间戳，路径校验期间被换掉就报错，防硬链接与 TOCTOU 重定向（I8）
 - `bounded-directory.ts` — 有上限地列目录（`readDirectoryEntries*`），条目超过上限抛 `DirectoryEntryLimitError`，防被塞爆的目录拖垮主进程
 - `bounded-response.ts` — 有上限地读 HTTP 响应体（`readBoundedResponseText/Bytes`），先看 content-length 再边读边数，超了就取消；I10 四件套里"响应体上限"那一件
-- `redirect-allowlist-fetch.ts` — 逐跳跟随下载跳转（`fetchWithRedirectAllowlist`）：强制 `redirect: 'manual'`，第一跳、每个 Location、响应自报的地址都过调用方给的校验，响应地址还必须正好是这一跳，另管循环与次数上限；I10 四件套里"重定向策略"那一件。Node 运行时和 Mac 桌面端安装器在用；Codex 桌面端那份按 AGENTS 第 7 节不收
+- `redirect-allowlist-fetch.ts` — 逐跳跟随下载跳转（`fetchWithRedirectAllowlist`）：强制 `redirect: 'manual'`，第一跳、每个 Location、响应自报的地址都过调用方给的校验，响应地址还必须正好是这一跳，另管循环与次数上限；I10 四件套里"重定向策略"那一件。`fetchLandingWithRedirectAllowlist` 另交回答话的那一跳（生产下载用的 fetch 不填 `response.url`），续传可设 `beyondLimit: 'return'` 不跟跳转；客户看得到的报错可用 `messages` 沿用原话。Node 运行时、Mac 桌面端安装器、Codex 插件目录、Git 运行时、Claude Desktop MSIX 在用；Codex 桌面端那份按 AGENTS 第 7 节不收
 - `bounded-operation-queue.ts` — 有并发上限和排队上限、可取消（AbortSignal）的通用任务队列；图片生成（`ai-image-service.ts`）和首页扫描的探测子进程（`system-service.ts`）在用。注意它不是 I11 的 `InstallationQueue`，安装类操作不能拿它代替
 - `schedule-timeout.ts` — 后台控制器默认用的延时器（`scheduleTimeout`，返回取消函数，计时器 `unref`）：应用线路、工具线路、系统代理复查、加速到期和中断提醒五处共用，测试各自注入假的；新控制器照用，别再抄一份（`schedule-timeout.test.ts` 钉住只此一份）
 - `safe-storage-backend.ts` — `safeStorage.isEncryptionAvailable()` 只说明"能调"，不说明"有保护"：Linux 没有密钥环时 Chromium 退到 `basic_text`，密钥是编进程序里的常量。这里把这种情况认成 `plaintext` 并拒绝落盘，Linux 上改成只在本次运行内存里保存（`resolveCredentialPersistence`）。登录会话、记住密码、托管 CLI Key 缓存、聊天 Key 缓存、多账号保险箱都经它判断
