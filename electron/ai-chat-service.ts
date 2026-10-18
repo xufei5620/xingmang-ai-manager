@@ -11,7 +11,7 @@ import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { classifyNetworkFailure, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
-import { classifyRelayQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { classifyRelayQuotaFailure, classifySub2apiStreamQuotaFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -143,6 +143,8 @@ export type AiChatServiceOptions = {
   emit(senderId: number, event: AiChatStreamEvent): void
   fetchImpl?: FetchImplementation
   baseUrl?: string
+  /** 这个站的账号后端。缺省按 new-api，流到一半的报错帧不认余额不足（见 classifySub2apiStreamQuotaFailure）。 */
+  backend?: 'new-api' | 'sub2api'
   clock?: AiChatServiceClock
   log?: (entry: AiChatStreamLogEntry) => void
   limits?: Partial<AiChatStreamLimits>
@@ -495,7 +497,7 @@ class BoundedSseParser {
   }
 }
 
-function parsedDelta(data: string): { content: string; reasoning: string; finished: boolean } {
+function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { content: string; reasoning: string; finished: boolean } {
   if (byteLength(data) === 0) return { content: '', reasoning: '', finished: false }
   let payload: unknown
   try {
@@ -508,7 +510,8 @@ function parsedDelta(data: string): { content: string; reasoning: string; finish
   }
   const record = payload as Record<string, unknown>
   if (record.error !== undefined || record.type === 'error' || record.type === 'upstream_error') {
-    throw new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
+    const quota = backend === 'sub2api' ? classifySub2apiStreamQuotaFailure(record) : null
+    throw new StreamFailure('upstream-http-error', quota ? relayQuotaFailureMessages[quota] : SAFE_ERROR_MESSAGES['upstream-http-error'])
   }
   const choices = record.choices
   if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '', finished: false }
@@ -765,7 +768,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       complete(request)
       return true
     }
-    const delta = parsedDelta(data)
+    const delta = parsedDelta(data, options.backend)
     appendDelta(request, delta.content, delta.reasoning)
     if (!delta.finished) return false
     complete(request)
@@ -986,7 +989,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
           }
           for (const data of frames) {
             if (data.trim() === '[DONE]') return text
-            const delta = parsedDelta(data)
+            const delta = parsedDelta(data, options.backend)
             const added = byteLength(delta.content)
             if (added > limits.fragmentBytes) {
               throw new StreamFailure('fragment-limit-exceeded', SAFE_ERROR_MESSAGES['fragment-limit-exceeded'])

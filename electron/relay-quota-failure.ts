@@ -71,6 +71,28 @@ export function extractRelayErrorDetail(payload: unknown): string {
   return parts.join(' ')
 }
 
+/**
+ * 对话流到一半收到的报错帧（#1093 第12a条）。这时状态码早已是 200，上面那套按状态码认的
+ * 用不上，只认 Sub2API 自己发的那一帧（对过 Wei-Shaw/sub2api 270eac6 与 b0a02a3）：
+ * 流式请求排队等并发槽位超过 10 秒，它先回 200 和 SSE 心跳占住连接；拿到槽位后再复查计费
+ * （openai_chat_completions.go 的 CheckBillingEligibility 与在途余额预留），余额不够就只能
+ * 就地发 `{"error":{"type":"billing_error","message":"insufficient balance"}}`
+ * （handleStreamingAwareErrorWithCode；原话是 redeem_service.go 的 ErrInsufficientBalance，
+ * 跟鉴权中间件那句「Insufficient account balance」不同，也不带 INSUFFICIENT_BALANCE）。
+ *
+ * new-api 不会这样：预扣费在开流之前（rc.45 controller/relay.go 的 PrepareRequestBilling），
+ * 开流后只结算不报错。xm 站流到一半出现这句，只可能是渠道上游原样转回来的（stream_scanner
+ * 把上游的 data 行照转），那是服务端欠费，叫客户充值就错了，所以只在历史账号站上认它。
+ */
+export function classifySub2apiStreamQuotaFailure(payload: unknown): RelayQuotaFailure | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const error = (payload as Record<string, unknown>).error
+  if (!error || typeof error !== 'object' || Array.isArray(error)) return null
+  const { type, message } = error as Record<string, unknown>
+  if (type !== 'billing_error' || typeof message !== 'string') return null
+  return message.trim().toLowerCase() === 'insufficient balance' ? 'balance' : null
+}
+
 const relayQuotaFailures: readonly RelayQuotaFailure[] = ['balance', 'keyLimit', 'keyInvalid']
 
 /**
