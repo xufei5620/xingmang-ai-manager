@@ -9,3 +9,5 @@
 - 未签名通道的说法改对（#1090 第 2 条）：RELEASING §3、README、`docs/WINDOWS-VERIFY-RUNBOOK.md` §4.1 原来都写
   「用户确认式更新」，2026-09-25 起这条通道已经跟着「自动更新」开关走（`electron/main.ts` 的 `unsignedAutoUpdate: true`）。
   停用的 `release-build.yml` 开头那句同样过时，这次不改工作流文件。
+- `docs/SERVICE-STATUS.md`「强制更新」和 `docs/LINUX.md` 原来说「打开下载页」开的是 GitHub 上的发布页，
+  代码里开的是安装教程页（`electron/app-download-page.ts`），两处改对。
