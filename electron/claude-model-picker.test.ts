@@ -4,6 +4,7 @@ import {
   buildClaudeRelayModelPicker,
   claudeModelLabel,
   claudeRelayModelPickerOutdated,
+  claudeRelayModelPickerUpdates,
   isManagedClaudeModelPicker,
   removeClaudeRelayModelPicker,
 } from './claude-model-picker'
@@ -99,9 +100,19 @@ describe('claude model picker', () => {
       expect(claudeRelayModelPickerOutdated(parsed, ['claude-opus-5'], 'claude-opus-5')).toBe(true)
     })
 
-    it('is outdated when Default does not point at the current model, including settings written before the picker existed', () => {
-      expect(claudeRelayModelPickerOutdated(written(['claude-opus-5'], 'claude-opus-5'), ['claude-opus-5', 'claude-sonnet-5'], 'claude-sonnet-5')).toBe(true)
+    it('is outdated when Default was never written, including settings written before the picker existed', () => {
       expect(claudeRelayModelPickerOutdated({ env: {} }, ['claude-opus-5'], 'claude-opus-5')).toBe(true)
+      expect(claudeRelayModelPickerOutdated({}, ['gpt-6-astra'], 'claude-opus-5')).toBe(true)
+      expect(claudeRelayModelPickerUpdates({ env: { ANTHROPIC_DEFAULT_MODEL: ' ' } }, ['gpt-6-astra'], 'claude-opus-5')).toEqual({ defaultModel: 'claude-opus-5' })
+    })
+
+    // #1154 后续：客户另指了 Default、或用 /model 换了型号，刷新菜单不跟着改 Default。
+    it('leaves a Default that points at another model and only brings the menu up to date', () => {
+      const parsed = written(['claude-opus-5', 'claude-sonnet-5'], 'claude-opus-5')
+      expect(claudeRelayModelPickerOutdated(parsed, ['claude-opus-5', 'claude-sonnet-5'], 'claude-sonnet-5')).toBe(false)
+      expect(claudeRelayModelPickerUpdates(parsed, ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5'], 'claude-sonnet-5')).toEqual({
+        modelPicker: buildClaudeRelayModelPicker(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5'], 'claude-sonnet-5'),
+      })
     })
 
     it('never counts a picker the user wrote as outdated', () => {
