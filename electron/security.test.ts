@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   isAllowedAppNavigationUrl,
@@ -296,18 +298,65 @@ describe('packaged debug switch security', () => {
         'app',
         loginLaunchArgument,
         accelerationWorkerArgument,
+        '--user-data-dir=/tmp/xingmang-acceleration-profile-abc',
         uninstallCleanupArgument,
         uninstallClearLoginArgument,
+        // electron-builder's StartApp after an update, and Electron's relaunch.
+        '--updated',
         'xingmang://open',
+        'xingmang://account/login?next=/wallet',
         '--',
         '-',
         '/',
       ], platform)).toBe(false)
     }
+    // Windows starts a COM activator with -Embedding or /Embedding; older macOS
+    // Finder adds a process serial number.
+    expect(hasDisallowedPackagedDebugSwitch(['app.exe', '-Embedding', '/Embedding', '-ToastActivated'], 'win32')).toBe(false)
+    expect(hasDisallowedPackagedDebugSwitch(['app', '-psn_0_12345'], 'darwin')).toBe(false)
     expect(hasDisallowedPackagedDebugSwitch([
       'C:\\Program Files\\星芒AI管理工具\\星芒AI管理工具.exe',
       '/c',
       'C:\\Users\\tester\\Documents\\remote-debugging-port',
     ], 'win32')).toBe(false)
+  })
+})
+
+describe('packaged launch arguments from the Windows installer', () => {
+  const repository = path.join(__dirname, '..')
+  const windowsExecutable = 'C:\\Program Files\\星芒AI管理工具\\星芒AI管理工具.exe'
+
+  it('lets every command line the uninstall hooks start this app with through', () => {
+    const installer = fs.readFileSync(path.join(repository, 'build', 'installer.nsh'), 'utf8')
+    const defines = new Map([...installer.matchAll(/^!define (\w+) "([^"]*)"$/gm)].map((match) => [match[1], match[2]]))
+    const launches = installer.split('\n')
+      .filter((line) => /\bExec\w*\b/.test(line) && line.includes('${APP_EXECUTABLE_FILENAME}'))
+    expect(launches.length).toBeGreaterThan(0)
+    for (const line of launches) {
+      const tail = line.match(/\$\{APP_EXECUTABLE_FILENAME\}"([^']*)'/)
+      expect(tail, line).not.toBeNull()
+      const args = (tail?.[1] ?? '').trim().split(/\s+/).filter(Boolean)
+        .map((token) => token.replace(/^\$\{(\w+)\}$/, (_whole, name: string) => defines.get(name) ?? token))
+      expect(args.length, line).toBeGreaterThan(0)
+      for (const argument of args) expect(argument, line).not.toContain('${')
+      expect(hasDisallowedPackagedDebugSwitch([windowsExecutable, ...args], 'win32'), line).toBe(false)
+    }
+  })
+
+  // The finish page's "run" box (assistedInstaller.nsh, oneClick is off) and the
+  // silent update relaunch (common.nsh) each pick the arguments they hand to
+  // ExecShellAsUser.
+  it.each([
+    ['assistedInstaller.nsh', /StrCpy \$1 "([^"]*)"/g],
+    ['common.nsh', /StrCpy \$startAppArgs "([^"]*)"/g],
+  ] as const)('lets the arguments electron-builder %s starts the app with through', (template, assignment) => {
+    const source = fs.readFileSync(path.join(repository, 'node_modules', 'app-builder-lib', 'templates', 'nsis', template), 'utf8')
+    expect(source).toContain('${StdUtils.ExecShellAsUser} $0 "$launchLink" "open"')
+    const values = [...source.matchAll(assignment)].map((match) => match[1])
+    expect(values).toContain('--updated')
+    for (const value of values) {
+      const args = value.split(/\s+/).filter(Boolean)
+      expect(hasDisallowedPackagedDebugSwitch([windowsExecutable, ...args], 'win32'), value).toBe(false)
+    }
   })
 })
