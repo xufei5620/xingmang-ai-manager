@@ -1,4 +1,6 @@
-# 已停用,保留待 CA 证书到手。
+# 已停用,保留待 CA 证书到手。当前的发布走 publish-release.yml(Windows 无签名、
+# macOS 免费签名,见 docs/RELEASING.md);这个工作流对应的签名发布流程整段归档在
+# docs/archive/RELEASING-signed.md,不适用于当前发布。
 #
 # 手动触发的 Windows **正式签名**安装包构建(2026-08-12 老板决定发布链路搬到 CI)。
 #
@@ -9,16 +11,18 @@
 #   - 产出 Setup.exe + .blockmap + latest.yml 三件套,客户端的"检查更新"要靠
 #     它们才能工作(测试包里更新器是关掉的)。
 #
-# 为什么没有"不签名但能更新"的模式:electron-builder.config.cjs 把
-# extraMetadata.xingmangLocalBuild 定义为 !publicReleaseMode —— 未签名的包
-# 在设计上就拒绝更新。这是承重墙,不是可以绕的流程。要在拿到 CA 证书之前
-# 先验证点击更新,用 test_signing 走自签名证书(见 RELEASING.md 的 CI 一节),
-# 整条链路真实运行,只是那张证书只有自己的机器认。
+# 这里不放"不签名"的选项:不签名但能更新的包已经有自己的通道,由
+# publish-release.yml 走 release:build:unsigned 出(XINGMANG_UNSIGNED_RELEASE=1,
+# electron-builder.config.cjs 里 xingmangLocalBuild 为 !updateEnabledMode),客户端
+# 下载后核 SHA-512 和我们自己的更新包签名,见 RELEASING.md「更新包签名」。
+# 要在拿到 CA 证书之前先验证签名包的点击更新,用 test_signing 走自签名证书(见
+# docs/archive/RELEASING-signed.md 的「CI 发布」一节),整条链路真实运行,只是
+# 那张证书只有自己的机器认。
 #
 # **本工作流永远不上传到更新服务器**:--publish never 由发布脚本固定写死,
-# 这里也不配置任何 R2/对象存储凭据。产物只挂在 Actions artifact,由老板下载
-# 后人工上传——RELEASING.md 要求每次发布都要产品所有者针对当前版本明确授权,
-# 把上传自动化就等于把那道授权取消了。
+# 这里也不配置任何 R2/对象存储凭据,产物只挂在 Actions artifact。每次上传都要
+# 产品所有者针对当前版本明确授权(RELEASING.md 第 1 节);现在的上传由
+# publish-release.yml 在 release 环境批准之后执行,这个工作流不要长出上传那一步。
 #
 # 上传顺序在 RELEASING.md 里,记牢一条:**先传 Setup.exe 与 .blockmap,最后
 # 才覆盖 latest.yml**。反了的话用户会在文件还没传完时就被告知有新版本。
