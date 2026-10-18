@@ -160,6 +160,14 @@ describe('restricted network failure classification', () => {
     expect(classifyNetworkFailure(new TypeError('fetch failed', { cause: new Error('Redirect was cancelled') }))).toBe('intercepted')
   })
 
+  // 查模型、画图、读状态文件用的是 redirect:'error'，Electron 的 net.fetch 碰到跳转报的是这一句
+  // （#1157 第 5 条）。认不出来就英文原样给客户，也不报给线路那边。
+  it('reads the redirect Electron net.fetch refuses under redirect:error as a captive portal', () => {
+    expect(classifyNetworkFailure(new Error('Attempted to redirect, but redirect policy was \'error\''))).toBe('intercepted')
+    expect(classifyNetworkFailure(new TypeError('fetch failed', { cause: new Error('Attempted to redirect, but redirect policy was \'error\'') })))
+      .toBe('intercepted')
+  })
+
   it('stops walking causes instead of following a cycle', () => {
     const outer: { message: string; cause?: unknown } = { message: 'outer' }
     outer.cause = outer
