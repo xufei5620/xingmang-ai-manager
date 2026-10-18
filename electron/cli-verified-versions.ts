@@ -65,11 +65,11 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.296',
-      verifiedAt: '2026-10-13',
+      version: '2.1.302',
+      verifiedAt: '2026-10-17',
       verifiedSites: [],
-      note: '当前 npm latest;2.1.292~2.1.296 没有新的网关回归,修了网关拒收 context-1m beta 时 [1m] 型号每次请求都失败、只支持 adaptive thinking 的型号在部分网关后数 token 失败;2.1.293 起 haiku 别名在自定义 ANTHROPIC_BASE_URL 下改发 claude-haiku-5-5(以前 claude-haiku-4-5-20251001),内置 claude-code-guide 帮手与 /model haiku 要中转有这个型号,后台小请求仍用主型号;/context 仍是 1M',
-      userNote: '修好了用大上下文型号时可能每次提问都失败的问题，长对话压缩后也不会再把做完的事重做一遍',
+      note: '当前 npm latest(2.1.297、2.1.298 没发过);2.1.299~2.1.302 没有新的网关回归;2.1.299 修了功能开关、启动、快速模式、账号资料、反馈几类发往 Anthropic 的请求带着第三方网关的 Key,以及自定义 ANTHROPIC_BASE_URL 下流式 180 秒没数据就被掐断(改为 300 秒);2.1.300 修了 MCP 工具 schema 被拒时每轮 400;2.1.301 修了网关回的型号名与请求的不同时反复压缩;2.1.302 让没设权限模式的 -p 会话在第三方 provider 上进 default 模式,模板写死 bypassPermissions 不受影响;沙箱本地假接口对照 2.1.296 请求体字段、20 个工具、只带 Authorization 都一样,/context 仍是 1M',
+      userNote: '修好了回复慢的时候三分钟就被断开的问题，密钥也不会再顺带发给官方',
     },
     blocked: [
       {
