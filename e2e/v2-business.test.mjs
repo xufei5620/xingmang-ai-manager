@@ -166,6 +166,25 @@ test('Sub2API usage left open overnight still asks for the last 7 days up to tod
     assert.equal(picked.apiKeyId, 4)
     assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), keyed.endDate)
     assert.equal(await toggle.innerText(), '收起筛选')
+
+    // 选过日期以后框里的默认是停住的：过几天把开始日期改回跟它一样，也是自己选的，照这段查，不换成今天往前 7 天。
+    await usage.getByLabel('开始日期', { exact: true }).fill(keyed.startDate)
+    await usage.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction((start) => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.startDate === start), keyed.startDate)
+    const typedBack = await refreshOnDay('2026-10-21T12:00:00Z')
+    assert.equal(typedBack.startDate, keyed.startDate)
+    assert.equal(typedBack.endDate, keyed.endDate)
+
+    // 「重置筛选」回到跟着日子走的默认：今天往前 7 天，框里也写这一段。
+    const beforeReset = (await usageQueries()).length
+    await usage.getByRole('button', { name: '重置筛选', exact: true }).click()
+    await page.waitForFunction((seen) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-usage').length > seen, beforeReset)
+    const reset = (await usageQueries()).at(-1)
+    assert.equal(reset.endDate, await today())
+    assert.equal(reset.startDate, shift(reset.endDate, -6))
+    assert.equal(reset.apiKeyId, undefined)
+    assert.equal(await usage.getByLabel('开始日期', { exact: true }).inputValue(), reset.startDate)
+    assert.equal(await usage.getByLabel('结束日期', { exact: true }).inputValue(), reset.endDate)
   } finally { await page.close() }
 })
 

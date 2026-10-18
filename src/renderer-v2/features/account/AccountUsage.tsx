@@ -353,9 +353,11 @@ function AccountCalls({
           onApply={(values) => {
             if (calendar) {
               const dates = usageDateRange({ ...values, timezone })
-              // 日期还是框里摆着的默认（没动过、点了「重置筛选」，或清空了）就不记，读的时候照样按当天现算。
-              const picked = !sameDates(dates, defaultDates) && !sameDates(dates, usageDateRange({ timezone }))
-              setFilter({ ...(picked ? dates : {}), modelName: values.modelName,
+              // 两格都清空了，或者本来就跟着日子走、框里的默认没动过：不记日期，读的时候照样按当天现算。
+              // 选过日期以后框里的默认是停住的，再改回跟它一样也是自己选的，不能拿它来猜（「重置筛选」走 onReset）。
+              const following = (!values.startDate && !values.endDate)
+                || (filter.startDate === undefined && filter.endDate === undefined && sameDates(dates, defaultDates))
+              setFilter({ ...(following ? {} : dates), modelName: values.modelName,
                 apiKeyId: sub2ApiFilterId(values.apiKeyId), groupId: sub2ApiFilterId(values.groupId),
                 ...(values.billingType === '0' || values.billingType === '1' ? { billingType: Number(values.billingType) as 0 | 1 } : {}) })
             } else {
@@ -373,6 +375,10 @@ function AccountCalls({
             if (values.modelName || values.type) setQuick('all')
             setPage(1)
           }}
+          onReset={calendar ? () => {
+            setFilter({})
+            setPage(1)
+          } : undefined}
         />
       </div>
       <Card padding="none">

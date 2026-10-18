@@ -62,6 +62,7 @@ export function AccountFilters({
   fields,
   primary,
   onApply,
+  onReset,
   initialValues = {},
   note,
 }: {
@@ -72,6 +73,8 @@ export function AccountFilters({
    */
   primary?: readonly string[]
   onApply: (values: Record<string, string>) => void
+  /** 「重置筛选」另有去处（历史账号回到跟着日子走的默认日期）；缺省 = 把默认值当一次查询交给 onApply。 */
+  onReset?: () => void
   initialValues?: Record<string, string>
   /** 展开后框下面那行说明（历史账号按整日统计那句）；缺省 = 没有。 */
   note?: ReactNode
@@ -102,7 +105,8 @@ export function AccountFilters({
     setDraft(initialValues)
     setApplied(initialValues)
     setError('')
-    onApply(initialValues)
+    if (onReset) onReset()
+    else onApply(initialValues)
   }
   function control(field: AccountFilterField) {
     return field.options ? (
