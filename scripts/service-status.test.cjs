@@ -133,6 +133,21 @@ test('a zero rollout reads as manual checks only', () => {
   assert.equal(describeStatus(next)[2], '分批放量：0.2.18 先不自动推，只给自己点「检查更新」的人')
 })
 
+test('a minimum version is compared with the feed segment by segment as numbers', () => {
+  assert.equal(applyMinimumVersion(undefined, '0.2.9', ['0.2.10']), '0.2.9')
+  assert.throws(() => applyMinimumVersion(undefined, '0.2.10', ['0.2.9']), /比线上正在发的 0\.2\.9 还高/)
+  assert.equal(applyMinimumVersion(undefined, '0.2.10', ['0.2.10', '0.3.0']), '0.2.10')
+  assert.throws(() => applyMinimumVersion(undefined, '0.3.0', ['0.2.99', '1.0.0']), /比线上正在发的 0\.2\.99、1\.0\.0 还高/)
+  assert.throws(() => applyMinimumVersion(undefined, '1.0.0', ['0.99999.99999']), /还高/)
+  assert.equal(applyMinimumVersion(undefined, '00.02.010', ['0.2.10']), '00.02.010')
+  assert.throws(() => applyMinimumVersion(undefined, '0.2.10', ['00.02.009']), /比线上正在发的 00\.02\.009 还高/)
+  assert.equal(applyMinimumVersion(undefined, ' V0.2.9 ', ['v0.2.9']), '0.2.9')
+  assert.equal(applyMinimumVersion(undefined, '99999.99999.99999', ['99999.99999.99999']), '99999.99999.99999')
+  assert.throws(() => applyMinimumVersion(undefined, '0.2.9', ['0.2.9-beta']), /0\.2\.10 这样/)
+  assert.throws(() => applyMinimumVersion(undefined, '0.2.9', ['0.2.9+build']), /0\.2\.10 这样/)
+  assert.throws(() => applyMinimumVersion(undefined, '123456.0.0', ['0.2.9']), /0\.2\.10 这样/)
+})
+
 test('a minimum version never goes above what the feed is publishing', () => {
   assert.equal(applyMinimumVersion(undefined, 'v0.2.12', ['0.2.12', '0.2.13']), '0.2.12')
   assert.equal(applyMinimumVersion('0.2.12', '', []), '0.2.12')
