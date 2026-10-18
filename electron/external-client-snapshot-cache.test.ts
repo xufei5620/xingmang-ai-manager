@@ -50,13 +50,15 @@ describe('external client snapshot cache', () => {
     const scanned = clients()
     scanned[0].routePending = true
     scanned[0].routeRecheck = true
+    scanned[0].keyPending = true
     const content = serializeExternalClientSnapshotCache(scanned, new Date('2026-10-05T10:00:05.000Z'))
     const parsed = parseExternalClientSnapshotCache(content!)
 
     expect(parsed).toEqual(clients().map((status) => ({ ...status, running: false, cachedAt: '2026-10-05T10:00:05.000Z' })))
-    // Only an open client waits to switch routes, and nothing here is known to be open.
+    // Only an open client waits to switch routes or keys, and nothing here is known to be open.
     expect(parsed?.[0]).not.toHaveProperty('routePending')
     expect(parsed?.[0]).not.toHaveProperty('routeRecheck')
+    expect(parsed?.[0]).not.toHaveProperty('keyPending')
   })
 
   it('remembers that Claude Desktop is on its official login so the first paint does not call it unconnected', () => {

@@ -46,7 +46,7 @@ import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asse
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { ChatKeyStore } from './chat-key-store'
-import { ManagedCliKeyStore } from './managed-cli-key-store'
+import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
 import { AccountSessionStore } from './account-session-store'
 import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
@@ -1420,6 +1420,7 @@ if (!hasSingleInstanceLock) {
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
     // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
     // 内核的回环端口，默认 session 一行不动，所以账号、中转与画布流量不受
@@ -1542,6 +1543,7 @@ if (!hasSingleInstanceLock) {
         status: () => readAccountSiteId() === 'solov' ? toolRouteStatusBoard.status(toolRouteController.snapshot()) : undefined,
       },
       getExternalClientAccountId: () => readExternalClientAccountId(),
+      readCurrentManagedCliKeys: () => readCurrentManagedCliKeys(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
@@ -2551,6 +2553,8 @@ if (!hasSingleInstanceLock) {
       legacy: credentialPersistence === 'durable' ? { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),
         readActive: () => accountSessionStore.read() } : undefined,
       quiesce: async () => {
+        // 排在安装后面还没轮到的「打开」当场出队，不陪前面的安装等到超时（#1085）。
+        accountWork.abortQueued()
         await acceleration?.stopAll()
         const previous = businesses.get(accounts.getSiteId())
         previous?.chatService.cancelAll()
@@ -3032,6 +3036,11 @@ if (!hasSingleInstanceLock) {
     const currentBusiness = () => ensureBusiness(accounts.getSiteId())
     const accountCredentialStore = createRealmServiceDispatch(() => currentBusiness().accountCredentialStore)
     const managedCliKeyStore = createRealmServiceDispatch(() => currentBusiness().managedCliKeyStore)
+    // Claude Desktop 跟着 Claude Code 换 Key 时读（#1113）：只读当前账号、当前站的那份缓存。
+    readCurrentManagedCliKeys = async () => {
+      const state = accountService.getSessionState()
+      return state.authenticated && state.account ? managedCliKeyStore.read(state.account.userId) : []
+    }
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
     const assetStore = createRealmServiceDispatch(() => currentBusiness().assetStore)

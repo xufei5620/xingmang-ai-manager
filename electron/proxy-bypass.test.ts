@@ -1520,6 +1520,25 @@ describe('site fetch', () => {
     expect(bypass.siteRouteFailed).toHaveBeenCalledWith(1)
   })
 
+  // 下载视频成片的接口本来就会跳到对象存储（relay-line-fetch.ts 的 redirectingPaths）：它回的跳转是星芒的回话，
+  // 不算直连被拦，不然每下一次视频都叫这一路再看一次，代理一探碰巧通了就交回去（#1157 第 3 条）。
+  it('keeps the direct session when the video download redirects as it is meant to', async () => {
+    const { bypass, viaSession, viaDirect } = routes(1)
+    viaDirect.mockResolvedValueOnce(new Response('<a href="https://tos.example/clip.mp4">Found</a>.', {
+      status: 302,
+      headers: { location: 'https://tos.example/clip.mp4', 'Content-Type': 'text/html; charset=utf-8' },
+    }))
+    const response = await createSiteFetch(bypass, viaSession, viaDirect)('https://relay.example/v1/videos/task-1/content', { redirect: 'manual' })
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('https://tos.example/clip.mp4')
+    expect(bypass.siteRouteFailed).not.toHaveBeenCalled()
+
+    // 别的接口回跳转照旧算被拦。
+    viaDirect.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://tos.example/clip.mp4' } }))
+    await createSiteFetch(bypass, viaSession, viaDirect)('https://relay.example/v1/videos/task-1')
+    expect(bypass.siteRouteFailed).toHaveBeenCalledWith(1)
+  })
+
   it('reports a reply cut midway on the direct session once the caller reads that far, and the caller still gets the error', async () => {
     const { bypass, viaSession, viaDirect } = routes(1)
     let sent = false

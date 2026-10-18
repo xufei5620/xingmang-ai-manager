@@ -183,6 +183,13 @@ describe('v2 chat request transitions', () => {
     // 准备分组时没有错误码，原话里带着 HTTP 码；以前 /登录|密钥/ 那条会先撞上。
     expect(chatErrorMessage(new Error(`${outage}（HTTP 503：登录服务维护中）`))).toBe(outage)
   })
+  it('tells a signed-out customer to sign in instead of calling their login expired', () => {
+    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:list-groups': Error: 请先登录星芒账号"))).toBe('请先登录星芒账号')
+    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': RealmAccountError: 请先登录账号"))).toBe('请先登录账号')
+    expect(chatErrorMessage('请先登录星芒账号')).toBe('请先登录星芒账号')
+    // 真的失效了照旧归到「请重新登录」。
+    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': Error: 登录已过期"))).toBe('当前登录或密钥已失效，请重新登录后准备分组')
+  })
 
   it('keeps the main process quota sentences and offers the matching account page', () => {
     const wrapped = `Error invoking remote method 'ai-image:generate': Error: ${relayQuotaFailureMessages.keyLimit}`

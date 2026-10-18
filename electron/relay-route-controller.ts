@@ -17,7 +17,9 @@
  * - 走先走的那条时隔一阵查一次。星芒自己的请求在它上面连不上（relay-line-fetch.ts 说了哪些算）就马上
  *   查，不等下一次；报上来的只叫这里去查，改不改照样看查的结果。
  * - 先走的那条连续 3 次没查通、备用那条查通了才改走备用那条；两条都不通（比如开机时还没联网）就不改，
- *   免得工具配置来回换，过一阵再查。
+ *   免得工具配置来回换，过一阵再查。先走的那条上的请求 5 分钟里攒够 3 次中途断开、等不来回话的，也当它
+ *   连着没查通（#1157 第 1 条）：健康检查只拉几 KB，被限速、长连接被掐的线路照样查得通，可 AI 回复次次断在
+ *   半路。正文下得慢不算，那种 relay-line-fetch.ts 本来就不报。
  * - 退到备用那条以后隔两分钟查一次先走的那条，连续 10 分钟都查得通才切回来。
  * - 开机（有存下的结论时）、唤醒、网络恢复、点「重新检测」，和退到备用以后它上面的请求也没走通时，
  *   两条一起查：走着的那条不通、另一条通了就当场换过去，不等三次也不等那 10 分钟（#1053）。三次阈值
@@ -66,6 +68,19 @@ export const relayRouteMinSwitchGapMs = 5 * 60_000
 /** 请求报上来的先走那条的失败，查过一轮以后这么久之内不再为它重查：一批请求一起失败只查一轮。 */
 export const relayRouteFailureRecheckGapMs = 30_000
 
+/**
+ * 先走的那条上的请求这么久里攒够 relayRouteRequestFailureThreshold 次中途断开、等不来回话，就当它连着没查通
+ * （#1157 第 1 条）。
+ */
+export const relayRouteRequestFailureWindowMs = 5 * 60_000
+export const relayRouteRequestFailureThreshold = 3
+
+// 健康检查查不出来的那两种请求失败（relay-line-fetch.ts 报的）：回了话以后正文读到一半断了，连回应头都没等来。
+const requestLayerReasons: ReadonlySet<string> = new Set(['body', 'no-answer'])
+
+/** 先走的那条上的请求接连没走通、改走备用那条时记的 trigger：检查报告据此不说「连着 3 次没连上」。 */
+export const requestFailuresTrigger = 'request-failures'
+
 // 切回先走的那条要连着查通这么多次（头一次到最后一次正好隔 relayRouteRecoveryMs）。数次数不看钟：计时器
 // 只会晚到不会早到，连着这么多次就一定跨过了那么久；电脑睡一觉醒来钟跳过去几个小时，睡前那一次
 // 不该跟醒来这一次连成「一直查得通」。
@@ -105,7 +120,8 @@ const maxProbeBytes = 256 * 1024
 
 /**
  * 为什么改的线路：startup = 这次开机第一次定下来，先走的那条查通了；health-failed = 先走的那条连续几次
- * 健康检查没通过、备用那条查通了，改走备用那条；line-down = 两条一起查的那一轮里走着的那条没通、另一条
+ * 健康检查没通过（或者它上面的请求接连断在半路、等不来回话，trigger 是 requestFailuresTrigger）、备用那条
+ * 查通了，改走备用那条；line-down = 两条一起查的那一轮里走着的那条没通、另一条
  * 通了，当场换过去（哪个方向都可能）；recovered = 退到备用以后先走的那条一直查得通，切回去。
  */
 export type RelayRouteChangeReason = 'startup' | 'health-failed' | 'line-down' | 'recovered'
@@ -162,7 +178,8 @@ export interface RelayRouteController {
   /**
    * 星芒自己的一次请求在「自动」的站这会儿走的那条线路上没走通：马上查一轮，不等下一次定时的。只是叫
    * 这里去查，改不改线路照样只看健康检查。走的是先走的那条就照三次的规矩查；已经退到备用那条就两条一起
-   * 查，备用那条不通、先走的那条通了当场切回去。报的不是这会儿走的那条（线路刚换过）就不管。
+   * 查，备用那条不通、先走的那条通了当场切回去。报的不是这会儿走的那条（线路刚换过）就不管。例外是先走的
+   * 那条上中途断开（body）、等不来回话（no-answer）的：攒够了就当它连着没查通（#1157 第 1 条）。
    */
   reportFailure(siteId: RelayRouteSiteId, line: RelayEndpointId, reason: string): void
   /**
@@ -192,6 +209,8 @@ interface SiteState {
   switchedAt: number | null
   /** 上一次为请求报上来的失败去查是什么时候。 */
   failureCheckedAt: number | null
+  /** 先走的那条上最近几次请求中途断开、等不来回话是什么时候（relayRouteRequestFailureWindowMs 里的）。 */
+  requestFailures: number[]
   /**
    * 星芒账号在这台电脑上还没有存下过结论（全新安装），线路是开机先定的、没查过：开机那一轮走
    * checkFirstLaunch，也不把这条没查过的线路存成结论。定下来一次就是 false。
@@ -257,6 +276,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       pendingRecheck: null,
       switchedAt: null,
       failureCheckedAt: null,
+      requestFailures: [],
       firstLaunch: siteId === 'solov' && concluded === undefined,
       cancelTimer: null,
     })
@@ -357,6 +377,8 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     state.settled = true
     state.round = null
     state.recovered = 0
+    // 换线以前攒下的请求失败不带到下一回走先走的那条上。
+    state.requestFailures = []
     // 定下过一次就不再是全新安装，后面照常走三次阈值那一套。
     state.firstLaunch = false
     watch(siteId, state)
@@ -428,7 +450,6 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     const round = state.round
     if (!round) return
     const preferred = relayAutoPreferredLines[siteId]
-    const backup = relayAutoBackupLine(siteId)
     const reachable = await check(state, siteId, preferred)
     if (reachable === null || state.round !== round) return
     if (reachable) {
@@ -448,6 +469,16 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       setTimer(state, relayRouteFailureProbeGapMs, () => runCheck(siteId, state, checkPreferred))
       return
     }
+    await checkBackup(siteId, state)
+  }
+
+  // 先走的那条算是连着没查通了（三次健康检查，或者请求接连没走通）：查一次备用那条，它通了（也隔够了
+  // 上次切换）才改走它。离上次切换不够久的，到点照常从头查一轮先走的那条：请求接连没走通的那种到时候查得通，
+  // 线路先不改，它上面的请求再攒够了再来。
+  async function checkBackup(siteId: RelayRouteSiteId, state: SiteState): Promise<void> {
+    const round = state.round
+    if (!round) return
+    const backup = relayAutoBackupLine(siteId)
     const backupReachable = await check(state, siteId, backup)
     if (backupReachable === null || state.round !== round) return
     state.round = null
@@ -465,6 +496,30 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       return
     }
     settle(siteId, state, backup, 'health-failed', round.trigger)
+  }
+
+  // 先走的那条上的请求中途断开、等不来回话（#1157 第 1 条，文件头）：relayRouteRequestFailureWindowMs 里攒够
+  // relayRouteRequestFailureThreshold 次就当它连着没查通，不再查它自己（它的健康检查这时照样查得通），直接查
+  // 备用那条。开查了就返回 true。退到备用那条以后不攒：那边请求没走通本来就两条一起查（#1053），切回先走的
+  // 那条照旧要连着查通 10 分钟。正有检查没回来的这次不开查，攒下的留着，下一次失败再看。
+  function noteRequestFailure(siteId: RelayRouteSiteId, state: SiteState, reason: string, at: number): boolean {
+    if (!requestLayerReasons.has(reason) || !state.settled || state.firstLaunch || state.line !== relayAutoPreferredLines[siteId]) return false
+    state.requestFailures = state.requestFailures.filter((failedAt) => failedAt <= at && at - failedAt < relayRouteRequestFailureWindowMs)
+    state.requestFailures.push(at)
+    if (state.requestFailures.length < relayRouteRequestFailureThreshold || state.checking) return false
+    state.requestFailures = []
+    // 先走的那条正等着隔 15 秒再查的那一轮不等了。
+    if (state.round) {
+      state.cancelTimer?.()
+      state.cancelTimer = null
+    }
+    state.failureCheckedAt = at
+    log('info', 'relay.route.requests-failed', '先走的那条线路上请求接连断在半路、等不来回话，查一下备用那条', {
+      siteId, line: state.line, failures: relayRouteRequestFailureThreshold, windowMs: relayRouteRequestFailureWindowMs,
+    })
+    state.round = { trigger: requestFailuresTrigger, failures: relayRouteFailureThreshold }
+    runCheck(siteId, state, checkBackup)
+    return true
   }
 
   // 全新安装（星芒账号在这台电脑上还没有存下过结论）开机那一轮：两条一起查，直连查通就定直连；直连
@@ -631,8 +686,9 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     },
     reportFailure(siteId, line, reason) {
       const state = states.get(siteId)
-      if (disposed || !state || state.line !== line || state.round || state.checking) return
+      if (disposed || !state || state.line !== line) return
       const at = now()
+      if (noteRequestFailure(siteId, state, reason, at) || state.round || state.checking) return
       if (state.failureCheckedAt !== null && at - state.failureCheckedAt >= 0
         && at - state.failureCheckedAt < relayRouteFailureRecheckGapMs) return
       state.failureCheckedAt = at

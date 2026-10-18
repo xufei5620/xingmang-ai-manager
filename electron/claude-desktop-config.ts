@@ -289,6 +289,49 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
     }
   }
 
+  /**
+   * followRoute、followKey 的那一笔写：正在用的是星芒那份、地址和 Key 还是 expected 时，只改 field 这一项，
+   * 新值由 value 在核对完以后给出。读、比、写都在 beforeCommit 之后同步做完。
+   */
+  function editOwnedGateway(
+    expected: { baseUrl: string; apiKey: string },
+    field: 'inferenceGatewayBaseUrl' | 'inferenceGatewayApiKey',
+    value: () => string | string[],
+    action: string,
+    beforeCommit?: () => Promise<void>,
+  ): Promise<{ path: string; backups: string[] }> {
+    return serial(async () => {
+      assertContext()
+      await options.assertUnmanaged?.()
+      await beforeCommit?.()
+      assertContext()
+      const snapshots = new Map<string, string | null>()
+      const capture = (filePath: string) => {
+        const content = read(filePath)
+        snapshots.set(filePath, content)
+        return content
+      }
+      const desktop = parseObject(capture(configPath))
+      const metadata = parseMetadata(capture(metadataPath))
+      const owner = parseOwner(capture(markerPath), profileDirectory)
+      const gatewayPath = owner ? path.join(libraryDirectory, `${owner.id}.json`) : null
+      const original = gatewayPath ? capture(gatewayPath) : null
+      const gateway = parseObject(original)
+      if (!owner || !gatewayPath || original === null || metadata.appliedId !== owner.id || metadata.hybridPointer
+        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p') || !gatewayConfigurationReady(gateway)
+        || typeof gateway.inferenceGatewayBaseUrl !== 'string' || !sameBaseUrl(gateway.inferenceGatewayBaseUrl, expected.baseUrl)
+        || gateway.inferenceGatewayApiKey !== expected.apiKey) {
+        throw new Error(`${label}在${action}前已变化，未执行修改`)
+      }
+      const content = applyEdits(original, modify(original, [field], value(), {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
+      }))
+      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
+      const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
+      return { path: gatewayPath, backups: saved.backups }
+    })
+  }
+
   return {
     /**
      * 开机一次性修复（claude-desktop-model-repair.ts）：0.2.12 往星芒自己那份配置里写进了一串
@@ -374,37 +417,18 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
      * 开没开），之后到写完都是同步的。写之前重读一遍：已经不是星芒那份在用、地址不是 from、Key
      * 不是这一把，一个字不写。
      */
-    followRoute: (from: string, to: string, apiKey: string, beforeCommit?: () => Promise<void>): Promise<{ path: string; backups: string[] }> => serial(async () => {
-      assertContext()
-      await options.assertUnmanaged?.()
-      await beforeCommit?.()
-      assertContext()
-      const snapshots = new Map<string, string | null>()
-      const capture = (filePath: string) => {
-        const content = read(filePath)
-        snapshots.set(filePath, content)
-        return content
-      }
-      const desktop = parseObject(capture(configPath))
-      const metadata = parseMetadata(capture(metadataPath))
-      const owner = parseOwner(capture(markerPath), profileDirectory)
-      const gatewayPath = owner ? path.join(libraryDirectory, `${owner.id}.json`) : null
-      const original = gatewayPath ? capture(gatewayPath) : null
-      const gateway = parseObject(original)
-      if (!owner || !gatewayPath || original === null || metadata.appliedId !== owner.id || metadata.hybridPointer
-        || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== '3p') || !gatewayConfigurationReady(gateway)
-        || typeof gateway.inferenceGatewayBaseUrl !== 'string' || !sameBaseUrl(gateway.inferenceGatewayBaseUrl, from)
-        || gateway.inferenceGatewayApiKey !== apiKey) {
-        throw new Error(`${label}在换线路前已变化，未执行修改`)
-      }
-      const { inferenceGatewayBaseUrl } = buildClaudeDesktopGatewayConfig({ baseUrl: to, apiKey })
-      const content = applyEdits(original, modify(original, ['inferenceGatewayBaseUrl'], inferenceGatewayBaseUrl, {
-        formattingOptions: { insertSpaces: true, tabSize: 2, eol: original.includes('\r\n') ? '\r\n' : '\n' },
-      }))
-      if (Buffer.byteLength(content, 'utf8') > maximumBytes) throw new Error(`${label}超过文件大小上限`)
-      const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
-      return { path: gatewayPath, backups: saved.backups }
-    }),
+    followRoute: (from: string, to: string, apiKey: string, beforeCommit?: () => Promise<void>): Promise<{ path: string; backups: string[] }> => (
+      editOwnedGateway({ baseUrl: from, apiKey }, 'inferenceGatewayBaseUrl',
+        () => buildClaudeDesktopGatewayConfig({ baseUrl: to, apiKey }).inferenceGatewayBaseUrl, '换线路', beforeCommit)
+    ),
+    /**
+     * 跟着 Claude Code 换 Key（#1113）：只把星芒那份的网关 Key 从 from 换成 to，地址、型号清单、认证方式和
+     * 文件里别的字都不动，规矩同 followRoute。
+     */
+    followKey: (baseUrl: string, from: string, to: string, beforeCommit?: () => Promise<void>): Promise<{ path: string; backups: string[] }> => (
+      editOwnedGateway({ baseUrl, apiKey: from }, 'inferenceGatewayApiKey',
+        () => buildClaudeDesktopGatewayConfig({ baseUrl, apiKey: to }).inferenceGatewayApiKey, '换密钥', beforeCommit)
+    ),
     /**
      * 首页「切回官方账号」：只把 claude_desktop_config.json 的 deploymentMode 改成官方登录，等于替客户在
      * Claude Desktop 的登录页选了「用 Claude 账号登录」。星芒那份配置和密钥原样留着，切回来不用重配；

@@ -93,6 +93,19 @@ describe('external client lifecycle presentation', () => {
     expect(present({ installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true, routeRecheck: true }).detail)
       .toBe('v2.0 · 运行中 · 还开着，完全退出后会自动换到当前线路')
   })
+
+  it('says a running client will take the new key by itself once it quits', () => {
+    // #1113：借的那个工具换了 Key，客户端开着，退出后星芒自己换。
+    for (const tool of ['claudeDesktop', 'workbuddy', 'opencode'] as const) {
+      expect(present({ tool, installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configured: true, configurationSource: 'xingmang', keyPending: true }))
+        .toMatchObject({ action: 'launch', detail: 'v2.0 · 运行中 · 还开着，完全退出后会自动换上新密钥' })
+    }
+    expect(present({ installed: true, running: false, version: 'v2.0', model: 'gpt-5.4', configured: true, configurationSource: 'xingmang', keyPending: true }).detail)
+      .toBe('v2.0 · gpt-5.4')
+    // A pending route says it first: the route moves in the same pass before the key does.
+    expect(present({ installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true, routeRecheck: true, keyPending: true }).detail)
+      .toBe('v2.0 · 运行中 · 还开着，完全退出后会自动换到当前线路')
+  })
 })
 
 describe('visibleExternalClients', () => {

@@ -13,7 +13,7 @@ import { listedProviderSessionProviders, providerSessionProviders } from './prov
 import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
 import { createWindowCloseQuery } from './window-close-query'
-import { createAccountWorkGate } from './account-work-gate'
+import { createAccountWorkGate, type QueuedAccountWork } from './account-work-gate'
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
@@ -274,6 +274,7 @@ function register(
     addMcpServer: vi.fn(),
     removeMcpServer: vi.fn(),
     loginMcpServer: vi.fn(),
+    cancelMcpLogin: vi.fn(),
     logoutMcpServer: vi.fn(),
     listSkills: vi.fn(),
     importSkill: vi.fn(),
@@ -3114,6 +3115,31 @@ describe('registerIpcHandlers', () => {
     await expect(result).resolves.toEqual([])
   })
 
+  // #1085：装着 Claude Code 时点了 Codex 的「打开」，它在安装队列里排着。换账号、退出不该陪它等到超时。
+  it('hands the CLI and Codex Desktop launches queued account work instead of holding an account change while they wait', async () => {
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+    const service = serviceStub()
+    const handedOver: QueuedAccountWork[] = []
+    vi.mocked(service.launchProvider).mockImplementation((_provider, _workspace, _mode, _resume, work) => {
+      if (work) handedOver.push(work)
+      return new Promise(() => undefined)
+    })
+    vi.mocked(service.launchCodexDesktop).mockImplementation((_mode, _target, launchOptions) => {
+      if (launchOptions?.accountWork) handedOver.push(launchOptions.accountWork)
+      return new Promise(() => undefined)
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never, accountWork, accountSessionReady: Promise.resolve() })
+
+    void electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', path.join(os.homedir(), 'project'))
+    void electronMocks.handlers.get('desktop:launch-codex')!(trustedEvent(), 'open')
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+    expect(handedOver).toHaveLength(2)
+    // 两个「打开」都还没回来，换账号照样不等它们。
+    await accountWork.whenIdle()
+    accountWork.abortQueued()
+    expect(handedOver.map((work) => work.signal.aborted)).toEqual([true, true])
+  })
+
   // 已知13：开机先摆上次落盘的客户端结果。那一读只读文件，不盘点、不记检测失败，也不陪账号恢复等。
   it('answers the startup read of the last saved client rows without scanning or waiting for the account, and logs it as that read', async () => {
     const restored = new Promise<void>(() => undefined)
@@ -3165,7 +3191,8 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get('config:configure-external-tool')!
     const result = await handler(trustedEvent(), 'opencode', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', protocol: 'responses', baseUrl: 'https://attacker.invalid', apiKey: 'sk-injected' })
     expect(result).toEqual(safeResult)
-    expect(service.configureExternalTool).toHaveBeenCalledWith('opencode', { apiKey: 'sk-known-secret-value', model: 'fixture-model', protocol: 'responses' }, expect.any(Function))
+    // 来源也交下去记着：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
+    expect(service.configureExternalTool).toHaveBeenCalledWith('opencode', { apiKey: 'sk-known-secret-value', model: 'fixture-model', protocol: 'responses' }, expect.any(Function), 'configured')
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('sk-known-secret-value')
     expect(JSON.stringify(result)).not.toContain('sk-known-secret-value')
     expect(() => handler(trustedEvent('https://untrusted.example/'), 'opencode', {})).toThrow('已拒绝')
@@ -3680,6 +3707,19 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => electronMocks.handlers.get('backups:inspect')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
       expect(() => electronMocks.handlers.get('mcp:remove')!(trustedEvent(), '')).toThrow('MCP 名称格式错误')
+    })
+
+    it('validates the MCP name before cancelling a waiting login', () => {
+      const { extensionService } = register()
+      extensionService.cancelMcpLogin.mockReturnValue(true)
+      const handler = electronMocks.handlers.get('mcp:cancel-login')!
+
+      expect(handler(trustedEvent(), ' remote-server ')).toBe(true)
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledWith('remote-server')
+      for (const bad of [42, null, '', 'server\0name', 'a'.repeat(129)]) {
+        expect(() => handler(trustedEvent(), bad)).toThrow('MCP 名称格式错误')
+      }
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledTimes(1)
     })
   })
 

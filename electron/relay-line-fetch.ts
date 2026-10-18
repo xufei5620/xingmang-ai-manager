@@ -10,11 +10,13 @@
  *
  * - 会退回的：解析不出地址、连不上、TLS 握手失败、连接被断、超时；代理回绝了直连这个地址（只放行
  *   老域名的公司网关、按域名列规则的代理）；网关 502/503/504 回的网页；直连回的别的网页或跳转（拦截页、
- *   上网认证）；直连回的网页形式的 404（白名单挡下了这个接口，只记日志，不算直连坏了）。
+ *   上网认证）；直连回的网页形式的 404（白名单挡下了这个接口，只记日志，不算直连坏了）。退到直连、直连
+ *   只回了白名单 404 的，交回走着那条的结果：那张 404 网页说明不了这次为什么没走通。
  * - 不退回的：401、403、429、余额不足这些业务错误（服务回的是 JSON），代理软件本身没开（换哪条都一样，
- *   归 proxy-bypass.ts 管），以及调用方自己中止的。
+ *   归 proxy-bypass.ts 管），本来就会跳转的接口回的跳转（redirectingPaths），以及调用方自己中止的。
  * - 会改动数据的请求（下单、建 Key、充值、AI 生成）只在请求肯定还没送到服务器时才重发：解析
- *   不出、连不上、TLS 失败、代理回绝、白名单 404。送出去以后才断的不重发，免得重复下单、重复扣费。
+ *   不出、连不上、证书没通过校验、代理回绝、白名单 404、被跳转拦下。送出去以后才断的不重发，握手做到
+ *   一半被掐断的也不重发（分不清请求是不是已经写出去了），免得重复下单、重复扣费。
  * - 只读的请求在走着的那条上等了 relayLineAnswerWaitMs 还没等来回应头（被丢包时就是这样，Chromium 自己
  *   要等二十秒到两分钟才报连接超时，早过了调用方的时限），就在另一条上也发一次，谁先回了能用的话用谁，
  *   另一个掐掉。不掐走着的这一次：服务端查得慢（用量明细）的请求照样能在它上面回来。这样换线路那一次
@@ -30,7 +32,7 @@
  * 写进工具配置之前那几次查模型、工具自检用的是另一个（createRelayObservedFetch）：它们查的
  * 正是那条线路通不通，不换地址也不重发，只按上面的口径把直连上的失败报给线路那边。
  */
-import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, isTlsHandshakeFailure, networkFailureCode, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, type NetworkFailureReason } from './network-failure'
 import {
   relayAutoBackupLine,
   relayAutoPreferredLines,
@@ -97,9 +99,43 @@ const unreportedPaths: ReadonlySet<string> = new Set(['/api/notice'])
 
 const gatewayStatuses: ReadonlySet<number> = new Set([502, 503, 504])
 
-// 星芒这几个站的接口从来不跳转。manual-redirect-fetch.ts 照 Node 的 fetch 把跳转原样交回来（3xx 带
-// Location），门户认证、拦截设备回的正是它。
+// 星芒这几个站的接口除了下面那一个都不跳转。manual-redirect-fetch.ts 照 Node 的 fetch 把跳转原样交回来
+// （3xx 带 Location），门户认证、拦截设备回的正是它。
 const redirectStatuses: ReadonlySet<number> = new Set([301, 302, 303, 307, 308])
+
+// 中转站本来就会跳转的接口：视频生成完了下载成片，中转站可以跳到对象存储的签名地址，ai-video-service.ts
+// 自己一跳一跳地查 Location、去掉 Authorization 再跟。这里回的 3xx 是星芒的回话，不算被拦、不换线路重发，
+// 也不叫线路那边查（#1157 第 3 条）。
+const redirectingPaths: readonly RegExp[] = [/^\/v1\/videos\/[^/]+\/content$/]
+
+function pathMayRedirect(path: string): boolean {
+  return redirectingPaths.some((pattern) => pattern.test(path))
+}
+
+/** 这个星芒地址回跳转是正常的（redirectingPaths）；直连分流（proxy-bypass.ts）也按它认。 */
+export function relayAnswerMayRedirect(url: string): boolean {
+  try {
+    return pathMayRedirect(new URL(url).pathname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 这里自己掐掉的那一次用的中止原因：另一条线路先回了能用的话，或者线路改走了另一条。下面那层直连分流
+ * （proxy-bypass.ts 的 createSiteFetch）见到它就知道这不是直连不通，账号请求也不叫它再看一次（#1157 第 4 条）。
+ */
+class RelayLineCancel extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RelayLineCancel'
+  }
+}
+
+/** 中止原因是这里自己掐的（RelayLineCancel），不是调用方中止、也不是等到了时限。 */
+export function isRelayLineCancel(reason: unknown): boolean {
+  return reason instanceof RelayLineCancel
+}
 
 /**
  * 只读的请求在走着的那条上等这么久还没等来回应头，就在另一条上也发一次（文件头）。和检查页「自动」给先走
@@ -142,19 +178,29 @@ function gatewayFailure(response: Response): boolean {
   return gatewayStatuses.has(response.status) && !isJsonContentType(response.headers.get('content-type'))
 }
 
-/** 直连回的不是星芒的回话：网页（拦截页、上网认证页、网关的错误页）或者跳转。 */
-function answeredBySomeoneElse(response: Response): boolean {
-  return response.type === 'opaqueredirect' || redirectStatuses.has(response.status) || isHtmlContentType(response.headers.get('content-type'))
+function isRedirectAnswer(response: Response): boolean {
+  return response.type === 'opaqueredirect' || redirectStatuses.has(response.status)
+}
+
+/**
+ * 直连回的不是星芒的回话：网页（拦截页、上网认证页、网关的错误页）或者跳转。本来就会跳转的接口
+ * （redirectingPaths）回的跳转不算，连它带着的那点网页正文也不看：Go 的 http.Redirect 给 GET 回跳转时
+ * 带的就是一小段 text/html。
+ */
+function answeredBySomeoneElse(response: Response, redirectExpected: boolean): boolean {
+  if (isRedirectAnswer(response)) return !redirectExpected
+  return isHtmlContentType(response.headers.get('content-type'))
 }
 
 /**
  * 直连上的这个回应说明直连这会儿没走通，就给出报给线路那边的原因（白名单 404 只挡这一个接口，不报，
- * 由调用方另说）；服务自己回的话（JSON，流式正文）给 null。检查页也按这个认。
+ * 由调用方另说）；服务自己回的话（JSON，流式正文）给 null。检查页也按这个认。redirectExpected 为真时
+ * 跳转也是服务自己回的话（redirectingPaths）。
  */
-export function relayLineFailureAnswer(response: Response): string | null {
+export function relayLineFailureAnswer(response: Response, redirectExpected = false): string | null {
   if (gatewayFailure(response)) return `http-${response.status}`
   if (blockedByAllowlist(response)) return null
-  return answeredBySomeoneElse(response) ? 'intercepted' : null
+  return answeredBySomeoneElse(response, redirectExpected) ? 'intercepted' : null
 }
 
 /** 换一条线路有可能走得通的失败（检查页、更新检查也按这个认），这一次请求可以换线路重发；别的返回 null。 */
@@ -188,9 +234,25 @@ function noAnswerFailure(error: unknown): string | null {
   return relayLineFailureReason(error) === 'timeout' ? networkFailureCode(error) ?? 'no-answer' : null
 }
 
+/**
+ * 证书没通过校验：Chromium 先验完证书才把请求写出去。只认 ERR_CERT_*，tls 那一类里 ERR_SSL_ 开头的不认：
+ * 证书换了（ERR_SSL_SERVER_CERT_CHANGED）是连接用到一半重新握手时报的，那时请求可能已经写出去了。Node 的
+ * 证书散句（测试里的 fetch）没有错误码，照证书失败算。
+ */
+function certificateRejected(error: unknown, reason: NetworkFailureReason): boolean {
+  if (reason !== 'tls' && reason !== 'certDate') return false
+  const code = networkFailureCode(error)
+  return code === null || code.startsWith('ERR_CERT_')
+}
+
+/**
+ * 会改动数据的请求能不能换一条线路重发：只有肯定还没送到服务器的才行。握手做到一半被掐断的
+ * （ERR_SSL_PROTOCOL_ERROR、ERR_QUIC_HANDSHAKE_FAILED 这类，#1060 归 refused）不算：路上的设备在建好的连接上
+ * 破坏 TLS 记录时 Chromium 报的也是它，QUIC 还会在握手没完时就把请求发出去，重发可能多签一把 Key、多下一单
+ * （#1157 第 6 条）。
+ */
 function provablyUnsent(error: unknown, reason: NetworkFailureReason): boolean {
-  // 握手被掐断归 refused（#1060），可和连接被重置不同，它跟证书失败一样是在握手里断的。
-  if (reason === 'dns' || reason === 'tls' || reason === 'certDate' || isTlsHandshakeFailure(error)) return true
+  if (reason === 'dns' || certificateRejected(error, reason)) return true
   const code = networkFailureCode(error)
   return code !== null && unsentFailureCodes.has(code)
 }
@@ -275,6 +337,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
 
     const path = new URL(requested).pathname
     const idempotent = isIdempotent(init) && !mailingPaths.has(path)
+    const redirectExpected = pathMayRedirect(path)
     const callerSignal = init?.signal ?? undefined
     const method = (init?.method ?? 'GET').toUpperCase()
     function report(reason: string): void {
@@ -283,17 +346,43 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     function logFallback(reason: string): void {
       log('info', 'relay.line.fallback', '走着的那条线路这次没走通，改走另一条重发', { siteId, from: line, to: other, reason, method, path })
     }
-    async function fallBack(reason: string): Promise<Response> {
+    function logBlocked(message: string): void {
+      log('warn', 'relay.line.blocked', message, { siteId, line: 'direct', method, path })
+    }
+    // 退到的是直连，直连回的却是白名单 404：那张网页只说明直连不放行这个接口，盖掉的是走着那条真正的错
+    // （连接被切断、网关错误页），客户看到「HTTP 404」会和客服一起找错方向。交回走着那条的结果（#1157 第 2 条）。
+    function blockedOnTheWayBack(response: Response): boolean {
+      if (other !== 'direct' || !blockedByAllowlist(response)) return false
+      logBlocked('线路2没放行这个接口，交回线路1这次的结果')
+      return true
+    }
+    // current 是走着那条这次的结果（失败，或者不能用、还没丢掉的回应），另一条也只回了白名单 404 时交回它；
+    // 走着那条本身就是白名单 404 的给 null。
+    async function fallBack(reason: string, current: AttemptOutcome | null): Promise<Response> {
       const target = onLine(requested, siteId, other)
       served.line = other
       logFallback(reason)
-      return asRequested(await base(target, init), target, requested)
+      let response: Response
+      try {
+        response = await base(target, init)
+      } catch (error) {
+        if (current?.response) await discard(current.response)
+        throw error
+      }
+      if (current && blockedOnTheWayBack(response)) {
+        await discard(response)
+        served.line = line
+        if (!current.response) throw current.error
+        return asRequested(current.response, sent, requested)
+      }
+      if (current?.response) await discard(current.response)
+      return asRequested(response, target, requested)
     }
     // 走着的那条回的话不能用就给出退回的原因：白名单 404 只挡这一个接口，不报给线路那边；回话的不是星芒
     // （网关错误页、拦截页、跳转）要报。白名单只在直连上有，走着默认线路时碰上网页 404 照原样交回去。
     function unusableAnswer(response: Response): { reason: string; reported: boolean } | null {
       if (line === 'direct' && blockedByAllowlist(response)) return { reason: 'allowlist-404', reported: false }
-      const failure = relayLineFailureAnswer(response)
+      const failure = relayLineFailureAnswer(response, redirectExpected)
       return failure ? { reason: failure, reported: true } : null
     }
     // 回了话以后正文读到一半断了（连接被重置）：这一次没法重发，只报给线路那边查一轮。调用方自己中止的
@@ -321,17 +410,20 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
         if (!reason) throw error
         const reported = reportedRelayLineFailure(error) ?? noAnswerFailure(error)
         if (reported) report(reported)
-        if (provablyUnsent(error, reason)) return fallBack(networkFailureCode(error) ?? reason)
+        if (provablyUnsent(error, reason)) return fallBack(networkFailureCode(error) ?? reason, { error })
         throw error
       }
       const unusable = unusableAnswer(response)
       if (unusable?.reason === 'allowlist-404') {
         // 白名单挡下的是这一个接口，请求没进到服务里：照样重发，后面的请求照样先走直连。
         await discard(response)
-        log('warn', 'relay.line.blocked', '线路2没放行这个接口，这次改走线路1', { siteId, line: 'direct', method, path })
-        return fallBack('allowlist-404')
+        logBlocked('线路2没放行这个接口，这次改走线路1')
+        return fallBack('allowlist-404', null)
       }
       if (unusable) report(unusable.reason)
+      // 被跳转拦下（上网认证、拦截设备）：星芒会改动数据的接口从来不跳转，回了跳转就是请求没进到服务里，
+      // 跟白名单 404 一样换一条线路重发（#1157 第 7 条）。网页、网关错误页分不清送没送到，照旧不重发。
+      if (unusable && isRedirectAnswer(response)) return fallBack(unusable.reason, { response })
       return handOver(response)
     }
     return readOnBothLines()
@@ -355,7 +447,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
       // 不要了的那一次：掐掉，晚到的回应把正文丢掉，连接好早点放回去。
       function drop(attempt: LineAttempt | null): void {
         if (!attempt) return
-        attempt.controller.abort(new Error('另一条线路已经回了话'))
+        attempt.controller.abort(new RelayLineCancel('另一条线路已经回了话'))
         void attempt.outcome.then((outcome) => outcome.response ? discard(outcome.response) : undefined)
       }
 
@@ -365,11 +457,14 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
       let secondPending = false
       // 另一条先回来、可走着的这条还没回的时候，它的结果先放着。
       let secondOutcome: AttemptOutcome | null = null
+      // 走着的这条失败了、回的话不能用的时候，它的结果也先放着：另一条只回了白名单 404 的话交回它
+      // （blockedOnTheWayBack）。线路改了被这里掐掉的那一次没什么可交回的，不放。
+      let firstOutcome: AttemptOutcome | null = null
       let lineChanged = false
       const unsubscribe = router.subscribe((changed) => {
         if (changed !== siteId || router.route(siteId).line === line) return
         lineChanged = true
-        first.controller.abort(new Error('线路已改走另一条'))
+        first.controller.abort(new RelayLineCancel('线路已改走另一条'))
       })
       let waitOver: () => void = () => undefined
       const waited = new Promise<'waited'>((resolve) => { waitOver = () => resolve('waited') })
@@ -388,6 +483,13 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
         return launch(other)
       }
       function secondFinal(outcome: AttemptOutcome, attempt: LineAttempt): Response {
+        const kept = firstOutcome
+        if (kept && outcome.response && blockedOnTheWayBack(outcome.response)) {
+          void discard(outcome.response)
+          firstOutcome = null
+          if (!kept.response) throw kept.error
+          return asRequested(kept.response, first.url, requested)
+        }
         served.line = other
         if (!outcome.response) throw outcome.error
         return asRequested(outcome.response, attempt.url, requested)
@@ -411,7 +513,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
             if (!attempt) continue
             secondPending = false
             if (!firstPending) return secondFinal(outcome, attempt)
-            if (outcome.response && !relayLineFailureAnswer(outcome.response) && !(other === 'direct' && blockedByAllowlist(outcome.response))) {
+            if (outcome.response && !relayLineFailureAnswer(outcome.response, redirectExpected) && !(other === 'direct' && blockedByAllowlist(outcome.response))) {
               // 另一条先回了能用的话：用它，走着的这条连回应头都没等来，报给线路那边。
               drop(first)
               report('no-answer')
@@ -427,9 +529,13 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
               drop(second)
               return handOver(outcome.response)
             }
-            await discard(outcome.response)
-            if (unusable.reported) report(unusable.reason)
-            else log('warn', 'relay.line.blocked', '线路2没放行这个接口，这次改走线路1', { siteId, line: 'direct', method, path })
+            if (unusable.reported) {
+              firstOutcome = outcome
+              report(unusable.reason)
+            } else {
+              await discard(outcome.response)
+              logBlocked('线路2没放行这个接口，这次改走线路1')
+            }
             if (secondOutcome && second) return secondFinal(secondOutcome, second)
             if (!second) {
               second = launchSecond(unusable.reason)
@@ -458,6 +564,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
             const reported = reportedRelayLineFailure(error) ?? noAnswerFailure(error)
             if (reported) report(reported)
             reason = networkFailureCode(error) ?? failure
+            firstOutcome = outcome
           }
           if (secondOutcome && second) return secondFinal(secondOutcome, second)
           if (!second) {
@@ -468,6 +575,8 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
       } finally {
         clearTimeout(waitTimer)
         unsubscribe()
+        // 放着没交回去的那份回应把正文丢掉。
+        if (firstOutcome?.response) void discard(firstOutcome.response)
       }
     }
   }
@@ -527,7 +636,7 @@ export function createRelayObservedFetch(
       if (reported) report(reported)
       throw error
     }
-    const failure = relayLineFailureAnswer(response)
+    const failure = relayLineFailureAnswer(response, pathMayRedirect(new URL(requested).pathname))
     if (failure) report(failure)
     else if (endpoint.endpointId === 'direct' && blockedByAllowlist(response)) {
       try {

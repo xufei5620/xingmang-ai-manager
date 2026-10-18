@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createSiteFetch } from './proxy-bypass'
 import {
   createRelayLineFetch,
   createRelayObservedFetch,
+  isRelayLineCancel,
+  relayAnswerMayRedirect,
   relayLineFailureAnswer,
   relayLineAnswerWaitMs,
   relayLineFailureReason,
@@ -55,6 +58,21 @@ function opaqueRedirect(): Response {
 
 function portalRedirect(): Response {
   return new Response(null, { status: 302, headers: { location: 'http://portal.example/login' } })
+}
+
+const clipUrl = 'https://tos.example/clip.mp4?signature=fixture'
+
+// 中转站下载视频成片时跳到对象存储：manual-redirect-fetch.ts 交回的不带正文的那种，和 Go 的 http.Redirect
+// 给 GET 写的带一小段网页正文的那种。
+function clipRedirects(): Array<() => Response> {
+  return [
+    () => new Response(null, { status: 302, headers: { location: clipUrl } }),
+    () => new Response(`<a href="${clipUrl}">Found</a>.`, { status: 302, headers: { location: clipUrl, 'content-type': 'text/html; charset=utf-8' } }),
+  ]
+}
+
+function causeOf(error: unknown): string {
+  return error instanceof Error ? String(error.cause) : ''
 }
 
 // 回了话、正文读到一半断了，跟 AI 回复写到一半连接断了一样。
@@ -204,16 +222,19 @@ describe('createRelayLineFetch', () => {
       return { outcome, sent: sentUrls(base), reports }
     }
 
-    // 代理回绝了直连这个地址（ERR_TUNNEL_CONNECTION_FAILED）：连接都没建起来。
-    // 握手被掐断现在和连接被重置说同一句（#1060），可它仍和证书失败一样算没送到。
-    for (const code of ['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_CONNECTION_TIMED_OUT', 'ERR_TUNNEL_CONNECTION_FAILED',
-      'ERR_SSL_PROTOCOL_ERROR', 'ERR_QUIC_HANDSHAKE_FAILED']) {
+    // 代理回绝了直连这个地址（ERR_TUNNEL_CONNECTION_FAILED）：连接都没建起来。证书没通过校验：请求还没写出去。
+    for (const code of ['ERR_NAME_NOT_RESOLVED', 'ERR_CONNECTION_REFUSED', 'ERR_CERT_AUTHORITY_INVALID', 'ERR_CERT_DATE_INVALID',
+      'ERR_CONNECTION_TIMED_OUT', 'ERR_TUNNEL_CONNECTION_FAILED']) {
       const result = await post(networkError(code))
       expect(result.outcome).toBe(200)
       expect(result.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
     }
-    // 送出去以后才断的、被跳转到别处的：可能已经下了单，不重发。
-    for (const code of ['ERR_CONNECTION_RESET', 'ERR_TIMED_OUT', 'ERR_EMPTY_RESPONSE', 'ERR_NETWORK_CHANGED', 'ERR_UNSAFE_REDIRECT']) {
+    // 测试里的 fetch（Node）报证书失败只有散句、没有错误码，照证书失败算。
+    expect((await post(new TypeError('fetch failed', { cause: new Error('self signed certificate in certificate chain') }))).outcome).toBe(200)
+    // 送出去以后才断的、被跳转到别处的：可能已经下了单，不重发。握手做到一半被掐断的、连接用到一半证书换了的
+    // 也分不清请求写没写出去（#1157 第 6 条）。
+    for (const code of ['ERR_CONNECTION_RESET', 'ERR_TIMED_OUT', 'ERR_EMPTY_RESPONSE', 'ERR_NETWORK_CHANGED', 'ERR_UNSAFE_REDIRECT',
+      'ERR_SSL_PROTOCOL_ERROR', 'ERR_QUIC_HANDSHAKE_FAILED', 'ERR_SSL_SERVER_CERT_CHANGED']) {
       const result = await post(networkError(code))
       expect(result.outcome).toBeInstanceOf(TypeError)
       expect(result.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay'])
@@ -227,10 +248,13 @@ describe('createRelayLineFetch', () => {
     expect(intercepted.outcome).toBe(200)
     expect(intercepted.sent).toHaveLength(1)
     expect(intercepted.reports).toEqual([['solov', 'intercepted']])
-    const redirected = await post(portalRedirect())
-    expect(redirected.outcome).toBe(302)
-    expect(redirected.sent).toHaveLength(1)
-    expect(redirected.reports).toEqual([['solov', 'intercepted']])
+    // 星芒会改动数据的接口从来不跳转：回了跳转就是没进到服务里，跟白名单 404 一样换线重发（#1157 第 7 条）。
+    for (const answer of [portalRedirect, opaqueRedirect]) {
+      const redirected = await post(answer())
+      expect(redirected.outcome).toBe(200)
+      expect(redirected.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
+      expect(redirected.reports).toEqual([['solov', 'intercepted']])
+    }
     const blocked = await post(page(404))
     expect(blocked.outcome).toBe(200)
     expect(blocked.sent).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
@@ -603,6 +627,66 @@ describe('createRelayLineFetch', () => {
     expect(notFoundBase).toHaveBeenCalledTimes(1)
   })
 
+  // 退到直连、直连只回了白名单 404：那张网页说明不了这次为什么没走通，交回走着那条的结果（#1157 第 2 条）。
+  it('hands back what the current line said when the direct line it fell back to only has an allowlist 404', async () => {
+    const refused = fakeRouter('primary')
+    const log = vi.fn()
+    const refusedBase = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_CONNECTION_REFUSED')).mockResolvedValueOnce(page(404))
+    const failure = await createRelayLineFetch(refused.router, refusedBase, { log })('https://xm.solov.cc/api/user/self').catch((error: unknown) => error)
+    expect(causeOf(failure)).toContain('ERR_CONNECTION_REFUSED')
+    expect(sentUrls(refusedBase)).toEqual(['https://xm.solov.cc/api/user/self', 'https://xm-direct.solov.cc/api/user/self'])
+    expect(requestDiagnosticsOf(failure)).toEqual({ line: 'primary' })
+    expect(refused.reports).toEqual([['solov', 'ERR_CONNECTION_REFUSED']])
+    expect(log).toHaveBeenCalledWith('warn', 'relay.line.blocked', expect.any(String), { siteId: 'solov', line: 'direct', method: 'GET', path: '/api/user/self' })
+
+    // 默认线路回的网关错误页也比直连的 404 说得清，正文原样交回。
+    const gateway = fakeRouter('primary')
+    const gatewayBase = vi.fn<typeof fetch>().mockResolvedValueOnce(page(502)).mockResolvedValueOnce(page(404))
+    const response = await createRelayLineFetch(gateway.router, gatewayBase)('https://xm.solov.cc/api/user/self')
+    expect(response.status).toBe(502)
+    expect(await response.text()).toBe('<html>blocked</html>')
+    expect(requestDiagnosticsOf(response)).toEqual({ line: 'primary' })
+    expect(gateway.reports).toEqual([['solov', 'http-502']])
+
+    // 会改动数据的请求同样：没送到才重发，重发碰上白名单 404 交回原来的失败；被跳转拦下的交回那个跳转。
+    const write = fakeRouter('primary')
+    const writeBase = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_CONNECTION_REFUSED')).mockResolvedValueOnce(page(404))
+    const writeFailure = await createRelayLineFetch(write.router, writeBase)('https://xm.solov.cc/api/user/pay', { method: 'POST', body: '{}' })
+      .catch((error: unknown) => error)
+    expect(causeOf(writeFailure)).toContain('ERR_CONNECTION_REFUSED')
+    expect(writeBase).toHaveBeenCalledTimes(2)
+    expect(requestDiagnosticsOf(writeFailure)).toEqual({ line: 'primary' })
+
+    const redirectedWrite = fakeRouter('primary')
+    const redirectBase = vi.fn<typeof fetch>().mockResolvedValueOnce(portalRedirect()).mockResolvedValueOnce(page(404))
+    const redirected = await createRelayLineFetch(redirectedWrite.router, redirectBase)('https://xm.solov.cc/api/user/pay', { method: 'POST', body: '{}' })
+    expect(redirected.status).toBe(302)
+    expect(redirected.headers.get('location')).toBe('http://portal.example/login')
+    expect(sentUrls(redirectBase)).toEqual(['https://xm.solov.cc/api/user/pay', 'https://xm-direct.solov.cc/api/user/pay'])
+    expect(requestDiagnosticsOf(redirected)).toEqual({ line: 'primary' })
+
+    // 另一条回的不是白名单 404 的照旧用另一条的。
+    const answered = fakeRouter('primary')
+    const answeredBase = vi.fn<typeof fetch>().mockResolvedValueOnce(page(502)).mockResolvedValueOnce(json(404, { error: 'Invalid URL' }))
+    expect((await createRelayLineFetch(answered.router, answeredBase)('https://xm.solov.cc/api/user/self')).status).toBe(404)
+  })
+
+  it('hands back the current line\'s failure when it fails after the direct line answered the wait with an allowlist 404', async () => {
+    vi.useFakeTimers()
+    const { router, reports } = fakeRouter('primary')
+    const lines = hangingLines()
+    const pending = createRelayLineFetch(router, lines.base)('https://xm.solov.cc/api/user/self').catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(relayLineAnswerWaitMs)
+    lines.answer('xm-direct.solov.cc', page(404))
+    await vi.advanceTimersByTimeAsync(0)
+    lines.fail('xm.solov.cc', networkError('ERR_CONNECTION_RESET'))
+    const failure = await pending
+    expect(causeOf(failure)).toContain('ERR_CONNECTION_RESET')
+    expect(requestDiagnosticsOf(failure)).toEqual({ line: 'primary' })
+    expect(reports).toEqual([['solov', 'ERR_CONNECTION_RESET']])
+    expect(lines.base).toHaveBeenCalledTimes(2)
+  })
+
   it('falls back from the historical default line for gateway and intercepted pages, but hands a page-shaped 404 back since only direct has an allowlist', async () => {
     const cases: Array<{ answer: () => Response; fellBack: boolean; reported: string | null }> = [
       { answer: () => page(502), fellBack: true, reported: 'http-502' },
@@ -645,6 +729,73 @@ describe('createRelayLineFetch', () => {
     expect((await pending).status).toBe(200)
     expect(sentUrls(base)).toEqual(['https://api.solov.cc/api/v1/auth/me', 'https://api-direct.solov.cc/api/v1/auth/me'])
     expect(listeners.size).toBe(0)
+  })
+
+  // 下载视频成片的接口本来就会跳到对象存储，ai-video-service.ts 自己查过 Location 再跟：这个跳转是星芒的回话，
+  // 不换线路重发、不叫线路那边查（#1157 第 3 条）。
+  it('hands the video download redirect back as the service\'s own answer', async () => {
+    for (const answer of clipRedirects()) {
+      const { router, reports } = fakeRouter()
+      const log = vi.fn()
+      const base = vi.fn<typeof fetch>().mockResolvedValueOnce(answer()).mockResolvedValueOnce(json(200))
+      const response = await createRelayLineFetch(router, base, { log })('https://xm.solov.cc/v1/videos/task-1/content', { redirect: 'manual' })
+      expect(response.status).toBe(302)
+      expect(response.headers.get('location')).toBe(clipUrl)
+      expect(sentUrls(base)).toEqual(['https://xm-direct.solov.cc/v1/videos/task-1/content'])
+      expect(reports).toEqual([])
+      expect(log).not.toHaveBeenCalled()
+
+      const observed = fakeRouter()
+      await createRelayObservedFetch(observed.router, vi.fn<typeof fetch>(async () => answer()))('https://xm-direct.solov.cc/v1/videos/task-1/content')
+      expect(observed.reports).toEqual([])
+    }
+    // 别的接口回跳转照旧算被拦。
+    const other = fakeRouter()
+    const otherBase = vi.fn<typeof fetch>().mockResolvedValueOnce(clipRedirects()[0]()).mockResolvedValueOnce(json(200))
+    expect((await createRelayLineFetch(other.router, otherBase)('https://xm.solov.cc/v1/videos/task-1')).status).toBe(200)
+    expect(other.reports).toEqual([['solov', 'intercepted']])
+  })
+
+  // 改走直连会话的账号请求：两条一起发时掐掉的那一次、线路改了掐掉的那一次，都不是直连不通（#1157 第 4 条）。
+  it('cuts the attempt it no longer needs in a way the direct session below can tell from a failure', async () => {
+    vi.useFakeTimers()
+    const siteRouteFailed = vi.fn()
+    const lines = hangingLines()
+    const reasons: unknown[] = []
+    const viaDirect = vi.fn<typeof fetch>((input, init) => {
+      init?.signal?.addEventListener('abort', () => reasons.push(init.signal?.reason))
+      return lines.base(input, init)
+    })
+    const accountFetch = createSiteFetch({ routeSiteRequest: () => 1, siteRouteFailed }, vi.fn<typeof fetch>(), viaDirect, { abortMeansUnreachable: true })
+
+    const hedged = fakeRouter()
+    const pending = createRelayLineFetch(hedged.router, accountFetch, { abortMeansNoAnswer: true })('https://xm.solov.cc/api/user/self')
+    await vi.advanceTimersByTimeAsync(relayLineAnswerWaitMs)
+    lines.answer('xm.solov.cc', json(200))
+    expect((await pending).status).toBe(200)
+    expect(lines.aborted).toEqual(['xm-direct.solov.cc'])
+
+    const moving = fakeRouter()
+    const moved = createRelayLineFetch(moving.router, accountFetch, { abortMeansNoAnswer: true })('https://xm.solov.cc/api/user/self')
+    await vi.advanceTimersByTimeAsync(0)
+    moving.moveTo('primary')
+    await vi.advanceTimersByTimeAsync(0)
+    lines.answer('xm.solov.cc', json(200))
+    expect((await moved).status).toBe(200)
+    expect(lines.aborted).toEqual(['xm-direct.solov.cc', 'xm-direct.solov.cc'])
+
+    expect(reasons).toHaveLength(2)
+    expect(reasons.every(isRelayLineCancel)).toBe(true)
+    expect(siteRouteFailed).not.toHaveBeenCalled()
+
+    // 调用方自己到了时限照旧算（账号请求只会因为等不来回话而中止）。
+    const caller = new AbortController()
+    const timedOut = createRelayLineFetch(fakeRouter().router, accountFetch, { abortMeansNoAnswer: true })('https://xm.solov.cc/api/user/self', { signal: caller.signal })
+    await vi.advanceTimersByTimeAsync(0)
+    caller.abort(new DOMException('timed out', 'TimeoutError'))
+    await expect(timedOut).rejects.toThrow('aborted')
+    expect(siteRouteFailed).toHaveBeenCalledTimes(1)
+    expect(isRelayLineCancel(caller.signal.reason)).toBe(false)
   })
 
   it('never resends a streamed body and never reroutes a pinned line', async () => {
@@ -827,6 +978,21 @@ describe('createRelayLineFetch and the tool line', () => {
 })
 
 describe('relayLineFailureAnswer', () => {
+  it('knows the one relay address that answers with a redirect on purpose', () => {
+    expect(relayAnswerMayRedirect('https://xm.solov.cc/v1/videos/task-1/content')).toBe(true)
+    expect(relayAnswerMayRedirect('https://xm-direct.solov.cc/v1/videos/task%2F1/content?variant=1')).toBe(true)
+    expect(relayAnswerMayRedirect('https://xm.solov.cc/v1/videos/task-1')).toBe(false)
+    expect(relayAnswerMayRedirect('https://xm.solov.cc/v1/videos/task-1/content/extra')).toBe(false)
+    expect(relayAnswerMayRedirect('https://xm.solov.cc/v1/videos//content')).toBe(false)
+    expect(relayAnswerMayRedirect('not a url')).toBe(false)
+    for (const answer of clipRedirects()) {
+      expect(relayLineFailureAnswer(answer(), true)).toBeNull()
+      expect(relayLineFailureAnswer(answer())).toBe('intercepted')
+    }
+    // 会跳转的接口回的网页（不是跳转）照旧算被拦。
+    expect(relayLineFailureAnswer(page(200), true)).toBe('intercepted')
+  })
+
   it('names the answers another line could avoid and leaves the service\'s own answers and an allowlist 404 alone', () => {
     expect(relayLineFailureAnswer(page(502))).toBe('http-502')
     expect(relayLineFailureAnswer(page(200))).toBe('intercepted')

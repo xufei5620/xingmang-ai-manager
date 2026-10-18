@@ -1141,8 +1141,11 @@ test('a failing lookup is never read as no tag when reserving', posixOnly, () =>
 // 报红，而「究竟发出去没有」是发布现场最不该需要人去猜的一件事。platforms 选单个
 // 平台时一个版本要分两次发，第二次跑到这里 tag 与 Release 都已经存在——原来的写法
 // 会在那里直接炸。
-function runTagStep({ existingTagSha = null, releaseExists = false, assets = true, annotated = false, lookupFails = false, createFails = false }) {
+function runTagStep({ existingTagSha = null, releaseExists = false, assets = true, annotated = false, lookupFails = false, createFails = false, releaseState = null }) {
   // assets：true 是 Windows 与 Mac 各一个包，'linux' 是只有 Linux 两个架构的 deb。
+  // releaseState：null 时查 Release 的接口什么都不回（和这一项加进来之前的桩一样），
+  // 'unreadable' 时报 404（草稿就是这样），{ immutable, assets } 时回那个 Release 锁没锁、
+  // 发布页上已经有哪些文件。
   const step = publishJob.steps.find((entry) => /Tag the commit that shipped/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-tag-'))
   const binDirectory = path.join(workspace, 'bin')
@@ -1159,6 +1162,7 @@ function runTagStep({ existingTagSha = null, releaseExists = false, assets = tru
     fs.writeFileSync(path.join(workspace, 'release-artifacts', 'XingMang-AI-Manager-9.9.9-Apple-Silicon-arm64.dmg'), 'image')
   }
   const logPath = path.join(workspace, 'commands.log')
+  const summaryPath = path.join(workspace, 'step-summary.md')
 
   // 打标走的是 gh，git 一次都不该被调到；留着这个桩就是为了在日志里抓到它。
   const gitStub = `#!/bin/bash
@@ -1173,6 +1177,14 @@ exit 0
   if (existingTagSha !== null) {
     refLines.push(`printf 'refs/tags/v9.9.9 %s\\n' ${JSON.stringify(annotated ? `tag ${TAG_OBJECT_SHA}` : `commit ${existingTagSha}`)}`)
   }
+  // 照工作流里那条 --jq 的输出来：第一行是 immutable，之后每行一个发布页上已有的文件名。
+  let releaseLookup = ':'
+  if (releaseState === 'unreadable') {
+    releaseLookup = `echo 'gh: Not Found (HTTP 404)' >&2; exit 1`
+  } else if (releaseState) {
+    releaseLookup = [String(releaseState.immutable), ...releaseState.assets]
+      .map((line) => `printf '%s\\n' ${JSON.stringify(line)}`).join('; ')
+  }
   const ghStub = `#!/bin/bash
 printf 'gh %s\\n' "$*" >> ${JSON.stringify(logPath)}
 if [ "$1" = 'api' ]; then
@@ -1180,6 +1192,7 @@ if [ "$1" = 'api' ]; then
     *'--method POST '*) exit ${createFails ? '1' : '0'} ;;
     *'/git/matching-refs/tags/'*) ${lookupFails ? `echo 'gh: Server Error (HTTP 502)' >&2; exit 1` : refLines.join('; ')} ;;
     *'/git/tags/'*) printf '%s\\n' ${JSON.stringify(existingTagSha || '')} ;;
+    *'/releases/tags/'*) ${releaseLookup} ;;
   esac
   exit 0
 fi
@@ -1208,11 +1221,13 @@ exit 0
       SHIPPED_SHA: SHIPPED,
       GH_TOKEN: 'stub',
       GITHUB_REPOSITORY: 'xufei5620/xingmang-ai-manager',
+      GITHUB_STEP_SUMMARY: summaryPath,
     },
   })
   const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+  const summary = fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, 'utf8') : ''
   fs.rmSync(workspace, { recursive: true, force: true })
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr, log }
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, log, summary }
 }
 
 test('the Release is created on the tag reserved at dispatch, without naming a commit', posixOnly, () => {
@@ -1281,6 +1296,54 @@ test('a Linux-only publish attaches both debs to the Release and nothing else', 
   assert.match(upload, /release-artifacts\/xingmang-ai-manager_9\.9\.9_arm64\.deb/)
   // 清单是给自动更新读的，挂到 Release 页面上只会让人点错。
   assert.doesNotMatch(upload, /latest-linux/)
+})
+
+test('a locked Release keeps its files and the summary names what only reached the update feed', posixOnly, () => {
+  // 先发 Windows、发布页锁住之后再补发 Mac：Mac 的包已经进了更新源，发布页挂不上去。
+  const run = runTagStep({
+    existingTagSha: SHIPPED,
+    releaseExists: true,
+    releaseState: { immutable: true, assets: ['XingMang-AI-Manager-9.9.9-Setup.exe'] },
+  })
+
+  // 锁住的 Release 一传就被拒，作业会在更新源都换好之后报红，那正是要防的收尾失败。
+  assert.equal(run.status, 0, run.stderr)
+  assert.doesNotMatch(run.log, /gh release (upload|create)/)
+  assert.match(run.stdout, /::warning::v9\.9\.9 的发布页已经锁住，这次补发的 XingMang-AI-Manager-9\.9\.9-Apple-Silicon-arm64\.dmg 挂不上去/)
+  assert.doesNotMatch(run.stdout, /::warning::.*Setup\.exe/)
+  assert.match(run.summary, /^### 发布页已锁/m)
+  assert.match(run.summary, /^- `XingMang-AI-Manager-9\.9\.9-Apple-Silicon-arm64\.dmg`$/m)
+  assert.doesNotMatch(run.summary, /Setup\.exe/)
+  assert.match(run.summary, /只能提升版本号再发/)
+})
+
+test('a locked Release that already has every file is left as it is without a warning', posixOnly, () => {
+  // 同一次运行的发布作业被重跑：上一次已经把这两个包挂上去，然后才锁住的。
+  const run = runTagStep({
+    existingTagSha: SHIPPED,
+    releaseExists: true,
+    releaseState: { immutable: true, assets: ['XingMang-AI-Manager-9.9.9-Apple-Silicon-arm64.dmg', 'XingMang-AI-Manager-9.9.9-Setup.exe'] },
+  })
+
+  assert.equal(run.status, 0, run.stderr)
+  assert.doesNotMatch(run.log, /gh release (upload|create)/)
+  assert.doesNotMatch(run.stdout, /::warning::/)
+  assert.match(run.stdout, /v9\.9\.9 的发布页已经锁住，这次的安装包发布页上都有同名的一份/)
+  assert.equal(run.summary, '')
+})
+
+test('a Release that is not proven locked is uploaded to as before', posixOnly, () => {
+  // 只有接口明说锁了才不传：没锁的被当成锁了，这一版的包会悄悄不上发布页。草稿查
+  // releases/tags 是 404，接口不带 immutable 时 jq 给的是 null。
+  for (const releaseState of [{ immutable: false, assets: [] }, { immutable: null, assets: [] }, 'unreadable']) {
+    const run = runTagStep({ existingTagSha: SHIPPED, releaseExists: true, releaseState })
+
+    assert.equal(run.status, 0, run.stderr)
+    assert.match(run.log, /gh api repos\/xufei5620\/xingmang-ai-manager\/releases\/tags\/v9\.9\.9 /)
+    assert.match(run.log, /gh release upload v9\.9\.9 .*--clobber/, JSON.stringify(releaseState))
+    assert.doesNotMatch(run.stdout, /::warning::/)
+    assert.equal(run.summary, '')
+  }
 })
 
 test('an annotated tag from an older release is dereferenced before it is compared', posixOnly, () => {

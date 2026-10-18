@@ -9,6 +9,7 @@ import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnost
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { InstallationQueue } from './installation-queue'
+import { createAccountWorkGate } from './account-work-gate'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveInterruptibleInstallTask } from './quit-blocking-tasks'
 import { providerBaseUrls, providerIds, type ProviderId } from './catalog'
@@ -6863,6 +6864,26 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     expect(claudeConfig.hasCompletedOnboarding).toBe(true)
     const trustedFolders = path.join(userHome, '.gemini', 'trustedFolders.json')
     expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
+  })
+
+  // #1085：换账号时还排着队的「打开」直接出队，一行都不跑；轮到它执行时才交给账号工作。
+  it('runs a launch inside the queued account work, and not at all once that work was called off', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-account-work-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(workspace)
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+
+    const calledOff = accountWork.queue()
+    accountWork.abortQueued()
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号上下文已变化')
+    expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
+
+    const work = accountWork.queue()
+    const run = vi.spyOn(work, 'run')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, work)).rejects.toThrow('未检测到 Claude Code')
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(true)
   })
 
   // 这组用例的服务按 linux 平台构造，而判定按平台选路径语义：Windows 主机上的临时目录

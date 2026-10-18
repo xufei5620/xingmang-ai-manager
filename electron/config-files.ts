@@ -1437,12 +1437,12 @@ function createCodexRelayConfigPlans(
     nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active, siteBaseUrls.codex), siteBaseUrls.codex, cliHook, templateCatalog)
   } else if (storedRelay) {
     const stored = TOML.parse(storedRelay)
-    applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex), siteBaseUrls.codex)
+    applyCodexRelayConfig(stored, model, codexRelayProviderFor(stored, siteBaseUrls.codex, true), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(stored, cliHook)
     if (catalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(stored, templateCatalog)
     nextContent = tomlContent(stored)
   } else if (currentParsed) {
-    applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex), siteBaseUrls.codex)
+    applyCodexRelayConfig(currentParsed, model, codexRelayProviderFor(currentParsed, siteBaseUrls.codex, true), siteBaseUrls.codex)
     if (cliHook) applyCodexCliNotify(currentParsed, cliHook)
     if (catalog !== undefined) catalogInUse = applyCodexRelayModelCatalog(currentParsed, templateCatalog)
     nextContent = tomlContent(currentParsed)
@@ -1838,12 +1838,16 @@ export function inspectProviderConfig(
   const actualBaseUrl = readProviderBaseUrl(provider, paths)
   const officialAccount = readOfficialAccountIdentity(provider, paths)
   const baseUrl = siteBaseUrlsInput[provider]
+  // 以前的版本只换 base_url 接管过带别家凭据的表（#1083）：地址是星芒的，请求带的却是别家的 Key。
+  // 这不是星芒写的中转配置（和 codexProviderShadowed 那种整张都是星芒的表不同），当不匹配：首页给
+  // 「改用当前账号」，换型号、刷型号菜单、补缺省项这些自动改写也不碰它。
+  const foreignCredentials = provider === 'codex' && readCodexActiveProviderCarriesCredentials(paths[0])
   return {
     baseUrl,
     actualBaseUrl,
     exists: files.some((file) => file.exists),
     hasApiKey: Boolean(apiKey),
-    matchesRelay: Boolean(apiKey && actualBaseUrl && relayProviderBaseUrlMatches(provider, actualBaseUrl, baseUrl)),
+    matchesRelay: Boolean(apiKey && actualBaseUrl && relayProviderBaseUrlMatches(provider, actualBaseUrl, baseUrl)) && !foreignCredentials,
     apiKey,
     model,
     ...(authType !== undefined ? { authType } : {}),
@@ -1975,6 +1979,31 @@ function isOfficialCodexAliasEntry(entry: unknown): entry is Record<string, unkn
     && codexProviderRouteKeys.every((key) => entry[key] === undefined)
 }
 
+// 表里另带凭据、另加请求头或查询参数的几项。有任何一项，请求就不只是拿 auth.json 里那把 Key 发出去：
+// env_key 读环境变量里的 Key，http_headers 里可能写死了 Authorization。别家中转的教程常这样写。
+const codexProviderCredentialKeys = [
+  'env_key', 'env_key_instructions', 'experimental_bearer_token', 'auth', 'gateway_oauth', 'aws',
+  'http_headers', 'env_http_headers', 'query_params',
+]
+
+/**
+ * 这张表另带了自己的凭据或请求参数（#1083）。只换 base_url 接管它，请求还带着别家的 Key 打到星芒，
+ * 一用就 401，变量不在时 Codex 干脆起不来；把那几项删掉又是动客户自己写的设置。所以只更新时不接管
+ * 这种表，另起一张星芒的，客户那张一个字不动（yoyo 10-18 定的「另起一张」）。代价：以前记在那张表下的
+ * Codex 对话不在「继续」列表里，对话文件还在，切回那张表就看得到。
+ */
+function carriesCodexProviderCredentials(entry: unknown): boolean {
+  return isJsonRecord(entry) && codexProviderCredentialKeys.some((key) => entry[key] !== undefined)
+}
+
+/** Codex 正在用的那张表（与 readProviderBaseUrl 读地址的是同一张）另带了凭据。 */
+function readCodexActiveProviderCarriesCredentials(configPath: string): boolean {
+  const parsed = readToml(configPath)
+  const providerName = nestedString(parsed, ['model_provider'])
+  const providers = parsed?.model_providers
+  return Boolean(providerName) && isJsonRecord(providers) && carriesCodexProviderCredentials(providers[providerName])
+}
+
 /** 这份配置正在用的星芒中转表名（旧对话记的就是它）；不是中转、或用的是 Codex 内置的名字，返回 null。 */
 function activeCodexRelayProviderName(parsed: Record<string, unknown> | null, siteBaseUrl: string): string | null {
   if (!parsed || classifyCodexConfigProfile(parsed, siteBaseUrl) !== 'relay') return null
@@ -2051,21 +2080,27 @@ function existingCodexProvider(configPath: string, siteBaseUrl: string): string 
  * named after a built-in ID is silently ignored and the relay written there
  * never takes effect. The IDs are case-sensitive: `OpenAI` is an ordinary
  * user-definable name, which is why older releases could use it safely.
+ *
+ * merging：只更新时表里别的键原样留着，带着别家凭据的表不接管（carriesCodexProviderCredentials）。
+ * 重置时整份按模板重写，沿用原来的名字也带不过去别家的设置，照旧。
  */
-function codexRelayProviderFor(parsed: Record<string, unknown>, siteBaseUrl: string): string {
+function codexRelayProviderFor(parsed: Record<string, unknown>, siteBaseUrl: string, merging = false): string {
   const active = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  function adoptable(name: string): boolean {
+    return !merging || !carriesCodexProviderCredentials(providers[name])
+  }
   // Keep a usable active name as is: Codex's resume picker filters sessions by
   // model_provider, so renaming it would hide the customer's earlier chats.
-  if (active && !reservedCodexProviders.has(active)) return active
-  const providers = isJsonRecord(parsed.model_providers) ? parsed.model_providers : {}
+  if (active && !reservedCodexProviders.has(active) && adoptable(active)) return active
   // 切官方时留下的那张走官方登录的表：旧对话记的就是这个名字，切回来接着用它，那些对话才跟着回来。
   const alias = active ? undefined
-    : Object.keys(providers).find((key) => !reservedCodexProviders.has(key) && isOfficialCodexAliasEntry(providers[key]))
+    : Object.keys(providers).find((key) => !reservedCodexProviders.has(key) && isOfficialCodexAliasEntry(providers[key]) && adoptable(key))
   if (alias) return alias
   function isFree(candidate: string): boolean {
-    return !Object.prototype.hasOwnProperty.call(providers, candidate)
-      || isOwnCodexRelayEntry(providers[candidate], siteBaseUrl)
-      || isOfficialCodexAliasEntry(providers[candidate])
+    if (!Object.prototype.hasOwnProperty.call(providers, candidate)) return true
+    return (isOwnCodexRelayEntry(providers[candidate], siteBaseUrl) || isOfficialCodexAliasEntry(providers[candidate]))
+      && adoptable(candidate)
   }
   // Without a selector, older releases picked `OpenAI`; keep that for the same
   // resume-list reason, but never take over a table someone else wrote.
@@ -2086,7 +2121,8 @@ function isOwnCodexRelayEntry(entry: unknown, siteBaseUrl: string): boolean {
  * that table of ours to the new name, keeping options such as retries. A
  * built-in-named table someone else wrote stays untouched: Codex ignores it
  * anyway, and refusing to save over it would turn a working switch into an
- * error.
+ * error. A table that also carries its own credentials is not moved either
+ * (carriesCodexProviderCredentials): the new table starts clean instead.
  */
 function migrateOwnReservedCodexProvider(
   parsed: Record<string, unknown>,
@@ -2098,7 +2134,7 @@ function migrateOwnReservedCodexProvider(
   const providers = parsed.model_providers
   if (!isJsonRecord(providers)) return
   const entry = providers[active]
-  if (!isJsonRecord(entry) || !isOwnCodexRelayEntry(entry, siteBaseUrl)) return
+  if (!isJsonRecord(entry) || !isOwnCodexRelayEntry(entry, siteBaseUrl) || carriesCodexProviderCredentials(entry)) return
   const existing = providers[providerName]
   providers[providerName] = { ...entry, ...(isJsonRecord(existing) ? existing : {}) }
   delete providers[active]

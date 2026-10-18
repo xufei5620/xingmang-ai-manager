@@ -1111,14 +1111,53 @@ jobs:
           if gh release view "$tag" > /dev/null 2>&1; then
             # Release 已经在了，只把这一次出的包挂上去。正文不重写：发布者可能已经
             # 在上面补过话，补发一个平台不该把那些改动冲掉。
+            #
+            # 仓库打开 Release immutability 以后（#1090），发布出去的 Release 再也加不了、
+            # 换不了文件，补发另一个平台时 upload 会被拒，作业在更新源都换好之后报红。所以
+            # 先问它锁了没有，锁了就不传，在运行摘要里写清楚。只有接口明说 immutable 是
+            # true 才算锁了：草稿查这个地址是 404，查不了、不带这个字段，都照原来那样去传。
+            # 没锁的被当成锁了，包就悄悄不上发布页；锁了的被当成没锁，GitHub 自己会拒，
+            # 和原来一样报红。
+            locked=false
+            on_page=''
             if [ "${#assets[@]}" -gt 0 ]; then
+              if listing=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+                --jq '(.immutable | tostring), .assets[].name' 2> /dev/null); then
+                if [ "${listing%%$'\n'*}" = 'true' ]; then locked=true; fi
+                on_page=$(tail -n +2 <<< "$listing")
+              else
+                echo "查不了 $tag 的发布页锁没锁（草稿查不到），照原来那样直接传"
+              fi
+            fi
+            if [ "${#assets[@]}" -eq 0 ]; then
+              echo "没有可上传的安装包，Release 保持原样"
+            elif [ "$locked" != 'true' ]; then
               gh release upload "$tag" "${assets[@]}" --clobber
             else
-              echo "没有可上传的安装包，Release 保持原样"
+              missing=()
+              for asset in "${assets[@]}"; do
+                name=${asset##*/}
+                if ! grep -Fxq -- "$name" <<< "$on_page"; then missing+=("$name"); fi
+              done
+              if [ "${#missing[@]}" -eq 0 ]; then
+                echo "$tag 的发布页已经锁住，这次的安装包发布页上都有同名的一份，保持原样"
+              else
+                echo "::warning::$tag 的发布页已经锁住，这次补发的 ${missing[*]} 挂不上去，只进了更新源；要让发布页上也有，只能提升版本号再发"
+                {
+                  echo '### 发布页已锁，这次补发的安装包没挂上去'
+                  echo
+                  echo "$tag 的 GitHub 发布页已经锁住（仓库打开了 Release immutability），发布出去的版本加不了文件。下面这些只进了更新源，客户自动更新照常拿得到；COS 同步开着的话，教程页的国内下载也会有："
+                  echo
+                  for name in "${missing[@]}"; do echo "- \`$name\`"; done
+                  echo
+                  echo '要让发布页上也有，只能提升版本号再发一版。'
+                } >> "$GITHUB_STEP_SUMMARY"
+              fi
             fi
           else
             # 挂到上面核过的那个 tag 上，它指着本次实际出包的 commit。--verify-tag：tag
-            # 万一这会儿不在了就停下，不让 GitHub 在今天的 main 上新建一个。
+            # 万一这会儿不在了就停下，不让 GitHub 在今天的 main 上新建一个。带着安装包建时
+            # gh 先建草稿、传完才发布，草稿不锁，所以发布页锁不锁这里都一样。
             gh release create "$tag" \
               --verify-tag \
               --title "$PACKAGE_VERSION" \
