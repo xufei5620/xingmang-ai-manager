@@ -57,7 +57,9 @@ import {
   resolveSameUserNpmPrefix,
 } from './npm-user-prefix'
 import { isChineseSentence } from './chinese-sentence'
-import { toolLaunchFailureMessage } from './failure-wording'
+import { npmFailureSentence, npmSourceFailure, toolLaunchFailureMessage, type NpmFailurePart } from './failure-wording'
+import { npmDownloadTimedOutReason, npmErrorCodeIn, npmErrorCodesClause } from './npm-failure-reasons'
+import { platformCapabilitiesFor } from './platform-capabilities'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
@@ -326,7 +328,7 @@ import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
-import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, officialRegistryUnreachableMarker, parsesAsJsonObject, toolCertificateMessages } from './network-failure'
 import { modelProbeFailurePrefix } from './relay-quota-failure'
 import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { NewApiNetworkError } from './new-api-client'
@@ -1676,8 +1678,11 @@ export function npmDownloadHeartbeatMessage(registry: string, elapsedMs: number)
   return `仍在${source}下载…（已用时 ${formatElapsedDuration(elapsedMs)}）`
 }
 
-/** 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按它归成「下载超时」）。 */
-const npmDownloadTimedOutMessage = '下载超时，长时间没有完成，已中止'
+/**
+ * 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按「超时」归成「下载超时」）。以前写的是
+ *「下载超时，长时间没有完成，已中止」，句子里含着目录标题「下载超时」，错误框就不出提示（#1100 第1条）。
+ */
+const npmDownloadTimedOutMessage = npmDownloadTimedOutReason
 
 /**
  * Bytes under `directory`, counted without following links. Entries that vanish
@@ -1809,6 +1814,14 @@ export function createNpmDownloadStallWatch(
  * command running long is not always a network problem. Inside an npm install
  * it is: npm spends its time downloading, so here it is said plainly.
  */
+/**
+ * npm 自己退出非 0：命令运行器那句「命令执行失败（退出码 1）：npm-cli.js」看着是中文，后面接的却是 npm 的
+ * 英文要点，不能当中文原话照旧上屏（#1100 第1条）。
+ */
+export function isNpmExitFailure(error: unknown): boolean {
+  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO'
+}
+
 export function describeNpmCommandFailure(error: unknown): string {
   if (!(error instanceof CommandRunnerError)) {
     return error instanceof Error ? error.message : String(error)
@@ -2178,7 +2191,14 @@ export async function replaceManagedNpmPrefixAtomically(
     }
     if (rollbackError) {
       const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-      throw new ManagedNpmRollbackError(`托管 npm 更新失败，且旧版本回滚失败：${detail}`, { cause: error })
+      // 上屏只说结果和下一步，「回滚失败」四个字留着：渲染层靠它不盖安抚文案（operation-error.ts 的 undoFailed）。
+      // 原话连同新版没装上的那个原因挂在 cause 上进运行日志（#1100 第1条）。
+      const errno = (rollbackError as NodeJS.ErrnoException | null)?.code
+      const code = typeof errno === 'string' && /^E[A-Z0-9_]+$/.test(errno) ? errno : npmErrorCodeIn(detail)
+      throw new ManagedNpmRollbackError(
+        `这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服${code ? `（错误码 ${code}）` : ''}。`,
+        { cause: new Error(`托管 npm 更新失败，且旧版本回滚失败：${detail}`, { cause: error }) },
+      )
     }
     throw error
   }
@@ -3688,15 +3708,16 @@ export function createSystemService(
    * 「也信任这台电脑的证书」去跑、仍然失败的，原文不动，交给渲染层「连接被网络拦截」
    * 那条。Node 版本读 PATH 上的 node：npm 就是由它跑起来的。读不出版本就不下结论。
    */
-  async function withToolCertificateHint(message: string): Promise<string> {
-    if (classifyNetworkFailure(message) !== 'tls') return message
+  async function withToolCertificateHint(message: string, raw = message): Promise<string> {
+    // 上屏那句只剩中文原因和错误码，拿 npm 的原话认（#1100 第1条连带 2）。
+    if (classifyNetworkFailure(raw) !== 'tls') return message
     const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
     let nodeVersion: string | null = null
     if (!trustedOnly) {
       try { nodeVersion = (await inspectTool('node')).version } catch { nodeVersion = null }
     }
     const kind = toolCertificateFailureKind({ trustedOnly, nodeVersion })
-    return kind ? `${message}。${toolCertificateMessages[kind]}` : message
+    return kind ? `${message.replace(/。$/, '')}。${toolCertificateMessages[kind]}` : message
   }
 
   async function inspectNode(): Promise<ToolStatus> {
@@ -4327,11 +4348,14 @@ export function createSystemService(
           // The installer still has its own verified fallback and will report
           // the actual Windows Installer result if the probe is unavailable.
           restartStatus = { required: false, reasons: [] }
+          // 进度那一行只说结果，系统回的英文原话进运行日志（#1100 第1条）。
+          const message = '没查清 Windows 是否在等重启，先接着装'
+          runtimeLog?.log('warn', 'install', 'node.install.restart-probe-failed', message, { reason: error instanceof Error ? error.message : String(error) })
           if (!target.isDestroyed()) {
             target.send('runtime:node-install-progress', {
               phase: 'checking',
               source: null,
-              message: `无法确认 Windows 待重启状态，将继续安装：${error instanceof Error ? error.message : String(error)}`,
+              message,
               percent: null,
             })
           }
@@ -5210,7 +5234,18 @@ export function createSystemService(
       } catch (error) {
         if (isInstallCancelledError(error)) throw error
         cancellation?.throwIfCancelled()
-        throw new Error(await withToolCertificateHint(`${definition.name} 安装失败：npm 官方源：${describeNpmCommandFailure(error)}`))
+        const raw = describeNpmCommandFailure(error)
+        const reason = npmSourceFailure(redactCommandText(raw), { commandFailed: isNpmExitFailure(error) })
+        // 这一步只走官方源，换镜像绕不过去；连不上时说清这一点和下一步（#1057 第5b条）。加速已经开着、
+        // 或者这个平台没有加速（Linux）时，叫人开加速没用，改说换个网络。
+        if (reason.kind === 'network') {
+          const nextStep = platformCapabilitiesFor(platform).acceleration && acceleratedDownloads === 0
+            ? '到「设置 › 网络加速」开启加速后再试。'
+            : '换个网络（比如手机热点）后再试。'
+          throw new Error(`${definition.name} 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}${npmErrorCodesClause([reason])}。${nextStep}`, { cause: error })
+        }
+        const message = npmFailureSentence(`${definition.name} 安装失败：`, [{ label: 'npm 官方源', reason }])
+        throw new Error(await withToolCertificateHint(message, raw), { cause: error })
       }
       const officialLock = await readBoundedUtf8File(
         path.join(officialResolution, 'package-lock.json'),
@@ -5220,6 +5255,7 @@ export function createSystemService(
       assertNpmReleaseMatchesOfficialLock(trustedRelease, officialLock)
       const registries = npmInstallRegistries(networkRegion)
       const installErrors: string[] = []
+      const installFailures: NpmFailurePart[] = []
       let installed = false
       let verification: Awaited<ReturnType<typeof inspectCliTool>> | null = null
       for (const [index, registry] of registries.entries()) {
@@ -5407,9 +5443,10 @@ export function createSystemService(
           if (isInstallCancelledError(error)) throw error
           cancellation?.throwIfCancelled()
           const detail = describeNpmCommandFailure(error)
-          installErrors.push(
-            `${registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'}：${redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'}`,
-          )
+          const label = registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'
+          const redacted = redactCommandText(detail).replace(/\s+/g, ' ').trim().slice(0, 300) || '安装失败'
+          installErrors.push(`${label}：${redacted}`)
+          installFailures.push({ label, reason: npmSourceFailure(redacted, { commandFailed: isNpmExitFailure(error) }) })
           // 这个源下了一半的东西先删掉再换源：下载最长能等 30 分钟，留到整次安装结束才删，
           // 盘快满时下一个源更容易写不下。删不掉就算了，结束时 finally 还会整个再删一次。
           await fs.promises.rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined)
@@ -5432,7 +5469,11 @@ export function createSystemService(
         // npm 替换正在运行的工具时报的是 EBUSY / EPERM,两者的原文都读不出「谁
         // 占着这个文件」。这里重新数一遍进程,数到了才改写成「文件被占用」。
         const occupied = await describeOccupiedCliFailure(provider, detail, detail, occupancyProbeRoot, updatingExistingInstall ? '更新' : '安装')
-        throw new Error(occupied ?? await withToolCertificateHint(`${definition.name} 安装失败：${detail}`))
+        // 每个源只说中文原因，错误码留在句尾给界面认；npm 的英文原话进运行日志（#1100 第1条）。
+        const message = installFailures.length
+          ? npmFailureSentence(`${definition.name} 安装失败：`, installFailures)
+          : `${definition.name} 安装失败：${detail}`
+        throw new Error(occupied ?? await withToolCertificateHint(message, detail), { cause: new Error(detail) })
       }
       sendInstallProgress(target, provider, 'output', `${definition.name} 已安装，正在检查安装结果`, undefined, { stage: 'final-check' })
       invalidateCliUpdateCache(provider)
@@ -5935,7 +5976,9 @@ export function createSystemService(
               platform === 'darwin' ? null : plan.packageRoot,
               '卸载',
             )
-            throw Object.assign(new Error(occupied ?? `${cliCatalog[provider].name} 卸载失败：${detail}`), { cause: error })
+            // 不是开着的话只说中文原因和错误码（EPERM、EACCES 说成文件删不掉），原话照旧在 cause 里（#1100 第1条）。
+            const reason = npmSourceFailure(redactCommandText(detail), { commandFailed: isNpmExitFailure(error), uninstall: true })
+            throw Object.assign(new Error(occupied ?? npmFailureSentence(`${cliCatalog[provider].name} 卸载失败：`, [{ reason }])), { cause: error })
           } finally {
             if (cache) await fs.promises.rm(cache, { recursive: true, force: true }).catch(() => undefined)
           }

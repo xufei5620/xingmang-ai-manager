@@ -1,4 +1,5 @@
 import { isChineseSentence } from './chinese-sentence'
+import { npmErrorCodeIn, npmErrorCodesClause, npmFailureReasonFor, pickNpmNextStep, type NpmFailureReason } from './npm-failure-reasons'
 
 /**
  * 主进程交给界面的失败句里，原话是英文时换成的那几句（#1100 第1、4条）。英文原话客户看不懂，
@@ -17,4 +18,30 @@ function errorText(error: unknown): string {
 export function toolLaunchFailureMessage(name: string, error: unknown): string {
   const detail = errorText(error).trim()
   return detail && isChineseSentence(detail) ? `未能打开 ${name}：${detail}` : `未能打开 ${name}，${loggedFailureNextStep}`
+}
+
+/**
+ * 一个 npm 源（或一次卸载）没成时说的那一段。commandFailed：原话是 npm 自己退出非 0 时命令运行器那句
+ * 「命令执行失败（退出码 1）：npm-cli.js（…英文…）」，看着是中文其实不是，认不出码就说「npm 没有装成」；
+ * 别的中文原话（清单对不上、主程序包缺了、命令运行器自己那几句）照旧接在后面。
+ */
+export function npmSourceFailure(raw: string, options: { commandFailed: boolean; uninstall?: boolean }): NpmFailureReason {
+  const known = npmFailureReasonFor(raw, options)
+  if (known) return known
+  const text = raw.replace(/\s+/g, ' ').trim()
+  if (!options.commandFailed && text && isChineseSentence(text)) return { reason: text.replace(/[。.]+$/, ''), code: null, kind: 'other', nextStep: null }
+  return { reason: options.uninstall ? '卸载命令没有成功' : 'npm 没有装成', code: npmErrorCodeIn(raw), kind: 'other', nextStep: loggedFailureNextStep }
+}
+
+export interface NpmFailurePart {
+  /** 「npm 官方源」「国内 npm 镜像」；卸载那句没有。 */
+  label?: string
+  reason: NpmFailureReason
+}
+
+/** 「{开头}npm 官方源：{原因}；国内 npm 镜像：{原因}（错误码 X、Y）。{下一步}」 */
+export function npmFailureSentence(lead: string, parts: readonly NpmFailurePart[]): string {
+  const body = parts.map(({ label, reason }) => (label ? `${label}：${reason.reason}` : reason.reason)).join('；')
+  const reasons = parts.map((part) => part.reason)
+  return `${lead}${body}${npmErrorCodesClause(reasons)}。${pickNpmNextStep(reasons) ?? ''}`
 }

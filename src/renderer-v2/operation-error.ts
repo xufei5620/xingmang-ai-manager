@@ -4,6 +4,7 @@ import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
+import { npmFailureExplainsItself } from '../../electron/npm-failure-reasons'
 import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
 import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
@@ -152,6 +153,9 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 话。「无可用渠道」以前归 keyInvalid，可上游渠道被自动禁用时 new-api 报的恰好是
   // 这句，那时换 Key 毫无用处。已经写好整句的（features/auth/account-errors.ts 的
   // 「服务暂时不可用，请稍后重试」、主进程那句）由 presentOperationError 按标题原样放行。
+  // npm 没装成、句尾的码全是找不到版本、被下载源拒绝、文件没过校验、组件对不上这几类时，主进程那句已经
+  // 说清下一步（#1100 第1条），不配标题；那句里的「换个网络」会被下面认成「连不上下载源」，所以排在前面。
+  { key: 'unknown', match: (message) => npmFailureExplainsItself(message) },
   // 装之前到 npm 官方源核对安装清单那一步没连上（#1057 第5b条）。这一步只走官方源，换镜像绕不过去；
   // 主进程那句已经按平台写好下一步（开加速或换网络），这里只给标题和按钮。
   { key: 'officialRegistryUnreachable', match: (message) => message.includes(officialRegistryUnreachableMarker) },

@@ -609,6 +609,26 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 
+  // 主进程按 npm 原因表写好的句子（#1100 第1条）：码留在句尾，认得出的照旧配目录那一类，整句自己说清下一步的不配。
+  it('reads the Chinese npm sentences by the codes left at the end', () => {
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：磁盘空间不足（错误码 ENOSPC）。')).toBe('diskFull')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安装目录拒绝访问（错误码 EPERM）。')).toBe('permission')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：文件被占用（错误码 EBUSY）。')).toBe('toolRunning')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止。')).toBe('downloadTimeout')
+    expect(presentOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止。')?.title).toBe('下载超时')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：解析不出下载源的地址（错误码 ENOTFOUND）。')).toBe('downloadUnreachable')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：和下载源的连接被切断（错误码 ECONNRESET）。')).toBe('downloadUnreachable')
+    expect(classifyOperationError('Codex CLI 安装失败：国内 npm 镜像：下载源那边出错（错误码 E503）。')).toBe('downloadSourceError')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。')).toBe('tlsIntercepted')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书没通过校验（错误码 CERT_HAS_EXPIRED）。')).toBe('certDate')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止；国内 npm 镜像：找不到要装的版本（错误码 ETIMEDOUT、E404）。过一会儿再点「重试」；一直这样请找客服。')).toBe('downloadTimeout')
+    for (const message of [
+      'Codex CLI 安装失败：npm 官方源：下载源拒绝了这次下载（错误码 E403）。换个网络后再点「重试」；一直这样请找客服。',
+      'Codex CLI 安装失败：npm 官方源：下载下来的文件没通过校验，已经丢掉（错误码 EINTEGRITY）。再点「重试」；一直这样换个网络。',
+      'Codex CLI 安装失败：npm 官方源：要装的版本和它用到的组件对不上（错误码 ERESOLVE）。过一会儿再点「重试」；一直这样请找客服。',
+    ]) expect([message, presentOperationError(message)]).toEqual([message, null])
+  })
+
   // 网络把握手掐断不是证书被换了（#1060）：和连接被重置一样落到连不上那几张卡片。
   it('reads a handshake the network cut as a failed connection, not a replaced certificate', () => {
     expect(classifyOperationError('检查网络时出错：net::ERR_SSL_PROTOCOL_ERROR')).toBe('timeout')

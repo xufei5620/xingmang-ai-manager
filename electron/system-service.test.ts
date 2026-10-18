@@ -39,7 +39,7 @@ import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } fr
 import type { CliModelHints } from './cli-model-defaults'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
-import { classifyOperationError } from '../src/renderer-v2/operation-error'
+import { classifyOperationError, presentOperationError } from '../src/renderer-v2/operation-error'
 import { managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
@@ -3304,17 +3304,24 @@ describe('managed npm transaction', () => {
     let renameCount = 0
     const rename = vi.fn(async (source: string, destination: string) => {
       renameCount += 1
-      if (renameCount === 4) throw new Error('rollback destination is locked')
+      if (renameCount === 4) throw Object.assign(new Error('EPERM: rollback destination is locked'), { code: 'EPERM' })
       await fs.promises.rename(source, destination)
     })
 
-    await expect(replaceManagedNpmPrefixAtomically(
+    const failure: unknown = await replaceManagedNpmPrefixAtomically(
       fixture.active,
       fixture.staged,
       fixture.transaction,
       async () => { throw new Error('verification failed') },
       { rename },
-    )).rejects.toBeInstanceOf(ManagedNpmRollbackError)
+    ).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(ManagedNpmRollbackError)
+    // 上屏只说结果和下一步，「回滚失败」留着；英文原话和新版没装上的原因都在 cause 里（#1100 第1条）。
+    expect((failure as Error).message).toBe('这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服（错误码 EPERM）。')
+    const cause = (failure as Error).cause as Error
+    expect(cause.message).toBe('托管 npm 更新失败，且旧版本回滚失败：EPERM: rollback destination is locked')
+    expect((cause.cause as Error).message).toBe('verification failed')
+    expect(presentOperationError((failure as Error).message)).toBeNull()
     expect(fs.readFileSync(
       path.join(fixture.transaction, 'previous-prefix', 'version.txt'),
       'utf8',
@@ -3764,13 +3771,13 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     expect(failure).toBeInstanceOf(Error)
     expect(failure).toMatchObject({
-      message: `Codex CLI 卸载失败：${npmRenameDeniedDetail}`,
+      message: 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EPERM）。',
       cause: expect.any(CommandRunnerError),
     })
     // EPERM by itself reads the same as a folder the user cannot write to, so it
     // stays a permission problem until a process of this tool is actually found.
     expect(probeRunningCliProcesses).toHaveBeenCalledWith(packageRoot)
-    expect(classifyOperationError(`Codex CLI 卸载失败：${npmRenameDeniedDetail}`)).toBe('permission')
+    expect(classifyOperationError((failure as Error).message)).toBe('permission')
     // The runtime log keeps only enumerable fields, and npm's raw output is what
     // support reads there.
     expect(Object.prototype.propertyIsEnumerable.call(failure, 'cause')).toBe(true)
@@ -3850,8 +3857,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：命令执行失败（退出码 1）：npm（EACCES；Error: EACCES: permission denied, '
-      + "rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-x'）"
+    const message = 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EACCES）。'
     expect(failure).toMatchObject({ message })
     expect(probeRunningCliProcesses).not.toHaveBeenCalled()
     expect(classifyOperationError(message)).toBe('permission')
@@ -4809,7 +4815,7 @@ describe('npm install progress reporting', () => {
       durationMs: npmDownloadTimeoutMs,
     })
 
-    expect(describeNpmCommandFailure(failure)).toContain('下载超时')
+    expect(describeNpmCommandFailure(failure)).toBe('下载太久没有完成，超时中止')
     expect(describeNpmCommandFailure(new Error('plain'))).toBe('plain')
   })
 
@@ -7746,7 +7752,9 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
     }))
     const target = { isDestroyed: () => false, send: vi.fn() }
 
-    await expect(macService(mac).installCli('codex', target)).rejects.toThrow('stopped at the first npm install')
+    const failure: unknown = await macService(mac).installCli('codex', target).catch((error: unknown) => error)
+    // 原话是英文，上屏只说没装成，原话挂在 cause 上进运行日志（#1100 第1条）。
+    expect(((failure as Error).cause as Error).message).toBe('stopped at the first npm install')
 
     const npmInstall = mac.runCommand.mock.calls.find(([spec]) => spec.argv.includes('install'))
     expect(npmInstall?.[0].executable).toBe(path.join(mac.managedBin, 'npm'))
