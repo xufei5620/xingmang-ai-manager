@@ -30,7 +30,7 @@
  * 写进工具配置之前那几次查模型、工具自检用的是另一个（createRelayObservedFetch）：它们查的
  * 正是那条线路通不通，不换地址也不重发，只按上面的口径把直连上的失败报给线路那边。
  */
-import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, networkFailureCode, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, isTlsHandshakeFailure, networkFailureCode, type NetworkFailureReason } from './network-failure'
 import {
   relayAutoBackupLine,
   relayAutoPreferredLines,
@@ -189,7 +189,8 @@ function noAnswerFailure(error: unknown): string | null {
 }
 
 function provablyUnsent(error: unknown, reason: NetworkFailureReason): boolean {
-  if (reason === 'dns' || reason === 'tls' || reason === 'certDate') return true
+  // 握手被掐断归 refused（#1060），可和连接被重置不同，它跟证书失败一样是在握手里断的。
+  if (reason === 'dns' || reason === 'tls' || reason === 'certDate' || isTlsHandshakeFailure(error)) return true
   const code = networkFailureCode(error)
   return code !== null && unsentFailureCodes.has(code)
 }

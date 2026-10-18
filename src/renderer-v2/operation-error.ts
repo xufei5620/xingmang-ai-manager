@@ -2,7 +2,7 @@ import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desk
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
-import { classifyNetworkFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
+import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
 import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
@@ -130,6 +130,11 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'toolCertOutdatedNode', match: (message) => toolCertificateFailureForMessage(message) === 'outdatedNode' },
   { key: 'toolCertElevated', match: (message) => toolCertificateFailureForMessage(message) === 'elevated' },
   { key: 'tlsIntercepted', match: (message) => classifyNetworkFailure(message) === 'tls' },
+  // 握手被网络掐断的原文（ERR_SSL_PROTOCOL_ERROR 这类）不是证书被换了（#1060），和 ECONNRESET 一样落到
+  // 连不上那两张卡。占的是它以前归 tlsIntercepted 时的位置：OpenSSL 原文里的十六进制串会被下面按
+  // 状态码认的几条（50x、52x）误认。
+  { key: 'downloadTimeout', match: (message) => downloadContext(message) && isTlsHandshakeFailure(message) },
+  { key: 'timeout', match: (message) => isTlsHandshakeFailure(message) },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。

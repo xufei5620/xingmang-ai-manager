@@ -845,6 +845,8 @@ describe('login failures', () => {
     ['域名解析不了', new Error('net::ERR_NAME_NOT_RESOLVED'), 'dns'],
     ['证书被替换', new Error('net::ERR_CERT_AUTHORITY_INVALID'), 'tls'],
     ['连接被切断', new Error('net::ERR_CONNECTION_RESET'), 'refused'],
+    // 握手被网络掐断不是证书被换了（#1060）。
+    ['握手被掐断', new Error('net::ERR_SSL_PROTOCOL_ERROR'), 'refused'],
     ['系统代理连不上', new Error('net::ERR_PROXY_CONNECTION_FAILED'), 'proxy'],
     // Electron 的 net.fetch 碰到跳转不交回 opaqueredirect，只报这一句（#1064）。
     ['跳转被拦下', new Error('Redirect was cancelled'), 'intercepted'],

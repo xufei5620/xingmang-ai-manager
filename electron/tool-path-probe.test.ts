@@ -328,6 +328,17 @@ describe('tool-path-probe', () => {
     expect(await probeToolPathThroughFetch(failing, primaryOrigin)).toMatchObject({ ok: false })
   })
 
+  // 经代理时握手被掐断，和不经代理那条一样算 tls（工具线路说成连接被重置），不算证书错误（#1060）。
+  it('keeps a cut handshake through a proxy apart from a certificate failure', async () => {
+    function failingWith(message: string): typeof fetch {
+      return async () => { throw new TypeError('fetch failed', { cause: new Error(message) }) }
+    }
+    expect(await probeToolPathThroughFetch(failingWith('net::ERR_SSL_PROTOCOL_ERROR'), primaryOrigin)).toMatchObject({ ok: false, kind: 'tls' })
+    expect(await probeToolPathThroughFetch(failingWith('net::ERR_QUIC_HANDSHAKE_FAILED'), primaryOrigin)).toMatchObject({ ok: false, kind: 'tls' })
+    expect(await probeToolPathThroughFetch(failingWith('net::ERR_CERT_AUTHORITY_INVALID'), primaryOrigin)).toMatchObject({ ok: false, kind: 'certificate' })
+    expect(await probeToolPathThroughFetch(failingWith('net::ERR_CONNECTION_RESET'), primaryOrigin)).toMatchObject({ ok: false, kind: 'refused' })
+  })
+
   it('prefers lines that pass on every path and falls back to the direct path', () => {
     function result(ok: boolean): ToolPathResult {
       return ok ? { ok, addresses: [], attempts: [] } : { ok, kind: 'timeout', addresses: [], attempts: [] }

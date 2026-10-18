@@ -518,6 +518,18 @@ describe('renderer-v2 operation error classification', () => {
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 
+  // 网络把握手掐断不是证书被换了（#1060）：和连接被重置一样落到连不上那几张卡片。
+  it('reads a handshake the network cut as a failed connection, not a replaced certificate', () => {
+    expect(classifyOperationError('检查网络时出错：net::ERR_SSL_PROTOCOL_ERROR')).toBe('timeout')
+    expect(classifyOperationError('账号接口请求失败：net::ERR_QUIC_HANDSHAKE_FAILED')).toBe('timeout')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：npm error code ERR_SSL_WRONG_VERSION_NUMBER')).toBe('downloadTimeout')
+    // OpenSSL 原文里的十六进制串不能被按状态码认的那几条抢走。
+    expect(classifyOperationError('Grok CLI 安装失败：ERR_SSL_WRONG_VERSION_NUMBER 40C7B5F8E5240000:error:0A00010B:SSL routines')).toBe('downloadTimeout')
+    expect(classifyOperationError(`重新写入 Key 没有完成：${networkFailureMessages.refused}`)).toBe('timeout')
+    // 证书真对不上的照旧是「连接被网络拦截」。
+    expect(classifyOperationError("账号接口请求失败：Error [ERR_TLS_CERT_ALTNAME_INVALID]: Hostname/IP does not match certificate's altnames")).toBe('tlsIntercepted')
+  })
+
   it('tells an outdated Node.js or an elevated app apart from a certificate the machine itself rejects', () => {
     const raw = 'Claude Code 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain'
     const outdated = presentOperationError(`${raw}。${toolCertificateMessages.outdatedNode}`)
