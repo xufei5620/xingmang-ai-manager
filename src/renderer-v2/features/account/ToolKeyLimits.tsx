@@ -152,8 +152,9 @@ export function ToolKeyLimits({
       '额度上限已保存',
     )
   const layout = toolKeyLimitLayout(resource.data ?? [])
-  // 一个工具都还没配：整张卡收成一行灰字，不摆四行点不动的空行。
-  if (resource.data && !layout.rows.length && !operation.error)
+  // 一个工具都还没配：整张卡收成一行灰字，不摆四行点不动的空行。读到过空的、刷新又没读到时
+  // 照常出卡片，红条和「重新加载」才看得见。
+  if (resource.data && !layout.rows.length && !operation.error && !resource.error)
     return (
       <p className="v2-business-key-limits-empty" data-testid="tool-key-limits">
         工具配好后，可以在这里给每个工具设额度上限。

@@ -690,6 +690,25 @@ test('tool key limits that could not be read can be read again without leaving t
   } finally {
     await page.close()
   }
+  // 读到过「一个工具都没配」、页头刷新又没读到：不能还收成那行灰字，把红条和「重新加载」藏掉。
+  const none = await fixture('page=account')
+  try {
+    await none.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = none.getByTestId('tool-key-limits')
+    const emptyLine = none.locator('.v2-business-key-limits-empty')
+    await emptyLine.waitFor()
+    await none.evaluate(() => window.failNextRead('toolKeyLimits'))
+    await none.getByTestId('account-refresh').click()
+    const alert = card.getByRole('alert')
+    await alert.getByText('密钥服务暂时不可用').waitFor()
+    assert.equal(await emptyLine.count(), 0)
+    await alert.getByRole('button', { name: '重新加载', exact: true }).click()
+    await emptyLine.waitFor()
+    assert.equal(await emptyLine.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
+    assert.equal(await card.getByRole('alert').count(), 0)
+  } finally {
+    await none.close()
+  }
 })
 
 test('a profile read once stays on screen when a later refresh cannot read it', async () => {
