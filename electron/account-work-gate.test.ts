@@ -81,6 +81,21 @@ describe('account work drain', () => {
     expect(shared.signal.aborted).toBe(false)
   })
 
+  // #1085：Codex 桌面端发出启动请求以后不算账号工作，没等到窗口要补连加速之前先问一句账号换没换。
+  it('reports queued work as current only while its account stays the same and no change is in progress', () => {
+    let revision = 0
+    let busy = false
+    const gate = createAccountWorkGate({ revision: () => revision, assertReady: () => { if (busy) throw new Error('switching') } })
+    const work = gate.queue()
+    expect(work.isCurrent()).toBe(true)
+    busy = true
+    expect(work.isCurrent()).toBe(false)
+    busy = false
+    expect(work.isCurrent()).toBe(true)
+    revision++
+    expect(work.isCurrent()).toBe(false)
+  })
+
   it('does not treat queue cancellation as completion of an underlying file write', async () => {
     const queue = new BoundedOperationQueue({ maxActive: 1, maxQueued: 1 })
     let release!: () => void

@@ -8,6 +8,11 @@ export interface QueuedAccountWork {
   readonly signal: AbortSignal
   /** 轮到它执行时调用：从这里起才算账号工作。排队期间换过账号或正在换，就一行都不跑。 */
   run<T>(operation: () => Promise<T>): Promise<T>
+  /**
+   * run 交出去的那段做完以后（Codex 桌面端已经发出启动请求，只剩等窗口、换中文），还要替这次点击碰一下
+   * 账号（补连加速）之前问一句：点的时候那个账号还在、也没在换。换过或正在换，就别做了。
+   */
+  isCurrent(): boolean
 }
 
 const staleAccountMessage = '账号上下文已变化，请重试'
@@ -64,6 +69,14 @@ export function createAccountWorkGate(options: { assertReady(): void; revision()
         } catch (error) {
           return Promise.reject(error)
         }
+      },
+      isCurrent(): boolean {
+        try {
+          options.assertReady()
+        } catch {
+          return false
+        }
+        return options.revision() === revision
       },
       release,
     }

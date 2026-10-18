@@ -77,6 +77,7 @@ import {
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
+  launchThenWaitOutsideAccountWork,
   parseCodexDesktopCombinedProbeJson,
   validateCodexDesktopResourceUrl,
   toCodexDesktopMacInstallFailure,
@@ -1925,6 +1926,59 @@ describe('Codex Desktop launch queueing', () => {
     await blocking
     await expect(next).rejects.toThrow('仅支持 Windows')
     expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledTimes(1)
+  })
+
+  // #1085：Windows 上等窗口、换中文最长一分多钟，发出启动请求以后换账号不该陪它等到 30 秒超时。
+  it('stops counting a launch as account work once the launch request is sent, while the window wait goes on', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    let sendRequest!: () => void
+    const requestSent = new Promise<void>((resolve) => { sendRequest = resolve })
+    let showWindow!: () => void
+    const windowShown = new Promise<void>((resolve) => { showWindow = resolve })
+    const launch = launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      await requestSent
+      return async () => { await windowShown; return 'opened' }
+    })
+
+    let drained = false
+    const drain = accountWork.whenIdle().then(() => { drained = true })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(drained).toBe(false)
+    sendRequest()
+    await drain
+    revision++
+    showWindow()
+    await expect(launch).resolves.toBe('opened')
+  })
+
+  // 启动请求已经发出去了：安装队列要等 Codex 起来再放别的安装进来（I11），账号换了照旧报出来。
+  it('still waits for the window before reporting an account change that began while the launch request was being sent', async () => {
+    let revision = 0
+    const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+    let showWindow!: () => void
+    const windowShown = new Promise<void>((resolve) => { showWindow = resolve })
+    let waited = false
+    const launch = launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      revision++
+      return async () => { await windowShown; waited = true; return 'opened' }
+    })
+    let settled = false
+    void launch.then(() => { settled = true }, () => { settled = true })
+
+    await accountWork.whenIdle()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(settled).toBe(false)
+    showWindow()
+    await expect(launch).rejects.toThrow('账号上下文已变化')
+    expect(waited).toBe(true)
+  })
+
+  it('does not wait for a window when the launch request could not be sent', async () => {
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+    await expect(launchThenWaitOutsideAccountWork(accountWork.queue(), async () => {
+      throw new Error('无法发送 Codex 桌面端启动请求')
+    })).rejects.toThrow('无法发送 Codex 桌面端启动请求')
   })
 
   it('merges a repeated identical launch but keeps a different mode or locale intent separate', async () => {
