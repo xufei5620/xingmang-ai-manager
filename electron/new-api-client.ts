@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
-import { redactCommandText } from './command-runner'
+import { sanitizeUpstreamDetail } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { buildAccountKeyName } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
@@ -1150,17 +1150,6 @@ function safeOrigin(value: string): string | null {
   }
 }
 
-const controlCharacterPattern = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) + String.fromCharCode(127) + ']', 'g')
-
-function sanitizeUpstreamMessage(value: string, secrets: readonly string[]): string {
-  if (!value) return ''
-  return redactCommandText(value, secrets)
-    .replace(controlCharacterPattern, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300)
-}
-
 // New-Api requires both headers on every authenticated call. Sending only
 // Authorization still comes back 401, which is easy to misdiagnose as an
 // expired session instead of a client bug (docs/RECON-new-api.md 坑2).
@@ -1325,7 +1314,7 @@ function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly
 function readEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly string[]): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), secrets)
+  const detail = sanitizeUpstreamDetail(displayServerMessage(envelope, serverMessage), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }
@@ -1443,7 +1432,7 @@ function unwrapPublicNotice(raw: NewApiRawResponse): unknown {
 function readPublicNotice(raw: NewApiRawResponse): unknown {
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
-  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, serverMessage), [])
+  const detail = sanitizeUpstreamDetail(displayServerMessage(envelope, serverMessage), [])
   if (raw.status === 401) throw new NewApiAuthenticationError(detail || '公告读取未授权')
   assertServiceAvailable(raw, detail)
   if (!raw.ok) throw new Error(detail || `公告读取失败，服务返回 HTTP ${raw.status}`)
@@ -1487,7 +1476,7 @@ function readLegacyBusinessEnvelope(
   const envelope = isRecord(raw.payload) ? raw.payload : null
   const message = envelope && typeof envelope.message === 'string' ? envelope.message : ''
   const dataMessage = envelope && typeof envelope.data === 'string' ? envelope.data : ''
-  const detail = sanitizeUpstreamMessage(displayServerMessage(envelope, message === 'error' ? dataMessage : message), secrets)
+  const detail = sanitizeUpstreamDetail(displayServerMessage(envelope, message === 'error' ? dataMessage : message), secrets)
   if (raw.status === 401) {
     throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
   }

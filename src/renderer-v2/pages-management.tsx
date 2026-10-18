@@ -17,6 +17,7 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
+  X,
 } from 'lucide-react'
 import {
   BrandIcon,
@@ -1783,6 +1784,10 @@ export function ExtensionsPage({
   }
   const health = useMcpHealth(api, provider, kind === 'mcp' && !missing)
   const operation = useToolOperation(provider)
+  const toast = useToast()
+  // 「登录授权」旁那颗「取消」点在了哪一行（authKey）；停没停下来，要等那次登录自己回来才知道（#1099 第 1 条）。
+  const authCancel = useRef('')
+  const [authStopping, setAuthStopping] = useState('')
   const [form, setForm] = useState<'add' | 'market' | null>(null)
   const [formName, setFormName] = useState('')
   const [source, setSource] = useState('')
@@ -2246,24 +2251,60 @@ export function ExtensionsPage({
                 </Button>
               )}
             {nativeMcp && needsAuth && canAuth && (
-              <Button
-                size="sm"
-                loading={operation.busy === authKey}
-                disabled={Boolean(operation.busy)}
-                onClick={() =>
-                  void operation.execute(
-                    authKey,
-                    async () => {
-                      await api.loginMcpServer(nativeMcp.name)
-                      await reloadList()
-                    },
-                    `${item.name} 已授权`,
-                  )
-                }
-                testId={`${page}-auth-${item.id}`}
-              >
-                {operation.busy === authKey ? '等你在浏览器里授权' : '登录授权'}
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  loading={operation.busy === authKey}
+                  disabled={Boolean(operation.busy)}
+                  onClick={() => {
+                    authCancel.current = ''
+                    setAuthStopping('')
+                    void operation.execute(
+                      authKey,
+                      async () => {
+                        const servers = await api.loginMcpServer(nativeMcp.name)
+                        await reloadList()
+                        return servers
+                      },
+                      (servers) => {
+                        if (authCancel.current !== authKey) return `${item.name} 已授权`
+                        // 点取消的那一下，浏览器里也可能刚好授权完了：按登录回来的列表说。
+                        const server = servers.find((entry) => entry.name === nativeMcp.name)
+                        if (server && mcpAuthorized(server.authStatus)) return `${item.name} 已授权`
+                        toast.show(`已取消，${item.name} 还没有授权`, 'neutral')
+                        return null
+                      },
+                    )
+                  }}
+                  testId={`${page}-auth-${item.id}`}
+                >
+                  {operation.busy === authKey ? '等你在浏览器里授权' : '登录授权'}
+                </Button>
+                {/* 不去浏览器里授权的话，原来要干等 3 分钟、整页的按钮都是灰的。取消由主进程停掉登录命令，
+                    停下以后那次登录照常回来，不算失败，不弹红条。 */}
+                {operation.busy === authKey && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={X}
+                    loading={authStopping === authKey}
+                    aria-label={`停止等待 ${item.name} 授权`}
+                    onClick={() => {
+                      authCancel.current = authKey
+                      setAuthStopping(authKey)
+                      // 主进程那边已经没有在等的（登录刚好自己结束了）回 false，什么都不用做：那次登录马上自己回来。
+                      void api.cancelMcpLogin(nativeMcp.name).catch((cause: unknown) => {
+                        authCancel.current = ''
+                        setAuthStopping('')
+                        toast.show(errorMessage(cause), 'bad')
+                      })
+                    }}
+                    testId={`${page}-auth-cancel-${item.id}`}
+                  >
+                    {authStopping === authKey ? '正在停止' : '取消'}
+                  </Button>
+                )}
+              </>
             )}
             {!item.installed && item.operations.install && (
               <Button
