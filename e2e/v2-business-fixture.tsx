@@ -36,7 +36,8 @@ declare global {
       fail(message: string): void
     }
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
-    failNextRead: (read: 'profile' | 'subscriptions') => void
+    // toolKeyLimits：下一次按 100 一页读密钥（「每个工具的额度上限」那张卡）没读到。
+    failNextRead: (read: 'profile' | 'subscriptions' | 'toolKeyLimits') => void
     // extensionHold：除卸载以外的扩展改动（开关、更新）挂着，等这里放开才回。
     releaseExtension: () => void
     // revokeHold：撤销密钥挂着，等这里放开才回。
@@ -611,6 +612,8 @@ const apiMethods = {
     }
   },
   getAccountKeys: async (input?: { page?: number; pageSize?: number; keyword?: string }) => {
+    // 额度上限卡按 100 一页翻（loadManagedCliKeys），密钥列表按 20；概览数把数也按 100，测试要等概览读完再设。
+    if (input?.pageSize === 100 && failingOnce('toolKeyLimits')) throw new Error('密钥服务暂时不可用')
     if (pagedKeys) {
       const page = input?.page ?? 1
       const pageSize = input?.pageSize ?? 20

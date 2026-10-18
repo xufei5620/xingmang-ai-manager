@@ -1,5 +1,6 @@
 import { accelerationEntryMode } from '../acceleration-worker-entry'
 import { linuxLaunchRefusal, linuxLaunchRefusalNotice, type LinuxLaunchRefusal } from '../linux-launch-guard'
+import { hasDisallowedPackagedDebugSwitch } from '../security'
 import { uninstallCleanupEntryMode } from '../uninstall-cleanup-entry'
 
 /**
@@ -41,7 +42,12 @@ function refuseLinuxLaunch(refusal: LinuxLaunchRefusal): void {
     })
 }
 
-// Checked before every other mode: no helper started by a normal launch is ever root,
+// Checked before every branch, the uninstall cleanup and helpers included: none of
+// them reaches main.ts, and a packaged launch carrying a debugger or command-launch
+// switch should run as little of this app as possible before it exits (#1065).
+const blockedSwitch = (require('electron') as typeof import('electron')).app.isPackaged
+  && hasDisallowedPackagedDebugSwitch(process.argv, process.platform)
+// Checked before every remaining mode: no helper started by a normal launch is ever root,
 // and nothing this process could go on to do is something root should do here.
 const launchRefusal = linuxLaunchRefusal({
   platform: process.platform,
@@ -52,7 +58,9 @@ const launchRefusal = linuxLaunchRefusal({
 // windows, renderer IPC, the single-instance lock, or the normal quit handlers.
 const cleanupMode = uninstallCleanupEntryMode(process.argv, process.platform)
 const mode = accelerationEntryMode(process.argv, typeof process.send === 'function' && process.connected, process.platform)
-if (launchRefusal) {
+if (blockedSwitch) {
+  process.exit(1)
+} else if (launchRefusal) {
   refuseLinuxLaunch(launchRefusal)
 } else if (cleanupMode === 'cleanup') {
   // The uninstaller waits on this process and deletes the files right after,
