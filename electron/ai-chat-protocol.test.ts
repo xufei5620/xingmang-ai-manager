@@ -52,6 +52,33 @@ describe('AI model capabilities', () => {
     })
   })
 
+  it('hides unrecognized video models instead of listing them as chat models', () => {
+    for (const model of [
+      'grok-imagine-video-2', 'minimax-h3-pro', 'MiniMax-Hailuo-02', 'sora-2', 'sora-2-pro',
+      'veo-3.1-fast', 'kling-v2-1-master', 'doubao-seedance-1-0-pro', 'wan2.2-t2v-plus',
+    ]) {
+      expect(resolveAiModelCapability(model), model).toMatchObject({ kind: 'chat', model, available: false, hidden: true })
+      expect(supportsChatImageInput(model), model).toBe(false)
+      expect(() => buildChatCompletionsRequest({
+        model, messages: [{ role: 'user', content: '海浪' }],
+      }), model).toThrowError(expect.objectContaining({ code: 'invalid-model' }))
+      // Hiding is not recognition: an unknown video model still cannot start a paid video task.
+      expect(() => buildVideoGenerationRequest({ model, prompt: 'p', seconds: '5' }), model)
+        .toThrowError(expect.objectContaining({ code: 'model-not-video' }))
+    }
+    expect(selectAiChatModelsForGroup('Grok', ['grok-4', 'grok-imagine-video-2', 'grok-imagine-video', 'sora-2']))
+      .toEqual(['grok-4', 'grok-imagine-video'])
+  })
+
+  it('keeps chat models whose names only resemble video vendors', () => {
+    for (const model of ['minimax-m2', 'MiniMax-Text-01', 'sora_image', 'sora-image', 'qwen3-vl-plus', 'veolia-chat']) {
+      expect(resolveAiModelCapability(model), model).toEqual({
+        kind: 'chat', model, available: true, hidden: false, source: 'fallback',
+      })
+    }
+    expect(selectAiChatModelsForGroup('MiniMax', ['minimax-m2', 'minimax-h3-pro'])).toEqual(['minimax-m2'])
+  })
+
   it('marks gpt-image-1.5 and its snapshots unavailable and hidden', () => {
     expect(resolveAiModelCapability('gpt-image-1.5')).toMatchObject({
       kind: 'image',

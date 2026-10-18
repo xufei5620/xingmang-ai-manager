@@ -935,6 +935,30 @@ test('revoking a key no tool is using only says it cannot be undone and never re
   } finally { await page.close() }
 })
 
+// 撤销一发出去就收不回：执行中「取消」、×、Esc 都关不掉弹窗，免得看着像取消了、过几秒又弹「已撤销」（#1099 第 2 条）。
+test('the revoke dialog stays open and cannot be cancelled while the revoke is running', async () => {
+  const page = await fixture('page=account&keyInUse=1&revokeHold=1')
+  try {
+    const dialog = await revokeTestKey(page)
+    const cancel = dialog.getByRole('button', { name: '取消', exact: true })
+    const close = dialog.getByRole('button', { name: '关闭', exact: true })
+    assert.equal(await cancel.isDisabled(), false)
+    assert.equal(await close.isDisabled(), false)
+    await dialog.getByRole('button', { name: '撤销', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'revokeAccountKey'))
+    assert.equal(await cancel.isDisabled(), true)
+    assert.equal(await close.isDisabled(), true)
+    await dialog.focus()
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+    assert.equal(await dialog.isVisible(), true)
+    await page.evaluate(() => window.releaseRevoke())
+    await waitForToast(page, '已撤销「Test key」，Claude Code 已换用新的密钥')
+    await dialog.waitFor({ state: 'hidden' })
+    assert.equal((await calls(page)).filter((call) => call.name === 'revokeAccountKey').length, 1)
+  } finally { await page.close() }
+})
+
 test('key editor re-reads available groups every time a new or existing key is opened', async () => {
   const page = await fixture('page=account')
   try {
@@ -1225,6 +1249,35 @@ test('extension toggle preserves original state and reports mutation failure', a
         scope: 'user',
       },
     )
+  } finally {
+    await page.close()
+  }
+})
+
+test('waiting for MCP browser authorization can be cancelled without a failure banner', async () => {
+  const page = await fixture('page=mcp&installedProviders=codex&mcpAuth')
+  try {
+    const row = page.getByTestId('mcp-row-test-extension')
+    await row.getByTestId('mcp-auth-test-extension').click()
+    await row.getByText('等你在浏览器里授权', { exact: true }).waitFor()
+    // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一行。
+    const cancel = row.getByRole('button', { name: '停止等待 测试扩展 授权', exact: true })
+    assert.equal(await cancel.textContent(), '取消')
+    await cancel.click()
+    await row.getByText('正在停止', { exact: true }).waitFor()
+    await waitForToast(page, '已取消，测试扩展 还没有授权')
+    await row.getByText('登录授权', { exact: true }).waitFor()
+    assert.equal(await row.getByTestId('mcp-auth-cancel-test-extension').count(), 0)
+    assert.equal(await row.getByTestId('mcp-auth-test-extension').isEnabled(), true)
+    // 取消是正常结束：不弹红条，也不说「已授权」。
+    assert.equal(await page.getByText('未完成', { exact: false }).count(), 0)
+    assert.equal(
+      await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text === '测试扩展 已授权')),
+      false,
+    )
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'mcp-login').map((call) => call.args), ['test-extension'])
+    assert.deepEqual(recorded.filter((call) => call.name === 'mcp-cancel-login').map((call) => call.args), ['test-extension'])
   } finally {
     await page.close()
   }

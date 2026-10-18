@@ -1,5 +1,7 @@
 .chat-page, .chat-page *, .chat-preview-image { box-sizing: border-box; }
 .chat-page { display: grid; grid-template-columns: 236px minmax(0, 1fr); width: 100%; height: 100%; min-height: 0; color: var(--text); background: var(--bg); font-family: var(--font); font-size: var(--font-body); }
+/* 读记录时只有一块「正在加载页面」，跟按需加载那块摆在同一处，不进左边对话列表那一栏；写在 [hidden] 前面，切走时照样藏起来。 */
+.chat-page[data-loading='true'] { display: block; }
 .chat-page[hidden] { display: none; }
 .chat-conversations { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 12px 10px; background: var(--win); box-shadow: inset -1px 0 0 var(--line); }
 .chat-conversations-top > .xm-btn { width: 100%; }

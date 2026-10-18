@@ -2424,7 +2424,7 @@ if (!hasSingleInstanceLock) {
     void updateAccountProbe.then((account) => {
       updateAccount = account
       if (account === 'standard') {
-        runtimeLog.log('info', 'updater', 'install.standard-account', '这台电脑的账号不是管理员：下好的新版本不自动装，等有管理员账号的人在更新页点「重启安装」')
+        runtimeLog.log('info', 'updater', 'install.standard-account', '这台电脑的账号不是管理员：下好的新版本不自动装，等有管理员账号的人在「设置 › 版本更新」点「重启并安装」')
         // 界面据此改说要管理员密码。
         updaterService.setInstallNeedsAdminPassword(true)
       } else if (account === 'unknown' && process.platform === 'win32') {
@@ -3724,7 +3724,7 @@ if (!hasSingleInstanceLock) {
           return 'quit'
         }
         if (decision === 'leave') {
-          runtimeLog.log('info', 'window', 'quit.update-left', `这台电脑的账号不是管理员，退出时不装 ${version ?? '新版本'}，等有管理员账号的人在更新页点「重启安装」`)
+          runtimeLog.log('info', 'window', 'quit.update-left', `这台电脑的账号不是管理员，退出时不装 ${version ?? '新版本'}，等有管理员账号的人在「设置 › 版本更新」点「重启并安装」`)
           return 'quit'
         }
         if (version && decision === 'install') {

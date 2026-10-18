@@ -79,8 +79,9 @@ export type ImageSizePolicy =
 export type ChatModelCapability = {
   kind: 'chat'
   model: string
-  available: true
-  hidden: false
+  // 只有名字一看就是视频、这里又认不出的型号是 false / true（见 UNRECOGNIZED_VIDEO_MODEL_PATTERN）。
+  available: boolean
+  hidden: boolean
   source: 'fallback'
 }
 
@@ -415,6 +416,11 @@ const JIMENG_MODEL_PATTERN = /^jimeng_[a-z0-9][a-z0-9_]*$/i
 const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]*)?$/i
 const IMAGE_SIZE_PATTERN = /^(\d{3,4})x(\d{3,4})$/
 const MINIMAX_VIDEO_MODEL_PATTERN = /^minimax-h3-(?:mini|fast|base)$/
+// 站上新出的视频型号（grok-imagine-video-2、minimax-h3-pro、sora-2 之类）上面认不出，不能拿去生成视频；
+// 以前落到最后当成聊天模型，列进文字对话，客户一选就报错（#1059）。名字一看就是视频的，标成不可用并藏起来。
+// 只认整段词（video、veo、kling 这些前后是分隔符或数字），minimax-m2 这类聊天型号不受影响。
+// sora 只认后面跟版本号的：不少中转把走聊天接口出图的型号叫 sora_image / sora-image，那个照旧列。
+const UNRECOGNIZED_VIDEO_MODEL_PATTERN = /^minimax-h\d|(?:^|[-_./])(?:sora-?(?:\d|$)|(?:video|veo|kling|vidu|seedance|hailuo|t2v|i2v)(?:$|[-_./\d]))/i
 const MINIMAX_VIDEO_MODES = new Set<MiniMaxVideoMode>(['t2va', 'i2va', 'fl2va', 'l2va', 'ref2va'])
 const MINIMAX_VIDEO_RESOLUTIONS = new Set<MiniMaxVideoResolution>(['480p', '720p'])
 const MINIMAX_VIDEO_ASPECT_RATIOS = new Set<MiniMaxVideoAspectRatio>([
@@ -501,11 +507,12 @@ export function resolveAiModelCapability(model: string): AiModelCapability {
   if (GROK_IMAGE_MODEL_PATTERN.test(normalized)) {
     return createImageCapability(normalized, IMAGE_PRESET_DEFINITIONS['grok-imagine-image'], 'fallback')
   }
+  const looksLikeVideo = UNRECOGNIZED_VIDEO_MODEL_PATTERN.test(normalized)
   return {
     kind: 'chat',
     model: normalized,
-    available: true,
-    hidden: false,
+    available: !looksLikeVideo,
+    hidden: looksLikeVideo,
     source: 'fallback',
   }
 }
@@ -586,7 +593,7 @@ export function supportsChatImageInput(model: string): boolean {
   } catch {
     return false
   }
-  if (capability.kind !== 'chat') return false
+  if (capability.kind !== 'chat' || !capability.available) return false
   return CHAT_IMAGE_INPUT_MODEL_PATTERNS.some((pattern) => pattern.test(capability.model))
 }
 
@@ -687,7 +694,7 @@ export function buildChatCompletionsRequest(input: {
   parameters?: AiChatParameters
 }): ChatCompletionsRequestBody {
   const capability = resolveAiModelCapability(input.model)
-  if (capability.kind !== 'chat') {
+  if (capability.kind !== 'chat' || !capability.available) {
     throw new AiChatProtocolError('invalid-model', 'media models cannot use chat completions')
   }
   if (input.stream !== undefined && typeof input.stream !== 'boolean') {

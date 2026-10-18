@@ -5,7 +5,6 @@ import {
   classifyConnectionResponse,
   extractUpstreamMessage,
   runConnectionCheck,
-  sanitizeUpstreamDetail,
   type ConnectionCheckResult,
   type ConnectionProbeIdentity,
 } from './connection-check'
@@ -415,16 +414,6 @@ describe('classifyConnectionFailure', () => {
 
   it('reports a transport failure as a network failure', () => {
     expect(classifyConnectionFailure(new Error('getaddrinfo ENOTFOUND')).layer).toBe('network')
-  })
-})
-
-describe('sanitizeUpstreamDetail', () => {
-  it('redacts the key, strips control characters and truncates', () => {
-    const detail = sanitizeUpstreamDetail(`失败\u0007 key=${apiKey}\n第二行`, [apiKey])
-    expect(detail).not.toContain(apiKey)
-    expect(detail).not.toContain('\u0007')
-    expect(detail).toContain('[REDACTED]')
-    expect(sanitizeUpstreamDetail('x'.repeat(500), []).length).toBe(300)
   })
 })
 

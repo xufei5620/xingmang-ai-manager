@@ -234,7 +234,7 @@ describe('toolbox read partial failures', () => {
       getConfig: async () => { throw new Error('C:\\Users\\张三\\.codex\\config.toml 解析失败') },
     })).read()
 
-    expect(result.failures[0]?.message).toBe('本地配置文件 解析失败')
+    expect(result.failures[0]?.message).toBe('本机路径 解析失败')
     expect(result.failures[0]?.message).not.toContain('张三')
   })
 

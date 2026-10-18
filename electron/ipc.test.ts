@@ -21,6 +21,7 @@ import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevoke
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 import { noteRequestDiagnostics } from './request-diagnostics'
+import { PaymentCheckoutRejected } from './payment-window'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -273,6 +274,7 @@ function register(
     addMcpServer: vi.fn(),
     removeMcpServer: vi.fn(),
     loginMcpServer: vi.fn(),
+    cancelMcpLogin: vi.fn(),
     logoutMcpServer: vi.fn(),
     listSkills: vi.fn(),
     importSkill: vi.fn(),
@@ -1015,6 +1017,36 @@ describe('registerIpcHandlers', () => {
     expect(() => generateImage(trustedEvent(undefined, 17), {
       requestId: 'image-bad', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', imageResolution: '8K',
     })).toThrow('生图清晰度格式错误')
+
+    // Exactly what the chat page sends: all seven fields, quality left undefined
+    // for models without a quality picker, and a multi-line prompt.
+    imageService.generate.mockClear()
+    await expect(generateImage(trustedEvent(undefined, 17), {
+      requestId: 'image-2', group: '生图分组', model: 'gpt-image-2', prompt: '海浪\n\t远处有船',
+      size: '1024x1024', quality: undefined, imageResolution: '1K',
+    })).resolves.toEqual([])
+    expect(imageService.generate).toHaveBeenCalledWith(17, {
+      requestId: 'image-2', group: '生图分组', model: 'gpt-image-2', prompt: '海浪\n\t远处有船',
+      size: '1024x1024', imageResolution: '1K', expectedUserId: 7,
+    })
+
+    // The chat page now holds the canvas standard: a field it never sends, such
+    // as a smuggled account id, is refused instead of silently dropped.
+    imageService.generate.mockClear()
+    const base = { requestId: 'image-3', group: '生图分组', model: 'gpt-image-2', prompt: '海浪' }
+    for (const [input, message] of [
+      [{ ...base, expectedUserId: 99 }, '生图请求格式错误'],
+      [{ ...base, projectId: 'p' }, '生图请求格式错误'],
+      [{ ...base, model: 'gpt-image-2\n' }, '生图模型格式错误'],
+      [{ ...base, model: 'm'.repeat(129) }, '生图模型格式错误'],
+      [{ ...base, size: 'x'.repeat(33) }, '生图尺寸格式错误'],
+      [{ ...base, prompt: '海浪\x1B[31m' }, '生图提示词格式错误'],
+      [{ ...base, quality: ['high'] }, '生图画质格式错误'],
+      [{ ...base, imageResolution: ['4K'] }, '生图清晰度格式错误'],
+    ] as const) {
+      expect(() => generateImage(trustedEvent(undefined, 17), input)).toThrow(message)
+    }
+    expect(imageService.generate).not.toHaveBeenCalled()
 
     const cancel = electronMocks.handlers.get('chat:cancel')!
     expect(cancel(trustedEvent(undefined, 22), 'request-1')).toEqual({
@@ -3705,6 +3737,19 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => electronMocks.handlers.get('backups:inspect')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
       expect(() => electronMocks.handlers.get('mcp:remove')!(trustedEvent(), '')).toThrow('MCP 名称格式错误')
+    })
+
+    it('validates the MCP name before cancelling a waiting login', () => {
+      const { extensionService } = register()
+      extensionService.cancelMcpLogin.mockReturnValue(true)
+      const handler = electronMocks.handlers.get('mcp:cancel-login')!
+
+      expect(handler(trustedEvent(), ' remote-server ')).toBe(true)
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledWith('remote-server')
+      for (const bad of [42, null, '', 'server\0name', 'a'.repeat(129)]) {
+        expect(() => handler(trustedEvent(), bad)).toThrow('MCP 名称格式错误')
+      }
+      expect(extensionService.cancelMcpLogin).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -6927,11 +6972,34 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         tradeNo: 'attacker-trade',
       })
 
-      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+      // 客户只看到一句能照着做的话，校验原话挂在 cause 上进运行日志（#1100 第5条）。
+      const failure = await Promise.resolve(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
         amount: 10,
         paymentMethod: 'alipay',
-      })).rejects.toThrow('支付来源与支付地址不匹配')
+      })).catch((error: unknown) => error)
+      expect(failure).toMatchObject({
+        message: '支付通道暂时异常，没有扣款，请联系客服。',
+        cause: { message: '支付来源与支付地址不匹配' },
+      })
       expect(paymentWindow.open).not.toHaveBeenCalled()
+    })
+
+    it('words a rejected subscription checkout the same way but leaves other payment failures as they are', async () => {
+      const accountService = accountServiceStub()
+      const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+      vi.mocked(accountService.createSubscriptionPayment).mockResolvedValue({
+        kind: 'url', url: 'https://checkout.example.com/session', tradeNo: 'subscription-trade-1', expiresAt: null,
+      })
+      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new PaymentCheckoutRejected('支付地址必须是不含账号密码和片段的 HTTPS 地址'))
+      await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe',
+      })).rejects.toThrow(/^支付通道暂时异常，没有扣款，请联系客服。$/)
+
+      // 网络打不开支付页、账号中途变了，各有各的下一步，不能一起吞成「联系客服」。
+      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试'))
+      await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe',
+      })).rejects.toThrow(/^支付页面打开失败，请稍后重试$/)
     })
 
     it('rejects malformed subscription payment inputs before dispatch', async () => {
@@ -8214,11 +8282,11 @@ describe('backup handlers and account key ownership', () => {
   it('still reports a completed restore when the official marker cannot follow it', async () => {
     const backupStore = backupStoreStub()
     const service = serviceStub()
-    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方 Key 没能挪开'))
+    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」；还不行请找客服（错误码 EPERM）。'))
     const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
     expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能跟着对齐'), expect.objectContaining({
-      provider: 'codex', reason: expect.stringContaining('官方 Key 没能挪开'),
+      provider: 'codex', reason: expect.stringContaining('官方密钥没能挪开'),
     }))
   })
 

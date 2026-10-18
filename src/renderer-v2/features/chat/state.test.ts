@@ -148,6 +148,12 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型不在所选分组的可用列表中，请刷新后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
+  it('shows an image refusal the main process already worded instead of asking for a retry', () => {
+    const blocked = '这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。'
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${blocked}`))).toBe(blocked)
+    const tooLarge = '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'
+    expect(chatErrorMessage(new Error(tooLarge))).toBe(tooLarge)
+  })
   it('keeps the partial reply and shows the main-process cut-off note when a stream times out', () => {
     const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
     state = applyStreamEvent(state, { type: 'reasoning', requestId: 'request-1', content: '先想一下' })

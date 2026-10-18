@@ -119,10 +119,22 @@ function safeUpstreamMessage(value: unknown): string {
   return redacted.slice(0, MAXIMUM_ERROR_MESSAGE)
 }
 
+// 生图被内容审核拦下：上游原话是英文（Your request was rejected as a result of our safety system），以前原样上屏（#1101 第4条）。
+const imageModerationPattern = /content_policy_violation|moderation_blocked|safety system|safety_violations?|content[_ ]policy|content[_ ]filter|sensitive[_ ]words?|敏感词|安全审核|内容[^。]{0,8}(?:违规|不合规)/i
+// 参考图的文件太大（file size must be less than 20 MB 这类）。原话里也有 size，以前被下面那条说成「尺寸不支持」，
+// 客户换了尺寸照样失败。只认带「文件」或字节单位的说法：尺寸不对的原话写的是 1024x1024 这类，不带 MB。
+const referenceTooLargePattern = /\bfile\b[^.]{0,40}\b(?:size|large|limit)|\d+(?:\.\d+)?\s*(?:mb|kb|mib|kib|bytes)\b|payload too large|entity too large|文件[^。]{0,10}(?:过大|太大|超过)|图片[^。]{0,6}(?:过大|太大)/i
+
 // `evidence` carries the error code next to the message; it is only matched,
 // never shown, because `detail` alone is what may reach the screen below.
 function imageRequestFailure(status: number, detail: string, evidence = detail): Error {
   const normalized = detail.toLowerCase()
+  if (status >= 400 && status < 500 && imageModerationPattern.test(`${detail} ${evidence}`)) {
+    return new Error('这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。')
+  }
+  if (status === 400 && referenceTooLargePattern.test(detail)) {
+    return new Error('参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。')
+  }
   if (status === 400 && normalized.includes('size')) {
     return new Error('当前模型不支持这个图片尺寸，请更换尺寸后重试')
   }

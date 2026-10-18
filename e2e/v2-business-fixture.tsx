@@ -31,6 +31,8 @@ declare global {
     failNextRead: (read: 'profile' | 'subscriptions') => void
     // extensionHold：除卸载以外的扩展改动（开关、更新）挂着，等这里放开才回。
     releaseExtension: () => void
+    // revokeHold：撤销密钥挂着，等这里放开才回。
+    releaseRevoke: () => void
     // 先发后到：下一次读资料按发出去那一刻的资料回，等 release() 才回。
     profileReadHarness: {
       deferNext(): void
@@ -109,6 +111,48 @@ let codexCatalogReady = false
 let codexCatalogAttempts = 0
 // mcpHealthFail 让第一次连接检测没跑完，验证「这次没检测成」和「重新检测」。
 let mcpHealthAttempts = 0
+// mcpAuth：Codex 那条连接要登录授权；点了「登录授权」就一直等，直到点「取消」（#1099 第 1 条）。
+let finishMcpLogin: (() => void) | null = null
+function codexMcpServers(authStatus: string) {
+  return [
+    {
+      name: 'test-extension',
+      enabled: true,
+      disabledReason: null,
+      transportType: 'http' as const,
+      command: null,
+      args: [],
+      cwd: null,
+      url: 'https://example.test/mcp',
+      envNames: [],
+      inheritedEnvNames: [],
+      httpHeaderNames: [],
+      inheritedHttpHeaderNames: [],
+      bearerTokenEnvVar: null,
+      startupTimeoutSec: null,
+      toolTimeoutSec: null,
+      authStatus,
+      origin: 'user' as const,
+      editable: true,
+    },
+  ]
+}
+const mcpAuthMethods = {
+  listMcpServers: async () => codexMcpServers('not_logged_in'),
+  loginMcpServer: async (name: string) => {
+    record('mcp-login', name)
+    await new Promise<void>((resolve) => {
+      finishMcpLogin = resolve
+    })
+    return codexMcpServers('not_logged_in')
+  },
+  cancelMcpLogin: async (name: string) => {
+    record('mcp-cancel-login', name)
+    // 主进程停掉登录命令、再读一遍列表要一会儿：留出「正在停止」看得见的那一下。
+    setTimeout(() => finishMcpLogin?.(), 400)
+    return true
+  },
+} satisfies Partial<V2Bridge>
 const codexCatalogPlugin = {
   provider: 'codex' as const,
   kind: 'plugin' as const,
@@ -292,6 +336,9 @@ const keyInUse = query.has('keyInUse')
 let replaceFailures = Number(query.get('replaceFails') ?? 0)
 // replaceSkipped：那个工具的配置是手填的，自动换新把它跳过（#478）。
 const replaceSkipped = query.has('replaceSkipped')
+// revokeHold：撤销密钥的请求挂着不回，好看执行中这几秒弹窗还能不能关（#1099 第 2 条）。
+let releaseHeldRevoke: (() => void) | undefined
+window.releaseRevoke = () => { releaseHeldRevoke?.(); releaseHeldRevoke = undefined }
 async function rewriteKey(provider: ProviderId) {
   record('rewriteKey', provider)
   if (replaceSkipped) throw new KeyRewriteSkippedError([{ provider, reason: 'manual', message: 'Claude Code 保留手动填写的密钥' }])
@@ -567,6 +614,7 @@ const apiMethods = {
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
+    if (query.has('revokeHold')) await new Promise<void>((resolve) => { releaseHeldRevoke = resolve })
     const index = pagedKeys?.findIndex((entry) => entry.id === id) ?? -1
     if (pagedKeys && index >= 0) pagedKeys.splice(index, 1)
   },
@@ -949,6 +997,7 @@ const apiMethods = {
     record('add-mcp', input)
     return []
   },
+  ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   listBackups: async () => (empty ? [] : [backup]),
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)
