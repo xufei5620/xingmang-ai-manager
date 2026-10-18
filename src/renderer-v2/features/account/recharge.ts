@@ -101,6 +101,18 @@ export function paymentTerminalPresentation(
       body: '如果手机上已经显示付款成功，可能是支付渠道慢了，稍后在「我的订单」里看。超过 30 分钟还没到账，请联系客服，并告诉客服订单号。',
     }
   }
+  // 订阅不进余额：关窗后那两句换成「订阅会自动开通」，别的照充值那套。
+  if (kind === 'subscription') return confirming
+    ? {
+      tone: 'neutral',
+      title: '支付窗口已关闭',
+      body: '如果已经付过款，不用做什么：星芒还在确认，付款成功后订阅会自动开通。还没付的话，这笔订单放着就行，不会扣钱。',
+    }
+    : {
+      tone: 'neutral',
+      title: '支付窗口已关闭',
+      body: '关闭支付窗口不会取消订单。付过款的话，付款成功后订阅会自动开通，也可以点「查看我的订单」核对。',
+    }
   return confirming
     ? {
       tone: 'neutral',
@@ -308,11 +320,25 @@ export function orderPaidText(order: Pick<Order, 'money' | 'paymentProvider' | '
   return `${yuanChannels.has(channel) ? '¥' : ''}${order.money.toFixed(2)}`
 }
 
+// 星芒账号（new-api）的订阅订单号前缀，rc.40～rc.45 和上游 main 一样：易支付 SUBUSR、Stripe 和 Creem
+// sub_ref_、Waffo Pancake WAFFO_PANCAKE_SUB-（上游分辨 Waffo Pancake 的订阅回调也是看这个前缀）。
+// 充值单是 USR、ref_、WAFFO_PANCAKE-，不会撞。订阅单没付成之前只在订阅订单表里，客户能查的「我的订单」（充值表）里没有；
+// 付成以后上游才往充值表补一行同单号、数量记 0 的成功记录（model/subscription.go upsertSubscriptionTopUpTx）。
+const subscriptionTradeNoPrefixes = ['SUBUSR', 'sub_ref_', 'WAFFO_PANCAKE_SUB-']
+
+/** 是不是星芒账号的订阅订单号。历史账号的订单号是另一套，不按这个认。 */
+export function isSubscriptionTradeNo(tradeNo: string): boolean {
+  const value = tradeNo.trim()
+  return subscriptionTradeNoPrefixes.some((prefix) => value.startsWith(prefix))
+}
+
 /**
  * 「我的订单」一行的标题和第二行末尾那截。星芒账号的充值数量就是到账美元；历史账号订单上记的是
- * 付了多少人民币那一档，倍数可能早就改过，按人民币写，不拿现在的倍数去乘。
+ * 付了多少人民币那一档，倍数可能早就改过，按人民币写，不拿现在的倍数去乘。星芒账号的订阅单在
+ * 充值表里数量记 0，照充值写就成了「充值 $0」，所以按单号认出来写「开通订阅」。
  */
-export function orderTitle(order: Pick<Order, 'amount'>, multiplierAccount: boolean): string {
+export function orderTitle(order: Pick<Order, 'amount' | 'tradeNo'>, multiplierAccount: boolean): string {
+  if (!multiplierAccount && isSubscriptionTradeNo(order.tradeNo)) return '开通订阅'
   return `充值 ${multiplierAccount ? '¥' : '$'}${formatAmount(order.amount)}`
 }
 export function orderTail(order: Pick<Order, 'status' | 'tradeNo'>, openTradeNo: string | null | undefined): string {
@@ -320,6 +346,15 @@ export function orderTail(order: Pick<Order, 'status' | 'tradeNo'>, openTradeNo:
   if (order.status === 'failed') return '，支付没有完成，没有扣款'
   if (order.status === 'expired') return '，没有付成功，不会扣钱'
   return ''
+}
+
+/** 按订单号搜没搜到时的那两行。星芒账号的订阅单没付成之前查不到，不叫客户去核对单号。 */
+export function ordersSearchEmpty(keyword: string, multiplierAccount: boolean): { title: string; description: string } {
+  if (!multiplierAccount && isSubscriptionTradeNo(keyword)) return {
+    title: '这笔订阅还没开通',
+    description: '订阅订单付款成功后才会出现在这里。没付的话放着就行，不会扣钱；手机上已经显示付款成功的话，稍后再查，超过 30 分钟还没开通请联系客服。',
+  }
+  return { title: '没有找到这个订单', description: '核对一下订单号，或者清空搜索看全部订单。' }
 }
 
 /** 「本次充值」里「按最近用量」后面那句：跟账号概览同一套说法（runwayDaysText），左边已经写了「按最近用量」，这里去掉打头那几个字。 */

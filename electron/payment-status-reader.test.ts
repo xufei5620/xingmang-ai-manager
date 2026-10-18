@@ -53,6 +53,23 @@ describe('createPaymentOrderStatusReader', () => {
     await expect(reader()).resolves.toBe('unknown')
   })
 
+  // new-api keeps a subscription order in subscription_orders and has no user
+  // endpoint to read it; only once paid does CompleteSubscriptionOrder upsert a
+  // success row with the same trade_no and amount 0 into top_ups (rc.24-rc.45).
+  it('confirms a paid xm subscription through the same exact top-up search', async () => {
+    const h = harness()
+    h.owner.siteId = 'solov'
+    delete h.client.getTopupOrderStatus
+    const tradeNo = 'SUBUSR12NOabc1231760000000'
+    const reader = createPaymentOrderStatusReader(h.options, tradeNo)!
+    await expect(reader()).resolves.toBe('unknown')
+    h.listTopupOrders.mockResolvedValue({ page: 1, pageSize: 20, total: 1, orders: [
+      { tradeNo, amount: 0, money: 29.9, status: 'success' },
+    ] } as NewApiTopupOrdersPage)
+    await expect(reader()).resolves.toBe('success')
+    expect(h.listTopupOrders).toHaveBeenLastCalledWith({ keyword: tradeNo })
+  })
+
   it('does not substitute an unsupported Sub2API reader with legacy order-list statuses', async () => {
     const h = harness()
     delete h.client.getTopupOrderStatus

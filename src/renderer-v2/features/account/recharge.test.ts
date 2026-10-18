@@ -3,10 +3,13 @@ import type { AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
 import {
   balancePurchaseLine,
   billingPreferenceNote,
+  isSubscriptionTradeNo,
   orderPaidText,
+  ordersSearchEmpty,
   orderTail,
   orderTitle,
   paymentTerminalBody,
+  paymentTerminalPresentation,
   planDurationText,
   planPriceText,
   planSubscription,
@@ -119,8 +122,8 @@ describe('recharge', () => {
     expect(orderPaidText({ money: 70, paymentProvider: 'epay', paymentMethod: 'alipay' })).toBe('¥70.00')
     expect(orderPaidText({ money: 10, paymentProvider: 'stripe', paymentMethod: 'stripe' })).toBe('10.00')
     expect(orderPaidText({ money: 0, paymentProvider: 'epay', paymentMethod: 'alipay' })).toBeNull()
-    expect(orderTitle({ amount: 10 }, false)).toBe('充值 $10')
-    expect(orderTitle({ amount: 70 }, true)).toBe('充值 ¥70')
+    expect(orderTitle({ amount: 10, tradeNo: 'USR7NOabc123' }, false)).toBe('充值 $10')
+    expect(orderTitle({ amount: 70, tradeNo: 'sub2_trade-31' }, true)).toBe('充值 ¥70')
     expect(orderTail({ status: 'pending', tradeNo: 'A' }, 'A')).toBe('，支付窗口开着')
     expect(orderTail({ status: 'pending', tradeNo: 'A' }, 'B')).toBe('，没付的话放着就行，不会扣钱')
     expect(orderTail({ status: 'failed', tradeNo: 'A' }, null)).toBe('，支付没有完成，没有扣款')
@@ -132,6 +135,35 @@ describe('recharge', () => {
     expect(rechargeRunwayText(400)).toBe('够用一年以上')
     expect(rechargeRunwayText(0)).toBe('不到 1 天就会用完')
     expect(rechargeRunwayText(12)).toBe('约还能用 12 天')
+  })
+
+  // new-api writes a paid subscription into the top-up table with amount 0
+  // (model/subscription.go upsertSubscriptionTopUpTx, rc.24 through rc.45).
+  it('titles a paid subscription row instead of calling it a $0 top-up', () => {
+    for (const tradeNo of ['SUBUSR7NOabc1231760000000', 'sub_ref_0a1b2c', 'WAFFO_PANCAKE_SUB-7-1760000000000-abcdef']) {
+      expect(isSubscriptionTradeNo(tradeNo)).toBe(true)
+      expect(orderTitle({ amount: 0, tradeNo }, false)).toBe('开通订阅')
+    }
+    for (const tradeNo of ['USR7NOabc1231760000000', 'ref_0a1b2c', 'WAFFO_PANCAKE-7-1760000000000-abcdef', 'XM-3']) {
+      expect(isSubscriptionTradeNo(tradeNo)).toBe(false)
+    }
+    expect(orderTitle({ amount: 0, tradeNo: 'SUBUSR7NOabc' }, true)).toBe('充值 ¥0')
+  })
+
+  it('does not ask the customer to recheck the number of a subscription that has not been paid yet', () => {
+    expect(ordersSearchEmpty(' SUBUSR7NOabc1231760000000 ', false)).toEqual({
+      title: '这笔订阅还没开通',
+      description: '订阅订单付款成功后才会出现在这里。没付的话放着就行，不会扣钱；手机上已经显示付款成功的话，稍后再查，超过 30 分钟还没开通请联系客服。',
+    })
+    expect(ordersSearchEmpty('USR7NOabc', false)).toEqual({ title: '没有找到这个订单', description: '核对一下订单号，或者清空搜索看全部订单。' })
+    expect(ordersSearchEmpty('SUBUSR7NOabc', true).title).toBe('没有找到这个订单')
+  })
+
+  it('says a closed subscription window opens the plan rather than topping up the balance', () => {
+    expect(paymentTerminalPresentation('closed', true, 'subscription').body).toBe('如果已经付过款，不用做什么：星芒还在确认，付款成功后订阅会自动开通。还没付的话，这笔订单放着就行，不会扣钱。')
+    expect(paymentTerminalPresentation('closed', false, 'subscription').body).toBe('关闭支付窗口不会取消订单。付过款的话，付款成功后订阅会自动开通，也可以点「查看我的订单」核对。')
+    expect(paymentTerminalPresentation('closed', true).body).toBe('如果已经付过款，不用做什么：星芒还在确认到账，到了会自动更新余额。还没付的话，这笔订单放着就行，不会扣钱。')
+    expect(paymentTerminalPresentation('unconfirmed', false, 'subscription').title).toBe('还没查到这笔订单到账')
   })
 
   it('names the bought plan when a paid subscription opens', () => {
