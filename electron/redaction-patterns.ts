@@ -116,3 +116,21 @@ export function credentialArgumentValues(argv: readonly string[]): string[] {
 export function redactSecretPatterns(value: string): string {
   return redactSecretQueryParameters(redactSecretFields(redactSecretShapes(value)))
 }
+
+// The address shape the crash reporter hides. The lookbehind lets a match start
+// only where a local part can start, so a long run of address characters with
+// no `@` in it (a base64 blob in a log line) is scanned once rather than once
+// per position. The domain has to end on a letters-only label, which keeps npm
+// pins such as `@openai/codex@0.130.0-alpha.12` readable.
+const EMAIL_ADDRESS = /(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![A-Za-z0-9_-])/g
+
+/**
+ * Half-hides email addresses: `alice@qq.com` becomes `a***@qq.com`. Support can
+ * still match a feedback report to the customer by asking for the address,
+ * while the report itself no longer carries it whole. Only the runtime log and
+ * the feedback exports apply this; the crash reporter hides the whole address,
+ * and nothing on screen is masked.
+ */
+export function maskEmailAddresses(value: string): string {
+  return value.replace(EMAIL_ADDRESS, '$1***@$2')
+}

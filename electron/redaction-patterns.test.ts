@@ -4,6 +4,7 @@ import { redactCrashText } from './crash-report'
 import { redactDiagnosticText } from './diagnostics'
 import {
   credentialArgumentValues,
+  maskEmailAddresses,
   redactSecretFields,
   redactSecretPatterns,
   redactSecretQueryParameters,
@@ -149,6 +150,34 @@ describe('redactSecretQueryParameters', () => {
 
   it('leaves parameters that merely end in key alone', () => {
     expect(redactSecretQueryParameters('?cachekey=abc&monkey=1')).toBe('?cachekey=abc&monkey=1')
+  })
+})
+
+describe('maskEmailAddresses', () => {
+  it('keeps the first character and the domain of every address', () => {
+    expect(maskEmailAddresses('登录 alice@qq.com 失败，换 Bob.Smith+tag@mail.example.co.uk 试试'))
+      .toBe('登录 a***@qq.com 失败，换 B***@mail.example.co.uk 试试')
+    expect(maskEmailAddresses('{"email":"x@example.com"}')).toBe('{"email":"x***@example.com"}')
+    expect(maskEmailAddresses('联系 a@b.com.')).toBe('联系 a***@b.com.')
+  })
+
+  it('leaves npm pins, hosts without a dot and already masked text alone', () => {
+    for (const text of [
+      'npm install -g @openai/codex@0.130.0-alpha.12 @xai-official/grok@latest @anthropic-ai/claude-code@2.1.302',
+      'user@localhost',
+      'a***@qq.com',
+      '[REDACTED]@git.example.invalid',
+    ]) {
+      expect(maskEmailAddresses(text)).toBe(text)
+    }
+  })
+
+  it('scans a long run of address characters without an @ in one pass', () => {
+    const blob = 'A'.repeat(200_000)
+    const started = performance.now()
+    expect(maskEmailAddresses(blob)).toBe(blob)
+    // Without the lookbehind this takes most of a minute.
+    expect(performance.now() - started).toBeLessThan(1_000)
   })
 })
 

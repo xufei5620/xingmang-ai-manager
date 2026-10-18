@@ -47,7 +47,7 @@ import {
   type CertificateTrustVerdict,
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
-import { redactSecretPatterns } from './redaction-patterns'
+import { maskEmailAddresses, redactSecretPatterns } from './redaction-patterns'
 import { pathRootSpellings } from './startup-log'
 import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
 import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, requestFailuresTrigger, type RelayRouteChange } from './relay-route-controller'
@@ -599,11 +599,13 @@ export function createDiagnosticsExport(
     exportedAt: new Date().toISOString(),
     diagnostics: redactStructuredAbsolutePaths(report, roots),
   }
-  return `${redactDiagnosticText(JSON.stringify(payload, null, 2), {
+  // 邮箱半遮只在导出这一步做（#1073 第 5 条 c）：redactDiagnosticText 也给「检查」页
+  // 上的结论脱敏，屏幕上的字不跟着变。
+  return `${maskEmailAddresses(redactDiagnosticText(JSON.stringify(payload, null, 2), {
     ...options,
     userHome,
     codexHome,
-  })}\n`
+  }))}\n`
 }
 
 function clashCandidates(homeDirectory: string, env: NodeJS.ProcessEnv): string[] {
