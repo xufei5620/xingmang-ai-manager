@@ -136,7 +136,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '打开 Codex，发出第一条消息',
         where: '工具箱首页 → Codex 桌面端「打开」→ Codex 对话框',
         detail: '点击「打开」，后面的操作在新出现的 Codex 窗口里完成。先问一个简单问题，不用选择文件夹。',
-        bullets: ['在 Codex 里开始新对话（英文界面可能写 New chat）。', '输入下面这句话并发送，等待回复。'],
+        bullets: ['在窗口左侧栏最上面把模式切到「Codex」，再开始新对话（英文界面可能写 New chat）。', '别在「ChatGPT」的「聊天」「工作」里发：那两项要登录 ChatGPT 账号，用当前账号会报「提交消息时出错」。', '输入下面这句话并发送，等待回复。'],
         example: '你好，请用中文告诉我你能帮我做什么。',
         expected: 'Codex 回了一段完整文字，你就可以开始用了。',
         illustration: 'desktop-message',
@@ -319,9 +319,10 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '先发一句简单的话',
         where: 'Codex 窗口 → 新对话 → 输入框',
         detail: '只问问题不用选文件夹。先试一条消息，确认能收到回复。',
-        bullets: ['开始一段新对话，英文界面可能显示 New chat。', '输入下面这句话并发送。'],
+        bullets: ['在窗口左侧栏最上面把模式切到「Codex」，开始一段新对话，英文界面可能显示 New chat。', '输入下面这句话并发送。'],
         example: '请帮我列一份今天的工作计划，先问我有哪些事情要做。',
         expected: 'Codex 返回文字，你可以继续回答它。',
+        extra: [{ title: '发出去报「提交消息时出错」？', detail: '多半是发在了「ChatGPT」的「聊天」或「工作」里。用当前账号或自己的密钥时，那两项发不出去，换到「Codex」里发就好。详见「出问题怎么办」。' }],
         illustration: 'desktop-message',
         action: '返回首页打开桌面端',
         page: 'home',
@@ -1101,6 +1102,19 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '看到 Codex 窗口，或取得明确启动错误。',
         extra: [{ title: '能打开，但还是英文？', detail: '中文界面只在从星芒打开 Codex 时生效。直接点 Codex 自己的图标（Mac 上叫 ChatGPT）打开会是英文：关掉它，从星芒首页点「打开」，或点右下角（Mac 在屏幕顶部）的星芒图标 →「已安装的工具」→「Codex 桌面端」。从星芒打开还是英文，再到桌面端「配置」→「界面语言与文件夹权限」点「启用中文界面」。启用可能重开 Codex，先保存工作。' }],
         action: '回首页检查 Codex 打开结果',
+        page: 'home',
+      },
+      // 桌面端的「聊天」「工作」是 ChatGPT 账号的功能（OpenAI 文档：用 API Key 登录时 ChatGPT Work 不可用），
+      // 用密钥时只有「Codex」那一栏走得通，在那两栏里发会弹「提交消息时出错」加一句英文（2026-10-18 客户报）。
+      // 落在首页，Linux 版教程按 page 过滤掉这一步。
+      {
+        title: '发消息报「提交消息时出错」：换到「Codex」里发',
+        where: 'Codex 桌面端窗口（也叫 ChatGPT）→ 左侧栏最上面的模式 →「Codex」',
+        detail: '提示下面写着「Work browser access requires an authenticated account」，是消息发在了「ChatGPT」的「聊天」或「工作」里。那两项要登录 ChatGPT 账号才能用，Codex 用的是当前账号或自己的密钥时发不出去，跟密钥、余额、网络都没关系。',
+        bullets: ['在左侧栏最上面把模式切到「Codex」，开始新对话。', '把没发出去的那段话粘过去再发，不用重装，也不用改设置。'],
+        expected: 'Codex 正常回复。',
+        extra: [{ title: '就想用「聊天」「工作」？', detail: '要用你自己的 ChatGPT 账号：在首页 Codex 桌面端卡片的「…」→「配置…」里选「ChatGPT 账号」并保存，再到 Codex 里用 ChatGPT 账号登录。那样花的是你自己的 ChatGPT 订阅，不扣当前账号的余额；想切回来，在同一处选回「当前账号」。' }],
+        action: '回首页打开 Codex',
         page: 'home',
       },
       {

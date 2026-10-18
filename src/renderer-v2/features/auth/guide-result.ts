@@ -104,13 +104,16 @@ export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult 
   const prompt = route === 'codexDesktop'
     ? '帮我看看这个文件夹里都有什么，每个文件用一句话说明它是做什么的。'
     : route === 'chat' ? '请先问我想解决的问题和限制，然后给我一个今天就能做的第一步。' : null
+  // 桌面端里「ChatGPT」那边的「聊天」「工作」要登录 ChatGPT 账号，用密钥发会报「提交消息时出错」，
+  // 只有「Codex」那一栏走得通（2026-10-18 客户报）。用官方账号的照旧，不多说这一句。
+  const keyedDesktop = route === 'codexDesktop' && (input.switched ? input.switched.target : input.tool?.source) !== 'official'
   const next: GuideResultRow = !readiness.prepared
     ? { value: '先回上一步', detail: '把工具准备好后，点「重新检测」。', tone: 'warn' }
     : !readiness.connected
       ? { value: '先把账号设好', detail: '保存设置或在工具里登录后，点「重新检测」。', tone: 'warn' }
       : route === 'chat'
         ? { value: '可以开始聊天', detail: '把下面这句话发出去试试。', tone: 'neutral' }
-        : { value: '打开工具试一次', detail: prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
+        : { value: '打开工具试一次', detail: keyedDesktop ? '打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试。' : prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
   return {
     install: installationResult(route, input.tool, readiness.prepared),
     connection: connection.row,

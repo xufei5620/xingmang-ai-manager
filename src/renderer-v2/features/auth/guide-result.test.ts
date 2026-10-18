@@ -76,13 +76,32 @@ describe('guide setup result', () => {
   it('offers a first prompt while making clear opening is not a completed task', () => {
     const desktop = buildGuideSetupResult({ route: 'codexDesktop', tool: codex, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' })
     expect(desktop.prompt).toBe('帮我看看这个文件夹里都有什么，每个文件用一句话说明它是做什么的。')
-    expect(desktop.next.detail).toBe('打开后把下面这句话发给它试试。')
+    expect(desktop.next.detail).toBe('打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试。')
     const cli = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude' }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号' })
     expect(cli.prompt).toBeNull()
     expect(cli.next.detail).not.toContain('下面')
     const chat = buildGuideSetupResult({ route: 'chat', signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' })
     expect(chat.prompt).toContain('请')
     expect(chat.install.value).toBe('不用另装')
+  })
+})
+
+describe('guide setup result desktop mode hint', () => {
+  // ChatGPT 桌面端的「聊天」「工作」要 ChatGPT 账号登录，用密钥只能在「Codex」里发。
+  it('points key users at the Codex mode of the desktop app', () => {
+    for (const source of ['account', 'manual', 'unknown'] as const) {
+      const result = buildGuideSetupResult({ route: 'codexDesktop', tool: { ...codex, source }, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' })
+      expect(result.next.detail).toContain('切到「Codex」')
+    }
+  })
+
+  it('leaves official account users and the chat route alone', () => {
+    const official = buildGuideSetupResult({ route: 'codexDesktop', tool: { ...codex, source: 'official' }, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' })
+    expect(official.next.detail).toBe('打开后把下面这句话发给它试试。')
+    const switchedToOfficial = buildGuideSetupResult({ route: 'codexDesktop', tool: codex, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号', switched: { ...switched, target: 'official' } })
+    expect(switchedToOfficial.next.detail).not.toContain('Codex')
+    const chat = buildGuideSetupResult({ route: 'chat', signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' })
+    expect(chat.next.detail).not.toContain('Codex')
   })
 })
 
