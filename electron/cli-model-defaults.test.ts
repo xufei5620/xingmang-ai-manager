@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCliModelName, isRetiredCliModel, resolveCliModelUpgrade, resolveDefaultCliModel, resolveRetiredCliModelReplacement } from './cli-model-defaults'
+import { isCliModelName, isRetiredCliModel, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -182,6 +182,37 @@ describe('cli model hints from the service status file', () => {
     expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-opus-5-5'], undefined, hints)).toBe('claude-opus-5-5')
     expect(resolveCliModelUpgrade('claude', 'claude-opus-5', ['claude-opus-5', 'claude-opus-5-5'], hints)).toBe('claude-opus-5-5')
     expect(resolveDefaultCliModel('claude', ['claude-opus-5-5'], undefined, null)).toBe('claude-opus-5-5')
+  })
+})
+
+describe('resolveCliModelDefault', () => {
+  it('names the bundled default when no table was published', () => {
+    expect(resolveCliModelDefault('codex')).toBe('gpt-6-astra')
+    expect(resolveCliModelDefault('claude', null)).toBe('claude-opus-5-5')
+    expect(resolveCliModelDefault('grok', { codex: { default: 'gpt-7' } })).toBe('grok-4.6')
+  })
+
+  it('follows the published default, the same one sign-in provisioning picks', () => {
+    const hints = { claude: { default: 'claude-opus-6' }, codex: { default: 'gpt-7' } }
+    expect(resolveCliModelDefault('claude', hints)).toBe('claude-opus-6')
+    expect(resolveCliModelDefault('codex', hints)).toBe('gpt-7')
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5-5', 'claude-opus-6'], undefined, hints)).toBe(resolveCliModelDefault('claude', hints))
+  })
+
+  it('ignores a published default that the same table retires', () => {
+    expect(resolveCliModelDefault('claude', { claude: { default: 'claude-opus-6', retired: ['claude-opus-6'] } })).toBe('claude-opus-5-5')
+  })
+})
+
+describe('resolveNewestModelOfFamily', () => {
+  it('picks the newest version in the same family instead of the alphabetically first model', () => {
+    const models = ['gpt-5.4', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-sol-thinking']
+    expect(resolveNewestModelOfFamily(models, 'gpt-5.6-sol')).toBe('gpt-6.1-sol')
+  })
+
+  it('returns null when nothing in the list shares the family', () => {
+    expect(resolveNewestModelOfFamily(['gpt-5.4', 'gpt-6-astra'], 'gpt-5.6-sol')).toBeNull()
+    expect(resolveNewestModelOfFamily([], 'gpt-5.6-sol')).toBeNull()
   })
 })
 

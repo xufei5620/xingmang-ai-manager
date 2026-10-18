@@ -1434,6 +1434,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
   'tools:inspect-running': '换账号后检查哪些工具还开着',
   'tools:check-models': '打开工具前核对当前账号能用的模型',
+  'tools:cli-model-hints': '读取服务状态文件里的型号表',
   'config:fill-template-defaults': '给工具配置补齐新版设置',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
   'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
@@ -2432,6 +2433,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (!service.checkToolModels) return { status: 'skipped' }
     return service.checkToolModels(provider)
+  })
+  // 读不到就当没有：配置窗口照旧按程序自带的那份挑，不为它报错。
+  registerTrustedHandler('tools:cli-model-hints', async (): Promise<CliModelHints | null> => {
+    if (!options.cliModelHints) return null
+    try { return await options.cliModelHints() } catch { return null }
   })
   registerTrustedHandler('config:fill-template-defaults', async (_event, retry: unknown): Promise<ToolTemplateFillResult> => {
     if (retry !== undefined && typeof retry !== 'boolean') throw new Error('补设置参数格式错误')

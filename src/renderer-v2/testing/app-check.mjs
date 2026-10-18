@@ -824,6 +824,26 @@ test('Codex non-GPT menu requires a detected non-GPT model before saving', async
   } finally { await page.close() }
 })
 
+// #1154 附录：服务状态文件改了 Codex 默认，「换用别家模型」里那条「Codex 默认」也跟着换，不再只认程序自带的。
+test('Codex non-GPT menu offers the published Codex default as the way back', async () => {
+  const page = await open('clientModels=1&cliModelHints=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.waitFor()
+    await row.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
+    await page.getByTestId('home-codex-models').click()
+    const list = page.getByTestId('tool-codex-model-filter')
+    await list.getByRole('radio', { name: /gpt-fixture/ }).waitFor()
+    const choices = await list.getByRole('radio').allTextContents()
+    assert.equal(choices.length, 3)
+    assert.match(choices[0], /gpt-fixture[\s\S]*Codex 默认/)
+    assert.equal(choices.filter((label) => label.includes('Codex 默认')).length, 1)
+    await page.keyboard.press('Escape')
+    await page.getByTestId('codex-other-models-dialog').waitFor({ state: 'hidden' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Codex model lists leave out grok-4.6 while the Grok CLI still offers it', async () => {
   const page = await open('codexGrokModels=1&allInstalled=1')
   try {
@@ -5963,6 +5983,24 @@ for (const existing of [false, true]) for (const { tool, provider, model } of de
     } finally { await page.close() }
   })
 }
+
+// #1154 附录：没设型号的工具，配置窗口预选的默认跟登录自动配置一样看服务状态文件的型号表，不只认程序自带的。
+test('the configuration dialog defaults a tool without a model to the published default', async () => {
+  const page = await open('guest=1&existing=1&allInstalled=1&keyOptions=1&cliDefaultModels=1&cliMissingModels=1&cliModelHints=1')
+  try {
+    await openGuestToolConfiguration(page, 'claude', false)
+    await expect(page.getByLabel('默认模型')).toHaveValue('claude-opus-6')
+    await page.getByTestId('tool-detect-models').click()
+    await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
+    assert.equal(await page.getByLabel('默认模型').inputValue(), 'claude-opus-6')
+    await page.getByTestId('tool-save-config').click()
+    await waitForSavedConfiguration(page)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').map((entry) => entry.args[0])), [
+      { provider: 'claude', apiKey: '', model: 'claude-opus-6', mode: 'merge' },
+    ])
+    await clean(page)
+  } finally { await page.close() }
+})
 
 // Gemini CLI 下线（yoyo 2026-10-14）：原来挂在它「官方账号」旁边的那句企业版限制也跟着没了；
 // 装着它也一样。v4 起配置窗口只管点开的那一个工具，没有工具页签。
