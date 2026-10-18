@@ -27,6 +27,7 @@ import {
   macosLegacyChatgptMessage,
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
+import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 import { ensureTrustedDirectory } from './trusted-temp'
 
 /**
@@ -180,7 +181,6 @@ export class MacosDesktopInstallError extends Error {
 const feedTimeoutMs = 30_000
 const maximumFeedBytes = 512 * 1024
 const maximumRedirects = 5
-const redirectStatuses = new Set([301, 302, 303, 307, 308])
 const extractTimeoutMs = 10 * 60_000
 const probeTimeoutMs = 30_000
 const copyTimeoutMs = 10 * 60_000
@@ -397,23 +397,11 @@ export async function fetchMacosDesktopResource(
 ): Promise<Response> {
   const source = sources[tool]
   if (!source) throw new Error('这个客户端没有可核对的官方下载地址')
-  let current = validateResourceUrl(source, url)
-  const visited = new Set<string>()
-  for (let redirects = 0; ; redirects += 1) {
-    if (visited.has(current.href)) throw new Error('下载发生了循环重定向')
-    visited.add(current.href)
-    const response = await fetchImplementation(current.href, { ...init, redirect: 'manual' })
-    // A fetch that followed redirects on its own would hide where the bytes came from.
-    if (response.url && validateResourceUrl(source, response.url).href !== current.href) {
-      throw new Error('下载绕过了受限的重定向策略')
-    }
-    if (!redirectStatuses.has(response.status)) return response
-    await response.body?.cancel().catch(() => undefined)
-    if (redirects >= maximumRedirects) throw new Error('下载重定向次数过多')
-    const location = response.headers.get('location')
-    if (!location) throw new Error('下载重定向缺少 Location')
-    current = validateResourceUrl(source, new URL(location, current).href)
-  }
+  return fetchWithRedirectAllowlist(url, init, fetchImplementation, {
+    label: '下载',
+    maximumRedirects,
+    validate: (candidate) => validateResourceUrl(source, candidate),
+  })
 }
 
 async function fetchFeed(

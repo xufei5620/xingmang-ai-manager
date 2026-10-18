@@ -33,6 +33,7 @@ import {
 import { minimumSupportedNodeVersion, nodeVersionStatus } from './versions'
 import { errorCodeClause, loggedFailureNextStep } from './failure-wording'
 import { classifyNetworkFailure, networkFailureCode } from './network-failure'
+import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
 export type NodeRuntimeNetworkRegion =
   | 'mainland-china'
@@ -179,7 +180,6 @@ const minimumMsiBytes = 1024 * 1024
 const appInstallerPackageName = 'Microsoft.DesktopAppInstaller'
 const appInstallerPackageFamily = 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe'
 const maximumNodeRedirects = 2
-const nodeRedirectStatuses = new Set([301, 302, 303, 307, 308])
 
 // The two probes below get 10 s each under trustedCommandEnvironment(), where a
 // cmdlet left to autoloading costs the whole System32 module scan (see
@@ -711,12 +711,16 @@ function nodeResourceIdentity(value: string): NodeResourceIdentity {
 }
 
 /** Accept only the exact resource on the official host or npmmirror's fixed CDN mapping. */
-export function validateNodeResponseUrl(responseUrl: string, expectedUrl: string): void {
-  const actual = nodeResourceIdentity(responseUrl)
-  const expected = nodeResourceIdentity(expectedUrl)
+function validateNodeResourceUrl(value: string, expected: NodeResourceIdentity): URL {
+  const actual = nodeResourceIdentity(value)
   if (actual.family !== expected.family || actual.suffix !== expected.suffix) {
     throw new Error('Node.js 下载重定向到了未经批准的资源路径')
   }
+  return new URL(value)
+}
+
+export function validateNodeResponseUrl(responseUrl: string, expectedUrl: string): void {
+  validateNodeResourceUrl(responseUrl, nodeResourceIdentity(expectedUrl))
 }
 
 export async function fetchTrustedNodeResource(
@@ -724,26 +728,12 @@ export async function fetchTrustedNodeResource(
   init: RequestInit,
   fetchImplementation: typeof globalThis.fetch,
 ): Promise<Response> {
-  nodeResourceIdentity(url)
-  let current = url
-  const visited = new Set<string>()
-  for (let redirectCount = 0; redirectCount <= maximumNodeRedirects; redirectCount += 1) {
-    if (visited.has(current)) throw new Error('Node.js 下载发生了循环重定向')
-    visited.add(current)
-    const response = await fetchImplementation(current, { ...init, redirect: 'manual' })
-    if (response.url) validateNodeResponseUrl(response.url, current)
-    if (!nodeRedirectStatuses.has(response.status)) return response
-    if (redirectCount === maximumNodeRedirects) {
-      throw new Error('Node.js 下载重定向次数过多')
-    }
-    const location = response.headers.get('location')
-    if (!location) throw new Error('Node.js 下载重定向缺少 Location')
-    await response.body?.cancel().catch(() => undefined)
-    const next = new URL(location, current).href
-    validateNodeResponseUrl(next, url)
-    current = next
-  }
-  throw new Error('Node.js 下载重定向次数过多')
+  const expected = nodeResourceIdentity(url)
+  return fetchWithRedirectAllowlist(url, init, fetchImplementation, {
+    label: 'Node.js 下载',
+    maximumRedirects: maximumNodeRedirects,
+    validate: (candidate) => validateNodeResourceUrl(candidate, expected),
+  })
 }
 
 export function buildNodeRuntimeInstallPlan(
