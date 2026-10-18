@@ -1153,10 +1153,10 @@ export interface SystemService {
    */
   followToolRoutes?(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport>
   /**
-   * 整份写入那一轮写完了（account-cli-provisioner.ts 的 configureManagedClis）：这一轮里因为连不上换了线路、
-   * 跟过去的工具一次提示重开，不一家一句（历史账号，#1061 第 2 条）。可选 = 旧实现不提供。
+   * 整份写入那一轮写完了（account-cli-provisioner.ts 的 configureManagedClis），written 是这一轮写好的几家：其中
+   * 因为连不上换了线路、跟过去的一次提示重开，不一家一句（历史账号，#1061 第 2 条）。可选 = 旧实现不提供。
    */
-  noteRouteFollowRestart?(): Promise<void>
+  noteRouteFollowRestart?(written: readonly ProviderId[]): Promise<void>
   /** ipc.ts 注册时交进来，注销时交 null。 */
   bindToolRouteAccount?(hooks: ToolRouteAccountHooks | null): void
   /** 星芒窗口回到前台：等着外部客户端退出再换线路的，看一眼退了没有（同一个客户端两次至少隔 2 分钟）。 */
@@ -8010,8 +8010,10 @@ export function createSystemService(
           mode: 'merge',
           readback: relayProviderBaseUrlEquals(inspectNativeProviderConfig(payload.provider).actualBaseUrl, activeSite.providerBaseUrls[payload.provider]),
         })
-        if (accountRouteFaultFollowed(activeSite.id, followedRoute)) accountRouteFollowed.set(payload.provider, owner)
       }
+      // 这一家刚写的这一笔是不是因为连不上换线、跟过去的：是就等这一轮写完提示重开，不是就把以前记下的作废。
+      if (followedRoute && accountRouteFaultFollowed(activeSite.id, followedRoute)) accountRouteFollowed.set(payload.provider, owner)
+      else accountRouteFollowed.delete(payload.provider)
       // 整份写过一遍、来源重新记成了这次的：之前「被别的软件改回过」的结论作废，换线路照常跟。
       if (toolRouteFollow.read().providers[payload.provider]?.managedElsewhere) {
         await writeToolRouteRecord(payload.provider, ({ managedElsewhere: _managedElsewhere, reverts: _reverts, ...rest }) => rest)
@@ -8296,8 +8298,9 @@ export function createSystemService(
   }
 
   // 历史账号的工具配置跟应用线路走，换了以后由界面整份写入跟过去（saveConfig 的 followedRoute），不走上面的
-  // 定点改写，以前因此一直不提示重开（#1061 第 2 条）。这一轮写完（noteRouteFollowRestart）再一次说完。记着是
-  // 哪个账号写的：账号中途换了，那一轮整轮作废、走不到说完那一步，留下的不带到下一个账号那一轮。
+  // 定点改写，以前因此一直不提示重开（#1061 第 2 条）。这一轮写完（noteRouteFollowRestart）再一次说完，只说这一轮
+  // 自己写的那几家：同时跑着的另一轮（客户自己点的换来源、换账号）不会把它们提前说掉。记着是哪个账号写的：账号
+  // 中途换了，那一轮整轮作废、走不到说完那一步，留下的不带到下一个账号那一轮。
   const accountRouteFollowed = new Map<ProviderId, string | null>()
 
   /**
@@ -8313,10 +8316,10 @@ export function createSystemService(
     return age >= 0 && age < toolRouteHintTtlMs
   }
 
-  async function noteRouteFollowRestart(): Promise<void> {
+  async function noteRouteFollowRestart(written: readonly ProviderId[]): Promise<void> {
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-    const followed = [...accountRouteFollowed].filter(([, writer]) => writer === owner).map(([provider]) => provider)
-    accountRouteFollowed.clear()
+    const followed = written.filter((provider) => accountRouteFollowed.has(provider) && accountRouteFollowed.get(provider) === owner)
+    for (const provider of written) accountRouteFollowed.delete(provider)
     if (!followed.length) return
     // 配置已经写好了：提示没出成只进日志，不能把这一轮写入算成失败。
     try {

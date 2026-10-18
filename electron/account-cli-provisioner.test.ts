@@ -546,7 +546,7 @@ describe('configureManagedClis', () => {
       expect(fetchAvailableModels).toHaveBeenCalledWith(managedKey('codex').key, { bypassCache: true })
     })
 
-    // #1061 第 2 条：跟着换了线路的几家写完以后一次提示重开，不是写一家说一家。
+    // #1061 第 2 条：跟着换了线路的几家写完以后一次提示重开，不是写一家说一家；只交这一轮写好的那几家。
     it('asks for the restart hint once, after every tool of the round has been written', async () => {
       const saveConfig = vi.fn(async (payload: Parameters<ConfigurationService['saveConfig']>[0]) => {
         if (payload.provider === 'grok') throw new Error('写入失败')
@@ -569,6 +569,7 @@ describe('configureManagedClis', () => {
       expect(result.configured).toEqual(['codex'])
       expect(saveConfig).toHaveBeenCalledTimes(2)
       expect(noteRouteFollowRestart).toHaveBeenCalledTimes(1)
+      expect(noteRouteFollowRestart).toHaveBeenCalledWith(['codex'])
       expect(noteRouteFollowRestart.mock.invocationCallOrder[0]).toBeGreaterThan(Math.max(...saveConfig.mock.invocationCallOrder))
     })
 

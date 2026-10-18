@@ -328,9 +328,9 @@ describe('legacy account restart hint after a whole rewrite', () => {
       await service.saveConfig({ provider, apiKey: '', model: 'fixture-model', mode: 'merge' }, false, undefined, { source: 'account', automatic: true })
       expect(service.getConfig(false).providers[provider].actualBaseUrl).toBe(relayProviderBaseUrls(siteId, 'direct')[provider])
     }
-    async function finish() {
+    async function finish(written: ProviderId[]) {
       if (!service.noteRouteFollowRestart) throw new Error('noteRouteFollowRestart missing')
-      await service.noteRouteFollowRestart()
+      await service.noteRouteFollowRestart(written)
     }
     return { service, rewrite, finish, clock, account, lastChange, followed, inspectRunning }
   }
@@ -340,7 +340,7 @@ describe('legacy account restart hint after a whole rewrite', () => {
     for (const provider of ['claude', 'codex', 'grok'] satisfies ProviderId[]) await f.rewrite(provider)
     // 写一家说一家会一句盖一句：整轮写完才说。
     expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
-    await f.finish()
+    await f.finish(['claude', 'codex', 'grok'])
     expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({
       id: f.clock.now, codex: { cli: true, desktop: null, canRestartDesktop: false }, grok: 'running',
     })
@@ -352,7 +352,7 @@ describe('legacy account restart hint after a whole rewrite', () => {
 
     // 说过的不再说：下一轮什么也没跟过去。
     f.clock.now += 1000
-    await f.finish()
+    await f.finish(['claude', 'codex', 'grok'])
     expect(f.inspectRunning).toHaveBeenCalledTimes(1)
     expect(f.followed).toHaveBeenCalledTimes(1)
   })
@@ -366,7 +366,7 @@ describe('legacy account restart hint after a whole rewrite', () => {
   ] satisfies Array<{ label: string; change: RelayRouteChange | null }>)('does not ask after $label', async ({ change }) => {
     const f = await legacyFixture({ change })
     await f.rewrite('codex')
-    await f.finish()
+    await f.finish(['codex'])
     expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
     expect(f.inspectRunning).not.toHaveBeenCalled()
     expect(f.followed).not.toHaveBeenCalled()
@@ -375,27 +375,51 @@ describe('legacy account restart hint after a whole rewrite', () => {
   it('asks after a line-down switch too', async () => {
     const f = await legacyFixture({ change: { from: 'primary', to: 'direct', reason: 'line-down', at: 1_000_000_000_000 - 60_000 } })
     await f.rewrite('codex')
-    await f.finish()
+    await f.finish(['codex'])
     expect(f.service.readStoredConfig().toolRouteRestartHint?.codex).toEqual({ cli: true, desktop: null, canRestartDesktop: false })
   })
 
   it('leaves the xm account to followToolRoutes even on the old whole-rewrite path', async () => {
     const f = await legacyFixture({ siteId: 'solov' })
     await f.rewrite('codex')
-    await f.finish()
+    await f.finish(['codex'])
     expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
     expect(f.lastChange).not.toHaveBeenCalled()
+  })
+
+  it('leaves the tools one round wrote for that round to announce, while another round finishes in between', async () => {
+    const f = await legacyFixture({ providers: ['codex', 'grok'] })
+    await f.rewrite('codex')
+    // 客户这时点了别的工具的换来源：那一轮只写了 Grok，说不到 Codex。
+    await f.finish(['grok'])
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    await f.rewrite('grok')
+    await f.finish(['codex', 'grok'])
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({
+      id: f.clock.now, codex: { cli: true, desktop: null, canRestartDesktop: false }, grok: 'running',
+    })
+    expect(f.followed).toHaveBeenCalledTimes(1)
+  })
+
+  it('forgets a followed tool once a later write of it is not a route follow', async () => {
+    const f = await legacyFixture()
+    await f.rewrite('codex')
+    // 已经在新线路上，再写一次就不是跟着换线了。
+    await f.rewrite('codex')
+    await f.finish(['codex'])
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    expect(f.inspectRunning).not.toHaveBeenCalled()
   })
 
   it('drops what was written for an account that changed before the round finished', async () => {
     const f = await legacyFixture()
     await f.rewrite('codex')
     f.account.owner = JSON.stringify(['solov-api', 10])
-    await f.finish()
+    await f.finish(['codex'])
     expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
     // 也不带到下一轮。
     f.account.owner = legacyOwner
-    await f.finish()
+    await f.finish(['codex'])
     expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
   })
 })

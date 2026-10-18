@@ -684,7 +684,7 @@ export async function configureManagedClis(
     }
   }
   // 换线路以后跟过去的这一轮写完了：开着的工具要重开才走新线路，这一轮一次说完（历史账号，#1061 第 2 条）。
-  await systemService.noteRouteFollowRestart?.()
+  await systemService.noteRouteFollowRestart?.(outcome.configured)
   return outcome
 }
 
