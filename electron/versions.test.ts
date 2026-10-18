@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  compareVersionNumbers,
+  compareVersionsBy,
   isExactCliVersion,
   isNewerVersion,
   minimumSupportedNodeVersion,
   nodeVersionStatus,
+  parseInstalledReleaseVersion,
+  parseNodeReleaseVersion,
   parseNodeVersion,
+  parsePythonReleaseVersion,
+  parseUpdateVersion,
 } from './versions'
 
 describe('exact CLI version targets', () => {
@@ -57,6 +63,26 @@ describe('CLI version comparison', () => {
     ['1.0.0', '99999999999999999999.0.0', true],
   ] as const)('reads %j against %j as newer=%s', (current, latest, expected) => {
     expect(isNewerVersion(current, latest)).toBe(expected)
+  })
+})
+
+describe('shared version comparison', () => {
+  it('returns the first differing segment and null when either side is unreadable', () => {
+    expect(compareVersionNumbers([0, 2, 10], [0, 2, 7])).toBe(3)
+    expect(compareVersionNumbers([1, 0, 0], [1, 0, 0])).toBe(0)
+    expect(compareVersionNumbers([0, 9, 9], [1, 0, 0])).toBe(-1)
+    expect(compareVersionsBy(parseUpdateVersion, 'v0.2.10', '0.2.9')).toBe(1)
+    expect(compareVersionsBy(parseUpdateVersion, 'dev', '0.2.9')).toBeNull()
+  })
+
+  it('keeps each source on its own reading rule', () => {
+    const readers = [parseUpdateVersion, parseInstalledReleaseVersion, parseNodeReleaseVersion, parsePythonReleaseVersion]
+    const readable = (value: string) => readers.map((read) => read(value) !== null)
+    expect(readable('1.2.3')).toEqual([true, true, false, true])
+    expect(readable('v1.2.3')).toEqual([true, false, true, false])
+    expect(readable(' 1.2.3-beta.1')).toEqual([true, false, false, false])
+    expect(readable('01.2.3')).toEqual([true, true, false, false])
+    expect(readable('1234567.0.0')).toEqual([true, false, false, true])
   })
 })
 

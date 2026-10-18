@@ -30,7 +30,7 @@ import {
   windowsPowerShellExecutable,
   type WindowsElevationCapability,
 } from './windows-elevation'
-import { minimumSupportedNodeVersion, nodeVersionStatus } from './versions'
+import { compareVersionsBy, minimumSupportedNodeVersion, nodeVersionStatus, parseNodeReleaseVersion } from './versions'
 import { errorCodeClause, loggedFailureNextStep } from './failure-wording'
 import { classifyNetworkFailure, networkFailureCode } from './network-failure'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
@@ -475,24 +475,6 @@ function sourceUrl(baseUrl: string, relativePath: string): string {
   return new URL(relativePath, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString()
 }
 
-function semverParts(version: string): [number, number, number] | null {
-  const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version)
-  if (!match) return null
-  const parts = match.slice(1).map(Number)
-  if (parts.some((part) => !Number.isSafeInteger(part))) return null
-  return [parts[0], parts[1], parts[2]]
-}
-
-function compareVersions(left: string, right: string): number {
-  const leftParts = semverParts(left)
-  const rightParts = semverParts(right)
-  if (!leftParts || !rightParts) return 0
-  for (let index = 0; index < 3; index += 1) {
-    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index]
-  }
-  return 0
-}
-
 export function normalizeNodeRuntimeArchitecture(
   architecture: NodeJS.Architecture,
 ): NodeRuntimeArchitecture {
@@ -567,7 +549,7 @@ export function parseNodeReleaseIndex(
       const files = record.files
       if (
         typeof record.version !== 'string'
-        || !semverParts(record.version)
+        || !parseNodeReleaseVersion(record.version)
         || typeof record.lts !== 'string'
         || !record.lts.trim()
         || !Array.isArray(files)
@@ -581,7 +563,7 @@ export function parseNodeReleaseIndex(
         fileName: nodeRuntimePackageFileName(record.version, architecture, kind),
       })
     }
-    releases.sort((left, right) => compareVersions(right.version, left.version))
+    releases.sort((left, right) => compareVersionsBy(parseNodeReleaseVersion, right.version, left.version) ?? 0)
     return releases[0] ?? null
   } catch {
     return null
