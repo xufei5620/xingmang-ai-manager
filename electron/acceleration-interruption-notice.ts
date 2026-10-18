@@ -27,6 +27,7 @@
  * 不含任何 Electron 依赖：时钟、定时器、通知与状态读取都由宿主注入。
  */
 import type { AccelerationState } from './acceleration-contract'
+import { scheduleTimeout } from './schedule-timeout'
 
 /** restored：会话确实停了，网络设置已改回；unrestored：没能确认这一点。 */
 export type AccelerationInterruptionOutcome = 'restored' | 'unrestored'
@@ -70,11 +71,6 @@ function sessionKey(state: AccelerationState): string {
 
 function isRunning(state: AccelerationState): boolean {
   return state.phase === 'active' || state.phase === 'connecting' || state.phase === 'stopping'
-}
-
-function scheduleTimeout(callback: () => void, delayMs: number) {
-  const timer = setTimeout(callback, delayMs)
-  return () => clearTimeout(timer)
 }
 
 export function createAccelerationInterruptionNotice(options: AccelerationInterruptionNoticeOptions): AccelerationInterruptionNotice {

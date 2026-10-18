@@ -99,4 +99,15 @@ describe('tool-route-rewrite', () => {
     expect(rewriteEnvValue('B=x\n', 'A', 'y')).toBeNull()
     expect(rewriteEnvValue('A=x\n', 'A', 'y"z')).toBeNull()
   })
+
+  it('reads the first exact .env line, strips one matching pair of quotes and returns null when it is missing', () => {
+    expect(readEnvLineValue('A_OLD=old\nA =spaced\n  A= "quoted" \nA=second\n', 'A')).toBe('quoted')
+    expect(readEnvLineValue("A='single'\r\nB=b\r\n", 'A')).toBe('single')
+    expect(readEnvLineValue('A="mixed\'\n', 'A')).toBe('"mixed\'')
+    expect(readEnvLineValue('A="\n', 'A')).toBe('')
+    expect(readEnvLineValue('A=x=y\n', 'A')).toBe('x=y')
+    expect(readEnvLineValue('A=\n', 'A')).toBe('')
+    expect(readEnvLineValue('B=b\n', 'A')).toBeNull()
+    expect(readEnvLineValue('', 'A')).toBeNull()
+  })
 })
