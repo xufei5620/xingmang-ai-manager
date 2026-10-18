@@ -59,8 +59,9 @@ const channels = {
 // implementation details, yet the canvas puts error.message on nodes and
 // banners verbatim, and canvas-v2 itself stays untouched, so the wrapper is
 // peeled here before the error crosses the bridge. Same pattern as
-// renderer-v2's rawErrorMessage (business-common.tsx), copied because a
-// sandboxed preload cannot import it (I7). Only one class name is taken per
+// renderer-v2's stripIpcErrorPrefix (src/renderer-v2/ipc-error-prefix.ts),
+// copied because a sandboxed preload cannot import it (I7); that module's test
+// pins the two literals to each other. Only one class name is taken per
 // layer, right after the channel and with a space after its colon, so a reason
 // that itself starts with `EPERM:` or a `C:\` path keeps it.
 const ipcErrorPrefix = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z_][A-Za-z0-9_]*:\s+)?/
