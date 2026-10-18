@@ -672,6 +672,26 @@ test('tool key limits list only the tools that have a key and name the ones stil
   }
 })
 
+test('tool key limits that could not be read can be read again without leaving the page', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    // 概览数密钥把数也按 100 一页读，等它读完再让下一次失败，失败的才是这张卡。
+    await page.locator('.v2-acct-kv').filter({ hasText: '2 把' }).waitFor()
+    await page.evaluate(() => window.failNextRead('toolKeyLimits'))
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = page.getByTestId('tool-key-limits')
+    const alert = card.getByRole('alert')
+    await alert.getByText('密钥服务暂时不可用').waitFor()
+    assert.equal(await card.getByTestId('tool-key-limit-claude').count(), 0)
+    await alert.getByRole('button', { name: '重新加载', exact: true }).click()
+    await card.getByTestId('tool-key-limit-claude').waitFor()
+    await card.getByTestId('tool-key-limit-codex').waitFor()
+    assert.equal(await card.getByRole('alert').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('a profile read once stays on screen when a later refresh cannot read it', async () => {
   const page = await fixture('page=account')
   try {
