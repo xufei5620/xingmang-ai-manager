@@ -3,6 +3,7 @@ import {
   type AccountSourceTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
+  type CliModelHints,
   type CliUninstallOptions,
   type CodexDesktopLaunchMode,
   type ExternalToolId,
@@ -255,6 +256,11 @@ export function createToolsApi(bridge: XingmangApi) {
     async checkModels(tool: ToolId): Promise<ToolModelCheck> {
       try { return await bridge.checkToolModels(providerFor(tool)) }
       catch { return { status: 'skipped' } }
+    },
+    /** 服务状态文件里的型号表，配置窗口挑默认型号用（#1154 附录）。读不到一律当没有，用程序自带的那份。 */
+    async cliModelHints(): Promise<CliModelHints | null> {
+      try { return await bridge.getCliModelHints() }
+      catch { return null }
     },
     getLocale: () => bridge.inspectCodexDesktopLocale(),
     setLocale: (locale: 'zh-CN' | 'system' = 'zh-CN') => bridge.setCodexDesktopLocale(locale),

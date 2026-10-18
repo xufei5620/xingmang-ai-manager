@@ -127,7 +127,7 @@ if (query.has('routedSwitch') || query.has('autoRelay')) {
 }
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
-  claude: ['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'fixture-model'],
+  claude: ['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', ...(query.has('cliModelHints') ? ['claude-opus-6'] : []), 'fixture-model'],
   codex: ['codex-auto-review', 'gpt-6-astra', 'fixture-model'],
   gemini: ['gemini-3.7-flash', 'gemini-3.8-flash-high', 'fixture-model'],
   grok: ['grok-4', 'grok-4.6', 'fixture-model'],
@@ -746,6 +746,8 @@ const methods = {
   checkToolModels: async (provider: ProviderId) => query.has('modelGone') && provider === 'claude' && config.providers.claude.model !== 'claude-opus-5-5'
     ? { status: 'unavailable' as const, model: config.providers.claude.model, replacement: 'claude-opus-5-5' }
     : { status: 'skipped' as const },
+  // cliModelHints：服务状态文件的型号表把 Claude Code 的默认换成 claude-opus-6、Codex 的换成 gpt-fixture。
+  getCliModelHints: async () => query.has('cliModelHints') ? { claude: { default: 'claude-opus-6' }, codex: { default: 'gpt-fixture' } } : null,
   // templateFilled：开机恢复账号后给老配置补齐了新版设置，角落该说一句。
   // templateDeferred：开机那轮 Codex 开着没补成，隔一阵再要（retry）时已经关了、补上了。
   fillToolTemplateDefaults: async (retry?: boolean) => query.has('templateDeferred')

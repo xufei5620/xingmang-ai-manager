@@ -79,6 +79,14 @@ export function isRetiredCliModel(provider: ProviderId, model: string, hints?: C
   return cliModelTable(provider, hints).retired.includes(model)
 }
 
+/**
+ * 型号表合并后的默认型号：远端写了（且不在下架名单上）就是远端那个，否则程序自带的。配置窗口给没设型号的工具
+ * 预选、「换用别家模型」标「Codex 默认」都看它，跟登录自动配置挑的是同一个（#1154 附录）。
+ */
+export function resolveCliModelDefault(provider: ProviderId, hints?: CliModelHints | null): string {
+  return cliModelTable(provider, hints).default
+}
+
 interface ModelLineage {
   family: string
   version: number[]
@@ -112,6 +120,14 @@ function compareNewerFirst(left: string, right: string): number {
 function newestOfFamily(offered: readonly string[], model: string): string | undefined {
   const { family } = modelLineage(model)
   return offered.filter((candidate) => modelLineage(candidate).family === family).sort(compareNewerFirst)[0]
+}
+
+/**
+ * 列表里跟 model 同系列、版本最新的那个；一个都没有是 null。AI 对话的默认文字型号不在分组里时拿它挑，
+ * 不按字母序退到第一个（gpt-5.6-sol → gpt-6.1-sol，不是排在前面的 gpt-5.4）。
+ */
+export function resolveNewestModelOfFamily(models: readonly string[], model: string): string | null {
+  return newestOfFamily(models, model) ?? null
 }
 
 // 模型列表按字母排，claude-haiku 排在 opus、sonnet 前面，兜底只拿第一个就挑到最弱的（#1154）。

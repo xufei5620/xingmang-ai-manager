@@ -1,3 +1,4 @@
+import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
@@ -64,6 +65,16 @@ export function resolveChatModel(models: readonly string[], remembered = '', pre
   if (remembered && models.includes(remembered)) return remembered
   const choices = typeof preferred === 'string' ? [preferred] : preferred
   return choices.find((model) => models.includes(model)) ?? models[0] ?? ''
+}
+/**
+ * 新对话、换分组、切文字/图片时默认挑哪个型号。文字默认型号不在这个分组里（下架了）就挑同系列最新的（#1154 附录）：
+ * 模型列表按字母排，以前退到第一个，gpt-5.4 排在 gpt-6.1-sol 前面。图片照旧，图片分组的模型主进程已经按偏好排好
+ * （ai-chat-protocol.ts 的 selectAiChatModelsForGroup），默认两个都不在就取第一个。
+ */
+export function resolveDefaultChatModel(mode: ChatMode, models: readonly string[], remembered = ''): string {
+  if (mode === 'image') return resolveChatModel(models, remembered, DEFAULT_IMAGE_MODELS)
+  const sameFamily = resolveNewestModelOfFamily(models, DEFAULT_CHAT_MODEL)
+  return resolveChatModel(models, remembered, sameFamily ? [DEFAULT_CHAT_MODEL, sameFamily] : DEFAULT_CHAT_MODEL)
 }
 export function activeConversation(state: ChatWorkspace): Conversation { return state.conversations.find((item) => item.id === state.activeId) ?? state.draftConversation }
 export function changeConversation(state: ChatWorkspace, id: string, change: (conversation: Conversation) => Conversation): ChatWorkspace {

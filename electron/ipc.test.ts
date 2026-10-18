@@ -2290,6 +2290,20 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), '../codex')).rejects.toThrow('未知的 CLI 类型')
   })
 
+  it('hands the published model table to the renderer and treats a missing or failing read as none', async () => {
+    const hints = { claude: { default: 'claude-opus-6' } }
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { cliModelHints: async () => hints })
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.getCliModelHints)!(trustedEvent())).resolves.toEqual(hints)
+
+    electronMocks.handlers.clear()
+    register(serviceStub())
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.getCliModelHints)!(trustedEvent())).resolves.toBeNull()
+
+    electronMocks.handlers.clear()
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { cliModelHints: async () => { throw new Error('offline') } })
+    await expect(electronMocks.handlers.get(ipcInvokeChannels.getCliModelHints)!(trustedEvent())).resolves.toBeNull()
+  })
+
   it('backs up each tool before filling template defaults and reports what was filled', async () => {
     const service = serviceStub()
     service.fillToolTemplateDefaults = vi.fn(async (backup?: (provider: 'codex') => void) => {

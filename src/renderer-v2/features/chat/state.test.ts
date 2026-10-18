@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, resolveDefaultChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { chatLimits, inspectModel, validateImageRequest } from './api'
@@ -30,6 +30,22 @@ describe('v2 chat request transitions', () => {
     expect(resolveChatModel(['gpt-image-2.5-sunburst', 'gpt-image-1'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2.5-sunburst')
     expect(resolveChatModel(['gpt-image-2', 'gpt-image-2.5-flare'], 'gpt-image-2', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2')
     expect(resolveChatModel([], '', DEFAULT_IMAGE_MODELS)).toBe('')
+  })
+
+  it('falls back to the newest model in the text default family instead of the alphabetically first one', () => {
+    const listed = ['gpt-5.4', 'gpt-5.6-terra', DEFAULT_CHAT_MODEL, 'gpt-6-astra', 'gpt-6.1-sol']
+    expect(resolveDefaultChatModel('text', listed)).toBe(DEFAULT_CHAT_MODEL)
+    const retired = listed.filter((model) => model !== DEFAULT_CHAT_MODEL)
+    expect(resolveDefaultChatModel('text', retired)).toBe('gpt-6.1-sol')
+    expect(resolveDefaultChatModel('text', retired, 'gpt-5.4')).toBe('gpt-5.4')
+    expect(resolveDefaultChatModel('text', ['gpt-5.4', 'gpt-6-astra'])).toBe('gpt-5.4')
+    expect(resolveDefaultChatModel('text', [])).toBe('')
+  })
+
+  it('keeps the image defaults and the main-process image order', () => {
+    expect(resolveDefaultChatModel('image', ['gpt-image-2', 'gpt-image-2.5-flare'])).toBe('gpt-image-2.5-flare')
+    expect(resolveDefaultChatModel('image', ['gpt-image-2.5-sunburst', 'gpt-image-1'])).toBe('gpt-image-2.5-sunburst')
+    expect(resolveDefaultChatModel('image', ['gpt-image-2', 'gpt-image-2.5-flare'], 'gpt-image-2')).toBe('gpt-image-2')
   })
 
   it('selects Sub2API Codex_pro independently of NewAPI groups', () => {
