@@ -8,7 +8,7 @@ const { test } = require('node:test')
 const yaml = require('yaml')
 const ts = require('typescript')
 const {
-  BUNDLE_FILES, parseArguments, stageAccelerationBundle,
+  BUNDLE_FILES, PROFILE_PASSWORD_PLACEHOLDER, parseArguments, readProfilePassword, stageAccelerationBundle,
   resolveAccelerationBundleResources, verifyAccelerationBundleCore,
 } = require('./stage-acceleration-bundle.cjs')
 
@@ -147,6 +147,88 @@ test('rejects repository profile hardlinks instead of following an alternate fil
   const { options, dependencies, bundled } = bundledFixture(t)
   fs.linkSync(path.join(bundled, 'profile.yaml'), path.join(bundled, 'alias.yaml'))
   await assert.rejects(stageAccelerationBundle(options, dependencies))
+  assert.equal(fs.existsSync(options.outputDirectory), false)
+})
+
+function stagedPasswords(options) {
+  const source = fs.readFileSync(path.join(options.outputDirectory, 'profile.yaml'), 'utf8')
+  return { source, passwords: runtime().parser.parseClashAccelerationProfile(source).nodes.map((node) => node.connection.password) }
+}
+
+test('a release password replaces every node password and the bundle pins the replaced profile', async (t) => {
+  // #1052：仓库里那份密码已经公开，换了以后新密码只在发版环境的 secret 里。安装包
+  // 钉的必须是换过以后那份的哈希，否则客户端按清单一核就把自己的线路拒掉了。
+  const { options, dependencies } = bundledFixture(t)
+  const result = await stageAccelerationBundle({ ...options, profilePassword: 'rotated-release-password' }, dependencies)
+  const { source, passwords } = stagedPasswords(options)
+  assert.deepEqual(passwords, ['rotated-release-password'])
+  assert.equal(source.includes('test-upstream-secret'), false)
+  assert.equal(result.manifest.profileSha256, digest(source))
+  assert.equal(JSON.stringify(result).includes('rotated-release-password'), false)
+  await verifyAccelerationBundleCore(options.outputDirectory, result.manifest, dependencies.runtime, { platform: 'win32', arch: 'x64' })
+})
+
+test('a replaced password reads back exactly as given, whatever YAML would make of it', async (t) => {
+  // 写进安装包的那份由运行时解析器去读：一个没加引号的 true、0123 或「a: b」会被
+  // YAML 读成别的东西，客户端那边就是连不上。
+  for (const password of ['true', '0123', 'null', '~', '- dash', 'key: value # comment', '"double" \'single\'', '&anchor *alias !tag', '中文密码']) {
+    const { options, dependencies } = bundledFixture(t)
+    await stageAccelerationBundle({ ...options, profilePassword: password }, dependencies)
+    assert.deepEqual(stagedPasswords(options).passwords, [password], password)
+  }
+})
+
+test('the repository pin is still checked when a release password is given', async (t) => {
+  // 换密码不等于换掉整份节点配置：换之前那份仍然得是审过、钉过哈希的那份。
+  const { options, dependencies, bundled } = bundledFixture(t)
+  fs.appendFileSync(path.join(bundled, 'profile.yaml'), '# changed\n')
+  await assert.rejects(stageAccelerationBundle({ ...options, profilePassword: 'rotated-release-password' }, dependencies), /SHA256/)
+  assert.equal(fs.existsSync(options.outputDirectory), false)
+})
+
+test('an unusable release password is refused before any output, without being echoed', async (t) => {
+  // Windows 出包的运行日志谁都能看，报错里不能带密码本身。
+  const { options, dependencies } = bundledFixture(t)
+  for (const password of ['', ' leading-space', 'trailing-newline\n', 'line\nbreak', 'tab\there', 'x'.repeat(4097), PROFILE_PASSWORD_PLACEHOLDER, 42]) {
+    await assert.rejects(stageAccelerationBundle({ ...options, profilePassword: password }, dependencies), (error) => {
+      assert.match(error.message, /加速节点密码（XINGMANG_ACCELERATION_PASSWORD）无效/)
+      if (typeof password === 'string' && password) assert.equal(error.message.includes(password), false)
+      return true
+    })
+    assert.equal(fs.existsSync(options.outputDirectory), false)
+  }
+})
+
+test('an empty environment value means the profile password, as an unset secret does', () => {
+  // 工作流里引用一个还没建的 secret，拿到的是空串而不是没有这个变量。
+  assert.equal(readProfilePassword({}), undefined)
+  assert.equal(readProfilePassword({ XINGMANG_ACCELERATION_PASSWORD: '' }), undefined)
+  assert.equal(readProfilePassword({ XINGMANG_ACCELERATION_PASSWORD: 'rotated-release-password' }), 'rotated-release-password')
+  assert.throws(() => readProfilePassword({ XINGMANG_ACCELERATION_PASSWORD: 'rotated-release-password\n' }), /首尾/)
+})
+
+test('a placeholder password stops the build unless a release password is given', async (t) => {
+  // 换密码那天 profile.yaml 里只剩占位符：没给密码还照常出包，发出去的就是一份
+  // 哪条线路都连不上的安装包。
+  const { options, dependencies, bundled } = bundledFixture(t)
+  const placeholder = fs.readFileSync(path.join(bundled, 'profile.yaml'), 'utf8').replaceAll('test-upstream-secret', PROFILE_PASSWORD_PLACEHOLDER)
+  fs.writeFileSync(path.join(bundled, 'profile.yaml'), placeholder)
+  fs.writeFileSync(path.join(bundled, 'profile.sha256'), digest(placeholder) + '\n')
+  await assert.rejects(stageAccelerationBundle(options, dependencies), /占位符/)
+  assert.equal(fs.existsSync(options.outputDirectory), false)
+  await stageAccelerationBundle({ ...options, profilePassword: 'rotated-release-password' }, dependencies)
+  const { source, passwords } = stagedPasswords(options)
+  assert.deepEqual(passwords, ['rotated-release-password'])
+  assert.equal(source.includes(PROFILE_PASSWORD_PLACEHOLDER), false)
+})
+
+test('nodes with different passwords are not all given the one release password', async (t) => {
+  const { options, dependencies, config } = fixture(t)
+  fs.writeFileSync(config.profilePath, yaml.stringify({ proxies: [
+    { name: '日本线路 1', type: 'hysteria2', server: 'jp.example.test', port: 443, password: 'first-upstream-secret' },
+    { name: '香港线路 2', type: 'hysteria2', server: 'hk.example.test', port: 443, password: 'second-upstream-secret' },
+  ] }))
+  await assert.rejects(stageAccelerationBundle({ ...options, profilePassword: 'rotated-release-password' }, dependencies), /不止一个/)
   assert.equal(fs.existsSync(options.outputDirectory), false)
 })
 

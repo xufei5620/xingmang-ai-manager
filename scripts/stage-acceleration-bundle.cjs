@@ -9,6 +9,14 @@ const PROJECT_ROOT = path.resolve(__dirname, '..')
 const MAX_CORE_BYTES = 100 * 1024 * 1024
 const BUNDLE_FILES = ['manifest.json', 'mihomo.exe', 'profile.yaml', 'LICENSE-mihomo.txt', 'THIRD-PARTY-NOTICES.txt']
 const SOURCE_ROOT = 'https://github.com/MetaCubeX/mihomo'
+// 节点密码换掉以后（#1052），新密码不进仓库，只放在发版工作流能读到的环境 secret
+// 里，出包时经这个环境变量带进来、替换全部节点的密码。没给就照旧用节点配置里那份。
+const PROFILE_PASSWORD_ENV = 'XINGMANG_ACCELERATION_PASSWORD'
+// 换密码那天，仓库 profile.yaml 里的密码改成这个占位符。出包时没给密码就停下，
+// 免得一份哪条线路都连不上的安装包悄悄发出去。
+const PROFILE_PASSWORD_PLACEHOLDER = '__XINGMANG_ACCELERATION_PASSWORD__'
+// 与运行时解析器给连接凭据的上限一致（acceleration-clash-config.ts）。
+const MAX_PROFILE_PASSWORD_LENGTH = 4096
 
 function loadRuntime() {
   try {
@@ -97,6 +105,35 @@ function validateLicense(source) {
     || !source.includes('END OF TERMS AND CONDITIONS')) throw new Error('需要提供完整的 Mihomo GNU GPL v3 许可文本。')
 }
 
+// 报错里只说哪里不对，绝不带上密码本身：Windows 出包的运行日志谁都能看。
+function validateProfilePassword(value) {
+  if (typeof value !== 'string' || !value || value.length > MAX_PROFILE_PASSWORD_LENGTH
+    || /[\x00-\x1f\x7f]/.test(value) || value.trim() !== value || value === PROFILE_PASSWORD_PLACEHOLDER) {
+    throw new Error(`加速节点密码（${PROFILE_PASSWORD_ENV}）无效：不能为空、首尾不能有空白、不能含换行等控制字符。`)
+  }
+  return value
+}
+
+function readProfilePassword(environment = process.env) {
+  const value = environment[PROFILE_PASSWORD_ENV]
+  // 工作流里引用一个没建的 secret 取到的是空串：和没设一样，照旧用节点配置里的密码。
+  if (value === undefined || value === '') return undefined
+  return validateProfilePassword(value)
+}
+
+function applyProfilePassword(nodes, password) {
+  const current = new Set(nodes.map((node) => node.connection.password))
+  if (password === undefined) {
+    if (current.has(PROFILE_PASSWORD_PLACEHOLDER)) {
+      throw new Error(`节点配置里的密码是占位符，出包需要加速节点密码（${PROFILE_PASSWORD_ENV}）。`)
+    }
+    return nodes
+  }
+  // 一个 secret 只装得下一个密码：线路各有各的密码时，不能全部换成同一个。
+  if (current.size !== 1) throw new Error('节点配置里的密码不止一个，不能全部换成同一个新密码。')
+  return nodes.map((node) => ({ ...node, connection: { ...node.connection, password } }))
+}
+
 function parseJson(source, label) {
   try { return JSON.parse(source) } catch { throw new Error(`${label}格式无效。`) }
 }
@@ -143,6 +180,7 @@ async function stageAccelerationBundle(options, dependencies = {}) {
   const output = assertExternalPath(options.outputDirectory, projectRoot, '私有资源输出目录')
   const licensePath = assertAbsolutePath(options.licensePath, 'Mihomo 许可文件')
   validateSourceVersion(options.coreVersion, options.sourceRef)
+  const profilePassword = options.profilePassword === undefined ? undefined : validateProfilePassword(options.profilePassword)
   safe.assertNoReparseComponents(output, '私有资源输出目录')
   if (fs.existsSync(output) && (!fs.lstatSync(output).isDirectory() || fs.readdirSync(output).length)) {
     throw new Error('私有资源输出目录必须不存在或为空，不会覆盖已有文件。')
@@ -172,9 +210,20 @@ async function stageAccelerationBundle(options, dependencies = {}) {
     }
   }
   const profile = parser.parseClashAccelerationProfile(profileSource)
+  // 仓库那份先按 profile.sha256 核过才换密码；下面的 manifest 记的是换过以后那份的
+  // 哈希，安装包和运行时都按它核。
+  const nodes = applyProfilePassword(profile.nodes, profilePassword)
   // Re-use the runtime's allowlist: subscriptions, DNS/rules, UI names and
   // controller credentials from the original Clash profile never get copied.
-  const projectedSource = stringify({ proxies: profile.nodes.map((node) => ({ name: node.label, ...node.connection })) }, { lineWidth: 0 })
+  const projectedSource = stringify({ proxies: nodes.map((node) => ({ name: node.label, ...node.connection })) }, { lineWidth: 0 })
+  if (profilePassword !== undefined) {
+    // 客户端读的就是这份字节：用运行时那个解析器读回一遍，确认每条线路拿到的都是
+    // 这个密码，而不是被 YAML 读成了别的东西。
+    const reread = parser.parseClashAccelerationProfile(projectedSource).nodes
+    if (reread.length !== nodes.length || reread.some((node) => node.connection.password !== profilePassword)) {
+      throw new Error('换过密码的节点配置读回来不一致，已放弃。')
+    }
+  }
   const license = await safe.readSafeUtf8File(licensePath, 'Mihomo 许可文件', 128 * 1024)
   validateLicense(license)
   const manifest = validateManifest({
@@ -260,17 +309,22 @@ async function verifyAccelerationBundleCore(directory, expected, runtime, target
 }
 
 async function main(argv = process.argv.slice(2)) {
-  const result = await stageAccelerationBundle(parseArguments(argv))
+  const profilePassword = readProfilePassword()
+  const result = await stageAccelerationBundle({ ...parseArguments(argv), ...(profilePassword === undefined ? {} : { profilePassword }) })
   process.stdout.write(`加速资源已准备：${result.nodeCount} 条线路；节点与内核校验值已固定。\n`)
 }
 
-module.exports = { BUNDLE_FILES, parseArguments, validateManifest, stageAccelerationBundle, resolveAccelerationBundleResources, verifyAccelerationBundleCore, main }
+module.exports = {
+  BUNDLE_FILES, PROFILE_PASSWORD_PLACEHOLDER,
+  parseArguments, validateManifest, validateProfilePassword, readProfilePassword,
+  stageAccelerationBundle, resolveAccelerationBundleResources, verifyAccelerationBundleCore, main,
+}
 
 if (require.main === module) {
   main().catch(() => {
     // Node filesystem errors can include private paths, and YAML errors may
     // contain source text. Never serialize those error objects from this tool.
-    process.stderr.write('私有加速资源准备失败：请核对绝对路径、空输出目录、内核校验值、源码版本和完整 GPL v3 许可。\n')
+    process.stderr.write(`私有加速资源准备失败：请核对绝对路径、空输出目录、内核校验值、源码版本、完整 GPL v3 许可和加速节点密码（${PROFILE_PASSWORD_ENV}）。\n`)
     process.exitCode = 1
   })
 }

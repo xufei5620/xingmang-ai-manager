@@ -4,6 +4,10 @@
 
 `profile.sha256` 固定 YAML 原始字节的 SHA-256。更新线路时需同时更新这个文件；文件统一为 UTF-8 无 BOM、LF 换行。校验只防止误改和打包不一致，不隐藏节点凭据。
 
+## 换过密码以后
+
+2026-10-18 起（#1052）。出包时设了环境变量 `XINGMANG_ACCELERATION_PASSWORD`，`stage-acceleration-bundle.cjs`（CI 里经 `prepare-acceleration-bundle.cjs` 调它）先按 `profile.sha256` 核过本目录的 `profile.yaml`，再把全部线路的密码换成这个值，资源清单钉的是换过以后那份的哈希。没设或为空就用本文件里的密码。本文件里的密码是占位符 `__XINGMANG_ACCELERATION_PASSWORD__` 时必须设，否则停下报错。正式发版从哪里读、怎么配，见[发布手册「加速节点密码」](../docs/RELEASING.md#加速节点密码换密码以后才要配)。
+
 ## 准备资源
 
 平台内核、配置 JSON 和生成的五文件资源目录仍放在源码目录之外。准备对应平台的官方 Mihomo 内核、核对 SHA-256，并取得对应版本的完整 GPL v3 许可。当前发布包使用 v1.19.29，对应源码为 <https://github.com/MetaCubeX/mihomo/tree/v1.19.29>。

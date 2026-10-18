@@ -36,7 +36,10 @@ const RELEASE_SECRET_NAMES = [
   // 更新包签名私钥（2026-09-25 加）。产品所有者照 docs/RELEASING.md「更新包签名」
   // 在自己电脑上生成、加进 release 环境；缺了它 Windows 发布会在上传前失败。
   'XINGMANG_UPDATE_SIGNING_KEY',
-]
+  // 加速节点密码（#1052，2026-10-18 加）。accel-profile 和 release 两个环境各放一份，
+  // 没放时出包照旧用仓库里那份密码。
+  'XINGMANG_ACCELERATION_PASSWORD',
+].sort()
 
 function stepIndex(job, pattern) {
   return job.steps.findIndex((step) => pattern.test(`${step.name || ''}\n${step.run || ''}`))
@@ -169,12 +172,34 @@ test('COS synchronization runs as its own job after an approved publish and keep
   assert.equal(workflow.on.release, undefined)
 })
 
-test('the Windows build job holds no credentials at all', () => {
-  // Windows 那一份是无签名发布，出包不需要任何 secret。少一个作业能读到凭据，
-  // 「谁能读到证书和 R2 密钥」这个问题就少一个答案。
-  assert.equal(windowsJob.environment, undefined)
+function stepsReading(job, secret) {
+  return job.steps.filter((step) => YAML.stringify(step).includes(`secrets.${secret}`))
+}
+
+test('the Windows build job holds only the acceleration password, bound to the one step that needs it', () => {
+  // Windows 那一份是无签名发布，证书和 R2 密钥都与它无关：少一个作业能读到它们，
+  // 「谁能读到证书和 R2 密钥」这个问题就少一个答案。它唯一要的是加速节点密码
+  // （#1052），从只放行 main、不设审批的 accel-profile 环境读，只交给准备加速资源
+  // 那一步：npm ci 装进来的第三方代码和后面整套出包门禁都拿不到它。
+  assert.equal(windowsJob.environment, 'accel-profile')
   assert.equal(windowsJob.permissions, undefined)
-  assert.doesNotMatch(YAML.stringify(windowsJob), /secrets\./)
+  assert.equal(windowsJob.env, undefined)
+  const secrets = new Set([...YAML.stringify(windowsJob).matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((match) => match[1]))
+  assert.deepEqual([...secrets], ['XINGMANG_ACCELERATION_PASSWORD'])
+  const reading = stepsReading(windowsJob, 'XINGMANG_ACCELERATION_PASSWORD')
+  assert.equal(reading.length, 1)
+  assert.match(String(reading[0].run), /prepare-acceleration-bundle\.cjs/)
+  assert.equal(reading[0].env.XINGMANG_ACCELERATION_PASSWORD, '${{ secrets.XINGMANG_ACCELERATION_PASSWORD }}')
+})
+
+test('only the Windows build uses the accel-profile environment, and approvals stay where they were', () => {
+  // accel-profile 不设审批；它要是挂到上传或 Mac 出包上，release 环境那两次批准
+  // 就有一次被它顶掉了。反过来，release 环境也不能从这两个作业上拿下来。
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name !== 'windows-build') assert.notEqual(job.environment, 'accel-profile', name)
+  }
+  assert.equal(macosJob.environment, 'release')
+  assert.equal(publishJob.environment, 'release')
 })
 
 test('the Linux jobs hold no credentials and need no approval', () => {
@@ -187,8 +212,9 @@ test('the Linux jobs hold no credentials and need no approval', () => {
   }
 })
 
-test('the macOS build job reads the signing identity and nothing else', () => {
+test('the macOS build job reads the signing identity and the acceleration password, nothing else', () => {
   // 它必须读 .p12，所以也挂 release 环境、也停下来等一次批准；但 R2 凭据与它无关。
+  // 加速节点密码（#1052）只交给准备加速资源那一步。
   assert.equal(macosJob.environment, 'release')
   assert.equal(macosJob.permissions, undefined)
   const macosSecrets = new Set(
@@ -196,10 +222,15 @@ test('the macOS build job reads the signing identity and nothing else', () => {
   )
   assert.deepEqual([...macosSecrets].sort(), [
     'CSC_NAME',
+    'XINGMANG_ACCELERATION_PASSWORD',
     'XINGMANG_MAC_SIGNING_P12_BASE64',
     'XINGMANG_MAC_SIGNING_P12_PASSWORD',
     'XINGMANG_MAC_SIGNING_SHA256',
   ])
+  const reading = stepsReading(macosJob, 'XINGMANG_ACCELERATION_PASSWORD')
+  assert.equal(reading.length, 1)
+  assert.match(String(reading[0].run), /--target darwin-arm64/)
+  assert.match(String(reading[0].run), /--target darwin-x64/)
 })
 
 test('the macOS signing keychain is always torn down, even when the build fails', () => {
@@ -249,6 +280,11 @@ test('the secrets are only ever bound, never echoed', () => {
         step.name,
       )
     }
+  }
+  // 加速节点密码只给 node 脚本从环境变量里读，shell 一个字都不碰它：Windows 那边是
+  // PowerShell，echo 之外还有 Write-Host、$env: 插值好几种写法，干脆整个不许出现。
+  for (const job of allJobs) {
+    for (const step of job.steps) assert.doesNotMatch(String(step.run || ''), /XINGMANG_ACCELERATION_PASSWORD/, step.name)
   }
 })
 

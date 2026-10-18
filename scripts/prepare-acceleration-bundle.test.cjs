@@ -6,7 +6,7 @@ const test = require('node:test')
 const { createHash } = require('node:crypto')
 const { gzipSync } = require('node:zlib')
 const {
-  ALLOWED_HOSTS, assertAllowedUrl, assertPortableAmd64Core, fetchAccelerationCore, parseArguments,
+  ALLOWED_HOSTS, assertAllowedUrl, assertPortableAmd64Core, fetchAccelerationCore, main, parseArguments,
   prepareAccelerationBundle, readCoreCatalog, resolveCoreTarget,
 } = require('./prepare-acceleration-bundle.cjs')
 
@@ -257,6 +257,64 @@ test('preparing a macOS bundle tells the staging step which architecture it is',
   // 没有 profilePath 就是"用仓库里那份节点配置"，stage 会再拿 profile.sha256 对一遍。
   assert.equal(staged[0].options.profilePath, undefined)
   assert.equal(result.nodeCount, 12)
+})
+
+function preparedRoot(t) {
+  const root = workspace(t)
+  fs.mkdirSync(path.join(root, 'bundled-acceleration'))
+  fs.writeFileSync(path.join(root, 'bundled-acceleration', 'cores.json'), JSON.stringify(catalogFixture()))
+  const target = resolveCoreTarget(catalogFixture(), 'darwin-arm64')
+  return { root, ...stubFetch({ [target.url]: respond(gzipSync(core)), [target.licenseUrl]: respond(license) }) }
+}
+
+test('a release password reaches the staging step in memory, never in the staging file', async (t) => {
+  // #1052：新密码只在发版环境的 secret 里。它交给 stage 去替换，但不落进临时目录里
+  // 那份准备配置：那个文件 stage 读完就不管了，密码没必要在磁盘上多躺一份。
+  const { root, implementation } = preparedRoot(t)
+  const staged = []
+  const result = await prepareAccelerationBundle(
+    { projectRoot: root, target: 'darwin-arm64', outputDirectory: path.join(root, 'bundle'), profilePassword: 'rotated-release-password' },
+    {
+      fetchImplementation: implementation,
+      stage: async (options) => {
+        staged.push(options)
+        assert.equal(fs.readFileSync(options.configPath, 'utf8').includes('rotated-release-password'), false)
+        return { outputDirectory: options.outputDirectory, nodeCount: 12 }
+      },
+    },
+  )
+  assert.equal(staged[0].profilePassword, 'rotated-release-password')
+  assert.equal(staged[0].profilePath, undefined)
+  assert.equal(result.profilePasswordReplaced, true)
+})
+
+test('without a release password the staging step is asked exactly as before', async (t) => {
+  const { root, implementation } = preparedRoot(t)
+  const staged = []
+  const result = await prepareAccelerationBundle(
+    { projectRoot: root, target: 'darwin-arm64', outputDirectory: path.join(root, 'bundle') },
+    { fetchImplementation: implementation, stage: async (options) => { staged.push(options); return { outputDirectory: options.outputDirectory, nodeCount: 12 } } },
+  )
+  assert.equal(Object.hasOwn(staged[0], 'profilePassword'), false)
+  assert.equal(result.profilePasswordReplaced, false)
+})
+
+test('a broken release password fails before the core is downloaded', async (t) => {
+  // 密钥填坏了（比如粘进去时多带了一个换行），没必要等十几 MB 的内核下完才知道。
+  const { root, implementation, seen } = preparedRoot(t)
+  await assert.rejects(prepareAccelerationBundle(
+    { projectRoot: root, target: 'darwin-arm64', outputDirectory: path.join(root, 'bundle'), profilePassword: 'rotated-release-password\n' },
+    { fetchImplementation: implementation, stage: async () => { throw new Error('不应该走到打包') } },
+  ), /XINGMANG_ACCELERATION_PASSWORD/)
+  assert.equal(seen.length, 0)
+})
+
+test('the command line reads the release password from the environment, and an empty one as none', async () => {
+  // 工作流引用一个还没建的 secret 时拿到空串：那就照旧用仓库里的密码，不是拿空串当密码。
+  for (const environment of [{}, { XINGMANG_ACCELERATION_PASSWORD: '' }]) {
+    await assert.rejects(main(['--target', 'win32-x64'], environment), /缺少/)
+  }
+  await assert.rejects(main(['--target', 'win32-x64', '--output', '/tmp/b'], { XINGMANG_ACCELERATION_PASSWORD: ' padded ' }), /首尾/)
 })
 
 test('the download workspace does not survive the run, successful or not', async (t) => {

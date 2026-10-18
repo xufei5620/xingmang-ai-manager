@@ -23,7 +23,7 @@ const { createHash } = require('node:crypto')
 const { gunzipSync } = require('node:zlib')
 const { execFileSync } = require('node:child_process')
 
-const { stageAccelerationBundle } = require('./stage-acceleration-bundle.cjs')
+const { readProfilePassword, stageAccelerationBundle, validateProfilePassword } = require('./stage-acceleration-bundle.cjs')
 
 const PROJECT_ROOT = path.resolve(__dirname, '..')
 const CATALOG_PATH = path.join('bundled-acceleration', 'cores.json')
@@ -195,6 +195,8 @@ async function prepareAccelerationBundle(options, dependencies = {}) {
   const projectRoot = path.resolve(options.projectRoot || PROJECT_ROOT)
   const catalog = readCoreCatalog(projectRoot)
   const target = resolveCoreTarget(catalog, options.target)
+  // 先核密码再下内核：密钥填坏了，不必等十几 MB 下完才知道。
+  const profilePassword = options.profilePassword === undefined ? undefined : validateProfilePassword(options.profilePassword)
   // 临时目录只放下载产物：真正的资源目录由 stage-acceleration-bundle 写，它自己
   // 要求那个目录不存在或为空，两者混在一起会被它当成"已有残留"拒掉。
   const workingDirectory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-accel-core-')))
@@ -202,7 +204,8 @@ async function prepareAccelerationBundle(options, dependencies = {}) {
     const fetched = await fetchAccelerationCore(target, workingDirectory, dependencies)
     const configPath = path.join(workingDirectory, 'acceleration-config.json')
     // 不写 profilePath：省略它就是"用仓库里那份节点配置"，而 stage 会拿
-    // bundled-acceleration/profile.sha256 把它对一遍。
+    // bundled-acceleration/profile.sha256 把它对一遍。密码也不写进这个文件，
+    // 只在内存里交给 stage，核过仓库那份以后再换。
     fs.writeFileSync(configPath, `${JSON.stringify({ version: 1, corePath: fetched.corePath, coreSha256: fetched.coreSha256 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
     const staged = await (dependencies.stage || stageAccelerationBundle)({
       configPath,
@@ -211,8 +214,9 @@ async function prepareAccelerationBundle(options, dependencies = {}) {
       sourceRef: catalog.sourceRef,
       licensePath: fetched.licensePath,
       ...(target.platform === 'darwin' ? { platform: 'darwin', arch: target.arch } : {}),
+      ...(profilePassword === undefined ? {} : { profilePassword }),
     }, { projectRoot })
-    return { ...staged, coreVersion: catalog.coreVersion, target: options.target }
+    return { ...staged, coreVersion: catalog.coreVersion, target: options.target, profilePasswordReplaced: profilePassword !== undefined }
   } finally {
     fs.rmSync(workingDirectory, { recursive: true, force: true })
   }
@@ -232,11 +236,14 @@ function parseArguments(argv) {
   return { target: options['--target'], outputDirectory: options['--output'] }
 }
 
-async function main(argv = process.argv.slice(2)) {
-  const result = await prepareAccelerationBundle(parseArguments(argv))
+async function main(argv = process.argv.slice(2), environment = process.env) {
+  const profilePassword = readProfilePassword(environment)
+  const result = await prepareAccelerationBundle({ ...parseArguments(argv), ...(profilePassword === undefined ? {} : { profilePassword }) })
+  // 只说用的是哪一份密码，不说密码本身：发版的人看日志就知道 secret 有没有生效。
   process.stdout.write(
     `私有加速资源已就位（${result.target}，内核 ${result.coreVersion}，`
-    + `${result.nodeCount} 条线路，内核与许可两道 SHA256 均已对账）：${result.outputDirectory}\n`,
+    + `${result.nodeCount} 条线路，节点密码${result.profilePasswordReplaced ? '已换成出包密钥里的那份' : '用的是仓库里那份'}，`
+    + `内核与许可两道 SHA256 均已对账）：${result.outputDirectory}\n`,
   )
 }
 

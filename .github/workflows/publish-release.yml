@@ -25,6 +25,9 @@
 # 有两次批准：一次放行「用真证书出包」，一次放行「传到更新源」。第一次批准之后什么都
 # 还没有对外发生，产物只躺在 Actions artifact 里。
 #
+# Windows 出包挂的 accel-profile 环境不算第三次批准：里面只放加速节点密码（#1052），
+# 只放行 main、不设 required reviewers。Mac 出包从 release 环境读同名的那一份。
+#
 # runner 现场生成的一次性身份（见 package-for-testing.yml）**绝不能**进更新源：老用户的
 # 机器不认它会拒绝更新，新装用户拿到的又是一个没人认得的发布者。本工作流不走那条路径。
 #
@@ -321,8 +324,12 @@ jobs:
     needs: release-tag
     if: ${{ inputs.platforms == 'all' || inputs.platforms == 'both' || inputs.platforms == 'windows' }}
     runs-on: windows-latest
-    # 这个作业不读任何 secret，也不挂 environment：它只是出包。凭据集中在 publish
-    # 作业里，那里才有需要保护的东西。
+    # 这个作业只读一个 secret：加速节点密码（#1052），只绑在准备加速资源那一步。
+    # 它放在 accel-profile 环境里：只放行 main、**不设 required reviewers**，所以挂上
+    # 它不会多出第三次批准（设了就会多停一次，别加）。证书和 R2 凭据仍然只在 macOS
+    # 出包和 publish 作业里。环境里还没有这个 secret 时取到空串，出包照旧用仓库里那份
+    # 密码；环境没建时 GitHub 会自动建一个空的，同样取到空串。
+    environment: accel-profile
     timeout-minutes: 120
     outputs:
       version: ${{ steps.metadata.outputs.version }}
@@ -370,6 +377,8 @@ jobs:
       - name: Prepare the private acceleration bundle
         env:
           ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
+          # 有值就替换全部节点的密码，安装包钉换过以后那份的哈希（见脚本）。
+          XINGMANG_ACCELERATION_PASSWORD: ${{ secrets.XINGMANG_ACCELERATION_PASSWORD }}
         run: node scripts/prepare-acceleration-bundle.cjs --target win32-x64 --output "$env:ACCELERATION_BUNDLE_DIR"
 
       - name: Build the installer through the full release gate
@@ -440,11 +449,13 @@ jobs:
         run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
 
       # 两个架构各准备一份：Mac 的资源清单里记着架构，内核也是按架构的 Mach-O，
-      # 混用会被打包前的校验直接拒掉。
+      # 混用会被打包前的校验直接拒掉。加速节点密码（#1052）从这个作业本来就挂着的
+      # release 环境读，同 windows-build。
       - name: Prepare the private acceleration bundles
         env:
           ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
           ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
+          XINGMANG_ACCELERATION_PASSWORD: ${{ secrets.XINGMANG_ACCELERATION_PASSWORD }}
         run: |
           node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$ACCELERATION_ARM64"
           node scripts/prepare-acceleration-bundle.cjs --target darwin-x64 --output "$ACCELERATION_X64"

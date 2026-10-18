@@ -395,6 +395,21 @@ R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整�
 
 `.p12` 只能从钥匙串里导出、用 GitHub 的 secret 输入框直接粘，**不要经过任何聊天、工单或邮件**：那份私钥泄露等于别人能签出一个客户端会当成「同一发布者」的更新包。`XINGMANG_MAC_SIGNING_SHA256` 填的必须是 2.2 里登记的那张已发布证书的指纹，换一张证书会在签名预检那一步直接失败。
 
+#### 加速节点密码（换密码以后才要配）
+
+2026-10-18 起（#1052）。`bundled-acceleration/profile.yaml` 里的节点密码已经公开，节点商换了新密码以后，新密码不进仓库，存成 secret `XINGMANG_ACCELERATION_PASSWORD`：出包时先按 `profile.sha256` 核过仓库那份，再把全部线路的密码换成它，安装包里钉的是换过以后那份的哈希。没配时（取到的是空串）照旧用仓库里那份密码，所以换密码之前什么都不用做。
+
+要放两处，值一样：
+
+1. **Settings → Environments → New environment**，名字填 `accel-profile`。发过一次版以后它可能已经被 GitHub 自动建出来了、什么规则都没有，那就点进去改。**Deployment branches and tags** 选 **Selected branches and tags**，加一条 `main`。**不要**打开 Required reviewers：Windows 出包挂着它，设了审批，一次发布就要批三次。然后在它的 **Environment secrets** 里加 `XINGMANG_ACCELERATION_PASSWORD`。
+2. **Settings → Environments → release → Environment secrets**，同样加一份 `XINGMANG_ACCELERATION_PASSWORD`，Mac 出包从这里读。
+
+Windows 出包单独用一个环境，是因为它一直不挂 release、不等批准；放仓库级 secret 又会对任意分支可见。配好以后看发版运行里准备加速资源那一步（Prepare the private acceleration bundle / bundles）的日志：写着「节点密码已换成出包密钥里的那份」就是读到了，写「用的是仓库里那份」就是没读到。
+
+测试包（`package-for-testing`）和 PR 上的检查不读这个密码。节点商停掉旧密码以后，它们出的包线路连不上；要测加速，用正式发版第一次批准后 Actions 里那份产物。
+
+换密码那天还有第二步：`profile.yaml` 的密码改成占位符 `__XINGMANG_ACCELERATION_PASSWORD__`、`profile.sha256` 跟着改，之后出包缺这个密码会停在准备加速资源那一步报错；测试包和 PR 检查那几处要同时改成不带线路出包。节点商停掉旧密码之前，带新密码的版本要已经推到客户手里。
+
 #### 更新包签名
 
 Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一个 R2 桶里：只凭清单里的 SHA-512，拿到 R2 上传密钥的人把安装包和清单一起换掉，校验照样通过。所以发布时再加一道我们自己的签名：
