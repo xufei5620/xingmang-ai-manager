@@ -73,10 +73,41 @@ func identity(_ pid: Int32) -> String? {
   return "\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)"
 }
 struct Entry: Codable { let original: Data; let expected: Data; let hadProtocol: Bool }
+func isSwitch(_ value: Any?) -> Bool { value == nil || equal(value, 0) || equal(value, 1) }
+func isPort(_ value: Any?) -> Bool { value == nil || (value as? Int).map({ (0...65535).contains($0) }) == true }
+let hostLabelCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+func isProxyHost(_ host: String) -> Bool {
+  guard host.utf8.count <= 253 else { return false }
+  var v4 = in_addr(), v6 = in6_addr()
+  if inet_pton(AF_INET, host, &v4) == 1 || inet_pton(AF_INET6, host, &v6) == 1 { return true }
+  let labels = (host.hasSuffix(".") ? host.dropLast() : Substring(host)).split(separator: ".", omittingEmptySubsequences: false)
+  return labels.allSatisfy { label in
+    guard !label.isEmpty, label.utf8.count <= 63, !label.hasPrefix("-"), !label.hasSuffix("-") else { return false }
+    return label.unicodeScalars.allSatisfy { hostLabelCharacters.contains($0) }
+  }
+}
+// Restoration writes back only the managed keys of `original`. A journal read
+// back from disk may have been edited by any same-user process, so bound those
+// keys to switches, ports and endpoint names. This cannot tell a tampered
+// endpoint from a real one: what keeps an edited journal from borrowing this
+// helper's authorization is that restore() trusts the disk only for crash
+// recovery, and then authorizes again.
+func isRecordedOriginal(_ original: [String: Any]) -> Bool {
+  for prefix in ["HTTP", "HTTPS", "SOCKS"] {
+    let enable = original[prefix + "Enable"], host = original[prefix + "Proxy"], port = original[prefix + "Port"]
+    guard isSwitch(enable), isPort(port) else { return false }
+    guard let value = host else { continue }
+    // A disabled endpoint is inert. An enabled one with no host is no endpoint
+    // either, and refusing that quirk would strand the user on the loopback.
+    guard let name = value as? String, name.isEmpty || !equal(enable, 1) || isProxyHost(name) else { return false }
+  }
+  return isSwitch(original["ProxyAutoConfigEnable"]) && isSwitch(original["ProxyAutoDiscoveryEnable"])
+}
 struct Journal: Codable { let version: Int; let pid: Int32; let identity: String; let entries: [String: Entry] }
 protocol Backend {
   func begin(_ write: Bool) throws
   func end()
+  func forgetAuthorization()
   func read() throws -> [String: [String: Any]]
   func hasProtocol(_ id: String) -> Bool
   func eligible(_ id: String) -> Bool
@@ -116,6 +147,10 @@ final class SystemBackend: Backend {
     }
   }
   func end() { if preferencesLocked, let prefs = prefs { SCPreferencesUnlock(prefs) }; preferencesLocked = false; prefs = nil; services = [:] }
+  // Called only between transactions, never while prefs still holds the ref.
+  // Destroy rather than release: a plain free can leave the rights shared in
+  // the session, and a new reference would then be granted without a prompt.
+  func forgetAuthorization() { if let auth = auth { AuthorizationFree(auth, [.destroyRights]) }; auth = nil }
   func read() throws -> [String: [String: Any]] {
     guard let prefs = prefs, let list = SCNetworkServiceCopyAll(prefs) as? [SCNetworkService] else { throw Failure.configuration }
     guard let currentSet = SCNetworkSetCopyCurrent(prefs), let active = SCNetworkSetCopyServices(currentSet) as? [SCNetworkService] else { throw Failure.configuration }
@@ -160,9 +195,18 @@ final class SystemBackend: Backend {
 #if PROXY_TEST_BACKEND
 final class FixtureBackend: Backend {
   let path: String
+  // Like SystemBackend, rights granted once stay with the process until
+  // forgotten, so a test can tell a fresh authorization from a borrowed one.
+  var authorized = false
   init(_ path: String) { self.path = path }
-  func begin(_ write: Bool) throws { if write, let delay = try object()["authorizationDelayMs"] as? Int { Thread.sleep(forTimeInterval: Double(min(max(delay, 0), 1000)) / 1000) }; if write, try object()["denyAuthorization"] as? Bool == true { throw Failure.authorization } }
+  func begin(_ write: Bool) throws {
+    guard write, !authorized else { return }
+    if let delay = try object()["authorizationDelayMs"] as? Int { Thread.sleep(forTimeInterval: Double(min(max(delay, 0), 1000)) / 1000) }
+    if try object()["denyAuthorization"] as? Bool == true { throw Failure.authorization }
+    authorized = true
+  }
   func end() {}
+  func forgetAuthorization() { authorized = false }
   func object() throws -> [String: Any] { guard let data = try readFile(path), let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure.storage }; return value }
   func read() throws -> [String: [String: Any]] { try object()["services"] as? [String: [String: Any]] ?? [:] }
   func applyAndVerify(_ values: [String: [String: Any]]) throws {
@@ -210,6 +254,10 @@ final class Controller {
   let backend: Backend
   let connection: ConnectionState
   var lock: Int32 = -1
+  // The snapshot this process took, or adopted from a crashed owner's journal
+  // once. The journal file stays writable by every same-user process while this
+  // helper keeps its authorization until exit, so restoration never re-reads it.
+  var owned: [String: Entry]?
   init(_ path: String, _ lockPath: String, _ backend: Backend, _ connection: ConnectionState) { self.path = path; self.lockPath = lockPath; self.backend = backend; self.connection = connection }
   func acquire() throws {
     if lock >= 0 { return }
@@ -229,7 +277,7 @@ final class Controller {
     var journalPort: Int?
     for (id, entry) in j.entries {
       guard !id.isEmpty, id.utf8.count <= 256 else { throw Failure.storage }
-      _ = try unpacked(entry.original)
+      guard try isRecordedOriginal(unpacked(entry.original)) else { throw Failure.storage }
       let expected = try unpacked(entry.expected)
       guard let port = expected["HTTPPort"] as? Int, (1024...65535).contains(port), journalPort == nil || journalPort == port else { throw Failure.storage }
       journalPort = port
@@ -242,16 +290,25 @@ final class Controller {
     return j
   }
   func restore() throws {
-    // No journal means no authorization UI, including routine startup recovery.
-    guard try readFile(path) != nil else { release(); return }
-    try acquire()
-    guard let j = try journal() else { return }
+    let entries: [String: Entry]
+    if let owned = owned { try acquire(); entries = owned } else {
+      // No journal means no authorization UI, including routine startup recovery.
+      guard try readFile(path) != nil else { release(); return }
+      try acquire()
+      guard let j = try journal() else { return }
+      // A journal this process did not write is crash recovery. Ask again rather
+      // than apply it with authorization retained from earlier work; adopting it
+      // first means a failed attempt is retried from these same entries.
+      backend.forgetAuthorization()
+      owned = j.entries
+      entries = j.entries
+    }
     try backend.begin(true); defer { backend.end() }
     let current = try backend.read()
     var updates: [String: [String: Any]] = [:]
     var applicationTargets: [String: [String: Any]] = [:]
     var remove = Set<String>()
-    for (id, entry) in j.entries {
+    for (id, entry) in entries {
       guard var config = current[id] else { continue }
       let expected = try unpacked(entry.expected), original = try unpacked(entry.original)
       if managed.allSatisfy({ equal(config[$0], original[$0]) }) { applicationTargets[id] = config; continue }
@@ -277,13 +334,14 @@ final class Controller {
     let verified = try backend.read()
     for (id, config) in updates { guard let actual = verified[id], NSDictionary(dictionary: config).isEqual(to: actual) else { throw Failure.configuration } }
     guard unlink(path) == 0 || errno == ENOENT else { throw Failure.storage }
+    owned = nil
     release()
   }
   func enable(_ port: Int) throws {
     try connection.check()
     guard (1024...65535).contains(port) else { throw Failure.invalid }
     try acquire()
-    if try readFile(path) != nil { try restore(); try acquire() }
+    if try owned != nil || readFile(path) != nil { try restore(); try acquire() }
     do { try applyEnable(port) }
     catch { let originalError = error; try? restore(); throw originalError }
   }
@@ -305,6 +363,7 @@ final class Controller {
     guard encoded.count <= 1048576 else { throw Failure.storage }
     try connection.check()
     try writeFile(path, encoded)
+    owned = entries
     try connection.check()
     try backend.write(updates, remove: [])
     try backend.applyAndVerify(updates)

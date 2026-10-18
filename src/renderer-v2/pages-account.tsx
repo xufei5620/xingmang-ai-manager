@@ -1367,9 +1367,12 @@ function AccountKeys({
         open={Boolean(removing)}
         title={removing ? `撤销「${removing.name}」？` : ''}
         onClose={() => setRemoving(null)}
+        // 撤销一发出去就收不回，后面还要签新密钥写进工具：这几秒里关掉弹窗看着像取消了，
+        // 过一会儿又弹「已撤销」（#1099 第 2 条）。所以执行中「取消」、×、Esc 都不让关。
+        busy={operation.busy === 'revoke'}
         footer={
           <>
-            <Button onClick={() => setRemoving(null)}>取消</Button>
+            <Button onClick={() => setRemoving(null)} disabled={operation.busy === 'revoke'}>取消</Button>
             <Button
               variant="danger"
               icon={Trash2}
