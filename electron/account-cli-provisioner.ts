@@ -522,19 +522,45 @@ export async function configureManagedClis(
   keyStore?: ManagedCliKeyStoreLike,
   mode: ConfigSavePayload['mode'] = 'merge',
   intent: 'automatic' | 'explicit' = 'automatic',
+  keepKeys: readonly ProviderId[] = [],
 ): Promise<ManagedCliConfigurationOutcome> {
   if (providers.length === 0) return { configured: [], failed: [] }
   const capture = authenticatedSession(accountService)
   const userId = capture.userId
-  // 和签 Key 一起等；真到挑型号那一步才用得上。
-  const pendingModelHints = loadCliModelHints(accountService)
-  const synchronized = await resolveManagedCliKeys(accountService, capture, keyStore)
+  // 换线路这一轮沿用配置里那把的几家（#1159）用不上托管 Key。点名重写不在此列：那是客户要换成自动那把。
+  const kept = new Set(intent === 'explicit' ? [] : keepKeys.filter((provider) => providers.includes(provider)))
+  const needsManagedKeys = providers.some((provider) => !kept.has(provider))
+  // 和签 Key 一起等；真到挑型号那一步才用得上。全是沿用的就不去问服务端：换线路多半正赶上网络不好。
+  const pendingModelHints = needsManagedKeys ? loadCliModelHints(accountService) : Promise.resolve(null)
+  const synchronized: Pick<ResolvedManagedCliKeys, 'keys' | 'failed'> = needsManagedKeys
+    ? await resolveManagedCliKeys(accountService, capture, keyStore)
+    : { keys: [], failed: [] }
   assertSameAuthenticatedUser(accountService, capture)
   const keys = new Map(synchronized.keys.map((entry) => [entry.provider, entry]))
   const syncFailures = new Map(synchronized.failed.map((entry) => [entry.provider, entry]))
   const outcome: ManagedCliConfigurationOutcome = { configured: [], failed: [] }
 
   for (const provider of providers) {
+    if (kept.has(provider)) {
+      // 客户在密钥页「写进工具」、配置窗口自己选的那把：Key 和型号原样，只跟着线路换地址。空 Key 交给 saveConfig
+      // 沿用配置里那把，它照旧只认来源是当前账号、之后没人动过的配置，也照旧拿这把查一遍型号还在不在。
+      try {
+        const model = preferredModels[provider]
+        if (!model) throw new Error('默认模型尚未写入配置')
+        assertSameAuthenticatedUser(accountService, capture)
+        await systemService.saveConfig(
+          { provider, apiKey: '', model, mode },
+          previewOnboarding,
+          () => assertSameAuthenticatedUser(accountService, capture),
+          { source: 'account', automatic: true },
+        )
+        assertSameAuthenticatedUser(accountService, capture)
+        outcome.configured.push(provider)
+      } catch (error) {
+        outcome.failed.push(failedConfiguration(provider, error))
+      }
+      continue
+    }
     let managedKey = keys.get(provider)
     if (!managedKey) {
       const syncFailure = syncFailures.get(provider)
@@ -605,13 +631,18 @@ export async function configureManagedClis(
         await retireReplacedKey(accountService, keyStore, retirementSlot(accountService.getActiveSiteId?.(), userId, provider), managedKey, capture)
       }
     } catch (error) {
-      rethrowAccountSessionChange(error)
-      outcome.failed.push(carryRequestDiagnostics(error, {
-        provider,
-        message: error instanceof Error ? error.message : 'CLI 配置失败',
-        ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
-      }))
+      outcome.failed.push(failedConfiguration(provider, error))
     }
   }
   return outcome
+}
+
+// 账号中途换了照旧整轮作废；其余的照原话交回界面，查型号那次请求的诊断跟着走（request-diagnostics.ts）。
+function failedConfiguration(provider: ProviderId, error: unknown): ManagedCliConfigurationOutcome['failed'][number] {
+  rethrowAccountSessionChange(error)
+  return carryRequestDiagnostics(error, {
+    provider,
+    message: error instanceof Error ? error.message : 'CLI 配置失败',
+    ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
+  })
 }

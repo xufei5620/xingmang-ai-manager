@@ -854,10 +854,11 @@ describe('explicit applied connection routes on restore', () => {
   const primary = relayProviderBaseUrls('solov', 'primary')
   const direct = relayProviderBaseUrls('solov', 'direct')
   const applied: AppSettingsV2 = { ...settings, relaySiteId: 'solov', toolRouteRewrite: 'merge', relayEndpointIds: { solov: 'direct' }, activeRelayEndpointIds: { solov: 'direct' } }
+  // 配置里是自动签的那把（缓存里眼下那把）；客户自己选的那把另见 #1159 那一组。
   function routedConfig(provider: ProviderId = 'codex'): AppConfigSummary {
     const current = config()
     current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true,
-      baseUrl: direct[provider], actualBaseUrl: primary[provider], model: 'kept-model', configurationOwnership: 'account' }
+      baseUrl: direct[provider], actualBaseUrl: primary[provider], model: 'kept-model', configurationOwnership: 'account', configurationAccountMatched: true }
     return current
   }
   function fixture() {
@@ -1058,6 +1059,98 @@ describe('automatic connection route', () => {
     }
     expect(accountBootstrapPlan(system(['codex']), ownedOn(legacyDirect.codex, legacyPrimary.codex), legacy, 'restore', null).targets).toEqual(['codex'])
     expect(accountRoutesPending(ownedOn(legacyDirect.codex, legacyPrimary.codex), legacy, memoryStorage())).toBe(true)
+  })
+})
+
+// #1159：历史账号换线路这一轮，客户在密钥页、配置窗口自己选的那把原样留着，只跟着线路换地址。
+describe('a chosen account key on a line change', () => {
+  const legacyPrimary = relayProviderBaseUrls('solov-api', 'primary')
+  const legacyDirect = relayProviderBaseUrls('solov-api', 'direct')
+  const legacy: AppSettingsV2 = {
+    ...settings,
+    relaySiteId: 'solov-api',
+    activeRelayEndpointIds: { 'solov-api': 'auto' },
+    relayRouteLines: { solov: { line: 'primary', settled: false }, 'solov-api': { line: 'direct', settled: true } },
+  }
+  // chosen：客户自己选的账号密钥；cached：缓存里眼下那把（自动签的）；replaced：缓存以前给它、后来换掉的那把。
+  function owned(current: AppConfigSummary, provider: ProviderId, key: 'chosen' | 'cached' | 'replaced', actual = legacyPrimary[provider]) {
+    current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true,
+      baseUrl: legacyDirect[provider], actualBaseUrl: actual, model: 'kept-model', configurationOwnership: 'account',
+      configurationAccountMatched: key === 'cached', ...(key === 'replaced' ? { configurationKeyReplaced: true } : {}) }
+    return current
+  }
+
+  it('keeps the chosen key and its model when only the line moves', () => {
+    expect(accountBootstrapPlan(system(['claude']), owned(config(), 'claude', 'chosen'), legacy, 'restore', null)).toMatchObject({
+      targets: ['claude'], preferredModels: { claude: 'kept-model' }, keepKeys: ['claude'],
+    })
+  })
+
+  it('rewrites the auto-signed key, or one the cache replaced, in full as before', () => {
+    for (const key of ['cached', 'replaced'] as const) {
+      const plan = accountBootstrapPlan(system(['claude']), owned(config(), 'claude', key), legacy, 'restore', null)
+      expect(plan.targets).toEqual(['claude'])
+      expect(plan).not.toHaveProperty('keepKeys')
+    }
+  })
+
+  // 买了订阅、订阅到期换了分组的照旧换进新分组（10-18 日汇总按现状定，yoyo 回「订阅不换」才改）。
+  it('still moves a chosen key into the new group when the managed key changed group', () => {
+    const plan = accountBootstrapPlan(system(['claude']), owned(config(), 'claude', 'chosen'), legacy, 'restore', null, ['claude'])
+    expect(plan.targets).toEqual(['claude'])
+    expect(plan).not.toHaveProperty('keepKeys')
+  })
+
+  it('leaves a chosen key on the current line alone, and keeps nothing on a login or an explicit rewrite', () => {
+    const settled = accountBootstrapPlan(system(['claude']), owned(config(), 'claude', 'chosen', legacyDirect.claude), legacy, 'restore', null)
+    expect(settled.targets).toEqual([])
+    expect(settled.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'claude', reason: 'configured' })]))
+    for (const mode of ['login', 'rewrite'] as const) {
+      const plan = accountBootstrapPlan(system(['claude']), owned(config(), 'claude', 'chosen'), legacy, mode, null)
+      expect(plan.targets).toEqual(['claude'])
+      expect(plan).not.toHaveProperty('keepKeys')
+    }
+  })
+
+  function fixture() {
+    const current = owned(owned(config(), 'claude', 'chosen'), 'codex', 'cached')
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, siteId: 'solov-api' as const, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude', 'codex'])),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      getSettings: vi.fn(async () => legacy),
+      configureManagedCliKeys: vi.fn(async (input: Parameters<AccountBootstrapBridge['configureManagedCliKeys']>[0]) => {
+        for (const provider of input.providers) current.providers[provider].actualBaseUrl = current.providers[provider].baseUrl
+        return { configured: [...input.providers], failed: [] }
+      }),
+    }
+    return { current, api }
+  }
+
+  it('asks the main process to keep the chosen key and counts the round as only following the line', async () => {
+    const { api } = fixture()
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
+      providers: ['claude', 'codex'],
+      preferredModels: { claude: 'kept-model', codex: 'kept-model' },
+      keepKeys: ['claude'],
+    })
+    expect(result).toMatchObject({ configured: ['claude', 'codex'], failed: [], routeFollowed: ['claude', 'codex'] })
+    expect(bootstrapOnlyFollowedRoute(result)).toBe(true)
+  })
+
+  it('only names the kept tools this round is allowed to write', async () => {
+    const { api } = fixture()
+
+    await bootstrapAccountTools(api, 17, undefined, 'restore', ['codex'], null)
+
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
+      providers: ['codex'],
+      preferredModels: { claude: 'kept-model', codex: 'kept-model' },
+    })
   })
 })
 

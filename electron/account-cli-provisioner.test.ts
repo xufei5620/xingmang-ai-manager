@@ -477,6 +477,116 @@ describe('configureManagedClis', () => {
     }, false, expect.any(Function), { source: 'account', automatic: true })
   })
 
+  // #1159：换线路这一轮，客户在密钥页、配置窗口自己选的那把原样留着：空 Key 交给 saveConfig 沿用配置里那把。
+  describe('keeping the configured key on a line change', () => {
+    function cachedStore(): ManagedCliKeyStoreLike {
+      return {
+        read: vi.fn(async () => activeProviderIds.map((provider) => managedKey(provider))),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+    }
+
+    it('saves with the configured key and model without reading, signing or checking managed keys', async () => {
+      const store = cachedStore()
+      const provisionCliKey = vi.fn()
+      const getCliModelHints = vi.fn(async () => null)
+      const fetchAvailableModels = vi.fn()
+      const saveConfig = vi.fn()
+
+      const result = await configureManagedClis(
+        Object.assign(loggedInAccountService(provisionCliKey), { getCliModelHints }),
+        { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+        ['claude'],
+        { claude: 'kept-model' },
+        false,
+        store,
+        'merge',
+        'automatic',
+        ['claude'],
+      )
+
+      expect(result).toEqual({ configured: ['claude'], failed: [] })
+      expect(saveConfig).toHaveBeenCalledTimes(1)
+      expect(saveConfig).toHaveBeenCalledWith({ provider: 'claude', apiKey: '', model: 'kept-model', mode: 'merge' },
+        false, expect.any(Function), { source: 'account', automatic: true })
+      expect(store.read).not.toHaveBeenCalled()
+      expect(provisionCliKey).not.toHaveBeenCalled()
+      expect(fetchAvailableModels).not.toHaveBeenCalled()
+      expect(getCliModelHints).not.toHaveBeenCalled()
+    })
+
+    it('still writes the managed key for the other tools of the round and reports a kept one it could not save', async () => {
+      const fetchAvailableModels = vi.fn(async () => ['codex-preferred'])
+      const saveConfig = vi.fn(async (payload: Parameters<ConfigurationService['saveConfig']>[0]) => {
+        if (payload.provider === 'claude') throw new Error('当前 API Key 不支持模型 kept-model，请重新检测并选择可用模型')
+        return { provider: payload.provider }
+      })
+
+      const result = await configureManagedClis(
+        loggedInAccountService(vi.fn()),
+        { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+        ['claude', 'codex'],
+        { claude: 'kept-model', codex: 'codex-preferred' },
+        false,
+        cachedStore(),
+        'merge',
+        'automatic',
+        ['claude'],
+      )
+
+      expect(result).toEqual({ configured: ['codex'], failed: [
+        { provider: 'claude', message: '当前 API Key 不支持模型 kept-model，请重新检测并选择可用模型' },
+      ] })
+      expect(saveConfig.mock.calls.map(([payload]) => payload)).toEqual([
+        { provider: 'claude', apiKey: '', model: 'kept-model', mode: 'merge' },
+        { provider: 'codex', apiKey: managedKey('codex').key, model: 'codex-preferred', mode: 'merge' },
+      ])
+      expect(fetchAvailableModels).toHaveBeenCalledTimes(1)
+      expect(fetchAvailableModels).toHaveBeenCalledWith(managedKey('codex').key, { bypassCache: true })
+    })
+
+    it('reports a kept tool without a model instead of writing one', async () => {
+      const saveConfig = vi.fn()
+
+      const result = await configureManagedClis(
+        loggedInAccountService(vi.fn()),
+        { fetchAvailableModels: vi.fn(), saveConfig } as unknown as ConfigurationService,
+        ['claude'],
+        {},
+        false,
+        cachedStore(),
+        'merge',
+        'automatic',
+        ['claude'],
+      )
+
+      expect(result).toEqual({ configured: [], failed: [{ provider: 'claude', message: '默认模型尚未写入配置' }] })
+      expect(saveConfig).not.toHaveBeenCalled()
+    })
+
+    it('writes the managed key on an explicit rewrite even when told to keep it', async () => {
+      const saveConfig = vi.fn()
+
+      const result = await configureManagedClis(
+        loggedInAccountService(vi.fn()),
+        { fetchAvailableModels: vi.fn(async () => ['kept-model']), saveConfig } as unknown as ConfigurationService,
+        ['claude'],
+        { claude: 'kept-model' },
+        false,
+        cachedStore(),
+        'merge',
+        'explicit',
+        ['claude'],
+      )
+
+      expect(result).toEqual({ configured: ['claude'], failed: [] })
+      expect(saveConfig).toHaveBeenCalledTimes(1)
+      expect(saveConfig).toHaveBeenCalledWith({ provider: 'claude', apiKey: managedKey('claude').key, model: 'kept-model', mode: 'merge' },
+        false, expect.any(Function), { source: 'account', automatic: false })
+    })
+  })
+
   it('uses an independent key, model lookup, and config payload for each provider', async () => {
     const keys = activeProviderIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {

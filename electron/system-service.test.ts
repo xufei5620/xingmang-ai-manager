@@ -725,6 +725,14 @@ describe('createSystemService', () => {
     expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
   })
 
+  // #1159：换线路这一轮沿用客户自己选的那把（account-cli-provisioner 的 keepKeys），空 Key 就是沿用配置里那把。
+  it('keeps the configured key when an automatic route migration reuses it', async () => {
+    const f = await automaticRouteFixture()
+    await f.save()
+    expect(f.service.revealApiKey('codex', false)).toBe('sk-migration-fixture')
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe('https://xm-direct.solov.cc/v1')
+  })
+
   it('logs which line a followed configuration came from and went to, without addresses', async () => {
     const log = vi.fn()
     const f = await automaticRouteFixture({ runtimeLog: { log } })
