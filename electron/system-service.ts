@@ -1628,7 +1628,11 @@ export function npmRegistryLabel(registry: string): string {
  * not that there is a lot of work to do. Ten minutes is a ceiling for that
  * case rather than an expected duration; five was killing connections that
  * were slow but still making progress. npm prints nothing throughout, which
- * is why this step used to look like a hang.
+ * is why this step used to look like a hang. A connection that delivers
+ * nothing at all is ended sooner, by the same stall window as the download:
+ * the packuments fetched here stream into the cache's temp files just like
+ * tarballs do, so a slow resolution keeps the cache changing and only a dead
+ * one stops it.
  */
 export const npmResolutionTimeoutMs = 10 * 60_000
 export const npmDownloadTimeoutMs = 5 * 60_000
@@ -5229,6 +5233,13 @@ export function createSystemService(
             { stage: 'download', elapsedMs },
           )
         }, npmResolutionHeartbeatMs)
+        // 国内没开加速时，连官方源这一步常常一个字节也收不到，以前要干等满 10 分钟（#1057 第5b条）。
+        // 这一步拉的包信息同样边收边写进缓存的临时文件，所以照下载那一步看目录：3 分钟一点没变就停，
+        // 慢但一直在收的照旧等到 10 分钟。缓存目录要等 executeNpm 建，没建好之前量不到，量不到不算卡住。
+        const stallWatch = createNpmDownloadStallWatch(async () => (
+          await measureDirectoryBytes(resolution) + await measureDirectoryBytes(cache)
+        ))
+        const watchStartedAt = performance.now()
         try {
           await executeNpm([
             'install',
@@ -5236,9 +5247,26 @@ export function createSystemService(
             '--ignore-scripts',
             '--omit=dev',
             `--registry=${registry}`,
-          ], resolution, cache, npmResolutionTimeoutMs)
+          ], resolution, cache, npmResolutionTimeoutMs, stallWatch.signal)
+        } catch (error) {
+          if (!stallWatch.stalled) throw error
+          runtimeLog?.log(
+            'warn',
+            'install',
+            'cli.install.resolution-stalled',
+            `${definition.name} 在${npmRegistryLabel(registry)}解析依赖图 ${formatElapsedDuration(npmDownloadStallTimeoutMs)}没有进展，已中止`,
+            {
+              provider,
+              registry,
+              elapsedMs: Math.round(performance.now() - watchStartedAt),
+              attemptBytes: stallWatch.bytes,
+            },
+          )
+          // 和满 10 分钟超时是同一句（describeNpmCommandFailure 对 TIMED_OUT 给的也是它），后面的报错照旧。
+          throw new Error(npmDownloadTimedOutMessage, { cause: error })
         } finally {
           clearInterval(ticker)
+          stallWatch.stop()
         }
       }
 
