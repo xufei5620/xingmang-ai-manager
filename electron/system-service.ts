@@ -3515,7 +3515,8 @@ export function createSystemService(
   /**
    * 装之前先看一眼盘。**读不到空间一律放行**（disk-space.ts 的 fail-open）：为了
    * 一个查不到的数字拦下安装，是把小毛病变成大故障。拦住时抛的那句话里有
-   * 「磁盘空间不足」，渲染层按已有的「磁盘空间不够」一类呈现，不新立一类。
+   * 「磁盘空间不足」（Windows 上是「C 盘空间不足」），渲染层按已有的「磁盘空间不够」
+   * 一类呈现，不新立一类。
    */
   async function assertInstallDiskSpace(subject: string): Promise<void> {
     const readings = await Promise.all(

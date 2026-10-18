@@ -142,7 +142,7 @@ export interface DiagnosticsDependencies {
   arch?: string
   /**
    * Mac 上本进程是不是经 Rosetta 转换运行（app.runningUnderARM64Translation）。Apple 芯片上装了
-   * Intel 版时 arch 是 x64，「操作系统」一项不能照它说成 Intel 芯片（#1155）。缺省 = 不是。
+   * Intel 版时 arch 是 x64，「操作系统」一项不能照它说成 Intel 处理器（#1155）。缺省 = 不是。
    */
   macRosetta?: boolean
   release?: string
@@ -1791,7 +1791,8 @@ export function operatingSystemSummary(platform: NodeJS.Platform, release: strin
     const darwinMajor = Number(release.match(/^(\d+)\./)?.[1])
     if (Number.isInteger(darwinMajor) && darwinMajor >= 20) {
       const version = darwinMajor >= 25 ? darwinMajor + 1 : darwinMajor - 9
-      const chip = arch === 'arm64' ? 'Apple 芯片' : 'Intel 芯片'
+      // Intel Mac 的「关于本机」写的是「处理器」不是「芯片」，照客户能对上的叫法说（#1155）。
+      const chip = arch === 'arm64' ? 'Apple 芯片' : 'Intel 处理器'
       return `macOS ${version}（${chip}）`
     }
   }

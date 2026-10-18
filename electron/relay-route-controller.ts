@@ -22,7 +22,10 @@
  * - 开机（有存下的结论时）、唤醒、网络恢复、点「重新检测」，和退到备用以后它上面的请求也没走通时，
  *   两条一起查：走着的那条不通、另一条通了就当场换过去，不等三次也不等那 10 分钟（#1053）。三次阈值
  *   防的是两条都能用时来回横跳，这时走着的那条刚没查通、另一条刚查通，不是横跳；不这样的话，换了
- *   网络以后要一分多钟才退得出坏掉的那条，备用那条自己坏了更是要等满 10 分钟。
+ *   网络以后要一分多钟才退得出坏掉的那条，备用那条自己坏了更是要等满 10 分钟。唤醒、换网那几秒网络
+ *   正在变，一次没查通不作数（#1156）：唤醒、网络恢复以后先等 relayRouteNetworkSettleMs 再查；查出
+ *   走着的那条不通，隔 relayRouteLineDownConfirmMs 再查它一次，还不通才换；报「网络变了」那几种错的
+ *   算没查准，不算不通。
  * - 两次切换至少隔 5 分钟：每切一次工具配置都要跟着改，开着的工具要重开。
  *
  * 结论和每个站最近一次切换落盘（relay-route-lines.json），下次开机先用结论，诊断页说得出最近一次
@@ -30,7 +33,7 @@
  */
 import path from 'node:path'
 import { readBoundedResponseText } from './bounded-response'
-import { isJsonContentType, parsesAsJsonObject } from './network-failure'
+import { isJsonContentType, networkFailureCode, parsesAsJsonObject } from './network-failure'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import {
   relayAutoBackupLine,
@@ -79,6 +82,22 @@ const unconcludedStart: Readonly<Record<RelayRouteSiteId, RelayRouteLine>> = {
 // 全新安装开机那一轮（checkFirstLaunch）从开查算起，默认线路已经查通的话，直连最多等这么久。直连被
 // 丢包时它的健康检查要等满 probeTimeoutMs 才算没通，新用户这会儿正在填注册（#963）。
 export const relayRouteFirstLaunchPreferDirectMs = 1_500
+
+/**
+ * 唤醒、网络恢复以后等这么久再两条一起查：系统这几秒里接连报网络变化，这时查出的「不通」多半是网络
+ * 在变、不是线路坏了；这段时间里接连来的只查一次（#1156）。客户点「重新检测」不等。
+ */
+export const relayRouteNetworkSettleMs = 8_000
+
+/** 两条一起查出走着的那条没通、另一条通了：隔这么久再查一次走着的那条，还不通才换过去（#1156）。 */
+export const relayRouteLineDownConfirmMs = 4_000
+
+// 网络这会儿正在变（唤醒、换 Wi-Fi、断网那一下）时 Chromium 报的错：说明不了线路坏没坏，两条一起查
+// 时算没查准，不据此换线（#1156）。
+const networkUnsettledCodes: ReadonlySet<string> = new Set(['ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_NETWORK_IO_SUSPENDED'])
+
+/** 一次健康检查的结果：通、不通，或者网络正在变、没查准。 */
+type LineHealth = 'up' | 'down' | 'unsure'
 
 // 健康检查那个接口只回几 KB，平时一秒内就回；给足时间，直连下行只有几十 KB/s 时也查得完。
 const probeTimeoutMs = 10_000
@@ -147,8 +166,10 @@ export interface RelayRouteController {
    */
   reportFailure(siteId: RelayRouteSiteId, line: RelayEndpointId, reason: string): void
   /**
-   * 唤醒、网络恢复、客户点「重新检测」：每个「自动」的站马上两条一起查一轮，走着的那条不通、另一条通就
-   * 当场换过去。唤醒、网络恢复时，退到备用以后攒下的「一直查得通」从头数：睡前那几次不该跟醒来连成一段。
+   * 唤醒、网络恢复、客户点「重新检测」：每个「自动」的站两条一起查一轮，走着的那条不通、另一条通就
+   * 换过去；这个站正有检查没回来的，那次查完马上补这一轮。唤醒、网络恢复先等 relayRouteNetworkSettleMs
+   * 再查，「重新检测」马上查。唤醒、网络恢复时，退到备用以后攒下的「一直查得通」从头数：睡前那几次不该
+   * 跟醒来连成一段。
    */
   recheck(trigger: 'resume' | 'network' | 'manual'): void
   /** 线路改了就叫一声，返回取消订阅。 */
@@ -165,6 +186,8 @@ interface SiteState {
   recovered: number
   /** 有一次检查还没回来。 */
   checking: boolean
+  /** 唤醒、网络恢复、「重新检测」赶上 checking：记下怎么起的，那次查完马上补一轮两条一起查。 */
+  pendingRecheck: string | null
   /** 这次运行里上一次改线路的时间。 */
   switchedAt: number | null
   /** 上一次为请求报上来的失败去查是什么时候。 */
@@ -217,6 +240,9 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     conclusions = { lines: {}, changes: {} }
   }
   let writing: Promise<void> = Promise.resolve()
+  // 唤醒、网络恢复以后等网络稳下来那一下（relayRouteNetworkSettleMs），和两条一起查里等着再查一次的那几下。
+  let cancelSettleWait: (() => void) | null = null
+  const confirmWaits = new Set<() => void>()
   const states = new Map<RelayRouteSiteId, SiteState>()
   for (const siteId of relayRouteSiteIds) {
     if (dependencies.preferences[siteId] !== 'auto') continue
@@ -228,6 +254,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       round: null,
       recovered: 0,
       checking: false,
+      pendingRecheck: null,
       switchedAt: null,
       failureCheckedAt: null,
       firstLaunch: siteId === 'solov' && concluded === undefined,
@@ -270,6 +297,29 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     }, delayMs)
   }
 
+  // 两条一起查用：不经 check()，抛错时分得出是网络正在变（没查准）还是真没通。
+  function probeHealth(siteId: RelayRouteSiteId, line: RelayEndpointId): Promise<LineHealth> {
+    function failed(error: unknown): LineHealth {
+      const code = networkFailureCode(error)
+      return code !== null && networkUnsettledCodes.has(code) ? 'unsure' : 'down'
+    }
+    try {
+      return dependencies.probe(siteId, line).then((reachable): LineHealth => reachable === true ? 'up' : 'down', failed)
+    } catch (error) {
+      return Promise.resolve(failed(error))
+    }
+  }
+
+  function confirmWait(): Promise<void> {
+    return new Promise((resolve) => {
+      const cancel = schedule(() => {
+        confirmWaits.delete(cancel)
+        resolve()
+      }, relayRouteLineDownConfirmMs)
+      confirmWaits.add(cancel)
+    })
+  }
+
   // 同一个站同一时刻只有一次检查在查。查完时已经 dispose 了就给 null，调用方什么都不做。
   async function check(state: SiteState, siteId: RelayRouteSiteId, line: RelayEndpointId): Promise<boolean | null> {
     state.checking = true
@@ -296,7 +346,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   // 定下来以后接着看：走先走的那条隔一阵查一次；退到备用那条隔两分钟查一次先走的那条，看能不能切回去。
   function watch(siteId: RelayRouteSiteId, state: SiteState): void {
     if (state.line === relayAutoPreferredLines[siteId]) setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
-    else setTimer(state, relayRouteRecoveryProbeIntervalMs, () => { void checkRecovery(siteId, state) })
+    else setTimer(state, relayRouteRecoveryProbeIntervalMs, () => runCheck(siteId, state, checkRecovery))
   }
 
   function settle(siteId: RelayRouteSiteId, state: SiteState, line: RelayEndpointId, reason: RelayRouteChangeReason, trigger?: string): void {
@@ -335,9 +385,35 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   function beginRound(siteId: RelayRouteSiteId, state: SiteState, trigger: string, bothLines = false): void {
     if (disposed || state.round || state.checking) return
     state.round = { trigger, failures: 0 }
-    if (state.firstLaunch) void checkFirstLaunch(siteId, state)
-    else if (bothLines || state.line !== relayAutoPreferredLines[siteId]) void checkBothLines(siteId, state)
-    else void checkPreferred(siteId, state)
+    if (state.firstLaunch) runCheck(siteId, state, checkFirstLaunch)
+    else if (bothLines || state.line !== relayAutoPreferredLines[siteId]) runCheck(siteId, state, checkBothLines)
+    else runCheck(siteId, state, checkPreferred)
+  }
+
+  // 每一步检查都经这里起：查完有攒着的重新检测就补上（recheckSite）。
+  function runCheck(siteId: RelayRouteSiteId, state: SiteState, step: (siteId: RelayRouteSiteId, state: SiteState) => Promise<void>): void {
+    void step(siteId, state).then(() => {
+      if (state.pendingRecheck !== null && !state.checking) recheckSite(siteId, state, state.pendingRecheck)
+    })
+  }
+
+  // 唤醒、网络恢复、「重新检测」一定两条一起查一轮，还没定下线路的历史账号也一样，不走三次的规矩。正有检查
+  // 没回来就记下来，查完马上补，不丢：唤醒那一刻，睡着时到点的切回检查往往同时起来，它只查先走的那条，
+  // 走着的备用那条坏了查不出来。先走的那条没查通、正等着隔 15 秒再查的那一轮不等了，换成两条一起查。
+  function recheckSite(siteId: RelayRouteSiteId, state: SiteState, trigger: string): void {
+    if (disposed) return
+    if (trigger !== 'manual') state.recovered = 0
+    if (state.checking) {
+      state.pendingRecheck = trigger
+      return
+    }
+    state.pendingRecheck = null
+    if (state.round) {
+      state.cancelTimer?.()
+      state.cancelTimer = null
+      state.round = null
+    }
+    beginRound(siteId, state, trigger, true)
   }
 
   // 两条一起查以后接着看：走先走的那条照常隔一阵查一次；退到备用那条时切回去的计时照旧，已经挂着的
@@ -369,7 +445,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       siteId, line: preferred, failures: round.failures, trigger: round.trigger,
     })
     if (round.failures < relayRouteFailureThreshold) {
-      setTimer(state, relayRouteFailureProbeGapMs, () => { void checkPreferred(siteId, state) })
+      setTimer(state, relayRouteFailureProbeGapMs, () => runCheck(siteId, state, checkPreferred))
       return
     }
     const backupReachable = await check(state, siteId, backup)
@@ -451,7 +527,8 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   }
 
   // 两条一起查（#1053）：开机（有存下的结论时）、唤醒、网络恢复、点「重新检测」，和退到备用以后它上面的
-  // 请求也没走通。走着的那条不通、另一条通了就当场换过去，不等三次（文件头）；两次切换至少隔 5 分钟照旧。
+  // 请求也没走通。走着的那条不通、另一条通了，隔几秒再查一次走着的那条，还不通就换过去，不等三次（文件头）；
+  // 报的是网络正在变就不换（#1156）。两次切换至少隔 5 分钟照旧。
   // 都通就不动：退到备用时先走的那条通了也不在这里切回去，切回去照旧要连着查通 10 分钟，这一轮只有开机
   // 那次算进去（和原来一样），别的时候查出先走的那条没通就从头数。健康检查只读，两条一起查没有副作用；
   // 两个检查不经 check()，理由同 checkFirstLaunch。
@@ -461,28 +538,28 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     const preferred = relayAutoPreferredLines[siteId]
     const current = state.line
     const other = current === preferred ? relayAutoBackupLine(siteId) : preferred
-    function probeLine(line: RelayEndpointId): Promise<boolean> {
-      try {
-        return dependencies.probe(siteId, line).then((reachable) => reachable === true, () => false)
-      } catch {
-        return Promise.resolve(false)
-      }
-    }
     state.checking = true
-    let currentUp = false
-    let otherUp = false
+    let currentHealth: LineHealth = 'down'
+    let otherHealth: LineHealth = 'down'
     try {
-      [currentUp, otherUp] = await Promise.all([probeLine(current), probeLine(other)])
+      [currentHealth, otherHealth] = await Promise.all([probeHealth(siteId, current), probeHealth(siteId, other)])
+      // 走着的那条没通、另一条通了：隔一会儿再查一次走着的那条，还不通才算它坏了。唤醒、换网那几秒里
+      // 两条同时查，往返长的那条更容易吃到网络变化那一下（#1156）。
+      if (currentHealth !== 'up' && otherHealth === 'up' && !disposed) {
+        await confirmWait()
+        if (!disposed) currentHealth = await probeHealth(siteId, current)
+      }
     } finally {
       state.checking = false
     }
     if (disposed || state.round !== round) return
     state.round = null
+    const otherUp = otherHealth === 'up'
     if (current !== preferred) {
       if (!otherUp) state.recovered = 0
       else if (round.trigger === 'startup') state.recovered += 1
     }
-    if (currentUp) {
+    if (currentHealth === 'up') {
       if (!state.settled) {
         settle(siteId, state, current, 'startup')
         return
@@ -491,12 +568,16 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       return
     }
     log('info', 'relay.route.check-failed', current === preferred ? '先走的那条线路这次健康检查没通过' : '备用那条线路这次健康检查没通过', {
-      siteId, line: current, trigger: round.trigger, bothLines: true,
+      siteId, line: current, trigger: round.trigger, bothLines: true, ...(currentHealth === 'unsure' ? { unsure: true } : {}),
     })
-    if (!otherUp) {
-      log('warn', 'relay.route.unreachable', '线路1和线路2这会儿都没连上，线路先不改', {
-        siteId, line: state.line, settled: state.settled, trigger: round.trigger,
-      })
+    if (!otherUp || currentHealth === 'unsure') {
+      if (otherUp) {
+        log('info', 'relay.route.unsure', '走着的那条报的是网络正在变，这次不算没通，线路先不改', { siteId, line: current, trigger: round.trigger })
+      } else {
+        log('warn', 'relay.route.unreachable', '线路1和线路2这会儿都没连上，线路先不改', {
+          siteId, line: state.line, settled: state.settled, trigger: round.trigger,
+        })
+      }
       if (current === preferred) setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
       else keepWatching(siteId, state)
       return
@@ -562,11 +643,22 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     },
     recheck(trigger) {
       if (disposed) return
+      cancelSettleWait?.()
+      cancelSettleWait = null
       for (const [siteId, state] of states) {
+        log('info', 'relay.route.recheck', '唤醒、网络恢复或点了重新检测，查一轮线路', { siteId, line: state.line, trigger })
         if (trigger !== 'manual') state.recovered = 0
-        log('info', 'relay.route.recheck', '唤醒、网络恢复或点了重新检测，马上查一轮线路', { siteId, line: state.line, trigger })
-        beginRound(siteId, state, trigger, state.settled && !state.firstLaunch)
       }
+      if (trigger === 'manual') {
+        for (const [siteId, state] of states) recheckSite(siteId, state, trigger)
+        return
+      }
+      // 唤醒、网络恢复：等网络稳下来再查，这段时间里又来的从头等、只查一次（#1156）。
+      cancelSettleWait = schedule(() => {
+        cancelSettleWait = null
+        if (disposed) return
+        for (const [siteId, state] of states) recheckSite(siteId, state, trigger)
+      }, relayRouteNetworkSettleMs)
     },
     subscribe(listener) {
       listeners.add(listener)
@@ -575,6 +667,10 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     dispose() {
       disposed = true
       listeners.clear()
+      cancelSettleWait?.()
+      cancelSettleWait = null
+      for (const cancel of confirmWaits) cancel()
+      confirmWaits.clear()
       for (const state of states.values()) {
         state.cancelTimer?.()
         state.cancelTimer = null

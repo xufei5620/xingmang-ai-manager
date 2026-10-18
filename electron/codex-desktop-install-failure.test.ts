@@ -150,7 +150,8 @@ describe('Codex Desktop install failure wording', () => {
 
   it('lets sentences already written for customers through untouched', () => {
     for (const plain of [
-      'Codex 桌面端安装失败：安装目录所在磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试',
+      'Codex 桌面端安装失败：C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试',
+      'Codex 桌面端安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试',
       '已取消管理员授权，Codex 桌面端安装未开始。重新点击安装即可再次授权。',
       '读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。',
       'Codex 桌面端正在安装或更新，请勿重复操作',

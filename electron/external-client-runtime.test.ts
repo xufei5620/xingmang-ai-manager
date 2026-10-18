@@ -1030,8 +1030,8 @@ describe('Windows Claude Desktop official package route', () => {
   })
 
   it('checks the disk before anything is downloaded', async () => {
-    const f = claudeFixture({ ...noWinget, assertDiskSpace: async (subject) => { throw new Error(`${subject}：安装目录所在磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试`) } })
-    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试')
+    const f = claudeFixture({ ...noWinget, assertDiskSpace: async (subject) => { throw new Error(`${subject}：C 盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理 C 盘再试`) } })
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow('Claude Desktop 安装失败：C 盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理 C 盘再试')
     expect(f.claudeOfficial).not.toHaveBeenCalled()
     expect(f.routed).toEqual([])
   })
@@ -1330,8 +1330,8 @@ describe('macOS external desktop lifecycle', () => {
     expect(f.execute.mock.calls.find(([spec]) => spec.executable === '/usr/bin/sw_vers')?.[1]?.signal?.aborted).toBe(true)
   })
   it('checks the disk before anything is downloaded and passes the installer failure on unchanged', async () => {
-    const short = macInstallFixture({ assertDiskSpace: async (subject) => { throw new Error(`${subject}：安装目录所在磁盘空间不足`) } })
-    await expect(short.runtime.install('opencode')).rejects.toThrow('OpenCode 安装失败：安装目录所在磁盘空间不足')
+    const short = macInstallFixture({ assertDiskSpace: async (subject) => { throw new Error(`${subject}：磁盘空间不足`) } })
+    await expect(short.runtime.install('opencode')).rejects.toThrow('OpenCode 安装失败：磁盘空间不足')
     expect(short.installMacosDesktopApp).not.toHaveBeenCalled()
     const failure = Object.assign(new Error('OpenCode 没下载下来，请检查网络后再点一次「安装」。'), { detail: 'fetch failed' })
     const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })

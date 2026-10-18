@@ -268,6 +268,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 结束了（#1098）。退出期间记一笔，事件看到它就不说「当前登录已结束」。
   const voluntaryLogout = useRef(false)
   const scope = sessionScope(session)
+  // 装完工具同步 Key 要对的是「现在」的账号，安装闭包里那份会话还停在点安装那一刻（#1097）。
+  const latestScope = useRef(scope)
+  latestScope.current = scope
   // 开机账号恢复超过了启动画面的等待上限：先进首页，按正在恢复的账号显示，
   // 恢复结束再补读一次配置（见 onAccountSessionChanged）。
   const restoring = sessionRestoring(session)
@@ -1146,7 +1149,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
    */
   async function syncAfterToolInstalled(id: ToolId): Promise<boolean> {
     let keyWritten = false
-    if (session.authenticated && session.account) {
+    // 装到一半退出登录或换了账号：这一轮只会被「账号已变化」拦下，失败那条路还会把
+    // 欢迎页换成未登录的首页。不跑；再登录时那一轮会给装好的工具写 Key（#1097）。
+    if (session.authenticated && session.account && scope === latestScope.current) {
       const outcome = await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
       keyWritten = Boolean(outcome?.result?.configured.includes(providerFor(id)))
     }

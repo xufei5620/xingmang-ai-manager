@@ -113,7 +113,8 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 磁盘满以前落进「操作没有成功」，用户只看到一句 ENOSPC 英文原文，被指去找客服。
   // 放在 permission 之前：npm 在写不下去时同时报过 EPERM 与 ENOSPC 的情况下，
   // 「清一清磁盘」才是用户真做得到的那一步。
-  { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|磁盘已满|disk full/i.test(message) },
+  // 装之前查盘那句在 Windows 上写出盘符（「C 盘空间不足」，electron/disk-space.ts）。
+  { key: 'diskFull', match: (message) => /ENOSPC|no space left|not enough space|磁盘空间不足|[A-Z] 盘空间不足|磁盘已满|disk full/i.test(message) },
   // 证书「已过期 / 还没生效」必须和「被换掉」分开：前者几乎都是这台电脑的时钟不对
   // （主板电池没电、装完系统没对时、时区改错），照「连接被网络拦截」那句去换网络，
   // 换几个热点都是同一个错。

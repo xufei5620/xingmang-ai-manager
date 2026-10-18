@@ -125,8 +125,11 @@
 .xm-tool-card-badge { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden; }
 .xm-tool-card-badge > * { min-width: 0; max-width: 100%; }
 .xm-tool-card-badge .xm-pill { overflow: hidden; text-overflow: ellipsis; }
-/* 按钮组也能缩：卡片最窄 220 时「改用 388290490@qq.com」这种长按钮自己省略，不撑出卡片、不压住左边的牌子。「…」不缩。 */
-.xm-tool-card-actions { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; margin-left: auto; }
+/* 牌子是 inline-flex，省略号只认里面那层 span：不包一层就是硬截，「不是当前账号的密钥」被截成「不是当前账号」意思就反了。 */
+.xm-tool-card-badge .xm-pill > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 按钮组不缩，挤的时候让左边的牌子先省略（issue 1132：两边一起缩时「打开」被压成「打…」）。
+   只有按钮长到连牌子最少 64 都留不下（卡片最窄 220 时的「改用 388290490@qq.com」）才轮到按钮自己省略；「…」永远不缩。 */
+.xm-tool-card-actions { display: flex; align-items: center; gap: 6px; flex: none; max-width: calc(100% - 64px); margin-left: auto; }
 .xm-tool-card-actions > .xm-btn { flex: 0 1 auto; min-width: 0; }
 .xm-tool-card-actions > .xm-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xm-tool-card-actions .xm-menu { flex: none; }

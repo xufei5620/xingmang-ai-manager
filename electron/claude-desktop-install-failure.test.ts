@@ -49,7 +49,8 @@ describe('Claude Desktop install failure wording', () => {
     for (const message of [
       '已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。',
       '未获得管理员权限，Claude Desktop 安装已停止。请在弹出的授权窗口点击「是」。',
-      'Claude Desktop 安装失败：安装目录所在磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试',
+      'Claude Desktop 安装失败：C 盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理 C 盘再试',
+      'Claude Desktop 安装失败：磁盘空间不足，只剩 1.0 GB，至少需要 2.0 GB，请先清理磁盘再试',
       '安装已取消。',
     ]) expect(isPlainClaudeDesktopInstallMessage(message)).toBe(true)
     expect(isPlainClaudeDesktopInstallMessage('Claude 官网返回 HTTP 503')).toBe(false)

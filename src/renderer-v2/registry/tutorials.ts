@@ -1001,7 +1001,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         bullets: ['确认失败的是工具箱更新，还是某个 AI 工具的安装。', '按对应原因处理后再重试，不要连续重复点击安装。'],
         expected: '安装继续进行，或日志里有明确的失败原因。',
         extra: [
-          { title: errors.diskFull.title, detail: '清理安装目录所在磁盘的空间。可以复制界面提供的路径，找到需要检查的目录。' },
+          { title: errors.diskFull.title, detail: '清理系统盘和安装目录所在磁盘的空间。可以复制界面提供的路径，看安装目录在哪个盘。' },
           { title: errors.permission.title, detail: '检查当前用户是否能写入安装目录，以及安全软件是否拦截。本软件以普通权限运行，不会自动提权。' },
           { title: errors.installBlocked.title, detail: '检查杀毒软件的隔离记录；确认文件可信后恢复，并将可信的安装目录加入信任。' },
           { title: errors.toolRunning.title, detail: '正在使用的工具占用了文件。先保存工作并关闭对应工具窗口，再重试。' },
