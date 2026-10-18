@@ -53,6 +53,7 @@ import {
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
 import { requestDiagnosticsOf } from './request-diagnostics'
+import { parseImageGenerateInput } from './canvas-request-parser'
 import { relayRoutePreferenceAllowed, relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
@@ -146,7 +147,6 @@ import type {
   AccountKey,
   AccountKeysPage,
   AiChatStartInput,
-  AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
   ChooseWorkspaceOptions,
   LegalDocumentKind,
@@ -169,7 +169,7 @@ import { isNetworkSettingsKind, type NetworkSettingsKind, type ProxyBypassOutcom
 import { platformCapabilitiesFor } from './platform-capabilities'
 import { clearStaleUserProxyVariables, type StaleProxyClearResult } from './stale-proxy-environment'
 import { isDiagnosticFixKind, type DiagnosticFixKind, type DiagnosticFixResult } from './diagnostic-fixes'
-import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
+import { PaymentCheckoutRejected, toCustomerPaymentError, validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { QueuedAccountWork } from './account-work-gate'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite, type AiChatHistoryStore } from './ai-chat-history-store'
@@ -1386,27 +1386,6 @@ function parseAiChatStartInput(value: unknown): AiChatStartInput {
     model: requiredString(value.model, 'AI聊天模型', 128),
     messages,
     ...(Object.keys(parsedParameters).length ? { parameters: parsedParameters } : {}),
-  }
-}
-
-function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
-  if (!isRecord(value)) throw new Error('生图请求格式错误')
-  const quality = value.quality
-  if (quality !== undefined && !['low', 'medium', 'high', 'auto'].includes(String(quality))) {
-    throw new Error('生图画质格式错误')
-  }
-  const imageResolution = value.imageResolution
-  if (imageResolution !== undefined && !['1K', '2K', '4K'].includes(String(imageResolution))) {
-    throw new Error('生图清晰度格式错误')
-  }
-  return {
-    requestId: requiredString(value.requestId, '生图请求标识', 160),
-    group: requiredString(value.group, '生图分组', 128),
-    model: requiredString(value.model, '生图模型', 128),
-    prompt: requiredString(value.prompt, '生图提示词', 40_000),
-    ...(value.size === undefined ? {} : { size: requiredString(value.size, '生图尺寸', 32) }),
-    ...(quality === undefined ? {} : { quality: quality as AiImageGenerateInput['quality'] }),
-    ...(imageResolution === undefined ? {} : { imageResolution: imageResolution as AiImageGenerateInput['imageResolution'] }),
   }
 }
 
@@ -3604,24 +3583,24 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       if (checkout && typeof checkout === 'object' && 'kind' in checkout) {
         if (checkout.kind === 'url') {
           const validated = validatePaymentUrl(checkout.url)
-          if (typeof checkout.tradeNo !== 'string' && checkout.tradeNo !== null) throw new Error('支付订单号格式异常')
-          if (checkout.tradeNo && checkout.tradeNo.length > 255) throw new Error('支付订单号格式异常')
-          if (checkout.expiresAt !== null && (typeof checkout.expiresAt !== 'string' || checkout.expiresAt.length > 64 || Number.isNaN(Date.parse(checkout.expiresAt)))) throw new Error('支付到期时间格式异常')
+          if (typeof checkout.tradeNo !== 'string' && checkout.tradeNo !== null) throw new PaymentCheckoutRejected('支付订单号格式异常')
+          if (checkout.tradeNo && checkout.tradeNo.length > 255) throw new PaymentCheckoutRejected('支付订单号格式异常')
+          if (checkout.expiresAt !== null && (typeof checkout.expiresAt !== 'string' || checkout.expiresAt.length > 64 || Number.isNaN(Date.parse(checkout.expiresAt)))) throw new PaymentCheckoutRejected('支付到期时间格式异常')
           await options.paymentWindow.openUrl(validated.url, parent, checkout.tradeNo)
           return { opened: true as const, tradeNo: checkout.tradeNo }
         }
         if (checkout.kind === 'qrcode') {
           const validated = validatePaymentQrCode(checkout)
-          if (!options.paymentWindow.openQrCode) throw new Error('当前版本不支持二维码支付')
+          if (!options.paymentWindow.openQrCode) throw new PaymentCheckoutRejected('当前版本不支持二维码支付')
           await options.paymentWindow.openQrCode(validated, parent)
           return { opened: true as const, tradeNo: validated.tradeNo }
         }
-        throw new Error('支付结果类型不支持')
+        throw new PaymentCheckoutRejected('支付结果类型不支持')
       }
       const validated = validatePaymentForm(checkout)
       await options.paymentWindow.open(checkout, parent)
       return { opened: true as const, tradeNo: validated.tradeNo }
-    })
+    }).catch((error: unknown) => { throw toCustomerPaymentError(error) })
   })
   registerTrustedHandler('account:close-payment-window', () => {
     // 和点支付窗口右上角的 × 一样：付过款的订单在后台接着确认到账。
@@ -3654,7 +3633,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       else if (checkout.kind === 'qrcode') {
         // 同充值那条：二维码内容先按白名单校验，再交给支付窗口。
         const validated = validatePaymentQrCode(checkout)
-        if (!options.paymentWindow.openQrCode) throw new Error('当前版本不支持二维码支付')
+        if (!options.paymentWindow.openQrCode) throw new PaymentCheckoutRejected('当前版本不支持二维码支付')
         await options.paymentWindow.openQrCode(validated, parent)
       } else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
       return {
@@ -3662,7 +3641,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         tradeNo: checkout.tradeNo,
         expiresAt: checkout.expiresAt,
       }
-    })
+    }).catch((error: unknown) => { throw toCustomerPaymentError(error) })
   })
   registerTrustedHandler('account:purchase-subscription-balance', (_event, planId: unknown) => (
     accountService.purchaseSubscriptionWithBalance(parsePositiveSafeInteger(planId, '订阅方案 ID'))
@@ -4045,7 +4024,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!options.imageService) throw new Error('生图服务未就绪')
     observeChatSender(event.sender)
     return options.imageService.generate(event.sender.id, {
-      ...parseAiImageGenerateInput(input),
+      // 对话页从没出过「包含未知字段」这句，多余字段沿用现成的「生图请求格式错误」，上屏的字不变。
+      ...parseImageGenerateInput(input, { prefix: '生图', unknownFields: '生图请求格式错误' }),
       expectedUserId: currentChatUserId(),
     })
   })

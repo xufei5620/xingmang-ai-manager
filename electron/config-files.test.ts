@@ -2236,6 +2236,29 @@ describe('native CLI configuration files', () => {
     expect(fs.readdirSync(path.dirname(configPath)).some((name) => name.includes('.bak.'))).toBe(false)
   })
 
+  // Creating a file symlink needs Developer Mode or administrator rights on Windows.
+  it.skipIf(process.platform === 'win32')('names a dotfiles-linked settings file by where it sits in the home folder and keeps the original refusal for the log', () => {
+    const home = temporaryHome()
+    vi.spyOn(os, 'homedir').mockReturnValue(home)
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
+    const source = path.join(home, 'dotfiles', 'settings.json')
+    fs.mkdirSync(path.dirname(source), { recursive: true })
+    fs.writeFileSync(source, '{}', 'utf8')
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.symlinkSync(source, configPath)
+
+    let refusal: unknown
+    try {
+      saveProviderConfig('claude', 'sk-dotfiles', testModels.claude, 'merge', providerRoots(home), {}, providerBaseUrls)
+    } catch (error) {
+      refusal = error
+    }
+    expect(refusal).toBeInstanceOf(Error)
+    expect((refusal as Error).message).toBe(`用户文件夹里的 ${path.join('.claude', 'settings.json')} 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。`)
+    expect(((refusal as Error).cause as Error).message).toMatch(/单链接普通文件|符号链接/)
+    expect(fs.readFileSync(source, 'utf8')).toBe('{}')
+  })
+
   it('prunes old backups after a successful save while keeping the most recent ones', () => {
     const home = temporaryHome()
     saveProviderConfig('claude', 'sk-first', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls)
@@ -4548,12 +4571,12 @@ describe('the Codex model catalog Xingmang writes', () => {
   }
 
   it('saves the key without the catalog when the catalog was swapped for a hard link', () => {
-    expectLinkRefused((target, linkPath) => fs.linkSync(target, linkPath), /单链接普通文件/)
+    expectLinkRefused((target, linkPath) => fs.linkSync(target, linkPath), /xingmang-models\.json 是个链接。为了安全，星芒不往链接里写/)
   })
 
   // Creating a file symlink needs Developer Mode or administrator rights on Windows.
   it.skipIf(process.platform === 'win32')('saves the key without the catalog when the catalog was swapped for a symbolic link', () => {
-    expectLinkRefused((target, linkPath) => fs.symlinkSync(target, linkPath), /符号链接|单链接普通文件/)
+    expectLinkRefused((target, linkPath) => fs.symlinkSync(target, linkPath), /xingmang-models\.json 是个链接。为了安全，星芒不往链接里写/)
   })
 
   it('reports whether config.toml carries its own catalog line and what that file holds', () => {
@@ -4658,7 +4681,7 @@ describe('the Codex model catalog Xingmang writes', () => {
     fs.renameSync(configPath, elsewhere)
     fs.linkSync(elsewhere, configPath)
 
-    expect(() => takeBackCodexModelCatalog(roots)).toThrow(/单链接普通文件/)
+    expect(() => takeBackCodexModelCatalog(roots)).toThrow(/config\.toml 是个链接。为了安全，星芒不往链接里写/)
     expect(asRecord(TOML.parse(fs.readFileSync(elsewhere, 'utf8')))?.model_catalog_json).toBe('xingmang-models.json')
   })
 })

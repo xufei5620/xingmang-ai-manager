@@ -14,6 +14,8 @@ import {
   installNodeRuntime,
   nodeRuntimeDownloadSources,
   normalizeNodeRuntimeArchitecture,
+  describeNodeInstallFailure,
+  describeNodeStagingFailure,
   parseAuthenticodeSignature,
   parseNodeReleaseIndex,
   parseNodeShasums,
@@ -298,7 +300,7 @@ describe('Node.js installer routing and process plans', () => {
         createTemporaryDirectory: async () => 'D:\\ProgramData\\XingMangAI\\InstallerCache\\test',
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败')
+    })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(runProcess).not.toHaveBeenCalled()
     expect(progress).toContain(
@@ -348,7 +350,7 @@ describe('Node.js installer routing and process plans', () => {
       throw new Error('offline')
     }) as unknown as typeof fetch
 
-    await expect(installNodeRuntime({
+    const failure = await installNodeRuntime({
       networkRegion: 'unknown',
       dependencies: {
         resolveWingetExecutable: async () => ({
@@ -361,8 +363,13 @@ describe('Node.js installer routing and process plans', () => {
         createTemporaryDirectory: async () => 'D:\\ProgramData\\XingMangAI\\InstallerCache\\test',
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow(/winget：安装后的 Node\.js 版本 v18\.20\.0 低于最低要求 v20\.0\.0/)
+    }).catch((error: unknown) => error)
 
+    // winget 那一步只进运行日志，上屏那句按备用源的原因说（#1100 第1条）。
+    expect(failure instanceof Error ? failure.message : null)
+      .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+    expect(failure instanceof Error ? (failure.cause as Error).message : null)
+      .toContain('winget：安装后的 Node.js 版本 v18.20.0 低于最低要求 v20.0.0')
     expect(runProcess).toHaveBeenCalledTimes(1)
     expect(inspectInstalledNodeRuntime).toHaveBeenCalledOnce()
     expect(fetchMock).toHaveBeenCalled()
@@ -522,7 +529,7 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
           await fs.promises.rm(directory, { recursive: true, force: true })
         },
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败')
+    })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(fetchMock).toHaveBeenCalled()
     expect(removed).toHaveLength(1)
@@ -546,7 +553,7 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
         },
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败。安装包暂存目录：当前进程没有管理员权限，无法创建受保护的安装目录')
+    })).rejects.toThrow('Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去。清理一下磁盘或重启电脑后再点「重试」。')
     expect(progress.some((entry) => entry.startsWith('error:'))).toBe(true)
   })
 
@@ -757,7 +764,7 @@ describe('Node.js installer and the download route on Windows', () => {
         },
         fetch: fetchMock,
       },
-    })).rejects.toThrow('Node.js LTS 自动安装失败')
+    })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(routeCalls).toBe(1)
     expect(events.slice(0, 3)).toEqual([
@@ -826,7 +833,7 @@ describe('Node.js MSI install while Windows Installer is busy with another insta
 
   it.runIf(process.platform === 'win32')('stops at the first download source instead of downloading the package again', async () => {
     const { failure, requested, msiRuns, progress } = await installWhileMsiExitsWith(1618)
-    const message = `Node.js LTS 自动安装失败。国内镜像：${installerBusy}`
+    const message = `Node.js 自动安装失败：${installerBusy}。`
 
     expect(failure).toBeInstanceOf(Error)
     expect(failure instanceof Error ? failure.message : null).toBe(message)
@@ -842,7 +849,34 @@ describe('Node.js MSI install while Windows Installer is busy with another insta
 
     expect(msiRuns).toHaveLength(2)
     expect(requested.some((url) => url.startsWith('https://nodejs.org/'))).toBe(true)
+    // 上屏只说一个原因，每个源的原话都在 cause 里进运行日志（#1100 第1条）。
     expect(failure instanceof Error ? failure.message : null)
+      .toMatch(/^Node\.js 自动安装失败：Windows Installer 安装失败（错误 1603）。/)
+    expect(failure instanceof Error ? (failure.cause as Error).message : null)
       .toContain('；Node.js 官方源：Windows Installer 安装失败（错误 1603）')
+  })
+})
+
+describe('the sentence a failed Node.js install leaves on screen', () => {
+  it('says one reason with the next step and leaves the raw steps to the log', () => {
+    const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:443'), { code: 'ECONNREFUSED' }) })
+    expect(describeNodeInstallFailure([refused, new Error('fetch failed')]))
+      .toBe('Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。检查网络后再点「重试」。')
+    expect(describeNodeInstallFailure([new Error('fetch failed')])).toBe('Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。')
+    expect(describeNodeInstallFailure([new Error('HTTP 503')])).toBe('Node.js 自动安装失败：下载安装包时下载源那边出错（错误码 HTTP 503）。过几分钟再点「重试」。')
+    expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('Node.js 安装包 SHA-256 校验失败')]))
+      .toBe('Node.js 自动安装失败：下载的安装包没通过校验，已经删掉。再点「重试」；一直这样换个网络。')
+    expect(describeNodeInstallFailure([new Error('无法解析安装后的 Node.js 可执行文件：ENOENT')]))
+      .toBe('Node.js 自动安装失败：装完没找到能用的 Node.js。重启电脑后再看一次；还不行请找客服。')
+    expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('命令执行失败（退出码 1603）：powershell.exe')]))
+      .toMatch(/^Node\.js 自动安装失败：Windows Installer 安装失败（错误 1603）。请先重启 Windows/)
+    expect(describeNodeInstallFailure([new Error('something odd')]))
+      .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+    expect(describeNodeInstallFailure([])).toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+  })
+
+  it('names the code when the staging folder could not be made', () => {
+    expect(describeNodeStagingFailure(Object.assign(new Error("EPERM: operation not permitted, mkdir 'C:\\x'"), { code: 'EPERM' })))
+      .toBe('Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去（错误码 EPERM）。清理一下磁盘或重启电脑后再点「重试」。')
   })
 })

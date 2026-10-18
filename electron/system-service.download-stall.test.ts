@@ -39,7 +39,7 @@ afterEach(() => {
 const integrity = `sha512-${Buffer.alloc(64, 0x37).toString('base64')}`
 const officialRegistry = 'https://registry.npmjs.org'
 const mirrorRegistry = 'https://registry.npmmirror.com'
-const timedOutDetail = '下载超时，长时间没有完成，已中止'
+const timedOutDetail = '下载太久没有完成，超时中止'
 
 function temporaryDirectory(prefix: string): string {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
@@ -513,7 +513,7 @@ describe('a CLI download that stops moving', () => {
     const error = await install
     expect(error).toBeInstanceOf(Error)
     const message = (error as Error).message
-    expect(message).toBe(`Claude Code 安装失败：npm 官方源：${timedOutDetail}；国内 npm 镜像：${timedOutDetail}`)
+    expect(message).toBe(`Claude Code 安装失败：npm 官方源：${timedOutDetail}；国内 npm 镜像：${timedOutDetail}。`)
     expect(classifyOperationError(message)).toBe('downloadTimeout')
     expect(fixture.target.send).not.toHaveBeenCalledWith(
       'cli:install-progress',

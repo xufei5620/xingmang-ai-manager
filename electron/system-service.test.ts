@@ -40,7 +40,7 @@ import { resolveBundledCodexModelCatalogPath, type CodexDesktopCatalogProbe } fr
 import type { CliModelHints } from './cli-model-defaults'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
-import { classifyOperationError } from '../src/renderer-v2/operation-error'
+import { classifyOperationError, presentOperationError } from '../src/renderer-v2/operation-error'
 import { managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
@@ -1501,7 +1501,7 @@ describe('createSystemService', () => {
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
     await f.store.setOfficialProvider('claude', true)
 
-    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/官方 Key 没能挪开，配置没有改动/)
+    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，配置没有改动。关掉 Claude Code 后再试；还不行请找客服/)
 
     expect(fs.existsSync(f.settingsPath)).toBe(false)
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
@@ -1516,7 +1516,7 @@ describe('createSystemService', () => {
 
     const error = await f.service.saveConfig(f.payload, false).catch((reason: unknown) => reason)
     expect(error).toBeInstanceOf(Error)
-    expect(String(error)).not.toMatch(/官方 Key/)
+    expect(String(error)).not.toMatch(/官方 Key|官方密钥/)
 
     expect(JSON.parse(fs.readFileSync(f.rootConfigPath, 'utf8'))).toEqual({ primaryApiKey: 'sk-ant-console' })
     expect(fs.readFileSync(f.snapshotPath, 'utf8')).toBe('')
@@ -1528,8 +1528,8 @@ describe('createSystemService', () => {
     await f.service.saveConfig(f.payload, false)
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
 
-    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
-    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方 Key 没能放回原处/)
+    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/^Claude Code 原来的官方密钥没能放回原处。关掉 Claude Code 后再点一次「切回官方账号」/)
+    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方密钥没能放回原处/)
 
     expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
@@ -1597,7 +1597,7 @@ describe('createSystemService', () => {
     await f.store.setOfficialProvider('claude', true)
     saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
 
-    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/官方 Key 没能挪开/)
+    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」/)
 
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
@@ -3305,17 +3305,24 @@ describe('managed npm transaction', () => {
     let renameCount = 0
     const rename = vi.fn(async (source: string, destination: string) => {
       renameCount += 1
-      if (renameCount === 4) throw new Error('rollback destination is locked')
+      if (renameCount === 4) throw Object.assign(new Error('EPERM: rollback destination is locked'), { code: 'EPERM' })
       await fs.promises.rename(source, destination)
     })
 
-    await expect(replaceManagedNpmPrefixAtomically(
+    const failure: unknown = await replaceManagedNpmPrefixAtomically(
       fixture.active,
       fixture.staged,
       fixture.transaction,
       async () => { throw new Error('verification failed') },
       { rename },
-    )).rejects.toBeInstanceOf(ManagedNpmRollbackError)
+    ).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(ManagedNpmRollbackError)
+    // 上屏只说结果和下一步，「回滚失败」留着；英文原话和新版没装上的原因都在 cause 里（#1100 第1条）。
+    expect((failure as Error).message).toBe('这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服（错误码 EPERM）。')
+    const cause = (failure as Error).cause as Error
+    expect(cause.message).toBe('托管 npm 更新失败，且旧版本回滚失败：EPERM: rollback destination is locked')
+    expect((cause.cause as Error).message).toBe('verification failed')
+    expect(presentOperationError((failure as Error).message)).toBeNull()
     expect(fs.readFileSync(
       path.join(fixture.transaction, 'previous-prefix', 'version.txt'),
       'utf8',
@@ -3765,13 +3772,13 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     expect(failure).toBeInstanceOf(Error)
     expect(failure).toMatchObject({
-      message: `Codex CLI 卸载失败：${npmRenameDeniedDetail}`,
+      message: 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EPERM）。',
       cause: expect.any(CommandRunnerError),
     })
     // EPERM by itself reads the same as a folder the user cannot write to, so it
     // stays a permission problem until a process of this tool is actually found.
     expect(probeRunningCliProcesses).toHaveBeenCalledWith(packageRoot)
-    expect(classifyOperationError(`Codex CLI 卸载失败：${npmRenameDeniedDetail}`)).toBe('permission')
+    expect(classifyOperationError((failure as Error).message)).toBe('permission')
     // The runtime log keeps only enumerable fields, and npm's raw output is what
     // support reads there.
     expect(Object.prototype.propertyIsEnumerable.call(failure, 'cause')).toBe(true)
@@ -3851,8 +3858,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：命令执行失败（退出码 1）：npm（EACCES；Error: EACCES: permission denied, '
-      + "rename '/usr/local/lib/node_modules/@openai/codex' -> '/usr/local/lib/node_modules/@openai/.codex-x'）"
+    const message = 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EACCES）。'
     expect(failure).toMatchObject({ message })
     expect(probeRunningCliProcesses).not.toHaveBeenCalled()
     expect(classifyOperationError(message)).toBe('permission')
@@ -4810,7 +4816,7 @@ describe('npm install progress reporting', () => {
       durationMs: npmDownloadTimeoutMs,
     })
 
-    expect(describeNpmCommandFailure(failure)).toContain('下载超时')
+    expect(describeNpmCommandFailure(failure)).toBe('下载太久没有完成，超时中止')
     expect(describeNpmCommandFailure(new Error('plain'))).toBe('plain')
   })
 
@@ -7265,7 +7271,7 @@ describe('opening a CLI on Windows', () => {
     fs.mkdirSync(workspace)
     const cause = `Cannot perform operation because the wildcard path ${path.join(workspace, '作业[1]')} did not resolve to a file.`
     const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => {
-      throw new WindowsCliLaunchError(`Windows 无法启动 PowerShell：${cause}`, {
+      throw new WindowsCliLaunchError('Windows 没能启动 PowerShell，原因已经记进运行日志。', {
         stderr: cause,
         message: `Command failed: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [REDACTED]\n${cause}`,
         code: 1,
@@ -7276,8 +7282,8 @@ describe('opening a CLI on Windows', () => {
     const log = vi.fn()
 
     const failure = windowsLaunchService(userHome, launchCliPowerShell, { log }).launchProvider('claude', workspace)
-    await expect(failure).rejects.toThrow(`未能打开 Claude Code：Windows 无法启动 PowerShell：${cause}`)
-    await expect(failure).rejects.not.toThrow('Command failed')
+    // PowerShell 的英文原话只进下面那条日志，错误框里只说原因已经记下（#1100 第1条）。
+    await expect(failure).rejects.toThrow(/^未能打开 Claude Code：Windows 没能启动 PowerShell，原因已经记进运行日志。$/)
 
     expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
     expect(launchCliPowerShell.mock.calls[0]?.[0]).toMatchObject({ workspace, title: 'Claude Code · 星芒AI' })
@@ -7767,7 +7773,9 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
     }))
     const target = { isDestroyed: () => false, send: vi.fn() }
 
-    await expect(macService(mac).installCli('codex', target)).rejects.toThrow('stopped at the first npm install')
+    const failure: unknown = await macService(mac).installCli('codex', target).catch((error: unknown) => error)
+    // 原话是英文，上屏只说没装成，原话挂在 cause 上进运行日志（#1100 第1条）。
+    expect(((failure as Error).cause as Error).message).toBe('stopped at the first npm install')
 
     const npmInstall = mac.runCommand.mock.calls.find(([spec]) => spec.argv.includes('install'))
     expect(npmInstall?.[0].executable).toBe(path.join(mac.managedBin, 'npm'))
@@ -7808,7 +7816,7 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
       resolveCliCommand,
     })
 
-    await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
+    await expect(service.launchProvider('gemini', workspace)).rejects.toMatchObject({ cause: { message: 'stopped before opening Terminal' } })
 
     expect(resolveCliCommand).toHaveBeenCalledTimes(1)
     const [provider, terminalEnvironment, , launchOptions] = resolveCliCommand.mock.calls[0]
@@ -7850,7 +7858,7 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
       resolveCliCommand,
     })
 
-    await expect(service.launchProvider('gemini', workspace)).rejects.toThrow('stopped before opening Terminal')
+    await expect(service.launchProvider('gemini', workspace)).rejects.toMatchObject({ cause: { message: 'stopped before opening Terminal' } })
 
     expect(resolveCliCommand.mock.calls[0]?.[3]).toEqual({ darwinStagingRetention: 'retained' })
   })
