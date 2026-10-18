@@ -993,7 +993,7 @@ describe('createSystemService', () => {
 
     expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, slugs: f.catalogSlugs() }) })).toEqual({ filled: [] })
 
-    // 名单落盘之后来源记录还要再写一次才改回「账号」，两样都到位才算这次同步做完。
+    // 刷新菜单只重写名单文件，来源记录照旧是「账号」（#1154 后续之前要等整份重写完再写回一次）。
     await vi.waitFor(() => {
       expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
       expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
@@ -1125,6 +1125,59 @@ describe('createSystemService', () => {
     expect(await service.checkToolModels!('claude')).toEqual({ status: 'ok', pickerRefreshed: true })
 
     expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  // #1154 后续：刷新菜单以前也走整份合并，模板里的每一项都按当前版本重写一遍。
+  it('keeps what the customer changed in Claude Code when it refreshes the /model menu before a launch', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-picker-only-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+    const account = { models: ['claude-opus-5', 'claude-sonnet-5'] }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      data: account.models.map((id) => ({ id })),
+    }), { status: 200 })))
+    const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
+      providerRoots: roots,
+      getExternalClientAccountId: () => JSON.stringify(['solov', 36]),
+    })
+    await service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { env: Record<string, unknown>; permissions: Record<string, unknown> }
+    // 客户放开了星芒拦掉的工具，「Default」那一行指去别的型号，还换成了四格缩进。
+    settings.permissions.deny = []
+    settings.env.ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-5'
+    const customized = `${JSON.stringify(settings, null, 4)}\n`
+    fs.writeFileSync(settingsPath, customized)
+    account.models.push('claude-haiku-5')
+
+    expect(await service.checkToolModels!('claude')).toEqual({ status: 'ok', pickerRefreshed: true })
+
+    const after = fs.readFileSync(settingsPath, 'utf8')
+    const refreshed = JSON.parse(after) as { modelPicker: { options: Array<{ model: string }> } }
+    expect(refreshed.modelPicker.options.map((option) => option.model)).toEqual(['claude-haiku-5', 'claude-opus-5', 'claude-sonnet-5'])
+    expect(refreshed).toEqual({ ...settings, modelPicker: refreshed.modelPicker })
+    const untilPicker = customized.indexOf('"modelPicker"')
+    expect(after.slice(0, untilPicker)).toBe(customized.slice(0, untilPicker))
+    expect(service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  it('keeps the customer\'s own review model and comments in Codex when it refreshes the model menu before a launch', async () => {
+    const f = codexCatalogFixture()
+    await f.service.saveConfig({ provider: 'codex', apiKey: 'sk-catalog', model: 'gpt-6.1-sol', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [config] = providerConfigPaths('codex', f.roots)
+    const written = fs.readFileSync(config, 'utf8')
+    expect(written).toContain('review_model = "gpt-6.1-sol"')
+    const customized = `# 我自己的注释\n${written
+      .replace('review_model = "gpt-6.1-sol"', 'review_model = "gpt-5.5"')
+      .replace('check_for_update_on_startup = false', 'check_for_update_on_startup = true')}`
+    fs.writeFileSync(config, customized)
+    f.account.models.push('gpt-6-astra')
+
+    expect(await f.service.checkToolModels!('codex')).toEqual({ status: 'ok', pickerRefreshed: true })
+
+    expect(fs.readFileSync(config, 'utf8')).toBe(customized)
+    expect(f.catalogSlugs()).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('account')
   })
 
   function retiredClaudeFixture() {

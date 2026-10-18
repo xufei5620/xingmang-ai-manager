@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
@@ -34,7 +35,7 @@ import {
   type CliHookInvocation,
   type ManagedCliHookTarget,
 } from './cli-hooks'
-import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, removeClaudeRelayModelPicker } from './claude-model-picker'
+import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, claudeRelayModelPickerUpdates, removeClaudeRelayModelPicker } from './claude-model-picker'
 import {
   applyCodexRelayModelCatalog,
   codexModelCatalogFileName,
@@ -3467,20 +3468,178 @@ export function applyProviderModelReplace(
   plan: ProviderModelRewrite,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
+  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在换型号时被别的程序改了，这次先不换')
+}
+
+/**
+ * 定点改写落盘（换型号、刷新菜单共用）。配置原文没变（只重写 Codex 的型号名单）就不碰配置文件，
+ * 免得每次刷新都多一份备份；名单照旧先落盘。每替换一个文件前都再读一遍配置原文，被别的程序改过
+ * 就整个放弃，已经换上的名单一起退回去。
+ */
+function commitProviderRewrite(
+  provider: ProviderId,
+  plan: ProviderModelRewrite | ProviderPickerRewrite,
+  rootsInput: ProviderConfigRoots,
+  raceMessage: string,
+): NativeConfigSaveResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   if (providerConfigPaths(provider, roots)[0] !== plan.file) throw new Error('工具配置路径不对，已拒绝写入')
   if (plan.catalog && (provider !== 'codex' || plan.catalog.path !== codexModelCatalogPath(roots))) throw new Error('型号名单路径不对，已拒绝写入')
   assertSafeConfigPath(plan.file, providerRoot, 'file')
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
-  const plans: FilePlan[] = [...(plan.catalog ? [plan.catalog] : []), { path: plan.file, content: plan.content }]
+  const plans: FilePlan[] = [
+    ...(plan.catalog ? [plan.catalog] : []),
+    ...(plan.content === plan.original ? [] : [{ path: plan.file, content: plan.content }]),
+  ]
+  if (!plans.length) return { backups: [], files: [] }
   return executeFilePlans(plans, {
-    beforeReplace: (filePath) => {
-      if (filePath === plan.file && requireRawConfigText(plan.file, '工具配置') !== plan.original) {
-        throw new Error('工具配置在换型号时被别的程序改了，这次先不换')
-      }
+    beforeReplace: () => {
+      if (requireRawConfigText(plan.file, '工具配置') !== plan.original) throw new Error(raceMessage)
     },
   }, providerRoot)
+}
+
+/**
+ * 打开前、开机核对时刷新型号菜单的打算（#1154 后续）。以前借 saveConfig 的整份合并，模板里每一项都
+ * 按当前版本重写一遍：Codex 客户自己定的 review_model、打开的检查更新、注释，Claude Code 放开的
+ * deny 项、另指的「Default」都被改回去。现在只动菜单本身，文件其余字节原样：
+ * - Claude Code：settings.json 里的 modelPicker 和 env.ANTHROPIC_DEFAULT_MODEL，改不改照
+ *   claude-model-picker.ts 的 claudeRelayModelPickerUpdates。
+ * - Codex：型号名单文件按 codexModelCatalog 重写（system-service.ts 的 resolveCodexModelCatalog 算好的；
+ *   undefined = 原样不动）；config.toml 里本软件那一行该有却没有就补上，不该有就收回，客户自己指向
+ *   别处的不动。
+ * current = 菜单已经是这样了；changed = 配置里的型号已经不是 model（客户刚改过、别的程序写过）；
+ * unlocated = 认不出该写在哪；missing = 配置文件不在。除了 rewrite 都一个字不动。写由 applyProviderPickerRefresh 做。
+ */
+export type ProviderPickerPlan =
+  | { status: 'rewrite'; file: string; original: string; content: string; catalog?: FileWritePlan }
+  | { status: 'current' | 'changed' | 'unlocated' | 'missing' }
+
+export type ProviderPickerRewrite = Extract<ProviderPickerPlan, { status: 'rewrite' }>
+
+export function planProviderPickerRefresh(
+  provider: ProviderId,
+  model: string,
+  availableModels: readonly string[],
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  codexModelCatalog?: string | null,
+): ProviderPickerPlan {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  const paths = providerConfigPaths(provider, roots)
+  for (const filePath of paths) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const file = paths[0]
+  const original = requireRawConfigText(file, '工具配置')
+  if (original === null) return { status: 'missing' }
+  // 字节顺序标记照原样留着（同换线路、换型号的定点改写），解析时去掉。
+  const byteOrderMark = original.startsWith('\uFEFF') ? '\uFEFF' : ''
+  const text = original.slice(byteOrderMark.length)
+  switch (provider) {
+    case 'claude': {
+      const next = claudeSettingsWithRelayPicker(text, model.trim(), availableModels)
+      if (next === 'changed' || next === 'unlocated') return { status: next }
+      return next === text ? { status: 'current' } : { status: 'rewrite', file, original, content: `${byteOrderMark}${next}` }
+    }
+    case 'codex': {
+      const parsed = parseTomlOrNull(text)
+      if (!parsed) return { status: 'unlocated' }
+      if (!sameModelName(typeof parsed.model === 'string' ? parsed.model : null, model.trim())) return { status: 'changed' }
+      const setting = parsed.model_catalog_json
+      if (codexModelCatalog === undefined || (setting !== undefined && !isManagedCodexModelCatalogSetting(setting))) return { status: 'current' }
+      if (codexModelCatalog === null) {
+        if (setting === undefined) return { status: 'current' }
+        const next = withoutManagedCodexModelCatalogLine(text, '现有 Codex config.toml')
+        return next === null ? { status: 'current' } : { status: 'rewrite', file, original, content: `${byteOrderMark}${next}` }
+      }
+      // 名单的位置被换成了链接：resolveCodexModelCatalog 那时就该给 null，这里再拦一道。
+      if (!codexModelCatalogTargetUsable(roots)) return { status: 'unlocated' }
+      const catalogPath = codexModelCatalogPath(roots)
+      const catalog = readText(catalogPath) === codexModelCatalog ? undefined : { path: catalogPath, content: codexModelCatalog }
+      const next = setting === undefined ? withManagedCodexModelCatalogLine(text) : text
+      if (next === null) return { status: 'unlocated' }
+      if (!catalog && next === text) return { status: 'current' }
+      return { status: 'rewrite', file, original, content: `${byteOrderMark}${next}`, ...(catalog ? { catalog } : {}) }
+    }
+    case 'gemini':
+    case 'grok':
+      // 这两家没有本软件管的型号菜单（tool-model-check.ts 的 hasModelPicker）。
+      return { status: 'unlocated' }
+  }
+}
+
+/** 照 planProviderPickerRefresh 算好的写下去，规矩同 applyProviderModelReplace（I9）。 */
+export function applyProviderPickerRefresh(
+  provider: ProviderId,
+  plan: ProviderPickerRewrite,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): NativeConfigSaveResult {
+  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在刷新型号菜单时被别的程序改了，这次先不刷新')
+}
+
+/**
+ * Claude Code 的 settings.json 只改菜单那两处，其余字节（缩进、键的顺序、客户自己的设置）原样。
+ * Claude Code 按严格 JSON 读这份文件；改完整份再读一遍，和「原来的内容只改了这两处」逐项比对，
+ * 对不上（比如同一个键写了两遍）就当认不出，一个字不动。
+ */
+function claudeSettingsWithRelayPicker(text: string, model: string, availableModels: readonly string[]): string | 'changed' | 'unlocated' {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return 'unlocated'
+  }
+  if (!isJsonObject(parsed)) return 'unlocated'
+  if (!sameModelName(typeof parsed.model === 'string' ? parsed.model : null, model)) return 'changed'
+  if (parsed.env !== undefined && !isJsonObject(parsed.env)) return 'unlocated'
+  const updates = claudeRelayModelPickerUpdates(parsed, availableModels, model)
+  const edits: Array<{ path: string[]; value: unknown }> = []
+  if (updates.defaultModel !== undefined) edits.push({ path: ['env', 'ANTHROPIC_DEFAULT_MODEL'], value: updates.defaultModel })
+  if (updates.modelPicker !== undefined) edits.push({ path: ['modelPicker'], value: updates.modelPicker })
+  if (!edits.length) return text
+  const expected = JSON.parse(text) as Record<string, unknown>
+  if (updates.defaultModel !== undefined) ensureRecord(expected, 'env').ANTHROPIC_DEFAULT_MODEL = updates.defaultModel
+  if (updates.modelPicker !== undefined) expected.modelPicker = updates.modelPicker
+  const indentation = /^([ \t]+)\S/m.exec(text)?.[1] ?? '  '
+  const formattingOptions = {
+    insertSpaces: !indentation.startsWith('\t'),
+    tabSize: indentation.startsWith('\t') ? 1 : indentation.length,
+    eol: text.includes('\r\n') ? '\r\n' : '\n',
+  }
+  let content = text
+  for (const edit of edits) content = applyEdits(content, modify(content, edit.path, edit.value, { formattingOptions }))
+  try {
+    return isDeepStrictEqual(JSON.parse(content), expected) ? content : 'unlocated'
+  } catch {
+    return 'unlocated'
+  }
+}
+
+/**
+ * 在 config.toml 顶层补上本软件那一行，其余一个字不动：放在第一张表之前最后一个键的后面。补进去
+ * 读回来必须恰好只多了这一个键（防的是多行字符串、多行数组里刚好有一行像表头），对不上就换到
+ * 第一张表正前面、文件开头再试，都不行给 null。
+ */
+function withManagedCodexModelCatalogLine(text: string): string | null {
+  const expected = parseTomlOrNull(text)
+  if (!expected || expected.model_catalog_json !== undefined) return null
+  expected.model_catalog_json = codexModelCatalogFileName
+  const lines = text.split(/(?<=\n)/)
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line))
+  const topLevelEnd = firstTable === -1 ? lines.length : firstTable
+  let afterLastKey = 0
+  for (let index = 0; index < topLevelEnd; index += 1) {
+    if (/^\s*[^\s#]/.test(lines[index])) afterLastKey = index + 1
+  }
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  const line = `model_catalog_json = ${tomlString(codexModelCatalogFileName)}${eol}`
+  for (const at of new Set([afterLastKey, topLevelEnd, 0])) {
+    const before = lines.slice(0, at).join('')
+    const next = `${before}${before && !before.endsWith('\n') ? eol : ''}${line}${lines.slice(at).join('')}`
+    const reread = parseTomlOrNull(next)
+    if (reread && isDeepStrictEqual(reread, expected)) return next
+  }
+  return null
 }
 
 // 模板改进只在「保存配置」那几条路上落盘，而老客户开机走的是恢复账号、一个字不写，
