@@ -63,7 +63,6 @@
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
 - `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度
-- `canvas-account-lifecycle.ts` — 账号切换时取消旧账号的生成与运行、给新账号续视频任务并初始化运行索引；同样的逻辑现在直接写在 `main.ts` 的账号切换里（推断：未见引用）
 
 ### 运行引擎（都在主进程）
 - `canvas-run-contract.ts` — 画布运行的数据契约：节点种类（含漫剧节点）、运行范围、尝试与候选产物、事件时间线、运行记录
@@ -138,7 +137,4 @@
 
 ### 外观与平台事实
 - `platform/zoom.ts` — 平台层对缩放公式的叫法，**只能委托** `window-preferences.ts` 的 `calculateUiZoom`：两个应用缩放的地方同时监听同一批事件，各留一份公式会由监听注册顺序决定用户看到哪个
-- `platform/types.ts` — 平台层的类型（平台家族、缩放偏好、原生能力、界面登记项）
-- `platform/registry.ts` — 各平台的界面事实（标题栏高度、快捷键修饰符、路径示例、终端名）；只被 `facade.ts` / `index.ts` 引用，生产代码未用到（推断：未见引用）
-- `platform/facade.ts` — 合成只读的平台快照（能力 + 原生能力默认全关 + 界面登记），README 说是给 v2 适配层用的，但渲染层实际经 `platform:get-capabilities` 拿能力，只有测试在调它（推断：未见引用）
-- `platform/index.ts` — 平台层的汇总导出（facade / registry / zoom / types），没有任何模块 import 它（推断：未见引用）
+- `platform/types.ts` — 平台层的类型（缩放偏好）
