@@ -233,6 +233,84 @@ describe('cancelling a CLI install', () => {
   })
 })
 
+// #1061 第 9 条：队列 key 不含版本，同一个工具第二次请求会并进正在跑的那次。
+// 同一个版本并进去没问题（重复点击），版本不同就得拒，不然报成功装的却是另一个版本。
+describe('a second install request for a tool that is already installing', () => {
+  // 被拒的那次要当场结束：并进了正在跑的安装就会一直挂着，这里立刻带着原因红，不要干等到用例超时。
+  function settledBeforeNextTick(install: Promise<void>): Promise<unknown> {
+    return Promise.race([
+      install.then(() => 'installed', (error: unknown) => error),
+      new Promise((resolve) => setImmediate(() => resolve('joined the running install'))),
+    ])
+  }
+
+  it.runIf(process.platform !== 'win32')('joins the running install when the same version is asked for again', async () => {
+    const fixture = createCancellableInstallFixture()
+    const first = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+    await fixture.downloadAttemptStarted(1)
+    const second = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+
+    expect(fixture.service.cancelCliInstall('claude')).toEqual({ cancelled: true, reason: null })
+    const [firstError, secondError] = await Promise.all([first, second])
+    // 两次拿到的是同一次安装的结果，前前后后只下过一次。
+    expect(secondError).toBe(firstError)
+    expect(isInstallCancelledError(firstError)).toBe(true)
+    expect(fixture.downloadAttempts).toHaveLength(1)
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a different version while an update is running and leaves the update alone', async () => {
+    const fixture = createCancellableInstallFixture()
+    const update = fixture.service.installCli('claude', fixture.target).catch((error: unknown) => error)
+    await fixture.downloadAttemptStarted(1)
+    fixture.target.send.mockClear()
+
+    const rollback = await settledBeforeNextTick(fixture.service.installCli('claude', fixture.target, '2.1.290'))
+    expect(rollback).toBeInstanceOf(Error)
+    expect(isInstallCancelledError(rollback)).toBe(false)
+    expect((rollback as Error).message).toBe('Claude Code 正在安装中')
+    // 被拒的那次不发进度：进度按工具发，发一条失败会写到还在跑的更新的进度行上。
+    expect(fixture.target.send).not.toHaveBeenCalled()
+    expect(fixture.downloadAttempts).toHaveLength(1)
+
+    // 更新照常跑着，取消的还是它自己。
+    expect(fixture.service.cancelCliInstall('claude')).toEqual({ cancelled: true, reason: null })
+    expect(isInstallCancelledError(await update)).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses the latest version while a named version is installing', async () => {
+    const fixture = createCancellableInstallFixture()
+    const rollback = fixture.service.installCli('claude', fixture.target, '2.1.290').catch((error: unknown) => error)
+    await fixture.downloadAttemptStarted(1)
+
+    const update = await settledBeforeNextTick(fixture.service.installCli('claude', fixture.target))
+    expect((update as Error).message).toBe('Claude Code 正在安装中')
+
+    fixture.service.cancelCliInstall('claude')
+    expect(isInstallCancelledError(await rollback)).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32')('takes a different version once the earlier install has unwound', async () => {
+    const fixture = createCancellableInstallFixture()
+    const update = fixture.service.installCli('claude', fixture.target).catch(() => undefined)
+    await fixture.downloadAttemptStarted(1)
+    fixture.service.cancelCliInstall('claude')
+    await update
+
+    const rollback = fixture.service.installCli('claude', fixture.target, '2.1.290').catch((error: unknown) => error)
+    // 第二次要是还被当成「正在安装中」，立刻带着原因红，不要干等到用例超时。
+    await Promise.race([
+      fixture.downloadAttemptStarted(2),
+      rollback.then((outcome) => {
+        if (fixture.downloadAttempts.length >= 2) return
+        throw new Error(`回退那次没走到下载就结束了：${outcome instanceof Error ? outcome.message : String(outcome)}`)
+      }),
+    ])
+    expect(fixture.downloadAttempts).toHaveLength(2)
+    expect(fixture.service.cancelCliInstall('claude').cancelled).toBe(true)
+    expect(isInstallCancelledError(await rollback)).toBe(true)
+  })
+})
+
 // Windows 上装 Claude Code 时接着装 Git 的那一段（第四十批 C）。注入的 platform 管不到
 // installCliOperation 里读真实 process.platform 的那几处，在 Linux / macOS 主机上走不通
 // Windows 那条安装，所以这里只测「封住 → 装 Git → 收」这一段，三个平台都能跑。
