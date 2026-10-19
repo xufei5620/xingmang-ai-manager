@@ -33,7 +33,7 @@ const MAX_COS_ERROR_BYTES = 4096
 // memory like every other message; the log carries only these codes (#1084).
 const CHECK_FAILURE_CODES = new Set(['platform-invalid', 'version-invalid', 'metadata-invalid', 'version-regressed', 'source-url-rejected', 'head-invalid',
   'download-mismatch', 'source-changed', 'package-format-invalid', 'package-identity-mismatch', 'package-signature-invalid',
-  'license-identity-mismatch', 'inspector-unavailable', 'inspector-failed', 'inspection-unparsable', 'cos-index-invalid',
+  'package-signer-mismatch', 'license-identity-mismatch', 'inspector-unavailable', 'inspector-failed', 'inspection-unparsable', 'cos-index-invalid',
   'cos-index-changed', 'cos-object-mismatch', 'temp-path-rejected'])
 // What a package check actually read: names, versions, architectures and the
 // signer of a vendor's public package, plus how a local inspector process
