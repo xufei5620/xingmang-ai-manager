@@ -58,6 +58,15 @@ export function moduleFunction(source: ts.SourceFile, name: string): ts.Function
   return found
 }
 
+/** A `function name(…) { … }` declared straight in `owner`'s body. */
+export function innerFunction(owner: ts.FunctionDeclaration, name: string): ts.FunctionDeclaration {
+  const found = owner.body?.statements.find((statement): statement is ts.FunctionDeclaration => (
+    ts.isFunctionDeclaration(statement) && statement.name?.text === name
+  ))
+  if (!found) throw new Error(`${owner.name?.text ?? 'function'} has no inner function ${name}`)
+  return found
+}
+
 /**
  * Where each callee is called straight from `owner`'s own body (not from a
  * callback inside it), in source order. A statement the owner runs directly
