@@ -4,10 +4,12 @@
 // 都拿这一份，不再各自去翻 serviceOptions，簇与簇之间也不互相 import。
 //
 // 这里只 import system-service.ts 的类型：值要是也从那边拿，两个文件就互相 require 了。
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { AppSettingsStore } from './app-settings'
+import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, type ProviderId } from './catalog'
 import {
   describeOccupiedUpdateFailure,
@@ -42,6 +44,9 @@ import { inspectMacosCodexApp } from './macos-codex-app'
 import { installMacGitRuntime } from './macos-git-install'
 import { installDarwinNodeRuntime, resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { launchMacosTerminal } from './macos-platform'
+import { parseModelIds } from './models'
+import { isServiceUnavailableResponse, parsesAsJsonObject } from './network-failure'
+import { NewApiNetworkError } from './new-api-client'
 import {
   inspectWindowsRestartRequired,
   installNodeRuntime as installNodeRuntimeLts,
@@ -54,7 +59,9 @@ import {
   inspectInstalledPythonRuntime,
   installPythonRuntime as installPythonRuntime312,
 } from './python-runtime'
-import { createRelayEndpointRoutingSnapshot, relaySiteForProviderBaseUrl, type RelaySite } from './relay-sites'
+import { modelProbeFailurePrefix } from './relay-quota-failure'
+import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relaySiteForProviderBaseUrl, type RelaySite } from './relay-sites'
+import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { bypassClosedLoopbackProxies, describeDroppedProxies, probeLoopbackProxy } from './stale-proxy-environment'
 import { redactHomeDirectory } from './startup-log'
 import type { SystemServiceOptions, ToolStatus } from './system-service'
@@ -123,6 +130,21 @@ export function buildToolStatusFromSettled(result: PromiseSettledResult<ToolStat
  */
 export function sameNativeConfigSnapshot(before: NativeConfigInspection, current: NativeConfigInspection): boolean {
   return toolConfigIdentity(current) === toolConfigIdentity(before) && current.updatedAt === before.updatedAt && current.model === before.model
+}
+
+const maximumModelResponseBytes = 1024 * 1024
+const modelAccessCacheMaxEntries = 32
+
+export function modelAccessCacheKey(apiKey: string): string {
+  return createHash('sha256').update(apiKey, 'utf8').digest('hex')
+}
+
+function safeRelayErrorMessage(value: string, apiKey: string): string {
+  return redactCommandText(value, [apiKey])
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500)
 }
 
 export function createServiceContext(store: AppSettingsStore, serviceOptions: SystemServiceOptions) {
@@ -514,6 +536,104 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     }
   }
 
+  // 问中转这把密钥能用哪些型号：保存配置、打开前核对型号、外部客户端写配置都要问，共用这一份两分钟的缓存。
+  const modelAccessCache = new Map<string, { expiresAt: number; models: string[] }>()
+
+  async function fetchAvailableModels(
+    apiKeyInput: string,
+    options: { bypassCache?: boolean; site?: RelaySite; routed?: boolean } = {},
+  ): Promise<string[]> {
+    const apiKey = apiKeyInput.trim()
+    if (!apiKey) throw new Error('请先填写 API Key')
+    // Reject any C0/C1 control character, not just CR/LF. A relay API key is a
+    // single opaque bearer token with no legitimate embedded control byte; an
+    // embedded NUL otherwise reaches undici's fetch below, which throws with
+    // the raw "Bearer <key…>" sequence in its message -- and redactCommandText's
+    // Bearer rule stops at the first non-token char, leaving the tail past the
+    // NUL in the clear in both the runtime log and the renderer-facing failure
+    // reason. This one chokepoint covers both models:list and config:save (the
+    // latter funnels through fetchAvailableModels before writing).
+    if (/[\x00-\x1F\x7F]/.test(apiKey)) throw new Error('API Key 格式错误')
+
+    const now = Date.now()
+    for (const [key, entry] of modelAccessCache) {
+      if (entry.expiresAt <= now) modelAccessCache.delete(key)
+    }
+    // Site id joins the cache key: the same API key can be pointed at a
+    // different relay site within the 2-minute TTL (site switcher), and a
+    // model list fetched from the previous site must not validate a model
+    // that then gets written into a config aimed at the new site.
+    const activeSite = options.site ?? activeRelaySite()
+    const cacheKey = `${activeSite.id}:${relayApiProbeBaseUrl(activeSite)}:${modelAccessCacheKey(apiKey)}`
+    const cached = options.bypassCache ? undefined : modelAccessCache.get(cacheKey)
+    if (cached) {
+      modelAccessCache.delete(cacheKey)
+      modelAccessCache.set(cacheKey, cached)
+      return [...cached.models]
+    }
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 12_000)
+    // 写 Key 前查模型没过时，日志要记得出走的哪条线路、服务器回了什么（request-diagnostics.ts）。
+    let diagnostics: RequestDiagnostics | null = null
+    try {
+      const relayFetch = (options.routed ? serviceOptions.relayRoutedFetch : undefined) ?? serviceOptions.relayFetch ?? fetch
+      const response = await relayFetch(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
+        headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
+        credentials: 'omit',
+        redirect: 'error',
+        signal: controller.signal,
+      })
+      diagnostics = responseDiagnostics(response)
+      const body = await readBoundedResponseText(response, maximumModelResponseBytes, '模型接口')
+      if (!response.ok) {
+        // 维护、网关错误、防护层验证页：写入 Key 与 AI 对话都经过这一步，按「服务
+        // 暂时不可用」说，免得渲染层把「服务返回 503」猜成 Key 或分组出了问题。
+        if (isServiceUnavailableResponse({ status: response.status, json: parsesAsJsonObject(body), headers: response.headers, bodyText: body })) {
+          // 用带分类的错误，一键切换才认得出「服务在维护」而不回滚（account-source-switch.ts）。
+          throw new NewApiNetworkError('serviceUnavailable', `模型查询 HTTP ${response.status}`)
+        }
+        let detail = ''
+        try {
+          const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown }
+          const message = parsed.error?.message ?? parsed.message
+          if (typeof message === 'string') detail = safeRelayErrorMessage(message, apiKey)
+        } catch {
+          detail = ''
+        }
+        const statusMessage = `${modelProbeFailurePrefix} ${response.status}`
+        throw new Error((detail ? `${statusMessage}：${detail}` : statusMessage).slice(0, 500))
+      }
+
+      let payload: unknown
+      try {
+        payload = JSON.parse(body) as unknown
+      } catch {
+        throw new Error('模型接口返回的不是有效 JSON')
+      }
+      const models = parseModelIds(payload)
+      if (!models.length) throw new Error('当前 API Key 没有返回可用模型')
+      while (modelAccessCache.size >= modelAccessCacheMaxEntries) {
+        const oldestKey = modelAccessCache.keys().next().value as string | undefined
+        if (!oldestKey) break
+        modelAccessCache.delete(oldestKey)
+      }
+      modelAccessCache.set(cacheKey, {
+        expiresAt: Date.now() + 2 * 60_000,
+        models: [...models],
+      })
+      return [...models]
+    } catch (error) {
+      noteRequestDiagnostics(error, diagnostics)
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw carryRequestDiagnostics(error, new Error('模型查询超时，请检查网络后重试'))
+      }
+      throw error
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
   return {
     store,
     serviceOptions,
@@ -581,6 +701,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     toolRouteNow,
     scheduleToolRouteTimer,
     untouchedSince,
+    fetchAvailableModels,
   }
 }
 

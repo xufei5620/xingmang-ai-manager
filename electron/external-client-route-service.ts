@@ -62,7 +62,7 @@ export function buildExternalClientDetectionErrorLogDetail(failure: ExternalClie
  * 外部客户端要跟上的那几把（#1113）：星芒替哪几个工具换过 Key、它们自己也已经换上了缓存里那把，连同读出来的缓存。
  * 主进程内部专用（I3）。
  */
-interface ManagedKeyFollowTarget {
+export interface ManagedKeyFollowTarget {
   owner: string
   keys: readonly { provider: ProviderId; apiKey: string }[]
   cachedKeys: readonly StoredManagedCliKey[]
