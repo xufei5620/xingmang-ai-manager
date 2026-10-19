@@ -1,0 +1,5 @@
+## 开发
+
+- 拆 `system-service.ts`（#1070 第 3 步，第四簇）：从星芒打开工具的那一段（`launchProvider`、`launchCodexDesktop`，Codex 桌面端中文界面和工作目录信任那几个，打开前补写配置那一队），连同只有它们用的顶层函数（终端环境 `interactiveTerminalEnvironment` / `sameUserTerminalEnvironment`、打开时不交给工具的变量、`providerCommandEnvironment`、Mac 终端的启动计划、`writeQueuedWithin` 这些），搬进新文件 `electron/provider-launch-service.ts` 的 `createProviderLaunchService`。`createSystemService` 照旧对外给原来那些方法，`system-service.ts` 照旧导出原来导出的名字；起子进程的环境、Codex 桌面端的探测和启动、读工具状态、记住的工作目录、打开 Grok 前修钩子显式传进去，新文件只 import `system-service.ts` 的类型。
+- 几样跨簇共用的状态搬进 `system-service-context.ts`：Windows 注册表里最新的 PATH（`refreshWindowsLivePath`，打开 Grok 和 Grok 钩子都看），「这次从星芒打开过哪些工具」和「哪些等重开才生效」两份记录（打开工具写、线路跟随读）。读最新 PATH 的两处从直接读变量改成调 `currentWindowsLivePath()`，这是唯一的改写；其余脚本整段复制，逐段比对一字没改。Windows 上核命令（管理员身份下 `assertTrustedElevatedCliCommand`）、开 PowerShell 窗口时终端环境以 `trustedCommandEnvironment` 为底、读注册表 PATH 这几段只搬不改。
+- 测试：新增 `provider-launch-service.test.ts`（工作目录没了先拒、打开前记进共用记录并清掉「需重开生效」、只有 Grok 先修钩子、同一次打开点两下只开一次），`system-service-context.test.ts` 加两条 Windows 最新 PATH 的读取（几秒内只读一次、别的系统不读）；系统服务其余测试照旧全过。

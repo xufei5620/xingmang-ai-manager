@@ -9,7 +9,7 @@ import type { SystemServiceOptions } from './system-service'
 
 // #1070 第 2 步把 createSystemService 开头那段搬成了 createServiceContext。这里钉住各簇都会拿去用、
 // 搬家时最容易悄悄变样的几条：缺省往严里取、管理员身份查 npm 元数据不换 fetch、下载加速的计数和归还、
-// 日志里的失败原因不带用户目录、保存配置的排队。
+// 日志里的失败原因不带用户目录、Windows 最新 PATH 的读取和交出、保存配置的排队。
 
 const temporaryDirectories: string[] = []
 
@@ -110,6 +110,39 @@ describe('system service context', () => {
     expect(reason).not.toContain(home)
     expect(reason).toContain('settings.json')
     expect(context.credentialFailureReason('plain text')).toBe('plain text')
+  })
+
+  it('hands out the newest Windows PATH it read and reads it at most once every few seconds', async () => {
+    const readWindowsLivePath = vi.fn(async () => 'C:\\Program Files\\PowerShell\\7')
+    const context = createContext({
+      platform: 'win32',
+      readWindowsLivePath,
+      resolveWindowsMachinePaths: () => ({
+        systemRoot: 'C:\\Windows',
+        system32: 'C:\\Windows\\System32',
+        programFiles: 'C:\\Program Files',
+        programFilesX86: null,
+        programData: 'C:\\ProgramData',
+      }),
+    })
+    expect(context.currentWindowsLivePath()).toBeNull()
+
+    await Promise.all([context.refreshWindowsLivePath(), context.refreshWindowsLivePath()])
+    await context.refreshWindowsLivePath()
+
+    expect(context.currentWindowsLivePath()).toBe('C:\\Program Files\\PowerShell\\7')
+    expect(readWindowsLivePath).toHaveBeenCalledTimes(1)
+    expect(readWindowsLivePath).toHaveBeenCalledWith('C:\\Windows\\System32', process.env)
+  })
+
+  it('never reads the Windows PATH on other systems', async () => {
+    const readWindowsLivePath = vi.fn(async () => 'C:\\x')
+    const context = createContext({ platform: 'darwin', readWindowsLivePath })
+
+    await context.refreshWindowsLivePath()
+
+    expect(readWindowsLivePath).not.toHaveBeenCalled()
+    expect(context.currentWindowsLivePath()).toBeNull()
   })
 
   it('runs queued config writes one after another even after one fails', async () => {

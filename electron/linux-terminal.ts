@@ -245,7 +245,7 @@ export interface LinuxTerminalScriptPlan {
   title: string
   env: NodeJS.ProcessEnv
   /**
-   * 这次打开不交给工具的变量（system-service.ts 的 launchExcludedEnvironmentVariables）。env 里已经去掉了，
+   * 这次打开不交给工具的变量（provider-launch-service.ts 的 launchExcludedEnvironmentVariables）。env 里已经去掉了，
    * 脚本再 unset 一次，免得命令窗口程序自己环境里的那份补上来；缺省 = 不 unset。
    */
   clearedEnvironmentKeys?: readonly string[]

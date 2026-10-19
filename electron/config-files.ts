@@ -4443,7 +4443,7 @@ const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
 
 /**
  * 上面选型号的那几项。客户在系统设置或 ~/.zshrc 里设的同名环境变量 Claude Code 一样认，所以用星芒账号
- * 从星芒打开 Claude Code 时也不交给它（system-service.ts 的 launchExcludedEnvironmentVariables，已知45 跟进），
+ * 从星芒打开 Claude Code 时也不交给它（provider-launch-service.ts 的 launchExcludedEnvironmentVariables，已知45 跟进），
  * 范围靠这一处和这里挪开的对齐。ANTHROPIC_API_KEY 不在内：它换的是 Key 不是型号，从星芒打开时不带它的是
  * launchExcludedEnvironmentVariables 另外列的那一项，三个平台一样（#1081）。
  */

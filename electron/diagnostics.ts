@@ -1102,7 +1102,7 @@ interface EnvironmentOverrideMatch {
  *   Gemini CLI 下线（2026-10-14）后星芒不再管它的账号，这五个从表里拿掉了，结论留在这里。
  *
  * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
- * （system-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
+ * （provider-launch-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
  * （diagnostics.test.ts 钉着），其中 Claude 的那几个只在用星芒账号时去掉。Windows、Linux 上从星芒打开时
  * Claude 的这几个同样不带（launchExcludedEnvironmentVariables，#1081）。检查页在 Mac 上另去读那几个终端
  * 设置文件，只找 breaksAccount 的那几个（collectMacosShellOverrides）。
@@ -1681,7 +1681,7 @@ async function defaultProbeNodeTls(
   env: NodeJS.ProcessEnv,
 ): Promise<NodeTlsProbeResult> {
   try {
-    // 普通权限那条路（system-service 的 sameUserTerminalEnvironment）同样是
+    // 普通权限那条路（provider-launch-service.ts 的 sameUserTerminalEnvironment）同样是
     // commandEnvironment：量的就是装工具、打开工具时真实会用到的那个 Node。
     const result = await runCommand({
       executable: input.nodePath,

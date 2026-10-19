@@ -64,6 +64,7 @@ import { createToolRouteFollowStore } from './tool-route-follow-state'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { createCliTerminalAccess } from './windows-cli-shell-access'
 import { launchCliPowerShell } from './windows-elevation'
+import { readWindowsLivePath } from './windows-live-path'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { inspectWindowsExecutableMachine } from './windows-processor'
 
@@ -451,6 +452,41 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
   }
 
+  // 注册表里整台电脑 + 当前账号的 PATH，最近读到的那一份；读不到时是 null，只看星芒启动时的快照。
+  let windowsLivePath: string | null = null
+  let windowsLivePathRead: Promise<void> | null = null
+  let windowsLivePathReadAt = 0
+
+  /**
+   * 星芒开着的时候客户装了 PowerShell 7，启动时的快照里没有它，新开的终端里却有（windows-live-path.ts）。
+   * 异步起 reg.exe，同一时刻只读一次，几秒内读过的不再读（修一次钩子会先后问两遍）；读不到就留着上一次的。
+   */
+  function refreshWindowsLivePath(): Promise<void> {
+    if (platform !== 'win32' || Date.now() - windowsLivePathReadAt < 5_000) return Promise.resolve()
+    windowsLivePathRead ??= (async () => {
+      try {
+        const system32 = resolveWindowsMachinePathsForService().system32
+        const value = await (serviceOptions.readWindowsLivePath ?? readWindowsLivePath)(system32, process.env)
+        if (value) windowsLivePath = value
+      } catch {
+        // 读不到只是少看见新装的那几段，照旧用快照推。
+      } finally {
+        windowsLivePathReadAt = Date.now()
+        windowsLivePathRead = null
+      }
+    })()
+    return windowsLivePathRead
+  }
+  // 打开工具和 Grok 钩子都要看最新读到的那一份（refreshWindowsLivePath 会换掉它），所以交出去的是个函数。
+  function currentWindowsLivePath(): string | null {
+    return windowsLivePath
+  }
+
+  // 这次运行从星芒打开过的工具（C19：从星芒打开的 Gemini 窗口按「开着」算）。
+  const toolLaunchedAt = new Map<ProviderId, number>()
+  // 改了以后要重开才生效、这回没弹提示的（24 小时内弹过、或客户关了提示），首页标「需重开生效」。
+  const toolRouteRestartPending = new Set<ProviderId>()
+
   return {
     store,
     serviceOptions,
@@ -511,6 +547,10 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     cliTerminalAccess,
     describeOccupiedCliFailure,
     credentialFailureReason,
+    refreshWindowsLivePath,
+    currentWindowsLivePath,
+    toolLaunchedAt,
+    toolRouteRestartPending,
   }
 }
 
