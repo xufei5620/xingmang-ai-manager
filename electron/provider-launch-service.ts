@@ -162,7 +162,7 @@ export function providerCommandEnvironment(
 
 /**
  * 三个平台从星芒打开工具时都不交给它的变量（已知45 跟进，#1081）。只管 Claude Code 用星芒账号的时候：
- * - 检查页实测会绕开当前账号的那两个（diagnostics.ts 的 breaksAccount）：ANTHROPIC_API_KEY 会换掉 Key，
+ * - 检查页实测会绕开当前账号的那两个（diagnostics-override-checks.ts 的 breaksAccount）：ANTHROPIC_API_KEY 会换掉 Key，
  *   CLAUDE_CONFIG_DIR 让它整个不读星芒写的 ~/.claude。这一次不交给工具不等于改客户的电脑，他系统里的设置
  *   一个字不动，所以 Windows、Linux 和 Mac 一样不带，不再只靠检查页提示。
  * - 选型号的那几个：客户自己设的 ANTHROPIC_MODEL 这类会让 Claude Code 去要当前账号没有的型号；接账号时

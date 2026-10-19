@@ -1451,7 +1451,7 @@ describe('diagnostics', () => {
       expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
     })
 
-    // 这两个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics.ts 的 breaksAccount），
+    // 这两个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics-override-checks.ts 的 breaksAccount），
     // 用户在终端里跑就连不上当前账号，所以是待处理，开机提示也会数它。
     it.each([
       ['ANTHROPIC_API_KEY', 'sk-must-not-leak', 'Claude Code'],
