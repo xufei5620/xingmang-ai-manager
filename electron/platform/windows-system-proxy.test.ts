@@ -102,6 +102,54 @@ describe('Windows system proxy lease', () => {
     expect(f.mutations).toHaveLength(2)
   })
 
+  it('sends private network addresses past the local proxy as well as loopback', () => {
+    const snapshot = buildWindowsLoopbackProxySnapshot(18765)
+    const ranges = Array.from({ length: 16 }, (_, index) => `172.${16 + index}.*`)
+    expect(snapshot.bypass.split(';')).toEqual(['<local>', 'localhost', '127.0.0.1', '[::1]', '10.*', ...ranges, '192.168.*', '169.254.*'])
+    expect(snapshot.bypass).not.toMatch(/172\.(?:15|32)\./)
+    expect(snapshot.registry.ProxyOverride).toBe(snapshot.bypass)
+  })
+
+  it('restores the original proxy from a journal an earlier version wrote with the loopback-only bypass list', async () => {
+    const f = fixture()
+    const earlierBypass = '<local>;localhost;127.0.0.1;[::1]'
+    const applied = buildWindowsLoopbackProxySnapshot(18765)
+    const earlier = { ...applied, bypass: earlierBypass, registry: { ...applied.registry, ProxyOverride: earlierBypass } }
+    const lease = { version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } }
+    fs.writeFileSync(f.lockPath, JSON.stringify(lease), 'utf8')
+    fs.writeFileSync(f.journalPath, JSON.stringify({ ...lease, before: f.before, applied: earlier }), 'utf8')
+    f.current = earlier
+    f.ownerTime = null
+    await f.service.recover()
+    expect(f.current).toEqual(f.before)
+    expect(f.mutations).toEqual([f.before])
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+    expect(fs.existsSync(f.lockPath)).toBe(false)
+  })
+
+  it('refuses a journal whose owned proxy mixes the earlier and the current bypass list', async () => {
+    const f = fixture()
+    const applied = buildWindowsLoopbackProxySnapshot(18765)
+    const mixed = { ...applied, registry: { ...applied.registry, ProxyOverride: '<local>;localhost;127.0.0.1;[::1]' } }
+    const lease = { version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } }
+    fs.writeFileSync(f.lockPath, JSON.stringify(lease), 'utf8')
+    fs.writeFileSync(f.journalPath, JSON.stringify({ ...lease, before: f.before, applied: mixed }), 'utf8')
+    f.current = mixed
+    f.ownerTime = null
+    await expect(f.service.recover()).rejects.toThrow('系统代理恢复记录损坏，已保留原文件。')
+    expect(f.mutations).toHaveLength(0)
+    expect(fs.existsSync(f.journalPath)).toBe(true)
+  })
+
+  it('keeps the customer recovery script and the uninstall smoke on the bypass list the app writes', () => {
+    const scripts = path.join(__dirname, '..', '..', 'scripts')
+    const recovery = fs.readFileSync(path.join(scripts, 'windows-acceleration-recovery.ps1'), 'utf8')
+    const smoke = fs.readFileSync(path.join(scripts, 'windows-uninstall-cleanup-smoke.ps1'), 'utf8')
+    const bypass = buildWindowsLoopbackProxySnapshot(18765).bypass
+    expect(recovery).toContain(`@('${bypass}', '<local>;localhost;127.0.0.1;[::1]')`)
+    expect(smoke).toContain(`$ownedBypass = '${bypass}'`)
+  })
+
   it('keeps repeated enable and restore idempotent and refuses a port switch while active', async () => {
     const f = fixture()
     await Promise.all([f.service.enable(18765), f.service.enable(18765)])

@@ -54,6 +54,16 @@ export interface WindowsSystemProxyOptions {
   commandTimeoutMs?: number
 }
 
+// 开着加速时，路由器、NAS、打印机、公司内网 IP 由系统直接连，不进本地代理，跟加速内核那份局域网
+// 直连（acceleration-clash-config.ts 的 privateNetworkRules，#1121）对上（#1058 第 2 项）。WinInet、
+// Chrome、Firefox、.NET 读这份列表都只认通配不认 CIDR，172.16.0.0/12 只能逐段写。100.64.0.0/10 要
+// 写 64 段、IPv6 内网写不成通配，这两类留给内核直连，同样不会送去共享节点。
+const loopbackProxyBypass = ['<local>', 'localhost', '127.0.0.1', '[::1]', '10.*',
+  ...Array.from({ length: 16 }, (_, index) => `172.${16 + index}.*`), '192.168.*', '169.254.*'].join(';')
+// 0.2.19 及以前写的绕过列表。那时开着加速断电或崩溃，恢复记录里存的就是它，升级后照样要认作自己写的、
+// 把客户原来的设置还回去；认不出来，系统代理就一直指着已经没人听的端口，整台电脑上不了网。
+const earlierLoopbackProxyBypass = '<local>;localhost;127.0.0.1;[::1]'
+
 const label = '系统代理恢复记录'
 const requestEnvironmentKey = 'XINGMANG_SYSTEM_PROXY_REQUEST'
 const maximumJournalBytes = 96 * 1024
@@ -447,7 +457,9 @@ function parseJournal(value: unknown): ProxyJournal {
   if (!isRecord(value)) throw new Error('系统代理恢复记录无效。')
   const applied = parseWindowsProxySnapshot(value.applied)
   const port = applied.server.match(/^http=127\.0\.0\.1:(\d+);https=127\.0\.0\.1:\1$/)?.[1]
-  if (!port || !sameSnapshot(applied, buildWindowsLoopbackProxySnapshot(Number(port)))) throw new Error('系统代理恢复目标无效。')
+  if (!port || ![loopbackProxyBypass, earlierLoopbackProxyBypass].some((bypass) => (
+    sameSnapshot(applied, loopbackProxySnapshot(Number(port), bypass))
+  ))) throw new Error('系统代理恢复目标无效。')
   return { ...parseLease(value), before: parseWindowsProxySnapshot(value.before), applied }
 }
 
@@ -477,11 +489,14 @@ function stillUsesOwnedEndpoint(current: WindowsProxySnapshot, applied: WindowsP
   )))
 }
 
-export function buildWindowsLoopbackProxySnapshot(port: number): WindowsProxySnapshot {
+function loopbackProxySnapshot(port: number, bypass: string): WindowsProxySnapshot {
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('本地代理端口无效。')
   const server = `http=127.0.0.1:${port};https=127.0.0.1:${port}`
-  const bypass = '<local>;localhost;127.0.0.1;[::1]'
   return { flags: 3, server, bypass, autoConfigUrl: '', registry: { ProxyEnable: 1, ProxyServer: server, ProxyOverride: bypass, AutoConfigURL: null } }
+}
+
+export function buildWindowsLoopbackProxySnapshot(port: number): WindowsProxySnapshot {
+  return loopbackProxySnapshot(port, loopbackProxyBypass)
 }
 
 /** OS mutex covers journal transitions as well as WinInet compare/write. Its
