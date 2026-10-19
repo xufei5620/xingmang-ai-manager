@@ -137,6 +137,8 @@ export interface InstallNodeRuntimeOptions {
   /**
    * 先走国内镜像还是官方源。可以给一个到要下载时才问的函数：Windows 先试 winget，没装成、
    * 借到下载专用线路以后才定（借到了就官方源优先），先算好就算早了（第二十八批 D）。
+   * Windows 上它会被问两次：没借线路时问一次定试不试 winget（nodeRuntimeTriesWingetFirst），
+   * 借到线路以后再问一次定先走哪个源。
    */
   networkRegion: NodeRuntimeNetworkRegion | (() => Promise<NodeRuntimeNetworkRegion>)
   architecture?: NodeJS.Architecture
@@ -501,6 +503,18 @@ export function resolveNodeRuntimeNetworkRegion(
   region: InstallNodeRuntimeOptions['networkRegion'],
 ): Promise<NodeRuntimeNetworkRegion> {
   return typeof region === 'function' ? region() : Promise.resolve(region)
+}
+
+/**
+ * #1061 第5条：winget 按它自己的清单去 nodejs.org 下 Node.js，不走国内镜像，也借不到下载专用线路，
+ * 国内网络上可能一直下到 15 分钟时限才轮到国内镜像。所以只在明确在海外时先试 winget；在国内或测不出位置
+ * （测不出的跟国内一样处理，理由见 nodeRuntimeDownloadSources）直接下经过校验的安装包，镜像排第一。
+ * 不改成给 winget 一个短时限：到点杀进程树，普通权限杀不到它提权拉起的 msiexec，真正在装的
+ * Windows Installer 服务也可能还在装，后面安装包那一步就撞上 1618（Windows 正在装别的），
+ * 整次安装反而失败。
+ */
+export function nodeRuntimeTriesWingetFirst(region: NodeRuntimeNetworkRegion): boolean {
+  return region === 'outside-mainland-china'
 }
 
 /**
@@ -1451,8 +1465,9 @@ async function installFromSource(
 }
 
 /**
- * Installs Node.js LTS on Windows. winget is attempted first; a verified MSI
- * from the region-preferred source is used when winget is unavailable/fails.
+ * Installs Node.js LTS on Windows. Outside mainland China winget is attempted
+ * first; a verified MSI from the region-preferred source is used when winget
+ * is skipped, unavailable or fails.
  */
 export async function installNodeRuntime(
   options: InstallNodeRuntimeOptions,
@@ -1470,7 +1485,18 @@ export async function installNodeRuntime(
   const failures: string[] = []
   // 各下载源没装成的原错误：上屏那句从这里挑一个原因说（describeNodeInstallFailure）。
   const sourceErrors: unknown[] = []
-  if (options.preferWinget !== false) {
+  let tryWinget = options.preferWinget !== false
+  if (tryWinget) {
+    // winget 不走下载专用线路，这里问的是没借线路时的位置；问不出来按测不出位置算。
+    const region = await resolveNodeRuntimeNetworkRegion(options.networkRegion)
+      .catch((): NodeRuntimeNetworkRegion => 'unknown')
+    throwIfAborted(options.signal)
+    if (!nodeRuntimeTriesWingetFirst(region)) {
+      tryWinget = false
+      failures.push(`winget：网络在国内或测不出位置（${region}），没试，直接下安装包`)
+    }
+  }
+  if (tryWinget) {
     report(options, {
       phase: 'checking',
       source: 'winget',

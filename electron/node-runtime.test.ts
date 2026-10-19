@@ -16,6 +16,7 @@ import {
   nodeDownloadCeilingMs,
   nodeDownloadStallTimeoutMs,
   nodeRuntimeDownloadSources,
+  nodeRuntimeTriesWingetFirst,
   normalizeNodeRuntimeArchitecture,
   describeNodeInstallFailure,
   describeNodeStagingFailure,
@@ -304,7 +305,7 @@ describe('Node.js installer routing and process plans', () => {
     }) as unknown as typeof fetch
 
     await expect(installNodeRuntime({
-      networkRegion: 'unknown',
+      networkRegion: 'outside-mainland-china',
       onProgress: (event) => progress.push(event.message),
       dependencies: {
         resolveWingetExecutable: async () => ({
@@ -338,7 +339,7 @@ describe('Node.js installer routing and process plans', () => {
     const fetchMock = vi.fn() as unknown as typeof fetch
 
     await expect(installNodeRuntime({
-      networkRegion: 'mainland-china',
+      networkRegion: 'outside-mainland-china',
       dependencies: {
         resolveWingetExecutable: async () => ({ executable, reason: null }),
         runProcess,
@@ -367,7 +368,7 @@ describe('Node.js installer routing and process plans', () => {
     }) as unknown as typeof fetch
 
     const failure = await installNodeRuntime({
-      networkRegion: 'unknown',
+      networkRegion: 'outside-mainland-china',
       dependencies: {
         resolveWingetExecutable: async () => ({
           executable: 'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
@@ -1002,7 +1003,7 @@ describe('Node.js installer and the download route on Windows', () => {
       routeCalls += 1
       return operation()
     }
-    const networkRegion = vi.fn(async () => 'mainland-china' as const)
+    const networkRegion = vi.fn(async () => 'outside-mainland-china' as const)
 
     await expect(installNodeRuntime({
       networkRegion,
@@ -1028,7 +1029,8 @@ describe('Node.js installer and the download route on Windows', () => {
     })).resolves.toMatchObject({ method: 'winget' })
 
     expect(routeCalls).toBe(0)
-    expect(networkRegion).not.toHaveBeenCalled()
+    // 只在决定试不试 winget 时问过一次，没有再去定先走哪个源。
+    expect(networkRegion).toHaveBeenCalledOnce()
   })
 
   it('borrows the route once winget is out and settles the source order inside it', async () => {
@@ -1067,12 +1069,126 @@ describe('Node.js installer and the download route on Windows', () => {
     })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(routeCalls).toBe(1)
-    expect(events.slice(0, 3)).toEqual([
+    expect(events.slice(0, 4)).toEqual([
+      'direct region',
       'direct winget',
       'route region',
       'route https://nodejs.org/dist/index.json',
     ])
-    expect(events.slice(2).every((event) => event.startsWith('route https://'))).toBe(true)
+    expect(events.slice(3).every((event) => event.startsWith('route https://'))).toBe(true)
+  })
+})
+
+// #1061 第5条：winget 只会从 nodejs.org 下，国内要等满 15 分钟才轮到镜像；只在明确在海外时先试它。
+describe('Node.js installer skips winget unless the network is outside mainland China', () => {
+  it('tries winget first only outside mainland China', () => {
+    expect(nodeRuntimeTriesWingetFirst('outside-mainland-china')).toBe(true)
+    expect(nodeRuntimeTriesWingetFirst('mainland-china')).toBe(false)
+    // 测不出位置的跟国内一样：拦位置探测的网络，正是连不上 nodejs.org 的那些。
+    expect(nodeRuntimeTriesWingetFirst('unknown')).toBe(false)
+  })
+
+  for (const region of ['mainland-china', 'unknown'] as const) {
+    it(`goes straight to the mirror package without touching winget when the region is ${region}`, async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      let routeHeld = false
+      async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+        routeHeld = true
+        try {
+          return await operation()
+        } finally {
+          routeHeld = false
+        }
+      }
+      const events: string[] = []
+      const progress: string[] = []
+      const resolveWingetExecutable = vi.fn(async () => ({
+        executable: 'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
+        reason: null,
+      }))
+      const runProcess = vi.fn(successfulCommand)
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        events.push(`${routeHeld ? 'route' : 'direct'} ${String(input)}`)
+        throw new Error('offline')
+      }) as unknown as typeof fetch
+
+      const failure = await installNodeRuntime({
+        networkRegion: async () => {
+          events.push(`${routeHeld ? 'route' : 'direct'} region`)
+          return region
+        },
+        temporaryDirectoryMode: 'same-user',
+        withDownloadRoute,
+        onProgress: (event) => progress.push(event.message),
+        dependencies: { resolveWingetExecutable, runProcess, fetch: fetchMock },
+      }).catch((error: unknown) => error)
+
+      expect(failure instanceof Error ? failure.message : null).toMatch(/^Node\.js 自动安装失败：/)
+      expect(resolveWingetExecutable).not.toHaveBeenCalled()
+      expect(runProcess).not.toHaveBeenCalled()
+      expect(progress.some((message) => message.includes('程序包管理器') || message.includes('应用安装组件'))).toBe(false)
+      expect(events.slice(0, 3)).toEqual([
+        'direct region',
+        'route region',
+        'route https://npmmirror.com/mirrors/node/index.json',
+      ])
+      // 没试 winget 的原因进运行日志，客服看得出这一步是跳过的、不是坏了。
+      expect(failure instanceof Error ? (failure.cause as Error).message : null)
+        .toContain(`winget：网络在国内或测不出位置（${region}），没试，直接下安装包`)
+    })
+  }
+
+  it('treats a region probe that throws as unknown and skips winget', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    let regionCalls = 0
+    const resolveWingetExecutable = vi.fn(async () => ({ executable: null, reason: 'unused' }))
+    const fetchMock = vi.fn(async () => {
+      throw new Error('offline')
+    }) as unknown as typeof fetch
+
+    await expect(installNodeRuntime({
+      networkRegion: async () => {
+        regionCalls += 1
+        if (regionCalls === 1) throw new Error('region probe failed')
+        return 'mainland-china'
+      },
+      temporaryDirectoryMode: 'same-user',
+      dependencies: { resolveWingetExecutable, fetch: fetchMock },
+    })).rejects.toThrow('Node.js 自动安装失败：')
+
+    expect(resolveWingetExecutable).not.toHaveBeenCalled()
+    expect(regionCalls).toBe(2)
+  })
+
+  it('does not ask for the region before winget when winget is turned off', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    let routeHeld = false
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeHeld = true
+      try {
+        return await operation()
+      } finally {
+        routeHeld = false
+      }
+    }
+    const regionAsked: string[] = []
+
+    await expect(installNodeRuntime({
+      networkRegion: async () => {
+        regionAsked.push(routeHeld ? 'route' : 'direct')
+        return 'mainland-china'
+      },
+      preferWinget: false,
+      temporaryDirectoryMode: 'same-user',
+      withDownloadRoute,
+      dependencies: {
+        fetch: vi.fn(async () => {
+          throw new Error('offline')
+        }) as unknown as typeof fetch,
+      },
+    })).rejects.toThrow('Node.js 自动安装失败：')
+
+    expect(regionAsked).toEqual(['route'])
   })
 })
 
