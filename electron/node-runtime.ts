@@ -413,6 +413,11 @@ function throwIfAborted(signal?: AbortSignal): void {
 // 跟从哪儿下载无关，认出它就不再换下载源重下（第三十五批 D）。
 const windowsInstallerBusyMessage = 'Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先重启电脑再试'
 
+// 授权窗口点了「否」、或者没拿到管理员权限时，runUacProcess 按账号类型写好的那两句（windows-elevation.ts）。
+// 普通账号那句多出来的「输入管理员账号的密码 / 找 IT」是写给它的下一步，不能被下面那句泛话盖掉；
+// 换个下载源重下，弹的还是同一个授权窗口、同一个账号，所以也不再换源（#1096）。
+const elevationDeclinedSentence = /^(?:已取消管理员授权|未获得管理员权限)，/
+
 function errorText(reason: unknown): string {
   const candidate = reason as { message?: unknown; stderr?: unknown } | null
   const raw = [
@@ -420,6 +425,7 @@ function errorText(reason: unknown): string {
     typeof candidate?.stderr === 'string' ? candidate.stderr : '',
     typeof reason === 'string' ? reason : '',
   ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+  if (elevationDeclinedSentence.test(raw)) return raw
   if (/\b1602\b|取消|cancell?ed|declined/i.test(raw)) return '已取消管理员授权，Node.js 尚未安装'
   if (/\b1925\b/i.test(raw)) {
     return 'Windows Installer 拒绝了机器级安装（错误 1925）。请在管理员授权提示中选择“是”；如果系统有待重启更新，请先重启电脑后再试'
@@ -436,7 +442,8 @@ function errorText(reason: unknown): string {
  * Node.js 自动安装没装成时上屏那句（#1100 第1条）。以前把每一步的原话拼在一起（「winget：命令执行失败
  * （退出码 -1978335212）：winget.exe；Node.js 官方源：fetch failed；…」），客户读不懂；现在只说一个原因和
  * 下一步，原话挂在 cause 上进运行日志。winget 那一步（先试的系统组件）不再上屏。几个下载源各有原因时，
- * 取最能动手的那一种：Windows Installer 自己那几句（取消授权、1925、1603、1618，本来就是中文）、
+ * 取最能动手的那一种：授权窗口那两句（点了「否」、没拿到管理员权限）和 Windows Installer 自己那几句
+ * （1925、1603、1618，本来就是中文）、
  * 装完没找到能用的、安装包没过校验、网络不通、下载源出错，最后才是说不清的。
  */
 export function describeNodeInstallFailure(errors: readonly unknown[]): string {
@@ -454,7 +461,15 @@ function withFullStop(sentence: string): string {
   return /[。！？]$/.test(sentence) ? sentence : `${sentence}。`
 }
 
-const windowsInstallerSentences = /^(?:已取消管理员授权|Windows Installer|Windows 正在安装别的程序)/
+const windowsInstallerSentences = /^(?:已取消管理员授权|未获得管理员权限|Windows Installer|Windows 正在安装别的程序)/
+
+/**
+ * 只认 runUacProcess 抛出来的那两整句，不认 errorText 按「取消」「cancelled」猜出来的那句：
+ * 猜错了就会把连不上之类的失败当成客户拒绝，备用下载源再也轮不到。
+ */
+function elevationDeclined(error: unknown): boolean {
+  return error instanceof Error && elevationDeclinedSentence.test(error.message)
+}
 
 function nodeInstallFailureReason(error: unknown): { rank: number; sentence: string } {
   const reason = errorText(error)
@@ -1589,8 +1604,9 @@ export async function installNodeRuntime(
           failures.push(`${source.label}：${reason}`)
           sourceErrors.push(error)
           if (options.signal?.aborted) throw error
-          // 换个源再下几十 MB，Windows 那边还在装别的，照样是 1618。
-          if (reason === windowsInstallerBusyMessage) break
+          // 换个源再下几十 MB，Windows 那边还在装别的，照样是 1618；客户在授权窗口点了「否」或者
+          // 这个账号拿不到管理员权限，换个源只会再弹一次授权（#1096）。
+          if (reason === windowsInstallerBusyMessage || elevationDeclined(error)) break
           report(options, {
             phase: 'resolving',
             source: source.id,
