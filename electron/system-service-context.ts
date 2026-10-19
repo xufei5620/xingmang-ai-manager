@@ -487,6 +487,15 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
   // 改了以后要重开才生效、这回没弹提示的（24 小时内弹过、或客户关了提示），首页标「需重开生效」。
   const toolRouteRestartPending = new Set<ProviderId>()
 
+  // 线路跟随（命令行工具和外部客户端两边）用的钟和定时器，测试替身在这里换。
+  const toolRouteNow = serviceOptions.toolRouteNow ?? Date.now
+  function scheduleToolRouteTimer(callback: () => void, delayMs: number): () => void {
+    if (serviceOptions.scheduleToolRoute) return serviceOptions.scheduleToolRoute(callback, delayMs)
+    const timer = setTimeout(callback, delayMs)
+    timer.unref?.()
+    return () => clearTimeout(timer)
+  }
+
   return {
     store,
     serviceOptions,
@@ -551,6 +560,8 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     currentWindowsLivePath,
     toolLaunchedAt,
     toolRouteRestartPending,
+    toolRouteNow,
+    scheduleToolRouteTimer,
   }
 }
 

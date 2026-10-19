@@ -819,6 +819,21 @@ describe('external clients follow the connection route the user selected (batch 
     expect(fs.readFileSync(files.get('claudeDesktop')!, 'utf8')).toBe(before.get('claudeDesktop')!.replaceAll(primaryOrigin, directOrigin))
   })
 
+  // 星芒退出时撤掉等客户端退出的那个定时（#1070 第 3 步搬家后由 disposeToolRoutes 调外部客户端那边撤）。
+  it('drops the pending client check-back when the app shuts down', async () => {
+    const f = fixture()
+    await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!.running = true
+    expect((await service.scanExternalClients()).find((client) => client.tool === 'claudeDesktop'))
+      .toMatchObject({ routePending: true, routeRecheck: true })
+    expect(f.routeTimers).toHaveLength(1)
+
+    expect(service.disposeToolRoutes).toBeTypeOf('function')
+    service.disposeToolRoutes?.()
+    expect(f.routeTimers).toEqual([])
+  })
+
   // xm 三线路 C11：客户不用回来点「重新检测」，关掉客户端以后星芒自己换。
   it('checks a pending client every five minutes and moves it by itself once it has quit', async () => {
     const f = fixture()
