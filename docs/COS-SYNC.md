@@ -170,6 +170,7 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 
 - 每次问 xAI 现在的 stable（`https://x.ai/cli/stable`，备用 `storage.googleapis.com/grok-build-public-artifacts/cli/stable`），再读本仓 `electron/cli-verified-versions.ts` 里 Grok 的推荐版本（星芒默认装它）。这两版的 x64、ARM64 都要在桶里；已经在桶里、对象大小和 ETag 没变的不再下，所以多数运行几分钟就结束。
 - 缺的那几个才从 xAI 下（x.ai 不通换 GCS 备用地址，不跟跳转，1 MB～512 MB），在 Windows 机器上先核 PE 头写的芯片和文件名一致，再用 `Get-AuthenticodeSignature` 核签名有效、签名者是 xAI 的两张证书之一：1.0.53 及更早是 X.AI LLC（SSL.com 签发），1.0.54 起是 X Corp.（GlobalSign 签发），签名者和签发机构都要对上（和客户端 `trusted-native-cli.ts` 同一份名单，#1051），核不过不传。文件不在同步机器上运行。
+- 失败时日志里搜 `stage-failed`，`failure.code` 是原因（#1084）：签名状态不是有效 `package-signature-invalid`，签名有效但签名者或签发机构不在名单上 `package-signer-mismatch`（多半是 xAI 又换了证书，两份名单要一起改），PE 头写的芯片和文件名不一致 `package-identity-mismatch`，签名检查程序没跑成 `inspector-failed`、结果读不出 `inspection-unparsable`，桶里清单不对 `cos-index-invalid`。签名对不上时 `failure.observed` 里是实际读到的签名状态、签名者和签发机构（公开的证书信息），芯片对不上时是 PE 头写的芯片；`sourceHost` 是这份文件从哪个官方地址下的。x.ai 和 GCS 每个没通的地址各打一行 `source-attempt-failed`，带地址名和脱敏后的原因（比如 HTTP 状态码），两个都不通时能看到各自卡在哪。
 - 传到 `xingmang/offline/grok/<windows-x64|windows-arm64>/sha256-<SHA-256>/grok-<版本>-windows-<x86_64|aarch64>.exe`（`application/octet-stream`，不可覆盖），完整回读核过，最后才改 `latest.json`。清单留最近 12 版（stable 和推荐版本一定在），旧版文件不删；x64 一个一百六七十 MB。
 - 在 Windows 机器上跑，因为签名只有 Windows 能核。
 

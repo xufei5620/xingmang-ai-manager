@@ -4,7 +4,7 @@ const os = require('node:os')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
-const { safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 // Windows 上一键装 Grok 从 xAI 官方下 grok.exe（electron/grok-installer.ts），国内多半连不上，以前靠加速。
 // yoyo 2026-10-14 定「放桶」：xAI 签过名的原件原样放进星芒的腾讯云存储桶，客户端先从桶里下
@@ -128,28 +128,28 @@ function validateFile(file, version, publicUrl) {
     || typeof file.url !== 'string' || (publicUrl && file.url !== publicUrl(file.key))
     || file.contentType !== CONTENT_TYPE || file.verification !== VERIFICATION
     || !Number.isSafeInteger(file.bytes) || file.bytes < MIN_BINARY_BYTES || file.bytes > MAX_BINARY_BYTES
-    || !sourceUrls(version, file.platformId).includes(file.sourceUrl)) throw new Error('COS 现有 Grok 清单的文件记录无效')
-  if (typeof file.cosEtag !== 'string' || !file.cosEtag || file.cosEtag.length > 256 || /[\r\n]/.test(file.cosEtag)) throw new Error('COS 现有 Grok 清单缺少已核验对象指纹')
+    || !sourceUrls(version, file.platformId).includes(file.sourceUrl)) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单的文件记录无效')
+  if (typeof file.cosEtag !== 'string' || !file.cosEtag || file.cosEtag.length > 256 || /[\r\n]/.test(file.cosEtag)) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单缺少已核验对象指纹')
 }
 
 function validateLatest(value, publicUrl) {
   if (value === null || value === undefined) return null
   if (!isRecord(value) || value.schemaVersion !== 1 || value.product !== PRODUCT || typeof value.generatedAt !== 'string'
     || !isRecord(value.stable) || !parseVersion(value.stable.version) || !STABLE_URLS.includes(value.stable.url)
-    || !Array.isArray(value.releases) || !value.releases.length || value.releases.length > MAX_RELEASES) throw new Error('COS 现有 Grok 清单格式无效，已保留现有清单')
+    || !Array.isArray(value.releases) || !value.releases.length || value.releases.length > MAX_RELEASES) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单格式无效，已保留现有清单')
   const seen = new Set()
   for (const release of value.releases) {
     if (!isRecord(release) || !parseVersion(release.version) || seen.has(release.version)
-      || !Array.isArray(release.files) || release.files.length !== PLATFORM_IDS.length) throw new Error('COS 现有 Grok 清单的版本记录无效')
+      || !Array.isArray(release.files) || release.files.length !== PLATFORM_IDS.length) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单的版本记录无效')
     seen.add(release.version)
     const platforms = new Set()
     for (const file of release.files) {
       validateFile(file, release.version, publicUrl)
       platforms.add(file.platformId)
     }
-    if (platforms.size !== PLATFORM_IDS.length) throw new Error('COS 现有 Grok 清单的版本缺少平台')
+    if (platforms.size !== PLATFORM_IDS.length) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单的版本缺少平台')
   }
-  if (!seen.has(value.stable.version)) throw new Error('COS 现有 Grok 清单里没有 stable 那一版')
+  if (!seen.has(value.stable.version)) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单里没有 stable 那一版')
   return value
 }
 
@@ -180,9 +180,15 @@ function createStageRunner(progress, pointerState) {
       }
       report('transfer', safe)
     }
+    // The stage fails with the last official host's error only; each host's own
+    // failure is logged as it happens, under a host name from the fixed list.
+    function attemptFailed(url, error) {
+      const host = new URL(url).hostname
+      report('source-attempt-failed', { sourceHost: OFFICIAL_HOSTS.includes(host) ? host : 'unlisted', failure: safeSyncFailure(error) })
+    }
     report('stage-start')
     try {
-      const result = await operation(transfer)
+      const result = await operation(transfer, attemptFailed)
       report('stage-complete')
       return result
     } catch (error) {
@@ -195,14 +201,21 @@ function createStageRunner(progress, pointerState) {
   }
 }
 
+// The signer is public certificate data. Logging what was read tells a certificate
+// xAI rotated (#1051: a valid signature from a signer not on the list) apart from a
+// damaged or foreign binary (a status other than Valid) without fetching the file.
+function observedSignature(signature) {
+  return isRecord(signature) ? { signatureStatus: signature.status, signerSubject: signature.subject, signerIssuer: signature.issuer } : undefined
+}
+
 function validateSignature(signature) {
-  if (!isRecord(signature) || typeof signature.status !== 'string' || signature.status.toLowerCase() !== 'valid') throw new Error('Grok 安装包没有有效的 Authenticode 签名')
+  if (!isRecord(signature) || typeof signature.status !== 'string' || signature.status.toLowerCase() !== 'valid') throw checkFailure('package-signature-invalid', 'Grok 安装包没有有效的 Authenticode 签名', observedSignature(signature))
   const subject = typeof signature.subject === 'string' ? signature.subject : ''
   const issuer = typeof signature.issuer === 'string' ? signature.issuer : ''
   const trusted = SIGNERS.some(function (signer) {
     return signer.subject.every(function (pattern) { return pattern.test(subject) }) && signer.issuer.every(function (pattern) { return pattern.test(issuer) })
   })
-  if (!trusted) throw new Error('Grok 安装包的签名发布者不是 xAI 官方的 X.AI LLC 或 X Corp.')
+  if (!trusted) throw checkFailure('package-signer-mismatch', 'Grok 安装包的签名发布者不是 xAI 官方的 X.AI LLC 或 X Corp.', observedSignature(signature))
 }
 
 async function verifyUnchangedArtifact(store, file) {
@@ -211,27 +224,31 @@ async function verifyUnchangedArtifact(store, file) {
   return Boolean(current && current.bytes === file.bytes && current.etag === file.cosEtag && contentType === file.contentType)
 }
 
-async function resolveStable(dependencies) {
+async function resolveStable(dependencies, attemptFailed) {
   let lastError
   for (const url of STABLE_URLS) {
     try {
       const version = parseVersion(await dependencies.fetchText({ url, allowedHosts: [new URL(url).hostname], maxBytes: MAX_STABLE_BYTES, headers: { accept: 'text/plain', 'user-agent': 'xingmang-grok-cos-sync/1' } }))
-      if (!version) throw new Error('xAI 返回的 Grok stable 版本格式无效')
+      if (!version) throw checkFailure('version-invalid', 'xAI 返回的 Grok stable 版本格式无效')
       return { version, url }
-    } catch (error) { lastError = error }
+    } catch (error) {
+      lastError = error
+      attemptFailed(url, error)
+    }
   }
   throw lastError
 }
 
-async function downloadOfficial(dependencies, version, platformId, filePath, onProgress) {
+async function downloadOfficial(dependencies, version, platformId, filePath, onProgress, attemptFailed) {
   let lastError
   for (const url of sourceUrls(version, platformId)) {
     try {
       const result = await dependencies.downloadResource({ url, filePath, allowedHosts: [new URL(url).hostname], maxBytes: MAX_BINARY_BYTES, headers: { accept: 'application/octet-stream', 'user-agent': 'xingmang-grok-cos-sync/1' }, onProgress })
-      if (!result || !Number.isSafeInteger(result.bytes) || result.bytes < MIN_BINARY_BYTES || result.bytes > MAX_BINARY_BYTES || !SHA256_PATTERN.test(result.sha256 || '')) throw new Error('Grok 安装包大小或摘要无效')
+      if (!result || !Number.isSafeInteger(result.bytes) || result.bytes < MIN_BINARY_BYTES || result.bytes > MAX_BINARY_BYTES || !SHA256_PATTERN.test(result.sha256 || '')) throw checkFailure('download-mismatch', 'Grok 安装包大小或摘要无效')
       return { url, bytes: result.bytes, sha256: result.sha256 }
     } catch (error) {
       lastError = error
+      attemptFailed(url, error)
       await dependencies.removeFile(filePath)
     }
   }
@@ -263,7 +280,7 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
   const old = await stage('cos-read-latest', {}, async function () {
     return validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
   })
-  const stable = await stage('source-stable', {}, function () { return resolveStable(dependencies) })
+  const stable = await stage('source-stable', {}, function (onProgress, attemptFailed) { return resolveStable(dependencies, attemptFailed) })
   // checkedAt is when xAI told us its stable, not when the uploads finished: if xAI moves on
   // mid-run, the index must not vouch for the old stable any longer than it has to.
   const checkedAt = now()
@@ -277,20 +294,21 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
       if (existing && await stage('cos-check-existing', context, function () { return verifyUnchangedArtifact(store, existing) })) return existing
       const filePath = path.join(workDirectory, artifactFileName(version, platformId))
       try {
-        const downloaded = await stage('source-download', context, function (onProgress) { return downloadOfficial(dependencies, version, platformId, filePath, onProgress) })
-        await stage('verify-binary', { ...context, expectedBytes: downloaded.bytes }, async function () {
-          if (await dependencies.readPeMachine(filePath) !== PLATFORMS[platformId].machine) throw new Error('Grok 安装包的处理器架构和文件名不一致')
+        const downloaded = await stage('source-download', context, function (onProgress, attemptFailed) { return downloadOfficial(dependencies, version, platformId, filePath, onProgress, attemptFailed) })
+        await stage('verify-binary', { ...context, expectedBytes: downloaded.bytes, sourceHost: new URL(downloaded.url).hostname }, async function () {
+          const machine = await dependencies.readPeMachine(filePath)
+          if (machine !== PLATFORMS[platformId].machine) throw checkFailure('package-identity-mismatch', 'Grok 安装包的处理器架构和文件名不一致', { packageArchitecture: machineName(machine) })
           validateSignature(await dependencies.inspectSignature(filePath, workDirectory))
         })
         const key = artifactKey(version, platformId, downloaded.sha256)
         const published = await stage('cos-publish-binary', { ...context, expectedBytes: downloaded.bytes }, async function (onProgress) {
           const result = await store.publishFile(key, filePath, { expectedBytes: downloaded.bytes, expectedSha256: downloaded.sha256, contentType: CONTENT_TYPE, cacheControl: 'public, max-age=31536000, immutable', onProgress })
-          if (result.bytes !== downloaded.bytes || result.sha256 !== downloaded.sha256) throw new Error('COS Grok 安装包公共下载校验结果不一致')
+          if (result.bytes !== downloaded.bytes || result.sha256 !== downloaded.sha256) throw checkFailure('cos-object-mismatch', 'COS Grok 安装包公共下载校验结果不一致')
           return result
         })
         const head = await stage('cos-head-binary', context, async function () {
           const result = await store.inspect(key)
-          if (!result || result.bytes !== downloaded.bytes || typeof result.etag !== 'string' || result.etag !== published.etag) throw new Error('COS Grok 安装包发布后的 HEAD 与已核验正文不一致')
+          if (!result || result.bytes !== downloaded.bytes || typeof result.etag !== 'string' || result.etag !== published.etag) throw checkFailure('cos-object-mismatch', 'COS Grok 安装包发布后的 HEAD 与已核验正文不一致')
           return result
         })
         return {
@@ -316,7 +334,7 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
     const published = changed ? manifest : { ...old, checkedAt }
     await stage('cos-recheck-latest', {}, async function () {
       const latest = validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
-      if (JSON.stringify(latest) !== JSON.stringify(old)) throw new Error('COS Grok 清单在同步期间发生变化，停止发布以保留现有状态')
+      if (JSON.stringify(latest) !== JSON.stringify(old)) throw checkFailure('cos-index-changed', 'COS Grok 清单在同步期间发生变化，停止发布以保留现有状态')
     })
     latestState = 'write-unconfirmed'
     await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, published, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
@@ -332,16 +350,24 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
   }
 }
 
+// The PE machine field as the platform's architecture name, or as hex for one
+// neither platform uses (0x014c is 32-bit x86).
+function machineName(machine) {
+  if (!Number.isSafeInteger(machine) || machine < 0 || machine > 0xffff) return undefined
+  const platform = Object.values(PLATFORMS).find(function (spec) { return spec.machine === machine })
+  return platform ? platform.architecture : `0x${machine.toString(16).padStart(4, '0')}`
+}
+
 /** Reads the COFF machine field from the PE header; never runs the file. */
 async function readPeMachine(filePath) {
   const handle = await fs.open(filePath, 'r')
   try {
     const dos = Buffer.alloc(64)
-    if ((await handle.read(dos, 0, 64, 0)).bytesRead !== 64 || dos.readUInt16LE(0) !== 0x5a4d) throw new Error('Grok 安装包不是 Windows 可执行文件')
+    if ((await handle.read(dos, 0, 64, 0)).bytesRead !== 64 || dos.readUInt16LE(0) !== 0x5a4d) throw checkFailure('package-format-invalid', 'Grok 安装包不是 Windows 可执行文件')
     const offset = dos.readUInt32LE(0x3c)
-    if (offset < 64 || offset > 64 * 1024) throw new Error('Grok 安装包的 PE 头位置无效')
+    if (offset < 64 || offset > 64 * 1024) throw checkFailure('package-format-invalid', 'Grok 安装包的 PE 头位置无效')
     const header = Buffer.alloc(6)
-    if ((await handle.read(header, 0, 6, offset)).bytesRead !== 6 || header.readUInt32LE(0) !== 0x00004550) throw new Error('Grok 安装包缺少 PE 头')
+    if ((await handle.read(header, 0, 6, offset)).bytesRead !== 6 || header.readUInt32LE(0) !== 0x00004550) throw checkFailure('package-format-invalid', 'Grok 安装包缺少 PE 头')
     return header.readUInt16LE(4)
   } finally {
     await handle.close()
@@ -355,7 +381,7 @@ $signature=Get-AuthenticodeSignature -LiteralPath $FilePath
 `
 
 async function inspectSignature(filePath, workDirectory, run = promisify(execFile), platform = process.platform) {
-  if (platform !== 'win32') throw new Error('Grok 签名检查必须在 Windows runner 运行')
+  if (platform !== 'win32') throw checkFailure('inspector-unavailable', 'Grok 签名检查必须在 Windows runner 运行')
   const script = path.join(workDirectory, 'inspect-grok-signature.ps1')
   try { await fs.writeFile(script, SIGNATURE_SCRIPT, { flag: 'wx', mode: 0o600 }) } catch (error) { if (error.code !== 'EEXIST') throw error }
   let result
@@ -364,8 +390,8 @@ async function inspectSignature(filePath, workDirectory, run = promisify(execFil
       env: { SystemRoot: 'C:\\Windows', WINDIR: 'C:\\Windows', TEMP: workDirectory, TMP: workDirectory, PSModulePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules' },
       windowsHide: true, timeout: 120000, maxBuffer: 64 * 1024,
     })
-  } catch { throw new Error('Grok 安装包签名检查失败') }
-  try { return JSON.parse(result.stdout.replace(/^\uFEFF/, '')) } catch { throw new Error('Grok 安装包签名检查结果无法解析') }
+  } catch (error) { throw checkFailure('inspector-failed', 'Grok 安装包签名检查失败', observedProcessFailure(error)) }
+  try { return JSON.parse(result.stdout.replace(/^\uFEFF/, '')) } catch { throw checkFailure('inspection-unparsable', 'Grok 安装包签名检查结果无法解析') }
 }
 
 function createRuntimeDependencies(common) {
@@ -379,7 +405,7 @@ function createRuntimeDependencies(common) {
     removeWorkDirectory: async function (directory) {
       const resolved = path.resolve(directory)
       const temporaryRoot = await fs.realpath(os.tmpdir())
-      if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith('xingmang-grok-cos-')) throw new Error('拒绝删除临时同步目录以外的路径')
+      if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith('xingmang-grok-cos-')) throw checkFailure('temp-path-rejected', '拒绝删除临时同步目录以外的路径')
       await fs.rm(resolved, { recursive: true, force: true })
     },
   }
@@ -387,7 +413,7 @@ function createRuntimeDependencies(common) {
 
 async function main() {
   const common = require('./cos-sync-utils.cjs')
-  if (process.argv.length > 2) throw new Error('Grok 同步不接受命令行参数')
+  if (process.argv.length > 2) throw checkFailure('platform-invalid', 'Grok 同步不接受命令行参数')
   const config = common.readCosConfiguration(process.env)
   const source = await common.readBoundedRegularFile(path.join(__dirname, '..', 'electron', 'cli-verified-versions.ts'), { maxBytes: MAX_SOURCE_BYTES })
   const recommendedVersion = readRecommendedGrokVersion(source.toString('utf8'))
