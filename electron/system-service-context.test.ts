@@ -3,13 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
+import { inspectProviderConfig as realInspectProviderConfig } from './config-files'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import { createServiceContext } from './system-service-context'
 import type { SystemServiceOptions } from './system-service'
 
 // #1070 第 2 步把 createSystemService 开头那段搬成了 createServiceContext。这里钉住各簇都会拿去用、
 // 搬家时最容易悄悄变样的几条：缺省往严里取、管理员身份查 npm 元数据不换 fetch、下载加速的计数和归还、
-// 日志里的失败原因不带用户目录、Windows 最新 PATH 的读取和交出、保存配置的排队。
+// 日志里的失败原因不带用户目录、Windows 最新 PATH 的读取和交出、读不出的配置算动过、保存配置的排队。
 
 const temporaryDirectories: string[] = []
 
@@ -143,6 +144,20 @@ describe('system service context', () => {
 
     expect(readWindowsLivePath).not.toHaveBeenCalled()
     expect(context.currentWindowsLivePath()).toBeNull()
+  })
+
+  it('counts a config it can no longer read as touched', () => {
+    let fail = false
+    const inspectProviderConfig = vi.fn((...args: Parameters<NonNullable<SystemServiceOptions['inspectProviderConfig']>>) => {
+      if (fail) throw new Error('reparse point in the way')
+      return realInspectProviderConfig(...args)
+    })
+    const context = createContext({ inspectProviderConfig })
+    const before = context.inspectNativeProviderConfig('codex')
+
+    expect(context.untouchedSince('codex', before)).toBe(true)
+    fail = true
+    expect(context.untouchedSince('codex', before)).toBe(false)
   })
 
   it('runs queued config writes one after another even after one fails', async () => {

@@ -26,6 +26,7 @@
 - `route-status-file.ts` — 读服务端发布的线路状态文件 `/xm-route-status.json`，里面有：各直连域名指向哪台入口、有没有被切到 CF、合法 IP、是否在处理故障、香港开没开。它只经应用线路、按本站线路自己的 origin 显式去读（不去退役别名），照 I10 做了超时、16KB 上限、不跟重定向。读不到不算线路失败，结果缓存 10 分钟。注意和更新目录里的 `service-status.json` 是两份文件
 - `tool-route-status.ts` — 把工具线路的快照和提示整理成设置快照里的 `relayToolRouteStatus`（服务端在切换、三条线都不通、劫持），不加 IPC 通道。`buildToolRouteReport` 生成检查页导出报告里工具线路那几行：只说线路1 / 线路2，不带地址
 - `tool-route-rewrite.ts` — 换线路时只改配置里的那一个地址（TOML / JSON / .env），文件其余字节原样。改完整份重新解析，和「只改了这一个键」逐项比对；对不上或定位不到就返回 null，一个字都不改。`config-files.ts` 和 `xingmang-ai-skill.ts` 在用
+- `tool-route-follow-service.ts` — **换线路定点改写命令行工具配置的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `followToolRoutes`、`noteRouteFollowRestart`、`bindToolRouteAccount`、`disposeToolRoutes`）：只管星芒账号；替当前账号写的那份只改地址（`tool-route-rewrite.ts`），和整份保存排同一个队；暂时改不动的过一会儿再试，改完一分钟回头看有没有被别的程序改回去（记在下面的 `tool-route-follow-state.ts`），要重开才生效的给首页一条半小时内有效的提示。星芒退出时撤掉这些定时，连外部客户端那边等着回头看的一起撤
 - `tool-route-follow-state.ts` — 换线路定点改写要跨重启记住的每工具状态（存在 `tool-route-follow/`），记这几样：
   - 被外部改回的次数；24 小时内改回两次就标「由其他工具管理」，不再自动改
   - 原件备份过没有

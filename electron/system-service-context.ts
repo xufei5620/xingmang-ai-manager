@@ -58,7 +58,7 @@ import { createRelayEndpointRoutingSnapshot, relaySiteForProviderBaseUrl, type R
 import { bypassClosedLoopbackProxies, describeDroppedProxies, probeLoopbackProxy } from './stale-proxy-environment'
 import { redactHomeDirectory } from './startup-log'
 import type { SystemServiceOptions, ToolStatus } from './system-service'
-import { ToolConfigOwnershipStore } from './tool-config-ownership'
+import { toolConfigIdentity, ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveCliCommand, resolveCliInstallation, resolveNpmGlobalRoot, type CliInstallation } from './tool-installation'
 import { createToolRouteFollowStore } from './tool-route-follow-state'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
@@ -114,6 +114,15 @@ export function buildToolStatusFromSettled(result: PromiseSettledResult<ToolStat
     detectionFailed: true,
     detectionError: describeProbeFailure(result.reason),
   }
+}
+
+/**
+ * 「保存前读到的那份配置一点没动」只有这一个口径：检测模型期间被人改了就不写；写失败以后，
+ * 也只有这样才把来源原样放回。修改时间也要一样：回滚会把内容照原样写回去，身份和型号都对得上，
+ * 可那几个文件毕竟被这次保存动过，按「写到一半」处理，照旧留着保护。
+ */
+export function sameNativeConfigSnapshot(before: NativeConfigInspection, current: NativeConfigInspection): boolean {
+  return toolConfigIdentity(current) === toolConfigIdentity(before) && current.updatedAt === before.updatedAt && current.model === before.model
 }
 
 export function createServiceContext(store: AppSettingsStore, serviceOptions: SystemServiceOptions) {
@@ -496,6 +505,15 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     return () => clearTimeout(timer)
   }
 
+  // 读不出来（比如路径里冒出了联接）就当动过：宁可留着「手动」保护，也不能让读配置的错误顶掉保存本来的错误。
+  function untouchedSince(provider: ProviderId, before: NativeConfigInspection): boolean {
+    try {
+      return sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))
+    } catch {
+      return false
+    }
+  }
+
   return {
     store,
     serviceOptions,
@@ -562,6 +580,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     toolRouteRestartPending,
     toolRouteNow,
     scheduleToolRouteTimer,
+    untouchedSince,
   }
 }
 
