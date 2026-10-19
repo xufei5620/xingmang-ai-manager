@@ -154,7 +154,7 @@ export function macGitInstallOutcomeMessage(outcome: MacGitInstallWaitOutcome): 
 }
 
 export interface MacGitRuntimeInstallDependencies {
-  /** 本软件平时那套 Git 探测（system-service 的 inspectGit）：Homebrew 装的也算。 */
+  /** 本软件平时那套 Git 探测（system-scan-service.ts 的 inspectGit）：Homebrew 装的也算。 */
   inspectInstalled(): Promise<{ version: string | null } | null>
   inspectShim(): Promise<CommandLineToolsShimState>
   /** 调用方负责把这一步排进安装队列（I11）；等待苹果窗口那一段不占队列。 */
