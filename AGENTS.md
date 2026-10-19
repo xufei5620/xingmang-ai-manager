@@ -162,8 +162,8 @@ v2 渲染层同样已收口，且**只有一套展示顺序**（v3.1.1 起，以
 
 历史包袱：这里曾有 5 处编译器沉默点（各页面自写 provider 联合类型/字面量数组），已随 #32 全部收口进 registry。**新的展示顺序数组只能定义在 registry 里，不要在页面里写字面量**。遗留手工点：概览页 `Dashboard.tsx` 的「N/5 个工具已安装」分母仍是硬编码。
 
-**T3. 改 `system-service.ts` → 先确认改的是纯函数区还是闭包区。**
-`createSystemService` 之前是纯函数库（全部 export、测试直接调用），它之后是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。这是全仓最大、也最容易撞车的文件。
+**T3. 改系统服务 → 先找对文件，再确认改的是纯函数区还是闭包区。**
+`createSystemService`（`system-service.ts`）已按 #1070 收成门面，只把各簇接起来；逻辑在各簇自己的 `*-service.ts`（装和更新 CLI、卸载、运行环境、首页检测、打开工具、外部客户端、线路跟随、官方账号、保存配置各一个，清单见 `docs/module-map/main-core-canvas.md` 的 `system-service.ts` 条），各簇共用的那份在 `system-service-context.ts`。每个文件里工厂函数之前是纯函数库（全部 export、测试直接调用），之内是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。一簇要用另一簇的东西，由门面显式传进去（各自的 `*ServiceDependencies`），簇与簇之间不互相 import 值；服务文件只 import `system-service.ts` 的类型，搬走的导出名由 `system-service.ts` 照旧转出。共用的上下文是最容易撞车的地方。
 
 **T4. 动 `trustedCommandEnvironment` → 只能收紧，不能放宽。**
 `unsafeKeys` / `unsafePrefixes` 两张禁止表只能加不能减，每条对应一个具体攻击。第三张 `safeGitOverrides` 是放行表，但只放行几个固定值（让 git 不读系统和全局配置、不弹密码提示的那几个），往里加的只能是让子进程更保守的固定值。放行任何变量或值前，先在测试里写出"为什么安全"。

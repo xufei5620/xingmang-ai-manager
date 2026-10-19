@@ -10,7 +10,8 @@ import type { SystemServiceOptions } from './system-service'
 
 // #1070 第 2 步把 createSystemService 开头那段搬成了 createServiceContext。这里钉住各簇都会拿去用、
 // 搬家时最容易悄悄变样的几条：缺省往严里取、管理员身份查 npm 元数据不换 fetch、下载加速的计数和归还、
-// 日志里的失败原因不带用户目录、Windows 最新 PATH 的读取和交出、读不出的配置算动过、保存配置的排队。
+// 日志里的失败原因不带用户目录、Windows 最新 PATH 的读取和交出、读不出的配置算动过、保存配置的排队，
+// 以及几簇共用的那份型号列表缓存。
 
 const temporaryDirectories: string[] = []
 
@@ -183,5 +184,19 @@ describe('system service context', () => {
     await expect(first).rejects.toThrow('写失败')
     await expect(second).resolves.toBe('saved')
     expect(order).toEqual(['first:start', 'first:end', 'second'])
+  })
+
+  it('asks the relay for the model list once per key and asks again when told to bypass the cache', async () => {
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const context = createContext({ relayFetch })
+
+    await expect(context.fetchAvailableModels('sk-fixture')).resolves.toEqual(['fixture-model'])
+    await expect(context.fetchAvailableModels(' sk-fixture ')).resolves.toEqual(['fixture-model'])
+    expect(relayFetch).toHaveBeenCalledTimes(1)
+
+    await context.fetchAvailableModels('sk-fixture', { bypassCache: true })
+    expect(relayFetch).toHaveBeenCalledTimes(2)
+    await expect(context.fetchAvailableModels('sk-bad\u0000')).rejects.toThrow('API Key 格式错误')
+    expect(relayFetch).toHaveBeenCalledTimes(2)
   })
 })

@@ -221,7 +221,7 @@ gh pr create \
 
 标了 `serial-only` 的任务，**同一时间只能有一个人做**。涉及：
 
-- **`electron/system-service.ts` 的结构性改动**（全仓最大的文件，行数以 `wc -l` 为准）
+- **`electron/system-service.ts` 的结构性改动**（#1070 起是把各簇服务接起来的门面，连同各簇共用的 `system-service-context.ts`，一动就波及每一簇）
 
 **为什么**：枢纽文件两个人同时动几乎必冲突。原来列在这里的 legacy `src/styles.css` / `src/App.tsx` 已随 2026-09-19 冻结不再做结构性改动（`AGENTS.md` T14），不再是冲突点。
 
