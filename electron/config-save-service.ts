@@ -613,7 +613,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
 
   /**
    * Gemini CLI 下线后，星芒以前写进它 settings.json 的做完提醒和画图工具没人跟着改了：星芒换了
-   * 位置或被卸掉，Gemini 每一轮都会多报一行错。每次开机看一眼，有就收回（config-files.ts 的
+   * 位置或被卸掉，Gemini 每一轮都会多报一行错。每次开机看一眼，有就收回（gemini-retired.ts 的
    * removeRetiredGeminiIntegrations），收过了就什么都不写。Gemini 开着时它可能正在写同一个文件，
    * 和补设置同一套规矩：开着或看不出开没开的这次不动。
    */

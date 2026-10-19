@@ -383,7 +383,7 @@ function inspectCodex(workspace: string, context: WorkspaceOverrideContext): Wor
 
 // 不信任这个文件夹时下面那几样 Gemini 都不读了，自己开终端反正用不上当前账号，只报这一条。
 // 本软件打开 Gemini 时会替没记过的文件夹写上信任（trustManagedWorkspace），客户自己选过
-// 「Don't trust」的不替他改（config-files.ts 的 trustGeminiWorkspaceInTrustedFoldersText）。
+// 「Don't trust」的不替他改（gemini-retired.ts 的 trustGeminiWorkspaceInTrustedFoldersText）。
 function inspectGeminiFolderTrust(workspace: string, context: WorkspaceOverrideContext): WorkspaceConfigOverride | null {
   const api = pathApi(context.platform)
   const settings = readSettingsFile(api.join(context.home, '.gemini', 'settings.json'))
