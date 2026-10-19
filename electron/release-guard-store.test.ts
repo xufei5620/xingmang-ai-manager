@@ -36,6 +36,21 @@ describe('release guard store', () => {
       .toEqual({ badVersions: ['0.2.20'], rollout: null })
   })
 
+  it('remembers which packages a withdrawal covers, and writes a record without any exactly as before (#1155 item 5)', async () => {
+    const filePath = temporaryFile()
+    const guard = {
+      badVersions: ['0.2.19', '0.2.20'],
+      badVersionPlatforms: { '0.2.20': ['mac-x64'] },
+      rollout: { version: '0.2.21', percent: 0, platforms: ['mac-x64'] },
+    }
+    await createReleaseGuardStore({ filePath }).write(guard)
+    expect(createReleaseGuardStore({ filePath }).read()).toEqual(guard)
+    // 只撤 Intel 版的 0.2.20 照旧写在 badVersions 里。
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).badVersions).toEqual(['0.2.19', '0.2.20'])
+    await createReleaseGuardStore({ filePath }).write({ badVersions: ['0.2.19'], rollout: null })
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('{"version":1,"badVersions":["0.2.19"],"rollout":null}\n')
+  })
+
   it('keeps the later of two writes issued back to back', async () => {
     const filePath = temporaryFile()
     const store = createReleaseGuardStore({ filePath })
