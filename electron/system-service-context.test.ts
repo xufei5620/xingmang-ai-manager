@@ -93,6 +93,14 @@ describe('system service context', () => {
     expect(direct.release).toHaveBeenCalledTimes(1)
   })
 
+  it('adds the file-in-use sentence only when the failure really is a locked file', async () => {
+    const logged: string[] = []
+    const context = createContext({ runtimeLog: { log: (_level, _source, event) => { logged.push(event) } } })
+
+    await expect(context.describeOccupiedCliFailure('claude', new Error('下载失败'), '下载失败', null, '更新')).resolves.toBeNull()
+    expect(logged).toEqual([])
+  })
+
   it('runs queued config writes one after another even after one fails', async () => {
     const context = createContext()
     const order: string[] = []

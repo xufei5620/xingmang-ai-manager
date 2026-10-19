@@ -477,7 +477,7 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
   })
 
   // internal #23: residual gap left by internal #16/#20's agent-link fixes.
-  // inspectVerifiedDarwinGrokPostInstall (system-service.ts) calls
+  // inspectVerifiedDarwinGrokPostInstall (cli-install-service.ts) calls
   // ensureDarwinGrokAgentLink as the first step of the verify() this
   // transaction wraps, then goes on to codesign- and version-verify the
   // canonical selection. A failure in that *later* work used to roll back

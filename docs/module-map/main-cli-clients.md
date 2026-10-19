@@ -11,7 +11,8 @@
 - `versions.ts` — 版本号小工具：只认精确版本（拒 npm 范围、标签和像命令行参数的串）、Node.js 最低 20、新旧比较；主进程判断版本新旧只走这里的 `compareVersionNumbers`，更新器、上次运行记录、Node / Python 发布索引各自的认法是这里的几个 `parse*Version`（Codex 桌面端四段包版本除外，在 `codex-desktop.ts`）；零依赖，渲染层也直接引
 
 ## CLI 安装、定位与运行环境
-- `tool-installation.ts` — **认「这个工具装在哪、从哪装的、怎么起」的核心**：分清 npm 包与官方原生安装器（首页据此写「官方安装器」还是「其他来源」）、能不能卸、新开和续聊的启动参数；`resolveCliCommand` 在起进程前核原生可执行文件（Windows 走 `trusted-native-cli.ts` 的签名与暂存，Mac 走 codesign 加 `darwin-cli-staging.ts`）。npm 装、更新这一步本身在 `system-service.ts`
+- `tool-installation.ts` — **认「这个工具装在哪、从哪装的、怎么起」的核心**：分清 npm 包与官方原生安装器（首页据此写「官方安装器」还是「其他来源」）、能不能卸、新开和续聊的启动参数；`resolveCliCommand` 在起进程前核原生可执行文件（Windows 走 `trusted-native-cli.ts` 的签名与暂存，Mac 走 codesign 加 `darwin-cli-staging.ts`）。npm 装、更新这一步本身在 `cli-install-service.ts`
+- `cli-install-service.ts` — **装和更新 CLI 的那一整段**（#1070 第 2 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installCli` / `cancelCliInstall` / `cleanupInstallLeftovers`）：找 npm（Windows 上没有就先装 Node.js）、按网络挑源、解析和下载卡住就换源、国内镜像下的包要和 npm 官方源的 SHA-512 一致、托管 npm 目录整体替换（换不回去时报 `ManagedNpmRollbackError`）、Grok 的 Windows 原生通道和 Mac / Linux 的签名核对、装完 Claude Code 顺带装 Git、记更新历史，以及取消和清理下了一半的东西。Windows 提权安装、可信路径那几段只搬不改
 - `installation-queue.ts` — **I11 的实现**：安装、卸载、启动这类会原子替换机器级目录的操作排成一队，同一个 key 复用同一个 Promise（双击天然幂等），还在排队的可以随信号直接出队。外部桌面客户端的「打开」是登记过的例外，见 `external-client-runtime.ts`
 - `install-cancellation.ts` — 安装的「取消」：每次安装一个可中止的信号，但原子替换那几段会「封住」，封着时拒绝取消并给出能上屏的中文原因，不默默吞掉；用户取消抛 `InstallCancelledError`，不进异常日志
 - `managed-cli-paths.ts` — **托管目录只在这里定**：Windows 是 `ProgramData\XingMangAI`（从可信机器路径取，不读环境变量），Mac 是 `~/Library/Application Support/XingMangAI`，Linux 是 `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`；npm 前缀、缓存、原生包、终端启动器、`Runtime/node` 都从它派生

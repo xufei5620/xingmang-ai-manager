@@ -547,7 +547,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('never reassures when the backend says the rollback failed too', () => {
-    // system-service.ts 的 ManagedNpmRollbackError。套上「当前版本不受影响」
+    // cli-install-service.ts 的 ManagedNpmRollbackError。套上「当前版本不受影响」
     // 正好是反的：旧版本已经没了。
     expect(presentOperationError('托管 npm 更新失败，且旧版本回滚失败：SHA-512 完整性校验不一致')).toBeNull()
     expect(presentOperationError('托管 npm 更新失败，且旧版本回滚失败：EPERM: operation not permitted')).toBeNull()
