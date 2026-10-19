@@ -798,7 +798,7 @@ export function createRelayRouteConclusionStore(filePath: string): Pick<RelayRou
 }
 
 /**
- * 健康检查：星芒账号查 /api/status，历史账号查 /api/v1/settings/public（diagnostics.ts 的
+ * 健康检查：星芒账号查 /api/status，历史账号查 /api/v1/settings/public（diagnostics-network-checks.ts 的
  * relayStatusProbeUrl，两个都是本来就回 JSON 的公开接口）。回 200 且正文是 JSON 才算通：
  * 白名单挡下的、门户认证页、防护层的验证页回的都是网页。重定向不跟（门户认证正是靠它）。
  */
