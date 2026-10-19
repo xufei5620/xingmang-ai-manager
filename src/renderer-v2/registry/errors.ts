@@ -22,6 +22,7 @@ export const errors = {
   toolCertElevated: { title: '管理员身份下工具不认这台电脑的证书', body: toolCertificateMessages.elevated, actions: ['重试', '查看日志'] },
   configLink: { title: '配置文件是个链接', body: '为了安全，星芒不往链接里写，原来的设置没有动。照下面这句话把它换成普通文件，再点「重试」；不会弄就点「找客服」。', actions: ['重试', '找客服'] },
   folderRelocated: { title: '文件夹被搬到了别的位置', body: '为了安全，软件不往被搬过的文件夹里写东西。打开「检查」页能看到是哪个文件夹；把它搬回原来的位置就能恢复。', actions: ['打开检查页', '找客服'] },
+  elevationDeclined: { title: '没拿到管理员授权', body: '这次没装，电脑上什么都没改。先照下面这句话做，再点「重试」；还不行点「找客服」。', actions: ['重试', '找客服'] },
   permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查安装目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },
   configPermission: { title: '写不进配置文件', body: '常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。', actions: ['重试', '查看日志', '找客服'] },
   updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },

@@ -118,7 +118,17 @@ export function guideOfficialLoginRequired(provider: ProviderId, source: GuideTo
   return provider === 'codex' && source === 'official' && summary?.codexAuthMode !== 'chatgpt'
 }
 
-const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'downloadUnreachable', 'downloadSourceError', 'officialRegistryUnreachable', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'permission'])
+const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'downloadUnreachable', 'downloadSourceError', 'officialRegistryUnreachable', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'elevationDeclined', 'permission'])
+
+/**
+ * 授权窗口那句（windows-elevation.ts）后半截按账号类型写好了下一步：普通账号要输管理员账号的密码、公司电脑找 IT。
+ * 认出原因以后原话折在「给客服看的原话」里，客户不会点开，所以把这半截接在红字里（#1096）。
+ */
+function elevationNextStep(key: string, message: string): string {
+  if (key !== 'elevationDeclined') return ''
+  const next = /(?:已取消管理员授权|未获得管理员权限)，[^。]*。(.+)$/.exec(message)?.[1].trim() ?? ''
+  return !next || /[。！？]$/.test(next) ? next : `${next}。`
+}
 
 /**
  * 引导红字的三样东西，和错误框一个规矩（#670）：上屏那句、认出来的原因（认不出为空）、
@@ -163,7 +173,7 @@ export function guideInstallFailure(error: unknown, name: string, canReplaceNode
   const detail = guideDetail(error, '')
   const why = reason ? `（${reason}）` : detail ? unrecognized : ''
   const what = /运行环境没装上/.test(message) ? `运行环境没装上${why}，${name} 还没开始装` : `${name} 没装上${why}`
-  return { message: `${what}。${guideFailureTail(!reason && Boolean(detail), copyable)}`, reason, detail }
+  return { message: `${what}。${elevationNextStep(key, message)}${guideFailureTail(!reason && Boolean(detail), copyable)}`, reason, detail }
 }
 
 /**
