@@ -23,7 +23,7 @@
 
 | 哪一套 | 契约（真相源） | preload（有意重复的字面量通道表） | 注册与校验 | 渲染层拿到的 |
 |---|---|---|---|---|
-| 主窗口业务 | `ipc-contract.ts` | `preload.ts` | `ipc.ts`，经 `registerTrustedHandler` | `window.xingmang` |
+| 主窗口业务 | `ipc-contract.ts` | `preload.ts` | `ipc.ts` 组装、处理器按域在 `ipc/handlers/`，都经 `registerTrustedHandler` | `window.xingmang` |
 | 主窗口系统设置与通知（只在新界面安装） | `platform/contract.ts` | `platform/preload.ts` | `platform/ipc.ts`，`assertPlatformOwner` 只放行主窗口主框架 | `window.xingmangPlatform` |
 | 画布窗口 | `canvas-contract.ts` | `canvas-preload.ts` | `canvas-window.ts`，`assertTrustedCanvasSender` 只放行画布窗口 | `window.xingmangCanvasHost` |
 
