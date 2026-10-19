@@ -168,6 +168,8 @@ describe('main process startup order', () => {
       'diagnostics.attachFeedbackDescribers',
       'createDesktopNotificationController',
       'registerApplicationProtocol',
+      'createAccountStorage',
+      'createAccountClientFactory',
       'createRealmAccountService',
       'createRealmBusinesses',
       'ensureBusiness',
