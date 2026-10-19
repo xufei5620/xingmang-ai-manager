@@ -115,6 +115,7 @@
 ## 官方账号（不是星芒账号）
 - `official-account-identity.ts` — 从 Codex `auth.json` 里的 JWT 解码出邮箱和套餐名，只用来显示，不验签（这不是认证决定）。令牌本身不出主进程（I3）
 - `official-account-usage.ts` — 用 Codex 本机的 ChatGPT 令牌去 chatgpt.com 查官方 5 小时限额和周限额还剩多少（8 秒超时、256KB 上限、不跟重定向，I10）。`system-service.ts` 在用
+- `official-credential-service.ts` — **官方账号与当前账号来回切的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `switchToOfficialAccount`、`setOfficialSourcePreference`、`restoreOfficialCredentials`、`adoptRestoredConfig`、`alignRestoredAccountSource`）：接中转时把 Claude Code 登录留下的官方 Console Key 挪到一边（它会顶掉当前账号的 Key），切回官方时放回，写配置失败就撤回这一步；恢复备份后按恢复出来的那份重新登记来源、对齐「选了官方账号」的记号；Codex 跟着账号开关星芒AI技能。都排在写配置那一条队里，保存配置也用这里的挪开、放回和撤回
 
 ## 网络环境检查
 - `stale-proxy-environment.ts` — 找出并清掉「指向本机、代理软件却没开」的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`。这种残留设置下，本软件自己联网正常，从这里打开的工具和 npm 却全连不上。Windows 上读、清当前账号和整台电脑的设置，用固定路径的 PowerShell + `execFile` + `trustedCommandEnvironment`（I1 / I2 / I14）。Mac 上的同一套规则在 `macos-platform.ts`，改这里要一起改
