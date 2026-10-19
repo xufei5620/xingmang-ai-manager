@@ -333,10 +333,10 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.302`（2026-10-17） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302 的依据见下文 |
-| Codex CLI | `0.162.1`（2026-10-13） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1 的依据见下文 |
+| Claude Code | `2.1.303`（2026-10-19） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302、2.1.303 的依据见下文 |
+| Codex CLI | `0.163.0`（2026-10-19） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.163.0 的依据见下文 |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
-| Grok CLI | `1.0.52`（2026-10-13） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52 各一遍，见下文） |
+| Grok CLI | `1.0.62`（2026-10-19） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62 各一遍，见下文） |
 
 四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
 
@@ -516,6 +516,13 @@ npm `latest` 是 2.1.302（10-16 发布）；2.1.297、2.1.298 没发过。2.1.2
 交互式启动那几类请求，沙箱里没跑交互式会话，2.1.299 那条以上游 changelog 为准。
 没做的：中转上的真实请求（`verifiedSites` 仍为空）。
 
+**2.1.302 → 2.1.303（2026-10-19 每周巡检）。** npm `latest` 是 2.1.303，上游 changelog 这一版只有一句
+*Bug fixes and reliability improvements*，看不出改了什么，所以全靠沙箱对照（做法同上一段，对照 2.1.296）：
+`claude -p "hi"` 两版都拿到假接口的回复，请求体字段一样，20 个工具、只带 `Authorization`；`anthropic-beta`
+头和 2.1.302 一样少了 `mid-conversation-system-2026-04-07`，没有新增；`--model haiku` 仍发 `claude-haiku-5-5`；
+`/context` 仍是 `2k / 1m`；npm 包文件列表与 `install.cjs` 和 2.1.296 逐字相同。没做的：中转上的真实请求
+（`verifiedSites` 仍为空）。
+
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
 每个模型用哪套系统提示词、哪些工具、支持哪些推理档位，`/model` 菜单也只列这份目录；这两个模型
@@ -601,6 +608,34 @@ Grok：没有可读的变更记录。npm 上 1.0.47~1.0.55 都发了，`latest` 
 `UserPromptSubmit`、`Stop`、`SessionEnd`，配置无解析错误（钩子）。
 
 没做的：中转上的真实请求（`verifiedSites` 仍为空）；Grok 1.0.52 Windows 版挑哪个 shell 没有重读二进制字符串。
+
+**Codex 0.162.1 → 0.163.0、Grok 1.0.52 → 1.0.62（2026-10-19 每周巡检）。**
+
+Codex 区间内只有 0.163.0 一个正式版（10-15 发布），读了 `rust-v0.163.0` 的 release note，没有一条碰自定义
+`model_providers` / `base_url` / `wire_api`。和本产品有关的：
+
+- 没写完（incomplete）的 Responses 回复改成按出错结束，并照算用量——中转回得不完整时客户会看到报错，不会当成已经答完。
+- WebSocket 续接失败时说清原因；`/daemon` 能重启托管的后台服务——我们 `daemon_auto_start = false`，碰不到。
+- 关了统计时仍会用自定义的 OTLP 指标导出——模板没写 OTLP，`[analytics] enabled = false` 照旧。
+- Windows：`Ctrl+V` / `Shift+Insert` 能粘贴文字，沙箱迁到 MXC。
+- 「Daybreak」对符合条件的账号默认开——推断说的是 ChatGPT 账号，API Key 登录应不在其中，沙箱里请求没有变化。
+
+随包型号名单：`rust-v0.163.0` 的 `codex-rs/models-manager/models.json` 与 `rust-v0.162.1` 逐字相同（sha256
+`943ca7fe…2c2b` 不变），`LICENSE`、`NOTICE` 也一样，只把 tag 与提交号换成 `rust-v0.163.0`
+（`83086188ae0614bd882818ff1aa23f3194962012`）。沙箱实测（做法同上）：0.163.0 的 `codex debug models` 列出全部
+11 个型号；`codex exec` 与 `codex --no-daemon exec` 用 `gpt-6.1-sol` 都拿到回复，打到假接口的只有一次
+`POST /v1/responses`（带 `Authorization`），出网代理记下的 `github.com`、`api.github.com`、`chatgpt.com` 与 0.162.1 一模一样。
+
+Grok：没有可读的变更记录。npm `latest` 与 xAI stable 都在 1.0.62，所以选它。1.0.54 起 `grok.exe` 改由 X Corp. 签名，
+#1051 已经两张证书都认；Windows 先从星芒存储桶下，桶里还没有这一版时悄悄换回 xAI 那一路（`grok-bucket.ts`），
+同步作业也会按新的推荐版本补传。在 1.0.62 上重跑四项：有 `allowed_models` 时 `grok models` 只列 `grok`、去掉后
+多出 `grok-4.6`、`grok-4.5`（K3）；起标题那次请求是 `relay-x`、去掉 `session_summary` 变回 `grok-4.6`（K4）；
+`image_gen` 打到本地 `POST /v1/images/generations`（K1）；一轮 `-p` 触发 `UserPromptSubmit`、`Stop`×2、`SessionEnd`，
+配置无解析错误（钩子）。**K1 有一处变化**：去掉 `[endpoints] xai_api_base_url` 后，1.0.52 会去连 `api.x.ai`，
+1.0.62 改为本地直接报「no xAI credential available」，出网代理一条记录都没有——Key 照样不会发去 xAI，但出图会失败，
+所以这一项仍然要写。装插件的 `--trust` 10-18 已在 1.0.62 上核过（见上文）。
+
+没做的：两家都没有中转上的真实请求（`verifiedSites` 仍为空）；Grok 1.0.62 Windows 版挑哪个 shell 没有重读二进制字符串。
 
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：

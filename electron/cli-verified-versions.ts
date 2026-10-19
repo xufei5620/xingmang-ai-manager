@@ -65,11 +65,11 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.302',
-      verifiedAt: '2026-10-17',
+      version: '2.1.303',
+      verifiedAt: '2026-10-19',
       verifiedSites: [],
-      note: '当前 npm latest(2.1.297、2.1.298 没发过);2.1.299~2.1.302 没有新的网关回归;2.1.299 修了功能开关、启动、快速模式、账号资料、反馈几类发往 Anthropic 的请求带着第三方网关的 Key,以及自定义 ANTHROPIC_BASE_URL 下流式 180 秒没数据就被掐断(改为 300 秒);2.1.300 修了 MCP 工具 schema 被拒时每轮 400;2.1.301 修了网关回的型号名与请求的不同时反复压缩;2.1.302 让没设权限模式的 -p 会话在第三方 provider 上进 default 模式,模板写死 bypassPermissions 不受影响;沙箱本地假接口对照 2.1.296 请求体字段、20 个工具、只带 Authorization 都一样,/context 仍是 1M',
-      userNote: '修好了回复慢的时候三分钟就被断开的问题，密钥也不会再顺带发给官方',
+      note: '当前 npm latest,上游 changelog 只有一句 Bug fixes and reliability improvements;2.1.299 起不再把第三方网关的 Key 带给 Anthropic、流式无数据 300 秒才断(见 2.1.302 那次);沙箱本地假接口对照 2.1.296 请求体字段、20 个工具、只带 Authorization 都一样,anthropic-beta 头与 2.1.302 一样少了 mid-conversation-system,haiku 别名仍发 claude-haiku-5-5,/context 仍是 1M,install.cjs 逐字相同',
+      userNote: '修了一些小问题，用起来更稳；回复慢的时候不会三分钟就断开，密钥也不会顺带发给官方',
     },
     blocked: [
       {
@@ -86,11 +86,11 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   codex: {
     recommended: {
-      version: '0.162.1',
-      verifiedAt: '2026-10-13',
+      version: '0.163.0',
+      verifiedAt: '2026-10-19',
       verifiedSites: [],
-      note: '当前 npm latest,随包型号名单换成 rust-v0.162.1(只删了已废弃的 instructions_variables: null,其余逐字相同);0.161.0~0.162.1 修了 Windows 10 盘符路径读不到、服务端繁忙时过早报错、后台服务功能设置不一致导致起不来,未见与自定义 model_providers / base_url 相关的回归;模板显式写了 model,0.161.0 改默认型号不影响;daemon_auto_start = false 与 --no-daemon 在 0.162.1 上仍然认',
-      userNote: '修好了 Windows 10 上读不到某些盘里文件、服务繁忙时太早放弃的问题',
+      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.163.0(models.json 与 rust-v0.162.1 逐字相同,sha256 不变);0.163.0 的 release note 没有一条碰自定义 model_providers / base_url / wire_api,未写完的 Responses 回复改成按出错处理,Windows 上 Ctrl+V / Shift+Insert 能粘贴文字;daemon_auto_start = false 与 --no-daemon 在 0.163.0 上仍然认,沙箱 debug models 列出全部 11 个型号,exec 与出网记录同 0.162.1',
+      userNote: '修好了 Windows 上用快捷键粘贴文字的问题，回复中途断掉时会直接提示出错',
     },
     blocked: [
       {
@@ -102,10 +102,10 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   grok: {
     recommended: {
-      version: '1.0.52',
-      verifiedAt: '2026-10-13',
+      version: '1.0.62',
+      verifiedAt: '2026-10-19',
       verifiedSites: [],
-      note: '当前 npm latest 与 xAI stable;没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效',
+      note: '当前 npm latest 与 xAI stable(1.0.54 起由 X Corp. 签名,#1051 已认);没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效;不写 [endpoints] 时出图改为本地直接报缺 xAI 凭据,不再连 api.x.ai',
       userNote: '跟上官方最新的稳定版，画图、起标题照旧走当前账号',
     },
     blocked: [],
