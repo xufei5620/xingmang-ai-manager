@@ -81,8 +81,9 @@ jobs:
   # run the same commands, with the same timeouts, on runners that start at the
   # same moment. Nothing is skipped, shortened or reordered within a shard.
   #
-  # The two vitest suites are cut with `--shard`, which sorts the resolved test
-  # files by a hash of their path and slices that list, so the shards are a
+  # The vitest suite is cut with `--shard`, which vitest.config.ts turns into a
+  # deal by measured time (scripts/vitest-shards.mjs) rather than vitest's own
+  # equal-count slices of a hash-sorted list. Either way the shards are a
   # stable partition whose union is exactly the file set the unsharded command
   # ran. `--no-file-parallelism` stays on inside each shard: it is what keeps
   # the filesystem-heavy files from racing each other under Defender, and
@@ -108,11 +109,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The vitest half of `npm test`: ~10 of its ~11 minutes. Almost all
-          # of that is per-file environment setup rather than assertions, so
-          # splitting by file count — which is what --shard does — splits the
-          # time with it. Its electron/ suites load the Electron binary, so
-          # these shards install it first (`electron`, see the steps).
+          # The vitest half of `npm test`. Its electron/ suites load the
+          # Electron binary, so these shards install it first (`electron`, see
+          # the steps).
           #
           # Cut in three on 2026-10-09. Two halves had grown into the budget:
           # on #955 a half ran 897.94s against the 900s here, passed every one
@@ -120,8 +119,20 @@ jobs:
           # that said nothing about the code. The three-lines PRs and #954 had
           # each added suites to the same two runners. Following what the
           # browser shards below settled on, the fix is another runner rather
-          # than a bigger number: a third should land near 10 minutes, and when
-          # one nears 15, deal to a fourth instead of raising this.
+          # than a bigger number.
+          #
+          # Cut in four on 2026-10-19, and dealt by time rather than by count.
+          # Counting files only split the time while every file cost about the
+          # same, and a dozen electron/ suites now take 13 to 170 seconds each
+          # against well under one for the rest. On main f4b0d2a the hash put
+          # four of the five slowest in the first third, which ran 12.7 minutes
+          # while the others took 6.0 and 4.1; #1287's ran out the 15 with
+          # every test passing. A fourth slice by count would have moved that
+          # cluster to --shard=2/4 whole, so vitest.config.ts deals the
+          # measured-slow files apart first (scripts/vitest-shards.mjs) and the
+          # rest after them. Each quarter should land near 6 minutes. When one
+          # drifts well past its siblings, re-measure the table; when they all
+          # near 15 together, deal to a fifth instead of raising this.
           - shard: vitest-1
             command: npm run test:vitest:1
             timeout: 15
@@ -132,6 +143,10 @@ jobs:
             electron: true
           - shard: vitest-3
             command: npm run test:vitest:3
+            timeout: 15
+            electron: true
+          - shard: vitest-4
+            command: npm run test:vitest:4
             timeout: 15
             electron: true
           # The node --test half of `npm test`: the build and release script
@@ -146,7 +161,7 @@ jobs:
           # test:v2's vitest half and test:canvas need no runner of their own:
           # vitest keeps every file whose path contains one of its arguments,
           # so the `src` in test:vitest already takes in src/renderer-v2 and
-          # canvas-v2/src, and the three shards above run all of them. A
+          # canvas-v2/src, and the four shards above run all of them. A
           # renderer-v2 shard here ran its 152 files a second time until #1066.
           #
           # The fixture browser-checks, cut in three. app-check.mjs is two
