@@ -48,6 +48,7 @@ import {
 } from './node-runtime'
 import { fetchOfficialChatGptUsage } from './official-account-usage'
 import { sameLocalPathIdentity } from './path-identity'
+import { describeProbeFailure } from './probe-failure'
 import { ProjectInstructionsStateStore } from './project-instructions'
 import {
   inspectInstalledPythonRuntime,
@@ -56,7 +57,7 @@ import {
 import { createRelayEndpointRoutingSnapshot, relaySiteForProviderBaseUrl, type RelaySite } from './relay-sites'
 import { bypassClosedLoopbackProxies, describeDroppedProxies, probeLoopbackProxy } from './stale-proxy-environment'
 import { redactHomeDirectory } from './startup-log'
-import type { SystemServiceOptions } from './system-service'
+import type { SystemServiceOptions, ToolStatus } from './system-service'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
 import { resolveCliCommand, resolveCliInstallation, resolveNpmGlobalRoot, type CliInstallation } from './tool-installation'
 import { createToolRouteFollowStore } from './tool-route-follow-state'
@@ -99,6 +100,18 @@ export function buildDarwinTrustedVerificationRunner(
       maxOutputBytes: 1024 * 1024,
     })
     return { stdout: result.stdout, stderr: result.stderr }
+  }
+}
+
+export function buildToolStatusFromSettled(result: PromiseSettledResult<ToolStatus>): ToolStatus {
+  if (result.status === 'fulfilled') return result.value
+  return {
+    installed: false,
+    version: null,
+    path: null,
+    installDirectory: null,
+    detectionFailed: true,
+    detectionError: describeProbeFailure(result.reason),
   }
 }
 
