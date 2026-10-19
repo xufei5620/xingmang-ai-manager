@@ -58,7 +58,8 @@ vi.mock('electron', () => ({
   clipboard: { writeText: electronMocks.writeText, readText: electronMocks.readText, clear: electronMocks.clearClipboard },
 }))
 
-import { accelerationStateLogKey, registerIpcHandlers } from './ipc'
+import { registerIpcHandlers } from './ipc'
+import { accelerationStateLogKey } from './ipc/handler-log'
 import { parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseNodeRuntimeInstallRequest, parseUpdateDownloadOptions } from './ipc/parsers/system'
 import { parseRunningToolsProviders } from './ipc/parsers/tools'
 

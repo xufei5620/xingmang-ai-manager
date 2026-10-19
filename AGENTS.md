@@ -150,7 +150,7 @@ renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守
 ## 5. 改动陷阱清单
 
 **T1. 加/删 IPC 通道 → 同一套的契约、注册、preload 三处必须一致。**
-主窗口业务通道是 `ipc-contract.ts`、`ipc.ts`、`preload.ts`：`ipc.test.ts` 把 `ipc.ts` 实际注册的通道和 `ipcInvokeChannels` 排序后比对，漏注册、多注册、重复注册都会红；`preload.test.ts` 钉住 preload 里那份通道表副本。主窗口这套另有第四处 `ipc-channel-policy.ts`：每条通道要表态日志里记什么、要不要等账号，漏了是编译错。这几处都**不看先后顺序**，新通道放在哪一行都行，并行加通道不用排队。
+主窗口业务通道是 `ipc-contract.ts`、`ipc.ts`、`preload.ts`；处理器按域分在 `ipc/handlers/` 下，新通道加进它那个域的文件，`ipc.ts` 只管组装。`ipc.test.ts` 把实际注册的通道和 `ipcInvokeChannels` 排序后比对，漏注册、多注册、重复注册都会红；`preload.test.ts` 钉住 preload 里那份通道表副本。主窗口这套另有第四处 `ipc-channel-policy.ts`：每条通道要表态日志里记什么、要不要等账号，漏了是编译错。这几处都**不看先后顺序**，新通道放在哪一行都行，并行加通道不用排队。
 另两套各自成组：`platform/contract.ts` 的 `platformChannels` + `platform/ipc.ts` + `platform/preload.ts`（`platform/ipc.test.ts`、`platform/preload.test.ts` 钉住）；`canvas-contract.ts` 的 `canvasHostChannels` + `canvas-window.ts` + `canvas-preload.ts`（`canvas-window.test.ts` 钉住）。
 三个契约文件都列在 `.github/CODEOWNERS` 里：通道数就是渲染进程能碰到的主进程入口（I5），加通道要让 yoyo 看得见。
 
@@ -185,7 +185,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 `tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。四段都串在 `npm run typecheck` 里，跑这一条即可。
 
 **T10. 改配置位置或配置格式 → 同时影响读写、备份、恢复、诊断。**
-配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files.ts`（`providerConfigPaths`）、`backups.ts`、`diagnostics.ts`、`ipc.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
+配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files.ts`（`providerConfigPaths`）、`backups.ts`、`diagnostics.ts`、`ipc/handlers/config.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
 
 **T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 删掉，不要提交，当回归排查。**
 泄漏源 `managed-cli.test.ts` 已改用 `os.tmpdir()` 并在 `afterEach` 清理，正常不会再出现。

@@ -160,7 +160,7 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 | 文件 | 说明 |
 |---|---|
 | `electron/system-service.ts` | 全仓最大的文件；Codex 桌面端部分已按 #34 搬入 `codex-desktop-service.ts` |
-| `electron/ipc.ts` / `config-files.ts` / `main.ts` / `new-api-client.ts` | 主进程里另外几个大文件，很多改动都会碰到 |
+| `electron/config-files.ts` / `main.ts` / `new-api-client.ts` | 主进程里另外几个大文件，很多改动都会碰到 |
 | `src/renderer-v2/pages-management.tsx` / `pages-maintenance.tsx` / `pages-account.tsx` / `App.tsx` | v2 界面的大文件 |
 | `src/styles.css` / `src/App.tsx` | legacy 的两个巨型文件，已冻结（§4.1 ③），只在安全修复时会碰 |
 
@@ -300,7 +300,7 @@ yoyo 2026-10-10 指出的两个反例，读一下就能避免：
 ## 8. 常见问题
 
 **Q：我的改动需要加 IPC 通道，但有人正在改 IPC？**
-A：不用等。`ipc.test.ts` 排序后比对注册的通道和契约，新通道放在哪一行都行；三处（`ipc-contract.ts` / `ipc.ts` / `preload.ts`）保持一致即可，见 `AGENTS.md` T1。
+A：不用等。`ipc.test.ts` 排序后比对注册的通道和契约，新通道放在哪一行都行；三处（`ipc-contract.ts` / `ipc/handlers/` 下那个域的文件 / `preload.ts`）保持一致即可，见 `AGENTS.md` T1。
 
 **Q：测试在我的平台上是红的，怎么判断是不是我改坏的？**
 A：三平台基线均为全绿（2026-08-10 起）。先在干净的 `main` 上复跑确认，仍红即为环境或新回归，不要带着红提交。
