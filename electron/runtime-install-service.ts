@@ -167,8 +167,9 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
       const result = await installNodeRuntimeForService({
         ...(architecture ? { architecture } : {}),
         // 到要下载时才问先走哪个源：Windows 借到线路以后才定，借到了就官方源优先。
+        // Windows 开头还会先问一次，只用来定试不试 winget（只在海外试，#1061 第5条）。
         networkRegion: inspectNetworkRegion,
-        // Windows 先试 winget，它自己下载、不走下载专用线路，退到下安装包时才借（第二十八批 D）；
+        // Windows 在海外先试 winget，它自己下载、不走下载专用线路，退到下安装包时才借（第二十八批 D）；
         // macOS、Linux 一开始就是下载，整段已经包在线路里（installNodeRuntime）。
         withDownloadRoute: platform === 'win32' ? (operation) => withDownloadAcceleration(null, operation) : undefined,
         temporaryDirectoryMode: windowsExecutionMode,

@@ -26,7 +26,7 @@
 - `npm-registry.ts` — 两个 npm 源（官方、国内镜像）的地址、按网络区域谁先谁后（`npmInstallRegistries`，区域不明时镜像优先）、查询地址怎么拼，以及查询的超时和响应体上限；装、查新版本、卸载共用
 - `npm-command-failure.ts` — npm 命令没成功时挑出给客户看的那句：命令运行器的话后面接 npm 自己的要点（错误码、占用、权限），超时说成「下载超时」；`isMachineBoundNpmFailure` 判断换个源也没用的那几种（盘满、正在用的目录被占用）。要用 `command-runner`，所以不跟进渲染层的 `npm-failure-reasons.ts` 放一起
 - `cli-process-probe.ts` — 更新、卸载撞上文件被占用时，查是不是这个工具自己的进程还开着（只认镜像或命令行落在它自己包目录里的进程，不按进程名），好让报错说「先关掉它的窗口」而不是「被杀毒拦了」；Windows 走 PowerShell/CIM，Mac 走 ps
-- `node-runtime.ts` — **Windows 上代装 Node.js**：winget 优先，没装成再按网络区域定先走国内镜像还是官方 MSI，核 SHASUMS 与 Authenticode 签名；要管理员时由普通权限的中转脚本钉住当前账号再弹 UAC，提权那一步把包拷进只有管理员能写的目录再核一遍才交给 msiexec。下载源、版本索引、校验清单这些通用件 Mac/Linux 版复用，`resolveSystemWingetExecutable` 也给外部客户端和 Python 用
+- `node-runtime.ts` — **Windows 上代装 Node.js**：在海外 winget 优先，国内或测不出位置时不试 winget（#1061 第5条）；下安装包时按网络区域定先走国内镜像还是官方 MSI，核 SHASUMS 与 Authenticode 签名；要管理员时由普通权限的中转脚本钉住当前账号再弹 UAC，提权那一步把包拷进只有管理员能写的目录再核一遍才交给 msiexec。下载源、版本索引、校验清单这些通用件 Mac/Linux 版复用，`resolveSystemWingetExecutable` 也给外部客户端和 Python 用
 - `python-runtime.ts` — Windows 上代装 Python 3.12：winget 优先，退到 python.org 安装包时才借下载线路，核 Authenticode 签名与响应地址
 - `git-runtime-install.ts` — Windows 上代装 Git for Windows：**钉死版本与 SHA-256**（官方摘要只写在 GitHub 发布说明里，从镜像取摘要等于让镜像自己作证），Inno Setup 按当前用户装、不弹 UAC；升级时改文件里那三个常量
 - `git-runtime.ts` — 缺 Git 会怎样、怎么装的**唯一文案来源**，插件市场、首页运行环境、检查页三处共用（Windows 上缺它 Claude Code 的 Bash 工具会退成 PowerShell）；零依赖，渲染层直接引
