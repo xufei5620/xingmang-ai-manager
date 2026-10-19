@@ -11,6 +11,7 @@ import type {
 import { orderStates, subscriptionStates } from '../../registry/business'
 import { dollars } from '../../business-common'
 import { buildTopupBonus, type TopupBonus } from './topup-bonus'
+import { formatAmount } from './topup-tier'
 import { runwayDaysText, shortDate } from './account-center'
 
 /**
@@ -202,10 +203,6 @@ export function subscriptionStateFor(status: string) {
   return Object.hasOwn(subscriptionStates, status)
     ? subscriptionStates[status]
     : { label: '待确认', tone: 'neutral' as const }
-}
-
-function formatAmount(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(2)
 }
 
 /** 一档充值到账多少（美元）：带倍数的账号档位是实付，到账 = 档位 × 倍数；其余档位就是到账。 */
