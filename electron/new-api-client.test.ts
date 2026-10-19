@@ -47,6 +47,7 @@ import {
   parseTopupAmountQuote,
   parseTopupInfo,
   parseTopupOrdersPage,
+  readRefusedAfterRefreshMessage,
   type NewApiFetch,
 } from './new-api-client'
 import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
@@ -54,6 +55,7 @@ import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
+import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
 
 function registerAckResponse(): Response {
@@ -3933,6 +3935,60 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
     expect(client.isAuthenticated()).toBe(false)
     // Exactly 4 calls -- a second refresh attempt would make this 5 or more.
     expect(fetchImpl).toHaveBeenCalledTimes(4)
+  })
+
+  // 用量账单一打开要读的这几样：续期刚成功、拿新令牌重问还被回 401，是这一项被服务器拒了，
+  // 不是登录没了。以前照样清掉登录，客户每点一次「用量账单」都被退出来，重新登录也没用。
+  it.each([
+    ['getDashboard', '/api/data/self', (client: ReturnType<typeof createNewApiClient>) => client.getDashboard({ startTimestamp: 1_754_780_000, endTimestamp: 1_754_790_000 })],
+    ['getUsage', '/api/log/self', (client: ReturnType<typeof createNewApiClient>) => client.getUsage({ page: 1, pageSize: 20 })],
+    ['getTasks', '/api/task/self', (client: ReturnType<typeof createNewApiClient>) => client.getTasks({ page: 1, pageSize: 20 })],
+    ['listKeys', '/api/token/', (client: ReturnType<typeof createNewApiClient>) => client.listKeys({ page: 1, pageSize: 100 })],
+  ])('keeps the login when %s is still refused after a successful refresh', async (_name, refusedPath, read) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const requestId = '20261019192835301629182BIRd5DPd'
+    fetchImpl.mockImplementation(async (url) => {
+      if (new URL(String(url)).pathname === '/api/user/auth/refresh') {
+        return jsonResponse({ success: true, message: '', data: { access_token: 'rotated-token', access_expires_at: null } })
+      }
+      return jsonResponse(
+        { success: false, code: 'AUTH_UNAUTHORIZED', message: 'Unauthorized, invalid access token' },
+        { status: 401, headers: { 'X-Oneapi-Request-Id': requestId } },
+      )
+    })
+
+    const error = await read(client).catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
+    expect((error as Error).message).toBe(readRefusedAfterRefreshMessage)
+    expect(client.isAuthenticated()).toBe(true)
+    const paths = fetchImpl.mock.calls.map(([url]) => new URL(String(url)).pathname)
+    expect(paths.filter((path) => path === '/api/user/auth/refresh')).toHaveLength(1)
+    expect(paths).toContain(refusedPath)
+    // 日志照样记得这一次是 401、请求编号是多少，客服拿它去服务端查。
+    expect(requestDiagnosticsOf(error)).toEqual({ status: 401, requestId })
+    const retried = fetchImpl.mock.calls.at(-1)?.[1]?.headers as Record<string, string>
+    expect(retried.Authorization).toBe('Bearer rotated-token')
+  })
+
+  it('words the refused read so the renderer does not send people to sign in again', () => {
+    expect(classifyOperationError(readRefusedAfterRefreshMessage)).not.toBe('sessionExpired')
+    expect(matchAccountErrorMessage(readRefusedAfterRefreshMessage)).toBeNull()
+  })
+
+  it('still ends the login when the refresh endpoint rejects the cookie during a data read', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+      .mockResolvedValueOnce(jsonResponse({ success: false, code: 'AUTH_UNAUTHORIZED', message: 'Unauthorized' }, { status: 401 }))
+
+    await expect(client.getDashboard({ startTimestamp: 1_754_780_000, endTimestamp: 1_754_790_000 }))
+      .rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it('does not attempt a refresh at all for a non-401 failure', async () => {
