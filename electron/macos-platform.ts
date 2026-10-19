@@ -25,7 +25,7 @@ export interface MacosTerminalScriptPlan {
   launcherPath: string
   env: NodeJS.ProcessEnv
   /**
-   * 客户的登录 shell 可能带进来、这次不能交给工具的变量（system-service.ts 的 macosShellOverrideVariables）。
+   * 客户的登录 shell 可能带进来、这次不能交给工具的变量（provider-launch-service.ts 的 macosShellOverrideVariables）。
    * 先 unset，再写 env 里星芒自己的值。缺省 = 不 unset（旧行为）。
    */
   clearedEnvironmentKeys?: readonly string[]
