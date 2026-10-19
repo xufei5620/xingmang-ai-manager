@@ -1,0 +1,7 @@
+## 开发
+
+- 拆 `config-files.ts`（#1070 第 10 步，第二块）：下线的 Gemini CLI 专用代码归拢进新文件 `electron/gemini-retired.ts`：照 Gemini 的规矩读写 settings.json 与 trustedFolders.json（`parseGeminiJsonObject`、`readGeminiJson`、`requireGeminiJson`、改写时留住注释的 `geminiJsonContent`），保存配置时补的那几项（`disableGeminiSelfUpdate`、`extendGeminiSessionRetention`、后台型号指到中转的 `geminiRelayHelperModels` 一组、使用统计开关和旁边那笔记录的一组、`forgetStaleGeminiUsageStatisticsRecord`），`geminiCliCompatibleModel`，目录信任和项目说明文件名（`trustGeminiWorkspace`、`trustGeminiWorkspaceInTrustedFoldersText`、`ensureGeminiProjectContextFiles`、`geminiTrustedFoldersTrustFolder`），`fillGeminiRelayTemplateDefaults`，以及收回星芒写进去的做完提醒和画图工具（`inspectRetiredGeminiIntegrations`、`removeRetiredGeminiIntegrations`）。各个 `switch (provider)` 里的 gemini 分支留在 `config-files.ts`（T2 的穷尽性保障），调的是新文件里的函数；以后整块删 Gemini，删这个文件再顺着编译错删那几个分支。config-files.ts 4246→3802 行。
+- 新文件只 import `config-files.ts` 的类型，共用的读写底层从上一块的 `config-files-context.ts` 拿；原来导出的名字（含 `RetiredGeminiIntegrations` 类型）`config-files.ts` 照旧导出，别处的 import 一个没改。
+- 搬运用脚本按原文件行号整段复制，逐段比对一字没改，只给 `config-files.ts` 还要用的几个加了 `export`；只多了一行注释：`MANAGED_GEMINI_SESSION_MAX_AGE` 说明为什么放长的那段是和 Claude 共用的，留在 `config-files.ts`，新文件里指一句过去。读写用户配置的逻辑一行没动，用户自己设过的保留期、统计开关、型号改写照旧不碰。
+- 测试：新增 `gemini-retired.test.ts`（`config-files.ts` 导出的就是这些函数本身、新文件只 import `config-files.ts` 的类型、改带注释的配置时注释留着、用户写过的保留期不动）；行为由 `config-files.test.ts` 原有的 Gemini 用例钉着。另用上一块那 58 种情况、698 步把返回值、报错原文和整个目录里的文件搬前搬后各跑一遍逐字比对，一样。
+- 文档：模块地图加新文件，`config-files.ts` 那一条跟着改；`config-save-service.ts`、`tool-model-check.ts`、`workspace-config-overrides.ts` 三处注释里说「在哪」的文件名跟着改。

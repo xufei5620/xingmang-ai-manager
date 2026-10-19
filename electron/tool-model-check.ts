@@ -89,7 +89,7 @@ const failedRetryMs = 60 * 60 * 1000
 const launchHintsWaitMs = 1_000
 
 /**
- * 写配置时 Gemini 的 3.7 / 3.8 flash 会补成 `-high`（config-files.ts 的
+ * 写配置时 Gemini 的 3.7 / 3.8 flash 会补成 `-high`（gemini-retired.ts 的
  * geminiCliCompatibleModel），读回来的名字和模型列表里的对不上，两种写法都算数。
  */
 export function modelOffered(provider: ProviderId, model: string, models: readonly string[]): boolean {
