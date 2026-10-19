@@ -1,7 +1,7 @@
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import { directCallPositions, enclosingFunction, mainWiringFiles, moduleFunction, parseWiringFile, readMainWiringSource, startupCallback } from './bootstrap/main-source.test-support'
+import { directCallPositions, enclosingFunction, innerFunction, mainWiringFiles, moduleFunction, parseWiringFile, readMainWiringSource, startupCallback } from './bootstrap/main-source.test-support'
 import { ipcEventChannels } from './ipc-contract'
 
 // main.ts boots the whole app on import, so these read its source instead.
@@ -162,8 +162,8 @@ describe('main process startup order', () => {
       'createSystemService',
       'startToolRouteFollowing',
       'createDiagnostics',
-      'createUpdaterService',
-      'serviceStatusMonitor?.start',
+      'createUpdateFeed',
+      'updateFeed.createUpdater',
       'cliHookEvents.start',
       'diagnostics.attachFeedbackDescribers',
       'createDesktopNotificationController',
@@ -215,6 +215,23 @@ describe('main process startup order', () => {
     for (const [owner, order] of orders) {
       const calls = directCallPositions(source, moduleFunction(source, owner), order)
       for (const { callee, positions } of calls) expect({ owner, callee, calls: positions.length }).toEqual({ owner, callee, calls: 1 })
+      const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
+      expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
+    }
+  })
+
+  it('picks the update feed before it builds the updater, and reads service status once the updater exists', () => {
+    // 包里那份还是直连那份更新目录开机就定（签名校验也在这时装上）；更新服务要等版本记录读好才建，
+    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。
+    const { source } = parseWiringFile(path.join(__dirname, 'bootstrap', 'updates.ts'))
+    const feed = moduleFunction(source, 'createUpdateFeed')
+    const orders: Array<[ts.FunctionDeclaration, string[]]> = [
+      [feed, ['installStrictUpdateCodeSignatureVerifier', 'locateDirectUpdateFeed', 'useUpdateFeedLine']],
+      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
+    ]
+    for (const [owner, order] of orders) {
+      const calls = directCallPositions(source, owner, order)
+      for (const { callee, positions } of calls) expect({ owner: owner.name?.text, callee, calls: positions.length }).toEqual({ owner: owner.name?.text, callee, calls: 1 })
       const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
       expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
     }
