@@ -47,6 +47,7 @@
 ## 配置与备份
 
 - `config-files.ts` — 各 CLI 配置文件的读写：**两阶段提交 + .bak 备份 + 失败回滚**（I9，Codex 一次要同时改 `config.toml` 和 `auth.json`）；`toNativeConfigSummary` 剥掉 `apiKey`，明文只走 `config:reveal-api-key`（I3）；切官方账号、路由跟随、钩子、状态行、工作区信任（字段实测见 `docs/WORKSPACE-TRUST.md`）、退役 Gemini 的清理也在这里。按 provider 分支的几个 `switch` **没有 default 分支**，是新增 provider 时的穷尽性保障，别重构成策略类（T2）；用户自己设过的值不动；改 `providerConfigPaths` 要顾及备份、诊断、启动前校验等消费者（T10）
+- `config-files-context.ts` — `config-files.ts` 和从它拆出去的文件共用的读写底层（#1070 第 10 步原样搬出，`executeFilePlans`、`providerConfigPaths` 由 `config-files.ts` 照旧导出）：读配置文本（只认单链接普通文件、去掉字节顺序标记、2MB 上限），写之前的路径检查 `assertSafeConfigPath`（I8，含「C 盘搬家」那条例外），两阶段提交 + .bak + 失败回滚的 `executeFilePlans`（I9），各家配置的位置 `providerConfigPaths`（T10），几家都用的 JSON 小工具。只 import `config-files.ts` 的类型，免得两个文件互相 require
 - `config-save-service.ts` — **保存工具配置的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `saveConfig`、`getConfig`、`revealApiKey`、`repairCliHooks`、`fillToolTemplateDefaults`、`checkToolModels` 这些）：保存配置（挪开官方 Console Key、写失败放回，记来源，换完星芒签的 Key 让外部客户端跟上）、换型号和刷新菜单的定点改写、配置摘要，打开前的型号核对（`tool-model-check.ts`），开机补模板缺省项，Codex 随包型号名单的写入和读不进时收回，写进各家工具的钩子和状态行（含 Grok 换终端后重写、这次启动替用户修过的钩子），退役 Gemini 留下的接入清理。首页检测、外部客户端、线路跟随、官方账号那几样由门面传进来
 - `config-file-backups.ts` — 配置文件旁边那份 `.bak.<时间戳>` 怎么起名、「每个文件只留最近 5 份」该删哪几份；`config-files.ts` 的保存事务和 `codex-config-toml.ts` 往同一个目录放、一起数，名字只能出自这里（#1068）
 - `backups.ts` — 配置备份与恢复（手动 / 保存前 / 恢复前三种），`ConfigBackupStore` 在用户数据目录下按 manifest 存每个文件的原样与 sha256；v2 manifest 额外记 Key 的 sha256（`apiKeyDigest`），恢复前能告诉用户备份里那把 Key 是不是当前账号的、会不会恢复出一把已作废的 Key；必须兼容老版本留下的 v1 备份（T10）

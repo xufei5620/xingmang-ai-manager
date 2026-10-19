@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-// 改工具配置之前在原文件旁边留的 `<文件名>.bak.<时间戳>`。保存配置的事务（config-files.ts）和
+// 改工具配置之前在原文件旁边留的 `<文件名>.bak.<时间戳>`。保存配置的事务（config-files-context.ts）和
 // 单改一份 Codex config.toml 的地方（codex-config-toml.ts）都往同一个目录里放，清旧的时候是一起
 // 数的：两边的名字必须出自这一处，哪边换了写法，另一边就会挑错该删的那几份（#1068）。
 
