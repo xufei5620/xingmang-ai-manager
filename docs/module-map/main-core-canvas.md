@@ -38,6 +38,7 @@
 ## CLI 服务与首页扫描
 
 - `system-service.ts` — **全仓最大、最容易撞车的模块**：`createSystemService` 之前是导出的纯函数区（可直接单测），之后是闭包工厂（内部函数不导出），新逻辑先写成顶层纯函数再在闭包里调（T3）。管首页扫描（Node/CLI/桌面端/网络位置）、CLI 安装更新卸载与回退、打开工具、一键修复等；`SystemSnapshot` 等类型也从这里导出
+- `system-service-context.ts` — 系统服务各簇共用的那一份上下文（#1070 第 2 步从 `createSystemService` 开头原样搬出）：`createServiceContext` 把选项解析成实际用的那一份（测试替身或缺省实现，缺省往严里取：执行模式缺省 `trusted-only`），建几份记录文件、安装排队（I11 的 `InstallationQueue` 与取消登记）和保存配置的排队，外加只靠这些就能做的几样：找命令、跑 `--version`、下载临时走加速（计数决定安装源顺序）、建安装临时目录、装之前看盘。`system-service.ts` 正按簇把闭包搬成各自的服务文件，都只拿这一份上下文；它只 import `system-service.ts` 的类型，免得两个文件互相 require
 - `system-snapshot-cache.ts` — 把上一次首页扫描结果留在本机，下次启动先画出首页、后台照常重扫。这份文件**只用来"先画个样子"**：主进程里任何要回答"装没装"的地方都不读它；别的版本写的文件照样认，但剥掉版本判断（`withoutVersionVerdicts`）
 - `project-instructions.ts` — 打开工作目录时，若 `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` 一个都没有，就用随包模板生成一份 `AGENTS.md`（三个工具都读它），绝不覆盖、绝不追加；`PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS` 记着每一版模板的摘要，检查页靠它认出个人文件夹里那份还是星芒放的原样（已知36），改模板只能往表里加、不能删
 - `manual-uninstall-visual-fixture.ts` — macOS 视觉验收专用的假快照（把 Codex/Grok 投影成「需要手动卸载」的样子），只在未打包且 `XINGMANG_E2E_MANUAL_UNINSTALL_FIXTURE=1` 时由 `main.ts` 启用，供 `e2e/macos-visual-qa.mjs` 截图；正式包里永远不生效
