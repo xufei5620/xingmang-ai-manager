@@ -119,7 +119,7 @@
 
 ## 网络环境检查
 - `stale-proxy-environment.ts` — 找出并清掉「指向本机、代理软件却没开」的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`。这种残留设置下，本软件自己联网正常，从这里打开的工具和 npm 却全连不上。Windows 上读、清当前账号和整台电脑的设置，用固定路径的 PowerShell + `execFile` + `trustedCommandEnvironment`（I1 / I2 / I14）。Mac 上的同一套规则在 `macos-platform.ts`，改这里要一起改
-- `certificate-trust-probe.ts` — 检查页的「安全证书」一项：用跑工具的那个 Node.js 握手两次，一次只用自带根证书，一次加上 `NODE_USE_SYSTEM_CA=1`，两次一对比就知道是不是公司证书在拦截、星芒替工具开的「信任系统证书」生效没有。`diagnostics.ts` 在用
+- `certificate-trust-probe.ts` — 检查页的「安全证书」一项：用跑工具的那个 Node.js 握手两次，一次只用自带根证书，一次加上 `NODE_USE_SYSTEM_CA=1`，两次一对比就知道是不是公司证书在拦截、星芒替工具开的「信任系统证书」生效没有。`diagnostics-network-checks.ts` 在用
 
 ## 清单里与账号无关的小模块
 - `login-launch.ts` — 识别开机自动启动：Windows 看 `--launched-at-login` 参数，Mac 读登录项标记。开机拉起时窗口留在托盘，工具检测、检查更新、签密钥这些后台事推到用户点开窗口或开机 3 分钟后再做。这里也定义 Windows 开机项的名字 `windowsAppUserModelId`，卸载清理必须用同一个

@@ -139,7 +139,7 @@ export function isRelayLineCancel(reason: unknown): boolean {
 
 /**
  * 只读的请求在走着的那条上等这么久还没等来回应头，就在另一条上也发一次（文件头）。和检查页「自动」给先走
- * 那条单独限的时间一样（diagnostics.ts 的 PREFERRED_NETWORK_PROBE_TIMEOUT_MS）：账号请求的时限是 10 秒，
+ * 那条单独限的时间一样（diagnostics-network-checks.ts 的 PREFERRED_NETWORK_PROBE_TIMEOUT_MS）：账号请求的时限是 10 秒，
  * 另一条至少还剩 6 秒。平时一秒内就回，直连下行只有几十 KB/s 时回应头也早到了，慢的是正文。
  */
 export const relayLineAnswerWaitMs = 4_000
