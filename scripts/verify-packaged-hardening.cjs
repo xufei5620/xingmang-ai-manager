@@ -12,24 +12,31 @@ function packagedSource(asarPath, relativePath, label) {
 }
 
 function inspectPackagedLaunchBoundary(asarPath) {
+  // #1070 第 3 步把打开 CLI 窗口那一段从 system-service.js 搬进了 provider-launch-service.js，
+  // 用哪个 PowerShell 启动函数由 system-service-context.js 接上；门面那份仍一起查，旧启动链不许在任何一份里回来。
   const serviceSource = packagedSource(
     asarPath,
-    'dist-electron/system-service.js',
+    'dist-electron/provider-launch-service.js',
     ' CLI 启动服务',
   )
+  const otherServiceSources = [
+    packagedSource(asarPath, 'dist-electron/system-service.js', '系统服务'),
+    packagedSource(asarPath, 'dist-electron/system-service-context.js', '系统服务上下文'),
+  ]
   const windowsLaunchSource = packagedSource(
     asarPath,
     'dist-electron/windows-elevation.js',
     ' Windows 启动模块',
   )
+  const scannedSource = [serviceSource, ...otherServiceSources, windowsLaunchSource].join('\n')
 
   // CLI windows must use an absolute machine PowerShell path without requesting
   // a second UAC boundary. Windows Terminal and bare powershell.exe launchers are
   // retained as explicit negative gates because both shipped in older builds.
-  if (/(?:new-tab|new-window).*?wt|\bwt\.exe\b/i.test(`${serviceSource}\n${windowsLaunchSource}`)) {
+  if (/(?:new-tab|new-window).*?wt|\bwt\.exe\b/i.test(scannedSource)) {
     throw new Error('打包产物仍包含旧的裸 powershell.exe/Windows Terminal CLI 启动链，请重新编译')
   }
-  if (/launchElevatedCliPowerShell|-Verb\s+RunAs/i.test(`${serviceSource}\n${windowsLaunchSource}`)) {
+  if (/launchElevatedCliPowerShell|-Verb\s+RunAs/i.test(scannedSource)) {
     throw new Error('打包产物仍包含 CLI 管理员提权启动链，请重新编译')
   }
   const requiredServiceMarkers = ['launchCliPowerShell']

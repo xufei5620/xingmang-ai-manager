@@ -14,14 +14,17 @@ const currentLaunchBoundary = [
   '系统 PowerShell 路径必须是绝对路径',
 ].join(' ')
 
-async function createFixture(t, { service, elevation = currentLaunchBoundary, releaseNotes, version = '0.2.9' }) {
+async function createFixture(t, { service, facade = '', context = '', elevation = currentLaunchBoundary, releaseNotes, version = '0.2.9' }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-hardening-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   // Pack a sibling directory so the archive is never written inside the tree
   // being crawled.
   const source = path.join(root, 'app')
   await fs.mkdir(path.join(source, 'dist-electron'), { recursive: true })
-  await fs.writeFile(path.join(source, 'dist-electron', 'system-service.js'), service, 'utf8')
+  // 打开 CLI 窗口那一段在 provider-launch-service.js（#1070 第 3 步从 system-service.js 搬过去）。
+  await fs.writeFile(path.join(source, 'dist-electron', 'provider-launch-service.js'), service, 'utf8')
+  await fs.writeFile(path.join(source, 'dist-electron', 'system-service.js'), facade, 'utf8')
+  await fs.writeFile(path.join(source, 'dist-electron', 'system-service-context.js'), context, 'utf8')
   await fs.writeFile(path.join(source, 'dist-electron', 'windows-elevation.js'), elevation, 'utf8')
   if (releaseNotes !== undefined) {
     await fs.writeFile(path.join(source, 'dist-electron', 'release-notes.json'), releaseNotes, 'utf8')
@@ -51,6 +54,28 @@ test('accepts the current absolute-path same-user launch boundary', async (t) =>
     service: 'launchCliPowerShell(command, workspace)',
   })
   assert.doesNotThrow(() => inspectPackagedLaunchBoundary(archive))
+})
+
+test('still rejects a legacy or elevated launch chain left in the facade or the shared context', async (t) => {
+  const inFacade = await createFixture(t, {
+    service: 'launchCliPowerShellForService(command, workspace)',
+    facade: 'wt.exe -w new-tab powershell.exe -NoExit',
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(inFacade), /旧的裸 powershell\.exe/)
+  const inContext = await createFixture(t, {
+    service: 'launchCliPowerShellForService(command, workspace)',
+    context: 'const launchCliPowerShellForService = launchElevatedCliPowerShell',
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(inContext), /管理员提权启动链/)
+})
+
+test('rejects a packaged launch service that no longer opens CLI windows through launchCliPowerShell', async (t) => {
+  // 只在门面里留着名字不算数：打开窗口那一段搬走以后，要在它现在所在的文件里找到。
+  const archive = await createFixture(t, {
+    service: 'spawn(command, workspace)',
+    facade: 'launchCliPowerShell',
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(archive), /普通用户 CLI 启动边界/)
 })
 
 test('rejects a packaged elevation module that lost absolute path resolution', async (t) => {
