@@ -9,23 +9,15 @@ import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type Mirror
 import type { RuntimeLogLike } from './account-session-store'
 import type { InstallProgressStage, NodeRuntimeInstallRequest } from './ipc-contract'
 import { redactHomeDirectory } from './startup-log'
-import {
-  bypassClosedLoopbackProxies,
-  describeDroppedProxies,
-  probeLoopbackProxy,
-  type LoopbackProbe,
-} from './stale-proxy-environment'
+import type { LoopbackProbe } from './stale-proxy-environment'
 import { activeProviderIds, cliCatalog, isRetiredProviderId, providerIds, retiredProviderIds, type ProviderId } from './catalog'
 import {
   buildCliVersionAdvice,
   resolveCliInstallVersion,
   type CliVersionAdvice,
 } from './cli-verified-versions'
-import { buildCliUpdateRecord, CliUpdateHistoryStore, resolveCliRevertVersion } from './cli-update-history'
-import {
-  defaultProviderConfigRoots,
-  type ProviderConfigRoots,
-} from './codex-home'
+import { buildCliUpdateRecord, resolveCliRevertVersion } from './cli-update-history'
+import type { ProviderConfigRoots } from './codex-home'
 import {
   CommandRunnerError,
   cleanCommandOutput,
@@ -38,7 +30,6 @@ import {
   runCommand,
   trustedCommandEnvironment,
   windowsSystemExecutable,
-  type WindowsPackageManager,
 } from './command-runner'
 import {
   cliPackageDirectory as cliPackageDirectoryFromNpmRoot,
@@ -139,7 +130,6 @@ import {
   type RetiredGeminiIntegrations,
 } from './config-files'
 import {
-  ProjectInstructionsStateStore,
   ensureProjectInstructions,
   readProjectInstructionsTemplate,
 } from './project-instructions'
@@ -164,7 +154,6 @@ import {
   findNpmExecutable,
   resolveCliCommand,
   resolveCliInstallation,
-  resolveNpmGlobalRoot,
   type CliInstallation,
   type CliInstallDisplaySource,
   type CliLaunchMode,
@@ -179,8 +168,6 @@ import {
   type NodeRuntimeInstallResult,
   type WindowsRestartStatus,
 } from './node-runtime'
-import { installDarwinNodeRuntime, resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
-import { installLinuxNodeRuntime } from './linux-node-runtime'
 import {
   inspectInstalledPythonRuntime,
   installPythonRuntime as installPythonRuntime312,
@@ -192,20 +179,19 @@ import {
   type GitRuntimeInstallProgress,
   type GitRuntimeInstallResult,
 } from './git-runtime-install'
-import { InstallationQueue, type InstallationQueueSnapshot } from './installation-queue'
+import type { InstallationQueueSnapshot } from './installation-queue'
 import type { QueuedAccountWork } from './account-work-gate'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import {
-  InstallCancellationRegistry,
   InstallCancelledError,
   isInstallCancelledError,
   type InstallCancellationHandle,
   type InstallCancellationOutcome,
 } from './install-cancellation'
 import { inspectCcSwitchInstalled, resolveCcSwitchLeftover, type CcSwitchLeftover } from './cc-switch-leftover'
-import { ToolConfigOwnershipStore, toolConfigIdentity, type ToolConfigOwnership, type ToolTemplateFillResult } from './tool-config-ownership'
+import { toolConfigIdentity, type ToolConfigOwnership, type ToolTemplateFillResult } from './tool-config-ownership'
 import { isReplacedManagedKey, type StoredManagedCliKey } from './managed-cli-key-store'
-import { ExternalClientOwnershipStore, type ExternalClientKeySource } from './external-client-ownership'
+import type { ExternalClientKeySource } from './external-client-ownership'
 import {
   assertTrustedElevatedCliCommand,
   launchCliPowerShell,
@@ -214,7 +200,7 @@ import {
   WindowsCliLaunchError,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
-import { createTrustedTemporaryDirectory, trustedInstallerCacheRoot } from './trusted-temp'
+import { trustedInstallerCacheRoot } from './trusted-temp'
 import {
   buildInstallLeftoverLocations,
   type InstallLeftoverLocation,
@@ -231,13 +217,9 @@ import { createCliTerminalAccess, type UserPathOutcome, type UserPathRemoval } f
 import type { MacosShellProfileOutcome } from './macos-shell-profile'
 import type { LinuxTerminalCommandsReason, LinuxTerminalCommandsResult } from './linux-shell-profile'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
-import { managedCliRoot, managedNativeProviderRoot, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedNativeProviderRoot, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
-import {
-  describeInsufficientDiskSpace,
-  readDiskSpace,
-  tightestDiskSpace,
-} from './disk-space'
+import { readDiskSpace } from './disk-space'
 import {
   codexDesktopLocaleNeedsChange,
   inspectCodexDesktopLocale as inspectCodexDesktopLocaleStatus,
@@ -258,7 +240,7 @@ import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './c
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
-import { createRelayEndpointRoutingSnapshot, relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
+import { relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
   relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelayRouteSiteId, type RelaySite } from './relay-sites'
 import type { RelayRouteChange } from './relay-route-controller'
 import {
@@ -308,7 +290,7 @@ import {
 } from './uninstall-leftovers'
 import { sameLocalPathIdentity } from './path-identity'
 import { adoptRestoredXingmangAiSkillOff, followXingmangAiSkillRoute, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
-import { createToolRouteFollowStore, recordToolRouteRevert, toolRouteHintDue, toolRouteRetryAllowed, toolRouteRetryDelayMs, type ToolRouteFollowRecord } from './tool-route-follow-state'
+import { recordToolRouteRevert, toolRouteHintDue, toolRouteRetryAllowed, toolRouteRetryDelayMs, type ToolRouteFollowRecord } from './tool-route-follow-state'
 import {
   cleanupDownloadedGrokBinary,
   downloadLatestGrokBinary,
@@ -324,10 +306,10 @@ import {
 } from './external-tool-config'
 import { externalClientNames, type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
-import type { DesktopBucketOptions } from './desktop-package-bucket'
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
+import { createServiceContext, scanReuseMs } from './system-service-context'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
@@ -1206,14 +1188,6 @@ export interface SystemService {
    * 不动。工具开着或看不出开没开的这次不动，下次开机再看。从不抛错。可选 = 旧实现不提供。
    */
   reclaimRetiredToolIntegrations?(): Promise<RetiredGeminiIntegrations>
-}
-
-function firstOutputLine(stdout: string, stderr: string): string | null {
-  return `${stdout}\n${stderr}`
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean)
-    ?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '') ?? null
 }
 
 export function parseLatestNpmVersion(output: string): string | null {
@@ -2983,8 +2957,8 @@ export function macosShellOverrideVariables(provider: ProviderId, accountMode: P
   }
 }
 
-/** 刚跑完的一轮扫描在这么久以内可以直接复用（见 createScanCoalescer）。 */
-export const scanReuseMs = 15_000
+// 定义随用它的 preferredNodeDirectories 搬进了 system-service-context.ts，这里照旧导出。
+export { scanReuseMs }
 
 /** 一轮扫描里同时在跑的探测子进程上限（见 createSystemService 里的 limitedProbe）。 */
 export const scanProbeConcurrency = 3
@@ -3370,26 +3344,28 @@ export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
 ): SystemService {
-  const windowsExecutionMode = serviceOptions.windowsExecutionMode ?? 'trusted-only'
-  const platform = serviceOptions.platform ?? process.platform
-  const providerRoots = serviceOptions.providerRoots ?? defaultProviderConfigRoots()
-  const runtimeLog = serviceOptions.runtimeLog
+  const context = createServiceContext(store, serviceOptions)
+  const {
+    windowsExecutionMode, platform, providerRoots, runtimeLog,
+    configOwnership, externalOwnership, projectInstructionsState, cliUpdateHistory, toolRouteFollow, serializeConfigWrite,
+    codexEnv, relayRouting, activeRelaySite, providerRelaySite, inspectNativeProviderConfig,
+    resolveVerifiedCliCommand, launchLinuxTerminalForService, launchCliPowerShellForService, launchMacosTerminalForService,
+    resolveCliInstallationForService, findExecutableForService, executeCommand, detectMacosCodexApp,
+    installPythonRuntimeForService, inspectInstalledPythonRuntimeForService, inspectWindowsRestartRequiredForService,
+    installNodeRuntimeForService, installGitRuntimeForService, installMacGitRuntimeWith, inspectExecutableMachine,
+    resolveWindowsMachinePathsForService, inspectOfficialUsage,
+    downloadFetch, registryMetadataFetch, resolveSubprocessProxyEnvironment, withoutDeadLoopbackProxies,
+    acceleratedDownloadCount, withDownloadAcceleration, desktopBucketDownloads, grokBucketDownloads,
+    installing, installationQueue, installCancellations, installRequestedVersions,
+    createInstallTemporaryDirectory, assertInstallDiskSpace,
+    findInstalledExecutable, preferredNodeDirectories, forgetPreferredNodeDirectories, nodeCommandDirectories,
+    resolveServiceNpmGlobalRoot, executeVersion,
+  } = context
   // 这次启动替用户改过的钩子（第十八批 1b）：试过的不再试，改好的让首页说一句。只在内存里，重开软件从头算。
   const autoRepairAttemptedCliHooks = new Set<ProviderId>()
   const autoRepairCheckedOwners = new Set<string>()
   const autoRepairedCliHooks = new Set<ProviderId>()
   let autoRepairQueue: Promise<unknown> = Promise.resolve()
-  const configOwnership = new ToolConfigOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-config-ownership'))
-  const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
-  const projectInstructionsState = new ProjectInstructionsStateStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'project-instructions'))
-  const cliUpdateHistory = new CliUpdateHistoryStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'cli-update-history'))
-  const toolRouteFollow = createToolRouteFollowStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-route-follow'))
-  let configWriteQueue: Promise<unknown> = Promise.resolve()
-  function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
-    const next = configWriteQueue.then(operation, operation)
-    configWriteQueue = next.catch(() => undefined)
-    return next
-  }
   // 打开工具前替客户补的那几样也排进保存配置这一队（#1061 第 1 条）。保存要先联网查模型，查完核对
   // 配置没被动过才写（sameNativeConfigSnapshot 连修改时间一起比）；以前这一两秒里点「打开」，补写
   // 一改 config.toml，保存就报「工具配置在模型检测期间发生变化」。这几样都是写不进去也不挡打开的，
@@ -3397,95 +3373,8 @@ export function createSystemService(
   function writeBeforeLaunch<T>(write: () => T | Promise<T>): Promise<T> {
     return writeQueuedWithin(serializeConfigWrite, write, toolLaunchConfigWriteWaitMs, '保存配置还没做完，这次打开先不写')
   }
-  const codexEnv = serviceOptions.codexEnv
-    ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
-  const relayRouting = serviceOptions.relayEndpointRouting ?? createRelayEndpointRoutingSnapshot(store.read().relayEndpointIds)
-  function activeRelaySite(): RelaySite {
-    return relayRouting.resolve(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-  }
-  function providerRelaySite(provider: ProviderId, current: NativeConfigInspection, removal = false): RelaySite {
-    const selected = activeRelaySite()
-    // 星芒账号接了工具线路以后一直是定下来的，「还没定、认得出的旧地址原样留着」只剩历史账号会走（xm 三线路 5.1.0）。
-    if (!removal && relayRouting.selection(selected.id) !== undefined) return selected
-    return relaySiteForProviderBaseUrl(selected.id, provider, current.actualBaseUrl) ?? selected
-  }
-  // The account's site remains live. An explicit line is frozen until restart; under "auto" the
-  // line may move mid-run, so each write and probe reads it once and uses that line throughout.
-  const inspectNativeProviderConfig = (provider: ProviderId) =>
-    (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(
-      provider,
-      providerRoots,
-      activeRelaySite().providerBaseUrls,
-    )
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
-  const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
-  const launchLinuxTerminalForService = serviceOptions.launchLinuxTerminal ?? launchLinuxTerminal
-  const launchCliPowerShellForService = serviceOptions.launchCliPowerShell ?? launchCliPowerShell
-  const launchMacosTerminalForService = serviceOptions.launchMacosTerminal ?? launchMacosTerminal
-  const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
-  const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
-  const executeCommand = serviceOptions.runCommand ?? runCommand
-  const detectMacosCodexApp = serviceOptions.macosCodexAppDetector ?? inspectMacosCodexApp
-  const installPythonRuntimeForService = serviceOptions.installPythonRuntime ?? installPythonRuntime312
-  const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
-  const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
-  // macOS 上不跑 Windows 那套 winget / MSI：把官方压缩包解进本软件自己的文件夹（第十六批 2）。
-  // Linux 同理，只是版本和校验值钉在软件里（linux-node-runtime.ts，Linux 版拆分 ②）。
-  const installNodeRuntimeForService = serviceOptions.installNodeRuntime
-    ?? (platform === 'darwin'
-      ? installDarwinNodeRuntime
-      : platform === 'win32' ? installNodeRuntimeLts : installLinuxNodeRuntime)
-  const installGitRuntimeForService = serviceOptions.installGitRuntime ?? installGitForWindows
-  const installMacGitRuntimeWith = serviceOptions.installMacGitRuntime ?? installMacGitRuntime
-  // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
-  // 没有任何代理变量，于是开着加速也一样直连。这两个注入点把下载接回系统代理。
-  const downloadFetch = serviceOptions.downloadFetch ?? fetch
-  /**
-   * 管理员身份时照旧用 Node 自带的根证书：当前用户的证书库普通权限就写得进，不能
-   * 让它决定管理员的安装信任哪张证书（与 trustedCommandEnvironment 剥掉
-   * NODE_USE_SYSTEM_CA 同一个理由）。取 fetch 放在调用时，测试替换全局 fetch 才生效。
-   */
-  const registryMetadataFetch: typeof fetch = (input, init) => (
-    serviceOptions.registryFetch && !(platform === 'win32' && windowsExecutionMode === 'trusted-only')
-      ? serviceOptions.registryFetch(input, init)
-      : fetch(input, init)
-  )
-  const resolveSubprocessProxyEnvironment = serviceOptions.resolveSubprocessProxyEnvironment
-    ?? (async (): Promise<NodeJS.ProcessEnv> => ({}))
-  const acquireDownloadAcceleration = serviceOptions.acquireDownloadAcceleration
-  const probeLoopbackProxyForService = serviceOptions.probeLoopbackProxy ?? probeLoopbackProxy
-  /**
-   * 电脑里留着指向本机某个没开的代理的设置时，这一次不带它（第十六批 5）。只减不增：
-   * 开着的、指向别的机器的照旧带上；探测出错时原样返回，不挡住打开和安装。
-   */
-  async function withoutDeadLoopbackProxies(env: NodeJS.ProcessEnv, provider: ProviderId): Promise<NodeJS.ProcessEnv> {
-    const bypass = await bypassClosedLoopbackProxies(env, probeLoopbackProxyForService)
-    if (bypass.dropped.length) {
-      runtimeLog?.log('info', 'network', 'proxy-env.bypassed', '电脑里设的本机代理没开，这一次不带它', {
-        provider,
-        ...describeDroppedProxies(bypass.dropped),
-      })
-    }
-    return bypass.env
-  }
-  // 有多少次下载正跑在加速线路上。只用来决定安装源顺序，所以是个计数而不是
-  // 布尔：两个工具同时装时，先装完的那个不能把后一个的官方优先撤掉。
-  let acceleratedDownloads = 0
-  const resolveWindowsMachinePathsForService = serviceOptions.resolveWindowsMachinePaths ?? resolveWindowsMachinePaths
-  const installing = new Set<ProviderId>()
-  const installationQueue = new InstallationQueue()
-  const installCancellations = new InstallCancellationRegistry()
-  // 登记着取消句柄的那次 CLI 安装点名的版本（undefined = 没点名）。只在句柄还登记着时读，
-  // 每次登记句柄都会先覆盖它，所以句柄放掉以后留着旧值也不会被读到。
-  const installRequestedVersions = new Map<ProviderId, string | undefined>()
-  // 桌面端（Codex、Claude）先从星芒自己的存储桶下（yoyo 2026-10-10）；桶那一路为什么没走通只进日志。
-  const desktopBucketDownloads: DesktopBucketOptions = {
-    onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
-  }
-  const grokBucketDownloads: DesktopBucketOptions = {
-    onFallback: (detail) => runtimeLog?.log('warn', 'install', 'grok-bucket.fallback', 'Grok 存储桶这一路没走通，改去 xAI 下载', { detail }),
-  }
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
     // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
@@ -3506,11 +3395,7 @@ export function createSystemService(
     onLaunchTiming: (timing) => runtimeLog?.log('info', 'system', 'external-client.launch-timing', '打开桌面客户端前各段用时', { ...timing }),
   })
   let nodeRuntimeInstalling = false
-  // Mac 上要不要改用代下的那份 Node.js（preferredNodeDirectories）。判断要起一两次 `node --version`，
-  // 同一阵子里的检测、装工具、开工具共用一次结果；强制重新检测、装完 Node.js 时重新判断。
-  let preferredNodeProbe: { at: number; directory: Promise<string | null> } | null = null
   let windowsProcessor: Promise<WindowsProcessorArchitecture | null> | null = null
-  const inspectExecutableMachine = serviceOptions.inspectExecutableMachine ?? inspectWindowsExecutableMachine
   // 苹果的安装窗口一次只该弹一个：连点两下「安装 Git」拿到的是同一次等待。
   let macGitInstall: Promise<GitRuntimeInstallResult> | null = null
   let pythonRuntimeInstalling = false
@@ -3529,64 +3414,6 @@ export function createSystemService(
     },
   })
   let officialChatGptCache: { expiresAt: number; value: OfficialChatGptAccount | null } | null = null
-  const inspectOfficialUsage = serviceOptions.fetchOfficialChatGptUsage
-    ?? (process.env.VITEST ? async () => null : fetchOfficialChatGptUsage)
-
-  function createInstallTemporaryDirectory(
-    label: string,
-    options: { baseDirectory?: string } = {},
-  ): Promise<string> {
-    if (options.baseDirectory) {
-      return createTrustedTemporaryDirectory(label, {
-        platform,
-        env: commandEnvironment(),
-        baseDirectory: options.baseDirectory,
-      })
-    }
-    if (process.platform === 'win32' && windowsExecutionMode === 'trusted-only') {
-      return createTrustedTemporaryDirectory(label, options)
-    }
-    const safeLabel = label.replace(/[^a-z0-9-]/gi, '-')
-    return fs.promises.mkdtemp(path.join(os.tmpdir(), `xingmang-${safeLabel}-`))
-  }
-
-  const probeDiskSpace = serviceOptions.readDiskSpace ?? readDiskSpace
-
-  /**
-   * 一次安装会同时用到临时事务目录和托管目录，所以两块盘都问一次，按最紧的那
-   * 一块判断。npm 的全局目录要跑一条命令才知道，而事务目录和缓存本来就落在临
-   * 时目录，够覆盖「C 盘只剩几百兆」这个真实场景。
-   */
-  function installDiskSpaceTargets(): string[] {
-    const targets = [os.tmpdir()]
-    try {
-      targets.push(managedCliRoot(commandEnvironment(), platform))
-    } catch {
-      // Windows 上拿不到可信的 ProgramData 时托管目录本来就用不了，这一项跳过。
-    }
-    return targets
-  }
-
-  /**
-   * 装之前先看一眼盘。**读不到空间一律放行**（disk-space.ts 的 fail-open）：为了
-   * 一个查不到的数字拦下安装，是把小毛病变成大故障。拦住时抛的那句话里有
-   * 「磁盘空间不足」（Windows 上是「C 盘空间不足」），渲染层按已有的「磁盘空间不够」
-   * 一类呈现，不新立一类。
-   */
-  async function assertInstallDiskSpace(subject: string): Promise<void> {
-    const readings = await Promise.all(
-      installDiskSpaceTargets().map((target) => probeDiskSpace(target)),
-    )
-    const tightest = tightestDiskSpace(readings)
-    const shortfall = describeInsufficientDiskSpace(tightest)
-    if (!shortfall) return
-    runtimeLog?.log('warn', 'install', 'disk-space.insufficient', `${subject}：${shortfall}`, {
-      subject,
-      availableBytes: tightest?.availableBytes ?? null,
-      measuredPath: tightest ? redactHomeDirectory(tightest.measuredPath, providerRoots.userHome) : null,
-    })
-    throw new Error(`${subject}：${shortfall}`)
-  }
 
   function inspectNetworkLocation(forceRefresh = false): Promise<NetworkLocationStatus> {
     return networkLocationCache.read(forceRefresh)
@@ -3594,34 +3421,6 @@ export function createSystemService(
 
   function refreshNetworkLocation(): Promise<SystemSnapshot['network']> {
     return inspectNetworkLocation(true)
-  }
-
-  /**
-   * 把一次下载包在临时加速里：开始前把线路拉起来，结束（无论成败）再还回去。
-   * 拿不到线路就原样执行——加速是加分项，绝不能变成安装的前置条件。
-   */
-  async function withDownloadAcceleration<T>(
-    note: ((message: string) => void) | null,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    if (!acquireDownloadAcceleration) return operation()
-    note?.('正在准备下载加速')
-    let lease: DownloadAccelerationLease
-    try { lease = await acquireDownloadAcceleration() }
-    catch { return operation() }
-    // 拿到手就一定要还回去，哪怕这一次并没有线路：租约的归属在协调者那边，
-    // 不还回去等于让下一次下载去猜还有没有人在用。
-    if (lease.accelerated) {
-      note?.('已为本次下载启用加速线路（未改动系统代理）')
-      acceleratedDownloads += 1
-    } else {
-      note?.('未启用下载加速，按现有下载源顺序继续')
-    }
-    try { return await operation() }
-    finally {
-      if (lease.accelerated) acceleratedDownloads -= 1
-      await lease.release().catch(() => undefined)
-    }
   }
 
   async function inspectNetworkRegion(): Promise<NetworkRegion> {
@@ -3632,76 +3431,8 @@ export function createSystemService(
     if (policy) return effectiveNetworkRegion(policy, 'unknown')
     // 加速已经为这次下载起来了：线路本来就是为直连官方源准备的，再绕镜像
     // 没有意义。顺带省掉一次区域探测——网络受限时那一步本身最不可靠。
-    if (acceleratedDownloads > 0) return effectiveNetworkRegion('official-first', 'unknown')
+    if (acceleratedDownloadCount() > 0) return effectiveNetworkRegion('official-first', 'unknown')
     return (await inspectNetworkLocation()).region
-  }
-
-  /**
-   * Tool discovery is deliberately not restricted to machine PATH entries.
-   * npm global installs and the official Grok/Claude installers live under a
-   * user's profile on Windows. Discovery is read-only; an explicitly elevated
-   * process still blocks version execution from user-writable paths.
-   */
-  async function findInstalledExecutable(command: string): Promise<string | null> {
-    const additionalPaths = await nodeCommandDirectories(command)
-    return findExecutableForService(command, {
-      env: commandEnvironment(),
-      windowsPackageManagers: command.toLowerCase() === 'npm' ? ['npm'] : [],
-      ...(additionalPaths.length ? { additionalPaths } : {}),
-    })
-  }
-
-  /**
-   * Mac 上客户自己那份 Node.js 太旧、代下的那份够新时，本软件自己找 node / npm、跑 npm
-   * 都把代下的那份排到最前（第三十四批 A，macos-node-runtime.ts）；别的平台、别的情况是空的，
-   * 顺序照旧。交给工具的终端 PATH 不经过这里，客户在工具里用的还是他自己那份。
-   */
-  function preferredNodeDirectories(): Promise<string[]> {
-    if (platform !== 'darwin') return Promise.resolve([])
-    const now = Date.now()
-    if (!preferredNodeProbe || now - preferredNodeProbe.at >= scanReuseMs) {
-      preferredNodeProbe = {
-        at: now,
-        directory: resolveDarwinPreferredNodeDirectory({
-          findNode: () => findExecutableForService('node', { env: commandEnvironment() }),
-          readVersion: (executable) => executeVersion(executable, ['--version']),
-        }).catch(() => null),
-      }
-    }
-    return preferredNodeProbe.directory.then((directory) => directory ? [directory] : [])
-  }
-
-  function nodeCommandDirectories(command: string): Promise<string[]> {
-    return ['node', 'npm', 'npx'].includes(command.toLowerCase()) ? preferredNodeDirectories() : Promise.resolve([])
-  }
-
-  /** `npm root --global` 也得用找 npm 时排在最前的那份 Node.js 跑，不然代下的 npm 会落到客户的旧 node 上。 */
-  async function resolveServiceNpmGlobalRoot(npmExecutable: string | null): Promise<string | null> {
-    return resolveNpmGlobalRoot(npmExecutable, commandEnvironment(), undefined, undefined, await preferredNodeDirectories())
-  }
-
-  async function executeVersion(
-    executable: string,
-    args: string[],
-    windowsPackageManager?: WindowsPackageManager,
-    baseEnv: NodeJS.ProcessEnv = process.env,
-    additionalPaths: readonly string[] = [],
-  ): Promise<string | null> {
-    try {
-      const trustedOnly = platform === 'win32' && windowsExecutionMode === 'trusted-only'
-      if (trustedOnly) await primeTrustedHighIntegrityExecutable(executable, platform)
-      if (trustedOnly && !isTrustedHighIntegrityExecutable(executable)) return null
-      const result = await executeCommand({ executable, argv: args, windowsPackageManager }, {
-        env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv, additionalPaths),
-        trustedOnly,
-        timeoutMs: 8_000,
-        maxOutputBytes: 1024 * 1024,
-      })
-      return firstOutputLine(result.stdout, result.stderr)
-    } catch (error) {
-      const candidate = error as { stdout?: string; stderr?: string }
-      return firstOutputLine(candidate.stdout ?? '', candidate.stderr ?? '')
-    }
   }
 
   async function inspectTool(command: string, args = ['--version']): Promise<ToolStatus> {
@@ -4226,7 +3957,7 @@ export function createSystemService(
       npmLatestCache.clear()
       grokLatestInFlight.clear()
       officialChatGptCache = null
-      preferredNodeProbe = null
+      forgetPreferredNodeDirectories()
     }
     const [nodeResult, npmResult, pythonResult, gitResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
       limitedProbe(inspectNode),
@@ -4439,7 +4170,7 @@ export function createSystemService(
         },
       })
       // Mac 上客户自己那份太旧时，刚下好的这份当场就用上，后面装工具不再去下（第三十四批 A）。
-      preferredNodeProbe = null
+      forgetPreferredNodeDirectories()
       if (replaceForCertificates) await assertNodeReplacedForCertificates()
       return result
     } finally {
@@ -5106,7 +4837,7 @@ export function createSystemService(
       // 策略钉死时 networkRegion 是归约值而非探测结果，"检测到"的措辞会撒谎。
       const regionLabel = store.read().mirrorPolicy
         ? '已按设置固定安装源顺序'
-        : acceleratedDownloads > 0
+        : acceleratedDownloadCount() > 0
         ? '已启用下载加速，优先使用官方源'
         : networkRegion === 'mainland-china'
           ? '检测到中国大陆网络'
@@ -5297,7 +5028,7 @@ export function createSystemService(
         // 这一步只走官方源，换镜像绕不过去；连不上时说清这一点和下一步（#1057 第5b条）。加速已经开着、
         // 或者这个平台没有加速（Linux）时，叫人开加速没用，改说换个网络。
         if (reason.kind === 'network') {
-          const nextStep = platformCapabilitiesFor(platform).acceleration && acceleratedDownloads === 0
+          const nextStep = platformCapabilitiesFor(platform).acceleration && acceleratedDownloadCount() === 0
             ? '到「设置 › 网络加速」开启加速后再试。'
             : '换个网络（比如手机热点）后再试。'
           throw new Error(`${definition.name} 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}${npmErrorCodesClause([reason])}。${nextStep}`, { cause: error })
