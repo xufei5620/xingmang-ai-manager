@@ -51,6 +51,30 @@ describe('main process window events', () => {
       expect(sourceText).not.toContain(`'${ipcEventChannels[event]}'`)
     }
   })
+
+  it('opens the macOS Settings menu command in the main window, brought to the front', () => {
+    // 画布、付款窗口在前时按 ⌘, 以前发给了在前的那个窗口，没人接（#1210）。
+    const { source } = mainSource()
+    const callback = startupCallback(source)
+    const menuHandlers: string[] = []
+    const assignments: Array<{ value: string, owner: ts.Node | undefined }> = []
+    function visit(node: ts.Node): void {
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 'buildMacApplicationMenuTemplate') {
+        menuHandlers.push(node.arguments[1]?.getText(source) ?? '')
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && node.left.getText(source) === 'navigateFromAppMenu') {
+        assignments.push({ value: node.right.getText(source), owner: enclosingFunction(node) })
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(menuHandlers).toEqual(['(target) => navigateFromAppMenu?.(target)'])
+    // Assigned once, straight from the startup callback, so it is set by the time the main window exists.
+    expect(assignments).toHaveLength(1)
+    expect(assignments[0].owner).toBe(callback)
+    expect(assignments[0].value).toBe("(target) => { showMainWindow(); sendToMainWindow('onNavigate', target) }")
+  })
 })
 
 // Every `quitCleanup.add` in main.ts with what a reader needs to check its place:

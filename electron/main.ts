@@ -117,7 +117,7 @@ import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { createInstallKeepAwake } from './install-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type SettingsSaveIssue, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type RendererNavigationTarget, type SettingsSaveIssue, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -783,6 +783,8 @@ if (!hasSingleInstanceLock) {
     // 客服要先分清是哪个发行版（linux-os-release.ts），检查页之外的「复制给客服」也带上。
     const linuxSystemNameRead = linuxTrayHost ? readLinuxSystemName() : null
     let linuxSystemLabel: string | null = null
+    // Mac 菜单要在建主窗口之前设上，「设置...」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
+    let navigateFromAppMenu: ((target: RendererNavigationTarget) => void) | null = null
     if (process.platform === 'win32') {
       app.setAppUserModelId(windowsAppUserModelId)
       Menu.setApplicationMenu(null)
@@ -797,13 +799,7 @@ if (!hasSingleInstanceLock) {
     } else if (process.platform === 'darwin') {
       // BrowserWindow.icon does not control the Dock, especially under electron . in development.
       app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'))
-      const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => {
-        const window = BrowserWindow.getFocusedWindow()
-          ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
-        if (window && !window.isDestroyed()) {
-          window.webContents.send(ipcEventChannels.onNavigate, target)
-        }
-      })
+      const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => navigateFromAppMenu?.(target))
       Menu.setApplicationMenu(Menu.buildFromTemplate(template))
     } else {
       // Linux 窗口和 Windows 一样自己画标题栏；Electron 默认那套英文 File / Edit / View
@@ -2183,6 +2179,9 @@ if (!hasSingleInstanceLock) {
       mainWindow.focus()
       reloadIfRendererGone(mainWindow)
     }
+    // 以前发给在前面的那个窗口：画布、付款窗口在前时发进了它们，没人接；主窗口缩在托盘里时发到了却不出来（#1210）。
+    // 跟托盘跳页一样，先把主窗口叫出来，再只发给它。
+    navigateFromAppMenu = (target) => { showMainWindow(); sendToMainWindow('onNavigate', target) }
     // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
     const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
       // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
