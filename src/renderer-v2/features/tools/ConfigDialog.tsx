@@ -483,7 +483,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     onClose={onClose} busy={Boolean(busy)} dirty={draft.dirty} testId="config-dialog"
     footer={<><span className="v2-dialog-footer-start v2-config-foot-note">只改账号、密钥和模型，改之前会自动备份。</span><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>
       <Button variant="primary" icon={done ? undefined : Save} loading={saving} disabled={Boolean(busy) || (!done && draft.source === 'unknown')} onClick={primary} testId="tool-save-config">{primaryLabel}</Button></>}>
-    <fieldset className="v2-config-controls" disabled={Boolean(busy)} data-unsaved={draft.dirty ? 'true' : undefined}>
+    <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
     {draft.source === 'unknown' && <><p className="v2-callout is-warn" data-testid="tool-foreign-key-note">{foreignKeyKind(native, 'unknown') === 'otherAccount' ? '这把密钥可能不是当前账号的，用量可能算到别的账号上。' : '这个工具现在用的不是当前账号的密钥，在这里打不开。'}点「{switchLabel}」换成你自己的，改之前会先备份现在的设置。</p><div className="v2-inline-actions">{onSwitchAccount
       ? <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} onClick={() => void switchAccount()} testId="tool-switch-account">{signedIn ? switchLabel : '登录后改用我的账号'}</Button>
       : <Button onClick={() => change({ source: 'account' })}>{switchLabel}</Button>}</div></>}

@@ -170,7 +170,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       onClick={() => void (detected ? save(model, models) : detectThenSave())} testId="external-client-save">{detected ? '保存配置' : '保存并检测'}</Button></>}>
     <div className="v2-client-head"><BrandIcon tool={tool} /><strong>{definition.name}</strong>{version && <span>v{version.replace(/^v/, '')}</span>}</div>
     <p className="v2-field-note">{clientHints[tool]}</p>
-    <fieldset className="v2-config-controls" disabled={Boolean(busy)} data-unsaved={dirty ? 'true' : undefined}>
+    <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
       <div className="v2-config-key"><OptionPicker label="访问密钥" value={source} options={sourceOptions} onChange={changeSource} testId="external-client-source" />
         {keyError && <p role="status">{accountKeyListFailureText(keyError)}</p>}
         {source === 'manual' && <Input label="星芒密钥" password mono autoComplete="off" value={secret} error={secretError || undefined} placeholder={strictKeyFormat ? '粘贴你在星芒创建的密钥，以 sk- 开头' : undefined}

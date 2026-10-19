@@ -2203,7 +2203,6 @@ test('feedback opens on the message form and copies what the customer wrote toge
     assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard' || call.name === 'open-support'), false)
     await page.getByTestId('feedback-type').getByRole('button', { name: '功能建议', exact: true }).click()
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
-    assert.equal(await form.getAttribute('data-unsaved'), 'true')
     await page.getByTestId('feedback-contact').fill('wx-test')
     await page.getByTestId('feedback-send').click()
     await waitForToast(page, '已复制，发给客服就行')
@@ -2216,20 +2215,13 @@ test('feedback opens on the message form and copies what the customer wrote toge
       '最近一次失败：安装 Codex CLI · 网络超时',
     ].join('\n') + '\n\n固定的脱敏报告内容'])
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
-    // 复制出去了就不再拦关窗口。
-    assert.equal(await form.getAttribute('data-unsaved'), null)
-    // 关掉「附带诊断报告」只复制客户写的那几行；关掉以后剪贴板里那段和表单对不上，又算没复制出去。
+    // 关掉「附带诊断报告」只复制客户写的那几行。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
-    assert.equal(await form.getAttribute('data-unsaved'), 'true')
     await page.getByTestId('feedback-send').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
     const last = (await calls(page)).filter((call) => call.name === 'copy-clipboard').at(-1).args
     assert.equal(last.includes('固定的脱敏报告内容'), false)
     assert.match(last, /^留言反馈 · 功能建议\n/)
-    assert.equal(await form.getAttribute('data-unsaved'), null)
-    // 换了类型也一样。
-    await page.getByTestId('feedback-type').getByRole('button', { name: '其他', exact: true }).click()
-    assert.equal(await form.getAttribute('data-unsaved'), 'true')
   } finally {
     await page.close()
   }
@@ -2247,7 +2239,6 @@ test('feedback still copies what the customer wrote when the diagnostic report c
     assert.match(copied[0], /^留言反馈 · 遇到问题\n点「打开」后终端闪一下就关了\n/)
     assert.match(copied[0], /\n诊断报告：这次没生成出来$/)
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page still opens')
-    assert.equal(await page.getByTestId('feedback-form').getAttribute('data-unsaved'), null)
   } finally {
     await page.close()
   }
