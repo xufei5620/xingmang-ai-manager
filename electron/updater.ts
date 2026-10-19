@@ -2,7 +2,7 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
-import { isOlderReleaseGuard, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
+import { isOlderReleaseGuard, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 import { compareVersionsBy, parseUpdateVersion } from './versions'
 
@@ -274,6 +274,8 @@ export interface UpdaterRuntime {
   currentVersion: string
   isPackaged: boolean
   platform?: NodeJS.Platform
+  /** 本机跑的是哪个架构的包；不传＝process.arch。撤回、放量、最低版本只对某几种安装包生效时拿它比。 */
+  arch?: string
   localBuild?: boolean
   enableDevelopmentUpdates?: boolean
   startupCheckTimeoutMs?: number
@@ -971,6 +973,8 @@ export function createUpdaterService(
   const verifyPackageDigest = runtime.verifyPackageDigest
   const verifyPackageSignature = runtime.verifyPackageSignature
   const intelMac = platform === 'darwin' && runtime.macRunsArm64 === false
+  // 撤回、放量、最低版本可以只对某几种安装包生效（#1155 第 5 条），这台电脑按这几种写法去对。
+  const releasePlatforms = resolveReleasePlatforms({ platform, arch: runtime.arch ?? process.arch, macRunsArm64: runtime.macRunsArm64 })
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
   let installRequested = false
@@ -1037,18 +1041,20 @@ export function createUpdaterService(
   client.logger = null
 
   function isWithdrawn(version: string | null | undefined): boolean {
-    return Boolean(version) && releaseGuard.badVersions.includes(String(version).trim().replace(/^v/i, ''))
+    return Boolean(version)
+      && resolveReleaseGuardFor(releaseGuard, releasePlatforms).badVersions.includes(String(version).trim().replace(/^v/i, ''))
   }
 
   // 撤回名单与分批放量都在 electron-updater 判断「有没有可用更新」的那一步生效：
   // 被拦下的版本对它来说就是没有更新，后面的下载、安装根本不会开始。
   const defaultRolloutCheck = client.isUserWithinRollout
   client.isUserWithinRollout = async (info: UpdateInfo) => {
+    const guard = resolveReleaseGuardFor(releaseGuard, releasePlatforms)
     const decision = decideUpdateOffer({
       version: info.version,
       currentVersion: runtime.currentVersion,
-      badVersions: releaseGuard.badVersions,
-      rollout: releaseGuard.rollout,
+      badVersions: guard.badVersions,
+      rollout: guard.rollout,
       // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
       // 看的是本机低不低于最低版本，不是那道门亮没亮：Linux 的门要等有了提议才亮。
       manual: manualCheck || Boolean(minimumRequired),
@@ -1137,6 +1143,7 @@ export function createUpdaterService(
     if (status) {
       adoptReleaseGuard({
         badVersions: status.badVersions ?? [],
+        ...(status.badVersionPlatforms ? { badVersionPlatforms: status.badVersionPlatforms } : {}),
         rollout: status.rollout ?? null,
         ...(status.updatedAt ? { updatedAt: status.updatedAt } : {}),
       })
@@ -1149,7 +1156,9 @@ export function createUpdaterService(
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
     // 开发态装不了更新，拦下来只会把人困住。
-    const required = enabled && !development ? resolveRequiredVersion(runtime.currentVersion, status?.minimumVersion) : null
+    const required = enabled && !development
+      ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
+      : null
     const previouslyRequired = minimumRequired
     minimumRequired = required
     // 快照里的 requiredVersion 由 emit 按 minimumRequired 重算，这里只判断要不要发一次。

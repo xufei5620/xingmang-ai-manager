@@ -1567,6 +1567,66 @@ describe('withdrawn versions and staged rollout', () => {
     service.dispose()
   })
 
+  it('withdraws and requires an update only on the packages the status file names (#1155 item 5)', async () => {
+    const status: ServiceStatus = {
+      maintenance: null,
+      badVersions: ['1.0.0', '1.2.0'],
+      badVersionPlatforms: { '1.0.0': ['mac-x64'], '1.2.0': ['mac-x64'] },
+      rollout: null,
+      minimumVersion: '1.1.0',
+      minimumVersionPlatforms: ['mac-x64'],
+    }
+    const check = async (runtime: Partial<UpdaterRuntime>) => {
+      const client = new FakeUpdater()
+      client.isUserWithinRollout = vi.fn(async () => true)
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus: async () => status, ...runtime })
+      const hook = client.isUserWithinRollout
+      const seen: { offered: boolean[]; allowDowngrade: boolean[] } = { offered: [], allowDowngrade: [] }
+      client.checkForUpdates.mockImplementation(async () => {
+        seen.allowDowngrade.push(client.allowDowngrade)
+        seen.offered.push(await hook!(updateInfo('1.1.0')), await hook!(updateInfo('1.2.0')))
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+      await service.check()
+      const { currentVersionWithdrawn, requiredVersion } = service.getState()
+      service.dispose()
+      return { ...seen, currentVersionWithdrawn, requiredVersion }
+    }
+
+    // Intel Mac：本机 1.0.0 被撤回、可以退回；1.2.0 不装；低于最低版本要先更新。
+    expect(await check({ platform: 'darwin', arch: 'x64', macRunsArm64: false })).toEqual({
+      offered: [true, false], allowDowngrade: [true], currentVersionWithdrawn: true, requiredVersion: '1.1.0',
+    })
+    // Apple 芯片上经 Rosetta 跑着 Intel 版：装着的就是 Intel 包，一样算。
+    expect(await check({ platform: 'darwin', arch: 'x64', macRunsArm64: true })).toMatchObject({ currentVersionWithdrawn: true, requiredVersion: '1.1.0' })
+    // M 系列芯片版和 Windows 都不受影响。
+    for (const runtime of [{ platform: 'darwin' as const, arch: 'arm64', macRunsArm64: true }, { platform: 'win32' as const, arch: 'x64' }]) {
+      expect(await check(runtime)).toEqual({ offered: [true, true], allowDowngrade: [false], currentVersionWithdrawn: false, requiredVersion: null })
+    }
+  })
+
+  it('holds a staged rollout back only on the packages the status file names (#1155 item 5)', async () => {
+    const status: ServiceStatus = { maintenance: null, badVersions: [], rollout: { version: '1.1.0', percent: 0, platforms: ['mac-x64'] } }
+    const offeredOn = async (runtime: Partial<UpdaterRuntime>) => {
+      const client = new FakeUpdater()
+      client.isUserWithinRollout = vi.fn(async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50)
+      const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus: async () => status, ...runtime })
+      const hook = client.isUserWithinRollout
+      const offered: boolean[] = []
+      client.checkForUpdates.mockImplementation(async () => {
+        offered.push(await hook!(updateInfo('1.1.0')))
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+      await service.check()
+      await service.check({ manual: true })
+      service.dispose()
+      return offered
+    }
+    expect(await offeredOn({ platform: 'darwin', arch: 'x64', macRunsArm64: false })).toEqual([false, true])
+    expect(await offeredOn({ platform: 'darwin', arch: 'arm64', macRunsArm64: true })).toEqual([true, true])
+    expect(await offeredOn({ platform: 'linux', arch: 'x64' })).toEqual([true, true])
+  })
+
   it('does not let an older copy of the status file roll the withdrawn list and rollout back (#1157 item 10)', async () => {
     const client = new FakeUpdater()
     const rememberReleaseGuard = vi.fn(async () => undefined)

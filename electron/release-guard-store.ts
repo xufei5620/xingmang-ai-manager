@@ -59,10 +59,12 @@ export function createReleaseGuardStore(options: { filePath: string }): ReleaseG
     },
     write(guard) {
       // 记下这份出自哪一版状态文件：以后读到更旧的副本就不拿它盖这份（#1157 第 10 条）。0.2.20 以前的版本
-      // 读这个文件时不认 updatedAt，照旧能用。
+      // 读这个文件时不认 updatedAt，照旧能用。只撤某几种安装包的版本跟状态文件一样照旧写在 badVersions 里，
+      // 撤哪几种另记一项（#1155 第 5 条），没有就不写，文件跟以前逐字一样。
       const content = `${JSON.stringify({
         version: 1,
         badVersions: guard.badVersions,
+        ...(guard.badVersionPlatforms ? { badVersionPlatforms: guard.badVersionPlatforms } : {}),
         rollout: guard.rollout,
         ...(guard.updatedAt ? { updatedAt: guard.updatedAt } : {}),
       })}\n`

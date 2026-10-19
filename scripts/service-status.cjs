@@ -27,6 +27,22 @@ const MAX_PREVIOUS_CLI_MODELS = 8
 const MAX_RETIRED_CLI_MODELS = 32
 // #1114：最低版本指着出来还不满一天的包时提醒批准的人。0.2.19 发出去 12 分钟就被设成最低版本。
 const FRESH_RELEASE_MS = 24 * 60 * 60 * 1000
+// 撤回、放量、最低版本只对哪几种安装包生效（#1155 第 5 条），写法与客户端 electron/service-status.ts 的
+// releasePlatformPattern 一致：平台，或平台-架构。
+const RELEASE_PLATFORM = /^(windows|mac|linux)(?:-(x64|arm64))?$/
+const RELEASE_PLATFORM_LABELS = {
+  windows: 'Windows',
+  'windows-x64': 'Windows x64 版',
+  'windows-arm64': 'Windows arm64 版',
+  mac: 'Mac',
+  'mac-x64': 'Mac Intel 版',
+  'mac-arm64': 'Mac M 系列芯片版',
+  linux: 'Linux',
+  'linux-x64': 'Linux x64 版',
+  'linux-arm64': 'Linux arm64 版',
+}
+// 第一个认平台的客户端版本：更早的不认，带平台的条目在它们那里照旧对所有平台生效。
+const PLATFORM_AWARE_CLIENT = '0.2.20'
 
 class StatusInputError extends Error {}
 
@@ -93,32 +109,98 @@ function plainVersion(value) {
   return version
 }
 
+/** 「mac-x64|linux」这样的平台表。写错直接报错：客户端遇到认不出的会当成对所有平台生效，发布者得当场知道。 */
+function releasePlatforms(value, context) {
+  const names = [...new Set(String(value ?? '').split(/[|｜]/).map((entry) => entry.trim().toLowerCase()))]
+  if (names.some((name) => !RELEASE_PLATFORM.test(name))) {
+    throw new StatusInputError(`平台只认 windows、mac、linux，后面可以接 -x64 或 -arm64（mac-x64 是 Intel 版的 Mac 包），几种之间用 | 隔开：${context}`)
+  }
+  return names
+}
+
+// 线上那份里读得懂的平台表；读不懂的那一项跟客户端一样当成对所有平台生效。
+function validReleasePlatforms(value) {
+  if (!Array.isArray(value) || value.length === 0) return null
+  return value.every((entry) => typeof entry === 'string' && RELEASE_PLATFORM.test(entry)) ? value : null
+}
+
+/** 「0.2.12@mac-x64」拆成版本号和平台表；不带 @ 的平台表是 null（对所有平台）。 */
+function splitReleasePlatforms(input) {
+  const raw = String(input ?? '').trim()
+  const parts = raw.split(/[@＠]/)
+  if (parts.length > 2) throw new StatusInputError(`一项里只能写一个 @：${raw}`)
+  return { value: parts[0].trim(), platforms: parts.length === 2 ? releasePlatforms(parts[1], raw) : null }
+}
+
+function describePlatforms(platforms) {
+  return platforms.map((name) => RELEASE_PLATFORM_LABELS[name] ?? name).join('、')
+}
+
 /**
  * 撤回名单只加不减：一个版本撤回之后，还停在它上面的人随时可能来检查更新，名单
  * 上少了它，那些人就退不回去了。真要移除写「-0.2.10」，清空写 none。
+ *
+ * 「0.2.20@mac-x64」只撤 Intel 版的 Mac 包（#1155 第 5 条）。版本号照旧写进 badVersions，撤哪几种另记在
+ * badVersionPlatforms：0.2.19 及以前的客户端只认前者，照旧整版撤回，只会撤得更多、不会漏。同一个版本再加
+ * 别的平台就合起来；不带 @ 再写一次就改回对所有平台撤回。已经对所有平台撤回的版本不能直接收窄（那等于
+ * 替一部分平台移出名单），要先「-0.2.20」再加。返回 { versions, platforms }，platforms 为 undefined 就是没有
+ * 只撤某几种的版本。
  */
-function applyBadVersions(current, input) {
+function applyBadVersions(current, input, currentPlatforms) {
   const raw = String(input ?? '').trim()
-  if (!raw) return current
-  if (raw.toLowerCase() === 'none') return []
+  if (!raw) return { versions: current, platforms: currentPlatforms }
+  if (raw.toLowerCase() === 'none') return { versions: [], platforms: undefined }
   const versions = new Set(Array.isArray(current) ? current.filter((entry) => typeof entry === 'string') : [])
-  for (const token of raw.split(/[\s,，]+/).filter(Boolean)) {
-    if (token.startsWith('-')) versions.delete(plainVersion(token.slice(1)))
-    else versions.add(plainVersion(token))
+  const scoped = new Map()
+  if (isRecord(currentPlatforms)) {
+    for (const [version, platforms] of Object.entries(currentPlatforms)) {
+      const valid = validReleasePlatforms(platforms)
+      if (valid) scoped.set(version, valid)
+    }
   }
-  return [...versions]
+  for (const token of raw.split(/[\s,，]+/).filter(Boolean)) {
+    const { value, platforms } = splitReleasePlatforms(token)
+    if (value.startsWith('-')) {
+      if (platforms) throw new StatusInputError(`移出撤回名单时只写版本号，不带平台：${token}`)
+      const version = plainVersion(value.slice(1))
+      versions.delete(version)
+      scoped.delete(version)
+      continue
+    }
+    const version = plainVersion(value)
+    if (!platforms) {
+      versions.add(version)
+      scoped.delete(version)
+      continue
+    }
+    if (versions.has(version) && !scoped.has(version)) {
+      throw new StatusInputError(`${version} 已经对所有平台撤回了。要改成只撤某几种安装包，先移出再加，写成「-${version} ${token}」`)
+    }
+    versions.add(version)
+    scoped.set(version, [...new Set([...(scoped.get(version) ?? []), ...platforms])])
+  }
+  const kept = [...versions].filter((version) => scoped.has(version))
+  return {
+    versions: [...versions],
+    platforms: kept.length ? Object.fromEntries(kept.map((version) => [version, scoped.get(version)])) : undefined,
+  }
 }
 
-/** 「0.2.11 20」或「0.2.11 20%」= 0.2.11 先给两成电脑；none = 取消分批，全部放开。 */
+/**
+ * 「0.2.11 20」或「0.2.11 20%」= 0.2.11 先给两成电脑；none = 取消分批，全部放开。
+ * 后面接「@mac-x64」只对这几种安装包分批，别的照常全放（#1155 第 5 条）；0.2.19 及以前的客户端不认，
+ * 对所有平台分批，只会推得更慢。
+ */
 function applyRollout(current, input) {
   const raw = String(input ?? '').trim()
   if (!raw) return current
   if (raw.toLowerCase() === 'none') return undefined
-  const match = raw.match(/^v?(\S+)\s+(\d{1,3})\s*%?$/)
+  const { value, platforms } = splitReleasePlatforms(raw)
+  const match = value.match(/^v?(\S+)\s+(\d{1,3})\s*%?$/)
   if (!match) throw new StatusInputError(`分批放量要写成「0.2.11 20」（版本号 空格 百分比）：${raw}`)
   const percent = Number(match[2])
   if (percent > 100) throw new StatusInputError(`百分比最多 100：${raw}`)
-  return { version: plainVersion(match[1]), percent }
+  return { version: plainVersion(match[1]), percent, ...(platforms ? { platforms } : {}) }
 }
 
 /**
@@ -280,16 +362,24 @@ function applyStatusChanges(current, changes, now = new Date()) {
   } else if (String(changes.message ?? '').trim() || String(changes.until ?? '').trim()) {
     throw new StatusInputError('只有打开维护时才能填说明和结束时间')
   }
-  const badVersions = applyBadVersions(next.badVersions, changes['bad-versions'])
+  const withdrawals = applyBadVersions(next.badVersions, changes['bad-versions'], next.badVersionPlatforms)
+  const badVersions = withdrawals.versions
   if (badVersions === undefined || (Array.isArray(badVersions) && badVersions.length === 0)) delete next.badVersions
   else next.badVersions = badVersions
+  if (withdrawals.platforms === undefined || !next.badVersions) delete next.badVersionPlatforms
+  else next.badVersionPlatforms = withdrawals.platforms
   const rollout = applyRollout(next.rollout, changes.rollout)
   if (rollout === undefined) delete next.rollout
   else next.rollout = rollout
   const publishedVersions = String(changes['published-versions'] ?? '').split(/\s+/).filter(Boolean)
-  const minimumVersion = applyMinimumVersion(next.minimumVersion, changes['minimum-version'], publishedVersions)
+  // 「0.2.12@mac-x64」只拦 Intel 版的 Mac 包。0.2.19 及以前的客户端不认平台、对所有平台都拦，所以仍要
+  // 不高于每个平台正在发的版本，被拦的人才都有新版本可装。
+  const minimumInput = splitReleasePlatforms(changes['minimum-version'])
+  const minimumVersion = applyMinimumVersion(next.minimumVersion, minimumInput.value, publishedVersions)
   if (minimumVersion === undefined) delete next.minimumVersion
   else next.minimumVersion = minimumVersion
+  if (minimumVersion === undefined || (minimumInput.value && !minimumInput.platforms)) delete next.minimumVersionPlatforms
+  else if (minimumInput.platforms) next.minimumVersionPlatforms = minimumInput.platforms
   const toolRouteRewrite = changes['tool-route-rewrite'] ?? 'keep'
   if (!['keep', 'targeted', 'merge'].includes(toolRouteRewrite)) throw new StatusInputError(`换线路改配置的方式只能是 keep / targeted / merge：${toolRouteRewrite}`)
   // 缺省就是只改地址（xm 三线路 C9）；只有切回整份重写时才写这个字段，切回来时整个删掉。
@@ -316,7 +406,29 @@ function summarizeRollout(rollout) {
 
 function describeRollout(rollout) {
   if (!isRecord(rollout)) return '分批放量：无（新版本全部放开）'
-  return `分批放量：${summarizeRollout(rollout)}`
+  const platforms = validReleasePlatforms(rollout.platforms)
+  const scope = platforms ? `（只管 ${describePlatforms(platforms)}，别的全放；${PLATFORM_AWARE_CLIENT} 以前的客户端不认平台，对所有平台分批）` : ''
+  return `分批放量：${summarizeRollout(rollout)}${scope}`
+}
+
+function describeBadVersions(status) {
+  if (!Array.isArray(status.badVersions) || status.badVersions.length === 0) return '撤回的版本：无'
+  const scoped = isRecord(status.badVersionPlatforms) ? status.badVersionPlatforms : {}
+  let any = false
+  const parts = status.badVersions.map((version) => {
+    const platforms = Object.hasOwn(scoped, version) ? validReleasePlatforms(scoped[version]) : null
+    if (!platforms) return version
+    any = true
+    return `${version}（只撤 ${describePlatforms(platforms)}）`
+  })
+  return `撤回的版本：${parts.join('、')}${any ? `（${PLATFORM_AWARE_CLIENT} 以前的客户端不认平台，照旧整版撤回）` : ''}`
+}
+
+function describeMinimumVersion(status) {
+  if (typeof status.minimumVersion !== 'string') return '最低版本：无'
+  const platforms = validReleasePlatforms(status.minimumVersionPlatforms)
+  const scope = platforms ? `；只拦 ${describePlatforms(platforms)}，${PLATFORM_AWARE_CLIENT} 以前的客户端不认平台，对所有平台都拦` : ''
+  return `最低版本：${status.minimumVersion}（更低的必须先更新，只有 0.2.11 及以后的客户端认${scope}）`
 }
 
 function describeAccountGroups(groups) {
@@ -344,9 +456,9 @@ function describeStatus(status) {
   const lines = []
   const maintenance = isRecord(status.maintenance) && status.maintenance.active === true ? status.maintenance : null
   lines.push(maintenance ? `维护：打开${maintenance.message ? `，说明「${maintenance.message}」` : ''}${maintenance.until ? `，${maintenance.until} 自动结束` : ''}` : '维护：关闭')
-  lines.push(Array.isArray(status.badVersions) && status.badVersions.length ? `撤回的版本：${status.badVersions.join('、')}` : '撤回的版本：无')
+  lines.push(describeBadVersions(status))
   lines.push(describeRollout(status.rollout))
-  lines.push(typeof status.minimumVersion === 'string' ? `最低版本：${status.minimumVersion}（更低的必须先更新，只有 0.2.11 及以后的客户端认）` : '最低版本：无')
+  lines.push(describeMinimumVersion(status))
   lines.push(status.toolRouteRewrite === 'merge' ? '换线路时：整份重写工具配置（老办法，只有 0.2.18 及以后的客户端认）' : '换线路时：只改工具配置里的地址')
   lines.push(describeCliModels(status.cliModels))
   lines.push(describeAccountGroups(status.accountGroups))
