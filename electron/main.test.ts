@@ -157,8 +157,7 @@ describe('main process startup order', () => {
       'runCodexContextLimitsMigration',
       'createNetworkRoutes',
       'runClaudeDesktopModelRepair',
-      'createDownloadAccelerationCoordinator',
-      'createCodexDesktopAccelerationCoordinator',
+      'createAccelerationRouting',
       'createSystemService',
       'startToolRouteFollowing',
       'createDiagnostics',
@@ -179,10 +178,8 @@ describe('main process startup order', () => {
       'settingsStore.normalize',
       'installXingmangAiSkillFiles',
       'accounts.restoreActive',
-      'createAccelerationDevelopmentHost',
-      'developmentAcceleration.recover',
-      'createAccelerationService',
-      'createTrayAccelerationCoordinator',
+      'createAccelerationHost',
+      'createAccelerationServices',
       'createAccelerationPower',
       'registerIpcHandlers',
       'attachTrayAvailability',
@@ -232,6 +229,36 @@ describe('main process startup order', () => {
     for (const [owner, order] of orders) {
       const calls = directCallPositions(source, owner, order)
       for (const { callee, positions } of calls) expect({ owner: owner.name?.text, callee, calls: positions.length }).toEqual({ owner: owner.name?.text, callee, calls: 1 })
+      const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
+      expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
+    }
+  })
+
+  it('wires acceleration in the order each piece reads the one before it', () => {
+    // 下载用的那条专用会话先建，下载线路换了才有地方设代理；Codex 桌面端的启动线路靠上面那份自动连接兜底。
+    // 宿主一建好就把上次崩溃没改回的系统代理改回去。两种提醒建在加速服务之前，加速服务一出状态就交给它们；
+    // 托盘读的是加速页那一套，所以最后建。
+    const { source } = parseWiringFile(path.join(__dirname, 'bootstrap', 'acceleration.ts'))
+    const orders: Array<[string, string[]]> = [
+      ['createAccelerationRouting', [
+        'session.fromPartition',
+        'createDownloadAccelerationCoordinator',
+        'createCodexDesktopAccelerationCoordinator',
+        'createCodexDesktopStartupRouteCoordinator',
+        'createManualRedirectFetch',
+      ]],
+      ['createAccelerationHost', ['createAccelerationDevelopmentHost', 'developmentAcceleration.recover']],
+      ['createAccelerationServices', [
+        'createAccelerationExpiryNotice',
+        'createAccelerationInterruptionNotice',
+        'createAccelerationService',
+        'createUserAccelerationApi',
+        'createTrayAccelerationCoordinator',
+      ]],
+    ]
+    for (const [owner, order] of orders) {
+      const calls = directCallPositions(source, moduleFunction(source, owner), order)
+      for (const { callee, positions } of calls) expect({ owner, callee, calls: positions.length }).toEqual({ owner, callee, calls: 1 })
       const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
       expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
     }
