@@ -68,6 +68,31 @@ function firstOutputLine(stdout: string, stderr: string): string | null {
     ?.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '') ?? null
 }
 
+/**
+ * Every darwin Grok post-install and uninstall codesign verification runs through
+ * this rather than the plain commandEnvironment() baseline used elsewhere to locate an
+ * installation. The result decides whether a just-installed or about-to-be-removed
+ * Grok binary is the genuine xAI build, so it must not run in an environment the
+ * caller can still shape after the fact — the same reasoning macos-codex-app.ts and
+ * resolveCliCommand's darwin staging path already apply for Codex.
+ *
+ * executeCommand is threaded through explicitly, rather than closed over, so this
+ * stays a top-level function callable — and testable — from outside
+ * createSystemService's closure.
+ */
+export function buildDarwinTrustedVerificationRunner(
+  executeCommand: typeof runCommand,
+): (spec: { executable: string; argv: readonly string[] }) => Promise<{ stdout: string; stderr: string }> {
+  return async (spec) => {
+    const result = await executeCommand(spec, {
+      env: trustedCommandEnvironment(),
+      timeoutMs: 8_000,
+      maxOutputBytes: 1024 * 1024,
+    })
+    return { stdout: result.stdout, stderr: result.stderr }
+  }
+}
+
 export function createServiceContext(store: AppSettingsStore, serviceOptions: SystemServiceOptions) {
   const windowsExecutionMode = serviceOptions.windowsExecutionMode ?? 'trusted-only'
   const platform = serviceOptions.platform ?? process.platform

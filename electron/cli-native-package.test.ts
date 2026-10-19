@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { cliNativePackageCandidates, cliNativePackageMissingMessage, findMissingCliNativePackage } from './cli-native-package'
+import { cliNativePackageCandidates, cliNativePackageMissingMessage, findMissingCliNativePackage, readPackageManifestVersion } from './cli-native-package'
 
 const temporaryDirectories: string[] = []
 
@@ -131,5 +131,30 @@ describe('cliNativePackageMissingMessage', () => {
     const message = cliNativePackageMissingMessage('Claude Code')
     expect(message).toContain('换个网络')
     expect(message).not.toMatch(/npm|optional|native|@/i)
+  })
+})
+
+describe('readPackageManifestVersion', () => {
+  function manifest(content: string): string {
+    const filePath = path.join(temporaryDirectory(), 'package.json')
+    fs.writeFileSync(filePath, content)
+    return filePath
+  }
+
+  it('reads an exact version and trims it', async () => {
+    await expect(readPackageManifestVersion(manifest(JSON.stringify({ version: ' 2.1.277 ' })), 'package.json')).resolves.toBe('2.1.277')
+  })
+
+  it('answers null rather than guessing when the version is not exact', async () => {
+    await expect(readPackageManifestVersion(manifest(JSON.stringify({ version: '^2.1.0' })), 'package.json')).resolves.toBeNull()
+    await expect(readPackageManifestVersion(manifest(JSON.stringify({ version: 2 })), 'package.json')).resolves.toBeNull()
+    await expect(readPackageManifestVersion(manifest('["2.1.277"]'), 'package.json')).resolves.toBeNull()
+    await expect(readPackageManifestVersion(manifest('{'), 'package.json')).resolves.toBeNull()
+  })
+
+  it('answers null for a missing or oversized manifest', async () => {
+    await expect(readPackageManifestVersion(path.join(temporaryDirectory(), 'package.json'), 'package.json')).resolves.toBeNull()
+    const padded = JSON.stringify({ version: '2.1.277', description: 'x'.repeat(256 * 1024) })
+    await expect(readPackageManifestVersion(manifest(padded), 'package.json')).resolves.toBeNull()
   })
 })

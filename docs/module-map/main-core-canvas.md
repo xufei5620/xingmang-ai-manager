@@ -22,7 +22,7 @@
 - `trusted-native-cli.ts` — Windows 原生 CLI（`.exe`）的 Authenticode 签名核对与暂存：按工具钉发布者主体名，Grok 还钉签发 CA（X.AI LLC 与 X Corp. 两张证书都认，名单与 `scripts/sync-grok-cos.cjs` 的 SIGNERS 是同一份、改要两处一起改）；只认单链接普通文件，核过签名再算 sha256 放进受管目录。目前由 `grok-installer.ts` 使用
 - `system-certificate-trust.ts` — 公司审计网关、杀软网页扫描会换掉 HTTPS 证书，Chromium 信系统证书库所以登录正常，Node 写的 npm 却装不上。这里只给同用户路径的子进程环境加 `NODE_USE_SYSTEM_CA=1`（用户自己设过就不动），并在仍失败时判断是哪种情况好给对下一步提示；`trustedCommandEnvironment` 会剥掉它，因为跨提权边界时当前用户的证书库是低权限一侧可写的（I2）
 - `manual-redirect-fetch.ts` — 让 Electron `net.fetch` 的 `redirect:'manual'` 表现得和 undici 一样（返回不带正文的 3xx，并当场取消请求）。不包这一层时，安装包下载的第一跳重定向必定报 "Redirect was cancelled"，账号与中转请求也认不出强制门户、没法切线路（#1064）；`main.ts` 给它发出去的每个 Chromium 会话 fetch 都包了这一层（I10）
-- `platform-capabilities.ts` — **判断"当前平台支持什么"的单一入口**（`platformCapabilitiesFor`）：Node/Python 由谁装、各 CLI 由谁装、要不要 Node、有没有加速、Codex 桌面端能不能装/开/卸等；`processElevated` 不在这里算，由 `platform:get-capabilities` 通道叠上去。渲染层经这条通道拿结果，不自己猜平台。改跨平台代码前先读它
+- `platform-capabilities.ts` — **判断"当前平台支持什么"的单一入口**（`platformCapabilitiesFor`）：Node/Python 由谁装、各 CLI 由谁装、要不要 Node、有没有加速、Codex 桌面端能不能装/开/卸等；Grok 按平台走哪条路装（`grokInstallStrategyFor`）也在这里；`processElevated` 不在这里算，由 `platform:get-capabilities` 通道叠上去。渲染层经这条通道拿结果，不自己猜平台。改跨平台代码前先读它
 
 ## 本地文件与有界读写（I8 / I10 的工具库，写本地数据和读网络响应一律走这里）
 
@@ -38,7 +38,7 @@
 ## CLI 服务与首页扫描
 
 - `system-service.ts` — **全仓最大、最容易撞车的模块**：`createSystemService` 之前是导出的纯函数区（可直接单测），之后是闭包工厂（内部函数不导出），新逻辑先写成顶层纯函数再在闭包里调（T3）。管首页扫描（Node/CLI/桌面端/网络位置）、CLI 安装更新卸载与回退、打开工具、一键修复等；`SystemSnapshot` 等类型也从这里导出
-- `system-service-context.ts` — 系统服务各簇共用的那一份上下文（#1070 第 2 步从 `createSystemService` 开头原样搬出）：`createServiceContext` 把选项解析成实际用的那一份（测试替身或缺省实现，缺省往严里取：执行模式缺省 `trusted-only`），建几份记录文件、安装排队（I11 的 `InstallationQueue` 与取消登记）和保存配置的排队，外加只靠这些就能做的几样：找命令、跑 `--version`、下载临时走加速（计数决定安装源顺序）、建安装临时目录、装之前看盘。`system-service.ts` 正按簇把闭包搬成各自的服务文件，都只拿这一份上下文；它只 import `system-service.ts` 的类型，免得两个文件互相 require
+- `system-service-context.ts` — 系统服务各簇共用的那一份上下文（#1070 第 2 步从 `createSystemService` 开头原样搬出）：`createServiceContext` 把选项解析成实际用的那一份（测试替身或缺省实现，缺省往严里取：执行模式缺省 `trusted-only`），建几份记录文件、安装排队（I11 的 `InstallationQueue` 与取消登记）和保存配置的排队，外加只靠这些就能做的几样：找命令、跑 `--version`、下载临时走加速（计数决定安装源顺序）、建安装临时目录、装之前看盘；Mac 上核 Grok 签名的那个执行器（`buildDarwinTrustedVerificationRunner`，固定走 `trustedCommandEnvironment`）装和卸都用，也放这里。`system-service.ts` 正按簇把闭包搬成各自的服务文件，都只拿这一份上下文；它只 import `system-service.ts` 的类型，免得两个文件互相 require
 - `system-snapshot-cache.ts` — 把上一次首页扫描结果留在本机，下次启动先画出首页、后台照常重扫。这份文件**只用来"先画个样子"**：主进程里任何要回答"装没装"的地方都不读它；别的版本写的文件照样认，但剥掉版本判断（`withoutVersionVerdicts`）
 - `project-instructions.ts` — 打开工作目录时，若 `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` 一个都没有，就用随包模板生成一份 `AGENTS.md`（三个工具都读它），绝不覆盖、绝不追加；`PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS` 记着每一版模板的摘要，检查页靠它认出个人文件夹里那份还是星芒放的原样（已知36），改模板只能往表里加、不能删
 - `manual-uninstall-visual-fixture.ts` — macOS 视觉验收专用的假快照（把 Codex/Grok 投影成「需要手动卸载」的样子），只在未打包且 `XINGMANG_E2E_MANUAL_UNINSTALL_FIXTURE=1` 时由 `main.ts` 启用，供 `e2e/macos-visual-qa.mjs` 截图；正式包里永远不生效

@@ -19,7 +19,6 @@ import {
 import { buildCliUpdateRecord, resolveCliRevertVersion } from './cli-update-history'
 import type { ProviderConfigRoots } from './codex-home'
 import {
-  CommandRunnerError,
   cleanCommandOutput,
   commandEnvironment,
   findExecutable,
@@ -49,8 +48,25 @@ import {
 } from './npm-user-prefix'
 import { isChineseSentence } from './chinese-sentence'
 import { errorCodeClause, npmFailureSentence, npmSourceFailure, toolLaunchFailureMessage, type NpmFailurePart } from './failure-wording'
-import { npmDownloadTimedOutReason, npmErrorCodesClause } from './npm-failure-reasons'
-import { platformCapabilitiesFor } from './platform-capabilities'
+import { npmErrorCodesClause } from './npm-failure-reasons'
+import {
+  describeNpmCommandFailure,
+  describeNpmUninstallFailure,
+  isMachineBoundNpmFailure,
+  isNpmExitFailure,
+  npmDownloadTimedOutMessage,
+} from './npm-command-failure'
+import {
+  maximumNpmRegistryResponseBytes,
+  npmInstallRegistries,
+  npmLatestQueryTimeoutMs,
+  npmMirrorRegistry,
+  npmOfficialRegistry,
+  npmPackageLatestUrl,
+  npmPackageVersionUrl,
+  npmRegistryLabel,
+} from './npm-registry'
+import { grokInstallStrategyFor, platformCapabilitiesFor } from './platform-capabilities'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
 import { buildCliHookInvocation, cliHookEventsDirectory, cliHookTargetsStale, grokCliHookCommand, grokCliHookShellChanged, resolveGrokWindowsShell, type CliHookInvocation, type GrokWindowsShell } from './cli-hooks'
 import { readWindowsLivePath, withAppendedWindowsPath } from './windows-live-path'
@@ -160,6 +176,7 @@ import {
   type CliUninstallCapability,
 } from './tool-installation'
 export type { CliLaunchMode } from './tool-installation'
+export type { GrokInstallStrategy } from './platform-capabilities'
 import { isExactCliVersion, isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
 import { nodeReadsSystemCertificates, toolCertificateFailureKind, withSystemCertificateTrust } from './system-certificate-trust'
 import {
@@ -236,7 +253,7 @@ import {
 import { fetchGrokStableVersion } from './grok-update'
 import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedUtf8File } from './bounded-file'
-import { cliNativePackageMissingMessage, findMissingCliNativePackage } from './cli-native-package'
+import { cliNativePackageMissingMessage, findMissingCliNativePackage, readPackageManifestVersion } from './cli-native-package'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import { launchLinuxTerminal, LinuxTerminalLaunchError, type LinuxTerminalAttempt } from './linux-terminal'
@@ -309,7 +326,7 @@ import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, t
 import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
 import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
-import { createServiceContext, scanReuseMs } from './system-service-context'
+import { buildDarwinTrustedVerificationRunner, createServiceContext, scanReuseMs } from './system-service-context'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
@@ -324,15 +341,8 @@ import { BoundedOperationQueue } from './bounded-operation-queue'
 const execFileAsync = promisify(execFile)
 const npmLatestCacheTtlMs = 10 * 60_000
 const npmLatestFailureCacheTtlMs = 2 * 60_000
-// Version checks run during the dashboard's initial scan. Keep each registry
-// attempt bounded so an offline machine reaches the UI with an explicit
-// "检查失败" state instead of appearing frozen for a minute or longer.
-const npmLatestQueryTimeoutMs = 10_000
-const maximumNpmRegistryResponseBytes = 256 * 1024
 const maximumNpmPackageLockBytes = 16 * 1024 * 1024
 export const networkLocationCacheTtlMs = 10 * 60_000
-const npmOfficialRegistry = 'https://registry.npmjs.org'
-const npmMirrorRegistry = 'https://registry.npmmirror.com'
 // 安装走到「把新版本换进全局目录」这一步就不能再中断了：半个目录被替换掉的
 // CLI 既跑不起来也回不去。这两条是拒绝取消时给用户看的原因。
 const managedPrefixSwapSealReason = '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。'
@@ -348,7 +358,6 @@ const networkLocationFallbackUrls = [
 ] as const
 const maximumModelResponseBytes = 1024 * 1024
 const modelAccessCacheMaxEntries = 32
-const maximumRuntimeManifestBytes = 256 * 1024
 const maximumGrokVersionMetadataBytes = 16 * 1024
 
 export type UpdateCheckStatus = 'checked' | 'failed' | 'skipped'
@@ -694,31 +703,6 @@ export interface RendererMessageTarget {
 }
 
 export type CodexDesktopLaunchMode = 'open' | 'restart'
-
-/**
- * Every darwin Grok post-install and uninstall codesign verification runs through
- * this rather than the plain commandEnvironment() baseline used elsewhere to locate an
- * installation. The result decides whether a just-installed or about-to-be-removed
- * Grok binary is the genuine xAI build, so it must not run in an environment the
- * caller can still shape after the fact — the same reasoning macos-codex-app.ts and
- * resolveCliCommand's darwin staging path already apply for Codex.
- *
- * executeCommand is threaded through explicitly, rather than closed over, so this
- * stays a top-level function callable — and testable — from outside
- * createSystemService's closure.
- */
-export function buildDarwinTrustedVerificationRunner(
-  executeCommand: typeof runCommand,
-): (spec: { executable: string; argv: readonly string[] }) => Promise<{ stdout: string; stderr: string }> {
-  return async (spec) => {
-    const result = await executeCommand(spec, {
-      env: trustedCommandEnvironment(),
-      timeoutMs: 8_000,
-      maxOutputBytes: 1024 * 1024,
-    })
-    return { stdout: result.stdout, stderr: result.stderr }
-  }
-}
 
 export interface UninstallVerifiedDarwinGrokInstallationOptions {
   homeDirectory: string
@@ -1297,23 +1281,6 @@ function normalizeRuntimeVersion(command: string, value: string | null): string 
   return version
 }
 
-async function readPackageManifestVersion(filePath: string, label: string): Promise<string | null> {
-  try {
-    const parsed = JSON.parse(await readBoundedUtf8File(
-      filePath,
-      maximumRuntimeManifestBytes,
-      label,
-    )) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    const version = (parsed as Record<string, unknown>).version
-    return typeof version === 'string' && isExactCliVersion(version.trim())
-      ? version.trim()
-      : null
-  } catch {
-    return null
-  }
-}
-
 async function readNpmPackageVersion(executable: string): Promise<string | null> {
   const executableDirectory = path.dirname(executable)
   const candidates = [
@@ -1557,23 +1524,6 @@ export async function detectNetworkRegion(
 }
 
 /**
- * An unknown region means the Cloudflare probe could not complete, and the
- * users whose network blocks that probe are overwhelmingly the ones who also
- * cannot reach registry.npmjs.org. Sending them to the official registry first
- * was exactly backwards.
- *
- * The costs are not symmetric. An overseas user wrongly routed to npmmirror
- * loses a few seconds to a CDN that still serves them; a mainland user wrongly
- * routed to the official registry cannot install at all. Both entries stay in
- * the list either way, so a wrong guess only changes which one is tried first.
- */
-export function npmInstallRegistries(region: NetworkRegion): [string, string] {
-  return region === 'outside-mainland-china'
-    ? [npmOfficialRegistry, npmMirrorRegistry]
-    : [npmMirrorRegistry, npmOfficialRegistry]
-}
-
-/**
  * IMPROVEMENT-PLAN 2.4: a user-pinned mirror policy overrides the probed
  * region by reducing to the region that yields the desired order. Both
  * npmInstallRegistries and nodeRuntimeDownloadSources branch only on
@@ -1594,10 +1544,6 @@ export function effectiveNetworkRegion(
   if (policy === 'mirror-first') return 'mainland-china'
   if (policy === 'official-first') return 'outside-mainland-china'
   return detected
-}
-
-export function npmRegistryLabel(registry: string): string {
-  return registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'
 }
 
 /**
@@ -1664,12 +1610,6 @@ export function npmDownloadHeartbeatMessage(registry: string, elapsedMs: number)
   const source = registry === npmMirrorRegistry ? '从国内 npm 镜像' : '从 npm 官方源'
   return `仍在${source}下载…（已用时 ${formatElapsedDuration(elapsedMs)}）`
 }
-
-/**
- * 总时长到点和下载卡住被掐，对客户是一回事，都说这一句（渲染层按「超时」归成「下载超时」）。以前写的是
- *「下载超时，长时间没有完成，已中止」，句子里含着目录标题「下载超时」，错误框就不出提示（#1100 第1条）。
- */
-const npmDownloadTimedOutMessage = npmDownloadTimedOutReason
 
 /**
  * Bytes under `directory`, counted without following links. Entries that vanish
@@ -1787,89 +1727,6 @@ export function createNpmDownloadStallWatch(
     get bytes() { return lastBytes },
     stop,
   }
-}
-
-/**
- * CommandRunnerError keeps npm's stderr on the error object, but its message
- * only says "命令执行失败（退出码 1）：node". The renderer classifies install
- * failures by the tokens npm prints (ENOSPC, EPERM, ETIMEDOUT, certificate
- * codes), so without npm's own lines a full disk, a denied folder and a
- * dropped connection all looked the same and every one of them was sent to
- * customer support.
- *
- * The runner's generic timeout wording deliberately avoids "超时" because a
- * command running long is not always a network problem. Inside an npm install
- * it is: npm spends its time downloading, so here it is said plainly.
- */
-/**
- * npm 自己退出非 0：命令运行器那句「命令执行失败（退出码 1）：npm-cli.js」看着是中文，后面接的却是 npm 的
- * 英文要点，不能当中文原话照旧上屏（#1100 第1条）。
- */
-export function isNpmExitFailure(error: unknown): boolean {
-  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO'
-}
-
-export function describeNpmCommandFailure(error: unknown): string {
-  if (!(error instanceof CommandRunnerError)) {
-    return error instanceof Error ? error.message : String(error)
-  }
-  if (error.code === 'TIMED_OUT') return npmDownloadTimedOutMessage
-  const highlights = npmFailureHighlights(error.stderr)
-  return highlights ? `${error.message}（${highlights}）` : error.message
-}
-
-/**
- * 换一个 npm 源，换的只是从哪儿下，换不了这台电脑（#1057 第 5a 条）。以前哪一步失败都记成
- * 「这个源不行」，换下一个源从头再下一遍（最长 30 分钟），下面两种最后报的还是同一个错：
- * - 盘满了（ENOSPC）：这一轮下的东西删掉以后，下一个源要写的还是那么多，哪一步报的都一样。
- * - 往正在用的工具目录里写的那一步，文件被占用或者没有权限（EBUSY、ETXTBSY、EPERM、EACCES）：
- *   下一个源写的还是那个目录，开着的工具也还开着。
- * 写进暂存目录（管理员身份、macOS、Linux）时撞上的占用不算：开着的工具用的是正在用的那份，
- * 不是这份；每个源都新建一份暂存目录，换个源照旧可能就过去了。
- * 先把正在用的工具目录复制进暂存目录的那一步不用这里判：它跟源无关，安装流程见它失败就停（#1157 第 14 条）。
- */
-export function isMachineBoundNpmFailure(detail: string, writingFolderInUse: boolean): boolean {
-  if (/\bENOSPC\b/.test(detail)) return true
-  return writingFolderInUse && /\b(?:EBUSY|ETXTBSY|EPERM|EACCES)\b/.test(detail)
-}
-
-/**
- * 卸载不下载任何东西，所以不借上面那句「下载超时」：借过去渲染层会归成下载超时，
- * 叫客户换源重试。这里一律用命令运行器自己那句话（它刻意不说「超时」），后面接上
- * npm 的要点（EPERM、EBUSY 这些），文件被占用要靠它们才认得出来。
- */
-export function describeNpmUninstallFailure(error: unknown): string {
-  if (!(error instanceof CommandRunnerError)) {
-    return error instanceof Error ? error.message : String(error)
-  }
-  const highlights = npmFailureHighlights(error.stderr)
-  return highlights ? `${error.message}（${highlights}）` : error.message
-}
-
-function npmFailureHighlights(stderr: string): string {
-  const lines = stderr
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*npm (?:warn|notice|verbose|info|http|timing)\b/i.test(line))
-    .map((line) => line.replace(/^\s*npm (?:error|ERR!)\s*/i, '').trim())
-    // The pointer to npm's own log file names a folder under the user's
-    // profile and says nothing about what went wrong.
-    .filter((line) => line && !/complete log of this run/i.test(line))
-  const codeLine = lines.find((line) => /^code\s+\S+$/.test(line))
-  const picked = codeLine
-    ? [
-        codeLine.replace(/^code\s+/, ''),
-        ...lines.filter((line) => line !== codeLine && !/^(?:syscall|errno|path|dest)\s/.test(line)).slice(0, 1),
-      ]
-    : lines.slice(-2)
-  return redactCommandText(picked.map((line) => line.slice(0, 160)).join('；'))
-}
-
-export function npmPackageLatestUrl(registry: string, packageName: string): string {
-  return `${registry.replace(/\/+$/, '')}/${encodeURIComponent(packageName)}/latest`
-}
-
-export function npmPackageVersionUrl(registry: string, packageName: string, version: string): string {
-  return `${registry.replace(/\/+$/, '')}/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`
 }
 
 export interface NpmPackageReleaseMetadata {
@@ -2209,16 +2066,6 @@ export interface CliMaintenancePlan {
   executable: string
   argv: string[]
   windowsPackageManager: 'npm'
-}
-
-export type GrokInstallStrategy = 'windows-native' | 'darwin-official-npm' | 'linux-official-npm' | 'external'
-
-export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallStrategy {
-  if (platform === 'win32') return 'windows-native'
-  if (platform === 'darwin') return 'darwin-official-npm'
-  // 和 macOS 一样从 npm 装（Linux 版拆分 ③），只是没有 codesign，核对改由 linux-grok.ts 做。
-  if (platform === 'linux') return 'linux-official-npm'
-  return 'external'
 }
 
 /**
@@ -2959,6 +2806,20 @@ export function macosShellOverrideVariables(provider: ProviderId, accountMode: P
 
 // 定义随用它的 preferredNodeDirectories 搬进了 system-service-context.ts，这里照旧导出。
 export { scanReuseMs }
+// #1070 第 2 步搬进 npm-registry.ts、npm-command-failure.ts、platform-capabilities.ts、system-service-context.ts 的几个，
+// 测试和别处照旧从这里拿。
+export {
+  buildDarwinTrustedVerificationRunner,
+  describeNpmCommandFailure,
+  describeNpmUninstallFailure,
+  grokInstallStrategyFor,
+  isMachineBoundNpmFailure,
+  isNpmExitFailure,
+  npmInstallRegistries,
+  npmPackageLatestUrl,
+  npmPackageVersionUrl,
+  npmRegistryLabel,
+}
 
 /** 一轮扫描里同时在跑的探测子进程上限（见 createSystemService 里的 limitedProbe）。 */
 export const scanProbeConcurrency = 3
