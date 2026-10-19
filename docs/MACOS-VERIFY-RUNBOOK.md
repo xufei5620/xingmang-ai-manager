@@ -2,7 +2,7 @@
 
 > 验收对象：`npm run dist:mac:free` 出的**免费自签** DMG / ZIP。
 > 这一份里的每一步都**只能在发布 Mac 上做**：云沙箱是 Linux；CI 的 macOS 作业虽然会用一次性临时身份
-> 真的打一次包并校验产物，但它**从来没有启动过应用**，也不跑本文的任何一条。
+> 真的打一次包、校验产物、再启动一次确认不崩，但它**不跑本文的任何一条**。
 > 权威口径在 [`MACOS_FREE_DISTRIBUTION.md`](MACOS_FREE_DISTRIBUTION.md)（分发与证书）和
 > [`RELEASING.md`](RELEASING.md)（发布流程）；本文只是把要人工动手的部分按顺序列出来。
 >
@@ -161,7 +161,7 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
 2. `manifest.json` 里的 `arch` 要和这个包的架构一致（arm64 包里写 `arm64`，x64 包里写 `x64`）。两个包拿错资源正是分架构构建最容易出的错。
 3. 在应用里打开加速，确认线路列表能出来、能连上；停止后再启动一次。
 
-CI 不跑这条路径：GitHub runner 上没有私有资源，`--ci-temporary-signing` 与这两个参数是互斥的，所以 CI 只验不带线路的构建。带线路的包只能在发布 Mac 上验。
+CI 也跑这条路径（2026-09-19 节点入仓以后，`--ci-temporary-signing` 不再与这两个参数互斥）：`package-for-testing` 出的 Mac 测试包和 PR 上的 `macos-release-rehearsal` 排练都带线路。它们用 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；想在真机上先验上面三条，下载 `package-for-testing` 的包就行，不必为此在发布 Mac 上另出一份。正式发给客户的包仍按本手册用发布身份出。
 
 ---
 

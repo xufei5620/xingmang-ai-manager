@@ -366,13 +366,22 @@ describe('Codex MCP login through the real command runner', () => {
     })
 
     const login = service.loginMcpServer('remote_server')
-    await vi.waitFor(() => expect(fs.existsSync(marker)).toBe(true), { timeout: 10_000 })
-    const pid = Number(fs.readFileSync(marker, 'utf8'))
-    expect(service.cancelMcpLogin('remote_server')).toBe(true)
+    try {
+      // 平常半秒内就起来了；main 433bcf0 那轮它紧跟在两套各跑一百多秒、大量写文件的测试后面，
+      // Windows 跑道上这个新 node 进程过了 10 秒还没写下标记（#1306）。等多久不影响要验的事：取消后进程没了。
+      await vi.waitFor(() => expect(fs.existsSync(marker)).toBe(true), { timeout: 60_000 })
+      const pid = Number(fs.readFileSync(marker, 'utf8'))
+      expect(service.cancelMcpLogin('remote_server')).toBe(true)
 
-    await expect(login).resolves.toEqual([])
-    expect(() => process.kill(pid, 0)).toThrow()
-  }, 20_000)
+      await expect(login).resolves.toEqual([])
+      expect(() => process.kill(pid, 0)).toThrow()
+    } finally {
+      // 上面没等到就失败时，先停掉还在起的登录再让 afterEach 删目录：不然它晚些在已删掉的目录里起来、
+      // 以退出码 1 结束，又多出一条记不到哪条测试头上的「未处理的错误」。
+      service.cancelMcpLogin('remote_server')
+      await login.catch(() => undefined)
+    }
+  }, 90_000)
 })
 
 describe('Codex Plugin and marketplace contracts', () => {
