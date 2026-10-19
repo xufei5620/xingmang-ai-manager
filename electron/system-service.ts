@@ -6,9 +6,8 @@ import path from 'node:path'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type RelayToolRouteStatus } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
 import type { NodeRuntimeInstallRequest } from './ipc-contract'
-import { redactHomeDirectory } from './startup-log'
 import type { LoopbackProbe } from './stale-proxy-environment'
-import { activeProviderIds, cliCatalog, isRetiredProviderId, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, isRetiredProviderId, providerIds, type ProviderId } from './catalog'
 import {
   type CliVersionAdvice,
 } from './cli-verified-versions'
@@ -167,8 +166,18 @@ import { reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal } from './macos-platform'
 import { launchLinuxTerminal } from './linux-terminal'
-import { relayApiProbeBaseUrl, relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl,
-  relaySiteExactEndpointIdForBaseUrl, relaySiteForProviderBaseUrl, relaySiteProviderBaseUrlVariants, type RelayEndpointId, type RelayEndpointRoutingSnapshot, type RelayRouteLines, type RelayRouteSiteId, type RelaySite } from './relay-sites'
+import {
+  relayApiProbeBaseUrl,
+  relayProviderBaseUrlEquals,
+  relaySiteEndpointIdForBaseUrl,
+  relaySiteExactEndpointIdForBaseUrl,
+  relaySiteForProviderBaseUrl,
+  type RelayEndpointId,
+  type RelayEndpointRoutingSnapshot,
+  type RelayRouteLines,
+  type RelayRouteSiteId,
+  type RelaySite,
+} from './relay-sites'
 import type { RelayRouteChange } from './relay-route-controller'
 import { inspectMacosCodexApp, type MacosCodexAppInfo, type MacosCodexAppInspection } from './macos-codex-app'
 import {
@@ -177,31 +186,24 @@ import {
 import { adoptRestoredXingmangAiSkillOff, followXingmangAiSkillRoute, syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import { recordToolRouteRevert, toolRouteHintDue, toolRouteRetryAllowed, toolRouteRetryDelayMs, type ToolRouteFollowRecord } from './tool-route-follow-state'
 import {
-  followExternalToolKey,
-  followExternalToolRoute,
-  saveExternalToolConfig,
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
-import { externalClientNames, type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
-import { createExternalClientRuntime, type ExternalClientDetectionErrorDetail, type ExternalClientMacVerificationFailure, type ExternalClientRegistryFailure } from './external-client-runtime'
-import { inspectExternalToolConnection, resolveExternalToolProbeCredential, type ExternalToolProbeCredential } from './external-tool-config'
-import { runExternalClientCheck, type ExternalClientCheckResult } from './external-client-connection'
-import { createClaudeDesktopConfigService } from './claude-desktop-config'
+import { type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { createExternalClientRuntime } from './external-client-runtime'
+import { type ExternalClientCheckResult } from './external-client-connection'
 import { buildDarwinTrustedVerificationRunner, buildToolStatusFromSettled, createServiceContext, scanReuseMs } from './system-service-context'
 import { createCliInstallService } from './cli-install-service'
+import { createExternalClientRouteService } from './external-client-route-service'
 import { createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
 import { createSystemScanService } from './system-scan-service'
 import { createRuntimeInstallService } from './runtime-install-service'
 import { createCliUninstallService } from './cli-uninstall-service'
-import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
-import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { isServiceUnavailableResponse, networkFailureMessages, parsesAsJsonObject } from './network-failure'
 import { modelProbeFailurePrefix } from './relay-quota-failure'
 import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { NewApiNetworkError } from './new-api-client'
-import { createExternalClientSnapshotCache } from './external-client-snapshot-cache'
 
 const maximumModelResponseBytes = 1024 * 1024
 const modelAccessCacheMaxEntries = 32
@@ -912,6 +914,12 @@ export type {
   NpmDownloadStallWatch,
   NpmDownloadStallWatchOptions,
 } from './cli-install-service'
+// 外部客户端搬进 external-client-route-service.ts 时一起带走的那些（#1070 第 3 步），测试和别处照旧从这里拿。
+export {
+  buildExternalClientDetectionErrorLogDetail,
+  buildExternalClientMacVerificationLogDetail,
+  buildExternalClientRegistryLogDetail,
+} from './external-client-route-service'
 // 打开工具搬进 provider-launch-service.ts 时一起带走的那些（#1070 第 3 步），测试和别处照旧从这里拿。
 export {
   buildCliLaunchQueueKey,
@@ -1220,44 +1228,14 @@ export function withCodexDesktopProgressLog(
   }
 }
 
-/** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
-export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
-  return { failures: failures.map((failure) => ({ ...failure, reason: redactHomeDirectory(failure.reason, userHome) })) }
-}
-
-/** 苹果没放行时进运行日志的那几项：应用包可能在主目录下的「应用程序」里，原话里也会带着这个路径。 */
-export function buildExternalClientMacVerificationLogDetail(failure: ExternalClientMacVerificationFailure, userHome: string) {
-  return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
-}
-
-/** 检测失败时 PowerShell 的原话进运行日志的那几项：读签名报的错里常带着客户端的完整路径。 */
-export function buildExternalClientDetectionErrorLogDetail(failure: ExternalClientDetectionErrorDetail, userHome: string) {
-  return { ...failure, message: redactHomeDirectory(failure.message, userHome) }
-}
-
-/**
- * 外部客户端要跟上的那几把（#1113）：星芒替哪几个工具换过 Key、它们自己也已经换上了缓存里那把，连同读出来的缓存。
- * 主进程内部专用（I3）。
- */
-interface ManagedKeyFollowTarget {
-  owner: string
-  keys: readonly { provider: ProviderId; apiKey: string }[]
-  cachedKeys: readonly StoredManagedCliKey[]
-}
-
-/** 比两个线路地址时不计末尾的斜杠：Claude Desktop 设置窗口里存的地址可能带一个。 */
-function sameRouteUrl(left: string, right: string): boolean {
-  return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
-}
-
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
 ): SystemService {
   const context = createServiceContext(store, serviceOptions)
   const {
-    windowsExecutionMode, platform, providerRoots, runtimeLog,
-    configOwnership, externalOwnership, toolRouteFollow, serializeConfigWrite,
+    platform, providerRoots, runtimeLog,
+    configOwnership, toolRouteFollow, serializeConfigWrite,
     codexEnv, relayRouting, activeRelaySite, providerRelaySite, inspectNativeProviderConfig,
     executeCommand, detectMacosCodexApp,
     downloadFetch,
@@ -1267,6 +1245,7 @@ export function createSystemService(
     findInstalledExecutable,
     credentialFailureReason,
     refreshWindowsLivePath, currentWindowsLivePath, toolLaunchedAt, toolRouteRestartPending,
+    toolRouteNow, scheduleToolRouteTimer,
   } = context
   // 这次启动替用户改过的钩子（第十八批 1b）：试过的不再试，改好的让首页说一句。只在内存里，重开软件从头算。
   const autoRepairAttemptedCliHooks = new Set<ProviderId>()
@@ -1275,24 +1254,22 @@ export function createSystemService(
   let autoRepairQueue: Promise<unknown> = Promise.resolve()
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
-  const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
-    installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
-    // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
-    fetch: downloadFetch,
-    withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
-    bucketDownloads: desktopBucketDownloads,
-    assertDiskSpace: assertInstallDiskSpace,
-    onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
-    // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
-    onRegistryIncomplete: (failures) => runtimeLog?.log('warn', 'system', 'external-client.registry-incomplete', '部分软件安装记录无法读取，桌面客户端检测不完整',
-      buildExternalClientRegistryLogDetail(failures, providerRoots.userHome)),
-    onMacVerificationFailed: (failure) => runtimeLog?.log('warn', 'system', 'external-client.mac-verification-failed', '桌面客户端没通过苹果的签名核对',
-      buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
-    // 首页只说「无法读取客户端数字签名」这类前半句中文（已知3），系统给的原话客服在反馈报告里看这一行。
-    onDetectionErrorDetail: (failure) => runtimeLog?.log('warn', 'system', 'external-client.detection-error-detail', '桌面客户端检测失败时系统给的原话',
-      buildExternalClientDetectionErrorLogDetail(failure, providerRoots.userHome)),
-    // 客户说「打开还是慢」，客服在反馈报告里看这一行：慢在排队、PowerShell 启动、读安装记录、核签名，还是交出去以后客户端自己慢。
-    onLaunchTiming: (timing) => runtimeLog?.log('info', 'system', 'external-client.launch-timing', '打开桌面客户端前各段用时', { ...timing }),
+  // 三个外部桌面客户端那一段在 external-client-route-service.ts（#1070 第 3 步）。
+  const {
+    scanExternalClients,
+    cachedExternalClients,
+    getLastExternalClients,
+    installExternalClient,
+    cancelExternalClientInstall,
+    launchExternalClient,
+    checkExternalClientConnection,
+    configureExternalTool,
+    switchExternalClientSource,
+    recheckPendingExternalRoutes,
+    managedKeyFollowTarget,
+    cancelPendingExternalRouteRecheck,
+  } = createExternalClientRouteService(context, {
+    fetchAvailableModels,
   })
   // Owns the Codex Desktop version-probe caches and the install/uninstall/
   // launch busy lock in its own closure; only the pieces that cross the
@@ -1591,663 +1568,6 @@ export function createSystemService(
     } finally {
       clearTimeout(timeout)
     }
-  }
-
-  let externalConfigQueue: Promise<unknown> = Promise.resolve()
-  let latestExternalClients: ExternalClientStatus[] | null = null
-  const externalClientCache = serviceOptions.externalClientSnapshotCacheFile
-    ? createExternalClientSnapshotCache({
-        filePath: serviceOptions.externalClientSnapshotCacheFile,
-        onWarning: (code, message) => runtimeLog?.log('warn', 'system', code, '上次客户端检测结果没有读写成功', { error: message }),
-      })
-    : null
-  let externalScansStarted = 0
-  let newestExternalScanSaved = 0
-  // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
-  // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
-  const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
-  async function claudeDesktopConfig(status: ExternalClientRuntimeStatus, assertBeforeWrite?: () => void) {
-    if (status.detectionError) throw new Error('Claude Desktop 安装位置无法确认，请重新检测')
-    const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
-    const installationPath = status.path ?? undefined
-    const storeVirtualization = env.CLAUDE_USER_DATA_DIR ? undefined
-      : await (serviceOptions.inspectClaudeDesktopStoreVirtualization ?? inspectClaudeDesktopStoreVirtualization)({ platform, installationPath })
-    assertBeforeWrite?.()
-    const roots = resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath, storeVirtualization })
-    return createClaudeDesktopConfigService({
-      dataDirectory: serviceOptions.managerDataDirectory ?? path.join(providerRoots.userHome, '.xingmang-ai-manager'),
-      ...roots,
-      assertBeforeWrite,
-      assertUnmanaged: serviceOptions.assertClaudeDesktopUnmanaged ?? (() => assertClaudeDesktopUnmanaged({ platform, userHome: providerRoots.userHome })),
-    })
-  }
-  /**
-   * 「这个客户端该对哪个地址、用谁的账号对账」只算一次：检测、连接自检与保存
-   * 后的复测读的必须是同一份，否则换过站点或换过账号的用户会在三处拿到三种
-   * 说法。
-   */
-  function externalClientContext(tool: ExternalToolId) {
-    const activeSite = activeRelaySite()
-    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-    const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
-    const belongsToCurrentAccount = (apiKey: string) => owner !== null
-      && serviceOptions.getExternalClientAccountId?.() === owner
-      && activeRelaySite().id === activeSite.id
-      && externalOwnership.matches(tool, owner, baseUrl, apiKey)
-    return { activeSite, baseUrl, belongsToCurrentAccount }
-  }
-  async function describeExternalClient(status: ExternalClientRuntimeStatus): Promise<ExternalClientStatus> {
-    const { baseUrl, belongsToCurrentAccount } = externalClientContext(status.tool)
-    if (status.tool === 'claudeDesktop') {
-      try {
-        return { ...status, ...await (await claudeDesktopConfig(status)).inspectConnection(baseUrl, belongsToCurrentAccount) }
-      } catch {
-        return { ...status, configured: false, model: null, configurationSource: 'unknown',
-          configurationError: 'Claude Desktop 本地配置目录无法确认，请重新检测。' }
-      }
-    }
-    const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-    if (xdgConfig && !path.isAbsolute(xdgConfig)) return { ...status, configured: false, model: null,
-      configurationSource: 'unknown', configurationError: 'XDG_CONFIG_HOME 必须是绝对路径。' }
-    const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
-    return { ...status, ...inspectExternalToolConnection(status.tool, externalPlatform, {
-      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-    }, baseUrl, belongsToCurrentAccount) }
-  }
-  /**
-   * 客户端配置里那把密钥。**只在主进程内部用**：它要被拿去发一次真实请求，
-   * 永远不跨 IPC（I3）。取不出来（没配、不是当前账号写的、文件读不了）一律
-   * 回 null，由调用方按「未配置 / 本地配置」去说。
-   */
-  async function externalClientProbeCredential(
-    status: ExternalClientRuntimeStatus,
-    baseUrl: string,
-    belongsToCurrentAccount: (apiKey: string) => boolean,
-  ): Promise<ExternalToolProbeCredential | null> {
-    try {
-      if (status.tool === 'claudeDesktop') {
-        return await (await claudeDesktopConfig(status)).inspectGatewayCredential(baseUrl, belongsToCurrentAccount)
-      }
-      const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-      if (xdgConfig && !path.isAbsolute(xdgConfig)) return null
-      const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
-      return resolveExternalToolProbeCredential(status.tool, externalPlatform, {
-        userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-      }, baseUrl, belongsToCurrentAccount)
-    } catch {
-      // 读不出来不是自检失败，是「本地配置」层的结论，由 describeExternalClient
-      // 那一份已经算出来的 configurationSource 去说。
-      return null
-    }
-  }
-  /**
-   * 外部客户端的连接自检。「检查」页与保存后的复测走同一条路，所以两处永远
-   * 给同一句结论。
-   */
-  async function checkExternalClientConnection(
-    tool: ExternalToolId,
-    knownStatus?: ExternalClientRuntimeStatus | null,
-  ): Promise<ExternalClientCheckResult> {
-    const { activeSite, baseUrl, belongsToCurrentAccount } = externalClientContext(tool)
-    // 装没装这件事只在 Windows 上要跑一轮 PowerShell 盘点。调用方手里已经有一份
-    // 时就用那份：保存配置之后顺手自检不该为此再盘点一次机器。
-    const status = knownStatus ?? (await externalClientRuntime.scan()).find((entry) => entry.tool === tool) ?? null
-    const described = status ? await describeExternalClient(status) : null
-    const credential = status && described?.configurationSource === 'xingmang'
-      ? await externalClientProbeCredential(status, baseUrl, belongsToCurrentAccount)
-      : null
-    return runExternalClientCheck({
-      tool,
-      installed: status?.installed === true,
-      baseUrl,
-      configurationSource: described?.configurationSource ?? 'unknown',
-      configurationError: described?.configurationError ?? null,
-      model: credential?.model ?? described?.model ?? null,
-      apiKey: credential?.apiKey ?? null,
-      ...(described?.officialAccount ? { officialAccount: true } : {}),
-    }, activeSite.id, { fetch: serviceOptions.relayFetch })
-  }
-  async function scanExternalClients(force = false): Promise<ExternalClientStatus[]> {
-    const started = ++externalScansStarted
-    // 本机盘点几分钟内复用（见 external-client-runtime 的缓存），配置每次都重读：
-    // 保存配置之后那次刷新要看到的正是刚写下去的那份。
-    const clients = await followExternalClientRoutes(await externalClientRuntime.scan({ force }))
-    // 反馈报告要答「客户端装没装、什么版本、配置指没指向当前账号」，而生成报告
-    // 时不该再发一轮探测（同 latestTraySystem 的取舍）。这份快照就是那一段的
-    // 数据源：只在用户自己点检测时更新。
-    latestExternalClients = clients
-    // 下次开机首页先摆它（已知13）。强制重扫与普通扫描可能交错完成，落盘只让后开始的那一轮
-    // 覆盖先开始的，同 CLI 那份快照。
-    if (started > newestExternalScanSaved) {
-      newestExternalScanSaved = started
-      void externalClientCache?.save(clients)
-    }
-    return clients
-  }
-  async function cachedExternalClients(): Promise<ExternalClientStatus[]> {
-    if (latestExternalClients || !externalClientCache) return []
-    const cached = await externalClientCache.load()
-    // 读文件这几毫秒里真的检测可能已经回来了，那就不必再给旧的。
-    return latestExternalClients || !cached ? [] : cached
-  }
-  /** 反馈报告用的上一份客户端快照；还没检测过时为 null，那一段写「未能读取」。 */
-  function getLastExternalClients(): ExternalClientStatus[] | null {
-    return latestExternalClients
-  }
-  async function installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus> {
-    const status = await externalClientRuntime.install(tool, (event) => {
-      if (!target.isDestroyed()) {
-        try { target.send('external-clients:install-progress', event) } catch { /* Installation continues if the renderer exits. */ }
-      }
-    })
-    const described = await describeExternalClient(status)
-    // 就地替换而不是追加：这份快照的顺序就是反馈报告与界面读到的顺序。
-    latestExternalClients = latestExternalClients?.some((entry) => entry.tool === tool)
-      ? latestExternalClients.map((entry) => entry.tool === tool ? described : entry)
-      : [...(latestExternalClients ?? []), described]
-    return described
-  }
-  const cancelExternalClientInstall = (tool: ExternalToolId) => externalClientRuntime.cancelInstall(tool)
-  const launchExternalClient = (tool: ExternalToolId) => externalClientRuntime.launch(tool)
-  /**
-   * 保存之后立刻回读一遍并自检。这一步问出来的比保存时那次模型清单校验多两件
-   * 事：写下去的配置本机能不能原样读回来、读回来的那把密钥在客户端真正会打的
-   * 那个地址上还认不认。自检本身出岔子不该把「已经写成功了」变成失败，所以整
-   * 段吞掉异常，只是结果变成 null（界面照实说「这次没测成」）。
-   */
-  async function verifySavedExternalClient(
-    tool: ExternalToolId,
-    knownStatus?: ExternalClientRuntimeStatus | null,
-  ): Promise<ExternalClientCheckResult | null> {
-    try {
-      return await checkExternalClientConnection(tool, knownStatus)
-    } catch {
-      return null
-    }
-  }
-  function configureExternalTool(
-    tool: ExternalToolId,
-    requested: ExternalToolConfigOptions,
-    assertBeforeWrite?: () => void,
-    keySource?: ExternalClientKeySource,
-  ): Promise<ExternalClientConfigResult> {
-    const work = async (): Promise<ExternalClientConfigResult> => {
-      assertBeforeWrite?.()
-      const activeSite = activeRelaySite()
-      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-      const apiKey = requested.apiKey?.trim() ?? ''
-      const model = requested.model?.trim() ?? ''
-      if (!model || model.length > 256 || /[\x00-\x1f\x7f]/.test(model)) throw new Error('请选择有效模型')
-      const models = await fetchAvailableModels(apiKey, { bypassCache: true })
-      const assertContext = () => {
-        assertBeforeWrite?.()
-        if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，请重新配置')
-        if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
-      }
-      assertContext()
-      if (!models.includes(model)) throw new Error('当前密钥不支持所选模型，请重新检测')
-      if (tool === 'claudeDesktop') {
-        const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
-        assertContext()
-        if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
-        const gateway = await claudeDesktopConfig(status, assertContext)
-        // 只写客户选中的那一个型号。0.2.12 曾把当前 Key 能用的全部 claude-* 型号都写进去（#685），
-        // 客户 Mac 上 Claude Desktop 随即提示型号被拒、发消息没回复，退回只写一个（0.2.8 的做法）就好了。
-        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
-        const result = await gateway.saveGateway(input)
-        assertContext()
-        if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey, keySource)
-        const connection = await verifySavedExternalClient(tool, status)
-        return { tool, model, path: result.path, files: result.files, backups: result.backups,
-          outcome: 'configured', message: result.warnings.join(' '),
-          restartRequired: result.restartRequired,
-          connectionVerified: connection?.ok === true, connection }
-      }
-      const externalPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux' ? platform : 'linux'
-      const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-      if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
-      const result = await saveExternalToolConfig(tool, externalPlatform, {
-        userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-      }, { apiKey, model, baseUrl: activeSite.providerBaseUrls.codex,
-        protocol: tool === 'workbuddy' ? 'chat-completions' : requested.protocol ?? 'responses',
-      }, { beforeReplace: assertContext })
-      assertContext()
-      if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey, keySource)
-      const connection = await verifySavedExternalClient(tool, latestExternalClients?.find((entry) => entry.tool === tool))
-      return { tool, model, path: result.path, files: result.files, backups: result.backups, outcome: 'configured',
-        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。'
-          : '全局配置与默认模型已保存。重新打开 OpenCode 后使用；项目配置或环境变量可能覆盖全局设置。',
-        restartRequired: tool === 'opencode',
-        connectionVerified: connection?.ok === true, connection }
-    }
-    const task = externalConfigQueue.then(work, work)
-    externalConfigQueue = task.catch(() => undefined)
-    return task
-  }
-  /**
-   * 首页 Claude Desktop 卡上「切回官方账号 / 改用当前账号」。和保存配置排同一个队：两件事改的是同一个
-   * 文件。切回当前账号只认星芒替当前账号写的、地址是当前线路的那一份，用不上就回 reconnect，界面接着
-   * 打开「连接 Claude Desktop」重新保存。
-   */
-  function switchExternalClientSource(
-    tool: ExternalToolId,
-    target: 'account' | 'official',
-    assertBeforeWrite?: () => void,
-  ): Promise<ExternalClientSourceSwitchResult> {
-    const work = async (): Promise<ExternalClientSourceSwitchResult> => {
-      if (tool !== 'claudeDesktop') throw new Error('未知的外部客户端类型')
-      assertBeforeWrite?.()
-      const { baseUrl, belongsToCurrentAccount } = externalClientContext(tool)
-      const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
-      assertBeforeWrite?.()
-      if (!status?.installed) throw new Error(`还没有检测到 ${externalClientNames[tool]}`)
-      const gateway = await claudeDesktopConfig(status, assertBeforeWrite)
-      if (target === 'official') {
-        const result = await gateway.useOfficialLogin(belongsToCurrentAccount)
-        runtimeLog?.log('info', 'config', 'external-client.source-switched', 'Claude Desktop 已切回官方登录', { target, running: status.running })
-        return { tool, target, outcome: 'switched', backups: result.backups,
-          message: '已切回官方账号，原来的配置已备份。下次打开 Claude Desktop 时用你自己的 Claude 账号登录；现在开着的话，要完全退出再打开。用星芒时的聊天记录不会删，切回当前账号还能看到。' }
-      }
-      const result = await gateway.useGatewayLogin(baseUrl, belongsToCurrentAccount)
-      runtimeLog?.log('info', 'config', 'external-client.source-switched', result.outcome === 'switched' ? 'Claude Desktop 已改用当前账号' : 'Claude Desktop 原来那份配置用不上，要重新连接', { target, outcome: result.outcome, running: status.running })
-      if (result.outcome === 'reconnect') return { tool, target, outcome: 'reconnect' }
-      return { tool, target, outcome: 'switched', backups: result.backups,
-        message: '已改用当前账号，原来的配置已备份。Claude Desktop 现在开着的话，要完全退出再打开才会换过来。' }
-    }
-    const task = externalConfigQueue.then(work, work)
-    externalConfigQueue = task.catch(() => undefined)
-    return task
-  }
-  /**
-   * 第四十三批 A：用户换了线路、重启以后，星芒替当前账号写进 Claude Desktop、WorkBuddy、
-   * OpenCode 的那一份跟着换到当前线路，只换地址，Key、型号和别的设置都不动。四个命令行工具
-   * #872 起已经这么换，规矩照那边：用户明确选过线路、地址是这个站登记过的另一条、归属对得上、
-   * 客户端没开着，四条都满足才写；开着就先不写，那一行带 routePending。和保存配置排同一个队。
-   * 检测时顺带做：开机那一次、「重新检测」、检查页「测试连接」之前那次都会走到。换过以后归属
-   * 记在新地址上：客户端要是又把旧的那份写了回来，那份不再算星芒的，不会来回改。
-   *
-   * 选过线路的人连读配置也排进队：同时有两次检测时，后一次要读到前一次换完的那份，不然
-   * 首页会被它旧的结论盖回去。
-   */
-  // C11：外部客户端开着、换线路要等它退出的，每 5 分钟只看一眼它的进程（runtime.stillRunning，不做整轮盘点），
-  // 星芒窗口回到前台时也看一眼（同一个客户端两次至少隔 2 分钟）；退了就整轮检测一次，换线路在那一轮里做，
-  // 写之前照旧再盘点一次（followExternalClientRoute 的 recheck）。一直看到换成、线路又变、换账号或星芒退出，
-  // 不设次数上限：Claude Desktop 往往整天开着。看不出开没开的（检测失败）退成每 15 分钟整轮检测一次。
-  // 跟着工具换 Key 开着等的（#1113）也记在这里，两个站都等，那一行带 keyPending。
-  const externalRoutePending = new Map<ExternalToolId, { path: string; checkedAt: number; scannedAt: number }>()
-  let cancelExternalRouteRecheck: (() => void) | null = null
-  const externalRouteRecheckMs = 5 * 60 * 1000
-  const externalRouteFocusGapMs = 2 * 60 * 1000
-  const externalRouteFullScanMs = 15 * 60 * 1000
-
-  function noteExternalRoutePending(
-    statuses: readonly ExternalClientRuntimeStatus[],
-    clients: readonly ExternalClientStatus[],
-    keyPending: ReadonlySet<ExternalToolId> = new Set(),
-  ): void {
-    const now = toolRouteNow()
-    for (const client of clients) {
-      const clientPath = statuses.find((status) => status.tool === client.tool)?.path ?? null
-      if (((client.routePending && client.routeRecheck) || keyPending.has(client.tool)) && clientPath) {
-        const known = externalRoutePending.get(client.tool)
-        externalRoutePending.set(client.tool, known?.path === clientPath ? known : { path: clientPath, checkedAt: now, scannedAt: now })
-      } else {
-        externalRoutePending.delete(client.tool)
-      }
-    }
-    if (!externalRoutePending.size) {
-      cancelExternalRouteRecheck?.()
-      cancelExternalRouteRecheck = null
-    } else if (!cancelExternalRouteRecheck) {
-      cancelExternalRouteRecheck = scheduleToolRouteTimer(() => {
-        cancelExternalRouteRecheck = null
-        void recheckExternalRoutes('timer')
-      }, externalRouteRecheckMs)
-    }
-  }
-
-  async function recheckExternalRoutes(trigger: 'timer' | 'focus'): Promise<void> {
-    const now = toolRouteNow()
-    let rescan = false
-    for (const [tool, entry] of [...externalRoutePending]) {
-      if (trigger === 'focus' && now - entry.checkedAt < externalRouteFocusGapMs) continue
-      entry.checkedAt = now
-      const running = await externalClientRuntime.stillRunning?.(tool, entry.path) ?? null
-      if (running === false || (running === null && now - entry.scannedAt >= externalRouteFullScanMs)) {
-        entry.scannedAt = now
-        rescan = true
-      }
-    }
-    if (rescan) {
-      const waiting = new Set(externalRoutePending.keys())
-      try {
-        await scanExternalClients(true)
-      } catch (error) {
-        runtimeLog?.log('warn', 'config', 'external-client.route.recheck-failed', '外部客户端这次没检测成，稍后再看', { reason: credentialFailureReason(error) })
-      }
-      // 换成了的那几个界面要重读；没换成的照旧等。
-      if ([...waiting].some((tool) => !externalRoutePending.has(tool))) serviceOptions.onToolRouteFollowed?.()
-    }
-    if (externalRoutePending.size && !cancelExternalRouteRecheck) {
-      cancelExternalRouteRecheck = scheduleToolRouteTimer(() => {
-        cancelExternalRouteRecheck = null
-        void recheckExternalRoutes('timer')
-      }, externalRouteRecheckMs)
-    }
-  }
-
-  function recheckPendingExternalRoutes(): void {
-    if (externalRoutePending.size) void recheckExternalRoutes('focus')
-  }
-
-  async function followExternalClientRoutes(statuses: readonly ExternalClientRuntimeStatus[]): Promise<ExternalClientStatus[]> {
-    const describe = () => Promise.all(statuses.map(describeExternalClient))
-    const to = relayRouting.selection(activeRelaySite().id)
-    if (to === undefined && !await externalKeyTarget(statuses)) {
-      const clients = await describe()
-      // 之前开着等换 Key 的，现在不用换了（客户自己重配过、Claude Code 又换了别的）：别再隔 5 分钟看一眼。
-      if (externalRoutePending.size) noteExternalRoutePending(statuses, clients)
-      return clients
-    }
-    const work = async () => {
-      const clients = await describe()
-      const updated = new Map<ExternalToolId, ExternalClientStatus>()
-      // 已经在当前线路上的不用再读一遍（Windows 商店版读 Claude Desktop 配置要起一次 PowerShell）；
-      // 没装上的看不出开没开，不碰。
-      const candidates = to === undefined ? [] : statuses.flatMap((status) => {
-        const client = clients.find((entry) => entry.tool === status.tool)
-        return client && status.installed && !status.detectionError && client.configurationSource === 'other' ? [{ status, client, to }] : []
-      })
-      for (const { status, client, to } of candidates) {
-        try {
-          const next = await followExternalClientRoute(status, client, to)
-          if (next) updated.set(status.tool, next)
-        } catch (error) {
-          runtimeLog?.log('warn', 'config', 'external-client.route.failed', `${externalClientNames[status.tool]} 的连接线路这次没换成，下次检测再试`, {
-            tool: status.tool, to, reason: credentialFailureReason(error),
-          })
-        }
-      }
-      // 换 Key 放在换线路之后：两样都要换时，这一轮先换地址；旧 Key 在新线路上不认、地址没换成的，Key 照样换，
-      // 地址下一轮再换。排队这会儿工具的 Key 可能又换过，所以进了队再看一次。
-      const keyPending = new Set<ExternalToolId>()
-      const keyTarget = await externalKeyTarget(statuses)
-      if (keyTarget) {
-        for (const status of statuses) {
-          const client = updated.get(status.tool) ?? clients.find((entry) => entry.tool === status.tool)
-          if (!client || !status.installed || status.detectionError) continue
-          const followed = await followExternalClientKey(status, client, keyTarget)
-          if (followed.client) updated.set(status.tool, followed.client)
-          if (followed.pending) keyPending.add(status.tool)
-        }
-      }
-      const result = clients.map((client) => updated.get(client.tool) ?? client)
-      noteExternalRoutePending(statuses, result, keyPending)
-      return result
-    }
-    const task = externalConfigQueue.then(work, work)
-    externalConfigQueue = task.catch(() => undefined)
-    return task
-  }
-  /** 这一轮要不要看外部客户端跟没跟上工具的 Key：一个都没装上、看不出装没装的不看（#1113）。 */
-  async function externalKeyTarget(statuses: readonly ExternalClientRuntimeStatus[]): Promise<ManagedKeyFollowTarget | null> {
-    return statuses.some((status) => status.installed && !status.detectionError) ? managedKeyFollowTarget() : null
-  }
-  /**
-   * #1113：Claude Desktop 默认借 Claude Code 那把星芒密钥，WorkBuddy、OpenCode 也能选「使用某工具当前的密钥」。
-   * 星芒替那个工具换了 Key（撤销后换新、失效重签、换组）以后，客户端要跟上的就是它现在用的那把，连同缓存一起交出。
-   * 只交这台电脑上托管 Key 换过、自己也已经换上缓存里那把的工具；一个都没有回 null：没登录、从没换过，或者工具
-   * 自己还没换上（写配置没成、客户换成了别的 Key），这时不替客户端做主。主进程内部专用，密钥永不跨 IPC（I3）。
-   */
-  async function managedKeyFollowTarget(): Promise<ManagedKeyFollowTarget | null> {
-    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-    if (owner === null || !serviceOptions.readCurrentManagedCliKeys) return null
-    const cachedKeys = await serviceOptions.readCurrentManagedCliKeys().catch(() => [])
-    const keys = cachedKeys.flatMap((entry) => {
-      if (isRetiredProviderId(entry.provider) || !entry.replacedKeyDigests?.length) return []
-      const tool = inspectNativeProviderConfig(entry.provider)
-      return tool.hasApiKey && tool.matchesRelay && tool.apiKey === entry.key ? [{ provider: entry.provider, apiKey: entry.key }] : []
-    })
-    if (!keys.length || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return null
-    return { owner, keys, cachedKeys }
-  }
-  /**
-   * 把客户端那份换成借的那个工具现在的 Key（#1113），只换 Key，地址、型号和别的设置都不动。全都对上才换：
-   * 正在用的是星芒替当前账号写的那份、地址是这个站的线路；它那把是缓存记着「被换掉」的某个工具的旧 Key；
-   * 不是客户自己填的（保存时记下的来源，0.2.20 以前保存的没记，凭「就是工具换下来的那把」认）；新 Key 认它
-   * 用着的型号。客户端开着就先不写，等它退出再换（同换线路 C11），那一行带 keyPending、pending 交回去记着。
-   */
-  async function followExternalClientKey(
-    status: ExternalClientRuntimeStatus,
-    client: ExternalClientStatus,
-    target: ManagedKeyFollowTarget,
-  ): Promise<{ client: ExternalClientStatus | null; pending: boolean }> {
-    const { tool } = status
-    const name = externalClientNames[tool]
-    const activeSite = activeRelaySite()
-    const { owner } = target
-    const assertContext = () => {
-      if (activeRelaySite().id !== activeSite.id || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) {
-        throw new Error('账号已变化，这次不换密钥')
-      }
-    }
-    const found = await externalClientKeyCredential(status, activeSite, owner)
-    // 它那把是哪个工具换下来的，就跟那个工具现在那把。
-    const next = found ? target.keys.find((key) => key.apiKey !== found.apiKey && isReplacedManagedKey(key.provider, found.apiKey, target.cachedKeys)) : undefined
-    if (!found || !next) return { client: null, pending: false }
-    const recorded = (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
-      ? externalOwnership.inspect(tool, owner, found.route.baseUrl, found.apiKey) : null
-    // 客户自己在客户端里填的那把，哪怕就是工具的旧 Key 也不动。
-    if (!recorded || recorded.source === 'manual') return { client: null, pending: false }
-    const detail = { tool, route: found.route.endpointId }
-    if (status.running) {
-      runtimeLog?.log('info', 'config', 'external-client.key.deferred', `${name} 还开着，先不换密钥，退出后再换`, detail)
-      return { client: { ...client, keyPending: true }, pending: true }
-    }
-    const latest = { status }
-    try {
-      // 新 Key 认它用着的型号才换，不替客户换型号；Claude Desktop 没写型号（由它自动获取）的，新 Key 能用就够了。
-      const models = await fetchAvailableModels(next.apiKey, { bypassCache: true, site: activeSite })
-      assertContext()
-      if (found.model !== null && !models.includes(found.model)) throw new Error(`新密钥不支持 ${name} 现在用的型号`)
-      // 同换线路：动文件之前再盘点一次开没开，要的是拉清单之后才开始的那一轮。
-      const recheck = async () => {
-        latest.status = (await externalClientRuntime.scan({ fresh: true })).find((entry) => entry.tool === tool) ?? { ...status, installed: false }
-        if (latest.status.running) throw new Error(`${name} 还开着，已保留原配置`)
-        if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
-        assertContext()
-      }
-      await externalOwnership.stageKey(tool, owner, found.route.baseUrl, found.apiKey, next.apiKey)
-      await moveExternalClientKey(status, { baseUrl: found.baseUrl, from: found.apiKey, to: next.apiKey }, assertContext, recheck)
-      await externalOwnership.rewrite(tool, owner, found.route.baseUrl, next.apiKey)
-      runtimeLog?.log('info', 'config', 'external-client.key.followed', `已把 ${name} 换成 ${cliCatalog[next.provider].name} 现在用的密钥`, detail)
-      return { client: await describeExternalClient(latest.status), pending: false }
-    } catch (error) {
-      if (latest.status.running) {
-        runtimeLog?.log('info', 'config', 'external-client.key.deferred', `${name} 还开着，先不换密钥，退出后再换`, detail)
-        return { client: { ...client, ...latest.status, keyPending: true }, pending: true }
-      }
-      // 拉不到模型清单、型号不在了、写之前客户刚改过配置都走这里：这次不动，下次检测再看。
-      runtimeLog?.log('warn', 'config', 'external-client.key.failed', `${name} 的密钥这次没换成，下次检测再试`, {
-        ...detail, reason: credentialFailureReason(error),
-      })
-      return { client: { ...client, ...latest.status }, pending: false }
-    }
-  }
-  /**
-   * 星芒替当前账号写进这个客户端、现在正用着的那一份（#1113）：route 是它在这个站登记的哪条线路，baseUrl 是配置里
-   * 原样写着的地址（Claude Desktop 设置窗口存的可能带斜杠），Key 和型号原样交出（Claude Desktop 没写型号时 model
-   * 为 null）。归属对不上、不在这个站的线路上回 null。主进程内部专用，密钥永不跨 IPC（I3）。
-   */
-  async function externalClientKeyCredential(
-    status: ExternalClientRuntimeStatus,
-    activeSite: RelaySite,
-    owner: string,
-  ): Promise<{ route: { endpointId: RelayEndpointId; baseUrl: string }; baseUrl: string; apiKey: string; model: string | null } | null> {
-    const owned = (baseUrl: string, apiKey: string) => (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
-      && externalOwnership.matches(status.tool, owner, baseUrl, apiKey)
-    if (status.tool === 'claudeDesktop') {
-      // 一次读出地址再比：Windows 上每读一次都要起 PowerShell 查管理策略。
-      const gateway = await claudeDesktopConfig(status).then((service) => service.inspectOwnedRoute()).catch(() => null)
-      const route = gateway ? relaySiteProviderBaseUrlVariants(activeSite.id, 'claude').find((variant) => sameRouteUrl(gateway.baseUrl, variant.baseUrl)) : undefined
-      return gateway && route && owned(route.baseUrl, gateway.apiKey) ? { route, ...gateway } : null
-    }
-    for (const route of relaySiteProviderBaseUrlVariants(activeSite.id, 'codex')) {
-      const credential = await externalClientProbeCredential(status, route.baseUrl, (apiKey) => owned(route.baseUrl, apiKey))
-      if (credential) return { route, baseUrl: route.baseUrl, ...credential }
-    }
-    return null
-  }
-  /** 只改 Key 的那一笔写，recheck 的位置同 moveExternalClientRoute。 */
-  async function moveExternalClientKey(
-    status: ExternalClientRuntimeStatus,
-    change: { baseUrl: string; from: string; to: string },
-    assertContext: () => void,
-    recheck: () => Promise<void>,
-  ): Promise<void> {
-    if (status.tool === 'claudeDesktop') {
-      await (await claudeDesktopConfig(status, assertContext)).followKey(change.baseUrl, change.from, change.to, recheck)
-      return
-    }
-    const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-    if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
-    await recheck()
-    await followExternalToolKey(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
-      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-    }, change, { beforeReplace: assertContext })
-  }
-  /** followExternalClientRoutes 里的一个客户端：那一行要换成什么就回什么，不用动时回 null。 */
-  async function followExternalClientRoute(
-    status: ExternalClientRuntimeStatus,
-    client: ExternalClientStatus,
-    to: RelayEndpointId,
-  ): Promise<ExternalClientStatus | null> {
-    const { tool } = status
-    const name = externalClientNames[tool]
-    const activeSite = activeRelaySite()
-    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
-    if (owner === null) return null
-    const followedKey = JSON.stringify([tool, owner])
-    const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
-    const assertContext = () => {
-      if (activeRelaySite().id !== activeSite.id || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) {
-        throw new Error('账号已变化，这次不换线路')
-      }
-    }
-    const found = await externalClientRouteCredential(status, activeSite, owner)
-    if (!found) {
-      // 换过的又回到原来那份：归属已经记在新地址上，不会再换，只在日志里说一次。
-      const followed = externalRoutesFollowed.get(followedKey)
-      if (!followed) return null
-      externalRoutesFollowed.delete(followedKey)
-      if (await externalClientProbeCredential(status, followed.baseUrl, (apiKey) => apiKey === followed.apiKey)) {
-        runtimeLog?.log('warn', 'config', 'external-client.route.reverted', `${name} 换过连接线路后又回到了原来那条，不再替它换`, { tool, from: followed.from, to })
-      }
-      return null
-    }
-    const detail = { tool, from: found.from, to }
-    if (found.baseUrl === baseUrl) {
-      // 地址已经在当前线路上，归属还记在原来那条：上回换完没记上（记归属那一步失败，或者星芒
-      // 正好在两步之间退出）。客户端那份不用再动，补记归属就行。
-      assertContext()
-      await externalOwnership.rewrite(tool, owner, baseUrl, found.apiKey)
-      runtimeLog?.log('info', 'config', 'external-client.route.recorded', `${name} 已在当前连接线路上，补记归属`, detail)
-      return await describeExternalClient(status)
-    }
-    if (status.running) {
-      runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
-      return { ...client, routePending: true, ...(activeSite.id === 'solov' ? { routeRecheck: true } : {}) }
-    }
-    const latest = { status, moved: false }
-    try {
-      // 新线路上认这把 Key、型号也还在才换，不替客户换型号（同 #872）；Claude Desktop 没写型号
-      // （由它自动获取）的那份，新线路认这把 Key 就够了。
-      const models = await fetchAvailableModels(found.apiKey, { bypassCache: true, site: activeSite })
-      assertContext()
-      if (found.model !== null && !models.includes(found.model)) throw new Error('当前密钥不支持所选模型，请重新检测')
-      // 动文件之前再盘点一次客户端开没开，放在写之前最后一步异步里（同 #872）。要的是这之后才
-      // 开始的那一轮：客户端可能是在拉清单那几秒里打开的，而那时正在跑的盘点可能比它早。
-      const recheck = async () => {
-        latest.status = (await externalClientRuntime.scan({ fresh: true })).find((entry) => entry.tool === tool) ?? { ...status, installed: false }
-        if (latest.status.running) throw new Error(`${name} 还开着，已保留原配置`)
-        if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
-        assertContext()
-      }
-      await moveExternalClientRoute(status, { from: found.baseUrl, to: baseUrl, apiKey: found.apiKey }, assertContext, recheck)
-      latest.moved = true
-      externalRoutesFollowed.set(followedKey, { from: found.from, baseUrl: found.baseUrl, apiKey: found.apiKey })
-      await externalOwnership.rewrite(tool, owner, baseUrl, found.apiKey)
-      runtimeLog?.log('info', 'config', 'external-client.route.followed', `已把 ${name} 换到当前连接线路`, detail)
-      return await describeExternalClient(latest.status)
-    } catch (error) {
-      if (latest.status.running) {
-        runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
-        return { ...client, ...latest.status, routePending: true }
-      }
-      // 拉不到模型清单、型号不在了、写之前客户刚改过配置也走这里：这次不动，下次检测再试。
-      // 地址已经换好、只是归属没记上的，下次检测补记（上面 recorded 那一支）。
-      runtimeLog?.log('warn', 'config', 'external-client.route.failed', latest.moved
-        ? `${name} 已换到当前连接线路，归属没记上，下次检测补记` : `${name} 的连接线路这次没换成，下次检测再试`,
-      { ...detail, reason: credentialFailureReason(error) })
-      return { ...client, ...latest.status }
-    }
-  }
-  /**
-   * 星芒替当前账号写的那一份在这个站的哪条线路上：from 是归属记在哪条线路，baseUrl 是那份配置
-   * 现在指着的地址，Key 和型号原样交出（Claude Desktop 没写型号时 model 为 null）。baseUrl 是另一条
-   * 线路的，跟着换；已经是当前线路的（上回地址换好了、归属没记上），补记归属。归属对不上、不是
-   * 这个站登记过的线路，回 null。别名也认：直连原来的地址是 IP 测试入口，那时存的那份归属记在
-   * IP 上，现在 IP 退成别名、要关掉，得跟着换到域名。主进程内部专用，密钥永不跨 IPC（I3）。
-   */
-  async function externalClientRouteCredential(
-    status: ExternalClientRuntimeStatus,
-    activeSite: RelaySite,
-    owner: string,
-  ): Promise<{ from: RelayEndpointId; baseUrl: string; apiKey: string; model: string | null } | null> {
-    const provider = status.tool === 'claudeDesktop' ? 'claude' : 'codex'
-    const current = activeSite.providerBaseUrls[provider]
-    const routes = relaySiteProviderBaseUrlVariants(activeSite.id, provider)
-      .map((variant) => ({ from: variant.endpointId, baseUrl: variant.baseUrl }))
-      .filter((route) => route.baseUrl !== current)
-    const unchanged = () => serviceOptions.getExternalClientAccountId?.() === owner && activeRelaySite().id === activeSite.id
-    const ownedRoute = (apiKey: string) => unchanged() ? routes.find((route) => externalOwnership.matches(status.tool, owner, route.baseUrl, apiKey)) : undefined
-    if (status.tool === 'claudeDesktop') {
-      // 一次读出地址再比：Windows 上每读一次都要起 PowerShell 查管理策略。
-      const gateway = await claudeDesktopConfig(status).then((service) => service.inspectOwnedRoute()).catch(() => null)
-      const route = gateway ? ownedRoute(gateway.apiKey) : undefined
-      if (!gateway || !route) return null
-      const at = sameRouteUrl(gateway.baseUrl, current) ? current : sameRouteUrl(gateway.baseUrl, route.baseUrl) ? route.baseUrl : null
-      return at ? { ...gateway, from: route.from, baseUrl: at } : null
-    }
-    for (const route of routes) {
-      const credential = await externalClientProbeCredential(status, route.baseUrl, (apiKey) => ownedRoute(apiKey) === route)
-      if (credential) return { ...credential, from: route.from, baseUrl: route.baseUrl }
-    }
-    const credential = await externalClientProbeCredential(status, current, (apiKey) => ownedRoute(apiKey) !== undefined)
-    const route = credential ? ownedRoute(credential.apiKey) : undefined
-    return credential && route ? { ...credential, from: route.from, baseUrl: current } : null
-  }
-  /**
-   * 只改地址的那一笔写：Claude Desktop 改网关地址，WorkBuddy、OpenCode 改星芒那几条的地址。
-   * recheck 是写之前最后看一眼客户端开没开，放在最后一步异步之后：Claude Desktop 那边商店版目录、
-   * 管理策略都要起 PowerShell，所以交给 followRoute 在那之后调。
-   */
-  async function moveExternalClientRoute(
-    status: ExternalClientRuntimeStatus,
-    route: { from: string; to: string; apiKey: string },
-    assertContext: () => void,
-    recheck: () => Promise<void>,
-  ): Promise<void> {
-    if (status.tool === 'claudeDesktop') {
-      await (await claudeDesktopConfig(status, assertContext)).followRoute(route.from, route.to, route.apiKey, recheck)
-      return
-    }
-    const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-    if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
-    await recheck()
-    await followExternalToolRoute(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
-      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-    }, route, { beforeReplace: assertContext })
   }
 
   function rememberedWorkspaceFor(workspace: string): string | null {
@@ -2920,13 +2240,6 @@ export function createSystemService(
   // 只管星芒账号（solov）；历史账号照旧由渲染层 followRelayRoute 走整份写入，一行不改（重开提示见 noteRouteFollowRestart）。地址取的是
   // relayRouting 这次运行生效的线路（开机定下的偏好，设置里改了没重启的不算），所以「改了设置没重启」
   // 那段时间工具配置照样跟着当前生效的线路走（(f)）。和整份写入排同一个 serializeConfigWrite 队。
-  const toolRouteNow = serviceOptions.toolRouteNow ?? Date.now
-  function scheduleToolRouteTimer(callback: () => void, delayMs: number): () => void {
-    if (serviceOptions.scheduleToolRoute) return serviceOptions.scheduleToolRoute(callback, delayMs)
-    const timer = setTimeout(callback, delayMs)
-    timer.unref?.()
-    return () => clearTimeout(timer)
-  }
   let toolRouteAccount: ToolRouteAccountHooks | null = null
   let toolRouteRestartHint: ToolRouteRestartHint | null = null
   // 暂时性失败已经连着失败了几次；换线或重启从头算。
@@ -3212,8 +2525,7 @@ export function createSystemService(
     cancelToolRouteRetry = null
     cancelToolRouteVerify?.()
     cancelToolRouteVerify = null
-    cancelExternalRouteRecheck?.()
-    cancelExternalRouteRecheck = null
+    cancelPendingExternalRouteRecheck()
   }
 
   /** 设置快照里给界面的那条重开提示；过了半小时不再给。 */
