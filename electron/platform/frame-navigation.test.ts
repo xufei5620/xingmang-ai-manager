@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { WebContents } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
+import { readMainWiringSource } from '../bootstrap/main-source.test-support'
 import {
   installMainWindowFrameNavigationGuard,
   shouldPreventMainWindowFrameNavigation,
@@ -24,7 +25,7 @@ describe('main-window embedded frame security', () => {
   })
 
   it('installs the frame guard at the main-window integration point', () => {
-    const mainSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'main.ts'), 'utf8')
+    const mainSource = readMainWiringSource()
     expect(mainSource).toContain('installMainWindowFrameNavigationGuard(window.webContents)')
   })
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { readMainWiringSource } from './bootstrap/main-source.test-support'
 import { ipcEventChannels } from './ipc-contract'
 import {
   applyWindowTheme,
@@ -236,7 +237,7 @@ describe('asset menu failure presentation', () => {
 
   it('is how main.ts fills every image, video and audio menu error box', () => {
     // 接线一断（哪个菜单又把 error.message 直接塞进错误框），英文原话和用户名就又上屏了。
-    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    const main = readMainWiringSource()
     for (const source of ['ai-chat', 'canvas']) {
       for (const mediaType of ['image', 'video', 'audio']) {
         expect(main).toContain(`item.run().catch((error) => showAssetMenuFailure('${source}', '${mediaType}', item.id, error))`)
