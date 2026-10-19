@@ -8,7 +8,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { AppSettingsStore } from './app-settings'
-import type { ProviderId } from './catalog'
+import { cliCatalog, type ProviderId } from './catalog'
+import {
+  describeOccupiedUpdateFailure,
+  fileLockErrorCode,
+  probeRunningCliProcesses,
+  type OccupiedUpdateFailureInput,
+} from './cli-process-probe'
 import { CliUpdateHistoryStore } from './cli-update-history'
 import { defaultProviderConfigRoots } from './codex-home'
 import {
@@ -16,6 +22,7 @@ import {
   findExecutable,
   isTrustedHighIntegrityExecutable,
   primeTrustedHighIntegrityExecutable,
+  redactCommandText,
   runCommand,
   trustedCommandEnvironment,
   type WindowsPackageManager,
@@ -30,7 +37,7 @@ import { InstallCancellationRegistry } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
 import { installLinuxNodeRuntime } from './linux-node-runtime'
 import { launchLinuxTerminal } from './linux-terminal'
-import { managedCliRoot } from './managed-cli-paths'
+import { managedCliRoot, managedNpmPrefix } from './managed-cli-paths'
 import { inspectMacosCodexApp } from './macos-codex-app'
 import { installMacGitRuntime } from './macos-git-install'
 import { installDarwinNodeRuntime, resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
@@ -40,6 +47,7 @@ import {
   installNodeRuntime as installNodeRuntimeLts,
 } from './node-runtime'
 import { fetchOfficialChatGptUsage } from './official-account-usage'
+import { sameLocalPathIdentity } from './path-identity'
 import { ProjectInstructionsStateStore } from './project-instructions'
 import {
   inspectInstalledPythonRuntime,
@@ -50,9 +58,10 @@ import { bypassClosedLoopbackProxies, describeDroppedProxies, probeLoopbackProxy
 import { redactHomeDirectory } from './startup-log'
 import type { SystemServiceOptions } from './system-service'
 import { ToolConfigOwnershipStore } from './tool-config-ownership'
-import { resolveCliCommand, resolveCliInstallation, resolveNpmGlobalRoot } from './tool-installation'
+import { resolveCliCommand, resolveCliInstallation, resolveNpmGlobalRoot, type CliInstallation } from './tool-installation'
 import { createToolRouteFollowStore } from './tool-route-follow-state'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { createCliTerminalAccess } from './windows-cli-shell-access'
 import { launchCliPowerShell } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { inspectWindowsExecutableMachine } from './windows-processor'
@@ -189,6 +198,8 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
   // 登记着取消句柄的那次 CLI 安装点名的版本（undefined = 没点名）。只在句柄还登记着时读，
   // 每次登记句柄都会先覆盖它，所以句柄放掉以后留着旧值也不会被读到。
   const installRequestedVersions = new Map<ProviderId, string | undefined>()
+  // 单独装 Node.js 和装工具时发现没有 npm 顺带装的那一次共用这一个标记：同一时间只装一份。
+  const nodeRuntimeInstall = { running: false }
   // 桌面端（Codex、Claude）先从星芒自己的存储桶下（yoyo 2026-10-10）；桶那一路为什么没走通只进日志。
   const desktopBucketDownloads: DesktopBucketOptions = {
     onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
@@ -355,6 +366,63 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     }
   }
 
+  function isManagedNpmInstallation(installation: Pick<CliInstallation, 'npmPrefix'>): boolean {
+    if (!installation.npmPrefix) return false
+    const expected = managedNpmPrefix(commandEnvironment(), platform)
+    return sameLocalPathIdentity(expected, installation.npmPrefix)
+  }
+
+  // 让用户在自己开的 PowerShell / cmd 里直接敲工具名就能用：删掉 npm 写的 .ps1
+  // 启动文件（默认执行策略下它会报「禁止运行脚本」），装完时再确认工具目录在
+  // 当前用户的 PATH 里。两步都只动当前用户自己的东西，不改执行策略、不提权；
+  // 失败只记日志，不影响安装结果。
+  const cliTerminalAccess = createCliTerminalAccess({
+    platform,
+    executionMode: windowsExecutionMode,
+    isManaged: isManagedNpmInstallation,
+    ensureUserPath: serviceOptions.ensureWindowsUserPath,
+    removeUserPath: serviceOptions.removeWindowsUserPath,
+    ensureShellProfile: serviceOptions.ensureMacosShellProfile,
+    syncTerminalCommands: serviceOptions.syncLinuxTerminalCommands,
+    log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
+    describeError: (error) => redactHomeDirectory(
+      redactCommandText(error instanceof Error ? error.message : String(error)),
+      providerRoots.userHome,
+    ),
+  })
+
+  /**
+   * 把「文件被占用」这句话补到失败原文上,前提是真的撞上了占用:EBUSY / ETXTBSY
+   * 自己就够,EPERM / EACCES 必须数到这个工具的进程才算(见 cli-process-probe.ts
+   * 的 describeOccupiedUpdateFailure)。数不到就返回 null,原来的失败原样出去。
+   */
+  async function describeOccupiedCliFailure(
+    provider: ProviderId,
+    errorLike: unknown,
+    detail: string,
+    probeRoot: string | null,
+    action: OccupiedUpdateFailureInput['action'],
+  ): Promise<string | null> {
+    if (!fileLockErrorCode(errorLike)) return null
+    const probe = probeRoot
+      ? await probeRunningCliProcesses(probeRoot)
+      : { status: 'unsupported' as const, processes: [] }
+    const message = describeOccupiedUpdateFailure({
+      toolName: cliCatalog[provider].name,
+      action,
+      error: errorLike,
+      probe,
+      detail,
+    })
+    if (!message) return null
+    runtimeLog?.log('warn', 'install', 'cli.file-locked', `${cliCatalog[provider].name} ${action}时文件被占用`, {
+      provider,
+      probeStatus: probe.status,
+      processes: probe.processes.length,
+    })
+    return message
+  }
+
   /** 这会儿有几次下载正跑在加速线路上；挑安装源顺序的两处（inspectNetworkRegion、装命令行工具）读它。 */
   function acceleratedDownloadCount(): number {
     return acceleratedDownloads
@@ -407,6 +475,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     installationQueue,
     installCancellations,
     installRequestedVersions,
+    nodeRuntimeInstall,
     desktopBucketDownloads,
     grokBucketDownloads,
     inspectExecutableMachine,
@@ -420,6 +489,9 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     nodeCommandDirectories,
     resolveServiceNpmGlobalRoot,
     executeVersion,
+    isManagedNpmInstallation,
+    cliTerminalAccess,
+    describeOccupiedCliFailure,
   }
 }
 
