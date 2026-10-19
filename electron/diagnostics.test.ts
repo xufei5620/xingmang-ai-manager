@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { activeProviderIds, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, providerIds, type ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
 import { inspectHomeFolderTrust, type NativeConfigInspection, type ProviderAccountMode } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
@@ -31,6 +31,7 @@ import {
   withAppProxyRoute,
   inspectAppProxyRoute,
   type DiagnosticItem,
+  type DiagnosticsReport,
   type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
@@ -291,6 +292,56 @@ describe('diagnostics', () => {
     expect(codes).not.toContain('CLI_GEMINI')
     expect(codes).not.toContain('PROVIDER_GEMINI')
     expect(report.items.filter((item) => item.title.includes('Gemini'))).toEqual([])
+  })
+
+  // 检查页和导出的报告都照这个次序列出各项（#1070 第 9 步把检查项按类别拆进几个文件时钉住它）。
+  it('lists every check in a fixed order with fixed titles', async () => {
+    const home = temporaryHome()
+    const everything: DiagnosticsDependencies = {
+      ...dependencies(home),
+      windowsProcessor: 'arm64',
+      inspectExecutableMachine: async () => 'arm64',
+      documentsDirectory: path.join(home, 'Documents'),
+      inspectDocuments: () => ({ state: 'writable' }),
+      probeAiOutput: async () => undefined,
+      accelerationBundle: 'intact',
+    }
+    const listed = (report: DiagnosticsReport) => report.items.map((item) => [item.code, item.title])
+    const tools = (prefix: string, suffix = '') => activeProviderIds
+      .map((provider) => [`${prefix}_${provider.toUpperCase()}`, `${cliCatalog[provider].name}${suffix}`])
+
+    expect(listed(await runDiagnostics(everything))).toEqual([
+      ['APP_RUNTIME', '星芒版本'],
+      ['OPERATING_SYSTEM', '操作系统'],
+      ['WINDOWS_ARM', '电脑芯片'],
+      ['ADMINISTRATOR', '运行权限'],
+      ['SYSTEM_POWERSHELL', '打开工具用的命令窗口'],
+      ['RUNTIME_NODE', 'Node.js'],
+      ['RUNTIME_NPM', 'Node.js 自带的安装组件'],
+      ['RUNTIME_PYTHON', 'Python'],
+      ['RUNTIME_GIT', 'Git'],
+      ...tools('CLI'),
+      ['CODEX_DESKTOP', 'Codex 桌面端'],
+      ...tools('PROVIDER', ' 连接设置'),
+      ['XINGMANG_NETWORK', '星芒 AI 网络'],
+      ['CERTIFICATE_TRUST', '安全证书'],
+      ['DISK_SPACE', '磁盘空间'],
+      ['DOCUMENTS_WRITABLE', '「文档」文件夹能不能写'],
+      ['AI_OUTPUT', 'AI 作品保存位置'],
+      ['ACCELERATION_BUNDLE', '加速功能'],
+      ['FOLDER_RELOCATED', '文件夹位置'],
+      ['CLASH_VERGE_TUN', '代理软件的全局接管模式'],
+      ['PROXY_ENVIRONMENT', '电脑里的代理设置'],
+      ['PROVIDER_ENVIRONMENT_OVERRIDE', '电脑里另外设过的工具地址或密钥'],
+      ['WORKSPACE_CONFIG_OVERRIDE', '项目文件夹里的设置'],
+      ['CODEX_DOTENV', 'Codex 文件夹里的额外设置'],
+      ['CLAUDE_BYPASS_PERMISSIONS', 'Claude Code 跑命令前要不要先问你'],
+      ['HOME_FOLDER_LEFTOVERS', '个人文件夹里早先留下的设置'],
+    ])
+    // Mac 上没有「电脑芯片」和「文档」那两项，其余次序不变。
+    const mac = (await runDiagnostics({ ...everything, platform: 'darwin' })).items.map((item) => item.code)
+    expect(mac).toEqual(listed(await runDiagnostics(everything)).map(([code]) => code)
+      .filter((code) => code !== 'WINDOWS_ARM' && code !== 'DOCUMENTS_WRITABLE'))
   })
 
   it('inspects providers and Codex dotenv through provider roots', async () => {
