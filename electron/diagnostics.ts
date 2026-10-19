@@ -1,21 +1,29 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
-import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, type ProviderId } from './catalog'
+import { commandEnvironment, runCommand, trustedCommandEnvironment } from './command-runner'
+import type { IgnoredCodexHome, ProviderConfigRoots } from './codex-home'
 import {
-  commandEnvironment,
-  findExecutable,
-  isTrustedHighIntegrityExecutable,
-  primeTrustedHighIntegrityExecutable,
-  runCommand,
-  trustedCommandEnvironment,
-} from './command-runner'
-import { defaultProviderConfigRoots, type IgnoredCodexHome, type ProviderConfigRoots } from './codex-home'
+  createDiagnosticsContext,
+  diagnosticsScanReuseMs,
+  errorChainText,
+  isRecord,
+  relayLineNames,
+  scannedCodexDesktopStatus,
+  scannedToolStatus,
+} from './diagnostics-context'
+import {
+  createDiagnosticsExport,
+  pathForDisplay,
+  pathOrIdentifierForDisplay,
+  redactDiagnosticText,
+  safeUrlForDisplay,
+} from './diagnostics-redaction'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
-import { inspectCodexDaemonAutoStart, inspectHomeFolderTrust, inspectProviderConfig, providerAccountMode, type CodexDaemonAutoStart, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
+import { inspectCodexDaemonAutoStart, inspectHomeFolderTrust, providerAccountMode, type CodexDaemonAutoStart, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
 import {
   formatFreeSpace,
   installMinimumFreeBytes,
@@ -25,14 +33,8 @@ import {
   type DiskSpaceReading,
 } from './disk-space'
 import { gitMissingImpact, gitMissingNotice } from './git-runtime'
-import {
-  commandLineToolsShimNotice,
-  inspectCommandLineToolsShim,
-  isMacOsCommandLineToolsShim,
-  xcodeLicensePendingNotice,
-} from './macos-command-line-tools'
+import { commandLineToolsShimNotice, xcodeLicensePendingNotice } from './macos-command-line-tools'
 import { findLinuxTerminals, type LinuxTerminalCandidate } from './linux-terminal'
-import { resolveDarwinPreferredNodeDirectory } from './macos-node-runtime'
 import { managedCliRoot } from './managed-cli-paths'
 import { hasUntouchedHomeProjectInstructions } from './project-instructions'
 import { classifyNetworkFailure, isJsonContentType, networkFailureCode, networkFailureMessages, type NetworkFailureReason } from './network-failure'
@@ -47,8 +49,6 @@ import {
   type CertificateTrustVerdict,
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
-import { maskEmailAddresses, redactSecretPatterns } from './redaction-patterns'
-import { pathRootSpellings } from './startup-log'
 import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
 import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, requestFailuresTrigger, type RelayRouteChange } from './relay-route-controller'
 import {
@@ -68,7 +68,6 @@ import {
   type ProxyVariableFinding,
   type ProxyVariableScopes,
 } from './stale-proxy-environment'
-import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import type { SystemSnapshot } from './system-service'
 import {
@@ -330,23 +329,8 @@ export interface DiagnosticsRunOptions {
   reuseRecentScan?: boolean
 }
 
-/** 多久以内跑完的扫描算「现成的」：开机自动检查紧跟着首页扫描，一分钟足够。 */
-export const diagnosticsScanReuseMs = 60_000
-
-/** 扫描里这一项的结论；扫描自己没探成（detectionFailed）就是 null，交回诊断自己探。 */
-export function scannedToolStatus(snapshot: DiagnosticsScanSnapshot, tool: DiagnosticToolId): DiagnosticToolStatus | null {
-  const status = (providerIds as readonly string[]).includes(tool) ? snapshot.clis[tool as ProviderId] : snapshot.runtime[tool as 'node' | 'npm' | 'python' | 'git']
-  if (!status || status.detectionFailed) return null
-  return status.installed ? { installed: true, version: status.version, path: status.path } : { installed: false, version: null, path: null }
-}
-
-export function scannedCodexDesktopStatus(snapshot: DiagnosticsScanSnapshot): DiagnosticToolStatus | null {
-  const status = snapshot.desktopApps.codex
-  if (status.detectionFailed) return null
-  return status.installed
-    ? { installed: true, version: status.version, path: status.path, running: status.running }
-    : { installed: false, version: null, path: null, running: false }
-}
+// 定义随用它的上下文搬进了 diagnostics-context.ts（#1070 第 9 步），这里照旧导出。
+export { diagnosticsScanReuseMs, scannedCodexDesktopStatus, scannedToolStatus }
 
 interface CheckOutcome {
   state: DiagnosticState
@@ -424,189 +408,13 @@ const runtimeCheckTitles: Readonly<Record<'node' | 'npm' | 'python', string>> = 
 }
 const PROXY_NAMES = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'FTP_PROXY'] as const
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
-
 function normalizedPathKey(value: string): string {
   const resolved = path.resolve(value)
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
-function pathApiFor(value: string, ...roots: string[]): typeof path.win32 | typeof path.posix {
-  return /^[A-Za-z]:[\\/]/.test(value)
-    || value.startsWith('\\\\')
-    || roots.some((root) => /^[A-Za-z]:[\\/]/.test(root) || root.startsWith('\\\\'))
-    ? path.win32
-    : path.posix
-}
-
-function resolvePathLike(value: string): string {
-  return pathApiFor(value, value).resolve(value)
-}
-
-function isAbsolutePathLike(value: string, roots: ProviderConfigRoots): boolean {
-  return pathApiFor(value, roots.userHome, roots.codexHome).isAbsolute(value)
-}
-
-function pathForDisplay(filePath: string | null, roots: ProviderConfigRoots): string | null {
-  if (!filePath) return null
-  const pathApi = pathApiFor(filePath, roots.userHome, roots.codexHome)
-  const resolved = pathApi.resolve(filePath)
-  const rootLabels = [
-    { root: pathApi.resolve(roots.codexHome), label: '[CODEX_HOME]' },
-    { root: pathApi.resolve(roots.userHome), label: '~' },
-  ].sort((left, right) => right.root.length - left.root.length)
-  for (const { root, label } of rootLabels) {
-    const relative = pathApi.relative(root, resolved)
-    if (relative === '') return label
-    if (relative !== '..' && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative)) {
-      return `${label}/${relative.split(pathApi.sep).join('/')}`
-    }
-  }
-  const basename = pathApi.basename(resolved)
-  return basename && basename !== pathApi.parse(resolved).root
-    ? `[ABSOLUTE_PATH]/${basename}`
-    : '[ABSOLUTE_PATH]'
-}
-
-function pathOrIdentifierForDisplay(value: string | null, roots: ProviderConfigRoots): string | null {
-  if (!value) return null
-  return isAbsolutePathLike(value, roots) || value.includes('/') || value.includes('\\')
-    ? pathForDisplay(value, roots)
-    : value
-}
-
-interface RootReplacement {
-  candidate: string
-  label: string
-  caseInsensitive: boolean
-}
-
-function rootReplacements(roots: { userHome?: string, codexHome?: string }): RootReplacement[] {
-  const replacements = new Map<string, RootReplacement>()
-  for (const [root, label] of [
-    [roots.codexHome?.trim(), '[CODEX_HOME]'],
-    [roots.userHome?.trim(), '~'],
-  ] as const) {
-    if (!root) continue
-    const caseInsensitive = /^[A-Za-z]:[\\/]/.test(root) || root.startsWith('\\\\')
-    for (const candidate of pathRootSpellings(root, resolvePathLike(root))) {
-      if (replacements.has(candidate)) continue
-      replacements.set(candidate, { candidate, label, caseInsensitive })
-    }
-  }
-  return [...replacements.values()].sort((left, right) => right.candidate.length - left.candidate.length)
-}
-
-function redactRootPaths(value: string, roots: { userHome?: string, codexHome?: string }): string {
-  let result = value
-  for (const replacement of rootReplacements(roots)) {
-    const flags = replacement.caseInsensitive ? 'gi' : 'g'
-    const pattern = new RegExp(
-      `(^|[^A-Za-z0-9\\\\/._-])${escapeRegExp(replacement.candidate)}(?=$|[\\\\/]|[^A-Za-z0-9\\\\/._-])`,
-      flags,
-    )
-    result = result.replace(
-      pattern,
-      (_match, prefix: string) => `${prefix}${replacement.label}`,
-    )
-  }
-  return result
-}
-
-function redactStructuredAbsolutePaths(value: unknown, roots: ProviderConfigRoots): unknown {
-  if (typeof value === 'string') {
-    const redacted = redactRootPaths(value, roots)
-    if (redacted !== value) return redacted
-    return isAbsolutePathLike(value, roots) ? pathForDisplay(value, roots) : value
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => redactStructuredAbsolutePaths(entry, roots))
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-      key,
-      redactStructuredAbsolutePaths(entry, roots),
-    ]))
-  }
-  return value
-}
-
-function safeUrlForDisplay(value: string): string {
-  if (!value) return ''
-  try {
-    const parsed = new URL(value)
-    parsed.username = ''
-    parsed.password = ''
-    parsed.search = ''
-    parsed.hash = ''
-    return parsed.toString().replace(/\/$/, parsed.pathname === '/' ? '/' : '')
-  } catch {
-    return '[invalid URL]'
-  }
-}
-
-function redactUrls(value: string): string {
-  return value.replace(/\b(?:https?|socks4|socks5):\/\/[^\s"'<>]+/gi, (match) => {
-    const suffix = match.match(/[),.;]+$/)?.[0] ?? ''
-    const rawUrl = suffix ? match.slice(0, -suffix.length) : match
-    try {
-      const parsed = new URL(rawUrl)
-      if (parsed.username) parsed.username = '[REDACTED]'
-      if (parsed.password) parsed.password = '[REDACTED]'
-      if (parsed.search) parsed.search = '?[REDACTED]'
-      parsed.hash = ''
-      return `${parsed.toString()}${suffix}`
-    } catch {
-      return `[REDACTED_URL]${suffix}`
-    }
-  })
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-export function redactDiagnosticText(
-  value: string,
-  options: DiagnosticRedactionOptions = {},
-): string {
-  let result = value
-  const secrets = [...new Set((options.sensitiveValues ?? []).filter((entry) => entry.length >= 3))]
-    .sort((left, right) => right.length - left.length)
-  for (const secret of secrets) result = result.split(secret).join('[REDACTED]')
-
-  result = redactUrls(redactSecretPatterns(result))
-
-  return redactRootPaths(result, {
-    userHome: options.userHome ?? options.homeDirectory,
-    codexHome: options.codexHome,
-  })
-}
-
-export function createDiagnosticsExport(
-  report: DiagnosticsReport,
-  options: DiagnosticRedactionOptions = {},
-): string {
-  const userHome = resolvePathLike(options.userHome ?? options.homeDirectory ?? os.homedir())
-  const codexHome = resolvePathLike(
-    options.codexHome ?? defaultProviderConfigRoots(userHome).codexHome,
-  )
-  const roots = { userHome, codexHome }
-  const payload = {
-    product: '星芒AI管理工具',
-    exportedAt: new Date().toISOString(),
-    diagnostics: redactStructuredAbsolutePaths(report, roots),
-  }
-  // 邮箱半遮只在导出这一步做（#1073 第 5 条 c）：redactDiagnosticText 也给「检查」页
-  // 上的结论脱敏，屏幕上的字不跟着变。
-  return `${maskEmailAddresses(redactDiagnosticText(JSON.stringify(payload, null, 2), {
-    ...options,
-    userHome,
-    codexHome,
-  }))}\n`
-}
+// 脱敏和导出搬进了 diagnostics-redaction.ts（#1070 第 9 步），这里照旧导出。
+export { createDiagnosticsExport, redactDiagnosticText }
 
 function clashCandidates(homeDirectory: string, env: NodeJS.ProcessEnv): string[] {
   const appData = env.APPDATA
@@ -642,149 +450,6 @@ export function parseClashTunConfig(source: string): boolean {
   if (value.enable_tun_mode === true || value.tun_mode === true) return true
   const tun = value.tun
   return isRecord(tun) && tun.enable === true
-}
-
-function findWindowsShim(command: string, env: NodeJS.ProcessEnv): string | null {
-  if (process.platform !== 'win32') return null
-  const searchPath = env.PATH ?? env.Path ?? env.path ?? ''
-  for (const directory of searchPath.split(path.delimiter).filter(Boolean)) {
-    const candidate = path.resolve(directory.replace(/^"(.*)"$/, '$1'), `${command}.cmd`)
-    try {
-      if (fs.statSync(candidate).isFile()) return candidate
-    } catch {
-      // Continue with the next PATH entry.
-    }
-  }
-  return null
-}
-
-async function versionForExecutable(
-  executable: string,
-  tool: DiagnosticToolId,
-  signal: AbortSignal,
-  env: NodeJS.ProcessEnv,
-  additionalPaths: readonly string[] = [],
-): Promise<string | null> {
-  // 直接做同步校验，Program Files 下的路径会在主线程上起 PowerShell 读权限，
-  // node / npm / git 各一次，普通用户点「重新检测」时窗口就卡住了。
-  await primeTrustedHighIntegrityExecutable(executable)
-  if (!isTrustedHighIntegrityExecutable(executable, env)) return null
-  if (process.platform === 'win32' && path.extname(executable).toLowerCase() === '.cmd' && tool !== 'npm') {
-    return null
-  }
-  const args = ['--version']
-  const result = await runCommand({
-    executable,
-    argv: args,
-    windowsPackageManager: tool === 'npm' ? 'npm' : undefined,
-  }, {
-    env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env, additionalPaths),
-    trustedOnly: process.platform === 'win32',
-    timeoutMs: 5_000,
-    maxOutputBytes: 128 * 1024,
-    signal,
-  })
-  return `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null
-}
-
-/**
- * Mac 上客户自己那份 Node.js 太旧时，本软件自己用代下的那份（第三十四批 A，system-service.ts
- * 的 preferredNodeDirectories）；检查页的 Node.js、npm 两项也报那一份，和首页对得上。
- */
-async function preferredNodeDirectories(signal: AbortSignal, env: NodeJS.ProcessEnv): Promise<string[]> {
-  if (process.platform !== 'darwin') return []
-  const directory = await resolveDarwinPreferredNodeDirectory({
-    findNode: () => findExecutable('node', { env: commandEnvironment(env) }),
-    readVersion: (executable) => versionForExecutable(executable, 'node', signal, env),
-    environment: env,
-  }).catch(() => null)
-  return directory ? [directory] : []
-}
-
-async function defaultInspectTool(
-  tool: DiagnosticToolId,
-  signal: AbortSignal,
-  env: NodeJS.ProcessEnv,
-): Promise<DiagnosticToolStatus> {
-  if (providerIds.includes(tool as ProviderId)) {
-    const provider = tool as ProviderId
-    const installation = await resolveCliInstallation(provider, { env })
-    if (!installation) return { installed: false, version: null, path: null }
-    if (installation.source === 'npm') {
-      return {
-        installed: true,
-        version: installation.packageVersion ?? null,
-        path: installation.commandPath,
-      }
-    }
-    try {
-      const command = await resolveCliCommand(provider, env, 'trusted-only', {
-        darwinStagingRetention: 'ephemeral',
-      })
-      try {
-        await primeTrustedHighIntegrityExecutable(command.executable)
-        if (!isTrustedHighIntegrityExecutable(command.executable, env)) {
-          return { installed: true, version: null, path: installation.commandPath }
-        }
-        const result = await runCommand({
-          executable: command.executable,
-          argv: [...command.argv, ...cliCatalog[provider].versionArgs],
-        }, {
-          env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env),
-          trustedOnly: process.platform === 'win32',
-          timeoutMs: 5_000,
-          maxOutputBytes: 128 * 1024,
-          signal,
-        })
-        return {
-          installed: true,
-          version: `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null,
-          path: command.verifiedDarwinStandalone?.executablePath ?? installation.commandPath,
-        }
-      } finally {
-        await command.release?.()
-      }
-    } catch {
-      return { installed: true, version: null, path: null }
-    }
-  }
-  const commands = tool === 'python' ? ['python', 'python3', 'py'] : [tool]
-  const nodeDirectories = tool === 'node' || tool === 'npm' ? await preferredNodeDirectories(signal, env) : []
-  let commandLineToolsShim = false
-  let xcodeLicensePending = false
-  for (const command of commands) {
-    const executable = await findExecutable(command, {
-      env: commandEnvironment(env),
-      windowsPackageManagers: command === 'npm' ? ['npm'] : [],
-      ...(nodeDirectories.length ? { additionalPaths: nodeDirectories } : {}),
-    }) ?? findWindowsShim(command, env)
-    if (!executable) continue
-    if (isMacOsCommandLineToolsShim(executable)) {
-      const shimState = await inspectCommandLineToolsShim(executable, { env, signal })
-      if (shimState !== 'usable') {
-        commandLineToolsShim = true
-        xcodeLicensePending ||= shimState === 'license-pending'
-        continue
-      }
-    }
-    let version: string | null = null
-    try {
-      version = await versionForExecutable(executable, tool, signal, env, nodeDirectories)
-    } catch {
-      // Presence is still useful when a package-manager shim cannot be executed safely.
-    }
-    return { installed: true, version, path: executable }
-  }
-  if (commandLineToolsShim) {
-    return {
-      installed: false,
-      version: null,
-      path: null,
-      commandLineToolsShim,
-      ...(xcodeLicensePending ? { xcodeLicensePending } : {}),
-    }
-  }
-  return { installed: false, version: null, path: null }
 }
 
 async function defaultInspectAdministrator(signal: AbortSignal): Promise<boolean> {
@@ -1518,24 +1183,6 @@ export function clockSyncGuidance(platform: NodeJS.Platform): string {
   return '请打开系统设置里的「日期和时间」，把时间设为自动同步（有的系统叫「自动设置日期和时间」），并确认时区正确。'
 }
 
-/** 日志里要看得见真正的原因，而 fetch 把它塞在 cause 里，外层只剩 fetch failed。 */
-function errorChainText(error: unknown): string {
-  const parts: string[] = []
-  let current: unknown = error
-  for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth += 1) {
-    if (typeof current !== 'object') {
-      parts.push(String(current))
-      break
-    }
-    const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown }
-    parts.push([record.name, record.message, record.code]
-      .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
-      .join(': '))
-    current = record.cause
-  }
-  return parts.filter(Boolean).join(' <- ').slice(0, 500)
-}
-
 interface IgnoredCodexHomeFinding {
   /** true = 在软件外面打开的 Codex 读不到本程序替当前账号写好的配置。 */
   blocking: boolean
@@ -1588,11 +1235,6 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
   const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
   return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
 }
-
-// 线路在星芒里就叫这两个名字，和设置里的选项、网络那一项的结论一致：只说线路1、线路2，不说在哪
-// （yoyo 10-14）。两个账号按入口对应，默认那条（CF）是线路1，直连是线路2，客服对报告时同一个名字指同一种
-// 入口。下面几处只写进导出的检查报告；检查页的详情不摆（diagnostic-details.ts 不列这几个键）。
-const relayLineNames: Readonly<Record<RelayEndpointId, string>> = { primary: '线路1', direct: '线路2' }
 
 /** 工具配置这会儿该用的那条线路，和那条线路上这个工具的地址。 */
 interface ProviderRelayLine {
@@ -2098,35 +1740,13 @@ export function buildWindowsArmSummary(input: {
 
 export async function runDiagnostics(dependencies: DiagnosticsDependencies): Promise<DiagnosticsReport> {
   const startedAt = Date.now()
-  const env = dependencies.env ?? process.env
-  const userHome = path.resolve(
-    dependencies.providerRoots?.userHome ?? dependencies.homeDirectory ?? os.homedir(),
-  )
-  const providerRoots = dependencies.providerRoots ?? defaultProviderConfigRoots(userHome, env)
-  const codexHome = providerRoots.codexHome
-  const displayRoots = { userHome, codexHome }
-  const platform = dependencies.platform ?? process.platform
-  const arch = dependencies.arch ?? process.arch
-  const release = dependencies.release ?? os.release()
+  const context = createDiagnosticsContext(dependencies)
+  const {
+    env, userHome, providerRoots, codexHome, displayRoots, platform, arch, release, inspectProvider,
+    relaySite, toolSite, toolRoute, providerInspections, sanitize, scanned, inspectTool, log, now,
+  } = context
   const timeoutMs = dependencies.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
-  const inspectProvider = dependencies.inspectProvider
-    ?? ((provider, roots) => inspectProviderConfig(provider, roots))
-  const relaySite = dependencies.relaySite ?? resolveRelaySite(undefined)
-  const toolSite = dependencies.toolRoute?.site ?? relaySite
-  const toolRoute = dependencies.toolRoute ? dependencies.toolRoute.route : dependencies.relayRoute
   const accountBaseUrls = environmentAccountBaseUrls(toolSite, toolRoute)
-  const providerInspections = new Map<ProviderId, NativeConfigInspection>()
-  const knownSecrets: string[] = []
-  // 下线的 Gemini CLI 也照读：它的 Key 还在本机配置里，报告里一样要遮掉。
-  for (const provider of providerIds) {
-    try {
-      const inspection = inspectProvider(provider, providerRoots)
-      providerInspections.set(provider, inspection)
-      if (inspection.apiKey) knownSecrets.push(inspection.apiKey)
-    } catch {
-      // The isolated provider check will surface its own error.
-    }
-  }
   // 只看配过的工具：没配过的工具谈不上「盖过当前账号」。管理策略不看工作目录，
   // 所以没选过文件夹时 Claude 那一份照查。
   const workspaceOverrideOutcome = (): CheckOutcome => {
@@ -2161,18 +1781,6 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         ...summary.details,
       },
     }
-  }
-  const sanitize = (value: string) => redactDiagnosticText(value, {
-    userHome,
-    codexHome,
-    sensitiveValues: knownSecrets,
-  })
-  const scanned = dependencies.recentScan ?? null
-  const probeTool = dependencies.inspectTool
-    ?? ((tool, signal) => defaultInspectTool(tool, signal, env))
-  const inspectTool: typeof probeTool = (tool, signal) => {
-    const known = scanned ? scannedToolStatus(scanned, tool) : null
-    return known ? Promise.resolve(known) : probeTool(tool, signal)
   }
   const probePowerShell = dependencies.inspectPowerShell
     ?? ((signal) => defaultInspectPowerShell(signal, env))
@@ -2211,8 +1819,6 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const probeDiskSpace = dependencies.readDiskSpace ?? readDiskSpace
   const probeAiOutput = dependencies.probeAiOutput
   const diskSpaceTargets = resolveDiskSpaceTargets(env, platform, dependencies.userDataDirectory)
-  const log = dependencies.log
-  const now = dependencies.now ?? (() => new Date())
   const supportedPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux'
   // 「星芒 AI 网络」那一次请求回完话没有，超时那一刻看它决定结论。
   let relayAnswered = false

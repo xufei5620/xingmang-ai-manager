@@ -30,7 +30,9 @@
 - `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关
 
 ## 诊断、日志与反馈
-- `diagnostics.ts` — **「检查」页的全部检查项与诊断导出**，全仓最大的模块之一：Node/npm/Git/CLI 状态（能复用一分钟内的扫描）、配置文件、环境变量覆盖、系统代理与 PAC、证书与系统时钟、线路连通、磁盘空间、文档可写、C 盘搬家、Windows ARM 等；`createDiagnosticsExport` / `redactDiagnosticText` 导出前替换已知 Key 值、密钥样式、URL 与用户目录（I13）。顶部是可单测的纯函数，`runDiagnostics` 是依赖注入的总入口
+- `diagnostics.ts` — **「检查」页的全部检查项与诊断导出**，全仓最大的模块之一：Node/npm/Git/CLI 状态（能复用一分钟内的扫描）、配置文件、环境变量覆盖、系统代理与 PAC、证书与系统时钟、线路连通、磁盘空间、文档可写、C 盘搬家、Windows ARM 等；脱敏和导出在 `diagnostics-redaction.ts`（这里照旧转出）。顶部是可单测的纯函数，`runDiagnostics` 是依赖注入的总入口，开头那段解析在 `diagnostics-context.ts`
+- `diagnostics-context.ts` — 一键检测各类检查共用的那一份上下文（#1070 第 9 步从 `runDiagnostics` 开头原样搬出）：`createDiagnosticsContext` 把依赖解析成实际用的那一份（测试替身或缺省实现），先把各家工具配置读一遍（下线的 Gemini 也读，好在报告里遮掉它的 Key），给出脱敏用的 `sanitize` 和能复用首页扫描就不再探的 `inspectTool`；问工具装没装、是哪一版的缺省实现（Windows 上只跑可信的高完整性路径，I2、I14）、错误原因串、线路名也在这里。各类检查都只拿这一份；它只 import `diagnostics.ts` 的类型，免得两个文件互相 require
+- `diagnostics-redaction.ts` — 检查报告的脱敏和导出（#1070 第 9 步从 `diagnostics.ts` 搬出）：`createDiagnosticsExport` / `redactDiagnosticText` 导出前替换已知 Key 值、密钥样式、URL 与用户目录，导出时邮箱半遮（I13）；各类检查在报告里写路径、网址用的 `pathForDisplay` / `safeUrlForDisplay` 也在这里
 - `runtime-log.ts` — 运行日志 `RuntimeLogStore`：`logs/runtime.jsonl` 带归档轮转、写入排队、写失败先缓存；每条按 key 名脱敏（apiKey/token/cookie…）+ `redactCommandText` + 截长（I13）；反馈报告头部的环境、自检、主机、账号几段由宿主注入描述函数拼进来；启动时把 `startup-log.ts` 攒下的失败并进来
 - `redaction-patterns.ts` — **全仓唯一的密钥样式表**（Bearer、sk-、AIza、xai-、GitHub/GitLab 令牌、URL userinfo、带凭据的命令行参数与查询参数），日志、诊断、崩溃、反馈的脱敏都用它；故意零 import（startup-log、crash-report 记录别的模块失败时也要能用），渲染层也值引用（I13、I6）
 - `request-diagnostics.ts` — 给一次账号请求的回应 / 错误挂上走的线路、HTTP 状态码、new-api 请求编号和 cf-ray，`ipc.ts` 记日志时取出来，给客服和服务端查单；挂在 WeakMap 上不改错误对象的样子，编号按白名单正则过滤（回应头外部可控），不带地址、令牌、Key（I13）

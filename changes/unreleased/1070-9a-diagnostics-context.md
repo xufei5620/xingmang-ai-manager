@@ -1,0 +1,6 @@
+## 开发
+
+- 拆 `diagnostics.ts`（#1070 第 9 步，第一块）：`runDiagnostics` 开头解析依赖的那段搬进新文件 `electron/diagnostics-context.ts` 的 `createDiagnosticsContext`，交出 `DiagnosticsContext`：环境、用户目录和 Codex 目录、平台、站点和工具线路（工具线路缺省跟着应用线路）、各家工具配置先读一遍的结果（下线的 Gemini 也读，报告里一样遮掉它的 Key）、脱敏用的 `sanitize`、能用首页扫描结果就不再探的 `inspectTool`、日志和钟。几类检查都要用的小工具一起搬过去：问工具装没装、是哪一版的缺省实现（`defaultInspectTool` 和它用的三个小函数）、扫描结果复用（`diagnosticsScanReuseMs`、`scannedToolStatus`、`scannedCodexDesktopStatus`）、`isRecord`、`errorChainText`、线路名 `relayLineNames`。脱敏和导出（路径显示、URL 清洗、`redactDiagnosticText`、`createDiagnosticsExport`）搬进 `electron/diagnostics-redaction.ts`。两个新文件都只 import `diagnostics.ts` 的类型，搬走的导出名 `diagnostics.ts` 照旧转出，别处的 import 一个没改。
+- 搬运用脚本按原文件行号整段复制，搬前搬后逐段比对一字没改，只给要跨文件用的几个函数加了 `export`；`runDiagnostics` 里用一次解构把这些名字照原样接回来，检查项的代码一行没动。Windows 专属的那段（`versionForExecutable`、`defaultInspectTool` 里只跑可信高完整性路径的判断、`.cmd` 不跑、Windows 上用 `trustedCommandEnvironment`、找 npm 的 `.cmd` 垫片）原样搬进 `diagnostics-context.ts`，没改。
+- 测试：`diagnostics.test.ts` 加一条钉住全部检查项的次序和名字（Windows 全开、Mac 少两项），后面按类别拆时不能乱；新增 `diagnostics-context.test.ts`（工具线路缺省跟着应用线路、各家配置都读且 Key 在报告里遮掉、读不了的那家不拦别家、扫描探到的不再探）。另用八种情况（Windows、Mac、Linux、断网、被拦截、服务端 500、全部卡住超时、管理员身份）把整份报告和日志搬前搬后各跑一遍逐字比对，一样。
+- 文档：模块地图加两个新文件，`.claude/rules/macos-platform.md` 里可执行文件解析的位置跟着改。
