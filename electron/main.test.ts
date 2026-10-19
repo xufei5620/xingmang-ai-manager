@@ -1,7 +1,7 @@
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import { directCallPositions, enclosingFunction, mainWiringFiles, parseWiringFile, readMainWiringSource, startupCallback } from './bootstrap/main-source.test-support'
+import { directCallPositions, enclosingFunction, mainWiringFiles, moduleFunction, parseWiringFile, readMainWiringSource, startupCallback } from './bootstrap/main-source.test-support'
 import { ipcEventChannels } from './ipc-contract'
 
 // main.ts boots the whole app on import, so these read its source instead.
@@ -155,15 +155,12 @@ describe('main process startup order', () => {
     const order = [
       'createQuitCleanup',
       'runCodexContextLimitsMigration',
-      'createRelayRouteController',
-      'createSiteRouting',
-      'createToolRouteController',
-      'relayRouteController.start',
+      'createNetworkRoutes',
       'runClaudeDesktopModelRepair',
       'createDownloadAccelerationCoordinator',
       'createCodexDesktopAccelerationCoordinator',
       'createSystemService',
-      'toolRouteController.start',
+      'startToolRouteFollowing',
       'createUpdaterService',
       'serviceStatusMonitor?.start',
       'cliHookEvents.start',
@@ -194,6 +191,29 @@ describe('main process startup order', () => {
     for (const { callee, positions } of calls) expect({ callee, calls: positions.length }).toEqual({ callee, calls: 1 })
     const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
     expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
+  })
+
+  it('builds the routes before it starts checking them, and follows tool routes once a listener is attached', () => {
+    // 应用线路先建、先订阅换线路的通知，再开始查；直连会话和工具线路在它们之间建好（查线路走的就是 relayFetch）。
+    // 工具线路先挂上监听再开始查，换了线路才不会漏掉第一声。
+    const { source } = parseWiringFile(path.join(__dirname, 'bootstrap', 'network-routes.ts'))
+    const orders: Array<[string, string[]]> = [
+      ['createNetworkRoutes', [
+        'createRelayRouteController',
+        'createSiteRouting',
+        'createToolRouteController',
+        'createToolRouteStatusBoard',
+        'relayRouteController.subscribe',
+        'relayRouteController.start',
+      ]],
+      ['startToolRouteFollowing', ['toolRouteController.subscribe', 'toolRouteController.start', 'powerMonitor.on', 'setInterval']],
+    ]
+    for (const [owner, order] of orders) {
+      const calls = directCallPositions(source, moduleFunction(source, owner), order)
+      for (const { callee, positions } of calls) expect({ owner, callee, calls: positions.length }).toEqual({ owner, callee, calls: 1 })
+      const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
+      expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
+    }
   })
 
   it('only hands a bootstrap module work from the startup callback itself', () => {
