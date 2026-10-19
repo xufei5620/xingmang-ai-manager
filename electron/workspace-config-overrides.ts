@@ -87,7 +87,7 @@ const MAX_WALK_DEPTH = 64
 const claudeBaseUrlKeys = ['ANTHROPIC_BASE_URL'] as const
 // 这几个开关打开后 Claude Code 直接改走云厂商，服务地址与密钥都不再是当前账号的。
 // 名字取自 2.1.277 可执行文件里的字符串，没见过的一律不猜。从星芒打开时不带它们、
-// 检查页报它们，都用这一份（system-service.ts、diagnostics.ts，#1157 第 11 条）。
+// 检查页报它们，都用这一份（provider-launch-service.ts、diagnostics-override-checks.ts，#1157 第 11 条）。
 export const claudePlatformSwitches = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
