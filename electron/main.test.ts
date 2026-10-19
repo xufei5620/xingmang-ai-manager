@@ -1,42 +1,45 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
+import { directCallPositions, enclosingFunction, mainWiringFiles, parseWiringFile, readMainWiringSource, startupCallback } from './bootstrap/main-source.test-support'
 import { ipcEventChannels } from './ipc-contract'
 
 // main.ts boots the whole app on import, so these read its source instead.
 function mainSource() {
-  const file = path.join(__dirname, 'main.ts')
-  const sourceText = fs.readFileSync(file, 'utf8')
-  return { sourceText, source: ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true) }
+  return parseWiringFile(path.join(__dirname, 'main.ts'))
 }
 
 describe('main process window events', () => {
   it('never sends an IPC event to every open window', () => {
     // 画布跑第三方前端代码，支付窗口是支付商的网页：挨个窗口发，订单号、账号就送到了它们手边（#1069）。
-    const { source } = mainSource()
     const broadcasts: string[] = []
-    function visit(node: ts.Node): void {
-      if (ts.isForOfStatement(node) && /\bBrowserWindow\.getAllWindows\(\)/.test(node.expression.getText(source))
-        && /\.send\(/.test(node.statement.getText(source))) {
-        broadcasts.push(`main.ts:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`)
+    for (const file of mainWiringFiles()) {
+      const { source } = parseWiringFile(file)
+      function visit(node: ts.Node): void {
+        if (ts.isForOfStatement(node) && /\bBrowserWindow\.getAllWindows\(\)/.test(node.expression.getText(source))
+          && /\.send\(/.test(node.statement.getText(source))) {
+          broadcasts.push(`${path.basename(file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`)
+        }
+        ts.forEachChild(node, visit)
       }
-      ts.forEachChild(node, visit)
+      visit(source)
     }
-    visit(source)
     expect(broadcasts).toEqual([])
   })
 
   it('delivers account, payment and update events to the main window only', () => {
-    const { source, sourceText } = mainSource()
+    const sourceText = readMainWiringSource()
     const helpers: string[] = []
-    function visit(node: ts.Node): void {
-      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'sendToMainWindow' && node.initializer) {
-        helpers.push(node.initializer.getText(source))
+    for (const file of mainWiringFiles()) {
+      const { source } = parseWiringFile(file)
+      function visit(node: ts.Node): void {
+        if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'sendToMainWindow' && node.initializer) {
+          helpers.push(node.initializer.getText(source))
+        }
+        ts.forEachChild(node, visit)
       }
-      ts.forEachChild(node, visit)
+      visit(source)
     }
-    visit(source)
     expect(helpers).toHaveLength(1)
     expect(helpers[0]).toContain('managedMainWindow')
     expect(helpers[0]).not.toContain('getAllWindows')
@@ -55,12 +58,6 @@ describe('main process window events', () => {
 function quitCleanupSteps() {
   const { source } = mainSource()
   const steps: Array<{ name: string, body: string, owner: ts.Node | undefined, guard: string | null }> = []
-  function enclosingFunction(node: ts.Node): ts.Node | undefined {
-    for (let parent = node.parent; parent; parent = parent.parent) {
-      if (ts.isFunctionLike(parent)) return parent
-    }
-    return undefined
-  }
   function enclosingGuard(node: ts.Node): string | null {
     for (let child = node, parent = node.parent; parent && !ts.isFunctionLike(parent); child = parent, parent = parent.parent) {
       if (ts.isIfStatement(parent) && parent.thenStatement === child) return parent.expression.getText(source)
@@ -110,8 +107,17 @@ describe('main process quit cleanup', () => {
     ])
     // Source order is run order only while every step is registered straight
     // from the startup callback, never from a callback that fires later.
-    expect(steps[0].owner).toBeDefined()
-    for (const step of steps) expect(step.owner).toBe(steps[0].owner)
+    const owner = startupCallback(mainSource().source).getStart()
+    for (const step of steps) expect(step.owner?.getStart()).toBe(owner)
+  })
+
+  it('leaves registering cleanup steps to main.ts', () => {
+    // 拆到 bootstrap/ 的启动步骤把要收拾的东西交回 main.ts 登记：登记都在一处，上面钉的先后才是退出时的先后。
+    for (const file of mainWiringFiles()) {
+      if (file.endsWith('main.ts') || file.endsWith('lifecycle.ts')) continue
+      const { sourceText } = parseWiringFile(file)
+      expect({ file: path.basename(file), registers: /quitCleanup|'will-quit'/.test(sourceText) }).toEqual({ file: path.basename(file), registers: false })
+    }
   })
 
   it('keeps the steps that only exist on some machines behind the same guards', () => {
@@ -136,5 +142,85 @@ describe('main process quit cleanup', () => {
     const all = steps.map((step) => step.body).join('\n')
     expect(all.match(/(?<![\w.])acceleration\?\.dispose\(\)/g)).toHaveLength(1)
     expect(all.match(/developmentAcceleration\?\.dispose\(\)/g)).toHaveLength(1)
+  })
+})
+
+describe('main process startup order', () => {
+  it('starts the subsystems in the order they depend on each other', () => {
+    // 启动回调里直接跑的语句按源码先后执行（中间的 await 也是一句等完再走下一句），所以这里的先后就是启动时的先后。
+    // 依赖举几条：线路先建好、先开始查，系统服务才拿得到线路；更新服务建在服务状态文件之前（读到的结果要交给它）；
+    // 账号服务建好才恢复登录；加速宿主读完随包资源才恢复上次没改回的系统代理；通道先注册、协议先挂上，窗口才建，
+    // 页面一加载就要调用它们；托盘最后建，它的菜单要读窗口和退出流程。
+    const { source } = mainSource()
+    const order = [
+      'createQuitCleanup',
+      'runCodexContextLimitsMigration',
+      'createRelayRouteController',
+      'createSiteRouting',
+      'createToolRouteController',
+      'relayRouteController.start',
+      'runClaudeDesktopModelRepair',
+      'createDownloadAccelerationCoordinator',
+      'createCodexDesktopAccelerationCoordinator',
+      'createSystemService',
+      'toolRouteController.start',
+      'createUpdaterService',
+      'serviceStatusMonitor?.start',
+      'cliHookEvents.start',
+      'createDesktopNotificationController',
+      'registerApplicationProtocol',
+      'createRealmAccountService',
+      'createRealmBusinesses',
+      'ensureBusiness',
+      'protocol.handle',
+      'createCanvasWindowController',
+      'createPaymentWindowController',
+      'settingsStore.normalize',
+      'installXingmangAiSkillFiles',
+      'accounts.restoreActive',
+      'createAccelerationDevelopmentHost',
+      'developmentAcceleration.recover',
+      'createAccelerationService',
+      'createTrayAccelerationCoordinator',
+      'createAccelerationPower',
+      'registerIpcHandlers',
+      'attachTrayAvailability',
+      'createWindow',
+      'createWindowLifecycle',
+      'lifecycle.attach',
+      'createApplicationTray',
+    ]
+    const calls = directCallPositions(source, startupCallback(source), order)
+    for (const { callee, positions } of calls) expect({ callee, calls: positions.length }).toEqual({ callee, calls: 1 })
+    const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
+    expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
+  })
+
+  it('only hands a bootstrap module work from the startup callback itself', () => {
+    // 从别的回调里才调用的启动步骤，先后就不再是源码里的先后了。
+    const { source } = mainSource()
+    const callback = startupCallback(source)
+    const factories = new Set<string>()
+    function collectImports(node: ts.Node): void {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)
+        && node.moduleSpecifier.text.startsWith('./bootstrap/') && node.importClause?.namedBindings
+        && ts.isNamedImports(node.importClause.namedBindings)) {
+        for (const element of node.importClause.namedBindings.elements) {
+          if (!element.isTypeOnly && !node.importClause.isTypeOnly) factories.add(element.name.text)
+        }
+      }
+      ts.forEachChild(node, collectImports)
+    }
+    collectImports(source)
+    const misplaced: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isCallExpression(node) && factories.has(node.expression.getText(source)) && enclosingFunction(node) !== callback) {
+        misplaced.push(`${node.expression.getText(source)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(factories.size).toBeGreaterThan(0)
+    expect(misplaced).toEqual([])
   })
 })

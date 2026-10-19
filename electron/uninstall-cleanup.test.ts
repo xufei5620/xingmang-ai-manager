@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readMainWiringSource } from './bootstrap/main-source.test-support'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
 import { providerBaseUrls } from './catalog'
@@ -202,7 +203,7 @@ describe('uninstall cleanup', () => {
       path.join(dataDirectory, 'realms', 'api-account', 'account-credentials.dat'),
     ])
     // A rename in any store would otherwise leave that login on disk with the box ticked.
-    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    const main = readMainWiringSource()
     expect(main).toContain("new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat')")
     expect(main).toContain("new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat')")
     expect(main).toContain("new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat')")
@@ -250,7 +251,7 @@ describe('uninstall cleanup', () => {
   })
 
   it('names the chat history folders the desktop process writes', () => {
-    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    const main = readMainWiringSource()
     expect(main).toContain("createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })")
     // Chromium keeps the renderer's localStorage there, where earlier versions kept chats.
     expect(chatHistoryDirectoryNames).toEqual(['chat-history', 'Local Storage'])
