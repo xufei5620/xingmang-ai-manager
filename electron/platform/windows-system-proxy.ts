@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -667,13 +666,15 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
     ensureSafeDataDirectory(path.dirname(lockPath), label)
     assertNoReparseComponents(path.dirname(lockPath), label)
     if (assertSafeDataFile(lockPath, label)) throw new Error('系统代理租约已存在。')
-    const handle = await fs.promises.open(lockPath, 'wx', 0o600)
-    try {
-      const stat = await handle.stat()
-      if (!stat.isFile() || stat.nlink !== 1) throw new Error('系统代理租约文件无效。')
-      await handle.writeFile(`${JSON.stringify(lease)}\n`, 'utf8')
-      await handle.sync()
-    } finally { await handle.close() }
+    // A lease created empty and filled afterwards stays empty after a power cut
+    // or a failed write, and every later start then refuses it as corrupt
+    // (#1061-11). Renaming a flushed temporary file into place leaves either no
+    // lease or a whole one. Unlike the exclusive create it replaces, a rename
+    // would overwrite a lease that appeared after the check above; none can,
+    // since leases are written only here, under the per-user OS mutex that
+    // serialized() holds, and the recovery script that also takes it never
+    // writes one.
+    await writeAtomicSafeUtf8File(lockPath, `${JSON.stringify(lease)}\n`, label)
     const saved = await readLease()
     if (JSON.stringify(saved) !== JSON.stringify(lease)) throw new Error('系统代理租约回读校验失败。')
   }

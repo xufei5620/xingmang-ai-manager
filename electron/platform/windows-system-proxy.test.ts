@@ -11,7 +11,10 @@ import {
 } from './windows-system-proxy'
 
 const directories: string[] = []
-afterEach(() => { for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }) })
+afterEach(() => {
+  vi.restoreAllMocks()
+  for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+})
 
 function commandFailure(code: CommandErrorCode, exitCode: number | null, stderr = ''): CommandRunnerError {
   return new CommandRunnerError('PowerShell 未完成。', {
@@ -303,6 +306,42 @@ describe('Windows system proxy lease', () => {
     await f.service.recover()
     expect(f.mutations).toHaveLength(0)
     expect(fs.existsSync(f.lockPath)).toBe(false)
+  })
+
+  it('leaves no lease behind when writing it fails, so the next start still succeeds', async () => {
+    const f = fixture()
+    const open = fs.promises.open.bind(fs.promises)
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await open(file, flags, mode)
+      // Fails between creating the file and filling it, the point where a
+      // power cut used to strand an empty lease that every later start refused.
+      if (flags === 'wx' && path.basename(String(file)).includes(path.basename(f.lockPath))) {
+        handle.writeFile = async () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }) }
+      }
+      return handle
+    })
+    await expect(f.service.enable(18765)).rejects.toThrow('disk full')
+    vi.restoreAllMocks()
+    expect(fs.readdirSync(f.directory)).toEqual([])
+    expect(f.mutations).toHaveLength(0)
+    await f.service.enable(18765)
+    expect(f.current).toEqual(buildWindowsLoopbackProxySnapshot(18765))
+    await f.service.restore()
+    expect(f.current).toEqual(f.before)
+  })
+
+  it('refuses rather than replaces a lease that appears while it is acquiring one', async () => {
+    const f = fixture()
+    const other = JSON.stringify({ version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } })
+    const run = f.execute.getMockImplementation()!
+    f.execute.mockImplementationOnce(async (spec, options) => {
+      fs.writeFileSync(f.lockPath, other, 'utf8')
+      return run(spec, options)
+    })
+    await expect(f.service.enable(18765)).rejects.toThrow('系统代理租约已存在。')
+    expect(fs.readFileSync(f.lockPath, 'utf8')).toBe(other)
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+    expect(f.mutations).toHaveLength(0)
   })
 
   it('retains the journal when restoration fails so a later stop can retry', async () => {
