@@ -38,7 +38,7 @@
 完整模块地图（主进程按子系统、`electron/platform/`、renderer-v2、macOS / Linux 模块）在 `docs/MODULE-MAP.md`，找文件时再读。常驻要点只有三条：
 
 - **跨进程通道有三套，各自一组「契约 + preload + 注册」**：主窗口业务通道 `ipc-contract.ts` + `preload.ts` + `ipc.ts`；主窗口系统设置与通知 `platform/contract.ts` + `platform/preload.ts` + `platform/ipc.ts`（`xingmang-platform:*`）；画布窗口 `canvas-contract.ts` + `canvas-preload.ts` + `canvas-window.ts`（`canvas-host:*`）。三个 preload 里的通道表都是 sandbox 约束下的有意重复（见 I7、T1）。
-- **本项目的复杂度不在业务，在提权、可信路径与原子写入这套边界上**——`command-runner.ts` / `windows-elevation.ts` / `windows-machine-paths.ts` / `trusted-temp.ts` / `config-files.ts`（见第 4 节）。
+- **本项目的复杂度不在业务，在提权、可信路径与原子写入这套边界上**——`command-runner.ts` / `windows-elevation.ts` / `windows-machine-paths.ts` / `trusted-temp.ts` / `config-files.ts` / `config-files-context.ts`（见第 4 节）。
 - **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另一个加载外部网页的是充值的支付窗口 `payment-window.ts`，它不挂 preload（见 I15）。
 
 **改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
@@ -156,7 +156,7 @@ renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守
 
 **T2. 给 `ProviderId` 加第 5 个 CLI → 改动点已收口，编译器/测试会带你走完。**
 
-顺序：`catalog.ts` 的 `providerIds` / `cliCatalog` / `managedCliKeyProfiles` 三处 → `config-files.ts` 里的各个 `switch (provider)`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 claude/codex/gemini/grok 与管理序 codex/claude/gemini/grok，差异只在头两位、是有意为之，各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts` 的 `providers`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx` 的来源标签等，全是编译错）。
+顺序：`catalog.ts` 的 `providerIds` / `cliCatalog` / `managedCliKeyProfiles` 三处 → `config-files.ts` 与 `config-files-context.ts`（`providerConfigPaths`）里的各个 `switch (provider)`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 claude/codex/gemini/grok 与管理序 codex/claude/gemini/grok，差异只在头两位、是有意为之，各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts` 的 `providers`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx` 的来源标签等，全是编译错）。
 
 v2 渲染层同样已收口，且**只有一套展示顺序**（v3.1.1 起，以 `registry/tools.ts` 的 `tools` 数组次序为准，`registry/tools.test.ts` 钉住；上面那两套顺序只服务已冻结的 legacy 树）：`src/renderer-v2/registry/tools.ts` 的 `ToolDef.id` 是 `ActiveProviderId | 'codexDesktop'`，`officialAccountNames` 是无 default 的 `Record<ActiveProviderId, string | null>`（下线的 Gemini 不在里面），npm 包名与配置目录名从 `catalog.ts` 派生，漏键是编译错，`registry/tools.test.ts` 另有覆盖断言（R-S11）。
 
@@ -185,7 +185,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 `tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。四段都串在 `npm run typecheck` 里，跑这一条即可。
 
 **T10. 改配置位置或配置格式 → 同时影响读写、备份、恢复、诊断。**
-配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files.ts`（`providerConfigPaths`）、`backups.ts`、`diagnostics.ts`（各类检查拆在 `diagnostics-*.ts`）、`ipc/handlers/config.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
+配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files-context.ts`（`providerConfigPaths`，`config-files.ts` 照旧导出）、`backups.ts`、`diagnostics.ts`（各类检查拆在 `diagnostics-*.ts`）、`ipc/handlers/config.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
 
 **T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 删掉，不要提交，当回归排查。**
 泄漏源 `managed-cli.test.ts` 已改用 `os.tmpdir()` 并在 `afterEach` 清理，正常不会再出现。
