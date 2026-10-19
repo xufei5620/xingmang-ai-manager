@@ -9,7 +9,7 @@ import type { SystemServiceOptions } from './system-service'
 
 // #1070 第 2 步把 createSystemService 开头那段搬成了 createServiceContext。这里钉住各簇都会拿去用、
 // 搬家时最容易悄悄变样的几条：缺省往严里取、管理员身份查 npm 元数据不换 fetch、下载加速的计数和归还、
-// 保存配置的排队。
+// 日志里的失败原因不带用户目录、保存配置的排队。
 
 const temporaryDirectories: string[] = []
 
@@ -99,6 +99,17 @@ describe('system service context', () => {
 
     await expect(context.describeOccupiedCliFailure('claude', new Error('下载失败'), '下载失败', null, '更新')).resolves.toBeNull()
     expect(logged).toEqual([])
+  })
+
+  it('keeps the user home out of a logged failure reason', () => {
+    const context = createContext()
+    const home = context.providerRoots.userHome
+
+    const reason = context.credentialFailureReason(new Error(`EACCES: ${path.join(home, '.claude', 'settings.json')}`))
+
+    expect(reason).not.toContain(home)
+    expect(reason).toContain('settings.json')
+    expect(context.credentialFailureReason('plain text')).toBe('plain text')
   })
 
   it('runs queued config writes one after another even after one fails', async () => {

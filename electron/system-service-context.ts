@@ -446,6 +446,11 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     preferredNodeProbe = null
   }
 
+  // 日志里记失败原因时遮掉用户目录那段路径；首页检测、钩子、外部客户端、保存配置各簇都用。
+  function credentialFailureReason(error: unknown): string {
+    return redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome)
+  }
+
   return {
     store,
     serviceOptions,
@@ -505,6 +510,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     isManagedNpmInstallation,
     cliTerminalAccess,
     describeOccupiedCliFailure,
+    credentialFailureReason,
   }
 }
 

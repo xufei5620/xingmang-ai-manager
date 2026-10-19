@@ -63,7 +63,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
-  // 主进程（system-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
+  // 主进程（system-scan-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
   toolCertOutdatedNode: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}` },
   toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
