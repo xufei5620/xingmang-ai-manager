@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { readBoundedUtf8File } from './bounded-file'
+import { isExactCliVersion } from './versions'
 
 // npm silently drops an optional dependency whose download fails, and still
 // exits 0. Claude Code and Codex ship their real executable only in such a
@@ -71,4 +72,24 @@ export async function findMissingCliNativePackage(
 /** 面向客户的那句话：不出现包名，只说怎么办。 */
 export function cliNativePackageMissingMessage(toolName: string): string {
   return `${toolName} 的主程序没有下载完整，多半是网络不稳定。请关掉代理或换个网络后再装一次`
+}
+
+// 读已装 npm 包 package.json 里的版本号：更新前记下旧版本、换进去之前核对暂存那份、查 npm 自己的版本都用它。
+const maximumRuntimeManifestBytes = 256 * 1024
+
+export async function readPackageManifestVersion(filePath: string, label: string): Promise<string | null> {
+  try {
+    const parsed = JSON.parse(await readBoundedUtf8File(
+      filePath,
+      maximumRuntimeManifestBytes,
+      label,
+    )) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const version = (parsed as Record<string, unknown>).version
+    return typeof version === 'string' && isExactCliVersion(version.trim())
+      ? version.trim()
+      : null
+  } catch {
+    return null
+  }
 }

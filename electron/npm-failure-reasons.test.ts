@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { npmErrorCodeIn, npmErrorCodesClause, npmFailureExplainsItself, npmFailureReasonFor, pickNpmNextStep, type NpmFailureReason } from './npm-failure-reasons'
 
-// 命令运行器那句加 npm 要点，和 system-service.ts 的 describeNpmCommandFailure 拼出来的一样。
+// 命令运行器那句加 npm 要点，和 npm-command-failure.ts 的 describeNpmCommandFailure 拼出来的一样。
 function npmDetail(highlights: string): string {
   return `命令执行失败（退出码 1）：npm-cli.js（${highlights}）`
 }

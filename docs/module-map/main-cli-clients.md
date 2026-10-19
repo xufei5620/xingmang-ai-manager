@@ -18,7 +18,9 @@
 - `managed-cli.ts` — 建托管 npm 布局（prefix、cache、空 userconfig），目录走 `trusted-temp.ts` 的受保护建法；上一次 npm 事务做到一半被打断时先把旧 prefix 恢复回来
 - `managed-path-trust.ts` — 只在 Windows 上登记「本软件自己建、上过 ACL 的托管根目录」，`command-runner.ts`、`trusted-temp.ts`、`node-runtime.ts` 据此放行其下路径；按真实路径再核一遍，防联接把子路径指到外面去（I8、I14）
 - `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面，用户的 `.npmrc` 改不了源和脚本策略
-- `cli-native-package.ts` — npm 下平台可选包失败时照样退出 0，Claude Code、Codex 就成了「版本读得出、根本起不来」；这里查出缺的是哪个平台包，给一句中文（Linux 版 Grok 也用）
+- `cli-native-package.ts` — npm 下平台可选包失败时照样退出 0，Claude Code、Codex 就成了「版本读得出、根本起不来」；这里查出缺的是哪个平台包，给一句中文（Linux 版 Grok 也用）。读已装包 `package.json` 版本号的 `readPackageManifestVersion` 也在这里
+- `npm-registry.ts` — 两个 npm 源（官方、国内镜像）的地址、按网络区域谁先谁后（`npmInstallRegistries`，区域不明时镜像优先）、查询地址怎么拼，以及查询的超时和响应体上限；装、查新版本、卸载共用
+- `npm-command-failure.ts` — npm 命令没成功时挑出给客户看的那句：命令运行器的话后面接 npm 自己的要点（错误码、占用、权限），超时说成「下载超时」；`isMachineBoundNpmFailure` 判断换个源也没用的那几种（盘满、正在用的目录被占用）。要用 `command-runner`，所以不跟进渲染层的 `npm-failure-reasons.ts` 放一起
 - `cli-process-probe.ts` — 更新、卸载撞上文件被占用时，查是不是这个工具自己的进程还开着（只认镜像或命令行落在它自己包目录里的进程，不按进程名），好让报错说「先关掉它的窗口」而不是「被杀毒拦了」；Windows 走 PowerShell/CIM，Mac 走 ps
 - `node-runtime.ts` — **Windows 上代装 Node.js**：winget 优先，没装成再按网络区域定先走国内镜像还是官方 MSI，核 SHASUMS 与 Authenticode 签名；要管理员时由普通权限的中转脚本钉住当前账号再弹 UAC，提权那一步把包拷进只有管理员能写的目录再核一遍才交给 msiexec。下载源、版本索引、校验清单这些通用件 Mac/Linux 版复用，`resolveSystemWingetExecutable` 也给外部客户端和 Python 用
 - `python-runtime.ts` — Windows 上代装 Python 3.12：winget 优先，退到 python.org 安装包时才借下载线路，核 Authenticode 签名与响应地址

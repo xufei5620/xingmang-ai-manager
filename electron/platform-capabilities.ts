@@ -60,7 +60,7 @@ export function platformCapabilitiesFor(
       gemini: 'managed',
       grok: 'managed',
     }),
-    // Windows 版 Grok 是 xAI 签名的独立程序，装和跑都不经过 npm（system-service.ts 的
+    // Windows 版 Grok 是 xAI 签名的独立程序，装和跑都不经过 npm（本文件末尾的
     // grokInstallStrategyFor → windows-native）；Mac 和 Linux 从 npm 包取，照旧要 Node.js。
     // 没有 Node.js 时只是少了做完提醒那几条钩子，配置照写（resolveCliHookInvocation）。
     cliNeedsNodeRuntime: Object.freeze({
@@ -91,4 +91,15 @@ export function platformCapabilitiesFor(
       windowsStore: windows,
     }),
   })
+}
+
+// Grok 走哪条路装：Windows 装 xAI 签名的原生程序，Mac 和 Linux 从 npm 装。装、查新版本、算安装目录都按它分平台。
+export type GrokInstallStrategy = 'windows-native' | 'darwin-official-npm' | 'linux-official-npm' | 'external'
+
+export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallStrategy {
+  if (platform === 'win32') return 'windows-native'
+  if (platform === 'darwin') return 'darwin-official-npm'
+  // 和 macOS 一样从 npm 装（Linux 版拆分 ③），只是没有 codesign，核对改由 linux-grok.ts 做。
+  if (platform === 'linux') return 'linux-official-npm'
+  return 'external'
 }
