@@ -35,6 +35,9 @@ const MAX_ENTRIES = 60000
 const MAX_PATH_LENGTH = 1024
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 const MAX_COMMIT_RESPONSE_BYTES = 256
+// 2026-10-19 起 GitHub 连着几轮拒绝带工作流令牌问 openai/plugins（HTTP 403），不带令牌照样能问到
+// （推断：对方组织开了 IP 白名单，连带拦下别家仓库的安装令牌）。令牌只为多要点额度，被拒就不带令牌再问一次。
+const TOKEN_REFUSED_STATUSES = new Set([401, 403])
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$/i
@@ -271,6 +274,18 @@ function commitRequest(token) {
   return { url: COMMIT_URL, allowedHosts: [API_HOST], maxBytes: MAX_COMMIT_RESPONSE_BYTES, headers }
 }
 
+// The anonymous retry is the same request minus the token: same host, no redirects,
+// same size cap and commit check. It runs once, and only when the token was refused.
+async function readSourceCommit(stage, fetchText, token) {
+  const request = commitRequest(token)
+  try {
+    return await stage('source-commit', {}, async function () { return parseCommit(await fetchText(request)) })
+  } catch (error) {
+    if (!request.headers.authorization || !TOKEN_REFUSED_STATUSES.has(stageFailures.get(error)?.error?.status)) throw error
+  }
+  return stage('source-commit-anonymous', {}, async function () { return parseCommit(await fetchText(commitRequest(undefined))) })
+}
+
 async function synchronizeCodexPlugins({ store, dependencies, token, progress, now = function () { return new Date().toISOString() } }) {
   let latestState = 'not-written-by-this-run'
   const stage = createStageRunner(progress, function () { return latestState })
@@ -279,7 +294,7 @@ async function synchronizeCodexPlugins({ store, dependencies, token, progress, n
     if (manifest && manifest.artifact.url !== store.publicUrl(manifest.artifact.key)) throw new Error('COS 现有插件目录下载地址与当前存储桶不一致')
     return manifest
   })
-  const commit = await stage('source-commit', {}, async function () { return parseCommit(await dependencies.fetchText(commitRequest(token))) })
+  const commit = await readSourceCommit(stage, dependencies.fetchText, token)
   if (old && old.source.commit === commit) {
     const intact = await stage('cos-check-existing', {}, function () { return verifyUnchangedArtifact(store, old.artifact) })
     if (intact) return { changed: false, manifest: old }
