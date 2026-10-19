@@ -170,6 +170,7 @@ describe('main process startup order', () => {
       'createDesktopNotificationController',
       'registerApplicationProtocol',
       'createRealmAccountService',
+      'createRealmBusinesses',
       'ensureBusiness',
       'protocol.handle',
       'createCanvasWindowController',

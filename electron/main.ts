@@ -7,7 +7,6 @@ import {
   clipboard,
   dialog,
   Menu,
-  nativeImage,
   net,
   powerMonitor,
   powerSaveBlocker,
@@ -19,7 +18,6 @@ import {
   type WebContents,
 } from 'electron'
 import { autoUpdater, CancellationToken } from 'electron-updater'
-import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
@@ -29,24 +27,9 @@ import { accelerationConflictDescriptions, accelerationFailureMessages, accelera
 import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
-import { AiAssetStore } from './ai-asset-store'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
-import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from './ai-output-location'
-import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
-import { createAiImageService } from './ai-image-service'
-import { AiVideoAssetStore } from './ai-video-asset-store'
-import { AiAudioAssetStore } from './ai-audio-asset-store'
-import { AiAssetMetadataStore } from './ai-asset-metadata-store'
-import { AiVideoTaskStore } from './ai-video-task-store'
-import { createAiVideoService } from './ai-video-service'
-import { createAiMediaAssetService } from './ai-media-asset-service'
-import { assetThumbnailMaxEdge, assetThumbnailSize } from './asset-thumbnail'
-import { AssetThumbnailStore } from './asset-thumbnail-store'
-import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asset-thumbnail-service'
-import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
-import { ChatKeyStore } from './chat-key-store'
-import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
+import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AccountSessionStore } from './account-session-store'
 import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
@@ -54,6 +37,7 @@ import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
+import { createRealmBusinesses } from './bootstrap/ai-services'
 import { createQuitCleanup } from './bootstrap/lifecycle'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
@@ -77,14 +61,6 @@ import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
-import { CanvasRunStore } from './canvas-run-store'
-import { createCanvasNodeExecutors } from './canvas-node-executors'
-import { createCanvasRunService } from './canvas-run-service'
-import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
-import { CanvasProjectStore } from './canvas-project-store'
-import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
-import { createAiAssetProtocolHandler } from './ai-asset-protocol'
-import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
@@ -104,14 +80,10 @@ import { probeLinuxTrayHost } from './linux-tray-host'
 import { describeLinuxDesktopSession, readLinuxSystemName } from './linux-os-release'
 import { parseRealmSavedAccount, type RealmSavedAccount } from './realm-account'
 import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
-import { requireSiteRuntimeDefinition } from './site-runtime'
-import { createActiveIdentityReader } from './active-identity'
-import { resolveRealmDataRoots } from './realm-data-roots'
 import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
 import { createAccountStartupGate } from './account-startup-gate'
 import { createAccountRestoreRetry } from './account-restore-retry'
-import { createAccountUsageTracker } from './account-usage-tracker'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
@@ -227,14 +199,12 @@ import { ensureMacosShellProfile } from './macos-shell-profile'
 import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './linux-shell-profile'
 import {
   applyWindowTheme,
-  assetMenuFailureDialog,
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
   resolveWindowPalette,
   titleBarOverlayHeight,
   windowIconFileName,
-  type AssetMenuMediaType,
 } from './window-presentation'
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
@@ -367,64 +337,6 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
     }
     callback({ path: target })
   })
-}
-
-/**
- * Derives thumbnails with Electron's bundled Skia encoder.
- *
- * The plan called for `createImageBitmap` plus `OffscreenCanvas` in a
- * `utilityProcess`. That is not available: a utility process is a Node.js
- * environment with Electron's `net` module, not a Blink one, so it has neither
- * global. The alternative that keeps those APIs would be a hidden
- * `BrowserWindow`, which adds a renderer surface for no benefit. `nativeImage`
- * gives the same Chromium decoders synchronously in the main process with zero
- * new dependencies, which is why generation is serialized behind a queue.
- */
-function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
-  return {
-    async fromImageBytes(bytes, mimeType) {
-      const image = nativeImage.createFromBuffer(bytes)
-      if (image.isEmpty()) return null
-      const { width, height } = image.getSize()
-      const contained = assetThumbnailSize(width, height)
-      const resized = image.resize({ ...contained, quality: 'better' })
-      if (resized.isEmpty()) return null
-      return mimeType === 'image/jpeg' ? resized.toJPEG(82) : resized.toPNG()
-    },
-    async fromMediaFile(filePath) {
-      // Backed by the platform shell thumbnail provider, which exists only on
-      // Windows and macOS. Both are the platforms this product ships on, and
-      // elsewhere the tray falls back to its own placeholder.
-      if (process.platform !== 'win32' && process.platform !== 'darwin') return null
-      try {
-        const image = await nativeImage.createThumbnailFromPath(filePath, {
-          width: assetThumbnailMaxEdge,
-          height: assetThumbnailMaxEdge,
-        })
-        return image.isEmpty() ? null : image.toPNG()
-      } catch {
-        return null
-      }
-    },
-  }
-}
-
-// Screenshots pasted into the chat are shrunk here, in the main process, before
-// anything is stored or sent. nativeImage decodes PNG and JPEG on every
-// platform; a WebP it cannot read comes back empty and is reported as such.
-const nativeChatImageCodec: ChatImageCodec = {
-  decode(bytes, maxEdge) {
-    let image = nativeImage.createFromBuffer(bytes)
-    if (image.isEmpty()) return null
-    const size = image.getSize()
-    const longest = Math.max(size.width, size.height)
-    if (longest > maxEdge) {
-      const scale = maxEdge / longest
-      image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' })
-    }
-    const resized = image.getSize()
-    return { width: resized.width, height: resized.height, png: () => image.toPNG(), jpeg: (quality) => image.toJPEG(quality) }
-  },
 }
 
 function windowForContents(contents: WebContents): BrowserWindow {
@@ -2646,414 +2558,21 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
     }
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
-    // Each realm moves its own subtree once per launch; a second realm object for
-    // the same subtree must not start a second walk over files already moving.
-    const aiOutputMigrations = new Set<string>()
-    function migrateAiOutputOnce(from: string, to: string, mergeMetadata: (userId: number, content: string) => Promise<void>): void {
-      if (aiOutputMigrations.has(from)) return
-      aiOutputMigrations.add(from)
-      void migrateLegacyAiOutput(from, to, { mergeMetadata }).then((result) => {
-        if (!result.moved && !result.kept && !result.failed) return
-        // Counts only: support needs to know whether anything stayed behind, not
-        // where the user's files are (I13).
-        runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', 'asset.output.migrated', '老版本的 AI 作品已搬到新的保存位置', { ...result })
-      }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
-    }
-    function createBusiness(siteId: RealmAccountSiteId) {
-      // AI 工作区的请求同样按默认线路的地址发，走哪条线路由 routedRelayFetch 换（「自动」会在运行中换线路）。
-      const definition = requireSiteRuntimeDefinition(siteId)
-      const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
-      const accountService = createRealmServiceDispatch(() => {
-        if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')
-        return accounts.client
-      })
-      const onAiRequestStarted = createAccountUsageTracker({
-        identities: createActiveIdentityReader(definition, {
-          getSessionState: () => accountService.getSessionState(),
-          getSessionRevision: () => accountService.getSessionRevision!(),
-        }),
-        assertReady: accounts.assertReady,
-        emit: (event) => {
-          if (!managedMainWindow || managedMainWindow.isDestroyed()) return
-          if (managedMainWindow.webContents.isDestroyed()) return
-          managedMainWindow.webContents.send(ipcEventChannels.onAccountUsageChanged, event)
-        },
-      })
-      const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
-      const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId, credentialPersistence)
-      const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage, credentialPersistence, siteId)
-      // AI 工作区查模型是星芒自己的请求：「自动」时直连没走通当场改走默认线路。
-      const chatCredentials = createChatCredentialCoordinator({ accountService, keyStore: chatKeyStore, modelService: {
-        fetchAvailableModels: (apiKey, options) => systemService.fetchAvailableModels(apiKey, { ...options, routed: true }),
-      }, loadAccountGroupHints: readAccountGroupHints })
-      // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
-      const aiOutputPlacement = chooseAiOutputRoot({
-        isPackaged: app.isPackaged,
-        projectRoot: path.join(__dirname, '..'),
-        documentsDirectory: readDocumentsDirectory(),
-        location: { platform: process.platform, home: os.homedir(), env: process.env },
-        scope: (root) => roots.assetOutputDirectory(root),
-      })
-      const aiOutputRoot = aiOutputPlacement.root
-      if (aiOutputPlacement.movedFromDocuments) {
-        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.moved-from-documents', '「文档」不让写，AI 作品改存到个人文件夹', {
-          earlierWorksLeftInDocuments: aiOutputPlacement.earlierWorksLeftInDocuments,
-        })
-      }
-      if (aiOutputPlacement.earlierWorksLeftInSyncedDocuments) {
-        runtimeLog.log('info', 'ai-chat', 'asset.output-directory.earlier-works-in-synced-documents', '「文档」开了云盘同步，以前的 AI 作品还在「文档」里', {
-          cloud: aiOutputPlacement.earlierWorksLeftInSyncedDocuments,
-        })
-      }
-      // 以前这六个菜单出错时一行日志都不记，客服事后查不到；错误框里只说中文（assetMenuFailureDialog）。
-      function showAssetMenuFailure(source: 'ai-chat' | 'canvas', mediaType: AssetMenuMediaType, action: string, error: unknown): void {
-        runtimeLog.exception(source, 'asset.menu.failed', error, { mediaType, action })
-        const content = assetMenuFailureDialog(mediaType, error)
-        dialog.showErrorBox(content.title, content.message)
-      }
-      const assetStore = new AiAssetStore({
-        outputRoot: aiOutputRoot,
-        // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
-        // 画布项目：新项目的作品存在用户自己选的文件夹里。
-        unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
-        trustedProxyFetchImpl: sessionFetch,
-        nativeOperations: {
-          copyImage: (bytes) => {
-            const image = nativeImage.createFromBuffer(bytes)
-            if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
-            clipboard.writeImage(image)
-          },
-          selectSavePath: async (suggestedFileName) => {
-            const result = await dialog.showSaveDialog({
-              title: '图片另存为',
-              defaultPath: suggestedFileName,
-              filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
-            })
-            return result.canceled ? null : result.filePath ?? null
-          },
-          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-          showContextMenu: (items) => {
-            const menu = Menu.buildFromTemplate(items.map((item) => ({
-              id: item.id,
-              label: item.label,
-              click: () => {
-                void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'image', item.id, error))
-              },
-            })))
-            menu.popup()
-          },
-        },
-      })
-      // Create the output location at startup and prove it accepts a file, so a
-      // location that cannot be written shows up in the log and on the check page
-      // (AI_OUTPUT) before anyone pays for a generation. Every paid request probes
-      // again, and the write path is still checked by AiAssetStore for each asset.
-      void assetStore.assertWritable().catch((error) => {
-        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 作品保存位置写不进去', {
-          // The user-facing message only says "写不进去"; the log keeps the OS
-          // reason (EACCES, EROFS, ENOSPC …) that support needs.
-          reason: error instanceof Error && error.cause instanceof Error ? error.cause.message : String(error),
-        })
-      })
-      const videoAssets = new AiVideoAssetStore({
-        outputRoot: aiOutputRoot,
-        nativeOperations: {
-          selectSavePath: async (suggestedFileName) => {
-            const result = await dialog.showSaveDialog({
-              title: '视频另存为', defaultPath: suggestedFileName,
-              filters: [{ name: '视频', extensions: ['mp4'] }],
-            })
-            return result.canceled ? null : result.filePath ?? null
-          },
-          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-          showContextMenu: (items) => {
-            Menu.buildFromTemplate(items.map((item) => ({
-              id: item.id, label: item.label,
-              click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'video', item.id, error)) },
-            }))).popup()
-          },
-        },
-      })
-      const audioAssets = new AiAudioAssetStore({
-        outputRoot: aiOutputRoot,
-        nativeOperations: {
-          selectSavePath: async (suggestedFileName) => {
-            const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
-            return result.canceled ? null : result.filePath ?? null
-          },
-          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-          showContextMenu: (items) => {
-            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'audio', item.id, error)) } }))).popup()
-          },
-        },
-      })
-      const assetMetadata = new AiAssetMetadataStore({ outputRoot: aiOutputRoot })
-      // 老版本存在可执行文件旁边的 output 里。画布、聊天记录只按作品编号找文件，
-      // 搬的时候布局不变，老作品搬完照样能打开；搬的过程在后台，不拖慢启动。
-      // 元数据合并交给正在用的这个 store，和搬家期间的收藏、新作品写入排同一个队。
-      const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
-      if (legacyAiOutputRoot) {
-        migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content))
-      }
-      // Permanent deletion hands the file to the OS recycle bin rather than
-      // unlinking it. The bytes are the user's artwork; the last recoverable copy
-      // should not depend on this program being right.
-      const trashItem = (filePath: string) => shell.trashItem(filePath)
-      const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
-      const canvasProjects = new CanvasProjectStore(roots.canvasProjectsDirectory)
-      const createProjectAssetContext = (outputRoot: string) => {
-        const images = new AiAssetStore({
-          outputRoot,
-          unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
-          trustedProxyFetchImpl: sessionFetch,
-          nativeOperations: {
-            copyImage: (bytes) => {
-              const image = nativeImage.createFromBuffer(bytes)
-              if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
-              clipboard.writeImage(image)
-            },
-            selectSavePath: async (suggestedFileName) => {
-              const result = await dialog.showSaveDialog({
-                title: '图片另存为', defaultPath: suggestedFileName,
-                filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
-              })
-              return result.canceled ? null : result.filePath ?? null
-            },
-            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-            showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({
-                id: item.id, label: item.label,
-                click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'image', item.id, error)) },
-              }))).popup()
-            },
-          },
-        })
-        const videos = new AiVideoAssetStore({
-          outputRoot,
-          nativeOperations: {
-            selectSavePath: async (suggestedFileName) => {
-              const result = await dialog.showSaveDialog({ title: '视频另存为', defaultPath: suggestedFileName, filters: [{ name: '视频', extensions: ['mp4'] }] })
-              return result.canceled ? null : result.filePath ?? null
-            },
-            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-            showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'video', item.id, error)) } }))).popup()
-            },
-          },
-        })
-        const audios = new AiAudioAssetStore({
-          outputRoot,
-          nativeOperations: {
-            selectSavePath: async (suggestedFileName) => {
-              const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
-              return result.canceled ? null : result.filePath ?? null
-            },
-            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-            showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'audio', item.id, error)) } }))).popup()
-            },
-          },
-        })
-        return createCanvasProjectAssetContext(images, videos, audios, new AiAssetMetadataStore({ outputRoot }), trashItem)
-      }
-      const canvasProjectAssets = new CanvasProjectAssetManager({
-        realmId: definition.realmId,
-        projects: canvasProjects,
-        global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata, trashItem),
-        create: createProjectAssetContext,
-        onMetadataError: (error, context) => runtimeLog.log(
-          'warn',
-          'canvas',
-          'asset.source.persist.failed',
-          '生成素材已保存，但来源信息保存失败',
-          { ...context, reason: error instanceof Error ? error.message : String(error) },
-        ),
-      })
-      const assetThumbnails = createAssetThumbnailService({
-        store: new AssetThumbnailStore({ cacheRoot: roots.assetThumbnailsDirectory }),
-        renderer: createNativeThumbnailRenderer(),
-        sources: {
-          // Must resolve through the project asset manager, not the global store.
-          // Canvas projects keep their media under the project workspace, so
-          // deriving from `output/` alone left every project asset without a
-          // thumbnail and the tray showed a placeholder for all of them.
-          readImage: async (userId, assetId) => {
-            const owned = await canvasProjectAssets.readOwned(userId, assetId, 'image')
-            return { bytes: owned.bytes, mimeType: owned.asset.mimeType }
-          },
-          resolveVideoPath: (userId, assetId) => canvasProjectAssets.resolveOwnedFilePath(userId, assetId, 'video'),
-        },
-        onFailure: (assetId, reason) => runtimeLog.log(
-          'warn',
-          'canvas',
-          'asset.thumbnail.failed',
-          '素材缩略图生成失败，已回退到占位图',
-          { assetId, reason },
-        ),
-      })
-      const chatAttachments = createChatAttachmentService({
-        store: assetStore,
-        codec: nativeChatImageCodec,
-        pickFiles: async () => {
-          const result = await dialog.showOpenDialog({
-            title: '选择要发给 AI 的图片',
-            properties: ['openFile', 'multiSelections'],
-            filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
-          })
-          return result.canceled ? [] : result.filePaths
-        },
-        readClipboardImage: () => {
-          const image = clipboard.readImage()
-          return image.isEmpty() ? null : image.toPNG()
-        },
-      })
-      const assetProtocol = createAiAssetProtocolHandler({
-        assets: canvasProjectAssets,
-        identities: createActiveIdentityReader(definition, { getSessionState: () => accountService.getSessionState(),
-          getSessionRevision: () => accountService.getSessionRevision!() }),
-        thumbnails: assetThumbnails,
-      })
-      const chatService = createAiChatService({
-        onRequestStarted: onAiRequestStarted,
-        readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
-        baseUrl: definition.aiBaseUrl,
-        backend: definition.backend,
-        credentialCoordinator: chatCredentials,
-        fetchImpl: routedRelayFetch,
-        emit: (senderId, event) => {
-          const sender = BrowserWindow.getAllWindows()
-            .map((window) => window.webContents)
-            .find((contents) => contents.id === senderId && !contents.isDestroyed())
-          if (!sender) throw new Error('AI聊天窗口已关闭')
-          if (event.type === 'delta') {
-            if (event.content) sender.send(ipcEventChannels.onAiChatStream, {
-              requestId: event.requestId,
-              type: 'content',
-              content: event.content,
-            })
-            if (event.reasoning) sender.send(ipcEventChannels.onAiChatStream, {
-              requestId: event.requestId,
-              type: 'reasoning',
-              content: event.reasoning,
-            })
-            return
-          }
-          if (event.type === 'error') sender.send(ipcEventChannels.onAiChatStream, {
-            requestId: event.requestId,
-            type: 'error',
-            code: event.code,
-            message: event.message,
-          })
-          else sender.send(ipcEventChannels.onAiChatStream, {
-            requestId: event.requestId,
-            type: event.type,
-          })
-        },
-        log: (entry) => runtimeLog.log(
-          entry.status === 'error' ? 'warn' : 'debug',
-          'chat',
-          `stream.${entry.status}`,
-          `AI聊天流已${entry.status === 'complete' ? '完成' : '结束'}`,
-          entry,
-        ),
-      })
-      runtimeLog.log('info', 'chat', 'network.ready', 'AI聊天网络栈已就绪', {
-        transport: 'electron-net',
-        responseHeaderTimeoutMs: AI_CHAT_STREAM_LIMITS.connectionTimeoutMs,
-      })
-      const imageService = createAiImageService({
-        onRequestStarted: onAiRequestStarted,
-        fetchImpl: routedRelayFetch,
-        baseUrl: definition.aiBaseUrl,
-        backend: definition.backend,
-        credentials: chatCredentials,
-        assets: assetStore,
-      })
-      const canvasImageService = createAiImageService({
-        onRequestStarted: onAiRequestStarted,
-        fetchImpl: routedRelayFetch,
-        baseUrl: definition.aiBaseUrl,
-        backend: definition.backend,
-        credentials: chatCredentials,
-        assets: {
-          prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
-          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
-          storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
-          storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
-          readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
-        },
-      })
-      const videoTasks = new AiVideoTaskStore({
-        rootDirectory: roots.canvasVideoTasksDirectory,
-      })
-      const videoService = createAiVideoService({
-        fetchImpl: routedRelayFetch,
-        baseUrl: definition.aiBaseUrl,
-        credentials: chatCredentials,
-        tasks: videoTasks,
-        assets: {
-          prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
-          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
-          storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
-          readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
-          readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
-        },
-      })
-      if (siteId === 'solov-api') {
-        videoService.generate = async () => { throw new Error('当前账号暂不支持视频生成') }
-        videoService.resumeVideoTask = async () => { throw new Error('当前账号暂不支持视频生成') }
-      }
-      const canvasRunStore = new CanvasRunStore({
-        rootDirectory: roots.canvasRuntimeDirectory,
-        assets: canvasProjectAssets,
-      })
-      const canvasPromptPresets = new CanvasPromptPresetStore({
-        rootDirectory: path.join(roots.rootDirectory, 'canvas-content'),
-      })
-      const canvasRuns = createCanvasRunService({
-        store: canvasRunStore,
-        executors: createCanvasNodeExecutors({
-          imageService: canvasImageService,
-          videoService,
-          assets: canvasProjectAssets,
-          completeText: {
-            completeOnce: (input) => chatService.completeOnce({
-              group: input.group,
-              model: input.model,
-              messages: [
-                { role: 'system', content: input.system },
-                { role: 'user', content: input.user },
-              ],
-              signal: input.signal,
-            }),
-          },
-        }),
-      })
-      return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
-        audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
-    }
-    const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
-    type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
-    type CanvasRunUnsubscribe = ReturnType<ReturnType<typeof createCanvasRunService>['subscribe']>
-    const canvasRunSubscriptions = new Set<{
-      listener: CanvasRunListener
-      removers: Map<RealmAccountSiteId, CanvasRunUnsubscribe>
-    }>()
+    const { businesses, ensureBusiness, subscribeCanvasRuns } = createRealmBusinesses({
+      managerDataDirectory,
+      projectRoot: path.join(__dirname, '..'),
+      accounts,
+      mainWindow: () => managedMainWindow,
+      credentialPersistence,
+      systemService,
+      readAccountGroupHints,
+      readDocumentsDirectory,
+      runtimeLog,
+      sessionFetch,
+      routedRelayFetch,
+    })
     // Construct each realm on first access. The initial realm is still the
     // account service's default until restoreActive completes below.
-    const ensureBusiness = (siteId: RealmAccountSiteId) => {
-      const existing = businesses.get(siteId)
-      if (existing) return existing
-      const created = createBusiness(siteId)
-      businesses.set(siteId, created)
-      // A renderer subscription can outlive a realm switch. Attach it to a
-      // lazily-created realm as soon as that realm becomes available.
-      for (const subscription of canvasRunSubscriptions) {
-        subscription.removers.set(siteId, created.canvasRuns.subscribe(subscription.listener))
-      }
-      return created
-    }
     ensureBusiness(accounts.getSiteId())
     const currentBusiness = () => ensureBusiness(accounts.getSiteId())
     const accountCredentialStore = createRealmServiceDispatch(() => currentBusiness().accountCredentialStore)
@@ -3080,17 +2599,7 @@ if (!hasSingleInstanceLock) {
     const canvasRuns = createRealmServiceDispatch(() => currentBusiness().canvasRuns)
     // Run subscriptions outlive a selected realm, so keep them attached to
     // every store, including stores created lazily after the initial render.
-    canvasRuns.subscribe = (listener) => {
-      const subscription = { listener, removers: new Map<RealmAccountSiteId, CanvasRunUnsubscribe>() }
-      for (const [siteId, business] of businesses) {
-        subscription.removers.set(siteId, business.canvasRuns.subscribe(listener))
-      }
-      canvasRunSubscriptions.add(subscription)
-      return () => {
-        if (!canvasRunSubscriptions.delete(subscription)) return
-        for (const unsubscribe of subscription.removers.values()) unsubscribe()
-      }
-    }
+    canvasRuns.subscribe = subscribeCanvasRuns
     protocol.handle('xingmang-asset', async (request) => {
       try { return await accountWork.run(() => currentBusiness().assetProtocol(request)) }
       catch { return new Response(null, { status: 401, headers: { 'Cache-Control': 'no-store' } }) }
