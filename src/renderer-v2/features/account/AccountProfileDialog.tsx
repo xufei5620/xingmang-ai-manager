@@ -74,7 +74,7 @@ export function AccountProfileDialog({
           </div>
           <Button size="sm" icon={Pencil} onClick={() => setAvatarOpen(true)} disabled={busy} testId="account-avatar-change">更换头像</Button>
         </div>
-        <div className="v2-acct-profile-fields" data-unsaved={changed ? 'true' : undefined}>
+        <div className="v2-acct-profile-fields">
           <Input
             ref={field}
             label="显示名称"

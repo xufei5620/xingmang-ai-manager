@@ -87,7 +87,7 @@ export function OtherModelsDialog({ api, tool, config, signedIn, onClose, onSave
     footer={<><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>{reusable
       ? <Button variant="primary" icon={Save} loading={busy === '保存'} disabled={Boolean(busy) || loading || Boolean(issue)} aria-describedby={listIssue ? statusId : undefined} onClick={() => void save()} testId="tool-save-config">保存</Button>
       : <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} disabled={Boolean(busy) || !onSwitchAccount} onClick={() => void switchAccount()} testId="tool-switch-account">改用当前账号并保存</Button>}</>}>
-    <fieldset className="v2-config-controls" disabled={Boolean(busy)} data-unsaved={picked ? 'true' : undefined}>
+    <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
       {official && <p className="v2-callout is-warn" data-testid="tool-model-filter-official">Codex 现在用的是 ChatGPT 账号。换别家模型要先改用当前账号，原来的配置会先备份。</p>}
       {reusable && <>
         {choices.length > 0 && <RadioCards label="模型" layout="stack" testId="tool-codex-model-filter" value={pick} onChange={(value) => { setPick(value); setPicked(true); setError('') }}

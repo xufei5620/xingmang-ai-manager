@@ -189,7 +189,6 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
     await emit(page, { type: 'complete', requestId: request.requestId })
     await page.getByRole('alert').filter({ hasText: '聊天记录没有保存到本机' }).waitFor()
     assert.equal(await page.getByText('VISIBLE-UNSAVED-RESULT', { exact: true }).count(), 1)
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
     assert.deepEqual(await saved(page), previous)
     await page.evaluate(() => window.chatHarness.failHistoryWrites(false))
     await page.getByTestId('chat-composer-input').fill('saved again')
@@ -699,20 +698,19 @@ test('new groups after an empty initial list require an explicit choice before p
   } finally { await page.close() }
 })
 
-test('hidden chat keeps its request and drafts while exposing native close protection flags', async () => {
+test('hidden chat keeps its request and drafts', async () => {
   const page = await open()
   try {
     const request = await send(page, 'background request')
     await page.getByTestId('chat-composer-input').fill('next draft')
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-busy'), 'true')
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
+    assert.equal(await page.getByTestId('chat-stop').count(), 1)
     await page.evaluate(() => window.chatHarness.setActive(false))
     await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
     assert.equal(await page.getByTestId('page-chat').isVisible(), false)
     assert.equal((await calls(page, 'cancel')).length, 0)
     await emit(page, { type: 'content', requestId: request.requestId, content: 'background result' })
     await emit(page, { type: 'complete', requestId: request.requestId })
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-busy'), 'false')
+    await page.getByTestId('chat-send').waitFor({ state: 'attached' })
     await page.getByTestId('chat-composer-input').dispatchEvent('keydown', { key: 'Enter', bubbles: true })
     assert.equal((await calls(page, 'start')).length, 1)
     await page.evaluate(() => window.chatHarness.setActive(true))
@@ -745,7 +743,6 @@ test('hidden chat removes native popup surfaces and preserves an edited message 
     await page.getByTestId('page-chat').waitFor({ state: 'visible' })
     await page.getByRole('button', { name: '编辑后重新发送', exact: true }).click()
     await page.getByTestId('chat-edit-input').fill('preserved edited draft')
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
     await page.evaluate(() => window.chatHarness.setActive(false))
     await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
     assert.equal(await page.locator('dialog[open]').count(), 0)

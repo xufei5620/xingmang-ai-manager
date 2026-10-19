@@ -6373,7 +6373,7 @@ test('configuration lists the current key models on open without changing the se
     assert.equal(calls.some((entry) => ['revealApiKey', 'revealAccountKey', 'listModels', 'listAccountKeyModels', 'saveConfig', 'saveConfigWithAccountKey'].includes(entry.method)), false)
     const dialog = page.getByTestId('config-dialog')
     assert.equal(await dialog.getByRole('alert').count(), 0)
-    assert.equal(await dialog.locator('[data-unsaved="true"]').count(), 0)
+    // 读了型号不算改过：点「取消」直接关掉，不弹「不保存」那一条。
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'hidden' })
     await clean(page)

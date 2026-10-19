@@ -2,7 +2,7 @@
 
 `ChatPage({ bridge: XingmangApi, accountScope: string, active?: boolean, openParameters?: boolean, onParametersOpened?: () => void })` 照 v4 原型：236px 会话栏（搜索常驻、按今天 / 昨天 / 更早分组）、顶部当前会话、独立滚动消息区和底部输入框（模式、分组和模型菜单、画图选项、加图片、发送都在框里）。父级应提供无额外 padding 的内容空间。`openParameters` 是顶部搜索「聊天参数设置」交下来的：为 true 时打开参数对话框，打开后调 `onParametersOpened` 放下。
 
-同一账号内保留组件挂载并以 `active={false}` 暂时隐藏：后台请求、会话与草稿继续保留，隐藏时不处理输入快捷键且移除顶层弹窗和菜单。账号改变仍按 scope 重建并取消旧请求。根节点的 `data-busy`、`data-unsaved` 供原生窗口关闭检查使用，隐藏页面也继续暴露这些状态。
+同一账号内保留组件挂载并以 `active={false}` 暂时隐藏：后台请求、会话与草稿继续保留，隐藏时不处理输入快捷键且移除顶层弹窗和菜单。账号改变仍按 scope 重建并取消旧请求。
 
 所有 IPC 都封装在 `api.ts`。该文件只复用 `electron/ai-chat-protocol` 已验证且无 Node 依赖的模型能力与请求校验函数，不修改协议，不依赖旧渲染层。
 
