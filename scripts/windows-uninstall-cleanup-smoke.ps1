@@ -34,10 +34,9 @@ function Check([bool]$condition, [string]$message) {
   Write-Output "ok - $message"
 }
 
-function Set-AccelerationLeftOn([string]$exePath) {
+function Set-AccelerationLeftOn([string]$exePath, [string]$bypass) {
   $port = 57448
   $endpoint = "http=127.0.0.1:$port;https=127.0.0.1:$port"
-  $bypass = '<local>;localhost;127.0.0.1;[::1]'
   $applied = [ordered]@{
     flags = 3; server = $endpoint; bypass = $bypass; autoConfigUrl = ''
     registry = [ordered]@{ ProxyEnable = 1; ProxyServer = $endpoint; ProxyOverride = $bypass; AutoConfigURL = $null }
@@ -176,6 +175,10 @@ $userData = Join-Path $env:APPDATA 'xingmang-ai-manager'
 $dataDirectory = Join-Path $userData 'acceleration-development'
 $journalPath = Join-Path $dataDirectory 'proxy-lease.json'
 $leasePath = "$journalPath.lock"
+# The bypass list this build writes, and the one 0.2.19 and earlier wrote: one
+# round meets a journal an earlier version left behind.
+$ownedBypass = '<local>;localhost;127.0.0.1;[::1];10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;169.254.*'
+$earlierOwnedBypass = '<local>;localhost;127.0.0.1;[::1]'
 # The files electron/uninstall-cleanup.ts loginRecordFiles names, and two that
 # must never go with them.
 $loginRecords = @('account-session.dat', 'saved-accounts.dat', 'realm-accounts-v2.dat', 'account-credentials.dat', 'realms\api-account\account-credentials.dat') |
@@ -209,7 +212,7 @@ try {
   # Stage 1: the cleanup entry on its own, so a failure below can be told apart
   # from the uninstaller never reaching it. Without the switch the sign-in stays.
   # The first run also meets a junction in the updater cache.
-  Set-AccelerationLeftOn $exe.FullName
+  Set-AccelerationLeftOn $exe.FullName $ownedBypass
   Set-UpdateDownloaded
   Set-JunctionInUpdaterCache
   Invoke-DirectCleanup 'direct cleanup' @('--xingmang-uninstall-cleanup') $true
@@ -217,14 +220,14 @@ try {
   Remove-Junction
   Remove-Item -LiteralPath $updaterCache -Recurse -Force
 
-  Set-AccelerationLeftOn $exe.FullName
+  Set-AccelerationLeftOn $exe.FullName $earlierOwnedBypass
   Set-UpdateDownloaded
   Invoke-DirectCleanup 'direct cleanup with clear-login' @('--xingmang-uninstall-cleanup', '--xingmang-clear-login')
   Assert-SignIn 'direct cleanup with clear-login' $false
 
   # Stage 2: the real uninstaller with the box left unticked, the default.
   Set-SignedIn
-  Set-AccelerationLeftOn $exe.FullName
+  Set-AccelerationLeftOn $exe.FullName $ownedBypass
   Set-UpdateDownloaded
   Invoke-Uninstall 'uninstall' @('/S')
   Assert-SignIn 'uninstall' $true
@@ -232,7 +235,7 @@ try {
   # Stage 3: reinstall, then uninstall with the switch a ticked box stands for.
   # Only the installer's own copy is in the updater cache this time.
   Install-App
-  Set-AccelerationLeftOn $exe.FullName
+  Set-AccelerationLeftOn $exe.FullName $ownedBypass
   Invoke-Uninstall 'uninstall with clear-login' @('/S', '--xingmang-clear-login')
   Assert-SignIn 'uninstall with clear-login' $false
 } catch {

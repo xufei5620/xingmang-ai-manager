@@ -404,6 +404,7 @@ const {
 const { claudeDesktopPolicyReadScript } = compiled('claude-desktop-policy')
 const { buildReadProxyScopesScript, readWindowsProxyScopes, windowsProxyPowerShellTimeoutMs } = compiled('stale-proxy-environment')
 const {
+  buildWindowsLoopbackProxySnapshot,
   parseWindowsProxySnapshot,
   windowsSystemProxyCommandTimeoutMs,
   windowsSystemProxyCompiledScript,
@@ -938,6 +939,14 @@ $journal = [pscustomobject]@{version=1;id='aaaabbbb-cccc-4ddd-8eee-ffffffffffff'
 $lease = [pscustomobject]@{version=1;id=$journal.id;owner=(Clone-Snapshot $journal.owner)}
 Check ((Assert-RecoveryJournal $journal $lease) -eq 57448) 'valid journal'
 Check ((Assert-RecoveryJournal $journal $null) -eq 57448) 'missing lease is recoverable'
+# $applied above carries the bypass list 0.2.19 and earlier wrote; a journal this build writes is ours as well.
+$journalNow = Clone-Snapshot $journal
+$journalNow.applied.bypass = '${buildWindowsLoopbackProxySnapshot(57448).bypass}'
+$journalNow.applied.registry.ProxyOverride = $journalNow.applied.bypass
+Check ((Assert-RecoveryJournal $journalNow $lease) -eq 57448) 'journal with the bypass list this build writes'
+$bad = Clone-Snapshot $journalNow
+$bad.applied.registry.ProxyOverride = $applied.registry.ProxyOverride
+Fails { Assert-RecoveryJournal $bad $lease } 'noncanonical-owned-snapshot'
 Check (Same-State (Get-ProxyRestoreTarget $applied $journal) $before) 'unchanged proxy restores original including absent registry'
 $current = Clone-Snapshot $applied
 $current.registry.ProxyOverride = 'added.example.test;<local>'
@@ -1021,7 +1030,7 @@ Check ($script:state.server -ceq 'other.example.test:8080' -and $script:writes -
 Write-Output ('RECOVERY_CHECKS=' + $script:checks)
 `
   const output = await runPowerShell(['-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodeWindowsPowerShellCommand(source)])
-  assert.match(output, /RECOVERY_CHECKS=33/)
+  assert.match(output, /RECOVERY_CHECKS=35/)
 }])
 
 // The same probes with autoloading switched off right after their imports, so
