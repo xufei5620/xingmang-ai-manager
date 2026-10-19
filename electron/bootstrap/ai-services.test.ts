@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AiAssetStore } from '../ai-asset-store'
 import type { RuntimeLogStore } from '../runtime-log'
 import { createRealmBusinesses, type RealmBusinessesOptions } from './ai-services'
 
@@ -26,8 +27,14 @@ vi.mock('../canvas-run-service', () => ({
 }))
 
 const directories: string[] = []
+// Each site tries a write into its output folder in the background as soon as
+// it is built. Removing the folder while that write is still going fails with
+// ENOTEMPTY now and then, so wait for those writes first.
+const outputProbes = vi.spyOn(AiAssetStore.prototype, 'assertWritable')
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.allSettled(outputProbes.mock.results.map((result) => result.value))
+  outputProbes.mockClear()
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
 
