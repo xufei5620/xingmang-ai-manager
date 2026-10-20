@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { isRecord } from './input-guards'
 import { isNewerVersion } from './versions'
 
 // 用星芒密钥连中转时，Codex（命令行和桌面端自带的那一份）只认二进制里随版本打包的模型
@@ -91,10 +92,6 @@ export interface CodexDesktopCatalogProbe {
   /** null = 看不出装没装（探测本身失败）。 */
   installed: boolean | null
   version: string | null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function isOptionalMember(value: unknown, allowed: ReadonlySet<string>): boolean {

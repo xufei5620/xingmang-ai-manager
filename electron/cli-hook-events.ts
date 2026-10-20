@@ -3,6 +3,7 @@ import path from 'node:path'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { ensureSafeDataDirectory } from './safe-local-data'
 import type { TerminalFailureReason, TerminalNotice } from './platform/notifications'
+import { isRecord } from './input-guards'
 
 // 读 CLI 钩子脚本（bundled-catalog/cli-hooks/xingmang-hook.cjs）丢进数据目录的小文件，
 // 决定要不要弹「终端里没回上 / 做完了 / 在等你」那几条系统通知。
@@ -54,10 +55,6 @@ function isEventKind(value: unknown): value is CliHookEventKind {
 }
 
 const failureReasons: ReadonlySet<string> = new Set<TerminalFailureReason>(['billing', 'auth', 'busy', 'model', 'service', 'unknown'])
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 /** 解析一条钩子记录；格式不对一律返回 null，从不抛错。 */
 export function parseCliHookEvent(text: string): CliHookEvent | null {

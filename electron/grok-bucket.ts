@@ -4,6 +4,7 @@ import {
   fetchDesktopBucketResource, isDesktopBucketIndexStale,
 } from './desktop-package-bucket'
 import { parseGrokStableVersion, resolveGrokInstallVersion } from './grok-update'
+import { isRecord } from './input-guards'
 
 /**
  * 星芒存储桶里的 Windows 版 Grok：scripts/sync-grok-cos.cjs 定时问 xAI 现在的 stable，连同星芒的推荐版本，
@@ -44,10 +45,6 @@ export interface GrokBucketRelease {
   contentType: typeof binaryContentType
   /** 同步作业最后一次问过 xAI 的 stable、核过这份清单的时间（ISO 8601），清单没写就没有。 */
   checkedAt?: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function objectUrl(key: string): string {

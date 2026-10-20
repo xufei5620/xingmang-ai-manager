@@ -1,3 +1,5 @@
+import { isRecord } from './input-guards'
+
 export type AppUiScale = 'auto' | '90' | '100' | '110'
 export type AppCloseBehavior = 'ask' | 'tray' | 'quit'
 
@@ -39,10 +41,6 @@ export const UI_MAX_ZOOM = 1.25
 
 const MAX_WINDOW_DIMENSION = 32_768
 const MAX_WINDOW_COORDINATE = 1_000_000
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
 
 function isBoundedInteger(value: unknown, minimum: number, maximum: number): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum && value <= maximum

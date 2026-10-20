@@ -32,6 +32,7 @@ import path from 'node:path'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
 import { updateInstallLaunchTimeoutCode, type UpdateInstallMethod, type UpdateSnapshot } from './updater'
+import { isRecord } from './input-guards'
 
 const storeLabel = '自动更新记录'
 const MAX_STORE_BYTES = 4 * 1024
@@ -73,10 +74,6 @@ export interface BackgroundInstall {
 }
 
 export const emptyPendingUpdateRecord: PendingUpdateRecord = { downloadedVersion: null, attemptedVersion: null, quitAttemptedVersion: null, backgroundInstall: null }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
 
 function parseVersion(value: unknown): string | null {
   return typeof value === 'string' && VERSION_PATTERN.test(value) ? value : null

@@ -1,5 +1,6 @@
 import net from 'node:net'
 import { readBoundedResponseText } from './bounded-response'
+import { isRecord } from './input-guards'
 import { relayEndpointOrigin, type RelayEndpointId } from './relay-sites'
 
 /**
@@ -40,10 +41,6 @@ const statusTimeoutMs = 10_000
 export const routeStatusCacheMs = 10 * 60_000
 const maximumLegitIps = 64
 const incidentStates: readonly RouteIncidentState[] = ['none', 'suspected', 'switching', 'switched']
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 // 只进诊断显示的短字符串：控制字符、过长的一律不要。
 function shortText(value: unknown, maximum = 64): string | null {

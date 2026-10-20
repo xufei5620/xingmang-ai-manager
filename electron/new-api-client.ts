@@ -10,6 +10,7 @@ import { relaySites } from './relay-sites'
 import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
 import type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
+import { isRecord } from './input-guards'
 export type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
 
 // xm.solov.cc runs QuantumNous/new-api (rc.22, custom branch). Most endpoints
@@ -1111,10 +1112,6 @@ interface NewApiRawResponse {
   headers: Headers
   /** 走的线路、状态码、请求编号：读回应时出的错挂上它，日志记得出服务器回了什么（request-diagnostics.ts）。 */
   diagnostics: RequestDiagnostics
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function asString(value: unknown, fallback: string): string {

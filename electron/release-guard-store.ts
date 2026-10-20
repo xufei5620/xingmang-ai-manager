@@ -16,6 +16,7 @@
  * file never brings in a version the publisher did not ship.
  */
 import path from 'node:path'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { parseReleaseGuard, type ReleaseGuard } from './service-status'
 
@@ -27,10 +28,6 @@ export interface ReleaseGuardStore {
   /** 开机时在更新服务之前读一次。没有、读坏了都返回 null，照「从没读到过」算。 */
   read(): ReleaseGuard | null
   write(guard: ReleaseGuard): Promise<void>
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function parseStoredReleaseGuard(content: string): ReleaseGuard | null {

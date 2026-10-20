@@ -18,6 +18,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { InstalledRelease } from './updater'
 import { compareVersionsBy, parseInstalledReleaseVersion } from './versions'
@@ -31,10 +32,6 @@ const MAX_NOTES = 60
 const MAX_NOTE_LENGTH = 1000
 const storeLabel = '上次运行版本记录'
 const MAX_STORE_BYTES = 4 * 1024
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
 
 /** a 比 b 新返回正数；任一边不是 x.y.z 返回 null。 */
 export function compareReleaseVersions(a: string, b: string): number | null {

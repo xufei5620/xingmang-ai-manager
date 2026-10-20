@@ -15,6 +15,7 @@ import {
 } from './desktop-package-bucket'
 import { downloadWithResume } from './download-retry'
 import type { ExternalToolId } from './external-tool-config'
+import { isRecord } from './input-guards'
 import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv, darwinGatekeeperAssessmentTimeoutMs } from './macos-code-signing'
 import {
   macosDesktopDiskFullMessage,
@@ -186,10 +187,6 @@ const probeTimeoutMs = 30_000
 const copyTimeoutMs = 10 * 60_000
 const stagingDirectoryName = 'DesktopApps'
 const stagingPrefix = 'staging-'
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 /**
  * OpenCode 发版时在 GitHub Releases 放一份 latest.json，列出各平台的包；Mac 两种芯片

@@ -1,5 +1,6 @@
 import { isIP } from 'node:net'
 import { parseDocument, stringify } from 'yaml'
+import { isRecord } from './input-guards'
 
 export const MAX_ACCELERATION_CLASH_BYTES = 2 * 1024 * 1024
 const MAX_NODE_COUNT = 512
@@ -64,10 +65,6 @@ export interface IsolatedMihomoOptions {
   directHosts?: readonly string[]
   /** Fixed literal-IP endpoints use exact /32 or /128 routes, never imported CIDRs. */
   directIps?: readonly string[]
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function requireText(value: unknown, maxLength: number, field: string): string {

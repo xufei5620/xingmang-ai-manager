@@ -1,4 +1,5 @@
 import { isActiveProviderId, type ActiveProviderId, type ProviderId } from '../../../electron/catalog';
+import { isRecord } from '../../../electron/input-guards';
 import catalog from '../../../bundled-catalog/curated-extensions.json';
 
 /**
@@ -87,9 +88,6 @@ export const curatedRuntimeLabels: Record<CuratedRuntime, string> = {
 // 预置第三方扩展等于替它们背书，所以确认框里这句免责说明是固定文案，不按条目变。
 export const curatedDisclaimer = '这些都是第三方软件，由它们各自的作者维护和更新，不随本应用一起发布。装之前请先看清它要哪些权限。';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }

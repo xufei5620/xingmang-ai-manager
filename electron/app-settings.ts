@@ -14,6 +14,7 @@ import {
   removeSafeDataFile,
   renameWithTransientRetry,
 } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 /** 工具线路要给客户看的状态（xm 三线路 5.1.5、C20，main.ts 从 tool-route-controller.ts 整理出来）。 */
 export interface RelayToolRouteStatus {
@@ -251,10 +252,6 @@ export function defaultAppSettings(homeDirectory = os.homedir()): AppSettings {
     checkUpdatesOnStartup: true,
     runDiagnosticsOnStartup: false,
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function optionalBoolean(value: unknown, fallback: boolean): boolean {

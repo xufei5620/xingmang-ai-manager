@@ -30,9 +30,10 @@ import type {
   NodeTlsProbeInput,
   ProxyVariableSummary,
 } from './diagnostics'
-import { errorChainText, isRecord, relayLineNames, type DiagnosticsContext } from './diagnostics-context'
+import { errorChainText, relayLineNames, type DiagnosticsContext } from './diagnostics-context'
 import { pathForDisplay } from './diagnostics-redaction'
 import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
+import { isRecord } from './input-guards'
 import { classifyNetworkFailure, isJsonContentType, networkFailureCode, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
 import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, requestFailuresTrigger, type RelayRouteChange } from './relay-route-controller'

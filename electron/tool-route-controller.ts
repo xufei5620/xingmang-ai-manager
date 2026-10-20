@@ -24,6 +24,7 @@ import { scheduleTimeout } from './schedule-timeout'
 import { toolPathFailureCounted, toolPathTlsRejected, type ToolPathCertificate, type ToolPathFailureKind } from './tool-path-probe'
 import type { RelayRouteConclusions } from './relay-route-controller'
 import type { RelayEndpointId, RelayRoutePreference } from './relay-sites'
+import { isRecord } from './input-guards'
 
 /** 工具线路的全部候选，按优先级。direct-hk 只在这里出现：不进 RelayEndpointId，设置、IPC、落盘都不认它。 */
 export const toolRouteLineOrder = ['direct', 'direct-hk', 'primary'] as const
@@ -696,10 +697,6 @@ const outageReasons: readonly ToolRouteOutageReason[] = ['reset', 'certificate',
 
 function isTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function parseChange(value: unknown): ToolRouteChange | undefined {

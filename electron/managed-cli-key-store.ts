@@ -11,6 +11,7 @@ import {
   removeSafeDataFile,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 const CURRENT_VERSION = 2
 const MAX_FILE_BYTES = 64 * 1024
@@ -69,10 +70,6 @@ export interface PersistedManagedCliKeys {
 
 interface LegacyPersistedManagedCliKeys extends PersistedManagedCliKeyAccount {
   version: 1
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 /** 托管 Key 的指纹：只用来认「配置里这把是不是缓存以前的那把」，缓存里不留旧 Key 本身。 */

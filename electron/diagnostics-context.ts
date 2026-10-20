@@ -49,10 +49,6 @@ export function scannedCodexDesktopStatus(snapshot: DiagnosticsScanSnapshot): Di
     : { installed: false, version: null, path: null, running: false }
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
-}
-
 function findWindowsShim(command: string, env: NodeJS.ProcessEnv): string | null {
   if (process.platform !== 'win32') return null
   const searchPath = env.PATH ?? env.Path ?? env.path ?? ''

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import { staleConfigBackups, uniqueConfigBackupPath } from './config-file-backups'
+import { isRecord } from './input-guards'
 import { resolveRelocatedPath } from './relocated-folders'
 import {
   assertNoReparseComponents,
@@ -135,15 +136,16 @@ function replaceTomlFile(target: string, content: string, label: string): string
   return backupPath
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)
+// @iarna/toml 把日期时间解析成 Date，它是对象但不是表。
+function isTomlTable(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !(value instanceof Date)
 }
 
 /** 按键一层层往下找，路上哪一层不是表就返回 undefined。 */
 export function tomlValueAt(config: Record<string, unknown>, keyPath: readonly string[]): unknown {
   let node: unknown = config
   for (const key of keyPath) {
-    if (!isRecord(node)) return undefined
+    if (!isTomlTable(node)) return undefined
     node = node[key]
   }
   return node
@@ -177,7 +179,7 @@ function tomlHeader(line: string): TomlHeader | null {
   const keyPath: string[] = []
   for (;;) {
     if (Array.isArray(node)) node = node[node.length - 1]
-    if (!isRecord(node)) return null
+    if (!isTomlTable(node)) return null
     const keys = Object.keys(node)
     if (keys.length !== 1) return null
     if (keys[0] === headerProbeKey) return { keyPath, array: /^\s*\[\[/.test(line) }
@@ -294,9 +296,9 @@ export function editTomlTableText(
 ): string | null {
   const was = tomlValueAt(before, keyPath)
   const now = tomlValueAt(after, keyPath)
-  if (!isRecord(now)) return null
+  if (!isTomlTable(now)) return null
   if (was === undefined) return appendTomlText(source, nestTomlValue(keyPath, now))
-  if (!isRecord(was)) return null
+  if (!isTomlTable(was)) return null
   return editTomlEntryText(source, { keyPath }, was, now)
 }
 
@@ -320,7 +322,7 @@ export function editTomlArrayTableText(
     const entry = was[index]
     const next = now[index]
     if (isDeepStrictEqual(entry, next)) continue
-    if (!isRecord(entry) || !isRecord(next)) return null
+    if (!isTomlTable(entry) || !isTomlTable(next)) return null
     content = editTomlEntryText(content, { keyPath, index }, entry, next)
   }
   if (content === null) return null

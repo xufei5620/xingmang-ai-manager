@@ -7,6 +7,7 @@ import {
 } from './safe-local-data'
 import type { SafeStorageLike } from './account-session-store'
 import { isSafeStorageUsable } from './safe-storage-backend'
+import { isRecord } from './input-guards'
 
 // Persists the "记住密码" login credential -- the identifier + password the
 // user asked the login dialog to keep. Same posture as account-session-store:
@@ -26,10 +27,6 @@ export interface PersistedAccountCredentials {
   version: 1
   identifier: string
   password: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 export function isPersistedAccountCredentials(value: unknown): value is PersistedAccountCredentials {
