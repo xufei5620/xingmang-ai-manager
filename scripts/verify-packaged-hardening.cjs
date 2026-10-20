@@ -1,7 +1,26 @@
 const fs = require('node:fs')
 const path = require('node:path')
-const { extractFile } = require('@electron/asar')
+const { extractFile, statFile } = require('@electron/asar')
 const { EXPECTED_FUSES, assertElectronFuseHardening } = require('./electron-fuse-hardening.cjs')
+
+// #1070 第 2、3 步把整份 system-service.js 拆成了门面、共用上下文、九个业务簇和三个共用的叶子模块。
+// 拆之前下面那两条「旧启动链不许回来」读的是整份 system-service.js，所以拆出来的每一份都要查（#1333）。
+// 这里点名的缺了就当场失败，改了名不会让门禁悄悄少查一份。
+const SYSTEM_SERVICE_FILES = [
+  'system-service.js',
+  'system-service-context.js',
+  'cli-install-service.js',
+  'cli-uninstall-service.js',
+  'runtime-install-service.js',
+  'system-scan-service.js',
+  'external-client-route-service.js',
+  'tool-route-follow-service.js',
+  'official-credential-service.js',
+  'config-save-service.js',
+  'npm-registry.js',
+  'npm-command-failure.js',
+  'cli-native-package.js',
+]
 
 function packagedSource(asarPath, relativePath, label) {
   try {
@@ -11,18 +30,34 @@ function packagedSource(asarPath, relativePath, label) {
   }
 }
 
+/**
+ * 点名的那几份，加上 dist-electron 顶层所有 *-service.js：以后再拆出来的服务文件不用记得回来改这张单子。
+ * 打开 CLI 窗口的那一份另外单独读，这里不重复。
+ */
+function packagedServiceFileNames(asarPath) {
+  let directory
+  try {
+    directory = statFile(asarPath, 'dist-electron')
+  } catch (error) {
+    throw new Error(`无法读取打包后的主进程目录：${error instanceof Error ? error.message : String(error)}`)
+  }
+  const discovered = Object.keys(directory.files ?? {}).filter((name) => name.endsWith('-service.js'))
+  return [...new Set([...SYSTEM_SERVICE_FILES, ...discovered])]
+    .filter((name) => name !== 'provider-launch-service.js')
+    .sort()
+}
+
 function inspectPackagedLaunchBoundary(asarPath) {
   // #1070 第 3 步把打开 CLI 窗口那一段从 system-service.js 搬进了 provider-launch-service.js，
-  // 用哪个 PowerShell 启动函数由 system-service-context.js 接上；门面那份仍一起查，旧启动链不许在任何一份里回来。
+  // 用哪个 PowerShell 启动函数由 system-service-context.js 接上；门面和其余拆出去的每一份仍一起查，
+  // 旧启动链不许在任何一份里回来。
   const serviceSource = packagedSource(
     asarPath,
     'dist-electron/provider-launch-service.js',
     ' CLI 启动服务',
   )
-  const otherServiceSources = [
-    packagedSource(asarPath, 'dist-electron/system-service.js', '系统服务'),
-    packagedSource(asarPath, 'dist-electron/system-service-context.js', '系统服务上下文'),
-  ]
+  const otherServiceSources = packagedServiceFileNames(asarPath)
+    .map((name) => packagedSource(asarPath, `dist-electron/${name}`, `系统服务（${name}）`))
   const windowsLaunchSource = packagedSource(
     asarPath,
     'dist-electron/windows-elevation.js',
@@ -148,4 +183,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { EXPECTED_FUSES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main, resolvePackagedExecutable }
+module.exports = { EXPECTED_FUSES, SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main, resolvePackagedExecutable }
