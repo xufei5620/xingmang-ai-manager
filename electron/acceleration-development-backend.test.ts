@@ -182,9 +182,11 @@ describe('local development acceleration backend', () => {
     await test.backend.recover()
     test.events.length = 0
     const pending = deferred<void>()
+    // 清理倒着跑，这一句排在 dispose 前面：断言没等到时先放行，不让卡住的 enable 拖着 dispose 一起超时（#1335 第 10 条）。
+    cleanup.push(async () => { pending.resolve() })
     test.proxy.enable.mockImplementationOnce(async () => { test.events.push('proxy:enable'); await pending.promise })
     const starting = test.backend.startAcceleration(scope, 'system-proxy')
-    await vi.waitFor(() => expect(test.proxy.enable).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(test.proxy.enable).toHaveBeenCalledOnce(), { timeout: 10_000 })
     test.elapse(12_000)
     pending.resolve()
     expect(await starting).toMatchObject({ phase: 'active', remainingSeconds: accelerationTrialSeconds, sessionSeconds: 0, line })
@@ -650,9 +652,10 @@ describe('local development acceleration backend', () => {
   it('also settles a power loss during connecting at one checkpoint interval at most', async () => {
     const test = await setup()
     const pending = deferred<void>()
+    cleanup.push(async () => { pending.resolve() })
     test.proxy.enable.mockImplementationOnce(async () => { await pending.promise })
     const starting = test.backend.startAcceleration(scope, 'system-proxy')
-    await vi.waitFor(() => expect(test.proxy.enable).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(test.proxy.enable).toHaveBeenCalledOnce(), { timeout: 10_000 })
     expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch, checkpointAt: epoch, checkpointMs: 0 })
     const restarted = await setup(test.ledgerPath)
     restarted.setWall(epoch + 86_400_000)
