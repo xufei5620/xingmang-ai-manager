@@ -157,11 +157,13 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     const activeSite = activeRelaySite()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const baseUrl = tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
-    const belongsToCurrentAccount = (apiKey: string) => owner !== null
+    // 归属按配置所在那条线路的地址认：平时就是当前线路，Claude Desktop 从官方登录切回时也认这个站的别的线路（#1112）。
+    const ownedOnRoute = (apiKey: string, routeBaseUrl: string) => owner !== null
       && serviceOptions.getExternalClientAccountId?.() === owner
       && activeRelaySite().id === activeSite.id
-      && externalOwnership.matches(tool, owner, baseUrl, apiKey)
-    return { activeSite, baseUrl, belongsToCurrentAccount }
+      && externalOwnership.matches(tool, owner, routeBaseUrl, apiKey)
+    const belongsToCurrentAccount = (apiKey: string) => ownedOnRoute(apiKey, baseUrl)
+    return { activeSite, owner, baseUrl, belongsToCurrentAccount, ownedOnRoute }
   }
   async function describeExternalClient(status: ExternalClientRuntimeStatus): Promise<ExternalClientStatus> {
     const { baseUrl, belongsToCurrentAccount } = externalClientContext(status.tool)
@@ -351,8 +353,9 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   }
   /**
    * 首页 Claude Desktop 卡上「切回官方账号 / 改用当前账号」。和保存配置排同一个队：两件事改的是同一个
-   * 文件。切回当前账号只认星芒替当前账号写的、地址是当前线路的那一份，用不上就回 reconnect，界面接着
-   * 打开「连接 Claude Desktop」重新保存。
+   * 文件。切回当前账号只认星芒替当前账号写的、地址是这个站登记过的线路的那一份，用不上就回 reconnect，
+   * 界面接着打开「连接 Claude Desktop」重新保存。官方登录期间换过线路的（#1112），归属按原来那条线路的
+   * 地址认，切回时换到当前线路、归属跟着记过来，同换线路。
    */
   function switchExternalClientSource(
     tool: ExternalToolId,
@@ -362,7 +365,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     const work = async (): Promise<ExternalClientSourceSwitchResult> => {
       if (tool !== 'claudeDesktop') throw new Error('未知的外部客户端类型')
       assertBeforeWrite?.()
-      const { baseUrl, belongsToCurrentAccount } = externalClientContext(tool)
+      const { activeSite, owner, baseUrl, belongsToCurrentAccount, ownedOnRoute } = externalClientContext(tool)
       const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
       assertBeforeWrite?.()
       if (!status?.installed) throw new Error(`还没有检测到 ${externalClientNames[tool]}`)
@@ -373,9 +376,26 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         return { tool, target, outcome: 'switched', backups: result.backups,
           message: '已切回官方账号，原来的配置已备份。下次打开 Claude Desktop 时用你自己的 Claude 账号登录；现在开着的话，要完全退出再打开。用星芒时的聊天记录不会删，切回当前账号还能看到。' }
       }
-      const result = await gateway.useGatewayLogin(baseUrl, belongsToCurrentAccount)
-      runtimeLog?.log('info', 'config', 'external-client.source-switched', result.outcome === 'switched' ? 'Claude Desktop 已改用当前账号' : 'Claude Desktop 原来那份配置用不上，要重新连接', { target, outcome: result.outcome, running: status.running })
+      const routes = relaySiteProviderBaseUrlVariants(activeSite.id, 'claude')
+      const result = await gateway.useGatewayLogin(baseUrl, ownedOnRoute, routes.map((route) => route.baseUrl))
+      const moved = result.outcome === 'switched' ? result.moved : undefined
+      // 换过线路的记一笔原来是哪条线路，日志里不记地址（同 external-client.route.*）。
+      runtimeLog?.log('info', 'config', 'external-client.source-switched', result.outcome === 'switched' ? 'Claude Desktop 已改用当前账号' : 'Claude Desktop 原来那份配置用不上，要重新连接', {
+        target, outcome: result.outcome, running: status.running,
+        ...(moved ? { from: routes.find((route) => route.baseUrl === moved.from)?.endpointId ?? null } : {}),
+      })
       if (result.outcome === 'reconnect') return { tool, target, outcome: 'reconnect' }
+      if (moved && owner !== null) {
+        // 归属按账号分开记，这一笔记的就是写进去的那个账号，中途换了账号也照记。地址已经换好、归属没记上的，
+        // 下次检测换线路那边补记（external-client.route.recorded）。
+        try {
+          await externalOwnership.rewrite(tool, owner, baseUrl, moved.apiKey)
+        } catch (error) {
+          runtimeLog?.log('warn', 'config', 'external-client.route.failed', 'Claude Desktop 已换到当前连接线路，归属没记上，下次检测补记', {
+            tool, reason: credentialFailureReason(error),
+          })
+        }
+      }
       return { tool, target, outcome: 'switched', backups: result.backups,
         message: '已改用当前账号，原来的配置已备份。Claude Desktop 现在开着的话，要完全退出再打开才会换过来。' }
     }
