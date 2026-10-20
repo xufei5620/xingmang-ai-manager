@@ -30,8 +30,12 @@
 - `features/feedback/FeedbackPage.tsx` — 反馈与客服（`FeedbackPage`：留言反馈、运行日志、复制/导出反馈报告，右边的「找客服」卡）。
 - `features/settings/SettingsPage.tsx` — 设置页（`SettingsPage`：外观显示、启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新八组，左栏搜索设置和快捷键弹窗）。
 - `business-actions.ts` — 各业务页共用的 `BusinessActions` 参数类型，连同装工具的结果、「找客服」卡、点名要落的反馈页签几个类型（只有类型）。
-- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页和扩展三页都用。
-- `pages-management.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）与扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
+- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页和扩展三页都用（扩展页经 `pages-maintenance` 拿，拆之前就这样）。
+- `pages-management.tsx` — 只做转出（#1070 第 11 步拆开）：记录页、扩展三页和它们共用的两个文件都搬了出去（下面四条），原来从这里 import 的地方（`pages-business.tsx`、`pages-featured.tsx`、测试）不用改。
+- `features/sessions/SessionsPage.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）。
+- `features/extensions/ExtensionsPage.tsx` — 扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
+- `features/extensions/extensions-common.tsx` — 扩展三页和「星芒精选」页共用的判断、解析和卡片：列表怎么分组、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的卡片和详情。
+- `features/tools/provider-options.ts` — 记录页和扩展三页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
 - `pages-account.tsx` — 个人中心（`AccountPage`）：账号概览、充值订阅、用量账单、密钥管理（含「配置到工具」写 Key）、账号安全、邀请返利六个页签的装配；下线的 Gemini 不替它写 Key、不列它的额度。
 - `pages-featured.tsx` — 「星芒精选」页：把随包精选清单摆成卡片，一次装进几个工具；装法和扩展页底下的精选是同一条路（不另开通道，主进程校验照样过一遍）。
 
@@ -274,7 +278,7 @@
 - **跨页落点统一是「模块里放一个待取槽」**：`features/app/settings-group-intent.ts`、`row-focus.ts`、`extension-tool-intent.ts`，以及 `update-retry.ts` 的安装确认请求；配合 App 「去过的页只藏不卸」使用。依据：这几个文件头注释。
 - **本机存储**：localStorage 只放本机便利项，键名多用 `xingmang-ui-v2:` 前缀（引导进度、教程进度、首次命令卡、旧聊天记录、手选来源、头像、公告已读等），读写都包 try/catch（`features/app/preferences.ts` 及各模块自带的 storage 注入）；聊天记录与公告已读已迁到主进程，localStorage 只作迁移来源。依据：`features/chat/storage.ts`、`features/shell/newapi-announcements.ts`、`features/auth/guide-progress.ts`、`features/tutorial/tutorial-progress.ts`。
 - **有意重复的字面量**：`features/tools/connection-check.ts` ↔ `electron/connection-check.ts`（层名）、`features/auth/account-errors.ts` ↔ legacy `src/components/account/account-errors.ts`、`business-common.tsx` ↔ legacy `src/error-message.ts`。理由都是 I6/I7（渲染层不能值引带 Node 依赖的模块、两棵树互不引用）。依据：各文件头注释。
-- **下线的 Gemini 在界面层逐处过滤**，统一用 `electron/catalog` 的 `activeProviderIds` / `isActiveProviderId`：`features/tools/model.ts`、`features/tools/recent-workspaces.ts`、`features/settings/BackupCard.tsx`、`pages-account.tsx`、`pages-management.tsx`、`features/auth/guide-progress.ts`、`registry/clients.ts`。依据：这些文件里的注释。
+- **下线的 Gemini 在界面层逐处过滤**，统一用 `electron/catalog` 的 `activeProviderIds` / `isActiveProviderId`：`features/tools/model.ts`、`features/tools/recent-workspaces.ts`、`features/settings/BackupCard.tsx`、`pages-account.tsx`、`features/tools/provider-options.ts`（记录页和扩展三页）、`features/auth/guide-progress.ts`、`registry/clients.ts`。依据：这些文件里的注释。
 - **分号风格边界**：`ui/`、`registry/`、`gallery*.tsx` 带行尾分号，其余不带，由 `scripts/verify-renderer-style.test.cjs` 钉住（它的清单里点名了 `gallery.tsx`、`gallery-entry.tsx`）。依据：该脚本与 `.claude/rules/renderer-v2.md`。
 - **`styles/tokens.css` 直接 `@import` 了 `ui-spec/tokens.css`**，改 ui-spec 的令牌就是改产品界面。依据：`styles/tokens.css` 第一行。
 - **浏览器回归的夹具分三种**：整页夹具 `testing/app.html`（acceleration、shell 三个、tools、contrast、app-check、部分 auth 用例）、各功能自带夹具（auth、chat）、组件检阅页 `gallery.html`（ui）。`npm run check:v2` 另由 `e2e/renderer-v2-testid-inventory.cjs` 盘点 data-testid。依据：各 browser-check.mjs 里打开的路径、`package.json`。

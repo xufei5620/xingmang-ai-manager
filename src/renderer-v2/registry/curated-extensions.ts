@@ -7,7 +7,7 @@ import catalog from '../../../bundled-catalog/curated-extensions.json';
  * 新增 IPC 通道。入选标准与复核周期见 docs/CURATED-EXTENSIONS.md。
  *
  * 这个模块只做两件事：把 JSON 收窄成带联合类型的结构，以及按页面与当前工具筛选。
- * 安装本身仍走 pages-management.tsx 既有的那一条提交路径（mutateProviderExtension /
+ * 安装本身仍走 features/extensions/extensions-common.tsx 既有的那一条提交路径（mutateProviderExtension /
  * addMcpServer），精选不另开一条，免得绕过主进程对命令与参数的校验。
  */
 
