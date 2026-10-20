@@ -1,9 +1,6 @@
 ## 用户
 
-- 在 Codex 桌面端（也叫 ChatGPT）的「聊天」「工作」里发消息，报「提交消息时出错」和一句
-  Work browser access requires an authenticated account 的，是那两项要登录 ChatGPT 账号；用当前账号
-  时请在窗口左侧栏最上面把模式切到「Codex」再发。新手引导和教程都写明了这一步，在教程里搜这句英文
-  能找到办法。
+- Codex 桌面端发消息报「提交消息时出错」的办法写进了教程：在 Codex 桌面端（也叫 ChatGPT）的「聊天」「工作」里报这句、还带一句 Work browser access requires an authenticated account 的，是那两项要登录 ChatGPT 账号；用当前账号时请在窗口左侧栏最上面把模式切到「Codex」再发。新手引导里也写明了这一步，在教程里搜这句英文能找到办法。
 
 ## 开发
 

@@ -1,7 +1,3 @@
-## 用户
-
-- 新手引导最后一步选了「先在星芒里聊天」时，点「进入首页」现在进的是首页，不再跟「去聊天」一样进聊天页。
-
 ## 开发
 
 - `features/auth/StartGuide.tsx` 的 `onComplete` 多带一个 `landing`（`'home' | 'chat'`）：只有「去聊天」那颗按钮给 `'chat'`，
