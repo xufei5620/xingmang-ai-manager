@@ -1141,6 +1141,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
               ),
               ...(versionChoice.source === 'latest' ? {} : { version: versionChoice.version }),
               ...(cancellation ? { signal: cancellation.signal } : {}),
+              onStableUnavailable: (detail) => runtimeLog?.log('warn', 'install', 'grok-stable.unavailable', '查不到 xAI 的 Grok 稳定版版本号，照指定版本直接下载', { detail }),
               createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
               onProgress: ({ percent, transferred, total }) => {
                 lastDownloadActivity = Date.now()

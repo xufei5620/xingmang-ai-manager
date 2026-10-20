@@ -66,10 +66,19 @@ export function parseGrokStableVersion(value: string): string | null {
 // 照装——旧版本的二进制仍在同一个官方下载目录里，签名校验一步不少。只收 x.y.z：
 // 预发布号在比较里排在正式版前面，带后缀的版本会从这个上限底下钻过去。
 export function resolveGrokInstallVersion(requested: string | null | undefined, stableVersion: string): string {
+  const named = resolveGrokNamedVersion(requested)
+  if (!named) return stableVersion
+  return isNewerVersion(stableVersion, named) ? stableVersion : named
+}
+
+// 两个 stable 地址都查不到时，xAI 那一路靠它定版本号（#1061 第 4 条，yoyo 2026-10-20「四条都放」）：
+// 点了名的照装，只是少了上面那道「不超过 stable」的上限；没点名（装最新）没有版本可装，返回 null。
+// 格式照旧只收 x.y.z，下回来的文件照旧核大小、SHA-256 和 xAI 签名。
+export function resolveGrokNamedVersion(requested: string | null | undefined): string | null {
   const wanted = requested?.trim()
-  if (!wanted || wanted === 'latest') return stableVersion
+  if (!wanted || wanted === 'latest') return null
   if (!/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(wanted)) throw new Error('指定的 Grok 版本号无效')
-  return isNewerVersion(stableVersion, wanted) ? stableVersion : wanted
+  return wanted
 }
 
 async function readBoundedText(response: Response): Promise<string> {

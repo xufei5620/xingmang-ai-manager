@@ -4,6 +4,7 @@ import {
   grokStableVersionUrls,
   parseGrokStableVersion,
   resolveGrokInstallVersion,
+  resolveGrokNamedVersion,
   type GrokVersionFetch,
 } from './grok-update'
 
@@ -41,6 +42,17 @@ describe('Grok official stable version feed', () => {
     expect(() => resolveGrokInstallVersion('1.0.44-rc.1', '1.0.44')).toThrow('版本号无效')
     expect(() => resolveGrokInstallVersion('1.0.44/../evil', '1.0.44')).toThrow('版本号无效')
     expect(() => resolveGrokInstallVersion('v1.0.44', '1.0.44')).toThrow('版本号无效')
+  })
+
+  it('keeps the same named-version rules when no stable version is known', () => {
+    expect(resolveGrokNamedVersion(undefined)).toBeNull()
+    expect(resolveGrokNamedVersion(' ')).toBeNull()
+    expect(resolveGrokNamedVersion('latest')).toBeNull()
+    expect(resolveGrokNamedVersion(' 1.0.46 ')).toBe('1.0.46')
+    expect(resolveGrokNamedVersion('1.0.99')).toBe('1.0.99')
+    expect(() => resolveGrokNamedVersion('1.0.44-rc.1')).toThrow('版本号无效')
+    expect(() => resolveGrokNamedVersion('1.0.44/../evil')).toThrow('版本号无效')
+    expect(() => resolveGrokNamedVersion('v1.0.44')).toThrow('版本号无效')
   })
 
   it('uses the xAI stable endpoint when it succeeds', async () => {
