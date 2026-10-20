@@ -8,6 +8,22 @@ import ts from 'typescript'
 // misses multi-line imports, require() and import(); this walks the syntax
 // tree instead.
 
+// `import type { A }`, or `import { type A, type B }` where every name is a
+// type: the CommonJS build (no verbatimModuleSyntax) erases both.
+function erasedImport(clause: ts.ImportClause | undefined): boolean {
+  if (!clause) return false
+  if (clause.isTypeOnly) return true
+  const bindings = clause.namedBindings
+  return !clause.name && !!bindings && ts.isNamedImports(bindings)
+    && bindings.elements.length > 0 && bindings.elements.every((element) => element.isTypeOnly)
+}
+
+function erasedExport(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return true
+  const clause = node.exportClause
+  return !!clause && ts.isNamedExports(clause) && clause.elements.length > 0 && clause.elements.every((element) => element.isTypeOnly)
+}
+
 function sameModule(fromFile: string, specifier: string, target: string): boolean {
   if (!specifier.startsWith('.')) return false
   const resolved = path.resolve(path.dirname(fromFile), specifier).replace(/\.(?:[cm]?js|ts)$/, '')
@@ -26,9 +42,9 @@ export function valueReferencesInSource(fileName: string, sourceText: string, ta
   }
   function visit(node: ts.Node): void {
     if (ts.isImportDeclaration(node) && pointsAtTarget(node.moduleSpecifier)) {
-      if (!node.importClause?.isTypeOnly) found.push(node.getText(source))
+      if (!erasedImport(node.importClause)) found.push(node.getText(source))
     } else if (ts.isExportDeclaration(node) && pointsAtTarget(node.moduleSpecifier)) {
-      if (!node.isTypeOnly) found.push(node.getText(source))
+      if (!erasedExport(node)) found.push(node.getText(source))
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       if (pointsAtTarget(node.moduleReference.expression) && !node.isTypeOnly) found.push(node.getText(source))
     } else if (ts.isCallExpression(node) && pointsAtTarget(node.arguments[0])) {
@@ -46,13 +62,13 @@ export function valueReferences(file: string, target: string): string[] {
   return valueReferencesInSource(file, fs.readFileSync(file, 'utf8'), target)
 }
 
-/** How many `import type … from target` the file has, so a gate can tell it still looks at the right import. */
+/** How many type-only imports from target the file has, so a gate can tell it still looks at the right import. */
 export function typeImportCount(file: string, target: string): number {
   const sourceText = fs.readFileSync(file, 'utf8')
   const source = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true)
   return source.statements.filter((statement) => (
     ts.isImportDeclaration(statement)
-    && !!statement.importClause?.isTypeOnly
+    && erasedImport(statement.importClause)
     && ts.isStringLiteralLike(statement.moduleSpecifier)
     && sameModule(file, statement.moduleSpecifier.text, target)
   )).length

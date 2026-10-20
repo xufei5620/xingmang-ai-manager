@@ -17,6 +17,13 @@ describe('type-only-imports test support', () => {
     expect(scan("type Lazy = import('./diagnostics').A\n")).toEqual([])
   })
 
+  it('accepts a clause whose every name is marked type, since the build erases it too', () => {
+    expect(scan("import { type A, type B } from './diagnostics'\n")).toEqual([])
+    expect(scan("export { type A } from './diagnostics'\n")).toEqual([])
+    expect(scan("import {} from './diagnostics'\n")).toHaveLength(1)
+    expect(scan("import Default, { type A } from './diagnostics'\n")).toHaveLength(1)
+  })
+
   it('flags every way of pulling a value, multi-line or not', () => {
     expect(scan("import {\n  runDiagnostics,\n} from './diagnostics'\n")).toHaveLength(1)
     expect(scan("import { type A, runDiagnostics } from './diagnostics'\n")).toHaveLength(1)
