@@ -329,7 +329,7 @@ describe('release platforms (#1155 item 5)', () => {
       applyStatusChanges: (current: Record<string, unknown>, changes: Record<string, string>, now: Date) => Record<string, unknown>
     }
     const changes: Array<Record<string, string>> = [
-      { 'bad-versions': '0.2.19 0.2.20@mac-x64 0.2.21@linux|windows-arm64' },
+      { 'bad-versions': '0.2.19 0.2.20@mac-x64 0.2.21@linux|windows-x64' },
       { rollout: '0.2.22 0@mac-x64' },
       { rollout: '0.2.22 30@windows|linux-arm64' },
       { 'minimum-version': '0.2.21@mac-arm64', 'published-versions': '0.2.22 0.2.22' },
@@ -359,7 +359,7 @@ describe('release platforms (#1155 item 5)', () => {
     }
     expect(written).toMatchObject({
       badVersions: ['0.2.19', '0.2.20', '0.2.21'],
-      badVersionPlatforms: { '0.2.20': ['mac-x64'], '0.2.21': ['linux', 'windows-arm64'] },
+      badVersionPlatforms: { '0.2.20': ['mac-x64'], '0.2.21': ['linux', 'windows-x64'] },
       rollout: { version: '0.2.22', percent: 30, platforms: ['windows', 'linux-arm64'] },
       minimumVersion: '0.2.21',
       minimumVersionPlatforms: ['mac-arm64'],

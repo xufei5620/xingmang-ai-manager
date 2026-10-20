@@ -154,6 +154,48 @@ test('a withdrawal for every package is never narrowed in place, and platforms t
   assert.equal(describeStatus(garbled)[1], '撤回的版本：0.2.20')
 })
 
+test('windows-arm64 is refused because no Windows machine reports it (#1335 item 7)', () => {
+  // Windows 只出 x64 包，ARM 电脑上模拟跑着的也是它，客户端算出来是 windows、windows-x64。
+  for (const [field, input] of [['bad-versions', '0.2.21@windows-arm64'], ['rollout', '0.2.21 20@mac-x64|windows-arm64'], ['minimum-version', '0.2.21@Windows-ARM64']]) {
+    assert.throws(() => applyStatusChanges({}, { [field]: input, 'published-versions': '0.2.21' }, now), /Windows 目前只有 x64 安装包.*windows-x64/)
+  }
+  assert.deepEqual(applyBadVersions([], '0.2.21@windows-x64|windows').platforms, { '0.2.21': ['windows-x64', 'windows'] })
+})
+
+test('the live file is read the way the client reads it, case and v prefix included (#1335 item 8)', () => {
+  // 手改线上文件写成 Mac-X64：客户端规整成 mac-x64、只撤 Intel 版 Mac，预览得照实说，下次运行也不能把它丢掉。
+  const handEdited = { badVersions: ['0.2.20'], badVersionPlatforms: { '0.2.20': [' Mac-X64 '] } }
+  assert.equal(describeStatus(handEdited)[1], '撤回的版本：0.2.20（只撤 Mac Intel 版）（0.2.20 以前的客户端不认平台，照旧整版撤回）')
+  assert.deepEqual(applyStatusChanges(handEdited, { 'bad-versions': '0.2.21' }, now).badVersionPlatforms, { '0.2.20': ['mac-x64'] })
+  assert.deepEqual(applyStatusChanges(handEdited, { 'bad-versions': '0.2.20@linux' }, now).badVersionPlatforms, { '0.2.20': ['mac-x64', 'linux'] })
+  // 版本号带 v、带空白的，跟客户端一样当成同一个版本，两份平台表合起来。
+  const prefixed = { badVersions: ['v0.2.20 '], badVersionPlatforms: { 'v0.2.20': ['mac-x64'], '0.2.20': ['LINUX'] } }
+  assert.equal(describeStatus(prefixed)[1], '撤回的版本：0.2.20（只撤 Mac Intel 版、Linux）（0.2.20 以前的客户端不认平台，照旧整版撤回）')
+  const merged = applyStatusChanges(prefixed, { 'bad-versions': '0.2.21' }, now)
+  assert.deepEqual(merged.badVersions, ['0.2.20', '0.2.21'])
+  assert.deepEqual(merged.badVersionPlatforms, { '0.2.20': ['mac-x64', 'linux'] })
+  // 其中一份读不懂，客户端就整版撤回：这里也一样，预览不说「只撤」，也不能就地收窄。
+  const halfGarbled = { badVersions: ['0.2.20'], badVersionPlatforms: { 'v0.2.20': ['mac-x64'], '0.2.20': ['mac-intel'] } }
+  assert.equal(describeStatus(halfGarbled)[1], '撤回的版本：0.2.20')
+  assert.throws(() => applyStatusChanges(halfGarbled, { 'bad-versions': '0.2.20@mac-x64' }, now), /已经对所有平台撤回了/)
+  // 分批和最低版本的平台表同样规整着读。
+  assert.equal(describeStatus({ rollout: { version: '0.2.21', percent: 0, platforms: ['MAC-x64'] } })[2], '分批放量：0.2.21 先不自动推，只给自己点「检查更新」的人（只管 Mac Intel 版，别的全放；0.2.20 以前的客户端不认平台，对所有平台分批）')
+  assert.match(describeStatus({ minimumVersion: '0.2.21', minimumVersionPlatforms: ['Mac-X64'] })[3], /只拦 Mac Intel 版/)
+})
+
+test('a platform scope is refused where every client it would reach ignores platforms (#1335 item 9)', () => {
+  // 撤回看跑着那一版的客户端：0.2.20 以前的都不认平台，带 @ 照样整版撤回。
+  assert.throws(() => applyBadVersions([], '0.2.18@mac-x64'), /0\.2\.18 比 0\.2\.20 早.*写「0\.2\.18」/)
+  assert.deepEqual(applyBadVersions([], '0.2.18').versions, ['0.2.18'])
+  assert.deepEqual(applyBadVersions([], '0.2.20@mac-x64').platforms, { '0.2.20': ['mac-x64'] })
+  // 分批和最低版本管的是比它低的客户端：不比 0.2.20 新，被管到的全都不认平台。
+  assert.throws(() => applyRollout(undefined, '0.2.20 20@mac-x64'), /分批放量的 0\.2\.20 不比 0\.2\.20 新/)
+  assert.deepEqual(applyRollout(undefined, '0.2.21 20@mac-x64'), { version: '0.2.21', percent: 20, platforms: ['mac-x64'] })
+  assert.throws(() => applyStatusChanges({}, { 'minimum-version': '0.2.19@mac-x64', 'published-versions': '0.2.21' }, now), /最低版本 0\.2\.19 不比 0\.2\.20 新/)
+  assert.equal(applyStatusChanges({}, { 'minimum-version': '0.2.19', 'published-versions': '0.2.21' }, now).minimumVersion, '0.2.19')
+  assert.equal(applyStatusChanges({ minimumVersion: '0.2.19' }, { 'minimum-version': 'none@mac-x64' }, now).minimumVersion, undefined)
+})
+
 test('a staged rollout names a version and a share of machines', () => {
   assert.deepEqual(applyRollout(undefined, '0.2.11 20'), { version: '0.2.11', percent: 20 })
   assert.deepEqual(applyRollout(undefined, 'v0.2.11 100%'), { version: '0.2.11', percent: 100 })
