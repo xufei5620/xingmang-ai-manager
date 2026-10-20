@@ -25,7 +25,12 @@
 
 ## pages-\*.tsx 业务页（全部经 `pages-business.tsx` 懒加载）
 - `pages-business.tsx` — **业务页的懒加载入口**：App 用 `React.lazy` 只引它，它按页面 id 分发到下面几个文件，并把个人中心页签、教程主题、付款回跳这些跨页参数接下去。
-- `pages-maintenance.tsx` — 检查页（`HealthPage`：诊断分组、一键修复、连接检查）、反馈与客服（`FeedbackPage`：留言反馈、运行日志、复制/导出反馈报告）、设置页（`SettingsPage`：外观显示、启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新八组），并转出 `TutorialPage`；各业务页共用的 `BusinessActions` 参数类型也定义在这里。
+- `pages-maintenance.tsx` — 只做转出（#1070 第 11 步拆开）：检查、反馈与客服、设置三页和它们共用的两个文件都搬了出去（下面五条），原来从这里 import 的地方不用改；`TutorialPage` 也从这里转出。
+- `features/health/HealthPage.tsx` — 检查页（`HealthPage`：诊断分组、一键修复、连接检查，运行环境那几行的安装与换新版 Node.js）。
+- `features/feedback/FeedbackPage.tsx` — 反馈与客服（`FeedbackPage`：留言反馈、运行日志、复制/导出反馈报告，右边的「找客服」卡）。
+- `features/settings/SettingsPage.tsx` — 设置页（`SettingsPage`：外观显示、启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新八组，左栏搜索设置和快捷键弹窗）。
+- `business-actions.ts` — 各业务页共用的 `BusinessActions` 参数类型，连同装工具的结果、「找客服」卡、点名要落的反馈页签几个类型（只有类型）。
+- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页和扩展三页都用。
 - `pages-management.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）与扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
 - `pages-account.tsx` — 个人中心（`AccountPage`）：账号概览、充值订阅、用量账单、密钥管理（含「配置到工具」写 Key）、账号安全、邀请返利六个页签的装配；下线的 Gemini 不替它写 Key、不列它的额度。
 - `pages-featured.tsx` — 「星芒精选」页：把随包精选清单摆成卡片，一次装进几个工具；装法和扩展页底下的精选是同一条路（不另开通道，主进程校验照样过一遍）。

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
@@ -13,6 +14,10 @@ import { errors } from './registry/errors'
 import { statuses } from './registry/status'
 import { accelerationTrialSeconds } from '../../electron/acceleration-contract'
 import { runtimeButtonLabel, runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
+import * as healthPage from './features/health/HealthPage'
+import * as feedbackPage from './features/feedback/FeedbackPage'
+import * as settingsPage from './features/settings/SettingsPage'
+import * as installResult from './features/tools/install-result'
 
 const pageIds = new Set<string>(pages.map((page) => page.id))
 const pageLabels = new Map<string, string>(
@@ -590,5 +595,25 @@ describe('installJobRunning', () => {
     expect(installJobRunning(undefined)).toBe(false)
     expect(installJobRunning({ label: '正在安装', log: [] })).toBe(true)
     expect(installJobRunning({ label: '正在卸载', log: [], kind: 'uninstall' })).toBe(false)
+  })
+})
+
+// #1070 第 11 步把三页搬出去以后 pages-maintenance 只做转出：转出的就是页面文件里那一份；页面文件也不反过来
+// 从它那里 import 值，免得几个文件绕着圈 import，谁先求值谁拿到一半。
+describe('pages-maintenance as a re-export of the split pages', () => {
+  it('re-exports the very functions the page files define', () => {
+    expect(HealthPage).toBe(healthPage.HealthPage)
+    expect(sortDiagnosticsBySeverity).toBe(healthPage.sortDiagnosticsBySeverity)
+    expect(FeedbackPage).toBe(feedbackPage.FeedbackPage)
+    expect(buildFeedbackMessage).toBe(feedbackPage.buildFeedbackMessage)
+    expect(SettingsPage).toBe(settingsPage.SettingsPage)
+    expect(shortcutRows).toBe(settingsPage.shortcutRows)
+    expect(installResultMessage).toBe(installResult.installResultMessage)
+  })
+
+  it('keeps the moved files from importing back out of it', () => {
+    for (const file of ['features/health/HealthPage.tsx', 'features/feedback/FeedbackPage.tsx', 'features/settings/SettingsPage.tsx', 'features/tools/install-result.ts', 'business-actions.ts']) {
+      expect(readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')).not.toMatch(/from '[./]*pages-maintenance'/)
+    }
   })
 })
