@@ -26,14 +26,14 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 
 ## 用哪个模型
 
-只用 OpenAI 的 gpt-image 系列（2026-10 起去掉了即梦和 Gemini）。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE` 挑：列表里有 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`，写进 `config.json` 的 `model`。这两个都没有时，再按 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS` 从画图脚本 `ALLOWED_MODELS` 也认的型号里挑列表里有的（`gpt-image-2.5-sunburst`，再 `gpt-image-1`；`gpt-image-1.5` 站上没开放，不挑）。两把都没查到、或查到了但一个能挑的都没有，就不写，画图照旧用 `gpt-image-2`，日志记一句。`gpt-image-2.5-sunburst` 慢、偏精修，前两个在时不当默认，AI 可以自己点名。
+只用 OpenAI 的 gpt-image 系列（2026-10 起去掉了即梦和 Gemini）。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE` 挑：列表里有 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`，写进 `config.json` 的 `model`。这两个都没有时，再按 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS` 挑列表里有的（`gpt-image-2.5-sunburst`，再 `gpt-image-1`；`gpt-image-1.5` 站上没开放，不挑）。两把都没查到、或查到了但一个能挑的都没有，就不写，画图照旧用 `gpt-image-2`，日志记一句。`gpt-image-2.5-sunburst` 慢、偏精修，前两个在时不当默认，AI 可以自己点名。
 
-画图工具把这个 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，中转明确回了错误（没渠道、没定价这类）会自动换 `gpt-image-2` 再试一次；连不上、超时不换。AI 点名要别的型号就只用那个。技能脚本 `generate.mjs` 同一套规则，`--model` 只收 `gpt-image-*`。
+画图工具把这个 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，中转明确回了错误（没渠道、没定价这类）会自动换 `gpt-image-2` 再试一次；连不上、超时不换。AI 点名要别的型号就只用那个。认型号三处用同一条规则（主进程 `OPENAI_IMAGE_MODEL_PATTERN`、`mcp-server.mjs`、技能脚本 `generate.mjs`，测试钉住一致）：只收 `gpt-image-*`，`config.json` 里写的、AI 点名的、`--model` 传的都一样；以前画图工具只认写死的 5 个，站上新出的型号会被悄悄换回 `gpt-image-2`（#1059）。工具 schema 的 `model` 不再列枚举，只给默认值和一句说明。
 
 ## 安全边界
 
 - Key 不写进任何工具的配置，只通过环境变量 `XINGMANG_IMAGE_CONFIG_PATH` 告诉脚本 `config.json` 在哪；脚本先用 Codex Key，401/403/429/503 时换生图分组 Key。上游报错里的 `sk-…`、`Bearer …` 打码。
-- 只连 `https://xm.solov.cc` / `https://api.solov.cc` 的 `/v1/images/generations` 与 `/v1/images/edits`，拒绝重定向，300 秒超时，响应 32MB 上限，模型白名单。
+- 只连 `https://xm.solov.cc` / `https://api.solov.cc` 的 `/v1/images/generations` 与 `/v1/images/edits`，拒绝重定向，300 秒超时，响应 32MB 上限，模型只收 `gpt-image-*`。
 - 改图读取的原图：必须是绝对路径、单个普通文件（拒符号链接，lstat 与 fstat 同一文件）、不超过 20MB、按文件头判定为 PNG/JPEG/WebP，最多 4 张。被提示词注入要求「改一下 ~/.ssh/id_rsa」时，内容校验会拒绝上传。
 - 退出账号只清 Key，工具条目保留；调用时会提示重新登录，不会用旧凭据。
 

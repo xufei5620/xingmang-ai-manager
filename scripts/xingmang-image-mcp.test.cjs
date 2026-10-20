@@ -245,6 +245,30 @@ test('MCP server ignores a configured model outside the OpenAI allow-list', asyn
   })
 })
 
+test('MCP server draws with a newer OpenAI image model instead of swapping it back to gpt-image-2', async () => {
+  await withServer({ apiKey: 'sk-test-not-real', model: 'gpt-image-3' }, ok, async ({ call, requests }) => {
+    const listed = await call('tools/list')
+    const modelSchema = listed.result.tools[0].inputSchema.properties.model
+    assert.equal(modelSchema.default, 'gpt-image-3')
+    assert.equal(modelSchema.enum, undefined)
+    const picked = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(picked.result.isError, undefined)
+    assert.match(picked.result.content[1].text, /gpt-image-3/)
+    const named = await call('tools/call', {
+      name: 'generate_image',
+      arguments: { prompt: 'a cat', model: 'gpt-image-3-mini' },
+    })
+    assert.equal(named.result.isError, undefined)
+    const refused = await call('tools/call', {
+      name: 'generate_image',
+      arguments: { prompt: 'a cat', model: 'jimeng_high_aes_general_v21_L' },
+    })
+    assert.equal(refused.result.isError, true)
+    assert.match(refused.result.content[0].text, /不在允许列表中/)
+    assert.deepEqual(requests.map((request) => JSON.parse(request.body.toString('utf8')).model), ['gpt-image-3', 'gpt-image-3-mini'])
+  })
+})
+
 test('MCP server falls back to gpt-image-2 when the picked model is refused by the relay', async () => {
   const config = { codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real', model: 'gpt-image-2.5-flare' }
   function respond(request) {
