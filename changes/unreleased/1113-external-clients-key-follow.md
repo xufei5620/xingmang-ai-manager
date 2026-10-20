@@ -1,7 +1,3 @@
-## 用户
-
-- 星芒替 Claude Code、Codex 等工具换了密钥以后（在个人中心撤销、密钥失效重新签、换分组），借它们密钥的 Claude Desktop、WorkBuddy、OpenCode 也跟着换上新的，不用重新连接。客户端开着时，首页那一行写「还开着，完全退出后会自动换上新密钥」。
-
 ## 开发
 
 - #1113 收尾：跟着换 Key 从 Claude Desktop 推广到 WorkBuddy、OpenCode，借的是哪个工具的都跟（`system-service.ts` 的

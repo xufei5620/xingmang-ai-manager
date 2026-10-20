@@ -4,6 +4,7 @@ const path = require('node:path')
 const test = require('node:test')
 
 const {
+  assertReleaseNotesFitUpdatePage,
   assertReleaseNotesVersionIsPublishable,
   assertRemoteVersionIsPublishable,
   parsePreflightArguments,
@@ -69,6 +70,36 @@ test('the committed notes are either still unreleased or exactly the packaged ve
     declared === '未发布' || declared === version,
     `release-notes.md 的第一行是「${declared}」，既不是「未发布」也不是 package.json 的 ${version}`,
   )
+})
+
+function releaseNotesWithItems(count) {
+  const items = Array.from({ length: count }, (_, index) => `- 第 ${index + 1} 条。`)
+  return ['0.2.6', '', ...items, '', '0.2.5', '', '- 上一版的条目。', ''].join('\n')
+}
+
+test('a public release refuses more items than the update page holds before anything is built', () => {
+  assert.equal(assertReleaseNotesFitUpdatePage(publicRelease, releaseNotesWithItems(60), '0.2.6'), true)
+  assert.throws(
+    () => assertReleaseNotesFitUpdatePage(publicRelease, releaseNotesWithItems(61), '0.2.6'),
+    (error) => {
+      assert.equal(error.name, 'ReleaseValidationError')
+      assert.equal(error.code, 'RELEASE_NOTES_TOO_MANY')
+      assert.match(error.message, /0\.2\.6 这一版有 61 条/)
+      return true
+    },
+  )
+})
+
+test('a local debug build is not held up by the item count', () => {
+  assert.equal(assertReleaseNotesFitUpdatePage(localBuild, releaseNotesWithItems(61), '0.2.6'), false)
+})
+
+test('the preflight checks the item count right after the version line', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'verify-release-environment.cjs'), 'utf8')
+  const version = source.indexOf('assertReleaseNotesVersionIsPublishable(signing, releaseNotes, packageVersion)')
+  const count = source.indexOf('assertReleaseNotesFitUpdatePage(signing, releaseNotes, packageVersion)')
+  assert.ok(version !== -1 && count > version)
+  assert.ok(count < source.indexOf('await verifyRemoteFeed('))
 })
 
 test('a public release refuses an update feed that is not older than the build', () => {
