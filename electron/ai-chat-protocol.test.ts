@@ -52,9 +52,28 @@ describe('AI model capabilities', () => {
     })
   })
 
+  it('recognizes newer Grok video versions by name prefix as Grok video models', () => {
+    for (const model of ['grok-imagine-video-2', 'grok-imagine-video-2.0-fast', 'Grok-Imagine-Video-3']) {
+      expect(resolveAiModelCapability(model), model).toMatchObject({
+        kind: 'video', model, provider: 'grok-video', available: true, hidden: false,
+        source: 'fallback', minimumSeconds: 1, maximumSeconds: 15,
+        supportsImageInput: true, supportsVideoInput: false, supportsAudioInput: false,
+      })
+      expect(() => buildChatCompletionsRequest({
+        model, messages: [{ role: 'user', content: '海浪' }],
+      }), model).toThrowError(expect.objectContaining({ code: 'invalid-model' }))
+      expect(buildVideoGenerationRequest({ model, prompt: '海浪', seconds: '5' }), model)
+        .toEqual({ model, prompt: '海浪', seconds: '5' })
+    }
+    // Only the exact family prefix counts: embedded or run-on names stay out of video generation.
+    for (const model of ['proxy-grok-imagine-video-2', 'grok-imagine-videos', 'grok-imagine-video-']) {
+      expect(resolveAiModelCapability(model), model).not.toMatchObject({ kind: 'video' })
+    }
+  })
+
   it('hides unrecognized video models instead of listing them as chat models', () => {
     for (const model of [
-      'grok-imagine-video-2', 'minimax-h3-pro', 'MiniMax-Hailuo-02', 'sora-2', 'sora-2-pro',
+      'minimax-h3-pro', 'MiniMax-Hailuo-02', 'sora-2', 'sora-2-pro',
       'veo-3.1-fast', 'kling-v2-1-master', 'doubao-seedance-1-0-pro', 'wan2.2-t2v-plus',
     ]) {
       expect(resolveAiModelCapability(model), model).toMatchObject({ kind: 'chat', model, available: false, hidden: true })
@@ -67,7 +86,7 @@ describe('AI model capabilities', () => {
         .toThrowError(expect.objectContaining({ code: 'model-not-video' }))
     }
     expect(selectAiChatModelsForGroup('Grok', ['grok-4', 'grok-imagine-video-2', 'grok-imagine-video', 'sora-2']))
-      .toEqual(['grok-4', 'grok-imagine-video'])
+      .toEqual(['grok-4', 'grok-imagine-video-2', 'grok-imagine-video'])
   })
 
   it('keeps chat models whose names only resemble video vendors', () => {
@@ -96,7 +115,7 @@ describe('AI model capabilities', () => {
     expect(getKnownImageModelPresets({ includeHidden: true }).map(({ model }) => model)).toContain('gpt-image-1.5')
   })
 
-  it('keeps only production-verified models in the image group and puts GPT Image 2 first', () => {
+  it('drops chat and hidden models from the image group and puts GPT Image 2 first', () => {
     expect(selectAiChatModelsForGroup('图片模型', [
       'gemini-3.1-flash-image',
       'gpt-image-1',
@@ -123,6 +142,35 @@ describe('AI model capabilities', () => {
 
     expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
     expect(selectAiChatModelsForGroup('画图', models, ['画图'])).toEqual(curated)
+  })
+
+  it('lists recognizable image and video models outside the curated order after it', () => {
+    expect(selectAiChatModelsForGroup('图片模型', [
+      'gpt-image-3',
+      'gpt-4o',
+      'sora-2',
+      'gpt-image-2',
+      'grok-imagine-video-2',
+      'gpt-image-1.5-2026-01-01',
+      'jimeng_future_v1',
+      'grok-imagine-image-3',
+      'gpt-image-2.5-flare',
+    ])).toEqual([
+      'gpt-image-2.5-flare',
+      'gpt-image-2',
+      'gpt-image-3',
+      'grok-imagine-video-2',
+      'jimeng_future_v1',
+      'grok-imagine-image-3',
+    ])
+  })
+
+  it('keeps a new-generation image group usable when none of the curated models remain', () => {
+    const models = ['gpt-image-3', 'gpt-image-3-mini', 'gpt-5.6-sol']
+
+    expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(['gpt-image-3', 'gpt-image-3-mini'])
+    expect(selectAiChatModelsForGroup('画图', models, ['画图'])).toEqual(['gpt-image-3', 'gpt-image-3-mini'])
+    expect(selectAiChatModelsForGroup('图片模型', ['gpt-5.6-sol', 'gpt-image-1.5'])).toEqual([])
   })
 
   it('keeps GPT Image 2.5 visible as image models in the default GPT group', () => {

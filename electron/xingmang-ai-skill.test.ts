@@ -11,6 +11,7 @@ import { writeCodexDesktopLocale } from './codex-desktop-locale'
 import { classifyCodexConfigProfile, codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
 import type { RelayBackendClient } from './relay-backend'
 import {
+  OPENAI_IMAGE_MODEL_PATTERN,
   XINGMANG_AI_CODEX_SKILL_STATE_FILE,
   XINGMANG_AI_CONFIG_FILE,
   XINGMANG_AI_MANAGED_MANIFEST_FILE,
@@ -127,18 +128,20 @@ describe('xingmang-ai-skill', () => {
   it('falls back to another listed model the drawing script accepts instead of an absent gpt-image-2', () => {
     expect(selectXingmangAiImageModel(['gpt-image-1', 'gpt-image-2.5-sunburst'])).toBe('gpt-image-2.5-sunburst')
     expect(selectXingmangAiImageModel([' gpt-image-1 ', 'gpt-image-1.5'])).toBe('gpt-image-1')
-    // gpt-image-1.5 is listed by some keys but not served; unknown gpt-image names are not in the script allow-list.
+    // gpt-image-1.5 is listed by some keys but not served; the automatic pick stays on the known names.
     expect(selectXingmangAiImageModel(['gpt-image-1.5', 'gpt-image-3', 'gemini-3.1-flash-image'])).toBeNull()
     expect(selectXingmangAiImageModel([])).toBeNull()
   })
 
-  it('only ever picks a model the bundled drawing script accepts', async () => {
-    const script = await readFile(path.join(bundledRoot, 'scripts', 'mcp-server.mjs'), 'utf8')
-    const allowList = /const ALLOWED_MODELS = new Set\(\[([^\]]*)\]\)/.exec(script)?.[1] ?? ''
-    const allowed = [...allowList.matchAll(/'([^']+)'/g)].map((match) => match[1])
-    expect(allowed.length).toBeGreaterThan(0)
-    for (const model of [...XINGMANG_AI_IMAGE_MODEL_PREFERENCE, ...XINGMANG_AI_IMAGE_MODEL_FALLBACKS]) {
-      expect(allowed, model).toContain(model)
+  it('recognizes image models with the same rule as both bundled drawing scripts', async () => {
+    // A narrower script rule silently swapped models the desktop app wrote back to gpt-image-2 (#1059).
+    for (const file of ['mcp-server.mjs', 'generate.mjs']) {
+      const script = await readFile(path.join(bundledRoot, 'scripts', file), 'utf8')
+      expect(script, file).toContain(`/${OPENAI_IMAGE_MODEL_PATTERN.source}/${OPENAI_IMAGE_MODEL_PATTERN.flags}`)
+      expect(script, file).not.toContain('ALLOWED_MODELS')
+    }
+    for (const model of [...XINGMANG_AI_IMAGE_MODEL_PREFERENCE, ...XINGMANG_AI_IMAGE_MODEL_FALLBACKS, 'gpt-image-3']) {
+      expect(OPENAI_IMAGE_MODEL_PATTERN.test(model), model).toBe(true)
     }
   })
 

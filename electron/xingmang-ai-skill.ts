@@ -483,11 +483,12 @@ export function selectImageSkillGroup(groups: readonly { name: string }[]): stri
 // 要用让 AI 自己点名。
 export const XINGMANG_AI_DEFAULT_IMAGE_MODEL = 'gpt-image-2'
 export const XINGMANG_AI_IMAGE_MODEL_PREFERENCE = ['gpt-image-2.5-flare', XINGMANG_AI_DEFAULT_IMAGE_MODEL] as const
-// 两个首选账号里都没有时，以前照样写 gpt-image-2，一画就失败（#1059）。这时从画图脚本也认的型号
-// （mcp-server.mjs 的 ALLOWED_MODELS）里挑账号实有的，次序跟 AI 对话的图片分组一样；sunburst 这时才轮到。
+// 两个首选账号里都没有时，以前照样写 gpt-image-2，一画就失败（#1059）。这时从下面两个里挑账号实有的，
+// 次序跟 AI 对话的图片分组一样；sunburst 这时才轮到。
 // gpt-image-1.5 站上没开放（ai-chat-protocol.ts 标了不可用），不挑。
 export const XINGMANG_AI_IMAGE_MODEL_FALLBACKS = ['gpt-image-2.5-sunburst', 'gpt-image-1'] as const
-const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
+// 画图脚本（mcp-server.mjs、generate.mjs）认型号用的是同一条，测试钉住三处一致。
+export const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
 
 export function selectXingmangAiImageModel(models: readonly string[]): string | null {
   const available = new Set(models.map((model) => model.trim()))
