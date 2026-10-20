@@ -16,6 +16,7 @@ import {
   type CanvasRunNodeKind,
   type CanvasRunRecord,
 } from './canvas-run-contract'
+import { isRecord } from './input-guards'
 
 const DEFAULT_MAXIMUM_BYTES = 8 * 1024 * 1024
 const DEFAULT_RUN_RETENTION = 100
@@ -63,10 +64,6 @@ function assertPositiveInteger(value: number, label: string, maximum = 100_000):
 
 function requireUserId(userId: number): void {
   assertPositiveInteger(userId, '画布账号标识', Number.MAX_SAFE_INTEGER)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function isIsoDate(value: unknown): value is string {

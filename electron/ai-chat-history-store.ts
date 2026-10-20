@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import type { AiChatHistoryFile, AiChatHistorySnapshot, AiChatHistoryWrite } from './ipc-contract'
 import { readDirectoryEntries } from './bounded-directory'
 import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8File, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 // 聊天记录以前整份存在渲染层 localStorage 里，超过 4 MB 就整份不写，退出后新内容
 // 全丢。现在按对话拆成文件放在用户数据目录：一次保存只重写改过的那几个对话，
@@ -30,10 +31,6 @@ export interface AiChatHistoryStore {
   write(input: AiChatHistoryWrite): Promise<void>
   /** Resolves once every write accepted so far has settled; quitting waits on it. */
   idle(): Promise<void>
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function utf8Bytes(value: string): number {

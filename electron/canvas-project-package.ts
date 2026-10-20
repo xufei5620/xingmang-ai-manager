@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { inspectAiImage, type AiStoredAsset } from './ai-asset-store'
+import { isRecord } from './input-guards'
 
 export const canvasProjectPackageVersion = 1 as const
 export const maximumCanvasProjectBytes = 96 * 1024 * 1024
@@ -26,10 +27,6 @@ export interface ParsedCanvasProjectPackage {
   workflow: Record<string, unknown>
   assets: Array<{ assetId: string; mimeType: AiStoredAsset['mimeType']; bytes: Buffer }>
   warnings: string[]
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function utf8Size(value: string): number {

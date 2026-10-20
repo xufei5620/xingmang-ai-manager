@@ -4,7 +4,9 @@
 // scripts/verify-renderer-boundary.test.cjs), so it must stay free of Node APIs (I6).
 
 // 「是不是对象」「是不是字符串数组」这类最基础的检查，以前在四十多个文件里各写一份，写法还不完全一样
-// （#1071 第 3 条）。新代码从这里取；旧副本等所在文件拆分时（#1070）顺手换掉，不单独批量替换。
+// （#1071 第 3 条）。主进程和 renderer-v2 自己那份 isRecord 已全部换成这里的（#1070），新代码也从这里取。
+// 还各留一份是有意的：drama-parse.ts 要和画布那份逐字一样（verify-drama-parse-parity），scripts/*.cjs
+// 是不经编译的 CommonJS，canvas-v2 和冻结的 legacy 树不动。
 // 这里只判断、不出报错文案：要拒绝的调用点照旧抛自己的中文报错，上屏的话不因为换了检查而变。
 
 /** 不是 null、不是数组的对象。Date、Map 这类也算，要排除它们的调用点自己再加一道。 */

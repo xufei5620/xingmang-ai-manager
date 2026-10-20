@@ -9,6 +9,7 @@ import {
   assertNoReparseComponents, assertSafeDataFile, ensureSafeDataDirectory,
   readSafeUtf8File, removeSafeDataFile, writeAtomicSafeUtf8File,
 } from '../safe-local-data'
+import { isRecord } from '../input-guards'
 
 interface ProxyRegistryValues {
   ProxyEnable: number | null
@@ -413,10 +414,6 @@ try {
   [void][Console]::In.ReadLine()
 } finally {if($owned){$mutex.ReleaseMutex()};$mutex.Dispose()}
 `
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
 
 function proxyText(value: unknown, nullable = false): string | null {
   if (nullable && value === null) return null

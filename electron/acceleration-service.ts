@@ -1,5 +1,6 @@
 import type { AccelerationApi, AccelerationBundleCheck, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState, AccelerationUnavailableReason } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind, isAccelerationLineId } from './acceleration-contract'
+import { isRecord } from './input-guards'
 
 export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
@@ -119,10 +120,6 @@ function redemptionFailure(error: unknown): Error {
   if (reason === 'local-data') return accelerationFailure(reason, '加速时长这次没有加上：本机的时长记录写不进去。请检查磁盘剩余空间后再输一次口令。')
   if (!reason || reason === 'unknown') return new Error(REDEMPTION_FAILURE)
   return accelerationFailure(reason, `加速时长这次没有加上：${accelerationFailureMessages[reason]}`)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function isSeconds(value: unknown): value is number {

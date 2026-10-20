@@ -14,6 +14,7 @@ import {
   readSafeUtf8File,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 const MAX_CODEX_CONFIG_BYTES = 2 * 1024 * 1024
 
@@ -162,10 +163,6 @@ export function resolveXingmangAiCodexSkillPath(userHome: string): string {
     XINGMANG_AI_SKILL_DIRECTORY,
     'SKILL.md',
   )
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function normalizedSkillPathKey(value: string): string {

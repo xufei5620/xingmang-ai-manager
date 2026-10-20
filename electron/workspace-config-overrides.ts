@@ -4,6 +4,7 @@ import * as TOML from '@iarna/toml'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import type { ProviderId } from './catalog'
+import { isRecord } from './input-guards'
 
 /**
  * 本软件只写用户级配置（~/.claude/settings.json、~/.codex、~/.gemini …），但几家
@@ -95,10 +96,6 @@ export const claudePlatformSwitches = [
   'CLAUDE_CODE_USE_ANTHROPIC_AWS',
   'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
 ] as const
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function nonEmptyString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''

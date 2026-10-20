@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { releaseStagedDarwinCli, stageVerifiedDarwinCli } from './darwin-cli-staging'
+import { isRecord } from './input-guards'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 
 const OPENAI_TEAM_ID = '2DC432GLL2'
@@ -70,10 +71,6 @@ function targetForDarwinArchitecture(arch: NodeJS.Architecture): string | null {
   if (arch === 'arm64') return 'aarch64-apple-darwin'
   if (arch === 'x64') return 'x86_64-apple-darwin'
   return null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function fileIdentity(stats: fs.BigIntStats): DarwinCodexFileIdentity {

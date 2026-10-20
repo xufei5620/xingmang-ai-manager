@@ -38,6 +38,7 @@ import {
   type CodexTomlMutation,
 } from './codex-config-toml'
 import { describeBrokenConfig } from './broken-config-advice'
+import { isRecord } from './input-guards'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -190,10 +191,6 @@ interface PlatformTarget {
   packageName: string
   triple: string
   executable: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function stringValue(value: unknown, fallback = ''): string {

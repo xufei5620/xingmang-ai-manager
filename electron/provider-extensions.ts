@@ -42,6 +42,7 @@ import {
   assertTrustedElevatedCliCommand,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
+import { isRecord } from './input-guards'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MUTATION_TIMEOUT_MS = 120_000
@@ -322,10 +323,6 @@ interface ParsedPackageSource {
   kind: 'npm' | 'pypi' | 'git' | 'source-unknown'
   locator: string | null
   reference: string | null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function text(value: unknown, fallback = ''): string {

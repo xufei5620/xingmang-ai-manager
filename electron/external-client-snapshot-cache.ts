@@ -2,6 +2,7 @@ import path from 'node:path'
 import { redactCommandText } from './command-runner'
 import { externalClientOfficialDownloadUrls, externalToolIds, isExternalToolId, type ExternalClientStatus } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { OptionalKeys, Pin, RequiredFields, SameShape } from './system-snapshot-cache'
 
@@ -36,10 +37,6 @@ const maximumBytes = 512 * 1024
 const maximumStringLength = 4096
 // 赋给更宽的类型再按客户端查，不用断言：没有下载页的那家查出来是 undefined。
 const officialDownloadUrls: Partial<Record<ExternalToolId, string>> = externalClientOfficialDownloadUrls
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function nullableString(value: unknown): boolean {
   return value === null || typeof value === 'string'

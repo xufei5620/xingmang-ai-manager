@@ -2,6 +2,7 @@ import { readBoundedUtf8FileSync } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { activeProviderIds } from './catalog'
 import { isCliModelName, type CliModelHint, type CliModelHints } from './cli-model-defaults'
+import { isRecord } from './input-guards'
 import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from './managed-cli-groups'
 
 /**
@@ -110,10 +111,6 @@ export interface ReleaseGuard {
 const maxStatusBytes = 16 * 1024
 const maxMessageLength = 200
 const defaultTimeoutMs = 5_000
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function isLoopbackHost(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'

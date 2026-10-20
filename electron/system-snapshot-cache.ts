@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { providerIds, type ProviderId } from './catalog'
 import { redactCommandText } from './command-runner'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { CliStatus, DesktopAppStatus, NetworkLocationStatus, NetworkRegion, SystemSnapshot, ToolStatus } from './system-service'
 import type { CliUninstallCapability } from './tool-installation'
@@ -41,10 +42,6 @@ export interface SystemSnapshotCache {
 const fileLabel = '上次检测结果'
 const maximumBytes = 512 * 1024
 const maximumStringLength = 4096
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function nullableString(value: unknown): boolean {
   return value === null || typeof value === 'string'

@@ -3,6 +3,7 @@ import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
 import type { CanvasRunGraph, CanvasRunNodeKind, CanvasRunScope } from './canvas-run-contract'
 import type { AiImageGenerateInput } from './ipc-contract'
+import { isRecord } from './input-guards'
 
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 const videoTaskIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
@@ -12,10 +13,6 @@ const windowsReservedFileNamePattern = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..
 // the graph revision and cloned again by the run service. A graph the canvas can
 // legitimately run comes from a workflow it can save, which is capped at 20 MB.
 const maximumRunPromptBytes = 20 * 1024 * 1024
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 export function requiredCanvasString(value: unknown, label: string, maximum: number): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum || /[\x00-\x1F\x7F]/.test(value)) {

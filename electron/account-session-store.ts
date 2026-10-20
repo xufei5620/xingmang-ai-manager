@@ -7,6 +7,7 @@ import {
   removeSafeDataFile,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 // Persists the 星芒 app's own login session -- NOT the relay API Key
 // AGENTS.md's "不给 API Key 加密" rule targets (that rule is about the key
@@ -49,10 +50,6 @@ const FILE_LABEL = '账号登录凭据'
 
 export interface PersistedAccountSession extends NewApiPersistableSession {
   version: 1
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 export function isPersistedAccountSession(value: unknown): value is PersistedAccountSession {

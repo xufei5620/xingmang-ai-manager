@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { isRecord } from './input-guards'
 import { powerShellLiteral } from './windows-elevation'
 
 // 终端里的 Claude Code / Gemini CLI / Grok 开始、出错、做完、停下来等人或退出时，以及 Codex 做完一轮时，由它们自己的钩子起一次
@@ -159,10 +160,6 @@ export function geminiCliHookCommand(invocation: CliHookInvocation): string {
     return `& ${powerShellLiteral(nodeExecutable)} ${powerShellLiteral(scriptPath)} gemini ${powerShellLiteral(eventsDirectory)}`
   }
   return `${posixShellLiteral(nodeExecutable)} ${posixShellLiteral(scriptPath)} gemini ${posixShellLiteral(eventsDirectory)}`
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 /** 这一条钩子是不是本软件写的：认脚本文件名，用户自己写的钩子不会提到它。 */

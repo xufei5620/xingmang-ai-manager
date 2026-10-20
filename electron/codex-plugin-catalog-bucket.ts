@@ -6,6 +6,7 @@ import {
   fetchDesktopBucketResource,
   isDesktopBucketDownloadTooSlow,
 } from './desktop-package-bucket'
+import { isRecord } from './input-guards'
 
 /**
  * 星芒存储桶里的 Codex 官方插件目录：scripts/sync-codex-plugins-cos.cjs 定时看 github.com/openai/plugins
@@ -47,10 +48,6 @@ export interface CodexPluginCatalogBucketRelease {
 export interface CodexPluginCatalogBucketDownload {
   commit: string
   compressed: Buffer
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function objectUrl(key: string): string {

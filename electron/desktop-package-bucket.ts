@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import { readBoundedResponseText } from './bounded-response'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
+import { isRecord } from './input-guards'
 
 /**
  * 星芒自己的腾讯云存储桶里放着 Codex、Claude 桌面端和 Mac 版 OpenCode 的官方离线包：
@@ -161,10 +162,6 @@ const packageSpecs: Record<DesktopBucketPackageId, CodexWindowsSpec | CodexMacSp
     fileName: 'opencode-desktop-mac-x64.app.tar.gz', contentType: 'application/gzip', verification: 'macos-developer-id-notarized',
     versionPattern: /^\d{1,4}\.\d{1,4}\.\d{1,6}$/, maximumBytes: maximumOpenCodePackageBytes,
   },
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function isSha256Hex(value: unknown): value is string {

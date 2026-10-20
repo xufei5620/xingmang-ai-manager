@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { isRecord } from './input-guards'
 import { XINGMANG_AI_CONFIG_FILE, XINGMANG_AI_SKILL_DIRECTORY } from './xingmang-ai-skill'
 
 export const XINGMANG_IMAGE_MCP_NAME = 'xingmang-image'
@@ -18,10 +19,6 @@ export interface XingmangImageMcpInvocation {
 
 export type XingmangImageTomlVariant = 'codex' | 'grok'
 export type XingmangImageJsonVariant = 'claude' | 'gemini'
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 export function buildXingmangImageMcpInvocation(
   nodeExecutable: string,
