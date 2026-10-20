@@ -77,11 +77,34 @@ describe('main process window events', () => {
   })
 })
 
+// What a step runs, one entry per statement, whitespace and a trailing `;`
+// dropped: a concise arrow body counts as one statement, and statements inside
+// an `if` or a loop count on their own (callbacks handed to something else are
+// left whole).
+function stepStatements(source: ts.SourceFile, step: ts.Expression): string[] {
+  function text(node: ts.Node): string {
+    return node.getText(source).replace(/\s+/g, ' ').replace(/;$/, '')
+  }
+  if (!ts.isArrowFunction(step) && !ts.isFunctionExpression(step)) return [text(step)]
+  if (!ts.isBlock(step.body)) return [text(step.body)]
+  const found: string[] = []
+  function visit(node: ts.Node): void {
+    if (ts.isFunctionLike(node)) return
+    if (ts.isExpressionStatement(node)) {
+      found.push(text(node))
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+  ts.forEachChild(step.body, visit)
+  return found
+}
+
 // Every `quitCleanup.add` in main.ts with what a reader needs to check its place:
 // the function it runs in and the `if` it sits behind, if any.
 function quitCleanupSteps() {
   const { source } = mainSource()
-  const steps: Array<{ name: string, body: string, owner: ts.Node | undefined, guard: string | null }> = []
+  const steps: Array<{ name: string, body: string, statements: string[], owner: ts.Node | undefined, guard: string | null }> = []
   function enclosingGuard(node: ts.Node): string | null {
     for (let child = node, parent = node.parent; parent && !ts.isFunctionLike(parent); child = parent, parent = parent.parent) {
       if (ts.isIfStatement(parent) && parent.thenStatement === child) return parent.expression.getText(source)
@@ -92,7 +115,7 @@ function quitCleanupSteps() {
     if (ts.isCallExpression(node) && node.expression.getText(source) === 'quitCleanup.add') {
       const [name, step] = node.arguments
       if (!name || !ts.isStringLiteral(name) || !step) throw new Error(`quitCleanup.add needs a literal name: ${node.getText(source)}`)
-      steps.push({ name: name.text, body: step.getText(source), owner: enclosingFunction(node), guard: enclosingGuard(node) })
+      steps.push({ name: name.text, body: step.getText(source), statements: stepStatements(source, step), owner: enclosingFunction(node), guard: enclosingGuard(node) })
     }
     ts.forEachChild(node, visit)
   }
@@ -103,8 +126,18 @@ function quitCleanupSteps() {
 describe('main process quit cleanup', () => {
   it('hangs the whole quit cleanup on a single will-quit listener', () => {
     const { sourceText } = mainSource()
-    expect(sourceText.match(/'will-quit'/g)).toHaveLength(1)
-    expect(sourceText).toContain("app.once('will-quit', () => quitCleanup.run())")
+    expect(sourceText.match(/['"`]will-quit['"`]/g)).toHaveLength(1)
+    const { source } = mainSource()
+    const listeners: string[][] = []
+    function visit(node: ts.Node): void {
+      const [event, listener] = ts.isCallExpression(node) ? node.arguments : []
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 'app.once' && event && ts.isStringLiteral(event)
+        && event.text === 'will-quit' && listener) listeners.push(stepStatements(source, listener))
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    // 运行日志先改成当场写，再跑清理：清理里哪一步失败、「即将退出」那一条才落得了盘（#1335 第 3 条）。
+    expect(listeners).toEqual([['runtimeLog.writeSynchronouslyFromNowOn()', 'quitCleanup.run()']])
   })
 
   it('registers the steps in the order the separate will-quit listeners used to run', () => {
@@ -135,12 +168,115 @@ describe('main process quit cleanup', () => {
     for (const step of steps) expect(step.owner?.getStart()).toBe(owner)
   })
 
+  it('runs exactly the teardown each step is meant to run', () => {
+    // 上面只钉了步骤名和先后，步骤里删掉一句（比如 relayRouteController.dispose()）测试照过，退出时就有计时器
+    // 或线路控制器没停（#1335 第 1 条）。改了哪一步要做的事，在这里跟着改。
+    const statements = Object.fromEntries(quitCleanupSteps().map((step) => [step.name, step.statements]))
+    expect(statements).toEqual({
+      'acceleration-power': ["powerMonitor.off('suspend', onSuspend)", "powerMonitor.off('resume', onResume)"],
+      'cli-hook-events': ['cliHookEvents.dispose()'],
+      'keep-awake': ['cliKeepAwake.dispose()', 'unsubscribeInstallKeepAwakeQueue()', 'unsubscribeInstallKeepAwakeUpdate()', 'installKeepAwake.dispose()'],
+      routes: [
+        'unsubscribeRelayRoute()',
+        'unsubscribeToolRoutes()',
+        'systemService.disposeToolRoutes?.()',
+        'relayRouteController.dispose()',
+        'toolRouteController.dispose()',
+        "powerMonitor.off('resume', onRouteResume)",
+        'clearInterval(routeOnlineTimer)',
+      ],
+      'acceleration-notices': ['accelerationExpiry?.dispose()', 'codexDesktopAcceleration.dispose()', 'accelerationInterruption?.dispose()'],
+      acceleration: ["void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))"],
+      'acceleration-host': ['void developmentAcceleration?.dispose().catch(() => undefined)'],
+      'runtime-log-hooks': [
+        "runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')",
+        "process.off('uncaughtExceptionMonitor', onUncaughtException)",
+        "process.off('unhandledRejection', onUnhandledRejection)",
+      ],
+      'updates-and-notifications': [
+        'clearInterval(periodicUpdateTimer)',
+        'serviceStatusMonitor?.dispose()',
+        'unsubscribeDesktopNotifications()',
+        'unsubscribeAutoUpdateInstall()',
+        'desktopNotifications.dispose()',
+      ],
+      ipc: ['unregisterIpcHandlers()'],
+      'business-services': [
+        'business.chatService.dispose()',
+        'business.imageService.cancelAll()',
+        'business.canvasImageService.cancelAll()',
+        'business.videoService.cancelAll()',
+        'business.canvasRuns.shutdown()',
+      ],
+      'asset-protocol-and-windows': ["protocol.unhandle('xingmang-asset')", 'paymentWindow.destroy()', 'canvasController.dispose()'],
+      updater: ['updaterService.dispose()'],
+      'display-watch': [
+        'clearTimeout(displayChangeTimer)',
+        "screen.removeListener('display-removed', onDisplaysChanged)",
+        "screen.removeListener('display-metrics-changed', onDisplaysChanged)",
+      ],
+      'power-off-watch': ["powerMonitor.off('shutdown', onPowerOff)"],
+      'unexpected-exit-flag': ['appWillQuit = true'],
+      'unexpected-exit-handler': ["process.off('uncaughtException', onUnexpectedException)"],
+      'window-lifecycle-and-tray': ['lifecycle.dispose()', 'applicationTray?.dispose()'],
+    })
+  })
+
+  it('hands every listener and interval a bootstrap module starts back to main.ts to undo', () => {
+    // bootstrap/ 里挂的监听和计时器要把取消句柄交回 main.ts，在退出清理里撤掉；只挂不撤，退出时它们还在跑
+    // （#1335 第 2 条）。真有不用撤的，写进 allowed（「文件 调用(句柄)」），旁边写明为什么。
+    const allowed: string[] = []
+    const listenerCall = /^(app|powerMonitor|process|screen|nativeTheme)\.(on|once|addListener)$/
+    const cleanup = quitCleanupSteps().flatMap((step) => step.statements)
+    const unhandled: string[] = []
+    for (const file of mainWiringFiles()) {
+      if (file.endsWith('main.ts') || file.endsWith('lifecycle.ts')) continue
+      const { source } = parseWiringFile(file)
+      // The names a function hands back as `return { a, b }`.
+      function returnedNames(owner: ts.Node | undefined): Set<string> {
+        const names = new Set<string>()
+        function visit(node: ts.Node): void {
+          if (ts.isReturnStatement(node) && enclosingFunction(node) === owner && node.expression && ts.isObjectLiteralExpression(node.expression)) {
+            for (const property of node.expression.properties) {
+              if (ts.isShorthandPropertyAssignment(property)) names.add(property.name.text)
+            }
+          }
+          ts.forEachChild(node, visit)
+        }
+        if (owner) visit(owner)
+        return names
+      }
+      function visit(node: ts.Node): void {
+        const callee = ts.isCallExpression(node) ? node.expression.getText(source) : ''
+        const listener = callee.match(listenerCall)
+        if (ts.isCallExpression(node) && (callee === 'setInterval' || listener)) {
+          const [event, callback] = node.arguments
+          const handle = listener
+            ? (callback && ts.isIdentifier(callback) ? callback.text : null)
+            : (ts.isVariableDeclaration(node.parent) ? node.parent.name.getText(source) : null)
+          const undo = handle === null ? [] : listener
+            ? [`${listener[1]}.off(${event?.getText(source)}, ${handle})`, `${listener[1]}.removeListener(${event?.getText(source)}, ${handle})`]
+            : [`clearInterval(${handle})`]
+          const handedBack = handle !== null && returnedNames(enclosingFunction(node)).has(handle)
+          const undone = cleanup.some((statement) => undo.includes(statement))
+          const name = `${path.basename(file)} ${callee}(${handle ?? '…'})`
+          if (!(handedBack && undone) && !allowed.includes(name)) {
+            unhandled.push(`${name} at line ${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(source)
+    }
+    expect(unhandled).toEqual([])
+  })
+
   it('leaves registering cleanup steps to main.ts', () => {
     // 拆到 bootstrap/ 的启动步骤把要收拾的东西交回 main.ts 登记：登记都在一处，上面钉的先后才是退出时的先后。
     for (const file of mainWiringFiles()) {
       if (file.endsWith('main.ts') || file.endsWith('lifecycle.ts')) continue
       const { sourceText } = parseWiringFile(file)
-      expect({ file: path.basename(file), registers: /quitCleanup|'will-quit'/.test(sourceText) }).toEqual({ file: path.basename(file), registers: false })
+      expect({ file: path.basename(file), registers: /quitCleanup|['"`]will-quit['"`]/.test(sourceText) }).toEqual({ file: path.basename(file), registers: false })
     }
   })
 
@@ -154,8 +290,8 @@ describe('main process quit cleanup', () => {
   })
 
   it('disconnects acceleration after its notices, then lets the worker go exactly once', () => {
-    // 独立加速进程被放掉后自己还原系统代理，失败按次数上限重试（#1265）：它必须排在加速服务之后，
-    // 而且整个退出只放一次。
+    // 先停提醒，再叫加速服务断开，再放掉独立加速进程：后两步都是发出去就走、不等对方做完，这里钉的是发出去的
+    // 先后和整个退出只放一次。独立加速进程被放掉后自己还原系统代理，失败按次数上限重试（#1265）。
     const steps = quitCleanupSteps()
     const names = steps.map((step) => step.name)
     expect(names.indexOf('acceleration-notices')).toBeLessThan(names.indexOf('acceleration'))

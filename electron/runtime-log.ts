@@ -6,10 +6,12 @@ import { maskEmailAddresses } from './redaction-patterns'
 import { drainStartupFailures, redactHomeDirectory, STARTUP_LOG_FILE_NAME } from './startup-log'
 import {
   appendSafeUtf8File,
+  appendSafeUtf8FileSync,
   assertSafeDataFile,
   ensureSafeDataDirectory,
   readSafeUtf8File,
   removeSafeDataFile,
+  removeSafeDataFileSync,
 } from './safe-local-data'
 
 export type RuntimeLogLevel = 'debug' | 'info' | 'warn' | 'error'
@@ -322,6 +324,12 @@ async function renameIfPresent(source: string, destination: string): Promise<voi
   await fs.promises.rename(source, destination)
 }
 
+function renameIfPresentSync(source: string, destination: string): void {
+  if (!assertSafeDataFile(source, '运行日志文件')) return
+  removeSafeDataFileSync(destination, '运行日志文件')
+  fs.renameSync(source, destination)
+}
+
 /**
  * 日志写不进文件的原因，说成用户看得懂的半句。最常见的一种是软件数据文件夹被
  * 「搬家」到了别的盘：safe-local-data 的校验（I8）会拒绝经过目录联接的路径，
@@ -355,6 +363,9 @@ export class RuntimeLogStore {
   private describeHost: RuntimeHostDescriber | null = null
   private describeAccount: RuntimeAccountDescriber | null = null
   private writeQueue: Promise<void> = Promise.resolve()
+  // 排在 writeQueue 里还没跑完的追加和读取有几件；同步写只在一件都没有时才动手。
+  private queuedTasks = 0
+  private writeSynchronously = false
   // 每个日志文件一份解析结果，键是文件路径，所以最多 archiveCount + 1 份，天然有界。
   private readonly parsedFiles = new Map<string, { fingerprint: string; summary: RuntimeLogFileSummary }>()
   private sequence = 0
@@ -438,9 +449,29 @@ export class RuntimeLogStore {
       stored = { ...entry, detail: { truncated: '[TRUNCATED: detail too large]' } }
       line = `${JSON.stringify(stored)}\n`
     }
+    if (this.writeSynchronously && this.queuedTasks === 0) {
+      try {
+        this.appendSync(line)
+      } catch (error) {
+        this.recordWriteFailure(stored, error)
+      }
+      return
+    }
+    this.queuedTasks += 1
     this.writeQueue = this.writeQueue
       .then(() => this.append(line))
       .catch((error: unknown) => this.recordWriteFailure(stored, error))
+      .finally(() => { this.queuedTasks -= 1 })
+  }
+
+  /**
+   * 进程马上要退出（will-quit）时调：从这一刻起每一条当场同步写进文件。排队的异步追加在 will-quit
+   * 返回、进程退出前多半跑不完，「应用主进程即将退出」和退出清理哪一步失败了那几条以前常常落不了盘
+   * （#1335 第 3 条）。队列里还有没跑完的就照旧排在后面：不跟进行中的那次追加抢同一个文件位置，
+   * 先后也不乱，代价只是这一条可能还是赶不上。
+   */
+  writeSynchronouslyFromNowOn(): void {
+    this.writeSynchronously = true
   }
 
   /**
@@ -521,10 +552,35 @@ export class RuntimeLogStore {
     await appendSafeUtf8File(this.filePath, line, '运行日志文件')
   }
 
+  /** append() 的同步版，同一套检查和轮转；只在退出那一拍、队列空着的时候用（见 writeSynchronouslyFromNowOn）。 */
+  private appendSync(line: string): void {
+    ensureSafeDataDirectory(this.directory, '运行日志目录')
+    const lineBytes = Buffer.byteLength(line, 'utf8')
+    let currentBytes = 0
+    if (assertSafeDataFile(this.filePath, '运行日志文件')) {
+      currentBytes = fs.statSync(this.filePath).size
+    }
+    if (currentBytes > 0 && currentBytes + lineBytes > this.maxFileBytes) {
+      this.parsedFiles.clear()
+      if (this.archiveCount > 0) {
+        removeSafeDataFileSync(this.archivePath(this.archiveCount), '运行日志文件')
+        for (let index = this.archiveCount - 1; index >= 1; index -= 1) {
+          renameIfPresentSync(this.archivePath(index), this.archivePath(index + 1))
+        }
+        renameIfPresentSync(this.filePath, this.archivePath(1))
+      } else {
+        removeSafeDataFileSync(this.filePath, '运行日志文件')
+      }
+    }
+    appendSafeUtf8FileSync(this.filePath, line, '运行日志文件')
+  }
+
   private runExclusive<T>(task: () => Promise<T>): Promise<T> {
     // Reads and clears share the write queue so an in-flight append can never
     // rotate or truncate a file while it is being read.
-    const result = this.writeQueue.then(task)
+    this.queuedTasks += 1
+    // 先减计数再兑现：等 idle() 的人醒来时，计数已经回到 0。
+    const result = this.writeQueue.then(task).finally(() => { this.queuedTasks -= 1 })
     this.writeQueue = result.then(() => undefined, () => undefined)
     return result
   }

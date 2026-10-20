@@ -147,6 +147,59 @@ describe('RuntimeLogStore', () => {
     expect(fs.readFileSync(store.filePath, 'utf8')).toContain('app.unexpected-exit.relaunched')
   })
 
+  // #1335 第 3 条：will-quit 返回后进程就退了，排队的异步追加跑不完，退出那一拍写的几条以前常常落不了盘。
+  describe('once the process is about to quit', () => {
+    it('writes each entry to the file on the spot', async () => {
+      const store = createStore()
+      store.log('info', 'main', 'app.started', '启动')
+      await store.idle()
+      store.writeSynchronouslyFromNowOn()
+      store.log('info', 'main', 'app.stopping', '应用主进程即将退出')
+      store.exception('main', 'app.quit-cleanup.failed', new Error('step failed'), { step: 'routes' })
+      // No await: the lines must already be in the file.
+      const events = fs.readFileSync(store.filePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line).event)
+      expect(events).toEqual(['app.started', 'app.stopping', 'app.quit-cleanup.failed'])
+    })
+
+    it('queues behind a write still in flight instead of racing it for the same spot in the file', async () => {
+      const store = createStore()
+      store.log('info', 'main', 'window.closed', '窗口关了')
+      store.writeSynchronouslyFromNowOn()
+      store.log('info', 'main', 'app.stopping', '应用主进程即将退出')
+      expect(fs.existsSync(store.filePath) ? fs.readFileSync(store.filePath, 'utf8') : '').not.toContain('app.stopping')
+      await store.idle()
+      store.log('info', 'main', 'after', '队列空了以后')
+      const events = fs.readFileSync(store.filePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line).event)
+      expect(events).toEqual(['window.closed', 'app.stopping', 'after'])
+    })
+
+    it('rotates the file the same way the queued writes do', async () => {
+      const store = createStore({ maxFileBytes: 520, archiveCount: 2 })
+      store.writeSynchronouslyFromNowOn()
+      for (let index = 0; index < 12; index += 1) {
+        store.log('info', 'test', 'rotation', `entry-${index}-${'x'.repeat(70)}`)
+      }
+      expect(fs.statSync(store.filePath).size).toBeLessThanOrEqual(520)
+      expect(fs.existsSync(`${store.filePath}.1`)).toBe(true)
+      expect(fs.existsSync(`${store.filePath}.2`)).toBe(true)
+      expect(fs.existsSync(`${store.filePath}.3`)).toBe(false)
+      expect((await store.snapshot()).entries[0].message).toContain('entry-11-')
+    })
+
+    it('still refuses a hard-linked log file and keeps the entry for the log page', async () => {
+      const store = createStore()
+      const victim = path.join(store.directory, 'victim.txt')
+      fs.writeFileSync(victim, 'do-not-change', 'utf8')
+      fs.linkSync(victim, store.filePath)
+      store.writeSynchronouslyFromNowOn()
+      store.log('error', 'test', 'unsafe-log', 'must not be appended')
+      expect(fs.readFileSync(victim, 'utf8')).toBe('do-not-change')
+      const snapshot = await store.snapshot()
+      expect(snapshot.writeFailure?.lostEntries).toBe(1)
+      expect(snapshot.entries.some((entry) => entry.event === 'unsafe-log')).toBe(true)
+    })
+  })
+
   it('adopts a pre-startup failure record so it reaches feedback and diagnostics', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
     temporaryDirectories.push(directory)

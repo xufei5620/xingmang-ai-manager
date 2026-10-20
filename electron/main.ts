@@ -883,10 +883,14 @@ if (!hasSingleInstanceLock) {
     process.on('unhandledRejection', onUnhandledRejection)
     // 退出清理只挂这一个 will-quit：下面各处按登记先后排进清单（bootstrap/lifecycle.ts），
     // 顺序由 main.test.ts 钉住，新加的一步登记在它该在的位置，别再另挂 will-quit。
+    // 运行日志先改成当场写：will-quit 返回后进程就退了，排队的异步追加来不及落盘（#1335 第 3 条）。
     const quitCleanup = createQuitCleanup({
       onStepFailed: (step, error) => runtimeLog.exception('main', 'app.quit-cleanup.failed', error, { step }),
     })
-    app.once('will-quit', () => quitCleanup.run())
+    app.once('will-quit', () => {
+      runtimeLog.writeSynchronouslyFromNowOn()
+      quitCleanup.run()
+    })
     // 上次是不是意外退出的：读完就记成「说过了」，这次启动里一直挂在窗口能力上，界面据此说一句。
     let unexpectedExit: UnexpectedExitNotice | null = null
     try {
