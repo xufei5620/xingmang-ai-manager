@@ -56,10 +56,12 @@ export type ClaudeDesktopModelRepairOutcome =
 
 /**
  * 切回当前账号的结论。reconnect 是星芒那份配置不在了、不是正在用的那份、或者不是当前账号的
- * 密钥：一个字没写，由调用方打开「连接 Claude Desktop」重新保存一次。
+ * 密钥：一个字没写，由调用方打开「连接 Claude Desktop」重新保存一次。switched 带 moved 的，是官方
+ * 登录期间换过线路、这次顺手换到了当前线路（#1112）：from 是原来那条线路的地址，apiKey 是那份的网关
+ * 密钥，调用方拿它把归属记到当前线路上。主进程内部专用，永不跨 IPC（I3）。
  */
 export type ClaudeDesktopGatewayReturn =
-  | { outcome: 'switched'; path: string; backups: string[] }
+  | { outcome: 'switched'; path: string; backups: string[]; moved?: { from: string; apiKey: string } }
   | { outcome: 'reconnect' }
 
 export interface ClaudeDesktopConfigOptions {
@@ -478,11 +480,21 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       return { path: configPath, backups: saved.backups }
     }),
     /**
-     * 首页「改用当前账号」：Claude Desktop 现在是官方登录、星芒那份还在用着的位置上、地址是当前线路、
-     * 密钥归当前账号，四条都对才把 deploymentMode 改回第三方，不用重新保存配置。有一条不对就一个字
-     * 不写，回 reconnect，由调用方打开「连接 Claude Desktop」照常保存（saveGateway 会把模式一起改回来）。
+     * 首页「改用当前账号」：Claude Desktop 现在是官方登录、星芒那份还在用着的位置上、地址是这个站登记过的
+     * 线路、密钥归当前账号（按那条线路的地址认），四条都对才把 deploymentMode 改回第三方，不用重新保存配置。
+     * 有一条不对就一个字不写，回 reconnect，由调用方打开「连接 Claude Desktop」照常保存（saveGateway 会把
+     * 模式一起改回来）。
+     *
+     * 官方登录期间换过线路的（#1112，yoyo 10-20 放宽「两条线路都认」）：换线路那边不碰官方登录的那份，地址
+     * 还在原来那条上。otherRouteBaseUrls 里的也认，切回时同一笔把网关地址换成 expectedBaseUrl，文件里别的字
+     * 照 followRoute 的样子不动。不另查新线路认不认这把 Key：同一个站的几条线路通的是同一个后端，切换也就
+     * 不用联网；客户端开着也照写，和这时回 reconnect、客户重新保存写的是同一个文件、同一个地址。
      */
-    useGatewayLogin: (expectedBaseUrl: string, belongsToCurrentAccount: (apiKey: string) => boolean): Promise<ClaudeDesktopGatewayReturn> => serial(async () => {
+    useGatewayLogin: (
+      expectedBaseUrl: string,
+      belongsToCurrentAccount: (apiKey: string, baseUrl: string) => boolean,
+      otherRouteBaseUrls: readonly string[] = [],
+    ): Promise<ClaudeDesktopGatewayReturn> => serial(async () => {
       assertContext()
       await options.assertUnmanaged?.()
       assertContext()
@@ -496,14 +508,23 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const metadata = parseMetadata(capture(metadataPath))
       const owner = parseOwner(capture(markerPath), profileDirectory)
       if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer) return { outcome: 'reconnect' }
-      const gateway = parseObject(capture(path.join(libraryDirectory, `${owner.id}.json`)))
+      const gatewayPath = path.join(libraryDirectory, `${owner.id}.json`)
+      const gatewayOriginal = capture(gatewayPath)
+      const gateway = parseObject(gatewayOriginal)
       const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
-      if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || !sameBaseUrl(baseUrl, expectedBaseUrl)
-        || typeof apiKey !== 'string' || !apiKey.trim() || !belongsToCurrentAccount(apiKey)) return { outcome: 'reconnect' }
-      const content = setTopLevelField(original, 'deploymentMode', claudeDesktopGatewayDeploymentMode)
-      assertWithinSizeLimit(content)
-      const saved = commitClaudeDesktopFiles([{ path: configPath, content }], snapshots, assertContext)
-      return { outcome: 'switched', path: configPath, backups: saved.backups }
+      if (gatewayOriginal === null || !gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string'
+        || typeof apiKey !== 'string' || !apiKey.trim()) return { outcome: 'reconnect' }
+      const route = [expectedBaseUrl, ...otherRouteBaseUrls].find((candidate) => sameBaseUrl(baseUrl, candidate))
+      if (route === undefined || !belongsToCurrentAccount(apiKey, route)) return { outcome: 'reconnect' }
+      const moved = !sameBaseUrl(route, expectedBaseUrl)
+      const plans = [
+        ...(moved ? [{ path: gatewayPath, content: setTopLevelField(gatewayOriginal, 'inferenceGatewayBaseUrl',
+          buildClaudeDesktopGatewayConfig({ baseUrl: expectedBaseUrl, apiKey }).inferenceGatewayBaseUrl) }] : []),
+        { path: configPath, content: setTopLevelField(original, 'deploymentMode', claudeDesktopGatewayDeploymentMode) },
+      ]
+      for (const plan of plans) assertWithinSizeLimit(plan.content)
+      const saved = commitClaudeDesktopFiles(plans, snapshots, assertContext)
+      return { outcome: 'switched', path: configPath, backups: saved.backups, ...(moved ? { moved: { from: route, apiKey } } : {}) }
     }),
     saveGateway: (input: ClaudeDesktopGatewayInput): Promise<ClaudeDesktopConfigResult> => serial(async () => {
       const gateway = buildClaudeDesktopGatewayConfig(input)
