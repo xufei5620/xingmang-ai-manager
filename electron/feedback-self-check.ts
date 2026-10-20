@@ -32,7 +32,7 @@ export interface FeedbackSelfCheckInput {
 }
 
 /**
- * 与「检查」页结果条上的三个词一致（`pages-maintenance.tsx`）：报告里换一套说法，
+ * 与「检查」页结果条上的三个词一致（`features/health/HealthPage.tsx`）：报告里换一套说法，
  * 客服和用户对着同一台机器会得出两个结论。
  */
 const stateLabels: Readonly<Record<DiagnosticState, string>> = {
