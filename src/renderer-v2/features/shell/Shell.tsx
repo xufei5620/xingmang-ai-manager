@@ -145,14 +145,14 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const sidebarRef = useRef<HTMLElement>(null)
   // 窗口拉宽又变窄，侧栏回到收着的窄条，不自己浮出来。
   useEffect(() => { if (!narrow) setFloatingOpen(false) }, [narrow])
-  // 浮着的时候点外面、按 Esc 就收回去；开着弹窗时 Esc 先归弹窗。
+  // 浮着的时候点外面、按 Esc 就收回去；开着弹窗、或这一下 Esc 已经被别的浮层（抽屉、菜单）用掉了，就不跟着收。
   useEffect(() => {
     if (!floating) return
     function pointerdown(event: PointerEvent) {
       if (event.target instanceof Node && !sidebarRef.current?.contains(event.target)) setFloatingOpen(false)
     }
     function keydown(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !event.isComposing && !document.querySelector('dialog[open]')) setFloatingOpen(false)
+      if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing && !document.querySelector('dialog[open]')) setFloatingOpen(false)
     }
     document.addEventListener('pointerdown', pointerdown, true)
     document.addEventListener('keydown', keydown)

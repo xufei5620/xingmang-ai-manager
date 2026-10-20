@@ -8701,8 +8701,16 @@ test('asking for the sidebar in a narrow window floats it over the page until yo
     assert.ok(spacer.left > sidebar.right && spacer.width > 40, `the status bar has room to click outside the sidebar: ${JSON.stringify(spacer)}`)
     await page.mouse.click(spacer.left + spacer.width / 2, (statusbar.top + statusbar.bottom) / 2)
     await folded()
-    // 按 Esc 收起。
+    // 按 Esc 收起；这一下 Esc 已经被别的浮层（比如抽屉）用掉了就不跟着收，一下只关一层。
     await expand()
+    await page.evaluate(() => {
+      window.__claimEscape = (event) => { if (event.key === 'Escape') event.preventDefault() }
+      document.addEventListener('keydown', window.__claimEscape, true)
+    })
+    await page.keyboard.press('Escape')
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await shell.getAttribute('class'), 'v2-shell sidebar-floating')
+    await page.evaluate(() => document.removeEventListener('keydown', window.__claimEscape, true))
     await page.keyboard.press('Escape')
     await folded()
     // 再点一次收起。
