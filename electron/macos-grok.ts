@@ -745,7 +745,7 @@ export function listDarwinGrokOrphanedDownloads(
   return orphans
 }
 
-// Same character class and length as ipc.ts's parseSessionId — 36 characters
+// Same character class and length as ipc/parsers/sessions.ts's parseSessionId — 36 characters
 // of hex digits and dashes, not a stricter 8-4-4-4-12 check. Matching that
 // existing strictness level (rather than inventing a tighter one) is
 // intentional: randomUUID() output always satisfies both, so there is

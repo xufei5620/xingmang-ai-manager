@@ -3567,7 +3567,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const revokeKey = (id: number): Promise<void> => (
     withSession(async (current) => {
-      // Defense in depth: ipc.ts's parseAccountRevokeKeyId already rejects
+      // Defense in depth: ipc/parsers/account-keys.ts's parseAccountRevokeKeyId already rejects
       // anything unsafe before it reaches here, but this client is also
       // callable directly by other main-process code and its own tests, so
       // the guard belongs here too rather than solely at the IPC boundary
@@ -3681,7 +3681,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       const originalPassword = input.originalPassword
       const newPassword = input.newPassword
       // Not trimmed: both must be forwarded exactly as typed, same reasoning
-      // as parseAccountLoginInput's password field in ipc.ts.
+      // as parseAccountLoginInput's password field in ipc/parsers/account.ts.
       if (!originalPassword) throw new Error('请输入原密码')
       if (!newPassword) throw new Error('请输入新密码')
       // rc.40 changes nothing without a one-time proof of the current password

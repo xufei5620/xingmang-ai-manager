@@ -840,4 +840,22 @@ describe('pages-management as a re-export of the split pages', () => {
       expect(readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')).not.toMatch(/from '[./]*pages-management'/)
     }
   })
+
+  it('keeps the business stylesheet in the order it had before the split', () => {
+    // 业务页那份样式表里，教程页那几份排在 extensions.css 前面，跟拆之前一样；先后由 import 的先后定（#1335 第 6 条）。
+    // ExtensionsPage 先从 pages-maintenance 拿装工具那两句（顺带带进教程页的样式），再 import extensions-common 和
+    // extensions.css；pages-management 头一个转出的又是 ExtensionsPage。改成直接从 features/tools/install-result 拿，
+    // 构建出来这两段样式就对调了：眼下没有同级选择器冲突，界面看不出来，所以只能在这里钉住。
+    function specifiers(file: string) {
+      const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')
+      return [...source.matchAll(/(?:\bfrom\s+|^import\s+)'([^']+)'/gm)].map((match) => match[1])
+    }
+    const page = specifiers('features/extensions/ExtensionsPage.tsx')
+    expect(page.indexOf('../../pages-maintenance')).toBeGreaterThan(-1)
+    expect(page.indexOf('../../pages-maintenance')).toBeLessThan(page.indexOf('./extensions-common'))
+    expect(page.indexOf('../../pages-maintenance')).toBeLessThan(page.indexOf('../../extensions.css'))
+    expect(readFileSync(new URL('./features/extensions/ExtensionsPage.tsx', import.meta.url), 'utf8'))
+      .toMatch(/import \{[^}]*\binstallJobRunning\b[^}]*\binstallResultMessage\b[^}]*\} from '\.\.\/\.\.\/pages-maintenance'/)
+    expect(specifiers('pages-management.tsx')[0]).toBe('./features/extensions/ExtensionsPage')
+  })
 })

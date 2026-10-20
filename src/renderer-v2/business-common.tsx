@@ -119,7 +119,7 @@ export function speaksChinese(safe: string) {
  * 工具行「检测失败」的那句小字（第二十六批 D）。`detectionError` 是 `describeProbeFailure`
  * 原样交过来的 `Error.message`，常是 `EPERM: operation not permitted, scandir 'C:\Users\…'`
  * 这种英文，脱敏后连引号都只剩半个：客户看得到却看不懂。英文原话由主进程在扫描完记一条
- * warn 进运行日志（ipc.ts 的 detection-failed），客服在反馈报告里看得到；这里只按错误码
+ * warn 进运行日志（ipc/handlers/detection-failures.ts 的 *.detection-failed），客服在反馈报告里看得到；这里只按错误码
  * 分四类说人话。原话本来是中文的照旧显示（只脱敏）。原话为空时返回 null，调用点用 `??`
  * 留自己的兜底句，同 `snapshotErrorMessage`。
  */
