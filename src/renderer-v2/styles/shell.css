@@ -88,6 +88,10 @@ button, input, select, textarea { font: inherit; }
 .sidebar-floating .v2-sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: var(--z-drawer); width: var(--sidebar-expanded); box-shadow: inset -1px 0 0 var(--line), var(--shadow-pop); }
 .sidebar-floating .v2-workspace { grid-column: 2; }
 .v2-root[data-os='mac'] .sidebar-floating .v2-topbar { padding-left: 32px; }
+/* 顶栏是拖动区：Electron 把那里的鼠标按下直接交给系统拖窗口，页面收不到，焦点也不动，上面「点外面就收」碰不到它，
+   点顶栏空白处侧栏一直浮着（issue 1349 第 1 条）。浮着时顶栏临时不当拖动区，点一下先收回；收回后照常能拖。
+   Windows 的最小化、关闭和 Mac 的红黄绿是系统画的，不归它管。 */
+.sidebar-floating .v2-topbar { -webkit-app-region: no-drag; }
 
 .v2-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); background-image: var(--glow-top); background-repeat: no-repeat; }
 .v2-workspace > .v2-topbar, .v2-workspace > .v2-content, .v2-workspace > .v2-statusbar, .v2-workspace > .v2-announcement-banner, .v2-workspace > .v2-promo-card, .v2-workspace > .v2-promo-bar, .v2-workspace > .v2-offline-banner { position: relative; z-index: 1; }
