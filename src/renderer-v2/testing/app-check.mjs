@@ -8634,7 +8634,7 @@ test('the shell fills a wide window and keeps each page 1000 wide to the right o
   } finally { await page.close() }
 })
 
-test('a window narrower than the design collapses the sidebar by itself, says why it stays narrow and never saves that as the choice', async () => {
+test('a window narrower than the design collapses the sidebar by itself and never saves that as the choice', async () => {
   const page = await open()
   try {
     // 选了 110% 的窗口在 1280 设计宽下只剩 1163 逻辑宽。
@@ -8644,10 +8644,6 @@ test('a window narrower than the design collapses the sidebar by itself, says wh
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
     assert.equal((await box(page, '[data-testid="sidebar"]')).width, 60)
     assert.equal((await box(page, '[data-testid="page-home"]')).width, 1000)
-    // v4 不再让侧栏浮在页面上展开：点展开键只说一句为什么，侧栏照旧收着。
-    await page.getByTestId('sidebar-collapse').click()
-    await waitForToast(page, '窗口较窄时侧栏会自动收起')
-    assert.equal(await shell.getAttribute('class'), 'v2-shell sidebar-collapsed')
     await page.screenshot({ path: path.join(artifacts, 'shell-narrow-rail.png') })
     await page.getByTestId('nav-settings').click()
     await page.getByTestId('page-settings').waitFor()
@@ -8657,6 +8653,92 @@ test('a window narrower than the design collapses the sidebar by itself, says wh
     await page.setViewportSize({ width: 1280, height: 820 })
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
     assert.equal((await box(page, '[data-testid="sidebar"]')).width, 224)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 2026-10-20 产品负责人在 Windows 0.2.19 上报「侧边栏无法展开」：窗口逻辑宽约 1092（Windows 放大加上「110%」），
+// 侧栏自动收着，点左下角的展开键只弹一句「窗口较窄时侧栏会自动收起」。现在点了就展开：照 224 宽浮在正文上面，
+// 正文不挪、不变窄，背后不罩；点外面、按 Esc、再点一次或点了侧栏里的一项都收回窄条，不改自己记的展开/收起。
+test('asking for the sidebar in a narrow window floats it over the page until you click away, press Esc or pick a page', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1092, height: 820 })
+    await page.getByTestId('page-home').waitFor()
+    const shell = page.locator('.v2-shell')
+    const toggle = page.getByTestId('sidebar-collapse')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    const pageBefore = await box(page, '[data-testid="page-home"]')
+    assert.equal(pageBefore.width, 1000)
+    async function expand() {
+      await toggle.click()
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-floating')
+    }
+    async function folded() {
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal((await box(page, '[data-testid="sidebar"]')).width, 60)
+    }
+    await expand()
+    const sidebar = await box(page, '[data-testid="sidebar"]')
+    assert.equal(sidebar.width, 224)
+    assert.equal(sidebar.left, 0)
+    // 侧栏的字、账号卡和余额都回来了，收起键换回「收起侧栏」。
+    assert.equal(await page.getByTestId('nav-settings').innerText(), '设置')
+    await page.getByTestId('sidebar-account-days').waitFor()
+    assert.equal(await toggle.getAttribute('aria-label'), '收起侧栏')
+    // 浮在正文上面：正文不挪不缩，侧栏盖住它左边一截，而且在上面（点得到侧栏里的项）。
+    assert.deepEqual(await box(page, '[data-testid="page-home"]'), pageBefore)
+    assert.ok(sidebar.right > pageBefore.left, `the sidebar covers the page edge (${sidebar.right} / ${pageBefore.left})`)
+    assert.equal(await page.evaluate(() => {
+      const item = document.querySelector('[data-testid="nav-settings"]').getBoundingClientRect()
+      return document.elementFromPoint(item.left + item.width / 2, item.top + item.height / 2)?.closest('[data-testid="nav-settings"]') !== null
+    }), true)
+    await assertNoToast(page, '窗口较窄时侧栏会自动收起')
+    await page.screenshot({ path: path.join(artifacts, 'shell-narrow-floating.png') })
+    // 点外面收起（点状态栏中间那段空白，不碰任何按钮）。
+    const spacer = await box(page, '.v2-status-spacer')
+    const statusbar = await box(page, '[data-testid="shell-statusbar"]')
+    assert.ok(spacer.left > sidebar.right && spacer.width > 40, `the status bar has room to click outside the sidebar: ${JSON.stringify(spacer)}`)
+    await page.mouse.click(spacer.left + spacer.width / 2, (statusbar.top + statusbar.bottom) / 2)
+    await folded()
+    // 按 Esc 收起。
+    await expand()
+    await page.keyboard.press('Escape')
+    await folded()
+    // 再点一次收起。
+    await expand()
+    await toggle.click()
+    await folded()
+    // 点了侧栏里的一页：去那一页，侧栏收回去，不挡着刚打开的页。
+    await expand()
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').waitFor()
+    await folded()
+    // 自动收起和浮着展开都不改自己记的展开/收起。
+    assert.equal(await page.evaluate(() => localStorage.getItem('xingmang-v2-sidebar')), null)
+    // 浮着展开时把窗口拉宽：回到自己设的样子；再变窄还是收着的窄条，不会自己浮出来。
+    await expand()
+    await page.setViewportSize({ width: 1280, height: 820 })
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+    await page.setViewportSize({ width: 1092, height: 820 })
+    await folded()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a sidebar floated open from the keyboard keeps focus on its toggle and folds when focus leaves it', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1092, height: 820 })
+    const shell = page.locator('.v2-shell')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    await page.getByTestId('sidebar-collapse').focus()
+    await page.keyboard.press('Enter')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-floating')
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '收起侧栏')
+    // 焦点离开侧栏（交给正文）：侧栏收回去，不留在那儿挡着焦点所在的地方。
+    await page.getByTestId('page-viewport').focus()
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
     await clean(page)
   } finally { await page.close() }
 })

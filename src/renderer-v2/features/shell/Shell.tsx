@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type MouseEvent, type ReactNode } from 'react'
 import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
-import { Button, Coachmark, Dialog, Input, Logo, Tooltip, useToast } from '../../ui'
+import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
 import { shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
 import { accountTabs, type SettingsItem } from '../../registry/business'
@@ -114,7 +114,6 @@ const narrowWindowQuery = '(max-width: 1271px)'
 const navEdge = 16
 const commandTitle = '搜索或跳转'
 const commandPlaceholder = '输入页面、工具或操作，比如「充值」'
-const narrowSidebarNote = '窗口较窄时侧栏会自动收起'
 const actionIcons: Partial<Record<string, LucideIcon>> = {
   'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'account:logout': LogOut,
 }
@@ -135,12 +134,33 @@ function useNarrowWindow() {
 
 export function Shell({ activePage, accountTab, account, platform, adapter, theme, environment, balance, version, update, network, networkRefreshing = false, accelerationLine, installedCount, updatableCount = 0, unread, announcementOpen = false, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
   const { offline } = useOnlineStatus()
-  const toast = useToast()
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
   const narrow = useNarrowWindow()
-  const rail = narrow || collapsed
+  // 窗口窄、侧栏自动收着时点了展开：侧栏照原宽浮在正文上面，正文不挪不缩。这只是临时看一眼，不改你自己记的展开/收起。
+  const [floatingOpen, setFloatingOpen] = useState(false)
+  const floating = narrow && floatingOpen
+  const rail = narrow ? !floating : collapsed
+  const sidebarRef = useRef<HTMLElement>(null)
+  // 窗口拉宽又变窄，侧栏回到收着的窄条，不自己浮出来。
+  useEffect(() => { if (!narrow) setFloatingOpen(false) }, [narrow])
+  // 浮着的时候点外面、按 Esc 就收回去；开着弹窗时 Esc 先归弹窗。
+  useEffect(() => {
+    if (!floating) return
+    function pointerdown(event: PointerEvent) {
+      if (event.target instanceof Node && !sidebarRef.current?.contains(event.target)) setFloatingOpen(false)
+    }
+    function keydown(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !event.isComposing && !document.querySelector('dialog[open]')) setFloatingOpen(false)
+    }
+    document.addEventListener('pointerdown', pointerdown, true)
+    document.addEventListener('keydown', keydown)
+    return () => {
+      document.removeEventListener('pointerdown', pointerdown, true)
+      document.removeEventListener('keydown', keydown)
+    }
+  }, [floating])
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [fade, setFade] = useState<'top' | 'bottom' | 'both' | null>(null)
   // 上面那段导航放不下时自己滚：上下边缘渐隐，看得出还有。
@@ -348,13 +368,21 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     }
   }, [activePage])
   function toggleSidebar() {
-    // 窗口窄时侧栏是自动收着的，点了也展不开：说一声为什么，不改你自己记的展开/收起。
-    if (narrow) { toast.show(narrowSidebarNote); return }
+    // 窗口窄时侧栏是自动收着的：点了浮在正文上展开、再点收回，不改你自己记的展开/收起。
+    if (narrow) { setFloatingOpen((current) => !current); return }
     setCollapsed((current) => {
       writeLocalPreference('xingmang-v2-sidebar', current ? 'expanded' : 'collapsed')
       adapter.setSidebarCollapsed?.(!current)
       return !current
     })
+  }
+  // 浮着的侧栏里点了一页或账号卡：去那一页，侧栏收回去，不挡着刚打开的页。
+  function foldAfterPick(event: MouseEvent<HTMLElement>) {
+    if (floating && event.target instanceof Element && event.target.closest('.v2-nav-item, .v2-account-main')) setFloatingOpen(false)
+  }
+  // 用键盘把焦点移出侧栏（交给正文）时也收回去；焦点没去别处（点了窗口外面）就不动。
+  function foldWhenFocusLeaves(event: FocusEvent<HTMLElement>) {
+    if (floating && event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) setFloatingOpen(false)
   }
   function entryVisible(entry: ShellNavigationEntry) {
     return entry === 'recharge' ? account.supportsBilling !== false : adapter.pageVisible?.(entry) ?? true
@@ -397,8 +425,8 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 重启后更新' : ''}` : '版本读取中'
   const tour = shellTour[tourStep]
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
-    <div className={`v2-shell${rail ? ' sidebar-collapsed' : ''}`} data-narrow={narrow || undefined}>
-      <aside className="v2-sidebar" data-testid="sidebar">
+    <div className={`v2-shell${rail ? ' sidebar-collapsed' : ''}${floating ? ' sidebar-floating' : ''}`} data-narrow={narrow || undefined}>
+      <aside ref={sidebarRef} className="v2-sidebar" data-testid="sidebar" onClick={foldAfterPick} onBlur={foldWhenFocusLeaves}>
         <a className="v2-skip-link" href="#v2-main" onClick={skipToContent} data-testid="shell-skip-to-content">跳到正文</a>
         <div className="v2-brand"><Logo kind="micro" height={24} />{!rail && <Logo kind="wordmark" height={17} />}</div>
         <nav className="v2-sidebar-nav" aria-label="主导航">

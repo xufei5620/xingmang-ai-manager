@@ -83,6 +83,11 @@ button, input, select, textarea { font: inherit; }
 .sidebar-collapsed .v2-account-main { align-items: center; padding: 6px 0; }
 .sidebar-collapsed .v2-account-top { padding: 0; }
 .sidebar-collapsed .v2-account-rail { position: relative; top: auto; right: auto; display: flex; align-items: center; justify-content: center; margin: 2px auto 0; width: 36px; height: 30px; }
+/* 窗口窄、侧栏自动收着时点了展开：侧栏照 224 宽浮在正文上面，正文那一列仍按窄条留 60，所以不挪不缩；背后不罩，点外面就收回。 */
+.v2-shell.sidebar-floating { position: relative; grid-template-columns: var(--sidebar-collapsed) minmax(0, 1fr); }
+.sidebar-floating .v2-sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: var(--z-drawer); width: var(--sidebar-expanded); box-shadow: inset -1px 0 0 var(--line), var(--shadow-pop); }
+.sidebar-floating .v2-workspace { grid-column: 2; }
+.v2-root[data-os='mac'] .sidebar-floating .v2-topbar { padding-left: 32px; }
 
 .v2-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); background-image: var(--glow-top); background-repeat: no-repeat; }
 .v2-workspace > .v2-topbar, .v2-workspace > .v2-content, .v2-workspace > .v2-statusbar, .v2-workspace > .v2-announcement-banner, .v2-workspace > .v2-promo-card, .v2-workspace > .v2-promo-bar, .v2-workspace > .v2-offline-banner { position: relative; z-index: 1; }
