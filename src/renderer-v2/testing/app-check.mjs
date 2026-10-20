@@ -1397,6 +1397,35 @@ test('the home recent card opens a record folder and says so when it cannot', as
   } finally { await page.close() }
 })
 
+// yoyo 那台 Windows（0.2.19）：底栏写着「已登录」，点「用量账单」个人中心却说「登录后查看个人中心」，
+// 点「登录账号」再登几次都没用。个人中心去过就只藏不卸，同一个账号重新登录作用域不变、页面也不重挂，
+// 页面自己读到过一次「没登录」就一直停在那里。外壳说登着就按外壳的摆，再请外壳问一次主进程。
+test('the account page follows the shell login when its own session read says signed out', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => window.v2Test.signOutAccountPageSessionReads())
+    await page.getByTestId('sidebar-account-open').click()
+    await page.waitForFunction(() => window.v2Test.accountPageSessionSignedOutServed() > 0)
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    await expect(page.getByTestId('account-tabs')).toBeVisible()
+    assert.equal(await page.getByTestId('page-account').getByText('登录后查看个人中心', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('welcome-page').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 主进程那边已经没登录、广播却没到外壳（底栏还写着「已登录」）：外壳再问一次就退回欢迎页，在那里
+// 登录会整页重来，不再停在一个点了「登录账号」也回不来的「登录后查看个人中心」上。
+test('a sign-out the shell missed reaches it when the account page finds no login', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => window.v2Test.dropSessionSilently())
+    await page.getByTestId('sidebar-account-open').click()
+    await page.getByTestId('welcome-page').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 全面检测 Q29：个人中心停在别的页签（以前是「我的订单」）时，回首页再点「充值」要回到充值那一页。
 // 以前 App 里记的分页值没变（还是上次的「充值」），个人中心就不切。
 test('the home recharge button reopens the recharge tab even after another account tab was chosen', async () => {
