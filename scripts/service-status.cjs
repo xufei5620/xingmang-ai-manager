@@ -41,6 +41,8 @@ const RELEASE_PLATFORM_LABELS = {
   'linux-x64': 'Linux x64 版',
   'linux-arm64': 'Linux arm64 版',
 }
+// 平台表最多几项，与客户端 readReleasePlatforms 的 maxReleasePlatforms 一致：三个平台各自整个、x64、arm64。
+const MAX_RELEASE_PLATFORMS = 9
 // 第一个认平台的客户端版本：更早的不认，带平台的条目在它们那里照旧对所有平台生效。
 const PLATFORM_AWARE_CLIENT = '0.2.20'
 
@@ -102,11 +104,19 @@ function normalizeUntil(value, now = new Date()) {
 }
 
 const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
+// 线上那份里的版本号照客户端 electron/service-status.ts 的 readVersion 认：去掉空白和前导 v，可带预发布后缀。
+const CLIENT_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}(?:-[0-9A-Za-z.-]{1,40})?$/
 
 function plainVersion(value) {
   const version = String(value ?? '').trim().replace(/^v/i, '')
   if (!PLAIN_VERSION.test(version)) throw new StatusInputError(`版本号要写成 0.2.10 这样：${value}`)
   return version
+}
+
+function clientVersion(value) {
+  if (typeof value !== 'string') return null
+  const version = value.trim().replace(/^v/i, '')
+  return CLIENT_VERSION.test(version) ? version : null
 }
 
 /** 「mac-x64|linux」这样的平台表。写错直接报错：客户端遇到认不出的会当成对所有平台生效，发布者得当场知道。 */
@@ -115,16 +125,67 @@ function releasePlatforms(value, context) {
   if (names.some((name) => !RELEASE_PLATFORM.test(name))) {
     throw new StatusInputError(`平台只认 windows、mac、linux，后面可以接 -x64 或 -arm64（mac-x64 是 Intel 版的 Mac 包），几种之间用 | 隔开：${context}`)
   }
+  // 客户端认这个写法，可一台电脑也对不上：ARM 电脑上模拟跑着的也是 x64 包，算 windows-x64（#1335 第 7 条）。
+  if (names.includes('windows-arm64')) {
+    throw new StatusInputError(`Windows 目前只有 x64 安装包，ARM 电脑上跑的也是它，算 windows-x64；要管 Windows 就写 windows 或 windows-x64：${context}`)
+  }
   return names
 }
 
-// 线上那份里读得懂的平台表；读不懂的那一项跟客户端一样当成对所有平台生效。
+// 线上那份里读得懂的平台表，照客户端 readReleasePlatforms 规整：去空白、转小写、去重。读不懂的那一项
+// 跟客户端一样当成对所有平台生效（#1335 第 8 条：以前逐字比，手改写成 Mac-X64 的这里认不出，客户端却认）。
 function validReleasePlatforms(value) {
-  if (!Array.isArray(value) || value.length === 0) return null
-  return value.every((entry) => typeof entry === 'string' && RELEASE_PLATFORM.test(entry)) ? value : null
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_RELEASE_PLATFORMS) return null
+  const names = []
+  for (const entry of value) {
+    const name = typeof entry === 'string' ? entry.trim().toLowerCase() : ''
+    if (!RELEASE_PLATFORM.test(name)) return null
+    if (!names.includes(name)) names.push(name)
+  }
+  return names
 }
 
-/** 「0.2.12@mac-x64」拆成版本号和平台表；不带 @ 的平台表是 null（对所有平台）。 */
+/**
+ * 线上那份的撤回名单照客户端读法读一遍：版本号规整（读不懂的原样留着，客户端反正不认），平台表的键也按
+ * 版本号规整，0.2.20、v0.2.20 两份合起来；其中一份读不懂，这个版本就算对所有平台撤回。
+ */
+function readBadVersions(current, currentPlatforms) {
+  const versions = new Set(Array.isArray(current) ? current.filter((entry) => typeof entry === 'string').map((entry) => clientVersion(entry) ?? entry) : [])
+  const scoped = new Map()
+  const everywhere = new Set()
+  if (isRecord(currentPlatforms)) {
+    for (const [key, platforms] of Object.entries(currentPlatforms)) {
+      const version = clientVersion(key)
+      if (!version) continue
+      const valid = validReleasePlatforms(platforms)
+      if (!valid) everywhere.add(version)
+      else scoped.set(version, [...new Set([...(scoped.get(version) ?? []), ...valid])])
+    }
+  }
+  for (const version of everywhere) scoped.delete(version)
+  return { versions, scoped }
+}
+
+/**
+ * 「0.2.18@mac-x64」这类（#1335 第 9 条）：跑着这一版、或者等着更新到这一版的客户端都还不认平台，带 @ 也会
+ * 对所有平台生效。撤回看的是跑着这一版的客户端，所以早于第一个认平台的版本就报错；分批和最低版本管的是比它
+ * 低的客户端，所以不比第一个认平台的版本新就报错。
+ */
+function assertPlatformsReachClients(version, platforms, kind, raw) {
+  if (!platforms) return
+  const order = compareReleaseVersions(version, PLATFORM_AWARE_CLIENT)
+  if (kind === 'withdraw' && order < 0) {
+    throw new StatusInputError(`${version} 比 ${PLATFORM_AWARE_CLIENT} 早，跑这一版的客户端都不认平台，带 @ 也会对所有平台撤回。要撤就去掉 @，写「${version}」：${raw}`)
+  }
+  if (kind === 'rollout' && order <= 0) {
+    throw new StatusInputError(`分批放量的 ${version} 不比 ${PLATFORM_AWARE_CLIENT} 新，等着更新到它的客户端都不认平台，带 @ 也会对所有平台分批。去掉 @ 再写：${raw}`)
+  }
+  if (kind === 'minimum' && order <= 0) {
+    throw new StatusInputError(`最低版本 ${version} 不比 ${PLATFORM_AWARE_CLIENT} 新，被它拦住的客户端都不认平台，带 @ 也会对所有平台都拦。去掉 @ 再写：${raw}`)
+  }
+}
+
+/** 「0.2.21@mac-x64」拆成版本号和平台表；不带 @ 的平台表是 null（对所有平台）。 */
 function splitReleasePlatforms(input) {
   const raw = String(input ?? '').trim()
   const parts = raw.split(/[@＠]/)
@@ -150,14 +211,7 @@ function applyBadVersions(current, input, currentPlatforms) {
   const raw = String(input ?? '').trim()
   if (!raw) return { versions: current, platforms: currentPlatforms }
   if (raw.toLowerCase() === 'none') return { versions: [], platforms: undefined }
-  const versions = new Set(Array.isArray(current) ? current.filter((entry) => typeof entry === 'string') : [])
-  const scoped = new Map()
-  if (isRecord(currentPlatforms)) {
-    for (const [version, platforms] of Object.entries(currentPlatforms)) {
-      const valid = validReleasePlatforms(platforms)
-      if (valid) scoped.set(version, valid)
-    }
-  }
+  const { versions, scoped } = readBadVersions(current, currentPlatforms)
   for (const token of raw.split(/[\s,，]+/).filter(Boolean)) {
     const { value, platforms } = splitReleasePlatforms(token)
     if (value.startsWith('-')) {
@@ -173,6 +227,7 @@ function applyBadVersions(current, input, currentPlatforms) {
       scoped.delete(version)
       continue
     }
+    assertPlatformsReachClients(version, platforms, 'withdraw', token)
     if (versions.has(version) && !scoped.has(version)) {
       throw new StatusInputError(`${version} 已经对所有平台撤回了。要改成只撤某几种安装包，先移出再加，写成「-${version} ${token}」`)
     }
@@ -200,7 +255,9 @@ function applyRollout(current, input) {
   if (!match) throw new StatusInputError(`分批放量要写成「0.2.11 20」（版本号 空格 百分比）：${raw}`)
   const percent = Number(match[2])
   if (percent > 100) throw new StatusInputError(`百分比最多 100：${raw}`)
-  return { version: plainVersion(match[1]), percent, ...(platforms ? { platforms } : {}) }
+  const version = plainVersion(match[1])
+  assertPlatformsReachClients(version, platforms, 'rollout', raw)
+  return { version, percent, ...(platforms ? { platforms } : {}) }
 }
 
 /**
@@ -372,10 +429,13 @@ function applyStatusChanges(current, changes, now = new Date()) {
   if (rollout === undefined) delete next.rollout
   else next.rollout = rollout
   const publishedVersions = String(changes['published-versions'] ?? '').split(/\s+/).filter(Boolean)
-  // 「0.2.12@mac-x64」只拦 Intel 版的 Mac 包。0.2.19 及以前的客户端不认平台、对所有平台都拦，所以仍要
+  // 「0.2.21@mac-x64」只拦 Intel 版的 Mac 包。0.2.19 及以前的客户端不认平台、对所有平台都拦，所以仍要
   // 不高于每个平台正在发的版本，被拦的人才都有新版本可装。
   const minimumInput = splitReleasePlatforms(changes['minimum-version'])
   const minimumVersion = applyMinimumVersion(next.minimumVersion, minimumInput.value, publishedVersions)
+  if (minimumInput.platforms && typeof minimumVersion === 'string') {
+    assertPlatformsReachClients(minimumVersion, minimumInput.platforms, 'minimum', String(changes['minimum-version']).trim())
+  }
   if (minimumVersion === undefined) delete next.minimumVersion
   else next.minimumVersion = minimumVersion
   if (minimumVersion === undefined || (minimumInput.value && !minimumInput.platforms)) delete next.minimumVersionPlatforms
@@ -413,10 +473,11 @@ function describeRollout(rollout) {
 
 function describeBadVersions(status) {
   if (!Array.isArray(status.badVersions) || status.badVersions.length === 0) return '撤回的版本：无'
-  const scoped = isRecord(status.badVersionPlatforms) ? status.badVersionPlatforms : {}
+  // 照客户端的读法规整以后再说：预览说的得是客户端真会做的。
+  const { versions, scoped } = readBadVersions(status.badVersions, status.badVersionPlatforms)
   let any = false
-  const parts = status.badVersions.map((version) => {
-    const platforms = Object.hasOwn(scoped, version) ? validReleasePlatforms(scoped[version]) : null
+  const parts = [...versions].map((version) => {
+    const platforms = scoped.get(version) ?? null
     if (!platforms) return version
     any = true
     return `${version}（只撤 ${describePlatforms(platforms)}）`
