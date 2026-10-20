@@ -11,6 +11,8 @@ import {
   fetchGrokStableVersion,
   parseGrokStableVersion,
   resolveGrokInstallVersion,
+  resolveGrokNamedVersion,
+  type GrokStableVersionResult,
   type GrokVersionFetch,
 } from './grok-update'
 import {
@@ -71,7 +73,10 @@ export interface DownloadLatestGrokOptions {
   onProgress?: (progress: GrokDownloadProgress) => void
   /** 用户点「取消」后中止下载,并且不再换下一条镜像重试。 */
   signal?: AbortSignal
-  /** 名单或「退回」点名的版本;缺省 = xAI 当前 stable。不会超过 stable,见 resolveGrokInstallVersion。 */
+  /**
+   * 名单或「退回」点名的版本;缺省 = xAI 当前 stable。查得到 stable 时不会超过它,见 resolveGrokInstallVersion;
+   * 查不到时照点名的版本直接下(resolveGrokNamedVersion)。
+   */
   version?: string
   /** 先从星芒存储桶下（grok-bucket.ts）;缺省不试,直接去 xAI。 */
   bucket?: DesktopBucketOptions
@@ -86,6 +91,8 @@ export interface DownloadLatestGrokOptions {
    */
   withVendorDownloadRoute?<T>(operation: () => Promise<T>): Promise<T>
   resumeOptions?: GrokResumeOptions
+  /** 去 xAI 那一路查不到 stable、改照点名的版本直接下时告诉调用方原因,只进日志。 */
+  onStableUnavailable?: (detail: string) => void
 }
 
 export interface InstallDownloadedGrokOptions {
@@ -326,6 +333,27 @@ async function downloadFromBucket(
   }
 }
 
+/**
+ * 问 xAI 的 stable 定这次下哪一版。两个 stable 地址都查不到时,点了名的版本(推荐版本、退回)照它直接下
+ * (#1061 第 4 条,yoyo 2026-10-20 放宽):以前这里整个安装失败。少的只是「不超过 stable」这道上限,
+ * 下回来的文件照旧核地址、大小、SHA-256 和 xAI 签名。没点名(装最新)没有版本可装,照旧报查询失败。
+ */
+async function resolveXaiDownloadVersion(
+  options: DownloadLatestGrokOptions,
+  fetchImpl: GrokVersionFetch,
+): Promise<{ version: string; preferredStableUrl?: string }> {
+  let stable: GrokStableVersionResult
+  try {
+    stable = await fetchGrokStableVersion({ fetchImpl })
+  } catch (error) {
+    const named = resolveGrokNamedVersion(options.version)
+    if (!named) throw error
+    options.onStableUnavailable?.(`按指定的 ${named} 直接下载；${compactError(error)}`)
+    return { version: named }
+  }
+  return { version: resolveGrokInstallVersion(options.version, stable.version), preferredStableUrl: stable.sourceUrl }
+}
+
 async function downloadFromXai(
   options: DownloadLatestGrokOptions,
   fetchImpl: GrokVersionFetch,
@@ -334,10 +362,9 @@ async function downloadFromXai(
   binaryPath: string,
   verifyBinary: typeof verifyOfficialNativeCliFile,
 ): Promise<DownloadedGrokBinary> {
-  const stable = await fetchGrokStableVersion({ fetchImpl })
-  const version = resolveGrokInstallVersion(options.version, stable.version)
+  const { version, preferredStableUrl } = await resolveXaiDownloadVersion(options, fetchImpl)
   const errors: string[] = []
-  for (const url of buildGrokArtifactUrls(version, architecture, stable.sourceUrl)) {
+  for (const url of buildGrokArtifactUrls(version, architecture, preferredStableUrl)) {
     // 取消之后不许再试下一条镜像:否则点了取消,下载只是换了个地址继续。
     options.signal?.throwIfAborted()
     try {

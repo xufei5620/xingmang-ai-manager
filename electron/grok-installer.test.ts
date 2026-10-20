@@ -209,6 +209,88 @@ describe('Grok signed binary installer', () => {
     })
   })
 
+  // #1061 item 4: yoyo relaxed this on 2026-10-20 ("四条都放"). A named version no longer
+  // needs the stable ceiling to install; every check on the downloaded file stays.
+  describe('when neither xAI stable address answers', () => {
+    const stableUrls = ['https://x.ai/cli/stable', 'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable']
+
+    function stableDownSetup() {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
+      temporaryDirectories.push(directory)
+      const binary = Buffer.alloc(1024 * 1024, 0x5d)
+      const requested: string[] = []
+      const unavailable: string[] = []
+      const fetchImpl = vi.fn<GrokVersionFetch>(async (input, init) => {
+        const url = String(input)
+        requested.push(url)
+        if (stableUrls.includes(url)) return new Response('busy', { status: 503, headers: { 'Content-Type': 'text/plain' } })
+        expect(init?.redirect).toBe('error')
+        return new Response(binary, { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length) } })
+      })
+      const verifyBinary = vi.fn(fakeVerification)
+      return {
+        directory,
+        binary,
+        requested,
+        unavailable,
+        verifyBinary,
+        options: {
+          fetchImpl,
+          architecture: 'x64' as const,
+          createTemporaryDirectory: async () => directory,
+          verifyBinary,
+          onStableUnavailable: (detail: string) => unavailable.push(detail),
+        },
+      }
+    }
+
+    it('downloads a named version straight from the official directory and still checks the signature', async () => {
+      const f = stableDownSetup()
+      const result = await downloadLatestGrokBinary({ ...f.options, version: '1.0.46' })
+      expect(result).toMatchObject({ version: '1.0.46', sourceUrl: 'https://x.ai/cli/grok-1.0.46-windows-x86_64.exe', size: f.binary.length })
+      expect(f.requested).toEqual([...stableUrls, 'https://x.ai/cli/grok-1.0.46-windows-x86_64.exe'])
+      expect(f.verifyBinary).toHaveBeenCalledWith('grok', result.binaryPath)
+      expect(f.unavailable).toEqual([expect.stringMatching(/^按指定的 1\.0\.46 直接下载；Grok 官方版本查询失败：x\.ai：Grok 版本服务返回 HTTP 503/)])
+    })
+
+    it('still rejects a named version whose file fails the xAI signature check on every address', async () => {
+      const f = stableDownSetup()
+      f.verifyBinary.mockRejectedValue(new Error('原生 CLI 没有有效的 Authenticode 签名'))
+      await expect(downloadLatestGrokBinary({ ...f.options, version: '1.0.46' }))
+        .rejects.toThrow('Grok 官方二进制下载或签名校验失败')
+      expect(f.verifyBinary).toHaveBeenCalledTimes(4)
+      expect(fs.existsSync(f.directory)).toBe(false)
+    })
+
+    it.each([
+      ['no version is named', undefined],
+      ['the latest is asked for', 'latest'],
+    ])('fails as before when %s, without downloading anything', async (_label, version) => {
+      const f = stableDownSetup()
+      await expect(downloadLatestGrokBinary({ ...f.options, ...(version ? { version } : {}) }))
+        .rejects.toThrow('Grok 官方版本查询失败')
+      expect(f.requested).toEqual(stableUrls)
+      expect(f.unavailable).toEqual([])
+    })
+
+    it('refuses a malformed named version without downloading anything', async () => {
+      const f = stableDownSetup()
+      await expect(downloadLatestGrokBinary({ ...f.options, version: '1.0.46/../evil' }))
+        .rejects.toThrow('指定的 Grok 版本号无效')
+      expect(f.requested).toEqual(stableUrls)
+      expect(f.unavailable).toEqual([])
+    })
+
+    it('stops on a cancel instead of downloading the named version', async () => {
+      const f = stableDownSetup()
+      const controller = new AbortController()
+      const reason = new Error('客户取消了')
+      controller.abort(reason)
+      await expect(downloadLatestGrokBinary({ ...f.options, version: '1.0.46', signal: controller.signal })).rejects.toBe(reason)
+      expect(f.requested).toEqual(stableUrls)
+    })
+  })
+
   describe('when the xAI download breaks part way', () => {
     const firstUrl = 'https://x.ai/cli/grok-1.0.62-windows-x86_64.exe'
     const secondUrl = 'https://x.ai/cli/grok-1.0.62-windows-x86_64'
@@ -415,7 +497,7 @@ describe('Grok signed binary installer', () => {
       })
     }
 
-    function bucketSetup(options: { indexStatus?: number, onBinaryRequest?: () => void, xaiStable?: string, checkedAt?: string | null } = {}) {
+    function bucketSetup(options: { indexStatus?: number, onBinaryRequest?: () => void, xaiStable?: string, xaiStableStatus?: number, checkedAt?: string | null } = {}) {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-download-'))
       temporaryDirectories.push(directory)
       const requested: string[] = []
@@ -430,7 +512,9 @@ describe('Grok signed binary installer', () => {
           init?.signal?.throwIfAborted()
           return new Response(binary, { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length) } })
         }
-        if (url === 'https://x.ai/cli/stable') return new Response(`${options.xaiStable ?? '1.0.52'}\n`, { status: 200, headers: { 'Content-Type': 'text/plain' } })
+        if (url === 'https://x.ai/cli/stable' || url === 'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable') {
+          return new Response(`${options.xaiStable ?? '1.0.52'}\n`, { status: options.xaiStableStatus ?? 200, headers: { 'Content-Type': 'text/plain' } })
+        }
         return new Response(binary, { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(binary.length) } })
       })
       return {
@@ -471,6 +555,20 @@ describe('Grok signed binary installer', () => {
       expect(f.requested).toEqual([bucketIndexUrl, 'https://x.ai/cli/stable', 'https://x.ai/cli/grok-1.0.46-windows-x86_64.exe'])
       expect(f.routed).toEqual(['start', 'end'])
       expect(f.fallbacks).toEqual(['grok-windows-x64：Grok 清单返回 HTTP 404'])
+    })
+
+    it('downloads the named version from xAI inside the download route when the bucket and xAI stable are both down', async () => {
+      const f = bucketSetup({ indexStatus: 404, xaiStableStatus: 503 })
+      const result = await downloadLatestGrokBinary(f.options)
+      expect(result).toMatchObject({ version: '1.0.46', sourceUrl: 'https://x.ai/cli/grok-1.0.46-windows-x86_64.exe' })
+      expect(f.requested).toEqual([
+        bucketIndexUrl,
+        'https://x.ai/cli/stable',
+        'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable',
+        'https://x.ai/cli/grok-1.0.46-windows-x86_64.exe',
+      ])
+      expect(f.options.verifyBinary).toHaveBeenCalledWith('grok', result.binaryPath)
+      expect(f.routed).toEqual(['start', 'end'])
     })
 
     it('goes to xAI when the bucket binary fails the xAI signature check, and installs that one', async () => {
