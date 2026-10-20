@@ -10,14 +10,18 @@
 // 顶节不是 package.json 的版本（日常 CI 测试包、还没做版本收口的构建）时写 notes: null，
 // 不让构建失败：正式发版由发布前置检查（P-14）与 extract-release-notes.cjs 各拦一道，
 // 这里宁可「这一版没有随包说明」，也不能把上一版的改动当成这一版显示给用户。
+//
+// 顶节就是这一版、条数却超过更新页的上限时，构建直接失败，不替发版的人挑哪几条不给客户看。
+// 以前这里悄悄截到前 60 条：0.2.20 的 84 条里，按文件名排在后面的正好是几位客户报过、
+// 点名修好的问题，装完后的更新页一条都不提（#1334）。
 const fs = require('node:fs')
 const path = require('node:path')
 const { extractReleaseNotes } = require('./extract-release-notes.cjs')
 
 const PROJECT_ROOT = path.resolve(__dirname, '..')
 const DEFAULT_OUTPUT = path.join(PROJECT_ROOT, 'dist-electron', 'release-notes.json')
-// 主进程读取时同样有上限（electron/installed-release.ts），这里先截住，免得构建出一个
-// 运行时会整份丢弃的文件而没人发现。
+// 主进程读取时同样有上限（electron/installed-release.ts，两边由测试钉成同一个数）。条数超了
+// 报错，单条超长截断：截断那条结尾带「…」，客户看得出后面还有。
 const MAX_ITEMS = 60
 const MAX_ITEM_LENGTH = 1000
 
@@ -53,8 +57,17 @@ function splitReleaseNoteItems(body) {
   return items
     .map(plainText)
     .filter(Boolean)
-    .slice(0, MAX_ITEMS)
     .map((item) => (item.length > MAX_ITEM_LENGTH ? `${item.slice(0, MAX_ITEM_LENGTH - 1)}…` : item))
+}
+
+function assertFitsUpdatePage(notes, version) {
+  if (notes.length <= MAX_ITEMS) return
+  const error = new Error(
+    `release-notes.md 里 ${version} 这一版有 ${notes.length} 条，装完后的更新页最多放 ${MAX_ITEMS} 条，`
+    + `多出来的客户看不到。请把相近的几条合并，压到 ${MAX_ITEMS} 条以内再构建，客户报过的问题放在最前面。`,
+  )
+  error.code = 'RELEASE_NOTES_TOO_MANY'
+  throw error
 }
 
 function buildBundledReleaseNotes(source, version) {
@@ -70,6 +83,7 @@ function buildBundledReleaseNotes(source, version) {
     return { version, notes: null }
   }
   const notes = splitReleaseNoteItems(body)
+  assertFitsUpdatePage(notes, version)
   return { version, notes: notes.length > 0 ? notes : null }
 }
 

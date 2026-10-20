@@ -41,6 +41,7 @@ import {
 import type { NodeTlsOutcome } from './certificate-trust-probe'
 import { readProjectInstructionsTemplate } from './project-instructions'
 import { launchExcludedEnvironmentVariables, macosShellOverrideVariables } from './system-service'
+import { valueReferences } from './type-only-imports.test-support'
 import { claudePlatformSwitches } from './workspace-config-overrides'
 
 const temporaryDirectories: string[] = []
@@ -3506,5 +3507,27 @@ describe('diagnostics system proxy', () => {
       state: 'warn',
       details: { systemProxy: '本机 10809 端口（没开）' },
     })
+  })
+})
+
+describe('the diagnostics-*.ts modules split out of diagnostics.ts', () => {
+  // 主进程是 CommonJS：diagnostics.ts 值导入这几个文件，它们要是反过来值导入 diagnostics.ts，两边互相 require，
+  // 其中一方会拿到半初始化的模块（#1335 第 4 条）。所以它们只许从 diagnostics.ts 拿类型。
+  it('only take types from diagnostics.ts so none of them requires it back', () => {
+    const diagnosticsModule = path.join(__dirname, 'diagnostics.ts')
+    const modules = fs.readdirSync(__dirname)
+      .filter((name) => /^diagnostics-.+\.ts$/.test(name) && !name.endsWith('.test.ts') && !name.endsWith('.test-support.ts'))
+    expect(modules).toEqual(expect.arrayContaining([
+      'diagnostics-context.ts',
+      'diagnostics-network-checks.ts',
+      'diagnostics-override-checks.ts',
+      'diagnostics-redaction.ts',
+      'diagnostics-storage-checks.ts',
+      'diagnostics-system-checks.ts',
+      'diagnostics-tool-checks.ts',
+    ]))
+    for (const name of modules) {
+      expect({ name, references: valueReferences(path.join(__dirname, name), diagnosticsModule) }).toEqual({ name, references: [] })
+    }
   })
 })

@@ -43,8 +43,11 @@ describe('schedule-timeout', () => {
   })
 
   it('is the only scheduleTimeout in the main process', () => {
-    const owners = fs.readdirSync(__dirname)
-      .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'))
+    // 要连 bootstrap/、ipc/handlers/、platform/ 这些子目录一起扫，搬家时最容易在那里重新抄出一份（#1335 第 5 条）。
+    const owners = fs.readdirSync(__dirname, { recursive: true, encoding: 'utf8' })
+      .map((name) => name.split(path.sep).join('/'))
+      .filter((name) => !name.split('/').includes('node_modules'))
+      .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts') && !name.endsWith('.test-support.ts'))
       .filter((name) => /\bfunction scheduleTimeout\(/.test(fs.readFileSync(path.join(__dirname, name), 'utf8')))
     expect(owners).toEqual(['schedule-timeout.ts'])
   })

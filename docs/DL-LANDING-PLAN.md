@@ -116,7 +116,7 @@ location / {
 3. 「获取验证码」：`GET /api/verification?email=`，客户端 60s 冷却；服务端本身有限流。
 4. 提交前本地校验：用户名 ≤20、密码 8–20、两次一致、邮箱形状、已勾选协议。与软件端 `validation.ts` 对齐，避免两套规则。
 5. `POST /api/user/register` JSON：`username`、`password`、`email`、`verification_code`，有码才带 `aff_code`。成功只看 `{ success: true }`，无 session。
-6. 进入成功态，三个 `<a>` 指向 `latest.json` 里的路径。失败用 new-api 返回文案（可复用软件端 `account-errors.ts` 的中文映射）。
+6. 进入成功态，三个按钮都指向教程站的下载区（`dl-landing/app.js` 的 `DOWNLOAD_GUIDE_URL`，和应用里「打开下载页」同一个地址），由那边按系统和芯片给包；`latest.json` 只用来显示版本号和「正在准备」。失败用 new-api 返回文案（可复用软件端 `account-errors.ts` 的中文映射）。
 
 不写：登录跳转、账号检测、下载前登录。
 

@@ -1,7 +1,3 @@
-## 用户
-
-- Claude Code 的扩展页不再把写在 settings.json 里的 MCP 连接列出来：Claude Code 本身不读那里，以前列出来点「移除」也删不掉。
-
 ## 开发
 
 - Claude Code 的 MCP 列表不再读 `~/.claude/settings.json` 和项目 `.claude/settings.json` 的 `mcpServers`（#1093 第 11 条）。

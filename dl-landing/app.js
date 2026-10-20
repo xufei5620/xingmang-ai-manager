@@ -8,7 +8,9 @@ const MAX_PASSWORD_LENGTH = 20
 const MAX_USERNAME_LENGTH = 20
 const MAX_AFF_CODE_LENGTH = 32
 const VERIFICATION_CODE_COOLDOWN_SECONDS = 60
-const DOWNLOAD_GUIDE_URL = 'https://s4621e8xzb.feishu.cn/wiki/WpBUwh4PhiAs2skvWfmcnM5vnDb?from=from_copylink'
+// 和应用里「打开下载页」同一个地址（electron/app-download-page.ts）。教程站的下载区按 Windows、
+// Apple 芯片、Intel 芯片分开给包；原来的飞书安装教程已经不用了（#1155）。
+const DOWNLOAD_GUIDE_URL = 'https://docs-new.solov.cc/guide/manager#download-installers'
 const legalFiles = {
   'user-agreement': { title: '用户协议', path: '/legal/user-agreement.md' },
   'privacy-policy': { title: '隐私政策', path: '/legal/privacy-policy.md' }

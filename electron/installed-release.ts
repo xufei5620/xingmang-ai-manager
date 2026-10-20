@@ -27,7 +27,7 @@ export type { InstalledRelease }
 
 export const BUNDLED_RELEASE_NOTES_RELATIVE_PATH = ['dist-electron', 'release-notes.json'] as const
 const MAX_BUNDLED_BYTES = 128 * 1024
-// 与 scripts/bundle-release-notes.cjs 的上限一致：构建端先截住，这里只防坏文件。
+// 与 scripts/bundle-release-notes.cjs 的上限一致（那边的测试钉住）：构建端条数超了直接报错，这里只防坏文件。
 const MAX_NOTES = 60
 const MAX_NOTE_LENGTH = 1000
 const storeLabel = '上次运行版本记录'

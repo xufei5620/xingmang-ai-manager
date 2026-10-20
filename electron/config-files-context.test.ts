@@ -12,6 +12,7 @@ import {
   requireRawConfigText,
   trustedFolderKey,
 } from './config-files-context'
+import { typeImportCount, valueReferences } from './type-only-imports.test-support'
 
 const temporaryDirectories: string[] = []
 
@@ -32,10 +33,10 @@ describe('config-files-context', () => {
   })
 
   it('only takes types from config-files.ts so the two never require each other', () => {
-    const source = fs.readFileSync(path.join(__dirname, 'config-files-context.ts'), 'utf8')
-    const imports = source.split('\n').filter((line) => /from '\.\/config-files'/.test(line))
-    expect(imports.length).toBeGreaterThan(0)
-    for (const line of imports) expect(line).toMatch(/^import type /)
+    const file = path.join(__dirname, 'config-files-context.ts')
+    const configFilesModule = path.join(__dirname, 'config-files.ts')
+    expect(typeImportCount(file, configFilesModule)).toBeGreaterThan(0)
+    expect(valueReferences(file, configFilesModule)).toEqual([])
   })
 
   it('reads text without the byte order mark unless asked to keep it', () => {
