@@ -16,8 +16,8 @@ import { isRecord } from './input-guards'
 // correct (and already-established) treatment. The plaintext only ever
 // crosses IPC on the dedicated account:get-remembered-login channel -- the
 // same "explicit reveal channel" pattern config:reveal-api-key set (I3) --
-// and both channels are in ipc.ts's quiet set so neither the value nor its
-// shape reaches the runtime log (I13).
+// and both channels are quiet-success in ipc-channel-policy.ts so neither the
+// value nor its shape reaches the runtime log (I13).
 
 const CURRENT_VERSION = 1
 const MAX_FILE_BYTES = 64 * 1024

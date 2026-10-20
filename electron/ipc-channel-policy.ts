@@ -9,8 +9,8 @@ import type { ipcInvokeChannels } from './ipc-contract'
 export type IpcInvokeChannel = (typeof ipcInvokeChannels)[keyof typeof ipcInvokeChannels]
 
 /**
- * 这条通道在运行日志里记什么（I13）。成功那一行只交给 ipc.ts 的两个格式化函数，它们只挑固定字段，
- * 不整个摊开入参和结果；下面几种是在那之上再收紧。
+ * 这条通道在运行日志里记什么（I13）。成功那一行只交给 ipc/handler-log.ts 的两个格式化函数（ipcSuccessMessage、
+ * ipcLogDetail），它们只挑固定字段，不整个摊开入参和结果；下面几种是在那之上再收紧。
  *
  * - normal：成功、失败都记。
  * - quiet-success：成功不记，失败照记。结果或入参带明文密钥、密码、个人信息的（I3），或者太频繁、
@@ -61,7 +61,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'config:open-directory': { label: '工具配置目录打开', log: 'normal', account: 'scoped' },
   'config:configure-external-tool': { log: 'normal', account: 'scoped' },
   // 开机先摆上次结果的那一读（第二个参数 cachedOnly: true）只读本机一个文件，不等账号；
-  // 这一项按入参判断，在 ipc.ts 的 readsCachedExternalClientsOnly，不在这张表里。
+  // 这一项按入参判断，在 ipc/handler-log.ts 的 readsCachedExternalClientsOnly，不在这张表里。
   'external-clients:scan': { label: '外部客户端检测', log: 'normal', account: 'scoped' },
   'external-clients:install': { label: '外部客户端安装', log: 'normal', account: 'none' },
   'external-clients:cancel-install': { label: '外部客户端安装取消', log: 'normal', account: 'none' },

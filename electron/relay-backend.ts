@@ -12,7 +12,7 @@
 // implementations.
 //
 // The method list here is deliberately the *exact* set today's real callers
-// use -- ipc.ts's account:* handlers, chat-credential-coordinator.ts's
+// use -- the account:* handlers in ipc/handlers/, chat-credential-coordinator.ts's
 // main-process key resolution for the canvas, and the saved-login restore
 // main.ts wires into realm-account-service.ts (restoreActive at startup,
 // switchSavedAccount later) -- not new-api-client.ts's full surface.
@@ -169,7 +169,7 @@ export interface RelayBackendCapabilities {
 
 /**
  * The subset of a relay backend's account client that today's real callers
- * use: ipc.ts's account:* handlers, chat-credential-coordinator.ts (the
+ * use: the account:* handlers in ipc/handlers/, chat-credential-coordinator.ts (the
  * canvas's key resolution, which happens in the main process -- the canvas
  * renderer never holds a key, see AGENTS.md's I15), and the saved-login
  * restore main.ts wires into realm-account-service.ts. Each
