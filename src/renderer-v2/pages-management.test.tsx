@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { V2Bridge } from './types'
@@ -39,6 +40,9 @@ import {
   curatedItemsFor,
 } from './registry/curated-extensions'
 import { extensionScopeGroups } from './registry/extensions'
+import * as sessionsPage from './features/sessions/SessionsPage'
+import * as extensionsPage from './features/extensions/ExtensionsPage'
+import * as extensionsCommon from './features/extensions/extensions-common'
 
 function item(id: string) {
   const found = curatedExtensions.find((entry) => entry.id === id)
@@ -820,3 +824,20 @@ describe('sessions table', () => {
   })
 })
 
+// #1070 第 11 步把两页搬出去以后 pages-management 只做转出：转出的就是页面文件里那一份；搬出去的文件也不反过来
+// 从它那里 import，免得几个文件绕着圈 import，谁先求值谁拿到一半。
+describe('pages-management as a re-export of the split pages', () => {
+  it('re-exports the very functions the page files define', () => {
+    expect(SessionsPage).toBe(sessionsPage.SessionsPage)
+    expect(sessionToolCounts).toBe(sessionsPage.sessionToolCounts)
+    expect(ExtensionsPage).toBe(extensionsPage.ExtensionsPage)
+    expect(CuratedShelf).toBe(extensionsCommon.CuratedShelf)
+    expect(submitMcpInstall).toBe(extensionsCommon.submitMcpInstall)
+  })
+
+  it('keeps the moved files from importing back out of it', () => {
+    for (const file of ['features/sessions/SessionsPage.tsx', 'features/extensions/ExtensionsPage.tsx', 'features/extensions/extensions-common.tsx', 'features/tools/provider-options.ts']) {
+      expect(readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')).not.toMatch(/from '[./]*pages-management'/)
+    }
+  })
+})

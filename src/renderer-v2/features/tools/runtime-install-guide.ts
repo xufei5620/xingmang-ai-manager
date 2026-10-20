@@ -66,7 +66,7 @@ export function runtimeInstallButtonShown(
 export const linuxPythonInstallCommand = 'sudo apt install python3'
 
 // Python 命令行工具都用不到了（要它的只有已下线的 Gemini CLI），
-// 只剩外接工具里个别连接要它（添加时那一页会提示，pages-management 的 mcpRuntimeNotice），
+// 只剩外接工具里个别连接要它（添加时那一页会提示，features/extensions/extensions-common 的 mcpRuntimeNotice），
 // 所以说成「要装的话」，别让客户以为非装不可。
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
