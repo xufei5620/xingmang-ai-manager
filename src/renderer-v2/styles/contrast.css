@@ -47,6 +47,8 @@
   :root .v2-workspace-starfield { display: none; }
   /* Edges that were only an inset ring or an outer shadow. */
   :root :is(.xm-modal, .xm-toast, .xm-brand-tile, .xm-notice, .xm-coachmark) { border: 1px solid CanvasText; }
+  /* The sidebar floated open over the page in a narrow window. */
+  :root .sidebar-floating .v2-sidebar { border-right: 1px solid CanvasText; }
   /* Buttons keep a visible edge; the main action gets a heavier one because its
      gradient fill is gone. */
   :root :is(.xm-btn, .xm-icon-btn) { border-color: ButtonText; }
