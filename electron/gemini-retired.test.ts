@@ -1,8 +1,8 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import * as configFiles from './config-files'
 import * as geminiRetired from './gemini-retired'
+import { typeImportCount, valueReferences } from './type-only-imports.test-support'
 
 describe('gemini-retired', () => {
   it('is what config-files.ts still exports under the old names', () => {
@@ -23,10 +23,10 @@ describe('gemini-retired', () => {
   })
 
   it('only takes types from config-files.ts so the two never require each other', () => {
-    const source = fs.readFileSync(path.join(__dirname, 'gemini-retired.ts'), 'utf8')
-    const imports = source.split('\n').filter((line) => /from '\.\/config-files'/.test(line))
-    expect(imports.length).toBeGreaterThan(0)
-    for (const line of imports) expect(line).toMatch(/^import type /)
+    const file = path.join(__dirname, 'gemini-retired.ts')
+    const configFilesModule = path.join(__dirname, 'config-files.ts')
+    expect(typeImportCount(file, configFilesModule)).toBeGreaterThan(0)
+    expect(valueReferences(file, configFilesModule)).toEqual([])
   })
 
   it('keeps comments and the user layout when it edits a commented settings file', () => {
