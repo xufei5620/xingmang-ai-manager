@@ -1,7 +1,0 @@
-## 开发
-
-- 拆 `diagnostics.ts`（#1070 第 9 步，最后一块）：「电脑里另外设过的设置」那几项（电脑里另外设过的工具地址或密钥、项目文件夹里的设置、Codex 文件夹里的额外设置、Claude Code 跑命令前要不要先问你、个人文件夹里早先留下的设置）连同只有它们用的东西（环境变量名单 `ENVIRONMENT_OVERRIDE_VARIABLES` 和判定、Mac 终端设置文件的读取、`clearableEnvironmentOverrides` / `environmentOverrideNames` / `environmentAccountBaseUrls`、被忽略的 `CODEX_HOME`、`readClaudeBypass`、`homeFolderLeftoversOutcome`，以及原来在 `runDiagnostics` 里的项目文件夹设置那段闭包）搬进新文件 `electron/diagnostics-override-checks.ts` 的 `buildOverrideChecks(context)`。搬走的四个导出名 `diagnostics.ts` 照旧转出，`diagnostic-fixes.ts`、`bootstrap/diagnostics.ts` 和测试都不用改。
-- `runDiagnostics` 现在只剩编排：建共用上下文，按原来的次序展开 `buildSystemChecks`、`buildToolChecks`、`buildNetworkChecks`、`buildStorageChecks`、`buildProxyChecks`、`buildOverrideChecks`，每项单独限时跑，收尾做两处跨项调和再数数。`diagnostics.ts` 从拆之前的 2961 行降到 504 行。
-- 搬运用脚本按原文件行号整段复制，逐段比对一字没改。Windows 专属的几段原样搬过去，没改：环境变量名按 Windows 的规矩不分大小写去找；「删掉这几项设置」只在 Windows 上挂，能删的只有地址和密钥类、不碰目录和开关类（清除脚本那一侧再对照 `environmentOverrideNames` 一遍）；路径比较在 Windows 上不分大小写。
-- 改了三处注释里的文件名（`workspace-config-overrides.ts`、`provider-launch-service.ts`、`diagnostics.test.ts` 说「在哪」的地方；`workspace-config-overrides.ts` 那句里原来写的 `system-service.ts` 实际已经不用它，顺手改成真用它的 `provider-launch-service.ts`），`docs/module-map/main-runtime.md` 里 `diagnostics.ts` 一条重写成总入口，`AGENTS.md` T10 的消费者名单注明各类检查拆在 `diagnostics-*.ts`。`config-files.ts` 里还有一句「见 diagnostics.ts 那段实测」，这一步不碰那个文件，没改。
-- 测试：这几项的行为由 `diagnostics.test.ts`、`diagnostic-fixes.test.ts` 原有的用例钉着（各个变量盖不盖过当前账号、Mac 终端设置文件、能一键清的名单、被忽略的 `CODEX_HOME`、项目文件夹设置、`.env`、跑命令前问不问、个人文件夹的旧说明和信任）；另用八种情况把整份报告和日志搬前搬后各跑一遍逐字比对，一样。

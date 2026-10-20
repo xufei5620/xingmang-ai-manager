@@ -1,6 +1,0 @@
-## 开发
-
-- 拆 `config-files.ts`（#1070 第 10 步，第一块）：读写工具配置文件的共用底层搬进新文件 `electron/config-files-context.ts`，给下一块把下线的 Gemini CLI 代码归拢到 `gemini-retired.ts` 铺路（那边要用这些，又不能反过来从 `config-files.ts` 拿值，否则两个文件互相 require）。搬过去的是：读配置文本（`readText`、`requireConfigText`、`requireRawConfigText`、去掉字节顺序标记、只认单链接普通文件、2MB 上限 `MAX_NATIVE_CONFIG_BYTES`），写之前的路径检查 `assertSafeConfigPath`（I8），两阶段提交 + .bak + 失败回滚的 `executeFilePlans` 和它用的准备、回滚、清理（I9），各家配置的位置 `providerConfigPaths` 和 `normalizeProviderConfigRoots`，以及几家配置都用的 `isJsonObject`、`isJsonRecord`、`ensureRecord`、`fillableRecord`、`jsonContent`、`normalizeWorkspacePathKey`、`trustedFolderKey`。新文件只 import `config-files.ts` 的类型；`executeFilePlans`、`providerConfigPaths` 由 `config-files.ts` 照旧导出，别处的 import 一个没改。config-files.ts 4702→4246 行。
-- 搬运用脚本按原文件行号整段复制，逐段比对一字没改，只给 `config-files.ts` 还要用的几个加了 `export`。另用 58 种情况（四家工具各自保存、合并、带字节顺序标记、备份轮换、改名失败回滚、配置是符号链接或硬链接、目录是链接、配置读不懂、超过 2MB、换线路和换型号、切官方账号再切回，直接调两阶段提交写入和删除、重复路径、越界、钩子抛错，三家的目录信任，以及 Gemini 的各种写法）把返回值、报错原文和整个目录里的文件搬前搬后各跑一遍逐字比对，一样。
-- 测试：新增 `config-files-context.test.ts`（`config-files.ts` 导出的就是这两个函数本身、新文件只 import `config-files.ts` 的类型、读文本去不去字节顺序标记、硬链接读不出也写不进、Windows 原样路径和普通路径算同一个、`fillableRecord` 不动不是表的值）。
-- 文档：模块地图加新文件，AGENTS.md 第 2 节、T2、T10 里 `providerConfigPaths` 的位置跟着改；`codex-config-toml.ts`、`config-file-backups.ts` 两处注释里「保存配置的事务在哪」跟着改。

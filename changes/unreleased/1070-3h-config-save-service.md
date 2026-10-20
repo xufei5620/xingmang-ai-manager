@@ -1,6 +1,0 @@
-## 开发
-
-- 拆 `system-service.ts`（#1070 第 3 步，第八簇，最后一簇）：保存工具配置的那一段（`saveConfig`、换型号和刷新菜单、配置摘要和明文密钥、打开前的型号核对、开机补模板缺省项、Codex 随包型号名单的写入和收回、各家工具的钩子和状态行、退役 Gemini 的接入清理）搬进新文件 `electron/config-save-service.ts` 的 `createConfigSaveService`。`createSystemService` 照旧对外给原来那些方法；首页检测、外部客户端、线路跟随、官方账号那几样显式传进去，新文件只 import `system-service.ts` 的类型，搬走的十个导出名 `system-service.ts` 照旧转出。`createSystemService` 由 1380 行左右收到 330 行左右，只剩把各簇接起来的门面（其中返回对象 78 行、Codex 桌面端的接线 41 行）。
-- 三处改写：问中转能用哪些型号的 `fetchAvailableModels` 连同它的缓存和几个小工具（`modelAccessCacheKey` 等）搬进 `system-service-context.ts`，外部客户端和保存配置都从那里拿（`system-service.ts` 照旧导出 `modelAccessCacheKey`）；门面里线路跟随、官方账号两段的接线挪到保存配置前面（保存配置要用它们，运行环境安装、装卸 CLI、打开工具又要用保存配置给的钩子和型号名单那几样）；`external-client-route-service.ts` 的 `ManagedKeyFollowTarget` 加了 `export`，给保存配置的依赖声明用。其余脚本整段复制，逐段比对一字没改。跟 Windows 有关的几段原样搬过去：状态行和钩子里写进配置的 Node 路径照旧由上下文的 `findInstalledExecutable` 找（管理员身份时的可信路径判断在上下文里，没动）；Windows 上 Grok 用 Git Bash 还是 PowerShell 跑钩子（`expectedGrokWindowsShell`、`resolveCliHookInvocation` 里先读注册表最新 PATH 那两行）。
-- 测试：新增 `config-save-service.test.ts`（保存 Claude Code 用的是上下文那份型号列表和传进来的挪开官方 Key、换完星芒签的 Key 让外部客户端跟上；型号不对时一个都不碰；开机那次型号名单检查只做一遍），`system-service-context.test.ts` 加一条型号列表缓存；系统服务其余测试照旧全过。
-- 文档：`AGENTS.md` T3 改成「先找对文件」，模块地图、`AGENT-RUNBOOK.md`、`COLLABORATION.md` 里「`system-service.ts` 是全仓最大的文件」的说法跟着改。

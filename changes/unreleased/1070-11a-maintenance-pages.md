@@ -1,7 +1,0 @@
-## 开发
-
-- 拆 `pages-maintenance.tsx`（#1070 第 11 步，第一块）：三页一页一个文件，检查页 `HealthPage` 搬进 `src/renderer-v2/features/health/HealthPage.tsx`，反馈与客服 `FeedbackPage` 搬进 `features/feedback/FeedbackPage.tsx`，设置页 `SettingsPage`（连同 `OnboardingGuideRow`、`OnboardingTourRow`、`settingsPageLead`、快捷键那两个函数）搬进 `features/settings/SettingsPage.tsx`，各自只用到的小函数跟着页面走。各业务页共用的 `BusinessActions` 和它带着的 `ToolInstallOutcome`、`FeedbackSupport`、`FeedbackRequest` 几个类型搬进 `business-actions.ts`；检查页和扩展三页都用的 `installResultMessage`、`installJobRunning`、`installGuideTopic` 搬进 `features/tools/install-result.ts`。`pages-maintenance.tsx` 从 3090 行降到 33 行，只做转出，原来从它那里 import 的地方一个没改；搬出去的文件不反过来从它那里 import，免得绕圈。
-- 搬运用脚本按原文件整段复制，每一段连同上面的注释逐字比对一样；只少了两处没人用的：`type Update` 和一行 `releaseNotesSection` 的 import（更新卡早先搬去 `VersionCard` 时留下的）。几页用到的那两三个类型别名（`Provider`、`AppSettings`）各文件各抄一份，和原来 pages-maintenance、pages-management 各有一份 `Provider` 一样。跟 Windows 有关的几处只是界面上的话和判断，原样搬了：检查页 Node.js 那行「要弹一次管理员授权」的提示、能删的设置那一句，设置页「打开工具用哪个窗口」里不写死 Windows Terminal 那一行。
-- 验证：搬前搬后用同一组 18 种情况（三页各几种参数、教程页、记录页、扩展三页）把渲染出来的整页 HTML 和两个文件的导出名逐字比对，一样；另把 renderer-v2 打包前后比对，样式表全部一字不差，首屏那份 JS 和别的几块除了互相引用的文件名一样，变的只有业务页那一块（模块次序）。
-- 测试：`pages-maintenance.test.ts` 原有的用例一条没改，照旧从 `pages-maintenance` import；末尾加两条：转出的就是页面文件里那一份，搬出去的文件不从 `pages-maintenance` import。
-- 文档：模块地图里 `pages-maintenance.tsx` 一条改成「只做转出」，加五个新文件；`docs/COLLABORATION.md` 热点文件表换成 `features/settings/SettingsPage.tsx`；`electron/feedback-self-check.ts` 一句注释里说「在哪」的文件名跟着改。
