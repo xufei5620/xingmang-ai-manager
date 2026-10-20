@@ -58,3 +58,15 @@ test('the Mac guide leads with the System Settings route that still works on mac
   assert.match(fallback, /macOS 14 或更早/)
   assert.match(fallback, /右键/)
 })
+
+test('the download buttons open the same tutorial download page as the app', () => {
+  // 飞书安装教程已经不用了，落地页和应用里「打开下载页」要去同一个教程站下载区，那边按芯片分开给包（#1155）。
+  const clientSource = fs.readFileSync(path.join(root, 'electron', 'app-download-page.ts'), 'utf8')
+  const clientUrl = clientSource.match(/appReleaseDownloadUrl = '([^']+)'/)
+  assert.ok(clientUrl, 'electron/app-download-page.ts no longer declares appReleaseDownloadUrl')
+  const landingUrl = app.match(/const DOWNLOAD_GUIDE_URL = '([^']+)'/)
+  assert.ok(landingUrl, 'dl-landing/app.js no longer declares DOWNLOAD_GUIDE_URL')
+  assert.equal(landingUrl[1], clientUrl[1])
+  assert.doesNotMatch(app, /feishu|larksuite/i)
+  assert.doesNotMatch(html, /feishu|larksuite/i)
+})
