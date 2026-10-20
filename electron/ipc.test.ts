@@ -432,6 +432,22 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel).sort()).toEqual(expectedChannels)
   })
 
+  // 各域交回来的收尾要在撤通道时接上；漏接一项编译器不管（#1333）。换线路定点改写拿着的账号钩子
+  // 要在这里放掉，不然撤了通道以后它还会按旧账号去备份、认密钥。
+  it('unbinds the tool route account hooks when disposed', () => {
+    const service = serviceStub()
+    const bindToolRouteAccount = vi.fn()
+    service.bindToolRouteAccount = bindToolRouteAccount
+    const { dispose } = register(service)
+    expect(bindToolRouteAccount).toHaveBeenCalledOnce()
+    expect(bindToolRouteAccount.mock.calls[0][0]).toEqual({ backup: expect.any(Function), ownedKeyIds: expect.any(Function) })
+
+    dispose()
+
+    expect(bindToolRouteAccount).toHaveBeenCalledTimes(2)
+    expect(bindToolRouteAccount).toHaveBeenLastCalledWith(null)
+  })
+
   it('routes global acceleration through trusted IPC and rejects unknown modes', async () => {
     const state = { scope: 'xm-account:7', phase: 'unavailable' as const, mode: 'system-proxy' as const,
       totalSeconds: 3600, remainingSeconds: null, sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null }
@@ -784,6 +800,25 @@ describe('registerIpcHandlers', () => {
   })
 
   describe('feedback preview snapshot contracts', () => {
+    // 预览留着的是整份反馈报告；撤通道时这一项收尾要接上，漏接编译器不管（#1333）。
+    it('forgets the previewed reports when the handlers are disposed', async () => {
+      const { runtimeLog, dispose } = register()
+      runtimeLog.captureFeedbackReport
+        .mockResolvedValueOnce({ text: 'before dispose\n', entries: 1 })
+        .mockResolvedValueOnce({ text: 'after dispose\n', entries: 2 })
+      const owner = trustedEvent()
+      const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+      const copy = electronMocks.handlers.get('runtime-logs:copy-feedback')!
+
+      dispose()
+
+      await expect(copy(owner, preview.id)).resolves.toEqual({
+        entries: 2,
+        regenerated: { id: expect.any(String), text: 'after dispose\n', entries: 2 },
+      })
+      expect(electronMocks.writeText).toHaveBeenCalledExactlyOnceWith('after dispose\n')
+    })
+
     it('copies and exports exactly the previewed text and count despite later log changes', async () => {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feedback-ipc-'))
       try {
@@ -7426,6 +7461,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       }
     })
 
+    // 复制完不到 60 秒就退出星芒：撤通道时要把还没到点的那段也擦掉，不能让密钥一直留在系统剪贴板里。
+    // 擦剪贴板是 ipc.ts 撤通道时的一项收尾，漏接、删掉编译器都不管（#1333）。
+    it('wipes a copied key from the clipboard when the handlers are disposed before the sixty seconds are up', async () => {
+      vi.useFakeTimers()
+      try {
+        const { accountService, dispose } = register()
+        const plaintextKey = 'sk-ipc-dispose-clear'
+        vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+        electronMocks.readText.mockReturnValue(plaintextKey)
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+
+        dispose()
+        expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
+        // The pending wipe is cancelled rather than left to fire after quit.
+        vi.advanceTimersByTime(60_000)
+        expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('falls back to the server for an ordinary key that is absent from the managed cache', async () => {
       const accountService = accountServiceStub()
       vi.mocked(accountService.getSessionState).mockReturnValue({
@@ -8261,6 +8318,112 @@ describe('IPC channel log and account policies', () => {
       'account:submit-two-factor-code',
       'account:switch-saved',
     ])
+  })
+
+  // 上面那份只管四个前缀。前缀以外的通道大多跟账号无关，下面这几条是例外：换账号时它们会拿着旧账号的配置
+  // 去开工具、开画布、切外部客户端，所以要等账号、跑完账号变了就作废。照抄邻居一行写成 none 也编译得过
+  // （external-clients:launch 下面紧挨着的 install 就是 none），这份名单让那种改动当场变红（#1333）。
+  it('keeps the channels outside those prefixes that act on the current account waiting for it', () => {
+    const scoped = Object.entries(ipcChannelPolicies)
+      .filter(([channel, policy]) => !/^(?:account|chat|config|models):/.test(channel) && policy.account !== 'none')
+      .map(([channel]) => channel)
+      .sort()
+    expect(scoped).toEqual([
+      'canvas:open',
+      'cli:launch',
+      'desktop:launch-codex',
+      'external-clients:launch',
+      'external-clients:scan',
+      'external-clients:switch-source',
+      'tools:check-models',
+    ])
+  })
+
+  // 日志收紧过的通道护着 I3、I13：入参或结果里有明文密钥、密码、整段对话。照抄邻居一行改回 normal，或者把
+  // silent 写成 quiet-success，都编译得过；两种特殊的等账号法也一样。这里照今天的表逐条点名，收紧、放宽、
+  // 新加都要在这里改，放宽的那一下就摆在审查的人眼前（#1333）。
+  it('names every channel whose log or account handling departs from the default', () => {
+    const departures: Record<string, string[]> = {}
+    for (const [channel, policy] of Object.entries(ipcChannelPolicies)) {
+      if (policy.log !== 'normal') (departures[`log: ${policy.log}`] ??= []).push(channel)
+      if (policy.account === 'scoped-queued' || policy.account === 'scoped-may-end-session') {
+        (departures[`account: ${policy.account}`] ??= []).push(channel)
+      }
+    }
+    for (const channels of Object.values(departures)) channels.sort()
+    expect(departures).toEqual({
+      'log: quiet-success': [
+        'account:change-password',
+        'account:configure-cli-with-key',
+        'account:configure-managed-clis',
+        'account:copy-key',
+        'account:copy-reset-password',
+        'account:get-balance',
+        'account:get-dashboard',
+        'account:get-key-options',
+        'account:get-legal-document',
+        'account:get-profile',
+        'account:get-remembered-login',
+        'account:get-session',
+        'account:get-status',
+        'account:get-tasks',
+        'account:get-usage',
+        'account:list-groups',
+        'account:list-key-models',
+        'account:list-keys',
+        'account:reset-password',
+        'account:reveal-key',
+        'account:set-remembered-login',
+        'account:sync-managed-cli-keys',
+        'chat-history:read',
+        'chat-history:write',
+        'chat:asset-menu',
+        'chat:cancel',
+        'chat:copy-asset',
+        'chat:list-groups',
+        'chat:paste-image',
+        'chat:pick-images',
+        'chat:save-asset',
+        'config:get',
+        'config:reveal-api-key',
+        'desktop:codex-locale-status',
+        'desktop:codex-permissions-status',
+        'desktop:codex-status',
+        'repository:get-context',
+        'runtime-logs:list',
+        'runtime-logs:renderer-error',
+        'settings:get',
+        'setup:codex-status',
+        'startup:codex-readiness',
+        'system:refresh-network-location',
+        'system:scan',
+        'update:get-state',
+        'update:startup',
+        'window:set-mode',
+        'window:set-theme',
+      ],
+      'log: polling': [
+        'account:get-notice',
+        'account:get-subscription-self',
+        'account:sync-local-notice-reads',
+      ],
+      'log: secret-input': [
+        'account:submit-two-factor-code',
+      ],
+      'log: silent': [
+        'chat:generate-image',
+        'chat:prepare-group',
+        'chat:start',
+      ],
+      'account: scoped-queued': [
+        'cli:launch',
+        'desktop:launch-codex',
+      ],
+      'account: scoped-may-end-session': [
+        'account:change-password',
+        'account:revoke-login-session',
+      ],
+    })
   })
 })
 
