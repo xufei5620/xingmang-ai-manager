@@ -149,7 +149,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const remainingText = remainingShown
     ? <>{localDevelopment ? '剩余测试时长' : '剩余免费时长'} <span data-testid="acceleration-quota-remaining">{formatAccelerationDuration(remaining, true)}</span></>
     : quotaNote
-  const intro = localDevelopment ? '网络加速连接测试，时长仅在本机记录' : '为游戏走一条更快的线路，当前账号的 AI 工具照常直连'
+  const intro = localDevelopment ? '网络加速连接测试，时长仅在本机记录' : '打开 ChatGPT、Codex 这些 OpenAI 服务时走星芒的美国线路，其他网站照常直连'
   // 标题已经说了「已开启」、按钮写着「开启加速」时，状态那几个字只留给读屏；别的状态（准备中、文件坏了、没连上）照常露出来。
   const phaseQuiet = active || (phase === 'idle' && !failedStart && signedIn)
 

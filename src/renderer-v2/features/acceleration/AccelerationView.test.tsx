@@ -235,7 +235,7 @@ describe('acceleration card copy', () => {
   it('says what the card is for and how much free time is left', () => {
     const markup = render(state({ remainingSeconds: 754 }))
     expect(markup).toContain('网络加速</h2>')
-    expect(markup).toContain('为游戏走一条更快的线路，当前账号的 AI 工具照常直连，剩余免费时长 <span data-testid="acceleration-quota-remaining">12 分 34 秒</span>')
+    expect(markup).toContain('打开 ChatGPT、Codex 这些 OpenAI 服务时走星芒的美国线路，其他网站照常直连，剩余免费时长 <span data-testid="acceleration-quota-remaining">12 分 34 秒</span>')
     expect(markup).toMatch(/data-testid="acceleration-session-start"[^>]*>.*?开启加速/)
     expect(markup).toContain('data-testid="acceleration-help-open"')
     // 地球动画、三格详情去掉了，计时规则在「使用帮助」里。

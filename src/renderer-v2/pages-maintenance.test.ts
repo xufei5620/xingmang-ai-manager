@@ -291,10 +291,12 @@ describe('tutorial topics', () => {
     expect(text).not.toContain('口令')
     // 托盘菜单（#326）是主窗口缩起来时唯一的开关入口。
     expect(text).toContain('托盘')
-    // 两处「自己连」：下载那条不改网络设置；Codex 桌面端那条悄悄连、不弹通知、加速页上
-    // 看不见、用完就断（#707 起不扣时长，yoyo 2026-10-01 定「悄悄连」，2026-10-02 定
-    // 「不在游戏加速那边体现」、结束后断开）。
-    expect(text).toContain('不计入免费时长')
+    // 「自己连」只剩 Codex 桌面端那条：悄悄连、不弹通知、加速页上看不见、用完就断（#707 起不扣时长，
+    // yoyo 2026-10-01 定「悄悄连」，2026-10-02 定「不在游戏加速那边体现」、结束后断开）。下载借临时线路
+    // 那条 2026-10-21 起不做了（线路只放行 GPT），教程改说下载照常直连。
+    expect(text).toContain('不扣免费时长')
+    expect(text).toContain('装工具、下载 Node.js 时不借加速线路')
+    expect(text).not.toContain('下载专用临时线路')
     expect(text).toContain('不弹通知')
     expect(text).toContain('网络加速卡和托盘也不显示')
     expect(text).toContain('打开约 2 分钟后自动断开')
