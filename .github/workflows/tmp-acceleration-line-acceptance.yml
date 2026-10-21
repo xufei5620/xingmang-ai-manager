@@ -1,0 +1,85 @@
+# 临时（核完就删）：从 package-for-testing 那次运行（39631582098）取回测试包，解开安装包里的加速资源，
+# 用 scripts/tmp-acceleration-line-acceptance.cjs 真连自建的洛杉矶线路：连接、只把 GPT 送去线路、断开、重连、
+# 内核被杀后再连。不读 secret、不挂 environment、不改系统代理。
+name: tmp acceleration line acceptance
+
+on:
+  push:
+    branches: [claude/project-thread-t9ypg8]
+    paths:
+      - .github/workflows/tmp-acceleration-line-acceptance.yml
+      - scripts/tmp-acceleration-line-acceptance.cjs
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PACKAGE_RUN_ID: '39631582098'
+  PACKAGE_VERSION: '0.2.20'
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/ --ignore-scripts
+      - run: npx tsc -p tsconfig.electron.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-CI-SIGNED-DO-NOT-PUBLISH-${{ env.PACKAGE_VERSION }}
+          path: ${{ runner.temp }}/package
+          run-id: ${{ env.PACKAGE_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Unpack the Apple silicon package
+        run: |
+          ls -la "$RUNNER_TEMP/package"
+          zip=$(ls "$RUNNER_TEMP"/package/*Apple-Silicon-arm64.zip | head -1)
+          mkdir -p "$RUNNER_TEMP/app"
+          ditto -x -k "$zip" "$RUNNER_TEMP/app"
+          resources=$(find "$RUNNER_TEMP/app" -maxdepth 3 -type d -path '*.app/Contents/Resources' | head -1)
+          ls -la "$resources/acceleration"
+          echo "RESOURCES=$resources" >> "$GITHUB_ENV"
+      - name: Connect to the line with the packaged core and profile
+        run: node scripts/tmp-acceleration-line-acceptance.cjs "$RESOURCES"
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/ --ignore-scripts
+      - run: npx tsc -p tsconfig.electron.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-unsigned-${{ env.PACKAGE_VERSION }}
+          path: ${{ runner.temp }}/package
+          run-id: ${{ env.PACKAGE_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Unpack the installer
+        shell: pwsh
+        run: |
+          Get-ChildItem "$env:RUNNER_TEMP\package"
+          $setup = Get-ChildItem "$env:RUNNER_TEMP\package" -Filter '*Setup.exe' | Select-Object -First 1
+          & 7z x -y $setup.FullName "-o$env:RUNNER_TEMP\nsis" | Out-Null
+          $archive = Get-ChildItem "$env:RUNNER_TEMP\nsis" -Recurse -Filter 'app-64.7z' | Select-Object -First 1
+          if (-not $archive) { throw 'app-64.7z not found in the installer' }
+          & 7z x -y $archive.FullName "-o$env:RUNNER_TEMP\app" | Out-Null
+          Get-ChildItem "$env:RUNNER_TEMP\app\resources\acceleration"
+          "RESOURCES=$env:RUNNER_TEMP\app\resources" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Connect to the line with the packaged core and profile
+        shell: pwsh
+        run: node scripts/tmp-acceleration-line-acceptance.cjs $env:RESOURCES
