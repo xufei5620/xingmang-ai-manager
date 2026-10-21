@@ -14,7 +14,15 @@ const { readAccelerationWorkerProfile } = require(path.join(root, 'dist-electron
 const { createMihomoRuntime } = require(path.join(root, 'dist-electron', 'acceleration-mihomo-runtime.js'))
 
 const LINE_SERVER = '179.255.133.164'
+// 服务器出站有 IPv4 也有 IPv6：IPv6 落在它所在机房（DMIT，2605:52c0::/32）的段里，同样算走了线路。
+const LINE_IPV6_PREFIX = '2605:52c0:'
 const results = []
+const exits = new Set()
+
+function isLineExit(ip) {
+  if (ip) exits.add(ip)
+  return ip === LINE_SERVER || (typeof ip === 'string' && ip.toLowerCase().startsWith(LINE_IPV6_PREFIX))
+}
 
 function record(name, ok, detail) {
   results.push({ name, ok, detail })
@@ -87,8 +95,8 @@ function killCore() {
 async function routedChecks(port, runnerIp) {
   await check('ChatGPT 走线路：chatgpt.com 看到的出口是洛杉矶服务器', async () => {
     const reply = await getViaProxy(port, 'https://chatgpt.com/cdn-cgi/trace')
-    expectThat(traceIp(reply.text) === LINE_SERVER, `出口 ${traceIp(reply.text) ?? '未知'}，HTTP ${reply.status}`)
-    return `出口 ${LINE_SERVER}`
+    expectThat(isLineExit(traceIp(reply.text)), `出口 ${traceIp(reply.text) ?? '未知'}，HTTP ${reply.status}`)
+    return `出口 ${traceIp(reply.text)}`
   })
   await check('ChatGPT 首页有响应（403 是 Cloudflare 人机页，算通）', async () => {
     const reply = await getViaProxy(port, 'https://chatgpt.com/')
@@ -108,7 +116,7 @@ async function routedChecks(port, runnerIp) {
   await check('别的网站直连：www.cloudflare.com 看到的是这台机器自己的出口', async () => {
     const reply = await getViaProxy(port, 'https://www.cloudflare.com/cdn-cgi/trace')
     const ip = traceIp(reply.text)
-    expectThat(ip && ip !== LINE_SERVER && (!runnerIp || ip === runnerIp), `出口 ${ip ?? '未知'}`)
+    expectThat(ip && !isLineExit(ip) && (!runnerIp || ip === runnerIp), `出口 ${ip ?? '未知'}`)
     return '没走线路'
   })
   await check('别的网站照常打得开：www.google.com、example.com', async () => {
@@ -119,7 +127,7 @@ async function routedChecks(port, runnerIp) {
   })
   await check('8 个并发请求经线路都成功', async () => {
     const replies = await Promise.all(Array.from({ length: 8 }, () => getViaProxy(port, 'https://chatgpt.com/cdn-cgi/trace')))
-    const good = replies.filter((reply) => traceIp(reply.text) === LINE_SERVER).length
+    const good = replies.filter((reply) => isLineExit(traceIp(reply.text))).length
     expectThat(good === 8, `${good}/8`)
     return '8/8'
   })
@@ -135,10 +143,11 @@ async function main() {
   const config = await readBundledAccelerationConfig({
     isPackaged: true, platform: process.platform, architecture: process.arch, resourcesPath, bundledMetadata: manifest,
   })
-  const pinned = fs.readFileSync(path.join(root, 'bundled-acceleration', 'profile.sha256'), 'utf8').trim()
-  record('安装包里的节点就是这次提交的那条线路', config.profileSha256 === pinned, `profile ${config.profileSha256.slice(0, 12)}…`)
+  // 打包时节点会被改名成「美国线路 1」这类（stage-acceleration-bundle），文件摘要跟仓库里的不同，所以看内容。
   const profile = await readAccelerationWorkerProfile(config)
-  record('安装包里只有一条线路', profile.nodes.length === 1, profile.nodes.map((node) => `${node.id} ${node.label}`).join('，'))
+  const servers = profile.nodes.map((node) => `${node.connection.server}:${node.connection.port}`)
+  record('安装包里只有洛杉矶这一条线路', servers.length === 1 && servers[0] === `${LINE_SERVER}:443`,
+    profile.nodes.map((node) => `${node.label} ${node.connection.server}:${node.connection.port}`).join('，'))
 
   const runnerIp = await directIp().catch(() => null)
   const runtimeDirectory = path.join(process.env.RUNNER_TEMP ?? root, 'xm-accel-acceptance')
@@ -169,7 +178,7 @@ async function main() {
     await check('重连：再连一次照样通', async () => {
       const again = await runtime.start(profile)
       const reply = await getViaProxy(again.proxyPort, 'https://chatgpt.com/cdn-cgi/trace')
-      expectThat(traceIp(reply.text) === LINE_SERVER, `出口 ${traceIp(reply.text) ?? '未知'}`)
+      expectThat(isLineExit(traceIp(reply.text)), `出口 ${traceIp(reply.text) ?? '未知'}`)
       return `用时 ${Date.now() - started} ms`
     })
 
@@ -184,12 +193,13 @@ async function main() {
     await check('被杀以后再连：照样通', async () => {
       const again = await runtime.start(profile)
       const reply = await getViaProxy(again.proxyPort, 'https://chatgpt.com/cdn-cgi/trace')
-      expectThat(traceIp(reply.text) === LINE_SERVER, `出口 ${traceIp(reply.text) ?? '未知'}`)
+      expectThat(isLineExit(traceIp(reply.text)), `出口 ${traceIp(reply.text) ?? '未知'}`)
       return `用时 ${Date.now() - started} ms`
     })
     await runtime.stop().catch(() => undefined)
   }
 
+  console.log(`线路出口：${[...exits].filter((ip) => isLineExit(ip)).join('、')}`)
   const failed = results.filter((result) => !result.ok)
   const summary = [`### ${process.platform} ${process.arch}：${results.length - failed.length}/${results.length} 通过`, '',
     '| 结果 | 项目 | 说明 |', '|---|---|---|',
