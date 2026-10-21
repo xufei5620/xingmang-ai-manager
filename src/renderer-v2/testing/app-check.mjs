@@ -8780,6 +8780,49 @@ test('a sidebar floated open from the keyboard keeps focus on its toggle and fol
   } finally { await page.close() }
 })
 
+// #1349 第 1 条：顶栏整条是拖动区，Electron 把那里的鼠标按下交给系统拖窗口，页面收不到 pointerdown、焦点也不动，
+// 浮着的侧栏点顶栏空白处收不回。无头 Chromium 不认拖动区，这里钉的是样式：浮着时侧栏外面一处拖动区都没有，
+// 收回、拉宽以后顶栏照常能拖。真机上点顶栏能不能收，以真机为准。
+test('a floating sidebar leaves no window drag region outside it, so clicking the empty top bar folds it', async () => {
+  for (const os of ['windows', 'mac']) {
+    const page = await open(os === 'mac' ? 'os=mac' : '')
+    try {
+      await page.setViewportSize({ width: 1092, height: 820 })
+      await page.getByTestId('page-home').waitFor()
+      const shell = page.locator('.v2-shell')
+      const topbar = page.getByTestId('shell-topbar')
+      function region(locator) { return locator.evaluate((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')) }
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal(await region(topbar), 'drag', `${os}: the top bar drags the window while the sidebar is a rail`)
+      await page.getByTestId('sidebar-collapse').click()
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-floating')
+      assert.deepEqual(await page.evaluate(() => {
+        const sidebar = document.querySelector('[data-testid="sidebar"]')
+        return [...document.querySelectorAll('body *')]
+          .filter((element) => !sidebar.contains(element) && getComputedStyle(element).getPropertyValue('-webkit-app-region') === 'drag')
+          .map((element) => element.getAttribute('data-testid') ?? element.className)
+      }), [], `${os}: nothing outside the floating sidebar swallows a click as a window drag`)
+      // 点顶栏左边那段空白（侧栏右边、搜索框左边，不碰任何按钮）。
+      const sidebar = await box(page, '[data-testid="sidebar"]')
+      const search = await box(page, '.v2-command-trigger')
+      const bar = await box(page, '[data-testid="shell-topbar"]')
+      assert.ok(search.left - sidebar.right > 40, `${os}: the top bar has room to click beside the sidebar (${sidebar.right} / ${search.left})`)
+      const point = { x: (sidebar.right + search.left) / 2, y: (bar.top + bar.bottom) / 2 }
+      assert.equal(await page.evaluate(({ x, y }) => {
+        const target = document.elementFromPoint(x, y)
+        return Boolean(target?.closest('[data-testid="shell-topbar"]')) && !target.closest('button, a, input')
+      }, point), true, `${os}: the click lands on the empty top bar`)
+      await page.mouse.click(point.x, point.y)
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal(await region(topbar), 'drag', `${os}: the top bar drags the window again once the sidebar folds`)
+      await page.setViewportSize({ width: 1280, height: 820 })
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+      assert.equal(await region(topbar), 'drag', `${os}: the top bar drags the window in a wide window`)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // #1133 第 3、4 条：最小窗口选 110% 只剩 970×566 逻辑大小。收成窄条的侧栏一项不少地放得下，不滚、不渐隐
 // （Mac 顶上还要让红黄绿三个点）；状态栏里历史账号那种长邮箱先省略、悬停看全文，网络状态一个字不少。
 test('the smallest window at 110% fits the collapsed sidebar and shortens a long email before the network status', async () => {
