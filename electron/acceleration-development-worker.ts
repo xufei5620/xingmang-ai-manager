@@ -97,6 +97,14 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
   const conflicts = createAccelerationConflictDetector({
     platform: process.platform,
     ...(windowsProxy ? { inspectWindowsProxy: () => windowsProxy.inspect() } : {}),
+    // Mac 上看去线路服务器的那条路是不是被别的 VPN 接走了（acceleration-conflict.ts）。冲突检查在内核
+    // 起来之前，第一次连接时节点还没读，所以这里先读一次，读到的留给随后的 start 用。
+    ...(macProxy ? {
+      lineAddresses: async () => {
+        if (!accelerationProfile) accelerationProfile = await readAccelerationWorkerProfile(config)
+        return accelerationProfile.nodes.map((node) => node.connection.server)
+      },
+    } : {}),
   })
   runtimeRunning = () => runtime.isRunning()
   backend = createAccelerationDevelopmentBackend({

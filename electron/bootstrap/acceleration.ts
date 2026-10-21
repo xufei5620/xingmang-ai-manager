@@ -43,7 +43,8 @@ export interface AccelerationRoutingOptions {
   readStoredConfig: () => Pick<AppSettings, 'relaySiteId'>
 }
 
-// 下载线路和 Codex 桌面端要的加速：装 CLI、下 Node 时临时走加速线路，打开 Codex 桌面端时替他连一次。
+// 下载线路和 Codex 桌面端要的加速：打开 Codex 桌面端时替他连一次。装 CLI、下 Node 临时借线路那一路
+// 2026-10-21 起没接（线路只通 ChatGPT / OpenAI，见 main.ts 建系统服务那里），下载协调者仍在，只剩 downloadFetch 用它。
 // 系统服务要拿这里给的下载 fetch 和启动线路，所以建在系统服务之前。
 export function createAccelerationRouting(options: AccelerationRoutingOptions) {
   const { routes: { relayRouting, proxyBypass, resolveSystemProxy }, rootedOptions, accelerationPreferences, runtimeLog } = options

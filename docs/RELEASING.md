@@ -35,7 +35,7 @@ npm run release:build:unsigned
 
 ### 从 0.2.3 起的加速资源与当前节点策略
 
-0.2.3 开始分发本机计时版：每账号在本机累计 20 分钟，TUN 尚未接入。当时节点只随本地安装包分发。产品所有者现已调整策略：现有 12 条发布线路的清洗后配置和 SHA-256 一并提交到 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，供 Windows 与 macOS 共用。具体文件与准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
+0.2.3 开始分发本机计时版：每账号在本机累计 20 分钟，TUN 尚未接入。当时节点只随本地安装包分发。产品所有者现已调整策略：发布线路的清洗后配置和 SHA-256 一并提交到 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，供 Windows 与 macOS 共用。具体文件与准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
 
 拉取源码后无需再私下传递节点文件；仍须准备对应平台的 Mihomo 内核及完整许可，并通过现有发布入口选入资源。普通构建和 CI 不会因为仓库中有 YAML 就自动获得内核或启用加速。
 

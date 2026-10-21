@@ -66,7 +66,7 @@ npm run changelog:collect     # 把 changes/unreleased/ 的分片汇入两份日
 
 实际落地时拆成了两半，因为这两样东西的性质不同：
 
-**节点在仓库里。** `bundled-acceleration/profile.yaml` 是那 12 条共享线路，`bundled-acceleration/profile.sha256` 钉住它的字节。它只有几 KB，而且它就是那个"私有"的部分，必须随源码走才能让任何一台机器出的包都一样。
+**节点在仓库里。** `bundled-acceleration/profile.yaml` 是随包分发的共享线路（2026-10-21 起是一条自建的洛杉矶线路），`bundled-acceleration/profile.sha256` 钉住它的字节。它只有几 KB，而且它就是那个"私有"的部分，必须随源码走才能让任何一台机器出的包都一样。
 
 **内核不在仓库里。** Mihomo 内核是 MetaCubeX 的公开发布产物，三个平台各十几 MB；进不进仓库都不影响谁能拿到它，而进了 git 历史就永远删不掉，每升一次版再压一份进去。所以仓库里只有 `bundled-acceleration/cores.json` 这张对账表，工作流现场从上游取。
 
