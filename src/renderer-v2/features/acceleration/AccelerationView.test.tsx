@@ -234,7 +234,7 @@ describe('acceleration line switch', () => {
 describe('acceleration card copy', () => {
   it('says what the card is for and how much free time is left', () => {
     const markup = render(state({ remainingSeconds: 754 }))
-    expect(markup).toContain('游戏加速</h2>')
+    expect(markup).toContain('网络加速</h2>')
     expect(markup).toContain('为游戏走一条更快的线路，当前账号的 AI 工具照常直连，剩余免费时长 <span data-testid="acceleration-quota-remaining">12 分 34 秒</span>')
     expect(markup).toMatch(/data-testid="acceleration-session-start"[^>]*>.*?开启加速/)
     expect(markup).toContain('data-testid="acceleration-help-open"')
@@ -242,10 +242,10 @@ describe('acceleration card copy', () => {
     expect(markup).not.toMatch(/acceleration-globe|累计使用|免费额度规则/)
   })
 
-  it('turns into 游戏加速已开启 with the session length while connected', () => {
+  it('turns into 网络加速已开启 with the session length while connected', () => {
     const markup = render(state({ phase: 'active', connectedAt: '2026-09-22T00:00:00Z', line: rememberedLine, sessionSeconds: 65, remainingSeconds: 600 }))
     expect(markup).toContain('class="acceleration-card is-active"')
-    expect(markup).toContain('游戏加速已开启</h2>')
+    expect(markup).toContain('网络加速已开启</h2>')
     expect(markup).toContain('已连接 <span data-testid="acceleration-session-duration">1 分 5 秒</span>，剩余免费时长 <span data-testid="acceleration-quota-remaining">10 分钟</span>')
     expect(markup).toMatch(/data-testid="acceleration-session-stop"[^>]*>.*?停止加速/)
   })

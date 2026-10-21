@@ -466,7 +466,7 @@ describe('acceleration-service', () => {
     expect(service.dispose()).toBe(disposed)
     await disposed
     expect(backend.stopAcceleration).toHaveBeenCalledWith(scope)
-    await expect(service.getAccelerationState(scope)).rejects.toThrow('游戏加速服务已关闭')
+    await expect(service.getAccelerationState(scope)).rejects.toThrow('网络加速服务已关闭')
   })
 
   it('can retry disposal after a transport stop failure', async () => {
@@ -489,7 +489,7 @@ describe('acceleration-service', () => {
     const firstResult = expect(first).rejects.toThrow('账号已变更')
     await startEntered.promise
     const next = service.startAcceleration(scope, 'system-proxy')
-    const nextResult = expect(next).rejects.toThrow('游戏加速服务已关闭')
+    const nextResult = expect(next).rejects.toThrow('网络加速服务已关闭')
     const disposed = service.dispose()
     started.resolve(active({ mode: 'tun' }))
     await firstResult
@@ -568,11 +568,11 @@ describe('acceleration preference', () => {
     let current: string | null = scope
     const { service, getAccelerationPreference, saveAccelerationPreference } = preferenceService({ getAccountScope: () => current })
     const other = 'xm-account:43'
-    await expect(service.getAccelerationPreference(other)).rejects.toThrow('账号已变更，请重新打开游戏加速。')
-    await expect(service.saveAccelerationPreference(other, { lineId: 'jp-01' })).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+    await expect(service.getAccelerationPreference(other)).rejects.toThrow('账号已变更，请重新打开网络加速。')
+    await expect(service.saveAccelerationPreference(other, { lineId: 'jp-01' })).rejects.toThrow('账号已变更，请重新打开网络加速。')
     current = null
-    await expect(service.getAccelerationPreference(scope)).rejects.toThrow('账号已变更，请重新打开游戏加速。')
-    await expect(service.saveAccelerationPreference(scope, { mode: 'tun' })).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+    await expect(service.getAccelerationPreference(scope)).rejects.toThrow('账号已变更，请重新打开网络加速。')
+    await expect(service.saveAccelerationPreference(scope, { mode: 'tun' })).rejects.toThrow('账号已变更，请重新打开网络加速。')
     expect(getAccelerationPreference).not.toHaveBeenCalled()
     expect(saveAccelerationPreference).not.toHaveBeenCalled()
 
@@ -583,7 +583,7 @@ describe('acceleration preference', () => {
     current = other
     await service.onAccountChanged()
     read.resolve({ lineId: 'jp-01', mode: 'tun' })
-    await expect(pending).rejects.toThrow('账号已变更，请重新打开游戏加速。')
+    await expect(pending).rejects.toThrow('账号已变更，请重新打开网络加速。')
   })
 
   // 没有偏好存储的宿主（早于这一版、或本机联调）照旧每次从智能分配 + 标准模式开始。

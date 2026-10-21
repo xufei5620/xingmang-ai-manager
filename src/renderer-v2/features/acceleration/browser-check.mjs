@@ -111,7 +111,7 @@ test('lists selectable acceleration lines, re-measures latency and switches back
   try {
     const card = page.getByTestId('acceleration-page')
     // 卡片标题以前是舞台左上角那行英文 GAME CONNECT。
-    assert.equal((await card.getByRole('heading', { level: 2 }).innerText()).trim(), '游戏加速')
+    assert.equal((await card.getByRole('heading', { level: 2 }).innerText()).trim(), '网络加速')
     const toggle = page.getByTestId('acceleration-line-picker-toggle')
     const currentLine = page.getByTestId('acceleration-line-current')
     assert.equal(await currentLine.innerText(), '自动选择')
@@ -265,8 +265,8 @@ test('network location refreshes on connect and disconnect, stays synced on othe
     await page.getByTestId('nav-home').click()
     const refreshes = await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'refreshNetworkLocation').length)
     await page.clock.runFor(20_000)
-    assert.equal(await location.getAttribute('title'), '新加坡 · 203.0.113.24；点击查看游戏加速')
-    assert.match(await location.getAttribute('aria-label'), /^加速中 · .+线路 \d，查看游戏加速$/)
+    assert.equal(await location.getAttribute('title'), '新加坡 · 203.0.113.24；点击查看网络加速')
+    assert.match(await location.getAttribute('aria-label'), /^加速中 · .+线路 \d，查看网络加速$/)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'refreshNetworkLocation').length), refreshes)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'scanSystem').length), scansBefore)
     // 加速中点它进「设置 › 网络加速」（v4 原型），不再重测网络位置。
@@ -295,7 +295,7 @@ test('failed stop retains the last connected location until a confirmed disconne
     await page.evaluate(() => { window.v2Test.fail = 'stopAcceleration' })
     await page.getByTestId('acceleration-session-stop').click()
     await page.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
-    assert.equal(await location.getAttribute('title'), '新加坡 · 203.0.113.24；点击查看游戏加速')
+    assert.equal(await location.getAttribute('title'), '新加坡 · 203.0.113.24；点击查看网络加速')
     await page.evaluate(() => { window.v2Test.fail = '' })
     await page.getByTestId('acceleration-session-stop').click()
     await locationTitled(page, '中国 · 198.51.100.18').waitFor()

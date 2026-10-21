@@ -296,7 +296,7 @@ describe('tutorial topics', () => {
     // 「不在游戏加速那边体现」、结束后断开）。
     expect(text).toContain('不计入免费时长')
     expect(text).toContain('不弹通知')
-    expect(text).toContain('游戏加速卡和托盘也不显示')
+    expect(text).toContain('网络加速卡和托盘也不显示')
     expect(text).toContain('打开约 2 分钟后自动断开')
     expect(text).toContain('关掉 Codex 后自动断开')
     expect(text).not.toContain('已自动连接')
@@ -455,7 +455,7 @@ describe('tutorial topics', () => {
     expect(linuxMarkup).toContain(`data-testid="tutorial-card-${linux[0].id}"`)
     expect(linuxMarkup).toContain('Codex CLI')
     expect(linuxMarkup).not.toContain('桌面端')
-    expect(linuxMarkup).not.toContain('游戏加速')
+    expect(linuxMarkup).not.toContain('网络加速')
     expect(linuxMarkup).toContain(`全部<span class="xm-chip-count">${linux.length}</span>`)
     // 要的那一章 Linux 上没有（比如 Mac 桌面端），落回 Linux 的卡片列表，不显示 Windows 那份。
     const fallback = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux', topic: { sequence: 1, id: macDesktopTutorialTopic } }))

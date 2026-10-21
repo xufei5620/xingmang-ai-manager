@@ -65,11 +65,12 @@ describe('searchCommands', () => {
   })
 
   it('finds the cards that moved into settings by their old page names', () => {
-    expect(searchCommands('游戏加速')[0]).toMatchObject({ group: 'settings', page: 'settings', section: 'acceleration' })
+    // 加速卡改名「网络加速」以后跟它所在的设置分组同名：分组排第一（翻过去最上面就是这张卡），卡紧跟着。
+    expect(searchCommands('网络加速').slice(0, 2)).toContainEqual(expect.objectContaining({ group: 'settings', page: 'settings', section: 'acceleration' }))
     expect(searchCommands('备份').find((item) => item.group === 'settings')).toMatchObject({ page: 'settings' })
     expect(searchCommands('备份').some((item) => item.section === 'backups')).toBe(true)
     expect(searchCommands('更新').some((item) => item.section === 'version')).toBe(true)
-    for (const word of ['游戏加速', '备份', '更新']) expect(searchCommands(word).some((item) => item.group === 'page' && settingsPageAlias(item.page) !== null), word).toBe(false)
+    for (const word of ['网络加速', '备份', '更新']) expect(searchCommands(word).some((item) => item.group === 'page' && settingsPageAlias(item.page) !== null), word).toBe(false)
   })
 
   it('finds the top-up tab of the account center by everyday words', () => {

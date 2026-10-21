@@ -491,9 +491,9 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
           {/* 断网时只说「没网」，不再写一句「网络正常」。网络位置的全文（国家和 IP）在悬停说明里。
               加速中点它进「设置 › 网络加速」（v4 原型），不再是刷新网络位置；后台正测着位置时也点得动（#1104 第 10 条）。 */}
           {!offline && <button type="button" className="v2-network-location network-location" data-testid="shell-network-location"
-            aria-label={accelerationLine ? `加速中 · ${accelerationLine}，查看游戏加速` : '刷新网络位置'} aria-busy={networkRefreshing}
+            aria-label={accelerationLine ? `加速中 · ${accelerationLine}，查看网络加速` : '刷新网络位置'} aria-busy={networkRefreshing}
             disabled={accelerationLine ? !adapter.navigate : networkRefreshing || !adapter.refreshNetwork}
-            title={networkRefreshing ? '正在检测当前网络出口' : `${network?.error ?? networkLocationLabel(network)}；${accelerationLine ? '点击查看游戏加速' : '点击刷新网络位置'}`}
+            title={networkRefreshing ? '正在检测当前网络出口' : `${network?.error ?? networkLocationLabel(network)}；${accelerationLine ? '点击查看网络加速' : '点击刷新网络位置'}`}
             onClick={accelerationLine ? () => adapter.navigate?.('acceleration') : adapter.refreshNetwork}>
             <span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : accelerationLine ? `加速中 · ${accelerationLine}` : networkStatusLabel(network)}</span>
           </button>}

@@ -500,7 +500,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }} />}
     {officialQuotaOpen && <OfficialQuotaDialog email={toolbox.snapshot?.config.providers.codex.officialAccountEmail ?? null} initial={toolbox.snapshot?.system.officialChatGpt ?? null}
       refresh={() => toolsApi.officialUsage()} onClose={() => setOfficialQuotaOpen(false)} />}
-    {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
+    {accelerationHelp && <Dialog open title="网络加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
       <p>选择线路后点击“开启加速”，连接成功后再打开游戏或启动器。“自动选择”会自动测速并选择可用线路，也可以手动选择。</p>
       <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。加速只改这台电脑的系统代理，不接管整台电脑的网络。</p>

@@ -149,7 +149,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const remainingText = remainingShown
     ? <>{localDevelopment ? '剩余测试时长' : '剩余免费时长'} <span data-testid="acceleration-quota-remaining">{formatAccelerationDuration(remaining, true)}</span></>
     : quotaNote
-  const intro = localDevelopment ? '游戏加速连接测试，时长仅在本机记录' : '为游戏走一条更快的线路，当前账号的 AI 工具照常直连'
+  const intro = localDevelopment ? '网络加速连接测试，时长仅在本机记录' : '为游戏走一条更快的线路，当前账号的 AI 工具照常直连'
   // 标题已经说了「已开启」、按钮写着「开启加速」时，状态那几个字只留给读屏；别的状态（准备中、文件坏了、没连上）照常露出来。
   const phaseQuiet = active || (phase === 'idle' && !failedStart && signedIn)
 
@@ -158,7 +158,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
       <div className="acceleration-tile" aria-hidden="true"><Globe2 size={24} /></div>
       <div className="acceleration-copy">
         <div className="acceleration-title">
-          <h2 id="acceleration-card-title">{active ? '游戏加速已开启' : '游戏加速'}</h2>
+          <h2 id="acceleration-card-title">{active ? '网络加速已开启' : '网络加速'}</h2>
           {(preview || localDevelopment) && <span className="acceleration-preview">{localDevelopment ? '本机联调' : '交互预览'}</span>}
           <span className={phaseQuiet ? 'acceleration-phase xm-visually-hidden' : 'acceleration-phase'} role="status" data-testid="acceleration-phase">{phaseLabel}</span>
           <Button variant="ghost" size="xs" icon={CircleHelp} onClick={onHelp} testId="acceleration-help-open">使用帮助</Button>

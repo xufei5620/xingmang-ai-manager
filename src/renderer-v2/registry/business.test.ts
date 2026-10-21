@@ -190,7 +190,7 @@ describe('renderer-v2 settings rows registry', () => {
   // 原来的三个页面挪进来以后，顶部搜索按原来的说法还要找得到它们（v4 批09）。
   it('finds the moved acceleration, backup and update cards by their old words', () => {
     const ids = (query: string) => searchSettingsItems(query).map(item => item.id);
-    expect(ids('游戏加速')).toContain('acceleration');
+    expect(ids('网络加速')).toContain('acceleration');
     expect(ids('免费时长')).toContain('acceleration');
     expect(ids('立即备份')).toEqual(['backups']);
     expect(ids('当前版本')).toEqual(['version']);
