@@ -4,7 +4,7 @@
 
 2026-09-14 用户确认免费时长由 1 小时调整为 20 分钟，0.2.3 先发布本机计时版，当时 Windows 安装包带私有节点、节点不上传 GitHub。每账号在本机累计 20 分钟，停止保留剩余、设备之间不同步。当前仅系统代理，TUN 尚未接入。
 
-当前节点策略已由产品所有者调整：现有 12 条发布线路的清洗后配置与 SHA-256 收录在 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，Windows 与 macOS 打包共用，无需再私下传递节点文件。内核、资源准备 JSON 和五文件输出目录仍留在仓库外；普通构建与 CI 不会自动附带内核或启用线路。具体准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
+当前节点策略已由产品所有者调整：发布线路的清洗后配置与 SHA-256 收录在 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，Windows 与 macOS 打包共用，无需再私下传递节点文件。内核、资源准备 JSON 和五文件输出目录仍留在仓库外；普通构建与 CI 不会自动附带内核或启用线路。具体准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。2026-10-21 起内置的是一条自建的洛杉矶线路（Hysteria 2），服务器只放行 ChatGPT / OpenAI 相关的几个域名，原来买的 12 条节点已随节点商迁址失效（#1352）。
 
 ## 已完成
 
@@ -22,7 +22,7 @@
 
 ## 星芒自己的服务不走加速线路
 
-加速内核的规则不是整条 `MATCH,XINGMANG`：`relay-sites.ts` 的 `relayDirectHosts()` 从全部站点（CLI 地址、账号地址、官网、取 Key 页）取主机名，`acceleration-mihomo-runtime.ts` 启动内核时作为 `directHosts` 交给 `buildIsolatedMihomoConfig`，在兜底规则之前逐个写 `DOMAIN,<host>,DIRECT`。于是开着加速时，本软件的登录、余额、签发 Key，以及 Codex CLI、Codex 桌面端这些遵循系统代理的工具连中转，都和 Claude Code、Gemini CLI（本来就不认系统代理）一样直连。
+2026-10-21 起只有服务器放行的那几个域名走线路（`acceleration-clash-config.ts` 的 `lineRoutedRules`：chatgpt.com、openai.com、oaistatic.com、oaiusercontent.com 及其子域名，challenges.cloudflare.com，以及选线测速用的 www.gstatic.com），兜底改成 `MATCH,DIRECT`：别的网站送过去会被服务器拒掉，开着加速就打不开。网络位置探测的 www.cloudflare.com 不走线路，安装源的顺序要按这台电脑直连时的位置排。下面这段说的直连规则写在这几条之前，照旧生效：`relay-sites.ts` 的 `relayDirectHosts()` 从全部站点（CLI 地址、账号地址、官网、取 Key 页）取主机名，`acceleration-mihomo-runtime.ts` 启动内核时作为 `directHosts` 交给 `buildIsolatedMihomoConfig`，在兜底规则之前逐个写 `DOMAIN,<host>,DIRECT`。于是开着加速时，本软件的登录、余额、签发 Key，以及 Codex CLI、Codex 桌面端这些遵循系统代理的工具连中转，都和 Claude Code、Gemini CLI（本来就不认系统代理）一样直连。
 
 - 两个平台共用这一份内核配置，星芒自己的主机名没有写进 Windows `ProxyOverride` 或 macOS 代理例外列表；加速仍只接管系统代理，不开 TUN。
 - 取全部站点而不是当前账号所在站点：加速开着时切换账号不会重启内核，只放当前站点会让新账号的请求绕线路。
@@ -151,7 +151,9 @@ node scripts/probe-acceleration-nodes.cjs --config 'C:\运营配置\shared-upstr
 
 点击开始后先连接，成功才计时；停止后保留剩余。切页或缩到托盘不停止，退出软件停止。每账号累计 20 分钟，不每日重置。TUN 关闭时只覆盖读取系统代理的应用；开启后覆盖更多应用。服务未开通时不扣时，不显示伪造的 `00:20:00` 已领取余额。
 
-## 下载专用线路（2026-09-22）
+## 下载专用线路（2026-09-22，2026-10-21 起停用）
+
+2026-10-21 起这一路没有接上（`electron/main.ts` 建系统服务和扩展服务时不再传 `acquireDownloadAcceleration`）：内置线路只通 ChatGPT / OpenAI，npm、Node、Python、GitHub 都过不去。用户自己开着加速时下载照样跟着系统代理进内核，在内核里按规则直连，也不算加速，安装源保持按区域排。下面是停用前的设计，代码还在（`download-acceleration.ts`、`startDownloadRoute`），以后有能下载的线路再接回去。
 
 装 CLI / 下 Node 这条最需要加速的链路，以前必须用户先去加速页点「连接」才有效。现在软件会在下载前自己把内核拉起来一次：
 

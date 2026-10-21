@@ -33,6 +33,15 @@ const privateNetworkRules = [
   'IP-CIDR6,fe80::/10,DIRECT,no-resolve',
 ]
 
+const lineRoutedRules = [
+  'DOMAIN-SUFFIX,chatgpt.com,XINGMANG',
+  'DOMAIN-SUFFIX,openai.com,XINGMANG',
+  'DOMAIN-SUFFIX,oaistatic.com,XINGMANG',
+  'DOMAIN-SUFFIX,oaiusercontent.com,XINGMANG',
+  'DOMAIN,challenges.cloudflare.com,XINGMANG',
+  'DOMAIN,www.gstatic.com,XINGMANG',
+]
+
 describe('parseClashAccelerationProfile', () => {
   it('projects the supported inline connection and reports insecure TLS', () => {
     const profile = parseClashAccelerationProfile(source())
@@ -156,7 +165,7 @@ describe('buildIsolatedMihomoConfig', () => {
       'mixed-port': 27901, 'allow-lan': false, 'bind-address': '127.0.0.1', ipv6: false,
       mode: 'rule', tun: { enable: false }, dns: { enable: false }, sniffer: { enable: false },
       'proxy-groups': [{ name: 'XINGMANG', type: 'select', proxies: ['line-1'] }],
-      rules: [...privateNetworkRules, 'MATCH,XINGMANG'],
+      rules: [...privateNetworkRules, ...lineRoutedRules, 'MATCH,DIRECT'],
     })
     expect(config.proxies).toHaveLength(1)
     expect(config.proxies[0].name).toBe('line-1')
@@ -207,7 +216,7 @@ describe('buildIsolatedMihomoConfig', () => {
     const config = parse(buildIsolatedMihomoConfig(profile, { mixedPort: 27901 }))
     expect(config.proxies.map((node: { name: string }) => node.name)).toEqual(['line-1', 'line-2'])
     expect(config['proxy-groups']).toEqual([{ name: 'XINGMANG', type: 'select', proxies: ['line-1', 'line-2'] }])
-    expect(config.rules).toEqual([...privateNetworkRules, 'MATCH,XINGMANG'])
+    expect(config.rules).toEqual([...privateNetworkRules, ...lineRoutedRules, 'MATCH,DIRECT'])
     expect(JSON.stringify(config)).not.toContain('url-test')
     expect(JSON.stringify(config)).not.toContain('health-check')
   })
@@ -230,10 +239,21 @@ describe('buildIsolatedMihomoConfig', () => {
     expect(config.proxies[0].name).toBe('line-1')
   })
 
-  it('routes the given hosts direct ahead of the catch-all line rule', () => {
+  it('sends only the GPT hosts the line server allows to the line and everything else direct', () => {
+    const config = parse(buildIsolatedMihomoConfig(parseClashAccelerationProfile(source()), { mixedPort: 27901, directHosts: ['xm.solov.cc'] }))
+    const rules = config.rules as string[]
+    expect(rules.filter((rule) => rule.endsWith(',XINGMANG'))).toEqual(lineRoutedRules)
+    expect(rules.at(-1)).toBe('MATCH,DIRECT')
+    // The connectivity probe has to reach the line, while the network location probe has to stay direct.
+    expect(rules).toContain('DOMAIN,www.gstatic.com,XINGMANG')
+    expect(rules.some((rule) => rule.includes('www.cloudflare.com'))).toBe(false)
+    expect(rules.indexOf('DOMAIN,xm.solov.cc,DIRECT')).toBeLessThan(rules.indexOf(lineRoutedRules[0]))
+  })
+
+  it('routes the given hosts direct ahead of the line rules', () => {
     const profile = parseClashAccelerationProfile(source())
     const config = parse(buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directHosts: ['xm.solov.cc', 'api.solov.cc', 'xm.solov.cc'] }))
-    expect(config.rules).toEqual(['DOMAIN,xm.solov.cc,DIRECT', 'DOMAIN,api.solov.cc,DIRECT', ...privateNetworkRules, 'MATCH,XINGMANG'])
+    expect(config.rules).toEqual(['DOMAIN,xm.solov.cc,DIRECT', 'DOMAIN,api.solov.cc,DIRECT', ...privateNetworkRules, ...lineRoutedRules, 'MATCH,DIRECT'])
   })
 
   it('refuses direct hosts that are not plain lowercase DNS names', () => {
@@ -250,7 +270,7 @@ describe('buildIsolatedMihomoConfig', () => {
     const config = parse(buildIsolatedMihomoConfig(profile, { mixedPort: 27901,
       directHosts: ['xm.solov.cc'], directIps: ['38.147.105.28', '2001:db8::1', '38.147.105.28'] }))
     expect(config.rules).toEqual(['DOMAIN,xm.solov.cc,DIRECT', 'IP-CIDR,38.147.105.28/32,DIRECT,no-resolve',
-      'IP-CIDR6,2001:db8::1/128,DIRECT,no-resolve', ...privateNetworkRules, 'MATCH,XINGMANG'])
+      'IP-CIDR6,2001:db8::1/128,DIRECT,no-resolve', ...privateNetworkRules, ...lineRoutedRules, 'MATCH,DIRECT'])
     for (const ip of ['38.147.105.28/24', 'xm.solov.cc', '38.147.105.28,DIRECT', '[2001:db8::1]', '']) {
       expect(() => buildIsolatedMihomoConfig(profile, { mixedPort: 27901, directIps: [ip] })).toThrow('IP 地址无效')
     }
@@ -261,14 +281,14 @@ describe('buildIsolatedMihomoConfig', () => {
   it('keeps LAN, link-local and loopback addresses off the shared line without resolving domains', () => {
     const config = parse(buildIsolatedMihomoConfig(parseClashAccelerationProfile(source()), { mixedPort: 27901 }))
     const direct = new BlockList()
-    for (const rule of config.rules.slice(0, -1) as string[]) {
+    for (const rule of (config.rules as string[]).filter((rule) => rule.startsWith('IP-CIDR'))) {
       const [kind, cidr, target, option] = rule.split(',')
       expect(kind).toMatch(/^IP-CIDR6?$/)
       expect([target, option]).toEqual(['DIRECT', 'no-resolve'])
       const [network, prefix] = cidr.split('/')
       direct.addSubnet(network, Number(prefix), isIP(network) === 6 ? 'ipv6' : 'ipv4')
     }
-    expect(config.rules.at(-1)).toBe('MATCH,XINGMANG')
+    expect(config.rules.at(-1)).toBe('MATCH,DIRECT')
     for (const address of ['192.168.1.1', '10.0.0.8', '172.16.0.1', '172.31.255.254', '169.254.169.254', '100.100.100.100', '127.0.0.1']) {
       expect(direct.check(address, 'ipv4'), address).toBe(true)
     }

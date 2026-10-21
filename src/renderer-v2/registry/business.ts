@@ -432,7 +432,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
-  { id: 'acceleration', group: 'network', label: '游戏加速', keywords: ['加速', '游戏', '延迟', '卡顿', '免费时长', '加速线路'], when: 'acceleration', card: true },
+  { id: 'acceleration', group: 'network', label: '网络加速', keywords: ['加速', '游戏', '延迟', '卡顿', '免费时长', '加速线路'], when: 'acceleration', card: true },
   ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', section: 'routes', label: route.label, keywords: ['线路', '线路1', '线路2', '直连', '洛杉矶', 'CF', '备用', '重启', '连不上'] })),
   { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '换线路后提醒我重开工具', keywords: ['线路', '重开', '需重开生效'] },
   { id: 'mirror', group: 'network', section: 'download', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },

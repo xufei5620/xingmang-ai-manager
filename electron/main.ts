@@ -1189,7 +1189,9 @@ if (!hasSingleInstanceLock) {
           parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://registry.npmjs.org/')),
         )
       },
-      acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
+      // 不再给下载临时借加速线路（acquireDownloadAcceleration 不接）：2026-10-21 起内置线路只通 ChatGPT /
+      // OpenAI（acceleration-clash-config.ts 的 lineRoutedRules），npm、Node、Python、GitHub 都过不去；
+      // 用户自己开着加速时下载照样跟着系统代理，在内核里按规则直连，也不算加速，安装源保持国内优先。
       prepareCodexDesktopStartupRoute: (context) => codexDesktopStartupRoute.prepare(context),
     })
     const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
@@ -1233,9 +1235,9 @@ if (!hasSingleInstanceLock) {
         parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
       ),
       // Codex 的官方插件目录由本软件替它下载（codex-plugin-catalog.ts），与装 CLI
-      // 同一条下载通道。先从星芒存储桶下，没走通才去 GitHub，那时才临时借加速线路。
+      // 同一条下载通道。先从星芒存储桶下，没走通才去 GitHub；GitHub 不在加速线路的放行名单里，
+      // 所以跟装 CLI 一样不借线路（见上面 createSystemService 那条）。
       downloadFetch,
-      acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
       codexCatalogBucket: {
         onFallback: (detail) => runtimeLog.log('warn', 'install', 'codex-plugin-catalog.bucket-fallback', 'Codex 插件目录存储桶这一路没走通，改从 GitHub 下', { detail }),
       },

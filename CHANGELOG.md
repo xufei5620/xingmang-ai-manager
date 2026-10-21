@@ -18,6 +18,26 @@
 
 ## 0.2.20 - 2026-10-20
 
+- 内置线路换成自建的洛杉矶 Hysteria 2（`bundled-acceleration/profile.yaml` 一条，重算 `profile.sha256`，#1352）：
+  节点商把原来 12 条迁到新域名后大多已失效。服务器只放行 ChatGPT / OpenAI 相关域名，所以
+  `acceleration-clash-config.ts` 的规则从「其余全走线路」（`MATCH,XINGMANG`）改成只把 `lineRoutedRules`
+  （chatgpt.com、openai.com、oaistatic.com、oaiusercontent.com 及子域名，challenges.cloudflare.com，
+  选线测速用的 www.gstatic.com）送去线路，兜底 `MATCH,DIRECT`；网络位置探测的 www.cloudflare.com 不送，
+  安装源顺序按直连时的位置排。
+- `main.ts` 不再给系统服务和扩展服务传 `acquireDownloadAcceleration`：装 CLI、下 Node、GitHub 下插件目录都不借线路，
+  用户自己开着加速时下载在内核里按规则直连，也不再算「已加速」把安装源切成官方优先。`download-acceleration.ts`
+  和 `startDownloadRoute` 留着，以后有能下载的线路再接回去。
+- `acceleration-conflict.ts`：Mac 上连接前对线路服务器的 IP 跑一次 `/sbin/route -n get`，出口是 utun / ppp / ipsec
+  就报已有的 `virtual-adapter` 冲突（沿用现有提示和「仍然连接」）。只读路由，不改用户的 VPN 和路由表，主机名不问（不替它解析）。
+  2026-10-21 yoyo 的 Mac 开着 VPN 时 QUIC 在 VPN 那条路上超时，同一进程单独走 Wi-Fi 能连。
+- 界面「游戏加速」改叫「网络加速」（侧栏/搜索/设置项、卡片标题、使用说明、教程、状态栏悬停、断开通知、换账号报错），
+  卡片说明、使用说明、教程里说游戏和下载借线路的句子换成只说 ChatGPT、Codex（yoyo 10-22 回「改为网络加速就行」「改」）。
+- 依赖锁文件把 vite 从 8.1.5 升到 8.1.6（`package.json` 的范围跟着抬到 `^8.1.6`）、follow-redirects 从 1.16.0 升到 1.16.1，修掉新出的 5 条公告让 CI 构建依赖审计报红：vite 打包进来的 launch-editor 3 条（GHSA-587h-7wmj-h5pm、GHSA-698v-4r3x-3vcv、GHSA-r825-w8mm-5pxw，修复版 8.1.6）与 follow-redirects 2 条（GHSA-8r9p-f939-6h3c、GHSA-q3jh-wrc6-jgq8，修复版 1.16.1）。follow-redirects 是 wait-on → axios 的间接依赖；两者都是纯开发依赖，不进安装包，锁文件里别的包没动。`canvas-v2/` 自己的锁文件 CI 不审，这次不碰。
+- `shell.css`：`.sidebar-floating .v2-topbar` 临时 `-webkit-app-region: no-drag`（#1349 第 1 条）。顶栏是拖动区，
+  Electron 在 Windows / macOS 上把那里的鼠标按下交给系统拖窗口，页面收不到 `pointerdown`、焦点也不动，
+  #1342 的「点外面就收」碰不到它。浮着时第一下只收侧栏、不拖窗口，收回后顶栏照常能拖；系统画的窗口按钮和红黄绿不受拖动区影响。
+  `app-check.mjs` 加一条浏览器用例（Windows、Mac 各跑一遍）：浮着时侧栏外面没有一处 `drag`，点顶栏空白处收回，收回和拉宽后顶栏仍是 `drag`。
+  无头 Chromium 不认拖动区，真机上点不点得收以真机为准。
 - `new-api-client.ts`：`getDashboard`、`getUsage`、`getTasks`、`listKeys` 改走 `withReadSession`。续期接口刚认过
   refresh cookie、拿新令牌重问还被回 401 时，只让这一次读取失败（`readRefusedAfterRefreshMessage`，挂着原来那次的
   状态码和请求编号进日志），不再 `setSession(null)`。续期接口自己拒了照旧清掉登录；`/api/user/self` 这类认身份的

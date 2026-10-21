@@ -21,6 +21,21 @@ const privateNetworkRules = [
   'IP-CIDR6,fe80::/10,DIRECT,no-resolve',
 ]
 
+// 2026-10-21 起内置线路是自建的洛杉矶服务器，服务器只放行 ChatGPT / OpenAI 那几个域名（yoyo 选「就用这台」），
+// 所以只把这几个送去线路、其余一律直连：别的网站送过去会被服务器拒掉，开着加速就打不开，国内网站也一样。
+// www.gstatic.com 是选线测速和连通验证要访问的地址（acceleration-mihomo-runtime.ts 的 PROBE_HOST），
+// challenges.cloudflare.com 是登录 ChatGPT 时的人机验证。这张表要跟服务器的放行名单一致：这里多一个，
+// 服务器那边照样拒；那边多一个，这里不送也用不上。www.cloudflare.com 服务器放行了但这里不送：
+// 网络位置要看这台电脑直连时在哪，安装源的顺序按它排（system-scan-service.ts）。
+const lineRoutedRules = [
+  'DOMAIN-SUFFIX,chatgpt.com,XINGMANG',
+  'DOMAIN-SUFFIX,openai.com,XINGMANG',
+  'DOMAIN-SUFFIX,oaistatic.com,XINGMANG',
+  'DOMAIN-SUFFIX,oaiusercontent.com,XINGMANG',
+  'DOMAIN,challenges.cloudflare.com,XINGMANG',
+  'DOMAIN,www.gstatic.com,XINGMANG',
+]
+
 interface Hysteria2Connection {
   type: 'hysteria2'
   server: string
@@ -260,7 +275,8 @@ export function buildIsolatedMihomoConfig(profile: AccelerationClashProfile, opt
     rules: [...directHosts.map((host) => `DOMAIN,${host},DIRECT`),
       ...directIps.map((ip) => `${isIP(ip) === 4 ? 'IP-CIDR' : 'IP-CIDR6'},${ip}/${isIP(ip) === 4 ? 32 : 128},DIRECT,no-resolve`),
       ...privateNetworkRules,
-      'MATCH,XINGMANG'],
+      ...lineRoutedRules,
+      'MATCH,DIRECT'],
   }
   if (options.controllerPort !== undefined) {
     const controllerPort = requirePort(options.controllerPort, true)

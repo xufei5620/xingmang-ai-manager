@@ -30,7 +30,7 @@ function fixture(reads: AccelerationState[] = []) {
   const queue = [...reads]
   const readState = vi.fn(async () => {
     const next = queue.shift()
-    if (!next) throw new Error('账号已变更，请重新打开游戏加速。')
+    if (!next) throw new Error('账号已变更，请重新打开网络加速。')
     // 真实接线里这一次读会经由服务的 onState 回到 observe()，夹具照做。
     notice.observe(next)
     return next
