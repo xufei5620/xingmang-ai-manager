@@ -15,19 +15,21 @@ jobs:
     steps:
       - name: Domain registration (RDAP)
         run: |
-          curl -sS --max-time 20 https://rdap.verisign.com/com/v1/domain/ktmhyld.com \
+          for domain in ktmhyld.com ktmhy.com; do curl -sS --max-time 20 https://rdap.verisign.com/com/v1/domain/$domain \
             | jq '{status, events: [.events[] | {eventAction, eventDate}], nameservers: [.nameservers[]?.ldhName]}' \
-            || echo 'RDAP lookup failed'
+            || echo 'RDAP lookup failed'; done
 
       - name: DNS from several resolvers
         run: |
-          for resolver in default 8.8.8.8 1.1.1.1 223.5.5.5 119.29.29.29; do
+          for resolver in default 223.5.5.5; do
             echo "== resolver $resolver"
             at=""; [ "$resolver" = default ] || at="@$resolver"
             echo "NS: $(dig +short +time=3 +tries=2 NS ktmhyld.com $at | tr '\n' ' ')"
-            for host in hk1 tw1 sg1 jp1 kr1 my1 th1 mc1 us1; do
-              status=$(dig +time=3 +tries=2 A $host.ktmhyld.com $at | sed -n 's/.*status: \([A-Z]*\).*/\1/p')
-              echo "$host.ktmhyld.com $status $(dig +short +time=3 +tries=2 A $host.ktmhyld.com $at | tr '\n' ' ')"
+            for name in hk1.ktmhyld.com tw1.ktmhyld.com tw2.ktmhyld.com sg1.ktmhyld.com sg2.ktmhyld.com kr1.ktmhyld.com kr2.ktmhyld.com my1.ktmhyld.com \
+                        gtm-hk1.ktmhy.com gtm-tw1.ktmhy.com gtm-sg1.ktmhy.com gtm-kr1.ktmhy.com gtm-my1.ktmhy.com gtm-jp1.ktmhy.com \
+                        hk1.ktmhy.com tw1.ktmhy.com sg1.ktmhy.com kr1.ktmhy.com my1.ktmhy.com; do
+              status=$(dig +time=3 +tries=2 A $name $at | sed -n 's/.*status: \([A-Z]*\).*/\1/p')
+              echo "$name $status $(dig +short +time=3 +tries=2 A $name $at | tr '\n' ' ')"
             done
           done
 
@@ -49,6 +51,17 @@ jobs:
           from aioquic.quic.connection import QuicConnection
           
           TARGETS = [
+              ('gtm-hk1.ktmhy.com', 18385, 'hk1.ktmhyld.com'),
+              ('gtm-tw1.ktmhy.com', 18386, 'tw1.ktmhyld.com'),
+              ('gtm-sg1.ktmhy.com', 18383, 'sg1.ktmhyld.com'),
+              ('gtm-kr1.ktmhy.com', 18385, 'kr1.ktmhyld.com'),
+              ('gtm-my1.ktmhy.com', 18385, 'my1.ktmhyld.com'),
+              ('43.211.114.227', 18385, 'th1.ktmhyld.com'),
+              ('43.218.227.243', 18385, 'mc1.ktmhyld.com'),
+              ('44.222.132.137', 18387, 'us1.ktmhyld.com'),
+              ('43.207.182.4', 18385, 'jp1.ktmhyld.com'),
+          ]
+          OLD_TARGETS = [
               ('hk1.ktmhyld.com', 18385, 'hk1.ktmhyld.com'),
               ('tw1.ktmhyld.com', 18386, 'tw1.ktmhyld.com'),
               ('tw1.ktmhyld.com', 18386, 'tw2.ktmhyld.com'),
