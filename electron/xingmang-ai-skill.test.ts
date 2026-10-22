@@ -11,6 +11,7 @@ import { writeCodexDesktopLocale } from './codex-desktop-locale'
 import { classifyCodexConfigProfile, codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
 import type { RelayBackendClient } from './relay-backend'
 import {
+  BUNDLED_SKILL_NAME_LINE,
   OPENAI_IMAGE_MODEL_PATTERN,
   XINGMANG_AI_CODEX_SKILL_STATE_FILE,
   XINGMANG_AI_CONFIG_FILE,
@@ -19,6 +20,7 @@ import {
   XINGMANG_AI_DEFAULT_IMAGE_MODEL,
   XINGMANG_AI_IMAGE_MODEL_FALLBACKS,
   XINGMANG_AI_IMAGE_MODEL_PREFERENCE,
+  XINGMANG_AI_LEGACY_SKILL_DIRECTORY,
   XINGMANG_AI_SKILL_DIRECTORY,
   XINGMANG_AI_SKILL_KEY_NAME,
   XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
@@ -32,6 +34,7 @@ import {
   parseXingmangAiSkillConfig,
   publicXingmangAiSkillConfig,
   installXingmangAiSkillFiles,
+  moveLegacyXingmangAiSkillCodexEntries,
   resolveXingmangAiBundledSkillRoot,
   resolveXingmangAiCodexSkillPath,
   resolveXingmangAiSkillDirectories,
@@ -84,6 +87,14 @@ function loggedInAccount(options: {
 async function readInstalledConfig(userHome: string, rootIndex = 0): Promise<string> {
   const directory = resolveXingmangAiSkillDirectories(userHome)[rootIndex]
   return readFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), 'utf8')
+}
+
+// 我们装的文件夹带着清单；只有 config.json、没有清单的 images 是客户自己的技能。
+async function seedOwnedSkillDirectory(userHome: string): Promise<string> {
+  const directory = resolveXingmangAiSkillDirectories(userHome)[0]
+  await mkdir(directory, { recursive: true })
+  await writeFile(path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE), '{"version":1,"files":{}}\n', 'utf8')
+  return directory
 }
 
 async function seedOptionalToolHomes(userHome: string): Promise<void> {
@@ -199,7 +210,7 @@ describe('xingmang-ai-skill', () => {
     await expect(readFile(
       path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY, 'SKILL.md'),
       'utf8',
-    )).resolves.toContain('name: 星芒AI')
+    )).resolves.toContain('name: images')
     await expect(readFile(
       path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY, XINGMANG_AI_CONFIG_FILE),
       'utf8',
@@ -216,7 +227,7 @@ describe('xingmang-ai-skill', () => {
       warnings: [],
     })
     for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
-      expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: 星芒AI')
+      expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: images')
     }
   })
 
@@ -299,7 +310,7 @@ describe('xingmang-ai-skill', () => {
 
   it('only fills missing files when a previous install is incomplete', async () => {
     const userHome = await temporaryHome()
-    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
+    const directory = await seedOwnedSkillDirectory(userHome)
     await mkdir(path.join(directory, 'scripts'), { recursive: true })
     await writeFile(path.join(directory, 'SKILL.md'), '---\nname: partial\n---\n', 'utf8')
     await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
@@ -364,7 +375,7 @@ describe('xingmang-ai-skill', () => {
       expect(parsed.codexApiKey).toBe('sk-test-codex-group-secret-12345678')
       expect(parsed.group).toBe('图片模型')
       expect(parsed.codexGroup).toBe(managedCliKeyProfiles.codex.group)
-      expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: 星芒AI')
+      expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: images')
       expect(path.basename(directory)).toBe(XINGMANG_AI_SKILL_DIRECTORY)
     }
   })
@@ -662,8 +673,7 @@ describe('xingmang-ai-skill', () => {
 
   it('does not keep a leftover secret when rewriting a damaged config during logout', async () => {
     const userHome = await temporaryHome()
-    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
-    await mkdir(directory, { recursive: true })
+    const directory = await seedOwnedSkillDirectory(userHome)
     await writeFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), '{not-json', 'utf8')
     await clearXingmangAiSkillSecrets(userHome)
     expect(JSON.parse(await readFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), 'utf8'))).toEqual({
@@ -1037,6 +1047,24 @@ describe('xingmang-ai-skill across Codex account switches', () => {
     expect(await accounts.skillOff(accounts.paths.relay)).toBe(true)
   })
 
+  it('keeps the user\'s off in a backup made before the folder was renamed', async () => {
+    const accounts = await codexAccounts()
+    await accounts.useChatGptBeforeXingmang()
+    await accounts.toXingmang()
+    await accounts.userTurnsSkillOff()
+    // The same backup as above, written while the skill still lived under its old folder name.
+    const skillPath = resolveXingmangAiCodexSkillPath(accounts.roots.userHome)
+    const legacyPath = path.join(path.dirname(path.dirname(skillPath)), XINGMANG_AI_LEGACY_SKILL_DIRECTORY, 'SKILL.md')
+    const userOffBackup = (await readFile(accounts.paths.active, 'utf8')).replace(JSON.stringify(skillPath), JSON.stringify(legacyPath))
+    expect(userOffBackup).toContain(JSON.stringify(legacyPath))
+    await accounts.userTurnsSkillOn()
+    await expect(accounts.toChatGpt()).resolves.toEqual({ changed: true, enabled: false })
+
+    await expect(accounts.restoreOnBackupsPage(userOffBackup, true)).resolves.toBe(true)
+    await expect(accounts.toXingmang()).resolves.toEqual({ changed: false, enabled: false })
+    expect(await accounts.skillOff()).toBe(true)
+  })
+
   it('still turns its own off back on when a Xingmang config holding it is restored before it could be', async () => {
     const accounts = await codexAccounts()
     await failToTurnOnConfigToml(accounts)
@@ -1080,6 +1108,255 @@ describe('xingmang-ai-skill across Codex account switches', () => {
   })
 })
 
+describe('xingmang-ai-skill folder rename to images', () => {
+  const sharedRoot = ['.agents', 'skills'] as const
+
+  function legacyDirectory(userHome: string, root: readonly string[] = sharedRoot): string {
+    return path.join(userHome, ...root, XINGMANG_AI_LEGACY_SKILL_DIRECTORY)
+  }
+
+  function currentDirectory(userHome: string, root: readonly string[] = sharedRoot): string {
+    return path.join(userHome, ...root, XINGMANG_AI_SKILL_DIRECTORY)
+  }
+
+  // What 0.2.20 and older left behind: the same files under the old folder name, with their
+  // manifest and a config.json from an earlier login.
+  async function seedLegacyInstall(userHome: string, roots: ReadonlyArray<readonly string[]> = [sharedRoot]): Promise<void> {
+    for (const root of roots) await mkdir(legacyDirectory(userHome, root), { recursive: true })
+    await installXingmangAiSkillFiles(bundledRoot, userHome)
+    for (const root of roots) {
+      await writeFile(path.join(legacyDirectory(userHome, root), XINGMANG_AI_CONFIG_FILE), `${JSON.stringify({
+        baseUrl: XINGMANG_AI_DEFAULT_BASE_URL,
+        group: IMAGE_SKILL_GROUP_NAMES[0],
+        apiKey: 'sk-test-old-login-secret-1234567890',
+      })}\n`, 'utf8')
+    }
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await readFile(target)
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EISDIR') return true
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw error
+    }
+  }
+
+  it('names the bundled skill after its folder so Claude Code and Codex call it the same', async () => {
+    const skill = await readFile(path.join(bundledRoot, 'SKILL.md'), 'utf8')
+    const frontmatter = skill.split(/^---$/m)[1]
+    expect(frontmatter.match(new RegExp(BUNDLED_SKILL_NAME_LINE.source, 'gm'))).toHaveLength(1)
+    // Grok only takes lowercase letters, digits and hyphens; it shows the old name as "ai".
+    expect(XINGMANG_AI_SKILL_DIRECTORY).toMatch(/^[a-z0-9-]{1,64}$/)
+  })
+
+  it('keeps using an old folder at startup, where nothing would move the image tool along with it', async () => {
+    const userHome = await temporaryHome()
+    await seedLegacyInstall(userHome)
+
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({ installed: 0, warnings: [] })
+    expect(resolveXingmangAiSkillDirectories(userHome)).toEqual([legacyDirectory(userHome)])
+    expect(resolveXingmangAiCodexSkillPath(userHome)).toBe(path.join(legacyDirectory(userHome), 'SKILL.md'))
+    expect(await readFile(path.join(legacyDirectory(userHome), 'SKILL.md'), 'utf8')).toContain(`name: ${XINGMANG_AI_LEGACY_SKILL_DIRECTORY}\n`)
+    expect(await exists(currentDirectory(userHome))).toBe(false)
+  })
+
+  it('renames the old folder at the login sync and takes the user\'s own edits along', async () => {
+    const userHome = await temporaryHome()
+    await seedOptionalToolHomes(userHome)
+    const roots = [sharedRoot, ['.claude', 'skills'], ['.grok', 'skills']] as const
+    await seedLegacyInstall(userHome, roots)
+    const customized = '# 我自己的参考\n'
+    await writeFile(path.join(legacyDirectory(userHome), 'references.md'), customized, 'utf8')
+    await writeFile(path.join(legacyDirectory(userHome), 'notes.txt'), '自己记的', 'utf8')
+    const { accountService } = loggedInAccount()
+    const syncImageMcp = vi.fn(async (_input: { skillDirectory: string; officialCodex: boolean }) => [] as string[])
+
+    const result = await syncXingmangAiSkill({ accountService, bundledRoot, userHome, syncImageMcp })
+
+    expect(result).toMatchObject({ ready: true, configured: 3 })
+    expect(result.directoryWarnings).toBeUndefined()
+    expect(resolveXingmangAiSkillDirectories(userHome)).toEqual(roots.map((root) => currentDirectory(userHome, root)))
+    for (const root of roots) {
+      expect(await exists(legacyDirectory(userHome, root))).toBe(false)
+      const directory = currentDirectory(userHome, root)
+      expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: images\n')
+      expect(parseXingmangAiSkillConfig(JSON.parse(await readFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), 'utf8'))).apiKey)
+        .toBe('sk-test-image-group-secret-12345678')
+    }
+    expect(await readFile(path.join(currentDirectory(userHome), 'references.md'), 'utf8')).toBe(customized)
+    expect(await readFile(path.join(currentDirectory(userHome), 'notes.txt'), 'utf8')).toBe('自己记的')
+    // The image tool is registered from the renamed folder in the same sync.
+    expect(syncImageMcp).toHaveBeenCalledWith({ skillDirectory: currentDirectory(userHome), officialCodex: false })
+
+    // Later startups install into images and leave the old name alone.
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({ installed: 0, warnings: [] })
+    expect(await exists(legacyDirectory(userHome))).toBe(false)
+  })
+
+  it('also renames an old folder from before the manifest existed', async () => {
+    const userHome = await temporaryHome()
+    await seedLegacyInstall(userHome)
+    await rm(path.join(legacyDirectory(userHome), XINGMANG_AI_MANAGED_MANIFEST_FILE))
+    const { accountService } = loggedInAccount()
+
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+
+    expect(await exists(legacyDirectory(userHome))).toBe(false)
+    expect(resolveXingmangAiSkillDirectories(userHome)).toEqual([currentDirectory(userHome)])
+  })
+
+  it('leaves an images skill the user made alone and keeps its own skill under the old name', async () => {
+    const userHome = await temporaryHome()
+    const theirs = currentDirectory(userHome)
+    await mkdir(theirs, { recursive: true })
+    const theirSkill = '---\nname: images\ndescription: 我自己的图片技能\n---\n'
+    const theirConfig = '{"apiKey":"sk-their-own-skill-secret-1234567890"}\n'
+    await writeFile(path.join(theirs, 'SKILL.md'), theirSkill, 'utf8')
+    await writeFile(path.join(theirs, XINGMANG_AI_CONFIG_FILE), theirConfig, 'utf8')
+    const { accountService } = loggedInAccount()
+    const syncImageMcp = vi.fn(async (_input: { skillDirectory: string; officialCodex: boolean }) => [] as string[])
+
+    await expect(syncXingmangAiSkill({ accountService, bundledRoot, userHome, syncImageMcp })).resolves.toMatchObject({ ready: true, configured: 1 })
+    await clearXingmangAiSkillSecrets(userHome)
+
+    expect(await readFile(path.join(theirs, 'SKILL.md'), 'utf8')).toBe(theirSkill)
+    expect(await readFile(path.join(theirs, XINGMANG_AI_CONFIG_FILE), 'utf8')).toBe(theirConfig)
+    expect(await exists(path.join(theirs, XINGMANG_AI_MANAGED_MANIFEST_FILE))).toBe(false)
+    expect(resolveXingmangAiSkillDirectories(userHome)).toEqual([legacyDirectory(userHome)])
+    expect(resolveXingmangAiCodexSkillPath(userHome)).toBe(path.join(legacyDirectory(userHome), 'SKILL.md'))
+    // Two skills called images would be indistinguishable in Codex, so ours keeps the old name too.
+    expect(await readFile(path.join(legacyDirectory(userHome), 'SKILL.md'), 'utf8')).toContain(`name: ${XINGMANG_AI_LEGACY_SKILL_DIRECTORY}\n`)
+    expect(syncImageMcp).toHaveBeenCalledWith({ skillDirectory: legacyDirectory(userHome), officialCodex: false })
+  })
+
+  it('clears an untouched old copy an older version installed again beside images', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+    // Going back to an older version puts the old folder back next to images.
+    fs.cpSync(currentDirectory(userHome), legacyDirectory(userHome), { recursive: true })
+    const skillPath = path.join(legacyDirectory(userHome), 'SKILL.md')
+    await writeFile(skillPath, (await readFile(skillPath, 'utf8')).replace(BUNDLED_SKILL_NAME_LINE, `name: ${XINGMANG_AI_LEGACY_SKILL_DIRECTORY}`), 'utf8')
+
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+
+    expect(await exists(legacyDirectory(userHome))).toBe(false)
+    expect(await exists(path.join(currentDirectory(userHome), 'SKILL.md'))).toBe(true)
+  })
+
+  it('keeps an old copy the user changed and still refreshes its key', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+    fs.cpSync(currentDirectory(userHome), legacyDirectory(userHome), { recursive: true })
+    await writeFile(path.join(legacyDirectory(userHome), 'scripts', 'generate.mjs'), '// 我改过\n', 'utf8')
+    await writeFile(path.join(legacyDirectory(userHome), XINGMANG_AI_CONFIG_FILE), '{"baseUrl":"https://xm.solov.cc","group":"图片模型"}\n', 'utf8')
+
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+
+    expect(await readFile(path.join(legacyDirectory(userHome), 'scripts', 'generate.mjs'), 'utf8')).toBe('// 我改过\n')
+    expect(parseXingmangAiSkillConfig(JSON.parse(await readFile(path.join(legacyDirectory(userHome), XINGMANG_AI_CONFIG_FILE), 'utf8'))).apiKey)
+      .toBe('sk-test-image-group-secret-12345678')
+    await clearXingmangAiSkillSecrets(userHome)
+    expect(await readFile(path.join(legacyDirectory(userHome), XINGMANG_AI_CONFIG_FILE), 'utf8')).not.toContain('sk-')
+  })
+
+  it('clears the untouched copy an early version left in the Codex skills folder', async () => {
+    const userHome = await temporaryHome()
+    const early = legacyDirectory(userHome, ['.codex', 'skills'])
+    await mkdir(early, { recursive: true })
+    await seedLegacyInstall(userHome)
+    fs.cpSync(legacyDirectory(userHome), early, { recursive: true })
+    const { accountService } = loggedInAccount()
+
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+
+    expect(await exists(early)).toBe(false)
+    expect(await exists(path.join(currentDirectory(userHome), 'SKILL.md'))).toBe(true)
+  })
+
+  it('never brings the old folder back when other skill work overlaps the login sync', async () => {
+    const userHome = await temporaryHome()
+    await seedLegacyInstall(userHome)
+    const { accountService } = loggedInAccount()
+
+    // Logging out or the startup install while the sync renames: whoever still holds the old path
+    // must not create that folder again just to write into it.
+    await Promise.all([
+      syncXingmangAiSkill({ accountService, bundledRoot, userHome }),
+      clearXingmangAiSkillSecrets(userHome),
+      installXingmangAiSkillFiles(bundledRoot, userHome),
+    ])
+
+    expect(await exists(legacyDirectory(userHome))).toBe(false)
+    expect(resolveXingmangAiSkillDirectories(userHome)).toEqual([currentDirectory(userHome)])
+  })
+
+  it('moves the Codex on/off entries written before the rename in config.toml and both stored configs', async () => {
+    const userHome = await temporaryHome()
+    await seedLegacyInstall(userHome)
+    const roots = { userHome, codexHome: path.join(userHome, '.codex') }
+    const paths = codexConfigSnapshotPaths(roots)
+    await mkdir(roots.codexHome, { recursive: true })
+    const legacyEntry = `[[skills.config]]\npath = ${JSON.stringify(path.join(legacyDirectory(userHome), 'SKILL.md'))}\nenabled = false\n`
+    const otherEntry = `[[skills.config]]\npath = ${JSON.stringify(path.join(userHome, '.agents', 'skills', 'other', 'SKILL.md'))}\nenabled = false\n`
+    for (const file of [paths.active, paths.relay, paths.chatgpt]) {
+      await writeFile(file, `# 我的注释\nmodel = "gpt-5.4"\n\n${legacyEntry}\n${otherEntry}`, 'utf8')
+    }
+    // The user turned it off themselves while on Xingmang.
+    await writeFile(path.join(roots.codexHome, XINGMANG_AI_CODEX_SKILL_STATE_FILE), '{"version":1,"offByXingmang":false}\n', 'utf8')
+
+    await installXingmangAiSkillFiles(bundledRoot, userHome, { officialCodex: false, renameLegacyDirectory: true })
+
+    const skillPath = path.join(currentDirectory(userHome), 'SKILL.md')
+    expect(resolveXingmangAiCodexSkillPath(userHome)).toBe(skillPath)
+    for (const file of [paths.active, paths.relay, paths.chatgpt]) {
+      const text = await readFile(file, 'utf8')
+      expect(text, file).toContain('# 我的注释')
+      expect(TOML.parse(text), file).toMatchObject({
+        skills: { config: [
+          { path: skillPath, enabled: false },
+          { path: path.join(userHome, '.agents', 'skills', 'other', 'SKILL.md'), enabled: false },
+        ] },
+      })
+    }
+    await expect(syncXingmangAiSkillCodexAvailability({ userHome, officialCodex: false, configPath: paths.active }))
+      .resolves.toEqual({ changed: false, enabled: false })
+  })
+
+  it('drops an entry written before the rename when the new folder already has one', () => {
+    const userHome = path.resolve(os.tmpdir(), 'home')
+    const skillPath = path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY, 'SKILL.md')
+    const legacyPath = path.join(userHome, '.agents', 'skills', XINGMANG_AI_LEGACY_SKILL_DIRECTORY, 'SKILL.md')
+    const config: Record<string, unknown> = {
+      skills: { config: [{ path: legacyPath, enabled: true }, { path: skillPath, enabled: false }] },
+    }
+    expect(moveLegacyXingmangAiSkillCodexEntries(config, skillPath)).toBe(true)
+    expect(config).toEqual({ skills: { config: [{ path: skillPath, enabled: false }] } })
+    // Still on the old name, images belongs to the user: its entry is theirs.
+    const theirs: Record<string, unknown> = { skills: { config: [{ path: skillPath, enabled: false }] } }
+    expect(moveLegacyXingmangAiSkillCodexEntries(theirs, legacyPath)).toBe(false)
+    expect(theirs).toEqual({ skills: { config: [{ path: skillPath, enabled: false }] } })
+  })
+
+  it('leaves the on/off entry of an images skill the user made alone', async () => {
+    const userHome = await temporaryHome()
+    await mkdir(currentDirectory(userHome), { recursive: true })
+    await writeFile(path.join(currentDirectory(userHome), 'SKILL.md'), '---\nname: images\ndescription: mine\n---\n', 'utf8')
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    await mkdir(path.dirname(configPath), { recursive: true })
+    const theirs = `[[skills.config]]\npath = ${JSON.stringify(path.join(currentDirectory(userHome), 'SKILL.md'))}\nenabled = false\n`
+    await writeFile(configPath, theirs, 'utf8')
+
+    await installXingmangAiSkillFiles(bundledRoot, userHome, { officialCodex: false, renameLegacyDirectory: true })
+
+    expect(await readFile(configPath, 'utf8')).toBe(theirs)
+  })
+})
+
 describe('describeImageMcpWarnings', () => {
   it('stays silent when the image tool registered everywhere', () => {
     expect(describeImageMcpWarnings([])).toBeUndefined()
@@ -1110,8 +1387,7 @@ describe('describeImageMcpWarnings', () => {
 describe('followXingmangAiSkillRoute', () => {
   const directOrigin = 'https://xm-direct.solov.cc'
   async function writeSkillConfig(userHome: string, content: string): Promise<string> {
-    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
-    await mkdir(directory, { recursive: true })
+    const directory = await seedOwnedSkillDirectory(userHome)
     const file = path.join(directory, XINGMANG_AI_CONFIG_FILE)
     await writeFile(file, content)
     return file
