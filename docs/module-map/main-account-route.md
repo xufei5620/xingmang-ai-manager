@@ -102,15 +102,16 @@
 - `release-guard-store.ts` — 把最近一次读成功的撤回名单和放量比例记到本地 `release-guard.json`（#1055），开机先用它。不记最低版本。读回来的内容用状态文件同一个解析器重新校验
 
 ## 星芒 AI 技能与画图 MCP
-- `xingmang-ai-skill.ts` — 「星芒AI」技能，管这几件事：
-  - 安装：把随包的技能文件装进 `~/.agents/skills`；Claude、Grok 的目录本来就有时，各自再复制一份
+- `xingmang-ai-skill.ts` — 生图技能（文件夹和技能名都叫 `images`，0.2.20 及以前叫「星芒AI」），管这几件事：
+  - 安装：把随包的技能文件装进 `~/.agents/skills/images`；Claude、Grok 的目录本来就有时，各自再复制一份
+  - 改名：登录同步时把老的「星芒AI」文件夹原地改名成 images；客户自己有 images 的地方一直用旧名；退回旧版又装出来的、早期装进 `~/.codex/skills` 的旧名文件夹，没动过就收掉；Codex 里改名前写的开关条目跟着换到新路径
   - 登录后：把地址、分组、画图模型（先 gpt-image-2.5-flare，没有再用 gpt-image-2）和密钥写进技能的 `config.json`
   - 换线路：只改 baseUrl（`followXingmangAiSkillRoute`）
   - Codex 切到 ChatGPT 官方账号时关掉技能，切回来只打开自己关的那一次
   - 退出登录时清掉密钥
 
   给界面看的版本会剥掉 apiKey（I3）
-- `xingmang-ai-mcp.ts` — 星芒画图 MCP（`xingmang-image`）写进各工具 MCP 配置的那一段：启动方式、Codex / Grok 的 TOML 写法、Claude / Gemini 的 JSON 写法、Claude 的工具权限。只有从星芒技能目录启动随包脚本的条目才算自己的，同名的别的条目不碰。密钥不进 MCP 配置，脚本按路径去读技能的 `config.json`
+- `xingmang-ai-mcp.ts` — 星芒画图 MCP（`xingmang-image`）写进各工具 MCP 配置的那一段：启动方式、Codex / Grok 的 TOML 写法、Claude / Gemini 的 JSON 写法、Claude 的工具权限。只有从星芒技能目录（`images` 或改名前的「星芒AI」）启动随包脚本的条目才算自己的，同名的别的条目不碰。Codex 选着 ChatGPT 账号时的 config.toml 和存着的两份配置里，登记过的那条只换位置、不新登记。密钥不进 MCP 配置，脚本按路径去读技能的 `config.json`
 
 ## 官方账号（不是星芒账号）
 - `official-account-identity.ts` — 从 Codex `auth.json` 里的 JWT 解码出邮箱和套餐名，只用来显示，不验签（这不是认证决定）。令牌本身不出主进程（I3）

@@ -98,6 +98,7 @@ import {
   applyXingmangImageMcpToJson,
   applyXingmangImageMcpToToml,
   applyXingmangImagePermissionToClaudeSettings,
+  repointXingmangImageMcpInToml,
   type XingmangImageMcpInvocation,
 } from './xingmang-ai-mcp'
 
@@ -2048,13 +2049,17 @@ function syncXingmangImageMcpToml(
   configPath: string,
   providerRoot: string,
   invocation: XingmangImageMcpInvocation,
+  mode: 'register' | 'repoint' = 'register',
 ): boolean {
   assertSafeConfigPath(configPath, providerRoot, 'file')
   const label = provider === 'codex' ? '现有 Codex config.toml' : '现有 Grok config.toml'
   const current = requireConfigText(configPath, label)
   if (current === null) return false
   const parsed = parseTomlForMcp(current, label)
-  if (!applyXingmangImageMcpToToml(parsed, invocation, provider)) return false
+  const changed = mode === 'register'
+    ? applyXingmangImageMcpToToml(parsed, invocation, provider)
+    : repointXingmangImageMcpInToml(parsed, invocation)
+  if (!changed) return false
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   executeFilePlans([{ path: configPath, content: tomlContent(parsed) }], {}, providerRoot)
   return true
@@ -2089,6 +2094,25 @@ function syncXingmangImageMcpClaude(roots: ProviderConfigRoots, invocation: Xing
   return true
 }
 
+/**
+ * 存着的两份 Codex 配置切换时整份换回来，里面登记过的那条也换到现在的位置（技能文件夹改了名、
+ * Node 换了地方），不补新的。尽力而为：这几份读不懂或写不进去，不该让首页说画图工具没装进 Codex，
+ * 下次同步再试。
+ */
+function repointXingmangImageMcpInCodexFiles(
+  configPaths: string[],
+  codexHome: string,
+  invocation: XingmangImageMcpInvocation,
+): void {
+  for (const configPath of configPaths) {
+    try {
+      syncXingmangImageMcpToml('codex', configPath, codexHome, invocation, 'repoint')
+    } catch {
+      // See above: only registering in the active Xingmang config.toml is reported.
+    }
+  }
+}
+
 /** 每家单独提交、单独失败：一家的配置读不懂，不该拖累另外几家。 */
 export function syncXingmangImageMcpConfigs(
   rootsInput: ProviderConfigRoots,
@@ -2099,9 +2123,17 @@ export function syncXingmangImageMcpConfigs(
   const changed: ProviderId[] = []
   const warnings: string[] = []
   const steps: Array<[ProviderId, () => boolean]> = [
-    ['codex', () => options.codex
-      && existingDirectory(roots.codexHome)
-      && syncXingmangImageMcpToml('codex', codexConfigSnapshotPaths(roots).active, roots.codexHome, invocation)],
+    ['codex', () => {
+      if (!existingDirectory(roots.codexHome)) return false
+      const snapshots = codexConfigSnapshotPaths(roots)
+      if (!options.codex) {
+        // ChatGPT 账号不登记，可从星芒配置整份带过来的那条还在用：只换位置。
+        repointXingmangImageMcpInCodexFiles([snapshots.active, snapshots.relay, snapshots.chatgpt], roots.codexHome, invocation)
+        return false
+      }
+      repointXingmangImageMcpInCodexFiles([snapshots.relay, snapshots.chatgpt], roots.codexHome, invocation)
+      return syncXingmangImageMcpToml('codex', snapshots.active, roots.codexHome, invocation)
+    }],
     ['claude', () => existingDirectory(providerConfigRoot('claude', roots))
       && syncXingmangImageMcpClaude(roots, invocation)],
     ['grok', () => {

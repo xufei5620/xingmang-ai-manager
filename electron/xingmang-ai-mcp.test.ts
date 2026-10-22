@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
 import { afterEach, describe, expect, it } from 'vitest'
-import { syncXingmangImageMcpConfigs } from './config-files'
+import { codexConfigSnapshotPaths, syncXingmangImageMcpConfigs } from './config-files'
 import {
   XINGMANG_IMAGE_CLAUDE_PERMISSION,
   XINGMANG_IMAGE_CONFIG_ENV,
@@ -15,6 +15,7 @@ import {
   buildXingmangImageMcpInvocation,
   isManagedXingmangImageMcpEntry,
   removeXingmangImageMcpFromJson,
+  repointXingmangImageMcpInToml,
 } from './xingmang-ai-mcp'
 
 const temporaryHomes: string[] = []
@@ -30,7 +31,9 @@ function temporaryHome(): string {
 }
 
 // Absolute on whichever OS runs the test: a hard-coded C:\ path is relative on macOS.
-const skillDirectory = path.resolve(os.tmpdir(), 'home', '.agents', 'skills', '星芒AI')
+const skillDirectory = path.resolve(os.tmpdir(), 'home', '.agents', 'skills', 'images')
+// 0.2.20 及以前登记的那条指着改名前的文件夹。
+const legacySkillDirectory = path.resolve(os.tmpdir(), 'home', '.agents', 'skills', '星芒AI')
 const nodeExecutable = path.resolve(os.tmpdir(), 'nodejs', 'node')
 const invocation = buildXingmangImageMcpInvocation(nodeExecutable, skillDirectory)
 
@@ -51,7 +54,10 @@ describe('xingmang-ai-mcp', () => {
 
   it('recognises only entries that launch the bundled script from a 星芒AI skill directory', () => {
     expect(isManagedXingmangImageMcpEntry({ args: [invocation.scriptPath] })).toBe(true)
+    expect(isManagedXingmangImageMcpEntry({ args: ['C:\\Users\\a\\.agents\\skills\\images\\scripts\\mcp-server.mjs'] })).toBe(true)
+    // Registered before the folder was renamed: still ours, so the next sync moves it along.
     expect(isManagedXingmangImageMcpEntry({ args: ['C:\\Users\\a\\.agents\\skills\\星芒AI\\scripts\\mcp-server.mjs'] })).toBe(true)
+    expect(isManagedXingmangImageMcpEntry({ args: ['/home/a/.agents/skills/imagegen/scripts/mcp-server.mjs'] })).toBe(false)
     expect(isManagedXingmangImageMcpEntry({ args: ['/home/a/my-own/mcp-server.mjs'] })).toBe(false)
     expect(isManagedXingmangImageMcpEntry({ command: 'npx', args: ['-y', 'someone-else'] })).toBe(false)
   })
@@ -201,6 +207,27 @@ describe('xingmang-ai-mcp', () => {
     })
   })
 
+  it('moves only an entry it registered and never adds one when repointing', () => {
+    const legacy = buildXingmangImageMcpInvocation(nodeExecutable, legacySkillDirectory)
+    const parsed: Record<string, unknown> = {}
+    applyXingmangImageMcpToToml(parsed, legacy, 'codex')
+    asRecord(asRecord(parsed.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).enabled = false
+
+    expect(repointXingmangImageMcpInToml(parsed, invocation)).toBe(true)
+    expect(asRecord(parsed.mcp_servers)[XINGMANG_IMAGE_MCP_NAME]).toMatchObject({
+      args: [invocation.scriptPath],
+      env: { [XINGMANG_IMAGE_CONFIG_ENV]: invocation.configPath },
+      enabled: false,
+    })
+    expect(repointXingmangImageMcpInToml(parsed, invocation)).toBe(false)
+
+    const empty: Record<string, unknown> = { model: 'gpt-5.5' }
+    expect(repointXingmangImageMcpInToml(empty, invocation)).toBe(false)
+    expect(empty).toEqual({ model: 'gpt-5.5' })
+    const userOwned = { mcp_servers: { [XINGMANG_IMAGE_MCP_NAME]: { command: 'npx', args: ['-y', 'my-images'] } } }
+    expect(repointXingmangImageMcpInToml(userOwned, invocation)).toBe(false)
+  })
+
   it('writes Claude and Gemini entries in their own shapes', () => {
     const claude: Record<string, unknown> = {}
     const gemini: Record<string, unknown> = {}
@@ -315,6 +342,40 @@ describe('syncXingmangImageMcpConfigs', () => {
     expect(result).toEqual({ changed: [], warnings: [] })
     expect(fs.readdirSync(home).sort()).toEqual(['.codex'])
     expect(fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf8')).toBe('model = "gpt-5.5"\n')
+  })
+
+  it('moves the entry in the stored Codex configs and in a ChatGPT config.toml without registering a new one', () => {
+    const home = temporaryHome()
+    const codexHome = path.join(home, '.codex')
+    fs.mkdirSync(codexHome)
+    const legacy = buildXingmangImageMcpInvocation(nodeExecutable, legacySkillDirectory)
+    const carried: Record<string, unknown> = { model: 'gpt-5.5' }
+    applyXingmangImageMcpToToml(carried, legacy, 'codex')
+    // On the ChatGPT account: config.toml still carries the entry the Xingmang config had, and so
+    // does the stored Xingmang config that comes back on the next switch.
+    const paths = codexConfigSnapshotPaths(roots(home))
+    fs.writeFileSync(paths.active, TOML.stringify(carried as TOML.JsonMap))
+    fs.writeFileSync(paths.relay, TOML.stringify(carried as TOML.JsonMap))
+    fs.writeFileSync(paths.chatgpt, 'model = "gpt-5"\n')
+
+    expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: false })).toEqual({ changed: [], warnings: [] })
+    for (const file of [paths.active, paths.relay]) {
+      const parsed = TOML.parse(fs.readFileSync(file, 'utf8'))
+      expect(asRecord(parsed.mcp_servers)[XINGMANG_IMAGE_MCP_NAME], file).toMatchObject({ args: [invocation.scriptPath] })
+    }
+    expect(fs.readFileSync(paths.chatgpt, 'utf8')).toBe('model = "gpt-5"\n')
+  })
+
+  it('keeps registering in config.toml when a stored Codex config cannot be read', () => {
+    const home = temporaryHome()
+    const codexHome = path.join(home, '.codex')
+    fs.mkdirSync(codexHome)
+    const paths = codexConfigSnapshotPaths(roots(home))
+    fs.writeFileSync(paths.active, 'model = "gpt-5.5"\n')
+    fs.writeFileSync(paths.chatgpt, 'model = [unclosed\n')
+
+    expect(syncXingmangImageMcpConfigs(roots(home), invocation, { codex: true })).toEqual({ changed: ['codex'], warnings: [] })
+    expect(fs.readFileSync(paths.chatgpt, 'utf8')).toBe('model = [unclosed\n')
   })
 
   it('reports one unreadable config without blocking the others', () => {

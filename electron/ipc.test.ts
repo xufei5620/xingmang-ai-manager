@@ -1239,7 +1239,7 @@ describe('registerIpcHandlers', () => {
     try {
       const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
       expect(JSON.stringify(summary)).not.toContain('sk-ipc-must-not-return-this-secret-key')
-      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      const configPath = path.join(userHome, '.agents', 'skills', 'images', 'config.json')
       expect(fs.readFileSync(configPath, 'utf8')).toContain('sk-ipc-must-not-return-this-secret-key')
       // The image tool draws with the newest OpenAI model the account's own key can list.
       expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-ipc-must-not-return-this-secret-key')
@@ -1375,7 +1375,7 @@ describe('registerIpcHandlers', () => {
         baseUrl: 'https://attacker.invalid', relayEndpointIds: { solov: pending },
       })
       expect(result).not.toHaveProperty('imageSkillWarning')
-      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      const configPath = path.join(userHome, '.agents', 'skills', 'images', 'config.json')
       expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).baseUrl).toBe(origin)
       expect(service.getConfig).toHaveBeenCalledWith(false)
     } finally {
@@ -1398,7 +1398,7 @@ describe('registerIpcHandlers', () => {
     try {
       await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
       expect(service.getConfig).not.toHaveBeenCalled()
-      expect(fs.existsSync(path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json'))).toBe(false)
+      expect(fs.existsSync(path.join(userHome, '.agents', 'skills', 'images', 'config.json'))).toBe(false)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
