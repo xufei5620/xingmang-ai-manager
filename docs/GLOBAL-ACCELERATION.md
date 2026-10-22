@@ -83,6 +83,33 @@ Windows 走 `release:build:unsigned`，并用 `XINGMANG_ACCELERATION_BUNDLE_DIR`
 
 已授权的共用节点连接凭据现随清洗后配置进入 GitHub，并在显式准备资源后随安装包分发；原始 Clash 文件、订阅地址和本机控制凭据不进入仓库。主进程与 renderer IPC 的边界保持不变，不向界面或诊断返回节点密码。本机计时记录仍可被重装/换设备绕过，不构成跨设备服务端额度。
 
+## 在线换节点（2026-10-22）
+
+2026-10-21 节点商迁址，安装包里的节点全断（#1352），只能出新版本才换得掉。yoyo 10-22 定「做在线换节点」：从 0.2.21 起，节点也能不发版就换。
+
+**客户端**（`electron/acceleration-online-nodes.ts`）：
+
+- 更新目录里另放一份 `acceleration-nodes.json`，跟 `latest.yml`、`service-status.json` 在一起。主进程开机读一次，之后每小时读一次；超时 10 秒、最多 256 KB、拒绝重定向，跟状态文件一个读法。只读包里那份更新目录，不读 Windows 线路2 的直连目录（那边只放行白名单里的文件）。
+- 文件里是一段节点（跟安装包里的 `profile.yaml` 一个格式）、发布时间和发布者签名。签名用发版那把 Ed25519 钥匙（`XINGMANG_UPDATE_SIGNING_KEY`，公钥名单就是 `update-package-signature.ts` 的 `updateSigningPublicKeys`），签的字以 `xingmang-acceleration-nodes/v1` 开头，跟更新包的签名不能互换。拿到 R2 上传密钥的人签不出客户端认的节点，没法把客户的 ChatGPT 流量引到自己的服务器。
+- 签名对、又比记下的那份新（发布时间更晚），才原样写进 app data 的 `acceleration-nodes.json`；比记下的旧的不收，防有人把线上换回一份真签名的旧节点。加速辅助进程每次连接、测线路、列线路时读它，读的时候再验一遍签名。
+- 用哪份：记下的在线节点签名对就用它；没记过、读坏了、签名不对、或者发布者发过签名的「撤回」，就用安装包自带、受清单校验的那份。读不到线上那份不影响已经记下的：节点商出问题那种时候，正是要接着用上次拿到的新节点。
+- 能换的只有节点：过同一个解析器（只收内联 Hysteria 2），分流规则、端口、只送 OpenAI 那几个域名这些都还在客户端代码里。以后换了这一版不认的协议，签名对也不收，接着用手上的。
+- 日志里只有发布时间、线路条数和拒收原因（`acceleration.nodes.*`），不写节点内容（I13）。开机记一笔这台电脑现在用的是哪一份（`acceleration.nodes.source`）。
+
+**发布**（`.github/workflows/acceleration-nodes.yml`、`scripts/acceleration-nodes.cjs`）：
+
+1. 节点只从仓库来：改 `bundled-acceleration/profile.yaml` 和 `profile.sha256`，走一次 PR 合进 main。工作流的输入里没有节点和密码。
+2. Actions → **acceleration-nodes** → Run workflow，分支选 `main`，「做什么」选 `publish`。
+3. 预览那一段先跑完，运行页面上列出这次要发的线路（不列密码）、发布时间和线上现在是哪一份。跟线上一模一样、不是从 main 跑的、节点校验值对不上，这一段就红，不用批。
+4. 停在 Waiting 时 Review deployments → 勾 release → Approve and deploy。publish 作业签名、确认客户端会收、上传，再从客户会读的地址读回来逐字比对。
+5. 客户端最迟一小时内读到，下一次连接起用。
+
+要退回安装包自带的节点，第 2 步选 `withdraw`。**不要直接删线上的文件**：客户端读不到时会接着用记下的那份。
+
+**要注意的一条**：线上发过节点以后，客户端记下的在线节点比安装包里的优先，就算新版安装包里已经换了节点也一样。所以改了仓库里的节点、合进 main，就跑一次 `acceleration-nodes`，让线上那份跟仓库一致。发版不会替你做这一步。
+
+publish 作业跟 `publish-release`、`rollback-release`、`service-status` 共用 `update-feed` 并发组（#492），凭据和批准都在 release 环境。
+
 ## 本机代理端口不加密码（2026-10-18）
 
 **#1058 第 3 条，2026-10-18 定为接受的风险**：开加速时 Mihomo 在 `127.0.0.1` 上开的代理端口（`mixed-port`，`allow-lan: false`）不要求用户名密码，同一台电脑上别的账户、别的程序连这个端口也能走付费线路。不加的原因：系统代理填不了密码（Windows 的系统代理设置里没有这一项；macOS 能勾「代理服务器需要密码」，但很多程序不读它，属推断），端口一加密码，走系统代理的浏览器和游戏多半就连不上了；个人电脑上很少有第二个账户。「只给本程序内部的下载另开一个带随机密码的端口」也考虑过，系统代理那个端口还得开着，收益有限，没做。

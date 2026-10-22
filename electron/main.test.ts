@@ -196,6 +196,7 @@ describe('main process quit cleanup', () => {
       'updates-and-notifications': [
         'clearInterval(periodicUpdateTimer)',
         'serviceStatusMonitor?.dispose()',
+        'accelerationNodes?.dispose()',
         'unsubscribeDesktopNotifications()',
         'unsubscribeAutoUpdateInstall()',
         'desktopNotifications.dispose()',

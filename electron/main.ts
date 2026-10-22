@@ -1326,7 +1326,7 @@ if (!hasSingleInstanceLock) {
     let updateAccount: WindowsElevationCapability | null = null
     // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
     let quitInstallAttempt: QuitInstallAttempt | null = null
-    const { updaterService, serviceStatusMonitor, cliModelsAtLaunch } = updateFeed.createUpdater({
+    const { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch } = updateFeed.createUpdater({
       managerDataDirectory,
       runtimeLog,
       systemService,
@@ -2104,6 +2104,7 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('updates-and-notifications', () => {
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       serviceStatusMonitor?.dispose()
+      accelerationNodes?.dispose()
       unsubscribeDesktopNotifications()
       unsubscribeAutoUpdateInstall()
       desktopNotifications.dispose()

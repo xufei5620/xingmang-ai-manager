@@ -8,6 +8,7 @@ import { createWindowsSystemProxy } from './platform/windows-system-proxy'
 import { createMacosSystemProxy } from './platform/macos-system-proxy'
 import { ensureSafeDataDirectory } from './safe-local-data'
 import { readAccelerationWorkerProfile } from './acceleration-worker-profile'
+import { accelerationOnlineNodesPath } from './acceleration-online-nodes'
 
 let backend: ReturnType<typeof createAccelerationDevelopmentBackend> | null = null
 let queue: Promise<unknown> = Promise.resolve()
@@ -58,6 +59,9 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
   const directory = accelerationDevelopmentDirectory(message.dataDirectory)
   ensureSafeDataDirectory(directory, '本机加速数据')
   const journalPath = accelerationProxyJournalPath(message.dataDirectory)
+  // 主进程读到的在线节点记在这里（acceleration-online-nodes.ts），这边每次读都再验一遍签名。
+  const onlineNodesPath = accelerationOnlineNodesPath(message.dataDirectory)
+  const readProfile = () => readAccelerationWorkerProfile(config, onlineNodesPath)
   const macProxy = process.platform === 'darwin'
     ? createMacosSystemProxy({
       journalPath,
@@ -98,10 +102,10 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     platform: process.platform,
     ...(windowsProxy ? { inspectWindowsProxy: () => windowsProxy.inspect() } : {}),
     // Mac 上看去线路服务器的那条路是不是被别的 VPN 接走了（acceleration-conflict.ts）。冲突检查在内核
-    // 起来之前，第一次连接时节点还没读，所以这里先读一次，读到的留给随后的 start 用。
+    // 起来之前，所以这里先读一次节点，读到的留给随后的 start 用：查的和连的是同一份。
     ...(macProxy ? {
       lineAddresses: async () => {
-        if (!accelerationProfile) accelerationProfile = await readAccelerationWorkerProfile(config)
+        accelerationProfile = await readProfile()
         return accelerationProfile.nodes.map((node) => node.connection.server)
       },
     } : {}),
@@ -136,24 +140,24 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
     runtime: {
       async start(lineId?: string) {
         if (!accelerationProfile) {
-          accelerationProfile = await readAccelerationWorkerProfile(config)
+          accelerationProfile = await readProfile()
         }
-        return runtime.start(accelerationProfile, lineId)
+        const profile = accelerationProfile
+        // 用过就作废：每次连接都用最新记下的节点，在线节点中途换了，下一次连接就用上。
+        accelerationProfile = null
+        return runtime.start(profile, lineId)
       },
       stop: () => runtime.stop(), isRunning: () => runtime.isRunning(),
     },
     listLines: async () => {
-      accelerationProfile = await readAccelerationWorkerProfile(config)
-      return accelerationLinesFromProfile(accelerationProfile)
+      return accelerationLinesFromProfile(await readProfile())
     },
     pingLine: async (lineId) => {
       if (runtime.isRunning()) throw new Error('加速连接进行中，暂不能检测线路。')
-      if (!accelerationProfile) {
-        accelerationProfile = await readAccelerationWorkerProfile(config)
-      }
+      const profile = await readProfile()
       // Mihomo performs the authenticated delay probe and CONNECT check while
       // starting. No system proxy is enabled for this short-lived probe.
-      try { return (await runtime.start(accelerationProfile, lineId)).line }
+      try { return (await runtime.start(profile, lineId)).line }
       finally { await runtime.stop() }
     },
   })

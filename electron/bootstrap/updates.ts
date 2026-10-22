@@ -4,11 +4,13 @@
 import path from 'node:path'
 import { app, autoUpdater as nativeAutoUpdater, shell } from 'electron'
 import { autoUpdater, CancellationToken } from 'electron-updater'
+import { accelerationOnlineNodesPath, createAccelerationNodesUpdater, resolveAccelerationNodesUrl } from '../acceleration-online-nodes'
 import { previousAutoInstallFailureMessage, resolvePreviousAutoInstallFailure, type PendingUpdateRecord } from '../auto-update-install'
 import { createCliModelHintsStore } from '../cli-model-hints-store'
 import { runWithTrustedWindowsProcessEnvironment } from '../command-runner'
 import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from '../disk-space'
 import type { InstalledRelease } from '../installed-release'
+import { platformCapabilitiesFor } from '../platform-capabilities'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from '../linux-deb-update'
 import type { ReleaseGuardStore } from '../release-guard-store'
 import type { RelayEndpointId } from '../relay-sites'
@@ -275,6 +277,31 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       })
       : null
     serviceStatusMonitor?.start()
+    // 在线换节点（acceleration-online-nodes.ts）：节点文件跟状态文件放在一起，读法也一样，只有能加速的平台读。
+    // 一律读包里那份更新目录：直连那份只放行白名单里的文件。日志里只有发布时间和线路条数，不写节点内容（I13）。
+    const accelerationNodes = serviceStatusUrl && platformCapabilitiesFor(process.platform).acceleration
+      ? createAccelerationNodesUpdater({
+        url: resolveAccelerationNodesUrl(serviceStatusUrl),
+        filePath: accelerationOnlineNodesPath(managerDataDirectory),
+        fetch: chromiumSessionFetch(autoUpdater.netSession),
+        onUpdated: (document) => runtimeLog.log('info', 'network', 'acceleration.nodes.updated', document.profile
+          ? '已换上在线发布的加速节点，下一次连接起用'
+          : '在线加速节点已撤回，下一次连接起改用安装包自带的节点', {
+          issuedAt: document.issuedAt,
+          ...(document.profile ? { lines: document.profile.nodes.length } : { withdrawn: true }),
+        }),
+        onRejected: (reason) => runtimeLog.log('warn', 'network', 'acceleration.nodes.rejected',
+          '在线加速节点没有通过校验，继续用记下的那份或安装包自带的', { reason }),
+        onStoreFailed: (error) => runtimeLog.exception('network', 'acceleration.nodes.save-failed', error),
+      })
+      : null
+    if (accelerationNodes) {
+      // 客服看日志时要知道这台电脑现在连的是哪一份节点。
+      void accelerationNodes.stored().then((document) => runtimeLog.log('info', 'network', 'acceleration.nodes.source',
+        document?.profile ? '加速用的是在线发布的节点' : '加速用的是安装包自带的节点',
+        document ? { issuedAt: document.issuedAt, ...(document.profile ? {} : { withdrawn: true }) } : undefined))
+      accelerationNodes.start()
+    }
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
@@ -294,7 +321,7 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
         '本机为未签名更新通道，安装包签名未校验；下载后强制校验安装包 SHA-512，是否自动下载与安装跟随「自动更新」开关',
       )
     }
-    return { updaterService, serviceStatusMonitor, cliModelsAtLaunch }
+    return { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch }
   }
   return { createUpdater }
 }
