@@ -67,7 +67,8 @@
 - `acceleration-mihomo-runtime.ts` — 起停 mihomo 内核：把核过 SHA-256 的内核复制进私有会话目录再 spawn（`trustedCommandEnvironment`，I1/I2），生成隔离配置、随机控制端口与密钥，经内核探测线路可用性；会话目录清扫只碰本进程没在用的，读写都走 safe-local-data / bounded-*（I8）
 - `acceleration-clash-config.ts` — 内置节点文件（Clash YAML）的解析与内核配置生成：只收内联 hysteria2 节点、拒绝别名和远程订阅，生成的配置 `tun` 关、IPv6 关、局域网与内网 IP 直连（#1058，不把内网流量送去海外节点）、星芒自己的站点直连；节点凭据只留在主进程侧，不进诊断与 IPC
 - `acceleration-bundled-config.ts` — 正式包读 `resources/acceleration/` 里的清单、内核与节点：文件名是常量、SHA-256 要与 ASAR 内包元数据钉住的值一致才启用，读不通报「内置加速资源无效」（界面据此说「被杀毒软件隔离」）；外部清单单独存在不能开启加速
-- `acceleration-worker-profile.ts` — 辅助进程每次连接前重新读节点文件，核对完整性后再解析（防启动后被替换）
+- `acceleration-worker-profile.ts` — 辅助进程每次连接前重新读节点：记在本机、签名对的在线节点优先，否则读安装包里的节点文件，核对完整性后再解析（防启动后被替换）
+- `acceleration-online-nodes.ts` — 在线换节点：主进程开机读一次、之后每小时读一次更新目录里的 `acceleration-nodes.json`（超时、256 KB 上限、拒绝重定向，I10），用发版那把 Ed25519 钥匙验签（签的字有自己的开头，跟更新包的签名不能互换），比记下的新才原样写进 app data；辅助进程读的时候再验一遍。签名不对、比记下的旧都不收，撤回也要签名。发布脚本 `scripts/acceleration-nodes.cjs`、工作流 `acceleration-nodes.yml`
 - `acceleration-binary.ts` — Mac 上 spawn 前核对内核是本机架构的 Mach-O 可执行文件（不收胖二进制、截断的加载命令表直接拒），打包脚本 `scripts/stage-acceleration-bundle.cjs` 也用
 - `acceleration-electron-profile.ts` — 给辅助 Electron 进程一个独立的临时 user-data-dir（各自的 Local State / OSCrypt 密钥，不和桌面进程抢配置），用完只删自己那个并先核对目录身份
 - `acceleration-worker-entry.ts` — 辅助进程启动开关 `--xingmang-acceleration-worker` 的识别：必须带父进程 IPC 通道且在 win32/darwin 才进 worker 模式，否则直接退出、绝不打开桌面；`platform/entry.ts` 最先调用

@@ -63,6 +63,30 @@ function decodeSignature(value: unknown): Buffer | null {
 }
 
 /**
+ * Checks a publisher signature over text another publisher-signed file builds
+ * (acceleration-online-nodes.ts). The caller's text must start with its own
+ * header, so a signature made for one kind of file never verifies as another.
+ * Never throws; a build with no configured key accepts nothing.
+ */
+export function verifyPublisherSignature(
+  payload: string,
+  signature: unknown,
+  publicKeys: readonly string[] = updateSigningPublicKeys,
+): boolean {
+  const keys = publicKeys.map(parsePublicKey).filter((key): key is KeyObject => key !== null)
+  const signatureBytes = decodeSignature(signature)
+  if (keys.length === 0 || !signatureBytes || typeof payload !== 'string' || !payload) return false
+  const data = Buffer.from(payload, 'utf8')
+  return keys.some((key) => {
+    try {
+      return verify(null, data, key, signatureBytes)
+    } catch {
+      return false
+    }
+  })
+}
+
+/**
  * Checks the publisher signature on the manifest entry the downloaded package was
  * matched to. Never throws: every way the check can fail is a rejection, and a
  * build with no configured key rejects too rather than quietly skipping.
