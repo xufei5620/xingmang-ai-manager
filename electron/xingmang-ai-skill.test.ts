@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -95,6 +95,18 @@ async function seedOwnedSkillDirectory(userHome: string): Promise<string> {
   await mkdir(directory, { recursive: true })
   await writeFile(path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE), '{"version":1,"files":{}}\n', 'utf8')
   return directory
+}
+
+// 不用 fs.cpSync：Windows CI（Node 22）上往「星芒AI」这种非 ASCII 路径拷，拷完目标里没有文件，
+// 跑这个文件的测试进程还中途退出了。改用 promise 版逐个文件拷。
+async function copyDirectory(from: string, to: string): Promise<void> {
+  await mkdir(to, { recursive: true })
+  for (const entry of await readdir(from, { withFileTypes: true })) {
+    const source = path.join(from, entry.name)
+    const target = path.join(to, entry.name)
+    if (entry.isDirectory()) await copyDirectory(source, target)
+    else await copyFile(source, target)
+  }
 }
 
 async function seedOptionalToolHomes(userHome: string): Promise<void> {
@@ -1237,7 +1249,7 @@ describe('xingmang-ai-skill folder rename to images', () => {
     const { accountService } = loggedInAccount()
     await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
     // Going back to an older version puts the old folder back next to images.
-    fs.cpSync(currentDirectory(userHome), legacyDirectory(userHome), { recursive: true })
+    await copyDirectory(currentDirectory(userHome), legacyDirectory(userHome))
     const skillPath = path.join(legacyDirectory(userHome), 'SKILL.md')
     await writeFile(skillPath, (await readFile(skillPath, 'utf8')).replace(BUNDLED_SKILL_NAME_LINE, `name: ${XINGMANG_AI_LEGACY_SKILL_DIRECTORY}`), 'utf8')
 
@@ -1251,7 +1263,7 @@ describe('xingmang-ai-skill folder rename to images', () => {
     const userHome = await temporaryHome()
     const { accountService } = loggedInAccount()
     await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
-    fs.cpSync(currentDirectory(userHome), legacyDirectory(userHome), { recursive: true })
+    await copyDirectory(currentDirectory(userHome), legacyDirectory(userHome))
     await writeFile(path.join(legacyDirectory(userHome), 'scripts', 'generate.mjs'), '// 我改过\n', 'utf8')
     await writeFile(path.join(legacyDirectory(userHome), XINGMANG_AI_CONFIG_FILE), '{"baseUrl":"https://xm.solov.cc","group":"图片模型"}\n', 'utf8')
 
@@ -1269,7 +1281,7 @@ describe('xingmang-ai-skill folder rename to images', () => {
     const early = legacyDirectory(userHome, ['.codex', 'skills'])
     await mkdir(early, { recursive: true })
     await seedLegacyInstall(userHome)
-    fs.cpSync(legacyDirectory(userHome), early, { recursive: true })
+    await copyDirectory(legacyDirectory(userHome), early)
     const { accountService } = loggedInAccount()
 
     await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
