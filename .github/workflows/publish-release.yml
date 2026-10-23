@@ -367,6 +367,12 @@ jobs:
       - name: Compile the main process the staging tool needs
         run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
 
+      # 线上发过在线加速节点以后，客户端一直优先用记下的那份（#1359）：这次装进安装包的节点跟线上的不一样，
+      # 老客户升级以后也用不上，先停下，让发版的人跑一次 acceleration-nodes。只读客户端也在读的公开文件，
+      # 不用任何凭据；读不到也停下（#493）。脚本用编译好的客户端代码校验，所以排在编译之后。
+      - name: Refuse a bundle the live online acceleration nodes would override
+        run: node scripts/acceleration-nodes.cjs check --summary "$env:GITHUB_STEP_SUMMARY"
+
       - name: Prepare the private acceleration bundle
         env:
           ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
@@ -438,6 +444,10 @@ jobs:
       # 随后还会自己跑一次完整的 npm run compile，这一次只是给暂存工具用的。
       - name: Compile the main process the staging tool needs
         run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      # 同 windows-build（#1359）：只发 Mac 时只有这里拦得住。
+      - name: Refuse a bundle the live online acceleration nodes would override
+        run: node scripts/acceleration-nodes.cjs check --summary "$GITHUB_STEP_SUMMARY"
 
       # 两个架构各准备一份：Mac 的资源清单里记着架构，内核也是按架构的 Mach-O，
       # 混用会被打包前的校验直接拒掉。
