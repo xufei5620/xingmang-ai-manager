@@ -87,7 +87,7 @@ function score(entry: Entry, words: readonly string[]) {
   return worst
 }
 
-// 游戏加速、备份、更新并进了设置：不再单独出页面结果，搜到的是设置里那一行（「网络加速 › 游戏加速」）。
+// 加速、备份、更新并进了设置：不再单独出页面结果，搜到的是设置里那一行（「网络加速」那张卡、「备份迁移 › 工具配置备份」）。
 // 「安装卸载」页拆掉了（第 10 批）：搜「安装」「卸载」给首页，搜 Node.js、Python 给检查页。
 function pageEntries(options: CommandSearchOptions): Entry[] {
   return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || page.id === 'maintenance' || !(options.pageVisible?.(page.id) ?? true) ? []
@@ -135,11 +135,17 @@ function accountEntries(options: CommandSearchOptions): Entry[] {
 
 // 设置里每一行单独一条，写成「版本更新 › 自动更新」，点了翻到那一行；只按行名和常用说法算分，
 // 组名不算，免得搜「更新」把这一组十来行全拉出来。组本身也还是一条，排在它的行前面。
+// 一行跟它的组同名时（「网络加速」组最上面那张「网络加速」卡）只留这一行、名字写一遍：以前搜「加速」
+// 出来「网络加速」「网络加速 › 网络加速」两条，落的是同一处（#1362 第 2 条）。这一行看不到（Linux 没有加速）时组照旧一条。
 function settingsEntries(options: CommandSearchOptions): Entry[] {
-  const groups: Entry[] = settingsGroups.map(group => ({ result: { key: `settings:${group.value}`, group: 'settings', label: group.label, page: 'settings', section: group.value }, label: group.label, keywords: group.keywords }))
-  const items: Entry[] = settingsItems.filter(item => options.settingsItemVisible?.(item) ?? true).map(item => {
-    const groupLabel = settingsGroups.find(group => group.value === item.group)?.label ?? ''
-    return { result: { key: `settings-item:${item.id}`, group: 'settings', label: `${groupLabel} › ${item.label}`, page: 'settings', section: item.id }, label: item.label, keywords: item.keywords }
+  const visible = settingsItems.filter(item => options.settingsItemVisible?.(item) ?? true)
+  const groupLabel = (item: SettingsItem) => settingsGroups.find(group => group.value === item.group)?.label ?? ''
+  const named = new Set(visible.filter(item => item.label === groupLabel(item)).map(item => item.group))
+  const groups: Entry[] = settingsGroups.filter(group => !named.has(group.value))
+    .map(group => ({ result: { key: `settings:${group.value}`, group: 'settings', label: group.label, page: 'settings', section: group.value }, label: group.label, keywords: group.keywords }))
+  const items: Entry[] = visible.map(item => {
+    const label = item.label === groupLabel(item) ? item.label : `${groupLabel(item)} › ${item.label}`
+    return { result: { key: `settings-item:${item.id}`, group: 'settings', label, page: 'settings', section: item.id }, label: item.label, keywords: item.keywords }
   })
   return [...groups, ...items]
 }
