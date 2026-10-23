@@ -10,7 +10,10 @@ const ts = require('typescript')
 const {
   AccelerationNodesError,
   buildPayload,
+  checkReleaseAgainstLive,
   describePlan,
+  fetchLiveDocument,
+  liveNodesUrl,
   parseArguments,
   planAccelerationNodes,
   readRepositoryProfile,
@@ -129,7 +132,67 @@ test('arguments name a command, the live copy and, to build, an output', () => {
   assert.throws(() => parseArguments(['preview', '--current', 'a.json', '--profile', 'other.yaml']), /参数不对/)
 })
 
+test('a release stops when the live online nodes would override the nodes it bundles', () => {
+  const source = readRepositoryProfile()
+  const same = signAccelerationNodes(planAccelerationNodes({ profileSource: source, now: new Date('2026-10-21T03:00:00.000Z'), runtime, pinnedKeys }), { privateKey: publisher.privateKey, pinnedKeys, runtime })
+  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: same, runtime, pinnedKeys }).join('\n'), /跟这次安装包里的一样/)
+  assert.throws(() => checkReleaseAgainstLive({ profileSource: source, currentText: liveDocument(), runtime, pinnedKeys }),
+    (error) => error instanceof AccelerationNodesError && /跟这次安装包里的不一样/.test(error.message) && /acceleration-nodes/.test(error.message)
+      && !error.message.includes('old-secret') && !error.message.includes('old.example.test'))
+})
+
+test('a release goes ahead when clients fall back to the nodes it bundles anyway', () => {
+  const source = readRepositoryProfile()
+  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: null, runtime, pinnedKeys }).join('\n'), /还没发布过/)
+  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: liveDocument({ profile: null }), runtime, pinnedKeys }).join('\n'), /撤回过/)
+  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: liveDocument({ privateKey: keyPair().privateKey }), runtime, pinnedKeys }).join('\n'), /没通过客户端的校验（signature）/)
+  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: 'not a node list', runtime, pinnedKeys }).join('\n'), /没通过客户端的校验（malformed）/)
+})
+
+function liveResponse(status, body = '', headers = {}) {
+  return new Response(status === 204 || status === 304 ? null : body, { status, headers })
+}
+
+test('the release check reads the live copy like a client does and stops on anything unclear', async () => {
+  const seen = []
+  const text = liveDocument()
+  assert.equal(await fetchLiveDocument('https://feed.example.test/acceleration-nodes.json', async (url, init) => {
+    seen.push({ url, redirect: init.redirect, signal: init.signal instanceof AbortSignal })
+    return liveResponse(200, text)
+  }), text)
+  assert.deepEqual(seen, [{ url: 'https://feed.example.test/acceleration-nodes.json', redirect: 'error', signal: true }])
+  assert.equal(await fetchLiveDocument('https://feed.example.test/x', async () => liveResponse(404, 'missing')), null)
+  await assert.rejects(fetchLiveDocument('https://feed.example.test/x', async () => liveResponse(503, 'busy')), /HTTP 503/)
+  await assert.rejects(fetchLiveDocument('https://feed.example.test/x', async () => { throw new TypeError('redirect') }), /读不到线上的在线加速节点（连不上）/)
+  assert.equal(await fetchLiveDocument('https://feed.example.test/x', async () => liveResponse(200, 'x', { 'content-length': String(256 * 1024 + 1) })), 'not a node list')
+  assert.equal(await fetchLiveDocument('https://feed.example.test/x', async () => liveResponse(200, 'x'.repeat(256 * 1024 + 1))), 'not a node list')
+})
+
+test('the release check reads the same address the publish workflow writes and clients read', () => {
+  const { resolveUpdateUrlForVersion } = require('./update-release-utils.cjs')
+  const { version } = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'))
+  assert.equal(liveNodesUrl(), `${resolveUpdateUrlForVersion(version).replace(/\/+$/, '')}/acceleration-nodes.json`)
+  assert.deepEqual(parseArguments(['check']), { command: 'check', withdraw: false })
+  assert.deepEqual(parseArguments(['check', '--summary', 's.md']), { command: 'check', withdraw: false, '--summary': 's.md' })
+  assert.throws(() => parseArguments(['check', '--current', 'a.json']), /参数不对/)
+  assert.throws(() => parseArguments(['check', '--withdraw']), /参数不对/)
+})
+
 const workflow = YAML.parse(fs.readFileSync(path.join(projectRoot, '.github', 'workflows', 'acceleration-nodes.yml'), 'utf8'))
+const releaseWorkflow = YAML.parse(fs.readFileSync(path.join(projectRoot, '.github', 'workflows', 'publish-release.yml'), 'utf8'))
+
+test('both release builds check the live online nodes before they stage the bundled ones', () => {
+  for (const name of ['windows-build', 'macos-build']) {
+    const commands = releaseWorkflow.jobs[name].steps.map((step) => String(step.run || ''))
+    const compile = commands.findIndex((command) => command.includes('tsc -p tsconfig.electron.json'))
+    const check = commands.findIndex((command) => /acceleration-nodes\.cjs check\b/.test(command))
+    const stage = commands.findIndex((command) => command.includes('prepare-acceleration-bundle.cjs'))
+    assert.ok(compile >= 0 && compile < check && check < stage, name)
+    const step = releaseWorkflow.jobs[name].steps[check]
+    assert.equal(/secrets\./.test(JSON.stringify(step)), false, name)
+    assert.doesNotMatch(commands[check], /\$\{\{/, name)
+  }
+})
 
 test('only the approved publish job holds credentials, and only for main', () => {
   const { preview, publish } = workflow.jobs

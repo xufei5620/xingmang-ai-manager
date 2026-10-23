@@ -106,7 +106,7 @@ Windows 走 `release:build:unsigned`，并用 `XINGMANG_ACCELERATION_BUNDLE_DIR`
 
 要退回安装包自带的节点，第 2 步选 `withdraw`。**不要直接删线上的文件**：客户端读不到时会接着用记下的那份。
 
-**要注意的一条**：线上发过节点以后，客户端记下的在线节点比安装包里的优先，就算新版安装包里已经换了节点也一样。所以改了仓库里的节点、合进 main，就跑一次 `acceleration-nodes`，让线上那份跟仓库一致。发版不会替你做这一步。
+**要注意的一条**：线上发过节点以后，客户端记下的在线节点比安装包里的优先，就算新版安装包里已经换了节点也一样。所以改了仓库里的节点、合进 main，就跑一次 `acceleration-nodes`，让线上那份跟仓库一致。发版不会替你做这一步，但会拦着（#1359）：`publish-release` 的 Windows、Mac 出包作业在准备加速资源之前跑 `node scripts/acceleration-nodes.cjs check`，线上那份客户端会用、又跟这次装进安装包的不一样，就停下并提示先跑 `acceleration-nodes`（publish 或 withdraw），跑完再重跑发版。线上没有、撤回过、客户端不收的那份都放行；读不到线上那份（404 以外）也停下，跟发布前别的检查一个口径（#493）。
 
 publish 作业跟 `publish-release`、`rollback-release`、`service-status` 共用 `update-feed` 并发组（#492），凭据和批准都在 release 环境。
 
