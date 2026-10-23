@@ -88,7 +88,7 @@ export interface XingmangAiSkillSyncResult {
   reason?: string
   directoryWarnings?: string[]
   /**
-   * 星芒画图没登记上的原始原因（不带「星芒画图工具未登记」前缀，也已并在 directoryWarnings 里进日志）。
+   * 星芒画图没登记上的原始原因（不带「images 工具未登记」前缀，也已并在 directoryWarnings 里进日志）。
    * 单独留一份，是让界面能换成客户看得懂的一句话；缺省 = 登记成功或这次没登记。
    */
   imageMcpWarnings?: string[]
@@ -1145,7 +1145,7 @@ export async function syncXingmangAiSkill(
         officialCodex: options.officialCodex === true,
       })
     }
-    warnings.push(...imageMcpWarnings.map((warning) => `星芒画图工具未登记：${warning}`))
+    warnings.push(...imageMcpWarnings.map((warning) => `images 工具未登记：${warning}`))
   }
   return {
     ready: true,
@@ -1179,11 +1179,11 @@ function delay(milliseconds: number): Promise<void> {
 export function describeImageMcpWarnings(warnings: readonly string[]): string | undefined {
   if (!warnings.length) return undefined
   if (warnings.includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)) {
-    return '星芒画图还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    return 'images 还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
   }
   const tools = providerIds.filter((provider) => warnings.some((warning) => warning.startsWith(`${provider}：`)))
   const where = tools.length ? tools.map((provider) => cliCatalog[provider].name).join('、') : 'AI 工具'
-  return `星芒画图还没装进 ${where}：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。`
+  return `images 还没装进 ${where}：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。`
 }
 
 /**

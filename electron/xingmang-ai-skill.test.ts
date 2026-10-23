@@ -402,7 +402,7 @@ describe('xingmang-ai-skill', () => {
     const shared = resolveXingmangAiSkillDirectories(userHome)[0]
     expect(syncImageMcp).toHaveBeenCalledWith({ skillDirectory: shared, officialCodex: false })
     expect(await readFile(path.join(shared, 'scripts', 'mcp-server.mjs'), 'utf8')).toContain('generate_image')
-    expect(result.directoryWarnings).toEqual(['星芒画图工具未登记：grok：配置读不懂'])
+    expect(result.directoryWarnings).toEqual(['images 工具未登记：grok：配置读不懂'])
     expect(result.imageMcpWarnings).toEqual(['grok：配置读不懂'])
     expect(result.ready).toBe(true)
   })
@@ -1392,7 +1392,7 @@ describe('describeImageMcpWarnings', () => {
   })
 
   it('falls back to a generic sentence when no tool is named', () => {
-    expect(describeImageMcpWarnings(['写入失败'])).toContain('星芒画图还没装进 AI 工具')
+    expect(describeImageMcpWarnings(['写入失败'])).toContain('images 还没装进 AI 工具')
   })
 })
 

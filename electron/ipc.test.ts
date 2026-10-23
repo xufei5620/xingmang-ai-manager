@@ -1338,7 +1338,7 @@ describe('registerIpcHandlers', () => {
       // The renderer only knows why from this flag, and drops the line while Node.js reads optional.
       expect(summary.imageMcpNeedsNode).toBe(true)
       expect(summary.imageSkillWarning).toBeUndefined()
-      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `星芒画图工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `images 工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
