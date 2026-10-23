@@ -74,8 +74,7 @@ function WeekSpend({ days, totalUsd }: { days: Array<{ start: number; label: str
         {days.map((day, index) => (
           <div key={day.start} className={`v2-acct-week-col${index === last ? ' is-today' : ''}`} title={spendDayTitle(day, dollars(day.usd))}>
             <div className="v2-acct-week-track">
-              {index === last && <em style={{ bottom: `calc(${heights[index]}% + 4px)` }}>{dollars(day.usd)}</em>}
-              <i style={{ height: `${heights[index]}%` }} />
+              <i style={{ height: `${heights[index]}%` }}>{index === last && <em>{dollars(day.usd)}</em>}</i>
             </div>
             <span>{day.label}</span>
           </div>

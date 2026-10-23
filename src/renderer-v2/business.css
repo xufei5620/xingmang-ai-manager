@@ -937,10 +937,11 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-acct-week-head > b { margin-left: auto; color: var(--text-2); font: 500 var(--font-small) var(--mono); }
 .v2-acct-week-bars { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; height: 74px; margin-top: 8px; }
 .v2-acct-week-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
-.v2-acct-week-track { position: relative; display: flex; flex: 1; align-items: flex-end; width: 100%; }
-.v2-acct-week-track > i { display: block; width: 100%; min-height: 0; border-radius: 3px 3px 1px 1px; background: var(--track); }
+/* 同首页：柱子那一格顶上留出今天金额那一行。 */
+.v2-acct-week-track { display: flex; flex: 1; align-items: flex-end; width: 100%; padding-top: 15px; }
+.v2-acct-week-track > i { position: relative; display: block; width: 100%; min-height: 0; border-radius: 3px 3px 1px 1px; background: var(--track); }
 .v2-acct-week-col.is-today .v2-acct-week-track > i { background: var(--fill); }
-.v2-acct-week-track > em { position: absolute; left: 50%; transform: translateX(-50%); color: var(--num); font: 500 11px var(--mono); font-style: normal; white-space: nowrap; }
+.v2-acct-week-track > i > em { position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); color: var(--num); font: 500 11px/1 var(--mono); font-style: normal; white-space: nowrap; }
 .v2-acct-week-col > span { color: var(--text-3); font-size: 11px; }
 .v2-acct-week-col.is-today > span { color: var(--text); font-weight: 500; }
 .v2-acct-session { flex-direction: row; align-items: center; gap: 14px; margin-top: 14px; padding: 14px 16px; }
