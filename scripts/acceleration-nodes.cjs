@@ -13,7 +13,7 @@
 //
 //   check [--summary <文件>]
 //     发版前跑（publish-release 的两个出包作业）：自己去读线上那份，客户端会用它、它又跟仓库里这次要装进
-//     安装包的节点不一样，就报错停下。不签名，不需要私钥。为什么要这一道见 checkReleaseAgainstLive。
+//     安装包的节点不一样，或者客户端不收它，就报错停下。不签名，不需要私钥。为什么要这一道见 checkReleaseAgainstLive。
 //
 // 只发仓库里固定了 SHA-256 的那份节点：工作流的输入里没有节点和密码，换节点先走一次 PR，节点改了什么在
 // PR 里看得到。--withdraw 发一份签过名的「撤回」，客户端读到后改用安装包自带的节点；直接删掉线上的文件
@@ -116,13 +116,20 @@ function planAccelerationNodes({ withdraw = false, profileSource, currentText = 
  * 发版前那道关（#1359）：线上有一份客户端会用的在线节点（签名对、没撤回），跟仓库里这次要装进安装包的又不一样，
  * 就不让出包。客户端记下过在线节点以后一直优先用它（electron/acceleration-worker-profile.ts），新版安装包换了
  * 节点也用不上：改了 profile.yaml 发了版、忘了跑 acceleration-nodes，记下过旧节点的老客户就一直连旧节点，
- * 旧节点要是已经不通，他们的加速就断了，新装的客户却正常，很难查。线上没有、撤回过、客户端不收的那份都放行：
- * 那几种客户端用的本来就是安装包自带的。
+ * 旧节点要是已经不通，他们的加速就断了，新装的客户却正常，很难查。
+ *
+ * 线上那份客户端不收（签名不对、格式坏了）也停下：客户端读到不收的那份不会丢掉记下的，记下过旧节点的照旧用旧的，
+ * 这时安全的状态只有「一份跟包里一样的」或者「一份新的撤回」。只有线上没有这个文件（404）和撤回过放行：404
+ * 分不出「没发布过」和「发布过又被删了」，而在线节点上线前每次发版都是 404，拦它就一版都发不出去；删文件本来
+ * 就不是撤回的办法（文件头），撤回走 --withdraw。
  */
 function checkReleaseAgainstLive({ profileSource, currentText = null, runtime, pinnedKeys }) {
   const live = inspectLive(currentText, runtime, pinnedKeys)
-  if (live.state === 'missing') return ['- 在线加速节点：线上还没发布过，客户端都用安装包自带的。']
-  if (live.state === 'rejected') return [`- 在线加速节点：线上那份没通过客户端的校验（${live.reason}），客户端不会用它。`]
+  if (live.state === 'missing') return ['- 在线加速节点：线上没有这个文件，按没发布过处理，客户端用安装包自带的。']
+  if (live.state === 'rejected') {
+    throw new AccelerationNodesError(`线上的在线加速节点文件客户端不收（${live.reason}），记下过旧节点的客户端会接着用旧的，新版安装包里的节点用不上。`
+      + '先在 Actions 里跑一次 acceleration-nodes（publish）把线上那份换成仓库里现在的节点，再重跑发版。')
+  }
   if (live.profile === null) return [`- 在线加速节点：${beijingTime(live.issuedAt)}撤回过，客户端都用安装包自带的。`]
   const projected = projectAccelerationProfileSource(runtime.parser.parseClashAccelerationProfile(profileSource))
   if (live.source !== projected) {
@@ -163,7 +170,7 @@ async function fetchLiveDocument(url, fetchImpl = globalThis.fetch) {
   try {
     for await (const chunk of response.body ?? []) {
       total += chunk.byteLength
-      // 超过上限的不是节点文件，客户端也不收；当成「客户端不收的那份」，照常放行。
+      // 超过上限的不是节点文件，客户端也不收；当成「客户端不收的那份」，由 checkReleaseAgainstLive 拦下。
       if (total > MAX_DOCUMENT_BYTES) return 'not a node list'
       chunks.push(Buffer.from(chunk))
     }

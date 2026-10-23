@@ -143,10 +143,18 @@ test('a release stops when the live online nodes would override the nodes it bun
 
 test('a release goes ahead when clients fall back to the nodes it bundles anyway', () => {
   const source = readRepositoryProfile()
-  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: null, runtime, pinnedKeys }).join('\n'), /还没发布过/)
+  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: null, runtime, pinnedKeys }).join('\n'), /按没发布过处理/)
   assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: liveDocument({ profile: null }), runtime, pinnedKeys }).join('\n'), /撤回过/)
-  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: liveDocument({ privateKey: keyPair().privateKey }), runtime, pinnedKeys }).join('\n'), /没通过客户端的校验（signature）/)
-  assert.match(checkReleaseAgainstLive({ profileSource: source, currentText: 'not a node list', runtime, pinnedKeys }).join('\n'), /没通过客户端的校验（malformed）/)
+})
+
+// A client that already keeps a copy ignores a live file it rejects, so old nodes would stay in use.
+test('a release stops when clients would reject the live file and keep whatever they stored', () => {
+  const source = readRepositoryProfile()
+  for (const [currentText, reason] of [[liveDocument({ privateKey: keyPair().privateKey }), 'signature'], ['not a node list', 'malformed']]) {
+    assert.throws(() => checkReleaseAgainstLive({ profileSource: source, currentText, runtime, pinnedKeys }),
+      (error) => error instanceof AccelerationNodesError && error.message.includes(`客户端不收（${reason}）`) && /acceleration-nodes（publish）/.test(error.message)
+        && !error.message.includes('old-secret') && !error.message.includes('old.example.test'))
+  }
 })
 
 function liveResponse(status, body = '', headers = {}) {
