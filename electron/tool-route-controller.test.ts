@@ -70,6 +70,7 @@ interface FakeTimer {
 
 interface HarnessOptions {
   preference?: RelayRoutePreference
+  /** Defaults to a machine that already settled on Los Angeles; null is a fresh install. */
   stored?: ToolRouteStoredState | null
   legacy?: RelayRouteConclusions
   status?: RouteStatus | null
@@ -94,7 +95,7 @@ function harness(options: HarnessOptions = {}) {
   const routeStatus = { current: options.status === undefined ? null : options.status }
   const controller = createToolRouteController({
     preference: options.preference ?? 'auto',
-    readState: () => options.stored ?? null,
+    readState: () => options.stored === undefined ? { line: 'direct', failures: {}, notices: {} } : options.stored,
     writeState: async (value) => { writes.push(value) },
     readLegacyConclusions: () => options.legacy ?? { lines: {}, changes: {} },
     probe: async (line) => {
@@ -173,6 +174,7 @@ describe('tool route controller', () => {
 
   it('takes the app line conclusion on the first run after upgrading and does not pull a recent fallback back to Los Angeles', async () => {
     const run = harness({
+      stored: null,
       legacy: {
         lines: { solov: 'primary' },
         changes: { solov: { from: 'direct', to: 'primary', reason: 'health-failed', at: startedAt - hourMs } },
@@ -188,6 +190,7 @@ describe('tool route controller', () => {
 
     // 两条一起查时当场换下来的（#1053）一样算洛杉矶刚没连上过。
     const onTheSpot = harness({
+      stored: null,
       legacy: {
         lines: { solov: 'primary' },
         changes: { solov: { from: 'direct', to: 'primary', reason: 'line-down', trigger: 'network', at: startedAt - hourMs } },
@@ -199,14 +202,70 @@ describe('tool route controller', () => {
 
   it('ignores an old app line change and defaults to Los Angeles without any conclusion', async () => {
     const old = harness({
+      stored: null,
       legacy: { lines: { solov: 'primary' }, changes: { solov: { from: 'direct', to: 'primary', reason: 'health-failed', at: startedAt - 8 * dayMs } } },
     })
     await settle()
     expect(old.writes[0]).toEqual({ line: 'primary', failures: {}, notices: {} })
-    const fresh = harness()
+    const fresh = harness({ stored: null })
     expect(fresh.controller.line()).toBe('direct')
     await settle()
-    expect(fresh.writes[0]).toEqual({ line: 'direct', failures: {}, notices: {} })
+    // Nothing checked yet, so nothing is stored: quitting now leaves the next launch a fresh install too (#963).
+    expect(fresh.writes).toEqual([])
+    fresh.controller.start()
+    await settle()
+    expect(fresh.probes).toEqual(['direct'])
+    expect(fresh.writes).toEqual([{ line: 'direct', failures: {}, notices: {} }])
+    expect(fresh.controller.snapshot().lastChange).toBeNull()
+  })
+
+  it('falls back to CF on the first failure on a fresh install when CF answers', async () => {
+    const run = harness({ stored: null })
+    run.results.direct = fail('timeout')
+    run.controller.start()
+    await settle()
+    expect(run.probes).toEqual(['direct', 'primary'])
+    expect(run.controller.line()).toBe('primary')
+    expect(run.controller.snapshot().lastChange).toMatchObject({ from: 'direct', to: 'primary', reason: 'failed', trigger: 'startup' })
+    expect(run.writes).toEqual([expect.objectContaining({ line: 'primary', failures: { direct: [startedAt] } })])
+    expect(run.notices).toEqual([])
+  })
+
+  it('keeps checking at the usual pace without a notice while both lines are down on a fresh install', async () => {
+    const run = harness({ stored: null })
+    run.results.direct = fail('dns', [])
+    run.results.primary = fail('dns', [])
+    run.controller.start()
+    await settle()
+    expect(run.controller.line()).toBe('direct')
+    expect(run.controller.snapshot().outage).toBeNull()
+    expect(run.pendingDelays()[0]).toBe(toolRouteFailureProbeGapMs)
+    await run.fireNext()
+    expect(run.notices).toEqual([])
+    await run.fireNext()
+    // Three rounds down, as before the fresh-install shortcut: now it is a real outage.
+    expect(run.controller.snapshot().outage).toMatchObject({ reason: 'dns' })
+    expect(run.notices).toEqual([{ kind: 'outage', reason: 'dns' }])
+    expect(run.probes.filter((line) => line === 'primary')).toHaveLength(3)
+
+    // Still no conclusion, so CF answering on the next round switches straight away.
+    run.results.primary = pass([cloudflare])
+    await run.fireNext()
+    expect(run.controller.line()).toBe('primary')
+    expect(run.controller.snapshot().outage).toBeNull()
+  })
+
+  it('waits for three failed rounds again once a fresh install has a conclusion', async () => {
+    const run = harness({ stored: null })
+    run.controller.start()
+    await settle()
+    expect(run.writes).toHaveLength(1)
+    run.results.direct = fail('timeout')
+    run.controller.recheck('manual')
+    await settle()
+    expect(run.controller.line()).toBe('direct')
+    expect(run.probes).toEqual(['direct', 'direct'])
+    expect(run.pendingDelays()[0]).toBe(toolRouteFailureProbeGapMs)
   })
 
   it('downgrades to CF after three failed rounds fifteen seconds apart when the status file is unavailable', async () => {
