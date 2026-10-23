@@ -1942,6 +1942,35 @@ test('home shows the last usage right away instead of asking the account backend
   } finally { await page.close() }
 })
 
+// #1362 第 1 条：今天花得最多时，今天那根柱子最高，柱顶上的金额以前顶到「近 7 天花费」那一行，跟七天合计叠在一起。
+// 测试数据里今天就是最多的那天。
+test('today\'s amount above the tallest bar stays clear of the 7-day total on home and the account overview', async () => {
+  const page = await open()
+  async function chart(scope, head, bar) {
+    return page.evaluate(([scopeSelector, headSelector, barSelector]) => {
+      const root = document.querySelector(scopeSelector)
+      const rect = (element) => { const { left, right, top, bottom } = element.getBoundingClientRect(); return { left, right, top, bottom } }
+      const bars = [...root.querySelectorAll(barSelector)]
+      return { total: rect(root.querySelector(headSelector)), amount: rect(root.querySelector('em')), bars: bars.map((element) => element.getBoundingClientRect().height), today: rect(bars.at(-1)) }
+    }, [scope, head, bar])
+  }
+  function apart(a, b) { return a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top }
+  try {
+    for (const [name, scope, head, bar] of [
+      ['home', '[data-testid="home-week-spend"]', '.v2-home-week-head > b', '.v2-home-week-bar > i'],
+      ['account overview', '[data-testid="account-overview-week"]', '.v2-acct-week-head > b', '.v2-acct-week-track > i'],
+    ]) {
+      if (name === 'account overview') await page.getByTestId('sidebar-account-open').click()
+      await page.locator(`${scope} em`).waitFor()
+      const { total, amount, bars, today } = await chart(scope, head, bar)
+      assert.equal(Math.max(...bars), bars.at(-1), `${name}: today is the tallest bar in the fixture`)
+      assert.ok(apart(total, amount), `${name}: today's amount ${JSON.stringify(amount)} clears the total ${JSON.stringify(total)}`)
+      assert.ok(amount.bottom <= today.top, `${name}: today's amount sits above its bar (${amount.bottom} / ${today.top})`)
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('archiving a session on the sessions page refreshes the home recent card right away', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&sessionArchive=1')
   const homeReads = () => page.evaluate(() => window.v2Test.calls

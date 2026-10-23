@@ -75,11 +75,12 @@
 .v2-home-week-head > b { color: var(--text-2); font-size: var(--font-small-compact); font-weight: 600; font-variant-numeric: tabular-nums; }
 .v2-home-week-bars { display: grid; flex: 1; grid-template-columns: repeat(7, minmax(0, 1fr)); margin-top: 10px; }
 .v2-home-week-day { display: grid; grid-template-rows: minmax(64px, 1fr) auto; row-gap: 7px; min-width: 0; }
-.v2-home-week-bar { position: relative; display: flex; align-items: flex-end; justify-content: center; box-shadow: 0 1px 0 var(--line); }
-.v2-home-week-bar > i { display: block; width: 46%; max-width: 16px; min-height: 2px; border-radius: 4px 4px 1px 1px; background: color-mix(in srgb, var(--text-3) 28%, transparent); transition: background var(--duration-fast) var(--ease-standard); }
+/* 今天的金额挂在柱顶上：柱子那一格顶上留出这一行，最高的柱子也碰不到上面的七天合计（#1362 第 1 条）。 */
+.v2-home-week-bar { position: relative; display: flex; align-items: flex-end; justify-content: center; padding-top: 17px; box-shadow: 0 1px 0 var(--line); }
+.v2-home-week-bar > i { position: relative; display: block; width: 46%; max-width: 16px; min-height: 2px; border-radius: 4px 4px 1px 1px; background: color-mix(in srgb, var(--text-3) 28%, transparent); transition: background var(--duration-fast) var(--ease-standard); }
 .v2-home-week-day:hover .v2-home-week-bar > i { background: color-mix(in srgb, var(--text-3) 45%, transparent); }
 .v2-home-week-day.is-today .v2-home-week-bar > i { background: linear-gradient(180deg, var(--gold), color-mix(in srgb, var(--gold) 60%, transparent)); }
-.v2-home-week-bar > em { position: absolute; left: 50%; transform: translateX(-50%); color: var(--gold-tx); font-size: 11.5px; font-style: normal; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.v2-home-week-bar > i > em { position: absolute; bottom: calc(100% + 5px); left: 50%; transform: translateX(-50%); color: var(--gold-tx); font-size: 11.5px; font-style: normal; font-weight: 600; line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .v2-home-week-day > span { color: var(--text-3); font-size: 11.5px; line-height: 1; text-align: center; }
 .v2-home-week-day.is-today > span { color: var(--gold-tx); font-weight: 600; }
 /* 工具卡片：一行按窗口宽度放得下几张就放几张，不另设断点。 */
