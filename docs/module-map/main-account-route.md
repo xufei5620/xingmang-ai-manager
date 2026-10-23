@@ -20,7 +20,7 @@
 - `relay-line-fetch.ts` — 包在 fetch 外面，把星芒自己的请求（账号、余额、AI 对话/画图/视频）换到当前线路的地址。调用方照旧按线路1 写死地址，所以 `sub2api-relay-backend.ts` 不用改。选「自动」时，网络层失败就当场换另一条重发一次，规则分三种：会改数据的请求（下单、建密钥、AI 生成）只在肯定没送到服务器时才重发，防止重复扣费；只读请求等 4 秒还没回应头，就在另一条上并发一次；失败只报给控制器去查，不直接改线路。`createRelayObservedFetch` 给写配置前查模型、做自检用：不换地址，不重发，只上报
 
 ## 工具线路（只有星芒账号，写进 AI 工具配置的那条）
-- `tool-route-controller.ts` — **工具线路控制器**（xm 三线路）。候选按优先级排：洛杉矶 `direct` → 香港 `direct-hk`（占位，永远选不上，也不进 `RelayEndpointId`、设置、IPC 和落盘）→ CF `primary`。降级条件是连续 3 轮不通，或判成劫持 1 次；服务端说在处理整体故障时，先等 5 分钟。回升的冷却期按 7 天内的失败次数定（0 / 1 / 6 / 24 小时）。它和应用线路分开管，因为管理工具走 Chromium 连得上，不等于 Node 里跑的命令行工具也连得上。状态单独存在 `tool-route-state.json`，不碰老版本还要读的 `relay-route-lines.json`
+- `tool-route-controller.ts` — **工具线路控制器**（xm 三线路）。候选按优先级排：洛杉矶 `direct` → 香港 `direct-hk`（占位，永远选不上，也不进 `RelayEndpointId`、设置、IPC 和落盘）→ CF `primary`。降级条件是连续 3 轮不通，或判成劫持 1 次（全新安装还没查出结论时，第一次没通、CF 通了就切，查出结论前不落盘，#963）；服务端说在处理整体故障时，先等 5 分钟。回升的冷却期按 7 天内的失败次数定（0 / 1 / 6 / 24 小时）。它和应用线路分开管，因为管理工具走 Chromium 连得上，不等于 Node 里跑的命令行工具也连得上。状态单独存在 `tool-route-state.json`，不碰老版本还要读的 `relay-route-lines.json`
 - `tool-route-probe.ts` — 工具线路的探测：一条线路要在工具实际会走的每条路径上都通才算通，路径包括无代理、系统代理和各处设的 HTTPS_PROXY / ALL_PROXY。哪条线路都不能全通时，以无代理路径为准。底层探测在 `tool-path-probe.ts`
 - `route-failure-classifier.ts` — 探测没通时贴标签：normal / proxy / unknown / hijack。IP 只用来解释原因，不用来判通不通。CF 线路对照 Cloudflare 公布的地址段；fake-ip 和私网地址算本机代理接管；状态文件读不到一律算 unknown，不判劫持
 - `route-status-file.ts` — 读服务端发布的线路状态文件 `/xm-route-status.json`，里面有：各直连域名指向哪台入口、有没有被切到 CF、合法 IP、是否在处理故障、香港开没开。它只经应用线路、按本站线路自己的 origin 显式去读（不去退役别名），照 I10 做了超时、16KB 上限、不跟重定向。读不到不算线路失败，结果缓存 10 分钟。注意和更新目录里的 `service-status.json` 是两份文件
