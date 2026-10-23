@@ -8780,6 +8780,40 @@ test('a sidebar floated open from the keyboard keeps focus on its toggle and fol
   } finally { await page.close() }
 })
 
+// #1361：窄条图标的名字提示以前冒在图标正下方、还接鼠标，正好盖住下一个图标的大半截；鼠标从「首页」挪到「聊天」
+// 点下去，点到的是「首页」的提示，页面不动。照 v4 原型改成冒在图标右边、不接鼠标。
+test('a rail icon names itself beside the rail, so moving down to the next icon clicks that icon', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1092, height: 820 })
+    await page.getByTestId('page-home').waitFor()
+    await expect.poll(() => page.locator('.v2-shell').getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    const sidebar = await box(page, '[data-testid="sidebar"]')
+    const home = await box(page, '[data-testid="nav-home"]')
+    const chat = await box(page, '[data-testid="nav-chat"]')
+    await page.mouse.move(home.left + home.width / 2, (home.top + home.bottom) / 2)
+    const tip = page.getByRole('tooltip')
+    await expect(tip).toHaveText('首页')
+    await expect(tip).toBeVisible()
+    const placed = await tip.evaluate((element) => {
+      const { left, top, bottom } = element.getBoundingClientRect()
+      return { left, top, bottom, pointerEvents: getComputedStyle(element).pointerEvents }
+    })
+    assert.ok(placed.left >= sidebar.right, `the tip sits beside the rail (${placed.left} / ${sidebar.right})`)
+    assert.ok(placed.top < home.bottom && placed.bottom > home.top, `the tip is level with its icon (${placed.top}-${placed.bottom} / ${home.top}-${home.bottom})`)
+    assert.equal(placed.pointerEvents, 'none')
+    // 跟客户一样一路往下挪，不先挪开再回来。
+    const target = { x: chat.left + chat.width / 2, y: (chat.top + chat.bottom) / 2 }
+    await page.mouse.move(target.x, target.y, { steps: 8 })
+    assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-testid]')?.getAttribute('data-testid'), target), 'nav-chat')
+    await expect(page.getByRole('tooltip')).toHaveText('聊天')
+    await page.mouse.down()
+    await page.mouse.up()
+    await page.getByTestId('page-chat').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // #1349 第 1 条：顶栏整条是拖动区，Electron 把那里的鼠标按下交给系统拖窗口，页面收不到 pointerdown、焦点也不动，
 // 浮着的侧栏点顶栏空白处收不回。无头 Chromium 不认拖动区，这里钉的是样式：浮着时侧栏外面一处拖动区都没有，
 // 收回、拉宽以后顶栏照常能拖。真机上点顶栏能不能收，以真机为准。
