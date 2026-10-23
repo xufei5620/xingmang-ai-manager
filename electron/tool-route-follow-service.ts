@@ -185,9 +185,9 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
         baseUrl: new URL(site.providerBaseUrls.claude).origin,
         ownedKeyIds: await toolRouteAccount.ownedKeyIds(),
       })
-      if (rewritten) runtimeLog?.log('info', 'config', 'route.followed', '星芒画图的连接地址已换到当前线路', { provider: 'skill', kind: 'tool', count: rewritten, mode: 'targeted' })
+      if (rewritten) runtimeLog?.log('info', 'config', 'route.followed', 'images 的连接地址已换到当前线路', { provider: 'skill', kind: 'tool', count: rewritten, mode: 'targeted' })
     } catch (error) {
-      runtimeLog?.log('warn', 'config', 'route.follow-failed', '星芒画图的连接地址这次没换成', { provider: 'skill', kind: 'tool', reason: credentialFailureReason(error) })
+      runtimeLog?.log('warn', 'config', 'route.follow-failed', 'images 的连接地址这次没换成', { provider: 'skill', kind: 'tool', reason: credentialFailureReason(error) })
     }
   }
 

@@ -1732,7 +1732,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
   })
 
   describe('drawing notice that asks for the runtime', () => {
-    const drawing = '星芒画图还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    const drawing = 'images 还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
     function bootstrap(overrides: Partial<AccountBootstrapResult> = {}): NonNullable<HomeProps['bootstrap']> {
       return {
         phase: 'verifying', label: 'Key 同步完成', percent: 100, scope: 'scope',
@@ -1745,7 +1745,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
       for (const platform of ['windows', 'macos'] as const) {
         const markup = render({}, undefined, { snapshot: machine(platform), bootstrap: bootstrap(), onBootstrapRetry: () => undefined })
         expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('可选 · 未装')
-        expect(markup).not.toContain('星芒画图')
+        expect(markup).not.toContain(drawing)
         expect(markup).not.toContain('账号 Key 已同步')
         expect(markup).not.toContain('>重新同步<')
       }
@@ -1758,7 +1758,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
         onBootstrapRetry: () => undefined,
       })
       expect(markup).toContain('本机加密缓存：fixture')
-      expect(markup).not.toContain('星芒画图')
+      expect(markup).not.toContain(drawing)
       expect(bootstrapNoticeExpiresAt({ ...bootstrap({ configured: ['claude'] }), finishedAt: 1_000 })).not.toBeNull()
     })
 
@@ -1779,7 +1779,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     it('does not show up halfway through installing a tool', () => {
       const job = { label: '正在准备 Node.js 运行环境（1/2）', log: [] } as unknown as ToolJob
       const markup = render({ claude: job }, undefined, { snapshot: machine('windows'), bootstrap: bootstrap() })
-      expect(markup).not.toContain('星芒画图')
+      expect(markup).not.toContain(drawing)
     })
   })
 
