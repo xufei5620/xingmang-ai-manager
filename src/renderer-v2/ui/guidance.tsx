@@ -15,7 +15,13 @@ function visibleBounds(element: HTMLElement | null): DOMRect | null {
   return rect
 }
 
-export function Tooltip({ text, children, testId }: BaseProps & { text: string; children: ReactNode }) {
+// Below by default. Rail items ask for beside instead: below lands on the next
+// icon, so moving down the rail would click the tip rather than that icon. The
+// rail tip only repeats the button's own name, so it also lets the pointer
+// through and goes the moment the pointer leaves (v4 原型 `.rail [data-tip]`).
+export type TooltipPlacement = 'below' | 'right'
+
+export function Tooltip({ text, children, testId, placement = 'below' }: BaseProps & { text: string; children: ReactNode; placement?: TooltipPlacement }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<CSSProperties>({ visibility: 'hidden' })
   const anchor = useRef<HTMLSpanElement>(null)
@@ -23,7 +29,7 @@ export function Tooltip({ text, children, testId }: BaseProps & { text: string; 
   const id = useId()
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   function show() { clearTimeout(timer.current); setOpen(true) }
-  function hide() { clearTimeout(timer.current); timer.current = setTimeout(() => setOpen(false), 100) }
+  function hide() { clearTimeout(timer.current); if (placement === 'right') setOpen(false); else timer.current = setTimeout(() => setOpen(false), 100) }
   useEffect(() => () => clearTimeout(timer.current), [])
   useLayoutEffect(() => {
     const element = panel.current
@@ -37,6 +43,11 @@ export function Tooltip({ text, children, testId }: BaseProps & { text: string; 
       const rect = visibleBounds(trigger)
       if (!rect) { setOpen(false); return }
       const panelRect = element.getBoundingClientRect()
+      if (placement === 'right') {
+        const top = Math.max(8, Math.min(rect.top + (rect.height - panelRect.height) / 2, innerHeight - panelRect.height - 8))
+        setPosition({ top, left: Math.max(8, Math.min(rect.right + 10, innerWidth - panelRect.width - 8)), visibility: 'visible' })
+        return
+      }
       const top = rect.bottom + panelRect.height + 8 < innerHeight ? rect.bottom + 8 : Math.max(8, rect.top - panelRect.height - 8)
       setPosition({ top, left: Math.max(8, Math.min(rect.left, innerWidth - panelRect.width - 8)), visibility: 'visible' })
     }
@@ -50,9 +61,9 @@ export function Tooltip({ text, children, testId }: BaseProps & { text: string; 
       window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place)
       document.removeEventListener('keydown', escape, true)
     }
-  }, [open, id])
+  }, [open, id, placement])
   return <span className="xm-tooltip-anchor" ref={anchor} onMouseEnter={show} onMouseLeave={hide} onFocusCapture={show} onBlurCapture={hide} data-testid={testId}>
-    {children}{open && <div id={id} ref={panel} role="tooltip" className="xm-tooltip-panel" style={position} onMouseEnter={show} onMouseLeave={hide}>{text}</div>}
+    {children}{open && <div id={id} ref={panel} role="tooltip" className="xm-tooltip-panel" data-placement={placement} style={position} onMouseEnter={show} onMouseLeave={hide}>{text}</div>}
   </span>
 }
 

@@ -388,7 +388,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     return entry === 'recharge' ? account.supportsBilling !== false : adapter.pageVisible?.(entry) ?? true
   }
   function railTip(label: string, button: ReactNode, key: string) {
-    return rail ? <Tooltip key={key} text={label}>{button}</Tooltip> : button
+    return rail ? <Tooltip key={key} text={label} placement="right">{button}</Tooltip> : button
   }
   function navButton(id: PageId) {
     const definition = pageRegistry.find((page) => page.id === id)!
