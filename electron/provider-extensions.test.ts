@@ -567,7 +567,32 @@ describe('ProviderExtensionService list facade', () => {
       'Agents Project',
     ]))
     expect(skillNames('claude')).toContain('Claude User')
-    expect(skillNames('grok')).toContain('Grok User')
+    expect(skillNames('grok')).toEqual(expect.arrayContaining(['Grok User', 'Agents User']))
+  })
+
+  it('lists Grok skills from ~/.agents/skills once per name, preferring the ~/.grok copy', async () => {
+    const home = temporaryDirectory()
+    const repository = temporaryDirectory()
+    const grokImages = path.join(home, '.grok', 'skills', 'images', 'SKILL.md')
+    const sharedImages = path.join(home, '.agents', 'skills', 'images', 'SKILL.md')
+    const sharedOnly = path.join(home, '.agents', 'skills', 'shared-only', 'SKILL.md')
+    const projectReview = path.join(repository, '.grok', 'skills', 'review', 'SKILL.md')
+    write(grokImages, '---\nname: images\ndescription: Grok copy\n---\n')
+    write(sharedImages, '---\nname: images\ndescription: Shared copy\n---\n')
+    write(sharedOnly, '---\nname: shared-only\n---\n')
+    write(projectReview, '---\nname: review\n---\n')
+    write(path.join(home, '.agents', 'skills', 'review', 'SKILL.md'), '---\nname: review\n---\n')
+    const service = new ProviderExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke: async () => '[]' })
+
+    const snapshot = await service.list('grok')
+
+    const skills = snapshot.items.filter((item) => item.kind === 'skill')
+    expect(skills.map((item) => item.id).sort()).toEqual([grokImages, sharedOnly, projectReview].map((file) => path.resolve(file)).sort())
+    expect(skills.find((item) => item.name === 'images')).toMatchObject({ description: 'Grok copy', scope: 'user' })
+    expect(skills.find((item) => item.name === 'shared-only')).toMatchObject({
+      scope: 'user',
+      operations: { install: false, uninstall: false, enable: false, disable: false },
+    })
   })
 
   it('degrades an oversized local MCP config to a warning without disabling the whole list', async () => {
