@@ -1,3 +1,0 @@
-## 开发
-
-- 依赖：Electron 从 43.8.0 升到 43 线最新的 43.8.3（`package.json` 的范围抬到 `^43.8.3`，不跨大版本），`undici` 从 7.30.0 升到 7.30.1（顶层固定版本）、node-gyp 带的那份从 6.29.0 升到 6.29.1，`fast-uri`（ajv 带进来）从 3.1.8 升到 3.1.9，修掉 2026-10-24 新出的 8 条公告让 CI 构建依赖审计报红：Electron 的 GHSA-jr5w-w6x2-84p9（eMudhra 中间证书被盗用的缓解，修复版 43.8.1）；`undici` 的 GHSA-4qv8-2p9j-2685、GHSA-f72v-6w45-q472、GHSA-xjj6-f33q-929c；`fast-uri` 的 GHSA-w74x-v6f9-j3xg、GHSA-xhq7-xmqj-769h、GHSA-wjr9-j795-jxcr、GHSA-333x-w4r6-6crp。`undici` 和 `fast-uri` 只在构建和测试里用，不进安装包；Electron 是安装包里的运行时，下一版起随包带上。锁文件只改这几个包的 version / resolved / integrity（数据取自 npm 官方源），别的包没动。`canvas-v2/` 自己的锁文件 CI 不审，不碰。
