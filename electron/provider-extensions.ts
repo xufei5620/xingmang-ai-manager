@@ -9,7 +9,14 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
 import { activeProviderIds, cliCatalog, providerIds, type ProviderId } from './catalog'
-import { readCodexMcpServerEntries, readCodexSkillEnablement } from './codex-extensions'
+import {
+  copySkillImport,
+  moveSkillToTrash,
+  readCodexMcpServerEntries,
+  readCodexSkillEnablement,
+  resolveSkillImportSource,
+  skillImportTarget,
+} from './codex-extensions'
 import {
   CODEX_API_CURATED_MARKETPLACE_NAME,
   ensureCodexPluginCatalog,
@@ -19,7 +26,6 @@ import {
 import {
   cleanCommandOutput,
   commandEnvironment,
-  CommandRunnerError,
   findExecutable,
   runCommand,
   trustedCommandEnvironment,
@@ -29,6 +35,8 @@ import {
 import type { DesktopBucketOptions } from './desktop-package-bucket'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import { gitInstallGuidance } from './git-runtime'
+import { commandOutputMarker } from './extension-command-failure'
+import { commandOutputTail, withCommandOutput } from './extension-command-output'
 import {
   commandLineToolsShimNotice,
   inspectCommandLineToolsShim,
@@ -142,6 +150,11 @@ export interface ProviderExtensionItem {
 export interface ProviderExtensionCategoryCapability {
   list: boolean
   reason: string | null
+  /**
+   * 技能能不能在星芒里从文件夹导入。Claude Code、Grok CLI 才会带（见 ownSkillRoot）；
+   * 缺省 = 照旧按工具认（Codex 走它自己的导入）。
+   */
+  install?: boolean
 }
 
 export interface ProviderExtensionMarketplaceState {
@@ -303,6 +316,16 @@ export interface ProviderExtensionServiceOptions {
    * 列 Codex 不跑 `codex` 命令：外接工具照用户那份 config.toml 列，插件不列。缺省 = 按装了算，照旧跑命令。
    */
   codexCliInstalled?: () => Promise<boolean>
+  /**
+   * 启停 Codex 的外接工具（main.ts 接的是 codex-extensions.ts 的 setMcpServerEnabled）。Codex 没有启停命令，
+   * 改的是用户那份 config.toml 里那条的 enabled，只装了桌面端时照样能改。缺省 = Codex 的外接工具不给启停（旧行为）。
+   */
+  setCodexMcpServerEnabled?: (name: string, enabled: boolean) => Promise<unknown>
+  /**
+   * 星芒的回收站（main.ts 接的跟 Codex 技能同一个）。给了才让 Claude Code、Grok CLI 的技能在这里
+   * 从文件夹导入、移除；缺省 = 只能看（旧行为）。
+   */
+  skillTrashDirectory?: string
 }
 
 interface MutableExtensionItem extends ProviderExtensionItem {
@@ -446,22 +469,11 @@ function normalizeScope(
   return requested
 }
 
-// 命令失败只说「执行失败（退出码 1）」等于什么都没说，真正的原因全在命令自己的
-// 输出里。只取最后几行：这段话会直接上屏，而 CLI 失败时往往先吐一大段帮助。
-// stdout / stderr 在 CommandRunnerError 构造时已经过一道 redactCommandText（I13）。
-function commandOutputTail(error: unknown): string {
-  if (!(error instanceof CommandRunnerError)) return ''
-  const output = error.stderr.trim() || error.stdout.trim()
-  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  if (!lines.length) return ''
-  return lines.slice(-3).join(' / ').slice(0, 240)
-}
-
 function errorDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   const summary = message.replace(/\s+/g, ' ').trim().slice(0, 500) || '未知错误'
   const tail = commandOutputTail(error)
-  return tail ? `${summary}（命令输出：${tail}）` : summary
+  return tail ? `${summary}${commandOutputMarker}${tail}）` : summary
 }
 
 class UnsupportedSourceInspectionError extends Error {
@@ -486,11 +498,15 @@ function isMutationScope(value: ProviderExtensionItemScope | null): value is Pro
 
 function nativeOperations(provider: ProviderId, kind: ProviderExtensionKind): ProviderExtensionOperations {
   if (kind === 'mcp') {
+    // Grok 有 `mcp enable / disable`（1.0.52、1.0.70 实测）；Codex 没有命令，启停在 mutate 里改 config.toml。
+    // Claude Code 没有命令，它自己的「停用」只记在 ~/.claude.json 里当前项目那一份（2.1.310），换个文件夹照样启用，
+    // 跟列表上「所有项目都能用」那组对不上，这里不给。
+    const toggle = provider !== 'claude'
     return {
       install: true,
       uninstall: true,
-      enable: provider === 'gemini',
-      disable: provider === 'gemini',
+      enable: toggle,
+      disable: toggle,
       update: false,
     }
   }
@@ -728,7 +744,15 @@ async function readConfiguredMcpServers(
   return { servers: [...result.values()], warnings }
 }
 
-function mcpItem(provider: ProviderId, server: RawMcpServer): MutableExtensionItem {
+/** toggleable = false：这个工具这回不给启停（Codex 没接上改 config.toml 的那一手时）。 */
+function mcpOperations(provider: ProviderId, server: RawMcpServer, toggleable: boolean): ProviderExtensionOperations {
+  const operations = nativeOperations(provider, 'mcp')
+  // 删不到的（Codex 项目里、插件带的）也改不到：启停和移除改的是同一份用户 config.toml。
+  if (server.removable === false) return { ...operations, uninstall: false, enable: false, disable: false }
+  return toggleable ? operations : { ...operations, enable: false, disable: false }
+}
+
+function mcpItem(provider: ProviderId, server: RawMcpServer, toggleable = true): MutableExtensionItem {
   const detected = detectMcpPackageSource(server.command, server.args)
   const sourceUnknown = detected.kind === 'source-unknown'
   return {
@@ -748,9 +772,7 @@ function mcpItem(provider: ProviderId, server: RawMcpServer): MutableExtensionIt
     update: sourceUnknown
       ? defaultUpdate('source-unknown', '无法从 MCP 启动命令识别 npm、PyPI 或 Git 来源')
       : defaultUpdate('unsupported', '尚未查询远端版本'),
-    operations: server.removable === false
-      ? { ...nativeOperations(provider, 'mcp'), uninstall: false }
-      : nativeOperations(provider, 'mcp'),
+    operations: mcpOperations(provider, server, toggleable),
   }
 }
 
@@ -1023,6 +1045,44 @@ async function scanSkillDirectory(
 function pathInside(candidate: string, root: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate))
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+export type OwnSkillProvider = 'claude' | 'grok'
+
+export function isOwnSkillProvider(provider: ProviderId): provider is OwnSkillProvider {
+  return provider === 'claude' || provider === 'grok'
+}
+
+/**
+ * Claude Code、Grok CLI 自己的技能文件夹，跟 skillRoots 里它们那几层一致。导入、移除只动这里：
+ * Grok 也读的 ~/.agents/skills 是跟 Codex 共用的，在 Grok 页删了 Codex 也就没了，要去 Codex 页移除。
+ */
+export function ownSkillRoot(
+  provider: OwnSkillProvider,
+  home: string,
+  repository: string | null,
+  scope: 'user' | 'project',
+): string | null {
+  if (scope === 'user') return path.resolve(home, `.${provider}`, 'skills')
+  return repository ? path.resolve(repository, `.${provider}`, 'skills') : null
+}
+
+/** 这份 SKILL.md 是不是直接放在它自己的技能文件夹下面一层（<root>/<名字>/SKILL.md）。 */
+export function inOwnSkillRoot(
+  provider: OwnSkillProvider,
+  definitionPath: string,
+  home: string,
+  repository: string | null,
+): boolean {
+  const parent = pathKey(path.dirname(path.dirname(path.resolve(definitionPath))))
+  return (['user', 'project'] as const).some((scope) => {
+    const root = ownSkillRoot(provider, home, repository, scope)
+    return root !== null && pathKey(root) === parent
+  })
+}
+
+function pathKey(value: string): string {
+  return process.platform === 'win32' ? value.toLowerCase() : value
 }
 
 function geminiSkillScope(
@@ -1939,6 +1999,8 @@ export class ProviderExtensionService {
   private readonly platform: NodeJS.Platform
   private readonly commandLineToolsShimState: (shim: string) => Promise<CommandLineToolsShimState>
   private readonly codexCliInstalled: () => Promise<boolean>
+  private readonly setCodexMcpServerEnabled: ((name: string, enabled: boolean) => Promise<unknown>) | null
+  private readonly skillTrashDirectory: string | null
 
   constructor(options: ProviderExtensionServiceOptions = {}) {
     this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
@@ -1971,6 +2033,8 @@ export class ProviderExtensionService {
     this.platform = options.platform ?? process.platform
     this.commandLineToolsShimState = commandLineToolsShimInspector(options, env)
     this.codexCliInstalled = options.codexCliInstalled ?? (async () => true)
+    this.setCodexMcpServerEnabled = options.setCodexMcpServerEnabled ?? null
+    this.skillTrashDirectory = options.skillTrashDirectory ? path.resolve(options.skillTrashDirectory) : null
   }
 
   /**
@@ -2145,7 +2209,8 @@ export class ProviderExtensionService {
         servers = configured.servers
         warnings.push(...configured.warnings.map((warning) => `${cliCatalog[provider].name} ${warning}`))
       }
-      items.push(...servers.map((server) => mcpItem(provider, server)))
+      const toggleable = provider !== 'codex' || this.setCodexMcpServerEnabled !== null
+      items.push(...servers.map((server) => mcpItem(provider, server, toggleable)))
     } catch (error) {
       const reason = `MCP 列表读取失败：${errorDetail(error)}`
       capabilities.mcp = { list: false, reason }
@@ -2160,13 +2225,26 @@ export class ProviderExtensionService {
         })
         items.push(...parseGeminiSkillList(output, this.homeDirectory, this.repositoryRoot))
       } else {
-        items.push(...await scanSkills(
+        const skills = await scanSkills(
           provider,
           this.homeDirectory,
           this.codexHome,
           this.repositoryRoot,
           provider === 'codex' ? readCodexSkillEnablement(path.join(this.codexHome, 'config.toml')) : undefined,
-        ))
+        )
+        if (isOwnSkillProvider(provider)) {
+          const manageable = this.skillTrashDirectory !== null
+          capabilities.skill = { ...capabilities.skill, install: manageable }
+          if (manageable) {
+            for (const skill of skills) {
+              skill.operations = {
+                ...skill.operations,
+                uninstall: inOwnSkillRoot(provider, skill.id, this.homeDirectory, this.repositoryRoot),
+              }
+            }
+          }
+        }
+        items.push(...skills)
       }
     } catch (error) {
       const reason = `${provider === 'gemini' ? 'Gemini CLI Skill 状态' : 'Skill 目录'}读取失败：${errorDetail(error)}`
@@ -2363,6 +2441,8 @@ export class ProviderExtensionService {
         }
         return { argv: ['mcp', 'remove', '--scope', scope, id!], secrets: [] }
       }
+      // Codex 没有 `mcp enable / disable`，启停在 mutate 里直接改 config.toml，走不到这里；兜底不让它落成一条不存在的命令。
+      if (input.provider === 'codex') throw new Error('当前 Provider 不支持该原生操作')
       return { argv: ['mcp', input.action, id!], secrets: [] }
     }
 
@@ -2443,11 +2523,68 @@ export class ProviderExtensionService {
     return { name: safeIdentifier(item.name, 'Skill 名称'), scope }
   }
 
+  /**
+   * Codex 的外接工具启停：没有命令，交给 codex-extensions.ts 改用户那份 config.toml 里那条的 enabled（备份、排队、对账
+   * 照旧），装没装 CLI 都一样。跟移除一样只认用户那份：项目里那几层和插件带的改不到，界面不给开关，这里兜底。
+   */
+  private async toggleCodexMcpServer(
+    id: string | undefined,
+    scope: ProviderExtensionScope | undefined,
+    enabled: boolean,
+  ): Promise<ProviderExtensionsSnapshot> {
+    const name = safeIdentifier(id, '扩展 ID')
+    if (!this.setCodexMcpServerEnabled || (scope !== undefined && scope !== 'user')) {
+      throw new Error('当前 Provider 不支持该原生操作')
+    }
+    await this.setCodexMcpServerEnabled(name, enabled)
+    return this.list('codex')
+  }
+
+  /**
+   * Claude Code、Grok CLI 没有导入技能的命令，技能就是技能文件夹里的一个文件夹：导入照 Codex 那样复制进它自己的
+   * 技能文件夹，移除挪进星芒的回收站（codex-extensions.ts 同一套检查和复制，I8）。
+   */
+  private async mutateOwnSkill(
+    provider: OwnSkillProvider,
+    input: ProviderExtensionMutation,
+    repositoryRoot: string | null,
+    trashDirectory: string,
+  ): Promise<ProviderExtensionsSnapshot> {
+    if (input.action === 'install') {
+      if (input.scope !== undefined && input.scope !== 'user' && input.scope !== 'project') {
+        throw new Error('当前 Provider 不支持该原生操作')
+      }
+      const sourceDirectory = resolveSkillImportSource(input.source ?? '')
+      const root = ownSkillRoot(provider, this.homeDirectory, repositoryRoot, input.scope ?? 'user')
+      if (!root) throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
+      copySkillImport(sourceDirectory, root, skillImportTarget(sourceDirectory, root))
+    } else if (input.action === 'uninstall') {
+      if (!input.id || !path.isAbsolute(input.id)) throw new Error('Skill 路径必须是绝对路径')
+      const requested = pathKey(path.resolve(input.id))
+      // 只认这一刻真的列得出来的那份：列表之后被换成链接、搬走的，scanSkills 已经不列。
+      const skills = await scanSkills(provider, this.homeDirectory, this.codexHome, repositoryRoot)
+      const skill = skills.find((entry) => pathKey(entry.id) === requested)
+      if (!skill || !inOwnSkillRoot(provider, skill.id, this.homeDirectory, repositoryRoot)) {
+        throw new Error('Skill 路径不在受管目录中')
+      }
+      moveSkillToTrash(skill.id, trashDirectory)
+    } else {
+      throw new Error('当前 Provider 不支持该原生操作')
+    }
+    return this.list(provider)
+  }
+
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
     if (!providerIds.includes(input.provider)) throw new Error('未知的 Provider')
+    if (input.provider === 'codex' && input.kind === 'mcp' && (input.action === 'enable' || input.action === 'disable')) {
+      return this.toggleCodexMcpServer(input.id, input.scope, input.action === 'enable')
+    }
     // 选工作目录或保存设置会随时改写 this.repositoryRoot；一次操作从查找技能到
     // 执行命令必须落在同一个项目里，否则列表在 A 读、命令在 B 跑（#488）。
     const repositoryRoot = this.repositoryRoot
+    if (input.kind === 'skill' && isOwnSkillProvider(input.provider) && this.skillTrashDirectory) {
+      return this.mutateOwnSkill(input.provider, input, repositoryRoot, this.skillTrashDirectory)
+    }
     const geminiSkill = await this.resolveGeminiSkill(input, repositoryRoot)
     const { argv, secrets } = this.mutationArgv(input, geminiSkill)
     const scope = geminiSkill ? geminiSkill.scope : input.scope
@@ -2460,18 +2597,22 @@ export class ProviderExtensionService {
     if (projectBound && scope && scope !== 'user' && !repositoryRoot) {
       throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
     }
-    if (input.provider === 'claude' && input.kind === 'plugin' && input.action === 'install') {
-      await this.ensureClaudeOfficialMarketplace()
+    try {
+      if (input.provider === 'claude' && input.kind === 'plugin' && input.action === 'install') {
+        await this.ensureClaudeOfficialMarketplace()
+      }
+      await this.invoke(input.provider, argv, {
+        cwd: projectBound ? repositoryRoot ?? undefined : undefined,
+        timeoutMs: MUTATION_TIMEOUT_MS,
+        maxOutputBytes: MAX_OUTPUT_BYTES,
+        sensitiveValues: [...secrets, ...sourceCredentials(input.source), ...sourceCredentials(input.id)],
+        ...(isNetworkBoundExtensionMutation(input)
+          ? { extraEnvironment: await this.networkEnvironment() }
+          : {}),
+      })
+    } catch (error) {
+      throw withCommandOutput(error)
     }
-    await this.invoke(input.provider, argv, {
-      cwd: projectBound ? repositoryRoot ?? undefined : undefined,
-      timeoutMs: MUTATION_TIMEOUT_MS,
-      maxOutputBytes: MAX_OUTPUT_BYTES,
-      sensitiveValues: [...secrets, ...sourceCredentials(input.source), ...sourceCredentials(input.id)],
-      ...(isNetworkBoundExtensionMutation(input)
-        ? { extraEnvironment: await this.networkEnvironment() }
-        : {}),
-    })
     return this.list(input.provider)
   }
 }

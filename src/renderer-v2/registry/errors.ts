@@ -42,5 +42,8 @@ export const errors = {
   codexDesktopNotStarted: { title: 'Codex 没能打开', body: '先点「重试」；还不行就点「重置 Codex」，重置完会自动再打开一次；还是不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '重置 Codex', '找客服'] },
   pluginCatalogStuck: { title: '插件目录暂时改不动', body: '重启电脑后再试一次；还不行请联系客服。', actions: ['重试', '找客服'] },
   switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「设置 › 备份迁移」里恢复改用之前的那一份就好。', actions: ['去备份迁移', '找客服'] },
+  gitMissing: { title: '这台电脑还没装 Git', body: '装插件要用 Git。到首页「运行环境」点「安装 Git」，装好回来再点「重试」。', actions: ['重试', '找客服'] },
+  githubUnreachable: { title: '连不上 GitHub', body: '插件要从 GitHub 下载，这台电脑现在连不上它，已经装好的不受影响。换个网络（比如手机热点）再点「重试」。', actions: ['重试', '找客服'] },
+  nameTaken: { title: '已经有同名的了', body: '这个工具里已经有一个同名的。换个名字，或者先把原来那个移除，再添加。', actions: ['找客服'] },
   unknown: { title: '操作没有完成', body: '', actions: ['重试', '查看日志', '找客服'] },
 } as const;

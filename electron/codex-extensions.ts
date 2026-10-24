@@ -31,6 +31,7 @@ import {
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
 import { isCodexDesktopCliInstallation } from './codex-desktop'
+import { withCommandOutput } from './extension-command-output'
 import { tomlErrorLocation } from './toml-error-location'
 import { configBackupSuffix } from './config-file-backups'
 import {
@@ -1000,7 +1001,51 @@ function copySkillTree(sourceDirectory: string, targetDirectory: string): void {
   }
 }
 
-function moveToTrash(source: string, trashDirectory: string): string {
+/**
+ * 导入技能的来源：一个技能文件夹，或者它根部的 SKILL.md。Claude Code、Grok CLI 的技能导入
+ * （provider-extensions.ts）走的也是这三步，跟 Codex 同一套检查（I8）。
+ */
+export function resolveSkillImportSource(sourcePath: string): string {
+  if (!path.isAbsolute(sourcePath)) throw new Error('Skill 导入路径必须是绝对路径')
+  let sourceDirectory = path.resolve(sourcePath)
+  assertNoSymlinkComponents(sourceDirectory, 'Skill 导入路径')
+  const sourceStats = fs.lstatSync(sourceDirectory)
+  if (sourceStats.isSymbolicLink()) throw new Error('Skill 导入路径不能是符号链接')
+  if (sourceStats.isFile()) {
+    if (path.basename(sourceDirectory) !== 'SKILL.md') throw new Error('Skill 文件必须命名为 SKILL.md')
+    sourceDirectory = path.dirname(sourceDirectory)
+  } else if (!sourceStats.isDirectory()) {
+    throw new Error('Skill 导入路径必须是目录或 SKILL.md')
+  }
+  validateSkillTree(sourceDirectory)
+  return sourceDirectory
+}
+
+/** 技能要落到的文件夹：技能目录下跟来源同名的一层，已经有了就不导。 */
+export function skillImportTarget(sourceDirectory: string, root: string): string {
+  assertNoSymlinkComponents(root, 'Skill 受管目录')
+  const directoryName = path.basename(sourceDirectory)
+  if (!SKILL_DIRECTORY_PATTERN.test(directoryName)) throw new Error('Skill 目录名包含不支持的字符')
+  const target = path.resolve(root, directoryName)
+  if (!isWithin(root, target) || normalizedPathKey(root) === normalizedPathKey(target)) {
+    throw new Error('Skill 目标路径越界')
+  }
+  if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
+  return target
+}
+
+export function copySkillImport(sourceDirectory: string, root: string, target: string): void {
+  fs.mkdirSync(root, { recursive: true })
+  try {
+    copySkillTree(sourceDirectory, target)
+  } catch (error) {
+    if (fs.existsSync(target) && isWithin(root, target)) fs.rmSync(target, { recursive: true, force: true })
+    throw error
+  }
+}
+
+/** 移除技能是把它所在的文件夹挪进星芒自己的回收站，不直接删。source 是那份 SKILL.md。 */
+export function moveSkillToTrash(source: string, trashDirectory: string): string {
   assertNoSymlinkComponents(source, 'Skill 路径')
   assertNoSymlinkComponents(trashDirectory, '应用回收站路径')
   fs.mkdirSync(trashDirectory, { recursive: true })
@@ -1185,7 +1230,7 @@ export class CodexExtensionService {
       const reconciled = await this.listMcpServers()
       const persisted = reconciled.find((server) => server.name === name)
       if (persisted && mcpServerMatchesInput(persisted, input)) return reconciled
-      throw error
+      throw withCommandOutput(error)
     }
     const reconciled = await this.listMcpServers()
     if (!reconciled.some((server) => server.name === name)) throw new Error('MCP 配置写入后未通过 Codex 对账')
@@ -1251,6 +1296,30 @@ export class CodexExtensionService {
     return reconciled
   }
 
+  /**
+   * Codex 没有 `mcp enable / disable`：停用就是用户 config.toml 里那条写 enabled = false（0.162.1 的 mcp list 报
+   * disabled，`codex mcp add` 别的连接也不会把它冲掉）。启用时把 false 改回 true，不删这一行：只改一个值能按行改、
+   * 留住客户的注释，删键就得整份重写；Codex 读 true 和不写一样。装没装 CLI、只装了桌面端都走这里。
+   * 用户那份里没有这一条（项目里的、插件带的）就不写，交给对账：已经是要的状态算成，不是就报错。
+   */
+  async setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerDto[]> {
+    assertSimpleName(name, 'MCP 名称')
+    await this.writeConfigToml({
+      mutate: (config) => {
+        const servers = config.mcp_servers
+        const entry = isRecord(servers) ? servers[name] : undefined
+        if (!isRecord(entry) || (entry.enabled !== false) === enabled) return false
+        entry.enabled = enabled
+        return true
+      },
+      editText: (source, before, after) => editTomlTableText(source, ['mcp_servers', name], before, after),
+    })
+    const reconciled = await this.listMcpServers()
+    const server = reconciled.find((entry) => entry.name === name)
+    if (!server || server.enabled !== enabled) throw new Error('MCP 配置写入后未通过 Codex 对账')
+    return reconciled
+  }
+
   async loginMcpServer(name: string, scopes: readonly string[] = []): Promise<McpServerDto[]> {
     assertSimpleName(name, 'MCP 名称')
     const argv = ['mcp', 'login', name]
@@ -1299,7 +1368,9 @@ export class CodexExtensionService {
 
   async addPlugin(selector: string): Promise<PluginCatalogDto> {
     assertSelector(selector)
-    await this.invoke(['plugin', 'add', selector, '--json'])
+    await this.invoke(['plugin', 'add', selector, '--json']).catch((error: unknown) => {
+      throw withCommandOutput(error)
+    })
     const catalog = await this.listPlugins()
     if (!catalog.plugins.some((plugin) => plugin.pluginId === selector && plugin.installed)) {
       throw new Error('Plugin 安装后未通过 Codex 对账')
@@ -1349,7 +1420,9 @@ export class CodexExtensionService {
     if (ref) argv.push('--ref', ref)
     for (const sparse of input.sparse ?? []) argv.push('--sparse', assertSparsePath(sparse))
     argv.push('--json')
-    await this.invoke(argv, { timeoutMs: 180_000 })
+    await this.invoke(argv, { timeoutMs: 180_000 }).catch((error: unknown) => {
+      throw withCommandOutput(error)
+    })
     return this.listPlugins()
   }
 
@@ -1425,48 +1498,23 @@ export class CodexExtensionService {
   }
 
   async importSkill(input: ImportSkillInput): Promise<SkillDto[]> {
-    if (!path.isAbsolute(input.sourcePath)) throw new Error('Skill 导入路径必须是绝对路径')
-    let sourceDirectory = path.resolve(input.sourcePath)
-    assertNoSymlinkComponents(sourceDirectory, 'Skill 导入路径')
-    const sourceStats = fs.lstatSync(sourceDirectory)
-    if (sourceStats.isSymbolicLink()) throw new Error('Skill 导入路径不能是符号链接')
-    if (sourceStats.isFile()) {
-      if (path.basename(sourceDirectory) !== 'SKILL.md') throw new Error('Skill 文件必须命名为 SKILL.md')
-      sourceDirectory = path.dirname(sourceDirectory)
-    } else if (!sourceStats.isDirectory()) {
-      throw new Error('Skill 导入路径必须是目录或 SKILL.md')
-    }
-    validateSkillTree(sourceDirectory)
-
+    const sourceDirectory = resolveSkillImportSource(input.sourcePath)
     const scope = input.scope ?? 'user'
     const root = scope === 'user'
       ? path.join(this.userHome, '.agents', 'skills')
       : this.repositoryRoot && path.join(this.repositoryRoot, '.agents', 'skills')
     if (!root) throw new Error('未设置仓库工作目录，不能导入 repo Skill')
-    assertNoSymlinkComponents(root, 'Skill 受管目录')
-    const directoryName = path.basename(sourceDirectory)
-    if (!SKILL_DIRECTORY_PATTERN.test(directoryName)) throw new Error('Skill 目录名包含不支持的字符')
-    const target = path.resolve(root, directoryName)
-    if (!isWithin(root, target) || normalizedPathKey(root) === normalizedPathKey(target)) {
-      throw new Error('Skill 目标路径越界')
-    }
-    if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
+    const target = skillImportTarget(sourceDirectory, root)
     // 这里还没有这个技能，config.toml 里它的启停记录只会是以前卸载（旧版本卸载不删）或手删目录
     // 留下的，不清掉的话新导入的一进来就是「已停用」（#1093 第 9 条）。
     await this.forgetSkillEnablement(path.join(target, 'SKILL.md'))
-    fs.mkdirSync(root, { recursive: true })
-    try {
-      copySkillTree(sourceDirectory, target)
-    } catch (error) {
-      if (fs.existsSync(target) && isWithin(root, target)) fs.rmSync(target, { recursive: true, force: true })
-      throw error
-    }
+    copySkillImport(sourceDirectory, root, target)
     return this.listSkills()
   }
 
   async uninstallSkill(skillPath: string): Promise<{ skills: SkillDto[]; trashPath: string }> {
     const target = await this.requireManagedSkill(skillPath)
-    const trashPath = moveToTrash(target.path, this.trashDirectory)
+    const trashPath = moveSkillToTrash(target.path, this.trashDirectory)
     // 挪走以后再删启停记录：先删的话挪不动时技能还在，客户关掉的却被打开了（#1093 第 9 条）。
     await this.forgetSkillEnablement(target.path)
     return { skills: await this.listSkills(), trashPath }

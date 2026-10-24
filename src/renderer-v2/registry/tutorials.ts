@@ -80,9 +80,6 @@ export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后
 // Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
 export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
 
-// 技能页选到不能在这里导入的工具时，「看怎么放」打开技能那篇并展开这一条。
-export const skillImportTutorialExtra = 'Claude Code、Grok CLI 没有导入按钮？';
-
 export function updateDiskCleanupStepsFor(os: WindowOs): string {
   return os === 'linux' ? linuxUpdateDiskCleanupSteps : updateDiskCleanupSteps;
 }
@@ -734,10 +731,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '添加自己的技能',
         where: '技能 → 从文件夹导入',
-        detail: 'Codex CLI 填本机技能文件夹。',
+        detail: '选好工具，再选一个本机的技能文件夹导入。',
         bullets: ['点「从文件夹导入」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
         expected: '列表出现新技能及添加范围。',
-        extra: [{ title: skillImportTutorialExtra, detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页点「重新加载」；选择当前项目时先核对工作文件夹。' }],
         action: '去导入技能',
         page: 'skills',
       },

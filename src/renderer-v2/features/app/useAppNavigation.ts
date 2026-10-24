@@ -70,7 +70,7 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
       if (landing.anchor) requestRowFocus('account', landing.anchor)
       setAccountTab((current) => ({ sequence: current.sequence + 1, value: landing.tab, rechargeAmount }))
     }
-    // 教程的 section 可以带「#某条补充说明的标题」：打开那一篇、展开那一条（技能页「看怎么放」）。
+    // 教程的 section 可以带「#某条补充说明的标题」：打开那一篇、展开那一条（原先给技能页「看怎么放」用，那颗按钮 10-24 去掉了，眼下没有地方这样跳）。
     if (target === 'tutorial' && section) {
       const mark = section.indexOf('#')
       const id = mark < 0 ? section : section.slice(0, mark)

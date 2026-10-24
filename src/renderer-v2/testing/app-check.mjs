@@ -1913,6 +1913,61 @@ test('with only the Codex desktop app, the extension pages manage Codex connecti
   } finally { await page.close() }
 })
 
+// 外接工具的开关：Codex 没有启停命令，主进程改 config.toml 里那条的 enabled，只装了桌面端也给开关，
+// 走的是通用的 mutate，不是删连接那一条；停用后那一行写「已停用」，再点打开。
+test('with only the Codex desktop app, a Codex connection can be switched off and back on', async () => {
+  const page = await open('desktopOnly=1')
+  try {
+    await page.evaluate(() => {
+      let enabled = true
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        items: provider === 'codex' ? [{
+          provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
+          installed: true, enabled, scope: 'user', currentVersion: null, latestVersion: null,
+          source: { kind: 'source-unknown', locator: null, reference: null },
+          update: { state: 'source-unknown', reason: '', checkedAt: null },
+          operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
+        }] : [],
+      })
+      window.xingmang.mutateProviderExtension = async (input) => {
+        enabled = input.action === 'enable'
+        return window.xingmang.listProviderExtensions(input.provider)
+      }
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+      window.xingmang.removeMcpServer = async () => []
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    const row = mcp.getByTestId('mcp-row-docs')
+    await row.waitFor()
+    const toggle = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '停用 docs' })
+    await expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+    await toggle.click()
+    await waitForToast(page, '已停用「docs」')
+    await expect(row.getByText('已停用', { exact: true })).toBeVisible()
+    const on = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '启用 docs' })
+    await expect(on).toHaveAttribute('aria-checked', 'false')
+
+    await on.click()
+    await waitForToast(page, '已启用「docs」')
+    await expect(row.getByText('已停用', { exact: true })).toHaveCount(0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'mutateProviderExtension').map((entry) => entry.args[0])), [
+      { provider: 'codex', kind: 'mcp', action: 'disable', id: 'docs', scope: 'user' },
+      { provider: 'codex', kind: 'mcp', action: 'enable', id: 'docs', scope: 'user' },
+    ])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'removeMcpServer')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 两个都装了：Codex 那一格下面说一句它们共用这些设置。
 test('with both the Codex CLI and the desktop app, the Codex tab says they share these settings', async () => {
   const page = await open()
@@ -8030,8 +8085,9 @@ test('tutorial cards remember how far each chapter was read and continue from th
   } finally { await page.close() }
 })
 
-// 第五部分第 27、32 条：技能页「看怎么放」打开技能那篇、只展开那一条补充说明；「全部教程」回到卡片时落在这一篇上。
-test('the skills page guide opens the skills chapter on its note and the card list comes back to it', async () => {
+// 第五部分第 32 条：「全部教程」回到卡片时落在这一篇上。10-24 起 Claude Code 也能在技能页导入（「扩展改」第 2 条），
+// 技能页不再有「看怎么放」，教程「技能」篇也不再有「没有导入按钮？」那一条。
+test('the skills chapter explains importing for every tool and the card list comes back to it', async () => {
   const page = await open()
   try {
     await page.setViewportSize({ width: 1280, height: 560 })
@@ -8043,21 +8099,18 @@ test('the skills page guide opens the skills chapter on its note and the card li
     })
     await page.getByTestId('nav-skills').click()
     const skills = page.getByTestId('page-skills')
-    const note = skills.getByTestId('skills-import-unsupported')
-    await expect(note).toContainText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。')
-    await expect(skills.getByTestId('skills-add')).toBeDisabled()
-    await expect(skills.getByTestId('skills-add')).toHaveAttribute('title', 'Claude Code 不支持在这里导入')
-    await note.getByRole('button', { name: '看怎么放', exact: true }).click()
+    await expect(skills.getByTestId('skills-empty')).toContainText('点「从文件夹导入」，选一个技能文件夹。')
+    await expect(skills.getByTestId('skills-import-unsupported')).toHaveCount(0)
+    await expect(skills.getByTestId('skills-add').first()).toBeEnabled()
+    await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
+    const entry = tutorial.getByTestId('tutorial-topic-skills')
+    await entry.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
-    const guide = article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')
-    await expect(guide).toHaveJSProperty('open', true)
-    await expect(guide).toContainText('再回本页点「重新加载」')
-    assert.deepEqual(await article.locator('details.v2-tutorial-extra').evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle)), ['Claude Code、Grok CLI 没有导入按钮？'])
-    await expect.poll(() => insidePageViewport(guide.locator('summary'))).toBe(true)
+    await expect(article).toContainText('选好工具，再选一个本机的技能文件夹导入。')
+    await expect(article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')).toHaveCount(0)
     await tutorial.getByTestId('tutorial-back').click()
-    const entry = tutorial.getByTestId('tutorial-topic-skills')
     await expect(entry).toBeFocused()
     await expect.poll(() => insidePageViewport(entry)).toBe(true)
     await clean(page)

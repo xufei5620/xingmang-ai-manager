@@ -11,9 +11,12 @@ import {
   curatedRuntimeCommand,
   curatedVersionText,
   customMcpProblem,
+  extensionNoToolInstalled,
+  extensionShowsUpdatePill,
   extensionToolChoices,
   extensionToolName,
   extensionToolNames,
+  extensionUpdateStatus,
   extensionUsableTools,
   groupExtensionItems,
   extensionFailureTarget,
@@ -510,6 +513,27 @@ describe('extension row actions', () => {
     expect(api.mutateProviderExtension).not.toHaveBeenCalled()
   })
 
+  // 外接工具的开关跟着主进程给的 operations 走：Grok 有命令，Codex 由主进程改 config.toml，Claude Code 不给。
+  it('switches a connection where the main process offers it and draws no switch where it does not', async () => {
+    const api = extensionApi()
+    const operations = { install: true, uninstall: true, enable: true, disable: true, update: false }
+    const codex = listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: 'user', operations })
+    const grok = listItem({ provider: 'grok', kind: 'mcp', id: 'repo-db', scope: 'project', enabled: false, operations })
+    const claude = listItem({ provider: 'claude', kind: 'mcp', id: 'files', operations: { ...operations, enable: false, disable: false } })
+
+    expect(extensionRowState(codex)).toMatchObject({ enabled: true, canToggle: true })
+    expect(extensionRowState(grok)).toMatchObject({ enabled: false, canToggle: true })
+    expect(extensionRowState(claude)).toMatchObject({ enabled: true, canToggle: false })
+    await runExtensionAction(api, codex, 'disable')
+    await runExtensionAction(api, grok, 'enable')
+
+    expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
+      { provider: 'codex', kind: 'mcp', action: 'disable', id: 'docs', scope: 'user' },
+      { provider: 'grok', kind: 'mcp', action: 'enable', id: 'repo-db', scope: 'project' },
+    ])
+    expect(api.removeMcpServer).not.toHaveBeenCalled()
+  })
+
   it('manages a user Codex skill through the native interface and shows it disabled', async () => {
     const api = extensionApi()
     const skill = nativeSkill({})
@@ -784,6 +808,61 @@ describe('the 给这些工具用 picker', () => {
 
   it('names the tools in navigation order whatever order they were picked in', () => {
     expect(extensionToolNames(['grok', 'claude'])).toBe('Claude Code、Grok CLI')
+  })
+})
+
+// 「扩展改」第 3 条（10-24）：勾选框全是「未安装」时，添加框里那条「还没装能用它的工具」。
+describe('the 还没装能用它的工具 notice', () => {
+  it('names the supported tools when none of them is installed', () => {
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex', 'grok'], [], []))).toBe('Claude Code、Codex CLI、Grok CLI')
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude'], [], []))).toBe('Claude Code')
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex', 'grok'], [], [], true))).toBe('Claude Code、Codex 桌面端、Grok CLI')
+  })
+
+  it('stays quiet once one of them can be picked or already has it', () => {
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex', 'grok'], ['grok'], []))).toBeNull()
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude'], ['claude'], ['claude']))).toBeNull()
+    // 还没检测完：都当装了，不出这一条。
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex'], undefined))).toBeNull()
+    expect(extensionNoToolInstalled([])).toBeNull()
+  })
+})
+
+// 「扩展改」第 1 条（10-24）：外接工具没有「更新」按钮，行上不挂「可更新」，详情里说清楚。
+describe('the update state of a connection', () => {
+  const update = { state: 'update-available' as const, reason: '检测到更高的远端版本', checkedAt: '2026-10-24T00:00:00Z' }
+
+  it('keeps the 可更新 pill for skills and plugins only', () => {
+    expect(extensionShowsUpdatePill(listItem({ kind: 'plugin', update }))).toBe(true)
+    expect(extensionShowsUpdatePill(listItem({ kind: 'skill', update }))).toBe(true)
+    expect(extensionShowsUpdatePill(listItem({ kind: 'mcp', update }))).toBe(false)
+    expect(extensionShowsUpdatePill(listItem({ kind: 'plugin' }))).toBe(false)
+  })
+
+  it('tells how a newer connection version is taken instead of offering an update', () => {
+    const npm = listItem({
+      kind: 'mcp',
+      latestVersion: '1.2.0',
+      source: { kind: 'npm', locator: '@acme/mcp', reference: '1.1.0' },
+      update,
+    })
+    expect(extensionUpdateStatus(npm)).toBe(
+      '有新版本 1.2.0。外接工具不在这里更新：精选里加的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。',
+    )
+    // Git 来源的「版本」是一串提交号，不往句子里放。
+    const git = listItem({
+      kind: 'mcp',
+      latestVersion: 'f'.repeat(40),
+      source: { kind: 'git', locator: 'https://github.com/acme/mcp.git', reference: 'a'.repeat(40) },
+      update,
+    })
+    expect(extensionUpdateStatus(git)).toMatch(/^有新版本。外接工具不在这里更新/)
+  })
+
+  it('keeps the main process wording everywhere else', () => {
+    expect(extensionUpdateStatus(listItem({ kind: 'plugin', update }))).toBe('检测到更高的远端版本')
+    expect(extensionUpdateStatus(listItem({ kind: 'mcp', update: { state: 'up-to-date', reason: '已是最新', checkedAt: null } }))).toBe('已是最新')
+    expect(extensionUpdateStatus(listItem({ kind: 'mcp' }))).toBe('尚未检查')
   })
 })
 

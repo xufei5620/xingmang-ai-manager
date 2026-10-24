@@ -1221,10 +1221,12 @@ if (!hasSingleInstanceLock) {
     })
     // 只装了 Codex 桌面端时，扩展页的外接工具直接读写 config.toml，不跑 `codex` 命令；怎么算装了和首页一样。
     const codexCliInstalled = () => isCodexCliInstalled(rootedOptions.codexExtensions.env)
+    // 移除的技能都挪进同一个回收站：Codex 的，和 Claude Code、Grok CLI 的。
+    const skillTrashDirectory = path.join(managerDataDirectory, 'trash', 'skills')
     const extensionService = new CodexExtensionService({
       ...rootedOptions.codexExtensions,
       repositoryRoot: storedSettings.workspace,
-      trashDirectory: path.join(managerDataDirectory, 'trash', 'skills'),
+      trashDirectory: skillTrashDirectory,
       windowsExecutionMode: windowsCliExecutionMode,
       serializeConfigWrite: systemService.serializeToolConfigWrite,
       cliInstalled: codexCliInstalled,
@@ -1234,6 +1236,9 @@ if (!hasSingleInstanceLock) {
       repositoryRoot: storedSettings.workspace,
       windowsExecutionMode: windowsCliExecutionMode,
       codexCliInstalled,
+      skillTrashDirectory,
+      // Codex 的外接工具启停没有命令，跟加、删同一边改 config.toml（备份、排队、对账）。
+      setCodexMcpServerEnabled: (name, enabled) => extensionService.setMcpServerEnabled(name, enabled),
       // 装插件和加官方市场都要出网（市场是一次 git clone），而 CLI 子进程不读
       // 系统代理，所以跟 CLI 安装一样把当前线路以环境变量带下去。
       resolveSubprocessProxyEnvironment: async () => subprocessDownloadProxyEnvironment(
