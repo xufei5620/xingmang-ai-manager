@@ -57,11 +57,10 @@ async function open(query = '', clock = false, initScript = null) {
     noticeReads.set(scope, next)
     return next
   })
-  if (clock === 'fixed' || clock instanceof Date) {
+  if (clock === 'fixed') {
     // Date.now stands still but timers keep running: React reveals a lazily
-    // loaded page on a timer, which a paused clock never fires. A Date fixes
-    // the clock at that moment instead.
-    await page.clock.setFixedTime(clock instanceof Date ? clock : new Date('2026-09-12T04:00:01Z'))
+    // loaded page on a timer, which a paused clock never fires.
+    await page.clock.setFixedTime(new Date('2026-09-12T04:00:01Z'))
   } else if (clock) {
     await page.clock.install({ time: new Date('2026-09-12T04:00:00Z') })
     await page.clock.pauseAt(new Date('2026-09-12T04:00:01Z'))
@@ -1944,10 +1943,9 @@ test('home shows the last usage right away instead of asking the account backend
 })
 
 // #1362 第 1 条：今天花得最多时，今天那根柱子最高，柱顶上的金额以前顶到「近 7 天花费」那一行，跟七天合计叠在一起。
-// 测试数据每天花多少按星期几给，星期五最多，所以把时钟定在一个星期五：UTC 中午，哪个时区的跑机看都还是星期五
-// （以前跟着真实日期走，只有星期五跑才绿）。
+// 测试数据里今天就是最多的那天。
 test('today\'s amount above the tallest bar stays clear of the 7-day total on home and the account overview', async () => {
-  const page = await open('', new Date('2026-09-11T12:00:00Z'))
+  const page = await open()
   async function chart(scope, head, bar) {
     return page.evaluate(([scopeSelector, headSelector, barSelector]) => {
       const root = document.querySelector(scopeSelector)
