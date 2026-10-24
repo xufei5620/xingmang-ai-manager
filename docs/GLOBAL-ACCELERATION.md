@@ -22,7 +22,7 @@
 
 ## 星芒自己的服务不走加速线路
 
-2026-10-21 起只有服务器放行的那几个域名走线路（`acceleration-clash-config.ts` 的 `lineRoutedRules`：chatgpt.com、openai.com、oaistatic.com、oaiusercontent.com 及其子域名，challenges.cloudflare.com，以及选线测速用的 www.gstatic.com），兜底改成 `MATCH,DIRECT`：别的网站送过去会被服务器拒掉，开着加速就打不开。网络位置探测的 www.cloudflare.com 不走线路，安装源的顺序要按这台电脑直连时的位置排。下面这段说的直连规则写在这几条之前，照旧生效：`relay-sites.ts` 的 `relayDirectHosts()` 从全部站点（CLI 地址、账号地址、官网、取 Key 页）取主机名，`acceleration-mihomo-runtime.ts` 启动内核时作为 `directHosts` 交给 `buildIsolatedMihomoConfig`，在兜底规则之前逐个写 `DOMAIN,<host>,DIRECT`。于是开着加速时，本软件的登录、余额、签发 Key，以及 Codex CLI、Codex 桌面端这些遵循系统代理的工具连中转，都和 Claude Code、Gemini CLI（本来就不认系统代理）一样直连。
+2026-10-21 起只有服务器放行的那几个域名走线路（`acceleration-clash-config.ts` 的 `lineRoutedRules`：chatgpt.com、openai.com、oaistatic.com、oaiusercontent.com 及其子域名，challenges.cloudflare.com，选线测速用的 www.gstatic.com，以及 2026-10-24 起 Claude Desktop 下 Claude Code 程序和 Cowork 工作区用的 downloads.claude.ai（#1373），兜底改成 `MATCH,DIRECT`：别的网站送过去会被服务器拒掉，开着加速就打不开。网络位置探测的 www.cloudflare.com 不走线路，安装源的顺序要按这台电脑直连时的位置排。下面这段说的直连规则写在这几条之前，照旧生效：`relay-sites.ts` 的 `relayDirectHosts()` 从全部站点（CLI 地址、账号地址、官网、取 Key 页）取主机名，`acceleration-mihomo-runtime.ts` 启动内核时作为 `directHosts` 交给 `buildIsolatedMihomoConfig`，在兜底规则之前逐个写 `DOMAIN,<host>,DIRECT`。于是开着加速时，本软件的登录、余额、签发 Key，以及 Codex CLI、Codex 桌面端这些遵循系统代理的工具连中转，都和 Claude Code、Gemini CLI（本来就不认系统代理）一样直连。
 
 - 两个平台共用这一份内核配置，星芒自己的主机名没有写进 Windows `ProxyOverride` 或 macOS 代理例外列表；加速仍只接管系统代理，不开 TUN。
 - 取全部站点而不是当前账号所在站点：加速开着时切换账号不会重启内核，只放当前站点会让新账号的请求绕线路。
