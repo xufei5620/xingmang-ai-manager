@@ -298,6 +298,11 @@ export interface ProviderExtensionServiceOptions {
   isCommandLineToolsShimBacked?: (shim: string) => Promise<boolean>
   /** 同上，但能分出「Xcode 许可还没同意」；与上一个同时给时以它为准。 */
   inspectCommandLineToolsShim?: (shim: string) => Promise<CommandLineToolsShimState>
+  /**
+   * 这台电脑装没装 Codex CLI（main.ts 接的是 codex-extensions.ts 的 isCodexCliInstalled）。没装、只装了 Codex 桌面端时，
+   * 列 Codex 不跑 `codex` 命令：外接工具照用户那份 config.toml 列，插件不列。缺省 = 按装了算，照旧跑命令。
+   */
+  codexCliInstalled?: () => Promise<boolean>
 }
 
 interface MutableExtensionItem extends ProviderExtensionItem {
@@ -1933,6 +1938,7 @@ export class ProviderExtensionService {
   private codexCatalogDownload: Promise<void> | null = null
   private readonly platform: NodeJS.Platform
   private readonly commandLineToolsShimState: (shim: string) => Promise<CommandLineToolsShimState>
+  private readonly codexCliInstalled: () => Promise<boolean>
 
   constructor(options: ProviderExtensionServiceOptions = {}) {
     this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
@@ -1964,6 +1970,7 @@ export class ProviderExtensionService {
     this.codexCatalogBucket = options.codexCatalogBucket ?? null
     this.platform = options.platform ?? process.platform
     this.commandLineToolsShimState = commandLineToolsShimInspector(options, env)
+    this.codexCliInstalled = options.codexCliInstalled ?? (async () => true)
   }
 
   /**
@@ -2107,11 +2114,19 @@ export class ProviderExtensionService {
     const capabilities = categoryCapabilities()
     const warnings: string[] = []
     const items: MutableExtensionItem[] = []
+    // 只装了 Codex 桌面端：它和 CLI 读同一份 config.toml，外接工具照那份列；插件要 CLI 才列得出来，交给桌面端自己的插件页。
+    const codexWithoutCli = provider === 'codex' && !await this.codexCliInstalled()
 
     try {
       const argv = mcpListArgv(provider)
       let servers: RawMcpServer[]
-      if (argv) {
+      if (codexWithoutCli) {
+        // 项目里那几层要看 Codex 信不信任那个项目，没有 CLI 问不了，只列用户那份；删也只删这一份。
+        servers = [...readCodexMcpServerEntries(path.join(this.codexHome, 'config.toml'))].map(([name, entry]) => ({
+          ...rawMcpFromJson({ ...(isRecord(entry) ? entry : {}), name }),
+          scope: 'user',
+        }))
+      } else if (argv) {
         // Grok 和 Codex 都是命令在哪个项目里跑就读哪个项目的配置，不在项目里跑就列不出来（#1092）。
         // Grok 没带 scope 的条目按它自己的缺省 user 算；Codex 不带层，对照配置文件补上。工作目录不在了
         // （删了、换了盘）就不进去跑：列不出项目那层，总比整张连接列表报错强。
@@ -2159,28 +2174,30 @@ export class ProviderExtensionService {
       warnings.push(`${cliCatalog[provider].name} ${reason}`)
     }
 
-    try {
-      const output = await this.invoke(provider, pluginListArgv(provider), {
-        cwd: provider === 'gemini' ? this.repositoryRoot ?? undefined : undefined,
-        maxOutputBytes: MAX_OUTPUT_BYTES,
-      })
-      const plugins = parseProviderPluginList(
-        provider,
-        output,
-        checkedAt,
-        // Gemini 的扩展装在用户目录下，启停不带 scope 时 CLI 也按 user 算；
-        // 这里如实标 user，免得界面带着猜出来的 workspace 去启停（#488）。
-        // Grok 的插件命令没有范围参数，装、卸、启停都落在 ~/.grok 里（1.0.52、1.0.62 实测，#1092）。
-        provider === 'gemini' || provider === 'grok' ? 'user' : null,
-        provider === 'claude' ? this.repositoryRoot : undefined,
-      )
-      if (provider === 'codex') await describeCodexCatalogPlugins(plugins, this.codexHome)
-      items.push(...plugins)
-    } catch (error) {
-      const noun = provider === 'gemini' ? 'Extension' : 'Plugin'
-      const reason = `${cliCatalog[provider].name} ${noun} 列表读取失败：${errorDetail(error)}`
-      capabilities.plugin = { list: false, reason }
-      warnings.push(reason)
+    if (!codexWithoutCli) {
+      try {
+        const output = await this.invoke(provider, pluginListArgv(provider), {
+          cwd: provider === 'gemini' ? this.repositoryRoot ?? undefined : undefined,
+          maxOutputBytes: MAX_OUTPUT_BYTES,
+        })
+        const plugins = parseProviderPluginList(
+          provider,
+          output,
+          checkedAt,
+          // Gemini 的扩展装在用户目录下，启停不带 scope 时 CLI 也按 user 算；
+          // 这里如实标 user，免得界面带着猜出来的 workspace 去启停（#488）。
+          // Grok 的插件命令没有范围参数，装、卸、启停都落在 ~/.grok 里（1.0.52、1.0.62 实测，#1092）。
+          provider === 'gemini' || provider === 'grok' ? 'user' : null,
+          provider === 'claude' ? this.repositoryRoot : undefined,
+        )
+        if (provider === 'codex') await describeCodexCatalogPlugins(plugins, this.codexHome)
+        items.push(...plugins)
+      } catch (error) {
+        const noun = provider === 'gemini' ? 'Extension' : 'Plugin'
+        const reason = `${cliCatalog[provider].name} ${noun} 列表读取失败：${errorDetail(error)}`
+        capabilities.plugin = { list: false, reason }
+        warnings.push(reason)
+      }
     }
 
     // 没有官方市场时 `plugin list --available` 只会返回空清单，界面必须能分辨

@@ -21,6 +21,7 @@ import {
   extensionFailureTarget,
   extensionToolChoices,
   extensionToolNames,
+  extensionUsableTools,
   fillCuratedPlaceholders,
   mcpRuntimeNotice,
   submitMcpInstall,
@@ -86,6 +87,7 @@ const kindOptions = [
 export function FeaturedPage({
   api,
   installedProviders,
+  codexDesktopInstalled,
   onRecommend,
   onOpenHelp,
   onSystemChanged,
@@ -94,6 +96,8 @@ export function FeaturedPage({
   api: V2Bridge
   /** 这台电脑上装好的命令行工具；缺省 = 还没检测完，三个都去读、都当作装了。 */
   installedProviders?: readonly string[]
+  /** 装没装 Codex 桌面端：只装了它时外接工具照样能加给 Codex（同 ExtensionsPage）；缺省 = 当没装。 */
+  codexDesktopInstalled?: boolean
   /** 「推荐一个」：去「反馈与客服」；缺省 = 不放这颗按钮。 */
   onRecommend?: () => void
   onOpenHelp?: () => void
@@ -102,7 +106,10 @@ export function FeaturedPage({
   /** 同 BusinessActions.active：再显示时重读一遍哪些已经装上了。 */
   active?: boolean
 }) {
-  const installedKey = installedProviders?.join(',')
+  const { usable, codexViaDesktop } = extensionUsableTools(installedProviders, codexDesktopInstalled)
+  // 某一条能给谁用看它是什么：插件要 CLI，只装了桌面端时 Codex 不算。
+  const usableFor = (item: CuratedExtension) => extensionUsableTools(installedProviders, codexDesktopInstalled, item.kind).usable
+  const installedKey = usable?.join(',')
   // 卡上的「已添加」要问每个装了的工具一遍；读不到的那个只当不知道，不让整页读不出来。
   const load = useCallback(async () => {
     const targets = activeProviderIds.filter((id) => installedKey === undefined || installedKey.split(',').includes(id))
@@ -132,7 +139,7 @@ export function FeaturedPage({
   const added = resource.data?.added ?? {}
   const shown = curatedExtensions.filter((item) => kind === 'all' || item.kind === kind)
   const choices = picking
-    ? extensionToolChoices(picking.providers, installedProviders, featuredAddedTools(picking, added))
+    ? extensionToolChoices(picking.providers, usableFor(picking), featuredAddedTools(picking, added), codexViaDesktop)
     : []
   const targets = choices
     .filter((choice) => choice.note === null && selectedTools.includes(choice.id))
@@ -141,7 +148,7 @@ export function FeaturedPage({
     ? mcpRuntimeNotice(curatedRuntimeCommand(picking), resource.data?.runtimes, resource.data?.pythonInstall ?? 'external')
     : null
   const open = (item: CuratedExtension) => {
-    const available = extensionToolChoices(item.providers, installedProviders, featuredAddedTools(item, added))
+    const available = extensionToolChoices(item.providers, usableFor(item), featuredAddedTools(item, added), codexViaDesktop)
       .filter((choice) => choice.note === null)
       .map((choice) => choice.id)
     setPicking(item)
@@ -197,7 +204,7 @@ export function FeaturedPage({
         setPicking(null)
         return done
       },
-      (done) => `${item.kind === 'mcp' ? '已添加' : '已安装'}「${item.name}」，给 ${extensionToolNames(done)} 使用`,
+      (done) => `${item.kind === 'mcp' ? '已添加' : '已安装'}「${item.name}」，给 ${extensionToolNames(done, codexViaDesktop)} 使用`,
     )
   const verb = picking?.kind === 'mcp' ? '添加' : '安装'
   const needsInput = Boolean(picking && curatedNeedsInput(picking))
@@ -233,15 +240,15 @@ export function FeaturedPage({
                   <span
                     className="v2-featured-tools"
                     role="img"
-                    aria-label={`能用的工具：${extensionToolNames(item.providers)}`}
+                    aria-label={`能用的工具：${extensionToolNames(item.providers, codexViaDesktop)}`}
                   >
                     {item.providers.map((id) => (
-                      <span key={id} title={extensionToolNames([id])}>
+                      <span key={id} title={extensionToolNames([id], codexViaDesktop)}>
                         <BrandIcon tool={id} size={16} variant="xs" />
                       </span>
                     ))}
                   </span>
-                  {featuredFullyAdded(item, installedProviders, added) ? (
+                  {featuredFullyAdded(item, usableFor(item), added) ? (
                     <Pill tone="ok">已添加</Pill>
                   ) : (
                     <Button

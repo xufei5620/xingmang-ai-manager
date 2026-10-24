@@ -384,6 +384,138 @@ describe('Codex MCP login through the real command runner', () => {
   }, 90_000)
 })
 
+// 只装了 Codex 桌面端：它和 CLI 读同一份 config.toml，外接工具照 `codex mcp add` 的写法直接写进去。
+describe('Codex MCP without the Codex CLI', () => {
+  function desktopOnly(home: string): { service: CodexExtensionService; configPath: string } {
+    const configPath = path.join(home, '.codex', 'config.toml')
+    const service = new CodexExtensionService({
+      userHome: home,
+      invoke: async (argv) => {
+        throw new Error(`没装 CLI 时不该跑命令：${argv.join(' ')}`)
+      },
+      cliInstalled: async () => false,
+    })
+    return { service, configPath }
+  }
+
+  it('lists the user config.toml entries the way the CLI shapes them, without running a command', async () => {
+    const home = temporaryDirectory()
+    const { service, configPath } = desktopOnly(home)
+    write(configPath, [
+      'model = "m"',
+      '',
+      '[mcp_servers.files]',
+      'command = "npx"',
+      'args = ["-y", "@modelcontextprotocol/server-filesystem"]',
+      'enabled = false',
+      '',
+      '[mcp_servers.files.env]',
+      'TOKEN = "sk-env-secret"',
+      '',
+      '[mcp_servers.github]',
+      'url = "https://api.example.test/mcp"',
+      'bearer_token_env_var = "GITHUB_TOKEN"',
+      '',
+      '[mcp_servers.plain]',
+      'url = "https://plain.example.test/mcp"',
+      '',
+      '[mcp_servers."has.dot"]',
+      'command = "node"',
+      '',
+    ].join('\n'))
+
+    const servers = await service.listMcpServers()
+
+    expect(servers.map((server) => [server.name, server.transportType, server.enabled, server.authStatus, server.editable])).toEqual([
+      ['files', 'stdio', false, 'unsupported', true],
+      ['github', 'http', true, 'bearer_token', true],
+      ['plain', 'http', true, 'unknown', true],
+    ])
+    expect(servers[0]).toMatchObject({ command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'], envNames: ['TOKEN'] })
+    expect(JSON.stringify(servers)).not.toContain('sk-env-secret')
+  })
+
+  it('writes a new server after the existing lines, the way `codex mcp add` lays it out', async () => {
+    const home = temporaryDirectory()
+    const { service, configPath } = desktopOnly(home)
+    const original = '# 客户自己写的说明\nmodel = "gpt-5.4" # 常用\n'
+    write(configPath, original)
+
+    const stdio = await service.addMcpServer({ type: 'stdio', name: 'memory', command: 'npx', args: ['-y', 'server-memory'], env: { MEMORY_FILE: '/tmp/m.json' } })
+    const http = await service.addMcpServer({ type: 'http', name: 'github', url: 'https://api.example.test/mcp', bearerTokenEnvVar: 'GITHUB_TOKEN' })
+
+    const written = fs.readFileSync(configPath, 'utf8')
+    expect(written.startsWith(original)).toBe(true)
+    expect(TOML.parse(written)).toEqual({
+      model: 'gpt-5.4',
+      mcp_servers: {
+        memory: { command: 'npx', args: ['-y', 'server-memory'], env: { MEMORY_FILE: '/tmp/m.json' } },
+        github: { url: 'https://api.example.test/mcp', bearer_token_env_var: 'GITHUB_TOKEN' },
+      },
+    })
+    expect(stdio.map((server) => server.name)).toEqual(['memory'])
+    expect(http.map((server) => server.name)).toEqual(['github', 'memory'])
+    // 空的参数和环境变量不写，和命令一样。
+    await service.addMcpServer({ type: 'stdio', name: 'bare', command: 'uvx' })
+    expect(asRecord(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).mcp_servers)?.bare)).toEqual({ command: 'uvx' })
+  })
+
+  it('replaces a same-named server whole and leaves its neighbours and their comments alone', async () => {
+    const home = temporaryDirectory()
+    const { service, configPath } = desktopOnly(home)
+    write(configPath, '[mcp_servers.docs]\ncommand = "old"\nstartup_timeout_sec = 5\n\n[mcp_servers.docs.env]\nTOKEN = "t"\n\n# 下面是 files\n[mcp_servers.files]\ncommand = "npx"\n')
+
+    await service.addMcpServer({ type: 'http', name: 'docs', url: 'https://docs.example.test/mcp' })
+
+    const written = fs.readFileSync(configPath, 'utf8')
+    expect(written).toContain('# 下面是 files\n[mcp_servers.files]\ncommand = "npx"\n')
+    expect(asRecord(TOML.parse(written).mcp_servers)).toEqual({
+      docs: { url: 'https://docs.example.test/mcp' },
+      files: { command: 'npx' },
+    })
+  })
+
+  it('refuses the OAuth fields it has nowhere to write, before touching the file', async () => {
+    const home = temporaryDirectory()
+    const { service, configPath } = desktopOnly(home)
+    write(configPath, 'model = "m"\n')
+
+    await expect(service.addMcpServer({ type: 'http', name: 'docs', url: 'https://docs.example.test/mcp', oauthClientId: 'client' }))
+      .rejects.toThrow('没装 Codex CLI 时，OAuth Client ID 和 OAuth Resource 填不了')
+    await expect(service.addMcpServer({ type: 'stdio', name: 'bad name', command: 'node' })).rejects.toThrow()
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "m"\n')
+  })
+
+  it('removes a server with its own tables, and the empty [mcp_servers] header after the last one', async () => {
+    const home = temporaryDirectory()
+    const { service, configPath } = desktopOnly(home)
+    write(configPath, 'model = "m"\n\n[mcp_servers]\n\n[mcp_servers.docs]\ncommand = "npx"\n\n[mcp_servers.docs.env]\nTOKEN = "t"\n\n[mcp_servers.files]\ncommand = "uvx"\n')
+
+    expect((await service.removeMcpServer('docs')).map((server) => server.name)).toEqual(['files'])
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "m"\n\n[mcp_servers]\n\n[mcp_servers.files]\ncommand = "uvx"\n')
+    expect(await service.removeMcpServer('files')).toEqual([])
+    expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "m"\n')
+    // 早就不在的再删一次，照旧回列表、不写文件。
+    expect(await service.removeMcpServer('files')).toEqual([])
+  })
+
+  it('still runs the CLI when it is installed', async () => {
+    const home = temporaryDirectory()
+    const calls: string[][] = []
+    const service = new CodexExtensionService({
+      userHome: home,
+      invoke: async (argv) => {
+        calls.push([...argv])
+        return argv[1] === 'list' ? '[]' : ''
+      },
+      cliInstalled: async () => true,
+    })
+
+    await expect(service.removeMcpServer('docs')).resolves.toEqual([])
+    expect(calls).toEqual([['mcp', 'list', '--json']])
+  })
+})
+
 describe('Codex Plugin and marketplace contracts', () => {
   it('parses official list shapes and reconciles install using JSON commands', async () => {
     const home = temporaryDirectory()

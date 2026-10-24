@@ -361,6 +361,32 @@ function removeTomlSectionText(source: string, section: { keyPath: readonly stri
   const lines = source.split(/(?<=\n)/)
   const range = findTomlSection(lines, section.keyPath, section.index)
   if (!range) return null
+  removeTomlSectionLines(lines, range)
+  return lines.join('')
+}
+
+/**
+ * 拿掉 keyPath 那张表连同它下面各自单占表头的子表（[mcp_servers.docs] 和 [mcp_servers.docs.env]），
+ * 每段的拿法同上。一段也没找到返回 null；写在上一层里的（行内表、点号键）也找不到，交给
+ * renderTomlEdit 整份重写。
+ */
+export function removeTomlTableText(source: string, keyPath: readonly string[]): string | null {
+  const lines = source.split(/(?<=\n)/)
+  const sections: Array<{ header: number; end: number }> = []
+  for (let line = 0; line < lines.length; line += 1) {
+    const parsed = tomlHeader(lineText(lines[line] ?? ''))
+    if (!parsed) continue
+    const previous = sections[sections.length - 1]
+    if (previous && previous.end === lines.length) previous.end = line
+    if (keyPath.every((key, index) => parsed.keyPath[index] === key)) sections.push({ header: line, end: lines.length })
+  }
+  if (!sections.length) return null
+  // 从后往前删，前面那几段的表头还在原来那行；后一段连它前面的空行一起拿掉时，前一段的结尾跟着收回来。
+  for (const range of sections.reverse()) removeTomlSectionLines(lines, { header: range.header, end: Math.min(range.end, lines.length) })
+  return lines.join('')
+}
+
+function removeTomlSectionLines(lines: string[], range: { header: number; end: number }): void {
   const blank = (line: number) => !lineText(lines[line] ?? '').trim()
   let last = range.header
   for (let line = range.end - 1; line > range.header; line -= 1) {
@@ -375,7 +401,6 @@ function removeTomlSectionText(source: string, section: { keyPath: readonly stri
   let start = range.header
   if (end === lines.length) while (start > 0 && blank(start - 1)) start -= 1
   lines.splice(start, end - start)
-  return lines.join('')
 }
 
 function editTomlEntryText(
