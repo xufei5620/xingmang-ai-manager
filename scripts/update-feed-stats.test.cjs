@@ -407,14 +407,16 @@ test('machines still below the newest version are split by whether they asked fo
       statusRead(windows19, 'ip-a', '12'),
       // Linux is not released; left out.
       statusRead(linux15, 'ip-g', '12'),
+      // Last seen three hours after anything newer than 0.2.19 first went out: had no fair chance to download.
+      statusRead(mac19, 'ip-h', '05'),
     ],
   }]
   const installerPieces = [{
     rows: [
-      download('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', 'ip-a', '10'),
-      download('XingMang-AI-Manager-0.2.19-Apple-Silicon-arm64.zip', 'ip-c', '10'),
-      download('XingMang-AI-Manager-0.2.21-Intel-x64.zip', 'ip-d', '10'),
-      download('XingMang-AI-Manager-0.2.21-Apple-Silicon-arm64.zip', 'ip-e', '10'),
+      download('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', 'ip-a', '02'),
+      download('XingMang-AI-Manager-0.2.19-Apple-Silicon-arm64.zip', 'ip-c', '02'),
+      download('XingMang-AI-Manager-0.2.21-Intel-x64.zip', 'ip-d', '03'),
+      download('XingMang-AI-Manager-0.2.21-Apple-Silicon-arm64.zip', 'ip-e', '03'),
     ],
   }]
   const stale = summarizeStaleMachines(statusPieces, installerPieces)
@@ -424,6 +426,7 @@ test('machines still below the newest version are split by whether they asked fo
     ['0.2.19', { windows: { downloaded: 0, missing: 1, estimated: 0 }, mac: { downloaded: 1, missing: 2, estimated: 1 } }],
     ['0.2.20', { windows: { downloaded: 0, missing: 0, estimated: 0 }, mac: { downloaded: 1, missing: 1, estimated: 1 } }],
   ])
+  assert.deepEqual(stale.unexposed, { windows: 0, mac: 1 })
   assert.equal(JSON.stringify([...stale.versions]).includes('ip-'), false)
   const nothingDownloaded = summarizeStaleMachines(statusPieces, [])
   assert.equal(nothingDownloaded.target, null)
@@ -436,9 +439,9 @@ test('under sampling each machine seen downloading stands for as many as its den
   const installerPieces = [{
     rows: [
       // Seen twice, once in an hour recorded 1 in 10 and once 1 in 4: it stands for four.
-      sampledDownload('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', 'ip-a', '09', 10),
-      sampledDownload('XingMang-AI-Manager-0.2.21-Apple-Silicon-arm64.zip', 'ip-a', '10', 4),
-      sampledDownload('XingMang-AI-Manager-0.2.21-Apple-Silicon-arm64.zip', 'ip-c', '10', 10),
+      sampledDownload('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', 'ip-a', '01', 10),
+      sampledDownload('XingMang-AI-Manager-0.2.21-Apple-Silicon-arm64.zip', 'ip-a', '02', 4),
+      sampledDownload('XingMang-AI-Manager-0.2.21-Apple-Silicon-arm64.zip', 'ip-c', '02', 10),
     ],
   }]
   const stale = summarizeStaleMachines(statusPieces, installerPieces)
@@ -452,17 +455,19 @@ test('the report follows the two newest versions and shows whether machines left
   const hour = (value) => `2026-10-07T${value}:00:00Z`
   const statusRows = [
     // Four Macs stopped on 0.2.19; one of them downloaded 0.2.20.
-    hourRow(mac19, '203.0.113.1', hour('13')),
-    hourRow(mac19, '203.0.113.2', hour('13')),
-    hourRow(mac19, '203.0.113.3', hour('13')),
-    hourRow(mac19, '203.0.113.4', hour('13')),
+    hourRow(mac19, '203.0.113.1', hour('20')),
+    hourRow(mac19, '203.0.113.2', hour('20')),
+    hourRow(mac19, '203.0.113.3', hour('20')),
+    hourRow(mac19, '203.0.113.4', hour('20')),
     // A Mac that took 0.2.20.
     hourRow(mac19, '203.0.113.5', hour('12')),
-    hourRow(mac20, '203.0.113.5', hour('14')),
+    hourRow(mac20, '203.0.113.5', hour('22')),
     // A Windows machine on 0.2.19 that downloaded 0.2.21.
-    hourRow(windows19, '198.51.100.1', hour('16')),
+    hourRow(windows19, '198.51.100.1', hour('22')),
+    // A Windows machine last seen an hour after the first newer installer went out: no chance yet, left out of the shares.
+    hourRow(windows15, '198.51.100.9', hour('13')),
     // Old versions beyond the rows shown are folded into one.
-    ...['0.2.14', '0.2.15', '0.2.17', '0.2.18'].map((version, index) => hourRow(mac15.replace('/0.2.15 ', `/${version} `), `192.0.2.${index + 1}`, hour('13'))),
+    ...['0.2.14', '0.2.15', '0.2.17', '0.2.18'].map((version, index) => hourRow(mac15.replace('/0.2.15 ', `/${version} `), `192.0.2.${index + 1}`, hour('20'))),
   ]
   const downloadRows = [
     downloadRow('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', '203.0.113.1', hour('12')),
@@ -485,7 +490,8 @@ test('the report follows the two newest versions and shows whether machines left
   assert.equal(report.split('「还没装上」里分不出装失败和下好了还没重启').length, 2)
 
   assert.match(report, /### 还停在旧版本的电脑下过新版没有/)
-  assert.match(report, /只算这段时间里最后一次读状态文件时还低于 0\.2\.21 的电脑/)
+  assert.match(report, /只算这段时间里最后一次读状态文件时还低于 0\.2\.21、而且有机会下新版的电脑/)
+  assert.match(report, /停着的电脑里另有一部分（Windows 50\.0%）最后一次出现时比它新的版本还没出来，或者出来不到 6 小时/)
   assert.match(report, /\| 停在哪个版本 \| Windows 下过新版 \| Mac 下过新版 \|/)
   assert.match(report, /\| 0\.2\.20 \| - \| 0\.0% \|/)
   assert.match(report, /\| 0\.2\.19 \| 100\.0% \| 25\.0% \|/)
@@ -502,7 +508,7 @@ test('the report follows the two newest versions and shows whether machines left
 test('a sampled window shows what was seen next to the estimate, capped at every machine, and says which is which', async () => {
   const hour = (value) => `2026-10-07T${value}:00:00Z`
   const sampledRow = (base, sampleInterval) => ({ ...base, avg: { sampleInterval } })
-  const statusRows = ['1', '2', '3', '4'].map((last) => hourRow(mac19, `203.0.113.${last}`, hour('14')))
+  const statusRows = ['1', '2', '3', '4'].map((last) => hourRow(mac19, `203.0.113.${last}`, hour('20')))
   const downloadRows = [
     sampledRow(downloadRow('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', '203.0.113.1', hour('12')), 10),
     downloadRow('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', '203.0.113.2', hour('13')),

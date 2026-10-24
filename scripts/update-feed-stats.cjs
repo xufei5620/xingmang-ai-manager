@@ -431,10 +431,18 @@ function summarizeInstallerDownloads(statusPieces, installerPieces, followed = u
   return { version, outcomes, sampleInterval }
 }
 
+// 开着的星芒每 3 小时查一次更新（electron/main.ts 的 updateCheckIntervalMs）。比它新的版本第一次被人下到以后，
+// 它又开了这么久（两轮检查，加上下载的时间）还没下，才算「有机会下却没下」。
+const DOWNLOAD_CHANCE_MS = 6 * 60 * 60 * 1000
+
 /**
  * 最后一次读状态文件时还低于这段时间里最新那版的电脑，这段时间里从这里请求过比它自己新的安装包没有。
  * 「下过还停着」是下了没装上（或没下完），「没下过」是根本没去下或下不到；两种的办法不一样，
  * 要不要强制更新先看这个。只按系统和它停在的版本汇总，返回值里没有 IP。
+ *
+ * 统计时段往往比新版本发出来的时间长：新版还没出（或刚出）时就最后一次出现的电脑没机会下，
+ * 算进「没下过」会把下载不通说得比实际严重，单独记在 unexposed 里，不进比例。哪个版本什么时候
+ * 「出来」的，按这段时间里第一次有人下到它的那个小时算。
  *
  * Cloudflare 忙的时候抽样记（一次请求只有 1/sampleInterval 的机会被记下），一台只请求一两次
  * 安装包的多半漏记，看到的「下过」只是下限。estimated 把看到的每台按它那几次里最密的抽样
@@ -443,19 +451,32 @@ function summarizeInstallerDownloads(statusPieces, installerPieces, followed = u
 function summarizeStaleMachines(statusPieces, installerPieces) {
   const { downloads, sampleInterval } = readInstallerDownloads(installerPieces)
   const byMachine = new Map()
+  const firstDownloaded = new Map()
   let target = null
   for (const download of downloads) {
     const list = byMachine.get(download.key) || []
     list.push(download)
     byMachine.set(download.key, list)
+    const first = firstDownloaded.get(download.version)
+    if (first === undefined || download.time < first) firstDownloaded.set(download.version, download.time)
     if (!target || compareReleaseVersions(download.version, target) > 0) target = download.version
   }
   const versions = new Map()
-  if (!target) return { target, versions, sampleInterval }
+  const unexposed = { windows: 0, mac: 0 }
+  if (!target) return { target, versions, unexposed, sampleInterval }
   for (const [key, client] of latestClientPerMachine(statusPieces)) {
     if (client.platform !== 'windows' && client.platform !== 'mac') continue
     if (compareReleaseVersions(client.version, target) >= 0) continue
     const newer = (byMachine.get(key) || []).filter((download) => compareReleaseVersions(download.version, client.version) > 0)
+    if (!newer.length) {
+      const newerOut = Math.min(...[...firstDownloaded]
+        .filter(([version]) => compareReleaseVersions(version, client.version) > 0)
+        .map(([, time]) => time))
+      if (client.time < newerOut + DOWNLOAD_CHANCE_MS) {
+        unexposed[client.platform] += 1
+        continue
+      }
+    }
     const counts = versions.get(client.version) || {
       windows: { downloaded: 0, missing: 0, estimated: 0 },
       mac: { downloaded: 0, missing: 0, estimated: 0 },
@@ -468,7 +489,7 @@ function summarizeStaleMachines(statusPieces, installerPieces) {
     }
     versions.set(client.version, counts)
   }
-  return { target, versions, sampleInterval }
+  return { target, versions, unexposed, sampleInterval }
 }
 
 // 最新那版刚发出去时大多还没轮到检查，只看它看不出装没装得上，所以连前一版一起看。
@@ -561,8 +582,9 @@ const STALE_VERSION_ROWS = 4
 // 每格是这一行、这个系统里停着的电脑下过新版的比例，不写台数。
 function renderStaleSection(stale) {
   const lines = ['', '### 还停在旧版本的电脑下过新版没有', '']
+  const unexposedReason = '最后一次出现时比它新的版本还没出来，或者出来不到 6 小时（开着的星芒 3 小时查一次更新），没机会下'
   if (!stale.versions.size) {
-    lines.push(`这段时间读过状态文件的电脑，最后一次读时都已经是 ${stale.target} 或更高。`)
+    lines.push(`这段时间读过状态文件的电脑，最后一次读时都已经是 ${stale.target} 或更高，或者${unexposedReason}。`)
     return lines
   }
   const versions = sortVersionsDescending(stale.versions.keys())
@@ -588,9 +610,13 @@ function renderStaleSection(stale) {
     return sampled && machines ? `${seen}（估 ${formatShare(Math.min(counts[id].estimated, machines), machines)}）` : seen
   }
   lines.push(
-    `只算这段时间里最后一次读状态文件时还低于 ${stale.target} 的电脑。每格是这一行、这个系统里的电脑这段时间从这里请求过`
+    `只算这段时间里最后一次读状态文件时还低于 ${stale.target}、而且有机会下新版的电脑。每格是这一行、这个系统里的电脑这段时间从这里请求过`
       + '比自己新的安装包（Windows 的 Setup.exe、Mac 的 zip，下没下完都算）的比例，剩下的是一次都没请求过。',
   )
+  const unexposed = DOWNLOAD_COLUMNS
+    .filter(([id]) => stale.unexposed[id] > 0)
+    .map(([id, label]) => `${label} ${formatShare(stale.unexposed[id], stale.unexposed[id] + total[id].downloaded + total[id].missing)}`)
+  if (unexposed.length) lines.push('', `停着的电脑里另有一部分（${unexposed.join('、')}）${unexposedReason}，没算进表里。`)
   if (sampled) {
     lines.push(
       '',
