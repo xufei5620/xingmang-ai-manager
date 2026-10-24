@@ -19,13 +19,16 @@ jobs:
     steps:
       - name: Probe official download entries
         run: |
-          set -u
+          set +e +o pipefail
           root='https://claude.ai/api/desktop'
           probe_entry() {
-            local name="$1" url="$2" ua mode headers status loc cf
+            local name="$1" url="$2" mode headers status loc cf
             for mode in curl sync; do
-              if [ "$mode" = sync ]; then ua='xingmang-official-offline-sync/1'; else ua="curl/$(curl --version | head -1 | cut -d' ' -f2)"; fi
-              headers=$(curl -sS -o /dev/null -D - --max-time 30 -A "$ua" "$url" 2>&1 || true)
+              if [ "$mode" = sync ]; then
+                headers=$(curl -sS -o /dev/null -D - --max-time 30 -A 'xingmang-official-offline-sync/1' "$url" 2>&1)
+              else
+                headers=$(curl -sS -o /dev/null -D - --max-time 30 "$url" 2>&1)
+              fi
               status=$(printf '%s\n' "$headers" | grep -i -m1 '^HTTP/' | tr -d '\r')
               loc=$(printf '%s\n' "$headers" | grep -i -m1 '^location:' | cut -d' ' -f2- | tr -d '\r')
               cf=$(printf '%s\n' "$headers" | grep -i -m1 '^cf-mitigated:' | tr -d '\r')
@@ -41,7 +44,7 @@ jobs:
           done
       - name: Probe component sizes named in the customer log
         run: |
-          set -u
+          set +e +o pipefail
           for path in \
             claude-code-releases/2.1.308/win32-x64/claude.exe.zst \
             claude-code-releases/2.1.308/linux-x64/claude.zst \
