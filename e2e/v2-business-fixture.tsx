@@ -1024,6 +1024,12 @@ const apiMethods = {
     if (query.has('extensionOk')) return extensionList(input.provider)
     throw new Error('扩展操作失败，已有配置保留')
   },
+  // Codex 插件的开关走它自己的接口（主进程改 config.toml），不走上面那条通用的扩展改动。
+  togglePlugin: async (selector: string, enabled: boolean) => {
+    record('toggle-plugin', [selector, enabled])
+    if (query.has('extensionOk')) return { plugins: [], marketplaces: [] }
+    throw new Error('扩展操作失败，已有配置保留')
+  },
   // Codex 的连接走它自己的原生接口；夹具只记下收到了什么。
   addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
     record('add-mcp', input)

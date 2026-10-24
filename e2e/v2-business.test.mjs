@@ -1900,6 +1900,21 @@ test('the tool tabs carry the count and a switched-off connection is named in th
   }
 })
 
+// Codex 没有插件启停命令：开关走它自己的接口改 config.toml，通用的扩展改动对 Codex 插件只认装和卸。
+test('a Codex plugin switch goes through the Codex plugin interface and names the plugin in the toast', async () => {
+  const page = await fixture('page=plugins&extensionOk')
+  try {
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
+    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
+    await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'toggle-plugin')).map((call) => call.args), [['test-extension', false]])
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('removing a connection says which tool it leaves and that the others keep theirs', async () => {
   const page = await fixture('page=mcp&extensionOk')
   try {

@@ -416,6 +416,7 @@ function extensionApi() {
     mutateProviderExtension: vi.fn().mockResolvedValue({}),
     toggleSkill: vi.fn().mockResolvedValue({ skills: [] }),
     uninstallSkill: vi.fn().mockResolvedValue({ skills: [], trashPath: '' }),
+    togglePlugin: vi.fn().mockResolvedValue({ plugins: [], marketplaces: [] }),
   }
 }
 
@@ -518,6 +519,52 @@ describe('extension row actions', () => {
     expect(api.toggleSkill).toHaveBeenCalledWith(skill.path, true)
     expect(api.uninstallSkill).toHaveBeenCalledWith(skill.path)
     expect(api.mutateProviderExtension).not.toHaveBeenCalled()
+  })
+
+  it('switches an installed Codex plugin through its own interface, since the Codex CLI has no command for it', async () => {
+    const api = extensionApi()
+    const row = listItem({
+      provider: 'codex',
+      id: 'sample@openai-api-curated',
+      name: 'sample',
+      scope: null,
+      // 主进程给 Codex 插件的启停照旧是 false：旧界面靠它不画开关。
+      operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+    })
+
+    expect(extensionRowState(row)).toEqual({
+      readonly: false,
+      enabled: true,
+      canToggle: true,
+      canUninstall: true,
+      canUpdate: false,
+    })
+    expect(extensionRowState({ ...row, enabled: false })).toMatchObject({ enabled: false, canToggle: true })
+    await runExtensionAction(api, row, 'disable')
+    await runExtensionAction(api, { ...row, enabled: false }, 'enable')
+    await runExtensionAction(api, row, 'uninstall')
+    await runExtensionAction(api, listItem({ provider: 'grok', id: 'demo', enabled: false }), 'enable')
+
+    expect(api.togglePlugin.mock.calls).toEqual([
+      ['sample@openai-api-curated', false],
+      ['sample@openai-api-curated', true],
+    ])
+    expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
+      { provider: 'codex', kind: 'plugin', action: 'uninstall', id: 'sample@openai-api-curated' },
+      { provider: 'grok', kind: 'plugin', action: 'enable', id: 'demo', scope: 'user' },
+    ])
+  })
+
+  it('offers no switch for a Codex plugin that is only in the catalog', () => {
+    const row = listItem({
+      provider: 'codex',
+      id: 'game-studio@openai-api-curated',
+      installed: false,
+      enabled: false,
+      scope: null,
+      operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+    })
+    expect(extensionRowState(row).canToggle).toBe(false)
   })
 
   it('keeps only the Codex system skills read-only', () => {
