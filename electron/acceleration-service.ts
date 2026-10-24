@@ -160,6 +160,10 @@ function projectLines(value: unknown): AccelerationLine[] {
   return lines
 }
 
+function isAutomaticOrigin(value: unknown): value is NonNullable<AccelerationState['autoStartedBy']> {
+  return value === 'codex-desktop' || value === 'claude-desktop'
+}
+
 /** Only allow display data across IPC; transport credentials must stay inside the backend. */
 function projectState(value: unknown, scope: string): AccelerationState {
   if (!isRecord(value) || value.scope !== scope || !isPhase(value.phase)
@@ -176,7 +180,7 @@ function projectState(value: unknown, scope: string): AccelerationState {
   if (value.supportedModes !== undefined && (!Array.isArray(value.supportedModes) || !value.supportedModes.length
     || value.supportedModes.length > 2 || new Set(value.supportedModes).size !== value.supportedModes.length
     || value.supportedModes.some((mode) => mode !== 'system-proxy' && mode !== 'tun'))) throw new Error(INVALID_RESPONSE)
-  if (value.autoStartedBy !== undefined && (value.autoStartedBy !== 'codex-desktop' || !isRunning(phase))) throw new Error(INVALID_RESPONSE)
+  if (value.autoStartedBy !== undefined && (!isAutomaticOrigin(value.autoStartedBy) || !isRunning(phase))) throw new Error(INVALID_RESPONSE)
   // 软件替用户连的会话不扣时长，免费时长用完（0）也照样连着。
   if (phase === 'active' && (value.connectedAt === null || value.remainingSeconds === null
     || (value.remainingSeconds === 0 && value.autoStartedBy === undefined))) {
@@ -200,7 +204,7 @@ function projectState(value: unknown, scope: string): AccelerationState {
     ...(value.entitlementSource === 'server' || value.entitlementSource === 'local-device' || value.entitlementSource === 'local-development' ? { entitlementSource: value.entitlementSource } : {}),
     ...(Array.isArray(value.supportedModes) ? { supportedModes: [...value.supportedModes] as AccelerationMode[] } : {}),
     ...(Array.isArray(value.conflicts) ? { conflicts: [...value.conflicts] as AccelerationConflictKind[] } : {}),
-    ...(value.autoStartedBy === 'codex-desktop' ? { autoStartedBy: value.autoStartedBy } : {}),
+    ...(isAutomaticOrigin(value.autoStartedBy) ? { autoStartedBy: value.autoStartedBy } : {}),
     scope, phase, mode: value.mode, totalSeconds: value.totalSeconds, remainingSeconds: value.remainingSeconds,
     sessionSeconds: value.sessionSeconds, measuredAt: value.measuredAt, connectedAt: value.connectedAt, line, error: value.error,
   }

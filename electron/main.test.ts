@@ -185,7 +185,7 @@ describe('main process quit cleanup', () => {
         "powerMonitor.off('resume', onRouteResume)",
         'clearInterval(routeOnlineTimer)',
       ],
-      'acceleration-notices': ['accelerationExpiry?.dispose()', 'codexDesktopAcceleration.dispose()', 'accelerationInterruption?.dispose()'],
+      'acceleration-notices': ['accelerationExpiry?.dispose()', 'codexDesktopAcceleration.dispose()', 'claudeDesktopAcceleration.dispose()', 'accelerationInterruption?.dispose()'],
       acceleration: ["void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))"],
       'acceleration-host': ['void developmentAcceleration?.dispose().catch(() => undefined)'],
       'runtime-log-hooks': [

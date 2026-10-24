@@ -93,6 +93,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     fetchAvailableModels,
   } = dependencies
 
+  // 从星芒打开过的客户端装在哪：之后问它还在不在跑要用。没打开成记 null（当它不在），还在打开就没有这一项。
+  const launchedClientPaths = new Map<ExternalToolId, string | null>()
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
     // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
@@ -111,6 +113,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       buildExternalClientDetectionErrorLogDetail(failure, providerRoots.userHome)),
     // 客户说「打开还是慢」，客服在反馈报告里看这一行：慢在排队、PowerShell 启动、读安装记录、核签名，还是交出去以后客户端自己慢。
     onLaunchTiming: (timing) => runtimeLog?.log('info', 'system', 'external-client.launch-timing', '打开桌面客户端前各段用时', { ...timing }),
+    onLaunched: (tool, clientPath) => { launchedClientPaths.set(tool, clientPath) },
   })
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()
@@ -277,7 +280,25 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     return described
   }
   const cancelExternalClientInstall = (tool: ExternalToolId) => externalClientRuntime.cancelInstall(tool)
-  const launchExternalClient = (tool: ExternalToolId) => externalClientRuntime.launch(tool)
+  async function launchedClientRunning(tool: ExternalToolId): Promise<boolean | null> {
+    const clientPath = launchedClientPaths.get(tool)
+    if (clientPath === undefined) return null
+    if (clientPath === null) return false
+    return await externalClientRuntime.stillRunning?.(tool, clientPath) ?? null
+  }
+  async function launchExternalClient(tool: ExternalToolId): Promise<void> {
+    // Claude Desktop 第一次用、每次自己升级以后都要从官网下 1GB 多的组件，国内直连下不动：先在后台替他连上
+    // 加速（#1373）。连不上照常打开（它永不抛错，这里再兜一层）。
+    if (tool === 'claudeDesktop' && serviceOptions.prepareClaudeDesktopLaunch) {
+      await serviceOptions.prepareClaudeDesktopLaunch({ isDesktopRunning: () => launchedClientRunning('claudeDesktop') }).catch(() => undefined)
+    }
+    try {
+      await externalClientRuntime.launch(tool)
+    } catch (error) {
+      if (tool === 'claudeDesktop') launchedClientPaths.set(tool, null)
+      throw error
+    }
+  }
   /**
    * 保存之后立刻回读一遍并自检。这一步问出来的比保存时那次模型清单校验多两件
    * 事：写下去的配置本机能不能原样读回来、读回来的那把密钥在客户端真正会打的

@@ -131,12 +131,19 @@ describe('acceleration routing', () => {
     await expect(routing.codexDesktopAcceleration.ensureConnected()).resolves.toEqual({ status: 'skipped', reason: 'state-unreadable' })
     expect(accelerationService).toHaveBeenCalled()
   })
+
+  it('opens Claude Desktop unaccelerated while the acceleration service is not built yet', async () => {
+    const { routing } = route()
+    await expect(routing.claudeDesktopAcceleration.ensureConnected({ isDesktopRunning: async () => null }))
+      .resolves.toEqual({ status: 'skipped', reason: 'state-unreadable' })
+  })
 })
 
 describe('acceleration services', () => {
   function build(overrides: Partial<AccelerationServicesOptions> = {}) {
     const log = runtimeLog()
     const observe = vi.fn<(state: AccelerationState) => void>()
+    const observeClaude = vi.fn<(state: AccelerationState) => void>()
     const applicationTray = vi.fn<AccelerationServicesOptions['applicationTray']>(() => null)
     const recheckAccelerationBundle = vi.fn(async () => 'repaired' as const)
     const services = createAccelerationServices({
@@ -146,6 +153,7 @@ describe('acceleration services', () => {
       recheckAccelerationBundle,
       routing: {
         codexDesktopAcceleration: { observe } as unknown as AccelerationServicesOptions['routing']['codexDesktopAcceleration'],
+        claudeDesktopAcceleration: { observe: observeClaude } as unknown as AccelerationServicesOptions['routing']['claudeDesktopAcceleration'],
         accelerationStartArguments: async () => ['system-proxy'],
       },
       readAccelerationAccountScope: () => 'xm-account:1',
@@ -154,14 +162,15 @@ describe('acceleration services', () => {
       applicationTray,
       ...overrides,
     })
-    return { services, log, observe, applicationTray, recheckAccelerationBundle }
+    return { services, log, observe, observeClaude, applicationTray, recheckAccelerationBundle }
   }
 
-  it('hands every state the service produces to the Codex desktop watcher', async () => {
-    const { services, observe } = build()
+  it('hands every state the service produces to the Codex and Claude desktop watchers', async () => {
+    const { services, observe, observeClaude } = build()
     const state = await services.acceleration.getAccelerationState('xm-account:1')
     expect(state.phase).toBe('unavailable')
     expect(observe).toHaveBeenCalledWith(state)
+    expect(observeClaude).toHaveBeenCalledWith(state)
   })
 
   it('blames a damaged bundle and offers a recheck that logs what it found', async () => {

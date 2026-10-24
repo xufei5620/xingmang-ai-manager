@@ -71,6 +71,12 @@ export interface CodexDesktopAccelerationOptions {
    * 也跟得上。
    */
   onlyNeededAtStartup?(): boolean | Promise<boolean>
+  /**
+   * 别的桌面端（Claude Desktop，claude-desktop-acceleration.ts）这会儿还在用同一次会话：Codex 这边用完了
+   * 也不断，交给它，由它用完再断。两边都是从星芒打开的、前后脚开的，共用一条线路；先用完的那边一断，
+   * 另一边下到一半的东西就断了。缺省 = 旧行为，用完就断。
+   */
+  heldElsewhere?(scope: string, connectedAt: string): boolean
   /** 多久问一次桌面端还在不在。缺省一分钟：Windows 上每问一次要起一个 PowerShell。 */
   watchIntervalMs?: number
   /**
@@ -105,6 +111,8 @@ export interface CodexDesktopAccelerationCoordinator {
    * （不管是怎么漏掉的），从这里接着盯，免得一条不扣时长的线路一直开到退出星芒。
    */
   observe(state: AccelerationState): void
+  /** 这一次会话 Codex 这边还在用（正盯着、还没到断开的时候）：别的桌面端用完了要交给它，不能断。 */
+  holds(scope: string, connectedAt: string): boolean
   /** 停掉「桌面端退出就断开」的定时检查。退出程序时加速服务自己会停干净。 */
   dispose(): void
 }
@@ -304,6 +312,10 @@ export function createCodexDesktopAccelerationCoordinator(
     stopWatching()
     const started = cause === 'desktop-started'
     const what = started ? 'Codex 桌面端已经打开好了' : 'Codex 桌面端已退出'
+    if (heldElsewhere(current.scope, current.connectedAt)) {
+      log('info', 'acceleration.codex-desktop.handed-off', `${what}，自动连上的加速别的桌面端还在用，交给它用完再断`, { cause })
+      return
+    }
     try {
       const after = await options.disconnect!(current.scope, current.connectedAt)
       if (after.phase === 'active' && !after.autoStartedBy) {
@@ -314,6 +326,11 @@ export function createCodexDesktopAccelerationCoordinator(
     } catch (error) {
       log('warn', 'acceleration.codex-desktop.disconnect.failed', `${what}，但自动连上的加速没能断开`, { cause, ...failureDetail(error) })
     }
+  }
+
+  function heldElsewhere(scope: string, connectedAt: string): boolean {
+    try { return options.heldElsewhere?.(scope, connectedAt) === true }
+    catch { return false }
   }
 
   /** 查不出来按「还要一直连着」：断早了 ChatGPT 账号的客户会发不出消息。 */
@@ -379,7 +396,12 @@ export function createCodexDesktopAccelerationCoordinator(
     observe(state) {
       // 只认当前账号的：换了账号，旧账号的会话由加速服务自己停掉。
       if (state.scope !== options.getAccountScope()) return
+      // 别的桌面端正盯着的那一次由它管，这边不再陪着每分钟起一个 PowerShell；交给它以后路过的也是这样。
+      if (state.connectedAt && !(watch && watch.connectedAt === state.connectedAt) && heldElsewhere(state.scope, state.connectedAt)) return
       watchSession(state)
+    },
+    holds(scope, connectedAt) {
+      return watch !== null && watch.scope === scope && watch.connectedAt === connectedAt
     },
     dispose() {
       disposed = true

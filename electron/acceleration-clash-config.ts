@@ -27,6 +27,9 @@ const privateNetworkRules = [
 // challenges.cloudflare.com 是登录 ChatGPT 时的人机验证。这张表要跟服务器的放行名单一致：这里多一个，
 // 服务器那边照样拒；那边多一个，这里不送也用不上。www.cloudflare.com 服务器放行了但这里不送：
 // 网络位置要看这台电脑直连时在哪，安装源的顺序按它排（system-scan-service.ts）。
+// downloads.claude.ai 是 2026-10-24 加的（#1373，yoyo 回「加速下」）：Claude Desktop 第三方推理模式第一次用
+// 之前，要从这里下 Claude Code 程序和 Cowork 工作区（1GB 多），国内直连不通，下不到聊天、Cowork、Code
+// 全起不来。只送这一个主机：claude.ai、api.anthropic.com 国内直连能通，遥测之类没必要占线路的流量。
 const lineRoutedRules = [
   'DOMAIN-SUFFIX,chatgpt.com,XINGMANG',
   'DOMAIN-SUFFIX,openai.com,XINGMANG',
@@ -34,6 +37,7 @@ const lineRoutedRules = [
   'DOMAIN-SUFFIX,oaiusercontent.com,XINGMANG',
   'DOMAIN,challenges.cloudflare.com,XINGMANG',
   'DOMAIN,www.gstatic.com,XINGMANG',
+  'DOMAIN,downloads.claude.ai,XINGMANG',
 ]
 
 interface Hysteria2Connection {

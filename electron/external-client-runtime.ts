@@ -136,6 +136,11 @@ export interface ExternalClientRuntimeOptions {
    * 那一次一共多久照旧记在「外部客户端启动」那一行。
    */
   onLaunchTiming?: (timing: ExternalClientLaunchTiming) => void
+  /**
+   * 打开成了的那一个装在哪（这次打开前那次检测认出来的）：之后问它还在不在跑（stillRunning）要用。
+   * 只进主进程，不上屏；缺省 = 不记。
+   */
+  onLaunched?: (tool: ExternalToolId, clientPath: string) => void
 }
 
 /** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
@@ -1053,6 +1058,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       } else throw new Error('当前系统不支持启动此桌面客户端')
       try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }
       catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
+      try { options.onLaunched?.(tool, client.path) }
+      catch { /* 同上：已经交出去了。 */ }
     })
     launches.set(tool, launched)
     const settle = () => {

@@ -40,6 +40,7 @@ const lineRoutedRules = [
   'DOMAIN-SUFFIX,oaiusercontent.com,XINGMANG',
   'DOMAIN,challenges.cloudflare.com,XINGMANG',
   'DOMAIN,www.gstatic.com,XINGMANG',
+  'DOMAIN,downloads.claude.ai,XINGMANG',
 ]
 
 describe('parseClashAccelerationProfile', () => {
@@ -247,6 +248,10 @@ describe('buildIsolatedMihomoConfig', () => {
     // The connectivity probe has to reach the line, while the network location probe has to stay direct.
     expect(rules).toContain('DOMAIN,www.gstatic.com,XINGMANG')
     expect(rules.some((rule) => rule.includes('www.cloudflare.com'))).toBe(false)
+    // Claude Desktop fetches its agent helper and workspace from this one host; the rest of claude.ai and
+    // anthropic.com stays direct so telemetry and sign-in pages do not spend the shared line quota.
+    expect(rules).toContain('DOMAIN,downloads.claude.ai,XINGMANG')
+    expect(rules.some((rule) => /(?:^|,)(?:claude\.ai|anthropic\.com|api\.anthropic\.com),XINGMANG$/.test(rule))).toBe(false)
     expect(rules.indexOf('DOMAIN,xm.solov.cc,DIRECT')).toBeLessThan(rules.indexOf(lineRoutedRules[0]))
   })
 

@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
+import type { ClaudeDesktopLaunchContext } from './claude-desktop-acceleration'
 import { createExternalClientRouteService } from './external-client-route-service'
 import type { SystemServiceOptions } from './system-service'
 import { createServiceContext } from './system-service-context'
@@ -67,5 +68,35 @@ describe('external client route service', () => {
 
     expect(runtime.launch).toHaveBeenCalledWith('claudeDesktop')
     expect(runtime.cancelInstall).toHaveBeenCalledWith('opencode')
+  })
+
+  // #1373: Claude Desktop downloads its components from the official site on first
+  // use, so the line has to be up before it starts.
+  it('connects acceleration before launching Claude Desktop, and only for Claude Desktop', async () => {
+    const order: string[] = []
+    const prepareClaudeDesktopLaunch = vi.fn(async (_context: ClaudeDesktopLaunchContext) => { order.push('prepare') })
+    const { runtime, service } = createService(async () => [], { prepareClaudeDesktopLaunch })
+    vi.mocked(runtime.launch).mockImplementation(async () => { order.push('launch') })
+
+    await service.launchExternalClient('claudeDesktop')
+    await service.launchExternalClient('opencode')
+
+    expect(order).toEqual(['prepare', 'launch', 'launch'])
+    expect(prepareClaudeDesktopLaunch).toHaveBeenCalledOnce()
+    // This runtime never says where it found the client, so whether it runs cannot be told yet.
+    await expect(prepareClaudeDesktopLaunch.mock.calls[0][0].isDesktopRunning()).resolves.toBeNull()
+  })
+
+  it('still opens Claude Desktop when acceleration fails, and counts it gone after a launch that failed', async () => {
+    const prepareClaudeDesktopLaunch = vi.fn(async (_context: ClaudeDesktopLaunchContext) => { throw new Error('helper down') })
+    const { runtime, service } = createService(async () => [], { prepareClaudeDesktopLaunch })
+
+    await service.launchExternalClient('claudeDesktop')
+    expect(runtime.launch).toHaveBeenCalledWith('claudeDesktop')
+
+    vi.mocked(runtime.launch).mockRejectedValueOnce(new Error('尚未检测到客户端，请先安装并重新检测'))
+    await expect(service.launchExternalClient('claudeDesktop')).rejects.toThrow('尚未检测到客户端')
+    await expect(prepareClaudeDesktopLaunch.mock.calls[1][0].isDesktopRunning()).resolves.toBe(false)
+    expect(runtime.stillRunning).not.toHaveBeenCalled()
   })
 })
