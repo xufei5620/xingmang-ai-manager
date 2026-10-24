@@ -2352,6 +2352,9 @@ export class ProviderExtensionService {
     }
 
     if (input.provider === 'codex') {
+      // Codex 没有插件启停命令，启停走 plugins:toggle 直接改 config.toml。这里只认装和卸：
+      // 哪天 operations 放开了启停，「停用」也不能落成 `plugin remove` 把插件卸掉。
+      if (input.action !== 'install' && input.action !== 'uninstall') throw new Error('当前 Provider 不支持该原生操作')
       return { argv: ['plugin', input.action === 'install' ? 'add' : 'remove', id ?? safeSource(input.source), '--json'], secrets: [] }
     }
     // Grok 的插件命令没有范围参数（1.0.52、1.0.62），要的是项目那一层也只会落到 ~/.grok 那份（#1092）。

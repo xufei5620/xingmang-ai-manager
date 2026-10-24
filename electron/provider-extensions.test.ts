@@ -1274,6 +1274,24 @@ describe('ProviderExtensionService native mutations', () => {
 
     expect(calls.filter((argv) => argv.includes('--trust'))).toEqual([])
   })
+
+  it('never turns a Codex plugin switch into a CLI command, least of all plugin remove', async () => {
+    // Codex has no plugin enable/disable command; the switch goes through plugins:toggle,
+    // which edits config.toml. The shared mutation path only knows add and remove.
+    const calls: string[][] = []
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      calls.push([...argv])
+      return '[]'
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+
+    for (const action of ['enable', 'disable'] as const) {
+      await expect(service.mutate({ provider: 'codex', kind: 'plugin', action, id: 'sample@market' }))
+        .rejects.toThrow('不支持该原生操作')
+    }
+
+    expect(calls).toEqual([])
+  })
 })
 
 describe('Claude Code official marketplace', () => {

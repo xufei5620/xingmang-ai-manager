@@ -198,6 +198,16 @@ export interface ExtensionRowState {
 }
 
 /**
+ * Codex 没有插件启停命令：启停由主进程直接改 config.toml 的 `[plugins."名字@市场"] enabled`
+ * （plugins:toggle，codex-extensions.ts 的 setPluginEnabled，装着才让改，改完再对一遍）。
+ * 通用 mutate 对 Codex 插件只认装和卸，operations 里的启停照旧是 false：旧界面拿它决定画不画开关，
+ * 拿到 true 就会把启停交给 mutate。所以这里单独放开，不去动 operations。
+ */
+function codexPluginToggle(item: ExtensionItem): boolean {
+  return item.provider === 'codex' && item.kind === 'plugin'
+}
+
+/**
  * Codex 技能不走通用的 mutate：启停写 config.toml、移除挪进回收站，都由原生
  * 接口完成。原生接口里 managed=true 恰恰是「用户自己的、可以管」，只有
  * system 那一层才是内置只读（#490）。
@@ -224,7 +234,9 @@ export function extensionRowState(
   return {
     readonly,
     enabled: item.enabled,
-    canToggle: !readonly && item.operations[item.enabled ? 'disable' : 'enable'],
+    canToggle: !readonly && (
+      codexPluginToggle(item) ? item.installed : item.operations[item.enabled ? 'disable' : 'enable']
+    ),
     canUninstall: !readonly && item.operations.uninstall,
     canUpdate: !readonly && item.operations.update,
   }
@@ -333,11 +345,15 @@ export function extensionFailureTarget(failed: string): OperationTarget | undefi
  * 按缺省的 user 去找，项目里的删不掉，同名的全局那份反倒被改了（#488）。
  */
 export async function runExtensionAction(
-  api: Pick<V2Bridge, 'mutateProviderExtension' | 'toggleSkill' | 'uninstallSkill'>,
+  api: Pick<V2Bridge, 'mutateProviderExtension' | 'toggleSkill' | 'uninstallSkill' | 'togglePlugin'>,
   item: ExtensionItem,
   action: RowAction,
   nativeSkill?: NativeSkill,
 ): Promise<void> {
+  if (codexPluginToggle(item) && (action === 'enable' || action === 'disable')) {
+    await api.togglePlugin(item.id, action === 'enable')
+    return
+  }
   if (item.provider === 'codex' && item.kind === 'skill') {
     const matched = nativeSkill && findNativeSkill([nativeSkill], item)
     if (!matched) throw new Error('这个技能的文件位置已经变化，请刷新列表后再操作。')
