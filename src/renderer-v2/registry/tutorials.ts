@@ -574,7 +574,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '连接前选择线路或「自动选择」',
-        where: '设置 › 网络加速 › 网络加速 → 线路',
+        where: '设置 › 网络加速 → 线路',
         detail: '不确定选哪条就用「自动选择」，连接时自动测速选可用线路。',
         bullets: ['点「线路」右边的按钮，选择「自动选择」或具体线路。', '每条线路右边写着延迟，数字越小通常越快；点菜单最下面的「重新测速」再测一遍。'],
         expected: '当前线路显示你的选择。',
@@ -584,7 +584,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '开启加速，等状态确认',
-        where: '设置 › 网络加速 › 网络加速 → 开启加速',
+        where: '设置 › 网络加速 → 开启加速',
         detail: '点「开启加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
         bullets: ['点「开启加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
         expected: '显示实际线路，剩余时长开始计时。',
@@ -599,7 +599,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '用完明确点击停止加速',
-        where: '设置 › 网络加速 › 网络加速 → 停止加速',
+        where: '设置 › 网络加速 → 停止加速',
         detail: '不用时明确点停止，缩到托盘或切换页面不等于停止。',
         bullets: ['点「停止加速」，等连接结束。', '要换线路，也先停止。'],
         expected: '标题变回「网络加速」，剩余时长保留。',
