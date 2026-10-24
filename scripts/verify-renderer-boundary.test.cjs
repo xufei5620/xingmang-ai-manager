@@ -39,6 +39,8 @@ const valueImportable = [
   'electron/config-link-refusal',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
+  // 装插件、加外接工具失败时命令行说的原因（缺 Git、连不上 GitHub、重名），主进程挑行、错误框配标题共用一份。
+  'electron/extension-command-failure',
   'electron/external-url-blocked',
   'electron/git-runtime',
   // isRecord 这类最基础的输入检查，主进程和渲染层共用一份（#1071 第 3 条）；文件本身什么都不 import。

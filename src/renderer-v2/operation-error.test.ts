@@ -21,6 +21,10 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
+  // 主进程 extension-command-output.ts 的 withCommandOutput：原话后面接上命令自己说的那一行（Claude Code 2.1 的原话）。
+  gitMissing: { sample: '命令执行失败（退出码 1）：claude（命令输出：Executable not found in $PATH: "git"）', target: 'config' },
+  githubUnreachable: { sample: "命令执行失败（退出码 1）：claude（命令输出：fatal: unable to access 'https://github.com/anthropics/claude-code.git/': Failed to connect to github.com port 443 after 21045 ms: Couldn't connect to server）", target: 'config' },
+  nameTaken: { sample: '命令执行失败（退出码 1）：claude（命令输出：MCP server demo already exists in local config）', target: 'config' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
   // 同一个函数在装着已知打不开的那一版时（codex-desktop-known-issues.ts）。

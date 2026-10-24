@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CommandRunnerError } from './command-runner'
 import {
   CodexExtensionService,
   resolveCodexCommand,
@@ -622,6 +623,31 @@ describe('Codex Plugin and marketplace contracts', () => {
     expect(calls).toContainEqual(['plugin', 'marketplace', 'list', '--json'])
     expect(catalog.plugins[0]).toMatchObject({ pluginId: 'sample@curated', installed: true })
     expect(catalog.marketplaces).toEqual([{ name: 'curated', root: 'C:\\market' }])
+  })
+
+  it('says why a plugin could not be added, not only that the command failed', async () => {
+    const failure = new CommandRunnerError('命令执行失败（退出码 1）：codex', {
+      code: 'EXIT_NON_ZERO',
+      executable: 'codex',
+      argv: ['plugin', 'add', 'sample@curated', '--json'],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: 'Error: Executable not found in $PATH: "git"\n',
+      outputBytes: 48,
+      maxOutputBytes: 1024,
+      durationMs: 7,
+    })
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[0] === 'plugin' && argv[1] === 'add') throw failure
+      return '[]'
+    }
+    const service = new CodexExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+
+    const error = await service.addPlugin('sample@curated').then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe('命令执行失败（退出码 1）：codex（命令输出：Error: Executable not found in $PATH: "git"）')
+    expect((error as Error).cause).toBe(failure)
   })
 
   it('writes plugin enabled state structurally, backs up, and preserves unrelated TOML', async () => {

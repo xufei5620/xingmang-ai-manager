@@ -749,7 +749,8 @@ describe('ProviderExtensionService list facade', () => {
 
     expect(snapshot.capabilities).toEqual({
       mcp: { list: true, reason: null },
-      skill: { list: true, reason: null },
+      // 没给回收站：Claude Code 的技能只能看，界面不出导入按钮。
+      skill: { list: true, reason: null, install: false },
       plugin: { list: true, reason: null },
     })
     expect(snapshot.items.find((item) => item.id === 'pinned')).toMatchObject({
@@ -2543,5 +2544,221 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       ['Loud', true],
       ['Quiet', false],
     ])
+  })
+})
+
+describe('Claude Code and Grok CLI skills managed in the app', () => {
+  function skillSource(name: string, description = 'demo'): string {
+    const directory = path.join(temporaryDirectory(), name)
+    write(path.join(directory, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n`)
+    return directory
+  }
+
+  function managedService(home: string, repository: string | null = null) {
+    const trash = path.join(temporaryDirectory(), 'trash', 'skills')
+    const invoke: ProviderCliInvoker = vi.fn(async () => '[]')
+    const service = new ProviderExtensionService({
+      homeDirectory: home,
+      repositoryRoot: repository ?? undefined,
+      invoke,
+      skillTrashDirectory: trash,
+    })
+    return { service, invoke, trash }
+  }
+
+  it('imports a skill folder into each tool\'s own skills folder without running the CLI', async () => {
+    const home = temporaryDirectory()
+    const { service, invoke } = managedService(home)
+    const source = skillSource('reviewer')
+
+    for (const provider of ['claude', 'grok'] as const) {
+      const snapshot = await service.mutate({ provider, kind: 'skill', action: 'install', source, scope: 'user' })
+      const definition = path.resolve(home, `.${provider}`, 'skills', 'reviewer', 'SKILL.md')
+      expect(fs.readFileSync(definition, 'utf8')).toContain('name: reviewer')
+      expect(snapshot.capabilities.skill).toMatchObject({ list: true, install: true })
+      expect(snapshot.items.find((item) => item.kind === 'skill' && item.id === definition)).toMatchObject({
+        name: 'reviewer',
+        scope: 'user',
+        operations: { uninstall: true },
+      })
+    }
+    // 源文件夹原样留着：导入是复制，不是挪走。
+    expect(fs.existsSync(path.join(source, 'SKILL.md'))).toBe(true)
+    expect(vi.mocked(invoke).mock.calls.some(([, argv]) => argv.includes('skills'))).toBe(false)
+  })
+
+  it('accepts the SKILL.md file itself as the import source', async () => {
+    const home = temporaryDirectory()
+    const { service } = managedService(home)
+    const source = skillSource('writer')
+
+    await service.mutate({ provider: 'claude', kind: 'skill', action: 'install', source: path.join(source, 'SKILL.md') })
+
+    expect(fs.existsSync(path.join(home, '.claude', 'skills', 'writer', 'SKILL.md'))).toBe(true)
+  })
+
+  it('imports into the project folder only when a project is chosen', async () => {
+    const home = temporaryDirectory()
+    const repository = path.join(temporaryDirectory(), 'workspace')
+    fs.mkdirSync(repository, { recursive: true })
+    const source = skillSource('project-only')
+
+    await managedService(home, repository).service.mutate({
+      provider: 'grok', kind: 'skill', action: 'install', source, scope: 'project',
+    })
+    expect(fs.existsSync(path.join(repository, '.grok', 'skills', 'project-only', 'SKILL.md'))).toBe(true)
+    expect(fs.existsSync(path.join(home, '.grok', 'skills', 'project-only'))).toBe(false)
+
+    await expect(managedService(home).service.mutate({
+      provider: 'grok', kind: 'skill', action: 'install', source, scope: 'project',
+    })).rejects.toThrow('请先在工作目录里选好这个项目')
+  })
+
+  it('refuses a relative source, a name already taken and an unknown scope', async () => {
+    const home = temporaryDirectory()
+    const { service } = managedService(home)
+    const source = skillSource('taken')
+    write(path.join(home, '.claude', 'skills', 'taken', 'SKILL.md'), '---\nname: taken\ndescription: mine\n---\n')
+
+    await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'install', source: 'taken' }))
+      .rejects.toThrow('Skill 导入路径必须是绝对路径')
+    await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'install', source }))
+      .rejects.toThrow('Skill 已存在：taken')
+    expect(fs.readFileSync(path.join(home, '.claude', 'skills', 'taken', 'SKILL.md'), 'utf8')).toContain('mine')
+    await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'install', source, scope: 'local' }))
+      .rejects.toThrow('当前 Provider 不支持该原生操作')
+    await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'enable', id: source }))
+      .rejects.toThrow('当前 Provider 不支持该原生操作')
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a source reached through a symbolic link', async () => {
+    const home = temporaryDirectory()
+    const { service } = managedService(home)
+    const source = skillSource('linked')
+    const link = path.join(temporaryDirectory(), 'linked')
+    fs.symlinkSync(source, link)
+
+    await expect(service.mutate({ provider: 'grok', kind: 'skill', action: 'install', source: link }))
+      .rejects.toThrow('符号链接')
+    expect(fs.existsSync(path.join(home, '.grok', 'skills', 'linked'))).toBe(false)
+  })
+
+  it('moves a removed skill into the app trash instead of deleting it', async () => {
+    const home = temporaryDirectory()
+    const { service, trash } = managedService(home)
+    const definition = path.join(home, '.claude', 'skills', 'old', 'SKILL.md')
+    write(definition, '---\nname: old\n---\n')
+
+    const snapshot = await service.mutate({ provider: 'claude', kind: 'skill', action: 'uninstall', id: definition, scope: 'user' })
+
+    expect(fs.existsSync(path.dirname(definition))).toBe(false)
+    const trashed = fs.readdirSync(trash)
+    expect(trashed).toHaveLength(1)
+    expect(trashed[0]).toMatch(/^old-/)
+    expect(fs.existsSync(path.join(trash, trashed[0], 'SKILL.md'))).toBe(true)
+    expect(snapshot.items.some((item) => item.kind === 'skill')).toBe(false)
+  })
+
+  it('leaves the skills Grok shares with Codex to the Codex tab', async () => {
+    const home = temporaryDirectory()
+    const { service } = managedService(home)
+    const shared = path.join(home, '.agents', 'skills', 'shared', 'SKILL.md')
+    write(shared, '---\nname: shared\n---\n')
+    write(path.join(home, '.grok', 'skills', 'own', 'SKILL.md'), '---\nname: own\n---\n')
+
+    const skills = (await service.list('grok')).items.filter((item) => item.kind === 'skill')
+    expect(skills.map((item) => [item.name, item.operations.uninstall]).sort()).toEqual([
+      ['own', true],
+      ['shared', false],
+    ])
+    await expect(service.mutate({ provider: 'grok', kind: 'skill', action: 'uninstall', id: shared }))
+      .rejects.toThrow('Skill 路径不在受管目录中')
+    expect(fs.existsSync(shared)).toBe(true)
+  })
+
+  it('refuses to remove a path that is not a listed skill', async () => {
+    const home = temporaryDirectory()
+    const { service } = managedService(home)
+    const outside = path.join(temporaryDirectory(), 'elsewhere', 'SKILL.md')
+    write(outside, '---\nname: elsewhere\n---\n')
+
+    await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'uninstall', id: outside }))
+      .rejects.toThrow('Skill 路径不在受管目录中')
+    await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'uninstall', id: 'old/SKILL.md' }))
+      .rejects.toThrow('Skill 路径必须是绝对路径')
+    expect(fs.existsSync(outside)).toBe(true)
+  })
+
+  it('keeps Claude Code and Grok CLI skills read-only without an app trash', async () => {
+    const home = temporaryDirectory()
+    write(path.join(home, '.claude', 'skills', 'mine', 'SKILL.md'), '---\nname: mine\n---\n')
+    const service = new ProviderExtensionService({ homeDirectory: home, invoke: async () => '[]' })
+
+    const snapshot = await service.list('claude')
+
+    expect(snapshot.capabilities.skill.install).toBe(false)
+    expect(snapshot.items.find((item) => item.kind === 'skill')?.operations.uninstall).toBe(false)
+    await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'install', source: skillSource('later') }))
+      .rejects.toThrow('当前 Provider 不支持该原生操作')
+    expect(fs.existsSync(path.join(home, '.claude', 'skills', 'later'))).toBe(false)
+  })
+
+  it('leaves the capability of other tools\' skills untouched', async () => {
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      codexHome: temporaryDirectory(),
+      invoke: async (_provider, argv) => (argv[0] === 'plugin' ? '{"installed":[],"available":[]}' : '[]'),
+      skillTrashDirectory: path.join(temporaryDirectory(), 'trash'),
+    })
+
+    expect((await service.list('codex')).capabilities.skill.install).toBeUndefined()
+  })
+})
+
+describe('provider CLI mutation failures', () => {
+  it('carries the recognisable command output into the error the window shows', async () => {
+    const failure = new CommandRunnerError('命令执行失败（退出码 1）：claude', {
+      code: 'EXIT_NON_ZERO',
+      executable: 'claude',
+      argv: ['mcp', 'add', 'demo'],
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: 'Usage: claude mcp add [options]\nMCP server demo already exists in local config\n',
+      outputBytes: 96,
+      maxOutputBytes: 1024,
+      durationMs: 9,
+    })
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      if (argv[0] === 'mcp' && argv[1] === 'add') throw failure
+      return '[]'
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+
+    const error = await service.mutate({
+      provider: 'claude',
+      kind: 'mcp',
+      action: 'install',
+      id: 'demo',
+      scope: 'user',
+      mcp: { type: 'http', url: 'https://example.com/mcp' },
+    }).then(() => null, (reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(
+      '命令执行失败（退出码 1）：claude（命令输出：MCP server demo already exists in local config）',
+    )
+    expect((error as Error).cause).toBe(failure)
+  })
+
+  it('passes other failures through unchanged', async () => {
+    const failure = new Error('spawn claude ETIMEDOUT')
+    const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+      if (argv[0] === 'plugin' && argv[1] === 'uninstall') throw failure
+      return '[]'
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+
+    await expect(service.mutate({ provider: 'grok', kind: 'plugin', action: 'uninstall', id: 'demo' })).rejects.toBe(failure)
   })
 })

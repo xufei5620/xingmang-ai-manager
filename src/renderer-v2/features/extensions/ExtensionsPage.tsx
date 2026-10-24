@@ -53,7 +53,6 @@ import {
   curatedNeedsInput,
   type CuratedExtension,
 } from '../../registry/curated-extensions'
-import { skillImportTutorialExtra } from '../../registry/tutorials'
 import {
   extensionKindLabels,
   extensionOfficialTerms,
@@ -79,9 +78,11 @@ import {
   extensionItemsForView,
   extensionRowState,
   extensionScopeLabel,
+  extensionShowsUpdatePill,
   extensionToolChoices,
   extensionToolName,
   extensionToolNames,
+  extensionUpdateStatus,
   extensionUsableTools,
   fillCuratedPlaceholders,
   filterExtensionMarkets,
@@ -191,7 +192,6 @@ export function ExtensionsPage({
   api,
   kind,
   onOpenHelp,
-  onOpenTutorial,
   installedProviders,
   codexDesktopInstalled,
   onSystemChanged,
@@ -203,8 +203,6 @@ export function ExtensionsPage({
   api: V2Bridge
   kind: ExtensionKind
   onOpenHelp?: () => void
-  /** 打开教程某一篇；section 写法同外壳 navigate('tutorial', section)。省略 = 不放「看怎么放」。 */
-  onOpenTutorial?: (section: string) => void
   /** 这台电脑上装好的命令行工具；缺省 = 不知道，默认选 Claude、当作都装了（旧行为）。 */
   installedProviders?: readonly string[]
   /**
@@ -383,8 +381,9 @@ export function ExtensionsPage({
       async () => (installTool ? installTool(provider) : 'skipped' as const),
       (outcome) => installResultMessage(outcome),
     )
+  // Claude Code、Grok CLI 的技能导入是主进程照 Codex 那套复制进它们自己的技能文件夹，主进程说不行（install: false）才不给。
   const supportsInstall =
-    kind !== 'skill' || provider === 'codex'
+    kind !== 'skill' || provider === 'codex' || capability?.install !== false
   const nativeSkillFor = (item: ExtensionItem) =>
     kind === 'skill' && resource.data?.codex
       ? findNativeSkill(resource.data.codex.skills, item)
@@ -681,9 +680,7 @@ export function ExtensionsPage({
     kind === 'mcp'
       ? '装下面「星芒精选」里的，或点右上角「自定义连接」接你自己的。'
       : kind === 'skill'
-        ? supportsInstall
-          ? '点「从文件夹导入」，选一个技能文件夹。'
-          : `按 ${toolName} 自己的方式放好技能，回来点「重新加载」就能看到。`
+        ? '点「从文件夹导入」，选一个技能文件夹。'
         : catalogTitle
           ? '从下面的官方目录里挑一个。'
           : undefined
@@ -725,7 +722,7 @@ export function ExtensionsPage({
                 {mcpHealth.label}
               </Pill>
             )}
-            {item.update.state === 'update-available' && (
+            {extensionShowsUpdatePill(item) && (
               <Pill tone="warn">可更新</Pill>
             )}
             {item.installed && !enabled && <Pill>已停用</Pill>}
@@ -955,23 +952,6 @@ export function ExtensionsPage({
       {provider === 'codex' && codexDesktopInstalled && installedProviders?.includes('codex') && (
         <div className="v2-skill-import-note" data-testid={`${page}-codex-shared`}>
           <span>Codex 桌面端和 Codex CLI 共用这些设置，在这里加的两边都能用。</span>
-        </div>
-      )}
-      {kind === 'skill' && !supportsInstall && (
-        <div className="v2-skill-import-note" data-testid="skills-import-unsupported">
-          <span>
-            {toolName} 的技能不能在这里导入，要按它自己的方式放好；{extensionToolName('codex', codexViaDesktop)} 可以在这里导入。
-          </span>
-          {onOpenTutorial && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => onOpenTutorial(`skills#${skillImportTutorialExtra}`)}
-              testId="skills-import-guide"
-            >
-              看怎么放
-            </Button>
-          )}
         </div>
       )}
       <ResultNotice {...operation} onSupport={onOpenHelp} target={extensionFailureTarget(operation.failed)} />
@@ -1392,7 +1372,7 @@ export function ExtensionsPage({
                 ? transport === 'http'
                   ? '服务地址'
                   : '启动命令'
-                : provider === 'codex' && kind === 'skill'
+                : kind === 'skill'
                   ? '技能文件夹路径'
                   : '来源'
           }
@@ -1654,7 +1634,7 @@ export function ExtensionsPage({
           <dt>当前版本</dt>
           <dd>{selected?.currentVersion || '未提供'}</dd>
           <dt>更新状态</dt>
-          <dd>{selected?.update.reason || '尚未检查'}</dd>
+          <dd>{selected ? extensionUpdateStatus(selected) : '尚未检查'}</dd>
         </dl>
       </Dialog>
     </section>

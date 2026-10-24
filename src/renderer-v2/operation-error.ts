@@ -2,6 +2,7 @@ import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desk
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
+import { extensionCommandFailureInMessage } from '../../electron/extension-command-failure'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { npmFailureExplainsItself } from '../../electron/npm-failure-reasons'
@@ -71,6 +72,12 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
   // 现在只剩「重启再试、不行找客服」。
   { key: 'pluginCatalogStuck', match: (message) => /插件目录里的旧备份清不掉/.test(message) },
+  // 装插件、加外接工具时命令行自己说的原因（主进程把那几行接在「（命令输出：」后面，extension-command-output.ts）。
+  // 只认带着这个记号的话，别处的英文不认。排在网络、权限那几条前面：连不上 GitHub 时原话里有 Connection reset
+  // 这类字样，被下面认成「网络连不上」也说得过去，但「插件要从 GitHub 下载」才说到点子上。
+  { key: 'gitMissing', match: (message) => extensionCommandFailureInMessage(message) === 'gitMissing' },
+  { key: 'githubUnreachable', match: (message) => extensionCommandFailureInMessage(message) === 'githubUnreachable' },
+  { key: 'nameTaken', match: (message) => extensionCommandFailureInMessage(message) === 'nameTaken' },
   // 主进程已经认定是服务那一侧（维护、网关错误、防护层验证页）的，排在最前：
   // 它后面带着的「HTTP 503」之类原文不能再被下面按字面猜成别的事。
   { key: 'serviceUnavailable', match: (message) => networkFailureReasonForMessage(message) === 'serviceUnavailable' },
