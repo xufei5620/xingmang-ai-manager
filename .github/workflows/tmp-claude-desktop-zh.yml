@@ -1,0 +1,128 @@
+# 临时：核对 Claude Desktop 3.6556.2 的中文界面怎么选、记在哪，核完就删，不进 main。
+name: tmp-claude-desktop-zh
+on:
+  push:
+    branches: [claude/project-thread-1qufks]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Download and unpack official MSIX
+        run: |
+          set -euo pipefail
+          mkdir -p work && cd work
+          curl -sS -o /dev/null -w '%{redirect_url}\n' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect | tee url.txt
+          curl -sSfL --retry 3 -o claude.msix https://claude.ai/api/desktop/win32/x64/msix/latest/redirect
+          ls -l claude.msix
+          mkdir msix && (cd msix && unzip -q ../claude.msix || true)
+          grep -o 'Version="[^"]*"' msix/AppxManifest.xml | head -1
+          npx --yes @electron/asar@3.2.10 extract msix/app/resources/app.asar asar || echo "asar extract partial"
+      - name: Look for Chinese UI
+        run: |
+          cd work
+          python3 - <<'PY'
+          import os, re, glob, json
+          def head(title):
+              print('\n==========', title)
+          def show(path, rx, before=600, after=600, limit=3):
+              data = open(path, 'rb').read()
+              n = 0
+              for m in re.finditer(rx, data):
+                  print('---', path, m.start())
+                  print(data[max(0, m.start() - before):m.end() + after].decode('utf-8', 'replace'))
+                  n += 1
+                  if n >= limit: break
+          def files(pattern):
+              return sorted(glob.glob(pattern, recursive=True))
+          head('shell catalogs')
+          for p in files('msix/app/resources/*.json'):
+              if re.search(r'(zh|en-US)', os.path.basename(p)):
+                  d = json.load(open(p, encoding='utf-8'))
+                  print(os.path.basename(p), os.path.getsize(p), 'keys', len(d))
+          head('ion-dist i18n listing')
+          for p in files('msix/app/resources/ion-dist/i18n/**/*'):
+              if os.path.isfile(p) and re.search(r'(zh|en-US|ja-JP)', p):
+                  print(p, os.path.getsize(p))
+          head('custom-3p-gated-imports.json')
+          p = 'msix/app/resources/ion-dist/custom-3p-gated-imports.json'
+          if os.path.exists(p):
+              print(open(p, encoding='utf-8').read()[:3000])
+          build = files('asar/.vite/build/*.js')
+          head('shell: system language matching')
+          for f in build:
+              data = open(f, 'rb').read()
+              if b'getPreferredSystemLanguages' in data:
+                  show(f, rb'getPreferredSystemLanguages', 1800, 900, 2)
+          head('shell: requestLocaleChange and saved locale')
+          for f in build:
+              data = open(f, 'rb').read()
+              if b'Rejected locale change' in data:
+                  show(f, rb'Rejected locale change', 300, 1500, 1)
+              if b'.get("locale")' in data:
+                  show(f, rb'\.get\("locale"\)', 400, 300, 2)
+          head('shell: gated messages zh-Hans size')
+          for f in build:
+              data = open(f, 'rb').read()
+              if b'publishGatedMessages' in data:
+                  i = data.find(b'"zh-Hans":')
+                  print(f, 'zh-Hans at', i, data[i:i + 300].decode('utf-8', 'replace'))
+                  show(f, rb'function r\(\{appLocale', 200, 600, 1)
+          head('shell: which store keeps "locale"')
+          for f in build:
+              data = open(f, 'rb').read()
+              for m in re.finditer(rb'locale:\{type:"string"', data):
+                  print('---', f, m.start())
+                  print(data[max(0, m.start() - 1500):m.end() + 500].decode('utf-8', 'replace'))
+                  break
+          for f in build:
+              data = open(f, 'rb').read()
+              for pat in (rb'name:"config"', rb'"config\.json"', rb'claude_desktop_config\.json'):
+                  c = len(re.findall(pat, data))
+                  if c: print(f, pat, c)
+          head('frontend: offered language lists')
+          assets = files('msix/app/resources/ion-dist/assets/**/*.js')
+          seen = 0
+          for f in assets:
+              data = open(f, 'rb').read()
+              for m in re.finditer(rb'\[\s*"en-US"\s*,\s*"(?:de-DE|fr-FR|ja-JP|es-419|zh-Hans|zh-CN)"[^\]]{0,500}\]', data):
+                  print('--- list in', f, m.start())
+                  print(data[max(0, m.start() - 200):m.end() + 200].decode('utf-8', 'replace'))
+                  seen += 1
+                  if seen >= 8: break
+              if seen >= 8: break
+          head('frontend: zh-Hans mentions')
+          hits = []
+          for f in assets:
+              data = open(f, 'rb').read()
+              c = data.count(b'zh-Hans') + data.count(b'zh-CN')
+              if c: hits.append((c, f))
+          for c, f in sorted(hits, reverse=True)[:15]:
+              print(c, f, os.path.getsize(f))
+          shown = 0
+          for c, f in sorted(hits, reverse=True)[:6]:
+              data = open(f, 'rb').read()
+              for m in re.finditer(rb'"zh-Hans"\s*:\s*\{', data):
+                  print('--- zh-Hans entry', f, m.start())
+                  print(data[max(0, m.start() - 500):m.end() + 500].decode('utf-8', 'replace'))
+                  shown += 1
+                  if shown >= 4: break
+              if shown >= 4: break
+          head('frontend: how the 3P page picks its locale')
+          shown = 0
+          for f in assets:
+              data = open(f, 'rb').read()
+              for pat in (rb'user_choice', rb'getInitialLocale', rb'requestLocaleChange'):
+                  for m in re.finditer(pat, data):
+                      print('---', pat.decode(), f, m.start())
+                      print(data[max(0, m.start() - 700):m.end() + 700].decode('utf-8', 'replace'))
+                      shown += 1
+                      break
+                  if shown >= 6: break
+              if shown >= 6: break
+          PY
