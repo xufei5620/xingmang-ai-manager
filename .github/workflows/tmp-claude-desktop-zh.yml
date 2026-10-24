@@ -23,13 +23,11 @@ jobs:
           mkdir msix && (cd msix && unzip -q ../claude.msix || true)
           grep -o 'Version="[^"]*"' msix/AppxManifest.xml | head -1
           npx --yes @electron/asar@3.2.10 extract msix/app/resources/app.asar asar || echo "asar extract partial"
-      - name: Look closer at the 3P page locale
+      - name: Check bundled catalogs and renderer discovery
         run: |
           cd work
           python3 - <<'PY'
-          import os, re, glob
-          def head(title):
-              print('\n==========', title)
+          import re, glob
           def show(path, rx, before=600, after=600, limit=3):
               data = open(path, 'rb').read()
               n = 0
@@ -38,44 +36,15 @@ jobs:
                   print(data[max(0, m.start() - before):m.end() + after].decode('utf-8', 'replace'))
                   n += 1
                   if n >= limit: break
-          build = sorted(glob.glob('asar/.vite/build/*.js'))
-          assets = sorted(glob.glob('msix/app/resources/ion-dist/assets/**/*.js', recursive=True))
-          head('shell: where ion-dist is loaded')
-          for f in build:
-              if b'ion-dist' in open(f, 'rb').read():
-                  show(f, rb'ion-dist', 500, 400, 3)
-          head('shell: the store that keeps locale')
-          for f in build:
-              if b'name:"config"' in open(f, 'rb').read():
-                  show(f, rb'name:"config"', 900, 400, 1)
-          head('shell: preload electronIntl')
-          for f in sorted(glob.glob('asar/.vite/build/**/*.js', recursive=True)):
-              if b'electronIntl' in open(f, 'rb').read():
-                  show(f, rb'electronIntl', 300, 500, 2)
-          head('page: locale logic after spa:locale')
-          for f in assets:
+          print('========== ion-dist html i18n meta')
+          for f in sorted(glob.glob('msix/app/resources/ion-dist/*.html')):
               data = open(f, 'rb').read()
-              i = data.find(b'Rv="spa:locale"')
-              if i < 0:
-                  i = data.find(b'"spa:locale"')
-              if i >= 0:
-                  print(f, i)
-                  print(data[i:i + 7000].decode('utf-8', 'replace'))
-                  break
-          head('page: catalog loading')
-          shown = 0
-          for f in assets:
+              for m in re.finditer(rb'<meta[^>]*i18n[^>]*>', data):
+                  print(f, m.group(0).decode('utf-8', 'replace')[:600])
+          print('========== shell: discoveredRendererConfig')
+          for f in sorted(glob.glob('asar/.vite/build/*.js')):
               data = open(f, 'rb').read()
-              for m in re.finditer(rb'i18n/', data):
-                  print('---', f, m.start())
-                  print(data[max(0, m.start() - 500):m.end() + 400].decode('utf-8', 'replace'))
-                  shown += 1
-                  break
-              if shown >= 5: break
-          head('page: other zh-Hans mentions')
-          for f in assets:
-              if 'c1a07bb31' in f: continue
-              data = open(f, 'rb').read()
-              if b'zh-Hans' in data:
-                  show(f, rb'zh-Hans', 300, 300, 2)
+              if b'discoveredRendererConfig' in data:
+                  show(f, rb'discoveredRendererConfig\(\)\{', 300, 1500, 2)
+                  show(f, rb'function KQr\(', 100, 2500, 1)
           PY
