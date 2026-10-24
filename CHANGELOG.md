@@ -16,6 +16,107 @@
 > **0.1.14 ~ 0.1.20 没有条目**：这些版本号在本仓 `main` 的 `package.json` 历史里从未出现过
 > （0.1.13 直接跳到 0.1.21），只有 `release-notes.md` 留下了 0.1.20 的用户条目。
 
+## 0.2.21 - 2026-10-24
+
+- 新装电脑的工具线路（#963 红队复核的残留第一条）：`tool-route-controller.ts` 在工具线路和应用线路都还没有结论时，
+  线路2 第一次没通就去查线路1，线路1 通了马上切，不等三轮；线路1 也不通照原来的节奏接着查，满三轮才出三线全挂提示。
+  查出结论之前不写 `tool-route-state.json`，没查完就退出的，下次开机还按全新安装算。有结论以后照旧三轮。
+- `acceleration-clash-config.ts` 的 `lineRoutedRules` 加 `DOMAIN,downloads.claude.ai,XINGMANG`（#1373）：Claude Desktop 3P 模式从这个主机下 Claude Code 程序（`claude-code-releases/<版本>/…`）和 Cowork 工作区（`vms/linux/<架构>/<编号>/rootfs.vhdx.zst` 等），国内直连超时。只加这一个主机，claude.ai、api.anthropic.com 照旧直连。洛杉矶服务器的放行名单同步加了这个域名。
+- 新增 `claude-desktop-acceleration.ts`：从星芒打开 Claude Desktop 前照 Codex 桌面端那套替用户连上加速（`autoStartedBy: 'claude-desktop'`，不扣时长、看不见），Claude 退出或连满一小时断开；和 Codex 桌面端共用同一次会话时用 `heldElsewhere` / `holds` 交接，后用完的那边断开。`external-client-runtime.ts` 加 `onLaunched`，记下打开的那一份装在哪，供 `stillRunning` 判断它还在不在。
+- Claude Desktop 配置弹窗两句提示改成请客户从星芒点「打开」（yoyo 2026-10-24 定的原文）。
+- Claude Desktop 装在非系统盘应用卷（`<盘符>:\WindowsApps`，`C:\Program Files\WindowsApps\<包>` 是系统放的链接）时，
+  `verifyExternalClientPath` 照旧拒绝（yoyo 2026-10-24 定：校验不放宽）。只在核对已经不过之后，`appx-volume-link.ts`
+  认出这个链接，`external-client-runtime.ts` 把「客户端 AppX 路径身份无法验证」换成教客户移回系统盘的话；
+  安装时这句不再套「无法确认当前安装状态：」。
+- 只装了 Codex 桌面端时扩展页不再把 Codex 当「未安装」：`isCodexCliInstalled`（`codex-extensions.ts`）和首页同一个判断
+  （`codex-desktop.ts` 新的 `isCodexDesktopCliInstallation`，`system-scan-service.ts` 两处改用它）。没装 CLI 时
+  `CodexExtensionService` 的外接工具列表、添加、移除不跑 `codex mcp`，直接读写 `$CODEX_HOME/config.toml`：照 0.163.0
+  `codex mcp add` 的写法（stdio 写 command、args、env，http 写 url、bearer_token_env_var，空的不写），同名整条换掉，
+  走 `mutateCodexConfigToml`（备份、原子替换、排在保存配置那一队后面），写完照旧对账；OAuth Client ID / Resource 没地方写，报错。
+  `ProviderExtensionService.list('codex')` 同样只读用户那份 config.toml 列外接工具（项目那几层要看信任，问不了 CLI，不列），
+  不跑插件列表。两个服务的新选项缺省都按装了算（旧行为），`main.ts` 接上探测。
+- `codex-config-toml.ts` 加 `removeTomlTableText`：拿掉一张表连同它单占表头的子表，按行删、别处的注释不动，找不到交给整份重写。
+- 界面：`extensionUsableTools` / `extensionToolName` 把只靠桌面端算上的 Codex 叫「Codex 桌面端」；Codex 外接工具的移除改走
+  `mcp:remove`（和添加走 `mcp:add` 同一边）；插件页 Codex 那一格不读列表、不自动下插件目录，只放一条提示；两个都装了时说一句共用。
+- `mcpAuthorized` 以前认 `authenticated` / `logged_in`，Codex 的 `mcp list --json` 从 0.46.0 到 0.163.0 只报
+  `unknown` / `unsupported` / `not_logged_in` / `bearer_token` / `o_auth`：现在只有 `not_logged_in` 挂「需要登录授权」，
+  `o_auth` 才给「退出授权」。legacy 的 `McpPage.tsx` 有同样的毛病，已冻结不修。
+- 插件页 Codex 那一栏接上启停开关：Codex CLI 没有插件启停命令，`extensionRowState` / `runExtensionAction`
+  （`extensions-common.tsx`）对 Codex 插件改走 `plugins:toggle`（`codex-extensions.ts` 的 `setPluginEnabled`，
+  直接改 config.toml 的 `[plugins."名字@市场"] enabled`，改完再读一遍核对），照 Codex 技能走 `toggleSkill` 的做法。
+  沿用原来的开关、「已停用」字牌和「已启用／已停用「…」」提示，没加新字。
+- 主进程 `nativeOperations` 里 Codex 插件的启停照旧是 false：旧界面（已冻结）按它决定画不画开关，改成 true
+  它就会把启停交给通用 mutate。`mutationArgv` 的 Codex 插件分支另加一道只认装和卸的检查，免得哪天放开了启停，
+  「停用」落成 `codex plugin remove`。
+- 依赖锁文件把 `dompurify` 从 3.4.16 升到 3.4.17，修掉新出的 3 条公告让 CI 构建依赖审计报红：GHSA-c6gr-qvv4-5v3f、GHSA-cg2g-xh64-v4q7、
+  GHSA-mrv2-3pqr-j5jr（都影响到 3.4.16 为止）。它只是 `@lobehub/icons` → `@lobehub/ui` → `mermaid` 带进来的开发依赖，本仓代码不直接用；
+  锁文件只改这一个包的 version / resolved / integrity（数据取自 npm 官方源），`npm ci` 装完锁文件不变。`canvas-v2/` 的锁文件 CI 不审，不碰。
+- 依赖：Electron 从 43.8.0 升到 43 线最新的 43.8.3（`package.json` 的范围抬到 `^43.8.3`，不跨大版本），`undici` 从 7.30.0 升到 7.30.1（顶层固定版本）、node-gyp 带的那份从 6.29.0 升到 6.29.1，`fast-uri`（ajv 带进来）从 3.1.8 升到 3.1.9，修掉 2026-10-24 新出的 8 条公告让 CI 构建依赖审计报红：Electron 的 GHSA-jr5w-w6x2-84p9（eMudhra 中间证书被盗用的缓解，修复版 43.8.1）；`undici` 的 GHSA-4qv8-2p9j-2685、GHSA-f72v-6w45-q472、GHSA-xjj6-f33q-929c；`fast-uri` 的 GHSA-w74x-v6f9-j3xg、GHSA-xhq7-xmqj-769h、GHSA-wjr9-j795-jxcr、GHSA-333x-w4r6-6crp。`undici` 和 `fast-uri` 只在构建和测试里用，不进安装包；Electron 是安装包里的运行时，下一版起随包带上。锁文件只改这几个包的 version / resolved / integrity（数据取自 npm 官方源），别的包没动。`canvas-v2/` 自己的锁文件 CI 不审，不碰。
+- 依赖锁文件把 vitest 及同套 `@vitest/*` 从 4.1.11 升到 4.1.12（`package.json` 的范围跟着抬到 `^4.1.12`），修掉新出的 2 条公告让 CI 构建依赖审计报红：`@vitest/mocker` 的 GHSA-qxg6-89mg-rqv8、GHSA-xp26-3454-mjgp（修复版 4.1.12）。纯开发依赖，不进安装包，锁文件里别的包没动。`canvas-v2/` 自己的锁文件 CI 不审，这次不碰。
+- `provider-extensions.ts` 的 `skillRoots`：Grok 除了 `~/.grok/skills` 再扫 `~/.agents/skills`（Grok 1.0.52 起也读这个目录，
+  2026-10-22 用真程序核过，`xingmang-ai-skill.ts` 那段注释写的就是它）。Grok 一个名字只认一份，所以 `~/.agents/skills` 里的技能
+  跟 Grok 别的目录（`~/.grok/skills`、项目 `.grok/skills`）同名时不列；两边都有时 Grok 自己认哪份没核过，这里按 `~/.grok` 那份优先（推断）。
+  星芒生图技能 `images` 两个目录各装一份，以前 Grok 只列 `~/.grok` 那份，现在也只列一份；`~/.grok` 是同步之后才建的电脑，
+  Grok 页以前看不到这个技能，现在能看到。Grok 的技能照旧只读，不给装、卸、启停按钮；Codex 用户层导入就是放进 `~/.agents/skills`（`codex-extensions.ts` `importSkill`）。项目里的 `.agents/skills` Grok 读不读没核过，不扫。
+- 在线换节点（yoyo 2026-10-22）：更新目录里新增带发布者签名的 `acceleration-nodes.json`，客户端开机读一次、之后每小时读一次，
+  签名对、又比记下的新才原样记进 app data，加速辅助进程每次连接时读它并再验一遍签名；没记过、读坏了、签名不对或发布者撤回了，
+  就用安装包自带的节点（`electron/acceleration-online-nodes.ts`、`acceleration-worker-profile.ts`）。签名复用发版的 Ed25519
+  钥匙，签的字以 `xingmang-acceleration-nodes/v1` 开头，跟更新包签名不能互换；只能换节点，规则仍在客户端代码里。
+- 新工作流 `acceleration-nodes`：把 main 上的 `bundled-acceleration/profile.yaml` 签名发到更新目录，或发一份签名的撤回；
+  预览段列出要发的线路（不列密码），上传段挂 release 环境要产品所有者批准，跟别的写更新目录的作业共用 `update-feed` 并发组。
+- 加速辅助进程每次连接、测线路都重新读节点（以前第一次读到就一直用到辅助进程退出），在线节点中途换了下一次连接就用上。
+- #1361：窄条图标的 `Tooltip` 以前放在图标正下方（`rect.bottom + 8`）还接鼠标，盖住下一个图标的大半截，从「首页」挪到
+  「聊天」点到的是提示。`Tooltip` 加 `placement`（`'below' | 'right'`，缺省 `below`），侧栏窄条用 `right`：放图标右边、
+  垂直居中、`pointer-events: none`、鼠标离开立刻收，照 v4 原型 `.rail [data-tip]`。`app-check.mjs` 补一条从「首页」挪到
+  「聊天」一次点进的用例。
+- 发版前核对在线加速节点（#1359）：`publish-release` 的 Windows、Mac 出包作业在准备加速资源之前跑
+  `scripts/acceleration-nodes.cjs check`，线上有一份客户端会用的在线节点、又跟这次装进安装包的不一样就停下，
+  提示先跑一次 `acceleration-nodes`（publish 或 withdraw）。客户端记下过在线节点后一直优先用它，不拦的话新版换了
+  节点，老客户升级后也还连旧节点。线上那份客户端不收（签名不对、格式坏了）也停下，因为客户端不收它也会接着用记下的；只有没有这个文件（404）和撤回过放行。读不到（404 以外）也停下（#493）。
+- #1362 第 2 条：`command-search.ts` 的 `settingsEntries` 里，设置项跟所在组同名（加速卡「网络加速」与 `network` 组）时
+  组那条不再单独出、这一行的结果名只写一遍；这一行被 `settingsItemVisible` 收掉时组照旧一条。`command-search.test.ts`
+  补一条，「搬进设置的卡按旧页名找得到」那条跟着收紧成第一条就是加速卡。
+- 生图技能的文件夹和 `SKILL.md` 的 `name` 从「星芒AI」改成 `images`（`xingmang-ai-skill.ts`）。沙箱里抓请求体核过：Claude Code 2.1.302 按文件夹名认技能，
+  Codex 0.162.1 按 `name` 认，两处必须一起改；Grok 1.0.52 只认小写字母、数字、连字符，旧名显示成 `ai`。Codex 0.162.1 / 0.163.0、
+  Claude Code 2.1.302 / 2.1.307 都没有叫 images 的自带技能（Codex 自带的是 imagegen）。
+- 老文件夹在登录同步时原地改名（清单先写进去再改名，改不成这次照旧用老的、下次再试），密钥和客户改过的文件跟着走，一个不删。
+  开机那次装文件不改名：它后面没有重新登记画图工具那一步。历史账号不做技能同步，所以那边的老文件夹继续叫旧名。
+- 客户自己已有 `images` 的地方一直用旧名，`SKILL.md` 里的 `name` 也写旧名；认不认得出是不是自己装的，只看 `.xingmang-managed.json`
+  （新建文件夹装文件前先写上）。退回旧版又装出来的旧名文件夹、早期装进 `~/.codex/skills` 的那份，只有全是自己装的、没改过的文件才收掉。
+- Codex `[[skills.config]]` 里改名前写的条目在 config.toml 和两份存着的配置里换到新路径，备份页恢复的老配置也认旧路径；
+  画图工具（`xingmang-image`）的登记认新旧两个文件夹名，并在 ChatGPT 账号的 config.toml 和两份存着的配置里只换位置、不新登记。
+  改名、装文件、换线路改地址、退出登录清密钥在主进程里排成一队，免得改名途中别处照旧路径写、把老文件夹又建出来。
+- 首页那两句「画图工具没登记上」的提示和三句日志里的「星芒画图」换成 `images`（yoyo 10-23 定「只写 images」）；
+  AI 工具里画图脚本自己报的错（`mcp-server.mjs`）不改。
+- 教程「网络加速」一章三步的位置去掉重复的组名（产品负责人 2026-10-24 回「位置改」）：`registry/tutorials.ts` 的
+  「设置 › 网络加速 › 网络加速 → 线路 / 开启加速 / 停止加速」改成「设置 › 网络加速 → …」，跟同一章「剩余免费时长」那步一致。
+- #1362 第 1 条：今天那根柱子顶上的金额以前按柱高绝对定位在柱图格子里（`bottom: calc(N% + 5px)`），柱子到 100% 时顶到
+  标题行。现在金额挂在柱子 `<i>` 里（`bottom: calc(100% + 5px)`），柱图格子顶上留出一行字的 `padding-top`（首页 17px、
+  概览 15px），最高的柱子画到留白下面。`app-check.mjs` 补一条首页和概览都核对两行字不重叠的用例（改之前红）。
+- Claude Code、Grok CLI 技能导入、移除（「扩展改」第 2 条）：`ProviderExtensionService` 新选项 `skillTrashDirectory`（`main.ts` 接的跟 Codex 技能同一个回收站），
+  给了才让 `mutate({ kind: 'skill' })` 对这两家走 `mutateOwnSkill`：导入复制进 `~/.claude/skills` / `~/.grok/skills`（或项目里同名那层），移除重新扫一遍、只认直接放在它自己技能文件夹下的那份，挪进回收站。
+  复制和挪动复用 `codex-extensions.ts` 拆出来的 `resolveSkillImportSource` / `skillImportTarget` / `copySkillImport` / `moveSkillToTrash`（不跟链接、单链接、大小和层数上限，I8），Codex 的 `importSkill` 改调同一套，行为不变。
+  Grok 也读的 `~/.agents/skills` 跟 Codex 共用，Grok 那一格不给移除。能力里新加可选的 `capabilities.skill.install`，没给回收站时是 `false`，界面据此决定出不出导入按钮。
+  Windows 跨盘挪进回收站的问题（#1357）这两家同样有，还在等真机。
+- 界面去掉 `skills-import-unsupported` 那一行、「看怎么放」和教程里的 `skillImportTutorialExtra`；教程外壳 `navigate('tutorial', 'id#补充说明')` 的跳法留着，眼下没有调用方。
+- 外接工具不挂「可更新」（`extensionShowsUpdatePill`），详情「更新状态」换成 `extensionUpdateStatus` 那句（Git 来源不写提交号）。
+- 精选添加框能用的工具全是「未安装」时出「还没装能用它的工具」和「去首页安装」（`extensionNoToolInstalled`，`FeaturedPage` 新的 `onOpenHome`）；
+  只装了 Codex 桌面端时插件弹窗那一格照旧叫「Codex CLI」（以前跟外接工具一样写成桌面端）。
+- 装、加、删失败的错误以前只剩「命令执行失败（退出码 1）：claude」，命令行自己说的原因从没到过界面：新的 `extension-command-output.ts` 的 `withCommandOutput`
+  把认得出的行（没有就最后三行，已脱敏，最多 240 字）接在「（命令输出：」后面，原错误挂在 `cause` 上；用在 `ProviderExtensionService.mutate` 和 Codex 的加外接工具、加插件、加市场。
+  认法在新的 `extension-command-failure.ts`（渲染层可值导入，已登记 `valueImportable`）：缺 Git、连不上 github.com、`already exists` 三种，`operation-error.ts` 只在带着这个记号的话里认，配上 `registry/errors.ts` 新的 `gitMissing` / `githubUnreachable` / `nameTaken`。
+- 外接工具的启停按各家自己的做法接上，界面沿用已有的开关和「已启用 / 已停用」提示，没加新字。
+- Grok：`grok mcp enable|disable <名字>`（1.0.52、1.0.70 实测，没有 `--scope`，在项目目录里跑才找得到项目那层；
+  停用会把名字记进 `~/.grok/config.toml` 的 `disabled_mcp_servers`，重复点照样退出 0）。`nativeOperations` 给 Grok 放开。
+- Codex：没有启停命令，停用就是用户 `config.toml` 里那条写 `enabled = false`（0.162.1 实测 `mcp list` 报 disabled，
+  `codex mcp add` 别的连接不会冲掉）。新的 `CodexExtensionService.setMcpServerEnabled` 按行改这一个值（启用写回 `true`，
+  不删键，免得整份重写），走 `mutateCodexConfigToml`（备份、原子替换、排队），写完按 `codex mcp list` 或配置文件对账，
+  装没装 CLI 都一样。`ProviderExtensionService.mutate` 把 Codex 外接工具的启停转给它（新选项 `setCodexMcpServerEnabled`，
+  `main.ts` 接上；缺省不给开关，旧行为），不跑命令；项目里那几层和插件带的改不到，跟「移除」一样不给开关。
+- Claude Code 这次不做：它没有启停命令，自己的「停用」只记在 `~/.claude.json` 里当前项目文件夹那一份（2.1.310），
+  换个文件夹照样启用，跟列表上「所有项目都能用」那组对不上，要加说明字才行。
+- legacy 的 `McpPage.tsx` 按 `operations` 画启停按钮，Codex、Grok 那两格跟着出现，走的同一条 `extensions:mutate`，代码没动。
+
 ## 0.2.20 - 2026-10-20
 
 - 内置线路换成自建的洛杉矶 Hysteria 2（`bundled-acceleration/profile.yaml` 一条，重算 `profile.sha256`，#1352）：
