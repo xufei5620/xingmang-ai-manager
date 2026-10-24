@@ -5,7 +5,8 @@
 // 数据从哪来：0.2.10 起客户端打开时和开着的每 15 分钟读一次更新目录上的
 // service-status.json。这个请求走 electron-updater 的会话，User-Agent 是 Electron
 // 默认那一串，里面带着「星芒AI管理工具/0.2.15 Chrome/… Electron/…」；latest.yml 的
-// 请求 UA 是 electron-builder，不带版本，所以只能数状态文件。更新目录挂在 Cloudflare
+// 请求 UA 是 electron-builder，不带版本，所以版本只能数状态文件，更新清单只拿来按来源 IP
+// 看一台电脑新版出来以后查过更新没有。更新目录挂在 Cloudflare
 // 上，这里拿只读的 Analytics 令牌查 GraphQL Analytics API，按 UA 和来源 IP 分组。
 //
 // 来源 IP 只在内存里拿来去重；仓库公开，任何输出（日志、Job Summary）里都只有按版本
@@ -24,6 +25,9 @@ const STATUS_PATH = '/xingmang-manager/service-status.json'
 // （scripts/macos-artifact-names.cjs），改名之前发的版本是 electron-builder 原名，两种都认。Linux 还没对外发。
 const INSTALLER_PATH_PATTERN = '/xingmang-manager/XingMang-AI-Manager-%'
 const INSTALLER_PATH = /^\/xingmang-manager\/XingMang-AI-Manager-(\d{1,6}\.\d{1,6}\.\d{1,6})-(Setup\.exe|(?:Apple-Silicon-arm64|Intel-x64|arm64|x64)\.zip)$/
+// electron-updater 每次查更新都先读更新清单：Windows 是 latest.yml，Mac 是 latest-mac.yml。
+const MANIFEST_PATH_PATTERN = '/xingmang-manager/latest%.yml'
+const MANIFEST_PATH = /^\/xingmang-manager\/latest(-mac)?\.yml$/
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_DAYS = 31
@@ -266,6 +270,15 @@ function installerQuery(limits) {
   }
 }
 
+// 和安装包一样要来源 IP、路径和小时才对得上电脑，只在查安装包的时候一起查。
+function manifestQuery() {
+  return {
+    label: '更新清单',
+    filter: { clientRequestPath_like: MANIFEST_PATH_PATTERN, edgeResponseStatus_lt: 400 },
+    dimensions: ['clientRequestPath', 'clientIP', 'datetimeHour'],
+  }
+}
+
 async function queryPiece(client, zoneTag, limits, piece, spec) {
   const filter = { datetime_geq: formatApiTime(piece.start), datetime_lt: formatApiTime(piece.end), ...spec.filter }
   const zone = await queryGraphql(client, buildGroupsQuery(limits.pageSize, spec.dimensions), { zoneTag, filter })
@@ -387,6 +400,28 @@ function readInstallerDownloads(installerPieces) {
   return { downloads, sampleInterval }
 }
 
+function parseManifestPath(path) {
+  const match = typeof path === 'string' ? MANIFEST_PATH.exec(path) : null
+  return match ? { platform: match[1] ? 'mac' : 'windows' } : null
+}
+
+/** 每台电脑（来源 IP + 系统）最后一次读更新清单的那个小时。键里有 IP，只在脚本里用。 */
+function readManifestChecks(manifestPieces) {
+  let sampleInterval = 1
+  const latest = new Map()
+  for (const piece of manifestPieces) {
+    for (const row of piece.rows) {
+      const manifest = parseManifestPath(row.path)
+      if (!manifest || !Number.isFinite(row.time)) continue
+      sampleInterval = Math.max(sampleInterval, row.sampleInterval)
+      const key = machineKey(manifest.platform, row.clientIP)
+      const seen = latest.get(key)
+      if (seen === undefined || row.time > seen) latest.set(key, row.time)
+    }
+  }
+  return { latest, sampleInterval }
+}
+
 /** 这段时间里被下过的版本，新的在前。 */
 function downloadedVersions(installerPieces) {
   return sortVersionsDescending(new Set(readInstallerDownloads(installerPieces).downloads.map((download) => download.version)))
@@ -444,12 +479,16 @@ const DOWNLOAD_CHANCE_MS = 6 * 60 * 60 * 1000
  * 算进「没下过」会把下载不通说得比实际严重，单独记在 unexposed 里，不进比例。哪个版本什么时候
  * 「出来」的，按这段时间里第一次有人下到它的那个小时算。
  *
+ * 没下过的再看新版出来以后读过更新清单没有（checked）：读过就是查到了新版却没去下（多半关了「自动更新」），
+ * 没读过就是开着的时候还没轮到查（或者查的那次没被记下）。
+ *
  * Cloudflare 忙的时候抽样记（一次请求只有 1/sampleInterval 的机会被记下），一台只请求一两次
  * 安装包的多半漏记，看到的「下过」只是下限。estimated 把看到的每台按它那几次里最密的抽样
  * 倍数算成几台（一台只请求一次时正好不偏；请求好几次时会估高），和看到的一起给个范围。
  */
-function summarizeStaleMachines(statusPieces, installerPieces) {
+function summarizeStaleMachines(statusPieces, installerPieces, manifestPieces = []) {
   const { downloads, sampleInterval } = readInstallerDownloads(installerPieces)
+  const checks = readManifestChecks(manifestPieces)
   const byMachine = new Map()
   const firstDownloaded = new Map()
   let target = null
@@ -463,44 +502,44 @@ function summarizeStaleMachines(statusPieces, installerPieces) {
   }
   const versions = new Map()
   const unexposed = { windows: 0, mac: 0 }
-  if (!target) return { target, versions, unexposed, sampleInterval }
+  const checkSampleInterval = checks.sampleInterval
+  if (!target) return { target, versions, unexposed, sampleInterval, checkSampleInterval }
   for (const [key, client] of latestClientPerMachine(statusPieces)) {
     if (client.platform !== 'windows' && client.platform !== 'mac') continue
     if (compareReleaseVersions(client.version, target) >= 0) continue
     const newer = (byMachine.get(key) || []).filter((download) => compareReleaseVersions(download.version, client.version) > 0)
-    if (!newer.length) {
-      const newerOut = Math.min(...[...firstDownloaded]
-        .filter(([version]) => compareReleaseVersions(version, client.version) > 0)
-        .map(([, time]) => time))
-      if (client.time < newerOut + DOWNLOAD_CHANCE_MS) {
-        unexposed[client.platform] += 1
-        continue
-      }
+    const newerOut = newer.length ? null : Math.min(...[...firstDownloaded]
+      .filter(([version]) => compareReleaseVersions(version, client.version) > 0)
+      .map(([, time]) => time))
+    if (newerOut !== null && client.time < newerOut + DOWNLOAD_CHANCE_MS) {
+      unexposed[client.platform] += 1
+      continue
     }
     const counts = versions.get(client.version) || {
-      windows: { downloaded: 0, missing: 0, estimated: 0 },
-      mac: { downloaded: 0, missing: 0, estimated: 0 },
+      windows: { downloaded: 0, missing: 0, checked: 0, estimated: 0 },
+      mac: { downloaded: 0, missing: 0, checked: 0, estimated: 0 },
     }
     if (newer.length) {
       counts[client.platform].downloaded += 1
       counts[client.platform].estimated += Math.min(...newer.map((download) => download.sampleInterval))
     } else {
       counts[client.platform].missing += 1
+      if (checks.latest.get(key) >= newerOut) counts[client.platform].checked += 1
     }
     versions.set(client.version, counts)
   }
-  return { target, versions, unexposed, sampleInterval }
+  return { target, versions, unexposed, sampleInterval, checkSampleInterval }
 }
 
 // 最新那版刚发出去时大多还没轮到检查，只看它看不出装没装得上，所以连前一版一起看。
 const FOLLOWED_VERSIONS = 2
 
-function summarizeUpdateDownloads(statusPieces, installerPieces) {
+function summarizeUpdateDownloads(statusPieces, installerPieces, manifestPieces = []) {
   return {
     followed: downloadedVersions(installerPieces)
       .slice(0, FOLLOWED_VERSIONS)
       .map((version) => summarizeInstallerDownloads(statusPieces, installerPieces, version)),
-    stale: summarizeStaleMachines(statusPieces, installerPieces),
+    stale: summarizeStaleMachines(statusPieces, installerPieces, manifestPieces),
   }
 }
 
@@ -579,7 +618,7 @@ function renderInstallerTable(summary) {
 // 停过的版本多了表太长：最近的几个版本单列，更早的并成一行。
 const STALE_VERSION_ROWS = 4
 
-// 每格是这一行、这个系统里停着的电脑下过新版的比例，不写台数。
+// 每格是这一行、这个系统里停着的电脑下过新版、或者没下但查过更新的比例，不写台数。
 function renderStaleSection(stale) {
   const lines = ['', '### 还停在旧版本的电脑下过新版没有', '']
   const unexposedReason = '最后一次出现时比它新的版本还没出来，或者出来不到 6 小时（开着的星芒 3 小时查一次更新），没机会下'
@@ -590,11 +629,11 @@ function renderStaleSection(stale) {
   const versions = sortVersionsDescending(stale.versions.keys())
   const rows = versions.slice(0, STALE_VERSION_ROWS).map((version) => [version, stale.versions.get(version)])
   function empty() {
-    return { windows: { downloaded: 0, missing: 0, estimated: 0 }, mac: { downloaded: 0, missing: 0, estimated: 0 } }
+    return { windows: { downloaded: 0, missing: 0, checked: 0, estimated: 0 }, mac: { downloaded: 0, missing: 0, checked: 0, estimated: 0 } }
   }
   function addInto(sum, counts) {
     for (const [id] of DOWNLOAD_COLUMNS) {
-      for (const field of ['downloaded', 'missing', 'estimated']) sum[id][field] += counts[id][field]
+      for (const field of ['downloaded', 'missing', 'checked', 'estimated']) sum[id][field] += counts[id][field]
     }
     return sum
   }
@@ -609,9 +648,14 @@ function renderStaleSection(stale) {
     const seen = formatShare(counts[id].downloaded, machines)
     return sampled && machines ? `${seen}（估 ${formatShare(Math.min(counts[id].estimated, machines), machines)}）` : seen
   }
+  function cells(counts) {
+    return DOWNLOAD_COLUMNS.flatMap(([id]) => [cell(counts, id), formatShare(counts[id].checked, counts[id].downloaded + counts[id].missing)])
+  }
   lines.push(
-    `只算这段时间里最后一次读状态文件时还低于 ${stale.target}、而且有机会下新版的电脑。每格是这一行、这个系统里的电脑这段时间从这里请求过`
-      + '比自己新的安装包（Windows 的 Setup.exe、Mac 的 zip，下没下完都算）的比例，剩下的是一次都没请求过。',
+    `只算这段时间里最后一次读状态文件时还低于 ${stale.target}、而且有机会下新版的电脑。「下过新版」是这段时间从这里请求过`
+      + '比自己新的安装包（Windows 的 Setup.exe、Mac 的 zip，下没下完都算）；「没下、查过更新」是一次都没请求过安装包，'
+      + '但新版出来以后读过更新清单（Windows 的 latest.yml、Mac 的 latest-mac.yml），也就是查到了新版却没去下。'
+      + '每格是占这一行、这个系统里的电脑的比例，剩下的是新版出来以后既没下、也没见它查过更新。',
   )
   const unexposed = DOWNLOAD_COLUMNS
     .filter(([id]) => stale.unexposed[id] > 0)
@@ -625,20 +669,30 @@ function renderStaleSection(stale) {
         + '实际在两个数之间。',
     )
   }
+  if (stale.checkSampleInterval > 1) {
+    lines.push(
+      '',
+      `更新清单的请求这段时间也是抽样记的（最多每 ${Math.round(stale.checkSampleInterval)} 次记 1 次），「没下、查过更新」只能当下限。`,
+    )
+  }
+  const columns = DOWNLOAD_COLUMNS.flatMap(([, label]) => [`${label} 下过新版`, `${label} 没下、查过更新`])
   lines.push(
     '',
-    `| 停在哪个版本 | ${DOWNLOAD_COLUMNS.map(([, label]) => `${label} 下过新版`).join(' | ')} |`,
-    `|---|${DOWNLOAD_COLUMNS.map(() => '---:').join('|')}|`,
+    `| 停在哪个版本 | ${columns.join(' | ')} |`,
+    `|---|${columns.map(() => '---:').join('|')}|`,
   )
-  for (const [label, counts] of rows) lines.push(`| ${label} | ${DOWNLOAD_COLUMNS.map(([id]) => cell(counts, id)).join(' | ')} |`)
-  lines.push(`| **合计** | ${DOWNLOAD_COLUMNS.map(([id]) => `**${cell(total, id)}**`).join(' | ')} |`)
+  for (const [label, counts] of rows) lines.push(`| ${label} | ${cells(counts).join(' | ')} |`)
+  lines.push(`| **合计** | ${cells(total).map((value) => `**${value}**`).join(' | ')} |`)
   lines.push(
     '',
     '- 下过还停着：下了没装上，或者没下完，这里分不开。自动更新下好以后要等退出星芒、或者下次打开时才装，点关闭缩到托盘（Mac 是菜单栏）不算退出。',
-    '- 没下过：关了「自动更新」、下载一开始就连不上、这段时间开着时还没轮到检查，这里分不开；Windows 还有走洛杉矶线路、从 xm-direct.solov.cc 下的，这里看不到。'
-      + 'Mac 的更新不走洛杉矶，Mac 这一列只看这里就够。',
-    '- 想强制更新（抬最低版本）前先看这一节：「下过」的多，说明下得到、只是没装，强制更新时点「立即更新」会当场装；'
-      + '「没下过」的多，要先弄清是不是下载不通，不然强制更新会把他们卡在下载这一步（推测）。',
+    '- 没下、查过更新：查到了新版却没去下。多半是关了「自动更新」（关了只提示、不下），也可能是查完以后出了错（推测）。',
+    '- 没下、也没见查过：新版出来以后，这台电脑开着星芒的时候还没轮到查更新（推测 Mac 合盖睡着的时间不算进那 3 小时），'
+      + '或者查的那次没被记下。',
+    '- Mac 的安装包、更新清单和状态文件在同一个地址，读得到状态文件就连得上，Mac「没下过」不是一开始就连不上（下到一半断了的算「下过」）。'
+      + 'Windows 走洛杉矶线路的从 xm-direct.solov.cc 查更新、下安装包，这里看不到，Windows 几列偏低。',
+    '- 想强制更新（抬最低版本）前先看这一节：强制更新只拦打开了窗口的人，拦住时点「立即更新」会当场下载并装上；'
+      + '窗口一直缩着、没去开的照旧停着。',
   )
   for (const [id, label] of DOWNLOAD_COLUMNS) {
     const machines = total[id].downloaded + total[id].missing
@@ -721,7 +775,13 @@ async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl
   const window = planWindow(now, days, limits)
   const pieces = await queryWindow(client, zoneTag, limits, window, statusQuery(limits))
   const installers = installerQuery(limits)
-  const downloads = installers ? summarizeUpdateDownloads(pieces, await queryWindow(client, zoneTag, limits, window, installers)) : null
+  const downloads = installers
+    ? summarizeUpdateDownloads(
+      pieces,
+      await queryWindow(client, zoneTag, limits, window, installers),
+      await queryWindow(client, zoneTag, limits, window, manifestQuery()),
+    )
+    : null
   return renderReport(aggregateStats(pieces, limits.withIp), window, limits, days, downloads)
 }
 
