@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
+import type { AppxVolumeLink } from './appx-volume-link'
 import { CommandRunnerError, runCommand, type CommandErrorCode, type CommandSpec, type CommandErrorDetails } from './command-runner'
 import { DesktopBucketUnavailableError } from './desktop-package-bucket'
 import type { ExternalClientInstallProgress } from './external-client-contract'
-import { buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
+import { buildClaudeDesktopOtherVolumeMessage, buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
 import { isInstallCancelledError } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
@@ -604,6 +605,35 @@ describe('external desktop client lifecycle', () => {
     expect((await f.runtime.scan())[1].detectionError).toContain('AppX')
   })
 
+  // 10-24 yoyo 真机：新应用存到 D 盘时，C 盘那一级是系统放的链接，核对照样不过，只把话换成怎么移回去。
+  const appxIdentityRefused = async (value: string, kind: string) => {
+    if (kind === 'appx-file') throw new Error('客户端 AppX 路径身份无法验证')
+    return value
+  }
+
+  it('explains a Claude package Windows keeps on another drive, and still refuses it', async () => {
+    const inspectAppxVolumeLink = vi.fn(() => ({ drive: 'D' }))
+    const f = fixture({ verifyPath: appxIdentityRefused, inspectAppxVolumeLink })
+    f.setInventory([appx()])
+    const claude = (await f.runtime.scan())[1]
+    expect(claude).toMatchObject({ installed: false, detectionError: buildClaudeDesktopOtherVolumeMessage('D', 'C') })
+    expect(claude.detectionError).toBe('Claude Desktop 装在了 D 盘，星芒认不了，要移回 C 盘才能用：先完全退出 Claude，在 Windows 设置的「已安装的应用」里找到 Claude，点「…」→「移动」选 C 盘，再回来点「重新检测」。没有「移动」的话，在 Windows 设置里搜「新内容的保存位置」，把「新的应用将保存到」改回 C 盘，再卸载 Claude，回星芒重新安装。')
+    expect(inspectAppxVolumeLink).toHaveBeenCalledExactlyOnceWith('C:\\Program Files\\WindowsApps\\Claude_2.110.1.0_x64__pzs8sxrjxfjjc', 'C')
+    await expect(f.runtime.launch('claudeDesktop')).rejects.toThrow('装在了 D 盘')
+    expect(f.launchProcess).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['the link is not recognized', appxIdentityRefused, {}, (): AppxVolumeLink | null => null, '客户端 AppX 路径身份无法验证'],
+    ['another identity check failed', undefined, { publisher: 'CN="Anthropic, PBC.evil"' }, (): AppxVolumeLink | null => ({ drive: 'D' }), 'Claude 桌面端 AppX 身份或安装路径不可信'],
+    ['the registered location does not hold the executable', appxIdentityRefused, { installLocation: 'C:\\Program Files\\WindowsApps\\Claude_9.9.9.9_x64__pzs8sxrjxfjjc' }, (): AppxVolumeLink | null => ({ drive: 'D' }), '客户端 AppX 路径身份无法验证'],
+    ['the location is outside WindowsApps', appxIdentityRefused, { path: 'C:\\Users\\Tester\\Claude\\app\\Claude.exe', installLocation: 'C:\\Users\\Tester\\Claude' }, (): AppxVolumeLink | null => ({ drive: 'D' }), '客户端 AppX 路径身份无法验证'],
+  ] as const)('keeps the original sentence when %s', async (_label, verifyPath, extra, link, expected) => {
+    const f = fixture({ ...(verifyPath ? { verifyPath } : {}), inspectAppxVolumeLink: link })
+    f.setInventory([appx(extra)])
+    expect((await f.runtime.scan())[1].detectionError).toBe(expected)
+  })
+
   it('reports unavailable winget for clients without an official fallback, without consulting a PATH alias', async () => {
     const f = fixture({ resolveWingetExecutable: async () => ({ executable: null, reason: 'Microsoft App Installer missing' }) })
     expect((await f.runtime.scan())[2]).toMatchObject({ installSupported: false, installHint: externalClientWingetUnavailableHint })
@@ -1041,6 +1071,20 @@ describe('Windows Claude Desktop official package route', () => {
       return f.inventoryCommand(spec, options)
     })
     await expect(f.runtime.install('claudeDesktop')).resolves.toMatchObject({ installed: true })
+    expect(f.claudeOfficial).toHaveBeenCalledOnce()
+  })
+
+  it('stops at the move-back sentence, without the unknown-state prefix, when Claude already sits on another drive', async () => {
+    const f = claudeFixture({ verifyPath: async (value, kind) => { if (kind === 'appx-file') throw new Error('客户端 AppX 路径身份无法验证'); return value }, inspectAppxVolumeLink: () => ({ drive: 'D' }) })
+    f.setInventory([appx()])
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow(new Error(buildClaudeDesktopOtherVolumeMessage('D', 'C')))
+    expect(f.claudeOfficial).not.toHaveBeenCalled()
+    expect(f.execute.mock.calls.some(([spec]) => spec.executable === winget)).toBe(false)
+  })
+
+  it('tells the customer how to move Claude back when Windows installs it on another drive', async () => {
+    const f = claudeFixture({ ...noWinget, verifyPath: async (value, kind) => { if (kind === 'appx-file') throw new Error('客户端 AppX 路径身份无法验证'); return value }, inspectAppxVolumeLink: () => ({ drive: 'E' }) })
+    await expect(f.runtime.install('claudeDesktop')).rejects.toThrow(new Error(buildClaudeDesktopOtherVolumeMessage('E', 'C')))
     expect(f.claudeOfficial).toHaveBeenCalledOnce()
   })
 
