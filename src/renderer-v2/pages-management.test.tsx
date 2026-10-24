@@ -510,6 +510,27 @@ describe('extension row actions', () => {
     expect(api.mutateProviderExtension).not.toHaveBeenCalled()
   })
 
+  // 外接工具的开关跟着主进程给的 operations 走：Grok 有命令，Codex 由主进程改 config.toml，Claude Code 不给。
+  it('switches a connection where the main process offers it and draws no switch where it does not', async () => {
+    const api = extensionApi()
+    const operations = { install: true, uninstall: true, enable: true, disable: true, update: false }
+    const codex = listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: 'user', operations })
+    const grok = listItem({ provider: 'grok', kind: 'mcp', id: 'repo-db', scope: 'project', enabled: false, operations })
+    const claude = listItem({ provider: 'claude', kind: 'mcp', id: 'files', operations: { ...operations, enable: false, disable: false } })
+
+    expect(extensionRowState(codex)).toMatchObject({ enabled: true, canToggle: true })
+    expect(extensionRowState(grok)).toMatchObject({ enabled: false, canToggle: true })
+    expect(extensionRowState(claude)).toMatchObject({ enabled: true, canToggle: false })
+    await runExtensionAction(api, codex, 'disable')
+    await runExtensionAction(api, grok, 'enable')
+
+    expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
+      { provider: 'codex', kind: 'mcp', action: 'disable', id: 'docs', scope: 'user' },
+      { provider: 'grok', kind: 'mcp', action: 'enable', id: 'repo-db', scope: 'project' },
+    ])
+    expect(api.removeMcpServer).not.toHaveBeenCalled()
+  })
+
   it('manages a user Codex skill through the native interface and shows it disabled', async () => {
     const api = extensionApi()
     const skill = nativeSkill({})

@@ -303,6 +303,11 @@ export interface ProviderExtensionServiceOptions {
    * 列 Codex 不跑 `codex` 命令：外接工具照用户那份 config.toml 列，插件不列。缺省 = 按装了算，照旧跑命令。
    */
   codexCliInstalled?: () => Promise<boolean>
+  /**
+   * 启停 Codex 的外接工具（main.ts 接的是 codex-extensions.ts 的 setMcpServerEnabled）。Codex 没有启停命令，
+   * 改的是用户那份 config.toml 里那条的 enabled，只装了桌面端时照样能改。缺省 = Codex 的外接工具不给启停（旧行为）。
+   */
+  setCodexMcpServerEnabled?: (name: string, enabled: boolean) => Promise<unknown>
 }
 
 interface MutableExtensionItem extends ProviderExtensionItem {
@@ -486,11 +491,15 @@ function isMutationScope(value: ProviderExtensionItemScope | null): value is Pro
 
 function nativeOperations(provider: ProviderId, kind: ProviderExtensionKind): ProviderExtensionOperations {
   if (kind === 'mcp') {
+    // Grok 有 `mcp enable / disable`（1.0.52、1.0.70 实测）；Codex 没有命令，启停在 mutate 里改 config.toml。
+    // Claude Code 没有命令，它自己的「停用」只记在 ~/.claude.json 里当前项目那一份（2.1.310），换个文件夹照样启用，
+    // 跟列表上「所有项目都能用」那组对不上，这里不给。
+    const toggle = provider !== 'claude'
     return {
       install: true,
       uninstall: true,
-      enable: provider === 'gemini',
-      disable: provider === 'gemini',
+      enable: toggle,
+      disable: toggle,
       update: false,
     }
   }
@@ -728,7 +737,15 @@ async function readConfiguredMcpServers(
   return { servers: [...result.values()], warnings }
 }
 
-function mcpItem(provider: ProviderId, server: RawMcpServer): MutableExtensionItem {
+/** toggleable = false：这个工具这回不给启停（Codex 没接上改 config.toml 的那一手时）。 */
+function mcpOperations(provider: ProviderId, server: RawMcpServer, toggleable: boolean): ProviderExtensionOperations {
+  const operations = nativeOperations(provider, 'mcp')
+  // 删不到的（Codex 项目里、插件带的）也改不到：启停和移除改的是同一份用户 config.toml。
+  if (server.removable === false) return { ...operations, uninstall: false, enable: false, disable: false }
+  return toggleable ? operations : { ...operations, enable: false, disable: false }
+}
+
+function mcpItem(provider: ProviderId, server: RawMcpServer, toggleable = true): MutableExtensionItem {
   const detected = detectMcpPackageSource(server.command, server.args)
   const sourceUnknown = detected.kind === 'source-unknown'
   return {
@@ -748,9 +765,7 @@ function mcpItem(provider: ProviderId, server: RawMcpServer): MutableExtensionIt
     update: sourceUnknown
       ? defaultUpdate('source-unknown', '无法从 MCP 启动命令识别 npm、PyPI 或 Git 来源')
       : defaultUpdate('unsupported', '尚未查询远端版本'),
-    operations: server.removable === false
-      ? { ...nativeOperations(provider, 'mcp'), uninstall: false }
-      : nativeOperations(provider, 'mcp'),
+    operations: mcpOperations(provider, server, toggleable),
   }
 }
 
@@ -1939,6 +1954,7 @@ export class ProviderExtensionService {
   private readonly platform: NodeJS.Platform
   private readonly commandLineToolsShimState: (shim: string) => Promise<CommandLineToolsShimState>
   private readonly codexCliInstalled: () => Promise<boolean>
+  private readonly setCodexMcpServerEnabled: ((name: string, enabled: boolean) => Promise<unknown>) | null
 
   constructor(options: ProviderExtensionServiceOptions = {}) {
     this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
@@ -1971,6 +1987,7 @@ export class ProviderExtensionService {
     this.platform = options.platform ?? process.platform
     this.commandLineToolsShimState = commandLineToolsShimInspector(options, env)
     this.codexCliInstalled = options.codexCliInstalled ?? (async () => true)
+    this.setCodexMcpServerEnabled = options.setCodexMcpServerEnabled ?? null
   }
 
   /**
@@ -2145,7 +2162,8 @@ export class ProviderExtensionService {
         servers = configured.servers
         warnings.push(...configured.warnings.map((warning) => `${cliCatalog[provider].name} ${warning}`))
       }
-      items.push(...servers.map((server) => mcpItem(provider, server)))
+      const toggleable = provider !== 'codex' || this.setCodexMcpServerEnabled !== null
+      items.push(...servers.map((server) => mcpItem(provider, server, toggleable)))
     } catch (error) {
       const reason = `MCP 列表读取失败：${errorDetail(error)}`
       capabilities.mcp = { list: false, reason }
@@ -2363,6 +2381,8 @@ export class ProviderExtensionService {
         }
         return { argv: ['mcp', 'remove', '--scope', scope, id!], secrets: [] }
       }
+      // Codex 没有 `mcp enable / disable`，启停在 mutate 里直接改 config.toml，走不到这里；兜底不让它落成一条不存在的命令。
+      if (input.provider === 'codex') throw new Error('当前 Provider 不支持该原生操作')
       return { argv: ['mcp', input.action, id!], secrets: [] }
     }
 
@@ -2443,8 +2463,28 @@ export class ProviderExtensionService {
     return { name: safeIdentifier(item.name, 'Skill 名称'), scope }
   }
 
+  /**
+   * Codex 的外接工具启停：没有命令，交给 codex-extensions.ts 改用户那份 config.toml 里那条的 enabled（备份、排队、对账
+   * 照旧），装没装 CLI 都一样。跟移除一样只认用户那份：项目里那几层和插件带的改不到，界面不给开关，这里兜底。
+   */
+  private async toggleCodexMcpServer(
+    id: string | undefined,
+    scope: ProviderExtensionScope | undefined,
+    enabled: boolean,
+  ): Promise<ProviderExtensionsSnapshot> {
+    const name = safeIdentifier(id, '扩展 ID')
+    if (!this.setCodexMcpServerEnabled || (scope !== undefined && scope !== 'user')) {
+      throw new Error('当前 Provider 不支持该原生操作')
+    }
+    await this.setCodexMcpServerEnabled(name, enabled)
+    return this.list('codex')
+  }
+
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
     if (!providerIds.includes(input.provider)) throw new Error('未知的 Provider')
+    if (input.provider === 'codex' && input.kind === 'mcp' && (input.action === 'enable' || input.action === 'disable')) {
+      return this.toggleCodexMcpServer(input.id, input.scope, input.action === 'enable')
+    }
     // 选工作目录或保存设置会随时改写 this.repositoryRoot；一次操作从查找技能到
     // 执行命令必须落在同一个项目里，否则列表在 A 读、命令在 B 跑（#488）。
     const repositoryRoot = this.repositoryRoot

@@ -355,7 +355,7 @@ export async function runExtensionAction(
     return
   }
   // Codex 的外接工具删和加（submitMcpInstall）走同一边：只装了桌面端、没有 CLI 时，那边直接改 config.toml。
-  // 项目里那条照旧交给下面，主进程会回「不支持」。
+  // 项目里那条照旧交给下面，主进程会回「不支持」。启停交给下面的 mutate，主进程同样改 config.toml，没有 CLI 也行。
   if (item.provider === 'codex' && item.kind === 'mcp' && action === 'uninstall' && item.scope !== 'project') {
     await api.removeMcpServer(item.id)
     return

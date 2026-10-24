@@ -2121,6 +2121,11 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       ['shared', 'project'],
       ['shared', 'user'],
     ])
+    // 2.1.310 has no enable/disable command and keeps its own switch per project folder in ~/.claude.json,
+    // which a list row standing for every project cannot represent.
+    expect(servers.some((item) => item.operations.enable || item.operations.disable)).toBe(false)
+    await expect(service.mutate({ provider: 'claude', kind: 'mcp', action: 'disable', id: 'shared', scope: 'user' }))
+      .rejects.toThrow('不支持该原生操作')
 
     calls.length = 0
     await service.mutate({ provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'shared', scope: 'project' })
@@ -2207,6 +2212,35 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       expect(remove.argv).toEqual(['mcp', 'remove', '--scope', item.scope, item.id])
       expect(remove.cwd).toBe(repository)
     }
+  })
+
+  // 1.0.52 and 1.0.70: `grok mcp enable|disable <name>` takes no --scope and finds a project server from the
+  // folder it runs in; disabling one records the name in ~/.grok/config.toml, and repeating either is a no-op exit 0.
+  it('offers the switch on every Grok MCP server and flips it from inside the project', async () => {
+    const repository = temporaryDirectory()
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return grokMcpList
+      if (argv.join(' ') === 'plugin list --available --json') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), repositoryRoot: repository, invoke })
+
+    const servers = (await service.list('grok')).items.filter((item) => item.kind === 'mcp')
+    expect(servers.every((item) => item.operations.enable && item.operations.disable)).toBe(true)
+
+    for (const [id, scope, action] of [['shared', 'project', 'disable'], ['mine', 'user', 'enable']] as const) {
+      calls.length = 0
+      await service.mutate({ provider: 'grok', kind: 'mcp', action, id, scope })
+      const toggle = calls.find((call) => call.argv[1] === action)!
+      expect(toggle.argv).toEqual(['mcp', action, id])
+      expect(toggle.cwd).toBe(repository)
+    }
+
+    calls.length = 0
+    service.setRepositoryRoot(null)
+    await expect(service.mutate({ provider: 'grok', kind: 'mcp', action: 'disable', id: 'shared', scope: 'project' }))
+      .rejects.toThrow('请先在工作目录里选好这个项目')
+    expect(calls).toHaveLength(0)
   })
 
   it('adds a project Grok MCP server inside the project and asks for the project folder when none is picked', async () => {
@@ -2332,6 +2366,65 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     expect(calls).toHaveLength(0)
   })
 
+  // Codex 0.162.1 has no `mcp enable|disable`; the switch is the entry's `enabled` in the user config.toml,
+  // written by codex-extensions.ts. Whatever remove cannot reach, the switch cannot either.
+  it('switches only the user copies of Codex MCP servers, through config.toml rather than a command', async () => {
+    const codexHome = temporaryDirectory()
+    const repository = temporaryDirectory()
+    fs.mkdirSync(path.join(repository, '.git'), { recursive: true })
+    write(path.join(codexHome, 'config.toml'), '[mcp_servers.mine]\ncommand = "echo"\nargs = ["mine"]\n')
+    write(path.join(repository, '.codex', 'config.toml'), '[mcp_servers.repo-db]\ncommand = "echo"\n')
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return codexMcpList('mine', 'repo-db', 'from-plugin')
+      if (argv[0] === 'plugin') return '[]'
+      return undefined
+    })
+    const setCodexMcpServerEnabled = vi.fn(async () => undefined)
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      codexHome,
+      repositoryRoot: repository,
+      invoke,
+      setCodexMcpServerEnabled,
+    })
+
+    const servers = (await service.list('codex')).items.filter((item) => item.kind === 'mcp')
+    expect(servers.map((item) => [item.id, item.operations.enable, item.operations.disable]).sort()).toEqual([
+      ['from-plugin', false, false],
+      ['mine', true, true],
+      ['repo-db', false, false],
+    ])
+
+    calls.length = 0
+    const snapshot = await service.mutate({ provider: 'codex', kind: 'mcp', action: 'disable', id: 'mine', scope: 'user' })
+    expect(setCodexMcpServerEnabled).toHaveBeenCalledWith('mine', false)
+    expect(calls.map((call) => call.argv.join(' '))).not.toContain('mcp disable mine')
+    expect(snapshot.provider).toBe('codex')
+
+    await expect(service.mutate({ provider: 'codex', kind: 'mcp', action: 'enable', id: 'repo-db', scope: 'project' }))
+      .rejects.toThrow('不支持该原生操作')
+    expect(setCodexMcpServerEnabled).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers no Codex MCP switch when nothing can write config.toml for it', async () => {
+    const codexHome = temporaryDirectory()
+    write(path.join(codexHome, 'config.toml'), '[mcp_servers.mine]\ncommand = "echo"\nargs = ["mine"]\n')
+    const { calls, invoke } = recordingInvoke((argv) => {
+      if (argv.join(' ') === 'mcp list --json') return codexMcpList('mine')
+      if (argv[0] === 'plugin') return '[]'
+      return undefined
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), codexHome, invoke })
+
+    const [server] = (await service.list('codex')).items.filter((item) => item.kind === 'mcp')
+    expect(server.operations).toMatchObject({ uninstall: true, enable: false, disable: false })
+
+    calls.length = 0
+    await expect(service.mutate({ provider: 'codex', kind: 'mcp', action: 'disable', id: 'mine', scope: 'user' }))
+      .rejects.toThrow('不支持该原生操作')
+    expect(calls).toHaveLength(0)
+  })
+
   it('reads only the folder itself as the Codex project layer when no Git root sits above it', async () => {
     const codexHome = temporaryDirectory()
     const parent = temporaryDirectory()
@@ -2409,6 +2502,26 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     // 别的工具照旧跑自己的命令。
     await service.list('grok')
     expect(calls.filter((call) => call.provider === 'grok').map((call) => call.argv.join(' '))).toContain('mcp list --json')
+  })
+
+  it('switches a Codex MCP server back on when only the desktop app is installed', async () => {
+    const codexHome = temporaryDirectory()
+    write(path.join(codexHome, 'config.toml'), '[mcp_servers.files]\ncommand = "npx"\nenabled = false\n')
+    const { calls, invoke } = recordingInvoke(() => '[]')
+    const setCodexMcpServerEnabled = vi.fn(async () => undefined)
+    const service = new ProviderExtensionService({
+      homeDirectory: temporaryDirectory(),
+      codexHome,
+      invoke,
+      codexCliInstalled: async () => false,
+      setCodexMcpServerEnabled,
+    })
+
+    const [server] = (await service.list('codex')).items.filter((item) => item.kind === 'mcp')
+    expect([server.enabled, server.operations.enable]).toEqual([false, true])
+    await service.mutate({ provider: 'codex', kind: 'mcp', action: 'enable', id: 'files', scope: 'user' })
+    expect(setCodexMcpServerEnabled).toHaveBeenCalledWith('files', true)
+    expect(calls.filter((call) => call.provider === 'codex')).toEqual([])
   })
 
   it('shows Codex skills disabled in config.toml as disabled', async () => {

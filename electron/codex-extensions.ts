@@ -1251,6 +1251,30 @@ export class CodexExtensionService {
     return reconciled
   }
 
+  /**
+   * Codex 没有 `mcp enable / disable`：停用就是用户 config.toml 里那条写 enabled = false（0.162.1 的 mcp list 报
+   * disabled，`codex mcp add` 别的连接也不会把它冲掉）。启用时把 false 改回 true，不删这一行：只改一个值能按行改、
+   * 留住客户的注释，删键就得整份重写；Codex 读 true 和不写一样。装没装 CLI、只装了桌面端都走这里。
+   * 用户那份里没有这一条（项目里的、插件带的）就不写，交给对账：已经是要的状态算成，不是就报错。
+   */
+  async setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerDto[]> {
+    assertSimpleName(name, 'MCP 名称')
+    await this.writeConfigToml({
+      mutate: (config) => {
+        const servers = config.mcp_servers
+        const entry = isRecord(servers) ? servers[name] : undefined
+        if (!isRecord(entry) || (entry.enabled !== false) === enabled) return false
+        entry.enabled = enabled
+        return true
+      },
+      editText: (source, before, after) => editTomlTableText(source, ['mcp_servers', name], before, after),
+    })
+    const reconciled = await this.listMcpServers()
+    const server = reconciled.find((entry) => entry.name === name)
+    if (!server || server.enabled !== enabled) throw new Error('MCP 配置写入后未通过 Codex 对账')
+    return reconciled
+  }
+
   async loginMcpServer(name: string, scopes: readonly string[] = []): Promise<McpServerDto[]> {
     assertSimpleName(name, 'MCP 名称')
     const argv = ['mcp', 'login', name]
