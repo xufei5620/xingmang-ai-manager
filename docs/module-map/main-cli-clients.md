@@ -102,6 +102,7 @@
 - `claude-desktop-policy.ts` — 写配置前确认 Claude Desktop 没被组织策略（注册表或托管文件）接管推理设置；PowerShell 只带出策略的名字和类型，值里可能有 Key，不出来（I3、I13）
 - `claude-desktop-model-repair.ts` — 开机一次性修复：0.2.12 往 Claude Desktop 配置里写了一串型号，导致发消息没回复；只认星芒自己那份、只认那个写法，改回单个型号，最多试三次，查完记一笔以后不再读
 - `claude-desktop-msix-installer.ts` — Windows 上 Claude Desktop 的离线 MSIX 一路（存储桶或 Claude 官网，官网只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）
+- `claude-desktop-acceleration.ts` — 从星芒打开 Claude Desktop 前悄悄替用户连上加速，好让它从 `downloads.claude.ai` 下得到 Claude Code 程序和 Cowork 工作区（#1373）：约束同 `codex-desktop-acceleration.ts`，Claude 退出或连满一小时就断，和 Codex 桌面端共用同一次会话时先用完的那边交给另一边（`heldElsewhere`）。不含 Electron 依赖
 - `claude-desktop-install-failure.ts` — Claude Desktop 没装上时那句话（按原因分类，原话只进日志）和官网下载页地址（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node
 
 ## 托管密钥的分组与换新

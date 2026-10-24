@@ -11,9 +11,10 @@ import { DialogExitButton } from './dialog-parts'
 import { OptionPicker, type PickerOption } from './OptionPicker'
 import { beginBusinessOperation, errorMessage } from '../../business-common'
 
-// 选模型之前要知道的那一句，放在最上面（v4 原型）。
+// 选模型之前要知道的那一句，放在最上面（v4 原型）。Claude Desktop 第一次用、每次自己升级以后都要从官网下组件，
+// 国内直连下不动；从星芒点「打开」时主进程会在后台替他连上加速（#1373，yoyo 2026-10-24 定的原文）。
 const clientHints: Record<ExternalToolId, string> = {
-  claudeDesktop: '保存后要完全退出再重新打开 Claude Desktop。',
+  claudeDesktop: '保存后要完全退出再重新打开 Claude Desktop。它第一次用和每次自己升级以后，都要从 Claude 官网下载组件（最多 1.6GB），请从这里点「打开」，星芒会在后台帮它连上下载线路。',
   workbuddy: '请选择能调用工具的模型；保存后在 WorkBuddy 的模型列表里选它。',
   opencode: '命令行版和桌面版共用这份配置。',
 }
@@ -21,7 +22,7 @@ const clientHints: Record<ExternalToolId, string> = {
 // 连好以后页顶说一句下一步。WorkBuddy 列表里显示的就是型号本身（主进程写进 models.json 的
 // name 缺省是型号 ID），所以直接点名让他选哪一个。
 function connectedText(tool: ExternalToolId, model: string): string {
-  if (tool === 'claudeDesktop') return '已连好 Claude Desktop，完全退出后重新打开就能用'
+  if (tool === 'claudeDesktop') return '已连好 Claude Desktop，完全退出后从这里点「打开」；第一次发消息要等它下完组件'
   if (tool === 'workbuddy') return `已连好 WorkBuddy，在它的模型列表里选「${model}」`
   return '已连好 OpenCode，命令行版和桌面版都能用'
 }

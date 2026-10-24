@@ -623,6 +623,21 @@ describe('acceleration started by the app', () => {
     expect((await service.startAcceleration(scope, 'system-proxy')).autoStartedBy).toBeUndefined()
   })
 
+  it('marks the session with the client it was started for, whatever origin the backend reports', async () => {
+    // The backend only knows "started by the app" and always says codex-desktop;
+    // which client asked is the service's own record (#1373).
+    const backend = createBackend()
+    const startAutomaticAcceleration = vi.fn(async () => active({ autoStartedBy: 'codex-desktop' }))
+    const service = createAccelerationService({ getAccountScope: () => scope, backend: { ...backend, startAutomaticAcceleration } })
+    expect((await service.startAutomaticAcceleration(scope, 'claude-desktop', 'system-proxy')).autoStartedBy).toBe('claude-desktop')
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active({ autoStartedBy: 'codex-desktop' }))
+    expect((await service.getAccelerationState(scope)).autoStartedBy).toBe('claude-desktop')
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active({ autoStartedBy: 'claude-desktop' }))
+    expect((await service.getAccelerationState(scope)).autoStartedBy).toBe('claude-desktop')
+    vi.mocked(backend.getAccelerationState).mockResolvedValueOnce(active({ autoStartedBy: 'other-client' as never }))
+    await expect(service.getAccelerationState(scope)).rejects.toThrow()
+  })
+
   it('leaves user starts and a session that was already running unmarked', async () => {
     const backend = createBackend()
     const service = createAccelerationService({ getAccountScope: () => scope, backend })

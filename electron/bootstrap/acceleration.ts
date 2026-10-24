@@ -13,6 +13,7 @@ import { accelerationStartRequest, defaultAccelerationPreference, type Accelerat
 import { createAccelerationService, createUserAccelerationApi, userAccelerationState, type AccelerationService } from '../acceleration-service'
 import type { AppSettings } from '../app-settings'
 import type { ApplicationTrayController } from '../application-tray'
+import { createClaudeDesktopAccelerationCoordinator } from '../claude-desktop-acceleration'
 import { codexDesktopNeedsAccelerationOnlyAtStartup, createCodexDesktopAccelerationCoordinator } from '../codex-desktop-acceleration'
 import { probeCodexDesktopRunning } from '../codex-desktop-service'
 import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator } from '../codex-desktop-startup-route'
@@ -118,6 +119,32 @@ export function createAccelerationRouting(options: AccelerationRoutingOptions) {
     // Mac 上连一次、断一次各要一次电脑密码，系统只记 30 秒：用星芒密钥的 20 秒后看到桌面端在跑就断，
     // 断开不用再输一次（2026-10-18 客户 Mac 一直弹）。Windows 不要密码，照旧两分钟。
     ...(process.platform === 'darwin' ? { startupDisconnectMs: 20_000 } : {}),
+    // 前后脚从星芒打开了 Claude Desktop、它还在下组件：Codex 这边用完也不断，交给它。
+    heldElsewhere: (scope, connectedAt) => claudeDesktopAcceleration.holds(scope, connectedAt),
+    log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+  })
+  // Claude Desktop 也是独立进程、只跟着系统代理走：第一次用、每次自己升级以后要从官网下 1GB 多的组件，
+  // 国内直连下不动（#1373）。从星芒打开它时同样替他连一次，Claude 退出或连满一小时就断。
+  const claudeDesktopAcceleration = createClaudeDesktopAccelerationCoordinator({
+    getAccountScope: () => readAccelerationAccountScope(),
+    readState: (scope) => {
+      const acceleration = accelerationService()
+      return acceleration
+        ? acceleration.getAccelerationState(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。'))
+    },
+    connect: async (scope, state) => {
+      const acceleration = accelerationService()
+      if (!acceleration) throw new Error('加速服务尚未就绪。')
+      return acceleration.startAutomaticAcceleration(scope, 'claude-desktop', ...await accelerationStartArguments(scope, state))
+    },
+    disconnect: (scope, connectedAt) => {
+      const acceleration = accelerationService()
+      return acceleration
+        ? acceleration.stopAutomaticAcceleration(scope, connectedAt)
+        : Promise.reject(new Error('加速服务尚未就绪。'))
+    },
+    heldElsewhere: (scope, connectedAt) => codexDesktopAcceleration.holds(scope, connectedAt),
     log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
   })
   function codexDesktopUsesStarKeyOnly(): boolean {
@@ -162,7 +189,7 @@ export function createAccelerationRouting(options: AccelerationRoutingOptions) {
     ...options,
     session: downloadAcceleration.currentEndpoint() ? acceleratedDownloadSession : session.defaultSession,
   }))
-  return { downloadAcceleration, accelerationStartArguments, codexDesktopAcceleration, codexDesktopStartupRoute, downloadFetch }
+  return { downloadAcceleration, accelerationStartArguments, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, downloadFetch }
 }
 
 export type AccelerationRouting = ReturnType<typeof createAccelerationRouting>
@@ -250,7 +277,7 @@ export interface AccelerationServicesOptions {
   accelerationBundleDamaged: boolean
   accelerationPreferences: AccelerationPreferenceStore
   recheckAccelerationBundle: () => Promise<AccelerationBundleCheck>
-  routing: Pick<AccelerationRouting, 'codexDesktopAcceleration' | 'accelerationStartArguments'>
+  routing: Pick<AccelerationRouting, 'codexDesktopAcceleration' | 'claudeDesktopAcceleration' | 'accelerationStartArguments'>
   readAccelerationAccountScope: () => string | null
   runtimeLog: RuntimeLogStore
   /** 主窗口和托盘都建得比这里晚，用到时再取。 */
@@ -262,7 +289,7 @@ export interface AccelerationServicesOptions {
 // main.ts 照旧各有一份同名的变量，拿到这里的结果马上填上；睡眠唤醒那一段和退出清理留在 main.ts。
 export function createAccelerationServices(options: AccelerationServicesOptions) {
   const { developmentAcceleration, accelerationBundleDamaged, accelerationPreferences, recheckAccelerationBundle, runtimeLog } = options
-  const { routing: { codexDesktopAcceleration, accelerationStartArguments }, readAccelerationAccountScope, mainWindow, applicationTray } = options
+  const { routing: { codexDesktopAcceleration, claudeDesktopAcceleration, accelerationStartArguments }, readAccelerationAccountScope, mainWindow, applicationTray } = options
   // 建的过程中互相读得到：还没建好的那一样是空的，跟原来在 main.ts 里一样。
   let trayAcceleration: TrayAccelerationCoordinator | null = null
   let accelerationExpiry: AccelerationExpiryNotice | null = null
@@ -315,6 +342,7 @@ export function createAccelerationServices(options: AccelerationServicesOptions)
       accelerationExpiry?.observe(state)
       accelerationInterruption?.observe(state)
       codexDesktopAcceleration.observe(state)
+      claudeDesktopAcceleration.observe(state)
     },
   })
   // 加速页（IPC）和托盘看到的那一套：软件替他在后台连的那一次（打开 Codex 桌面端

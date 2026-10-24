@@ -1117,7 +1117,7 @@ if (!hasSingleInstanceLock) {
       issueCodexStartupTicket: () => issueCodexStartupTicket(),
       readStoredConfig: () => systemService.readStoredConfig(),
     })
-    const { downloadAcceleration, codexDesktopAcceleration, codexDesktopStartupRoute, downloadFetch } = accelerationRouting
+    const { downloadAcceleration, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, downloadFetch } = accelerationRouting
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
@@ -1193,6 +1193,8 @@ if (!hasSingleInstanceLock) {
       // OpenAI（acceleration-clash-config.ts 的 lineRoutedRules），npm、Node、Python、GitHub 都过不去；
       // 用户自己开着加速时下载照样跟着系统代理，在内核里按规则直连，也不算加速，安装源保持国内优先。
       prepareCodexDesktopStartupRoute: (context) => codexDesktopStartupRoute.prepare(context),
+      // Claude Desktop 要从官网下组件，国内直连下不动：从星芒打开时先在后台替他连上加速（#1373）。
+      prepareClaudeDesktopLaunch: (context) => claudeDesktopAcceleration.ensureConnected(context),
     })
     const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
       systemService,
@@ -2087,6 +2089,7 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('acceleration-notices', () => {
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
+      claudeDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()
     })
     // 加速服务、独立加速进程各占一步：前一步同步抛错，也要照样放掉加速进程，由它还原系统代理。

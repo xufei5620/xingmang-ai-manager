@@ -165,6 +165,7 @@ describe('codex desktop acceleration exit watch', () => {
     onlyNeededAtStartup?: () => boolean | Promise<boolean>
     disconnected?: AccelerationState
     startupDisconnectMs?: number
+    heldElsewhere?: (scope: string, connectedAt: string) => boolean
   }) {
     const timers: Array<() => void> = []
     const delays: number[] = []
@@ -189,6 +190,7 @@ describe('codex desktop acceleration exit watch', () => {
       ...(options.onlyNeededAtStartup ? { onlyNeededAtStartup: options.onlyNeededAtStartup } : {}),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.startupDisconnectMs === undefined ? {} : { startupDisconnectMs: options.startupDisconnectMs }),
+      ...(options.heldElsewhere ? { heldElsewhere: options.heldElsewhere } : {}),
       schedule: (callback, milliseconds) => {
         timers.push(callback)
         delays.push(milliseconds)
@@ -454,6 +456,41 @@ describe('codex desktop acceleration exit watch', () => {
     expect(h.timers).toHaveLength(0)
     expect(h.isDesktopRunning).not.toHaveBeenCalled()
     expect(h.disconnect).not.toHaveBeenCalled()
+  })
+
+  // #1373: Claude Desktop opened from Starmang right after Codex Desktop rides the
+  // same session; cutting it when Codex is done would break a download midway.
+  it('hands the session to Claude Desktop instead of disconnecting while it still needs the line', async () => {
+    const heldElsewhere = vi.fn(() => true)
+    const h = watchSetup({ running: [false, false], heldElsewhere })
+    await h.coordinator.ensureConnected()
+    expect(h.coordinator.holds(scope, automatic.connectedAt!)).toBe(true)
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => { expect(heldElsewhere).toHaveBeenCalledWith(scope, automatic.connectedAt) })
+    expect(h.disconnect).not.toHaveBeenCalled()
+    expect(h.timers).toHaveLength(0)
+    expect(h.coordinator.holds(scope, automatic.connectedAt!)).toBe(false)
+    expect(h.log).toHaveBeenCalledWith('info', 'acceleration.codex-desktop.handed-off', expect.any(String), { cause: 'desktop-exited' })
+    // While Claude Desktop holds it, passing state updates leave it to Claude Desktop.
+    h.coordinator.observe(automatic)
+    expect(h.timers).toHaveLength(0)
+  })
+
+  it('still disconnects when nothing else holds the session', async () => {
+    const h = watchSetup({ running: [false, false], heldElsewhere: () => false })
+    await h.coordinator.ensureConnected()
+    await h.tick()
+    await h.tick()
+    await vi.waitFor(() => { expect(h.disconnect).toHaveBeenCalledExactlyOnceWith(scope, automatic.connectedAt) })
+  })
+
+  it('watches a session started for Claude Desktop when Codex Desktop is opened on it', async () => {
+    const claudeSession: AccelerationState = { ...automatic, autoStartedBy: 'claude-desktop' }
+    const h = watchSetup({ running: [true] })
+    h.setState(claudeSession)
+    await expect(h.coordinator.ensureConnected()).resolves.toEqual({ status: 'already-connected' })
+    expect(h.coordinator.holds(scope, claudeSession.connectedAt!)).toBe(true)
   })
 
   it('ignores state updates that are not an unattended automatic session of this account', () => {

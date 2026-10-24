@@ -211,3 +211,14 @@ Codex 桌面端（ChatGPT 客户端）是另一个独立进程，不在本软件
 > - **用完就断**（`codex-desktop-acceleration.ts`）：桌面端用的是星芒的 Key（Codex 配置指向当前站点且 `auth_mode` 为 apikey），连续两次（约两分钟）确认它在跑就断；登 ChatGPT 账号、没登录或读不出配置的，等连续两次确认它退出再断（ChatGPT 账号启动时要连 chatgpt.com，否则卡在「无法加载组织设置」）。断开只认自己那一次的 `connectedAt`。
 > - **断开时内核留到在途的回复写完**（`acceleration-development-backend.ts` 的 `holdCoreForDrain`，2026-10-03）：系统代理照旧当场改回，之后的新请求直连；内核再留 `automaticSessionDrainMs`（10 分钟）才停，断开前已经走在本机端口上的连接（Codex 正在流式返回的回复）不被掐断。这期间同一条线路再连直接接管内核（用户点「开始加速」接手后台那次也因此不重起内核），下载临时加速共用它，检测线路时让路；到点停不掉时记 `core-stop`、五秒后再试。用户自己点的、计时的加速停下时照旧马上停内核。
 > - 底部状态栏显示的是电脑此刻真实的出口地区，后台连着时刷新到会显示线路地区，这一点没藏。
+
+## 打开 Claude Desktop 时自动连接（2026-10-24，#1373）
+
+Claude Desktop 第一次用、每次自己升级换了组件以后，都要从 `downloads.claude.ai` 下 Claude Code 程序和 Cowork 工作区（合计约 1.6GB），国内直连下不动，聊天、Cowork、Code 全起不来。洛杉矶线路的服务器已放行这个域名，`lineRoutedRules` 也送它走线路；Claude Desktop 只跟着系统代理走，所以从星芒点「打开」它时，照 Codex 桌面端那套替他连一次（`claude-desktop-acceleration.ts`，yoyo 2026-10-24「按你的推荐修」）：
+
+- 走 `startAutomaticAcceleration`，来源记 `claude-desktop`：不扣免费时长，加速页和托盘看不见，连不上照常打开，用户自己连着的不碰。
+- 星芒看不出 Claude 什么时候下完（组件放在哪是 Claude 内部的事），所以等它退出（连续两次确认）或连满一小时就断；再点一次「打开」从那一刻重新算。断开后内核照旧再留十分钟，正在下的那条连接不会当场被掐断。
+- 问 Claude 还在不在用的是打开它那次检测认出来的安装位置（`external-client-runtime.ts` 的 `onLaunched` 与 `stillRunning`）；没打开成就当它不在，两分钟后断开。
+- 和 Codex 桌面端前后脚从星芒打开、共用同一次会话时，先用完的那边不断，交给还在用的那边（两个协调者的 `heldElsewhere` / `holds`），由后用完的断开。
+- 从开始菜单打开、Claude 自己升级后重启的，不会自动连；提示里请客户从星芒点「打开」。
+- Mac 上改系统代理要电脑密码：打开时和断开时各问一次（下载要几分钟，避不开系统只记 30 秒那一下）。

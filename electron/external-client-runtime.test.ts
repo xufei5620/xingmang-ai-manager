@@ -853,6 +853,21 @@ describe('external desktop client lifecycle', () => {
     expect(onLaunchTiming).not.toHaveBeenCalled()
   })
 
+  it('tells the host where the client it launched is installed, and only after the launch went through', async () => {
+    // The host asks later whether that client is still running (#1373).
+    const onLaunched = vi.fn<NonNullable<ExternalClientRuntimeOptions['onLaunched']>>()
+    const f = fixture({ onLaunched })
+    await expect(f.runtime.launch('opencode')).rejects.toThrow('尚未检测到客户端')
+    expect(onLaunched).not.toHaveBeenCalled()
+    f.setInventory([candidate('opencode')])
+    await f.runtime.launch('opencode')
+    expect(onLaunched).toHaveBeenCalledExactlyOnceWith('opencode', candidate('opencode').path)
+
+    const throwing = fixture({ onLaunched: () => { throw new Error('host gone') } })
+    throwing.setInventory([candidate('opencode')])
+    await expect(throwing.runtime.launch('opencode')).resolves.toBeUndefined()
+  })
+
   it('still reports a launch as done when its timings cannot be logged', async () => {
     // The client is already with Explorer: a failure here must not send the customer to click again.
     const f = fixture({ onLaunchTiming: () => { throw new Error('log unavailable') } })

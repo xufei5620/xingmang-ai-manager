@@ -30,6 +30,7 @@ import {
 } from './npm-registry'
 import { grokInstallStrategyFor } from './platform-capabilities'
 import { activateCodexDesktopWithCdp, injectCodexDesktopChineseLocale, withCodexDesktopCdpFailureReport, withCodexDesktopLocaleFailureReport } from './codex-desktop-cdp'
+import type { ClaudeDesktopLaunchContext } from './claude-desktop-acceleration'
 import type { CodexDesktopStartupRoute } from './codex-desktop-startup-route'
 import {
   createCodexDesktopService,
@@ -736,6 +737,11 @@ export interface SystemServiceOptions {
    * 就由它按需连加速，prepareCodexDesktopAcceleration 不再单独调。缺省 = 旧行为。
    */
   prepareCodexDesktopStartupRoute?: (context: { launchArgumentsUsable: boolean }) => Promise<CodexDesktopStartupRoute>
+  /**
+   * 从星芒打开 Claude Desktop 之前先在后台替他连上加速，好让它下得到 Claude Code 程序和 Cowork 工作区
+   * （#1373，claude-desktop-acceleration.ts）。实现永不抛错；缺省 = 旧行为，直接打开。
+   */
+  prepareClaudeDesktopLaunch?: (context: ClaudeDesktopLaunchContext) => Promise<unknown>
   /** runtime.jsonl sink for steps that are allowed to fail without blocking. */
   runtimeLog?: RuntimeLogLike
   /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */
