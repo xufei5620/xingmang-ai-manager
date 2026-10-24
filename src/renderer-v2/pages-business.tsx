@@ -116,11 +116,11 @@ export function BusinessPage({
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'featured')
-    return <FeaturedPage api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} active={actions.active} />
+    return <FeaturedPage api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'mcp')
     return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'plugins')
     return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />

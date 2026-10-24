@@ -1754,32 +1754,33 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
   }
 })
 
-// 第五部分第 27、28 条：不能在这里导入的工具，说清楚怎么放，空着时给「重新加载」。
-test('a tool whose skills cannot be imported here says how to place them and offers a reload', async () => {
-  const page = await fixture('page=skills&empty')
+// 第五部分第 28 条；10-24 起 Claude Code、Grok CLI 的技能也在这里从文件夹导入（「扩展改」第 2 条），
+// 主进程照 Codex 那套复制进它们自己的技能文件夹，界面走通用的 mutate。
+test('Claude Code and Grok CLI import skills from a folder like Codex CLI', async () => {
+  const page = await fixture('page=skills&empty&extensionOk')
   try {
-    const note = page.getByTestId('skills-import-unsupported')
-    await note.getByText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。', { exact: true }).waitFor()
-    const add = page.getByTestId('skills-add')
-    assert.equal(await add.count(), 1, '空状态里不再放那颗灰的「从文件夹导入」')
-    assert.equal(await add.isDisabled(), true)
-    assert.equal(await add.getAttribute('title'), 'Claude Code 不支持在这里导入')
     const empty = page.getByTestId('skills-empty')
-    await empty.getByText('按 Claude Code 自己的方式放好技能，回来点「重新加载」就能看到。', { exact: true }).waitFor()
-    let reads = (await callsNamed(page, 'list-extensions')).length
-    await empty.getByTestId('skills-empty-reload').click()
-    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
-    await note.getByRole('button', { name: '看怎么放', exact: true }).click()
-    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['tutorial', 'skills#Claude Code、Grok CLI 没有导入按钮？'])
-    // 选 Grok CLI 时句首换成它。
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await note.getByText(/^Grok CLI 的技能不能在这里导入/).waitFor()
-    // 能导入的工具：没有那一行，空着时叫人点「从文件夹导入」；工具条上的「重新加载」照样重读。
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await note.waitFor({ state: 'detached' })
     await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
-    await empty.getByTestId('skills-add').waitFor()
-    reads = (await callsNamed(page, 'list-extensions')).length
+    assert.equal(await page.getByTestId('skills-import-unsupported').count(), 0, '不再放「不能在这里导入」那一行')
+    const add = empty.getByTestId('skills-add')
+    assert.equal(await add.isDisabled(), false)
+    assert.equal(await add.getAttribute('title'), null)
+    await add.click()
+    const form = page.getByRole('dialog', { name: '给 Claude Code 导入技能', exact: true })
+    assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
+    await form.getByLabel('技能文件夹路径', { exact: true }).fill('/Users/demo/skills/reviewer')
+    await form.getByTestId('skills-form-submit').click()
+    await form.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user',
+    })
+    // Grok CLI 同样能导入；工具条上的「重新加载」照样重读。
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
+    await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
+    await empty.getByTestId('skills-add').click()
+    await page.getByRole('dialog', { name: '给 Grok CLI 导入技能', exact: true }).waitFor()
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    const reads = (await callsNamed(page, 'list-extensions')).length
     await page.getByTestId('skills-reload').click()
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
   } finally {
@@ -2080,6 +2081,36 @@ test('a featured entry that needs a folder asks for it in the same dialog before
     assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['feedback', 'form'])
   } finally {
     await page.close()
+  }
+})
+
+// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时，添加框直说，给「去首页安装」。
+test('a featured entry says when none of its tools is installed and leads to the home page', async () => {
+  const page = await fixture('page=featured&installedProviders=')
+  try {
+    await page.getByTestId('featured-install-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '添加「逐步思考」', exact: true })
+    const notice = dialog.getByTestId('featured-no-tool')
+    await notice.getByText('还没装能用它的工具', { exact: true }).waitFor()
+    await notice.getByText('这一条给 Claude Code、Codex CLI、Grok CLI 用，这台电脑上一个都还没装。先去首页装一个，装好回来再添加。', { exact: true }).waitFor()
+    await notice.getByTestId('featured-open-home').click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
+    // 插件说「安装」；只要有一个工具装了，就不出这一条。
+    await page.getByTestId('featured-kind').getByRole('button', { name: '插件', exact: true }).click()
+    await page.getByTestId('featured-install-code-review').click()
+    const plugin = page.getByRole('dialog', { name: '安装「代码审查」', exact: true })
+    await plugin.getByText('这一条给 Claude Code 用，这台电脑上一个都还没装。先去首页装一个，装好回来再安装。', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+  const installed = await fixture('page=featured&installedProviders=claude')
+  try {
+    await installed.getByTestId('featured-install-sequential-thinking').click()
+    await installed.getByRole('dialog', { name: '添加「逐步思考」', exact: true }).getByTestId('featured-install-submit').waitFor()
+    assert.equal(await installed.getByTestId('featured-no-tool').count(), 0)
+  } finally {
+    await installed.close()
   }
 })
 

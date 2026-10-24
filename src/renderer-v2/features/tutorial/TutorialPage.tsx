@@ -34,7 +34,7 @@ function isTutorialCategory(value: unknown): value is TutorialCategoryFilter {
 
 function initialView(tutorialTopics: readonly TutorialTopic[], topic?: { id: string; query?: string }): TutorialView {
   const fallback: TutorialView = { open: null, query: '', category: 'all' }
-  // 顶部搜索「去教程里搜」带着字过来：停在卡片列表上搜；只指名一篇（技能页「看怎么放」）就直接打开那一篇。
+  // 顶部搜索「去教程里搜」带着字过来：停在卡片列表上搜；只指名一篇（命令面板、安装指南）就直接打开那一篇。
   if (topic) return topic.query !== undefined ? { ...fallback, query: topic.query.slice(0, 200) }
     : { ...fallback, open: tutorialTopics.some(entry => entry.id === topic.id) ? topic.id : null }
   try {
@@ -120,7 +120,7 @@ export type TutorialPageProps = Omit<BusinessActions, 'navigate'> & {
   navigate?: (page: V2Page, section?: string) => void
   /**
    * query：从顶部搜索「去教程里搜」过来时带上的字，停在卡片列表上搜；缺省 = 直接打开 id 那一篇。
-   * extra：要展开并翻到的那一条补充说明的标题（技能页「看怎么放」），缺省 = 一条都不展开。
+   * extra：要展开并翻到的那一条补充说明的标题（外壳 navigate 的 section 带 #），缺省 = 一条都不展开。
    */
   topic?: { sequence: number; id: string; query?: string; extra?: string }
   /** 哪个系统的教程；缺省按窗口当前的系统（外壳挂载前就写好了）。Linux 有自己的一份。 */
@@ -313,7 +313,7 @@ export function TutorialPage({ navigate, openGuide, openHelp, topic, os }: Tutor
               {step.expected && <div className="v2-tutorial-expected"><CheckCircle2 size={17} aria-hidden="true" /><p><strong>看到这样，就做好了</strong><Hits text={step.expected} words={words} /></p></div>}
               {step.tip && <p className="v2-tutorial-tip"><strong>小提醒：</strong><Hits text={step.tip} words={words} /></p>}
               {navigate && <Button size="sm" iconRight={ArrowRight} onClick={() => navigate(step.page, step.section)} testId={`tutorial-${current.id}-action-${index}`}>{step.action}</Button>}
-              {/* 搜索时只展开含这个词的补充说明；从别处点「看怎么放」过来时只展开指名的那一条。 */}
+              {/* 搜索时只展开含这个词的补充说明；从别处指名某一条过来时只展开那一条。 */}
               {step.extra?.map(note => <details className="v2-tutorial-extra" key={`${note.title}:${searchKey}:${focusExtra?.sequence ?? 0}`} data-extra-title={note.title}
                 open={searchKey ? textHasSearchWord(`${note.title} ${note.detail}`, words) : focusExtra?.title === note.title}>
                 <summary><Hits text={note.title} words={words} /></summary><p><Hits text={note.detail} words={words} /></p>

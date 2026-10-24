@@ -8085,8 +8085,9 @@ test('tutorial cards remember how far each chapter was read and continue from th
   } finally { await page.close() }
 })
 
-// 第五部分第 27、32 条：技能页「看怎么放」打开技能那篇、只展开那一条补充说明；「全部教程」回到卡片时落在这一篇上。
-test('the skills page guide opens the skills chapter on its note and the card list comes back to it', async () => {
+// 第五部分第 32 条：「全部教程」回到卡片时落在这一篇上。10-24 起 Claude Code 也能在技能页导入（「扩展改」第 2 条），
+// 技能页不再有「看怎么放」，教程「技能」篇也不再有「没有导入按钮？」那一条。
+test('the skills chapter explains importing for every tool and the card list comes back to it', async () => {
   const page = await open()
   try {
     await page.setViewportSize({ width: 1280, height: 560 })
@@ -8098,21 +8099,18 @@ test('the skills page guide opens the skills chapter on its note and the card li
     })
     await page.getByTestId('nav-skills').click()
     const skills = page.getByTestId('page-skills')
-    const note = skills.getByTestId('skills-import-unsupported')
-    await expect(note).toContainText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。')
-    await expect(skills.getByTestId('skills-add')).toBeDisabled()
-    await expect(skills.getByTestId('skills-add')).toHaveAttribute('title', 'Claude Code 不支持在这里导入')
-    await note.getByRole('button', { name: '看怎么放', exact: true }).click()
+    await expect(skills.getByTestId('skills-empty')).toContainText('点「从文件夹导入」，选一个技能文件夹。')
+    await expect(skills.getByTestId('skills-import-unsupported')).toHaveCount(0)
+    await expect(skills.getByTestId('skills-add').first()).toBeEnabled()
+    await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
+    const entry = tutorial.getByTestId('tutorial-topic-skills')
+    await entry.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
-    const guide = article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')
-    await expect(guide).toHaveJSProperty('open', true)
-    await expect(guide).toContainText('再回本页点「重新加载」')
-    assert.deepEqual(await article.locator('details.v2-tutorial-extra').evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle)), ['Claude Code、Grok CLI 没有导入按钮？'])
-    await expect.poll(() => insidePageViewport(guide.locator('summary'))).toBe(true)
+    await expect(article).toContainText('选好工具，再选一个本机的技能文件夹导入。')
+    await expect(article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')).toHaveCount(0)
     await tutorial.getByTestId('tutorial-back').click()
-    const entry = tutorial.getByTestId('tutorial-topic-skills')
     await expect(entry).toBeFocused()
     await expect.poll(() => insidePageViewport(entry)).toBe(true)
     await clean(page)

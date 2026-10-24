@@ -243,6 +243,21 @@ export function extensionRowState(
 }
 
 /**
+ * 外接工具没有「更新」这一步：精选里的版本是星芒核过才固定下来的，自己加的要换版本只能移除再加。
+ * 行上挂着「可更新」却找不到按钮，所以外接工具只在详情里说清楚，技能、插件有「更新」按钮照旧挂。
+ */
+export function extensionShowsUpdatePill(item: ExtensionItem): boolean {
+  return item.kind !== 'mcp' && item.update.state === 'update-available'
+}
+
+/** 详情里的「更新状态」。Git 来源的「版本」是一串提交号，不往句子里放。 */
+export function extensionUpdateStatus(item: ExtensionItem): string {
+  if (item.kind !== 'mcp' || item.update.state !== 'update-available') return item.update.reason || '尚未检查'
+  const latest = item.source.kind === 'git' ? null : item.latestVersion
+  return `有新版本${latest ? ` ${latest}` : ''}。外接工具不在这里更新：精选里加的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。`
+}
+
+/**
  * scope 是 CLI 自己的英文叫法，「范围」筛选和详情按同一套归类：local 是只在这个项目里用的那一份，
  * 归「当前项目」；扩展自带的技能装在用户目录里，哪个文件夹打开都能用，归「我的（全局）」。
  */
@@ -453,6 +468,16 @@ export function extensionToolChoices(
           ? '已添加'
           : null,
   }))
+}
+
+/**
+ * 添加框里能装它的工具一个都没装（勾选框全是「未安装」）时，那几个工具的名字，用「、」连起来；
+ * 有一个能勾、或者已经加过的，回 null，不出那条提示。
+ */
+export function extensionNoToolInstalled(choices: readonly ExtensionToolChoice[]): string | null {
+  const supported = choices.filter((choice) => choice.note !== '不支持')
+  if (!supported.length || supported.some((choice) => choice.note !== '未安装')) return null
+  return supported.map((choice) => choice.name).join('、')
 }
 
 export function ExtensionToolPicker({
