@@ -23,7 +23,7 @@ import {
 } from './cli-process-probe'
 import { resolveCliRevertVersion } from './cli-update-history'
 import { buildCliVersionAdvice, type CliVersionAdvice } from './cli-verified-versions'
-import { isCodexDesktopExecutable } from './codex-desktop'
+import { isCodexDesktopCliInstallation } from './codex-desktop'
 import { desktopUpdateFields } from './codex-desktop-service'
 import { cleanCommandOutput, commandEnvironment, trustedCommandEnvironment } from './command-runner'
 import { readCodexAuthTokens } from './config-files'
@@ -928,8 +928,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
     const installTarget = resolveCliInstallTarget(provider, npmGlobalRoot ?? null)
     if (
       !installation
-      || (provider === 'codex' && installation.source === 'native'
-        && isCodexDesktopExecutable(installation.commandPath))
+      || (provider === 'codex' && isCodexDesktopCliInstallation(installation))
     ) {
       return {
         status: { installed: false, version: null, path: null, installDirectory: null, installTarget },
@@ -1241,8 +1240,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         })
         // 与 inspectCliTool 同一条排除：命令行找到的若是桌面端自带的 codex，那是
         // 桌面端的进程，下面单独问桌面端，别在这里再算一遍 Codex CLI。
-        if (installation && provider === 'codex' && installation.source === 'native'
-          && isCodexDesktopExecutable(installation.commandPath)) return []
+        if (installation && provider === 'codex' && isCodexDesktopCliInstallation(installation)) return []
         return cliProcessProbeRoots(installation, platform)
       },
       probe: (root) => probeRunningCliProcesses(root, { platform }),

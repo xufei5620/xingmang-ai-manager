@@ -2373,6 +2373,44 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     expect(calls.filter((call) => call.argv.join(' ') === 'mcp list --json').map((call) => call.cwd)).toEqual([undefined, undefined])
   })
 
+  // 只装了 Codex 桌面端：没有 CLI 可跑，外接工具照用户那份 config.toml 列，插件交给桌面端自己的插件页。
+  it('lists Codex from the user config.toml without running a command when only the desktop app is installed', async () => {
+    const home = temporaryDirectory()
+    const codexHome = temporaryDirectory()
+    const repository = temporaryDirectory()
+    write(
+      path.join(codexHome, 'config.toml'),
+      '[mcp_servers.files]\ncommand = "npx"\nargs = ["-y", "@modelcontextprotocol/server-filesystem@1.2.0"]\nenabled = false\n\n'
+        + '[mcp_servers.github]\nurl = "https://api.example.test/mcp"\n',
+    )
+    write(path.join(repository, '.codex', 'config.toml'), '[mcp_servers.repo-db]\ncommand = "echo"\n')
+    write(path.join(home, '.agents', 'skills', 'notes', 'SKILL.md'), '---\nname: Notes\n---\n')
+    const { calls, invoke } = recordingInvoke(() => '[]')
+    const service = new ProviderExtensionService({
+      homeDirectory: home,
+      codexHome,
+      repositoryRoot: repository,
+      invoke,
+      codexCliInstalled: async () => false,
+      inspectSource: async (input) => ({ currentVersion: input.currentVersion, latestVersion: input.currentVersion }),
+    })
+
+    const snapshot = await service.list('codex')
+    expect(calls.filter((call) => call.provider === 'codex')).toEqual([])
+    expect(snapshot.warnings).toEqual([])
+    expect(snapshot.capabilities.mcp.list).toBe(true)
+    expect(snapshot.items.filter((item) => item.kind === 'mcp').map((item) => [item.id, item.scope, item.enabled, item.operations.uninstall]))
+      .toEqual([
+        ['files', 'user', false, true],
+        ['github', 'user', true, true],
+      ])
+    expect(snapshot.items.filter((item) => item.kind === 'skill').map((item) => item.name)).toEqual(['Notes'])
+    expect(snapshot.items.filter((item) => item.kind === 'plugin')).toEqual([])
+    // 别的工具照旧跑自己的命令。
+    await service.list('grok')
+    expect(calls.filter((call) => call.provider === 'grok').map((call) => call.argv.join(' '))).toContain('mcp list --json')
+  })
+
   it('shows Codex skills disabled in config.toml as disabled', async () => {
     const home = temporaryDirectory()
     const codexHome = temporaryDirectory()

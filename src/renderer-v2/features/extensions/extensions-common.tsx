@@ -345,13 +345,19 @@ export function extensionFailureTarget(failed: string): OperationTarget | undefi
  * 按缺省的 user 去找，项目里的删不掉，同名的全局那份反倒被改了（#488）。
  */
 export async function runExtensionAction(
-  api: Pick<V2Bridge, 'mutateProviderExtension' | 'toggleSkill' | 'uninstallSkill' | 'togglePlugin'>,
+  api: Pick<V2Bridge, 'mutateProviderExtension' | 'toggleSkill' | 'uninstallSkill' | 'togglePlugin' | 'removeMcpServer'>,
   item: ExtensionItem,
   action: RowAction,
   nativeSkill?: NativeSkill,
 ): Promise<void> {
   if (codexPluginToggle(item) && (action === 'enable' || action === 'disable')) {
     await api.togglePlugin(item.id, action === 'enable')
+    return
+  }
+  // Codex 的外接工具删和加（submitMcpInstall）走同一边：只装了桌面端、没有 CLI 时，那边直接改 config.toml。
+  // 项目里那条照旧交给下面，主进程会回「不支持」。
+  if (item.provider === 'codex' && item.kind === 'mcp' && action === 'uninstall' && item.scope !== 'project') {
+    await api.removeMcpServer(item.id)
     return
   }
   if (item.provider === 'codex' && item.kind === 'skill') {
@@ -386,11 +392,36 @@ export function preferredExtensionProvider(installed: readonly string[] | undefi
 export const activeTools = tools.flatMap((tool) =>
   tool.kind === 'cli' && isProvider(tool.id) ? [{ id: tool.id, name: tool.name }] : [],
 )
+const codexDesktopName = tools.find((tool) => tool.id === 'codexDesktop')?.name ?? 'Codex 桌面端'
+
+/**
+ * 扩展几页当作「装好了」的工具：装好的命令行工具，只装了 Codex 桌面端时 Codex 也算上。桌面端和 CLI 读同一份
+ * config.toml 和 ~/.agents/skills，外接工具和技能星芒直接改文件；插件要 CLI，给了 kind 'plugin' 时不算上。
+ * codexViaDesktop = Codex 这一格靠桌面端算上，各处工具名要写「Codex 桌面端」。还没检测完（缺省）时原样回缺省。
+ */
+export function extensionUsableTools(
+  installedProviders: readonly string[] | undefined,
+  codexDesktopInstalled: boolean | undefined,
+  kind?: ExtensionKind,
+): { usable: readonly string[] | undefined; codexViaDesktop: boolean } {
+  const codexViaDesktop = Boolean(installedProviders && codexDesktopInstalled && !installedProviders.includes('codex'))
+  return {
+    usable: installedProviders && codexViaDesktop && kind !== 'plugin' ? [...installedProviders, 'codex'] : installedProviders,
+    codexViaDesktop,
+  }
+}
+
+/** 页签、勾选框、提示里写的工具名：只装了 Codex 桌面端时，Codex 那一格叫「Codex 桌面端」。 */
+export function extensionToolName(id: string, codexViaDesktop = false): string {
+  if (id === 'codex' && codexViaDesktop) return codexDesktopName
+  return activeTools.find((tool) => tool.id === id)?.name ?? id
+}
+
 /** 「给 A、B 使用」里那一串工具名，次序同导航。 */
-export function extensionToolNames(ids: readonly string[]): string {
+export function extensionToolNames(ids: readonly string[], codexViaDesktop = false): string {
   return activeTools
     .filter((tool) => ids.includes(tool.id))
-    .map((tool) => tool.name)
+    .map((tool) => extensionToolName(tool.id, codexViaDesktop))
     .join('、')
 }
 
@@ -409,10 +440,11 @@ export function extensionToolChoices(
   supported: readonly string[],
   installedProviders: readonly string[] | undefined,
   added: readonly string[] = [],
+  codexViaDesktop = false,
 ): ExtensionToolChoice[] {
-  return activeTools.map(({ id, name }) => ({
+  return activeTools.map(({ id }) => ({
     id,
-    name,
+    name: extensionToolName(id, codexViaDesktop),
     note: !supported.includes(id)
       ? '不支持'
       : installedProviders && !installedProviders.includes(id)
@@ -484,8 +516,15 @@ export function customMcpProblem(input: {
   if (input.transport === 'stdio') return source ? null : '请填写启动命令'
   return /^https?:\/\/\S/i.test(source) ? null : '服务地址要以 http:// 或 https:// 开头'
 }
+// Codex 的 `mcp list --json` 只报 unknown、unsupported、not_logged_in、bearer_token、o_auth 这几个词（0.46.0 到
+// 0.163.0 都一样）。以前认的是 authenticated、logged_in，Codex 从来不报，登录过的、带令牌的也一直挂着「需要登录授权」。
+/** 已经用 OAuth 登录过，可以「退出授权」。 */
 export function mcpAuthorized(status: string) {
-  return ['authenticated', 'logged_in'].includes(status.toLowerCase())
+  return status.toLowerCase() === 'o_auth'
+}
+/** 要他去登录：只有 Codex 明说没登录的那种；说不清的（unknown）不催。 */
+export function mcpNeedsLogin(status: string) {
+  return status.toLowerCase() === 'not_logged_in'
 }
 /**
  * 「能连上 / 连不上 / 未检测」这一行小标。没有报告 = 这一轮还没检测过，

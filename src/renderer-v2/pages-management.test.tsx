@@ -12,7 +12,9 @@ import {
   curatedVersionText,
   customMcpProblem,
   extensionToolChoices,
+  extensionToolName,
   extensionToolNames,
+  extensionUsableTools,
   groupExtensionItems,
   extensionFailureTarget,
   extensionFormOffersProject,
@@ -21,7 +23,9 @@ import {
   fillCuratedPlaceholders,
   findNativeSkill,
   mcpCommandRuntime,
+  mcpAuthorized,
   mcpHealthView,
+  mcpNeedsLogin,
   mcpNamesInScope,
   preferredExtensionProvider,
   parseCommandArguments,
@@ -417,6 +421,7 @@ function extensionApi() {
     toggleSkill: vi.fn().mockResolvedValue({ skills: [] }),
     uninstallSkill: vi.fn().mockResolvedValue({ skills: [], trashPath: '' }),
     togglePlugin: vi.fn().mockResolvedValue({ plugins: [], marketplaces: [] }),
+    removeMcpServer: vi.fn().mockResolvedValue([]),
   }
 }
 
@@ -487,12 +492,22 @@ describe('extension row actions', () => {
       listItem({ provider: 'grok', kind: 'skill', id: '/cli/builtin/x/SKILL.md', scope: 'builtin' }),
       'disable',
     )
-    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: null }), 'uninstall')
+    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: 'project' }), 'uninstall')
 
     expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
       { provider: 'grok', kind: 'skill', action: 'disable', id: '/cli/builtin/x/SKILL.md' },
-      { provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'docs' },
+      { provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'docs', scope: 'project' },
     ])
+  })
+
+  // 只装了 Codex 桌面端时，删和加一样走 Codex 自己那一边，那边没有 CLI 就直接改 config.toml。
+  it('removes a Codex connection the same way it was added', async () => {
+    const api = extensionApi()
+    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: 'user' }), 'uninstall')
+    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'shared', scope: null }), 'uninstall')
+
+    expect(api.removeMcpServer.mock.calls).toEqual([['docs'], ['shared']])
+    expect(api.mutateProviderExtension).not.toHaveBeenCalled()
   })
 
   it('manages a user Codex skill through the native interface and shows it disabled', async () => {
@@ -769,6 +784,44 @@ describe('the 给这些工具用 picker', () => {
 
   it('names the tools in navigation order whatever order they were picked in', () => {
     expect(extensionToolNames(['grok', 'claude'])).toBe('Claude Code、Grok CLI')
+  })
+})
+
+// 只装了 Codex 桌面端：外接工具和技能照样在 Codex 那一格管，名字写「Codex 桌面端」；插件要 CLI，不算。
+describe('Codex desktop without the Codex CLI', () => {
+  it('counts Codex as usable through the desktop app for connections and skills, not for plugins', () => {
+    expect(extensionUsableTools(['claude'], true)).toEqual({ usable: ['claude', 'codex'], codexViaDesktop: true })
+    expect(extensionUsableTools(['claude'], true, 'plugin')).toEqual({ usable: ['claude'], codexViaDesktop: true })
+    expect(extensionUsableTools(['claude', 'codex'], true)).toEqual({ usable: ['claude', 'codex'], codexViaDesktop: false })
+    expect(extensionUsableTools(['claude'], false)).toEqual({ usable: ['claude'], codexViaDesktop: false })
+    expect(extensionUsableTools(undefined, true)).toEqual({ usable: undefined, codexViaDesktop: false })
+    expect(preferredExtensionProvider(extensionUsableTools([], true).usable)).toBe('codex')
+  })
+
+  it('calls the Codex slot by the desktop app in names and the tool picker', () => {
+    expect(extensionToolName('codex', true)).toBe('Codex 桌面端')
+    expect(extensionToolName('codex')).toBe('Codex CLI')
+    expect(extensionToolName('grok', true)).toBe('Grok CLI')
+    expect(extensionToolNames(['codex', 'claude'], true)).toBe('Claude Code、Codex 桌面端')
+    expect(extensionToolChoices(['claude', 'codex', 'grok'], ['codex'], [], true)).toEqual([
+      { id: 'claude', name: 'Claude Code', note: '未安装' },
+      { id: 'codex', name: 'Codex 桌面端', note: null },
+      { id: 'grok', name: 'Grok CLI', note: '未安装' },
+    ])
+  })
+})
+
+// Codex 0.163.0 `mcp list --json` 报的五个词：只有 not_logged_in 要他去登录，只有 o_auth 能退出授权。
+describe('Codex MCP sign-in states', () => {
+  it('asks for a sign-in only when Codex says nobody signed in', () => {
+    expect(['unknown', 'unsupported', 'not_logged_in', 'bearer_token', 'o_auth'].map((status) => [status, mcpNeedsLogin(status), mcpAuthorized(status)]))
+      .toEqual([
+        ['unknown', false, false],
+        ['unsupported', false, false],
+        ['not_logged_in', true, false],
+        ['bearer_token', false, false],
+        ['o_auth', false, true],
+      ])
   })
 })
 

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import { parse as parseYaml } from 'yaml'
 import { mapWithConcurrency } from './async-map'
@@ -29,12 +30,15 @@ import {
 } from './windows-elevation'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
+import { isCodexDesktopCliInstallation } from './codex-desktop'
 import { tomlErrorLocation } from './toml-error-location'
 import { configBackupSuffix } from './config-file-backups'
 import {
+  appendTomlText,
   editTomlArrayTableText,
   editTomlTableText,
   mutateCodexConfigToml,
+  removeTomlTableText,
   type CodexTomlMutation,
 } from './codex-config-toml'
 import { describeBrokenConfig } from './broken-config-advice'
@@ -178,6 +182,11 @@ export interface CodexExtensionServiceOptions {
    * 发生变化」（#1157 第 9 条）。缺省 = 不排队，直接写。
    */
   serializeConfigWrite?: <T>(operation: () => Promise<T>) => Promise<T>
+  /**
+   * 这台电脑装没装 Codex CLI（main.ts 接的是 isCodexCliInstalled）。没装、只装了 Codex 桌面端时，外接工具不跑
+   * `codex mcp`，直接读写 config.toml：桌面端和 CLI 读的是同一份。缺省 = 按装了算，照旧跑命令。
+   */
+  cliInstalled?: () => Promise<boolean>
 }
 
 interface SkillRoot {
@@ -397,6 +406,19 @@ function candidateCodexPackageRoots(
   return [...new Set(candidates.map((entry) => path.resolve(entry)))]
 }
 
+/**
+ * 和首页同一个判断（system-scan-service.ts 的 inspectCliTool）：找不到，或者找到的只是桌面端自带的 codex.exe，都算
+ * 没装。找的过程自己出错时按装了算，照旧去跑命令，由命令报它自己的错。
+ */
+export async function isCodexCliInstalled(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  try {
+    const installation = await resolveCliInstallation('codex', { env })
+    return installation !== null && !isCodexDesktopCliInstallation(installation)
+  } catch {
+    return true
+  }
+}
+
 /** Resolves only files rooted in a verified @openai/codex npm installation. */
 export async function resolveCodexCommand(
   env: NodeJS.ProcessEnv = process.env,
@@ -583,6 +605,30 @@ function mcpUserNames(configPath: string): Set<string> {
 export function readCodexMcpServerEntries(configPath: string): Map<string, unknown> {
   const servers = parseTomlFile(configPath).mcp_servers
   return new Map(isRecord(servers) ? Object.entries(servers) : [])
+}
+
+/** config.toml 里的一条，摆成 `codex mcp list --json` 的样子（0.163.0 的 mcp_cmd.rs），好跟命令列出来的过同一道检查。 */
+function configuredMcpServer(name: string, entry: unknown): Record<string, unknown> {
+  const config = isRecord(entry) ? entry : {}
+  const stdio = typeof config.command === 'string'
+  return {
+    name,
+    enabled: config.enabled,
+    disabled_reason: null,
+    transport: stdio
+      ? { type: 'stdio', command: config.command, args: config.args, env: config.env, env_vars: config.env_vars, cwd: config.cwd }
+      : {
+          type: 'streamable_http',
+          url: config.url,
+          bearer_token_env_var: config.bearer_token_env_var,
+          http_headers: config.http_headers,
+          env_http_headers: config.env_http_headers,
+        },
+    startup_timeout_sec: config.startup_timeout_sec,
+    tool_timeout_sec: config.tool_timeout_sec,
+    // 登没登录授权要 CLI 去问，没装 CLI 时说不清；只认得出带令牌的。
+    auth_status: stdio ? 'unsupported' : typeof config.bearer_token_env_var === 'string' ? 'bearer_token' : 'unknown',
+  }
 }
 
 function sanitizeMcpServer(
@@ -993,6 +1039,7 @@ export class CodexExtensionService {
   // 正在等浏览器授权的 `codex mcp login`，按名称记下，「取消」时一起停掉。
   private readonly mcpLogins = new Map<string, Set<AbortController>>()
   private readonly serializeConfigWrite: <T>(operation: () => Promise<T>) => Promise<T>
+  private readonly cliInstalled: () => Promise<boolean>
 
   constructor(options: CodexExtensionServiceOptions = {}) {
     this.userHome = path.resolve(options.userHome ?? options.homeDirectory ?? os.homedir())
@@ -1004,6 +1051,7 @@ export class CodexExtensionService {
     this.configPath = path.resolve(options.configPath ?? path.join(this.codexHome, 'config.toml'))
     this.invoke = options.invoke ?? defaultInvoker(options)
     this.serializeConfigWrite = options.serializeConfigWrite ?? ((operation) => operation())
+    this.cliInstalled = options.cliInstalled ?? (async () => true)
   }
 
   private writeConfigToml(mutation: Pick<CodexTomlMutation, 'mutate' | 'editText'>): Promise<string | undefined> {
@@ -1040,6 +1088,7 @@ export class CodexExtensionService {
   }
 
   async listMcpServers(): Promise<McpServerDto[]> {
+    if (!await this.cliInstalled()) return this.listConfiguredMcpServers()
     const output = await this.invoke(['mcp', 'list', '--json'])
     const userNames = mcpUserNames(this.configPath)
     const entries = parseJsonArray(output, 'Codex MCP 列表')
@@ -1054,6 +1103,18 @@ export class CodexExtensionService {
     }
     return entries
       .map((entry) => sanitizeMcpServer(entry, userNames, pluginNames))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  }
+
+  /**
+   * 没装 Codex CLI 时只列用户那份 config.toml：项目里那几层要看 Codex 信不信任那个项目，插件带的要问 CLI，
+   * 这两样都不列。名字里带点号这类的星芒删不了（assertSimpleName），也不列，免得整张表读不出来。
+   */
+  private listConfiguredMcpServers(): McpServerDto[] {
+    const entries = [...readCodexMcpServerEntries(this.configPath)].filter(([name]) => NAME_PATTERN.test(name))
+    const userNames = new Set(entries.map(([name]) => name))
+    return entries
+      .map(([name, entry]) => sanitizeMcpServer(configuredMcpServer(name, entry), userNames, new Set()))
       .sort((left, right) => left.name.localeCompare(right.name))
   }
 
@@ -1076,30 +1137,48 @@ export class CodexExtensionService {
     const name = assertSimpleName(input.name, 'MCP 名称')
     const argv = ['mcp', 'add', name]
     const sensitiveValues: string[] = []
+    // 没装 Codex CLI 时直接写进 config.toml 的那一条，照 `codex mcp add` 自己的写法（0.163.0 的
+    // document_helpers.rs）：stdio 写 command、args、env，http 写 url、bearer_token_env_var，空的不写。
+    const entry: Record<string, unknown> = {}
+    let oauthRequested = false
     if (input.type === 'stdio') {
       const command = assertNoNul(input.command, 'MCP 命令')
       if (command.length > 4_096) throw new Error('MCP 命令过长')
+      entry.command = command
+      const env: Record<string, string> = {}
       for (const [envName, envValue] of Object.entries(input.env ?? {})) {
         if (!ENV_NAME_PATTERN.test(envName)) throw new Error(`环境变量名无效：${envName}`)
         if (envValue.includes('\0')) throw new Error(`环境变量 ${envName} 包含 NUL 字符`)
         argv.push('--env', `${envName}=${envValue}`)
+        env[envName] = envValue
         if (envValue) sensitiveValues.push(envValue)
       }
       const args = [...(input.args ?? [])]
       if (args.some((argument) => argument.includes('\0'))) throw new Error('MCP 参数不能包含 NUL 字符')
       argv.push('--', command, ...args)
+      if (args.length) entry.args = args
+      if (Object.keys(env).length) entry.env = env
     } else {
-      argv.push('--url', assertHttpUrl(input.url))
+      const url = assertHttpUrl(input.url)
+      argv.push('--url', url)
+      entry.url = url
       if (input.bearerTokenEnvVar) {
         if (!ENV_NAME_PATTERN.test(input.bearerTokenEnvVar)) throw new Error('Bearer Token 环境变量名无效')
         argv.push('--bearer-token-env-var', input.bearerTokenEnvVar)
+        entry.bearer_token_env_var = input.bearerTokenEnvVar
       }
       const oauthClientId = assertOptionalValue(input.oauthClientId, 'OAuth Client ID')
       const oauthResource = assertOptionalValue(input.oauthResource, 'OAuth Resource')
       if (oauthClientId) argv.push('--oauth-client-id', oauthClientId)
       if (oauthResource) argv.push('--oauth-resource', oauthResource)
+      oauthRequested = Boolean(oauthClientId || oauthResource)
     }
 
+    if (!await this.cliInstalled()) {
+      // 这两项是 `codex mcp add` 当场去做 OAuth 登录时用的，config.toml 里没有对应的写法；界面上没装 CLI 时不给填。
+      if (oauthRequested) throw new Error('没装 Codex CLI 时，OAuth Client ID 和 OAuth Resource 填不了，要先装好 Codex CLI。')
+      return this.addConfiguredMcpServer(name, entry)
+    }
     try {
       await this.invoke(argv, { sensitiveValues, timeoutMs: 120_000 })
     } catch (error) {
@@ -1113,8 +1192,55 @@ export class CodexExtensionService {
     return reconciled
   }
 
+  /**
+   * 同名的整条换掉，和 `codex mcp add` 一样。原来那条单占表头时先整段拿掉、新的接在末尾，别的注释和排版不动；
+   * 只能整份重写时备份照留，这条通道回的是列表，带不出「注释可能丢失」那句。
+   */
+  private async addConfiguredMcpServer(name: string, entry: Record<string, unknown>): Promise<McpServerDto[]> {
+    await this.writeConfigToml({
+      mutate: (config) => {
+        if (!isRecord(config.mcp_servers)) config.mcp_servers = {}
+        const servers = config.mcp_servers as Record<string, unknown>
+        if (isDeepStrictEqual(servers[name], entry)) return false
+        servers[name] = entry
+        return true
+      },
+      editText: (source, before) => {
+        const existing = isRecord(before.mcp_servers) && name in before.mcp_servers
+        const base = existing ? removeTomlTableText(source, ['mcp_servers', name]) : source
+        return base === null ? null : appendTomlText(base, { mcp_servers: { [name]: entry } })
+      },
+    })
+    const reconciled = this.listConfiguredMcpServers()
+    if (!reconciled.some((server) => server.name === name)) throw new Error('MCP 配置写入后未通过 Codex 对账')
+    return reconciled
+  }
+
+  private async removeConfiguredMcpServer(name: string): Promise<McpServerDto[]> {
+    await this.writeConfigToml({
+      mutate: (config) => {
+        const servers = config.mcp_servers
+        if (!isRecord(servers) || !(name in servers)) return false
+        delete servers[name]
+        if (!Object.keys(servers).length) delete config.mcp_servers
+        return true
+      },
+      editText: (source, _before, after) => {
+        const removed = removeTomlTableText(source, ['mcp_servers', name])
+        // 最后一条也删了的时候，空着的 [mcp_servers] 表头一起拿掉，解析回去才对得上。
+        return removed !== null && after.mcp_servers === undefined
+          ? removeTomlTableText(removed, ['mcp_servers']) ?? removed
+          : removed
+      },
+    })
+    const reconciled = this.listConfiguredMcpServers()
+    if (reconciled.some((entry) => entry.name === name)) throw new Error('MCP 删除后仍存在，Codex 对账失败')
+    return reconciled
+  }
+
   async removeMcpServer(name: string): Promise<McpServerDto[]> {
     assertSimpleName(name, 'MCP 名称')
+    if (!await this.cliInstalled()) return this.removeConfiguredMcpServer(name)
     const before = await this.listMcpServers()
     const server = before.find((entry) => entry.name === name)
     if (!server) return before

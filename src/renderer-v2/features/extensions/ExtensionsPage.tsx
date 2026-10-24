@@ -80,7 +80,9 @@ import {
   extensionRowState,
   extensionScopeLabel,
   extensionToolChoices,
+  extensionToolName,
   extensionToolNames,
+  extensionUsableTools,
   fillCuratedPlaceholders,
   filterExtensionMarkets,
   findNativeSkill,
@@ -88,6 +90,7 @@ import {
   mcpAuthorized,
   mcpHealthView,
   mcpNamesInScope,
+  mcpNeedsLogin,
   mcpRuntimeNotice,
   officialMarketplaceNotice,
   parseCommandArguments,
@@ -99,7 +102,7 @@ import {
   unresolvedInstallPlaceholders,
   type RowAction,
 } from './extensions-common'
-import { isProvider, providerName } from '../tools/provider-options'
+import { isProvider } from '../tools/provider-options'
 import '../../extensions.css'
 
 // 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：管理页不再列它的扩展、会话和备份。
@@ -190,6 +193,7 @@ export function ExtensionsPage({
   onOpenHelp,
   onOpenTutorial,
   installedProviders,
+  codexDesktopInstalled,
   onSystemChanged,
   active,
   installTool,
@@ -203,6 +207,11 @@ export function ExtensionsPage({
   onOpenTutorial?: (section: string) => void
   /** 这台电脑上装好的命令行工具；缺省 = 不知道，默认选 Claude、当作都装了（旧行为）。 */
   installedProviders?: readonly string[]
+  /**
+   * 装没装 Codex 桌面端。没装 Codex CLI 只装了它时，外接工具和技能照样在 Codex 那一格管（主进程直接改它和 CLI
+   * 共用的那份配置），插件那一格指去桌面端自己的插件页。缺省 = 当没装（旧行为）。
+   */
+  codexDesktopInstalled?: boolean
   /**
    * 「自动安装 Python」装好以后叫一声，由 App 重新检测，首页「运行环境」跟着变（同 BusinessActions.onSystemChanged）。
    * 缺省 = 只刷新本页（旧行为）。
@@ -226,10 +235,11 @@ export function ExtensionsPage({
   const page =
     kind === 'skill' ? 'skills' : kind === 'plugin' ? 'plugins' : 'mcp'
   const title = extensionKindLabels[kind]
-  const [provider, setProvider] = useState<Provider>(() => preferredExtensionProvider(installedProviders))
+  const { usable, codexViaDesktop } = extensionUsableTools(installedProviders, codexDesktopInstalled)
+  const [provider, setProvider] = useState<Provider>(() => preferredExtensionProvider(usable))
   // 检测结果比页面晚到时跟上去；用户自己点过工具之后就不再替他换。
   const providerTouched = useRef(false)
-  const preferredProvider = preferredExtensionProvider(installedProviders)
+  const preferredProvider = preferredExtensionProvider(usable)
   useEffect(() => {
     if (!providerTouched.current) setProvider(preferredProvider)
   }, [preferredProvider])
@@ -247,10 +257,12 @@ export function ExtensionsPage({
     return subscribeExtensionTool(take)
   }, [page])
   // 已经知道没装的工具不去问它：问了也只换来一句找不到命令。还没检测完的照旧去读（旧行为）。
-  const missing = installedProviders !== undefined && !installedProviders.includes(provider)
+  const missing = usable !== undefined && !usable.includes(provider)
+  // 只装了 Codex 桌面端时插件要 CLI 才管得了，这一格只放一句话指去桌面端，不读列表、不替他下插件目录。
+  const desktopPlugins = kind === 'plugin' && provider === 'codex' && codexViaDesktop
   const load = useCallback(
     async () => {
-      if (missing) return null
+      if (missing || desktopPlugins) return null
       // 平台能力只决定缺 Python 时那颗按钮给不给，读不出来不该让整页空着：
       // 失败就当成「本应用不代装」，提示照出，只是不给按钮。
       const [snapshot, platform] = await Promise.all([
@@ -267,7 +279,7 @@ export function ExtensionsPage({
         codex: await readCodexExtensionMetadata(api),
       }
     },
-    [api, kind, provider, missing],
+    [api, kind, provider, missing, desktopPlugins],
   )
   const resource = useResource(load)
   // 去过的页面只藏不卸：在首页、检查页或终端里装好、删掉东西，回来还是第一次进来时那份，
@@ -318,7 +330,7 @@ export function ExtensionsPage({
         `${item.name} ${item.summary}`.toLowerCase().includes(normalizedQuery),
       )
     : curatedItems
-  const toolName = providerName(provider)
+  const toolName = extensionToolName(provider, codexViaDesktop)
   const snapshot = resource.data?.snapshot
   const installedItems = extensionItemsForView(snapshot?.items ?? [], kind, 'installed')
   const matches = (item: ExtensionItem) =>
@@ -472,7 +484,9 @@ export function ExtensionsPage({
     )
   const formChoices = extensionToolChoices(
     activeTools.map((tool) => tool.id),
-    installedProviders,
+    usable,
+    [],
+    codexViaDesktop,
   )
   // 勾选按导航次序装，成功提示里的工具名也按这个次序。
   const formTargets = formChoices
@@ -481,6 +495,8 @@ export function ExtensionsPage({
   // Codex CLI 的连接只有全局一层，submitMcpInstall 给它的范围会被丢掉。勾上它时整张表就只能装到「我的（全局）」，
   // 不然框里写着装进当前项目，Codex CLI 那边其实是全局的。
   const mcpGlobalOnly = kind === 'mcp' && formTargets.includes('codex')
+  // OAuth 那两项是 `codex mcp add` 当场去登录时用的，没装 Codex CLI 时写不进配置，不给填。
+  const oauthUnavailable = codexViaDesktop && formTargets.includes('codex')
   const formOffersProject = kind === 'mcp' ? !mcpGlobalOnly : extensionFormOffersProject(provider, kind)
   const shownScope = formOffersProject ? formScope : 'user'
   const addMcp = async () => {
@@ -515,8 +531,8 @@ export function ExtensionsPage({
     }
     const advanced = {
       ...(bearerEnv ? { bearerTokenEnvVar: bearerEnv.trim() } : {}),
-      ...(oauthClient ? { oauthClientId: oauthClient.trim() } : {}),
-      ...(oauthResource ? { oauthResource: oauthResource.trim() } : {}),
+      ...(oauthClient && !oauthUnavailable ? { oauthClientId: oauthClient.trim() } : {}),
+      ...(oauthResource && !oauthUnavailable ? { oauthResource: oauthResource.trim() } : {}),
     }
     const done: Provider[] = []
     try {
@@ -575,7 +591,7 @@ export function ExtensionsPage({
       },
       (added) =>
         added
-          ? `已添加「${added.name}」，给 ${extensionToolNames(added.tools)} 使用，下次打开工具时生效`
+          ? `已添加「${added.name}」，给 ${extensionToolNames(added.tools, codexViaDesktop)} 使用，下次打开工具时生效`
           : '已添加，列表已更新',
     )
   }
@@ -639,7 +655,7 @@ export function ExtensionsPage({
       {marketplace?.actionLabel ?? '添加官方市场'}
     </Button>
   )
-  const headerAction = (
+  const headerAction = desktopPlugins ? undefined : (
     <>
       {kind === 'plugin' && provider === 'codex' && (
         <Button
@@ -682,7 +698,7 @@ export function ExtensionsPage({
       : null
     const authorized = nativeMcp ? mcpAuthorized(nativeMcp.authStatus) : false
     // 「已授权」「无需登录」不再画，只在真要他去登录时说一句。
-    const needsAuth = Boolean(nativeMcp && !authorized && nativeMcp.authStatus !== 'unsupported')
+    const needsAuth = Boolean(nativeMcp && mcpNeedsLogin(nativeMcp.authStatus))
     const canAuth = Boolean(nativeMcp?.editable && nativeMcp.transportType === 'http')
     const authKey = `auth:${item.id}`
     return (
@@ -902,10 +918,10 @@ export function ExtensionsPage({
         <Tabs
           items={activeTools.map((tool) => {
             const count = counts[tool.id]
-            const toolMissing = installedProviders !== undefined && !installedProviders.includes(tool.id)
+            const toolMissing = usable !== undefined && !usable.includes(tool.id)
             return {
               value: tool.id,
-              label: tool.name,
+              label: extensionToolName(tool.id, codexViaDesktop),
               leading: (
                 <span className="v2-ext-tab-brand" aria-hidden="true">
                   <BrandIcon tool={tool.id} size={18} variant="xs" />
@@ -936,10 +952,15 @@ export function ExtensionsPage({
         </span>
         <strong>{`${toolName} 官方叫「${extensionOfficialTerms[kind][provider]}」`}</strong>
       </div>
+      {provider === 'codex' && codexDesktopInstalled && installedProviders?.includes('codex') && (
+        <div className="v2-skill-import-note" data-testid={`${page}-codex-shared`}>
+          <span>Codex 桌面端和 Codex CLI 共用这些设置，在这里加的两边都能用。</span>
+        </div>
+      )}
       {kind === 'skill' && !supportsInstall && (
         <div className="v2-skill-import-note" data-testid="skills-import-unsupported">
           <span>
-            {toolName} 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。
+            {toolName} 的技能不能在这里导入，要按它自己的方式放好；{extensionToolName('codex', codexViaDesktop)} 可以在这里导入。
           </span>
           {onOpenTutorial && (
             <Button
@@ -994,6 +1015,13 @@ export function ExtensionsPage({
             </Button>
           ) : null}
         </section>
+      ) : desktopPlugins ? (
+        <Notice
+          tone="neutral"
+          title="插件请在 Codex 桌面端里装"
+          body="没装 Codex CLI 时，星芒管不了 Codex 的插件。打开 Codex 桌面端，在它自己的插件页里装、卸载或停用。"
+          testId="plugins-codex-desktop"
+        />
       ) : (
         <div className="v2-ext-installed">
           <Toolbar
@@ -1133,7 +1161,7 @@ export function ExtensionsPage({
           onPick={setCurated}
         />
       )}
-      {kind === 'plugin' && catalogTitle && !missing && (marketplace || catalogItems.length > 0) && (
+      {kind === 'plugin' && catalogTitle && !missing && !desktopPlugins && (marketplace || catalogItems.length > 0) && (
         <section className="v2-ext-section" data-testid="plugins-catalog">
           <div className="v2-ext-section-head">
             <h2>{catalogTitle}</h2>
@@ -1178,7 +1206,7 @@ export function ExtensionsPage({
       )}
       {/* 自己加的市场还在，只是退到官方目录下面：这里管的是市场本身（更新、移除），
           市场里的插件已经和官方目录一起列在上面了。 */}
-      {kind === 'plugin' && provider === 'codex' && !missing && markets.length > 0 && (
+      {kind === 'plugin' && provider === 'codex' && !missing && !desktopPlugins && markets.length > 0 && (
         <Card padding="none" title="自己添加的市场" testId="plugins-custom-markets">
           <ListState
             page="plugins-market"
@@ -1407,16 +1435,20 @@ export function ExtensionsPage({
               value={bearerEnv}
               onChange={(event) => setBearerEnv(event.target.value)}
             />
-            <Input
-              label="OAuth Client ID"
-              value={oauthClient}
-              onChange={(event) => setOauthClient(event.target.value)}
-            />
-            <Input
-              label="OAuth Resource"
-              value={oauthResource}
-              onChange={(event) => setOauthResource(event.target.value)}
-            />
+            {!oauthUnavailable && (
+              <>
+                <Input
+                  label="OAuth Client ID"
+                  value={oauthClient}
+                  onChange={(event) => setOauthClient(event.target.value)}
+                />
+                <Input
+                  label="OAuth Resource"
+                  value={oauthResource}
+                  onChange={(event) => setOauthResource(event.target.value)}
+                />
+              </>
+            )}
           </details>
         )}
         {form !== 'market' && (
@@ -1614,7 +1646,7 @@ export function ExtensionsPage({
       >
         <dl className="v2-business-kv">
           <dt>工具</dt>
-          <dd>{providerName(provider)}</dd>
+          <dd>{toolName}</dd>
           <dt>范围</dt>
           <dd>{extensionScopeLabel(selected?.scope)}</dd>
           <dt>来源</dt>

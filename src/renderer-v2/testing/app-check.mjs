@@ -1822,6 +1822,122 @@ test('an extension action that fails after switching tools shows its failure und
   } finally { await page.close() }
 })
 
+// 只装了 Codex 桌面端、没装 Codex CLI：外接工具和技能照样在 Codex 那一格管，名字写「Codex 桌面端」、不标「未安装」；
+// 删和加一样走 Codex 自己那一边（主进程直接改 config.toml）；插件那一格只说去桌面端自己的插件页里装。
+test('with only the Codex desktop app, the extension pages manage Codex connections and skills and send plugins to the app', async () => {
+  const page = await open('desktopOnly=1')
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        items: provider === 'codex' ? [{
+          provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
+          installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
+          source: { kind: 'source-unknown', locator: null, reference: null },
+          update: { state: 'source-unknown', reason: '', checkedAt: null },
+          operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+        }] : [],
+      })
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+      window.xingmang.addMcpServer = async () => []
+      window.xingmang.removeMcpServer = async () => []
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    const codexTab = mcp.getByRole('tab', { name: /^Codex 桌面端/ })
+    await expect(codexTab).toHaveAttribute('aria-selected', 'true')
+    assert.equal(await codexTab.getByText('未安装').count(), 0)
+    assert.equal(await mcp.getByRole('tab', { name: /^Codex CLI/ }).count(), 0)
+    await mcp.getByTestId('mcp-row-docs').waitFor()
+    assert.equal(await mcp.getByTestId('mcp-tool-missing').count(), 0)
+    assert.equal(await mcp.getByTestId('mcp-codex-shared').count(), 0)
+
+    // 加：勾选框写「Codex 桌面端」能勾，没装的两家灰着；网络服务的高级设置里没有 OAuth 那两项。
+    await mcp.getByTestId('mcp-add').first().click()
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    const picker = dialog.getByTestId('mcp-form-tools')
+    await expect(picker.getByTestId('mcp-form-tools-codex')).toBeEnabled()
+    await expect(picker.getByTestId('mcp-form-tools-codex')).toHaveText('Codex 桌面端')
+    await expect(picker.getByTestId('mcp-form-tools-claude')).toBeDisabled()
+    await dialog.getByRole('button', { name: '网络服务', exact: true }).click()
+    await dialog.getByText('高级认证设置').click()
+    await dialog.getByLabel('登录信息的名称').waitFor()
+    assert.equal(await dialog.getByLabel('OAuth Client ID').count(), 0)
+    await dialog.getByTestId('mcp-name').fill('github')
+    await dialog.getByTestId('mcp-source').fill('https://api.example.test/mcp')
+    await dialog.getByTestId('mcp-form-submit').click()
+    await dialog.waitFor({ state: 'hidden' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'addMcpServer').map((entry) => entry.args[0])), [
+      { name: 'github', type: 'http', url: 'https://api.example.test/mcp' },
+    ])
+
+    // 删：走 removeMcpServer，不跑 CLI 那条通用的。
+    await mcp.getByTestId('mcp-menu-docs').click()
+    await page.getByRole('menuitem', { name: '从 Codex 桌面端 移除…', exact: true }).click()
+    await page.getByTestId('mcp-delete-confirm').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'removeMcpServer'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'removeMcpServer').map((entry) => entry.args[0])), ['docs'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'mutateProviderExtension')), false)
+
+    // 技能：Codex 那一格照常能从文件夹导入。
+    await page.getByTestId('nav-skills').click()
+    const skills = page.getByTestId('page-skills')
+    await expect(skills.getByRole('tab', { name: /^Codex 桌面端/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(skills.getByTestId('skills-add').first()).toBeEnabled()
+
+    // 插件：只有一句话，不放「添加插件」「添加市场」，也不去读列表、不替他下插件目录。
+    const pluginLists = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderExtensions').length)
+    await page.getByTestId('nav-plugins').click()
+    const plugins = page.getByTestId('page-plugins')
+    await expect(plugins.getByRole('tab', { name: /^Codex 桌面端/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(plugins.getByTestId('plugins-codex-desktop')).toContainText('插件请在 Codex 桌面端里装')
+    await expect(plugins.getByTestId('plugins-codex-desktop')).toContainText('打开 Codex 桌面端，在它自己的插件页里装、卸载或停用。')
+    assert.equal(await plugins.getByTestId('plugins-add').count(), 0)
+    assert.equal(await plugins.getByTestId('plugins-market-add').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderExtensions').length), pluginLists)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'ensureProviderMarketplace')), false)
+
+    // 精选：外接工具能勾给「Codex 桌面端」。
+    await page.getByTestId('nav-featured').click()
+    await page.getByTestId('featured-install-github').click()
+    const tools = page.getByTestId('featured-install-tools')
+    await expect(tools.getByTestId('featured-install-tools-codex')).toBeEnabled()
+    await expect(tools.getByTestId('featured-install-tools-codex')).toHaveText('Codex 桌面端')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 两个都装了：Codex 那一格下面说一句它们共用这些设置。
+test('with both the Codex CLI and the desktop app, the Codex tab says they share these settings', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+      })
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    assert.equal(await mcp.getByTestId('mcp-codex-shared').count(), 0)
+    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await expect(mcp.getByTestId('mcp-codex-shared')).toHaveText('Codex 桌面端和 Codex CLI 共用这些设置，在这里加的两边都能用。')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 停在记录页、窗口回到前面时也重读，离上次读不到半分钟不读，窗口藏着时不读。时钟停着，等的那一下在测试这边等。
 test('the records page reads again when the window comes back after half a minute, but not sooner and not while hidden', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1', true)

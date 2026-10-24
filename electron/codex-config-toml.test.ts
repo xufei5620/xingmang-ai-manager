@@ -8,6 +8,7 @@ import {
   editTomlArrayTableText,
   editTomlTableText,
   mutateCodexConfigToml,
+  removeTomlTableText,
   renderTomlEdit,
   setTomlKeyText,
   type CodexTomlMutation,
@@ -119,6 +120,24 @@ describe('editTomlTableText and editTomlArrayTableText', () => {
     expect(editTomlArrayTableText(source, ['list'], before, { model: 'm', list: [{ k: 1 }] }))
       .toBe('model = "m"\r\n\r\n[[list]]\r\nk = 1\r\n')
     expect(editTomlArrayTableText(source, ['list'], before, { model: 'm' })).toBe('model = "m"\r\n')
+  })
+})
+
+describe('removeTomlTableText', () => {
+  it('drops the table with its own subtables and leaves the neighbours and their comments alone', () => {
+    const source = 'model = "m"\n\n[mcp_servers.docs]\ncommand = "npx"\n\n  [mcp_servers.docs.env]\n  TOKEN = "t"\n\n# 下面是 files\n[mcp_servers.files]\nurl = "https://example.com/mcp"\n\n[mcp_servers.docs-extra]\ncommand = "x"\n'
+    const edited = removeTomlTableText(source, ['mcp_servers', 'docs'])
+
+    expect(edited).toBe('model = "m"\n\n# 下面是 files\n[mcp_servers.files]\nurl = "https://example.com/mcp"\n\n[mcp_servers.docs-extra]\ncommand = "x"\n')
+    const after = TOML.parse(source)
+    delete (record(after).mcp_servers as Record<string, unknown>).docs
+    expect(TOML.parse(edited ?? '')).toEqual(after)
+  })
+
+  it('takes the blank lines before a table that ends the file, keeps CRLF, and declines tables it cannot find', () => {
+    const source = 'model = "m"\r\n\r\n[mcp_servers.docs]\r\ncommand = "npx"\r\n\r\n[mcp_servers.docs.env]\r\nTOKEN = "t"\r\n'
+    expect(removeTomlTableText(source, ['mcp_servers', 'docs'])).toBe('model = "m"\r\n')
+    expect(removeTomlTableText('[mcp_servers]\ndocs = { command = "npx" }\n', ['mcp_servers', 'docs'])).toBeNull()
   })
 })
 

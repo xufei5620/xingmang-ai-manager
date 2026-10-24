@@ -64,7 +64,7 @@ import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
 import { findExecutable, isTrustedHighIntegrityExecutable, trustedCommandEnvironment } from './command-runner'
-import { CodexExtensionService } from './codex-extensions'
+import { CodexExtensionService, isCodexCliInstalled } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import type { NewApiCodexStartupTicket } from './new-api-client'
 import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
@@ -1217,17 +1217,21 @@ if (!hasSingleInstanceLock) {
       ...rootedOptions.backups,
       userDataDirectory: managerDataDirectory,
     })
+    // 只装了 Codex 桌面端时，扩展页的外接工具直接读写 config.toml，不跑 `codex` 命令；怎么算装了和首页一样。
+    const codexCliInstalled = () => isCodexCliInstalled(rootedOptions.codexExtensions.env)
     const extensionService = new CodexExtensionService({
       ...rootedOptions.codexExtensions,
       repositoryRoot: storedSettings.workspace,
       trashDirectory: path.join(managerDataDirectory, 'trash', 'skills'),
       windowsExecutionMode: windowsCliExecutionMode,
       serializeConfigWrite: systemService.serializeToolConfigWrite,
+      cliInstalled: codexCliInstalled,
     })
     const providerExtensionService = new ProviderExtensionService({
       ...rootedOptions.providerExtensions,
       repositoryRoot: storedSettings.workspace,
       windowsExecutionMode: windowsCliExecutionMode,
+      codexCliInstalled,
       // 装插件和加官方市场都要出网（市场是一次 git clone），而 CLI 子进程不读
       // 系统代理，所以跟 CLI 安装一样把当前线路以环境变量带下去。
       resolveSubprocessProxyEnvironment: async () => subprocessDownloadProxyEnvironment(

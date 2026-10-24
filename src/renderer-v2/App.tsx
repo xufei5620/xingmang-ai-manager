@@ -226,6 +226,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const clis = toolbox.snapshot?.system.clis
     return clis ? activeProviderIds.filter((id) => clis[id].installed) : undefined
   }, [toolbox.snapshot?.system.clis])
+  // 只装了 Codex 桌面端时，扩展几页照样替 Codex 管外接工具和技能（桌面端和 CLI 读同一份配置）。
+  const codexDesktopInstalled = toolbox.snapshot?.system.desktopApps.codex.installed
   useRelayRouteSync({ native, app, boot, session, siteId, toolbox, setSettings, showRouteRestartHint, runAccountBootstrap, mounted })
   const { chooseDisplayCompat, chooseCrashReporting } = useStartupChecks({ native, app, boot, settings, setSettings, authenticated: session.authenticated, noteStartupCheck, perform, toast, mounted })
   // 平台能力回来之前沿用挂载前定下的系统，不能先按 Windows 写上去再改：欢迎页和
@@ -456,6 +458,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onToolConfigSaved={() => { markDiagnosticsStale(); void toolbox.refreshConfig().catch(() => undefined) }}
                   toolConfigConfirmed={toolConfigConfirmed}
                   installedProviders={installedProviders}
+                  codexDesktopInstalled={codexDesktopInstalled}
                   onSystemChanged={() => { markDiagnosticsStale(); refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}

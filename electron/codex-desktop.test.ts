@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   codexDesktopPackageValidationError,
   compareWindowsPackageVersions,
+  isCodexDesktopCliInstallation,
   isCodexDesktopExecutable,
   parseCodexDesktopAppManifest,
   parseCodexDesktopPackageMetadata,
@@ -340,6 +341,13 @@ describe('Codex desktop app discovery', () => {
     expect(isCodexDesktopExecutable('C:\\Program Files\\WindowsApps\\OpenAI.CodexTools_26.715.0.0_x64__id\\ChatGPT.exe')).toBe(false)
     expect(isCodexDesktopExecutable('C:\\Program Files\\WindowsApps\\OpenAI.Desktop_1.0.0.0_x64__id\\ChatGPT.exe')).toBe(false)
     expect(isCodexDesktopExecutable('C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd')).toBe(false)
+  })
+
+  it('does not count the codex.exe the desktop app puts on PATH as the Codex CLI', () => {
+    const desktop = 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.715.0.0_x64__id\\app\\resources\\codex.exe'
+    expect(isCodexDesktopCliInstallation({ source: 'native', commandPath: desktop })).toBe(true)
+    expect(isCodexDesktopCliInstallation({ source: 'npm', commandPath: desktop })).toBe(false)
+    expect(isCodexDesktopCliInstallation({ source: 'native', commandPath: 'C:\\Users\\tester\\.local\\bin\\codex.exe' })).toBe(false)
   })
 
   it('parses Codex desktop process JSON and finds the process-tree root', () => {
