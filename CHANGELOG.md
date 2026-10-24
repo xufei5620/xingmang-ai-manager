@@ -93,6 +93,29 @@
 - #1362 第 1 条：今天那根柱子顶上的金额以前按柱高绝对定位在柱图格子里（`bottom: calc(N% + 5px)`），柱子到 100% 时顶到
   标题行。现在金额挂在柱子 `<i>` 里（`bottom: calc(100% + 5px)`），柱图格子顶上留出一行字的 `padding-top`（首页 17px、
   概览 15px），最高的柱子画到留白下面。`app-check.mjs` 补一条首页和概览都核对两行字不重叠的用例（改之前红）。
+- Claude Code、Grok CLI 技能导入、移除（「扩展改」第 2 条）：`ProviderExtensionService` 新选项 `skillTrashDirectory`（`main.ts` 接的跟 Codex 技能同一个回收站），
+  给了才让 `mutate({ kind: 'skill' })` 对这两家走 `mutateOwnSkill`：导入复制进 `~/.claude/skills` / `~/.grok/skills`（或项目里同名那层），移除重新扫一遍、只认直接放在它自己技能文件夹下的那份，挪进回收站。
+  复制和挪动复用 `codex-extensions.ts` 拆出来的 `resolveSkillImportSource` / `skillImportTarget` / `copySkillImport` / `moveSkillToTrash`（不跟链接、单链接、大小和层数上限，I8），Codex 的 `importSkill` 改调同一套，行为不变。
+  Grok 也读的 `~/.agents/skills` 跟 Codex 共用，Grok 那一格不给移除。能力里新加可选的 `capabilities.skill.install`，没给回收站时是 `false`，界面据此决定出不出导入按钮。
+  Windows 跨盘挪进回收站的问题（#1357）这两家同样有，还在等真机。
+- 界面去掉 `skills-import-unsupported` 那一行、「看怎么放」和教程里的 `skillImportTutorialExtra`；教程外壳 `navigate('tutorial', 'id#补充说明')` 的跳法留着，眼下没有调用方。
+- 外接工具不挂「可更新」（`extensionShowsUpdatePill`），详情「更新状态」换成 `extensionUpdateStatus` 那句（Git 来源不写提交号）。
+- 精选添加框能用的工具全是「未安装」时出「还没装能用它的工具」和「去首页安装」（`extensionNoToolInstalled`，`FeaturedPage` 新的 `onOpenHome`）；
+  只装了 Codex 桌面端时插件弹窗那一格照旧叫「Codex CLI」（以前跟外接工具一样写成桌面端）。
+- 装、加、删失败的错误以前只剩「命令执行失败（退出码 1）：claude」，命令行自己说的原因从没到过界面：新的 `extension-command-output.ts` 的 `withCommandOutput`
+  把认得出的行（没有就最后三行，已脱敏，最多 240 字）接在「（命令输出：」后面，原错误挂在 `cause` 上；用在 `ProviderExtensionService.mutate` 和 Codex 的加外接工具、加插件、加市场。
+  认法在新的 `extension-command-failure.ts`（渲染层可值导入，已登记 `valueImportable`）：缺 Git、连不上 github.com、`already exists` 三种，`operation-error.ts` 只在带着这个记号的话里认，配上 `registry/errors.ts` 新的 `gitMissing` / `githubUnreachable` / `nameTaken`。
+- 外接工具的启停按各家自己的做法接上，界面沿用已有的开关和「已启用 / 已停用」提示，没加新字。
+- Grok：`grok mcp enable|disable <名字>`（1.0.52、1.0.70 实测，没有 `--scope`，在项目目录里跑才找得到项目那层；
+  停用会把名字记进 `~/.grok/config.toml` 的 `disabled_mcp_servers`，重复点照样退出 0）。`nativeOperations` 给 Grok 放开。
+- Codex：没有启停命令，停用就是用户 `config.toml` 里那条写 `enabled = false`（0.162.1 实测 `mcp list` 报 disabled，
+  `codex mcp add` 别的连接不会冲掉）。新的 `CodexExtensionService.setMcpServerEnabled` 按行改这一个值（启用写回 `true`，
+  不删键，免得整份重写），走 `mutateCodexConfigToml`（备份、原子替换、排队），写完按 `codex mcp list` 或配置文件对账，
+  装没装 CLI 都一样。`ProviderExtensionService.mutate` 把 Codex 外接工具的启停转给它（新选项 `setCodexMcpServerEnabled`，
+  `main.ts` 接上；缺省不给开关，旧行为），不跑命令；项目里那几层和插件带的改不到，跟「移除」一样不给开关。
+- Claude Code 这次不做：它没有启停命令，自己的「停用」只记在 `~/.claude.json` 里当前项目文件夹那一份（2.1.310），
+  换个文件夹照样启用，跟列表上「所有项目都能用」那组对不上，要加说明字才行。
+- legacy 的 `McpPage.tsx` 按 `operations` 画启停按钮，Codex、Grok 那两格跟着出现，走的同一条 `extensions:mutate`，代码没动。
 
 ## 0.2.20 - 2026-10-20
 
