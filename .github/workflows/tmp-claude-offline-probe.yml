@@ -1,0 +1,53 @@
+# 临时：核 GitHub 机器能不能拉到 Claude Desktop 官方离线版、多大，以及它要下的两样组件多大（#1373），核完就删
+name: tmp-claude-offline-probe
+on:
+  push:
+    branches: [claude/tmp-claude-offline-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Probe official download entries
+        run: |
+          set -u
+          root='https://claude.ai/api/desktop'
+          probe_entry() {
+            local name="$1" url="$2" ua mode headers status loc cf
+            for mode in curl sync; do
+              if [ "$mode" = sync ]; then ua='xingmang-official-offline-sync/1'; else ua="curl/$(curl --version | head -1 | cut -d' ' -f2)"; fi
+              headers=$(curl -sS -o /dev/null -D - --max-time 30 -A "$ua" "$url" 2>&1 || true)
+              status=$(printf '%s\n' "$headers" | grep -i -m1 '^HTTP/' | tr -d '\r')
+              loc=$(printf '%s\n' "$headers" | grep -i -m1 '^location:' | cut -d' ' -f2- | tr -d '\r')
+              cf=$(printf '%s\n' "$headers" | grep -i -m1 '^cf-mitigated:' | tr -d '\r')
+              echo "$name [$mode]: ${status:-<no status>} ${cf} -> ${loc:-<no location>}"
+              if [ -n "$loc" ]; then
+                printf '  final HEAD: '; curl -sS -I --max-time 30 "$loc" | grep -i -E '^HTTP/|^content-length:' | tr -d '\r' | paste -sd ' ' -
+                printf '  final GET first 1 MiB: '; curl -sS -o /dev/null -w '%{http_code} %{size_download}\n' --max-time 60 -r 0-1048575 "$loc"
+              fi
+            done
+          }
+          for target in win32/x64/msix win32/x64/offline win32/arm64/offline darwin/arm64/offline darwin/x64/offline; do
+            probe_entry "$target" "$root/$target/latest/redirect"
+          done
+      - name: Probe component sizes named in the customer log
+        run: |
+          set -u
+          for path in \
+            claude-code-releases/2.1.308/win32-x64/claude.exe.zst \
+            claude-code-releases/2.1.308/linux-x64/claude.zst \
+            vms/linux/x64/072b6cbfe74f428a98bd86035f83b322b369d1f1/rootfs.vhdx.zst \
+            vms/linux/x64/072b6cbfe74f428a98bd86035f83b322b369d1f1/vmlinuz.zst \
+            vms/linux/x64/072b6cbfe74f428a98bd86035f83b322b369d1f1/initrd.zst; do
+            printf '%s: ' "$path"
+            curl -sS -I --max-time 30 "https://downloads.claude.ai/$path" | grep -i -E '^HTTP/|^content-length:' | tr -d '\r' | paste -sd ' ' -
+          done
