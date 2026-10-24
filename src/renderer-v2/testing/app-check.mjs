@@ -1913,6 +1913,61 @@ test('with only the Codex desktop app, the extension pages manage Codex connecti
   } finally { await page.close() }
 })
 
+// 外接工具的开关：Codex 没有启停命令，主进程改 config.toml 里那条的 enabled，只装了桌面端也给开关，
+// 走的是通用的 mutate，不是删连接那一条；停用后那一行写「已停用」，再点打开。
+test('with only the Codex desktop app, a Codex connection can be switched off and back on', async () => {
+  const page = await open('desktopOnly=1')
+  try {
+    await page.evaluate(() => {
+      let enabled = true
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        items: provider === 'codex' ? [{
+          provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
+          installed: true, enabled, scope: 'user', currentVersion: null, latestVersion: null,
+          source: { kind: 'source-unknown', locator: null, reference: null },
+          update: { state: 'source-unknown', reason: '', checkedAt: null },
+          operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
+        }] : [],
+      })
+      window.xingmang.mutateProviderExtension = async (input) => {
+        enabled = input.action === 'enable'
+        return window.xingmang.listProviderExtensions(input.provider)
+      }
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+      window.xingmang.removeMcpServer = async () => []
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    const row = mcp.getByTestId('mcp-row-docs')
+    await row.waitFor()
+    const toggle = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '停用 docs' })
+    await expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+    await toggle.click()
+    await waitForToast(page, '已停用「docs」')
+    await expect(row.getByText('已停用', { exact: true })).toBeVisible()
+    const on = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '启用 docs' })
+    await expect(on).toHaveAttribute('aria-checked', 'false')
+
+    await on.click()
+    await waitForToast(page, '已启用「docs」')
+    await expect(row.getByText('已停用', { exact: true })).toHaveCount(0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'mutateProviderExtension').map((entry) => entry.args[0])), [
+      { provider: 'codex', kind: 'mcp', action: 'disable', id: 'docs', scope: 'user' },
+      { provider: 'codex', kind: 'mcp', action: 'enable', id: 'docs', scope: 'user' },
+    ])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'removeMcpServer')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 两个都装了：Codex 那一格下面说一句它们共用这些设置。
 test('with both the Codex CLI and the desktop app, the Codex tab says they share these settings', async () => {
   const page = await open()

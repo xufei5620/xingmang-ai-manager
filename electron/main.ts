@@ -1234,6 +1234,8 @@ if (!hasSingleInstanceLock) {
       repositoryRoot: storedSettings.workspace,
       windowsExecutionMode: windowsCliExecutionMode,
       codexCliInstalled,
+      // Codex 的外接工具启停没有命令，跟加、删同一边改 config.toml（备份、排队、对账）。
+      setCodexMcpServerEnabled: (name, enabled) => extensionService.setMcpServerEnabled(name, enabled),
       // 装插件和加官方市场都要出网（市场是一次 git clone），而 CLI 子进程不读
       // 系统代理，所以跟 CLI 安装一样把当前线路以环境变量带下去。
       resolveSubprocessProxyEnvironment: async () => subprocessDownloadProxyEnvironment(
