@@ -843,6 +843,8 @@ function yamlFrontmatter(content: string): Record<string, unknown> {
 interface SkillRoot {
   path: string
   scope: ProviderExtensionScope
+  /** 别的目录里已经有同名技能时，这个目录里的那份不再列出。 */
+  yieldsByName?: boolean
 }
 
 function skillRoots(
@@ -865,7 +867,14 @@ function skillRoots(
       { path: path.join(home, '.agents', 'skills'), scope: 'user' },
     )
   }
-  if (provider === 'grok') roots.push({ path: path.join(home, '.grok', 'skills'), scope: 'user' })
+  if (provider === 'grok') {
+    // Grok 1.0.52 起也读 ~/.agents/skills（10-22 用真程序核过），同一个名字它只认一份。
+    // 两边都有时认哪份没核过，这里按 ~/.grok 自己那份优先列（推断）。
+    roots.push(
+      { path: path.join(home, '.grok', 'skills'), scope: 'user' },
+      { path: path.join(home, '.agents', 'skills'), scope: 'user', yieldsByName: true },
+    )
+  }
   if (repository) {
     if (provider === 'codex') {
       roots.push(
@@ -922,6 +931,7 @@ async function scanSkills(
   isEnabled: (definitionPath: string) => boolean = () => true,
 ): Promise<MutableExtensionItem[]> {
   const result = new Map<string, MutableExtensionItem>()
+  const yielding = new Set<MutableExtensionItem>()
   for (const root of skillRoots(provider, home, codexHome, repository)) {
     let rootInfo: fs.Stats
     let realRoot: string
@@ -946,9 +956,12 @@ async function scanSkills(
       if (!item) continue
       const key = process.platform === 'win32' ? item.id.toLowerCase() : item.id
       result.set(key, item)
+      if (root.yieldsByName) yielding.add(item)
     }
   }
-  return [...result.values()]
+  const items = [...result.values()]
+  const ownNames = new Set(items.filter((item) => !yielding.has(item)).map((item) => item.name))
+  return items.filter((item) => !yielding.has(item) || !ownNames.has(item.name))
 }
 
 async function scanSkillDirectory(
