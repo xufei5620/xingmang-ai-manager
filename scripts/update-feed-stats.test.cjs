@@ -419,12 +419,25 @@ test('machines still below the newest version are split by whether they asked fo
       download('XingMang-AI-Manager-0.2.21-Apple-Silicon-arm64.zip', 'ip-e', '03'),
     ],
   }]
-  const stale = summarizeStaleMachines(statusPieces, installerPieces)
+  const manifestPieces = [{
+    rows: [
+      // ip-b read the Mac manifest after 0.2.20 went out: it saw the new version and did not fetch it.
+      download('latest-mac.yml', 'ip-b', '06'),
+      // ip-c only read it before anything newer than 0.2.19 was out.
+      download('latest-mac.yml', 'ip-c', '01'),
+      // The Windows manifest read from ip-a belongs to the Windows machine there, not to the Mac.
+      download('latest.yml', 'ip-a', '06'),
+      // Linux manifests and anything else under the pattern are not a Windows or Mac check.
+      download('latest-linux.yml', 'ip-f', '12'),
+    ],
+  }]
+  const stale = summarizeStaleMachines(statusPieces, installerPieces, manifestPieces)
   assert.equal(stale.target, '0.2.21')
   assert.equal(stale.sampleInterval, 1)
+  assert.equal(stale.checkSampleInterval, 1)
   assert.deepEqual([...stale.versions], [
-    ['0.2.19', { windows: { downloaded: 0, missing: 1, estimated: 0 }, mac: { downloaded: 1, missing: 2, estimated: 1 } }],
-    ['0.2.20', { windows: { downloaded: 0, missing: 0, estimated: 0 }, mac: { downloaded: 1, missing: 1, estimated: 1 } }],
+    ['0.2.19', { windows: { downloaded: 0, missing: 1, checked: 1, estimated: 0 }, mac: { downloaded: 1, missing: 2, checked: 1, estimated: 1 } }],
+    ['0.2.20', { windows: { downloaded: 0, missing: 0, checked: 0, estimated: 0 }, mac: { downloaded: 1, missing: 1, checked: 0, estimated: 1 } }],
   ])
   assert.deepEqual(stale.unexposed, { windows: 0, mac: 1 })
   assert.equal(JSON.stringify([...stale.versions]).includes('ip-'), false)
@@ -447,7 +460,7 @@ test('under sampling each machine seen downloading stands for as many as its den
   const stale = summarizeStaleMachines(statusPieces, installerPieces)
   assert.equal(stale.sampleInterval, 10)
   assert.deepEqual([...stale.versions], [
-    ['0.2.19', { windows: { downloaded: 0, missing: 0, estimated: 0 }, mac: { downloaded: 1, missing: 1, estimated: 4 } }],
+    ['0.2.19', { windows: { downloaded: 0, missing: 0, checked: 0, estimated: 0 }, mac: { downloaded: 1, missing: 1, checked: 0, estimated: 4 } }],
   ])
 })
 
@@ -476,9 +489,18 @@ test('the report follows the two newest versions and shows whether machines left
     // A third, older version downloaded in the window is not followed in a table of its own.
     downloadRow('XingMang-AI-Manager-0.2.19-Intel-x64.zip', '192.0.2.1', hour('12')),
   ]
+  const manifestRows = [
+    // One of the three Macs left on 0.2.19 without a download checked after 0.2.20 went out, one only before.
+    downloadRow('latest-mac.yml', '203.0.113.2', hour('18')),
+    downloadRow('latest-mac.yml', '203.0.113.3', hour('11')),
+  ]
   const cloudflare = createCloudflare({
     limits: hourlySettings,
-    groups: (filter) => filter.datetime_geq !== '2026-10-07T12:00:00Z' ? [] : filter.clientRequestPath_like ? downloadRows : statusRows,
+    groups: (filter) => {
+      if (filter.datetime_geq !== '2026-10-07T12:00:00Z') return []
+      if (filter.clientRequestPath_like === '/xingmang-manager/latest%.yml') return manifestRows
+      return filter.clientRequestPath_like ? downloadRows : statusRows
+    },
   })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
 
@@ -492,15 +514,18 @@ test('the report follows the two newest versions and shows whether machines left
   assert.match(report, /### 还停在旧版本的电脑下过新版没有/)
   assert.match(report, /只算这段时间里最后一次读状态文件时还低于 0\.2\.21、而且有机会下新版的电脑/)
   assert.match(report, /停着的电脑里另有一部分（Windows 50\.0%）最后一次出现时比它新的版本还没出来，或者出来不到 6 小时/)
-  assert.match(report, /\| 停在哪个版本 \| Windows 下过新版 \| Mac 下过新版 \|/)
-  assert.match(report, /\| 0\.2\.20 \| - \| 0\.0% \|/)
-  assert.match(report, /\| 0\.2\.19 \| 100\.0% \| 25\.0% \|/)
-  assert.match(report, /\| 0\.2\.18 \| - \| 0\.0% \|/)
-  assert.match(report, /\| 0\.2\.17 \| - \| 0\.0% \|/)
+  assert.match(report, /\| 停在哪个版本 \| Windows 下过新版 \| Windows 没下、查过更新 \| Mac 下过新版 \| Mac 没下、查过更新 \|/)
+  assert.match(report, /\| 0\.2\.20 \| - \| - \| 0\.0% \| 0\.0% \|/)
+  assert.match(report, /\| 0\.2\.19 \| 100\.0% \| 0\.0% \| 25\.0% \| 25\.0% \|/)
+  assert.match(report, /\| 0\.2\.18 \| - \| - \| 0\.0% \| 0\.0% \|/)
+  assert.match(report, /\| 0\.2\.17 \| - \| - \| 0\.0% \| 0\.0% \|/)
   // 0.2.14 fetched 0.2.19, which is newer than itself.
-  assert.match(report, /\| 0\.2\.15 及更早 \| - \| 50\.0% \|/)
-  assert.match(report, /\| \*\*合计\*\* \| \*\*100\.0%\*\* \| \*\*22\.2%\*\* \|/)
-  assert.match(report, /想强制更新（抬最低版本）前先看这一节/)
+  assert.match(report, /\| 0\.2\.15 及更早 \| - \| - \| 50\.0% \| 0\.0% \|/)
+  assert.match(report, /\| \*\*合计\*\* \| \*\*100\.0%\*\* \| \*\*0\.0%\*\* \| \*\*22\.2%\*\* \| \*\*11\.1%\*\* \|/)
+  assert.match(report, /没下、查过更新：查到了新版却没去下/)
+  assert.match(report, /Mac 的安装包、更新清单和状态文件在同一个地址，读得到状态文件就连得上/)
+  assert.match(report, /想强制更新（抬最低版本）前先看这一节：强制更新只拦打开了窗口的人/)
+  assert.doesNotMatch(report, /更新清单的请求这段时间也是抽样记的/)
   assert.match(report, /Mac 停在旧版本的电脑不到 20 台/)
   assert.doesNotMatch(report, /203\.0\.113|198\.51\.100|192\.0\.2/)
 })
@@ -513,15 +538,21 @@ test('a sampled window shows what was seen next to the estimate, capped at every
     sampledRow(downloadRow('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', '203.0.113.1', hour('12')), 10),
     downloadRow('XingMang-AI-Manager-0.2.20-Apple-Silicon-arm64.zip', '203.0.113.2', hour('13')),
   ]
+  const manifestRows = [sampledRow(downloadRow('latest-mac.yml', '203.0.113.3', hour('16')), 5)]
   const cloudflare = createCloudflare({
     limits: hourlySettings,
-    groups: (filter) => filter.datetime_geq !== '2026-10-07T12:00:00Z' ? [] : filter.clientRequestPath_like ? downloadRows : statusRows,
+    groups: (filter) => {
+      if (filter.datetime_geq !== '2026-10-07T12:00:00Z') return []
+      if (filter.clientRequestPath_like === '/xingmang-manager/latest%.yml') return manifestRows
+      return filter.clientRequestPath_like ? downloadRows : statusRows
+    },
   })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   // Two of four seen; ten plus one estimated, which cannot be more than the four machines there are.
-  assert.match(report, /\| 0\.2\.19 \| - \| 50\.0%（估 100\.0%） \|/)
+  assert.match(report, /\| 0\.2\.19 \| - \| - \| 50\.0%（估 100\.0%） \| 25\.0% \|/)
   assert.match(report, /最多每 10 次记 1 次/)
   assert.match(report, /前面那个数是看到的，只能当下限/)
+  assert.match(report, /更新清单的请求这段时间也是抽样记的（最多每 5 次记 1 次），「没下、查过更新」只能当下限/)
 })
 
 test('the report follows installer downloads by hour and states its scope, still without addresses or counts', async () => {
@@ -547,9 +578,15 @@ test('the report follows installer downloads by hour and states its scope, still
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   const grouped = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body))
   const status = grouped.filter((payload) => payload.variables.filter.clientRequestPath)
-  const installers = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like)
+  const installers = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === '/xingmang-manager/XingMang-AI-Manager-%')
+  const manifests = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === '/xingmang-manager/latest%.yml')
+  assert.equal(grouped.length, 3)
   assert.equal(status.length, 1)
   assert.equal(installers.length, 1)
+  assert.equal(manifests.length, 1)
+  assert.equal(manifests[0].variables.filter.edgeResponseStatus_lt, 400)
+  assert.equal(manifests[0].variables.filter.datetime_geq, '2026-10-07T12:00:00Z')
+  assert.match(manifests[0].query, /dimensions \{ clientRequestPath clientIP datetimeHour \}/)
   assert.match(status[0].query, /dimensions \{ userAgent clientIP datetimeHour \}/)
   assert.equal(installers[0].variables.filter.clientRequestPath_like, '/xingmang-manager/XingMang-AI-Manager-%')
   assert.equal(installers[0].variables.filter.edgeResponseStatus_lt, 400)
