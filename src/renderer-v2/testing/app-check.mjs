@@ -1822,6 +1822,25 @@ test('an extension action that fails after switching tools shows its failure und
   } finally { await page.close() }
 })
 
+// 打开软件时替客户改好了提醒设置：右下角说一次就收，卡片照常写线路和版本；离开首页再回来不再说。
+// 原来那句挂在卡片中间那行，软件开着就一直在（yoyo 2026-10-25 截图）。
+test('a reminder setting fixed on startup is announced once and leaves the card line alone', async () => {
+  const page = await open('desktopOnly=1&hooksAutoRepaired=codex')
+  try {
+    const text = 'Codex 里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。'
+    await waitForToast(page, text)
+    const card = page.getByTestId('tool-row-codexDesktop')
+    await expect(card).toContainText('v1.2.3')
+    await expect(card).not.toContainText('自动改好')
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('nav-home').click()
+    await expect(page.getByTestId('tool-row-codexDesktop')).toContainText('v1.2.3')
+    await page.waitForTimeout(300)
+    await assertNoToast(page, text)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 只装了 Codex 桌面端、没装 Codex CLI：外接工具和技能照样在 Codex 那一格管，名字写「Codex 桌面端」、不标「未安装」；
 // 删和加一样走 Codex 自己那一边（主进程直接改 config.toml）；插件那一格只说去桌面端自己的插件页里装。
 test('with only the Codex desktop app, the extension pages manage Codex connections and skills and send plugins to the app', async () => {
