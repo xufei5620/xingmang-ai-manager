@@ -126,6 +126,14 @@ export interface RemoteRedactionOptions {
   platform?: NodeJS.Platform
 }
 
+/**
+ * 主目录换成 ~。redactHomeDirectory 在 Windows、Mac 上写 %USERPROFILE%，那是给客服看日志的；
+ * 手机上给客户自己看，统一写 ~ 好认。
+ */
+export function remoteDisplayPath(text: string, homeDirectory: string, platform?: NodeJS.Platform): string {
+  return redactHomeDirectory(text, homeDirectory, platform).split('%USERPROFILE%').join('~')
+}
+
 /** 发出电脑的每一段字都过这里（I13）：认得出形状的密钥、点名的原值、主目录路径。 */
 export function redactRemoteText(text: string, options: RemoteRedactionOptions): string {
   let result = text
@@ -133,7 +141,7 @@ export function redactRemoteText(text: string, options: RemoteRedactionOptions):
     .sort((left, right) => right.length - left.length)
   for (const secret of secrets) result = result.split(secret).join('[已隐去]')
   result = redactSecretPatterns(result).split('[REDACTED]').join('[已隐去]')
-  return redactHomeDirectory(result, options.homeDirectory, options.platform)
+  return remoteDisplayPath(result, options.homeDirectory, options.platform)
 }
 
 export function truncateRemoteText(text: string, maxLength: number): string {

@@ -29,8 +29,11 @@ export interface CodexRemoteBoundPeer {
   boundAt: number
 }
 
+/**
+ * 「开没开」不落盘：每次打开星芒遥控都从关着开始，要客户在电脑上点一次才连，
+ * 免得开机自启的星芒在没人看着时就把这台电脑交给手机。
+ */
 export interface CodexRemoteChannelSettings {
-  enabled: boolean
   /** 界面上认账号用的非机密字样（飞书 App ID、微信昵称）。 */
   accountLabel: string | null
   boundPeer: CodexRemoteBoundPeer | null
@@ -47,7 +50,7 @@ export function emptyCodexRemoteSettings(): CodexRemoteSettings {
 }
 
 export function emptyChannelSettings(): CodexRemoteChannelSettings {
-  return { enabled: false, accountLabel: null, boundPeer: null }
+  return { accountLabel: null, boundPeer: null }
 }
 
 function boundedString(value: unknown, maxLength: number): string | null {
@@ -72,7 +75,6 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue
       settings.channels[id] = {
-        enabled: raw.enabled === true,
         accountLabel: boundedString(raw.accountLabel, maxAccountLabelLength),
         boundPeer: parseBoundPeer(raw.boundPeer),
       }

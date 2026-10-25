@@ -31,7 +31,7 @@ afterEach(() => {
 })
 
 describe('codex-remote-store', () => {
-  it('drops unknown channels, bad peers and relative workspaces when parsing', () => {
+  it('drops unknown channels, bad peers, relative workspaces and any stored on switch when parsing', () => {
     const parsed = parseCodexRemoteSettings({
       version: 1,
       workspaceDirectory: 'relative/dir',
@@ -42,7 +42,7 @@ describe('codex-remote-store', () => {
     })
     expect(parsed.workspaceDirectory).toBeNull()
     expect(Object.keys(parsed.channels)).toEqual(['feishu'])
-    expect(parsed.channels.feishu?.boundPeer).toEqual({ userId: 'ou_1', boundAt: 5, displayName: 'A' })
+    expect(parsed.channels.feishu).toEqual({ accountLabel: 'cli_a', boundPeer: { userId: 'ou_1', boundAt: 5, displayName: 'A' } })
     expect(parseCodexRemoteSettings({ version: 2 })).toEqual({ version: 1, workspaceDirectory: null, channels: {} })
     expect(parseCodexRemoteSettings({ version: 1, channels: { feishu: { boundPeer: { userId: '' } } } }).channels.feishu?.boundPeer).toBeNull()
   })
@@ -53,11 +53,11 @@ describe('codex-remote-store', () => {
     const workspace = path.join(os.tmpdir(), 'project')
     await store.updateSettings((settings) => {
       settings.workspaceDirectory = workspace
-      settings.channels.feishu = { enabled: true, accountLabel: 'cli_x', boundPeer: null }
+      settings.channels.feishu = { accountLabel: 'cli_x', boundPeer: null }
     })
     const reread = await new CodexRemoteStore(directory, fakeStorage(), 'darwin').readSettings()
     expect(reread.workspaceDirectory).toBe(workspace)
-    expect(reread.channels.feishu?.enabled).toBe(true)
+    expect(reread.channels.feishu?.accountLabel).toBe('cli_x')
   })
 
   it('encrypts credentials at rest and clears them', async () => {
