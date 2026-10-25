@@ -118,6 +118,15 @@ export const accelerationStartFailureDescriptions: Record<AccelerationStartFailu
  * 起一整份 Electron。
  */
 export const accelerationProxyRecoveryRetryDelaysMs: readonly number[] = [5_000, 15_000, 30_000, 60_000, 120_000]
+/**
+ * 上一个星芒退出时还没把网络设置改回去，这一个就起来了：退出只等两秒，「现在重开」随即拉起新进程，
+ * Mac 上改回网络设置还要等他输电脑密码。那一个还握着恢复记录，这时拉起的辅助进程初始化只会报
+ * 「另一实例」（proxy-owned），加速页上就是「请完全退出软件后重新打开」，可他刚重开过（2026-10-25
+ * 客户 Mac）。所以先等它：每秒看一眼恢复记录，没了（它改回去了）就马上再拉；一直在，就在这几个点
+ * 各再拉一次（它可能已经走了，只是把没改回的记录留了下来）。等满最后一个点还不行，照旧报错。
+ */
+export const accelerationPreviousOwnerRetryAtMs: readonly number[] = [5_000, 15_000, 30_000]
+const previousOwnerPollMs = 1_000
 const stopFailureStages: readonly string[] = ['proxy-restore', 'core-stop', 'ledger-write']
 
 /** 只有用户当面点的这两个请求，才让新拉起的辅助进程在初始化时去问密码（见 recoveryQuiet）。 */
@@ -167,6 +176,11 @@ export function createAccelerationDevelopmentHost(options: {
    */
   onProxyRecoveryRetry?(attempt: number, recovered: boolean): void
   /**
+   * 等上一个星芒交出网络设置的结果（见 accelerationPreviousOwnerRetryAtMs）：`recovered` = 等到了、
+   * 新的辅助进程已经起来；`waitedMs` 是等了多久。
+   */
+  onPreviousOwnerWait?(recovered: boolean, waitedMs: number): void
+  /**
    * 辅助进程是一整个 Electron（约 100MB），登录后读一次加速状态就会拉起来。
    * 给了这个值，它在这么久没有新请求、且确认没在加速也没在给下载走线路时
    * 自己退掉，下次用到再拉。缺省不退（旧行为）。
@@ -204,6 +218,9 @@ export function createAccelerationDevelopmentHost(options: {
   // 初始化照常完成、但那一次还原没去改的辅助进程：它的初始化成功不算「完整成功」。
   const withheldWorkers = new WeakSet<ChildProcess>()
   let recoveryRetryWait: { timer: ReturnType<typeof setTimeout>; resolve(): void } | null = null
+  // 拉起辅助进程、上一个星芒还占着网络设置时就等它的那一整段：这期间来的请求都跟着它，不另拉。
+  let launching: Promise<void> | null = null
+  let previousOwnerPoll: { timer: ReturnType<typeof setTimeout>; resolve(): void } | null = null
 
   function failPending() {
     for (const request of pending.values()) {
@@ -299,6 +316,7 @@ export function createAccelerationDevelopmentHost(options: {
   function ensureReady(): Promise<void> {
     if (disposed) return Promise.reject(withAccelerationReason(new Error('本机加速服务已关闭。'), 'helper-launch'))
     activity += 1
+    if (launching) return launching
     if (ready) {
       scheduleIdleExit()
       return ready
@@ -312,7 +330,66 @@ export function createAccelerationDevelopmentHost(options: {
       ready = relaunch
       return relaunch
     }
-    return launch()
+    return launchAfterPreviousOwner()
+  }
+
+  function launchAfterPreviousOwner(): Promise<void> {
+    const current = launch().catch((error: unknown) => {
+      if (disposed || accelerationFailureReason(error) !== 'proxy-owned') throw error
+      return waitForPreviousOwner(error)
+    })
+    launching = current
+    void current.finally(() => { if (launching === current) launching = null }).catch(() => undefined)
+    return current
+  }
+
+  function pollPreviousOwner(): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        previousOwnerPoll = null
+        resolve()
+      }, previousOwnerPollMs)
+      timer.unref?.()
+      previousOwnerPoll = { timer, resolve }
+    })
+  }
+
+  /** 见 accelerationPreviousOwnerRetryAtMs。只在初始化报 proxy-owned 之后进来。 */
+  async function waitForPreviousOwner(failure: unknown): Promise<void> {
+    const retryAt = accelerationPreviousOwnerRetryAtMs
+    let last = failure
+    let waitedMs = 0
+    let checkpoint = 0
+    // 记录从「在」变成「没了」才马上再拉：没了还报占用的，等下一个点，免得每秒拉起一整份 Electron。
+    let recordsSeen = true
+    function report(recovered: boolean) {
+      try { options.onPreviousOwnerWait?.(recovered, waitedMs) } catch { /* Reporting must not change recovery. */ }
+    }
+    while (waitedMs < retryAt[retryAt.length - 1]) {
+      await pollPreviousOwner()
+      waitedMs += previousOwnerPollMs
+      if (disposed) break
+      // 刚才失败的那个辅助进程还在退场，它退之前也在试着改回：两个不能同时去抢同一份记录。
+      if (child || ready) continue
+      const due = checkpoint < retryAt.length && waitedMs >= retryAt[checkpoint]
+      const records = await hasProxyRecoveryRecords()
+      if (disposed) break
+      const released = recordsSeen && !records
+      if (records) recordsSeen = true
+      if (!due && !released) continue
+      try {
+        await launch()
+        report(true)
+        return
+      } catch (error) {
+        last = error
+        if (accelerationFailureReason(error) !== 'proxy-owned') throw error
+        recordsSeen = false
+        while (checkpoint < retryAt.length && retryAt[checkpoint] <= waitedMs) checkpoint += 1
+      }
+    }
+    if (!disposed) report(false)
+    throw last
   }
 
   function launch(): Promise<void> {
@@ -568,6 +645,11 @@ export function createAccelerationDevelopmentHost(options: {
         clearTimeout(recoveryRetryWait.timer)
         recoveryRetryWait.resolve()
         recoveryRetryWait = null
+      }
+      if (previousOwnerPoll) {
+        clearTimeout(previousOwnerPoll.timer)
+        previousOwnerPoll.resolve()
+        previousOwnerPoll = null
       }
       disposal = (async () => {
         if (!child) return

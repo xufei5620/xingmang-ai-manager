@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AccelerationPhase, AccelerationState } from './acceleration-contract'
 import {
   codexDesktopAccelerationDecision,
+  codexDesktopAccelerationNeed,
   codexDesktopNeedsAccelerationOnlyAtStartup,
   createCodexDesktopAccelerationCoordinator,
+  createCodexDesktopAccelerationNeedReader,
 } from './codex-desktop-acceleration'
 import { relayProviderBaseUrlMatches, relayProviderBaseUrls } from './relay-sites'
 
@@ -527,5 +529,55 @@ describe('codexDesktopNeedsAccelerationOnlyAtStartup', () => {
         expect(codexDesktopNeedsAccelerationOnlyAtStartup({ matchesRelay, codexAuthMode: 'apikey', codexProviderShadowed: false })).toBe(true)
       }
     }
+  })
+})
+
+describe('codexDesktopAccelerationNeed', () => {
+  it('names the check that kept the acceleration on until the desktop app exits', () => {
+    const relayKey = { matchesRelay: true, codexAuthMode: 'apikey' as const, codexProviderShadowed: false }
+    expect(codexDesktopAccelerationNeed(relayKey)).toBe('startup-only')
+    expect(codexDesktopAccelerationNeed({ ...relayKey, matchesRelay: false })).toBe('not-relay')
+    expect(codexDesktopAccelerationNeed({ ...relayKey, matchesRelay: false, codexAuthMode: 'chatgpt' })).toBe('not-relay')
+    expect(codexDesktopAccelerationNeed({ ...relayKey, codexAuthMode: 'chatgpt' })).toBe('chatgpt-login')
+    expect(codexDesktopAccelerationNeed({ ...relayKey, codexAuthMode: null })).toBe('unknown-login')
+    expect(codexDesktopAccelerationNeed({ ...relayKey, codexAuthMode: undefined })).toBe('unknown-login')
+    expect(codexDesktopAccelerationNeed({ ...relayKey, codexProviderShadowed: true })).toBe('shadowed')
+  })
+})
+
+describe('createCodexDesktopAccelerationNeedReader', () => {
+  type Inspection = Parameters<typeof codexDesktopAccelerationNeed>[0]
+  const relayKey: Inspection = { matchesRelay: true, codexAuthMode: 'apikey', codexProviderShadowed: false }
+
+  it('logs only when the answer changes, and stays quiet while it is the usual one', () => {
+    let current: Inspection | Error = relayKey
+    const log = vi.fn()
+    const read = createCodexDesktopAccelerationNeedReader({
+      inspect: () => { if (current instanceof Error) throw current; return current },
+      log,
+    })
+    expect(read()).toBe(true)
+    expect(read()).toBe(true)
+    expect(log).not.toHaveBeenCalled()
+    current = { ...relayKey, codexAuthMode: 'chatgpt' }
+    expect(read()).toBe(false)
+    expect(read()).toBe(false)
+    current = new Error('config.toml is being rewritten')
+    expect(read()).toBe(false)
+    current = relayKey
+    expect(read()).toBe(true)
+    expect(log.mock.calls.map(([level, event, , detail]) => [level, event, detail])).toEqual([
+      ['info', 'acceleration.codex-desktop.need', { need: 'chatgpt-login' }],
+      ['info', 'acceleration.codex-desktop.need', { need: 'unreadable' }],
+      ['info', 'acceleration.codex-desktop.need', { need: 'startup-only' }],
+    ])
+  })
+
+  it('keeps answering when the log itself fails', () => {
+    const read = createCodexDesktopAccelerationNeedReader({
+      inspect: () => ({ ...relayKey, matchesRelay: false }),
+      log: () => { throw new Error('log store closed') },
+    })
+    expect(read()).toBe(false)
   })
 })

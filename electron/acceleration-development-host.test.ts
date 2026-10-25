@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode, accelerationConflictKinds } from './acceleration-contract'
-import { accelerationDevelopmentDirectory, accelerationProxyJournalPath, accelerationProxyRecoveryRetryDelaysMs, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationDevelopmentDirectory, accelerationPreviousOwnerRetryAtMs, accelerationProxyJournalPath, accelerationProxyRecoveryRetryDelaysMs, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
 const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), fork: mocks.fork, spawn: mocks.spawn }))
@@ -857,6 +857,157 @@ describe('development acceleration worker host', () => {
         expect(onProxyRecoveryRetry.mock.calls).toEqual([[1, true]])
         expect(third.sent.map((message) => message.operation)).toEqual(['init'])
         await host.dispose()
+      })
+    })
+  })
+
+  // 2026-10-25 客户 Mac：「现在重开」后上一个星芒还在改回网络设置（等电脑密码），新的这一个拉起的辅助进程
+  // 初始化报「另一实例」，加速页上就让刚重开过的人「完全退出后重新打开」。
+  describe('waiting for the previous instance to hand the network settings back', () => {
+    async function until(condition: () => boolean) {
+      while (!condition()) await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    async function settle() {
+      for (let round = 0; round < 200; round += 1) await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    async function withJournal(run: (directory: string) => Promise<void>) {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-owner-test-'))
+      try {
+        await fs.mkdir(accelerationDevelopmentDirectory(directory))
+        await fs.writeFile(accelerationProxyJournalPath(directory), '{}')
+        await run(directory)
+      } finally { await fs.rm(directory, { recursive: true, force: true }) }
+    }
+    function ownedWorker() {
+      const worker = new FakeWorker()
+      worker.autoInit = false
+      return worker
+    }
+    function answerOwned(worker: FakeWorker) {
+      const init = worker.sent.find((message) => message.operation === 'init')
+      worker.emit('message', { id: init?.id, ok: false, reason: 'proxy-owned', cause: 'busy' })
+    }
+    // 等宿主排好下一眼再拨一秒：它每一眼之后要先真读一次恢复记录（lstat 不受假时钟管），拨早了就错开了。
+    async function tick() {
+      await until(() => vi.getTimerCount() > 0)
+      await vi.advanceTimersByTimeAsync(1_000)
+    }
+
+    it('takes over as soon as the previous instance has restored the settings, and the waiting requests join it', async () => {
+      await withJournal(async (directory) => {
+        const onPreviousOwnerWait = vi.fn()
+        const onHelperFailure = vi.fn()
+        const owned = ownedWorker()
+        const healthy = new FakeWorker()
+        mocks.fork.mockReturnValueOnce(owned).mockReturnValueOnce(healthy)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onPreviousOwnerWait, onHelperFailure })
+        const recovery = host.recover()
+        await until(() => owned.sent.length > 0)
+        const state = host.getAccelerationState('xm-account:1')
+        answerOwned(owned)
+        await settle()
+        expect(owned.disconnect).toHaveBeenCalledOnce()
+        expect(onHelperFailure.mock.calls.map(([reason]) => reason)).toEqual(['proxy-owned'])
+        // 那一个改回去了、记录没了，刚才失败的这个也退了：下一眼就接手。
+        await fs.rm(accelerationProxyJournalPath(directory))
+        owned.emit('exit', 0)
+        await tick()
+        await until(() => mocks.fork.mock.calls.length === 2)
+        await recovery
+        await until(() => healthy.sent.length > 1)
+        healthy.respond(Number(healthy.sent[1].id), true, { phase: 'idle' })
+        await expect(state).resolves.toEqual({ phase: 'idle' })
+        expect(onPreviousOwnerWait.mock.calls).toEqual([[true, 1_000]])
+        expect(mocks.fork).toHaveBeenCalledTimes(2)
+        await host.dispose()
+        expect(vi.getTimerCount()).toBe(0)
+      })
+    })
+
+    it('never launches a new helper while the one that failed is still on its way out', async () => {
+      await withJournal(async (directory) => {
+        const owned = ownedWorker()
+        mocks.fork.mockReturnValueOnce(owned).mockReturnValueOnce(new FakeWorker())
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+        const recovery = host.recover()
+        await until(() => owned.sent.length > 0)
+        answerOwned(owned)
+        await fs.rm(accelerationProxyJournalPath(directory))
+        for (let second = 0; second < 6; second += 1) await tick()
+        await settle()
+        expect(mocks.fork).toHaveBeenCalledOnce()
+        owned.emit('exit', 0)
+        await tick()
+        await until(() => mocks.fork.mock.calls.length === 2)
+        await recovery
+        await host.dispose()
+      })
+    })
+
+    it('tries again at each checkpoint while the record stays, then gives up after half a minute', async () => {
+      await withJournal(async (directory) => {
+        const onPreviousOwnerWait = vi.fn()
+        const workers = [ownedWorker(), ownedWorker(), ownedWorker(), ownedWorker()]
+        for (const worker of workers) mocks.fork.mockReturnValueOnce(worker)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onPreviousOwnerWait })
+        const recovery = host.recover().catch((error: unknown) => error)
+        await until(() => mocks.fork.mock.calls.length > 0)
+        const launchedAt: number[] = []
+        let elapsed = 0
+        for (let attempt = 0; attempt < workers.length; attempt += 1) {
+          while (mocks.fork.mock.calls.length <= attempt) {
+            await tick()
+            elapsed += 1_000
+            await until(() => mocks.fork.mock.calls.length > attempt || vi.getTimerCount() > 0)
+          }
+          launchedAt.push(elapsed)
+          await until(() => workers[attempt].sent.length > 0)
+          answerOwned(workers[attempt])
+          await settle()
+          workers[attempt].emit('exit', 0)
+        }
+        const failure = await recovery
+        expect(launchedAt).toEqual([0, ...accelerationPreviousOwnerRetryAtMs])
+        expect((failure as { accelerationReason?: string }).accelerationReason).toBe('proxy-owned')
+        expect(onPreviousOwnerWait.mock.calls).toEqual([[false, 30_000]])
+        await host.dispose()
+      })
+    })
+
+    it('does not wait on any other kind of failure', async () => {
+      await withJournal(async (directory) => {
+        const onPreviousOwnerWait = vi.fn()
+        const failing = ownedWorker()
+        mocks.fork.mockReturnValueOnce(failing)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onPreviousOwnerWait })
+        const recovery = host.recover()
+        await until(() => failing.sent.length > 0)
+        failing.emit('message', { id: 1, ok: false, reason: 'proxy-restore', cause: 'configuration' })
+        await expect(recovery).rejects.toThrow(/^本机加速进程初始化未完成。$/)
+        expect(onPreviousOwnerWait).not.toHaveBeenCalled()
+        failing.emit('exit', 0)
+        await host.dispose()
+      })
+    })
+
+    it('stops waiting when the app quits', async () => {
+      await withJournal(async (directory) => {
+        const onPreviousOwnerWait = vi.fn()
+        const owned = ownedWorker()
+        mocks.fork.mockReturnValueOnce(owned)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory, onPreviousOwnerWait })
+        const recovery = host.recover().catch((error: unknown) => error)
+        await until(() => owned.sent.length > 0)
+        answerOwned(owned)
+        await settle()
+        owned.emit('exit', 0)
+        await host.dispose()
+        expect(((await recovery) as { accelerationReason?: string }).accelerationReason).toBe('proxy-owned')
+        expect(vi.getTimerCount()).toBe(0)
+        await vi.advanceTimersByTimeAsync(60_000)
+        await settle()
+        expect(mocks.fork).toHaveBeenCalledOnce()
+        expect(onPreviousOwnerWait).not.toHaveBeenCalled()
       })
     })
   })
