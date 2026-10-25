@@ -146,4 +146,46 @@ export interface RemoteChannelDependencies {
   writeCredential(value: string | null): Promise<void>
   log(level: RemoteChannelLogLevel, event: string, detail?: RemoteChannelLogDetail): void
   now(): number
+  /** 星芒自己的版本号（app.getVersion()），渠道要在请求里报客户端版本时用。 */
+  appVersion: string
+}
+
+// ---- 给界面的快照（codex-remote:get-state / codex-remote:state-changed）----
+// 只放能上屏的东西：没有凭据原值，绑定的人只给昵称和平台编号的尾巴。
+
+export interface CodexRemoteBoundPeerSnapshot {
+  displayName?: string
+  /** 平台编号的最后 4 位，让客户认得出是不是自己。 */
+  userIdTail: string
+  boundAt: number
+}
+
+export interface CodexRemotePairingSnapshot {
+  code: string
+  expiresAt: number
+}
+
+export interface CodexRemoteChannelSnapshot {
+  channel: RemoteChannelId
+  hasCredential: boolean
+  accountLabel: string | null
+  enabled: boolean
+  status: RemoteChannelStatus
+  boundPeer: CodexRemoteBoundPeerSnapshot | null
+  pairing: CodexRemotePairingSnapshot | null
+}
+
+export type CodexRemoteTaskState = 'idle' | 'starting' | 'running' | 'waiting-approval'
+
+export interface CodexRemoteSnapshot {
+  /** 这台电脑现在能不能开遥控；不能时 unavailableReason 是上屏的原因（比如星芒以管理员身份运行）。 */
+  available: boolean
+  unavailableReason?: string
+  /** 凭据能不能存到下次打开（Linux 没有密钥环时只到这次关掉）。 */
+  credentialPersistence: 'durable' | 'session-only' | 'unavailable'
+  /** 主目录已换成 ~ 的工作文件夹；没选是 null。 */
+  workspaceDirectory: string | null
+  task: CodexRemoteTaskState
+  pendingApprovals: number
+  channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }
