@@ -89,7 +89,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
             onChange={(event) => studio.changeSettings({ shotCount: Number(event.target.value) })} testId="video-shot-count" />
           <Select label="每段时长" value={String(settings.secondsPerShot)} disabled={studio.busy} options={secondsOptions(settings.videoModel, settings.secondsPerShot)}
             onChange={(event) => studio.changeSettings({ secondsPerShot: Number(event.target.value) })} testId="video-seconds" />
-          <div className="video-studio-switch"><Switch label="烧字幕" description="每个镜头配一句字幕，拼片时烧在画面上" checked={settings.captions} disabled={studio.planning} onChange={(captions) => studio.changeSettings({ captions })} testId="video-captions" /></div>
+          <div className="video-studio-switch"><Switch label="烧字幕" description="每个镜头配一句字幕，拼片时烧在画面上" checked={settings.captions} disabled={studio.planning || composing} onChange={(captions) => studio.changeSettings({ captions })} testId="video-captions" /></div>
         </div>
         <div className="video-studio-models">
           <ModelPicker studio={studio} kind="text" />
@@ -129,9 +129,10 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       <div className="video-studio-actions">
         {composing
           ? <Button icon={Square} disabled={studio.composeState.phase === 'storing'} onClick={studio.stopCompose} testId="video-compose-stop">停止</Button>
-          : <Button variant="primary" icon={Film} disabled={!videoStudioReadyToCompose(project)} onClick={() => void studio.compose()} testId="video-compose">拼成一条视频</Button>}
-        {!composing && !videoStudioReadyToCompose(project) && <small className="video-studio-hint">{generating ? '等片段都生成好再拼。' : `还有 ${missing} 个镜头没生成片段。`}</small>}
-        {!composing && videoStudioReadyToCompose(project) && <small className="video-studio-hint">在这台电脑上拼，不花钱。</small>}
+          : <Button variant="primary" icon={Film} disabled={studio.planning || !videoStudioReadyToCompose(project)} onClick={() => void studio.compose()} testId="video-compose">拼成一条视频</Button>}
+        {!composing && studio.planning && <small className="video-studio-hint">等分镜写完再拼。</small>}
+        {!composing && !studio.planning && !videoStudioReadyToCompose(project) && <small className="video-studio-hint">{generating ? '等片段都生成好再拼。' : `还有 ${missing} 个镜头没生成片段。`}</small>}
+        {!composing && !studio.planning && videoStudioReadyToCompose(project) && <small className="video-studio-hint">在这台电脑上拼，不花钱。</small>}
       </div>
       {exported && !composing && <div className="video-studio-result" data-testid="video-result">
         <button type="button" className="video-studio-thumb" onClick={() => void studio.openClip(exported.assetId)} aria-label="用播放器打开成片" title="用播放器打开">

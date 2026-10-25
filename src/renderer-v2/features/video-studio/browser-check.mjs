@@ -254,6 +254,18 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   for (const index of [0, 1, 2]) await page.getByTestId(`video-shot-${index}`).getByText('已生成').waitFor()
   assert.equal(await page.getByTestId('video-shot-prompt-1').inputValue(), '绿色的门')
   assert.deepEqual(await studioCalls(page, 'generate'), [])
+
+  // 重写分镜的时候不能拼：拼完的成片会挂到换过的分镜上。
+  await page.getByTestId('video-plan').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '重新写' }).click()
+  await page.getByTestId('video-plan-stop').waitFor()
+  assert.equal(await page.getByTestId('video-compose').isDisabled(), true, 'no joining while the storyboard is being rewritten')
+  assert.equal(await page.getByTestId('video-captions').getByRole('switch').isDisabled(), true, 'the caption switch waits for the storyboard too')
+  await page.getByTestId('video-export').getByText('等分镜写完再拼。').waitFor()
+  await page.evaluate(() => window.videoStudioPage.failPlan('这次 AI 没按格式写出分镜，把想法写具体一点或换个文字模型再试'))
+  await page.getByTestId('video-error').waitFor()
+  assert.equal(await page.getByTestId('video-compose').isDisabled(), false, 'the storyboard that is still there can be joined again')
+  await page.getByTestId('video-result').waitFor()
   assert.deepEqual(errors, [])
   await page.close()
 })

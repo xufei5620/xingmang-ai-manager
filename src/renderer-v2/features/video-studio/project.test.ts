@@ -14,6 +14,7 @@ import {
   serializeVideoStudioProject,
   settleVideoStudioModels,
   videoStudioComposeCaptions,
+  videoStudioComposeKey,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotProblem,
@@ -112,6 +113,19 @@ describe('video studio project', () => {
     expect(videoStudioReadyToCompose({ ...done, shots: done.shots.map((shot, index) => index === 1 ? { ...shot, status: 'generating' } : shot) })).toBe(false)
     expect(videoStudioComposeCaptions(done)).toEqual(['下雨了', '', '到家了'])
     expect(videoStudioComposeCaptions({ ...done, settings: { ...done.settings, captions: false } })).toEqual(['', '', ''])
+  })
+
+  it('changes the compose key with anything that ends up in the film and nothing else', () => {
+    const project = planned()
+    const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('abc'[index]), status: 'done' })) }
+    const key = videoStudioComposeKey(done)
+    expect(videoStudioComposeKey({ ...done, title: '另一个名字', shots: done.shots.map((shot) => ({ ...shot, prompt: `${shot.prompt}，改过` })) })).toBe(key)
+    expect(videoStudioComposeKey(moveVideoStudioShot(done, 'shot-2', 1))).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, shots: done.shots.map((shot, index) => index === 0 ? { ...shot, clip: clip('z') } : shot) })).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, shots: done.shots.map((shot, index) => index === 0 ? { ...shot, caption: '雨停了' } : shot) })).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, captions: false } })).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, fit: 'contain' } })).not.toBe(key)
+    expect(videoStudioComposeKey(applyVideoStudioPlan(done, { title: '新的', shots: [{ prompt: '新镜头' }] }, ids()))).not.toBe(key)
   })
 
   it('stores the storyboard and clip ids but not what was running', () => {

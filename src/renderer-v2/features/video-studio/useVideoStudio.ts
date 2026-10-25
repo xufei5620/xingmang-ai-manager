@@ -25,6 +25,7 @@ import {
   settleVideoStudioModels,
   updateVideoStudioShot,
   videoStudioComposeCaptions,
+  videoStudioComposeKey,
   videoStudioReadyToCompose,
   videoStudioShotProblem,
   videoStudioStorageKey,
@@ -186,7 +187,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     const { settings } = projectRef.current
     if (!settings.idea.trim()) { setError('先写一句想拍什么'); return }
     if (!settings.textModel || !settings.textGroup) { setError('还没有能写分镜的文字模型，点「刷新模型」再试'); return }
-    if (planning || running.current.size || queue.current.length) return
+    // 拼片读的是现在这份分镜，写新分镜会把它换掉，两件事不能同时做。
+    if (planning || running.current.size || queue.current.length || composeAbort.current) return
     const requestId = createVideoStudioId(), alive = owner.capture()
     setPlanning(requestId); setError(''); setNotice('')
     try {
@@ -273,11 +275,12 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   const compose = async () => {
     const current = projectRef.current
-    if (!videoStudioReadyToCompose(current) || composeAbort.current) return
+    if (!videoStudioReadyToCompose(current) || composeAbort.current || planning) return
     const controller = new AbortController(), alive = owner.capture()
     composeAbort.current = controller
     setError(''); setNotice('')
     const captions = videoStudioComposeCaptions(current)
+    const inputs = videoStudioComposeKey(current)
     try {
       const clips: VideoStudioComposeRequest['clips'] = []
       for (const [index, shot] of current.shots.entries()) {
@@ -303,6 +306,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       setComposeState({ phase: 'storing' })
       const stored = await bridge.storeVideoStudioExport(new Uint8Array(result.data))
       if (!alive()) return
+      if (videoStudioComposeKey(projectRef.current) !== inputs) { setNotice('成片已经存进 AI 作品文件夹。拼的时候分镜改过了，这里没有换上，要用新的分镜就再拼一次。'); return }
       commit((latest) => ({ ...latest, exported: stored }))
       setNotice(result.audioCodec === null && current.shots.length ? '拼好了。这几段片段都没有声音，成片也没有声音。' : '拼好了，成片已经存进 AI 作品文件夹。')
     } catch (reason) {

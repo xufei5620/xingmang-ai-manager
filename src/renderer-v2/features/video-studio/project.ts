@@ -215,6 +215,12 @@ export function videoStudioComposeCaptions(project: VideoStudioProject): string[
   return project.shots.map((shot) => project.settings.captions ? normalizeVideoStudioCaption(shot.caption) : '')
 }
 
+/** 一次拼片用到的全部东西：哪几段、什么顺序、烧什么字、什么画面。拼完时和工程对不上，说明中途改过，成片不能挂到改过的分镜上。 */
+export function videoStudioComposeKey(project: VideoStudioProject): string {
+  const { aspect, resolution, fit } = project.settings
+  return JSON.stringify([aspect, resolution, fit, project.shots.map((shot) => shot.clip?.assetId ?? ''), videoStudioComposeCaptions(project)])
+}
+
 // —— 存到这台电脑上 ——
 // 存的是想法、设置、分镜和片段编号，片段本身在作品库里。生成中、排队这类只在这次打开时有的
 // 状态不存：重开以后没有片段的镜头一律当还没生成。
