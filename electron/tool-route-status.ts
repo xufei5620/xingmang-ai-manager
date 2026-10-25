@@ -5,7 +5,7 @@
  * - 服务端正在切换：快照里有就给，首页安静显示一行。
  * - 三条线都连不上：控制器按原因 24 小时限过频才叫 notify，这里从那一刻起给到恢复为止；顺带查一下
  *   管理工具自己能不能连上，能就在提示前面多说一句。
- * - 劫持：控制器每台电脑 7 天最多叫一次，这里出来以后半小时内给界面（窗口晚开、重载还能看到）。
+ * - 劫持：控制器每台电脑 7 天最多叫一次，这里出来以后半小时内给界面（窗口晚开、重载还能看到），带上换下来的是哪条。
  */
 import type { RelayToolRouteStatus } from './app-settings'
 import type { RelayEndpointId } from './relay-sites'
@@ -32,14 +32,14 @@ export interface ToolRouteStatusBoard {
 export function createToolRouteStatusBoard(options: ToolRouteStatusBoardOptions): ToolRouteStatusBoard {
   const now = options.now ?? Date.now
   let outage: NonNullable<RelayToolRouteStatus['outage']> | null = null
-  let hijack: { id: number } | null = null
+  let hijack: NonNullable<RelayToolRouteStatus['hijack']> | null = null
   // 每次三线全挂提示 +1：查管理工具能不能连上的那一下回来晚了、这期间已经恢复或者又提示了一次，就作废。
   let generation = 0
 
   return {
     notice(notice) {
       if (notice.kind === 'hijack') {
-        hijack = { id: now() }
+        hijack = { id: now(), line: notice.line }
         options.changed()
         return
       }

@@ -81,8 +81,12 @@ export interface ToolRouteChange {
   at: number
 }
 
-/** 所有候选线路都不通时，按什么原因提示（需求 5.1.5 第 5 条）。 */
-export type ToolRouteOutageReason = 'reset' | 'certificate' | 'dns' | 'unreachable'
+/**
+ * 所有候选线路都不通时，按什么原因提示（需求 5.1.5 第 5 条）。hijack：当前线路判成了劫持（地址被指到别处、
+ * 证书也不对），别的线路又没通。这是电脑用的 DNS 给了假地址，提示里要让客户改 DNS，光说「换个网络」不够
+ * （10-25 客户 Mac：用的 114 时好时坏，两条线路的地址都给错过，连到同一台发自签证书的冒充机）。
+ */
+export type ToolRouteOutageReason = 'reset' | 'certificate' | 'dns' | 'unreachable' | 'hijack'
 
 export interface ToolRouteStoredState {
   line: RelayEndpointId
@@ -583,7 +587,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
       setWatch(toolRouteFailureProbeGapMs, () => { void checkCurrent() })
       return
     }
-    enterOutage(active, failure)
+    enterOutage(active, failure, reason === 'hijack')
   }
 
   function applySwitch(active: NonNullable<typeof round>, target: RelayEndpointId, reason: ToolRouteChangeReason): void {
@@ -598,9 +602,9 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     switchTo(target, reason, active.trigger)
   }
 
-  function enterOutage(active: NonNullable<typeof round>, failure: ToolRouteProbeResult): void {
+  function enterOutage(active: NonNullable<typeof round>, failure: ToolRouteProbeResult, hijacked = false): void {
     round = null
-    const reason = outageReason(failure.kind)
+    const reason = hijacked ? 'hijack' : outageReason(failure.kind)
     log('warn', 'relay.route.unreachable', '工具线路的候选这会儿都不通，配置先不改', { line: current, reason, trigger: active.trigger })
     // 服务端切换等够了、CF 也不通：改按三线全挂提示，「服务端正在切换」那一行同时收起。
     const changed = incidentSince !== null || !outage || outage.reason !== reason
@@ -711,7 +715,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
 const stateLabel = '工具线路状态'
 const maxStateBytes = 8 * 1024
 const changeReasons: readonly ToolRouteChangeReason[] = ['failed', 'hijack', 'incident', 'recovered']
-const outageReasons: readonly ToolRouteOutageReason[] = ['reset', 'certificate', 'dns', 'unreachable']
+const outageReasons: readonly ToolRouteOutageReason[] = ['reset', 'certificate', 'dns', 'unreachable', 'hijack']
 
 function isTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
