@@ -287,4 +287,14 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'diagnostics:open-folder': { label: '检查页打开文件夹', log: 'normal', account: 'none' },
   'diagnostics:fix': { label: '检查页一键处理', log: 'normal', account: 'none' },
   'extensions:choose-directory': { label: '外接工具选择文件夹', log: 'normal', account: 'none' },
+  'codex-remote:get-state': { label: '手机遥控状态读取', log: 'quiet-success', account: 'none' },
+  'codex-remote:set-channel-enabled': { label: '手机遥控开关', log: 'normal', account: 'none' },
+  'codex-remote:choose-workspace': { label: '手机遥控工作文件夹选择', log: 'normal', account: 'none' },
+  // 返回值里带着配对码：只该出现在客户自己眼前的屏幕上，成功不进日志和反馈报告。
+  'codex-remote:start-pairing': { label: '手机遥控开始配对', log: 'quiet-success', account: 'none' },
+  'codex-remote:cancel-pairing': { label: '手机遥控取消配对', log: 'normal', account: 'none' },
+  'codex-remote:unbind': { label: '手机遥控解绑', log: 'normal', account: 'none' },
+  'codex-remote:clear-credentials': { label: '手机遥控清除凭据', log: 'normal', account: 'none' },
+  // 入参是飞书 App Secret（I3）：入参从构造上进不了日志，成功照记一行。
+  'codex-remote:save-feishu-credentials': { label: '手机遥控保存飞书凭据', log: 'secret-input', account: 'none' },
 }

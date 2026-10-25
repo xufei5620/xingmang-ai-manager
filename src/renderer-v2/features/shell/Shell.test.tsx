@@ -220,6 +220,11 @@ describe('renderer-v2 v4 status bar', () => {
     expect(bar({ network: { region: 'outside-mainland-china', countryCode: 'jp', publicIp: '203.0.113.9', checkedAt: '2026-10-15T00:00:00.000Z', error: null } })).toContain('网络正常 · 日本')
     expect(bar({ accelerationLine: '东京 2' })).toContain('加速中 · 东京 2')
   })
+
+  it('shows 手机遥控中 only while a phone remote channel is on', () => {
+    expect(bar({ remoteActive: true })).toMatch(/data-testid="statusbar-remote"[^>]*>.*手机遥控中<\/button>/)
+    expect(bar()).not.toContain('statusbar-remote')
+  })
 })
 
 describe('renderer-v2 status bar account label', () => {

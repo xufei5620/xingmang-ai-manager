@@ -8384,6 +8384,8 @@ describe('IPC channel log and account policies', () => {
         'chat:paste-image',
         'chat:pick-images',
         'chat:save-asset',
+        'codex-remote:get-state',
+        'codex-remote:start-pairing',
         'config:get',
         'config:reveal-api-key',
         'desktop:codex-locale-status',
@@ -8409,6 +8411,7 @@ describe('IPC channel log and account policies', () => {
       ],
       'log: secret-input': [
         'account:submit-two-factor-code',
+        'codex-remote:save-feishu-credentials',
       ],
       'log: silent': [
         'chat:generate-image',

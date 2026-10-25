@@ -42,6 +42,7 @@ import { accountSources } from './features/auth/state'
 import { AnnouncementCenter } from './features/shell/Announcement'
 import { createAccelerationApi } from './features/acceleration/api'
 import { useAcceleration } from './features/acceleration/useAcceleration'
+import { useCodexRemoteActive } from './features/settings/codex-remote/useCodexRemoteActive'
 import { useNetworkLocation } from './features/shell/useNetworkLocation'
 import { latestNetworkLocation } from './features/shell/network'
 import { platformApi } from './platform-api'
@@ -191,6 +192,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 也不去读加速状态。能力回来之前按窗口的系统先判断，免得 Linux 上侧栏先闪一下「游戏加速」。
   const accelerationAvailable = platform ? platform.acceleration !== false : currentWindowOs() !== 'linux'
   const acceleration = useAcceleration(accelerationApi, session.authenticated && accelerationAvailable ? scope : null)
+  const remoteActive = useCodexRemoteActive(native)
   const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
@@ -368,6 +370,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           accountTab={page === 'account' ? shownAccountTab : undefined} theme={settings?.theme} announcementOpen={announcementOpen}
           update={update && !update.error ? update.phase === 'downloaded' ? 'ready' : update.phase === 'available' || update.phase === 'downloading' ? 'available' : undefined : undefined}
           accelerationLine={acceleration.snapshot.state?.phase === 'active' ? acceleration.snapshot.state.line?.name : undefined}
+          remoteActive={remoteActive}
           tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
           environment={buildEnvironmentStatus(diagnosticsCounts, toolbox.snapshot?.system.runtime)} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + visibleExternalClients(os, toolbox.externalClients).filter((tool) => tool.installed).length : undefined}

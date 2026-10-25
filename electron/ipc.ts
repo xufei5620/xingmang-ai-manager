@@ -76,6 +76,7 @@ import { registerAccountUsageHandlers } from './ipc/handlers/account-usage'
 import { registerAccountKeyHandlers } from './ipc/handlers/account-keys'
 import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
+import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -130,6 +131,8 @@ export interface IpcRegistrationOptions {
   accountService?: RelayBackendClient
   announcementReads?: Pick<AnnouncementReadStore, 'sync'>
   acceleration?: AccelerationApi & Partial<AccelerationPreferenceApi>
+  /** 手机遥控 Codex（bootstrap/codex-remote.ts）；省略 = 那几条通道报「暂未准备好」。 */
+  codexRemote?: import('./codex-remote-service').CodexRemoteService
   // The server-owned payment form stays in the main process. IPC receives
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
@@ -369,6 +372,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerAccountKeyHandlers(ctx)
   registerAiChatHandlers(ctx)
   registerDataTransferHandlers(ctx)
+  registerCodexRemoteHandlers(ctx)
 
   return () => {
     disposeConfig()

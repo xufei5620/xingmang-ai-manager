@@ -207,6 +207,14 @@ const ipcInvokeChannels = {
   openDiagnosticFolder: 'diagnostics:open-folder',
   fixDiagnostic: 'diagnostics:fix',
   chooseExtensionDirectory: 'extensions:choose-directory',
+  getCodexRemoteState: 'codex-remote:get-state',
+  setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
+  chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
+  startCodexRemotePairing: 'codex-remote:start-pairing',
+  cancelCodexRemotePairing: 'codex-remote:cancel-pairing',
+  unbindCodexRemotePeer: 'codex-remote:unbind',
+  clearCodexRemoteCredentials: 'codex-remote:clear-credentials',
+  saveCodexRemoteFeishuCredentials: 'codex-remote:save-feishu-credentials',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -231,6 +239,7 @@ const ipcEventChannels = {
   onAiChatStream: 'chat:stream-event',
   onProxyBypassEnded: 'network:proxy-bypass-ended',
   onRelayRouteChanged: 'network:relay-route-changed',
+  onCodexRemoteStateChanged: 'codex-remote:state-changed',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }
@@ -461,6 +470,14 @@ const xingmangApi: XingmangApi = {
   openDiagnosticFolder: (target) => invoke('openDiagnosticFolder', target),
   fixDiagnostic: (kind) => invoke('fixDiagnostic', kind),
   chooseExtensionDirectory: () => invoke('chooseExtensionDirectory'),
+  getCodexRemoteState: () => invoke('getCodexRemoteState'),
+  setCodexRemoteChannelEnabled: (channel, enabled) => invoke('setCodexRemoteChannelEnabled', channel, enabled),
+  chooseCodexRemoteWorkspace: () => invoke('chooseCodexRemoteWorkspace'),
+  startCodexRemotePairing: (channel) => invoke('startCodexRemotePairing', channel),
+  cancelCodexRemotePairing: (channel) => invoke('cancelCodexRemotePairing', channel),
+  unbindCodexRemotePeer: (channel) => invoke('unbindCodexRemotePeer', channel),
+  clearCodexRemoteCredentials: (channel) => invoke('clearCodexRemoteCredentials', channel),
+  saveCodexRemoteFeishuCredentials: (request) => invoke('saveCodexRemoteFeishuCredentials', request),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),
   onAccountUsageChanged: (listener) => subscribe('onAccountUsageChanged', listener),
@@ -480,6 +497,7 @@ const xingmangApi: XingmangApi = {
   onAiChatStream: (listener) => subscribe('onAiChatStream', listener),
   onProxyBypassEnded: (listener) => subscribe('onProxyBypassEnded', listener),
   onRelayRouteChanged: (listener) => subscribe('onRelayRouteChanged', listener),
+  onCodexRemoteStateChanged: (listener) => subscribe('onCodexRemoteStateChanged', listener),
 }
 
 contextBridge.exposeInMainWorld('xingmang', xingmangApi)

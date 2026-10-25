@@ -211,6 +211,11 @@
 ## features/settings/ 与 features/tutorial/
 - `features/settings/VersionCard.tsx` — 设置 › 版本更新最上面的版本卡：当前版本、更新内容、下载进度与主按钮，撤回、要管理员密码、磁盘不够、失败几种提示；Windows 授权窗、Mac 钥匙串、Linux 系统安装窗口各有提前说明。
 - `features/settings/BackupCard.tsx` — 设置 › 备份迁移的备份列表、预览与恢复，恢复后提醒回首页看或重开工具；下线的 Gemini 不列。
+- `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。
+- `features/settings/codex-remote/channel-sections.tsx` — 各渠道那一块的登记表（`Record<RemoteChannelId, …>`，主进程加渠道这里漏了是编译错）：标题、提示句和填凭据的组件。
+- `features/settings/codex-remote/FeishuRemoteSection.tsx` — 飞书那一块：填 App ID / App Secret（附怎么建机器人的六步，只写字不放链接），填过了只显示 App ID。
+- `features/settings/codex-remote/remote-view.ts` — 卡上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
+- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到设置里那张卡。
 - `features/tutorial/TutorialPage.tsx` — 教程页：分类按钮与搜索、两列卡片、文章与吸顶条、「读到第几步」；顶部搜索没结果时带字进来接着搜。
 - `features/tutorial/TutorialIllustration.tsx` — 教程每一步的示意插图（用界面同款图标拼出来，不是截图），每种插图配标题与说明。
 - `features/tutorial/tutorial-progress.ts` / `features/tutorial/tutorial-search.ts` — 教程卡上的「已完成 k / n 步」（只存本机 localStorage、只进不退，不为它开主进程通道）和教程页与顶部搜索共用的分词匹配、高亮。

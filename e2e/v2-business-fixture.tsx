@@ -54,6 +54,10 @@ declare global {
       failNext(message?: string): void
       release(): void
     }
+    // 手机遥控 Codex：手机那头发对了配对码（主进程这时推一份新快照）。
+    remoteHarness: {
+      pair(displayName: string): void
+    }
   }
 }
 
@@ -153,6 +157,105 @@ function codexMcpServers(authStatus: string) {
     },
   ]
 }
+// 手机遥控 Codex：一份可变的状态，操作改它、回整份快照（revision 每次加一），和主进程一个样子。
+// remoteReady：已经选好文件夹、填好飞书应用；remoteElevated：星芒以管理员身份在跑。
+type RemoteSnapshot = Awaited<ReturnType<V2Bridge['getCodexRemoteState']>>
+const remoteReady = query.has('remoteReady')
+const remoteState: {
+  workspaceDirectory: string | null
+  accountLabel: string | null
+  enabled: boolean
+  pairing: RemoteSnapshot['channels']['feishu']['pairing']
+  boundPeer: RemoteSnapshot['channels']['feishu']['boundPeer']
+} = {
+  workspaceDirectory: remoteReady ? '~/projects/demo' : null,
+  accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
+  enabled: false,
+  pairing: null,
+  boundPeer: null,
+}
+let remoteRevision = 0
+const remoteListeners = new Set<(snapshot: RemoteSnapshot) => void>()
+function remoteSnapshot(): RemoteSnapshot {
+  remoteRevision += 1
+  const elevated = query.has('remoteElevated')
+  return {
+    revision: remoteRevision,
+    available: !elevated,
+    ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
+    credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
+    workspaceDirectory: remoteState.workspaceDirectory,
+    task: 'idle',
+    pendingApprovals: 0,
+    channels: {
+      feishu: {
+        channel: 'feishu',
+        hasCredential: remoteState.accountLabel !== null,
+        accountLabel: remoteState.accountLabel,
+        enabled: remoteState.enabled,
+        status: { state: remoteState.enabled ? 'connected' : 'stopped' },
+        boundPeer: remoteState.boundPeer,
+        pairing: remoteState.pairing,
+      },
+    },
+  }
+}
+window.remoteHarness = {
+  pair(displayName) {
+    remoteState.pairing = null
+    remoteState.boundPeer = { displayName, userIdTail: '9f3c', boundAt: Date.parse('2026-10-25T06:05:00Z') }
+    const next = remoteSnapshot()
+    for (const listener of remoteListeners) listener(next)
+  },
+}
+const codexRemoteMethods = {
+  getCodexRemoteState: async () => remoteSnapshot(),
+  onCodexRemoteStateChanged: (listener: (snapshot: RemoteSnapshot) => void) => {
+    remoteListeners.add(listener)
+    return () => { remoteListeners.delete(listener) }
+  },
+  chooseCodexRemoteWorkspace: async () => {
+    record('remote-workspace')
+    remoteState.workspaceDirectory = '~/projects/demo'
+    return remoteSnapshot()
+  },
+  saveCodexRemoteFeishuCredentials: async (request: Parameters<V2Bridge['saveCodexRemoteFeishuCredentials']>[0]) => {
+    // App Secret 不记：测试只看主进程收到的是哪个应用。
+    record('remote-feishu-save', request.appId)
+    if (request.appSecret === 'wrong-secret') throw new Error('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。')
+    remoteState.accountLabel = request.appId
+    return remoteSnapshot()
+  },
+  clearCodexRemoteCredentials: async (channel: Parameters<V2Bridge['clearCodexRemoteCredentials']>[0]) => {
+    record('remote-clear', channel)
+    remoteState.accountLabel = null
+    remoteState.enabled = false
+    remoteState.pairing = null
+    remoteState.boundPeer = null
+    return remoteSnapshot()
+  },
+  setCodexRemoteChannelEnabled: async (channel: Parameters<V2Bridge['setCodexRemoteChannelEnabled']>[0], enabled: boolean) => {
+    record('remote-enable', [channel, enabled])
+    remoteState.enabled = enabled
+    if (!enabled) remoteState.pairing = null
+    return remoteSnapshot()
+  },
+  startCodexRemotePairing: async (channel: Parameters<V2Bridge['startCodexRemotePairing']>[0]) => {
+    record('remote-pair', channel)
+    remoteState.pairing = { code: '482915', expiresAt: Date.now() + 10 * 60_000 }
+    return remoteSnapshot()
+  },
+  cancelCodexRemotePairing: async (channel: Parameters<V2Bridge['cancelCodexRemotePairing']>[0]) => {
+    record('remote-cancel-pairing', channel)
+    remoteState.pairing = null
+    return remoteSnapshot()
+  },
+  unbindCodexRemotePeer: async (channel: Parameters<V2Bridge['unbindCodexRemotePeer']>[0]) => {
+    record('remote-unbind', channel)
+    remoteState.boundPeer = null
+    return remoteSnapshot()
+  },
+} satisfies Partial<V2Bridge>
 const mcpAuthMethods = {
   listMcpServers: async () => codexMcpServers('not_logged_in'),
   loginMcpServer: async (name: string) => {
@@ -1036,6 +1139,7 @@ const apiMethods = {
     return []
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
+  ...codexRemoteMethods,
   listBackups: async () => (empty ? [] : [backup]),
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)

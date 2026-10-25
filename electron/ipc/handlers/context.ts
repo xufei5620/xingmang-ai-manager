@@ -24,6 +24,7 @@ import { createSensitiveClipboard, type SensitiveClipboard } from '../../sensiti
 import { parseAccountRevokeKeyId } from '../parsers/account-keys'
 import type { IpcRegistrationOptions } from '../../ipc'
 import type { DetectionFailureLogLine } from './detection-failures'
+import type { CodexRemoteService } from '../../codex-remote-service'
 
 const MAX_REMEMBERED_EXPORTS = 16
 
@@ -67,6 +68,8 @@ export interface IpcHandlerContext {
   backupBeforeReset(provider: ProviderId): Promise<void>
   assertAccountSessionUser(expectedUserId: number): void
   revealAccountKeySecret(id: unknown, expectedUserId?: number): Promise<string>
+  /** 手机遥控的底座；main.ts 还没建好（或测试没给）时抛一句能上屏的话。飞书、微信两边的处理器共用。 */
+  codexRemote(): CodexRemoteService
 }
 
 /**
@@ -282,8 +285,13 @@ export function createIpcHandlerContext(
     assertStartingSessionIsCurrent()
     return secret
   }
+  const codexRemote = (): CodexRemoteService => {
+    if (!options.codexRemote) throw new Error('手机遥控暂未准备好，请稍后再试。')
+    return options.codexRemote
+  }
   return {
     ...base,
+    codexRemote,
     externalShell,
     sensitiveClipboard,
     exportedFiles,

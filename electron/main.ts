@@ -161,6 +161,7 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { createCodexRemote } from './bootstrap/codex-remote'
 
 guardProcessOutputStreams()
 
@@ -1940,8 +1941,21 @@ if (!hasSingleInstanceLock) {
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
     const shouldLogUpdateState = createUpdateStateLogFilter()
+    // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
+    const codexRemote = createCodexRemote({
+      managerDataDirectory,
+      runtimeLog,
+      fetch: chromiumSessionFetch(session.defaultSession),
+      appVersion: app.getVersion(),
+      homeDirectory: rootedOptions.system.providerRoots.userHome,
+      codexEnv: rootedOptions.codexExtensions.env,
+      providerRoots: rootedOptions.system.providerRoots,
+      windowsExecution: windowsCliExecution,
+      onStateChanged: (snapshot) => sendToMainWindow('onCodexRemoteStateChanged', snapshot),
+    })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration: userAcceleration,
+      codexRemote,
       realmAccounts: accounts,
       accountWork,
       accountCredentialsForSite: (siteId) => ensureBusiness(siteId).accountCredentialStore,
@@ -2123,6 +2137,8 @@ if (!hasSingleInstanceLock) {
       desktopNotifications.dispose()
     })
     quitCleanup.add('ipc', () => unregisterIpcHandlers())
+    // 等你同意的一律拒绝，停掉渠道连接和 Codex 进程；放在 IPC 之后，界面不会再点到它。
+    quitCleanup.add('codex-remote', () => codexRemote.dispose())
     quitCleanup.add('business-services', () => {
       for (const business of businesses.values()) {
         business.chatService.dispose()

@@ -8303,6 +8303,22 @@ test('every settings row the search can name is on the settings page, in the reg
   } finally { await page.close() }
 })
 
+// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到设置里那张卡。
+test('the status bar says the phone remote is on and leads to its settings card', async () => {
+  const page = await open()
+  try {
+    await expect(page.getByTestId('statusbar-remote')).toHaveCount(0)
+    const feishu = { channel: 'feishu', hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' }, boundPeer: null, pairing: null }
+    await page.evaluate((channel) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 50, available: true, credentialPersistence: 'durable', workspaceDirectory: '~/projects/demo', task: 'idle', pendingApprovals: 0, channels: { feishu: channel } }), feishu)
+    await page.getByTestId('statusbar-remote').click()
+    await expect(page.getByTestId('page-settings').getByTestId('settings-remote-card')).toBeVisible()
+    // 推来的旧快照（revision 小）不把它关掉。
+    await page.evaluate((channel) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 2, available: true, credentialPersistence: 'durable', workspaceDirectory: null, task: 'idle', pendingApprovals: 0, channels: { feishu: { ...channel, enabled: false } } }), feishu)
+    await expect(page.getByTestId('statusbar-remote')).toBeVisible()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the enterprise certificate row opens the check page on the certificate item and points at it', async () => {
   const page = await open()
   try {
