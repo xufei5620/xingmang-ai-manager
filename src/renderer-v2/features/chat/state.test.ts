@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, chatErrorAction, chatErrorMessage, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, planTurn, removeDraftImage, resolveChatGroup, resolveChatModel, resolveDefaultChatModel, saveConversation, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatWorkspace } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { chatLimits, inspectModel, validateImageRequest } from './api'
@@ -18,7 +18,7 @@ describe('v2 chat request transitions', () => {
     expect(defaultChatSettings()).toMatchObject({ mode: 'text', group: '', model: '' })
     expect(DEFAULT_CHAT_GROUP).toBe('GPT')
     expect(DEFAULT_CHAT_MODEL).toBe('gpt-5.6-sol')
-    expect(resolveChatGroup([{ name: 'default' }, { name: DEFAULT_CHAT_GROUP }])).toBe(DEFAULT_CHAT_GROUP)
+    expect(recommendedChatGroup([{ name: 'default' }, { name: DEFAULT_CHAT_GROUP }])).toBe(DEFAULT_CHAT_GROUP)
     expect(resolveChatModel(['gpt-5.6-terra', DEFAULT_CHAT_MODEL])).toBe(DEFAULT_CHAT_MODEL)
     expect(resolveChatModel(['gpt-5.6-terra', DEFAULT_CHAT_MODEL], 'gpt-5.6-terra')).toBe('gpt-5.6-terra')
     expect(resolveChatModel(['gpt-image-1', 'gpt-image-2'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2')
@@ -50,25 +50,87 @@ describe('v2 chat request transitions', () => {
 
   it('selects Sub2API Codex_pro independently of NewAPI groups', () => {
     const groups = [{ name: 'GPT' }, { name: 'Codex_pro' }]
-    expect(resolveChatGroup(groups, '', 'solov-api')).toBe('Codex_pro')
-    expect(resolveChatGroup(groups, '', 'solov')).toBe('GPT')
+    expect(pickChatGroup(['GPT', 'Codex_pro'], { current: '', mode: 'text', groups, site: 'solov-api' })).toBe('Codex_pro')
+    expect(pickChatGroup(['GPT', 'Codex_pro'], { current: '', mode: 'text', groups, site: 'solov' })).toBe('GPT')
   })
 
-  it('prefers the managed GPT group for a new conversation and preserves a valid remembered group', () => {
-    const groups = [{ name: 'default' }, { name: 'GPT' }, { name: '图片模型' }]
-    expect(resolveChatGroup(groups)).toBe('GPT')
-    expect(resolveChatGroup(groups, '图片模型')).toBe('图片模型')
-    expect(resolveChatGroup(groups, '已下线分组')).toBe('GPT')
-    expect(resolveChatGroup([{ name: 'default' }])).toBe('default')
-    expect(resolveChatGroup([])).toBe('')
+  it('bills a model several groups offer to the conversation group, then the recommended one, then the cheapest, then the first', () => {
+    const groups = [{ name: 'default', ratio: 1 }, { name: 'GPT', ratio: 1 }, { name: '图片模型', ratio: 1 }, { name: 'cheap', ratio: '0.5' }]
+    expect(pickChatGroup(['default', 'GPT', '图片模型'], { current: '', mode: 'text', groups })).toBe('GPT')
+    expect(pickChatGroup(['default', 'GPT', '图片模型'], { current: '图片模型', mode: 'text', groups })).toBe('图片模型')
+    expect(pickChatGroup(['default', 'GPT', '图片模型'], { current: '已下线分组', mode: 'text', groups })).toBe('GPT')
+    expect(pickChatGroup(['default', 'GPT', '图片模型'], { current: '', mode: 'image', groups })).toBe('图片模型')
+    expect(pickChatGroup(['default', 'cheap'], { current: '', mode: 'text', groups })).toBe('cheap')
+    expect(pickChatGroup(['default', 'odd'], { current: '', mode: 'text', groups: [{ name: 'default', ratio: 1 }, { name: 'odd', ratio: 'n/a' }] })).toBe('default')
+    expect(pickChatGroup(['default'], { current: '', mode: 'text', groups })).toBe('default')
+    expect(pickChatGroup([], { current: 'GPT', mode: 'text', groups })).toBe('')
   })
 
   it('follows the group the main process recommends once the managed GPT group is renamed', () => {
-    const renamed = [{ name: 'default' }, { name: 'GPT 主力', recommended: true }, { name: 'GPT-官方API直连' }]
-    expect(resolveChatGroup(renamed)).toBe('GPT 主力')
-    expect(resolveChatGroup(renamed, 'GPT')).toBe('GPT 主力')
-    expect(resolveChatGroup(renamed, 'GPT-官方API直连')).toBe('GPT-官方API直连')
+    const renamed = [{ name: 'default' }, { name: 'GPT 主力', recommended: true as const }, { name: 'GPT-官方API直连' }, { name: 'GPT' }]
+    const candidates = renamed.map((group) => group.name)
+    expect(recommendedChatGroup(renamed)).toBe('GPT 主力')
+    expect(pickChatGroup(candidates, { current: '', mode: 'text', groups: renamed })).toBe('GPT 主力')
+    expect(pickChatGroup(candidates, { current: 'GPT-官方API直连', mode: 'text', groups: renamed })).toBe('GPT-官方API直连')
+    expect(recommendedChatGroup([{ name: 'default' }])).toBe('')
   })
+
+  it('files models under their vendor in a fixed order and puts the rest under 其他', () => {
+    expect(chatModelVendors[0]).toBe('OpenAI')
+    expect(chatModelVendors.at(-1)).toBe('其他')
+    expect(['gpt-5.6-sol', 'o3-mini', 'gpt-image-2', 'codex-mini'].map(chatModelVendor)).toEqual(['OpenAI', 'OpenAI', 'OpenAI', 'OpenAI'])
+    expect(['claude-sonnet-4-5', 'gemini-3.1-flash-image', 'grok-imagine-image', 'deepseek-v3', 'qwen3-max', 'glm-4.6', 'kimi-k2', 'MiniMax-M2', 'jimeng-4.0']
+      .map(chatModelVendor)).toEqual(['Claude', 'Gemini', 'Grok', 'DeepSeek', '通义千问', '智谱 GLM', 'Kimi', 'MiniMax', '即梦'])
+    expect(chatModelVendor('other-model')).toBe('其他')
+  })
+
+  it('merges the models of every group into one list per mode, once each, in the backend order', () => {
+    const groups = [{ name: 'group-a' }, { name: 'group-b' }, { name: 'group-c' }, { name: 'group-d' }]
+    const preparations = {
+      'group-a': { phase: 'ready' as const, models: ['gpt-test', 'gpt-image-2', 'claude-test'] },
+      'group-b': { phase: 'ready' as const, models: ['claude-test', 'other-model', 'grok-imagine-image'] },
+      'group-c': { phase: 'error' as const, models: [] },
+      // 正在重新读的分组先照旧列着上一回的模型。
+      'group-d': { phase: 'loading' as const, models: ['deepseek-v3'] },
+      'gone-group': { phase: 'ready' as const, models: ['kimi-k2'] },
+    }
+    expect(buildChatCatalog(groups, preparations, 'text')).toEqual([
+      { model: 'gpt-test', groups: ['group-a'] },
+      { model: 'claude-test', groups: ['group-a', 'group-b'] },
+      { model: 'other-model', groups: ['group-b'] },
+      { model: 'deepseek-v3', groups: ['group-d'] },
+    ])
+    expect(buildChatCatalog(groups, preparations, 'image')).toEqual([
+      { model: 'gpt-image-2', groups: ['group-a'] },
+      { model: 'grok-imagine-image', groups: ['group-b'] },
+    ])
+    expect([...pendingChatGroups(groups, preparations)]).toEqual(['group-d'])
+    expect([...pendingChatGroups([...groups, { name: 'queued' }], preparations)]).toEqual(['group-d', 'queued'])
+  })
+
+  it('settles a remembered model on a group that offers it and only falls back to a default once every group is read', () => {
+    const groups = [{ name: 'group-a' }, { name: 'GPT' }, { name: 'group-b' }]
+    const settings = (patch: Partial<ChatSettings>): ChatSettings => ({ ...defaultChatSettings(), ...patch })
+    const catalog = [{ model: 'gpt-test', groups: ['group-a'] }, { model: DEFAULT_CHAT_MODEL, groups: ['GPT'] }, { model: 'other-model', groups: ['group-b', 'GPT'] }]
+    const settled = { pending: new Set<string>(), groups }
+    // A model still offered keeps it and moves the billing group only when its own group no longer has it.
+    expect(settleChatModel(settings({ group: 'group-b', model: 'other-model' }), catalog, settled)).toEqual({ group: 'group-b', model: 'other-model' })
+    expect(settleChatModel(settings({ group: 'retired', model: 'other-model' }), catalog, settled)).toEqual({ group: 'GPT', model: 'other-model' })
+    // While its own group is still being read, nothing moves.
+    expect(settleChatModel(settings({ group: 'group-b', model: 'other-model' }), [catalog[0]], { pending: new Set(['group-b']), groups })).toEqual({ group: 'group-b', model: 'other-model' })
+    // A new conversation takes the default as soon as it is listed, without waiting for the rest.
+    expect(settleChatModel(settings({}), catalog, { pending: new Set(['group-b']), groups })).toEqual({ group: 'GPT', model: DEFAULT_CHAT_MODEL })
+    expect(settleChatModel(settings({}), [catalog[0]], { pending: new Set(['GPT']), groups })).toEqual({ group: '', model: '' })
+    // A model nobody offers any more is replaced once everything is read, unless a background refresh asked to keep it.
+    expect(settleChatModel(settings({ group: 'group-a', model: 'gpt-5.5' }), catalog, settled)).toEqual({ group: 'GPT', model: DEFAULT_CHAT_MODEL })
+    expect(settleChatModel(settings({ group: 'group-a', model: 'gpt-5.5' }), catalog, { ...settled, keepMissing: true })).toEqual({ group: 'group-a', model: 'gpt-5.5' })
+    expect(settleChatModel(settings({ group: 'group-a', model: 'gpt-5.5' }), catalog, { pending: new Set(['group-b']), groups })).toEqual({ group: 'group-a', model: 'gpt-5.5' })
+    expect(settleChatModel(settings({ group: 'group-a', model: 'gpt-5.5' }), [], settled)).toEqual({ group: 'group-a', model: 'gpt-5.5' })
+    // Image mode prefers the image group and the image defaults.
+    const images = [{ model: 'gpt-image-2', groups: ['GPT', '图片模型'] }, { model: 'grok-imagine-image', groups: ['group-b'] }]
+    expect(settleChatModel(settings({ mode: 'image' }), images, { pending: new Set(), groups: [...groups, { name: '图片模型' }] })).toEqual({ group: '图片模型', model: 'gpt-image-2' })
+  })
+
   it('tells the user to start a new conversation once one reply is longer than a single message may be', () => {
     const first = turn()
     const long = 'a'.repeat(chatLimits.messageLength + 1)
@@ -145,7 +207,7 @@ describe('v2 chat request transitions', () => {
       .toBe('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
     expect(chatErrorMessage('连接 AI 服务超时，请检查网络后重试', 'connection-timeout')).toBe('AI 服务响应较慢，本次等待已超时，请重试')
     expect(chatErrorMessage('AI 服务连接提前关闭，请重试', 'stream-closed')).toBe('AI 服务提前结束了本次响应，请重试')
-    expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型不在所选分组的可用列表中，请刷新后重新选择')
+    expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型暂时用不了，请刷新模型后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
   it('shows an image refusal the main process already worded instead of asking for a retry', () => {
