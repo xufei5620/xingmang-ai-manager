@@ -14,7 +14,7 @@ import { createAccelerationService, createUserAccelerationApi, userAccelerationS
 import type { AppSettings } from '../app-settings'
 import type { ApplicationTrayController } from '../application-tray'
 import { createClaudeDesktopAccelerationCoordinator } from '../claude-desktop-acceleration'
-import { codexDesktopNeedsAccelerationOnlyAtStartup, createCodexDesktopAccelerationCoordinator } from '../codex-desktop-acceleration'
+import { createCodexDesktopAccelerationCoordinator, createCodexDesktopAccelerationNeedReader } from '../codex-desktop-acceleration'
 import { probeCodexDesktopRunning } from '../codex-desktop-service'
 import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator } from '../codex-desktop-startup-route'
 import { inspectProviderConfig } from '../config-files'
@@ -147,10 +147,12 @@ export function createAccelerationRouting(options: AccelerationRoutingOptions) {
     heldElsewhere: (scope, connectedAt) => codexDesktopAcceleration.holds(scope, connectedAt),
     log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
   })
-  function codexDesktopUsesStarKeyOnly(): boolean {
-    return codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
-      rootedOptions.system.providerRoots, relayRouting.resolve(readStoredConfig().relaySiteId).providerBaseUrls))
-  }
+  // 2026-10-25 客户 Mac 上自动连的加速一直没断，日志里看不出那一下为什么判成「要一直连着」：答案变了就记一笔。
+  const codexDesktopUsesStarKeyOnly = createCodexDesktopAccelerationNeedReader({
+    inspect: () => inspectProviderConfig('codex',
+      rootedOptions.system.providerRoots, relayRouting.resolve(readStoredConfig().relaySiteId).providerBaseUrls),
+    log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+  })
   // 通道地址跟账号请求走同一个站、同一套线路：这会儿走的那条在前，另一条留作握不上手时再试。
   function codexStartupTunnelUrls(): string[] {
     const lines: RelayEndpointId[] = relayRouting.lines().solov.line === 'direct' ? ['direct', 'primary'] : ['primary', 'direct']
@@ -252,6 +254,9 @@ export function createAccelerationHost(options: AccelerationHostOptions) {
       onHelperExited: (recovered) => accelerationInterruption()?.helperExited(recovered),
       onProxyRecoveryRetry: (attempt, recovered) => runtimeLog.log(recovered ? 'info' : 'warn', 'network', 'acceleration.recover.retry',
         recovered ? '重试后已把网络设置改回去' : '重试仍未能把网络设置改回去', { attempt }),
+      // 「现在重开」、退出后马上又打开：上一个星芒还在改回网络设置（Mac 上可能在等电脑密码），这边等它收完再接手。
+      onPreviousOwnerWait: (recovered, waitedMs) => runtimeLog.log(recovered ? 'info' : 'warn', 'network', 'acceleration.previous-owner.wait',
+        recovered ? '上一个星芒退出时还在改回网络设置，等它收完后已接手' : '等了半分钟，上一个星芒还占着网络设置', { waitedMs }),
       // 登录后读一次加速状态就会拉起整份 Electron 辅助进程；从不用加速的人
       // 不该一直背着它。两分钟没人用、又确认没在加速就退，下次用到再拉。
       idleExitMs: 120_000,

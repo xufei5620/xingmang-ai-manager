@@ -144,7 +144,52 @@ const desktopSteadyBeforeRelaxing = 3
 export function codexDesktopNeedsAccelerationOnlyAtStartup(
   codex: Pick<NativeConfigInspection, 'matchesRelay' | 'codexAuthMode' | 'codexProviderShadowed'>,
 ): boolean {
-  return codex.matchesRelay && codex.codexAuthMode === 'apikey' && codex.codexProviderShadowed !== true
+  return codexDesktopAccelerationNeed(codex) === 'startup-only'
+}
+
+/**
+ * 同上那条判断，只是说清是哪一条没过，好记进日志：2026-10-25 客户 Mac 上打开 Codex 时自动连的加速
+ * 一直没断，日志里只看得出「这一下判成了要一直连着」，看不出为什么。
+ * - not-relay：配置没指向星芒中转（没密钥、地址不是星芒的，或那张表带着别家的凭据）；
+ * - chatgpt-login：auth.json 是 ChatGPT 登录；
+ * - unknown-login：auth.json 读不出是哪种登录；
+ * - shadowed：连接名被官方保留名顶掉了。
+ */
+export type CodexDesktopAccelerationNeed = 'startup-only' | 'not-relay' | 'chatgpt-login' | 'unknown-login' | 'shadowed'
+
+export function codexDesktopAccelerationNeed(
+  codex: Pick<NativeConfigInspection, 'matchesRelay' | 'codexAuthMode' | 'codexProviderShadowed'>,
+): CodexDesktopAccelerationNeed {
+  if (!codex.matchesRelay) return 'not-relay'
+  if (codex.codexAuthMode === 'chatgpt') return 'chatgpt-login'
+  if (codex.codexAuthMode !== 'apikey') return 'unknown-login'
+  if (codex.codexProviderShadowed === true) return 'shadowed'
+  return 'startup-only'
+}
+
+/**
+ * 给 onlyNeededAtStartup 用的那一问：每次都现读配置，读不出（抛错）按「一直要」。打开时问一次、盯着的时候
+ * 每次确认它在跑也问一次，所以只在答案变了的时候记一笔；头一回就是「只在启动时要」的不记，那是常态。
+ */
+export function createCodexDesktopAccelerationNeedReader(options: {
+  inspect(): Pick<NativeConfigInspection, 'matchesRelay' | 'codexAuthMode' | 'codexProviderShadowed'>
+  log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
+}): () => boolean {
+  let last: CodexDesktopAccelerationNeed | 'unreadable' = 'startup-only'
+  return () => {
+    let need: CodexDesktopAccelerationNeed | 'unreadable'
+    try { need = codexDesktopAccelerationNeed(options.inspect()) }
+    catch { need = 'unreadable' }
+    if (need !== last) {
+      last = need
+      try {
+        options.log?.('info', 'acceleration.codex-desktop.need', need === 'startup-only'
+          ? 'Codex 桌面端用的是星芒密钥，打开时自动连的加速等它起来就断'
+          : 'Codex 桌面端不是只用星芒密钥（或认不出），打开时自动连的加速等它退出才断', { need })
+      } catch { /* 记日志失败不能改变答案。 */ }
+    }
+    return need === 'startup-only'
+  }
 }
 
 /**

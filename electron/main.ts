@@ -2437,6 +2437,9 @@ if (!hasSingleInstanceLock) {
       },
       prepareToQuit: async () => {
         accountRestoreRetry.dispose()
+        // 这里只等两秒，没收完的由加速辅助进程在退出后接着改回（Mac 上可能还要输一次电脑密码）。2026-10-25 客户
+        // 日志里打开 Codex 时自动连的那一次只有「已连接」、没有「已断开」：它是重开星芒时在这里收回的，日志里却一个字都没留。
+        if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
         // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
         await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle()])
       },
