@@ -138,6 +138,7 @@ button, input, select, textarea { font: inherit; }
 .v2-dot.is-ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
 .v2-dot.is-warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .v2-dot.is-bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+.v2-dot.is-accent { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .v2-notification { position: absolute; right: 20px; bottom: 44px; width: 420px; z-index: 18; }
 .v2-notification > .xm-notice { box-shadow: var(--shadow); }
 /* 启动期后台检查的提示（v4）放在正文左下角、状态栏上面：标题栏并进顶栏以后，右上角是顶栏的三个图标键和

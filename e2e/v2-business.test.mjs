@@ -3299,6 +3299,10 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
     await card.getByTestId('settings-remote-feishu-unbind').click()
     await card.getByText('还没配对。点「开始配对」，把配对码私聊发给机器人。', { exact: true }).waitFor()
+    // 退出登录：凭据清掉、遥控关掉，回到填应用的框。
+    await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
+    await card.getByTestId('settings-remote-feishu-form').waitFor()
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false')
     const recorded = await calls(page)
     assert.deepEqual(
       recorded.filter((call) => call.name.startsWith('remote-')).map((call) => [call.name, call.args ?? null]),
@@ -3309,6 +3313,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
         ['remote-enable', ['feishu', true]],
         ['remote-pair', 'feishu'],
         ['remote-unbind', 'feishu'],
+        ['remote-clear', 'feishu'],
       ],
     )
     assert.equal(JSON.stringify(recorded).includes('rightSecret123'), false)

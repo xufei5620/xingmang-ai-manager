@@ -15,6 +15,7 @@ export const feishuSetupSteps = [
 /**
  * 飞书那一块里「填凭据」的部分：还没填时摆两个框和怎么建机器人，填过了只说是哪个应用。
  * 保存时主进程先拿去飞书换一次访问凭证，填错了当场说；App Secret 不回到界面上。
+ * 清掉凭据是卡片上各渠道共用的「退出登录」，不在这里。
  */
 export function FeishuRemoteSection({ snapshot, api, disabled, busy, run }: RemoteChannelSectionProps) {
   const [editing, setEditing] = useState(false)
@@ -32,21 +33,7 @@ export function FeishuRemoteSection({ snapshot, api, disabled, busy, run }: Remo
       <SettingRow
         title="飞书应用"
         description={`App ID：${snapshot.accountLabel ?? '已保存'}`}
-        control={
-          <>
-            <Button size="sm" disabled={disabled} onClick={() => setEditing(true)} testId="settings-remote-feishu-edit">重新填写</Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={disabled}
-              loading={busy === 'feishu-clear'}
-              onClick={() => void run('feishu-clear', () => api.clearCodexRemoteCredentials('feishu'))}
-              testId="settings-remote-feishu-clear"
-            >
-              清除
-            </Button>
-          </>
-        }
+        control={<Button size="sm" disabled={disabled} onClick={() => setEditing(true)} testId="settings-remote-feishu-edit">重新填写</Button>}
         testId="settings-remote-feishu-app"
       />
     )

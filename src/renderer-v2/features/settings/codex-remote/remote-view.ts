@@ -18,10 +18,13 @@ export function remoteTaskLabel(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pe
   return '正在处理'
 }
 
+export function remoteAnyEnabled(snapshot: Pick<CodexRemoteSnapshot, 'channels'>): boolean {
+  return Object.values(snapshot.channels).some((channel) => channel.enabled)
+}
+
 /** 卡片标题右边那句：有渠道开着才说 Codex 在干什么；都没开时不写，各渠道的小标签已经说了「没打开」。 */
 export function remoteCardMeta(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pendingApprovals' | 'channels'>): string | null {
-  const anyEnabled = Object.values(snapshot.channels).some((channel) => channel.enabled)
-  return anyEnabled ? `Codex ${remoteTaskLabel(snapshot)}` : null
+  return remoteAnyEnabled(snapshot) ? `Codex ${remoteTaskLabel(snapshot)}` : null
 }
 
 /** 「打开遥控」那一行的说明：还差哪一步就说哪一步，都齐了说什么时候会断开。 */

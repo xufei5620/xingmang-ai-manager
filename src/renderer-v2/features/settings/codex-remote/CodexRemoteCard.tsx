@@ -90,6 +90,22 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
         <h3>{definition.title}</h3>
         {definition.experimental && <Pill tone="warn">实验功能</Pill>}
         <Pill tone={remoteChannelStateTone(channel.status)} dot testId={`settings-remote-${id}-state`}>{remoteChannelStateLabel(channel.status)}</Pill>
+        {/* 各渠道共用：飞书清掉 App ID / App Secret，微信清掉扫码拿到的登录；绑定的人一起解掉。 */}
+        {channel.hasCredential && (
+          <span className="v2-remote-channel-actions">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={Boolean(busy)}
+              loading={busy === `${id}-logout`}
+              onClick={() => void run(`${id}-logout`, () => api.clearCodexRemoteCredentials(id))}
+              aria-label={`退出${definition.title}登录`}
+              testId={`settings-remote-${id}-logout`}
+            >
+              退出登录
+            </Button>
+          </span>
+        )}
       </div>
       {channel.status.message && channel.status.state !== 'connected' && (
         <p className="v2-remote-status" data-testid={`settings-remote-${id}-status`}>{channel.status.message}</p>

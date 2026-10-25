@@ -91,6 +91,8 @@ interface ShellProps {
   networkRefreshing?: boolean
   /** 游戏加速连着时的线路名；状态栏网络那一项写「加速中 · 线路名」。缺省 = 没在加速。 */
   accelerationLine?: string
+  /** 手机遥控 Codex 有渠道开着：状态栏亮「手机遥控中」，点了去设置里那张卡。缺省 = 没开。 */
+  remoteActive?: boolean
   /** Kept for fixture compatibility; the status bar no longer presents it as a download source. */
   sourceLabel?: string
   installedCount?: number
@@ -132,7 +134,7 @@ function useNarrowWindow() {
   return narrow
 }
 
-export function Shell({ activePage, accountTab, account, platform, adapter, theme, environment, balance, version, update, network, networkRefreshing = false, accelerationLine, installedCount, updatableCount = 0, unread, announcementOpen = false, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
+export function Shell({ activePage, accountTab, account, platform, adapter, theme, environment, balance, version, update, network, networkRefreshing = false, accelerationLine, remoteActive = false, installedCount, updatableCount = 0, unread, announcementOpen = false, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
   const { offline } = useOnlineStatus()
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
@@ -497,6 +499,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
             onClick={accelerationLine ? () => adapter.navigate?.('acceleration') : adapter.refreshNetwork}>
             <span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : accelerationLine ? `加速中 · ${accelerationLine}` : networkStatusLabel(network)}</span>
           </button>}
+          {remoteActive && <button type="button" className="v2-status-remote" onClick={() => adapter.navigate?.('settings', 'codex-remote')} disabled={!adapter.navigate} title="手机遥控 Codex 开着，点击查看或关闭" data-testid="statusbar-remote"><i className="v2-dot is-accent" />手机遥控中</button>}
           <span className="v2-status-spacer" />
           {installedCount !== undefined && <button type="button" onClick={() => adapter.navigate?.('home')} data-testid="statusbar-tools">已装 {installedCount} 个工具</button>}
           <button type="button" className={`v2-status-version${update ? ' has-update' : ''}`} onClick={adapter.openUpdates} data-testid="statusbar-version">{versionLabel}</button>
