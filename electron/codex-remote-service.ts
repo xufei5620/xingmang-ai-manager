@@ -100,6 +100,8 @@ export interface CodexRemoteServiceOptions {
   readCodexSecrets(): Promise<readonly string[]>
   /** 这台电脑现在能不能开遥控；不能就给上屏的原因（比如星芒以管理员身份运行）。 */
   inspectAvailability(): string | null
+  /** 打开渠道前看一眼 Codex 命令行工具在不在；不在就给上屏的原因。缺省 = 不看，等真用到时再报。 */
+  checkCodexReady?(): Promise<string | null>
   onStateChanged?(snapshot: CodexRemoteSnapshot): void
 }
 
@@ -388,12 +390,15 @@ export class CodexRemoteService {
       return this.emit()
     }
     if (runtime.enabled) return this.emit()
+    if (this.disposed) throw new Error('星芒正在退出。')
     const reason = this.options.inspectAvailability()
     if (reason) throw new Error(reason)
     const settings = await this.options.store.readSettings()
     if (!settings.workspaceDirectory) throw new Error('先选好 Codex 在哪个文件夹里干活。')
     validateRemoteWorkspace(settings.workspaceDirectory, this.options.homeDirectory, this.platform)
     if ((await this.options.store.readCredential(channel)) === null) throw new Error('先完成这个渠道的登录。')
+    const codexProblem = await this.options.checkCodexReady?.()
+    if (codexProblem) throw new Error(codexProblem)
     await this.startChannel(runtime)
     return this.emit()
   }
@@ -457,12 +462,28 @@ export class CodexRemoteService {
     return this.emit()
   }
 
-  /** 星芒退出：跟手机说一声（最多等一会儿），停掉渠道和 Codex。 */
-  async shutdown(): Promise<void> {
+  /**
+   * 星芒退出（will-quit 里同步调）：等你同意的一律拒绝，停掉定时器、渠道连接和 Codex 进程。
+   * 退出时来不及等网络，不跟手机道别；下次手机上发消息不会有人理，直到在电脑上重新打开。
+   */
+  dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    await Promise.all(remoteChannelIds.map((id) => this.disableChannel(this.runtimes[id], remoteMessages.closedOnComputer)))
-    await this.stopCodex()
+    for (const entry of this.pending.values()) entry.settle('decline')
+    for (const id of remoteChannelIds) {
+      const runtime = this.runtimes[id]
+      runtime.enabled = false
+      runtime.pairing = null
+      runtime.turn = null
+      if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
+      runtime.idleTimer = null
+      const adapter = runtime.adapter
+      runtime.adapter = null
+      void adapter?.stop().catch(() => undefined)
+    }
+    const client = this.codex
+    this.codex = null
+    void client?.stop()
   }
 
   private async emit(): Promise<CodexRemoteSnapshot> {

@@ -34,6 +34,8 @@ const valueImportable = [
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
+  // 手机遥控的渠道表和状态快照类型，设置页那张卡按渠道摆；文件本身什么都不 import。
+  'electron/codex-remote-channel',
   'electron/cli-model-defaults',
   // 工具配置文件是个链接时那句话的标志，主进程拼、错误框照它认出来配「配置文件是个链接」（#1100 第 2 条）。
   'electron/config-link-refusal',

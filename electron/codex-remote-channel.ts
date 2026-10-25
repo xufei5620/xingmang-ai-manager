@@ -1,3 +1,5 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
+
 // 手机遥控 Codex 的渠道接口：飞书、微信这类聊天渠道只管「收消息、发消息」，配对、审批、
 // 会话、脱敏、启停都在底座（codex-remote-service.ts）里做，两个渠道守的是同一条安全底线。
 //

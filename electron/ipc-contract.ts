@@ -15,6 +15,17 @@ import type {
   ConfigRestoreResult,
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
+import type { CodexRemoteSnapshot, RemoteChannelId } from './codex-remote-channel'
+export type {
+  CodexRemoteBoundPeerSnapshot,
+  CodexRemoteChannelSnapshot,
+  CodexRemotePairingSnapshot,
+  CodexRemoteSnapshot,
+  CodexRemoteTaskState,
+  RemoteChannelId,
+  RemoteChannelState,
+  RemoteChannelStatus,
+} from './codex-remote-channel'
 import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
   ExternalToolId,
@@ -1270,6 +1281,22 @@ export interface XingmangInvokeContract {
    * 返回用户选的文件夹，取消返回 null。选到的路径照旧随添加请求过主进程的参数校验。
    */
   chooseExtensionDirectory: IpcInvokeDefinition<'extensions:choose-directory', [], string | null>
+  /** 手机遥控 Codex：飞书、微信这些渠道的开关、配对、绑定的人，和 Codex 在哪个文件夹里干活。 */
+  getCodexRemoteState: IpcInvokeDefinition<'codex-remote:get-state', [], CodexRemoteSnapshot>
+  setCodexRemoteChannelEnabled: IpcInvokeDefinition<'codex-remote:set-channel-enabled', [channel: RemoteChannelId, enabled: boolean], CodexRemoteSnapshot>
+  /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
+  chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
+  startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  cancelCodexRemotePairing: IpcInvokeDefinition<'codex-remote:cancel-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  unbindCodexRemotePeer: IpcInvokeDefinition<'codex-remote:unbind', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  clearCodexRemoteCredentials: IpcInvokeDefinition<'codex-remote:clear-credentials', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  /** 入参带着 App Secret：只走这一条，成功不记日志（I3、I13）；主进程先拿它去飞书验一遍再存。 */
+  saveCodexRemoteFeishuCredentials: IpcInvokeDefinition<'codex-remote:save-feishu-credentials', [request: CodexRemoteFeishuCredentialRequest], CodexRemoteSnapshot>
+}
+
+export interface CodexRemoteFeishuCredentialRequest {
+  appId: string
+  appSecret: string
 }
 
 export interface XingmangEventContract {
@@ -1323,6 +1350,7 @@ export interface XingmangEventContract {
    * 工具迁过去（开着的也迁，#941）。
    */
   onRelayRouteChanged: IpcEventDefinition<'network:relay-route-changed', undefined>
+  onCodexRemoteStateChanged: IpcEventDefinition<'codex-remote:state-changed', CodexRemoteSnapshot>
 }
 
 export type XingmangApi = {
@@ -1532,6 +1560,14 @@ export const ipcInvokeChannels = {
   openDiagnosticFolder: 'diagnostics:open-folder',
   fixDiagnostic: 'diagnostics:fix',
   chooseExtensionDirectory: 'extensions:choose-directory',
+  getCodexRemoteState: 'codex-remote:get-state',
+  setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
+  chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
+  startCodexRemotePairing: 'codex-remote:start-pairing',
+  cancelCodexRemotePairing: 'codex-remote:cancel-pairing',
+  unbindCodexRemotePeer: 'codex-remote:unbind',
+  clearCodexRemoteCredentials: 'codex-remote:clear-credentials',
+  saveCodexRemoteFeishuCredentials: 'codex-remote:save-feishu-credentials',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -1556,6 +1592,7 @@ export const ipcEventChannels = {
   onAiChatStream: 'chat:stream-event',
   onProxyBypassEnded: 'network:proxy-bypass-ended',
   onRelayRouteChanged: 'network:relay-route-changed',
+  onCodexRemoteStateChanged: 'codex-remote:state-changed',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }

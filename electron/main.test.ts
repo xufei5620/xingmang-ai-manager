@@ -153,6 +153,7 @@ describe('main process quit cleanup', () => {
       'runtime-log-hooks',
       'updates-and-notifications',
       'ipc',
+      'codex-remote',
       'business-services',
       'asset-protocol-and-windows',
       'updater',
@@ -203,6 +204,7 @@ describe('main process quit cleanup', () => {
         'desktopNotifications.dispose()',
       ],
       ipc: ['unregisterIpcHandlers()'],
+      'codex-remote': ['codexRemote.dispose()'],
       'business-services': [
         'business.chatService.dispose()',
         'business.imageService.cancelAll()',
