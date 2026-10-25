@@ -12,6 +12,8 @@ export interface RealmDataRoots {
   readonly canvasProjectsDirectory: string
   readonly canvasRuntimeDirectory: string
   readonly canvasVideoTasksDirectory: string
+  /** 主窗口（对话页、视频剪辑页）出视频的任务记录，和画布的分开放。 */
+  readonly chatVideoTasksDirectory: string
   readonly assetThumbnailsDirectory: string
   /** Place a generated-media base (current or legacy) for this realm: xm uses it as is, api-account nests below it. */
   assetOutputDirectory(legacyRoot: string): string
@@ -59,6 +61,7 @@ export function resolveRealmDataRoots(managerDataDirectory: string, realmInput: 
     canvasProjectsDirectory: path.join(rootDirectory, 'canvas-projects'),
     canvasRuntimeDirectory: path.join(rootDirectory, 'canvas-runtime'),
     canvasVideoTasksDirectory: path.join(rootDirectory, 'canvas-video-tasks'),
+    chatVideoTasksDirectory: path.join(rootDirectory, 'chat-video-tasks'),
     assetThumbnailsDirectory: path.join(rootDirectory, 'asset-thumbnails'),
     assetOutputDirectory,
     accountDirectory,

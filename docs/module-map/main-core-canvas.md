@@ -7,9 +7,9 @@
 - `ipc-contract.ts` — **主窗口业务通道的类型真相源**（另两套见总述）：`ipcInvokeChannels` / `ipcEventChannels` 两张通道表 + `XingmangApi` 接口，`as const satisfies` 让通道表和接口对齐。只许 `import type`；值导出只能来自零 Node 依赖的模块（现在是 `catalog.ts` 的 `providerIds` / `managedCliKeyProfiles` 和 `relay-sites.ts` 的一组站点常量），否则 Vite 会把 `node:fs` 打进渲染包（I6）。列在 CODEOWNERS 里，加通道要让 yoyo 看见（T1）
 - `preload.ts` — 主窗口的 sandbox 桥，暴露 `window.xingmang`。sandbox 下不能 require 本地模块，所以**手抄了一份通道表**，用 `satisfies` 钉住契约类型，`preload.test.ts` 钉住内容；这份重复是有意的，别"消除"（I7、T1）
 - `ipc.ts` — `registerIpcHandlers` 是主窗口业务通道的薄入口：建好 `registerTrustedHandler`（校验 sender URL、结构化日志、等账号、统一 dispose，I4），交给 `ipc/handlers/` 下各域注册，最后统一撤销。每条通道日志记什么、要不要等账号照 `ipc-channel-policy.ts` 那张表办（I3、I13）。`IpcRegistrationOptions`（main.ts 交进来的全部依赖）也定义在这里。`ipc.test.ts` 把实际注册的通道和契约排序比对，漏注册、多注册都会红
-- `ipc/handlers/` — 主窗口业务通道的处理器，按域一个文件（#1070 第 7 步从 `ipc.ts` 原样搬出）：`system`（平台能力、本机检测）、`config`（工具配置读写、切换账号来源、补模板、查型号）、`external-clients`、`launch`（选工作目录、打开命令行工具和 Codex 桌面端，敏感目录提醒和试写都在这）、`tools`（Node.js、Python、Git、命令行工具和 Codex 桌面端的装卸与状态）、`window`（窗口、外链、网络设置、画布窗口）、`updates`、`sessions`、`settings`、`diagnostics`、`runtime-logs`（含反馈报告和「打开所在位置」）、`backups`、`extensions`、`account`（登录、会话、本机账号、公告、密码）、`acceleration`、`account-billing`、`account-usage`、`account-keys`（签发、写进工具、撤销）、`ai-chat`、`data-transfer`、`codex-remote`（手机遥控 Codex）。每个文件导出一个 `register*Handlers(ctx)`；几个域都要用的（账号服务、签发包装、备份上下文、取密钥、导出记录、敏感剪贴板）在 `context.ts` 的 `createIpcHandlerContext` 里建一份，域文件之间不互相 import。入参一律用 `ipc/parsers/` 的手写 `parse*` 函数校验、出中文错误（I5，别换成 zod）
+- `ipc/handlers/` — 主窗口业务通道的处理器，按域一个文件（#1070 第 7 步从 `ipc.ts` 原样搬出）：`system`（平台能力、本机检测）、`config`（工具配置读写、切换账号来源、补模板、查型号）、`external-clients`、`launch`（选工作目录、打开命令行工具和 Codex 桌面端，敏感目录提醒和试写都在这）、`tools`（Node.js、Python、Git、命令行工具和 Codex 桌面端的装卸与状态）、`window`（窗口、外链、网络设置、画布窗口）、`updates`、`sessions`、`settings`、`diagnostics`、`runtime-logs`（含反馈报告和「打开所在位置」）、`backups`、`extensions`、`account`（登录、会话、本机账号、公告、密码）、`acceleration`、`account-billing`、`account-usage`、`account-keys`（签发、写进工具、撤销）、`ai-chat`、`ai-video`（出视频片段，对话页和视频剪辑页共用；剪辑页的分镜、存成片；作品库里视频的读字节、用播放器打开、另存，都按编号找文件，路径不出主进程）、`data-transfer`、`codex-remote`（手机遥控 Codex）。每个文件导出一个 `register*Handlers(ctx)`；几个域都要用的（账号服务、签发包装、备份上下文、取密钥、导出记录、敏感剪贴板）在 `context.ts` 的 `createIpcHandlerContext` 里建一份，域文件之间不互相 import。入参一律用 `ipc/parsers/` 的手写 `parse*` 函数校验、出中文错误（I5，别换成 zod）
 - `ipc/handler-log.ts` — 通道调用成功那一行日志的中文说法和字段（`ipcSuccessMessage` / `ipcLogDetail`），加速页轮询状态的去重键 `accelerationStateLogKey`；只给 `ipc.ts` 的包装用
-- `ipc/parsers/` — 主窗口业务通道的入参解析，按域一个文件（#1070 第 6 步从 `ipc.ts` 原样搬出）：`common`（`requiredString` / `optionalString` / `optionalBoolean` / `stringArray`，对象判断用 `input-guards.ts` 的 `isRecord`）、`system`（窗口、诊断、更新、检测、渲染层报错）、`settings`、`extensions`（MCP、插件市场、Skill）、`tools`（命令行工具和 Codex 桌面端的安装、配置、启动，选工作目录）、`sessions`、`account`（登录注册、密码、协议）、`account-billing`（充值、订阅支付）、`account-usage`（用量、看板、任务）、`account-keys`（密钥增删改、写进工具）、`ai-chat`（对话、生图，生图带参考图时的图片编号）、`codex-remote`（渠道名、飞书 App ID / App Secret）。只认已知字段、限长、拒 NUL，报错是能直接上屏的中文；路径、密钥、网址相关的几个在同目录的测试里直接钉住，其余经 `ipc.test.ts` 的处理器用例覆盖
+- `ipc/parsers/` — 主窗口业务通道的入参解析，按域一个文件（#1070 第 6 步从 `ipc.ts` 原样搬出）：`common`（`requiredString` / `optionalString` / `optionalBoolean` / `stringArray`，对象判断用 `input-guards.ts` 的 `isRecord`）、`system`（窗口、诊断、更新、检测、渲染层报错）、`settings`、`extensions`（MCP、插件市场、Skill）、`tools`（命令行工具和 Codex 桌面端的安装、配置、启动，选工作目录）、`sessions`、`account`（登录注册、密码、协议）、`account-billing`（充值、订阅支付）、`account-usage`（用量、看板、任务）、`account-keys`（密钥增删改、写进工具）、`ai-chat`（对话、生图，生图带参考图时的图片编号）、`ai-video`（出视频那份和画布共用 `canvas-request-parser.ts` 的 `parseVideoGenerateInput`，主窗口只收参考图）、`codex-remote`（渠道名、飞书 App ID / App Secret）。只认已知字段、限长、拒 NUL，报错是能直接上屏的中文；路径、密钥、网址相关的几个在同目录的测试里直接钉住，其余经 `ipc.test.ts` 的处理器用例覆盖
 - `ipc-channel-policy.ts` — 主窗口业务通道的策略表 `ipcChannelPolicies`：键是契约里的通道名，每条必填 `log`（成功、失败记不记，入参给不给日志）和 `account`（要不要等账号恢复、在不在账号工作里跑、跑完核不核对账号），可选 `label` 是日志里的中文名。漏一条、拼错一条是编译错（#1071 第 1 条）。`config:reveal-api-key`、记住密码两条通道和聊天记录读写都标了成功不记
 - `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版由 `platform/entry.ts` 在分出任何一支之前调用，拒绝 `--inspect` / `--remote-debugging-*` 和能让 Chromium 拉起命令的 `--gpu-launcher`、`--*-cmd-prefix`、`--browser-subprocess-path`；照 Chromium 的读法，单短横线和 Windows 上的斜杠写法同样拦。它是黑名单，残余风险写在源码注释里（#1065）
 - `input-guards.ts` — 最基础的输入检查（`isRecord`、`isStringArray`、`filterStrings`、`isPromiseLike`），零依赖、渲染层也能值导入（I6）；只判断不出报错文案。主进程和 renderer-v2 各文件自己那份 `isRecord` 已全部换成这一份（#1071 第 3 条、#1070），只有要和画布逐字一样的 `drama-parse.ts` 还留着；`codex-config-toml.ts` 的 `isTomlTable` 在它上面再排除 Date
@@ -72,7 +72,7 @@
 - `canvas-contract.ts` — 宿主通道名 `canvasHostChannels` 与各通道入参/返回类型的单一来源（主进程侧），通道清单以它为准
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
-- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）
+- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）；生视频的 `parseVideoGenerateInput` 同理，另给主窗口的 `video:generate` 用，只是不收参考视频、参考音频
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度
 
 ### 运行引擎（都在主进程）
@@ -95,7 +95,7 @@
 
 ### AI 服务（聊天、生图、生视频，与 CLI 共用同一账号额度）
 - `ai-chat-protocol.ts` — AI 请求的协议层：端点（`/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`）、各种上限、型号能力表 `resolveAiModelCapability` 与请求体构造；聊天、生图、生视频、画布指纹和执行器都依赖它
-- `ai-chat-service.ts` — 主进程的流式聊天：连接、空闲、总时长三道超时（长思考模型几分钟不出字也不截断，Q43），事件/输出/响应体都有字节上限，按窗口限并发；附图在主进程按账号读回转成 data URI；`completeOnce` 供画布文本节点用。Key 经 `chat-credential-coordinator.ts` 拿，渲染层只发"请求"
+- `ai-chat-service.ts` — 主进程的流式聊天：连接、空闲、总时长三道超时（长思考模型几分钟不出字也不截断，Q43），事件/输出/响应体都有字节上限，按窗口限并发；附图在主进程按账号读回转成 data URI；`completeOnce` 供画布文本节点和视频剪辑页的分镜用，没有窗口、不进并发表，但 `cancelAll`（换账号、退出登录）照样停它。Key 经 `chat-credential-coordinator.ts` 拿，渲染层只发"请求"
 - `ai-image-service.ts` — 生图与改图（multipart `/v1/images/edits`）：用有界队列限并发、可取消，响应体有上限；发请求前先试写保存位置，写不进就在扣费之前停下
 - `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上
 - `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品
@@ -105,7 +105,8 @@
 
 ### 素材存储与读取
 - `ai-asset-store.ts` — **图片素材的落盘与读取**（`AiAssetStore`）：按账号存进 `user-<id>/`，素材 id 由内容哈希派生；下载远端图片时只许公网地址、限重定向次数与超时、校验图片魔数（防 SSRF，I10）；提供复制、另存为、在文件夹中显示、右键菜单；`assertWritable` 让生成前先试写
-- `ai-video-asset-store.ts` / `ai-audio-asset-store.ts` — 视频（mp4）与音频素材的落盘与读取，同样按账号、内容哈希定 id，读出时长宽高等元数据；音频只来自用户导入
+- `ai-video-asset-store.ts` / `ai-audio-asset-store.ts` — 视频（mp4）与音频素材的落盘与读取，同样按账号、内容哈希定 id，读出时长宽高等元数据；音频只来自用户导入。视频剪辑页拼好的成片走 `storeComposed`，和出的片段存在一处
+- `video-studio-plan.ts` — 视频剪辑「一句话出片」的分镜：给文字模型的提示词、读回答（多写的镜头只留要的几个，控制字符换空格、超长截断），上限和剪辑页共用一份；零依赖、渲染层能值导入（I6）
 - `ai-asset-index.ts` — 枚举一个账号的全部素材文件而不读任何媒体字节，替代以前"读全文件、最多 500 条"的做法，让搜索和排序面对的是完整结果、只为当前页补元数据
 - `ai-asset-metadata-store.ts` — 素材的逻辑元数据（显示名、收藏、标签、最近使用、来源、生成时的提示词、回收站），每个账号文件夹一个 `asset-metadata.json`，有体积和条数上限；删除是逻辑删除
 - `ai-media-asset-service.ts` — 素材库：把图片/视频/音频三个仓库和元数据合成一个可分页、可搜索、可按收藏/最近/回收站/标签/来源筛选的列表，"找相似"按提示词精确匹配；目前只交给画布窗口用（主窗口那套 IPC 不经过它）

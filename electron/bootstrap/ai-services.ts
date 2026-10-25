@@ -15,10 +15,10 @@ import { AiAudioAssetStore } from '../ai-audio-asset-store'
 import { createChatAttachmentService, type ChatImageCodec } from '../ai-chat-attachments'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from '../ai-chat-service'
 import { createAiImageService } from '../ai-image-service'
-import { createAiMediaAssetService } from '../ai-media-asset-service'
+import { createAiMediaAssetService, type AiMediaAssetService } from '../ai-media-asset-service'
 import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from '../ai-output-location'
 import { AiVideoAssetStore } from '../ai-video-asset-store'
-import { createAiVideoService } from '../ai-video-service'
+import { createAiVideoService, type AiVideoAssetWriter } from '../ai-video-service'
 import { AiVideoTaskStore } from '../ai-video-task-store'
 import { assetThumbnailMaxEdge, assetThumbnailSize } from '../asset-thumbnail'
 import { createAssetThumbnailService, type AssetThumbnailRenderer } from '../asset-thumbnail-service'
@@ -54,6 +54,34 @@ import { assetMenuFailureDialog, type AssetMenuMediaType } from '../window-prese
  * gives the same Chromium decoders synchronously in the main process with zero
  * new dependencies, which is why generation is serialized behind a queue.
  */
+/**
+ * 主窗口（对话页、视频剪辑页）出的视频存进全局作品库，和对话里出的图片同一处。没有 prepareProject：
+ * 它不属于哪个画布项目，画布那份没选项目就停下的检查不该拦它。参考图按编号先找全局、再找各个项目，
+ * 对话里选的图片也在全局里。
+ */
+export function createGlobalVideoAssetWriter(options: {
+  images: Pick<AiAssetStore, 'assertWritable'>
+  videos: Pick<AiVideoAssetStore, 'storeMp4'>
+  media: Pick<AiMediaAssetService, 'setSource'>
+  references: Pick<CanvasProjectAssetManager, 'readImageDataUri' | 'readMediaOwned'>
+  log: Pick<RuntimeLogStore, 'log'>
+}): AiVideoAssetWriter {
+  return {
+    assertWritable: (userId) => options.images.assertWritable(userId),
+    async storeMp4(userId, bytes, metadata) {
+      const asset = await options.videos.storeMp4(userId, bytes, { taskId: metadata.taskId })
+      // 来源只影响作品库里的筛选和提示词显示；片段已经存下了，记不上也不该让这次出片算失败。
+      await options.media.setSource(userId, asset.assetId, 'generated', metadata.prompt).catch((error: unknown) => options.log.log(
+        'warn', 'ai-chat', 'asset.source.persist.failed', '生成素材已保存，但来源信息保存失败',
+        { userId, assetId: asset.assetId, source: 'generated', reason: error instanceof Error ? error.message : String(error) },
+      ))
+      return asset
+    },
+    readImageDataUri: (userId, assetId) => options.references.readImageDataUri(userId, assetId),
+    readOwned: (userId, assetId, kind) => options.references.readMediaOwned(userId, assetId, kind),
+  }
+}
+
 function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
   return {
     async fromImageBytes(bytes, mimeType) {
@@ -476,9 +504,22 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
       },
     })
+    // 主窗口（对话页、视频剪辑页）出的视频不属于哪个画布项目，存进全局作品库，和对话里出的图片同一处。
+    // 画布那份按项目存、没选项目就在扣费前停下，所以另起一份；任务记录也分开放，开机续查时两份各认各的。
+    const chatVideoService = createAiVideoService({
+      fetchImpl: routedRelayFetch,
+      baseUrl: definition.aiBaseUrl,
+      credentials: chatCredentials,
+      tasks: new AiVideoTaskStore({ rootDirectory: roots.chatVideoTasksDirectory }),
+      assets: createGlobalVideoAssetWriter({
+        images: assetStore, videos: videoAssets, media: mediaAssets, references: canvasProjectAssets, log: runtimeLog,
+      }),
+    })
     if (siteId === 'solov-api') {
-      videoService.generate = async () => { throw new Error('当前账号暂不支持视频生成') }
-      videoService.resumeVideoTask = async () => { throw new Error('当前账号暂不支持视频生成') }
+      for (const service of [videoService, chatVideoService]) {
+        service.generate = async () => { throw new Error('当前账号暂不支持视频生成') }
+        service.resumeVideoTask = async () => { throw new Error('当前账号暂不支持视频生成') }
+      }
     }
     const canvasRunStore = new CanvasRunStore({
       rootDirectory: roots.canvasRuntimeDirectory,
@@ -508,7 +549,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     })
     return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
       audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-      chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
+      chatService, imageService, canvasImageService, videoService, chatVideoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
   }
   const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
   type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]

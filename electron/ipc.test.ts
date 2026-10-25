@@ -22,6 +22,8 @@ import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './extern
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 import { noteRequestDiagnostics } from './request-diagnostics'
 import { PaymentCheckoutRejected } from './payment-window'
+import { assetThumbnailUrl } from './asset-thumbnail'
+import type { AiOperationProgressObserver } from './ai-operation-progress'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -1112,6 +1114,149 @@ describe('registerIpcHandlers', () => {
     expect(chatHistory.read).toHaveBeenCalledWith('xm-account:7')
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('chat body')
     dispose()
+  })
+
+  describe('video channels', () => {
+    const clipId = 'C'.repeat(43)
+    const imageId = 'I'.repeat(43)
+    const storedClip = {
+      assetId: clipId, localUrl: `xingmang-asset://video/${clipId}`, mimeType: 'video/mp4' as const,
+      fileName: `xingmang-${clipId}.mp4`, taskId: 'task_1', width: 720, height: 1280, durationSeconds: 6,
+    }
+    const clip = { assetId: clipId, thumbnailUrl: assetThumbnailUrl(clipId, 'video'), width: 720, height: 1280, durationSeconds: 6 }
+
+    function signedIn(userId: number | null = 7) {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue((userId === null
+        ? { authenticated: false }
+        : { authenticated: true, account: { userId } }) as never)
+      return accountService
+    }
+
+    function videoServiceStub() {
+      return {
+        generate: vi.fn(async (_senderId: number, _input: unknown, progress?: AiOperationProgressObserver) => {
+          await progress?.onStage('processing')
+          await progress?.onProgress?.({ value: 41.6, health: 'delayed' })
+          await progress?.onStage('downloading')
+          return storedClip
+        }),
+        cancel: vi.fn(() => ({ canceled: true, mayStillComplete: true })),
+        cancelSender: vi.fn(() => 0),
+        cancelAll: vi.fn(() => 0),
+      }
+    }
+
+    it('generates a clip for the signed-in account, forwards progress to the asking window and hands back no paths', async () => {
+      const accountService = signedIn()
+      const videoService = videoServiceStub()
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { videoService })
+      const generate = electronMocks.handlers.get('video:generate')!
+      const input = { requestId: 'video-1', group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6', imageAssetIds: [imageId] }
+
+      expect(() => generate(trustedEvent('https://attacker.example/', 9), input)).toThrow('已拒绝来自非应用页面的操作请求')
+      await expect(generate(trustedEvent(undefined, 17), { ...input, projectId: 'p' })).rejects.toThrow('视频请求包含未知字段')
+      expect(videoService.generate).not.toHaveBeenCalled()
+
+      const event = trustedEvent(undefined, 17)
+      await expect(generate(event, input)).resolves.toEqual(clip)
+      expect(videoService.generate).toHaveBeenCalledWith(17, { ...input, expectedUserId: 7 }, expect.any(Object))
+      expect(event.sender.send.mock.calls).toEqual([
+        ['video:progress', { requestId: 'video-1', stage: 'processing' }],
+        ['video:progress', { requestId: 'video-1', stage: 'processing', value: 42, delayed: true }],
+        ['video:progress', { requestId: 'video-1', stage: 'downloading' }],
+      ])
+
+      const cancel = electronMocks.handlers.get('video:cancel')!
+      expect(cancel(trustedEvent(undefined, 17), 'video-1')).toEqual({ canceled: true, mayStillComplete: true })
+      expect(videoService.cancel).toHaveBeenCalledWith(17, 'video-1', 7)
+
+      const destroyed = vi.mocked(event.sender.once).mock.calls.find(([name]) => name === 'destroyed')?.[1]
+      ;(destroyed as () => void)()
+      expect(videoService.cancelSender).toHaveBeenCalledWith(17)
+      dispose()
+      expect(videoService.cancelAll).toHaveBeenCalled()
+
+      const signedOut = videoServiceStub()
+      const second = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(null), undefined, undefined, {}, { videoService: signedOut })
+      await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), input)).rejects.toThrow('请先登录星芒账号')
+      expect(signedOut.generate).not.toHaveBeenCalled()
+      second.dispose()
+    })
+
+    it('writes a storyboard with the chosen text model and asks once more only when the answer is unreadable', async () => {
+      const answer = JSON.stringify({ title: '回家', shots: [{ prompt: '橘猫在雨里', caption: '下雨了' }] })
+      const chatService = {
+        completeOnce: vi.fn<(input: { signal?: AbortSignal }) => Promise<string>>()
+          .mockResolvedValueOnce('我先想想')
+          .mockResolvedValueOnce(answer),
+        dispose: vi.fn(),
+      }
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, { chatService } as never)
+      const planHandler = electronMocks.handlers.get('video-studio:plan')!
+      const input = { requestId: 'plan-1', group: '文字分组', model: 'gpt-6-astra', idea: '一只橘猫回家', shotCount: 1, secondsPerShot: 6, aspect: '9:16', captions: true }
+
+      await expect(planHandler(trustedEvent(), { ...input, shotCount: 20 })).rejects.toThrow('镜头数要在 1 到 12 个之间')
+      await expect(planHandler(trustedEvent(), input)).resolves.toEqual({ title: '回家', shots: [{ prompt: '橘猫在雨里', caption: '下雨了' }] })
+      expect(chatService.completeOnce).toHaveBeenCalledTimes(2)
+      expect(chatService.completeOnce).toHaveBeenCalledWith({
+        group: '文字分组',
+        model: 'gpt-6-astra',
+        messages: [{ role: 'system', content: expect.stringContaining('shots 正好 1 个') }, { role: 'user', content: '一只橘猫回家' }],
+        parameters: { temperature: 0.7 },
+        signal: expect.any(AbortSignal),
+      })
+
+      // A failed request is not asked again: that would only pay twice for the same failure.
+      chatService.completeOnce.mockReset().mockRejectedValueOnce(new Error('当前余额不足'))
+      await expect(planHandler(trustedEvent(), input)).rejects.toThrow('当前余额不足')
+      expect(chatService.completeOnce).toHaveBeenCalledOnce()
+
+      chatService.completeOnce.mockReset().mockImplementation(({ signal }) => new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('已取消')), { once: true })
+      }))
+      const pending = planHandler(trustedEvent(undefined, 31), input)
+      await vi.waitFor(() => expect(chatService.completeOnce).toHaveBeenCalledOnce())
+      const cancel = electronMocks.handlers.get('video:cancel')!
+      expect(cancel(trustedEvent(undefined, 32), 'plan-1')).toEqual({ canceled: false, mayStillComplete: false })
+      expect(cancel(trustedEvent(undefined, 31), 'plan-1')).toEqual({ canceled: true, mayStillComplete: false })
+      await expect(pending).rejects.toThrow('已停止写分镜')
+      dispose()
+    })
+
+    it('reads, stores, opens and saves works by id for the signed-in account only, keeping paths out of the renderer and the log', async () => {
+      const filePath = '/home/someone/Documents/XingmangAI/user-7/2026-10-25/xingmang-clip.mp4'
+      const videoAssets = {
+        readOwned: vi.fn(async () => ({ asset: storedClip, bytes: Buffer.from('ftyp-bytes') })),
+        storeComposed: vi.fn(async () => ({ ...storedClip, taskId: undefined })),
+        resolveOwnedFilePath: vi.fn(async () => filePath),
+        saveAs: vi.fn(async (_userId: number, _assetId: string, authorize?: () => void | Promise<void>) => {
+          await authorize?.()
+          return true
+        }),
+      }
+      electronMocks.openPath.mockResolvedValue('')
+      const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoAssets })
+
+      await expect(electronMocks.handlers.get('video:read-clip')!(trustedEvent(), '../../secret')).rejects.toThrow('视频编号格式错误')
+      expect(videoAssets.readOwned).not.toHaveBeenCalled()
+      await expect(electronMocks.handlers.get('video:read-clip')!(trustedEvent(), clipId)).resolves.toEqual(Buffer.from('ftyp-bytes'))
+      expect(videoAssets.readOwned).toHaveBeenCalledWith(7, clipId)
+
+      const film = new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112])
+      await expect(electronMocks.handlers.get('video-studio:store-export')!(trustedEvent(), film)).resolves.toEqual(clip)
+      expect(videoAssets.storeComposed).toHaveBeenCalledWith(7, Buffer.from(film))
+      await expect(electronMocks.handlers.get('video-studio:store-export')!(trustedEvent(), 'not bytes')).rejects.toThrow('成片内容格式错误')
+
+      await expect(electronMocks.handlers.get('video:open')!(trustedEvent(), clipId)).resolves.toBeUndefined()
+      expect(videoAssets.resolveOwnedFilePath).toHaveBeenCalledWith(7, clipId)
+      expect(electronMocks.openPath).toHaveBeenCalledWith(filePath)
+
+      await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId)).resolves.toEqual({ saved: true })
+      expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
+      dispose()
+    })
   })
 
   it('exports portable settings with the renderer conversations and nothing account-bound', async () => {
@@ -8350,6 +8495,14 @@ describe('IPC channel log and account policies', () => {
       'external-clients:scan',
       'external-clients:switch-source',
       'tools:check-models',
+      // 出视频、分镜和作品库：凭据和作品都按当前账号找。
+      'video-studio:plan',
+      'video-studio:store-export',
+      'video:cancel',
+      'video:generate',
+      'video:open',
+      'video:read-clip',
+      'video:save-as',
     ])
   })
 
@@ -8417,6 +8570,8 @@ describe('IPC channel log and account policies', () => {
         'system:scan',
         'update:get-state',
         'update:startup',
+        'video:cancel',
+        'video:read-clip',
         'window:set-mode',
         'window:set-theme',
       ],
