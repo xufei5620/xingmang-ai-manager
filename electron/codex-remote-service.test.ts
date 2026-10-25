@@ -239,15 +239,18 @@ describe('codex-remote-service helpers', () => {
   })
 
   it('refuses whole-computer folders as the remote workspace', () => {
+    // These are real folders, so classify them with this machine's path rules: under the
+    // posix rules a C:\ path is not absolute and nothing would be refused.
+    const platform = process.platform
     const root = tempRoot()
     const home = path.join(root, 'home')
     fs.mkdirSync(path.join(home, 'Desktop'), { recursive: true })
     fs.mkdirSync(path.join(home, 'code'), { recursive: true })
-    expect(() => validateRemoteWorkspace(home, home, 'darwin')).toThrow('用户主目录')
-    expect(() => validateRemoteWorkspace(path.join(home, 'Desktop'), home, 'darwin')).toThrow('桌面')
-    expect(() => validateRemoteWorkspace(path.join(home, 'missing'), home, 'darwin')).toThrow('不存在')
-    expect(() => validateRemoteWorkspace('relative', home, 'darwin')).toThrow()
-    expect(validateRemoteWorkspace(path.join(home, 'code'), home, 'darwin')).toBe(path.join(home, 'code'))
+    expect(() => validateRemoteWorkspace(home, home, platform)).toThrow('用户主目录')
+    expect(() => validateRemoteWorkspace(path.join(home, 'Desktop'), home, platform)).toThrow('桌面')
+    expect(() => validateRemoteWorkspace(path.join(home, 'missing'), home, platform)).toThrow('不存在')
+    expect(() => validateRemoteWorkspace('relative', home, platform)).toThrow()
+    expect(validateRemoteWorkspace(path.join(home, 'code'), home, platform)).toBe(path.join(home, 'code'))
   })
 
   it('redacts and shortens what an approval shows', () => {
