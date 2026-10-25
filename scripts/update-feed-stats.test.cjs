@@ -554,7 +554,10 @@ test('the report follows the two newest versions and shows whether machines left
   assert.match(report, /想强制更新（抬最低版本）前先看这一节：强制更新只拦打开了窗口的人/)
   assert.doesNotMatch(report, /更新清单的请求这段时间也是抽样记的/)
   assert.match(report, /\*\*停着的电脑查更新勤不勤\*\*：没下过新版的停着的电脑，每读 100 次状态文件读了几次更新清单（Windows 0\.0 次、Mac 18\.8 次，/)
-  assert.match(report, /大约是 8 次。远少于这个数、下面「更新相关的请求有没有被拒」里清单又没怎么被拒，说明这些电脑开着却没按时查更新/)
+  // A window shorter than the time since the previous release hides machines that downloaded it earlier and stopped checking.
+  assert.match(report, /大约是 8 次。统计开始以前就下好、在等装的电脑也算在这里面（那次下载这里看不到），它们不再查/)
+  assert.match(report, /那样的时段里还远少于这个数、下面「更新相关的请求有没有被拒」里清单又没怎么被拒，才说明这些电脑开着却没按时查更新/)
+  assert.match(report, /或者统计开始以前就下好了、在等装（那次下载这里看不到，下好以后也不再查）。只看 1 天这种比上一版发出来以后还短的时段，最后这种会占大头/)
   assert.match(report, /Mac 停在旧版本的电脑不到 20 台/)
 
   // Rejected requests per kind: sampled rows scaled up, the status file's rejections taken out of all its reads.
