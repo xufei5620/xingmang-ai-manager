@@ -12,7 +12,7 @@
 // it received from the platform.
 
 /** 渠道列表。加一个渠道先加在这里，编译器会带着把工厂和界面补齐。 */
-export const remoteChannelIds = ['feishu'] as const
+export const remoteChannelIds = ['feishu', 'weixin'] as const
 
 export type RemoteChannelId = typeof remoteChannelIds[number]
 

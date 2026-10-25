@@ -8309,11 +8309,12 @@ test('the status bar says the phone remote is on and leads to its settings card'
   try {
     await expect(page.getByTestId('statusbar-remote')).toHaveCount(0)
     const feishu = { channel: 'feishu', hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' }, boundPeer: null, pairing: null }
-    await page.evaluate((channel) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 50, available: true, credentialPersistence: 'durable', workspaceDirectory: '~/projects/demo', task: 'idle', pendingApprovals: 0, channels: { feishu: channel } }), feishu)
+    const weixin = { channel: 'weixin', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null }
+    await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 50, available: true, credentialPersistence: 'durable', workspaceDirectory: '~/projects/demo', task: 'idle', pendingApprovals: 0, channels: { feishu: channel, weixin: idle } }), [feishu, weixin])
     await page.getByTestId('statusbar-remote').click()
     await expect(page.getByTestId('page-settings').getByTestId('settings-remote-card')).toBeVisible()
     // 推来的旧快照（revision 小）不把它关掉。
-    await page.evaluate((channel) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 2, available: true, credentialPersistence: 'durable', workspaceDirectory: null, task: 'idle', pendingApprovals: 0, channels: { feishu: { ...channel, enabled: false } } }), feishu)
+    await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 2, available: true, credentialPersistence: 'durable', workspaceDirectory: null, task: 'idle', pendingApprovals: 0, channels: { feishu: { ...channel, enabled: false }, weixin: idle } }), [feishu, weixin])
     await expect(page.getByTestId('statusbar-remote')).toBeVisible()
     await clean(page)
   } finally { await page.close() }

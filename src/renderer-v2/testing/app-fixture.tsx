@@ -417,7 +417,10 @@ const methods = {
     workspaceDirectory: null,
     task: 'idle' as const,
     pendingApprovals: 0,
-    channels: { feishu: { channel: 'feishu' as const, hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' as const }, boundPeer: null, pairing: null } },
+    channels: {
+      feishu: { channel: 'feishu' as const, hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' as const }, boundPeer: null, pairing: null },
+      weixin: { channel: 'weixin' as const, hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' as const }, boundPeer: null, pairing: null },
+    },
   }),
   getUpdateState: async () => ({ phase: query.has('startupUpdate') || query.has('updateCheckFail') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true, ...(query.has('justUpdated') ? { installedRelease: { justUpdated: true, previousVersion: '0.1.30', notes: ['更新装完第一次打开会告诉你已经更新到哪一版。', '更新页能看到当前这一版改了什么。'] } } : {}) }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },

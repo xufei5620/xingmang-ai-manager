@@ -96,8 +96,10 @@
 - `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限
 - `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
 - `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试
+- `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；登录过期（-14、401/403）报「要重新登录」不再重试
+- `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；拿到的令牌直接进底座的加密凭据存储，不过 IPC。`-login-state.ts` 只有类型，界面 `import type` 它
 - `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上星芒以管理员身份或高完整性运行时不许开（手机上点一下就是管理员级操作）
-- 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参），状态变化经 `codex-remote:state-changed` 推给界面
+- 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参），状态变化经 `codex-remote:state-changed` 推给界面；微信扫码的三条（`codex-remote:weixin-login-start` / `-poll` / `-cancel`）在 `ipc/handlers/codex-remote-weixin.ts` + `ipc/parsers/codex-remote-weixin.ts`，成功不记日志
 
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
 - `external-client-runtime.ts` — **三家客户端的探测、安装与打开**：Windows 用一段 PowerShell 盘点并核签名，Claude Desktop 装法是存储桶 → winget → 官网 MSIX，OpenCode 走 winget，WorkBuddy 一律让客户去官网自己下；Mac 交给 `macos-desktop-app-installer.ts` 并核 Developer ID。「打开」不排安装队列，是 I11 的登记例外（只等同一家正在装的那一次）

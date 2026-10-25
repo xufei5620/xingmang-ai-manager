@@ -67,6 +67,8 @@ const valueImportable = [
 const typeImportableOnly = [
   'electron/platform/contract',
   'electron/relay-backend',
+  // 微信扫码登录交给界面的快照，只有类型，零依赖。
+  'electron/codex-remote-weixin-login-state',
 ]
 
 // Reading a listed file on its own should already say that it ends up in the
