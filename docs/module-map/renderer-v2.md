@@ -188,8 +188,11 @@
 - `features/chat/index.ts` — 本目录出口，App 懒加载时从这里取 `ChatPage`。
 - `features/chat/chat.css` — 聊天页样式（消息最宽 684、输入框最宽 740，悬停才露出的按钮）。
 
-## features/video-studio/ 视频剪辑（目前只有拼片引擎，还没有页面入口）
-- `features/video-studio/README.md` — 拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
+## features/video-studio/ 视频剪辑（侧栏「视频剪辑」页和它的拼片引擎）
+- `features/video-studio/README.md` — 页面的流程和工程怎么存；拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
+- `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 「视频剪辑」页（经 `pages-business.tsx` 懒加载）：想法、分镜、拼成一条视频三张卡；没登录、历史账号各一个空状态；要花钱的先弹确认。片段用缩略图代表，点了交给系统播放器（主窗口 CSP 不放 `media-src`）。
+- `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、拼片、按账号存工程；停下时说清哪几段已经交给服务端、照样扣费。
+- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例）、`localStorage` 存取与逐字段校验（缩略图只认作品库的地址）。
 - `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
 - `features/video-studio/compose-worker.ts` — 后台线程本身，一个线程只拼一次。
 - `features/video-studio/compose.ts` — 用 mediabunny（MPL-2.0）读片段、逐帧画到 OffscreenCanvas 上烧字幕、WebCodecs 编码、写 MP4；画面一段接一段、每段画完接这一段的声音。

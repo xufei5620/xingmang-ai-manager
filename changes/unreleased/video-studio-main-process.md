@@ -6,4 +6,4 @@
   播放器打开，Windows 上经资源管理器转交）、`video:save-as`，以及剪辑页的 `video-studio:plan`（文字型号把一句
   想法拆成几个镜头，答得读不懂才再问一次）和 `video-studio:store-export`（拼好的成片存进作品库）。
   出视频的入参和画布共用一份解析（`parseVideoGenerateInput`），主窗口不收参考视频、参考音频。
-  `chatService.cancelAll()` 现在也停没写完的 `completeOnce`，换账号、退出登录不用等它。还没有页面入口。
+  `chatService.cancelAll()` 现在也停没写完的 `completeOnce`，换账号、退出登录不用等它。

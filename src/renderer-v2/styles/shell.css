@@ -193,8 +193,9 @@ button, input, select, textarea { font: inherit; }
   .v2-account-balance { margin-top: 8px; }
   /* 收起的窄条也要放得下（#1133 第 4 条）：110% 缩放的最小窗口只剩 566 高，原来只收了展开的侧栏，
      窄条差 36（Mac 顶上还要让红黄绿三个点，差 68），「反馈与客服」滚出去，「检查」被渐隐盖得像按不动。
-     这里图标行 30 → 28、分组线上下空隙减半，标志和账号头像那块的空隙也收一点，Mac 也放得下。 */
-  .sidebar-collapsed .v2-nav-item { height: 28px; }
+     这里图标行 30 → 28、分组线上下空隙减半，标志和账号头像那块的空隙也收一点，Mac 也放得下。
+     2026-10-25 工作组加了「视频剪辑」，Mac 又差 21，图标行再收到 26（仍高过 24 的最小点按目标）。 */
+  .sidebar-collapsed .v2-nav-item { height: 26px; }
   .sidebar-collapsed :is(.v2-nav-group-label, .v2-nav-separator) { margin-block: 4px; }
   .sidebar-collapsed .v2-brand { height: 28px; margin-bottom: 4px; }
   .sidebar-collapsed .v2-sidebar-pinned { padding-top: 4px; }
