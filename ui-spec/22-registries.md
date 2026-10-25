@@ -10,6 +10,7 @@
 | chat | 聊天 | message-square | daily | 专用 | 跳转 | page-chat |
 | sessions | 记录 | clock | daily | T3 | 跳转 | page-sessions |
 | canvas | 画布 ↗ | infinity | daily | 独立窗口 | 跳转 | nav-canvas |
+| video | 视频剪辑（2026-10-25 新增，历史账号登录时不出） | clapperboard | daily | T1 | 跳转 | page-video |
 | acceleration | 网络加速（2026-10-21 前叫游戏加速） | globe-2 | daily | T5 | 跳转 | page-acceleration |
 | mcp | 外接工具 | plug | extend | T1 | 跳转 | page-mcp |
 | skills | 技能 | sparkles | extend | T1 | 跳转 | page-skills |

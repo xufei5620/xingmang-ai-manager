@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createFixtureServer } from '../../../../e2e/harness.mjs'
-import { openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
+import { fixtureReadyTimeoutMs, openFixturePage } from '../../../../e2e/fixture-readiness.mjs'
 
 // 拼片引擎在真浏览器里跑：WebCodecs 编解码、后台线程、MP4 读写都只有浏览器里才有，
 // node 里的单元测试只核得了纯计算那一半。片段是页面现做的纯色视频，不碰网络。
@@ -162,5 +162,132 @@ test('explains which clip it cannot read', async () => {
   assert.deepEqual(summary.page, { name: 'VideoStudioError', message: '第 2 段不是能读的视频文件（支持 MP4、MOV、WebM）' })
   assert.equal(summary.worker.message, '第 2 段不是能读的视频文件（支持 MP4、MOV、WebM）')
   assert.equal(summary.tooShort.message, '第 1 段剪掉首尾后不到 0.2 秒，没法用')
+  await page.close()
+})
+
+// —— 视频剪辑页 ——
+// 页面接假的主进程桥（page-fixture.tsx），片段用上面那套现做的纯色视频，拼片走真的后台线程。
+
+async function openStudio() {
+  const page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
+  const errors = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.route('**/*', async (route) => { if (new URL(route.request().url()).hostname !== '127.0.0.1') return route.abort(); await route.continue() })
+  await openFixturePage(page, `${base}/src/renderer-v2/features/video-studio/page-fixture.html`,
+    (timeout) => page.getByTestId('video-idea-input').waitFor({ timeout }), { label: 'video studio page' })
+  // 模型表读完、两个模型都落定了才算打开好。
+  await page.locator('[data-testid="video-text-model"][data-model="gpt-5.6-sol"]').waitFor()
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  return { page, errors }
+}
+
+function studioCalls(page, method) {
+  return page.evaluate((name) => window.videoStudioPage.calls.filter((call) => call.method === name).map((call) => call.input), method)
+}
+
+async function writeStoryboard(page, idea, plan) {
+  await page.getByTestId('video-idea-input').fill(idea)
+  await page.getByTestId('video-shot-count').selectOption(String(plan.shots.length))
+  await page.getByTestId('video-plan').click()
+  await page.getByTestId('video-plan-stop').waitFor()
+  await page.evaluate((value) => window.videoStudioPage.finishPlan(value), plan)
+  await page.getByTestId(`video-shot-${plan.shots.length - 1}`).waitFor()
+}
+
+test('writes a storyboard, generates every shot and joins them into one film', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '一只橘猫在雨夜找回家的路', { title: '回家的猫', shots: [{ prompt: '红色的街', caption: 'Hello 星芒' }, { prompt: '蓝色的雨' }, { prompt: '绿色的门', caption: '到家了' }] })
+  const [plan] = await studioCalls(page, 'plan')
+  assert.deepEqual({ ...plan, requestId: typeof plan.requestId }, {
+    requestId: 'string', group: 'GPT', model: 'gpt-5.6-sol', idea: '一只橘猫在雨夜找回家的路', shotCount: 3, secondsPerShot: 6, aspect: '9:16', captions: true,
+  })
+  assert.match(await page.getByTestId('video-shots').textContent(), /回家的猫.*3 个镜头 · 每段 6 秒 · 共约 18 秒/)
+
+  // 把绿色那一镜挪到第二个。
+  await page.getByTestId('video-shot-up-2').click()
+  assert.equal(await page.getByTestId('video-shot-prompt-1').inputValue(), '绿色的门')
+
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  const requests = await studioCalls(page, 'generate')
+  assert.deepEqual(requests.map((input) => ({ ...input, requestId: undefined })), ['红色的街', '绿色的门', '蓝色的雨'].map((prompt) => ({
+    requestId: undefined, group: '图片模型', model: 'grok-imagine-video-1.5', prompt, seconds: '6', width: 720, height: 1280,
+  })))
+  await page.evaluate((requestId) => window.videoStudioPage.progress({ requestId, stage: 'processing', value: 40 }), requests[0].requestId)
+  await page.getByTestId('video-shot-0').getByText('生成中 40%').waitFor()
+  assert.equal(await page.getByTestId('video-compose').isDisabled(), true, 'nothing to join until every clip is back')
+
+  const colors = { 红色的街: '#ff0000', 绿色的门: '#00ff00', 蓝色的雨: '#0000ff' }
+  for (const input of requests) await page.evaluate(([requestId, color]) => window.videoStudioPage.finishClip(requestId, color), [input.requestId, colors[input.prompt]])
+  for (const index of [0, 1, 2]) await page.getByTestId(`video-shot-${index}`).getByText('已生成').waitFor()
+
+  await page.getByTestId('video-compose').click()
+  // 真的在后台线程里拼三段，慢机器上要好一会儿；用和冷启动同一份的宽限，不另写一个数。
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const inspected = await page.evaluate(async () => {
+    const data = window.videoStudioPage.exported()
+    return window.videoStudioHarness.inspect(data, {
+      colors: [{ time: 0.5, x: 360, y: 400 }, { time: 1.5, x: 360, y: 400 }, { time: 2.5, x: 360, y: 400 }],
+      bright: [{ time: 0.5, top: 0, bottom: 1280 }, { time: 2.5, top: 0, bottom: 1280 }],
+    })
+  })
+  assert.equal(inspected.width, 720)
+  assert.equal(inspected.height, 1280)
+  near(inspected.videoDuration, 3, 0.05, 'film duration')
+  closeColor(inspected.colors[0], [255, 0, 0], 'first shot')
+  closeColor(inspected.colors[1], [0, 255, 0], 'moved shot')
+  closeColor(inspected.colors[2], [0, 0, 255], 'last shot')
+  assert.ok(inspected.bright[0] > 50, 'the first caption is burnt in')
+  assert.equal(inspected.bright[1], 0, 'the shot without a caption stays clean')
+  assert.equal((await studioCalls(page, 'read')).length, 3)
+  assert.equal((await studioCalls(page, 'store')).length, 1)
+  assert.match(await page.getByTestId('video-notice').textContent(), /拼好了/)
+
+  await page.getByTestId('video-result-open').click()
+  const [opened] = await studioCalls(page, 'open')
+  assert.match(opened, /^v+\d+$/)
+
+  // 重开页面：分镜、片段和成片都还在，没有再发任何付费请求。
+  await page.reload()
+  await page.getByTestId('video-result').waitFor()
+  for (const index of [0, 1, 2]) await page.getByTestId(`video-shot-${index}`).getByText('已生成').waitFor()
+  assert.equal(await page.getByTestId('video-shot-prompt-1').inputValue(), '绿色的门')
+  assert.deepEqual(await studioCalls(page, 'generate'), [])
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+test('stops a storyboard and the clips still running, and says which ones may still be billed', async () => {
+  const { page, errors } = await openStudio()
+  await page.getByTestId('video-idea-input').fill('海边日落')
+  await page.getByTestId('video-plan').click()
+  await page.getByTestId('video-plan-stop').click()
+  await page.getByTestId('video-plan').waitFor()
+  assert.equal((await studioCalls(page, 'cancel')).length, 1)
+  assert.equal(await page.getByTestId('video-error').count(), 0, 'stopping on purpose is not an error')
+
+  await writeStoryboard(page, '海边日落', { title: '日落', shots: [{ prompt: '海浪' }, { prompt: '夕阳' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const [first] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), first.requestId)
+  await page.getByTestId('video-shot-0').getByText('这次的描述没通过安全审核，换个说法再试').waitFor()
+  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+
+  await page.getByTestId('video-generate-stop').click()
+  await page.getByTestId('video-notice').getByText(/其中 1 段已经交给服务端，会照样生成、照样扣费/).waitFor()
+  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  assert.equal(await page.getByTestId('video-shot-1').getByRole('alert').count(), 0, 'a clip stopped on purpose shows no error')
+  assert.equal(await page.getByTestId('video-generate-all').textContent(), '生成全部 2 段')
+
+  // 一镜没写描述就一段都不发。
+  await page.getByTestId('video-shot-prompt-1').fill('  ')
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.getByTestId('video-error').getByText('第 2 个镜头还没写画面描述').waitFor()
+  assert.equal((await studioCalls(page, 'generate')).length, 2)
+  assert.deepEqual(errors, [])
   await page.close()
 })

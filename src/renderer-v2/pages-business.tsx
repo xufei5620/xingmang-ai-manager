@@ -1,4 +1,6 @@
 import { AccountPage } from './pages-account'
+import { accountSiteId, sessionScope } from './account-context'
+import { VideoStudioPage } from './features/video-studio'
 import { ExtensionsPage, SessionsPage } from './pages-management'
 import { FeaturedPage } from './pages-featured'
 import {
@@ -127,6 +129,12 @@ export function BusinessPage({
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
+  if (page === 'video') {
+    const site = accountSession ? accountSiteId(accountSession) : 'solov'
+    const access = !accountSession?.authenticated ? 'guest' : site === 'solov-api' ? 'unsupported' : 'ready'
+    return <VideoStudioPage bridge={api} accountScope={accountSession ? sessionScope(accountSession) : 'guest'} site={site} access={access} active={actions.active}
+      onLogin={actions.openLogin ? () => actions.openLogin?.() : undefined} onOpenAccount={actions.navigate ? (tab) => actions.navigate?.('account', tab) : undefined} />
+  }
   return null
 }
 
