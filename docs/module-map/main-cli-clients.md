@@ -86,6 +86,19 @@
 - `codex-desktop-install-failure.ts` — 桌面端装不上 / 更新不了时客户看到的那句话（按原因分几类，原话只进日志），外加微软商店链接（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node（I6）
 - `codex-desktop-known-issues.ts` — 已知打不开的桌面端版本表：只提示并引到 Codex 命令行版，不给「退回上一版」（商店几小时就换回去）；上游修好、真机核过后删掉那一行。主进程与渲染层共用
 
+## 手机遥控 Codex（设置 › 工具管理；只认配对过的一个人的私聊，命令要在聊天里点同意）
+- `codex-remote-channel.ts` — 渠道（飞书、微信）和底座之间的接口：入站消息、出站文字与审批、渠道状态、`RemoteChannelDependencies`（主进程 fetch、凭据读写、日志、版本号），以及给界面的快照类型（带 `revision`，界面只收新的那份）。零依赖，在 `valueImportable` 名单上（I6），渲染层用它的 `remoteChannelIds`
+- `codex-remote-http.ts` — 渠道请求平台开放接口的唯一出口：只许 HTTPS 和渠道给的那几个主机、超时、响应体上限、不跟跳转（I10），报错不带令牌和消息正文
+- `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
+- `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
+- `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
+- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限
+- `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
+- `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试
+- `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上星芒以管理员身份或高完整性运行时不许开（手机上点一下就是管理员级操作）
+- 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参），状态变化经 `codex-remote:state-changed` 推给界面
+
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
 - `external-client-runtime.ts` — **三家客户端的探测、安装与打开**：Windows 用一段 PowerShell 盘点并核签名，Claude Desktop 装法是存储桶 → winget → 官网 MSIX，OpenCode 走 winget，WorkBuddy 一律让客户去官网自己下；Mac 交给 `macos-desktop-app-installer.ts` 并核 Developer ID。「打开」不排安装队列，是 I11 的登记例外（只等同一家正在装的那一次）
 - `external-client-route-service.ts` — **三家客户端在系统服务里的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `scanExternalClients`、`configureExternalTool`、`switchExternalClientSource` 这些）：盘点（合并、落盘先画首页）、安装、打开、测试连接，写配置前绕过缓存现查型号、核账号没换，Claude Desktop 切回官方账号或改用当前账号；换线路、换 Key 以后替当前账号写的那份跟着换，客户端开着就每 5 分钟看一眼进程、等它退出再换（星芒退出时撤掉这个定时）。写配置、切账号、跟线路改的是同一批文件，排同一个队（`queueExternalConfigWork`，原来手抄三份）
