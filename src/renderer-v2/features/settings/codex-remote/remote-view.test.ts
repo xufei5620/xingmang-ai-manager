@@ -22,7 +22,7 @@ function snapshot(patch: Partial<CodexRemoteSnapshot> = {}): CodexRemoteSnapshot
     workspaceDirectory: '~/projects/demo',
     task: 'idle',
     pendingApprovals: 0,
-    channels: { feishu: channel() },
+    channels: { feishu: channel(), weixin: channel({ channel: 'weixin', hasCredential: false, accountLabel: null }) },
     ...patch,
   }
 }
@@ -40,7 +40,7 @@ describe('codex remote view', () => {
     expect(remoteTaskLabel({ task: 'waiting-approval', pendingApprovals: 2 })).toBe('等你同意 2 条')
     expect(remoteTaskLabel({ task: 'starting', pendingApprovals: 0 })).toBe('正在处理')
     expect(remoteCardMeta(snapshot())).toBeNull()
-    expect(remoteCardMeta(snapshot({ task: 'running', channels: { feishu: channel({ enabled: true }) } }))).toBe('Codex 正在处理')
+    expect(remoteCardMeta(snapshot({ task: 'running', channels: { ...snapshot().channels, feishu: channel({ enabled: true }) } }))).toBe('Codex 正在处理')
   })
 
   it('labels every channel state and only colours the ones that need attention', () => {

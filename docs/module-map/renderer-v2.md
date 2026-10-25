@@ -214,6 +214,7 @@
 - `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。
 - `features/settings/codex-remote/channel-sections.tsx` — 各渠道那一块的登记表（`Record<RemoteChannelId, …>`，主进程加渠道这里漏了是编译错）：标题、提示句和填凭据的组件。
 - `features/settings/codex-remote/FeishuRemoteSection.tsx` — 飞书那一块：填 App ID / App Secret（附怎么建机器人的六步，只写字不放链接），填过了只显示 App ID。
+- `features/settings/codex-remote/WeixinRemoteSection.tsx` — 微信那一块（实验功能）：黄色提醒、扫码登录 / 重新扫码，扫码弹窗（二维码图由主进程给、手机上要输数字时换成输入框）；拿二维码走卡片的 `run`，弹窗里的轮询自己管（`useLatestRequest`），登录好了靠主进程推的快照变成「已登录」。
 - `features/settings/codex-remote/remote-view.ts` — 卡上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
 - `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到设置里那张卡。
 - `features/tutorial/TutorialPage.tsx` — 教程页：分类按钮与搜索、两列卡片、文章与吸顶条、「读到第几步」；顶部搜索没结果时带字进来接着搜。

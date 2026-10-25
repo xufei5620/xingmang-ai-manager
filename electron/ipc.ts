@@ -77,6 +77,7 @@ import { registerAccountKeyHandlers } from './ipc/handlers/account-keys'
 import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
+import { registerCodexRemoteWeixinHandlers } from './ipc/handlers/codex-remote-weixin'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -373,6 +374,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerAiChatHandlers(ctx)
   registerDataTransferHandlers(ctx)
   registerCodexRemoteHandlers(ctx)
+  registerCodexRemoteWeixinHandlers(ctx)
 
   return () => {
     disposeConfig()

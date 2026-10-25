@@ -3322,6 +3322,63 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
   }
 })
 
+// 微信那一块：二维码由主进程画好给过来；手机上要输数字时停下来等输，输错了当场说；登录好了卡上换成机器人编号。
+test('the WeChat block logs in through the QR dialog, asks for the number on the phone and then shows the bot', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const block = card.getByTestId('settings-remote-weixin')
+    await block.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
+    await block.getByText('实验功能', { exact: true }).waitFor()
+    await block.getByText('先在上面用微信扫码登录。', { exact: true }).waitFor()
+    assert.equal(await card.getByRole('switch', { name: '打开微信遥控', exact: true }).isDisabled(), true)
+    assert.equal(await card.getByRole('button', { name: '退出微信登录', exact: true }).count(), 0)
+    await block.getByTestId('settings-remote-weixin-login-start').click()
+    const dialog = page.getByTestId('settings-remote-weixin-dialog')
+    const qr = dialog.getByRole('img', { name: '微信登录二维码', exact: true })
+    await qr.waitFor()
+    assert.match(await qr.getAttribute('src'), /^data:image\/png;base64,/)
+    await dialog.getByText('打开手机微信「扫一扫」，扫完在手机上点确认。二维码 5 分钟内有效。', { exact: true }).waitFor()
+    await page.evaluate(() => window.remoteHarness.weixinScanned())
+    await dialog.getByText('手机微信上显示了一串数字，请输在下面', { exact: true }).waitFor()
+    assert.equal(await qr.count(), 0)
+    const code = dialog.getByTestId('settings-remote-weixin-code')
+    await code.fill('1111')
+    await dialog.getByTestId('settings-remote-weixin-code-submit').click()
+    await dialog.getByText('数字不对，请对照手机上的数字重新输入', { exact: true }).waitFor()
+    await code.fill('2580')
+    await dialog.getByTestId('settings-remote-weixin-code-submit').click()
+    await dialog.getByText('微信登录好了。下一步点「开始配对」，在微信的 ClawBot 对话里发配对码。', { exact: true }).waitFor()
+    await block.getByText('已登录：ClawBot decb', { exact: true }).waitFor()
+    await dialog.getByTestId('settings-remote-weixin-close').click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal(await block.getByTestId('settings-remote-weixin-login-start').innerText(), '重新扫码')
+    await card.getByRole('button', { name: '退出微信登录', exact: true }).waitFor()
+    // 重新扫码又不扫了：点取消，主进程那边的这次登录一起收掉。
+    await block.getByTestId('settings-remote-weixin-login-start').click()
+    await dialog.getByRole('img', { name: '微信登录二维码', exact: true }).waitFor()
+    await dialog.getByTestId('settings-remote-weixin-cancel').click()
+    await dialog.waitFor({ state: 'detached' })
+    const recorded = await calls(page)
+    assert.deepEqual(
+      recorded.filter((call) => call.name.startsWith('remote-weixin')).map((call) => [call.name, call.args ?? null]),
+      [
+        ['remote-weixin-login-start', null],
+        ['remote-weixin-login-poll', null],
+        ['remote-weixin-login-poll', '1111'],
+        ['remote-weixin-login-poll', '2580'],
+        ['remote-weixin-login-poll', null],
+        ['remote-weixin-login-start', null],
+        ['remote-weixin-login-poll', null],
+        ['remote-weixin-login-cancel', '0f8fad5b-d9cb-469f-a165-70867728950e'],
+      ],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
   const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
   try {

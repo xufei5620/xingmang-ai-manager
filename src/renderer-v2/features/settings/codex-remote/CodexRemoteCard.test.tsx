@@ -8,7 +8,7 @@ function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteCh
   return { channel: 'feishu', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null, ...patch }
 }
 
-function snapshot(patch: Partial<CodexRemoteSnapshot> = {}, feishu: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteSnapshot {
+function snapshot(patch: Partial<CodexRemoteSnapshot> = {}, feishu: Partial<CodexRemoteChannelSnapshot> = {}, weixin: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteSnapshot {
   return {
     revision: 1,
     available: true,
@@ -16,7 +16,7 @@ function snapshot(patch: Partial<CodexRemoteSnapshot> = {}, feishu: Partial<Code
     workspaceDirectory: null,
     task: 'idle',
     pendingApprovals: 0,
-    channels: { feishu: channel(feishu) },
+    channels: { feishu: channel(feishu), weixin: channel({ channel: 'weixin', ...weixin }) },
     ...patch,
   }
 }
@@ -83,6 +83,18 @@ describe('codex remote card', () => {
     expect(markup).toContain('星芒正以管理员身份运行。')
     expect(switchMarkup(markup)).toContain('disabled=""')
     expect(markup).toMatch(/data-testid="settings-remote-workspace" disabled=""/)
+  })
+
+  it('puts the WeChat block after Feishu, marked experimental, with its own scan and logout', () => {
+    const before = render(snapshot())
+    expect(before.indexOf('data-testid="settings-remote-weixin"')).toBeGreaterThan(before.indexOf('data-testid="settings-remote-feishu"'))
+    expect(before).toMatch(/<h3>微信<\/h3><span[^>]*>实验功能<\/span>/)
+    expect(before).toContain('先在上面用微信扫码登录。')
+    expect(before).not.toContain('退出微信登录')
+    const after = render(snapshot({ workspaceDirectory: '~/projects/demo' }, {}, { hasCredential: true, accountLabel: 'ClawBot decb', enabled: true, status: { state: 'connected' }, pairing: { code: '482915', expiresAt: 1 } }))
+    expect(after).toContain('已登录：ClawBot decb')
+    expect(after).toContain('aria-label="退出微信登录"')
+    expect(after).toContain('在微信的 ClawBot 对话里发送这 6 位数字。10 分钟内有效。')
   })
 
   it('warns when the credentials only last until the manager closes', () => {

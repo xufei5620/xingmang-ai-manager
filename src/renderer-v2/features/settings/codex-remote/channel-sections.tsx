@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
 import { FeishuRemoteSection } from './FeishuRemoteSection'
+import { WeixinRemoteSection } from './WeixinRemoteSection'
 
 /**
  * 每个渠道「登录或填凭据」那一块拿到的东西。操作一律交给 run：和卡上别的按钮共用一把锁、一条红条，
@@ -38,5 +39,12 @@ export const remoteChannelSections: Record<RemoteChannelId, RemoteChannelSection
     credentialHint: '先在上面填好飞书应用。',
     pairingHint: '在飞书里打开你建的机器人，私聊发这 6 位数字。',
     Section: FeishuRemoteSection,
+  },
+  weixin: {
+    title: '微信',
+    experimental: true,
+    credentialHint: '先在上面用微信扫码登录。',
+    pairingHint: '在微信的 ClawBot 对话里发送这 6 位数字。',
+    Section: WeixinRemoteSection,
   },
 }

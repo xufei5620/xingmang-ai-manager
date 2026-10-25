@@ -4,6 +4,7 @@ import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from 
 import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
+import type { WeixinLoginPollInput, WeixinLoginSnapshot } from './codex-remote-weixin-login-state'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 export type { StaleProxyClearResult } from './stale-proxy-environment'
@@ -1006,6 +1007,13 @@ export interface XingmangInvokeContract {
   inspectBackup: IpcInvokeDefinition<'backups:inspect', [id: string], ConfigBackupPreview>
   restoreBackup: IpcInvokeDefinition<'backups:restore', [id: string], ConfigRestoreResult>
   deleteBackup: IpcInvokeDefinition<'backups:delete', [id: string], void>
+  /**
+   * 手机遥控 Codex 的微信扫码登录。二维码由主进程画成图片给过来，登录链接和机器人令牌都不过
+   * IPC（I3）；令牌直接进底座的加密凭据存储。poll 等一轮长轮询（最多四十来秒）。
+   */
+  startWeixinRemoteLogin: IpcInvokeDefinition<'codex-remote:weixin-login-start', [], WeixinLoginSnapshot>
+  pollWeixinRemoteLogin: IpcInvokeDefinition<'codex-remote:weixin-login-poll', [input: WeixinLoginPollInput], WeixinLoginSnapshot>
+  cancelWeixinRemoteLogin: IpcInvokeDefinition<'codex-remote:weixin-login-cancel', [loginId: string], void>
   listMcpServers: IpcInvokeDefinition<'mcp:list', [], McpServer[]>
   addMcpServer: IpcInvokeDefinition<'mcp:add', [input: McpCreateInput], McpServer[]>
   removeMcpServer: IpcInvokeDefinition<'mcp:remove', [name: string], McpServer[]>
@@ -1453,6 +1461,9 @@ export const ipcInvokeChannels = {
   inspectBackup: 'backups:inspect',
   restoreBackup: 'backups:restore',
   deleteBackup: 'backups:delete',
+  startWeixinRemoteLogin: 'codex-remote:weixin-login-start',
+  pollWeixinRemoteLogin: 'codex-remote:weixin-login-poll',
+  cancelWeixinRemoteLogin: 'codex-remote:weixin-login-cancel',
   listMcpServers: 'mcp:list',
   addMcpServer: 'mcp:add',
   removeMcpServer: 'mcp:remove',
