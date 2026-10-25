@@ -2250,8 +2250,9 @@ if (!hasSingleInstanceLock) {
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'
-        // 挂在隐藏窗口上的框用户看不见：窗口缩着时先叫出来，点了「稍后再说」再缩回去。
-        const wasHidden = !mainWindow.isVisible() || mainWindow.isMinimized()
+        // 挂在隐藏窗口上的框用户看不见：窗口缩着时先叫出来，点了「稍后再说」再照原样缩回去。
+        const wasMinimized = mainWindow.isMinimized()
+        const wasHidden = !wasMinimized && !mainWindow.isVisible()
         showMainWindow()
         if (process.platform === 'darwin') app.focus({ steal: true })
         const result = await dialog.showMessageBox(mainWindow, {
@@ -2261,10 +2262,13 @@ if (!hasSingleInstanceLock) {
           defaultId: 0, cancelId: 0, noLink: true, signal,
         })
         if (result.response === 1 && !signal.aborted) return 'install'
-        if (wasHidden && !mainWindow.isDestroyed()) {
+        if (mainWindow.isDestroyed()) return 'later'
+        if (wasMinimized) mainWindow.minimize()
+        if (wasHidden) {
           mainWindow.hide()
-          // 把前台还给刚才在用的程序，同后台装完重新拉起的那一次。
-          if (process.platform === 'darwin') app.hide()
+          // 把前台还给刚才在用的程序，同后台装完重新拉起的那一次。画布开着时不这么做：app.hide() 会把它也藏起来。
+          const othersVisible = BrowserWindow.getAllWindows().some((window) => window !== mainWindow && !window.isDestroyed() && window.isVisible())
+          if (process.platform === 'darwin' && !othersVisible) app.hide()
         }
         return 'later'
       },
