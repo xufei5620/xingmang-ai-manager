@@ -42,6 +42,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
+import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
@@ -2226,6 +2227,76 @@ if (!hasSingleInstanceLock) {
       if (!proceed) runtimeLog.log('info', 'updater', 'install.postponed', '还有工具在装，这次不装新版本，新版本留着')
       return proceed
     }
+    // 新版本在后台下好以后先跳框问要不要现在装，没装的 Mac 等电脑闲着时自己装（update-install-prompt.ts，#1380）。
+    const updateInstallPrompter = createUpdateInstallPrompter({
+      platform: process.platform,
+      getState: () => updaterService.getState(),
+      autoUpdate: () => updaterService.autoUpdateEnabled(),
+      downloadedAtLaunch: pendingUpdateAtLaunch.downloadedVersion,
+      standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
+      unattended: () => canInstallUnattended({
+        platform: process.platform,
+        installMethod: updaterService.getState().installMethod,
+        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
+      }),
+      elevated: () => windowsCliExecution.highIntegrity === true,
+      idleMs: () => powerMonitor.getSystemIdleTime() * 1_000,
+      locked: () => powerMonitor.getSystemIdleState(1) === 'locked',
+      // 画布、付款窗口开着（哪怕最小化了）就不在闲时重启：上面可能还有没保存的东西。
+      windowVisible: () => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && (window.isVisible() || window.isMinimized())),
+      busy: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+      toolsWorking: () => cliKeepAwake.tools().length > 0,
+      accelerationActive: () => acceleration?.hasPossibleSession() === true,
+      attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
+      ask: async (prompt, signal) => {
+        if (mainWindow.isDestroyed()) return 'later'
+        // 挂在隐藏窗口上的框用户看不见：窗口缩着时先叫出来，点了「稍后再说」再照原样缩回去。
+        const wasMinimized = mainWindow.isMinimized()
+        const wasHidden = !wasMinimized && !mainWindow.isVisible()
+        showMainWindow()
+        if (process.platform === 'darwin') app.focus({ steal: true })
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'question', title: prompt.title, message: prompt.message, detail: prompt.detail,
+          buttons: prompt.buttons,
+          // 回车、空格、Esc 都落在「稍后再说」上：客户在别处打字时按的回车不能把星芒关掉去装。
+          defaultId: 0, cancelId: 0, noLink: true, signal,
+        })
+        if (result.response === 1 && !signal.aborted) return 'install'
+        if (mainWindow.isDestroyed()) return 'later'
+        if (wasMinimized) mainWindow.minimize()
+        if (wasHidden) {
+          mainWindow.hide()
+          // 把前台还给刚才在用的程序，同后台装完重新拉起的那一次。画布开着时不这么做：app.hide() 会把它也藏起来。
+          const othersVisible = BrowserWindow.getAllWindows().some((window) => window !== mainWindow && !window.isDestroyed() && window.isVisible())
+          if (process.platform === 'darwin' && !othersVisible) app.hide()
+        }
+        return 'later'
+      },
+      // 与托盘「重启并安装」同一条路：还有工具在装时先问那一句。
+      installNow: async () => {
+        if (await confirmUpdateInstall?.() ?? true) updaterService.install()
+      },
+      // 照开机自启时的后台装办：先把「试过了」写稳，安装器把新版本拉起来时照旧待在后台（isRelaunchAfterBackgroundInstall）。
+      installWhileIdle: async (version) => {
+        pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version, backgroundInstall: { version, startedAt: Date.now() } }
+        await pendingUpdateStore.write(pendingUpdateRecord)
+        try {
+          updaterService.install()
+        } catch (cause) {
+          dropBackgroundInstall()
+          throw cause
+        }
+      },
+      log: (level, event, message, detail) => runtimeLog.log(level, 'updater', event, message, detail),
+    })
+    const unsubscribeUpdateInstallPrompt = updaterService.subscribe((state) => updateInstallPrompter.observe(state))
+    updateInstallPrompter.observe(updaterService.getState())
+    // 账号是不是管理员问出来之前不跳框，问出来再看一遍。
+    void updateAccountProbe.then(() => updateInstallPrompter.observe(updaterService.getState()), () => undefined)
+    quitCleanup.add('update-install-prompt', () => {
+      unsubscribeUpdateInstallPrompt()
+      updateInstallPrompter.dispose()
+    })
     receiveDeepLink = (raw) => {
       if (!deepLinkInbox.accept(raw)) return
       showMainWindow()
