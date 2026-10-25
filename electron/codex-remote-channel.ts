@@ -180,6 +180,10 @@ export interface CodexRemoteChannelSnapshot {
 export type CodexRemoteTaskState = 'idle' | 'starting' | 'running' | 'waiting-approval'
 
 export interface CodexRemoteSnapshot {
+  /**
+   * 每拼一次快照加一。操作的返回值和 state-changed 事件都是整份快照、到达先后不定，界面只收比手上新的那份。
+   */
+  revision: number
   /** 这台电脑现在能不能开遥控；不能时 unavailableReason 是上屏的原因（比如星芒以管理员身份运行）。 */
   available: boolean
   unavailableReason?: string

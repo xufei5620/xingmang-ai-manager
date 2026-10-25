@@ -45,6 +45,7 @@ import {
 import { shortcutTools } from '../../registry/tools'
 import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
+import { CodexRemoteCard } from './codex-remote/CodexRemoteCard'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
 import { ThemeCards, type ThemeCardValue } from '../app/ThemeCards'
@@ -522,6 +523,8 @@ export function SettingsPage({
         installedProviders={installedProviders}
       />
     ),
+    // 手机遥控 Codex：不读设置，自己向主进程要状态。
+    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
     version: (
       <VersionCard

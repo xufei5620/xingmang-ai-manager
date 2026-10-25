@@ -131,6 +131,7 @@ class FakeChannel implements RemoteChannelAdapter {
 }
 
 let messageCounter = 0
+const commandRequest = { threadId: 'th-1', turnId: 'tu-1', itemId: 'i1', startedAtMs: 0, environmentId: null, kind: 'command', command: 'npm test', cwd: '/tmp/x' }
 
 function text(peer: RemotePeer, body: string, extra: Partial<RemoteInbound> = {}): RemoteInbound {
   messageCounter += 1
@@ -149,7 +150,7 @@ interface Setup {
   unavailable: { reason: string | null }
 }
 
-async function setup(options: { workspace?: boolean; credential?: boolean } = {}): Promise<Setup> {
+async function setup(options: { workspace?: boolean; credential?: boolean; codexProblem?: string } = {}): Promise<Setup> {
   const root = tempRoot()
   const home = path.join(root, 'home')
   const workspace = path.join(home, 'projects', 'demo')
@@ -182,6 +183,7 @@ async function setup(options: { workspace?: boolean; credential?: boolean } = {}
     },
     readCodexSecrets: async () => [apiKey],
     inspectAvailability: () => unavailable.reason,
+    checkCodexReady: async () => options.codexProblem ?? null,
     onStateChanged: (snapshot) => { snapshots.push(snapshot) },
   })
   return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, unavailable }
@@ -276,6 +278,22 @@ describe('codex-remote-service enabling', () => {
     expect((await elevated.service.snapshot()).available).toBe(false)
   })
 
+  it('refuses to start when Codex is not installed on this computer', async () => {
+    const s = await setup({ codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('这台电脑还没装 Codex 命令行工具')
+    expect(s.channels).toHaveLength(0)
+  })
+
+  it('numbers every snapshot so the window can keep the newest one', async () => {
+    const s = await setup()
+    const first = await s.service.snapshot()
+    await s.service.setChannelEnabled('feishu', true)
+    const last = await s.service.snapshot()
+    expect(last.revision).toBeGreaterThan(first.revision)
+    const revisions = s.snapshots.map((snapshot) => snapshot.revision)
+    expect(revisions).toEqual([...revisions].sort((left, right) => left - right))
+  })
+
   it('does not remember the switch across restarts', async () => {
     const s = await setup()
     await s.service.setChannelEnabled('feishu', true)
@@ -318,6 +336,22 @@ describe('codex-remote-service pairing', () => {
     channel.handlers?.onInbound(text(mallory, '000042'))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
+  })
+
+  it('drops the code by itself after ten minutes and tells the window', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    await s.service.startPairing('feishu')
+    const shown = s.snapshots.length
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.waitFor(() => expect(s.snapshots.length).toBeGreaterThan(shown))
+    expect(s.snapshots.at(-1)?.channels.feishu.pairing).toBeNull()
+    // A correct code that arrives late binds nobody.
+    s.channels[0].handlers?.onInbound(text(alice, '000042'))
+    await vi.advanceTimersByTimeAsync(20)
+    expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
+    expect(s.channels[0].sent).toHaveLength(0)
   })
 
   it('drops group messages and messages from before the channel opened', async () => {
@@ -404,8 +438,6 @@ describe('codex-remote-service turns', () => {
 })
 
 describe('codex-remote-service approvals', () => {
-  const commandRequest = { threadId: 'th-1', turnId: 'tu-1', itemId: 'i1', startedAtMs: 0, environmentId: null, kind: 'command', command: 'npm test', cwd: '/tmp/x' }
-
   it('asks the bound person and answers Codex with plain accept or decline', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -519,6 +551,24 @@ describe('codex-remote-service lifecycle', () => {
     await s.service.saveChannelCredential('feishu', null, null)
     const snapshot = await s.service.snapshot()
     expect(snapshot.channels.feishu).toMatchObject({ hasCredential: false, accountLabel: null, enabled: false })
+  })
+
+  it('drops what is waiting, stops the channel and Codex, and stays off when the manager quits', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    void codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await s.service.startPairing('feishu')
+    s.service.dispose()
+    // Codex itself is killed, so the waiting command can never run; nothing was ever accepted.
+    await vi.waitFor(() => expect(codex.kills.length).toBeGreaterThan(0))
+    await vi.waitFor(() => expect(channel.stopped).toBeGreaterThan(0))
+    expect(codex.written.some((message) => JSON.stringify(message.result ?? null).includes('accept'))).toBe(false)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot).toMatchObject({ pendingApprovals: 0, task: 'idle' })
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: false, pairing: null })
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('星芒正在退出。')
   })
 
   it('hands channels the same dependencies the login flow uses', async () => {

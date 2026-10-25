@@ -3261,6 +3261,89 @@ test('the settings search lists matching rows in place, links back to their grou
   }
 })
 
+// 手机遥控 Codex：先选文件夹、填飞书应用，打开遥控，再配对；App Secret 不进记录，填错了当场说。
+test('the phone remote card walks through folder, Feishu app, switch and pairing, and never records the app secret', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-feishu-state').getByText('没打开', { exact: true }).waitFor()
+    const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
+    assert.equal(await toggle.isDisabled(), true)
+    await card.getByText('先在上面填好飞书应用。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-workspace').click()
+    await card.getByText('~/projects/demo', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '换一个')
+    await card.getByTestId('settings-remote-feishu-app-id').fill('cli_a1b2c3d4e5')
+    await card.getByTestId('settings-remote-feishu-app-secret').fill('wrong-secret')
+    await card.getByTestId('settings-remote-feishu-save').click()
+    await card.getByRole('alert').getByText('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。').waitFor()
+    // 填错了框里的字留着，改一下再存就行。
+    assert.equal(await card.getByTestId('settings-remote-feishu-app-secret').inputValue(), 'wrong-secret')
+    await card.getByTestId('settings-remote-feishu-app-secret').fill('rightSecret123')
+    await card.getByTestId('settings-remote-feishu-save').click()
+    await card.getByTestId('settings-remote-feishu-app').getByText('App ID：cli_a1b2c3d4e5', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-form').count(), 0)
+    assert.equal(await card.getByRole('alert').count(), 0)
+    await card.getByText('还没配对。打开遥控后才能配对。', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-pair').isDisabled(), true)
+    await toggle.click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByText('Codex 空闲', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-pair').click()
+    await card.getByTestId('settings-remote-feishu-code').getByText('482915', { exact: true }).waitFor()
+    await card.getByText('在飞书里打开你建的机器人，私聊发这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
+    // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定的人。
+    await page.evaluate(() => window.remoteHarness.pair('小明'))
+    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
+    await card.getByTestId('settings-remote-feishu-unbind').click()
+    await card.getByText('还没配对。点「开始配对」，把配对码私聊发给机器人。', { exact: true }).waitFor()
+    const recorded = await calls(page)
+    assert.deepEqual(
+      recorded.filter((call) => call.name.startsWith('remote-')).map((call) => [call.name, call.args ?? null]),
+      [
+        ['remote-workspace', null],
+        ['remote-feishu-save', 'cli_a1b2c3d4e5'],
+        ['remote-feishu-save', 'cli_a1b2c3d4e5'],
+        ['remote-enable', ['feishu', true]],
+        ['remote-pair', 'feishu'],
+        ['remote-unbind', 'feishu'],
+      ],
+    )
+    assert.equal(JSON.stringify(recorded).includes('rightSecret123'), false)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
+  const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。').waitFor()
+    assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), true)
+    assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), true)
+    assert.equal(await card.getByTestId('settings-remote-feishu-edit').isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+})
+
+test('searching the settings for Feishu finds the phone remote card', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByTestId('settings-search').fill('飞书')
+    const results = page.getByTestId('settings-search-results')
+    await results.waitFor()
+    assert.deepEqual(await results.locator('[data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), ['codex-remote'])
+    await results.getByTestId('settings-remote-card').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 test('restoring the default appearance resets the theme, contrast, scale, large text and motion together', async () => {
   const page = await fixture('page=settings&system=1')
   try {

@@ -248,7 +248,7 @@ interface ChannelRuntime {
   status: RemoteChannelStatus
   enabled: boolean
   startedAt: number
-  pairing: { code: string; expiresAt: number; failures: number } | null
+  pairing: { code: string; expiresAt: number; failures: number; timer: NodeJS.Timeout } | null
   peer: RemotePeer | null
   replyContext?: string
   seen: Set<string>
@@ -294,6 +294,7 @@ export class CodexRemoteService {
   private readonly pending = new Map<string, PendingApproval>()
   private readonly fileChanges = new Map<string, string[]>()
   private nextApprovalId = 1
+  private revision = 0
   private codex: CodexAppServerClient | null = null
   private codexStarting: Promise<CodexAppServerClient> | null = null
   private secrets: readonly string[] = []
@@ -336,7 +337,7 @@ export class CodexRemoteService {
       const runtime = this.runtimes[id]
       const stored = settings.channels[id]
       const now = this.now()
-      if (runtime.pairing && runtime.pairing.expiresAt <= now) runtime.pairing = null
+      if (runtime.pairing && runtime.pairing.expiresAt <= now) this.clearPairing(runtime)
       channels[id] = {
         channel: id,
         hasCredential: (await this.options.store.readCredential(id)) !== null,
@@ -357,7 +358,9 @@ export class CodexRemoteService {
       if (waiting > 0) task = 'waiting-approval'
       else if (runtime.turn && task !== 'waiting-approval') task = runtime.turn.id ? 'running' : 'starting'
     }
+    this.revision += 1
     return {
+      revision: this.revision,
       available: unavailableReason === null,
       ...(unavailableReason ? { unavailableReason } : {}),
       credentialPersistence: this.options.store.credentialPersistence(),
@@ -406,18 +409,32 @@ export class CodexRemoteService {
   async startPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')
+    this.clearPairing(runtime)
+    // 到点自己收掉，界面上的配对码跟着消失，不用界面自己掐表。
+    const timer = setTimeout(() => {
+      if (runtime.pairing?.timer !== timer) return
+      runtime.pairing = null
+      this.emitSoon()
+    }, pairingTtlMs)
+    timer.unref?.()
     runtime.pairing = {
       code: generatePairingCode(this.options.randomInt ?? cryptoRandomInt),
       expiresAt: this.now() + pairingTtlMs,
       failures: 0,
+      timer,
     }
     this.options.log('info', 'remote.pairing-started', { channel })
     return this.emit()
   }
 
   async cancelPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
-    this.runtimes[channel].pairing = null
+    this.clearPairing(this.runtimes[channel])
     return this.emit()
+  }
+
+  private clearPairing(runtime: ChannelRuntime): void {
+    if (runtime.pairing) clearTimeout(runtime.pairing.timer)
+    runtime.pairing = null
   }
 
   async unbind(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
@@ -473,7 +490,7 @@ export class CodexRemoteService {
     for (const id of remoteChannelIds) {
       const runtime = this.runtimes[id]
       runtime.enabled = false
-      runtime.pairing = null
+      this.clearPairing(runtime)
       runtime.turn = null
       if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
       runtime.idleTimer = null
@@ -547,7 +564,7 @@ export class CodexRemoteService {
   private async disableChannel(runtime: ChannelRuntime, farewell: string | null): Promise<void> {
     const wasEnabled = runtime.enabled
     runtime.enabled = false
-    runtime.pairing = null
+    this.clearPairing(runtime)
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
     runtime.idleTimer = null
     await this.abandonTurn(runtime)
@@ -740,7 +757,7 @@ export class CodexRemoteService {
     // 没在配对、或者不是配对码：不回话，免得别人拿消息探出这里有个遥控。
     if (!pairing || message.kind !== 'text') return
     if (pairing.expiresAt <= this.now()) {
-      runtime.pairing = null
+      this.clearPairing(runtime)
       this.emitSoon()
       return
     }
@@ -750,13 +767,13 @@ export class CodexRemoteService {
       pairing.failures += 1
       this.options.log('warn', 'remote.pairing-mismatch', { channel: runtime.id, failures: pairing.failures })
       if (pairing.failures >= maxPairingFailures) {
-        runtime.pairing = null
+        this.clearPairing(runtime)
         this.options.log('warn', 'remote.pairing-locked', { channel: runtime.id })
         this.emitSoon()
       }
       return
     }
-    runtime.pairing = null
+    this.clearPairing(runtime)
     await this.forgetPeer(runtime)
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[runtime.id] ?? emptyChannelSettings()
