@@ -177,9 +177,9 @@
 
 ## features/chat/ 桌面聊天（App 懒加载）
 - `features/chat/README.md` — 聊天页约定：同账号内只藏不卸、换账号按 scope 重建并取消旧请求；记录存主进程文件，localStorage 只作旧版迁移来源；写盘前剥掉凭据与运行时负载。
-- `features/chat/ChatPage.tsx` — 聊天页：会话栏、消息区、输入框（模式、分组和模型、画图选项、加图片）；等主进程把记录读回来才显示，避免空状态抢先自动保存覆盖记录。
-- `features/chat/useChatController.ts` — 聊天控制器：分组准备、发送/停止/重试、编辑重发、图片生成与取消、断网后重发；后台刷新只动元数据，不换用户的模型和草稿、不签 Key、不悄悄替换被吊销的分组。
-- `features/chat/state.ts` — 会话与消息的数据结构和纯操作：默认分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
+- `features/chat/ChatPage.tsx` — 聊天页：会话栏、消息区、输入框（模式、按厂商列全部分组模型的模型菜单、画图选项、加图片）；等主进程把记录读回来才显示，避免空状态抢先自动保存覆盖记录。
+- `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
+- `features/chat/state.ts` — 会话与消息的数据结构和纯操作：全部分组的模型表与厂商分节（`buildChatCatalog` / `chatModelVendor`）、同一模型几个分组都有时挑哪个计费（`pickChatGroup`）、记着的模型怎么落定（`settleChatModel`）、推荐分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
 - `features/chat/storage.ts` — 聊天记录读写：经主进程按对话分文件写盘、每次只重写改过的；写盘前剥掉 `sk-`、`Bearer`、`api_key=` 与 `blob:`、内联 base64（I13）；旧 localStorage 记录只读迁移，文件里有了才删旧副本。
 - `features/chat/transfer.ts` — 「搬到新电脑」里聊天记录那一半：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
 - `features/chat/api.ts` — 聊天 IPC 的封装；只复用 `electron/ai-chat-protocol` 里无 Node 依赖的模型能力与请求校验函数，不改协议。

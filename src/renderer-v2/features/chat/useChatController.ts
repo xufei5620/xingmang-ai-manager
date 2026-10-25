@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { platformApi } from '../../platform-api'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, planTurn, resolveChatGroup, resolveDefaultChatModel, removeDraftImage, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, saveConversation, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation } from './state'
 import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -15,12 +15,15 @@ interface PendingRequest { conversationId: string; assistantId: string; mode: Ch
 
 export function useChatController(api: ChatApi, scope: string, initial: LoadedChatHistory, active = true) {
   const [writer] = useState(() => createHistoryWriter(api, initial.saved, initial.afterFirstSave))
+  const site: ChatSite = /^(api-account|solov-api):/.test(scope) ? 'solov-api' : 'solov'
   const [state, setState] = useState(initial.state)
   const [groups, setGroups] = useState<AiChatGroupSummary[]>([])
   const [groupLoading, setGroupLoading] = useState(false)
   const [groupError, setGroupError] = useState('')
   const [groupsLoaded, setGroupsLoaded] = useState(false)
   const [preparations, setPreparations] = useState<Record<string, GroupPreparation>>({})
+  // 落定模型要在同一拍里看到最新的准备结果，state 赶不上，另记一份。
+  const preparationsRef = useRef<Record<string, GroupPreparation>>({})
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。现在聊的内容不会保存，关掉软件就没了。` : '')
@@ -49,32 +52,68 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     stateRef.current = next
     setState(next)
   }
+  const setPreparation = (group: string, preparation: GroupPreparation) => {
+    preparationsRef.current = { ...preparationsRef.current, [group]: preparation }
+    setPreparations(preparationsRef.current)
+  }
+  // 菜单里只选模型（yoyo 10-25）：每准备完一个分组，就把各对话记着的模型按全部分组的模型表落定一次，
+  // 给它挑一个有这个模型的分组计费。正在回答的不动；当前这段对话因为原分组没了换了计费分组，说一句。
+  // 后台刷新（keepMissing）只换计费分组，模型哪儿都没有了就留着，页面上让用户自己换。
+  const settleConversations = (keepMissing = false) => {
+    const groups = groupsRef.current, prepared = preparationsRef.current
+    const context = { pending: pendingChatGroups(groups, prepared), groups, site, keepMissing }
+    const catalogs = { text: buildChatCatalog(groups, prepared, 'text'), image: buildChatCatalog(groups, prepared, 'image') }
+    const activeId = activeConversation(stateRef.current).id
+    const moved: { from?: string; to?: string } = {}
+    const settle = (conversation: Conversation) => {
+      if (isGenerating(conversation)) return conversation
+      const next = settleChatModel(conversation.settings, catalogs[conversation.settings.mode], context)
+      if (next.group === conversation.settings.group && next.model === conversation.settings.model) return conversation
+      if (conversation.id === activeId && conversation.settings.group && next.model === conversation.settings.model && !groups.some((group) => group.name === conversation.settings.group)) { moved.from = conversation.settings.group; moved.to = next.group }
+      return { ...conversation, settings: normalizeModel({ ...conversation.settings, ...next }) }
+    }
+    commit((current) => ({ ...current, conversations: current.conversations.map(settle), draftConversation: settle(current.draftConversation) }))
+    if (moved.from && moved.to) setNotice(`原来的分组「${moved.from}」已不可用，已换成「${moved.to}」，之后按「${moved.to}」分组计费。`)
+  }
   // 交回准备好的模型；分组不可用、准备失败或被更新的准备盖掉时是 null。
-  const prepareGroup = async (group: string): Promise<string[] | null> => {
-    if (!group || !groupsRef.current.some((item) => item.name === group)) return null
+  const prepareGroup = async (group: string, keepMissing = false): Promise<string[] | null> => {
+    if (!group || !groupsRef.current.some((item) => item.name === group)) {
+      // 排着队时分组没了：去掉排队时记的「正在准备」，它以后再出现还会准备。
+      if (preparationsRef.current[group]?.phase === 'loading') {
+        const { [group]: _queued, ...rest } = preparationsRef.current
+        preparationsRef.current = rest
+        setPreparations(rest)
+      }
+      return null
+    }
     const owner = epoch.capture()
     const attempt = (prepareAttempts.current.get(group) ?? 0) + 1
     prepareAttempts.current.set(group, attempt)
-    setPreparations((current) => ({ ...current, [group]: { phase: 'loading', models: current[group]?.models ?? [] } }))
+    setPreparation(group, { phase: 'loading', models: preparationsRef.current[group]?.models ?? [] })
     try {
       const prepared = await api.prepareGroup(group)
       if (!alive.current || !owner() || prepareAttempts.current.get(group) !== attempt) return null
       if (prepared.group !== group) throw new Error('所选分组与返回分组不一致')
       const models = [...new Set(prepared.models)].filter((model) => { try { const cap = inspectModel(model); return cap.available && !cap.hidden && cap.kind !== 'video' } catch { return false } })
-      setPreparations((current) => ({ ...current, [group]: { phase: 'ready', models, warning: prepared.storageWarning ? '分组已准备，但本机密钥缓存未能保存，下次可能需要重新准备' : undefined } }))
-      const updateModel = (conversation: Conversation) => {
-        if (conversation.settings.group !== group || isGenerating(conversation)) return conversation
-        const mode = conversation.settings.mode
-        const choices = models.filter((model) => inspectModel(model).kind === (mode === 'image' ? 'image' : 'chat'))
-        const model = resolveDefaultChatModel(mode, choices, conversation.settings.model)
-        return { ...conversation, settings: normalizeModel({ ...conversation.settings, model }) }
-      }
-      commit((current) => ({ ...current, conversations: current.conversations.map(updateModel), draftConversation: updateModel(current.draftConversation) }))
+      setPreparation(group, { phase: 'ready', models, warning: prepared.storageWarning ? '分组已准备，但本机密钥缓存未能保存，下次可能需要重新准备' : undefined })
+      settleConversations(keepMissing)
       return models
     } catch (reason) {
-      if (alive.current && owner() && prepareAttempts.current.get(group) === attempt) setPreparations((current) => ({ ...current, [group]: { phase: 'error', models: [], error: chatErrorMessage(reason) } }))
+      if (alive.current && owner() && prepareAttempts.current.get(group) === attempt) {
+        setPreparation(group, { phase: 'error', models: [], error: chatErrorMessage(reason) })
+        settleConversations(keepMissing)
+      }
       return null
     }
+  }
+  // 打开聊天、点「刷新模型」时每个分组都准备一遍：菜单要列出全部分组的模型。还没有对话密钥的分组这时签一把，
+  // 之后一直复用（yoyo 10-25 知道并同意）。一次最多同时准备三个。
+  const prepareAllGroups = async (groups: readonly AiChatGroupSummary[], keepMissing = false): Promise<void> => {
+    const pending = groups.map((group) => group.name)
+    // 排着队的也先记成「正在准备」：菜单知道还没读完，后台刷新也不会把它再排一遍。
+    for (const group of pending) setPreparation(group, { phase: 'loading', models: preparationsRef.current[group]?.models ?? [] })
+    const worker = async () => { for (let group = pending.shift(); group !== undefined; group = pending.shift()) await prepareGroup(group, keepMissing) }
+    await Promise.all([worker(), worker(), worker()])
   }
   const refreshGroups = (): Promise<boolean> => {
     if (groupFlight.current?.epoch()) return groupFlight.current.promise
@@ -86,20 +125,15 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
         if (!alive.current || !owner() || !attempt()) return false
         groupsRef.current = result
         setGroups(result); setGroupsLoaded(true)
-        // Background refresh is metadata-only. It must not reset a user's
-        // model/draft, mint keys, or silently replace a revoked group.
+        // A background refresh never prepares a group again. Only a group the
+        // account did not have before is prepared, once, so the menu can list
+        // its models; that is where its chat key gets minted.
         if (!groupsInitialized.current) {
           groupsInitialized.current = true
-          const conversation = activeConversation(stateRef.current)
-          const remembered = initial.exists || stateRef.current.activeId !== null || Boolean(conversation.settings.model)
-          const previous = remembered ? conversation.settings.group : ''
-          // 记住的分组站上已经没了（xm 站 10-16 删过老分组名，#1059）：退回推荐分组，并说一句扣费分组也换了。
-          // 一个分组都读不到时照旧留着原来的，不把它清掉。
-          const resolved = resolveChatGroup(result, previous, /^(api-account|solov-api):/.test(scope) ? 'solov-api' : 'solov')
-          const selected = previous && !resolved ? previous : resolved
-          if (selected !== conversation.settings.group) commit((current) => changeConversation(current, conversation.id, (item) => ({ ...item, settings: { ...item.settings, group: selected, model: '' } })))
-          if (previous && selected !== previous) setNotice(`原来的分组「${previous}」已不可用，已换成「${selected}」，之后按「${selected}」分组计费。`)
-          if (selected) void prepareGroup(selected)
+          void prepareAllGroups(result)
+        } else {
+          settleConversations(true)
+          void prepareAllGroups(result.filter((group) => !preparationsRef.current[group.name]), true)
         }
         return true
       } catch (reason) {
@@ -113,11 +147,12 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     groupFlight.current = { epoch: owner, promise }
     return promise
   }
-  // 菜单底部的「刷新分组和模型」：交回刷新后当前分组的模型，没刷成（或中途换了分组）是 null。
-  const refreshGroupsAndModels = async (): Promise<string[] | null> => {
-    const group = activeConversation(stateRef.current).settings.group
-    if (await refreshGroups() && alive.current && activeConversation(stateRef.current).settings.group === group) return prepareGroup(group)
-    return null
+  // 菜单底部的「刷新模型」：分组和每个分组的模型都重读。交回这种模式下现在能选的模型，分组都没读到是 null。
+  const refreshModels = async (): Promise<string[] | null> => {
+    if (!await refreshGroups() || !alive.current) return null
+    await prepareAllGroups(groupsRef.current)
+    if (!alive.current) return null
+    return buildChatCatalog(groupsRef.current, preparationsRef.current, activeConversation(stateRef.current).settings.mode).map((entry) => entry.model)
   }
   const refreshActions = useRef({ refreshGroups })
   refreshActions.current = { refreshGroups }
@@ -177,15 +212,19 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const conversation = activeConversation(state)
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }
   const changeSettings = (patch: Partial<ChatSettings>) => updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
-  const selectGroup = (group: string) => {
-    if (group === activeConversation(stateRef.current).settings.group || !groupsRef.current.some((item) => item.name === group)) return
-    changeSettings({ group, model: '' }); void prepareGroup(group)
+  // 选了哪个模型，就用有它的那个分组计费（同一个模型几个分组都有时按 pickChatGroup 的次序挑）。
+  const selectModel = (model: string) => {
+    const current = activeConversation(stateRef.current).settings
+    const entry = buildChatCatalog(groupsRef.current, preparationsRef.current, current.mode).find((item) => item.model === model)
+    if (!entry) return
+    const group = pickChatGroup(entry.groups, { current: current.group, mode: current.mode, groups: groupsRef.current, site })
+    updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, model, group }) }))
   }
-  const selectModel = (model: string) => updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, model }) }))
   const selectMode = (mode: ChatMode) => {
-    const current = activeConversation(stateRef.current)
-    const candidates = preparations[current.settings.group]?.models.filter((model) => inspectModel(model).kind === (mode === 'image' ? 'image' : 'chat')) ?? []
-    updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, mode, model: resolveDefaultChatModel(mode, candidates, item.settings.model) }) }))
+    const current = activeConversation(stateRef.current).settings
+    const groups = groupsRef.current, prepared = preparationsRef.current
+    const next = settleChatModel({ ...current, mode, model: '' }, buildChatCatalog(groups, prepared, mode), { pending: pendingChatGroups(groups, prepared), groups, site })
+    updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, mode, ...next }) }))
   }
   const openConversation = (id: string | null) => {
     commit((current) => ({ ...current, activeId: id }))
@@ -215,9 +254,9 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     try {
       const plan = planTurn(current, { prompt: options.prompt ?? current.draft, images: current.draftImages, requestId: createId(), assistantId: createId(), userMessageId: createId(), ...options })
       // 发送按钮灰着时 Enter 也不发，走到这里的是「编辑后重新发送」「重新生成」和断网横幅上的「重试」：按卡在哪一步说。
-      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError(!groupsLoaded && groupLoading ? '正在读取分组，读完再发送' : '所选分组已不可用，请选择可用分组后再发送'); return }
+      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError(!groupsLoaded && groupLoading ? '正在读取模型，读完再发送' : '这个模型现在用不了，请换一个模型再发送'); return }
       const prepared = preparations[plan.settings.group]
-      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '正在准备模型，准备好再发送' : prepared.phase === 'error' ? '模型没准备好，请先点「刷新分组和模型」再发送' : '请先选择分组和模型'); return }
+      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '正在准备模型，准备好再发送' : prepared.phase === 'error' ? '模型没准备好，请先点模型菜单里的「刷新模型」再发送' : '请先选择模型'); return }
       const textInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, messages: plan.messages, parameters: plan.settings.parameters }
       const capability = inspectModel(plan.settings.model)
       const imageInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, prompt: plan.prompt, size: plan.settings.size, quality: capability.kind === 'image' && capability.qualities.length ? plan.settings.quality : undefined, imageResolution: plan.settings.imageResolution }
@@ -340,7 +379,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
   // 以前的记录没读出来：这一回不往本机写，免得空记录盖掉原文件；页面上给「重新读取」。
   const historyUnreadable = Boolean(initial.warning)
-  return { attaching, pickImages, pasteImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
+  return { site, attaching, pickImages, pasteImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {
