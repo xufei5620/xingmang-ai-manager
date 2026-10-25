@@ -139,6 +139,14 @@ export class AiVideoAssetStore {
     return this.storeBytes(userId, bytes, metadata)
   }
 
+  /** 视频剪辑页在本机拼好的成片：没有服务端任务，存法和出的片段一样。 */
+  async storeComposed(userId: number, bytes: Buffer): Promise<AiStoredVideoAsset> {
+    assertUserId(userId)
+    if (!Buffer.isBuffer(bytes) || bytes.length > this.maximumVideoBytes) throw new Error('视频超过 512 MB 安全上限')
+    inspectMp4Video(bytes)
+    return this.storeBytes(userId, bytes, {})
+  }
+
   async storeLocalFile(userId: number, sourcePath: string): Promise<AiStoredVideoAsset> {
     assertUserId(userId)
     if (!path.isAbsolute(sourcePath) || sourcePath.includes('\0')) throw new Error('本地视频路径无效')

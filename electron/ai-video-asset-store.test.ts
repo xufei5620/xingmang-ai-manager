@@ -70,6 +70,24 @@ describe('AiVideoAssetStore', () => {
     ])
   })
 
+  it('stores a film composed on this computer like a generated clip, without a task id', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-composed-'))
+    roots.push(outputRoot)
+    const store = new AiVideoAssetStore({ outputRoot })
+    const first = await store.storeComposed(7, mp4())
+    const second = await store.storeComposed(7, mp4())
+    expect(first).toMatchObject({ mimeType: 'video/mp4', width: 1920, height: 1080, durationSeconds: 5.25 })
+    expect(first).not.toHaveProperty('taskId')
+    // Each export is its own work, even when two exports happen to be identical.
+    expect(second.assetId).not.toBe(first.assetId)
+    await expect(store.readOwned(7, first.assetId)).resolves.toMatchObject({ bytes: mp4() })
+    await expect(store.resolveOwnedFilePath(7, first.assetId)).resolves.toMatch(new RegExp(`xingmang-${first.assetId}\\.mp4$`))
+    await expect(store.storeComposed(7, Buffer.from('<html>not a film</html>'))).rejects.toThrow('仅支持 MP4')
+    await expect(store.storeComposed(0, mp4())).rejects.toThrow('AI 视频账号标识格式错误')
+    const small = new AiVideoAssetStore({ outputRoot, maximumVideoBytes: 16 })
+    await expect(small.storeComposed(7, mp4())).rejects.toThrow('视频超过 512 MB 安全上限')
+  })
+
   it('imports an MP4 file idempotently without changing the source', async () => {
     const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-import-'))
     const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-source-'))
