@@ -63,6 +63,8 @@ const valueImportable = [
   'electron/system-certificate-trust',
   'electron/usage-date-range',
   'electron/versions',
+  // 视频剪辑「一句话出片」的分镜上限和读回答，主进程和剪辑页共用一份；文件本身什么都不 import。
+  'electron/video-studio-plan',
 ]
 const typeImportableOnly = [
   'electron/platform/contract',

@@ -42,6 +42,7 @@ export function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], re
   }
   if ((channel === 'chat-history:export-text' || channel === 'data-transfer:export') && result === null) return '已取消导出'
   if (channel === 'data-transfer:import' && result === null) return '已取消导入'
+  if (channel === 'video:save-as' && isRecord(result) && result.saved === false) return '已取消另存视频'
   if (channel === 'config:save' && provider) return `${provider} 配置已保存`
   if (channel === 'cli:install' && provider) return `${provider} 安装或更新已完成`
   if (channel === 'runtime:install-node') return 'Node.js LTS 自动安装完成'

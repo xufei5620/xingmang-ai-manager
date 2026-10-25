@@ -1621,6 +1621,7 @@ if (!hasSingleInstanceLock) {
         previous?.imageService.cancelAll()
         previous?.canvasImageService.cancelAll()
         previous?.videoService.cancelAll()
+        previous?.chatVideoService.cancelAll()
         previous?.canvasRuns.shutdown()
         paymentWindow.destroy()
         // 补设置那次还在本机看工具开没开的，不陪它等 PowerShell 跑完；叫停管到下面这段等完，
@@ -1629,6 +1630,7 @@ if (!hasSingleInstanceLock) {
         try {
           await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
             previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
+            previous.chatVideoService.whenIdle(),
             previous.canvasRuns.whenIdle()] : [])])
         } finally {
           resumeTemplateFill?.()
@@ -1646,6 +1648,7 @@ if (!hasSingleInstanceLock) {
           business.imageService.cancelAll()
           business.canvasImageService.cancelAll()
           business.videoService.cancelAll()
+          business.chatVideoService.cancelAll()
           business.canvasRuns.shutdown()
         }
         latestTrayBalance = null
@@ -1663,7 +1666,11 @@ if (!hasSingleInstanceLock) {
             await current.canvasRuns.initializeUser(userId)
             await current.canvasRuns.reconcileAssets(userId)
           }).catch((error) => runtimeLog.exception('canvas', 'runtime.initialize.failed', error))
-          if (siteId === 'solov') void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
+          if (siteId === 'solov') {
+            void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
+            // 对话页、视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
+            void current.chatVideoService.resumeUser(userId).catch((error) => runtimeLog.exception('ai-chat', 'video.resume.failed', error))
+          }
         }
       },
     })
@@ -1728,6 +1735,7 @@ if (!hasSingleInstanceLock) {
     const imageService = createRealmServiceDispatch(() => currentBusiness().imageService)
     const canvasImageService = createRealmServiceDispatch(() => currentBusiness().canvasImageService)
     const videoService = createRealmServiceDispatch(() => currentBusiness().videoService)
+    const chatVideoService = createRealmServiceDispatch(() => currentBusiness().chatVideoService)
     const canvasRuns = createRealmServiceDispatch(() => currentBusiness().canvasRuns)
     // Run subscriptions outlive a selected realm, so keep them attached to
     // every store, including stores created lazily after the initial render.
@@ -1982,6 +1990,8 @@ if (!hasSingleInstanceLock) {
       imageService,
       aiAssets: assetStore,
       chatAttachments,
+      videoService: chatVideoService,
+      videoAssets,
       chatHistory: chatHistoryStore,
       sessionsService,
       providerSessionsService,
@@ -2145,6 +2155,7 @@ if (!hasSingleInstanceLock) {
         business.imageService.cancelAll()
         business.canvasImageService.cancelAll()
         business.videoService.cancelAll()
+        business.chatVideoService.cancelAll()
         business.canvasRuns.shutdown()
       }
     })

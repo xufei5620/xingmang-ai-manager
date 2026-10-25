@@ -918,6 +918,20 @@ describe('AI chat time limits for long-thinking models', () => {
     hanging.dispose()
     stoppable.dispose()
   })
+
+  it('stops completeOnce requests on cancelAll, so an account switch does not wait for half an answer', async () => {
+    const stream = controlledSseResponse()
+    const fetchImpl = vi.fn<TestFetch>(async () => stream.response)
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+    const pending = service.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '分镜' }] })
+    const result = expect(pending).rejects.toThrow('已取消')
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+    stream.enqueue(reasoningFrame)
+    expect(service.cancelAll()).toBe(1)
+    await result
+    expect(service.cancelAll()).toBe(0)
+    service.dispose()
+  })
 })
 
 describe('AI chat attached images', () => {

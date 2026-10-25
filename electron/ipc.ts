@@ -26,6 +26,8 @@ import type { CliModelHints } from './cli-model-defaults'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
+import type { AiVideoAssetStore } from './ai-video-asset-store'
+import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
   RememberedAccountLogin,
@@ -75,6 +77,7 @@ import { registerAccountBillingHandlers } from './ipc/handlers/account-billing'
 import { registerAccountUsageHandlers } from './ipc/handlers/account-usage'
 import { registerAccountKeyHandlers } from './ipc/handlers/account-keys'
 import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
+import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
 import { registerCodexRemoteWeixinHandlers } from './ipc/handlers/codex-remote-weixin'
@@ -237,6 +240,9 @@ export interface IpcRegistrationOptions {
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
   chatAttachments?: ChatAttachmentService
+  // 对话页和视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
+  videoService?: Pick<AiVideoService, 'generate' | 'cancel' | 'cancelSender' | 'cancelAll'>
+  videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC
@@ -372,6 +378,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerAccountUsageHandlers(ctx)
   registerAccountKeyHandlers(ctx)
   registerAiChatHandlers(ctx)
+  registerAiVideoHandlers(ctx)
   registerDataTransferHandlers(ctx)
   registerCodexRemoteHandlers(ctx)
   registerCodexRemoteWeixinHandlers(ctx)
@@ -383,6 +390,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     unsubscribeUpdates()
     options.chatService?.dispose()
     options.imageService?.cancelAll()
+    options.videoService?.cancelAll()
     for (const channel of registeredChannels) ipcMain.removeHandler(channel)
   }
 }

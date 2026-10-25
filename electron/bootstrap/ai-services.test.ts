@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiAssetStore } from '../ai-asset-store'
 import type { RuntimeLogStore } from '../runtime-log'
-import { createRealmBusinesses, type RealmBusinessesOptions } from './ai-services'
+import { createGlobalVideoAssetWriter, createRealmBusinesses, type RealmBusinessesOptions } from './ai-services'
 
 vi.mock('electron', () => ({
   app: { isPackaged: false },
@@ -79,9 +79,45 @@ describe('realm businesses', () => {
 
   it('turns video generation away for the history account site only', async () => {
     const { ensureBusiness } = create()
-    await expect(ensureBusiness('solov-api').videoService.generate(1, {} as never)).rejects.toThrow('当前账号暂不支持视频生成')
-    await expect(ensureBusiness('solov-api').videoService.resumeVideoTask(1, 7, 'task')).rejects.toThrow('当前账号暂不支持视频生成')
-    expect(ensureBusiness('solov').videoService.generate).not.toBe(ensureBusiness('solov-api').videoService.generate)
+    for (const service of ['videoService', 'chatVideoService'] as const) {
+      await expect(ensureBusiness('solov-api')[service].generate(1, {} as never)).rejects.toThrow('当前账号暂不支持视频生成')
+      await expect(ensureBusiness('solov-api')[service].resumeVideoTask(1, 7, 'task')).rejects.toThrow('当前账号暂不支持视频生成')
+      expect(ensureBusiness('solov')[service].generate).not.toBe(ensureBusiness('solov-api')[service].generate)
+    }
+  })
+
+  // 画布那份按项目存，没选项目就在扣费前停下；主窗口出的视频没有项目，要的是另一份。
+  it('gives the main window its own video service that does not need a canvas project', () => {
+    const { ensureBusiness } = create()
+    const solov = ensureBusiness('solov')
+    expect(solov.chatVideoService).not.toBe(solov.videoService)
+  })
+
+  it('stores main-window clips in the global library and keeps a clip whose source note fails', async () => {
+    const stored = { assetId: 'a'.repeat(43) }
+    const images = { assertWritable: vi.fn(async () => undefined) }
+    const videos = { storeMp4: vi.fn(async () => stored) }
+    const media = { setSource: vi.fn(async () => { throw new Error('磁盘满了') }) }
+    const references = {
+      readImageDataUri: vi.fn(async () => 'data:image/png;base64,AA=='),
+      readMediaOwned: vi.fn(async () => ({ bytes: Buffer.from('clip') })),
+    }
+    const log = { log: vi.fn() }
+    const writer = createGlobalVideoAssetWriter({
+      images, videos, media, references, log,
+    } as unknown as Parameters<typeof createGlobalVideoAssetWriter>[0])
+
+    expect(writer).not.toHaveProperty('prepareProject')
+    await writer.assertWritable?.(7)
+    expect(images.assertWritable).toHaveBeenCalledWith(7)
+    const bytes = Buffer.from('mp4')
+    await expect(writer.storeMp4(7, bytes, { taskId: 'video_1', prompt: '雨夜的猫' })).resolves.toBe(stored)
+    expect(videos.storeMp4).toHaveBeenCalledWith(7, bytes, { taskId: 'video_1' })
+    expect(media.setSource).toHaveBeenCalledWith(7, stored.assetId, 'generated', '雨夜的猫')
+    expect(log.log).toHaveBeenCalledWith('warn', 'ai-chat', 'asset.source.persist.failed', expect.any(String),
+      expect.objectContaining({ userId: 7, assetId: stored.assetId, reason: '磁盘满了' }))
+    await writer.readImageDataUri(7, 'img')
+    expect(references.readImageDataUri).toHaveBeenCalledWith(7, 'img')
   })
 
   it('attaches a canvas run listener to every site, including sites built after it subscribed', () => {
