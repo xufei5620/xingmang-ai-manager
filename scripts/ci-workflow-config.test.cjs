@@ -1512,6 +1512,7 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/ui/browser-check.mjs',
   'src/renderer-v2/styles/contrast.browser-check.mjs',
   'src/renderer-v2/features/shell/keyboard.browser-check.mjs',
+  'src/renderer-v2/features/video-studio/browser-check.mjs',
   // Opens its pages through the harness rather than browser.newPage(), so the
   // scan below never saw it; it clicked straight after page.goto on a 7s action
   // default. Found by the Windows-shard check further down.

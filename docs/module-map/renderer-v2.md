@@ -188,6 +188,18 @@
 - `features/chat/index.ts` — 本目录出口，App 懒加载时从这里取 `ChatPage`。
 - `features/chat/chat.css` — 聊天页样式（消息最宽 684、输入框最宽 740，悬停才露出的按钮）。
 
+## features/video-studio/ 视频剪辑（目前只有拼片引擎，还没有页面入口）
+- `features/video-studio/README.md` — 拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
+- `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
+- `features/video-studio/compose-worker.ts` — 后台线程本身，一个线程只拼一次。
+- `features/video-studio/compose.ts` — 用 mediabunny（MPL-2.0）读片段、逐帧画到 OffscreenCanvas 上烧字幕、WebCodecs 编码、写 MP4；画面一段接一段、每段画完接这一段的声音。
+- `features/video-studio/compose-protocol.ts` — 后台线程两头的消息格式与解析，片段字节与总量的上限。
+- `features/video-studio/timeline.ts` — 纯计算：成片尺寸（清晰度是短边）、每段的取材起点与成片帧位；48 kHz 能被 24/25/30 整除，画面和声音不会错开。
+- `features/video-studio/captions.ts` — 字幕断行（汉字按字、英文按词、标点不上行首）、字号与位置、白字黑描边。
+- `features/video-studio/pcm.ts` — 声音拼接：各段重采样成 48 kHz 立体声、只写自己的时间窗、空处补静音（mediabunny 自带的重采样只认第一段的采样率，所以在这里做）。
+- `features/video-studio/encoding.ts` — 挑编码器：画面 H.264 → VP9 → AV1，声音 AAC → Opus。
+- `features/video-studio/errors.ts` — 报错上屏一律中文，浏览器的英文错误换成能照着做的话。
+
 ## features/shell/ 外壳：侧栏、顶栏、状态栏、公告与断网
 - `features/shell/Shell.tsx` — **外壳**：侧栏（账号卡、余额与还能用几天、导航）、顶栏（面包屑、顶部搜索、铃铛）、状态栏（环境、网络、余额、版本）、侧栏收起。
 - `features/shell/command-search.ts` — 顶部搜索 / 命令面板：页面、工具（打开/安装/配置）、动作、个人中心落点、设置项和教程一起搜，当前账号用不上的页签不列，搜不到时把字带去教程页。
@@ -267,6 +279,7 @@
 - `styles/contrast.browser-check.mjs` — 用 Chromium 的 forced-colors 模拟查高对比度样式；具体某个 Windows 主题长什么样仍要人工看。
 - `features/auth/browser-check.mjs` / `features/auth/browser-fixture.tsx` / `features/auth/browser-fixture.html` — 登录、注册、找回、引导的浏览器回归与它的假接口（可模拟人机验证、状态读取失败、登录失败、两步验证）；部分用例改开整页夹具。
 - `features/chat/browser-check.mjs` / `features/chat/browser-fixture.tsx` / `features/chat/browser-fixture.html` — 聊天页回归与夹具，用 IndexedDB 冒充主进程的记录文件（跨 reload 存活、没有 localStorage 配额限制）。
+- `features/video-studio/browser-check.mjs` / `features/video-studio/browser-fixture.ts` / `features/video-studio/browser-fixture.html` — 拼片引擎在真浏览器里跑：页面现做几段纯色片段，拼完解出来量颜色、字幕像素、音量，并核对后台线程、取消和读不了的文件。
 - `ui/browser-check.mjs` — 组件层交互检查，开的是 `gallery.html`。
 
 ## gallery 组件检阅
@@ -287,4 +300,4 @@
 - **下线的 Gemini 在界面层逐处过滤**，统一用 `electron/catalog` 的 `activeProviderIds` / `isActiveProviderId`：`features/tools/model.ts`、`features/tools/recent-workspaces.ts`、`features/settings/BackupCard.tsx`、`pages-account.tsx`、`features/tools/provider-options.ts`（记录页和扩展三页）、`features/auth/guide-progress.ts`、`registry/clients.ts`。依据：这些文件里的注释。
 - **分号风格边界**：`ui/`、`registry/`、`gallery*.tsx` 带行尾分号，其余不带，由 `scripts/verify-renderer-style.test.cjs` 钉住（它的清单里点名了 `gallery.tsx`、`gallery-entry.tsx`）。依据：该脚本与 `.claude/rules/renderer-v2.md`。
 - **`styles/tokens.css` 直接 `@import` 了 `ui-spec/tokens.css`**，改 ui-spec 的令牌就是改产品界面。依据：`styles/tokens.css` 第一行。
-- **浏览器回归的夹具分三种**：整页夹具 `testing/app.html`（acceleration、shell 三个、tools、contrast、app-check、部分 auth 用例）、各功能自带夹具（auth、chat）、组件检阅页 `gallery.html`（ui）。`npm run check:v2` 另由 `e2e/renderer-v2-testid-inventory.cjs` 盘点 data-testid。依据：各 browser-check.mjs 里打开的路径、`package.json`。
+- **浏览器回归的夹具分三种**：整页夹具 `testing/app.html`（acceleration、shell 三个、tools、contrast、app-check、部分 auth 用例）、各功能自带夹具（auth、chat、video-studio）、组件检阅页 `gallery.html`（ui）。`npm run check:v2` 另由 `e2e/renderer-v2-testid-inventory.cjs` 盘点 data-testid。依据：各 browser-check.mjs 里打开的路径、`package.json`。
