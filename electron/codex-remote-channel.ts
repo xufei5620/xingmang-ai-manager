@@ -35,6 +35,11 @@ interface RemoteInboundBase {
    * 往这个人回消息时原样交还 send()。没有就不填。
    */
   replyContext?: string
+  /**
+   * 平台记的发送时间（毫秒）。底座丢掉渠道开启前 1 分钟以上、或 10 分钟以前发的消息：星芒关着时
+   * 发的指令不该在下次打开时突然执行。平台不给就不填，按收到的时间算。
+   */
+  sentAt?: number
 }
 
 export interface RemoteInboundText extends RemoteInboundBase {
@@ -51,7 +56,13 @@ export interface RemoteInboundApproval extends RemoteInboundBase {
   decision: RemoteApprovalDecision
 }
 
-export type RemoteInbound = RemoteInboundText | RemoteInboundApproval
+/** 收到了渠道转不成文字的东西（图片、文件）。底座回一句「暂时只支持文字」，渠道不用自己回话。 */
+export interface RemoteInboundUnsupported extends RemoteInboundBase {
+  kind: 'unsupported'
+  messageId: string
+}
+
+export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteInboundUnsupported
 
 export type RemoteApprovalDecision = 'accept' | 'decline'
 

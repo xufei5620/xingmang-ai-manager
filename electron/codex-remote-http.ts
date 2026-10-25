@@ -17,6 +17,8 @@ export interface RemoteJsonRequest {
   /** 报错里用的中文名，如「飞书」。 */
   label: string
   signal?: AbortSignal
+  /** 缺省 JSON.parse。iLink 的消息编号是 64 位整数，那边要传一个不丢精度的解析函数。 */
+  parseJson?: (text: string) => unknown
 }
 
 export interface RemoteJsonResponse {
@@ -95,7 +97,7 @@ export async function requestRemoteJson(request: RemoteJsonRequest): Promise<Rem
     let payload: unknown = null
     if (text) {
       try {
-        payload = JSON.parse(text)
+        payload = (request.parseJson ?? JSON.parse)(text)
       } catch {
         payload = null
       }
