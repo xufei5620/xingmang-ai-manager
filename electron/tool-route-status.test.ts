@@ -68,9 +68,15 @@ describe('createToolRouteStatusBoard', () => {
     const board = createToolRouteStatusBoard({ appReachable: async () => true, changed, now: () => clock })
     board.notice({ kind: 'hijack', line: 'direct' })
     expect(changed).toHaveBeenCalledTimes(1)
-    expect(board.status(snapshot({ line: 'primary' }))).toEqual({ hijack: { id: 10_000 } })
+    expect(board.status(snapshot({ line: 'primary' }))).toEqual({ hijack: { id: 10_000, line: 'direct' } })
     clock += toolRouteHijackNoticeTtlMs
     expect(board.status(snapshot({ line: 'primary' }))).toBeUndefined()
+  })
+
+  it('says which line was pointed elsewhere, so a hijacked line 1 is not reported as line 2', () => {
+    const board = createToolRouteStatusBoard({ appReachable: async () => true, changed: vi.fn(), now: () => 10_000 })
+    board.notice({ kind: 'hijack', line: 'primary' })
+    expect(board.status(snapshot({ line: 'direct' }))).toEqual({ hijack: { id: 10_000, line: 'primary' } })
   })
 })
 

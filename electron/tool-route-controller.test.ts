@@ -309,6 +309,31 @@ describe('tool route controller', () => {
     expect(later.notices).toEqual([])
   })
 
+  it('asks for a DNS fix, not just another network, when the hijacked line has nowhere to go', async () => {
+    // 10-25 customer Mac: Cloudflare's address was pointed at an impostor too, so the hijack had no
+    // line to fall back to.
+    const run = harness({ status: status() })
+    run.results.direct = fail('certificate', [foreign])
+    run.results.primary = fail('certificate', [foreign])
+    run.controller.start()
+    await settle()
+    expect(run.controller.line()).toBe('direct')
+    expect(run.controller.snapshot().outage).toEqual({ reason: 'hijack', since: run.now() })
+    expect(run.notices).toEqual([{ kind: 'outage', reason: 'hijack' }])
+    expect(run.events('relay.route.unreachable')).toEqual([{ kind: 'tool', line: 'direct', reason: 'hijack', trigger: 'startup' }])
+    expect(run.writes.at(-1)?.notices.outage).toEqual({ hijack: run.now() })
+    expect(parseToolRouteState(JSON.stringify({ version: 1, ...run.writes.at(-1) }))?.notices.outage).toEqual({ hijack: run.now() })
+  })
+
+  it('reports a hijacked line 1 as line 1 when it moves to line 2', async () => {
+    const run = harness({ status: status(), stored: { line: 'primary', failures: {}, notices: {} } })
+    run.results.primary = fail('certificate', [foreign])
+    run.controller.start()
+    await settle()
+    expect(run.controller.snapshot().lastChange).toMatchObject({ from: 'primary', to: 'direct', reason: 'hijack' })
+    expect(run.notices).toEqual([{ kind: 'hijack', line: 'primary' }])
+  })
+
   it('never judges hijack without legitimate addresses or behind a local proxy takeover', async () => {
     const unknown = harness({ status: null })
     unknown.results.direct = fail('certificate', [foreign])

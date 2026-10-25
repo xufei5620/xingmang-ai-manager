@@ -42,10 +42,23 @@ describe('toolRouteHomeTexts', () => {
     }
   })
 
+  it('tells the customer to change DNS when the address itself was pointed elsewhere', () => {
+    expect(toolRouteHomeTexts({ outage: { id: 1, reason: 'hijack', appReachable: false } }, 0).outage)
+      .toBe('你这台电脑用的 DNS（查网址用的服务）把星芒的地址查错了，AI 工具这会儿连不上。把电脑的 DNS 改成 223.5.5.5 和 119.29.29.29，或者换个网络（比如手机热点）再试。')
+  })
+
   it('keeps the hijack sentence for half an hour and never mentions DNS', () => {
     const shown = toolRouteHomeTexts({ hijack: { id: 1_000 } }, 1_000).hijack
     expect(shown).toBe('你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。')
     expect(shown).not.toMatch(/DNS|洛杉矶|CF/)
     expect(toolRouteHomeTexts({ hijack: { id: 1_000 } }, 1_000 + toolRouteHijackShownMs).hijack).toBeUndefined()
+  })
+
+  it('names the line that was actually pointed elsewhere', () => {
+    expect(toolRouteHomeTexts({ hijack: { id: 1_000, line: 'direct' } }, 1_000).hijack)
+      .toBe('你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。')
+    const shown = toolRouteHomeTexts({ hijack: { id: 1_000, line: 'primary' } }, 1_000).hijack
+    expect(shown).toBe('你所在的网络把星芒线路1的地址指到了别处，已为你改用线路2，不影响使用。星芒不会改你电脑的任何设置。')
+    expect(shown).not.toMatch(/DNS|洛杉矶|CF/)
   })
 })
