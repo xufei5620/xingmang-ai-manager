@@ -231,11 +231,30 @@ const codexShadowedDetail = '这份配置里有一处 Codex 认不出，打开�
 /**
  * 本软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡）指向了旧位置：
  * 卸载后换了文件夹重装、挪了软件、换装了 Node.js 都会这样。工具照样能用，只是每一轮
- * 都多报一行错。「修好它」只改这几行，先备份。
+ * 都多报一行错。「修好它」只改这几行，先备份。客户不知道「提醒设置」是什么，按它干的事叫。
  */
-const cliHooksStaleDetail = '工具里的提醒设置指向了旧位置，每次都会多报一行错'
-/** 打开软件时已经替用户改好了：只说一句，原来的设置在「设置 › 备份迁移」里。 */
-const cliHooksAutoRepairedDetail = '提醒设置指向了旧位置，打开软件时已经自动改好，原来的设置在「设置 › 备份迁移」里'
+const cliHooksStaleDetail = '「做完弹通知」的设置记着旧地址，每次用都会多报一行错'
+
+/**
+ * 打开软件时替客户改好的提醒设置这次运行里说过的那几家。放在模块里：离开首页再回来、首页重画都不再弹；
+ * 重开软件从头算，同主进程那份只在内存里的记录（autoRepairedCliHooks）。
+ */
+const announcedHookRepairs = new Set<ProviderId>()
+
+/**
+ * 打开软件时替客户改好了提醒设置（第十八批 1b）：只在右下角说一次、到点自己收起。原来写在卡片中间那行，
+ * 软件开着就一直挂着，还顶掉了线路和版本，客户以为一直有事要处理（yoyo 2026-10-25）。
+ * 返回这次还没说过的那几家；Codex 命令行和桌面端共用一份配置，算一家。
+ */
+export function hookRepairsToAnnounce(repaired: readonly ProviderId[], announced: ReadonlySet<ProviderId>): ProviderId[] {
+  return [...new Set(repaired)].filter((provider) => !announced.has(provider))
+}
+
+/** 右下角那一句：Codex 两行共用一份配置，只说「Codex」。原来的设置改之前先备份，在「设置 › 备份迁移」里。 */
+export function cliHooksAutoRepairedText(providers: readonly ProviderId[]): string {
+  const names = providers.map((provider) => provider === 'codex' ? 'Codex' : toolRegistry.find((tool) => tool.id === provider)?.name ?? provider)
+  return `${spacedName(names.join('、'))}里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。`
+}
 /**
  * Windows 上只装 Grok 时没有运行环境，做完提醒和防睡写不上（#695 留下的）。没有运行环境时「补上」
  * 先去准备它，装好后主进程自己补；已经有了（客户自己装的）就直接补。
@@ -890,7 +909,6 @@ export function Home(props: HomeProps) {
         : state.foreignKey && status !== 'ccSwitch' ? foreignKeyDetails[state.foreignKey]
         : status === 'unconfigured' ? unconfiguredDetail
         : status === 'ready' && state.hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail
-        : status === 'ready' && state.hooksAutoRepaired ? cliHooksAutoRepairedDetail
         : !tool.status.installed ? state.elevationHint ?? homeToolBlurbs[tool.id]
         : tool.id === 'codexDesktop' ? tool.versionAdvice?.blockedReason ?? null : null)
     const metaTone = state.installFailure || status === 'detectionFailed' || status === 'configBroken' ? 'bad' as const
@@ -1106,6 +1124,21 @@ export function Home(props: HomeProps) {
   const shownNotices = statusNotices.slice(0, homeNoticeLimit)
   const noticeRoom = homeNoticeLimit - shownNotices.length
   useEffect(() => { onNoticeRoom?.(noticeRoom) }, [noticeRoom, onNoticeRoom])
+
+  // 打开软件时替客户改好的提醒设置：装着、连着当前账号的那几家说一次就收（hookRepairsToAnnounce）。
+  const repairedHooks = tools.filter((tool) => {
+    const state = toolState(tool)
+    return state.status === 'ready' && state.hooksAutoRepaired
+  }).map((tool) => tool.provider)
+  const repairedHooksKey = [...new Set(repairedHooks)].sort().join(',')
+  const showToast = toast.show
+  useEffect(() => {
+    const due = hookRepairsToAnnounce(repairedHooks, announcedHookRepairs)
+    if (!due.length) return
+    for (const provider of due) announcedHookRepairs.add(provider)
+    showToast(cliHooksAutoRepairedText(due), 'ok')
+    // repairedHooks 每次重画都是新数组，按里面是哪几家来判断要不要再看一遍。
+  }, [repairedHooksKey, showToast])
 
   // 页头那句按状态说（v4）：在检测、没网、有要处理的、还没连上、还没装、都好了。
   const cliStates = tools.filter((tool) => tool.status.installed && !jobs[tool.id]).map((tool) => ({ tool, status: toolState(tool).status }))
