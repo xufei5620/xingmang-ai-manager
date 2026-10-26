@@ -38,6 +38,8 @@ export interface PlatformSystemDependencies {
   /** 代理开着、只是不转发星芒时，账号和 AI 对话是不是已经改走直连（应用窗口照旧跟着代理）。 */
   proxySiteDirect?: () => boolean
   onError?: (error: unknown) => void
+  /** 隐私开关存好以后告诉主进程那一侧：匿名使用统计关掉时要当场删掉本机攒的计数（privacy-change-bridge.ts）。 */
+  onPrivacyChanged?: (kind: PlatformPrivacyPreference, enabled: boolean) => void
   notify?: (
     kind: PlatformActivityKind | 'test',
     eventKey: string,
@@ -340,6 +342,12 @@ export class PlatformSystemService {
       const privacy = { anonymousUsage: true, ...current.privacy }
       privacy[kind] = enabled
       await this.dependencies.store.update({ privacy })
+      // 开关已经存下了：那一侧出错只记下来，不把这次保存算成失败。
+      try {
+        this.dependencies.onPrivacyChanged?.(kind, enabled)
+      } catch (error) {
+        this.dependencies.onError?.(error)
+      }
       this.emit()
       return this.getState()
     })

@@ -22,6 +22,8 @@ import type { OperationTarget } from '../../operation-error'
 import type { V2Bridge } from '../../types'
 import type { ActiveProviderId } from '../../../../electron/catalog'
 import { isProvider, providerOptions } from '../tools/provider-options'
+import { isRecord } from '../../../../electron/input-guards'
+import { mcpHttpHeaderEntries } from '../../../../electron/mcp-http-headers'
 import '../../extensions.css'
 
 // 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：管理页不再列它的扩展、会话和备份。
@@ -671,6 +673,59 @@ export function parseEnvironmentVariables(
   )
     throw new Error('附加设置需填写为名称和值均有效的 JSON 对象。')
   return result as Record<string, string>
+}
+const headerFormatError = '请求头每行写一个，格式是「名称: 值」，比如 Authorization: Bearer 你的密钥。'
+/**
+ * 网络服务的请求头：一行一个「名称: 值」，和提供方说明、Claude Code 的 --header 一个写法；照「附加设置」那样
+ * 贴一个 JSON 对象进来也认。主进程收到以后还要用同一份规矩（mcp-http-headers.ts）再过一遍。
+ */
+export function parseHttpHeaders(value: string): Record<string, string> {
+  const text = value.trim()
+  if (!text) return {}
+  let entries: Array<[string, unknown]>
+  if (text.startsWith('{')) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      throw new Error(headerFormatError)
+    }
+    if (!isRecord(parsed)) throw new Error(headerFormatError)
+    entries = Object.entries(parsed)
+  } else {
+    entries = text.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+      const colon = line.indexOf(':')
+      if (colon <= 0) throw new Error(headerFormatError)
+      return [line.slice(0, colon).trim(), line.slice(colon + 1)]
+    })
+  }
+  try {
+    return Object.fromEntries(mcpHttpHeaderEntries(Object.fromEntries(entries)))
+  } catch {
+    throw new Error(headerFormatError)
+  }
+}
+
+/**
+ * 勾上的别的工具里已经有同名连接的那几个。Codex、Grok 加同名的会把原来那条整条换掉，用户在那边自己配好的
+ * 密钥就没了，所以加之前先问一遍各自的列表。读不到列表的工具不拦（和以前一样交给工具自己）。
+ */
+export async function mcpNameTakenIn(
+  api: Pick<V2Bridge, 'listProviderExtensions'>,
+  targets: readonly Provider[],
+  name: string,
+  scope: 'user' | 'project',
+): Promise<Provider[]> {
+  const snapshots = await Promise.allSettled(targets.map((target) => api.listProviderExtensions(target)))
+  return targets.filter((target, index) => {
+    const read = snapshots[index]
+    if (read?.status !== 'fulfilled') return false
+    // Codex 的连接只有全局一层，项目里同名的也会盖住它，所以 Codex 不分层地看。
+    const names = target === 'codex'
+      ? read.value.items.filter((item) => item.kind === 'mcp').map((item) => item.id)
+      : mcpNamesInScope(read.value.items, scope)
+    return names.includes(name)
+  })
 }
 
 /**

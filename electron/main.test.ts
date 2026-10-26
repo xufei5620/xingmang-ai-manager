@@ -183,6 +183,7 @@ describe('main process quit cleanup', () => {
         "app.off('browser-window-focus', resumeStallMonitor)",
         "app.off('browser-window-blur', pauseStallMonitor)",
         'mainStallMonitor.stop()',
+        'detachPrivacyListener()',
         'usageStats.stop()',
         'noteUsageEvent = null',
       ],

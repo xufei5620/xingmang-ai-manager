@@ -370,4 +370,23 @@ describe('platform system preferences', () => {
     await h.service.setNotificationPreference('balance', false)
     expect(h.service.getState().preferences.privacy).toEqual({ anonymousUsage: false })
   })
+  it('tells the main process side about a privacy switch only after it is stored', async () => {
+    const h = setup()
+    const seen: unknown[] = []
+    h.dependencies.onPrivacyChanged = (kind, enabled) => {
+      seen.push([kind, enabled, h.store.read().privacy])
+    }
+    await h.service.setPrivacyPreference('anonymousUsage', false)
+    expect(seen).toEqual([['anonymousUsage', false, { anonymousUsage: false }]])
+  })
+  it('keeps a stored privacy switch saved when the main process side throws', async () => {
+    const h = setup()
+    const failure = new Error('listener failed')
+    h.dependencies.onPrivacyChanged = () => { throw failure }
+    h.dependencies.onError = vi.fn()
+    await expect(h.service.setPrivacyPreference('anonymousUsage', false)).resolves.toMatchObject({
+      preferences: { privacy: { anonymousUsage: false } },
+    })
+    expect(h.dependencies.onError).toHaveBeenCalledWith(failure)
+  })
 })
