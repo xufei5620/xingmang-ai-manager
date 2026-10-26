@@ -20,6 +20,10 @@ const ownSiteHostnames: ReadonlySet<string> = new Set([
 const paymentWindowMonitorIntervalMs = 1_000
 const paymentOrderMonitorIntervalMs = 3_000
 const paymentWindowMaxLifetimeMs = 10 * 60_000
+// 付款页最多等这么久开始显示（见 waitForPaymentPage）；等不到就当打不开，「打开支付窗口」不再一直转。
+export const paymentPageOpenTimeoutMs = 30_000
+// 付款页已经到了、迟迟画不出第一屏（<head> 里一个脚本卡在半路）时，过这么久先把窗口亮出来。
+export const paymentWindowShowFallbackMs = 1_500
 const paymentPageSnapshotLimit = 8_192
 // 窗口关了以后接着问这笔订单：前 2 分钟每 5 秒、之后每 30 秒，最多 15 分钟。
 // 窗口开着时是每 3 秒一次，这里只会更稀。账号服务对查订单接口的限流没有核实过
@@ -300,6 +304,41 @@ export function isAllowedPaymentNavigationUrl(
   }
 }
 
+/**
+ * 付款页算「打开了」以主框架第一次提交为准（committed：did-navigate），不等 loadURL。loadURL 要等页面上
+ * 每个资源都加载完才算完：付款页一张图、一个统计脚本卡在半路，「打开支付窗口」就一直转，窗口里的查单
+ * 也一直不开始。易支付这类先给一张自动跳转页的，这张页没加载完就跳去收银台时，loadURL 还会报 ERR_ABORTED，
+ * 收银台明明打开了却被当成失败关掉（两件都在 Electron 43 里实测过）。
+ * 提交之前就失败的（地址解析不了、证书不对、被拦下的重定向）照旧报打不开；timeoutMs 内一直没提交也算打不开。
+ * 提交以后 loadURL 再失败不再算数：窗口已经交给客户，后面由页面巡检和查单管。
+ */
+export function waitForPaymentPage(
+  load: Promise<void>,
+  committed: Promise<void>,
+  timeoutMs = paymentPageOpenTimeoutMs,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(Object.assign(new Error('payment page did not start within the time limit (ERR_TIMED_OUT)'), { code: 'ERR_TIMED_OUT' }))
+    }, timeoutMs)
+    timer.unref?.()
+    function settle(): void {
+      clearTimeout(timer)
+    }
+    void committed.then(() => {
+      settle()
+      resolve()
+    })
+    load.then(() => {
+      settle()
+      resolve()
+    }, (error: unknown) => {
+      settle()
+      reject(error)
+    })
+  })
+}
+
 export function createPaymentWindowController(
   options: PaymentWindowControllerOptions = {},
 ): PaymentWindowController {
@@ -307,6 +346,7 @@ export function createPaymentWindowController(
   let paymentWindow: BrowserWindow | null = null
   let monitorTimer: NodeJS.Timeout | null = null
   let orderMonitorTimer: NodeJS.Timeout | null = null
+  let showFallbackTimer: NodeJS.Timeout | null = null
   let monitorGeneration = 0
   let openRequestGeneration = 0
   let followUpTimer: NodeJS.Timeout | null = null
@@ -383,8 +423,10 @@ export function createPaymentWindowController(
   function stopMonitoring(): void {
     if (monitorTimer) clearInterval(monitorTimer)
     if (orderMonitorTimer) clearInterval(orderMonitorTimer)
+    if (showFallbackTimer) clearTimeout(showFallbackTimer)
     monitorTimer = null
     orderMonitorTimer = null
+    showFallbackTimer = null
     monitorGeneration += 1
   }
 
@@ -417,8 +459,10 @@ export function createPaymentWindowController(
     const generation = monitorGeneration
     let windowTitle = buildPaymentWindowTitle(targetUrl)
     const window = createWindow({
+      // 挂在主窗口上（总在主窗口前面），但不做模态：模态在 Windows 上把主窗口整个禁掉，在 Mac 上变成
+      // 贴在主窗口顶上、没有关闭按钮的面板。付款页卡住时客户关不掉它，主窗口里「关闭支付窗口」也点不到，
+      // 看上去就是星芒卡死了。
       parent,
-      modal: Boolean(parent),
       width: 760,
       height: 820,
       minWidth: 560,
@@ -451,12 +495,15 @@ export function createPaymentWindowController(
     window.webContents.session.setDevicePermissionHandler(() => false)
     window.webContents.session.on('will-download', (event) => event.preventDefault())
 
-    window.once('ready-to-show', () => {
-      if (window.isDestroyed()) return
+    let shown = false
+    const reveal = () => {
+      if (shown || window.isDestroyed()) return
+      shown = true
       window.center()
       window.show()
       window.focus()
-    })
+    }
+    window.once('ready-to-show', reveal)
     window.on('closed', () => {
       const wasActive = paymentWindow === window
       const wasSilent = silentClosures.delete(window)
@@ -468,8 +515,11 @@ export function createPaymentWindowController(
       event.preventDefault()
       if (!window.isDestroyed()) window.setTitle(windowTitle)
     })
+    let markCommitted = () => {}
+    const committed = new Promise<void>((resolve) => { markCommitted = resolve })
     // 跳转、重定向落地以后按实际地址换标题。同一个网页里改地址（did-navigate-in-page）换不了域名，不用听。
     window.webContents.on('did-navigate', (_event, url) => {
+      markCommitted()
       windowTitle = buildPaymentWindowTitle(url)
       if (!window.isDestroyed()) window.setTitle(windowTitle)
     })
@@ -486,8 +536,10 @@ export function createPaymentWindowController(
     window.webContents.on('will-redirect', guardNavigation)
 
     try {
-      await window.loadURL(targetUrl, loadOptions)
+      await waitForPaymentPage(window.loadURL(targetUrl, loadOptions), committed)
       if (!isCurrent()) return
+      showFallbackTimer = setTimeout(reveal, paymentWindowShowFallbackMs)
+      showFallbackTimer.unref?.()
 
       const openedAt = Date.now()
       const deadline = Math.min(openedAt + paymentWindowMaxLifetimeMs, expiresAt ? Date.parse(expiresAt) : Infinity)

@@ -19,8 +19,11 @@ import {
   paymentFollowUpDelayMs,
   paymentFollowUpMaxMs,
   paymentFormLimits,
+  paymentPageOpenTimeoutMs,
+  paymentWindowShowFallbackMs,
   validatePaymentForm,
   validatePaymentUrl,
+  waitForPaymentPage,
   type PaymentWindowControllerOptions,
 } from './payment-window'
 
@@ -278,7 +281,6 @@ describe('createPaymentWindowController', () => {
 
     expect(harness.createWindow).toHaveBeenCalledWith(expect.objectContaining({
       parent,
-      modal: true,
       show: false,
       title: '安全支付 - 星芒AI（当前网页：pay.example.com）',
       icon: '/app/assets/brand/v3/app-icon.png',
@@ -293,6 +295,9 @@ describe('createPaymentWindowController', () => {
         allowRunningInsecureContent: false,
       }),
     }))
+    // Modal would disable the main window on Windows and turn the window into a
+    // close-button-less sheet on macOS; the in-app close button must stay usable.
+    expect(harness.createWindow).toHaveBeenCalledWith(expect.not.objectContaining({ modal: expect.anything() }))
     expect(harness.window.loadURL).toHaveBeenCalledOnce()
     const [target, options] = harness.window.loadURL.mock.calls[0]!
     if (!options?.postData) throw new Error('expected POST load options')
@@ -658,6 +663,104 @@ describe('authenticated payment order monitoring', () => {
     await vi.advanceTimersByTimeAsync(3_000)
     expect(second.window.destroy).toHaveBeenCalledOnce()
     expect(onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'success', tradeNo: 'new' }, inWindow)
+  })
+})
+
+describe('payment page opening', () => {
+  beforeEach(() => vi.useFakeTimers())
+
+  it('counts the page as opened once the main frame commits, ignoring a late load failure', async () => {
+    const load = deferred<void>()
+    const committed = deferred<void>()
+    let outcome = 'pending'
+    void waitForPaymentPage(load.promise, committed.promise).then(() => { outcome = 'opened' }, () => { outcome = 'failed' })
+    committed.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(outcome).toBe('opened')
+    // The redirect page navigating to the cashier before its own load event
+    // makes Electron reject loadURL with ERR_ABORTED.
+    load.reject(Object.assign(new Error('ERR_ABORTED (-3)'), { code: 'ERR_ABORTED' }))
+    await vi.advanceTimersByTimeAsync(paymentPageOpenTimeoutMs)
+    expect(outcome).toBe('opened')
+  })
+
+  it('still fails a page that could not load before anything committed', async () => {
+    const failure = Object.assign(new Error('ERR_NAME_NOT_RESOLVED (-105)'), { code: 'ERR_NAME_NOT_RESOLVED' })
+    await expect(waitForPaymentPage(Promise.reject(failure), new Promise(() => undefined))).rejects.toBe(failure)
+  })
+
+  it('gives up on a page that never starts, as a timeout', async () => {
+    const opening = waitForPaymentPage(new Promise(() => undefined), new Promise(() => undefined))
+    const rejected = expect(opening).rejects.toMatchObject({ code: 'ERR_TIMED_OUT' })
+    await vi.advanceTimersByTimeAsync(paymentPageOpenTimeoutMs - 1)
+    let settled = false
+    void opening.then(() => { settled = true }, () => { settled = true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await rejected
+  })
+
+  it('opens and starts confirming the order while a page resource still hangs', async () => {
+    const reader = vi.fn(async (): Promise<NewApiTopupOrderStatus> => 'pending')
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    harness.window.loadURL.mockReturnValueOnce(new Promise(() => undefined))
+    let opened = false
+    const opening = harness.controller.openUrl('https://pay.example.com/cashier', undefined, 'XM-1').then(() => { opened = true })
+
+    harness.webContentsEvents.get('did-navigate')!({}, 'https://pay.example.com/cashier')
+    await opening
+    expect(opened).toBe(true)
+    // The first paint is stuck behind a hanging <head> script: show the window anyway.
+    expect(harness.window.show).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(paymentWindowShowFallbackMs)
+    expect(harness.window.center).toHaveBeenCalledOnce()
+    expect(harness.window.show).toHaveBeenCalledOnce()
+    expect(harness.window.focus).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(reader).toHaveBeenCalled()
+    expect(harness.controller.isOpen()).toBe(true)
+  })
+
+  it('keeps a committed payment page open when its redirect page reports ERR_ABORTED', async () => {
+    const load = deferred<void>()
+    const harness = createHarness()
+    harness.window.loadURL.mockReturnValueOnce(load.promise)
+    const opening = harness.controller.open(paymentForm())
+    harness.webContentsEvents.get('did-navigate')!({}, 'https://pay.example.com/submit?channel=alipay')
+    await opening
+    load.reject(Object.assign(new Error('ERR_ABORTED (-3)'), { code: 'ERR_ABORTED' }))
+    harness.windowEvents.get('ready-to-show')!()
+    await vi.advanceTimersByTimeAsync(paymentWindowShowFallbackMs)
+    expect(harness.window.destroy).not.toHaveBeenCalled()
+    expect(harness.window.show).toHaveBeenCalledOnce()
+    expect(harness.controller.isOpen()).toBe(true)
+    expect(harness.onTerminalState).not.toHaveBeenCalled()
+  })
+
+  it('closes a page that never starts and reports it as a timeout', async () => {
+    const harness = createHarness()
+    harness.window.loadURL.mockReturnValueOnce(new Promise(() => undefined))
+    const failure = harness.controller.openUrl('https://pay.example.com/cashier').catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(paymentPageOpenTimeoutMs)
+    const error = await failure
+    expect(error instanceof Error && error.message).toBe('支付页面打开失败，请稍后重试')
+    expect(error instanceof Error && error.cause).toEqual({ code: 'ERR_TIMED_OUT' })
+    expect(classifyNetworkFailure(error)).toBe('timeout')
+    expect(harness.window.destroy).toHaveBeenCalledOnce()
+    expect(harness.window.show).not.toHaveBeenCalled()
+    expect(harness.controller.isOpen()).toBe(false)
+  })
+
+  it('does not show a window that closed before its fallback came due', async () => {
+    const harness = createHarness()
+    harness.window.loadURL.mockReturnValueOnce(new Promise(() => undefined))
+    const opening = harness.controller.openUrl('https://pay.example.com/cashier')
+    harness.webContentsEvents.get('did-navigate')!({}, 'https://pay.example.com/cashier')
+    await opening
+    harness.controller.close()
+    await vi.advanceTimersByTimeAsync(paymentWindowShowFallbackMs)
+    expect(harness.window.show).not.toHaveBeenCalled()
   })
 })
 
