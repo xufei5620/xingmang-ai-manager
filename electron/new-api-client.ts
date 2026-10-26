@@ -72,6 +72,7 @@ const dataSelfPath = '/api/data/self'
 const taskSelfPath = '/api/task/self'
 const tokenCollectionPath = '/api/token/'
 const userGroupsPath = '/api/user/self/groups'
+const userModelsPath = '/api/user/models'
 const topupInfoPath = '/api/user/topup/info'
 const topupAmountPath = '/api/user/amount'
 const topupPaymentPath = '/api/user/pay'
@@ -913,6 +914,10 @@ export interface NewApiClientService extends RelayBackendClient {
   // whitelist this applies on the way out.
   listKeys(input?: NewApiAccountKeysQuery): Promise<NewApiAccountKeysPage>
   listUsableGroups(): Promise<NewApiUsableGroup[]>
+  // GET /api/user/models?group= (controller/user.go GetUserModels, rc.44):
+  // the models one group enables, read with the login session rather than a
+  // key. chat-credential-coordinator.ts lists the chat menu with it.
+  listGroupModels(group: string): Promise<string[]>
   revealKey(id: number): Promise<string>
   // DELETE /api/token/:id. Destructive and immediate: any CLI config or
   // canvas session currently holding this key's plaintext stops working the
@@ -2276,6 +2281,17 @@ export function parseAccountKey(payload: unknown): NewApiAccountKey | null {
   }
 }
 
+// GET /api/user/models's data: service.GetGroupsEnabledModels, a plain
+// []string of model names (rc.44 controller/user.go GetUserModels).
+export function parseGroupModels(payload: unknown): string[] {
+  if (!Array.isArray(payload)) throw new Error('分组模型响应格式异常')
+  return [...new Set(payload.flatMap((entry) => {
+    if (typeof entry !== 'string') return []
+    const model = entry.trim()
+    return model && model.length <= 200 ? [model] : []
+  }))]
+}
+
 export function parseUsableGroups(payload: unknown): NewApiUsableGroup[] {
   if (!isRecord(payload)) throw new Error('可用分组响应格式异常')
   return Object.entries(payload).flatMap(([name, raw]) => {
@@ -3552,6 +3568,24 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const listUsableGroups = (): Promise<NewApiUsableGroup[]> => withSession(loadUsableGroups)
 
+  // Signing a key costs one POST /api/token/:id/key, which sits behind
+  // CriticalRateLimit: per client IP, 20 per 20 minutes by default, shared
+  // with login, the 15-minute session refresh, logout and top-up orders
+  // (rc.44 router/api-router.go). Listing a group's models this way only
+  // passes the global /api limit, so a menu covering every group never spends
+  // that budget. GetUserModels answers [] for a group the account cannot use.
+  const listGroupModels = (groupInput: string): Promise<string[]> => withReadSession(async (current) => {
+    const group = groupInput.trim()
+    if (!group || group.length > 128 || /[\x00-\x1F\x7F]/.test(group)) throw new Error('分组格式错误')
+    const raw = await performRequest(
+      ctx,
+      `${userModelsPath}?${new URLSearchParams({ group }).toString()}`,
+      { method: 'GET', headers: authHeaders(current) },
+      '分组模型查询',
+    )
+    return parseGroupModels(unwrapEnvelope(raw, '分组模型查询', [current.accessToken]))
+  })
+
   const revealKey = (id: number): Promise<string> => withSession(async (current) => {
     if (!Number.isInteger(id) || id <= 0) throw new Error('Key ID 格式错误')
     const raw = await performRequest(
@@ -4008,6 +4042,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     getTasks,
     listKeys,
     listUsableGroups,
+    listGroupModels,
     revealKey,
     revokeKey,
     createKey,
