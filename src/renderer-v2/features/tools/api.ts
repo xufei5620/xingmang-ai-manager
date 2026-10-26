@@ -119,11 +119,12 @@ async function loadBalanceUsage(bridge: XingmangApi): Promise<OwnedBalanceUsage>
   const monthDate = `${usageCalendarDate(now, dates.timezone).slice(0, 7)}-01`
   const endTimestamp = Math.floor(now.getTime() / 1000)
   const monthStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000)
+  // 只用合计：星芒账号只查合计那一个接口，不再陪着查一页明细。
   const [month, week] = await Promise.all([
     bridge.getAccountUsage(calendar ? { ...dates, startDate: monthDate, page: 1, pageSize: 1 }
-      : { type: 2, page: 1, pageSize: 1, startTimestamp: monthStart, endTimestamp }),
+      : { type: 2, statsOnly: true, startTimestamp: monthStart, endTimestamp }),
     bridge.getAccountUsage(calendar ? { ...dates, page: 1, pageSize: 1 }
-      : { type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
+      : { type: 2, statsOnly: true, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
   ])
   return { scope: accountScope(session), usage: { monthQuota: month.stats.quota, weekQuota: week.stats.quota } }
 }
@@ -301,8 +302,8 @@ export function createToolsApi(bridge: XingmangApi) {
       }
       const endTimestamp = Math.floor(now.getTime() / 1000)
       const [hour, week] = await Promise.all([
-        bridge.getAccountUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 3600, endTimestamp }),
-        bridge.getAccountUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
+        bridge.getAccountUsage({ type: 2, statsOnly: true, startTimestamp: endTimestamp - 3600, endTimestamp }),
+        bridge.getAccountUsage({ type: 2, statsOnly: true, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
       ])
       return { hourQuota: hour.stats.quota, weekQuota: week.stats.quota }
     },

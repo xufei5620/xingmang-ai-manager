@@ -16,13 +16,25 @@ describe('home balance usage queries', () => {
         expect(query.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone)
         expect(query).not.toHaveProperty('type')
         expect(query).not.toHaveProperty('startTimestamp')
+        // 历史账号那边见到不认识的字段就整个拒掉。
+        expect(query).not.toHaveProperty('statsOnly')
       } else {
         expect(query.type).toBe(2)
         expect(query.startTimestamp).toEqual(expect.any(Number))
         expect(query.endTimestamp).toEqual(expect.any(Number))
         expect(query).not.toHaveProperty('startDate')
+        // 首页只用合计：星芒账号不再陪着查一页明细。
+        expect(query.statsOnly).toBe(true)
+        expect(query).not.toHaveProperty('page')
       }
     }
+  })
+
+  it('asks only for the totals when checking a spending spike on the current account', async () => {
+    const getAccountUsage = vi.fn(async () => ({ stats: { quota: 3 } }))
+    const bridge = { getAccountSession: async () => ({ siteId: 'solov' }), getAccountUsage } as unknown as XingmangApi
+    expect(await createToolsApi(bridge).spendBaseline()).toEqual({ hourQuota: 3, weekQuota: 3 })
+    for (const call of getAccountUsage.mock.calls as unknown as Array<[Record<string, unknown>]>) expect(call[0].statsOnly).toBe(true)
   })
 })
 

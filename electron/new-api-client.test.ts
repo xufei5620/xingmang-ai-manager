@@ -2255,6 +2255,20 @@ describe('getUsage', () => {
     expect(statUrl.searchParams.has('upstream_request_id')).toBe(false)
   })
 
+  it('asks only the totals endpoint when the caller wants the totals alone', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { quota: 4_200, rpm: 1, tpm: 9 } }))
+
+    const page = await client.getUsage({ type: 2, startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400, statsOnly: true })
+
+    expect(page).toEqual({ page: 1, pageSize: 0, total: 0, records: [], stats: { quota: 4_200, rpm: 1, tpm: 9 } })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const statUrl = new URL(String(fetchImpl.mock.calls[0][0]))
+    expect(statUrl.pathname).toBe('/api/log/self/stat')
+    expect(Object.fromEntries(statUrl.searchParams)).toEqual({ type: '2', start_timestamp: '1700000000', end_timestamp: '1700086400' })
+  })
+
   it('rejects Sub2API-only usage filters instead of silently widening a NewAPI query', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
@@ -4161,6 +4175,73 @@ describe('restoreSession', () => {
 
     await expect(client.restoreSession({ userId: 42, cookies: ['refresh_token=x'] })).resolves.toBe(false)
     expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('balance right after a restore', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  function restoringServer() {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    let token = 0
+    fetchImpl.mockImplementation(async (input) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/api/user/auth/refresh') {
+        token += 1
+        return jsonResponse({ success: true, message: '', data: { access_token: `restored-token-${token}`, access_expires_at: null } })
+      }
+      if (path === '/api/status') return statusResponse()
+      return jsonResponse({ success: true, message: '', data: userData() })
+    })
+    const selfReads = () => fetchImpl.mock.calls.filter(([input]) => new URL(String(input)).pathname === '/api/user/self').length
+    return { fetchImpl, selfReads }
+  }
+
+  it('reuses the profile the restore just read for the next balance, once', async () => {
+    vi.useFakeTimers({ now: new Date('2026-10-26T10:00:00Z'), toFake: ['Date'] })
+    const { fetchImpl, selfReads } = restoringServer()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await client.restoreSession({ userId: 42, cookies: ['refresh_token=persisted-cookie'] })
+    expect(selfReads()).toBe(1)
+
+    vi.setSystemTime(new Date('2026-10-26T10:00:05Z'))
+    await expect(client.getBalance()).resolves.toMatchObject({ quota: 1_000_000, usedQuota: 250_000, quotaPerUnit: 500_000 })
+    expect(selfReads()).toBe(1)
+    // 只给紧跟着的那一次：之后的余额（定时、回到前台、付完款）都去问服务器。
+    await client.getBalance()
+    expect(selfReads()).toBe(2)
+  })
+
+  it('asks the server again once the restored profile is ten seconds old', async () => {
+    vi.useFakeTimers({ now: new Date('2026-10-26T10:00:00Z'), toFake: ['Date'] })
+    const { fetchImpl, selfReads } = restoringServer()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await client.restoreSession({ userId: 42, cookies: ['refresh_token=persisted-cookie'] })
+    vi.setSystemTime(new Date('2026-10-26T10:00:10Z'))
+    await client.getBalance()
+    expect(selfReads()).toBe(2)
+  })
+
+  it('asks the server again when the session changed after the restore', async () => {
+    const { fetchImpl, selfReads } = restoringServer()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await client.restoreSession({ userId: 42, cookies: ['refresh_token=persisted-cookie'] })
+    // A 401 on an ordinary read rotates the access token in place.
+    fetchImpl.mockImplementationOnce(async () => failureResponse('登录状态已失效', 401))
+    await client.getUsage({ statsOnly: true })
+    expect(fetchImpl.mock.calls.filter(([input]) => new URL(String(input)).pathname === '/api/user/auth/refresh')).toHaveLength(2)
+    await client.getBalance()
+    expect(selfReads()).toBe(2)
+  })
+
+  it('never hands a login the profile the restore read', async () => {
+    const { fetchImpl, selfReads } = restoringServer()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await client.restoreSession({ userId: 42, cookies: ['refresh_token=persisted-cookie'] })
+    fetchImpl.mockResolvedValueOnce(loginResponse({ id: 43 }))
+    await client.login({ username: 'other', password: 'correct horse battery staple' })
+    await client.getBalance()
+    expect(selfReads()).toBe(2)
   })
 })
 

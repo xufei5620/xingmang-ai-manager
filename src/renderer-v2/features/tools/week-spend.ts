@@ -7,7 +7,8 @@ import { createTtlCache } from './ttl-cache'
  * 首页余额卡「近 7 天花费」的七根小柱子（v4 批 04）。一根是本机时区的一个自然日，最后一根是今天到现在。
  * 看板接口查 24 小时以内按小时分桶、超过就按 UTC 的天分桶：一次查七天，北京时间的「一天」会被
  * 切在下午四点。所以按本机的天一天查一次，只要每次查回来的合计。过完的天不会再变，记下来
- * 不再查，之后每次刷新只查今天这一根。
+ * 不再查，之后每次刷新只查今天这一根。记的那几天也存在本机（按账号分开），重开软件同样只查
+ * 今天：以前每次开机都要对后台发七个请求（性能体检第 9 条）。
  */
 export interface WeekSpendDay {
   /** 本机这一天 0 点（毫秒）。 */
@@ -49,22 +50,92 @@ export interface WeekSpend {
 /** 和余额卡上的用量同一个有效期：一分钟内回首页不再问后台。 */
 export const weekSpendTtlMs = 60_000
 
-export function createWeekSpendLoader(bridge: Pick<XingmangApi, 'getAccountSession' | 'getAccountDashboard'>, now: () => Date = () => new Date()) {
-  // 过完的那几天：账号 + 那天 0 点 → 当天花了多少（额度单位）。
-  const settled = new Map<string, number>()
+/**
+ * 过完的天要再过这么久才记下来不再问。后台的看板数据先攒在内存里，隔几分钟才落一次库
+ * （new-api 的 DataExportInterval 默认 5 分钟），零点刚过就去问昨天，最后那几分钟可能还没算进去；
+ * 记下来以后就再也不问了，所以宁可多等一会儿。
+ */
+export const weekSpendSettleMs = 60 * 60_000
+
+export interface WeekSpendStorage { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void }
+
+export function weekSpendKey(scope: string): string { return `xingmang-ui-v2:week-spend:${encodeURIComponent(scope)}` }
+
+export function getWeekSpendStorage(): WeekSpendStorage | null {
+  try { return typeof window === 'undefined' ? null : window.localStorage } catch { return null }
+}
+
+/**
+ * 读回本机记着的、这个账号过完的那几天：那天 0 点（毫秒）→ 当天花了多少（额度单位）。
+ * 读回来的一律当坏数据校验一遍：用户或别的程序改过 localStorage，最多是多问几次后台，
+ * 不能让首页画出离谱的柱子。
+ */
+export function readSettledWeekSpend(storage: WeekSpendStorage | null, scope: string): Map<number, number> {
+  const settled = new Map<number, number>()
+  if (!storage) return settled
+  try {
+    const raw = storage.getItem(weekSpendKey(scope))
+    if (!raw || raw.length > 1024) return settled
+    const value = JSON.parse(raw) as unknown
+    if (!value || typeof value !== 'object') return settled
+    const entry = value as Record<string, unknown>
+    if (entry.version !== 1 || entry.owner !== scope || !Array.isArray(entry.days)) return settled
+    for (const day of entry.days.slice(0, 7)) {
+      if (!Array.isArray(day) || day.length !== 2) continue
+      const [start, quota] = day as unknown[]
+      if (typeof start !== 'number' || !Number.isSafeInteger(start) || start <= 0) continue
+      if (typeof quota !== 'number' || !Number.isFinite(quota) || quota < 0) continue
+      settled.set(start, quota)
+    }
+  } catch { /* 读不出就当没记过，照旧问后台。 */ }
+  return settled
+}
+
+export function writeSettledWeekSpend(storage: WeekSpendStorage | null, scope: string, settled: ReadonlyMap<number, number>): void {
+  if (!storage) return
+  const days = [...settled].sort((left, right) => left[0] - right[0])
+  try { storage.setItem(weekSpendKey(scope), JSON.stringify({ version: 1, owner: scope, days })) } catch { /* 存不进去下次开机就多问几天，不值得打断用户。 */ }
+}
+
+export function createWeekSpendLoader(
+  bridge: Pick<XingmangApi, 'getAccountSession' | 'getAccountDashboard'>,
+  now: () => Date = () => new Date(),
+  storage: WeekSpendStorage | null = getWeekSpendStorage(),
+) {
+  // 过完的那几天，按账号分开：那天 0 点 → 当天花了多少（额度单位）。头一次用到某个账号时从本机读回来。
+  const settledByScope = new Map<string, Map<number, number>>()
+  function settledFor(scope: string): Map<number, number> {
+    let settled = settledByScope.get(scope)
+    if (!settled) {
+      settled = readSettledWeekSpend(storage, scope)
+      settledByScope.set(scope, settled)
+    }
+    return settled
+  }
   async function load(): Promise<WeekSpend> {
     const session = await bridge.getAccountSession()
     const scope = accountScope(session)
-    const days = weekSpendDays(now())
+    const askedAt = now()
+    const days = weekSpendDays(askedAt)
+    const settled = settledFor(scope)
+    // 只留还在这七天里的：过了一周的那天也画不上了，不用再记。
+    let pruned = false
+    for (const start of settled.keys()) {
+      if (start < days[0].start) { settled.delete(start); pruned = true }
+    }
+    if (pruned) writeSettledWeekSpend(storage, scope, settled)
     const quotas = await Promise.all(days.map(async (day, index) => {
-      const key = `${scope}:${day.start}`
       const today = index === days.length - 1
-      const known = settled.get(key)
+      const known = settled.get(day.start)
       if (!today && known !== undefined) return known
       const data = await bridge.getAccountDashboard({ startTimestamp: Math.floor(day.start / 1000), endTimestamp: Math.floor(day.end / 1000) })
       // 只给全部累计、不分时段的后台画不出每天一根柱子。
       if (data.coverage === 'all-time-summary') throw new Error('这个账号读不出每天的花费')
-      if (!today) settled.set(key, data.quota)
+      // 查到一天就存一天：同一趟里别的天没查成，查成的这几天下次也不用再问。
+      if (!today && askedAt.getTime() - (day.end + 1000) >= weekSpendSettleMs) {
+        settled.set(day.start, data.quota)
+        writeSettledWeekSpend(storage, scope, settled)
+      }
       return data.quota
     }))
     return { scope, days: days.map((day, index) => ({ ...day, quota: quotas[index] })) }
@@ -82,9 +153,9 @@ export function createWeekSpendLoader(bridge: Pick<XingmangApi, 'getAccountSessi
       const owned = cache.peek()
       return owned && owned.scope === scope ? owned : null
     },
+    /** 换账号时调。过完的那几天按账号记着、不会再变，留着；今天那根下次照旧重查。 */
     invalidate(): void {
       cache.invalidate()
-      settled.clear()
     },
   }
 }
