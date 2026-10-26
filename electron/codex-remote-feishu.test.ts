@@ -43,13 +43,13 @@ function textEvent(overrides: { eventId?: string; chatType?: string; senderType?
   }
 }
 
-function cardEvent(chatId: string) {
+function cardEvent(chatId: string, value: Record<string, unknown> = { approval: '2', nonce: 'Zx9_-nonce-0042', decision: 'accept' }) {
   return {
     schema: '2.0',
     header: { event_id: 'ev-card', event_type: 'card.action.trigger' },
     event: {
       operator: { open_id: 'ou_alice' },
-      action: { tag: 'button', value: { approval: '2', decision: 'accept' } },
+      action: { tag: 'button', value },
       context: { open_message_id: 'om_card', open_chat_id: chatId },
     },
   }
@@ -252,6 +252,7 @@ describe('codex-remote-feishu events', () => {
       peer: { channel: 'feishu', userId: 'ou_alice' },
       direct: true,
       approvalId: '2',
+      nonce: 'Zx9_-nonce-0042',
       decision: 'accept',
     })
     expect(parseFeishuEvent(cardEvent('oc_group'), context).inbound).toMatchObject({ direct: false })
@@ -259,9 +260,16 @@ describe('codex-remote-feishu events', () => {
   })
 
   it('ignores card clicks whose value is not ours', () => {
-    const event = cardEvent('oc_p2p_alice')
-    event.event.action.value = { approval: '../1', decision: 'accept' }
+    const event = cardEvent('oc_p2p_alice', { approval: '../1', nonce: 'Zx9_-nonce-0042', decision: 'accept' })
     expect(parseFeishuEvent(event, { p2pChats: new Map() }).inbound).toBeNull()
+  })
+
+  it('hands over a card click without a usable nonce so the core can call the card stale', () => {
+    const context = { p2pChats: new Map([['ou_alice', 'oc_p2p_alice']]) }
+    for (const nonce of [undefined, '', 'short', 'has space in it', '<script>', 'x'.repeat(65), 42]) {
+      const event = cardEvent('oc_p2p_alice', { approval: '2', decision: 'accept', ...(nonce === undefined ? {} : { nonce }) })
+      expect(parseFeishuEvent(event, context).inbound).toMatchObject({ kind: 'approval', approvalId: '2', nonce: null })
+    }
   })
 })
 
@@ -293,15 +301,15 @@ describe('codex-remote-feishu outbound', () => {
     })
     const body = buildFeishuMessageBody(peer, {
       kind: 'approval',
-      request: { approvalId: '3', kind: 'command', summary: 'npm test' },
+      request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command', summary: 'npm test' },
       text: 'Codex 想运行命令（第 3 条）：\nnpm test',
     })
     expect(body.msg_type).toBe('interactive')
     const card = JSON.parse(String(body.content)) as { elements: Array<{ tag: string; actions?: Array<{ value: unknown }> }> }
     const actions = card.elements.find((element) => element.tag === 'action')?.actions ?? []
     expect(actions.map((action) => action.value)).toEqual([
-      { approval: '3', decision: 'accept' },
-      { approval: '3', decision: 'decline' },
+      { approval: '3', nonce: 'nonce-of-three', decision: 'accept' },
+      { approval: '3', nonce: 'nonce-of-three', decision: 'decline' },
     ])
   })
 })
