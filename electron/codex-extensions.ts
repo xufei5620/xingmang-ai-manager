@@ -44,6 +44,7 @@ import {
 } from './codex-config-toml'
 import { describeBrokenConfig } from './broken-config-advice'
 import { isRecord } from './input-guards'
+import { mcpHttpHeaderEntries } from './mcp-http-headers'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -98,6 +99,8 @@ export interface HttpMcpInput {
   bearerTokenEnvVar?: string
   oauthClientId?: string
   oauthResource?: string
+  /** 写进 config.toml 的 http_headers，多半是提供方给的密钥。缺省 = 不带（旧行为）。 */
+  headers?: Readonly<Record<string, string>>
 }
 
 export type AddMcpInput = StdioMcpInput | HttpMcpInput
@@ -1186,6 +1189,7 @@ export class CodexExtensionService {
     // document_helpers.rs）：stdio 写 command、args、env，http 写 url、bearer_token_env_var，空的不写。
     const entry: Record<string, unknown> = {}
     let oauthRequested = false
+    let headersRequested = false
     if (input.type === 'stdio') {
       const command = assertNoNul(input.command, 'MCP 命令')
       if (command.length > 4_096) throw new Error('MCP 命令过长')
@@ -1212,6 +1216,11 @@ export class CodexExtensionService {
         argv.push('--bearer-token-env-var', input.bearerTokenEnvVar)
         entry.bearer_token_env_var = input.bearerTokenEnvVar
       }
+      const headers = mcpHttpHeaderEntries(input.headers)
+      if (headers.length) {
+        entry.http_headers = Object.fromEntries(headers)
+        headersRequested = true
+      }
       const oauthClientId = assertOptionalValue(input.oauthClientId, 'OAuth Client ID')
       const oauthResource = assertOptionalValue(input.oauthResource, 'OAuth Resource')
       if (oauthClientId) argv.push('--oauth-client-id', oauthClientId)
@@ -1219,6 +1228,12 @@ export class CodexExtensionService {
       oauthRequested = Boolean(oauthClientId || oauthResource)
     }
 
+    if (headersRequested) {
+      // `codex mcp add` 没有请求头的开关（0.164.0 的 --help 只有 --url、--bearer-token-env-var 和 OAuth 那几项），
+      // 装没装 CLI 都照它自己的格式直接写 config.toml。OAuth 那两项只有命令当场登录时才用得上，这里写不进去。
+      if (oauthRequested) throw new Error('带请求头的连接不用填 OAuth Client ID 和 OAuth Resource，清空这两项再添加。')
+      return this.addConfiguredMcpServer(name, entry)
+    }
     if (!await this.cliInstalled()) {
       // 这两项是 `codex mcp add` 当场去做 OAuth 登录时用的，config.toml 里没有对应的写法；界面上没装 CLI 时不给填。
       if (oauthRequested) throw new Error('没装 Codex CLI 时，OAuth Client ID 和 OAuth Resource 填不了，要先装好 Codex CLI。')
