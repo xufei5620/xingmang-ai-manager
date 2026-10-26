@@ -46,6 +46,18 @@ const CLAUDE_FAILURE_REASONS = {
   server_error: 'service',
 }
 
+// 中转说「钱不够」的那几句原话，跟 electron/relay-quota-failure.ts 的 balancePattern 是同一份
+// （钩子是随包的独立脚本，引不了那边，cli-hooks.test.ts 钉住两边认的句子一样）。
+// new-api 余额用完回 403 insufficient_user_quota，Claude Code 2.1.310 对本地假接口实测把它报成
+// authentication_failed，错误原文落在 last_assistant_message 里（「API Error: 403 用户额度不足, …」）。
+// 照对照表会说成 Key 用不了、点进去是检查页，所以在这两类里再看一眼原文。原文只拿来比对，不往外写。
+const BALANCE_EXHAUSTED_PATTERN = /insufficient_user_quota|用户额度不足|预扣费额度失败|订阅额度不足|user quota is not enough|INSUFFICIENT_BALANCE|insufficient account balance/i
+
+function balanceExhausted(payload) {
+  return [payload.error_details, payload.last_assistant_message]
+    .some((text) => typeof text === 'string' && BALANCE_EXHAUSTED_PATTERN.test(text))
+}
+
 // 只有真要人回来点一下的几类才算「在等你」。idle_prompt 是「做完一分钟没人理」，
 // 前面已经有「做完了」那一条，再弹就重复了。
 const CLAUDE_WAITING_TYPES = new Set([
@@ -111,6 +123,10 @@ function claudeEvent(payload) {
       const reason = Object.prototype.hasOwnProperty.call(CLAUDE_FAILURE_REASONS, error)
         ? CLAUDE_FAILURE_REASONS[error]
         : 'unknown'
+      // 只改「Key 用不了」和「说不清」两类：限流、型号不对这些 CLI 自己认得准，不拿原文去翻案。
+      if ((reason === 'auth' || reason === 'unknown') && balanceExhausted(payload)) {
+        return { event: 'failed', reason: 'billing' }
+      }
       return { event: 'failed', reason }
     }
     case 'Notification':

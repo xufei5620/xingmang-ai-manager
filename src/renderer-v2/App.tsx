@@ -88,6 +88,7 @@ import { useToolAccountActions } from './features/tools/useToolAccountActions'
 import { useToolLaunch } from './features/tools/useToolLaunch'
 import { useToolInstall } from './features/tools/useToolInstall'
 import { jobToolName } from './features/tools/tool-jobs'
+import { resolveToolKeySyncFailure } from './features/tools/key-sync-failure'
 import './business.css'
 
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
@@ -311,6 +312,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
+    // 装完自动写密钥没写成：引导第 3 步说首页横幅那句、给「重新同步」，不叫客户自己去配（主路卡点 F14）。
+    keySyncFailure: resolveToolKeySyncFailure(accountBootstrap?.scope === scope ? accountBootstrap : null, tool.provider, tool.id) ?? undefined,
   })) : []
   const toolUpdates = useToolUpdateNotice(toolbox.snapshot)
   const { balanceAmount, runway, accountSummary } = useBalanceWatch({ toolsApi, session, scope, balanceState, subscription })
@@ -491,7 +494,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {/* v4：新手引导是叠在欢迎页或主界面上面的弹窗，不再整页换掉它们。 */}
     {guide && <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
-      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
+      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')}
+      onBootstrapRetry={async (id) => {
+        // 跟装完以后那一轮一样，只给这一个工具写（useToolInstall），不顺手改别的工具。
+        if (!session.account) return false
+        const provider = providerFor(id)
+        const outcome = await runAccountBootstrap(session.account.userId, 'login', true, [provider])
+        return Boolean(outcome?.result?.configured.includes(provider))
+      }} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       walletEmpty={session.authenticated && guideWalletEmpty(balanceAmount, Boolean(subscription), accountSupports(session, 'supportsBilling'))}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
       onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}

@@ -46,6 +46,11 @@ export interface GuideToolState {
    * 替当前账号写过、之后在软件之外被改动过。缺省 = 按 otherSite 处理（旧行为：拦住）。
    */
   keyState?: 'otherSite' | 'otherAccount' | 'changed'
+  /**
+   * 最近那一轮写账号密钥没给它写成（主路卡点 F14，装完自动写的那一轮最常见）：text 是首页横幅
+   * 同一句，retry = 给不给「重新同步」（账号没开通的不给）。缺省 = 没有失败。
+   */
+  keySyncFailure?: { text: string; retry: boolean }
 }
 export interface StartGuideProps {
   platform: 'win' | 'mac' | 'linux'
@@ -64,6 +69,11 @@ export interface StartGuideProps {
    * 失败时抛错。返回 null = 没切（还没登录，先去登录了）。缺省 = 旧行为，只给「打开配置」。
    */
   onSwitchAccount?: (route: Exclude<GuideRoute, 'chat'>) => Promise<AccountSourceSwitchResult | null>
+  /**
+   * 第 3 步的「重新同步」：只给这个工具把账号密钥再写一次，跟装完以后那一轮一样。返回 true = 写好了，
+   * 引导替他点「下一步」。缺省 = 不给这颗按钮，写失败时只剩「去完成连接配置」。
+   */
+  onBootstrapRetry?: (route: Exclude<GuideRoute, 'chat'>) => Promise<boolean>
   /** 按钮上的账号名；没登录为 null。 */
   accountName?: string | null
   /**
@@ -332,7 +342,7 @@ function GuideFirstTaskPrompt({ prompt, copiedNotice, disabled }: { prompt: stri
   </div>
 }
 
-function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, resumeKey, onConfigure, onSwitchAccount, accountName = null, onFailureAction, canReplaceNode = false, walletEmpty = false, onLogin, onRegister, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
+function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, resumeKey, onConfigure, onSwitchAccount, onBootstrapRetry, accountName = null, onFailureAction, canReplaceNode = false, walletEmpty = false, onLogin, onRegister, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
   const recommended = guideRecommendedToolFor(platform)
   const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === recommended) - Number(a.id === recommended) || a.shortcutIndex - b.shortcutIndex)
@@ -349,7 +359,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const [supportCopy, setSupportCopy] = useState<{ state: 'ok' | 'failed'; text: string } | null>(null)
   // 这一轮引导里改用过的是哪个工具、结果如何：第 4 步据此说「已改用」还是「没能确认能用」。
   const [switched, setSwitched] = useState<{ route: GuideRoute; result: AccountSourceSwitchResult } | null>(null)
-  // 改用成功后替用户点「下一步」；还没登录时先去登录，登好了接着改。
+  // 改用、重新同步成功后替用户点「下一步」；还没登录时先去登录，登好了接着改。
   const advanceAfterSwitch = useRef<GuideRoute | null>(null)
   const switchAfterLogin = useRef<GuideRoute | null>(null)
   const [storageWarning, setStorageWarning] = useState('')
@@ -466,6 +476,13 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
       advanceAfterSwitch.current = chosen
     })
   }
+  const retryKeySync = () => {
+    if (!route || route === 'chat' || !onBootstrapRetry || locked) return
+    const chosen = route
+    const ticket = owner.capture()
+    // 算在「确认连接」这一步里：等的时候、万一出错时说的都是这一步现成的话。
+    void run('确认连接', async () => { if (await onBootstrapRetry(chosen) && ticket()) advanceAfterSwitch.current = chosen })
+  }
   const next = () => {
     if (locked || !route) return
     if (step === 'choose') { move('prepare'); if (route !== 'chat') void run('检测工具', onDetect) }
@@ -494,6 +511,10 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const codexShared = route === 'codex' || route === 'codexDesktop' ? 'Codex CLI 和 Codex 桌面端共用这份设置，会一起改。' : ''
   const foreignLead = { otherSite: `${name} 现在用的不是当前账号的密钥。`, otherAccount: `${name} 现在用的密钥可能不是当前账号的。`, changed: `${name} 的配置在软件之外被改动过。` }
   const switchButton = signedIn ? switchLabel : '登录后改用我的账号'
+  // 装完自动写密钥没写成（主路卡点 F14）：先说首页那句，主按钮是「重新同步」，不叫客户自己去选来源、密钥和模型。
+  // 别处的 Key 是被跳过、不是没写成，照旧走「改用」那条路。
+  const keySyncFailure = route && route !== 'chat' && signedIn && !foreign && !readiness.connected ? tool?.keySyncFailure ?? null : null
+  const offerKeySync = Boolean(keySyncFailure?.retry && onBootstrapRetry)
   const foreignCallout = { otherSite: `点「${switchButton}」就能接着往下走。改之前会先把现在的设置备份一份。`, otherAccount: `能直接用，但用量可能算到别的账号上。点「${switchButton}」换成你自己的，改之前会先备份。`, changed: `现在还能用。想恢复成你账号的设置，点「${switchButton}」，改之前会先备份。` }
   // 官方账号本来就能用，「改用」只是旁边一颗次要按钮；没登录时不给，免得点了先弹登录。
   const offerSwitch = Boolean(onSwitchAccount && (foreign || (tool?.source === 'official' && signedIn)))
@@ -555,9 +576,10 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
         {step === 'prepare' && !signedIn && <p className="auth-guide-note"><Info size={15} aria-hidden="true" /><span>登录后会自动连接账号。</span></p>}
         {step === 'connect' && route === 'chat' && <>{signedIn ? <GuideStateCard tone="ok" icon={Check} title="账号已就绪">聊天和工具共用同一份余额。</GuideStateCard> : <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>}{!signedIn && <div className="auth-form-actions"><Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button></div>}</>}
         {step === 'connect' && route && route !== 'chat' && readiness.prepared && <>
+          {keySyncFailure && <p className="auth-error" role="alert" data-testid="guide-key-sync-failure">{keySyncFailure.text}</p>}
           {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用当前账号。` : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
           {officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}
-          <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
+          <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerKeySync && <Button variant="primary" icon={KeyRound} disabled={locked} onClick={retryKeySync} testId="guide-key-sync-retry">重新同步</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || offerKeySync || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
           {!connectCard && result && <GuideResultCard result={result} />}
         </>}
         {(step === 'connect' || step === 'ready') && notPrepared}

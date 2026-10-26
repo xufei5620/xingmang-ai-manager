@@ -612,3 +612,59 @@ describe('guide switch failure exits', () => {
       .toEqual([{ id: 'log', label: '查看日志' }])
   })
 })
+
+// 主路卡点 F14：装完自动写密钥没写成时，第 3 步先说首页那句，主按钮是「重新同步」，
+// 不再只叫客户「去完成连接配置」自己选来源、密钥、模型。
+describe('guide connect step after the account key was not written', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  const unwritten = guideTool({ configured: false, source: 'none', keySyncFailure: { text: 'Claude Code：密钥没有写进去，点「重新同步」再试', retry: true } })
+  const retry = { onBootstrapRetry: async () => true }
+
+  function buttonClass(markup: string, testId: string): string {
+    return new RegExp(`<button class="([^"]*)"[^>]*data-testid="${testId}"`).exec(markup)?.[1] ?? ''
+  }
+
+  it('says why with the home banner sentence and makes resync the main button', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([unwritten], retry)
+    expect(markup).toContain('data-testid="guide-key-sync-failure"')
+    expect(markup).toContain('Claude Code：密钥没有写进去，点「重新同步」再试')
+    expect(markup).toContain('>重新同步<')
+    expect(buttonClass(markup, 'guide-key-sync-retry')).toContain('xm-btn-primary')
+    // 自己去配置那条路还在，只是退成次按钮。
+    expect(buttonClass(markup, 'guide-config')).toContain('xm-btn-secondary')
+    expect(markup.indexOf('guide-key-sync-retry')).toBeLessThan(markup.indexOf('guide-config'))
+  })
+
+  it('keeps configure as the main button when nothing went wrong', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ configured: false, source: 'none' })], retry)
+    expect(markup).not.toContain('data-testid="guide-key-sync-failure"')
+    expect(markup).not.toContain('data-testid="guide-key-sync-retry"')
+    expect(buttonClass(markup, 'guide-config')).toContain('xm-btn-primary')
+  })
+
+  it('still says why but offers no resync when it cannot help or the host has no way to', () => {
+    stubResumedGuide('grok', 'connect')
+    const notEnabled = guideTool({ id: 'grok', configured: false, source: 'none', keySyncFailure: { text: 'Grok CLI：当前账号还不能用，需要的话请联系客服开通', retry: false } })
+    const markup = render([notEnabled], retry)
+    expect(markup).toContain('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
+    expect(markup).not.toContain('data-testid="guide-key-sync-retry"')
+    expect(buttonClass(markup, 'guide-config')).toContain('xm-btn-primary')
+    stubResumedGuide('claude', 'connect')
+    const withoutHost = render([unwritten])
+    expect(withoutHost).toContain('data-testid="guide-key-sync-failure"')
+    expect(withoutHost).not.toContain('data-testid="guide-key-sync-retry"')
+  })
+
+  it('leaves a connected tool, a signed-out guide and a key from elsewhere as they were', () => {
+    stubResumedGuide('claude', 'connect')
+    const failure = { text: 'Claude Code：密钥没有写进去，点「重新同步」再试', retry: true }
+    // 已连好、只是这一轮没换成新 Key：照旧说已连好，不喊没写进去。
+    expect(render([guideTool({ keySyncFailure: failure })], retry)).not.toContain('data-testid="guide-key-sync-failure"')
+    expect(render([unwritten], { ...retry, signedIn: false })).not.toContain('data-testid="guide-key-sync-failure"')
+    const foreign = render([guideTool({ configured: false, source: 'unknown', keyState: 'otherSite', keySyncFailure: failure })], { ...retry, onSwitchAccount: async () => null, accountName: 'peaker' })
+    expect(foreign).not.toContain('data-testid="guide-key-sync-failure"')
+    expect(foreign).toContain('data-testid="guide-switch-account"')
+  })
+})

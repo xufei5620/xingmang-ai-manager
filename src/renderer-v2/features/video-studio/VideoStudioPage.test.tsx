@@ -12,6 +12,7 @@ const bridge: VideoStudioBridge = {
   prepareAiChatGroup: unused,
   planVideoStudio: unused,
   generateAiVideo: unused,
+  resumeAiVideo: unused,
   cancelAiVideo: unused,
   onAiVideoProgress: unused,
   readAiVideoClip: unused,
@@ -84,6 +85,17 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('还有 1 个镜头没生成片段。')
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="video-compose"|<button[^>]*data-testid="video-compose"[^>]*disabled=""/)
     expect(markup).not.toContain('data-testid="video-result"')
+  })
+
+  it('shows a shot that was still generating when the app closed as generating again, not as never made', () => {
+    const project = plannedProject()
+    const reopened: VideoStudioProject = { ...project, shots: [project.shots[0], { ...project.shots[1], status: 'generating', requestId: 'shot-request' }] }
+    const markup = render('ready', reopened)
+    expect(markup).toMatch(/data-testid="video-shot-1"[^]*生成中/)
+    expect(markup).not.toContain('还没生成')
+    expect(markup).toContain('data-testid="video-generate-stop"')
+    expect(markup).not.toContain('data-testid="video-generate-all"')
+    expect(markup).toContain('等片段都生成好再拼。')
   })
 
   it('shows the joined film with open and save once every clip is there', () => {

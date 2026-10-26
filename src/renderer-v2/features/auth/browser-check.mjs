@@ -389,6 +389,41 @@ test('a key from another site switches to the signed-in account in one click and
   } finally { await page.close() }
 })
 
+// 主路卡点 F14：装完自动写密钥没写成时，第 3 步说首页那句、主按钮是「重新同步」，写好了接着到最后一步。
+test('a key that was not written offers resync on the connect step and moves on once it is written', async () => {
+  const page = await open('scenario=guide&installed=1&runtime=1&keySyncFail=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-key-sync-failure').waitFor()
+    assert.equal(await page.getByTestId('guide-key-sync-failure').textContent(), 'Claude Code：密钥没有写进去，点「重新同步」再试')
+    assert.equal((await page.getByTestId('guide-key-sync-retry').textContent())?.trim(), '重新同步')
+    assert.match(await page.getByTestId('guide-key-sync-retry').getAttribute('class') ?? '', /xm-btn-primary/)
+    assert.match(await page.getByTestId('guide-config').getAttribute('class') ?? '', /xm-btn-secondary/)
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-key-sync-retry').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.equal(await page.getByTestId('guide-key-sync-failure').count(), 0)
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'resync'])
+  } finally { await page.close() }
+})
+
+test('a resync that still did not write the key keeps the step and the button', async () => {
+  const page = await open('scenario=guide&installed=1&runtime=1&keySyncFail=1&keySyncFailAgain=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-key-sync-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('resync'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="guide-key-sync-retry"]')?.hasAttribute('disabled'))
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
+    assert.equal(await page.getByTestId('guide-key-sync-failure').count(), 1)
+    assert.equal(await page.getByTestId('guide-error').count(), 0)
+  } finally { await page.close() }
+})
+
 test('a failed switch keeps the step and offers the matching way out', async () => {
   const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchFail=1')
   try {
