@@ -50,6 +50,8 @@ export interface UsageStatsReporter {
   stop(): void
   /** 跑一次「今天发了没有，没发就发」。定时器调它，测试也直接调。 */
   runOnce(): Promise<UsageStatsRunResult>
+  /** 客户刚在设置里关掉开关：攒着的计数和本机那份当场丢掉，不等下一次定时检查。 */
+  discard(): Promise<void>
   /** 已排队的读写都做完时兑现；测试用。 */
   idle(): Promise<void>
 }
@@ -228,6 +230,7 @@ export function createUsageStatsReporter(options: UsageStatsReporterOptions): Us
   return {
     record,
     runOnce,
+    discard,
     start() {
       if (running || stopped) return
       running = true

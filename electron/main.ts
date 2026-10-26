@@ -107,6 +107,7 @@ import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
 import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
+import { attachPrivacyChangeListener } from './platform/privacy-change-bridge'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
 import { networkSettingsTarget } from './proxy-bypass'
@@ -1842,6 +1843,10 @@ if (!hasSingleInstanceLock) {
     noteUsageEvent = (event) => { usageStats.record(event) }
     if (unexpectedExit) usageStats.record({ kind: 'hang', hang: 'unexpectedExit' })
     usageStats.start()
+    // 设置里一关就删掉本机攒的计数（方案第 5 节「关掉后立刻停，计数文件一起删掉」），不等最多 6 小时后的那次定时检查。
+    const detachPrivacyListener = attachPrivacyChangeListener((kind, enabled) => {
+      if (kind === 'anonymousUsage' && !enabled) void usageStats.discard()
+    })
     // 只在星芒有窗口在前台时量主进程卡没卡住：后台被系统放慢的不算，也不在后台空转。
     const mainStallMonitor = createMainStallMonitor({ onStall: () => { usageStats.record({ kind: 'hang', hang: 'stall' }) } })
     const resumeStallMonitor = () => { mainStallMonitor.resume() }
@@ -1853,6 +1858,7 @@ if (!hasSingleInstanceLock) {
       app.off('browser-window-focus', resumeStallMonitor)
       app.off('browser-window-blur', pauseStallMonitor)
       mainStallMonitor.stop()
+      detachPrivacyListener()
       usageStats.stop()
       noteUsageEvent = null
     })
