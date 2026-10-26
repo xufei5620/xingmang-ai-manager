@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiAssetStore } from './ai-asset-store'
+import { createAiImageService } from './ai-image-service'
 import { AiAudioAssetStore } from './ai-audio-asset-store'
 import { AiAssetMetadataStore } from './ai-asset-metadata-store'
 import { AiVideoAssetStore } from './ai-video-asset-store'
@@ -95,6 +96,86 @@ describe('CanvasProjectAssetManager', () => {
     await manager.assertWritable(7, projectId)
     expect(assertWritable).toHaveBeenCalledWith(7)
     await expect(manager.assertWritable(7)).rejects.toThrow('画布项目尚未选择')
+  })
+
+  it('tags a stored picture in the library it was stored in and keeps the tags already on it', async () => {
+    const globalOutput = temporaryRoot('xingmang-global-output-')
+    const workspace = temporaryRoot('xingmang-tag-workspace-')
+    const ownFolder = '11111111-1111-1111-1111-111111111111'
+    const sharedLibrary = '22222222-2222-2222-2222-222222222222'
+    const projects = {
+      list: vi.fn(async () => []),
+      getUsableWorkspaceDirectory: vi.fn(async (_userId: number, projectId: string) => projectId === ownFolder ? workspace : null),
+    }
+    const globalContext = context(globalOutput, 2)
+    const manager = new CanvasProjectAssetManager({ projects, global: globalContext, create: context })
+
+    const inWorkspace = await manager.storeBase64(7, png, { projectId: ownFolder, prompt: '一只猫' })
+    const projectContext = await manager.forProject(7, ownFolder)
+    await projectContext.media.updateMetadata(7, inWorkspace.assetId, { tags: ['角色'] })
+    await manager.addImageTag(7, [inWorkspace.assetId], '已停止，但已扣费', ownFolder)
+    await expect(projectContext.media.listOwnedPage(7)).resolves.toMatchObject({
+      items: [expect.objectContaining({ assetId: inWorkspace.assetId, tags: ['角色', '已停止，但已扣费'], source: 'generated', prompt: '一只猫' })],
+    })
+    await expect(globalContext.metadata.getMany(7, [inWorkspace.assetId])).resolves.toEqual({})
+
+    const inLibrary = await manager.storeBase64(7, png, { projectId: sharedLibrary })
+    await manager.addImageTag(7, [inLibrary.assetId], '已停止，但已扣费', sharedLibrary)
+    await expect(globalContext.metadata.getMany(7, [inLibrary.assetId])).resolves.toMatchObject({
+      [inLibrary.assetId]: { tags: ['已停止，但已扣费'] },
+    })
+    await expect(manager.addImageTag(7, [inLibrary.assetId], '已停止，但已扣费')).rejects.toThrow('项目尚未选择')
+  })
+
+  it('puts a picture paid for before a stop into the paying account library with the stop tag', async () => {
+    const globalOutput = temporaryRoot('xingmang-global-output-')
+    const workspace = temporaryRoot('xingmang-stop-workspace-')
+    const projectId = '11111111-1111-1111-1111-111111111111'
+    const manager = new CanvasProjectAssetManager({
+      projects: { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => workspace) },
+      global: context(globalOutput, 2),
+      create: context,
+    })
+    let answer!: (value: Response) => void
+    let userId = 7
+    const finished = vi.fn()
+    const service = createAiImageService({
+      baseUrl: 'https://xm.solov.cc',
+      credentials: {
+        resolveCredential: vi.fn(async (group: string) => ({
+          userId, group, models: ['gpt-image-2'], keyCreated: false, apiKey: 'sk-test-only', keyId: 1, keyName: 'image',
+        })),
+      },
+      fetchImpl: vi.fn(() => new Promise<Response>((resolve) => { answer = resolve })) as unknown as typeof fetch,
+      finishDispatchedAfterStop: true,
+      onFinishedAfterStop: finished,
+      assets: {
+        prepareProject: (owner, project) => manager.prepareProject(owner, project),
+        assertWritable: (owner, project) => manager.assertWritable(owner, project),
+        storeBase64: (owner, value, metadata) => manager.storeBase64(owner, value, metadata),
+        storeRemoteUrl: (owner, url, metadata) => manager.storeRemoteUrl(owner, url, metadata),
+        readOwned: (owner, assetId, project) => manager.readImageOwned(owner, assetId, project),
+        addTag: (owner, assetIds, tag, project) => manager.addImageTag(owner, assetIds, tag, project),
+      },
+    })
+    const pending = service.generate(4, {
+      requestId: 'canvas-run:paid', group: '图片模型', model: 'gpt-image-2', prompt: '一只猫', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+    expect(service.cancelSender(4)).toBe(1)
+    await expect(pending).rejects.toThrow('已停止等待')
+
+    // Another account signs in before the answer arrives.
+    userId = 9
+    answer(new Response(JSON.stringify({ data: [{ b64_json: png.slice(png.indexOf(',') + 1) }] }), { status: 200 }))
+    await vi.waitFor(() => expect(finished).toHaveBeenCalledWith({ requestId: 'canvas-run:paid', stored: 1 }))
+
+    const paying = await manager.forProject(7, projectId)
+    await expect(paying.media.listOwnedPage(7)).resolves.toMatchObject({
+      total: 1,
+      items: [expect.objectContaining({ mediaType: 'image', source: 'generated', prompt: '一只猫', tags: ['已停止，但已扣费'] })],
+    })
+    await expect((await manager.forProject(9, projectId)).media.listOwnedPage(9)).resolves.toMatchObject({ total: 0 })
   })
 
   it('keeps a saved generated asset usable when only source metadata persistence fails', async () => {

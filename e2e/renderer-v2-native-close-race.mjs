@@ -47,6 +47,7 @@ async function main() {
     checkUpdatesOnStartup: false,
     runDiagnosticsOnStartup: false,
     crashReportingNoticeShown: true,
+    usageStatsNoticeShown: true,
     closeBehavior: 'quit',
   }) + '\n', 'utf8')
   const tracePath = path.join(sandbox, 'close-trace.jsonl')

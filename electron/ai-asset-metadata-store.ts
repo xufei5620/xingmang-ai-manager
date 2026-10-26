@@ -292,6 +292,31 @@ export class AiAssetMetadataStore {
     })
   }
 
+  /**
+   * Appends one tag and keeps every tag already there. The app tags a picture it
+   * has just stored itself (one that arrived after a stop), and replacing the
+   * list through updatePreferences would need a read first, which could drop a
+   * tag the user added in between. A tag already present, in any case, or a
+   * full list leaves the record as it is.
+   */
+  addTag(userId: number, assetId: string, tagInput: string): Promise<AiAssetMetadataItem> {
+    return this.enqueue(userId, async () => {
+      assertAssetId(assetId)
+      const [tag] = normalizeAiAssetTags([tagInput])
+      const state = await this.readState(userId)
+      const existing = state.items.find((entry) => entry.assetId === assetId)
+      const current = existing?.tags ?? []
+      const key = tag.toLocaleLowerCase('zh-CN')
+      if (existing && (current.length >= MAXIMUM_TAGS || current.some((entry) => entry.toLocaleLowerCase('zh-CN') === key))) {
+        return structuredClone(existing)
+      }
+      const item = this.upsert(state, assetId, this.now().toISOString())
+      item.tags = [...current, tag]
+      await this.writeState(userId, state)
+      return structuredClone(item)
+    })
+  }
+
   markUsed(userId: number, assetId: string): Promise<AiAssetMetadataItem> {
     return this.enqueue(userId, async () => {
       assertAssetId(assetId)

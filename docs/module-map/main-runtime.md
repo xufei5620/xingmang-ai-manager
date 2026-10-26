@@ -19,6 +19,10 @@
 - `window-recovery.ts` — 窗口停在已拔掉的显示器上时挪回主屏居中（最大化的先还原再挪再最大化）；只在马上要显示时调，对隐藏窗口 `unmaximize()` 在 Windows 上会把它顺手显示出来
 - `window-responsiveness.ts` — 页面卡死时弹「等待 / 重新加载」，页面自己缓过来就把弹框收回且绝不重载
 - `renderer-crash-recovery.ts` — 页面进程被回收或崩溃后：一分钟内前两次自动重载，第三次改为问用户（画布窗口不问、停在空白等用户重开）；主窗口与 `canvas-window.ts` 共用
+- `renderer-release.ts` — 主窗口缩在托盘里满 10 分钟就关掉界面进程省内存（`forcefullyCrashRenderer`，窗口本身留着），点托盘或别的入口叫出来时按原地址重新加载。界面没报告过忙闲（legacy 回滚版）、报告手上有事（聊天在生成、视频在做、工具在装、开着对话框）、主进程在退出 / 装东西 / 付款窗口开着时都不关；关着和重新加载那一会儿，托盘、系统通知、深链要的跳页先存着，新界面第一次报告时再发（`platform/renderer-delivery-bridge.ts` 给 platform 那边的「打开某页」用同一条路）。那一声「界面进程没了」由 `main.ts` 的崩溃处理认出来不当崩溃
+- `released-renderer-watch.ts` — 界面关着时替它做两件后台事：每 10 分钟读一次余额（托盘、余额与花费提醒照旧），看缓存的公告，有界面没见过的新公告或者有充值活动（每天一次）就把界面叫醒，让它照旧弹公告
+- `balance-alerts.ts` / `spend-spike.ts` — 「余额低于 5 美元」和「花费突然变多」两个系统通知（原来在界面里，搬到主进程界面关着也照常提醒）：每次读回余额都过一遍，花费突增掉够了再读一次用量核账；同一账号 6 小时内只提醒一次的记录写在 userData 的 `spend-spike-notified.json`
+- `empty-balance-alert.ts` — 「当前账号余额是 $0」那条通知的判断和记录（主路卡点 F2，Codex 没有出错钩子，只能看余额）：钱包 ≤ 0 且确定没有能扣的订阅才算用完，订阅还没读到不下结论；同一账号同一次用完只说一次，记在 userData 的 `balance-empty-notified.json`，读到有钱就抹掉
 - `display-compat.ts` — 显卡进程短时间内连崩几次（老集显、远程桌面、虚拟机）就记进 `display-crashes.log`，下次启动这一次自动改用不走显卡的兼容模式并告诉用户；必须在 app ready 之前决定
 - `context-menu.ts` — 主窗口的编辑右键菜单（剪切/复制/粘贴/全选，照 Chromium 的 editFlags 置灰）；链接只给「复制链接」不给「打开」，免得绕开 `will-navigate` / `setWindowOpenHandler` 白名单（I12）
 - `process-stream-errors.ts` — 吞掉 stdout/stderr 的 EPIPE：开发时关掉控制台后 Electron 往断管写日志不该把主进程打崩，其他错误照抛
@@ -28,6 +32,7 @@
 - `startup-failure.ts` — 启动出错时给小白看的弹框：按 errno 链分成磁盘满 / 被杀毒软件占着 / 安装不完整 / 其他，原文只在点「复制错误信息」时出去且先抹用户目录与密钥（I13）
 - `unexpected-exit.ts` — 主进程未捕获异常时不弹 Electron 的英文框：记一笔、自动重开一次，下次打开用中文说明并给「复制给客服」；10 分钟内已重开过就不再重开，避免窗口一闪一闪
 - `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关
+- `usage-stats.ts` / `usage-stats-reporter.ts` — 匿名使用统计（每天打卡，2026-10-26 yoyo 选的推荐档）。前者是纯函数：一天那条地址的每一段都从固定缩写表或版本号样式来，报错原文只在内存里归成五类之一，开关判定、计数文件的解析；后者负责本机计数文件（`safe-local-data` 原子写）和发送（两个固定地址、一天最多成功一次最多试三次、不带 cookie、拒绝重定向、超时、读回包限量，I10），另有主进程卡顿计时。开关是系统界面设置里的 `privacy.anonymousUsage`，没碰过 = 开；工作流解码在 `scripts/update-feed-stats.cjs`
 
 ## 诊断、日志与反馈
 - `diagnostics.ts` — **「检查」页的总入口**：`runDiagnostics` 先建一份共用上下文（`diagnostics-context.ts`），再按固定次序把下面几类检查排起来同时跑（每项单独限时，超时或出错只算这一项，报告里的文字一律再脱敏一遍），收尾时做两处跨项调和（证书那项跟着网络那项、Node.js 那两项跟着有没有装命令行工具），再数各档多少项。报告的类型、`DiagnosticsDependencies`（缺省实现和测试替身的注入口）、检查页「打开文件夹」的名字也在这里。#1070 第 9 步把各类检查按类别拆进了下面几个 `diagnostics-*.ts`，它们只 import 这里的类型；原来从这里导出的名字照旧从这里转出，调用方不用改

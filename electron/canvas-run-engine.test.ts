@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   appendCanvasRunTimelineEvent,
   canvasRunDescendants,
+  canvasRunDesktopUnsupportedReason,
   canvasRunExclusiveNodeIds,
   canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
@@ -553,6 +554,32 @@ describe('executeCanvasRun', () => {
 })
 
 describe('canvasRunDescendants', () => {
+  it('fails a node the desktop cannot run without reaching an executor when a caller skips the service check', async () => {
+    // A kernel-only kind falls back to the video executor, so this second
+    // line is what keeps a direct engine call from spending money.
+    const image = vi.fn(async () => ({ assets: [asset()] }))
+    const video = vi.fn(async () => ({ assets: [] }))
+    const reason = '「一次出多张图」桌面版暂不支持，本次没有提交任何付费请求'
+    const workflow = graph(
+      [
+        node('prompt', 'text'),
+        node('compare', 'image-compare'),
+        { ...node('many', 'image-generate'), desktopUnsupported: reason },
+        node('after', 'image'),
+      ],
+      [edge('prompt', 'compare'), edge('prompt', 'many'), edge('many', 'after', 'image')],
+    )
+    const record = await executeCanvasRun(runOptions(workflow, { executors: executors({ image, video }) }))
+
+    expect(image).not.toHaveBeenCalled()
+    expect(video).not.toHaveBeenCalled()
+    const states = Object.fromEntries(record.nodes.map((entry) => [entry.nodeId, entry.state]))
+    expect(states).toEqual({ prompt: 'succeeded', compare: 'failed', many: 'failed', after: 'skipped' })
+    expect(record.nodes.find((entry) => entry.nodeId === 'many')?.errorMessage).toBe(reason)
+    expect(record.nodes.find((entry) => entry.nodeId === 'compare')?.errorMessage)
+      .toBe('该节点桌面版暂不支持，本次没有提交任何付费请求')
+  })
+
   it('returns descendants in topological order without including the roots', () => {
     const workflow = graph(
       [node('a', 'text'), node('b', 'text'), node('c', 'text'), node('d', 'text')],
@@ -575,5 +602,51 @@ describe('canvasRunExclusiveNodeIds', () => {
       graph([node('a', 'text'), node('b', 'text')]),
       { kind: 'all' },
     )).toEqual(['a', 'b'])
+  })
+})
+
+describe('canvasRunDesktopUnsupportedReason', () => {
+  function unsupported(id: string, reason: string): CanvasRunGraphNode {
+    return { ...node(id, 'image-generate'), desktopUnsupported: reason }
+  }
+
+  it('names the first unsupported node the run would execute', () => {
+    const workflow = graph(
+      [node('prompt', 'text'), unsupported('first', 'A'), unsupported('second', 'B'), node('other', 'text')],
+      [edge('prompt', 'first'), edge('first', 'second')],
+    )
+    expect(canvasRunDesktopUnsupportedReason(workflow, { kind: 'all' })).toBe('A')
+    // Every scope pulls in the upstream nodes the selected ones depend on.
+    expect(canvasRunDesktopUnsupportedReason(workflow, { kind: 'selection', nodeIds: ['second'] })).toBe('A')
+    expect(canvasRunDesktopUnsupportedReason(workflow, { kind: 'from-node', nodeId: 'second' })).toBe('A')
+
+    const siblings = graph(workflow.nodes, [edge('prompt', 'first'), edge('prompt', 'second')])
+    expect(canvasRunDesktopUnsupportedReason(siblings, { kind: 'to-node', nodeId: 'second' })).toBe('B')
+  })
+
+  it('ignores unsupported nodes outside the scope, switched off or behind a switched-off node', () => {
+    const workflow = graph(
+      [node('prompt', 'text'), unsupported('first', 'A'), unsupported('second', 'B'), node('other', 'text')],
+      [edge('prompt', 'first'), edge('first', 'second')],
+    )
+    expect(canvasRunDesktopUnsupportedReason(workflow, { kind: 'to-node', nodeId: 'prompt' })).toBeUndefined()
+    expect(canvasRunDesktopUnsupportedReason(workflow, { kind: 'selection', nodeIds: ['other'] })).toBeUndefined()
+
+    const switchedOff = graph(
+      [node('prompt', 'text'), { ...unsupported('first', 'A'), disabled: true }, unsupported('second', 'B'), node('other', 'text')],
+      workflow.edges,
+    )
+    expect(canvasRunDesktopUnsupportedReason(switchedOff, { kind: 'all' })).toBeUndefined()
+
+    const behindSwitchedOff = graph(
+      [{ ...node('prompt', 'text'), disabled: true }, unsupported('first', 'A'), node('other', 'text')],
+      [edge('prompt', 'first')],
+    )
+    expect(canvasRunDesktopUnsupportedReason(behindSwitchedOff, { kind: 'all' })).toBeUndefined()
+  })
+
+  it('still rejects a malformed graph before looking at any node', () => {
+    expect(() => canvasRunDesktopUnsupportedReason(graph([unsupported('a', 'A')], [edge('ghost', 'a')]), { kind: 'all' }))
+      .toThrow('不存在的节点')
   })
 })

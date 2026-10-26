@@ -62,6 +62,7 @@
 ## 扩展
 
 - `provider-extensions.ts` — 各 CLI 统一的 MCP / Skill / Plugin 抽象（`ProviderExtensionService`）：列出、安装、卸载、启停、查更新、MCP 健康检查，都是在主进程以 argv 数组调用各家 CLI 自己的子命令（MCP 的 command/args 来自用户输入，I1）；Claude 官方插件市场在没开过终端的电脑上不存在，这里替它注册（要 git，缺 git 时给能照做的提示）。Codex 专用部分在 `codex-extensions.ts` 和 `codex-plugin-catalog*.ts`
+- `mcp-http-headers.ts` — 外接工具网络服务请求头的合格规矩（名字是不以 - 开头的 HTTP token，值不许换行和 NUL，最多 64 条），IPC 解析、`provider-extensions.ts` 拼 `--header`、`codex-extensions.ts` 写 `http_headers` 和渲染层填表共用；零依赖、渲染层也能值导入（I6）
 
 ## 无限画布 + AI 工作区（全项目唯一运行第三方前端代码且有宿主桥的地方）
 
@@ -97,8 +98,8 @@
 - `ai-chat-protocol.ts` — AI 请求的协议层：端点（`/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`）、各种上限、型号能力表 `resolveAiModelCapability` 与请求体构造；聊天、生图、生视频、画布指纹和执行器都依赖它
 - `ai-chat-service.ts` — 主进程的流式聊天：连接、空闲、总时长三道超时（长思考模型几分钟不出字也不截断，Q43），事件/输出/响应体都有字节上限，按窗口限并发；附图在主进程按账号读回转成 data URI；`completeOnce` 供画布文本节点和视频剪辑页的分镜用，没有窗口、不进并发表，但 `cancelAll`（换账号、退出登录）照样停它。Key 经 `chat-credential-coordinator.ts` 拿，渲染层只发"请求"
 - `ai-image-service.ts` — 生图与改图（multipart `/v1/images/edits`）：用有界队列限并发、可取消，响应体有上限；发请求前先试写保存位置，写不进就在扣费之前停下
-- `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上
-- `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品
+- `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上；同一个任务只查一份、只存一次，视频剪辑页可按原请求号接回（`resumeRequest`）
+- `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品；取回成品时另记一笔「请求号 → 片段」（最近 100 条），视频剪辑页重开时按请求号把片段挂回镜头
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（用户数据目录 `chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + 最后写的 `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写、单文件/总量/账号目录数上限（防被攻破的渲染层换 scope 写满磁盘）；对话数上限与渲染层 `storage.ts` 是有意重复
 - `ai-chat-attachments.ts` — 聊天里附带的图片只从系统选文件框和剪贴板在主进程里取，渲染层给不出任何路径或字节（I15 同一思路）；太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片素材目录
 - `chat-key-store.ts` — AI 聊天按分组签发的 Key 的本机缓存（`ChatKeyStore`）：`safeStorage` 加密落盘，`basic_text` 后端时拒绝落盘、只在本次运行内存里留；有账号数、每账号 Key 数上限，支持按账号/分组/Key 失效，并把退役分组名改成新名。由 `chat-credential-coordinator.ts`、`account-key-options.ts` 使用
@@ -142,6 +143,7 @@
 - `platform/runtime-log-bridge.ts` — 平台 handler 先于 `RuntimeLogStore` 注册，这里把早到的日志缓冲起来，等 `main.ts` 接上后补发（I4 要求的日志那一半）
 - `platform/host-notification-bridge.ts` — 让 `main.ts` 一侧（加速快用完/已断开、终端事件）能发系统通知；**不缓冲**，没接上就如实返回 `unsupported`，因为晚到的"加速还剩 5 分钟"比不送更糟
 - `platform/proxy-bypass-bridge.ts` / `platform/tray-availability-bridge.ts` — 把 `main.ts` 里"代理连不上已改直连 / 只对星芒改直连"和"托盘建没建出来"两个状态读给设置页；没接上时分别当作没绕过、不知道
+- `platform/privacy-change-bridge.ts` — 方向反过来：设置页存好隐私开关后告诉 `main.ts`，关掉「匿名使用统计」时当场删掉本机攒的计数（`usage-stats-reporter.ts` 的 `discard`）；没接上就什么都不做，那边接上后每次记和发之前都重读开关
 
 ### 系统代理（给加速用，不在主窗口里跑）
 - `platform/windows-system-proxy.ts` — Windows 上开关当前用户的系统代理：经可信 PowerShell（固定路径 + `trustedCommandEnvironment` + `trustedOnly`，I2、I14）调 WinInet 改设置，先写恢复记录与租约，只在整体状态仍等于预期时才写；被拦时退到预编译脚本。加速辅助进程和卸载清理使用

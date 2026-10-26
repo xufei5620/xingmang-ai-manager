@@ -93,6 +93,40 @@ describe('renderer-v2 start guide first run', () => {
     expect(render([guideTool()], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
   })
 
+  // 主路卡点 F3：余额 $0 时「去充值」排在最底下，要往下翻才看得到。
+  it('leads with the empty wallet and puts top-up first when the current account has nothing to spend', () => {
+    stubResumedGuide('claude', 'ready')
+    const markup = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
+    expect(markup).toContain('data-testid="guide-wallet-empty"')
+    expect(markup).toContain('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    expect(markup).not.toContain('已准备好。打开工具，即可开始第一次任务。')
+    expect(markup.match(/data-testid="guide-recharge-button"/g)).toHaveLength(1)
+    // 紧跟在顶上那句后面，排在结果卡、第一句话、文件夹提示前面。
+    expect(markup.indexOf('data-testid="guide-recharge-button"')).toBeLessThan(markup.indexOf('data-testid="guide-result"'))
+    expect(markup.indexOf('data-testid="guide-recharge-button"')).toBeLessThan(markup.indexOf('data-testid="guide-folder-hint"'))
+    expect(markup).toMatch(/class="[^"]*xm-btn-primary[^"]*"[^>]*data-testid="guide-recharge-button"/)
+    // 「打开」照样能点，只是不再抢主按钮。
+    expect(markup).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-open-tool"/)
+    expect(markup).not.toMatch(/data-testid="guide-open-tool"[^>]*disabled/)
+    stubResumedGuide('chat', 'ready')
+    const chat = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
+    expect(chat).toContain('data-testid="guide-wallet-empty"')
+    expect(chat).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-chat"/)
+  })
+
+  it('keeps the ready wording when the empty wallet is not what the tool spends', () => {
+    stubResumedGuide('claude', 'ready')
+    for (const tool of [guideTool({ source: 'official' }), guideTool({ source: 'manual' })]) {
+      const markup = render([tool], { onFailureAction: () => undefined, walletEmpty: true })
+      expect(markup).not.toContain('data-testid="guide-wallet-empty"')
+      expect(markup).toContain('已准备好。打开工具，即可开始第一次任务。')
+    }
+    const funded = render([guideTool()], { onFailureAction: () => undefined })
+    expect(funded).not.toContain('data-testid="guide-wallet-empty"')
+    expect(funded).toMatch(/class="[^"]*xm-btn-primary[^"]*"[^>]*data-testid="guide-open-tool"/)
+    expect(funded).toMatch(/class="[^"]*xm-btn-ghost[^"]*"[^>]*data-testid="guide-recharge-button"/)
+  })
+
   it('does not offer a folder for the desktop app, the chat route or a tool that is not ready', () => {
     stubResumedGuide('codexDesktop', 'ready')
     expect(render([guideTool({ id: 'codexDesktop' })])).not.toContain('data-testid="guide-folder-hint"')
@@ -314,6 +348,29 @@ describe('guide install failure wording', () => {
     expect(guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。'), 'Claude Code').message)
       .toBe('运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
     expect(guideInstallExits(new Error(`未获得管理员权限，Node.js安装已停止。${standardAdvice}`)).map((action) => action.id)).toEqual(['support'])
+  })
+
+  // 主进程那句只说原因、下一步留给错误目录；引导以前只放标题，「换个网络（比如手机热点）」客户看不到（主路卡点 F12）。
+  it('tells a network failure to try another network with the catalog wording and the guide button name', () => {
+    const intercepted = guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。'), 'Claude Code', false, true)
+    expect(intercepted.message).toBe('Claude Code 没装上（连接被网络拦截）。连接的路上有设备把证书换成了别的（运营商、公司或学校的网络常见）。稍等一两分钟再试；还不行就换个网络（比如手机热点），公司或学校的网络请找网络管理员。')
+    expect(intercepted.reason).toBe('连接被网络拦截')
+    expect(intercepted.detail).toContain('SELF_SIGNED_CERT_IN_CHAIN')
+    expect(guideInstallFailure(new Error('Codex CLI 安装失败：npm 官方源：解析不出下载源的地址（错误码 ENOTFOUND）。'), 'Codex').message)
+      .toBe('Codex 没装上（连不上下载源）。这台电脑现在连不到下载用的服务器，已安装的工具不受影响。检查网络或换个网络（比如手机热点）后，再点「再试一次」。')
+    expect(guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 CERT_HAS_EXPIRED）。'), 'Claude Code').message)
+      .toBe('Claude Code 没装上（证书日期对不上）。多半是这台电脑的系统时间不准——证书有没有过期是拿本机时钟比出来的。请把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换个网络。')
+    // 运行环境那一段没装上也是同一句下一步。
+    expect(guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ECONNRESET'), 'Claude Code').message)
+      .toBe('运行环境没装上（连不上下载源），Claude Code 还没开始装。这台电脑现在连不到下载用的服务器，已安装的工具不受影响。检查网络或换个网络（比如手机热点）后，再点「再试一次」。')
+  })
+
+  it('keeps the next step the main process wrote when the official registry check could not connect', () => {
+    const network = guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。换个网络（比如手机热点）后再试。'), 'Claude Code')
+    expect(network.message).toBe('Claude Code 没装上（连不上 npm 官方源）。换个网络（比如手机热点）后再试。点「再试一次」，还不行就点「需要帮助」。')
+    expect(network.reason).toBe('连不上 npm 官方源')
+    expect(guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。到「设置 › 网络加速」开启加速后再试。'), 'Claude Code').message)
+      .toBe('Claude Code 没装上（连不上 npm 官方源）。到「设置 › 网络加速」开启加速后再试。点「再试一次」，还不行就点「需要帮助」。')
   })
 })
 
@@ -576,5 +633,61 @@ describe('guide switch failure exits', () => {
     // 改的只是那句话：按钮照旧是「再试一次」「复制给客服」和这里的「查看日志」，不多出「找客服」。
     expect(guideFailureExits(new Error("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
       .toEqual([{ id: 'log', label: '查看日志' }])
+  })
+})
+
+// 主路卡点 F14：装完自动写密钥没写成时，第 3 步先说首页那句，主按钮是「重新同步」，
+// 不再只叫客户「去完成连接配置」自己选来源、密钥、模型。
+describe('guide connect step after the account key was not written', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  const unwritten = guideTool({ configured: false, source: 'none', keySyncFailure: { text: 'Claude Code：密钥没有写进去，点「重新同步」再试', retry: true } })
+  const retry = { onBootstrapRetry: async () => true }
+
+  function buttonClass(markup: string, testId: string): string {
+    return new RegExp(`<button class="([^"]*)"[^>]*data-testid="${testId}"`).exec(markup)?.[1] ?? ''
+  }
+
+  it('says why with the home banner sentence and makes resync the main button', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([unwritten], retry)
+    expect(markup).toContain('data-testid="guide-key-sync-failure"')
+    expect(markup).toContain('Claude Code：密钥没有写进去，点「重新同步」再试')
+    expect(markup).toContain('>重新同步<')
+    expect(buttonClass(markup, 'guide-key-sync-retry')).toContain('xm-btn-primary')
+    // 自己去配置那条路还在，只是退成次按钮。
+    expect(buttonClass(markup, 'guide-config')).toContain('xm-btn-secondary')
+    expect(markup.indexOf('guide-key-sync-retry')).toBeLessThan(markup.indexOf('guide-config'))
+  })
+
+  it('keeps configure as the main button when nothing went wrong', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ configured: false, source: 'none' })], retry)
+    expect(markup).not.toContain('data-testid="guide-key-sync-failure"')
+    expect(markup).not.toContain('data-testid="guide-key-sync-retry"')
+    expect(buttonClass(markup, 'guide-config')).toContain('xm-btn-primary')
+  })
+
+  it('still says why but offers no resync when it cannot help or the host has no way to', () => {
+    stubResumedGuide('grok', 'connect')
+    const notEnabled = guideTool({ id: 'grok', configured: false, source: 'none', keySyncFailure: { text: 'Grok CLI：当前账号还不能用，需要的话请联系客服开通', retry: false } })
+    const markup = render([notEnabled], retry)
+    expect(markup).toContain('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
+    expect(markup).not.toContain('data-testid="guide-key-sync-retry"')
+    expect(buttonClass(markup, 'guide-config')).toContain('xm-btn-primary')
+    stubResumedGuide('claude', 'connect')
+    const withoutHost = render([unwritten])
+    expect(withoutHost).toContain('data-testid="guide-key-sync-failure"')
+    expect(withoutHost).not.toContain('data-testid="guide-key-sync-retry"')
+  })
+
+  it('leaves a connected tool, a signed-out guide and a key from elsewhere as they were', () => {
+    stubResumedGuide('claude', 'connect')
+    const failure = { text: 'Claude Code：密钥没有写进去，点「重新同步」再试', retry: true }
+    // 已连好、只是这一轮没换成新 Key：照旧说已连好，不喊没写进去。
+    expect(render([guideTool({ keySyncFailure: failure })], retry)).not.toContain('data-testid="guide-key-sync-failure"')
+    expect(render([unwritten], { ...retry, signedIn: false })).not.toContain('data-testid="guide-key-sync-failure"')
+    const foreign = render([guideTool({ configured: false, source: 'unknown', keyState: 'otherSite', keySyncFailure: failure })], { ...retry, onSwitchAccount: async () => null, accountName: 'peaker' })
+    expect(foreign).not.toContain('data-testid="guide-key-sync-failure"')
+    expect(foreign).toContain('data-testid="guide-switch-account"')
   })
 })

@@ -330,7 +330,7 @@ export function cliHooksNeedRepair(config: Pick<ProviderConfigSummary, 'cliHooks
 
 /**
  * 这次打开软件时，提醒设置指向旧位置已经替用户改好了（主进程 cliHooksAutoRepaired）。
- * 首页只在工具行上轻轻说一句，不改状态、不给按钮。
+ * 首页右下角说一次就收（Home.tsx 的 hookRepairsToAnnounce），不改状态、不给按钮。
  */
 export function cliHooksWereAutoRepaired(config: Pick<ProviderConfigSummary, 'cliHooksAutoRepaired'>): boolean {
   return config.cliHooksAutoRepaired === true

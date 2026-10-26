@@ -389,6 +389,41 @@ test('a key from another site switches to the signed-in account in one click and
   } finally { await page.close() }
 })
 
+// 主路卡点 F14：装完自动写密钥没写成时，第 3 步说首页那句、主按钮是「重新同步」，写好了接着到最后一步。
+test('a key that was not written offers resync on the connect step and moves on once it is written', async () => {
+  const page = await open('scenario=guide&installed=1&runtime=1&keySyncFail=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-key-sync-failure').waitFor()
+    assert.equal(await page.getByTestId('guide-key-sync-failure').textContent(), 'Claude Code：密钥没有写进去，点「重新同步」再试')
+    assert.equal((await page.getByTestId('guide-key-sync-retry').textContent())?.trim(), '重新同步')
+    assert.match(await page.getByTestId('guide-key-sync-retry').getAttribute('class') ?? '', /xm-btn-primary/)
+    assert.match(await page.getByTestId('guide-config').getAttribute('class') ?? '', /xm-btn-secondary/)
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-key-sync-retry').click()
+    await page.locator('[data-guide-step="ready"]').waitFor()
+    assert.equal(await page.getByTestId('guide-key-sync-failure').count(), 0)
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'resync'])
+  } finally { await page.close() }
+})
+
+test('a resync that still did not write the key keeps the step and the button', async () => {
+  const page = await open('scenario=guide&installed=1&runtime=1&keySyncFail=1&keySyncFailAgain=1')
+  try {
+    await page.getByTestId('guide-route-claude').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-key-sync-retry').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('resync'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="guide-key-sync-retry"]')?.hasAttribute('disabled'))
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
+    assert.equal(await page.getByTestId('guide-key-sync-failure').count(), 1)
+    assert.equal(await page.getByTestId('guide-error').count(), 0)
+  } finally { await page.close() }
+})
+
 test('a failed switch keeps the step and offers the matching way out', async () => {
   const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchFail=1')
   try {
@@ -642,6 +677,28 @@ test('a real backup and a verified switch appear after account switching, and a 
     assert.equal(await page.getByTestId('guide-open-tool').isDisabled(), true)
     assert.equal(await page.getByTestId('guide-home').isDisabled(), true)
     assert.equal((await calls(page)).some((entry) => entry.method === 'launch'), false)
+  } finally { await page.close() }
+})
+
+// 主路卡点 F3：新账号余额 $0 走完引导，「去充值」排在最底下，小屏上要往下翻才看得到。
+test('an empty wallet puts top-up in view on the last step without scrolling', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&runtime=1&switchable=1&walletEmpty=1')
+  try {
+    // 1366×768 的笔记本按八五折开窗，再缩放到 0.9，能看到的大约就这么高。
+    await page.setViewportSize({ width: 1280, height: 620 })
+    await page.getByTestId('guide-route-claude').check()
+    while (await page.getByTestId('start-guide').getAttribute('data-guide-step') !== 'ready') await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('guide-wallet-empty').innerText(), '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    const body = page.locator('.xm-dialog-body')
+    assert.equal(await body.evaluate((element) => element.scrollTop), 0)
+    const box = await page.getByTestId('guide-recharge-button').boundingBox()
+    const frame = await body.boundingBox()
+    assert.ok(box && frame && box.y >= frame.y && box.y + box.height <= frame.y + frame.height, `top-up button ${JSON.stringify(box)} is outside the visible dialog ${JSON.stringify(frame)}`)
+    assert.equal(await page.getByTestId('guide-recharge-button').count(), 1)
+    assert.equal(await page.getByTestId('guide-open-tool').isEnabled(), true)
+    await page.getByTestId('guide-recharge-button').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('exit'))
+    assert.deepEqual((await calls(page)).slice(-2), [{ method: 'complete', input: 'claude' }, { method: 'exit', input: 'recharge' }])
   } finally { await page.close() }
 })
 

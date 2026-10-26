@@ -73,7 +73,8 @@ describe('main process window events', () => {
     // Assigned once, straight from the startup callback, so it is set by the time the main window exists.
     expect(assignments).toHaveLength(1)
     expect(assignments[0].owner).toBe(callback)
-    expect(assignments[0].value).toBe("(target) => { showMainWindow(); sendToMainWindow('onNavigate', target) }")
+    // 界面缩在托盘里被关掉时，跳页先存着，重新加载好了再发（renderer-release.ts）。
+    expect(assignments[0].value).toBe("(target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }")
   })
 })
 
@@ -143,6 +144,8 @@ describe('main process quit cleanup', () => {
   it('registers the steps in the order the separate will-quit listeners used to run', () => {
     const steps = quitCleanupSteps()
     expect(steps.map((step) => step.name)).toEqual([
+      // 匿名使用统计最先停：后面那些步骤退出时报的错、窗口没响应都不该再记。
+      'usage-stats',
       'acceleration-power',
       'cli-hook-events',
       'keep-awake',
@@ -159,6 +162,7 @@ describe('main process quit cleanup', () => {
       'updater',
       'display-watch',
       'update-install-prompt',
+      'renderer-release',
       'power-off-watch',
       'unexpected-exit-flag',
       'unexpected-exit-handler',
@@ -175,9 +179,23 @@ describe('main process quit cleanup', () => {
     // 或线路控制器没停（#1335 第 1 条）。改了哪一步要做的事，在这里跟着改。
     const statements = Object.fromEntries(quitCleanupSteps().map((step) => [step.name, step.statements]))
     expect(statements).toEqual({
+      'usage-stats': [
+        "app.off('browser-window-focus', resumeStallMonitor)",
+        "app.off('browser-window-blur', pauseStallMonitor)",
+        'mainStallMonitor.stop()',
+        'detachPrivacyListener()',
+        'usageStats.stop()',
+        'noteUsageEvent = null',
+      ],
       'acceleration-power': ["powerMonitor.off('suspend', onSuspend)", "powerMonitor.off('resume', onResume)"],
       'cli-hook-events': ['cliHookEvents.dispose()'],
-      'keep-awake': ['cliKeepAwake.dispose()', 'unsubscribeInstallKeepAwakeQueue()', 'unsubscribeInstallKeepAwakeUpdate()', 'installKeepAwake.dispose()'],
+      'keep-awake': [
+        'cliKeepAwake.dispose()',
+        'unsubscribeInstallKeepAwakeQueue()',
+        'unsubscribeInstallKeepAwakeUpdate()',
+        'installKeepAwake.dispose()',
+        'codexRemoteKeepAwake.dispose()',
+      ],
       routes: [
         'unsubscribeRelayRoute()',
         'unsubscribeToolRoutes()',
@@ -221,6 +239,7 @@ describe('main process quit cleanup', () => {
         "screen.removeListener('display-metrics-changed', onDisplaysChanged)",
       ],
       'update-install-prompt': ['unsubscribeUpdateInstallPrompt()', 'updateInstallPrompter.dispose()'],
+      'renderer-release': ['releasedWatch.stop()', 'rendererRelease.dispose()', 'detachRendererDelivery(deliverWhenRendererReady)'],
       'power-off-watch': ["powerMonitor.off('shutdown', onPowerOff)"],
       'unexpected-exit-flag': ['appWillQuit = true'],
       'unexpected-exit-handler': ["process.off('uncaughtException', onUnexpectedException)"],

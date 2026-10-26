@@ -1,7 +1,21 @@
-import type { CanvasAssetQuery, CanvasImageEditInput, CanvasImageGenerateInput, CanvasRenameAssetInput, CanvasStartRunInput, CanvasUpdateAssetMetadataInput } from './canvas-contract'
+import {
+  maximumCanvasPromptPresetNameLength as maximumPromptPresetNameLength,
+  type CanvasAssetQuery,
+  type CanvasImageEditInput,
+  type CanvasImageGenerateInput,
+  type CanvasRenameAssetInput,
+  type CanvasStartRunInput,
+  type CanvasUpdateAssetMetadataInput,
+} from './canvas-contract'
 import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
-import type { CanvasRunGraph, CanvasRunNodeKind, CanvasRunScope } from './canvas-run-contract'
+import {
+  canvasRunKernelOnlyNodeLabels,
+  type CanvasRunGraph,
+  type CanvasRunKernelOnlyNodeKind,
+  type CanvasRunNodeKind,
+  type CanvasRunScope,
+} from './canvas-run-contract'
 import type { AiImageGenerateInput } from './ipc-contract'
 import { isRecord } from './input-guards'
 
@@ -234,7 +248,147 @@ const canvasNodeKinds = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
   'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot',
+  ...Object.keys(canvasRunKernelOnlyNodeLabels) as CanvasRunNodeKind[],
 ])
+
+// Fields the xingmang-canvas kernel adds to every run-graph node (#1392). None
+// of them is passed on to an executor. A value that leaves the request exactly
+// as the desktop already sends it is accepted; any other value marks the node
+// as unsupported so a run that reaches it is refused before money is spent,
+// rather than run with the parameter silently dropped.
+const kernelRunFields = [
+  'routerStrategy', 'textWebSearch', 'imageCandidateCount', 'videoCandidateCount', 'imageEditMask',
+  'interiorTask', 'exteriorTask', 'storyboardTask', 'commerceTask', 'imageReferenceOrder', 'generateAudio',
+  'videoProtocol', 'imageTransform', 'imageCollageInputOrder', 'tileInput', 'videoReferenceOrder',
+  'imageOutputIndex', 'frameTimestampSeconds',
+] as const
+const maximumKernelFieldUnits = 20 * 1024 * 1024
+const forbiddenKernelFieldKey = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|password)/i
+
+/**
+ * Walks a structured value the desktop never interprets, so only its size and
+ * shape matter. The budget is shared by the whole graph: the values are
+ * dropped after parsing, but 5 000 nodes each carrying a 64 KB mask would
+ * still be a lot of work for one IPC call.
+ */
+function assertBoundedKernelValue(value: unknown, label: string, budget: { remaining: number }, depth = 0): void {
+  budget.remaining -= 1
+  if (budget.remaining < 0) throw new Error('工作流规模超过安全上限')
+  if (depth > 8) throw new Error(`${label}格式错误`)
+  if (value === null || typeof value === 'boolean') return
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`${label}格式错误`)
+    return
+  }
+  if (typeof value === 'string') {
+    if (value.length > 10_000 || value.includes('\0')) throw new Error(`${label}格式错误`)
+    budget.remaining -= value.length
+    if (budget.remaining < 0) throw new Error('工作流规模超过安全上限')
+    return
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 4_096) throw new Error(`${label}格式错误`)
+    for (const entry of value) assertBoundedKernelValue(entry, label, budget, depth + 1)
+    return
+  }
+  if (!isRecord(value)) throw new Error(`${label}格式错误`)
+  const entries = Object.entries(value)
+  if (entries.length > 256) throw new Error(`${label}格式错误`)
+  for (const [key, entry] of entries) {
+    if (!key || key.length > 128 || forbiddenKernelFieldKey.test(key)) throw new Error(`${label}格式错误`)
+    assertBoundedKernelValue(entry, label, budget, depth + 1)
+  }
+}
+
+function isKernelOnlyNodeKind(kind: CanvasRunNodeKind): kind is CanvasRunKernelOnlyNodeKind {
+  return Object.prototype.hasOwnProperty.call(canvasRunKernelOnlyNodeLabels, kind)
+}
+
+function optionalCandidateCount(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 4) throw new Error(`${label}格式错误`)
+  return value as number
+}
+
+function optionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') throw new Error(`${label}格式错误`)
+  return value
+}
+
+function referenceSlotCount(value: unknown, label: string, maximum: number, budget: { remaining: number }): number | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.slots) || value.slots.length > maximum) throw new Error(`${label}格式错误`)
+  assertOnlyFields(value, ['version', 'slots'], label)
+  if (value.slots.some((slot) => !isRecord(slot))) throw new Error(`${label}格式错误`)
+  assertBoundedKernelValue(value, label, budget)
+  return value.slots.length
+}
+
+/**
+ * Returns why the desktop cannot run this node as the kernel asked, or
+ * undefined when every kernel field is absent or equal to what the desktop
+ * already does. The wording names what the user switched on, never a field.
+ */
+function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }): string | undefined {
+  const reasons: string[] = []
+  const imageCandidates = optionalCandidateCount(data.imageCandidateCount, '画布图片生成数量')
+  if (imageCandidates !== undefined && imageCandidates > 1) reasons.push('一次出多张图')
+  const videoCandidates = optionalCandidateCount(data.videoCandidateCount, '画布视频生成数量')
+  if (videoCandidates !== undefined && videoCandidates > 1) reasons.push('一次出多个视频')
+  if (optionalBoolean(data.textWebSearch, '画布联网搜索开关') === true) reasons.push('联网搜索')
+  // xingmang-canvas runtime/video-audio.ts: undefined keeps the provider's
+  // default and false is an explicit request for a silent video. The desktop
+  // sends neither, so only undefined leaves the request unchanged.
+  if (optionalBoolean(data.generateAudio, '画布生成音频设置') !== undefined) reasons.push('生成音频设置')
+  if (data.routerStrategy !== undefined) {
+    // The desktop router forwards every text and the images (or else the
+    // videos) it receives, which is neither kernel strategy for mixed inputs.
+    if (!isRecord(data.routerStrategy) || data.routerStrategy.version !== 1 || (data.routerStrategy.strategy !== 'first-available' && data.routerStrategy.strategy !== 'all')) {
+      throw new Error('画布路由策略格式错误')
+    }
+    assertOnlyFields(data.routerStrategy, ['version', 'strategy'], '画布路由策略')
+    reasons.push('路由策略')
+  }
+  if (data.videoProtocol !== undefined) {
+    if (data.videoProtocol !== 'relay-videos' && data.videoProtocol !== 'xai-native' && data.videoProtocol !== 'ark-seedance') throw new Error('画布视频接口格式错误')
+    // The desktop always submits through the relay's /v1/videos.
+    if (data.videoProtocol !== 'relay-videos') reasons.push('这个视频接口')
+  }
+  const videoSlots = referenceSlotCount(data.videoReferenceOrder, '画布视频参考顺序', 12, budget)
+  if (videoSlots !== undefined && videoSlots > 0) reasons.push('视频参考顺序')
+  const imageSlots = referenceSlotCount(data.imageReferenceOrder, '画布参考图角色', 4, budget)
+  if (imageSlots !== undefined) reasons.push('参考图角色')
+  if (data.imageOutputIndex !== undefined) {
+    if (!Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) > 10_000) throw new Error('画布图片输出序号格式错误')
+    reasons.push('图片处理')
+  }
+  if (data.frameTimestampSeconds !== undefined) {
+    if (typeof data.frameTimestampSeconds !== 'number' || !Number.isFinite(data.frameTimestampSeconds) || data.frameTimestampSeconds < 0 || data.frameTimestampSeconds > 86_400) {
+      throw new Error('画布抽帧时间格式错误')
+    }
+    reasons.push('视频抽帧')
+  }
+  const structured: Array<[string, string, string]> = [
+    ['imageEditMask', '画布蒙版', '蒙版局部修改'],
+    ['commerceTask', '画布电商创作配置', '电商创作'],
+    ['interiorTask', '画布室内创作配置', '室内创作'],
+    ['exteriorTask', '画布室外创作配置', '室外创作'],
+    ['storyboardTask', '画布故事板配置', '故事板'],
+    ['imageTransform', '画布图片处理配置', '图片处理'],
+    ['imageCollageInputOrder', '画布拼图顺序', '图片处理'],
+    ['tileInput', '画布平铺输入', '图片处理'],
+  ]
+  for (const [field, label, reason] of structured) {
+    if (data[field] === undefined) continue
+    if (!isRecord(data[field]) && !Array.isArray(data[field])) throw new Error(`${label}格式错误`)
+    assertBoundedKernelValue(data[field], label, budget)
+    reasons.push(reason)
+  }
+  if (isKernelOnlyNodeKind(kind)) return `「${canvasRunKernelOnlyNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
+  if (reasons.length === 0) return undefined
+  return `「${[...new Set(reasons)].join('、')}」桌面版暂不支持，本次没有提交任何付费请求`
+}
 
 function optionalCanvasString(value: unknown, label: string, maximum: number): string | undefined {
   return value === undefined || value === '' ? undefined : requiredCanvasString(value, label, maximum)
@@ -356,7 +510,7 @@ export function parseCanvasPromptPresetInput(value: unknown): CanvasPromptPreset
   assertOnlyFields(value, ['name', 'prompt', 'tags'], '画布提示词预设请求')
   const tags = promptPresetTags(value.tags)
   return {
-    name: promptPresetText(value.name, '画布提示词名称', 100),
+    name: promptPresetText(value.name, '画布提示词名称', maximumPromptPresetNameLength),
     prompt: promptPresetText(value.prompt, '画布提示词内容', 40_000),
     ...(tags ? { tags } : {}),
   }
@@ -367,11 +521,33 @@ export function parseCanvasPromptPresetUpdate(value: unknown): CanvasPromptPrese
   assertOnlyFields(value, ['id', 'name', 'prompt', 'tags'], '画布提示词预设更新')
   const id = requiredCanvasString(value.id, '画布提示词预设标识', 80)
   if (!/^[A-Za-z0-9_-]{16,80}$/.test(id)) throw new Error('画布提示词预设标识格式错误')
-  const name = value.name === undefined ? undefined : promptPresetText(value.name, '画布提示词名称', 100)
+  const name = value.name === undefined ? undefined : promptPresetText(value.name, '画布提示词名称', maximumPromptPresetNameLength)
   const prompt = value.prompt === undefined ? undefined : promptPresetText(value.prompt, '画布提示词内容', 40_000)
   const tags = promptPresetTags(value.tags)
   if (name === undefined && prompt === undefined && tags === undefined) throw new Error('画布提示词预设更新内容为空')
   return { id, ...(name ? { name } : {}), ...(prompt ? { prompt } : {}), ...(tags ? { tags } : {}) }
+}
+
+export interface CanvasCreateProjectContent {
+  workflowContent: string
+  sourceProjectId?: string
+}
+
+/**
+ * The two optional arguments the canvas kernel adds to createProject when it
+ * saves the open project as a new one. Absent both, it is a plain new project.
+ * The content is parsed again by the project store with the save validator.
+ */
+export function parseCanvasCreateProjectContent(contentInput: unknown, optionsInput: unknown): CanvasCreateProjectContent | undefined {
+  if (contentInput === undefined && optionsInput === undefined) return undefined
+  const workflowContent = requiredCanvasText(contentInput, '画布项目内容', 20 * 1024 * 1024)
+  if (optionsInput === undefined) return { workflowContent }
+  if (!isRecord(optionsInput)) throw new Error('画布项目复制选项格式错误')
+  assertOnlyFields(optionsInput, ['sourceProjectId'], '画布项目复制选项')
+  if (optionsInput.sourceProjectId === undefined) return { workflowContent }
+  const sourceProjectId = requiredCanvasString(optionsInput.sourceProjectId, '画布项目标识', 64)
+  if (!/^[a-f0-9-]{36}$/.test(sourceProjectId)) throw new Error('画布项目标识格式错误')
+  return { workflowContent, sourceProjectId }
 }
 
 export function parseCanvasPromptPresetId(value: unknown): string {
@@ -401,22 +577,29 @@ function parseRunScope(value: unknown): CanvasRunScope {
 
 export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
-  assertOnlyFields(value, ['graph', 'scope'], '画布运行请求')
+  // The kernel's agent panel starts runs on the user's behalf from a cloud
+  // conversation the desktop does not have. Refuse it by name instead of the
+  // generic unknown-field error, so the reason reads as a decision.
+  if (value.agentExecution !== undefined) throw new Error('桌面版不支持由 Agent 发起运行')
+  assertOnlyFields(value, ['graph', 'scope', 'agentExecution'], '画布运行请求')
   if (!isRecord(value.graph) || !Array.isArray(value.graph.nodes) || !Array.isArray(value.graph.edges)) {
     throw new Error('画布运行图格式错误')
   }
   assertOnlyFields(value.graph, ['nodes', 'edges'], '画布运行图')
   if (value.graph.nodes.length > 5_000 || value.graph.edges.length > 20_000) throw new Error('工作流规模超过安全上限')
   let promptBytes = 0
+  const kernelFieldBudget = { remaining: maximumKernelFieldUnits }
   const nodes: CanvasRunGraph['nodes'] = value.graph.nodes.map((entry) => {
     if (!isRecord(entry) || !isRecord(entry.data)) throw new Error('画布运行节点格式错误')
     assertOnlyFields(entry, ['id', 'kind', 'definitionVersion', 'disabled', 'data'], '画布运行节点')
     assertOnlyFields(entry.data, [
       'prompt', 'model', 'group', 'quality', 'size', 'imageResolution', 'seconds', 'adoptedAssetId',
       'videoMode', 'videoResolution', 'videoAspectRatio', 'promptOptimization',
+      ...kernelRunFields,
     ], '画布运行节点数据')
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
+    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget)
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
     if (entry.disabled !== undefined && typeof entry.disabled !== 'boolean') throw new Error('画布节点禁用状态格式错误')
     const prompt = canvasPrompt(entry.data.prompt, '画布节点提示词', 100_000)
@@ -449,6 +632,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
       kind,
       definitionVersion: entry.definitionVersion as number,
       ...(entry.disabled === true ? { disabled: true } : {}),
+      ...(desktopUnsupported ? { desktopUnsupported } : {}),
       data: {
         prompt,
         model,

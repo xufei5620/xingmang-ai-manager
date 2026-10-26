@@ -41,6 +41,7 @@ import {
   canvasSaveFileName,
   parseCanvasAssetQuery,
   parseCanvasAssetId,
+  parseCanvasCreateProjectContent,
   parseCanvasImageEditInput,
   parseCanvasImageGenerateInput,
   parseCanvasPromptPresetId,
@@ -551,9 +552,12 @@ export function createCanvasWindowController(
     return projects
   })
 
-  registerCanvasHandler(canvasHostCreateProjectChannel, async (event, nameInput) => {
+  registerCanvasHandler(canvasHostCreateProjectChannel, async (event, nameInput, contentInput, optionsInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     const userId = authenticatedCanvasUserId()
+    // Checked before the folder dialog, so a malformed copy request does not
+    // make the user pick a folder first and then fail.
+    const initial = parseCanvasCreateProjectContent(contentInput, optionsInput)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
       title: '选择画布项目工作文件夹',
@@ -565,11 +569,10 @@ export function createCanvasWindowController(
       : await dialog.showOpenDialog(dialogOptions)
     if (result.canceled || !result.filePaths[0]) return null
     assertCanvasUserUnchanged(userId)
-    const created = await options.projects.create(
-      userId,
-      requiredCanvasString(nameInput, '画布项目名称', 128),
-      result.filePaths[0],
-    )
+    const name = requiredCanvasString(nameInput, '画布项目名称', 128)
+    const created = initial
+      ? await options.projects.createWithContent(userId, name, result.filePaths[0], initial.workflowContent, initial.sourceProjectId)
+      : await options.projects.create(userId, name, result.filePaths[0])
     assertCanvasUserUnchanged(userId)
     activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
     return created

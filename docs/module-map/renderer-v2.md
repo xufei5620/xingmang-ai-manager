@@ -20,6 +20,8 @@
 - `external-link-fallback.tsx` — 公告、协议里的链接被主进程外链白名单拦下时的出路（I12，白名单不放宽）：只认 http(s) 且不带账号密码段的地址，复制给用户自己去浏览器打开；只看主进程给的错误码，不比对文案。
 - `LocalAvatar.tsx` / `local-avatar.ts` — 本机头像：选图、裁剪、压成 256 见方的 PNG 按账号存进 localStorage；保存前比对的是最后一次真正上屏的账号，并发渲染被丢弃时也不会存到别的账号上。
 - `AccountFilters.tsx` — 用量账单、异步任务那种「常驻几个框 + 展开筛选」的筛选条，以及展开按钮上「已生效几个」的计数。
+- `background-work.ts` — 「手上有事」登记处：聊天在生成、视频在做、工具在装、登录后同步密钥这几处用 `useBackgroundWork` 登记，窗口缩托盘久了主进程要关界面省内存前看它（`electron/renderer-release.ts`）。
+- `window-session.ts` — 读写 sessionStorage 的小包装（读写失败当没有）：界面被关掉再加载时同一窗口里还在，用来记关掉的更新气泡、维护提示和停在哪一页。
 - `calendar-time.ts` — 列表时间统一按本机日历写（「今天 14:20」「昨天 09:12」「9月28日」），按日历天差算、不按 24 小时；首页最近、记录、备份都照它。
 - `app.css` / `business.css` / `extensions.css` — 页面级样式：`app.css` 管首页与工具配置弹窗（main.tsx 直接引），`business.css` 管个人中心、记录、检查等业务页（随 pages-business 一起懒加载），`extensions.css` 管外接工具、技能、插件和精选页。
 
@@ -35,6 +37,7 @@
 - `features/sessions/SessionsPage.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）。
 - `features/extensions/ExtensionsPage.tsx` — 扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
 - `features/extensions/extensions-common.tsx` — 扩展三页和「星芒精选」页共用的判断、解析和卡片：列表怎么分组、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的卡片和详情。
+- `features/extensions/mcp-paste.ts` — 「自定义连接」里粘贴框的识别：提供方给的整段配置（各家 JSON、Codex / Grok 的 TOML 片段、一行命令、地址、`claude mcp add …`）认成本地程序 / 网络服务，替他填表、点名还是示例文字的几项。只认不写，提交照旧走 `submitMcpInstall`。
 - `features/tools/provider-options.ts` — 记录页和扩展三页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
 - `pages-account.tsx` — 个人中心（`AccountPage`）：账号概览、充值订阅、用量账单、密钥管理（含「配置到工具」写 Key）、账号安全、邀请返利六个页签的装配；下线的 Gemini 不替它写 Key、不列它的额度。
 - `pages-featured.tsx` — 「星芒精选」页：把随包精选清单摆成卡片，一次装进几个工具；装法和扩展页底下的精选是同一条路（不另开通道，主进程校验照样过一遍）。
@@ -112,14 +115,15 @@
 ## features/app/ 应用级状态、提示与设置零件
 
 余额与账号读取：
-- `features/app/balance-store.ts` — **软件里唯一按时去服务端拉数据的地方**：余额在用户看着时每分钟一次、被挡住或在后台每 10 分钟一次；公告、订阅、花费突增都搭它的车。连续几次本机网络失败也由它认出来，给断网横幅用。
+- `features/app/balance-store.ts` — **软件里唯一按时去服务端拉数据的地方**：余额在用户看着时每分钟一次、被挡住或在后台每 10 分钟一次；公告、订阅都搭它的车，每次读回的余额也交给主进程判断余额低和花费突增。连续几次本机网络失败也由它认出来，给断网横幅用。
 - `features/app/balance-context.tsx` — 余额 store 的 React 接口：按账号作用域共用一份，StrictMode 重连时等最后一个使用者离开才释放；顺带给出当前能用的订阅。
 - `features/app/subscription-cache.ts` — 订阅读取缓存：跟着余额读回顺带看、几分钟内读过不再读，刚买完订阅强制再读。
 - `features/app/balance-runway.ts` — 「余额还能用多久」：按近 7 天用量算、订阅剩余也算进去；侧栏账号卡、侧栏「余额低」、首页、账号概览读同一个判断。
-- `features/app/spend-spike.ts` — 「花费突然变多」提醒：只看余额每次读回的落差，掉够了再读一次用量核账才提醒；阈值写死，设置里只有开关。
+- 「余额低」「花费突然变多」两个系统通知已搬到主进程（`electron/balance-alerts.ts`、`electron/spend-spike.ts`），界面关着也照常提醒；界面这边只剩设置里的开关。
 - `features/app/account-read-error.ts` — 读账号失败时的说法与按钮：登录失效给「重新登录」（和错误框同一份规则），维护中不说成没网，过时的读取直接丢掉。
 
 开机提示与更新：
+- `features/app/useRendererRelease.ts` — 窗口缩托盘久了界面被关掉、再叫出来重新加载时界面这边的三件事：向主进程报告忙闲（登记的事加上开着的对话框，对话框一开就报，不等窗口藏起来），记下停在哪一页并在重新加载后回去（要登录的页账号没恢复就不回），重新加载这一次开机提示和开机检查不再来一遍（`useAppBoot` 给出 `restoredBoot`）。
 - `features/app/startup-notice.ts` / `features/app/StartupNotices.tsx` — 开机时应用自己跑的后台检查（更新、诊断、外观……）与一次性告知的角落卡片：坏消息不许挡路（不弹模态），最多摊开两张、按「要你选 > 出事了 > 有空看 > 纯告知」排，其余折成一行；排序表是无缺省的 `Record`，加新提示必须给位置。
 - `features/app/RequiredUpdateGate.tsx` / `features/app/required-update.ts` — 状态文件定了最低版本、本机低于它时盖住整个界面的那层：故意关不掉，只能更新或找客服，自动更新走不通时多一个「打开下载页」，磁盘不够时换成清理说明。
 - `features/app/update-retry.ts` — 更新失败后「再来一次」的唯一走法（检查失败重查、下载失败先查再下、安装失败回到重启确认），版本卡与首页气泡共用。
@@ -295,7 +299,7 @@
 - **渲染层防竞态的写法**：v2 一处都没用 legacy 的 `src/scan-coordinator.ts`、`src/latest-request.ts`、`src/provider-extension-coordinator.ts`（门禁本来也禁止 v2 引 legacy 树）。实际用的是：① useRef 计数器——`business-common.tsx` 的 `useResource`（`sequence` 序号）、`App.tsx` 的 `accountEpoch` / `bootstrapEpoch` / `sessionEvents`、`features/tools/useToolbox.ts` 的 `request` / `externalRequest` / `configRevision` / `desktopRevision`；② effect 里的 `let current = true` 取消标记（如 `features/auth/LegalDocument.tsx`）；③ 纯控制器里的 revision / epoch（`platform-api.ts`、`features/acceleration/lines-controller.ts`、`features/shell/network-controller.ts`）；④ `features/tools/ttl-cache.ts` 作废时让在飞请求不写回；⑤ 账号作用域变了就按 scope 重建（聊天控制器）。回归由 `features/tools/account-bound-launch.browser-check.mjs` 钉住。AGENTS.md T6 点名的三个工具只适用于冻结的 legacy 树，总述里该改成指向这些写法。依据：上述文件。
 - **两座桥、各功能自己包一层 api**：`window.xingmang`（`bridge.ts`，ipc-contract 的 `XingmangApi`）和 `window.xingmangPlatform`（`platform-api.ts`，平台层契约，只取类型）；IPC 调用按功能封在 `features/app/api.ts`、`features/auth/api.ts`、`features/chat/api.ts`、`features/tools/api.ts`、`features/acceleration/api.ts` 里，页面里另有直接用 bridge 的。依据：这几个 api.ts 与 `features/auth/README.md`。
 - **账号 → 写 Key 是一条链**：`App.tsx` 调度 → `features/tools/account-bootstrap.ts`（登录/恢复/点名重写三档）→ `features/tools/source-marker.ts`（手选来源标记）、`features/tools/key-sync-failure.ts`（失败话术）、`features/tools/online-resync.ts`（网回来补跑）；切账号时另走 `account-switch-sync.ts` + `SavedAccounts.tsx`。AuthFlow 只管认证、不碰 Key。依据：各文件头注释与 `features/auth/README.md`。
-- **余额是唯一的定时拉取**，公告轮询、订阅缓存、花费突增都搭它的车，断网判断也部分靠它：`features/app/balance-store.ts` → `balance-context.tsx` / `subscription-cache.ts` / `spend-spike.ts` / `features/shell/Announcement.tsx` / `features/shell/online-status.ts`。依据：`balance-store.ts`、`subscription-cache.ts`、`Announcement.tsx` 注释。
+- **余额是唯一的定时拉取**，公告轮询、订阅缓存都搭它的车（花费突增在主进程，跟着每次读回的余额走），断网判断也部分靠它：`features/app/balance-store.ts` → `balance-context.tsx` / `subscription-cache.ts` / `features/shell/Announcement.tsx` / `features/shell/online-status.ts`。依据：`balance-store.ts`、`subscription-cache.ts`、`Announcement.tsx` 注释。
 - **错误展示是一条链**：`business-common.tsx`（剥 IPC 前缀、路径脱敏、Key 打码，I13）→ `operation-error.ts`（归类）→ `registry/errors.ts`（文案）→ `features/app/OperationErrorDialog.tsx` + `features/app/SupportIdentity.tsx`（复制给客服）。依据：这几个文件的 import 与注释。
 - **跨页落点统一是「模块里放一个待取槽」**：`features/app/settings-group-intent.ts`、`row-focus.ts`、`extension-tool-intent.ts`，以及 `update-retry.ts` 的安装确认请求；配合 App 「去过的页只藏不卸」使用。依据：这几个文件头注释。
 - **本机存储**：localStorage 只放本机便利项，键名多用 `xingmang-ui-v2:` 前缀（引导进度、教程进度、首次命令卡、旧聊天记录、手选来源、头像、公告已读等），读写都包 try/catch（`features/app/preferences.ts` 及各模块自带的 storage 注入）；聊天记录与公告已读已迁到主进程，localStorage 只作迁移来源。依据：`features/chat/storage.ts`、`features/shell/newapi-announcements.ts`、`features/auth/guide-progress.ts`、`features/tutorial/tutorial-progress.ts`。

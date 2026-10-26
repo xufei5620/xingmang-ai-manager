@@ -612,6 +612,44 @@ describe('createCanvasWindowController', () => {
     expect(created).toMatchObject({ project: { workspaceName: path.basename(workspace), workspaceConfigured: true } })
   })
 
+  it('creates a saved copy from the kernel content after the folder is chosen and checks the request first', async () => {
+    const workspace = temporaryDirectory()
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const sourceProjectId = '22222222-2222-4222-8222-222222222222'
+    const content = JSON.stringify({ schemaVersion: 2, name: '副本', nodes: [], edges: [] })
+    const createWithContent = vi.fn(async (_userId: number, name: string, selected: string, _content: string, _source?: string) => ({
+      project: {
+        id: projectId, name, createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+        nodeCount: 0, workspaceName: path.basename(selected), workspaceConfigured: true,
+      },
+      content,
+    }))
+    const projects = { list: vi.fn(async () => []), create: vi.fn(), createWithContent, open: vi.fn(), save: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostCreateProjectChannel)!
+    electronMocks.showOpenDialog.mockClear()
+
+    // A malformed request fails before the user is asked to pick a folder.
+    await expect(handler(trustedEvent(), '副本', content, { sourceProjectId: '../other' })).rejects.toThrow('画布项目标识格式错误')
+    await expect(handler(trustedEvent(), '副本', content, { sourceProjectId, workspace: 'C:\\Users' })).rejects.toThrow('包含未知字段')
+    await expect(handler(trustedEvent(), '副本', 42)).rejects.toThrow('画布项目内容格式错误')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+
+    await expect(handler(trustedEvent(), '副本', content, { sourceProjectId })).resolves.toBeNull()
+    expect(createWithContent).not.toHaveBeenCalled()
+
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
+    const created = await handler(trustedEvent(), '副本', content, { sourceProjectId })
+    expect(createWithContent).toHaveBeenCalledWith(7, '副本', workspace, content, sourceProjectId)
+    expect(projects.create).not.toHaveBeenCalled()
+    expect(JSON.stringify(created)).not.toContain(workspace)
+
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
+    await handler(trustedEvent(), '副本', content)
+    expect(createWithContent).toHaveBeenLastCalledWith(7, '副本', workspace, content, undefined)
+  })
+
   it('accepts pretty-printed project JSON and forwards saved node layout and viewport', async () => {
     const projectId = '11111111-1111-4111-8111-111111111111'
     const summary = {

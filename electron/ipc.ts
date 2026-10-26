@@ -10,6 +10,7 @@ import type { ProviderId } from './catalog'
 import type { ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { ManagedCliKeyStoreLike } from './account-cli-provisioner'
 import { requestDiagnosticsOf } from './request-diagnostics'
+import { usageArgumentChannels, type UsageOperation } from './usage-stats'
 import type { CodexExtensionService } from './codex-extensions'
 import { ProviderExtensionService } from './provider-extensions'
 import { CodexSessionsService } from './codex-sessions'
@@ -20,7 +21,7 @@ import { isTrustedIpcSenderUrl, type ApplicationUrlPolicy } from './security'
 import type { SystemSnapshot, SystemService } from './system-service'
 import type { ProviderConfigRoots } from './codex-home'
 import type { UpdateSnapshot, UpdaterService } from './updater'
-import type { RelayBackendClient } from './relay-backend'
+import type { RelayBackendClient, RelayNotice } from './relay-backend'
 import type { AccountGroupHints } from './managed-cli-groups'
 import type { CliModelHints } from './cli-model-defaults'
 import type { AiAssetStore } from './ai-asset-store'
@@ -31,6 +32,7 @@ import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
   RememberedAccountLogin,
+  RendererActivity,
   RendererErrorPayload,
   WindowCapabilities,
   AppUninstallRequest,
@@ -167,6 +169,8 @@ export interface IpcRegistrationOptions {
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
   getWindowCapabilities?(): WindowCapabilities
+  /** 界面报告手上有没有事（renderer-release.ts 靠它决定缩到托盘后能不能关掉界面）。不传 = 不管。 */
+  onRendererActivity?(target: WebContents, activity: RendererActivity): void
   /**
    * Windows 上这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）。为真时
    * platform:get-capabilities 叠上 processElevated，界面不再说会弹授权窗口。缺省 = 不是（旧行为）。
@@ -192,6 +196,12 @@ export interface IpcRegistrationOptions {
   /** Renderer-side crashes the host may forward to crash reporting. The
    *  payload is the already-validated one, never the raw IPC value. */
   onRendererError?(error: RendererErrorPayload): void
+  /**
+   * 每次操作结束（成功或失败）都告诉一声，匿名使用统计靠它数装失败、付款页打开慢（usage-stats.ts）。
+   * 参数只给装工具那两条通道的第一个（usageArgumentChannels），其余一律不给。缺省 = 不数。
+   * 它抛错也不影响这次操作的结果。
+   */
+  observeOperation?(operation: UsageOperation): void
   onSystemSnapshot?(snapshot: SystemSnapshot): void
   /** 客户点了首页的「重新检测」（system:scan 带 recheckRoutes）：叫工具线路马上查一轮。 */
   onRouteRecheckRequested?(): void
@@ -203,6 +213,8 @@ export interface IpcRegistrationOptions {
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
   /** 渲染层读到了当前账号的订阅；托盘靠它说「订阅剩余多少」，不自己去读。 */
   onAccountSubscription?(subscription: Awaited<ReturnType<RelayBackendClient['getSubscriptionSelf']>>): void
+  /** 渲染层读到了公告：界面关着时主进程拿它比对有没有新公告（released-renderer-watch.ts）。 */
+  onAccountNotice?(notice: RelayNotice | null): void
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one
@@ -241,7 +253,7 @@ export interface IpcRegistrationOptions {
   chatHistory?: AiChatHistoryStore
   chatAttachments?: ChatAttachmentService
   // 对话页和视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
-  videoService?: Pick<AiVideoService, 'generate' | 'cancel' | 'cancelSender' | 'cancelAll'>
+  videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
@@ -270,7 +282,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const policy = ipcChannelPolicies[channel]
     ipcMain.handle(channel, (event, ...args) => {
       const startedAt = Date.now()
+      const observe = (failed: boolean, error?: unknown) => {
+        try {
+          options.observeOperation?.({ channel, args: usageArgumentChannels.has(channel) ? args.slice(0, 1) : [], durationMs: Date.now() - startedAt, failed, ...(failed ? { error } : {}) })
+        } catch {
+          // Counting is best effort; it must never turn a finished operation into a failure.
+        }
+      }
       const recordSuccess = (result: unknown) => {
+        observe(false)
         if (policy.log === 'quiet-success' || policy.log === 'silent') return
         if (channel === 'acceleration:get-state') {
           const key = accelerationStateLogKey(result)
@@ -298,6 +318,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         )
       }
       const recordFailure = (error: unknown) => {
+        observe(true, error)
         if (policy.log === 'polling') failedPollingChannels.add(channel)
         if (policy.log === 'silent') return
         const reason = error instanceof Error ? error.message : String(error)

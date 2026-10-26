@@ -1822,6 +1822,30 @@ test('an extension action that fails after switching tools shows its failure und
   } finally { await page.close() }
 })
 
+// 打开软件时替客户改好了提醒设置：右下角说一次就收，卡片照常写线路和版本；离开首页再回来不再说。
+// 原来那句挂在卡片中间那行，软件开着就一直在（yoyo 2026-10-25 截图）。
+test('a reminder setting fixed on startup is announced once and leaves the card line alone', async () => {
+  const page = await open('desktopOnly=1&hooksAutoRepaired=codex')
+  try {
+    const text = 'Codex 里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。'
+    await waitForToast(page, text)
+    const card = page.getByTestId('tool-row-codexDesktop')
+    await expect(card).toContainText('v1.2.3')
+    await expect(card).not.toContainText('自动改好')
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('nav-home').click()
+    await expect(page.getByTestId('tool-row-codexDesktop')).toContainText('v1.2.3')
+    await page.waitForTimeout(300)
+    await assertNoToast(page, text)
+    // 窗口缩在托盘久了界面被关掉、叫出来时同一个窗口重新加载（#1411），也不再说。
+    await page.reload()
+    await expect(page.getByTestId('tool-row-codexDesktop')).toContainText('v1.2.3')
+    await page.waitForTimeout(300)
+    await assertNoToast(page, text)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 只装了 Codex 桌面端、没装 Codex CLI：外接工具和技能照样在 Codex 那一格管，名字写「Codex 桌面端」、不标「未安装」；
 // 删和加一样走 Codex 自己那一边（主进程直接改 config.toml）；插件那一格只说去桌面端自己的插件页里装。
 test('with only the Codex desktop app, the extension pages manage Codex connections and skills and send plugins to the app', async () => {
@@ -2530,6 +2554,7 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
     ['allInstalled=1&changedClaude=1', 'claude', '重新写入密钥', '配置被改过'],
     ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
     ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
+    ['emptyWallet=1', 'claude', '去充值', '余额为零'],
   ]
   for (const [query, tool, label, status] of cases) {
     const page = await open(query)
@@ -2565,6 +2590,34 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
       await clean(page)
     } finally { await page.close() }
   }
+})
+// 主路卡点 F4：余额是 $0 时首页上面说要先充值，工具卡和大卡的主按钮也是「去充值」；「打开」照样能点。
+test('an empty wallet turns the main button on the tool cards into 去充值 and keeps 打开 one click away', async () => {
+  const page = await open('emptyWallet=1')
+  try {
+    await page.getByTestId('home-low-balance').waitFor()
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('余额为零', { exact: true }).waitFor()
+    assert.deepEqual(await row.locator('.xm-tool-card-actions > .xm-btn').allInnerTexts(), ['去充值'])
+    // 大卡：「去充值」排第一当主按钮，「打开 Claude Code」退成旁边的次按钮。
+    const hero = page.getByTestId('home-hero')
+    assert.deepEqual((await hero.locator('.v2-home-hero-actions > .xm-btn').allInnerTexts()).map((text) => text.split('\n')[0]), ['去充值', '打开 Claude Code', '选择其他文件夹…'])
+    assert.match(await page.getByTestId('home-hero-recharge').getAttribute('class'), /xm-btn-primary/)
+    assert.match(await page.getByTestId('home-hero-open').getAttribute('class'), /xm-btn-secondary/)
+    // 「打开」在「…」第一项，点了照常打开。
+    await row.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    const items = await page.locator('.xm-menu-pop [role="menuitem"]').allInnerTexts()
+    assert.equal(items[0], '打开')
+    await page.getByTestId('tool-claude-open').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.getByTestId('tool-claude-recharge').waitFor()
+    await clean(page)
+    // 卡上的「去充值」进个人中心的充值页。
+    await page.getByTestId('tool-claude-recharge').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent === '充值订阅')
+    // 默认夹具没接充值、订单那几个读取（会记进 unexpected），这里只看有没有报错。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
 })
 // 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，换成一句中文。
 test('an English probe failure reads as a plain Chinese sentence on the home row', async () => {
@@ -3810,6 +3863,44 @@ test('a failed startup update check shows a dismissible notice instead of a bloc
   } finally { await page.close() }
 })
 
+// 窗口缩到托盘久了界面被关掉，叫出来时重新加载（electron/renderer-release.ts）：开机那几句、开机检查、检查更新
+// 这次运行里已经做过，不再来一遍；回到关之前停的那一页；准备好了才告诉主进程，存着的跳页这时才发过来。
+test('a renderer reloaded after the tray released it skips the startup round and returns to the page it was on', async () => {
+  const page = await open('startupUpdate=1&diagnostics=1&rendererRestored=1', false, () => {
+    sessionStorage.setItem('xingmang-v2-release-page', JSON.stringify({ page: 'settings', section: 'about' }))
+  })
+  try {
+    await page.getByTestId('page-settings').waitFor()
+    // 登录恢复那一轮密钥同步在跑时先说「有事」，跑完再说「没事」。
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportWindowActivity').at(-1)?.args[0])).toEqual({ busy: false })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'runDiagnostics' || entry.method === 'runStartupUpdate')), false)
+    assert.equal(await page.getByTestId('startup-notice-update').count(), 0)
+    assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('xingmang-v2-release-page'))), { page: 'settings', section: 'about' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the renderer remembers its page for a reload and tells the host it is busy while a dialog is open', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const latestReport = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportWindowActivity').at(-1)?.args[0].busy)
+    await expect.poll(latestReport).toBe(false)
+    await page.getByTestId('nav-tutorial').click()
+    await page.getByTestId('page-tutorial').waitFor()
+    await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('xingmang-v2-release-page') ?? 'null'))).toEqual({ page: 'tutorial' })
+    await page.getByTestId('shell-topbar').getByRole('button', { name: '帮助与客服', exact: true }).click()
+    const help = page.getByRole('dialog', { name: '帮助与客服', exact: true })
+    await help.waitFor()
+    // 对话框一打开就报「有事」，不等窗口藏起来那一声（托盘里不一定有）：里面的东西关了就没了，这时不能关。
+    await expect.poll(latestReport).toBe(true)
+    await page.keyboard.press('Escape')
+    await expect(help).toHaveCount(0)
+    await expect.poll(latestReport).toBe(false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('startup environment findings are a notice with a way in, not an error and not a dialog', async () => {
   const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
   try {
@@ -3933,6 +4024,57 @@ test('the crash reporting notice waits until the user is signed in', async () =>
   try {
     await page.getByTestId('welcome-page').waitFor()
     assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 主路卡点 F11：第一次登录时引导、导览本身就占着一屏，错误报告那张卡再挤上来还盖住工具卡的按钮。
+// 引导、导览开着时它先等着，都关了再出；告知的内容和缺省开关不变。
+async function signInFromWelcome(page) {
+  await page.getByTestId('welcome-login').click()
+  await page.getByTestId('login-account').fill('fixture-user')
+  await page.getByTestId('login-password').fill('fixture-password')
+  await page.getByTestId('auth-agree').check()
+  await page.getByTestId('login-submit').click()
+  const guide = page.getByTestId('start-guide')
+  await guide.waitFor()
+  // 登录后那几件只做一次的事都跑过了，卡片要出早就该出了。
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+  return guide
+}
+
+test('the crash reporting notice waits for the onboarding guide to close (F11)', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    const guide = await signInFromWelcome(page)
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    await page.getByTestId('guide-pause').click()
+    await guide.waitFor({ state: 'detached' })
+    await page.getByTestId('startup-notice-crash-reporting').waitFor()
+    // 只是晚出，没替客户选：什么都没点之前不写设置。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'saveSettings' && 'crashReportingNoticeShown' in entry.args[0])), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the crash reporting notice also waits for the interface tour that follows the guide (F11)', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    const guide = await signInFromWelcome(page)
+    await page.getByTestId('guide-route-chat').check()
+    for (let turn = 0; turn < 4 && await guide.getAttribute('data-guide-step') !== 'ready'; turn++) {
+      const step = await guide.getAttribute('data-guide-step')
+      await page.getByTestId('guide-next').click()
+      await page.waitForFunction((previous) => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') !== previous, step)
+    }
+    await page.getByTestId('guide-home').click()
+    await guide.waitFor({ state: 'detached' })
+    const tour = page.getByTestId('shell-guide-tip')
+    await tour.waitFor()
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    for (const label of ['下一步', '下一步', '知道了']) await tour.getByRole('button', { name: label, exact: true }).click()
+    await tour.waitFor({ state: 'detached' })
+    await page.getByTestId('startup-notice-crash-reporting').waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -8280,6 +8422,36 @@ test('a guest or a check of another site gets no route fix on the cut-off networ
     await expect(guest.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await guest.evaluate(() => window.v2Test.errors), [])
   } finally { await guest.close() }
+})
+
+// 检查页「查网址的服务（DNS）」「别的代理软件」：改 DNS、关代理都在系统设置里，行里直接给按钮，打开哪一页由主进程
+// 按 kind 定；系统没让打开时页头说去哪里找。DNS 只错一条、又固定用着错的那条时，另给「去处理」翻到线路那一行。
+test('the DNS and proxy rows open the system settings and the wrong fixed line goes to the route setting', async () => {
+  const page = await open()
+  try {
+    await stubHealthReport(page, [
+      { code: 'RELAY_DNS', title: '查网址的服务（DNS）', state: 'warn', summary: '你这台电脑用的 DNS 把星芒线路2的地址查错了，线路1是对的。',
+        details: { siteId: 'solov', line1: 'ok', line2: 'wrong', fix: 'open-dns-settings', reroute: 'auto' } },
+      { code: 'SYSTEM_PROXY_SOFTWARE', title: '别的代理软件', state: 'warn', summary: '系统设置里还开着代理（本机 7890 端口），可是那个代理软件没在运行。',
+        details: { systemProxy: 'dead', proxyPort: 7890, fix: 'open-proxy-settings' } },
+    ])
+    await page.getByTestId('nav-health').click()
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'openNetworkSettings').map((call) => call.args))
+    await expect(page.getByTestId('health-network-settings-RELAY_DNS')).toHaveText('打开网络设置')
+    await page.getByTestId('health-network-settings-RELAY_DNS').click()
+    await expect.poll(opened).toEqual([['dns']])
+    await expect(page.getByTestId('health-network-settings-SYSTEM_PROXY_SOFTWARE')).toHaveText('打开系统代理设置')
+    await page.getByTestId('health-network-settings-SYSTEM_PROXY_SOFTWARE').click()
+    await expect.poll(opened).toEqual([['dns'], ['proxy']])
+    // 代理那一行在软件里没有能处理它的地方：不给「去处理」。
+    await expect(page.getByTestId('health-fix-SYSTEM_PROXY_SOFTWARE')).toHaveCount(0)
+    await page.evaluate(() => { window.xingmang.openNetworkSettings = async () => false })
+    await page.getByTestId('health-network-settings-RELAY_DNS').click()
+    await expect(page.getByTestId('page-health')).toContainText('没能打开网络设置，请在系统设置里找「网络」。')
+    await page.getByTestId('health-fix-RELAY_DNS').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
+    await clean(page)
+  } finally { await page.close() }
 })
 
 // 顶部搜索能搜到设置里的每一行，靠的是每一行都带着注册表里的 id。这里把注册表和

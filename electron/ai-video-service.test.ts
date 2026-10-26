@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createAiVideoService, delayVideoPoll, isAllowedVideoDownloadAddress } from './ai-video-service'
-import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type StoredAiVideoTask } from './ai-video-task-store'
+import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type FinishedAiVideoAsset, type FinishedAiVideoTask, type StoredAiVideoTask } from './ai-video-task-store'
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -51,6 +51,7 @@ function setup(
   const reservations = new Set<string>()
   let reservationSequence = 0
   const upsert = vi.fn(async (_task: StoredAiVideoTask) => undefined)
+  const remove = vi.fn(async (_userId: number, _taskId: string) => undefined)
   const tasks = {
     list: vi.fn(async () => options.pending ?? []),
     upsert,
@@ -70,7 +71,11 @@ function setup(
     releaseReservation: vi.fn(async (_userId: number, reservationId: string) => {
       reservations.delete(reservationId)
     }),
-    remove: vi.fn(async () => undefined),
+    remove,
+    // The real store drops the task and records the clip in one write; tests
+    // that only care about the task being gone keep asserting on remove.
+    finish: vi.fn(async (task: Pick<StoredAiVideoTask, 'userId' | 'taskId'>, _asset: FinishedAiVideoAsset) => remove(task.userId, task.taskId)),
+    findFinished: vi.fn(async (_userId: number, _requestId: string): Promise<FinishedAiVideoTask | null> => null),
   }
   const assets = {
     assertWritable: vi.fn(async (_userId: number, _projectId?: string) => undefined),
@@ -821,6 +826,28 @@ describe('createAiVideoService', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('counts a video as in progress from the request until it ends, so an idle update install waits for it', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_running', status: 'queued' })
+      if (String(input).endsWith('/content')) return stalledBodyResponse('video/mp4', vi.fn())
+      return jsonResponse({ id: 'video_running', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    expect(service.hasActiveRequests()).toBe(false)
+    const stages: string[] = []
+    const settled = service.generate(41, {
+      requestId: 'running', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: (stage) => { stages.push(stage) } }).catch((error: unknown) => error)
+    expect(service.hasActiveRequests()).toBe(true)
+    await vi.waitFor(() => expect(stages).toContain('downloading'))
+    expect(service.hasActiveRequests()).toBe(true)
+
+    service.cancelAll()
+    await service.whenIdle()
+    await settled
+    expect(service.hasActiveRequests()).toBe(false)
+  })
+
   it('lets 「停止」 and the account switch end a download whose body stalls after the headers', async () => {
     const bodyCanceled = vi.fn()
     const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
@@ -1114,5 +1141,119 @@ describe('createAiVideoService', () => {
     const signedCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => String(input) === signedUrl)
     expect(signedCall?.[1]?.headers).not.toHaveProperty('Authorization')
     expect(vi.mocked(fetchImpl).mock.calls.some(([input]) => String(input).endsWith('/content'))).toBe(false)
+  })
+
+  // 视频剪辑页记着每一镜正在出的请求号，关掉软件再打开时拿它回来接（审查清单 JJ-1）。
+  it('hands a reopened video studio the clip its request became after the next launch fetched it', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-resume-'))
+    try {
+      const tasks = new AiVideoTaskStore({ rootDirectory: root })
+      const submit = vi.fn(async () => jsonResponse({ id: 'video_closed', status: 'queued' })) as unknown as typeof fetch
+      const first = setup(submit, { tasks })
+      const pending = first.service.generate(41, {
+        requestId: 'shot-request', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      })
+      await vi.waitFor(async () => expect(await tasks.list(7)).toHaveLength(1))
+      // Closing the window ends the wait; the paid task stays for the next launch.
+      expect(first.service.cancelSender(41)).toBe(1)
+      await expect(pending).rejects.toThrow('服务端可能仍在生成视频')
+
+      const reopened = new AiVideoTaskStore({ rootDirectory: root })
+      const download = vi.fn(async (input: URL | RequestInfo) => (
+        String(input).endsWith('/content') ? mp4Response() : jsonResponse({ id: 'video_closed', status: 'completed' })
+      )) as unknown as typeof fetch
+      const next = setup(download, { tasks: reopened })
+      await expect(next.service.resumeUser(7)).resolves.toHaveLength(1)
+      expect(await reopened.list(7)).toEqual([])
+      const fetched = vi.mocked(download).mock.calls.length
+
+      await expect(next.service.resumeRequest(52, 7, 'shot-request')).resolves.toMatchObject({ assetId: 'a'.repeat(43), taskId: 'video_closed' })
+      await expect(next.service.resumeRequest(52, 7, 'never-sent')).resolves.toBeNull()
+      expect(vi.mocked(download).mock.calls).toHaveLength(fetched)
+      expect(vi.mocked(download).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+      expect(next.assets.storeMp4).toHaveBeenCalledOnce()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lets a reopened page join the launch resume of the same task instead of fetching and saving it twice', async () => {
+    const stored: StoredAiVideoTask = {
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_shared', group: 'grok', model: 'grok-imagine-video',
+      requestId: 'shot-shared', createdAt: '2026-10-26T00:00:00.000Z',
+    }
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo) => {
+      if (String(input).endsWith('/content')) return mp4Response()
+      await gate
+      return jsonResponse({ id: 'video_shared', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service, tasks, assets } = setup(fetchImpl, { pending: [stored] })
+
+    const launch = service.resumeUser(7)
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+    const page = service.resumeRequest(41, 7, 'shot-shared', { onStage: vi.fn() })
+    release()
+    await expect(page).resolves.toMatchObject({ assetId: 'a'.repeat(43), taskId: 'video_shared' })
+    await expect(launch).resolves.toHaveLength(1)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(assets.storeMp4).toHaveBeenCalledOnce()
+    expect(tasks.finish).toHaveBeenCalledOnce()
+    expect(tasks.finish).toHaveBeenCalledWith(stored, { assetId: 'a'.repeat(43) })
+  })
+
+  it('lets a reloaded page pick up its own request while it is still being submitted', async () => {
+    let resolvePost!: (response: Response) => void
+    const fetchImpl = vi.fn((input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return new Promise<Response>((resolve) => { resolvePost = resolve })
+      return Promise.resolve(String(input).endsWith('/content') ? mp4Response() : jsonResponse({ id: 'video_reload', status: 'completed' }))
+    }) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const original = service.generate(41, {
+      requestId: 'shot-reload', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+
+    const reloaded = service.resumeRequest(41, 7, ' shot-reload ')
+    // Another window has no request of that id in flight and no record of it yet.
+    await expect(service.resumeRequest(42, 7, 'shot-reload')).resolves.toBeNull()
+    resolvePost(jsonResponse({ id: 'video_reload', status: 'queued' }))
+    await expect(reloaded).resolves.toMatchObject({ assetId: 'a'.repeat(43), taskId: 'video_reload' })
+    await expect(original).resolves.toMatchObject({ taskId: 'video_reload' })
+    expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+    expect(assets.storeMp4).toHaveBeenCalledOnce()
+  })
+
+  it('lets 「停止」 end a resumed wait but keeps the paid task for the next launch', async () => {
+    const stored: StoredAiVideoTask = {
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_resumed_stop', group: 'grok', model: 'grok-imagine-video',
+      requestId: 'shot-stop', createdAt: '2026-10-26T00:00:00.000Z',
+    }
+    const fetchImpl = vi.fn((_input: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl, { pending: [stored] })
+
+    const pending = service.resumeRequest(41, 7, 'shot-stop')
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+    expect(service.cancel(41, 'shot-stop', 7)).toEqual({ canceled: true, mayStillComplete: true })
+    await expect(pending).rejects.toThrow('服务端可能仍在生成视频')
+    expect(tasks.remove).not.toHaveBeenCalled()
+    expect(tasks.finish).not.toHaveBeenCalled()
+    expect(vi.mocked(fetchImpl).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('answers a resume for a request that never reached the server without touching the network', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch
+    const { service, tasks, credentials } = setup(fetchImpl)
+
+    await expect(service.resumeRequest(41, 7, 'never-sent')).resolves.toBeNull()
+    expect(tasks.findFinished).toHaveBeenCalledWith(7, 'never-sent')
+    await expect(service.resumeRequest(0, 7, 'never-sent')).rejects.toThrow('视频窗口标识格式错误')
+    await expect(service.resumeRequest(41, 0, 'never-sent')).rejects.toThrow('AI 视频账号标识格式错误')
+    await expect(service.resumeRequest(41, 7, 'bad\u0000id')).rejects.toThrow('视频请求标识格式错误')
+    expect(credentials.resolveCredential).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 })

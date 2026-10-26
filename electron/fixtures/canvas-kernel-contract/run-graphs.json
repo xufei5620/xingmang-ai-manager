@@ -1,0 +1,508 @@
+{
+  "kernelUndefinedKeys": [
+    "quality",
+    "size",
+    "imageResolution",
+    "imageCandidateCount",
+    "videoCandidateCount",
+    "seconds",
+    "adoptedAssetId",
+    "videoMode",
+    "videoResolution",
+    "videoAspectRatio",
+    "promptOptimization"
+  ],
+  "cases": [
+    {
+      "name": "prompt and image asset, kernel shape",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "image-1",
+              "kind": "image-input",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "",
+                "adoptedAssetId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": null
+      }
+    },
+    {
+      "name": "defaults that leave the request unchanged",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "video-generate",
+              "data": {
+                "prompt": "",
+                "model": "grok-imagine-video",
+                "group": "视频模型",
+                "seconds": "5",
+                "videoProtocol": "relay-videos",
+                "videoReferenceOrder": {
+                  "version": 1,
+                  "slots": []
+                },
+                "videoCandidateCount": 1
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": null
+      }
+    },
+    {
+      "name": "image candidates above one",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "image-generate",
+              "data": {
+                "prompt": "",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "imageCandidateCount": 4
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": "「一次出多张图」桌面版暂不支持，本次没有提交任何付费请求"
+      }
+    },
+    {
+      "name": "web search on",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "text-generate",
+              "data": {
+                "prompt": "",
+                "model": "gpt-5.5",
+                "textWebSearch": true
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": "「文字生成」节点桌面版暂不支持，本次没有提交任何付费请求"
+      }
+    },
+    {
+      "name": "image edit mask",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "image-edit",
+              "data": {
+                "prompt": "改背景",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "imageEditMask": {
+                  "version": 1,
+                  "width": 64,
+                  "height": 48,
+                  "strokes": [
+                    {
+                      "tool": "brush",
+                      "size": 0.1,
+                      "points": [
+                        {
+                          "x": 0.5,
+                          "y": 0.5
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": "「蒙版局部修改」桌面版暂不支持，本次没有提交任何付费请求"
+      }
+    },
+    {
+      "name": "native video protocol",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "video-generate",
+              "data": {
+                "prompt": "",
+                "model": "grok-imagine-video",
+                "group": "视频模型",
+                "seconds": "5",
+                "videoProtocol": "xai-native"
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": "「这个视频接口」桌面版暂不支持，本次没有提交任何付费请求"
+      }
+    },
+    {
+      "name": "kernel-only node in scope",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "image-compare",
+              "data": {
+                "prompt": "",
+                "model": ""
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": "「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求"
+      }
+    },
+    {
+      "name": "kernel-only node outside the scope",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "image-compare",
+              "data": {
+                "prompt": "",
+                "model": ""
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "to-node",
+          "nodeId": "prompt-1"
+        }
+      },
+      "expect": {
+        "refusal": null
+      }
+    },
+    {
+      "name": "1080p video",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "video-generate",
+              "data": {
+                "prompt": "",
+                "model": "minimax-h3-fast",
+                "group": "视频模型",
+                "seconds": "6",
+                "videoResolution": "1080p"
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "parseError": "画布 MiniMax 分辨率不受支持"
+      }
+    },
+    {
+      "name": "3:2 video",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "video-generate",
+              "data": {
+                "prompt": "",
+                "model": "minimax-h3-fast",
+                "group": "视频模型",
+                "seconds": "6",
+                "videoAspectRatio": "3:2"
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "parseError": "画布 MiniMax 视频比例不受支持"
+      }
+    },
+    {
+      "name": "agent execution",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "image-1",
+              "kind": "image-input",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "",
+                "adoptedAssetId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "scope": {
+          "kind": "all"
+        },
+        "agentExecution": {
+          "sessionId": "s",
+          "turnId": "t"
+        }
+      },
+      "expect": {
+        "parseError": "桌面版不支持由 Agent 发起运行"
+      }
+    }
+  ]
+}

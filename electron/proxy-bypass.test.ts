@@ -184,9 +184,10 @@ describe('direct connection probe', () => {
 })
 
 describe('network settings targets', () => {
-  it('only knows the two fixed destinations', () => {
+  it('only knows the three fixed destinations', () => {
     expect(isNetworkSettingsKind('proxy')).toBe(true)
     expect(isNetworkSettingsKind('captive-portal')).toBe(true)
+    expect(isNetworkSettingsKind('dns')).toBe(true)
     expect(isNetworkSettingsKind('https://evil.example')).toBe(false)
     expect(isNetworkSettingsKind(undefined)).toBe(false)
   })
@@ -197,6 +198,12 @@ describe('network settings targets', () => {
     expect(networkSettingsTarget('darwin', 'proxy')).toBe('x-apple.systempreferences:com.apple.preference.network')
     expect(networkSettingsTarget('darwin', 'captive-portal')).toBe('http://captive.apple.com/')
     expect(networkSettingsTarget('linux', 'proxy')).toBeNull()
+  })
+
+  it('opens the network page where the DNS servers are changed', () => {
+    expect(networkSettingsTarget('win32', 'dns')).toBe('ms-settings:network-status')
+    expect(networkSettingsTarget('darwin', 'dns')).toBe('x-apple.systempreferences:com.apple.preference.network')
+    expect(networkSettingsTarget('linux', 'dns')).toBeNull()
   })
 })
 

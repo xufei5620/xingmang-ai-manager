@@ -261,6 +261,29 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('announcement', 'notice-ffffffff')).toBe('disabled')
     expect(h.runtime.create).toHaveBeenCalledTimes(1)
   })
+  it('words an empty wallet on its own under the balance switch and opens top-up on click', () => {
+    const h = setup()
+    expect(h.controller.notify('balance', 'balance-empty:7:1')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({
+      title: '当前账号余额是 $0',
+      body: 'AI 工具现在用不了，有的会一直转圈重连，像是网断了。点这里去充值，付完马上生效，回到工具里再发一次就行。',
+      silent: true,
+    })
+    h.notifications[0].emit('click')
+    expect(h.openPage).toHaveBeenCalledWith('topup')
+    expect(h.controller.notify('balance', 'balance-empty:7:1')).toBe('duplicate')
+    // The ordinary low-balance key keeps its own wording.
+    expect(h.controller.notify('balance', 'balance:7:2')).toBe('requested')
+    expect(h.runtime.create).toHaveBeenLastCalledWith({ title: '余额需要留意', body: '星芒余额不足 $5，可以在个人中心查看和充值。', silent: true })
+    h.preferences.balance = false
+    expect(h.controller.notify('balance', 'balance-empty:7:3')).toBe('disabled')
+  })
+  it('keeps the empty-wallet wording free of tool, site and technical names', () => {
+    const { title, body } = buildActivityNotificationMessage('balance', 'balance-empty:7:1')
+    expect(`${title}${body}`).not.toMatch(/solov|Sub2API|API|403|Codex|Claude|npm|PATH|Key/)
+    // The prefix only matters for the balance kind.
+    expect(buildActivityNotificationMessage('task', 'balance-empty:7:1').title).toBe('异步任务已完成')
+  })
   it('words recharge promos on their own, once per promo and once per day, under the announcement switch', () => {
     const h = setup()
     expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('requested')

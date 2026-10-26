@@ -14,7 +14,7 @@ import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
-import { Home } from './features/tools/Home'
+import { Home, homeWalletEmpty } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
@@ -68,6 +68,7 @@ import { keyToolInstalled } from './features/account/account-center'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import type { PendingConfirmation } from './features/app/runtime-context'
 import { useStartupChecks, useStartupNotices } from './features/app/useStartupNotices'
+import { startupNoticesShown } from './features/app/startup-notice'
 import { useAppBoot } from './features/app/useAppBoot'
 import { useAppOnlineStatus } from './features/app/useAppOnlineStatus'
 import { useAppNavigation } from './features/app/useAppNavigation'
@@ -81,10 +82,13 @@ import { useDeepLinks } from './features/app/useDeepLinks'
 import { useFailureActions } from './features/app/useFailureActions'
 import { useAccountSessionSync } from './features/app/useAccountSessionSync'
 import { useAppEntryPoints } from './features/app/useAppEntryPoints'
+import { usePageRestore, useRendererActivityReport } from './features/app/useRendererRelease'
+import { useBackgroundWork } from './background-work'
 import { useToolAccountActions } from './features/tools/useToolAccountActions'
 import { useToolLaunch } from './features/tools/useToolLaunch'
 import { useToolInstall } from './features/tools/useToolInstall'
 import { jobToolName } from './features/tools/tool-jobs'
+import { resolveToolKeySyncFailure } from './features/tools/key-sync-failure'
 import './business.css'
 
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
@@ -145,7 +149,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [lastFailure, setLastFailure] = useState<SupportFailure | null>(null)
   const [guide, setGuide] = useState(false)
   const { startupNotices, noteStartupCheck, showRouteRestartHint, dismissStartupNotice } = useStartupNotices(native, mounted)
-  const { boot, bootError, retryBoot, settings, setSettings, platform, systemLabel, session, setSession, update, setUpdate, sessionEvents } = useAppBoot({ native, app, noteStartupCheck, showRouteRestartHint, setLastFailure, setGuide })
+  const { boot, bootError, retryBoot, settings, setSettings, platform, systemLabel, session, setSession, update, setUpdate, sessionEvents, restoredBoot } = useAppBoot({ native, app, noteStartupCheck, showRouteRestartHint, setLastFailure, setGuide })
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
   const [auth, setAuth] = useState<AuthMode | null>(null)
@@ -186,7 +190,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 恢复结束再补读一次配置（见 useAccountSessionSync）。
   const restoring = sessionRestoring(session)
   const restoreRetrying = sessionRestoreRetrying(session)
-  const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || restoring || guide || workspaceEntered), scope)
+  const toolboxEnabled = boot === 'ready' && (session.authenticated || restoring || guide || workspaceEntered)
+  const toolbox = useToolbox(native, toolboxEnabled, scope)
   const accelerationApi = useMemo(() => createAccelerationApi(native), [native])
   // Linux 第一版不带加速（platformCapabilitiesFor 的 acceleration）：设置里的游戏加速卡、搜索、领时长都不出现，
   // 也不去读加速状态。能力回来之前按窗口的系统先判断，免得 Linux 上侧栏先闪一下「游戏加速」。
@@ -211,7 +216,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const relaySite = resolveRelaySite(siteId)
   const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
   const { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore } = useAccountBootstrap({
-    native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered,
+    native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered, restoredBoot,
   })
   const { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave } = useToolAccountActions({
     toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer,
@@ -231,7 +236,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 只装了 Codex 桌面端时，扩展几页照样替 Codex 管外接工具和技能（桌面端和 CLI 读同一份配置）。
   const codexDesktopInstalled = toolbox.snapshot?.system.desktopApps.codex.installed
   useRelayRouteSync({ native, app, boot, session, siteId, toolbox, setSettings, showRouteRestartHint, runAccountBootstrap, mounted })
-  const { chooseDisplayCompat, chooseCrashReporting } = useStartupChecks({ native, app, boot, settings, setSettings, authenticated: session.authenticated, noteStartupCheck, perform, toast, mounted })
+  const { chooseDisplayCompat, chooseCrashReporting, chooseUsageStats } = useStartupChecks({ native, app, boot, settings, setSettings, authenticated: session.authenticated, noteStartupCheck, perform, toast, mounted, restoredBoot })
   // 平台能力回来之前沿用挂载前定下的系统，不能先按 Windows 写上去再改：欢迎页和
   // 启动页据此排顶栏，Mac 上那样第一帧就没给红黄绿按钮让位。
   const os = platform ? windowOsFor(platform.platform) : currentWindowOs()
@@ -307,6 +312,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
+    // 装完自动写密钥没写成：引导第 3 步说首页横幅那句、给「重新同步」，不叫客户自己去配（主路卡点 F14）。
+    keySyncFailure: resolveToolKeySyncFailure(accountBootstrap?.scope === scope ? accountBootstrap : null, tool.provider, tool.id) ?? undefined,
   })) : []
   const toolUpdates = useToolUpdateNotice(toolbox.snapshot)
   const { balanceAmount, runway, accountSummary } = useBalanceWatch({ toolsApi, session, scope, balanceState, subscription })
@@ -350,6 +357,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     native, update, setUpdate, settings, page, settingsGroup, perform, navigate,
   })
   const accountBootstrapBusy = Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
+  // 窗口缩到托盘久了主进程会关掉界面省内存（useRendererRelease.ts）：装工具、同步密钥时不关；
+  // 重新加载的那一次回到原来那一页，工具检测回来了再告诉主进程准备好了（托盘「打开工具」要用它）。
+  useBackgroundWork('tool-jobs', Object.keys(toolbox.jobs).length > 0)
+  useBackgroundWork('account-bootstrap', accountBootstrapBusy)
+  const pageRestored = usePageRestore({
+    boot, restoredBoot, authenticated: session.authenticated, workspaceVisible, page,
+    section: page === 'account' ? shownAccountTab : page === 'settings' ? settingsGroup ?? undefined : undefined, navigate,
+  })
+  const toolboxSettled = !toolboxEnabled || toolbox.snapshot !== null || toolbox.error !== ''
+  useRendererActivityReport(native, boot !== 'loading' && pageRestored && toolboxSettled)
   // Account switches can happen while the chat route is active. The retained
   // chat host deliberately keeps its previous scope in state, but rendering
   // must follow the newly authenticated account immediately; otherwise the
@@ -477,7 +494,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {/* v4：新手引导是叠在欢迎页或主界面上面的弹窗，不再整页换掉它们。 */}
     {guide && <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : guideJobProgress(toolbox.jobs)} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={async (id, version) => { await install(id, version) }} onInstallRuntime={() => installRuntime('node')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
-      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
+      accountName={session.account?.username ?? null} onSwitchAccount={(id) => switchToolAccount(id, 'account')}
+      onBootstrapRetry={async (id) => {
+        // 跟装完以后那一轮一样，只给这一个工具写（useToolInstall），不顺手改别的工具。
+        if (!session.account) return false
+        const provider = providerFor(id)
+        const outcome = await runAccountBootstrap(session.account.userId, 'login', true, [provider])
+        return Boolean(outcome?.result?.configured.includes(provider))
+      }} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
+      walletEmpty={session.authenticated && homeWalletEmpty(balanceAmount, subscription, accountSupports(session, 'supportsBilling'))}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
       onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
@@ -527,7 +552,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />
-    <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
+    {/* 引导、导览开着时，登录后说一次的告知卡先等着（主路卡点 F11）。导览只在首页放，开在别的页上客户看不见它，
+        那时不用等，否则一直待在聊天页的客户就一直看不到告知。 */}
+    <StartupNotices notices={startupNoticesShown(startupNotices, guide || (tourOpen && page === 'home'))} onDismiss={dismissStartupNotice}
       leading={[
         ...(launchInstall ? [<LaunchInstallNotice key={`launch-install-${launchInstall.installAt}`} notice={launchInstall} />] : []),
         ...(maintenance && !maintenanceDismissed ? [<MaintenanceNotice key="maintenance" maintenance={maintenance} onDismiss={dismissMaintenance} />] : []),
@@ -546,6 +573,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         else if ('page' in action) navigate(action.page, action.section)
         else if ('displayCompat' in action) void chooseDisplayCompat(action.displayCompat)
         else if ('crashReporting' in action) void chooseCrashReporting(action.crashReporting)
+        else if ('usageStats' in action) void chooseUsageStats(action.usageStats)
         else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })
         else if ('restartCodexDesktop' in action) void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart') })
       }} />

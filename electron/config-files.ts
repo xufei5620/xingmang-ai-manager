@@ -591,6 +591,63 @@ function ensureClaudeResponseLanguage(parsed: Record<string, unknown>): void {
   parsed.language = MANAGED_CLAUDE_RESPONSE_LANGUAGE
 }
 
+// Codex、Grok 没有 language 这样的设置，但都把自己配置目录里的一份全局说明拼在项目说明前面
+// 交给模型。Codex 先认 AGENTS.override.md、再认 AGENTS.md（10-23 源码 codex-rs/codex-home/
+// src/instructions/mod.rs）；Grok 1.0.70 自带的说明写着 ~/.grok/AGENTS.md 是「Global rules」，
+// 同一目录下 AGENT.md、CLAUDE.md、CLAUDE.local.md 也认。项目说明模板只在目录里一份说明都没有
+// 时才放，从网上拉下来的项目多半带英文 AGENTS.md，于是 Codex、Grok 照旧用英文回。
+//
+// 照 language 的做法当语言偏好：配置目录里这几个名字一个都没有（大小写不论，链接也算有）才放
+// 这一份，客户已有的一个字不碰、不追加；切回官方账号也不收回。
+export const MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS = [
+  '# 回复语言',
+  '',
+  '- 始终用简体中文回复，包括计划、进度说明和最后的总结。',
+  '- 代码、命令、文件路径和报错原文保持原样，不要翻译。',
+  '',
+  '<!-- 这份文件是星芒AI管理工具放的，对所有项目都生效。想换成别的语言，直接改上面两句；改过以后星芒不会再动它。 -->',
+  '',
+].join('\n')
+
+/**
+ * 发出去过的每一版全局说明的摘要（同 project-instructions.ts 的 projectInstructionsDigest），
+ * 以后认得出客户手里那份还是不是星芒放的、改没改过。改上面的文字时把新版的摘要加在后面，
+ * 旧的一个都不删。测试钉住当前这一版在表里。
+ */
+export const PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS: readonly string[] = [
+  // 2026-10-26 发出的第一版。
+  '53fe08aa986a74ce1fd0f54c2c6a0835301591f426f10e895a0c3f7dce9f7270',
+]
+
+function globalInstructionFileNames(provider: ProviderId): readonly string[] {
+  switch (provider) {
+    case 'codex':
+      return ['AGENTS.override.md', 'AGENTS.md']
+    case 'grok':
+      return ['AGENTS.md', 'AGENT.md', 'CLAUDE.md', 'CLAUDE.local.md']
+    case 'claude':
+    case 'gemini':
+      return []
+  }
+}
+
+/** 配置目录里一份全局说明都没有时放一份「用中文回复」；已经有了，或者目录读不了，就什么都不放。 */
+function globalResponseLanguagePlans(provider: ProviderId, roots: ProviderConfigRoots): FilePlan[] {
+  const names = globalInstructionFileNames(provider)
+  if (!names.length) return []
+  const providerRoot = providerConfigRoot(provider, roots)
+  let entries: string[] = []
+  try {
+    entries = fs.readdirSync(providerRoot)
+  } catch (error) {
+    // 目录还没有是第一次配置，照放；别的读不了宁可不放，不能为一句语言偏好挡住保存。
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return []
+  }
+  const wanted = new Set(names.map((name) => name.toLowerCase()))
+  if (entries.some((entry) => wanted.has(entry.toLowerCase()))) return []
+  return [{ path: path.join(providerRoot, 'AGENTS.md'), content: MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS }]
+}
+
 function nestedString(source: Record<string, unknown> | null, keys: string[]): string {
   let current: unknown = source
   for (const key of keys) {
@@ -1296,7 +1353,7 @@ function normalizeUrl(value: string): string {
 }
 
 /**
- * Claude Code 的 /model 菜单与 Default 指向按这份型号清单重写会不会变（见
+ * Claude Code 的 /model 菜单、Default 指向与备用型号按这份型号清单重写会不会变（见
  * claude-model-picker.ts 的 claudeRelayModelPickerOutdated）。只读，读之前先过路径校验。
  */
 export function claudeModelPickerNeedsRefresh(
@@ -1309,6 +1366,18 @@ export function claudeModelPickerNeedsRefresh(
   const [settingsPath] = providerConfigPaths('claude', roots)
   assertSafeConfigPath(settingsPath, providerRoot, 'file')
   return claudeRelayModelPickerOutdated(requireJson(settingsPath, '现有 Claude settings.json'), availableModels, currentModel)
+}
+
+/**
+ * Claude Code 的 settings.json 里还没写备用型号（fallbackModel）。开机那轮先看它，有了就不必为补这一项去问中转。
+ * 只读，读之前先过路径校验。
+ */
+export function claudeFallbackModelMissing(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('claude', roots)
+  const [settingsPath] = providerConfigPaths('claude', roots)
+  assertSafeConfigPath(settingsPath, providerRoot, 'file')
+  return requireJson(settingsPath, '现有 Claude settings.json').fallbackModel === undefined
 }
 
 /**
@@ -2534,9 +2603,12 @@ export function saveProviderConfig(
 
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
-  const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
-    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+  const plans = [
+    ...(mode === 'merge'
+      ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+      : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)),
+    ...globalResponseLanguagePlans(provider, roots),
+  ]
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
@@ -2786,7 +2858,7 @@ function commitProviderRewrite(
  * 打开前、开机核对时刷新型号菜单的打算（#1154 后续）。以前借 saveConfig 的整份合并，模板里每一项都
  * 按当前版本重写一遍：Codex 客户自己定的 review_model、打开的检查更新、注释，Claude Code 放开的
  * deny 项、另指的「Default」都被改回去。现在只动菜单本身，文件其余字节原样：
- * - Claude Code：settings.json 里的 modelPicker 和 env.ANTHROPIC_DEFAULT_MODEL，改不改照
+ * - Claude Code：settings.json 里的 modelPicker、env.ANTHROPIC_DEFAULT_MODEL 和没写过的 fallbackModel，改不改照
  *   claude-model-picker.ts 的 claudeRelayModelPickerUpdates。
  * - Codex：型号名单文件按 codexModelCatalog 重写（system-service.ts 的 resolveCodexModelCatalog 算好的；
  *   undefined = 原样不动）；config.toml 里本软件那一行该有却没有就补上，不该有就收回，客户自己指向
@@ -2860,8 +2932,9 @@ export function applyProviderPickerRefresh(
 }
 
 /**
- * Claude Code 的 settings.json 只改菜单那两处，其余字节（缩进、键的顺序、客户自己的设置）原样。
- * Claude Code 按严格 JSON 读这份文件；改完整份再读一遍，和「原来的内容只改了这两处」逐项比对，
+ * Claude Code 的 settings.json 只改菜单那几处（菜单、Default 指向、没写过的备用型号），其余字节（缩进、
+ * 键的顺序、客户自己的设置）原样。
+ * Claude Code 按严格 JSON 读这份文件；改完整份再读一遍，和「原来的内容只改了这几处」逐项比对，
  * 对不上（比如同一个键写了两遍）就当认不出，一个字不动。
  */
 function claudeSettingsWithRelayPicker(text: string, model: string, availableModels: readonly string[]): string | 'changed' | 'unlocated' {
@@ -2878,10 +2951,12 @@ function claudeSettingsWithRelayPicker(text: string, model: string, availableMod
   const edits: Array<{ path: string[]; value: unknown }> = []
   if (updates.defaultModel !== undefined) edits.push({ path: ['env', 'ANTHROPIC_DEFAULT_MODEL'], value: updates.defaultModel })
   if (updates.modelPicker !== undefined) edits.push({ path: ['modelPicker'], value: updates.modelPicker })
+  if (updates.fallbackModel !== undefined) edits.push({ path: ['fallbackModel'], value: updates.fallbackModel })
   if (!edits.length) return text
   const expected = JSON.parse(text) as Record<string, unknown>
   if (updates.defaultModel !== undefined) ensureRecord(expected, 'env').ANTHROPIC_DEFAULT_MODEL = updates.defaultModel
   if (updates.modelPicker !== undefined) expected.modelPicker = updates.modelPicker
+  if (updates.fallbackModel !== undefined) expected.fallbackModel = updates.fallbackModel
   const indentation = /^([ \t]+)\S/m.exec(text)?.[1] ?? '  '
   const formattingOptions = {
     insertSpaces: !indentation.startsWith('\t'),
@@ -2935,7 +3010,11 @@ function withManagedCodexModelCatalogLine(text: string): string | null {
 // 3：Codex 线路显示名老模板的 XingmangAI 换成 OpenAI（2026-10-14）。这一项改的是值不是缺省
 //    键，只认星芒自己那张表上一字不差的老值（renameLegacyCodexRelayDisplayName）。
 // 4：Codex 星芒那张表没写 supports_websockets 的按型号补，GPT 型号 true、别家型号 false（2026-10-16）。
-export const relayTemplateRevision = 4
+// 5：VS Code、Cursor 的用户设置没写 claudeCode.disableLoginPrompt 的补 true（2026-10-26）。这一项不在
+//    Claude Code 自己的配置里，由开机补设置那一轮在 Claude Code 那份到期时顺带做（editor-claude-login-prompt.ts）。
+// 6：Codex、Grok 配置目录里一份全局说明都没有的，放一份「用中文回复」（2026-10-26）。这一项不是
+//    配置里的键，是另放一个文件（globalResponseLanguagePlans），同一次两阶段提交里写。
+export const relayTemplateRevision = 6
 
 function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBaseUrl: string, platform: NodeJS.Platform): void {
   if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false
@@ -2996,9 +3075,10 @@ function relayTemplateDefaultsPlans(
       const before = cloneTomlRecord(parsed)
       fillCodexRelayTemplateDefaults(parsed, siteBaseUrls.codex, platform)
       dropEmptyCreatedTables(parsed, before)
-      if (JSON.stringify(parsed) === JSON.stringify(before)) return []
+      const language = globalResponseLanguagePlans(provider, roots)
+      if (JSON.stringify(parsed) === JSON.stringify(before)) return language
       const content = tomlContent(parsed)
-      return [{ path: snapshots.relay, content }, { path: snapshots.active, content }]
+      return [{ path: snapshots.relay, content }, { path: snapshots.active, content }, ...language]
     }
     case 'claude': {
       if (requireConfigText(paths[0], '现有 Claude settings.json') === null) return []
@@ -3036,8 +3116,9 @@ function relayTemplateDefaultsPlans(
       const before = cloneTomlRecord(parsed)
       fillGrokRelayTemplateDefaults(parsed, siteBaseUrls.grok, defaultModel)
       dropEmptyCreatedTables(parsed, before)
-      if (JSON.stringify(parsed) === JSON.stringify(before)) return []
-      return [{ path: paths[0], content: tomlContent(parsed) }]
+      const language = globalResponseLanguagePlans(provider, roots)
+      if (JSON.stringify(parsed) === JSON.stringify(before)) return language
+      return [{ path: paths[0], content: tomlContent(parsed) }, ...language]
     }
   }
 }
@@ -3058,7 +3139,8 @@ export function relayTemplateDefaultsPending(
 /**
  * 给一份「当前账号的」配置只补模板里缺的那几项：键缺省才写，用户写过的值（哪怕写的是
  * false）一律不动，Key、服务地址、型号、钩子、状态行这些也都不碰。唯一换值的是 Codex
- * 线路显示名：只换星芒自己那张表上一字不差的老模板值 XingmangAI（第 3 版）。配置不是指向当前
+ * 线路显示名：只换星芒自己那张表上一字不差的老模板值 XingmangAI（第 3 版）。Codex、Grok 的配置
+ * 目录里一份全局说明都没有时另放一份「用中文回复」（第 6 版）。配置不是指向当前
  * 账号服务的（切回了官方、换了别家）就什么都不做。写入与保存配置同一套两阶段提交、
  * 留 .bak、失败回滚（I9）。返回 null = 这份配置已经齐了，没写任何文件。
  */

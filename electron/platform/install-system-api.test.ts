@@ -12,6 +12,9 @@ import type {
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installPlatformSystemApi } from './install-system-api'
 import { platformChannels } from './contract'
+import { hostNotifier } from './host-notification-bridge'
+import { attachRendererDelivery, detachRendererDelivery } from './renderer-delivery-bridge'
+import { ipcEventChannels } from '../ipc-contract'
 
 const roots: string[] = []
 afterEach(() => {
@@ -19,7 +22,27 @@ afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true })
 })
 
-function installFixture() {
+function notificationRuntimeFixture() {
+  const created: { title: string; body: string; click?: () => void }[] = []
+  return {
+    created,
+    runtime: {
+      supported: () => true,
+      create: (options: { title: string; body: string; silent: boolean }) => {
+        const entry: { title: string; body: string; click?: () => void } = { title: options.title, body: options.body }
+        created.push(entry)
+        return {
+          on: (event: string, listener: (...args: unknown[]) => void) => { if (event === 'click') entry.click = () => listener() },
+          show: () => undefined,
+          close: () => undefined,
+          removeAllListeners: () => undefined,
+        }
+      },
+    },
+  }
+}
+
+function installFixture(notificationRuntime?: ReturnType<typeof notificationRuntimeFixture>['runtime']) {
   const root = fs.mkdtempSync(
     path.join(os.tmpdir(), 'xingmang-platform-install-'),
   )
@@ -78,6 +101,7 @@ function installFixture() {
     }),
     platformPreloadPath: path.join(root, 'platform-preload.js'),
     onError,
+    ...(notificationRuntime ? { notificationRuntime } : {}),
   })
   return { root, app, handlers, session, frame, contents, window, windowTitle, onError, dispose }
 }
@@ -143,5 +167,33 @@ describe('additional sandbox preload registration', () => {
     await Promise.resolve()
     expect(session.registerPreloadScript).not.toHaveBeenCalled()
     dispose()
+  })
+})
+
+describe('host activity notifications', () => {
+  it('shows the main process balance alert with the renderer wording and holds its click-through page until the renderer is ready', async () => {
+    const notifications = notificationRuntimeFixture()
+    const { app, window, contents, dispose } = installFixture(notifications.runtime)
+    const shown = vi.fn()
+    Object.assign(window, { isMinimized: () => false, restore: vi.fn(), show: shown, focus: vi.fn() })
+    app.emit('browser-window-created', {}, window as unknown as BrowserWindow)
+    await Promise.resolve()
+    const held: (() => void)[] = []
+    const holdUntilReady = (_key: string, send: () => void) => { held.push(send) }
+    attachRendererDelivery(holdUntilReady)
+    try {
+      expect(hostNotifier()({ activity: 'balance', eventKey: 'balance:7:1' })).toBe('requested')
+      expect(notifications.created).toEqual([expect.objectContaining({ title: '余额需要留意' })])
+      notifications.created[0]!.click!()
+      expect(shown).toHaveBeenCalledOnce()
+      expect(contents.send).not.toHaveBeenCalledWith(ipcEventChannels.onNavigate, 'topup')
+      for (const send of held) send()
+      expect(contents.send).toHaveBeenCalledWith(ipcEventChannels.onNavigate, 'topup')
+      expect(hostNotifier()({ activity: 'spend', eventKey: 'spend:7:2', detail: { cents: 1234, multiple: 6 } })).toBe('requested')
+      expect(notifications.created[1]).toMatchObject({ body: expect.stringContaining('$12.34') })
+    } finally {
+      detachRendererDelivery(holdUntilReady)
+      dispose()
+    }
   })
 })

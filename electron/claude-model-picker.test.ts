@@ -116,12 +116,69 @@ describe('claude model picker', () => {
     })
 
     it('never counts a picker the user wrote as outdated', () => {
-      const parsed = { env: { ANTHROPIC_DEFAULT_MODEL: 'claude-opus-5' }, modelPicker: { options: [{ model: 'claude-opus-5', label: 'Mine', description: 'mine' }] } }
+      const parsed = {
+        env: { ANTHROPIC_DEFAULT_MODEL: 'claude-opus-5' },
+        modelPicker: { options: [{ model: 'claude-opus-5', label: 'Mine', description: 'mine' }] },
+        fallbackModel: ['claude-sonnet-5'],
+      }
       expect(claudeRelayModelPickerOutdated(parsed, ['claude-opus-5', 'claude-sonnet-5'], 'claude-opus-5')).toBe(false)
     })
 
     it('keeps the picker when the list has no Claude model rather than asking to rewrite it', () => {
       expect(claudeRelayModelPickerOutdated(written(['claude-opus-5'], 'claude-opus-5'), ['gpt-6-astra'], 'claude-opus-5')).toBe(false)
+    })
+
+    it('fills in fallback models only where settings never had them', () => {
+      const models = ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5']
+      const parsed = written(models, 'claude-opus-5-5')
+      delete parsed.fallbackModel
+      expect(claudeRelayModelPickerUpdates(parsed, models, 'claude-opus-5-5')).toEqual({ fallbackModel: ['claude-opus-5', 'claude-sonnet-5-5'] })
+      // 写过的不管是不是照老清单写的都不动；清单里一个备用都挑不出也不算落后。
+      expect(claudeRelayModelPickerOutdated({ ...parsed, fallbackModel: ['claude-opus-4-8'] }, models, 'claude-opus-5-5')).toBe(false)
+      expect(claudeRelayModelPickerOutdated(written(['claude-opus-5-5'], 'claude-opus-5-5'), ['claude-opus-5-5'], 'claude-opus-5-5')).toBe(false)
+    })
+  })
+
+  describe('fallback models', () => {
+    const models = ['claude-haiku-5-5', 'claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6-astra']
+
+    it('writes fallback models picked from the key\'s own model list when settings have none', () => {
+      const parsed: Record<string, unknown> = { model: 'claude-opus-5-5' }
+      applyClaudeRelayModelPicker(parsed, {}, models, 'claude-opus-5-5')
+      expect(parsed.fallbackModel).toEqual(['claude-opus-5', 'claude-sonnet-5-5'])
+    })
+
+    it('follows a model changed in the config dialog when the fallback models are the ones it wrote', () => {
+      const parsed: Record<string, unknown> = { model: 'claude-opus-5-5', fallbackModel: ['claude-opus-5', 'claude-sonnet-5-5'] }
+      applyClaudeRelayModelPicker(parsed, {}, models, 'claude-sonnet-5-5')
+      expect(parsed.fallbackModel).toEqual(['claude-opus-5-5'])
+    })
+
+    it('leaves fallback models the customer wrote alone, and keeps them when leaving the relay', () => {
+      const parsed: Record<string, unknown> = { model: 'claude-opus-5-5', fallbackModel: ['claude-haiku-5-5'] }
+      const env: Record<string, unknown> = {}
+      applyClaudeRelayModelPicker(parsed, env, models, 'claude-sonnet-5-5')
+      expect(parsed.fallbackModel).toEqual(['claude-haiku-5-5'])
+      removeClaudeRelayModelPicker(parsed, env)
+      expect(parsed.fallbackModel).toEqual(['claude-haiku-5-5'])
+
+      // 客户写了个空的，就是不要备用，账号里挑不出备用时也不当成本软件写的收走。
+      const none: Record<string, unknown> = { model: 'claude-opus-5-5', fallbackModel: [] }
+      applyClaudeRelayModelPicker(none, {}, ['claude-opus-5-5'], 'claude-opus-5-5')
+      expect(none.fallbackModel).toEqual([])
+    })
+
+    it('takes back its own fallback models when the new model has nothing to fall back to', () => {
+      const parsed: Record<string, unknown> = { model: 'claude-opus-5-5', fallbackModel: ['claude-opus-5', 'claude-sonnet-5-5'] }
+      applyClaudeRelayModelPicker(parsed, {}, models, 'claude-haiku-5-5')
+      expect(parsed.fallbackModel).toEqual(['claude-sonnet-5-5'])
+      const lean = ['claude-haiku-5-5', 'claude-opus-5', 'claude-opus-5-5']
+      const written: Record<string, unknown> = { model: 'claude-opus-5-5', fallbackModel: ['claude-opus-5'] }
+      applyClaudeRelayModelPicker(written, {}, lean, 'claude-haiku-5-5')
+      expect(written).not.toHaveProperty('fallbackModel')
+      const fresh: Record<string, unknown> = { model: 'claude-opus-5-5' }
+      applyClaudeRelayModelPicker(fresh, {}, ['claude-opus-5-5', 'claude-haiku-5-5'], 'claude-opus-5-5')
+      expect(fresh).not.toHaveProperty('fallbackModel')
     })
   })
 })
