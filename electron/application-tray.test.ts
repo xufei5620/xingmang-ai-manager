@@ -349,6 +349,8 @@ describe('application tray keep-awake line', () => {
     expect(trayKeepAwakeLabel(idle)).toBeNull()
     expect(trayKeepAwakeLabel({ tools: ['Grok CLI'], installing: true, downloadingUpdate: true })).toBe('Grok CLI 正在干活，暂不让电脑自动睡眠')
     expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code', 'Gemini CLI'], installing: true })).toBe('AI 工具正在干活，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code'], remoteControl: true })).toBe('Claude Code 正在干活，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, remoteControl: true, installing: true, downloadingUpdate: true })).toBe('手机遥控开着，暂不让电脑自动睡眠')
     expect(trayKeepAwakeLabel({ ...idle, installing: true, downloadingUpdate: true })).toBe('正在安装，暂不让电脑自动睡眠')
     expect(trayKeepAwakeLabel({ ...idle, downloadingUpdate: true })).toBe('正在下载星芒新版本，暂不让电脑自动睡眠')
   })

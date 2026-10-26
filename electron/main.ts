@@ -1954,6 +1954,7 @@ if (!hasSingleInstanceLock) {
     const codexRemoteKeepAwake = createCodexRemoteKeepAwake({
       blocker: powerSaveBlocker,
       log: (level, event, message, detail) => runtimeLog.log(level, 'codex-remote', event, message, detail),
+      onChange: () => applicationTray?.updateSnapshot(),
     })
     // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
     const codexRemote = createCodexRemote({
@@ -2658,6 +2659,7 @@ if (!hasSingleInstanceLock) {
           acceleration: trayAcceleration?.entry() ?? null,
           keepAwakeLabel: trayKeepAwakeLabel({
             tools: cliKeepAwake.tools().map((tool) => isProviderId(tool) ? cliCatalog[tool].name : tool),
+            remoteControl: codexRemoteKeepAwake.holding(),
             installing: installKeepAwake.reasons().includes('install'),
             downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
           }),

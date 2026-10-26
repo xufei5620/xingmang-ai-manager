@@ -25,6 +25,8 @@ export function resolveCodexRemoteKeepAwakeChannels(snapshot: Pick<CodexRemoteSn
 export interface CodexRemoteKeepAwakeOptions {
   blocker: SleepBlocker
   log?: (level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>) => void
+  /** 开始挡、放开时：托盘那行「暂不让电脑自动睡眠」跟着换。 */
+  onChange?: () => void
 }
 
 export function createCodexRemoteKeepAwake(options: CodexRemoteKeepAwakeOptions) {
@@ -33,6 +35,14 @@ export function createCodexRemoteKeepAwake(options: CodexRemoteKeepAwakeOptions)
   // 快照是异步拼好的，先后可能颠倒；只认比手上新的那份，旧的「已关」不能把新的「已开」放掉。
   let revision = Number.NEGATIVE_INFINITY
   let disposed = false
+
+  function announce(): void {
+    try {
+      options.onChange?.()
+    } catch (error) {
+      options.log?.('warn', 'codex-remote.keep-awake.notify-failed', '托盘没跟上防睡状态', { reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
 
   function release(): void {
     if (blockerId === null) return
@@ -61,8 +71,10 @@ export function createCodexRemoteKeepAwake(options: CodexRemoteKeepAwakeOptions)
       if (disposed || snapshot.revision <= revision) return
       revision = snapshot.revision
       listening = resolveCodexRemoteKeepAwakeChannels(snapshot)
+      const wasHolding = blockerId !== null
       if (listening.length > 0) hold()
       else release()
+      if (wasHolding !== (blockerId !== null)) announce()
     },
     /** 现在是不是正挡着睡眠；测试与日志用。 */
     holding(): boolean {

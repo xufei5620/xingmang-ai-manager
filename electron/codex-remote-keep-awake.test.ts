@@ -148,6 +148,36 @@ describe('createCodexRemoteKeepAwake', () => {
     expect(logs).toEqual(['codex-remote.keep-awake.held', 'codex-remote.keep-awake.stop-failed', 'codex-remote.keep-awake.released'])
   })
 
+  it('tells the tray only when it starts or stops holding', () => {
+    const { blocker } = fakeBlocker()
+    let changes = 0
+    const keepAwake = createCodexRemoteKeepAwake({ blocker, onChange: () => { changes += 1 } })
+    keepAwake.observe(snapshot(1, { feishu: [true, 'connecting'] }))
+    keepAwake.observe(snapshot(2, { feishu: [true, 'connected'], weixin: [true, 'connected'] }))
+    expect(changes).toBe(1)
+    keepAwake.observe(snapshot(3))
+    expect(changes).toBe(2)
+    keepAwake.observe(snapshot(4))
+    expect(changes).toBe(2)
+    keepAwake.dispose()
+  })
+
+  it('keeps going when the tray listener throws', () => {
+    const { blocker } = fakeBlocker()
+    const logs: string[] = []
+    const keepAwake = createCodexRemoteKeepAwake({
+      blocker,
+      log: (_level, event) => { logs.push(event) },
+      onChange: () => {
+        throw new Error('tray gone')
+      },
+    })
+    keepAwake.observe(snapshot(1, { feishu: [true, 'connected'] }))
+    expect(keepAwake.holding()).toBe(true)
+    expect(logs).toContain('codex-remote.keep-awake.notify-failed')
+    keepAwake.dispose()
+  })
+
   it('releases on dispose and stays released for later snapshots', () => {
     const { blocker, running } = fakeBlocker()
     const keepAwake = createCodexRemoteKeepAwake({ blocker })
