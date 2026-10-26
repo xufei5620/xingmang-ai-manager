@@ -2,7 +2,7 @@
 // 以及反馈报告里「工具环境」「运行环境」「自检结果」三段。反馈报告只读诊断和扫描上一次留下的结果，
 // 生成报告不重跑探测，所以这两样放在一起。
 import path from 'node:path'
-import { app, session } from 'electron'
+import { app } from 'electron'
 import type { AiAssetStore } from '../ai-asset-store'
 import { providerIds, type ProviderId } from '../catalog'
 import type { CodexHomeContext } from '../codex-home'
@@ -10,6 +10,7 @@ import { createCodexResponsesProbeService } from '../codex-responses-probe'
 import { inspectProviderConfig } from '../config-files'
 import { buildConnectionProbe, runConnectionCheck } from '../connection-check'
 import { clearUserProviderOverrides, setAsideCodexDotenv, setAsideHomeProjectInstructions, type DiagnosticFixKind } from '../diagnostic-fixes'
+import { lookupWithPublicDns, lookupWithSystemDns } from '../diagnostics-dns-check'
 import { clearableEnvironmentOverrides, createDiagnosticsExport, diagnosticsScanReuseMs, environmentAccountBaseUrls, redactDiagnosticText, runDiagnostics, type DiagnosticsDependencies, type DiagnosticsRelayRoute, type DiagnosticsReport, type DiagnosticsRunOptions } from '../diagnostics'
 import type { ExternalToolId } from '../external-tool-config'
 import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute, resolveFeedbackToolRoute } from '../feedback-environment'
@@ -27,7 +28,7 @@ import type { NetworkRoutes } from './network-routes'
 type RealmBusiness = ReturnType<ReturnType<typeof createRealmBusinesses>['ensureBusiness']>
 
 export interface DiagnosticsWiringOptions {
-  routes: Pick<NetworkRoutes, 'relayRouting' | 'relayRouteController' | 'toolRouting' | 'toolRouteController' | 'latestRouteStatus' | 'latestToolProbes' | 'observedRelayFetch' | 'proxyBypass'>
+  routes: Pick<NetworkRoutes, 'relayRouting' | 'relayRouteController' | 'toolRouting' | 'toolRouteController' | 'latestRouteStatus' | 'latestToolProbes' | 'observedRelayFetch' | 'resolveSystemProxy' | 'systemProxyFetch' | 'siteDirectFetch'>
   systemService: SystemService
   rootedOptions: RootedMainServiceOptions
   codexContext: CodexHomeContext
@@ -51,7 +52,7 @@ export interface FeedbackDescriberOptions {
 
 export function createDiagnostics(options: DiagnosticsWiringOptions) {
   const {
-    routes: { relayRouting, relayRouteController, toolRouting, toolRouteController, latestRouteStatus, latestToolProbes, observedRelayFetch, proxyBypass },
+    routes: { relayRouting, relayRouteController, toolRouting, toolRouteController, latestRouteStatus, latestToolProbes, observedRelayFetch, resolveSystemProxy, systemProxyFetch, siteDirectFetch },
     systemService, rootedOptions, codexContext, managerDataDirectory, windowsCliExecution, accelerationBundleStatus, accelerationRunning,
     readDocumentsDirectory, runtimeLog, readBillingAccountScope, currentBusiness, assetStore,
   } = options
@@ -154,11 +155,15 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
         relayRoute: diagnosticsRelayRoute(systemService.readStoredConfig().relaySiteId),
         toolRoute: diagnosticsToolRoute(systemService.readStoredConfig().relaySiteId),
         inspectAccelerationActive: accelerationRunning,
-        // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
-        // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
-        resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
-        // 代理不转发星芒、账号和 AI 对话已经自己改了直连时，这一项照实说，不叫人去退代理软件。
-        siteDirectActive: () => proxyBypass.siteDirect(),
+        // 「别的代理软件」问只跟随系统代理的那个会话：星芒自己改了直连以后默认会话答 DIRECT，问它会把没在
+        // 运行的代理说成没有。再经它、经直连会话各连一次星芒，比出是不是代理软件挡的路。
+        resolveSystemProxy,
+        fetchThroughSystemProxy: systemProxyFetch,
+        fetchDirect: siteDirectFetch,
+        // 「查网址的服务（DNS）」：电脑自己的 DNS 和公共 DNS 各查一遍两条线路的地址。线路状态文件只用上次读到的。
+        lookupHost: lookupWithSystemDns,
+        lookupHostWithPublicDns: lookupWithPublicDns,
+        routeStatus: () => latestRouteStatus()?.status ?? null,
         // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
         // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
         readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,

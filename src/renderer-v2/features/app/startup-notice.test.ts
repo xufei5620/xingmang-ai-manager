@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, usageStatsNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, startupNoticesShown, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, usageStatsNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -185,6 +185,34 @@ describe('crashReportingNotice', () => {
     expect(crashReportingNotice({ crashReportingNoticeShown: true }, true)).toBeNull()
     expect(crashReportingNotice({ crashReporting: false }, true)).toBeNull()
   })
+
+  it('waits for the onboarding guide and the interface tour to close', () => {
+    expect(crashReportingNotice({}, true)?.waitsForOnboarding).toBe(true)
+  })
+})
+
+describe('startupNoticesShown', () => {
+  const crash = crashReportingNotice({}, true)!
+  const vault = vaultRecoveredNotice()
+  const diagnostics = startupCheckFailure('diagnostics', 'fixture failure')
+
+  it('holds back only the notices that wait for onboarding while the guide or the tour is open', () => {
+    expect(startupNoticesShown([vault, crash, diagnostics], true).map((notice) => notice.id)).toEqual(['vault-recovered', 'diagnostics'])
+    const usage = usageStatsNotice({ crashReportingNoticeShown: true }, true, true)!
+    expect(startupNoticesShown([usage, vault], true)).toEqual([vault])
+  })
+
+  it('shows every notice, in its original order, once onboarding is closed', () => {
+    const notices = [vault, crash, diagnostics]
+    expect(startupNoticesShown(notices, false)).toBe(notices)
+  })
+
+  it('leaves notices without the flag alone, so news the user must act on is never held back', () => {
+    for (const notice of [vault, diagnostics, displayRelaunchNotice(), settingsSaveNotice({ kind: 'disk-full' })!]) {
+      expect(notice.waitsForOnboarding).toBeUndefined()
+      expect(startupNoticesShown([notice], true)).toEqual([notice])
+    }
+  })
 })
 
 describe('usageStatsNotice', () => {
@@ -200,6 +228,7 @@ describe('usageStatsNotice', () => {
       body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
       action: { label: '知道了', usageStats: 'keep' },
       secondaryAction: { label: '不想发送', usageStats: 'off' },
+      waitsForOnboarding: true,
     })
   })
 

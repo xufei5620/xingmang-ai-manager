@@ -28,8 +28,6 @@ import {
   relayStatusProbeUrl,
   runDiagnostics,
   windowsProxySettingsOutcome,
-  withAppProxyRoute,
-  inspectAppProxyRoute,
   type DiagnosticItem,
   type DiagnosticsReport,
   type DiagnosticsScanSnapshot,
@@ -306,6 +304,11 @@ describe('diagnostics', () => {
       inspectDocuments: () => ({ state: 'writable' }),
       probeAiOutput: async () => undefined,
       accelerationBundle: 'intact',
+      lookupHost: async () => ['104.16.1.1'],
+      lookupHostWithPublicDns: async () => ['104.16.1.1'],
+      resolveSystemProxy: async () => 'DIRECT',
+      fetchThroughSystemProxy: async () => statusJson(),
+      fetchDirect: async () => statusJson(),
     }
     const listed = (report: DiagnosticsReport) => report.items.map((item) => [item.code, item.title])
     const tools = (prefix: string, suffix = '') => activeProviderIds
@@ -326,6 +329,7 @@ describe('diagnostics', () => {
       ...tools('PROVIDER', ' 连接设置'),
       ['XINGMANG_NETWORK', '星芒 AI 网络'],
       ['CERTIFICATE_TRUST', '安全证书'],
+      ['RELAY_DNS', '查网址的服务（DNS）'],
       ['DISK_SPACE', '磁盘空间'],
       ['DOCUMENTS_WRITABLE', '「文档」文件夹能不能写'],
       ['AI_OUTPUT', 'AI 作品保存位置'],
@@ -333,6 +337,7 @@ describe('diagnostics', () => {
       ['FOLDER_RELOCATED', '文件夹位置'],
       ['CLASH_VERGE_TUN', '代理软件的全局接管模式'],
       ['PROXY_ENVIRONMENT', '电脑里的代理设置'],
+      ['SYSTEM_PROXY_SOFTWARE', '别的代理软件'],
       ['PROVIDER_ENVIRONMENT_OVERRIDE', '电脑里另外设过的工具地址或密钥'],
       ['WORKSPACE_CONFIG_OVERRIDE', '项目文件夹里的设置'],
       ['CODEX_DOTENV', 'Codex 文件夹里的额外设置'],
@@ -3313,7 +3318,7 @@ describe('windowsProxySettingsOutcome', () => {
 
   it('passes when no proxy is set', async () => {
     expect(await windowsProxySettingsOutcome({ PATH: 'C:\\Windows' }, closedOnly, noScopes))
-      .toEqual({ state: 'pass', summary: '电脑里没有设代理，工具直接联网' })
+      .toEqual({ state: 'pass', summary: '没有另外设过代理' })
   })
 
   it('offers to clear a current-user proxy that points at a closed local port', async () => {
@@ -3370,143 +3375,125 @@ describe('windowsProxySettingsOutcome', () => {
   })
 })
 
-describe('inspectAppProxyRoute', () => {
-  const url = 'https://xm.solov.cc'
-
-  it('treats a direct route or an unreadable answer as no proxy', async () => {
-    expect(await inspectAppProxyRoute(async () => 'DIRECT', url, async () => true)).toBeNull()
-    expect(await inspectAppProxyRoute(async () => { throw new Error('resolve failed') }, url, async () => true)).toBeNull()
-  })
-
-  it('asks for the account address and probes a local proxy port', async () => {
-    const resolve = vi.fn(async () => 'PROXY 127.0.0.1:7890;DIRECT')
-    const probe = vi.fn(async () => true)
-    expect(await inspectAppProxyRoute(resolve, url, probe)).toEqual({ reach: 'open', port: 7890 })
-    expect(resolve).toHaveBeenCalledWith(url)
-    expect(probe).toHaveBeenCalledWith({ host: '127.0.0.1', port: 7890 })
-  })
-
-  it('reports a local SOCKS proxy that is not running', async () => {
-    expect(await inspectAppProxyRoute(async () => 'SOCKS5 localhost:1080', url, async () => false))
-      .toEqual({ reach: 'closed', port: 1080 })
-  })
-
-  it('does not probe or echo a proxy on another machine', async () => {
-    const probe = vi.fn(async () => true)
-    expect(await inspectAppProxyRoute(async () => 'PROXY proxy.corp.example:8080', url, probe)).toEqual({ reach: 'remote' })
-    expect(probe).not.toHaveBeenCalled()
-  })
-})
-
-describe('withAppProxyRoute', () => {
-  it('keeps the outcome unchanged when the app connects directly', () => {
-    const outcome = { state: 'pass' as const, summary: '没有另外设过代理', details: {} }
-    expect(withAppProxyRoute(outcome, null)).toBe(outcome)
-  })
-
-  it('turns a clean result into a warning when the system proxy is on', () => {
-    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'open', port: 7890 })).toEqual({
-      state: 'warn',
-      summary: '电脑里开着代理（本机 7890 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
-      details: { systemProxy: '本机 7890 端口（开着）' },
-    })
-  })
-
-  it('says a local system proxy that is not running will block the account', () => {
-    const outcome = withAppProxyRoute({ state: 'pass', summary: '电脑里没有设代理，工具直接联网' }, { reach: 'closed', port: 7890 })
-    expect(outcome.state).toBe('warn')
-    expect(outcome.summary).toBe('电脑里开着代理（本机 7890 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。')
-  })
-
-  it('keeps the variable findings and the clear button next to the system proxy', () => {
-    const outcome = withAppProxyRoute({
-      state: 'warn',
-      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
-      details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy' },
-    }, { reach: 'remote' })
-    expect(outcome).toEqual({
-      state: 'warn',
-      summary: '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
-        + '另外，电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
-      details: { HTTPS_PROXY: '别的机器', fix: 'clear-user-proxy', systemProxy: '别的机器' },
-    })
-  })
-
-  it('says the account already goes direct instead of telling the user to quit the proxy', () => {
-    // 已知30：代理开着、只是不转发星芒时，账号和 AI 对话已经自己改了直连，这半不再标黄。
-    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'open', port: 7890 }, true)).toEqual({
-      state: 'pass',
-      summary: '电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
-      details: { systemProxy: '本机 7890 端口（开着）' },
-    })
-    expect(withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'remote' }, true).summary)
-      .toBe('电脑里开着代理（用的是别的机器上的代理）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。')
-    // 另外设过代理的那半照旧标黄、照旧接在后面。
-    const withVariables = withAppProxyRoute({
-      state: 'warn',
-      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
-      details: { HTTPS_PROXY: '别的机器' },
-    }, { reach: 'open', port: 7890 }, true)
-    expect(withVariables.state).toBe('warn')
-    expect(withVariables.summary).toBe('电脑里开着代理（本机 7890 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。'
-      + '另外，电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。')
-    // 代理没开的那种照旧：装工具这些还跟着系统代理走。
-    const closed = withAppProxyRoute({ state: 'pass', summary: '没有另外设过代理', details: {} }, { reach: 'closed', port: 7890 }, true)
-    expect(closed.state).toBe('warn')
-    expect(closed.summary).toContain('但它现在没开')
-  })
-})
-
 describe('diagnostics system proxy', () => {
-  function proxyItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
-    return report.items.find((item) => item.code === 'PROXY_ENVIRONMENT')
+  function item(report: Awaited<ReturnType<typeof runDiagnostics>>, code: string) {
+    return report.items.find((entry) => entry.code === code)
+  }
+  // 两个会话都不真的连星芒（T12）：经系统代理那个回网关错误页，直接连那个回状态接口。
+  function wired(input: DiagnosticsDependencies, resolveProxy: string): DiagnosticsDependencies {
+    return {
+      ...input,
+      resolveSystemProxy: async () => resolveProxy,
+      fetchThroughSystemProxy: async () => new Response('<html>502</html>', { status: 502, headers: { 'content-type': 'text/html' } }),
+      fetchDirect: async () => statusJson(),
+      probeLoopbackProxy: async () => true,
+    }
   }
 
-  it('warns on macOS when the system settings route the account through a proxy', async () => {
-    const input = dependencies(temporaryHome())
+  it('moves the system proxy out of the proxy settings row into its own row', async () => {
+    const input = wired(dependencies(temporaryHome()), 'PROXY 127.0.0.1:7897')
     input.platform = 'darwin'
-    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:7897'
-    input.probeLoopbackProxy = async () => true
-    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
-      title: '电脑里的代理设置',
+    const report = await runDiagnostics(input)
+    expect(item(report, 'PROXY_ENVIRONMENT')).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
+    expect(item(report, 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({
+      title: '别的代理软件',
       state: 'warn',
-      summary: '电脑里开着代理（本机 7897 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。',
-      details: { systemProxy: '本机 7897 端口（开着）' },
+      details: { systemProxy: 'blocking', proxyPort: 7897, fix: 'open-proxy-settings' },
     })
-  })
-
-  it('reports the direct account route the proxy bypass already took', async () => {
-    const input = dependencies(temporaryHome())
-    input.platform = 'darwin'
-    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:7897'
-    input.probeLoopbackProxy = async () => true
-    input.siteDirectActive = () => true
-    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
-      state: 'pass',
-      summary: '电脑里开着代理（本机 7897 端口）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。',
-    })
-  })
-
-  it('does not count the acceleration proxy as another program', async () => {
-    const input = dependencies(temporaryHome())
-    input.platform = 'darwin'
-    const resolveAppProxy = vi.fn(async () => 'PROXY 127.0.0.1:7897')
-    input.resolveAppProxy = resolveAppProxy
-    input.inspectAccelerationActive = async () => true
-    expect(proxyItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
-    expect(resolveAppProxy).not.toHaveBeenCalled()
+    expect(item(report, 'SYSTEM_PROXY_SOFTWARE')?.summary).toContain('开着别的代理软件（本机 7897 端口），可是经它连不上星芒。')
   })
 
   it('checks the system proxy on Windows too', async () => {
-    const input = dependencies(temporaryHome())
-    input.platform = 'win32'
+    const input = wired(dependencies(temporaryHome()), 'PROXY 127.0.0.1:10809')
     input.readProxyScopes = async () => null
-    input.resolveAppProxy = async () => 'PROXY 127.0.0.1:10809'
     input.probeLoopbackProxy = async () => false
-    expect(proxyItem(await runDiagnostics(input))).toMatchObject({
-      state: 'warn',
-      details: { systemProxy: '本机 10809 端口（没开）' },
+    const report = await runDiagnostics(input)
+    expect(item(report, 'PROXY_ENVIRONMENT')).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
+    expect(item(report, 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({ state: 'warn', details: { systemProxy: 'dead', proxyPort: 10809 } })
+  })
+
+  it('does not count the acceleration proxy as another program', async () => {
+    const resolveSystemProxy = vi.fn(async () => 'PROXY 127.0.0.1:7897')
+    const input = { ...wired(dependencies(temporaryHome()), 'DIRECT'), resolveSystemProxy, inspectAccelerationActive: async () => true }
+    expect(item(await runDiagnostics(input), 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({
+      state: 'pass',
+      summary: '系统设置里的代理是星芒自己的加速设的，不是别的软件',
     })
+    expect(resolveSystemProxy).not.toHaveBeenCalled()
+  })
+
+  it('leaves the row out when the host does not wire the two sessions', async () => {
+    const input = dependencies(temporaryHome())
+    input.resolveSystemProxy = async () => 'PROXY 127.0.0.1:7897'
+    expect(item(await runDiagnostics(input), 'SYSTEM_PROXY_SOFTWARE')).toBeUndefined()
+  })
+
+  it('probes the tool line, which is what Codex and the desktop apps connect to', async () => {
+    const seen: string[] = []
+    const input = wired(dependencies(temporaryHome()), 'PROXY 127.0.0.1:7897')
+    input.fetchThroughSystemProxy = async (url) => {
+      seen.push(String(url))
+      return statusJson()
+    }
+    input.toolRoute = { site: requireRelaySite('solov', 'direct') }
+    expect(item(await runDiagnostics(input), 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({ state: 'pass', summary: '开着别的代理软件（本机 7897 端口），星芒经它能连上' })
+    expect(seen).toEqual(['https://xm-direct.solov.cc/api/status'])
+  })
+})
+
+describe('diagnostics DNS', () => {
+  function dnsItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+    return report.items.find((entry) => entry.code === 'RELAY_DNS')
+  }
+
+  it('leaves the row out unless both lookups are wired, so tests never query real DNS', async () => {
+    const input = dependencies(temporaryHome())
+    input.lookupHost = async () => ['104.16.1.1']
+    expect(dnsItem(await runDiagnostics(input))).toBeUndefined()
+  })
+
+  it('checks both lines of the current account and says when the computer DNS answers wrong', async () => {
+    const asked: string[] = []
+    const input = dependencies(temporaryHome())
+    input.lookupHost = async (host) => {
+      asked.push(host)
+      return ['203.0.113.9']
+    }
+    input.lookupHostWithPublicDns = async (host) => host === 'xm.solov.cc' ? ['104.16.1.1'] : ['198.51.100.7']
+    const item = dnsItem(await runDiagnostics(input))
+    expect(item).toMatchObject({ title: '查网址的服务（DNS）', state: 'fail', details: { line1: 'wrong', line2: 'wrong', fix: 'open-dns-settings' } })
+    expect(item?.summary).toContain('你这台电脑用的 DNS 把星芒的地址查错了')
+    expect(asked.sort()).toEqual(['xm-direct.solov.cc', 'xm.solov.cc'])
+    // 解析出来的地址不进结论和报告（xm 三线路需求 5.1.9）。
+    expect(JSON.stringify(item)).not.toContain('203.0.113.9')
+  })
+
+  it('checks line 2 against the route status file it last read', async () => {
+    const input = dependencies(temporaryHome())
+    input.lookupHost = async (host) => host === 'xm.solov.cc' ? ['104.16.1.1'] : ['192.0.2.10']
+    input.lookupHostWithPublicDns = async () => { throw new Error('no answer') }
+    input.routeStatus = () => ({
+      updatedAt: null,
+      incident: { line: null, state: 'none', since: null },
+      lines: { direct: { target: 'lax', proxied: false, healthy: true, legitIps: ['192.0.2.10'] } },
+      hkEnabled: false,
+      hkRecommended: false,
+    })
+    expect(dnsItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '电脑的 DNS 查星芒的地址是对的' })
+  })
+
+  it('judges by the tool route and sends a fixed wrong line to the route setting', async () => {
+    const input = dependencies(temporaryHome())
+    input.lookupHost = async (host) => host === 'xm.solov.cc' ? ['104.16.1.1'] : ['203.0.113.9']
+    input.lookupHostWithPublicDns = async (host) => host === 'xm.solov.cc' ? ['104.16.1.1'] : ['198.51.100.7']
+    const site = requireRelaySite('solov')
+    input.toolRoute = { site, route: { line: 'direct', automatic: false, settled: true, primarySite: site } }
+    expect(dnsItem(await runDiagnostics(input))).toMatchObject({
+      state: 'warn',
+      details: { siteId: 'solov', line1: 'ok', line2: 'wrong', reroute: 'auto' },
+    })
+    input.toolRoute = { site, route: { line: 'primary', automatic: true, settled: true, primarySite: site } }
+    expect(dnsItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', details: { line1: 'ok', line2: 'wrong' } })
   })
 })
 
@@ -3519,8 +3506,10 @@ describe('the diagnostics-*.ts modules split out of diagnostics.ts', () => {
       .filter((name) => /^diagnostics-.+\.ts$/.test(name) && !name.endsWith('.test.ts') && !name.endsWith('.test-support.ts'))
     expect(modules).toEqual(expect.arrayContaining([
       'diagnostics-context.ts',
+      'diagnostics-dns-check.ts',
       'diagnostics-network-checks.ts',
       'diagnostics-override-checks.ts',
+      'diagnostics-proxy-software-check.ts',
       'diagnostics-redaction.ts',
       'diagnostics-storage-checks.ts',
       'diagnostics-system-checks.ts',

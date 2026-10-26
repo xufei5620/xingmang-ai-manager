@@ -4004,6 +4004,57 @@ test('the crash reporting notice waits until the user is signed in', async () =>
   } finally { await page.close() }
 })
 
+// 主路卡点 F11：第一次登录时引导、导览本身就占着一屏，错误报告那张卡再挤上来还盖住工具卡的按钮。
+// 引导、导览开着时它先等着，都关了再出；告知的内容和缺省开关不变。
+async function signInFromWelcome(page) {
+  await page.getByTestId('welcome-login').click()
+  await page.getByTestId('login-account').fill('fixture-user')
+  await page.getByTestId('login-password').fill('fixture-password')
+  await page.getByTestId('auth-agree').check()
+  await page.getByTestId('login-submit').click()
+  const guide = page.getByTestId('start-guide')
+  await guide.waitFor()
+  // 登录后那几件只做一次的事都跑过了，卡片要出早就该出了。
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+  return guide
+}
+
+test('the crash reporting notice waits for the onboarding guide to close (F11)', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    const guide = await signInFromWelcome(page)
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    await page.getByTestId('guide-pause').click()
+    await guide.waitFor({ state: 'detached' })
+    await page.getByTestId('startup-notice-crash-reporting').waitFor()
+    // 只是晚出，没替客户选：什么都没点之前不写设置。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'saveSettings' && 'crashReportingNoticeShown' in entry.args[0])), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the crash reporting notice also waits for the interface tour that follows the guide (F11)', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    const guide = await signInFromWelcome(page)
+    await page.getByTestId('guide-route-chat').check()
+    for (let turn = 0; turn < 4 && await guide.getAttribute('data-guide-step') !== 'ready'; turn++) {
+      const step = await guide.getAttribute('data-guide-step')
+      await page.getByTestId('guide-next').click()
+      await page.waitForFunction((previous) => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') !== previous, step)
+    }
+    await page.getByTestId('guide-home').click()
+    await guide.waitFor({ state: 'detached' })
+    const tour = page.getByTestId('shell-guide-tip')
+    await tour.waitFor()
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    for (const label of ['下一步', '下一步', '知道了']) await tour.getByRole('button', { name: label, exact: true }).click()
+    await tour.waitFor({ state: 'detached' })
+    await page.getByTestId('startup-notice-crash-reporting').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 显卡接连崩溃后这次自动改用了兼容方式显示：角落里说一句，并让用户二选一，
 // 不放关闭叉（关掉等于没选）。两个选择都写进设置，「恢复」接着给一颗「现在重开」。
 test('an automatic display fallback explains itself and keeps the fallback when chosen', async () => {
@@ -8347,6 +8398,36 @@ test('a guest or a check of another site gets no route fix on the cut-off networ
     await expect(guest.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await guest.evaluate(() => window.v2Test.errors), [])
   } finally { await guest.close() }
+})
+
+// 检查页「查网址的服务（DNS）」「别的代理软件」：改 DNS、关代理都在系统设置里，行里直接给按钮，打开哪一页由主进程
+// 按 kind 定；系统没让打开时页头说去哪里找。DNS 只错一条、又固定用着错的那条时，另给「去处理」翻到线路那一行。
+test('the DNS and proxy rows open the system settings and the wrong fixed line goes to the route setting', async () => {
+  const page = await open()
+  try {
+    await stubHealthReport(page, [
+      { code: 'RELAY_DNS', title: '查网址的服务（DNS）', state: 'warn', summary: '你这台电脑用的 DNS 把星芒线路2的地址查错了，线路1是对的。',
+        details: { siteId: 'solov', line1: 'ok', line2: 'wrong', fix: 'open-dns-settings', reroute: 'auto' } },
+      { code: 'SYSTEM_PROXY_SOFTWARE', title: '别的代理软件', state: 'warn', summary: '系统设置里还开着代理（本机 7890 端口），可是那个代理软件没在运行。',
+        details: { systemProxy: 'dead', proxyPort: 7890, fix: 'open-proxy-settings' } },
+    ])
+    await page.getByTestId('nav-health').click()
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'openNetworkSettings').map((call) => call.args))
+    await expect(page.getByTestId('health-network-settings-RELAY_DNS')).toHaveText('打开网络设置')
+    await page.getByTestId('health-network-settings-RELAY_DNS').click()
+    await expect.poll(opened).toEqual([['dns']])
+    await expect(page.getByTestId('health-network-settings-SYSTEM_PROXY_SOFTWARE')).toHaveText('打开系统代理设置')
+    await page.getByTestId('health-network-settings-SYSTEM_PROXY_SOFTWARE').click()
+    await expect.poll(opened).toEqual([['dns'], ['proxy']])
+    // 代理那一行在软件里没有能处理它的地方：不给「去处理」。
+    await expect(page.getByTestId('health-fix-SYSTEM_PROXY_SOFTWARE')).toHaveCount(0)
+    await page.evaluate(() => { window.xingmang.openNetworkSettings = async () => false })
+    await page.getByTestId('health-network-settings-RELAY_DNS').click()
+    await expect(page.getByTestId('page-health')).toContainText('没能打开网络设置，请在系统设置里找「网络」。')
+    await page.getByTestId('health-fix-RELAY_DNS').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
+    await clean(page)
+  } finally { await page.close() }
 })
 
 // 顶部搜索能搜到设置里的每一行，靠的是每一行都带着注册表里的 id。这里把注册表和
