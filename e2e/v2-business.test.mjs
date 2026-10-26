@@ -3706,12 +3706,30 @@ test('desktop notifications start on, the master switch gates test notifications
       (await calls(page)).filter((call) => call.name === 'settings').at(-1).args,
       { version: 2, crashReporting: false },
     )
-    await page
-      .getByRole('switch', { name: '匿名使用统计偏好', exact: true })
-      .click()
-    await waitForToast(page, '偏好已保存在本机，没有上传使用记录')
+    // 匿名使用统计没碰过 = 开（usage-stats.ts），点一下是关掉。
+    const usageStats = page.getByRole('switch', {
+      name: '匿名使用统计偏好',
+      exact: true,
+    })
+    assert.equal(await usageStats.getAttribute('aria-checked'), 'true')
+    await usageStats.click()
+    await waitForToast(page, '已关闭，不再发送使用情况')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'platform-privacy').args,
+      { kind: 'anonymousUsage', enabled: false },
+    )
+    await page
+      .getByText(
+        '每天最多发一次版本、系统、装了哪些工具、安装和更新是否成功；不含账号、密钥、文件路径和对话内容，也没有电脑编号',
+        { exact: true },
+      )
+      .waitFor()
+    await usageStats.click()
+    await waitForToast(page, '已打开，每天最多发一次匿名使用情况')
+    assert.deepEqual(
+      (await calls(page))
+        .filter((call) => call.name === 'platform-privacy')
+        .at(-1).args,
       { kind: 'anonymousUsage', enabled: true },
     )
     assert.deepEqual(

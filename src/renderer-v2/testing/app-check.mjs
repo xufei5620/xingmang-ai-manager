@@ -2530,6 +2530,7 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
     ['allInstalled=1&changedClaude=1', 'claude', '重新写入密钥', '配置被改过'],
     ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
     ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
+    ['emptyWallet=1', 'claude', '去充值', '余额为零'],
   ]
   for (const [query, tool, label, status] of cases) {
     const page = await open(query)
@@ -2565,6 +2566,34 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
       await clean(page)
     } finally { await page.close() }
   }
+})
+// 主路卡点 F4：余额是 $0 时首页上面说要先充值，工具卡和大卡的主按钮也是「去充值」；「打开」照样能点。
+test('an empty wallet turns the main button on the tool cards into 去充值 and keeps 打开 one click away', async () => {
+  const page = await open('emptyWallet=1')
+  try {
+    await page.getByTestId('home-low-balance').waitFor()
+    const row = page.getByTestId('tool-row-claude')
+    await row.getByText('余额为零', { exact: true }).waitFor()
+    assert.deepEqual(await row.locator('.xm-tool-card-actions > .xm-btn').allInnerTexts(), ['去充值'])
+    // 大卡：「去充值」排第一当主按钮，「打开 Claude Code」退成旁边的次按钮。
+    const hero = page.getByTestId('home-hero')
+    assert.deepEqual((await hero.locator('.v2-home-hero-actions > .xm-btn').allInnerTexts()).map((text) => text.split('\n')[0]), ['去充值', '打开 Claude Code', '选择其他文件夹…'])
+    assert.match(await page.getByTestId('home-hero-recharge').getAttribute('class'), /xm-btn-primary/)
+    assert.match(await page.getByTestId('home-hero-open').getAttribute('class'), /xm-btn-secondary/)
+    // 「打开」在「…」第一项，点了照常打开。
+    await row.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    const items = await page.locator('.xm-menu-pop [role="menuitem"]').allInnerTexts()
+    assert.equal(items[0], '打开')
+    await page.getByTestId('tool-claude-open').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.getByTestId('tool-claude-recharge').waitFor()
+    await clean(page)
+    // 卡上的「去充值」进个人中心的充值页。
+    await page.getByTestId('tool-claude-recharge').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent === '充值订阅')
+    // 默认夹具没接充值、订单那几个读取（会记进 unexpected），这里只看有没有报错。
+    assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
 })
 // 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，换成一句中文。
 test('an English probe failure reads as a plain Chinese sentence on the home row', async () => {

@@ -8,6 +8,7 @@ import type {
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import {
   canvasRunDescendants,
+  canvasRunDesktopUnsupportedReason,
   canvasRunExclusiveNodeIds,
   canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
@@ -92,6 +93,8 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
   async function start(input: StartCanvasRunInput): Promise<CanvasRunHandle> {
     const expectedRevision = computeCanvasGraphRevision(input.graph)
     if (expectedRevision !== input.graphRevision) throw new Error('工作流已发生变化，请重新发起运行')
+    const unsupported = canvasRunDesktopUnsupportedReason(input.graph, input.scope)
+    if (unsupported) throw new Error(unsupported)
     const remoteGenerations = canvasRunRemoteGenerationUpperBound(input.graph, input.scope)
     if (remoteGenerations > maxRemoteGenerationsPerRun) {
       throw new Error(`单次运行最多允许 ${maxRemoteGenerationsPerRun} 个远程生成节点，请拆分后重试`)

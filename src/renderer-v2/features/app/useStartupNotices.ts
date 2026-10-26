@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject
 import type { AppSettingsV2, XingmangApi } from '../../../../electron/ipc-contract'
 import { errorMessage } from '../../business-common'
 import { diagnosticsRevision, publishDiagnosticsCounts } from './environment-status'
-import { crashReportingNotice, displayRelaunchNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, toolRouteRestartNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './startup-notice'
+import { platformApi } from '../../platform-api'
+import { crashReportingNotice, displayRelaunchNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, toolRouteRestartNotice, usageStatsNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './startup-notice'
 import type { AppApi, AppToast, Perform } from './runtime-context'
 
 const routeRestartHintKey = 'xingmang-v2-route-restart-hint'
@@ -62,7 +63,7 @@ interface StartupChecksOptions {
   perform: Perform
   toast: AppToast
   mounted: RefObject<boolean>
-  /** 缩到托盘关掉界面以后重新加载的这一次：开机环境检查、错误报告告知这次运行里已经做过，不再来。 */
+  /** 缩到托盘关掉界面以后重新加载的这一次：开机环境检查、错误报告和使用统计告知这次运行里已经做过，不再来。 */
   restoredBoot?: boolean
 }
 
@@ -102,5 +103,29 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
     setSettings(await app.savePreferences({ version: 2, crashReportingNoticeShown: true, ...(choice === 'off' ? { crashReporting: false } : {}) }))
     if (choice === 'off') toast.show('已关掉，出错时不再发送错误报告。想重新打开，到「设置」的「隐私数据」里。', 'ok')
   }), [app, perform, setSettings, toast])
-  return { chooseDisplayCompat, chooseCrashReporting }
+  // 匿名使用统计告知：一次打开只说一件这种事，错误报告那张这次出过就等下次打开，同样一次运行只出一回。
+  // 开关在系统界面设置那边，要先读一下现在是不是开着：亲手关过的不用再说。
+  const usageNoticeOffered = useRef(false)
+  useEffect(() => {
+    if (boot !== 'ready' || restoredBoot || usageNoticeOffered.current || crashNoticeOffered.current || !usageStatsNotice(settings, authenticated, true)) return
+    const platform = platformApi()
+    if (!platform) return
+    let current = true
+    void platform.getState().then((state) => {
+      if (!current || usageNoticeOffered.current) return
+      usageNoticeOffered.current = true
+      const notice = usageStatsNotice(settings, authenticated, state.preferences.privacy?.anonymousUsage !== false)
+      if (notice) noteStartupCheck(notice)
+    }).catch(() => undefined)
+    return () => { current = false }
+  }, [boot, noteStartupCheck, authenticated, settings, restoredBoot])
+  const chooseUsageStats = useCallback((choice: 'keep' | 'off') => perform('保存使用统计设置', async () => {
+    if (choice === 'off') {
+      const platform = platformApi()
+      if (platform) await platform.setPrivacyPreference('anonymousUsage', false)
+    }
+    setSettings(await app.savePreferences({ version: 2, usageStatsNoticeShown: true }))
+    if (choice === 'off') toast.show('已关闭，不再发送使用情况', 'ok')
+  }), [app, perform, setSettings, toast])
+  return { chooseDisplayCompat, chooseCrashReporting, chooseUsageStats }
 }
