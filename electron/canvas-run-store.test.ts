@@ -337,4 +337,23 @@ describe('CanvasRunStore', () => {
     })
     await expect(store.resolveCache(7, 'c'.repeat(64))).resolves.toMatchObject({ outputText })
   })
+
+  it('reads back a run file whose cache holds a kernel-only node kind', async () => {
+    // A later release runs these kinds; rolled back to this one, the file must
+    // still load instead of being backed up as corrupt with all its history.
+    const { root, store } = fixture()
+    await store.saveRun(7, record('kept'))
+    await store.storeCache(7, {
+      version: 1,
+      fingerprint: 'd'.repeat(64),
+      nodeKind: 'text-generate',
+      outputText: '生成好的文案',
+      createdAt: '2026-08-13T00:00:00.000Z',
+      lastUsedAt: '2026-08-13T00:00:00.000Z',
+    })
+    const reopened = new CanvasRunStore({ rootDirectory: root, assets: { readOwned: async () => { throw new Error('missing') } } })
+    expect((await reopened.listRuns(7)).map((run) => run.runId)).toEqual(['kept'])
+    await expect(reopened.resolveCache(7, 'd'.repeat(64))).resolves.toMatchObject({ nodeKind: 'text-generate', outputText: '生成好的文案' })
+    expect(fs.readdirSync(path.join(root, 'user-7')).some((entry) => entry.includes('.corrupt-'))).toBe(false)
+  })
 })

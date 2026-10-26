@@ -3650,6 +3650,31 @@ describe('registerIpcHandlers', () => {
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('apiKey')
   })
 
+  it('tells the usage counter how each operation ended, with nothing but an install target as argument', async () => {
+    const observeOperation = vi.fn()
+    const service = serviceStub()
+    vi.mocked(service.installCli).mockRejectedValueOnce(new Error('npm ERR! code ECONNRESET'))
+    const login = vi.fn(async () => { throw new Error('用户名或密码错误') })
+    register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never }, { observeOperation })
+    const install = electronMocks.handlers.get('cli:install')!
+
+    await expect(install(trustedEvent(), 'claude', '2.1.310')).rejects.toThrow('ECONNRESET')
+    expect(observeOperation).toHaveBeenLastCalledWith({ channel: 'cli:install', args: ['claude'], durationMs: expect.any(Number), failed: true, error: expect.any(Error) })
+    await install(trustedEvent(), 'claude')
+    expect(observeOperation).toHaveBeenLastCalledWith({ channel: 'cli:install', args: ['claude'], durationMs: expect.any(Number), failed: false })
+
+    await expect(electronMocks.handlers.get('account:login')!(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })).rejects.toThrow()
+    expect(observeOperation).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'account:login', args: [], failed: true }))
+    expect(JSON.stringify(observeOperation.mock.calls)).not.toMatch(/fixture-password|user@example/)
+  })
+
+  it('finishes an operation normally when the usage counter throws', async () => {
+    const service = serviceStub()
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, { observeOperation: () => { throw new Error('counter broke') } })
+    await electronMocks.handlers.get('cli:install')!(trustedEvent(), 'claude')
+    expect(service.installCli).toHaveBeenCalledWith('claude', expect.anything(), undefined)
+  })
+
   it('passes an explicit CLI version through and rejects anything but an exact one', async () => {
     const service = serviceStub()
     register(service)
@@ -4228,6 +4253,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, crashReportingNoticeShown: true, crashReporting: false })
       vi.mocked(service.updateStoredConfig).mockClear()
       await expect(handler(trustedEvent(), { version: 2, crashReportingNoticeShown: 'yes' })).rejects.toThrow('错误报告告知记录')
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    it('carries the usage stats notice marker and rejects a non-boolean one', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await handler(trustedEvent(), { version: 2, usageStatsNoticeShown: true })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, usageStatsNoticeShown: true })
+      vi.mocked(service.updateStoredConfig).mockClear()
+      await expect(handler(trustedEvent(), { version: 2, usageStatsNoticeShown: 1 })).rejects.toThrow('使用统计告知记录')
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
     })
 

@@ -57,7 +57,10 @@ export function parsePlatformPreferences(value: unknown): PlatformPreferences {
   })
   // 老文件里的 crashReports 会在这里被丢掉：键不在清单里就不会被读出，
   // 下一次写入自然不再落盘，不需要单独的迁移步骤。
-  const privacy = booleanRecord(record.privacy, { anonymousUsage: false })
+  // 匿名使用统计没碰过 = 开（yoyo 10-26 选的默认，usage-stats.ts）。这一项只在点过隐私开关时才落盘：
+  // 文件里写着 false 的，是客户亲手关过的（早先的版本点隐私里别的开关时也可能顺带写下），
+  // 一律照旧关，宁可少数几台，不替客户打开。
+  const privacy = booleanRecord(record.privacy, { anonymousUsage: true })
   return {
     version: 1,
     themePreference: record.themePreference,

@@ -128,6 +128,11 @@ export interface AppSettings {
    */
   crashReportingNoticeShown?: boolean
   /**
+   * 已经用一次性卡片告诉过用户「每天会发一次匿名使用情况」（usage-stats.ts）。只落 true，同上：
+   * 告知不改开关，开关本身在系统界面设置那份文件里（privacy.anonymousUsage）。
+   */
+  usageStatsNoticeShown?: boolean
+  /**
    * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
    * needs a loopback CDP port which stays open for the whole Codex session and
    * accepts any local client, so consent must never be inferred from
@@ -212,6 +217,8 @@ export interface AppSettingsUpdate {
   crashReporting?: boolean
   /** true is sticky and false is ignored, like trayHintShown. */
   crashReportingNoticeShown?: boolean
+  /** Same as crashReportingNoticeShown. */
+  usageStatsNoticeShown?: boolean
   codexDesktopChineseRuntimePatch?: CodexChineseRuntimePatchChoice
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
@@ -396,6 +403,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
     ...(value.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
+    ...(value.usageStatsNoticeShown === true ? { usageStatsNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
@@ -562,6 +570,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
     ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
+    ...(update.usageStatsNoticeShown === true || base.usageStatsNoticeShown === true ? { usageStatsNoticeShown: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
