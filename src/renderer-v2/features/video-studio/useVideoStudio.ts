@@ -5,6 +5,7 @@ import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { speaksChinese, userFacingErrorMessage } from '../../business-common'
 import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
+import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { composeInVideoStudioWorker } from './compose-client'
@@ -35,7 +36,7 @@ import {
   type VideoStudioShot,
 } from './project'
 
-export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo'>
+export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder'>
 export type VideoStudioStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export interface VideoStudioOptions {
@@ -347,6 +348,14 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const saveClip = async (assetId: string): Promise<boolean> => {
     try { return (await bridge.saveAiVideo(assetId)).saved } catch (reason) { setError(videoStudioErrorMessage(reason, '没存下来，请换个位置再试')); return false }
   }
+  // 页面上好几处说「存进 AI 作品文件夹」，这里直接打开它。用的是检查页那条：路径由主进程算、过了 I8 检查才打开，这里只说要哪一个。
+  const openFolder = async () => {
+    try {
+      if (!(await bridge.openDiagnosticFolder('ai-output'))) setError(diagnosticFolderUnavailableMessage)
+    } catch (reason) {
+      setError(videoStudioErrorMessage(reason, diagnosticFolderUnavailableMessage))
+    }
+  }
 
   const busy = Boolean(planning) || project.shots.some(isVideoStudioShotBusy) || composeState.phase !== 'idle'
   // 写分镜、出片、拼片都靠这一页接着往下走：做着的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
@@ -354,7 +363,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   return {
     site, project, groups, preparations, catalogLoading, catalogError, planning: Boolean(planning), composeState, error, notice, storageWarning, busy,
     catalogs: buildVideoStudioCatalogs(groups, preparations),
-    setError, setNotice, changeSettings, refreshModels, writePlan, stopPlan, generate, stopGenerating, compose, stopCompose, openClip, saveClip,
+    setError, setNotice, changeSettings, refreshModels, writePlan, stopPlan, generate, stopGenerating, compose, stopCompose, openClip, saveClip, openFolder,
     selectVideoModel: (model: string, group: string) => changeSettings({ videoModel: model, videoGroup: group, secondsPerShot: clampVideoStudioSeconds(projectRef.current.settings.secondsPerShot, model) }),
     selectTextModel: (model: string, group: string) => changeSettings({ textModel: model, textGroup: group }),
     editShot: (id: string, patch: Partial<Pick<VideoStudioShot, 'prompt' | 'caption'>>) => commit((current) => ({ ...updateVideoStudioShot(current, id, (shot) => ({ ...shot, ...patch })), ...(patch.caption === undefined ? {} : { exported: undefined }) })),
