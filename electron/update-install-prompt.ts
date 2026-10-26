@@ -21,7 +21,9 @@
  *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开；问过的版本还要
  *   等「稍后再说」之后 10 分钟。每个版本只自动试一次，记在打开时装的同一条记录里（attempted），
  *   没装上就退回到退出时装。客户不在电脑前时下好的不问，直接等着闲时装；框弹出来以后人一直
- *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。装之前跟退出时装一样，先现读一次
+ *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。星芒窗口开着（含最小化）时这两条
+ *   不做：闲时装要窗口都缩着，记成问过了或者把框收掉，这一版这次运行就再也没人管了；人不在时
+ *   先不问，等人回来、几秒没动再跳框，框弹出来以后也不收。装之前跟退出时装一样，先现读一次
  *   服务状态文件（最多等几秒）：下载之后才被撤回的版本在这里收回，不装。
  *
  * 不含任何 Electron 依赖：框、窗口、空闲时长、装都由宿主接进来。
@@ -131,7 +133,7 @@ export function decideIdleInstall(input: IdleInstallInput): string | null {
   return version
 }
 
-/** 客户不在电脑前（锁了屏，或者很久没碰）：这时跳框没人看，能闲时装的就不问了。 */
+/** 客户不在电脑前（锁了屏，或者很久没碰）：这时跳框没人看，能闲时装的（窗口都缩着）就不问了。 */
 export function isAwayFromComputer(idleMs: number, locked: boolean): boolean {
   return locked || idleMs >= IDLE_INSTALL_IDLE_MS
 }
@@ -191,10 +193,13 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   const setTimer = options.setTimer ?? defaultTimer
   const asked = new Set<string>()
   let waiting: string | null = null
-  let open: { version: string; controller: AbortController } | null = null
+  // windowShown：跳框之前星芒就有窗口开着。宿主跳框时会把主窗口叫出来，所以要在跳之前看。
+  let open: { version: string; controller: AbortController; windowShown: boolean } | null = null
   let notBefore: number | null = null
   let idleTried: string | null = null
   let heldForAcceleration: string | null = null
+  // 人不在、窗口又开着，正等人回来再跳框的那一版。
+  let heldUntilBack: string | null = null
   let cancelTimer: (() => void) | null = null
   let armedMs: number | null = null
   let disposed = false
@@ -251,11 +256,12 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   // 更新状态每变一次都会来一遍：已经排着同样间隔的就不重排，免得一直往后推。
   function schedule(): void {
     const downloaded = installableVersion(read<UpdateSnapshot | null>(options.getState, null)) !== null
-    // 加速开着时一局游戏可能打几个小时，这段时间放慢着看，加速关了再按 2 秒一次等人停手。
+    // 加速开着时一局游戏可能打几个小时、人不在可能一走一整夜，这段时间放慢着看，加速关了、人回来了
+    // 再按 2 秒一次等人停手。
     const wanted = disposed
       ? null
       : waiting
-        ? accelerationOn() ? IDLE_POLL_MS : PROMPT_POLL_MS
+        ? accelerationOn() || heldUntilBack === waiting ? IDLE_POLL_MS : PROMPT_POLL_MS
         : downloaded && canInstallWhileIdle() && idleTried === null ? IDLE_POLL_MS : null
     if (wanted !== null && wanted === armedMs && cancelTimer) return
     cancelTimer?.()
@@ -294,12 +300,23 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     const idleMs = read(options.idleMs, 0)
     const locked = read(options.locked, false)
     if (canInstallWhileIdle() && isAwayFromComputer(idleMs, locked)) {
+      // 窗口开着的闲时装等不来（要窗口都缩着），在这里记成问过了，这一版这次运行就既不问也不装。
+      // 读不出窗口开没开时当作开着：顶多等人回来多问一句。
+      if (read(options.windowVisible, true)) {
+        if (heldUntilBack !== version) {
+          heldUntilBack = version
+          log('info', 'install.prompt.away-window-open', `新版本 ${version} 下好时没人在电脑前，可星芒窗口开着、闲时装不了，等人回来再跳框`, { locked })
+        }
+        return
+      }
+      heldUntilBack = null
       waiting = null
       asked.add(version)
       notBefore = null
       log('info', 'install.prompt.away', `新版本 ${version} 下好时没人在电脑前，不跳框，等闲时装`, { locked })
       return
     }
+    heldUntilBack = null
     if (!(idleMs >= PROMPT_QUIET_INPUT_MS)) return
     waiting = null
     asked.add(version)
@@ -308,7 +325,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
 
   function showPrompt(version: string): void {
     const controller = new AbortController()
-    open = { version, controller }
+    open = { version, controller, windowShown: read(options.windowVisible, true) }
     const prompt = buildInstallPrompt(version, options.platform, {
       unattended: canInstallWhileIdle(),
       elevated: read(options.elevated, false),
@@ -345,6 +362,8 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
 
   function considerAbandon(): void {
     if (!open || !canInstallWhileIdle()) return
+    // 窗口本来就开着的，收了框窗口也照样开着、闲时装等不来：框留着等人回来回答。
+    if (open.windowShown) return
     if (!isAwayFromComputer(read(options.idleMs, 0), read(options.locked, false))) return
     open.controller.abort()
   }
