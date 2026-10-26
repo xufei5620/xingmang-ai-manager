@@ -87,7 +87,6 @@ function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInst
     platform,
     getState: () => state.snapshot,
     autoUpdate: () => true,
-    downloadedAtLaunch: null,
     standardAccount: () => state.standardAccount,
     unattended: () => true,
     elevated: () => false,
@@ -157,15 +156,16 @@ describe('update install prompt copy', () => {
 })
 
 describe('resolveInstallPromptVersion', () => {
-  const base = { autoUpdate: true, snapshot: snapshot(), downloadedAtLaunch: null, standardAccount: false }
+  const base = { autoUpdate: true, snapshot: snapshot(), attempted: false, standardAccount: false }
 
-  it('asks about a version downloaded during this run', () => {
+  it('asks about a downloaded version that no automatic install has taken', () => {
+    // Downloaded during this run, or downloaded before it while the launch install held it back
+    // (a login launch waiting for the first window, or the two-minute launch window missed).
     expect(resolveInstallPromptVersion(base)).toBe('0.2.22')
   })
 
-  it('leaves a version that was already downloaded at launch to the launch install', () => {
-    expect(resolveInstallPromptVersion({ ...base, downloadedAtLaunch: '0.2.22' })).toBeNull()
-    expect(resolveInstallPromptVersion({ ...base, downloadedAtLaunch: '0.2.21' })).toBe('0.2.22')
+  it('leaves a version the launch install or another automatic install has taken to that install', () => {
+    expect(resolveInstallPromptVersion({ ...base, attempted: true })).toBeNull()
   })
 
   it('does not ask when the customer cannot or did not choose to install automatically', () => {
@@ -574,6 +574,50 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
+  it('asks about a version the launch install held for the first window on a Windows login launch', async () => {
+    // The launch install decided 'window' and wrote nothing, so the question is the only way this
+    // computer installs before it is shut down again.
+    const test = harness('win32', { unattended: () => false })
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已经下好，现在装上吗？')
+    test.asks[0].answer('install')
+    await settle()
+    expect(test.installedNow).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('stops waiting to ask once the launch install takes the version', async () => {
+    // The customer opened the window from the tray before the computer went quiet: the launch
+    // install announced the version and marked it attempted.
+    const test = harness('win32', { unattended: () => false })
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    expect(test.timers.map((timer) => timer.ms)).toEqual([PROMPT_POLL_MS])
+    test.state.attempted = '0.2.22'
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.timers).toEqual([])
+    prompter.dispose()
+  })
+
+  it('does not ask when it cannot tell whether an automatic install has taken the version', async () => {
+    const test = harness('win32', {
+      unattended: () => false,
+      attempted: () => { throw new Error('record unreadable') },
+    })
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    prompter.dispose()
+  })
+
   it('leaves a version already tried by another automatic install alone', async () => {
     const test = harness()
     test.state.attempted = '0.2.22'
@@ -582,6 +626,7 @@ describe('createUpdateInstallPrompter', () => {
     prompter.observe(test.state.snapshot)
     await test.runTimers()
     await test.runTimers()
+    expect(test.asks).toHaveLength(0)
     expect(test.installedIdle).toEqual([])
     prompter.dispose()
   })
