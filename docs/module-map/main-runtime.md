@@ -22,6 +22,7 @@
 - `renderer-release.ts` — 主窗口缩在托盘里满 10 分钟就关掉界面进程省内存（`forcefullyCrashRenderer`，窗口本身留着），点托盘或别的入口叫出来时按原地址重新加载。界面没报告过忙闲（legacy 回滚版）、报告手上有事（聊天在生成、视频在做、工具在装、开着对话框）、主进程在退出 / 装东西 / 付款窗口开着时都不关；关着和重新加载那一会儿，托盘、系统通知、深链要的跳页先存着，新界面第一次报告时再发（`platform/renderer-delivery-bridge.ts` 给 platform 那边的「打开某页」用同一条路）。那一声「界面进程没了」由 `main.ts` 的崩溃处理认出来不当崩溃
 - `released-renderer-watch.ts` — 界面关着时替它做两件后台事：每 10 分钟读一次余额（托盘、余额与花费提醒照旧），看缓存的公告，有界面没见过的新公告或者有充值活动（每天一次）就把界面叫醒，让它照旧弹公告
 - `balance-alerts.ts` / `spend-spike.ts` — 「余额低于 5 美元」和「花费突然变多」两个系统通知（原来在界面里，搬到主进程界面关着也照常提醒）：每次读回余额都过一遍，花费突增掉够了再读一次用量核账；同一账号 6 小时内只提醒一次的记录写在 userData 的 `spend-spike-notified.json`
+- `empty-balance-alert.ts` — 「当前账号余额是 $0」那条通知的判断和记录（主路卡点 F2，Codex 没有出错钩子，只能看余额）：钱包 ≤ 0 且确定没有能扣的订阅才算用完，订阅还没读到不下结论；同一账号同一次用完只说一次，记在 userData 的 `balance-empty-notified.json`，读到有钱就抹掉
 - `display-compat.ts` — 显卡进程短时间内连崩几次（老集显、远程桌面、虚拟机）就记进 `display-crashes.log`，下次启动这一次自动改用不走显卡的兼容模式并告诉用户；必须在 app ready 之前决定
 - `context-menu.ts` — 主窗口的编辑右键菜单（剪切/复制/粘贴/全选，照 Chromium 的 editFlags 置灰）；链接只给「复制链接」不给「打开」，免得绕开 `will-navigate` / `setWindowOpenHandler` 白名单（I12）
 - `process-stream-errors.ts` — 吞掉 stdout/stderr 的 EPIPE：开发时关掉控制台后 Electron 往断管写日志不该把主进程打崩，其他错误照抛
