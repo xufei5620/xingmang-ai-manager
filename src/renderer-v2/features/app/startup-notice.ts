@@ -44,6 +44,11 @@ export interface StartupNotice {
   action?: StartupNoticeAction
   /** 要用户二选一时的另一颗按钮。有它就不再放关闭叉：关掉等于没选。 */
   secondaryAction?: StartupNoticeAction
+  /**
+   * true = 新手引导或首页导览开着时先不出，都关了再出（见 startupNoticesShown）。给「登录进来说一次」
+   * 这类不急着要客户动手的告知卡用；缺省 = 照旧马上出。
+   */
+  waitsForOnboarding?: boolean
 }
 
 const failureTitles: Record<StartupCheckFailureId, string> = {
@@ -225,6 +230,7 @@ export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporti
     body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私数据」里关掉。',
     action: { label: '知道了', crashReporting: 'keep' },
     secondaryAction: { label: '不想发送', crashReporting: 'off' },
+    waitsForOnboarding: true,
   }
 }
 
@@ -249,6 +255,7 @@ export function usageStatsNotice(
     body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
     action: { label: '知道了', usageStats: 'keep' },
     secondaryAction: { label: '不想发送', usageStats: 'off' },
+    waitsForOnboarding: true,
   }
 }
 
@@ -346,6 +353,16 @@ export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotic
     items,
     ...(offersToolRouteDesktopRestart(hint) ? { action: { label: '帮我重开', restartCodexDesktop: true as const } } : {}),
   }
+}
+
+/**
+ * 第一次登录时新手引导、首页导览本身就占着一屏，告知卡再挤上来，客户不知道先看哪个，错误报告
+ * 那张还正好盖住工具卡的按钮（主路卡点 F11）。标了 waitsForOnboarding 的先不摊出来，卡片仍留在
+ * 那一摞里，引导和导览都关了再出。错误报告、使用统计这两张登录后说一次的告知卡标了它，以后再加
+ * 同类的标上就跟着等。没标的照旧马上出：出了事要客户知道的不该被引导压着。
+ */
+export function startupNoticesShown(notices: readonly StartupNotice[], onboarding: boolean): readonly StartupNotice[] {
+  return onboarding ? notices.filter((notice) => notice.waitsForOnboarding !== true) : notices
 }
 
 /** 同一个检查只留最新一条，否则重试几次就堆成一叠说同一件事的提示。 */

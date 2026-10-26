@@ -12,6 +12,7 @@ import {
   KeyRound,
   PlugZap,
   RefreshCw,
+  Settings,
   Terminal,
   Trash2,
   TriangleAlert,
@@ -43,6 +44,7 @@ import { diagnosticDetailRows } from '../app/diagnostic-details'
 import { diagnosticStateLabel, groupDiagnostics, type DiagnosticGroup } from '../app/diagnostic-group'
 import { canClearStaleProxy, staleProxyClearMessage, staleProxyConfirmBody } from '../app/stale-proxy'
 import { diagnosticFolderTarget, diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
+import { diagnosticNetworkSettings, networkSettingsUnavailableMessages, type DiagnosticNetworkSettings } from '../app/network-settings-fix'
 import { firstProblemAnchor, useRowFocus } from '../app/row-focus'
 import { diagnosticsRevision, publishDiagnosticsCounts, useDiagnosticsRevision } from '../app/environment-status'
 import { diagnosticFixConfirm, diagnosticFixKind, diagnosticFixLabel, diagnosticFixLabels, diagnosticFixMessage } from '../app/diagnostic-fix'
@@ -105,6 +107,16 @@ function networkRouteSetting(details: Diagnostic['details'], accountSiteId: stri
 }
 
 /**
+ * 「查网址的服务（DNS）」的「去处理」：电脑的 DNS 只把一条线路查错、客户又固定用着查错的那条时（主进程给 reroute），
+ * 翻到「设置 → 网络」里这个站的线路那一行改成「自动」。同上面那样只认登着的这个账号的站、这个站能选线路。
+ */
+function dnsRouteSetting(details: Diagnostic['details'], accountSiteId: string | null): string | null {
+  if (!accountSiteId || details?.siteId !== accountSiteId || details?.reroute !== 'auto') return null
+  if (connectionRouteOptions(accountSiteId).length < 2) return null
+  return connectionRouteSettings.find((route) => route.siteId === accountSiteId)?.id ?? null
+}
+
+/**
  * 「去处理」要落在真能处理这件事的地方。落不到的（磁盘满、系统版本、运行权限、
  * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
  * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
@@ -123,6 +135,10 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details'], 
   // #872 以后那一组最上面就是「星芒账号线路」：换一条线路有可能救回来的那几种连不上，
   // 「去处理」直接翻到那一行。别的情况和代理软件那一项，结论里已经写了该怎么做。
   if (code === 'XINGMANG_NETWORK') return networkRouteSetting(details, accountSiteId) ? 'settings' : null
+  // 改 DNS、关代理在系统设置里：行里直接给「打开网络设置」「打开系统代理设置」。DNS 只有固定用着查错的那条线路时
+  // 才另给「去处理」翻到线路那一行。
+  if (code === 'RELAY_DNS') return dnsRouteSetting(details, accountSiteId) ? 'settings' : null
+  if (code === 'SYSTEM_PROXY_SOFTWARE') return null
   if (code === 'CLASH_VERGE_TUN') return null
   // 电脑里的代理设置在设置页没有能处理它的东西；能清的那种在行里直接给「清掉这条旧设置」。
   if (code === 'PROXY_ENVIRONMENT') return null
@@ -147,6 +163,7 @@ export function diagnosticHasFix(code: string, details?: Diagnostic['details'], 
 /** 「去处理」落到那一页里的哪一行（「反馈与客服」是哪个页签）；缺省 = 只跳页。 */
 export function diagnosticSection(code: string, details?: Diagnostic['details'], accountSiteId: string | null = null): string | undefined {
   if (code === 'FOLDER_RELOCATED') return 'form'
+  if (code === 'RELAY_DNS') return dnsRouteSetting(details, accountSiteId) ?? undefined
   return code === 'XINGMANG_NETWORK' ? networkRouteSetting(details, accountSiteId) ?? undefined : undefined
 }
 
@@ -507,6 +524,12 @@ export function HealthPage({
     }, diagnosticFixMessage)
     setFixing(null)
   }
+  // DNS、代理那两行的「打开网络设置」「打开系统代理设置」：打开了就不必再说什么。
+  const openNetworkSettings = (settings: DiagnosticNetworkSettings) => {
+    void operation.execute(settings.label, async () => {
+      if (!(await api.openNetworkSettings(settings.kind))) throw new Error(networkSettingsUnavailableMessages[settings.kind])
+    }, () => null)
+  }
   // 「文档」不让写时那一行给的「打开文件夹」：打开了就不必再说什么。
   const openDiagnosticFolder = (item: Diagnostic) => {
     const target = diagnosticFolderTarget(item)
@@ -572,7 +595,8 @@ export function HealthPage({
     return rewritableKeys?.includes(provider) ? provider : null
   }
   function rowActionable(item: Diagnostic): boolean {
-    return canClearStaleProxy(item) || Boolean(diagnosticFixKind(item)) || Boolean(diagnosticFolderTarget(item)) || runtimeAction(item) !== null
+    return canClearStaleProxy(item) || Boolean(diagnosticFixKind(item)) || Boolean(diagnosticFolderTarget(item))
+      || diagnosticNetworkSettings(item) !== null || runtimeAction(item) !== null
   }
   const responsesView = responsesResult ? connectionCheckView(responsesResult) : null
   const exportReport = () =>
@@ -593,6 +617,7 @@ export function HealthPage({
     const runtime = runtimeAction(item)
     const notice = runtimeNotice(item)
     const rewritable = rewritableProvider(item)
+    const networkSettings = diagnosticNetworkSettings(item)
     const detailsId = `health-details-panel-${item.code}`
     return (
       <div key={item.code} className="xm-list-row v2-health-row" data-anchor={item.code} data-testid={`health-row-${item.code}`}>
@@ -631,6 +656,16 @@ export function HealthPage({
               testId={`health-fix-inline-${item.code}`}
             >
               {diagnosticFixLabel(item)}
+            </Button>
+          )}
+          {networkSettings && (
+            <Button
+              size="sm"
+              icon={Settings}
+              onClick={() => openNetworkSettings(networkSettings)}
+              testId={`health-network-settings-${item.code}`}
+            >
+              {networkSettings.label}
             </Button>
           )}
           {diagnosticFolderTarget(item) && (

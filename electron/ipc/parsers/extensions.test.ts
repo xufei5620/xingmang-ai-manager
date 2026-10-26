@@ -37,6 +37,32 @@ describe('parseMcpInput', () => {
   })
 })
 
+describe('MCP request headers', () => {
+  it('keeps valid headers trimmed and leaves the field out when there are none', () => {
+    expect(parseMcpInput({ type: 'http', name: 'demo', url: 'https://example.test/mcp', headers: { Authorization: ' Bearer x ' } }))
+      .toMatchObject({ headers: { Authorization: 'Bearer x' } })
+    expect(parseMcpInput({ type: 'http', name: 'demo', url: 'https://example.test/mcp', headers: {} })).not.toHaveProperty('headers')
+    expect(parseProviderExtensionMutation({
+      provider: 'grok', kind: 'mcp', action: 'install', id: 'demo',
+      mcp: { type: 'http', url: 'https://example.test/mcp', headers: { 'X-Api-Key': 'k' } },
+    }).mcp).toEqual({ type: 'http', url: 'https://example.test/mcp', headers: { 'X-Api-Key': 'k' } })
+    expect(parseProviderExtensionMutation({
+      provider: 'grok', kind: 'mcp', action: 'install', id: 'demo', mcp: { type: 'http', url: 'https://example.test/mcp' },
+    }).mcp).toEqual({ type: 'http', url: 'https://example.test/mcp' })
+  })
+
+  it('rejects headers that are not plain one-line text under a token name', () => {
+    for (const headers of [['Authorization: x'], { Authorization: 1 }, { Authorization: 'a\nb' }, { '-H': 'x' }, { 'A B': 'x' }, 'x']) {
+      expect(() => parseMcpInput({ type: 'http', name: 'demo', url: 'https://example.test/mcp', headers })).toThrow('MCP 请求头格式错误')
+      expect(() => parseProviderExtensionMutation({
+        provider: 'claude', kind: 'mcp', action: 'install', id: 'demo', mcp: { type: 'http', url: 'https://example.test/mcp', headers },
+      })).toThrow('MCP 请求头格式错误')
+    }
+    const many = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`X-${index}`, 'v']))
+    expect(() => parseMcpInput({ type: 'http', name: 'demo', url: 'https://example.test/mcp', headers: many })).toThrow('MCP 请求头数量过多')
+  })
+})
+
 describe('parseProviderExtensionMutation', () => {
   it('passes trust only for a literal true', () => {
     expect(parseProviderExtensionMutation({ provider: 'claude', kind: 'plugin', action: 'install', id: 'demo', trust: true }))

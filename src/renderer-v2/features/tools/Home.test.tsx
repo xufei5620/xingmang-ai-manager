@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, bootstrapNoticeExpiresAt, homeMoneyNotice, homeWalletEmpty, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, homeWalletEmpty, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -1259,7 +1259,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('says the reminder settings need fixing, offers the fix and still opens the tool', () => {
       const markup = render({}, undefined, { snapshot: staleSnapshot(), onRepairHooks: () => undefined })
       expect(markup).toContain('提醒设置要修')
-      expect(markup).toContain('工具里的提醒设置指向了旧位置，每次都会多报一行错')
+      expect(markup).toContain('「做完弹通知」的设置记着旧地址，每次用都会多报一行错')
       expect(markup).toContain('data-testid="tool-claude-repair-hooks"')
       expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
       expect(markup).not.toContain('data-testid="tool-codex-repair-hooks"')
@@ -1270,8 +1270,9 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
     })
 
-    // 第十八批 1b：打开软件时已经替客户改好了，只在工具行上轻轻说一句，不改状态、不给按钮。
-    it('mentions quietly that the reminder settings were fixed on startup', () => {
+    // 第十八批 1b：打开软件时已经替客户改好了，不改状态、不给按钮。那一句改成右下角说一次（yoyo 2026-10-25）：
+    // 原来挂在卡片中间那行，软件开着就一直在，还顶掉了线路和版本。
+    it('keeps the card on its usual line after the reminder settings were fixed on startup', () => {
       const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
       const repaired = {
         ...base,
@@ -1281,10 +1282,29 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         },
       } as unknown as ToolboxSnapshot
       const markup = render({}, undefined, { snapshot: repaired, onRepairHooks: () => undefined })
-      expect(markup).toContain('提醒设置指向了旧位置，打开软件时已经自动改好，原来的设置在「设置 › 备份迁移」里')
+      expect(markup).not.toContain('自动改好')
+      expect(markup).toMatch(/data-testid="tool-row-claude"[\s\S]*?fixture-model · v1\.2\.3/)
       expect(markup).not.toContain('提醒设置要修')
       expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
       expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
+    })
+
+    it('announces each tool once per run, counting the two Codex rows as one', () => {
+      expect(hookRepairsToAnnounce(['codex', 'codex', 'claude'], new Set())).toEqual(['codex', 'claude'])
+      expect(hookRepairsToAnnounce(['codex', 'claude'], new Set<ProviderId>(['codex']))).toEqual(['claude'])
+      expect(hookRepairsToAnnounce(['codex'], new Set<ProviderId>(['codex']))).toEqual([])
+    })
+
+    // 窗口缩在托盘久了界面会重新加载（#1411），说过的那几家记在窗口的 sessionStorage 里带过去。
+    it('reads back the tools already announced before the window reloaded', () => {
+      expect(parseAnnouncedHookRepairs('codex,claude')).toEqual(['codex', 'claude'])
+      expect(parseAnnouncedHookRepairs('codex,,nope')).toEqual(['codex'])
+      expect(parseAnnouncedHookRepairs(null)).toEqual([])
+    })
+
+    it('names the fixed tools the way the home page does', () => {
+      expect(cliHooksAutoRepairedText(['codex'])).toBe('Codex 里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。')
+      expect(cliHooksAutoRepairedText(['claude', 'grok'])).toBe('Claude Code、Grok CLI 里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。')
     })
 
     // 客户自己装了 Git 或 PowerShell 7，Windows 版 Grok 换了命令行，写下去的那种写法跑不起来了。
@@ -1299,7 +1319,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       } as unknown as ToolboxSnapshot
       const markup = render({}, undefined, { snapshot: shellChanged, onRepairHooks: () => undefined })
       expect(markup).toContain('Grok 换了命令行，星芒写的提醒设置要跟着改一下，不然每次都会多报一行错')
-      expect(markup).not.toContain('工具里的提醒设置指向了旧位置')
+      expect(markup).not.toContain('「做完弹通知」的设置记着旧地址')
       expect(markup).toContain('data-testid="tool-grok-repair-hooks"')
     })
 
