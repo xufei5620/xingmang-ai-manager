@@ -243,10 +243,16 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   assert.equal((await studioCalls(page, 'read')).length, 3)
   assert.equal((await studioCalls(page, 'store')).length, 1)
   assert.match(await page.getByTestId('video-notice').textContent(), /拼好了/)
+  // 这几段都没声音，提示说的是没声音、没提文件夹，提示上就不挂「打开文件夹」；成片那一行照样有。
+  assert.equal(await page.getByTestId('video-notice-folder').count(), 0)
 
   await page.getByTestId('video-result-open').click()
   const [opened] = await studioCalls(page, 'open')
   assert.match(opened, /^v+\d+$/)
+  await page.getByTestId('video-result-folder').click()
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'folder'))
+  assert.deepEqual(await studioCalls(page, 'folder'), ['ai-output'])
+  assert.equal(await page.getByTestId('video-error').count(), 0)
 
   // 重开页面：分镜、片段和成片都还在，没有再发任何付费请求。
   await page.reload()
@@ -326,6 +332,15 @@ test('stops a storyboard and the clips still running, and says which ones may st
 
   await page.getByTestId('video-generate-stop').click()
   await page.getByTestId('video-notice').getByText(/其中 1 段已经交给服务端，会照样生成、照样扣费/).waitFor()
+  // 提示说好了会存进 AI 作品文件夹，旁边就能直接打开它；主进程说打不开时按失败说一句。
+  await page.getByTestId('video-notice-folder').click()
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'folder'))
+  assert.deepEqual(await studioCalls(page, 'folder'), ['ai-output'])
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+  await page.evaluate(() => window.videoStudioPage.folderOpens(false))
+  await page.getByTestId('video-notice-folder').click()
+  await page.getByTestId('video-error').getByText('这个文件夹现在打不开，重新打开本软件后再试一次。').waitFor()
+  assert.equal(await page.getByTestId('video-notice-folder').count(), 1, 'the notice stays so the folder can be tried again')
   await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
   assert.equal(await page.getByTestId('video-shot-1').getByRole('alert').count(), 0, 'a clip stopped on purpose shows no error')
   assert.equal(await page.getByTestId('video-generate-all').textContent(), '生成全部 2 段')

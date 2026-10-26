@@ -2,6 +2,7 @@
 import { isActiveProviderId } from '../../catalog'
 import type { AddMarketplaceInput, AddMcpInput, ImportSkillInput } from '../../codex-extensions'
 import { isRecord } from '../../input-guards'
+import { mcpHttpHeaderEntries } from '../../mcp-http-headers'
 import type { ProviderExtensionMutation } from '../../provider-extensions'
 import { optionalString, requiredString, stringArray } from './common'
 
@@ -27,6 +28,7 @@ export function parseMcpInput(value: unknown): AddMcpInput {
     }
   }
   if (value.type !== 'http') throw new Error('MCP 类型错误')
+  const headers = parseMcpHeaders(value.headers)
   return {
     type: 'http',
     name,
@@ -34,7 +36,14 @@ export function parseMcpInput(value: unknown): AddMcpInput {
     bearerTokenEnvVar: optionalString(value.bearerTokenEnvVar, 'Bearer Token 环境变量名', 128),
     oauthClientId: optionalString(value.oauthClientId, 'OAuth Client ID'),
     oauthResource: optionalString(value.oauthResource, 'OAuth Resource'),
+    ...(headers ? { headers } : {}),
   }
+}
+
+// 缺省或一条都没有时不带这个字段，下游照旧（不带请求头）。
+function parseMcpHeaders(value: unknown): Record<string, string> | undefined {
+  const entries = mcpHttpHeaderEntries(value)
+  return entries.length ? Object.fromEntries(entries) : undefined
 }
 
 export function parseMarketplaceInput(value: unknown): AddMarketplaceInput {
@@ -82,9 +91,11 @@ export function parseProviderExtensionMutation(value: unknown): ProviderExtensio
   if (value.mcp !== undefined) {
     if (!isRecord(value.mcp)) throw new Error('MCP 安装配置格式错误')
     if (value.mcp.type === 'http') {
+      const headers = parseMcpHeaders(value.mcp.headers)
       mcp = {
         type: 'http',
         url: requiredString(value.mcp.url, 'MCP 地址'),
+        ...(headers ? { headers } : {}),
       }
     } else if (value.mcp.type === 'stdio') {
       const envValue = value.mcp.env

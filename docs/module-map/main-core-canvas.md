@@ -62,6 +62,7 @@
 ## 扩展
 
 - `provider-extensions.ts` — 各 CLI 统一的 MCP / Skill / Plugin 抽象（`ProviderExtensionService`）：列出、安装、卸载、启停、查更新、MCP 健康检查，都是在主进程以 argv 数组调用各家 CLI 自己的子命令（MCP 的 command/args 来自用户输入，I1）；Claude 官方插件市场在没开过终端的电脑上不存在，这里替它注册（要 git，缺 git 时给能照做的提示）。Codex 专用部分在 `codex-extensions.ts` 和 `codex-plugin-catalog*.ts`
+- `mcp-http-headers.ts` — 外接工具网络服务请求头的合格规矩（名字是不以 - 开头的 HTTP token，值不许换行和 NUL，最多 64 条），IPC 解析、`provider-extensions.ts` 拼 `--header`、`codex-extensions.ts` 写 `http_headers` 和渲染层填表共用；零依赖、渲染层也能值导入（I6）
 
 ## 无限画布 + AI 工作区（全项目唯一运行第三方前端代码且有宿主桥的地方）
 
@@ -142,6 +143,7 @@
 - `platform/runtime-log-bridge.ts` — 平台 handler 先于 `RuntimeLogStore` 注册，这里把早到的日志缓冲起来，等 `main.ts` 接上后补发（I4 要求的日志那一半）
 - `platform/host-notification-bridge.ts` — 让 `main.ts` 一侧（加速快用完/已断开、终端事件）能发系统通知；**不缓冲**，没接上就如实返回 `unsupported`，因为晚到的"加速还剩 5 分钟"比不送更糟
 - `platform/proxy-bypass-bridge.ts` / `platform/tray-availability-bridge.ts` — 把 `main.ts` 里"代理连不上已改直连 / 只对星芒改直连"和"托盘建没建出来"两个状态读给设置页；没接上时分别当作没绕过、不知道
+- `platform/privacy-change-bridge.ts` — 方向反过来：设置页存好隐私开关后告诉 `main.ts`，关掉「匿名使用统计」时当场删掉本机攒的计数（`usage-stats-reporter.ts` 的 `discard`）；没接上就什么都不做，那边接上后每次记和发之前都重读开关
 
 ### 系统代理（给加速用，不在主窗口里跑）
 - `platform/windows-system-proxy.ts` — Windows 上开关当前用户的系统代理：经可信 PowerShell（固定路径 + `trustedCommandEnvironment` + `trustedOnly`，I2、I14）调 WinInet 改设置，先写恢复记录与租约，只在整体状态仍等于预期时才写；被拦时退到预编译脚本。加速辅助进程和卸载清理使用

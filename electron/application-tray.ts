@@ -21,18 +21,22 @@ export interface ApplicationTraySnapshot {
 export interface TrayKeepAwakeState {
   /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
   tools: readonly string[]
+  /** 手机遥控 Codex 有渠道开着、星芒正为它挡着睡眠（codex-remote-keep-awake.ts）。缺省 = 没开。 */
+  remoteControl?: boolean
   installing: boolean
   downloadingUpdate: boolean
 }
 
 /**
  * 星芒挡着电脑自动睡眠时，客户原本一点都不知道（已知35）。托盘里说一句，挡完就收起；
- * 同一时间只说一件：终端里的工具在干活排最前，其次是装东西，最后是下载星芒新版本。
- * Codex 自己挡睡眠，不归星芒管，不在这里说。
+ * 同一时间只说一件：终端里的工具在干活排最前，其次是手机遥控开着（一开就是几个钟头，
+ * 别的那几件做完了才轮到它），再是装东西，最后是下载星芒新版本。终端里的 Codex 自己
+ * 挡睡眠，不归星芒管，不在这里说。
  */
 export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
   if (state.tools.length === 1) return `${state.tools[0]} 正在干活，暂不让电脑自动睡眠`
   if (state.tools.length > 1) return 'AI 工具正在干活，暂不让电脑自动睡眠'
+  if (state.remoteControl) return '手机遥控开着，暂不让电脑自动睡眠'
   if (state.installing) return '正在安装，暂不让电脑自动睡眠'
   if (state.downloadingUpdate) return '正在下载星芒新版本，暂不让电脑自动睡眠'
   return null
