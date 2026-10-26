@@ -1107,12 +1107,13 @@ describe('ProviderExtensionService native mutations', () => {
   it('refuses a header that could break out of its line or read as a flag, before running anything', async () => {
     const invoke: ProviderCliInvoker = vi.fn(async () => '')
     const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
-    for (const headers of [
+    const refused: Array<Record<string, string>> = [
       { Authorization: 'Bearer a\r\nX-Injected: 1' },
       { '-X': 'value' },
       { 'Bad Name': 'value' },
       { Authorization: '   ' },
-    ]) {
+    ]
+    for (const headers of refused) {
       await expect(service.mutate({
         provider: 'claude',
         kind: 'mcp',
