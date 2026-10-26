@@ -211,6 +211,28 @@ describe('Codex MCP contract and secret boundary', () => {
     expect(JSON.stringify(result)).not.toContain(secret)
   })
 
+  it('writes a server with request headers straight into config.toml even with the CLI installed', async () => {
+    const home = temporaryDirectory()
+    const calls: string[][] = []
+    const invoke: CodexInvoker = async (argv) => {
+      calls.push([...argv])
+      throw new Error(`带请求头时不该跑命令：${argv.join(' ')}`)
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    const servers = await service.addMcpServer({
+      type: 'http', name: 'remote', url: 'https://example.test/mcp', headers: { 'X-Api-Key': 'sk-header-secret' },
+    })
+
+    expect(calls).toEqual([])
+    expect(asRecord(TOML.parse(fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf8')).mcp_servers)).toEqual({
+      remote: { url: 'https://example.test/mcp', http_headers: { 'X-Api-Key': 'sk-header-secret' } },
+    })
+    // 列表照旧只回请求头的名字，不回值。
+    expect(servers.map((server) => [server.name, server.httpHeaderNames])).toEqual([['remote', ['X-Api-Key']]])
+    expect(JSON.stringify(servers)).not.toContain('sk-header-secret')
+  })
+
   it('accepts an HTTP add that persisted before an OAuth command failure', async () => {
     const home = temporaryDirectory()
     let calls = 0
@@ -459,6 +481,29 @@ describe('Codex MCP without the Codex CLI', () => {
     // 空的参数和环境变量不写，和命令一样。
     await service.addMcpServer({ type: 'stdio', name: 'bare', command: 'uvx' })
     expect(asRecord(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).mcp_servers)?.bare)).toEqual({ command: 'uvx' })
+  })
+
+  it('writes request headers into http_headers, since `codex mcp add` has no switch for them', async () => {
+    const home = temporaryDirectory()
+    const { service, configPath } = desktopOnly(home)
+    write(configPath, 'model = "m"\n')
+
+    await service.addMcpServer({
+      type: 'http',
+      name: 'docs',
+      url: 'https://docs.example.test/mcp',
+      headers: { Authorization: 'Bearer sk-secret', 'X-Region': ' cn ' },
+    })
+
+    expect(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).mcp_servers)).toEqual({
+      docs: { url: 'https://docs.example.test/mcp', http_headers: { Authorization: 'Bearer sk-secret', 'X-Region': 'cn' } },
+    })
+    await expect(service.addMcpServer({ type: 'http', name: 'bad', url: 'https://docs.example.test/mcp', headers: { Authorization: 'a\nb' } }))
+      .rejects.toThrow('MCP 请求头格式错误')
+    await expect(service.addMcpServer({
+      type: 'http', name: 'oauth', url: 'https://docs.example.test/mcp', headers: { Authorization: 'Bearer x' }, oauthClientId: 'client',
+    })).rejects.toThrow('带请求头的连接不用填 OAuth Client ID 和 OAuth Resource')
+    expect(Object.keys(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).mcp_servers) ?? {})).toEqual(['docs'])
   })
 
   it('replaces a same-named server whole and leaves its neighbours and their comments alone', async () => {

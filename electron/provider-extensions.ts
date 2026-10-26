@@ -51,6 +51,7 @@ import {
   type WindowsCliExecutionMode,
 } from './windows-elevation'
 import { isRecord } from './input-guards'
+import { mcpHttpHeaderEntries } from './mcp-http-headers'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MUTATION_TIMEOUT_MS = 120_000
@@ -220,6 +221,8 @@ export type ProviderMcpInstallConfiguration =
   | {
       type: 'http'
       url: string
+      /** 提供方要求带上的请求头（多半是密钥），只往下写、列表不回值。缺省 = 不带（旧行为）。 */
+      headers?: Readonly<Record<string, string>>
     }
 
 export interface ProviderExtensionMutation {
@@ -2393,8 +2396,25 @@ export class ProviderExtensionService {
     const scope = normalizeScope(input.provider, input.scope, 'mcp')
     if (config.type === 'http') {
       const url = safeUrl(config.url)
-      if (input.provider === 'codex') return { argv: ['mcp', 'add', id, '--url', url], secrets: [] }
-      return { argv: ['mcp', 'add', '--transport', 'http', '--scope', scope, id, url], secrets: [] }
+      const headers = mcpHttpHeaderEntries(config.headers)
+      const secrets = headers.map(([, value]) => value)
+      const headerArgs = headers.flatMap(([name, value]) => ['--header', `${name}: ${value}`])
+      if (!headers.length) {
+        if (input.provider === 'codex') return { argv: ['mcp', 'add', id, '--url', url], secrets: [] }
+        return { argv: ['mcp', 'add', '--transport', 'http', '--scope', scope, id, url], secrets: [] }
+      }
+      // `codex mcp add` 没有请求头的开关（0.164.0），Codex 的那条由 codex-extensions.ts 直接写 config.toml；
+      // 已下线的 Gemini 没核过它的写法，都不在这里拼。
+      if (input.provider === 'codex' || input.provider === 'gemini') throw new Error('当前 Provider 不支持该原生操作')
+      // Claude Code's --header is variadic (commander), so it must come after the two
+      // positionals or it would swallow the name and the URL as more headers
+      // (2.1.310 `mcp add --help` puts it last too). Grok takes one value per flag
+      // (clap) and treats whatever follows the URL as server arguments, so there
+      // it goes in front.
+      if (input.provider === 'claude') {
+        return { argv: ['mcp', 'add', '--transport', 'http', '--scope', scope, id, url, ...headerArgs], secrets }
+      }
+      return { argv: ['mcp', 'add', '--transport', 'http', '--scope', scope, ...headerArgs, id, url], secrets }
     }
     const command = safeIdentifier(config.command, 'MCP 命令')
     const args = (config.args ?? []).map((entry) => {

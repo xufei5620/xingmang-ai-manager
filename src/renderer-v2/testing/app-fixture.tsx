@@ -407,6 +407,8 @@ const methods = {
     if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''
     return 'direct' as const
   },
+  // 检查页、首页断网横条的「打开网络设置」「打开系统代理设置」：系统设置页打开了。
+  openNetworkSettings: async () => true,
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}), ...(query.has('displayCompat') && settings.hardwareAcceleration === undefined ? { displayCompat: 'auto' as const } : {}), ...(query.has('claudeDesktopRepaired') ? { claudeDesktopRepaired: true as const } : {}), ...(query.has('rendererRestored') ? { rendererRestored: true as const } : {}) }),
   reportWindowActivity: async () => undefined,
   relaunchApp: async () => true,

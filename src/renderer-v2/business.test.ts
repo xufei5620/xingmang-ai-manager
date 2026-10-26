@@ -412,6 +412,31 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeNull()
     expect(diagnosticSection('CLASH_VERGE_TUN', { reason: 'refused', siteId: 'solov' }, 'solov')).toBeUndefined()
   })
+  // DNS 只把一条线路查错、客户又固定用着查错的那条时，主进程给 reroute，「去处理」翻到线路那一行改成「自动」；
+  // 别的情况改 DNS、关代理都在系统设置里，行里直接给按钮，不跳页。
+  it('sends a DNS row to the route setting only when the fixed line is the wrong one', () => {
+    const reroute = { siteId: 'solov', line1: 'ok', line2: 'wrong', fix: 'open-dns-settings', reroute: 'auto' }
+    expect(diagnosticTarget('RELAY_DNS', reroute, 'solov')).toBe('settings')
+    expect(diagnosticHasFix('RELAY_DNS', reroute, 'solov')).toBe(true)
+    expect(diagnosticSection('RELAY_DNS', reroute, 'solov')).toBe('relay-route-solov')
+    const historical = { ...reroute, siteId: 'solov-api' }
+    expect(diagnosticSection('RELAY_DNS', historical, 'solov-api')).toBe('relay-route-solov-api')
+    const cases: Array<[string, Record<string, string> | undefined, string | null]> = [
+      ['both lines wrong', { siteId: 'solov', line1: 'wrong', line2: 'wrong', fix: 'open-dns-settings' }, 'solov'],
+      ['automatic', { siteId: 'solov', line1: 'wrong', line2: 'ok' }, 'solov'],
+      ['guest', reroute, null],
+      ['another site', reroute, 'solov-api'],
+      ['no details', undefined, 'solov'],
+    ]
+    for (const [label, details, accountSiteId] of cases) {
+      expect(diagnosticTarget('RELAY_DNS', details, accountSiteId), label).toBeNull()
+      expect(diagnosticHasFix('RELAY_DNS', details, accountSiteId), label).toBe(false)
+      expect(diagnosticSection('RELAY_DNS', details, accountSiteId), label).toBeUndefined()
+    }
+    const blocking = { systemProxy: 'blocking', proxyPort: 7890, fix: 'open-proxy-settings' }
+    expect(diagnosticTarget('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeNull()
+    expect(diagnosticSection('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeUndefined()
+  })
   // 「Node.js 太旧」那一种在检查页那一行里直接给「换成新版 Node.js」，不再跳去「安装卸载」页。
   it('sends no certificate verdict away from the check page', () => {
     for (const verdict of ['outdatedNode', 'untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
