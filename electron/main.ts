@@ -2348,6 +2348,8 @@ if (!hasSingleInstanceLock) {
       videoWorking: () => [...businesses.values()].some((business) => (
         business.videoService.hasActiveRequests() || business.chatVideoService.hasActiveRequests()
       )),
+      // 视频剪辑的拼片在界面里跑，主进程看不到，跟对话出字、开着的对话框一起由界面报忙闲（#1411）。
+      rendererBusy: () => mainRendererRelease?.rendererBusy === true,
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'

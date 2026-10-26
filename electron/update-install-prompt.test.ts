@@ -46,6 +46,7 @@ function idleInput(patch: Partial<IdleInstallInput> = {}): IdleInstallInput {
     accelerationActive: false,
     remoteControlActive: false,
     videoWorking: false,
+    rendererBusy: false,
     attempted: false,
     promptOpen: false,
     notBefore: null,
@@ -62,7 +63,7 @@ interface Harness {
   options: UpdateInstallPrompterOptions
   state: {
     snapshot: UpdateSnapshot; idleMs: number; locked: boolean; now: number; windowVisible: boolean; standardAccount: boolean | null; attempted: string | null
-    remote: boolean; video: boolean
+    remote: boolean; video: boolean; renderer: boolean
   }
   timers: Array<{ callback: () => void; ms: number; cancelled: boolean }>
   asks: Array<{ prompt: InstallPrompt; signal: AbortSignal; answer(value: InstallPromptAnswer): void }>
@@ -74,7 +75,7 @@ interface Harness {
 
 function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInstallPrompterOptions> = {}): Harness {
   const state: Harness['state'] = {
-    snapshot: snapshot(), idleMs: 0, locked: false, now: 1_000, windowVisible: false, standardAccount: false, attempted: null, remote: false, video: false,
+    snapshot: snapshot(), idleMs: 0, locked: false, now: 1_000, windowVisible: false, standardAccount: false, attempted: null, remote: false, video: false, renderer: false,
   }
   const timers: Harness['timers'] = []
   const asks: Harness['asks'] = []
@@ -97,6 +98,7 @@ function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInst
     accelerationActive: () => false,
     remoteControlActive: () => state.remote,
     videoWorking: () => state.video,
+    rendererBusy: () => state.renderer,
     attempted: (version) => state.attempted === version,
     ask: (prompt, signal) => new Promise<InstallPromptAnswer>((resolve) => {
       // Electron closes an aborted message box as if the cancel button was pressed.
@@ -203,9 +205,10 @@ describe('decideIdleInstall', () => {
     expect(decideIdleInstall(idleInput({ notBefore: 1_000 }))).toBe('0.2.22')
   })
 
-  it('waits while the phone remote is on or a video is being made', () => {
+  it('waits while the phone remote is on, a video is being made, or the window has work in hand', () => {
     expect(decideIdleInstall(idleInput({ remoteControlActive: true }))).toBeNull()
     expect(decideIdleInstall(idleInput({ videoWorking: true }))).toBeNull()
+    expect(decideIdleInstall(idleInput({ rendererBusy: true }))).toBeNull()
     expect(decideIdleInstall(idleInput({ locked: true, remoteControlActive: true }))).toBeNull()
   })
 
@@ -374,10 +377,11 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
-  it('lets a video being made finish before installing while nobody is at the Mac', async () => {
+  it('lets a video being made or stitched finish before installing while nobody is at the Mac', async () => {
     const test = harness()
     test.state.locked = true
     test.state.video = true
+    test.state.renderer = true
     const prompter = createUpdateInstallPrompter(test.options)
     prompter.observe(test.state.snapshot)
     await test.runTimers()
@@ -388,16 +392,22 @@ describe('createUpdateInstallPrompter', () => {
     await test.runTimers()
     expect(test.installedIdle).toEqual([])
 
+    // Clips are back, the stitching in the window still runs.
     test.state.video = false
+    await test.runTimers()
+    expect(test.installedIdle).toEqual([])
+
+    test.state.renderer = false
     await test.runTimers()
     expect(test.installedIdle).toEqual(['0.2.22'])
     prompter.dispose()
   })
 
-  it('treats a remote or video state that cannot be read as busy', async () => {
+  it('treats a remote, video or window state that cannot be read as busy', async () => {
     const test = harness('darwin', {
       remoteControlActive: () => { throw new Error('gone') },
       videoWorking: () => { throw new Error('gone') },
+      rendererBusy: () => { throw new Error('gone') },
     })
     test.state.locked = true
     test.state.idleMs = IDLE_INSTALL_IDLE_MS

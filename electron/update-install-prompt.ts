@@ -13,7 +13,7 @@
  * - **闲时装**：只在装的时候一个窗口也不弹的 Mac 上（canInstallUnattended）。Windows 每次装都要
  *   有人点授权窗口的「是」，没人在电脑前就卡在那儿，不做。要等电脑 10 分钟没人碰或者锁了屏，
  *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开，手机遥控没开着，
- *   视频没在生成或拼；问过的版本还要等「稍后再说」之后 10 分钟。每个版本只自动试一次，记在打开时装的同一条记录里（attempted），
+ *   视频没在出，界面手上没事（拼片、对话在出字这些）；问过的版本还要等「稍后再说」之后 10 分钟。每个版本只自动试一次，记在打开时装的同一条记录里（attempted），
  *   没装上就退回到退出时装。客户不在电脑前时下好的不问，直接等着闲时装；框弹出来以后人一直
  *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。手机遥控开着时这两条都不做
  *   （闲时装等不来，客户得回来看到框），框里那句换成退出或下次打开时装（YK-2）。
@@ -104,8 +104,10 @@ export interface IdleInstallInput {
   accelerationActive: boolean
   /** 手机遥控开着（任一渠道）。重开星芒后遥控不会自己连回去，开着它的人又多半不在电脑前。 */
   remoteControlActive: boolean
-  /** 视频在生成或在拼：重启会把它打断，已经交给服务端的片段照样扣钱。 */
+  /** 视频在出或在取回（主进程里的请求）：重启会把它打断，已经交给服务端的片段照样扣钱。 */
   videoWorking: boolean
+  /** 主窗口界面手上有事：视频剪辑在拼片、对话在出字、开着对话框（renderer-release.ts 的 rendererBusy）。 */
+  rendererBusy: boolean
   /** 这个版本已经自动装过（打开时、退出时、闲时，任何一种）。 */
   attempted: boolean
   /** 跳框开着、还在等回答。 */
@@ -124,7 +126,7 @@ export function decideIdleInstall(input: IdleInstallInput): string | null {
   if (input.notBefore !== null && input.now < input.notBefore) return null
   if (!input.locked && !(input.idleMs >= IDLE_INSTALL_IDLE_MS)) return null
   if (input.windowVisible || input.busy || input.toolsWorking || input.accelerationActive) return null
-  if (input.remoteControlActive || input.videoWorking) return null
+  if (input.remoteControlActive || input.videoWorking || input.rendererBusy) return null
   return version
 }
 
@@ -155,6 +157,8 @@ export interface UpdateInstallPrompterOptions {
   remoteControlActive(): boolean
   /** 见 IdleInstallInput.videoWorking。 */
   videoWorking(): boolean
+  /** 见 IdleInstallInput.rendererBusy。 */
+  rendererBusy(): boolean
   attempted(version: string): boolean
   /** 跳框；signal 断开时宿主收起框，当作「稍后再说」。 */
   ask(prompt: InstallPrompt, signal: AbortSignal): Promise<InstallPromptAnswer>
@@ -227,6 +231,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
       accelerationActive: read(options.accelerationActive, true),
       remoteControlActive: read(options.remoteControlActive, true),
       videoWorking: read(options.videoWorking, true),
+      rendererBusy: read(options.rendererBusy, true),
       attempted: !version || version === idleTried || read(() => options.attempted(version), true),
       promptOpen: open !== null,
       notBefore,
@@ -240,7 +245,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   }
 
   // 手机遥控可能一开就是一整天，这期间闲时装等不来：人走开了也照样跳框、框也不收，
-  // 客户回到电脑前能看到；框里说退出或下次打开时装。视频一会儿就做完，不用这样。
+  // 客户回到电脑前能看到；框里说退出或下次打开时装。视频、界面上的活一会儿就做完，不用这样。
   function idleInstallHeldByRemote(): boolean {
     return read(options.remoteControlActive, true)
   }
