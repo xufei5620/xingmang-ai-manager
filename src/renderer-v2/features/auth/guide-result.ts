@@ -13,6 +13,8 @@ export interface GuideSetupResult {
   billing: string
   /** 花的就是当前账号的余额：最后一步据此告诉新用户去哪充值；别处的额度不提。 */
   usesAccountBalance: boolean
+  /** 花的是当前账号的余额，而余额是 $0、也没有能用的订阅：最后一步先让客户去充值。 */
+  walletEmpty: boolean
   next: GuideResultRow
   prompt: string | null
 }
@@ -28,6 +30,22 @@ interface GuideSetupInput {
   /** 右上角显示的账号名；没有就只说「当前账号」。 */
   accountName?: string | null
   switched?: AccountSourceSwitchResult | null
+  /** 当前账号余额是 $0、也没有能用的订阅；缺省 = 不知道，照旧说「已准备好」。 */
+  walletEmpty?: boolean
+}
+
+/**
+ * 新账号的余额本来就是 0，装好、连好以后发第一句话就会失败（主路卡点 F3）。
+ * 跟首页那条提示（Home.tsx 的 lowBalanceText(0)）用同一句原话，测试钉住两处一致。
+ */
+export const walletEmptyLead = '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。'
+
+/**
+ * 跟首页那条 $0 提示同一个判断（homeMoneyNotice）：有能用的订阅就不算，订阅客户的钱包常是 0、
+ * 扣的却是订阅；余额还没读到、账号不能在这里充值时也不说。
+ */
+export function guideWalletEmpty(balanceUsd: number | null, hasSubscription: boolean, supportsBilling: boolean): boolean {
+  return supportsBilling && !hasSubscription && balanceUsd !== null && balanceUsd <= 0
 }
 
 // 和「改用 xxx」按钮用同一种截断，免得同一个名字在两处长短不一。
@@ -114,11 +132,13 @@ export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult 
       : route === 'chat'
         ? { value: '可以开始聊天', detail: '把下面这句话发出去试试。', tone: 'neutral' }
         : { value: '打开工具试一次', detail: keyedDesktop ? '打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试。' : prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
+  const usesAccountBalance = connection.usesAccountBalance ?? false
   return {
     install: installationResult(route, input.tool, readiness.prepared),
     connection: connection.row,
     billing: connection.billing,
-    usesAccountBalance: connection.usesAccountBalance ?? false,
+    usesAccountBalance,
+    walletEmpty: usesAccountBalance && input.walletEmpty === true,
     next,
     prompt,
   }

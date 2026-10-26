@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountSourceSwitchResult } from '../../../../electron/ipc-contract'
 import type { GuideToolState } from './StartGuide'
-import { buildGuideSetupResult } from './guide-result'
+import { lowBalanceText } from '../tools/Home'
+import { buildGuideSetupResult, guideWalletEmpty, walletEmptyLead } from './guide-result'
 
 const codex: GuideToolState = { id: 'codexDesktop', installed: true, configured: true, source: 'account', version: '1.2.3' }
 const ready = { prepared: true, connected: true }
@@ -116,5 +117,32 @@ describe('guide setup result wording', () => {
       const text = [result.install, result.connection, result.next].flatMap((row) => [row.value, row.detail]).concat(result.billing).join('\n')
       expect(text).not.toMatch(/Key|同站|基础检查|运行环境|平台支持|v\d|中转|星芒/)
     }
+  })
+})
+
+// 主路卡点 F3：新账号 $0 走完引导被告知「可以开始了」，发第一句话就失败。
+describe('guide setup result empty wallet', () => {
+  it('flags an empty wallet only when the tool spends the current account', () => {
+    expect(buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude' }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号', walletEmpty: true }).walletEmpty).toBe(true)
+    expect(buildGuideSetupResult({ route: 'chat', signedIn: true, readiness: ready, name: '聊天', officialName: 'ChatGPT 账号', walletEmpty: true }).walletEmpty).toBe(true)
+    for (const source of ['official', 'manual', 'unknown'] as const) {
+      expect(buildGuideSetupResult({ route: 'codexDesktop', tool: { ...codex, source }, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号', walletEmpty: true }).walletEmpty).toBe(false)
+    }
+    expect(buildGuideSetupResult({ route: 'codexDesktop', tool: codex, signedIn: true, readiness: { prepared: true, connected: false }, name: 'Codex 桌面端', officialName: 'ChatGPT 账号', walletEmpty: true }).walletEmpty).toBe(false)
+    expect(buildGuideSetupResult({ route: 'codexDesktop', tool: codex, signedIn: false, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号', walletEmpty: true }).walletEmpty).toBe(false)
+    expect(buildGuideSetupResult({ route: 'codexDesktop', tool: codex, signedIn: true, readiness: ready, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' }).walletEmpty).toBe(false)
+  })
+
+  it('says the empty wallet in the same words as the home page', () => {
+    expect(walletEmptyLead).toBe(lowBalanceText(0))
+  })
+
+  it('treats a usable subscription, an unread balance or an account without top-up as not empty', () => {
+    expect(guideWalletEmpty(0, false, true)).toBe(true)
+    expect(guideWalletEmpty(-0.2, false, true)).toBe(true)
+    expect(guideWalletEmpty(0.01, false, true)).toBe(false)
+    expect(guideWalletEmpty(0, true, true)).toBe(false)
+    expect(guideWalletEmpty(null, false, true)).toBe(false)
+    expect(guideWalletEmpty(0, false, false)).toBe(false)
   })
 })
