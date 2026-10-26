@@ -735,6 +735,18 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('crashReportingNoticeShown')
   })
 
+  it('keeps the usage stats notice marker once set', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('usageStatsNoticeShown')
+    await updateAppSettings(filePath, { version: 2, usageStatsNoticeShown: true })
+    expect(readAppSettings(filePath)).toMatchObject({ usageStatsNoticeShown: true })
+    await updateAppSettings(filePath, { version: 2, usageStatsNoticeShown: false })
+    expect(readAppSettings(filePath)).toMatchObject({ usageStatsNoticeShown: true })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), usageStatsNoticeShown: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('usageStatsNoticeShown')
+  })
+
   it('migrates old v2 records to the first-run light and mist appearance', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())
