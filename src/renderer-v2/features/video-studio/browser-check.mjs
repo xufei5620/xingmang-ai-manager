@@ -276,6 +276,42 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   await page.close()
 })
 
+// 审查清单 JJ-1：生成到一半关掉软件，钱扣了的那段要回到镜头上，不能显示「还没生成」让客户再花一次钱。
+test('picks shots that were still generating back up after the page reopens, without paying again', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '城市夜景', { title: '夜景', shots: [{ prompt: '霓虹招牌' }, { prompt: '车流' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const requests = (await studioCalls(page, 'generate')).map((input) => input.requestId)
+
+  // 刷新页面当作关掉再打开：原来那两次请求的应答没了，两段照样当在生成，拿原来的请求号去接，不发新的生成。
+  await page.reload()
+  await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 2)
+  assert.deepEqual([...new Set(await studioCalls(page, 'resume'))].sort(), [...requests].sort())
+  for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('生成中').waitFor()
+  await page.getByTestId('video-generate-stop').waitFor()
+  await page.evaluate((requestId) => window.videoStudioPage.progress({ requestId, stage: 'processing', value: 70 }), requests[0])
+  await page.getByTestId('video-shot-0').getByText('生成中 70%').waitFor()
+
+  await page.evaluate((requestId) => window.videoStudioPage.finishResume(requestId, '#ff0000'), requests[0])
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  // 主进程那边没有这一单（没交出去，或者服务端说失败了）：回到「还没生成」，可以再点生成。
+  await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), requests[1])
+  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  assert.equal(await page.getByTestId('video-generate-all').textContent(), '生成剩下的 1 段')
+  assert.deepEqual(await studioCalls(page, 'generate'), [])
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+
+  // 再打开一次：接回来的那段已经记在镜头上，没有还要接的。
+  await page.reload()
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 test('stops a storyboard and the clips still running, and says which ones may still be billed', async () => {
   const { page, errors } = await openStudio()
   await page.getByTestId('video-idea-input').fill('海边日落')

@@ -15,9 +15,13 @@ export interface VideoStudioShot {
   caption: string
   /** 生成好的片段；重新生成成功前一直留着上一段。 */
   clip?: AiVideoClip
+  /**
+   * 正在生成、或者没等到结果就失败了的那一次请求。会存下来：关掉软件再打开，拿它回主进程把那一段接回来，
+   * 钱已经扣了的片段不会只留在作品库里、镜头上却显示「还没生成」。
+   */
+  requestId?: string
   // 下面几项只在这一次打开页面时有，不存。
   status: VideoStudioShotStatus
-  requestId?: string
   stage?: AiVideoProgressEvent['stage']
   progress?: number
   delayed?: boolean
@@ -222,11 +226,12 @@ export function videoStudioComposeKey(project: VideoStudioProject): string {
 }
 
 // —— 存到这台电脑上 ——
-// 存的是想法、设置、分镜和片段编号，片段本身在作品库里。生成中、排队这类只在这次打开时有的
-// 状态不存：重开以后没有片段的镜头一律当还没生成。
+// 存的是想法、设置、分镜和片段编号，片段本身在作品库里。排队、进度这类只在这次打开时有的状态不存；
+// 正在生成的那一段存下请求号，重开以后先当它还在生成，由 useVideoStudio 拿请求号去接回来。
 
 const maxStoredIdeaLength = videoStudioPlanLimits.maximumIdeaLength
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
+const requestIdPattern = /^[A-Za-z0-9-]{1,64}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -260,7 +265,9 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
     version: 1,
     settings: project.settings,
     title: project.title,
-    shots: project.shots.map((shot) => ({ id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.clip ? { clip: shot.clip } : {}) })),
+    shots: project.shots.map((shot) => ({
+      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.clip ? { clip: shot.clip } : {}), ...(shot.requestId ? { requestId: shot.requestId } : {}),
+    })),
     ...(project.exported ? { exported: project.exported } : {}),
   }
 }
@@ -295,12 +302,14 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     if (ids.has(id)) id = createId()
     ids.add(id)
     const clip = readClip(entry.clip)
+    const requestId = typeof entry.requestId === 'string' && requestIdPattern.test(entry.requestId) ? entry.requestId : undefined
     shots.push({
       id,
       prompt: readText(entry.prompt, videoStudioPlanLimits.maximumPromptLength),
       caption: readText(entry.caption, videoStudioPlanLimits.maximumCaptionLength),
       ...(clip ? { clip } : {}),
-      status: clip ? 'done' : 'idle',
+      ...(requestId ? { requestId } : {}),
+      status: requestId ? 'generating' : clip ? 'done' : 'idle',
     })
   }
   const exported = readClip(value.exported)
