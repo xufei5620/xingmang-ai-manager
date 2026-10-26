@@ -59,6 +59,11 @@ export interface RendererRelease {
    * 打开那样再来一遍，免得用户一句都没看到。
    */
   readonly restoredBoot: boolean
+  /**
+   * 界面最后一次报告的是手上有事（装工具、聊天回复、出视频含拼片、同步密钥、开着对话框）。没报告过的、
+   * 界面关着的都算没事：关着时那边没有活在跑。别处要「界面在忙就先别动」（例如闲时装更新）读这个。
+   */
+  readonly rendererBusy: boolean
   /** 窗口藏起来了（缩到托盘、开机自启没弹窗）：开始计时。 */
   noteHidden(): void
   /** 窗口出来了：不再计时；界面关着就马上重新加载。 */
@@ -172,6 +177,7 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
   return {
     get state() { return state },
     get restoredBoot() { return restoredBoot },
+    get rendererBusy() { return rendererBusy },
     noteHidden() {
       if (disposed || state !== 'live') return
       deferredReason = null

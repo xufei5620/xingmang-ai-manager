@@ -2606,13 +2606,16 @@ if (!hasSingleInstanceLock) {
     mainWindow.once('ready-to-show', () => {
       if (!mainWindow.isDestroyed() && !mainWindow.isVisible()) rendererRelease.noteHidden()
     })
-    const disposeRendererRelease = () => {
+    mainWindow.once('closed', () => {
       releasedWatch.stop()
       rendererRelease.dispose()
       detachRendererDelivery(deliverWhenRendererReady)
-    }
-    mainWindow.once('closed', disposeRendererRelease)
-    quitCleanup.add('renderer-release', disposeRendererRelease)
+    })
+    quitCleanup.add('renderer-release', () => {
+      releasedWatch.stop()
+      rendererRelease.dispose()
+      detachRendererDelivery(deliverWhenRendererReady)
+    })
     // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：听到这一声，
     // 接下来的退出和 Windows 关机一样不问、不装（下好的更新下次打开再装），开着的确认框和
     // 正在等的安装器都不等了。Electron 只在系统发出关机通知时发它，Command + Q 不发。

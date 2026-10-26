@@ -150,6 +150,18 @@ describe('renderer release', () => {
     expect(h.timers).toEqual([])
   })
 
+  it('exposes the latest busy report and clears it once the renderer is gone', () => {
+    const h = fixture()
+    expect(h.controller.rendererBusy).toBe(false)
+    h.controller.reportActivity(true)
+    expect(h.controller.rendererBusy).toBe(true)
+    h.controller.reportActivity(false)
+    h.controller.noteHidden()
+    h.fire()
+    expect(h.controller.state).toBe('released')
+    expect(h.controller.rendererBusy).toBe(false)
+  })
+
   it('sends deliveries straight through while the renderer is live', () => {
     const h = fixture()
     const send = vi.fn()
