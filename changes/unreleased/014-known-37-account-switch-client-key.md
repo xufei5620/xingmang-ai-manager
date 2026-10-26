@@ -1,7 +1,8 @@
 ## 用户
 
-- 切换账号时勾了「同步到工具」，借 Claude Code、Codex 密钥的 Claude Desktop、WorkBuddy、OpenCode 也跟着换成新账号的密钥，
-  不再留着上一个账号的。
+- 换账号时三个桌面客户端也跟着换成新账号：换账号时在「同步到工具」里勾了 Claude Code 或 Codex 的，
+  借它们密钥的 Claude Desktop、WorkBuddy、OpenCode 也一起换成新账号的密钥，
+  不会再接着扣上一个账号的余额。
 
 ## 开发
 
