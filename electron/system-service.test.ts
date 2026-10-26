@@ -799,6 +799,7 @@ describe('createSystemService', () => {
       configSnapshots.active,
       authSnapshots.apikey,
       authSnapshots.active,
+      path.join(codexHome, 'AGENTS.md'),
     ])
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
   })

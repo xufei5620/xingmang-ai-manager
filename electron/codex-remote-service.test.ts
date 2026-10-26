@@ -13,6 +13,7 @@ import type {
   RemoteOutbound,
   RemotePeer,
 } from './codex-remote-channel'
+import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import { CodexRemoteStore } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 import {
@@ -660,6 +661,38 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
     await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  it('reports every open, login loss and close to the state listener so the sleep blocker can follow', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    let held = 0
+    const keepAwake = createCodexRemoteKeepAwake({
+      blocker: {
+        start: () => {
+          held += 1
+          return held
+        },
+        stop: () => { held -= 1 },
+      },
+    })
+    function follow(): boolean {
+      for (const snapshot of s.snapshots) keepAwake.observe(snapshot)
+      return keepAwake.holding()
+    }
+    await s.service.setChannelEnabled('feishu', true)
+    await vi.waitFor(() => expect(follow()).toBe(true))
+    s.channels[0].handlers?.onStatus({ state: 'needs-login', message: '飞书应用的密钥失效了' })
+    await vi.waitFor(() => expect(follow()).toBe(false))
+    s.channels[0].handlers?.onStatus({ state: 'connected' })
+    await vi.waitFor(() => expect(follow()).toBe(true))
+    await s.service.setChannelEnabled('feishu', false)
+    await vi.waitFor(() => expect(follow()).toBe(false))
+    await s.service.setChannelEnabled('feishu', true)
+    await vi.waitFor(() => expect(follow()).toBe(true))
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
+    await vi.waitFor(() => expect(follow()).toBe(false))
+    expect(held).toBe(0)
   })
 
   it('keeps the binding when the same account logs in again and drops it for a different one', async () => {

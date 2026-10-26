@@ -76,7 +76,8 @@ interface Harness {
 
 function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInstallPrompterOptions> = {}): Harness {
   const state: Harness['state'] = {
-    snapshot: snapshot(), idleMs: 0, locked: false, now: 1_000, windowVisible: false, standardAccount: false, attempted: null, remote: false, video: false, renderer: false,
+    snapshot: snapshot(), idleMs: 0, locked: false, now: 1_000, windowVisible: false, standardAccount: false, attempted: null,
+    remote: false, video: false, renderer: false,
   }
   const timers: Harness['timers'] = []
   const asks: Harness['asks'] = []
@@ -393,20 +394,148 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
-  it('asks instead of waiting for an idle install that the phone remote holds off, and keeps the question up', async () => {
+  it('waits for the customer to come back before asking when a 星芒 window is open on a Mac nobody is at', async () => {
     const test = harness()
-    test.state.remote = true
+    test.state.windowVisible = true
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    // An idle install needs every window tucked away, so marking the version as asked would leave it alone for the whole run.
+    expect(test.asks).toHaveLength(0)
+    expect(test.events).not.toContain('install.prompt.away')
+    expect(test.events).toContain('install.prompt.away-window-open')
+    // Away may last all night: look less often until someone is back.
+    expect(test.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual([])
+    expect(test.events.filter((event) => event === 'install.prompt.away-window-open')).toHaveLength(1)
+
+    // Back and typing: wait for the usual pause, checking at the usual pace.
+    test.state.locked = false
+    test.state.idleMs = 0
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([PROMPT_POLL_MS])
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已经下好，现在装上吗？')
+    prompter.dispose()
+  })
+
+  it('treats a window state that cannot be read as open and waits for the customer', async () => {
+    const test = harness('darwin', { windowVisible: () => { throw new Error('gone') } })
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.events).not.toContain('install.prompt.away')
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual([])
+    test.state.locked = false
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    prompter.dispose()
+  })
+
+  it('goes back to the idle install once every window is tucked away while nobody is there', async () => {
+    const test = harness()
+    test.state.windowVisible = true
     test.state.idleMs = IDLE_INSTALL_IDLE_MS
     const prompter = createUpdateInstallPrompter(test.options)
     prompter.observe(test.state.snapshot)
     await test.runTimers()
+    expect(test.events).toContain('install.prompt.away-window-open')
+
+    test.state.windowVisible = false
+    await test.runTimers()
+    expect(test.events).toContain('install.prompt.away')
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('keeps the question up for the customer when a window was already open before it appeared', async () => {
+    const test = harness()
+    test.state.windowVisible = true
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+
+    test.state.idleMs = IDLE_INSTALL_IDLE_MS * 6
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.asks[0].signal.aborted).toBe(false)
+    expect(test.events).not.toContain('install.prompt.abandoned')
+    expect(test.installedIdle).toEqual([])
+
+    test.asks[0].answer('install')
+    await settle()
+    expect(test.installedNow).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('still closes a question it brought a hidden window up for, although that window is showing now', async () => {
+    const test = harness('darwin', {
+      ask: (prompt, signal) => new Promise<InstallPromptAnswer>((resolve) => {
+        // Like the host: the main window comes up for the question and goes back once it closes.
+        test.state.windowVisible = true
+        signal.addEventListener('abort', () => {
+          test.state.windowVisible = false
+          resolve('later')
+        })
+        test.asks.push({ prompt, signal, answer: resolve })
+      }),
+    })
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.state.windowVisible).toBe(true)
+
+    test.state.idleMs = IDLE_INSTALL_IDLE_MS
+    await test.runTimers()
+    expect(test.asks[0].signal.aborted).toBe(true)
+    expect(test.events).toContain('install.prompt.abandoned')
+    await test.runTimers()
+    expect(test.installedIdle).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('waits for the customer to come back before asking while the phone remote holds off the idle install, and keeps the question up', async () => {
+    const test = harness()
+    test.state.remote = true
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    // The remote may stay on all day, so marking the version as asked would leave it alone for the whole run.
+    expect(test.asks).toHaveLength(0)
     expect(test.events).not.toContain('install.prompt.away')
+    expect(test.events).toContain('install.prompt.away-remote-on')
+    expect(test.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual([])
+
+    test.state.locked = false
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    await test.runTimers()
     expect(test.asks).toHaveLength(1)
     // An idle install cannot come while the remote stays on, so the question does not promise one.
     expect(test.asks[0].prompt.detail).toBe(buildInstallPrompt('0.2.22', 'darwin', { unattended: false }).detail)
     expect(test.asks[0].prompt.detail).toContain('退出星芒或下次打开时自动装上。')
 
-    // Away for long, still unanswered: the question stays for when the customer comes back.
+    // Away again, still unanswered: the question stays for when the customer comes back.
     test.state.idleMs = IDLE_INSTALL_IDLE_MS * 6
     await test.runTimers()
     await test.runTimers()
@@ -471,20 +600,19 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
-  it('treats a remote, video or window state that cannot be read as busy', async () => {
+  it('treats a remote, video or window-work state that cannot be read as busy', async () => {
     const test = harness('darwin', {
       remoteControlActive: () => { throw new Error('gone') },
       videoWorking: () => { throw new Error('gone') },
       rendererBusy: () => { throw new Error('gone') },
     })
     test.state.locked = true
-    test.state.idleMs = IDLE_INSTALL_IDLE_MS
     const prompter = createUpdateInstallPrompter(test.options)
     prompter.observe(test.state.snapshot)
     await test.runTimers()
     await test.runTimers()
-    expect(test.asks).toHaveLength(1)
-    expect(test.asks[0].signal.aborted).toBe(false)
+    expect(test.events).toContain('install.prompt.away-remote-on')
+    expect(test.asks).toHaveLength(0)
     expect(test.installedIdle).toEqual([])
     prompter.dispose()
   })
