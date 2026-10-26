@@ -13,6 +13,7 @@ const {
   validateWindowsInspection, sanitizedWindowsEnvironment, synchronizeOfficialChatgpt,
   validatePackageMagic, createRuntimeDependencies, safeOfficialSyncFailure, inspectWindowsFile, validateLicenseInspection,
   MULTIPART_DEADLINE_MS, createOfficialCosStore, validatePreviousManifest,
+  PACKAGE_PENDING_MAXIMUM_MS, isOlderOfficialWindowsPackage, canWaitForOfficialPackage,
 } = require('./sync-chatgpt-official-cos.cjs')
 
 test('runtime temp aliases resolve to safe files and cleanup preserves neighboring directories', async function () {
@@ -462,7 +463,8 @@ test('rejects a valid unrelated signer despite matching package identity', funct
 })
 
 // 2026-10-17 第 51 次运行：官方更新清单已写 26.1013.4894.0，两个 MSIX 还是 26.1013.3656.0，日志里只有 operation-failed。
-test('an official package that still carries the previous version logs both versions instead of operation-failed', async function () {
+// 桶里还没有这一架构时没有上一版可等，照旧报错，带上两边的版本。
+test('an official package that still carries the previous version logs both versions when the bucket has nothing to wait on', async function () {
   const fixture = createFixture()
   fixture.metadata.buildVersion = '26.1013.4894.0'
   fixture.packageVersion = '26.1013.3656.0'
@@ -470,7 +472,7 @@ test('an official package that still carries the previous version logs both vers
   await assert.rejects(synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, platforms: 'windows-arm64', progress: (event) => events.push(event) }), function (error) {
     assert.deepEqual(safeOfficialSyncFailure(error), {
       stage: 'verify-windows-package', platform: 'windows-arm64', latestState: 'not-written-by-this-run',
-      failure: { code: 'package-identity-mismatch', observed: {
+      failure: { code: 'package-version-behind', observed: {
         expectedVersion: '26.1013.4894.0', packageName: 'OpenAI.Codex', packageVersion: '26.1013.3656.0', packageArchitecture: 'arm64',
         packagePublisher: WINDOWS_PUBLISHER, containsPackageSignature: true, signatureStatus: 'Valid', signerSubject: WINDOWS_PUBLISHER,
         signerIssuer: 'CN=Microsoft Marketplace CA G 028, O=Microsoft Corporation, C=US',
@@ -479,10 +481,154 @@ test('an official package that still carries the previous version logs both vers
     return true
   })
   const failed = events.find((event) => event.event === 'stage-failed')
-  assert.equal(failed.diagnostic.failure.code, 'package-identity-mismatch')
-  assert.doesNotMatch(JSON.stringify(events), /校验失败/)
+  assert.equal(failed.diagnostic.failure.code, 'package-version-behind')
+  assert.doesNotMatch(JSON.stringify(events), /校验失败|还是上一版/)
+  assert.equal(events.some((event) => event.event === 'package-pending'), false)
   assert.equal(fixture.publications.length, 0)
   assert.equal(fixture.pointers.length, 0)
+})
+
+// 2026-10-24 第 78 次运行：清单已写 26.1021.3705.0，两个 MSIX 还是 26.1021.2667.0、签名照常，十几个小时后 OpenAI 换好包。
+test('waits without failing while the official metadata is ahead of the package and the bucket keeps its copy', async function () {
+  const fixture = createFixture()
+  await fixture.run('windows')
+  const before = clone(fixture.latest)
+  const publicationCount = fixture.publications.length
+  fixture.metadata.buildVersion = '26.1013.4894.0'
+  fixture.packageVersion = '26.930.2377.0'
+  const events = []
+  const result = await synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, platforms: 'windows-x64',
+    progress: (event) => events.push(event), now: function () { return '2026-10-03T11:00:00.000Z' } })
+  assert.deepEqual(result.pending, ['windows-x64'])
+  assert.equal(result.changed, false)
+  assert.deepEqual(result.manifest, before)
+  assert.deepEqual(fixture.latest, before)
+  assert.equal(fixture.pointers.length, 1)
+  assert.equal(fixture.publications.length, publicationCount)
+  assert.deepEqual(fixture.removed, fixture.directories)
+  assert.equal(events.some((event) => event.event === 'stage-failed'), false)
+  assert.deepEqual(events.filter((event) => event.event === 'package-pending'), [{ event: 'package-pending', platform: 'windows-x64',
+    expectedVersion: '26.1013.4894.0', packageVersion: '26.930.2377.0', bucketVersion: '26.930.2377.0', bucketCheckedAt: '2026-10-02T12:00:00.000Z' }])
+
+  // Once OpenAI replaces the package, the next run publishes it as usual.
+  fixture.packageVersion = undefined
+  fixture.resources.get(SOURCES['windows-x64'].url).etag = '"replaced-package"'
+  const replaced = await fixture.run('windows-x64')
+  assert.deepEqual(replaced.pending, [])
+  assert.equal(replaced.changed, true)
+  assert.equal(fixture.latest.windows.buildVersion, '26.1013.4894.0')
+  assert.equal(fixture.latest.platforms['windows-x64'].packageVersion, '26.1013.4894.0')
+})
+
+test('reports the lagging package once the bucket copy has gone unchecked for more than a day', async function () {
+  const fixture = createFixture()
+  await fixture.run('windows')
+  const before = clone(fixture.latest)
+  fixture.metadata.buildVersion = '26.1013.4894.0'
+  fixture.packageVersion = '26.930.2377.0'
+  function runAt(time) { return synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, platforms: 'windows-arm64', now: function () { return time } }) }
+  // Waiting never refreshes checkedAt, so the day counts from the last run that succeeded.
+  assert.deepEqual((await runAt('2026-10-03T06:00:00.000Z')).pending, ['windows-arm64'])
+  assert.deepEqual((await runAt('2026-10-03T12:00:00.000Z')).pending, ['windows-arm64'])
+  await assert.rejects(runAt('2026-10-03T12:00:00.001Z'), function (error) {
+    const diagnostic = safeOfficialSyncFailure(error)
+    assert.equal(diagnostic.stage, 'verify-windows-package')
+    assert.equal(diagnostic.platform, 'windows-arm64')
+    assert.equal(diagnostic.failure.code, 'package-version-behind')
+    assert.equal(diagnostic.failure.observed.expectedVersion, '26.1013.4894.0')
+    assert.equal(diagnostic.failure.observed.packageVersion, '26.930.2377.0')
+    return true
+  })
+  assert.deepEqual(fixture.latest, before)
+  assert.equal(fixture.pointers.length, 1)
+})
+
+test('a lagging version never excuses a broken signature, a foreign identity or a package newer than the metadata', async function () {
+  const fixture = createFixture()
+  await fixture.run('windows')
+  const before = clone(fixture.latest)
+  fixture.metadata.buildVersion = '26.1013.4894.0'
+  fixture.packageVersion = '26.930.2377.0'
+  fixture.badSignatureArchitecture = 'x64'
+  await assert.rejects(fixture.run('windows-x64'), function (error) {
+    const failure = safeOfficialSyncFailure(error).failure
+    assert.equal(failure.code, 'package-signature-invalid')
+    assert.equal(failure.observed.packageVersion, '26.930.2377.0')
+    return true
+  })
+  fixture.badSignatureArchitecture = undefined
+  fixture.packageVersion = '26.1100.1.0'
+  await assert.rejects(fixture.run('windows-x64'), function (error) {
+    assert.equal(safeOfficialSyncFailure(error).failure.code, 'package-identity-mismatch')
+    return true
+  })
+  assert.deepEqual(fixture.latest, before)
+
+  const metadata = clone(fixture.metadata)
+  const report = { manifest: { name: 'OpenAI.Codex', version: '26.930.2377.0', architecture: 'x64', publisher: WINDOWS_PUBLISHER, containsPackageSignature: true },
+    signature: { status: 'Valid', signerSubject: WINDOWS_PUBLISHER, signerIssuer: 'CN=Microsoft Marketplace CA G 028, O=Microsoft Corporation, C=US' } }
+  function variant(manifest = {}, signature = {}) { return { manifest: { ...report.manifest, ...manifest }, signature: { ...report.signature, ...signature } } }
+  assert.equal(isOlderOfficialWindowsPackage(report, metadata, 'x64'), true)
+  assert.equal(isOlderOfficialWindowsPackage(report, metadata, 'arm64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({ name: 'Attacker.App' }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({ publisher: 'CN=Attacker' }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({ containsPackageSignature: false }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({}, { status: 'HashMismatch' }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({}, { signerSubject: 'CN=Attacker' }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({ version: '26.1013.4894.0' }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({ version: '26.1100.1.0' }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({ version: '26.930.2377' }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(variant({ version: undefined }), metadata, 'x64'), false)
+  assert.equal(isOlderOfficialWindowsPackage(null, metadata, 'x64'), false)
+})
+
+test('waits only on a bucket entry whose last check is readable and at most a day old', function () {
+  const entry = { checkedAt: '2026-10-02T12:00:00.000Z' }
+  assert.equal(PACKAGE_PENDING_MAXIMUM_MS, 24 * 60 * 60 * 1000)
+  assert.equal(canWaitForOfficialPackage(entry, '2026-10-03T12:00:00.000Z'), true)
+  assert.equal(canWaitForOfficialPackage(entry, '2026-10-03T12:00:00.001Z'), false)
+  // The sync runner's clock may be a little behind the one that wrote checkedAt.
+  assert.equal(canWaitForOfficialPackage(entry, '2026-10-02T11:59:58.000Z'), true)
+  assert.equal(canWaitForOfficialPackage(undefined, '2026-10-02T12:00:00.000Z'), false)
+  assert.equal(canWaitForOfficialPackage({}, '2026-10-02T12:00:00.000Z'), false)
+  assert.equal(canWaitForOfficialPackage({ checkedAt: 'Fri, 02 Oct 2026 12:00:00 GMT' }, '2026-10-02T12:00:00.000Z'), false)
+  assert.equal(canWaitForOfficialPackage({ checkedAt: '2026-13-45T99:00:00Z' }, '2026-10-02T12:00:00.000Z'), false)
+})
+
+test('a run that also checks macOS refreshes only the platforms that were not waiting', async function () {
+  const fixture = createFixture()
+  await fixture.run()
+  const before = clone(fixture.latest)
+  fixture.metadata.buildVersion = '26.1013.4894.0'
+  fixture.packageVersion = '26.930.2377.0'
+  const result = await synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, now: function () { return '2026-10-03T06:00:00.000Z' } })
+  assert.deepEqual(result.pending, ['windows-x64', 'windows-arm64'])
+  assert.equal(result.changed, false)
+  assert.deepEqual(fixture.latest.windows, before.windows)
+  for (const id of ['windows-x64', 'windows-arm64']) assert.deepEqual(fixture.latest.platforms[id], before.platforms[id])
+  for (const id of ['macos-arm64', 'macos-x64']) assert.deepEqual(fixture.latest.platforms[id], { ...before.platforms[id], checkedAt: '2026-10-03T06:00:00.000Z' })
+  assert.deepEqual(validatePreviousManifest(clone(fixture.latest)), fixture.latest)
+})
+
+test('one architecture still waiting does not hold back the other', async function () {
+  const fixture = createFixture()
+  await fixture.run('windows')
+  fixture.metadata.buildVersion = '26.1013.4894.0'
+  const inspect = fixture.dependencies.inspectWindowsFile
+  fixture.dependencies.inspectWindowsFile = async function (input) {
+    const report = await inspect(input)
+    if (report.manifest?.architecture === 'x64') report.manifest.version = '26.930.2377.0'
+    return report
+  }
+  const result = await synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, platforms: 'windows', now: function () { return '2026-10-03T06:00:00.000Z' } })
+  assert.deepEqual(result.pending, ['windows-x64'])
+  assert.equal(result.changed, true)
+  assert.equal(fixture.latest.windows.buildVersion, '26.1013.4894.0')
+  assert.equal(fixture.latest.platforms['windows-arm64'].packageVersion, '26.1013.4894.0')
+  assert.equal(fixture.latest.platforms['windows-arm64'].checkedAt, '2026-10-03T06:00:00.000Z')
+  // The waiting architecture is never vouched for by this run.
+  assert.notEqual(fixture.latest.platforms['windows-x64']?.checkedAt, '2026-10-03T06:00:00.000Z')
+  assert.deepEqual(validatePreviousManifest(clone(fixture.latest)), fixture.latest)
 })
 
 test('signature, license and format failures each log their own code', async function () {
