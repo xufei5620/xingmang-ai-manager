@@ -43,10 +43,15 @@ export interface CodexRemoteSettings {
   version: 1
   workspaceDirectory: string | null
   channels: Partial<Record<RemoteChannelId, CodexRemoteChannelSettings>>
+  /**
+   * 上一条审批用到的编号（0 = 还没有过）。重开星芒接着往下数：手机上还留着上次的「同意 1」，
+   * 不能落到这次新的第 1 条头上。
+   */
+  lastApprovalNumber: number
 }
 
 export function emptyCodexRemoteSettings(): CodexRemoteSettings {
-  return { version: 1, workspaceDirectory: null, channels: {} }
+  return { version: 1, workspaceDirectory: null, channels: {}, lastApprovalNumber: 0 }
 }
 
 export function emptyChannelSettings(): CodexRemoteChannelSettings {
@@ -71,6 +76,10 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   if (!isRecord(value) || value.version !== 1) return settings
   const workspace = boundedString(value.workspaceDirectory, 4096)
   settings.workspaceDirectory = workspace && path.isAbsolute(workspace) ? workspace : null
+  const lastApprovalNumber = value.lastApprovalNumber
+  if (typeof lastApprovalNumber === 'number' && Number.isSafeInteger(lastApprovalNumber) && lastApprovalNumber > 0) {
+    settings.lastApprovalNumber = lastApprovalNumber
+  }
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue
