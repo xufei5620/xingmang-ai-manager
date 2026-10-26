@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, FolderOpen, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, PageHead, Pill, Progress, Select, Switch, Textarea } from '../../ui'
 import { chatModelVendor, chatModelVendors, pickChatGroup, type ChatCatalogEntry, type ChatSite } from '../chat/state'
@@ -55,6 +55,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const composing = studio.composeState.phase !== 'idle'
   const missing = shots.filter((shot) => !shot.clip).length
   const quotaAction = /余额|额度/.test(studio.error) && onOpenAccount
+  const folderAction = /AI 作品文件夹/.test(studio.notice)
   const confirmGenerate = (ids: string[]) => setConfirmation({ kind: 'generate', ids })
   const runConfirmation = () => {
     const current = confirmation
@@ -74,7 +75,8 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       actions={(shots.length > 0 || settings.idea) && <Button icon={RotateCcw} disabled={studio.busy} onClick={() => setConfirmation({ kind: 'reset' })} testId="video-reset">重新开始</Button>} />
     {studio.error && <Notice tone="bad" title="没有完成" body={studio.error} onDismiss={() => studio.setError('')}
       actions={quotaAction ? <Button size="sm" variant="primary" onClick={() => onOpenAccount?.(/额度上限/.test(studio.error) ? 'keys' : 'recharge')}>{/额度上限/.test(studio.error) ? '去调额度' : '去充值'}</Button> : undefined} testId="video-error" />}
-    {studio.notice && <Notice tone="accent" title="提示" body={studio.notice} onDismiss={() => studio.setNotice('')} testId="video-notice" />}
+    {studio.notice && <Notice tone="accent" title="提示" body={studio.notice} onDismiss={() => studio.setNotice('')}
+      actions={folderAction ? <Button size="sm" icon={FolderOpen} onClick={() => void studio.openFolder()} testId="video-notice-folder">打开文件夹</Button> : undefined} testId="video-notice" />}
     {studio.storageWarning && <Notice tone="warn" title="存不下这份分镜" body={studio.storageWarning} testId="video-storage-warning" />}
 
     <Card title="想法" testId="video-idea">
@@ -144,6 +146,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
           <div className="video-studio-result-actions">
             <Button size="sm" icon={Play} onClick={() => void studio.openClip(exported.assetId)} testId="video-result-open">用播放器打开</Button>
             <Button size="sm" icon={Download} onClick={() => void studio.saveClip(exported.assetId)} testId="video-result-save">另存为</Button>
+            <Button size="sm" icon={FolderOpen} onClick={() => void studio.openFolder()} testId="video-result-folder">打开文件夹</Button>
           </div>
         </div>
       </div>}

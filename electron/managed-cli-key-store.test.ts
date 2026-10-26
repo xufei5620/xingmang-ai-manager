@@ -189,6 +189,25 @@ describe('ManagedCliKeyStore', () => {
     for (const entry of [...firstUserKeys, ...secondUserKeys]) expect(onDisk).not.toContain(entry.key)
   })
 
+  it('hands out the other accounts cached on this site, with the keys each one replaced', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    const replaced = { ...managedKey('claude'), key: 'sk-claude-replaced-managed-secret-123456' }
+    const firstUserKeys = [managedKey('claude'), managedKey('codex')]
+    const secondUserKeys = [{ ...managedKey('claude'), id: 101, key: 'sk-claude-second-managed-secret-123456' }]
+
+    await store.save(42, [replaced, managedKey('codex')])
+    await store.save(42, firstUserKeys)
+    await store.save(99, secondUserKeys)
+
+    await expect(store.readOtherAccounts(99)).resolves.toEqual([{ userId: 42, keys: [
+      { ...firstUserKeys[0], replacedKeyDigests: [managedKeyDigest(replaced.key)] },
+      firstUserKeys[1],
+    ] }])
+    await expect(store.readOtherAccounts(42)).resolves.toEqual([{ userId: 99, keys: secondUserKeys }])
+    await expect(store.readOtherAccounts(7)).resolves.toHaveLength(2)
+    await expect(new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage()).readOtherAccounts(42)).resolves.toEqual([])
+  })
+
   it('rejects a corrupted cache instead of silently treating it as a server miss', async () => {
     const filePath = temporaryFilePath()
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
