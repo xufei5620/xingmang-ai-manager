@@ -62,8 +62,6 @@ import {
   takeBackCodexModelCatalog,
   toNativeConfigSummary,
 } from './config-files'
-import type { ExternalClientStatus } from './external-client-contract'
-import type { ManagedKeyFollowTarget } from './external-client-route-service'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { isReplacedManagedKey, type StoredManagedCliKey } from './managed-cli-key-store'
 import {
@@ -235,8 +233,7 @@ export interface ConfigSaveServiceDependencies {
   ) => Promise<{ status: ToolStatus; installation: CliInstallation | null }>
   inspectRunningTools: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
   /** 外部客户端那边：保存完替星芒换过 Key 的话，让三个外部客户端跟上。 */
-  managedKeyFollowTarget: () => Promise<ManagedKeyFollowTarget | null>
-  scanExternalClients: (force?: boolean) => Promise<ExternalClientStatus[]>
+  followManagedKeysNow: () => Promise<void>
   /** 线路跟随那边：整份保存后记下这次写的是哪条线路，配置摘要里带上线路那两个字段。 */
   accountRouteFollowed: Map<ProviderId, string | null>
   accountRouteFaultFollowed: (siteId: string, line: RelayEndpointId) => boolean
@@ -263,8 +260,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   const {
     inspectCliTool,
     inspectRunningTools,
-    managedKeyFollowTarget,
-    scanExternalClients,
+    followManagedKeysNow,
     accountRouteFollowed,
     accountRouteFaultFollowed,
     writeToolRouteRecord,
@@ -904,11 +900,10 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       managedKeyReplaced = ownership?.source === 'account' && apiKey !== before.apiKey
       return result
     })
-    // #1113：星芒刚替这个工具换了 Key（撤销后换新、失效重签、换组），借它那把的外部客户端马上看一眼要不要
-    // 跟着换，不等下次检测。不等它：换 Key 那一步出岔子只进日志，不算这次保存失败。
+    // #1113：星芒刚替这个工具换了 Key（撤销后换新、失效重签、换组，换账号时同步到工具也算，已知37），借它那把的
+    // 外部客户端马上看一眼要不要跟着换，不等下次检测。不等它：换 Key 那一步出岔子只进日志，不算这次保存失败。
     if (managedKeyReplaced) {
-      // 先只看缓存和工具配置：这台电脑上的托管 Key 从没被星芒换过时，不为它盘点一遍本机客户端。
-      void managedKeyFollowTarget().then((target) => target ? scanExternalClients() : undefined).catch((error: unknown) => {
+      void followManagedKeysNow().catch((error: unknown) => {
         runtimeLog?.log('warn', 'config', 'external-client.key.failed', '外部客户端的密钥这次没换成，下次检测再试', {
           provider: payload.provider, reason: credentialFailureReason(error),
         })
