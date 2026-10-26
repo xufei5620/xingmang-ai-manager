@@ -144,6 +144,59 @@ describe('CanvasProjectStore', () => {
     await expect(store.open(36, copied.project.id)).resolves.toMatchObject({ project: { name: '源项目副本' } })
   })
 
+  it('saves the open workflow as a new project and copies the source project assets', async () => {
+    const { workspace, store } = createFixture('save-as')
+    const source = await store.create(36, '源项目', workspace)
+    await store.save(36, source.project.id, workflow('源项目'))
+    fs.writeFileSync(path.join(workspace, 'assets', 'sample.bin'), 'asset-bytes', 'utf8')
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-save-as-target-'))
+    roots.push(target)
+    const edited = workflow('源项目', 'edited-audio')
+
+    const created = await store.createWithContent(36, '源项目 · 本地副本', target, edited, source.project.id)
+
+    expect(created.project).toEqual(expect.objectContaining({ name: '源项目 · 本地副本', nodeCount: 1, assetCount: 1, workspaceStatus: 'ready' }))
+    expect(JSON.parse(created.content)).toMatchObject({ name: '源项目 · 本地副本', nodes: [{ id: 'edited-audio' }] })
+    expect(fs.readFileSync(path.join(target, 'assets', 'sample.bin'), 'utf8')).toBe('asset-bytes')
+    await expect(store.open(36, created.project.id)).resolves.toMatchObject({ project: { name: '源项目 · 本地副本' } })
+    // The source project is untouched.
+    expect(JSON.parse((await store.open(36, source.project.id)).content)).toMatchObject({ nodes: [{ id: 'audio' }] })
+  })
+
+  it('refuses a save-as with unsafe content, another account\'s source or an archived source', async () => {
+    const { workspace, store } = createFixture('save-as-reject')
+    const source = await store.create(36, '源项目', workspace)
+    await store.save(36, source.project.id, workflow('源项目'))
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-save-as-reject-target-'))
+    roots.push(target)
+    const unsafe = JSON.parse(workflow('源项目'))
+    unsafe.nodes[0].data.apiKey = 'sk-secret'
+
+    await expect(store.createWithContent(36, '副本', target, JSON.stringify(unsafe), source.project.id)).rejects.toThrow('未知或敏感字段')
+    await expect(store.createWithContent(37, '副本', target, workflow('源项目'), source.project.id)).rejects.toThrow()
+    await store.setArchived(36, source.project.id, true)
+    await expect(store.createWithContent(36, '副本', target, workflow('源项目'), source.project.id)).rejects.toThrow('已归档')
+    expect(fs.readdirSync(target)).toEqual([])
+    await expect(store.list(36)).resolves.toHaveLength(1)
+    await expect(store.list(37)).resolves.toEqual([])
+  })
+
+  it('creates a project from content alone only when it uses no assets', async () => {
+    const { workspace, store } = createFixture('content-only')
+    const plain = JSON.stringify({
+      schemaVersion: 2, name: '模板', nodes: [{ id: 'note', kind: 'note', definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', settings: { text: 'https://example.com 开头的便签' } } }], edges: [],
+    })
+
+    const created = await store.createWithContent(36, '新项目', workspace, plain)
+    expect(JSON.parse(created.content)).toMatchObject({ name: '新项目', nodes: [{ id: 'note' }] })
+    expect(fs.existsSync(path.join(workspace, 'assets'))).toBe(true)
+
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-content-assets-'))
+    roots.push(other)
+    await expect(store.createWithContent(36, '新项目二', other, workflow('带素材'))).rejects.toThrow('请从原项目另存副本')
+    await expect(store.list(36)).resolves.toHaveLength(1)
+  })
+
   it('rejects non-empty duplicate targets and legacy project copies without deleting user files', async () => {
     const { root, workspace, store } = createFixture('duplicate-reject')
     const created = await store.create(36, '源项目', workspace)

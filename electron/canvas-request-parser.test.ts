@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   parseCanvasAssetQuery,
   parseCanvasAssetId,
+  parseCanvasCreateProjectContent,
   parseCanvasImageEditInput,
   parseCanvasImageGenerateInput,
   parseCanvasPromptPresetId,
@@ -18,6 +19,16 @@ import {
   requiredCanvasString,
   requiredCanvasText,
 } from './canvas-request-parser'
+import { canvasRunKernelOnlyNodeLabels } from './canvas-run-contract'
+
+const kernelRefusal = '桌面版暂不支持，本次没有提交任何付费请求'
+
+function kernelNode(kind: string, extra: Record<string, unknown>) {
+  return structuredClone({
+    graph: { nodes: [{ id: 'node', kind, definitionVersion: 1, data: { prompt: 'p', model: 'm', ...extra } }], edges: [] },
+    scope: { kind: 'all' },
+  })
+}
 
 describe('canvas request parser', () => {
   it('accepts bounded multiline document text while rejecting unsafe controls and oversized UTF-8', () => {
@@ -406,6 +417,188 @@ describe('canvas request parser', () => {
       graph: { nodes: Array.from({ length: 60 }, (_, index) => node(index)), edges: [] }, scope: { kind: 'all' },
     })
     expect(accepted.graph.nodes).toHaveLength(60)
+  })
+
+  it('parses a kernel run graph after an IPC clone keeps its undefined keys', () => {
+    // Structured clone, unlike a JSON round trip, keeps a key whose value is
+    // undefined, and the kernel's toCanvasRunGraph writes every optional key
+    // that way. A parser that treated "present" as "set" would refuse them all.
+    const unset = {
+      quality: undefined, size: undefined, imageResolution: undefined, imageCandidateCount: undefined,
+      videoCandidateCount: undefined, seconds: undefined, adoptedAssetId: undefined, videoMode: undefined,
+      videoResolution: undefined, videoAspectRatio: undefined, promptOptimization: undefined,
+    }
+    const input = structuredClone({
+      graph: {
+        nodes: [
+          { id: 'prompt', kind: 'prompt', definitionVersion: 1, data: { prompt: '一只猫', model: '', ...unset } },
+          { id: 'image', kind: 'image-generate', definitionVersion: 1, data: {
+            prompt: '', model: 'gpt-image-2', group: '图片模型', imageCandidateCount: 1, textWebSearch: false,
+          } },
+          { id: 'video', kind: 'video-generate', definitionVersion: 1, data: {
+            prompt: '', model: 'grok-imagine-video', seconds: '5', videoCandidateCount: 1,
+            videoProtocol: 'relay-videos', videoReferenceOrder: { version: 1, slots: [] },
+          } },
+        ],
+        edges: [],
+      },
+      scope: { kind: 'all' },
+      agentExecution: undefined,
+    })
+    expect(Object.keys(input.graph.nodes[0].data)).toContain('imageCandidateCount')
+    expect(Object.keys(input)).toContain('agentExecution')
+
+    const parsed = parseCanvasStartRunInput(input)
+    expect(parsed.graph.nodes.some((node) => 'desktopUnsupported' in node)).toBe(false)
+    // Only what an executor already reads is handed on.
+    expect(parsed.graph.nodes.map((node) => node.data)).toEqual([
+      { prompt: '一只猫', model: '' },
+      { prompt: '', model: 'gpt-image-2', group: '图片模型' },
+      { prompt: '', model: 'grok-imagine-video', seconds: '5' },
+    ])
+    expect(parsed).toEqual({ graph: { nodes: parsed.graph.nodes, edges: [] }, scope: { kind: 'all' } })
+  })
+
+  it('marks each kernel setting the desktop cannot honour instead of dropping it', () => {
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['image-generate', { imageCandidateCount: 2 }, '一次出多张图'],
+      ['video-generate', { videoCandidateCount: 4 }, '一次出多个视频'],
+      ['image-generate', { textWebSearch: true }, '联网搜索'],
+      // false asks for a silent video; the desktop sends neither, so only
+      // undefined leaves the request as it is.
+      ['video-generate', { generateAudio: true }, '生成音频设置'],
+      ['video-generate', { generateAudio: false }, '生成音频设置'],
+      ['router', { routerStrategy: { version: 1, strategy: 'first-available' } }, '路由策略'],
+      ['router', { routerStrategy: { version: 1, strategy: 'all' } }, '路由策略'],
+      ['video-generate', { videoProtocol: 'xai-native' }, '这个视频接口'],
+      ['video-generate', { videoProtocol: 'ark-seedance' }, '这个视频接口'],
+      ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ kind: 'image', sourceNodeId: 'a' }] } }, '视频参考顺序'],
+      ['image-edit', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图角色'],
+      ['image-generate', { imageOutputIndex: 0 }, '图片处理'],
+      ['frame-extract', { frameTimestampSeconds: 1.5 }, '视频抽帧'],
+      ['image-edit', { imageEditMask: { version: 1, strokes: [] } }, '蒙版局部修改'],
+      ['image-generate', { commerceTask: { version: 1 } }, '电商创作'],
+      ['image-generate', { interiorTask: { version: 1 } }, '室内创作'],
+      ['image-generate', { exteriorTask: { version: 1 } }, '室外创作'],
+      ['image-generate', { storyboardTask: { version: 1 } }, '故事板'],
+      ['image-generate', { imageTransform: { kind: 'crop' } }, '图片处理'],
+      ['image-generate', { imageCollageInputOrder: ['a', 'b'] }, '图片处理'],
+      ['image-generate', { tileInput: { columns: 2 } }, '图片处理'],
+    ]
+    for (const [kind, extra, reason] of cases) {
+      const node = parseCanvasStartRunInput(kernelNode(kind, extra)).graph.nodes[0]
+      expect(node.desktopUnsupported, JSON.stringify(extra)).toBe(`「${reason}」${kernelRefusal}`)
+      expect(node.data).toEqual({ prompt: 'p', model: 'm' })
+    }
+    // Several reasons are each named once, in a fixed order.
+    expect(parseCanvasStartRunInput(kernelNode('image-generate', {
+      tileInput: { columns: 2 }, imageTransform: { kind: 'crop' }, imageCandidateCount: 3,
+    })).graph.nodes[0].desktopUnsupported).toBe(`「一次出多张图、图片处理」${kernelRefusal}`)
+  })
+
+  it('marks every kernel-only node kind by its name and still refuses unknown kinds', () => {
+    for (const [kind, label] of Object.entries(canvasRunKernelOnlyNodeLabels)) {
+      const node = parseCanvasStartRunInput(kernelNode(kind, {})).graph.nodes[0]
+      expect(node.kind).toBe(kind)
+      expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
+    }
+    expect(parseCanvasStartRunInput(kernelNode('text-generate', { textWebSearch: true })).graph.nodes[0].desktopUnsupported)
+      .toBe(`「文字生成」节点${kernelRefusal}`)
+    for (const kind of ['image-upscale', 'constructor', '__proto__', 'toString']) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, {}))).toThrow('类型不受支持')
+    }
+  })
+
+  it('rejects malformed kernel settings rather than marking them', () => {
+    const deep: Record<string, unknown> = {}
+    let cursor = deep
+    for (let level = 0; level < 10; level += 1) {
+      const next: Record<string, unknown> = {}
+      cursor.child = next
+      cursor = next
+    }
+    const malformed: Array<[Record<string, unknown>, string]> = [
+      [{ imageCandidateCount: 5 }, '画布图片生成数量格式错误'],
+      [{ imageCandidateCount: '2' }, '画布图片生成数量格式错误'],
+      [{ imageCandidateCount: 1.5 }, '画布图片生成数量格式错误'],
+      [{ videoCandidateCount: 0 }, '画布视频生成数量格式错误'],
+      [{ textWebSearch: 'yes' }, '画布联网搜索开关格式错误'],
+      [{ generateAudio: 1 }, '画布生成音频设置格式错误'],
+      [{ routerStrategy: { version: 1, strategy: 'random' } }, '画布路由策略格式错误'],
+      [{ routerStrategy: { version: 2, strategy: 'all' } }, '画布路由策略格式错误'],
+      [{ routerStrategy: { version: 1, strategy: 'all', apiKey: 'secret' } }, '画布路由策略包含未知字段'],
+      [{ videoProtocol: 'https://evil.test/v1/videos' }, '画布视频接口格式错误'],
+      [{ videoReferenceOrder: { version: 2, slots: [] } }, '画布视频参考顺序格式错误'],
+      [{ videoReferenceOrder: { version: 1, slots: Array.from({ length: 13 }, () => ({})) } }, '画布视频参考顺序格式错误'],
+      [{ videoReferenceOrder: { version: 1, slots: [], url: 'https://evil.test' } }, '画布视频参考顺序包含未知字段'],
+      [{ imageReferenceOrder: { version: 1, slots: Array.from({ length: 5 }, () => ({})) } }, '画布参考图角色格式错误'],
+      [{ imageReferenceOrder: { version: 1, slots: ['image'] } }, '画布参考图角色格式错误'],
+      [{ imageOutputIndex: -1 }, '画布图片输出序号格式错误'],
+      [{ frameTimestampSeconds: Number.NaN }, '画布抽帧时间格式错误'],
+      [{ frameTimestampSeconds: 86_401 }, '画布抽帧时间格式错误'],
+      [{ imageEditMask: 'mask' }, '画布蒙版格式错误'],
+      [{ imageEditMask: { strokes: [{ accessToken: 'secret' }] } }, '画布蒙版格式错误'],
+      [{ commerceTask: { prompt: 'bad\0value' } }, '画布电商创作配置格式错误'],
+      [{ commerceTask: { prompt: 'x'.repeat(10_001) } }, '画布电商创作配置格式错误'],
+      [{ storyboardTask: deep }, '画布故事板配置格式错误'],
+      [{ tileInput: { values: Array.from({ length: 4_097 }, () => 0) } }, '画布平铺输入格式错误'],
+      [{ imageTransform: { scale: Number.POSITIVE_INFINITY } }, '画布图片处理配置格式错误'],
+    ]
+    for (const [extra, message] of malformed) {
+      expect(() => parseCanvasStartRunInput(kernelNode('image-generate', extra)), JSON.stringify(extra)).toThrow(message)
+    }
+  })
+
+  it('bounds the kernel settings one run may carry as a whole', () => {
+    // Each node is within every per-value limit; together they are not.
+    const chunk = Array.from({ length: 256 }, () => 'x'.repeat(10_000))
+    const node = (index: number) => ({
+      id: `n-${index}`, kind: 'image-generate', definitionVersion: 1, data: { prompt: '', model: 'm', commerceTask: { chunk } },
+    })
+    expect(parseCanvasStartRunInput({ graph: { nodes: [node(0)], edges: [] }, scope: { kind: 'all' } }).graph.nodes[0].desktopUnsupported)
+      .toBe(`「电商创作」${kernelRefusal}`)
+    expect(() => parseCanvasStartRunInput({
+      graph: { nodes: Array.from({ length: 9 }, (_, index) => node(index)), edges: [] }, scope: { kind: 'all' },
+    })).toThrow('工作流规模超过安全上限')
+  })
+
+  it('refuses a run the kernel agent panel starts and accepts the key left unset', () => {
+    const input = {
+      graph: { nodes: [{ id: 'prompt', kind: 'prompt', definitionVersion: 1, data: { prompt: '一只猫', model: '' } }], edges: [] },
+      scope: { kind: 'all' },
+    }
+    for (const agentExecution of [{ conversationId: 'c-1' }, null, false, 'run']) {
+      expect(() => parseCanvasStartRunInput({ ...input, agentExecution })).toThrow('桌面版不支持由 Agent 发起运行')
+    }
+    expect(parseCanvasStartRunInput(structuredClone({ ...input, agentExecution: undefined }))).toEqual(input)
+  })
+
+  it('accepts prompt preset names up to the kernel limit of 160 characters', () => {
+    const id = 'preset-id-0000000000000001'
+    expect(parseCanvasPromptPresetInput({ name: '名'.repeat(160), prompt: 'p' }).name).toHaveLength(160)
+    expect(parseCanvasPromptPresetUpdate({ id, name: '名'.repeat(160) }).name).toHaveLength(160)
+    expect(() => parseCanvasPromptPresetInput({ name: '名'.repeat(161), prompt: 'p' })).toThrow('画布提示词名称格式错误')
+    expect(() => parseCanvasPromptPresetUpdate({ id, name: '名'.repeat(161) })).toThrow('画布提示词名称格式错误')
+  })
+
+  it('parses the content and source a saved copy adds to createProject', () => {
+    const sourceProjectId = '0f4b2c1e-8a7d-4c3b-9e21-5d6f7a8b9c0d'
+    expect(parseCanvasCreateProjectContent(undefined, undefined)).toBeUndefined()
+    expect(parseCanvasCreateProjectContent('{"schemaVersion":2}', undefined)).toEqual({ workflowContent: '{"schemaVersion":2}' })
+    expect(parseCanvasCreateProjectContent('{}', {})).toEqual({ workflowContent: '{}' })
+    expect(parseCanvasCreateProjectContent('{}', { sourceProjectId: undefined })).toEqual({ workflowContent: '{}' })
+    expect(parseCanvasCreateProjectContent('{}', { sourceProjectId })).toEqual({ workflowContent: '{}', sourceProjectId })
+
+    expect(() => parseCanvasCreateProjectContent(undefined, { sourceProjectId })).toThrow('画布项目内容格式错误')
+    expect(() => parseCanvasCreateProjectContent('', undefined)).toThrow('画布项目内容格式错误')
+    expect(() => parseCanvasCreateProjectContent(42, undefined)).toThrow('画布项目内容格式错误')
+    expect(() => parseCanvasCreateProjectContent('{}\u0000', undefined)).toThrow('画布项目内容格式错误')
+    expect(() => parseCanvasCreateProjectContent('x'.repeat(20 * 1024 * 1024 + 1), undefined)).toThrow('画布项目内容格式错误')
+    expect(() => parseCanvasCreateProjectContent('{}', 'options')).toThrow('画布项目复制选项格式错误')
+    expect(() => parseCanvasCreateProjectContent('{}', { sourceProjectId, workspacePath: 'C:\\Users' })).toThrow('画布项目复制选项包含未知字段')
+    for (const id of ['../other-project', 'user-1/project', sourceProjectId.toUpperCase(), `${sourceProjectId}0`]) {
+      expect(() => parseCanvasCreateProjectContent('{}', { sourceProjectId: id })).toThrow('画布项目标识格式错误')
+    }
   })
 
   it('removes spelled-out links from canvas notification text', () => {

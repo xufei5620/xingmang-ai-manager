@@ -2807,6 +2807,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       return buildCodexDesktopDarwinStatus(result)
     }
     if (platform !== 'win32') {
+      // Linux 上本来就没有 Codex 桌面端，不查是常态、不是出错。以前这里带着一句
+      // 「仅支持 Windows」当错误文字，检测完 system:scan 见到就记一条「更新检测失败」
+      // 警告，每次检测一条，客户导出的反馈报告里全是它。跟 Mac 那支一样只写「没查」。
       return {
         installed: false,
         version: null,
@@ -2817,11 +2820,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         path: null,
         installDirectory: null,
         running: false,
-        ...desktopUpdateFields(
-          'skipped',
-          'Codex Desktop 版本检测仅支持 Windows',
-          null,
-        ),
+        ...desktopUpdateFields('skipped', null, null),
       }
     }
     const [probeResult, mirrorResult] = await Promise.allSettled([
