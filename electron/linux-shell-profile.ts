@@ -27,6 +27,12 @@ export const linuxShellProfileMarker = '# >>> xingmang-ai-manager terminal comma
 const linuxShellProfileEndMarker = '# <<< xingmang-ai-manager terminal commands <<<'
 const launcherSignature = '# xingmang-ai-manager terminal launcher'
 
+// 写进启动文件那句注释里列的命令。卸载只撤一字不差的那一段，改这句时把旧的挪进
+// previousProfileCommandLists，不然以前加过的那段卸载时认不出、撤不掉。
+const profileCommandList = 'claude / codex / grok'
+// 2026-10-26 以前写的还列着 gemini（Gemini CLI 10-14 下线）。
+const previousProfileCommandLists = ['claude / codex / gemini / grok']
+
 // 打开软件时只在从没写过的电脑上补一次：客户自己把那几行删了，就别每次开软件又加回来。
 // 装、修复、更新工具时仍然会再确认一遍，那是客户明确要用这个工具的时候。
 const stampFileName = 'terminal-commands-added'
@@ -95,11 +101,15 @@ export function buildLauncherDirectoryWords(launcherDirectory: string, homeDirec
  * the user installed on their own keeps winning. The `case` guard keeps a shell
  * that reads both ~/.profile and ~/.bashrc from listing it twice.
  */
-export function buildLinuxShellProfileBlock(launcherDirectory: string, homeDirectory: string): string {
+export function buildLinuxShellProfileBlock(
+  launcherDirectory: string,
+  homeDirectory: string,
+  commandList = profileCommandList,
+): string {
   const { posix } = buildLauncherDirectoryWords(launcherDirectory, homeDirectory)
   return [
     linuxShellProfileMarker,
-    '# 星芒AI管理工具加的：让新开的终端能直接敲 claude / codex / gemini / grok。在星芒里卸掉它装的全部工具时会自动去掉；不想要也可以连同上下两行标记一起删掉。',
+    `# 星芒AI管理工具加的：让新开的终端能直接敲 ${commandList}。在星芒里卸掉它装的全部工具时会自动去掉；不想要也可以连同上下两行标记一起删掉。`,
     'case ":$PATH:" in',
     `  *":${posix}:"*) ;;`,
     `  *) export PATH="$PATH:${posix}" ;;`,
@@ -110,11 +120,15 @@ export function buildLinuxShellProfileBlock(launcherDirectory: string, homeDirec
 }
 
 /** fish reads every file in conf.d, so it gets a file of its own instead of an edit to config.fish. */
-export function buildLinuxFishProfile(launcherDirectory: string, homeDirectory: string): string {
+export function buildLinuxFishProfile(
+  launcherDirectory: string,
+  homeDirectory: string,
+  commandList = profileCommandList,
+): string {
   const { fish } = buildLauncherDirectoryWords(launcherDirectory, homeDirectory)
   return [
     linuxShellProfileMarker,
-    '# 星芒AI管理工具加的：让新开的终端能直接敲 claude / codex / gemini / grok。在星芒里卸掉它装的全部工具时会自动删掉这个文件。',
+    `# 星芒AI管理工具加的：让新开的终端能直接敲 ${commandList}。在星芒里卸掉它装的全部工具时会自动删掉这个文件。`,
     `if not contains -- "${fish}" $PATH`,
     `    set -gx PATH $PATH "${fish}"`,
     'end',
@@ -354,15 +368,32 @@ async function addToTarget(target: LinuxShellProfileTarget, block: string, fishP
   return true
 }
 
-async function removeFromTarget(target: LinuxShellProfileTarget, block: string, fishProfile: string): Promise<boolean> {
+interface WrittenProfile {
+  block: string
+  fishProfile: string
+}
+
+/** What this app writes now, then what earlier versions wrote; uninstall takes out whichever is there. */
+function writtenProfiles(launcherDirectory: string, homeDirectory: string): WrittenProfile[] {
+  return [profileCommandList, ...previousProfileCommandLists].map((commandList) => ({
+    block: buildLinuxShellProfileBlock(launcherDirectory, homeDirectory, commandList),
+    fishProfile: buildLinuxFishProfile(launcherDirectory, homeDirectory, commandList),
+  }))
+}
+
+async function removeFromTarget(target: LinuxShellProfileTarget, written: WrittenProfile[]): Promise<boolean> {
   const current = await readSafeUtf8File(target.filePath, profileLabel, maximumProfileBytes)
   if (current === null) return false
   if (target.kind === 'fish') {
-    if (current !== fishProfile) return false
+    if (!written.some(({ fishProfile }) => current === fishProfile)) return false
     await removeSafeDataFile(target.filePath, profileLabel)
     return true
   }
-  const next = planLinuxShellProfileRemoval(current, block)
+  let next: string | null = null
+  for (const { block } of written) {
+    next = planLinuxShellProfileRemoval(current, block)
+    if (next !== null) break
+  }
   if (next === null) return false
   const { mode } = await fs.promises.lstat(target.filePath)
   // 两次读之间客户正好在改这个文件，就这次不动，下次卸载再说。
@@ -408,10 +439,11 @@ export async function syncLinuxTerminalCommands(options: SyncLinuxTerminalComman
     if (options.reason !== 'uninstall') return { outcome: 'not-needed', launchers, skipped }
     // 撤的时候不看登录 shell：以前加过的文件都要找一遍。
     const targets = planLinuxShellProfileTargets({ homeDirectory, fishConfigDirectory: fishDirectory, loginShell: null, exists: pathExists })
+    const written = writtenProfiles(launcherDirectory, homeDirectory)
     let removed = false
     for (const target of targets) {
       try {
-        if (await removeFromTarget(target, block, fishProfile)) removed = true
+        if (await removeFromTarget(target, written)) removed = true
       } catch {
         skipped.push(target.displayPath)
       }
