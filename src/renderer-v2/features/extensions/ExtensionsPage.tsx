@@ -91,11 +91,13 @@ import {
   mcpAuthorized,
   mcpHealthView,
   mcpNamesInScope,
+  mcpNameTakenIn,
   mcpNeedsLogin,
   mcpRuntimeNotice,
   officialMarketplaceNotice,
   parseCommandArguments,
   parseEnvironmentVariables,
+  parseHttpHeaders,
   preferredExtensionProvider,
   readCodexExtensionMetadata,
   runExtensionAction,
@@ -104,6 +106,13 @@ import {
   type RowAction,
 } from './extensions-common'
 import { isProvider } from '../tools/provider-options'
+import {
+  mcpHeaderLines,
+  mcpPasteChoiceLabel,
+  mcpPasteNotice,
+  parseMcpPaste,
+  type PastedMcpServer,
+} from './mcp-paste'
 import '../../extensions.css'
 
 // 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：管理页不再列它的扩展、会话和备份。
@@ -309,6 +318,14 @@ export function ExtensionsPage({
   const [bearerEnv, setBearerEnv] = useState('')
   const [oauthClient, setOauthClient] = useState('')
   const [oauthResource, setOauthResource] = useState('')
+  const [headers, setHeaders] = useState('')
+  // 粘贴框里的原文、多条时选的第几条、替他填上的名字（他自己改过名字就不再动）。
+  const [pasteText, setPasteText] = useState('')
+  const [pasteChoice, setPasteChoice] = useState(0)
+  const [pastedName, setPastedName] = useState('')
+  // 粘贴填好以后把「更多设置」展开，让他看得见要启动什么、带了哪些设置和请求头；换 key 是为了每次粘贴都重新展开。
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [moreKey, setMoreKey] = useState(0)
   const [formScope, setFormScope] = useState<'user' | 'project'>('user')
   // 「自定义连接」给哪几个工具加；打开时只勾当前这个。
   const [formTools, setFormTools] = useState<Provider[]>([])
@@ -430,6 +447,11 @@ export function ExtensionsPage({
     setBearerEnv('')
     setOauthClient('')
     setOauthResource('')
+    setHeaders('')
+    setPasteText('')
+    setPasteChoice(0)
+    setPastedName('')
+    setMoreOpen(false)
     setFormTools([provider])
     setCuratedForm(null)
     setCuratedValues({})
@@ -451,6 +473,46 @@ export function ExtensionsPage({
       setEnvironment(JSON.stringify(item.install.env))
     }
     setCuratedForm(item)
+  }
+  // 粘贴进来的那一条照原样填进下面几项。名字只在空着、或者还是上次替他填的那个时才换，他自己起的不动。
+  const fillPasted = (server: PastedMcpServer | undefined) => {
+    const config = server?.config
+    if (!server || !config) return
+    setTransport(config.type)
+    if (config.type === 'stdio') {
+      setSource(config.command)
+      setArgs(JSON.stringify(config.args))
+      setEnvironment(JSON.stringify(config.env))
+      setHeaders('')
+    } else {
+      setSource(config.url)
+      setArgs('[]')
+      setEnvironment('{}')
+      setHeaders(mcpHeaderLines(config.headers))
+      if (config.bearerTokenEnvVar) setBearerEnv(config.bearerTokenEnvVar)
+    }
+    if (!formName.trim() || formName === pastedName) {
+      setFormName(server.name)
+      setPastedName(server.name)
+    }
+    setMoreOpen(
+      config.type === 'stdio'
+        ? config.args.length > 0 || Object.keys(config.env).length > 0
+        : Object.keys(config.headers).length > 0,
+    )
+    setMoreKey((key) => key + 1)
+  }
+  const pasted = useMemo(() => parseMcpPaste(pasteText), [pasteText])
+  const pasteNotice = mcpPasteNotice(pasted, pasteChoice)
+  const pasteConfig = (value: string) => {
+    setPasteText(value)
+    setPasteChoice(0)
+    const result = parseMcpPaste(value)
+    if (result.status === 'ok') fillPasted(result.servers[0])
+  }
+  const choosePasted = (index: number) => {
+    setPasteChoice(index)
+    if (pasted.status === 'ok') fillPasted(pasted.servers[index])
   }
   // 空列表里的「看看精选」把焦点交给精选卡的第一个「添加」，键盘用户不用自己找上去；
   // 精选都装过了就只滚到那一块。
@@ -509,9 +571,14 @@ export function ExtensionsPage({
         : [],
     })
     if (problem) throw new Error(problem)
+    const headerValues = transport === 'http' ? parseHttpHeaders(headers) : {}
     const mcp =
       transport === 'http'
-        ? { type: 'http' as const, url: source.trim() }
+        ? {
+            type: 'http' as const,
+            url: source.trim(),
+            ...(Object.keys(headerValues).length ? { headers: headerValues } : {}),
+          }
         : {
             type: 'stdio' as const,
             command: source.trim(),
@@ -532,6 +599,12 @@ export function ExtensionsPage({
       ...(bearerEnv ? { bearerTokenEnvVar: bearerEnv.trim() } : {}),
       ...(oauthClient && !oauthUnavailable ? { oauthClientId: oauthClient.trim() } : {}),
       ...(oauthResource && !oauthUnavailable ? { oauthResource: oauthResource.trim() } : {}),
+    }
+    // 当前这个工具的同名在上面 customMcpProblem 里已经拦过；勾上的别的工具要现问一遍，免得把那边原来那条换掉。
+    const taken = await mcpNameTakenIn(api, formTargets.filter((target) => target !== provider), name, shownScope)
+    if (taken.length) {
+      const names = extensionToolNames(taken, codexViaDesktop)
+      throw new Error(`${names} 里已经有叫「${name}」的连接了，为了不动原来那条，这次没有添加。换个名字，或者不勾 ${names}。`)
     }
     const done: Provider[] = []
     try {
@@ -1339,6 +1412,39 @@ export function ExtensionsPage({
             ) : undefined}
           />
         )}
+        {kind === 'mcp' && form === 'add' && !curatedForm && (
+          <>
+            <Textarea
+              label="粘贴整段配置"
+              value={pasteText}
+              onChange={(event) => pasteConfig(event.target.value)}
+              placeholder="把提供方给的一整段配置粘贴到这里，下面几项会自动填好。没有的话直接往下填。"
+              rows={4}
+              mono
+              testId="mcp-paste"
+            />
+            {pasteNotice && (
+              <Notice
+                tone={pasteNotice.tone}
+                title={pasteNotice.title}
+                body={pasteNotice.body}
+                testId="mcp-paste-result"
+              />
+            )}
+            {pasted.status === 'ok' && pasted.servers.length > 1 && (
+              <Select
+                label={`这段里有 ${pasted.servers.length} 个连接，先加哪一个`}
+                options={pasted.servers.map((server, index) => ({
+                  value: String(index),
+                  label: mcpPasteChoiceLabel(server, index),
+                }))}
+                value={String(pasteChoice)}
+                onChange={(event) => choosePasted(Number(event.target.value))}
+                testId="mcp-paste-choice"
+              />
+            )}
+          </>
+        )}
         {kind === 'mcp' && form === 'add' && (
           <>
             <Input
@@ -1389,7 +1495,7 @@ export function ExtensionsPage({
           testId={`${page}-source`}
         />
         {kind === 'mcp' && form === 'add' && transport === 'stdio' && (
-          <details className="v2-ext-more">
+          <details key={`more-${moreKey}`} className="v2-ext-more" open={moreOpen || undefined}>
             <summary>更多设置</summary>
             <Textarea
               label="附加参数"
@@ -1404,6 +1510,20 @@ export function ExtensionsPage({
               onChange={(event) => setEnvironment(event.target.value)}
               mono
               hint="按提供方说明原样粘贴"
+            />
+          </details>
+        )}
+        {kind === 'mcp' && form === 'add' && transport === 'http' && (
+          <details key={`more-${moreKey}`} className="v2-ext-more" open={moreOpen || undefined}>
+            <summary>更多设置</summary>
+            <Textarea
+              label="请求头"
+              value={headers}
+              onChange={(event) => setHeaders(event.target.value)}
+              placeholder="Authorization: Bearer 你的密钥"
+              mono
+              hint="一行一个，写成「名称: 值」。按提供方说明原样粘贴"
+              testId="mcp-headers"
             />
           </details>
         )}

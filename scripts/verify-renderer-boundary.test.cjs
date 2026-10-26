@@ -50,6 +50,8 @@ const valueImportable = [
   'electron/ipc-contract',
   // Mac 上一键装桌面端没装成的那几句话，主进程拼、错误框照它认出来配「看安装指南」。
   'electron/macos-desktop-install-failure',
+  // 外接工具网络服务的请求头怎么算合格，粘贴识别、填表和主进程拼命令共用一份；文件本身什么都不 import。
+  'electron/mcp-http-headers',
   'electron/network-failure',
   // npm 没装成那句里「整句自己说清了下一步」的几类错误码，主进程拼、错误框照它认（#1100 第 1 条）。
   'electron/npm-failure-reasons',

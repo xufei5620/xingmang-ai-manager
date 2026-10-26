@@ -1072,6 +1072,71 @@ describe('ProviderExtensionService native mutations', () => {
     })
   })
 
+  it('passes request headers where each CLI reads them and marks their values as sensitive', async () => {
+    const calls: Array<{ provider: string; argv: readonly string[]; sensitiveValues: readonly string[] }> = []
+    const invoke: ProviderCliInvoker = vi.fn(async (provider, argv, options) => {
+      calls.push({ provider, argv: [...argv], sensitiveValues: options?.sensitiveValues ?? [] })
+      return argv.join(' ') === 'mcp list --json' ? '[]' : ''
+    })
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+    const headers = { Authorization: 'Bearer sk-secret', 'X-Region': 'cn' }
+
+    for (const provider of ['claude', 'grok'] as const) {
+      await service.mutate({
+        provider,
+        kind: 'mcp',
+        action: 'install',
+        id: 'docs',
+        scope: 'user',
+        mcp: { type: 'http', url: 'https://example.com/mcp', headers },
+      })
+    }
+
+    const adds = calls.filter((call) => call.argv[1] === 'add')
+    // Claude Code 2.1.310 的 --header 一次能吃好几个值，要放在名字和地址后面；Grok 1.0.70 一个开关一个值、
+    // 地址后面的会当成服务参数，所以放在前面。两家都在沙箱里实测写进了自己的配置。
+    expect(adds.map((call) => [call.provider, call.argv])).toEqual([
+      ['claude', ['mcp', 'add', '--transport', 'http', '--scope', 'user', 'docs', 'https://example.com/mcp',
+        '--header', 'Authorization: Bearer sk-secret', '--header', 'X-Region: cn']],
+      ['grok', ['mcp', 'add', '--transport', 'http', '--scope', 'user',
+        '--header', 'Authorization: Bearer sk-secret', '--header', 'X-Region: cn', 'docs', 'https://example.com/mcp']],
+    ])
+    for (const call of adds) expect(call.sensitiveValues).toEqual(['Bearer sk-secret', 'cn'])
+  })
+
+  it('refuses a header that could break out of its line or read as a flag, before running anything', async () => {
+    const invoke: ProviderCliInvoker = vi.fn(async () => '')
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
+    const refused: Array<Record<string, string>> = [
+      { Authorization: 'Bearer a\r\nX-Injected: 1' },
+      { '-X': 'value' },
+      { 'Bad Name': 'value' },
+      { Authorization: '   ' },
+    ]
+    for (const headers of refused) {
+      await expect(service.mutate({
+        provider: 'claude',
+        kind: 'mcp',
+        action: 'install',
+        id: 'docs',
+        scope: 'user',
+        mcp: { type: 'http', url: 'https://example.com/mcp', headers },
+      })).rejects.toThrow('MCP 请求头格式错误')
+    }
+    // Codex 的请求头由 codex-extensions.ts 写 config.toml；已下线的 Gemini 没核过写法。都不在这里拼命令。
+    for (const provider of ['codex', 'gemini'] as const) {
+      await expect(service.mutate({
+        provider,
+        kind: 'mcp',
+        action: 'install',
+        id: 'docs',
+        scope: 'user',
+        mcp: { type: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer x' } },
+      })).rejects.toThrow('不支持该原生操作')
+    }
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
   it('keeps option-looking MCP arguments behind the argv separator for every provider', async () => {
     const userArgs = ['--trust', '--scope', 'user', '--include-tools', 'shell']
     for (const provider of providerIds) {
