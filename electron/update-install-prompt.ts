@@ -12,10 +12,11 @@
  *   最多问一次。账号不在管理员组的 Windows 自己装不了，不问；关了「自动更新」的不问。
  * - **闲时装**：只在装的时候一个窗口也不弹的 Mac 上（canInstallUnattended）。Windows 每次装都要
  *   有人点授权窗口的「是」，没人在电脑前就卡在那儿，不做。要等电脑 10 分钟没人碰或者锁了屏，
- *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开；问过的版本还要
- *   等「稍后再说」之后 10 分钟。每个版本只自动试一次，记在打开时装的同一条记录里（attempted），
+ *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开，手机遥控没开着，
+ *   视频没在生成或拼；问过的版本还要等「稍后再说」之后 10 分钟。每个版本只自动试一次，记在打开时装的同一条记录里（attempted），
  *   没装上就退回到退出时装。客户不在电脑前时下好的不问，直接等着闲时装；框弹出来以后人一直
- *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。
+ *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。手机遥控开着时这两条都不做
+ *   （闲时装等不来，客户得回来看到框），框里那句换成退出或下次打开时装（YK-2）。
  *
  * 不含任何 Electron 依赖：框、窗口、空闲时长、装都由宿主接进来。
  */
@@ -101,6 +102,10 @@ export interface IdleInstallInput {
   /** Claude Code 这些工具正在干活（cli-keep-awake）。 */
   toolsWorking: boolean
   accelerationActive: boolean
+  /** 手机遥控开着（任一渠道）。重开星芒后遥控不会自己连回去，开着它的人又多半不在电脑前。 */
+  remoteControlActive: boolean
+  /** 视频在生成或在拼：重启会把它打断，已经交给服务端的片段照样扣钱。 */
+  videoWorking: boolean
   /** 这个版本已经自动装过（打开时、退出时、闲时，任何一种）。 */
   attempted: boolean
   /** 跳框开着、还在等回答。 */
@@ -119,6 +124,7 @@ export function decideIdleInstall(input: IdleInstallInput): string | null {
   if (input.notBefore !== null && input.now < input.notBefore) return null
   if (!input.locked && !(input.idleMs >= IDLE_INSTALL_IDLE_MS)) return null
   if (input.windowVisible || input.busy || input.toolsWorking || input.accelerationActive) return null
+  if (input.remoteControlActive || input.videoWorking) return null
   return version
 }
 
@@ -145,6 +151,10 @@ export interface UpdateInstallPrompterOptions {
   busy(): boolean
   toolsWorking(): boolean
   accelerationActive(): boolean
+  /** 见 IdleInstallInput.remoteControlActive。 */
+  remoteControlActive(): boolean
+  /** 见 IdleInstallInput.videoWorking。 */
+  videoWorking(): boolean
   attempted(version: string): boolean
   /** 跳框；signal 断开时宿主收起框，当作「稍后再说」。 */
   ask(prompt: InstallPrompt, signal: AbortSignal): Promise<InstallPromptAnswer>
@@ -215,6 +225,8 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
       busy: read(options.busy, true),
       toolsWorking: read(options.toolsWorking, true),
       accelerationActive: read(options.accelerationActive, true),
+      remoteControlActive: read(options.remoteControlActive, true),
+      videoWorking: read(options.videoWorking, true),
       attempted: !version || version === idleTried || read(() => options.attempted(version), true),
       promptOpen: open !== null,
       notBefore,
@@ -225,6 +237,12 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   // 能闲时装的电脑上要一直看着（框开着时也要看人走没走），不能的只在等着跳框时看。
   function canInstallWhileIdle(): boolean {
     return options.platform === 'darwin' && read(options.unattended, false)
+  }
+
+  // 手机遥控可能一开就是一整天，这期间闲时装等不来：人走开了也照样跳框、框也不收，
+  // 客户回到电脑前能看到；框里说退出或下次打开时装。视频一会儿就做完，不用这样。
+  function idleInstallHeldByRemote(): boolean {
+    return read(options.remoteControlActive, true)
   }
 
   // 更新状态每变一次都会来一遍：已经排着同样间隔的就不重排，免得一直往后推。
@@ -261,7 +279,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     }
     const idleMs = read(options.idleMs, 0)
     const locked = read(options.locked, false)
-    if (canInstallWhileIdle() && isAwayFromComputer(idleMs, locked)) {
+    if (canInstallWhileIdle() && !idleInstallHeldByRemote() && isAwayFromComputer(idleMs, locked)) {
       waiting = null
       asked.add(version)
       notBefore = null
@@ -278,7 +296,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     const controller = new AbortController()
     open = { version, controller }
     const prompt = buildInstallPrompt(version, options.platform, {
-      unattended: canInstallWhileIdle(),
+      unattended: canInstallWhileIdle() && !idleInstallHeldByRemote(),
       elevated: read(options.elevated, false),
     })
     log('info', 'install.prompt.shown', `新版本 ${version} 下好了，跳框问要不要现在装`)
@@ -312,7 +330,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   }
 
   function considerAbandon(): void {
-    if (!open || !canInstallWhileIdle()) return
+    if (!open || !canInstallWhileIdle() || idleInstallHeldByRemote()) return
     if (!isAwayFromComputer(read(options.idleMs, 0), read(options.locked, false))) return
     open.controller.abort()
   }

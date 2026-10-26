@@ -327,6 +327,11 @@ export class CodexRemoteService {
     }
   }
 
+  /** 有渠道开着。闲时自动装更新要看：一重启遥控就停了，开着它的人又多半不在电脑前。 */
+  hasEnabledChannel(): boolean {
+    return remoteChannelIds.some((id) => this.runtimes[id].enabled)
+  }
+
   async snapshot(): Promise<CodexRemoteSnapshot> {
     const settings = await this.options.store.readSettings()
     const unavailableReason = this.options.inspectAvailability()

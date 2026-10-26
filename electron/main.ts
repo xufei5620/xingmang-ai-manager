@@ -2274,6 +2274,12 @@ if (!hasSingleInstanceLock) {
       busy: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
       toolsWorking: () => cliKeepAwake.tools().length > 0,
       accelerationActive: () => acceleration?.hasPossibleSession() === true,
+      // 遥控开着就不在闲时重启：重开以后不会自己连回去，人在外面也开不了（YK-2）。
+      remoteControlActive: () => codexRemote.hasEnabledChannel(),
+      // 对话页、视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
+      videoWorking: () => [...businesses.values()].some((business) => (
+        business.videoService.hasActiveRequests() || business.chatVideoService.hasActiveRequests()
+      )),
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'

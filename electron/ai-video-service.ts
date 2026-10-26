@@ -880,6 +880,8 @@ export function createAiVideoService(options: {
     cancelSender: (senderId: number) => cancelMatching((operation) => operation.senderId === senderId),
     cancelUser: (userId: number) => cancelMatching((operation) => operation.userId === userId),
     cancelAll: () => cancelMatching(() => true),
+    /** 还有视频在出或在取回（闲时自动装更新要等它们做完）。 */
+    hasActiveRequests: () => active.size > 0,
     resumeUser: (...args: Parameters<typeof resumeUser>) => track(resumeUser(...args)),
     resumeVideoTask: (...args: Parameters<typeof resumeVideoTask>) => track(resumeVideoTask(...args)),
     whenIdle: async () => { while (pendingWork.size) await Promise.allSettled([...pendingWork]) },

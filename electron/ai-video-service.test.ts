@@ -821,6 +821,28 @@ describe('createAiVideoService', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('counts a video as in progress from the request until it ends, so an idle update install waits for it', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_running', status: 'queued' })
+      if (String(input).endsWith('/content')) return stalledBodyResponse('video/mp4', vi.fn())
+      return jsonResponse({ id: 'video_running', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    expect(service.hasActiveRequests()).toBe(false)
+    const stages: string[] = []
+    const settled = service.generate(41, {
+      requestId: 'running', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: (stage) => { stages.push(stage) } }).catch((error: unknown) => error)
+    expect(service.hasActiveRequests()).toBe(true)
+    await vi.waitFor(() => expect(stages).toContain('downloading'))
+    expect(service.hasActiveRequests()).toBe(true)
+
+    service.cancelAll()
+    await service.whenIdle()
+    await settled
+    expect(service.hasActiveRequests()).toBe(false)
+  })
+
   it('lets 「停止」 and the account switch end a download whose body stalls after the headers', async () => {
     const bodyCanceled = vi.fn()
     const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {

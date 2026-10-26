@@ -533,6 +533,20 @@ describe('codex-remote-service lifecycle', () => {
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
+  it('tells the idle update install whether any channel is on, through switch-off and the four-hour close', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    await enabledAndPaired(s)
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
+    await vi.waitFor(() => expect(s.service.hasEnabledChannel()).toBe(false))
+    await s.service.setChannelEnabled('feishu', true)
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    await s.service.setChannelEnabled('feishu', false)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+  })
+
   it('closes itself after four idle hours', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const s = await setup()
