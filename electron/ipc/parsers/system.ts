@@ -2,7 +2,7 @@
 import type { DiagnosticsRunOptions } from '../../diagnostics'
 import type { ExternalClientScanOptions } from '../../external-client-contract'
 import { isRecord } from '../../input-guards'
-import type { AppUninstallRequest, NodeRuntimeInstallRequest, RendererLogLevel, UpdateInstallOptions } from '../../ipc-contract'
+import type { AppUninstallRequest, NodeRuntimeInstallRequest, RendererActivity, RendererLogLevel, UpdateInstallOptions } from '../../ipc-contract'
 import type { SystemScanOptions } from '../../system-service'
 import type { UpdateDownloadOptions } from '../../updater'
 import { optionalBoolean, optionalString, requiredString } from './common'
@@ -13,6 +13,11 @@ export function parseAppUninstallRequest(value: unknown): AppUninstallRequest {
     clearLoginRecords: optionalBoolean(value.clearLoginRecords, '卸载选项') ?? false,
     removeManagedTools: optionalBoolean(value.removeManagedTools, '卸载选项') ?? false,
   }
+}
+
+export function parseRendererActivity(value: unknown): RendererActivity {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'busy') || typeof value.busy !== 'boolean') throw new Error('界面忙闲报告格式错误')
+  return { busy: value.busy }
 }
 
 export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOptions {

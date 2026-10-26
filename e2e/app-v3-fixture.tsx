@@ -34,6 +34,7 @@ if (search.get('completed') === 'true') rememberStartChoice(localStorage, 'solov
 const api = {
   getPlatformCapabilities: async () => platformCapabilitiesFor('win32', 'x64'),
   getWindowCapabilities: async () => ({ tray: true, notifications: false }),
+  reportWindowActivity: async () => undefined,
   takeExternalDeepLink: async () => { const link = window.appHarness.deepLink; window.appHarness.deepLink = null; return link },
   getSettings: async () => ({ ...settings }),
   saveSettings: async (patch) => {
