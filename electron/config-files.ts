@@ -1296,7 +1296,7 @@ function normalizeUrl(value: string): string {
 }
 
 /**
- * Claude Code 的 /model 菜单与 Default 指向按这份型号清单重写会不会变（见
+ * Claude Code 的 /model 菜单、Default 指向与备用型号按这份型号清单重写会不会变（见
  * claude-model-picker.ts 的 claudeRelayModelPickerOutdated）。只读，读之前先过路径校验。
  */
 export function claudeModelPickerNeedsRefresh(
@@ -1309,6 +1309,18 @@ export function claudeModelPickerNeedsRefresh(
   const [settingsPath] = providerConfigPaths('claude', roots)
   assertSafeConfigPath(settingsPath, providerRoot, 'file')
   return claudeRelayModelPickerOutdated(requireJson(settingsPath, '现有 Claude settings.json'), availableModels, currentModel)
+}
+
+/**
+ * Claude Code 的 settings.json 里还没写备用型号（fallbackModel）。开机那轮先看它，有了就不必为补这一项去问中转。
+ * 只读，读之前先过路径校验。
+ */
+export function claudeFallbackModelMissing(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('claude', roots)
+  const [settingsPath] = providerConfigPaths('claude', roots)
+  assertSafeConfigPath(settingsPath, providerRoot, 'file')
+  return requireJson(settingsPath, '现有 Claude settings.json').fallbackModel === undefined
 }
 
 /**
@@ -2786,7 +2798,7 @@ function commitProviderRewrite(
  * 打开前、开机核对时刷新型号菜单的打算（#1154 后续）。以前借 saveConfig 的整份合并，模板里每一项都
  * 按当前版本重写一遍：Codex 客户自己定的 review_model、打开的检查更新、注释，Claude Code 放开的
  * deny 项、另指的「Default」都被改回去。现在只动菜单本身，文件其余字节原样：
- * - Claude Code：settings.json 里的 modelPicker 和 env.ANTHROPIC_DEFAULT_MODEL，改不改照
+ * - Claude Code：settings.json 里的 modelPicker、env.ANTHROPIC_DEFAULT_MODEL 和没写过的 fallbackModel，改不改照
  *   claude-model-picker.ts 的 claudeRelayModelPickerUpdates。
  * - Codex：型号名单文件按 codexModelCatalog 重写（system-service.ts 的 resolveCodexModelCatalog 算好的；
  *   undefined = 原样不动）；config.toml 里本软件那一行该有却没有就补上，不该有就收回，客户自己指向
@@ -2860,8 +2872,9 @@ export function applyProviderPickerRefresh(
 }
 
 /**
- * Claude Code 的 settings.json 只改菜单那两处，其余字节（缩进、键的顺序、客户自己的设置）原样。
- * Claude Code 按严格 JSON 读这份文件；改完整份再读一遍，和「原来的内容只改了这两处」逐项比对，
+ * Claude Code 的 settings.json 只改菜单那几处（菜单、Default 指向、没写过的备用型号），其余字节（缩进、
+ * 键的顺序、客户自己的设置）原样。
+ * Claude Code 按严格 JSON 读这份文件；改完整份再读一遍，和「原来的内容只改了这几处」逐项比对，
  * 对不上（比如同一个键写了两遍）就当认不出，一个字不动。
  */
 function claudeSettingsWithRelayPicker(text: string, model: string, availableModels: readonly string[]): string | 'changed' | 'unlocated' {
@@ -2878,10 +2891,12 @@ function claudeSettingsWithRelayPicker(text: string, model: string, availableMod
   const edits: Array<{ path: string[]; value: unknown }> = []
   if (updates.defaultModel !== undefined) edits.push({ path: ['env', 'ANTHROPIC_DEFAULT_MODEL'], value: updates.defaultModel })
   if (updates.modelPicker !== undefined) edits.push({ path: ['modelPicker'], value: updates.modelPicker })
+  if (updates.fallbackModel !== undefined) edits.push({ path: ['fallbackModel'], value: updates.fallbackModel })
   if (!edits.length) return text
   const expected = JSON.parse(text) as Record<string, unknown>
   if (updates.defaultModel !== undefined) ensureRecord(expected, 'env').ANTHROPIC_DEFAULT_MODEL = updates.defaultModel
   if (updates.modelPicker !== undefined) expected.modelPicker = updates.modelPicker
+  if (updates.fallbackModel !== undefined) expected.fallbackModel = updates.fallbackModel
   const indentation = /^([ \t]+)\S/m.exec(text)?.[1] ?? '  '
   const formattingOptions = {
     insertSpaces: !indentation.startsWith('\t'),

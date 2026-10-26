@@ -40,6 +40,7 @@ import {
 import {
   applyProviderModelReplace,
   applyProviderPickerRefresh,
+  claudeFallbackModelMissing,
   claudeModelPickerNeedsRefresh,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogTargetUsable,
@@ -1230,6 +1231,30 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
+   * 开机那轮给老客户的 Claude Code 补上备用型号（fallbackModel，挑法见 cli-model-defaults.ts 的
+   * resolveClaudeFallbackModels）。要按当前账号能用的型号挑，补设置那一步（fillRelayTemplateDefaults）不问中转、
+   * 挑不了，所以走打开前那次核对同一条路（syncPicker），菜单要是也落后了一起刷新：从终端、VS Code 直接开
+   * Claude Code 的客户等不到打开前那一问。配置里已经有这一项就不问中转；型号已下架的留给上面换型号那条，
+   * 换完下次开机再补，免得两条路一起写。写之前看一眼 Claude Code 开没开，开着或看不出这次不写，也不记成欠着，
+   * 下次开机或从星芒打开时再补。先备份，失败只记日志。
+   */
+  async function syncClaudeFallbackModels(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<void> {
+    if (!round.providers.includes('claude')) return
+    const target = modelCheckTarget('claude', true)
+    if (!target || !claudeFallbackModelMissing(providerRoots)) return
+    const loadHints = serviceOptions.cliModelHints
+    const hints = loadHints ? await unlessStopped(() => loadHints().catch(() => null), stopped) : null
+    if (isRetiredCliModel('claude', target.model, hints)) return
+    void toolModelChecker.syncPicker('claude', {
+      beforeRefresh: async () => {
+        const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['claude'])
+        if (latest.running.includes('claude') || latest.unknown.includes('claude')) throw new Error('Claude Code 可能正开着，这次先不写')
+        backup?.('claude')
+      },
+    }).catch(() => undefined)
+  }
+
+  /**
    * 开机那次：先补设置，再在本机看 Codex 开没开、型号名单欠不欠，两样都算进 pending 交回去；
    * 按账号核对型号名单要先问一遍中转，补设置那句提示不等它。retry = 渲染层隔一阵来补做
    * （第二十六批 E）：只做开机那轮欠下的，换了账号就什么都不做。
@@ -1248,10 +1273,12 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     } catch (error) {
       void syncCodexModelCatalog(backup, round, stopped).catch(() => false)
       void replaceRetiredCliModels(backup, round, stopped).catch(() => [])
+      void syncClaudeFallbackModels(backup, round, stopped).catch(() => undefined)
       throw error
     }
     const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
     const retiredOwed = await replaceRetiredCliModels(backup, round, stopped).catch((): ProviderId[] => [])
+    await syncClaudeFallbackModels(backup, round, stopped).catch(() => undefined)
     const skipped = [...new Set([...(result.pending ?? []), ...retiredOwed])]
     templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
     const pending = activeProviderIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))
