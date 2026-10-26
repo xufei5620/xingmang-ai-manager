@@ -29,6 +29,14 @@ const LICENSE_SOURCE = Object.freeze({ fileName: 'ChatGPT-License.xml', url: `${
 // 传到约 850 MB 就撞线中止，一出新版就失败（#1082）。工作流给这个作业 150 分钟，
 // 余下的时间留给下载、Windows 校验和完整回读。
 const MULTIPART_DEADLINE_MS = 120 * 60 * 1000
+// OpenAI 有时先把更新清单换成新版，过十几个小时才换可下载的 MSIX（10-17 第 51 次、10-24 第 78 次运行：清单
+// 写新版，包还是上一版，签名照常）。以前这时作业报 package-identity-mismatch，连着两次就开告警 issue，等 OpenAI 换好包
+// 又自己关掉，什么也不用做。所以桶里这一架构还有一条这么久以内核过的上一版、客户照常从桶里装时，先等包：这次
+// 不动桶、不写清单，作业不算失败。这个时长同客户端认桶的期限（desktop-package-bucket.ts 的
+// desktopBucketIndexMaximumAgeMs），再等下去客户已经不从桶里装了，照旧报错。
+const PACKAGE_PENDING_MAXIMUM_MS = 24 * 60 * 60 * 1000
+// 同客户端读 checkedAt 的格式（desktop-package-bucket.ts 的 isDesktopBucketIndexStale）。
+const CHECKED_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/
 const officialFailures = new WeakMap()
 
 function safeOfficialSyncFailure(error) {
@@ -43,7 +51,7 @@ function createStageRunner(progress, pointerState) {
       try { progress(value) } catch {}
     }
   }
-  return async function (stage, input, operation) {
+  async function run(stage, input, operation) {
     const started = performance.now()
     const context = { stage, ...input }
     let lastTransfer = {}
@@ -75,6 +83,10 @@ function createStageRunner(progress, pointerState) {
       throw wrapped
     } finally { if (heartbeat) clearInterval(heartbeat) }
   }
+  // A decision taken inside a stage that is not a failure gets its own line;
+  // the stage's start and end events do not say what it decided.
+  run.notice = function (event, fields) { emit({ event, ...fields }) }
+  return run
 }
 
 // A fixed script and argv prevent package paths from becoming PowerShell code.
@@ -271,9 +283,28 @@ function observedWindowsInspection(report, metadata) {
 }
 
 function validateWindowsInspection(report, metadata, architecture) {
-  if (!report || report.manifest?.name !== metadata.packageIdentity || report.manifest?.version !== metadata.buildVersion || report.manifest?.architecture !== architecture || report.manifest?.publisher !== WINDOWS_PUBLISHER || report.manifest?.containsPackageSignature !== true) throw checkFailure('package-identity-mismatch', 'Windows 安装包身份、版本、架构或发布者校验失败', observedWindowsInspection(report, metadata))
+  if (!report || report.manifest?.name !== metadata.packageIdentity || report.manifest?.architecture !== architecture || report.manifest?.publisher !== WINDOWS_PUBLISHER || report.manifest?.containsPackageSignature !== true) throw checkFailure('package-identity-mismatch', 'Windows 安装包身份、架构或发布者校验失败', observedWindowsInspection(report, metadata))
   if (report.signature?.status !== 'Valid' || report.signature?.signerSubject !== WINDOWS_PUBLISHER || typeof report.signature?.signerIssuer !== 'string' || !report.signature.signerIssuer.includes('O=Microsoft Corporation')) throw checkFailure('package-signature-invalid', 'Windows 安装包可信签名校验失败', observedWindowsInspection(report, metadata))
+  // 版本放在签名后面核：包还是上一版、签名又坏了时，报的是签名。
+  if (report.manifest.version !== metadata.buildVersion) throw checkFailure('package-identity-mismatch', 'Windows 安装包版本与官方更新清单不一致', observedWindowsInspection(report, metadata))
   return 'windows-authenticode'
+}
+
+// 身份、架构、发布者、签名都对，只是版本比官方更新清单写的旧：OpenAI 清单先换了版，安装包还没换上来。
+function isOlderOfficialWindowsPackage(report, metadata, architecture) {
+  const version = report?.manifest?.version
+  try {
+    validateWindowsInspection(report, { ...metadata, buildVersion: version }, architecture)
+    return compareWindowsVersions(version, metadata.buildVersion) < 0
+  } catch { return false }
+}
+
+// 桶里这一架构还有一条 PACKAGE_PENDING_MAXIMUM_MS 以内和官网核过的上一版。等包的那几次不刷 checkedAt，
+// 所以这也就是从上一次同步成功算起等了多久。
+function canWaitForOfficialPackage(entry, now) {
+  if (typeof entry?.checkedAt !== 'string' || !CHECKED_AT_PATTERN.test(entry.checkedAt)) return false
+  const elapsed = Date.parse(now) - Date.parse(entry.checkedAt)
+  return Number.isFinite(elapsed) && elapsed <= PACKAGE_PENDING_MAXIMUM_MS
 }
 
 function validateLicenseInspection(report) {
@@ -398,6 +429,7 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
   let primaryError
   try {
     const prepared = []
+    const pending = []
     let preparedLicense = null
     for (const id of ids) {
       if (reusable[id]) continue
@@ -412,7 +444,19 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
       })
       let verification = 'official-https-sha256'
       if (source.platform === 'windows') {
-        verification = await stage('verify-windows-package', { platform: id }, async function () { return validateWindowsInspection(await dependencies.inspectWindowsFile({ filePath, workDirectory }), metadata, source.architecture) })
+        const inspected = await stage('verify-windows-package', { platform: id }, async function () {
+          const report = await dependencies.inspectWindowsFile({ filePath, workDirectory })
+          if (!isOlderOfficialWindowsPackage(report, metadata, source.architecture)) return { verification: validateWindowsInspection(report, metadata, source.architecture) }
+          if (!canWaitForOfficialPackage(old?.platforms[id], now())) throw checkFailure('package-version-behind', '官方更新清单已换新版，可下载的 Windows 安装包还是上一版，桶里也没有一天内核过的上一版可用', observedWindowsInspection(report, metadata))
+          return { pendingVersion: report.manifest.version }
+        })
+        if (inspected.pendingVersion) {
+          pending.push(id)
+          stage.notice('package-pending', { platform: id, expectedVersion: metadata.buildVersion, packageVersion: inspected.pendingVersion,
+            bucketVersion: old.platforms[id].packageVersion, bucketCheckedAt: old.platforms[id].checkedAt })
+          continue
+        }
+        verification = inspected.verification
       } else {
         await stage('verify-package-format', { platform: id }, function () { return dependencies.validatePackageMagic(filePath, source.format, result.bytes) })
       }
@@ -429,12 +473,17 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
       await stage('verify-windows-license', {}, async function () { return validateLicenseInspection(await dependencies.inspectWindowsFile({ filePath, license: true, workDirectory })) })
       preparedLicense = { filePath, bytes: result.bytes, sha256: result.sha256 }
     }
+    // 等包的平台这次当没来过：桶里那条和它的 checkedAt 原样留着，等得太久就照旧报错。
+    const checkedIds = ids.filter(function (id) { return !pending.includes(id) })
+    if (!checkedIds.length) return { changed: false, manifest: old, platforms: ids, pending }
+    const windowsChecked = checkedIds.some(function (id) { return SOURCES[id].platform === 'windows' })
+    const windowsMetadata = windowsChecked ? metadata : old?.windows
     // A failed package or license must leave the prior pointer untouched. All
     // packages are locally validated before the first remote publication.
     const entries = { ...(old?.platforms || {}), ...reusable }
-    if (old?.windows && metadata && compareWindowsVersions(metadata.buildVersion, old.windows.buildVersion) > 0) {
+    if (old?.windows && windowsMetadata && compareWindowsVersions(windowsMetadata.buildVersion, old.windows.buildVersion) > 0) {
       // Do not advertise old Windows packages under the new shared metadata.
-      for (const id of Object.keys(entries)) if (SOURCES[id].platform === 'windows' && !ids.includes(id)) delete entries[id]
+      for (const id of Object.keys(entries)) if (SOURCES[id].platform === 'windows' && !checkedIds.includes(id)) delete entries[id]
     }
     for (const item of prepared) {
       const source = sources[item.id]
@@ -473,12 +522,12 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
     // Each job vouches only for the platforms it checked against the official
     // source just now; the other entries keep the time their own job last did.
     const checkedAt = now()
-    for (const id of ids) entries[id] = { ...entries[id], checkedAt }
-    const manifest = { schemaVersion: 1, product: 'chatgpt', generatedAt: now(), ...(metadata ? { windows: metadata } : {}), platforms: entries }
+    for (const id of checkedIds) entries[id] = { ...entries[id], checkedAt }
+    const manifest = { schemaVersion: 1, product: 'chatgpt', generatedAt: now(), ...(windowsMetadata ? { windows: windowsMetadata } : {}), platforms: entries }
     await stage('validate-latest', {}, async function () { validatePreviousManifest(manifest) })
     // Linux's public "latest" URLs are mutable. A long upload must not turn a
     // superseded source snapshot into today's advertised latest pointer.
-    for (const id of ids) {
+    for (const id of checkedIds) {
       await stage('source-recheck-package', { platform: id }, async function () {
         const head = validateHead(await dependencies.inspectResource({ url: sources[id].url, allowedHosts: [OFFICIAL_HOST], maxBytes: MAX_PACKAGE_BYTES }), MAX_PACKAGE_BYTES)
         if (!sameFingerprint(head, heads[id])) throw checkFailure('source-changed', '官方包来源在同步期间发生变化，未发布最新索引，请重新同步')
@@ -490,7 +539,7 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
         })
       }
     }
-    if (windowsNeeded) {
+    if (windowsChecked) {
       await stage('source-recheck-windows', {}, async function () {
         const current = validateWindowsMetadata(await dependencies.fetchJson({ url: WINDOWS_METADATA_URL, allowedHosts: [OFFICIAL_HOST], maxBytes: 65536 }))
         const currentLicense = validateHead(await dependencies.inspectResource({ url: LICENSE_SOURCE.url, allowedHosts: [OFFICIAL_HOST], maxBytes: MAX_LICENSE_BYTES }), MAX_LICENSE_BYTES)
@@ -499,13 +548,13 @@ async function synchronizeOfficialChatgpt({ store, platforms = DEFAULT_PLATFORMS
     }
     await stage('cos-recheck-latest', {}, async function () {
       const current = validatePreviousManifest(await store.readJson(LATEST_KEY, { missingOk: true }))
-      if (metadata && current?.windows && compareWindowsVersions(metadata.buildVersion, current.windows.buildVersion) < 0) throw checkFailure('cos-index-changed', 'COS 最新 Windows 版本已更新，拒绝发布较旧清单')
+      if (windowsMetadata && current?.windows && compareWindowsVersions(windowsMetadata.buildVersion, current.windows.buildVersion) < 0) throw checkFailure('cos-index-changed', 'COS 最新 Windows 版本已更新，拒绝发布较旧清单')
       if (JSON.stringify(current) !== JSON.stringify(old)) throw checkFailure('cos-index-changed', 'COS 最新清单在同步期间发生变化，停止发布以保留现有状态')
     })
     latestState = 'write-unconfirmed'
     await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
     latestState = 'published-and-read-back'
-    return { changed: !unchanged, manifest, platforms: ids }
+    return { changed: prepared.length > 0, manifest, platforms: ids, pending }
   } catch (error) {
     primaryError = error
     throw error
@@ -547,7 +596,9 @@ async function main() {
   const platforms = parsePlatforms(args[0]?.slice('--platforms='.length) ?? process.env.CHATGPT_SYNC_PLATFORMS)
   const config = common.readCosConfiguration(process.env)
   const result = await synchronizeOfficialChatgpt({ store: createOfficialCosStore(common, config), platforms, dependencies: createRuntimeDependencies(common), progress: function (event) { console.log(`[chatgpt-sync] ${JSON.stringify(event)}`) } })
-  console.log(JSON.stringify({ changed: result.changed, platforms: result.platforms, windowsVersion: result.manifest.windows?.buildVersion ?? null }))
+  // 作业是绿的，在运行页上标一句它是在等包，不是同步好了。
+  for (const id of result.pending) console.log(`::notice title=等官方换包::${id} 的官方更新清单已换新版，可下载的安装包还是上一版，桶里留着上一版，下次同步再看`)
+  console.log(JSON.stringify({ changed: result.changed, platforms: result.platforms, pending: result.pending, windowsVersion: result.manifest.windows?.buildVersion ?? null }))
 }
 
 if (require.main === module) {
@@ -557,4 +608,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE, DEFAULT_PLATFORMS, MAX_PACKAGE_BYTES, MAX_LICENSE_BYTES, LATEST_KEY, MULTIPART_DEADLINE_MS, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, parseWindowsVersion, compareWindowsVersions, validateWindowsMetadata, validateHead, sameFingerprint, artifactKey, parseMacAppcast, validatePreviousManifest, validateWindowsInspection, validateLicenseInspection, sanitizedWindowsEnvironment, inspectWindowsFile, validatePackageMagic, validateDownloaded, synchronizeOfficialChatgpt, createRuntimeDependencies, createOfficialCosStore, safeOfficialSyncFailure }
+module.exports = { OFFICIAL_HOST, WINDOWS_METADATA_URL, WINDOWS_PUBLISHER, SOURCES, LICENSE_SOURCE, DEFAULT_PLATFORMS, MAX_PACKAGE_BYTES, MAX_LICENSE_BYTES, LATEST_KEY, MULTIPART_DEADLINE_MS, PACKAGE_PENDING_MAXIMUM_MS, WINDOWS_INSPECTION_SCRIPT, parsePlatforms, parseWindowsVersion, compareWindowsVersions, validateWindowsMetadata, validateHead, sameFingerprint, artifactKey, parseMacAppcast, validatePreviousManifest, validateWindowsInspection, isOlderOfficialWindowsPackage, canWaitForOfficialPackage, validateLicenseInspection, sanitizedWindowsEnvironment, inspectWindowsFile, validatePackageMagic, validateDownloaded, synchronizeOfficialChatgpt, createRuntimeDependencies, createOfficialCosStore, safeOfficialSyncFailure }
