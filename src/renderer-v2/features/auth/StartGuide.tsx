@@ -5,9 +5,9 @@ import { BrandIcon, Button, Dialog, Pill, Progress, useToast } from '../../ui'
 import { guideRecommendedTool, guideRecommendedToolFor, officialAccountNames, officialAccountNotes, tools as toolRegistry, type ToolDef } from '../../registry/tools'
 import { FirstRunSteps } from '../tools/FirstRun'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
-import { matchNetworkFailureMessage } from '../../../../electron/network-failure'
+import { matchNetworkFailureMessage, officialRegistryUnreachableMarker } from '../../../../electron/network-failure'
 import { configLinkRefusalIn } from '../../../../electron/config-link-refusal'
-import { classifyOperationError, operationTargetOf, presentOperationError, type OperationAction, type OperationActionId } from '../../operation-error'
+import { classifyOperationError, operationTargetOf, presentOperationError, type OperationAction, type OperationActionId, type OperationErrorKey } from '../../operation-error'
 import { speaksChinese, supportDetailOf, userFacingErrorMessage } from '../../business-common'
 import { useLatestRequest } from '../../latest-request'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
@@ -141,6 +141,30 @@ function elevationNextStep(key: string, message: string): string {
 }
 
 /**
+ * 装之前到 npm 官方源核对清单那一步没连上（#1057 第5b条）：开加速还是换个网络，主进程按平台写在那句的最后。
+ * 认出原因以后原话折起来，客户看不到这一句，和授权那句一样接在红字里（主路卡点 F12）。
+ */
+function officialRegistryNextStep(key: string, message: string): string {
+  if (key !== 'officialRegistryUnreachable') return ''
+  const rest = message.slice(message.indexOf(officialRegistryUnreachableMarker))
+  const next = /^[^。]*。(.+)$/.exec(rest)?.[1].trim() ?? ''
+  return !next || /[。！？]$/.test(next) ? next : `${next}。`
+}
+
+/**
+ * 网络那几类（证书日期对不上、证书被换、连不上下载源），主进程那句只说原因，下一步交给错误目录
+ *（npm-failure-reasons.ts 里这几类的 nextStep 是 null）。引导以前只拿标题放进括号，再叫人点「再试一次」：
+ * 证书被换的那种重试只会撞同一个错，目录里「换个网络（比如手机热点）」那句客户看不到（主路卡点 F12）。
+ * 目录正文说的是错误框的「重试」，引导里这颗按钮叫「再试一次」；正文已经说到怎么重试、还不行怎么办，
+ * 后面不再接那句通用的。
+ */
+const installNetworkFailureKeys = new Set<string>(['certDate', 'tlsIntercepted', 'downloadUnreachable'])
+
+function installNetworkNextStep(key: OperationErrorKey): string {
+  return installNetworkFailureKeys.has(key) ? errors[key].body.replace(/「重试」/g, '「再试一次」') : ''
+}
+
+/**
  * 引导红字的三样东西，和错误框一个规矩（#670）：上屏那句、认出来的原因（认不出为空）、
  * 给客服看的原话（脱路径、打码，和上屏那句一样时不留）。
  */
@@ -183,7 +207,8 @@ export function guideInstallFailure(error: unknown, name: string, canReplaceNode
   const detail = guideDetail(error, '')
   const why = reason ? `（${reason}）` : detail ? unrecognized : ''
   const what = /运行环境没装上/.test(message) ? `运行环境没装上${why}，${name} 还没开始装` : `${name} 没装上${why}`
-  return { message: `${what}。${elevationNextStep(key, message)}${guideFailureTail(!reason && Boolean(detail), copyable)}`, reason, detail }
+  const tail = installNetworkNextStep(key) || guideFailureTail(!reason && Boolean(detail), copyable)
+  return { message: `${what}。${elevationNextStep(key, message)}${officialRegistryNextStep(key, message)}${tail}`, reason, detail }
 }
 
 /**
