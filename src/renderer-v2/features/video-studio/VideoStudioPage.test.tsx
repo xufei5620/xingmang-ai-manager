@@ -18,6 +18,7 @@ const bridge: VideoStudioBridge = {
   storeVideoStudioExport: unused,
   openAiVideo: unused,
   saveAiVideo: unused,
+  openDiagnosticFolder: unused,
 }
 
 function clip(letter: string): AiVideoClip {
@@ -86,7 +87,7 @@ describe('VideoStudioPage', () => {
     expect(markup).not.toContain('data-testid="video-result"')
   })
 
-  it('shows the joined film with open and save once every clip is there', () => {
+  it('shows the joined film with open, save and open folder once every clip is there', () => {
     const project = plannedProject()
     const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('ab'[index]), status: 'done' })), exported: clip('z') }
     const markup = render('ready', done)
@@ -95,6 +96,7 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('data-testid="video-result"')
     expect(markup).toContain('data-testid="video-result-open"')
     expect(markup).toContain('data-testid="video-result-save"')
+    expect(markup).toMatch(/data-testid="video-result-folder"[^>]*>[^]*?打开文件夹/)
     expect(markup).toContain('12 秒 · 720 × 1280')
   })
 })

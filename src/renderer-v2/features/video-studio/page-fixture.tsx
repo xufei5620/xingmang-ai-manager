@@ -25,6 +25,7 @@ const clips = new Map<string, { input: AiVideoGenerateInput, resolve: (clip: AiV
 const library = new Map<string, ArrayBuffer>()
 let exported: ArrayBuffer | null = null
 let assetCounter = 0
+let folderOpens = true
 const groups = [{ name: 'GPT', description: '聊天', ratio: 1, recommended: true }, { name: '图片模型', description: '图片和视频', ratio: 1 }]
 const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
@@ -64,6 +65,7 @@ const bridge: VideoStudioBridge = {
   },
   openAiVideo: async (assetId) => { record('open', assetId) },
   saveAiVideo: async (assetId) => { record('save', assetId); return { saved: true } },
+  openDiagnosticFolder: async (target) => { record('folder', target); return folderOpens },
 }
 
 async function finishClip(requestId: string, color: string) {
@@ -89,6 +91,7 @@ declare global {
       progress(event: AiVideoProgressEvent): void
       exported(): ArrayBuffer | null
       forget(assetId: string): void
+      folderOpens(value: boolean): void
     }
   }
 }
@@ -103,6 +106,7 @@ window.videoStudioPage = {
   progress: (event) => { for (const listener of listeners) listener(event) },
   exported: () => exported,
   forget: (assetId) => { library.delete(assetId) },
+  folderOpens: (value) => { folderOpens = value },
 }
 
 const access = query.get('access') === 'guest' ? 'guest' : query.get('access') === 'unsupported' ? 'unsupported' : 'ready'
