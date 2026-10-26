@@ -185,6 +185,25 @@ describe('usage stats reporter', () => {
     expect(pathOf(fetch.calls[0]).endsWith('/h-0')).toBe(true)
   })
 
+  it('removes what was kept as soon as the switch is turned off, without waiting for the timer', async () => {
+    let enabled = true
+    const fetch = fakeFetch()
+    const { reporter, filePath } = reporterWith({ fetchImpl: fetch.fetchImpl, isEnabled: () => enabled })
+    reporter.record({ kind: 'hang', hang: 'stall' })
+    await reporter.idle()
+    expect(fs.existsSync(filePath)).toBe(true)
+
+    enabled = false
+    await reporter.discard()
+    expect(fs.existsSync(filePath)).toBe(false)
+    expect(fetch.calls).toHaveLength(0)
+
+    // Turned back on before the next check: the stall from before is not sent.
+    enabled = true
+    await expect(reporter.runOnce()).resolves.toBe('sent')
+    expect(pathOf(fetch.calls[0]).endsWith('/h-0')).toBe(true)
+  })
+
   it('does not send when the switch is turned off while the snapshot is being read', async () => {
     let enabled = true
     const fetch = fakeFetch()
