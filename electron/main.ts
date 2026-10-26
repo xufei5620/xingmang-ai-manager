@@ -1470,6 +1470,7 @@ if (!hasSingleInstanceLock) {
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     let launchInstallTried = false
     // Windows 上开机自启、窗口没打开过、开机时没装的那一版（'window'）：等第一次打开窗口再装。
+    // 电脑闲下来时跳框先问了的，就撤下（withdrawLaunchInstall）。
     let launchInstallAwaitingWindow: string | null = null
     const startLaunchInstall = (version: string, mode: Exclude<LaunchInstallMode, 'skip'>) => {
       const background = mode === 'background'
@@ -1557,6 +1558,15 @@ if (!hasSingleInstanceLock) {
         return
       }
       startLaunchInstall(version, mode)
+    }
+    // 跳框问过了就不再走打开时装（update-install-prompt.ts，#1410）：等着开窗口的那一版，跳框叫出
+    // 窗口时别再预告装一遍；两分钟里还没轮到的，也别在客户回答前后自己装起来。点了「稍后再说」的
+    // 照框里说的，退出或下次打开时装。
+    const withdrawLaunchInstall = () => {
+      const awaiting = launchInstallAwaitingWindow
+      launchInstallTried = true
+      launchInstallAwaitingWindow = null
+      if (awaiting) runtimeLog.log('info', 'updater', 'install.on-launch.withdrawn', `开机时留着等开窗口的 ${awaiting} 交给跳框问了，第一次打开窗口时不再预告装`)
     }
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
       const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
@@ -2259,7 +2269,6 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       getState: () => updaterService.getState(),
       autoUpdate: () => updaterService.autoUpdateEnabled(),
-      downloadedAtLaunch: pendingUpdateAtLaunch.downloadedVersion,
       standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
       unattended: () => canInstallUnattended({
         platform: process.platform,
@@ -2277,6 +2286,8 @@ if (!hasSingleInstanceLock) {
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'
+        // 先撤，再叫出窗口：窗口第一次显示时会把等着开窗口的那一版交给打开时装。
+        withdrawLaunchInstall()
         // 挂在隐藏窗口上的框用户看不见：窗口缩着时先叫出来，点了「稍后再说」再照原样缩回去。
         const wasMinimized = mainWindow.isMinimized()
         const wasHidden = !wasMinimized && !mainWindow.isVisible()
