@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, type StoredAiVideoTask } from './ai-video-task-store'
+import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_FINISHED_VIDEO_TASKS, type StoredAiVideoTask } from './ai-video-task-store'
 
 const roots: string[] = []
 
@@ -170,5 +170,58 @@ describe('AiVideoTaskStore', () => {
     await store.commitReservation(reservationId, task('video-reserved'))
     expect(await store.list(7)).toHaveLength(200)
     await expect(store.releaseReservation(7, reservationId)).resolves.toBeUndefined()
+  })
+
+  // 视频剪辑页关掉软件再打开时，按请求号找回那一段（审查清单 JJ-1）。
+  it('drops a finished task and remembers which clip its request became', async () => {
+    const { root, store } = fixture()
+    await store.upsert(task('video-done'))
+    await store.upsert({ ...task('video-waiting'), requestId: 'request-2' })
+    const clip = { assetId: 'C'.repeat(43), width: 720, height: 1280, durationSeconds: 6 }
+    await store.finish(task('video-done'), clip)
+
+    const reopened = new AiVideoTaskStore({ rootDirectory: root, now: () => new Date('2026-10-26T00:00:00.000Z') })
+    expect((await reopened.list(7)).map(({ taskId }) => taskId)).toEqual(['video-waiting'])
+    await expect(reopened.findFinished(7, 'request-1')).resolves.toMatchObject({ requestId: 'request-1', taskId: 'video-done', ...clip })
+    await expect(reopened.findFinished(7, 'request-2')).resolves.toBeNull()
+    await expect(reopened.findFinished(8, 'request-1')).resolves.toBeNull()
+    await expect(reopened.findFinished(7, 'bad\u0000id')).resolves.toBeNull()
+    const content = fs.readFileSync(path.join(root, 'user-7', 'video-tasks.json'), 'utf8')
+    expect(content).not.toMatch(/apiKey|accessToken|refreshToken|https?:\/\//)
+  })
+
+  it('keeps only the newest finished requests', async () => {
+    const { store } = fixture()
+    for (let index = 0; index <= MAXIMUM_FINISHED_VIDEO_TASKS; index += 1) {
+      await store.finish({ userId: 7, taskId: `video-${index}`, requestId: `request-${index}` }, { assetId: String(index).padStart(43, 'a') })
+    }
+    await expect(store.findFinished(7, 'request-0')).resolves.toBeNull()
+    await expect(store.findFinished(7, 'request-1')).resolves.toMatchObject({ taskId: 'video-1' })
+    await expect(store.findFinished(7, `request-${MAXIMUM_FINISHED_VIDEO_TASKS}`)).resolves.toMatchObject({ taskId: `video-${MAXIMUM_FINISHED_VIDEO_TASKS}` })
+  })
+
+  it('drops a damaged finished entry on its own without losing the tasks still waiting', async () => {
+    const { root, store } = fixture()
+    await store.upsert(task('video-waiting'))
+    await store.finish({ userId: 7, taskId: 'video-done', requestId: 'request-done' }, { assetId: 'C'.repeat(43) })
+    const filePath = path.join(root, 'user-7', 'video-tasks.json')
+    const state = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { finished: Record<string, unknown>[] }
+    state.finished.push({ ...state.finished[0], requestId: 'request-bad', assetId: '../escape' })
+    state.finished.push({ ...state.finished[0], requestId: 'https://evil.example/relay' })
+    fs.writeFileSync(filePath, `${JSON.stringify(state)}\n`, 'utf8')
+
+    const reopened = new AiVideoTaskStore({ rootDirectory: root })
+    expect((await reopened.list(7)).map(({ taskId }) => taskId)).toEqual(['video-waiting'])
+    await expect(reopened.findFinished(7, 'request-done')).resolves.toMatchObject({ assetId: 'C'.repeat(43) })
+    await expect(reopened.findFinished(7, 'request-bad')).resolves.toBeNull()
+    await expect(reopened.findFinished(7, 'https://evil.example/relay')).resolves.toBeNull()
+    expect(fs.readdirSync(path.dirname(filePath)).some((entry) => entry.includes('.corrupt-'))).toBe(false)
+  })
+
+  it('writes no finished list until there is one, so the file stays what older builds wrote', async () => {
+    const { root, store } = fixture()
+    await store.upsert(task())
+    const state = JSON.parse(fs.readFileSync(path.join(root, 'user-7', 'video-tasks.json'), 'utf8')) as Record<string, unknown>
+    expect(Object.keys(state).sort()).toEqual(['tasks', 'userId', 'version'])
   })
 })

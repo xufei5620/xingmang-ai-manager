@@ -17,6 +17,7 @@ export const remoteMessages = {
   idleClosed: '4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   codexUnavailable: '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。',
+  staleApprovalCard: '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。',
 } as const
 
 export function turnFailedMessage(reason: string): string {

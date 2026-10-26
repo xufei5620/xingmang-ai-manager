@@ -26,6 +26,7 @@ import {
   splitManagedCommand,
   type CliHookInvocation,
 } from './cli-hooks'
+import { classifyRelayQuotaFailure } from './relay-quota-failure'
 
 const temporaryDirectories: string[] = []
 const bundledScript = path.resolve(__dirname, '..', 'bundled-catalog', 'cli-hooks', CLI_HOOK_SCRIPT_NAME)
@@ -360,6 +361,51 @@ describe('bundled hook script', () => {
     expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'Notification', notification_type: 'auth_success' }), 1)).toBeNull()
     expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 's', reason: 'exit' }), 1)).toEqual({ version: 1, tool: 'claude', event: 'ended', session: 's', at: 1 })
     expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: '../x' }), 1)).toMatchObject({ event: 'started', session: '' })
+  })
+
+  it('reports an empty wallet as billing even when Claude Code calls it an authentication failure', () => {
+    // StopFailure payload from Claude Code 2.1.310 against a local fake relay answering like
+    // new-api with an empty wallet (403 insufficient_user_quota).
+    const payload = {
+      session_id: '8d765e10-68ae-5f5d-acb0-b43a8ca088f8',
+      cwd: '/work',
+      prompt_id: '0f9070d9-a289-4e2f-863a-e508778f99c2',
+      hook_event_name: 'StopFailure',
+      error: 'authentication_failed',
+      last_assistant_message: 'API Error: 403 用户额度不足, 剩余额度: ＄0.000000 (request id: r1)',
+    }
+    const entry = buildRecord('claude', JSON.stringify(payload), 7)
+    expect(entry).toEqual({ version: 1, tool: 'claude', event: 'failed', reason: 'billing', session: payload.session_id, at: 7 })
+    // Only the category word leaves the script, never the relay's wording.
+    expect(JSON.stringify(entry)).not.toContain('额度')
+    expect(buildRecord('claude', JSON.stringify({ ...payload, error: 'unknown' }), 7)?.reason).toBe('billing')
+    expect(buildRecord('claude', JSON.stringify({ hook_event_name: 'StopFailure', error: 'authentication_failed', error_details: '403 {"error":{"code":"insufficient_user_quota"}}' }), 7)?.reason).toBe('billing')
+    expect(buildRecord('grok', JSON.stringify({ ...payload, promptId: 'p1' }), 7)).toMatchObject({ reason: 'billing', turn: 'p1' })
+  })
+
+  it('recognises the same empty-wallet wording as the in-app classifier and nothing broader', () => {
+    const failure = (text: string, error = 'authentication_failed') =>
+      buildRecord('claude', JSON.stringify({ hook_event_name: 'StopFailure', error, last_assistant_message: `API Error: 403 ${text}` }), 1)?.reason
+    const balance = [
+      '用户额度不足, 剩余额度: ＄0.000000',
+      '预扣费额度失败, 用户剩余额度: ＄0.01, 需要预扣费额度: ＄0.02',
+      '订阅额度不足或未配置订阅: 无可用订阅',
+      'insufficient_user_quota',
+      'user quota is not enough',
+      'INSUFFICIENT_BALANCE Insufficient account balance',
+    ]
+    for (const text of balance) {
+      expect(classifyRelayQuotaFailure(403, text)).toBe('balance')
+      expect(failure(text)).toBe('billing')
+    }
+    // A dead key or a key's own spending cap is not fixed by topping up the wallet.
+    for (const text of ['无效的令牌', 'token quota is not enough, token remain quota: ＄0.01', 'insufficient_quota']) {
+      expect(classifyRelayQuotaFailure(403, text)).not.toBe('balance')
+      expect(failure(text)).toBe('auth')
+    }
+    // Categories Claude Code already gets right stay as they are.
+    expect(failure('用户额度不足', 'rate_limit')).toBe('busy')
+    expect(failure('用户额度不足', 'server_error')).toBe('service')
   })
 
   it('maps Gemini events and ignores unknown tools or malformed input', () => {

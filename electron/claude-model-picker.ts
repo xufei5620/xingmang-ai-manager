@@ -1,5 +1,7 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
+import { resolveClaudeFallbackModels } from './cli-model-defaults'
+
 // Claude Code 的 /model 菜单写死了官方阵容：Default（Opus 5 · 1M 上下文）、Opus、Fable、
 // Sonnet、Haiku……每一行还标着官方美元单价。接中转后这份菜单与当前账号实际能用的模型对不上：
 // 选到分组里没有的型号就是一句「无可用渠道」，看到的价格也不是中转的计费。
@@ -100,13 +102,37 @@ export function applyClaudeRelayModelPicker(
   currentModel: string,
 ): void {
   env.ANTHROPIC_DEFAULT_MODEL = currentModel
+  applyClaudeRelayFallbackModels(parsed, availableModels, currentModel)
   const picker = buildClaudeRelayModelPicker(availableModels, currentModel)
   if (!picker) return
   if (parsed.modelPicker !== undefined && !isManagedClaudeModelPicker(parsed.modelPicker)) return
   parsed.modelPicker = picker
 }
 
-/** 切回官方 Claude 账号：官方菜单才是对的，收回本软件写的菜单与 Default 指向。 */
+// 本软件从不写空数组，空的就是客户自己写的。
+function sameModelList(value: unknown, models: readonly string[]): boolean {
+  return models.length > 0 && Array.isArray(value) && value.length === models.length && value.every((model, index) => model === models[index])
+}
+
+/**
+ * 备用型号（fallbackModel，挑法见 cli-model-defaults.ts 的 resolveClaudeFallbackModels）。和菜单一样只在
+ * 「没写过」或「是本软件照这份型号清单给配置里原来那个型号写的」时改：在配置窗口换了型号，备用跟着换；客户
+ * 自己写的一个字不动。一个都挑不到就不写，原来本软件写的那份收回。parsed.model 这时还是原来的型号（合并时
+ * 最后才改它）。
+ */
+function applyClaudeRelayFallbackModels(parsed: Record<string, unknown>, availableModels: readonly string[], currentModel: string): void {
+  const previousModel = typeof parsed.model === 'string' ? parsed.model : currentModel
+  if (parsed.fallbackModel !== undefined
+    && !sameModelList(parsed.fallbackModel, resolveClaudeFallbackModels(availableModels, previousModel))) return
+  const fallbackModel = resolveClaudeFallbackModels(availableModels, currentModel)
+  if (fallbackModel.length) parsed.fallbackModel = fallbackModel
+  else delete parsed.fallbackModel
+}
+
+/**
+ * 切回官方 Claude 账号：官方菜单才是对的，收回本软件写的菜单与 Default 指向。备用型号留着：没有型号清单
+ * 认不出是不是本软件写的，而里面是官方型号名，官方账号主型号忙不过来时照样换着用。
+ */
 export function removeClaudeRelayModelPicker(parsed: Record<string, unknown>, env: Record<string, unknown> | null): void {
   if (isManagedClaudeModelPicker(parsed.modelPicker)) delete parsed.modelPicker
   if (env) delete env.ANTHROPIC_DEFAULT_MODEL
@@ -116,6 +142,7 @@ export function removeClaudeRelayModelPicker(parsed: Record<string, unknown>, en
 export interface ClaudeModelPickerUpdates {
   defaultModel?: string
   modelPicker?: ClaudeModelPickerSetting
+  fallbackModel?: string[]
 }
 
 /**
@@ -125,6 +152,8 @@ export interface ClaudeModelPickerUpdates {
  * - Default 指向只在没写时补成当前型号（老版本写的配置没有这一项）。写了别的型号就是客户
  *   自己指的，或者客户用 /model 换了型号，都不跟着改，同开机换下架型号那条（#1154 第 4 条）。
  * - 本软件管的菜单（没写过也算）和新生成的对不上就换成新的。用户自己写的菜单照旧不认。
+ * - 备用型号只在没写时补（老版本写的配置没有这一项）。写了的不管是谁写的都不动：分辨不出是客户自己写的，
+ *   还是本软件照老清单写的；老清单里的型号下架了，Claude Code 试它回「无可用渠道」就接着试下一个。
  */
 export function claudeRelayModelPickerUpdates(
   parsed: Record<string, unknown>,
@@ -137,6 +166,10 @@ export function claudeRelayModelPickerUpdates(
   const updates: ClaudeModelPickerUpdates = {}
   const defaultModel = env?.ANTHROPIC_DEFAULT_MODEL
   if (defaultModel === undefined || (typeof defaultModel === 'string' && !defaultModel.trim())) updates.defaultModel = currentModel
+  if (parsed.fallbackModel === undefined) {
+    const fallbackModel = resolveClaudeFallbackModels(availableModels, currentModel)
+    if (fallbackModel.length) updates.fallbackModel = fallbackModel
+  }
   const picker = buildClaudeRelayModelPicker(availableModels, currentModel)
   if (picker && (parsed.modelPicker === undefined || isManagedClaudeModelPicker(parsed.modelPicker))
     && JSON.stringify(parsed.modelPicker) !== JSON.stringify(picker)) {
@@ -152,5 +185,5 @@ export function claudeRelayModelPickerOutdated(
   currentModel: string,
 ): boolean {
   const updates = claudeRelayModelPickerUpdates(parsed, availableModels, currentModel)
-  return updates.defaultModel !== undefined || updates.modelPicker !== undefined
+  return updates.defaultModel !== undefined || updates.modelPicker !== undefined || updates.fallbackModel !== undefined
 }

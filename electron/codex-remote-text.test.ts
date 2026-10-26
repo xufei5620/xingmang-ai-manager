@@ -69,8 +69,9 @@ describe('codex-remote-text', () => {
   })
 
   it('formats approvals with the reply words and an optional cwd', () => {
-    const text = formatApprovalText({ approvalId: '2', kind: 'command', summary: 'npm test', cwd: '~/project' })
+    const text = formatApprovalText({ approvalId: '2', nonce: 'nonce-of-two', kind: 'command', summary: 'npm test', cwd: '~/project' })
     expect(text).toContain('Codex 想运行命令（第 2 条）')
+    expect(text).not.toContain('nonce-of-two')
     expect(text).toContain('npm test')
     expect(text).toContain('在：~/project')
     expect(text).toContain('回「同意 2」或「拒绝 2」')

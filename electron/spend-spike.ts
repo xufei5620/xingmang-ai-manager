@@ -1,10 +1,11 @@
-import { readLocalPreference, writeLocalPreference } from './preferences'
-import { backgroundRefreshInterval } from './balance-store'
-
 /**
  * 「花费突然变多」提醒（第十五批 7）。不另起定时器，也不另拉余额：余额本来就在
- * 按时刷新（balance-store.ts），这里只把每次读成功的钱包余额记下来，算过去一小时
- * 少了多少。掉得够多了才去读一次用量核账，确认是真花掉的、而且远超平时才提醒。
+ * 按时刷新，这里只把每次读成功的钱包余额记下来，算过去一小时少了多少。掉得够多了
+ * 才去读一次用量核账，确认是真花掉的、而且远超平时才提醒。
+ *
+ * 原先在界面里（renderer-v2 的 features/app），缩到托盘久了界面会被关掉省内存
+ * （renderer-release.ts），提醒却恰恰要在那时候发，所以挪到主进程：界面开着时它读
+ * 余额走 account:get-balance，主进程照样看得到；界面关着时由主进程自己按时读。
  *
  * 阈值先写死，设置里只有开关（notifications.spend），不给调数字。
  */
@@ -12,14 +13,15 @@ export const spendSpikeWindow = 60 * 60_000
 export const spendSpikeMinimumDollars = 5
 export const spendSpikeRatio = 5
 export const spendSpikeQuietPeriod = 6 * 60 * 60_000
-// 后台每 10 分钟读一次；两次读成功隔得比这还久，说明中间读失败过、电脑睡过或者
-// 软件关过，那一段少掉的钱算不清是什么时候花的，不算。
-export const spendSampleMaxGap = backgroundRefreshInterval + 5 * 60_000
+// 窗口在后台时界面每 10 分钟读一次余额（balance-store.ts），界面关着时主进程也是这个节奏。
+export const backgroundBalanceInterval = 10 * 60_000
+// 两次读成功隔得比这还久，说明中间读失败过、电脑睡过或者软件关过，那一段少掉的钱
+// 算不清是什么时候花的，不算。
+export const spendSampleMaxGap = backgroundBalanceInterval + 5 * 60_000
 // 余额掉够了但核账说不算（买了订阅、平时就用得多）或者用量没读到时，隔一会儿再核，
 // 免得前台每分钟一刷就跟着读一次用量。
 const baselineReuse = 15 * 60_000
 const hoursInWeek = 7 * 24
-const storageKey = 'xingmang-v2-spend-spike-notified'
 
 export interface BalanceSample {
   at: number
@@ -75,33 +77,17 @@ export function evaluateSpendSpike(input: { walletSpent: number; baseline: Spend
   }
 }
 
-export function readSpendSpikeNotifiedAt(account: string): number | null {
-  const stored = readLocalPreference(storageKey)
-  if (!stored) return null
-  try {
-    const parsed: unknown = JSON.parse(stored)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    const value = (parsed as Record<string, unknown>)[account]
-    return typeof value === 'number' && Number.isFinite(value) ? value : null
-  } catch {
-    return null
+/**
+ * 只留还在安静期里的那几条：早就过了的没用了，顺手丢掉，免得换过很多账号后越记越长。
+ * 读回来的东西一律当外来数据过一遍。
+ */
+export function pruneSpendSpikeRecord(record: unknown, at: number): Record<string, number> {
+  const kept: Record<string, number> = {}
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return kept
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === 'number' && Number.isFinite(value) && at - value < spendSpikeQuietPeriod) kept[key] = value
   }
-}
-
-export function rememberSpendSpikeNotifiedAt(account: string, at: number): boolean {
-  let current: Record<string, number> = {}
-  try {
-    const parsed: unknown = JSON.parse(readLocalPreference(storageKey) ?? '{}')
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      for (const [key, value] of Object.entries(parsed)) {
-        // 早就过了安静期的记录没用了，顺手丢掉，免得换过很多账号后越记越长。
-        if (typeof value === 'number' && at - value < spendSpikeQuietPeriod) current[key] = value
-      }
-    }
-  } catch {
-    current = {}
-  }
-  return writeLocalPreference(storageKey, JSON.stringify({ ...current, [account]: at }))
+  return kept
 }
 
 export interface SpendSpikeObservation {
@@ -121,19 +107,22 @@ export interface SpendSpikeWatch {
 export function createSpendSpikeWatch(options: {
   readBaseline: () => Promise<SpendBaseline>
   notify: (eventKey: string, notice: SpendSpikeNotice) => void
-  readNotifiedAt?: (account: string) => number | null
-  rememberNotifiedAt?: (account: string, at: number) => void
+  /** 这个账号上次提醒是什么时候（6 小时安静期按它算），没提醒过为 null。 */
+  readNotifiedAt: (account: string) => number | null | Promise<number | null>
+  rememberNotifiedAt: (account: string, at: number) => void | Promise<void>
 }): SpendSpikeWatch {
-  const readNotifiedAt = options.readNotifiedAt ?? readSpendSpikeNotifiedAt
-  const rememberNotifiedAt = options.rememberNotifiedAt ?? rememberSpendSpikeNotifiedAt
+  const { readNotifiedAt, rememberNotifiedAt } = options
   let scope: string | null = null
   let samples: BalanceSample[] = []
   let checkedAt: number | null = null
   let checking = false
 
-  function quiet(account: string, at: number) {
-    const last = readNotifiedAt(account)
-    return last !== null && at - last >= 0 && at - last < spendSpikeQuietPeriod
+  // 记录读得出来就当场判断，不多等一拍：同步的记录（测试、已经读进内存的）照旧当场去核账。
+  function quiet(account: string, at: number): boolean | Promise<boolean> {
+    const judge = (last: number | null) => last !== null && at - last >= 0 && at - last < spendSpikeQuietPeriod
+    let last: number | null | Promise<number | null>
+    try { last = readNotifiedAt(account) } catch { return false }
+    return last instanceof Promise ? last.then(judge, () => false) : judge(last)
   }
 
   return {
@@ -146,18 +135,21 @@ export function createSpendSpikeWatch(options: {
       samples = recordBalanceSample(samples, { at: observation.at, quota: observation.quota })
       const spent = walletSpent(samples)
       if (!(observation.quotaPerUnit > 0) || spent / observation.quotaPerUnit < spendSpikeMinimumDollars) return
-      if (checking || quiet(observation.account, observation.at)) return
+      if (checking) return
       if (checkedAt !== null && observation.at - checkedAt >= 0 && observation.at - checkedAt < baselineReuse) return
       checking = true
       const requestScope = scope
       try {
+        const silenced = quiet(observation.account, observation.at)
+        if (typeof silenced === 'boolean' ? silenced : await silenced) return
         const baseline = await options.readBaseline().catch(() => null)
         if (requestScope !== scope) return
         checkedAt = observation.at
         if (!baseline) return
         const notice = evaluateSpendSpike({ walletSpent: spent, baseline, quotaPerUnit: observation.quotaPerUnit })
         if (!notice) return
-        rememberNotifiedAt(observation.account, observation.at)
+        // 记不下来也照样提醒：最多 6 小时里多说一次，不能因此一次都不说。
+        await Promise.resolve().then(() => rememberNotifiedAt(observation.account, observation.at)).catch(() => undefined)
         options.notify(`spend:${observation.account.replace(/[^A-Za-z0-9._-]/g, '-')}:${observation.at}`, notice)
       } finally {
         checking = false

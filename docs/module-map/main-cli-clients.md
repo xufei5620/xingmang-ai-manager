@@ -50,6 +50,7 @@
 - `cli-hook-events.ts` — 读钩子脚本丢进数据目录的小文件，决定弹不弹「终端里没回上 / 做完了 / 在等你」的系统通知；那个目录用户可写，文件一律当敌意输入：固定文件名格式、单链接有界读取（I8）、字段白名单重建（I5），文件里的字一个都不进通知
 - `cli-keep-awake.ts` — 终端里 Claude Code / Gemini / Grok 正在跑一轮时挡住系统自动睡眠，做完、出错、退出就放开，最多挡两小时；信号就是上面那套钩子记录。Codex 用它自己的防睡开关，不走这里
 - `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
+- `editor-claude-login-prompt.ts` — VS Code、Cursor 用户设置里的 `claudeCode.disableLoginPrompt`：写 Claude Code 配置时、开机补设置那一轮顺手补上，编辑器里的 Claude Code 插件就不再先要登录 Anthropic 账号；编辑器没打开过不建，客户写过的不动，设置文件按 JSONC 原样只插这一行，经 `config-files.ts` 同一套两阶段提交写入（I8、I9）
 - `claude-model-picker.ts` — Claude Code 的 `/model` 菜单：接当前账号时按 Key 实际可用的模型生成 `modelPicker` 与 `ANTHROPIC_DEFAULT_MODEL`，认得出本软件写的菜单，切回官方时收回
 - `codex-model-catalog.ts` — Codex（命令行与桌面端共用）的型号名单：随包官方名单（`bundled-catalog/codex-models`，按 sha256 钉住）按账号挑出能用的型号，写成 `CODEX_HOME/xingmang-models.json` 并在 `config.toml` 顶层指向它；这个文件坏了命令行起不来，所以本机命令行或桌面端太旧、默认型号不在名单里就不写，写了的收回
 - `tool-model-check.ts` — 打开工具前每天核一次账号能用的型号：默认型号下架了交给界面问，Claude Code 菜单与 Codex 型号名单悄悄刷新；两站都下架的型号开机那轮直接换掉；核对失败绝不挡打开
@@ -92,8 +93,8 @@
 - `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
 - `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
 - `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
-- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
-- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限
+- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限
 - `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
 - `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试
 - `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；登录过期（-14、401/403）报「要重新登录」不再重试

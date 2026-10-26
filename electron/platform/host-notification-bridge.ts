@@ -1,4 +1,4 @@
-import type { PlatformNotificationResult } from './contract'
+import type { PlatformActivityDetail, PlatformActivityKind, PlatformNotificationResult } from './contract'
 import type {
   PlatformHostNotification,
   TerminalNotice,
@@ -27,8 +27,18 @@ export interface TerminalNotificationRequest {
   eventKey: string
 }
 
+/**
+ * 渲染层也能请求的那几类活动通知，由主进程替它发：余额跌破 5 美元、花费突然变多改由
+ * 主进程判断（balance-alerts.ts），界面缩到托盘被关掉时也照样提醒。文案与去处同渲染层那条。
+ */
+export interface ActivityNotificationRequest {
+  activity: PlatformActivityKind
+  eventKey: string
+  detail?: PlatformActivityDetail
+}
+
 export type HostNotificationRequest =
-  HostEventNotificationRequest | TerminalNotificationRequest
+  HostEventNotificationRequest | TerminalNotificationRequest | ActivityNotificationRequest
 
 export type HostNotifier = (
   request: HostNotificationRequest,
