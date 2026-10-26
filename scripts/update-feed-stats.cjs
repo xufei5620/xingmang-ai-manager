@@ -1215,8 +1215,8 @@ function renderUsageScope(usage) {
     '### 打卡的口径',
     '',
     '- 只有 0.2.22 起、开着这一项、这天开过星芒的电脑。0.2.21 及更早的不发，亲手关掉的不发，所以和上面按状态文件数的不是同一批电脑，不能直接比。',
-    '- 先发到 updatesnew.shenfengwl.fun，连不上才发洛杉矶那份（xm-direct.solov.cc），那份转过来的也记在这里（推测，测试包核过再删这句）。'
-      + '一天最多试 3 次，一直连不上的电脑那天缺一条。',
+    '- 先发到 updatesnew.shenfengwl.fun，连不上才发洛杉矶那份（xm-direct.solov.cc）。那份的 /xingmang-manager/ 是 nginx 原样转发到这里的'
+      + '（服务端 10-17 核过），所以也记在这里。一天最多试 3 次，一直连不上的电脑那天缺一条。',
     '- 只有打包好的正式版发，开发版、自己编的版本和 GitHub Actions 里真装真开的都不发。',
   ]
   if (usage.sampleInterval > 1) lines.push(`- 这段时间 Cloudflare 是抽样记的（最多每 ${Math.round(usage.sampleInterval)} 次记 1 次），每条按抽样倍数折算，比例有误差。`)

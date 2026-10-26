@@ -200,6 +200,14 @@ describe('usage stats reporter', () => {
     expect(fetch.calls).toHaveLength(0)
   })
 
+  it('records nothing once stopped for quitting', async () => {
+    const { reporter, filePath } = reporterWith({ fetchImpl: fakeFetch().fetchImpl })
+    reporter.stop()
+    reporter.record({ kind: 'hang', hang: 'unresponsive' })
+    await reporter.idle()
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
   it('refuses a relative file path', () => {
     expect(() => createUsageStatsReporter({
       filePath: 'usage-stats.json',

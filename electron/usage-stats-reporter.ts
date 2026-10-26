@@ -46,6 +46,7 @@ export type UsageStatsRunResult = 'sent' | 'skipped' | 'failed' | 'disabled'
 export interface UsageStatsReporter {
   record(event: UsageStatsEvent): void
   start(): void
+  /** 退出时调：停掉定时，之后记的一律不算。 */
   stop(): void
   /** 跑一次「今天发了没有，没发就发」。定时器调它，测试也直接调。 */
   runOnce(): Promise<UsageStatsRunResult>
@@ -131,6 +132,8 @@ export function createUsageStatsReporter(options: UsageStatsReporterOptions): Us
   let queue: Promise<unknown> = Promise.resolve()
   let timer: NodeJS.Timeout | null = null
   let running = false
+  // 退出时停下以后不再记：退出过程中各处收尾报的错不算客户碰到的。
+  let stopped = false
 
   function serial<T>(task: () => Promise<T>): Promise<T> {
     const result = queue.then(task)
@@ -167,7 +170,7 @@ export function createUsageStatsReporter(options: UsageStatsReporterOptions): Us
   }
 
   function record(event: UsageStatsEvent): void {
-    if (!options.isEnabled()) return
+    if (stopped || !options.isEnabled()) return
     void serial(async () => {
       const at = now().getTime()
       const state = withoutExpiredCounters(await load(), at)
@@ -226,12 +229,13 @@ export function createUsageStatsReporter(options: UsageStatsReporterOptions): Us
     record,
     runOnce,
     start() {
-      if (running) return
+      if (running || stopped) return
       running = true
       schedule(options.initialDelayMs ?? defaultInitialDelayMs)
     },
     stop() {
       running = false
+      stopped = true
       if (timer) clearTimeout(timer)
       timer = null
     },

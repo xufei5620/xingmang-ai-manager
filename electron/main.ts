@@ -1781,6 +1781,7 @@ if (!hasSingleInstanceLock) {
     const pauseStallMonitor = () => { mainStallMonitor.pause() }
     app.on('browser-window-focus', resumeStallMonitor)
     app.on('browser-window-blur', pauseStallMonitor)
+    // 最先停：后面那些步骤退出时报的错、窗口没响应都不算客户碰到的。
     quitCleanup.add('usage-stats', () => {
       app.off('browser-window-focus', resumeStallMonitor)
       app.off('browser-window-blur', pauseStallMonitor)

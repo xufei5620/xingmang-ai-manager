@@ -812,7 +812,7 @@ test('the check-in section reads one whole day for shares and every day for rate
 
   assert.match(section, /最多每 3 次记 1 次/)
   assert.match(section, /另有 14\.3% 的打卡地址认不出/)
-  assert.match(section, /那份转过来的也记在这里（推测/)
+  assert.match(section, /nginx 原样转发到这里的（服务端 10-17 核过），所以也记在这里/)
   // Public run pages: shares and rates only, never a count of machines or check-ins.
   assert.doesNotMatch(section, /\| (?:1|2|3|4|5|6|7) \|/)
 })
