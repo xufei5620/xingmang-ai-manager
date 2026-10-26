@@ -200,4 +200,77 @@ describe('canvas project package', () => {
     }
     expect(() => parseCanvasProjectWorkflow(JSON.stringify(document))).not.toThrow()
   })
+
+  it('accepts the node data keys the canvas kernel adds and checks their shape', () => {
+    // A rollback to this release must still open what the kernel saved (#1392).
+    const reference = { start: 0, end: 4, presetId: 'cinematic-poster', version: 2, name: '名'.repeat(160), prompt: '电影感海报' }
+    function withData(extra: Record<string, unknown>): string {
+      const document = JSON.parse(workflow())
+      document.nodes[0].data = { ...document.nodes[0].data, ...extra }
+      return JSON.stringify(document)
+    }
+    const accepted = withData({
+      dirty: true, textWebSearch: false, imageCandidateCount: 4, videoCandidateCount: 1,
+      outputText: '生成好的文案\n第二行'.repeat(1_000), promptReferences: [reference],
+    })
+    expect(parseCanvasProjectWorkflow(accepted).workflow).toMatchObject({
+      nodes: [{ data: { dirty: true, imageCandidateCount: 4, promptReferences: [reference] } }],
+    })
+
+    const rejected: Array<[Record<string, unknown>, string]> = [
+      [{ dirty: 'yes' }, '开关错误'],
+      [{ textWebSearch: 1 }, '开关错误'],
+      [{ imageCandidateCount: 5 }, '生成数量错误'],
+      [{ imageCandidateCount: 1.5 }, '生成数量错误'],
+      [{ videoCandidateCount: 0 }, '生成数量错误'],
+      [{ outputText: 'x'.repeat(32_001) }, '输出文字错误'],
+      [{ outputText: 'bad\0text' }, '输出文字错误'],
+      [{ promptReferences: { 0: reference } }, '提示词引用格式错误'],
+      [{ promptReferences: Array.from({ length: 65 }, () => reference) }, '提示词引用格式错误'],
+      [{ promptReferences: [{ ...reference, start: 5, end: 4 }] }, '提示词引用格式错误'],
+      [{ promptReferences: [{ ...reference, end: 100_001 }] }, '提示词引用格式错误'],
+      [{ promptReferences: [{ ...reference, version: 0 }] }, '提示词引用格式错误'],
+      [{ promptReferences: [{ ...reference, name: '名'.repeat(161) }] }, '提示词引用格式错误'],
+      [{ promptReferences: [{ ...reference, presetId: '' }] }, '提示词引用格式错误'],
+      [{ promptReferences: [{ ...reference, prompt: 'bad\0' }] }, '提示词引用格式错误'],
+      [{ promptReferences: [{ ...reference, apiKey: 'sk-secret' }] }, '未知或敏感字段'],
+      [{ promptReferences: [{ ...reference, url: 'https://evil.test' }] }, '未知或敏感字段'],
+    ]
+    for (const [extra, message] of rejected) {
+      expect(() => parseCanvasProjectWorkflow(withData(extra)), JSON.stringify(extra).slice(0, 80)).toThrow(message)
+    }
+  })
+
+  it('treats a note\'s own text as prose and keeps the location rule everywhere else', () => {
+    function withNode(kind: string, settings: Record<string, unknown>): string {
+      const document = JSON.parse(workflow())
+      document.nodes[0] = { id: 'note-1', kind, definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', settings } }
+      return JSON.stringify(document)
+    }
+    // What people paste on a sticky note: links, slash commands, file paths.
+    for (const text of ['https://example.com/brief', '/imagine 一只猫', 'D:\\素材\\参考.png', '\\\\server\\share', 'data:text/plain,hi', 'x'.repeat(100_000)]) {
+      expect(() => parseCanvasProjectWorkflow(withNode('note', { text, color: 'yellow' })), text.slice(0, 40)).not.toThrow()
+    }
+    expect(() => parseCanvasProjectWorkflow(withNode('note', { text: 'x'.repeat(100_001) }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('note', { text: 'bad\0text' }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('note', { text: 42 }))).toThrow('设置不安全')
+    // The same strings on any other node kind or under any other key are
+    // still locations.
+    expect(() => parseCanvasProjectWorkflow(withNode('prompt', { text: 'https://example.com/brief' }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('note', { text: '便签', source: 'https://example.com' }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('note', { text: '便签', nested: { text: 'D:\\素材' } }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('note', { text: 'x'.repeat(10_001), color: 'x'.repeat(10_001) }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('note', { text: '便签', apiKey: 'sk-secret' }))).toThrow('设置不安全')
+  })
+
+  it('accepts a mask-sized settings array and still bounds it', () => {
+    function withMask(pointCount: number): string {
+      const document = JSON.parse(workflow())
+      const points = Array.from({ length: pointCount }, (_, index) => ({ x: (index % 64) / 64, y: Math.floor(index / 64) / 64 }))
+      document.nodes[0].data.settings = { imageEditMask: { version: 1, sourceAssetId: assetId, strokes: [{ tool: 'brush', size: 0.05, points }] } }
+      return JSON.stringify(document)
+    }
+    expect(() => parseCanvasProjectWorkflow(withMask(4_096))).not.toThrow()
+    expect(() => parseCanvasProjectWorkflow(withMask(4_097))).toThrow('设置不安全')
+  })
 })

@@ -47,16 +47,57 @@ function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly str
   }
 }
 
+// An image-edit mask keeps up to 4 096 brush points in one array (xingmang-canvas
+// image-edit-mask.ts). The workflow's 20 MB ceiling still bounds the total.
+const maximumSettingsArrayLength = 4_096
+const maximumNoteTextLength = 100_000
+
 function validateSettings(value: unknown, depth = 0): boolean {
   if (depth > 8) return false
   if (typeof value === 'string') return value.length <= 10_000 && !unsafeLocation.test(value)
   if (typeof value === 'number') return Number.isFinite(value)
   if (typeof value === 'boolean' || value === null) return true
-  if (Array.isArray(value)) return value.length <= 256 && value.every((entry) => validateSettings(entry, depth + 1))
+  if (Array.isArray(value)) return value.length <= maximumSettingsArrayLength && value.every((entry) => validateSettings(entry, depth + 1))
   if (!isRecord(value) || Object.keys(value).length > 256) return false
   return Object.entries(value).every(([key, child]) => (
     key.length > 0 && key.length <= 128 && !forbiddenKey.test(key) && validateSettings(child, depth + 1)
   ))
+}
+
+/**
+ * A note's root `settings.text` is the prose the user typed on the sticky
+ * note. Nothing reads it as a path or a link (the canvas renders it as text,
+ * and opening a link still goes through the exact-href allowlist, I12), so a
+ * note that starts with a URL, "/imagine" or a drive letter is ordinary
+ * content. Only that one key is display text, exactly as the canvas kernel's
+ * own serializer treats it; every other settings string, including nested
+ * ones and the same key on any other node kind, keeps the location rule.
+ */
+function validateNodeSettings(kind: string, value: unknown): boolean {
+  if (kind !== 'note' || !isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'text')) return validateSettings(value)
+  const { text, ...rest } = value
+  return typeof text === 'string'
+    && text.length <= maximumNoteTextLength
+    && !text.includes('\0')
+    && Object.keys(value).length <= 256
+    && validateSettings(rest)
+}
+
+function validatePromptReferences(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 64) throw new Error('画布项目提示词引用格式错误')
+  for (const entry of value) {
+    if (!isRecord(entry)) throw new Error('画布项目提示词引用格式错误')
+    assertAllowedKeys(entry, ['start', 'end', 'presetId', 'version', 'name', 'prompt'], '画布项目提示词引用')
+    const { start, end, version } = entry
+    if (
+      !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || !Number.isSafeInteger(version)
+      || (start as number) < 0 || (end as number) < (start as number) || (end as number) > 100_000
+      || (version as number) < 1 || (version as number) > 10_000
+      || !safeString(entry.presetId, 256) || !safeString(entry.name, 160) || !safeString(entry.prompt, 100_000)
+    ) {
+      throw new Error('画布项目提示词引用格式错误')
+    }
+  }
 }
 
 function readAssetReference(value: unknown, assetIds: Set<string>): void {
@@ -111,8 +152,22 @@ function validateWorkflowNode(value: unknown, assetIds: Set<string>, nodeIds: Se
   // were added to the serializer without being added here, so every project
   // whose node carried either field failed to save. `latestAttemptDurationMs`
   // is accepted on old files only; the renderer no longer writes or restores it.
-  assertAllowedKeys(value.data, ['prompt', 'model', 'group', 'quality', 'size', 'imageResolution', 'seconds', 'result', 'settings', 'candidateAssetIds', 'latestAttemptDurationMs'], '画布项目节点数据')
+  // The xingmang-canvas kernel adds the last six keys (dirty … textWebSearch).
+  // They are accepted one release before the kernel ships so a rollback to
+  // that release can still open what the kernel saved (#1392).
+  assertAllowedKeys(value.data, [
+    'prompt', 'model', 'group', 'quality', 'size', 'imageResolution', 'seconds', 'result', 'settings', 'candidateAssetIds', 'latestAttemptDurationMs',
+    'dirty', 'imageCandidateCount', 'videoCandidateCount', 'outputText', 'promptReferences', 'textWebSearch',
+  ], '画布项目节点数据')
   if (!safeString(value.data.prompt, 100_000, true) || !safeString(value.data.model, 512, true)) throw new Error('画布项目节点文本错误')
+  for (const flag of [value.data.dirty, value.data.textWebSearch]) {
+    if (flag !== undefined && typeof flag !== 'boolean') throw new Error('画布项目节点开关错误')
+  }
+  for (const count of [value.data.imageCandidateCount, value.data.videoCandidateCount]) {
+    if (count !== undefined && (!Number.isSafeInteger(count) || (count as number) < 1 || (count as number) > 4)) throw new Error('画布项目节点生成数量错误')
+  }
+  if (value.data.outputText !== undefined && !safeString(value.data.outputText, 32_000, true)) throw new Error('画布项目节点输出文字错误')
+  if (value.data.promptReferences !== undefined) validatePromptReferences(value.data.promptReferences)
   for (const entry of [value.data.group, value.data.quality, value.data.size, value.data.seconds]) {
     if (entry !== undefined && !safeString(entry, 128)) throw new Error('画布项目节点选项错误')
   }
@@ -130,7 +185,7 @@ function validateWorkflowNode(value: unknown, assetIds: Set<string>, nodeIds: Se
     }
   }
   readAssetReference(value.data.result, assetIds)
-  if (value.data.settings !== undefined && !validateSettings(value.data.settings)) throw new Error('画布项目节点设置不安全')
+  if (value.data.settings !== undefined && !validateNodeSettings(value.kind as string, value.data.settings)) throw new Error('画布项目节点设置不安全')
   if (value.data.candidateAssetIds !== undefined) {
     if (!Array.isArray(value.data.candidateAssetIds) || value.data.candidateAssetIds.length > 16) throw new Error('画布项目候选资产错误')
     for (const assetId of value.data.candidateAssetIds) {

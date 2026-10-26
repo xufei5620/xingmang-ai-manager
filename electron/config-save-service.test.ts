@@ -38,8 +38,7 @@ function createService(options: SystemServiceOptions = {}) {
   const dependencies = {
     inspectCliTool: vi.fn(async () => ({ status: absent, installation: null })),
     inspectRunningTools: vi.fn(async () => ({ running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })),
-    managedKeyFollowTarget: vi.fn(async () => ({ owner: 'user-1', keys: [], cachedKeys: [] })),
-    scanExternalClients: vi.fn(async () => []),
+    followManagedKeysNow: vi.fn(async () => undefined),
     accountRouteFollowed: new Map(),
     accountRouteFaultFollowed: vi.fn(() => false),
     writeToolRouteRecord: vi.fn(async () => undefined),
@@ -69,8 +68,7 @@ describe('config save service', () => {
     expect(store.read().officialProviders ?? []).not.toContain('claude')
     expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toContain('sk-fixture')
     // 换的是星芒签的 Key：外部客户端那边接着看一眼要不要跟上，不挡这次保存。
-    await vi.waitFor(() => expect(dependencies.scanExternalClients).toHaveBeenCalledTimes(1))
-    expect(dependencies.managedKeyFollowTarget).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(dependencies.followManagedKeysNow).toHaveBeenCalledTimes(1))
   })
 
   it('refuses a model the key cannot use before touching the official key', async () => {
@@ -79,7 +77,7 @@ describe('config save service', () => {
     await expect(service.saveConfig({ provider: 'claude', apiKey: 'sk-fixture', model: 'claude-missing', mode: 'merge' }, false))
       .rejects.toThrow('当前 API Key 不支持模型 claude-missing')
     expect(dependencies.moveOfficialCredentialsAside).not.toHaveBeenCalled()
-    expect(dependencies.managedKeyFollowTarget).not.toHaveBeenCalled()
+    expect(dependencies.followManagedKeysNow).not.toHaveBeenCalled()
   })
 
   it('checks the Codex model catalog at startup only once and not at all without a bundled catalog', async () => {

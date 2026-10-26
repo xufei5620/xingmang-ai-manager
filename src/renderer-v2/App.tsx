@@ -236,7 +236,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 只装了 Codex 桌面端时，扩展几页照样替 Codex 管外接工具和技能（桌面端和 CLI 读同一份配置）。
   const codexDesktopInstalled = toolbox.snapshot?.system.desktopApps.codex.installed
   useRelayRouteSync({ native, app, boot, session, siteId, toolbox, setSettings, showRouteRestartHint, runAccountBootstrap, mounted })
-  const { chooseDisplayCompat, chooseCrashReporting } = useStartupChecks({ native, app, boot, settings, setSettings, authenticated: session.authenticated, noteStartupCheck, perform, toast, mounted, restoredBoot })
+  const { chooseDisplayCompat, chooseCrashReporting, chooseUsageStats } = useStartupChecks({ native, app, boot, settings, setSettings, authenticated: session.authenticated, noteStartupCheck, perform, toast, mounted, restoredBoot })
   // 平台能力回来之前沿用挂载前定下的系统，不能先按 Windows 写上去再改：欢迎页和
   // 启动页据此排顶栏，Mac 上那样第一帧就没给红黄绿按钮让位。
   const os = platform ? windowOsFor(platform.platform) : currentWindowOs()
@@ -571,6 +571,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         else if ('page' in action) navigate(action.page, action.section)
         else if ('displayCompat' in action) void chooseDisplayCompat(action.displayCompat)
         else if ('crashReporting' in action) void chooseCrashReporting(action.crashReporting)
+        else if ('usageStats' in action) void chooseUsageStats(action.usageStats)
         else if ('relaunch' in action) void perform('重开软件', async () => { await app.relaunch() })
         else if ('restartCodexDesktop' in action) void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart') })
       }} />

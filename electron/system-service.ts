@@ -638,6 +638,11 @@ export interface SystemServiceOptions {
    */
   readCurrentManagedCliKeys?: () => Promise<readonly StoredManagedCliKey[]>
   /**
+   * 这台电脑上同一个站别的账号的托管 Key 缓存，owner 同 getExternalClientAccountId 的写法。换了账号、工具同步成
+   * 新账号那把以后，外部客户端跟着换要用（已知37）；明文只在主进程里用（I3）。缺省 = 换账号时不跟着换。
+   */
+  readOtherManagedCliKeyAccounts?: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]>
+  /**
    * R6：换线路时工具配置怎么改。缺省 targeted = 主进程定点只改地址；merge = 退回整份写入的老路
    * （渲染层照旧跑同步 Key）。来自服务状态文件，出问题不用发版就能切回。
    */
@@ -1021,7 +1026,7 @@ export function createSystemService(
     configureExternalTool,
     switchExternalClientSource,
     recheckPendingExternalRoutes,
-    managedKeyFollowTarget,
+    followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
@@ -1140,8 +1145,7 @@ export function createSystemService(
   } = createConfigSaveService(context, {
     inspectCliTool,
     inspectRunningTools,
-    managedKeyFollowTarget,
-    scanExternalClients,
+    followManagedKeysNow,
     accountRouteFollowed,
     accountRouteFaultFollowed,
     writeToolRouteRecord,

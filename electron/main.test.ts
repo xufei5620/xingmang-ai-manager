@@ -144,6 +144,8 @@ describe('main process quit cleanup', () => {
   it('registers the steps in the order the separate will-quit listeners used to run', () => {
     const steps = quitCleanupSteps()
     expect(steps.map((step) => step.name)).toEqual([
+      // 匿名使用统计最先停：后面那些步骤退出时报的错、窗口没响应都不该再记。
+      'usage-stats',
       'acceleration-power',
       'cli-hook-events',
       'keep-awake',
@@ -177,9 +179,22 @@ describe('main process quit cleanup', () => {
     // 或线路控制器没停（#1335 第 1 条）。改了哪一步要做的事，在这里跟着改。
     const statements = Object.fromEntries(quitCleanupSteps().map((step) => [step.name, step.statements]))
     expect(statements).toEqual({
+      'usage-stats': [
+        "app.off('browser-window-focus', resumeStallMonitor)",
+        "app.off('browser-window-blur', pauseStallMonitor)",
+        'mainStallMonitor.stop()',
+        'usageStats.stop()',
+        'noteUsageEvent = null',
+      ],
       'acceleration-power': ["powerMonitor.off('suspend', onSuspend)", "powerMonitor.off('resume', onResume)"],
       'cli-hook-events': ['cliHookEvents.dispose()'],
-      'keep-awake': ['cliKeepAwake.dispose()', 'unsubscribeInstallKeepAwakeQueue()', 'unsubscribeInstallKeepAwakeUpdate()', 'installKeepAwake.dispose()'],
+      'keep-awake': [
+        'cliKeepAwake.dispose()',
+        'unsubscribeInstallKeepAwakeQueue()',
+        'unsubscribeInstallKeepAwakeUpdate()',
+        'installKeepAwake.dispose()',
+        'codexRemoteKeepAwake.dispose()',
+      ],
       routes: [
         'unsubscribeRelayRoute()',
         'unsubscribeToolRoutes()',
