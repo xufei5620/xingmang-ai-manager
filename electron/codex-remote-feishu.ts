@@ -75,6 +75,7 @@ export class FeishuAuthError extends Error {
 
 const appIdPattern = /^cli_[A-Za-z0-9]{4,64}$/
 const appSecretPattern = /^[A-Za-z0-9]{8,128}$/
+const approvalNoncePattern = /^[A-Za-z0-9_-]{8,64}$/
 
 /** 界面填进来的两串字：去掉两边空白，格式不对直接报能上屏的中文。 */
 export function validateFeishuCredentialInput(appId: unknown, appSecret: unknown): FeishuCredential {
@@ -292,25 +293,30 @@ export function parseFeishuEvent(payload: unknown, context: FeishuEventContext):
     const openId = stringField(operator.open_id)
     const chatId = stringField(actionContext.open_chat_id) ?? stringField(event.open_chat_id)
     const approvalId = typeof value.approval === 'string' && /^\d{1,4}$/.test(value.approval) ? value.approval : null
+    // 随机串认不出也照样交给底座，让它回一句卡片失效，而不是点了没反应。
+    const nonce = typeof value.nonce === 'string' && approvalNoncePattern.test(value.nonce) ? value.nonce : null
     const decision = value.decision === 'accept' || value.decision === 'decline' ? value.decision : null
     if (!openId || !approvalId || !decision) return { eventId, inbound: null }
     const direct = Boolean(chatId) && context.p2pChats.get(openId) === chatId
     return {
       eventId,
-      inbound: { kind: 'approval', peer: { channel: 'feishu', userId: openId }, direct, approvalId, decision },
+      inbound: { kind: 'approval', peer: { channel: 'feishu', userId: openId }, direct, approvalId, nonce, decision },
     }
   }
   return { eventId, inbound: null }
 }
 
-/** 审批卡片（消息卡片 1.0 写法）：正文是底座写好的纯文字，下面两颗按钮。 */
+/**
+ * 审批卡片（消息卡片 1.0 写法）：正文是底座写好的纯文字，下面两颗按钮。按钮里带上这一条的随机串，
+ * 旧卡片留在聊天记录里随时能点，底座靠它认出点的是不是当下这一条。
+ */
 export function buildFeishuApprovalCard(message: RemoteOutboundApproval): Record<string, unknown> {
   const { request } = message
   const button = (text: string, type: 'primary' | 'danger', decision: 'accept' | 'decline') => ({
     tag: 'button',
     text: { tag: 'plain_text', content: text },
     type,
-    value: { approval: request.approvalId, decision },
+    value: { approval: request.approvalId, nonce: request.nonce, decision },
   })
   return {
     config: { wide_screen_mode: true, update_multi: false },
