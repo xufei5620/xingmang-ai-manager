@@ -14,7 +14,7 @@ import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { buildSupportBundle, type SupportFailure, type SupportIdentityInput } from '../app/SupportIdentity'
 import { errors } from '../../registry/errors'
 import { clearGuideProgress, getGuideStorage, readGuideProgress, writeGuideProgress } from './guide-progress'
-import { buildGuideSetupResult, type GuideSetupResult } from './guide-result'
+import { buildGuideSetupResult, walletEmptyLead, type GuideSetupResult } from './guide-result'
 import './auth.css'
 
 export type GuideRoute = 'claude' | 'codex' | 'codexDesktop' | 'grok' | 'chat'
@@ -83,6 +83,8 @@ export interface StartGuideProps {
   onFailureAction?: (action: OperationActionId, retry?: () => void) => void
   /** 这台电脑能不能由本软件把 Node.js 换成新版（只有 Windows）；缺省 = 不能。 */
   canReplaceNode?: boolean
+  /** 当前账号余额是 $0、也没有能用的订阅：最后一步先说这件事，「去充值」放到最上面。缺省 = 不知道，照旧。 */
+  walletEmpty?: boolean
   onLogin: () => void
   /** 最后一步没登录时的「注册新账号」；缺省 = 不给这颗按钮。 */
   onRegister?: () => void
@@ -365,7 +367,7 @@ function GuideFirstTaskPrompt({ prompt, copiedNotice, disabled }: { prompt: stri
   </div>
 }
 
-function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, resumeKey, onConfigure, onSwitchAccount, onBootstrapRetry, accountName = null, onFailureAction, canReplaceNode = false, onLogin, onRegister, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
+function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, resumeKey, onConfigure, onSwitchAccount, onBootstrapRetry, accountName = null, onFailureAction, canReplaceNode = false, walletEmpty = false, onLogin, onRegister, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
   const recommended = guideRecommendedToolFor(platform)
   const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === recommended) - Number(a.id === recommended) || a.shortcutIndex - b.shortcutIndex)
@@ -553,7 +555,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   }
   // 有「换成新版 Node.js」时它才是出路：排在「再试一次」前面、当主按钮，和错误框一个规矩。
   const replaceFirst = Boolean(onFailureAction && failureExits.some((action) => action.id === 'replaceNode'))
-  const result = route ? buildGuideSetupResult({ route, tool, signedIn, readiness, name, officialName, accountName, switched: switchedHere }) : null
+  const result = route ? buildGuideSetupResult({ route, tool, signedIn, readiness, name, officialName, accountName, switched: switchedHere, walletEmpty }) : null
   // 第 3 步：没装好、没登录、已用当前账号或官方账号连好、聊天这几种照 v4 一张卡说清；别处的 Key、官方账号还没登录、
   // 手动填的密钥这些要人看一眼的，照旧是说明加按钮，下面再带结果卡。
   const connectCard = !route || route === 'chat' || foreign || tool?.officialLoginRequired || !readiness.prepared ? null
@@ -564,6 +566,10 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const notPrepared = route && route !== 'chat' && !readiness.prepared ? <GuideStateCard tone="off" icon={Download} title={`${spaceAfter(name)}还没装好`}>回上一步装好，再来这里连接。</GuideStateCard> : null
   const readyToOpen = readiness.prepared && readiness.connected
   const showRecharge = Boolean(step === 'ready' && onFailureAction && route && readyToOpen && result?.usesAccountBalance)
+  const unverifiedSwitch = switchedHere?.target === 'account' && !switchedHere.verified
+  // 余额是 $0 时打开了也用不了：顶上那句换成首页的原话，「去充值」紧跟在下面当主按钮，
+  // 不用往下翻（主路卡点 F3）。「打开」照样能点，只是退成次按钮。没试通的改用自己带着出口，不叠这一套。
+  const walletFirst = Boolean(showRecharge && result?.walletEmpty && !unverifiedSwitch)
   const installing = pending === '安装工具'
   const pause = () => { if (locked) return; if (route) saveProgress(route, step); onBack?.() }
   const footer = <>
@@ -603,7 +609,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
         </>}
         {(step === 'connect' || step === 'ready') && notPrepared}
         {step === 'ready' && <>
-          {readiness.prepared && <p className="auth-guide-lead">{route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.connected ? switchedHere?.target === 'account' && !switchedHere.verified ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
+          {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
+          {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></div>}
           {switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}
           {result && <GuideResultCard result={result} />}
           {definition?.firstRun && readyToOpen && <FirstRunSteps key={route} name={name} firstRun={definition.firstRun} testId="guide-first-run" />}
@@ -611,9 +618,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           {opensFolder && readyToOpen && <div className="auth-guide-check-row" data-testid="guide-folder-hint"><FolderPlus size={20} aria-hidden="true" /><div><strong>选哪个文件夹</strong><p>打开时要选一个项目文件夹。不知道选哪个，就点「新建并打开」，软件替你建好一个空文件夹并直接打开。</p></div><Button size="sm" icon={FolderPlus} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-new-folder">新建并打开</Button></div>}
           <div className="auth-guide-ready-actions">
             {!signedIn && !readyToOpen && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
-            <Button variant={signedIn || readyToOpen ? 'primary' : 'secondary'} icon={route === 'chat' ? MessageSquare : FolderOpen} loading={pending === '打开工具'} disabled={locked || !readyToOpen} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '去聊天' : `打开 ${name}`}</Button>
+            <Button variant={(signedIn || readyToOpen) && !walletFirst ? 'primary' : 'secondary'} icon={route === 'chat' ? MessageSquare : FolderOpen} loading={pending === '打开工具'} disabled={locked || !readyToOpen} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '去聊天' : `打开 ${name}`}</Button>
             <Button variant="secondary" disabled={locked || !route || !readyToOpen} onClick={() => { if (route) complete(route, 'home') }} testId="guide-home">进入首页</Button>
-            {showRecharge && route && <span className="auth-guide-recharge" data-testid="guide-recharge"><Button variant="ghost" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></span>}
+            {showRecharge && !walletFirst && route && <span className="auth-guide-recharge" data-testid="guide-recharge"><Button variant="ghost" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></span>}
             {!signedIn && readyToOpen && <Button variant="secondary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
             {!signedIn && onRegister && <Button variant="secondary" icon={UserPlus} disabled={locked} onClick={onRegister} testId="guide-ready-register">注册新账号</Button>}
             <span className="auth-footer-spacer" />

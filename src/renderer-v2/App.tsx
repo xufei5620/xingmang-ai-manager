@@ -14,7 +14,7 @@ import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
-import { Home } from './features/tools/Home'
+import { Home, homeWalletEmpty } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
@@ -68,6 +68,7 @@ import { keyToolInstalled } from './features/account/account-center'
 import { rewritableKeyProviders } from './features/tools/connection-check'
 import type { PendingConfirmation } from './features/app/runtime-context'
 import { useStartupChecks, useStartupNotices } from './features/app/useStartupNotices'
+import { startupNoticesShown } from './features/app/startup-notice'
 import { useAppBoot } from './features/app/useAppBoot'
 import { useAppOnlineStatus } from './features/app/useAppOnlineStatus'
 import { useAppNavigation } from './features/app/useAppNavigation'
@@ -501,6 +502,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         const outcome = await runAccountBootstrap(session.account.userId, 'login', true, [provider])
         return Boolean(outcome?.result?.configured.includes(provider))
       }} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
+      walletEmpty={session.authenticated && homeWalletEmpty(balanceAmount, subscription, accountSupports(session, 'supportsBilling'))}
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
       onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
@@ -550,7 +552,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />
-    <StartupNotices notices={startupNotices} onDismiss={dismissStartupNotice}
+    {/* 引导、导览开着时，登录后说一次的告知卡先等着（主路卡点 F11）。导览只在首页放，开在别的页上客户看不见它，
+        那时不用等，否则一直待在聊天页的客户就一直看不到告知。 */}
+    <StartupNotices notices={startupNoticesShown(startupNotices, guide || (tourOpen && page === 'home'))} onDismiss={dismissStartupNotice}
       leading={[
         ...(launchInstall ? [<LaunchInstallNotice key={`launch-install-${launchInstall.installAt}`} notice={launchInstall} />] : []),
         ...(maintenance && !maintenanceDismissed ? [<MaintenanceNotice key="maintenance" maintenance={maintenance} onDismiss={dismissMaintenance} />] : []),

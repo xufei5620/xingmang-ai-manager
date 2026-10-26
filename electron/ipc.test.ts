@@ -6059,6 +6059,20 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })
     })
 
+    it('forwards a totals-only request, drops a false one and refuses anything but a boolean', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.getUsage).mockResolvedValue({ page: 1, pageSize: 0, total: 0, records: [], stats: { quota: 0, rpm: 0, tpm: 0 } })
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      await handler(trustedEvent(), { type: 2, statsOnly: true })
+      expect(vi.mocked(accountService.getUsage).mock.calls[0][0]).toMatchObject({ type: 2, statsOnly: true })
+      // 历史账号那边见到不认识的字段就整个拒掉，false 不往下传。
+      await handler(trustedEvent(), { statsOnly: false })
+      expect(vi.mocked(accountService.getUsage).mock.calls[1][0]?.statsOnly).toBeUndefined()
+      expect(() => handler(trustedEvent(), { statsOnly: 'yes' })).toThrow('用量查询参数格式错误')
+      expect(accountService.getUsage).toHaveBeenCalledTimes(2)
+    })
+
     it('defaults to an empty query object when no input is given', async () => {
       const { accountService } = register()
       vi.mocked(accountService.getUsage).mockResolvedValue({ page: 1, pageSize: 10, total: 0, records: [], stats: { quota: 0, rpm: 0, tpm: 0 } })

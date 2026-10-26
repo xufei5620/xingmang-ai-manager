@@ -16,11 +16,16 @@ describe('home balance usage queries', () => {
         expect(query.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone)
         expect(query).not.toHaveProperty('type')
         expect(query).not.toHaveProperty('startTimestamp')
+        // 历史账号那边见到不认识的字段就整个拒掉。
+        expect(query).not.toHaveProperty('statsOnly')
       } else {
         expect(query.type).toBe(2)
         expect(query.startTimestamp).toEqual(expect.any(Number))
         expect(query.endTimestamp).toEqual(expect.any(Number))
         expect(query).not.toHaveProperty('startDate')
+        // 首页只用合计：星芒账号不再陪着查一页明细。
+        expect(query.statsOnly).toBe(true)
+        expect(query).not.toHaveProperty('page')
       }
     }
   })

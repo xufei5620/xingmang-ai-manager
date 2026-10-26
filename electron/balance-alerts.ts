@@ -63,9 +63,10 @@ export async function readSpendBaseline(source: SpendBaselineSource, now = new D
     return { hourQuota: null, weekQuota: week.stats.quota }
   }
   const endTimestamp = Math.floor(now.getTime() / 1000)
+  // 只用合计：星芒账号只查合计那一个接口，不再陪着查一页明细。
   const [hour, week] = await Promise.all([
-    source.getUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 3600, endTimestamp }),
-    source.getUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
+    source.getUsage({ type: 2, statsOnly: true, startTimestamp: endTimestamp - 3600, endTimestamp }),
+    source.getUsage({ type: 2, statsOnly: true, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
   ])
   return { hourQuota: hour.stats.quota, weekQuota: week.stats.quota }
 }

@@ -203,8 +203,8 @@ describe('spend baseline', () => {
     expect(await readSpendBaseline({ dateOnly: false, getUsage }, now)).toEqual({ hourQuota: 11, weekQuota: 22 })
     const end = Math.floor(now.getTime() / 1000)
     expect(getUsage.mock.calls).toEqual([
-      [{ type: 2, page: 1, pageSize: 1, startTimestamp: end - 3600, endTimestamp: end }],
-      [{ type: 2, page: 1, pageSize: 1, startTimestamp: end - 7 * 86400, endTimestamp: end }],
+      [{ type: 2, statsOnly: true, startTimestamp: end - 3600, endTimestamp: end }],
+      [{ type: 2, statsOnly: true, startTimestamp: end - 7 * 86400, endTimestamp: end }],
     ])
   })
 
@@ -214,6 +214,8 @@ describe('spend baseline', () => {
     expect(baseline).toEqual({ hourQuota: null, weekQuota: 33 })
     expect(getUsage).toHaveBeenCalledOnce()
     expect(getUsage.mock.calls[0]?.[0]).toMatchObject({ page: 1, pageSize: 1, startDate: expect.any(String), endDate: expect.any(String), timezone: expect.any(String) })
+    // 历史账号那边见到不认识的字段就整个拒掉。
+    expect(getUsage.mock.calls[0]?.[0]).not.toHaveProperty('statsOnly')
   })
 })
 
