@@ -21,7 +21,7 @@ import { isTrustedIpcSenderUrl, type ApplicationUrlPolicy } from './security'
 import type { SystemSnapshot, SystemService } from './system-service'
 import type { ProviderConfigRoots } from './codex-home'
 import type { UpdateSnapshot, UpdaterService } from './updater'
-import type { RelayBackendClient } from './relay-backend'
+import type { RelayBackendClient, RelayNotice } from './relay-backend'
 import type { AccountGroupHints } from './managed-cli-groups'
 import type { CliModelHints } from './cli-model-defaults'
 import type { AiAssetStore } from './ai-asset-store'
@@ -32,6 +32,7 @@ import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
   RememberedAccountLogin,
+  RendererActivity,
   RendererErrorPayload,
   WindowCapabilities,
   AppUninstallRequest,
@@ -168,6 +169,8 @@ export interface IpcRegistrationOptions {
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
   getWindowCapabilities?(): WindowCapabilities
+  /** 界面报告手上有没有事（renderer-release.ts 靠它决定缩到托盘后能不能关掉界面）。不传 = 不管。 */
+  onRendererActivity?(target: WebContents, activity: RendererActivity): void
   /**
    * Windows 上这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）。为真时
    * platform:get-capabilities 叠上 processElevated，界面不再说会弹授权窗口。缺省 = 不是（旧行为）。
@@ -210,6 +213,8 @@ export interface IpcRegistrationOptions {
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
   /** 渲染层读到了当前账号的订阅；托盘靠它说「订阅剩余多少」，不自己去读。 */
   onAccountSubscription?(subscription: Awaited<ReturnType<RelayBackendClient['getSubscriptionSelf']>>): void
+  /** 渲染层读到了公告：界面关着时主进程拿它比对有没有新公告（released-renderer-watch.ts）。 */
+  onAccountNotice?(notice: RelayNotice | null): void
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one

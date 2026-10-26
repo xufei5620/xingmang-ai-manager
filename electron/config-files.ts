@@ -2935,7 +2935,9 @@ function withManagedCodexModelCatalogLine(text: string): string | null {
 // 3：Codex 线路显示名老模板的 XingmangAI 换成 OpenAI（2026-10-14）。这一项改的是值不是缺省
 //    键，只认星芒自己那张表上一字不差的老值（renameLegacyCodexRelayDisplayName）。
 // 4：Codex 星芒那张表没写 supports_websockets 的按型号补，GPT 型号 true、别家型号 false（2026-10-16）。
-export const relayTemplateRevision = 4
+// 5：VS Code、Cursor 的用户设置没写 claudeCode.disableLoginPrompt 的补 true（2026-10-26）。这一项不在
+//    Claude Code 自己的配置里，由开机补设置那一轮在 Claude Code 那份到期时顺带做（editor-claude-login-prompt.ts）。
+export const relayTemplateRevision = 5
 
 function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBaseUrl: string, platform: NodeJS.Platform): void {
   if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false

@@ -4,7 +4,7 @@ import { ExternalUrlBlockedError } from '../../external-url-blocked'
 import { providerIds } from '../../catalog'
 import { isAllowedExternalUrl } from '../../security'
 import { isNetworkSettingsKind } from '../../proxy-bypass'
-import { parseAppUninstallRequest } from '../parsers/system'
+import { parseAppUninstallRequest, parseRendererActivity } from '../parsers/system'
 import type { IpcHandlerContext } from './context'
 
 export function registerWindowHandlers(ctx: IpcHandlerContext): void {
@@ -19,6 +19,10 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
     options.setWindowTheme(event.sender, theme)
   })
   registerTrustedHandler('window:get-capabilities', () => options.getWindowCapabilities?.() ?? { tray: false, notifications: false })
+  registerTrustedHandler('window:report-activity', (event, raw: unknown) => {
+    const activity = parseRendererActivity(raw)
+    options.onRendererActivity?.(event.sender, activity)
+  })
   registerTrustedHandler('window:relaunch', () => options.relaunchApp?.() ?? false)
   registerTrustedHandler('window:uninstall-app', async (_event, raw: unknown) => {
     const request = parseAppUninstallRequest(raw)

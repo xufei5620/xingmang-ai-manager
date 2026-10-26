@@ -73,7 +73,8 @@ describe('main process window events', () => {
     // Assigned once, straight from the startup callback, so it is set by the time the main window exists.
     expect(assignments).toHaveLength(1)
     expect(assignments[0].owner).toBe(callback)
-    expect(assignments[0].value).toBe("(target) => { showMainWindow(); sendToMainWindow('onNavigate', target) }")
+    // 界面缩在托盘里被关掉时，跳页先存着，重新加载好了再发（renderer-release.ts）。
+    expect(assignments[0].value).toBe("(target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }")
   })
 })
 
@@ -161,6 +162,7 @@ describe('main process quit cleanup', () => {
       'updater',
       'display-watch',
       'update-install-prompt',
+      'renderer-release',
       'power-off-watch',
       'unexpected-exit-flag',
       'unexpected-exit-handler',
@@ -230,6 +232,7 @@ describe('main process quit cleanup', () => {
         "screen.removeListener('display-metrics-changed', onDisplaysChanged)",
       ],
       'update-install-prompt': ['unsubscribeUpdateInstallPrompt()', 'updateInstallPrompter.dispose()'],
+      'renderer-release': ['releasedWatch.stop()', 'rendererRelease.dispose()', 'detachRendererDelivery(deliverWhenRendererReady)'],
       'power-off-watch': ["powerMonitor.off('shutdown', onPowerOff)"],
       'unexpected-exit-flag': ['appWillQuit = true'],
       'unexpected-exit-handler': ["process.off('uncaughtException', onUnexpectedException)"],
