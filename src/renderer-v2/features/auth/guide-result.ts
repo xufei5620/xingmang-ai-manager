@@ -40,14 +40,6 @@ interface GuideSetupInput {
  */
 export const walletEmptyLead = '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。'
 
-/**
- * 跟首页那条 $0 提示同一个判断（homeMoneyNotice）：有能用的订阅就不算，订阅客户的钱包常是 0、
- * 扣的却是订阅；余额还没读到、账号不能在这里充值时也不说。
- */
-export function guideWalletEmpty(balanceUsd: number | null, hasSubscription: boolean, supportsBilling: boolean): boolean {
-  return supportsBilling && !hasSubscription && balanceUsd !== null && balanceUsd <= 0
-}
-
 // 和「改用 xxx」按钮用同一种截断，免得同一个名字在两处长短不一。
 function currentAccountLabel(accountName: string | null | undefined): string {
   const name = [...(accountName?.trim() ?? '')]

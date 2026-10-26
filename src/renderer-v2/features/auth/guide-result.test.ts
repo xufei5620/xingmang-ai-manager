@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AccountSourceSwitchResult } from '../../../../electron/ipc-contract'
 import type { GuideToolState } from './StartGuide'
 import { lowBalanceText } from '../tools/Home'
-import { buildGuideSetupResult, guideWalletEmpty, walletEmptyLead } from './guide-result'
+import { buildGuideSetupResult, walletEmptyLead } from './guide-result'
 
 const codex: GuideToolState = { id: 'codexDesktop', installed: true, configured: true, source: 'account', version: '1.2.3' }
 const ready = { prepared: true, connected: true }
@@ -135,14 +135,5 @@ describe('guide setup result empty wallet', () => {
 
   it('says the empty wallet in the same words as the home page', () => {
     expect(walletEmptyLead).toBe(lowBalanceText(0))
-  })
-
-  it('treats a usable subscription, an unread balance or an account without top-up as not empty', () => {
-    expect(guideWalletEmpty(0, false, true)).toBe(true)
-    expect(guideWalletEmpty(-0.2, false, true)).toBe(true)
-    expect(guideWalletEmpty(0.01, false, true)).toBe(false)
-    expect(guideWalletEmpty(0, true, true)).toBe(false)
-    expect(guideWalletEmpty(null, false, true)).toBe(false)
-    expect(guideWalletEmpty(0, false, false)).toBe(false)
   })
 })
