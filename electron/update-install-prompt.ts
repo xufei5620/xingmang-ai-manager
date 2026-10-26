@@ -9,7 +9,10 @@
  * - **跳框**：只问这次运行里在后台下好的版本。打开星芒时就已经下好的，由打开时装去装，这里
  *   再问会跟它抢。默认按钮是「稍后再说」，回车、空格、Esc 都落在它上面，只有用鼠标点「现在
  *   安装」才装；等电脑几秒没人按键盘、动鼠标再弹，免得客户正打着字框跳出来。每个版本每次运行
- *   最多问一次。账号不在管理员组的 Windows 自己装不了，不问；关了「自动更新」的不问。
+ *   最多问一次。账号不在管理员组的 Windows 自己装不了，不问；关了「自动更新」的不问。网络加速开着
+ *   时先不问：开加速的多半在打游戏，过场、读图那几秒就凑够「没人动」，框一跳会把游戏切出去；点了
+ *   「现在安装」加速会先断，装好也不会自己连回去。等加速关了再按上面的规矩问，一直没关的这次就
+ *   不问了，留给退出时或下次打开时装。
  * - **闲时装**：只在装的时候一个窗口也不弹的 Mac 上（canInstallUnattended）。Windows 每次装都要
  *   有人点授权窗口的「是」，没人在电脑前就卡在那儿，不做。要等电脑 10 分钟没人碰或者锁了屏，
  *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开；问过的版本还要
@@ -31,7 +34,7 @@ export const IDLE_INSTALL_IDLE_MS = 10 * 60_000
 export const IDLE_INSTALL_AFTER_PROMPT_MS = 10 * 60_000
 /** 等着跳框时多久看一次有没有人在打字。 */
 export const PROMPT_POLL_MS = 2_000
-/** 等着闲时装、框开着等回答时多久看一次。 */
+/** 等着闲时装、框开着等回答、加速开着先不问时多久看一次。 */
 export const IDLE_POLL_MS = 30_000
 /** 闲时装之前现读服务状态文件最多等这么久，读不到就按上次读到的撤回名单算（同退出时装）。 */
 export const IDLE_INSTALL_STATUS_WAIT_MS = 3_000
@@ -189,6 +192,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   let open: { version: string; controller: AbortController } | null = null
   let notBefore: number | null = null
   let idleTried: string | null = null
+  let heldForAcceleration: string | null = null
   let cancelTimer: (() => void) | null = null
   let armedMs: number | null = null
   let disposed = false
@@ -235,12 +239,20 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     return options.platform === 'darwin' && read(options.unattended, false)
   }
 
+  // 读不出加速开没开时当作开着：宁可这次不问，也不能把正在打的游戏切出去。
+  function accelerationOn(): boolean {
+    return read(options.accelerationActive, true)
+  }
+
   // 更新状态每变一次都会来一遍：已经排着同样间隔的就不重排，免得一直往后推。
   function schedule(): void {
     const downloaded = installableVersion(read<UpdateSnapshot | null>(options.getState, null)) !== null
+    // 加速开着时一局游戏可能打几个小时，这段时间放慢着看，加速关了再按 2 秒一次等人停手。
     const wanted = disposed
       ? null
-      : waiting ? PROMPT_POLL_MS : downloaded && canInstallWhileIdle() && idleTried === null ? IDLE_POLL_MS : null
+      : waiting
+        ? accelerationOn() ? IDLE_POLL_MS : PROMPT_POLL_MS
+        : downloaded && canInstallWhileIdle() && idleTried === null ? IDLE_POLL_MS : null
     if (wanted !== null && wanted === armedMs && cancelTimer) return
     cancelTimer?.()
     cancelTimer = null
@@ -265,6 +277,14 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     if (!version) return
     if (promptVersion(snapshot) !== version) {
       waiting = null
+      return
+    }
+    // 先于「人在不在」看：加速开着时什么都不记，关了以后再按原规矩办，人走开了的照样等闲时装。
+    if (accelerationOn()) {
+      if (heldForAcceleration !== version) {
+        heldForAcceleration = version
+        log('info', 'install.prompt.held', `网络加速开着，新版本 ${version} 先不跳框问，等加速关了再问`)
+      }
       return
     }
     const idleMs = read(options.idleMs, 0)

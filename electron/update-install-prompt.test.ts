@@ -392,6 +392,60 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
+  it('holds the question while network acceleration is on and asks once it is off', async () => {
+    let accelerating = true
+    const test = harness('win32', { unattended: () => false, accelerationActive: () => accelerating })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    // A gaming session can last hours: look slowly, and log the hold once.
+    expect(test.timers.map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+    expect(test.events.filter((event) => event === 'install.prompt.held')).toHaveLength(1)
+
+    accelerating = false
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.installedNow).toEqual([])
+    prompter.dispose()
+  })
+
+  it('does not treat a Mac gamer as away while acceleration is on', async () => {
+    let accelerating = true
+    const test = harness('darwin', { accelerationActive: () => accelerating })
+    const prompter = createUpdateInstallPrompter(test.options)
+    // Gamepad input does not reset the system idle time.
+    test.state.idleMs = IDLE_INSTALL_IDLE_MS
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.events).not.toContain('install.prompt.away')
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual([])
+
+    accelerating = false
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    prompter.dispose()
+  })
+
+  it('holds the question when it cannot tell whether acceleration is on', async () => {
+    const test = harness('win32', {
+      unattended: () => false,
+      accelerationActive: () => { throw new Error('acceleration state unavailable') },
+    })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.events).toContain('install.prompt.held')
+    prompter.dispose()
+  })
+
   it('waits to ask until it is known whether the Windows account is an administrator', async () => {
     const test = harness('win32', { unattended: () => false })
     test.state.standardAccount = null
