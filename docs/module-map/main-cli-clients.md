@@ -92,8 +92,8 @@
 - `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
 - `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
 - `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
-- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
-- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限
+- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限
 - `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
 - `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试
 - `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；登录过期（-14、401/403）报「要重新登录」不再重试
