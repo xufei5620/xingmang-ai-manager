@@ -69,6 +69,40 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 把 `ANTHROPIC_BASE_URL` 指过去、`ANTHROPIC_AUTH_TOKEN` 随便填，跑 `claude -p "hi"`，
 看请求体的 `tools[].name`。**不要对生产中转发这类探测请求。**
 
+## 名单之外的第三道保险：Claude Code 的备用型号
+
+名单管的是 CLI 版本，管不到「中转这边某个型号一时用不了」：分组里这个型号的渠道全挂了（new-api 回
+JSON 503「当前分组 x 下对于模型 y 无可用渠道」）、上游 500/502、过载 529。Claude Code 对这些错误默认
+重试 10 次（指数退避），客户干等约 3 分钟，最后看到一句英文 `API Error: 503 …`。
+
+Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个）就是给这种情况的：主型号过载或
+用不了时按顺序换着试，换过去答完这一轮，下一轮又先试主型号。所以 `electron/claude-model-picker.ts`
+在写 `/model` 菜单的同一处写它，挑法在 `cli-model-defaults.ts` 的 `resolveClaudeFallbackModels`：
+只从这个密钥列着的 Claude 型号里挑最多两个，先同系列版本最新的另一版（Opus 5.5 → Opus 5），再另一档
+最新的（Opus、Haiku 配 Sonnet，Sonnet 配 Opus），不挑 Haiku，挑不到就不写。客户自己写的不动；老配置在
+打开前核对和开机那轮补上；切回官方账号不收回（里面是官方型号名，官方账号照样能用）。
+
+**验证依据**（沙箱，2026-10-26，`@anthropic-ai/claude-code@2.1.302` 与 `@2.1.310`，空 HOME，
+本地假接口按型号回错，`claude -p "hi"`，主型号 `claude-opus-5-5`，`fallbackModel: ["claude-sonnet-5-5"]`）：
+
+| 主型号收到的回复 | 没有备用 | 有备用 |
+|---|---|---|
+| 503 `new_api_error`「无可用渠道」（两种 JSON 形状） | 10 次重试，约 183 秒后退出码 1 | 立刻换 Sonnet，1 秒内答完 |
+| 500 `api_error` / 502 HTML | 同上，约 182 秒 | 立刻换 |
+| 529 `overloaded_error` | 同上，约 193 秒 | 主型号试 3 次后换，约 2 秒 |
+| 404 `not_found_error` | 立刻报「There's an issue with the selected model」 | 立刻换 |
+| 403「用户额度不足」 | 立刻报错 | 同左，不换 |
+| 429 | 重试后报错 | 同左，不换 |
+
+- 备用链 `["claude-opus-5", "claude-sonnet-5-5"]`、主型号和 Opus 5 都回 503 时：依次试 Opus 5.5、Opus 5、
+  Sonnet 5.5，Sonnet 答完。三个都回 503 时，前两个各试一次，最后那个照旧重试 10 次、约 181 秒后报错，
+  跟没有备用时一样。链里写了主型号本身的，跳过它直接试下一个。
+- 两版行为一样（2.1.310 主请求带工具搜索，工具数 12，与本项无关）。
+- 交互界面（2.1.302，伪终端里真跑）：主型号回 503 时对话里先出一行 Claude Code 自己的英文
+  `Switched to Opus 5 due to high demand for Opus 5.5`，接着是备用型号的回答。
+- **没演过**：中转真实的过载回什么状态码没在线上看过，按 new-api 源码与 `connection-check.ts` 里认「无可用渠道」
+  的写法推的；Windows、Mac 真机没跑。
+
 ## CLI 自己的更新机制：不关掉，名单等于白钉
 
 名单只决定**本软件装哪一版**。四个 CLI 装完之后各自还带着一套更新机制，全都绕开名单：
