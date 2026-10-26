@@ -988,6 +988,7 @@ describe('registerIpcHandlers', () => {
     }
     const imageService = {
       generate: vi.fn(async () => []),
+      edit: vi.fn(async () => []),
       cancel: vi.fn(() => ({ canceled: true, mayStillComplete: true })),
       cancelSender: vi.fn(() => 0),
       cancelUser: vi.fn(() => 0),
@@ -1059,6 +1060,19 @@ describe('registerIpcHandlers', () => {
       expect(() => generateImage(trustedEvent(undefined, 17), input)).toThrow(message)
     }
     expect(imageService.generate).not.toHaveBeenCalled()
+
+    // Reference images turn the request into an edit. They are only opaque ids
+    // the main process issued; the image service reads them through readOwned
+    // for the signed-in account, so no path or foreign asset can come in here.
+    const reference = 'r'.repeat(43)
+    await expect(generateImage(trustedEvent(undefined, 17), { ...base, sourceAssetIds: [reference, 's'.repeat(43)] })).resolves.toEqual([])
+    expect(imageService.edit).toHaveBeenCalledWith(17, { ...base, sourceAssetIds: [reference, 's'.repeat(43)], expectedUserId: 7 })
+    expect(imageService.generate).not.toHaveBeenCalled()
+    imageService.edit.mockClear()
+    for (const sourceAssetIds of [[], [reference, reference], ['../../etc/passwd'], ['C:\\Users\\a.png'], [42], Array.from({ length: 5 }, (_, index) => String(index).repeat(43)), reference]) {
+      expect(() => generateImage(trustedEvent(undefined, 17), { ...base, sourceAssetIds })).toThrow('生图参考图格式错误')
+    }
+    expect(imageService.edit).not.toHaveBeenCalled()
 
     const cancel = electronMocks.handlers.get('chat:cancel')!
     expect(cancel(trustedEvent(undefined, 22), 'request-1')).toEqual({
