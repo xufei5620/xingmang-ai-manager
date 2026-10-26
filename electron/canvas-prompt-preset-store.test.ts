@@ -50,4 +50,15 @@ describe('CanvasPromptPresetStore', () => {
     await expect(store.create(7, { name: 'bad\0', prompt: '内容' })).rejects.toThrow('名称格式')
     await expect(store.create(7, { name: '重复标签', prompt: '内容', tags: ['a', 'a'] })).rejects.toThrow('不能重复')
   })
+
+  it('keeps a 160-character name through create, update and a new store instance', async () => {
+    const { root, store } = fixture()
+    const name = '名'.repeat(160)
+    const created = await store.create(7, { name, prompt: '电影感海报' })
+    expect(created.name).toBe(name)
+    await expect(store.update(7, { id: created.id, name: `${'改'.repeat(159)}名` })).resolves.toMatchObject({ name: `${'改'.repeat(159)}名` })
+    expect((await new CanvasPromptPresetStore({ rootDirectory: root }).list(7))[0]?.name).toBe(`${'改'.repeat(159)}名`)
+    await expect(store.create(7, { name: '名'.repeat(161), prompt: '内容' })).rejects.toThrow('名称格式')
+    await expect(store.update(7, { id: created.id, name: '名'.repeat(161) })).rejects.toThrow('名称格式')
+  })
 })

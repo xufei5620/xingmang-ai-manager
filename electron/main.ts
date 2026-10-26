@@ -50,6 +50,7 @@ import { createRendererCrashRecovery, type RendererCrashRecovery } from './rende
 import { createRendererRelease, type RendererRelease, type RendererReleaseLogEvent } from './renderer-release'
 import { createReleasedRendererWatch, noticeFingerprint } from './released-renderer-watch'
 import { createBalanceAlerts, createSpendSpikeRecordStore, readSpendBaseline } from './balance-alerts'
+import { createEmptyBalanceRecordStore } from './empty-balance-alert'
 import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
 import { resolveUsableSubscription } from './subscription-summary'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -62,6 +63,21 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
+import { classifyNetworkFailure } from './network-failure'
+import { PlatformSettingsStore } from './platform/settings-store'
+import {
+  resolveUsageOs,
+  resolveUsageUpdateState,
+  shouldSendUsageStats,
+  usageAccountKind,
+  usageEventForOperation,
+  usageEventForUpdate,
+  usageRouteChoice,
+  usageToolInventory,
+  type UsageStatsEvent,
+  type UsageUpdateView,
+} from './usage-stats'
+import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-reporter'
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -489,11 +505,20 @@ function createWindow(
     },
     onError: (cause) => { runtimeLog.exception('renderer', 'window.unresponsive.failed', cause) },
   })
+  // 同一次没响应 Electron 会连着报好几回，匿名使用统计只算一次，恢复以后再算下一次。
+  let unresponsiveCounted = false
   window.on('unresponsive', () => {
     runtimeLog.log('warn', 'renderer', 'window.unresponsive', '应用窗口暂时无响应')
+    if (!unresponsiveCounted) {
+      unresponsiveCounted = true
+      noteUsageEvent?.({ kind: 'hang', hang: 'unresponsive' })
+    }
     responsiveness.handleUnresponsive()
   })
-  window.on('responsive', () => { responsiveness.handleResponsive() })
+  window.on('responsive', () => {
+    unresponsiveCounted = false
+    responsiveness.handleResponsive()
+  })
   window.once('closed', () => { responsiveness.dispose() })
 
   void window.loadURL(resolveMainWindowUrl(stored.theme)).catch((error) => {
@@ -636,6 +661,8 @@ async function presentStartupFailure(error: unknown, logPath: string | null): Pr
 // launch) is simply dropped: the reporter must never become a second source
 // of startup errors.
 let reportCrashSendFailure: ((error: unknown) => void) | null = null
+// 匿名使用统计（usage-stats.ts）建得比主窗口晚一点；在那之前、和退出以后，窗口没响应就不数。
+let noteUsageEvent: ((event: UsageStatsEvent) => void) | null = null
 
 /**
  * 一个 Chromium 会话的 fetch。net.fetch 碰到 redirect: 'manual' 不交回跳转，直接报「Redirect was
@@ -1128,6 +1155,7 @@ if (!hasSingleInstanceLock) {
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
+    let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
     // 账号服务也建得比这里晚。下载线路与游戏加速用的是同一个账号口径，所以
     // 指向同一个读取函数，而不是各写一份。
@@ -1164,6 +1192,7 @@ if (!hasSingleInstanceLock) {
       },
       getExternalClientAccountId: () => readExternalClientAccountId(),
       readCurrentManagedCliKeys: () => readCurrentManagedCliKeys(),
+      readOtherManagedCliKeyAccounts: () => readOtherManagedCliKeyAccounts(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
       // 历史账号的工具配置跟应用线路：因为连不上换了、整份写入跟过去以后，照星芒账号那样提示重开（#1061 第 2 条）。
       relayRouteLastChange: (siteId) => relayRouteController.lastChange(siteId),
@@ -1510,6 +1539,7 @@ if (!hasSingleInstanceLock) {
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     let launchInstallTried = false
     // Windows 上开机自启、窗口没打开过、开机时没装的那一版（'window'）：等第一次打开窗口再装。
+    // 电脑闲下来时跳框先问了的，就撤下（withdrawLaunchInstall）。
     let launchInstallAwaitingWindow: string | null = null
     const startLaunchInstall = (version: string, mode: Exclude<LaunchInstallMode, 'skip'>) => {
       const background = mode === 'background'
@@ -1597,6 +1627,15 @@ if (!hasSingleInstanceLock) {
         return
       }
       startLaunchInstall(version, mode)
+    }
+    // 跳框问过了就不再走打开时装（update-install-prompt.ts，#1410）：等着开窗口的那一版，跳框叫出
+    // 窗口时别再预告装一遍；两分钟里还没轮到的，也别在客户回答前后自己装起来。点了「稍后再说」的
+    // 照框里说的，退出或下次打开时装。
+    const withdrawLaunchInstall = () => {
+      const awaiting = launchInstallAwaitingWindow
+      launchInstallTried = true
+      launchInstallAwaitingWindow = null
+      if (awaiting) runtimeLog.log('info', 'updater', 'install.on-launch.withdrawn', `开机时留着等开窗口的 ${awaiting} 交给跳框问了，第一次打开窗口时不再预告装`)
     }
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
       const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
@@ -1723,7 +1762,7 @@ if (!hasSingleInstanceLock) {
       return issue()
     }
     const accountService = accounts.client
-    // 余额跌破 5 美元、花费突然变多这两条提醒由主进程判断（balance-alerts.ts），界面关着时也照样提醒。
+    // 余额跌破 5 美元、余额到了 $0、花费突然变多这几条提醒由主进程判断（balance-alerts.ts），界面关着时也照样提醒。
     const balanceAlerts = createBalanceAlerts({
       notify: (kind, eventKey, notice) => { hostNotifier()({ activity: kind, eventKey, ...(notice ? { detail: notice } : {}) }) },
       readBaseline: () => readSpendBaseline({
@@ -1731,8 +1770,9 @@ if (!hasSingleInstanceLock) {
         getUsage: (query) => accountService.getUsage(query),
       }),
       ...createSpendSpikeRecordStore(managerDataDirectory),
+      emptyRecord: createEmptyBalanceRecordStore(managerDataDirectory),
     })
-    // 托盘余额和两条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
+    // 托盘余额和几条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
     const observeAccountBalance = (balance: AccountBalance) => {
       latestTrayBalance = balance
       applicationTray?.updateSnapshot()
@@ -1747,7 +1787,10 @@ if (!hasSingleInstanceLock) {
         quotaPerUnit: balance.quotaPerUnit,
         at,
         supportsUsage: accountService.capabilities.supportsUsage,
-        subscribed: resolveUsableSubscription(latestTraySubscription, { now: at, quotaPerUnit: balance.quotaPerUnit }) !== null,
+        // 订阅跟着余额读回来以后才读（界面那边），换账号时清空：还没读到就是 null，不当作没有。
+        subscribed: !accountService.capabilities.supportsSubscriptions ? false
+          : latestTraySubscription === null ? null
+            : resolveUsableSubscription(latestTraySubscription, { now: at, quotaPerUnit: balance.quotaPerUnit }) !== null,
       }).catch((cause: unknown) => runtimeLog.exception('account', 'balance-alert.failed', cause))
     }
     readBillingAccountScope = () => {
@@ -1759,10 +1802,82 @@ if (!hasSingleInstanceLock) {
       const state = accountService.getSessionState()
       return { authenticated: state.authenticated && Boolean(state.account), userId: state.account?.userId }
     })
+    // 外部客户端归属记在谁名下：站点加 userId。换账号以后认上一个账号那份（已知37）也照这个写法拼。
+    function externalClientOwner(siteId: string, userId: number): string {
+      return JSON.stringify([siteId, userId])
+    }
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
-      return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
+      return state.authenticated && state.account ? externalClientOwner(accounts.getSiteId(), state.account.userId) : null
     }
+    // 匿名使用统计（usage-stats.ts，yoyo 10-26 选的「推荐档」）：每天最多发成一次版本、系统、装了哪些工具、
+    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关是设置「隐私数据」里的「匿名使用统计」，
+    // 存在系统界面设置那份文件里；读不出来按关算，同崩溃上报。
+    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
+    const usageStatsEnabled = (): boolean => {
+      let preference: boolean | undefined
+      try {
+        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
+      } catch {
+        return false
+      }
+      return shouldSendUsageStats({
+        packaged: app.isPackaged,
+        localBuild: applicationPackage.xingmangLocalBuild === true,
+        env: process.env,
+        preference,
+      })
+    }
+    const usageStats = createUsageStatsReporter({
+      filePath: path.join(managerDataDirectory, 'usage-stats.json'),
+      isEnabled: usageStatsEnabled,
+      collect: async () => {
+        const siteId = accounts.getSiteId()
+        const accountState = accountService.getSessionState()
+        // 只读首页检测已经拿到的：没有就拿上次落盘的那份，都没有就写「没检测到」，不另起检测。
+        const scan = latestTraySystem
+          ?? await (systemService.recentScan(24 * 60 * 60 * 1000) ?? systemService.cachedScan({ startScan: false })).catch(() => null)
+        const externalClients = systemService.getLastExternalClients() ?? await systemService.cachedExternalClients().catch(() => [])
+        return {
+          appVersion: app.getVersion(),
+          os: resolveUsageOs({
+            platform: process.platform,
+            release: os.release(),
+            systemVersion: process.platform === 'darwin' ? process.getSystemVersion() : null,
+          }),
+          arch: process.arch,
+          account: usageAccountKind(siteId, accountState.authenticated && Boolean(accountState.account)),
+          route: usageRouteChoice(relayRouting, siteId),
+          autoUpdate: systemService.readStoredConfig().autoUpdate !== false,
+          update: resolveUsageUpdateState(pendingUpdateRecord, app.getVersion()),
+          tools: usageToolInventory(scan, externalClients),
+        }
+      },
+      fetchImpl: (url, init) => chromiumSessionFetch(session.defaultSession)(url, init),
+      onSendFailure: (error) => {
+        const reason = classifyNetworkFailure(error)
+        runtimeLog.log('info', 'usage-stats', 'send.failed', '匿名使用统计这次没发出去，过一会儿再试', reason ? { networkFailure: reason } : undefined)
+      },
+      onLocalFailure: (error) => { runtimeLog.exception('usage-stats', 'local.failed', error) },
+    })
+    noteUsageEvent = (event) => { usageStats.record(event) }
+    if (unexpectedExit) usageStats.record({ kind: 'hang', hang: 'unexpectedExit' })
+    usageStats.start()
+    // 只在星芒有窗口在前台时量主进程卡没卡住：后台被系统放慢的不算，也不在后台空转。
+    const mainStallMonitor = createMainStallMonitor({ onStall: () => { usageStats.record({ kind: 'hang', hang: 'stall' }) } })
+    const resumeStallMonitor = () => { mainStallMonitor.resume() }
+    const pauseStallMonitor = () => { mainStallMonitor.pause() }
+    app.on('browser-window-focus', resumeStallMonitor)
+    app.on('browser-window-blur', pauseStallMonitor)
+    // 最先停：后面那些步骤退出时报的错、窗口没响应都不算客户碰到的。
+    quitCleanup.add('usage-stats', () => {
+      app.off('browser-window-focus', resumeStallMonitor)
+      app.off('browser-window-blur', pauseStallMonitor)
+      mainStallMonitor.stop()
+      usageStats.stop()
+      noteUsageEvent = null
+    })
+    let lastUpdateForUsage: UsageUpdateView | null = null
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
     const { businesses, ensureBusiness, subscribeCanvasRuns } = createRealmBusinesses({
       managerDataDirectory,
@@ -1787,6 +1902,14 @@ if (!hasSingleInstanceLock) {
     readCurrentManagedCliKeys = async () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? managedCliKeyStore.read(state.account.userId) : []
+    }
+    // 换了账号以后外部客户端跟着换 Key 时读（已知37）：当前站别的账号的那份缓存。
+    readOtherManagedCliKeyAccounts = async () => {
+      const state = accountService.getSessionState()
+      if (!state.authenticated || !state.account) return []
+      const siteId = accounts.getSiteId()
+      const others = await managedCliKeyStore.readOtherAccounts(state.account.userId)
+      return others.map((entry) => ({ owner: externalClientOwner(siteId, entry.userId), keys: entry.keys }))
     }
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
@@ -2068,6 +2191,9 @@ if (!hasSingleInstanceLock) {
       externalUrlAllowlist,
       updaterService,
       broadcastUpdate: (snapshot) => {
+        const usageEvent = usageEventForUpdate(lastUpdateForUsage, snapshot)
+        lastUpdateForUsage = snapshot
+        if (usageEvent) usageStats.record(usageEvent)
         if (shouldLogUpdateState(snapshot)) {
           runtimeLog.log(snapshot.error ? 'error' : 'info', 'updater', 'state.changed', `主程序更新状态：${snapshot.phase}`, buildUpdateStateLogDetail(snapshot))
         }
@@ -2127,6 +2253,10 @@ if (!hasSingleInstanceLock) {
         void updaterService.autoUpdateChanged().catch((cause: unknown) => {
           runtimeLog.exception('updater', 'auto.download.failed', cause)
         })
+      },
+      observeOperation: (operation) => {
+        const usageEvent = usageEventForOperation(operation)
+        if (usageEvent) usageStats.record(usageEvent)
       },
       onRendererError: (error) => {
         crashReporter.report({
@@ -2327,7 +2457,6 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       getState: () => updaterService.getState(),
       autoUpdate: () => updaterService.autoUpdateEnabled(),
-      downloadedAtLaunch: pendingUpdateAtLaunch.downloadedVersion,
       standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
       unattended: () => canInstallUnattended({
         platform: process.platform,
@@ -2345,6 +2474,8 @@ if (!hasSingleInstanceLock) {
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'
+        // 先撤，再叫出窗口：窗口第一次显示时会把等着开窗口的那一版交给打开时装。
+        withdrawLaunchInstall()
         // 挂在隐藏窗口上的框用户看不见：窗口缩着时先叫出来，点了「稍后再说」再照原样缩回去。
         const wasMinimized = mainWindow.isMinimized()
         const wasHidden = !wasMinimized && !mainWindow.isVisible()
@@ -2371,6 +2502,8 @@ if (!hasSingleInstanceLock) {
       installNow: async () => {
         if (await confirmUpdateInstall?.() ?? true) updaterService.install()
       },
+      // 闲时装之前同退出时装一样现读一次撤回名单，最多等几秒由跳框器自己掐。
+      refreshServiceStatus: async () => { await serviceStatusMonitor?.refresh() },
       // 照开机自启时的后台装办：先把「试过了」写稳，安装器把新版本拉起来时照旧待在后台（isRelaunchAfterBackgroundInstall）。
       installWhileIdle: async (version) => {
         pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version, backgroundInstall: { version, startedAt: Date.now() } }

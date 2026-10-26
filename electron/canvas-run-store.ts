@@ -9,6 +9,7 @@ import {
 } from './safe-local-data'
 import {
   canvasRunContractVersion,
+  canvasRunKernelOnlyNodeLabels,
   type CanvasRunAsset,
   type CanvasRunAssetLineage,
   type CanvasRunAssetManifestEntry,
@@ -26,10 +27,14 @@ const FILE_LABEL = '画布运行记录'
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const PROJECT_ID_PATTERN = /^[a-f0-9-]{36}$/
+// Kernel-only kinds are listed although nothing caches them yet: once a later
+// release adds their executors, a rollback to this one must still read its
+// cache instead of treating the whole run file as damaged (#1392).
 const CACHEABLE_NODE_KINDS = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
   'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot',
+  ...Object.keys(canvasRunKernelOnlyNodeLabels) as CanvasRunNodeKind[],
 ])
 const CANVAS_RUN_NODE_STAGES = new Set([
   'validating', 'resolving-cache', 'waiting-slot', 'submitting', 'processing', 'downloading', 'saving',

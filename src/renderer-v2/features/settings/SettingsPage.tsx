@@ -1009,13 +1009,14 @@ export function SettingsPage({
           onChange={(enabled) => void update({ crashReporting: enabled })}
         />,
       ),
+      // 没碰过 = 开（主进程 usage-stats.ts）；本机只有客户亲手点过才存值。
       'usage-stats': row(
         'usage-stats',
-        '只记下你的选择；目前软件不会收集或上传使用记录',
+        '每天最多发一次版本、系统、装了哪些工具、安装和更新是否成功；不含账号、密钥、文件路径和对话内容，也没有电脑编号',
         systemApi && systemState ? (
           <Switch
             aria-label="匿名使用统计偏好"
-            checked={systemState.preferences.privacy?.anonymousUsage ?? false}
+            checked={systemState.preferences.privacy?.anonymousUsage !== false}
             disabled={Boolean(operation.busy)}
             onChange={(enabled) =>
               void operation.execute(
@@ -1027,7 +1028,7 @@ export function SettingsPage({
                       enabled,
                     ),
                   ),
-                toasted('偏好已保存在本机，没有上传使用记录'),
+                toasted(enabled ? '已打开，每天最多发一次匿名使用情况' : '已关闭，不再发送使用情况'),
               )
             }
           />
