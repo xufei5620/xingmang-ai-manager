@@ -56,6 +56,21 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
+import { classifyNetworkFailure } from './network-failure'
+import { PlatformSettingsStore } from './platform/settings-store'
+import {
+  resolveUsageOs,
+  resolveUsageUpdateState,
+  shouldSendUsageStats,
+  usageAccountKind,
+  usageEventForOperation,
+  usageEventForUpdate,
+  usageRouteChoice,
+  usageToolInventory,
+  type UsageStatsEvent,
+  type UsageUpdateView,
+} from './usage-stats'
+import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-reporter'
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -479,11 +494,20 @@ function createWindow(
     },
     onError: (cause) => { runtimeLog.exception('renderer', 'window.unresponsive.failed', cause) },
   })
+  // 同一次没响应 Electron 会连着报好几回，匿名使用统计只算一次，恢复以后再算下一次。
+  let unresponsiveCounted = false
   window.on('unresponsive', () => {
     runtimeLog.log('warn', 'renderer', 'window.unresponsive', '应用窗口暂时无响应')
+    if (!unresponsiveCounted) {
+      unresponsiveCounted = true
+      noteUsageEvent?.({ kind: 'hang', hang: 'unresponsive' })
+    }
     responsiveness.handleUnresponsive()
   })
-  window.on('responsive', () => { responsiveness.handleResponsive() })
+  window.on('responsive', () => {
+    unresponsiveCounted = false
+    responsiveness.handleResponsive()
+  })
   window.once('closed', () => { responsiveness.dispose() })
 
   const devServerUrl = !app.isPackaged ? process.env.VITE_DEV_SERVER_URL : undefined
@@ -606,6 +630,8 @@ async function presentStartupFailure(error: unknown, logPath: string | null): Pr
 // launch) is simply dropped: the reporter must never become a second source
 // of startup errors.
 let reportCrashSendFailure: ((error: unknown) => void) | null = null
+// 匿名使用统计（usage-stats.ts）建得比主窗口晚一点；在那之前、和退出以后，窗口没响应就不数。
+let noteUsageEvent: ((event: UsageStatsEvent) => void) | null = null
 
 /**
  * 一个 Chromium 会话的 fetch。net.fetch 碰到 redirect: 'manual' 不交回跳转，直接报「Redirect was
@@ -1696,6 +1722,73 @@ if (!hasSingleInstanceLock) {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
     }
+    // 匿名使用统计（usage-stats.ts，yoyo 10-26 选的「推荐档」）：每天最多发成一次版本、系统、装了哪些工具、
+    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关是设置「隐私数据」里的「匿名使用统计」，
+    // 存在系统界面设置那份文件里；读不出来按关算，同崩溃上报。
+    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
+    const usageStatsEnabled = (): boolean => {
+      let preference: boolean | undefined
+      try {
+        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
+      } catch {
+        return false
+      }
+      return shouldSendUsageStats({
+        packaged: app.isPackaged,
+        localBuild: applicationPackage.xingmangLocalBuild === true,
+        env: process.env,
+        preference,
+      })
+    }
+    const usageStats = createUsageStatsReporter({
+      filePath: path.join(managerDataDirectory, 'usage-stats.json'),
+      isEnabled: usageStatsEnabled,
+      collect: async () => {
+        const siteId = accounts.getSiteId()
+        const accountState = accountService.getSessionState()
+        // 只读首页检测已经拿到的：没有就拿上次落盘的那份，都没有就写「没检测到」，不另起检测。
+        const scan = latestTraySystem
+          ?? await (systemService.recentScan(24 * 60 * 60 * 1000) ?? systemService.cachedScan({ startScan: false })).catch(() => null)
+        const externalClients = systemService.getLastExternalClients() ?? await systemService.cachedExternalClients().catch(() => [])
+        return {
+          appVersion: app.getVersion(),
+          os: resolveUsageOs({
+            platform: process.platform,
+            release: os.release(),
+            systemVersion: process.platform === 'darwin' ? process.getSystemVersion() : null,
+          }),
+          arch: process.arch,
+          account: usageAccountKind(siteId, accountState.authenticated && Boolean(accountState.account)),
+          route: usageRouteChoice(relayRouting, siteId),
+          autoUpdate: systemService.readStoredConfig().autoUpdate !== false,
+          update: resolveUsageUpdateState(pendingUpdateRecord, app.getVersion()),
+          tools: usageToolInventory(scan, externalClients),
+        }
+      },
+      fetchImpl: (url, init) => chromiumSessionFetch(session.defaultSession)(url, init),
+      onSendFailure: (error) => {
+        const reason = classifyNetworkFailure(error)
+        runtimeLog.log('info', 'usage-stats', 'send.failed', '匿名使用统计这次没发出去，过一会儿再试', reason ? { networkFailure: reason } : undefined)
+      },
+      onLocalFailure: (error) => { runtimeLog.exception('usage-stats', 'local.failed', error) },
+    })
+    noteUsageEvent = (event) => { usageStats.record(event) }
+    if (unexpectedExit) usageStats.record({ kind: 'hang', hang: 'unexpectedExit' })
+    usageStats.start()
+    // 只在星芒有窗口在前台时量主进程卡没卡住：后台被系统放慢的不算，也不在后台空转。
+    const mainStallMonitor = createMainStallMonitor({ onStall: () => { usageStats.record({ kind: 'hang', hang: 'stall' }) } })
+    const resumeStallMonitor = () => { mainStallMonitor.resume() }
+    const pauseStallMonitor = () => { mainStallMonitor.pause() }
+    app.on('browser-window-focus', resumeStallMonitor)
+    app.on('browser-window-blur', pauseStallMonitor)
+    quitCleanup.add('usage-stats', () => {
+      app.off('browser-window-focus', resumeStallMonitor)
+      app.off('browser-window-blur', pauseStallMonitor)
+      mainStallMonitor.stop()
+      usageStats.stop()
+      noteUsageEvent = null
+    })
+    let lastUpdateForUsage: UsageUpdateView | null = null
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
     const { businesses, ensureBusiness, subscribeCanvasRuns } = createRealmBusinesses({
       managerDataDirectory,
@@ -2005,6 +2098,9 @@ if (!hasSingleInstanceLock) {
       externalUrlAllowlist,
       updaterService,
       broadcastUpdate: (snapshot) => {
+        const usageEvent = usageEventForUpdate(lastUpdateForUsage, snapshot)
+        lastUpdateForUsage = snapshot
+        if (usageEvent) usageStats.record(usageEvent)
         if (shouldLogUpdateState(snapshot)) {
           runtimeLog.log(snapshot.error ? 'error' : 'info', 'updater', 'state.changed', `主程序更新状态：${snapshot.phase}`, buildUpdateStateLogDetail(snapshot))
         }
@@ -2059,6 +2155,10 @@ if (!hasSingleInstanceLock) {
         void updaterService.autoUpdateChanged().catch((cause: unknown) => {
           runtimeLog.exception('updater', 'auto.download.failed', cause)
         })
+      },
+      observeOperation: (operation) => {
+        const usageEvent = usageEventForOperation(operation)
+        if (usageEvent) usageStats.record(usageEvent)
       },
       onRendererError: (error) => {
         crashReporter.report({

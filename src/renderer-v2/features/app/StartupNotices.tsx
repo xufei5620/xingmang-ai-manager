@@ -18,6 +18,7 @@ const startupNoticeRank: Record<StartupCheckId, number> = {
   'display-compat': 0,
   'display-relaunch': 0,
   'crash-reporting': 0,
+  'usage-stats': 0,
   'unexpected-exit': 1,
   'vault-recovered': 1,
   'settings-save': 1,

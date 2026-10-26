@@ -28,6 +28,7 @@
 - `startup-failure.ts` — 启动出错时给小白看的弹框：按 errno 链分成磁盘满 / 被杀毒软件占着 / 安装不完整 / 其他，原文只在点「复制错误信息」时出去且先抹用户目录与密钥（I13）
 - `unexpected-exit.ts` — 主进程未捕获异常时不弹 Electron 的英文框：记一笔、自动重开一次，下次打开用中文说明并给「复制给客服」；10 分钟内已重开过就不再重开，避免窗口一闪一闪
 - `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关
+- `usage-stats.ts` / `usage-stats-reporter.ts` — 匿名使用统计（每天打卡，2026-10-26 yoyo 选的推荐档）。前者是纯函数：一天那条地址的每一段都从固定缩写表或版本号样式来，报错原文只在内存里归成五类之一，开关判定、计数文件的解析；后者负责本机计数文件（`safe-local-data` 原子写）和发送（两个固定地址、一天最多成功一次最多试三次、不带 cookie、拒绝重定向、超时、读回包限量，I10），另有主进程卡顿计时。开关是系统界面设置里的 `privacy.anonymousUsage`，没碰过 = 开；工作流解码在 `scripts/update-feed-stats.cjs`
 
 ## 诊断、日志与反馈
 - `diagnostics.ts` — **「检查」页的总入口**：`runDiagnostics` 先建一份共用上下文（`diagnostics-context.ts`），再按固定次序把下面几类检查排起来同时跑（每项单独限时，超时或出错只算这一项，报告里的文字一律再脱敏一遍），收尾时做两处跨项调和（证书那项跟着网络那项、Node.js 那两项跟着有没有装命令行工具），再数各档多少项。报告的类型、`DiagnosticsDependencies`（缺省实现和测试替身的注入口）、检查页「打开文件夹」的名字也在这里。#1070 第 9 步把各类检查按类别拆进了下面几个 `diagnostics-*.ts`，它们只 import 这里的类型；原来从这里导出的名字照旧从这里转出，调用方不用改

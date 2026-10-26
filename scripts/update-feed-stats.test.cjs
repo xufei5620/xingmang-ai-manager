@@ -11,6 +11,7 @@ const {
   networkOf,
   parseDays,
   parseInstallerPath,
+  parseUsagePath,
   planWindow,
   summarizeInstallerDownloads,
   summarizeStaleMachines,
@@ -83,9 +84,12 @@ function failedRow(file, edgeResponseStatus, count, sampleInterval = 1) {
   return { count, avg: { sampleInterval }, dimensions: { clientRequestPath: `/xingmang-manager/${file}`, edgeResponseStatus } }
 }
 
+const USAGE_FILTER = '/xingmang-manager/stats/v1/%'
+
 // A stand-in for api.cloudflare.com: answers the zone lookup, the settings query and
-// the grouped query, and records every call for the assertions.
-function createCloudflare({ limits = settings(), groups = () => [], zoneStatus = 200 } = {}) {
+// the grouped query, and records every call for the assertions. The daily check-in
+// query has its own answer, empty unless a test gives one.
+function createCloudflare({ limits = settings(), groups = () => [], usage = () => [], zoneStatus = 200 } = {}) {
   const calls = []
   async function fetchImpl(url, init) {
     calls.push({ url, init })
@@ -98,7 +102,8 @@ function createCloudflare({ limits = settings(), groups = () => [], zoneStatus =
     if (payload.query.includes('settings')) {
       return jsonResponse(200, { data: { viewer: { zones: [{ settings: { httpRequestsAdaptiveGroups: limits } }] } } })
     }
-    return jsonResponse(200, { data: { viewer: { zones: [{ httpRequestsAdaptiveGroups: groups(payload.variables.filter, payload.query) }] } } })
+    const answer = payload.variables.filter.clientRequestPath_like === USAGE_FILTER ? usage : groups
+    return jsonResponse(200, { data: { viewer: { zones: [{ httpRequestsAdaptiveGroups: answer(payload.variables.filter, payload.query) }] } } })
   }
   return { calls, fetchImpl }
 }
@@ -186,7 +191,7 @@ test('the report gives shares per version and platform, never an address or a co
   assert.doesNotMatch(report, /抽样/)
 })
 
-test('only the status file is queried, with the token sent to the Cloudflare API alone and no redirects', async () => {
+test('only the status file and the daily check-ins are queried, with the token sent to the Cloudflare API alone and no redirects', async () => {
   const cloudflare = createCloudflare()
   await collectUpdateFeedStats({ token: TOKEN, days: 2, now, fetchImpl: cloudflare.fetchImpl })
   assert.equal(cloudflare.calls[0].url, 'https://api.cloudflare.com/client/v4/zones?name=shenfengwl.fun')
@@ -197,13 +202,24 @@ test('only the status file is queried, with the token sent to the Cloudflare API
     assert.ok(call.init.signal instanceof AbortSignal)
   }
   const grouped = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body))
-  assert.equal(grouped.length, 2)
-  for (const payload of grouped) {
+  const status = grouped.filter((payload) => payload.variables.filter.clientRequestPath)
+  const usage = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === USAGE_FILTER)
+  assert.equal(grouped.length, 4)
+  assert.equal(status.length, 2)
+  for (const payload of status) {
     assert.equal(payload.variables.zoneTag, ZONE_ID)
     assert.equal(payload.variables.filter.clientRequestPath, '/xingmang-manager/service-status.json')
     assert.match(payload.query, /dimensions \{ userAgent clientIP \}/)
   }
-  assert.deepEqual(grouped.map((payload) => payload.variables.filter.datetime_geq), ['2026-10-06T12:00:00Z', '2026-10-07T12:00:00Z'])
+  assert.deepEqual(status.map((payload) => payload.variables.filter.datetime_geq), ['2026-10-06T12:00:00Z', '2026-10-07T12:00:00Z'])
+  // The check-ins carry everything in the path: no address, no hour, no status code.
+  assert.equal(usage.length, 2)
+  for (const payload of usage) {
+    assert.equal(payload.variables.zoneTag, ZONE_ID)
+    assert.match(payload.query, /dimensions \{ clientRequestPath \}/)
+    assert.equal(Object.keys(payload.variables.filter).sort().join(','), 'clientRequestPath_like,datetime_geq,datetime_lt')
+  }
+  assert.deepEqual(usage.map((payload) => payload.variables.filter.datetime_geq), ['2026-10-06T12:00:00Z', '2026-10-07T12:00:00Z'])
 })
 
 test('a piece that fills a whole page is split in half until every group fits', async () => {
@@ -216,8 +232,8 @@ test('a piece that fills a whole page is split in half until every group fits', 
     },
   })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
-  // 24h -> 12h -> 6h: four pieces of six hours, the later ones see ip-a on 0.2.15.
-  assert.equal(cloudflare.calls.length, 2 + 1 + 2 + 4)
+  // 24h -> 12h -> 6h: four pieces of six hours, the later ones see ip-a on 0.2.15. The check-ins fit in one page.
+  assert.equal(cloudflare.calls.length, 2 + 1 + 2 + 4 + 1)
   assert.match(report, /\| 0\.2\.15 \| 50\.0% \| 0\.0% \| 0\.0% \| \*\*50\.0%\*\* \|/)
   assert.match(report, /\| 0\.2\.14 \| 50\.0% \| 0\.0% \| 0\.0% \| \*\*50\.0%\*\* \|/)
 })
@@ -625,7 +641,7 @@ test('the report follows installer downloads by hour and states its scope, still
   const status = grouped.filter((payload) => payload.variables.filter.clientRequestPath)
   const installers = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === '/xingmang-manager/XingMang-AI-Manager-%')
   const manifests = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === '/xingmang-manager/latest%.yml')
-  assert.equal(grouped.length, 3)
+  assert.equal(grouped.length, 4)
   assert.equal(status.length, 1)
   assert.equal(installers.length, 1)
   assert.equal(manifests.length, 1)
@@ -662,10 +678,158 @@ test('without hourly groups the installer section says it cannot be worked out a
   const cloudflare = createCloudflare({ groups: () => [row(windows15, 'ip-a')] })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   const grouped = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body))
-  assert.equal(grouped.length, 1)
+  // The status file, and the check-ins, which need the path alone.
+  assert.equal(grouped.length, 2)
   assert.equal(grouped[0].variables.filter.clientRequestPath, '/xingmang-manager/service-status.json')
+  assert.equal(grouped[1].variables.filter.clientRequestPath_like, USAGE_FILTER)
   assert.match(report, /### 下过新版安装包的电脑后来怎样/)
   assert.match(report, /查不到来源 IP、请求路径或小时，这一项没法算/)
+})
+
+// The same sample electron/usage-stats.test.ts builds with buildUsageStatsPath: if either side
+// renames a code, one of the two tests goes red.
+const usageSample = fs.readFileSync(path.join(root, 'scripts', 'fixtures', 'usage-stats-path.txt'), 'utf8').trim()
+
+function usagePath({
+  day = '20261007', app = '0.2.22', os = 'w11', arch = 'x64', account = 'xm', route = 'a2', auto = '1', update = 'ok',
+  tools = 'cc~2.1.310_cx~0_gk~x_gm~0_cdx~0_cd~0_wb~0_oc~0', installs = '0', updates = '0', hangs = '0',
+} = {}) {
+  return `/xingmang-manager/stats/v1/d-${day}/a-${app}/o-${os}/c-${arch}/k-${account}/r-${route}/u-${auto}/s-${update}/t-${tools}/i-${installs}/f-${updates}/h-${hangs}`
+}
+
+function usageRow(clientRequestPath, count = 1, sampleInterval = 1) {
+  return { count, avg: { sampleInterval }, dimensions: { clientRequestPath } }
+}
+
+test('a daily check-in path decodes field by field, matching the sample the client builds', () => {
+  const absent = { seen: false, installed: false, version: null }
+  const missing = { seen: true, installed: false, version: null }
+  const present = { seen: true, installed: true, version: null }
+  assert.deepEqual(parseUsagePath(usageSample), {
+    day: '20261027',
+    dayStart: Date.parse('2026-10-27T00:00:00Z'),
+    app: '0.2.22',
+    os: 'w11',
+    platform: 'windows',
+    arch: 'x64',
+    account: 'xm',
+    route: 'a2',
+    autoUpdate: true,
+    update: { state: 'dl', version: '0.2.23' },
+    tools: {
+      cc: { seen: true, installed: true, version: '2.1.310' },
+      cx: missing,
+      gk: absent,
+      gm: present,
+      cdx: missing,
+      cd: present,
+      wb: absent,
+      oc: missing,
+    },
+    installs: [{ code: 'cc', category: 'net', count: 2 }, { code: 'nd', category: 'mac', count: 1 }],
+    updates: [{ code: 'dl', category: 'net', count: 1 }],
+    hangs: [{ code: 's', category: null, count: 3 }, { code: 'w', category: null, count: 1 }],
+  })
+  // Installed with a version the client could not read.
+  assert.deepEqual(parseUsagePath(usageSample.replace('cc~2.1.310', 'cc~v')).tools.cc, present)
+  // Nothing detected and nothing counted is still a day of use.
+  assert.equal(parseUsagePath(usagePath({ app: 'x', os: 'x', arch: 'x', account: 'no', route: 'x', auto: '0', tools: 'cc~x_cx~x_gk~x_gm~x_cdx~x_cd~x_wb~x_oc~x' })).platform, 'other')
+})
+
+test('a check-in path with anything outside the vocabulary is not counted at all', () => {
+  const variants = [
+    usageSample.replace('/v1/', '/v2/'),
+    usageSample.replace('d-20261027', 'd-20261332'),
+    usageSample.replace('a-0.2.22', 'a-yoyo'),
+    usageSample.replace('o-w11', 'o-w12'),
+    usageSample.replace('c-x64', 'c-riscv'),
+    usageSample.replace('k-xm', 'k-alice'),
+    usageSample.replace('r-a2', 'r-a3'),
+    usageSample.replace('u-1', 'u-2'),
+    usageSample.replace('s-dl~0.2.23', 's-dl~latest'),
+    usageSample.replace('cc~2.1.310', 'cc~sk-abc'),
+    usageSample.replace('gm~1', 'gm~2'),
+    usageSample.replace('_oc~0', ''),
+    usageSample.replace('cc~2.1.310_cx~0', 'cx~0_cc~2.1.310'),
+    usageSample.replace('i-cc~net~2', 'i-cc~net~100'),
+    usageSample.replace('i-cc~net~2', 'i-cc~net~0'),
+    usageSample.replace('i-cc~net~2', 'i-zz~net~2'),
+    usageSample.replace('i-cc~net~2', 'i-cc~disk~2'),
+    usageSample.replace('h-s~3', 'h-s~net~3'),
+    usageSample.replace('/f-dl~net~1', ''),
+    usageSample.replace('/k-xm/r-a2/', '/r-a2/k-xm/'),
+    `${usageSample}/extra`,
+    '/xingmang-manager/stats/v1/',
+    '/xingmang-manager/service-status.json',
+    null,
+  ]
+  for (const variant of variants) assert.equal(parseUsagePath(variant), null, String(variant))
+})
+
+test('the check-in section reads one whole day for shares and every day for rates, without counts', async () => {
+  const cloudflare = createCloudflare({
+    usage: (filter) => (filter.datetime_geq !== '2026-10-06T12:00:00Z' ? [] : [
+      // Three Windows 11 machines seen once under one-in-three sampling.
+      usageRow(usagePath(), 1, 3),
+      usageRow(usagePath({
+        os: 'm15', arch: 'arm64', account: 'api', route: 'a1', auto: '0', update: 'dl~0.2.23',
+        tools: 'cc~v_cx~0.164.0_gk~1.0.70_gm~1_cdx~1_cd~0_wb~0_oc~0', installs: 'cx~net~2', hangs: 's~1',
+      })),
+      usageRow(usagePath({ os: 'w10', account: 'no', route: 'm1', update: 'ff~0.2.23', installs: 'cc~src~1_nd~mac~1', updates: 'ins~oth~1', hangs: 'w~1' })),
+      // The day before is only half inside the window: counted in the rates, not in the day's shares.
+      usageRow(usagePath({ day: '20261006', os: 'w10', installs: 'cc~net~3' })),
+      usageRow('/xingmang-manager/stats/v1/d-20261007/a-hello'),
+    ]),
+  })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 2, now, fetchImpl: cloudflare.fetchImpl })
+  const section = report.slice(report.indexOf('## 每天打卡（匿名使用统计）'))
+  assert.ok(report.indexOf('## 每天打卡（匿名使用统计）') > 0)
+
+  assert.match(section, /### 2026-10-07 这一天的电脑\n/)
+  assert.match(section, /\| 0\.2\.22 \| 80\.0% \| 20\.0% \| 0\.0% \| \*\*100\.0%\*\* \|/)
+  assert.match(section, /- \*\*系统\*\*：Windows 11 60\.0%、Windows 10 20\.0%、macOS 15 20\.0%\n/)
+  assert.match(section, /- \*\*芯片\*\*：x64 80\.0%、arm64 20\.0%\n/)
+  assert.match(section, /- \*\*账号\*\*：星芒账号 60\.0%、历史账号 20\.0%、没登录 20\.0%\n/)
+  assert.match(section, /- \*\*线路\*\*：自动，正在走线路2 60\.0%、固定线路1 20\.0%、自动，正在走线路1 20\.0%\n/)
+  assert.match(section, /- \*\*自动更新\*\*：开着 80\.0%、关了 20\.0%\n/)
+  assert.match(section, /- \*\*新版装上没有\*\*：没有下好待装的新版 60\.0%、下好了还没装 0\.2\.23 20\.0%、试着装过、没装上 0\.2\.23 20\.0%（/)
+  assert.match(section, /\| Claude Code \| 100\.0% \| 2\.1\.310 80\.0% \|/)
+  assert.match(section, /\| Codex \| 20\.0% \| 0\.164\.0 100\.0% \|/)
+  // Grok was only detected on the Mac.
+  assert.match(section, /\| Grok \| 100\.0% \| 1\.0\.70 100\.0% \|/)
+  assert.match(section, /\| Gemini CLI（已下线，老客户留着的） \| 20\.0% \| - \|/)
+  assert.match(section, /这一天打卡的电脑不到 20 台/)
+
+  assert.match(section, /\| 什么 \| 合计 \| Windows \| Mac \| 最多的原因 \|/)
+  assert.match(section, /\| 装 Claude Code 失败 \| 66\.7 \| 80\.0 \| 0\.0 \| 网络 75\.0%、下载源那边出错 25\.0% \|/)
+  assert.match(section, /\| 装 Codex 失败 \| 33\.3 \| 0\.0 \| 200\.0 \| 网络 100\.0% \|/)
+  assert.match(section, /\| 装 Node\.js 失败 \| 16\.7 \| 20\.0 \| 0\.0 \| 电脑本身（磁盘、权限、文件被占用） 100\.0% \|/)
+  assert.match(section, /\| 装 Python 失败 \| 0\.0 \| 0\.0 \| 0\.0 \| - \|/)
+  assert.match(section, /\| 星芒更新：安装失败 \| 16\.7 \| 20\.0 \| 0\.0 \| 其他 100\.0% \|/)
+  assert.match(section, /\| 窗口没响应 \| 16\.7 \| 20\.0 \| 0\.0 \| - \|/)
+  assert.match(section, /\| 整个界面卡住 2 秒以上 \| 16\.7 \| 0\.0 \| 100\.0 \| - \|/)
+  assert.match(section, /打卡加起来不到 20 台·天/)
+
+  assert.match(section, /最多每 3 次记 1 次/)
+  assert.match(section, /另有 14\.3% 的打卡地址认不出/)
+  assert.match(section, /那份转过来的也记在这里（推测/)
+  // Public run pages: shares and rates only, never a count of machines or check-ins.
+  assert.doesNotMatch(section, /\| (?:1|2|3|4|5|6|7) \|/)
+})
+
+test('the check-in section says plainly when there is nothing to read or no way to read it', async () => {
+  const empty = createCloudflare()
+  assert.match(await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: empty.fetchImpl }), /这段时间没有认得出的打卡记录/)
+
+  // Two half days in a one-day window: the busier one stands in, and says so.
+  const halves = createCloudflare({ usage: () => [usageRow(usagePath(), 2), usageRow(usagePath({ day: '20261008' }))] })
+  assert.match(await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: halves.fetchImpl }), /### 2026-10-07 这一天的电脑（这段时间没有一个整天，拿记录最多的那天）/)
+
+  const pathless = createCloudflare({ limits: settings({ availableFields: ['count', 'dimensions_userAgent', 'dimensions_clientIP'] }) })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: pathless.fetchImpl })
+  assert.match(report, /不能按请求路径分，打卡记录没法数/)
+  const grouped = pathless.calls.slice(2).map((call) => JSON.parse(call.init.body))
+  assert.equal(grouped.some((payload) => payload.variables.filter.clientRequestPath_like === USAGE_FILTER), false)
 })
 
 test('the stats workflow only reads, on demand, with the read-only analytics token', () => {

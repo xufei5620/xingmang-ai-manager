@@ -16,6 +16,10 @@
 // 「哪个小时下的」和「之后读状态文件时是哪个版本」对上，分成装上了、还在旧版、没再出现。
 // 0.2.18 起 Windows 走洛杉矶线路时更新和状态文件都改读 xm-direct.solov.cc，Cloudflare
 // 看不到，口径写在报告里。
+//
+// 每天打卡（匿名使用统计）：0.2.22 起开着这一项的客户端每天最多发成一条，内容整个写在更新目录 stats/
+// 下面的地址里（electron/usage-stats.ts），一天一条就是一台电脑。这一项不查 IP，只按地址分；
+// Windows 走洛杉矶线路的也先发到这里，补上面数不到的那一块。
 const { compareReleaseVersions } = require('./update-release-utils.cjs')
 
 const API_ORIGIN = 'https://api.cloudflare.com'
@@ -28,6 +32,30 @@ const INSTALLER_PATH = /^\/xingmang-manager\/XingMang-AI-Manager-(\d{1,6}\.\d{1,
 // electron-updater 每次查更新都先读更新清单：Windows 是 latest.yml，Mac 是 latest-mac.yml。
 const MANIFEST_PATH_PATTERN = '/xingmang-manager/latest%.yml'
 const MANIFEST_PATH = /^\/xingmang-manager\/latest(-mac)?\.yml$/
+// 每天打卡（匿名使用统计，electron/usage-stats.ts 的 buildUsageStatsPath）：0.2.22 起的星芒开着这项时
+// 每天最多发成一条，内容整个写在地址里。下面几张缩写表和那边一一对应，改一边要改另一边；
+// 两边的测试都读 scripts/fixtures/usage-stats-path.txt 这份样例，对不上当场就红。
+const USAGE_PATH_PATTERN = '/xingmang-manager/stats/v1/%'
+const USAGE_PATH_PREFIX = '/xingmang-manager/stats/v1/'
+const USAGE_SEGMENT_LETTERS = ['d', 'a', 'o', 'c', 'k', 'r', 'u', 's', 't', 'i', 'f', 'h']
+const USAGE_APP_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.]{1,30})?$/
+const USAGE_TOOL_VERSION = /^\d{1,6}(?:\.\d{1,6}){0,3}(?:-[0-9A-Za-z.]{1,30})?$/
+const USAGE_INSTALL_TARGETS = [
+  ['cc', 'Claude Code'], ['cx', 'Codex'], ['gk', 'Grok'], ['cdx', 'Codex 桌面端'], ['cd', 'Claude 桌面端'],
+  ['wb', 'WorkBuddy'], ['oc', 'OpenCode'], ['nd', 'Node.js'], ['gt', 'Git'], ['py', 'Python'],
+]
+const USAGE_UPDATE_STEPS = [['chk', '星芒更新：检查失败'], ['dl', '星芒更新：下载失败'], ['ins', '星芒更新：安装失败']]
+const USAGE_HANGS = [
+  ['w', '窗口没响应'], ['s', '整个界面卡住 2 秒以上'], ['ps', '付款页 10 秒以上才打开'], ['pf', '付款页没打开'], ['e', '上次意外退出（闪退）'],
+]
+const USAGE_CATEGORIES = [['mac', '电脑本身（磁盘、权限、文件被占用）'], ['crt', '安全证书'], ['net', '网络'], ['src', '下载源那边出错'], ['oth', '其他']]
+const USAGE_TOOLS = [
+  ['cc', 'Claude Code', 'version'], ['cx', 'Codex', 'version'], ['gk', 'Grok', 'version'], ['gm', 'Gemini CLI（已下线，老客户留着的）', 'flag'],
+  ['cdx', 'Codex 桌面端', 'flag'], ['cd', 'Claude 桌面端', 'flag'], ['wb', 'WorkBuddy', 'flag'], ['oc', 'OpenCode', 'flag'],
+]
+const USAGE_ACCOUNTS = [['xm', '星芒账号'], ['api', '历史账号'], ['no', '没登录']]
+const USAGE_ROUTES = [['a2', '自动，正在走线路2'], ['a1', '自动，正在走线路1'], ['m2', '固定线路2'], ['m1', '固定线路1'], ['x', '看不出']]
+const USAGE_ARCHES = [['x64', 'x64'], ['arm64', 'arm64'], ['ia32', '32 位'], ['x', '看不出']]
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_DAYS = 31
@@ -287,12 +315,23 @@ function manifestQuery() {
 }
 
 // 被拒的请求（状态码 400 以上）只按路径和状态码分：不用对上电脑，不带 IP。上面两项只数没被拒的，
-// Mac 查更新时要是被这边拒了，在那里就成了「没见查过」，得在这里看。
+// Mac 查更新时要是被这边拒了，在那里就成了「没见查过」，得在这里看。每天打卡的地址（stats/ 下面）
+// 本来就是 404，也会落进这一项，按路径认不出是哪类更新请求，直接跳过。
 function failedRequestQuery() {
   return {
     label: '被拒的请求',
     filter: { clientRequestPath_like: '/xingmang-manager/%', edgeResponseStatus_geq: 400 },
     dimensions: ['clientRequestPath', 'edgeResponseStatus'],
+  }
+}
+
+// 每天打卡只按地址分：内容整个在地址里，一台电脑一天一条，不用 IP 也不用小时。
+function usageQuery(limits) {
+  if (!limits.withPath) return null
+  return {
+    label: '每天打卡',
+    filter: { clientRequestPath_like: USAGE_PATH_PATTERN },
+    dimensions: ['clientRequestPath'],
   }
 }
 
@@ -645,6 +684,153 @@ function summarizeUpdateDownloads(statusPieces, installerPieces, manifestPieces 
   }
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function codesOf(table) {
+  return new Set(table.map(([code]) => code))
+}
+
+const USAGE_INSTALL_CODES = codesOf(USAGE_INSTALL_TARGETS)
+const USAGE_STEP_CODES = codesOf(USAGE_UPDATE_STEPS)
+const USAGE_HANG_CODES = codesOf(USAGE_HANGS)
+const USAGE_CATEGORY_CODES = codesOf(USAGE_CATEGORIES)
+
+// 日期按 UTC：客户端按 UTC 分天，Cloudflare 也是。
+function parseUsageDay(value) {
+  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(value)
+  if (!match) return null
+  const start = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  return new Date(start).toISOString().slice(0, 10).replaceAll('-', '') === value ? start : null
+}
+
+// 「代号~原因~次数」或「代号~次数」用 _ 连起来，0 是一项都没有。次数是 1 到 99。
+function parseUsageCounts(value, codes, withCategory) {
+  if (value === '0') return []
+  const items = []
+  for (const item of value.split('_')) {
+    const parts = item.split('~')
+    if (parts.length !== (withCategory ? 3 : 2)) return null
+    const category = withCategory ? parts[1] : null
+    const count = parts[parts.length - 1]
+    if (!codes.has(parts[0]) || (withCategory && !USAGE_CATEGORY_CODES.has(category)) || !/^[1-9]\d?$/.test(count)) return null
+    items.push({ code: parts[0], category, count: Number(count) })
+  }
+  return items
+}
+
+// 版本号；0 = 没装；v = 装了但读不出版本；x = 这次没检测到。桌面端只有 1 / 0 / x。
+function parseUsageTools(value) {
+  const items = value.split('_')
+  if (items.length !== USAGE_TOOLS.length) return null
+  const tools = {}
+  for (const [index, [code, , kind]] of USAGE_TOOLS.entries()) {
+    const separator = items[index].indexOf('~')
+    if (separator < 0 || items[index].slice(0, separator) !== code) return null
+    const token = items[index].slice(separator + 1)
+    if (token === 'x') tools[code] = { seen: false, installed: false, version: null }
+    else if (token === '0') tools[code] = { seen: true, installed: false, version: null }
+    else if (kind === 'flag' ? token === '1' : token === 'v') tools[code] = { seen: true, installed: true, version: null }
+    else if (kind === 'version' && USAGE_TOOL_VERSION.test(token)) tools[code] = { seen: true, installed: true, version: token }
+    else return null
+  }
+  return tools
+}
+
+// ok = 没有下好待装的新版；dl~版本 = 下好了还没装；ff~版本 = 试着装过、没装上。
+function parseUsageUpdate(value) {
+  if (value === 'ok') return { state: 'ok', version: null }
+  const match = /^(dl|ff)~(.+)$/.exec(value)
+  if (!match || (match[2] !== 'x' && !USAGE_APP_VERSION.test(match[2]))) return null
+  return { state: match[1], version: match[2] === 'x' ? null : match[2] }
+}
+
+function usagePlatformOf(os) {
+  if (/^w/.test(os)) return 'windows'
+  if (/^m/.test(os)) return 'mac'
+  return os === 'lx' ? 'linux' : 'other'
+}
+
+/**
+ * 认一条打卡地址，认不出（段数、顺序、哪一个值不在缩写表里）就是 null。地址谁都能请求，
+ * 所以每一段都按缩写表或版本号的样子严格认，认不出的整条不算，不会有别的字混进报告。
+ */
+function parseUsagePath(path) {
+  if (typeof path !== 'string' || !path.startsWith(USAGE_PATH_PREFIX) || path.length > 1500) return null
+  const segments = path.slice(USAGE_PATH_PREFIX.length).split('/')
+  if (segments.length !== USAGE_SEGMENT_LETTERS.length) return null
+  const values = {}
+  for (const [index, letter] of USAGE_SEGMENT_LETTERS.entries()) {
+    if (!segments[index].startsWith(`${letter}-`)) return null
+    values[letter] = segments[index].slice(2)
+  }
+  const dayStart = parseUsageDay(values.d)
+  const app = values.a === 'x' ? null : values.a
+  const update = parseUsageUpdate(values.s)
+  const tools = parseUsageTools(values.t)
+  const installs = parseUsageCounts(values.i, USAGE_INSTALL_CODES, true)
+  const updates = parseUsageCounts(values.f, USAGE_STEP_CODES, true)
+  const hangs = parseUsageCounts(values.h, USAGE_HANG_CODES, false)
+  if (
+    dayStart === null
+    || (app !== null && !USAGE_APP_VERSION.test(app))
+    || !/^(?:w10|w11|wx|m\d{1,2}|mx|lx|x)$/.test(values.o)
+    || !codesOf(USAGE_ARCHES).has(values.c)
+    || !codesOf(USAGE_ACCOUNTS).has(values.k)
+    || !codesOf(USAGE_ROUTES).has(values.r)
+    || !/^[01]$/.test(values.u)
+    || !update || !tools || !installs || !updates || !hangs
+  ) return null
+  return {
+    day: values.d,
+    dayStart,
+    app,
+    os: values.o,
+    platform: usagePlatformOf(values.o),
+    arch: values.c,
+    account: values.k,
+    route: values.r,
+    autoUpdate: values.u === '1',
+    update,
+    tools,
+    installs,
+    updates,
+    hangs,
+  }
+}
+
+/**
+ * 拿哪一天看「这一天的电脑」：统计时段里最后一个整天（UTC）；一个整天都没有（只统计 1 天、
+ * 跨了两个半天）就拿记录最多的那天。
+ */
+function pickUsageDay(records, window) {
+  const weights = new Map()
+  for (const record of records) weights.set(record.day, (weights.get(record.day) || 0) + record.weight)
+  const starts = new Map(records.map((record) => [record.day, record.dayStart]))
+  const complete = [...weights.keys()]
+    .filter((day) => starts.get(day) >= window.start && starts.get(day) + DAY_MS <= window.end)
+    .sort()
+  if (complete.length) return { day: complete[complete.length - 1], complete: true }
+  const busiest = [...weights].sort((left, right) => right[1] - left[1] || (left[0] < right[0] ? 1 : -1))[0]
+  return busiest ? { day: busiest[0], complete: false } : null
+}
+
+/** 每条打卡按抽样倍数折算成几台·天（weight）。返回值里只有认出来的打卡内容，没有 IP（本来也没查）。 */
+function summarizeUsage(usagePieces, window) {
+  const records = []
+  let unrecognized = 0
+  let sampleInterval = 1
+  for (const piece of usagePieces) {
+    for (const row of piece.rows) {
+      const weight = row.count * row.sampleInterval
+      sampleInterval = Math.max(sampleInterval, row.sampleInterval)
+      const record = parseUsagePath(row.path)
+      if (record) records.push({ ...record, weight })
+      else unrecognized += weight
+    }
+  }
+  return { records, unrecognized, sampleInterval, day: pickUsageDay(records, window) }
+}
+
 function formatBeijingTime(milliseconds) {
   return new Date(milliseconds + 8 * 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' ')
 }
@@ -891,7 +1077,170 @@ function renderScope(stats) {
   return lines
 }
 
-function renderReport(stats, window, limits, days, downloads = null) {
+function sumWeights(records) {
+  return records.reduce((sum, record) => sum + record.weight, 0)
+}
+
+function weightsBy(records, labelOf) {
+  const weights = new Map()
+  for (const record of records) {
+    const label = labelOf(record)
+    if (label !== null) weights.set(label, (weights.get(label) || 0) + record.weight)
+  }
+  return weights
+}
+
+// 「标签 占比」从高到低用顿号连起来；limit 只留前几个。
+function shareList(weights, total, limit = Infinity) {
+  const items = [...weights]
+    .filter(([, weight]) => weight > 0)
+    .sort((left, right) => right[1] - left[1] || (left[0] < right[0] ? -1 : 1))
+    .slice(0, limit)
+    .map(([label, weight]) => `${label} ${formatShare(weight, total)}`)
+  return items.join('、') || '-'
+}
+
+function labelFrom(table, code) {
+  const entry = table.find(([id]) => id === code)
+  return entry ? entry[1] : code
+}
+
+function usageOsLabel(os) {
+  const names = { w10: 'Windows 10', w11: 'Windows 11', wx: 'Windows（认不出几）', mx: 'macOS（认不出版本）', lx: 'Linux' }
+  if (names[os]) return names[os]
+  const mac = /^m(\d{1,2})$/.exec(os)
+  return mac ? `macOS ${mac[1]}` : '其他'
+}
+
+function usageUpdateLabel(update) {
+  if (update.state === 'ok') return '没有下好待装的新版'
+  return `${update.state === 'dl' ? '下好了还没装' : '试着装过、没装上'} ${update.version ?? '（认不出版本）'}`
+}
+
+function formatUsageDay(day) {
+  return `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)}`
+}
+
+// 只写每 100 台·天几次，不写次数和台·天数。
+function formatRate(count, machineDays) {
+  return machineDays > 0 ? (count * 100 / machineDays).toFixed(1) : '-'
+}
+
+// 一天一条就是一台电脑，所以这一节和上面按状态文件数的一样只写占比。
+function renderUsageDay(usage) {
+  const records = usage.records.filter((record) => record.day === usage.day.day)
+  const total = sumWeights(records)
+  const machines = new Map()
+  for (const record of records) {
+    if (record.app === null) continue
+    const counts = machines.get(record.app) || { windows: 0, mac: 0, linux: 0, other: 0 }
+    counts[record.platform] += record.weight
+    machines.set(record.app, counts)
+  }
+  const lines = [
+    '',
+    `### ${formatUsageDay(usage.day.day)} 这一天的电脑${usage.day.complete ? '' : '（这段时间没有一个整天，拿记录最多的那天）'}`,
+    '',
+    '按 UTC 分天，也就是北京时间这天早上 8 点到第二天早上 8 点。下面每个数都是占这一天打卡电脑的比例。',
+    '',
+  ]
+  if (machines.size) lines.push('各版本占比：', '', ...renderMachineTable(machines).lines, '')
+  lines.push(
+    `- **系统**：${shareList(weightsBy(records, (record) => usageOsLabel(record.os)), total)}`,
+    `- **芯片**：${shareList(weightsBy(records, (record) => labelFrom(USAGE_ARCHES, record.arch)), total)}`,
+    `- **账号**：${shareList(weightsBy(records, (record) => labelFrom(USAGE_ACCOUNTS, record.account)), total)}`,
+    `- **线路**：${shareList(weightsBy(records, (record) => labelFrom(USAGE_ROUTES, record.route)), total)}`,
+    `- **自动更新**：${shareList(weightsBy(records, (record) => (record.autoUpdate ? '开着' : '关了')), total)}`,
+    `- **新版装上没有**：${shareList(weightsBy(records, (record) => usageUpdateLabel(record.update)), total)}`
+      + '（「试着装过、没装上」是打开时、退出时或后台已经装过这一版，还停在旧版）',
+    '',
+    '| 工具 | 装了的电脑 | 装了的里面最多的版本 |',
+    '|---|---:|---|',
+  )
+  for (const [code, label, kind] of USAGE_TOOLS) {
+    const seen = records.filter((record) => record.tools[code].seen)
+    const installed = seen.filter((record) => record.tools[code].installed)
+    const versions = kind === 'version' ? shareList(weightsBy(installed, (record) => record.tools[code].version), sumWeights(installed), 3) : '-'
+    lines.push(`| ${label} | ${formatShare(sumWeights(installed), sumWeights(seen))} | ${versions} |`)
+  }
+  lines.push('', '「装了的电脑」只算这次检测到了的（首页检测还没跑完的不算）；版本是占装了的电脑的比例。')
+  if (total < SMALL_SAMPLE) lines.push('', `这一天打卡的电脑不到 ${SMALL_SAMPLE} 台，比例只能粗看。`)
+  return lines
+}
+
+function renderUsageRates(usage) {
+  const records = usage.records
+  const columns = [['total', '合计'], ...PLATFORMS.filter(([id]) => records.some((record) => record.platform === id))]
+  const machineDays = Object.fromEntries(columns.map(([id]) => [id, sumWeights(id === 'total' ? records : records.filter((record) => record.platform === id))]))
+  const lines = [
+    '',
+    '### 出错和卡住（每 100 台·天几次）',
+    '',
+    '这段时间的打卡加在一起算：一台电脑开了一天算 1 台·天，每格是平均每 100 台·天出了几次。',
+    '',
+    `| 什么 | ${columns.map(([, label]) => label).join(' | ')} | 最多的原因 |`,
+    `|---|${columns.map(() => '---:').join('|')}|---|`,
+  ]
+  function row(label, itemsOf, withReasons) {
+    const counts = Object.fromEntries(columns.map(([id]) => [id, 0]))
+    const reasons = new Map()
+    for (const record of records) {
+      for (const item of itemsOf(record)) {
+        const weighted = item.count * record.weight
+        counts.total += weighted
+        counts[record.platform] += weighted
+        if (withReasons) reasons.set(labelFrom(USAGE_CATEGORIES, item.category), (reasons.get(labelFrom(USAGE_CATEGORIES, item.category)) || 0) + weighted)
+      }
+    }
+    lines.push(`| ${label} | ${columns.map(([id]) => formatRate(counts[id], machineDays[id])).join(' | ')} | ${withReasons ? shareList(reasons, counts.total, 2) : '-'} |`)
+  }
+  for (const [code, label] of USAGE_INSTALL_TARGETS) row(`装 ${label} 失败`, (record) => record.installs.filter((item) => item.code === code), true)
+  for (const [code, label] of USAGE_UPDATE_STEPS) row(label, (record) => record.updates.filter((item) => item.code === code), true)
+  for (const [code, label] of USAGE_HANGS) row(label, (record) => record.hangs.filter((item) => item.code === code), false)
+  lines.push(
+    '',
+    '- 安装失败不算客户自己点了取消的。原因是星芒按报错归的类，报错原文不发。',
+    '- 「星芒更新：检查失败」只算客户自己点的那次，开机和每 3 小时自动查的没查成不算；自动装没装上看上面「新版装上没有」。',
+    '- 「整个界面卡住」只在星芒窗口在前台时量，2 到 30 秒算一次（再长多半是电脑睡着了）；「窗口没响应」是系统报的那种，同一次只算一回。',
+    '- 付款两项只算点了充值或订阅以后打开付款页那一步。',
+    '- 每种一天最多记 99 次。没发出去的攒着，最多留 7 天，算在发出去的那天。',
+  )
+  if (machineDays.total < SMALL_SAMPLE) lines.push(`- 这段时间的打卡加起来不到 ${SMALL_SAMPLE} 台·天，只能粗看。`)
+  return lines
+}
+
+function renderUsageScope(usage) {
+  const lines = [
+    '',
+    '### 打卡的口径',
+    '',
+    '- 只有 0.2.22 起、开着这一项、这天开过星芒的电脑。0.2.21 及更早的不发，亲手关掉的不发，所以和上面按状态文件数的不是同一批电脑，不能直接比。',
+    '- 先发到 updatesnew.shenfengwl.fun，连不上才发洛杉矶那份（xm-direct.solov.cc），那份转过来的也记在这里（推测，测试包核过再删这句）。'
+      + '一天最多试 3 次，一直连不上的电脑那天缺一条。',
+    '- 只有打包好的正式版发，开发版、自己编的版本和 GitHub Actions 里真装真开的都不发。',
+  ]
+  if (usage.sampleInterval > 1) lines.push(`- 这段时间 Cloudflare 是抽样记的（最多每 ${Math.round(usage.sampleInterval)} 次记 1 次），每条按抽样倍数折算，比例有误差。`)
+  if (usage.unrecognized) {
+    lines.push(`- 另有 ${formatShare(usage.unrecognized, usage.unrecognized + sumWeights(usage.records))} 的打卡地址认不出（格式不对，多半不是星芒发的），没算进上面。`)
+  }
+  return lines
+}
+
+function renderUsageSection(usage) {
+  const lines = ['', '## 每天打卡（匿名使用统计）', '']
+  if (!usage) return [...lines, '这个套餐的 Cloudflare 统计不能按请求路径分，打卡记录没法数。']
+  lines.push(
+    '0.2.22 起的星芒开着「匿名使用统计」（设置 → 隐私数据，默认开）时，每天最多发成一条：版本、系统、装了哪些工具、'
+      + '安装和更新出没出错、卡住几次，不带账号和电脑编号。一天只发成一条是客户端自己保证的，所以一天一条就是一台电脑。'
+      + 'Windows 走线路2 的也先发到这里，和上面那几节不一样，数得到。',
+  )
+  if (usage.records.length) lines.push(...renderUsageDay(usage), ...renderUsageRates(usage))
+  else lines.push('', '这段时间没有认得出的打卡记录：0.2.22 还没发出去，或者装了的都关了这一项。')
+  lines.push(...renderUsageScope(usage))
+  return lines
+}
+
+function renderReport(stats, window, limits, days, downloads = null, usage = undefined) {
   const lines = ['## 星芒各版本的占比', '']
   const covered = (window.end - window.start) / (24 * 60 * 60 * 1000)
   lines.push(`统计时段：北京时间 ${formatBeijingTime(window.start)} 至 ${formatBeijingTime(window.end)}（${Number.isInteger(covered) ? covered : covered.toFixed(1)} 天）`)
@@ -916,6 +1265,8 @@ function renderReport(stats, window, limits, days, downloads = null) {
   }
   const recognized = [...stats.requests.values()].reduce((sum, count) => sum + count, 0)
   if (stats.unrecognized) lines.push('', `另有 ${formatShare(stats.unrecognized, recognized + stats.unrecognized)} 的请求看不出版本（浏览器直接打开、爬虫等），没算进上面的表。`)
+  // undefined 是没查（直接调用时），null 是这个套餐查不了。
+  if (usage !== undefined) lines.push(...renderUsageSection(usage))
   return `${lines.join('\n')}\n`
 }
 
@@ -940,7 +1291,9 @@ async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl
       limits.withStatus ? await queryWindow(client, zoneTag, limits, window, failedRequestQuery()) : null,
     )
     : null
-  return renderReport(aggregateStats(pieces, limits.withIp), window, limits, days, downloads)
+  const usageSpec = usageQuery(limits)
+  const usage = usageSpec ? summarizeUsage(await queryWindow(client, zoneTag, limits, window, usageSpec), window) : null
+  return renderReport(aggregateStats(pieces, limits.withIp), window, limits, days, downloads, usage)
 }
 
 function parseArguments(argv) {
@@ -971,9 +1324,11 @@ module.exports = {
   parseDays,
   networkOf,
   parseInstallerPath,
+  parseUsagePath,
   planWindow,
   renderReport,
   summarizeInstallerDownloads,
   summarizeStaleMachines,
   summarizeUpdateDownloads,
+  summarizeUsage,
 }
