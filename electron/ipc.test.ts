@@ -502,6 +502,30 @@ describe('registerIpcHandlers', () => {
     expect(acceleration.getAccelerationState).toHaveBeenCalledTimes(5)
   })
 
+  it('forwards the renderer activity report with its sender and refuses anything but a busy flag', async () => {
+    const onRendererActivity = vi.fn()
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { onRendererActivity })
+    const report = electronMocks.handlers.get('window:report-activity')!
+    const event = trustedEvent()
+    await report(event, { busy: true })
+    expect(onRendererActivity).toHaveBeenCalledWith(event.sender, { busy: true })
+    for (const bad of [undefined, null, { busy: 'yes' }, { busy: false, extra: 1 }, [true]]) {
+      await expect(Promise.resolve().then(() => report(trustedEvent(), bad))).rejects.toThrow('界面忙闲报告格式错误')
+    }
+    expect(onRendererActivity).toHaveBeenCalledOnce()
+  })
+
+  it('hands every notice the renderer reads to the host so a released window can tell when a new one arrives', async () => {
+    const accountService = accountServiceStub()
+    const notice = { id: 'n1', text: '维护通知' }
+    accountService.getNotice = vi.fn(async () => notice)
+    const onAccountNotice = vi.fn()
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { onAccountNotice })
+    const readNotice = electronMocks.handlers.get('account:get-notice')!
+    await expect(readNotice(trustedEvent(), 'cached')).resolves.toEqual(notice)
+    expect(onAccountNotice).toHaveBeenCalledWith(notice)
+  })
+
   it('keeps routine notice and subscription polling out of the feedback report but logs slow reads and recoveries', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
@@ -8558,6 +8582,7 @@ describe('IPC channel log and account policies', () => {
         'update:startup',
         'video:cancel',
         'video:read-clip',
+        'window:report-activity',
         'window:set-mode',
         'window:set-theme',
       ],
