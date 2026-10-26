@@ -279,7 +279,8 @@ let launchedWorkspace: string | undefined
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
-let balanceOverride: number | null = null
+// emptyWallet：当前账号余额是 $0（新账号还没充值），首页工具卡换「去充值」。
+let balanceOverride: number | null = query.has('emptyWallet') ? 0 : null
 /** 哪些工具在本次夹具生命周期里被重新写过一次 Key。 */
 const keyRewritten = new Set<ProviderId>()
 let nextConfigSaveHeld = false
