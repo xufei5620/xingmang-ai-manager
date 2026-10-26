@@ -40,6 +40,7 @@ import {
 import {
   applyProviderModelReplace,
   applyProviderPickerRefresh,
+  claudeFallbackModelMissing,
   claudeModelPickerNeedsRefresh,
   codexModelCatalogNeedsRefresh,
   codexModelCatalogTargetUsable,
@@ -62,6 +63,7 @@ import {
   takeBackCodexModelCatalog,
   toNativeConfigSummary,
 } from './config-files'
+import { ensureEditorClaudeLoginPromptDisabled } from './editor-claude-login-prompt'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { isReplacedManagedKey, type StoredManagedCliKey } from './managed-cli-key-store'
 import {
@@ -781,6 +783,29 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     return repaired
   }
 
+  /**
+   * 写完 Claude Code 配置顺手在 VS Code、Cursor 的用户设置里关掉 Claude Code 插件的登录页
+   * （editor-claude-login-prompt.ts）。补不上只记日志，不算这次保存或补设置失败。
+   */
+  function disableEditorClaudeLoginPrompt(): void {
+    try {
+      for (const result of ensureEditorClaudeLoginPromptDisabled({ platform, userHome: providerRoots.userHome })) {
+        if (result.outcome === 'added') {
+          runtimeLog?.log('info', 'config', 'editor-login-prompt.disabled', '已在编辑器设置里关掉 Claude Code 插件的登录页', { editor: result.editor })
+        } else if (result.outcome === 'unreadable') {
+          runtimeLog?.log('info', 'config', 'editor-login-prompt.skipped', '编辑器设置读不懂，没有替 Claude Code 插件关登录页', { editor: result.editor })
+        } else if (result.outcome === 'failed') {
+          runtimeLog?.log('warn', 'config', 'editor-login-prompt.failed', '没能在编辑器设置里关掉 Claude Code 插件的登录页', {
+            editor: result.editor,
+            reason: credentialFailureReason(result.error),
+          })
+        }
+      }
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'editor-login-prompt.failed', '没能在编辑器设置里关掉 Claude Code 插件的登录页', { reason: credentialFailureReason(error) })
+    }
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -875,6 +900,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
       // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner, relayTemplateRevision)
+      if (payload.provider === 'claude' && !previewOnboarding) disableEditorClaudeLoginPrompt()
       if (shadowRepair) runtimeLog?.log('info', 'config', 'codex-provider.auto-repaired', '开机时把 Codex 认不出的连接设置改好了，原来的设置已备份', { provider: payload.provider })
       // 客服从日志看得出工具配置是什么时候、从哪条线路换到哪条的：只记线路 id，不记地址。
       if (followedRoute) {
@@ -1120,6 +1146,8 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
           const result = pending ? fillRelayTemplateDefaults(provider, providerRoots, site.providerBaseUrls) : null
           // 补的都是指纹之外的键，来源记录照旧是当前账号，只把版本号往前挪。
           await configOwnership.write(provider, inspectNativeProviderConfig(provider), 'account', owner, relayTemplateRevision)
+          // 第 5 版：编辑器设置不在工具配置目录里，不算进上面的「补齐」，每份配置跟着版本号只做这一次。
+          if (provider === 'claude') disableEditorClaudeLoginPrompt()
           return result !== null
         })
         if (wrote) {
@@ -1225,6 +1253,30 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
+   * 开机那轮给老客户的 Claude Code 补上备用型号（fallbackModel，挑法见 cli-model-defaults.ts 的
+   * resolveClaudeFallbackModels）。要按当前账号能用的型号挑，补设置那一步（fillRelayTemplateDefaults）不问中转、
+   * 挑不了，所以走打开前那次核对同一条路（syncPicker），菜单要是也落后了一起刷新：从终端、VS Code 直接开
+   * Claude Code 的客户等不到打开前那一问。配置里已经有这一项就不问中转；型号已下架的留给上面换型号那条，
+   * 换完下次开机再补，免得两条路一起写。写之前看一眼 Claude Code 开没开，开着或看不出这次不写，也不记成欠着，
+   * 下次开机或从星芒打开时再补。先备份，失败只记日志。
+   */
+  async function syncClaudeFallbackModels(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<void> {
+    if (!round.providers.includes('claude')) return
+    const target = modelCheckTarget('claude', true)
+    if (!target || !claudeFallbackModelMissing(providerRoots)) return
+    const loadHints = serviceOptions.cliModelHints
+    const hints = loadHints ? await unlessStopped(() => loadHints().catch(() => null), stopped) : null
+    if (isRetiredCliModel('claude', target.model, hints)) return
+    void toolModelChecker.syncPicker('claude', {
+      beforeRefresh: async () => {
+        const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['claude'])
+        if (latest.running.includes('claude') || latest.unknown.includes('claude')) throw new Error('Claude Code 可能正开着，这次先不写')
+        backup?.('claude')
+      },
+    }).catch(() => undefined)
+  }
+
+  /**
    * 开机那次：先补设置，再在本机看 Codex 开没开、型号名单欠不欠，两样都算进 pending 交回去；
    * 按账号核对型号名单要先问一遍中转，补设置那句提示不等它。retry = 渲染层隔一阵来补做
    * （第二十六批 E）：只做开机那轮欠下的，换了账号就什么都不做。
@@ -1243,10 +1295,12 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     } catch (error) {
       void syncCodexModelCatalog(backup, round, stopped).catch(() => false)
       void replaceRetiredCliModels(backup, round, stopped).catch(() => [])
+      void syncClaudeFallbackModels(backup, round, stopped).catch(() => undefined)
       throw error
     }
     const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
     const retiredOwed = await replaceRetiredCliModels(backup, round, stopped).catch((): ProviderId[] => [])
+    await syncClaudeFallbackModels(backup, round, stopped).catch(() => undefined)
     const skipped = [...new Set([...(result.pending ?? []), ...retiredOwed])]
     templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
     const pending = activeProviderIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))

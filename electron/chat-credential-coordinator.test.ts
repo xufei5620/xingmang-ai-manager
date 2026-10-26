@@ -18,6 +18,8 @@ function setup(overrides: {
   groups?: string[]
   siteId?: 'solov' | 'solov-api'
   loadAccountGroupHints?: () => Promise<AccountGroupHints | null>
+  // new-api lists a group's models with the login session; Sub2API has no such read.
+  groupModels?: Record<string, string[]>
 } = {}) {
   let userId = overrides.userId ?? 7
   let sessionRevision = 0
@@ -35,7 +37,8 @@ function setup(overrides: {
       key: `sk-${userId}-${input.group}`,
     })),
     listKeys: vi.fn(async () => ({ page: 1, pageSize: 100, total: overrides.keys?.length ?? 0, keys: overrides.keys ?? [] })),
-  } as unknown as Pick<RelayBackendClient, 'getSessionState' | 'getActiveSiteId' | 'listUsableGroups' | 'provisionCliKey' | 'listKeys'>
+    ...(overrides.groupModels ? { listGroupModels: vi.fn(async (group: string) => overrides.groupModels?.[group] ?? []) } : {}),
+  } as unknown as Pick<RelayBackendClient, 'getSessionState' | 'getActiveSiteId' | 'listUsableGroups' | 'provisionCliKey' | 'listKeys' | 'listGroupModels'>
   const store: ChatKeyStoreLike = {
     read: vi.fn(async (targetUserId) => cached.filter((entry) => entry.userId === targetUserId)),
     captureRevision: vi.fn(() => revision),
@@ -354,5 +357,79 @@ describe('chat credential coordinator', () => {
   it('lists groups only for an authenticated account', async () => {
     const { coordinator } = setup()
     await expect(coordinator.listGroups()).resolves.toHaveLength(2)
+  })
+})
+
+// 0.2.22 回归审查第 1 条：new-api 上签一把密钥要取一次明文，那个接口按出口 IP 20 分钟只给 20 次，
+// 和登录、续登录、充值下单共用。菜单列模型不能为每个分组都签一把。
+describe('chat credential coordinator on new-api: preparing a group signs no key', () => {
+  const xmGroups = ['Claude Max/订阅', 'Claude Pro/订阅', 'Claude 官转', 'Claude 逆向', 'GPT', 'GPT Plus', 'Grok', 'Grok Heavy', 'Gemini', '图片模型', '视频模型']
+
+  it('lists a group through the login session without reading, signing or using a key', async () => {
+    const cached: StoredChatKey = { userId: 7, group: 'codex-pro', keyId: 3, keyName: 'tester-codex-pro-对话', key: 'sk-chat-secret' }
+    const context = setup({ cached: [cached], groupModels: { 'codex-pro': ['gpt-6-astra', 'gpt-5.4'] } })
+
+    const prepared = await context.coordinator.prepareGroup('codex-pro')
+
+    expect(prepared).toEqual({ group: 'codex-pro', models: ['gpt-6-astra', 'gpt-5.4'], keyCreated: false })
+    expect(context.accountService.listGroupModels).toHaveBeenCalledWith('codex-pro')
+    expect(context.accountService.provisionCliKey).not.toHaveBeenCalled()
+    expect(context.modelService.fetchAvailableModels).not.toHaveBeenCalled()
+    expect(context.store.read).not.toHaveBeenCalled()
+    expect(context.accountService.listUsableGroups).not.toHaveBeenCalled()
+  })
+
+  it('opens the menu over every group of the account for no key, then signs one where the customer sends', async () => {
+    const context = setup({ groups: xmGroups, groupModels: Object.fromEntries(xmGroups.map((group) => [group, ['gpt-5.4']])) })
+
+    await Promise.all(xmGroups.map((group) => context.coordinator.prepareGroup(group)))
+    expect(context.accountService.provisionCliKey).not.toHaveBeenCalled()
+
+    await expect(context.coordinator.resolveCredential('GPT')).resolves.toMatchObject({ keyCreated: true, models: ['gpt-5.4'] })
+    expect(context.accountService.provisionCliKey).toHaveBeenCalledTimes(1)
+    expect(context.accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({ group: 'GPT', purpose: 'chat' }))
+    // 第二句话复用本机存下的那把，不再签。
+    await context.coordinator.resolveCredential('GPT')
+    expect(context.accountService.provisionCliKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('still curates the image group from the group map', async () => {
+    const context = setup({
+      groups: ['画图-新名字'],
+      groupModels: { '画图-新名字': ['gpt-4o', 'gpt-image-1', 'gpt-image-2', 'gpt-image-2-2026-04-21'] },
+      loadAccountGroupHints: vi.fn(async () => ({ image: ['画图-新名字'] })),
+    })
+
+    await expect(context.coordinator.prepareGroup('画图-新名字')).resolves.toMatchObject({ models: ['gpt-image-2', 'gpt-image-1'] })
+  })
+
+  it('tells a group the account cannot use apart from a group with no models', async () => {
+    const context = setup({ groups: ['codex-pro', 'empty'], groupModels: {} })
+
+    await expect(context.coordinator.prepareGroup('empty')).resolves.toEqual({ group: 'empty', models: [], keyCreated: false })
+    await expect(context.coordinator.prepareGroup('not-allowed')).rejects.toThrow('当前账号不可使用分组「not-allowed」')
+    expect(context.accountService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('rejects the list when the account changes while it loads', async () => {
+    const context = setup({ groupModels: {} })
+    let release: () => void = () => undefined
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    vi.mocked(context.accountService.listGroupModels!).mockImplementation(async () => {
+      await blocked
+      return ['gpt-5.4']
+    })
+
+    const result = context.coordinator.prepareGroup('codex-pro')
+    await vi.waitFor(() => expect(context.accountService.listGroupModels).toHaveBeenCalled())
+    context.switchUser(9)
+    release()
+    await expect(result).rejects.toThrow('账号已切换')
+  })
+
+  it('rejects a malformed group before asking the server', async () => {
+    const context = setup({ groupModels: {} })
+    await expect(context.coordinator.prepareGroup('a\u0000b')).rejects.toThrow('AI聊天分组格式错误')
+    expect(context.accountService.listGroupModels).not.toHaveBeenCalled()
   })
 })

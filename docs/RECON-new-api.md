@@ -21,6 +21,7 @@
 | CLI Key-创建 | `POST /api/token/` | UserAuth | name, remain_quota, expired_time(-1 永久), unlimited_quota, group, model_limits*, allow_ips；**响应只有 success，不返回 id/key** |
 | CLI Key-列表 | `GET /api/token/` | UserAuth | 含掩码 key，需按 name 反查新记录 id |
 | CLI Key-取明文 | `POST /api/token/:id/key` | UserAuth+限流 | 返回 `key`（前缀 `sk-`） |
+| 分组模型 | `GET /api/user/models?group=` | UserAuth | `data` 是该分组开着的模型名数组（`GetGroupsEnabledModels`）；分组不可用回空数组；不带 `group` 回全部可用分组的并集。不走 CriticalRateLimit |
 | 兑换码 | `POST /api/user/topup` | UserAuth | `key`→Redeem，成功返回加值后 quota；受站点「支付合规确认」开关整体拦截 |
 | 充值信息 | `GET /api/user/topup/info` `/topup/self` | UserAuth | 站内定价/记录 |
 | 兑换码管理 | `/api/redemption/*` | **AdminAuth** | 客户端不可查询，只能消费 |
@@ -53,6 +54,7 @@
 9. **登录会话有上限**（rc.24 `service/auth_session.go`、`service/auth_token.go`、`common/constants.go` 核实）：每个账号最多 50 个未过期会话（TTL 30 天），满了登录回 409 `AUTH_SESSION_LIMIT`；24 小时内最多新建 100 个，超了回 429 `AUTH_SESSION_ISSUANCE_LIMIT`；登录路由另有按 IP 的 CriticalRateLimit，回空 body 的 429。网页登录同样受 50 个上限约束，所以客户端退出必须调登出端点（`new-api-client.ts` 的 `endServerSession`），否则会话只能等 30 天过期。
 10. **rc.43 起控制台提示一律回英文**（2026-10-13 对 QuantumNous/new-api rc.42、rc.43、rc.44 tag 源码核实）：rc.42 以前，失败提示要么写死中文，要么按请求语言翻译（Electron 的 `net.fetch` 会按系统语言带 `Accept-Language: zh-CN`，沙箱里实测过），所以中文 Windows 一直拿到中文；rc.43 起 `message` 永远是英文原句，另带 `message_key`（英文模板，也是网页控制台语言包的键）和 `message_params`，翻译挪进网页前端的 `web/src/i18n/locales/zh.json`。星芒在主进程按 `message_key` 换回上游自己的中文（`electron/new-api-messages.ts`），只换 rc.40 时就回中文的句子（rc.40 本来就回英文的安全操作报错不换），认不出的照旧是英文原句；安全验证中间件 `securityProofError` 回的几句不带 `message_key`，按原句另收；按原话判断失败种类的地方（登录被拒、两步验证）仍看英文。用量明细的「说明」（`content`）同一版起也改存英文，中文版放在 `other.content_parts`，星芒还没有接。
 11. **订阅订单查到账走的仍是充值订单表**（2026-10-18 对 QuantumNous/new-api rc.24、rc.40、rc.44、rc.45 tag 和 main 源码核实）：在线买订阅时，订单先只写进 `subscription_orders`（`model/subscription.go` 的 `SubscriptionOrder`），没有给用户查它的接口（`/api/subscription/*` 只有 plans、self、self/preference 和各家 pay）；付款回调走 `CompleteSubscriptionOrder`，同一个事务里由 `upsertSubscriptionTopUpTx` 往 `top_ups` 补一行同单号、`amount` 记 0、`money` 记实付、`status=success` 的记录。所以 `GET /api/user/topup/self?keyword=<单号>`（`SearchUserTopUps`，单号精确匹配，`_` 会转义）付成以后能查到成功，付成之前和过期的订阅单都查不到。订阅单号前缀：易支付 `SUBUSR`、Stripe 和 Creem `sub_ref_`、Waffo Pancake `WAFFO_PANCAKE_SUB-`（充值单是 `USR`、`ref_`、`WAFFO_PANCAKE-`），上游自己分辨 Waffo Pancake 订阅回调也看前缀。Stripe 的订阅下单只回 `pay_link`，不回 `order_id`，客户端拿不到单号，没法按单号确认。
+12. **取密钥明文吃的是登录那份限流**（2026-10-26 对 QuantumNous/new-api rc.44 tag 源码核实，生产有没有改环境变量没核）：`POST /api/token/:id/key` 挂 `CriticalRateLimit`，按出口 IP 计、默认 20 次 / 1200 秒（`CRITICAL_RATE_LIMIT`、`CRITICAL_RATE_LIMIT_DURATION`），和登录、两步验证、注册、续登录 `/api/user/auth/refresh`、退出、`/api/verify`、`PUT /api/user/self`、各家下单共用同一个计数（`router/api-router.go`、`middleware/rate-limit.go` 标记都是 `CT`）。建密钥 `POST /api/token/` 不限。所以客户端签一把密钥（建→列→取明文）就花掉一次登录额度；只为列模型时用 `GET /api/user/models?group=`（`controller/user.go` 的 `GetUserModels`），它只受全局 `/api` 限流。它跟拿密钥问 `/v1/models` 的差别：`/v1/models` 还会滤掉没配价格的模型（`helper.HasModelBillingConfig`，自用模式或用户设置了接受未定价时不滤），分组模型这条不滤。
 
 ## D. 建议鉴权流
 

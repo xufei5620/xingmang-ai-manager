@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCliModelName, isRetiredCliModel, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement } from './cli-model-defaults'
+import { isCliModelName, isRetiredCliModel, resolveClaudeFallbackModels, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -224,5 +224,26 @@ describe('isCliModelName', () => {
     for (const name of ['', ' gpt-7', 'gpt 7', 'gpt-7"', "gpt-7'", 'gpt-7\n', '-gpt-7', '_x', 'claude-opus-4-8[1m]', 'x'.repeat(129)]) {
       expect(isCliModelName(name)).toBe(false)
     }
+  })
+})
+
+describe('resolveClaudeFallbackModels', () => {
+  const models = ['claude-haiku-5-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'gpt-6-astra']
+
+  it('falls back to the newest other version in the same family, then the newest of the other tier', () => {
+    expect(resolveClaudeFallbackModels(models, 'claude-opus-5-5')).toEqual(['claude-opus-5', 'claude-sonnet-5-5'])
+    expect(resolveClaudeFallbackModels(models, 'claude-opus-5')).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5'])
+    expect(resolveClaudeFallbackModels(models, 'claude-sonnet-5-5')).toEqual(['claude-sonnet-5', 'claude-opus-5-5'])
+  })
+
+  it('never falls back to Haiku, and a Haiku primary falls back to Sonnet', () => {
+    expect(resolveClaudeFallbackModels(['claude-haiku-5-5', 'claude-opus-5-5'], 'claude-opus-5-5')).toEqual([])
+    expect(resolveClaudeFallbackModels(models, 'claude-haiku-5-5')).toEqual(['claude-sonnet-5-5'])
+  })
+
+  it('prefers plain ids over suffixed variants of the same version and skips models the key does not list', () => {
+    expect(resolveClaudeFallbackModels(['claude-opus-5-5', 'claude-sonnet-5-5-thinking', 'claude-sonnet-5-5'], 'claude-opus-5-5')).toEqual(['claude-sonnet-5-5'])
+    expect(resolveClaudeFallbackModels(['claude-opus-5-5', 'claude-opus-5-5'], 'claude-opus-5-5')).toEqual([])
+    expect(resolveClaudeFallbackModels([], 'claude-opus-5-5')).toEqual([])
   })
 })

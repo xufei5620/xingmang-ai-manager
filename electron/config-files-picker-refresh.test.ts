@@ -154,6 +154,7 @@ describe('refreshing the Claude Code /model menu', () => {
     permissions: { defaultMode: 'default', deny: [] },
     model: 'claude-opus-5',
     modelPicker: buildClaudeRelayModelPicker(['claude-opus-5', 'claude-sonnet-5'], 'claude-opus-5'),
+    fallbackModel: ['claude-sonnet-5'],
   }
 
   it('replaces only the menu, keeps a Default the customer pointed elsewhere, and keeps the layout', () => {
@@ -198,6 +199,22 @@ describe('refreshing the Claude Code /model menu', () => {
     expect(planProviderPickerRefresh('claude', 'claude-opus-5', models, r)).toEqual({ status: 'unlocated' })
     write(file, '{"model": "claude-opus-5", // 注释\n}')
     expect(planProviderPickerRefresh('claude', 'claude-opus-5', models, r)).toEqual({ status: 'unlocated' })
+  })
+
+  it('fills in fallback models where they were never written and leaves ones the customer wrote', () => {
+    const r = roots()
+    const [file] = providerConfigPaths('claude', r)
+    const { fallbackModel: _written, ...before } = settings
+    const content = `${JSON.stringify({ ...before, modelPicker: buildClaudeRelayModelPicker(models, 'claude-opus-5') }, null, 2)}\n`
+    write(file, content)
+
+    const plan = rewrite(planProviderPickerRefresh('claude', 'claude-opus-5', models, r))
+    expect(JSON.parse(plan.content)).toEqual({ ...before, modelPicker: buildClaudeRelayModelPicker(models, 'claude-opus-5'), fallbackModel: ['claude-sonnet-5'] })
+    // 原来的每一行原样，新的一项接在最后。
+    expect(plan.content.startsWith(content.slice(0, content.lastIndexOf('\n}')))).toBe(true)
+
+    write(file, JSON.stringify({ ...before, modelPicker: buildClaudeRelayModelPicker(models, 'claude-opus-5'), fallbackModel: ['claude-haiku-5'] }))
+    expect(planProviderPickerRefresh('claude', 'claude-opus-5', models, r)).toEqual({ status: 'current' })
   })
 
   it('does not write a menu for Grok', () => {
