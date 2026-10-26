@@ -3839,6 +3839,44 @@ test('a failed startup update check shows a dismissible notice instead of a bloc
   } finally { await page.close() }
 })
 
+// 窗口缩到托盘久了界面被关掉，叫出来时重新加载（electron/renderer-release.ts）：开机那几句、开机检查、检查更新
+// 这次运行里已经做过，不再来一遍；回到关之前停的那一页；准备好了才告诉主进程，存着的跳页这时才发过来。
+test('a renderer reloaded after the tray released it skips the startup round and returns to the page it was on', async () => {
+  const page = await open('startupUpdate=1&diagnostics=1&rendererRestored=1', false, () => {
+    sessionStorage.setItem('xingmang-v2-release-page', JSON.stringify({ page: 'settings', section: 'about' }))
+  })
+  try {
+    await page.getByTestId('page-settings').waitFor()
+    // 登录恢复那一轮密钥同步在跑时先说「有事」，跑完再说「没事」。
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportWindowActivity').at(-1)?.args[0])).toEqual({ busy: false })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'runDiagnostics' || entry.method === 'runStartupUpdate')), false)
+    assert.equal(await page.getByTestId('startup-notice-update').count(), 0)
+    assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('xingmang-v2-release-page'))), { page: 'settings', section: 'about' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the renderer remembers its page for a reload and tells the host it is busy while a dialog is open', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const latestReport = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportWindowActivity').at(-1)?.args[0].busy)
+    await expect.poll(latestReport).toBe(false)
+    await page.getByTestId('nav-tutorial').click()
+    await page.getByTestId('page-tutorial').waitFor()
+    await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('xingmang-v2-release-page') ?? 'null'))).toEqual({ page: 'tutorial' })
+    await page.getByTestId('shell-topbar').getByRole('button', { name: '帮助与客服', exact: true }).click()
+    const help = page.getByRole('dialog', { name: '帮助与客服', exact: true })
+    await help.waitFor()
+    // 对话框一打开就报「有事」，不等窗口藏起来那一声（托盘里不一定有）：里面的东西关了就没了，这时不能关。
+    await expect.poll(latestReport).toBe(true)
+    await page.keyboard.press('Escape')
+    await expect(help).toHaveCount(0)
+    await expect.poll(latestReport).toBe(false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('startup environment findings are a notice with a way in, not an error and not a dialog', async () => {
   const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
   try {

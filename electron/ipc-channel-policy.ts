@@ -103,6 +103,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'window:set-mode': { label: '窗口模式切换', log: 'quiet-success', account: 'none' },
   'window:set-theme': { label: '界面主题切换', log: 'quiet-success', account: 'none' },
   'window:get-capabilities': { log: 'normal', account: 'none' },
+  // 界面忙闲一变就报一次，记了只会刷屏；关不关界面由 renderer-release.ts 自己记。
+  'window:report-activity': { label: '界面忙闲报告', log: 'quiet-success', account: 'none' },
   'window:relaunch': { log: 'normal', account: 'none' },
   'window:uninstall-app': { log: 'normal', account: 'none' },
   'navigation:take-deep-link': { log: 'normal', account: 'none' },
