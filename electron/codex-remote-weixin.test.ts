@@ -197,7 +197,7 @@ describe('createWeixinRemoteChannel', () => {
     const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
     await channel.send({ channel: 'weixin', userId: owner }, {
       kind: 'approval',
-      request: { approvalId: '1', kind: 'command', summary: 'npm test' },
+      request: { approvalId: '1', nonce: 'nonce-of-one', kind: 'command', summary: 'npm test' },
       text: 'Codex 想运行：npm test\n回「同意 1」或「拒绝 1」',
     }, 'ctx')
     const msg = requests[0].body.msg as { item_list: Array<{ text_item: { text: string } }> }

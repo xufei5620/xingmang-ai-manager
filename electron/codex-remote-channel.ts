@@ -55,6 +55,8 @@ export interface RemoteInboundText extends RemoteInboundBase {
 export interface RemoteInboundApproval extends RemoteInboundBase {
   kind: 'approval'
   approvalId: string
+  /** 按钮里原样带回来的 RemoteApprovalRequest.nonce；没带或认不出是 null，底座当失效的卡片。 */
+  nonce: string | null
   decision: RemoteApprovalDecision
 }
 
@@ -72,8 +74,13 @@ export type RemoteApprovalKind = 'command' | 'file-change' | 'other'
 
 /** 底座发出的审批请求，跟渠道无关。渠道自己决定画成按钮还是文字。 */
 export interface RemoteApprovalRequest {
-  /** 底座编的短编号（"1"、"2"…），一次会话里不重复。 */
+  /** 底座编的短编号（"1"、"2"…），重开星芒也接着数，过了 9999 回到 1；手机上回「同意 3」认的就是它。 */
   approvalId: string
+  /**
+   * 只对这一条有效的随机串。有按钮的渠道把它原样放进按钮、点了原样交回：底座只认编号和它都对上的点击，
+   * 处理过的、超时的、星芒重开前发的旧卡片一律不认。没按钮的渠道不用管它。
+   */
+  nonce: string
   kind: RemoteApprovalKind
   /** 要跑的命令或要改的文件，已脱敏、已截断。 */
   summary: string
