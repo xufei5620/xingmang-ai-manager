@@ -281,6 +281,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // 出视频要几分钟。换账号时 main.ts 先叫停视频服务再等账号工作结束，所以照样能放进账号工作里。
   'video-studio:plan': { label: '视频剪辑分镜', log: 'normal', account: 'scoped' },
   'video:generate': { label: 'AI 视频生成', log: 'normal', account: 'scoped' },
+  'video:resume': { label: 'AI 视频接回', log: 'normal', account: 'scoped' },
   'video:cancel': { log: 'quiet-success', account: 'scoped' },
   // 回的是整段视频的字节，拼一次片要读好几段。
   'video:read-clip': { label: '视频片段读取', log: 'quiet-success', account: 'scoped' },

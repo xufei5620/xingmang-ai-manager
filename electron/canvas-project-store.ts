@@ -306,6 +306,59 @@ export class CanvasProjectStore {
     })
   }
 
+  /**
+   * The canvas kernel's "save as a new project": the caller's current workflow
+   * plus, when it names one, the assets of the project it came from. The
+   * content goes through the same validator as save() and the folder and the
+   * source through the same checks as duplicate(), so this can do nothing
+   * that saving and duplicating could not already do. The source is looked up
+   * under this account's own directory, so another account's id is not found.
+   */
+  async createWithContent(
+    userId: number,
+    nameInput: string,
+    workspaceInput: string,
+    content: string,
+    sourceProjectId?: string,
+  ): Promise<{ project: CanvasStoredProjectSummary; content: string }> {
+    return this.enqueue(userId, async () => {
+      const name = normalizedProjectName(nameInput)
+      const parsed = parseCanvasProjectWorkflow(content)
+      const workflow = { ...parsed.workflow, name }
+      const source = sourceProjectId === undefined ? undefined : await this.readProject(userId, sourceProjectId)
+      if (source?.archivedAt) throw new Error('请先恢复已归档项目再复制')
+      if (source && !source.workspaceDirectory) throw new Error('旧项目没有独立工作文件夹，暂时不能复制')
+      // Without a source there is nowhere to copy the files from, and a new
+      // project whose images all show as missing is worse than a clear refusal.
+      if (!source && (parsed.assetIds.length > 0 || workflowAssetProjection(workflow).assetIds.size > 0)) {
+        throw new Error('新项目的内容用到了素材，请从原项目另存副本')
+      }
+      const targetWorkspace = normalizedWorkspaceDirectory(workspaceInput, true)
+      const sourceWorkspace = source?.workspaceDirectory ? normalizedWorkspaceDirectory(source.workspaceDirectory, true) : undefined
+      if (sourceWorkspace && sameLocalPathIdentity(sourceWorkspace, targetWorkspace)) throw new Error('复制项目必须选择新的工作文件夹')
+      const existing = await this.list(userId)
+      if (existing.length >= maximumProjects) throw new Error('画布项目已达到数量上限')
+      for (const project of existing) {
+        const bound = await this.getWorkspaceDirectory(userId, project.id)
+        if (bound && sameLocalPathIdentity(bound, targetWorkspace)) {
+          throw new Error(`该工作文件夹已绑定项目「${project.name}」，请为新项目选择单独的文件夹`)
+        }
+      }
+      if (sourceWorkspace) await copyProjectAssets(sourceWorkspace, targetWorkspace)
+      else ensureSafeDataDirectory(path.join(targetWorkspace, 'assets'), '画布项目素材')
+      const now = new Date().toISOString()
+      const id = randomUUID()
+      const created = { id, createdAt: now, updatedAt: now, lastOpenedAt: now, workspaceDirectory: targetWorkspace, workflow }
+      try {
+        await this.write(userId, created)
+      } catch (error) {
+        if (sourceWorkspace) await fs.promises.rm(path.join(targetWorkspace, 'assets'), { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      }
+      return { project: this.summary(created), content: JSON.stringify(workflow) }
+    })
+  }
+
   async open(userId: number, projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string }> {
     return this.enqueue(userId, async () => {
       const stored = await this.readProject(userId, projectId)

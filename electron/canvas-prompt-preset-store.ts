@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
+import { maximumCanvasPromptPresetNameLength as maximumPromptPresetNameLength } from './canvas-contract'
 import { isRecord } from './input-guards'
 import {
   assertSafeDataFile,
@@ -71,7 +72,7 @@ function normalizedTags(value: unknown): string[] {
 
 function normalizedInput(input: CanvasPromptPresetInput): CanvasPromptPresetInput {
   return {
-    name: boundedText(input.name, '提示词名称', 100),
+    name: boundedText(input.name, '提示词名称', maximumPromptPresetNameLength),
     prompt: boundedText(input.prompt, '提示词内容', 40_000),
     tags: normalizedTags(input.tags),
   }

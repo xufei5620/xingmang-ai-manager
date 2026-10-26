@@ -96,7 +96,7 @@ const inFlightByService = new WeakMap<object, Map<string, Promise<ResolvedChatCr
 
 export function createChatCredentialCoordinator(options: {
   accountService: Pick<RelayBackendClient,
-    'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listKeys'>
+    'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId' | 'listKeys' | 'listGroupModels'>
   modelService: ChatModelServiceLike
   keyStore: ChatKeyStoreLike
   /**
@@ -248,11 +248,33 @@ export function createChatCredentialCoordinator(options: {
     return tracked
   }
 
-  async function prepareGroup(group: string): Promise<PreparedChatGroup> {
-    const { userId: _userId, apiKey: _apiKey, keyId: _keyId, keyName: _keyName, ...safe } = (
-      await resolveCredential(group)
-    )
-    return safe
+  // 菜单要列出每个分组的模型（#1399），但这一步不签密钥（0.2.22 回归审查第 1 条）：new-api 上签一把
+  // 要取一次明文，那个接口按出口 IP 20 分钟只给 20 次，和登录、续登录、充值下单共用，十来个分组一起签
+  // 就可能把它用光，连登录和余额一起报错。这里用登录态读分组的模型，密钥等客户在这个分组真发第一句话、
+  // 出第一张图时由 resolveCredential 签，跟 0.2.21 一样只签用到的那几把。历史账号（Sub2API）没有这个
+  // 接口，照旧靠分组的密钥列模型。
+  async function prepareGroup(groupInput: string): Promise<PreparedChatGroup> {
+    const group = requiredGroup(groupInput)
+    if (typeof accountService.listGroupModels !== 'function') {
+      const { userId: _userId, apiKey: _apiKey, keyId: _keyId, keyName: _keyName, ...safe } = (
+        await resolveCredential(group)
+      )
+      return safe
+    }
+    const { userId, revision } = authenticatedSession(accountService)
+    const [listed, imageGroups] = await Promise.all([
+      accountService.listGroupModels(group),
+      loadImageGroupNames(),
+    ])
+    assertSameSession(accountService, userId, revision)
+    // GetUserModels answers an empty list for a group the account cannot use:
+    // tell that apart from a group that simply has no models, as before.
+    if (!listed.length) {
+      const usableGroups = await accountService.listUsableGroups()
+      assertSameSession(accountService, userId, revision)
+      if (!usableGroups.some((entry) => entry.name === group)) throw new Error(`当前账号不可使用分组「${group}」`)
+    }
+    return { group, models: selectAiChatModelsForGroup(group, listed, imageGroups), keyCreated: false }
   }
 
   return { listGroups, prepareGroup, resolveCredential }
