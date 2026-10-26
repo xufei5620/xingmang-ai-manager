@@ -397,6 +397,11 @@ git push origin v0.2.6
 
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
+工作流这一边由 `scripts/workflow-secret-scope.test.cjs` 钉住（#1090）：读上表这些 secret 的作业必须挂 `environment: release`，读 COS 那两把的必须挂 `cos-sync`；仓库级只许巡检密钥 `XINGMANG_CLI_PATROL_KEY` 和访问统计令牌 `CLOUDFLARE_ANALYTICS_TOKEN` 两把（2026-10-18 定，见 `COLLABORATION.md`「一次性探测工作流」）。新加一把 secret 不登记就过不了 CI。GitHub 上的 secret 实际放在哪一级，门禁看不到，要隔一段时间在设置里核一遍：
+
+1. **Settings → Secrets and variables → Actions**，看 **Repository secrets** 那一栏：只应该有上面那两把（或更少）。多出来的名字（`R2_`、`CSC_`、`XINGMANG_MAC_`、`XINGMANG_UPDATE_SIGNING_KEY`、`COS_`、`WIN_CSC_` 这些），先确认第 2 步的环境里有同名的一份，再把仓库级这份删掉：只挪不删等于没挪。
+2. **Settings → Environments → release**：Required reviewers 里有批准的人；Deployment branches and tags 只有 `main`；Environment secrets 里有上表九把。**cos-sync**：Deployment branches and tags 只有 `main`（它不设批准人，挡住别的分支全靠这一条）；Environment secrets 里有 `COS_SECRET_ID`、`COS_SECRET_KEY`。
+
 `.p12` 只能从钥匙串里导出、用 GitHub 的 secret 输入框直接粘，**不要经过任何聊天、工单或邮件**：那份私钥泄露等于别人能签出一个客户端会当成「同一发布者」的更新包。`XINGMANG_MAC_SIGNING_SHA256` 填的必须是 2.2 里登记的那张已发布证书的指纹，换一张证书会在签名预检那一步直接失败。
 
 #### 更新包签名
