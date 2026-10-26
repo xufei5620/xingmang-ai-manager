@@ -1,14 +1,16 @@
 import path from 'node:path'
+import { resolveEmptyBalanceState, type EmptyBalanceRecord } from './empty-balance-alert'
 import type { NewApiAccountUsageQuery } from './new-api-client'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 import { createSpendSpikeWatch, pruneSpendSpikeRecord, type SpendBaseline, type SpendSpikeNotice } from './spend-spike'
 import { usageDateRange } from './usage-date-range'
 
 /**
- * 跟着余额走的两条系统通知：余额跌破 5 美元、一小时里花得远超平时（spend-spike.ts）。
+ * 跟着余额走的三条系统通知：余额跌破 5 美元、余额到了 $0（empty-balance-alert.ts）、一小时里花得远超平时
+ * （spend-spike.ts）。
  *
  * 原先由界面每次读到余额时判断。缩到托盘久了界面会被关掉省内存（renderer-release.ts），那段时间
- * 恰恰最需要这两条提醒，所以整个挪进主进程：界面开着时它读余额走 account:get-balance，主进程在
+ * 恰恰最需要这几条提醒，所以整个挪进主进程：界面开着时它读余额走 account:get-balance，主进程在
  * 那里看到；界面关着时主进程自己按时读，也交到这里。只此一处判断，不会两边各提醒一次。
  */
 
@@ -23,8 +25,11 @@ export interface BalanceAlertObservation {
   at: number
   /** 账号能按时段查用量：花费突增要读用量核账，查不了就不看。 */
   supportsUsage: boolean
-  /** 当前账号有能扣的订阅：先扣订阅，钱包少于 5 美元不算余额不足。 */
-  subscribed: boolean
+  /**
+   * 当前账号有能扣的订阅：先扣订阅，钱包少于 5 美元不算余额不足。null = 这个账号的订阅还没读到：
+   * 跌破 5 美元那条照旧当没有订阅，余额用完那条等读到了再说（只靠订阅的客户钱包本来就是 0）。
+   */
+  subscribed: boolean | null
 }
 
 export interface BalanceAlertsOptions {
@@ -33,6 +38,8 @@ export interface BalanceAlertsOptions {
   readBaseline(): Promise<SpendBaseline>
   readNotifiedAt(account: string): number | null | Promise<number | null>
   rememberNotifiedAt(account: string, at: number): void | Promise<void>
+  /** 余额用完那条「同一次只说一次」的记录（empty-balance-alert.ts）；缺省时不发这一条。 */
+  emptyRecord?: EmptyBalanceRecord
 }
 
 export interface BalanceAlerts {
@@ -76,13 +83,28 @@ export function createBalanceAlerts(options: BalanceAlertsOptions): BalanceAlert
     readNotifiedAt: options.readNotifiedAt,
     rememberNotifiedAt: options.rememberNotifiedAt,
   })
+  // 钱包到了 0、又确定没有能扣的订阅：这一次用完还没说过就说一次。说了返回 true。
+  async function observeEmptyBalance(observation: BalanceAlertObservation, dollars: number): Promise<boolean> {
+    const record = options.emptyRecord
+    if (!record) return false
+    const state = resolveEmptyBalanceState(dollars, observation.subscribed)
+    if (state === 'funded') {
+      await record.release(observation.scope)
+      return false
+    }
+    if (state === 'unknown' || !await record.claim(observation.scope, observation.at)) return false
+    options.notify('balance', `balance-empty:${observation.userId}:${observation.at}`)
+    return true
+  }
   return {
     async observe(observation) {
       if (!(observation.quotaPerUnit > 0)) return
       const dollars = observation.quota / observation.quotaPerUnit
       const before = previous?.scope === observation.scope ? previous.dollars : null
       previous = { scope: observation.scope, dollars }
-      if (!observation.subscribed && crossedLowBalance(before, dollars)) {
+      // 一下从 5 美元以上掉到 0：只说「是 $0 了」，不再另说一条「不足 $5」。
+      const emptied = await observeEmptyBalance(observation, dollars)
+      if (!emptied && !observation.subscribed && crossedLowBalance(before, dollars)) {
         options.notify('balance', `balance:${observation.userId}:${observation.at}`)
       }
       if (!observation.supportsUsage) return

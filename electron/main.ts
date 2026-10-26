@@ -50,6 +50,7 @@ import { createRendererCrashRecovery, type RendererCrashRecovery } from './rende
 import { createRendererRelease, type RendererRelease, type RendererReleaseLogEvent } from './renderer-release'
 import { createReleasedRendererWatch, noticeFingerprint } from './released-renderer-watch'
 import { createBalanceAlerts, createSpendSpikeRecordStore, readSpendBaseline } from './balance-alerts'
+import { createEmptyBalanceRecordStore } from './empty-balance-alert'
 import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
 import { resolveUsableSubscription } from './subscription-summary'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -1759,7 +1760,7 @@ if (!hasSingleInstanceLock) {
       return issue()
     }
     const accountService = accounts.client
-    // 余额跌破 5 美元、花费突然变多这两条提醒由主进程判断（balance-alerts.ts），界面关着时也照样提醒。
+    // 余额跌破 5 美元、余额到了 $0、花费突然变多这几条提醒由主进程判断（balance-alerts.ts），界面关着时也照样提醒。
     const balanceAlerts = createBalanceAlerts({
       notify: (kind, eventKey, notice) => { hostNotifier()({ activity: kind, eventKey, ...(notice ? { detail: notice } : {}) }) },
       readBaseline: () => readSpendBaseline({
@@ -1767,8 +1768,9 @@ if (!hasSingleInstanceLock) {
         getUsage: (query) => accountService.getUsage(query),
       }),
       ...createSpendSpikeRecordStore(managerDataDirectory),
+      emptyRecord: createEmptyBalanceRecordStore(managerDataDirectory),
     })
-    // 托盘余额和两条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
+    // 托盘余额和几条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
     const observeAccountBalance = (balance: AccountBalance) => {
       latestTrayBalance = balance
       applicationTray?.updateSnapshot()
@@ -1783,7 +1785,10 @@ if (!hasSingleInstanceLock) {
         quotaPerUnit: balance.quotaPerUnit,
         at,
         supportsUsage: accountService.capabilities.supportsUsage,
-        subscribed: resolveUsableSubscription(latestTraySubscription, { now: at, quotaPerUnit: balance.quotaPerUnit }) !== null,
+        // 订阅跟着余额读回来以后才读（界面那边），换账号时清空：还没读到就是 null，不当作没有。
+        subscribed: !accountService.capabilities.supportsSubscriptions ? false
+          : latestTraySubscription === null ? null
+            : resolveUsableSubscription(latestTraySubscription, { now: at, quotaPerUnit: balance.quotaPerUnit }) !== null,
       }).catch((cause: unknown) => runtimeLog.exception('account', 'balance-alert.failed', cause))
     }
     readBillingAccountScope = () => {
