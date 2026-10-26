@@ -35,7 +35,7 @@ npm run release:build:unsigned
 
 ### 从 0.2.3 起的加速资源与当前节点策略
 
-0.2.3 开始分发本机计时版：每账号在本机累计 20 分钟，TUN 尚未接入。当时节点只随本地安装包分发。产品所有者现已调整策略：现有 12 条发布线路的清洗后配置和 SHA-256 一并提交到 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，供 Windows 与 macOS 共用。具体文件与准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
+0.2.3 开始分发本机计时版：每账号在本机累计 20 分钟，TUN 尚未接入。当时节点只随本地安装包分发。产品所有者现已调整策略：发布线路的清洗后配置和 SHA-256 一并提交到 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，供 Windows 与 macOS 共用。具体文件与准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
 
 拉取源码后无需再私下传递节点文件；仍须准备对应平台的 Mihomo 内核及完整许可，并通过现有发布入口选入资源。普通构建和 CI 不会因为仓库中有 YAML 就自动获得内核或启用加速。
 
@@ -86,7 +86,7 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
 
 两条路径的最后一步都一样：产物校验之前，六个文件会被改成带芯片名的发行名（`XingMang-AI-Manager-<版本号>-Apple-Silicon-arm64.*` 与 `…-Intel-x64.*`），`latest-mac.yml` 的引用同步改写。上传时保持这些名字不变——架构后缀是 electron-updater 分架构下载的依据，手工改名会让一部分 Mac 更新到另一个架构的包。
 
-CI 的真实打包门禁（`--ci-temporary-signing`）不走这条路：runner 没有准备含对应内核的完整加速资源，该参数与两个加速参数互斥，CI 只覆盖不带线路的构建路径。节点入仓不会改变这一边界，带线路的构建仍须在发布 Mac 上本机验证。
+CI 上也走这条带线路的路径。`--ci-temporary-signing` 与两个加速参数在 2026-09-19 节点入仓之前互斥，之后不再互斥（见 `scripts/run-macos-free-build.cjs` 的 `parseFreeMacBuildArguments` 和 [`CI-PACKAGING.md`](CI-PACKAGING.md) 4.4）：`package-for-testing` 出的 Mac 测试包、PR 上 `quality` 的 `macos-release-rehearsal` 排练，都先在 runner 上用 `scripts/prepare-acceleration-bundle.cjs` 现场准备两个架构的资源，再带上这两个参数出包。它们由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布的包仍按本节用发布身份出（`publish-release` 的 `macos-build` 也是带着这两个参数跑 `dist:mac:free`）。`quality` 里的 `macos-test` 与 `macos-intel` 两个作业出的包仍不带线路。
 
 本次使用官方 Mihomo v1.19.29，内核、资源准备 JSON 和生成的五文件目录仍保存在仓库外，节点来源可使用仓库固定配置。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
 
@@ -177,9 +177,11 @@ npm view electron time --json --registry=https://registry.npmjs.org/ | Select-St
 - 执行 `npm run changelog:collect`：把 `changes/unreleased/` 下的分片按 `## 用户` / `## 开发` 分别汇入 `release-notes.md` 的「未发布」段与 `CHANGELOG.md` 的 `## Unreleased` 段，并删除已汇总的分片文件。
 - 定版之后、发完之前合进 main 的改动如果带了分片，要在这一版里补收：再跑一次 `changelog:collect`，把汇出来的「未发布」「## Unreleased」两段并进这一版那一节。`publish-release` 一开始就核对 `changes/unreleased/` 已经清空，还有分片就停下、什么都不动（#1086）：那些改动照样会进这次的包，不补收的话客户的更新说明里一句不提，CHANGELOG 还会把它们记到下一版。
 - 汇总后把这两个标题改成本次版本号（`未发布` → `0.2.7`，`## Unreleased` → `## 0.2.7 - <日期>`），按需润色文案。`release-notes.md` 的内容会在打包时写入更新清单并显示在客户端更新页面。
+- **更新页最多放 60 条。** 装完后第一次打开时那一页（和「设置 › 版本更新」里的清单）读的是包里的说明，这一版超过 60 条时，发布前置检查和 `npm run compile` 都会直接报错，不再悄悄截掉后面的（#1334：0.2.20 汇出来 84 条，后 24 条正好是几位客户报过的修复）。超了就在 `release-notes.md` 里把相近的几条合并成一条，不要把上限调大：一页太长客户也看不完。
 - 客户从旧版升上来、而旧版的更新方式和新版不一样时（比如 0.2.10 没有自动更新，要客户自己点「下载更新」「重启安装」、过一次 Windows 授权窗口），把**怎么装这个更新**写在这一版说明的第一条：旧版客户端的更新页直接显示新版这份说明，这是唯一能教到他们的地方。分片文件名以 `000-` 开头，汇总时就排在最前；客服话术用同一句。
+- 客户报过、这一版点名修好的问题排在它后面：分片文件名用 `001-`、`002-`……开头，数字小的在前。装完后角落那张卡片只列最前面 3 条的开头半句（第一个冒号或句号之前，长了截断），所以这几条要把「修好了什么」写在冒号前面。
 - `npm run compile` 的最后一步（`scripts/bundle-release-notes.cjs`）会把 `release-notes.md` 顶上那一节写进包内的 `dist-electron/release-notes.json`，客户端更新装完后第一次启动时据此显示「已更新到 x.y.z」和这一版的改动（不走网络）。只有文件第一行等于 `package.json` 版本号时才带内容，否则写 `notes: null`、客户端不显示改动，所以**先改好标题再编译**；`verify-packaged-hardening.cjs` 会核对包里这份文件存在且版本一致。
-- 发布前置检查（`npm run release:preflight`，`release:build` 的第一步）会断言 `release-notes.md` 的第一行等于 `package.json` 的版本号：忘了改标题时门禁直接失败，不会把「未发布」当成版本名发到客户端更新页（审查总表 P-14）。
+- 发布前置检查（`npm run release:preflight`，`release:build` 的第一步）会断言 `release-notes.md` 的第一行等于 `package.json` 的版本号：忘了改标题时门禁直接失败，不会把「未发布」当成版本名发到客户端更新页（审查总表 P-14）；同一步也核对这一版不超过更新页的 60 条（#1334）。
 - 使用专用 Windows 发布机，系统时间正确，依赖锁文件未被临时改写。
 - 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
@@ -319,11 +321,13 @@ git push origin v0.2.6
 - 出包期间有人把 tag 删了：上传前那道关检查都过了以后先补建，再往线上传；补建不了就停下，线上什么都不改。
 - 取消之后改了版本号再发，旧版本号的 tag 会留在仓库里，指向一个没发出去的 commit。它不影响发布；要清理就在仓库的 Tags 页面手动删掉。
 
+**出包前核对在线加速节点（#1359）。** Windows 和 macOS 的出包作业在准备加速组件之前，先读一遍线上的 `acceleration-nodes.json`（客户端读的同一个地址）。线上发过在线节点、没撤回，又跟这次要装进安装包的 `bundled-acceleration/profile.yaml` 不一样，就直接停下，不出包、不用批：记下过线上那份的客户端会一直用它，新包里换的节点用不上。照提示先在 Actions 里跑一次 `acceleration-nodes`（publish 发仓库里现在的节点，或 withdraw 撤回在线节点），再从 main 重新触发。线上那份客户端不收（签名不对、格式坏了）也停下：客户端不收它也不会丢掉记下的旧节点，先跑一次 `acceleration-nodes` 的 publish 换成好的。只有线上没有这个文件（404，在线节点上线前每次都是这样）和撤回过放行，所以撤回要用 withdraw，别直接删文件。别的读不到（连不上、5xx）也停下，过几分钟重跑。
+
 上传之前还有一道关（#493，`scripts/publish-guard.cjs`）：tag 已存在却指向别的 commit，或者线上清单已经是这个版本（或更高）而这次出的包不是同一批文件，就直接停下，线上什么都不改。所以**同一个版本号只能发一批字节**：先发 Windows、之后在同一个 commit 上补发 Mac 或 Linux 可以；某个平台已经发过这个版本，要重发就先提升版本号。仓库设置里打开 Release immutability（锁发布页）以后，发布出去的 GitHub Release 加不了、换不了文件：补发的平台照样进更新源（COS 同步开着时也进 COS），只是挂不上发布页，收尾那一步给一条黄色提示、在运行摘要里列出没挂上的文件，不会变红；要让发布页上也有，只能提升版本号再发。发布作业半路失败时，用 **Re-run failed jobs** 重跑它（用的是同一批产物，会放行）；重新点 Run workflow 会重新出包，Mac 每次出包字节都不同，如果清单已经换过去就会被这道关挡下。
 
 **一次发布要批准两次。** 读 `.p12` 的 macOS 出包作业和上传的 publish 作业都挂 `environment: release`，运行会各停一次等你按 Approve。第一次批准之后什么都还没有对外发生，产物只躺在 Actions artifact 里——把包下下来装机验收，过了再批第二次。这两下就是本节开头说的「明确发布授权」。
 
-**上传那一段和回滚、维护开关排队。** publish 作业与 `rollback-release`、`service-status` 共用 `update-feed` 并发组（#492）：三者都是先读线上清单或状态、再写回去，同时跑会互相盖掉。所以批第二次之前如果它显示 Pending，是另一条正在写更新目录，等它跑完就轮到这里。出包那两段不在组里，不会被挡。
+**上传那一段和回滚、维护开关排队。** publish 作业与 `rollback-release`、`service-status`、`acceleration-nodes` 共用 `update-feed` 并发组（#492）：三者都是先读线上清单或状态、再写回去，同时跑会互相盖掉。所以批第二次之前如果它显示 Pending，是另一条正在写更新目录，等它跑完就轮到这里。出包那两段不在组里，不会被挡。
 
 #### 分批放量（0.2.19 起每次都做）
 
@@ -389,7 +393,7 @@ git push origin v0.2.6
 | `R2_BUCKET` | 桶名 | 上传 |
 | `R2_ACCESS_KEY_ID` | R2 凭据 | 上传 |
 | `R2_SECRET_ACCESS_KEY` | R2 凭据 | 上传 |
-| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 清单签名、回退时补签 |
+| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 清单签名、回退时补签；`acceleration-nodes` 给在线加速节点签名 |
 
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
@@ -420,7 +424,7 @@ Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一�
 4. 仓库 **Settings → Environments → release → Environment secrets → Add environment secret**，Name 填 `XINGMANG_UPDATE_SIGNING_KEY`，Value 粘贴，点 **Add secret**。
 5. 把这个文件另存一份到安全的地方（U 盘或密码管理器）。**丢了它，就再也签不出老客户端认的包**，只能先发一版带新公钥的客户端、让所有人手动重装一次。
 
-**换钥匙**：`updateSigningPublicKeys` 可以同时放几把。先把新公钥加进去发一版，等大部分人升上去之后再把 secret 换成新私钥，最后再从名单里删掉旧公钥。
+**换钥匙**：`updateSigningPublicKeys` 可以同时放几把。先把新公钥加进去发一版，等大部分人升上去之后再把 secret 换成新私钥，最后再从名单里删掉旧公钥。在线加速节点（`docs/GLOBAL-ACCELERATION.md`「在线换节点」）用的是同一把钥匙、同一份名单，换钥匙时一起换：secret 换成新私钥以后，再跑一次 `acceleration-nodes` 用新钥匙重签线上那份。
 
 ### 可选的 COS 国内文件分发同步
 
@@ -525,6 +529,10 @@ npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=wi
 
 拿不准先撤回：几分钟生效，能原样撤销，不碍着之后再退回。不管用了哪一招，最后都发一个提升了版本号的修好版。
 放量停住、撤回只有 0.2.10 及以后的客户端认；更早的只有退回（换掉更新清单）挡得住。
+
+只有一种安装包坏了（比如只有 Intel 版的 Mac 包）：放量停住、撤回、最低版本都能在版本号后面接 `@mac-x64` 这样的平台，只管那一种，
+别的平台照常（#1155 第 5 条，写法见 `docs/SERVICE-STATUS.md`「只管某几种安装包」）。只有 0.2.20 及以后的客户端分得清平台，
+更早的照旧对所有平台生效：撤回、放量停住只会多拦，最低版本会把它们一起拦去更新。退回（`rollback-release`）不分平台。
 
 最低版本为什么要跟着改成 `none`（#1114）：最低版本还指着坏版本时，低于它的电脑每次检查更新（打开时、每 3 小时）都会先盖上「必须更新」，查完发现没有能装的新版本才放行；网不好检查失败时会一直盖着，只剩「重试」「打开下载页」。退回以后，比退回目标还旧的电脑还会被这层提示逼着装上退回的那一版，提示里写的却是坏版本号（按 `electron/updater.ts` 的 `decideUpdateOffer`、`src/renderer-v2/features/app/required-update.ts` 看是这样，没在真机上演过）。修好版发出去以后还需要强制更新，再把最低版本设成修好版。
 

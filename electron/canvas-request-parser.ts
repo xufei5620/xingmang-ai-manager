@@ -3,6 +3,7 @@ import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
 import type { CanvasRunGraph, CanvasRunNodeKind, CanvasRunScope } from './canvas-run-contract'
 import type { AiImageGenerateInput } from './ipc-contract'
+import { isRecord } from './input-guards'
 
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 const videoTaskIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
@@ -12,10 +13,6 @@ const windowsReservedFileNamePattern = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..
 // the graph revision and cloned again by the run service. A graph the canvas can
 // legitimately run comes from a workflow it can save, which is capped at 20 MB.
 const maximumRunPromptBytes = 20 * 1024 * 1024
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 export function requiredCanvasString(value: unknown, label: string, maximum: number): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum || /[\x00-\x1F\x7F]/.test(value)) {
@@ -144,16 +141,32 @@ export function parseCanvasImageEditInput(value: unknown): CanvasImageEditInput 
   return { ...generateInput, sourceAssetIds }
 }
 
-export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGenerationInput {
-  if (!isRecord(value)) throw new Error('画布视频请求格式错误')
-  assertOnlyFields(value, [
-    'requestId', 'group', 'model', 'prompt', 'seconds', 'imageAssetId', 'imageAssetIds', 'videoAssetIds', 'audioAssetIds',
-    'width', 'height', 'mode', 'resolution', 'aspectRatio', 'promptOptimization',
-  ], '画布视频请求')
+export interface VideoGenerateInputLabels {
+  /** Every error starts with it, so each page keeps the wording its users already see. */
+  video: string
+  miniMax: string
+  /**
+   * 画布还收老的单张参考图、参考视频和参考音频；主窗口只收参考图，对话里选的图片
+   * （chat:pick-images）也在同一个作品库里。
+   */
+  references: 'canvas' | 'images'
+}
+
+const imageOnlyVideoGenerateFields = [
+  'requestId', 'group', 'model', 'prompt', 'seconds', 'imageAssetIds',
+  'width', 'height', 'mode', 'resolution', 'aspectRatio', 'promptOptimization',
+] as const
+const canvasVideoGenerateFields = [...imageOnlyVideoGenerateFields, 'imageAssetId', 'videoAssetIds', 'audioAssetIds'] as const
+
+// 画布和主窗口发的是同一个付费出视频请求，照生图那份（#1071）合成一份解析，标准一样，只有报错的前缀不同。
+export function parseVideoGenerateInput(value: unknown, labels: VideoGenerateInputLabels): AiVideoGenerationInput {
+  const { video, miniMax } = labels
+  if (!isRecord(value)) throw new Error(`${video}请求格式错误`)
+  assertOnlyFields(value, labels.references === 'canvas' ? canvasVideoGenerateFields : imageOnlyVideoGenerateFields, `${video}请求`)
   const imageAssetId = value.imageAssetId === undefined
     ? undefined
-    : requiredCanvasString(value.imageAssetId, '画布视频参考图片资产标识', 64)
-  if (imageAssetId && !assetIdPattern.test(imageAssetId)) throw new Error('画布视频参考图片资产标识格式错误')
+    : requiredCanvasString(value.imageAssetId, `${video}参考图片资产标识`, 64)
+  if (imageAssetId && !assetIdPattern.test(imageAssetId)) throw new Error(`${video}参考图片资产标识格式错误`)
   const assetIds = (entry: unknown, label: string, maximum: number): string[] | undefined => {
     if (entry === undefined) return undefined
     if (!Array.isArray(entry) || entry.length > maximum) throw new Error(`${label}数量格式错误`)
@@ -162,12 +175,12 @@ export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGeneration
     if (new Set(parsed).size !== parsed.length) throw new Error(`${label}不能重复`)
     return parsed
   }
-  const imageAssetIds = assetIds(value.imageAssetIds, '画布视频参考图片', 9)
-  const videoAssetIds = assetIds(value.videoAssetIds, '画布视频参考视频', 3)
-  const audioAssetIds = assetIds(value.audioAssetIds, '画布视频参考音频', 3)
-  if (imageAssetId && imageAssetIds?.includes(imageAssetId)) throw new Error('画布视频参考图片不能重复')
-  const seconds = requiredCanvasString(value.seconds, '画布视频时长', 2)
-  if (!/^(?:[1-9]|1[0-5])$/.test(seconds)) throw new Error('画布视频时长必须是 1-15 秒的整数')
+  const imageAssetIds = assetIds(value.imageAssetIds, `${video}参考图片`, 9)
+  const videoAssetIds = assetIds(value.videoAssetIds, `${video}参考视频`, 3)
+  const audioAssetIds = assetIds(value.audioAssetIds, `${video}参考音频`, 3)
+  if (imageAssetId && imageAssetIds?.includes(imageAssetId)) throw new Error(`${video}参考图片不能重复`)
+  const seconds = requiredCanvasString(value.seconds, `${video}时长`, 2)
+  if (!/^(?:[1-9]|1[0-5])$/.test(seconds)) throw new Error(`${video}时长必须是 1-15 秒的整数`)
   const hasWidth = value.width !== undefined
   const hasHeight = value.height !== undefined
   const allowedDimensions = new Set(['1280x720', '720x1280', '1024x1024', '1024x768', '768x1024'])
@@ -175,25 +188,25 @@ export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGeneration
     !Number.isSafeInteger(value.width)
     || !Number.isSafeInteger(value.height)
     || !allowedDimensions.has(`${value.width}x${value.height}`)
-  ))) throw new Error('画布视频比例不受支持')
+  ))) throw new Error(`${video}比例不受支持`)
   const mode = value.mode
   if (mode !== undefined && !['t2va', 'i2va', 'fl2va', 'l2va', 'ref2va'].includes(String(mode))) {
-    throw new Error('画布 MiniMax 生成模式不受支持')
+    throw new Error(`${miniMax} 生成模式不受支持`)
   }
   const resolution = value.resolution
-  if (resolution !== undefined && resolution !== '480p' && resolution !== '720p') throw new Error('画布 MiniMax 分辨率不受支持')
+  if (resolution !== undefined && resolution !== '480p' && resolution !== '720p') throw new Error(`${miniMax} 分辨率不受支持`)
   const aspectRatio = value.aspectRatio
   if (aspectRatio !== undefined && !['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4'].includes(String(aspectRatio))) {
-    throw new Error('画布 MiniMax 视频比例不受支持')
+    throw new Error(`${miniMax} 视频比例不受支持`)
   }
   if (value.promptOptimization !== undefined && typeof value.promptOptimization !== 'boolean') {
-    throw new Error('画布 MiniMax 提示词优化开关格式错误')
+    throw new Error(`${miniMax} 提示词优化开关格式错误`)
   }
   return {
-    requestId: requiredCanvasString(value.requestId, '画布视频请求标识', 160),
-    group: requiredCanvasString(value.group, '画布视频分组', 128),
-    model: requiredCanvasString(value.model, '画布视频模型', 128),
-    prompt: requiredCanvasPrompt(value.prompt, '画布视频提示词', 40_000),
+    requestId: requiredCanvasString(value.requestId, `${video}请求标识`, 160),
+    group: requiredCanvasString(value.group, `${video}分组`, 128),
+    model: requiredCanvasString(value.model, `${video}模型`, 128),
+    prompt: requiredCanvasPrompt(value.prompt, `${video}提示词`, 40_000),
     seconds,
     ...(imageAssetId ? { imageAssetId } : {}),
     ...(imageAssetIds ? { imageAssetIds } : {}),
@@ -205,6 +218,10 @@ export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGeneration
     ...(aspectRatio ? { aspectRatio: aspectRatio as AiVideoGenerationInput['aspectRatio'] } : {}),
     ...(typeof value.promptOptimization === 'boolean' ? { promptOptimization: value.promptOptimization } : {}),
   }
+}
+
+export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGenerationInput {
+  return parseVideoGenerateInput(value, { video: '画布视频', miniMax: '画布 MiniMax', references: 'canvas' })
 }
 
 export function parseCanvasVideoTaskId(value: unknown): string {

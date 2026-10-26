@@ -10,7 +10,7 @@ import type { RelaySite } from './relay-sites'
 
 /**
  * Which layer of the "装好了但一跑就报错" stack the probe stopped at. The
- * status-endpoint probe in diagnostics.ts (XINGMANG_NETWORK) only answers the
+ * status-endpoint probe in diagnostics-network-checks.ts (XINGMANG_NETWORK) only answers the
  * `network` question, which is why a user whose key was revoked still sees
  * 「已连通」 and ends up in a support ticket. Every other member here is a
  * failure that check cannot see.

@@ -37,16 +37,23 @@ const outageTexts = {
   dns: '这台电脑这会儿查不到星芒的地址，AI 工具连不上。可以换个网络再试。',
   // 连不上、等不来回话：和网络掐断一样，换个网络再试。
   unreachable: '你所在的网络掐断了星芒的地址，AI 工具这会儿连不上。可以换个网络（比如手机热点）再试。',
+  // 查网址的服务给了假地址、连到冒充的机器上：换网络之外，改 DNS 就能根治（10-25 客户 Mac 用的 114 时好时坏，
+  // 两条线路的地址都给错过；yoyo 回「DNS改」）。
+  hijack: '你这台电脑用的 DNS（查网址用的服务）把星芒的地址查错了，AI 工具这会儿连不上。把电脑的 DNS 改成 223.5.5.5 和 119.29.29.29，或者换个网络（比如手机热点）再试。',
 } as const
 
 export const toolRouteServerSwitchingText = '服务端正在切换线路，稍等几分钟'
-export const toolRouteHijackText = '你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。'
+// 按换下来的是哪条说：被指错的是线路1 时换去线路2，不能还说成线路2 换线路1（10-25，yoyo 回「DNS改」）。
+const hijackTexts = {
+  direct: '你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。',
+  primary: '你所在的网络把星芒线路1的地址指到了别处，已为你改用线路2，不影响使用。星芒不会改你电脑的任何设置。',
+} as const
 /** 劫持提示出来以后在首页留多久（主进程那边同样只给半小时）。 */
 export const toolRouteHijackShownMs = 30 * 60_000
 
 /**
  * 首页上工具线路的几句话（xm 三线路 5.1.5、C20）：服务端正在切换时安静的一行；三条线都连不上时带「重新检测」
- * 的提示，管理工具自己能连上就先说一句；判成劫持、已改用 CF 时说一句。只有星芒账号才有这几样（主进程给）。
+ * 的提示，管理工具自己能连上就先说一句；判成劫持、已改用另一条线路时说一句。只有星芒账号才有这几样（主进程给）。
  */
 export function toolRouteHomeTexts(status: RelayToolRouteStatus | undefined, now: number): { quiet?: string; outage?: string; hijack?: string } {
   if (!status) return {}
@@ -54,6 +61,6 @@ export function toolRouteHomeTexts(status: RelayToolRouteStatus | undefined, now
   return {
     ...(status.serverSwitching ? { quiet: toolRouteServerSwitchingText } : {}),
     ...(status.outage ? { outage: `${status.outage.appReachable ? '星芒管理工具能连上，但 AI 工具会连不上。' : ''}${outageTexts[status.outage.reason]}` } : {}),
-    ...(hijackAge >= 0 && hijackAge < toolRouteHijackShownMs ? { hijack: toolRouteHijackText } : {}),
+    ...(status.hijack && hijackAge >= 0 && hijackAge < toolRouteHijackShownMs ? { hijack: hijackTexts[status.hijack.line ?? 'direct'] } : {}),
   }
 }

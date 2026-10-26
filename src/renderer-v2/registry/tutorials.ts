@@ -80,9 +80,6 @@ export const updateDiskCleanupDetail = `${updateDiskCleanupSteps}清出空间后
 // Linux 各家桌面的设置页不一样，只说每台都有的「文件」和回收站。
 export const linuxUpdateDiskCleanupSteps = '打开「文件」（文件管理器），清空「回收站」，再把「下载」「桌面」里用不着的大文件删掉，或者挪到 U 盘。自己的项目文件夹别删。';
 
-// 技能页选到不能在这里导入的工具时，「看怎么放」打开技能那篇并展开这一条。
-export const skillImportTutorialExtra = 'Claude Code、Grok CLI 没有导入按钮？';
-
 export function updateDiskCleanupStepsFor(os: WindowOs): string {
   return os === 'linux' ? linuxUpdateDiskCleanupSteps : updateDiskCleanupSteps;
 }
@@ -554,7 +551,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   },
   {
     id: 'acceleration',
-    title: '游戏加速',
+    title: '网络加速',
     lead: '选线路，点开启；用完点停止，剩余时长下次继续。',
     category: 'tools',
     minutes: 3,
@@ -564,17 +561,17 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         title: '登录后查看可用时长',
         where: '设置 › 网络加速 → 剩余免费时长',
         detail: `每个账号在本机累计 ${accelerationTrialSeconds / 60} 分钟，连接成功才计时，不每日重置。`,
-        bullets: ['未登录先点「登录领取免费体验」。', '剩余时长写在「游戏加速」下面那句说明里。'],
+        bullets: ['未登录先点「登录领取免费体验」。', '剩余时长写在「网络加速」下面那句说明里。'],
         expected: '读到剩余时长与线路状态。',
         illustration: 'acceleration',
         extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「联系客服」，可通过「帮助与客服」咨询。启用「设置」→「消息通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
-        action: '打开游戏加速',
+        action: '打开网络加速',
         page: 'settings',
         section: 'acceleration',
       },
       {
         title: '连接前选择线路或「自动选择」',
-        where: '设置 › 网络加速 › 游戏加速 → 线路',
+        where: '设置 › 网络加速 → 线路',
         detail: '不确定选哪条就用「自动选择」，连接时自动测速选可用线路。',
         bullets: ['点「线路」右边的按钮，选择「自动选择」或具体线路。', '每条线路右边写着延迟，数字越小通常越快；点菜单最下面的「重新测速」再测一遍。'],
         expected: '当前线路显示你的选择。',
@@ -584,25 +581,25 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
       {
         title: '开启加速，等状态确认',
-        where: '设置 › 网络加速 › 游戏加速 → 开启加速',
+        where: '设置 › 网络加速 → 开启加速',
         detail: '点「开启加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
         bullets: ['点「开启加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
         expected: '显示实际线路，剩余时长开始计时。',
         extra: [
           { title: '提示其他代理或 VPN 冲突？', detail: '先关闭其他代理或 VPN 后重试；也可以按页面选择「仍然连接」。系统代理能否影响某个应用，取决于那个应用是否采用系统代理。' },
-          { title: '为什么有时会自动连接？', detail: '安装、更新命令行工具，装 Node.js、Git、Python，或下载 Codex 插件目录时，工具箱会在后台准备下载专用临时线路：不改电脑网络设置，不计入免费时长，下载后关闭，游戏加速卡上不显示已连接。打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，游戏加速卡和托盘也不显示。桌面端用星芒密钥的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。' },
+          { title: '为什么有时会自动连接？', detail: '打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，网络加速卡和托盘也不显示。桌面端用星芒密钥的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。装工具、下载 Node.js 时不借加速线路，照常直连。' },
           { title: '「加速服务暂不可用」或连不上？', detail: '先按具体提示处理：完全退出工具箱（含托盘）后重开、检查磁盘空间，或请管理员处理系统限制。「查看日志」会进入反馈页运行日志，「重新检查」会重新读取状态；线路准备中可点「刷新线路状态」。' },
         ],
-        action: '打开游戏加速连接',
+        action: '打开网络加速连接',
         page: 'settings',
         section: 'acceleration',
       },
       {
         title: '用完明确点击停止加速',
-        where: '设置 › 网络加速 › 游戏加速 → 停止加速',
+        where: '设置 › 网络加速 → 停止加速',
         detail: '不用时明确点停止，缩到托盘或切换页面不等于停止。',
         bullets: ['点「停止加速」，等连接结束。', '要换线路，也先停止。'],
-        expected: '标题变回「游戏加速」，剩余时长保留。',
+        expected: '标题变回「网络加速」，剩余时长保留。',
         extra: [{ title: '窗口缩到托盘后怎么操作？', detail: '右键工具箱托盘图标，查看加速状态和剩余时长，使用「连接加速 / 断开加速」。不可操作时按钮变灰，状态行说明原因。' }],
         action: '查看并停止加速',
         page: 'settings',
@@ -734,10 +731,9 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       {
         title: '添加自己的技能',
         where: '技能 → 从文件夹导入',
-        detail: 'Codex CLI 填本机技能文件夹。',
+        detail: '选好工具，再选一个本机的技能文件夹导入。',
         bullets: ['点「从文件夹导入」，按提示填来源。', '选「我的（全局）」用于多个项目，或「当前项目」只用于此项目。'],
         expected: '列表出现新技能及添加范围。',
-        extra: [{ title: skillImportTutorialExtra, detail: '它们不提供这里的导入入口。按工具自己的方式放好技能，再回本页点「重新加载」；选择当前项目时先核对工作文件夹。' }],
         action: '去导入技能',
         page: 'skills',
       },

@@ -37,7 +37,7 @@
 
 **几条跨多个文件的链路**：
 
-- 星芒自身更新：`update-feed-route.ts` 选源 → `update-request-guard.ts` 管请求 → `update-package-digest.ts`（SHA-512）→ Windows 上 `update-signature.ts`（Authenticode）或无签名通道的 `update-package-signature.ts`（Ed25519）→ `auto-update-install.ts` 决定何时装 → `installed-release.ts` 下次启动说「已更新」，由 `main.ts` 接进 `updater.ts`。
+- 星芒自身更新：`update-feed-route.ts` 选源 → `update-request-guard.ts` 管请求 → `update-package-digest.ts`（SHA-512）→ Windows 上 `update-signature.ts`（Authenticode）或无签名通道的 `update-package-signature.ts`（Ed25519）→ `auto-update-install.ts` 决定何时装（`update-install-prompt.ts` 下好后跳框问、Mac 闲时装）→ `installed-release.ts` 下次启动说「已更新」，由 `main.ts` 接进 `updater.ts`。
 - 游戏加速：`acceleration-service.ts`（主进程门面）→ `acceleration-development-host.ts`（拉起辅助进程；文件名里的 development 是历史名字，正式包也走它）→ 辅助进程 `acceleration-development-worker.ts` → `acceleration-development-backend.ts` + `acceleration-mihomo-runtime.ts` + `platform/windows-system-proxy.ts` / `platform/macos-system-proxy.ts`。只在 Windows 和 macOS 上有。
 - AI 对话与生成：画布或聊天的请求 → `canvas-request-parser.ts` 或 `ipc.ts` 校验 → `ai-chat-service.ts` / `ai-image-service.ts` / `ai-video-service.ts` → 密钥只在主进程由 `chat-credential-coordinator.ts` 给出（I15）→ 产物进 `ai-asset-store.ts` 等 → 经 `xingmang-asset://` 显示。
 - 画布运行：`canvas-window.ts` → `canvas-run-service.ts` → `canvas-run-engine.ts` → `canvas-node-executors.ts` → 上面的 AI 服务，记录落在 `canvas-run-store.ts`。

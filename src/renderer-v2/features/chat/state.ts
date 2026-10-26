@@ -1,10 +1,11 @@
+import { IMAGE_SKILL_GROUP_NAMES } from '../../../../electron/ai-chat-protocol'
 import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { rawErrorMessage, speaksChinese, userFacingErrorMessage } from '../../business-common'
-import { canReadImages, chatLimits } from './api'
+import { canReadImages, chatLimits, inspectModel } from './api'
 
 export type ChatMode = 'text' | 'image'
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'canceled' | 'error'
@@ -53,13 +54,14 @@ export function createId(): string { return crypto.randomUUID() }
 export function defaultChatSettings(): ChatSettings { return { mode: 'text', group: '', model: '', systemPrompt: '', parameters: {}, size: '1024x1024', quality: 'low', imageResolution: '1K' } }
 export function createConversation(settings = defaultChatSettings(), id = createId()): Conversation { const now = Date.now(); return { id, title: '新对话', createdAt: now, updatedAt: now, draft: '', settings: { ...settings, parameters: { ...settings.parameters } }, messages: [] } }
 export function createWorkspace(owner: string): ChatWorkspace { return { version: 2, owner, activeId: null, conversations: [], draftConversation: createConversation() } }
+export type ChatSite = 'solov' | 'solov-api'
 // 主进程标了 recommended 就跟它走：站上改了分组本名时写死的名字找不到，那边会按分组对照认出新名字。
-export function resolveChatGroup(groups: readonly Pick<AiChatGroupSummary, 'name' | 'recommended'>[], remembered = '', siteId: 'solov' | 'solov-api' = 'solov'): string {
-  if (remembered && groups.some((group) => group.name === remembered)) return remembered
+// 历史账号那边主进程不标，按写死的 Codex_pro 认。都不在时是空字符串。
+export function recommendedChatGroup(groups: readonly Pick<AiChatGroupSummary, 'name' | 'recommended'>[], siteId: ChatSite = 'solov'): string {
   const recommended = groups.find((group) => group.recommended === true)
   if (recommended) return recommended.name
   const preferred = siteId === 'solov-api' ? SUB2API_CHAT_GROUP : DEFAULT_CHAT_GROUP
-  return groups.find((group) => group.name === preferred)?.name ?? groups[0]?.name ?? ''
+  return groups.find((group) => group.name === preferred)?.name ?? ''
 }
 export function resolveChatModel(models: readonly string[], remembered = '', preferred: string | readonly string[] = DEFAULT_CHAT_MODEL): string {
   if (remembered && models.includes(remembered)) return remembered
@@ -76,6 +78,99 @@ export function resolveDefaultChatModel(mode: ChatMode, models: readonly string[
   const sameFamily = resolveNewestModelOfFamily(models, DEFAULT_CHAT_MODEL)
   return resolveChatModel(models, remembered, sameFamily ? [DEFAULT_CHAT_MODEL, sameFamily] : DEFAULT_CHAT_MODEL)
 }
+
+// 模型菜单按厂商分节，次序固定；认不出的放「其他」。认法跟 ui/brand.tsx 的 BrandIcon 对得上，
+// 菜单里的小标跟按钮上的图标说的是同一家。
+export const chatModelVendors = ['OpenAI', 'Claude', 'Gemini', 'Grok', 'DeepSeek', '通义千问', '智谱 GLM', 'Kimi', 'MiniMax', '即梦', '其他'] as const
+export type ChatModelVendor = typeof chatModelVendors[number]
+const vendorPatterns: ReadonlyArray<readonly [ChatModelVendor, RegExp]> = [
+  ['OpenAI', /^(?:gpt|chatgpt|codex|dall-e|sora)|^o\d/i],
+  ['Claude', /^claude/i],
+  ['Gemini', /^(?:gemini|imagen|veo)/i],
+  ['Grok', /^grok/i],
+  ['DeepSeek', /^deepseek/i],
+  ['通义千问', /^(?:qwen|qwq|qvq)/i],
+  ['智谱 GLM', /^(?:chatglm|glm|zhipu|cogview)/i],
+  ['Kimi', /^(?:kimi|moonshot)/i],
+  ['MiniMax', /^(?:minimax|abab|hailuo)/i],
+  ['即梦', /^jimeng/i],
+]
+export function chatModelVendor(model: string): ChatModelVendor {
+  return vendorPatterns.find(([, pattern]) => pattern.test(model))?.[0] ?? '其他'
+}
+
+/** 一个模型在哪几个分组里有：按后台列分组的先后。 */
+export interface ChatCatalogEntry { model: string; groups: string[] }
+export interface ChatGroupPreparation { phase: 'loading' | 'ready' | 'error'; models: readonly string[] }
+/**
+ * 各分组读到的模型并成一张表（只收这一种模式用得上的）：同一个模型只列一次，记下哪些分组有它。
+ * 先后照后台列分组的先后、分组里模型的先后；图片分组里的模型主进程已经按偏好排好了。
+ */
+export function buildChatCatalog(groups: readonly Pick<AiChatGroupSummary, 'name'>[], preparations: Readonly<Record<string, ChatGroupPreparation | undefined>>, mode: ChatMode): ChatCatalogEntry[] {
+  const kind = mode === 'image' ? 'image' : 'chat'
+  const entries = new Map<string, ChatCatalogEntry>()
+  for (const group of groups) {
+    const prepared = preparations[group.name]
+    // 正在重新准备的分组先照旧列着上一回的模型，点「刷新模型」时菜单不会一下子空掉。
+    if (!prepared || prepared.phase === 'error') continue
+    for (const model of prepared.models) {
+      let capability
+      try { capability = inspectModel(model) } catch { continue }
+      if (capability.kind !== kind) continue
+      const entry = entries.get(model)
+      if (entry) { if (!entry.groups.includes(group.name)) entry.groups.push(group.name) } else entries.set(model, { model, groups: [group.name] })
+    }
+  }
+  return [...entries.values()]
+}
+/** 还没准备完的分组（没开始或正在准备）。 */
+export function pendingChatGroups(groups: readonly Pick<AiChatGroupSummary, 'name'>[], preparations: Readonly<Record<string, ChatGroupPreparation | undefined>>): Set<string> {
+  return new Set(groups.filter((group) => { const phase = preparations[group.name]?.phase; return phase !== 'ready' && phase !== 'error' }).map((group) => group.name))
+}
+
+function groupRatio(value: number | string | undefined): number {
+  const ratio = typeof value === 'number' ? value : Number.parseFloat(value ?? '')
+  return Number.isFinite(ratio) && ratio >= 0 ? ratio : Number.POSITIVE_INFINITY
+}
+const imageGroupNames = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
+/**
+ * 同一个模型好几个分组都有时，按哪个分组计费（yoyo 10-25 定的次序）：这段对话正在用的分组 → 出图挑图片分组、
+ * 聊天挑推荐分组 → 价格倍率低的 → 后台列的先后。candidates 已经按后台列的先后排好。
+ */
+export interface ChatGroupContext { groups: readonly (Pick<AiChatGroupSummary, 'name' | 'recommended'> & Partial<Pick<AiChatGroupSummary, 'ratio'>>)[]; site?: ChatSite }
+export function pickChatGroup(candidates: readonly string[], context: ChatGroupContext & { current: string; mode: ChatMode }): string {
+  if (!candidates.length) return ''
+  if (context.current && candidates.includes(context.current)) return context.current
+  const recommended = recommendedChatGroup(context.groups, context.site)
+  const preferred = context.mode === 'image'
+    ? candidates.find((name) => imageGroupNames.has(name))
+    : candidates.find((name) => name === recommended)
+  if (preferred) return preferred
+  const ratioOf = (name: string) => groupRatio(context.groups.find((group) => group.name === name)?.ratio)
+  return candidates.reduce((best, name) => ratioOf(name) < ratioOf(best) ? name : best)
+}
+/**
+ * 菜单里没得选分组了，对话记着的模型和分组按这张表落定：模型还在就挑一个有它的分组；不在了，等各分组都准备完
+ * 再换成默认模型（首选的默认模型已经在表里时不用等）。表里一个都没有时留着原样，不把记着的清掉。
+ * keepMissing：后台刷新时用。正在用的模型哪个分组都没有了也不悄悄换成别的，留给用户自己换。
+ */
+export function settleChatModel(settings: ChatSettings, catalog: readonly ChatCatalogEntry[], context: ChatGroupContext & { pending: ReadonlySet<string>; keepMissing?: boolean }): Pick<ChatSettings, 'group' | 'model'> {
+  const unchanged = { group: settings.group, model: settings.model }
+  const settled = context.pending.size === 0
+  // 正在用的分组还在准备：先别因为别的分组也有这个模型就换走它的计费分组。
+  if (settings.model && context.pending.has(settings.group)) return unchanged
+  const pick = (entry: ChatCatalogEntry) => ({ model: entry.model, group: pickChatGroup(entry.groups, { ...context, current: settings.group, mode: settings.mode }) })
+  const remembered = settings.model ? catalog.find((entry) => entry.model === settings.model) : undefined
+  if (remembered) return pick(remembered)
+  if (settings.model && context.keepMissing) return unchanged
+  const first = catalog.find((entry) => entry.model === (settings.mode === 'image' ? DEFAULT_IMAGE_MODELS[0] : DEFAULT_CHAT_MODEL))
+  if (!settled && !settings.model && first) return pick(first)
+  if (!settled || !catalog.length) return unchanged
+  const fallback = resolveDefaultChatModel(settings.mode, catalog.map((entry) => entry.model))
+  const entry = catalog.find((item) => item.model === fallback)
+  return entry ? pick(entry) : unchanged
+}
+
 export function activeConversation(state: ChatWorkspace): Conversation { return state.conversations.find((item) => item.id === state.activeId) ?? state.draftConversation }
 export function changeConversation(state: ChatWorkspace, id: string, change: (conversation: Conversation) => Conversation): ChatWorkspace {
   if (state.draftConversation.id === id) return { ...state, draftConversation: change(state.draftConversation) }
@@ -217,7 +312,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   }
   if (!prompt && !images.length) throw new Error('请先输入消息内容')
   if (prompt.length > chatLimits.messageLength) throw new Error(`单条消息最多 ${chatLimits.messageLength} 个字符`)
-  if (!settings.group || !settings.model) throw new Error('请先选择分组和模型')
+  if (!settings.group || !settings.model) throw new Error('请先选择模型')
   if (images.length && settings.mode === 'image') throw new Error('生成图片时还不能带图片，请先把图片去掉')
   if (images.length && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
   const messages = contextMessages(history, settings)
@@ -243,7 +338,7 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 准备分组时断网，主进程带来的是账号服务那一层说清了原因的那句话，原样上屏。
   if (code === 'network-error') return matchNetworkFailureMessage(message) ?? '无法连接 AI 服务，请检查网络后重试'
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'
-  if (code === 'model-unavailable') return '当前模型不在所选分组的可用列表中，请刷新后重新选择'
+  if (code === 'model-unavailable') return '当前模型暂时用不了，请刷新模型后重新选择'
   // 必须排在下面那几条按字面猜的正则之前：服务在维护时主进程给的话已经说清楚了，
   // 再被 /登录|密钥/ 之类撞上，就会变回「请重新登录」。
   if (code === 'service-unavailable' || networkFailureReasonForMessage(message) === 'serviceUnavailable') return networkFailureMessages.serviceUnavailable

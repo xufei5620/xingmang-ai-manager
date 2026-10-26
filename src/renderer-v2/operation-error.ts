@@ -2,6 +2,7 @@ import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desk
 import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
+import { extensionCommandFailureInMessage } from '../../electron/extension-command-failure'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { npmFailureExplainsItself } from '../../electron/npm-failure-reasons'
@@ -71,6 +72,12 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
   // 现在只剩「重启再试、不行找客服」。
   { key: 'pluginCatalogStuck', match: (message) => /插件目录里的旧备份清不掉/.test(message) },
+  // 装插件、加外接工具时命令行自己说的原因（主进程把那几行接在「（命令输出：」后面，extension-command-output.ts）。
+  // 只认带着这个记号的话，别处的英文不认。排在网络、权限那几条前面：连不上 GitHub 时原话里有 Connection reset
+  // 这类字样，被下面认成「网络连不上」也说得过去，但「插件要从 GitHub 下载」才说到点子上。
+  { key: 'gitMissing', match: (message) => extensionCommandFailureInMessage(message) === 'gitMissing' },
+  { key: 'githubUnreachable', match: (message) => extensionCommandFailureInMessage(message) === 'githubUnreachable' },
+  { key: 'nameTaken', match: (message) => extensionCommandFailureInMessage(message) === 'nameTaken' },
   // 主进程已经认定是服务那一侧（维护、网关错误、防护层验证页）的，排在最前：
   // 它后面带着的「HTTP 503」之类原文不能再被下面按字面猜成别的事。
   { key: 'serviceUnavailable', match: (message) => networkFailureReasonForMessage(message) === 'serviceUnavailable' },
@@ -145,6 +152,11 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。
   { key: 'folderRelocated', match: (message) => /不能经过符号链接或目录联接/.test(message) },
+  // Windows 授权窗口点了「否」、或者这个账号拿不到管理员权限（windows-elevation.ts 那两句，装 Node.js、
+  // Codex 桌面端、Claude Desktop 都会说）。以前认不出，一长串原话配「操作没有完成」。那句话后半截已经按
+  // 账号类型写好下一步（普通账号要输管理员账号的密码、公司电脑找 IT），这里只给标题和按钮（#1096）。
+  // 标题不能是原话里的一段，否则 presentOperationError 当它已经说过、不出提示。
+  { key: 'elevationDeclined', match: (message) => /已取消管理员授权|未获得管理员权限/.test(message) },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|UnauthorizedAccess|access to the path\b.*\bis denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   // 「杀毒」这条只留真的在说杀毒软件的说法。EBUSY 与「文件被占用」已经上移到
   // toolRunning：两条都留着的话，先匹配到的那条就决定用户去关哪个东西。

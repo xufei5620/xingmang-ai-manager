@@ -83,6 +83,15 @@ button, input, select, textarea { font: inherit; }
 .sidebar-collapsed .v2-account-main { align-items: center; padding: 6px 0; }
 .sidebar-collapsed .v2-account-top { padding: 0; }
 .sidebar-collapsed .v2-account-rail { position: relative; top: auto; right: auto; display: flex; align-items: center; justify-content: center; margin: 2px auto 0; width: 36px; height: 30px; }
+/* 窗口窄、侧栏自动收着时点了展开：侧栏照 224 宽浮在正文上面，正文那一列仍按窄条留 60，所以不挪不缩；背后不罩，点外面就收回。 */
+.v2-shell.sidebar-floating { position: relative; grid-template-columns: var(--sidebar-collapsed) minmax(0, 1fr); }
+.sidebar-floating .v2-sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: var(--z-drawer); width: var(--sidebar-expanded); box-shadow: inset -1px 0 0 var(--line), var(--shadow-pop); }
+.sidebar-floating .v2-workspace { grid-column: 2; }
+.v2-root[data-os='mac'] .sidebar-floating .v2-topbar { padding-left: 32px; }
+/* 顶栏是拖动区：Electron 把那里的鼠标按下直接交给系统拖窗口，页面收不到，焦点也不动，上面「点外面就收」碰不到它，
+   点顶栏空白处侧栏一直浮着（issue 1349 第 1 条）。浮着时顶栏临时不当拖动区，点一下先收回；收回后照常能拖。
+   Windows 的最小化、关闭和 Mac 的红黄绿是系统画的，不归它管。 */
+.sidebar-floating .v2-topbar { -webkit-app-region: no-drag; }
 
 .v2-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); background-image: var(--glow-top); background-repeat: no-repeat; }
 .v2-workspace > .v2-topbar, .v2-workspace > .v2-content, .v2-workspace > .v2-statusbar, .v2-workspace > .v2-announcement-banner, .v2-workspace > .v2-promo-card, .v2-workspace > .v2-promo-bar, .v2-workspace > .v2-offline-banner { position: relative; z-index: 1; }
@@ -129,6 +138,7 @@ button, input, select, textarea { font: inherit; }
 .v2-dot.is-ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
 .v2-dot.is-warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .v2-dot.is-bad { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+.v2-dot.is-accent { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .v2-notification { position: absolute; right: 20px; bottom: 44px; width: 420px; z-index: 18; }
 .v2-notification > .xm-notice { box-shadow: var(--shadow); }
 /* 启动期后台检查的提示（v4）放在正文左下角、状态栏上面：标题栏并进顶栏以后，右上角是顶栏的三个图标键和
@@ -183,8 +193,9 @@ button, input, select, textarea { font: inherit; }
   .v2-account-balance { margin-top: 8px; }
   /* 收起的窄条也要放得下（#1133 第 4 条）：110% 缩放的最小窗口只剩 566 高，原来只收了展开的侧栏，
      窄条差 36（Mac 顶上还要让红黄绿三个点，差 68），「反馈与客服」滚出去，「检查」被渐隐盖得像按不动。
-     这里图标行 30 → 28、分组线上下空隙减半，标志和账号头像那块的空隙也收一点，Mac 也放得下。 */
-  .sidebar-collapsed .v2-nav-item { height: 28px; }
+     这里图标行 30 → 28、分组线上下空隙减半，标志和账号头像那块的空隙也收一点，Mac 也放得下。
+     2026-10-25 工作组加了「视频剪辑」，Mac 又差 21，图标行再收到 26（仍高过 24 的最小点按目标）。 */
+  .sidebar-collapsed .v2-nav-item { height: 26px; }
   .sidebar-collapsed :is(.v2-nav-group-label, .v2-nav-separator) { margin-block: 4px; }
   .sidebar-collapsed .v2-brand { height: 28px; margin-bottom: 4px; }
   .sidebar-collapsed .v2-sidebar-pinned { padding-top: 4px; }

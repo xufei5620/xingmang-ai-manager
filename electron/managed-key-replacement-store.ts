@@ -15,6 +15,7 @@
  * 不含任何 Electron 依赖，路径由宿主注入，好让这套判断能脱离主进程单测。
  */
 import path from 'node:path'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 
 const storeLabel = '密钥换新记录'
@@ -51,10 +52,6 @@ export const managedKeyReplacementUnreadableRevokeMessage = '之前记下的密�
 interface StoredReplacements {
   version: 1
   entries: Record<string, PendingKeyLimit>
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function parseLimit(value: unknown): PendingKeyLimit | null {

@@ -6,8 +6,8 @@
 
 - `src/renderer-v2/pages-business.tsx`：`BusinessPage` 页面分发。
 - `src/renderer-v2/pages-account.tsx`：原型九页签；我的账号按左基本资料、右余额/保存账号/设备排版。
-- `src/renderer-v2/pages-management.tsx`：多工具记录、MCP、技能、插件、市场、备份及详情抽屉。
-- `src/renderer-v2/pages-maintenance.tsx`：检查、反馈、更新、安装卸载、八组设置、教程。
+- `src/renderer-v2/pages-management.tsx`：只做转出（#1070 第 11 步）。记录页在 `features/sessions/SessionsPage.tsx`；外接工具、技能、插件三页在 `features/extensions/ExtensionsPage.tsx`，三页和「星芒精选」共用的判断、解析和卡片在 `features/extensions/extensions-common.tsx`。
+- `src/renderer-v2/pages-maintenance.tsx`：只做转出（#1070 第 11 步）。检查页在 `features/health/HealthPage.tsx`，反馈与客服在 `features/feedback/FeedbackPage.tsx`，设置页在 `features/settings/SettingsPage.tsx`，教程在 `features/tutorial/TutorialPage.tsx`；装工具那几句结果在 `features/tools/install-result.ts`。
 - `src/renderer-v2/SavedAccounts.tsx`：可供账号页与外壳共用的保存账号列表。
 - `src/renderer-v2/AccountFilters.tsx`：调用明细和异步任务的筛选表单。
 - `src/renderer-v2/business-common.tsx`：加载回包隔离、操作错误、活动任务登记和分页。

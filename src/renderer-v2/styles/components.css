@@ -2,6 +2,7 @@
 .xm-tooltip-anchor { display: inline-flex; }
 .xm-tooltip-panel { position: fixed; inset: auto; margin: 0; width: max-content; max-width: 260px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text); background: var(--panel-solid); font: var(--font-small-compact)/var(--line-body) var(--font); box-shadow: var(--shadow); }
 .xm-tooltip-panel { background: var(--pop); border-color: var(--pop-line); box-shadow: var(--shadow-pop); }
+.xm-tooltip-panel[data-placement='right'] { pointer-events: none; }
 /* 导览气泡（v4）：窄卡片，一个小三角指着讲的那个东西，被指的东西描一圈金边。三角的位置由 guidance.tsx 量好写进变量。 */
 .xm-coachmark { position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: var(--coach-width); padding: 12px 14px; border: 0; border-radius: 12px; overflow: visible; color: var(--text); background: var(--pop); box-shadow: inset 0 0 0 1px var(--soft-line), var(--shadow-pop); font: var(--font-body)/var(--line-body) var(--font); text-align: left; }
 .xm-coachmark::before { content: ''; position: absolute; width: 10px; height: 10px; background: var(--pop); box-shadow: -1px -1px 0 0 var(--soft-line); }

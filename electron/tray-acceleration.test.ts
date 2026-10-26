@@ -81,7 +81,7 @@ describe('tray acceleration menu entry', () => {
     expect(describeTrayAccelerationFailure(accelerationFailure('proxy-locked'))).toBe('系统策略限制，无法修改网络设置')
     expect(describeTrayAccelerationFailure(accelerationFailure('proxy-declined'))).toBe('网络设置还没改回，要输电脑密码')
     expect(describeTrayAccelerationFailure(accelerationFailure('unknown'))).toBe('连接未成功，请稍后重试')
-    expect(describeTrayAccelerationFailure(new Error('账号已变更，请重新打开游戏加速。'))).toBe('账号已变更，请重新打开游戏加速')
+    expect(describeTrayAccelerationFailure(new Error('账号已变更，请重新打开网络加速。'))).toBe('账号已变更，请重新打开网络加速')
     expect(describeTrayAccelerationFailure('not an error')).toBe('连接未成功，请稍后重试')
   })
 })

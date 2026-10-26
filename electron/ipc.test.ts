@@ -22,6 +22,8 @@ import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './extern
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 import { noteRequestDiagnostics } from './request-diagnostics'
 import { PaymentCheckoutRejected } from './payment-window'
+import { assetThumbnailUrl } from './asset-thumbnail'
+import type { AiOperationProgressObserver } from './ai-operation-progress'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -432,6 +434,22 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel).sort()).toEqual(expectedChannels)
   })
 
+  // 各域交回来的收尾要在撤通道时接上；漏接一项编译器不管（#1333）。换线路定点改写拿着的账号钩子
+  // 要在这里放掉，不然撤了通道以后它还会按旧账号去备份、认密钥。
+  it('unbinds the tool route account hooks when disposed', () => {
+    const service = serviceStub()
+    const bindToolRouteAccount = vi.fn()
+    service.bindToolRouteAccount = bindToolRouteAccount
+    const { dispose } = register(service)
+    expect(bindToolRouteAccount).toHaveBeenCalledOnce()
+    expect(bindToolRouteAccount.mock.calls[0][0]).toEqual({ backup: expect.any(Function), ownedKeyIds: expect.any(Function) })
+
+    dispose()
+
+    expect(bindToolRouteAccount).toHaveBeenCalledTimes(2)
+    expect(bindToolRouteAccount).toHaveBeenLastCalledWith(null)
+  })
+
   it('routes global acceleration through trusted IPC and rejects unknown modes', async () => {
     const state = { scope: 'xm-account:7', phase: 'unavailable' as const, mode: 'system-proxy' as const,
       totalSeconds: 3600, remainingSeconds: null, sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null }
@@ -784,6 +802,25 @@ describe('registerIpcHandlers', () => {
   })
 
   describe('feedback preview snapshot contracts', () => {
+    // 预览留着的是整份反馈报告；撤通道时这一项收尾要接上，漏接编译器不管（#1333）。
+    it('forgets the previewed reports when the handlers are disposed', async () => {
+      const { runtimeLog, dispose } = register()
+      runtimeLog.captureFeedbackReport
+        .mockResolvedValueOnce({ text: 'before dispose\n', entries: 1 })
+        .mockResolvedValueOnce({ text: 'after dispose\n', entries: 2 })
+      const owner = trustedEvent()
+      const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+      const copy = electronMocks.handlers.get('runtime-logs:copy-feedback')!
+
+      dispose()
+
+      await expect(copy(owner, preview.id)).resolves.toEqual({
+        entries: 2,
+        regenerated: { id: expect.any(String), text: 'after dispose\n', entries: 2 },
+      })
+      expect(electronMocks.writeText).toHaveBeenCalledExactlyOnceWith('after dispose\n')
+    })
+
     it('copies and exports exactly the previewed text and count despite later log changes', async () => {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feedback-ipc-'))
       try {
@@ -1065,6 +1102,149 @@ describe('registerIpcHandlers', () => {
     dispose()
   })
 
+  describe('video channels', () => {
+    const clipId = 'C'.repeat(43)
+    const imageId = 'I'.repeat(43)
+    const storedClip = {
+      assetId: clipId, localUrl: `xingmang-asset://video/${clipId}`, mimeType: 'video/mp4' as const,
+      fileName: `xingmang-${clipId}.mp4`, taskId: 'task_1', width: 720, height: 1280, durationSeconds: 6,
+    }
+    const clip = { assetId: clipId, thumbnailUrl: assetThumbnailUrl(clipId, 'video'), width: 720, height: 1280, durationSeconds: 6 }
+
+    function signedIn(userId: number | null = 7) {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue((userId === null
+        ? { authenticated: false }
+        : { authenticated: true, account: { userId } }) as never)
+      return accountService
+    }
+
+    function videoServiceStub() {
+      return {
+        generate: vi.fn(async (_senderId: number, _input: unknown, progress?: AiOperationProgressObserver) => {
+          await progress?.onStage('processing')
+          await progress?.onProgress?.({ value: 41.6, health: 'delayed' })
+          await progress?.onStage('downloading')
+          return storedClip
+        }),
+        cancel: vi.fn(() => ({ canceled: true, mayStillComplete: true })),
+        cancelSender: vi.fn(() => 0),
+        cancelAll: vi.fn(() => 0),
+      }
+    }
+
+    it('generates a clip for the signed-in account, forwards progress to the asking window and hands back no paths', async () => {
+      const accountService = signedIn()
+      const videoService = videoServiceStub()
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { videoService })
+      const generate = electronMocks.handlers.get('video:generate')!
+      const input = { requestId: 'video-1', group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6', imageAssetIds: [imageId] }
+
+      expect(() => generate(trustedEvent('https://attacker.example/', 9), input)).toThrow('已拒绝来自非应用页面的操作请求')
+      await expect(generate(trustedEvent(undefined, 17), { ...input, projectId: 'p' })).rejects.toThrow('视频请求包含未知字段')
+      expect(videoService.generate).not.toHaveBeenCalled()
+
+      const event = trustedEvent(undefined, 17)
+      await expect(generate(event, input)).resolves.toEqual(clip)
+      expect(videoService.generate).toHaveBeenCalledWith(17, { ...input, expectedUserId: 7 }, expect.any(Object))
+      expect(event.sender.send.mock.calls).toEqual([
+        ['video:progress', { requestId: 'video-1', stage: 'processing' }],
+        ['video:progress', { requestId: 'video-1', stage: 'processing', value: 42, delayed: true }],
+        ['video:progress', { requestId: 'video-1', stage: 'downloading' }],
+      ])
+
+      const cancel = electronMocks.handlers.get('video:cancel')!
+      expect(cancel(trustedEvent(undefined, 17), 'video-1')).toEqual({ canceled: true, mayStillComplete: true })
+      expect(videoService.cancel).toHaveBeenCalledWith(17, 'video-1', 7)
+
+      const destroyed = vi.mocked(event.sender.once).mock.calls.find(([name]) => name === 'destroyed')?.[1]
+      ;(destroyed as () => void)()
+      expect(videoService.cancelSender).toHaveBeenCalledWith(17)
+      dispose()
+      expect(videoService.cancelAll).toHaveBeenCalled()
+
+      const signedOut = videoServiceStub()
+      const second = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(null), undefined, undefined, {}, { videoService: signedOut })
+      await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), input)).rejects.toThrow('请先登录星芒账号')
+      expect(signedOut.generate).not.toHaveBeenCalled()
+      second.dispose()
+    })
+
+    it('writes a storyboard with the chosen text model and asks once more only when the answer is unreadable', async () => {
+      const answer = JSON.stringify({ title: '回家', shots: [{ prompt: '橘猫在雨里', caption: '下雨了' }] })
+      const chatService = {
+        completeOnce: vi.fn<(input: { signal?: AbortSignal }) => Promise<string>>()
+          .mockResolvedValueOnce('我先想想')
+          .mockResolvedValueOnce(answer),
+        dispose: vi.fn(),
+      }
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, { chatService } as never)
+      const planHandler = electronMocks.handlers.get('video-studio:plan')!
+      const input = { requestId: 'plan-1', group: '文字分组', model: 'gpt-6-astra', idea: '一只橘猫回家', shotCount: 1, secondsPerShot: 6, aspect: '9:16', captions: true }
+
+      await expect(planHandler(trustedEvent(), { ...input, shotCount: 20 })).rejects.toThrow('镜头数要在 1 到 12 个之间')
+      await expect(planHandler(trustedEvent(), input)).resolves.toEqual({ title: '回家', shots: [{ prompt: '橘猫在雨里', caption: '下雨了' }] })
+      expect(chatService.completeOnce).toHaveBeenCalledTimes(2)
+      expect(chatService.completeOnce).toHaveBeenCalledWith({
+        group: '文字分组',
+        model: 'gpt-6-astra',
+        messages: [{ role: 'system', content: expect.stringContaining('shots 正好 1 个') }, { role: 'user', content: '一只橘猫回家' }],
+        parameters: { temperature: 0.7 },
+        signal: expect.any(AbortSignal),
+      })
+
+      // A failed request is not asked again: that would only pay twice for the same failure.
+      chatService.completeOnce.mockReset().mockRejectedValueOnce(new Error('当前余额不足'))
+      await expect(planHandler(trustedEvent(), input)).rejects.toThrow('当前余额不足')
+      expect(chatService.completeOnce).toHaveBeenCalledOnce()
+
+      chatService.completeOnce.mockReset().mockImplementation(({ signal }) => new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('已取消')), { once: true })
+      }))
+      const pending = planHandler(trustedEvent(undefined, 31), input)
+      await vi.waitFor(() => expect(chatService.completeOnce).toHaveBeenCalledOnce())
+      const cancel = electronMocks.handlers.get('video:cancel')!
+      expect(cancel(trustedEvent(undefined, 32), 'plan-1')).toEqual({ canceled: false, mayStillComplete: false })
+      expect(cancel(trustedEvent(undefined, 31), 'plan-1')).toEqual({ canceled: true, mayStillComplete: false })
+      await expect(pending).rejects.toThrow('已停止写分镜')
+      dispose()
+    })
+
+    it('reads, stores, opens and saves works by id for the signed-in account only, keeping paths out of the renderer and the log', async () => {
+      const filePath = '/home/someone/Documents/XingmangAI/user-7/2026-10-25/xingmang-clip.mp4'
+      const videoAssets = {
+        readOwned: vi.fn(async () => ({ asset: storedClip, bytes: Buffer.from('ftyp-bytes') })),
+        storeComposed: vi.fn(async () => ({ ...storedClip, taskId: undefined })),
+        resolveOwnedFilePath: vi.fn(async () => filePath),
+        saveAs: vi.fn(async (_userId: number, _assetId: string, authorize?: () => void | Promise<void>) => {
+          await authorize?.()
+          return true
+        }),
+      }
+      electronMocks.openPath.mockResolvedValue('')
+      const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoAssets })
+
+      await expect(electronMocks.handlers.get('video:read-clip')!(trustedEvent(), '../../secret')).rejects.toThrow('视频编号格式错误')
+      expect(videoAssets.readOwned).not.toHaveBeenCalled()
+      await expect(electronMocks.handlers.get('video:read-clip')!(trustedEvent(), clipId)).resolves.toEqual(Buffer.from('ftyp-bytes'))
+      expect(videoAssets.readOwned).toHaveBeenCalledWith(7, clipId)
+
+      const film = new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112])
+      await expect(electronMocks.handlers.get('video-studio:store-export')!(trustedEvent(), film)).resolves.toEqual(clip)
+      expect(videoAssets.storeComposed).toHaveBeenCalledWith(7, Buffer.from(film))
+      await expect(electronMocks.handlers.get('video-studio:store-export')!(trustedEvent(), 'not bytes')).rejects.toThrow('成片内容格式错误')
+
+      await expect(electronMocks.handlers.get('video:open')!(trustedEvent(), clipId)).resolves.toBeUndefined()
+      expect(videoAssets.resolveOwnedFilePath).toHaveBeenCalledWith(7, clipId)
+      expect(electronMocks.openPath).toHaveBeenCalledWith(filePath)
+
+      await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId)).resolves.toEqual({ saved: true })
+      expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
+      dispose()
+    })
+  })
+
   it('exports portable settings with the renderer conversations and nothing account-bound', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
     try {
@@ -1204,7 +1384,7 @@ describe('registerIpcHandlers', () => {
     try {
       const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
       expect(JSON.stringify(summary)).not.toContain('sk-ipc-must-not-return-this-secret-key')
-      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      const configPath = path.join(userHome, '.agents', 'skills', 'images', 'config.json')
       expect(fs.readFileSync(configPath, 'utf8')).toContain('sk-ipc-must-not-return-this-secret-key')
       // The image tool draws with the newest OpenAI model the account's own key can list.
       expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-ipc-must-not-return-this-secret-key')
@@ -1303,7 +1483,7 @@ describe('registerIpcHandlers', () => {
       // The renderer only knows why from this flag, and drops the line while Node.js reads optional.
       expect(summary.imageMcpNeedsNode).toBe(true)
       expect(summary.imageSkillWarning).toBeUndefined()
-      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `星芒画图工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'account', 'xingmang-ai-skill.sync', `images 工具未登记：${XINGMANG_IMAGE_MCP_NO_NODE_WARNING}`)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
@@ -1340,7 +1520,7 @@ describe('registerIpcHandlers', () => {
         baseUrl: 'https://attacker.invalid', relayEndpointIds: { solov: pending },
       })
       expect(result).not.toHaveProperty('imageSkillWarning')
-      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      const configPath = path.join(userHome, '.agents', 'skills', 'images', 'config.json')
       expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).baseUrl).toBe(origin)
       expect(service.getConfig).toHaveBeenCalledWith(false)
     } finally {
@@ -1363,7 +1543,7 @@ describe('registerIpcHandlers', () => {
     try {
       await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
       expect(service.getConfig).not.toHaveBeenCalled()
-      expect(fs.existsSync(path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json'))).toBe(false)
+      expect(fs.existsSync(path.join(userHome, '.agents', 'skills', 'images', 'config.json'))).toBe(false)
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true })
     }
@@ -7426,6 +7606,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       }
     })
 
+    // 复制完不到 60 秒就退出星芒：撤通道时要把还没到点的那段也擦掉，不能让密钥一直留在系统剪贴板里。
+    // 擦剪贴板是 ipc.ts 撤通道时的一项收尾，漏接、删掉编译器都不管（#1333）。
+    it('wipes a copied key from the clipboard when the handlers are disposed before the sixty seconds are up', async () => {
+      vi.useFakeTimers()
+      try {
+        const { accountService, dispose } = register()
+        const plaintextKey = 'sk-ipc-dispose-clear'
+        vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+        electronMocks.readText.mockReturnValue(plaintextKey)
+        await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
+        expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
+
+        dispose()
+        expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
+        // The pending wipe is cancelled rather than left to fire after quit.
+        vi.advanceTimersByTime(60_000)
+        expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('falls back to the server for an ordinary key that is absent from the managed cache', async () => {
       const accountService = accountServiceStub()
       vi.mocked(accountService.getSessionState).mockReturnValue({
@@ -8261,6 +8463,127 @@ describe('IPC channel log and account policies', () => {
       'account:submit-two-factor-code',
       'account:switch-saved',
     ])
+  })
+
+  // 上面那份只管四个前缀。前缀以外的通道大多跟账号无关，下面这几条是例外：换账号时它们会拿着旧账号的配置
+  // 去开工具、开画布、切外部客户端，所以要等账号、跑完账号变了就作废。照抄邻居一行写成 none 也编译得过
+  // （external-clients:launch 下面紧挨着的 install 就是 none），这份名单让那种改动当场变红（#1333）。
+  it('keeps the channels outside those prefixes that act on the current account waiting for it', () => {
+    const scoped = Object.entries(ipcChannelPolicies)
+      .filter(([channel, policy]) => !/^(?:account|chat|config|models):/.test(channel) && policy.account !== 'none')
+      .map(([channel]) => channel)
+      .sort()
+    expect(scoped).toEqual([
+      'canvas:open',
+      'cli:launch',
+      'desktop:launch-codex',
+      'external-clients:launch',
+      'external-clients:scan',
+      'external-clients:switch-source',
+      'tools:check-models',
+      // 出视频、分镜和作品库：凭据和作品都按当前账号找。
+      'video-studio:plan',
+      'video-studio:store-export',
+      'video:cancel',
+      'video:generate',
+      'video:open',
+      'video:read-clip',
+      'video:save-as',
+    ])
+  })
+
+  // 日志收紧过的通道护着 I3、I13：入参或结果里有明文密钥、密码、整段对话。照抄邻居一行改回 normal，或者把
+  // silent 写成 quiet-success，都编译得过；两种特殊的等账号法也一样。这里照今天的表逐条点名，收紧、放宽、
+  // 新加都要在这里改，放宽的那一下就摆在审查的人眼前（#1333）。
+  it('names every channel whose log or account handling departs from the default', () => {
+    const departures: Record<string, string[]> = {}
+    for (const [channel, policy] of Object.entries(ipcChannelPolicies)) {
+      if (policy.log !== 'normal') (departures[`log: ${policy.log}`] ??= []).push(channel)
+      if (policy.account === 'scoped-queued' || policy.account === 'scoped-may-end-session') {
+        (departures[`account: ${policy.account}`] ??= []).push(channel)
+      }
+    }
+    for (const channels of Object.values(departures)) channels.sort()
+    expect(departures).toEqual({
+      'log: quiet-success': [
+        'account:change-password',
+        'account:configure-cli-with-key',
+        'account:configure-managed-clis',
+        'account:copy-key',
+        'account:copy-reset-password',
+        'account:get-balance',
+        'account:get-dashboard',
+        'account:get-key-options',
+        'account:get-legal-document',
+        'account:get-profile',
+        'account:get-remembered-login',
+        'account:get-session',
+        'account:get-status',
+        'account:get-tasks',
+        'account:get-usage',
+        'account:list-groups',
+        'account:list-key-models',
+        'account:list-keys',
+        'account:reset-password',
+        'account:reveal-key',
+        'account:set-remembered-login',
+        'account:sync-managed-cli-keys',
+        'chat-history:read',
+        'chat-history:write',
+        'chat:asset-menu',
+        'chat:cancel',
+        'chat:copy-asset',
+        'chat:list-groups',
+        'chat:paste-image',
+        'chat:pick-images',
+        'chat:save-asset',
+        'codex-remote:get-state',
+        'codex-remote:start-pairing',
+        'codex-remote:weixin-login-poll',
+        'codex-remote:weixin-login-start',
+        'config:get',
+        'config:reveal-api-key',
+        'desktop:codex-locale-status',
+        'desktop:codex-permissions-status',
+        'desktop:codex-status',
+        'repository:get-context',
+        'runtime-logs:list',
+        'runtime-logs:renderer-error',
+        'settings:get',
+        'setup:codex-status',
+        'startup:codex-readiness',
+        'system:refresh-network-location',
+        'system:scan',
+        'update:get-state',
+        'update:startup',
+        'video:cancel',
+        'video:read-clip',
+        'window:set-mode',
+        'window:set-theme',
+      ],
+      'log: polling': [
+        'account:get-notice',
+        'account:get-subscription-self',
+        'account:sync-local-notice-reads',
+      ],
+      'log: secret-input': [
+        'account:submit-two-factor-code',
+        'codex-remote:save-feishu-credentials',
+      ],
+      'log: silent': [
+        'chat:generate-image',
+        'chat:prepare-group',
+        'chat:start',
+      ],
+      'account: scoped-queued': [
+        'cli:launch',
+        'desktop:launch-codex',
+      ],
+      'account: scoped-may-end-session': [
+        'account:change-password',
+        'account:revoke-login-session',
+      ],
+    })
   })
 })
 

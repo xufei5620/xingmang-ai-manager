@@ -16,6 +16,7 @@ import {
   nodeDownloadCeilingMs,
   nodeDownloadStallTimeoutMs,
   nodeRuntimeDownloadSources,
+  nodeRuntimeTriesWingetFirst,
   normalizeNodeRuntimeArchitecture,
   describeNodeInstallFailure,
   describeNodeStagingFailure,
@@ -304,7 +305,7 @@ describe('Node.js installer routing and process plans', () => {
     }) as unknown as typeof fetch
 
     await expect(installNodeRuntime({
-      networkRegion: 'unknown',
+      networkRegion: 'outside-mainland-china',
       onProgress: (event) => progress.push(event.message),
       dependencies: {
         resolveWingetExecutable: async () => ({
@@ -338,7 +339,7 @@ describe('Node.js installer routing and process plans', () => {
     const fetchMock = vi.fn() as unknown as typeof fetch
 
     await expect(installNodeRuntime({
-      networkRegion: 'mainland-china',
+      networkRegion: 'outside-mainland-china',
       dependencies: {
         resolveWingetExecutable: async () => ({ executable, reason: null }),
         runProcess,
@@ -367,7 +368,7 @@ describe('Node.js installer routing and process plans', () => {
     }) as unknown as typeof fetch
 
     const failure = await installNodeRuntime({
-      networkRegion: 'unknown',
+      networkRegion: 'outside-mainland-china',
       dependencies: {
         resolveWingetExecutable: async () => ({
           executable: 'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
@@ -1002,7 +1003,7 @@ describe('Node.js installer and the download route on Windows', () => {
       routeCalls += 1
       return operation()
     }
-    const networkRegion = vi.fn(async () => 'mainland-china' as const)
+    const networkRegion = vi.fn(async () => 'outside-mainland-china' as const)
 
     await expect(installNodeRuntime({
       networkRegion,
@@ -1028,7 +1029,8 @@ describe('Node.js installer and the download route on Windows', () => {
     })).resolves.toMatchObject({ method: 'winget' })
 
     expect(routeCalls).toBe(0)
-    expect(networkRegion).not.toHaveBeenCalled()
+    // 只在决定试不试 winget 时问过一次，没有再去定先走哪个源。
+    expect(networkRegion).toHaveBeenCalledOnce()
   })
 
   it('borrows the route once winget is out and settles the source order inside it', async () => {
@@ -1067,26 +1069,159 @@ describe('Node.js installer and the download route on Windows', () => {
     })).rejects.toThrow('Node.js 自动安装失败：')
 
     expect(routeCalls).toBe(1)
-    expect(events.slice(0, 3)).toEqual([
+    expect(events.slice(0, 4)).toEqual([
+      'direct region',
       'direct winget',
       'route region',
       'route https://nodejs.org/dist/index.json',
     ])
-    expect(events.slice(2).every((event) => event.startsWith('route https://'))).toBe(true)
+    expect(events.slice(3).every((event) => event.startsWith('route https://'))).toBe(true)
+  })
+})
+
+// #1061 第5条：winget 只会从 nodejs.org 下，国内要等满 15 分钟才轮到镜像；只在明确在海外时先试它。
+describe('Node.js installer skips winget unless the network is outside mainland China', () => {
+  it('tries winget first only outside mainland China', () => {
+    expect(nodeRuntimeTriesWingetFirst('outside-mainland-china')).toBe(true)
+    expect(nodeRuntimeTriesWingetFirst('mainland-china')).toBe(false)
+    // 测不出位置的跟国内一样：拦位置探测的网络，正是连不上 nodejs.org 的那些。
+    expect(nodeRuntimeTriesWingetFirst('unknown')).toBe(false)
+  })
+
+  for (const region of ['mainland-china', 'unknown'] as const) {
+    it(`goes straight to the mirror package without touching winget when the region is ${region}`, async () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      let routeHeld = false
+      async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+        routeHeld = true
+        try {
+          return await operation()
+        } finally {
+          routeHeld = false
+        }
+      }
+      const events: string[] = []
+      const progress: string[] = []
+      const resolveWingetExecutable = vi.fn(async () => ({
+        executable: 'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
+        reason: null,
+      }))
+      const runProcess = vi.fn(successfulCommand)
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        events.push(`${routeHeld ? 'route' : 'direct'} ${String(input)}`)
+        throw new Error('offline')
+      }) as unknown as typeof fetch
+
+      const failure = await installNodeRuntime({
+        networkRegion: async () => {
+          events.push(`${routeHeld ? 'route' : 'direct'} region`)
+          return region
+        },
+        temporaryDirectoryMode: 'same-user',
+        withDownloadRoute,
+        onProgress: (event) => progress.push(event.message),
+        dependencies: { resolveWingetExecutable, runProcess, fetch: fetchMock },
+      }).catch((error: unknown) => error)
+
+      expect(failure instanceof Error ? failure.message : null).toMatch(/^Node\.js 自动安装失败：/)
+      expect(resolveWingetExecutable).not.toHaveBeenCalled()
+      expect(runProcess).not.toHaveBeenCalled()
+      expect(progress.some((message) => message.includes('程序包管理器') || message.includes('应用安装组件'))).toBe(false)
+      expect(events.slice(0, 3)).toEqual([
+        'direct region',
+        'route region',
+        'route https://npmmirror.com/mirrors/node/index.json',
+      ])
+      // 没试 winget 的原因进运行日志，客服看得出这一步是跳过的、不是坏了。
+      expect(failure instanceof Error ? (failure.cause as Error).message : null)
+        .toContain(`winget：网络在国内或测不出位置（${region}），没试，直接下安装包`)
+    })
+  }
+
+  it('treats a region probe that throws as unknown and skips winget', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    let regionCalls = 0
+    const resolveWingetExecutable = vi.fn(async () => ({ executable: null, reason: 'unused' }))
+    const fetchMock = vi.fn(async () => {
+      throw new Error('offline')
+    }) as unknown as typeof fetch
+
+    await expect(installNodeRuntime({
+      networkRegion: async () => {
+        regionCalls += 1
+        if (regionCalls === 1) throw new Error('region probe failed')
+        return 'mainland-china'
+      },
+      temporaryDirectoryMode: 'same-user',
+      dependencies: { resolveWingetExecutable, fetch: fetchMock },
+    })).rejects.toThrow('Node.js 自动安装失败：')
+
+    expect(resolveWingetExecutable).not.toHaveBeenCalled()
+    expect(regionCalls).toBe(2)
+  })
+
+  it('does not ask for the region before winget when winget is turned off', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    let routeHeld = false
+    async function withDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
+      routeHeld = true
+      try {
+        return await operation()
+      } finally {
+        routeHeld = false
+      }
+    }
+    const regionAsked: string[] = []
+
+    await expect(installNodeRuntime({
+      networkRegion: async () => {
+        regionAsked.push(routeHeld ? 'route' : 'direct')
+        return 'mainland-china'
+      },
+      preferWinget: false,
+      temporaryDirectoryMode: 'same-user',
+      withDownloadRoute,
+      dependencies: {
+        fetch: vi.fn(async () => {
+          throw new Error('offline')
+        }) as unknown as typeof fetch,
+      },
+    })).rejects.toThrow('Node.js 自动安装失败：')
+
+    expect(regionAsked).toEqual(['route'])
   })
 })
 
 // Windows 同一时间只让装一个安装包：别的程序正在装时 msiexec 以 1618 退出，跟从哪儿下载无关（第三十五批 D）。
-describe('Node.js MSI install while Windows Installer is busy with another install', () => {
+// 客户在授权窗口点了「否」、或者这个账号拿不到管理员权限，同样跟从哪儿下载无关（#1096）。
+describe('whether a failed Node.js MSI install moves on to the next download source', () => {
   const installerBusy = 'Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先重启电脑再试'
   const msiBytes = Buffer.alloc(2 * 1024 * 1024, 7)
   const msiSha256 = createHash('sha256').update(msiBytes).digest('hex')
 
-  async function installWhileMsiExitsWith(exitCode: number) {
+  async function installWhileMsiExitsWith(exitCode: number, failIndexFrom?: string) {
+    // 授权代理把 msiexec 的退出码原样带回来；1618、1603 都不是它自己的码，runCommand 的错误照原样抛出。
+    return installWhileMsiFails(() => new CommandRunnerError(`命令执行失败（退出码 ${exitCode}）：powershell.exe`, {
+      code: 'EXIT_NON_ZERO',
+      executable: systemPowerShell,
+      argv: [],
+      exitCode,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      outputBytes: 0,
+      maxOutputBytes: 2 * 1024 * 1024,
+      durationMs: 1,
+    }), failIndexFrom)
+  }
+
+  // failIndexFrom：这个源连清单都拿不到，报一句带「cancelled」的网络错（以前按字面会被当成取消授权）。
+  async function installWhileMsiFails(msiFailure: () => Error, failIndexFrom?: string) {
     const requested: string[] = []
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = String(input)
       requested.push(url)
+      if (failIndexFrom && url.startsWith(failIndexFrom)) throw new Error('The operation was cancelled')
       if (url.endsWith('/index.json')) {
         return new Response(JSON.stringify([{ version: 'v22.17.0', lts: 'Jod', files: ['win-x64-msi'] }]))
       }
@@ -1105,19 +1240,7 @@ describe('Node.js MSI install while Windows Installer is busy with another insta
         }
       }
       msiRuns.push(plan)
-      // 授权代理把 msiexec 的退出码原样带回来；1618、1603 都不是它自己的码，runCommand 的错误照原样抛出。
-      throw new CommandRunnerError(`命令执行失败（退出码 ${exitCode}）：powershell.exe`, {
-        code: 'EXIT_NON_ZERO',
-        executable: systemPowerShell,
-        argv: [],
-        exitCode,
-        signal: null,
-        stdout: '',
-        stderr: '',
-        outputBytes: 0,
-        maxOutputBytes: 2 * 1024 * 1024,
-        durationMs: 1,
-      })
+      throw msiFailure()
     })
     const progress: string[] = []
     const failure = await installNodeRuntime({
@@ -1155,6 +1278,32 @@ describe('Node.js MSI install while Windows Installer is busy with another insta
     expect(failure instanceof Error ? (failure.cause as Error).message : null)
       .toContain('；Node.js 官方源：Windows Installer 安装失败（错误 1603）')
   })
+
+  // 授权窗口点了「否」（1223）或者没拿到管理员权限（740）：换个源重下，弹的还是同一个窗口（#1096）。
+  // runUacProcess 把这两个码换成按账号类型写好的整句再抛，这里照它的样子抛。
+  it.runIf(process.platform === 'win32')('stops after the user declines the administrator prompt and keeps the account-specific advice', async () => {
+    for (const exitCode of [1223, 740]) {
+      const declined = nodeRuntimeElevationFailureMessage(exitCode, 'standard') ?? ''
+      const { failure, requested, msiRuns, progress } = await installWhileMsiFails(() => new Error(declined))
+      const message = `Node.js 自动安装失败：${declined}`
+
+      expect(declined).toContain('这个 Windows 账号不在管理员组')
+      expect(failure instanceof Error ? failure.message : null).toBe(message)
+      expect(msiRuns).toHaveLength(1)
+      expect(requested.every((url) => url.startsWith('https://npmmirror.com/'))).toBe(true)
+      expect(progress.some((entry) => entry.includes('正在尝试备用下载源'))).toBe(false)
+      expect(progress.at(-1)).toBe(`error:${message}`)
+      expect(failure instanceof Error ? (failure.cause as Error).message : null).toContain(`国内镜像：${declined}`)
+    }
+  })
+
+  // 只认授权代理那两整句：别处的「cancelled」按字面会被猜成取消授权，可它不是客户点的「否」。
+  it.runIf(process.platform === 'win32')('still tries the backup source when a download merely mentions a cancellation', async () => {
+    const { requested, msiRuns } = await installWhileMsiExitsWith(1603, 'https://npmmirror.com/')
+
+    expect(requested.some((url) => url.startsWith('https://nodejs.org/'))).toBe(true)
+    expect(msiRuns).toHaveLength(1)
+  })
 })
 
 describe('the sentence a failed Node.js install leaves on screen', () => {
@@ -1173,6 +1322,22 @@ describe('the sentence a failed Node.js install leaves on screen', () => {
     expect(describeNodeInstallFailure([new Error('something odd')]))
       .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
     expect(describeNodeInstallFailure([])).toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+  })
+
+  // 以前「取消」两个字一出现，整句就换成「已取消管理员授权，Node.js 尚未安装」，普通账号那句「输入管理员账号的密码 /
+  // 找 IT」被盖掉；没拿到管理员权限那句又落到最后一档，只剩「原因已经记进运行日志」（#1096）。
+  it('keeps the administrator prompt sentences word for word, ahead of any download failure', () => {
+    for (const exitCode of [1223, 740]) {
+      for (const capability of ['standard', 'administrator', 'unknown'] as const) {
+        const declined = nodeRuntimeElevationFailureMessage(exitCode, capability) ?? ''
+        expect(describeNodeInstallFailure([new Error('fetch failed'), new Error(declined)])).toBe(`Node.js 自动安装失败：${declined}`)
+      }
+    }
+    expect(describeNodeInstallFailure([new Error(nodeRuntimeElevationFailureMessage(1223, 'standard') ?? '')]))
+      .toBe('Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。')
+    // msiexec 自己报的 1602（用户取消）没有按账号写好的话，照旧是那句短的。
+    expect(describeNodeInstallFailure([new Error('命令执行失败（退出码 1602）：powershell.exe')]))
+      .toBe('Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。')
   })
 
   it('names the code when the staging folder could not be made', () => {

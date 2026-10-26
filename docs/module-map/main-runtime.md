@@ -3,10 +3,16 @@
 > 总述、三套跨进程通道和其他分册见 [`../MODULE-MAP.md`](../MODULE-MAP.md)。每个模块一句话，**一律以代码为准**；加了新模块在这里补一行。
 
 ## 进程入口、生命周期与窗口
-- `main.ts` — **桌面主流程与装配中心，但不是进程入口**（入口是 `platform/entry.ts`，分流后经 `platform/desktop-entry.ts` 才 `require('../main')`，见总述）。管单实例锁、主窗口 `BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true` / `nodeIntegration:false` / `webviewTag:false` / `navigateOnDragDrop:false`，打包版关 devTools）、注册 `xingmang://` / `xingmang-canvas://` / `xingmang-asset://` 三个特权协议、导航与外链白名单（I12；主窗口与画布各一张表，故意不合并）、显卡兼容模式要在 ready 之前定、装配全部服务并调 `registerIpcHandlers`。全仓最大的接线文件：新逻辑写成独立模块（多数做成「不含 Electron 依赖、由宿主注入」）再在这里接
+- `main.ts` — **桌面主流程与装配中心，但不是进程入口**（入口是 `platform/entry.ts`，分流后经 `platform/desktop-entry.ts` 才 `require('../main')`，见总述）。管单实例锁、主窗口 `BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true` / `nodeIntegration:false` / `webviewTag:false` / `navigateOnDragDrop:false`，打包版关 devTools）、注册 `xingmang://` / `xingmang-canvas://` / `xingmang-asset://` 三个特权协议、导航与外链白名单（I12；主窗口与画布各一张表，故意不合并）、显卡兼容模式要在 ready 之前定、装配全部服务并调 `registerIpcHandlers`。全仓最大的接线文件：新逻辑写成独立模块（多数做成「不含 Electron 依赖、由宿主注入」）再在这里接。启动回调正按子系统拆进 `bootstrap/`（#1070 第 5 步）：拆出去的启动步骤只在启动回调里直接调用、要收拾的东西交回 main.ts 登记退出清理，启动时各步的先后由 `main.test.ts` 按源码钉住；读 main.ts 源码核对接线的测试经 `bootstrap/main-source.test-support.ts` 连同 `bootstrap/` 一起读
 - `main-service-options.ts` — 把同一份 `CodexHomeContext`（用户主目录、`CODEX_HOME`、Codex 环境变量）一次派生成 system / sessions / backups / 扩展 / 诊断各服务的根路径，保证各服务对「Codex 配置在哪」答案一致；只有 `main.ts` 用
 - `window-lifecycle.ts` — 点关闭时的决策：按「关闭行为」偏好缩到托盘 / 退出 / 询问（可「记住选择」），托盘不可用时不藏窗；退出前只问一句（有安装在跑就拦，或问要不要顺手装已下好的更新），选了装更新先置 quitting 再拉安装器，免得被自己再拦一遍
 - `bootstrap/lifecycle.ts` — 退出清理清单：`main.ts` 只挂一个 `will-quit`，各处用 `quitCleanup.add(名字, 步骤)` 按登记先后排进来，退出时挨个跑、整个退出只跑一次；某一步抛错只记日志（`app.quit-cleanup.failed`，带步骤名），后面的照跑。顺序由 `main.test.ts` 按源码钉住（加速服务在独立加速进程之前），新加一步登记在它该在的位置，别再另挂 `will-quit`
+- `bootstrap/ai-services.ts` — 按账号站点分开的 AI 工作区（#1070 第 5 步从 main.ts 原样搬出）：`createRealmBusinesses` 给星芒账号、历史账号各建一份聊天、画图、视频、画布运行、作品存储和缩略图，第一次用到那个站点才建，之后一直用这一份；画布运行的订阅挂在每个站点上，后建的站点也补挂。main.ts 用 `createRealmServiceDispatch` 把当前站点那份交出去。生成缩略图、缩小聊天里贴的截图都用 `nativeImage` 在主进程里做
+- `bootstrap/acceleration.ts` — 本机加速的接线（#1070 第 5 步从 main.ts 原样搬出），按启动时建的先后三段：`createAccelerationRouting` 建下载线路（装 CLI、下 Node 时临时走加速，用一个只给下载用的网络分区，默认会话不动）和打开 Codex 桌面端时替他连一次的加速、启动线路，系统服务要用，所以最早建；`createAccelerationHost` 拿启动一开始读好的加速文件建宿主（辅助进程、内核、系统代理都归它管，各种失败的原因写进日志），建好马上把上次崩溃没改回的系统代理改回去，安装包里本该有的加速文件读坏了记成「文件坏了」，好让加速页叫客户去看杀毒软件；`createAccelerationServices` 建加速服务、时长快用完和加速中断的系统通知、加速页和托盘看到的那一套（软件替他在后台连的那一次在这套里看不见）。睡眠唤醒（只在有宿主时挂）和退出清理留在 main.ts
+- `bootstrap/network-routes.ts` — 星芒自己连站点的几条路和两套线路（#1070 第 5 步从 main.ts 原样搬出）：`createNetworkRoutes` 建应用线路（`relay-route-controller.ts`）、代理软件不转发时改走的直连会话和只跟随系统代理的探测会话（`proxy-bypass.ts`）、按线路走的几种 fetch、工具线路（`tool-route-controller.ts`）和线路状态文件，建完就开始查应用线路；`startToolRouteFollowing` 在系统服务建好以后才挂上工具线路的监听、开始查工具线路，并在唤醒和网络恢复时两套一起重查。退出清理照旧由 main.ts 登记
+- `bootstrap/diagnostics.ts` — 检查页和反馈报告（#1070 第 5 步从 main.ts 原样搬出）：`createDiagnostics` 交出 `diagnosticsService`（健康诊断、一键处理、连接自检、Codex 实测、诊断导出），它的 `attachFeedbackDescribers` 给反馈报告挂上「工具环境」「运行环境」「自检结果」三段，只读诊断和扫描上一次留下的结果，生成报告不重跑探测。导出和反馈报告都把本机写着的几把 Key 当敏感值剔掉（I13）
+- `bootstrap/accounts.ts` — 两个账号站点的登录记录和账号客户端（#1070 第 5 步从 main.ts 原样搬出）：`createAccountStorage` 按系统能不能加密选登录记录的保管（Windows、macOS 不能加密就拒绝登录，Linux 只留本次运行），`createAccountClientFactory` 给 `createRealmAccountService` 建每个站点的客户端（星芒账号 new-api、历史账号 Sub2API），账号请求按线路走、经系统代理没走通时改直连重发。换账号、退出时各服务怎么收拾留在 main.ts
+- `bootstrap/updates.ts` — 主程序自己的更新（#1070 第 5 步从 main.ts 原样搬出）：`createUpdateFeed` 开机定用包里那份还是直连那份更新目录（只有标准 Windows 正式版有直连那份，跟着星芒账号这会儿的线路选），Windows 上顺带装严格的代码签名校验；它的 `createUpdater` 在版本记录、待装记录读好以后建更新服务和更新目录上的服务状态文件监视器。打开时装、退出时装牵着窗口和退出流程，留在 main.ts
 - `quit-blocking-tasks.ts` — 判断哪些排队任务值得在退出前拦一下：只有安装类（CLI、Node/Python/Git、Codex 桌面端、三个外部客户端），因为打断虽不留半成品（I11 原子替换）但白下；启动、卸载不拦。与 `install-keep-awake.ts` 认的是同一批，两边要一起改；另给自动更新算「退出时能不能装」
 - `window-preferences.ts` — 窗口尺寸与缩放的纯函数：UI 设计宽度、自动缩放上下限（v4 起最低 0.9、用户 90% 再低一档但不低于 0.85）、按显示器工作区算初始位置、拔掉显示器后的找回坐标、窗口状态的解析；`app-settings.ts` 与 `platform/zoom.ts` 共用
 - `window-presentation.ts` — 窗口外观与对用户的几句话：Windows/Linux 标题栏覆盖层高度与配色（legacy 36 高 vs v4 并进 44 高顶栏，`platform/renderer-v2.ts` 切到 v4）、启动失败的中文兜底句、资源右键菜单失败弹框、各平台窗口图标文件名
@@ -24,11 +30,18 @@
 - `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关
 
 ## 诊断、日志与反馈
-- `diagnostics.ts` — **「检查」页的全部检查项与诊断导出**，全仓最大的模块之一：Node/npm/Git/CLI 状态（能复用一分钟内的扫描）、配置文件、环境变量覆盖、系统代理与 PAC、证书与系统时钟、线路连通、磁盘空间、文档可写、C 盘搬家、Windows ARM 等；`createDiagnosticsExport` / `redactDiagnosticText` 导出前替换已知 Key 值、密钥样式、URL 与用户目录（I13）。顶部是可单测的纯函数，`runDiagnostics` 是依赖注入的总入口
+- `diagnostics.ts` — **「检查」页的总入口**：`runDiagnostics` 先建一份共用上下文（`diagnostics-context.ts`），再按固定次序把下面几类检查排起来同时跑（每项单独限时，超时或出错只算这一项，报告里的文字一律再脱敏一遍），收尾时做两处跨项调和（证书那项跟着网络那项、Node.js 那两项跟着有没有装命令行工具），再数各档多少项。报告的类型、`DiagnosticsDependencies`（缺省实现和测试替身的注入口）、检查页「打开文件夹」的名字也在这里。#1070 第 9 步把各类检查按类别拆进了下面几个 `diagnostics-*.ts`，它们只 import 这里的类型；原来从这里导出的名字照旧从这里转出，调用方不用改
+- `diagnostics-context.ts` — 一键检测各类检查共用的那一份上下文（#1070 第 9 步从 `runDiagnostics` 开头原样搬出）：`createDiagnosticsContext` 把依赖解析成实际用的那一份（测试替身或缺省实现），先把各家工具配置读一遍（下线的 Gemini 也读，好在报告里遮掉它的 Key），给出脱敏用的 `sanitize` 和能复用首页扫描就不再探的 `inspectTool`；问工具装没装、是哪一版的缺省实现（Windows 上只跑可信的高完整性路径，I2、I14）、错误原因串、线路名也在这里。各类检查都只拿这一份；它只 import `diagnostics.ts` 的类型，免得两个文件互相 require
+- `diagnostics-redaction.ts` — 检查报告的脱敏和导出（#1070 第 9 步从 `diagnostics.ts` 搬出）：`createDiagnosticsExport` / `redactDiagnosticText` 导出前替换已知 Key 值、密钥样式、URL 与用户目录，导出时邮箱半遮（I13）；各类检查在报告里写路径、网址用的 `pathForDisplay` / `safeUrlForDisplay` 也在这里
+- `diagnostics-system-checks.ts` — 一键检测里「系统与权限」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildSystemChecks`）：星芒版本、操作系统（`operatingSystemSummary` 把内核号说成 Windows 11、macOS 15、Linux 发行版）、Windows ARM 电脑芯片、运行权限（是不是以管理员身份在跑、这个账号能不能提权，启动时那次探测没问出来时照实说）、打开工具用的命令窗口（Windows 的 PowerShell 只认固定解析器给的可信路径，I14；Linux 的终端程序）
+- `diagnostics-tool-checks.ts` — 一键检测里「运行环境与工具」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildToolChecks`）：Node.js、它自带的安装组件、Python、Git、各家命令行工具和 Codex 桌面端装没装、是哪一版（Codex 桌面端单独探时用的 PowerShell 脚本先按名字导入模块），各家工具连接设置是不是连到当前账号（导出的报告里另写工具配置走的是哪条线路、Codex 后台常驻开没开）；一个命令行工具都没装时 Node.js 那两项降成「需留意」（`reconcileNodeRuntimeWithClis`）
+- `diagnostics-network-checks.ts` — 一键检测里「网络与代理」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出）。`buildNetworkChecks`：星芒 AI 网络（向当前站点本来就回 JSON 的公开状态接口 `relayStatusProbeUrl` 发一次请求，认出断网、超时、门户拦截、服务端出错；「自动」先走的那条没查通就改查备用那条并报给线路那边；顺带拿 Date 头比一次系统时间）、安全证书（用跑工具的那个 Node.js 握手两次，见 `certificate-trust-probe.ts`）。`buildProxyChecks`：Clash Verge Rev 的全局接管模式（读配置限大小、YAML 限别名展开）、电脑里的代理设置（Windows 上看本机端口开没开、能不能一键清掉，另问 Chromium 星芒自己走不走系统代理）。两段分开是因为它们在报告里不挨着
+- `diagnostics-storage-checks.ts` — 一键检测里「磁盘与文件夹」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildStorageChecks`）：磁盘空间（工具安装目录、软件数据目录所在的盘还剩多少，同一块盘只说一次）、「文档」文件夹能不能写（只在 Windows 上查，写不进时新项目和 AI 作品改放个人文件夹）、AI 作品保存位置、加速用的文件是否完好、文件夹位置（「C 盘搬家」留下的联接：普通权限运行时跟过去读写、只报一句搬到了哪块盘；管理员身份运行或搬到网络盘、共享位置的照 I8 不写，标红）
+- `diagnostics-override-checks.ts` — 一键检测里「电脑里另外设过的设置」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildOverrideChecks`）：环境变量里另外设的工具地址和密钥（哪些会盖过当前账号、哪些指的就是当前账号用 `environmentAccountBaseUrls` 判；Mac 上连终端设置文件一起看，Windows 上用户级的能一键清掉，名单 `environmentOverrideNames` / `clearableEnvironmentOverrides` 给 `diagnostic-fixes.ts` 对照；写错被忽略的 `CODEX_HOME` 单独说）、项目文件夹里的设置（`workspace-config-overrides.ts`）、Codex 文件夹里的 `.env`、Claude Code 跑命令前问不问、个人文件夹里早先留下的项目说明和信任设置
 - `runtime-log.ts` — 运行日志 `RuntimeLogStore`：`logs/runtime.jsonl` 带归档轮转、写入排队、写失败先缓存；每条按 key 名脱敏（apiKey/token/cookie…）+ `redactCommandText` + 截长（I13）；反馈报告头部的环境、自检、主机、账号几段由宿主注入描述函数拼进来；启动时把 `startup-log.ts` 攒下的失败并进来
 - `redaction-patterns.ts` — **全仓唯一的密钥样式表**（Bearer、sk-、AIza、xai-、GitHub/GitLab 令牌、URL userinfo、带凭据的命令行参数与查询参数），日志、诊断、崩溃、反馈的脱敏都用它；故意零 import（startup-log、crash-report 记录别的模块失败时也要能用），渲染层也值引用（I13、I6）
 - `request-diagnostics.ts` — 给一次账号请求的回应 / 错误挂上走的线路、HTTP 状态码、new-api 请求编号和 cf-ray，`ipc.ts` 记日志时取出来，给客服和服务端查单；挂在 WeakMap 上不改错误对象的样子，编号按白名单正则过滤（回应头外部可控），不带地址、令牌、Key（I13）
-- `diagnostic-fixes.ts` — 「检查」页「点这里就好」的三个修复：把 Codex 文件夹里的 `.env` 改名留在原处、把主目录里星芒生成且没动过的 AGENTS.md 挪开、用 PowerShell 清掉用户级的工具环境变量覆盖（名单来自 `diagnostics.ts`，整台电脑那份只报不改）；改名前过 I8 检查
+- `diagnostic-fixes.ts` — 「检查」页「点这里就好」的三个修复：把 Codex 文件夹里的 `.env` 改名留在原处、把主目录里星芒生成且没动过的 AGENTS.md 挪开、用 PowerShell 清掉用户级的工具环境变量覆盖（名单来自 `diagnostics-override-checks.ts`，整台电脑那份只报不改）；改名前过 I8 检查
 - `feedback-environment.ts` — 反馈报告里「工具与配置」那段的纯函数：每个 CLI、外部客户端、运行时装没装、什么版本、怎么装的、配置是否指向当前账号、走哪条线路；只读已有快照、不触发扫描，不写 Key、地址和站点名（I13）
 - `feedback-self-check.ts` — 反馈报告里「最近一次自检」那段的纯函数：只读内存里上一次「检查」页结果和连接自检，不重跑、不发请求，刻意不带 endpoint / siteId（I13）；三个状态词与检查页一致
 - `broken-config-advice.ts` — 读不懂原配置、星芒没敢改时给客户的那句（哪里坏了、星芒没改、去配置窗口「高级」点「重置为初始状态」，会先备份）；`config-files.ts` 与 `codex-extensions.ts` 用
@@ -54,7 +67,8 @@
 - `acceleration-mihomo-runtime.ts` — 起停 mihomo 内核：把核过 SHA-256 的内核复制进私有会话目录再 spawn（`trustedCommandEnvironment`，I1/I2），生成隔离配置、随机控制端口与密钥，经内核探测线路可用性；会话目录清扫只碰本进程没在用的，读写都走 safe-local-data / bounded-*（I8）
 - `acceleration-clash-config.ts` — 内置节点文件（Clash YAML）的解析与内核配置生成：只收内联 hysteria2 节点、拒绝别名和远程订阅，生成的配置 `tun` 关、IPv6 关、局域网与内网 IP 直连（#1058，不把内网流量送去海外节点）、星芒自己的站点直连；节点凭据只留在主进程侧，不进诊断与 IPC
 - `acceleration-bundled-config.ts` — 正式包读 `resources/acceleration/` 里的清单、内核与节点：文件名是常量、SHA-256 要与 ASAR 内包元数据钉住的值一致才启用，读不通报「内置加速资源无效」（界面据此说「被杀毒软件隔离」）；外部清单单独存在不能开启加速
-- `acceleration-worker-profile.ts` — 辅助进程每次连接前重新读节点文件，核对完整性后再解析（防启动后被替换）
+- `acceleration-worker-profile.ts` — 辅助进程每次连接前重新读节点：记在本机、签名对的在线节点优先，否则读安装包里的节点文件，核对完整性后再解析（防启动后被替换）
+- `acceleration-online-nodes.ts` — 在线换节点：主进程开机读一次、之后每小时读一次更新目录里的 `acceleration-nodes.json`（超时、256 KB 上限、拒绝重定向，I10），用发版那把 Ed25519 钥匙验签（签的字有自己的开头，跟更新包的签名不能互换），比记下的新才原样写进 app data；辅助进程读的时候再验一遍。签名不对、比记下的旧都不收，撤回也要签名。发布脚本 `scripts/acceleration-nodes.cjs`、工作流 `acceleration-nodes.yml`
 - `acceleration-binary.ts` — Mac 上 spawn 前核对内核是本机架构的 Mach-O 可执行文件（不收胖二进制、截断的加载命令表直接拒），打包脚本 `scripts/stage-acceleration-bundle.cjs` 也用
 - `acceleration-electron-profile.ts` — 给辅助 Electron 进程一个独立的临时 user-data-dir（各自的 Local State / OSCrypt 密钥，不和桌面进程抢配置），用完只删自己那个并先核对目录身份
 - `acceleration-worker-entry.ts` — 辅助进程启动开关 `--xingmang-acceleration-worker` 的识别：必须带父进程 IPC 通道且在 win32/darwin 才进 worker 模式，否则直接退出、绝不打开桌面；`platform/entry.ts` 最先调用
@@ -85,6 +99,7 @@
 - `update-feed-route.ts` — 更新源的线路：标准 Windows 正式版在账号走直连线路时改用直连镜像（同一批文件、同一份撤回清单），自定义源与通道不动，不从账号 URL 派生、不带凭据；配置文件读取限大小
 - `update-request-guard.ts` — 从外面补 electron-updater 6.8.9 在 Electron 43 上的三个缺口（请求超时不生效、增量下载停住不认取消、多段回应没挂 error 监听会变成主进程未捕获异常）：跟踪每个请求、给看门狗打时间戳、需要时全部中止
 - `auto-update-install.ts` — 「自动更新」下好的版本什么时候装：只在用户自己退出时、或下次刚打开时，每个版本各只自动试一次（先落盘「试过了」再装，防安装器起不来造成一开就关的死循环）；Windows 非管理员账号不自动装；记录读坏就当没有，最多少装一次
+- `update-install-prompt.ts` — 这次运行里在后台下好的新版本先跳框问要不要现在装（默认按钮「稍后再说」，等几秒没人打字再弹，每个版本每次运行最多问一次）；没装的 Mac 在装的时候不弹窗口时，等电脑 10 分钟没人碰或锁屏、窗口都缩着、没在装工具、工具没在干活、加速没开时自己装，借打开时装那条「试过了」记录每版只试一次；不含 Electron 依赖
 - `installed-release.ts` — 「这次启动是不是刚更新完 / 这一版改了什么」：记住上次运行的版本，升了就带一次性标记，更新说明读打包时写进的 `dist-electron/release-notes.json`（断网也能显示）；装回旧版不算更新
 - `update-state-log.ts` — 更新状态那条日志只在阶段、版本、错误变了或下载进度跨过 10% 一档时才记，免得一次下载刷掉反馈报告里的几百条（第二十六批 B）
 - `app-download-page.ts` — 星芒安装包手动下载页的唯一常量，自动更新走不通时给的退路；主进程外链白名单与渲染层都读它（I12 全等匹配），所以零运行时依赖

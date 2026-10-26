@@ -65,11 +65,28 @@ describe('searchCommands', () => {
   })
 
   it('finds the cards that moved into settings by their old page names', () => {
-    expect(searchCommands('游戏加速')[0]).toMatchObject({ group: 'settings', page: 'settings', section: 'acceleration' })
+    // 加速卡改名「网络加速」以后跟它所在的设置分组同名：只出这张卡一条，就在这一组最上面。
+    expect(searchCommands('网络加速')[0]).toMatchObject({ group: 'settings', label: '网络加速', page: 'settings', section: 'acceleration' })
     expect(searchCommands('备份').find((item) => item.group === 'settings')).toMatchObject({ page: 'settings' })
     expect(searchCommands('备份').some((item) => item.section === 'backups')).toBe(true)
     expect(searchCommands('更新').some((item) => item.section === 'version')).toBe(true)
-    for (const word of ['游戏加速', '备份', '更新']) expect(searchCommands(word).some((item) => item.group === 'page' && settingsPageAlias(item.page) !== null), word).toBe(false)
+    for (const word of ['网络加速', '备份', '更新']) expect(searchCommands(word).some((item) => item.group === 'page' && settingsPageAlias(item.page) !== null), word).toBe(false)
+  })
+
+  // #1362 第 2 条：以前搜「加速」出来「网络加速」「网络加速 › 网络加速」两条，落的是同一处。
+  it('lists a settings row that shares its group name once, and the group again when that row is not on this computer', () => {
+    for (const word of ['加速', '网络加速']) {
+      const settings = searchCommands(word).filter((item) => item.group === 'settings')
+      expect(settings.filter((item) => item.label.startsWith('网络加速') && !item.label.includes(' › ')), word).toEqual([
+        { key: 'settings-item:acceleration', group: 'settings', label: '网络加速', page: 'settings', section: 'acceleration' },
+      ])
+      expect(settings.some((item) => item.label === '网络加速 › 网络加速'), word).toBe(false)
+    }
+    // 别的行照旧写成「组名 › 行名」。
+    expect(searchCommands('企业证书').find((item) => item.group === 'settings')).toMatchObject({ label: '网络加速 › 企业证书', section: 'certificate' })
+    const withoutAcceleration = searchCommands('网络加速', { settingsItemVisible: (item) => item.id !== 'acceleration' }).filter((item) => item.group === 'settings')
+    expect(withoutAcceleration[0]).toEqual({ key: 'settings:network', group: 'settings', label: '网络加速', page: 'settings', section: 'network' })
+    expect(withoutAcceleration.some((item) => item.section === 'acceleration')).toBe(false)
   })
 
   it('finds the top-up tab of the account center by everyday words', () => {

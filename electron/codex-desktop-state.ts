@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { isRecord } from './input-guards'
 import {
   assertNoReparseComponents,
   ensureSafeDataDirectory,
@@ -26,10 +27,6 @@ export interface CodexDesktopGlobalStateStatus {
 
 export interface CodexDesktopGlobalStateRepairResult extends CodexDesktopGlobalStateStatus {
   changed: boolean
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function isPermissionVisibility(value: unknown): value is Record<string, boolean> {

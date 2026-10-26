@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { inspectAppxVolumeLink } from './appx-volume-link'
 import {
   buildClaudeDesktopInstallFailureMessage, classifyClaudeDesktopInstallFailure, isPlainClaudeDesktopInstallMessage,
 } from './claude-desktop-install-failure'
@@ -44,6 +45,9 @@ export const externalClientWingetUnavailableHint = '这台电脑缺少系统自�
 const workBuddySelfDownloadHint = '到腾讯官网下载安装，装好后回来重新检测'
 // Windows 上签名不对、Mac 上苹果的签名核对没过，首页那一行说的都是这一句。
 const signatureMismatchMessage = '客户端数字签名无效或签名发布者与官方发布者不一致'
+const appxPathIdentityMessage = '客户端 AppX 路径身份无法验证'
+// 这一句已经说清装在哪、该怎么办；安装时不再套「无法确认当前安装状态」。
+const claudeDesktopOtherVolumePattern = /^Claude Desktop 装在了 [A-Z] 盘，/
 // 检测脚本最多交回几条读不出来的安装记录（只进运行日志）。
 const maximumRegistryFailures = 10
 // 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
@@ -98,6 +102,8 @@ export interface ExternalClientRuntimeOptions {
   resolvePowerShellExecutable?: () => string
   /** Test seams keep installation and launch tests entirely outside the host machine. */
   verifyPath?: (candidate: string, kind: 'file' | 'directory' | 'appx-file') => Promise<string>
+  /** 核对没过时认「Windows 把 Claude 放到了别的盘」用的；测试不碰本机文件。 */
+  inspectAppxVolumeLink?: typeof inspectAppxVolumeLink
   /** 读应用包指纹用的 lstat；测试不碰本机文件。 */
   lstatPath?: (candidate: string) => Promise<BundleEntryStats>
   launchProcess?: (plan: LaunchPlan) => Promise<void>
@@ -136,6 +142,11 @@ export interface ExternalClientRuntimeOptions {
    * 那一次一共多久照旧记在「外部客户端启动」那一行。
    */
   onLaunchTiming?: (timing: ExternalClientLaunchTiming) => void
+  /**
+   * 打开成了的那一个装在哪（这次打开前那次检测认出来的）：之后问它还在不在跑（stillRunning）要用。
+   * 只进主进程，不上屏；缺省 = 不记。
+   */
+  onLaunched?: (tool: ExternalToolId, clientPath: string) => void
 }
 
 /** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
@@ -219,6 +230,15 @@ export interface KnownExternalClientSignature {
 
 function errorText(error: unknown): string {
   return cleanCommandOutput(error instanceof Error ? error.message : String(error)).slice(0, 1500)
+}
+
+/** Windows 把 Claude Desktop 放到了别的盘时首页和出错框说的话（yoyo 2026-10-24 定稿，盘符按这台电脑填）。 */
+export function buildClaudeDesktopOtherVolumeMessage(drive: string, systemDrive: string): string {
+  return `Claude Desktop 装在了 ${drive} 盘，星芒认不了，要移回 ${systemDrive} 盘才能用：先完全退出 Claude，在 Windows 设置的「已安装的应用」里找到 Claude，点「…」→「移动」选 ${systemDrive} 盘，再回来点「重新检测」。没有「移动」的话，在 Windows 设置里搜「新内容的保存位置」，把「新的应用将保存到」改回 ${systemDrive} 盘，再卸载 Claude，回星芒重新安装。`
+}
+
+function installStateMessage(detectionError: string): string {
+  return claudeDesktopOtherVolumePattern.test(detectionError) ? detectionError : `无法确认当前安装状态：${detectionError}`
 }
 
 function officialDownloadUrl(tool: ExternalToolId): string | null {
@@ -336,7 +356,7 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
     // registered package and its executable remain accessible. Compare the
     // complete path identity (including lstat of each component), rather than
     // requiring a native realpath handle on every parent directory.
-    if (!sameLocalPathIdentity(candidate, candidate)) throw new Error('客户端 AppX 路径身份无法验证')
+    if (!sameLocalPathIdentity(candidate, candidate)) throw new Error(appxPathIdentityMessage)
   } else assertNoReparseComponents(candidate, '客户端安装路径')
   const stats = await fs.promises.lstat(candidate)
   if (stats.isSymbolicLink() || (kind === 'directory' ? !stats.isDirectory() : !stats.isFile() || (kind !== 'appx-file' && stats.nlink !== 1))) {
@@ -578,6 +598,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const userHome = options.userHome ?? os.homedir()
   const execute = options.runCommand ?? runCommand
   const verifyPath = options.verifyPath ?? verifyExternalClientPath
+  const appxVolumeLink = options.inspectAppxVolumeLink ?? inspectAppxVolumeLink
   const lstatPath = options.lstatPath ?? ((candidate: string) => fs.promises.lstat(candidate))
   const queue = options.installationQueue ?? new InstallationQueue()
   const launchProcess = options.launchProcess ?? launchDetached
@@ -663,6 +684,26 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     knownSignatures.set(file.toLowerCase(), { path: file, stamp, status: textValue(item.signatureStatus) ?? '', subject: textValue(item.signatureSubject) ?? '', version })
   }
 
+  /**
+   * Claude Desktop 的路径核对没过、是因为 Windows 把它放到了别的盘（见 appx-volume-link.ts）时，
+   * 把那句看不懂的换成该怎么办。照样拒：只换说法，认不出就留原话。
+   */
+  function otherVolumeMessage(item: Record<string, unknown>): string | null {
+    try {
+      const location = textValue(item.installLocation)
+      const candidate = textValue(item.path)
+      const programFiles = resolveMachinePaths().programFiles
+      const windowsApps = path.win32.join(programFiles, 'WindowsApps')
+      if (!location || !candidate || !localWindowsPath(location) || path.win32.dirname(location).toLowerCase() !== windowsApps.toLowerCase()
+        || path.win32.relative(location, candidate).toLowerCase() !== 'app\\claude.exe') return null
+      const systemDrive = path.win32.parse(programFiles).root.charAt(0).toUpperCase()
+      const link = appxVolumeLink(location, systemDrive)
+      return link ? buildClaudeDesktopOtherVolumeMessage(link.drive, systemDrive) : null
+    } catch {
+      return null
+    }
+  }
+
   async function inspectWindows(scope: InspectionScope): Promise<Inspection> {
     const remembered = [...knownSignatures.values()]
     const script = windowsExternalClientInventoryScript(scope.reuseSignatures === true ? remembered
@@ -705,7 +746,10 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           throw new Error(signatureMismatchMessage)
         }
         clients.push({ tool, path: canonical, version: versionValue(item.version), running: item.running === true, ...(applicationId ? { applicationId } : {}) })
-      } catch (error) { errors[tool] = errorText(error) }
+      } catch (error) {
+        errors[tool] = errorText(error)
+        if (item.family !== undefined && errors[tool] === appxPathIdentityMessage) errors[tool] = otherVolumeMessage(item) ?? errors[tool]
+      }
     }
     for (const client of clients) delete errors[client.tool]
     // 原话只配脚本自己说的那句：这一行最后报的要是这边核对路径、签名时另起的错，它就对不上了。
@@ -955,7 +999,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         cancellation.throwIfCancelled()
         const current = status(tool, before, winget)
         if (current.installed) { report('completed', '客户端已安装，无需重复安装', 100); return current }
-        if (current.detectionError) throw new Error(`无法确认当前安装状态：${current.detectionError}`)
+        if (current.detectionError) throw new Error(installStateMessage(current.detectionError))
         if (!current.installSupported) throw new Error(current.installHint || '当前系统不支持一键安装')
         if (platform === 'darwin') await installOnMac(tool, report, cancellation.signal)
         // Windows 上 Claude Desktop 先从星芒自己的存储桶装；装上了就不再走后面那几路。
@@ -992,7 +1036,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
             // 换星芒自己下官方安装包的那一路：下载时又能取消了。
             cancellation.unseal()
             const recheck = status(tool, await inspect(), winget)
-            if (recheck.detectionError) throw installationError(`无法确认当前安装状态：${recheck.detectionError}`, error)
+            if (recheck.detectionError) throw installationError(installStateMessage(recheck.detectionError), error)
             officialDownloadNeeded = !recheck.installed
           }
         }
@@ -1053,6 +1097,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       } else throw new Error('当前系统不支持启动此桌面客户端')
       try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }
       catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
+      try { options.onLaunched?.(tool, client.path) }
+      catch { /* 同上：已经交出去了。 */ }
     })
     launches.set(tool, launched)
     const settle = () => {

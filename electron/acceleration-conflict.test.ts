@@ -1,8 +1,8 @@
 import os from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  createAccelerationConflictDetector, detectMacosProxyConflicts, detectVirtualAdapterConflicts,
-  detectWindowsProxyConflicts, parseMacosProxyState,
+  createAccelerationConflictDetector, detectMacosProxyConflicts, detectMacosTunnelRoute, detectVirtualAdapterConflicts,
+  detectWindowsProxyConflicts, parseMacosProxyState, parseMacosRouteInterface,
 } from './acceleration-conflict'
 
 function windowsReading(overrides: {
@@ -118,7 +118,72 @@ describe('virtual adapter detection', () => {
   })
 })
 
+// What `route -n get` prints on macOS; only the interface line matters.
+function macosRoute(interfaceName: string): string {
+  return [
+    '   route to: 179.255.133.164',
+    'destination: default',
+    '       mask: default',
+    '    gateway: 192.168.1.1',
+    `  interface: ${interfaceName}`,
+    '      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>',
+  ].join('\n')
+}
+
+describe('macOS line route detection', () => {
+  it('reads only the interface name out of the route answer', () => {
+    expect(parseMacosRouteInterface(macosRoute('en0'))).toBe('en0')
+    expect(parseMacosRouteInterface(macosRoute('utun4'))).toBe('utun4')
+    expect(parseMacosRouteInterface('route: writing to routing socket: not in table')).toBeNull()
+    expect(parseMacosRouteInterface('  interface: en0; rm -rf /')).toBeNull()
+  })
+
+  it('treats a route that leaves through a tunnel as a VPN in the way', () => {
+    for (const name of ['utun0', 'utun12', 'ppp0', 'ipsec0']) expect(detectMacosTunnelRoute(name)).toEqual(['virtual-adapter'])
+    for (const name of ['en0', 'en7', 'bridge100', 'utun', null]) expect(detectMacosTunnelRoute(name)).toEqual([])
+  })
+})
+
 describe('acceleration conflict detector', () => {
+  it('asks macOS for the route to each literal line address and reports a tunnel', async () => {
+    const readMacosRoute = vi.fn(async (target: string) => macosRoute(target === '203.0.113.9' ? 'utun3' : 'en0'))
+    const detector = createAccelerationConflictDetector({
+      platform: 'darwin', readMacosProxyState: async () => '', networkInterfaces: () => ({}),
+      lineAddresses: async () => ['198.51.100.7', 'node.example.com', '203.0.113.9', '198.51.100.7'],
+      readMacosRoute,
+    })
+    expect(await detector.read()).toEqual(['virtual-adapter'])
+    // A host name would make route resolve it; it is skipped rather than asked about.
+    expect(readMacosRoute.mock.calls.map(([target]) => target)).toEqual(['198.51.100.7', '203.0.113.9'])
+  })
+
+  it('reports nothing when the route to the line leaves through the physical interface', async () => {
+    const detector = createAccelerationConflictDetector({
+      platform: 'darwin', readMacosProxyState: async () => '', networkInterfaces: () => ({ utun0: [address()] }),
+      lineAddresses: async () => ['198.51.100.7'], readMacosRoute: async () => macosRoute('en0'),
+    })
+    expect(await detector.read()).toEqual([])
+  })
+
+  it('keeps the route check to macOS and never lets it block a connect', async () => {
+    const readMacosRoute = vi.fn(async () => macosRoute('utun3'))
+    const windows = createAccelerationConflictDetector({
+      platform: 'win32', networkInterfaces: () => ({}), lineAddresses: async () => ['198.51.100.7'], readMacosRoute,
+    })
+    expect(await windows.read()).toEqual([])
+    expect(readMacosRoute).not.toHaveBeenCalled()
+    const unreadable = createAccelerationConflictDetector({
+      platform: 'darwin', readMacosProxyState: async () => '', networkInterfaces: () => ({}),
+      lineAddresses: async () => { throw new Error('profile unreadable') }, readMacosRoute,
+    })
+    await expect(unreadable.read()).resolves.toEqual([])
+    const failingRoute = createAccelerationConflictDetector({
+      platform: 'darwin', readMacosProxyState: async () => '', networkInterfaces: () => ({}),
+      lineAddresses: async () => ['198.51.100.7'], readMacosRoute: async () => { throw new Error('route missing') },
+    })
+    await expect(failingRoute.read()).resolves.toEqual([])
+  })
+
   it('combines the Windows proxy reading with the adapter scan in a stable order', async () => {
     const detector = createAccelerationConflictDetector({
       platform: 'win32',

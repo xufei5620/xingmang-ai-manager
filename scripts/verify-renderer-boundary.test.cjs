@@ -34,11 +34,15 @@ const valueImportable = [
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
+  // 手机遥控的渠道表和状态快照类型，设置页那张卡按渠道摆；文件本身什么都不 import。
+  'electron/codex-remote-channel',
   'electron/cli-model-defaults',
   // 工具配置文件是个链接时那句话的标志，主进程拼、错误框照它认出来配「配置文件是个链接」（#1100 第 2 条）。
   'electron/config-link-refusal',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
+  // 装插件、加外接工具失败时命令行说的原因（缺 Git、连不上 GitHub、重名），主进程挑行、错误框配标题共用一份。
+  'electron/extension-command-failure',
   'electron/external-url-blocked',
   'electron/git-runtime',
   // isRecord 这类最基础的输入检查，主进程和渲染层共用一份（#1071 第 3 条）；文件本身什么都不 import。
@@ -59,10 +63,14 @@ const valueImportable = [
   'electron/system-certificate-trust',
   'electron/usage-date-range',
   'electron/versions',
+  // 视频剪辑「一句话出片」的分镜上限和读回答，主进程和剪辑页共用一份；文件本身什么都不 import。
+  'electron/video-studio-plan',
 ]
 const typeImportableOnly = [
   'electron/platform/contract',
   'electron/relay-backend',
+  // 微信扫码登录交给界面的快照，只有类型，零依赖。
+  'electron/codex-remote-weixin-login-state',
 ]
 
 // Reading a listed file on its own should already say that it ends up in the

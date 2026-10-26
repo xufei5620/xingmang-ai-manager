@@ -45,7 +45,7 @@ describe('tutorial step targets', () => {
   });
 
   it('lands the acceleration, backup and update steps on their rows in settings', () => {
-    for (const action of ['打开游戏加速', '去选择加速线路', '打开游戏加速连接', '查看并停止加速']) {
+    for (const action of ['打开网络加速', '去选择加速线路', '打开网络加速连接', '查看并停止加速']) {
       expect(step('acceleration', action)).toMatchObject({ page: 'settings', section: 'acceleration' });
     }
     expect(step(updatesTutorialTopic, '打开备份迁移')).toMatchObject({ page: 'settings', section: 'backups' });
@@ -187,7 +187,7 @@ describe('linux tutorials', () => {
   });
 
   it('never points a Linux reader at Windows, a Mac, the desktop app or game acceleration', () => {
-    expect(visible).not.toMatch(/Windows|Mac|桌面端|Homebrew|访达|PowerShell|开始菜单|废纸篓|游戏加速|C 盘|钥匙串|Claude Desktop/);
+    expect(visible).not.toMatch(/Windows|Mac|桌面端|Homebrew|访达|PowerShell|开始菜单|废纸篓|网络加速|C 盘|钥匙串|Claude Desktop/);
     expect(visible).not.toMatch(/npm|PATH|TOML/i);
     expect(visible.replace(/(Codex|Grok) CLI/g, '')).not.toMatch(/CLI/);
   });

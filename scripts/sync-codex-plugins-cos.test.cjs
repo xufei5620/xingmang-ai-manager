@@ -4,7 +4,9 @@ const { createHash, randomBytes } = require('node:crypto')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
+const { Readable, Writable } = require('node:stream')
 const zlib = require('node:zlib')
+const { fetchText } = require('./cos-sync-utils.cjs')
 const {
   API_HOST, ARCHIVE_HOST, COMMIT_URL, LATEST_KEY, CONTENT_TYPE, MIN_ARCHIVE_BYTES,
   archiveUrl, artifactKey, parseCommit, validateLatest, inspectCatalogArchive, commitRequest,
@@ -212,6 +214,80 @@ test('the first run uploads the verified archive under its digest, then writes t
   }])
   assert.equal(validateLatest(fixture.latest), fixture.latest)
   assert.equal(fixture.removed.length, 1)
+})
+
+// The commit lookup goes through the real shared transport; only the socket is fake.
+// `answer` gets whether the request carried a token and returns [status, body].
+function githubCommitApi(fixture, answer) {
+  fixture.dependencies.fetchText = function (input) {
+    fixture.commitRequests.push(clone(input))
+    return fetchText(input, { requestImpl(url, options, callback) {
+      const [status, body] = answer(Boolean(options.headers.authorization))
+      const request = new Writable({ write(chunk, encoding, done) { done() } })
+      request.on('finish', () => {
+        const response = Readable.from([Buffer.from(body)])
+        response.statusCode = status
+        response.headers = {}
+        callback(response)
+      })
+      return request
+    } })
+  }
+}
+
+test('GitHub refusing the workflow token falls back to one anonymous lookup of the same commit', async () => {
+  const fixture = createFixture()
+  githubCommitApi(fixture, (withToken) => withToken ? [403, 'Although you appear to have the correct authorization credentials, the organization has an IP allow list enabled'] : [200, `${COMMIT}\n`])
+  const events = []
+  const result = await fixture.run({ progress: (event) => events.push(event) })
+  assert.equal(result.changed, true)
+  assert.equal(fixture.latest.source.commit, COMMIT)
+  assert.equal(fixture.commitRequests.length, 2)
+  assert.equal(fixture.commitRequests[0].headers.authorization, `Bearer ${TOKEN}`)
+  assert.equal(fixture.commitRequests[1].headers.authorization, undefined)
+  for (const request of fixture.commitRequests) {
+    assert.equal(request.url, COMMIT_URL)
+    assert.deepEqual(request.allowedHosts, [API_HOST])
+    assert.equal(request.maxBytes, 256)
+  }
+  const failed = events.find((event) => event.event === 'stage-failed')
+  assert.equal(failed.stage, 'source-commit')
+  assert.deepEqual(failed.diagnostic.failure, { code: 'http-status', method: 'GET', phase: 'response-headers', status: 403, transferredBytes: 0 })
+  assert.ok(events.some((event) => event.event === 'stage-complete' && event.stage === 'source-commit-anonymous'))
+  assert.doesNotMatch(JSON.stringify(events), /Bearer|ghs_|allow list/)
+})
+
+test('only a refused token is retried without it, and only once', async () => {
+  const refusedTwice = createFixture()
+  githubCommitApi(refusedTwice, () => [403, ''])
+  await assert.rejects(refusedTwice.run(), (error) => {
+    const diagnostic = safeCodexPluginsSyncFailure(error)
+    assert.equal(diagnostic.stage, 'source-commit-anonymous')
+    assert.equal(diagnostic.failure.status, 403)
+    return true
+  })
+  assert.equal(refusedTwice.commitRequests.length, 2)
+
+  const noToken = createFixture()
+  githubCommitApi(noToken, () => [403, ''])
+  await assert.rejects(noToken.run({ token: undefined }), (error) => safeCodexPluginsSyncFailure(error).stage === 'source-commit')
+  assert.equal(noToken.commitRequests.length, 1)
+
+  for (const status of [404, 429, 500]) {
+    const other = createFixture()
+    githubCommitApi(other, () => [status, ''])
+    await assert.rejects(other.run(), (error) => safeCodexPluginsSyncFailure(error).failure.status === status)
+    assert.equal(other.commitRequests.length, 1, String(status))
+  }
+
+  const malformed = createFixture()
+  githubCommitApi(malformed, (withToken) => withToken ? [403, ''] : [200, 'main'])
+  await assert.rejects(malformed.run(), (error) => safeCodexPluginsSyncFailure(error).stage === 'source-commit-anonymous')
+  for (const fixture of [refusedTwice, noToken, malformed]) {
+    assert.equal(fixture.downloads.length, 0)
+    assert.equal(fixture.publications.length, 0)
+    assert.equal(fixture.pointers.length, 0)
+  }
 })
 
 test('an unchanged main and an intact bucket copy mean no download and no write', async () => {

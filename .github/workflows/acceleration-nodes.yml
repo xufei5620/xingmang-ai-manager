@@ -1,0 +1,195 @@
+# 在线换节点：把仓库里现在的加速节点（bundled-acceleration/profile.yaml）签名后放到更新目录的
+# acceleration-nodes.json，客户端最迟一小时内换上；或者发一份签过名的「撤回」，客户端改回安装包自带的节点。
+# 客户端怎么读见 electron/acceleration-online-nodes.ts，一步步的操作见 docs/GLOBAL-ACCELERATION.md「在线换节点」。
+#
+# 节点只从 main 上的仓库文件来，输入里没有节点和密码：换节点先走一次 PR。签名用发版的那把钥匙，
+# 凭据与正式发布共用 release 环境，所以每次运行都要产品所有者点一次 Approve。
+name: acceleration-nodes
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 做什么
+        type: choice
+        default: 'publish: 发布仓库里现在的加速节点'
+        options:
+          - 'publish: 发布仓库里现在的加速节点'
+          - 'withdraw: 撤回在线节点（客户端改用安装包自带的）'
+
+permissions:
+  contents: read
+
+jobs:
+  # 批准之前先跑这一段：照仓库里的节点算一遍「批了以后线上是什么样」，写到运行页面上。这一段不挂环境、
+  # 不引用任何 secret；读的只是客户端也在读的公开文件。不对（不是从 main 跑的、跟线上一模一样、节点
+  # 校验值对不上）这一段就红，不用白批一次。
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Only nodes merged to main are published
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::只发 main 上的节点：请在 Run workflow 里把分支选成 main"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      # 脚本用客户端同一套代码解析节点、校验签名，所以先编译主进程。
+      - run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      - name: Resolve the address clients read the node list from
+        id: feed
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
+          echo "url=${base%/}/acceleration-nodes.json" >> "$GITHUB_OUTPUT"
+
+      # 线上那份读不到（404）就当还没发布过；别的失败一律停下，免得在看不清线上的时候盖掉它。
+      - name: Fetch the node list that is live now
+        env:
+          NODES_URL: ${{ steps.feed.outputs.url }}
+        run: |
+          set -euo pipefail
+          code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/current.json" --write-out '%{http_code}' "$NODES_URL")
+          case "$code" in
+            200) echo "线上已有一份节点文件" ;;
+            404) echo "线上还没有节点文件"; rm -f "$RUNNER_TEMP/current.json" ;;
+            *) echo "::error::读取线上节点文件失败（HTTP $code），这次不改"; exit 1 ;;
+          esac
+
+      # 输入经环境变量传给脚本，不拼进命令行。
+      - name: Show the approver what this run would publish
+        env:
+          ACTION_CHOICE: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          mode="${ACTION_CHOICE%%:*}"
+          withdraw=""
+          if [ "$mode" = "withdraw" ]; then withdraw="--withdraw"; fi
+          node scripts/acceleration-nodes.cjs preview \
+            --current "$RUNNER_TEMP/current.json" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            $withdraw
+
+  publish:
+    # 等预览跑完才开始等批准：批的人点开运行时，页面上已经有这次要发布的线路。
+    needs: preview
+    # 跟别的写更新目录的作业共用一个并发组（#492），写的虽然是另一个文件，排着队也只多等几分钟。
+    concurrency:
+      group: update-feed
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 20
+    env:
+      OBJECT_PREFIX: xingmang-manager
+    steps:
+      - name: Only nodes merged to main are published
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::只发 main 上的节点：请在 Run workflow 里把分支选成 main"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      - name: Fail early when the credentials are not configured
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
+        run: |
+          missing=""
+          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY XINGMANG_UPDATE_SIGNING_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::release 环境缺少这些 secret：$missing（见 docs/GLOBAL-ACCELERATION.md「在线换节点」）"
+            exit 1
+          fi
+
+      - name: Resolve the address clients read the node list from
+        id: feed
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./scripts/update-release-utils.cjs').resolveUpdateUrlForVersion(require('./package.json').version)")
+          echo "url=${base%/}/acceleration-nodes.json" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the node list that is live now
+        env:
+          NODES_URL: ${{ steps.feed.outputs.url }}
+        run: |
+          set -euo pipefail
+          code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/current.json" --write-out '%{http_code}' "$NODES_URL")
+          case "$code" in
+            200) echo "线上已有一份节点文件" ;;
+            404) echo "线上还没有节点文件"; rm -f "$RUNNER_TEMP/current.json" ;;
+            *) echo "::error::读取线上节点文件失败（HTTP $code），这次不改"; exit 1 ;;
+          esac
+
+      # 签好的那份里有连接密码，只上传、不打印。
+      - name: Sign the node list
+        env:
+          ACTION_CHOICE: ${{ inputs.action }}
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          mode="${ACTION_CHOICE%%:*}"
+          withdraw=""
+          if [ "$mode" = "withdraw" ]; then withdraw="--withdraw"; fi
+          node scripts/acceleration-nodes.cjs build \
+            --current "$RUNNER_TEMP/current.json" \
+            --output "$RUNNER_TEMP/acceleration-nodes.json" \
+            $withdraw
+
+      - name: Upload the node list
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          aws s3 cp "$RUNNER_TEMP/acceleration-nodes.json" \
+            "s3://$R2_BUCKET/$OBJECT_PREFIX/acceleration-nodes.json" \
+            --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+            --content-type 'application/json; charset=utf-8' \
+            --cache-control 'no-cache'
+
+      - name: Verify clients now read exactly what was uploaded
+        env:
+          NODES_URL: ${{ steps.feed.outputs.url }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 30 --output "$RUNNER_TEMP/published.json" "$NODES_URL"
+          if ! cmp -s "$RUNNER_TEMP/acceleration-nodes.json" "$RUNNER_TEMP/published.json"; then
+            echo "::error::上传成功，但客户会用的地址读到的不是这一份（可能是缓存），请过几分钟重跑一次核对"
+            exit 1
+          fi
+          echo "客户端下一次读取（最迟一小时）就会换上这一份"

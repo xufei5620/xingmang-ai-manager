@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,7 +9,11 @@ import {
   locateServiceStatusUrl,
   parseReleaseGuard,
   parseServiceStatus,
+  parseServiceStatusDocument,
   readServiceStatus,
+  resolveMinimumVersionFor,
+  resolveReleaseGuardFor,
+  resolveReleasePlatforms,
   resolveServiceStatusUrl,
   type ServiceStatus,
 } from './service-status'
@@ -226,6 +231,139 @@ describe('parseServiceStatus', () => {
     expect(isOlderReleaseGuard(later, later)).toBe(false)
     expect(isOlderReleaseGuard({}, later)).toBe(false)
     expect(isOlderReleaseGuard(earlier, {})).toBe(false)
+  })
+})
+
+describe('release platforms (#1155 item 5)', () => {
+  const machines = {
+    windows: resolveReleasePlatforms({ platform: 'win32', arch: 'x64' }),
+    windowsArm: resolveReleasePlatforms({ platform: 'win32', arch: 'arm64' }),
+    intelMac: resolveReleasePlatforms({ platform: 'darwin', arch: 'x64', macRunsArm64: false }),
+    appleMac: resolveReleasePlatforms({ platform: 'darwin', arch: 'arm64', macRunsArm64: true }),
+    rosettaMac: resolveReleasePlatforms({ platform: 'darwin', arch: 'x64', macRunsArm64: true }),
+    linux: resolveReleasePlatforms({ platform: 'linux', arch: 'x64' }),
+    linuxArm: resolveReleasePlatforms({ platform: 'linux', arch: 'arm64' }),
+  }
+
+  it('names this machine by its platform and by the packages it runs and updates to', () => {
+    expect(machines.windows).toEqual(['windows', 'windows-x64'])
+    expect(machines.intelMac).toEqual(['mac', 'mac-x64'])
+    expect(machines.appleMac).toEqual(['mac', 'mac-arm64'])
+    // Intel 版经 Rosetta 跑着：装着的是 Intel 版，更新时会换成 M 系列芯片版，两种都算。
+    expect(machines.rosettaMac).toEqual(['mac', 'mac-x64', 'mac-arm64'])
+    expect(machines.linuxArm).toEqual(['linux', 'linux-arm64'])
+    expect(resolveReleasePlatforms({ platform: 'darwin', arch: 'x64' })).toEqual(['mac', 'mac-x64'])
+    expect(resolveReleasePlatforms({ platform: 'win32', arch: 'ia32' })).toEqual(['windows'])
+    expect(resolveReleasePlatforms({ platform: 'freebsd', arch: 'x64' })).toEqual([])
+  })
+
+  it('reads which packages a withdrawal, a rollout or a minimum covers', () => {
+    const status = parseServiceStatus(JSON.stringify({
+      badVersions: ['0.2.19', '0.2.20', 'v0.2.21'],
+      badVersionPlatforms: { '0.2.20': ['mac-x64', 'MAC-X64 ', 'linux'], 'v0.2.21': ['windows'], '0.2.18': ['mac'] },
+      rollout: { version: '0.2.22', percent: 0, platforms: ['mac-x64'] },
+      minimumVersion: '0.2.21',
+      minimumVersionPlatforms: ['mac-arm64'],
+    }), now)
+    expect(status).toEqual({
+      maintenance: null,
+      badVersions: ['0.2.19', '0.2.20', '0.2.21'],
+      // 不在撤回名单里的 0.2.18 不收。
+      badVersionPlatforms: { '0.2.20': ['mac-x64', 'linux'], '0.2.21': ['windows'] },
+      rollout: { version: '0.2.22', percent: 0, platforms: ['mac-x64'] },
+      minimumVersion: '0.2.21',
+      minimumVersionPlatforms: ['mac-arm64'],
+    })
+    expect(parseReleaseGuard({ badVersions: status.badVersions, badVersionPlatforms: status.badVersionPlatforms, rollout: status.rollout }, now))
+      .toEqual({ badVersions: ['0.2.19', '0.2.20', '0.2.21'], badVersionPlatforms: { '0.2.20': ['mac-x64', 'linux'], '0.2.21': ['windows'] }, rollout: status.rollout })
+  })
+
+  it('falls back to every package on a platform list it cannot fully read', () => {
+    for (const platforms of [['mac-intel'], ['mac-x64', 'macos'], [], 'mac-x64', [3], null, Array(10).fill('mac')]) {
+      const status = parseServiceStatus(JSON.stringify({
+        badVersions: ['0.2.20'],
+        badVersionPlatforms: { '0.2.20': platforms },
+        rollout: { version: '0.2.21', percent: 20, platforms },
+        minimumVersion: '0.2.21',
+        minimumVersionPlatforms: platforms,
+      }), now)
+      expect(status).toEqual({ maintenance: null, badVersions: ['0.2.20'], rollout: { version: '0.2.21', percent: 20 }, minimumVersion: '0.2.21' })
+    }
+    // 同一个版本写了两次，有一份读不懂就整版撤回。
+    expect(parseServiceStatus(JSON.stringify({
+      badVersions: ['0.2.20'],
+      badVersionPlatforms: { '0.2.20': ['mac-x64'], 'v0.2.20': ['mac-intel'] },
+    }), now)).not.toHaveProperty('badVersionPlatforms')
+    expect(parseServiceStatus(JSON.stringify({
+      badVersions: ['0.2.20'],
+      badVersionPlatforms: { '0.2.20': ['mac-x64'], 'v0.2.20': ['linux'] },
+    }), now).badVersionPlatforms).toEqual({ '0.2.20': ['mac-x64', 'linux'] })
+    // 没有最低版本时不收它的平台表。
+    expect(parseServiceStatus(JSON.stringify({ minimumVersionPlatforms: ['mac'] }), now)).not.toHaveProperty('minimumVersionPlatforms')
+  })
+
+  it('keeps only what applies to this machine', () => {
+    const guard = {
+      badVersions: ['0.2.19', '0.2.20'],
+      badVersionPlatforms: { '0.2.20': ['mac-x64'] },
+      rollout: { version: '0.2.21', percent: 0, platforms: ['mac'] },
+    }
+    expect(resolveReleaseGuardFor(guard, machines.intelMac)).toEqual({ badVersions: ['0.2.19', '0.2.20'], rollout: guard.rollout })
+    expect(resolveReleaseGuardFor(guard, machines.rosettaMac)).toEqual({ badVersions: ['0.2.19', '0.2.20'], rollout: guard.rollout })
+    expect(resolveReleaseGuardFor(guard, machines.appleMac)).toEqual({ badVersions: ['0.2.19'], rollout: guard.rollout })
+    expect(resolveReleaseGuardFor(guard, machines.windows)).toEqual({ badVersions: ['0.2.19'], rollout: null })
+    expect(resolveReleaseGuardFor({ badVersions: ['0.2.20'], rollout: { version: '0.2.21', percent: 20 } }, []))
+      .toEqual({ badVersions: ['0.2.20'], rollout: { version: '0.2.21', percent: 20 } })
+    const status = { minimumVersion: '0.2.21', minimumVersionPlatforms: ['linux-arm64'] }
+    expect(resolveMinimumVersionFor(status, machines.linuxArm)).toBe('0.2.21')
+    expect(resolveMinimumVersionFor(status, machines.linux)).toBeNull()
+    expect(resolveMinimumVersionFor({ minimumVersion: '0.2.21' }, machines.windows)).toBe('0.2.21')
+    expect(resolveMinimumVersionFor(null, machines.windows)).toBeNull()
+  })
+
+  it('leaves clients that do not read platforms withdrawing, holding back and requiring at least as much', () => {
+    // 发布脚本写出来的文件，按 0.2.19 及以前的客户端那样只看 badVersions、rollout 的版本和百分比、minimumVersion
+    // 去读：每台电脑上撤的、拦的都不比认平台的读法少。
+    const load = createRequire(__filename)
+    const { applyStatusChanges } = load('../scripts/service-status.cjs') as {
+      applyStatusChanges: (current: Record<string, unknown>, changes: Record<string, string>, now: Date) => Record<string, unknown>
+    }
+    const changes: Array<Record<string, string>> = [
+      { 'bad-versions': '0.2.19 0.2.20@mac-x64 0.2.21@linux|windows-x64' },
+      { rollout: '0.2.22 0@mac-x64' },
+      { rollout: '0.2.22 30@windows|linux-arm64' },
+      { 'minimum-version': '0.2.21@mac-arm64', 'published-versions': '0.2.22 0.2.22' },
+    ]
+    let written: Record<string, unknown> = {}
+    for (const change of changes) {
+      written = applyStatusChanges(written, change, now)
+      const scoped = parseServiceStatusDocument(JSON.stringify(written), now)
+      const { badVersionPlatforms: _versions, minimumVersionPlatforms: _minimum, ...visible } = written
+      const rollout = visible.rollout as Record<string, unknown> | undefined
+      const legacy = parseServiceStatusDocument(JSON.stringify({
+        ...visible,
+        ...(rollout ? { rollout: { version: rollout.version, percent: rollout.percent } } : {}),
+      }), now)
+      expect(scoped).not.toBeNull()
+      expect(legacy).not.toBeNull()
+      for (const here of Object.values(machines)) {
+        const applied = resolveReleaseGuardFor({ badVersions: scoped!.badVersions ?? [], badVersionPlatforms: scoped!.badVersionPlatforms, rollout: scoped!.rollout ?? null }, here)
+        for (const version of applied.badVersions) expect(legacy!.badVersions).toContain(version)
+        if (applied.rollout) expect(legacy!.rollout).toEqual({ version: applied.rollout.version, percent: applied.rollout.percent })
+        const minimum = resolveMinimumVersionFor(scoped, here)
+        if (minimum) expect(legacy!.minimumVersion).toBe(minimum)
+      }
+      // 认不认平台，读到的撤回名单、放量的版本和百分比、最低版本都一样，差别只在管不管这台电脑。
+      expect(scoped!.badVersions).toEqual(legacy!.badVersions)
+      expect(scoped!.minimumVersion).toBe(legacy!.minimumVersion)
+    }
+    expect(written).toMatchObject({
+      badVersions: ['0.2.19', '0.2.20', '0.2.21'],
+      badVersionPlatforms: { '0.2.20': ['mac-x64'], '0.2.21': ['linux', 'windows-x64'] },
+      rollout: { version: '0.2.22', percent: 30, platforms: ['windows', 'linux-arm64'] },
+      minimumVersion: '0.2.21',
+      minimumVersionPlatforms: ['mac-arm64'],
+    })
   })
 })
 

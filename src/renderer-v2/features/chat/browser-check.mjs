@@ -46,10 +46,10 @@ async function open(query = '', stored = {}, init) {
   return page
 }
 async function ready(page) { await page.waitForFunction(() => { const button = document.querySelector('[data-testid=chat-model]'); return button && !button.disabled && button.dataset.model }) }
-// 分组和模型合在一个菜单里：按钮上带着当前选的分组和模型（data-group / data-model），选项只在菜单打开时才有。
+// 模型菜单按厂商分节列全部分组的模型，不选分组：按钮上带着当前的模型和按哪个分组计费（data-model / data-group），选项只在菜单打开时才有。
 async function picked(page) { return page.getByTestId('chat-model').evaluate((button) => ({ group: button.dataset.group, model: button.dataset.model, label: button.querySelector('.chat-model-name').textContent })) }
 async function modelMenu(page) {
-  const menu = page.getByRole('menu', { name: '分组和模型', exact: true })
+  const menu = page.getByRole('menu', { name: '模型', exact: true })
   if (!await menu.count()) await page.getByTestId('chat-model').click()
   await menu.waitFor()
   return menu
@@ -58,11 +58,13 @@ async function closeMenu(page, menu) {
   if (await menu.count()) { await menu.locator('button:not(:disabled)').first().focus(); await page.keyboard.press('Escape') }
   await menu.waitFor({ state: 'detached' })
 }
-async function choices(menu, testId) { return menu.getByTestId(testId).getByRole('menuitemradio').evaluateAll((items) => items.map((item) => ({ label: item.querySelector('.xm-menu-choice > span').textContent, hint: item.querySelector('.xm-menu-choice > small')?.textContent ?? '', checked: item.getAttribute('aria-checked') === 'true', disabled: item.disabled }))) }
-async function groupChoices(page) { const menu = await modelMenu(page); const list = await choices(menu, 'chat-group'); await closeMenu(page, menu); return list }
-// 选分组后菜单不关，接着在下面选模型；这里选完分组就关掉。
-async function pickGroup(page, name) { const menu = await modelMenu(page); await menu.getByTestId('chat-group').getByRole('menuitemradio', { name, exact: true }).click(); await closeMenu(page, menu) }
-async function pickModel(page, name) { const menu = await modelMenu(page); await menu.getByTestId('chat-model-options').getByRole('menuitemradio', { name, exact: true }).click(); await menu.waitFor({ state: 'detached' }) }
+// 每节是一家厂商，选项是模型名，小字是选它以后按哪个分组计费。
+async function vendorSections(menu) { return menu.getByRole('group').evaluateAll((sections) => sections.map((section) => ({ vendor: section.getAttribute('aria-label'), models: [...section.querySelectorAll('[role=menuitemradio]')].map((item) => ({ label: item.querySelector('.xm-menu-choice > span').textContent, hint: item.querySelector('.xm-menu-choice > small')?.textContent ?? '', checked: item.getAttribute('aria-checked') === 'true' })) }))) }
+async function menuSections(page) { const menu = await modelMenu(page); const list = await vendorSections(menu); await closeMenu(page, menu); return list }
+async function pickModel(page, name) { const menu = await modelMenu(page); await menu.getByRole('menuitemradio', { name, exact: true }).click(); await menu.waitFor({ state: 'detached' }) }
+// 打开聊天时每个分组都准备一遍，等它们都读完（按钮上的 data-preparing 放下）。
+async function allPrepared(page) { await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false') }
+async function preparedGroups(page, from = 0) { return (await calls(page, 'prepare')).slice(from).map((call) => call.input) }
 async function pickChoice(page, testId, label, name) {
   await page.getByTestId(testId).click()
   const menu = page.getByRole('menu', { name: label, exact: true })
@@ -189,7 +191,6 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
     await emit(page, { type: 'complete', requestId: request.requestId })
     await page.getByRole('alert').filter({ hasText: '聊天记录没有保存到本机' }).waitFor()
     assert.equal(await page.getByText('VISIBLE-UNSAVED-RESULT', { exact: true }).count(), 1)
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
     assert.deepEqual(await saved(page), previous)
     await page.evaluate(() => window.chatHarness.failHistoryWrites(false))
     await page.getByTestId('chat-composer-input').fill('saved again')
@@ -198,28 +199,29 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
   } finally { await page.close() }
 })
 
-test('one menu lists the backend groups with their descriptions above the models of the chosen group', async () => {
+test('one menu lists the models of every group by vendor, each naming the group it bills to', async () => {
   const page = await open('theme=dark&preferredGroup=1')
   try {
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.group === 'GPT')
     assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话', exact: true }).getAttribute('aria-pressed'), 'true', '首次进入聊天应默认文本对话')
     await ready(page)
     assert.deepEqual(await picked(page), { group: 'GPT', model: 'gpt-5.6-sol', label: 'gpt-5.6-sol' }, '首次进入文本对话应选择截图中的默认模型')
+    await allPrepared(page)
+    assert.deepEqual((await preparedGroups(page)).sort(), ['GPT', 'default'], 'opening chat reads the models of every group once')
     const menu = await modelMenu(page)
-    // 选项名只是分组名，后台的说明作为补充读出来，不并进名字。
-    assert.deepEqual(await choices(menu, 'chat-group'), [
-      { label: 'default', hint: '用户分组', checked: false, disabled: false },
-      { label: 'GPT', hint: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', checked: true, disabled: false },
+    // 没有分组那一节了；两个分组都有的 other-model 只列一次，小字写选它以后按哪个分组计费（正在用的分组有它就留在那个分组）。
+    assert.deepEqual(await vendorSections(menu), [
+      { vendor: 'OpenAI', models: [{ label: 'gpt-5.6-sol', hint: 'GPT分组', checked: true }] },
+      { vendor: '其他', models: [{ label: 'other-model', hint: 'GPT分组', checked: false }] },
     ])
-    assert.equal(await menu.getByRole('menuitemradio', { name: 'GPT', exact: true }).getAttribute('title'), 'gpt-image-1 / 1.5 / 2（官方按 token 计费）')
-    await menu.getByText('2 个模型可用', { exact: true }).waitFor()
-    assert.deepEqual((await choices(menu, 'chat-model-options')).map((item) => item.label), ['other-model', 'gpt-5.6-sol'])
-    assert.equal(await page.evaluate(() => document.activeElement?.querySelector('.xm-menu-choice > span')?.textContent), 'GPT', 'the menu opens on the chosen group')
+    assert.equal(await menu.getByRole('menuitemradio', { name: 'gpt-5.6-sol', exact: true }).getAttribute('title'), 'GPT分组')
+    assert.equal(await menu.getByTestId('chat-group-prepare').textContent(), '刷新模型')
+    assert.equal(await page.evaluate(() => document.activeElement?.querySelector('.xm-menu-choice > span')?.textContent), 'gpt-5.6-sol', 'the menu opens on the chosen model')
     const surface = await menu.evaluate((element) => ({ background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color }))
     assert.notEqual(surface.background, 'rgba(0, 0, 0, 0)')
     assert.notEqual(surface.color, surface.background)
     await pickModel(page, 'other-model')
-    assert.equal((await picked(page)).model, 'other-model')
+    assert.deepEqual(await picked(page), { group: 'GPT', model: 'other-model', label: 'other-model' })
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.testid), 'chat-model', 'focus returns to the button after a pick')
     // 计费提示只留输入框下面那一句，右上角那个「自动 · 费用不可预测」去掉了。
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，回复越长花得越多。')
@@ -301,7 +303,9 @@ test('retry reuses its original settings without duplicating a user message, edi
   try {
     const first = await send(page, 'original question')
     await emit(page, { type: 'error', requestId: first.requestId, message: 'network error' })
-    await pickGroup(page, 'group-b')
+    // other-model 只有 group-b 有：选了它，这段对话就改按 group-b 计费。
+    await pickModel(page, 'other-model')
+    assert.deepEqual(await picked(page), { group: 'group-b', model: 'other-model', label: 'other-model' })
     await ready(page)
     await page.getByRole('button', { name: '重新生成', exact: true }).click()
     await page.getByTestId('chat-confirm').getByRole('button', { name: '重新生成', exact: true }).click()
@@ -323,12 +327,15 @@ test('retry reuses its original settings without duplicating a user message, edi
   } finally { await page.close() }
 })
 
-test('late group preparation and account stream results cannot replace a newer scope', async () => {
+test('a late group preparation keeps the model picked meanwhile, and account stream results cannot replace a newer scope', async () => {
   const page = await open('deferPreparation=1')
   try {
-    await pickGroup(page, 'group-b')
+    // group-a 还没读完，菜单先列已经读到的 group-b 的模型。
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-model"] .chat-model-name')?.textContent === '正在准备模型')
+    await pickModel(page, 'other-model')
     await ready(page)
     await page.evaluate(() => window.chatHarness.finishPreparation())
+    await allPrepared(page)
     assert.deepEqual(await picked(page), { group: 'group-b', model: 'other-model', label: 'other-model' })
     const request = await send(page, 'old account secret')
     await page.evaluate(() => window.chatHarness.switchScope(8))
@@ -344,11 +351,15 @@ test('image controls use real model capabilities and asset actions use opaque id
   const page = await open('saveCancel=1')
   try {
     await ready(page)
+    await allPrepared(page)
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
     assert.equal((await picked(page)).model, 'gpt-image-2')
-    const menu = await modelMenu(page)
-    assert.equal(await menu.getByTestId('chat-model-options').getByRole('menuitemradio', { name: 'gpt-image-1.5', exact: true }).count(), 0)
-    await closeMenu(page, menu)
+    // 生成图片时菜单只列出图的模型，两个分组的都在；gpt-image-1.5 不在可选之列。
+    assert.deepEqual(await menuSections(page), [
+      { vendor: 'OpenAI', models: [{ label: 'gpt-image-2', hint: 'group-a分组', checked: true }] },
+      { vendor: 'Gemini', models: [{ label: 'gemini-3.1-flash-image', hint: 'group-a分组', checked: false }] },
+      { vendor: 'Grok', models: [{ label: 'grok-imagine-image', hint: 'group-b分组', checked: false }] },
+    ])
     assert.equal(await page.getByTestId('chat-image-quality').textContent(), '画质：低')
     await pickChoice(page, 'chat-image-quality', '画质', '高')
     assert.equal(await page.getByTestId('chat-image-quality').textContent(), '画质：高')
@@ -530,10 +541,11 @@ test('group fetch failure can be retried without clearing the user draft', async
   } finally { await page.close() }
 })
 
-test('opening the group menu refreshes metadata once without preparing keys or resetting the current draft/model', async () => {
+test('opening the model menu refreshes the group list, reads only a newly added group and keeps the draft and model; 刷新模型 reads every group again', async () => {
   const page = await open('preferredGroup=1')
   try {
     await ready(page)
+    await allPrepared(page)
     await pickModel(page, 'other-model')
     await page.getByTestId('chat-composer-input').fill('keep this unsent draft')
     const before = (await calls(page, 'groups')).length
@@ -548,22 +560,24 @@ test('opening the group menu refreshes metadata once without preparing keys or r
     assert.equal(await menu.isVisible(), true, 'background refresh must leave the open menu in place')
     assert.equal(await page.getByTestId('chat-model').isDisabled(), false)
     await page.evaluate(() => window.chatHarness.releaseGroupList())
-    await menu.getByRole('menuitemradio', { name: 'new-live-group', exact: true }).waitFor()
+    // 账号多了一个分组：只读这一个（这时给它签对话密钥），原来那两个不再读一遍。
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length > count, prepared)
+    await allPrepared(page)
+    assert.deepEqual(await preparedGroups(page, prepared), ['new-live-group'])
     assert.deepEqual(await picked(page), { group: 'GPT', model: 'other-model', label: 'other-model' })
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'keep this unsent draft')
-    assert.equal((await calls(page, 'prepare')).length, prepared)
     assert.equal((await calls(page, 'start')).length + (await calls(page, 'image')).length, 0)
-    // 菜单底部的「刷新分组和模型」再读一遍当前分组的模型，菜单不关。
+    // 菜单底部的「刷新模型」把每个分组的模型都再读一遍，菜单不关。
     await menu.getByTestId('chat-group-prepare').click()
-    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length > count, prepared)
-    assert.equal((await calls(page, 'prepare')).length, prepared + 1)
-    await waitForToast(page, '已刷新：GPT分组有 2 个模型可用')
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length >= count + 4, prepared)
+    assert.deepEqual((await preparedGroups(page, prepared + 1)).sort(), ['GPT', 'default', 'new-live-group'])
+    await waitForToast(page, '已刷新：有 2 个模型可用')
     assert.equal(await menu.isVisible(), true)
     assert.equal((await picked(page)).model, 'other-model')
   } finally { await page.close() }
 })
 
-test('removing the selected group preserves selection/history and prevents send and retry until the user selects an available group', async () => {
+test('when the group of the current model goes away the model stays named and send and retry wait until the user picks another model', async () => {
   const page = await open()
   try {
     const request = await send(page, 'saved question')
@@ -572,8 +586,10 @@ test('removing the selected group preserves selection/history and prevents send 
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => { window.chatHarness.setGroups(['group-b']); window.dispatchEvent(new Event('focus')) })
     await page.getByTestId('chat-group-unavailable').waitFor()
+    assert.equal(await page.getByTestId('chat-group-unavailable').textContent(), '当前模型已不可用，请换一个模型。已保存的消息和草稿继续保留。')
+    // 后台刷新不悄悄换模型：按钮上照旧写着 gpt-test，菜单里只剩还在的分组的模型。
     assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
-    assert.deepEqual(await groupChoices(page), [{ label: 'group-a（不可用）', hint: '', checked: true, disabled: true }, { label: 'group-b', hint: '', checked: false, disabled: false }])
+    assert.deepEqual(await menuSections(page), [{ vendor: '其他', models: [{ label: 'other-model', hint: 'group-b分组', checked: false }] }])
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     assert.equal(await page.getByRole('button', { name: '重新生成', exact: true }).isDisabled(), true)
     await page.getByTestId('chat-composer-input').press('Enter')
@@ -583,8 +599,9 @@ test('removing the selected group preserves selection/history and prevents send 
     assert.equal((await calls(page, 'prepare')).length, prepared)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after revoked group')
     assert.equal(await page.locator('.chat-message[data-role="user"]').getByText('saved question', { exact: true }).count(), 1)
-    await pickGroup(page, 'group-b')
+    await pickModel(page, 'other-model')
     await ready(page)
+    assert.deepEqual(await picked(page), { group: 'group-b', model: 'other-model', label: 'other-model' })
     assert.equal(await page.getByTestId('chat-group-unavailable').count(), 0)
     assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after revoked group')
@@ -624,10 +641,11 @@ test('regenerating before the group has its models says they are still being pre
   } finally { await page.close() }
 })
 
-test('focus and reactivation refresh groups without polling or repeating preparation', async () => {
+test('focus and reactivation refresh groups without polling, and only a newly added group is read', async () => {
   const page = await open()
   try {
     await ready(page)
+    await allPrepared(page)
     await page.clock.install()
     await page.evaluate(() => Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true }))
     await page.getByTestId('chat-composer-input').fill('persistent draft')
@@ -656,7 +674,9 @@ test('focus and reactivation refresh groups without polling or repeating prepara
       document.dispatchEvent(new Event('visibilitychange'))
     })
     await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'groups').length > count, hidden)
-    assert.equal((await calls(page, 'prepare')).length, prepared)
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length >= count + 3, prepared)
+    // group-a 一直在，不再读；每次新冒出来的分组各读一次。
+    assert.deepEqual(await preparedGroups(page, prepared), ['focus-group', 'reactivated-group', 'visible-group'])
     assert.equal((await calls(page, 'start')).length + (await calls(page, 'image')).length, 0)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'persistent draft')
   } finally { await page.close() }
@@ -666,6 +686,7 @@ test('a background list failure retains existing options and model while exposin
   const page = await open()
   try {
     await ready(page)
+    await allPrepared(page)
     await page.getByTestId('chat-composer-input').fill('offline draft')
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => { window.chatHarness.failGroupList(); window.dispatchEvent(new Event('focus')) })
@@ -675,44 +696,83 @@ test('a background list failure retains existing options and model while exposin
     await page.evaluate(() => { window.chatHarness.resetGroupFailure(); window.chatHarness.setGroups(['group-a', 'recovered-group']) })
     await page.getByTestId('chat-groups-retry').click()
     await page.getByTestId('chat-groups-retry').waitFor({ state: 'detached' })
-    assert.deepEqual((await groupChoices(page)).map((item) => item.label), ['group-a', 'recovered-group'])
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length > count, prepared)
+    await allPrepared(page)
+    assert.deepEqual(await preparedGroups(page, prepared), ['recovered-group'])
+    assert.deepEqual(await menuSections(page), [
+      { vendor: 'OpenAI', models: [{ label: 'gpt-test', hint: 'group-a分组', checked: true }] },
+      { vendor: 'Claude', models: [{ label: 'claude-test', hint: 'group-a分组', checked: false }] },
+      { vendor: '其他', models: [{ label: 'other-model', hint: 'recovered-group分组', checked: false }] },
+    ])
+    assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'offline draft')
-    assert.equal((await calls(page, 'prepare')).length, prepared)
   } finally { await page.close() }
 })
 
-test('new groups after an empty initial list require an explicit choice before preparing a key', async () => {
+test('groups granted after an empty initial list are read on the next refresh and their models offered', async () => {
   const page = await open('emptyGroups=1')
   try {
-    await page.waitForFunction(() => document.querySelector('[data-testid="chat-model"] .chat-model-name')?.textContent === '暂无可用分组')
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-model"] .chat-model-name')?.textContent === '暂无可用模型')
+    assert.deepEqual(await menuSections(page), [{ vendor: '模型', models: [] }])
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await page.getByTestId('chat-composer-input').fill('draft before access granted')
     await page.evaluate(() => { window.chatHarness.setGroups(['group-a']); window.dispatchEvent(new Event('focus')) })
-    await page.waitForFunction(() => document.querySelector('[data-testid="chat-model"] .chat-model-name')?.textContent === '请选择分组')
-    assert.deepEqual(await picked(page), { group: '', model: '', label: '请选择分组' })
-    assert.deepEqual(await groupChoices(page), [{ label: 'group-a', hint: '', checked: false, disabled: false }])
-    assert.equal((await calls(page, 'prepare')).length, 0)
-    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
-    await pickGroup(page, 'group-a')
     await ready(page)
-    assert.equal((await calls(page, 'prepare')).length, 1)
+    await allPrepared(page)
+    assert.deepEqual(await preparedGroups(page), ['group-a'])
+    assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft before access granted')
   } finally { await page.close() }
 })
 
-test('hidden chat keeps its request and drafts while exposing native close protection flags', async () => {
+test('a group whose models were not read is mentioned under the composer, and 刷新模型 brings its models back', async () => {
+  const page = await open('prepareFail=group-b')
+  try {
+    await ready(page)
+    await allPrepared(page)
+    assert.equal(await page.getByTestId('chat-groups-partly-failed').textContent(), '有几个分组的模型没读到，可以点模型菜单里的「刷新模型」再试。')
+    const menu = await modelMenu(page)
+    assert.deepEqual((await vendorSections(menu)).map((section) => section.vendor), ['OpenAI', 'Claude'])
+    await page.evaluate(() => window.chatHarness.failPreparation(null))
+    const prepared = (await calls(page, 'prepare')).length
+    await menu.getByTestId('chat-group-prepare').click()
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length >= count + 2, prepared)
+    await waitForToast(page, '已刷新：有 3 个模型可用')
+    assert.deepEqual((await vendorSections(menu)).map((section) => section.vendor), ['OpenAI', 'Claude', '其他'])
+    assert.equal(await page.getByTestId('chat-groups-partly-failed').count(), 0)
+    assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
+  } finally { await page.close() }
+})
+
+test('when no group has its models read the menu says to refresh and nothing can be sent', async () => {
+  const page = await open('prepareFail=all')
+  try {
+    await allPrepared(page)
+    assert.equal((await picked(page)).label, '暂无可用模型')
+    const menu = await modelMenu(page)
+    assert.equal(await menu.locator('.xm-menu-empty').textContent(), '没读到模型，点「刷新模型」再试')
+    await closeMenu(page, menu)
+    assert.equal(await page.locator('.chat-composer .chat-message-error').count(), 1)
+    await page.getByTestId('chat-composer-input').fill('cannot go out yet')
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    assert.equal(await page.getByTestId('chat-groups-partly-failed').count(), 0)
+  } finally { await page.close() }
+})
+
+test('hidden chat keeps its request and drafts', async () => {
   const page = await open()
   try {
     const request = await send(page, 'background request')
     await page.getByTestId('chat-composer-input').fill('next draft')
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-busy'), 'true')
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
+    assert.equal(await page.getByTestId('chat-stop').count(), 1)
     await page.evaluate(() => window.chatHarness.setActive(false))
     await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
     assert.equal(await page.getByTestId('page-chat').isVisible(), false)
     assert.equal((await calls(page, 'cancel')).length, 0)
     await emit(page, { type: 'content', requestId: request.requestId, content: 'background result' })
     await emit(page, { type: 'complete', requestId: request.requestId })
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-busy'), 'false')
+    await page.getByTestId('chat-send').waitFor({ state: 'attached' })
     await page.getByTestId('chat-composer-input').dispatchEvent('keydown', { key: 'Enter', bubbles: true })
     assert.equal((await calls(page, 'start')).length, 1)
     await page.evaluate(() => window.chatHarness.setActive(true))
@@ -737,7 +797,7 @@ test('hidden chat removes native popup surfaces and preserves an edited message 
     await page.getByTestId('page-chat').waitFor({ state: 'visible' })
     assert.equal(await page.getByTestId('chat-parameters').count(), 0, 'the parameters dialog does not come back on its own')
     await page.getByTestId('chat-model').click()
-    await page.getByRole('menu', { name: '分组和模型', exact: true }).waitFor()
+    await page.getByRole('menu', { name: '模型', exact: true }).waitFor()
     await page.evaluate(() => window.chatHarness.setActive(false))
     await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
     assert.equal(await page.locator(':popover-open').count(), 0)
@@ -745,7 +805,6 @@ test('hidden chat removes native popup surfaces and preserves an edited message 
     await page.getByTestId('page-chat').waitFor({ state: 'visible' })
     await page.getByRole('button', { name: '编辑后重新发送', exact: true }).click()
     await page.getByTestId('chat-edit-input').fill('preserved edited draft')
-    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
     await page.evaluate(() => window.chatHarness.setActive(false))
     await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
     assert.equal(await page.locator('dialog[open]').count(), 0)

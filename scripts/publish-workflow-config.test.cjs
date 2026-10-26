@@ -504,7 +504,7 @@ test('every job that writes the update feed shares one concurrency group', () =>
       assert.notEqual(parsed.concurrency?.group, 'update-feed', `${file} must hold the group per job`)
     }
   }
-  assert.deepEqual(writers, ['publish-release.yml#publish', 'rollback-release.yml#rollback', 'service-status.yml#publish'])
+  assert.deepEqual(writers, ['acceleration-nodes.yml#publish', 'publish-release.yml#publish', 'rollback-release.yml#rollback', 'service-status.yml#publish'])
 })
 
 // tag 在触发时就占上（0.2.14 的收尾两次都是 HTTP 403）：作业用的 GITHUB_TOKEN 拿不到

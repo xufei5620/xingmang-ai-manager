@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
+import { isRecord } from './input-guards'
 import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
@@ -74,10 +75,6 @@ function normalizedInput(input: CanvasPromptPresetInput): CanvasPromptPresetInpu
     prompt: boundedText(input.prompt, '提示词内容', 40_000),
     tags: normalizedTags(input.tags),
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function exactFields(value: Record<string, unknown>, fields: readonly string[]): boolean {

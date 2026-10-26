@@ -10,14 +10,26 @@ import { relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl } from './rel
 import { rewriteJsonStrings } from './tool-route-rewrite'
 import { editTomlArrayTableText, mutateCodexConfigToml } from './codex-config-toml'
 import {
+  assertNoReparseComponents,
+  assertSafeDataFile,
   ensureSafeDataDirectory,
   readSafeUtf8File,
+  removeSafeDataFile,
+  renameWithTransientRetry,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 const MAX_CODEX_CONFIG_BYTES = 2 * 1024 * 1024
 
-export const XINGMANG_AI_SKILL_DIRECTORY = '星芒AI'
+// 文件夹名就是技能名：Claude Code 按文件夹名叫它（/images），Codex 按 SKILL.md 里的 name，
+// 两处必须一样。Grok 只认小写字母、数字和连字符，旧名在它那里显示成「ai」。
+export const XINGMANG_AI_SKILL_DIRECTORY = 'images'
+/**
+ * 0.2.20 及以前的文件夹名。登录同步时原地改名成 images，密钥和客户改过的文件跟着走；
+ * 客户自己已经有一个 images 时，那个技能目录下继续用旧名，不碰客户的。
+ */
+export const XINGMANG_AI_LEGACY_SKILL_DIRECTORY = '星芒AI'
 export const XINGMANG_AI_SKILL_KEY_NAME = 'xingmang-ai'
 export const XINGMANG_AI_DEFAULT_BASE_URL = 'https://xm.solov.cc'
 export const XINGMANG_AI_CONFIG_FILE = 'config.json'
@@ -26,7 +38,8 @@ export const XINGMANG_AI_MANAGED_MANIFEST_FILE = '.xingmang-managed.json'
 export const XINGMANG_AI_CODEX_SKILL_STATE_FILE = 'xingmang-ai-skill-state.json'
 
 // Always install into ~/.agents/skills (Codex Desktop / Codex CLI / Gemini).
-// Claude and Grok only see their own homes, so copy there too — but only if
+// Claude only sees its own home, and so did Grok before it also read
+// ~/.agents (1.0.52 keeps one copy per name), so copy there too — but only if
 // that tool home already exists. Creating ~/.claude or ~/.grok for a machine
 // that never installed those CLIs is pointless and has aborted the whole
 // sync with EPERM. Do not also write ~/.codex/skills or ~/.gemini/skills:
@@ -75,7 +88,7 @@ export interface XingmangAiSkillSyncResult {
   reason?: string
   directoryWarnings?: string[]
   /**
-   * 星芒画图没登记上的原始原因（不带「星芒画图工具未登记」前缀，也已并在 directoryWarnings 里进日志）。
+   * 星芒画图没登记上的原始原因（不带「images 工具未登记」前缀，也已并在 directoryWarnings 里进日志）。
    * 单独留一份，是让界面能换成客户看得懂的一句话；缺省 = 登记成功或这次没登记。
    */
   imageMcpWarnings?: string[]
@@ -124,6 +137,11 @@ export interface XingmangAiSkillInstallOptions {
    * serializeToolConfigWrite，#1061 第 1 条）。缺省 = 直接改。
    */
   serializeConfigWrite?: <T>(operation: () => Promise<T>) => Promise<T>
+  /**
+   * 把老的「星芒AI」文件夹改名成 images。只有登录同步打开它：改完紧接着要把画图工具的登记换到
+   * 新位置，开机那次装文件后面没有这一步，改了名画图工具就找不到脚本。缺省 = 不改名，老文件夹照旧用。
+   */
+  renameLegacyDirectory?: boolean
 }
 
 export function resolveXingmangAiBundledSkillRoot(
@@ -145,32 +163,102 @@ export function resolveXingmangAiBundledSkillRoot(
   return candidates[0]
 }
 
-export function resolveXingmangAiSkillDirectories(userHome: string): string[] {
+function resolveXingmangAiSkillRoots(userHome: string): string[] {
   const home = path.resolve(userHome)
-  const directories = [path.join(home, ...XINGMANG_AI_SHARED_SKILL_ROOT, XINGMANG_AI_SKILL_DIRECTORY)]
+  const roots = [path.join(home, ...XINGMANG_AI_SHARED_SKILL_ROOT)]
   for (const segments of XINGMANG_AI_OPTIONAL_SKILL_ROOTS) {
     if (!isExistingDirectory(path.join(home, segments[0]))) continue
-    directories.push(path.join(home, ...segments, XINGMANG_AI_SKILL_DIRECTORY))
+    roots.push(path.join(home, ...segments))
   }
-  return directories
+  return roots
+}
+
+/**
+ * 一个技能目录（如 ~/.agents/skills）下现在用哪个文件夹：images 是我们装的（有清单）就用它；
+ * 被别的东西占了就用旧名；老文件夹还没改名就先照旧用它，等登录同步改名；都没有就新装成 images。
+ */
+export function resolveXingmangAiSkillDirectoryInRoot(skillRoot: string): string {
+  const current = path.join(skillRoot, XINGMANG_AI_SKILL_DIRECTORY)
+  const legacy = path.join(skillRoot, XINGMANG_AI_LEGACY_SKILL_DIRECTORY)
+  if (isOwnedSkillDirectory(current)) return current
+  if (pathEntryExists(current) || isExistingDirectory(legacy)) return legacy
+  return current
+}
+
+export function resolveXingmangAiSkillDirectories(userHome: string): string[] {
+  return resolveXingmangAiSkillRoots(userHome).map(resolveXingmangAiSkillDirectoryInRoot)
 }
 
 export function resolveXingmangAiCodexSkillPath(userHome: string): string {
   return path.join(
-    path.resolve(userHome),
-    ...XINGMANG_AI_SHARED_SKILL_ROOT,
-    XINGMANG_AI_SKILL_DIRECTORY,
+    resolveXingmangAiSkillDirectoryInRoot(path.join(path.resolve(userHome), ...XINGMANG_AI_SHARED_SKILL_ROOT)),
     'SKILL.md',
   )
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+// 只认清单：客户自己建的 images 不会有它。新建的文件夹装文件前先写上清单，改名时清单跟着老文件夹走，
+// 所以中途失败也不会把自己装的认成客户的、再在旧名下装出第二份。
+function isOwnedSkillDirectory(directory: string): boolean {
+  return isExistingDirectory(directory) && bundledSkillFileExists(path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE))
+}
+
+function pathEntryExists(entry: string): boolean {
+  try {
+    fs.lstatSync(entry)
+    return true
+  } catch (error) {
+    // 看不清的按占着算：宁可这次照旧用旧名，也不往说不准是谁的地方装。
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT'
+  }
 }
 
 function normalizedSkillPathKey(value: string): string {
   const resolved = path.resolve(value)
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+/**
+ * Codex [[skills.config]] 里算作这个技能的路径。已经改名成 images 时，改名前写的「星芒AI」那条也算：
+ * 备份页恢复出来的老配置里只有那一条，认不出来就会把客户自己的关当成没关。
+ */
+function codexSkillPathKeys(skillPath: string): Set<string> {
+  const keys = new Set([normalizedSkillPathKey(skillPath)])
+  const legacyPath = legacyCodexSkillPath(skillPath)
+  if (legacyPath) keys.add(normalizedSkillPathKey(legacyPath))
+  return keys
+}
+
+function legacyCodexSkillPath(skillPath: string): string | null {
+  const directory = path.dirname(path.resolve(skillPath))
+  if (path.basename(directory) !== XINGMANG_AI_SKILL_DIRECTORY) return null
+  return path.join(path.dirname(directory), XINGMANG_AI_LEGACY_SKILL_DIRECTORY, 'SKILL.md')
+}
+
+/**
+ * 把改名前的那几条换成新位置，同一个技能已经有新位置的条目时旧的直接去掉。只在已经叫 images 时换：
+ * 用着旧名时的 images 是客户自己的技能，它的开关不归我们。返回是否改动。
+ */
+export function moveLegacyXingmangAiSkillCodexEntries(config: Record<string, unknown>, skillPath: string): boolean {
+  const legacyPath = legacyCodexSkillPath(skillPath)
+  const skills = config.skills
+  if (!legacyPath || !isRecord(skills) || !Array.isArray(skills.config)) return false
+  const legacyKey = normalizedSkillPathKey(legacyPath)
+  const currentKey = normalizedSkillPathKey(skillPath)
+  const hasCurrent = skills.config.some((entry) => (
+    isRecord(entry) && typeof entry.path === 'string' && normalizedSkillPathKey(entry.path) === currentKey
+  ))
+  let changed = false
+  const kept: unknown[] = []
+  for (const entry of skills.config) {
+    if (isRecord(entry) && typeof entry.path === 'string' && normalizedSkillPathKey(entry.path) === legacyKey) {
+      changed = true
+      if (hasCurrent) continue
+      entry.path = path.resolve(skillPath)
+    }
+    kept.push(entry)
+  }
+  if (changed) skills.config = kept
+  return changed
 }
 
 /**
@@ -219,20 +307,43 @@ export function applyXingmangAiSkillEnabledFlag(
 function isXingmangAiSkillTurnedOff(config: Record<string, unknown>, skillPath: string): boolean {
   const skills = config.skills
   if (!isRecord(skills) || !Array.isArray(skills.config)) return false
-  const key = normalizedSkillPathKey(skillPath)
+  const keys = codexSkillPathKeys(skillPath)
   return skills.config.some((entry) => (
     isRecord(entry)
     && typeof entry.path === 'string'
-    && normalizedSkillPathKey(entry.path) === key
+    && keys.has(normalizedSkillPathKey(entry.path))
     && entry.enabled === false
   ))
 }
 
-// 星芒存的那份星芒配置，就是 config-files.ts 的 codexRelayConfigSnapshotName。那边经
-// xingmang-ai-mcp.ts 引用了本文件，这里再引用回去会成环，所以抄一份名字；名字对不上时，
-// 测试里真切换的那几条会红。
+// 星芒存的那两份 Codex 配置，就是 config-files.ts 的 codexRelayConfigSnapshotName、
+// codexChatGptConfigSnapshotName。那边经 xingmang-ai-mcp.ts 引用了本文件，这里再引用回去会成环，
+// 所以抄一份名字；名字对不上时，测试里真切换的那几条和改名那条会红。
 const CODEX_RELAY_CONFIG_SNAPSHOT_FILE = 'xingmang-config-relay.toml'
 const CODEX_RELAY_CONFIG_SNAPSHOT_LABEL = '已保存的星芒 Codex 配置'
+const CODEX_CHATGPT_CONFIG_SNAPSHOT_FILE = 'xingmang-config-chatgpt.toml'
+const CODEX_CHATGPT_CONFIG_SNAPSHOT_LABEL = '已保存的 ChatGPT Codex 配置'
+
+/**
+ * 文件夹改名后，Codex 里改名前写的开关条目跟着换到新位置（正在用的和存着的两份都换，切换时会整份换回来）：
+ * 不然客户在 Codex 里关掉的、星芒替 ChatGPT 账号关的，改名后都悄悄变回开着。读不懂的不替它改。
+ */
+function moveLegacyCodexSkillEntriesInFiles(codexHome: string, configPath: string, skillPath: string): void {
+  if (!legacyCodexSkillPath(skillPath)) return
+  const files: Array<[string, string]> = [
+    [configPath, 'Codex config.toml'],
+    [path.join(codexHome, CODEX_RELAY_CONFIG_SNAPSHOT_FILE), CODEX_RELAY_CONFIG_SNAPSHOT_LABEL],
+    [path.join(codexHome, CODEX_CHATGPT_CONFIG_SNAPSHOT_FILE), CODEX_CHATGPT_CONFIG_SNAPSHOT_LABEL],
+  ]
+  for (const [filePath, label] of files) {
+    mutateCodexConfigToml(filePath, {
+      label,
+      unreadable: 'skip',
+      mutate: (config) => moveLegacyXingmangAiSkillCodexEntries(config, skillPath),
+      editText: (source, before, after) => editTomlArrayTableText(source, ['skills', 'config'], before, after),
+    })
+  }
+}
 
 // 客户自己在 Codex 里关掉的技能，以前每次打开星芒、保存配置、切回星芒都被打开（#834 F07）：
 // 光看 config.toml 分不清这个「关」是谁的。Codex 的星芒配置和 ChatGPT 配置是两份，切换时整份
@@ -326,6 +437,7 @@ export async function syncXingmangAiSkillCodexAvailability(options: {
 }): Promise<{ changed: boolean; enabled: boolean }> {
   const skillPath = resolveXingmangAiCodexSkillPath(options.userHome)
   const configPath = path.resolve(options.configPath ?? path.join(options.userHome, '.codex', 'config.toml'))
+  moveLegacyCodexSkillEntriesInFiles(path.dirname(configPath), configPath, skillPath)
   const existing = await readSafeUtf8File(configPath, 'Codex config.toml', MAX_CODEX_CONFIG_BYTES)
   if (existing === null && !options.officialCodex) return { changed: false, enabled: true }
 
@@ -436,15 +548,24 @@ function isExistingDirectory(directory: string): boolean {
   }
 }
 
+/** 早期版本装进 Codex、Gemini 自己技能目录的那份，只叫过旧名。 */
+function earlyXingmangAiSkillDirectories(userHome: string): string[] {
+  const home = path.resolve(userHome)
+  return ([['.codex', 'skills'], ['.gemini', 'skills']] as const)
+    .map((segments) => path.join(home, ...segments, XINGMANG_AI_LEGACY_SKILL_DIRECTORY))
+}
+
 function discoverExistingXingmangAiSkillDirectories(userHome: string): string[] {
   const known = new Set(resolveXingmangAiSkillDirectories(userHome).map((directory) => path.resolve(directory)))
-  const extras: string[] = []
-  for (const segments of [['.codex', 'skills'], ['.gemini', 'skills']] as const) {
-    const directory = path.join(path.resolve(userHome), ...segments, XINGMANG_AI_SKILL_DIRECTORY)
-    if (known.has(directory)) continue
-    if (bundledSkillFileExists(path.join(directory, 'SKILL.md'))) extras.push(directory)
-  }
-  return extras
+  const candidates = [
+    // 已经改名成 images、旧名文件夹却还在（客户改过里面的文件，没删）：密钥照样跟着刷新，退出登录照样清掉。
+    ...resolveXingmangAiSkillRoots(userHome).map((root) => path.join(root, XINGMANG_AI_LEGACY_SKILL_DIRECTORY)),
+    ...earlyXingmangAiSkillDirectories(userHome),
+  ]
+  return candidates.filter((directory) => !known.has(directory) && (
+    bundledSkillFileExists(path.join(directory, 'SKILL.md'))
+    || bundledSkillFileExists(path.join(directory, XINGMANG_AI_CONFIG_FILE))
+  ))
 }
 
 function skillDirectoriesForConfig(userHome: string): string[] {
@@ -486,11 +607,12 @@ export function selectImageSkillGroup(groups: readonly { name: string }[]): stri
 // 要用让 AI 自己点名。
 export const XINGMANG_AI_DEFAULT_IMAGE_MODEL = 'gpt-image-2'
 export const XINGMANG_AI_IMAGE_MODEL_PREFERENCE = ['gpt-image-2.5-flare', XINGMANG_AI_DEFAULT_IMAGE_MODEL] as const
-// 两个首选账号里都没有时，以前照样写 gpt-image-2，一画就失败（#1059）。这时从画图脚本也认的型号
-// （mcp-server.mjs 的 ALLOWED_MODELS）里挑账号实有的，次序跟 AI 对话的图片分组一样；sunburst 这时才轮到。
+// 两个首选账号里都没有时，以前照样写 gpt-image-2，一画就失败（#1059）。这时从下面两个里挑账号实有的，
+// 次序跟 AI 对话的图片分组一样；sunburst 这时才轮到。
 // gpt-image-1.5 站上没开放（ai-chat-protocol.ts 标了不可用），不挑。
 export const XINGMANG_AI_IMAGE_MODEL_FALLBACKS = ['gpt-image-2.5-sunburst', 'gpt-image-1'] as const
-const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
+// 画图脚本（mcp-server.mjs、generate.mjs）认型号用的是同一条，测试钉住三处一致。
+export const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
 
 export function selectXingmangAiImageModel(models: readonly string[]): string | null {
   const available = new Set(models.map((model) => model.trim()))
@@ -655,20 +777,150 @@ export async function installXingmangAiSkillFiles(
 ): Promise<XingmangAiSkillInstallResult> {
   const root = path.resolve(bundledRoot)
   assertBundledXingmangAiSkill(root)
-  let installed = 0
   const warnings: string[] = []
-  for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
-    try {
-      if (await installBundledSkill(root, directory)) installed += 1
-    } catch (error) {
-      // One blocked home root must not abort the others. Customer machines
-      // have shown EPERM on ~/.claude while ~/.agents already had the files.
-      warnings.push(directoryFailureMessage(error))
+  const installed = await serializeSkillDirectoryWork(async () => {
+    let count = 0
+    for (const skillRoot of resolveXingmangAiSkillRoots(userHome)) {
+      try {
+        if (options.renameLegacyDirectory) await moveLegacySkillDirectory(skillRoot, root, warnings)
+        if (await installBundledSkill(root, resolveXingmangAiSkillDirectoryInRoot(skillRoot))) count += 1
+      } catch (error) {
+        // One blocked home root must not abort the others. Customer machines
+        // have shown EPERM on ~/.claude while ~/.agents already had the files.
+        warnings.push(directoryFailureMessage(error))
+      }
     }
-  }
+    if (options.renameLegacyDirectory) await removeEarlyLegacySkillCopies(userHome, root, warnings)
+    return count
+  })
   await applyXingmangAiSkillCodexAvailabilitySafely(userHome, options, warnings)
   return { installed, warnings }
 }
+
+// 改名、装文件、刷新和清掉 config.json 排成一队：开机那次装文件和登录同步可能同时跑，一边刚把老文件夹
+// 改了名，另一边还照着老路径写，就会把老文件夹又建出来，变成两份。
+let skillDirectoryQueue: Promise<unknown> = Promise.resolve()
+
+function serializeSkillDirectoryWork<T>(operation: () => Promise<T>): Promise<T> {
+  const result = skillDirectoryQueue.then(operation, operation)
+  skillDirectoryQueue = result.catch(() => undefined)
+  return result
+}
+
+/**
+ * 老的「星芒AI」文件夹整个改名成 images：一次改名，密钥、客户改过的说明和脚本都跟着走，一个文件
+ * 不删。改不成（被占着、杀毒软件在扫）就这次照旧用老的，下次同步再改。images 已经是我们的，老的
+ * 只可能是退回旧版本时又装出来的，没动过就收掉。images 是客户自己的，就一直用老的。
+ */
+async function moveLegacySkillDirectory(skillRoot: string, bundledRoot: string, warnings: string[]): Promise<void> {
+  const current = path.join(skillRoot, XINGMANG_AI_SKILL_DIRECTORY)
+  const legacy = path.join(skillRoot, XINGMANG_AI_LEGACY_SKILL_DIRECTORY)
+  if (!isExistingDirectory(legacy)) return
+  if (isOwnedSkillDirectory(current)) {
+    await removeUntouchedLegacySkill(legacy, bundledRoot, warnings)
+    return
+  }
+  if (pathEntryExists(current)) return
+  try {
+    ensureSafeDataDirectory(skillRoot, '星芒AI Skill 目录')
+    assertNoReparseComponents(legacy, '星芒AI Skill 目录')
+    // 清单先写进老文件夹再改名：改完那一刻 images 就带着它，不会被当成客户的。
+    await claimSkillDirectory(legacy)
+    await renameWithTransientRetry(legacy, current, () => {
+      assertNoReparseComponents(legacy, '星芒AI Skill 目录')
+      if (!isExistingDirectory(legacy)) throw new Error('星芒AI Skill 旧文件夹已经不在了')
+      // POSIX 上改名会顶掉一个空文件夹，Windows 上直接失败；两边都先看一眼，别人刚建的不顶。
+      if (pathEntryExists(current)) throw new Error(`${XINGMANG_AI_SKILL_DIRECTORY} 文件夹已经有了`)
+    })
+  } catch (error) {
+    warnings.push(`星芒AI Skill 文件夹这次没改成 ${XINGMANG_AI_SKILL_DIRECTORY}，先照旧用原来的：${directoryFailureMessage(error)}`)
+  }
+}
+
+/** 早期装进 ~/.codex/skills 的那份，Codex 照样会列出来；已经装好 images 以后，没动过的收掉。 */
+async function removeEarlyLegacySkillCopies(userHome: string, bundledRoot: string, warnings: string[]): Promise<void> {
+  const shared = resolveXingmangAiCodexSkillPath(userHome)
+  if (legacyCodexSkillPath(shared) === null || !isXingmangAiSkillInstalled(path.dirname(shared))) return
+  // Gemini CLI 下线后它目录下的东西不再动（catalog.ts 的 retiredProviderIds）。
+  const [codexCopy] = earlyXingmangAiSkillDirectories(userHome)
+  if (isExistingDirectory(codexCopy)) await removeUntouchedLegacySkill(codexCopy, bundledRoot, warnings)
+}
+
+const LEGACY_SKILL_TOP_LEVEL = new Set(['SKILL.md', 'references.md', 'scripts', XINGMANG_AI_CONFIG_FILE, XINGMANG_AI_MANAGED_MANIFEST_FILE])
+const LEGACY_SKILL_SCRIPTS = new Set(XINGMANG_AI_BUNDLED_FILES
+  .filter((relative) => path.dirname(relative) === 'scripts')
+  .map((relative) => path.basename(relative)))
+
+/**
+ * 只收一份从没动过的旧技能：里面只有我们装的文件，每个都还是装进去时的样子（对得上清单、早期版本的
+ * 原样，或这一版装成旧名时的样子）。多一个文件、改过一个字，就整个留着，只是还会跟着刷新密钥。
+ */
+async function removeUntouchedLegacySkill(directory: string, bundledRoot: string, warnings: string[]): Promise<void> {
+  try {
+    assertNoReparseComponents(directory, '星芒AI Skill 旧文件夹')
+    if (!legacySkillHoldsOnlyOurFiles(directory)) return
+    const ownFiles = [...XINGMANG_AI_BUNDLED_FILES, XINGMANG_AI_CONFIG_FILE, XINGMANG_AI_MANAGED_MANIFEST_FILE]
+    // 先把每个都核一遍（单链接普通文件），再动手删：删到一半才发现一个硬链接，就剩下半个技能。
+    for (const relative of ownFiles) assertSafeDataFile(path.join(directory, relative), '星芒AI Skill 旧文件')
+    const manifest = await readManagedManifest(directory)
+    for (const relative of XINGMANG_AI_BUNDLED_FILES) {
+      const filePath = path.join(directory, relative)
+      if (!bundledSkillFileExists(filePath)) continue
+      const digest = skillFileDigest(fs.readFileSync(filePath, 'utf8'))
+      const key = managedFileKey(relative)
+      const shipped = skillFileDigest(bundledSkillContentFor(directory, relative, readBundledUtf8(path.join(bundledRoot, relative))))
+      if (digest !== manifest.files[key] && digest !== LEGACY_MANAGED_SKILL_DIGESTS[key] && digest !== shipped) return
+    }
+    for (const relative of ownFiles) {
+      await removeSafeDataFile(path.join(directory, relative), '星芒AI Skill 旧文件')
+    }
+    removeEmptyDirectory(path.join(directory, 'scripts'))
+    removeEmptyDirectory(directory)
+  } catch (error) {
+    warnings.push(`星芒AI Skill 旧文件夹没能收掉：${directoryFailureMessage(error)}`)
+  }
+}
+
+function legacySkillHoldsOnlyOurFiles(directory: string): boolean {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (!LEGACY_SKILL_TOP_LEVEL.has(entry.name)) return false
+    if (entry.name === 'scripts') {
+      if (!entry.isDirectory()) return false
+      for (const script of fs.readdirSync(path.join(directory, 'scripts'), { withFileTypes: true })) {
+        if (!script.isFile() || !LEGACY_SKILL_SCRIPTS.has(script.name)) return false
+      }
+    } else if (!entry.isFile()) {
+      return false
+    }
+  }
+  return true
+}
+
+function removeEmptyDirectory(directory: string): void {
+  try {
+    fs.rmdirSync(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
+/** 文件夹里还没有清单就先写一份空的，表明它是我们装的；已有的不动。 */
+async function claimSkillDirectory(directory: string): Promise<void> {
+  if (bundledSkillFileExists(path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE))) return
+  await writeManagedManifest(directory, emptyManagedManifest())
+}
+
+/**
+ * 技能名跟着文件夹名走：装进旧名文件夹时 SKILL.md 里也写「星芒AI」。客户自己有 images 时两个同名，
+ * Codex 里就分不清了；还没改名的老文件夹也照旧叫原来的名字，等改名那一刻一起换。
+ */
+function bundledSkillContentFor(directory: string, relative: string, content: string): string {
+  const name = path.basename(directory)
+  if (relative !== 'SKILL.md' || name === XINGMANG_AI_SKILL_DIRECTORY) return content
+  return content.replace(BUNDLED_SKILL_NAME_LINE, `name: ${name}`)
+}
+
+export const BUNDLED_SKILL_NAME_LINE = new RegExp(`^name: ${XINGMANG_AI_SKILL_DIRECTORY}$`, 'm')
 
 interface ManagedSkillManifest {
   version: 1
@@ -736,13 +988,14 @@ function shouldReplaceManagedSkillFile(
 
 async function installBundledSkill(bundledRoot: string, targetDirectory: string): Promise<boolean> {
   ensureSafeDataDirectory(targetDirectory, '星芒AI Skill 目录')
+  await claimSkillDirectory(targetDirectory)
   ensureSafeDataDirectory(path.join(targetDirectory, 'scripts'), '星芒AI Skill 脚本目录')
   const manifest = await readManagedManifest(targetDirectory)
   let wrote = false
   let manifestChanged = false
   for (const relative of XINGMANG_AI_BUNDLED_FILES) {
     const destination = path.join(targetDirectory, relative)
-    const content = readBundledUtf8(path.join(bundledRoot, relative))
+    const content = bundledSkillContentFor(targetDirectory, relative, readBundledUtf8(path.join(bundledRoot, relative)))
     const bundledDigest = skillFileDigest(content)
     const key = managedFileKey(relative)
     const existing = bundledSkillFileExists(destination) ? fs.readFileSync(destination, 'utf8') : null
@@ -795,6 +1048,8 @@ export async function syncXingmangAiSkill(
     officialCodex: options.officialCodex,
     codexHome: options.codexHome,
     serializeConfigWrite: options.serializeConfigWrite,
+    // 下面登记画图工具时会换到改名后的位置，所以只在这里改名。
+    renameLegacyDirectory: true,
   })
 
   const [groups, hints] = await Promise.all([
@@ -890,7 +1145,7 @@ export async function syncXingmangAiSkill(
         officialCodex: options.officialCodex === true,
       })
     }
-    warnings.push(...imageMcpWarnings.map((warning) => `星芒画图工具未登记：${warning}`))
+    warnings.push(...imageMcpWarnings.map((warning) => `images 工具未登记：${warning}`))
   }
   return {
     ready: true,
@@ -924,11 +1179,11 @@ function delay(milliseconds: number): Promise<void> {
 export function describeImageMcpWarnings(warnings: readonly string[]): string | undefined {
   if (!warnings.length) return undefined
   if (warnings.includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)) {
-    return '星芒画图还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    return 'images 还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
   }
   const tools = providerIds.filter((provider) => warnings.some((warning) => warning.startsWith(`${provider}：`)))
   const where = tools.length ? tools.map((provider) => cliCatalog[provider].name).join('、') : 'AI 工具'
-  return `星芒画图还没装进 ${where}：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。`
+  return `images 还没装进 ${where}：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。`
 }
 
 /**
@@ -937,14 +1192,20 @@ export function describeImageMcpWarnings(warnings: readonly string[]): string | 
  * 只在它本来就是本站某条线路（含退役别名）或者缺省时才改，缺省的补写上。别的一律不碰。
  * 只换 baseUrl 那一处，Key 和分组原样；不经过同步 Key，也不问后端。返回改了几份。
  */
-export async function followXingmangAiSkillRoute(options: {
+export async function followXingmangAiSkillRoute(options: XingmangAiSkillRouteOptions): Promise<number> {
+  assertSafeBaseUrl(options.baseUrl)
+  return serializeSkillDirectoryWork(() => followXingmangAiSkillRouteInDirectories(options))
+}
+
+interface XingmangAiSkillRouteOptions {
   userHome: string
   siteId: string
   /** 工具线路上的 origin（技能脚本自己拼路径，和 Claude Code 的地址同形）。 */
   baseUrl: string
   ownedKeyIds: ReadonlySet<number>
-}): Promise<number> {
-  assertSafeBaseUrl(options.baseUrl)
+}
+
+async function followXingmangAiSkillRouteInDirectories(options: XingmangAiSkillRouteOptions): Promise<number> {
   let rewritten = 0
   for (const directory of skillDirectoriesForConfig(options.userHome)) {
     const filePath = path.join(directory, XINGMANG_AI_CONFIG_FILE)
@@ -978,6 +1239,10 @@ export async function followXingmangAiSkillRoute(options: {
 }
 
 export async function clearXingmangAiSkillSecrets(userHome: string): Promise<number> {
+  return serializeSkillDirectoryWork(() => clearXingmangAiSkillSecretsInDirectories(userHome))
+}
+
+async function clearXingmangAiSkillSecretsInDirectories(userHome: string): Promise<number> {
   let cleared = 0
   for (const directory of skillDirectoriesForConfig(userHome)) {
     const filePath = path.join(directory, XINGMANG_AI_CONFIG_FILE)

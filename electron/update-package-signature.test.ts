@@ -1,8 +1,8 @@
 import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
-import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { readMainWiringSource } from './bootstrap/main-source.test-support'
 import {
   UPDATE_SIGNATURE_FIELD,
   buildUpdateSignaturePayload,
@@ -79,7 +79,7 @@ describe('update package signature', () => {
 
   it('is wired into the Windows update channel only', () => {
     // Linux 的 deb 也走未签名通道，可它的清单还没签：接上就会拒装所有 Linux 更新。
-    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    const main = readMainWiringSource()
     expect(main).toContain("...(unsignedChannel && process.platform === 'win32' ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),")
     expect(main.match(/verifyPackageSignature:/g)).toHaveLength(1)
   })

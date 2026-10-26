@@ -6,7 +6,7 @@ export { formatFreeSpace }
 
 /**
  * 装一个 CLI 要的不止一份空间：托管 npm 布局是「先在临时目录装完整份，再原子
- * 替换旧的那份」（system-service.ts 的 createInstallTemporaryDirectory 一带），
+ * 替换旧的那份」（system-service-context.ts 的 createInstallTemporaryDirectory 一带），
  * 峰值同时存在两份，再加上 npm 缓存。磁盘只剩几百兆时 npm 会跑到一半才报
  * ENOSPC，用户已经等了几分钟、旧版本也可能被动过——所以宁可在一个字节都还没下
  * 之前就拦住。

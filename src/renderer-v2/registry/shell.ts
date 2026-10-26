@@ -8,7 +8,7 @@ export interface ShellNavigationGroup {
   entries: readonly ShellNavigationEntry[]
 }
 export const shellNavigation: readonly ShellNavigationGroup[] = [
-  { entries: ['home', 'chat', 'sessions', 'canvas'] },
+  { entries: ['home', 'chat', 'sessions', 'canvas', 'video'] },
   { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
   { entries: ['recharge', 'tutorial', 'health', 'feedback'] },
 ]

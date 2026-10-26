@@ -7,6 +7,7 @@ import {
   readSafeUtf8File,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 const CURRENT_VERSION = 1
 const MAX_FILE_BYTES = 256 * 1024
@@ -33,10 +34,6 @@ export interface PersistedChatKeys {
    * persisted order without adding another field to the credential record.
    */
   keys: StoredChatKey[]
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function isBoundedString(value: unknown, maximumLength: number): value is string {

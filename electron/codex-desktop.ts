@@ -456,6 +456,14 @@ export function isCodexDesktopExecutable(executablePath: string): boolean {
   return parseCodexDesktopPackagePath(executablePath) !== null
 }
 
+/**
+ * Codex 桌面端在 Windows 上把自带的 codex.exe 放进 PATH。按命令名找到的若是它，不算装了 Codex CLI：
+ * 首页（system-scan-service.ts）和扩展页（codex-extensions.ts 的 isCodexCliInstalled）都按这一句认。
+ */
+export function isCodexDesktopCliInstallation(installation: { source: string; commandPath: string }): boolean {
+  return installation.source === 'native' && isCodexDesktopExecutable(installation.commandPath)
+}
+
 export function parseWindowsProcessesJson(output: string): WindowsProcessEntry[] {
   const trimmed = output.trim().replace(/^\uFEFF/, '')
   if (!trimmed) return []

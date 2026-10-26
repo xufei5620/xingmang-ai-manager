@@ -2,67 +2,52 @@ import path from 'node:path'
 import os from 'node:os'
 import {
   app,
-  autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   clipboard,
   dialog,
   Menu,
-  nativeImage,
   net,
   powerMonitor,
   powerSaveBlocker,
   protocol,
-  safeStorage,
   screen,
   session,
   shell,
   type WebContents,
 } from 'electron'
-import { autoUpdater, CancellationToken } from 'electron-updater'
-import { AccountCredentialStore } from './account-credential-store'
 import { AnnouncementReadStore } from './announcement-read-store'
-import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from './acceleration-expiry-notice'
-import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from './acceleration-interruption-notice'
+import type { AccelerationExpiryNotice } from './acceleration-expiry-notice'
+import type { AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
-import { createAccelerationService, createUserAccelerationApi, userAccelerationState } from './acceleration-service'
-import { accelerationConflictDescriptions, accelerationFailureMessages, accelerationProxyFailureCause, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from './acceleration-contract'
-import { accelerationStartRequest, createAccelerationPreferenceStore, defaultAccelerationPreference } from './acceleration-preference-store'
-import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
+import { createAccelerationService } from './acceleration-service'
+import type { AccelerationBundleCheck } from './acceleration-contract'
+import { createAccelerationPreferenceStore } from './acceleration-preference-store'
+import { readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
-import { AiAssetStore } from './ai-asset-store'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
-import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from './ai-output-location'
-import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
-import { createAiImageService } from './ai-image-service'
-import { AiVideoAssetStore } from './ai-video-asset-store'
-import { AiAudioAssetStore } from './ai-audio-asset-store'
-import { AiAssetMetadataStore } from './ai-asset-metadata-store'
-import { AiVideoTaskStore } from './ai-video-task-store'
-import { createAiVideoService } from './ai-video-service'
-import { createAiMediaAssetService } from './ai-media-asset-service'
-import { assetThumbnailMaxEdge, assetThumbnailSize } from './asset-thumbnail'
-import { AssetThumbnailStore } from './asset-thumbnail-store'
-import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asset-thumbnail-service'
-import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
-import { ChatKeyStore } from './chat-key-store'
-import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
-import { AccountSessionStore } from './account-session-store'
-import { SavedAccountsStore } from './saved-accounts'
+import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
+import { createAccelerationHost, createAccelerationRouting, createAccelerationServices } from './bootstrap/acceleration'
+import { createAccountClientFactory, createAccountStorage } from './bootstrap/accounts'
+import { createRealmBusinesses } from './bootstrap/ai-services'
+import { createDiagnostics } from './bootstrap/diagnostics'
 import { createQuitCleanup } from './bootstrap/lifecycle'
+import { createNetworkRoutes, startToolRouteFollowing } from './bootstrap/network-routes'
+import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, previousAutoInstallFailureMessage, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolvePreviousAutoInstallFailure, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
+import { createUpdateInstallPrompter } from './update-install-prompt'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
-import { createTrayAccelerationCoordinator, type TrayAccelerationCoordinator } from './tray-acceleration'
+import type { TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
@@ -71,47 +56,28 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
-import { activeProviderIds, cliCatalog, isProviderId, providerIds, type ProviderId } from './catalog'
-import { platformCapabilitiesFor } from './platform-capabilities'
+import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
-import { CanvasRunStore } from './canvas-run-store'
-import { createCanvasNodeExecutors } from './canvas-node-executors'
-import { createCanvasRunService } from './canvas-run-service'
-import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
-import { CanvasProjectStore } from './canvas-project-store'
-import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
-import { createAiAssetProtocolHandler } from './ai-asset-protocol'
-import { createChatAttachmentService, type ChatImageCodec } from './ai-chat-attachments'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
-import { findExecutable, isTrustedHighIntegrityExecutable, runWithTrustedWindowsProcessEnvironment, trustedCommandEnvironment } from './command-runner'
-import { CodexExtensionService } from './codex-extensions'
+import { findExecutable, isTrustedHighIntegrityExecutable, trustedCommandEnvironment } from './command-runner'
+import { CodexExtensionService, isCodexCliInstalled } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
-import { createNewApiClient, type NewApiCodexStartupTicket, type NewApiRetryOffProxyFailure } from './new-api-client'
+import type { NewApiCodexStartupTicket } from './new-api-client'
 import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
-import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
-import { createFileRealmAccountVault } from './realm-account-vault-file'
-import { createSessionRealmAccountVault } from './realm-account-vault'
-import { createVaultRecoveryNotifier } from './vault-recovery-notice'
-import { inspectSafeStorageBackend, resolveCredentialPersistence } from './safe-storage-backend'
+import { createRealmAccountService } from './realm-account-service'
 import { isRegularFile, resolveLinuxPasswordStore } from './linux-password-store'
 import { resolveLinuxImeSwitches } from './linux-ime'
 import { probeLinuxTrayHost } from './linux-tray-host'
 import { describeLinuxDesktopSession, readLinuxSystemName } from './linux-os-release'
-import { parseRealmSavedAccount, type RealmSavedAccount } from './realm-account'
-import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
-import { requireSiteRuntimeDefinition } from './site-runtime'
-import { createActiveIdentityReader } from './active-identity'
-import { resolveRealmDataRoots } from './realm-data-roots'
 import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
 import { createAccountStartupGate } from './account-startup-gate'
 import { createAccountRestoreRetry } from './account-restore-retry'
-import { createAccountUsageTracker } from './account-usage-tracker'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
@@ -122,49 +88,20 @@ import { hostNotifier } from './platform/host-notification-bridge'
 import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
-import { createSiteRouting, networkSettingsTarget } from './proxy-bypass'
+import { networkSettingsTarget } from './proxy-bypass'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
-import { inspectProviderConfig, syncXingmangImageMcpConfigs } from './config-files'
-import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute, resolveFeedbackToolRoute } from './feedback-environment'
-import { managedCliRoot } from './managed-cli-paths'
-import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from './feedback-self-check'
+import { syncXingmangImageMcpConfigs } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
   moveMacosAppToApplications, type MacosInstallLocationChoice, type MacosInstallLocationNotice,
 } from './macos-install-location'
-import { createRelayEndpointRoutingSnapshot, createToolRouteRoutingSnapshot, privacyPolicyUrl, relayAutoBackupLine, relayAutoPreferredLines, relayEndpointOrigin, relaySiteExternalUrls, relaySites, requireRelaySite, resolveRelayRoutePreferences, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
+import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
-import { createRelayLineFetch, createRelayObservedFetch } from './relay-line-fetch'
-import { createRelayRouteConclusionStore, createRelayRouteController, probeRelayLineHealth } from './relay-route-controller'
 import { createPaymentWindowController } from './payment-window'
-import { createRouteStatusReader, type RouteStatus } from './route-status-file'
-import { environmentProxyCandidates, probeToolPathDirect, probeToolPathThroughFetch } from './tool-path-probe'
-import { createToolRouteController, createToolRouteStateStore, type ToolRouteProbeResult } from './tool-route-controller'
-import { createToolRouteProbe } from './tool-route-probe'
-import { buildToolRouteReport, createToolRouteStatusBoard, type ToolRouteProbeRecord } from './tool-route-status'
-import { readWindowsProxyScopes } from './stale-proxy-environment'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
-import {
-  clearableEnvironmentOverrides,
-  createDiagnosticsExport,
-  environmentAccountBaseUrls,
-  redactDiagnosticText,
-  diagnosticsScanReuseMs,
-  relaySiteStatusProbeUrls,
-  relayStatusProbeUrl,
-  runDiagnostics,
-  type DiagnosticsDependencies,
-  type DiagnosticsRelayRoute,
-  type DiagnosticsReport,
-  type DiagnosticsRunOptions,
-} from './diagnostics'
-import { buildConnectionProbe, runConnectionCheck } from './connection-check'
-import { clearUserProviderOverrides, setAsideCodexDotenv, setAsideHomeProjectInstructions, type DiagnosticFixKind } from './diagnostic-fixes'
-import { createCodexResponsesProbeService } from './codex-responses-probe'
-import type { ExternalToolId } from './external-tool-config'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
 import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksFromConfigs, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
@@ -181,7 +118,7 @@ import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { createInstallKeepAwake } from './install-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type SettingsSaveIssue, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type RendererNavigationTarget, type SettingsSaveIssue, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -194,31 +131,18 @@ import {
 import {
   parseChromiumProxyResult,
   subprocessDownloadProxyEnvironment,
-  type DownloadProxyEndpoint,
 } from './download-proxy'
-import { createDownloadAccelerationCoordinator } from './download-acceleration'
-import { codexDesktopNeedsAccelerationOnlyAtStartup, createCodexDesktopAccelerationCoordinator } from './codex-desktop-acceleration'
-import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator } from './codex-desktop-startup-route'
-import { probeCodexDesktopRunning } from './codex-desktop-service'
 import {
   createSystemService,
   type SystemService,
   type SystemSnapshot,
 } from './system-service'
-import { verifyUpdatePackageDigest } from './update-package-digest'
-import { verifyUpdateEntrySignature } from './update-package-signature'
-import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
-import { createUpdateRequestGuard } from './update-request-guard'
-import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from './update-feed-route'
-import { createUpdaterService, type UpdateSnapshot } from './updater'
+import type { UpdateSnapshot } from './updater'
 import { buildUpdateStateLogDetail, createUpdateStateLogFilter } from './update-state-log'
-import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from './linux-deb-update'
-import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from './disk-space'
 import { createLastRunVersionStore, hasPriorRunRecord, readBundledReleaseNotes, resolveInstalledRelease } from './installed-release'
 import { appReleaseDownloadUrl } from './app-download-page'
-import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from './service-status'
 import { createReleaseGuardStore } from './release-guard-store'
-import { createCliModelHintsStore, resolveCliModelHints } from './cli-model-hints-store'
+import { resolveCliModelHints } from './cli-model-hints-store'
 import type { AccountGroupHints } from './managed-cli-groups'
 import type { CliModelHints } from './cli-model-defaults'
 import { inspectWindowsElevationCapability, resolveWindowsCliExecutionModeDetailed, type WindowsElevationCapability } from './windows-elevation'
@@ -227,18 +151,17 @@ import { ensureMacosShellProfile } from './macos-shell-profile'
 import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './linux-shell-profile'
 import {
   applyWindowTheme,
-  assetMenuFailureDialog,
   buildMacApplicationMenuTemplate,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
   resolveWindowPalette,
   titleBarOverlayHeight,
   windowIconFileName,
-  type AssetMenuMediaType,
 } from './window-presentation'
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { createCodexRemote } from './bootstrap/codex-remote'
 
 guardProcessOutputStreams()
 
@@ -367,64 +290,6 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
     }
     callback({ path: target })
   })
-}
-
-/**
- * Derives thumbnails with Electron's bundled Skia encoder.
- *
- * The plan called for `createImageBitmap` plus `OffscreenCanvas` in a
- * `utilityProcess`. That is not available: a utility process is a Node.js
- * environment with Electron's `net` module, not a Blink one, so it has neither
- * global. The alternative that keeps those APIs would be a hidden
- * `BrowserWindow`, which adds a renderer surface for no benefit. `nativeImage`
- * gives the same Chromium decoders synchronously in the main process with zero
- * new dependencies, which is why generation is serialized behind a queue.
- */
-function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
-  return {
-    async fromImageBytes(bytes, mimeType) {
-      const image = nativeImage.createFromBuffer(bytes)
-      if (image.isEmpty()) return null
-      const { width, height } = image.getSize()
-      const contained = assetThumbnailSize(width, height)
-      const resized = image.resize({ ...contained, quality: 'better' })
-      if (resized.isEmpty()) return null
-      return mimeType === 'image/jpeg' ? resized.toJPEG(82) : resized.toPNG()
-    },
-    async fromMediaFile(filePath) {
-      // Backed by the platform shell thumbnail provider, which exists only on
-      // Windows and macOS. Both are the platforms this product ships on, and
-      // elsewhere the tray falls back to its own placeholder.
-      if (process.platform !== 'win32' && process.platform !== 'darwin') return null
-      try {
-        const image = await nativeImage.createThumbnailFromPath(filePath, {
-          width: assetThumbnailMaxEdge,
-          height: assetThumbnailMaxEdge,
-        })
-        return image.isEmpty() ? null : image.toPNG()
-      } catch {
-        return null
-      }
-    },
-  }
-}
-
-// Screenshots pasted into the chat are shrunk here, in the main process, before
-// anything is stored or sent. nativeImage decodes PNG and JPEG on every
-// platform; a WebP it cannot read comes back empty and is reported as such.
-const nativeChatImageCodec: ChatImageCodec = {
-  decode(bytes, maxEdge) {
-    let image = nativeImage.createFromBuffer(bytes)
-    if (image.isEmpty()) return null
-    const size = image.getSize()
-    const longest = Math.max(size.width, size.height)
-    if (longest > maxEdge) {
-      const scale = maxEdge / longest
-      image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' })
-    }
-    const resized = image.getSize()
-    return { width: resized.width, height: resized.height, png: () => image.toPNG(), jpeg: (quality) => image.toJPEG(quality) }
-  },
 }
 
 function windowForContents(contents: WebContents): BrowserWindow {
@@ -920,6 +785,8 @@ if (!hasSingleInstanceLock) {
     // 客服要先分清是哪个发行版（linux-os-release.ts），检查页之外的「复制给客服」也带上。
     const linuxSystemNameRead = linuxTrayHost ? readLinuxSystemName() : null
     let linuxSystemLabel: string | null = null
+    // Mac 菜单要在建主窗口之前设上，「设置...」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
+    let navigateFromAppMenu: ((target: RendererNavigationTarget) => void) | null = null
     if (process.platform === 'win32') {
       app.setAppUserModelId(windowsAppUserModelId)
       Menu.setApplicationMenu(null)
@@ -934,13 +801,7 @@ if (!hasSingleInstanceLock) {
     } else if (process.platform === 'darwin') {
       // BrowserWindow.icon does not control the Dock, especially under electron . in development.
       app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'))
-      const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => {
-        const window = BrowserWindow.getFocusedWindow()
-          ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
-        if (window && !window.isDestroyed()) {
-          window.webContents.send(ipcEventChannels.onNavigate, target)
-        }
-      })
+      const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => navigateFromAppMenu?.(target))
       Menu.setApplicationMenu(Menu.buildFromTemplate(template))
     } else {
       // Linux 窗口和 Windows 一样自己画标题栏；Electron 默认那套英文 File / Edit / View
@@ -1024,10 +885,14 @@ if (!hasSingleInstanceLock) {
     process.on('unhandledRejection', onUnhandledRejection)
     // 退出清理只挂这一个 will-quit：下面各处按登记先后排进清单（bootstrap/lifecycle.ts），
     // 顺序由 main.test.ts 钉住，新加的一步登记在它该在的位置，别再另挂 will-quit。
+    // 运行日志先改成当场写：will-quit 返回后进程就退了，排队的异步追加来不及落盘（#1335 第 3 条）。
     const quitCleanup = createQuitCleanup({
       onStepFailed: (step, error) => runtimeLog.exception('main', 'app.quit-cleanup.failed', error, { step }),
     })
-    app.once('will-quit', () => quitCleanup.run())
+    app.once('will-quit', () => {
+      runtimeLog.writeSynchronouslyFromNowOn()
+      quitCleanup.run()
+    })
     // 上次是不是意外退出的：读完就记成「说过了」，这次启动里一直挂在窗口能力上，界面据此说一句。
     let unexpectedExit: UnexpectedExitNotice | null = null
     try {
@@ -1151,25 +1016,6 @@ if (!hasSingleInstanceLock) {
     }
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
-    // 线路选项开机时定下，这次运行里不再变（设置里改了要重启才生效）。选「自动」的站这次运行里会
-    // 换线路：先用上次存下的结论，开机后在后台查一次，先走的那条连不上改走备用那条，好了再切回来
-    // （星芒账号先走直连，历史账号先走默认线路，relay-route-controller.ts）。查线路走的是星芒自己连站点
-    // 那条路（relayFetch，下面才建）。
-    const relayPreferences = resolveRelayRoutePreferences(settingsStore.read().relayEndpointIds)
-    const relayRouteConclusions = createRelayRouteConclusionStore(path.join(managerDataDirectory, 'relay-route-lines.json'))
-    const relayRouteController = createRelayRouteController({
-      preferences: relayPreferences,
-      ...relayRouteConclusions,
-      probe: (siteId, line) => probeRelayLineHealth(relayFetch, relayStatusProbeUrl(requireRelaySite(siteId, line))),
-      // xm 三线路：日志里分得出是管理工具自己这套（应用线路）还是写进工具配置那套（工具线路）。
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, { kind: 'app', ...detail }),
-    })
-    const relayRouting = createRelayEndpointRoutingSnapshot(relayPreferences, () => relayRouteController.lines())
-    // 客服要从日志看出这次走的是哪条：只记线路 id，不记地址。
-    runtimeLog.log('info', 'config', 'relay.route.active', '本次运行用的连接线路', {
-      preferences: relayRouting.preferences,
-      lines: relayRouting.lines(),
-    })
     let settingsSaveIssue: SettingsSaveIssue | undefined
     // 加速页上选过的线路与模式单独落一份，不进 settings.json：它是按账号分的
     // 记录，而 settings.json 会整份交给渲染层，没必要把机器上每个账号的记录都
@@ -1177,193 +1023,22 @@ if (!hasSingleInstanceLock) {
     const accelerationPreferences = createAccelerationPreferenceStore({
       filePath: path.join(managerDataDirectory, 'acceleration-preferences.json'),
     })
-    const sessionFetch = chromiumSessionFetch(session.defaultSession)
-    // 代理软件活着、只是不转发星芒站点时，连星芒站点的请求（账号、余额、AI 聊天画图、连通
-    // 检查）改走的直连会话；默认会话照旧跟随系统代理，装工具、拉插件、检查页都不受影响。
-    // 非 persist: 前缀 = 内存分区，不落盘；这些请求自己带凭据（Key，或者账号那边
-    // credentials: 'omit' 的 cookie），换会话不影响登录。
-    const siteDirectSession = session.fromPartition('xingmang-site-direct')
-    const siteDirectSessionFetch = chromiumSessionFetch(siteDirectSession)
-    let siteDirectProxy: Promise<void> | null = null
-    const siteDirectFetch: typeof fetch = (input, init) => {
-      // 设不上就下次再设，别把一次失败记一整个运行。
-      siteDirectProxy ??= siteDirectSession.setProxy({ mode: 'direct' }).catch((error: unknown) => {
-        siteDirectProxy = null
-        throw error
-      })
-      return siteDirectProxy.then(() => siteDirectSessionFetch(input, init))
-    }
-    // 整个改了直连以后默认会话不再经过系统代理，看代理软件是不是又好了，得另走一个只跟随
-    // 系统代理的会话。同样是内存分区，只用来探那一下。
-    const systemProxySession = session.fromPartition('xingmang-system-proxy')
-    const systemProxySessionFetch = chromiumSessionFetch(systemProxySession)
-    let systemProxyMode: Promise<void> | null = null
-    function ensureSystemProxyMode(): Promise<void> {
-      systemProxyMode ??= systemProxySession.setProxy({ mode: 'system' }).catch((error: unknown) => {
-        systemProxyMode = null
-        throw error
-      })
-      return systemProxyMode
-    }
-    const systemProxyFetch: typeof fetch = (input, init) => (
-      ensureSystemProxyMode().then(() => systemProxySessionFetch(input, init))
-    )
-    // 工具线路探测问「系统代理对星芒这个地址生不生效」（PAC、绕过列表都算在内），问的是同一个会话。
-    function resolveSystemProxy(url: string): Promise<string> {
-      return ensureSystemProxyMode().then(() => systemProxySession.resolveProxy(url))
-    }
-    // 系统代理指着一个已经关掉的代理软件时，星芒自己改走直连（更新那条路早就这么做）。
-    // 只动 defaultSession，不落盘；装工具时给子进程的代理也按它 resolveProxy，一起跟着直连，
-    // 代理软件好了以后再一起改回来。
-    // AI 聊天画图、连通检查、查模型（relayFetch）都连星芒站点，账号请求（accountFetch）
-    // 改直连时跟着一起改，它们自己不触发改直连；别的地址照旧走默认会话。建在这里是因为
-    // relayFetch 马上就要用；站点设置、加速状态都是出了事才去读。
-    const { bypass: proxyBypass, relayFetch, accountFetch } = createSiteRouting({
-      probeUrl: () => {
-        try { return relayStatusProbeUrl(relayRouting.resolve(systemService.readStoredConfig().relaySiteId)) }
-        catch { return null }
-      },
-      // 同一个站的默认线路和直连算一个站点：「自动」中途换了线路，分去直连会话的请求照样分过去。
-      siteProbeUrls: (url) => relaySiteStatusProbeUrls(url, relayRouting.lines()),
-      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
-      setProxy: (mode) => session.defaultSession.setProxy({ mode }),
-      accelerationActive: accelerationRunning,
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-      sessionFetch,
-      siteDirectFetch,
-      systemProxyFetch,
-      // 代理软件好了、改回跟随系统代理：界面上「已经改为直接联网」那条提示跟着收起。
-      // 窗口是后面才建的，改回最早也在改直连 5 分钟以后，那时早就建好了。
-      directEnded: () => {
-        if (!managedMainWindow || managedMainWindow.isDestroyed()) return
-        if (managedMainWindow.webContents.isDestroyed()) return
-        managedMainWindow.webContents.send(ipcEventChannels.onProxyBypassEnded, undefined)
-      },
+    const networkRoutes = createNetworkRoutes({
+      managerDataDirectory,
+      settingsStore,
+      runtimeLog,
+      chromiumSessionFetch,
+      readStoredConfig: () => systemService.readStoredConfig(),
+      accelerationRunning,
+      mainWindow: () => managedMainWindow,
+      readAccountSiteId: () => readAccountSiteId(),
     })
-    // 星芒自己的请求（账号、AI 工作区、AI 工作区查模型）按线路走：认得出的星芒地址换到这个站这会儿
-    // 的线路，「自动」时先走的那条没走通当场改走备用那条（relay-line-fetch.ts）。报给线路那边的只是叫它查一轮
-    // 健康检查，换不换由它定（#941 第 3 节）：正文读得慢、客户点了「停止」不报；账号请求只会因为等到时限
-    // 才中止，连回应头都没等来就报（abortMeansNoAnswer）。工具相关的检查（写配置前查模型、工具自检）查的
-    // 正是工具会用的那条线路，不换不重发，先走的那条上连不上只报给线路那边。
-    function logRelayLine(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
-      runtimeLog.log(level, 'network', event, message, detail)
-    }
-    const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
-    const routedAccountRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { abortMeansNoAnswer: true, log: logRelayLine })
-    const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { abortMeansNoAnswer: true, log: logRelayLine })
-
-    // ---- xm 三线路：星芒账号的工具线路（写进各 AI 工具配置的那条，tool-route-controller.ts） ----
-    // 管理工具自己的请求照旧走上面的应用线路；工具线路照 AI 工具自己的网络路径探（Node 的 TLS、系统代理、
-    // HTTPS_PROXY），两套可以不一样。历史账号没有工具线路，照旧跟应用线路（createToolRouteRoutingSnapshot）。
-    // 线路状态文件只经应用线路、按 origin 显式去读，读不到不算线路失败（需求 7.3）。
-    const routeStatusReader = createRouteStatusReader({
-      fetch: relayFetch,
-      lines: () => relayRouting.lines().solov.line === 'direct' ? ['direct', 'primary'] : ['primary', 'direct'],
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
-    // 最近一次读到的状态文件和两条线路最近一次的探测结果：只给检查报告（C16）和更新源（C15）看。
-    let latestRouteStatus: { at: number; status: RouteStatus | null } | null = null
-    function readRouteStatus(options: { fresh: boolean }): Promise<RouteStatus | null> {
-      return routeStatusReader.read(options).then((status) => {
-        latestRouteStatus = { at: Date.now(), status }
-        return status
-      })
-    }
-    const latestToolProbes: Partial<Record<RelayEndpointId, ToolRouteProbeRecord>> = {}
-    function recordToolProbe(probe: (line: RelayEndpointId) => Promise<ToolRouteProbeResult>): (line: RelayEndpointId) => Promise<ToolRouteProbeResult> {
-      return async (line) => {
-        const result = await probe(line)
-        latestToolProbes[line] = { ok: result.ok, ...(result.kind ? { kind: result.kind } : {}), at: Date.now() }
-        return result
-      }
-    }
-    // 环境变量里的代理：Windows 上读当前账号、整台电脑那两份要起一次 PowerShell，所以不跟定时探测一起读，
-    // 只在开机、唤醒、网络恢复、点「重新检测」、准备降级时重读，平时用上次的结果（计划第 5 节第 7 条）。
-    let toolEnvironmentProxies: Promise<readonly string[]> | null = null
-    function readToolEnvironmentProxies(): Promise<readonly string[]> {
-      toolEnvironmentProxies ??= (process.platform === 'win32'
-        ? readWindowsProxyScopes().catch(() => ({ user: {}, machine: {} }))
-        : Promise.resolve({ user: {}, machine: {} })
-      ).then((scopes) => environmentProxyCandidates({ process: process.env, ...scopes }))
-      return toolEnvironmentProxies
-    }
-    // 每个环境变量代理一个内存分区（不落盘）；候选最多六个（三份环境 × 两个变量），超了清掉重记。
-    // 分区名只增不复用：拿 size 起名的话，删掉一个以后新代理会落到别的代理正在用的分区上，把它的规则改掉。
-    const toolProxySessions = new Map<string, { fetch: typeof fetch; ready: Promise<void> }>()
-    let toolProxyPartitions = 0
-    function toolProxyFetch(proxy: string): typeof fetch {
-      let entry = toolProxySessions.get(proxy)
-      if (!entry) {
-        if (toolProxySessions.size >= 6) toolProxySessions.clear()
-        const target = session.fromPartition(`xingmang-tool-proxy-${toolProxyPartitions++}`)
-        const created = { fetch: chromiumSessionFetch(target), ready: target.setProxy({ proxyRules: proxy }) }
-        created.ready.catch(() => { if (toolProxySessions.get(proxy) === created) toolProxySessions.delete(proxy) })
-        toolProxySessions.set(proxy, created)
-        entry = created
-      }
-      const { fetch: proxied, ready } = entry
-      return (input, init) => ready.then(() => proxied(input, init))
-    }
-    // 开发构建可以把工具线路的各个计时缩短 60 倍（需求 5.8，给 V14 这种 24 小时的测试用），打包版不认。
-    const toolRouteTimeScale = !app.isPackaged && process.env.XINGMANG_TOOL_ROUTE_FAST === '1' ? 60 : 1
-    const toolRouteClockStart = Date.now()
-    const toolRouteController = createToolRouteController({
-      preference: relayPreferences.solov,
-      ...createToolRouteStateStore(path.join(managerDataDirectory, 'tool-route-state.json')),
-      readLegacyConclusions: () => relayRouteConclusions.readConclusions(),
-      // Linux 本期只测无代理路径（需求 5.1.1）。
-      probe: recordToolProbe(createToolRouteProbe({
-        direct: (origin) => probeToolPathDirect(origin),
-        ...(process.platform === 'linux' ? {} : {
-          systemProxyActive: async (origin: string) => parseChromiumProxyResult(await resolveSystemProxy(origin)) !== null,
-          throughSystemProxy: (origin: string) => probeToolPathThroughFetch(systemProxyFetch, origin),
-          environmentProxies: readToolEnvironmentProxies,
-          throughProxy: (proxy: string, origin: string) => probeToolPathThroughFetch(toolProxyFetch(proxy), origin),
-        }),
-      })),
-      readStatus: ({ fresh }) => {
-        // 不走缓存读状态文件 = 准备降级或者碰上认不出的地址：环境变量代理也一起重读。
-        if (fresh) toolEnvironmentProxies = null
-        return readRouteStatus({ fresh })
-      },
-      notify: (notice) => toolRouteStatusBoard.notice(notice),
-      ...(toolRouteTimeScale === 1 ? {} : {
-        now: () => toolRouteClockStart + (Date.now() - toolRouteClockStart) * toolRouteTimeScale,
-        schedule: (callback: () => void, delayMs: number) => {
-          const timer = setTimeout(callback, delayMs / toolRouteTimeScale)
-          timer.unref?.()
-          return () => clearTimeout(timer)
-        },
-      }),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
-    const toolRouteStatusBoard = createToolRouteStatusBoard({
-      appReachable: () => probeRelayLineHealth(relayFetch, relayStatusProbeUrl(relayRouting.resolve('solov'))),
-      // 只有星芒账号看得到这几样；历史账号、没登录时叫界面重读会白白多一轮外部客户端检测。
-      changed: () => { if (readAccountSiteId() === 'solov') notifyRelayRouteChanged() },
-    })
-    // 写进工具配置、给工具自检对账用的线路：星芒账号读工具线路，历史账号照旧读应用线路。
-    const toolRouting = createToolRouteRoutingSnapshot(relayPreferences, () => relayRouteController.lines(), () => toolRouteController.line())
-    runtimeLog.log('info', 'config', 'relay.route.active', '本次运行写进工具配置的线路', { kind: 'tool', lines: { solov: toolRouteController.line() } })
-    // 写配置前查模型、工具自检：星芒账号在工具线路上没走通报给工具线路，历史账号报先走的那条（默认线路）给应用线路。
-    const observedRelayFetch = createRelayObservedFetch(relayRouteController, relayFetch, {
-      log: logRelayLine,
-      toolLine: {
-        route: () => ({ line: toolRouteController.line(), automatic: relayPreferences.solov === 'auto' }),
-        reportFailure: (trigger) => toolRouteController.reportFailure(trigger),
-      },
-    })
-    // 「自动」换了线路：界面重读设置、把工具迁过去（App.tsx，开着的也迁）。窗口还没建好时不用叫，
-    // 首屏读设置时读到的就是新线路。
-    function notifyRelayRouteChanged(): void {
-      if (!managedMainWindow || managedMainWindow.isDestroyed()) return
-      if (managedMainWindow.webContents.isDestroyed()) return
-      managedMainWindow.webContents.send(ipcEventChannels.onRelayRouteChanged, undefined)
-    }
-    const unsubscribeRelayRoute = relayRouteController.subscribe(() => notifyRelayRouteChanged())
+    const {
+      relayRouteController, relayRouting, sessionFetch, proxyBypass, routedRelayFetch, observedRelayFetch,
+      toolRouteController, toolRouteStatusBoard, toolRouting, notifyRelayRouteChanged, unsubscribeRelayRoute, recheckRoutes,
+    } = networkRoutes
     // R6：换线路时工具配置怎么改，跟着服务状态文件（下面 serviceStatusMonitor 读到才改）；缺省定点只改地址。
     let toolRouteRewriteMode: 'targeted' | 'merge' = 'targeted'
-    relayRouteController.start()
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
     const windowsCliExecution = await windowsCliExecutionModePromise
@@ -1424,118 +1099,27 @@ if (!hasSingleInstanceLock) {
     let readExternalClientAccountId: () => string | null = () => null
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
-    // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
-    // 内核的回环端口，默认 session 一行不动，所以账号、中转与画布流量不受
-    // 影响。非 persist: 前缀 = 内存分区，不落盘。
-    const acceleratedDownloadSession = session.fromPartition('xingmang-download-acceleration')
-    let acceleratedDownloadProxyRules: string | null = null
-    async function applyAcceleratedDownloadProxy(endpoint: DownloadProxyEndpoint | null): Promise<void> {
-      const rules = endpoint ? `http=${endpoint.host}:${endpoint.port};https=${endpoint.host}:${endpoint.port}` : null
-      if (rules === acceleratedDownloadProxyRules) return
-      await acceleratedDownloadSession.setProxy(rules
-        ? { proxyRules: rules, proxyBypassRules: '<local>' }
-        : { mode: 'direct' })
-      acceleratedDownloadProxyRules = rules
-    }
     // 账号服务也建得比这里晚。下载线路与游戏加速用的是同一个账号口径，所以
     // 指向同一个读取函数，而不是各写一份。
     let readAccelerationAccountScope: () => string | null = () => null
     // 加速宿主要晚得多才建得起来（它依赖账号与随包资源）。在那之前这里是空的，
     // 任何一次下载都按没加速继续。
     let accelerationDownloadRoutes: Pick<AccelerationDevelopmentHost, 'startDownloadRoute' | 'stopDownloadRoute'> | null = null
-    const downloadAcceleration = createDownloadAccelerationCoordinator({
-      getAccountScope: () => readAccelerationAccountScope(),
-      startRoute: (scope) => accelerationDownloadRoutes
-        ? accelerationDownloadRoutes.startDownloadRoute(scope)
-        : Promise.resolve({ status: 'unavailable' as const }),
-      stopRoute: async (scope) => { await accelerationDownloadRoutes?.stopDownloadRoute(scope) },
-      onRouteChanged: applyAcceleratedDownloadProxy,
-      // 没有临时线路时，下载和给 npm 的代理都按默认会话走（见下面的 downloadFetch 和
-      // resolveSubprocessProxyEnvironment）：整个改了直连，它就不再跟着系统代理。
-      downloadsFollowSystemProxy: () => !proxyBypass.active(),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
-    // 托盘与自动连接共用这一条：把用户在加速页上选过并落了盘的线路与模式，落到
-    // 一次真正的连接上。没选过就是「智能分配 + 标准模式」，与落盘之前的行为一致；
-    // 读不到偏好也按没选过继续，绝不因此连不上。
-    async function accelerationStartArguments(scope: string, state: AccelerationState | null): Promise<[AccelerationMode, string?]> {
-      let preference = defaultAccelerationPreference
-      try { preference = await accelerationPreferences.getAccelerationPreference(scope) }
-      catch (error) { runtimeLog.exception('network', 'acceleration.preference.read.failed', error) }
-      const request = accelerationStartRequest(preference, state?.supportedModes)
-      return request.lineId === undefined ? [request.mode] : [request.mode, request.lineId]
-    }
-    // Codex 桌面端是独立进程，只跟着系统代理走，所以这里要的是完整的「连接」
-    // （和用户在加速页点的那一下同一条路），不是下载专用线路。加速服务同样
-    // 建得比 systemService 晚，空着的时候一律按没加速打开。
-    const codexDesktopAcceleration = createCodexDesktopAccelerationCoordinator({
-      getAccountScope: () => readAccelerationAccountScope(),
-      readState: (scope) => acceleration
-        ? acceleration.getAccelerationState(scope)
-        : Promise.reject(new Error('加速服务尚未就绪。')),
-      connect: async (scope, state) => {
-        if (!acceleration) throw new Error('加速服务尚未就绪。')
-        return acceleration.startAutomaticAcceleration(scope, 'codex-desktop', ...await accelerationStartArguments(scope, state))
-      },
-      // 自动连的不扣免费时长，所以用完就断开，否则就是一条白送的不限时线路。
-      isDesktopRunning: () => probeCodexDesktopRunning(),
-      disconnect: (scope, connectedAt) => acceleration
-        ? acceleration.stopAutomaticAcceleration(scope, connectedAt)
-        : Promise.reject(new Error('加速服务尚未就绪。')),
-      // 桌面端用的是星芒的 Key：它要加速只为启动时拉中文界面那份配置，之后连着只会
-      // 让整台电脑白白绕道（yoyo 2026-10-02）。登 ChatGPT 账号的一直要连 chatgpt.com，
-      // 认不准的也按这种算，等桌面端退出再断。读配置抛错由守护按「一直要」处理。
-      onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
-      // Mac 上连一次、断一次各要一次电脑密码，系统只记 30 秒：用星芒密钥的 20 秒后看到桌面端在跑就断，
-      // 断开不用再输一次（2026-10-18 客户 Mac 一直弹）。Windows 不要密码，照旧两分钟。
-      ...(process.platform === 'darwin' ? { startupDisconnectMs: 20_000 } : {}),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
-    function codexDesktopUsesStarKeyOnly(): boolean {
-      return codexDesktopNeedsAccelerationOnlyAtStartup(inspectProviderConfig('codex',
-        rootedOptions.system.providerRoots, relayRouting.resolve(systemService.readStoredConfig().relaySiteId).providerBaseUrls))
-    }
     // Codex 启动时读中文开关的那一下先试着经星芒服务器代取，走不通才照旧连加速（issue #977，
     // codex-desktop-startup-route.ts）。账号服务建得比这里晚，建好以后才换成真的换票。
     let issueCodexStartupTicket: () => Promise<NewApiCodexStartupTicket> = () => Promise.reject(new Error('账号服务尚未就绪'))
-    // 通道地址跟账号请求走同一个站、同一套线路：这会儿走的那条在前，另一条留作握不上手时再试。
-    function codexStartupTunnelUrls(): string[] {
-      const lines: RelayEndpointId[] = relayRouting.lines().solov.line === 'direct' ? ['direct', 'primary'] : ['primary', 'direct']
-      return lines.flatMap((line) => {
-        const origin = relayEndpointOrigin('solov', line)
-        const url = origin ? buildCodexStartupTunnelUrl(origin) : null
-        return url ? [url] : []
-      })
-    }
-    const codexDesktopStartupRoute = createCodexDesktopStartupRouteCoordinator({
-      launchArgumentsSupported: process.platform === 'win32' || process.platform === 'darwin',
-      fastFailSupported: process.platform === 'win32',
-      skipAccelerationWhenRunning: process.platform === 'darwin',
-      onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
-      issueTicket: () => issueCodexStartupTicket(),
-      tunnelUrls: () => codexStartupTunnelUrls(),
-      ensureAccelerated: () => codexDesktopAcceleration.ensureConnected(),
-      resolveSystemProxy: (url) => resolveSystemProxy(url),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    const accelerationRouting = createAccelerationRouting({
+      routes: networkRoutes,
+      rootedOptions,
+      accelerationPreferences,
+      runtimeLog,
+      readAccelerationAccountScope: () => readAccelerationAccountScope(),
+      downloadRoutes: () => accelerationDownloadRoutes,
+      accelerationService: () => acceleration,
+      issueCodexStartupTicket: () => issueCodexStartupTicket(),
+      readStoredConfig: () => systemService.readStoredConfig(),
     })
-    // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
-    // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
-    // 临时线路生效时改走那条专用 session（它的代理只对下载有效，默认
-    // session 一行未动，账号与中转流量不受影响）。
-    // 各安装包下载自己一跳一跳地跟跳转（redirect: 'manual'，每一跳先核主机），net.fetch 却不把
-    // 跳转交回来，直接报「Redirect was cancelled」，Git、Claude Desktop 因此一次都没下成。
-    // createManualRedirectFetch 把这种请求改走 net.request，跳转照 Node 的 fetch 那样交回去。
-    const downloadFetch: typeof fetch = createManualRedirectFetch((input, init) => {
-      const url = input instanceof URL ? input.href : input
-      // 专用 session 的 fetch 只收字符串或 Request；下载链路一律传 URL 字符串。
-      if (downloadAcceleration.currentEndpoint() && typeof url === 'string') {
-        return acceleratedDownloadSession.fetch(url, init)
-      }
-      return net.fetch(url, init)
-    }, (options) => net.request({
-      ...options,
-      session: downloadAcceleration.currentEndpoint() ? acceleratedDownloadSession : session.defaultSession,
-    }))
+    const { downloadAcceleration, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, downloadFetch } = accelerationRouting
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
@@ -1607,41 +1191,17 @@ if (!hasSingleInstanceLock) {
           parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://registry.npmjs.org/')),
         )
       },
-      acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
+      // 不再给下载临时借加速线路（acquireDownloadAcceleration 不接）：2026-10-21 起内置线路只通 ChatGPT /
+      // OpenAI（acceleration-clash-config.ts 的 lineRoutedRules），npm、Node、Python、GitHub 都过不去；
+      // 用户自己开着加速时下载照样跟着系统代理，在内核里按规则直连，也不算加速，安装源保持国内优先。
       prepareCodexDesktopStartupRoute: (context) => codexDesktopStartupRoute.prepare(context),
+      // Claude Desktop 要从官网下组件，国内直连下不动：从星芒打开时先在后台替他连上加速（#1373）。
+      prepareClaudeDesktopLaunch: (context) => claudeDesktopAcceleration.ensureConnected(context),
     })
-    // 星芒账号的工具线路换了：主进程把四个工具配置里的地址定点改过去（xm 三线路 C9）。历史账号照旧
-    // 由界面收到应用线路那声以后走同步 Key。只有因为连不上换的（没通、劫持、服务端整体故障）才可能提示
-    // 重开（C10）。服务端切换、三线全挂这些状态变了也叫界面重读设置。
-    let toolRouteLine = toolRouteController.line()
-    const unsubscribeToolRoutes = toolRouteController.subscribe((snapshot) => {
-      toolRouteStatusBoard.update(snapshot)
-      const lineChanged = snapshot.line !== toolRouteLine
-      if (lineChanged) {
-        toolRouteLine = snapshot.line
-        void systemService.followToolRoutes?.({ reason: 'route-changed', fault: snapshot.lastChange?.reason !== 'recovered' })
-      }
-      if (lineChanged || readAccountSiteId() === 'solov') notifyRelayRouteChanged()
+    const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
+      systemService,
+      readAccountSiteId: () => readAccountSiteId(),
     })
-    toolRouteController.start()
-    // 唤醒、网络恢复、点「重新检测」都马上查一轮工具线路（需求 5.1.4）和管理工具自己的应用线路（#1053：
-    // 以前只查工具线路，换了网络以后账号、余额要等定时检查或者某次请求失败才开始换）。加速那边的 resume
-    // 监听只在有加速时注册，不能挂在它上面。网络恢复没有现成的事件，隔 15 秒看一眼 net.isOnline()（只读
-    // 本机状态，不出网）。
-    function recheckRoutes(trigger: 'resume' | 'network' | 'manual'): void {
-      toolEnvironmentProxies = null
-      toolRouteController.recheck(trigger)
-      relayRouteController.recheck(trigger)
-    }
-    const onRouteResume = () => recheckRoutes('resume')
-    powerMonitor.on('resume', onRouteResume)
-    let routeOnline = net.isOnline()
-    const routeOnlineTimer = setInterval(() => {
-      const online = net.isOnline()
-      if (online && !routeOnline) recheckRoutes('network')
-      routeOnline = online
-    }, 15_000)
-    routeOnlineTimer.unref?.()
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
       ...rootedOptions.sessions,
@@ -1661,17 +1221,26 @@ if (!hasSingleInstanceLock) {
       ...rootedOptions.backups,
       userDataDirectory: managerDataDirectory,
     })
+    // 只装了 Codex 桌面端时，扩展页的外接工具直接读写 config.toml，不跑 `codex` 命令；怎么算装了和首页一样。
+    const codexCliInstalled = () => isCodexCliInstalled(rootedOptions.codexExtensions.env)
+    // 移除的技能都挪进同一个回收站：Codex 的，和 Claude Code、Grok CLI 的。
+    const skillTrashDirectory = path.join(managerDataDirectory, 'trash', 'skills')
     const extensionService = new CodexExtensionService({
       ...rootedOptions.codexExtensions,
       repositoryRoot: storedSettings.workspace,
-      trashDirectory: path.join(managerDataDirectory, 'trash', 'skills'),
+      trashDirectory: skillTrashDirectory,
       windowsExecutionMode: windowsCliExecutionMode,
       serializeConfigWrite: systemService.serializeToolConfigWrite,
+      cliInstalled: codexCliInstalled,
     })
     const providerExtensionService = new ProviderExtensionService({
       ...rootedOptions.providerExtensions,
       repositoryRoot: storedSettings.workspace,
       windowsExecutionMode: windowsCliExecutionMode,
+      codexCliInstalled,
+      skillTrashDirectory,
+      // Codex 的外接工具启停没有命令，跟加、删同一边改 config.toml（备份、排队、对账）。
+      setCodexMcpServerEnabled: (name, enabled) => extensionService.setMcpServerEnabled(name, enabled),
       // 装插件和加官方市场都要出网（市场是一次 git clone），而 CLI 子进程不读
       // 系统代理，所以跟 CLI 安装一样把当前线路以环境变量带下去。
       resolveSubprocessProxyEnvironment: async () => subprocessDownloadProxyEnvironment(
@@ -1679,216 +1248,30 @@ if (!hasSingleInstanceLock) {
         parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://github.com/')),
       ),
       // Codex 的官方插件目录由本软件替它下载（codex-plugin-catalog.ts），与装 CLI
-      // 同一条下载通道。先从星芒存储桶下，没走通才去 GitHub，那时才临时借加速线路。
+      // 同一条下载通道。先从星芒存储桶下，没走通才去 GitHub；GitHub 不在加速线路的放行名单里，
+      // 所以跟装 CLI 一样不借线路（见上面 createSystemService 那条）。
       downloadFetch,
-      acquireDownloadAcceleration: () => downloadAcceleration.acquire(),
       codexCatalogBucket: {
         onFallback: (detail) => runtimeLog.log('warn', 'install', 'codex-plugin-catalog.bucket-fallback', 'Codex 插件目录存储桶这一路没走通，改从 GitHub 下', { detail }),
       },
     })
-    let latestDiagnostics: DiagnosticsReport | null = null
-    // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走先走的那条没查通时它改查备用那条，并把失败报过来。
-    // 各工具「连接设置」、电脑里另外设过的工具地址比的是工具线路（xm 三线路）；历史账号两套是同一套，不另给。
-    function diagnosticsToolRoute(siteId: string | undefined): DiagnosticsDependencies['toolRoute'] {
-      const site = toolRouting.resolve(siteId)
-      if (site.id !== 'solov') return undefined
-      return {
-        site,
-        route: { line: toolRouting.lines().solov.line, settled: true, automatic: toolRouting.preferences.solov === 'auto', primarySite: requireRelaySite('solov') },
-        report: () => buildToolRouteReport({ snapshot: toolRouteController.snapshot(), lastStatus: latestRouteStatus, probes: latestToolProbes }),
-      }
-    }
-    function diagnosticsRelayRoute(siteId: string | undefined): DiagnosticsRelayRoute | undefined {
-      const site = relayRouting.resolve(siteId)
-      if (site.id !== 'solov' && site.id !== 'solov-api') return undefined
-      const routeSiteId: RelayRouteSiteId = site.id
-      const { line, settled } = relayRouting.lines()[routeSiteId]
-      return {
-        line,
-        settled,
-        automatic: relayRouting.preferences[routeSiteId] === 'auto',
-        primarySite: requireRelaySite(routeSiteId),
-        preferredLine: relayAutoPreferredLines[routeSiteId],
-        backupSite: requireRelaySite(routeSiteId, relayAutoBackupLine(routeSiteId)),
-        reportLineFailure: (reason) => relayRouteController.reportFailure(routeSiteId, line, reason),
-        lastChange: relayRouteController.lastChange(routeSiteId),
-      }
-    }
-    // 最近一次连接自检的结论，只留进报告的那几项（没有 Key、没有地址、没有站
-    // 点名）。键是四个工具，所以天然有界。
-    const latestConnectionChecks = new Map<ProviderId, FeedbackConnectionRecord>()
-    function codexProbeContext() {
-      const site = toolRouting.resolve(systemService.readStoredConfig().relaySiteId)
-      const inspection = inspectProviderConfig(
-        'codex', rootedOptions.system.providerRoots, site.providerBaseUrls,
-      )
-      return { site, inspection }
-    }
-    const codexResponsesProbe = createCodexResponsesProbeService(
-      () => {
-        const { site, inspection } = codexProbeContext()
-        return buildConnectionProbe('codex', site, inspection)
-      },
-      {
-        // 查的是 Codex 自己那份配置里的地址：工具会走哪条就查哪条（observed，不换不重发）。
-        fetch: observedRelayFetch,
-        // The Key stays in main-process memory. Re-reading it after the first
-        // response prevents a second paid request after account/source changes.
-        currentScope: () => {
-          const { site, inspection } = codexProbeContext()
-          return JSON.stringify([
-            readBillingAccountScope(), site.id, inspection.actualBaseUrl,
-            inspection.apiKey, inspection.model, inspection.matchesRelay,
-          ])
-        },
-      },
-    )
-    // 诊断导出与反馈报告都要把本机真正写着的那几把 Key 当敏感值剔掉。
-    const sensitiveKeyValues = () => providerIds
-      .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
-      .filter(Boolean)
-    const diagnosticsService = {
-      run: async (options: DiagnosticsRunOptions = {}) => {
-        // 开机自动检查紧跟着首页扫描：扫描正在跑就等它，一分钟内刚跑完就直接用，
-        // 不再把各工具的版本探测、PowerShell、Codex 桌面端检测重跑一遍。没有现成的
-        // 就照旧自己探，不为此专门起一轮扫描。
-        const recent = options.reuseRecentScan ? systemService.recentScan(diagnosticsScanReuseMs) : null
-        const recentScan = recent ? await recent.catch(() => null) : null
-        latestDiagnostics = await runDiagnostics({
-          recentScan,
-          ...rootedOptions.diagnostics,
-          app: {
-            name: '星芒AI管理工具',
-            version: app.getVersion(),
-            packaged: app.isPackaged,
-          },
-          inspectCodexDesktop: async () => systemService.inspectCodexDesktop(),
-          // 「磁盘空间」那一项要看软件数据目录所在的盘，而 userData 在哪只有宿主
-          // 知道；CLI 落点由诊断自己算。
-          userDataDirectory: app.getPath('userData'),
-          // 跟着当前账号所在的那一套 output 走（历史账号多一层 realms/api-account）。
-          probeAiOutput: () => assetStore.assertWritable(),
-          aiOutputPlacement: () => currentBusiness().aiOutputPlacement,
-          // 「文档文件夹能不能写」一项（Windows）：新项目与 AI 作品默认都放在它下面。
-          documentsDirectory: readDocumentsDirectory(),
-          ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
-          windowsExecution: windowsCliExecution,
-          windowsProcessor: await systemService.inspectWindowsProcessor(),
-          macRosetta: process.platform === 'darwin' && app.runningUnderARM64Translation,
-          // 报告只装中文结论（它会被导出发给客服），认出失败靠的那段上游原文
-          // 留在 runtime.jsonl 里。
-          log: (level, event, message, detail) => runtimeLog.log(level, 'diagnostics', event, message, detail),
-          // Read the account's site on every run; endpoint preferences take
-          // effect only after restart, matching the live account clients.
-          relaySite: relayRouting.resolve(systemService.readStoredConfig().relaySiteId),
-          relayRoute: diagnosticsRelayRoute(systemService.readStoredConfig().relaySiteId),
-          toolRoute: diagnosticsToolRoute(systemService.readStoredConfig().relaySiteId),
-          inspectAccelerationActive: accelerationRunning,
-          // 「电脑里的代理设置」顺带看账号请求走不走系统代理：账号请求用的就是
-          // defaultSession 的 net.fetch，问它本身最准，也不用另起命令读系统设置。
-          resolveAppProxy: (url) => session.defaultSession.resolveProxy(url),
-          // 代理不转发星芒、账号和 AI 对话已经自己改了直连时，这一项照实说，不叫人去退代理软件。
-          siteDirectActive: () => proxyBypass.siteDirect(),
-          // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
-          // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
-          readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
-          // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
-          workspace: systemService.readStoredConfig().workspace,
-        })
-        return latestDiagnostics
-      },
-      // 检查页的一键处理。要删哪几项、挪哪个文件在点的那一刻按当前环境和当前站点重算，
-      // 不信渲染层给的任何名字或路径（I5）。
-      fix: async (kind: DiagnosticFixKind) => {
-        if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
-        if (kind === 'set-aside-home-agents-md') return setAsideHomeProjectInstructions(codexContext.userHome)
-        const siteId = systemService.readStoredConfig().relaySiteId
-        // 和检查页那一项同一套「指向当前账号」：「自动」走直连时指着默认线路的不删。星芒账号按工具线路认。
-        const toolRoute = diagnosticsToolRoute(siteId)
-        const accountBaseUrls = toolRoute
-          ? environmentAccountBaseUrls(toolRoute.site, toolRoute.route)
-          : environmentAccountBaseUrls(relayRouting.resolve(siteId), diagnosticsRelayRoute(siteId))
-        return clearUserProviderOverrides({
-          names: clearableEnvironmentOverrides(process.env, accountBaseUrls, codexContext.userHome),
-        })
-      },
-      // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——
-      // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
-      // 站点的用户会被告知一份好配置「指错了地方」。站点名只进日志不上屏。
-      checkConnection: async (provider: ProviderId) => {
-        const site = toolRouting.resolve(systemService.readStoredConfig().relaySiteId)
-        const result = await runConnectionCheck({
-          provider,
-          site,
-          inspection: inspectProviderConfig(provider, rootedOptions.system.providerRoots, site.providerBaseUrls),
-          // 测的是工具配置里写的那个地址，工具走哪条就测哪条（observed，不换不重发）。
-          fetch: observedRelayFetch,
-        })
-        latestConnectionChecks.set(provider, {
-          ok: result.ok,
-          layer: result.layer,
-          summary: result.summary,
-          checkedAt: result.checkedAt,
-        })
-        return result
-      },
-      probeCodexResponses: (expectedAccountScope: string) => {
-        if (expectedAccountScope !== readBillingAccountScope()) {
-          throw new Error('当前账号变了，请重新勾选确认后再检查')
-        }
-        return codexResponsesProbe.run()
-      },
-      // 外部客户端的自检由 system-service 出面：Key、地址与归属都只有它算得出
-      // 来，主进程这一层只负责把它接到通道上。
-      checkExternalConnection: (tool: ExternalToolId) => systemService.checkExternalClientConnection(tool),
-      // 预览反馈报告时据此提醒先去检查：与报告里写不写「还没做过自检」读的是同一份结果。
-      hasSelfCheckResult: () => hasFeedbackSelfCheck({
-        report: latestDiagnostics,
-        readConnection: (provider) => latestConnectionChecks.get(provider) ?? null,
-      }),
-      exportLatest: () => {
-        if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
-        return createDiagnosticsExport(latestDiagnostics, {
-          ...rootedOptions.diagnosticExport,
-          sensitiveValues: sensitiveKeyValues(),
-        })
-      },
-    }
-    if (process.platform === 'win32') {
-      installStrictUpdateCodeSignatureVerifier(autoUpdater as typeof autoUpdater & {
-        verifyUpdateCodeSignature: (publisherNames: string[], filePath: string) => Promise<string | null>
-      }, {
-        warn: (message) => runtimeLog.log('warn', 'updater', 'signature.publisher.cn-only', message),
-      })
-    }
-    const localBuild = app.isPackaged && applicationPackage.xingmangLocalBuild === true
-    const updateConfigPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'app-update.yml')
-      : path.join(app.getAppPath(), 'dev-app-update.yml')
-    // 只有标准 Windows 正式版有直连那份更新目录（直连白名单里只有 Windows 的安装包）。星芒账号走
-    // 直连时更新也走直连；「自动」会在运行中换线路，所以每次检查前按这会儿的线路选（feedRoute）。
-    const directUpdateFeed = locateDirectUpdateFeed(updateConfigPath, {
-      activeSolovEndpointId: 'direct',
-      platform: process.platform,
-      isPackaged: app.isPackaged,
-      localBuild,
+    const diagnostics = createDiagnostics({
+      routes: networkRoutes,
+      systemService,
+      rootedOptions,
+      codexContext,
+      managerDataDirectory,
+      windowsCliExecution,
+      accelerationBundleStatus,
+      accelerationRunning,
+      readDocumentsDirectory,
+      runtimeLog,
+      readBillingAccountScope: () => readBillingAccountScope(),
+      currentBusiness: () => currentBusiness(),
+      assetStore: () => assetStore,
     })
-    let updateFeedLine: RelayEndpointId = 'primary'
-    // setFeedURL only changes transport. Keep configOnDisk intact: electron-updater
-    // still reads publisherName and updaterCacheDirName there when verifying/installing.
-    function useUpdateFeedLine(line: RelayEndpointId): void {
-      if (!directUpdateFeed || line === updateFeedLine) return
-      autoUpdater.setFeedURL((line === 'direct' ? directUpdateFeed : packagedUpdateFeed()).feed)
-      updateFeedLine = line
-    }
-    // 应用线路在洛杉矶、可状态文件说那个域名这会儿指向香港：更新改用包里那份（C15，updateFeedLineFor）。
-    // 状态文件只在这里顺手刷新（10 分钟缓存），读到的下一次检查才用上；读不到照旧。
-    function currentUpdateFeedLine(): RelayEndpointId {
-      const line = relayRouteController.route('solov').line
-      if (directUpdateFeed && line === 'direct') void readRouteStatus({ fresh: false }).catch(() => null)
-      return updateFeedLineFor(line, latestRouteStatus?.status ?? null)
-    }
-    useUpdateFeedLine(currentUpdateFeedLine())
+    const { diagnosticsService } = diagnostics
+    const updateFeed = createUpdateFeed({ applicationPackage, routes: networkRoutes, runtimeLog })
     // Builds made with XINGMANG_UNSIGNED_RELEASE=1 carry no publisherName, so
     // electron-updater returns from verifySignature before the strict verifier
     // above is ever reached. The updater re-checks the manifest digest itself;
@@ -1956,192 +1339,19 @@ if (!hasSingleInstanceLock) {
     let updateAccount: WindowsElevationCapability | null = null
     // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
     let quitInstallAttempt: QuitInstallAttempt | null = null
-    let previousAutoInstallFailureReported = false
-    // Linux 只有 .deb 装的能自动更新，装这一步交给系统安装程序（linux-deb-update.ts）。
-    const updateInstallMethod = process.platform === 'linux'
-      ? resolveLinuxInstallMethod({
-        isPackaged: app.isPackaged,
-        packageType: app.isPackaged ? readLinuxPackageType(process.resourcesPath) : null,
-      })
-      : undefined
-    // electron-updater 的请求在 Electron 里没有能用的超时，增量下载停住了也不认取消令牌，中途断网
-    // 还会抛没人接的异常：包住它建请求的那一处，看门狗才看得到数据还来不来、停住时掐得断
-    // （见 update-request-guard.ts）。httpExecutor 没写进 electron-updater 对外的类型，只能这样取；
-    // 取不到就只剩取消令牌。
-    const updateRequests = createUpdateRequestGuard(Reflect.get(autoUpdater, 'httpExecutor'))
-    const updaterService = createUpdaterService(autoUpdater, {
-      installMethod: updateInstallMethod,
-      openSystemInstaller: updateInstallMethod === 'system-installer'
-        ? async (packagePath) => {
-          try {
-            await openWithSystemInstaller({
-              packagePath,
-              opener: resolveSystemPackageOpener(),
-              env: systemInstallerEnvironment(process.env),
-            })
-            runtimeLog.log('info', 'updater', 'install.system-installer.opened', '已把新版本安装包交给系统安装程序')
-          } catch (error) {
-            const code = (error as Partial<SystemInstallerError> | null)?.code ?? 'UPDATE_SYSTEM_INSTALLER_FAILED'
-            runtimeLog.exception('updater', 'install.system-installer.failed', error)
-            if (code === 'UPDATE_PACKAGE_PATH_MISSING') throw error
-            // 安装程序没起来时替客户把安装包所在的文件夹打开，双击它照样能装。
-            let revealed = false
-            try {
-              shell.showItemInFolder(packagePath)
-              revealed = true
-            } catch (cause) {
-              runtimeLog.exception('updater', 'install.system-installer.reveal-failed', cause)
-            }
-            throw Object.assign(new Error(systemInstallerFailureMessage(code, revealed)), { code })
-          }
-        }
-        : undefined,
-      quitAfterSystemInstaller: () => { app.quit() },
+    const { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch } = updateFeed.createUpdater({
+      managerDataDirectory,
+      runtimeLog,
+      systemService,
+      chromiumSessionFetch,
       installedRelease,
-      currentVersion: app.getVersion(),
-      isPackaged: app.isPackaged,
-      localBuild,
       unsignedChannel,
-      // 未签名通道（Windows）也跟着「自动更新」开关走：yoyo 2026-09-25 在项目聊天亲口
-      // 同意「Windows 也自动更新」。撤回名单、分批放量、SHA-512 复核照旧生效。
-      unsignedAutoUpdate: true,
-      readAutoUpdate: () => systemService.readStoredConfig().autoUpdate !== false,
-      // 每次运行只认一次：用户点「重新安装」后又重新下载同一版时，不该再被判成上次失败。
-      previousAutoInstallFailure: (version) => {
-        if (previousAutoInstallFailureReported) return null
-        const failed = resolvePreviousAutoInstallFailure(version, app.getVersion(), pendingUpdateAtLaunch)
-        if (!failed) return null
-        previousAutoInstallFailureReported = true
-        runtimeLog.log('warn', 'updater', 'install.auto.previous-failed', `上次自动安装 ${failed} 没有装上，这次不再自动装`)
-        return previousAutoInstallFailureMessage(process.platform)
-      },
-      verifyPackageDigest: verifyUpdatePackageDigest,
-      // electron-updater 按 `uname -a`（带电脑名）判断 Apple 芯片，Intel Mac 会被挑上 arm64 包（#1155）。
-      // Intel 版在 Apple 芯片上经 Rosetta 跑时 process.arch 是 x64，这时照样算能跑 arm64，让它换回 M 系列芯片版。
-      ...(process.platform === 'darwin' ? { macRunsArm64: process.arch === 'arm64' || app.runningUnderARM64Translation } : {}),
-      // 未签名通道里只有 Windows 的清单由发布者 Ed25519 签过（update-package-signature.ts），
-      // 没有 Authenticode 就只认它。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签；Linux 的 deb
-      // 同样走未签名通道，但它的清单还没签，接上会让所有 Linux 更新都被拒装。
-      ...(unsignedChannel && process.platform === 'win32' ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),
-      // 盘快满的电脑上别每 3 小时下一次注定失败的安装包（第二十二批 2）。
-      readFreeDiskBytes: async () => {
-        const targets = updateDownloadProbeTargets(process.platform, {
-          localAppData: process.env.LOCALAPPDATA,
-          home: app.getPath('home'),
-          temp: app.getPath('temp'),
-        })
-        const tightest = tightestDiskSpace(await Promise.all(targets.map((target) => readDiskSpace(target))))
-        return tightest ? tightest.availableBytes : null
-      },
-      diskShortfallSkipped: (shortfall, version) => {
-        runtimeLog.log('warn', 'updater', 'download.skipped.disk', `磁盘空间不够，先不下载 ${version ?? '新版本'}`, {
-          neededBytes: shortfall.neededBytes,
-          freeBytes: shortfall.freeBytes,
-        })
-      },
-      // 下载停住时看门狗靠它取消。得是 electron-updater 自己导出的这个类：它认「已取消」
-      // 靠 instanceof，别处来的令牌取消后会被当成下载出错。
-      createDownloadCancellation: () => new CancellationToken(),
-      downloadReceivedAt: () => updateRequests?.lastReceivedAt() ?? null,
-      abortDownloadRequests: (reason) => {
-        const aborted = updateRequests?.abortAll(reason) ?? 0
-        // 检查挂住和下载停住都从这里掐，reason 分得清是哪个看门狗（UpdateCheckAborted / UpdateDownloadAborted）。
-        runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted, reason: reason.name })
-      },
-      downloadStalled: (stall) => {
-        runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
-          retrying: stall.retrying,
-          transferred: stall.transferred,
-          total: stall.total,
-          unsettled: stall.unsettled,
-          fullPackage: stall.fullPackage,
-          transferEnded: stall.transferEnded,
-        })
-      },
-      // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
-      refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
+      pendingUpdateAtLaunch,
+      releaseGuardStore,
       releaseGuardAtLaunch,
-      rememberReleaseGuard: (guard) => releaseGuardStore.write(guard).catch((cause: unknown) => {
-        runtimeLog.exception('updater', 'release-guard.save-failed', cause)
-        throw cause
-      }),
-      enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
-      macInstallHandoff: process.platform === 'darwin'
-        ? {
-            nativeUpdateDownloadedListenerCount: () => (
-              nativeAutoUpdater.listenerCount('update-downloaded')
-            ),
-            retryNativeCheck: () => nativeAutoUpdater.checkForUpdates(),
-          }
-        : undefined,
-      installEnvironmentGuard: process.platform === 'win32'
-        ? (launch) => runWithTrustedWindowsProcessEnvironment(launch)
-        : undefined,
-      prepareInstallQuit: () => updateQuitHandoff?.prepare(),
-      installQuitAborted: () => { updateQuitHandoff?.abort() },
-      reportBackgroundError: (error) => runtimeLog.exception('updater', 'download.background.failed', error),
-      retryWithoutProxy: async () => {
-        await autoUpdater.netSession.setProxy({ mode: 'direct' })
-      },
-      // Bypassing the proxy is a per-request escape hatch, so the updater
-      // session goes back to the default resolution as soon as the request is
-      // over. 'system' is the mode a freshly created session already has.
-      restoreProxy: async () => {
-        await autoUpdater.netSession.setProxy({ mode: 'system' })
-      },
-      feedRoute: directUpdateFeed
-        ? {
-            prepare: () => useUpdateFeedLine(currentUpdateFeedLine()),
-            // 「自动」时直连那份没查通：换回包里那份当场再查一次。连不上一类的报给线路那边再查直连；
-            // 白名单 404 只是那一个文件的事，下次检查照样先走直连。
-            fallBack: (error) => {
-              if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
-              const failure = classifyDirectFeedFailure(error)
-              if (!failure) return false
-              if (failure.lineFailure) relayRouteController.reportFailure('solov', 'direct', failure.reason)
-              useUpdateFeedLine('primary')
-              runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在线路2上没走通，改走线路1再查一次', { reason: failure.reason })
-              return true
-            },
-          }
-        : undefined,
+      updateQuitHandoff: () => updateQuitHandoff,
+      setToolRouteRewriteMode: (mode) => { toolRouteRewriteMode = mode },
     })
-    // 更新目录上的服务状态文件：发布者在那里标「正在维护」，没登录的人也能看到。
-    // 只在更新开着的包里读（地址来自安装包自己的更新配置）；读不到当没在维护，
-    // 请求在后台走，不挡启动。Linux 上不是 .deb 装的那种更新关着，可维护提示照样
-    // 要让他看到。
-    const serviceStatusUrl = updaterService.getState().phase === 'disabled' && updateInstallMethod !== 'manual'
-      ? null
-      : locateServiceStatusUrl(updateConfigPath, { allowLocalHttp: !app.isPackaged })
-    // 型号表也记在本地（#1154 第 6 条）：开机那轮换下架型号时状态文件还没读成功，也按上次读成功的那份算。
-    const cliModelHintsStore = createCliModelHintsStore({ filePath: path.join(managerDataDirectory, 'cli-model-hints.json') })
-    const cliModelsAtLaunch = serviceStatusUrl ? cliModelHintsStore.read() : null
-    const serviceStatusMonitor = serviceStatusUrl
-      ? createServiceStatusMonitor({
-        // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
-        read: () => readServiceStatus({
-          url: directUpdateFeed && updateFeedLine === 'direct' ? directUpdateFeed.serviceStatusUrl : serviceStatusUrl,
-          fetch: chromiumSessionFetch(autoUpdater.netSession),
-        }),
-        onChange: (status) => {
-          updaterService.setServiceStatus(status)
-          toolRouteRewriteMode = status?.toolRouteRewrite === 'merge' ? 'merge' : 'targeted'
-          runtimeLog.log('info', 'updater', 'service-status.changed', status?.maintenance ? '服务状态文件：正在维护' : '服务状态文件：没在维护', {
-            maintenance: Boolean(status?.maintenance),
-            toolRouteRewrite: toolRouteRewriteMode,
-            ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
-            ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
-          })
-          // 读成功的才记，没写型号表的那次记成没有；没读到（null）不动记下的那份。
-          if (status) {
-            cliModelHintsStore.write(status.cliModels ?? null).catch((cause: unknown) => {
-              runtimeLog.exception('updater', 'cli-models.save-failed', cause)
-            })
-          }
-        },
-      })
-      : null
-    serviceStatusMonitor?.start()
     // 分组对照跟着服务状态文件走：正在读就等这一次读完，不为它另发请求；这次没读到就用上一次读成功的那份。
     async function readAccountGroupHints(): Promise<AccountGroupHints | null> {
       if (!serviceStatusMonitor) return null
@@ -2160,25 +1370,6 @@ if (!hasSingleInstanceLock) {
       if (!serviceStatusMonitor) return null
       await serviceStatusMonitor.settled()
       return resolveCliModelHints(serviceStatusMonitor.lastKnown(), cliModelsAtLaunch)
-    }
-    runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
-      enabled: updaterService.getState().phase !== 'disabled',
-      localBuild,
-      unsignedChannel,
-      ...(updateInstallMethod ? { installMethod: updateInstallMethod } : {}),
-      signatureVerification: unsignedChannel ? 'none' : 'strict',
-      requestGuard: updateRequests !== null,
-      updateFeedRoute: directUpdateFeed ? updateFeedLine : 'packaged',
-      // 开机时有没有上次记下的撤回名单和分批放量：状态文件读不到时，客服靠这一项看出还拦着没有。
-      storedReleaseGuard: releaseGuardAtLaunch !== null,
-    })
-    if (unsignedChannel) {
-      runtimeLog.log(
-        'warn',
-        'updater',
-        'channel.unsigned',
-        '本机为未签名更新通道，安装包签名未校验；下载后强制校验安装包 SHA-512，是否自动下载与安装跟随「自动更新」开关',
-      )
     }
     let periodicUpdateTimer: NodeJS.Timeout | null = null
     let applicationTray: ApplicationTrayController | null = null
@@ -2223,68 +1414,7 @@ if (!hasSingleInstanceLock) {
       if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
       window.webContents.send(ipcEventChannels[event], payload)
     }
-    // 客服收到反馈报告的第一句总是「你的工具是什么版本、怎么装的、配置指向哪」。
-    // 这几行就答这三件事：只读上一次扫描留下的快照（latestTraySystem），不为了
-    // 生成一份报告再发一轮探测；配置按用户当前所在的站点对账（同上面的
-    // checkConnection），否则换过站的用户会被告知一份好配置「没指向当前账号」。
-    runtimeLog.attachEnvironmentDescriber(async () => {
-      // 「配置指向哪」对的是写进工具配置的那条（工具线路）。
-      const site = toolRouting.resolve(systemService.readStoredConfig().relaySiteId)
-      return buildFeedbackEnvironmentLines({
-        clis: latestTraySystem?.clis ?? null,
-        readConfig: (provider) => inspectProviderConfig(
-          provider,
-          rootedOptions.system.providerRoots,
-          site.providerBaseUrls,
-        ),
-        // 三个外部客户端同样只读上一次检测留下的快照：生成一份报告不该再去跑
-        // 一轮 PowerShell 盘点。没检测过时那三行写「未能读取」。
-        externalClients: systemService.getLastExternalClients(),
-      })
-    })
-    // 「运行环境」段：系统里的 Node / npm / Python / Git、Codex 桌面端、网络位置
-    // 同样只读上一次扫描的快照；其余几行是进程本来就知道的路径与区域设置，
-    // 不起任何探测。
-    runtimeLog.attachHostDescriber(async () => {
-      let managedDirectory: string | null = null
-      try {
-        managedDirectory = managedCliRoot(process.env, process.platform)
-      } catch {
-        // ProgramData 解析不出来时这一行不出，报告照常生成。
-      }
-      return buildFeedbackRuntimeLines({
-        snapshot: pickFeedbackRuntimeSnapshot(latestTraySystem),
-        platform: process.platform,
-        mac: process.platform === 'darwin'
-          ? { systemVersion: process.getSystemVersion(), appArch: process.arch, translated: app.runningUnderARM64Translation }
-          : null,
-        executionMode: process.platform === 'win32' ? windowsCliExecutionMode : null,
-        executionProbeFailure: windowsCliExecution.probeFailure?.reason ?? null,
-        certificateTrust: latestDiagnostics?.items.find((item) => item.code === 'CERTIFICATE_TRUST')?.summary ?? null,
-        relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
-        toolRoute: resolveFeedbackToolRoute(toolRouting, systemService.readStoredConfig().relaySiteId),
-        toolRouteCertificate: toolRouting.resolve(systemService.readStoredConfig().relaySiteId).id === 'solov' ? toolRouteController.certificateFailure() : null,
-        appDirectory: path.dirname(app.getPath('exe')),
-        dataDirectory: managerDataDirectory,
-        managedDirectory,
-        locale: app.getLocale(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      })
-    })
-    // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有
-    // 了，没必要再让他截图发过来。只读上一次的结果，生成报告不重跑自检、不发
-    // 网络请求。
-    runtimeLog.attachSelfCheckDescriber(async () => buildFeedbackSelfCheckLines({
-      report: latestDiagnostics,
-      readConnection: (provider) => latestConnectionChecks.get(provider) ?? null,
-      now: new Date(),
-      // 诊断结论本身不该带 Key，但这份报告是要发到客服群里的，所以跟诊断导出
-      // 过同一遍脱敏（I13）。
-      redact: (value) => redactDiagnosticText(value, {
-        ...rootedOptions.diagnosticExport,
-        sensitiveValues: sensitiveKeyValues(),
-      }),
-    }))
+    diagnostics.attachFeedbackDescribers({ latestTraySystem: () => latestTraySystem })
     const desktopNotifications = createDesktopNotificationController({
       readEnabled: () => systemService.readStoredConfig().desktopNotifications !== false,
       focusMainWindow: () => {
@@ -2460,44 +1590,11 @@ if (!hasSingleInstanceLock) {
     registerApplicationProtocol(urlPolicy)
     const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
 
-    // Both realms commit accounts through the OS-backed encrypted vault. When
-    // encryption is unavailable, Windows and macOS reject login; Linux signs in
-    // for this run only (resolveCredentialPersistence). Existing files are never
-    // touched either way.
-    const safeStorageBackend = inspectSafeStorageBackend(safeStorage)
-    const credentialPersistence = resolveCredentialPersistence(process.platform, safeStorageBackend)
-    if (linuxPasswordStore) {
-      // The detail key avoids "password": the log sanitizer would redact the value.
-      runtimeLog.log('info', 'account', 'session.password-store', '桌面环境不在 Chromium 认识的名单里，已改用系统自带的密码保管', {
-        selectedStore: linuxPasswordStore,
-        backend: safeStorageBackend,
-      })
-    }
-    if (safeStorageBackend !== 'ok') {
-      runtimeLog.log(
-        'warn',
-        'account',
-        'session.persist.unavailable',
-        credentialPersistence === 'session-only'
-          ? '这台电脑没法安全保存登录，本次登录只留在内存里，关掉软件后要重新登录；已有账号文件不动'
-          : '系统未提供安全加密存储，请恢复系统凭据服务后登录；已有账号文件将保留',
-        { backend: safeStorageBackend, persistence: credentialPersistence },
-      )
-    }
-    const accountSessionStore = new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat'), safeStorage)
-    const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
-    const vault = credentialPersistence === 'session-only' ? createSessionRealmAccountVault() : createFileRealmAccountVault(managerDataDirectory, safeStorage, {
-      // 重建之后用户看到的是「记住的账号没了」，只记日志等于让他自己猜，所以同时
-      // 给界面发一条（一次启动只发一条，备份文件名不跟着走）。
-      onRecovered: createVaultRecoveryNotifier({
-        log: (backupFileName) => runtimeLog.log('warn', 'account', 'vault.recovered',
-          '本地登录记录无法解密，已保留原密文备份并重建账号存储', { reason: 'decrypt', backupFileName }),
-        emit: () => {
-          if (!managedMainWindow || managedMainWindow.isDestroyed()) return
-          if (managedMainWindow.webContents.isDestroyed()) return
-          managedMainWindow.webContents.send(ipcEventChannels.onAccountVaultRecovered, undefined)
-        },
-      }),
+    const { credentialPersistence, accountSessionStore, savedAccounts, vault } = createAccountStorage({
+      managerDataDirectory,
+      runtimeLog,
+      linuxPasswordStore,
+      mainWindow: () => managedMainWindow,
     })
     const accountIdentity = createAccountIdentityTracker()
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
@@ -2507,63 +1604,10 @@ if (!hasSingleInstanceLock) {
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
-    // 系统代理活着却不转发时（代理软件换了线路、规则把账号服务挡了），账号请求只会
-    // 一直超时。客户端在网络层失败后来问这一句，和登没登录无关；所以兜底必须建在
-    // 账号服务之前，开机恢复登录的头一个请求就用得上。
-    // 改直连的是这个客户端连的站点：切账号时另一个站点的登录框也在发请求，它不一定是
-    // 当前选中的那个。
-    async function recoverAccountRequestOffProxy(siteId: RealmAccountSiteId, failure: NewApiRetryOffProxyFailure): Promise<boolean> {
-      const siteProbeUrl = relayStatusProbeUrl(relayRouting.resolve(siteId))
-      const retry = await proxyBypass.recoverFailedRequest(failure.startedAt, failure.reason, siteProbeUrl)
-      if (retry) {
-        // 直连那一路刚交还给系统代理、或者代理只断了一下又连得上时，重发走的是系统代理。
-        const scope = proxyBypass.active() ? 'app' : proxyBypass.siteDirect() ? 'site' : 'proxy'
-        runtimeLog.log('info', 'network', 'proxy-bypass.account-retry', scope !== 'proxy'
-          ? '账号请求经系统代理没走通，已改直接联网'
-          : failure.reason === 'proxy'
-            ? '账号请求撞上系统代理断了一下，代理又连得上了，经系统代理重发'
-            : '账号请求直接联网没走通，已改回跟随系统代理', {
-          reason: failure.reason,
-          method: failure.method,
-          scope,
-        })
-      }
-      return retry
-    }
+    const createAccountClient = createAccountClientFactory({ vault, routes: networkRoutes, runtimeLog })
     const accounts = createRealmAccountService({
       vault,
-      createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
-        // 历史账号的客户端写死的是默认线路的地址（sub2api-relay-backend.ts 不改），走直连靠请求这一层换地址。
-        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedAccountRelayFetch, onSessionChange,
-          onCredentialRotation: (saved) => vault.updateSession(saved) })
-        let client: ReturnType<typeof createNewApiClient>
-        function saved(): RealmSavedAccount | null {
-          const persisted = client.getPersistableSession()
-          const profile = client.getSessionState().account
-          return persisted && profile ? parseRealmSavedAccount({ version: 2, realmId: 'xm-account',
-            origin: 'https://xm.solov.cc', userId: String(persisted.userId), username: profile.username,
-            credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
-        }
-        // 客户端认的一直是默认线路的地址（登录记录、凭据都按它记），这会儿走哪条线路由请求这一层换。
-        client = createNewApiClient({ baseUrl: requireRelaySite(siteId).accountBaseUrl, fetchImpl: routedAccountFetch,
-          retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
-          onCredentialRotation: async (persisted) => {
-            const revision = client.getSessionRevision()
-            const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
-            const existing = await vault.get(owner)
-            if (client.getSessionRevision() !== revision) throw new Error('账号会话已变更')
-            if (existing) await vault.updateSession(parseRealmSavedAccount({ ...existing,
-              credential: { kind: 'new-api', cookies: persisted.cookies } }))
-          },
-          onSessionChange: () => onSessionChange(saved()) })
-        return { client, getSavedAccount: saved, restore: async (record) => {
-          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与当前账号不匹配')
-          return client.restoreSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
-        }, endSavedSession: async (record) => {
-          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') return
-          await client.endPersistedServerSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
-        } }
-      },
+      createClient: createAccountClient,
       // The old files can only be read with the OS key; in session-only mode
       // there is nothing to import them into anyway.
       legacy: credentialPersistence === 'durable' ? { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),
@@ -2577,6 +1621,7 @@ if (!hasSingleInstanceLock) {
         previous?.imageService.cancelAll()
         previous?.canvasImageService.cancelAll()
         previous?.videoService.cancelAll()
+        previous?.chatVideoService.cancelAll()
         previous?.canvasRuns.shutdown()
         paymentWindow.destroy()
         // 补设置那次还在本机看工具开没开的，不陪它等 PowerShell 跑完；叫停管到下面这段等完，
@@ -2585,6 +1630,7 @@ if (!hasSingleInstanceLock) {
         try {
           await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
             previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
+            previous.chatVideoService.whenIdle(),
             previous.canvasRuns.whenIdle()] : [])])
         } finally {
           resumeTemplateFill?.()
@@ -2602,6 +1648,7 @@ if (!hasSingleInstanceLock) {
           business.imageService.cancelAll()
           business.canvasImageService.cancelAll()
           business.videoService.cancelAll()
+          business.chatVideoService.cancelAll()
           business.canvasRuns.shutdown()
         }
         latestTrayBalance = null
@@ -2619,7 +1666,11 @@ if (!hasSingleInstanceLock) {
             await current.canvasRuns.initializeUser(userId)
             await current.canvasRuns.reconcileAssets(userId)
           }).catch((error) => runtimeLog.exception('canvas', 'runtime.initialize.failed', error))
-          if (siteId === 'solov') void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
+          if (siteId === 'solov') {
+            void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
+            // 对话页、视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
+            void current.chatVideoService.resumeUser(userId).catch((error) => runtimeLog.exception('ai-chat', 'video.resume.failed', error))
+          }
         }
       },
     })
@@ -2646,414 +1697,21 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
     }
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
-    // Each realm moves its own subtree once per launch; a second realm object for
-    // the same subtree must not start a second walk over files already moving.
-    const aiOutputMigrations = new Set<string>()
-    function migrateAiOutputOnce(from: string, to: string, mergeMetadata: (userId: number, content: string) => Promise<void>): void {
-      if (aiOutputMigrations.has(from)) return
-      aiOutputMigrations.add(from)
-      void migrateLegacyAiOutput(from, to, { mergeMetadata }).then((result) => {
-        if (!result.moved && !result.kept && !result.failed) return
-        // Counts only: support needs to know whether anything stayed behind, not
-        // where the user's files are (I13).
-        runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', 'asset.output.migrated', '老版本的 AI 作品已搬到新的保存位置', { ...result })
-      }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
-    }
-    function createBusiness(siteId: RealmAccountSiteId) {
-      // AI 工作区的请求同样按默认线路的地址发，走哪条线路由 routedRelayFetch 换（「自动」会在运行中换线路）。
-      const definition = requireSiteRuntimeDefinition(siteId)
-      const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
-      const accountService = createRealmServiceDispatch(() => {
-        if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')
-        return accounts.client
-      })
-      const onAiRequestStarted = createAccountUsageTracker({
-        identities: createActiveIdentityReader(definition, {
-          getSessionState: () => accountService.getSessionState(),
-          getSessionRevision: () => accountService.getSessionRevision!(),
-        }),
-        assertReady: accounts.assertReady,
-        emit: (event) => {
-          if (!managedMainWindow || managedMainWindow.isDestroyed()) return
-          if (managedMainWindow.webContents.isDestroyed()) return
-          managedMainWindow.webContents.send(ipcEventChannels.onAccountUsageChanged, event)
-        },
-      })
-      const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
-      const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId, credentialPersistence)
-      const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage, credentialPersistence, siteId)
-      // AI 工作区查模型是星芒自己的请求：「自动」时直连没走通当场改走默认线路。
-      const chatCredentials = createChatCredentialCoordinator({ accountService, keyStore: chatKeyStore, modelService: {
-        fetchAvailableModels: (apiKey, options) => systemService.fetchAvailableModels(apiKey, { ...options, routed: true }),
-      }, loadAccountGroupHints: readAccountGroupHints })
-      // 「文档」不让写时改存到主目录下（ai-output-location.ts），检查页照实说。
-      const aiOutputPlacement = chooseAiOutputRoot({
-        isPackaged: app.isPackaged,
-        projectRoot: path.join(__dirname, '..'),
-        documentsDirectory: readDocumentsDirectory(),
-        location: { platform: process.platform, home: os.homedir(), env: process.env },
-        scope: (root) => roots.assetOutputDirectory(root),
-      })
-      const aiOutputRoot = aiOutputPlacement.root
-      if (aiOutputPlacement.movedFromDocuments) {
-        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.moved-from-documents', '「文档」不让写，AI 作品改存到个人文件夹', {
-          earlierWorksLeftInDocuments: aiOutputPlacement.earlierWorksLeftInDocuments,
-        })
-      }
-      if (aiOutputPlacement.earlierWorksLeftInSyncedDocuments) {
-        runtimeLog.log('info', 'ai-chat', 'asset.output-directory.earlier-works-in-synced-documents', '「文档」开了云盘同步，以前的 AI 作品还在「文档」里', {
-          cloud: aiOutputPlacement.earlierWorksLeftInSyncedDocuments,
-        })
-      }
-      // 以前这六个菜单出错时一行日志都不记，客服事后查不到；错误框里只说中文（assetMenuFailureDialog）。
-      function showAssetMenuFailure(source: 'ai-chat' | 'canvas', mediaType: AssetMenuMediaType, action: string, error: unknown): void {
-        runtimeLog.exception(source, 'asset.menu.failed', error, { mediaType, action })
-        const content = assetMenuFailureDialog(mediaType, error)
-        dialog.showErrorBox(content.title, content.message)
-      }
-      const assetStore = new AiAssetStore({
-        outputRoot: aiOutputRoot,
-        // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
-        // 画布项目：新项目的作品存在用户自己选的文件夹里。
-        unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
-        trustedProxyFetchImpl: sessionFetch,
-        nativeOperations: {
-          copyImage: (bytes) => {
-            const image = nativeImage.createFromBuffer(bytes)
-            if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
-            clipboard.writeImage(image)
-          },
-          selectSavePath: async (suggestedFileName) => {
-            const result = await dialog.showSaveDialog({
-              title: '图片另存为',
-              defaultPath: suggestedFileName,
-              filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
-            })
-            return result.canceled ? null : result.filePath ?? null
-          },
-          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-          showContextMenu: (items) => {
-            const menu = Menu.buildFromTemplate(items.map((item) => ({
-              id: item.id,
-              label: item.label,
-              click: () => {
-                void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'image', item.id, error))
-              },
-            })))
-            menu.popup()
-          },
-        },
-      })
-      // Create the output location at startup and prove it accepts a file, so a
-      // location that cannot be written shows up in the log and on the check page
-      // (AI_OUTPUT) before anyone pays for a generation. Every paid request probes
-      // again, and the write path is still checked by AiAssetStore for each asset.
-      void assetStore.assertWritable().catch((error) => {
-        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 作品保存位置写不进去', {
-          // The user-facing message only says "写不进去"; the log keeps the OS
-          // reason (EACCES, EROFS, ENOSPC …) that support needs.
-          reason: error instanceof Error && error.cause instanceof Error ? error.cause.message : String(error),
-        })
-      })
-      const videoAssets = new AiVideoAssetStore({
-        outputRoot: aiOutputRoot,
-        nativeOperations: {
-          selectSavePath: async (suggestedFileName) => {
-            const result = await dialog.showSaveDialog({
-              title: '视频另存为', defaultPath: suggestedFileName,
-              filters: [{ name: '视频', extensions: ['mp4'] }],
-            })
-            return result.canceled ? null : result.filePath ?? null
-          },
-          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-          showContextMenu: (items) => {
-            Menu.buildFromTemplate(items.map((item) => ({
-              id: item.id, label: item.label,
-              click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'video', item.id, error)) },
-            }))).popup()
-          },
-        },
-      })
-      const audioAssets = new AiAudioAssetStore({
-        outputRoot: aiOutputRoot,
-        nativeOperations: {
-          selectSavePath: async (suggestedFileName) => {
-            const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
-            return result.canceled ? null : result.filePath ?? null
-          },
-          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-          showContextMenu: (items) => {
-            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('ai-chat', 'audio', item.id, error)) } }))).popup()
-          },
-        },
-      })
-      const assetMetadata = new AiAssetMetadataStore({ outputRoot: aiOutputRoot })
-      // 老版本存在可执行文件旁边的 output 里。画布、聊天记录只按作品编号找文件，
-      // 搬的时候布局不变，老作品搬完照样能打开；搬的过程在后台，不拖慢启动。
-      // 元数据合并交给正在用的这个 store，和搬家期间的收藏、新作品写入排同一个队。
-      const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
-      if (legacyAiOutputRoot) {
-        migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content))
-      }
-      // Permanent deletion hands the file to the OS recycle bin rather than
-      // unlinking it. The bytes are the user's artwork; the last recoverable copy
-      // should not depend on this program being right.
-      const trashItem = (filePath: string) => shell.trashItem(filePath)
-      const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
-      const canvasProjects = new CanvasProjectStore(roots.canvasProjectsDirectory)
-      const createProjectAssetContext = (outputRoot: string) => {
-        const images = new AiAssetStore({
-          outputRoot,
-          unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
-          trustedProxyFetchImpl: sessionFetch,
-          nativeOperations: {
-            copyImage: (bytes) => {
-              const image = nativeImage.createFromBuffer(bytes)
-              if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
-              clipboard.writeImage(image)
-            },
-            selectSavePath: async (suggestedFileName) => {
-              const result = await dialog.showSaveDialog({
-                title: '图片另存为', defaultPath: suggestedFileName,
-                filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
-              })
-              return result.canceled ? null : result.filePath ?? null
-            },
-            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-            showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({
-                id: item.id, label: item.label,
-                click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'image', item.id, error)) },
-              }))).popup()
-            },
-          },
-        })
-        const videos = new AiVideoAssetStore({
-          outputRoot,
-          nativeOperations: {
-            selectSavePath: async (suggestedFileName) => {
-              const result = await dialog.showSaveDialog({ title: '视频另存为', defaultPath: suggestedFileName, filters: [{ name: '视频', extensions: ['mp4'] }] })
-              return result.canceled ? null : result.filePath ?? null
-            },
-            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-            showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'video', item.id, error)) } }))).popup()
-            },
-          },
-        })
-        const audios = new AiAudioAssetStore({
-          outputRoot,
-          nativeOperations: {
-            selectSavePath: async (suggestedFileName) => {
-              const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
-              return result.canceled ? null : result.filePath ?? null
-            },
-            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-            showContextMenu: (items) => {
-              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => showAssetMenuFailure('canvas', 'audio', item.id, error)) } }))).popup()
-            },
-          },
-        })
-        return createCanvasProjectAssetContext(images, videos, audios, new AiAssetMetadataStore({ outputRoot }), trashItem)
-      }
-      const canvasProjectAssets = new CanvasProjectAssetManager({
-        realmId: definition.realmId,
-        projects: canvasProjects,
-        global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata, trashItem),
-        create: createProjectAssetContext,
-        onMetadataError: (error, context) => runtimeLog.log(
-          'warn',
-          'canvas',
-          'asset.source.persist.failed',
-          '生成素材已保存，但来源信息保存失败',
-          { ...context, reason: error instanceof Error ? error.message : String(error) },
-        ),
-      })
-      const assetThumbnails = createAssetThumbnailService({
-        store: new AssetThumbnailStore({ cacheRoot: roots.assetThumbnailsDirectory }),
-        renderer: createNativeThumbnailRenderer(),
-        sources: {
-          // Must resolve through the project asset manager, not the global store.
-          // Canvas projects keep their media under the project workspace, so
-          // deriving from `output/` alone left every project asset without a
-          // thumbnail and the tray showed a placeholder for all of them.
-          readImage: async (userId, assetId) => {
-            const owned = await canvasProjectAssets.readOwned(userId, assetId, 'image')
-            return { bytes: owned.bytes, mimeType: owned.asset.mimeType }
-          },
-          resolveVideoPath: (userId, assetId) => canvasProjectAssets.resolveOwnedFilePath(userId, assetId, 'video'),
-        },
-        onFailure: (assetId, reason) => runtimeLog.log(
-          'warn',
-          'canvas',
-          'asset.thumbnail.failed',
-          '素材缩略图生成失败，已回退到占位图',
-          { assetId, reason },
-        ),
-      })
-      const chatAttachments = createChatAttachmentService({
-        store: assetStore,
-        codec: nativeChatImageCodec,
-        pickFiles: async () => {
-          const result = await dialog.showOpenDialog({
-            title: '选择要发给 AI 的图片',
-            properties: ['openFile', 'multiSelections'],
-            filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
-          })
-          return result.canceled ? [] : result.filePaths
-        },
-        readClipboardImage: () => {
-          const image = clipboard.readImage()
-          return image.isEmpty() ? null : image.toPNG()
-        },
-      })
-      const assetProtocol = createAiAssetProtocolHandler({
-        assets: canvasProjectAssets,
-        identities: createActiveIdentityReader(definition, { getSessionState: () => accountService.getSessionState(),
-          getSessionRevision: () => accountService.getSessionRevision!() }),
-        thumbnails: assetThumbnails,
-      })
-      const chatService = createAiChatService({
-        onRequestStarted: onAiRequestStarted,
-        readChatImage: (userId, assetId) => chatAttachments.readDataUri(userId, assetId),
-        baseUrl: definition.aiBaseUrl,
-        backend: definition.backend,
-        credentialCoordinator: chatCredentials,
-        fetchImpl: routedRelayFetch,
-        emit: (senderId, event) => {
-          const sender = BrowserWindow.getAllWindows()
-            .map((window) => window.webContents)
-            .find((contents) => contents.id === senderId && !contents.isDestroyed())
-          if (!sender) throw new Error('AI聊天窗口已关闭')
-          if (event.type === 'delta') {
-            if (event.content) sender.send(ipcEventChannels.onAiChatStream, {
-              requestId: event.requestId,
-              type: 'content',
-              content: event.content,
-            })
-            if (event.reasoning) sender.send(ipcEventChannels.onAiChatStream, {
-              requestId: event.requestId,
-              type: 'reasoning',
-              content: event.reasoning,
-            })
-            return
-          }
-          if (event.type === 'error') sender.send(ipcEventChannels.onAiChatStream, {
-            requestId: event.requestId,
-            type: 'error',
-            code: event.code,
-            message: event.message,
-          })
-          else sender.send(ipcEventChannels.onAiChatStream, {
-            requestId: event.requestId,
-            type: event.type,
-          })
-        },
-        log: (entry) => runtimeLog.log(
-          entry.status === 'error' ? 'warn' : 'debug',
-          'chat',
-          `stream.${entry.status}`,
-          `AI聊天流已${entry.status === 'complete' ? '完成' : '结束'}`,
-          entry,
-        ),
-      })
-      runtimeLog.log('info', 'chat', 'network.ready', 'AI聊天网络栈已就绪', {
-        transport: 'electron-net',
-        responseHeaderTimeoutMs: AI_CHAT_STREAM_LIMITS.connectionTimeoutMs,
-      })
-      const imageService = createAiImageService({
-        onRequestStarted: onAiRequestStarted,
-        fetchImpl: routedRelayFetch,
-        baseUrl: definition.aiBaseUrl,
-        backend: definition.backend,
-        credentials: chatCredentials,
-        assets: assetStore,
-      })
-      const canvasImageService = createAiImageService({
-        onRequestStarted: onAiRequestStarted,
-        fetchImpl: routedRelayFetch,
-        baseUrl: definition.aiBaseUrl,
-        backend: definition.backend,
-        credentials: chatCredentials,
-        assets: {
-          prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
-          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
-          storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
-          storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
-          readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
-        },
-      })
-      const videoTasks = new AiVideoTaskStore({
-        rootDirectory: roots.canvasVideoTasksDirectory,
-      })
-      const videoService = createAiVideoService({
-        fetchImpl: routedRelayFetch,
-        baseUrl: definition.aiBaseUrl,
-        credentials: chatCredentials,
-        tasks: videoTasks,
-        assets: {
-          prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
-          assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
-          storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
-          readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
-          readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
-        },
-      })
-      if (siteId === 'solov-api') {
-        videoService.generate = async () => { throw new Error('当前账号暂不支持视频生成') }
-        videoService.resumeVideoTask = async () => { throw new Error('当前账号暂不支持视频生成') }
-      }
-      const canvasRunStore = new CanvasRunStore({
-        rootDirectory: roots.canvasRuntimeDirectory,
-        assets: canvasProjectAssets,
-      })
-      const canvasPromptPresets = new CanvasPromptPresetStore({
-        rootDirectory: path.join(roots.rootDirectory, 'canvas-content'),
-      })
-      const canvasRuns = createCanvasRunService({
-        store: canvasRunStore,
-        executors: createCanvasNodeExecutors({
-          imageService: canvasImageService,
-          videoService,
-          assets: canvasProjectAssets,
-          completeText: {
-            completeOnce: (input) => chatService.completeOnce({
-              group: input.group,
-              model: input.model,
-              messages: [
-                { role: 'system', content: input.system },
-                { role: 'user', content: input.user },
-              ],
-              signal: input.signal,
-            }),
-          },
-        }),
-      })
-      return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
-        audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
-    }
-    const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
-    type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
-    type CanvasRunUnsubscribe = ReturnType<ReturnType<typeof createCanvasRunService>['subscribe']>
-    const canvasRunSubscriptions = new Set<{
-      listener: CanvasRunListener
-      removers: Map<RealmAccountSiteId, CanvasRunUnsubscribe>
-    }>()
+    const { businesses, ensureBusiness, subscribeCanvasRuns } = createRealmBusinesses({
+      managerDataDirectory,
+      projectRoot: path.join(__dirname, '..'),
+      accounts,
+      mainWindow: () => managedMainWindow,
+      credentialPersistence,
+      systemService,
+      readAccountGroupHints,
+      readDocumentsDirectory,
+      runtimeLog,
+      sessionFetch,
+      routedRelayFetch,
+    })
     // Construct each realm on first access. The initial realm is still the
     // account service's default until restoreActive completes below.
-    const ensureBusiness = (siteId: RealmAccountSiteId) => {
-      const existing = businesses.get(siteId)
-      if (existing) return existing
-      const created = createBusiness(siteId)
-      businesses.set(siteId, created)
-      // A renderer subscription can outlive a realm switch. Attach it to a
-      // lazily-created realm as soon as that realm becomes available.
-      for (const subscription of canvasRunSubscriptions) {
-        subscription.removers.set(siteId, created.canvasRuns.subscribe(subscription.listener))
-      }
-      return created
-    }
     ensureBusiness(accounts.getSiteId())
     const currentBusiness = () => ensureBusiness(accounts.getSiteId())
     const accountCredentialStore = createRealmServiceDispatch(() => currentBusiness().accountCredentialStore)
@@ -3077,20 +1735,11 @@ if (!hasSingleInstanceLock) {
     const imageService = createRealmServiceDispatch(() => currentBusiness().imageService)
     const canvasImageService = createRealmServiceDispatch(() => currentBusiness().canvasImageService)
     const videoService = createRealmServiceDispatch(() => currentBusiness().videoService)
+    const chatVideoService = createRealmServiceDispatch(() => currentBusiness().chatVideoService)
     const canvasRuns = createRealmServiceDispatch(() => currentBusiness().canvasRuns)
     // Run subscriptions outlive a selected realm, so keep them attached to
     // every store, including stores created lazily after the initial render.
-    canvasRuns.subscribe = (listener) => {
-      const subscription = { listener, removers: new Map<RealmAccountSiteId, CanvasRunUnsubscribe>() }
-      for (const [siteId, business] of businesses) {
-        subscription.removers.set(siteId, business.canvasRuns.subscribe(listener))
-      }
-      canvasRunSubscriptions.add(subscription)
-      return () => {
-        if (!canvasRunSubscriptions.delete(subscription)) return
-        for (const unsubscribe of subscription.removers.values()) unsubscribe()
-      }
-    }
+    canvasRuns.subscribe = subscribeCanvasRuns
     protocol.handle('xingmang-asset', async (request) => {
       try { return await accountWork.run(() => currentBusiness().assetProtocol(request)) }
       catch { return new Response(null, { status: 401, headers: { 'Cache-Control': 'no-store' } }) }
@@ -3246,70 +1895,11 @@ if (!hasSingleInstanceLock) {
       if (restored || accounts.stalledAccount() || !accountStartupGate.releasedEarly()) return
       sendToMainWindow('onAccountSessionChanged', accounts.client.getSessionState())
     })
-    let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
-    // 只看读文件这一步：后面建加速服务失败不是文件坏了，不能叫客户去翻杀毒软件。
-    let accelerationBundleDamaged = false
-    try {
-      const read = await accelerationConfigRead
-      if (!read.ok) {
-        accelerationBundleDamaged = app.isPackaged
-        throw read.error
-      }
-      const accelerationConfig = read.config
-      if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
-        config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
-        // cause 只有系统代理那一步才有：被拒、没去问、别的程序改过、没生效……2026-10-18 客户 Mac
-        // 一直弹密码框时日志里只有 proxy-restore，第一次为什么没成一个字都查不到。
-        onDiagnostic: (stage, cause) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
-          '加速停止尚未完成，将保留恢复记录并重试', { stage, ...(cause ? { cause } : {}) }),
-        onRecoveryWithheld: (cause) => runtimeLog.log('warn', 'network', 'acceleration.recover.withheld',
-          cause === 'declined' ? '上次加速的网络设置没改回：用户在密码框上点了取消，等他点开启或停止时再问'
-            : '上次加速的网络设置没改回：这一次不弹密码框，等用户点开启或停止时再问', { cause }),
-        // A failed connect resolves with an error-carrying state rather than
-        // rejecting, so the IPC layer records it as a success. Without this the
-        // only trace of a machine that can never connect is a sentence on
-        // screen that means the same thing for every possible cause.
-        onStartDiagnostic: (stage) => runtimeLog.log('error', 'network', 'acceleration.start.failed',
-          `加速连接失败：${accelerationStartFailureDescriptions[stage]}`, { stage }),
-        // yoyo 2026-09-20 真机反馈：本地 VPN 与加速互抢系统代理时，下载到底走了哪条线
-        // 事后完全看不出来。记录检测到什么，以及用户是否选择了「仍然连接」。
-        onConflictDiagnostic: (kind, ignored) => runtimeLog.log('warn', 'network',
-          ignored ? 'acceleration.conflict.ignored' : 'acceleration.conflict.detected',
-          `${ignored ? '用户选择忽略网络冲突继续连接' : '开始加速前检测到网络冲突'}：${accelerationConflictDescriptions[kind]}`,
-          { kind, ignored }),
-        // 启动辅助进程这一步以前把 errno 和原文一起吞掉，只留一句「本机加速进程
-        // 启动失败。」。2026-09-22 客户机卡在临时目录上，就是因此只能靠反编译
-        // 压缩产物才定位到。原因与底层错误都留在这里（日志会脱敏路径，I13）。
-        onHelperFailure: (reason, error) => runtimeLog.exception('network', 'acceleration.helper.failed', error, {
-          reason,
-          ...(accelerationProxyFailureCause(error) === 'other' ? {} : { cause: accelerationProxyFailureCause(error) }),
-          // errno 单列一格：光看 message 分不清「目录建不出来」报的是没空间、
-          // 没权限还是路径不存在，而这恰恰是客服要问用户的下一句话。
-          ...(typeof (error as NodeJS.ErrnoException | null)?.code === 'string' ? { code: (error as NodeJS.ErrnoException).code } : {}),
-          detail: accelerationFailureMessages[reason],
-        }),
-        // 加速中内核或辅助进程自己没了：网络设置由辅助进程（或宿主重拉的那一个）
-        // 先改回去，这里负责读一次状态让各处跟上，并告诉用户网络现在是什么样。
-        onRuntimeExited: () => accelerationInterruption?.runtimeExited(),
-        onHelperExited: (recovered) => accelerationInterruption?.helperExited(recovered),
-        onProxyRecoveryRetry: (attempt, recovered) => runtimeLog.log(recovered ? 'info' : 'warn', 'network', 'acceleration.recover.retry',
-          recovered ? '重试后已把网络设置改回去' : '重试仍未能把网络设置改回去', { attempt }),
-        // 登录后读一次加速状态就会拉起整份 Electron 辅助进程；从不用加速的人
-        // 不该一直背着它。两分钟没人用、又确认没在加速就退，下次用到再拉。
-        idleExitMs: 120_000,
-        ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
-      })
-    } catch {
-      runtimeLog.log('warn', 'network', 'acceleration.config.invalid', '本机加速资源校验未通过')
-    }
-    // The worker restores a proxy lease left by a crash as part of its own
-    // initialization, and it only starts when a request reaches it. Every other
-    // request carries an account scope, so a machine left pointing at a dead
-    // acceleration port would never recover: the dead proxy blocks the sign-in
-    // that would have produced the first scoped request.
-    if (developmentAcceleration) void developmentAcceleration.recover().catch((error) => {
-      const cause = accelerationProxyFailureCause(error)
-      runtimeLog.exception('network', 'acceleration.recover.failed', error, cause === 'other' ? undefined : { cause })
+    const { developmentAcceleration, accelerationBundleDamaged } = createAccelerationHost({
+      read: await accelerationConfigRead,
+      managerDataDirectory,
+      runtimeLog,
+      accelerationInterruption: () => accelerationInterruption,
     })
     readAccelerationAccountScope = () => {
       const state = accountService.getSessionState()
@@ -3317,68 +1907,22 @@ if (!hasSingleInstanceLock) {
       return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
     }
     accelerationDownloadRoutes = developmentAcceleration ?? null
-    function showAccelerationPage() {
-      if (managedMainWindow && !managedMainWindow.isDestroyed()) {
-        managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'acceleration')
-      }
-    }
-    // 时长快用完、以及用完自动断开的那一刻各发一条系统通知。放在主进程是因为
-    // 窗口缩到托盘之后渲染层的计时与轮询都停着，而那正是用户在打游戏的时候。
-    accelerationExpiry = createAccelerationExpiryNotice({
-      notify: (stage, eventKey) => hostNotifier()({
-        event: stage === 'expiring' ? 'accelerationExpiring' : 'accelerationExhausted',
-        eventKey,
-        onClick: showAccelerationPage,
-      }),
-      readState: (scope) => acceleration
-        ? acceleration.getAccelerationState(scope)
-        : Promise.reject(new Error('加速服务尚未就绪。')),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    const accelerationServices = createAccelerationServices({
+      developmentAcceleration,
+      accelerationBundleDamaged,
+      accelerationPreferences,
+      recheckAccelerationBundle,
+      routing: accelerationRouting,
+      readAccelerationAccountScope: () => readAccelerationAccountScope(),
+      runtimeLog,
+      mainWindow: () => managedMainWindow,
+      applicationTray: () => applicationTray,
     })
-    accelerationInterruption = createAccelerationInterruptionNotice({
-      notify: (outcome, eventKey) => hostNotifier()({
-        event: outcome === 'restored' ? 'accelerationInterrupted' : 'accelerationInterruptedUnrestored',
-        eventKey,
-        onClick: showAccelerationPage,
-      }),
-      readState: (scope) => acceleration
-        ? acceleration.getAccelerationState(scope)
-        : Promise.reject(new Error('加速服务尚未就绪。')),
-      getAccountScope: () => readAccelerationAccountScope(),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
-    acceleration = createAccelerationService({
-      backend: developmentAcceleration,
-      preferences: accelerationPreferences,
-      ...(accelerationBundleDamaged ? { bundleDamaged: { recheck: async () => {
-        const result = await recheckAccelerationBundle()
-        runtimeLog.log(result === 'repaired' ? 'info' : 'warn', 'network', 'acceleration.config.recheck',
-          result === 'repaired' ? '本机加速资源已恢复，重新打开软件后生效' : '本机加速资源仍未通过校验', { result })
-        return result
-      } } } : {}),
-      getAccountScope: () => readAccelerationAccountScope(),
-      onState: (state) => {
-        // 托盘与加速页同一口径：软件替他在后台连的那一次不显示（userAccelerationState）。
-        trayAcceleration?.observe(userAccelerationState(state))
-        accelerationExpiry?.observe(state)
-        accelerationInterruption?.observe(state)
-        codexDesktopAcceleration.observe(state)
-      },
-    })
-    // 加速页（IPC）和托盘看到的那一套：软件替他在后台连的那一次（打开 Codex 桌面端
-    // 时）在这里看不见，也停不掉（yoyo 2026-10-02）。主进程别的观察者读的仍是 acceleration。
-    const userAcceleration = createUserAccelerationApi(acceleration)
-    // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
-    // 落了盘的那一套，与打开 Codex 桌面端时自动连接同一口径。没有加速的平台（Linux
-    // 第一版）托盘上就不放这一行，不然只会一直「正在读取状态」。
-    trayAcceleration = platformCapabilitiesFor().acceleration === false ? null : createTrayAccelerationCoordinator({
-      getAccountScope: () => readAccelerationAccountScope(),
-      readState: (scope) => userAcceleration.getAccelerationState(scope),
-      connect: async (scope, state) => userAcceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state)),
-      disconnect: (scope) => userAcceleration.stopAcceleration(scope),
-      onChanged: () => applicationTray?.updateSnapshot(),
-      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-    })
+    accelerationExpiry = accelerationServices.accelerationExpiry
+    accelerationInterruption = accelerationServices.accelerationInterruption
+    acceleration = accelerationServices.acceleration
+    const { userAcceleration } = accelerationServices
+    trayAcceleration = accelerationServices.trayAcceleration
     // 睡着的那段不计免费时长；醒来看加速还在不在，不在了先恢复网络再提醒。
     if (developmentAcceleration) {
       const accelerationHost = developmentAcceleration
@@ -3405,8 +1949,21 @@ if (!hasSingleInstanceLock) {
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
     const shouldLogUpdateState = createUpdateStateLogFilter()
+    // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
+    const codexRemote = createCodexRemote({
+      managerDataDirectory,
+      runtimeLog,
+      fetch: chromiumSessionFetch(session.defaultSession),
+      appVersion: app.getVersion(),
+      homeDirectory: rootedOptions.system.providerRoots.userHome,
+      codexEnv: rootedOptions.codexExtensions.env,
+      providerRoots: rootedOptions.system.providerRoots,
+      windowsExecution: windowsCliExecution,
+      onStateChanged: (snapshot) => sendToMainWindow('onCodexRemoteStateChanged', snapshot),
+    })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration: userAcceleration,
+      codexRemote,
       realmAccounts: accounts,
       accountWork,
       accountCredentialsForSite: (siteId) => ensureBusiness(siteId).accountCredentialStore,
@@ -3433,6 +1990,8 @@ if (!hasSingleInstanceLock) {
       imageService,
       aiAssets: assetStore,
       chatAttachments,
+      videoService: chatVideoService,
+      videoAssets,
       chatHistory: chatHistoryStore,
       sessionsService,
       providerSessionsService,
@@ -3564,6 +2123,7 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('acceleration-notices', () => {
       accelerationExpiry?.dispose()
       codexDesktopAcceleration.dispose()
+      claudeDesktopAcceleration.dispose()
       accelerationInterruption?.dispose()
     })
     // 加速服务、独立加速进程各占一步：前一步同步抛错，也要照样放掉加速进程，由它还原系统代理。
@@ -3581,17 +2141,21 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('updates-and-notifications', () => {
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       serviceStatusMonitor?.dispose()
+      accelerationNodes?.dispose()
       unsubscribeDesktopNotifications()
       unsubscribeAutoUpdateInstall()
       desktopNotifications.dispose()
     })
     quitCleanup.add('ipc', () => unregisterIpcHandlers())
+    // 等你同意的一律拒绝，停掉渠道连接和 Codex 进程；放在 IPC 之后，界面不会再点到它。
+    quitCleanup.add('codex-remote', () => codexRemote.dispose())
     quitCleanup.add('business-services', () => {
       for (const business of businesses.values()) {
         business.chatService.dispose()
         business.imageService.cancelAll()
         business.canvasImageService.cancelAll()
         business.videoService.cancelAll()
+        business.chatVideoService.cancelAll()
         business.canvasRuns.shutdown()
       }
     })
@@ -3662,6 +2226,9 @@ if (!hasSingleInstanceLock) {
       mainWindow.focus()
       reloadIfRendererGone(mainWindow)
     }
+    // 以前发给在前面的那个窗口：画布、付款窗口在前时发进了它们，没人接；主窗口缩在托盘里时发到了却不出来（#1210）。
+    // 跟托盘跳页一样，先把主窗口叫出来，再只发给它。
+    navigateFromAppMenu = (target) => { showMainWindow(); sendToMainWindow('onNavigate', target) }
     // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
     const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
       // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
@@ -3687,6 +2254,76 @@ if (!hasSingleInstanceLock) {
       if (!proceed) runtimeLog.log('info', 'updater', 'install.postponed', '还有工具在装，这次不装新版本，新版本留着')
       return proceed
     }
+    // 新版本在后台下好以后先跳框问要不要现在装，没装的 Mac 等电脑闲着时自己装（update-install-prompt.ts，#1380）。
+    const updateInstallPrompter = createUpdateInstallPrompter({
+      platform: process.platform,
+      getState: () => updaterService.getState(),
+      autoUpdate: () => updaterService.autoUpdateEnabled(),
+      downloadedAtLaunch: pendingUpdateAtLaunch.downloadedVersion,
+      standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
+      unattended: () => canInstallUnattended({
+        platform: process.platform,
+        installMethod: updaterService.getState().installMethod,
+        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
+      }),
+      elevated: () => windowsCliExecution.highIntegrity === true,
+      idleMs: () => powerMonitor.getSystemIdleTime() * 1_000,
+      locked: () => powerMonitor.getSystemIdleState(1) === 'locked',
+      // 画布、付款窗口开着（哪怕最小化了）就不在闲时重启：上面可能还有没保存的东西。
+      windowVisible: () => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && (window.isVisible() || window.isMinimized())),
+      busy: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+      toolsWorking: () => cliKeepAwake.tools().length > 0,
+      accelerationActive: () => acceleration?.hasPossibleSession() === true,
+      attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
+      ask: async (prompt, signal) => {
+        if (mainWindow.isDestroyed()) return 'later'
+        // 挂在隐藏窗口上的框用户看不见：窗口缩着时先叫出来，点了「稍后再说」再照原样缩回去。
+        const wasMinimized = mainWindow.isMinimized()
+        const wasHidden = !wasMinimized && !mainWindow.isVisible()
+        showMainWindow()
+        if (process.platform === 'darwin') app.focus({ steal: true })
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'question', title: prompt.title, message: prompt.message, detail: prompt.detail,
+          buttons: prompt.buttons,
+          // 回车、空格、Esc 都落在「稍后再说」上：客户在别处打字时按的回车不能把星芒关掉去装。
+          defaultId: 0, cancelId: 0, noLink: true, signal,
+        })
+        if (result.response === 1 && !signal.aborted) return 'install'
+        if (mainWindow.isDestroyed()) return 'later'
+        if (wasMinimized) mainWindow.minimize()
+        if (wasHidden) {
+          mainWindow.hide()
+          // 把前台还给刚才在用的程序，同后台装完重新拉起的那一次。画布开着时不这么做：app.hide() 会把它也藏起来。
+          const othersVisible = BrowserWindow.getAllWindows().some((window) => window !== mainWindow && !window.isDestroyed() && window.isVisible())
+          if (process.platform === 'darwin' && !othersVisible) app.hide()
+        }
+        return 'later'
+      },
+      // 与托盘「重启并安装」同一条路：还有工具在装时先问那一句。
+      installNow: async () => {
+        if (await confirmUpdateInstall?.() ?? true) updaterService.install()
+      },
+      // 照开机自启时的后台装办：先把「试过了」写稳，安装器把新版本拉起来时照旧待在后台（isRelaunchAfterBackgroundInstall）。
+      installWhileIdle: async (version) => {
+        pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version, backgroundInstall: { version, startedAt: Date.now() } }
+        await pendingUpdateStore.write(pendingUpdateRecord)
+        try {
+          updaterService.install()
+        } catch (cause) {
+          dropBackgroundInstall()
+          throw cause
+        }
+      },
+      log: (level, event, message, detail) => runtimeLog.log(level, 'updater', event, message, detail),
+    })
+    const unsubscribeUpdateInstallPrompt = updaterService.subscribe((state) => updateInstallPrompter.observe(state))
+    updateInstallPrompter.observe(updaterService.getState())
+    // 账号是不是管理员问出来之前不跳框，问出来再看一遍。
+    void updateAccountProbe.then(() => updateInstallPrompter.observe(updaterService.getState()), () => undefined)
+    quitCleanup.add('update-install-prompt', () => {
+      unsubscribeUpdateInstallPrompt()
+      updateInstallPrompter.dispose()
+    })
     receiveDeepLink = (raw) => {
       if (!deepLinkInbox.accept(raw)) return
       showMainWindow()
@@ -3827,6 +2464,9 @@ if (!hasSingleInstanceLock) {
       },
       prepareToQuit: async () => {
         accountRestoreRetry.dispose()
+        // 这里只等两秒，没收完的由加速辅助进程在退出后接着改回（Mac 上可能还要输一次电脑密码）。2026-10-25 客户
+        // 日志里打开 Codex 时自动连的那一次只有「已连接」、没有「已断开」：它是重开星芒时在这里收回的，日志里却一个字都没留。
+        if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
         // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
         await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle()])
       },

@@ -16,6 +16,7 @@
  * file never brings in a version the publisher did not ship.
  */
 import path from 'node:path'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { parseReleaseGuard, type ReleaseGuard } from './service-status'
 
@@ -27,10 +28,6 @@ export interface ReleaseGuardStore {
   /** 开机时在更新服务之前读一次。没有、读坏了都返回 null，照「从没读到过」算。 */
   read(): ReleaseGuard | null
   write(guard: ReleaseGuard): Promise<void>
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function parseStoredReleaseGuard(content: string): ReleaseGuard | null {
@@ -59,10 +56,12 @@ export function createReleaseGuardStore(options: { filePath: string }): ReleaseG
     },
     write(guard) {
       // 记下这份出自哪一版状态文件：以后读到更旧的副本就不拿它盖这份（#1157 第 10 条）。0.2.20 以前的版本
-      // 读这个文件时不认 updatedAt，照旧能用。
+      // 读这个文件时不认 updatedAt，照旧能用。只撤某几种安装包的版本跟状态文件一样照旧写在 badVersions 里，
+      // 撤哪几种另记一项（#1155 第 5 条），没有就不写，文件跟以前逐字一样。
       const content = `${JSON.stringify({
         version: 1,
         badVersions: guard.badVersions,
+        ...(guard.badVersionPlatforms ? { badVersionPlatforms: guard.badVersionPlatforms } : {}),
         rollout: guard.rollout,
         ...(guard.updatedAt ? { updatedAt: guard.updatedAt } : {}),
       })}\n`

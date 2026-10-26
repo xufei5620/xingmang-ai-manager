@@ -4,7 +4,7 @@
 
 2026-09-14 用户确认免费时长由 1 小时调整为 20 分钟，0.2.3 先发布本机计时版，当时 Windows 安装包带私有节点、节点不上传 GitHub。每账号在本机累计 20 分钟，停止保留剩余、设备之间不同步。当前仅系统代理，TUN 尚未接入。
 
-当前节点策略已由产品所有者调整：现有 12 条发布线路的清洗后配置与 SHA-256 收录在 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，Windows 与 macOS 打包共用，无需再私下传递节点文件。内核、资源准备 JSON 和五文件输出目录仍留在仓库外；普通构建与 CI 不会自动附带内核或启用线路。具体准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
+当前节点策略已由产品所有者调整：发布线路的清洗后配置与 SHA-256 收录在 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，Windows 与 macOS 打包共用，无需再私下传递节点文件。内核、资源准备 JSON 和五文件输出目录仍留在仓库外；普通构建与 CI 不会自动附带内核或启用线路。具体准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。2026-10-21 起内置的是一条自建的洛杉矶线路（Hysteria 2），服务器只放行 ChatGPT / OpenAI 相关的几个域名，原来买的 12 条节点已随节点商迁址失效（#1352）。
 
 ## 已完成
 
@@ -22,12 +22,12 @@
 
 ## 星芒自己的服务不走加速线路
 
-加速内核的规则不是整条 `MATCH,XINGMANG`：`relay-sites.ts` 的 `relayDirectHosts()` 从全部站点（CLI 地址、账号地址、官网、取 Key 页）取主机名，`acceleration-mihomo-runtime.ts` 启动内核时作为 `directHosts` 交给 `buildIsolatedMihomoConfig`，在兜底规则之前逐个写 `DOMAIN,<host>,DIRECT`。于是开着加速时，本软件的登录、余额、签发 Key，以及 Codex CLI、Codex 桌面端这些遵循系统代理的工具连中转，都和 Claude Code、Gemini CLI（本来就不认系统代理）一样直连。
+2026-10-21 起只有服务器放行的那几个域名走线路（`acceleration-clash-config.ts` 的 `lineRoutedRules`：chatgpt.com、openai.com、oaistatic.com、oaiusercontent.com 及其子域名，challenges.cloudflare.com，选线测速用的 www.gstatic.com，以及 2026-10-24 起 Claude Desktop 下 Claude Code 程序和 Cowork 工作区用的 downloads.claude.ai（#1373），兜底改成 `MATCH,DIRECT`：别的网站送过去会被服务器拒掉，开着加速就打不开。网络位置探测的 www.cloudflare.com 不走线路，安装源的顺序要按这台电脑直连时的位置排。下面这段说的直连规则写在这几条之前，照旧生效：`relay-sites.ts` 的 `relayDirectHosts()` 从全部站点（CLI 地址、账号地址、官网、取 Key 页）取主机名，`acceleration-mihomo-runtime.ts` 启动内核时作为 `directHosts` 交给 `buildIsolatedMihomoConfig`，在兜底规则之前逐个写 `DOMAIN,<host>,DIRECT`。于是开着加速时，本软件的登录、余额、签发 Key，以及 Codex CLI、Codex 桌面端这些遵循系统代理的工具连中转，都和 Claude Code、Gemini CLI（本来就不认系统代理）一样直连。
 
-- 两个平台共用这一份内核配置，没有去改 Windows `ProxyOverride` 或 macOS 代理例外列表；加速仍只接管系统代理，不开 TUN。
+- 两个平台共用这一份内核配置，星芒自己的主机名没有写进 Windows `ProxyOverride` 或 macOS 代理例外列表；加速仍只接管系统代理，不开 TUN。
 - 取全部站点而不是当前账号所在站点：加速开着时切换账号不会重启内核，只放当前站点会让新账号的请求绕线路。
 - 启动时的连通性验证（`www.gstatic.com`）和底部网络位置探测不在直连名单里，仍然证明的是线路本身。
-- 本机和局域网地址也直连（#1058 第 2 项）：兜底规则前固定写 `127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`169.254.0.0/16`、`100.64.0.0/10` 和 IPv6 的 `::1`、`fc00::/7`、`fe80::/10`，都带 `no-resolve`。开着加速也能打开路由器、NAS、打印机和公司内网 IP，内网的明文登录不再经过共享节点。只认直接写 IP 的请求：解析到内网 IP 的公司域名照旧走线路；内核关着 IPv6，IPv6 内网地址直连也拨不通，只是不再送出去。Windows 绕过列表没改。
+- 本机和局域网地址也直连（#1058 第 2 项）：兜底规则前固定写 `127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`169.254.0.0/16`、`100.64.0.0/10` 和 IPv6 的 `::1`、`fc00::/7`、`fe80::/10`，都带 `no-resolve`。开着加速也能打开路由器、NAS、打印机和公司内网 IP，内网的明文登录不再经过共享节点。只认直接写 IP 的请求：解析到内网 IP 的公司域名照旧走线路；内核关着 IPv6，IPv6 内网地址直连也拨不通，只是不再送出去。Windows 系统代理的绕过列表（`windows-system-proxy.ts` 的 `buildWindowsLoopbackProxySnapshot`）也补了 `10.*`、`172.16.*`～`172.31.*`、`192.168.*`、`169.254.*`，浏览器访问这些 IP 根本不进本地代理；WinInet 和各家浏览器只认通配不认 CIDR，`100.64.0.0/10`（要写 64 段）和 IPv6 内网仍只靠内核直连。0.2.19 及以前开着加速断电留下的恢复记录存的是旧列表 `<local>;localhost;127.0.0.1;[::1]`，客户端和客户恢复脚本 `scripts/windows-acceleration-recovery.ps1` 两份都照样认作自己写的、照样还原。
 - 检查页「星芒 AI 网络」一项在加速开着时注明「开着加速时也直接连，不绕加速线路」，报告 details 带 `route: 'direct'`。
 
 ## 底部网络位置刷新
@@ -82,6 +82,33 @@ Windows 走 `release:build:unsigned`，并用 `XINGMANG_ACCELERATION_BUNDLE_DIR`
 正式包保持 RunAsNode=false、OnlyLoadAppFromAsar=true 等现有 fuse，使用自身可执行文件的固定 `--xingmang-acceleration-worker` 入口启动独立 Electron helper，仅存在父 IPC 时加载 worker，完全跳过窗口和普通主进程初始化。helper 使用 detached 方式，父进程退出后收到 IPC 断连并恢复代理；不能用随父进程立即终止的 utilityProcess 替代。不同于开发模式，不依赖客户另装 Node.js 或 Clash。
 
 已授权的共用节点连接凭据现随清洗后配置进入 GitHub，并在显式准备资源后随安装包分发；原始 Clash 文件、订阅地址和本机控制凭据不进入仓库。主进程与 renderer IPC 的边界保持不变，不向界面或诊断返回节点密码。本机计时记录仍可被重装/换设备绕过，不构成跨设备服务端额度。
+
+## 在线换节点（2026-10-22）
+
+2026-10-21 节点商迁址，安装包里的节点全断（#1352），只能出新版本才换得掉。yoyo 10-22 定「做在线换节点」：从 0.2.21 起，节点也能不发版就换。
+
+**客户端**（`electron/acceleration-online-nodes.ts`）：
+
+- 更新目录里另放一份 `acceleration-nodes.json`，跟 `latest.yml`、`service-status.json` 在一起。主进程开机读一次，之后每小时读一次；超时 10 秒、最多 256 KB、拒绝重定向，跟状态文件一个读法。只读包里那份更新目录，不读 Windows 线路2 的直连目录（那边只放行白名单里的文件）。
+- 文件里是一段节点（跟安装包里的 `profile.yaml` 一个格式）、发布时间和发布者签名。签名用发版那把 Ed25519 钥匙（`XINGMANG_UPDATE_SIGNING_KEY`，公钥名单就是 `update-package-signature.ts` 的 `updateSigningPublicKeys`），签的字以 `xingmang-acceleration-nodes/v1` 开头，跟更新包的签名不能互换。拿到 R2 上传密钥的人签不出客户端认的节点，没法把客户的 ChatGPT 流量引到自己的服务器。
+- 签名对、又比记下的那份新（发布时间更晚），才原样写进 app data 的 `acceleration-nodes.json`；比记下的旧的不收，防有人把线上换回一份真签名的旧节点。加速辅助进程每次连接、测线路、列线路时读它，读的时候再验一遍签名。
+- 用哪份：记下的在线节点签名对就用它；没记过、读坏了、签名不对、或者发布者发过签名的「撤回」，就用安装包自带、受清单校验的那份。读不到线上那份不影响已经记下的：节点商出问题那种时候，正是要接着用上次拿到的新节点。
+- 能换的只有节点：过同一个解析器（只收内联 Hysteria 2），分流规则、端口、只送 OpenAI 那几个域名这些都还在客户端代码里。以后换了这一版不认的协议，签名对也不收，接着用手上的。
+- 日志里只有发布时间、线路条数和拒收原因（`acceleration.nodes.*`），不写节点内容（I13）。开机记一笔这台电脑现在用的是哪一份（`acceleration.nodes.source`）。
+
+**发布**（`.github/workflows/acceleration-nodes.yml`、`scripts/acceleration-nodes.cjs`）：
+
+1. 节点只从仓库来：改 `bundled-acceleration/profile.yaml` 和 `profile.sha256`，走一次 PR 合进 main。工作流的输入里没有节点和密码。
+2. Actions → **acceleration-nodes** → Run workflow，分支选 `main`，「做什么」选 `publish`。
+3. 预览那一段先跑完，运行页面上列出这次要发的线路（不列密码）、发布时间和线上现在是哪一份。跟线上一模一样、不是从 main 跑的、节点校验值对不上，这一段就红，不用批。
+4. 停在 Waiting 时 Review deployments → 勾 release → Approve and deploy。publish 作业签名、确认客户端会收、上传，再从客户会读的地址读回来逐字比对。
+5. 客户端最迟一小时内读到，下一次连接起用。
+
+要退回安装包自带的节点，第 2 步选 `withdraw`。**不要直接删线上的文件**：客户端读不到时会接着用记下的那份。
+
+**要注意的一条**：线上发过节点以后，客户端记下的在线节点比安装包里的优先，就算新版安装包里已经换了节点也一样。所以改了仓库里的节点、合进 main，就跑一次 `acceleration-nodes`，让线上那份跟仓库一致。发版不会替你做这一步，但会拦着（#1359）：`publish-release` 的 Windows、Mac 出包作业在准备加速资源之前跑 `node scripts/acceleration-nodes.cjs check`，线上那份客户端会用、又跟这次装进安装包的不一样，就停下并提示先跑 `acceleration-nodes`（publish 或 withdraw），跑完再重跑发版。线上那份客户端不收（签名不对、格式坏了）也停下：客户端不收它就接着用记下的。只有线上没有这个文件（404）和撤回过放行；404 分不出没发布过和发布过又删了，所以撤回只用 withdraw，别直接删文件。读不到线上那份（404 以外）也停下，跟发布前别的检查一个口径（#493）。
+
+publish 作业跟 `publish-release`、`rollback-release`、`service-status` 共用 `update-feed` 并发组（#492），凭据和批准都在 release 环境。
 
 ## 本机代理端口不加密码（2026-10-18）
 
@@ -151,7 +178,9 @@ node scripts/probe-acceleration-nodes.cjs --config 'C:\运营配置\shared-upstr
 
 点击开始后先连接，成功才计时；停止后保留剩余。切页或缩到托盘不停止，退出软件停止。每账号累计 20 分钟，不每日重置。TUN 关闭时只覆盖读取系统代理的应用；开启后覆盖更多应用。服务未开通时不扣时，不显示伪造的 `00:20:00` 已领取余额。
 
-## 下载专用线路（2026-09-22）
+## 下载专用线路（2026-09-22，2026-10-21 起停用）
+
+2026-10-21 起这一路没有接上（`electron/main.ts` 建系统服务和扩展服务时不再传 `acquireDownloadAcceleration`）：内置线路只通 ChatGPT / OpenAI，npm、Node、Python、GitHub 都过不去。用户自己开着加速时下载照样跟着系统代理进内核，在内核里按规则直连，也不算加速，安装源保持按区域排。下面是停用前的设计，代码还在（`download-acceleration.ts`、`startDownloadRoute`），以后有能下载的线路再接回去。
 
 装 CLI / 下 Node 这条最需要加速的链路，以前必须用户先去加速页点「连接」才有效。现在软件会在下载前自己把内核拉起来一次：
 
@@ -182,3 +211,14 @@ Codex 桌面端（ChatGPT 客户端）是另一个独立进程，不在本软件
 > - **用完就断**（`codex-desktop-acceleration.ts`）：桌面端用的是星芒的 Key（Codex 配置指向当前站点且 `auth_mode` 为 apikey），连续两次（约两分钟）确认它在跑就断；登 ChatGPT 账号、没登录或读不出配置的，等连续两次确认它退出再断（ChatGPT 账号启动时要连 chatgpt.com，否则卡在「无法加载组织设置」）。断开只认自己那一次的 `connectedAt`。
 > - **断开时内核留到在途的回复写完**（`acceleration-development-backend.ts` 的 `holdCoreForDrain`，2026-10-03）：系统代理照旧当场改回，之后的新请求直连；内核再留 `automaticSessionDrainMs`（10 分钟）才停，断开前已经走在本机端口上的连接（Codex 正在流式返回的回复）不被掐断。这期间同一条线路再连直接接管内核（用户点「开始加速」接手后台那次也因此不重起内核），下载临时加速共用它，检测线路时让路；到点停不掉时记 `core-stop`、五秒后再试。用户自己点的、计时的加速停下时照旧马上停内核。
 > - 底部状态栏显示的是电脑此刻真实的出口地区，后台连着时刷新到会显示线路地区，这一点没藏。
+
+## 打开 Claude Desktop 时自动连接（2026-10-24，#1373）
+
+Claude Desktop 第一次用、每次自己升级换了组件以后，都要从 `downloads.claude.ai` 下 Claude Code 程序和 Cowork 工作区（合计约 1.6GB），国内直连下不动，聊天、Cowork、Code 全起不来。洛杉矶线路的服务器已放行这个域名，`lineRoutedRules` 也送它走线路；Claude Desktop 只跟着系统代理走，所以从星芒点「打开」它时，照 Codex 桌面端那套替他连一次（`claude-desktop-acceleration.ts`，yoyo 2026-10-24「按你的推荐修」）：
+
+- 走 `startAutomaticAcceleration`，来源记 `claude-desktop`：不扣免费时长，加速页和托盘看不见，连不上照常打开，用户自己连着的不碰。
+- 星芒看不出 Claude 什么时候下完（组件放在哪是 Claude 内部的事），所以等它退出（连续两次确认）或连满一小时就断；再点一次「打开」从那一刻重新算。断开后内核照旧再留十分钟，正在下的那条连接不会当场被掐断。
+- 问 Claude 还在不在用的是打开它那次检测认出来的安装位置（`external-client-runtime.ts` 的 `onLaunched` 与 `stillRunning`）；没打开成就当它不在，两分钟后断开。
+- 和 Codex 桌面端前后脚从星芒打开、共用同一次会话时，先用完的那边不断，交给还在用的那边（两个协调者的 `heldElsewhere` / `holds`），由后用完的断开。
+- 从开始菜单打开、Claude 自己升级后重启的，不会自动连；提示里请客户从星芒点「打开」。
+- Mac 上改系统代理要电脑密码：打开时和断开时各问一次（下载要几分钟，避不开系统只记 30 秒那一下）。

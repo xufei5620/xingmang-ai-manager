@@ -2,6 +2,7 @@ import path from 'node:path'
 import type { AppSettings, AppSettingsUpdate } from './app-settings'
 import type { ChatConversationExportInput, DataTransferExportInput, DataTransferImportPreview } from './ipc-contract'
 import { MAX_CHAT_HISTORY_CONVERSATIONS } from './ai-chat-history-store'
+import { isRecord } from './input-guards'
 
 // 「搬到新电脑」的文件：当前账号的聊天对话 + 几项跟着人走的软件设置。刻意不放任何
 // 能花钱或能登录的东西（Key、密码、登录状态、保存的账号），也不放命令行工具的配置、
@@ -87,10 +88,6 @@ const allowed: { [Key in PortableKey]: readonly PortableSettings[Key][] } = {
   mirrorPolicy: ['auto', 'mirror-first', 'official-first'],
   desktopNotifications: [true, false],
   crashReporting: [true, false],
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 export function buildPortableSettings(settings: AppSettings): PortableSettings {

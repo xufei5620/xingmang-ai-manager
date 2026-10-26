@@ -20,12 +20,13 @@
 - `relay-line-fetch.ts` — 包在 fetch 外面，把星芒自己的请求（账号、余额、AI 对话/画图/视频）换到当前线路的地址。调用方照旧按线路1 写死地址，所以 `sub2api-relay-backend.ts` 不用改。选「自动」时，网络层失败就当场换另一条重发一次，规则分三种：会改数据的请求（下单、建密钥、AI 生成）只在肯定没送到服务器时才重发，防止重复扣费；只读请求等 4 秒还没回应头，就在另一条上并发一次；失败只报给控制器去查，不直接改线路。`createRelayObservedFetch` 给写配置前查模型、做自检用：不换地址，不重发，只上报
 
 ## 工具线路（只有星芒账号，写进 AI 工具配置的那条）
-- `tool-route-controller.ts` — **工具线路控制器**（xm 三线路）。候选按优先级排：洛杉矶 `direct` → 香港 `direct-hk`（占位，永远选不上，也不进 `RelayEndpointId`、设置、IPC 和落盘）→ CF `primary`。降级条件是连续 3 轮不通，或判成劫持 1 次；服务端说在处理整体故障时，先等 5 分钟。回升的冷却期按 7 天内的失败次数定（0 / 1 / 6 / 24 小时）。它和应用线路分开管，因为管理工具走 Chromium 连得上，不等于 Node 里跑的命令行工具也连得上。状态单独存在 `tool-route-state.json`，不碰老版本还要读的 `relay-route-lines.json`
+- `tool-route-controller.ts` — **工具线路控制器**（xm 三线路）。候选按优先级排：洛杉矶 `direct` → 香港 `direct-hk`（占位，永远选不上，也不进 `RelayEndpointId`、设置、IPC 和落盘）→ CF `primary`。降级条件是连续 3 轮不通，或判成劫持 1 次（全新安装还没查出结论时，第一次没通、CF 通了就切，查出结论前不落盘，#963）；服务端说在处理整体故障时，先等 5 分钟。回升的冷却期按 7 天内的失败次数定（0 / 1 / 6 / 24 小时）。它和应用线路分开管，因为管理工具走 Chromium 连得上，不等于 Node 里跑的命令行工具也连得上。状态单独存在 `tool-route-state.json`，不碰老版本还要读的 `relay-route-lines.json`
 - `tool-route-probe.ts` — 工具线路的探测：一条线路要在工具实际会走的每条路径上都通才算通，路径包括无代理、系统代理和各处设的 HTTPS_PROXY / ALL_PROXY。哪条线路都不能全通时，以无代理路径为准。底层探测在 `tool-path-probe.ts`
 - `route-failure-classifier.ts` — 探测没通时贴标签：normal / proxy / unknown / hijack。IP 只用来解释原因，不用来判通不通。CF 线路对照 Cloudflare 公布的地址段；fake-ip 和私网地址算本机代理接管；状态文件读不到一律算 unknown，不判劫持
 - `route-status-file.ts` — 读服务端发布的线路状态文件 `/xm-route-status.json`，里面有：各直连域名指向哪台入口、有没有被切到 CF、合法 IP、是否在处理故障、香港开没开。它只经应用线路、按本站线路自己的 origin 显式去读（不去退役别名），照 I10 做了超时、16KB 上限、不跟重定向。读不到不算线路失败，结果缓存 10 分钟。注意和更新目录里的 `service-status.json` 是两份文件
 - `tool-route-status.ts` — 把工具线路的快照和提示整理成设置快照里的 `relayToolRouteStatus`（服务端在切换、三条线都不通、劫持），不加 IPC 通道。`buildToolRouteReport` 生成检查页导出报告里工具线路那几行：只说线路1 / 线路2，不带地址
 - `tool-route-rewrite.ts` — 换线路时只改配置里的那一个地址（TOML / JSON / .env），文件其余字节原样。改完整份重新解析，和「只改了这一个键」逐项比对；对不上或定位不到就返回 null，一个字都不改。`config-files.ts` 和 `xingmang-ai-skill.ts` 在用
+- `tool-route-follow-service.ts` — **换线路定点改写命令行工具配置的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `followToolRoutes`、`noteRouteFollowRestart`、`bindToolRouteAccount`、`disposeToolRoutes`）：只管星芒账号；替当前账号写的那份只改地址（`tool-route-rewrite.ts`），和整份保存排同一个队；暂时改不动的过一会儿再试，改完一分钟回头看有没有被别的程序改回去（记在下面的 `tool-route-follow-state.ts`），要重开才生效的给首页一条半小时内有效的提示。星芒退出时撤掉这些定时，连外部客户端那边等着回头看的一起撤
 - `tool-route-follow-state.ts` — 换线路定点改写要跨重启记住的每工具状态（存在 `tool-route-follow/`），记这几样：
   - 被外部改回的次数；24 小时内改回两次就标「由其他工具管理」，不再自动改
   - 原件备份过没有
@@ -101,23 +102,25 @@
 - `release-guard-store.ts` — 把最近一次读成功的撤回名单和放量比例记到本地 `release-guard.json`（#1055），开机先用它。不记最低版本。读回来的内容用状态文件同一个解析器重新校验
 
 ## 星芒 AI 技能与画图 MCP
-- `xingmang-ai-skill.ts` — 「星芒AI」技能，管这几件事：
-  - 安装：把随包的技能文件装进 `~/.agents/skills`；Claude、Grok 的目录本来就有时，各自再复制一份
+- `xingmang-ai-skill.ts` — 生图技能（文件夹和技能名都叫 `images`，0.2.20 及以前叫「星芒AI」），管这几件事：
+  - 安装：把随包的技能文件装进 `~/.agents/skills/images`；Claude、Grok 的目录本来就有时，各自再复制一份
+  - 改名：登录同步时把老的「星芒AI」文件夹原地改名成 images；客户自己有 images 的地方一直用旧名；退回旧版又装出来的、早期装进 `~/.codex/skills` 的旧名文件夹，没动过就收掉；Codex 里改名前写的开关条目跟着换到新路径
   - 登录后：把地址、分组、画图模型（先 gpt-image-2.5-flare，没有再用 gpt-image-2）和密钥写进技能的 `config.json`
   - 换线路：只改 baseUrl（`followXingmangAiSkillRoute`）
   - Codex 切到 ChatGPT 官方账号时关掉技能，切回来只打开自己关的那一次
   - 退出登录时清掉密钥
 
   给界面看的版本会剥掉 apiKey（I3）
-- `xingmang-ai-mcp.ts` — 星芒画图 MCP（`xingmang-image`）写进各工具 MCP 配置的那一段：启动方式、Codex / Grok 的 TOML 写法、Claude / Gemini 的 JSON 写法、Claude 的工具权限。只有从星芒技能目录启动随包脚本的条目才算自己的，同名的别的条目不碰。密钥不进 MCP 配置，脚本按路径去读技能的 `config.json`
+- `xingmang-ai-mcp.ts` — 星芒画图 MCP（`xingmang-image`）写进各工具 MCP 配置的那一段：启动方式、Codex / Grok 的 TOML 写法、Claude / Gemini 的 JSON 写法、Claude 的工具权限。只有从星芒技能目录（`images` 或改名前的「星芒AI」）启动随包脚本的条目才算自己的，同名的别的条目不碰。Codex 选着 ChatGPT 账号时的 config.toml 和存着的两份配置里，登记过的那条只换位置、不新登记。密钥不进 MCP 配置，脚本按路径去读技能的 `config.json`
 
 ## 官方账号（不是星芒账号）
 - `official-account-identity.ts` — 从 Codex `auth.json` 里的 JWT 解码出邮箱和套餐名，只用来显示，不验签（这不是认证决定）。令牌本身不出主进程（I3）
 - `official-account-usage.ts` — 用 Codex 本机的 ChatGPT 令牌去 chatgpt.com 查官方 5 小时限额和周限额还剩多少（8 秒超时、256KB 上限、不跟重定向，I10）。`system-service.ts` 在用
+- `official-credential-service.ts` — **官方账号与当前账号来回切的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `switchToOfficialAccount`、`setOfficialSourcePreference`、`restoreOfficialCredentials`、`adoptRestoredConfig`、`alignRestoredAccountSource`）：接中转时把 Claude Code 登录留下的官方 Console Key 挪到一边（它会顶掉当前账号的 Key），切回官方时放回，写配置失败就撤回这一步；恢复备份后按恢复出来的那份重新登记来源、对齐「选了官方账号」的记号；Codex 跟着账号开关星芒AI技能。都排在写配置那一条队里，保存配置也用这里的挪开、放回和撤回
 
 ## 网络环境检查
 - `stale-proxy-environment.ts` — 找出并清掉「指向本机、代理软件却没开」的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`。这种残留设置下，本软件自己联网正常，从这里打开的工具和 npm 却全连不上。Windows 上读、清当前账号和整台电脑的设置，用固定路径的 PowerShell + `execFile` + `trustedCommandEnvironment`（I1 / I2 / I14）。Mac 上的同一套规则在 `macos-platform.ts`，改这里要一起改
-- `certificate-trust-probe.ts` — 检查页的「安全证书」一项：用跑工具的那个 Node.js 握手两次，一次只用自带根证书，一次加上 `NODE_USE_SYSTEM_CA=1`，两次一对比就知道是不是公司证书在拦截、星芒替工具开的「信任系统证书」生效没有。`diagnostics.ts` 在用
+- `certificate-trust-probe.ts` — 检查页的「安全证书」一项：用跑工具的那个 Node.js 握手两次，一次只用自带根证书，一次加上 `NODE_USE_SYSTEM_CA=1`，两次一对比就知道是不是公司证书在拦截、星芒替工具开的「信任系统证书」生效没有。`diagnostics-network-checks.ts` 在用
 
 ## 清单里与账号无关的小模块
 - `login-launch.ts` — 识别开机自动启动：Windows 看 `--launched-at-login` 参数，Mac 读登录项标记。开机拉起时窗口留在托盘，工具检测、检查更新、签密钥这些后台事推到用户点开窗口或开机 3 分钟后再做。这里也定义 Windows 开机项的名字 `windowsAppUserModelId`，卸载清理必须用同一个

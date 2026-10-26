@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { activeProviderIds, providerIds, type ProviderId } from './catalog'
+import { activeProviderIds, cliCatalog, providerIds, type ProviderId } from './catalog'
 import type { ProviderConfigRoots } from './codex-home'
 import { inspectHomeFolderTrust, type NativeConfigInspection, type ProviderAccountMode } from './config-files'
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
@@ -31,6 +31,7 @@ import {
   withAppProxyRoute,
   inspectAppProxyRoute,
   type DiagnosticItem,
+  type DiagnosticsReport,
   type DiagnosticsScanSnapshot,
   type DiagnosticToolId,
   type DiagnosticsDependencies,
@@ -40,6 +41,7 @@ import {
 import type { NodeTlsOutcome } from './certificate-trust-probe'
 import { readProjectInstructionsTemplate } from './project-instructions'
 import { launchExcludedEnvironmentVariables, macosShellOverrideVariables } from './system-service'
+import { valueReferences } from './type-only-imports.test-support'
 import { claudePlatformSwitches } from './workspace-config-overrides'
 
 const temporaryDirectories: string[] = []
@@ -291,6 +293,56 @@ describe('diagnostics', () => {
     expect(codes).not.toContain('CLI_GEMINI')
     expect(codes).not.toContain('PROVIDER_GEMINI')
     expect(report.items.filter((item) => item.title.includes('Gemini'))).toEqual([])
+  })
+
+  // 检查页和导出的报告都照这个次序列出各项（#1070 第 9 步把检查项按类别拆进几个文件时钉住它）。
+  it('lists every check in a fixed order with fixed titles', async () => {
+    const home = temporaryHome()
+    const everything: DiagnosticsDependencies = {
+      ...dependencies(home),
+      windowsProcessor: 'arm64',
+      inspectExecutableMachine: async () => 'arm64',
+      documentsDirectory: path.join(home, 'Documents'),
+      inspectDocuments: () => ({ state: 'writable' }),
+      probeAiOutput: async () => undefined,
+      accelerationBundle: 'intact',
+    }
+    const listed = (report: DiagnosticsReport) => report.items.map((item) => [item.code, item.title])
+    const tools = (prefix: string, suffix = '') => activeProviderIds
+      .map((provider) => [`${prefix}_${provider.toUpperCase()}`, `${cliCatalog[provider].name}${suffix}`])
+
+    expect(listed(await runDiagnostics(everything))).toEqual([
+      ['APP_RUNTIME', '星芒版本'],
+      ['OPERATING_SYSTEM', '操作系统'],
+      ['WINDOWS_ARM', '电脑芯片'],
+      ['ADMINISTRATOR', '运行权限'],
+      ['SYSTEM_POWERSHELL', '打开工具用的命令窗口'],
+      ['RUNTIME_NODE', 'Node.js'],
+      ['RUNTIME_NPM', 'Node.js 自带的安装组件'],
+      ['RUNTIME_PYTHON', 'Python'],
+      ['RUNTIME_GIT', 'Git'],
+      ...tools('CLI'),
+      ['CODEX_DESKTOP', 'Codex 桌面端'],
+      ...tools('PROVIDER', ' 连接设置'),
+      ['XINGMANG_NETWORK', '星芒 AI 网络'],
+      ['CERTIFICATE_TRUST', '安全证书'],
+      ['DISK_SPACE', '磁盘空间'],
+      ['DOCUMENTS_WRITABLE', '「文档」文件夹能不能写'],
+      ['AI_OUTPUT', 'AI 作品保存位置'],
+      ['ACCELERATION_BUNDLE', '加速功能'],
+      ['FOLDER_RELOCATED', '文件夹位置'],
+      ['CLASH_VERGE_TUN', '代理软件的全局接管模式'],
+      ['PROXY_ENVIRONMENT', '电脑里的代理设置'],
+      ['PROVIDER_ENVIRONMENT_OVERRIDE', '电脑里另外设过的工具地址或密钥'],
+      ['WORKSPACE_CONFIG_OVERRIDE', '项目文件夹里的设置'],
+      ['CODEX_DOTENV', 'Codex 文件夹里的额外设置'],
+      ['CLAUDE_BYPASS_PERMISSIONS', 'Claude Code 跑命令前要不要先问你'],
+      ['HOME_FOLDER_LEFTOVERS', '个人文件夹里早先留下的设置'],
+    ])
+    // Mac 上没有「电脑芯片」和「文档」那两项，其余次序不变。
+    const mac = (await runDiagnostics({ ...everything, platform: 'darwin' })).items.map((item) => item.code)
+    expect(mac).toEqual(listed(await runDiagnostics(everything)).map(([code]) => code)
+      .filter((code) => code !== 'WINDOWS_ARM' && code !== 'DOCUMENTS_WRITABLE'))
   })
 
   it('inspects providers and Codex dotenv through provider roots', async () => {
@@ -1400,7 +1452,7 @@ describe('diagnostics', () => {
       expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
     })
 
-    // 这两个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics.ts 的 breaksAccount），
+    // 这两个在沙箱里实测会让 CLI 绕开写入的配置（diagnostics-override-checks.ts 的 breaksAccount），
     // 用户在终端里跑就连不上当前账号，所以是待处理，开机提示也会数它。
     it.each([
       ['ANTHROPIC_API_KEY', 'sk-must-not-leak', 'Claude Code'],
@@ -3455,5 +3507,27 @@ describe('diagnostics system proxy', () => {
       state: 'warn',
       details: { systemProxy: '本机 10809 端口（没开）' },
     })
+  })
+})
+
+describe('the diagnostics-*.ts modules split out of diagnostics.ts', () => {
+  // 主进程是 CommonJS：diagnostics.ts 值导入这几个文件，它们要是反过来值导入 diagnostics.ts，两边互相 require，
+  // 其中一方会拿到半初始化的模块（#1335 第 4 条）。所以它们只许从 diagnostics.ts 拿类型。
+  it('only take types from diagnostics.ts so none of them requires it back', () => {
+    const diagnosticsModule = path.join(__dirname, 'diagnostics.ts')
+    const modules = fs.readdirSync(__dirname)
+      .filter((name) => /^diagnostics-.+\.ts$/.test(name) && !name.endsWith('.test.ts') && !name.endsWith('.test-support.ts'))
+    expect(modules).toEqual(expect.arrayContaining([
+      'diagnostics-context.ts',
+      'diagnostics-network-checks.ts',
+      'diagnostics-override-checks.ts',
+      'diagnostics-redaction.ts',
+      'diagnostics-storage-checks.ts',
+      'diagnostics-system-checks.ts',
+      'diagnostics-tool-checks.ts',
+    ]))
+    for (const name of modules) {
+      expect({ name, references: valueReferences(path.join(__dirname, name), diagnosticsModule) }).toEqual({ name, references: [] })
+    }
   })
 })

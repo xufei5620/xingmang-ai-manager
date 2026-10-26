@@ -42,9 +42,10 @@ Windows 那一份与正式发布的产物走的是同一条门禁（`release:bui
 
 ## 3. 跑之前会撞上的一件事：版本号
 
-`package-for-testing` 的 Windows 作业第一步就是发布前置检查，它会拒绝两种情况：
+`package-for-testing` 的 Windows 作业第一步就是发布前置检查，它会拒绝三种情况：
 
 - `release-notes.md` 的第一行和 `package.json` 的版本对不上；
+- 这一版的更新说明超过 60 条（装完后的更新页只放这么多，超了就合并几条，见 `docs/RELEASING.md` 第 3 节，#1334）；
 - 更新源上已经有一个不低于本地的版本。
 
 也就是说，**每出一版新的包之前，得先把变更日志汇总掉、版本号改成要发的那一版**：
@@ -65,7 +66,7 @@ npm run changelog:collect     # 把 changes/unreleased/ 的分片汇入两份日
 
 实际落地时拆成了两半，因为这两样东西的性质不同：
 
-**节点在仓库里。** `bundled-acceleration/profile.yaml` 是那 12 条共享线路，`bundled-acceleration/profile.sha256` 钉住它的字节。它只有几 KB，而且它就是那个"私有"的部分，必须随源码走才能让任何一台机器出的包都一样。
+**节点在仓库里。** `bundled-acceleration/profile.yaml` 是随包分发的共享线路（2026-10-21 起是一条自建的洛杉矶线路），`bundled-acceleration/profile.sha256` 钉住它的字节。它只有几 KB，而且它就是那个"私有"的部分，必须随源码走才能让任何一台机器出的包都一样。
 
 **内核不在仓库里。** Mihomo 内核是 MetaCubeX 的公开发布产物，三个平台各十几 MB；进不进仓库都不影响谁能拿到它，而进了 git 历史就永远删不掉，每升一次版再压一份进去。所以仓库里只有 `bundled-acceleration/cores.json` 这张对账表，工作流现场从上游取。
 

@@ -109,7 +109,7 @@ export type VideoModelCapability = {
   provider: VideoModelProvider
   available: true
   hidden: false
-  source: 'preset'
+  source: 'preset' | 'fallback'
   minimumSeconds: number
   maximumSeconds: 15
   supportsImageInput: boolean
@@ -416,9 +416,12 @@ const GPT_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]*$/i
 const UNAVAILABLE_GPT_IMAGE_15_PATTERN = /^gpt-image-1\.5(?:-|$)/i
 const JIMENG_MODEL_PATTERN = /^jimeng_[a-z0-9][a-z0-9_]*$/i
 const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]*)?$/i
+// grok-imagine-video-2 这类同名新版本按 Grok 视频认（#1059）：走的还是同一个接口、同样 1–15 秒；
+// 型号都来自账号自己的列表，账号列不出的照样用不了。
+const GROK_VIDEO_MODEL_PATTERN = /^grok-imagine-video(?:-[a-z0-9][a-z0-9._-]*)?$/i
 const IMAGE_SIZE_PATTERN = /^(\d{3,4})x(\d{3,4})$/
 const MINIMAX_VIDEO_MODEL_PATTERN = /^minimax-h3-(?:mini|fast|base)$/
-// 站上新出的视频型号（grok-imagine-video-2、minimax-h3-pro、sora-2 之类）上面认不出，不能拿去生成视频；
+// 站上新出的视频型号（minimax-h3-pro、sora-2 之类）上面认不出，不能拿去生成视频；
 // 以前落到最后当成聊天模型，列进文字对话，客户一选就报错（#1059）。名字一看就是视频的，标成不可用并藏起来。
 // 只认整段词（video、veo、kling 这些前后是分隔符或数字），minimax-m2 这类聊天型号不受影响。
 // sora 只认后面跟版本号的：不少中转把走聊天接口出图的型号叫 sora_image / sora-image，那个照旧列。
@@ -497,6 +500,14 @@ export function resolveAiModelCapability(model: string): AiModelCapability {
     }
   }
 
+  if (GROK_VIDEO_MODEL_PATTERN.test(normalized)) {
+    return {
+      kind: 'video', model: normalized, provider: 'grok-video', available: true, hidden: false,
+      source: 'fallback', minimumSeconds: 1, maximumSeconds: 15,
+      supportsImageInput: true, supportsVideoInput: false, supportsAudioInput: false,
+    }
+  }
+
   if (UNAVAILABLE_GPT_IMAGE_15_PATTERN.test(normalized)) {
     return createImageCapability(normalized, IMAGE_PRESET_DEFINITIONS['gpt-image-1.5'], 'fallback')
   }
@@ -535,6 +546,8 @@ export const IMAGE_SKILL_GROUP_NAMES = ['图片模型', '生图分组'] as const
 const IMAGE_GROUP_NAMES = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
 // gpt-image-2.5 两个型号 xm 站「GPT」「图片模型」两个分组都开了，按张计价。排序跟星芒AI生图（#999）的取舍：
 // flare 是默认、排第一，gpt-image-2 第二；sunburst 慢、偏精修，不当默认，排在它们后面。
+// 这张表只管先后。以前只列表里有的，站上换代（gpt-image-3）后图片分组一个都不剩（#1059）；
+// 现在表外认得出的图片、视频型号接在后面，次序照账号列表，认不出的（聊天型号、藏起来的）照旧不列。
 const IMAGE_GROUP_MODEL_ORDER = [
   'gpt-image-2.5-flare',
   'gpt-image-2',
@@ -573,7 +586,10 @@ export function selectAiChatModelsForGroup(
   if (!IMAGE_GROUP_NAMES.has(name) && !imageGroups.includes(name)) return visible
 
   const available = new Set(visible)
-  return IMAGE_GROUP_MODEL_ORDER.filter((model) => available.has(model))
+  const ordered: string[] = IMAGE_GROUP_MODEL_ORDER.filter((model) => available.has(model))
+  const listed = new Set(ordered)
+  const others = visible.filter((model) => !listed.has(model) && resolveAiModelCapability(model).kind !== 'chat')
+  return [...ordered, ...others]
 }
 
 const IMAGE_ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/

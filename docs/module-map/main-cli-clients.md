@@ -11,16 +11,22 @@
 - `versions.ts` — 版本号小工具：只认精确版本（拒 npm 范围、标签和像命令行参数的串）、Node.js 最低 20、新旧比较；主进程判断版本新旧只走这里的 `compareVersionNumbers`，更新器、上次运行记录、Node / Python 发布索引各自的认法是这里的几个 `parse*Version`（Codex 桌面端四段包版本除外，在 `codex-desktop.ts`）；零依赖，渲染层也直接引
 
 ## CLI 安装、定位与运行环境
-- `tool-installation.ts` — **认「这个工具装在哪、从哪装的、怎么起」的核心**：分清 npm 包与官方原生安装器（首页据此写「官方安装器」还是「其他来源」）、能不能卸、新开和续聊的启动参数；`resolveCliCommand` 在起进程前核原生可执行文件（Windows 走 `trusted-native-cli.ts` 的签名与暂存，Mac 走 codesign 加 `darwin-cli-staging.ts`）。npm 装、更新这一步本身在 `system-service.ts`
+- `tool-installation.ts` — **认「这个工具装在哪、从哪装的、怎么起」的核心**：分清 npm 包与官方原生安装器（首页据此写「官方安装器」还是「其他来源」）、能不能卸、新开和续聊的启动参数；`resolveCliCommand` 在起进程前核原生可执行文件（Windows 走 `trusted-native-cli.ts` 的签名与暂存，Mac 走 codesign 加 `darwin-cli-staging.ts`）。npm 装、更新这一步本身在 `cli-install-service.ts`
+- `cli-install-service.ts` — **装和更新 CLI 的那一整段**（#1070 第 2 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installCli` / `cancelCliInstall` / `cleanupInstallLeftovers`）：找 npm（Windows 上没有就先装 Node.js）、按网络挑源、解析和下载卡住就换源、国内镜像下的包要和 npm 官方源的 SHA-512 一致、托管 npm 目录整体替换（换不回去时报 `ManagedNpmRollbackError`）、Grok 的 Windows 原生通道和 Mac / Linux 的签名核对、装完 Claude Code 顺带装 Git、记更新历史，以及取消和清理下了一半的东西。Windows 提权安装、可信路径那几段只搬不改
+- `cli-uninstall-service.ts` — **卸载 CLI 的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `uninstallCli` / `cleanUninstallLeftovers`）：按安装来源定卸法（npm 包、官方安装器装的 Claude Code、Grok 原生程序，Mac 上先核 xAI 签名再删）、要用户自己跑的卸载命令开在不提权的窗口里、卸完核对命令真的没了、记下删不掉的文件供「帮我清理」用（路径只由这里给，不收界面传来的）
+- `runtime-install-service.ts` — **装运行环境的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installNodeRuntime` / `installPythonRuntime` / `installGitRuntime` / `inspectWindowsProcessor` / `restartWindows`）：Node.js 认不得公司证书时换一份、Windows 上看处理器挑安装包（一次启动只问一次）、Mac 上弹苹果自己的 Git 安装窗口（一次只弹一个），装完补 Grok 钩子；有安装、卸载、打开在排队时不发重启。真正下载和核签名在 `node-runtime.ts`、`python-runtime.ts`、`git-runtime-install.ts` 和 Mac / Linux 各自那份；重启那段（`shutdown.exe` 走固定系统路径）只搬不改
+- `provider-launch-service.ts` — **从星芒打开工具的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `launchProvider`、`launchCodexDesktop` 和 Codex 桌面端中文界面、工作目录信任那几个）：打开前在保存配置那一队里补写目录信任和项目说明（敏感目录不写）、给 CLI 配环境（哪些变量这次不交给工具：`launchExcludedEnvironmentVariables`、Mac 的 `macosShellOverrideVariables`）、Windows 上核命令后开 PowerShell 窗口（管理员身份时终端环境以 `trustedCommandEnvironment` 为底，见 I2 的 `interactiveTerminalEnvironment`）、Mac 开「终端」、Linux 挨个试终端。Windows 提权那几段只搬不改
 - `installation-queue.ts` — **I11 的实现**：安装、卸载、启动这类会原子替换机器级目录的操作排成一队，同一个 key 复用同一个 Promise（双击天然幂等），还在排队的可以随信号直接出队。外部桌面客户端的「打开」是登记过的例外，见 `external-client-runtime.ts`
 - `install-cancellation.ts` — 安装的「取消」：每次安装一个可中止的信号，但原子替换那几段会「封住」，封着时拒绝取消并给出能上屏的中文原因，不默默吞掉；用户取消抛 `InstallCancelledError`，不进异常日志
 - `managed-cli-paths.ts` — **托管目录只在这里定**：Windows 是 `ProgramData\XingMangAI`（从可信机器路径取，不读环境变量），Mac 是 `~/Library/Application Support/XingMangAI`，Linux 是 `${XDG_DATA_HOME:-~/.local/share}/XingMangAI`；npm 前缀、缓存、原生包、终端启动器、`Runtime/node` 都从它派生
 - `managed-cli.ts` — 建托管 npm 布局（prefix、cache、空 userconfig），目录走 `trusted-temp.ts` 的受保护建法；上一次 npm 事务做到一半被打断时先把旧 prefix 恢复回来
 - `managed-path-trust.ts` — 只在 Windows 上登记「本软件自己建、上过 ACL 的托管根目录」，`command-runner.ts`、`trusted-temp.ts`、`node-runtime.ts` 据此放行其下路径；按真实路径再核一遍，防联接把子路径指到外面去（I8、I14）
 - `npm-user-prefix.ts` — 普通权限安装只从用户 `.npmrc` 读回 `prefix` 一项（照 npm 的 ini 解析与路径展开），显式传 `--prefix`；其余配置仍被空 `--userconfig` 挡在外面，用户的 `.npmrc` 改不了源和脚本策略
-- `cli-native-package.ts` — npm 下平台可选包失败时照样退出 0，Claude Code、Codex 就成了「版本读得出、根本起不来」；这里查出缺的是哪个平台包，给一句中文（Linux 版 Grok 也用）
+- `cli-native-package.ts` — npm 下平台可选包失败时照样退出 0，Claude Code、Codex 就成了「版本读得出、根本起不来」；这里查出缺的是哪个平台包，给一句中文（Linux 版 Grok 也用）。读已装包 `package.json` 版本号的 `readPackageManifestVersion` 也在这里
+- `npm-registry.ts` — 两个 npm 源（官方、国内镜像）的地址、按网络区域谁先谁后（`npmInstallRegistries`，区域不明时镜像优先）、查询地址怎么拼，以及查询的超时和响应体上限；装、查新版本、卸载共用
+- `npm-command-failure.ts` — npm 命令没成功时挑出给客户看的那句：命令运行器的话后面接 npm 自己的要点（错误码、占用、权限），超时说成「下载超时」；`isMachineBoundNpmFailure` 判断换个源也没用的那几种（盘满、正在用的目录被占用）。要用 `command-runner`，所以不跟进渲染层的 `npm-failure-reasons.ts` 放一起
 - `cli-process-probe.ts` — 更新、卸载撞上文件被占用时，查是不是这个工具自己的进程还开着（只认镜像或命令行落在它自己包目录里的进程，不按进程名），好让报错说「先关掉它的窗口」而不是「被杀毒拦了」；Windows 走 PowerShell/CIM，Mac 走 ps
-- `node-runtime.ts` — **Windows 上代装 Node.js**：winget 优先，没装成再按网络区域定先走国内镜像还是官方 MSI，核 SHASUMS 与 Authenticode 签名；要管理员时由普通权限的中转脚本钉住当前账号再弹 UAC，提权那一步把包拷进只有管理员能写的目录再核一遍才交给 msiexec。下载源、版本索引、校验清单这些通用件 Mac/Linux 版复用，`resolveSystemWingetExecutable` 也给外部客户端和 Python 用
+- `node-runtime.ts` — **Windows 上代装 Node.js**：在海外 winget 优先，国内或测不出位置时不试 winget（#1061 第5条）；下安装包时按网络区域定先走国内镜像还是官方 MSI，核 SHASUMS 与 Authenticode 签名；要管理员时由普通权限的中转脚本钉住当前账号再弹 UAC，提权那一步把包拷进只有管理员能写的目录再核一遍才交给 msiexec。下载源、版本索引、校验清单这些通用件 Mac/Linux 版复用，`resolveSystemWingetExecutable` 也给外部客户端和 Python 用
 - `python-runtime.ts` — Windows 上代装 Python 3.12：winget 优先，退到 python.org 安装包时才借下载线路，核 Authenticode 签名与响应地址
 - `git-runtime-install.ts` — Windows 上代装 Git for Windows：**钉死版本与 SHA-256**（官方摘要只写在 GitHub 发布说明里，从镜像取摘要等于让镜像自己作证），Inno Setup 按当前用户装、不弹 UAC；升级时改文件里那三个常量
 - `git-runtime.ts` — 缺 Git 会怎样、怎么装的**唯一文案来源**，插件市场、首页运行环境、检查页三处共用（Windows 上缺它 Claude Code 的 Bash 工具会退成 PowerShell）；零依赖，渲染层直接引
@@ -80,8 +86,24 @@
 - `codex-desktop-install-failure.ts` — 桌面端装不上 / 更新不了时客户看到的那句话（按原因分几类，原话只进日志），外加微软商店链接（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node（I6）
 - `codex-desktop-known-issues.ts` — 已知打不开的桌面端版本表：只提示并引到 Codex 命令行版，不给「退回上一版」（商店几小时就换回去）；上游修好、真机核过后删掉那一行。主进程与渲染层共用
 
+## 手机遥控 Codex（设置 › 工具管理；只认配对过的一个人的私聊，命令要在聊天里点同意）
+- `codex-remote-channel.ts` — 渠道（飞书、微信）和底座之间的接口：入站消息、出站文字与审批、渠道状态、`RemoteChannelDependencies`（主进程 fetch、凭据读写、日志、版本号），以及给界面的快照类型（带 `revision`，界面只收新的那份）。零依赖，在 `valueImportable` 名单上（I6），渲染层用它的 `remoteChannelIds`
+- `codex-remote-http.ts` — 渠道请求平台开放接口的唯一出口：只许 HTTPS 和渠道给的那几个主机、超时、响应体上限、不跟跳转（I10），报错不带令牌和消息正文
+- `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
+- `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
+- `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
+- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限
+- `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
+- `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试
+- `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；登录过期（-14、401/403）报「要重新登录」不再重试
+- `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；拿到的令牌直接进底座的加密凭据存储，不过 IPC。`-login-state.ts` 只有类型，界面 `import type` 它
+- `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上星芒以管理员身份或高完整性运行时不许开（手机上点一下就是管理员级操作）
+- 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参），状态变化经 `codex-remote:state-changed` 推给界面；微信扫码的三条（`codex-remote:weixin-login-start` / `-poll` / `-cancel`）在 `ipc/handlers/codex-remote-weixin.ts` + `ipc/parsers/codex-remote-weixin.ts`，成功不记日志
+
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
 - `external-client-runtime.ts` — **三家客户端的探测、安装与打开**：Windows 用一段 PowerShell 盘点并核签名，Claude Desktop 装法是存储桶 → winget → 官网 MSIX，OpenCode 走 winget，WorkBuddy 一律让客户去官网自己下；Mac 交给 `macos-desktop-app-installer.ts` 并核 Developer ID。「打开」不排安装队列，是 I11 的登记例外（只等同一家正在装的那一次）
+- `external-client-route-service.ts` — **三家客户端在系统服务里的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `scanExternalClients`、`configureExternalTool`、`switchExternalClientSource` 这些）：盘点（合并、落盘先画首页）、安装、打开、测试连接，写配置前绕过缓存现查型号、核账号没换，Claude Desktop 切回官方账号或改用当前账号；换线路、换 Key 以后替当前账号写的那份跟着换，客户端开着就每 5 分钟看一眼进程、等它退出再换（星芒退出时撤掉这个定时）。写配置、切账号、跟线路改的是同一批文件，排同一个队（`queueExternalConfigWork`，原来手抄三份）
 - `external-client-contract.ts` — 三家的共用类型、名字表、「去官网下载」网址（主进程外链白名单逐条全等收录，I12）和配置请求的入参校验（I5）；`ipc-contract.ts` 引它的类型
 - `external-tool-config.ts` — WorkBuddy 与 OpenCode 的配置文件：找位置、合并，经 `config-files.ts` 同一套两阶段提交写入（I9）；换线路时只改星芒写的那几处地址，客户刚改过就一个字不写。Claude Desktop 不在这里，见 `claude-desktop-config.ts`
 - `external-client-connection.ts` — 三家的连接自检：回读客户端自己的配置，用里面那把密钥问一次星芒（WorkBuddy、OpenCode 查模型清单不花额度，Claude Desktop 照它自己的样子发一个字）；客户端里真正发的对话本机测不到，结论照实说，不假绿
@@ -95,6 +117,7 @@
 - `claude-desktop-policy.ts` — 写配置前确认 Claude Desktop 没被组织策略（注册表或托管文件）接管推理设置；PowerShell 只带出策略的名字和类型，值里可能有 Key，不出来（I3、I13）
 - `claude-desktop-model-repair.ts` — 开机一次性修复：0.2.12 往 Claude Desktop 配置里写了一串型号，导致发消息没回复；只认星芒自己那份、只认那个写法，改回单个型号，最多试三次，查完记一笔以后不再读
 - `claude-desktop-msix-installer.ts` — Windows 上 Claude Desktop 的离线 MSIX 一路（存储桶或 Claude 官网，官网只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）
+- `claude-desktop-acceleration.ts` — 从星芒打开 Claude Desktop 前悄悄替用户连上加速，好让它从 `downloads.claude.ai` 下得到 Claude Code 程序和 Cowork 工作区（#1373）：约束同 `codex-desktop-acceleration.ts`，Claude 退出或连满一小时就断，和 Codex 桌面端共用同一次会话时先用完的那边交给另一边（`heldElsewhere`）。不含 Electron 依赖
 - `claude-desktop-install-failure.ts` — Claude Desktop 没装上时那句话（按原因分类，原话只进日志）和官网下载页地址（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node
 
 ## 托管密钥的分组与换新

@@ -58,11 +58,13 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
     const alias = settingsPageAlias(requested)
     const target: PageId = alias ? 'settings' : retiredPageAlias(requested) ?? requested
     const section = alias ?? requestedSection
-    if ((target === 'account' || target === 'chat') && restoring) {
+    // 视频剪辑同聊天：花的是账号额度，没登录先登录。
+    const needsAccount = target === 'account' || target === 'chat' || target === 'video'
+    if (needsAccount && restoring) {
       toast.show(restoreRetrying ? '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。' : '正在恢复上次的登录，稍等一下再试。')
       return
     }
-    if ((target === 'account' || target === 'chat') && !authenticated) { setAuth('login'); return }
+    if (needsAccount && !authenticated) { setAuth('login'); return }
     // 个人中心的页签，或页签里的某一节（顶部搜索的「切换账号」「我的订单」、系统通知的「异步任务」…）：
     // 切到那一节所在的页签，再翻到那一节。
     if (target === 'account') {
@@ -70,7 +72,7 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
       if (landing.anchor) requestRowFocus('account', landing.anchor)
       setAccountTab((current) => ({ sequence: current.sequence + 1, value: landing.tab, rechargeAmount }))
     }
-    // 教程的 section 可以带「#某条补充说明的标题」：打开那一篇、展开那一条（技能页「看怎么放」）。
+    // 教程的 section 可以带「#某条补充说明的标题」：打开那一篇、展开那一条（原先给技能页「看怎么放」用，那颗按钮 10-24 去掉了，眼下没有地方这样跳）。
     if (target === 'tutorial' && section) {
       const mark = section.indexOf('#')
       const id = mark < 0 ? section : section.slice(0, mark)

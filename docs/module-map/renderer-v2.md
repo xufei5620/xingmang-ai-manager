@@ -25,8 +25,17 @@
 
 ## pages-\*.tsx 业务页（全部经 `pages-business.tsx` 懒加载）
 - `pages-business.tsx` — **业务页的懒加载入口**：App 用 `React.lazy` 只引它，它按页面 id 分发到下面几个文件，并把个人中心页签、教程主题、付款回跳这些跨页参数接下去。
-- `pages-maintenance.tsx` — 检查页（`HealthPage`：诊断分组、一键修复、连接检查）、反馈与客服（`FeedbackPage`：留言反馈、运行日志、复制/导出反馈报告）、设置页（`SettingsPage`：外观显示、启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新八组），并转出 `TutorialPage`；各业务页共用的 `BusinessActions` 参数类型也定义在这里。
-- `pages-management.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）与扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
+- `pages-maintenance.tsx` — 只做转出（#1070 第 11 步拆开）：检查、反馈与客服、设置三页和它们共用的两个文件都搬了出去（下面五条），原来从这里 import 的地方不用改；`TutorialPage` 也从这里转出。
+- `features/health/HealthPage.tsx` — 检查页（`HealthPage`：诊断分组、一键修复、连接检查，运行环境那几行的安装与换新版 Node.js）。
+- `features/feedback/FeedbackPage.tsx` — 反馈与客服（`FeedbackPage`：留言反馈、运行日志、复制/导出反馈报告，右边的「找客服」卡）。
+- `features/settings/SettingsPage.tsx` — 设置页（`SettingsPage`：外观显示、启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新八组，左栏搜索设置和快捷键弹窗）。
+- `business-actions.ts` — 各业务页共用的 `BusinessActions` 参数类型，连同装工具的结果、「找客服」卡、点名要落的反馈页签几个类型（只有类型）。
+- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页和扩展三页都用（扩展页经 `pages-maintenance` 拿，拆之前就这样）。
+- `pages-management.tsx` — 只做转出（#1070 第 11 步拆开）：记录页、扩展三页和它们共用的两个文件都搬了出去（下面四条），原来从这里 import 的地方（`pages-business.tsx`、`pages-featured.tsx`、测试）不用改。
+- `features/sessions/SessionsPage.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）。
+- `features/extensions/ExtensionsPage.tsx` — 扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
+- `features/extensions/extensions-common.tsx` — 扩展三页和「星芒精选」页共用的判断、解析和卡片：列表怎么分组、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的卡片和详情。
+- `features/tools/provider-options.ts` — 记录页和扩展三页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
 - `pages-account.tsx` — 个人中心（`AccountPage`）：账号概览、充值订阅、用量账单、密钥管理（含「配置到工具」写 Key）、账号安全、邀请返利六个页签的装配；下线的 Gemini 不替它写 Key、不列它的额度。
 - `pages-featured.tsx` — 「星芒精选」页：把随包精选清单摆成卡片，一次装进几个工具；装法和扩展页底下的精选是同一条路（不另开通道，主进程校验照样过一遍）。
 
@@ -168,9 +177,9 @@
 
 ## features/chat/ 桌面聊天（App 懒加载）
 - `features/chat/README.md` — 聊天页约定：同账号内只藏不卸、换账号按 scope 重建并取消旧请求；记录存主进程文件，localStorage 只作旧版迁移来源；写盘前剥掉凭据与运行时负载。
-- `features/chat/ChatPage.tsx` — 聊天页：会话栏、消息区、输入框（模式、分组和模型、画图选项、加图片）；等主进程把记录读回来才显示，避免空状态抢先自动保存覆盖记录。
-- `features/chat/useChatController.ts` — 聊天控制器：分组准备、发送/停止/重试、编辑重发、图片生成与取消、断网后重发；后台刷新只动元数据，不换用户的模型和草稿、不签 Key、不悄悄替换被吊销的分组。
-- `features/chat/state.ts` — 会话与消息的数据结构和纯操作：默认分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
+- `features/chat/ChatPage.tsx` — 聊天页：会话栏、消息区、输入框（模式、按厂商列全部分组模型的模型菜单、画图选项、加图片）；等主进程把记录读回来才显示，避免空状态抢先自动保存覆盖记录。
+- `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
+- `features/chat/state.ts` — 会话与消息的数据结构和纯操作：全部分组的模型表与厂商分节（`buildChatCatalog` / `chatModelVendor`）、同一模型几个分组都有时挑哪个计费（`pickChatGroup`）、记着的模型怎么落定（`settleChatModel`）、推荐分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
 - `features/chat/storage.ts` — 聊天记录读写：经主进程按对话分文件写盘、每次只重写改过的；写盘前剥掉 `sk-`、`Bearer`、`api_key=` 与 `blob:`、内联 base64（I13）；旧 localStorage 记录只读迁移，文件里有了才删旧副本。
 - `features/chat/transfer.ts` — 「搬到新电脑」里聊天记录那一半：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
 - `features/chat/api.ts` — 聊天 IPC 的封装；只复用 `electron/ai-chat-protocol` 里无 Node 依赖的模型能力与请求校验函数，不改协议。
@@ -178,6 +187,21 @@
 - `features/chat/links.ts` / `features/chat/math.ts` — 模型输出里的链接从不打开、只给复制，host 按 URL 解析认（`xm.solov.cc@evil.example` 显示真去处，I12 同理）；公式渲染成 MathML，不带字体文件、关掉 `\href` 等命令，CSP 不用放宽。
 - `features/chat/index.ts` — 本目录出口，App 懒加载时从这里取 `ChatPage`。
 - `features/chat/chat.css` — 聊天页样式（消息最宽 684、输入框最宽 740，悬停才露出的按钮）。
+
+## features/video-studio/ 视频剪辑（侧栏「视频剪辑」页和它的拼片引擎）
+- `features/video-studio/README.md` — 页面的流程和工程怎么存；拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
+- `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 「视频剪辑」页（经 `pages-business.tsx` 懒加载）：想法、分镜、拼成一条视频三张卡；没登录、历史账号各一个空状态；要花钱的先弹确认。片段用缩略图代表，点了交给系统播放器（主窗口 CSP 不放 `media-src`）。
+- `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、拼片、按账号存工程；停下时说清哪几段已经交给服务端、照样扣费。
+- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例）、`localStorage` 存取与逐字段校验（缩略图只认作品库的地址）。
+- `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
+- `features/video-studio/compose-worker.ts` — 后台线程本身，一个线程只拼一次。
+- `features/video-studio/compose.ts` — 用 mediabunny（MPL-2.0）读片段、逐帧画到 OffscreenCanvas 上烧字幕、WebCodecs 编码、写 MP4；画面一段接一段、每段画完接这一段的声音。
+- `features/video-studio/compose-protocol.ts` — 后台线程两头的消息格式与解析，片段字节与总量的上限。
+- `features/video-studio/timeline.ts` — 纯计算：成片尺寸（清晰度是短边）、每段的取材起点与成片帧位；48 kHz 能被 24/25/30 整除，画面和声音不会错开。
+- `features/video-studio/captions.ts` — 字幕断行（汉字按字、英文按词、标点不上行首）、字号与位置、白字黑描边。
+- `features/video-studio/pcm.ts` — 声音拼接：各段重采样成 48 kHz 立体声、只写自己的时间窗、空处补静音（mediabunny 自带的重采样只认第一段的采样率，所以在这里做）。
+- `features/video-studio/encoding.ts` — 挑编码器：画面 H.264 → VP9 → AV1，声音 AAC → Opus。
+- `features/video-studio/errors.ts` — 报错上屏一律中文，浏览器的英文错误换成能照着做的话。
 
 ## features/shell/ 外壳：侧栏、顶栏、状态栏、公告与断网
 - `features/shell/Shell.tsx` — **外壳**：侧栏（账号卡、余额与还能用几天、导航）、顶栏（面包屑、顶部搜索、铃铛）、状态栏（环境、网络、余额、版本）、侧栏收起。
@@ -202,6 +226,12 @@
 ## features/settings/ 与 features/tutorial/
 - `features/settings/VersionCard.tsx` — 设置 › 版本更新最上面的版本卡：当前版本、更新内容、下载进度与主按钮，撤回、要管理员密码、磁盘不够、失败几种提示；Windows 授权窗、Mac 钥匙串、Linux 系统安装窗口各有提前说明。
 - `features/settings/BackupCard.tsx` — 设置 › 备份迁移的备份列表、预览与恢复，恢复后提醒回首页看或重开工具；下线的 Gemini 不列。
+- `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。
+- `features/settings/codex-remote/channel-sections.tsx` — 各渠道那一块的登记表（`Record<RemoteChannelId, …>`，主进程加渠道这里漏了是编译错）：标题、提示句和填凭据的组件。
+- `features/settings/codex-remote/FeishuRemoteSection.tsx` — 飞书那一块：填 App ID / App Secret（附怎么建机器人的六步，只写字不放链接），填过了只显示 App ID。
+- `features/settings/codex-remote/WeixinRemoteSection.tsx` — 微信那一块（实验功能）：黄色提醒、扫码登录 / 重新扫码，扫码弹窗（二维码图由主进程给、手机上要输数字时换成输入框）；拿二维码走卡片的 `run`，弹窗里的轮询自己管（`useLatestRequest`），登录好了靠主进程推的快照变成「已登录」。
+- `features/settings/codex-remote/remote-view.ts` — 卡上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
+- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到设置里那张卡。
 - `features/tutorial/TutorialPage.tsx` — 教程页：分类按钮与搜索、两列卡片、文章与吸顶条、「读到第几步」；顶部搜索没结果时带字进来接着搜。
 - `features/tutorial/TutorialIllustration.tsx` — 教程每一步的示意插图（用界面同款图标拼出来，不是截图），每种插图配标题与说明。
 - `features/tutorial/tutorial-progress.ts` / `features/tutorial/tutorial-search.ts` — 教程卡上的「已完成 k / n 步」（只存本机 localStorage、只进不退，不为它开主进程通道）和教程页与顶部搜索共用的分词匹配、高亮。
@@ -252,6 +282,7 @@
 - `styles/contrast.browser-check.mjs` — 用 Chromium 的 forced-colors 模拟查高对比度样式；具体某个 Windows 主题长什么样仍要人工看。
 - `features/auth/browser-check.mjs` / `features/auth/browser-fixture.tsx` / `features/auth/browser-fixture.html` — 登录、注册、找回、引导的浏览器回归与它的假接口（可模拟人机验证、状态读取失败、登录失败、两步验证）；部分用例改开整页夹具。
 - `features/chat/browser-check.mjs` / `features/chat/browser-fixture.tsx` / `features/chat/browser-fixture.html` — 聊天页回归与夹具，用 IndexedDB 冒充主进程的记录文件（跨 reload 存活、没有 localStorage 配额限制）。
+- `features/video-studio/browser-check.mjs` / `features/video-studio/browser-fixture.ts` / `features/video-studio/browser-fixture.html` — 拼片引擎在真浏览器里跑：页面现做几段纯色片段，拼完解出来量颜色、字幕像素、音量，并核对后台线程、取消和读不了的文件。
 - `ui/browser-check.mjs` — 组件层交互检查，开的是 `gallery.html`。
 
 ## gallery 组件检阅
@@ -269,7 +300,7 @@
 - **跨页落点统一是「模块里放一个待取槽」**：`features/app/settings-group-intent.ts`、`row-focus.ts`、`extension-tool-intent.ts`，以及 `update-retry.ts` 的安装确认请求；配合 App 「去过的页只藏不卸」使用。依据：这几个文件头注释。
 - **本机存储**：localStorage 只放本机便利项，键名多用 `xingmang-ui-v2:` 前缀（引导进度、教程进度、首次命令卡、旧聊天记录、手选来源、头像、公告已读等），读写都包 try/catch（`features/app/preferences.ts` 及各模块自带的 storage 注入）；聊天记录与公告已读已迁到主进程，localStorage 只作迁移来源。依据：`features/chat/storage.ts`、`features/shell/newapi-announcements.ts`、`features/auth/guide-progress.ts`、`features/tutorial/tutorial-progress.ts`。
 - **有意重复的字面量**：`features/tools/connection-check.ts` ↔ `electron/connection-check.ts`（层名）、`features/auth/account-errors.ts` ↔ legacy `src/components/account/account-errors.ts`、`business-common.tsx` ↔ legacy `src/error-message.ts`。理由都是 I6/I7（渲染层不能值引带 Node 依赖的模块、两棵树互不引用）。依据：各文件头注释。
-- **下线的 Gemini 在界面层逐处过滤**，统一用 `electron/catalog` 的 `activeProviderIds` / `isActiveProviderId`：`features/tools/model.ts`、`features/tools/recent-workspaces.ts`、`features/settings/BackupCard.tsx`、`pages-account.tsx`、`pages-management.tsx`、`features/auth/guide-progress.ts`、`registry/clients.ts`。依据：这些文件里的注释。
+- **下线的 Gemini 在界面层逐处过滤**，统一用 `electron/catalog` 的 `activeProviderIds` / `isActiveProviderId`：`features/tools/model.ts`、`features/tools/recent-workspaces.ts`、`features/settings/BackupCard.tsx`、`pages-account.tsx`、`features/tools/provider-options.ts`（记录页和扩展三页）、`features/auth/guide-progress.ts`、`registry/clients.ts`。依据：这些文件里的注释。
 - **分号风格边界**：`ui/`、`registry/`、`gallery*.tsx` 带行尾分号，其余不带，由 `scripts/verify-renderer-style.test.cjs` 钉住（它的清单里点名了 `gallery.tsx`、`gallery-entry.tsx`）。依据：该脚本与 `.claude/rules/renderer-v2.md`。
 - **`styles/tokens.css` 直接 `@import` 了 `ui-spec/tokens.css`**，改 ui-spec 的令牌就是改产品界面。依据：`styles/tokens.css` 第一行。
-- **浏览器回归的夹具分三种**：整页夹具 `testing/app.html`（acceleration、shell 三个、tools、contrast、app-check、部分 auth 用例）、各功能自带夹具（auth、chat）、组件检阅页 `gallery.html`（ui）。`npm run check:v2` 另由 `e2e/renderer-v2-testid-inventory.cjs` 盘点 data-testid。依据：各 browser-check.mjs 里打开的路径、`package.json`。
+- **浏览器回归的夹具分三种**：整页夹具 `testing/app.html`（acceleration、shell 三个、tools、contrast、app-check、部分 auth 用例）、各功能自带夹具（auth、chat、video-studio）、组件检阅页 `gallery.html`（ui）。`npm run check:v2` 另由 `e2e/renderer-v2-testid-inventory.cjs` 盘点 data-testid。依据：各 browser-check.mjs 里打开的路径、`package.json`。

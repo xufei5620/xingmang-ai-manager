@@ -14,13 +14,9 @@ const MAX_INPUT_IMAGES = 4
 const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
 const REQUEST_TIMEOUT_MS = 300_000
 const DEFAULT_MODEL = 'gpt-image-2'
-const ALLOWED_MODELS = new Set([
-  'gpt-image-1',
-  'gpt-image-1.5',
-  'gpt-image-2',
-  'gpt-image-2.5-flare',
-  'gpt-image-2.5-sunburst',
-])
+// 只用 OpenAI 的 gpt-image 系列，认法跟星芒主程序（xingmang-ai-skill.ts）和 generate.mjs 同一条：
+// 以前这里只认写死的 5 个，站上换代后主程序写进来的新型号会被悄悄换回 gpt-image-2（#1059）。
+const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
 // This standalone script cannot import the desktop registry. Trust exact TLS
 // origins instead of permitting other services on the same host to receive the
 // account's keys. The desktop app rewrites this skill's base URL to the active
@@ -104,10 +100,10 @@ async function readConfig() {
   return { origin, keys, model: configuredModel(parsed) }
 }
 
-// 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型挑一个写进 model；没有或不在白名单里就用 gpt-image-2。
+// 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型挑一个写进 model；没有或不是 gpt-image 系列就用 gpt-image-2。
 function configuredModel(parsed) {
   const model = typeof parsed.model === 'string' ? parsed.model.trim() : ''
-  return ALLOWED_MODELS.has(model) ? model : DEFAULT_MODEL
+  return OPENAI_IMAGE_MODEL_PATTERN.test(model) ? model : DEFAULT_MODEL
 }
 
 async function defaultModel() {
@@ -130,7 +126,7 @@ function schema(model) {
         maxItems: MAX_INPUT_IMAGES,
         description: '改图时填要修改的原图（PNG、JPEG 或 WebP）的完整路径；画新图时不填',
       },
-      model: { type: 'string', enum: [...ALLOWED_MODELS], default: model },
+      model: { type: 'string', default: model, description: '一般不填，用星芒为当前账号挑好的模型；要换就写 gpt-image- 开头的完整型号名' },
       size: { type: 'string', description: '例如 1024x1024、1536x1024、1024x1536 或 auto；gpt-image-2 的宽高要是 16 的倍数' },
       quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], default: 'low' },
       background: { type: 'string', enum: ['opaque', 'transparent', 'auto'], default: 'opaque' },
@@ -161,7 +157,7 @@ function parseArguments(argumentsValue) {
   if (!prompt) throw new ImageError('图片描述不能为空')
   // 没点名就留空，等读到配置再用星芒挑好的那个。
   const model = argumentsValue.model === undefined ? undefined : textValue(argumentsValue.model, '', 80)
-  if (model !== undefined && !ALLOWED_MODELS.has(model)) throw new ImageError('图片模型不在允许列表中')
+  if (model !== undefined && !OPENAI_IMAGE_MODEL_PATTERN.test(model)) throw new ImageError('图片模型不在允许列表中')
   const size = textValue(argumentsValue.size, '1024x1024', 32)
   if (size !== 'auto' && !/^(\d{2,5})x(\d{2,5})$/.test(size)) throw new ImageError('图片尺寸格式错误')
   const quality = textValue(argumentsValue.quality, 'low', 16)

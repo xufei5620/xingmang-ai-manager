@@ -4,6 +4,7 @@ import * as TOML from '@iarna/toml'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import type { ProviderId } from './catalog'
+import { isRecord } from './input-guards'
 
 /**
  * 本软件只写用户级配置（~/.claude/settings.json、~/.codex、~/.gemini …），但几家
@@ -87,7 +88,7 @@ const MAX_WALK_DEPTH = 64
 const claudeBaseUrlKeys = ['ANTHROPIC_BASE_URL'] as const
 // 这几个开关打开后 Claude Code 直接改走云厂商，服务地址与密钥都不再是当前账号的。
 // 名字取自 2.1.277 可执行文件里的字符串，没见过的一律不猜。从星芒打开时不带它们、
-// 检查页报它们，都用这一份（system-service.ts、diagnostics.ts，#1157 第 11 条）。
+// 检查页报它们，都用这一份（provider-launch-service.ts、diagnostics-override-checks.ts，#1157 第 11 条）。
 export const claudePlatformSwitches = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
@@ -95,10 +96,6 @@ export const claudePlatformSwitches = [
   'CLAUDE_CODE_USE_ANTHROPIC_AWS',
   'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
 ] as const
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function nonEmptyString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -383,7 +380,7 @@ function inspectCodex(workspace: string, context: WorkspaceOverrideContext): Wor
 
 // 不信任这个文件夹时下面那几样 Gemini 都不读了，自己开终端反正用不上当前账号，只报这一条。
 // 本软件打开 Gemini 时会替没记过的文件夹写上信任（trustManagedWorkspace），客户自己选过
-// 「Don't trust」的不替他改（config-files.ts 的 trustGeminiWorkspaceInTrustedFoldersText）。
+// 「Don't trust」的不替他改（gemini-retired.ts 的 trustGeminiWorkspaceInTrustedFoldersText）。
 function inspectGeminiFolderTrust(workspace: string, context: WorkspaceOverrideContext): WorkspaceConfigOverride | null {
   const api = pathApi(context.platform)
   const settings = readSettingsFile(api.join(context.home, '.gemini', 'settings.json'))

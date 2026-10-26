@@ -880,6 +880,44 @@ describe('Claude Desktop official login switch', () => {
       configurationSource: 'xingmang', configurationError: null })
   })
 
+  it('switches back onto the current route when the route changed during the official login (#1112)', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    await f.service.useOfficialLogin()
+    // Claude Desktop 自己重写过这份：四个空格缩进、CRLF，地址末尾带一个斜杠。
+    const profile = JSON.stringify({ ...read(saved.path), inferenceGatewayBaseUrl: `${input.baseUrl}/` }, null, 4).replaceAll('\n', '\r\n')
+    fs.writeFileSync(saved.path, profile, 'utf8')
+    const others = snapshot([f.metadataPath, markerPath(f)])
+    const direct = 'https://xm-direct.solov.cc'
+    // 归属按这份现在所在的那条线路认。
+    const owned = vi.fn((key: string, baseUrl: string) => key === input.apiKey && baseUrl === input.baseUrl)
+
+    const result = await f.service.useGatewayLogin(direct, owned, [input.baseUrl, direct])
+    expect(result).toEqual({ outcome: 'switched', path: f.configPath, backups: [expect.any(String), expect.any(String)],
+      moved: { from: input.baseUrl, apiKey: input.apiKey } })
+    expect(owned).toHaveBeenCalledWith(input.apiKey, input.baseUrl)
+    expect(read(f.configPath)).toEqual({ deploymentMode: '3p' })
+    // 只换了地址，别的字和排版照原样；改前那份留了备份。
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(profile.replace(`"${input.baseUrl}/"`, `"${direct}"`))
+    expect(result.outcome === 'switched' && result.backups.map((backup) => fs.readFileSync(backup, 'utf8'))).toContain(profile)
+    expectSnapshot(others)
+    expect(await f.service.inspectConnection(direct, belongs)).toEqual({ configured: true, configurationReady: true, model: 'claude-opus-5',
+      configurationSource: 'xingmang', configurationError: null })
+  })
+
+  it.each([
+    // 换线路那边换过、客户端退出时又把旧的那份写了回来：归属已经记在当前线路上，不替它认回去。
+    ['its key is recorded on the current route only', (key: string, baseUrl: string) => key === input.apiKey && baseUrl === 'https://xm-direct.solov.cc'],
+    ['its key belongs to another account', () => false],
+  ])('asks to connect again without writing when the toolbox profile left on the old route %s', async (_case, owned) => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    await f.service.useOfficialLogin()
+    const previous = snapshot([f.configPath, f.metadataPath, markerPath(f), saved.path])
+    await expect(f.service.useGatewayLogin('https://xm-direct.solov.cc', owned, [input.baseUrl, 'https://xm-direct.solov.cc'])).resolves.toEqual({ outcome: 'reconnect' })
+    expectSnapshot(previous)
+  })
+
   it('reports the official login even when the toolbox never saved a profile', async () => {
     const f = fixture()
     write(f.configPath, { deploymentMode: '1p' })
@@ -1080,6 +1118,16 @@ describe('Claude Desktop write snapshots', () => {
     commit.mockClear()
     expect(await f.service.useGatewayLogin(input.baseUrl, belongs)).toMatchObject({ outcome: 'switched' })
     expect(committed()).toEqual({ plans: [f.configPath], snapshots: before })
+  })
+
+  it('also writes the toolbox profile when switching back from the official login onto another route', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    await f.service.useOfficialLogin()
+    const before = onDisk([f.configPath, f.metadataPath, markerPath(f), saved.path])
+    commit.mockClear()
+    expect(await f.service.useGatewayLogin('https://xm-direct.solov.cc', belongs, [input.baseUrl])).toMatchObject({ outcome: 'switched' })
+    expect(committed()).toEqual({ plans: [saved.path, f.configPath], snapshots: before })
   })
 })
 

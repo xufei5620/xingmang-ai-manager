@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import { staleConfigBackups, uniqueConfigBackupPath } from './config-file-backups'
+import { isRecord } from './input-guards'
 import { resolveRelocatedPath } from './relocated-folders'
 import {
   assertNoReparseComponents,
@@ -17,7 +18,7 @@ import {
 // 技能、星芒画图技能跟着账号开关、Codex 桌面端语言。以前四处各读各写（#1068）：中间隔着 await
 // 的那几处会把这段时间里别处刚写进去的改动整份盖掉，两处不留备份，两处整份重写把客户的注释抹掉。
 //
-// 整个读、改、写是同步的，中间不让出事件循环。保存配置的事务（config-files.ts 的
+// 整个读、改、写是同步的，中间不让出事件循环。保存配置的事务（config-files-context.ts 的
 // executeFilePlans）本来就是同步的，所以本进程里谁也插不进这一段，不用另排一个队：排队只管得住
 // 进了队的，那个事务要进队就得整条改成异步。别的程序（Codex 自己）同时写不在这里管。
 
@@ -135,15 +136,16 @@ function replaceTomlFile(target: string, content: string, label: string): string
   return backupPath
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)
+// @iarna/toml 把日期时间解析成 Date，它是对象但不是表。
+function isTomlTable(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !(value instanceof Date)
 }
 
 /** 按键一层层往下找，路上哪一层不是表就返回 undefined。 */
 export function tomlValueAt(config: Record<string, unknown>, keyPath: readonly string[]): unknown {
   let node: unknown = config
   for (const key of keyPath) {
-    if (!isRecord(node)) return undefined
+    if (!isTomlTable(node)) return undefined
     node = node[key]
   }
   return node
@@ -177,7 +179,7 @@ function tomlHeader(line: string): TomlHeader | null {
   const keyPath: string[] = []
   for (;;) {
     if (Array.isArray(node)) node = node[node.length - 1]
-    if (!isRecord(node)) return null
+    if (!isTomlTable(node)) return null
     const keys = Object.keys(node)
     if (keys.length !== 1) return null
     if (keys[0] === headerProbeKey) return { keyPath, array: /^\s*\[\[/.test(line) }
@@ -294,9 +296,9 @@ export function editTomlTableText(
 ): string | null {
   const was = tomlValueAt(before, keyPath)
   const now = tomlValueAt(after, keyPath)
-  if (!isRecord(now)) return null
+  if (!isTomlTable(now)) return null
   if (was === undefined) return appendTomlText(source, nestTomlValue(keyPath, now))
-  if (!isRecord(was)) return null
+  if (!isTomlTable(was)) return null
   return editTomlEntryText(source, { keyPath }, was, now)
 }
 
@@ -320,7 +322,7 @@ export function editTomlArrayTableText(
     const entry = was[index]
     const next = now[index]
     if (isDeepStrictEqual(entry, next)) continue
-    if (!isRecord(entry) || !isRecord(next)) return null
+    if (!isTomlTable(entry) || !isTomlTable(next)) return null
     content = editTomlEntryText(content, { keyPath, index }, entry, next)
   }
   if (content === null) return null
@@ -359,6 +361,32 @@ function removeTomlSectionText(source: string, section: { keyPath: readonly stri
   const lines = source.split(/(?<=\n)/)
   const range = findTomlSection(lines, section.keyPath, section.index)
   if (!range) return null
+  removeTomlSectionLines(lines, range)
+  return lines.join('')
+}
+
+/**
+ * 拿掉 keyPath 那张表连同它下面各自单占表头的子表（[mcp_servers.docs] 和 [mcp_servers.docs.env]），
+ * 每段的拿法同上。一段也没找到返回 null；写在上一层里的（行内表、点号键）也找不到，交给
+ * renderTomlEdit 整份重写。
+ */
+export function removeTomlTableText(source: string, keyPath: readonly string[]): string | null {
+  const lines = source.split(/(?<=\n)/)
+  const sections: Array<{ header: number; end: number }> = []
+  for (let line = 0; line < lines.length; line += 1) {
+    const parsed = tomlHeader(lineText(lines[line] ?? ''))
+    if (!parsed) continue
+    const previous = sections[sections.length - 1]
+    if (previous && previous.end === lines.length) previous.end = line
+    if (keyPath.every((key, index) => parsed.keyPath[index] === key)) sections.push({ header: line, end: lines.length })
+  }
+  if (!sections.length) return null
+  // 从后往前删，前面那几段的表头还在原来那行；后一段连它前面的空行一起拿掉时，前一段的结尾跟着收回来。
+  for (const range of sections.reverse()) removeTomlSectionLines(lines, { header: range.header, end: Math.min(range.end, lines.length) })
+  return lines.join('')
+}
+
+function removeTomlSectionLines(lines: string[], range: { header: number; end: number }): void {
   const blank = (line: number) => !lineText(lines[line] ?? '').trim()
   let last = range.header
   for (let line = range.end - 1; line > range.header; line -= 1) {
@@ -373,7 +401,6 @@ function removeTomlSectionText(source: string, section: { keyPath: readonly stri
   let start = range.header
   if (end === lines.length) while (start > 0 && blank(start - 1)) start -= 1
   lines.splice(start, end - start)
-  return lines.join('')
 }
 
 function editTomlEntryText(

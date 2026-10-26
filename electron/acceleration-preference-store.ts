@@ -18,6 +18,7 @@
  */
 import path from 'node:path'
 import { isAccelerationLineId, type AccelerationMode, type AccelerationPreference, type AccelerationPreferenceApi, type AccelerationPreferenceUpdate } from './acceleration-contract'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 
 const storeLabel = '加速线路偏好'
@@ -42,10 +43,6 @@ export interface AccelerationPreferenceStore extends AccelerationPreferenceApi {
 interface StoredPreferences {
   version: 1
   accounts: Record<string, AccelerationPreference>
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function parseMode(value: unknown): AccelerationMode | null {

@@ -53,7 +53,9 @@ export function payableSymbol(provider: string | undefined): string {
   return provider === 'epay' ? '¥' : ''
 }
 
-function formatAmount(value: number): string {
+// 充值这一页的金额（档位到账、套餐价、订单标题）只有这一种写法：整数不带小数，其余两位小数，
+// 不加千分位。余额那种 $23,456.78 走 business-common 的 dollars，两种别混用。
+export function formatAmount(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2)
 }
 

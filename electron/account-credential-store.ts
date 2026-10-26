@@ -7,6 +7,7 @@ import {
 } from './safe-local-data'
 import type { SafeStorageLike } from './account-session-store'
 import { isSafeStorageUsable } from './safe-storage-backend'
+import { isRecord } from './input-guards'
 
 // Persists the "记住密码" login credential -- the identifier + password the
 // user asked the login dialog to keep. Same posture as account-session-store:
@@ -15,8 +16,8 @@ import { isSafeStorageUsable } from './safe-storage-backend'
 // correct (and already-established) treatment. The plaintext only ever
 // crosses IPC on the dedicated account:get-remembered-login channel -- the
 // same "explicit reveal channel" pattern config:reveal-api-key set (I3) --
-// and both channels are in ipc.ts's quiet set so neither the value nor its
-// shape reaches the runtime log (I13).
+// and both channels are quiet-success in ipc-channel-policy.ts so neither the
+// value nor its shape reaches the runtime log (I13).
 
 const CURRENT_VERSION = 1
 const MAX_FILE_BYTES = 64 * 1024
@@ -26,10 +27,6 @@ export interface PersistedAccountCredentials {
   version: 1
   identifier: string
   password: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 export function isPersistedAccountCredentials(value: unknown): value is PersistedAccountCredentials {

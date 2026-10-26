@@ -299,10 +299,10 @@ test('the Windows required job tests and compiles the default renderer v2', () =
 
 test('splitting the Windows job did not drop a suite it used to run', () => {
   // The split is a wall-clock change and nothing else, so the shards have to
-  // add up to exactly what the one job ran. vitest --shard partitions by a
-  // hash of each file's path: the shards reconstitute the unsharded file set,
-  // but only while every shard is actually dispatched, which is what the
-  // exhaustiveness check below is for.
+  // add up to exactly what the one job ran. vitest --shard partitions the
+  // files (by measured time, through vitest.config.ts's sequencer): the shards
+  // reconstitute the unsharded file set, but only while every shard is
+  // actually dispatched, which is what the exhaustiveness check below is for.
   const scripts = packageJson.scripts
   const shardCommands = windowsShardCommands()
 
@@ -318,7 +318,7 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:windows'], undefined,
     'test:windows became a duplicate of npm test and must stay deleted')
 
-  for (const [script, count] of [['test:vitest', 3]]) {
+  for (const [script, count] of [['test:vitest', 4]]) {
     for (let index = 1; index <= count; index += 1) {
       assert.ok(shardCommands.includes(`npm run ${script}:${index}`), `the matrix must dispatch ${script}:${index}`)
     }
@@ -326,12 +326,13 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
       `${script} declares a shard the matrix never dispatches`)
   }
 
-  // The vitest thirds are the same command plus the flag that selects the
-  // third, so the suite, its serialisation and its 30s timeout cannot drift
+  // The vitest quarters are the same command plus the flag that selects the
+  // quarter, so the suite, its serialisation and its 30s timeout cannot drift
   // between them.
-  assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/3')
-  assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/3')
-  assert.equal(scripts['test:vitest:3'], 'npm run test:vitest -- --shard=3/3')
+  assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/4')
+  assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/4')
+  assert.equal(scripts['test:vitest:3'], 'npm run test:vitest -- --shard=3/4')
+  assert.equal(scripts['test:vitest:4'], 'npm run test:vitest -- --shard=4/4')
 
   // quality.yml runs test:v2:browser whole nowhere (the release gates still run
   // test:v2 whole). The two suites that bring a Vite cacheDir of their own get a
@@ -452,6 +453,67 @@ test('every script suite is run by some npm script', () => {
     .map((name) => `scripts/${name}`)
   assert.ok(suites.length > 0, 'scripts/ must still hold its suites')
   assert.deepEqual(suites.filter((suite) => !named.has(suite)), [])
+})
+
+// --shard used to slice vitest's hash-sorted file list into equal counts, and
+// the hash had put four of the five slowest Windows suites in the first third
+// (12.7 minutes against 6.0 and 4.1). vitest.config.ts now hands --shard to a
+// sequencer that deals the files by measured time; these pin that the deal is
+// still a partition every runner computes alike, and that the slow suites it
+// exists for really are spread.
+test('the vitest shards deal every file to one shard and the slow suites apart', async () => {
+  const shards = await import(require('node:url').pathToFileURL(path.join(root, 'scripts', 'vitest-shards.mjs')).href)
+  const vitestConfigSource = fs.readFileSync(path.join(root, 'vitest.config.ts'), 'utf8')
+  assert.match(vitestConfigSource, /import \{ dealTestFiles \} from '\.\/scripts\/vitest-shards\.mjs'/)
+  assert.match(vitestConfigSource, /sequence: \{ sequencer: MeasuredShardSequencer \}/)
+
+  // The files test:vitest resolves: every *.test.ts(x) under electron/, src/
+  // and canvas-v2/src/, which is what its three projects include.
+  function testFiles(directory) {
+    return fs.readdirSync(path.join(root, directory), { withFileTypes: true }).flatMap((entry) => {
+      const relative = `${directory}/${entry.name}`
+      if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : testFiles(relative)
+      return /\.test\.tsx?$/.test(entry.name) ? [relative] : []
+    })
+  }
+  const files = ['electron', 'src', 'canvas-v2/src'].flatMap(testFiles).sort()
+  assert.ok(files.length > 500, 'the walk must still find the vitest suites')
+
+  // A renamed or deleted suite must not leave a weight behind that no longer
+  // weighs anything.
+  const measured = Object.keys(shards.measuredSeconds)
+  assert.deepEqual(measured.filter((file) => !files.includes(file)), [],
+    'every measured suite in scripts/vitest-shards.mjs must still exist')
+
+  const count = windowsShardCommands().filter((command) => /^npm run test:vitest:\d+$/.test(command)).length
+  assert.equal(packageJson.scripts['test:vitest:1'], `npm run test:vitest -- --shard=1/${count}`)
+  const dealt = shards.dealTestFiles(files, count)
+  assert.equal(dealt.length, files.length)
+  assert.ok(dealt.every((shard) => Number.isInteger(shard) && shard >= 1 && shard <= count))
+  for (let shard = 1; shard <= count; shard += 1) {
+    assert.ok(dealt.includes(shard), `shard ${shard} must receive files`)
+  }
+
+  // Every runner resolves the same files but need not list them in the same
+  // order, so the deal must not depend on it.
+  const shardOf = new Map(files.map((file, position) => [file, dealt[position]]))
+  const reversed = [...files].reverse()
+  assert.deepEqual(shards.dealTestFiles(reversed, count), reversed.map((file) => shardOf.get(file)))
+
+  const slowest = Object.entries(shards.measuredSeconds).sort(([, left], [, right]) => right - left).slice(0, count)
+  assert.equal(new Set(slowest.map(([file]) => shardOf.get(file))).size, count,
+    `the ${count} slowest suites must land in ${count} different shards`)
+
+  // Planned in the table's own seconds, no shard may carry much more than an
+  // even share. A suite that outgrows a shard on its own fails here; cut that
+  // file rather than adding a runner.
+  const loads = new Array(count).fill(0)
+  files.forEach((file, position) => {
+    loads[dealt[position] - 1] += shards.measuredSeconds[file] ?? shards.unmeasuredSeconds
+  })
+  const evenShare = loads.reduce((sum, load) => sum + load, 0) / count
+  assert.ok(Math.max(...loads) <= evenShare * 1.1, `planned shards ${loads.join(', ')} must stay near ${evenShare}`)
+  assert.throws(() => shards.dealTestFiles(files, 0), /shard count must be a positive integer/)
 })
 
 // The shares above only add up to the whole file while the deal gives every
@@ -613,9 +675,9 @@ test('each platform runs every vitest file once, through npm test or its shards'
   assertVitestRunCovers('test:vitest', 'test:canvas')
   assert.equal(packageJson.scripts.test.split('&&')[0].trim(), 'npm run test:vitest')
 
-  // Each platform runs the whole of test:vitest: Windows as the three shards the
+  // Each platform runs the whole of test:vitest: Windows as the four shards the
   // split test above pins, Linux and macOS inside `npm test`.
-  for (let index = 1; index <= 3; index += 1) {
+  for (let index = 1; index <= 4; index += 1) {
     assert.ok(windowsShardCommands().includes(`npm run test:vitest:${index}`), `Windows must dispatch test:vitest:${index}`)
   }
   assert.ok(runSteps('linux-test').includes('npm test'), 'linux-test must run npm test')
@@ -1450,6 +1512,7 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/ui/browser-check.mjs',
   'src/renderer-v2/styles/contrast.browser-check.mjs',
   'src/renderer-v2/features/shell/keyboard.browser-check.mjs',
+  'src/renderer-v2/features/video-studio/browser-check.mjs',
   // Opens its pages through the harness rather than browser.newPage(), so the
   // scan below never saw it; it clicked straight after page.goto on a 7s action
   // default. Found by the Windows-shard check further down.

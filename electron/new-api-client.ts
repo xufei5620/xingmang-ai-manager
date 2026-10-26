@@ -10,6 +10,7 @@ import { relaySites } from './relay-sites'
 import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
 import type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
+import { isRecord } from './input-guards'
 export type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
 
 // xm.solov.cc runs QuantumNous/new-api (rc.22, custom branch). Most endpoints
@@ -1011,6 +1012,10 @@ export const twoFactorExpiredMessage = '等太久了，请重新输入密码登�
 export const twoFactorInvalidCodeMessage = '验证码不对或已过期，请看验证器里最新的数字再试'
 export const twoFactorRateLimitedMessage = '试得太频繁了，请过一会儿再试'
 
+// 只读数据的那几样（用量看板、调用明细、异步任务、密钥列表）续期成功后还被回 401 时上屏的话。
+// 不能带「401」「请重新登录」「登录已过期」：渲染层按这些字把它认成登录失效，又叫人去重新登录。
+export const readRefusedAfterRefreshMessage = '服务器拒绝了这一项查询，但登录没有失效，不用重新登录。请稍后重试；还不行，到「反馈与客服」页把报告发给客服。'
+
 /**
  * Password accepted, second factor still owed. The flow token is the only
  * thing that can finish this login, so it lives in a private field: neither
@@ -1107,10 +1112,6 @@ interface NewApiRawResponse {
   headers: Headers
   /** 走的线路、状态码、请求编号：读回应时出的错挂上它，日志记得出服务器回了什么（request-diagnostics.ts）。 */
   diagnostics: RequestDiagnostics
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function asString(value: unknown, fallback: string): string {
@@ -2820,11 +2821,20 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // nothing about the refresh cookie. Clearing here used to sign people out
   // and drop the account from the vault on a network blip. The refresh error
   // is rethrown so callers classify it as unreachable, not as expired.
+  //
+  // keepSessionOnRefusal: the read-only data endpoints (dashboard, usage log,
+  // task log, key list) say nothing about the login itself. When the refresh
+  // endpoint has just accepted the cookie and the retried call still answers
+  // 401, that one endpoint is refusing this account, not the login ending.
+  // Clearing there signed people out every time they opened 用量账单, and
+  // signing in again could never help. Only that request fails; a login that
+  // really is dead is caught by the next refresh, which clears as before.
   const retryAfterSilentRefresh = async <T>(
     failedSession: InternalSession,
     run: (current: InternalSession) => Promise<T>,
     originalError: NewApiAuthenticationError,
     allowSessionClear: boolean,
+    keepSessionOnRefusal: boolean,
   ): Promise<T> => {
     let refreshed: InternalSession
     try {
@@ -2842,12 +2852,19 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       return result
     } catch (retryError) {
       assertCurrentOwner(refreshed)
-      if (retryError instanceof NewApiAuthenticationError && session === refreshed) setSession(null)
+      if (retryError instanceof NewApiAuthenticationError) {
+        if (keepSessionOnRefusal) throw carryRequestDiagnostics(retryError, new Error(readRefusedAfterRefreshMessage))
+        if (session === refreshed) setSession(null)
+      }
       throw retryError
     }
   }
 
-  const withSession = async <T>(run: (current: InternalSession) => Promise<T>, allowSessionClear = false): Promise<T> => {
+  const withSession = async <T>(
+    run: (current: InternalSession) => Promise<T>,
+    allowSessionClear = false,
+    keepSessionOnRefusal = false,
+  ): Promise<T> => {
     const current = requireSession()
     try {
       const result = await run(current)
@@ -2856,9 +2873,13 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     } catch (error) {
       assertCurrentOwner(current)
       if (!(error instanceof NewApiAuthenticationError)) throw error
-      return await retryAfterSilentRefresh(current, run, error, allowSessionClear)
+      return await retryAfterSilentRefresh(current, run, error, allowSessionClear, keepSessionOnRefusal)
     }
   }
+
+  // getUsage, getDashboard, getTasks and listKeys: a 401 that survives a
+  // successful refresh fails only that read (retryAfterSilentRefresh).
+  const withReadSession = <T>(run: (current: InternalSession) => Promise<T>): Promise<T> => withSession(run, false, true)
 
   const getStatus = async (): Promise<NewApiAccountStatus> => {
     const raw = await performRequest(ctx, statusPath, { method: 'GET' }, '账号服务状态查询')
@@ -3410,7 +3431,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   )
 
   const getUsage = (input: NewApiAccountUsageQuery = {}): Promise<NewApiAccountUsagePage> => (
-    withSession(async (current) => {
+    withReadSession(async (current) => {
       if (['startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType'].some((key) => input[key as keyof NewApiAccountUsageQuery] !== undefined)) {
         throw new TypeError('当前账号不支持这些用量筛选条件')
       }
@@ -3459,7 +3480,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   )
 
   const getDashboard = (input: NewApiAccountDashboardQuery): Promise<NewApiAccountDashboardData> => (
-    withSession(async (current) => {
+    withReadSession(async (current) => {
       const params = new URLSearchParams({
         start_timestamp: String(input.startTimestamp),
         end_timestamp: String(input.endTimestamp),
@@ -3478,7 +3499,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   )
 
   const getTasks = (input: NewApiAccountTaskQuery = {}): Promise<NewApiAccountTaskPage> => (
-    withSession(async (current) => {
+    withReadSession(async (current) => {
       const params = new URLSearchParams()
       if (Number.isInteger(input.page) && (input.page as number) >= 1) params.set('p', String(input.page))
       if (Number.isInteger(input.pageSize) && (input.pageSize as number) >= 1) params.set('page_size', String(input.pageSize))
@@ -3500,7 +3521,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   )
 
   const listKeys = (input: NewApiAccountKeysQuery = {}): Promise<NewApiAccountKeysPage> => (
-    withSession(async (current) => {
+    withReadSession(async (current) => {
       const params = new URLSearchParams()
       if (Number.isInteger(input.page) && (input.page as number) >= 1) {
         params.set('p', String(input.page))
@@ -3546,7 +3567,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const revokeKey = (id: number): Promise<void> => (
     withSession(async (current) => {
-      // Defense in depth: ipc.ts's parseAccountRevokeKeyId already rejects
+      // Defense in depth: ipc/parsers/account-keys.ts's parseAccountRevokeKeyId already rejects
       // anything unsafe before it reaches here, but this client is also
       // callable directly by other main-process code and its own tests, so
       // the guard belongs here too rather than solely at the IPC boundary
@@ -3660,7 +3681,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       const originalPassword = input.originalPassword
       const newPassword = input.newPassword
       // Not trimmed: both must be forwarded exactly as typed, same reasoning
-      // as parseAccountLoginInput's password field in ipc.ts.
+      // as parseAccountLoginInput's password field in ipc/parsers/account.ts.
       if (!originalPassword) throw new Error('请输入原密码')
       if (!newPassword) throw new Error('请输入新密码')
       // rc.40 changes nothing without a one-time proof of the current password

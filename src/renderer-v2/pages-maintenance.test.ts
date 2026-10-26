@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
@@ -13,6 +14,10 @@ import { errors } from './registry/errors'
 import { statuses } from './registry/status'
 import { accelerationTrialSeconds } from '../../electron/acceleration-contract'
 import { runtimeButtonLabel, runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
+import * as healthPage from './features/health/HealthPage'
+import * as feedbackPage from './features/feedback/FeedbackPage'
+import * as settingsPage from './features/settings/SettingsPage'
+import * as installResult from './features/tools/install-result'
 
 const pageIds = new Set<string>(pages.map((page) => page.id))
 const pageLabels = new Map<string, string>(
@@ -286,12 +291,14 @@ describe('tutorial topics', () => {
     expect(text).not.toContain('口令')
     // 托盘菜单（#326）是主窗口缩起来时唯一的开关入口。
     expect(text).toContain('托盘')
-    // 两处「自己连」：下载那条不改网络设置；Codex 桌面端那条悄悄连、不弹通知、加速页上
-    // 看不见、用完就断（#707 起不扣时长，yoyo 2026-10-01 定「悄悄连」，2026-10-02 定
-    // 「不在游戏加速那边体现」、结束后断开）。
-    expect(text).toContain('不计入免费时长')
+    // 「自己连」只剩 Codex 桌面端那条：悄悄连、不弹通知、加速页上看不见、用完就断（#707 起不扣时长，
+    // yoyo 2026-10-01 定「悄悄连」，2026-10-02 定「不在游戏加速那边体现」、结束后断开）。下载借临时线路
+    // 那条 2026-10-21 起不做了（线路只放行 GPT），教程改说下载照常直连。
+    expect(text).toContain('不扣免费时长')
+    expect(text).toContain('装工具、下载 Node.js 时不借加速线路')
+    expect(text).not.toContain('下载专用临时线路')
     expect(text).toContain('不弹通知')
-    expect(text).toContain('游戏加速卡和托盘也不显示')
+    expect(text).toContain('网络加速卡和托盘也不显示')
     expect(text).toContain('打开约 2 分钟后自动断开')
     expect(text).toContain('关掉 Codex 后自动断开')
     expect(text).not.toContain('已自动连接')
@@ -450,7 +457,7 @@ describe('tutorial topics', () => {
     expect(linuxMarkup).toContain(`data-testid="tutorial-card-${linux[0].id}"`)
     expect(linuxMarkup).toContain('Codex CLI')
     expect(linuxMarkup).not.toContain('桌面端')
-    expect(linuxMarkup).not.toContain('游戏加速')
+    expect(linuxMarkup).not.toContain('网络加速')
     expect(linuxMarkup).toContain(`全部<span class="xm-chip-count">${linux.length}</span>`)
     // 要的那一章 Linux 上没有（比如 Mac 桌面端），落回 Linux 的卡片列表，不显示 Windows 那份。
     const fallback = renderToStaticMarkup(createElement(TutorialPage, { os: 'linux', topic: { sequence: 1, id: macDesktopTutorialTopic } }))
@@ -590,5 +597,25 @@ describe('installJobRunning', () => {
     expect(installJobRunning(undefined)).toBe(false)
     expect(installJobRunning({ label: '正在安装', log: [] })).toBe(true)
     expect(installJobRunning({ label: '正在卸载', log: [], kind: 'uninstall' })).toBe(false)
+  })
+})
+
+// #1070 第 11 步把三页搬出去以后 pages-maintenance 只做转出：转出的就是页面文件里那一份；页面文件也不反过来
+// 从它那里 import 值，免得几个文件绕着圈 import，谁先求值谁拿到一半。
+describe('pages-maintenance as a re-export of the split pages', () => {
+  it('re-exports the very functions the page files define', () => {
+    expect(HealthPage).toBe(healthPage.HealthPage)
+    expect(sortDiagnosticsBySeverity).toBe(healthPage.sortDiagnosticsBySeverity)
+    expect(FeedbackPage).toBe(feedbackPage.FeedbackPage)
+    expect(buildFeedbackMessage).toBe(feedbackPage.buildFeedbackMessage)
+    expect(SettingsPage).toBe(settingsPage.SettingsPage)
+    expect(shortcutRows).toBe(settingsPage.shortcutRows)
+    expect(installResultMessage).toBe(installResult.installResultMessage)
+  })
+
+  it('keeps the moved files from importing back out of it', () => {
+    for (const file of ['features/health/HealthPage.tsx', 'features/feedback/FeedbackPage.tsx', 'features/settings/SettingsPage.tsx', 'features/tools/install-result.ts', 'business-actions.ts']) {
+      expect(readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')).not.toMatch(/from '[./]*pages-maintenance'/)
+    }
   })
 })

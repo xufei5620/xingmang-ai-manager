@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import { parse as parseYaml } from 'yaml'
 import { mapWithConcurrency } from './async-map'
@@ -29,15 +30,20 @@ import {
 } from './windows-elevation'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
+import { isCodexDesktopCliInstallation } from './codex-desktop'
+import { withCommandOutput } from './extension-command-output'
 import { tomlErrorLocation } from './toml-error-location'
 import { configBackupSuffix } from './config-file-backups'
 import {
+  appendTomlText,
   editTomlArrayTableText,
   editTomlTableText,
   mutateCodexConfigToml,
+  removeTomlTableText,
   type CodexTomlMutation,
 } from './codex-config-toml'
 import { describeBrokenConfig } from './broken-config-advice'
+import { isRecord } from './input-guards'
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -177,6 +183,11 @@ export interface CodexExtensionServiceOptions {
    * 发生变化」（#1157 第 9 条）。缺省 = 不排队，直接写。
    */
   serializeConfigWrite?: <T>(operation: () => Promise<T>) => Promise<T>
+  /**
+   * 这台电脑装没装 Codex CLI（main.ts 接的是 isCodexCliInstalled）。没装、只装了 Codex 桌面端时，外接工具不跑
+   * `codex mcp`，直接读写 config.toml：桌面端和 CLI 读的是同一份。缺省 = 按装了算，照旧跑命令。
+   */
+  cliInstalled?: () => Promise<boolean>
 }
 
 interface SkillRoot {
@@ -190,10 +201,6 @@ interface PlatformTarget {
   packageName: string
   triple: string
   executable: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function stringValue(value: unknown, fallback = ''): string {
@@ -400,6 +407,19 @@ function candidateCodexPackageRoots(
   return [...new Set(candidates.map((entry) => path.resolve(entry)))]
 }
 
+/**
+ * 和首页同一个判断（system-scan-service.ts 的 inspectCliTool）：找不到，或者找到的只是桌面端自带的 codex.exe，都算
+ * 没装。找的过程自己出错时按装了算，照旧去跑命令，由命令报它自己的错。
+ */
+export async function isCodexCliInstalled(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  try {
+    const installation = await resolveCliInstallation('codex', { env })
+    return installation !== null && !isCodexDesktopCliInstallation(installation)
+  } catch {
+    return true
+  }
+}
+
 /** Resolves only files rooted in a verified @openai/codex npm installation. */
 export async function resolveCodexCommand(
   env: NodeJS.ProcessEnv = process.env,
@@ -586,6 +606,30 @@ function mcpUserNames(configPath: string): Set<string> {
 export function readCodexMcpServerEntries(configPath: string): Map<string, unknown> {
   const servers = parseTomlFile(configPath).mcp_servers
   return new Map(isRecord(servers) ? Object.entries(servers) : [])
+}
+
+/** config.toml 里的一条，摆成 `codex mcp list --json` 的样子（0.163.0 的 mcp_cmd.rs），好跟命令列出来的过同一道检查。 */
+function configuredMcpServer(name: string, entry: unknown): Record<string, unknown> {
+  const config = isRecord(entry) ? entry : {}
+  const stdio = typeof config.command === 'string'
+  return {
+    name,
+    enabled: config.enabled,
+    disabled_reason: null,
+    transport: stdio
+      ? { type: 'stdio', command: config.command, args: config.args, env: config.env, env_vars: config.env_vars, cwd: config.cwd }
+      : {
+          type: 'streamable_http',
+          url: config.url,
+          bearer_token_env_var: config.bearer_token_env_var,
+          http_headers: config.http_headers,
+          env_http_headers: config.env_http_headers,
+        },
+    startup_timeout_sec: config.startup_timeout_sec,
+    tool_timeout_sec: config.tool_timeout_sec,
+    // 登没登录授权要 CLI 去问，没装 CLI 时说不清；只认得出带令牌的。
+    auth_status: stdio ? 'unsupported' : typeof config.bearer_token_env_var === 'string' ? 'bearer_token' : 'unknown',
+  }
 }
 
 function sanitizeMcpServer(
@@ -957,7 +1001,51 @@ function copySkillTree(sourceDirectory: string, targetDirectory: string): void {
   }
 }
 
-function moveToTrash(source: string, trashDirectory: string): string {
+/**
+ * 导入技能的来源：一个技能文件夹，或者它根部的 SKILL.md。Claude Code、Grok CLI 的技能导入
+ * （provider-extensions.ts）走的也是这三步，跟 Codex 同一套检查（I8）。
+ */
+export function resolveSkillImportSource(sourcePath: string): string {
+  if (!path.isAbsolute(sourcePath)) throw new Error('Skill 导入路径必须是绝对路径')
+  let sourceDirectory = path.resolve(sourcePath)
+  assertNoSymlinkComponents(sourceDirectory, 'Skill 导入路径')
+  const sourceStats = fs.lstatSync(sourceDirectory)
+  if (sourceStats.isSymbolicLink()) throw new Error('Skill 导入路径不能是符号链接')
+  if (sourceStats.isFile()) {
+    if (path.basename(sourceDirectory) !== 'SKILL.md') throw new Error('Skill 文件必须命名为 SKILL.md')
+    sourceDirectory = path.dirname(sourceDirectory)
+  } else if (!sourceStats.isDirectory()) {
+    throw new Error('Skill 导入路径必须是目录或 SKILL.md')
+  }
+  validateSkillTree(sourceDirectory)
+  return sourceDirectory
+}
+
+/** 技能要落到的文件夹：技能目录下跟来源同名的一层，已经有了就不导。 */
+export function skillImportTarget(sourceDirectory: string, root: string): string {
+  assertNoSymlinkComponents(root, 'Skill 受管目录')
+  const directoryName = path.basename(sourceDirectory)
+  if (!SKILL_DIRECTORY_PATTERN.test(directoryName)) throw new Error('Skill 目录名包含不支持的字符')
+  const target = path.resolve(root, directoryName)
+  if (!isWithin(root, target) || normalizedPathKey(root) === normalizedPathKey(target)) {
+    throw new Error('Skill 目标路径越界')
+  }
+  if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
+  return target
+}
+
+export function copySkillImport(sourceDirectory: string, root: string, target: string): void {
+  fs.mkdirSync(root, { recursive: true })
+  try {
+    copySkillTree(sourceDirectory, target)
+  } catch (error) {
+    if (fs.existsSync(target) && isWithin(root, target)) fs.rmSync(target, { recursive: true, force: true })
+    throw error
+  }
+}
+
+/** 移除技能是把它所在的文件夹挪进星芒自己的回收站，不直接删。source 是那份 SKILL.md。 */
+export function moveSkillToTrash(source: string, trashDirectory: string): string {
   assertNoSymlinkComponents(source, 'Skill 路径')
   assertNoSymlinkComponents(trashDirectory, '应用回收站路径')
   fs.mkdirSync(trashDirectory, { recursive: true })
@@ -996,6 +1084,7 @@ export class CodexExtensionService {
   // 正在等浏览器授权的 `codex mcp login`，按名称记下，「取消」时一起停掉。
   private readonly mcpLogins = new Map<string, Set<AbortController>>()
   private readonly serializeConfigWrite: <T>(operation: () => Promise<T>) => Promise<T>
+  private readonly cliInstalled: () => Promise<boolean>
 
   constructor(options: CodexExtensionServiceOptions = {}) {
     this.userHome = path.resolve(options.userHome ?? options.homeDirectory ?? os.homedir())
@@ -1007,6 +1096,7 @@ export class CodexExtensionService {
     this.configPath = path.resolve(options.configPath ?? path.join(this.codexHome, 'config.toml'))
     this.invoke = options.invoke ?? defaultInvoker(options)
     this.serializeConfigWrite = options.serializeConfigWrite ?? ((operation) => operation())
+    this.cliInstalled = options.cliInstalled ?? (async () => true)
   }
 
   private writeConfigToml(mutation: Pick<CodexTomlMutation, 'mutate' | 'editText'>): Promise<string | undefined> {
@@ -1043,6 +1133,7 @@ export class CodexExtensionService {
   }
 
   async listMcpServers(): Promise<McpServerDto[]> {
+    if (!await this.cliInstalled()) return this.listConfiguredMcpServers()
     const output = await this.invoke(['mcp', 'list', '--json'])
     const userNames = mcpUserNames(this.configPath)
     const entries = parseJsonArray(output, 'Codex MCP 列表')
@@ -1057,6 +1148,18 @@ export class CodexExtensionService {
     }
     return entries
       .map((entry) => sanitizeMcpServer(entry, userNames, pluginNames))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  }
+
+  /**
+   * 没装 Codex CLI 时只列用户那份 config.toml：项目里那几层要看 Codex 信不信任那个项目，插件带的要问 CLI，
+   * 这两样都不列。名字里带点号这类的星芒删不了（assertSimpleName），也不列，免得整张表读不出来。
+   */
+  private listConfiguredMcpServers(): McpServerDto[] {
+    const entries = [...readCodexMcpServerEntries(this.configPath)].filter(([name]) => NAME_PATTERN.test(name))
+    const userNames = new Set(entries.map(([name]) => name))
+    return entries
+      .map(([name, entry]) => sanitizeMcpServer(configuredMcpServer(name, entry), userNames, new Set()))
       .sort((left, right) => left.name.localeCompare(right.name))
   }
 
@@ -1079,45 +1182,110 @@ export class CodexExtensionService {
     const name = assertSimpleName(input.name, 'MCP 名称')
     const argv = ['mcp', 'add', name]
     const sensitiveValues: string[] = []
+    // 没装 Codex CLI 时直接写进 config.toml 的那一条，照 `codex mcp add` 自己的写法（0.163.0 的
+    // document_helpers.rs）：stdio 写 command、args、env，http 写 url、bearer_token_env_var，空的不写。
+    const entry: Record<string, unknown> = {}
+    let oauthRequested = false
     if (input.type === 'stdio') {
       const command = assertNoNul(input.command, 'MCP 命令')
       if (command.length > 4_096) throw new Error('MCP 命令过长')
+      entry.command = command
+      const env: Record<string, string> = {}
       for (const [envName, envValue] of Object.entries(input.env ?? {})) {
         if (!ENV_NAME_PATTERN.test(envName)) throw new Error(`环境变量名无效：${envName}`)
         if (envValue.includes('\0')) throw new Error(`环境变量 ${envName} 包含 NUL 字符`)
         argv.push('--env', `${envName}=${envValue}`)
+        env[envName] = envValue
         if (envValue) sensitiveValues.push(envValue)
       }
       const args = [...(input.args ?? [])]
       if (args.some((argument) => argument.includes('\0'))) throw new Error('MCP 参数不能包含 NUL 字符')
       argv.push('--', command, ...args)
+      if (args.length) entry.args = args
+      if (Object.keys(env).length) entry.env = env
     } else {
-      argv.push('--url', assertHttpUrl(input.url))
+      const url = assertHttpUrl(input.url)
+      argv.push('--url', url)
+      entry.url = url
       if (input.bearerTokenEnvVar) {
         if (!ENV_NAME_PATTERN.test(input.bearerTokenEnvVar)) throw new Error('Bearer Token 环境变量名无效')
         argv.push('--bearer-token-env-var', input.bearerTokenEnvVar)
+        entry.bearer_token_env_var = input.bearerTokenEnvVar
       }
       const oauthClientId = assertOptionalValue(input.oauthClientId, 'OAuth Client ID')
       const oauthResource = assertOptionalValue(input.oauthResource, 'OAuth Resource')
       if (oauthClientId) argv.push('--oauth-client-id', oauthClientId)
       if (oauthResource) argv.push('--oauth-resource', oauthResource)
+      oauthRequested = Boolean(oauthClientId || oauthResource)
     }
 
+    if (!await this.cliInstalled()) {
+      // 这两项是 `codex mcp add` 当场去做 OAuth 登录时用的，config.toml 里没有对应的写法；界面上没装 CLI 时不给填。
+      if (oauthRequested) throw new Error('没装 Codex CLI 时，OAuth Client ID 和 OAuth Resource 填不了，要先装好 Codex CLI。')
+      return this.addConfiguredMcpServer(name, entry)
+    }
     try {
       await this.invoke(argv, { sensitiveValues, timeoutMs: 120_000 })
     } catch (error) {
       const reconciled = await this.listMcpServers()
       const persisted = reconciled.find((server) => server.name === name)
       if (persisted && mcpServerMatchesInput(persisted, input)) return reconciled
-      throw error
+      throw withCommandOutput(error)
     }
     const reconciled = await this.listMcpServers()
     if (!reconciled.some((server) => server.name === name)) throw new Error('MCP 配置写入后未通过 Codex 对账')
     return reconciled
   }
 
+  /**
+   * 同名的整条换掉，和 `codex mcp add` 一样。原来那条单占表头时先整段拿掉、新的接在末尾，别的注释和排版不动；
+   * 只能整份重写时备份照留，这条通道回的是列表，带不出「注释可能丢失」那句。
+   */
+  private async addConfiguredMcpServer(name: string, entry: Record<string, unknown>): Promise<McpServerDto[]> {
+    await this.writeConfigToml({
+      mutate: (config) => {
+        if (!isRecord(config.mcp_servers)) config.mcp_servers = {}
+        const servers = config.mcp_servers as Record<string, unknown>
+        if (isDeepStrictEqual(servers[name], entry)) return false
+        servers[name] = entry
+        return true
+      },
+      editText: (source, before) => {
+        const existing = isRecord(before.mcp_servers) && name in before.mcp_servers
+        const base = existing ? removeTomlTableText(source, ['mcp_servers', name]) : source
+        return base === null ? null : appendTomlText(base, { mcp_servers: { [name]: entry } })
+      },
+    })
+    const reconciled = this.listConfiguredMcpServers()
+    if (!reconciled.some((server) => server.name === name)) throw new Error('MCP 配置写入后未通过 Codex 对账')
+    return reconciled
+  }
+
+  private async removeConfiguredMcpServer(name: string): Promise<McpServerDto[]> {
+    await this.writeConfigToml({
+      mutate: (config) => {
+        const servers = config.mcp_servers
+        if (!isRecord(servers) || !(name in servers)) return false
+        delete servers[name]
+        if (!Object.keys(servers).length) delete config.mcp_servers
+        return true
+      },
+      editText: (source, _before, after) => {
+        const removed = removeTomlTableText(source, ['mcp_servers', name])
+        // 最后一条也删了的时候，空着的 [mcp_servers] 表头一起拿掉，解析回去才对得上。
+        return removed !== null && after.mcp_servers === undefined
+          ? removeTomlTableText(removed, ['mcp_servers']) ?? removed
+          : removed
+      },
+    })
+    const reconciled = this.listConfiguredMcpServers()
+    if (reconciled.some((entry) => entry.name === name)) throw new Error('MCP 删除后仍存在，Codex 对账失败')
+    return reconciled
+  }
+
   async removeMcpServer(name: string): Promise<McpServerDto[]> {
     assertSimpleName(name, 'MCP 名称')
+    if (!await this.cliInstalled()) return this.removeConfiguredMcpServer(name)
     const before = await this.listMcpServers()
     const server = before.find((entry) => entry.name === name)
     if (!server) return before
@@ -1125,6 +1293,30 @@ export class CodexExtensionService {
     await this.invoke(['mcp', 'remove', name])
     const reconciled = await this.listMcpServers()
     if (reconciled.some((entry) => entry.name === name)) throw new Error('MCP 删除后仍存在，Codex 对账失败')
+    return reconciled
+  }
+
+  /**
+   * Codex 没有 `mcp enable / disable`：停用就是用户 config.toml 里那条写 enabled = false（0.162.1 的 mcp list 报
+   * disabled，`codex mcp add` 别的连接也不会把它冲掉）。启用时把 false 改回 true，不删这一行：只改一个值能按行改、
+   * 留住客户的注释，删键就得整份重写；Codex 读 true 和不写一样。装没装 CLI、只装了桌面端都走这里。
+   * 用户那份里没有这一条（项目里的、插件带的）就不写，交给对账：已经是要的状态算成，不是就报错。
+   */
+  async setMcpServerEnabled(name: string, enabled: boolean): Promise<McpServerDto[]> {
+    assertSimpleName(name, 'MCP 名称')
+    await this.writeConfigToml({
+      mutate: (config) => {
+        const servers = config.mcp_servers
+        const entry = isRecord(servers) ? servers[name] : undefined
+        if (!isRecord(entry) || (entry.enabled !== false) === enabled) return false
+        entry.enabled = enabled
+        return true
+      },
+      editText: (source, before, after) => editTomlTableText(source, ['mcp_servers', name], before, after),
+    })
+    const reconciled = await this.listMcpServers()
+    const server = reconciled.find((entry) => entry.name === name)
+    if (!server || server.enabled !== enabled) throw new Error('MCP 配置写入后未通过 Codex 对账')
     return reconciled
   }
 
@@ -1176,7 +1368,9 @@ export class CodexExtensionService {
 
   async addPlugin(selector: string): Promise<PluginCatalogDto> {
     assertSelector(selector)
-    await this.invoke(['plugin', 'add', selector, '--json'])
+    await this.invoke(['plugin', 'add', selector, '--json']).catch((error: unknown) => {
+      throw withCommandOutput(error)
+    })
     const catalog = await this.listPlugins()
     if (!catalog.plugins.some((plugin) => plugin.pluginId === selector && plugin.installed)) {
       throw new Error('Plugin 安装后未通过 Codex 对账')
@@ -1226,7 +1420,9 @@ export class CodexExtensionService {
     if (ref) argv.push('--ref', ref)
     for (const sparse of input.sparse ?? []) argv.push('--sparse', assertSparsePath(sparse))
     argv.push('--json')
-    await this.invoke(argv, { timeoutMs: 180_000 })
+    await this.invoke(argv, { timeoutMs: 180_000 }).catch((error: unknown) => {
+      throw withCommandOutput(error)
+    })
     return this.listPlugins()
   }
 
@@ -1302,48 +1498,23 @@ export class CodexExtensionService {
   }
 
   async importSkill(input: ImportSkillInput): Promise<SkillDto[]> {
-    if (!path.isAbsolute(input.sourcePath)) throw new Error('Skill 导入路径必须是绝对路径')
-    let sourceDirectory = path.resolve(input.sourcePath)
-    assertNoSymlinkComponents(sourceDirectory, 'Skill 导入路径')
-    const sourceStats = fs.lstatSync(sourceDirectory)
-    if (sourceStats.isSymbolicLink()) throw new Error('Skill 导入路径不能是符号链接')
-    if (sourceStats.isFile()) {
-      if (path.basename(sourceDirectory) !== 'SKILL.md') throw new Error('Skill 文件必须命名为 SKILL.md')
-      sourceDirectory = path.dirname(sourceDirectory)
-    } else if (!sourceStats.isDirectory()) {
-      throw new Error('Skill 导入路径必须是目录或 SKILL.md')
-    }
-    validateSkillTree(sourceDirectory)
-
+    const sourceDirectory = resolveSkillImportSource(input.sourcePath)
     const scope = input.scope ?? 'user'
     const root = scope === 'user'
       ? path.join(this.userHome, '.agents', 'skills')
       : this.repositoryRoot && path.join(this.repositoryRoot, '.agents', 'skills')
     if (!root) throw new Error('未设置仓库工作目录，不能导入 repo Skill')
-    assertNoSymlinkComponents(root, 'Skill 受管目录')
-    const directoryName = path.basename(sourceDirectory)
-    if (!SKILL_DIRECTORY_PATTERN.test(directoryName)) throw new Error('Skill 目录名包含不支持的字符')
-    const target = path.resolve(root, directoryName)
-    if (!isWithin(root, target) || normalizedPathKey(root) === normalizedPathKey(target)) {
-      throw new Error('Skill 目标路径越界')
-    }
-    if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
+    const target = skillImportTarget(sourceDirectory, root)
     // 这里还没有这个技能，config.toml 里它的启停记录只会是以前卸载（旧版本卸载不删）或手删目录
     // 留下的，不清掉的话新导入的一进来就是「已停用」（#1093 第 9 条）。
     await this.forgetSkillEnablement(path.join(target, 'SKILL.md'))
-    fs.mkdirSync(root, { recursive: true })
-    try {
-      copySkillTree(sourceDirectory, target)
-    } catch (error) {
-      if (fs.existsSync(target) && isWithin(root, target)) fs.rmSync(target, { recursive: true, force: true })
-      throw error
-    }
+    copySkillImport(sourceDirectory, root, target)
     return this.listSkills()
   }
 
   async uninstallSkill(skillPath: string): Promise<{ skills: SkillDto[]; trashPath: string }> {
     const target = await this.requireManagedSkill(skillPath)
-    const trashPath = moveToTrash(target.path, this.trashDirectory)
+    const trashPath = moveSkillToTrash(target.path, this.trashDirectory)
     // 挪走以后再删启停记录：先删的话挪不动时技能还在，客户关掉的却被打开了（#1093 第 9 条）。
     await this.forgetSkillEnablement(target.path)
     return { skills: await this.listSkills(), trashPath }

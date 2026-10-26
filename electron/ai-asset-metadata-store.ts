@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
+import { isRecord } from './input-guards'
 import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
@@ -67,10 +68,6 @@ function assertUserId(userId: number): void {
 
 function assertAssetId(assetId: string): void {
   if (!ASSET_ID_PATTERN.test(assetId)) throw new Error('AI 素材标识格式错误')
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function hasOnlyFields(value: Record<string, unknown>, fields: readonly string[]): boolean {

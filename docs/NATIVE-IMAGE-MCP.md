@@ -18,22 +18,22 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 | Grok | `~/.grok/config.toml` 的 `[mcp_servers.xingmang-image]` | `tool_timeout_sec = 300` | 未找到对应配置，待真机 |
 
 - 直接写文件，不调各家 `mcp add`：只装了 Codex 桌面端的客户没有命令行版，照样能用。写入走 `executeFilePlans`（两阶段提交 + 备份 + 回滚）。
-- 只写已存在的配置目录；Codex 用官方 ChatGPT 登录时不写（它有原生画图）。
-- 同名条目只有「启动的是 星芒AI 技能目录下 `scripts/mcp-server.mjs`」才算本软件的，才会改写；别的一律不动。
+- 只写已存在的配置目录；Codex 用官方 ChatGPT 登录时不新登记（它有原生画图），但从星芒配置整份带过来的那条、存着的两份 Codex 配置（`xingmang-config-relay.toml`、`xingmang-config-chatgpt.toml`）里登记过的那条，每次同步跟着换位置，不然切换以后找不到脚本。
+- 同名条目只有「启动的是星芒技能目录（`images`，或改名前的 `星芒AI`）下 `scripts/mcp-server.mjs`」才算本软件的，才会改写；别的一律不动。
 - 服务器条目（Codex / Grok 的 `[mcp_servers.xingmang-image]`、Claude Code 与 Gemini 的 `mcpServers.xingmang-image`）里的调用时限、免确认和 `enabled = true` 只在第一次登记时写。登记过的条目以后每次只对齐启动方式（`command`、`args`、`env` 里的 `XINGMANG_IMAGE_CONFIG_PATH`，Claude Code 另加 `type = "stdio"`），跟着 Node 或技能目录换位置；别的键照用户现在的样子留着，缺了也不补。关掉（`enabled = false`）、改成每次先问（Codex `approval_mode = "prompt"`、Gemini `trust: false` 或删掉 `trust`）、改时限、自己加的 `disabled_tools` / `excludeTools` / 环境变量都算用户的选择。画一张图要扣余额，以前每次登录同步都整条重建，改成先问的人下次打开星芒又变回不问就画。
 - Claude Code 的免确认不在服务器条目里，是 `settings.json` 里 `permissions.allow` 的一条规则，每次同步缺了照旧补上。要 Claude Code 每次先问，就把 `mcp__xingmang-image__generate_image` 写进 `permissions.ask`：写进 ask / deny 的本软件一律不碰，而 2.1.277 判断权限时 ask 规则排在免确认模式（`bypassPermissions`）前面，开着免确认模式也会问（读程序确认，没在真机上演过）。只从 `allow` 里删掉那条不够：免确认模式下本来就不问，别的模式下下次同步又会补回来。
 - 工具说明和 `SKILL.md` 都让 AI 优先用这个工具，技能脚本留作没有工具时的兜底。
 
 ## 用哪个模型
 
-只用 OpenAI 的 gpt-image 系列（2026-10 起去掉了即梦和 Gemini）。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE` 挑：列表里有 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`，写进 `config.json` 的 `model`。这两个都没有时，再按 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS` 从画图脚本 `ALLOWED_MODELS` 也认的型号里挑列表里有的（`gpt-image-2.5-sunburst`，再 `gpt-image-1`；`gpt-image-1.5` 站上没开放，不挑）。两把都没查到、或查到了但一个能挑的都没有，就不写，画图照旧用 `gpt-image-2`，日志记一句。`gpt-image-2.5-sunburst` 慢、偏精修，前两个在时不当默认，AI 可以自己点名。
+只用 OpenAI 的 gpt-image 系列（2026-10 起去掉了即梦和 Gemini）。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE` 挑：列表里有 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`，写进 `config.json` 的 `model`。这两个都没有时，再按 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS` 挑列表里有的（`gpt-image-2.5-sunburst`，再 `gpt-image-1`；`gpt-image-1.5` 站上没开放，不挑）。两把都没查到、或查到了但一个能挑的都没有，就不写，画图照旧用 `gpt-image-2`，日志记一句。`gpt-image-2.5-sunburst` 慢、偏精修，前两个在时不当默认，AI 可以自己点名。
 
-画图工具把这个 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，中转明确回了错误（没渠道、没定价这类）会自动换 `gpt-image-2` 再试一次；连不上、超时不换。AI 点名要别的型号就只用那个。技能脚本 `generate.mjs` 同一套规则，`--model` 只收 `gpt-image-*`。
+画图工具把这个 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，中转明确回了错误（没渠道、没定价这类）会自动换 `gpt-image-2` 再试一次；连不上、超时不换。AI 点名要别的型号就只用那个。认型号三处用同一条规则（主进程 `OPENAI_IMAGE_MODEL_PATTERN`、`mcp-server.mjs`、技能脚本 `generate.mjs`，测试钉住一致）：只收 `gpt-image-*`，`config.json` 里写的、AI 点名的、`--model` 传的都一样；以前画图工具只认写死的 5 个，站上新出的型号会被悄悄换回 `gpt-image-2`（#1059）。工具 schema 的 `model` 不再列枚举，只给默认值和一句说明。
 
 ## 安全边界
 
 - Key 不写进任何工具的配置，只通过环境变量 `XINGMANG_IMAGE_CONFIG_PATH` 告诉脚本 `config.json` 在哪；脚本先用 Codex Key，401/403/429/503 时换生图分组 Key。上游报错里的 `sk-…`、`Bearer …` 打码。
-- 只连 `https://xm.solov.cc` / `https://api.solov.cc` 的 `/v1/images/generations` 与 `/v1/images/edits`，拒绝重定向，300 秒超时，响应 32MB 上限，模型白名单。
+- 只连 `https://xm.solov.cc` / `https://api.solov.cc` 的 `/v1/images/generations` 与 `/v1/images/edits`，拒绝重定向，300 秒超时，响应 32MB 上限，模型只收 `gpt-image-*`。
 - 改图读取的原图：必须是绝对路径、单个普通文件（拒符号链接，lstat 与 fstat 同一文件）、不超过 20MB、按文件头判定为 PNG/JPEG/WebP，最多 4 张。被提示词注入要求「改一下 ~/.ssh/id_rsa」时，内容校验会拒绝上传。
 - 退出账号只清 Key，工具条目保留；调用时会提示重新登录，不会用旧凭据。
 

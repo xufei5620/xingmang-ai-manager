@@ -1,5 +1,5 @@
 ---
-name: 星芒AI
+name: images
 description: >-
   用星芒中转（xm.solov.cc）按 URL + API Key 生成或编辑位图：照片、插画、海报、Logo、信息图、透明底切图。
   先用软件签发的 Codex Key（GPT），失败再改用「图片模型」生图分组 Key。

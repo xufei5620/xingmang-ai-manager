@@ -1,11 +1,12 @@
-import { Archive, BookOpen, Clock, Flag, Globe2, Home, Infinity as InfinityIcon, MessageSquare, Package, Plug, RefreshCw, Settings, Sparkles, Star, User, Wrench, Zap, type LucideIcon } from 'lucide-react'
+import { Archive, BookOpen, Clapperboard, Clock, Flag, Globe2, Home, Infinity as InfinityIcon, MessageSquare, Package, Plug, RefreshCw, Settings, Sparkles, Star, User, Wrench, Zap, type LucideIcon } from 'lucide-react'
 
 export const pages = [
   { id: 'home', label: '首页', icon: 'home', group: 'daily', template: 'T5', testId: 'page-home' },
   { id: 'chat', label: '聊天', icon: 'message-square', group: 'daily', template: '专用', testId: 'page-chat' },
   { id: 'sessions', label: '记录', icon: 'clock', group: 'daily', template: 'T3', testId: 'page-sessions' },
   { id: 'canvas', label: '画布', icon: 'infinity', group: 'daily', template: '独立窗口', testId: 'nav-canvas' },
-  { id: 'acceleration', label: '游戏加速', icon: 'globe-2', group: 'daily', template: 'T5', testId: 'page-acceleration' },
+  { id: 'video', label: '视频剪辑', icon: 'clapperboard', group: 'daily', template: 'T1', testId: 'page-video' },
+  { id: 'acceleration', label: '网络加速', icon: 'globe-2', group: 'daily', template: 'T5', testId: 'page-acceleration' },
   { id: 'featured', label: '精选', icon: 'star', group: 'extend', template: 'T1', testId: 'page-featured' },
   { id: 'mcp', label: '外接工具', icon: 'plug', group: 'extend', template: 'T1', testId: 'page-mcp' },
   { id: 'skills', label: '技能', icon: 'sparkles', group: 'extend', template: 'T1', testId: 'page-skills' },
@@ -22,7 +23,7 @@ export const pages = [
 export type PageId = typeof pages[number]['id'];
 export type PageGroup = 'daily' | 'extend' | 'maintain' | 'account'
 export interface PageDefinition { id: PageId; label: string; icon: LucideIcon; group: PageGroup; testId: string; external?: boolean }
-const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, acceleration: Globe2, featured: Star, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
+const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, video: Clapperboard, acceleration: Globe2, featured: Star, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
 export const pageRegistry: readonly PageDefinition[] = pages.map((page) => ({ id: page.id, label: page.label, icon: pageIcons[page.id], group: page.group as PageGroup, testId: page.testId, external: page.id === 'canvas' }))
 /**
  * v4 起游戏加速、备份、更新三页并进设置（第 9 批），页面 id 留作别名：托盘、系统通知、
@@ -50,6 +51,7 @@ export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | Reti
   chat: ['对话', '问答', '提问', '生图', '画图', '分组', '模型'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
   canvas: ['画图', '生图', '工作流'],
+  video: ['视频', '剪视频', '剪辑', '生成视频', '一句话出片', '分镜', '短视频', '拼视频', '字幕'],
   featured: ['推荐', '好用的', '扩展推荐', '星芒精选'],
   // 入口改了名、页签合了页，旧说法照样搜得到。
   mcp: ['MCP', '外部工具', '自定义连接', '添加连接', '连接'],

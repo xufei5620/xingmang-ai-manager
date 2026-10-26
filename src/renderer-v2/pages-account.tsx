@@ -416,11 +416,31 @@ export function AccountPage({
     return session.authenticated ? session : null
   }, [api])
   const sessionRead = useResource(loadSession)
-  const session = sessionRead.data ?? (
-    (sessionRead.loading || sessionRead.error) && accountSession?.authenticated ? accountSession : null
-  )
-  const signedOut = !sessionRead.loading && !sessionRead.error && !sessionRead.data
+  // 外壳手上的登录状态跟着主进程的广播走；页面自己这份只在挂上、点刷新、改了东西时读。页面去过
+  // 就只藏不卸，同一个账号重新登录作用域不变、页面也不重挂，所以页面读到过一次「没登录」，外壳
+  // 后来登上了，页面还停在「登录后查看个人中心」，点「登录账号」再登几次都回不来（0.2.19 的
+  // Windows 真机上底栏同时写着「已登录」）。外壳说登着就按外壳的摆。
+  const shellSession = accountSession?.authenticated ? accountSession : null
+  const session = sessionRead.data ?? shellSession
+  const readSignedOut = !sessionRead.loading && !sessionRead.error && !sessionRead.data
+  const signedOut = readSignedOut && !shellSession
   const signedIn = Boolean(session)
+  // 两边说法对不上，总有一边过时了：请外壳再问一次主进程。真没登录，外壳退回欢迎页，在那里登录
+  // 整页重来；其实登着，外壳换上新的一份，下面那段让页面跟着重读。一次分歧只问一次，两边说法
+  // 一致了（页面读到了登录，或外壳也说没登录）才算翻篇，免得两边来回问。
+  const shellRecheckAsked = useRef(false)
+  useEffect(() => {
+    if (sessionRead.data || !shellSession) { shellRecheckAsked.current = false; return }
+    if (!readSignedOut || shellRecheckAsked.current) return
+    shellRecheckAsked.current = true
+    onAccountChanged?.()
+  }, [readSignedOut, sessionRead.data, shellSession])
+  const shellSessionSeen = useRef(accountSession)
+  useEffect(() => {
+    if (shellSessionSeen.current === accountSession) return
+    shellSessionSeen.current = accountSession
+    if (readSignedOut && shellSession) void sessionRead.reload()
+  }, [accountSession])
   const detailsScope = session ? `${accountOrigin(session)}:${session.account?.userId ?? ''}` : ''
   // 已经读到过的资料、余额：刷新或改了东西以后再读没读到，手上这份留着，只在要它的那页顶上
   // 说一声（同改版前）。换了账号不沿用。

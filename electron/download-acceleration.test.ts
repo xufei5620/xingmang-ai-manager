@@ -1,6 +1,5 @@
-import fs from 'node:fs'
-import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { readMainWiringSource } from './bootstrap/main-source.test-support'
 import {
   createDownloadAccelerationCoordinator,
   downloadRouteEndpoint,
@@ -148,7 +147,7 @@ describe('download acceleration coordinator', () => {
 
   it('is told by main.ts when this run has switched to connecting directly', () => {
     // 接线一断，上面这几条就形同虚设：改了直连以后照样说已经加速。
-    const main = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+    const main = readMainWiringSource()
     expect(main).toContain('downloadsFollowSystemProxy: () => !proxyBypass.active(),')
   })
 

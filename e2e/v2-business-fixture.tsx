@@ -54,6 +54,12 @@ declare global {
       failNext(message?: string): void
       release(): void
     }
+    // 手机遥控 Codex：手机那头发对了配对码（主进程这时推一份新快照）。
+    remoteHarness: {
+      pair(displayName: string): void
+      // 手机微信扫了二维码：挂着的那次查询这时才回「要输数字」。
+      weixinScanned(): void
+    }
   }
 }
 
@@ -153,6 +159,165 @@ function codexMcpServers(authStatus: string) {
     },
   ]
 }
+// 手机遥控 Codex：一份可变的状态，操作改它、回整份快照（revision 每次加一），和主进程一个样子。
+// remoteReady：已经选好文件夹、填好飞书应用；remoteElevated：星芒以管理员身份在跑。
+type RemoteSnapshot = Awaited<ReturnType<V2Bridge['getCodexRemoteState']>>
+const remoteReady = query.has('remoteReady')
+const remoteState: {
+  workspaceDirectory: string | null
+  accountLabel: string | null
+  enabled: boolean
+  pairing: RemoteSnapshot['channels']['feishu']['pairing']
+  boundPeer: RemoteSnapshot['channels']['feishu']['boundPeer']
+} = {
+  workspaceDirectory: remoteReady ? '~/projects/demo' : null,
+  accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
+  enabled: false,
+  pairing: null,
+  boundPeer: null,
+}
+// 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。
+const weixinRemote: { accountLabel: string | null; enabled: boolean; stage: 'idle' | 'code' | 'scanned' } = { accountLabel: null, enabled: false, stage: 'idle' }
+const weixinLoginId = '0f8fad5b-d9cb-469f-a165-70867728950e'
+const weixinQrImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+let releaseWeixinScan: (() => void) | null = null
+let remoteRevision = 0
+const remoteListeners = new Set<(snapshot: RemoteSnapshot) => void>()
+function remoteSnapshot(): RemoteSnapshot {
+  remoteRevision += 1
+  const elevated = query.has('remoteElevated')
+  return {
+    revision: remoteRevision,
+    available: !elevated,
+    ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
+    credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
+    workspaceDirectory: remoteState.workspaceDirectory,
+    task: 'idle',
+    pendingApprovals: 0,
+    channels: {
+      feishu: {
+        channel: 'feishu',
+        hasCredential: remoteState.accountLabel !== null,
+        accountLabel: remoteState.accountLabel,
+        enabled: remoteState.enabled,
+        status: { state: remoteState.enabled ? 'connected' : 'stopped' },
+        boundPeer: remoteState.boundPeer,
+        pairing: remoteState.pairing,
+      },
+      weixin: {
+        channel: 'weixin',
+        hasCredential: weixinRemote.accountLabel !== null,
+        accountLabel: weixinRemote.accountLabel,
+        enabled: weixinRemote.enabled,
+        status: { state: weixinRemote.enabled ? 'connected' : 'stopped' },
+        boundPeer: null,
+        pairing: null,
+      },
+    },
+  }
+}
+function pushRemoteSnapshot() {
+  const next = remoteSnapshot()
+  for (const listener of remoteListeners) listener(next)
+}
+window.remoteHarness = {
+  pair(displayName) {
+    remoteState.pairing = null
+    remoteState.boundPeer = { displayName, userIdTail: '9f3c', boundAt: Date.parse('2026-10-25T06:05:00Z') }
+    const next = remoteSnapshot()
+    for (const listener of remoteListeners) listener(next)
+  },
+  weixinScanned() {
+    releaseWeixinScan?.()
+    releaseWeixinScan = null
+  },
+}
+const codexRemoteMethods = {
+  getCodexRemoteState: async () => remoteSnapshot(),
+  onCodexRemoteStateChanged: (listener: (snapshot: RemoteSnapshot) => void) => {
+    remoteListeners.add(listener)
+    return () => { remoteListeners.delete(listener) }
+  },
+  chooseCodexRemoteWorkspace: async () => {
+    record('remote-workspace')
+    remoteState.workspaceDirectory = '~/projects/demo'
+    return remoteSnapshot()
+  },
+  saveCodexRemoteFeishuCredentials: async (request: Parameters<V2Bridge['saveCodexRemoteFeishuCredentials']>[0]) => {
+    // App Secret 不记：测试只看主进程收到的是哪个应用。
+    record('remote-feishu-save', request.appId)
+    if (request.appSecret === 'wrong-secret') throw new Error('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。')
+    remoteState.accountLabel = request.appId
+    return remoteSnapshot()
+  },
+  clearCodexRemoteCredentials: async (channel: Parameters<V2Bridge['clearCodexRemoteCredentials']>[0]) => {
+    record('remote-clear', channel)
+    if (channel === 'weixin') {
+      weixinRemote.accountLabel = null
+      weixinRemote.enabled = false
+      return remoteSnapshot()
+    }
+    remoteState.accountLabel = null
+    remoteState.enabled = false
+    remoteState.pairing = null
+    remoteState.boundPeer = null
+    return remoteSnapshot()
+  },
+  setCodexRemoteChannelEnabled: async (channel: Parameters<V2Bridge['setCodexRemoteChannelEnabled']>[0], enabled: boolean) => {
+    record('remote-enable', [channel, enabled])
+    if (channel === 'weixin') {
+      weixinRemote.enabled = enabled
+      return remoteSnapshot()
+    }
+    remoteState.enabled = enabled
+    if (!enabled) remoteState.pairing = null
+    return remoteSnapshot()
+  },
+  startCodexRemotePairing: async (channel: Parameters<V2Bridge['startCodexRemotePairing']>[0]) => {
+    record('remote-pair', channel)
+    remoteState.pairing = { code: '482915', expiresAt: Date.now() + 10 * 60_000 }
+    return remoteSnapshot()
+  },
+  cancelCodexRemotePairing: async (channel: Parameters<V2Bridge['cancelCodexRemotePairing']>[0]) => {
+    record('remote-cancel-pairing', channel)
+    remoteState.pairing = null
+    return remoteSnapshot()
+  },
+  unbindCodexRemotePeer: async (channel: Parameters<V2Bridge['unbindCodexRemotePeer']>[0]) => {
+    record('remote-unbind', channel)
+    remoteState.boundPeer = null
+    return remoteSnapshot()
+  },
+  startWeixinRemoteLogin: async () => {
+    record('remote-weixin-login-start')
+    weixinRemote.stage = 'code'
+    return { loginId: weixinLoginId, phase: 'waiting-scan' as const, qrImage: weixinQrImage, expiresAt: Date.now() + 5 * 60_000, retryAfterMs: 0 }
+  },
+  pollWeixinRemoteLogin: async (input: Parameters<V2Bridge['pollWeixinRemoteLogin']>[0]) => {
+    record('remote-weixin-login-poll', input.verifyCode ?? null)
+    if (input.verifyCode !== undefined) {
+      if (input.verifyCode !== '2580') return { loginId: input.loginId, phase: 'verify-code-wrong' as const, retryAfterMs: 0 }
+      weixinRemote.stage = 'scanned'
+      return { loginId: input.loginId, phase: 'scanned' as const, retryAfterMs: 0 }
+    }
+    if (weixinRemote.stage === 'scanned') {
+      // 主进程存好登录信息时推一份新快照，卡片靠它变成「已登录」。
+      weixinRemote.stage = 'idle'
+      weixinRemote.accountLabel = 'ClawBot decb'
+      pushRemoteSnapshot()
+      return { loginId: input.loginId, phase: 'confirmed' as const, retryAfterMs: 0 }
+    }
+    // 跟主进程的长轮询一样：手机还没扫，这一次查询就挂着不回。
+    await new Promise<void>((resolve) => {
+      releaseWeixinScan = resolve
+    })
+    return { loginId: input.loginId, phase: 'need-verify-code' as const, retryAfterMs: 0 }
+  },
+  cancelWeixinRemoteLogin: async (loginId: Parameters<V2Bridge['cancelWeixinRemoteLogin']>[0]) => {
+    record('remote-weixin-login-cancel', loginId)
+    weixinRemote.stage = 'idle'
+  },
+} satisfies Partial<V2Bridge>
 const mcpAuthMethods = {
   listMcpServers: async () => codexMcpServers('not_logged_in'),
   loginMcpServer: async (name: string) => {
@@ -1024,12 +1189,19 @@ const apiMethods = {
     if (query.has('extensionOk')) return extensionList(input.provider)
     throw new Error('扩展操作失败，已有配置保留')
   },
+  // Codex 插件的开关走它自己的接口（主进程改 config.toml），不走上面那条通用的扩展改动。
+  togglePlugin: async (selector: string, enabled: boolean) => {
+    record('toggle-plugin', [selector, enabled])
+    if (query.has('extensionOk')) return { plugins: [], marketplaces: [] }
+    throw new Error('扩展操作失败，已有配置保留')
+  },
   // Codex 的连接走它自己的原生接口；夹具只记下收到了什么。
   addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
     record('add-mcp', input)
     return []
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
+  ...codexRemoteMethods,
   listBackups: async () => (empty ? [] : [backup]),
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)

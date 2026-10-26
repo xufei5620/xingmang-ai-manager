@@ -22,6 +22,7 @@ export const errors = {
   toolCertElevated: { title: '管理员身份下工具不认这台电脑的证书', body: toolCertificateMessages.elevated, actions: ['重试', '查看日志'] },
   configLink: { title: '配置文件是个链接', body: '为了安全，星芒不往链接里写，原来的设置没有动。照下面这句话把它换成普通文件，再点「重试」；不会弄就点「找客服」。', actions: ['重试', '找客服'] },
   folderRelocated: { title: '文件夹被搬到了别的位置', body: '为了安全，软件不往被搬过的文件夹里写东西。打开「检查」页能看到是哪个文件夹；把它搬回原来的位置就能恢复。', actions: ['打开检查页', '找客服'] },
+  elevationDeclined: { title: '没拿到管理员授权', body: '这次没装，电脑上什么都没改。先照下面这句话做，再点「重试」；还不行点「找客服」。', actions: ['重试', '找客服'] },
   permission: { title: '写不进安装目录', body: '本工具按普通权限运行，不会提权。请检查安装目录的写入权限，或杀毒软件是否拦了它。', actions: ['复制路径', '查看日志'] },
   configPermission: { title: '写不进配置文件', body: '常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。', actions: ['重试', '查看日志', '找客服'] },
   updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },
@@ -41,5 +42,8 @@ export const errors = {
   codexDesktopNotStarted: { title: 'Codex 没能打开', body: '先点「重试」；还不行就点「重置 Codex」，重置完会自动再打开一次；还是不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '重置 Codex', '找客服'] },
   pluginCatalogStuck: { title: '插件目录暂时改不动', body: '重启电脑后再试一次；还不行请联系客服。', actions: ['重试', '找客服'] },
   switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「设置 › 备份迁移」里恢复改用之前的那一份就好。', actions: ['去备份迁移', '找客服'] },
+  gitMissing: { title: '这台电脑还没装 Git', body: '装插件要用 Git。到首页「运行环境」点「安装 Git」，装好回来再点「重试」。', actions: ['重试', '找客服'] },
+  githubUnreachable: { title: '连不上 GitHub', body: '插件要从 GitHub 下载，这台电脑现在连不上它，已经装好的不受影响。换个网络（比如手机热点）再点「重试」。', actions: ['重试', '找客服'] },
+  nameTaken: { title: '已经有同名的了', body: '这个工具里已经有一个同名的。换个名字，或者先把原来那个移除，再添加。', actions: ['找客服'] },
   unknown: { title: '操作没有完成', body: '', actions: ['重试', '查看日志', '找客服'] },
 } as const;

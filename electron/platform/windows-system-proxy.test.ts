@@ -11,7 +11,10 @@ import {
 } from './windows-system-proxy'
 
 const directories: string[] = []
-afterEach(() => { for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true }) })
+afterEach(() => {
+  vi.restoreAllMocks()
+  for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+})
 
 function commandFailure(code: CommandErrorCode, exitCode: number | null, stderr = ''): CommandRunnerError {
   return new CommandRunnerError('PowerShell 未完成。', {
@@ -100,6 +103,54 @@ describe('Windows system proxy lease', () => {
     expect(fs.existsSync(f.journalPath)).toBe(false)
     expect(fs.existsSync(f.lockPath)).toBe(false)
     expect(f.mutations).toHaveLength(2)
+  })
+
+  it('sends private network addresses past the local proxy as well as loopback', () => {
+    const snapshot = buildWindowsLoopbackProxySnapshot(18765)
+    const ranges = Array.from({ length: 16 }, (_, index) => `172.${16 + index}.*`)
+    expect(snapshot.bypass.split(';')).toEqual(['<local>', 'localhost', '127.0.0.1', '[::1]', '10.*', ...ranges, '192.168.*', '169.254.*'])
+    expect(snapshot.bypass).not.toMatch(/172\.(?:15|32)\./)
+    expect(snapshot.registry.ProxyOverride).toBe(snapshot.bypass)
+  })
+
+  it('restores the original proxy from a journal an earlier version wrote with the loopback-only bypass list', async () => {
+    const f = fixture()
+    const earlierBypass = '<local>;localhost;127.0.0.1;[::1]'
+    const applied = buildWindowsLoopbackProxySnapshot(18765)
+    const earlier = { ...applied, bypass: earlierBypass, registry: { ...applied.registry, ProxyOverride: earlierBypass } }
+    const lease = { version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } }
+    fs.writeFileSync(f.lockPath, JSON.stringify(lease), 'utf8')
+    fs.writeFileSync(f.journalPath, JSON.stringify({ ...lease, before: f.before, applied: earlier }), 'utf8')
+    f.current = earlier
+    f.ownerTime = null
+    await f.service.recover()
+    expect(f.current).toEqual(f.before)
+    expect(f.mutations).toEqual([f.before])
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+    expect(fs.existsSync(f.lockPath)).toBe(false)
+  })
+
+  it('refuses a journal whose owned proxy mixes the earlier and the current bypass list', async () => {
+    const f = fixture()
+    const applied = buildWindowsLoopbackProxySnapshot(18765)
+    const mixed = { ...applied, registry: { ...applied.registry, ProxyOverride: '<local>;localhost;127.0.0.1;[::1]' } }
+    const lease = { version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } }
+    fs.writeFileSync(f.lockPath, JSON.stringify(lease), 'utf8')
+    fs.writeFileSync(f.journalPath, JSON.stringify({ ...lease, before: f.before, applied: mixed }), 'utf8')
+    f.current = mixed
+    f.ownerTime = null
+    await expect(f.service.recover()).rejects.toThrow('系统代理恢复记录损坏，已保留原文件。')
+    expect(f.mutations).toHaveLength(0)
+    expect(fs.existsSync(f.journalPath)).toBe(true)
+  })
+
+  it('keeps the customer recovery script and the uninstall smoke on the bypass list the app writes', () => {
+    const scripts = path.join(__dirname, '..', '..', 'scripts')
+    const recovery = fs.readFileSync(path.join(scripts, 'windows-acceleration-recovery.ps1'), 'utf8')
+    const smoke = fs.readFileSync(path.join(scripts, 'windows-uninstall-cleanup-smoke.ps1'), 'utf8')
+    const bypass = buildWindowsLoopbackProxySnapshot(18765).bypass
+    expect(recovery).toContain(`@('${bypass}', '<local>;localhost;127.0.0.1;[::1]')`)
+    expect(smoke).toContain(`$ownedBypass = '${bypass}'`)
   })
 
   it('keeps repeated enable and restore idempotent and refuses a port switch while active', async () => {
@@ -255,6 +306,42 @@ describe('Windows system proxy lease', () => {
     await f.service.recover()
     expect(f.mutations).toHaveLength(0)
     expect(fs.existsSync(f.lockPath)).toBe(false)
+  })
+
+  it('leaves no lease behind when writing it fails, so the next start still succeeds', async () => {
+    const f = fixture()
+    const open = fs.promises.open.bind(fs.promises)
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await open(file, flags, mode)
+      // Fails between creating the file and filling it, the point where a
+      // power cut used to strand an empty lease that every later start refused.
+      if (flags === 'wx' && path.basename(String(file)).includes(path.basename(f.lockPath))) {
+        handle.writeFile = async () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }) }
+      }
+      return handle
+    })
+    await expect(f.service.enable(18765)).rejects.toThrow('disk full')
+    vi.restoreAllMocks()
+    expect(fs.readdirSync(f.directory)).toEqual([])
+    expect(f.mutations).toHaveLength(0)
+    await f.service.enable(18765)
+    expect(f.current).toEqual(buildWindowsLoopbackProxySnapshot(18765))
+    await f.service.restore()
+    expect(f.current).toEqual(f.before)
+  })
+
+  it('refuses rather than replaces a lease that appears while it is acquiring one', async () => {
+    const f = fixture()
+    const other = JSON.stringify({ version: 1, id: '74f03e7f-3d83-40f5-8e56-0b6d86f98fd2', owner: { pid: 77, startedAt: '134022112340000000' } })
+    const run = f.execute.getMockImplementation()!
+    f.execute.mockImplementationOnce(async (spec, options) => {
+      fs.writeFileSync(f.lockPath, other, 'utf8')
+      return run(spec, options)
+    })
+    await expect(f.service.enable(18765)).rejects.toThrow('系统代理租约已存在。')
+    expect(fs.readFileSync(f.lockPath, 'utf8')).toBe(other)
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+    expect(f.mutations).toHaveLength(0)
   })
 
   it('retains the journal when restoration fails so a later stop can retry', async () => {

@@ -108,13 +108,92 @@ test('the workflow keeps free text out of the shell and publishes only the statu
 })
 
 test('withdrawn versions are added, removed one by one, or cleared, never silently replaced', () => {
-  assert.deepEqual(applyBadVersions(['0.2.8'], '0.2.10, v0.2.11'), ['0.2.8', '0.2.10', '0.2.11'])
-  assert.deepEqual(applyBadVersions(['0.2.8', '0.2.10'], '-0.2.8'), ['0.2.10'])
-  assert.deepEqual(applyBadVersions(['0.2.8'], 'none'), [])
-  assert.deepEqual(applyBadVersions(['0.2.8'], ''), ['0.2.8'])
+  assert.deepEqual(applyBadVersions(['0.2.8'], '0.2.10, v0.2.11').versions, ['0.2.8', '0.2.10', '0.2.11'])
+  assert.deepEqual(applyBadVersions(['0.2.8', '0.2.10'], '-0.2.8').versions, ['0.2.10'])
+  assert.deepEqual(applyBadVersions(['0.2.8'], 'none').versions, [])
+  assert.deepEqual(applyBadVersions(['0.2.8'], '').versions, ['0.2.8'])
   assert.throws(() => applyBadVersions([], 'latest'), /0\.2\.10 这样/)
   const next = applyStatusChanges({ badVersions: ['0.2.8'] }, { 'bad-versions': 'none' }, now)
   assert.equal(next.badVersions, undefined)
+})
+
+test('a withdrawal scoped to some packages still lists the version for clients that do not read platforms (#1155 item 5)', () => {
+  const next = applyStatusChanges({ badVersions: ['0.2.8'] }, { 'bad-versions': '0.2.20@mac-x64' }, now)
+  // 0.2.19 及以前的客户端只读 badVersions：版本号在里面，它们照旧整版撤回。
+  assert.deepEqual(next.badVersions, ['0.2.8', '0.2.20'])
+  assert.deepEqual(next.badVersionPlatforms, { '0.2.20': ['mac-x64'] })
+  assert.equal(describeStatus(next)[1], '撤回的版本：0.2.8、0.2.20（只撤 Mac Intel 版）（0.2.20 以前的客户端不认平台，照旧整版撤回）')
+  // 再加别的平台就合起来；不带 @ 再写一次改回对所有平台撤回。
+  const widened = applyStatusChanges(next, { 'bad-versions': '0.2.20@Linux-ARM64|mac-x64' }, now)
+  assert.deepEqual(widened.badVersionPlatforms, { '0.2.20': ['mac-x64', 'linux-arm64'] })
+  const everywhere = applyStatusChanges(widened, { 'bad-versions': '0.2.20' }, now)
+  assert.deepEqual(everywhere.badVersions, ['0.2.8', '0.2.20'])
+  assert.equal(everywhere.badVersionPlatforms, undefined)
+  assert.equal(describeStatus(everywhere)[1], '撤回的版本：0.2.8、0.2.20')
+  // 移出或清空连平台表一起去掉；只留下名单里还有的版本。
+  assert.equal(applyStatusChanges(widened, { 'bad-versions': '-0.2.20' }, now).badVersionPlatforms, undefined)
+  assert.equal(applyStatusChanges(widened, { 'bad-versions': 'none' }, now).badVersionPlatforms, undefined)
+  // 留空 = 不改，平台表照线上原样保留。
+  assert.deepEqual(applyStatusChanges(widened, { 'bad-versions': '' }, now).badVersionPlatforms, { '0.2.20': ['mac-x64', 'linux-arm64'] })
+})
+
+test('a withdrawal for every package is never narrowed in place, and platforms the client would not read are refused', () => {
+  const everywhere = { badVersions: ['0.2.20'] }
+  assert.throws(() => applyStatusChanges(everywhere, { 'bad-versions': '0.2.20@mac-x64' }, now), /已经对所有平台撤回了.*-0\.2\.20 0\.2\.20@mac-x64/)
+  // 先移出再加，同一次就能改成只撤某几种。
+  const narrowed = applyStatusChanges(everywhere, { 'bad-versions': '-0.2.20 0.2.20@mac-x64' }, now)
+  assert.deepEqual(narrowed.badVersions, ['0.2.20'])
+  assert.deepEqual(narrowed.badVersionPlatforms, { '0.2.20': ['mac-x64'] })
+  assert.throws(() => applyBadVersions([], '0.2.20@mac-intel'), /平台只认 windows、mac、linux/)
+  assert.throws(() => applyBadVersions([], '0.2.20@'), /平台只认/)
+  assert.throws(() => applyBadVersions([], '0.2.20@mac@linux'), /只能写一个 @/)
+  assert.throws(() => applyBadVersions(['0.2.20'], '-0.2.20@mac-x64'), /移出撤回名单时只写版本号/)
+  // 线上那份里读不懂的平台表，客户端当成对所有平台撤回，这里也一样：不能就地收窄。
+  const garbled = { badVersions: ['0.2.20'], badVersionPlatforms: { '0.2.20': ['mac-intel'] } }
+  assert.throws(() => applyStatusChanges(garbled, { 'bad-versions': '0.2.20@mac-x64' }, now), /已经对所有平台撤回了/)
+  assert.equal(describeStatus(garbled)[1], '撤回的版本：0.2.20')
+})
+
+test('windows-arm64 is refused because no Windows machine reports it (#1335 item 7)', () => {
+  // Windows 只出 x64 包，ARM 电脑上模拟跑着的也是它，客户端算出来是 windows、windows-x64。
+  for (const [field, input] of [['bad-versions', '0.2.21@windows-arm64'], ['rollout', '0.2.21 20@mac-x64|windows-arm64'], ['minimum-version', '0.2.21@Windows-ARM64']]) {
+    assert.throws(() => applyStatusChanges({}, { [field]: input, 'published-versions': '0.2.21' }, now), /Windows 目前只有 x64 安装包.*windows-x64/)
+  }
+  assert.deepEqual(applyBadVersions([], '0.2.21@windows-x64|windows').platforms, { '0.2.21': ['windows-x64', 'windows'] })
+})
+
+test('the live file is read the way the client reads it, case and v prefix included (#1335 item 8)', () => {
+  // 手改线上文件写成 Mac-X64：客户端规整成 mac-x64、只撤 Intel 版 Mac，预览得照实说，下次运行也不能把它丢掉。
+  const handEdited = { badVersions: ['0.2.20'], badVersionPlatforms: { '0.2.20': [' Mac-X64 '] } }
+  assert.equal(describeStatus(handEdited)[1], '撤回的版本：0.2.20（只撤 Mac Intel 版）（0.2.20 以前的客户端不认平台，照旧整版撤回）')
+  assert.deepEqual(applyStatusChanges(handEdited, { 'bad-versions': '0.2.21' }, now).badVersionPlatforms, { '0.2.20': ['mac-x64'] })
+  assert.deepEqual(applyStatusChanges(handEdited, { 'bad-versions': '0.2.20@linux' }, now).badVersionPlatforms, { '0.2.20': ['mac-x64', 'linux'] })
+  // 版本号带 v、带空白的，跟客户端一样当成同一个版本，两份平台表合起来。
+  const prefixed = { badVersions: ['v0.2.20 '], badVersionPlatforms: { 'v0.2.20': ['mac-x64'], '0.2.20': ['LINUX'] } }
+  assert.equal(describeStatus(prefixed)[1], '撤回的版本：0.2.20（只撤 Mac Intel 版、Linux）（0.2.20 以前的客户端不认平台，照旧整版撤回）')
+  const merged = applyStatusChanges(prefixed, { 'bad-versions': '0.2.21' }, now)
+  assert.deepEqual(merged.badVersions, ['0.2.20', '0.2.21'])
+  assert.deepEqual(merged.badVersionPlatforms, { '0.2.20': ['mac-x64', 'linux'] })
+  // 其中一份读不懂，客户端就整版撤回：这里也一样，预览不说「只撤」，也不能就地收窄。
+  const halfGarbled = { badVersions: ['0.2.20'], badVersionPlatforms: { 'v0.2.20': ['mac-x64'], '0.2.20': ['mac-intel'] } }
+  assert.equal(describeStatus(halfGarbled)[1], '撤回的版本：0.2.20')
+  assert.throws(() => applyStatusChanges(halfGarbled, { 'bad-versions': '0.2.20@mac-x64' }, now), /已经对所有平台撤回了/)
+  // 分批和最低版本的平台表同样规整着读。
+  assert.equal(describeStatus({ rollout: { version: '0.2.21', percent: 0, platforms: ['MAC-x64'] } })[2], '分批放量：0.2.21 先不自动推，只给自己点「检查更新」的人（只管 Mac Intel 版，别的全放；0.2.20 以前的客户端不认平台，对所有平台分批）')
+  assert.match(describeStatus({ minimumVersion: '0.2.21', minimumVersionPlatforms: ['Mac-X64'] })[3], /只拦 Mac Intel 版/)
+})
+
+test('a platform scope is refused where every client it would reach ignores platforms (#1335 item 9)', () => {
+  // 撤回看跑着那一版的客户端：0.2.20 以前的都不认平台，带 @ 照样整版撤回。
+  assert.throws(() => applyBadVersions([], '0.2.18@mac-x64'), /0\.2\.18 比 0\.2\.20 早.*写「0\.2\.18」/)
+  assert.deepEqual(applyBadVersions([], '0.2.18').versions, ['0.2.18'])
+  assert.deepEqual(applyBadVersions([], '0.2.20@mac-x64').platforms, { '0.2.20': ['mac-x64'] })
+  // 分批和最低版本管的是比它低的客户端：不比 0.2.20 新，被管到的全都不认平台。
+  assert.throws(() => applyRollout(undefined, '0.2.20 20@mac-x64'), /分批放量的 0\.2\.20 不比 0\.2\.20 新/)
+  assert.deepEqual(applyRollout(undefined, '0.2.21 20@mac-x64'), { version: '0.2.21', percent: 20, platforms: ['mac-x64'] })
+  assert.throws(() => applyStatusChanges({}, { 'minimum-version': '0.2.19@mac-x64', 'published-versions': '0.2.21' }, now), /最低版本 0\.2\.19 不比 0\.2\.20 新/)
+  assert.equal(applyStatusChanges({}, { 'minimum-version': '0.2.19', 'published-versions': '0.2.21' }, now).minimumVersion, '0.2.19')
+  assert.equal(applyStatusChanges({ minimumVersion: '0.2.19' }, { 'minimum-version': 'none@mac-x64' }, now).minimumVersion, undefined)
 })
 
 test('a staged rollout names a version and a share of machines', () => {
@@ -125,6 +204,17 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.throws(() => applyRollout(undefined, '0.2.11 150'), /最多 100/)
   const next = applyStatusChanges({}, { rollout: '0.2.11 20' }, now)
   assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '型号表：无（客户端用程序自带的）', '分组对照：无（客户端按写死的名字认）'])
+})
+
+test('a staged rollout can hold back only some packages and lets the rest through (#1155 item 5)', () => {
+  assert.deepEqual(applyRollout(undefined, '0.2.21 0@mac-x64'), { version: '0.2.21', percent: 0, platforms: ['mac-x64'] })
+  assert.deepEqual(applyRollout(undefined, 'v0.2.21 20% @ mac-x64|linux'), { version: '0.2.21', percent: 20, platforms: ['mac-x64', 'linux'] })
+  assert.throws(() => applyRollout(undefined, '0.2.21 20@macos'), /平台只认/)
+  const next = applyStatusChanges({}, { rollout: '0.2.21 0@mac-x64' }, now)
+  // 0.2.19 及以前的客户端只读 version 和 percent：对所有平台分批，只会推得更慢。
+  assert.deepEqual(next.rollout, { version: '0.2.21', percent: 0, platforms: ['mac-x64'] })
+  assert.equal(describeStatus(next)[2], '分批放量：0.2.21 先不自动推，只给自己点「检查更新」的人（只管 Mac Intel 版，别的全放；0.2.20 以前的客户端不认平台，对所有平台分批）')
+  assert.deepEqual(applyStatusChanges(next, { rollout: '0.2.21 50' }, now).rollout, { version: '0.2.21', percent: 50 })
 })
 
 test('a zero rollout reads as manual checks only', () => {
@@ -160,6 +250,23 @@ test('a minimum version never goes above what the feed is publishing', () => {
   assert.deepEqual(next.badVersions, ['0.2.10'])
   assert.equal(describeStatus(next)[3], '最低版本：0.2.11（更低的必须先更新，只有 0.2.11 及以后的客户端认）')
   assert.equal(applyStatusChanges(next, { 'minimum-version': 'none' }, now).minimumVersion, undefined)
+})
+
+test('a minimum version can stop only some packages and is still checked against every platform (#1155 item 5)', () => {
+  const next = applyStatusChanges({}, { 'minimum-version': '0.2.21@mac-x64', 'published-versions': '0.2.21 0.2.21' }, now)
+  // 0.2.19 及以前的客户端只读 minimumVersion，对所有平台都拦，所以仍要每个平台都有不低于它的版本可装。
+  assert.equal(next.minimumVersion, '0.2.21')
+  assert.deepEqual(next.minimumVersionPlatforms, ['mac-x64'])
+  assert.equal(describeStatus(next)[3], '最低版本：0.2.21（更低的必须先更新，只有 0.2.11 及以后的客户端认；只拦 Mac Intel 版，0.2.20 以前的客户端不认平台，对所有平台都拦）')
+  assert.throws(() => applyStatusChanges({}, { 'minimum-version': '0.2.21@mac-x64', 'published-versions': '0.2.20 0.2.21' }, now), /比线上正在发的 0\.2\.20、0\.2\.21 还高/)
+  // 留空连平台一起保留；不带 @ 重设改回对所有平台；none 一起去掉。
+  assert.deepEqual(applyStatusChanges(next, {}, now).minimumVersionPlatforms, ['mac-x64'])
+  const everywhere = applyStatusChanges(next, { 'minimum-version': '0.2.21', 'published-versions': '0.2.21' }, now)
+  assert.equal(everywhere.minimumVersion, '0.2.21')
+  assert.equal(everywhere.minimumVersionPlatforms, undefined)
+  const cleared = applyStatusChanges(next, { 'minimum-version': 'none' }, now)
+  assert.equal(cleared.minimumVersion, undefined)
+  assert.equal(cleared.minimumVersionPlatforms, undefined)
 })
 
 test('the workflow checks the live manifests before it sets a minimum version', () => {

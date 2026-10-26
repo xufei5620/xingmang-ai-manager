@@ -20,6 +20,7 @@ import {
   topupCreditedUsd,
   topupGift,
 } from './recharge'
+import { creditedMoney } from './topup-tier'
 
 type Subscription = AccountSubscriptionSelf['allSubscriptions'][number]
 
@@ -62,6 +63,38 @@ describe('recharge', () => {
     expect(planPriceText({ priceAmount: 68, currency: 'CNY' })).toBe('¥68')
     expect(planPriceText({ priceAmount: 5, currency: 'EUR' })).toBe('EUR 5')
     expect(planPriceText({ priceAmount: 5, currency: '' })).toBe('$5')
+  })
+
+  // 套餐价、订单标题、档位卡上的到账金额是同一种写法：整数不带小数，其余四舍五入到两位，
+  // 不加千分位（跟 business-common 的 dollars 不一样）。三处逐字钉住，收成一份时一个字都不能变。
+  it('writes plan prices, order titles and credited tiers with the same amount spelling', () => {
+    const cases: Array<[number, string]> = [
+      [0, '0'],
+      [-0, '0'],
+      [10, '10'],
+      [23456, '23456'],
+      [9.9, '9.90'],
+      [9.95, '9.95'],
+      [9.999, '10.00'],
+      [0.1 + 0.2, '0.30'],
+      [16.5, '16.50'],
+      [1.005, '1.00'],
+      [2.345, '2.35'],
+      [0.004, '0.00'],
+      [-3.5, '-3.50'],
+      [-7, '-7'],
+      [Number.MAX_SAFE_INTEGER, '9007199254740991'],
+      [1e21, '1e+21'],
+      [Number.NaN, 'NaN'],
+      [Number.POSITIVE_INFINITY, 'Infinity'],
+    ]
+    for (const [value, text] of cases) {
+      expect(planPriceText({ priceAmount: value, currency: 'USD' })).toBe(`$${text}`)
+      expect(planPriceText({ priceAmount: value, currency: 'CNY' })).toBe(`¥${text}`)
+      expect(orderTitle({ amount: value, tradeNo: 'USR7NOabc123' }, false)).toBe(`充值 $${text}`)
+      expect(orderTitle({ amount: value, tradeNo: 'sub2_trade-31' }, true)).toBe(`充值 ¥${text}`)
+      expect(creditedMoney(value)).toBe(`$${text}`)
+    }
   })
 
   it('spells a plan period in days, months, years or hours and leaves out what it cannot tell', () => {

@@ -1754,32 +1754,33 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
   }
 })
 
-// 第五部分第 27、28 条：不能在这里导入的工具，说清楚怎么放，空着时给「重新加载」。
-test('a tool whose skills cannot be imported here says how to place them and offers a reload', async () => {
-  const page = await fixture('page=skills&empty')
+// 第五部分第 28 条；10-24 起 Claude Code、Grok CLI 的技能也在这里从文件夹导入（「扩展改」第 2 条），
+// 主进程照 Codex 那套复制进它们自己的技能文件夹，界面走通用的 mutate。
+test('Claude Code and Grok CLI import skills from a folder like Codex CLI', async () => {
+  const page = await fixture('page=skills&empty&extensionOk')
   try {
-    const note = page.getByTestId('skills-import-unsupported')
-    await note.getByText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。', { exact: true }).waitFor()
-    const add = page.getByTestId('skills-add')
-    assert.equal(await add.count(), 1, '空状态里不再放那颗灰的「从文件夹导入」')
-    assert.equal(await add.isDisabled(), true)
-    assert.equal(await add.getAttribute('title'), 'Claude Code 不支持在这里导入')
     const empty = page.getByTestId('skills-empty')
-    await empty.getByText('按 Claude Code 自己的方式放好技能，回来点「重新加载」就能看到。', { exact: true }).waitFor()
-    let reads = (await callsNamed(page, 'list-extensions')).length
-    await empty.getByTestId('skills-empty-reload').click()
-    await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
-    await note.getByRole('button', { name: '看怎么放', exact: true }).click()
-    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['tutorial', 'skills#Claude Code、Grok CLI 没有导入按钮？'])
-    // 选 Grok CLI 时句首换成它。
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await note.getByText(/^Grok CLI 的技能不能在这里导入/).waitFor()
-    // 能导入的工具：没有那一行，空着时叫人点「从文件夹导入」；工具条上的「重新加载」照样重读。
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await note.waitFor({ state: 'detached' })
     await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
-    await empty.getByTestId('skills-add').waitFor()
-    reads = (await callsNamed(page, 'list-extensions')).length
+    assert.equal(await page.getByTestId('skills-import-unsupported').count(), 0, '不再放「不能在这里导入」那一行')
+    const add = empty.getByTestId('skills-add')
+    assert.equal(await add.isDisabled(), false)
+    assert.equal(await add.getAttribute('title'), null)
+    await add.click()
+    const form = page.getByRole('dialog', { name: '给 Claude Code 导入技能', exact: true })
+    assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
+    await form.getByLabel('技能文件夹路径', { exact: true }).fill('/Users/demo/skills/reviewer')
+    await form.getByTestId('skills-form-submit').click()
+    await form.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user',
+    })
+    // Grok CLI 同样能导入；工具条上的「重新加载」照样重读。
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
+    await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
+    await empty.getByTestId('skills-add').click()
+    await page.getByRole('dialog', { name: '给 Grok CLI 导入技能', exact: true }).waitFor()
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    const reads = (await callsNamed(page, 'list-extensions')).length
     await page.getByTestId('skills-reload').click()
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
   } finally {
@@ -1895,6 +1896,21 @@ test('the tool tabs carry the count and a switched-off connection is named in th
     await page.getByText('Claude Code 官方叫「MCP 服务器」', { exact: true }).waitFor()
     await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
     await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+// Codex 没有插件启停命令：开关走它自己的接口改 config.toml，通用的扩展改动对 Codex 插件只认装和卸。
+test('a Codex plugin switch goes through the Codex plugin interface and names the plugin in the toast', async () => {
+  const page = await fixture('page=plugins&extensionOk')
+  try {
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
+    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
+    await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'toggle-plugin')).map((call) => call.args), [['test-extension', false]])
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
   } finally {
     await page.close()
   }
@@ -2068,6 +2084,36 @@ test('a featured entry that needs a folder asks for it in the same dialog before
   }
 })
 
+// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时，添加框直说，给「去首页安装」。
+test('a featured entry says when none of its tools is installed and leads to the home page', async () => {
+  const page = await fixture('page=featured&installedProviders=')
+  try {
+    await page.getByTestId('featured-install-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '添加「逐步思考」', exact: true })
+    const notice = dialog.getByTestId('featured-no-tool')
+    await notice.getByText('还没装能用它的工具', { exact: true }).waitFor()
+    await notice.getByText('这一条给 Claude Code、Codex CLI、Grok CLI 用，这台电脑上一个都还没装。先去首页装一个，装好回来再添加。', { exact: true }).waitFor()
+    await notice.getByTestId('featured-open-home').click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
+    // 插件说「安装」；只要有一个工具装了，就不出这一条。
+    await page.getByTestId('featured-kind').getByRole('button', { name: '插件', exact: true }).click()
+    await page.getByTestId('featured-install-code-review').click()
+    const plugin = page.getByRole('dialog', { name: '安装「代码审查」', exact: true })
+    await plugin.getByText('这一条给 Claude Code 用，这台电脑上一个都还没装。先去首页装一个，装好回来再安装。', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+  const installed = await fixture('page=featured&installedProviders=claude')
+  try {
+    await installed.getByTestId('featured-install-sequential-thinking').click()
+    await installed.getByRole('dialog', { name: '添加「逐步思考」', exact: true }).getByTestId('featured-install-submit').waitFor()
+    assert.equal(await installed.getByTestId('featured-no-tool').count(), 0)
+  } finally {
+    await installed.close()
+  }
+})
+
 // 备份行的标题就是列表上写的那个时间（今天 09:12 / 9月7日 09:00…），后面跟着原因和 Key 两颗小标签。
 function backupRowTime(row) {
   return row.locator('.xm-row-title').evaluate((title) => title.firstChild.textContent)
@@ -2203,7 +2249,6 @@ test('feedback opens on the message form and copies what the customer wrote toge
     assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard' || call.name === 'open-support'), false)
     await page.getByTestId('feedback-type').getByRole('button', { name: '功能建议', exact: true }).click()
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
-    assert.equal(await form.getAttribute('data-unsaved'), 'true')
     await page.getByTestId('feedback-contact').fill('wx-test')
     await page.getByTestId('feedback-send').click()
     await waitForToast(page, '已复制，发给客服就行')
@@ -2216,20 +2261,13 @@ test('feedback opens on the message form and copies what the customer wrote toge
       '最近一次失败：安装 Codex CLI · 网络超时',
     ].join('\n') + '\n\n固定的脱敏报告内容'])
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
-    // 复制出去了就不再拦关窗口。
-    assert.equal(await form.getAttribute('data-unsaved'), null)
-    // 关掉「附带诊断报告」只复制客户写的那几行；关掉以后剪贴板里那段和表单对不上，又算没复制出去。
+    // 关掉「附带诊断报告」只复制客户写的那几行。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
-    assert.equal(await form.getAttribute('data-unsaved'), 'true')
     await page.getByTestId('feedback-send').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
     const last = (await calls(page)).filter((call) => call.name === 'copy-clipboard').at(-1).args
     assert.equal(last.includes('固定的脱敏报告内容'), false)
     assert.match(last, /^留言反馈 · 功能建议\n/)
-    assert.equal(await form.getAttribute('data-unsaved'), null)
-    // 换了类型也一样。
-    await page.getByTestId('feedback-type').getByRole('button', { name: '其他', exact: true }).click()
-    assert.equal(await form.getAttribute('data-unsaved'), 'true')
   } finally {
     await page.close()
   }
@@ -2247,7 +2285,6 @@ test('feedback still copies what the customer wrote when the diagnostic report c
     assert.match(copied[0], /^留言反馈 · 遇到问题\n点「打开」后终端闪一下就关了\n/)
     assert.match(copied[0], /\n诊断报告：这次没生成出来$/)
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page still opens')
-    assert.equal(await page.getByTestId('feedback-form').getAttribute('data-unsaved'), null)
   } finally {
     await page.close()
   }
@@ -3219,6 +3256,151 @@ test('the settings search lists matching rows in place, links back to their grou
     await page.getByRole('tab', { name: '外观显示', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-testid="settings-search"]')?.value === '')
     await page.getByTestId('settings-theme').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+// 手机遥控 Codex：先选文件夹、填飞书应用，打开遥控，再配对；App Secret 不进记录，填错了当场说。
+test('the phone remote card walks through folder, Feishu app, switch and pairing, and never records the app secret', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-feishu-state').getByText('没打开', { exact: true }).waitFor()
+    const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
+    assert.equal(await toggle.isDisabled(), true)
+    await card.getByText('先在上面填好飞书应用。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-workspace').click()
+    await card.getByText('~/projects/demo', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '换一个')
+    await card.getByTestId('settings-remote-feishu-app-id').fill('cli_a1b2c3d4e5')
+    await card.getByTestId('settings-remote-feishu-app-secret').fill('wrong-secret')
+    await card.getByTestId('settings-remote-feishu-save').click()
+    await card.getByRole('alert').getByText('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。').waitFor()
+    // 填错了框里的字留着，改一下再存就行。
+    assert.equal(await card.getByTestId('settings-remote-feishu-app-secret').inputValue(), 'wrong-secret')
+    await card.getByTestId('settings-remote-feishu-app-secret').fill('rightSecret123')
+    await card.getByTestId('settings-remote-feishu-save').click()
+    await card.getByTestId('settings-remote-feishu-app').getByText('App ID：cli_a1b2c3d4e5', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-form').count(), 0)
+    assert.equal(await card.getByRole('alert').count(), 0)
+    await card.getByText('还没配对。打开遥控后才能配对。', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-pair').isDisabled(), true)
+    await toggle.click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByText('Codex 空闲', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-pair').click()
+    await card.getByTestId('settings-remote-feishu-code').getByText('482915', { exact: true }).waitFor()
+    await card.getByText('在飞书里打开你建的机器人，私聊发这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
+    // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定的人。
+    await page.evaluate(() => window.remoteHarness.pair('小明'))
+    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
+    await card.getByTestId('settings-remote-feishu-unbind').click()
+    await card.getByText('还没配对。点「开始配对」，把配对码私聊发给机器人。', { exact: true }).waitFor()
+    // 退出登录：凭据清掉、遥控关掉，回到填应用的框。
+    await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
+    await card.getByTestId('settings-remote-feishu-form').waitFor()
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false')
+    const recorded = await calls(page)
+    assert.deepEqual(
+      recorded.filter((call) => call.name.startsWith('remote-')).map((call) => [call.name, call.args ?? null]),
+      [
+        ['remote-workspace', null],
+        ['remote-feishu-save', 'cli_a1b2c3d4e5'],
+        ['remote-feishu-save', 'cli_a1b2c3d4e5'],
+        ['remote-enable', ['feishu', true]],
+        ['remote-pair', 'feishu'],
+        ['remote-unbind', 'feishu'],
+        ['remote-clear', 'feishu'],
+      ],
+    )
+    assert.equal(JSON.stringify(recorded).includes('rightSecret123'), false)
+  } finally {
+    await page.close()
+  }
+})
+
+// 微信那一块：二维码由主进程画好给过来；手机上要输数字时停下来等输，输错了当场说；登录好了卡上换成机器人编号。
+test('the WeChat block logs in through the QR dialog, asks for the number on the phone and then shows the bot', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const block = card.getByTestId('settings-remote-weixin')
+    await block.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
+    await block.getByText('实验功能', { exact: true }).waitFor()
+    await block.getByText('先在上面用微信扫码登录。', { exact: true }).waitFor()
+    assert.equal(await card.getByRole('switch', { name: '打开微信遥控', exact: true }).isDisabled(), true)
+    assert.equal(await card.getByRole('button', { name: '退出微信登录', exact: true }).count(), 0)
+    await block.getByTestId('settings-remote-weixin-login-start').click()
+    const dialog = page.getByTestId('settings-remote-weixin-dialog')
+    const qr = dialog.getByRole('img', { name: '微信登录二维码', exact: true })
+    await qr.waitFor()
+    assert.match(await qr.getAttribute('src'), /^data:image\/png;base64,/)
+    await dialog.getByText('打开手机微信「扫一扫」，扫完在手机上点确认。二维码 5 分钟内有效。', { exact: true }).waitFor()
+    await page.evaluate(() => window.remoteHarness.weixinScanned())
+    await dialog.getByText('手机微信上显示了一串数字，请输在下面', { exact: true }).waitFor()
+    assert.equal(await qr.count(), 0)
+    const code = dialog.getByTestId('settings-remote-weixin-code')
+    await code.fill('1111')
+    await dialog.getByTestId('settings-remote-weixin-code-submit').click()
+    await dialog.getByText('数字不对，请对照手机上的数字重新输入', { exact: true }).waitFor()
+    await code.fill('2580')
+    await dialog.getByTestId('settings-remote-weixin-code-submit').click()
+    await dialog.getByText('微信登录好了。下一步点「开始配对」，在微信的 ClawBot 对话里发配对码。', { exact: true }).waitFor()
+    await block.getByText('已登录：ClawBot decb', { exact: true }).waitFor()
+    await dialog.getByTestId('settings-remote-weixin-close').click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal(await block.getByTestId('settings-remote-weixin-login-start').innerText(), '重新扫码')
+    await card.getByRole('button', { name: '退出微信登录', exact: true }).waitFor()
+    // 重新扫码又不扫了：点取消，主进程那边的这次登录一起收掉。
+    await block.getByTestId('settings-remote-weixin-login-start').click()
+    await dialog.getByRole('img', { name: '微信登录二维码', exact: true }).waitFor()
+    await dialog.getByTestId('settings-remote-weixin-cancel').click()
+    await dialog.waitFor({ state: 'detached' })
+    const recorded = await calls(page)
+    assert.deepEqual(
+      recorded.filter((call) => call.name.startsWith('remote-weixin')).map((call) => [call.name, call.args ?? null]),
+      [
+        ['remote-weixin-login-start', null],
+        ['remote-weixin-login-poll', null],
+        ['remote-weixin-login-poll', '1111'],
+        ['remote-weixin-login-poll', '2580'],
+        ['remote-weixin-login-poll', null],
+        ['remote-weixin-login-start', null],
+        ['remote-weixin-login-poll', null],
+        ['remote-weixin-login-cancel', '0f8fad5b-d9cb-469f-a165-70867728950e'],
+      ],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
+  const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。').waitFor()
+    assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), true)
+    assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), true)
+    assert.equal(await card.getByTestId('settings-remote-feishu-edit').isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+})
+
+test('searching the settings for Feishu finds the phone remote card', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByTestId('settings-search').fill('飞书')
+    const results = page.getByTestId('settings-search-results')
+    await results.waitFor()
+    assert.deepEqual(await results.locator('[data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), ['codex-remote'])
+    await results.getByTestId('settings-remote-card').waitFor()
   } finally {
     await page.close()
   }

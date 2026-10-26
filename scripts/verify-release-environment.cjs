@@ -8,6 +8,7 @@ const {
   verifyRemoteFeed,
 } = require('./update-release-utils.cjs')
 const { updateManifestName: linuxUpdateManifestName } = require('./linux-artifact-names.cjs')
+const { buildBundledReleaseNotes } = require('./bundle-release-notes.cjs')
 const packageVersion = require('../package.json').version
 
 const releaseNotesFile = 'release-notes.md'
@@ -49,6 +50,20 @@ function assertReleaseNotesVersionIsPublishable(signing, source, localVersion) {
   return true
 }
 
+// 装完后第一次打开时那一页读的是包里的 release-notes.json，条数超了 compile 的最后一步
+// （bundle-release-notes.cjs）会失败。这里用同一个函数在出包前先拦一道，免得等编译、
+// 测试跑完才发现；两边判的是同一件事，不会一个放行一个拦（#1334）。
+function assertReleaseNotesFitUpdatePage(signing, source, localVersion) {
+  if (!signing.publicReleaseMode) return false
+  try {
+    buildBundledReleaseNotes(source, localVersion)
+  } catch (error) {
+    if (error.code !== 'RELEASE_NOTES_TOO_MANY') throw error
+    throw new ReleaseValidationError(error.code, error.message)
+  }
+  return true
+}
+
 // 不带参数是 Windows 那条（release:build 与 release:build:unsigned 一直这么调）；
 // Linux 出包作业每个架构带 --platform linux --arch <x64|arm64>，只比它自己那份清单
 // ——先发 Windows、之后在同一个 commit 上补发 Linux 是被支持的发布方式，拿 Windows
@@ -76,6 +91,7 @@ async function main() {
   const { updateUrl, signing } = validateReleaseEnvironment(process.env, packageVersion)
   const releaseNotes = fs.readFileSync(path.join(__dirname, '..', releaseNotesFile), 'utf8')
   assertReleaseNotesVersionIsPublishable(signing, releaseNotes, packageVersion)
+  assertReleaseNotesFitUpdatePage(signing, releaseNotes, packageVersion)
   const feed = target.platform === 'windows'
     ? await verifyRemoteFeed({
         baseUrl: updateUrl,
@@ -98,7 +114,7 @@ async function main() {
   } else if (signing.unsignedReleaseMode) {
     console.log('发布模式：无签名 Windows 安装程序（产品决定：暂无代码签名证书）')
     console.log('跳过：Authenticode 签名主体比对（无签名模式下没有可比对的证书主体）')
-    console.log('照跑：远端版本必须低于本地、更新说明版本行、类型检查、全部单测、冒烟、加固校验、ASAR 篡改校验、latest.yml/SHA-512/blockmap 校验')
+    console.log('照跑：远端版本必须低于本地、更新说明版本行与条数、类型检查、全部单测、冒烟、加固校验、ASAR 篡改校验、latest.yml/SHA-512/blockmap 校验')
   } else {
     console.log('发布模式：本地开发校验；未执行正式签名门禁')
   }
@@ -112,6 +128,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertReleaseNotesFitUpdatePage,
   assertReleaseNotesVersionIsPublishable,
   assertRemoteVersionIsPublishable,
   parsePreflightArguments,

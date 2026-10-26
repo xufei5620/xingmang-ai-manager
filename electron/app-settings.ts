@@ -14,15 +14,19 @@ import {
   removeSafeDataFile,
   renameWithTransientRetry,
 } from './safe-local-data'
+import { isRecord } from './input-guards'
 
 /** 工具线路要给客户看的状态（xm 三线路 5.1.5、C20，main.ts 从 tool-route-controller.ts 整理出来）。 */
 export interface RelayToolRouteStatus {
   /** 服务端说洛杉矶线路正在整体切换，这边先不改配置：首页安静显示一行。 */
   readonly serverSwitching?: true
   /** 所有候选线路都不通，这回该提示（同一原因 24 小时一次）；恢复以后不再给。appReachable = 管理工具自己能连上。 */
-  readonly outage?: { readonly id: number; readonly reason: 'reset' | 'certificate' | 'dns' | 'unreachable'; readonly appReachable: boolean }
-  /** 判成劫持、已经改用 CF 线路（每台电脑 7 天最多一次）；出来以后半小时内给界面。 */
-  readonly hijack?: { readonly id: number }
+  readonly outage?: { readonly id: number; readonly reason: 'reset' | 'certificate' | 'dns' | 'unreachable' | 'hijack'; readonly appReachable: boolean }
+  /**
+   * 判成劫持、已经改用另一条线路（每台电脑 7 天最多一次）；出来以后半小时内给界面。line 是被指错、换下来的
+   * 那条，缺省按线路2（加这个字段以前只会从线路2 换下来）。
+   */
+  readonly hijack?: { readonly id: number; readonly line?: 'direct' | 'primary' }
 }
 
 export type AppTheme = 'light' | 'dark'
@@ -251,10 +255,6 @@ export function defaultAppSettings(homeDirectory = os.homedir()): AppSettings {
     checkUpdatesOnStartup: true,
     runDiagnosticsOnStartup: false,
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function optionalBoolean(value: unknown, fallback: boolean): boolean {

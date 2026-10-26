@@ -2,6 +2,7 @@ import { readBoundedUtf8FileSync } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { activeProviderIds } from './catalog'
 import { isCliModelName, type CliModelHint, type CliModelHints } from './cli-model-defaults'
+import { isRecord } from './input-guards'
 import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from './managed-cli-groups'
 
 /**
@@ -31,6 +32,11 @@ export interface ServiceRollout {
   version: string
   /** 0～100：自动检查时只有这个百分比的电脑会看到它；用户手动点「检查更新」不受限。 */
   percent: number
+  /**
+   * 只对这几种安装包分批（写法见 releasePlatformPattern），别的照常全放。没写、写错就是对所有平台分批。
+   * 0.2.19 及以前的客户端不认这一项，对所有平台分批，只会推得更慢。0.2.20 起的客户端认。
+   */
+  platforms?: readonly string[]
 }
 
 export interface ServiceStatus {
@@ -41,6 +47,12 @@ export interface ServiceStatus {
    * 「更新」到更低的版本号（退回上一个好版本）。
    */
   badVersions?: readonly string[]
+  /**
+   * 撤回名单里哪几个版本只撤哪几种安装包（#1155 第 5 条）：键是 badVersions 里的版本号，值是平台列表。
+   * 版本号照旧写在 badVersions 里，所以 0.2.19 及以前的客户端不认这一项也照样整版撤回，只会撤得更多。
+   * 不在 badVersions 里的键、写错的、写了认不出的平台的，都按对所有平台撤回算。0.2.20 起的客户端认。
+   */
+  badVersionPlatforms?: Readonly<Record<string, readonly string[]>>
   /** 分批放量；没有就是 null。 */
   rollout?: ServiceRollout | null
   /**
@@ -48,6 +60,11 @@ export interface ServiceStatus {
    * 没写、写错一律是 null（不拦任何人）。只有 0.2.11 及以后的客户端认这一项。
    */
   minimumVersion?: string | null
+  /**
+   * 最低版本只拦哪几种安装包。没写、写错就是对所有平台都拦，跟 0.2.19 及以前的客户端读法一样。
+   * 0.2.20 起的客户端认。
+   */
+  minimumVersionPlatforms?: readonly string[]
   /**
    * 换线路时工具配置怎么改（xm 三线路 R6）：merge = 退回整份重写的老办法。没写、写错都是缺省的
    * 只改地址。0.2.18 起的客户端认。
@@ -82,6 +99,8 @@ export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: nu
  */
 export interface ReleaseGuard {
   badVersions: readonly string[]
+  /** 同 ServiceStatus.badVersionPlatforms；缺省 = 撤回名单上的版本对所有平台都撤。 */
+  badVersionPlatforms?: Readonly<Record<string, readonly string[]>>
   rollout: ServiceRollout | null
   /** 这份出自哪一版状态文件（ServiceStatus.updatedAt）；缺省 = 那份没写，比不出新旧。 */
   updatedAt?: string
@@ -92,10 +111,6 @@ export interface ReleaseGuard {
 const maxStatusBytes = 16 * 1024
 const maxMessageLength = 200
 const defaultTimeoutMs = 5_000
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function isLoopbackHost(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
@@ -185,12 +200,105 @@ function readBadVersions(value: unknown): string[] {
   return [...versions]
 }
 
+/**
+ * 撤回、放量、最低版本只对哪几种安装包生效（#1155 第 5 条）：「平台」或「平台-架构」，比如 mac-x64 是 Intel 版
+ * 的 Mac 包，mac 是两种 Mac 包都算。哪天只有 Intel 版坏了，不用连 Windows 和 M 系列芯片版一起撤回。
+ */
+const releasePlatformPattern = /^(windows|mac|linux)(?:-(x64|arm64))?$/
+// 三个平台各自整个、x64、arm64，一共九种写法。
+const maxReleasePlatforms = 9
+
+// 只对这几种安装包生效的条目要收窄的是别人：认不出的一项可能正是这台电脑，所以有一项读不懂就整张作废，
+// 回到对所有平台生效。撤回、放量这样算只会更保守；最低版本这样算跟不认平台的旧客户端一个样。
+function readReleasePlatforms(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maxReleasePlatforms) return null
+  const platforms: string[] = []
+  for (const entry of value) {
+    const name = typeof entry === 'string' ? entry.trim().toLowerCase() : ''
+    if (!releasePlatformPattern.test(name)) return null
+    if (!platforms.includes(name)) platforms.push(name)
+  }
+  return platforms
+}
+
+// 只收撤回名单里真有的版本，按名单的先后排，记在本地的那份前后两次比得出一样。同一个版本写了两次
+// （0.2.20、v0.2.20）就合起来；其中一份读不懂就整版撤回。
+function readBadVersionPlatforms(value: unknown, badVersions: readonly string[]): Record<string, string[]> | null {
+  if (!isRecord(value)) return null
+  const scoped = new Map<string, string[]>()
+  const everywhere = new Set<string>()
+  for (const [key, entry] of Object.entries(value)) {
+    const version = readVersion(key)
+    if (!version || !badVersions.includes(version)) continue
+    const platforms = readReleasePlatforms(entry)
+    if (!platforms) {
+      everywhere.add(version)
+      continue
+    }
+    scoped.set(version, [...new Set([...(scoped.get(version) ?? []), ...platforms])])
+  }
+  const result: Record<string, string[]> = {}
+  let any = false
+  for (const version of badVersions) {
+    const platforms = scoped.get(version)
+    if (!platforms || everywhere.has(version)) continue
+    result[version] = platforms
+    any = true
+  }
+  return any ? result : null
+}
+
 function readRollout(value: unknown): ServiceRollout | null {
   if (!isRecord(value)) return null
   const version = readVersion(value.version)
   const percent = value.percent
   if (!version || typeof percent !== 'number' || !Number.isFinite(percent)) return null
-  return { version, percent: Math.min(100, Math.max(0, percent)) }
+  const platforms = readReleasePlatforms(value.platforms)
+  return { version, percent: Math.min(100, Math.max(0, percent)), ...(platforms ? { platforms } : {}) }
+}
+
+const releasePlatformNames: Partial<Record<NodeJS.Platform, string>> = { win32: 'windows', darwin: 'mac', linux: 'linux' }
+
+/**
+ * 这台电脑的安装包属于哪几种写法，例如 Intel Mac 是 mac、mac-x64。Apple 芯片上经 Rosetta 跑着 Intel 版的
+ * Mac 两种都算：装着的是 Intel 版，更新时 electron-updater 又会给它换 M 系列芯片版（macRunsArm64）。
+ * 多算一种，撤回和放量只会多拦，不会漏。认不出的平台给空表，只对某几种安装包生效的条目都管不到它。
+ */
+export function resolveReleasePlatforms(input: { platform: NodeJS.Platform; arch: string; macRunsArm64?: boolean }): string[] {
+  const platform = releasePlatformNames[input.platform]
+  if (!platform) return []
+  const arches = new Set<string>()
+  if (input.arch === 'x64' || input.arch === 'arm64') arches.add(input.arch)
+  if (input.platform === 'darwin' && input.macRunsArm64 !== undefined) arches.add(input.macRunsArm64 ? 'arm64' : 'x64')
+  return [platform, ...[...arches].map((arch) => `${platform}-${arch}`)]
+}
+
+function appliesTo(platforms: readonly string[] | undefined, here: readonly string[]): boolean {
+  return !platforms || platforms.length === 0 || platforms.some((entry) => here.includes(entry))
+}
+
+/**
+ * 撤回名单和放量里，这台电脑要守的那部分：只撤别的安装包的版本从名单里拿掉，只对别的安装包分批的放量
+ * 当没有（交回 latest.yml 里的 stagingPercentage）。
+ */
+export function resolveReleaseGuardFor(
+  guard: Pick<ReleaseGuard, 'badVersions' | 'badVersionPlatforms' | 'rollout'>,
+  here: readonly string[],
+): { badVersions: string[]; rollout: ServiceRollout | null } {
+  const scoped = guard.badVersionPlatforms ?? {}
+  return {
+    badVersions: guard.badVersions.filter((version) => !Object.hasOwn(scoped, version) || appliesTo(scoped[version], here)),
+    rollout: guard.rollout && appliesTo(guard.rollout.platforms, here) ? guard.rollout : null,
+  }
+}
+
+/** 状态文件里的最低版本管不管这台电脑：只拦别的安装包时返回 null。 */
+export function resolveMinimumVersionFor(
+  status: Pick<ServiceStatus, 'minimumVersion' | 'minimumVersionPlatforms'> | null | undefined,
+  here: readonly string[],
+): string | null {
+  const minimum = status?.minimumVersion ?? null
+  return minimum && appliesTo(status?.minimumVersionPlatforms, here) ? minimum : null
 }
 
 // 时间写在未来太远的当没写：不然一份手误写到明年的文件，会让之后每一份都显得比它旧、谁也盖不掉它。
@@ -211,8 +319,11 @@ function readUpdatedAt(value: unknown, now: Date): string | null {
 export function parseReleaseGuard(value: unknown, now: Date = new Date()): ReleaseGuard | null {
   if (!isRecord(value)) return null
   const updatedAt = readUpdatedAt(value.updatedAt, now)
+  const badVersions = readBadVersions(value.badVersions)
+  const badVersionPlatforms = readBadVersionPlatforms(value.badVersionPlatforms, badVersions)
   return {
-    badVersions: readBadVersions(value.badVersions),
+    badVersions,
+    ...(badVersionPlatforms ? { badVersionPlatforms } : {}),
     rollout: readRollout(value.rollout),
     ...(updatedAt ? { updatedAt } : {}),
   }
@@ -323,11 +434,17 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
   const accountGroups = readAccountGroups(parsed.accountGroups)
   const cliModels = readCliModels(parsed.cliModels)
   const updatedAt = readUpdatedAt(parsed.updatedAt, now)
+  const badVersions = readBadVersions(parsed.badVersions)
+  const badVersionPlatforms = readBadVersionPlatforms(parsed.badVersionPlatforms, badVersions)
+  const minimumVersion = readMinimumVersion(parsed.minimumVersion)
+  const minimumVersionPlatforms = minimumVersion ? readReleasePlatforms(parsed.minimumVersionPlatforms) : null
   return {
     maintenance: readMaintenance(parsed.maintenance, now),
-    badVersions: readBadVersions(parsed.badVersions),
+    badVersions,
+    ...(badVersionPlatforms ? { badVersionPlatforms } : {}),
     rollout: readRollout(parsed.rollout),
-    minimumVersion: readMinimumVersion(parsed.minimumVersion),
+    minimumVersion,
+    ...(minimumVersionPlatforms ? { minimumVersionPlatforms } : {}),
     ...(parsed.toolRouteRewrite === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}),
     ...(accountGroups ? { accountGroups } : {}),
     ...(cliModels ? { cliModels } : {}),

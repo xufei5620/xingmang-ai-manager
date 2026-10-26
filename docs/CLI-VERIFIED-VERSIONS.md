@@ -353,6 +353,9 @@ Mac 从 npm 装 `@xai-official/grok` 再核二进制签名。两条路原先都�
 （`grok-update.ts` 的 `resolveGrokInstallVersion`，只收 `x.y.z`，预发布号会从「不超过」底下钻过去）。
 签名校验一步没少；旧版本的二进制仍在同一个官方目录里（2026-09-30 抽查 1.0.40、1.0.41、1.0.44 的
 Windows x64 / ARM 两种包都在）。「总是装最新版」打开时装的就是 stable。
+2026-10-20 起（#1061 第 4 条，yoyo「四条都放」）：两个 stable 地址都查不到时，点了名的版本照它直接下
+（`resolveGrokNamedVersion`），不再整个安装失败，只是少了「不超过 stable」这道上限；地址、大小、SHA-256、签名照旧核。
+没点名（「总是装最新版」）查不到 stable 照旧报错。原因只进运行日志（`grok-stable.unavailable`）。
 更新前的版本号改为装之前问一次 Grok 自己（它没有 npm 目录可读），记下来供「退回更新前的版本」用。
 
 **2026-10-14 起（yoyo「放桶」）**：Windows 先从星芒存储桶下同一个 xAI 签名的 `grok.exe`（`grok-bucket.ts`），

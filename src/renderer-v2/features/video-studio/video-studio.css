@@ -1,0 +1,39 @@
+/* 视频剪辑页：三张卡（想法、分镜、拼成一条视频），照 v4 普通内容页的卡片写法；原型没有这一页。 */
+.video-studio-idea { display: grid; gap: 14px; }
+.video-studio-options { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+.video-studio-options > .xm-field { flex: 0 1 160px; min-width: 132px; }
+.video-studio-switch { display: flex; align-items: center; min-height: var(--control-md); }
+.video-studio-models { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; }
+.video-studio-model { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.video-studio-model > span { flex: none; color: var(--text-2); font-size: 13px; }
+.video-studio-model .xm-menu { min-width: 0; }
+.video-studio-model .xm-btn { max-width: 300px; }
+.video-studio-model .xm-btn > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.video-studio-model .xm-btn > span > span { display: inline-flex; }
+.video-studio-model .video-studio-model-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-studio-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 16px; }
+.video-studio-hint { color: var(--text-3); font-size: 12px; line-height: 1.5; }
+.video-studio-shots { display: grid; gap: 10px; margin: 0 0 12px; padding: 0; list-style: none; }
+.video-studio-shot { display: grid; grid-template-columns: 128px minmax(0, 1fr) auto; gap: 14px; padding: 12px; border-radius: 10px; corner-shape: squircle; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
+.video-studio-shot[data-status='failed'] { box-shadow: inset 0 0 0 1px var(--bad-soft); }
+.video-studio-shot-body { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.video-studio-shot-body textarea { resize: vertical; }
+.video-studio-shot-side { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.video-studio-shot-tools { display: flex; align-items: center; gap: 2px; }
+.video-studio-shot-error { margin: 0; color: var(--bad-tx); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+/* 页面里放不了视频（主窗口不开 media-src），片段用第一帧缩略图代表，点了交给系统播放器。 */
+.video-studio-thumb { position: relative; display: grid; place-items: center; width: 128px; height: 80px; padding: 0; overflow: hidden; border: 0; border-radius: 8px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--text-3); cursor: pointer; }
+.video-studio-thumb.is-empty { cursor: default; }
+.video-studio-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.video-studio-thumb > svg { position: relative; box-sizing: content-box; padding: 6px; border-radius: 50%; background: color-mix(in srgb, var(--bg) 72%, transparent); color: var(--text); opacity: 0.9; }
+.video-studio-thumb > b { position: absolute; left: 6px; top: 6px; min-width: 18px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--bg) 72%, transparent); color: var(--text); font-size: 11px; font-weight: 600; line-height: 16px; text-align: center; }
+.video-studio-thumb.is-empty > b { position: static; background: transparent; color: var(--text-3); font-size: 18px; }
+.video-studio-thumb:hover:not(.is-empty) > svg { opacity: 1; }
+.video-studio-progress { margin-top: 14px; }
+.video-studio-result { display: flex; align-items: center; gap: 14px; margin-top: 16px; padding-top: 16px; box-shadow: inset 0 1px 0 var(--line); }
+.video-studio-result .video-studio-thumb { width: 160px; height: 100px; }
+.video-studio-result-copy { display: grid; gap: 4px; min-width: 0; }
+.video-studio-result-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.video-studio-result-copy small { color: var(--text-3); font-size: 12px; }
+.video-studio-result-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.video-studio button.video-studio-thumb:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

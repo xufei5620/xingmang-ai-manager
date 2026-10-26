@@ -19,8 +19,10 @@ import {
   curatedRuntimeCommand,
   curatedTags,
   extensionFailureTarget,
+  extensionNoToolInstalled,
   extensionToolChoices,
   extensionToolNames,
+  extensionUsableTools,
   fillCuratedPlaceholders,
   mcpRuntimeNotice,
   submitMcpInstall,
@@ -86,23 +88,34 @@ const kindOptions = [
 export function FeaturedPage({
   api,
   installedProviders,
+  codexDesktopInstalled,
   onRecommend,
   onOpenHelp,
   onSystemChanged,
+  onOpenHome,
   active,
 }: {
   api: V2Bridge
   /** 这台电脑上装好的命令行工具；缺省 = 还没检测完，三个都去读、都当作装了。 */
   installedProviders?: readonly string[]
+  /** 装没装 Codex 桌面端：只装了它时外接工具照样能加给 Codex（同 ExtensionsPage）；缺省 = 当没装。 */
+  codexDesktopInstalled?: boolean
   /** 「推荐一个」：去「反馈与客服」；缺省 = 不放这颗按钮。 */
   onRecommend?: () => void
   onOpenHelp?: () => void
   /** 「自动安装 Python」装好以后叫一声，首页「运行环境」跟着变（同 ExtensionsPage）。 */
   onSystemChanged?: () => void
+  /** 添加框里一个能用的工具都没装时那颗「去首页安装」；缺省 = 只说还没装，不给按钮。 */
+  onOpenHome?: () => void
   /** 同 BusinessActions.active：再显示时重读一遍哪些已经装上了。 */
   active?: boolean
 }) {
-  const installedKey = installedProviders?.join(',')
+  const { usable, codexViaDesktop } = extensionUsableTools(installedProviders, codexDesktopInstalled)
+  // 某一条能给谁用看它是什么：插件要 CLI，只装了桌面端时 Codex 不算。
+  const usableFor = (item: CuratedExtension) => extensionUsableTools(installedProviders, codexDesktopInstalled, item.kind).usable
+  // 插件只能装进 Codex CLI，只装了桌面端时那一格照旧叫「Codex CLI」、标「未安装」，不叫桌面端。
+  const viaDesktop = (item: CuratedExtension) => codexViaDesktop && item.kind !== 'plugin'
+  const installedKey = usable?.join(',')
   // 卡上的「已添加」要问每个装了的工具一遍；读不到的那个只当不知道，不让整页读不出来。
   const load = useCallback(async () => {
     const targets = activeProviderIds.filter((id) => installedKey === undefined || installedKey.split(',').includes(id))
@@ -132,8 +145,9 @@ export function FeaturedPage({
   const added = resource.data?.added ?? {}
   const shown = curatedExtensions.filter((item) => kind === 'all' || item.kind === kind)
   const choices = picking
-    ? extensionToolChoices(picking.providers, installedProviders, featuredAddedTools(picking, added))
+    ? extensionToolChoices(picking.providers, usableFor(picking), featuredAddedTools(picking, added), viaDesktop(picking))
     : []
+  const noToolInstalled = extensionNoToolInstalled(choices)
   const targets = choices
     .filter((choice) => choice.note === null && selectedTools.includes(choice.id))
     .map((choice) => choice.id)
@@ -141,7 +155,7 @@ export function FeaturedPage({
     ? mcpRuntimeNotice(curatedRuntimeCommand(picking), resource.data?.runtimes, resource.data?.pythonInstall ?? 'external')
     : null
   const open = (item: CuratedExtension) => {
-    const available = extensionToolChoices(item.providers, installedProviders, featuredAddedTools(item, added))
+    const available = extensionToolChoices(item.providers, usableFor(item), featuredAddedTools(item, added), viaDesktop(item))
       .filter((choice) => choice.note === null)
       .map((choice) => choice.id)
     setPicking(item)
@@ -197,7 +211,7 @@ export function FeaturedPage({
         setPicking(null)
         return done
       },
-      (done) => `${item.kind === 'mcp' ? '已添加' : '已安装'}「${item.name}」，给 ${extensionToolNames(done)} 使用`,
+      (done) => `${item.kind === 'mcp' ? '已添加' : '已安装'}「${item.name}」，给 ${extensionToolNames(done, viaDesktop(item))} 使用`,
     )
   const verb = picking?.kind === 'mcp' ? '添加' : '安装'
   const needsInput = Boolean(picking && curatedNeedsInput(picking))
@@ -233,15 +247,15 @@ export function FeaturedPage({
                   <span
                     className="v2-featured-tools"
                     role="img"
-                    aria-label={`能用的工具：${extensionToolNames(item.providers)}`}
+                    aria-label={`能用的工具：${extensionToolNames(item.providers, viaDesktop(item))}`}
                   >
                     {item.providers.map((id) => (
-                      <span key={id} title={extensionToolNames([id])}>
+                      <span key={id} title={extensionToolNames([id], viaDesktop(item))}>
                         <BrandIcon tool={id} size={16} variant="xs" />
                       </span>
                     ))}
                   </span>
-                  {featuredFullyAdded(item, installedProviders, added) ? (
+                  {featuredFullyAdded(item, usableFor(item), added) ? (
                     <Pill tone="ok">已添加</Pill>
                   ) : (
                     <Button
@@ -339,6 +353,29 @@ export function FeaturedPage({
                   testId="mcp-install-python"
                 >
                   自动安装 Python
+                </Button>
+              ) : undefined
+            }
+          />
+        )}
+        {noToolInstalled && (
+          <Notice
+            tone="warn"
+            title="还没装能用它的工具"
+            body={`这一条给 ${noToolInstalled} 用，这台电脑上一个都还没装。先去首页装一个，装好回来再${verb}。`}
+            testId="featured-no-tool"
+            actions={
+              onOpenHome ? (
+                <Button
+                  size="sm"
+                  icon={Download}
+                  onClick={() => {
+                    setPicking(null)
+                    onOpenHome()
+                  }}
+                  testId="featured-open-home"
+                >
+                  去首页安装
                 </Button>
               ) : undefined
             }

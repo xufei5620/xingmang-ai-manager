@@ -7,12 +7,12 @@
 - `ipc-contract.ts` — **主窗口业务通道的类型真相源**（另两套见总述）：`ipcInvokeChannels` / `ipcEventChannels` 两张通道表 + `XingmangApi` 接口，`as const satisfies` 让通道表和接口对齐。只许 `import type`；值导出只能来自零 Node 依赖的模块（现在是 `catalog.ts` 的 `providerIds` / `managedCliKeyProfiles` 和 `relay-sites.ts` 的一组站点常量），否则 Vite 会把 `node:fs` 打进渲染包（I6）。列在 CODEOWNERS 里，加通道要让 yoyo 看见（T1）
 - `preload.ts` — 主窗口的 sandbox 桥，暴露 `window.xingmang`。sandbox 下不能 require 本地模块，所以**手抄了一份通道表**，用 `satisfies` 钉住契约类型，`preload.test.ts` 钉住内容；这份重复是有意的，别"消除"（I7、T1）
 - `ipc.ts` — `registerIpcHandlers` 是主窗口业务通道的薄入口：建好 `registerTrustedHandler`（校验 sender URL、结构化日志、等账号、统一 dispose，I4），交给 `ipc/handlers/` 下各域注册，最后统一撤销。每条通道日志记什么、要不要等账号照 `ipc-channel-policy.ts` 那张表办（I3、I13）。`IpcRegistrationOptions`（main.ts 交进来的全部依赖）也定义在这里。`ipc.test.ts` 把实际注册的通道和契约排序比对，漏注册、多注册都会红
-- `ipc/handlers/` — 主窗口业务通道的处理器，按域一个文件（#1070 第 7 步从 `ipc.ts` 原样搬出）：`system`（平台能力、本机检测）、`config`（工具配置读写、切换账号来源、补模板、查型号）、`external-clients`、`launch`（选工作目录、打开命令行工具和 Codex 桌面端，敏感目录提醒和试写都在这）、`tools`（Node.js、Python、Git、命令行工具和 Codex 桌面端的装卸与状态）、`window`（窗口、外链、网络设置、画布窗口）、`updates`、`sessions`、`settings`、`diagnostics`、`runtime-logs`（含反馈报告和「打开所在位置」）、`backups`、`extensions`、`account`（登录、会话、本机账号、公告、密码）、`acceleration`、`account-billing`、`account-usage`、`account-keys`（签发、写进工具、撤销）、`ai-chat`、`data-transfer`。每个文件导出一个 `register*Handlers(ctx)`；几个域都要用的（账号服务、签发包装、备份上下文、取密钥、导出记录、敏感剪贴板）在 `context.ts` 的 `createIpcHandlerContext` 里建一份，域文件之间不互相 import。入参一律用 `ipc/parsers/` 的手写 `parse*` 函数校验、出中文错误（I5，别换成 zod）
+- `ipc/handlers/` — 主窗口业务通道的处理器，按域一个文件（#1070 第 7 步从 `ipc.ts` 原样搬出）：`system`（平台能力、本机检测）、`config`（工具配置读写、切换账号来源、补模板、查型号）、`external-clients`、`launch`（选工作目录、打开命令行工具和 Codex 桌面端，敏感目录提醒和试写都在这）、`tools`（Node.js、Python、Git、命令行工具和 Codex 桌面端的装卸与状态）、`window`（窗口、外链、网络设置、画布窗口）、`updates`、`sessions`、`settings`、`diagnostics`、`runtime-logs`（含反馈报告和「打开所在位置」）、`backups`、`extensions`、`account`（登录、会话、本机账号、公告、密码）、`acceleration`、`account-billing`、`account-usage`、`account-keys`（签发、写进工具、撤销）、`ai-chat`、`ai-video`（出视频片段，对话页和视频剪辑页共用；剪辑页的分镜、存成片；作品库里视频的读字节、用播放器打开、另存，都按编号找文件，路径不出主进程）、`data-transfer`、`codex-remote`（手机遥控 Codex）。每个文件导出一个 `register*Handlers(ctx)`；几个域都要用的（账号服务、签发包装、备份上下文、取密钥、导出记录、敏感剪贴板）在 `context.ts` 的 `createIpcHandlerContext` 里建一份，域文件之间不互相 import。入参一律用 `ipc/parsers/` 的手写 `parse*` 函数校验、出中文错误（I5，别换成 zod）
 - `ipc/handler-log.ts` — 通道调用成功那一行日志的中文说法和字段（`ipcSuccessMessage` / `ipcLogDetail`），加速页轮询状态的去重键 `accelerationStateLogKey`；只给 `ipc.ts` 的包装用
-- `ipc/parsers/` — 主窗口业务通道的入参解析，按域一个文件（#1070 第 6 步从 `ipc.ts` 原样搬出）：`common`（`requiredString` / `optionalString` / `optionalBoolean` / `stringArray`，对象判断用 `input-guards.ts` 的 `isRecord`）、`system`（窗口、诊断、更新、检测、渲染层报错）、`settings`、`extensions`（MCP、插件市场、Skill）、`tools`（命令行工具和 Codex 桌面端的安装、配置、启动，选工作目录）、`sessions`、`account`（登录注册、密码、协议）、`account-billing`（充值、订阅支付）、`account-usage`（用量、看板、任务）、`account-keys`（密钥增删改、写进工具）、`ai-chat`。只认已知字段、限长、拒 NUL，报错是能直接上屏的中文；路径、密钥、网址相关的几个在同目录的测试里直接钉住，其余经 `ipc.test.ts` 的处理器用例覆盖
+- `ipc/parsers/` — 主窗口业务通道的入参解析，按域一个文件（#1070 第 6 步从 `ipc.ts` 原样搬出）：`common`（`requiredString` / `optionalString` / `optionalBoolean` / `stringArray`，对象判断用 `input-guards.ts` 的 `isRecord`）、`system`（窗口、诊断、更新、检测、渲染层报错）、`settings`、`extensions`（MCP、插件市场、Skill）、`tools`（命令行工具和 Codex 桌面端的安装、配置、启动，选工作目录）、`sessions`、`account`（登录注册、密码、协议）、`account-billing`（充值、订阅支付）、`account-usage`（用量、看板、任务）、`account-keys`（密钥增删改、写进工具）、`ai-chat`、`ai-video`（出视频那份和画布共用 `canvas-request-parser.ts` 的 `parseVideoGenerateInput`，主窗口只收参考图）、`codex-remote`（渠道名、飞书 App ID / App Secret）。只认已知字段、限长、拒 NUL，报错是能直接上屏的中文；路径、密钥、网址相关的几个在同目录的测试里直接钉住，其余经 `ipc.test.ts` 的处理器用例覆盖
 - `ipc-channel-policy.ts` — 主窗口业务通道的策略表 `ipcChannelPolicies`：键是契约里的通道名，每条必填 `log`（成功、失败记不记，入参给不给日志）和 `account`（要不要等账号恢复、在不在账号工作里跑、跑完核不核对账号），可选 `label` 是日志里的中文名。漏一条、拼错一条是编译错（#1071 第 1 条）。`config:reveal-api-key`、记住密码两条通道和聊天记录读写都标了成功不记
 - `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版由 `platform/entry.ts` 在分出任何一支之前调用，拒绝 `--inspect` / `--remote-debugging-*` 和能让 Chromium 拉起命令的 `--gpu-launcher`、`--*-cmd-prefix`、`--browser-subprocess-path`；照 Chromium 的读法，单短横线和 Windows 上的斜杠写法同样拦。它是黑名单，残余风险写在源码注释里（#1065）
-- `input-guards.ts` — 最基础的输入检查（`isRecord`、`isStringArray`、`filterStrings`、`isPromiseLike`），零依赖、渲染层也能值导入（I6）；只判断不出报错文案。新代码从这里取，旧文件里各自那份等拆分时（#1070）顺手换（#1071 第 3 条）
+- `input-guards.ts` — 最基础的输入检查（`isRecord`、`isStringArray`、`filterStrings`、`isPromiseLike`），零依赖、渲染层也能值导入（I6）；只判断不出报错文案。主进程和 renderer-v2 各文件自己那份 `isRecord` 已全部换成这一份（#1071 第 3 条、#1070），只有要和画布逐字一样的 `drama-parse.ts` 还留着；`codex-config-toml.ts` 的 `isTomlTable` 在它上面再排除 Date
 
 ## 命令执行与安全边界（本项目真正的复杂度在这里）
 
@@ -22,7 +22,7 @@
 - `trusted-native-cli.ts` — Windows 原生 CLI（`.exe`）的 Authenticode 签名核对与暂存：按工具钉发布者主体名，Grok 还钉签发 CA（X.AI LLC 与 X Corp. 两张证书都认，名单与 `scripts/sync-grok-cos.cjs` 的 SIGNERS 是同一份、改要两处一起改）；只认单链接普通文件，核过签名再算 sha256 放进受管目录。目前由 `grok-installer.ts` 使用
 - `system-certificate-trust.ts` — 公司审计网关、杀软网页扫描会换掉 HTTPS 证书，Chromium 信系统证书库所以登录正常，Node 写的 npm 却装不上。这里只给同用户路径的子进程环境加 `NODE_USE_SYSTEM_CA=1`（用户自己设过就不动），并在仍失败时判断是哪种情况好给对下一步提示；`trustedCommandEnvironment` 会剥掉它，因为跨提权边界时当前用户的证书库是低权限一侧可写的（I2）
 - `manual-redirect-fetch.ts` — 让 Electron `net.fetch` 的 `redirect:'manual'` 表现得和 undici 一样（返回不带正文的 3xx，并当场取消请求）。不包这一层时，安装包下载的第一跳重定向必定报 "Redirect was cancelled"，账号与中转请求也认不出强制门户、没法切线路（#1064）；`main.ts` 给它发出去的每个 Chromium 会话 fetch 都包了这一层（I10）
-- `platform-capabilities.ts` — **判断"当前平台支持什么"的单一入口**（`platformCapabilitiesFor`）：Node/Python 由谁装、各 CLI 由谁装、要不要 Node、有没有加速、Codex 桌面端能不能装/开/卸等；`processElevated` 不在这里算，由 `platform:get-capabilities` 通道叠上去。渲染层经这条通道拿结果，不自己猜平台。改跨平台代码前先读它
+- `platform-capabilities.ts` — **判断"当前平台支持什么"的单一入口**（`platformCapabilitiesFor`）：Node/Python 由谁装、各 CLI 由谁装、要不要 Node、有没有加速、Codex 桌面端能不能装/开/卸等；Grok 按平台走哪条路装（`grokInstallStrategyFor`）也在这里；`processElevated` 不在这里算，由 `platform:get-capabilities` 通道叠上去。渲染层经这条通道拿结果，不自己猜平台。改跨平台代码前先读它
 
 ## 本地文件与有界读写（I8 / I10 的工具库，写本地数据和读网络响应一律走这里）
 
@@ -31,20 +31,25 @@
 - `bounded-directory.ts` — 有上限地列目录（`readDirectoryEntries*`），条目超过上限抛 `DirectoryEntryLimitError`，防被塞爆的目录拖垮主进程
 - `bounded-response.ts` — 有上限地读 HTTP 响应体（`readBoundedResponseText/Bytes`），先看 content-length 再边读边数，超了就取消；I10 四件套里"响应体上限"那一件
 - `redirect-allowlist-fetch.ts` — 逐跳跟随下载跳转（`fetchWithRedirectAllowlist`）：强制 `redirect: 'manual'`，第一跳、每个 Location、响应自报的地址都过调用方给的校验，响应地址还必须正好是这一跳，另管循环与次数上限；I10 四件套里"重定向策略"那一件。`fetchLandingWithRedirectAllowlist` 另交回答话的那一跳（生产下载用的 fetch 不填 `response.url`），续传可设 `beyondLimit: 'return'` 不跟跳转；客户看得到的报错可用 `messages` 沿用原话。Node 运行时、Mac 桌面端安装器、Codex 插件目录、Git 运行时、Claude Desktop MSIX、Grok 版本查询、AI 图片下载在用（图片那处传进来的 fetch 每一跳按主机挑：`imgen.x.ai` 走跟随代理的会话，其余先查 DNS 再钉住地址）；Codex 桌面端那份按 AGENTS 第 7 节不收
-- `bounded-operation-queue.ts` — 有并发上限和排队上限、可取消（AbortSignal）的通用任务队列；图片生成（`ai-image-service.ts`）和首页扫描的探测子进程（`system-service.ts`）在用。注意它不是 I11 的 `InstallationQueue`，安装类操作不能拿它代替
+- `bounded-operation-queue.ts` — 有并发上限和排队上限、可取消（AbortSignal）的通用任务队列；图片生成（`ai-image-service.ts`）和首页扫描的探测子进程（`system-scan-service.ts`）在用。注意它不是 I11 的 `InstallationQueue`，安装类操作不能拿它代替
 - `schedule-timeout.ts` — 后台控制器默认用的延时器（`scheduleTimeout`，返回取消函数，计时器 `unref`）：应用线路、工具线路、系统代理复查、加速到期和中断提醒五处共用，测试各自注入假的；新控制器照用，别再抄一份（`schedule-timeout.test.ts` 钉住只此一份）
 - `safe-storage-backend.ts` — `safeStorage.isEncryptionAvailable()` 只说明"能调"，不说明"有保护"：Linux 没有密钥环时 Chromium 退到 `basic_text`，密钥是编进程序里的常量。这里把这种情况认成 `plaintext` 并拒绝落盘，Linux 上改成只在本次运行内存里保存（`resolveCredentialPersistence`）。登录会话、记住密码、托管 CLI Key 缓存、聊天 Key 缓存、多账号保险箱都经它判断
 
 ## CLI 服务与首页扫描
 
-- `system-service.ts` — **全仓最大、最容易撞车的模块**：`createSystemService` 之前是导出的纯函数区（可直接单测），之后是闭包工厂（内部函数不导出），新逻辑先写成顶层纯函数再在闭包里调（T3）。管首页扫描（Node/CLI/桌面端/网络位置）、CLI 安装更新卸载与回退、打开工具、一键修复等；`SystemSnapshot` 等类型也从这里导出
+- `system-service.ts` — **系统服务的门面**：`createSystemService` 只把各簇接起来、对外给 `SystemService` 那一整套方法，`SystemSnapshot` 等类型也从这里导出；`createSystemService` 之前仍是导出的纯函数区。#1070 第 2、3 步已按簇把闭包搬成各自的服务文件，新逻辑写进对应的那个文件（T3）（装和更新 CLI 已搬进 `cli-install-service.ts`、卸载搬进 `cli-uninstall-service.ts`、装运行环境搬进 `runtime-install-service.ts`、打开工具搬进 `provider-launch-service.ts`、三家外部客户端搬进 `external-client-route-service.ts`，见 [`main-cli-clients.md`](./main-cli-clients.md)；首页检测搬进下面的 `system-scan-service.ts`；换线路定点改写工具配置搬进 `tool-route-follow-service.ts`、官方账号来回切搬进 `official-credential-service.ts`，见 [`main-account-route.md`](./main-account-route.md)；保存配置搬进下面「配置与备份」里的 `config-save-service.ts`），搬走的导出名这里照旧转出
+- `system-service-context.ts` — 系统服务各簇共用的那一份上下文（#1070 第 2 步从 `createSystemService` 开头原样搬出）：`createServiceContext` 把选项解析成实际用的那一份（测试替身或缺省实现，缺省往严里取：执行模式缺省 `trusted-only`），建几份记录文件、安装排队（I11 的 `InstallationQueue` 与取消登记）和保存配置的排队，外加只靠这些就能做的几样：找命令、跑 `--version`、下载临时走加速（计数决定安装源顺序）、建安装临时目录、装之前看盘、认托管 npm 布局、终端里直接敲工具名那套（`cliTerminalAccess`）、文件被占用时补一句（装和卸都用）；Mac 上核 Grok 签名的那个执行器（`buildDarwinTrustedVerificationRunner`，固定走 `trustedCommandEnvironment`）装和卸都用，也放这里；把几样探测结果拼成工具状态的 `buildToolStatusFromSettled` 首页检测和装运行环境都用，同样放这里；日志里记失败原因时遮掉用户目录的 `credentialFailureReason` 各簇都用，也在这里；打开工具和 Grok 钩子都看的 Windows 注册表里最新的 PATH（`refreshWindowsLivePath`），和打开工具、线路跟随都记的「这次从星芒打开过哪些工具、哪些等重开」两份记录，同样放这里；线路跟随（命令行工具和外部客户端两边）用的钟和定时器（`toolRouteNow`、`scheduleToolRouteTimer`，测试替身在这里换）也在这里；「保存前读到的那份配置一点没动」的口径（`sameNativeConfigSnapshot` / `untouchedSince`）保存配置和线路跟随都用，同样放这里；问中转这把密钥能用哪些型号的 `fetchAvailableModels`（带两分钟缓存，12 秒超时、1MB 上限、不跟重定向，I10）保存配置、打开前核对型号和外部客户端都用，也在这里。`system-service.ts` 正按簇把闭包搬成各自的服务文件，都只拿这一份上下文；它只 import `system-service.ts` 的类型，免得两个文件互相 require
+- `system-scan-service.ts` — **首页检测的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `scanSystem`、`cachedScan`、`inspectCliUpdate`、`inspectRunningTools`、`refreshNetworkLocation` 这些）：网络位置（Cloudflare trace 加三个备用地址，缓存 10 分钟）、Node / npm / Python / Git 和各家 CLI 装没装、装的哪一版、有没有新版（npm 查最新版走镜像和官方源，Grok 查自己的版本清单），哪些工具正开着，Codex 官方账号用量；整轮检测合并成一次（`createScanCoalescer`）、起子进程的探测限流（`scanProbeConcurrency`）、上次结果落盘先给界面看。探测出错落「检测失败」而不是「没装」，免得向导对正常的工具触发重装
 - `system-snapshot-cache.ts` — 把上一次首页扫描结果留在本机，下次启动先画出首页、后台照常重扫。这份文件**只用来"先画个样子"**：主进程里任何要回答"装没装"的地方都不读它；别的版本写的文件照样认，但剥掉版本判断（`withoutVersionVerdicts`）
 - `project-instructions.ts` — 打开工作目录时，若 `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` 一个都没有，就用随包模板生成一份 `AGENTS.md`（三个工具都读它），绝不覆盖、绝不追加；`PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS` 记着每一版模板的摘要，检查页靠它认出个人文件夹里那份还是星芒放的原样（已知36），改模板只能往表里加、不能删
 - `manual-uninstall-visual-fixture.ts` — macOS 视觉验收专用的假快照（把 Codex/Grok 投影成「需要手动卸载」的样子），只在未打包且 `XINGMANG_E2E_MANUAL_UNINSTALL_FIXTURE=1` 时由 `main.ts` 启用，供 `e2e/macos-visual-qa.mjs` 截图；正式包里永远不生效
 
 ## 配置与备份
 
-- `config-files.ts` — 各 CLI 配置文件的读写：**两阶段提交 + .bak 备份 + 失败回滚**（I9，Codex 一次要同时改 `config.toml` 和 `auth.json`）；`toNativeConfigSummary` 剥掉 `apiKey`，明文只走 `config:reveal-api-key`（I3）；切官方账号、路由跟随、钩子、状态行、工作区信任（字段实测见 `docs/WORKSPACE-TRUST.md`）、退役 Gemini 的清理也在这里。按 provider 分支的几个 `switch` **没有 default 分支**，是新增 provider 时的穷尽性保障，别重构成策略类（T2）；用户自己设过的值不动；改 `providerConfigPaths` 要顾及备份、诊断、启动前校验等消费者（T10）
+- `config-files.ts` — 各 CLI 配置文件的读写：**两阶段提交 + .bak 备份 + 失败回滚**（I9，Codex 一次要同时改 `config.toml` 和 `auth.json`）；`toNativeConfigSummary` 剥掉 `apiKey`，明文只走 `config:reveal-api-key`（I3）；切官方账号、路由跟随、钩子、状态行、工作区信任（字段实测见 `docs/WORKSPACE-TRUST.md`）也在这里；下线的 Gemini CLI 专用的那些在 `gemini-retired.ts`，这里只留各个 `switch` 里的 gemini 分支。按 provider 分支的几个 `switch` **没有 default 分支**，是新增 provider 时的穷尽性保障，别重构成策略类（T2）；用户自己设过的值不动；改 `providerConfigPaths` 要顾及备份、诊断、启动前校验等消费者（T10）
+- `config-files-context.ts` — `config-files.ts` 和从它拆出去的文件共用的读写底层（#1070 第 10 步原样搬出，`executeFilePlans`、`providerConfigPaths` 由 `config-files.ts` 照旧导出）：读配置文本（只认单链接普通文件、去掉字节顺序标记、2MB 上限），写之前的路径检查 `assertSafeConfigPath`（I8，含「C 盘搬家」那条例外），两阶段提交 + .bak + 失败回滚的 `executeFilePlans`（I9），各家配置的位置 `providerConfigPaths`（T10），几家都用的 JSON 小工具。只 import `config-files.ts` 的类型，免得两个文件互相 require
+- `gemini-retired.ts` — 下线的 Gemini CLI 在配置这一侧的专用代码（#1070 第 10 步从 `config-files.ts` 原样搬出，原来导出的名字 `config-files.ts` 照旧导出）：照 Gemini 的规矩读写 settings.json 与 trustedFolders.json（允许注释、改写时留住注释、重复键拒绝），保存配置时补的那几项（不自己升级、会话留一年、后台型号指到中转、关使用统计和旁边那笔记录），目录信任和项目说明文件名，收回星芒写进去的做完提醒和画图工具（`removeRetiredGeminiIntegrations`）。老客户电脑上的 Gemini 不卸不删，这些照旧要能读能写；`config-files.ts` 各个 `switch (provider)` 里的 gemini 分支留在原处调这里（T2）。整块删 Gemini 时删这个文件，再顺着编译错删那几个分支
+- `config-save-service.ts` — **保存工具配置的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `saveConfig`、`getConfig`、`revealApiKey`、`repairCliHooks`、`fillToolTemplateDefaults`、`checkToolModels` 这些）：保存配置（挪开官方 Console Key、写失败放回，记来源，换完星芒签的 Key 让外部客户端跟上）、换型号和刷新菜单的定点改写、配置摘要，打开前的型号核对（`tool-model-check.ts`），开机补模板缺省项，Codex 随包型号名单的写入和读不进时收回，写进各家工具的钩子和状态行（含 Grok 换终端后重写、这次启动替用户修过的钩子），退役 Gemini 留下的接入清理。首页检测、外部客户端、线路跟随、官方账号那几样由门面传进来
 - `config-file-backups.ts` — 配置文件旁边那份 `.bak.<时间戳>` 怎么起名、「每个文件只留最近 5 份」该删哪几份；`config-files.ts` 的保存事务和 `codex-config-toml.ts` 往同一个目录放、一起数，名字只能出自这里（#1068）
 - `backups.ts` — 配置备份与恢复（手动 / 保存前 / 恢复前三种），`ConfigBackupStore` 在用户数据目录下按 manifest 存每个文件的原样与 sha256；v2 manifest 额外记 Key 的 sha256（`apiKeyDigest`），恢复前能告诉用户备份里那把 Key 是不是当前账号的、会不会恢复出一把已作废的 Key；必须兼容老版本留下的 v1 备份（T10）
 - `config-directory.ts` — 「打开配置文件夹」前的校验：拒绝经过符号链接/联接的路径，免得资源管理器被引去攻击者指定的位置（I8）；刻意不替用户建目录，"还没生成"就如实说。只有 `ipc.ts` 用
@@ -67,7 +72,7 @@
 - `canvas-contract.ts` — 宿主通道名 `canvasHostChannels` 与各通道入参/返回类型的单一来源（主进程侧），通道清单以它为准
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
-- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）
+- `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）；生视频的 `parseVideoGenerateInput` 同理，另给主窗口的 `video:generate` 用，只是不收参考视频、参考音频
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度
 
 ### 运行引擎（都在主进程）
@@ -90,7 +95,7 @@
 
 ### AI 服务（聊天、生图、生视频，与 CLI 共用同一账号额度）
 - `ai-chat-protocol.ts` — AI 请求的协议层：端点（`/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`）、各种上限、型号能力表 `resolveAiModelCapability` 与请求体构造；聊天、生图、生视频、画布指纹和执行器都依赖它
-- `ai-chat-service.ts` — 主进程的流式聊天：连接、空闲、总时长三道超时（长思考模型几分钟不出字也不截断，Q43），事件/输出/响应体都有字节上限，按窗口限并发；附图在主进程按账号读回转成 data URI；`completeOnce` 供画布文本节点用。Key 经 `chat-credential-coordinator.ts` 拿，渲染层只发"请求"
+- `ai-chat-service.ts` — 主进程的流式聊天：连接、空闲、总时长三道超时（长思考模型几分钟不出字也不截断，Q43），事件/输出/响应体都有字节上限，按窗口限并发；附图在主进程按账号读回转成 data URI；`completeOnce` 供画布文本节点和视频剪辑页的分镜用，没有窗口、不进并发表，但 `cancelAll`（换账号、退出登录）照样停它。Key 经 `chat-credential-coordinator.ts` 拿，渲染层只发"请求"
 - `ai-image-service.ts` — 生图与改图（multipart `/v1/images/edits`）：用有界队列限并发、可取消，响应体有上限；发请求前先试写保存位置，写不进就在扣费之前停下
 - `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上
 - `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品
@@ -100,7 +105,8 @@
 
 ### 素材存储与读取
 - `ai-asset-store.ts` — **图片素材的落盘与读取**（`AiAssetStore`）：按账号存进 `user-<id>/`，素材 id 由内容哈希派生；下载远端图片时只许公网地址、限重定向次数与超时、校验图片魔数（防 SSRF，I10）；提供复制、另存为、在文件夹中显示、右键菜单；`assertWritable` 让生成前先试写
-- `ai-video-asset-store.ts` / `ai-audio-asset-store.ts` — 视频（mp4）与音频素材的落盘与读取，同样按账号、内容哈希定 id，读出时长宽高等元数据；音频只来自用户导入
+- `ai-video-asset-store.ts` / `ai-audio-asset-store.ts` — 视频（mp4）与音频素材的落盘与读取，同样按账号、内容哈希定 id，读出时长宽高等元数据；音频只来自用户导入。视频剪辑页拼好的成片走 `storeComposed`，和出的片段存在一处
+- `video-studio-plan.ts` — 视频剪辑「一句话出片」的分镜：给文字模型的提示词、读回答（多写的镜头只留要的几个，控制字符换空格、超长截断），上限和剪辑页共用一份；零依赖、渲染层能值导入（I6）
 - `ai-asset-index.ts` — 枚举一个账号的全部素材文件而不读任何媒体字节，替代以前"读全文件、最多 500 条"的做法，让搜索和排序面对的是完整结果、只为当前页补元数据
 - `ai-asset-metadata-store.ts` — 素材的逻辑元数据（显示名、收藏、标签、最近使用、来源、生成时的提示词、回收站），每个账号文件夹一个 `asset-metadata.json`，有体积和条数上限；删除是逻辑删除
 - `ai-media-asset-service.ts` — 素材库：把图片/视频/音频三个仓库和元数据合成一个可分页、可搜索、可按收藏/最近/回收站/标签/来源筛选的列表，"找相似"按提示词精确匹配；目前只交给画布窗口用（主窗口那套 IPC 不经过它）

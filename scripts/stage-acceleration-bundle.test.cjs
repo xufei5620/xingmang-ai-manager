@@ -19,7 +19,7 @@ const sourceModules = new Map()
 // application compile or writing generated files into the working tree.
 function sourceModule(name) {
   if (sourceModules.has(name)) return sourceModules.get(name)
-  assert.ok(['safe-local-data', 'bounded-file', 'path-identity', 'relocated-folders', 'darwin-path-trust', 'linux-path-trust', 'acceleration-clash-config', 'acceleration-binary'].includes(name))
+  assert.ok(['safe-local-data', 'bounded-file', 'path-identity', 'relocated-folders', 'darwin-path-trust', 'linux-path-trust', 'acceleration-clash-config', 'acceleration-binary', 'input-guards'].includes(name))
   const file = path.join(projectRoot, 'electron', `${name}.ts`)
   const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
@@ -157,11 +157,11 @@ test('committed shared profile is pinned and contains only the approved node fie
   let profile
   try { profile = yaml.parse(bytes.toString('utf8')) } catch { throw new Error('仓库节点 YAML 无效。') }
   assert.equal(JSON.stringify(Object.keys(profile)), '["proxies"]')
-  assert.equal(profile.proxies.length, 12)
+  assert.equal(profile.proxies.length, 1)
   const allowed = new Set(['name', 'type', 'server', 'port', 'password', 'sni', 'up', 'down', 'skip-cert-verify'])
   assert.ok(profile.proxies.every(node => Object.keys(node).every(key => allowed.has(key))))
   const parsed = runtime().parser.parseClashAccelerationProfile(bytes.toString('utf8'))
-  assert.equal(parsed.nodes.length, 12)
+  assert.equal(parsed.nodes.length, 1)
   assert.equal(parsed.unsupportedNodeCount + parsed.metadataNodeCount + parsed.duplicateNodeCount, 0)
 })
 

@@ -16,6 +16,7 @@
  */
 import path from 'node:path'
 import type { CliModelHints } from './cli-model-defaults'
+import { isRecord } from './input-guards'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { parseCliModelHints, type ServiceStatus } from './service-status'
 
@@ -28,10 +29,6 @@ export interface CliModelHintsStore {
   read(): CliModelHints | null
   /** 状态文件读成功一次就交过来（没写型号表就是 null）；跟上次读到、写下的一样就不动盘。 */
   write(hints: CliModelHints | null): Promise<void>
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function serialize(hints: CliModelHints | null): string {

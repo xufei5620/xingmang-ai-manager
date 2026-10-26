@@ -301,6 +301,20 @@ describe('guide install failure wording', () => {
     expect(message).toContain('网络连不上')
     expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
   })
+
+  // 认出原因以后原话折起来，普通账号那句「输管理员账号的密码 / 找 IT」得接在红字里才看得见（#1096）。
+  it('keeps the account-specific next step in view when the administrator prompt was declined', () => {
+    const standardAdvice = '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+    const standard = guideInstallFailure(new Error(`Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`), 'Claude Code')
+    expect(standard.message).toBe(`运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。${standardAdvice}点「再试一次」，还不行就点「需要帮助」。`)
+    expect(standard.reason).toBe('没拿到管理员授权')
+    expect(guideInstallFailure(new Error('已取消管理员授权，Codex 桌面端安装未开始。重新点击安装即可再次授权。'), 'Codex 桌面端').message)
+      .toBe('Codex 桌面端 没装上（没拿到管理员授权）。重新点击安装即可再次授权。点「再试一次」，还不行就点「需要帮助」。')
+    // 以前那句短的后面没有下一步，红字照常。
+    expect(guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。'), 'Claude Code').message)
+      .toBe('运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideInstallExits(new Error(`未获得管理员权限，Node.js安装已停止。${standardAdvice}`)).map((action) => action.id)).toEqual(['support'])
+  })
 })
 
 describe('guide install failure exits', () => {

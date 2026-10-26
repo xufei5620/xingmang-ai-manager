@@ -1,5 +1,6 @@
 import type { AccelerationApi, AccelerationBundleCheck, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState, AccelerationUnavailableReason } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind, isAccelerationLineId } from './acceleration-contract'
+import { isRecord } from './input-guards'
 
 export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
@@ -62,7 +63,7 @@ interface AccelerationServiceOptions {
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
 const INVALID_RESPONSE = '加速服务返回的数据无效，请稍后重试。'
 const BACKEND_FAILURE = accelerationFailureMessages.unknown
-const ACCOUNT_CHANGED = '账号已变更，请重新打开游戏加速。'
+const ACCOUNT_CHANGED = '账号已变更，请重新打开网络加速。'
 const BACKGROUND_BUSY = 'Codex 桌面端正在后台用加速，暂不能检测线路。'
 const phases: readonly AccelerationPhase[] = ['unavailable', 'idle', 'connecting', 'active', 'stopping', 'exhausted', 'error']
 
@@ -121,10 +122,6 @@ function redemptionFailure(error: unknown): Error {
   return accelerationFailure(reason, `加速时长这次没有加上：${accelerationFailureMessages[reason]}`)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
 function isSeconds(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000
 }
@@ -163,6 +160,10 @@ function projectLines(value: unknown): AccelerationLine[] {
   return lines
 }
 
+function isAutomaticOrigin(value: unknown): value is NonNullable<AccelerationState['autoStartedBy']> {
+  return value === 'codex-desktop' || value === 'claude-desktop'
+}
+
 /** Only allow display data across IPC; transport credentials must stay inside the backend. */
 function projectState(value: unknown, scope: string): AccelerationState {
   if (!isRecord(value) || value.scope !== scope || !isPhase(value.phase)
@@ -179,7 +180,7 @@ function projectState(value: unknown, scope: string): AccelerationState {
   if (value.supportedModes !== undefined && (!Array.isArray(value.supportedModes) || !value.supportedModes.length
     || value.supportedModes.length > 2 || new Set(value.supportedModes).size !== value.supportedModes.length
     || value.supportedModes.some((mode) => mode !== 'system-proxy' && mode !== 'tun'))) throw new Error(INVALID_RESPONSE)
-  if (value.autoStartedBy !== undefined && (value.autoStartedBy !== 'codex-desktop' || !isRunning(phase))) throw new Error(INVALID_RESPONSE)
+  if (value.autoStartedBy !== undefined && (!isAutomaticOrigin(value.autoStartedBy) || !isRunning(phase))) throw new Error(INVALID_RESPONSE)
   // 软件替用户连的会话不扣时长，免费时长用完（0）也照样连着。
   if (phase === 'active' && (value.connectedAt === null || value.remainingSeconds === null
     || (value.remainingSeconds === 0 && value.autoStartedBy === undefined))) {
@@ -203,7 +204,7 @@ function projectState(value: unknown, scope: string): AccelerationState {
     ...(value.entitlementSource === 'server' || value.entitlementSource === 'local-device' || value.entitlementSource === 'local-development' ? { entitlementSource: value.entitlementSource } : {}),
     ...(Array.isArray(value.supportedModes) ? { supportedModes: [...value.supportedModes] as AccelerationMode[] } : {}),
     ...(Array.isArray(value.conflicts) ? { conflicts: [...value.conflicts] as AccelerationConflictKind[] } : {}),
-    ...(value.autoStartedBy === 'codex-desktop' ? { autoStartedBy: value.autoStartedBy } : {}),
+    ...(isAutomaticOrigin(value.autoStartedBy) ? { autoStartedBy: value.autoStartedBy } : {}),
     scope, phase, mode: value.mode, totalSeconds: value.totalSeconds, remainingSeconds: value.remainingSeconds,
     sessionSeconds: value.sessionSeconds, measuredAt: value.measuredAt, connectedAt: value.connectedAt, line, error: value.error,
   }
@@ -290,7 +291,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
   }
 
   function assertCurrent(scope: string, expectedRevision: number): void {
-    if (disposed) throw new Error('游戏加速服务已关闭。')
+    if (disposed) throw new Error('网络加速服务已关闭。')
     if (options.getAccountScope() !== scope || expectedRevision !== revision) throw new Error(ACCOUNT_CHANGED)
   }
 

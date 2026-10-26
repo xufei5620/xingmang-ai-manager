@@ -819,6 +819,21 @@ describe('external clients follow the connection route the user selected (batch 
     expect(fs.readFileSync(files.get('claudeDesktop')!, 'utf8')).toBe(before.get('claudeDesktop')!.replaceAll(primaryOrigin, directOrigin))
   })
 
+  // 星芒退出时撤掉等客户端退出的那个定时（#1070 第 3 步搬家后由 disposeToolRoutes 调外部客户端那边撤）。
+  it('drops the pending client check-back when the app shuts down', async () => {
+    const f = fixture()
+    await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!.running = true
+    expect((await service.scanExternalClients()).find((client) => client.tool === 'claudeDesktop'))
+      .toMatchObject({ routePending: true, routeRecheck: true })
+    expect(f.routeTimers).toHaveLength(1)
+
+    expect(service.disposeToolRoutes).toBeTypeOf('function')
+    service.disposeToolRoutes?.()
+    expect(f.routeTimers).toEqual([])
+  })
+
   // xm 三线路 C11：客户不用回来点「重新检测」，关掉客户端以后星芒自己换。
   it('checks a pending client every five minutes and moves it by itself once it has quit', async () => {
     const f = fixture()
@@ -1101,6 +1116,72 @@ describe('external clients follow the connection route the user selected (batch 
     expect(routeLogs(f).filter(([, , event]) => event === 'external-client.route.reverted')).toEqual([
       ['warn', 'config', 'external-client.route.reverted', expect.any(String), { tool: 'workbuddy', from: 'primary', to: 'direct' }],
     ])
+  })
+
+  // #1112（yoyo 10-20 放宽「两条线路都认」）：官方登录期间换线路那边不碰 Claude Desktop，切回当前账号时顺手换过来。
+  async function officialThenRestartOnDirect(f: ReturnType<typeof fixture>) {
+    const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    await f.service.switchExternalClientSource('claudeDesktop', 'official')
+    const service = await restartOn(f, 'direct')
+    expect((await service.scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop')).toMatchObject({ configured: false, officialAccount: true })
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before)
+    f.relayFetch.mockClear()
+    return { service, profile: saved.path, before, desktopPath: path.join(f.claudeProfileDirectory, 'claude_desktop_config.json') }
+  }
+
+  it('switches Claude Desktop back from the official login onto the route selected meanwhile', async () => {
+    const f = fixture()
+    const { service, profile, before, desktopPath } = await officialThenRestartOnDirect(f)
+
+    const back = await service.switchExternalClientSource('claudeDesktop', 'account')
+    expect(back).toMatchObject({ tool: 'claudeDesktop', target: 'account', outcome: 'switched' })
+    expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ deploymentMode: '3p' })
+    // 只换了地址：Key、型号原样，改前那份留了备份；切换不联网，结果和日志里没有 Key、没有地址。
+    expect(fs.readFileSync(profile, 'utf8')).toBe(before.replaceAll(primaryOrigin, directOrigin))
+    expect(backupsOf(profile)).toContain(before)
+    expect(f.relayFetch).not.toHaveBeenCalled()
+    expect(f.runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'external-client.source-switched', 'Claude Desktop 已改用当前账号',
+      { target: 'account', outcome: 'switched', running: false, from: 'primary' })
+    expect(JSON.stringify([back, f.runtimeLog.log.mock.calls])).not.toMatch(/sk-selected|solov\.cc/)
+
+    // 归属跟着记到了当前线路：首页认它是当前账号，重开以后也认，换线路那边不再动它。
+    expect((await service.scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop'))
+      .toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+    expect((await (await restartOn(f, 'direct')).scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop'))
+      .toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+    expect(f.relayFetch).not.toHaveBeenCalled()
+    expect(routeLogs(f)).toEqual([])
+  })
+
+  it('asks to connect Claude Desktop again when the profile left on the old route is not the current account\'s', async () => {
+    const f = fixture()
+    const { service, profile, before, desktopPath } = await officialThenRestartOnDirect(f)
+    f.setUser(18)
+
+    await expect(service.switchExternalClientSource('claudeDesktop', 'account')).resolves.toEqual({ tool: 'claudeDesktop', target: 'account', outcome: 'reconnect' })
+    expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ deploymentMode: '1p' })
+    expect(fs.readFileSync(profile, 'utf8')).toBe(before)
+  })
+
+  it('records ownership on the next check when switching back moved the address but recording it failed', async () => {
+    const f = fixture()
+    const { service, profile, before } = await officialThenRestartOnDirect(f)
+    const write = vi.spyOn(ExternalClientOwnershipStore.prototype, 'rewrite').mockRejectedValueOnce(new Error('ENOSPC: no space left on device'))
+    try {
+      await expect(service.switchExternalClientSource('claudeDesktop', 'account')).resolves.toMatchObject({ outcome: 'switched' })
+      expect(fs.readFileSync(profile, 'utf8')).toBe(before.replaceAll(primaryOrigin, directOrigin))
+      expect(routeLogs(f)).toContainEqual(['warn', 'config', 'external-client.route.failed', 'Claude Desktop 已换到当前连接线路，归属没记上，下次检测补记',
+        expect.objectContaining({ tool: 'claudeDesktop' })])
+
+      const client = (await service.scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop')
+      expect(client).toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+      expect(fs.readFileSync(profile, 'utf8')).toBe(before.replaceAll(primaryOrigin, directOrigin))
+      expect(f.relayFetch).not.toHaveBeenCalled()
+      expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.recorded', expect.any(String), { tool: 'claudeDesktop', from: 'primary', to: 'direct' }])
+    } finally {
+      write.mockRestore()
+    }
   })
 
   it('records ownership on the next check when the address was moved but recording it failed', async () => {

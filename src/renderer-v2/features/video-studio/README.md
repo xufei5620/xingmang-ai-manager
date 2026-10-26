@@ -1,0 +1,64 @@
+# 视频剪辑
+
+把 AI 生成的几段片段拼成一条成片。第 1 期「一句话出片」分三步做：本目录的拼片引擎、主进程的分镜和出片段通道、侧栏「视频剪辑」页，三步都已接上。
+
+## 页面
+
+侧栏工作组画布后面的「视频剪辑」（`registry/pages.ts` 的 `video`，T1）。历史账号登录时侧栏和顶部搜索都不出这一项（`App.tsx` 的 `pageVisible`，历史账号站没有视频模型）；没登录时页里只有「登录后才能用」。
+
+流程：写一句想法 → 「写分镜」（文字模型拆成几个镜头，每个镜头一句画面描述和一句字幕）→ 改描述、字幕，上移、下移、删掉、加镜头 → 「生成全部 N 段」（先确认几段、每段几秒、按段计费；同时最多 3 段）→ 某段不满意单独「重新生成」→ 「拼成一条视频」（在这台电脑上拼，不花钱）→ 用播放器打开或另存。
+
+- 每一笔要花钱的操作（生成、重新生成）都先弹确认；停下时说清哪几段已经交给服务端、照样扣费。
+- 工程（想法、设置、分镜、片段和成片的编号）按账号存在这个窗口的 `localStorage`（`xingmang-ui-v2:video-studio:{账号}`），正在跑的不记；读回来时每个字段都重新校验，缩略图只认 `xingmang-asset://thumb/…/video/{编号}`。存不下时页面上出一条提示，不影响用。
+- 视频模型从账号所有分组里找（`kind` 是 `video` 的，现在是 Grok 和 MiniMax 两家），默认 `grok-imagine-video-1.5`；每段时长只列这个模型能出的长度。文字模型的菜单和聊天一样按厂商分节。
+- 换账号时整页重新挂载（`key={scope}`），上一个账号的请求和进度都作废。
+
+文件：
+
+- `project.ts` — 纯函数：工程的形状、默认值、分镜落成镜头、排序增删、出片段的请求、存取和校验。
+- `useVideoStudio.ts` — 页面的状态和对主进程的调用：读模型、写分镜、排队出片段、拼片、存工程。
+- `VideoStudioPage.tsx` / `video-studio.css` — 页面本身。
+
+## 主进程那一半
+
+请求都在主进程发，凭据和文件路径不出主进程（`electron/ipc/handlers/ai-video.ts`）：
+
+- `planVideoStudio`：文字型号把一句想法拆成几个镜头，每个镜头一句给视频型号的画面描述和一句字幕（`electron/video-studio-plan.ts`，上限页面也从这里读）。
+- `generateAiVideo`：出一段视频，存进全局作品库后回编号、缩略图、宽高和时长；进度经 `onAiVideoProgress` 推回来。对话页也用这一条。
+- `cancelAiVideo`：停下分镜或出视频。已经交给服务端的视频照样生成、照样扣费，下次登录会自己取回来。
+- `readAiVideoClip`：读一段视频的全部字节，交给下面的拼片引擎。
+- `storeVideoStudioExport`：拼好的成片存进作品库；`openAiVideo` 用电脑默认的播放器打开，`saveAiVideo` 另存。
+
+主窗口的 CSP 没有 `media-src`，页面里放不了视频，看成片靠缩略图加「用播放器打开」。
+
+## 拼片引擎
+
+`composeInVideoStudioWorker(request, { signal, onProgress })` 在后台线程里拼，页面不卡；`composeVideoStudio` 是同一套，直接在当前线程跑（测试用）。
+
+- **输入**：每段片段的全部字节（MP4 / MOV / WebM）加可选的剪头、剪尾、字幕；成片的画面比例（16:9、9:16、1:1）、清晰度（短边 480 / 720 / 1080）、填充方式（裁边 `cover` / 补黑边 `contain`）和帧率（24 / 25 / 30）。
+- **输出**：一个 MP4 的字节、编码、宽高和时长。画面优先 H.264，没有再用 VP9、AV1；声音优先 AAC，Linux 的 Chromium 没有 AAC 编码器，用 Opus。所有片段都没有声音时成片不带音轨。
+- **字节会转移**：交给后台线程后 `request` 里的 `ArrayBuffer` 就空了，要重拼就重新读片段。
+- **不装 ffmpeg**：解码、编码都用 Electron 自带的 WebCodecs，读写 MP4 用 [mediabunny](https://github.com/Vanilagy/mediabunny)（MPL-2.0，没改它的源码）。
+- **上限**：最多 50 段、成片最长 10 分钟、一段最大 512 MB、加起来最大 1 GB；成片整个在内存里组装。
+
+文件：
+
+- `timeline.ts` — 纯计算：成片尺寸、每段从哪儿取、落在成片第几帧。按整帧切，48 kHz 能被每个帧率整除，所以画面和声音拼多少段都不会错开。
+- `captions.ts` — 字幕排版：汉字按字断行、英文按词断行，标点不上行首；字号按短边算，竖屏抬到下五分之一；放不下先缩字号再截断。
+- `pcm.ts` — 声音拼接：每段先重采样成 48 kHz 立体声再交给编码器，只写这一段自己的时间窗，没有声音的地方是静音。
+- `encoding.ts` — 挑这台电脑能用的编码器。
+- `compose.ts` — 用 mediabunny 读片段、逐帧画到画布上烧字幕、编码、写 MP4。
+- `compose-protocol.ts` — 后台线程两头的消息格式，两边都按白名单读。
+- `compose-worker.ts` / `compose-client.ts` — 后台线程本身和页面这一头；取消就直接关掉线程。
+- `errors.ts` — 报错上屏一律中文；浏览器抛的英文错误换成一句能照着做的话。
+
+## 验证
+
+```bash
+npx vitest run src/renderer-v2/features/video-studio --no-file-parallelism
+XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium node --test src/renderer-v2/features/video-studio/browser-check.mjs
+```
+
+浏览器测试在页面里现做几段纯色片段（不同尺寸、帧率、有无声音），拼完再解出来量颜色、字幕像素和音量，也核对后台线程、取消和读不了的文件。页面那两条（`page-fixture.html`）用假的主进程桥走完写分镜、生成、拼片、刷新后恢复，以及停下分镜和正在生成的片段。不碰网络。
+
+Windows / Mac 上能不能编出 AAC 声音要真机看；编不出也会自动换 Opus，照样出 MP4。

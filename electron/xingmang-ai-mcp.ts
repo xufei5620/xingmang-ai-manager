@@ -1,5 +1,6 @@
 import path from 'node:path'
-import { XINGMANG_AI_CONFIG_FILE, XINGMANG_AI_SKILL_DIRECTORY } from './xingmang-ai-skill'
+import { isRecord } from './input-guards'
+import { XINGMANG_AI_CONFIG_FILE, XINGMANG_AI_LEGACY_SKILL_DIRECTORY, XINGMANG_AI_SKILL_DIRECTORY } from './xingmang-ai-skill'
 
 export const XINGMANG_IMAGE_MCP_NAME = 'xingmang-image'
 export const XINGMANG_IMAGE_TOOL_NAME = 'generate_image'
@@ -19,10 +20,6 @@ export interface XingmangImageMcpInvocation {
 export type XingmangImageTomlVariant = 'codex' | 'grok'
 export type XingmangImageJsonVariant = 'claude' | 'gemini'
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
 export function buildXingmangImageMcpInvocation(
   nodeExecutable: string,
   skillDirectory: string,
@@ -37,11 +34,15 @@ export function buildXingmangImageMcpInvocation(
   }
 }
 
+// 技能文件夹改名前登记的那条也是我们的：认得出来，才会跟着换到改名后的位置。
+const managedSkillDirectoryNames = new Set([XINGMANG_AI_SKILL_DIRECTORY, XINGMANG_AI_LEGACY_SKILL_DIRECTORY])
+
 /**
  * An entry is ours only when it launches the bundled script from a 星芒AI skill
- * directory. Anything else under the same name belongs to the user and is never
- * rewritten. Paths are split on both separators because the config may have been
- * written on the other OS family than the one reading it in tests.
+ * directory (under its current or its pre-rename folder name). Anything else
+ * under the same name belongs to the user and is never rewritten. Paths are
+ * split on both separators because the config may have been written on the
+ * other OS family than the one reading it in tests.
  */
 export function isManagedXingmangImageMcpEntry(value: unknown): boolean {
   if (!isRecord(value) || !Array.isArray(value.args) || value.args.length !== 1) return false
@@ -51,7 +52,7 @@ export function isManagedXingmangImageMcpEntry(value: unknown): boolean {
   return segments.length >= 3
     && segments[segments.length - 1] === XINGMANG_IMAGE_SCRIPT_FILE
     && segments[segments.length - 2] === 'scripts'
-    && segments[segments.length - 3] === XINGMANG_AI_SKILL_DIRECTORY
+    && managedSkillDirectoryNames.has(segments[segments.length - 3])
 }
 
 // 只在第一次登记时写；以后缺了也不补回来，理由见 repointedEntry。
@@ -120,6 +121,24 @@ export function applyXingmangImageMcpToToml(
   if (sameValue(existing, next)) return false
   servers[XINGMANG_IMAGE_MCP_NAME] = next
   parsed.mcp_servers = servers
+  return true
+}
+
+/**
+ * 只把已经登记过的那条换到现在的位置，没登记过的不补。用在 Codex 选着 ChatGPT 账号时的 config.toml
+ * 和存着的两份配置上：那里不登记新的，可整份带过来的旧条目还指着改名前的技能文件夹或旧的 Node，
+ * 切换以后画图工具就起不来。返回是否改动。
+ */
+export function repointXingmangImageMcpInToml(
+  parsed: Record<string, unknown>,
+  invocation: XingmangImageMcpInvocation,
+): boolean {
+  if (!isRecord(parsed.mcp_servers)) return false
+  const existing = parsed.mcp_servers[XINGMANG_IMAGE_MCP_NAME]
+  if (!isRecord(existing) || !isManagedXingmangImageMcpEntry(existing)) return false
+  const next = repointedEntry(existing, invocation)
+  if (sameValue(existing, next)) return false
+  parsed.mcp_servers[XINGMANG_IMAGE_MCP_NAME] = next
   return true
 }
 

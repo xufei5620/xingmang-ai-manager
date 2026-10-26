@@ -42,6 +42,7 @@ import { accountSources } from './features/auth/state'
 import { AnnouncementCenter } from './features/shell/Announcement'
 import { createAccelerationApi } from './features/acceleration/api'
 import { useAcceleration } from './features/acceleration/useAcceleration'
+import { useCodexRemoteActive } from './features/settings/codex-remote/useCodexRemoteActive'
 import { useNetworkLocation } from './features/shell/useNetworkLocation'
 import { latestNetworkLocation } from './features/shell/network'
 import { platformApi } from './platform-api'
@@ -59,7 +60,7 @@ import { readLocalPreference, writeLocalPreference } from './features/app/prefer
 import { currentWindowOs, windowOsFor } from './features/app/window-os'
 import { rememberTourPending, rememberTourSeen, tourReplayPending } from './features/shell/tour-state'
 import { SupportIdentity, buildSupportBundle, type SupportFailure } from './features/app/SupportIdentity'
-import { accountOrigin, accountScope, accountSiteId, accountSupports, sessionRestoreRetrying, sessionRestoring, sessionScope, siteIdForOrigin, visibleAccountTab } from './account-context'
+import { accountOrigin, accountScope, accountSiteId, accountSupports, sessionRestoreRetrying, sessionRestoring, sessionScope, signedInSiteId, siteIdForOrigin, visibleAccountTab } from './account-context'
 import { accountReadErrorAction } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore, useUsableSubscription } from './features/app/balance-context'
 import { subscriptionSummaryText } from '../../electron/subscription-summary'
@@ -191,6 +192,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 也不去读加速状态。能力回来之前按窗口的系统先判断，免得 Linux 上侧栏先闪一下「游戏加速」。
   const accelerationAvailable = platform ? platform.acceleration !== false : currentWindowOs() !== 'linux'
   const acceleration = useAcceleration(accelerationApi, session.authenticated && accelerationAvailable ? scope : null)
+  const remoteActive = useCodexRemoteActive(native)
   const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
@@ -226,6 +228,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const clis = toolbox.snapshot?.system.clis
     return clis ? activeProviderIds.filter((id) => clis[id].installed) : undefined
   }, [toolbox.snapshot?.system.clis])
+  // 只装了 Codex 桌面端时，扩展几页照样替 Codex 管外接工具和技能（桌面端和 CLI 读同一份配置）。
+  const codexDesktopInstalled = toolbox.snapshot?.system.desktopApps.codex.installed
   useRelayRouteSync({ native, app, boot, session, siteId, toolbox, setSettings, showRouteRestartHint, runAccountBootstrap, mounted })
   const { chooseDisplayCompat, chooseCrashReporting } = useStartupChecks({ native, app, boot, settings, setSettings, authenticated: session.authenticated, noteStartupCheck, perform, toast, mounted })
   // 平台能力回来之前沿用挂载前定下的系统，不能先按 Windows 写上去再改：欢迎页和
@@ -366,6 +370,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           accountTab={page === 'account' ? shownAccountTab : undefined} theme={settings?.theme} announcementOpen={announcementOpen}
           update={update && !update.error ? update.phase === 'downloaded' ? 'ready' : update.phase === 'available' || update.phase === 'downloading' ? 'available' : undefined : undefined}
           accelerationLine={acceleration.snapshot.state?.phase === 'active' ? acceleration.snapshot.state.line?.name : undefined}
+          remoteActive={remoteActive}
           tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
           environment={buildEnvironmentStatus(diagnosticsCounts, toolbox.snapshot?.system.runtime)} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + visibleExternalClients(os, toolbox.externalClients).filter((tool) => tool.installed).length : undefined}
@@ -381,7 +386,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               {updateOffersDownloadPage(update) && <Button size="sm" variant={updateNeedsManualReinstall(update) ? 'primary' : 'secondary'} onClick={() => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl))}>打开下载页</Button>}
               {updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
               {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
-          adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), pageVisible: (id) => id !== 'acceleration' || accelerationAvailable,
+          adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), pageVisible: (id) => id === 'video' ? signedInSiteId(session) !== 'solov-api' : id !== 'acceleration' || accelerationAvailable,
             settingsItemVisible: (item: SettingsItem) => settingsItemAvailable(item, { mac: os === 'mac', autoUpdate: Boolean(update?.autoUpdateSupported), acceleration: accelerationAvailable }), refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             ...(accelerationAvailable ? { redeemAccelerationCode: async (code: string) => {
               if (!session.authenticated) throw new Error('请先登录星芒账号，再领取加速时长。')
@@ -456,6 +461,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onToolConfigSaved={() => { markDiagnosticsStale(); void toolbox.refreshConfig().catch(() => undefined) }}
                   toolConfigConfirmed={toolConfigConfirmed}
                   installedProviders={installedProviders}
+                  codexDesktopInstalled={codexDesktopInstalled}
                   onSystemChanged={() => { markDiagnosticsStale(); refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
                   onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
                   openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
@@ -500,12 +506,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }} />}
     {officialQuotaOpen && <OfficialQuotaDialog email={toolbox.snapshot?.config.providers.codex.officialAccountEmail ?? null} initial={toolbox.snapshot?.system.officialChatGpt ?? null}
       refresh={() => toolsApi.officialUsage()} onClose={() => setOfficialQuotaOpen(false)} />}
-    {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
+    {accelerationHelp && <Dialog open title="网络加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
-      <p>选择线路后点击“开启加速”，连接成功后再打开游戏或启动器。“自动选择”会自动测速并选择可用线路，也可以手动选择。</p>
-      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。加速只改这台电脑的系统代理，不接管整台电脑的网络。</p>
+      <p>选择线路后点击“开启加速”，连接成功后再打开 ChatGPT 网页或 Codex。“自动选择”会自动测速并选择可用线路，也可以手动选择。</p>
+      <p>只有 ChatGPT、Codex 这些 OpenAI 的服务走这条线路，别的网站和下载照常直连。加速只改这台电脑的系统代理，不接管整台电脑的网络。开着别的 VPN 时可能连不上，建议先关掉。</p>
       <p>每个账号在本机累计享有 20 分钟免费体验。连接成功后才开始计时，停止后保留剩余时长，下次继续使用，不会每天重置。当前时长在本机保存，设备之间不同步。</p>
-      <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
+      <p>切换页面、缩到托盘或关掉浏览器都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={640} testId="support-dialog">
       {/* 左边扫码、右边复制身份，常去的几处排成下面的六格（v4 第 10 批，代替原来那排按钮和「设置里还有」「左边「更多」里还有」）。 */}

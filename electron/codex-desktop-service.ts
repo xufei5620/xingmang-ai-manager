@@ -678,8 +678,8 @@ export const codexDesktopStoreHeartbeatMs = 15_000
 // 离超时只剩这么久时改口成「最多再等 X 分钟」，让用户知道等待是有头的。
 const codexDesktopStoreDeadlineNoticeMs = 3 * 60_000
 
-// system-service 已经 import 本模块，反过来 import 它的 formatElapsedDuration
-// 会成环，所以这里留一份同样写法的。
+// 和 cli-install-service.ts 的 formatElapsedDuration 同样写法。那份早先在 system-service.ts 里，
+// 而 system-service.ts import 本模块，反过来 import 会成环，所以各留一份。
 function formatCodexDesktopStoreElapsed(elapsedMs: number): string {
   const seconds = Math.max(0, Math.round(elapsedMs / 1000))
   if (seconds < 60) return `${seconds} 秒`

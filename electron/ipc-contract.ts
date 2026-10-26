@@ -2,8 +2,12 @@
 
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
 import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
+import type { MiniMaxVideoAspectRatio, MiniMaxVideoMode, MiniMaxVideoResolution } from './ai-chat-protocol'
+import type { VideoStudioPlan, VideoStudioPlanRequest } from './video-studio-plan'
+export type { VideoStudioPlan, VideoStudioPlanAspect, VideoStudioPlanShot } from './video-studio-plan'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
+import type { WeixinLoginPollInput, WeixinLoginSnapshot } from './codex-remote-weixin-login-state'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 export type { StaleProxyClearResult } from './stale-proxy-environment'
@@ -15,6 +19,17 @@ import type {
   ConfigRestoreResult,
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
+import type { CodexRemoteSnapshot, RemoteChannelId } from './codex-remote-channel'
+export type {
+  CodexRemoteBoundPeerSnapshot,
+  CodexRemoteChannelSnapshot,
+  CodexRemotePairingSnapshot,
+  CodexRemoteSnapshot,
+  CodexRemoteTaskState,
+  RemoteChannelId,
+  RemoteChannelState,
+  RemoteChannelStatus,
+} from './codex-remote-channel'
 import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
   ExternalToolId,
@@ -655,6 +670,52 @@ export interface AiChatCancelResult {
   mayStillComplete: boolean
 }
 
+/**
+ * 主窗口出一段 AI 视频（video:generate），对话页和视频剪辑页共用。参考图可以是对话里选的图片
+ * （chat:pick-images 回的编号），它们和出的图片在同一个作品库里。不收账号、项目这类字段：账号按
+ * 当前登录算，片段存进全局作品库。
+ */
+export interface AiVideoGenerateInput {
+  requestId: string
+  group: string
+  model: string
+  prompt: string
+  /** 1 到 15 的整数秒，写成字符串；每个视频型号能选的时长不一样，由页面按型号给。 */
+  seconds: string
+  imageAssetIds?: string[]
+  width?: number
+  height?: number
+  mode?: MiniMaxVideoMode
+  resolution?: MiniMaxVideoResolution
+  aspectRatio?: MiniMaxVideoAspectRatio
+  promptOptimization?: boolean
+}
+
+/** 作品库里的一段视频（出的片段或拼好的成片）。不给文件路径；要字节走 video:read-clip。 */
+export interface AiVideoClip {
+  assetId: string
+  /** 第一帧缩略图，主窗口能直接放进 <img>。 */
+  thumbnailUrl: string
+  width?: number
+  height?: number
+  durationSeconds?: number
+}
+
+export interface AiVideoProgressEvent {
+  requestId: string
+  stage: 'processing' | 'downloading' | 'saving'
+  /** 0 到 100；服务端不报进度时没有。 */
+  value?: number
+  /** 服务端说这单排得比平时慢。 */
+  delayed?: boolean
+}
+
+export interface VideoStudioPlanInput extends VideoStudioPlanRequest {
+  requestId: string
+  group: string
+  model: string
+}
+
 export interface InstallCancelResult {
   /** 取消请求是否被接受。 */
   cancelled: boolean
@@ -995,6 +1056,13 @@ export interface XingmangInvokeContract {
   inspectBackup: IpcInvokeDefinition<'backups:inspect', [id: string], ConfigBackupPreview>
   restoreBackup: IpcInvokeDefinition<'backups:restore', [id: string], ConfigRestoreResult>
   deleteBackup: IpcInvokeDefinition<'backups:delete', [id: string], void>
+  /**
+   * 手机遥控 Codex 的微信扫码登录。二维码由主进程画成图片给过来，登录链接和机器人令牌都不过
+   * IPC（I3）；令牌直接进底座的加密凭据存储。poll 等一轮长轮询（最多四十来秒）。
+   */
+  startWeixinRemoteLogin: IpcInvokeDefinition<'codex-remote:weixin-login-start', [], WeixinLoginSnapshot>
+  pollWeixinRemoteLogin: IpcInvokeDefinition<'codex-remote:weixin-login-poll', [input: WeixinLoginPollInput], WeixinLoginSnapshot>
+  cancelWeixinRemoteLogin: IpcInvokeDefinition<'codex-remote:weixin-login-cancel', [loginId: string], void>
   listMcpServers: IpcInvokeDefinition<'mcp:list', [], McpServer[]>
   addMcpServer: IpcInvokeDefinition<'mcp:add', [input: McpCreateInput], McpServer[]>
   removeMcpServer: IpcInvokeDefinition<'mcp:remove', [name: string], McpServer[]>
@@ -1211,6 +1279,19 @@ export interface XingmangInvokeContract {
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
   pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
   pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
+  /** 视频剪辑「一句话出片」：文字型号把想法拆成几个镜头。停下用 video:cancel，同一个请求标识。 */
+  planVideoStudio: IpcInvokeDefinition<'video-studio:plan', [input: VideoStudioPlanInput], VideoStudioPlan>
+  /** 出一段视频，等到存进作品库才回；途中的进度走 onAiVideoProgress。 */
+  generateAiVideo: IpcInvokeDefinition<'video:generate', [input: AiVideoGenerateInput], AiVideoClip>
+  /** 停下 video:generate 或 video-studio:plan。已经交给服务端的视频照样生成、照样扣费（mayStillComplete）。 */
+  cancelAiVideo: IpcInvokeDefinition<'video:cancel', [requestId: string], AiChatCancelResult>
+  /** 作品库里一段视频的全部字节，给页面拼片用。 */
+  readAiVideoClip: IpcInvokeDefinition<'video:read-clip', [assetId: string], Uint8Array>
+  /** 页面拼好的 MP4 存进作品库。 */
+  storeVideoStudioExport: IpcInvokeDefinition<'video-studio:store-export', [bytes: Uint8Array], AiVideoClip>
+  /** 用电脑上默认的播放器打开作品库里的一段视频。 */
+  openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
+  saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string], { saved: boolean }>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
@@ -1270,6 +1351,22 @@ export interface XingmangInvokeContract {
    * 返回用户选的文件夹，取消返回 null。选到的路径照旧随添加请求过主进程的参数校验。
    */
   chooseExtensionDirectory: IpcInvokeDefinition<'extensions:choose-directory', [], string | null>
+  /** 手机遥控 Codex：飞书、微信这些渠道的开关、配对、绑定的人，和 Codex 在哪个文件夹里干活。 */
+  getCodexRemoteState: IpcInvokeDefinition<'codex-remote:get-state', [], CodexRemoteSnapshot>
+  setCodexRemoteChannelEnabled: IpcInvokeDefinition<'codex-remote:set-channel-enabled', [channel: RemoteChannelId, enabled: boolean], CodexRemoteSnapshot>
+  /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
+  chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
+  startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  cancelCodexRemotePairing: IpcInvokeDefinition<'codex-remote:cancel-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  unbindCodexRemotePeer: IpcInvokeDefinition<'codex-remote:unbind', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  clearCodexRemoteCredentials: IpcInvokeDefinition<'codex-remote:clear-credentials', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  /** 入参带着 App Secret：只走这一条，成功不记日志（I3、I13）；主进程先拿它去飞书验一遍再存。 */
+  saveCodexRemoteFeishuCredentials: IpcInvokeDefinition<'codex-remote:save-feishu-credentials', [request: CodexRemoteFeishuCredentialRequest], CodexRemoteSnapshot>
+}
+
+export interface CodexRemoteFeishuCredentialRequest {
+  appId: string
+  appSecret: string
 }
 
 export interface XingmangEventContract {
@@ -1312,6 +1409,7 @@ export interface XingmangEventContract {
     AccountPaymentWindowTerminalEvent
   >
   onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
+  onAiVideoProgress: IpcEventDefinition<'video:progress', AiVideoProgressEvent>
   /**
    * 星芒替用户绕开连不上的代理、整个改了直连以后，代理软件又连得上了，已经改回跟随系统代理
    * （electron/proxy-bypass.ts）。载荷为空：界面只拿它收起「已经改为直接联网」那条提示。
@@ -1323,6 +1421,7 @@ export interface XingmangEventContract {
    * 工具迁过去（开着的也迁，#941）。
    */
   onRelayRouteChanged: IpcEventDefinition<'network:relay-route-changed', undefined>
+  onCodexRemoteStateChanged: IpcEventDefinition<'codex-remote:state-changed', CodexRemoteSnapshot>
 }
 
 export type XingmangApi = {
@@ -1425,6 +1524,9 @@ export const ipcInvokeChannels = {
   inspectBackup: 'backups:inspect',
   restoreBackup: 'backups:restore',
   deleteBackup: 'backups:delete',
+  startWeixinRemoteLogin: 'codex-remote:weixin-login-start',
+  pollWeixinRemoteLogin: 'codex-remote:weixin-login-poll',
+  cancelWeixinRemoteLogin: 'codex-remote:weixin-login-cancel',
   listMcpServers: 'mcp:list',
   addMcpServer: 'mcp:add',
   removeMcpServer: 'mcp:remove',
@@ -1519,6 +1621,13 @@ export const ipcInvokeChannels = {
   showAiChatAssetMenu: 'chat:asset-menu',
   pickAiChatImages: 'chat:pick-images',
   pasteAiChatImage: 'chat:paste-image',
+  planVideoStudio: 'video-studio:plan',
+  generateAiVideo: 'video:generate',
+  cancelAiVideo: 'video:cancel',
+  readAiVideoClip: 'video:read-clip',
+  storeVideoStudioExport: 'video-studio:store-export',
+  openAiVideo: 'video:open',
+  saveAiVideo: 'video:save-as',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   exportAiChatConversation: 'chat-history:export-text',
@@ -1532,6 +1641,14 @@ export const ipcInvokeChannels = {
   openDiagnosticFolder: 'diagnostics:open-folder',
   fixDiagnostic: 'diagnostics:fix',
   chooseExtensionDirectory: 'extensions:choose-directory',
+  getCodexRemoteState: 'codex-remote:get-state',
+  setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
+  chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
+  startCodexRemotePairing: 'codex-remote:start-pairing',
+  cancelCodexRemotePairing: 'codex-remote:cancel-pairing',
+  unbindCodexRemotePeer: 'codex-remote:unbind',
+  clearCodexRemoteCredentials: 'codex-remote:clear-credentials',
+  saveCodexRemoteFeishuCredentials: 'codex-remote:save-feishu-credentials',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -1554,8 +1671,10 @@ export const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onAiVideoProgress: 'video:progress',
   onProxyBypassEnded: 'network:proxy-bypass-ended',
   onRelayRouteChanged: 'network:relay-route-changed',
+  onCodexRemoteStateChanged: 'codex-remote:state-changed',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }

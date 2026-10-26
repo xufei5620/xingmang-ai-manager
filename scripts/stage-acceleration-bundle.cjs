@@ -80,6 +80,15 @@ function validateTarget(platform, arch) {
   if (platform === 'win32' && arch !== undefined && arch !== 'x64') throw new Error('Windows 加速内核架构不受支持。')
 }
 
+// Re-use the runtime's allowlist: subscriptions, DNS/rules, UI names and
+// controller credentials from the original Clash profile never get copied.
+// The online node list (scripts/acceleration-nodes.cjs) publishes the same
+// projection, so the repository profile reaches customers as the same bytes
+// either way.
+function projectAccelerationProfileSource(profile) {
+  return stringify({ proxies: profile.nodes.map((node) => ({ name: node.label, ...node.connection })) }, { lineWidth: 0 })
+}
+
 function bundleFiles(manifest) {
   return BUNDLE_FILES.map(name => name === 'mihomo.exe' ? manifest.coreFile : name)
 }
@@ -172,9 +181,7 @@ async function stageAccelerationBundle(options, dependencies = {}) {
     }
   }
   const profile = parser.parseClashAccelerationProfile(profileSource)
-  // Re-use the runtime's allowlist: subscriptions, DNS/rules, UI names and
-  // controller credentials from the original Clash profile never get copied.
-  const projectedSource = stringify({ proxies: profile.nodes.map((node) => ({ name: node.label, ...node.connection })) }, { lineWidth: 0 })
+  const projectedSource = projectAccelerationProfileSource(profile)
   const license = await safe.readSafeUtf8File(licensePath, 'Mihomo 许可文件', 128 * 1024)
   validateLicense(license)
   const manifest = validateManifest({
@@ -264,7 +271,7 @@ async function main(argv = process.argv.slice(2)) {
   process.stdout.write(`加速资源已准备：${result.nodeCount} 条线路；节点与内核校验值已固定。\n`)
 }
 
-module.exports = { BUNDLE_FILES, parseArguments, validateManifest, stageAccelerationBundle, resolveAccelerationBundleResources, verifyAccelerationBundleCore, main }
+module.exports = { BUNDLE_FILES, parseArguments, validateManifest, projectAccelerationProfileSource, stageAccelerationBundle, resolveAccelerationBundleResources, verifyAccelerationBundleCore, main }
 
 if (require.main === module) {
   main().catch(() => {

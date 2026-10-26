@@ -19,6 +19,8 @@ const preparations: Array<{ group: string; resolve: (prepared: AiChatPreparedGro
 let userId = 7
 let failedGroupList = query.has('groupFail')
 let groupOverride: AiChatGroupSummary[] | undefined = query.has('emptyGroups') ? [] : undefined
+// 读某个分组的模型失败（all = 每个分组都失败）；harness 能放开，点「刷新模型」再读就好了。
+let failingPreparation = query.get('prepareFail')
 let groupGate: Promise<void> | undefined
 let releaseGroupGate: (() => void) | undefined
 const imageAsset: AiChatAsset = { assetId: 'a'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png', fileName: 'fixture.png', width: 288, height: 256 }
@@ -80,7 +82,7 @@ const bridge: ChatBridge = {
       ? [{ name: 'default', description: '用户分组', ratio: 1 }, { name: query.has('sub2api') ? 'Codex_pro' : 'GPT', description: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', ratio: 1 }]
       : [{ name: 'group-a', description: '文本与图片以及一段不应进入选项标题的超长能力说明', ratio: 1 }, { name: 'group-b', description: '另一分组', ratio: 1 }]
   },
-  prepareAiChatGroup: async (group) => { record('prepare', group); if (query.has('deferPreparation') && group === 'group-a') return new Promise<AiChatPreparedGroup>((resolve) => { preparations.push({ group, resolve }) }); const models = query.has('preferredGroup') && group === (query.has('sub2api') ? 'Codex_pro' : 'GPT') ? ['other-model', 'gpt-5.6-sol'] : group === 'group-a' ? ['gpt-test', 'gpt-image-2', 'gpt-image-1.5', 'gemini-3.1-flash-image', 'claude-test'] : ['other-model', 'grok-imagine-image']; return { group, models, keyCreated: false } },
+  prepareAiChatGroup: async (group) => { record('prepare', group); if (failingPreparation === group || failingPreparation === 'all') throw new Error('network error'); if (query.has('deferPreparation') && group === 'group-a') return new Promise<AiChatPreparedGroup>((resolve) => { preparations.push({ group, resolve }) }); const models = query.has('preferredGroup') && group === (query.has('sub2api') ? 'Codex_pro' : 'GPT') ? ['other-model', 'gpt-5.6-sol'] : group === 'group-a' ? ['gpt-test', 'gpt-image-2', 'gpt-image-1.5', 'gemini-3.1-flash-image', 'claude-test'] : ['other-model', 'grok-imagine-image']; return { group, models, keyCreated: false } },
   startAiChat: async (input) => { record('start', input); return { accepted: true, requestId: input.requestId } },
   generateAiImage: async (input) => { record('image', input); return new Promise<AiChatAsset[]>((resolve, reject) => { images.set(input.requestId, { resolve, reject }) }) },
   cancelAiChat: async (requestId) => { record('cancel', requestId); if (query.has('cancelReject')) { images.get(requestId)?.reject(new Error('request canceled')); await Promise.resolve() } return { canceled: true, mayStillComplete: images.has(requestId) } },
@@ -96,7 +98,7 @@ const bridge: ChatBridge = {
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
+  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
@@ -108,6 +110,7 @@ function Fixture() {
   window.chatHarness = { calls, emit: (event) => { for (const listener of listeners) listener(event) }, completeImage: (id) => images.get(id)?.resolve([imageAsset]), failImage: (id) => images.get(id)?.reject(new Error('network error')), finishPreparation: () => { for (const item of preparations) item.resolve({ group: item.group, models: ['gpt-test', 'gpt-image-2'], keyCreated: false }) }, switchScope: (id) => { userId = id; setScope(`xm-account:${id}`) }, resetGroupFailure: () => { failedGroupList = false }, setActive,
     setGroups: (names) => { groupOverride = names.map((name) => ({ name, description: name, ratio: 1 })) },
     failGroupList: () => { failedGroupList = true },
+    failPreparation: (group) => { failingPreparation = group },
     deferGroupList: () => { groupGate = new Promise<void>((resolve) => { releaseGroupGate = resolve }) },
     releaseGroupList: () => { releaseGroupGate?.(); groupGate = undefined; releaseGroupGate = undefined },
     savedWorkspace,

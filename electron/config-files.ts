@@ -1,14 +1,12 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
-import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
+import { applyEdits, modify } from 'jsonc-parser'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlEquals, relayProviderBaseUrlMatches, relaySiteEndpointIdForBaseUrl, relaySites } from './relay-sites'
 import { readEnvLineValue, readJsonString, readTomlBoolean, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, rewriteTomlValues, type StringValueEdit, type ValueEdit } from './tool-route-rewrite'
-import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
+import { readBoundedFileSync } from './bounded-file'
 import { isCodexConfigBroken } from './codex-config-syntax'
 import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
 import { tomlErrorLocation } from './toml-error-location'
@@ -20,7 +18,54 @@ import {
 } from './codex-home'
 import { identityFromCodexAuthTokens } from './official-account-identity'
 import { removeCodexContextLimits } from './codex-context-limits'
-import { configBackupSuffix, staleConfigBackups, uniqueConfigBackupPath } from './config-file-backups'
+import {
+  assertSafeConfigPath,
+  ensureRecord,
+  executeFilePlans,
+  fillableRecord,
+  isJsonObject,
+  isJsonRecord,
+  jsonContent,
+  MAX_NATIVE_CONFIG_BYTES,
+  normalizeProviderConfigRoots,
+  normalizeWorkspacePathKey,
+  providerConfigPaths,
+  readText,
+  requireConfigText,
+  requireRawConfigText,
+  trustedFolderKey,
+  withoutByteOrderMark,
+} from './config-files-context'
+import {
+  applyGeminiRelayModelOverrides,
+  buildGeminiRelayModelOverrides,
+  disableGeminiRelayUsageStatistics,
+  disableGeminiSelfUpdate,
+  ensureGeminiContextFilenamesInSettingsText,
+  ensureGeminiProjectContextFiles,
+  extendGeminiSessionRetention,
+  fillGeminiRelayTemplateDefaults,
+  forgetStaleGeminiUsageStatisticsRecord,
+  GEMINI_PROJECT_CONTEXT_FILENAMES,
+  geminiCliCompatibleModel,
+  geminiJsonContent,
+  geminiTrustedFoldersTrustFolder,
+  geminiUsageStatisticsRecordClearPlans,
+  geminiUsageStatisticsRecordName,
+  geminiUsageStatisticsRecordPlans,
+  geminiUsageStatisticsSetting,
+  geminiUsageStatisticsWrittenByUs,
+  inspectRetiredGeminiIntegrations,
+  MANAGED_GEMINI_SESSION_MAX_AGE,
+  readGeminiJson,
+  readGeminiUsageStatisticsRecord,
+  removeGeminiRelayModelOverrides,
+  removeRetiredGeminiIntegrations,
+  requireGeminiJson,
+  restoreGeminiUsageStatistics,
+  trustGeminiWorkspace,
+  trustGeminiWorkspaceInTrustedFoldersText,
+} from './gemini-retired'
 import { applyClaudeStatusLine, claudeStatusLineSetting, managedClaudeStatusLineTarget } from './claude-status-line'
 import {
   applyClaudeCliHooks,
@@ -48,21 +93,15 @@ import {
   assertNoReparseComponents,
   ensureSafeDataDirectory,
   readSafeUtf8FileSync,
-  renameWithTransientRetrySync,
 } from './safe-local-data'
-import { resolveRelocatedPath } from './relocated-folders'
-import { configLinkRefusalMessage } from './config-link-refusal'
 import {
   applyXingmangImageMcpToJson,
   applyXingmangImageMcpToToml,
   applyXingmangImagePermissionToClaudeSettings,
-  isManagedXingmangImageMcpEntry,
-  removeXingmangImageMcpFromJson,
-  XINGMANG_IMAGE_MCP_NAME,
+  repointXingmangImageMcpInToml,
   type XingmangImageMcpInvocation,
 } from './xingmang-ai-mcp'
 
-const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
 // ~/.claude.json 会随会话历史一起长，2MB 上限会误伤正常用户。
 // 与 provider-extensions.ts 读同一份文件时用的上限保持一致。
 const MAX_CLAUDE_ROOT_CONFIG_BYTES = 16 * 1024 * 1024
@@ -237,121 +276,8 @@ export interface FileRemovePlan {
   remove: true
 }
 
-function isRemovePlan(plan: FilePlan): plan is FileRemovePlan {
-  return 'remove' in plan
-}
-
-function normalizeProviderConfigRoots(
-  roots: ProviderConfigRoots = defaultProviderConfigRoots(),
-): ProviderConfigRoots {
-  return {
-    userHome: path.resolve(roots.userHome),
-    codexHome: path.resolve(roots.codexHome),
-  }
-}
-
-export function providerConfigPaths(
-  provider: ProviderId,
-  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
-): string[] {
-  const root = providerConfigRoot(provider, normalizeProviderConfigRoots(rootsInput))
-  switch (provider) {
-    case 'codex':
-      return [
-        path.join(root, 'config.toml'),
-        path.join(root, 'auth.json'),
-      ]
-    case 'claude':
-      return [path.join(root, 'settings.json')]
-    case 'gemini':
-      return [
-        path.join(root, 'settings.json'),
-        path.join(root, '.env'),
-      ]
-    case 'grok':
-      return [path.join(root, 'config.toml')]
-  }
-}
-
-function readText(filePath: string): string | null {
-  try {
-    const info = fs.lstatSync(filePath)
-    if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) return null
-    return withoutByteOrderMark(readBoundedUtf8FileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
-  } catch {
-    return null
-  }
-}
-
-/**
- * Notepad on older Windows and PowerShell 5's `Set-Content -Encoding UTF8`
- * both write a UTF-8 BOM. JSON.parse and @iarna/toml reject it as an unknown
- * character, so a config the CLI itself reads fine used to be reported as
- * unparseable and never got the account key (全面检测 Q41). Writing back
- * without the BOM is harmless: every managed CLI reads plain UTF-8.
- */
-function withoutByteOrderMark(content: string): string {
-  return content.replace(/^\uFEFF/, '')
-}
-
-function requireConfigText(
-  filePath: string,
-  label: string,
-  maximumBytes = MAX_NATIVE_CONFIG_BYTES,
-): string | null {
-  const content = requireRawConfigText(filePath, label, maximumBytes)
-  return content === null ? null : withoutByteOrderMark(content)
-}
-
-/** 同 requireConfigText，但字节顺序标记照原样留着：定点改写要逐字节写回去。 */
-function requireRawConfigText(
-  filePath: string,
-  label: string,
-  maximumBytes = MAX_NATIVE_CONFIG_BYTES,
-): string | null {
-  let info: fs.Stats
-  try {
-    info = fs.lstatSync(filePath)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw error
-  }
-  if (isLinkedFile(info)) throw linkedConfigError(filePath, 'file', `${label} 必须是单链接普通文件，未执行修改`)
-  if (!info.isFile() || info.nlink !== 1) {
-    throw new Error(`${label} 必须是单链接普通文件，未执行修改`)
-  }
-  return readBoundedUtf8FileSync(filePath, maximumBytes, label)
-}
-
-/** 符号链接、硬链接都算：dotfiles 工具两种都做。 */
-function isLinkedFile(info: fs.Stats): boolean {
-  return info.isSymbolicLink() || (info.isFile() && info.nlink > 1)
-}
-
-/**
- * 配置文件（或路径上的文件夹）是个链接时给客户看的那句（#1100 第2条）。校验照旧拒绝，只是说法换成
- * 客户照着做得了的：在哪、为什么不写、怎么办。原来那句（带完整路径）挂在 cause 上进运行日志。
- */
-function linkedConfigError(filePath: string, kind: 'file' | 'folder', detail: string): Error {
-  const relative = path.relative(os.homedir(), filePath)
-  const insideHome = relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
-  return new Error(configLinkRefusalMessage(insideHome ? `用户文件夹里的 ${relative}` : path.basename(filePath), kind), { cause: new Error(detail) })
-}
-
-/**
- * 配置文件本身是链接时，要赶在下面逐级检查之前认出来：那一步把它报成「不能经过符号链接或目录联接」，
- * 界面于是说「文件夹被搬到了别的位置」，客户去「检查」页也找不到是哪个文件夹（#1100 第2条）。
- * 这里只是先认、换个说法，后面的检查一个不少；读不到就交给后面照原样报。
- */
-function assertConfigFileNotLinked(resolvedPath: string, shownPath: string): void {
-  let info: fs.Stats
-  try {
-    info = fs.lstatSync(resolvedPath)
-  } catch {
-    return
-  }
-  if (isLinkedFile(info)) throw linkedConfigError(shownPath, 'file', `配置目标不是单链接普通文件，已拒绝写入：${resolvedPath}`)
-}
+// 读写配置文件的底层（读文本、查路径、两阶段提交）搬进了 config-files-context.ts（#1070 第 10 步），这里照旧导出。
+export { executeFilePlans, providerConfigPaths }
 
 function readJson(filePath: string): Record<string, unknown> | null {
   const content = readText(filePath)
@@ -441,114 +367,21 @@ function requireToml(filePath: string, label: string, brokenTool?: string): Reco
   }
 }
 
-/**
- * Gemini CLI runs settings.json and trustedFolders.json through
- * strip-json-comments before JSON.parse, so a file with comments is valid to
- * it and used to be refused here as unparseable -- the account key never got
- * written (全面检测 Q16). Parse them the way Gemini does: comments allowed,
- * trailing commas not (strip-json-comments keeps those and JSON.parse then
- * rejects them). Duplicate keys are refused on this path only, because the
- * comment-preserving write edits one occurrence while Gemini reads the last.
- */
-function parseGeminiJsonObject(content: string, label: string, brokenTool?: string): Record<string, unknown> {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(content) as unknown
-  } catch {
-    const errors: ParseError[] = []
-    const tree = parseTree(content, errors, { allowTrailingComma: false, disallowComments: false })
-    // Same reason as requireJson for not surfacing the parser's own message.
-    if (!tree || errors.length || hasDuplicateProperties(tree)) {
-      throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 无法解析为 JSON，未执行修改`)
-    }
-    parsed = getNodeValue(tree) as unknown
-  }
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-  throw new Error(brokenTool ? describeBrokenConfig(brokenTool) : `${label} 不是有效的 JSON 对象，未执行修改`)
+// 下线的 Gemini CLI 专用的那些搬进了 gemini-retired.ts（#1070 第 10 步），这里照旧导出。
+export {
+  ensureGeminiContextFilenamesInSettingsText,
+  ensureGeminiProjectContextFiles,
+  forgetStaleGeminiUsageStatisticsRecord,
+  GEMINI_PROJECT_CONTEXT_FILENAMES,
+  geminiCliCompatibleModel,
+  geminiTrustedFoldersTrustFolder,
+  geminiUsageStatisticsRecordName,
+  inspectRetiredGeminiIntegrations,
+  removeRetiredGeminiIntegrations,
+  trustGeminiWorkspace,
+  trustGeminiWorkspaceInTrustedFoldersText,
 }
-
-function hasDuplicateProperties(node: Node): boolean {
-  if (node.type === 'object') {
-    const names = new Set<unknown>()
-    for (const property of node.children ?? []) {
-      const name = property.children?.[0]?.value as unknown
-      if (names.has(name)) return true
-      names.add(name)
-    }
-  }
-  return (node.children ?? []).some(hasDuplicateProperties)
-}
-
-function readGeminiJson(filePath: string): Record<string, unknown> | null {
-  const content = readText(filePath)
-  if (!content) return null
-  try {
-    return parseGeminiJsonObject(withoutByteOrderMark(content), 'Gemini 配置')
-  } catch {
-    return null
-  }
-}
-
-function requireGeminiJson(filePath: string, label: string, brokenTool?: string): { parsed: Record<string, unknown>, original: string | null } {
-  const original = requireConfigText(filePath, label)
-  return { parsed: original === null ? {} : parseGeminiJsonObject(original, label, brokenTool), original }
-}
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function collectJsonEdits(
-  location: string[],
-  before: unknown,
-  after: unknown,
-  edits: Array<{ path: string[], value: unknown }>,
-): void {
-  if (isJsonObject(before) && isJsonObject(after)) {
-    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-      if (!Object.hasOwn(after, key)) edits.push({ path: [...location, key], value: undefined })
-      else if (!Object.hasOwn(before, key)) edits.push({ path: [...location, key], value: after[key] })
-      else collectJsonEdits([...location, key], before[key], after[key], edits)
-    }
-    return
-  }
-  if (JSON.stringify(before) !== JSON.stringify(after)) edits.push({ path: location, value: after })
-}
-
-/**
- * Plain JSON is rewritten as before. A file that only parsed because comments
- * were allowed gets just the changed values edited in place, so the user's
- * comments and layout outside those values survive.
- */
-function geminiJsonContent(original: string | null, next: Record<string, unknown>): string {
-  if (original === null || !original.trim()) return jsonContent(next)
-  try {
-    JSON.parse(original)
-    return jsonContent(next)
-  } catch {
-    // Has comments: fall through to the in-place edit.
-  }
-  const edits: Array<{ path: string[], value: unknown }> = []
-  collectJsonEdits([], parseGeminiJsonObject(original, 'Gemini 配置'), next, edits)
-  const eol = original.includes('\r\n') ? '\r\n' : '\n'
-  let content = original
-  for (const edit of edits) {
-    content = applyEdits(content, modify(content, edit.path, edit.value, {
-      formattingOptions: { insertSpaces: true, tabSize: 2, eol },
-    }))
-  }
-  return content.endsWith('\n') ? content : `${content}${eol}`
-}
-
-function ensureRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> {
-  const current = parent[key]
-  if (current && typeof current === 'object' && !Array.isArray(current)) {
-    return current as Record<string, unknown>
-  }
-  const created: Record<string, unknown> = {}
-  parent[key] = created
-  return created
-}
+export type { RetiredGeminiIntegrations } from './gemini-retired'
 
 // Claude Code 的 Artifact 工具只对 claude.ai 账号有用：它把结果发布成 claude.ai 上的
 // 链接，走中转 API Key 的客户点开是空的。更要紧的是，2.1.265~2.1.268 那次「每轮请求
@@ -630,16 +463,6 @@ function skipClaudeCommandConfirmation(parsed: Record<string, unknown>, permissi
  */
 function disableClaudeSelfUpdate(env: Record<string, unknown>): void {
   env.DISABLE_AUTOUPDATER = '1'
-}
-
-/**
- * Gemini CLI 两个开关各管一半：enableAutoUpdate 关掉「启动即静默升级」，
- * enableAutoUpdateNotification 关掉那条英文催更提示。两个默认都是 true。
- */
-function disableGeminiSelfUpdate(parsed: Record<string, unknown>): void {
-  const general = ensureRecord(parsed, 'general')
-  general.enableAutoUpdate = false
-  general.enableAutoUpdateNotification = false
 }
 
 /** Grok 的开关在 config.toml 的 [cli] 表里，等价环境变量是 GROK_DISABLE_AUTOUPDATER。 */
@@ -746,183 +569,11 @@ function pinGrokModelsToRelay(parsed: Record<string, unknown>, relayModelName: s
 //
 // 这两项是用户偏好，不是中转配置：用户自己设过就一字不动，切回官方账号也不收回。
 const MANAGED_CLAUDE_RETENTION_DAYS = 365
-const MANAGED_GEMINI_SESSION_MAX_AGE = '365d'
 
 /** 只在用户没写过 cleanupPeriodDays 时补上，写过什么值都原样保留。 */
 function extendClaudeSessionRetention(parsed: Record<string, unknown>): void {
   if (parsed.cleanupPeriodDays !== undefined) return
   parsed.cleanupPeriodDays = MANAGED_CLAUDE_RETENTION_DAYS
-}
-
-/**
- * 只在用户完全没碰过 general.sessionRetention 时补 maxAge。已经有这一段（哪怕只写了
- * enabled: false 或 maxCount）就整段不动：那是用户对保留策略的明确表达，往里塞一个
- * maxAge 会改掉他算好的行为。
- */
-function extendGeminiSessionRetention(parsed: Record<string, unknown>): void {
-  const general = ensureRecord(parsed, 'general')
-  if (general.sessionRetention !== undefined) return
-  general.sessionRetention = { maxAge: MANAGED_GEMINI_SESSION_MAX_AGE }
-}
-
-// Gemini CLI 的主对话用 GEMINI_MODEL，但一批后台功能各自写死了 Google 官方的型号名：
-// 联网搜索、读网页与 codebase_investigator 子代理走 gemini-3-flash-preview，/compress
-// 与自动压缩走 gemini-3.1-pro-preview-customtools，每次启动给上次会话写摘要走
-// gemini-3.1-flash-lite，Auto 模式先用 flash-lite 分类再用 3.1-pro。中转只开放自己的
-// 型号时这些请求一律「无可用渠道」，而 CLI 对它们默默重试：搜索和读网页 2.5 分钟以上
-// 才失败，压缩转圈一分多钟，用户只觉得「卡住了」。
-//
-// modelConfigs.customOverrides 按请求里的型号名改写目标型号，把这批官方名统一指到当前
-// 配的中转型号（沙箱实测 0.60.0：上述每一项 2~3 秒完成）。代价是这些后台调用按主型号
-// 计费。当前型号本身若恰好在表里，不给它写改写，免得自己指向自己。
-//
-// 这张表出自 0.60.0 bundle 的 DEFAULT_MODEL_CONFIGS（aliases / modelIdResolutions），
-// 升级 Gemini CLI 推荐版本时要重新核一遍。0.61.0 新增 gemini-3.8-flash 与
-// gemini-3.5-flash-lite 两个内置型号，/model 菜单里也列着它们，不补上的话用户在菜单里
-// 选了就直接发出官方型号名（沙箱实测 0.61.0）。0.62.0 的 DEFAULT_MODEL_CONFIGS 与 0.61.0
-// 逐字相同，表不用动。
-const geminiRelayHelperModels = [
-  'gemini-3-flash-preview',
-  'gemini-3-pro-preview',
-  'gemini-3.1-pro-preview',
-  'gemini-3.1-pro-preview-customtools',
-  'gemini-3.1-flash-lite',
-  'gemini-3.5-flash-lite',
-  'gemini-3.5-flash',
-  'gemini-3.8-flash',
-  'gemini-2.5-pro',
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'flash-lite',
-  'flash',
-  'pro',
-] as const
-
-function buildGeminiRelayModelOverrides(model: string): Array<Record<string, unknown>> {
-  return geminiRelayHelperModels
-    .filter((helper) => helper !== model)
-    .map((helper) => ({ match: { model: helper }, modelConfig: { model } }))
-}
-
-/**
- * 认出本软件写的那种改写：match 只有一个官方型号名、modelConfig 只改 model。用户自己写
- * 的改写（带别的匹配条件或别的参数）不是这个形状，原样保留。
- */
-function isGeminiRelayModelOverride(entry: unknown): boolean {
-  if (!isJsonRecord(entry) || Object.keys(entry).length !== 2) return false
-  const { match, modelConfig } = entry
-  if (!isJsonRecord(match) || !isJsonRecord(modelConfig)) return false
-  if (Object.keys(match).length !== 1 || Object.keys(modelConfig).length !== 1) return false
-  return typeof modelConfig.model === 'string'
-    && geminiRelayHelperModels.some((helper) => helper === match.model)
-}
-
-function applyGeminiRelayModelOverrides(parsed: Record<string, unknown>, model: string): void {
-  const modelConfigs = ensureRecord(parsed, 'modelConfigs')
-  const current = modelConfigs.customOverrides
-  const kept = Array.isArray(current) ? current.filter((entry) => !isGeminiRelayModelOverride(entry)) : []
-  modelConfigs.customOverrides = [...kept, ...buildGeminiRelayModelOverrides(model)]
-}
-
-/**
- * 切回 Google 账号时撤掉：官方型号在那边都真实存在，留着改写反而会把后台请求指到一个
- * 官方不存在的中转型号上。只删本软件写的那种，空了连键一起删。
- */
-function removeGeminiRelayModelOverrides(parsed: Record<string, unknown>): void {
-  const modelConfigs = parsed.modelConfigs
-  if (!isJsonRecord(modelConfigs) || !Array.isArray(modelConfigs.customOverrides)) return
-  const kept = modelConfigs.customOverrides.filter((entry) => !isGeminiRelayModelOverride(entry))
-  if (kept.length === modelConfigs.customOverrides.length) return
-  if (kept.length > 0) modelConfigs.customOverrides = kept
-  else delete modelConfigs.customOverrides
-  if (Object.keys(modelConfigs).length === 0) delete parsed.modelConfigs
-}
-
-// Gemini CLI 默认把使用统计发去 play.googleapis.com（clearcut），同时在发给中转的每一个
-// 请求上带 x-gemini-api-privileged-user-id: <本机安装 ID>——等于把一个跨会话不变的设备标识
-// 交给了中转。国内连不上前者，后者对我们毫无用处。privacy.usageStatisticsEnabled = false
-// 两样一起去掉（沙箱实测 0.60.0），不影响任何功能。只在用户没表过态时补，切回 Google 账号
-// 时只收回本软件写的那一份。
-//
-// 「本软件写的」不能凭值猜：用星芒之前自己关掉统计的客户，文件里也是这一个 false，以前切回
-// Google 时被一并删掉，统计被悄悄打开（#834 F03）。所以写下它时在 settings.json 旁边记一笔，
-// 切回时只认这笔记录。有记录之前写下的那些分不清是谁的，切回时留着：关着统计不影响任何功能。
-export const geminiUsageStatisticsRecordName = 'xingmang-gemini-usage-statistics.json'
-const geminiUsageStatisticsRecordContent = jsonContent({ version: 1, usageStatisticsEnabled: false })
-
-function disableGeminiRelayUsageStatistics(parsed: Record<string, unknown>): void {
-  const privacy = ensureRecord(parsed, 'privacy')
-  if (privacy.usageStatisticsEnabled === undefined) privacy.usageStatisticsEnabled = false
-}
-
-/** privacy 不是一张表时按没设过算，与 disableGeminiRelayUsageStatistics 的判断一致。 */
-function geminiUsageStatisticsSetting(parsed: Record<string, unknown>): unknown {
-  return isJsonRecord(parsed.privacy) ? parsed.privacy.usageStatisticsEnabled : undefined
-}
-
-function geminiUsageStatisticsRecordPath(roots: ProviderConfigRoots): string {
-  return path.join(providerConfigRoot('gemini', roots), geminiUsageStatisticsRecordName)
-}
-
-function readGeminiUsageStatisticsRecord(roots: ProviderConfigRoots): string | null {
-  const recordPath = geminiUsageStatisticsRecordPath(roots)
-  assertSafeConfigPath(recordPath, providerConfigRoot('gemini', roots), 'file')
-  return requireConfigText(recordPath, '星芒写过的 Gemini 统计开关记录')
-}
-
-/** 记录读不懂就当没有：宁可留着一个关着的统计，也不替客户打开。 */
-function geminiUsageStatisticsWrittenByUs(record: string | null): boolean {
-  if (!record?.trim()) return false
-  try {
-    const parsed = JSON.parse(record) as unknown
-    return isJsonRecord(parsed) && parsed.version === 1 && parsed.usageStatisticsEnabled === false
-  } catch {
-    return false
-  }
-}
-
-/** 写下统计开关时附上这笔记录；已经记着就不重写，免得每次保存多一份 .bak。 */
-function geminiUsageStatisticsRecordPlans(roots: ProviderConfigRoots): FilePlan[] {
-  if (geminiUsageStatisticsWrittenByUs(readGeminiUsageStatisticsRecord(roots))) return []
-  return [{ path: geminiUsageStatisticsRecordPath(roots), content: geminiUsageStatisticsRecordContent }]
-}
-
-/** 切回 Google 账号后这笔记录就用完了，写空（同 Claude 旧设置快照，不删文件）。 */
-function geminiUsageStatisticsRecordClearPlans(record: string | null, roots: ProviderConfigRoots): FilePlan[] {
-  return record?.trim() ? [{ path: geminiUsageStatisticsRecordPath(roots), content: '' }] : []
-}
-
-function restoreGeminiUsageStatistics(parsed: Record<string, unknown>, writtenByUs: boolean): void {
-  const privacy = parsed.privacy
-  if (!writtenByUs || !isJsonRecord(privacy) || privacy.usageStatisticsEnabled !== false) return
-  delete privacy.usageStatisticsEnabled
-  if (Object.keys(privacy).length === 0) delete parsed.privacy
-}
-
-/**
- * 从备份恢复（切换没成功时的回滚、备份页里恢复）只还原 settings.json 和 .env，这笔记录不跟着
- * 回去。恢复出来的 settings.json 里没有那个 false 了，记录就作废：留着的话，客户以后自己关掉
- * 统计，切回 Google 时会被当成星芒写的收回去。返回是否改动了文件。
- */
-export function forgetStaleGeminiUsageStatisticsRecord(
-  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
-): boolean {
-  const roots = normalizeProviderConfigRoots(rootsInput)
-  const providerRoot = providerConfigRoot('gemini', roots)
-  const record = readGeminiUsageStatisticsRecord(roots)
-  if (!record?.trim()) return false
-  const [settingsPath] = providerConfigPaths('gemini', roots)
-  let statistics: unknown
-  try {
-    assertSafeConfigPath(settingsPath, providerRoot, 'file')
-    statistics = geminiUsageStatisticsSetting(requireGeminiJson(settingsPath, '现有 Gemini settings.json').parsed)
-  } catch {
-    // 读不了就看不出那个 false 还在不在，按不在算：以后少收回一次，不会替客户打开统计。
-    statistics = undefined
-  }
-  if (statistics === false) return false
-  executeFilePlans(geminiUsageStatisticsRecordClearPlans(record, roots), {}, providerRoot)
-  return true
 }
 
 // Claude Code 的 language 设置会被原样插进系统提示（2.1.277 实测：settings.json 写
@@ -1006,18 +657,6 @@ function readProviderModel(provider: ProviderId, paths: string[]): string {
       return defaultModel ? nestedString(parsed, ['model', defaultModel, 'model']) : ''
     }
   }
-}
-
-/**
- * Gemini CLI 0.59 rewrites every model whose name ends in `-flash` to its
- * built-in `gemini-3.5-flash` alias. The relay exposes the current 3.7/3.8
- * tiers with an explicit suffix, bypassing that client-side rewrite. Always
- * report the actual stored ID: a tier suffix must not be hidden in the UI.
- * 0.61.0 stopped that rewrite, but a customer may still be running an older
- * install, so the suffix stays.
- */
-export function geminiCliCompatibleModel(model: string): string {
-  return /^(gemini-3\.[78]-flash)$/i.test(model.trim()) ? `${model.trim()}-high` : model.trim()
 }
 
 function readProviderAuthType(provider: ProviderId, paths: string[]): string | undefined {
@@ -1505,10 +1144,6 @@ function createCodexOfficialConfigPlans(
   if (storedChatgpt) plans.push({ path: paths.chatgpt, content: cleanContent })
   plans.push({ path: paths.active, content: officialContent(cleanContent) })
   return plans
-}
-
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 export function classifyCodexAuthProfile(value: unknown): 'apikey' | 'chatgpt' | 'mixed' | 'empty' {
@@ -2134,26 +1769,8 @@ function migrateOwnReservedCodexProvider(
   delete providers[active]
 }
 
-function jsonContent(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`
-}
-
 function tomlContent(value: Record<string, unknown>): string {
   return TOML.stringify(value as Parameters<typeof TOML.stringify>[0])
-}
-
-function normalizeWorkspacePathKey(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-  const windowsPath = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\')
-  const normalized = windowsPath
-    ? trimmed.replace(/\//g, '\\')
-    : path.posix.normalize(trimmed.replace(/\\/g, '/'))
-  if (windowsPath) {
-    const isDriveRoot = /^[A-Za-z]:\\$/.test(normalized)
-    return isDriveRoot ? normalized.toLowerCase() : normalized.replace(/[\\]+$/, '').toLowerCase()
-  }
-  return normalized === '/' ? normalized : normalized.replace(/\/+$/, '')
 }
 
 function codexWorkspaceProjectEntry(
@@ -2335,10 +1952,6 @@ function requireWorkspaceTrustJson(content: string | null, label: string): Recor
   throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
 }
 
-function requireGeminiWorkspaceJson(content: string | null, label: string): Record<string, unknown> {
-  return content?.trim() ? parseGeminiJsonObject(content, label) : {}
-}
-
 export function trustClaudeWorkspaceInRootConfigText(
   content: string | null,
   workspace: string,
@@ -2372,35 +1985,6 @@ export function trustClaudeWorkspaceInRootConfigText(
   return { content: jsonContent(parsed), changed }
 }
 
-// Gemini CLI 0.62.0 (core/src/utils/paths.ts normalizePath) lower-cases every
-// trustedFolders.json key on win32 and darwin, both when it records an answer
-// and when it reads the file back, and of two keys that fold to the same folder
-// the later one wins. normalizeWorkspacePathKey already folds Windows-shaped
-// paths; a POSIX path on macOS has to be folded here too, or the
-// "/users/alex/app": "DO_NOT_TRUST" Gemini wrote is missed and the
-// "/Users/alex/app": "TRUST_FOLDER" appended after it overrides that answer.
-function geminiTrustedFolderKey(value: string, platform: NodeJS.Platform): string {
-  const key = normalizeWorkspacePathKey(value)
-  return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key
-}
-
-export function trustGeminiWorkspaceInTrustedFoldersText(
-  content: string | null,
-  workspace: string,
-  platform: NodeJS.Platform = process.platform,
-): { content: string; changed: boolean } {
-  const trimmedWorkspace = workspace.trim()
-  if (!trimmedWorkspace) throw new Error('Gemini CLI 工作目录不能为空')
-  const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI trustedFolders.json')
-  const wanted = geminiTrustedFolderKey(trimmedWorkspace, platform)
-  const answered = Object.keys(parsed).some((key) => geminiTrustedFolderKey(key, platform) === wanted)
-  // A folder the user already answered for keeps its answer, including
-  // DO_NOT_TRUST. Only a folder Gemini has never asked about gets filled in.
-  if (answered) return { content: geminiJsonContent(content, parsed), changed: false }
-  parsed[trimmedWorkspace] = 'TRUST_FOLDER'
-  return { content: geminiJsonContent(content, parsed), changed: true }
-}
-
 export function trustClaudeWorkspace(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   workspace: string,
@@ -2421,73 +2005,6 @@ export function trustClaudeWorkspace(
   ensureSafeDataDirectory(root, '用户主目录')
   return {
     ...executeFilePlans([{ path: configPath, content: next.content }], {}, root),
-    changed: true,
-  }
-}
-
-export function trustGeminiWorkspace(
-  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
-  workspace: string,
-): WorkspaceTrustWriteResult {
-  const roots = normalizeProviderConfigRoots(rootsInput)
-  const providerRoot = providerConfigRoot('gemini', roots)
-  const configPath = path.join(providerRoot, 'trustedFolders.json')
-  assertSafeConfigPath(configPath, providerRoot, 'file')
-  const current = requireConfigText(configPath, '现有 Gemini CLI trustedFolders.json')
-  const next = trustGeminiWorkspaceInTrustedFoldersText(current, workspace)
-  if (!next.changed) return { backups: [], files: [], changed: false }
-  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
-  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
-  return {
-    ...executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot),
-    changed: true,
-  }
-}
-
-// Gemini CLI 的项目说明文件名由 settings.json 的 context.fileName 决定，默认只有
-// "GEMINI.md"。要让它也读共用的 AGENTS.md，就得把这两个名字都放进去。
-export const GEMINI_PROJECT_CONTEXT_FILENAMES = ['GEMINI.md', 'AGENTS.md'] as const
-
-export function ensureGeminiContextFilenamesInSettingsText(
-  content: string | null,
-): { content: string; changed: boolean } {
-  const parsed = requireGeminiWorkspaceJson(content, '现有 Gemini CLI settings.json')
-  const context = ensureRecord(parsed, 'context')
-  const raw = context.fileName
-  // 结构读不懂时（既不是字符串也不是数组）一律不动，宁可让 Gemini 自己用默认值，
-  // 也不能拿一份看不懂的配置换取读到 AGENTS.md。
-  if (raw !== undefined && typeof raw !== 'string' && !Array.isArray(raw)) {
-    return { content: geminiJsonContent(content, parsed), changed: false }
-  }
-  const existing = typeof raw === 'string'
-    ? (raw.trim() ? [raw.trim()] : [])
-    : Array.isArray(raw) ? raw : []
-  const present = new Set(existing.filter((entry): entry is string => typeof entry === 'string'))
-  const missing = GEMINI_PROJECT_CONTEXT_FILENAMES.filter((name) => !present.has(name))
-  // 已有值一个不删，只把缺的补在后面（含用户自己写的其它文件名），已经齐了就不动。
-  if (missing.length === 0) return { content: geminiJsonContent(content, parsed), changed: false }
-  context.fileName = [...existing, ...missing]
-  return { content: geminiJsonContent(content, parsed), changed: true }
-}
-
-/**
- * 让 Gemini CLI 的用户级 settings.json 把 GEMINI.md 与 AGENTS.md 都算作项目说明。
- * 只补不删，已配好就不写。写入走两阶段提交 + .bak + 回滚（I9）。
- */
-export function ensureGeminiProjectContextFiles(
-  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
-): WorkspaceTrustWriteResult {
-  const roots = normalizeProviderConfigRoots(rootsInput)
-  const providerRoot = providerConfigRoot('gemini', roots)
-  const configPath = path.join(providerRoot, 'settings.json')
-  assertSafeConfigPath(configPath, providerRoot, 'file')
-  const current = requireConfigText(configPath, '现有 Gemini CLI settings.json')
-  const next = ensureGeminiContextFilenamesInSettingsText(current)
-  if (!next.changed) return { backups: [], files: [], changed: false }
-  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
-  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
-  return {
-    ...executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot),
     changed: true,
   }
 }
@@ -2532,13 +2049,17 @@ function syncXingmangImageMcpToml(
   configPath: string,
   providerRoot: string,
   invocation: XingmangImageMcpInvocation,
+  mode: 'register' | 'repoint' = 'register',
 ): boolean {
   assertSafeConfigPath(configPath, providerRoot, 'file')
   const label = provider === 'codex' ? '现有 Codex config.toml' : '现有 Grok config.toml'
   const current = requireConfigText(configPath, label)
   if (current === null) return false
   const parsed = parseTomlForMcp(current, label)
-  if (!applyXingmangImageMcpToToml(parsed, invocation, provider)) return false
+  const changed = mode === 'register'
+    ? applyXingmangImageMcpToToml(parsed, invocation, provider)
+    : repointXingmangImageMcpInToml(parsed, invocation)
+  if (!changed) return false
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   executeFilePlans([{ path: configPath, content: tomlContent(parsed) }], {}, providerRoot)
   return true
@@ -2573,6 +2094,25 @@ function syncXingmangImageMcpClaude(roots: ProviderConfigRoots, invocation: Xing
   return true
 }
 
+/**
+ * 存着的两份 Codex 配置切换时整份换回来，里面登记过的那条也换到现在的位置（技能文件夹改了名、
+ * Node 换了地方），不补新的。尽力而为：这几份读不懂或写不进去，不该让首页说画图工具没装进 Codex，
+ * 下次同步再试。
+ */
+function repointXingmangImageMcpInCodexFiles(
+  configPaths: string[],
+  codexHome: string,
+  invocation: XingmangImageMcpInvocation,
+): void {
+  for (const configPath of configPaths) {
+    try {
+      syncXingmangImageMcpToml('codex', configPath, codexHome, invocation, 'repoint')
+    } catch {
+      // See above: only registering in the active Xingmang config.toml is reported.
+    }
+  }
+}
+
 /** 每家单独提交、单独失败：一家的配置读不懂，不该拖累另外几家。 */
 export function syncXingmangImageMcpConfigs(
   rootsInput: ProviderConfigRoots,
@@ -2583,9 +2123,17 @@ export function syncXingmangImageMcpConfigs(
   const changed: ProviderId[] = []
   const warnings: string[] = []
   const steps: Array<[ProviderId, () => boolean]> = [
-    ['codex', () => options.codex
-      && existingDirectory(roots.codexHome)
-      && syncXingmangImageMcpToml('codex', codexConfigSnapshotPaths(roots).active, roots.codexHome, invocation)],
+    ['codex', () => {
+      if (!existingDirectory(roots.codexHome)) return false
+      const snapshots = codexConfigSnapshotPaths(roots)
+      if (!options.codex) {
+        // ChatGPT 账号不登记，可从星芒配置整份带过来的那条还在用：只换位置。
+        repointXingmangImageMcpInCodexFiles([snapshots.active, snapshots.relay, snapshots.chatgpt], roots.codexHome, invocation)
+        return false
+      }
+      repointXingmangImageMcpInCodexFiles([snapshots.relay, snapshots.chatgpt], roots.codexHome, invocation)
+      return syncXingmangImageMcpToml('codex', snapshots.active, roots.codexHome, invocation)
+    }],
     ['claude', () => existingDirectory(providerConfigRoot('claude', roots))
       && syncXingmangImageMcpClaude(roots, invocation)],
     ['grok', () => {
@@ -2634,14 +2182,6 @@ export function trustManagedWorkspace(
  */
 export type HomeFolderTrustProvider = Extract<ProviderId, 'claude' | 'codex' | 'gemini'>
 
-// Codex on Windows may record a folder in its verbatim form (\\?\C:\...);
-// strip that prefix so the same folder compares equal.
-function trustedFolderKey(value: string): string {
-  const trimmed = value.trim()
-  if (trimmed.startsWith('\\\\?\\UNC\\')) return normalizeWorkspacePathKey(`\\\\${trimmed.slice(8)}`)
-  return normalizeWorkspacePathKey(trimmed.startsWith('\\\\?\\') ? trimmed.slice(4) : trimmed)
-}
-
 export function claudeRootConfigTrustsFolder(content: string | null, folder: string): boolean {
   if (!content?.trim()) return false
   let parsed: unknown
@@ -2668,26 +2208,6 @@ export function codexConfigTrustsFolder(content: string | null, folder: string):
   const wanted = trustedFolderKey(folder)
   return Object.entries(parsed.projects).some(([key, entry]) =>
     trustedFolderKey(key) === wanted && isJsonRecord(entry) && entry.trust_level === 'trusted')
-}
-
-// Gemini CLI trusts the parent of a TRUST_PARENT entry, so a project directly
-// under the home folder answered that way trusts the whole home folder.
-export function geminiTrustedFoldersTrustFolder(content: string | null, folder: string): boolean {
-  if (!content?.trim()) return false
-  let parsed: Record<string, unknown>
-  try {
-    parsed = parseGeminiJsonObject(content, 'Gemini CLI trustedFolders.json')
-  } catch {
-    return false
-  }
-  const wanted = trustedFolderKey(folder)
-  return Object.entries(parsed).some(([key, level]) => {
-    const trusted = trustedFolderKey(key)
-    if (level === 'TRUST_FOLDER') return trusted === wanted
-    if (level !== 'TRUST_PARENT') return false
-    const parent = /^[a-z]:\\|^\\\\/.test(trusted) ? path.win32.dirname(trusted) : path.posix.dirname(trusted)
-    return parent !== trusted && parent === wanted
-  })
 }
 
 function readTrustConfigText(filePath: string, root: string, label: string, maximumBytes?: number): string | null {
@@ -2966,315 +2486,6 @@ function createMergePlans(
       if (cliHook) applyGrokCliHooks(parsed, cliHook)
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
-  }
-}
-
-type PreparedFilePlan = FilePlan & {
-  backupPath: string | null
-  existed: boolean
-  temporaryPath: string
-}
-
-// 清理失败只静默跳过，绝不影响已成功的保存。
-function pruneBackups(filePath: string, providerRoot: string): void {
-  try {
-    assertSafeConfigPath(filePath, providerRoot, 'parent')
-  } catch {
-    return
-  }
-  for (const backupPath of staleConfigBackups(filePath)) {
-    try {
-      assertSafeConfigPath(backupPath, providerRoot, 'file')
-      removeIfPresent(backupPath)
-    } catch {
-      continue
-    }
-  }
-}
-
-function writeDurableUtf8(filePath: string, content: string, providerRoot: string): void {
-  assertSafeConfigPath(filePath, providerRoot, 'file')
-  const descriptor = fs.openSync(filePath, 'wx', 0o600)
-  try {
-    fs.writeFileSync(descriptor, content, { encoding: 'utf8' })
-    fs.fsyncSync(descriptor)
-  } finally {
-    fs.closeSync(descriptor)
-  }
-}
-
-function removeIfPresent(filePath: string): void {
-  try {
-    fs.rmSync(filePath)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-}
-
-function assertSafeConfigPath(filePath: string, rootDirectory: string, target: 'file' | 'parent'): void {
-  // A profile moved to another disk is judged at where it lives now; any link the
-  // relocation policy does not accept stays in the path and is rejected below.
-  const root = resolveRelocatedPath(rootDirectory)
-  const resolved = resolveRelocatedPath(filePath)
-  const relative = path.relative(root, resolved)
-  if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
-    throw new Error(`配置路径越过 Provider 根目录，已拒绝写入：${filePath}`)
-  }
-
-  assertNoReparseComponents(root, 'Provider 配置根目录')
-  if (target === 'file') assertConfigFileNotLinked(resolved, filePath)
-  const stopAt = target === 'parent' ? path.dirname(resolved) : resolved
-  assertNoReparseComponents(stopAt, '配置路径')
-
-  let canonicalRoot: string | null = null
-  try {
-    const rootInfo = fs.lstatSync(root)
-    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
-      throw new Error(`配置根目录不是安全的本地目录：${root}`)
-    }
-    canonicalRoot = fs.realpathSync.native(root)
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('配置根目录')) throw error
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Error(`无法验证配置根目录：${root}`)
-    }
-  }
-
-  const segments = path.relative(root, stopAt).split(path.sep).filter(Boolean)
-  let current = root
-  for (const segment of segments) {
-    current = path.join(current, segment)
-    let info: fs.Stats
-    try {
-      info = fs.lstatSync(current)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw error
-    }
-    if (info.isSymbolicLink()) {
-      throw linkedConfigError(current, target === 'file' && current === resolved ? 'file' : 'folder', `配置路径包含符号链接，已拒绝写入：${current}`)
-    }
-    if (target === 'parent' || current !== resolved) {
-      if (!info.isDirectory()) throw new Error(`配置父路径不是目录，已拒绝写入：${current}`)
-    } else if (isLinkedFile(info)) {
-      throw linkedConfigError(current, 'file', `配置目标不是单链接普通文件，已拒绝写入：${current}`)
-    } else if (!info.isFile()) {
-      throw new Error(`配置目标不是单链接普通文件，已拒绝写入：${current}`)
-    }
-    if (canonicalRoot) {
-      const canonical = fs.realpathSync.native(current)
-      const canonicalRelative = path.relative(canonicalRoot, canonical)
-      if (
-        canonicalRelative.startsWith(`..${path.sep}`)
-        || canonicalRelative === '..'
-        || path.isAbsolute(canonicalRelative)
-      ) {
-        throw new Error(`配置路径指向 Provider 根目录之外，已拒绝写入：${current}`)
-      }
-    }
-  }
-
-  if (target === 'file') {
-    try {
-      const info = fs.lstatSync(resolved)
-      if (isLinkedFile(info)) throw linkedConfigError(filePath, 'file', `配置目标不是单链接普通文件，已拒绝写入：${resolved}`)
-      if (!info.isFile()) {
-        throw new Error(`配置目标不是单链接普通文件，已拒绝写入：${resolved}`)
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-  }
-}
-
-function assertSafeExistingFile(filePath: string, providerRoot: string): void {
-  assertSafeConfigPath(filePath, providerRoot, 'file')
-  try {
-    const info = fs.lstatSync(filePath)
-    if (isLinkedFile(info)) throw linkedConfigError(filePath, 'file', `配置事务源不是单链接普通文件，已拒绝写入：${filePath}`)
-    if (!info.isFile()) {
-      throw new Error(`配置事务源不是单链接普通文件，已拒绝写入：${filePath}`)
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`配置事务源文件不存在，已拒绝写入：${filePath}`)
-    }
-    throw error
-  }
-}
-
-function assertSafeSourceAndTarget(
-  sourcePath: string,
-  targetPath: string,
-  providerRoot: string,
-): void {
-  assertSafeExistingFile(sourcePath, providerRoot)
-  assertSafeConfigPath(targetPath, providerRoot, 'file')
-}
-
-function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFilePlan[] {
-  const seenTargets = new Set<string>()
-  const suffix = configBackupSuffix()
-  return plans.map((plan) => {
-    const targetKey = path.resolve(plan.path).toLowerCase()
-    if (seenTargets.has(targetKey)) throw new Error(`配置写入计划包含重复路径：${plan.path}`)
-    seenTargets.add(targetKey)
-    assertSafeConfigPath(plan.path, providerRoot, 'parent')
-    let existed = false
-    try {
-      const info = fs.lstatSync(plan.path)
-      if (isLinkedFile(info)) throw linkedConfigError(plan.path, 'file', `配置目标不是单链接普通文件，已拒绝写入：${plan.path}`)
-      if (!info.isFile()) {
-        throw new Error(`配置目标不是单链接普通文件，已拒绝写入：${plan.path}`)
-      }
-      existed = true
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    return {
-      ...plan,
-      existed,
-      backupPath: existed ? uniqueConfigBackupPath(plan.path, suffix) : null,
-      temporaryPath: `${plan.path}.xingmang-${randomUUID()}.tmp`,
-    }
-  }).filter((plan) => plan.existed || !isRemovePlan(plan))
-}
-
-function rollbackCommittedPlans(
-  committed: PreparedFilePlan[],
-  providerRoot: string,
-): Error[] {
-  const rollbackErrors: Error[] = []
-  for (const plan of [...committed].reverse()) {
-    if (plan.existed && plan.backupPath) {
-      const rollbackPath = `${plan.path}.xingmang-rollback-${randomUUID()}.tmp`
-      let rollbackCopyCreated = false
-      try {
-        assertSafeSourceAndTarget(plan.backupPath, rollbackPath, providerRoot)
-        fs.copyFileSync(plan.backupPath, rollbackPath, fs.constants.COPYFILE_EXCL)
-        rollbackCopyCreated = true
-        renameWithTransientRetrySync(
-          rollbackPath,
-          plan.path,
-          () => assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot),
-        )
-        rollbackCopyCreated = false
-      } catch (error) {
-        rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
-      }
-      if (rollbackCopyCreated) {
-        try {
-          assertSafeConfigPath(rollbackPath, providerRoot, 'file')
-          removeIfPresent(rollbackPath)
-        } catch (error) {
-          rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
-        }
-      }
-    } else {
-      try {
-        assertSafeConfigPath(plan.path, providerRoot, 'file')
-        removeIfPresent(plan.path)
-      } catch (error) {
-        rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
-      }
-    }
-  }
-  return rollbackErrors
-}
-
-function cleanupPreparedPlans(
-  prepared: PreparedFilePlan[],
-  providerRoot: string,
-): Error[] {
-  const cleanupErrors: Error[] = []
-  for (const plan of prepared) {
-    try {
-      assertSafeConfigPath(plan.temporaryPath, providerRoot, 'file')
-      removeIfPresent(plan.temporaryPath)
-    } catch (error) {
-      cleanupErrors.push(error instanceof Error ? error : new Error(String(error)))
-    }
-  }
-  return cleanupErrors
-}
-
-export function executeFilePlans(
-  plans: FilePlan[],
-  hooks: NativeConfigWriteHooks,
-  providerRoot: string,
-  // discard：提交成功以后把这次的 .bak 删掉，不进每个文件 5 份的轮换。换线路的定点改写
-  // 来回切几次就会把客户自己保存时留下的备份挤掉，那几份才是有用的（原件另由调用方留一份）。
-  backupRetention: 'rotate' | 'discard' = 'rotate',
-): NativeConfigSaveResult {
-  const prepared = prepareFilePlans(plans, providerRoot)
-  const committed: PreparedFilePlan[] = []
-
-  try {
-    // No target is touched until every new file has been written successfully.
-    for (const plan of prepared) {
-      if (isRemovePlan(plan)) continue
-      assertSafeConfigPath(plan.path, providerRoot, 'parent')
-      fs.mkdirSync(path.dirname(plan.path), { recursive: true })
-      writeDurableUtf8(plan.temporaryPath, plan.content, providerRoot)
-    }
-    for (const plan of prepared) {
-      if (plan.backupPath) {
-        assertSafeSourceAndTarget(plan.path, plan.backupPath, providerRoot)
-        fs.copyFileSync(plan.path, plan.backupPath, fs.constants.COPYFILE_EXCL)
-      }
-    }
-    for (const [index, plan] of prepared.entries()) {
-      // Removal moves the file aside instead of deleting it, so the rollback
-      // below can still put the .bak copy back; the cleanup after a full commit
-      // deletes the moved-aside file together with the other temporaries.
-      const [source, target] = isRemovePlan(plan) ? [plan.path, plan.temporaryPath] : [plan.temporaryPath, plan.path]
-      assertSafeSourceAndTarget(source, target, providerRoot)
-      // A hook may re-read what this save was computed from (external-tool-config
-      // does), so it runs again before every retry: whoever held the file may
-      // have just saved its own change.
-      renameWithTransientRetrySync(source, target, () => {
-        hooks.beforeReplace?.(plan.path, index)
-        assertSafeSourceAndTarget(source, target, providerRoot)
-      })
-      committed.push(plan)
-    }
-  } catch (error) {
-    const recoveryErrors = [
-      ...rollbackCommittedPlans(committed, providerRoot),
-      ...cleanupPreparedPlans(prepared, providerRoot),
-    ]
-    if (recoveryErrors.length) {
-      throw new AggregateError(
-        [error, ...recoveryErrors],
-        '配置写入失败，且部分文件无法自动回滚；请从 .bak 备份恢复',
-      )
-    }
-    throw error
-  }
-
-  const cleanupErrors = cleanupPreparedPlans(prepared, providerRoot)
-  if (cleanupErrors.length) {
-    throw new AggregateError(cleanupErrors, '配置已写入，但临时文件无法安全清理')
-  }
-
-  // 必须在全部提交成功后清理：回滚依赖本次 backupPath，提前删除会破坏恢复链路。
-  if (backupRetention === 'discard') {
-    for (const plan of prepared) {
-      if (!plan.backupPath) continue
-      try {
-        assertSafeConfigPath(plan.backupPath, providerRoot, 'file')
-        removeIfPresent(plan.backupPath)
-      } catch {
-        // 删不掉只是多留一份备份，不影响已经写成的配置。
-      }
-    }
-    return { backups: [], files: prepared.map((plan) => plan.path) }
-  }
-  for (const plan of prepared) pruneBackups(plan.path, providerRoot)
-
-  return {
-    backups: prepared.flatMap((plan) => plan.backupPath ? [plan.backupPath] : []),
-    files: prepared.map((plan) => plan.path),
   }
 }
 
@@ -3726,13 +2937,6 @@ function withManagedCodexModelCatalogLine(text: string): string | null {
 // 4：Codex 星芒那张表没写 supports_websockets 的按型号补，GPT 型号 true、别家型号 false（2026-10-16）。
 export const relayTemplateRevision = 4
 
-/** 键缺省时建一张表；已经是表就用它；是别的东西（用户写坏了或另有用途）返回 null，一字不动。 */
-function fillableRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> | null {
-  if (parent[key] === undefined) parent[key] = {}
-  const current = parent[key]
-  return isJsonRecord(current) ? current : null
-}
-
 function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBaseUrl: string, platform: NodeJS.Platform): void {
   if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false
   if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
@@ -3758,24 +2962,6 @@ function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void 
   if (parsed.skipWebFetchPreflight === undefined) skipClaudeWebFetchPreflight(parsed)
   ensureClaudeResponseLanguage(parsed)
   extendClaudeSessionRetention(parsed)
-}
-
-function fillGeminiRelayTemplateDefaults(parsed: Record<string, unknown>, model: string): void {
-  const general = fillableRecord(parsed, 'general')
-  if (general) {
-    if (general.enableAutoUpdate === undefined) general.enableAutoUpdate = false
-    if (general.enableAutoUpdateNotification === undefined) general.enableAutoUpdateNotification = false
-    extendGeminiSessionRetention(parsed)
-  }
-  if (parsed.privacy === undefined || isJsonRecord(parsed.privacy)) disableGeminiRelayUsageStatistics(parsed)
-  // 已经有本软件写的那种改写就整段不动：那一组按写入时的型号生成，型号和名单都由保存配置
-  // 那条路负责刷新，这里只给从来没有过这一段的老配置补上。
-  const modelConfigs = parsed.modelConfigs
-  if (!model || (modelConfigs !== undefined && !isJsonRecord(modelConfigs))) return
-  const overrides = isJsonRecord(modelConfigs) ? modelConfigs.customOverrides : undefined
-  if (overrides !== undefined && !Array.isArray(overrides)) return
-  if (Array.isArray(overrides) && overrides.some(isGeminiRelayModelOverride)) return
-  applyGeminiRelayModelOverrides(parsed, model)
 }
 
 function fillGrokRelayTemplateDefaults(parsed: Record<string, unknown>, relayBaseUrl: string, relayModelName: string): void {
@@ -4147,63 +3333,6 @@ export function removeManagedCliHooks(
 }
 
 // ---------------------------------------------------------------------------
-// 下线的 Gemini CLI：收回星芒写进它 settings.json 的两样东西
-//
-// 做完提醒（xingmang-notify）指向星芒安装目录里的小脚本和一个写死的 Node 位置，原来靠
-// 开机自动修（repairStaleAccountCliHooks）跟着走；星芒画图（xingmang-image）靠每次准备
-// Key 时对齐。下线后两样都没人维护，星芒挪了位置、重装到别处或被卸载，Gemini 每一轮都会
-// 多报一行错。只删认得出是星芒写的那几条，Key、线路、型号这些让它照常能用的一律不动。
-
-export interface RetiredGeminiIntegrations {
-  /** settings.json 里还有星芒的做完提醒。 */
-  hooks: boolean
-  /** settings.json 里还有星芒登记的画图工具。 */
-  imageMcp: boolean
-}
-
-function readRetiredGeminiSettings(roots: ProviderConfigRoots): {
-  configPath: string
-  providerRoot: string
-  parsed: Record<string, unknown>
-  original: string | null
-} {
-  const providerRoot = providerConfigRoot('gemini', roots)
-  const configPath = providerConfigPaths('gemini', roots)[0]
-  assertSafeConfigPath(configPath, providerRoot, 'file')
-  return { configPath, providerRoot, ...requireGeminiJson(configPath, '现有 Gemini settings.json') }
-}
-
-/** 只读：还有没有要收回的。配置读不懂时抛错，由调用方记一笔、不动它。 */
-export function inspectRetiredGeminiIntegrations(
-  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
-): RetiredGeminiIntegrations {
-  const { parsed, original } = readRetiredGeminiSettings(normalizeProviderConfigRoots(rootsInput))
-  if (original === null) return { hooks: false, imageMcp: false }
-  const servers = parsed.mcpServers
-  return {
-    hooks: managedCliHookTargets('gemini', parsed).length > 0,
-    imageMcp: isJsonObject(servers) && isManagedXingmangImageMcpEntry(servers[XINGMANG_IMAGE_MCP_NAME]),
-  }
-}
-
-/** 收回提醒与画图；没有要收的就不写文件。写之前照常留 .bak，失败整份回滚。 */
-export function removeRetiredGeminiIntegrations(
-  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
-): RetiredGeminiIntegrations & { result: NativeConfigSaveResult } {
-  const roots = normalizeProviderConfigRoots(rootsInput)
-  const { configPath, providerRoot, parsed, original } = readRetiredGeminiSettings(roots)
-  const nothing = { hooks: false, imageMcp: false, result: { backups: [], files: [] } }
-  if (original === null) return nothing
-  const hooks = managedCliHookTargets('gemini', parsed).length > 0
-  if (hooks) removeGeminiCliHooks(parsed)
-  const imageMcp = removeXingmangImageMcpFromJson(parsed)
-  if (!hooks && !imageMcp) return nothing
-  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
-  const result = executeFilePlans([{ path: configPath, content: geminiJsonContent(original, parsed) }], {}, providerRoot)
-  return { hooks, imageMcp, result }
-}
-
-// ---------------------------------------------------------------------------
 // 账号来源切换:星芒中转 ⇄ 用户自己的官方订阅
 //
 // 产品背景(2026-08-12 老板决策):不做本机双路由常驻服务,改为"一键切回
@@ -4443,7 +3572,7 @@ const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
 
 /**
  * 上面选型号的那几项。客户在系统设置或 ~/.zshrc 里设的同名环境变量 Claude Code 一样认，所以用星芒账号
- * 从星芒打开 Claude Code 时也不交给它（system-service.ts 的 launchExcludedEnvironmentVariables，已知45 跟进），
+ * 从星芒打开 Claude Code 时也不交给它（provider-launch-service.ts 的 launchExcludedEnvironmentVariables，已知45 跟进），
  * 范围靠这一处和这里挪开的对齐。ANTHROPIC_API_KEY 不在内：它换的是 Key 不是型号，从星芒打开时不带它的是
  * launchExcludedEnvironmentVariables 另外列的那一项，三个平台一样（#1081）。
  */

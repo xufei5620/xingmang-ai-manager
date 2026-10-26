@@ -19,7 +19,7 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 | 函数 | macOS 上的语义 |
 |---|---|
 | `isUserWritablePath` | 「**除 root 与当前用户之外**的主体能否改动它解析后的目标」——沿完整祖先链判定 |
-| `isTrustedHighIntegrityExecutable` | 绝对路径 + 上面那条。管住 `diagnostics.ts` 里两处可执行文件解析 |
+| `isTrustedHighIntegrityExecutable` | 绝对路径 + 上面那条。管住 `diagnostics-context.ts`（一键检测问工具版本）里两处可执行文件解析 |
 | `trustedCommandEnvironment` | 重建 PATH：固定机器目录在前，继承项在后，**每一项都过同一个判定**，首次出现优先 |
 
 ⚠️ **两个最容易误读的点**：

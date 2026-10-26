@@ -57,10 +57,11 @@ async function open(query = '', clock = false, initScript = null) {
     noticeReads.set(scope, next)
     return next
   })
-  if (clock === 'fixed') {
+  if (clock === 'fixed' || clock instanceof Date) {
     // Date.now stands still but timers keep running: React reveals a lazily
-    // loaded page on a timer, which a paused clock never fires.
-    await page.clock.setFixedTime(new Date('2026-09-12T04:00:01Z'))
+    // loaded page on a timer, which a paused clock never fires. A Date fixes
+    // the clock at that moment instead.
+    await page.clock.setFixedTime(clock instanceof Date ? clock : new Date('2026-09-12T04:00:01Z'))
   } else if (clock) {
     await page.clock.install({ time: new Date('2026-09-12T04:00:00Z') })
     await page.clock.pauseAt(new Date('2026-09-12T04:00:01Z'))
@@ -1397,6 +1398,35 @@ test('the home recent card opens a record folder and says so when it cannot', as
   } finally { await page.close() }
 })
 
+// yoyo 那台 Windows（0.2.19）：底栏写着「已登录」，点「用量账单」个人中心却说「登录后查看个人中心」，
+// 点「登录账号」再登几次都没用。个人中心去过就只藏不卸，同一个账号重新登录作用域不变、页面也不重挂，
+// 页面自己读到过一次「没登录」就一直停在那里。外壳说登着就按外壳的摆，再请外壳问一次主进程。
+test('the account page follows the shell login when its own session read says signed out', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => window.v2Test.signOutAccountPageSessionReads())
+    await page.getByTestId('sidebar-account-open').click()
+    await page.waitForFunction(() => window.v2Test.accountPageSessionSignedOutServed() > 0)
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    await expect(page.getByTestId('account-tabs')).toBeVisible()
+    assert.equal(await page.getByTestId('page-account').getByText('登录后查看个人中心', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('welcome-page').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 主进程那边已经没登录、广播却没到外壳（底栏还写着「已登录」）：外壳再问一次就退回欢迎页，在那里
+// 登录会整页重来，不再停在一个点了「登录账号」也回不来的「登录后查看个人中心」上。
+test('a sign-out the shell missed reaches it when the account page finds no login', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => window.v2Test.dropSessionSilently())
+    await page.getByTestId('sidebar-account-open').click()
+    await page.getByTestId('welcome-page').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 全面检测 Q29：个人中心停在别的页签（以前是「我的订单」）时，回首页再点「充值」要回到充值那一页。
 // 以前 App 里记的分页值没变（还是上次的「充值」），个人中心就不切。
 test('the home recharge button reopens the recharge tab even after another account tab was chosen', async () => {
@@ -1792,6 +1822,177 @@ test('an extension action that fails after switching tools shows its failure und
   } finally { await page.close() }
 })
 
+// 只装了 Codex 桌面端、没装 Codex CLI：外接工具和技能照样在 Codex 那一格管，名字写「Codex 桌面端」、不标「未安装」；
+// 删和加一样走 Codex 自己那一边（主进程直接改 config.toml）；插件那一格只说去桌面端自己的插件页里装。
+test('with only the Codex desktop app, the extension pages manage Codex connections and skills and send plugins to the app', async () => {
+  const page = await open('desktopOnly=1')
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        items: provider === 'codex' ? [{
+          provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
+          installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
+          source: { kind: 'source-unknown', locator: null, reference: null },
+          update: { state: 'source-unknown', reason: '', checkedAt: null },
+          operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+        }] : [],
+      })
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+      window.xingmang.addMcpServer = async () => []
+      window.xingmang.removeMcpServer = async () => []
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    const codexTab = mcp.getByRole('tab', { name: /^Codex 桌面端/ })
+    await expect(codexTab).toHaveAttribute('aria-selected', 'true')
+    assert.equal(await codexTab.getByText('未安装').count(), 0)
+    assert.equal(await mcp.getByRole('tab', { name: /^Codex CLI/ }).count(), 0)
+    await mcp.getByTestId('mcp-row-docs').waitFor()
+    assert.equal(await mcp.getByTestId('mcp-tool-missing').count(), 0)
+    assert.equal(await mcp.getByTestId('mcp-codex-shared').count(), 0)
+
+    // 加：勾选框写「Codex 桌面端」能勾，没装的两家灰着；网络服务的高级设置里没有 OAuth 那两项。
+    await mcp.getByTestId('mcp-add').first().click()
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    const picker = dialog.getByTestId('mcp-form-tools')
+    await expect(picker.getByTestId('mcp-form-tools-codex')).toBeEnabled()
+    await expect(picker.getByTestId('mcp-form-tools-codex')).toHaveText('Codex 桌面端')
+    await expect(picker.getByTestId('mcp-form-tools-claude')).toBeDisabled()
+    await dialog.getByRole('button', { name: '网络服务', exact: true }).click()
+    await dialog.getByText('高级认证设置').click()
+    await dialog.getByLabel('登录信息的名称').waitFor()
+    assert.equal(await dialog.getByLabel('OAuth Client ID').count(), 0)
+    await dialog.getByTestId('mcp-name').fill('github')
+    await dialog.getByTestId('mcp-source').fill('https://api.example.test/mcp')
+    await dialog.getByTestId('mcp-form-submit').click()
+    await dialog.waitFor({ state: 'hidden' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'addMcpServer').map((entry) => entry.args[0])), [
+      { name: 'github', type: 'http', url: 'https://api.example.test/mcp' },
+    ])
+
+    // 删：走 removeMcpServer，不跑 CLI 那条通用的。
+    await mcp.getByTestId('mcp-menu-docs').click()
+    await page.getByRole('menuitem', { name: '从 Codex 桌面端 移除…', exact: true }).click()
+    await page.getByTestId('mcp-delete-confirm').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'removeMcpServer'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'removeMcpServer').map((entry) => entry.args[0])), ['docs'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'mutateProviderExtension')), false)
+
+    // 技能：Codex 那一格照常能从文件夹导入。
+    await page.getByTestId('nav-skills').click()
+    const skills = page.getByTestId('page-skills')
+    await expect(skills.getByRole('tab', { name: /^Codex 桌面端/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(skills.getByTestId('skills-add').first()).toBeEnabled()
+
+    // 插件：只有一句话，不放「添加插件」「添加市场」，也不去读列表、不替他下插件目录。
+    const pluginLists = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderExtensions').length)
+    await page.getByTestId('nav-plugins').click()
+    const plugins = page.getByTestId('page-plugins')
+    await expect(plugins.getByRole('tab', { name: /^Codex 桌面端/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(plugins.getByTestId('plugins-codex-desktop')).toContainText('插件请在 Codex 桌面端里装')
+    await expect(plugins.getByTestId('plugins-codex-desktop')).toContainText('打开 Codex 桌面端，在它自己的插件页里装、卸载或停用。')
+    assert.equal(await plugins.getByTestId('plugins-add').count(), 0)
+    assert.equal(await plugins.getByTestId('plugins-market-add').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderExtensions').length), pluginLists)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'ensureProviderMarketplace')), false)
+
+    // 精选：外接工具能勾给「Codex 桌面端」。
+    await page.getByTestId('nav-featured').click()
+    await page.getByTestId('featured-install-github').click()
+    const tools = page.getByTestId('featured-install-tools')
+    await expect(tools.getByTestId('featured-install-tools-codex')).toBeEnabled()
+    await expect(tools.getByTestId('featured-install-tools-codex')).toHaveText('Codex 桌面端')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 外接工具的开关：Codex 没有启停命令，主进程改 config.toml 里那条的 enabled，只装了桌面端也给开关，
+// 走的是通用的 mutate，不是删连接那一条；停用后那一行写「已停用」，再点打开。
+test('with only the Codex desktop app, a Codex connection can be switched off and back on', async () => {
+  const page = await open('desktopOnly=1')
+  try {
+    await page.evaluate(() => {
+      let enabled = true
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        items: provider === 'codex' ? [{
+          provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
+          installed: true, enabled, scope: 'user', currentVersion: null, latestVersion: null,
+          source: { kind: 'source-unknown', locator: null, reference: null },
+          update: { state: 'source-unknown', reason: '', checkedAt: null },
+          operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
+        }] : [],
+      })
+      window.xingmang.mutateProviderExtension = async (input) => {
+        enabled = input.action === 'enable'
+        return window.xingmang.listProviderExtensions(input.provider)
+      }
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+      window.xingmang.removeMcpServer = async () => []
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    const row = mcp.getByTestId('mcp-row-docs')
+    await row.waitFor()
+    const toggle = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '停用 docs' })
+    await expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+    await toggle.click()
+    await waitForToast(page, '已停用「docs」')
+    await expect(row.getByText('已停用', { exact: true })).toBeVisible()
+    const on = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '启用 docs' })
+    await expect(on).toHaveAttribute('aria-checked', 'false')
+
+    await on.click()
+    await waitForToast(page, '已启用「docs」')
+    await expect(row.getByText('已停用', { exact: true })).toHaveCount(0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'mutateProviderExtension').map((entry) => entry.args[0])), [
+      { provider: 'codex', kind: 'mcp', action: 'disable', id: 'docs', scope: 'user' },
+      { provider: 'codex', kind: 'mcp', action: 'enable', id: 'docs', scope: 'user' },
+    ])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'removeMcpServer')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 两个都装了：Codex 那一格下面说一句它们共用这些设置。
+test('with both the Codex CLI and the desktop app, the Codex tab says they share these settings', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.listProviderExtensions = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+      })
+      window.xingmang.listMcpServers = async () => []
+      window.xingmang.listSkills = async () => []
+      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+      window.xingmang.checkProviderMcpHealth = async (provider) => ({
+        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+      })
+    })
+    await page.getByTestId('nav-mcp').click()
+    const mcp = page.getByTestId('page-mcp')
+    assert.equal(await mcp.getByTestId('mcp-codex-shared').count(), 0)
+    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await expect(mcp.getByTestId('mcp-codex-shared')).toHaveText('Codex 桌面端和 Codex CLI 共用这些设置，在这里加的两边都能用。')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 停在记录页、窗口回到前面时也重读，离上次读不到半分钟不读，窗口藏着时不读。时钟停着，等的那一下在测试这边等。
 test('the records page reads again when the window comes back after half a minute, but not sooner and not while hidden', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1', true)
@@ -1909,6 +2110,36 @@ test('home shows the last usage right away instead of asking the account backend
     await expect(usageLine).toContainText('约还能用')
     assert.equal(await page.evaluate(() => window.__usageBlank), false)
     assert.equal(await usageReads(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// #1362 第 1 条：今天花得最多时，今天那根柱子最高，柱顶上的金额以前顶到「近 7 天花费」那一行，跟七天合计叠在一起。
+// 测试数据每天花多少按星期几给，星期五最多，所以把时钟定在一个星期五：UTC 中午，哪个时区的跑机看都还是星期五
+// （以前跟着真实日期走，只有星期五跑才绿）。
+test('today\'s amount above the tallest bar stays clear of the 7-day total on home and the account overview', async () => {
+  const page = await open('', new Date('2026-09-11T12:00:00Z'))
+  async function chart(scope, head, bar) {
+    return page.evaluate(([scopeSelector, headSelector, barSelector]) => {
+      const root = document.querySelector(scopeSelector)
+      const rect = (element) => { const { left, right, top, bottom } = element.getBoundingClientRect(); return { left, right, top, bottom } }
+      const bars = [...root.querySelectorAll(barSelector)]
+      return { total: rect(root.querySelector(headSelector)), amount: rect(root.querySelector('em')), bars: bars.map((element) => element.getBoundingClientRect().height), today: rect(bars.at(-1)) }
+    }, [scope, head, bar])
+  }
+  function apart(a, b) { return a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top }
+  try {
+    for (const [name, scope, head, bar] of [
+      ['home', '[data-testid="home-week-spend"]', '.v2-home-week-head > b', '.v2-home-week-bar > i'],
+      ['account overview', '[data-testid="account-overview-week"]', '.v2-acct-week-head > b', '.v2-acct-week-track > i'],
+    ]) {
+      if (name === 'account overview') await page.getByTestId('sidebar-account-open').click()
+      await page.locator(`${scope} em`).waitFor()
+      const { total, amount, bars, today } = await chart(scope, head, bar)
+      assert.equal(Math.max(...bars), bars.at(-1), `${name}: today is the tallest bar in the fixture`)
+      assert.ok(apart(total, amount), `${name}: today's amount ${JSON.stringify(amount)} clears the total ${JSON.stringify(total)}`)
+      assert.ok(amount.bottom <= today.top, `${name}: today's amount sits above its bar (${amount.bottom} / ${today.top})`)
+    }
     await clean(page)
   } finally { await page.close() }
 })
@@ -6373,7 +6604,7 @@ test('configuration lists the current key models on open without changing the se
     assert.equal(calls.some((entry) => ['revealApiKey', 'revealAccountKey', 'listModels', 'listAccountKeyModels', 'saveConfig', 'saveConfigWithAccountKey'].includes(entry.method)), false)
     const dialog = page.getByTestId('config-dialog')
     assert.equal(await dialog.getByRole('alert').count(), 0)
-    assert.equal(await dialog.locator('[data-unsaved="true"]').count(), 0)
+    // 读了型号不算改过：点「取消」直接关掉，不弹「不保存」那一条。
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'hidden' })
     await clean(page)
@@ -7854,8 +8085,9 @@ test('tutorial cards remember how far each chapter was read and continue from th
   } finally { await page.close() }
 })
 
-// 第五部分第 27、32 条：技能页「看怎么放」打开技能那篇、只展开那一条补充说明；「全部教程」回到卡片时落在这一篇上。
-test('the skills page guide opens the skills chapter on its note and the card list comes back to it', async () => {
+// 第五部分第 32 条：「全部教程」回到卡片时落在这一篇上。10-24 起 Claude Code 也能在技能页导入（「扩展改」第 2 条），
+// 技能页不再有「看怎么放」，教程「技能」篇也不再有「没有导入按钮？」那一条。
+test('the skills chapter explains importing for every tool and the card list comes back to it', async () => {
   const page = await open()
   try {
     await page.setViewportSize({ width: 1280, height: 560 })
@@ -7867,21 +8099,18 @@ test('the skills page guide opens the skills chapter on its note and the card li
     })
     await page.getByTestId('nav-skills').click()
     const skills = page.getByTestId('page-skills')
-    const note = skills.getByTestId('skills-import-unsupported')
-    await expect(note).toContainText('Claude Code 的技能不能在这里导入，要按它自己的方式放好；Codex CLI 可以在这里导入。')
-    await expect(skills.getByTestId('skills-add')).toBeDisabled()
-    await expect(skills.getByTestId('skills-add')).toHaveAttribute('title', 'Claude Code 不支持在这里导入')
-    await note.getByRole('button', { name: '看怎么放', exact: true }).click()
+    await expect(skills.getByTestId('skills-empty')).toContainText('点「从文件夹导入」，选一个技能文件夹。')
+    await expect(skills.getByTestId('skills-import-unsupported')).toHaveCount(0)
+    await expect(skills.getByTestId('skills-add').first()).toBeEnabled()
+    await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
+    const entry = tutorial.getByTestId('tutorial-topic-skills')
+    await entry.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
-    const guide = article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')
-    await expect(guide).toHaveJSProperty('open', true)
-    await expect(guide).toContainText('再回本页点「重新加载」')
-    assert.deepEqual(await article.locator('details.v2-tutorial-extra').evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle)), ['Claude Code、Grok CLI 没有导入按钮？'])
-    await expect.poll(() => insidePageViewport(guide.locator('summary'))).toBe(true)
+    await expect(article).toContainText('选好工具，再选一个本机的技能文件夹导入。')
+    await expect(article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')).toHaveCount(0)
     await tutorial.getByTestId('tutorial-back').click()
-    const entry = tutorial.getByTestId('tutorial-topic-skills')
     await expect(entry).toBeFocused()
     await expect.poll(() => insidePageViewport(entry)).toBe(true)
     await clean(page)
@@ -8070,6 +8299,23 @@ test('every settings row the search can name is on the settings page, in the reg
       await expect(settings.locator('#v2-settings-panel .v2-settings-panel-head h2')).toHaveText(group.label)
       await expect.poll(() => settings.locator('#v2-settings-panel [data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), { message: `「${group.label}」的行` }).toEqual(group.ids)
     }
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到设置里那张卡。
+test('the status bar says the phone remote is on and leads to its settings card', async () => {
+  const page = await open()
+  try {
+    await expect(page.getByTestId('statusbar-remote')).toHaveCount(0)
+    const feishu = { channel: 'feishu', hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' }, boundPeer: null, pairing: null }
+    const weixin = { channel: 'weixin', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null }
+    await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 50, available: true, credentialPersistence: 'durable', workspaceDirectory: '~/projects/demo', task: 'idle', pendingApprovals: 0, channels: { feishu: channel, weixin: idle } }), [feishu, weixin])
+    await page.getByTestId('statusbar-remote').click()
+    await expect(page.getByTestId('page-settings').getByTestId('settings-remote-card')).toBeVisible()
+    // 推来的旧快照（revision 小）不把它关掉。
+    await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 2, available: true, credentialPersistence: 'durable', workspaceDirectory: null, task: 'idle', pendingApprovals: 0, channels: { feishu: { ...channel, enabled: false }, weixin: idle } }), [feishu, weixin])
+    await expect(page.getByTestId('statusbar-remote')).toBeVisible()
     await clean(page)
   } finally { await page.close() }
 })
@@ -8634,7 +8880,7 @@ test('the shell fills a wide window and keeps each page 1000 wide to the right o
   } finally { await page.close() }
 })
 
-test('a window narrower than the design collapses the sidebar by itself, says why it stays narrow and never saves that as the choice', async () => {
+test('a window narrower than the design collapses the sidebar by itself and never saves that as the choice', async () => {
   const page = await open()
   try {
     // 选了 110% 的窗口在 1280 设计宽下只剩 1163 逻辑宽。
@@ -8644,10 +8890,6 @@ test('a window narrower than the design collapses the sidebar by itself, says wh
     await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
     assert.equal((await box(page, '[data-testid="sidebar"]')).width, 60)
     assert.equal((await box(page, '[data-testid="page-home"]')).width, 1000)
-    // v4 不再让侧栏浮在页面上展开：点展开键只说一句为什么，侧栏照旧收着。
-    await page.getByTestId('sidebar-collapse').click()
-    await waitForToast(page, '窗口较窄时侧栏会自动收起')
-    assert.equal(await shell.getAttribute('class'), 'v2-shell sidebar-collapsed')
     await page.screenshot({ path: path.join(artifacts, 'shell-narrow-rail.png') })
     await page.getByTestId('nav-settings').click()
     await page.getByTestId('page-settings').waitFor()
@@ -8659,6 +8901,177 @@ test('a window narrower than the design collapses the sidebar by itself, says wh
     assert.equal((await box(page, '[data-testid="sidebar"]')).width, 224)
     await clean(page)
   } finally { await page.close() }
+})
+
+// 2026-10-20 产品负责人在 Windows 0.2.19 上报「侧边栏无法展开」：窗口逻辑宽约 1092（Windows 放大加上「110%」），
+// 侧栏自动收着，点左下角的展开键只弹一句「窗口较窄时侧栏会自动收起」。现在点了就展开：照 224 宽浮在正文上面，
+// 正文不挪、不变窄，背后不罩；点外面、按 Esc、再点一次或点了侧栏里的一项都收回窄条，不改自己记的展开/收起。
+test('asking for the sidebar in a narrow window floats it over the page until you click away, press Esc or pick a page', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1092, height: 820 })
+    await page.getByTestId('page-home').waitFor()
+    const shell = page.locator('.v2-shell')
+    const toggle = page.getByTestId('sidebar-collapse')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    const pageBefore = await box(page, '[data-testid="page-home"]')
+    assert.equal(pageBefore.width, 1000)
+    async function expand() {
+      await toggle.click()
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-floating')
+    }
+    async function folded() {
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal((await box(page, '[data-testid="sidebar"]')).width, 60)
+    }
+    await expand()
+    const sidebar = await box(page, '[data-testid="sidebar"]')
+    assert.equal(sidebar.width, 224)
+    assert.equal(sidebar.left, 0)
+    // 侧栏的字、账号卡和余额都回来了，收起键换回「收起侧栏」。
+    assert.equal(await page.getByTestId('nav-settings').innerText(), '设置')
+    await page.getByTestId('sidebar-account-days').waitFor()
+    assert.equal(await toggle.getAttribute('aria-label'), '收起侧栏')
+    // 浮在正文上面：正文不挪不缩，侧栏盖住它左边一截，而且在上面（点得到侧栏里的项）。
+    assert.deepEqual(await box(page, '[data-testid="page-home"]'), pageBefore)
+    assert.ok(sidebar.right > pageBefore.left, `the sidebar covers the page edge (${sidebar.right} / ${pageBefore.left})`)
+    assert.equal(await page.evaluate(() => {
+      const item = document.querySelector('[data-testid="nav-settings"]').getBoundingClientRect()
+      return document.elementFromPoint(item.left + item.width / 2, item.top + item.height / 2)?.closest('[data-testid="nav-settings"]') !== null
+    }), true)
+    await assertNoToast(page, '窗口较窄时侧栏会自动收起')
+    await page.screenshot({ path: path.join(artifacts, 'shell-narrow-floating.png') })
+    // 点外面收起（点状态栏中间那段空白，不碰任何按钮）。
+    const spacer = await box(page, '.v2-status-spacer')
+    const statusbar = await box(page, '[data-testid="shell-statusbar"]')
+    assert.ok(spacer.left > sidebar.right && spacer.width > 40, `the status bar has room to click outside the sidebar: ${JSON.stringify(spacer)}`)
+    await page.mouse.click(spacer.left + spacer.width / 2, (statusbar.top + statusbar.bottom) / 2)
+    await folded()
+    // 按 Esc 收起；这一下 Esc 已经被别的浮层（比如抽屉）用掉了就不跟着收，一下只关一层。
+    await expand()
+    await page.evaluate(() => {
+      window.__claimEscape = (event) => { if (event.key === 'Escape') event.preventDefault() }
+      document.addEventListener('keydown', window.__claimEscape, true)
+    })
+    await page.keyboard.press('Escape')
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await shell.getAttribute('class'), 'v2-shell sidebar-floating')
+    await page.evaluate(() => document.removeEventListener('keydown', window.__claimEscape, true))
+    await page.keyboard.press('Escape')
+    await folded()
+    // 再点一次收起。
+    await expand()
+    await toggle.click()
+    await folded()
+    // 点了侧栏里的一页：去那一页，侧栏收回去，不挡着刚打开的页。
+    await expand()
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').waitFor()
+    await folded()
+    // 自动收起和浮着展开都不改自己记的展开/收起。
+    assert.equal(await page.evaluate(() => localStorage.getItem('xingmang-v2-sidebar')), null)
+    // 浮着展开时把窗口拉宽：回到自己设的样子；再变窄还是收着的窄条，不会自己浮出来。
+    await expand()
+    await page.setViewportSize({ width: 1280, height: 820 })
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+    await page.setViewportSize({ width: 1092, height: 820 })
+    await folded()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a sidebar floated open from the keyboard keeps focus on its toggle and folds when focus leaves it', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1092, height: 820 })
+    const shell = page.locator('.v2-shell')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    await page.getByTestId('sidebar-collapse').focus()
+    await page.keyboard.press('Enter')
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-floating')
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '收起侧栏')
+    // 焦点离开侧栏（交给正文）：侧栏收回去，不留在那儿挡着焦点所在的地方。
+    await page.getByTestId('page-viewport').focus()
+    await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// #1361：窄条图标的名字提示以前冒在图标正下方、还接鼠标，正好盖住下一个图标的大半截；鼠标从「首页」挪到「聊天」
+// 点下去，点到的是「首页」的提示，页面不动。照 v4 原型改成冒在图标右边、不接鼠标。
+test('a rail icon names itself beside the rail, so moving down to the next icon clicks that icon', async () => {
+  const page = await open()
+  try {
+    await page.setViewportSize({ width: 1092, height: 820 })
+    await page.getByTestId('page-home').waitFor()
+    await expect.poll(() => page.locator('.v2-shell').getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+    const sidebar = await box(page, '[data-testid="sidebar"]')
+    const home = await box(page, '[data-testid="nav-home"]')
+    const chat = await box(page, '[data-testid="nav-chat"]')
+    await page.mouse.move(home.left + home.width / 2, (home.top + home.bottom) / 2)
+    const tip = page.getByRole('tooltip')
+    await expect(tip).toHaveText('首页')
+    await expect(tip).toBeVisible()
+    const placed = await tip.evaluate((element) => {
+      const { left, top, bottom } = element.getBoundingClientRect()
+      return { left, top, bottom, pointerEvents: getComputedStyle(element).pointerEvents }
+    })
+    assert.ok(placed.left >= sidebar.right, `the tip sits beside the rail (${placed.left} / ${sidebar.right})`)
+    assert.ok(placed.top < home.bottom && placed.bottom > home.top, `the tip is level with its icon (${placed.top}-${placed.bottom} / ${home.top}-${home.bottom})`)
+    assert.equal(placed.pointerEvents, 'none')
+    // 跟客户一样一路往下挪，不先挪开再回来。
+    const target = { x: chat.left + chat.width / 2, y: (chat.top + chat.bottom) / 2 }
+    await page.mouse.move(target.x, target.y, { steps: 8 })
+    assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-testid]')?.getAttribute('data-testid'), target), 'nav-chat')
+    await expect(page.getByRole('tooltip')).toHaveText('聊天')
+    await page.mouse.down()
+    await page.mouse.up()
+    await page.getByTestId('page-chat').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// #1349 第 1 条：顶栏整条是拖动区，Electron 把那里的鼠标按下交给系统拖窗口，页面收不到 pointerdown、焦点也不动，
+// 浮着的侧栏点顶栏空白处收不回。无头 Chromium 不认拖动区，这里钉的是样式：浮着时侧栏外面一处拖动区都没有，
+// 收回、拉宽以后顶栏照常能拖。真机上点顶栏能不能收，以真机为准。
+test('a floating sidebar leaves no window drag region outside it, so clicking the empty top bar folds it', async () => {
+  for (const os of ['windows', 'mac']) {
+    const page = await open(os === 'mac' ? 'os=mac' : '')
+    try {
+      await page.setViewportSize({ width: 1092, height: 820 })
+      await page.getByTestId('page-home').waitFor()
+      const shell = page.locator('.v2-shell')
+      const topbar = page.getByTestId('shell-topbar')
+      function region(locator) { return locator.evaluate((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')) }
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal(await region(topbar), 'drag', `${os}: the top bar drags the window while the sidebar is a rail`)
+      await page.getByTestId('sidebar-collapse').click()
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-floating')
+      assert.deepEqual(await page.evaluate(() => {
+        const sidebar = document.querySelector('[data-testid="sidebar"]')
+        return [...document.querySelectorAll('body *')]
+          .filter((element) => !sidebar.contains(element) && getComputedStyle(element).getPropertyValue('-webkit-app-region') === 'drag')
+          .map((element) => element.getAttribute('data-testid') ?? element.className)
+      }), [], `${os}: nothing outside the floating sidebar swallows a click as a window drag`)
+      // 点顶栏左边那段空白（侧栏右边、搜索框左边，不碰任何按钮）。
+      const sidebar = await box(page, '[data-testid="sidebar"]')
+      const search = await box(page, '.v2-command-trigger')
+      const bar = await box(page, '[data-testid="shell-topbar"]')
+      assert.ok(search.left - sidebar.right > 40, `${os}: the top bar has room to click beside the sidebar (${sidebar.right} / ${search.left})`)
+      const point = { x: (sidebar.right + search.left) / 2, y: (bar.top + bar.bottom) / 2 }
+      assert.equal(await page.evaluate(({ x, y }) => {
+        const target = document.elementFromPoint(x, y)
+        return Boolean(target?.closest('[data-testid="shell-topbar"]')) && !target.closest('button, a, input')
+      }, point), true, `${os}: the click lands on the empty top bar`)
+      await page.mouse.click(point.x, point.y)
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.equal(await region(topbar), 'drag', `${os}: the top bar drags the window again once the sidebar folds`)
+      await page.setViewportSize({ width: 1280, height: 820 })
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+      assert.equal(await region(topbar), 'drag', `${os}: the top bar drags the window in a wide window`)
+      await clean(page)
+    } finally { await page.close() }
+  }
 })
 
 // #1133 第 3、4 条：最小窗口选 110% 只剩 970×566 逻辑大小。收成窄条的侧栏一项不少地放得下，不滚、不渐隐

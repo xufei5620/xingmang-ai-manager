@@ -5,7 +5,8 @@
 // 数据从哪来：0.2.10 起客户端打开时和开着的每 15 分钟读一次更新目录上的
 // service-status.json。这个请求走 electron-updater 的会话，User-Agent 是 Electron
 // 默认那一串，里面带着「星芒AI管理工具/0.2.15 Chrome/… Electron/…」；latest.yml 的
-// 请求 UA 是 electron-builder，不带版本，所以只能数状态文件。更新目录挂在 Cloudflare
+// 请求 UA 是 electron-builder，不带版本，所以版本只能数状态文件，更新清单只拿来按来源 IP
+// 看一台电脑新版出来以后查过更新没有。更新目录挂在 Cloudflare
 // 上，这里拿只读的 Analytics 令牌查 GraphQL Analytics API，按 UA 和来源 IP 分组。
 //
 // 来源 IP 只在内存里拿来去重；仓库公开，任何输出（日志、Job Summary）里都只有按版本
@@ -24,6 +25,9 @@ const STATUS_PATH = '/xingmang-manager/service-status.json'
 // （scripts/macos-artifact-names.cjs），改名之前发的版本是 electron-builder 原名，两种都认。Linux 还没对外发。
 const INSTALLER_PATH_PATTERN = '/xingmang-manager/XingMang-AI-Manager-%'
 const INSTALLER_PATH = /^\/xingmang-manager\/XingMang-AI-Manager-(\d{1,6}\.\d{1,6}\.\d{1,6})-(Setup\.exe|(?:Apple-Silicon-arm64|Intel-x64|arm64|x64)\.zip)$/
+// electron-updater 每次查更新都先读更新清单：Windows 是 latest.yml，Mac 是 latest-mac.yml。
+const MANIFEST_PATH_PATTERN = '/xingmang-manager/latest%.yml'
+const MANIFEST_PATH = /^\/xingmang-manager\/latest(-mac)?\.yml$/
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_DAYS = 31
@@ -193,6 +197,7 @@ async function readDatasetLimits(client, zoneTag) {
     withIp: !fields || hasField(fields, 'clientIP'),
     withHour: !fields || hasField(fields, 'datetimeHour'),
     withPath: !fields || hasField(fields, 'clientRequestPath'),
+    withStatus: !fields || hasField(fields, 'edgeResponseStatus'),
   }
 }
 
@@ -226,12 +231,17 @@ function buildGroupsQuery(pageSize, dimensions) {
 }`
 }
 
+// 状态码 Cloudflare 给的是数字，别的维度都是字符串。
+function validDimension(name, value) {
+  return name === 'edgeResponseStatus' ? Number.isSafeInteger(value) && value >= 100 && value <= 599 : typeof value === 'string'
+}
+
 function parseGroupRows(zone, dimensionNames) {
   const groups = zone.httpRequestsAdaptiveGroups
   if (!Array.isArray(groups)) throw new StatsError('Cloudflare 统计接口返回的分组格式不对')
   return groups.map((group) => {
     const dimensions = isRecord(group) && isRecord(group.dimensions) ? group.dimensions : null
-    if (!dimensions || !Number.isSafeInteger(group.count) || group.count < 0 || dimensionNames.some((name) => typeof dimensions[name] !== 'string')) {
+    if (!dimensions || !Number.isSafeInteger(group.count) || group.count < 0 || dimensionNames.some((name) => !validDimension(name, dimensions[name]))) {
       throw new StatsError('Cloudflare 统计接口返回的分组格式不对')
     }
     const time = dimensionNames.includes('datetimeHour') ? Date.parse(dimensions.datetimeHour) : null
@@ -243,6 +253,7 @@ function parseGroupRows(zone, dimensionNames) {
       userAgent: dimensions.userAgent ?? null,
       clientIP: dimensions.clientIP ?? null,
       path: dimensions.clientRequestPath ?? null,
+      status: dimensions.edgeResponseStatus ?? null,
       time,
     }
   })
@@ -263,6 +274,25 @@ function installerQuery(limits) {
     label: '安装包',
     filter: { clientRequestPath_like: INSTALLER_PATH_PATTERN, edgeResponseStatus_lt: 400 },
     dimensions: ['clientRequestPath', 'clientIP', 'datetimeHour'],
+  }
+}
+
+// 和安装包一样要来源 IP、路径和小时才对得上电脑，只在查安装包的时候一起查。
+function manifestQuery() {
+  return {
+    label: '更新清单',
+    filter: { clientRequestPath_like: MANIFEST_PATH_PATTERN, edgeResponseStatus_lt: 400 },
+    dimensions: ['clientRequestPath', 'clientIP', 'datetimeHour'],
+  }
+}
+
+// 被拒的请求（状态码 400 以上）只按路径和状态码分：不用对上电脑，不带 IP。上面两项只数没被拒的，
+// Mac 查更新时要是被这边拒了，在那里就成了「没见查过」，得在这里看。
+function failedRequestQuery() {
+  return {
+    label: '被拒的请求',
+    filter: { clientRequestPath_like: '/xingmang-manager/%', edgeResponseStatus_geq: 400 },
+    dimensions: ['clientRequestPath', 'edgeResponseStatus'],
   }
 }
 
@@ -322,23 +352,14 @@ function readTime(row, piece, index) {
 /**
  * pieces 必须按时间先后排好。每台电脑（来源 IP + 系统）只算它最后出现的那个小时（查不到
  * 小时就是那一段）里的版本；同一时间里出现两个版本取高的那个（多半是这时候升了级）。
- * 返回值里没有 IP。
+ * 键里有 IP，只在脚本里用，不往外交。
  */
-function aggregateStats(pieces, withIp) {
+function latestClientPerMachine(pieces) {
   const latest = new Map()
-  const requests = new Map()
-  let unrecognized = 0
-  let sampleInterval = 1
   pieces.forEach((piece, index) => {
     for (const row of piece.rows) {
-      sampleInterval = Math.max(sampleInterval, row.sampleInterval)
       const client = classifyUserAgent(row.userAgent)
-      if (!client) {
-        unrecognized += row.count
-        continue
-      }
-      requests.set(client.version, (requests.get(client.version) || 0) + row.count)
-      if (!withIp) continue
+      if (!client) continue
       const key = machineKey(client.platform, row.clientIP)
       const time = readTime(row, piece, index)
       const previous = latest.get(key)
@@ -347,11 +368,32 @@ function aggregateStats(pieces, withIp) {
       }
     }
   })
+  return latest
+}
+
+/** 按电脑的版本分布（规则见 latestClientPerMachine）和按请求的版本分布。返回值里没有 IP。 */
+function aggregateStats(pieces, withIp) {
+  const requests = new Map()
+  let unrecognized = 0
+  let sampleInterval = 1
+  for (const piece of pieces) {
+    for (const row of piece.rows) {
+      sampleInterval = Math.max(sampleInterval, row.sampleInterval)
+      const client = classifyUserAgent(row.userAgent)
+      if (!client) {
+        unrecognized += row.count
+        continue
+      }
+      requests.set(client.version, (requests.get(client.version) || 0) + row.count)
+    }
+  }
   const machines = new Map()
-  for (const client of latest.values()) {
-    const counts = machines.get(client.version) || { windows: 0, mac: 0, linux: 0, other: 0 }
-    counts[client.platform] += 1
-    machines.set(client.version, counts)
+  if (withIp) {
+    for (const client of latestClientPerMachine(pieces).values()) {
+      const counts = machines.get(client.version) || { windows: 0, mac: 0, linux: 0, other: 0 }
+      counts[client.platform] += 1
+      machines.set(client.version, counts)
+    }
   }
   return { withIp, machines, requests, unrecognized, sampleInterval }
 }
@@ -361,13 +403,7 @@ function parseInstallerPath(path) {
   return match ? { version: match[1], platform: match[2] === 'Setup.exe' ? 'windows' : 'mac' } : null
 }
 
-/**
- * 只看这段时间里被下过的最高版本。每台电脑（来源 IP + 系统）从它第一次下那个小时往后看：
- * 那之后以这个版本（或更高）读过状态文件算装上了；没有，但晚于那个小时还以旧版本读过，算还没装上；
- * 都没有就是没再出现。返回值里只有各系统的台数，没有 IP。
- */
-function summarizeInstallerDownloads(statusPieces, installerPieces) {
-  let version = null
+function readInstallerDownloads(installerPieces) {
   let sampleInterval = 1
   const downloads = []
   for (const piece of installerPieces) {
@@ -375,15 +411,79 @@ function summarizeInstallerDownloads(statusPieces, installerPieces) {
       const installer = parseInstallerPath(row.path)
       if (!installer || !Number.isFinite(row.time)) continue
       sampleInterval = Math.max(sampleInterval, row.sampleInterval)
-      downloads.push({ ...installer, key: machineKey(installer.platform, row.clientIP), time: row.time })
-      if (!version || compareReleaseVersions(installer.version, version) > 0) version = installer.version
+      downloads.push({ ...installer, key: machineKey(installer.platform, row.clientIP), time: row.time, sampleInterval: row.sampleInterval })
     }
   }
+  return { downloads, sampleInterval }
+}
+
+function parseManifestPath(path) {
+  const match = typeof path === 'string' ? MANIFEST_PATH.exec(path) : null
+  return match ? { platform: match[1] ? 'mac' : 'windows' } : null
+}
+
+/**
+ * 每台电脑（来源 IP + 系统）最后一次读更新清单的那个小时，和按抽样倍数折算的读了几次（estimated）。
+ * 键里有 IP，只在脚本里用。
+ */
+function readManifestChecks(manifestPieces) {
+  let sampleInterval = 1
+  const latest = new Map()
+  const estimated = new Map()
+  for (const piece of manifestPieces) {
+    for (const row of piece.rows) {
+      const manifest = parseManifestPath(row.path)
+      if (!manifest || !Number.isFinite(row.time)) continue
+      sampleInterval = Math.max(sampleInterval, row.sampleInterval)
+      const key = machineKey(manifest.platform, row.clientIP)
+      const seen = latest.get(key)
+      if (seen === undefined || row.time > seen) latest.set(key, row.time)
+      estimated.set(key, (estimated.get(key) || 0) + row.count * row.sampleInterval)
+    }
+  }
+  return { latest, estimated, sampleInterval }
+}
+
+/** 每台电脑这段时间读状态文件的次数，按抽样倍数折算。键里有 IP，只在脚本里用。 */
+function estimateStatusReads(statusPieces) {
+  const reads = new Map()
+  for (const piece of statusPieces) {
+    for (const row of piece.rows) {
+      const client = classifyUserAgent(row.userAgent)
+      if (!client) continue
+      const key = machineKey(client.platform, row.clientIP)
+      reads.set(key, (reads.get(key) || 0) + row.count * row.sampleInterval)
+    }
+  }
+  return reads
+}
+
+/** 这段时间里被下过的版本，新的在前。 */
+function downloadedVersions(installerPieces) {
+  return sortVersionsDescending(new Set(readInstallerDownloads(installerPieces).downloads.map((download) => download.version)))
+}
+
+// 下好以后星芒不再定时查（electron/main.ts 里 downloaded 阶段跳过例行检查），重开时用缓存里那份、也不再下。
+// 同一台隔了这么久又下同一版，多半是上一次没下完或没过校验，回头重下的（推测）。一次下载跨了整点不算。
+const REDOWNLOAD_GAP_MS = 2 * 60 * 60 * 1000
+
+/**
+ * 看这段时间里被下过的某一版（缺省是最高的那版）。每台电脑（来源 IP + 系统）从它第一次下那个小时往后看：
+ * 那之后以这个版本（或更高）读过状态文件算装上了；没有，但晚于那个小时还以旧版本读过，算还没装上；
+ * 都没有就是没再出现。还没装上的里面，隔了两小时以上又下过这一版的另记 redownloaded。
+ * 返回值里只有各系统的台数，没有 IP。
+ */
+function summarizeInstallerDownloads(statusPieces, installerPieces, followed = undefined) {
+  const { downloads, sampleInterval } = readInstallerDownloads(installerPieces)
+  const version = followed === undefined ? sortVersionsDescending(new Set(downloads.map((download) => download.version)))[0] ?? null : followed
   const downloadedAt = new Map()
+  const lastDownloadedAt = new Map()
   for (const download of downloads) {
     if (download.version !== version) continue
     const previous = downloadedAt.get(download.key)
     if (previous === undefined || download.time < previous) downloadedAt.set(download.key, download.time)
+    const last = lastDownloadedAt.get(download.key)
+    if (last === undefined || download.time > last) lastDownloadedAt.set(download.key, download.time)
   }
   const installed = new Set()
   const pending = new Set()
@@ -402,12 +502,147 @@ function summarizeInstallerDownloads(statusPieces, installerPieces) {
       }
     }
   }
-  const outcomes = { windows: { installed: 0, pending: 0, gone: 0 }, mac: { installed: 0, pending: 0, gone: 0 } }
-  for (const key of downloadedAt.keys()) {
+  const outcomes = {
+    windows: { installed: 0, pending: 0, gone: 0, redownloaded: 0 },
+    mac: { installed: 0, pending: 0, gone: 0, redownloaded: 0 },
+  }
+  for (const [key, first] of downloadedAt) {
     const outcome = installed.has(key) ? 'installed' : pending.has(key) ? 'pending' : 'gone'
-    outcomes[key.slice(0, key.indexOf('\n'))][outcome] += 1
+    const platform = key.slice(0, key.indexOf('\n'))
+    outcomes[platform][outcome] += 1
+    if (outcome === 'pending' && lastDownloadedAt.get(key) - first >= REDOWNLOAD_GAP_MS) outcomes[platform].redownloaded += 1
   }
   return { version, outcomes, sampleInterval }
+}
+
+// 开着的星芒每 3 小时查一次更新（electron/main.ts 的 updateCheckIntervalMs）。比它新的版本第一次被人下到以后，
+// 它又开了这么久（两轮检查，加上下载的时间）还没下，才算「有机会下却没下」。
+const DOWNLOAD_CHANCE_MS = 6 * 60 * 60 * 1000
+
+/**
+ * 最后一次读状态文件时还低于这段时间里最新那版的电脑，这段时间里从这里请求过比它自己新的安装包没有。
+ * 「下过还停着」是下了没装上（或没下完），「没下过」是根本没去下或下不到；两种的办法不一样，
+ * 要不要强制更新先看这个。只按系统和它停在的版本汇总，返回值里没有 IP。
+ *
+ * 统计时段往往比新版本发出来的时间长：新版还没出（或刚出）时就最后一次出现的电脑没机会下，
+ * 算进「没下过」会把下载不通说得比实际严重，单独记在 unexposed 里，不进比例。哪个版本什么时候
+ * 「出来」的，按这段时间里第一次有人下到它的那个小时算。
+ *
+ * 没下过的再看新版出来以后读过更新清单没有（checked）：读过就是查到了新版却没去下（多半关了「自动更新」），
+ * 没读过就是开着的时候还没轮到查（或者查的那次没被记下）。
+ *
+ * Cloudflare 忙的时候抽样记（一次请求只有 1/sampleInterval 的机会被记下），一台只请求一两次
+ * 安装包的多半漏记，看到的「下过」只是下限。estimated 把看到的每台按它那几次里最密的抽样
+ * 倍数算成几台（一台只请求一次时正好不偏；请求好几次时会估高），和看到的一起给个范围。
+ */
+function summarizeStaleMachines(statusPieces, installerPieces, manifestPieces = []) {
+  const { downloads, sampleInterval } = readInstallerDownloads(installerPieces)
+  const checks = readManifestChecks(manifestPieces)
+  const byMachine = new Map()
+  const firstDownloaded = new Map()
+  let target = null
+  for (const download of downloads) {
+    const list = byMachine.get(download.key) || []
+    list.push(download)
+    byMachine.set(download.key, list)
+    const first = firstDownloaded.get(download.version)
+    if (first === undefined || download.time < first) firstDownloaded.set(download.version, download.time)
+    if (!target || compareReleaseVersions(download.version, target) > 0) target = download.version
+  }
+  const versions = new Map()
+  const unexposed = { windows: 0, mac: 0 }
+  const checkSampleInterval = checks.sampleInterval
+  const statusReads = estimateStatusReads(statusPieces)
+  const cadence = { windows: { statusReads: 0, manifestReads: 0 }, mac: { statusReads: 0, manifestReads: 0 } }
+  if (!target) return { target, versions, unexposed, cadence, sampleInterval, checkSampleInterval }
+  for (const [key, client] of latestClientPerMachine(statusPieces)) {
+    if (client.platform !== 'windows' && client.platform !== 'mac') continue
+    if (compareReleaseVersions(client.version, target) >= 0) continue
+    const newer = (byMachine.get(key) || []).filter((download) => compareReleaseVersions(download.version, client.version) > 0)
+    // 只看没下过新版的：下好以后星芒就不再定时查，算进来会把数拉低。还没机会下的也算，查得勤不勤和有没有新版无关。
+    if (!newer.length) {
+      cadence[client.platform].statusReads += statusReads.get(key) || 0
+      cadence[client.platform].manifestReads += checks.estimated.get(key) || 0
+    }
+    const newerOut = newer.length ? null : Math.min(...[...firstDownloaded]
+      .filter(([version]) => compareReleaseVersions(version, client.version) > 0)
+      .map(([, time]) => time))
+    if (newerOut !== null && client.time < newerOut + DOWNLOAD_CHANCE_MS) {
+      unexposed[client.platform] += 1
+      continue
+    }
+    const counts = versions.get(client.version) || {
+      windows: { downloaded: 0, missing: 0, checked: 0, estimated: 0 },
+      mac: { downloaded: 0, missing: 0, checked: 0, estimated: 0 },
+    }
+    if (newer.length) {
+      counts[client.platform].downloaded += 1
+      counts[client.platform].estimated += Math.min(...newer.map((download) => download.sampleInterval))
+    } else {
+      counts[client.platform].missing += 1
+      if (checks.latest.get(key) >= newerOut) counts[client.platform].checked += 1
+    }
+    versions.set(client.version, counts)
+  }
+  return { target, versions, unexposed, cadence, sampleInterval, checkSampleInterval }
+}
+
+// 最新那版刚发出去时大多还没轮到检查，只看它看不出装没装得上，所以连前一版一起看。
+const FOLLOWED_VERSIONS = 2
+
+const REQUEST_KINDS = [
+  ['macManifest', 'Mac 更新清单（latest-mac.yml）'],
+  ['windowsManifest', 'Windows 更新清单（latest.yml）'],
+  ['macInstaller', 'Mac 安装包'],
+  ['windowsInstaller', 'Windows 安装包'],
+  ['status', '状态文件'],
+]
+
+function requestKind(path) {
+  if (path === STATUS_PATH) return 'status'
+  const manifest = parseManifestPath(path)
+  if (manifest) return `${manifest.platform}Manifest`
+  const installer = parseInstallerPath(path)
+  return installer ? `${installer.platform}Installer` : null
+}
+
+/**
+ * 更新相关的几类请求各被拒了多少（状态码 400 以上），按抽样倍数折算。没被拒的那部分来自前面几次查询：
+ * 安装包和更新清单只查了没被拒的；状态文件不分状态码全查了，被拒的要从里面减掉。只有次数，没有 IP。
+ */
+function summarizeFailedRequests(statusPieces, installerPieces, manifestPieces, failedPieces) {
+  const kinds = Object.fromEntries(REQUEST_KINDS.map(([id]) => [id, { ok: 0, failed: 0, codes: new Map() }]))
+  for (const piece of failedPieces) {
+    for (const row of piece.rows) {
+      const kind = requestKind(row.path)
+      if (!kind) continue
+      const estimate = row.count * row.sampleInterval
+      kinds[kind].failed += estimate
+      kinds[kind].codes.set(row.status, (kinds[kind].codes.get(row.status) || 0) + estimate)
+    }
+  }
+  for (const piece of [...installerPieces, ...manifestPieces]) {
+    for (const row of piece.rows) {
+      const kind = requestKind(row.path)
+      if (kind) kinds[kind].ok += row.count * row.sampleInterval
+    }
+  }
+  let statusReads = 0
+  for (const piece of statusPieces) {
+    for (const row of piece.rows) statusReads += row.count * row.sampleInterval
+  }
+  kinds.status.ok = Math.max(0, statusReads - kinds.status.failed)
+  return kinds
+}
+
+function summarizeUpdateDownloads(statusPieces, installerPieces, manifestPieces = [], failedPieces = null) {
+  return {
+    followed: downloadedVersions(installerPieces)
+      .slice(0, FOLLOWED_VERSIONS)
+      .map((version) => summarizeInstallerDownloads(statusPieces, installerPieces, version)),
+    stale: summarizeStaleMachines(statusPieces, installerPieces, manifestPieces),
+    failures: failedPieces ? summarizeFailedRequests(statusPieces, installerPieces, manifestPieces, failedPieces) : null,
+  }
 }
 
 function formatBeijingTime(milliseconds) {
@@ -454,45 +689,192 @@ function renderRequestTable(requests) {
   return lines
 }
 
+const DOWNLOAD_COLUMNS = [['windows', 'Windows'], ['mac', 'Mac']]
+
 // 比例是占同一个系统里下过的电脑，不写台数。
-function renderInstallerSection(downloads) {
-  const lines = ['', `### 下过${downloads?.version ? ` ${downloads.version} ` : '新版'}安装包的电脑后来怎样`, '']
-  if (!downloads) {
-    lines.push('这个套餐的 Cloudflare 统计查不到来源 IP、请求路径或小时，这一项没法算。')
-    return lines
-  }
-  if (!downloads.version) {
-    lines.push('这段时间没有电脑从这里下过安装包。')
-    return lines
-  }
-  const columns = [['windows', 'Windows'], ['mac', 'Mac']]
+function renderInstallerTable(summary) {
   const outcomes = [
-    ['installed', `之后以 ${downloads.version} 读过状态文件（装上了）`],
+    ['installed', `之后以 ${summary.version} 或更高版本读过状态文件（装上了）`],
     ['pending', '之后还以旧版本读状态文件（还没装上）'],
     ['gone', '之后在这里没再出现'],
   ]
-  const totals = Object.fromEntries(columns.map(([id]) => [id, outcomes.reduce((sum, [outcome]) => sum + downloads.outcomes[id][outcome], 0)]))
-  lines.push(
-    `只算这段时间里从这里下过 ${downloads.version} 安装包的电脑（Windows 的 Setup.exe、Mac 的 zip，自动更新下的就是这两个），`
+  const totals = Object.fromEntries(DOWNLOAD_COLUMNS.map(([id]) => [id, outcomes.reduce((sum, [outcome]) => sum + summary.outcomes[id][outcome], 0)]))
+  const lines = [
+    '',
+    `### 下过 ${summary.version} 安装包的电脑后来怎样`,
+    '',
+    `只算这段时间里从这里下过 ${summary.version} 安装包的电脑（Windows 的 Setup.exe、Mac 的 zip，自动更新下的就是这两个），`
       + '同一台下了几次算一次，从它第一次下的那个小时往后看。每格是占同一个系统里下过的电脑的比例。',
     '',
-    `| 下完以后 | ${columns.map(([, label]) => label).join(' | ')} |`,
-    `|---|${columns.map(() => '---:').join('|')}|`,
-  )
+    `| 下完以后 | ${DOWNLOAD_COLUMNS.map(([, label]) => label).join(' | ')} |`,
+    `|---|${DOWNLOAD_COLUMNS.map(() => '---:').join('|')}|`,
+  ]
   for (const [outcome, label] of outcomes) {
-    lines.push(`| ${label} | ${columns.map(([id]) => formatShare(downloads.outcomes[id][outcome], totals[id])).join(' | ')} |`)
+    lines.push(`| ${label} | ${DOWNLOAD_COLUMNS.map(([id]) => formatShare(summary.outcomes[id][outcome], totals[id])).join(' | ')} |`)
+  }
+  const redownloaded = DOWNLOAD_COLUMNS
+    .filter(([id]) => summary.outcomes[id].pending > 0)
+    .map(([id, label]) => `${label} ${formatShare(summary.outcomes[id].redownloaded, summary.outcomes[id].pending)}`)
+  if (redownloaded.length) {
+    lines.push(
+      '',
+      `还没装上的里面，隔了两小时以上又下过 ${summary.version} 的（${redownloaded.join('、')}）：下好以后星芒不再定时查、重开也用下好的那份，`
+        + '回头重下多半是上一次没下完或没过校验（推测）；其余的是下好了在等退出或重开。',
+    )
+  }
+  const small = DOWNLOAD_COLUMNS.filter(([id]) => totals[id] > 0 && totals[id] < SMALL_SAMPLE)
+  if (small.length) lines.push('', ...small.map(([, label]) => `- ${label} 下过的电脑不到 ${SMALL_SAMPLE} 台，这一列只能粗看。`))
+  return lines
+}
+
+// 开着时状态文件 15 分钟读一次（electron/service-status.ts），更新 3 小时查一次（electron/main.ts），
+// 每次查更新前还会补读一次状态文件：3 小时里大约 13 次状态文件对 1 次更新清单。
+const EXPECTED_CHECKS_PER_100_STATUS_READS = 8
+
+// 停过的版本多了表太长：最近的几个版本单列，更早的并成一行。
+const STALE_VERSION_ROWS = 4
+
+// 每格是这一行、这个系统里停着的电脑下过新版、或者没下但查过更新的比例，不写台数。
+function renderStaleSection(stale) {
+  const lines = ['', '### 还停在旧版本的电脑下过新版没有', '']
+  const unexposedReason = '最后一次出现时比它新的版本还没出来，或者出来不到 6 小时（开着的星芒 3 小时查一次更新），没机会下'
+  if (!stale.versions.size) {
+    lines.push(`这段时间读过状态文件的电脑，最后一次读时都已经是 ${stale.target} 或更高，或者${unexposedReason}。`)
+    return lines
+  }
+  const versions = sortVersionsDescending(stale.versions.keys())
+  const rows = versions.slice(0, STALE_VERSION_ROWS).map((version) => [version, stale.versions.get(version)])
+  function empty() {
+    return { windows: { downloaded: 0, missing: 0, checked: 0, estimated: 0 }, mac: { downloaded: 0, missing: 0, checked: 0, estimated: 0 } }
+  }
+  function addInto(sum, counts) {
+    for (const [id] of DOWNLOAD_COLUMNS) {
+      for (const field of ['downloaded', 'missing', 'checked', 'estimated']) sum[id][field] += counts[id][field]
+    }
+    return sum
+  }
+  if (versions.length > STALE_VERSION_ROWS) {
+    const older = versions.slice(STALE_VERSION_ROWS).reduce((sum, version) => addInto(sum, stale.versions.get(version)), empty())
+    rows.push([`${versions[STALE_VERSION_ROWS]} 及更早`, older])
+  }
+  const total = [...stale.versions.values()].reduce(addInto, empty())
+  const sampled = stale.sampleInterval > 1
+  function cell(counts, id) {
+    const machines = counts[id].downloaded + counts[id].missing
+    const seen = formatShare(counts[id].downloaded, machines)
+    return sampled && machines ? `${seen}（估 ${formatShare(Math.min(counts[id].estimated, machines), machines)}）` : seen
+  }
+  function cells(counts) {
+    return DOWNLOAD_COLUMNS.flatMap(([id]) => [cell(counts, id), formatShare(counts[id].checked, counts[id].downloaded + counts[id].missing)])
   }
   lines.push(
+    `只算这段时间里最后一次读状态文件时还低于 ${stale.target}、而且有机会下新版的电脑。「下过新版」是这段时间从这里请求过`
+      + '比自己新的安装包（Windows 的 Setup.exe、Mac 的 zip，下没下完都算）；「没下、查过更新」是一次都没请求过安装包，'
+      + '但新版出来以后读过更新清单（Windows 的 latest.yml、Mac 的 latest-mac.yml），也就是查到了新版却没去下。'
+      + '每格是占这一行、这个系统里的电脑的比例，剩下的是新版出来以后既没下、也没见它查过更新。',
+  )
+  const unexposed = DOWNLOAD_COLUMNS
+    .filter(([id]) => stale.unexposed[id] > 0)
+    .map(([id, label]) => `${label} ${formatShare(stale.unexposed[id], stale.unexposed[id] + total[id].downloaded + total[id].missing)}`)
+  if (unexposed.length) lines.push('', `停着的电脑里另有一部分（${unexposed.join('、')}）${unexposedReason}，没算进表里。`)
+  if (sampled) {
+    lines.push(
+      '',
+      `**这段时间 Cloudflare 是抽样记的（最多每 ${Math.round(stale.sampleInterval)} 次记 1 次）**：一台只请求一两次安装包的多半漏记，`
+        + '所以前面那个数是看到的，只能当下限；括号里把看到的每台按那个小时的抽样倍数算成几台，是估出来的，一台请求了好几次时会估高。'
+        + '实际在两个数之间。',
+    )
+  }
+  if (stale.checkSampleInterval > 1) {
+    lines.push(
+      '',
+      `更新清单的请求这段时间也是抽样记的（最多每 ${Math.round(stale.checkSampleInterval)} 次记 1 次），「没下、查过更新」只能当下限。`,
+    )
+  }
+  const columns = DOWNLOAD_COLUMNS.flatMap(([, label]) => [`${label} 下过新版`, `${label} 没下、查过更新`])
+  lines.push(
+    '',
+    `| 停在哪个版本 | ${columns.join(' | ')} |`,
+    `|---|${columns.map(() => '---:').join('|')}|`,
+  )
+  for (const [label, counts] of rows) lines.push(`| ${label} | ${cells(counts).join(' | ')} |`)
+  lines.push(`| **合计** | ${cells(total).map((value) => `**${value}**`).join(' | ')} |`)
+  lines.push(
+    '',
+    '- 下过还停着：下了没装上，或者没下完，这里分不开。自动更新下好以后要等退出星芒、或者下次打开时才装，点关闭缩到托盘（Mac 是菜单栏）不算退出。',
+    '- 没下、查过更新：查到了新版却没去下。多半是关了「自动更新」（关了只提示、不下），也可能是查完以后出了错（推测）。',
+    '- 没下、也没见查过：新版出来以后还没轮到查，查的那次没被抽样记下，或者统计开始以前就下好了、在等装'
+      + '（那次下载这里看不到，下好以后也不再查）。只看 1 天这种比上一版发出来以后还短的时段，最后这种会占大头，'
+      + '看这一项要选从上一版发出来以前开始的时段（一般 7 天够）。下面「查更新勤不勤」那句能帮着分。'
+      + '合盖睡着不耽误：Electron 主进程的定时按真实时间走，醒来时已经过了 3 小时的，十几分钟内就会补查（读代码推断）。',
+    '- Mac 的安装包、更新清单和状态文件在同一个地址，读得到状态文件就连得上，Mac「没下过」不是一开始就连不上（下到一半断了的算「下过」）。'
+      + 'Windows 走洛杉矶线路的从 xm-direct.solov.cc 查更新、下安装包，这里看不到，Windows 几列偏低。',
+    '- 想强制更新（抬最低版本）前先看这一节：强制更新只拦打开了窗口的人，拦住时点「立即更新」会当场下载并装上；'
+      + '窗口一直缩着、没去开的照旧停着。',
+  )
+  const cadence = DOWNLOAD_COLUMNS
+    .filter(([id]) => stale.cadence[id].statusReads > 0)
+    .map(([id, label]) => `${label} ${(stale.cadence[id].manifestReads * 100 / stale.cadence[id].statusReads).toFixed(1)} 次`)
+  if (cadence.length) {
+    lines.push(
+      '',
+      `**停着的电脑查更新勤不勤**：没下过新版的停着的电脑，每读 100 次状态文件读了几次更新清单（${cadence.join('、')}，`
+        + `都按抽样倍数折算）。照代码，开着的星芒每 15 分钟读一次状态文件、每 3 小时查一次更新，大约是 ${EXPECTED_CHECKS_PER_100_STATUS_READS} 次。`
+        + '统计开始以前就下好、在等装的电脑也算在这里面（那次下载这里看不到），它们不再查，'
+        + '时段比上一版发出来以后还短时（比如只看 1 天）这个数会低很多，所以这一项也要看从上一版发出来以前开始的时段。'
+        + '那样的时段里还远少于这个数、下面「更新相关的请求有没有被拒」里清单又没怎么被拒，才说明这些电脑开着却没按时查更新，'
+        + '「没下、也没见查过」不是抽样漏记。',
+    )
+  }
+  for (const [id, label] of DOWNLOAD_COLUMNS) {
+    const machines = total[id].downloaded + total[id].missing
+    if (machines > 0 && machines < SMALL_SAMPLE) lines.push(`- ${label} 停在旧版本的电脑不到 ${SMALL_SAMPLE} 台，这一列只能粗看。`)
+  }
+  return lines
+}
+
+// 只写占比：被拒的占这一类请求的几成，被拒的里面各个状态码又占几成。
+function renderFailedRequests(failures) {
+  const lines = ['', '### 更新相关的请求有没有被拒', '']
+  if (!failures) {
+    lines.push('这个套餐的 Cloudflare 统计不能按状态码分，这一项没法算。')
+    return lines
+  }
+  lines.push(
+    '这段时间各类请求里被这边拒掉（状态码 400 以上）的占几成，按请求次数算、不按电脑，都按抽样倍数折算。'
+      + '前面两节只数没被拒的请求：Mac 的更新清单要是被拒得多，「没下、也没见查过」里就有一部分其实查过，只是被拒了。',
+    '',
+    '| 请求 | 被拒的占比 | 被拒的里面最多的状态码 |',
+    '|---|---:|---|',
+  )
+  for (const [id, label] of REQUEST_KINDS) {
+    const kind = failures[id]
+    const codes = [...kind.codes]
+      .sort((left, right) => right[1] - left[1] || left[0] - right[0])
+      .slice(0, 3)
+      .map(([code, count]) => `${code}（${formatShare(count, kind.failed)}）`)
+    lines.push(`| ${label} | ${formatShare(kind.failed, kind.ok + kind.failed)} | ${codes.join('、') || '-'} |`)
+  }
+  return lines
+}
+
+function renderDownloadSections(downloads) {
+  if (!downloads) return ['', '### 下过新版安装包的电脑后来怎样', '', '这个套餐的 Cloudflare 统计查不到来源 IP、请求路径或小时，这一项没法算。']
+  if (!downloads.followed.length) return ['', '### 下过新版安装包的电脑后来怎样', '', '这段时间没有电脑从这里下过安装包。']
+  const lines = downloads.followed.flatMap((summary) => renderInstallerTable(summary))
+  lines.push(
+    '',
+    '上面几张表都这样读：',
     '',
     '- 「还没装上」里分不出装失败和下好了还没重启。0.2.18 以前的版本要客户自己点「重启安装」才装。',
     '- Windows「没再出现」的，可能是装好后改走洛杉矶线路、从 xm-direct.solov.cc 读了（0.2.18 起），也可能只是关了星芒没再开，这里分不开。',
     '- Mac 的更新不走洛杉矶，「没再出现」就是之后没再开星芒。拿 Mac 这一格当「关了没再开」的大概比例，'
       + 'Windows 那一格多出来的，大致就是装好后改走洛杉矶的（推测）。',
   )
-  for (const [id, label] of columns) {
-    if (totals[id] > 0 && totals[id] < SMALL_SAMPLE) lines.push(`- ${label} 下过的电脑不到 ${SMALL_SAMPLE} 台，这一列只能粗看。`)
+  if (downloads.followed.some((summary) => summary.sampleInterval > 1)) {
+    lines.push('- Cloudflare 这段时间是抽样记录的，一台电脑只下一次的请求可能漏记，这几节的偏差比上面大。')
   }
-  if (downloads.sampleInterval > 1) lines.push('- Cloudflare 这段时间是抽样记录的，一台电脑只下一次的请求可能漏记，这一节的偏差比上面大。')
+  lines.push(...renderStaleSection(downloads.stale), ...renderFailedRequests(downloads.failures))
   return lines
 }
 
@@ -527,7 +909,7 @@ function renderReport(stats, window, limits, days, downloads = null) {
     lines.push('这个套餐的 Cloudflare 统计查不到来源 IP，没法按电脑去重，只有下面按请求算的占比。')
   }
   lines.push(...renderScope(stats))
-  lines.push(...renderInstallerSection(downloads))
+  lines.push(...renderDownloadSections(downloads))
   if (stats.requests.size) {
     lines.push('', '### 按请求算', '', ...renderRequestTable(stats.requests), '')
     lines.push('开着的星芒每 15 分钟读一次，一直不关的电脑分量重，这张表只用来对照。')
@@ -550,7 +932,14 @@ async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl
   const window = planWindow(now, days, limits)
   const pieces = await queryWindow(client, zoneTag, limits, window, statusQuery(limits))
   const installers = installerQuery(limits)
-  const downloads = installers ? summarizeInstallerDownloads(pieces, await queryWindow(client, zoneTag, limits, window, installers)) : null
+  const downloads = installers
+    ? summarizeUpdateDownloads(
+      pieces,
+      await queryWindow(client, zoneTag, limits, window, installers),
+      await queryWindow(client, zoneTag, limits, window, manifestQuery()),
+      limits.withStatus ? await queryWindow(client, zoneTag, limits, window, failedRequestQuery()) : null,
+    )
+    : null
   return renderReport(aggregateStats(pieces, limits.withIp), window, limits, days, downloads)
 }
 
@@ -585,4 +974,6 @@ module.exports = {
   planWindow,
   renderReport,
   summarizeInstallerDownloads,
+  summarizeStaleMachines,
+  summarizeUpdateDownloads,
 }

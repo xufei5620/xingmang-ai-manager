@@ -21,6 +21,10 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
+  // 主进程 extension-command-output.ts 的 withCommandOutput：原话后面接上命令自己说的那一行（Claude Code 2.1 的原话）。
+  gitMissing: { sample: '命令执行失败（退出码 1）：claude（命令输出：Executable not found in $PATH: "git"）', target: 'config' },
+  githubUnreachable: { sample: "命令执行失败（退出码 1）：claude（命令输出：fatal: unable to access 'https://github.com/anthropics/claude-code.git/': Failed to connect to github.com port 443 after 21045 ms: Couldn't connect to server）", target: 'config' },
+  nameTaken: { sample: '命令执行失败（退出码 1）：claude（命令输出：MCP server demo already exists in local config）', target: 'config' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
   // 同一个函数在装着已知打不开的那一版时（codex-desktop-known-issues.ts）。
@@ -55,6 +59,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   configLink: { sample: configLinkRefusalMessage('用户文件夹里的 .claude/settings.json', 'file'), target: 'config' },
   // config-files 写 Key 前的校验（safe-local-data）原话。
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
+  // 授权窗口点了「否」（node-runtime.ts 的 describeNodeInstallFailure 接上 windows-elevation.ts 那句，#1096）。
+  elevationDeclined: { sample: 'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
   configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
@@ -63,7 +69,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
-  // 主进程（system-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
+  // 主进程（system-scan-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
   toolCertOutdatedNode: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.outdatedNode}` },
   toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
@@ -416,6 +422,31 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。')).not.toBe('claudeDesktopInstallFailed')
   })
 
+  // 以前认不出，一长串原话配「操作没有完成」，没有下一步（#1096）。下一步在原话后半截（按账号类型写好的），
+  // 所以标题、正文只说「没装、什么都没改，照下面这句话做」，原话照旧在下面。
+  it('gives a declined or missing administrator approval its own title and keeps the sentence underneath', () => {
+    const standardAdvice = '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+    for (const message of [
+      'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。',
+      `Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
+      `Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。${standardAdvice}`,
+      'Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。',
+      // 装工具时先装 Node.js（runtime-readiness.ts 的 runtimeInstallFailureMessage）。
+      `Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
+      // 主进程以前那句短的（msiexec 自己报 1602）。
+      'Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。',
+      // 桌面端装不上时主进程原样放行的那两句（codex-desktop-install-failure.ts、claude-desktop-install-failure.ts）。
+      '已取消管理员授权，Codex 桌面端安装未开始。重新点击安装即可再次授权。',
+      `未获得管理员权限，Claude Desktop 安装已停止。${standardAdvice}`,
+    ]) {
+      const hint = presentOperationError(message)
+      expect([message, hint?.key]).toEqual([message, 'elevationDeclined'])
+      expect(hint?.title).toBe('没拿到管理员授权')
+      expect(hint?.body).toBe('这次没装，电脑上什么都没改。先照下面这句话做，再点「重试」；还不行点「找客服」。')
+      expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'support', label: '找客服' }])
+    }
+  })
+
   it('puts a failed Claude Desktop install on screen without the class name Electron adds to the rejection', () => {
     const message = buildClaudeDesktopInstallFailureMessage('damaged', { wingetTried: true })
     const failure = operationFailureFrom(new Error(`Error invoking remote method 'external-clients:install': Error: ${message}`), '安装客户端')
@@ -547,7 +578,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('never reassures when the backend says the rollback failed too', () => {
-    // system-service.ts 的 ManagedNpmRollbackError。套上「当前版本不受影响」
+    // cli-install-service.ts 的 ManagedNpmRollbackError。套上「当前版本不受影响」
     // 正好是反的：旧版本已经没了。
     expect(presentOperationError('托管 npm 更新失败，且旧版本回滚失败：SHA-512 完整性校验不一致')).toBeNull()
     expect(presentOperationError('托管 npm 更新失败，且旧版本回滚失败：EPERM: operation not permitted')).toBeNull()

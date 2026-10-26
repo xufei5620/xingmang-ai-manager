@@ -9,8 +9,8 @@ import type { ipcInvokeChannels } from './ipc-contract'
 export type IpcInvokeChannel = (typeof ipcInvokeChannels)[keyof typeof ipcInvokeChannels]
 
 /**
- * 这条通道在运行日志里记什么（I13）。成功那一行只交给 ipc.ts 的两个格式化函数，它们只挑固定字段，
- * 不整个摊开入参和结果；下面几种是在那之上再收紧。
+ * 这条通道在运行日志里记什么（I13）。成功那一行只交给 ipc/handler-log.ts 的两个格式化函数（ipcSuccessMessage、
+ * ipcLogDetail），它们只挑固定字段，不整个摊开入参和结果；下面几种是在那之上再收紧。
  *
  * - normal：成功、失败都记。
  * - quiet-success：成功不记，失败照记。结果或入参带明文密钥、密码、个人信息的（I3），或者太频繁、
@@ -61,7 +61,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'config:open-directory': { label: '工具配置目录打开', log: 'normal', account: 'scoped' },
   'config:configure-external-tool': { log: 'normal', account: 'scoped' },
   // 开机先摆上次结果的那一读（第二个参数 cachedOnly: true）只读本机一个文件，不等账号；
-  // 这一项按入参判断，在 ipc.ts 的 readsCachedExternalClientsOnly，不在这张表里。
+  // 这一项按入参判断，在 ipc/handler-log.ts 的 readsCachedExternalClientsOnly，不在这张表里。
   'external-clients:scan': { label: '外部客户端检测', log: 'normal', account: 'scoped' },
   'external-clients:install': { label: '外部客户端安装', log: 'normal', account: 'none' },
   'external-clients:cancel-install': { label: '外部客户端安装取消', log: 'normal', account: 'none' },
@@ -141,6 +141,11 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'backups:inspect': { label: '配置备份详情读取', log: 'normal', account: 'none' },
   'backups:restore': { label: '配置备份恢复', log: 'normal', account: 'none' },
   'backups:delete': { label: '配置备份删除', log: 'normal', account: 'none' },
+  // 结果里是登录二维码的图片，扫了它就能把别人的微信连到这台：成功不记（I13）。poll 每四十秒一次，
+  // 记了也只会刷屏。失败照记，失败那一行不带入参。
+  'codex-remote:weixin-login-start': { label: '手机遥控微信扫码', log: 'quiet-success', account: 'none' },
+  'codex-remote:weixin-login-poll': { label: '手机遥控微信扫码结果查询', log: 'quiet-success', account: 'none' },
+  'codex-remote:weixin-login-cancel': { label: '手机遥控微信扫码取消', log: 'normal', account: 'none' },
   'mcp:list': { label: 'MCP 列表读取', log: 'normal', account: 'none' },
   'mcp:add': { label: 'MCP 添加', log: 'normal', account: 'none' },
   'mcp:remove': { label: 'MCP 删除', log: 'normal', account: 'none' },
@@ -271,6 +276,15 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat:asset-menu': { log: 'quiet-success', account: 'scoped' },
   'chat:pick-images': { label: '聊天图片选择', log: 'quiet-success', account: 'scoped' },
   'chat:paste-image': { label: '聊天截图粘贴', log: 'quiet-success', account: 'scoped' },
+  // 出视频要几分钟。换账号时 main.ts 先叫停视频服务再等账号工作结束，所以照样能放进账号工作里。
+  'video-studio:plan': { label: '视频剪辑分镜', log: 'normal', account: 'scoped' },
+  'video:generate': { label: 'AI 视频生成', log: 'normal', account: 'scoped' },
+  'video:cancel': { log: 'quiet-success', account: 'scoped' },
+  // 回的是整段视频的字节，拼一次片要读好几段。
+  'video:read-clip': { label: '视频片段读取', log: 'quiet-success', account: 'scoped' },
+  'video-studio:store-export': { label: '视频剪辑成片保存', log: 'normal', account: 'scoped' },
+  'video:open': { label: '视频用播放器打开', log: 'normal', account: 'scoped' },
+  'video:save-as': { label: '视频另存', log: 'normal', account: 'scoped' },
   // Chat history carries whole conversations and autosaves after every edit:
   // a success line would flood the log, and the payload must never reach it
   // (I13). Failures still log, with the Chinese reason only.
@@ -287,4 +301,14 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'diagnostics:open-folder': { label: '检查页打开文件夹', log: 'normal', account: 'none' },
   'diagnostics:fix': { label: '检查页一键处理', log: 'normal', account: 'none' },
   'extensions:choose-directory': { label: '外接工具选择文件夹', log: 'normal', account: 'none' },
+  'codex-remote:get-state': { label: '手机遥控状态读取', log: 'quiet-success', account: 'none' },
+  'codex-remote:set-channel-enabled': { label: '手机遥控开关', log: 'normal', account: 'none' },
+  'codex-remote:choose-workspace': { label: '手机遥控工作文件夹选择', log: 'normal', account: 'none' },
+  // 返回值里带着配对码：只该出现在客户自己眼前的屏幕上，成功不进日志和反馈报告。
+  'codex-remote:start-pairing': { label: '手机遥控开始配对', log: 'quiet-success', account: 'none' },
+  'codex-remote:cancel-pairing': { label: '手机遥控取消配对', log: 'normal', account: 'none' },
+  'codex-remote:unbind': { label: '手机遥控解绑', log: 'normal', account: 'none' },
+  'codex-remote:clear-credentials': { label: '手机遥控清除凭据', log: 'normal', account: 'none' },
+  // 入参是飞书 App Secret（I3）：入参从构造上进不了日志，成功照记一行。
+  'codex-remote:save-feishu-credentials': { label: '手机遥控保存飞书凭据', log: 'secret-input', account: 'none' },
 }

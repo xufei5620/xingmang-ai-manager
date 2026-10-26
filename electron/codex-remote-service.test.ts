@@ -1,0 +1,585 @@
+import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AppServerProcess } from './codex-remote-app-server'
+import type {
+  CodexRemoteSnapshot,
+  RemoteChannelAdapter,
+  RemoteChannelHandlers,
+  RemoteInbound,
+  RemoteOutbound,
+  RemotePeer,
+} from './codex-remote-channel'
+import { CodexRemoteStore } from './codex-remote-store'
+import type { SafeStorageLike } from './account-session-store'
+import {
+  buildApprovalRequest,
+  buildThreadStartParams,
+  collectCredentialSecrets,
+  CodexRemoteService,
+  generatePairingCode,
+  isStaleInbound,
+  validateRemoteWorkspace,
+} from './codex-remote-service'
+
+const roots: string[] = []
+const apiKey = 'sk-xingmang-0123456789abcdef'
+const alice: RemotePeer = { channel: 'feishu', userId: 'ou_alice_1234' }
+const mallory: RemotePeer = { channel: 'feishu', userId: 'ou_mallory_9' }
+
+function tempRoot(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xm-remote-service-'))
+  roots.push(root)
+  return root
+}
+
+function fakeStorage(): SafeStorageLike {
+  return {
+    isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => 'keychain',
+    encryptString: (text) => Buffer.from(`enc:${text}`, 'utf8'),
+    decryptString: (buffer) => buffer.toString('utf8').slice(4),
+  }
+}
+
+class FakeCodex extends EventEmitter {
+  readonly stdout = new EventEmitter()
+  readonly stderr = new EventEmitter()
+  readonly written: Array<Record<string, unknown>> = []
+  readonly kills: string[] = []
+  private turns = 0
+  private readonly replies = new Map<string, (message: Record<string, unknown>) => void>()
+  readonly stdin = {
+    write: (chunk: string) => {
+      for (const line of chunk.split('\n').filter(Boolean)) this.receive(JSON.parse(line) as Record<string, unknown>)
+      return true
+    },
+    end: () => undefined,
+    on: () => this,
+  }
+
+  kill(signal?: NodeJS.Signals): boolean {
+    this.kills.push(signal ?? 'SIGTERM')
+    this.emit('exit', null, signal ?? 'SIGTERM')
+    return true
+  }
+
+  send(message: unknown): void {
+    this.stdout.emit('data', `${JSON.stringify(message)}\n`)
+  }
+
+  notify(method: string, params: unknown): void {
+    this.send({ method, params })
+  }
+
+  /** Codex asks the client something; resolves with what the client answered. */
+  ask(method: string, params: unknown, id = `srv-${this.written.length}`): Promise<Record<string, unknown>> {
+    return new Promise((resolve) => {
+      this.replies.set(id, resolve)
+      this.send({ id, method, params })
+    })
+  }
+
+  requests(method: string): Array<Record<string, unknown>> {
+    return this.written.filter((message) => message.method === method)
+  }
+
+  private receive(message: Record<string, unknown>): void {
+    this.written.push(message)
+    const id = message.id
+    if (typeof id === 'string' && !message.method) {
+      this.replies.get(id)?.(message)
+      this.replies.delete(id)
+      return
+    }
+    if (typeof id !== 'string') return
+    if (message.method === 'initialize') this.send({ id, result: { userAgent: 'codex' } })
+    if (message.method === 'thread/start') this.send({ id, result: { thread: { id: 'th-1' } } })
+    if (message.method === 'turn/start') {
+      this.turns += 1
+      this.send({ id, result: { turn: { id: `tu-${this.turns}`, status: 'inProgress' } } })
+    }
+    if (message.method === 'turn/interrupt') this.send({ id, result: {} })
+  }
+}
+
+class FakeChannel implements RemoteChannelAdapter {
+  readonly id = 'feishu' as const
+  readonly capabilities = { approvalButtons: true, maxTextLength: 4000 }
+  handlers: RemoteChannelHandlers | null = null
+  readonly sent: Array<{ peer: RemotePeer; message: RemoteOutbound; replyContext?: string }> = []
+  stopped = 0
+
+  async start(handlers: RemoteChannelHandlers): Promise<void> {
+    this.handlers = handlers
+    handlers.onStatus({ state: 'connected' })
+  }
+
+  async stop(): Promise<void> {
+    this.stopped += 1
+  }
+
+  async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void> {
+    this.sent.push({ peer, message, replyContext })
+  }
+
+  texts(): string[] {
+    return this.sent.map((entry) => (entry.message.kind === 'text' ? entry.message.text : `[approval] ${entry.message.text}`))
+  }
+}
+
+let messageCounter = 0
+const commandRequest = { threadId: 'th-1', turnId: 'tu-1', itemId: 'i1', startedAtMs: 0, environmentId: null, kind: 'command', command: 'npm test', cwd: '/tmp/x' }
+
+function text(peer: RemotePeer, body: string, extra: Partial<RemoteInbound> = {}): RemoteInbound {
+  messageCounter += 1
+  return { kind: 'text', peer, direct: true, messageId: `m-${messageCounter}`, text: body, replyContext: `ctx-${messageCounter}`, ...extra } as RemoteInbound
+}
+
+interface Setup {
+  service: CodexRemoteService
+  channel: FakeChannel
+  channels: FakeChannel[]
+  codex: FakeCodex[]
+  snapshots: CodexRemoteSnapshot[]
+  workspace: string
+  store: CodexRemoteStore
+  logs: string[]
+  unavailable: { reason: string | null }
+}
+
+async function setup(options: { workspace?: boolean; credential?: boolean; codexProblem?: string } = {}): Promise<Setup> {
+  const root = tempRoot()
+  const home = path.join(root, 'home')
+  const workspace = path.join(home, 'projects', 'demo')
+  fs.mkdirSync(workspace, { recursive: true })
+  const store = new CodexRemoteStore(path.join(root, 'data', 'codex-remote'), fakeStorage(), 'darwin')
+  if (options.workspace !== false) await store.updateSettings((settings) => { settings.workspaceDirectory = workspace })
+  if (options.credential !== false) await store.writeCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'feishu-secret-value' }))
+  const channels: FakeChannel[] = []
+  const codex: FakeCodex[] = []
+  const snapshots: CodexRemoteSnapshot[] = []
+  const logs: string[] = []
+  const unavailable = { reason: null as string | null }
+  const service = new CodexRemoteService({
+    store,
+    createChannel: () => {
+      const channel = new FakeChannel()
+      channels.push(channel)
+      return channel
+    },
+    fetch: vi.fn(),
+    appVersion: '0.2.21',
+    homeDirectory: home,
+    platform: 'darwin',
+    log: (_level, event) => { logs.push(event) },
+    randomInt: () => 42,
+    spawnCodex: async () => {
+      const fake = new FakeCodex()
+      codex.push(fake)
+      return fake as unknown as AppServerProcess
+    },
+    readCodexSecrets: async () => [apiKey],
+    inspectAvailability: () => unavailable.reason,
+    checkCodexReady: async () => options.codexProblem ?? null,
+    onStateChanged: (snapshot) => { snapshots.push(snapshot) },
+  })
+  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, unavailable }
+}
+
+async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
+  await s.service.setChannelEnabled('feishu', true)
+  const channel = s.channels[0]
+  await s.service.startPairing('feishu')
+  channel.handlers?.onInbound(text(alice, '000042'))
+  await vi.waitFor(() => expect(channel.texts()).toContain('配对成功。这台电脑上的 Codex 现在只听你的。直接发消息就能让它干活，发「帮助」看能用的指令。'))
+  channel.sent.length = 0
+  return channel
+}
+
+async function prompted(s: Setup, channel: FakeChannel, body = '跑一下测试'): Promise<FakeCodex> {
+  channel.handlers?.onInbound(text(alice, body))
+  await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBeGreaterThan(0))
+  return s.codex[0]
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
+})
+
+describe('codex-remote-service helpers', () => {
+  it('pads pairing codes to six digits', () => {
+    expect(generatePairingCode(() => 42)).toBe('000042')
+    expect(generatePairingCode(() => 999_999)).toBe('999999')
+  })
+
+  it('treats messages sent before the channel opened or long ago as stale', () => {
+    expect(isStaleInbound(1_000_000 - 61_000, 1_000_000, 1_000_000)).toBe(true)
+    expect(isStaleInbound(1_000_000 - 30_000, 1_000_000, 1_000_000)).toBe(false)
+    expect(isStaleInbound(0, 0, 11 * 60_000)).toBe(true)
+  })
+
+  it('starts threads that ask the user before anything outside the safe list runs', () => {
+    expect(buildThreadStartParams('/p')).toMatchObject({
+      cwd: '/p',
+      approvalPolicy: 'untrusted',
+      approvalsReviewer: 'user',
+      sandbox: 'workspace-write',
+    })
+    expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('danger-full-access')
+  })
+
+  it('collects every long string of a channel credential as a secret', () => {
+    expect(collectCredentialSecrets('{"appId":"cli_abcdef12","appSecret":"s3cr3t-value","n":1}')).toEqual(['cli_abcdef12', 's3cr3t-value'])
+    expect(collectCredentialSecrets('plain-token-value')).toEqual(['plain-token-value'])
+    expect(collectCredentialSecrets(null)).toEqual([])
+  })
+
+  it('refuses whole-computer folders as the remote workspace', () => {
+    // These are real folders, so classify them with this machine's path rules: under the
+    // posix rules a C:\ path is not absolute and nothing would be refused.
+    const platform = process.platform
+    const root = tempRoot()
+    const home = path.join(root, 'home')
+    fs.mkdirSync(path.join(home, 'Desktop'), { recursive: true })
+    fs.mkdirSync(path.join(home, 'code'), { recursive: true })
+    expect(() => validateRemoteWorkspace(home, home, platform)).toThrow('用户主目录')
+    expect(() => validateRemoteWorkspace(path.join(home, 'Desktop'), home, platform)).toThrow('桌面')
+    expect(() => validateRemoteWorkspace(path.join(home, 'missing'), home, platform)).toThrow('不存在')
+    expect(() => validateRemoteWorkspace('relative', home, platform)).toThrow()
+    expect(validateRemoteWorkspace(path.join(home, 'code'), home, platform)).toBe(path.join(home, 'code'))
+  })
+
+  it('redacts and shortens what an approval shows', () => {
+    const request = buildApprovalRequest('7', 'command', {
+      command: `curl -H "Authorization: Bearer ${apiKey}" https://example.com`,
+      cwd: '/Users/alice/projects/demo',
+      reason: 'needs network',
+    }, [], { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [apiKey] })
+    expect(request.summary).not.toContain(apiKey)
+    expect(request.cwd).toBe('~/projects/demo')
+    expect(request.reason).toBe('needs network')
+    const files = Array.from({ length: 25 }, (_, index) => `/Users/alice/projects/demo/f${index}.ts`)
+    const change = buildApprovalRequest('8', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
+    expect(change.summary.split('\n')).toHaveLength(21)
+    expect(change.summary).toContain('另外还有 5 个文件')
+  })
+})
+
+describe('codex-remote-service enabling', () => {
+  it('refuses to start without a workspace, a credential, or when the computer cannot host it', async () => {
+    const noWorkspace = await setup({ workspace: false })
+    await expect(noWorkspace.service.setChannelEnabled('feishu', true)).rejects.toThrow('文件夹')
+    const noCredential = await setup({ credential: false })
+    await expect(noCredential.service.setChannelEnabled('feishu', true)).rejects.toThrow('登录')
+    const elevated = await setup()
+    elevated.unavailable.reason = '星芒正以管理员身份运行'
+    await expect(elevated.service.setChannelEnabled('feishu', true)).rejects.toThrow('管理员')
+    expect((await elevated.service.snapshot()).available).toBe(false)
+  })
+
+  it('refuses to start when Codex is not installed on this computer', async () => {
+    const s = await setup({ codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('这台电脑还没装 Codex 命令行工具')
+    expect(s.channels).toHaveLength(0)
+  })
+
+  it('numbers every snapshot so the window can keep the newest one', async () => {
+    const s = await setup()
+    const first = await s.service.snapshot()
+    await s.service.setChannelEnabled('feishu', true)
+    const last = await s.service.snapshot()
+    expect(last.revision).toBeGreaterThan(first.revision)
+    const revisions = s.snapshots.map((snapshot) => snapshot.revision)
+    expect(revisions).toEqual([...revisions].sort((left, right) => left - right))
+  })
+
+  it('does not remember the switch across restarts', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
+    const settings = await s.store.readSettings()
+    expect(JSON.stringify(settings)).not.toContain('enabled')
+  })
+})
+
+describe('codex-remote-service pairing', () => {
+  it('ignores strangers silently and binds whoever sends the code', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    channel.handlers?.onInbound(text(mallory, '帮我删库'))
+    await s.service.startPairing('feishu')
+    expect((await s.service.snapshot()).channels.feishu.pairing?.code).toBe('000042')
+    channel.handlers?.onInbound(text(mallory, '123456'))
+    channel.handlers?.onInbound(text(alice, '000 042'))
+    await vi.waitFor(() => expect(channel.sent).toHaveLength(1))
+    expect(channel.sent[0].peer).toEqual(alice)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.boundPeer).toMatchObject({ userIdTail: '1234' })
+    expect(snapshot.channels.feishu.pairing).toBeNull()
+    // The stranger is still ignored after pairing.
+    channel.handlers?.onInbound(text(mallory, '000042'))
+    channel.handlers?.onInbound(text(mallory, '跑一下 rm -rf'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.sent).toHaveLength(1)
+    expect(s.codex).toHaveLength(0)
+  })
+
+  it('locks pairing after too many wrong codes', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    for (let index = 0; index < 20; index += 1) channel.handlers?.onInbound(text(mallory, String(100000 + index)))
+    await vi.waitFor(async () => expect((await s.service.snapshot()).channels.feishu.pairing).toBeNull())
+    channel.handlers?.onInbound(text(mallory, '000042'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
+  })
+
+  it('drops the code by itself after ten minutes and tells the window', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    await s.service.startPairing('feishu')
+    const shown = s.snapshots.length
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.waitFor(() => expect(s.snapshots.length).toBeGreaterThan(shown))
+    expect(s.snapshots.at(-1)?.channels.feishu.pairing).toBeNull()
+    // A correct code that arrives late binds nobody.
+    s.channels[0].handlers?.onInbound(text(alice, '000042'))
+    await vi.advanceTimersByTimeAsync(20)
+    expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
+    expect(s.channels[0].sent).toHaveLength(0)
+  })
+
+  it('drops group messages and messages from before the channel opened', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    channel.handlers?.onInbound(text(alice, '000042', { direct: false }))
+    channel.handlers?.onInbound(text(alice, '000042', { sentAt: Date.now() - 5 * 60_000 }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
+  })
+})
+
+describe('codex-remote-service turns', () => {
+  it('runs a prompt in the workspace and replies with the redacted final answer', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    expect(codex.requests('thread/start')[0].params).toMatchObject({
+      cwd: s.workspace,
+      approvalPolicy: 'untrusted',
+      approvalsReviewer: 'user',
+      sandbox: 'workspace-write',
+    })
+    expect(codex.requests('turn/start')[0].params).toEqual({
+      threadId: 'th-1',
+      input: [{ type: 'text', text: '跑一下测试', text_elements: [] }],
+    })
+    expect((await s.service.snapshot()).task).toBe('running')
+    codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '先看看', phase: 'commentary' } })
+    codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a2', text: `测试都过了，密钥是 ${apiKey}`, phase: 'final_answer' } })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed', error: null } })
+    await vi.waitFor(() => expect(channel.texts()).toHaveLength(2))
+    expect(channel.texts()[1]).toBe('测试都过了，密钥是 [已隐去]')
+    expect(channel.sent[1].replyContext).toMatch(/^ctx-/)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+  })
+
+  it('keeps one turn at a time and reuses the thread', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(() => expect(channel.texts()).toContain('这一轮做完了，Codex 没有留下文字回复。'))
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    expect(codex.requests('thread/start')).toHaveLength(1)
+  })
+
+  it('stops a running turn on request', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
+    expect(codex.requests('turn/interrupt')[0].params).toEqual({ threadId: 'th-1', turnId: 'tu-1' })
+    await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('现在没有在处理的任务。'))
+  })
+
+  it('reports a failed turn with the redacted reason', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: `401 for key ${apiKey}` } } })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('这一轮没做完：401 for key [已隐去]'))
+  })
+
+  it('tells the phone when Codex dies mid-turn', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.emit('exit', 1, null)
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('意外退出'))
+    channel.handlers?.onInbound(text(alice, '再试一次'))
+    await vi.waitFor(() => expect(s.codex).toHaveLength(2))
+  })
+})
+
+describe('codex-remote-service approvals', () => {
+  it('asks the bound person and answers Codex with plain accept or decline', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    const approval = channel.sent.find((entry) => entry.message.kind === 'approval')?.message
+    expect(approval).toMatchObject({ kind: 'approval', request: { approvalId: '1', kind: 'command', summary: 'npm test' } })
+    expect((await s.service.snapshot()).task).toBe('waiting-approval')
+    channel.handlers?.onInbound(text(alice, '同意'))
+    expect((await answer).result).toEqual({ decision: 'accept' })
+    await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
+
+    const second = codex.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'i2', startedAtMs: 0 })
+    await vi.waitFor(() => expect(channel.sent.filter((entry) => entry.message.kind === 'approval')).toHaveLength(2))
+    channel.handlers?.onInbound({ kind: 'approval', peer: alice, direct: true, approvalId: '2', decision: 'decline' })
+    expect((await second).result).toEqual({ decision: 'decline' })
+  })
+
+  it('asks which one when several are waiting and rejects unknown numbers', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const first = codex.ask('item/commandExecution/requestApproval', commandRequest, 'a')
+    const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' }, 'b')
+    await vi.waitFor(() => expect(channel.sent.filter((entry) => entry.message.kind === 'approval')).toHaveLength(2))
+    channel.handlers?.onInbound(text(alice, '同意'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('现在有 2 条等你同意（1、2）'))
+    channel.handlers?.onInbound(text(alice, '同意 9'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('没有第 9 条等你同意的操作。'))
+    channel.handlers?.onInbound(text(alice, '拒绝 2'))
+    channel.handlers?.onInbound(text(alice, '同意 1'))
+    expect((await first).result).toEqual({ decision: 'accept' })
+    expect((await second).result).toEqual({ decision: 'decline' })
+  })
+
+  it('ignores approvals from anyone but the bound person', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    channel.handlers?.onInbound({ kind: 'approval', peer: mallory, direct: true, approvalId: '1', decision: 'accept' })
+    channel.handlers?.onInbound(text(mallory, '同意 1'))
+    channel.handlers?.onInbound({ kind: 'approval', peer: alice, direct: false, approvalId: '1', decision: 'accept' })
+    channel.handlers?.onInbound(text(alice, '停止'))
+    expect((await answer).result).toEqual({ decision: 'decline' })
+  })
+
+  it('declines by itself after ten minutes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect((await answer).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
+  })
+
+  it('declines approvals for threads it did not start and grants nothing by default', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect((await codex.ask('item/commandExecution/requestApproval', { ...commandRequest, threadId: 'other' })).result)
+      .toEqual({ decision: 'decline' })
+    expect((await codex.ask('item/tool/requestUserInput', { threadId: 'th-1', questions: [] })).result).toEqual({ answers: {} })
+    expect((await codex.ask('mcpServer/elicitation/request', {})).result).toMatchObject({ action: 'decline' })
+    expect((await codex.ask('account/chatgptAuthTokens/refresh', {})).error).toMatchObject({ code: -32601 })
+    const permissions = codex.ask('item/permissions/requestApproval', {
+      threadId: 'th-1', turnId: 'tu-1', itemId: 'p', cwd: '/tmp', reason: null, startedAtMs: 0, environmentId: null,
+      permissions: { network: { enabled: true }, fileSystem: null },
+    })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('联网'))
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await permissions).result).toEqual({ permissions: {}, scope: 'turn' })
+  })
+})
+
+describe('codex-remote-service lifecycle', () => {
+  it('says goodbye and stops everything when switched off on the computer', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    await s.service.setChannelEnabled('feishu', false)
+    expect(channel.texts()).toContain('手机遥控已在电脑上关闭。')
+    expect(channel.stopped).toBe(1)
+    expect(codex.kills).toContain('SIGTERM')
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  it('closes itself after four idle hours', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
+    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  it('keeps the binding when the same account logs in again and drops it for a different one', async () => {
+    const s = await setup()
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'x'.repeat(16) }), 'cli_abcdef')
+    await enabledAndPaired(s)
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
+    expect((await s.service.snapshot()).channels.feishu.boundPeer).not.toBeNull()
+    expect(s.channels).toHaveLength(2)
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_other1', appSecret: 'z'.repeat(16) }), 'cli_other1')
+    expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
+    await s.service.saveChannelCredential('feishu', null, null)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu).toMatchObject({ hasCredential: false, accountLabel: null, enabled: false })
+  })
+
+  it('drops what is waiting, stops the channel and Codex, and stays off when the manager quits', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    void codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await s.service.startPairing('feishu')
+    s.service.dispose()
+    // Codex itself is killed, so the waiting command can never run; nothing was ever accepted.
+    await vi.waitFor(() => expect(codex.kills.length).toBeGreaterThan(0))
+    await vi.waitFor(() => expect(channel.stopped).toBeGreaterThan(0))
+    expect(codex.written.some((message) => JSON.stringify(message.result ?? null).includes('accept'))).toBe(false)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot).toMatchObject({ pendingApprovals: 0, task: 'idle' })
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: false, pairing: null })
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('星芒正在退出。')
+  })
+
+  it('hands channels the same dependencies the login flow uses', async () => {
+    const s = await setup()
+    const deps = s.service.channelDependencies('feishu')
+    expect(deps.appVersion).toBe('0.2.21')
+    expect(await deps.readCredential()).toContain('feishu-secret-value')
+    deps.log('info', 'probe')
+    expect(s.logs).toContain('feishu.probe')
+  })
+})

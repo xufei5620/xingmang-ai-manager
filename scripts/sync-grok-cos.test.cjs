@@ -4,6 +4,8 @@ const { createHash } = require('node:crypto')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
+const { Readable, Writable } = require('node:stream')
+const { fetchText, safeSyncFailure } = require('./cos-sync-utils.cjs')
 const {
   STABLE_URLS, LATEST_KEY, CONTENT_TYPE, VERIFICATION, MIN_BINARY_BYTES, MAX_RELEASES, PLATFORMS,
   parseVersion, compareVersions, artifactKey, sourceUrls, readRecommendedGrokVersion, targetVersions, validateLatest, validateSignature,
@@ -190,9 +192,52 @@ test('when x.ai refuses the runner, the stable answer and the binaries come from
   const broken = createFixture()
   broken.stableResponses.set(STABLE_URLS[0], '<html>blocked</html>')
   broken.stableResponses.set(STABLE_URLS[1], 'latest')
-  await assert.rejects(broken.run(), (error) => safeGrokSyncFailure(error).stage === 'source-stable')
+  const events = []
+  await assert.rejects(broken.run({ progress: (event) => events.push(event) }), (error) => {
+    assert.deepEqual(safeGrokSyncFailure(error), { stage: 'source-stable', latestState: 'not-written-by-this-run', failure: { code: 'version-invalid' } })
+    return true
+  })
+  assert.deepEqual(events.filter((event) => event.event === 'source-attempt-failed').map((event) => [event.sourceHost, event.failure.code]),
+    [['x.ai', 'version-invalid'], ['storage.googleapis.com', 'version-invalid']])
   assert.equal(broken.downloads.length, 0)
   assert.equal(broken.pointers.length, 0)
+})
+
+// The stable lookup goes through the real shared transport; only the socket is fake.
+function xaiStable(fixture, answer) {
+  fixture.dependencies.fetchText = function (input) {
+    fixture.stableRequests.push(clone(input))
+    return fetchText(input, { requestImpl(url, options, callback) {
+      const [status, body] = answer(new URL(input.url).hostname)
+      const request = new Writable({ write(chunk, encoding, done) { done() } })
+      request.on('finish', () => {
+        const response = Readable.from([Buffer.from(body)])
+        response.statusCode = status
+        response.headers = {}
+        callback(response)
+      })
+      return request
+    } })
+  }
+}
+
+test('each official host that fails is logged with its own reason, also when the other host answers', async () => {
+  const fixture = createFixture()
+  xaiStable(fixture, (host) => host === 'x.ai' ? [403, 'Access denied SECRET-PAGE'] : [200, '1.0.52\n'])
+  fixture.failingHosts.add('x.ai')
+  const events = []
+  await fixture.run({ progress: (event) => events.push(event) })
+  assert.deepEqual(fixture.latest.stable, { version: '1.0.52', url: STABLE_URLS[1] })
+  const attempts = events.filter((event) => event.event === 'source-attempt-failed')
+  assert.deepEqual(attempts[0], { event: 'source-attempt-failed', stage: 'source-stable', elapsedMs: attempts[0].elapsedMs, sourceHost: 'x.ai',
+    failure: { code: 'http-status', method: 'GET', phase: 'response-headers', status: 403, transferredBytes: 0 } })
+  // The fake download error is a bare exception: its text never reaches the log.
+  assert.deepEqual(attempts.slice(1).map((event) => [event.stage, event.sourceHost, event.failure]),
+    Array(4).fill(['source-download', 'x.ai', { code: 'operation-failed' }]))
+  assert.ok(events.some((event) => event.event === 'stage-complete' && event.stage === 'source-stable'))
+  assert.ok(events.every((event) => event.event !== 'stage-failed'))
+  for (const event of events.filter((item) => item.stage === 'verify-binary')) assert.equal(event.sourceHost, 'storage.googleapis.com')
+  assert.doesNotMatch(JSON.stringify(events), /SECRET|https:/)
 })
 
 test('an unchanged stable with intact objects means no download and only a fresh checkedAt', async () => {
@@ -253,16 +298,19 @@ test('the history keeps stable, the recommendation and the newest older releases
 })
 
 test('binaries without xAI\'s valid signature or for the wrong processor are never uploaded', async () => {
-  for (const [signature, machine, message] of [
-    [{ status: 'NotSigned', subject: null }, null, /Authenticode/],
-    [{ status: 'HashMismatch', subject: SIGNER }, null, /Authenticode/],
-    [{ status: 'Valid', subject: 'CN=Evil LLC, O=Evil LLC' }, null, /X\.AI LLC/],
-    [{ status: 'Valid', subject: 'CN=X.AI LLC Fake, O=Other' }, null, /X\.AI LLC/],
-    [{ status: 'Valid', subject: SIGNER }, null, /X\.AI LLC/],
-    [{ status: 'Valid', subject: X_CORP_SIGNER, issuer: ISSUER }, null, /X Corp\./],
-    [{ status: 'Valid', subject: SIGNER, issuer: X_CORP_ISSUER }, null, /X Corp\./],
-    [{ status: 'Valid', subject: 'CN=X Corp., O=X Corp., L=Austin, S=Texas, C=US', issuer: X_CORP_ISSUER }, null, /X Corp\./],
-    [{ status: 'Valid', subject: SIGNER, issuer: ISSUER }, 0x14c, /处理器架构/],
+  const evilSigner = 'CN=Evil LLC, O=Evil LLC'
+  const austinSigner = 'CN=X Corp., O=X Corp., L=Austin, S=Texas, C=US'
+  for (const [signature, machine, message, failure] of [
+    [{ status: 'NotSigned', subject: null }, null, /Authenticode/, { code: 'package-signature-invalid', observed: { signatureStatus: 'NotSigned' } }],
+    [{ status: 'HashMismatch', subject: SIGNER }, null, /Authenticode/, { code: 'package-signature-invalid', observed: { signatureStatus: 'HashMismatch', signerSubject: SIGNER } }],
+    [{ status: 'Valid', subject: evilSigner }, null, /X\.AI LLC/, { code: 'package-signer-mismatch', observed: { signatureStatus: 'Valid', signerSubject: evilSigner } }],
+    [{ status: 'Valid', subject: 'CN=X.AI LLC Fake, O=Other' }, null, /X\.AI LLC/, { code: 'package-signer-mismatch', observed: { signatureStatus: 'Valid', signerSubject: 'CN=X.AI LLC Fake, O=Other' } }],
+    [{ status: 'Valid', subject: SIGNER }, null, /X\.AI LLC/, { code: 'package-signer-mismatch', observed: { signatureStatus: 'Valid', signerSubject: SIGNER } }],
+    [{ status: 'Valid', subject: X_CORP_SIGNER, issuer: ISSUER }, null, /X Corp\./, { code: 'package-signer-mismatch', observed: { signatureStatus: 'Valid', signerSubject: X_CORP_SIGNER, signerIssuer: ISSUER } }],
+    [{ status: 'Valid', subject: SIGNER, issuer: X_CORP_ISSUER }, null, /X Corp\./, { code: 'package-signer-mismatch', observed: { signatureStatus: 'Valid', signerSubject: SIGNER, signerIssuer: X_CORP_ISSUER } }],
+    [{ status: 'Valid', subject: austinSigner, issuer: X_CORP_ISSUER }, null, /X Corp\./, { code: 'package-signer-mismatch', observed: { signatureStatus: 'Valid', signerSubject: austinSigner, signerIssuer: X_CORP_ISSUER } }],
+    [{ status: 'Valid', subject: SIGNER, issuer: ISSUER }, 0x14c, /处理器架构/, { code: 'package-identity-mismatch', observed: { packageArchitecture: '0x014c' } }],
+    [{ status: 'Valid', subject: SIGNER, issuer: ISSUER }, 0xaa64, /处理器架构/, { code: 'package-identity-mismatch', observed: { packageArchitecture: 'arm64' } }],
   ]) {
     const fixture = createFixture()
     fixture.signature = signature
@@ -273,9 +321,12 @@ test('binaries without xAI\'s valid signature or for the wrong processor are nev
       const diagnostic = safeGrokSyncFailure(error)
       assert.equal(diagnostic.stage, 'verify-binary')
       assert.equal(diagnostic.platformId, 'windows-x64')
+      assert.equal(diagnostic.sourceHost, 'x.ai')
       assert.equal(diagnostic.latestState, 'not-written-by-this-run')
+      assert.deepEqual(diagnostic.failure, failure)
       return true
     })
+    assert.deepEqual(events.find((event) => event.event === 'stage-failed').diagnostic.failure, failure)
     assert.equal(fixture.publications.length, 0)
     assert.equal(fixture.pointers.length, 0)
     assert.equal(fixture.removed.length, 1)
@@ -303,8 +354,23 @@ test('a stable signed by X Corp. and a recommendation signed by X.AI LLC are bot
 test('a pointer changed by another run stops the write; a cleanup failure never hides the first error', async () => {
   const fixture = createFixture()
   fixture.readOverride = (reads) => reads === 1 ? null : { changed: true }
-  await assert.rejects(fixture.run(), (error) => safeGrokSyncFailure(error).stage === 'cos-recheck-latest')
+  await assert.rejects(fixture.run(), (error) => {
+    assert.deepEqual(safeGrokSyncFailure(error), { stage: 'cos-recheck-latest', latestState: 'not-written-by-this-run', failure: { code: 'cos-index-invalid' } })
+    return true
+  })
   assert.equal(fixture.pointers.length, 0)
+
+  const raced = createFixture()
+  await raced.run()
+  const theirs = { ...clone(raced.latest), generatedAt: '2026-10-14T17:00:00.000Z' }
+  raced.pointers.length = 0
+  raced.reads = 0
+  raced.readOverride = (reads) => reads === 2 ? raced.latest : theirs
+  await assert.rejects(raced.run(), (error) => {
+    assert.deepEqual(safeGrokSyncFailure(error), { stage: 'cos-recheck-latest', latestState: 'not-written-by-this-run', failure: { code: 'cos-index-changed' } })
+    return true
+  })
+  assert.equal(raced.pointers.length, 0)
 
   const failing = createFixture()
   failing.publicationError = true
@@ -340,13 +406,16 @@ test('an existing pointer must describe this bucket and the exact object layout'
   ]) {
     const value = clone(good)
     mutate(value)
-    assert.throws(() => validateLatest(value, fixture.store.publicUrl))
+    assert.throws(() => validateLatest(value, fixture.store.publicUrl), (error) => safeSyncFailure(error).code === 'cos-index-invalid')
   }
   const elsewhere = createFixture()
   const moved = clone(good)
   moved.releases[0].files[0].url = `https://other-bucket.cos.ap-shanghai.myqcloud.com/${moved.releases[0].files[0].key}`
   elsewhere.latest = moved
-  await assert.rejects(elsewhere.run(), (error) => safeGrokSyncFailure(error).stage === 'cos-read-latest')
+  await assert.rejects(elsewhere.run(), (error) => {
+    assert.deepEqual(safeGrokSyncFailure(error), { stage: 'cos-read-latest', latestState: 'not-written-by-this-run', failure: { code: 'cos-index-invalid' } })
+    return true
+  })
   assert.equal(elsewhere.downloads.length, 0)
 })
 
@@ -377,7 +446,7 @@ test('the PE header check reads the machine field without running the file', asy
       ['missing.exe', pe(0x8664, { signature: 0x12345678 })],
     ]) {
       await fs.writeFile(path.join(directory, name), body)
-      await assert.rejects(readPeMachine(path.join(directory, name)))
+      await assert.rejects(readPeMachine(path.join(directory, name)), (error) => safeSyncFailure(error).code === 'package-format-invalid')
     }
   } finally {
     await fs.rm(directory, { recursive: true, force: true })
@@ -385,7 +454,11 @@ test('the PE header check reads the machine field without running the file', asy
 })
 
 test('the signature probe uses the fixed Windows PowerShell with a minimal environment', async () => {
-  await assert.rejects(inspectSignature('C:\\work\\grok.exe', os.tmpdir(), async function () { throw new Error('not reached') }, 'linux'), /Windows runner/)
+  await assert.rejects(inspectSignature('C:\\work\\grok.exe', os.tmpdir(), async function () { throw new Error('not reached') }, 'linux'), (error) => {
+    assert.match(error.message, /Windows runner/)
+    assert.deepEqual(safeSyncFailure(error), { code: 'inspector-unavailable' })
+    return true
+  })
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-signature-test-'))
   try {
     const calls = []
@@ -400,8 +473,19 @@ test('the signature probe uses the fixed Windows PowerShell with a minimal envir
     assert.deepEqual(Object.keys(calls[0].options.env).sort(), ['PSModulePath', 'SystemRoot', 'TEMP', 'TMP', 'WINDIR'])
     assert.match(await fs.readFile(calls[0].args[6], 'utf8'), /Get-AuthenticodeSignature -LiteralPath \$FilePath/)
     assert.match(await fs.readFile(calls[0].args[6], 'utf8'), /issuer=if\(\$signature\.SignerCertificate\)\{\[string\]\$signature\.SignerCertificate\.Issuer\}/)
-    await assert.rejects(inspectSignature(path.join(directory, 'grok.exe'), directory, async function () { return { stdout: 'not json' } }, 'win32'), /无法解析/)
-    await assert.rejects(inspectSignature(path.join(directory, 'grok.exe'), directory, async function () { throw new Error('SECRET') }, 'win32'), /签名检查失败/)
+    await assert.rejects(inspectSignature(path.join(directory, 'grok.exe'), directory, async function () { return { stdout: 'not json' } }, 'win32'), (error) => {
+      assert.match(error.message, /无法解析/)
+      assert.deepEqual(safeSyncFailure(error), { code: 'inspection-unparsable' })
+      return true
+    })
+    await assert.rejects(inspectSignature(path.join(directory, 'grok.exe'), directory, async function () {
+      throw Object.assign(new Error('Command failed: SECRET'), { code: 1, killed: false, stdout: 'SECRET', stderr: 'SECRET' })
+    }, 'win32'), (error) => {
+      assert.match(error.message, /签名检查失败/)
+      // Only how PowerShell ended is kept, never what it printed.
+      assert.deepEqual(safeSyncFailure(error), { code: 'inspector-failed', observed: { exitCode: 1, timedOut: false } })
+      return true
+    })
   } finally {
     await fs.rm(directory, { recursive: true, force: true })
   }
@@ -413,7 +497,7 @@ test('runtime temp directories are created under the real temp root and only the
   try {
     assert.equal(path.dirname(directory), await fs.realpath(os.tmpdir()))
     assert.match(path.basename(directory), /^xingmang-grok-cos-/)
-    await assert.rejects(runtime.removeWorkDirectory(path.join(directory, 'nested')), /拒绝删除/)
+    await assert.rejects(runtime.removeWorkDirectory(path.join(directory, 'nested')), (error) => /拒绝删除/.test(error.message) && safeSyncFailure(error).code === 'temp-path-rejected')
     await assert.rejects(runtime.removeWorkDirectory(path.join(path.dirname(directory), 'unrelated')), /拒绝删除/)
   } finally {
     await runtime.removeWorkDirectory(directory)

@@ -159,9 +159,9 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 | 文件 | 说明 |
 |---|---|
-| `electron/system-service.ts` | 全仓最大的文件；Codex 桌面端部分已按 #34 搬入 `codex-desktop-service.ts` |
+| `electron/system-service.ts` / `system-service-context.ts` | 系统服务的门面和各簇共用的上下文；各簇已按 #1070 搬进各自的 `*-service.ts`（其中 `config-save-service.ts` 最大），Codex 桌面端早先按 #34 搬入 `codex-desktop-service.ts` |
 | `electron/config-files.ts` / `main.ts` / `new-api-client.ts` | 主进程里另外几个大文件，很多改动都会碰到 |
-| `src/renderer-v2/pages-management.tsx` / `pages-maintenance.tsx` / `pages-account.tsx` / `App.tsx` | v2 界面的大文件 |
+| `src/renderer-v2/pages-account.tsx` / `features/extensions/ExtensionsPage.tsx` / `features/settings/SettingsPage.tsx` / `App.tsx` | v2 界面的大文件（`pages-maintenance.tsx`、`pages-management.tsx` 已按 #1070 一页一个文件拆开，只做转出） |
 | `src/styles.css` / `src/App.tsx` | legacy 的两个巨型文件，已冻结（§4.1 ③），只在安全修复时会碰 |
 
 **分配任务时，尽量不要让两个 agent 同时改同一个热点文件。**

@@ -1,4 +1,6 @@
 import { AccountPage } from './pages-account'
+import { accountSiteId, sessionScope } from './account-context'
+import { VideoStudioPage } from './features/video-studio'
 import { ExtensionsPage, SessionsPage } from './pages-management'
 import { FeaturedPage } from './pages-featured'
 import {
@@ -48,6 +50,8 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
   /** 装好的命令行工具：扩展三页用它挑默认显示哪个，记录页用它把没装的那家「接着聊」按灰；缺省 = 默认 Claude、不按灰（旧行为）。 */
   installedProviders?: readonly string[]
+  /** 装没装 Codex 桌面端：只装了它时，扩展几页和精选照样替 Codex 加外接工具和技能；缺省 = 当没装（旧行为）。 */
+  codexDesktopInstalled?: boolean
   /** 订阅开通后把用得上它的工具换过去；缺省 = 不换（旧行为）。 */
   onSubscriptionActivated?: Parameters<typeof AccountPage>[0]['onSubscriptionActivated']
   onSubscriptionPurchased?: () => void
@@ -74,6 +78,7 @@ export function BusinessPage({
   onToolConfigSaved,
   toolConfigConfirmed,
   installedProviders,
+  codexDesktopInstalled,
   onSubscriptionActivated,
   onSubscriptionPurchased,
   onAccountTabChange,
@@ -113,17 +118,23 @@ export function BusinessPage({
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'featured')
-    return <FeaturedPage api={api} installedProviders={installedProviders} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} active={actions.active} />
+    return <FeaturedPage api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
+    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenTutorial={actions.navigate ? (section) => actions.navigate?.('tutorial', section) : undefined} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
+    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'plugins')
-    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
+    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
+  if (page === 'video') {
+    const site = accountSession ? accountSiteId(accountSession) : 'solov'
+    const access = !accountSession?.authenticated ? 'guest' : site === 'solov-api' ? 'unsupported' : 'ready'
+    return <VideoStudioPage bridge={api} accountScope={accountSession ? sessionScope(accountSession) : 'guest'} site={site} access={access} active={actions.active}
+      onLogin={actions.openLogin ? () => actions.openLogin?.() : undefined} onOpenAccount={actions.navigate ? (tab) => actions.navigate?.('account', tab) : undefined} />
+  }
   return null
 }
 

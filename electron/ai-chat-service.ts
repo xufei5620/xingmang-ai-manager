@@ -636,6 +636,9 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
   const baseUrl = validateBaseUrl(options.baseUrl ?? 'https://xm.solov.cc')
   const endpoint = new URL(AI_CHAT_ENDPOINTS.chatCompletions.replace(/^\//, ''), baseUrl)
   const active = new Map<string, ActiveRequest>()
+  // completeOnce 没有窗口、不进 active；换账号、退出登录时 cancelAll 照样要把它们停下，
+  // 不然换账号得等一段写到一半的回答（视频剪辑的分镜、画布的文字节点）写完。
+  const onceControllers = new Set<AbortController>()
   const idleWaiters = new Set<() => void>()
   let disposed = false
 
@@ -945,6 +948,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     }
     if (input.signal?.aborted) throw new Error('已取消')
     input.signal?.addEventListener('abort', onAbort, { once: true })
+    controller.signal.addEventListener('abort', () => { void reader?.cancel().catch(() => undefined) }, { once: true })
+    onceControllers.add(controller)
     // 与流式聊天同一套三道时限：等响应头、两次收到数据之间、总时长。只有总时长时，
     // 放宽到半小时后一个不出声的连接会把画布节点挂住半小时。
     let timedOut: 'connection-timeout' | StreamTimeoutCode | null = null
@@ -1055,6 +1060,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       clock.clearTimeout(totalTimer)
       if (stageTimer !== null) clock.clearTimeout(stageTimer)
       input.signal?.removeEventListener('abort', onAbort)
+      onceControllers.delete(controller)
     }
   }
 
@@ -1151,7 +1157,13 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
   }
 
   function cancelAll(): number {
-    return cancelWhere(() => true)
+    let canceled = 0
+    for (const controller of [...onceControllers]) {
+      if (controller.signal.aborted) continue
+      controller.abort()
+      canceled += 1
+    }
+    return canceled + cancelWhere(() => true)
   }
 
   function whenIdle(): Promise<void> {

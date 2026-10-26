@@ -9,6 +9,8 @@
  * - 降级挑「这一轮探测通过、优先级最高」的线路，比当前高的也算（在 CF 上 CF 坏了、洛杉矶已经好了就
  *   直接回洛杉矶）。目标这一轮没探测通过不切；全都不通不改配置，只出提示。
  * - 两次切换至少隔 5 分钟，开机那一次除外。
+ * - 全新安装（这台电脑上工具线路、应用线路都还没有结论）：洛杉矶只是没查过的默认值。第一次没通就去查 CF，
+ *   CF 通了马上切，不等三轮；CF 也不通照原来的节奏接着查。查出结论以前不落盘（#963）。
  * - 回升带退避：7 天内从这条线路因故障降下来的次数决定冷却期（0 / 1 / 6 / 24 小时，墙钟，落盘），
  *   冷却期满每 2 分钟查一次，连续 6 次通才切回。7 天内没失败过的，开机 30 秒内 3 次全通就切回。
  *   退出时不做回升。
@@ -24,6 +26,7 @@ import { scheduleTimeout } from './schedule-timeout'
 import { toolPathFailureCounted, toolPathTlsRejected, type ToolPathCertificate, type ToolPathFailureKind } from './tool-path-probe'
 import type { RelayRouteConclusions } from './relay-route-controller'
 import type { RelayEndpointId, RelayRoutePreference } from './relay-sites'
+import { isRecord } from './input-guards'
 
 /** 工具线路的全部候选，按优先级。direct-hk 只在这里出现：不进 RelayEndpointId，设置、IPC、落盘都不认它。 */
 export const toolRouteLineOrder = ['direct', 'direct-hk', 'primary'] as const
@@ -78,8 +81,12 @@ export interface ToolRouteChange {
   at: number
 }
 
-/** 所有候选线路都不通时，按什么原因提示（需求 5.1.5 第 5 条）。 */
-export type ToolRouteOutageReason = 'reset' | 'certificate' | 'dns' | 'unreachable'
+/**
+ * 所有候选线路都不通时，按什么原因提示（需求 5.1.5 第 5 条）。hijack：当前线路判成了劫持（地址被指到别处、
+ * 证书也不对），别的线路又没通。这是电脑用的 DNS 给了假地址，提示里要让客户改 DNS，光说「换个网络」不够
+ * （10-25 客户 Mac：用的 114 时好时坏，两条线路的地址都给错过，连到同一台发自签证书的冒充机）。
+ */
+export type ToolRouteOutageReason = 'reset' | 'certificate' | 'dns' | 'unreachable' | 'hijack'
 
 export interface ToolRouteStoredState {
   line: RelayEndpointId
@@ -235,6 +242,10 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
   let state: ToolRouteStoredState = stored?.state ?? { line: 'direct', failures: {}, notices: {} }
   const line0: RelayEndpointId = automatic ? state.line : dependencies.preference === 'direct' ? 'direct' : 'primary'
 
+  // 全新安装、还没查出结论：洛杉矶是没查过的默认值，三轮的等待防的是在两条都查过的线路之间来回切，
+  // 这里没有可来回切的对象，只剩代价——新用户这会儿正登录、写工具配置（#963）。
+  let unconcluded = stored?.unconcluded === true
+
   // 每次换线 +1：换线前发出去、换线后才回来的探测结果一律作废。
   let epoch = 0
   let current = line0
@@ -252,13 +263,13 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
 
   // 开机初值：上次存下的工具线路；没有（升级后第一次运行）就取应用线路存下的星芒账号结论，读不到才用
   // 洛杉矶。应用线路 7 天内因为没通退到 CF 的，给洛杉矶记一次失败，免得刚退下来又被拉回去。
-  function loadInitialState(): { state: ToolRouteStoredState; firstRun: boolean } {
+  function loadInitialState(): { state: ToolRouteStoredState; firstRun: boolean; unconcluded: boolean } {
     let saved: ToolRouteStoredState | null = null
     try { saved = dependencies.readState() } catch { saved = null }
     if (saved) {
       const restored: ToolRouteStoredState = { line: saved.line, failures: { ...saved.failures }, notices: { ...saved.notices } }
       if (saved.lastChange) restored.lastChange = { ...saved.lastChange }
-      return { state: restored, firstRun: false }
+      return { state: restored, firstRun: false, unconcluded: false }
     }
     let legacy: RelayRouteConclusions | null = null
     try { legacy = dependencies.readLegacyConclusions?.() ?? null } catch { legacy = null }
@@ -269,7 +280,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     if (change && (change.reason === 'health-failed' || change.reason === 'line-down') && change.from === 'direct' && change.at <= at && at - change.at < toolRouteFailureWindowMs) {
       failures.direct = [change.at]
     }
-    return { state: { line, failures, notices: {} }, firstRun: true }
+    return { state: { line, failures, notices: {} }, firstRun: true, unconcluded: legacy?.lines.solov === undefined }
   }
 
   function snapshot(): ToolRouteSnapshot {
@@ -425,6 +436,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     clearTransient()
     current = target
     switchedAt = at
+    unconcluded = false
     const change: ToolRouteChange = { from, to: target, reason, ...(triggerPattern.test(trigger) ? { trigger } : {}), at }
     state = { ...state, line: target, lastChange: change }
     log('info', 'relay.route.changed', target === 'direct' ? '工具线路改走线路2' : '工具线路改走线路1', {
@@ -469,6 +481,10 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
       // 通了，或者慢但有进展（不算失败）：这一轮结束。
       roundBusy = false
       round = null
+      if (unconcluded) {
+        unconcluded = false
+        persist()
+      }
       if (result.ok && clearTransient()) emit()
       watch()
       return
@@ -488,7 +504,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
       void prepareDowngrade(active, 'hijack', result)
       return
     }
-    if (active.failures < toolRouteFailureThreshold) {
+    if (!unconcluded && active.failures < toolRouteFailureThreshold) {
       setWatch(toolRouteFailureProbeGapMs, () => { void checkCurrent() })
       return
     }
@@ -566,7 +582,12 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
       return
     }
     roundBusy = false
-    enterOutage(active, failure)
+    // 全新安装没等满三轮就来查 CF 的：CF 也不通（开机还没联网那种），照原来的节奏接着查，先不出提示。
+    if (reason === 'failed' && active.failures < toolRouteFailureThreshold) {
+      setWatch(toolRouteFailureProbeGapMs, () => { void checkCurrent() })
+      return
+    }
+    enterOutage(active, failure, reason === 'hijack')
   }
 
   function applySwitch(active: NonNullable<typeof round>, target: RelayEndpointId, reason: ToolRouteChangeReason): void {
@@ -581,9 +602,9 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     switchTo(target, reason, active.trigger)
   }
 
-  function enterOutage(active: NonNullable<typeof round>, failure: ToolRouteProbeResult): void {
+  function enterOutage(active: NonNullable<typeof round>, failure: ToolRouteProbeResult, hijacked = false): void {
     round = null
-    const reason = outageReason(failure.kind)
+    const reason = hijacked ? 'hijack' : outageReason(failure.kind)
     log('warn', 'relay.route.unreachable', '工具线路的候选这会儿都不通，配置先不改', { line: current, reason, trigger: active.trigger })
     // 服务端切换等够了、CF 也不通：改按三线全挂提示，「服务端正在切换」那一行同时收起。
     const changed = incidentSince !== null || !outage || outage.reason !== reason
@@ -636,7 +657,9 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     setRecovery(toolRouteStartupRecoveryGapMs, () => { void startupRecoveryProbe(attempt + 1) })
   }
 
-  if (stored?.firstRun) {
+  if (stored?.unconcluded) {
+    log('info', 'relay.route.tool-initialized', '第一次定工具线路，这台电脑还没有结论：先走线路2，查过再存', { line: state.line })
+  } else if (stored?.firstRun) {
     log('info', 'relay.route.tool-initialized', '第一次定工具线路，沿用应用线路上次的结论', {
       line: state.line, failures7d: failuresOf('direct').length,
     })
@@ -692,14 +715,10 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
 const stateLabel = '工具线路状态'
 const maxStateBytes = 8 * 1024
 const changeReasons: readonly ToolRouteChangeReason[] = ['failed', 'hijack', 'incident', 'recovered']
-const outageReasons: readonly ToolRouteOutageReason[] = ['reset', 'certificate', 'dns', 'unreachable']
+const outageReasons: readonly ToolRouteOutageReason[] = ['reset', 'certificate', 'dns', 'unreachable', 'hijack']
 
 function isTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function parseChange(value: unknown): ToolRouteChange | undefined {

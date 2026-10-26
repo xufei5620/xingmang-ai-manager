@@ -39,12 +39,18 @@ function Assert-RecoveryJournal($journal, $lease) {
         $lease.owner.pid -cne $journal.owner.pid -or $lease.owner.startedAt -cne $journal.owner.startedAt)) { throw 'lease-journal-mismatch' }
     if ($journal.applied.server -cnotmatch '^http=127\.0\.0\.1:(\d+);https=127\.0\.0\.1:\1$') { throw 'invalid-owned-endpoint' }
     $port = [int]$Matches[1]
-    $canonical = [pscustomobject]@{
-        flags = 3; server = "http=127.0.0.1:$port;https=127.0.0.1:$port"
-        bypass = '<local>;localhost;127.0.0.1;[::1]'; autoConfigUrl = ''
-        registry = [pscustomobject]@{ ProxyEnable = 1; ProxyServer = "http=127.0.0.1:$port;https=127.0.0.1:$port"; ProxyOverride = '<local>;localhost;127.0.0.1;[::1]'; AutoConfigURL = $null }
+    # The bypass list the app writes now, then the one 0.2.19 and earlier wrote:
+    # a journal those versions left behind is still ours to restore.
+    $canonical = $false
+    foreach ($bypass in @('<local>;localhost;127.0.0.1;[::1];10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;169.254.*', '<local>;localhost;127.0.0.1;[::1]')) {
+        $candidate = [pscustomobject]@{
+            flags = 3; server = "http=127.0.0.1:$port;https=127.0.0.1:$port"
+            bypass = $bypass; autoConfigUrl = ''
+            registry = [pscustomobject]@{ ProxyEnable = 1; ProxyServer = "http=127.0.0.1:$port;https=127.0.0.1:$port"; ProxyOverride = $bypass; AutoConfigURL = $null }
+        }
+        if (Same-State $journal.applied $candidate) { $canonical = $true }
     }
-    if ($port -lt 1024 -or $port -gt 65535 -or -not (Same-State $journal.applied $canonical)) { throw 'noncanonical-owned-snapshot' }
+    if ($port -lt 1024 -or $port -gt 65535 -or -not $canonical) { throw 'noncanonical-owned-snapshot' }
     if (Test-ProxyEndpoint $journal.before "127.0.0.1:$port") { throw 'original-proxy-still-uses-owned-port' }
     return $port
 }

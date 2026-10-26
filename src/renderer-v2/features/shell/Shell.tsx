@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type MouseEvent, type ReactNode } from 'react'
 import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
-import { Button, Coachmark, Dialog, Input, Logo, Tooltip, useToast } from '../../ui'
+import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
 import { shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
 import { accountTabs, type SettingsItem } from '../../registry/business'
@@ -91,6 +91,8 @@ interface ShellProps {
   networkRefreshing?: boolean
   /** 游戏加速连着时的线路名；状态栏网络那一项写「加速中 · 线路名」。缺省 = 没在加速。 */
   accelerationLine?: string
+  /** 手机遥控 Codex 有渠道开着：状态栏亮「手机遥控中」，点了去设置里那张卡。缺省 = 没开。 */
+  remoteActive?: boolean
   /** Kept for fixture compatibility; the status bar no longer presents it as a download source. */
   sourceLabel?: string
   installedCount?: number
@@ -114,7 +116,6 @@ const narrowWindowQuery = '(max-width: 1271px)'
 const navEdge = 16
 const commandTitle = '搜索或跳转'
 const commandPlaceholder = '输入页面、工具或操作，比如「充值」'
-const narrowSidebarNote = '窗口较窄时侧栏会自动收起'
 const actionIcons: Partial<Record<string, LucideIcon>> = {
   'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'account:logout': LogOut,
 }
@@ -133,14 +134,35 @@ function useNarrowWindow() {
   return narrow
 }
 
-export function Shell({ activePage, accountTab, account, platform, adapter, theme, environment, balance, version, update, network, networkRefreshing = false, accelerationLine, installedCount, updatableCount = 0, unread, announcementOpen = false, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
+export function Shell({ activePage, accountTab, account, platform, adapter, theme, environment, balance, version, update, network, networkRefreshing = false, accelerationLine, remoteActive = false, installedCount, updatableCount = 0, unread, announcementOpen = false, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
   const { offline } = useOnlineStatus()
-  const toast = useToast()
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
   const narrow = useNarrowWindow()
-  const rail = narrow || collapsed
+  // 窗口窄、侧栏自动收着时点了展开：侧栏照原宽浮在正文上面，正文不挪不缩。这只是临时看一眼，不改你自己记的展开/收起。
+  const [floatingOpen, setFloatingOpen] = useState(false)
+  const floating = narrow && floatingOpen
+  const rail = narrow ? !floating : collapsed
+  const sidebarRef = useRef<HTMLElement>(null)
+  // 窗口拉宽又变窄，侧栏回到收着的窄条，不自己浮出来。
+  useEffect(() => { if (!narrow) setFloatingOpen(false) }, [narrow])
+  // 浮着的时候点外面、按 Esc 就收回去；开着弹窗、或这一下 Esc 已经被别的浮层（抽屉、菜单）用掉了，就不跟着收。
+  useEffect(() => {
+    if (!floating) return
+    function pointerdown(event: PointerEvent) {
+      if (event.target instanceof Node && !sidebarRef.current?.contains(event.target)) setFloatingOpen(false)
+    }
+    function keydown(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing && !document.querySelector('dialog[open]')) setFloatingOpen(false)
+    }
+    document.addEventListener('pointerdown', pointerdown, true)
+    document.addEventListener('keydown', keydown)
+    return () => {
+      document.removeEventListener('pointerdown', pointerdown, true)
+      document.removeEventListener('keydown', keydown)
+    }
+  }, [floating])
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [fade, setFade] = useState<'top' | 'bottom' | 'both' | null>(null)
   // 上面那段导航放不下时自己滚：上下边缘渐隐，看得出还有。
@@ -348,19 +370,27 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     }
   }, [activePage])
   function toggleSidebar() {
-    // 窗口窄时侧栏是自动收着的，点了也展不开：说一声为什么，不改你自己记的展开/收起。
-    if (narrow) { toast.show(narrowSidebarNote); return }
+    // 窗口窄时侧栏是自动收着的：点了浮在正文上展开、再点收回，不改你自己记的展开/收起。
+    if (narrow) { setFloatingOpen((current) => !current); return }
     setCollapsed((current) => {
       writeLocalPreference('xingmang-v2-sidebar', current ? 'expanded' : 'collapsed')
       adapter.setSidebarCollapsed?.(!current)
       return !current
     })
   }
+  // 浮着的侧栏里点了一页或账号卡：去那一页，侧栏收回去，不挡着刚打开的页。
+  function foldAfterPick(event: MouseEvent<HTMLElement>) {
+    if (floating && event.target instanceof Element && event.target.closest('.v2-nav-item, .v2-account-main')) setFloatingOpen(false)
+  }
+  // 用键盘把焦点移出侧栏（交给正文）时也收回去；焦点没去别处（点了窗口外面）就不动。
+  function foldWhenFocusLeaves(event: FocusEvent<HTMLElement>) {
+    if (floating && event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) setFloatingOpen(false)
+  }
   function entryVisible(entry: ShellNavigationEntry) {
     return entry === 'recharge' ? account.supportsBilling !== false : adapter.pageVisible?.(entry) ?? true
   }
   function railTip(label: string, button: ReactNode, key: string) {
-    return rail ? <Tooltip key={key} text={label}>{button}</Tooltip> : button
+    return rail ? <Tooltip key={key} text={label} placement="right">{button}</Tooltip> : button
   }
   function navButton(id: PageId) {
     const definition = pageRegistry.find((page) => page.id === id)!
@@ -397,8 +427,8 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 重启后更新' : ''}` : '版本读取中'
   const tour = shellTour[tourStep]
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
-    <div className={`v2-shell${rail ? ' sidebar-collapsed' : ''}`} data-narrow={narrow || undefined}>
-      <aside className="v2-sidebar" data-testid="sidebar">
+    <div className={`v2-shell${rail ? ' sidebar-collapsed' : ''}${floating ? ' sidebar-floating' : ''}`} data-narrow={narrow || undefined}>
+      <aside ref={sidebarRef} className="v2-sidebar" data-testid="sidebar" onClick={foldAfterPick} onBlur={foldWhenFocusLeaves}>
         <a className="v2-skip-link" href="#v2-main" onClick={skipToContent} data-testid="shell-skip-to-content">跳到正文</a>
         <div className="v2-brand"><Logo kind="micro" height={24} />{!rail && <Logo kind="wordmark" height={17} />}</div>
         <nav className="v2-sidebar-nav" aria-label="主导航">
@@ -463,12 +493,13 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
           {/* 断网时只说「没网」，不再写一句「网络正常」。网络位置的全文（国家和 IP）在悬停说明里。
               加速中点它进「设置 › 网络加速」（v4 原型），不再是刷新网络位置；后台正测着位置时也点得动（#1104 第 10 条）。 */}
           {!offline && <button type="button" className="v2-network-location network-location" data-testid="shell-network-location"
-            aria-label={accelerationLine ? `加速中 · ${accelerationLine}，查看游戏加速` : '刷新网络位置'} aria-busy={networkRefreshing}
+            aria-label={accelerationLine ? `加速中 · ${accelerationLine}，查看网络加速` : '刷新网络位置'} aria-busy={networkRefreshing}
             disabled={accelerationLine ? !adapter.navigate : networkRefreshing || !adapter.refreshNetwork}
-            title={networkRefreshing ? '正在检测当前网络出口' : `${network?.error ?? networkLocationLabel(network)}；${accelerationLine ? '点击查看游戏加速' : '点击刷新网络位置'}`}
+            title={networkRefreshing ? '正在检测当前网络出口' : `${network?.error ?? networkLocationLabel(network)}；${accelerationLine ? '点击查看网络加速' : '点击刷新网络位置'}`}
             onClick={accelerationLine ? () => adapter.navigate?.('acceleration') : adapter.refreshNetwork}>
             <span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : accelerationLine ? `加速中 · ${accelerationLine}` : networkStatusLabel(network)}</span>
           </button>}
+          {remoteActive && <button type="button" className="v2-status-remote" onClick={() => adapter.navigate?.('settings', 'codex-remote')} disabled={!adapter.navigate} title="手机遥控 Codex 开着，点击查看或关闭" data-testid="statusbar-remote"><i className="v2-dot is-accent" />手机遥控中</button>}
           <span className="v2-status-spacer" />
           {installedCount !== undefined && <button type="button" onClick={() => adapter.navigate?.('home')} data-testid="statusbar-tools">已装 {installedCount} 个工具</button>}
           <button type="button" className={`v2-status-version${update ? ' has-update' : ''}`} onClick={adapter.openUpdates} data-testid="statusbar-version">{versionLabel}</button>

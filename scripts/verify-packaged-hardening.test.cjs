@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { createSettledPackage } = require('./asar-fixture.test-support.cjs')
-const { assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, resolvePackagedExecutable } = require('./verify-packaged-hardening.cjs')
+const { SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, resolvePackagedExecutable } = require('./verify-packaged-hardening.cjs')
 
 const currentLaunchBoundary = [
   'WindowsPowerShell',
@@ -14,15 +14,26 @@ const currentLaunchBoundary = [
   '系统 PowerShell 路径必须是绝对路径',
 ].join(' ')
 
-async function createFixture(t, { service, elevation = currentLaunchBoundary, releaseNotes, version = '0.2.9' }) {
+async function createFixture(t, { service, facade = '', context = '', otherFiles = {}, omit = [], elevation = currentLaunchBoundary, releaseNotes, version = '0.2.9' }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-hardening-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   // Pack a sibling directory so the archive is never written inside the tree
   // being crawled.
   const source = path.join(root, 'app')
   await fs.mkdir(path.join(source, 'dist-electron'), { recursive: true })
-  await fs.writeFile(path.join(source, 'dist-electron', 'system-service.js'), service, 'utf8')
-  await fs.writeFile(path.join(source, 'dist-electron', 'windows-elevation.js'), elevation, 'utf8')
+  // 打开 CLI 窗口那一段在 provider-launch-service.js（#1070 第 3 步从 system-service.js 搬过去）。
+  const files = {
+    ...Object.fromEntries(SYSTEM_SERVICE_FILES.map((name) => [name, ''])),
+    'system-service.js': facade,
+    'system-service-context.js': context,
+    ...otherFiles,
+    'provider-launch-service.js': service,
+    'windows-elevation.js': elevation,
+  }
+  for (const name of omit) delete files[name]
+  for (const [name, text] of Object.entries(files)) {
+    await fs.writeFile(path.join(source, 'dist-electron', name), text, 'utf8')
+  }
   if (releaseNotes !== undefined) {
     await fs.writeFile(path.join(source, 'dist-electron', 'release-notes.json'), releaseNotes, 'utf8')
   }
@@ -51,6 +62,80 @@ test('accepts the current absolute-path same-user launch boundary', async (t) =>
     service: 'launchCliPowerShell(command, workspace)',
   })
   assert.doesNotThrow(() => inspectPackagedLaunchBoundary(archive))
+})
+
+test('still rejects a legacy or elevated launch chain left in the facade or the shared context', async (t) => {
+  const inFacade = await createFixture(t, {
+    service: 'launchCliPowerShellForService(command, workspace)',
+    facade: 'wt.exe -w new-tab powershell.exe -NoExit',
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(inFacade), /旧的裸 powershell\.exe/)
+  const inContext = await createFixture(t, {
+    service: 'launchCliPowerShellForService(command, workspace)',
+    context: 'const launchCliPowerShellForService = launchElevatedCliPowerShell',
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(inContext), /管理员提权启动链/)
+})
+
+// 拆家前这两条否定检查读的是整份 system-service.js（#1333）：拆出去的每一份都还在查的范围里。
+test('still rejects a legacy or elevated launch chain moved into any file split out of the system service', async (t) => {
+  const moved = [
+    'cli-install-service.js',
+    'cli-native-package.js',
+    'cli-uninstall-service.js',
+    'config-save-service.js',
+    'external-client-route-service.js',
+    'npm-command-failure.js',
+    'npm-registry.js',
+    'official-credential-service.js',
+    'runtime-install-service.js',
+    'system-scan-service.js',
+    'tool-route-follow-service.js',
+  ]
+  for (const name of moved) {
+    assert.ok(SYSTEM_SERVICE_FILES.includes(name), `门禁的名单里少了 ${name}`)
+    const elevated = await createFixture(t, {
+      service: 'launchCliPowerShell(command, workspace)',
+      otherFiles: { [name]: 'const launch = launchElevatedCliPowerShell' },
+    })
+    assert.throws(() => inspectPackagedLaunchBoundary(elevated), /管理员提权启动链/, name)
+    const runAs = await createFixture(t, {
+      service: 'launchCliPowerShell(command, workspace)',
+      otherFiles: { [name]: 'Start-Process powershell.exe -Verb RunAs' },
+    })
+    assert.throws(() => inspectPackagedLaunchBoundary(runAs), /管理员提权启动链/, name)
+    const terminal = await createFixture(t, {
+      service: 'launchCliPowerShell(command, workspace)',
+      otherFiles: { [name]: 'wt.exe -w new-tab powershell.exe -NoExit' },
+    })
+    assert.throws(() => inspectPackagedLaunchBoundary(terminal), /旧的裸 powershell\.exe/, name)
+  }
+})
+
+test('also scans a service file split out later that the list does not name yet', async (t) => {
+  const archive = await createFixture(t, {
+    service: 'launchCliPowerShell(command, workspace)',
+    otherFiles: { 'future-split-service.js': 'const launch = launchElevatedCliPowerShell' },
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(archive), /管理员提权启动链/)
+})
+
+test('fails instead of scanning less when a named system service file is missing from the package', async (t) => {
+  // 改了名、门禁没跟上时，宁可出包失败，也不能悄悄少查一份。
+  const archive = await createFixture(t, {
+    service: 'launchCliPowerShell(command, workspace)',
+    omit: ['config-save-service.js'],
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(archive), /无法读取打包后的系统服务（config-save-service\.js）/)
+})
+
+test('rejects a packaged launch service that no longer opens CLI windows through launchCliPowerShell', async (t) => {
+  // 只在门面里留着名字不算数：打开窗口那一段搬走以后，要在它现在所在的文件里找到。
+  const archive = await createFixture(t, {
+    service: 'spawn(command, workspace)',
+    facade: 'launchCliPowerShell',
+  })
+  assert.throws(() => inspectPackagedLaunchBoundary(archive), /普通用户 CLI 启动边界/)
 })
 
 test('rejects a packaged elevation module that lost absolute path resolution', async (t) => {

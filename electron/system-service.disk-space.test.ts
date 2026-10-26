@@ -24,6 +24,21 @@ function diskWith(availableBytes: number): DiskSpaceReading {
 }
 
 /**
+ * 放行以后、找 npm 之前，安装会先去 npm 官方源核对版本和 SHA-512。这里替它回一份像样的
+ * 元数据，不出网：原来真的去连 registry.npmjs.org，CI 的机器偶尔 10 秒等不来就报「查询超时」，
+ * 跟磁盘预检无关的一条红。
+ */
+function officialRegistryRelease(): typeof fetch {
+  return async (input) => {
+    const segments = new URL(String(input)).pathname.split('/')
+    const version = decodeURIComponent(segments.pop() ?? '')
+    const name = decodeURIComponent(segments.pop() ?? '')
+    const integrity = `sha512-${Buffer.alloc(64).toString('base64')}`
+    return new Response(JSON.stringify({ name, version: version === 'latest' ? '9.9.9' : version, dist: { integrity } }), { status: 200 })
+  }
+}
+
+/**
  * 预检跑在安装的最前面，所以这个夹具连 npm 都不给：空间够的时候安装照样失败，
  * 但失败的理由必须是别的，这正是「没被磁盘预检拦住」的证据。
  */
@@ -34,6 +49,7 @@ function createInstallFixture(readDiskSpace: () => Promise<DiskSpaceReading | nu
   // Linux 上托管目录跟着 XDG_DATA_HOME 走，不清掉会写进开发机真实的数据目录。
   vi.stubEnv('XDG_DATA_HOME', undefined)
   const target = { isDestroyed: () => false, send: vi.fn() }
+  const registryFetch = vi.fn(officialRegistryRelease())
   const service = createSystemService(
     new AppSettingsStore(path.join(root, 'settings.json'), root),
     {
@@ -41,9 +57,10 @@ function createInstallFixture(readDiskSpace: () => Promise<DiskSpaceReading | nu
       windowsExecutionMode: 'same-user',
       findExecutable: vi.fn(async () => null),
       readDiskSpace: vi.fn(readDiskSpace),
+      registryFetch,
     },
   )
-  return { service, target }
+  return { service, target, registryFetch }
 }
 
 describe('checking free space before a CLI install starts', () => {
@@ -68,6 +85,7 @@ describe('checking free space before a CLI install starts', () => {
 
     // 这个夹具没给 npm，所以安装必然失败——失败在 npm 那一步，正说明磁盘预检放行了。
     expect(String(error)).toContain('未检测到 npm')
+    expect(fixture.registryFetch).toHaveBeenCalledOnce()
   })
 
   it.runIf(process.platform !== 'win32')(
@@ -79,6 +97,7 @@ describe('checking free space before a CLI install starts', () => {
         .catch((reason: unknown) => reason)
 
       expect(String(error)).toContain('未检测到 npm')
+      expect(fixture.registryFetch).toHaveBeenCalledOnce()
     },
   )
 })

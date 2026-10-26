@@ -1175,7 +1175,7 @@ export function Home(props: HomeProps) {
               const today = index === weekDays.length - 1
               const height = weekMax > 0 ? Math.round(day.usd / weekMax * 100) : 0
               return <div key={day.start} className={`v2-home-week-day${today ? ' is-today' : ''}`} title={weekSpendHint(day.start, day.usd)}>
-                <div className="v2-home-week-bar">{today && <em style={{ bottom: `calc(${height}% + 5px)` }}>{money(day.usd)}</em>}<i style={{ height: `${height}%` }} /></div>
+                <div className="v2-home-week-bar"><i style={{ height: `${height}%` }}>{today && <em>{money(day.usd)}</em>}</i></div>
                 <span>{weekSpendLabel(day.start, today)}</span>
               </div>
             })}

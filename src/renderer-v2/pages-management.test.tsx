@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { V2Bridge } from './types'
@@ -10,8 +11,13 @@ import {
   curatedRuntimeCommand,
   curatedVersionText,
   customMcpProblem,
+  extensionNoToolInstalled,
+  extensionShowsUpdatePill,
   extensionToolChoices,
+  extensionToolName,
   extensionToolNames,
+  extensionUpdateStatus,
+  extensionUsableTools,
   groupExtensionItems,
   extensionFailureTarget,
   extensionFormOffersProject,
@@ -20,7 +26,9 @@ import {
   fillCuratedPlaceholders,
   findNativeSkill,
   mcpCommandRuntime,
+  mcpAuthorized,
   mcpHealthView,
+  mcpNeedsLogin,
   mcpNamesInScope,
   preferredExtensionProvider,
   parseCommandArguments,
@@ -39,6 +47,9 @@ import {
   curatedItemsFor,
 } from './registry/curated-extensions'
 import { extensionScopeGroups } from './registry/extensions'
+import * as sessionsPage from './features/sessions/SessionsPage'
+import * as extensionsPage from './features/extensions/ExtensionsPage'
+import * as extensionsCommon from './features/extensions/extensions-common'
 
 function item(id: string) {
   const found = curatedExtensions.find((entry) => entry.id === id)
@@ -412,6 +423,8 @@ function extensionApi() {
     mutateProviderExtension: vi.fn().mockResolvedValue({}),
     toggleSkill: vi.fn().mockResolvedValue({ skills: [] }),
     uninstallSkill: vi.fn().mockResolvedValue({ skills: [], trashPath: '' }),
+    togglePlugin: vi.fn().mockResolvedValue({ plugins: [], marketplaces: [] }),
+    removeMcpServer: vi.fn().mockResolvedValue([]),
   }
 }
 
@@ -482,12 +495,43 @@ describe('extension row actions', () => {
       listItem({ provider: 'grok', kind: 'skill', id: '/cli/builtin/x/SKILL.md', scope: 'builtin' }),
       'disable',
     )
-    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: null }), 'uninstall')
+    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: 'project' }), 'uninstall')
 
     expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
       { provider: 'grok', kind: 'skill', action: 'disable', id: '/cli/builtin/x/SKILL.md' },
-      { provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'docs' },
+      { provider: 'codex', kind: 'mcp', action: 'uninstall', id: 'docs', scope: 'project' },
     ])
+  })
+
+  // 只装了 Codex 桌面端时，删和加一样走 Codex 自己那一边，那边没有 CLI 就直接改 config.toml。
+  it('removes a Codex connection the same way it was added', async () => {
+    const api = extensionApi()
+    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: 'user' }), 'uninstall')
+    await runExtensionAction(api, listItem({ provider: 'codex', kind: 'mcp', id: 'shared', scope: null }), 'uninstall')
+
+    expect(api.removeMcpServer.mock.calls).toEqual([['docs'], ['shared']])
+    expect(api.mutateProviderExtension).not.toHaveBeenCalled()
+  })
+
+  // 外接工具的开关跟着主进程给的 operations 走：Grok 有命令，Codex 由主进程改 config.toml，Claude Code 不给。
+  it('switches a connection where the main process offers it and draws no switch where it does not', async () => {
+    const api = extensionApi()
+    const operations = { install: true, uninstall: true, enable: true, disable: true, update: false }
+    const codex = listItem({ provider: 'codex', kind: 'mcp', id: 'docs', scope: 'user', operations })
+    const grok = listItem({ provider: 'grok', kind: 'mcp', id: 'repo-db', scope: 'project', enabled: false, operations })
+    const claude = listItem({ provider: 'claude', kind: 'mcp', id: 'files', operations: { ...operations, enable: false, disable: false } })
+
+    expect(extensionRowState(codex)).toMatchObject({ enabled: true, canToggle: true })
+    expect(extensionRowState(grok)).toMatchObject({ enabled: false, canToggle: true })
+    expect(extensionRowState(claude)).toMatchObject({ enabled: true, canToggle: false })
+    await runExtensionAction(api, codex, 'disable')
+    await runExtensionAction(api, grok, 'enable')
+
+    expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
+      { provider: 'codex', kind: 'mcp', action: 'disable', id: 'docs', scope: 'user' },
+      { provider: 'grok', kind: 'mcp', action: 'enable', id: 'repo-db', scope: 'project' },
+    ])
+    expect(api.removeMcpServer).not.toHaveBeenCalled()
   })
 
   it('manages a user Codex skill through the native interface and shows it disabled', async () => {
@@ -514,6 +558,52 @@ describe('extension row actions', () => {
     expect(api.toggleSkill).toHaveBeenCalledWith(skill.path, true)
     expect(api.uninstallSkill).toHaveBeenCalledWith(skill.path)
     expect(api.mutateProviderExtension).not.toHaveBeenCalled()
+  })
+
+  it('switches an installed Codex plugin through its own interface, since the Codex CLI has no command for it', async () => {
+    const api = extensionApi()
+    const row = listItem({
+      provider: 'codex',
+      id: 'sample@openai-api-curated',
+      name: 'sample',
+      scope: null,
+      // 主进程给 Codex 插件的启停照旧是 false：旧界面靠它不画开关。
+      operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+    })
+
+    expect(extensionRowState(row)).toEqual({
+      readonly: false,
+      enabled: true,
+      canToggle: true,
+      canUninstall: true,
+      canUpdate: false,
+    })
+    expect(extensionRowState({ ...row, enabled: false })).toMatchObject({ enabled: false, canToggle: true })
+    await runExtensionAction(api, row, 'disable')
+    await runExtensionAction(api, { ...row, enabled: false }, 'enable')
+    await runExtensionAction(api, row, 'uninstall')
+    await runExtensionAction(api, listItem({ provider: 'grok', id: 'demo', enabled: false }), 'enable')
+
+    expect(api.togglePlugin.mock.calls).toEqual([
+      ['sample@openai-api-curated', false],
+      ['sample@openai-api-curated', true],
+    ])
+    expect(api.mutateProviderExtension.mock.calls.map(([input]) => input)).toEqual([
+      { provider: 'codex', kind: 'plugin', action: 'uninstall', id: 'sample@openai-api-curated' },
+      { provider: 'grok', kind: 'plugin', action: 'enable', id: 'demo', scope: 'user' },
+    ])
+  })
+
+  it('offers no switch for a Codex plugin that is only in the catalog', () => {
+    const row = listItem({
+      provider: 'codex',
+      id: 'game-studio@openai-api-curated',
+      installed: false,
+      enabled: false,
+      scope: null,
+      operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
+    })
+    expect(extensionRowState(row).canToggle).toBe(false)
   })
 
   it('keeps only the Codex system skills read-only', () => {
@@ -721,6 +811,99 @@ describe('the 给这些工具用 picker', () => {
   })
 })
 
+// 「扩展改」第 3 条（10-24）：勾选框全是「未安装」时，添加框里那条「还没装能用它的工具」。
+describe('the 还没装能用它的工具 notice', () => {
+  it('names the supported tools when none of them is installed', () => {
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex', 'grok'], [], []))).toBe('Claude Code、Codex CLI、Grok CLI')
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude'], [], []))).toBe('Claude Code')
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex', 'grok'], [], [], true))).toBe('Claude Code、Codex 桌面端、Grok CLI')
+  })
+
+  it('stays quiet once one of them can be picked or already has it', () => {
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex', 'grok'], ['grok'], []))).toBeNull()
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude'], ['claude'], ['claude']))).toBeNull()
+    // 还没检测完：都当装了，不出这一条。
+    expect(extensionNoToolInstalled(extensionToolChoices(['claude', 'codex'], undefined))).toBeNull()
+    expect(extensionNoToolInstalled([])).toBeNull()
+  })
+})
+
+// 「扩展改」第 1 条（10-24）：外接工具没有「更新」按钮，行上不挂「可更新」，详情里说清楚。
+describe('the update state of a connection', () => {
+  const update = { state: 'update-available' as const, reason: '检测到更高的远端版本', checkedAt: '2026-10-24T00:00:00Z' }
+
+  it('keeps the 可更新 pill for skills and plugins only', () => {
+    expect(extensionShowsUpdatePill(listItem({ kind: 'plugin', update }))).toBe(true)
+    expect(extensionShowsUpdatePill(listItem({ kind: 'skill', update }))).toBe(true)
+    expect(extensionShowsUpdatePill(listItem({ kind: 'mcp', update }))).toBe(false)
+    expect(extensionShowsUpdatePill(listItem({ kind: 'plugin' }))).toBe(false)
+  })
+
+  it('tells how a newer connection version is taken instead of offering an update', () => {
+    const npm = listItem({
+      kind: 'mcp',
+      latestVersion: '1.2.0',
+      source: { kind: 'npm', locator: '@acme/mcp', reference: '1.1.0' },
+      update,
+    })
+    expect(extensionUpdateStatus(npm)).toBe(
+      '有新版本 1.2.0。外接工具不在这里更新：精选里加的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。',
+    )
+    // Git 来源的「版本」是一串提交号，不往句子里放。
+    const git = listItem({
+      kind: 'mcp',
+      latestVersion: 'f'.repeat(40),
+      source: { kind: 'git', locator: 'https://github.com/acme/mcp.git', reference: 'a'.repeat(40) },
+      update,
+    })
+    expect(extensionUpdateStatus(git)).toMatch(/^有新版本。外接工具不在这里更新/)
+  })
+
+  it('keeps the main process wording everywhere else', () => {
+    expect(extensionUpdateStatus(listItem({ kind: 'plugin', update }))).toBe('检测到更高的远端版本')
+    expect(extensionUpdateStatus(listItem({ kind: 'mcp', update: { state: 'up-to-date', reason: '已是最新', checkedAt: null } }))).toBe('已是最新')
+    expect(extensionUpdateStatus(listItem({ kind: 'mcp' }))).toBe('尚未检查')
+  })
+})
+
+// 只装了 Codex 桌面端：外接工具和技能照样在 Codex 那一格管，名字写「Codex 桌面端」；插件要 CLI，不算。
+describe('Codex desktop without the Codex CLI', () => {
+  it('counts Codex as usable through the desktop app for connections and skills, not for plugins', () => {
+    expect(extensionUsableTools(['claude'], true)).toEqual({ usable: ['claude', 'codex'], codexViaDesktop: true })
+    expect(extensionUsableTools(['claude'], true, 'plugin')).toEqual({ usable: ['claude'], codexViaDesktop: true })
+    expect(extensionUsableTools(['claude', 'codex'], true)).toEqual({ usable: ['claude', 'codex'], codexViaDesktop: false })
+    expect(extensionUsableTools(['claude'], false)).toEqual({ usable: ['claude'], codexViaDesktop: false })
+    expect(extensionUsableTools(undefined, true)).toEqual({ usable: undefined, codexViaDesktop: false })
+    expect(preferredExtensionProvider(extensionUsableTools([], true).usable)).toBe('codex')
+  })
+
+  it('calls the Codex slot by the desktop app in names and the tool picker', () => {
+    expect(extensionToolName('codex', true)).toBe('Codex 桌面端')
+    expect(extensionToolName('codex')).toBe('Codex CLI')
+    expect(extensionToolName('grok', true)).toBe('Grok CLI')
+    expect(extensionToolNames(['codex', 'claude'], true)).toBe('Claude Code、Codex 桌面端')
+    expect(extensionToolChoices(['claude', 'codex', 'grok'], ['codex'], [], true)).toEqual([
+      { id: 'claude', name: 'Claude Code', note: '未安装' },
+      { id: 'codex', name: 'Codex 桌面端', note: null },
+      { id: 'grok', name: 'Grok CLI', note: '未安装' },
+    ])
+  })
+})
+
+// Codex 0.163.0 `mcp list --json` 报的五个词：只有 not_logged_in 要他去登录，只有 o_auth 能退出授权。
+describe('Codex MCP sign-in states', () => {
+  it('asks for a sign-in only when Codex says nobody signed in', () => {
+    expect(['unknown', 'unsupported', 'not_logged_in', 'bearer_token', 'o_auth'].map((status) => [status, mcpNeedsLogin(status), mcpAuthorized(status)]))
+      .toEqual([
+        ['unknown', false, false],
+        ['unsupported', false, false],
+        ['not_logged_in', true, false],
+        ['bearer_token', false, false],
+        ['o_auth', false, true],
+      ])
+  })
+})
+
 describe('custom connection checks', () => {
   const valid = { name: 'my-database', transport: 'stdio', source: 'npx -y pkg' }
   it('passes a well-formed connection', () => {
@@ -820,3 +1003,38 @@ describe('sessions table', () => {
   })
 })
 
+// #1070 第 11 步把两页搬出去以后 pages-management 只做转出：转出的就是页面文件里那一份；搬出去的文件也不反过来
+// 从它那里 import，免得几个文件绕着圈 import，谁先求值谁拿到一半。
+describe('pages-management as a re-export of the split pages', () => {
+  it('re-exports the very functions the page files define', () => {
+    expect(SessionsPage).toBe(sessionsPage.SessionsPage)
+    expect(sessionToolCounts).toBe(sessionsPage.sessionToolCounts)
+    expect(ExtensionsPage).toBe(extensionsPage.ExtensionsPage)
+    expect(CuratedShelf).toBe(extensionsCommon.CuratedShelf)
+    expect(submitMcpInstall).toBe(extensionsCommon.submitMcpInstall)
+  })
+
+  it('keeps the moved files from importing back out of it', () => {
+    for (const file of ['features/sessions/SessionsPage.tsx', 'features/extensions/ExtensionsPage.tsx', 'features/extensions/extensions-common.tsx', 'features/tools/provider-options.ts']) {
+      expect(readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')).not.toMatch(/from '[./]*pages-management'/)
+    }
+  })
+
+  it('keeps the business stylesheet in the order it had before the split', () => {
+    // 业务页那份样式表里，教程页那几份排在 extensions.css 前面，跟拆之前一样；先后由 import 的先后定（#1335 第 6 条）。
+    // ExtensionsPage 先从 pages-maintenance 拿装工具那两句（顺带带进教程页的样式），再 import extensions-common 和
+    // extensions.css；pages-management 头一个转出的又是 ExtensionsPage。改成直接从 features/tools/install-result 拿，
+    // 构建出来这两段样式就对调了：眼下没有同级选择器冲突，界面看不出来，所以只能在这里钉住。
+    function specifiers(file: string) {
+      const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')
+      return [...source.matchAll(/(?:\bfrom\s+|^import\s+)'([^']+)'/gm)].map((match) => match[1])
+    }
+    const page = specifiers('features/extensions/ExtensionsPage.tsx')
+    expect(page.indexOf('../../pages-maintenance')).toBeGreaterThan(-1)
+    expect(page.indexOf('../../pages-maintenance')).toBeLessThan(page.indexOf('./extensions-common'))
+    expect(page.indexOf('../../pages-maintenance')).toBeLessThan(page.indexOf('../../extensions.css'))
+    expect(readFileSync(new URL('./features/extensions/ExtensionsPage.tsx', import.meta.url), 'utf8'))
+      .toMatch(/import \{[^}]*\binstallJobRunning\b[^}]*\binstallResultMessage\b[^}]*\} from '\.\.\/\.\.\/pages-maintenance'/)
+    expect(specifiers('pages-management.tsx')[0]).toBe('./features/extensions/ExtensionsPage')
+  })
+})
