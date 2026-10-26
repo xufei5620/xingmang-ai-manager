@@ -95,17 +95,20 @@ describe('versionInBlockedRange', () => {
 })
 
 describe('cliVerifiedVersions coverage', () => {
-  it('pins Claude Code past both gateway regressions', () => {
-    // 2.1.278-2.1.303 shipped no new third-party base URL regression, and the
-    // range fixes stream handling behind proxies (a cleanly closed stream reported
-    // as complete, duplicated stream events running a tool call twice). 2.1.299
-    // stopped startup, feature flag and profile requests to Anthropic from
-    // carrying the key configured for a third-party gateway. A sandbox capture
-    // against a local fake endpoint sent the same request fields and the same
-    // tool list as 2.1.277 (2.1.303 matches 2.1.296 apart from one description).
-    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.303')
-    expect(findBlockedCliVersion('claude', '2.1.303')).toBeNull()
+  it('pins Claude Code past its gateway regressions', () => {
+    // 2.1.278-2.1.310 fix stream handling behind proxies (a cleanly closed stream
+    // reported as complete, duplicated stream events running a tool call twice),
+    // and 2.1.299 stopped startup, feature flag and profile requests to Anthropic
+    // from carrying the key configured for a third-party gateway. The one new
+    // regression in that range is 2.1.304: it turned tool search on behind a custom
+    // ANTHROPIC_BASE_URL and, per upstream, failed every request where the gateway
+    // rejected it until 2.1.305. Against a local fake endpoint that answers tool
+    // search with a 400, 2.1.310 resends without it and gets its reply.
+    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.310')
+    expect(findBlockedCliVersion('claude', '2.1.310')).toBeNull()
     expect(findBlockedCliVersion('claude', '2.1.276')?.fixed).toBe('2.1.277')
+    expect(findBlockedCliVersion('claude', '2.1.304')?.fixed).toBe('2.1.305')
+    expect(findBlockedCliVersion('claude', '2.1.305')).toBeNull()
   })
 
   it('pins Codex and blocks the release that asks the relay for reasoning summaries', () => {
@@ -115,9 +118,9 @@ describe('cliVerifiedVersions coverage', () => {
     // customer who pressed "更新" in that window installed exactly 0.155.0.
     // 0.156.1 is the first release whose bundled catalog knows gpt-6-sol and
     // gpt-6-luna; on 0.155.1 they run on fallback metadata. The bundled model
-    // catalog is copied from rust-v0.163.0, the recommended release's own tag
+    // catalog is copied from rust-v0.164.0, the recommended release's own tag
     // (codex-model-catalog.ts).
-    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.163.0')
+    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.164.0')
     expect(findBlockedCliVersion('codex', '0.155.0')?.fixed).toBe('0.155.1')
     expect(findBlockedCliVersion('codex', '0.155.1')).toBeNull()
     expect(findBlockedCliVersion('codex', '0.154.0')).toBeNull()
@@ -129,9 +132,9 @@ describe('cliVerifiedVersions coverage', () => {
   })
 
   it('pins Grok to a release that is both npm latest and the xAI stable channel', () => {
-    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.62')
+    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.70')
     expect(cliVerifiedVersions.grok.blocked).toEqual([])
-    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.62', source: 'recommended' })
+    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.70', source: 'recommended' })
     expect(resolveCliInstallVersion('grok', { alwaysLatest: true })).toEqual({ version: 'latest', source: 'latest' })
   })
 })
@@ -243,7 +246,7 @@ describe('buildCliVersionAdvice', () => {
 
   it('tells a Codex user on the blocked release to move forward, not back', () => {
     const advice = buildCliVersionAdvice('codex', '0.155.0')
-    expect(advice.recommendedVersion).toBe('0.163.0')
+    expect(advice.recommendedVersion).toBe('0.164.0')
     expect(advice.blockedReason).toMatch(/拒绝/)
     expect(advice.rollbackAvailable).toBe(true)
     expect(advice.recommendedIsNewer).toBe(true)
