@@ -347,6 +347,8 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 - 官方账号、手填、来源没确认、被改动过的配置一律不碰。
 - 第 5 版的编辑器设置（`claudeCode.disableLoginPrompt`）不在 Claude Code 自己的配置里，不进 `fillRelayTemplateDefaults`：
   补设置那一轮在 Claude Code 那份到期时顺带补（`editor-claude-login-prompt.ts`），跟着版本号只做一次。
+- 第 6 版的 Codex、Grok 全局说明（配置目录里没有任何一份时放的那份「用中文回复」`AGENTS.md`）不是配置里的键，
+  但在工具配置目录里，所以进 `fillRelayTemplateDefaults` 的同一次两阶段提交（`globalResponseLanguagePlans`），保存配置时也一起写。
 
 **规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
 `relayTemplateRevision` 加一**，否则老客户拿不到。只在保存路径里加、不进补缺清单的项（比如跟着
