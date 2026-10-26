@@ -15,7 +15,7 @@ import { raceAbort, readBoundedResponseBytes, type ResponseBodyGuard } from './b
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
-import type { AiVideoTaskStore, StoredAiVideoTask } from './ai-video-task-store'
+import type { AiVideoTaskStore, FinishedAiVideoAsset, StoredAiVideoTask } from './ai-video-task-store'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
 import { isServiceUnavailableResponse } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
@@ -315,7 +315,7 @@ export function delayVideoPoll(milliseconds: number, signal: AbortSignal): Promi
 export function createAiVideoService(options: {
   baseUrl: string
   credentials: Pick<ChatCredentialCoordinator, 'resolveCredential'>
-  tasks: Pick<AiVideoTaskStore, 'list' | 'reserve' | 'commitReservation' | 'releaseReservation' | 'remove'>
+  tasks: Pick<AiVideoTaskStore, 'list' | 'reserve' | 'commitReservation' | 'releaseReservation' | 'remove' | 'finish' | 'findFinished'>
   assets: AiVideoAssetWriter
   fetchImpl?: typeof fetch
   pollIntervalMs?: number
@@ -618,22 +618,41 @@ export function createAiVideoService(options: {
         ...(task.prompt ? { prompt: task.prompt } : {}),
       },
     )
-    await options.tasks.remove(task.userId, task.taskId)
+    await options.tasks.finish(task, {
+      assetId: asset.assetId,
+      ...(asset.width ? { width: asset.width } : {}),
+      ...(asset.height ? { height: asset.height } : {}),
+      ...(asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}),
+    })
     return { ...asset, taskId: task.taskId }
   }
 
-  async function finishExisting(task: StoredAiVideoTask, signal: AbortSignal): Promise<GeneratedAiVideoAsset> {
+  async function finishExisting(task: StoredAiVideoTask, signal: AbortSignal, progress?: AiOperationProgressObserver): Promise<GeneratedAiVideoAsset> {
     const credential = await options.credentials.resolveCredential(task.group)
     if (credential.userId !== task.userId) throw new Error('登录账号已变化，已停止视频任务查询')
     await options.assets.prepareProject?.(task.userId, task.projectId)
-    const completed = await pollTask(task, credential.apiKey, signal)
+    const completed = await pollTask(task, credential.apiKey, signal, progress)
     return downloadTask(task, credential.apiKey, signal, {
       url: typeof completed.url === 'string' ? completed.url : undefined,
       urlExpiresAt: completed.url_expires_at ?? completed.asset_expires_at,
       contentType: typeof completed.content_type === 'string' ? completed.content_type : undefined,
       sizeBytes: typeof completed.size_bytes === 'number' ? completed.size_bytes : undefined,
       sha256: typeof completed.sha256 === 'string' ? completed.sha256 : undefined,
-    })
+    }, progress)
+  }
+
+  // 同一个服务端任务只查一份、只存一次。出片段的那次、开机续查、视频剪辑页重开回来接，可能同时碰上
+  // 同一个任务：后来的等先来的那份结果，不再自己查一遍、下载一遍、存出第二个文件。
+  const finishing = new Map<string, Promise<GeneratedAiVideoAsset>>()
+  function finishOnce(task: StoredAiVideoTask, run: () => Promise<GeneratedAiVideoAsset>): Promise<GeneratedAiVideoAsset> {
+    const key = `${task.userId}:${task.taskId}`
+    const running = finishing.get(key)
+    if (running) return running
+    const started = run()
+    finishing.set(key, started)
+    const settle = () => { if (finishing.get(key) === started) finishing.delete(key) }
+    void started.then(settle, settle)
+    return started
   }
 
   async function generate(
@@ -775,14 +794,16 @@ export function createAiVideoService(options: {
         throw new Error(`视频任务已创建但本地恢复记录保存失败（任务 ${task.taskId}），请勿重复提交`)
       }
       await progress?.onStage('processing')
-      const completed = await pollTask(task, credential.apiKey, operation.controller.signal, progress)
-      return await downloadTask(task, credential.apiKey, operation.controller.signal, {
-        url: typeof completed.url === 'string' ? completed.url : undefined,
-        urlExpiresAt: completed.url_expires_at ?? completed.asset_expires_at,
-        contentType: typeof completed.content_type === 'string' ? completed.content_type : undefined,
-        sizeBytes: typeof completed.size_bytes === 'number' ? completed.size_bytes : undefined,
-        sha256: typeof completed.sha256 === 'string' ? completed.sha256 : undefined,
-      }, progress)
+      return await raceAbort(finishOnce(task, async () => {
+        const completed = await pollTask(task, credential.apiKey, operation.controller.signal, progress)
+        return downloadTask(task, credential.apiKey, operation.controller.signal, {
+          url: typeof completed.url === 'string' ? completed.url : undefined,
+          urlExpiresAt: completed.url_expires_at ?? completed.asset_expires_at,
+          contentType: typeof completed.content_type === 'string' ? completed.content_type : undefined,
+          sizeBytes: typeof completed.size_bytes === 'number' ? completed.size_bytes : undefined,
+          sha256: typeof completed.sha256 === 'string' ? completed.sha256 : undefined,
+        }, progress)
+      }), operation.controller.signal)
     } catch (error) {
       if (operation.controller.signal.aborted) {
         if (operation.taskId) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')
@@ -830,12 +851,44 @@ export function createAiVideoService(options: {
       }
       active.set(key, operation)
       try {
-        return await finishExisting(task, operation.controller.signal)
+        return await raceAbort(finishOnce(task, () => finishExisting(task, operation.controller.signal)), operation.controller.signal)
       } finally {
         if (active.get(key) === operation) active.delete(key)
       }
     }))
     return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+  }
+
+  /**
+   * 视频剪辑页重开以后，拿镜头上记着的请求号回来接那一段：还在出就等它出完，已经出完的直接给片段；
+   * 都没有（没交出去、服务端说失败了、记录太旧被挤掉）回 null，页面当这一镜还没生成。只查、只下载，
+   * 永不重新提交：那一单的钱已经付过了。
+   */
+  async function resumeRequest(
+    senderId: number,
+    userId: number,
+    requestIdInput: string,
+    progress?: AiOperationProgressObserver,
+  ): Promise<FinishedAiVideoAsset | null> {
+    if (!Number.isSafeInteger(senderId) || senderId <= 0) throw new Error('视频窗口标识格式错误')
+    if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error('AI 视频账号标识格式错误')
+    const requestId = requiredIdentifier(requestIdInput, '视频请求标识', 160)
+    const key = requestKey(senderId, requestId)
+    const task = (await options.tasks.list(userId)).find((entry) => entry.requestId === requestId)
+    if (!task) return options.tasks.findFinished(userId, requestId)
+    const operation: ActiveVideoRequest = {
+      senderId, requestId, userId, taskId: task.taskId, controller: new AbortController(), dispatched: true,
+    }
+    active.set(key, operation)
+    try {
+      await progress?.onStage('processing')
+      return await raceAbort(finishOnce(task, () => finishExisting(task, operation.controller.signal, progress)), operation.controller.signal)
+    } catch (error) {
+      if (operation.controller.signal.aborted) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')
+      throw error
+    } finally {
+      if (active.get(key) === operation) active.delete(key)
+    }
   }
 
   async function resumeVideoTask(senderId: number, userId: number, taskIdInput: string, expectedProjectId?: string): Promise<GeneratedAiVideoAsset> {
@@ -874,8 +927,27 @@ export function createAiVideoService(options: {
     void operation.then(() => pendingWork.delete(operation), () => pendingWork.delete(operation))
     return operation
   }
+  // 这个窗口里还没回的请求，按「窗口:请求」记。页面刷新以后同一个窗口拿原来的请求号回来接
+  // （resumeRequest），接的就是这一份，哪怕它还在提交、服务端任务号还没拿到。
+  const live = new Map<string, Promise<FinishedAiVideoAsset | null>>()
+  function remember<T extends FinishedAiVideoAsset | null>(key: string, operation: Promise<T>): Promise<T> {
+    if (live.has(key)) return operation
+    live.set(key, operation)
+    const settle = () => { if (live.get(key) === operation) live.delete(key) }
+    void operation.then(settle, settle)
+    return operation
+  }
   return {
-    generate: (...args: Parameters<typeof generate>) => track(generate(...args)),
+    generate: (senderId: number, input: AiVideoGenerationInput, progress?: AiOperationProgressObserver) => {
+      const result = track(generate(senderId, input, progress))
+      // generate 自己会拒掉同一个窗口里重复的请求号；那一次不能顶掉正在出的那一份。
+      return typeof input.requestId === 'string' ? remember(requestKey(senderId, input.requestId.trim()), result) : result
+    },
+    resumeRequest: (...args: Parameters<typeof resumeRequest>) => {
+      const [senderId, , requestId] = args
+      const key = requestKey(senderId, typeof requestId === 'string' ? requestId.trim() : '')
+      return live.get(key) ?? remember(key, track(resumeRequest(...args)))
+    },
     cancel,
     cancelSender: (senderId: number) => cancelMatching((operation) => operation.senderId === senderId),
     cancelUser: (userId: number) => cancelMatching((operation) => operation.userId === userId),

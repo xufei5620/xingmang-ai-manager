@@ -55,6 +55,111 @@ export const canvasHostChannels = {
   cancelCloseTasks: 'canvas-host:cancel-close-tasks',
 } as const
 
+export const maximumCanvasPromptPresetNameLength = 160
+
+/**
+ * What this desktop host can run, read by the xingmang-canvas kernel through
+ * `xingmangCanvasHost.capabilities()` (#1392). It is a fixed literal: no
+ * account data, no IPC round trip, the same answer on every call, so a
+ * poisoned canvas learns nothing from it it could not read in this file.
+ * canvas-preload.ts carries a copy (I7); canvas-preload.test.ts pins the two
+ * together, and canvas-contract.test.ts pins this one to the executor table
+ * and the image model table it describes.
+ *
+ * A switch only says the kernel may show an entry. The main process still
+ * refuses, before any paid request, every parameter it cannot honour.
+ */
+export interface CanvasHostCapabilities {
+  contractVersion: number
+  host: 'desktop'
+  executableNodeKinds: readonly string[]
+  features: {
+    quote: boolean
+    accountSummary: boolean
+    imageEditMask: boolean
+    textGenerate: boolean
+    textWebSearch: boolean
+    imageTools: boolean
+    frameExtract: boolean
+    scenarioTemplates: boolean
+    routerStrategy: boolean
+    generateAudio: boolean
+    referenceOrder: boolean
+    cloud: boolean
+    agentExecution: boolean
+    byteUpload: boolean
+    promptPresetGroups: boolean
+  }
+  imageCandidates: { maximum: number }
+  videoCandidates: { maximum: number }
+  promptPresetNameMaxLength: number
+  imageResolutions: {
+    byModel: Readonly<Record<string, readonly ('1K' | '2K' | '4K')[]>>
+    /** Any other gpt-image-* model the account lists, except gpt-image-1.5. */
+    otherGptImage: readonly ('1K' | '2K' | '4K')[]
+  }
+  video: {
+    /** The legacy account site has video switched off in the main process. */
+    siteIds: readonly ('solov' | 'solov-api')[]
+    protocols: readonly string[]
+    seconds: { minimum: number; maximum: number }
+    dimensions: readonly string[]
+    miniMaxResolutions: readonly string[]
+    miniMaxAspectRatios: readonly string[]
+  }
+}
+
+export const desktopCanvasCapabilities: CanvasHostCapabilities = {
+  contractVersion: 1,
+  host: 'desktop',
+  executableNodeKinds: [
+    'text', 'prompt', 'note', 'image', 'image-generate', 'image-edit', 'video', 'video-generate',
+    'image-input', 'video-input', 'audio-input', 'router', 'gallery', 'output', 'group',
+    'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
+  ],
+  features: {
+    quote: false,
+    accountSummary: false,
+    imageEditMask: false,
+    textGenerate: false,
+    textWebSearch: false,
+    imageTools: false,
+    frameExtract: false,
+    scenarioTemplates: false,
+    routerStrategy: false,
+    generateAudio: false,
+    referenceOrder: false,
+    cloud: false,
+    agentExecution: false,
+    byteUpload: false,
+    promptPresetGroups: false,
+  },
+  imageCandidates: { maximum: 1 },
+  videoCandidates: { maximum: 1 },
+  promptPresetNameMaxLength: maximumCanvasPromptPresetNameLength,
+  imageResolutions: {
+    byModel: {
+      'gemini-3.1-flash-image': ['1K', '2K', '4K'],
+      'gpt-image-1': ['1K'],
+      'gpt-image-2': ['1K', '2K', '4K'],
+      'gpt-image-2-2026-04-21': ['1K', '2K', '4K'],
+      jimeng_high_aes_general_v21_L: ['1K'],
+      'grok-imagine-image': ['1K'],
+      'grok-imagine-image-2.0': ['1K'],
+      'grok-imagine-image-quality': ['1K'],
+    },
+    otherGptImage: ['1K', '2K', '4K'],
+  },
+  video: {
+    siteIds: ['solov'],
+    protocols: ['relay-videos'],
+    seconds: { minimum: 1, maximum: 15 },
+    dimensions: ['1280x720', '720x1280', '1024x1024', '1024x768', '768x1024'],
+    miniMaxResolutions: ['480p', '720p'],
+    miniMaxAspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4'],
+  },
+}
+
 export interface CanvasAppearance {
   theme: 'light' | 'dark'
   uiSkin?: 'dawn' | 'obsidian' | 'mist' | 'aurora'

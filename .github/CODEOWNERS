@@ -16,3 +16,10 @@
 /electron/ipc-contract.ts @xufei5620
 /electron/platform/contract.ts @xufei5620
 /electron/canvas-contract.ts @xufei5620
+
+# 画布宿主桥的入参边界（I15）：画布跑第三方前端代码，这几个文件决定它送来的什么能被接受、
+# 什么在付费请求之前被拒。放宽要 yoyo 亲手同意（#1392），这里点名审查。
+/electron/canvas-request-parser.ts @xufei5620
+/electron/canvas-project-package.ts @xufei5620
+/electron/canvas-preload.ts @xufei5620
+/electron/canvas-prompt-preset-store.ts @xufei5620

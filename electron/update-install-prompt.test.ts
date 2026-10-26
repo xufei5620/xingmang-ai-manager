@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   IDLE_INSTALL_AFTER_PROMPT_MS,
   IDLE_INSTALL_IDLE_MS,
+  IDLE_INSTALL_STATUS_WAIT_MS,
   IDLE_POLL_MS,
   PROMPT_POLL_MS,
   PROMPT_QUIET_INPUT_MS,
@@ -106,6 +107,7 @@ function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInst
       asks.push({ prompt, signal, answer: resolve })
     }),
     installNow: async (version) => { installedNow.push(version) },
+    refreshServiceStatus: async () => null,
     installWhileIdle: async (version) => { installedIdle.push(version) },
     log: (_level, event) => { events.push(event) },
     now: () => state.now,
@@ -304,6 +306,72 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
+  it('reads the service status again before installing while idle and skips a version withdrawn meanwhile', async () => {
+    const order: string[] = []
+    const test = harness('darwin', {
+      refreshServiceStatus: async () => {
+        order.push('refresh')
+        // The updater drops a downloaded offer the moment it learns it was withdrawn (withdrawOffer).
+        if (test.state.snapshot.availableVersion === '0.2.22') test.state.snapshot = snapshot({ phase: 'idle', availableVersion: null })
+        return null
+      },
+      installWhileIdle: async (version) => { order.push(`install ${version}`) },
+    })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.locked = true
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(order).toEqual(['refresh'])
+    expect(test.events).toContain('install.idle.withdrawn')
+    expect(test.events).not.toContain('install.idle')
+
+    // The fixed version downloaded later in the same run still installs while idle.
+    test.state.snapshot = snapshot({ availableVersion: '0.2.23' })
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(order).toEqual(['refresh', 'refresh', 'install 0.2.23'])
+    prompter.dispose()
+  })
+
+  it('installs on the last known withdrawal list when the service status is slow or unreadable', async () => {
+    const slow = harness('darwin', { refreshServiceStatus: () => new Promise<never>(() => undefined) })
+    const slowPrompter = createUpdateInstallPrompter(slow.options)
+    slow.state.locked = true
+    slowPrompter.observe(slow.state.snapshot)
+    await slow.runTimers()
+    await slow.runTimers()
+    expect(slow.installedIdle).toEqual([])
+    expect(slow.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([IDLE_INSTALL_STATUS_WAIT_MS])
+    await slow.runTimers()
+    expect(slow.installedIdle).toEqual(['0.2.22'])
+    slowPrompter.dispose()
+
+    const failing = harness('darwin', { refreshServiceStatus: async () => { throw new Error('offline') } })
+    const failingPrompter = createUpdateInstallPrompter(failing.options)
+    failing.state.locked = true
+    failingPrompter.observe(failing.state.snapshot)
+    await failing.runTimers()
+    await failing.runTimers()
+    expect(failing.installedIdle).toEqual(['0.2.22'])
+    // The wait timer is dropped once the read settles.
+    expect(failing.timers.filter((timer) => timer.ms === IDLE_INSTALL_STATUS_WAIT_MS).every((timer) => timer.cancelled)).toBe(true)
+    failingPrompter.dispose()
+  })
+
+  it('does not install while idle if 星芒 is closing while the service status is read', async () => {
+    const test = harness('darwin', { refreshServiceStatus: () => new Promise<never>(() => undefined) })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.locked = true
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    prompter.dispose()
+    await test.runTimers()
+    expect(test.installedIdle).toEqual([])
+  })
+
   it('closes an unanswered question once the customer has walked away, then installs without the extra wait', async () => {
     const test = harness()
     const prompter = createUpdateInstallPrompter(test.options)
@@ -435,6 +503,60 @@ describe('createUpdateInstallPrompter', () => {
     await settle()
     expect(test.timers).toEqual([])
     expect(test.installedIdle).toEqual([])
+    prompter.dispose()
+  })
+
+  it('holds the question while network acceleration is on and asks once it is off', async () => {
+    let accelerating = true
+    const test = harness('win32', { unattended: () => false, accelerationActive: () => accelerating })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    // A gaming session can last hours: look slowly, and log the hold once.
+    expect(test.timers.map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+    expect(test.events.filter((event) => event === 'install.prompt.held')).toHaveLength(1)
+
+    accelerating = false
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.installedNow).toEqual([])
+    prompter.dispose()
+  })
+
+  it('does not treat a Mac gamer as away while acceleration is on', async () => {
+    let accelerating = true
+    const test = harness('darwin', { accelerationActive: () => accelerating })
+    const prompter = createUpdateInstallPrompter(test.options)
+    // Gamepad input does not reset the system idle time.
+    test.state.idleMs = IDLE_INSTALL_IDLE_MS
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.events).not.toContain('install.prompt.away')
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual([])
+
+    accelerating = false
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    prompter.dispose()
+  })
+
+  it('holds the question when it cannot tell whether acceleration is on', async () => {
+    const test = harness('win32', {
+      unattended: () => false,
+      accelerationActive: () => { throw new Error('acceleration state unavailable') },
+    })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.events).toContain('install.prompt.held')
     prompter.dispose()
   })
 

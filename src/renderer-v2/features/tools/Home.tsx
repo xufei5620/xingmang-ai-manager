@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
+import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X, Zap } from 'lucide-react'
 import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
@@ -14,14 +14,13 @@ import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry
 import { homeToolBlurbs, homeToolOrder, officialAccountNames, shortcutTools, tools as toolRegistry } from '../../registry/tools'
 import { statuses } from '../../registry/status'
 import { FirstRunSteps } from './FirstRun'
-import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
+import { bootstrapErrorText, isAccountNotEnabledFailure, keySyncFailureText, networkBlockedNotice } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentReplacedHint, recentResumeHint, recentSessionSubtitle } from './recent-display'
 import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
 import { dollars as money, errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId } from '../../../../electron/catalog'
-import { isCertificateFailureText, isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
@@ -190,19 +189,6 @@ export function recentResumeOffered(tools: readonly ToolPresentation[], provider
 }
 
 /**
- * 断网启动时这条横幅原来会先说一句「账号 Key 已同步」，再跟上一串网络失败原文，
- * 自相矛盾且没交代下一步。网络类失败改说这一句：已装好的工具照常能用，网络回来
- * 之后客户端自己会补写，用户什么都不用做。「重新同步」按钮保留，想立刻试的照点。
- */
-const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常能用；联网后会自动补写密钥。'
-
-/**
- * 拦住同步的是证书被换掉时，电脑一直联着网，等不来「联网后自动补写」，换这一句。「自动」线路下
- * 星芒约半分钟到一分钟会自己换到 CF，所以先叫客户稍等再点「重新同步」，还不行再换网络。
- */
-const certificateBootstrapNotice = '连星芒时被网络上的设备拦下了，这次没写好密钥。已装好的工具照常能用；稍等一两分钟点「重新同步」，还不行就换个网络（比如手机热点）。'
-
-/**
  * 「配置被改过」这一档必须自己解释一句：角标只说了发生什么，没说会怎样。
  * 用户真正要知道的是这个工具现在没在用当前账号，以及有一颗按钮能一键修回来。
  * 文案以「当前账号」为主语，不提站点。
@@ -310,21 +296,20 @@ export function homeMoneyNotice(dollars: number | null, subscription: UsableSubs
   return { text: warning, renew: true }
 }
 
+/**
+ * 钱包是 $0、也没有能用的订阅：跟上面那条 $0 提示同一个判断。订阅客户的钱包常是 0、扣的却是订阅；
+ * 余额还没读到、账号不能在这里充值时都不算。
+ */
+export function homeWalletEmpty(dollars: number | null, subscription: UsableSubscription | null, supportsBilling: boolean): boolean {
+  return supportsBilling && !subscription && dollars !== null && dollars <= 0
+}
+
 function cachedUsage(api: ToolsApi, scope: string | undefined): BalanceUsage | null {
   return scope === undefined ? null : api.peekBalanceUsage(scope)
 }
 
 function cachedWeekSpend(api: ToolsApi, scope: string | undefined, wanted: boolean): WeekSpend | null {
   return wanted && scope !== undefined ? api.peekWeekSpend(scope) : null
-}
-
-function bootstrapErrorText(error: string) {
-  if (isCertificateFailureText(error)) return certificateBootstrapNotice
-  return isNetworkFailureText(error) ? offlineBootstrapNotice : `密钥没写好：${keySyncFailureReason(error)}`
-}
-
-function networkBlockedNotice(result: AccountBootstrapResult) {
-  return result.networkBlockedByCertificate ? certificateBootstrapNotice : offlineBootstrapNotice
 }
 
 /** 「已给 Claude Code 配好密钥，可以直接用了」：一个工具说名字，几个说个数。 */
@@ -529,6 +514,7 @@ export function Home(props: HomeProps) {
   const weekUsd = usage ? usageDollars(usage.weekQuota) : null
   const runway = account ? buildBalanceRunway({ walletUsd: dollars, subscription, weekUsageUsd: weekUsd }) : null
   const moneyNotice = props.supportsBilling !== false ? homeMoneyNotice(dollars, subscription, runway) : null
+  const walletEmpty = homeWalletEmpty(dollars, subscription, props.supportsBilling !== false)
   const bootstrapResult = props.bootstrap?.result
   const bootstrapFailed = bootstrapResult?.failed ?? []
   const bootstrapWarnings = bootstrapResult ? homeBootstrapWarnings(bootstrapResult, tools) : []
@@ -673,6 +659,10 @@ export function Home(props: HomeProps) {
       : hooksStale ? 'cliHooksStale' as const : tool.source === 'official' ? 'official' as const
         : bootstrapBusy && !tool.configured ? 'configuring' as const
         : tool.configured ? 'ready' as const : notEnabled ? 'notEnabled' as const : 'unconfigured' as const
+    // 用当前账号连着的工具在余额 $0 时打开了也用不了，发第一句话就报错，而卡上还是一颗深色「打开」，
+    // 跟上面「余额是 $0」那条打架（主路卡点 F4）。角标换「余额为零」、主按钮换「去充值」，「打开」照样能点。
+    // status 不改：提醒设置没写上那些「已配好」底下的判断照旧。官方账号、自己填的密钥不扣这份余额，不变。
+    const zeroBalance = walletEmpty && status === 'ready' && tool.source === 'account'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，拿它当「打开」的默认值，
     // 「…」里再给原来的选择器（N7）。这个工具还没有记录时用上次在本软件里选过的文件夹，
     // 几个命令行工具合起来只问一次。Codex 桌面端自己管工作区，不走这条路。
@@ -709,7 +699,7 @@ export function Home(props: HomeProps) {
     // 配置里实际写的星芒线路（xm 三线路 C12）；codexDesktop 读的是 Codex 那份配置，标签跟着一起显示。
     const routeLabel = config && !broken && !ownershipPending ? toolRouteLabel(config, tool.source) : null
     const sourceLabel = sourceChipLabels[tool.source === 'official' || tool.source === 'manual' ? tool.source : 'account']
-    return { installJob, launchJob, switchJob, repairJob, job, config, configUnavailable, status, broken, ccSwitch, foreignKey, shadowed, openable,
+    return { installJob, launchJob, switchJob, repairJob, job, config, configUnavailable, status, zeroBalance, broken, ccSwitch, foreignKey, shadowed, openable,
       hooksStale, hooksDetail, hooksAutoRepaired, hooksMissing, installFailure, opensWorkspace, workspaces, lastWorkspace, startsFresh, manualInstall,
       elevationHint, waitingForScan, waitingForAccount, primaryLabel, primary, primaryDisabled, officialLine, officialPending, routeLabel, sourceLabel,
       ownershipPending }
@@ -766,8 +756,8 @@ export function Home(props: HomeProps) {
     // 账号还在恢复时来源同样没判定（见 ownershipAwaitingAccount），等恢复完再给。
     // Codex 读不了的文件，切换只会在合并那一步报错，出路是卡上的「修好它」。
     const switchTarget = state.configUnavailable || state.broken || tool.error || state.ownershipPending ? null : accountSwitchTarget(tool)
-    // 被拦着的那几种（配置坏了、被改过……）卡上只放修的那颗按钮，还能用的话「打开」挪进这里。
-    const blockedOpen = state.openable && ['configBroken', 'configChanged', 'ccSwitch', 'otherSiteKey'].includes(state.status)
+    // 被拦着的那几种（配置坏了、被改过……）和余额为零，卡上只放修的那颗按钮，还能用的话「打开」挪进这里。
+    const blockedOpen = state.openable && (state.zeroBalance || ['configBroken', 'configChanged', 'ccSwitch', 'otherSiteKey'].includes(state.status))
     // 这个工具聊过（记录还没读到时说不准，照旧给）才有「接着之前的对话…」。以前这里列的是最近几个文件夹的
     // 整条路径，点了是在那里开新对话，客户看着像对话记录又看不懂（yoyo 10-16）；v4 原型这里也没有那一串。
     const conversationsOffered = state.opensWorkspace && (recent === null || recent.stats.byProvider[tool.provider] > 0)
@@ -862,7 +852,7 @@ export function Home(props: HomeProps) {
     const state = toolState(tool)
     const { installJob, job, status } = state
     const name = toolRegistry.find((entry) => entry.id === tool.id)?.name ?? tool.name
-    const [statusText, statusTone] = statuses.tool[status]
+    const [statusText, statusTone] = statuses.tool[state.zeroBalance ? 'zeroBalance' : status]
     // 字包一层 span 才有省略号（components.css 的 .xm-tool-card-badge），被截时悬停看全文。
     const statusPill = <Pill tone={statusTone} dot><span title={statusText}>{statusText}</span></Pill>
     const repairBusy = Boolean(state.repairJob)
@@ -901,7 +891,7 @@ export function Home(props: HomeProps) {
       : installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : state.installFailure && props.onShowInstallFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowInstallFailure?.(tool.id)} testId={`tool-${tool.id}-why`}>看原因</Button>
       : status === 'missing' ? <span className="v2-tool-card-off">{statusText}</span>
-      : status === 'ready' || status === 'official' ? sourceMenu(tool, state)
+      : (status === 'ready' && !state.zeroBalance) || status === 'official' ? sourceMenu(tool, state)
         : statusPill
     // 检测失败时按钮是「重新检测」，不配下载箭头（#1132）。
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(state.launchJob)}
@@ -909,11 +899,15 @@ export function Home(props: HomeProps) {
       title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined}
       icon={!tool.status.installed && !tool.error && !state.manualInstall && !state.installFailure ? Download : undefined}
       onClick={state.primary} testId={`tool-${tool.id}-primary`}>{state.primaryLabel}</Button>
+    // 卡底下放不下两颗按钮还不挤掉角标（一张卡约 235 宽）：同被拦着的那几种，「打开」在「…」第一项。
+    // 从那里点了「打开」，打开的那一会儿照旧是转圈的「打开中」。
+    const rechargeButton = state.zeroBalance && !state.job
+      ? <Button size="sm" variant="primary" onClick={() => props.onNavigate('account', 'recharge')} testId={`tool-${tool.id}-recharge`}>去充值</Button> : null
     const actions = installJob ? installJob.cancellable
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
       : null
       : state.switchJob ? null
-        : fixButton ?? primaryButton
+        : fixButton ?? rechargeButton ?? primaryButton
     return <ToolCard key={tool.id} tool={tool.id} off={!tool.status.installed && !installJob && !tool.error} meta={meta} metaTone={metaTone}
       metaTitle={detail ?? line?.title ?? undefined} link={toolLink(tool, state)} badge={badge} actions={actions}
       progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
@@ -1006,6 +1000,7 @@ export function Home(props: HomeProps) {
     const lastText = recent === null ? null : last ? `上次 ${formatRecentTime(last.updatedAt, Date.now())}` : '还没用过'
     const official = heroTool.source === 'official' && !state.broken
     const sourceText = official ? officialAccountNames[heroTool.provider] ?? '官方账号'
+      : state.zeroBalance ? statuses.tool.zeroBalance[0]
       : state.status === 'ready' ? state.sourceLabel : statuses.tool[state.status][0]
     const sub = (official ? [sourceText, lastText] : [state.routeLabel?.text, heroTool.model || null, sourceText, lastText]).filter(Boolean).join(' · ')
     const shortcut = shortcutTools(os).findIndex((entry) => entry.id === heroTool.id) + 1
@@ -1014,8 +1009,10 @@ export function Home(props: HomeProps) {
       <BrandIcon tool={heroTool.id} size={52} variant="tile" />
       <div className="v2-home-hero-copy"><h2>{name}</h2><p title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined}>{sub}</p>
         <div className="v2-home-hero-actions">
+          {/* 余额为零时大卡地方够：「去充值」当主按钮排第一，「打开」退成旁边的次按钮，照样能点。 */}
+          {state.zeroBalance && <Button variant="primary" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')} testId="home-hero-recharge">去充值</Button>}
           {opens
-            ? <Button variant="primary" icon={Play} loading={Boolean(state.launchJob)} disabled={state.primaryDisabled} title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined} onClick={state.primary} testId="home-hero-open"
+            ? <Button variant={state.zeroBalance ? 'secondary' : 'primary'} icon={Play} loading={Boolean(state.launchJob)} disabled={state.primaryDisabled} title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined} onClick={state.primary} testId="home-hero-open"
               kbd={shortcut > 0 ? os === 'mac' ? `⌘${shortcut}` : `Ctrl ${shortcut}` : undefined}>{`打开 ${name}`}</Button>
             : <Button variant="primary" loading={Boolean(state.job)} disabled={state.primaryDisabled} onClick={state.primary} testId="home-hero-open">{state.primaryLabel}</Button>}
           {state.opensWorkspace && <Button variant="secondary" icon={FolderOpen} disabled={state.waitingForScan || state.waitingForAccount || launchBusy} onClick={() => props.onLaunch(heroTool.id)} testId="home-hero-pick-folder">{chooseWorkspaceLabel}</Button>}

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
 function response(body: unknown, status = 200): Response {
@@ -592,5 +592,196 @@ describe('AI image service', () => {
     expect(service.cancelAll()).toBe(1)
     await expect(byApplication).rejects.toThrow('服务端可能仍在生成')
     expect(service.cancelAll()).toBe(0)
+  })
+})
+
+// #1394 第 6 条：画布那份停止、关窗、换号时不掐断已经发出去的请求，图照样存进付钱的账号并打标签。
+describe('canvas image service after a stop', () => {
+  function heldFetch() {
+    const requests: Array<{ signal: AbortSignal; resolve(value: Response): void }> = []
+    const fetchImpl = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const signal = init?.signal as AbortSignal
+      requests.push({ signal, resolve })
+      signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    })) as unknown as typeof fetch
+    return { fetchImpl, requests }
+  }
+
+  function canvasSetup(fetchImpl: typeof fetch, extra: { timeoutMs?: number; maxActive?: number; maxQueued?: number } = {}) {
+    const base = setup(fetchImpl, extra)
+    const addTag = vi.fn(async () => undefined)
+    const onFinishedAfterStop = vi.fn()
+    const assets: AiImageAssetWriter = { ...base.assets, addTag }
+    const service = createAiImageService({
+      baseUrl: 'https://xm.solov.cc',
+      credentials: base.credentials,
+      assets,
+      fetchImpl,
+      finishDispatchedAfterStop: true,
+      onFinishedAfterStop,
+      ...extra,
+    })
+    return { ...base, service, addTag, onFinishedAfterStop }
+  }
+
+  const projectId = '11111111-1111-1111-1111-111111111111'
+
+  it('releases the caller on stop but lets the paid request finish into the paying account library with the stop tag', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, assets, addTag, onFinishedAfterStop } = canvasSetup(fetchImpl)
+    const stages: string[] = []
+    const pending = service.generate(4, {
+      requestId: 'canvas-run:stopped', group: '生图分组', model: 'gpt-image-2', prompt: '一只猫', expectedUserId: 7, projectId,
+    }, { onStage: (stage) => { stages.push(stage) } })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+
+    expect(service.cancel(4, 'canvas-run:stopped', 7)).toEqual({ canceled: true, mayStillComplete: true })
+    await expect(pending).rejects.toThrow('已停止等待；服务端可能仍在生成图片')
+    expect(requests[0].signal.aborted).toBe(false)
+    expect(service.cancel(4, 'canvas-run:stopped', 7)).toEqual({ canceled: false, mayStillComplete: false })
+    await service.whenIdle()
+
+    requests[0].resolve(response({ data: [{ b64_json: 'aGVsbG8=' }] }))
+    await vi.waitFor(() => expect(onFinishedAfterStop).toHaveBeenCalledWith({ requestId: 'canvas-run:stopped', stored: 1 }))
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'aGVsbG8=', { projectId, prompt: '一只猫' })
+    expect(addTag).toHaveBeenCalledWith(7, ['asset-b64'], chargedAfterStopAssetTag, projectId)
+    expect(chargedAfterStopAssetTag).toBe('已停止，但已扣费')
+    // The run is already recorded as stopped; nothing of the late result may report into it.
+    expect(stages).toEqual([])
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('still cancels requests that have not gone out, so nothing is paid for them', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, credentials, assets, addTag } = canvasSetup(fetchImpl, { maxActive: 1, maxQueued: 1 })
+    let releaseCredential: () => void = () => undefined
+    const credentialGate = new Promise<void>((resolve) => { releaseCredential = resolve })
+    const resolveCredential = credentials.resolveCredential.getMockImplementation()!
+    credentials.resolveCredential.mockImplementationOnce(async (group: string) => {
+      await credentialGate
+      return resolveCredential(group)
+    })
+    const preparing = service.generate(4, {
+      requestId: 'canvas-preparing', group: '生图分组', model: 'gpt-image-2', prompt: '图一', expectedUserId: 7, projectId,
+    })
+    const queued = service.generate(4, {
+      requestId: 'canvas-queued', group: '生图分组', model: 'gpt-image-2', prompt: '图二', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(credentials.resolveCredential).toHaveBeenCalledTimes(1))
+
+    expect(service.cancel(4, 'canvas-queued', 7)).toEqual({ canceled: true, mayStillComplete: false })
+    expect(service.cancelSender(4)).toBe(1)
+    releaseCredential()
+    await expect(queued).rejects.toThrow('已取消生图请求')
+    await expect(preparing).rejects.toThrow('已取消生图请求')
+    await service.whenIdle()
+    expect(requests).toHaveLength(0)
+    expect(assets.storeBase64).not.toHaveBeenCalled()
+    expect(addTag).not.toHaveBeenCalled()
+  })
+
+  it('keeps paid requests running through a window close and an account switch without holding up the switch', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, credentials, assets, addTag, onFinishedAfterStop } = canvasSetup(fetchImpl, { maxActive: 3 })
+    const closed = service.generate(4, {
+      requestId: 'canvas-closed', group: '生图分组', model: 'gpt-image-2', prompt: '关窗', expectedUserId: 7, projectId,
+    })
+    const switched = service.generate(5, {
+      requestId: 'canvas-switched', group: '生图分组', model: 'gpt-image-2', prompt: '换号', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(requests).toHaveLength(2))
+
+    expect(service.cancelSender(4)).toBe(1)
+    await expect(closed).rejects.toThrow('服务端可能仍在生成')
+    // main.ts quiesces an account switch with cancelAll() and then waits for whenIdle().
+    expect(service.cancelAll()).toBe(1)
+    await expect(switched).rejects.toThrow('服务端可能仍在生成')
+    await service.whenIdle()
+    expect(requests.every((request) => !request.signal.aborted)).toBe(true)
+
+    // The next account signs in before the late answers arrive.
+    credentials.resolveCredential.mockImplementation(async (group: string) => ({
+      userId: 9, group, models: ['gpt-image-2'], keyCreated: false, apiKey: 'sk-next-account', keyId: 2, keyName: 'image',
+    }))
+    requests[0].resolve(response({ data: [{ b64_json: 'aGVsbG8=' }] }))
+    requests[1].resolve(response({ data: [{ url: 'https://images.example/late.png' }] }))
+    await vi.waitFor(() => expect(onFinishedAfterStop).toHaveBeenCalledTimes(2))
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'aGVsbG8=', { projectId, prompt: '关窗' })
+    expect(assets.storeRemoteUrl).toHaveBeenCalledWith(7, 'https://images.example/late.png', { projectId, prompt: '换号' })
+    expect(addTag).toHaveBeenCalledWith(7, ['asset-b64'], chargedAfterStopAssetTag, projectId)
+    expect(addTag).toHaveBeenCalledWith(7, ['asset-url'], chargedAfterStopAssetTag, projectId)
+    expect(JSON.stringify([vi.mocked(assets.storeBase64).mock.calls, vi.mocked(assets.storeRemoteUrl).mock.calls, addTag.mock.calls])).not.toContain('9')
+  })
+
+  it('still ends a stopped request at the original total timeout and stores nothing', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, assets, addTag, onFinishedAfterStop } = canvasSetup(fetchImpl, { timeoutMs: 1_000 })
+    const pending = service.generate(4, {
+      requestId: 'canvas-timeout', group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    expect(service.cancel(4, 'canvas-timeout')).toEqual({ canceled: true, mayStillComplete: true })
+    await expect(pending).rejects.toThrow('服务端可能仍在生成')
+
+    await vi.waitFor(
+      () => expect(onFinishedAfterStop).toHaveBeenCalledWith({ requestId: 'canvas-timeout', error: '生图请求超时' }),
+      { timeout: 5_000 },
+    )
+    expect(requests[0].signal.aborted).toBe(true)
+    expect(assets.storeBase64).not.toHaveBeenCalled()
+    expect(addTag).not.toHaveBeenCalled()
+  })
+
+  it('logs a failed late answer without tagging anything and keeps the queue slot until it ends', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, addTag, onFinishedAfterStop } = canvasSetup(fetchImpl, { maxActive: 1 })
+    const stopped = service.generate(4, {
+      requestId: 'canvas-failed', group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    service.cancel(4, 'canvas-failed')
+    await expect(stopped).rejects.toThrow('服务端可能仍在生成')
+
+    // The paid request still holds the only slot, so the next one waits for it.
+    const next = service.generate(4, {
+      requestId: 'canvas-next', group: '生图分组', model: 'gpt-image-2', prompt: '下一张', expectedUserId: 7, projectId,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(requests).toHaveLength(1)
+
+    requests[0].resolve(response({ error: { message: 'Project does not have access to model' } }, 403))
+    await vi.waitFor(() => expect(onFinishedAfterStop).toHaveBeenCalledWith({
+      requestId: 'canvas-failed', error: '当前账号暂无该生图模型权限，请切换其他模型',
+    }))
+    expect(addTag).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(requests).toHaveLength(2))
+    requests[1].resolve(response({ data: [{ b64_json: 'aGVsbG8=' }] }))
+    await expect(next).resolves.toHaveLength(1)
+    expect(addTag).not.toHaveBeenCalled()
+  })
+})
+
+// AI 对话页那份不开这个选项：停止、关窗、换号照旧掐断，什么都不存（#1394 第 6 条要求的回归）。
+describe('chat image service stop behaviour', () => {
+  it.each([
+    ['stop', (service: ReturnType<typeof setup>['service']) => service.cancel(4, 'chat-request').canceled],
+    ['window close', (service: ReturnType<typeof setup>['service']) => service.cancelSender(4) === 1],
+    ['account switch', (service: ReturnType<typeof setup>['service']) => service.cancelAll() === 1],
+  ])('aborts a dispatched request on %s and stores nothing', async (_label, stop) => {
+    const requests: AbortSignal[] = []
+    const fetchImpl = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      requests.push(init?.signal as AbortSignal)
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const pending = service.generate(4, { requestId: 'chat-request', group: '生图分组', model: 'gpt-image-2', prompt: '图' })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+
+    expect(stop(service)).toBe(true)
+    await expect(pending).rejects.toThrow('已停止等待；服务端可能仍在生成图片')
+    expect(requests[0].aborted).toBe(true)
+    await service.whenIdle()
+    expect(assets.storeBase64).not.toHaveBeenCalled()
+    expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
   })
 })

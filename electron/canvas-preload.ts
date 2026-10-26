@@ -54,6 +54,68 @@ const channels = {
   cancelCloseTasks: 'canvas-host:cancel-close-tasks',
 } as const
 
+// Mirrors desktopCanvasCapabilities in canvas-contract.ts (I7); the preload
+// test loads this file and deep-compares the two. Answered here rather than
+// over IPC: it is a constant, so it opens no main-process entry point.
+const capabilities = deepFreeze({
+  contractVersion: 1,
+  host: 'desktop',
+  executableNodeKinds: [
+    'text', 'prompt', 'note', 'image', 'image-generate', 'image-edit', 'video', 'video-generate',
+    'image-input', 'video-input', 'audio-input', 'router', 'gallery', 'output', 'group',
+    'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
+  ],
+  features: {
+    quote: false,
+    accountSummary: false,
+    imageEditMask: false,
+    textGenerate: false,
+    textWebSearch: false,
+    imageTools: false,
+    frameExtract: false,
+    scenarioTemplates: false,
+    routerStrategy: false,
+    generateAudio: false,
+    referenceOrder: false,
+    cloud: false,
+    agentExecution: false,
+    byteUpload: false,
+    promptPresetGroups: false,
+  },
+  imageCandidates: { maximum: 1 },
+  videoCandidates: { maximum: 1 },
+  promptPresetNameMaxLength: 160,
+  imageResolutions: {
+    byModel: {
+      'gemini-3.1-flash-image': ['1K', '2K', '4K'],
+      'gpt-image-1': ['1K'],
+      'gpt-image-2': ['1K', '2K', '4K'],
+      'gpt-image-2-2026-04-21': ['1K', '2K', '4K'],
+      jimeng_high_aes_general_v21_L: ['1K'],
+      'grok-imagine-image': ['1K'],
+      'grok-imagine-image-2.0': ['1K'],
+      'grok-imagine-image-quality': ['1K'],
+    },
+    otherGptImage: ['1K', '2K', '4K'],
+  },
+  video: {
+    siteIds: ['solov'],
+    protocols: ['relay-videos'],
+    seconds: { minimum: 1, maximum: 15 },
+    dimensions: ['1280x720', '720x1280', '1024x1024', '1024x768', '768x1024'],
+    miniMaxResolutions: ['480p', '720p'],
+    miniMaxAspectRatios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4'],
+  },
+})
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    for (const entry of Object.values(value)) deepFreeze(entry)
+    Object.freeze(value)
+  }
+  return value
+}
+
 // Electron rejects a failed invoke with "Error invoking remote method
 // '<channel>': <ClassName>: <reason>". The channel and class name are
 // implementation details, yet the canvas puts error.message on nodes and
@@ -116,6 +178,7 @@ function subscribeAccountChange(listener: (change: { userId: number | null; prev
 }
 
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
+  capabilities: () => capabilities,
   saveFile: (suggestedName: string, content: string) => (
     invoke(channels.saveFile, suggestedName, content)
   ),
@@ -157,7 +220,14 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   previewProject: () => invoke(channels.previewProject),
   importProject: (previewId: string) => invoke(channels.importProject, previewId),
   listProjects: () => invoke(channels.listProjects),
-  createProject: (name: string) => invoke(channels.createProject, name),
+  // The kernel's "save a copy" also passes the current workflow and the
+  // project it came from. A wrong type is forwarded, not dropped, so the main
+  // process refuses it instead of quietly creating an empty project.
+  createProject: (name: string, initialWorkflowContent?: unknown, options?: unknown) => (
+    initialWorkflowContent === undefined && options === undefined
+      ? invoke(channels.createProject, name)
+      : invoke(channels.createProject, name, initialWorkflowContent, options)
+  ),
   openProject: (projectId: string) => invoke(channels.openProject, projectId),
   saveProject: (projectId: string, content: string) => invoke(channels.saveProject, projectId, content),
   renameProject: (projectId: string, name: string) => invoke(channels.renameProject, projectId, name),

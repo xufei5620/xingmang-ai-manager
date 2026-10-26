@@ -286,7 +286,8 @@ const terminalFailureBodies: Record<TerminalFailureReason, string> = {
   busy: '现在用的人太多，服务一时忙不过来。等一两分钟再在终端里发一次就行。',
   model: '现在选的型号用不了，点这里回星芒检查，换一个能用的型号。',
   service: '服务暂时出了问题，可能在维护。稍等几分钟再试，一直不好就点这里检查一下。',
-  // 工具自己也说不清原因（额度用完常常落在这一类），就不猜，请用户回来查一下。
+  // 工具自己也说不清原因，就不猜，请用户回来查一下。中转说余额用完时 Claude Code 报的是
+  // authentication_failed，钩子脚本看过原文改报 billing（xingmang-hook.cjs 的 balanceExhausted）。
   unknown: '点这里回星芒检查一下，看看是额度、Key 还是服务的问题，照提示点一下就好。',
 }
 

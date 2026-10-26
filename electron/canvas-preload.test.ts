@@ -3,6 +3,7 @@ import path from 'node:path'
 import vm from 'node:vm'
 import ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
+import { desktopCanvasCapabilities } from './canvas-contract'
 
 type CanvasBridge = Record<string, (...args: unknown[]) => Promise<unknown>>
 
@@ -80,6 +81,44 @@ describe('canvas sandbox preload', () => {
     expect(invoke.mock.calls).toEqual([
       ['canvas-host:open-project', 'p1'],
       ['canvas-host:save-project', 'p1', '{}'],
+    ])
+  })
+
+  it('answers capabilities from a frozen copy of the contract without touching IPC', () => {
+    const invoke = vi.fn(async () => null)
+    const bridge = loadCanvasBridge(invoke)
+    const capabilities: unknown = bridge.capabilities()
+    // The copy lives in another realm, so compare the data, not the objects.
+    expect(JSON.parse(JSON.stringify(capabilities))).toEqual(JSON.parse(JSON.stringify(desktopCanvasCapabilities)))
+    expect(bridge.capabilities()).toBe(capabilities)
+    const frozen: unknown[] = []
+    function collect(value: unknown) {
+      if (!value || typeof value !== 'object') return
+      frozen.push(value)
+      for (const entry of Object.values(value)) collect(entry)
+    }
+    collect(capabilities)
+    expect(frozen.length).toBeGreaterThan(10)
+    expect(frozen.every((value) => Object.isFrozen(value))).toBe(true)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('forwards the content and source of a saved copy only when the kernel passes them', async () => {
+    const invoke = vi.fn(async () => null)
+    const bridge = loadCanvasBridge(invoke)
+    await bridge.createProject('新项目')
+    await bridge.createProject('副本', '{"schemaVersion":2}', { sourceProjectId: 'source' })
+    await bridge.createProject('副本', '{"schemaVersion":2}')
+    // A wrong type is passed on so the main process refuses it, rather than
+    // being dropped into an empty new project.
+    await bridge.createProject('副本', 42)
+    await bridge.createProject('副本', undefined, { sourceProjectId: 'source' })
+    expect(invoke.mock.calls).toEqual([
+      ['canvas-host:create-project', '新项目'],
+      ['canvas-host:create-project', '副本', '{"schemaVersion":2}', { sourceProjectId: 'source' }],
+      ['canvas-host:create-project', '副本', '{"schemaVersion":2}', undefined],
+      ['canvas-host:create-project', '副本', 42, undefined],
+      ['canvas-host:create-project', '副本', undefined, { sourceProjectId: 'source' }],
     ])
   })
 })
