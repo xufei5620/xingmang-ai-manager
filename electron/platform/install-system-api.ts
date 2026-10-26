@@ -19,6 +19,7 @@ import {
   detachHostNotifier,
   type HostNotifier,
 } from './host-notification-bridge'
+import { notifyPrivacyChanged } from './privacy-change-bridge'
 import { proxyBypassActive, proxySiteDirectActive } from './proxy-bypass-bridge'
 import { deliverToMainRenderer } from './renderer-delivery-bridge'
 import { trayAvailability } from './tray-availability-bridge'
@@ -197,6 +198,7 @@ export function installPlatformSystemApi(
             return owner.session.resolveProxy(url)
           },
           onError: options.onError,
+          onPrivacyChanged: notifyPrivacyChanged,
           notify: (kind, key, detail) =>
             notifications?.notify(kind, key, detail) ?? 'unsupported',
         })

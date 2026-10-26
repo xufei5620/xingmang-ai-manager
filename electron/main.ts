@@ -50,6 +50,7 @@ import { createRendererCrashRecovery, type RendererCrashRecovery } from './rende
 import { createRendererRelease, type RendererRelease, type RendererReleaseLogEvent } from './renderer-release'
 import { createReleasedRendererWatch, noticeFingerprint } from './released-renderer-watch'
 import { createBalanceAlerts, createSpendSpikeRecordStore, readSpendBaseline } from './balance-alerts'
+import { createEmptyBalanceRecordStore } from './empty-balance-alert'
 import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
 import { resolveUsableSubscription } from './subscription-summary'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
@@ -107,6 +108,7 @@ import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
 import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
+import { attachPrivacyChangeListener } from './platform/privacy-change-bridge'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
 import { networkSettingsTarget } from './proxy-bypass'
@@ -183,6 +185,7 @@ import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } fr
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
+import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 
 guardProcessOutputStreams()
 
@@ -1154,6 +1157,7 @@ if (!hasSingleInstanceLock) {
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
+    let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
     // 账号服务也建得比这里晚。下载线路与游戏加速用的是同一个账号口径，所以
     // 指向同一个读取函数，而不是各写一份。
@@ -1190,6 +1194,7 @@ if (!hasSingleInstanceLock) {
       },
       getExternalClientAccountId: () => readExternalClientAccountId(),
       readCurrentManagedCliKeys: () => readCurrentManagedCliKeys(),
+      readOtherManagedCliKeyAccounts: () => readOtherManagedCliKeyAccounts(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
       // 历史账号的工具配置跟应用线路：因为连不上换了、整份写入跟过去以后，照星芒账号那样提示重开（#1061 第 2 条）。
       relayRouteLastChange: (siteId) => relayRouteController.lastChange(siteId),
@@ -1536,6 +1541,7 @@ if (!hasSingleInstanceLock) {
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     let launchInstallTried = false
     // Windows 上开机自启、窗口没打开过、开机时没装的那一版（'window'）：等第一次打开窗口再装。
+    // 电脑闲下来时跳框先问了的，就撤下（withdrawLaunchInstall）。
     let launchInstallAwaitingWindow: string | null = null
     const startLaunchInstall = (version: string, mode: Exclude<LaunchInstallMode, 'skip'>) => {
       const background = mode === 'background'
@@ -1623,6 +1629,15 @@ if (!hasSingleInstanceLock) {
         return
       }
       startLaunchInstall(version, mode)
+    }
+    // 跳框问过了就不再走打开时装（update-install-prompt.ts，#1410）：等着开窗口的那一版，跳框叫出
+    // 窗口时别再预告装一遍；两分钟里还没轮到的，也别在客户回答前后自己装起来。点了「稍后再说」的
+    // 照框里说的，退出或下次打开时装。
+    const withdrawLaunchInstall = () => {
+      const awaiting = launchInstallAwaitingWindow
+      launchInstallTried = true
+      launchInstallAwaitingWindow = null
+      if (awaiting) runtimeLog.log('info', 'updater', 'install.on-launch.withdrawn', `开机时留着等开窗口的 ${awaiting} 交给跳框问了，第一次打开窗口时不再预告装`)
     }
     const unsubscribeAutoUpdateInstall = updaterService.subscribe((state) => {
       const downloaded = resolveDownloadedVersionToRecord(state, pendingUpdateRecord)
@@ -1749,7 +1764,7 @@ if (!hasSingleInstanceLock) {
       return issue()
     }
     const accountService = accounts.client
-    // 余额跌破 5 美元、花费突然变多这两条提醒由主进程判断（balance-alerts.ts），界面关着时也照样提醒。
+    // 余额跌破 5 美元、余额到了 $0、花费突然变多这几条提醒由主进程判断（balance-alerts.ts），界面关着时也照样提醒。
     const balanceAlerts = createBalanceAlerts({
       notify: (kind, eventKey, notice) => { hostNotifier()({ activity: kind, eventKey, ...(notice ? { detail: notice } : {}) }) },
       readBaseline: () => readSpendBaseline({
@@ -1757,8 +1772,9 @@ if (!hasSingleInstanceLock) {
         getUsage: (query) => accountService.getUsage(query),
       }),
       ...createSpendSpikeRecordStore(managerDataDirectory),
+      emptyRecord: createEmptyBalanceRecordStore(managerDataDirectory),
     })
-    // 托盘余额和两条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
+    // 托盘余额和几条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
     const observeAccountBalance = (balance: AccountBalance) => {
       latestTrayBalance = balance
       applicationTray?.updateSnapshot()
@@ -1773,7 +1789,10 @@ if (!hasSingleInstanceLock) {
         quotaPerUnit: balance.quotaPerUnit,
         at,
         supportsUsage: accountService.capabilities.supportsUsage,
-        subscribed: resolveUsableSubscription(latestTraySubscription, { now: at, quotaPerUnit: balance.quotaPerUnit }) !== null,
+        // 订阅跟着余额读回来以后才读（界面那边），换账号时清空：还没读到就是 null，不当作没有。
+        subscribed: !accountService.capabilities.supportsSubscriptions ? false
+          : latestTraySubscription === null ? null
+            : resolveUsableSubscription(latestTraySubscription, { now: at, quotaPerUnit: balance.quotaPerUnit }) !== null,
       }).catch((cause: unknown) => runtimeLog.exception('account', 'balance-alert.failed', cause))
     }
     readBillingAccountScope = () => {
@@ -1785,9 +1804,13 @@ if (!hasSingleInstanceLock) {
       const state = accountService.getSessionState()
       return { authenticated: state.authenticated && Boolean(state.account), userId: state.account?.userId }
     })
+    // 外部客户端归属记在谁名下：站点加 userId。换账号以后认上一个账号那份（已知37）也照这个写法拼。
+    function externalClientOwner(siteId: string, userId: number): string {
+      return JSON.stringify([siteId, userId])
+    }
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
-      return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
+      return state.authenticated && state.account ? externalClientOwner(accounts.getSiteId(), state.account.userId) : null
     }
     // 匿名使用统计（usage-stats.ts，yoyo 10-26 选的「推荐档」）：每天最多发成一次版本、系统、装了哪些工具、
     // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关是设置「隐私数据」里的「匿名使用统计」，
@@ -1842,6 +1865,10 @@ if (!hasSingleInstanceLock) {
     noteUsageEvent = (event) => { usageStats.record(event) }
     if (unexpectedExit) usageStats.record({ kind: 'hang', hang: 'unexpectedExit' })
     usageStats.start()
+    // 设置里一关就删掉本机攒的计数（方案第 5 节「关掉后立刻停，计数文件一起删掉」），不等最多 6 小时后的那次定时检查。
+    const detachPrivacyListener = attachPrivacyChangeListener((kind, enabled) => {
+      if (kind === 'anonymousUsage' && !enabled) void usageStats.discard()
+    })
     // 只在星芒有窗口在前台时量主进程卡没卡住：后台被系统放慢的不算，也不在后台空转。
     const mainStallMonitor = createMainStallMonitor({ onStall: () => { usageStats.record({ kind: 'hang', hang: 'stall' }) } })
     const resumeStallMonitor = () => { mainStallMonitor.resume() }
@@ -1853,6 +1880,7 @@ if (!hasSingleInstanceLock) {
       app.off('browser-window-focus', resumeStallMonitor)
       app.off('browser-window-blur', pauseStallMonitor)
       mainStallMonitor.stop()
+      detachPrivacyListener()
       usageStats.stop()
       noteUsageEvent = null
     })
@@ -1881,6 +1909,14 @@ if (!hasSingleInstanceLock) {
     readCurrentManagedCliKeys = async () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? managedCliKeyStore.read(state.account.userId) : []
+    }
+    // 换了账号以后外部客户端跟着换 Key 时读（已知37）：当前站别的账号的那份缓存。
+    readOtherManagedCliKeyAccounts = async () => {
+      const state = accountService.getSessionState()
+      if (!state.authenticated || !state.account) return []
+      const siteId = accounts.getSiteId()
+      const others = await managedCliKeyStore.readOtherAccounts(state.account.userId)
+      return others.map((entry) => ({ owner: externalClientOwner(siteId, entry.userId), keys: entry.keys }))
     }
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
@@ -2106,6 +2142,12 @@ if (!hasSingleInstanceLock) {
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
     const shouldLogUpdateState = createUpdateStateLogFilter()
+    // 手机遥控开着就不让电脑自己睡着：人走开了电脑一睡，手机上发消息就没人理（YK-1）。
+    const codexRemoteKeepAwake = createCodexRemoteKeepAwake({
+      blocker: powerSaveBlocker,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'codex-remote', event, message, detail),
+      onChange: () => applicationTray?.updateSnapshot(),
+    })
     // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
     const codexRemote = createCodexRemote({
       managerDataDirectory,
@@ -2116,7 +2158,10 @@ if (!hasSingleInstanceLock) {
       codexEnv: rootedOptions.codexExtensions.env,
       providerRoots: rootedOptions.system.providerRoots,
       windowsExecution: windowsCliExecution,
-      onStateChanged: (snapshot) => sendToMainWindow('onCodexRemoteStateChanged', snapshot),
+      onStateChanged: (snapshot) => {
+        codexRemoteKeepAwake.observe(snapshot)
+        sendToMainWindow('onCodexRemoteStateChanged', snapshot)
+      },
     })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration: userAcceleration,
@@ -2278,6 +2323,7 @@ if (!hasSingleInstanceLock) {
       unsubscribeInstallKeepAwakeQueue()
       unsubscribeInstallKeepAwakeUpdate()
       installKeepAwake.dispose()
+      codexRemoteKeepAwake.dispose()
     })
     quitCleanup.add('routes', () => {
       unsubscribeRelayRoute()
@@ -2428,7 +2474,6 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       getState: () => updaterService.getState(),
       autoUpdate: () => updaterService.autoUpdateEnabled(),
-      downloadedAtLaunch: pendingUpdateAtLaunch.downloadedVersion,
       standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
       unattended: () => canInstallUnattended({
         platform: process.platform,
@@ -2446,6 +2491,8 @@ if (!hasSingleInstanceLock) {
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'
+        // 先撤，再叫出窗口：窗口第一次显示时会把等着开窗口的那一版交给打开时装。
+        withdrawLaunchInstall()
         // 挂在隐藏窗口上的框用户看不见：窗口缩着时先叫出来，点了「稍后再说」再照原样缩回去。
         const wasMinimized = mainWindow.isMinimized()
         const wasHidden = !wasMinimized && !mainWindow.isVisible()
@@ -2876,6 +2923,7 @@ if (!hasSingleInstanceLock) {
           acceleration: trayAcceleration?.entry() ?? null,
           keepAwakeLabel: trayKeepAwakeLabel({
             tools: cliKeepAwake.tools().map((tool) => isProviderId(tool) ? cliCatalog[tool].name : tool),
+            remoteControl: codexRemoteKeepAwake.holding(),
             installing: installKeepAwake.reasons().includes('install'),
             downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
           }),

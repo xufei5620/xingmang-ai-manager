@@ -79,7 +79,6 @@ function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInst
     platform,
     getState: () => state.snapshot,
     autoUpdate: () => true,
-    downloadedAtLaunch: null,
     standardAccount: () => state.standardAccount,
     unattended: () => true,
     elevated: () => false,
@@ -146,15 +145,16 @@ describe('update install prompt copy', () => {
 })
 
 describe('resolveInstallPromptVersion', () => {
-  const base = { autoUpdate: true, snapshot: snapshot(), downloadedAtLaunch: null, standardAccount: false }
+  const base = { autoUpdate: true, snapshot: snapshot(), attempted: false, standardAccount: false }
 
-  it('asks about a version downloaded during this run', () => {
+  it('asks about a downloaded version that no automatic install has taken', () => {
+    // Downloaded during this run, or downloaded before it while the launch install held it back
+    // (a login launch waiting for the first window, or the two-minute launch window missed).
     expect(resolveInstallPromptVersion(base)).toBe('0.2.22')
   })
 
-  it('leaves a version that was already downloaded at launch to the launch install', () => {
-    expect(resolveInstallPromptVersion({ ...base, downloadedAtLaunch: '0.2.22' })).toBeNull()
-    expect(resolveInstallPromptVersion({ ...base, downloadedAtLaunch: '0.2.21' })).toBe('0.2.22')
+  it('leaves a version the launch install or another automatic install has taken to that install', () => {
+    expect(resolveInstallPromptVersion({ ...base, attempted: true })).toBeNull()
   })
 
   it('does not ask when the customer cannot or did not choose to install automatically', () => {
@@ -375,6 +375,122 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
+  it('waits for the customer to come back before asking when a 星芒 window is open on a Mac nobody is at', async () => {
+    const test = harness()
+    test.state.windowVisible = true
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    // An idle install needs every window tucked away, so marking the version as asked would leave it alone for the whole run.
+    expect(test.asks).toHaveLength(0)
+    expect(test.events).not.toContain('install.prompt.away')
+    expect(test.events).toContain('install.prompt.away-window-open')
+    // Away may last all night: look less often until someone is back.
+    expect(test.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual([])
+    expect(test.events.filter((event) => event === 'install.prompt.away-window-open')).toHaveLength(1)
+
+    // Back and typing: wait for the usual pause, checking at the usual pace.
+    test.state.locked = false
+    test.state.idleMs = 0
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([PROMPT_POLL_MS])
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已经下好，现在装上吗？')
+    prompter.dispose()
+  })
+
+  it('treats a window state that cannot be read as open and waits for the customer', async () => {
+    const test = harness('darwin', { windowVisible: () => { throw new Error('gone') } })
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.events).not.toContain('install.prompt.away')
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual([])
+    test.state.locked = false
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    prompter.dispose()
+  })
+
+  it('goes back to the idle install once every window is tucked away while nobody is there', async () => {
+    const test = harness()
+    test.state.windowVisible = true
+    test.state.idleMs = IDLE_INSTALL_IDLE_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.events).toContain('install.prompt.away-window-open')
+
+    test.state.windowVisible = false
+    await test.runTimers()
+    expect(test.events).toContain('install.prompt.away')
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.installedIdle).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('keeps the question up for the customer when a window was already open before it appeared', async () => {
+    const test = harness()
+    test.state.windowVisible = true
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+
+    test.state.idleMs = IDLE_INSTALL_IDLE_MS * 6
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.asks[0].signal.aborted).toBe(false)
+    expect(test.events).not.toContain('install.prompt.abandoned')
+    expect(test.installedIdle).toEqual([])
+
+    test.asks[0].answer('install')
+    await settle()
+    expect(test.installedNow).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('still closes a question it brought a hidden window up for, although that window is showing now', async () => {
+    const test = harness('darwin', {
+      ask: (prompt, signal) => new Promise<InstallPromptAnswer>((resolve) => {
+        // Like the host: the main window comes up for the question and goes back once it closes.
+        test.state.windowVisible = true
+        signal.addEventListener('abort', () => {
+          test.state.windowVisible = false
+          resolve('later')
+        })
+        test.asks.push({ prompt, signal, answer: resolve })
+      }),
+    })
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.state.windowVisible).toBe(true)
+
+    test.state.idleMs = IDLE_INSTALL_IDLE_MS
+    await test.runTimers()
+    expect(test.asks[0].signal.aborted).toBe(true)
+    expect(test.events).toContain('install.prompt.abandoned')
+    await test.runTimers()
+    expect(test.installedIdle).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
   it('on Windows still asks when nobody is around and never installs on its own', async () => {
     const test = harness('win32', { unattended: () => false })
     const prompter = createUpdateInstallPrompter(test.options)
@@ -460,6 +576,50 @@ describe('createUpdateInstallPrompter', () => {
     prompter.dispose()
   })
 
+  it('asks about a version the launch install held for the first window on a Windows login launch', async () => {
+    // The launch install decided 'window' and wrote nothing, so the question is the only way this
+    // computer installs before it is shut down again.
+    const test = harness('win32', { unattended: () => false })
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已经下好，现在装上吗？')
+    test.asks[0].answer('install')
+    await settle()
+    expect(test.installedNow).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('stops waiting to ask once the launch install takes the version', async () => {
+    // The customer opened the window from the tray before the computer went quiet: the launch
+    // install announced the version and marked it attempted.
+    const test = harness('win32', { unattended: () => false })
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    expect(test.timers.map((timer) => timer.ms)).toEqual([PROMPT_POLL_MS])
+    test.state.attempted = '0.2.22'
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.timers).toEqual([])
+    prompter.dispose()
+  })
+
+  it('does not ask when it cannot tell whether an automatic install has taken the version', async () => {
+    const test = harness('win32', {
+      unattended: () => false,
+      attempted: () => { throw new Error('record unreadable') },
+    })
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    prompter.dispose()
+  })
+
   it('leaves a version already tried by another automatic install alone', async () => {
     const test = harness()
     test.state.attempted = '0.2.22'
@@ -468,6 +628,7 @@ describe('createUpdateInstallPrompter', () => {
     prompter.observe(test.state.snapshot)
     await test.runTimers()
     await test.runTimers()
+    expect(test.asks).toHaveLength(0)
     expect(test.installedIdle).toEqual([])
     prompter.dispose()
   })

@@ -175,6 +175,7 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 | Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
 | Claude 的命令确认 | `permissions.defaultMode` 与 `skipDangerousModePermissionPrompt` | `default`（逐条问）；2.1.283 起接第三方中转又没写时进自动模式 | `bypassPermissions`（新客户模板写；已有设置的老客户只在没写时补，写过任何模式都不动） | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
+| Codex、Grok 的回复语言 | `~/.codex/AGENTS.md`、`~/.grok/AGENTS.md`（两家的全局说明，拼在项目说明前面交给模型） | 没有（跟着项目说明和对话语言走） | 一份写着「始终用简体中文回复」的 `AGENTS.md`（配置目录里已有任何一份全局说明就不放：Codex 的 `AGENTS.override.md` / `AGENTS.md`，Grok 认的 `AGENTS.md` / `AGENT.md` / `CLAUDE.md` / `CLAUDE.local.md`，大小写不论、链接也算；切回官方不收回） | 同上，两家又没有 `language` 这样的设置 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
 | VS Code、Cursor 里 Claude Code 插件的登录页 | 编辑器用户设置（`Code/User/settings.json`、`Cursor/User/settings.json`）的 `claudeCode.disableLoginPrompt` | `false`（一打开先要登录 Anthropic 账号） | `true`（编辑器打开过才补，客户写过的不动；切回官方不收回，认不出是不是我们补的） | 官方文档「使用第三方提供商」第一步；在编辑器终端里跑一次 Claude Code 插件就自己装上，客户没有那种账号 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
@@ -346,6 +347,8 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 - 官方账号、手填、来源没确认、被改动过的配置一律不碰。
 - 第 5 版的编辑器设置（`claudeCode.disableLoginPrompt`）不在 Claude Code 自己的配置里，不进 `fillRelayTemplateDefaults`：
   补设置那一轮在 Claude Code 那份到期时顺带补（`editor-claude-login-prompt.ts`），跟着版本号只做一次。
+- 第 6 版的 Codex、Grok 全局说明（配置目录里没有任何一份时放的那份「用中文回复」`AGENTS.md`）不是配置里的键，
+  但在工具配置目录里，所以进 `fillRelayTemplateDefaults` 的同一次两阶段提交（`globalResponseLanguagePlans`），保存配置时也一起写。
 
 **规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
 `relayTemplateRevision` 加一**，否则老客户拿不到。只在保存路径里加、不进补缺清单的项（比如跟着

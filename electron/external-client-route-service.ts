@@ -60,12 +60,28 @@ export function buildExternalClientDetectionErrorLogDetail(failure: ExternalClie
 
 /**
  * 外部客户端要跟上的那几把（#1113）：星芒替哪几个工具换过 Key、它们自己也已经换上了缓存里那把，连同读出来的缓存。
- * 主进程内部专用（I3）。
+ * 换了账号的（已知37）另交两样：工具现在用的就是当前账号缓存里那把的（inUse），和这台电脑上同一个站别的账号缓存过的
+ * 托管 Key（previousAccounts）。主进程内部专用（I3）。
  */
 export interface ManagedKeyFollowTarget {
   owner: string
   keys: readonly { provider: ProviderId; apiKey: string }[]
   cachedKeys: readonly StoredManagedCliKey[]
+  inUse: readonly { provider: ProviderId; apiKey: string }[]
+  previousAccounts: readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]
+}
+
+/** 这把是不是这个账号缓存里给 provider 的托管 Key：眼下那把，或者以前缓存过、后来被换掉的那几把。 */
+function isAccountManagedKey(provider: ProviderId, key: string, cachedKeys: readonly StoredManagedCliKey[]): boolean {
+  return cachedKeys.some((entry) => entry.provider === provider && entry.key === key) || isReplacedManagedKey(provider, key, cachedKeys)
+}
+
+/** 星芒写进客户端、现在正用着的那一份（externalClientKeyCredential）。主进程内部专用（I3）。 */
+interface ExternalClientKeyCredential {
+  route: { endpointId: RelayEndpointId; baseUrl: string }
+  baseUrl: string
+  apiKey: string
+  model: string | null
 }
 
 /** 比两个线路地址时不计末尾的斜杠：Claude Desktop 设置窗口里存的地址可能带一个。 */
@@ -133,6 +149,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     : null
   let externalScansStarted = 0
   let newestExternalScanSaved = 0
+  // 这次运行里替客户端换成过几回 Key（#1113、已知37）：保存配置后台那一眼换成了，界面要重读。
+  let externalKeysFollowed = 0
   // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
   // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
@@ -564,26 +582,47 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   /**
    * #1113：Claude Desktop 默认借 Claude Code 那把星芒密钥，WorkBuddy、OpenCode 也能选「使用某工具当前的密钥」。
    * 星芒替那个工具换了 Key（撤销后换新、失效重签、换组）以后，客户端要跟上的就是它现在用的那把，连同缓存一起交出。
-   * 只交这台电脑上托管 Key 换过、自己也已经换上缓存里那把的工具；一个都没有回 null：没登录、从没换过，或者工具
-   * 自己还没换上（写配置没成、客户换成了别的 Key），这时不替客户端做主。主进程内部专用，密钥永不跨 IPC（I3）。
+   * 只交这台电脑上托管 Key 换过、自己也已经换上缓存里那把的工具。已知37：换了账号、工具同步成新账号那把的，客户端
+   * 手上要是上一个账号给这个工具的那把也跟上，所以同一个站别的账号缓存过 Key 时也交出。两样都没有回 null：没登录、
+   * 从没换过，或者工具自己还没换上（写配置没成、客户换成了别的 Key、换账号时没勾这个工具），这时不替客户端做主。
+   * 主进程内部专用，密钥永不跨 IPC（I3）。
    */
   async function managedKeyFollowTarget(): Promise<ManagedKeyFollowTarget | null> {
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     if (owner === null || !serviceOptions.readCurrentManagedCliKeys) return null
     const cachedKeys = await serviceOptions.readCurrentManagedCliKeys().catch(() => [])
-    const keys = cachedKeys.flatMap((entry) => {
-      if (isRetiredProviderId(entry.provider) || !entry.replacedKeyDigests?.length) return []
+    const otherAccounts = cachedKeys.length && serviceOptions.readOtherManagedCliKeyAccounts
+      ? (await serviceOptions.readOtherManagedCliKeyAccounts().catch(() => [])).filter((account) => account.owner !== owner) : []
+    // 别的账号给同一个工具缓存过另一把：换账号以后客户端手上可能还是那一把。
+    const otherAccountKey = (entry: StoredManagedCliKey) => otherAccounts.some((account) => account.keys.some((key) => key.provider === entry.provider && key.key !== entry.key))
+    // 先只看缓存：这台电脑上的托管 Key 从没被星芒换过、也没有别的账号时，一个工具的配置都不读。
+    const inUse = cachedKeys.flatMap((entry) => {
+      if (isRetiredProviderId(entry.provider) || (!entry.replacedKeyDigests?.length && !otherAccountKey(entry))) return []
       const tool = inspectNativeProviderConfig(entry.provider)
       return tool.hasApiKey && tool.matchesRelay && tool.apiKey === entry.key ? [{ provider: entry.provider, apiKey: entry.key }] : []
     })
-    if (!keys.length || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return null
-    return { owner, keys, cachedKeys }
+    const keys = inUse.filter((key) => cachedKeys.some((entry) => entry.provider === key.provider && entry.replacedKeyDigests?.length))
+    const previousAccounts = otherAccounts.filter((account) => account.keys.some((entry) => inUse.some((key) => key.provider === entry.provider && key.apiKey !== entry.key)))
+    if ((!keys.length && !previousAccounts.length) || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return null
+    return { owner, keys, cachedKeys, inUse, previousAccounts }
+  }
+  /**
+   * 星芒刚替某个工具换了 Key（保存配置那一下）：马上看一眼外部客户端要不要跟上，不等下次检测。先只看缓存和工具配置，
+   * 没有要跟的不为它盘点一遍本机客户端。这一轮是后台做的，界面手上还是换之前那份（换账号时首页在同步工具之前就读过
+   * 客户端），换成了叫一声让它重读。
+   */
+  async function followManagedKeysNow(): Promise<void> {
+    if (!await managedKeyFollowTarget()) return
+    const before = externalKeysFollowed
+    await scanExternalClients()
+    if (externalKeysFollowed !== before) serviceOptions.onToolRouteFollowed?.()
   }
   /**
    * 把客户端那份换成借的那个工具现在的 Key（#1113），只换 Key，地址、型号和别的设置都不动。全都对上才换：
    * 正在用的是星芒替当前账号写的那份、地址是这个站的线路；它那把是缓存记着「被换掉」的某个工具的旧 Key；
    * 不是客户自己填的（保存时记下的来源，0.2.20 以前保存的没记，凭「就是工具换下来的那把」认）；新 Key 认它
-   * 用着的型号。客户端开着就先不写，等它退出再换（同换线路 C11），那一行带 keyPending、pending 交回去记着。
+   * 用着的型号。换了账号的（已知37）认的是上一个账号：见 externalClientKeyChange。客户端开着就先不写，等它退出
+   * 再换（同换线路 C11），那一行带 keyPending、pending 交回去记着。
    */
   async function followExternalClientKey(
     status: ExternalClientRuntimeStatus,
@@ -599,15 +638,11 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         throw new Error('账号已变化，这次不换密钥')
       }
     }
-    const found = await externalClientKeyCredential(status, activeSite, owner)
-    // 它那把是哪个工具换下来的，就跟那个工具现在那把。
-    const next = found ? target.keys.find((key) => key.apiKey !== found.apiKey && isReplacedManagedKey(key.provider, found.apiKey, target.cachedKeys)) : undefined
-    if (!found || !next) return { client: null, pending: false }
-    const recorded = (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
-      ? externalOwnership.inspect(tool, owner, found.route.baseUrl, found.apiKey) : null
-    // 客户自己在客户端里填的那把，哪怕就是工具的旧 Key 也不动。
-    if (!recorded || recorded.source === 'manual') return { client: null, pending: false }
-    const detail = { tool, route: found.route.endpointId }
+    const change = await externalClientKeyChange(status, client, activeSite, target)
+    if (!change) return { client: null, pending: false }
+    const { found, next } = change
+    const switched = change.from !== owner
+    const detail = { tool, route: found.route.endpointId, ...(switched ? { accountSwitch: true } : {}) }
     if (status.running) {
       runtimeLog?.log('info', 'config', 'external-client.key.deferred', `${name} 还开着，先不换密钥，退出后再换`, detail)
       return { client: { ...client, keyPending: true }, pending: true }
@@ -625,9 +660,18 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
         assertContext()
       }
-      await externalOwnership.stageKey(tool, owner, found.route.baseUrl, found.apiKey, next.apiKey)
-      await moveExternalClientKey(status, { baseUrl: found.baseUrl, from: found.apiKey, to: next.apiKey }, assertContext, recheck)
-      await externalOwnership.rewrite(tool, owner, found.route.baseUrl, next.apiKey)
+      const keyChange = { baseUrl: found.baseUrl, from: found.apiKey, to: next.apiKey }
+      if (switched) {
+        // 换了账号：归属先记到当前账号名下（来源照上一个账号那份记），再改客户端。中途断了，客户端手上还是上一个
+        // 账号那把，上一个账号的归属也还在，下次检测照样认出来再换。
+        await externalOwnership.write(tool, owner, found.route.baseUrl, next.apiKey, change.source)
+        await moveExternalClientKey(status, keyChange, assertContext, recheck)
+      } else {
+        await externalOwnership.stageKey(tool, owner, found.route.baseUrl, found.apiKey, next.apiKey)
+        await moveExternalClientKey(status, keyChange, assertContext, recheck)
+        await externalOwnership.rewrite(tool, owner, found.route.baseUrl, next.apiKey)
+      }
+      externalKeysFollowed += 1
       runtimeLog?.log('info', 'config', 'external-client.key.followed', `已把 ${name} 换成 ${cliCatalog[next.provider].name} 现在用的密钥`, detail)
       return { client: await describeExternalClient(latest.status), pending: false }
     } catch (error) {
@@ -643,17 +687,65 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     }
   }
   /**
-   * 星芒替当前账号写进这个客户端、现在正用着的那一份（#1113）：route 是它在这个站登记的哪条线路，baseUrl 是配置里
-   * 原样写着的地址（Claude Desktop 设置窗口存的可能带斜杠），Key 和型号原样交出（Claude Desktop 没写型号时 model
-   * 为 null）。归属对不上、不在这个站的线路上回 null。主进程内部专用，密钥永不跨 IPC（I3）。
+   * 这个客户端要换成哪把，换不了回 null。from 是归属记在哪个账号名下：
+   * - 当前账号（#1113）：它那把是哪个工具换下来的，就跟那个工具现在那把。
+   * - 上一个账号（已知37）：首页认它不是当前账号那份（configurationSource 为 other）；归属记在这个站别的账号名下，
+   *   它那把是那个账号缓存里给某个工具的托管 Key；那个工具现在用的是当前账号缓存里那把（换账号时勾了它同步）。
+   *   换账号时没同步这个工具的，客户端也不动，跟着客户在「同步到工具」里的选择走。
+   * 两种都不动客户自己填的（manual）。只读一遍客户端配置：Windows 上读 Claude Desktop 每次都要起 PowerShell。
+   */
+  async function externalClientKeyChange(
+    status: ExternalClientRuntimeStatus,
+    client: ExternalClientStatus,
+    activeSite: RelaySite,
+    target: ManagedKeyFollowTarget,
+  ): Promise<{ found: ExternalClientKeyCredential; next: { provider: ProviderId; apiKey: string }; from: string; source?: ExternalClientKeySource } | null> {
+    const { tool } = status
+    const { owner } = target
+    const unchanged = () => (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
+    const sameAccount = (baseUrl: string, apiKey: string) => target.keys.length > 0 && unchanged()
+      && externalOwnership.matches(tool, owner, baseUrl, apiKey)
+    const switchable = client.configurationSource === 'other' && target.previousAccounts.length > 0
+    const previous = (baseUrl: string, apiKey: string) => switchable && unchanged() ? previousAccountKey(tool, target, baseUrl, apiKey) : null
+    if (!target.keys.length && !switchable) return null
+    const found = await externalClientKeyCredential(status, activeSite, (baseUrl, apiKey) => sameAccount(baseUrl, apiKey) || previous(baseUrl, apiKey) !== null)
+    if (!found) return null
+    if (sameAccount(found.route.baseUrl, found.apiKey)) {
+      const next = target.keys.find((key) => key.apiKey !== found.apiKey && isReplacedManagedKey(key.provider, found.apiKey, target.cachedKeys))
+      const recorded = next && unchanged() ? externalOwnership.inspect(tool, owner, found.route.baseUrl, found.apiKey) : null
+      // 客户自己在客户端里填的那把，哪怕就是工具的旧 Key 也不动。
+      return next && recorded && recorded.source !== 'manual' ? { found, next, from: owner, ...(recorded.source ? { source: recorded.source } : {}) } : null
+    }
+    const match = previous(found.route.baseUrl, found.apiKey)
+    return match ? { found, ...match } : null
+  }
+  /** 已知37：这把是不是这个站别的账号缓存里给某个工具的托管 Key、归属记在那个账号名下、不是客户自己填的。 */
+  function previousAccountKey(
+    tool: ExternalToolId,
+    target: ManagedKeyFollowTarget,
+    baseUrl: string,
+    apiKey: string,
+  ): { next: { provider: ProviderId; apiKey: string }; from: string; source?: ExternalClientKeySource } | null {
+    for (const account of target.previousAccounts) {
+      const next = target.inUse.find((key) => key.apiKey !== apiKey && isAccountManagedKey(key.provider, apiKey, account.keys))
+      if (!next) continue
+      const recorded = externalOwnership.inspect(tool, account.owner, baseUrl, apiKey)
+      if (!recorded || recorded.source === 'manual') continue
+      return { next, from: account.owner, ...(recorded.source ? { source: recorded.source } : {}) }
+    }
+    return null
+  }
+  /**
+   * 星芒写进这个客户端、现在正用着的那一份（#1113）：route 是它在这个站登记的哪条线路，baseUrl 是配置里原样写着的
+   * 地址（Claude Desktop 设置窗口存的可能带斜杠），Key 和型号原样交出（Claude Desktop 没写型号时 model 为 null）。
+   * 归属认不认由 owned 说（当前账号的，或者换账号以前那个账号的）；对不上、不在这个站的线路上回 null。主进程内部
+   * 专用，密钥永不跨 IPC（I3）。
    */
   async function externalClientKeyCredential(
     status: ExternalClientRuntimeStatus,
     activeSite: RelaySite,
-    owner: string,
-  ): Promise<{ route: { endpointId: RelayEndpointId; baseUrl: string }; baseUrl: string; apiKey: string; model: string | null } | null> {
-    const owned = (baseUrl: string, apiKey: string) => (serviceOptions.getExternalClientAccountId?.() ?? null) === owner
-      && externalOwnership.matches(status.tool, owner, baseUrl, apiKey)
+    owned: (baseUrl: string, apiKey: string) => boolean,
+  ): Promise<ExternalClientKeyCredential | null> {
     if (status.tool === 'claudeDesktop') {
       // 一次读出地址再比：Windows 上每读一次都要起 PowerShell 查管理策略。
       const gateway = await claudeDesktopConfig(status).then((service) => service.inspectOwnedRoute()).catch(() => null)
@@ -829,7 +921,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     configureExternalTool,
     switchExternalClientSource,
     recheckPendingExternalRoutes,
-    managedKeyFollowTarget,
+    followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
   }
 }

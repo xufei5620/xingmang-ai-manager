@@ -142,6 +142,7 @@
 - `platform/runtime-log-bridge.ts` — 平台 handler 先于 `RuntimeLogStore` 注册，这里把早到的日志缓冲起来，等 `main.ts` 接上后补发（I4 要求的日志那一半）
 - `platform/host-notification-bridge.ts` — 让 `main.ts` 一侧（加速快用完/已断开、终端事件）能发系统通知；**不缓冲**，没接上就如实返回 `unsupported`，因为晚到的"加速还剩 5 分钟"比不送更糟
 - `platform/proxy-bypass-bridge.ts` / `platform/tray-availability-bridge.ts` — 把 `main.ts` 里"代理连不上已改直连 / 只对星芒改直连"和"托盘建没建出来"两个状态读给设置页；没接上时分别当作没绕过、不知道
+- `platform/privacy-change-bridge.ts` — 方向反过来：设置页存好隐私开关后告诉 `main.ts`，关掉「匿名使用统计」时当场删掉本机攒的计数（`usage-stats-reporter.ts` 的 `discard`）；没接上就什么都不做，那边接上后每次记和发之前都重读开关
 
 ### 系统代理（给加速用，不在主窗口里跑）
 - `platform/windows-system-proxy.ts` — Windows 上开关当前用户的系统代理：经可信 PowerShell（固定路径 + `trustedCommandEnvironment` + `trustedOnly`，I2、I14）调 WinInet 改设置，先写恢复记录与租约，只在整体状态仍等于预期时才写；被拦时退到预编译脚本。加速辅助进程和卸载清理使用
