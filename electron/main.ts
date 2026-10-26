@@ -1155,6 +1155,7 @@ if (!hasSingleInstanceLock) {
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
+    let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
     // 账号服务也建得比这里晚。下载线路与游戏加速用的是同一个账号口径，所以
     // 指向同一个读取函数，而不是各写一份。
@@ -1191,6 +1192,7 @@ if (!hasSingleInstanceLock) {
       },
       getExternalClientAccountId: () => readExternalClientAccountId(),
       readCurrentManagedCliKeys: () => readCurrentManagedCliKeys(),
+      readOtherManagedCliKeyAccounts: () => readOtherManagedCliKeyAccounts(),
       getToolRouteRewriteMode: () => toolRouteRewriteMode,
       // 历史账号的工具配置跟应用线路：因为连不上换了、整份写入跟过去以后，照星芒账号那样提示重开（#1061 第 2 条）。
       relayRouteLastChange: (siteId) => relayRouteController.lastChange(siteId),
@@ -1800,9 +1802,13 @@ if (!hasSingleInstanceLock) {
       const state = accountService.getSessionState()
       return { authenticated: state.authenticated && Boolean(state.account), userId: state.account?.userId }
     })
+    // 外部客户端归属记在谁名下：站点加 userId。换账号以后认上一个账号那份（已知37）也照这个写法拼。
+    function externalClientOwner(siteId: string, userId: number): string {
+      return JSON.stringify([siteId, userId])
+    }
     readExternalClientAccountId = () => {
       const state = accountService.getSessionState()
-      return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
+      return state.authenticated && state.account ? externalClientOwner(accounts.getSiteId(), state.account.userId) : null
     }
     // 匿名使用统计（usage-stats.ts，yoyo 10-26 选的「推荐档」）：每天最多发成一次版本、系统、装了哪些工具、
     // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关是设置「隐私数据」里的「匿名使用统计」，
@@ -1896,6 +1902,14 @@ if (!hasSingleInstanceLock) {
     readCurrentManagedCliKeys = async () => {
       const state = accountService.getSessionState()
       return state.authenticated && state.account ? managedCliKeyStore.read(state.account.userId) : []
+    }
+    // 换了账号以后外部客户端跟着换 Key 时读（已知37）：当前站别的账号的那份缓存。
+    readOtherManagedCliKeyAccounts = async () => {
+      const state = accountService.getSessionState()
+      if (!state.authenticated || !state.account) return []
+      const siteId = accounts.getSiteId()
+      const others = await managedCliKeyStore.readOtherAccounts(state.account.userId)
+      return others.map((entry) => ({ owner: externalClientOwner(siteId, entry.userId), keys: entry.keys }))
     }
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)

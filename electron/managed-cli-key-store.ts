@@ -250,16 +250,32 @@ export class ManagedCliKeyStore {
     await this.writeQueue.catch(() => undefined)
     const record = await this.readRecord()
     const account = record?.accounts.find((entry) => entry.userId === userId)
-    // xm 站删老分组名之前把老名字下的 Key 全挂到了新名字下（Key 不变），本机记的老名字照着换，
-    // 开机时就不会因为「分组对不上」去重签一把、再重写一遍配置。文件里的老名字等下次保存时自然换掉。
-    return account?.keys.map((entry) => {
+    return account ? this.accountKeys(account) : []
+  }
+
+  /**
+   * 这台电脑上同一个站缓存过托管 Key 的别的账号（已知37）：换了账号、工具同步成新账号那把以后，外部客户端
+   * 手上的要是上一个账号给这个工具的那把，跟着换。读法同 read。
+   */
+  async readOtherAccounts(userId: number): Promise<{ userId: number; keys: StoredManagedCliKey[] }[]> {
+    this.assertEncryptionAvailable()
+    await this.writeQueue.catch(() => undefined)
+    const record = await this.readRecord()
+    return record?.accounts.filter((entry) => entry.userId !== userId)
+      .map((entry) => ({ userId: entry.userId, keys: this.accountKeys(entry) })) ?? []
+  }
+
+  // xm 站删老分组名之前把老名字下的 Key 全挂到了新名字下（Key 不变），本机记的老名字照着换，
+  // 开机时就不会因为「分组对不上」去重签一把、再重写一遍配置。文件里的老名字等下次保存时自然换掉。
+  private accountKeys(account: PersistedManagedCliKeyAccount): StoredManagedCliKey[] {
+    return account.keys.map((entry) => {
       const replaced = replacedDigests(account.replacedKeys?.[entry.provider])
       return {
         ...entry,
         ...(this.siteId === 'solov' ? { group: currentAccountGroupName(entry.group) } : {}),
         ...(replaced.length ? { replacedKeyDigests: replaced } : {}),
       }
-    }) ?? []
+    })
   }
 
   captureRevision(): number {
