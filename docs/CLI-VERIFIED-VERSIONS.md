@@ -142,6 +142,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的命令确认 | `permissions.defaultMode` 与 `skipDangerousModePermissionPrompt` | `default`（逐条问）；2.1.283 起接第三方中转又没写时进自动模式 | `bypassPermissions`（新客户模板写；已有设置的老客户只在没写时补，写过任何模式都不动） | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
+| VS Code、Cursor 里 Claude Code 插件的登录页 | 编辑器用户设置（`Code/User/settings.json`、`Cursor/User/settings.json`）的 `claudeCode.disableLoginPrompt` | `false`（一打开先要登录 Anthropic 账号） | `true`（编辑器打开过才补，客户写过的不动；切回官方不收回，认不出是不是我们补的） | 官方文档「使用第三方提供商」第一步；在编辑器终端里跑一次 Claude Code 插件就自己装上，客户没有那种账号 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
@@ -309,6 +310,8 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
   只补欠着的、换了账号不补，最多 6 次（`template-fill-retry.ts`）；失败只记日志、版本号不前进，下次开机再试。
   首页角落说一次补了哪几个工具（补做那次补上了也说）。
 - 官方账号、手填、来源没确认、被改动过的配置一律不碰。
+- 第 5 版的编辑器设置（`claudeCode.disableLoginPrompt`）不在 Claude Code 自己的配置里，不进 `fillRelayTemplateDefaults`：
+  补设置那一轮在 Claude Code 那份到期时顺带补（`editor-claude-login-prompt.ts`），跟着版本号只做一次。
 
 **规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
 `relayTemplateRevision` 加一**，否则老客户拿不到。只在保存路径里加、不进补缺清单的项（比如跟着

@@ -50,6 +50,7 @@
 - `cli-hook-events.ts` — 读钩子脚本丢进数据目录的小文件，决定弹不弹「终端里没回上 / 做完了 / 在等你」的系统通知；那个目录用户可写，文件一律当敌意输入：固定文件名格式、单链接有界读取（I8）、字段白名单重建（I5），文件里的字一个都不进通知
 - `cli-keep-awake.ts` — 终端里 Claude Code / Gemini / Grok 正在跑一轮时挡住系统自动睡眠，做完、出错、退出就放开，最多挡两小时；信号就是上面那套钩子记录。Codex 用它自己的防睡开关，不走这里
 - `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
+- `editor-claude-login-prompt.ts` — VS Code、Cursor 用户设置里的 `claudeCode.disableLoginPrompt`：写 Claude Code 配置时、开机补设置那一轮顺手补上，编辑器里的 Claude Code 插件就不再先要登录 Anthropic 账号；编辑器没打开过不建，客户写过的不动，设置文件按 JSONC 原样只插这一行，经 `config-files.ts` 同一套两阶段提交写入（I8、I9）
 - `claude-model-picker.ts` — Claude Code 的 `/model` 菜单：接当前账号时按 Key 实际可用的模型生成 `modelPicker` 与 `ANTHROPIC_DEFAULT_MODEL`，认得出本软件写的菜单，切回官方时收回
 - `codex-model-catalog.ts` — Codex（命令行与桌面端共用）的型号名单：随包官方名单（`bundled-catalog/codex-models`，按 sha256 钉住）按账号挑出能用的型号，写成 `CODEX_HOME/xingmang-models.json` 并在 `config.toml` 顶层指向它；这个文件坏了命令行起不来，所以本机命令行或桌面端太旧、默认型号不在名单里就不写，写了的收回
 - `tool-model-check.ts` — 打开工具前每天核一次账号能用的型号：默认型号下架了交给界面问，Claude Code 菜单与 Codex 型号名单悄悄刷新；两站都下架的型号开机那轮直接换掉；核对失败绝不挡打开
