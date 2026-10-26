@@ -6,7 +6,7 @@ import { usageDateRange } from '../../usage-date-range'
 const accountUsageQueryFields = new Set([
   'page', 'pageSize', 'type', 'startTimestamp', 'endTimestamp',
   'modelName', 'tokenName', 'group', 'requestId', 'upstreamRequestId',
-  'startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType',
+  'startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType', 'statsOnly',
 ])
 const accountUsageLogTypes = new Set([0, 1, 2, 3, 4, 5, 6, 7])
 
@@ -57,6 +57,7 @@ export function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery 
     if (id !== undefined && (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) throw new Error(`${label}格式错误`)
   }
   if (value.billingType !== undefined && value.billingType !== 0 && value.billingType !== 1) throw new Error('计费来源格式错误')
+  if (value.statsOnly !== undefined && typeof value.statsOnly !== 'boolean') throw new Error('用量查询参数格式错误')
   return {
     ...dates,
     apiKeyId: value.apiKeyId as number | undefined,
@@ -72,6 +73,8 @@ export function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery 
     group: parseOptionalAccountUsageText(value.group, '分组名称', 128),
     requestId: parseOptionalAccountUsageText(value.requestId, '请求 ID', 128),
     upstreamRequestId: parseOptionalAccountUsageText(value.upstreamRequestId, '上游请求 ID', 256),
+    // false 也不往下传：历史账号那边见到不认识的字段就整个拒掉。
+    statsOnly: value.statsOnly === true ? true : undefined,
   }
 }
 

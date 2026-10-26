@@ -56,6 +56,9 @@ const statusPath = '/api/status'
 // Callers that arrive together (focus, login, a balance tick) share one read.
 // Pacing belongs to the renderer's balance store, the single scheduler.
 const sharedStatusReuseMs = 20 * 1_000
+// 开机恢复登录刚读过一遍 /api/user/self，首页余额卡紧跟着又要余额：这么短的时间里
+// 就用恢复时那一份，不再读第二遍（性能体检第 10 条）。只给紧跟着的那一次余额用。
+const restoredProfileReuseMs = 10 * 1_000
 // Opening the notice center reuses the timeline the balance refresh already
 // brought in, and reads /api/status itself only when that copy is this old.
 const timelineStaleMs = 5 * 60 * 1_000
@@ -547,6 +550,12 @@ export interface NewApiAccountUsageQuery {
   apiKeyId?: number
   groupId?: number
   billingType?: 0 | 1
+  /**
+   * 只要合计（/api/log/self/stat），不查明细那一页：首页余额卡只用 `stats.quota`，
+   * 明细那一下在服务端还要把日志总条数数一遍（性能体检第 10 条）。返回的页里
+   * records 为空、total 为 0，只有 stats 是真的。只有星芒账号认它。
+   */
+  statsOnly?: boolean
 }
 
 export interface NewApiAccountUsageStreamStatus {
@@ -2706,6 +2715,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   let noticeInFlight: Promise<string> | null = null
 
   let session: InternalSession | null = null
+  // The profile restoreSession() just read, kept for the balance read that
+  // follows it. setSession() drops it, so a token rotation, login, switch or
+  // sign-out in between always sends that balance read to the server.
+  let restoredProfile: { owner: InternalSession; readAt: number } | null = null
   let ownerGeneration = 0
   let authAttemptGeneration = 0
   const sessionOwners = new WeakMap<InternalSession, number>()
@@ -2720,6 +2733,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       ownerGeneration += 1
       authAttemptGeneration += 1
     }
+    restoredProfile = null
     session = next
     if (next) sessionOwners.set(next, ownerGeneration)
     options.onSessionChange?.(
@@ -3195,14 +3209,24 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     account: session?.profile ?? null,
   })
 
+  // 恢复时读到的那一份只给一次：取了就清掉，之后的余额（定时、回到前台、付完款）都去问服务器。
+  const takeRestoredProfile = (current: InternalSession): NewApiAccountProfile | null => {
+    const entry = restoredProfile
+    restoredProfile = null
+    if (!entry || entry.owner !== current || entry.owner.profile.quota === null) return null
+    const age = Date.now() - entry.readAt
+    return age >= 0 && age < restoredProfileReuseMs ? entry.owner.profile : null
+  }
+
   const getBalance = (): Promise<NewApiBalance> => withSession(async (current) => {
+    const restored = takeRestoredProfile(current)
     const [statusData, selfRaw] = await Promise.all([
       readSharedStatus('账号余额查询'),
-      performRequest(ctx, selfPath, { method: 'GET', headers: authHeaders(current) }, '账号余额查询'),
+      restored ? null : performRequest(ctx, selfPath, { method: 'GET', headers: authHeaders(current) }, '账号余额查询'),
     ])
     const status = parseAccountStatus(statusData)
-    const profile = parseAccountProfile(unwrapEnvelope(selfRaw, '账号余额查询', [current.accessToken]))
-    if (profile.quota === null) throw new Error('账号余额查询失败，服务未返回余额')
+    const profile = selfRaw ? parseAccountProfile(unwrapEnvelope(selfRaw, '账号余额查询', [current.accessToken])) : restored
+    if (profile === null || profile.quota === null) throw new Error('账号余额查询失败，服务未返回余额')
     return {
       quota: profile.quota,
       usedQuota: profile.usedQuota ?? 0,
@@ -3473,6 +3497,16 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       statParams.delete('request_id')
       statParams.delete('upstream_request_id')
       const statQuery = statParams.toString()
+      if (input.statsOnly) {
+        const statRaw = await performRequest(
+          ctx,
+          statQuery ? `${logSelfStatPath}?${statQuery}` : logSelfStatPath,
+          { method: 'GET', headers: authHeaders(current) },
+          '用量统计查询',
+        )
+        const stats = parseAccountUsageStats(unwrapEnvelope(statRaw, '用量统计查询', [current.accessToken]))
+        return { page: 1, pageSize: 0, total: 0, records: [], stats }
+      }
       const [listRaw, statRaw] = await Promise.all([
         performRequest(
           ctx,
@@ -3973,7 +4007,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     // reality -- treat that the same as an invalid credential rather than
     // silently logging the caller in as the wrong account.
     if (profile.userId !== seed.userId) return false
-    setSession({ ...refreshed, profile })
+    const restored = { ...refreshed, profile }
+    setSession(restored)
+    restoredProfile = { owner: restored, readAt: Date.now() }
     return true
   }
 
