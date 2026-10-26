@@ -259,6 +259,11 @@ export interface RelayBackendClient {
   listKeys(input?: NewApiAccountKeysQuery): Promise<NewApiAccountKeysPage>
   /** ipc.ts: account:list-groups */
   listUsableGroups(): Promise<NewApiUsableGroup[]>
+  /**
+   * chat-credential-coordinator.ts: one group's models without signing a key for it (new-api only).
+   * sub2api-relay-backend.ts leaves it out; chat there still lists models through the group's key.
+   */
+  listGroupModels?(group: string): Promise<string[]>
   /** ipc.ts: account:copy-key and account:reveal-key; renderer reveal is explicit and short-lived. */
   revealKey(id: number): Promise<string>
   /** ipc.ts: account:revoke-key */

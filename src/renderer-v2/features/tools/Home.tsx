@@ -14,14 +14,13 @@ import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry
 import { homeToolBlurbs, homeToolOrder, officialAccountNames, shortcutTools, tools as toolRegistry } from '../../registry/tools'
 import { statuses } from '../../registry/status'
 import { FirstRunSteps } from './FirstRun'
-import { isAccountNotEnabledFailure, keySyncFailureReason, keySyncFailureText } from './key-sync-failure'
+import { bootstrapErrorText, isAccountNotEnabledFailure, keySyncFailureText, networkBlockedNotice } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentReplacedHint, recentResumeHint, recentSessionSubtitle } from './recent-display'
 import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
 import { dollars as money, errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId, isProviderId } from '../../../../electron/catalog'
-import { isCertificateFailureText, isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
 import { RuntimeInstallHint } from './RuntimeInstallHint'
@@ -191,19 +190,6 @@ export function recentResumeOffered(tools: readonly ToolPresentation[], provider
 }
 
 /**
- * 断网启动时这条横幅原来会先说一句「账号 Key 已同步」，再跟上一串网络失败原文，
- * 自相矛盾且没交代下一步。网络类失败改说这一句：已装好的工具照常能用，网络回来
- * 之后客户端自己会补写，用户什么都不用做。「重新同步」按钮保留，想立刻试的照点。
- */
-const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常能用；联网后会自动补写密钥。'
-
-/**
- * 拦住同步的是证书被换掉时，电脑一直联着网，等不来「联网后自动补写」，换这一句。「自动」线路下
- * 星芒约半分钟到一分钟会自己换到 CF，所以先叫客户稍等再点「重新同步」，还不行再换网络。
- */
-const certificateBootstrapNotice = '连星芒时被网络上的设备拦下了，这次没写好密钥。已装好的工具照常能用；稍等一两分钟点「重新同步」，还不行就换个网络（比如手机热点）。'
-
-/**
  * 「配置被改过」这一档必须自己解释一句：角标只说了发生什么，没说会怎样。
  * 用户真正要知道的是这个工具现在没在用当前账号，以及有一颗按钮能一键修回来。
  * 文案以「当前账号」为主语，不提站点。
@@ -343,15 +329,6 @@ function cachedUsage(api: ToolsApi, scope: string | undefined): BalanceUsage | n
 
 function cachedWeekSpend(api: ToolsApi, scope: string | undefined, wanted: boolean): WeekSpend | null {
   return wanted && scope !== undefined ? api.peekWeekSpend(scope) : null
-}
-
-function bootstrapErrorText(error: string) {
-  if (isCertificateFailureText(error)) return certificateBootstrapNotice
-  return isNetworkFailureText(error) ? offlineBootstrapNotice : `密钥没写好：${keySyncFailureReason(error)}`
-}
-
-function networkBlockedNotice(result: AccountBootstrapResult) {
-  return result.networkBlockedByCertificate ? certificateBootstrapNotice : offlineBootstrapNotice
 }
 
 /** 「已给 Claude Code 配好密钥，可以直接用了」：一个工具说名字，几个说个数。 */

@@ -186,6 +186,7 @@ function accountServiceStub(): NewApiClientService {
     getTasks: vi.fn() as never,
     listKeys: vi.fn() as never,
     listUsableGroups: vi.fn() as never,
+    listGroupModels: vi.fn() as never,
     revokeKey: vi.fn() as never,
     revealKey: vi.fn() as never,
     createKey: vi.fn(async () => undefined),
@@ -1151,6 +1152,10 @@ describe('registerIpcHandlers', () => {
           await progress?.onStage('downloading')
           return storedClip
         }),
+        resumeRequest: vi.fn(async (_senderId: number, _userId: number, _requestId: string, progress?: AiOperationProgressObserver) => {
+          await progress?.onStage('processing')
+          return storedClip
+        }),
         cancel: vi.fn(() => ({ canceled: true, mayStillComplete: true })),
         cancelSender: vi.fn(() => 0),
         cancelAll: vi.fn(() => 0),
@@ -1191,6 +1196,37 @@ describe('registerIpcHandlers', () => {
       const second = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(null), undefined, undefined, {}, { videoService: signedOut })
       await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), input)).rejects.toThrow('请先登录星芒账号')
       expect(signedOut.generate).not.toHaveBeenCalled()
+      second.dispose()
+    })
+
+    it('picks a clip back up by request id for the signed-in account and the asking window only', async () => {
+      const videoService = videoServiceStub()
+      const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoService })
+      const resume = electronMocks.handlers.get('video:resume')!
+
+      expect(() => resume(trustedEvent('https://attacker.example/', 9), 'shot-1')).toThrow('已拒绝来自非应用页面的操作请求')
+      await expect(resume(trustedEvent(undefined, 17), 'bad\u0000id')).rejects.toThrow('视频请求标识格式错误')
+      await expect(resume(trustedEvent(undefined, 17), 'x'.repeat(161))).rejects.toThrow('视频请求标识格式错误')
+      expect(videoService.resumeRequest).not.toHaveBeenCalled()
+
+      const event = trustedEvent(undefined, 17)
+      await expect(resume(event, ' shot-1 ')).resolves.toEqual(clip)
+      expect(videoService.resumeRequest).toHaveBeenCalledWith(17, 7, 'shot-1', expect.any(Object))
+      expect(event.sender.send.mock.calls).toEqual([['video:progress', { requestId: 'shot-1', stage: 'processing' }]])
+      // Closing the window stops the wait the same way it stops a fresh request.
+      const destroyed = vi.mocked(event.sender.once).mock.calls.find(([name]) => name === 'destroyed')?.[1]
+      ;(destroyed as () => void)()
+      expect(videoService.cancelSender).toHaveBeenCalledWith(17)
+
+      videoService.resumeRequest.mockResolvedValueOnce(null as never)
+      await expect(resume(trustedEvent(undefined, 17), 'never-sent')).resolves.toBeNull()
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).toContain('没有要接回的视频片段')
+      dispose()
+
+      const signedOut = videoServiceStub()
+      const second = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(null), undefined, undefined, {}, { videoService: signedOut })
+      await expect(electronMocks.handlers.get('video:resume')!(trustedEvent(), 'shot-1')).rejects.toThrow('请先登录星芒账号')
+      expect(signedOut.resumeRequest).not.toHaveBeenCalled()
       second.dispose()
     })
 
@@ -8512,6 +8548,7 @@ describe('IPC channel log and account policies', () => {
       'video:generate',
       'video:open',
       'video:read-clip',
+      'video:resume',
       'video:save-as',
     ])
   })

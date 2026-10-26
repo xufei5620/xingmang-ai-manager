@@ -128,17 +128,22 @@ describe('video studio project', () => {
     expect(videoStudioComposeKey(applyVideoStudioPlan(done, { title: '新的', shots: [{ prompt: '新镜头' }] }, ids()))).not.toBe(key)
   })
 
-  it('stores the storyboard and clip ids but not what was running', () => {
+  it('stores the storyboard, clip ids and the requests still out, but not their progress', () => {
     const project = planned()
     const running: VideoStudioProject = {
       ...project,
-      shots: [{ ...project.shots[0], clip: clip('a'), status: 'done' }, { ...project.shots[1], status: 'generating', requestId: 'r', progress: 40 }, project.shots[2]],
+      shots: [
+        { ...project.shots[0], clip: clip('a'), status: 'generating', requestId: 'again', stage: 'downloading', progress: 90 },
+        { ...project.shots[1], status: 'generating', requestId: 'r', progress: 40, delayed: true },
+        { ...project.shots[2], status: 'queued' },
+      ],
       exported: clip('z'),
     }
     const restored = restoreVideoStudioProject(JSON.parse(JSON.stringify(serializeVideoStudioProject(running))))
+    // A request that went out is picked back up when the page reopens (useVideoStudio); one only queued here was never sent or paid for.
     expect(restored?.shots).toEqual([
-      { id: 'shot-1', prompt: '雨夜街头的橘猫', caption: '下雨了', clip: clip('a'), status: 'done' },
-      { id: 'shot-2', prompt: '橘猫穿过人群', caption: '', status: 'idle' },
+      { id: 'shot-1', prompt: '雨夜街头的橘猫', caption: '下雨了', clip: clip('a'), requestId: 'again', status: 'generating' },
+      { id: 'shot-2', prompt: '橘猫穿过人群', caption: '', requestId: 'r', status: 'generating' },
       { id: 'shot-3', prompt: '橘猫跳上台阶', caption: '到家了', status: 'idle' },
     ])
     expect(restored?.exported).toEqual(clip('z'))
@@ -156,7 +161,7 @@ describe('video studio project', () => {
         { id: 'same', prompt: '一', clip: { assetId: 'a'.repeat(43), thumbnailUrl: 'https://evil.example/x.png' } },
         { id: 'same', prompt: '二', clip: { assetId: 'b'.repeat(43), thumbnailUrl: `xingmang-asset://thumb/v2/video/${'c'.repeat(43)}` } },
         'not a shot',
-        { id: '../../x', prompt: 3 },
+        { id: '../../x', prompt: 3, requestId: '../../secret' },
       ],
       exported: { assetId: '../secret', thumbnailUrl: 'xingmang-asset://thumb/v2/video/x' },
     }, ids())
