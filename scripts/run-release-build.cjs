@@ -51,12 +51,13 @@ function buildReleaseSteps({ npmCli, releaseOutputDirectory, unsignedReleaseMode
     // 必现——2026-08-12 首次 CI 正式构建就死在 system-service.test.ts 的 5s
     // 超时上,而同一提交在 Linux 全绿。放宽的是超时不是断言:真回归照样红。
     { label: '全部测试', executable: process.execPath, args: [npmCli, 'test'] },
-    // 上一步的用例集不含出货渲染层和画布:`npm test` 跑的是 `vitest run electron src`,
-    // renderer-v2 的浏览器回归与 canvas-v2 单测各有独立入口。少了这三条,发布门禁
-    // 对真正装到客户机器上的那个界面是 0 覆盖,比 quality.yml 的 windows 作业还弱
-    // 一档(审查总表 M-03 /《发版前检查清单》缺口 4)。
-    { label: '出货渲染层回归测试', executable: process.execPath, args: [npmCli, 'run', 'test:v2'] },
-    { label: '画布单元测试', executable: process.execPath, args: [npmCli, 'run', 'test:canvas'] },
+    // 出货渲染层和画布的单测上一步已经跑过:vitest 按路径子串挑文件,`vitest run
+    // electron src` 的 `src` 把 src/renderer-v2 和 canvas-v2/src 都挑了进去(#1066,
+    // scripts/ci-workflow-config.test.cjs 钉住)。这里原来再跑整条 test:v2 和
+    // test:canvas,同一批文件在出包门禁里跑两遍。`npm test` 不跑的只剩 renderer-v2 的
+    // 浏览器回归和旧回滚界面,少了前者,发布门禁对真正装到客户机器上的那个界面没有
+    // 一条浏览器里的检查(审查总表 M-03 /《发版前检查清单》缺口 4)。
+    { label: '出货渲染层浏览器回归测试', executable: process.execPath, args: [npmCli, 'run', 'test:v2:browser'] },
     { label: '旧回滚界面测试', executable: process.execPath, args: [npmCli, 'run', 'test:ui'] },
     { label: '编译应用', executable: process.execPath, args: [npmCli, 'run', 'compile'] },
     // 这两个冒烟脚本同时挂在 quality.yml 的 windows 作业上。门禁只跑 CI 也在跑的
