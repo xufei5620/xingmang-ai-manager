@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AiChatGroupSummary, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatGroupSummary, AiVideoClip, XingmangApi } from '../../../../electron/ipc-contract'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { speaksChinese, userFacingErrorMessage } from '../../business-common'
@@ -34,7 +34,7 @@ import {
   type VideoStudioShot,
 } from './project'
 
-export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo'>
+export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo'>
 export type VideoStudioStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export interface VideoStudioOptions {
@@ -76,10 +76,13 @@ function loadProject(storage: VideoStudioStorage | null, scope: string): VideoSt
   return createVideoStudioProject()
 }
 
-/** 片段停下或失败以后回到什么样：有上一段就还是「已生成」，没有就是「没生成」。 */
+/**
+ * 片段停下或失败以后回到什么样：有上一段就还是「已生成」，没有就是「没生成」。失败的留着请求号：
+ * 「暂时查不到进度」这类失败时服务端多半还在出，下次打开页面拿它接回来；真失败了主进程回 null，照样回到「没生成」。
+ */
 function settleShot(shot: VideoStudioShot, error?: string): VideoStudioShot {
-  const { requestId: _request, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
-  if (error) return { ...rest, status: 'failed', error }
+  const { requestId, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
+  if (error) return { ...rest, ...(requestId ? { requestId } : {}), status: 'failed', error }
   return { ...rest, status: rest.clip ? 'done' : 'idle' }
 }
 
@@ -183,6 +186,16 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   // 关掉页面（换账号时整页重挂）就停下拼片；正在生成的片段主进程换账号时自己会停。
   useEffect(() => () => composeAbort.current?.abort(), [])
 
+  // 上次关掉软件（或刷新页面）时还在生成、没等到结果的那几段：拿记着的请求号回主进程接回来。主进程只查不提交，
+  // 同一个请求号问两遍（开发版 StrictMode 会把这里跑两遍）接的也是同一份。
+  useEffect(() => {
+    if (!enabled) return
+    for (const shot of projectRef.current.shots) {
+      const { requestId } = shot
+      if (shot.status === 'generating' && requestId) void awaitClip(shot.id, requestId, () => bridge.resumeAiVideo(requestId))
+    }
+  }, [enabled])
+
   const writePlan = async () => {
     const { settings } = projectRef.current
     if (!settings.idea.trim()) { setError('先写一句想拍什么'); return }
@@ -212,17 +225,17 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     try { await bridge.cancelAiVideo(planning) } catch { /* 停不下来就等它自己写完，写完照样能用。 */ }
   }
 
-  const runShot = async (shotId: string) => {
-    const index = projectRef.current.shots.findIndex((shot) => shot.id === shotId)
-    const shot = projectRef.current.shots[index]
-    if (!shot) return
-    const requestId = createVideoStudioId(), alive = owner.capture()
+  /** 等一段片段回来：新发的（generateAiVideo）和重开页面接回来的（resumeAiVideo）走同一套收尾。接回来是 null 就是没有这一单。 */
+  async function awaitClip(shotId: string, requestId: string, request: () => Promise<AiVideoClip | null>) {
+    const alive = owner.capture()
     running.current.set(shotId, requestId)
-    commit((current) => updateVideoStudioShot(current, shotId, (item) => ({ ...settleShot(item), status: 'generating', requestId })))
     try {
-      const clip = await bridge.generateAiVideo(buildVideoStudioClipRequest(projectRef.current.settings, shot, requestId))
+      const clip = await request()
       if (!alive()) return
-      commit((current) => ({ ...updateVideoStudioShot(current, shotId, (item) => item.requestId === requestId ? settleShot({ ...item, clip }) : item), exported: undefined }))
+      commit((current) => {
+        const next = updateVideoStudioShot(current, shotId, (item) => item.requestId === requestId ? settleShot(clip ? { ...item, clip } : item) : item)
+        return clip ? { ...next, exported: undefined } : next
+      })
     } catch (reason) {
       if (!alive()) return
       const stopped = canceled.current.has(requestId)
@@ -234,6 +247,13 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (running.current.get(shotId) === requestId) running.current.delete(shotId)
       if (alive()) pump()
     }
+  }
+  const runShot = (shotId: string) => {
+    const shot = projectRef.current.shots.find((item) => item.id === shotId)
+    if (!shot) return
+    const requestId = createVideoStudioId()
+    commit((current) => updateVideoStudioShot(current, shotId, (item) => ({ ...settleShot(item), status: 'generating', requestId })))
+    void awaitClip(shotId, requestId, () => bridge.generateAiVideo(buildVideoStudioClipRequest(projectRef.current.settings, shot, requestId)))
   }
   function pump() {
     while (running.current.size < maxParallelClips && queue.current.length) {

@@ -241,7 +241,7 @@ export interface IpcRegistrationOptions {
   chatHistory?: AiChatHistoryStore
   chatAttachments?: ChatAttachmentService
   // 对话页和视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
-  videoService?: Pick<AiVideoService, 'generate' | 'cancel' | 'cancelSender' | 'cancelAll'>
+  videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and

@@ -1283,7 +1283,12 @@ export interface XingmangInvokeContract {
   planVideoStudio: IpcInvokeDefinition<'video-studio:plan', [input: VideoStudioPlanInput], VideoStudioPlan>
   /** 出一段视频，等到存进作品库才回；途中的进度走 onAiVideoProgress。 */
   generateAiVideo: IpcInvokeDefinition<'video:generate', [input: AiVideoGenerateInput], AiVideoClip>
-  /** 停下 video:generate 或 video-studio:plan。已经交给服务端的视频照样生成、照样扣费（mayStillComplete）。 */
+  /**
+   * 视频剪辑页重开以后，按镜头上记着的请求号把那一段接回来：还在出就等它出完（进度照样走 onAiVideoProgress），
+   * 已经出完就直接回片段；没有这一单（没交出去、服务端说失败了）回 null。只查不提交，停下同样用 video:cancel。
+   */
+  resumeAiVideo: IpcInvokeDefinition<'video:resume', [requestId: string], AiVideoClip | null>
+  /** 停下 video:generate、video:resume 或 video-studio:plan。已经交给服务端的视频照样生成、照样扣费（mayStillComplete）。 */
   cancelAiVideo: IpcInvokeDefinition<'video:cancel', [requestId: string], AiChatCancelResult>
   /** 作品库里一段视频的全部字节，给页面拼片用。 */
   readAiVideoClip: IpcInvokeDefinition<'video:read-clip', [assetId: string], Uint8Array>
@@ -1623,6 +1628,7 @@ export const ipcInvokeChannels = {
   pasteAiChatImage: 'chat:paste-image',
   planVideoStudio: 'video-studio:plan',
   generateAiVideo: 'video:generate',
+  resumeAiVideo: 'video:resume',
   cancelAiVideo: 'video:cancel',
   readAiVideoClip: 'video:read-clip',
   storeVideoStudioExport: 'video-studio:store-export',
