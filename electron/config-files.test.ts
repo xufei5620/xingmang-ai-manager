@@ -3200,6 +3200,21 @@ describe('switching a provider back to the official subscription account', () =>
     expect(asRecord(official.env)).not.toHaveProperty('ANTHROPIC_DEFAULT_MODEL')
   })
 
+  it('writes Claude fallback models from the key\'s models, follows a model change, and keeps them for the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const models = ['claude-haiku-5-5', 'claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5-5']
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-5-5', 'reset', roots, {}, providerBaseUrls, undefined, models)
+    expect((JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>).fallbackModel).toEqual(['claude-opus-5', 'claude-sonnet-5-5'])
+
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5-5', 'merge', roots, {}, providerBaseUrls, undefined, models)
+    expect((JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>).fallbackModel).toEqual(['claude-opus-5-5'])
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    expect((JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>).fallbackModel).toEqual(['claude-opus-5-5'])
+  })
+
   it('leaves the Claude model menu untouched when no model list is supplied', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)

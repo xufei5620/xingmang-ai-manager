@@ -480,12 +480,19 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       baseUrl: definition.aiBaseUrl,
       backend: definition.backend,
       credentials: chatCredentials,
+      // 画布点停止、关窗、换号时，已经发出去的图照样收完放进付钱那个账号的素材库（#1394 第 6 条）；对话页那份不开。
+      finishDispatchedAfterStop: true,
+      onFinishedAfterStop: (outcome) => {
+        if ('error' in outcome) runtimeLog.log('warn', 'canvas', 'image.after-stop.failed', '停止后继续收的图没收到', outcome)
+        else runtimeLog.log('info', 'canvas', 'image.after-stop.stored', '停止后继续收的图已放进素材库', outcome)
+      },
       assets: {
         prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
         assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
         storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
         storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
         readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
+        addTag: (userId, assetIds, tag, projectId) => canvasProjectAssets.addImageTag(userId, assetIds, tag, projectId),
       },
     })
     const videoTasks = new AiVideoTaskStore({

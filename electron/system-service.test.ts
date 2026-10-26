@@ -1202,7 +1202,7 @@ describe('createSystemService', () => {
     function configuredModel(): unknown {
       return (JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as Record<string, unknown>).model
     }
-    return { account, fetchModels, running, hints, service, configuredModel }
+    return { account, fetchModels, running, hints, service, configuredModel, roots }
   }
 
   it('swaps a Claude Code model the published table retires at startup once it is closed, backing the config up first', async () => {
@@ -1280,6 +1280,61 @@ describe('createSystemService', () => {
 
     expect(f.configuredModel()).toBe('claude-sonnet-5')
     expect(f.running).not.toHaveBeenCalled()
+  })
+
+  function withoutClaudeFallbackModels(roots: { userHome: string; codexHome: string }): void {
+    // 备用型号以前没有：老版本写的配置。
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    const { fallbackModel: _written, ...settings } = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+  }
+
+  function claudeFallbackModels(roots: { userHome: string; codexHome: string }): unknown {
+    return (JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as Record<string, unknown>).fallbackModel
+  }
+
+  it('fills in Claude Code fallback models at startup for settings written before they existed, backing up first', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    expect(claudeFallbackModels(f.roots)).toEqual(['claude-opus-5', 'claude-sonnet-5'])
+    withoutClaudeFallbackModels(f.roots)
+    const backups: Array<{ provider: ProviderId; fallbackModel: unknown }> = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, fallbackModel: claudeFallbackModels(f.roots) }) })).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(claudeFallbackModels(f.roots)).toEqual(['claude-opus-5', 'claude-sonnet-5']), backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'claude', fallbackModel: undefined }])
+    expect(f.running).toHaveBeenCalledWith(['claude'])
+    expect(f.configuredModel()).toBe('claude-opus-5-5')
+    expect(f.service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  it('does not write Claude Code fallback models at startup while it may be open, or ask the relay when settings already have them', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    withoutClaudeFallbackModels(f.roots)
+    f.running.mockResolvedValue({ running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['claude']), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(claudeFallbackModels(f.roots)).toBeUndefined()
+    expect(backup).not.toHaveBeenCalled()
+
+    // 客户自己写了备用型号：开机不为它问中转，也不看工具开没开。
+    const [settingsPath] = providerConfigPaths('claude', f.roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, fallbackModel: ['claude-haiku-4-5'] }))
+    f.running.mockClear()
+    const requests = f.fetchModels.mock.calls.length
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(claudeFallbackModels(f.roots)).toEqual(['claude-haiku-4-5'])
+    expect(f.running).not.toHaveBeenCalled()
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
   })
 
   it('owes the swap while Claude Code may be open and makes it on a later try once it is closed', async () => {

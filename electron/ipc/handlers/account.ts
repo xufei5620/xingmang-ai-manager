@@ -36,9 +36,11 @@ export function registerAccountHandlers(ctx: IpcHandlerContext): void {
       ? options.realmAccounts.getPublicClient(parseAccountSiteId(siteId)).getStatus()
       : accountService.getStatus()
   ))
-  registerTrustedHandler('account:get-notice', (_event, mode: unknown) => {
+  registerTrustedHandler('account:get-notice', async (_event, mode: unknown) => {
     if (mode !== undefined && mode !== 'cached') throw new Error('公告读取方式无效')
-    return accountService.getNotice?.(mode) ?? null
+    const notice = await accountService.getNotice?.(mode) ?? null
+    options.onAccountNotice?.(notice)
+    return notice
   })
   registerTrustedHandler('account:mark-notice-read', (_event, id: unknown, entryId: unknown) => {
     const noticeId = requiredString(id, '公告 ID', 128)

@@ -11,7 +11,7 @@ import {
 } from './bounded-operation-queue'
 import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
-import type { AiOperationProgressObserver } from './ai-operation-progress'
+import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
 
@@ -24,6 +24,8 @@ const MAXIMUM_EDIT_SOURCE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_EDIT_SOURCE_IMAGES = 4
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
+/** 停止以后才收到的图，钱已经扣了，存好后在素材栏里带着这个标签（#1394 第 6 条）。素材标签最多 32 字。 */
+export const chargedAfterStopAssetTag = '已停止，但已扣费'
 
 export interface GeneratedAiAsset {
   assetId: string
@@ -42,6 +44,8 @@ export interface AiImageAssetWriter {
   storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
   storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
   readOwned(userId: number, assetId: string, projectId?: string): Promise<{ asset: GeneratedAiAsset; bytes: Buffer }>
+  /** 给刚存好的图追加一个标签，客户自己加的不动。只有画布那份实现。 */
+  addTag?(userId: number, assetIds: readonly string[], tag: string, projectId?: string): Promise<void>
 }
 
 export interface AiImageGenerationInput {
@@ -66,6 +70,11 @@ export interface AiImageCancelResult {
   mayStillComplete: boolean
 }
 
+/** 停止后还在收的那张图最后怎样了，只进日志。 */
+export type AiImageAfterStopOutcome =
+  | { requestId: string; stored: number }
+  | { requestId: string; error: string }
+
 interface ActiveImageRequest {
   senderId: number
   requestId: string
@@ -78,6 +87,16 @@ interface ActiveImageRequest {
   expectedUserId?: number
   dispatched: boolean
   cancelReason?: 'user' | 'sender' | 'account' | 'application' | 'timeout' | 'shutdown'
+  projectId?: string
+  // Set when a stop lets an already paid request run on. The caller has been
+  // released by then and its run already reads as stopped, so nothing about
+  // this request may reach it again.
+  detached?: boolean
+  release: (reason: Error) => void
+  // Settles once the queued work has finished, was dropped before it started,
+  // or was handed off by a stop. whenIdle waits for exactly this.
+  ownedWorkDone: Promise<void>
+  onSettled: () => void
 }
 
 function ownedBy(operation: ActiveImageRequest, expectedUserId: number | undefined): boolean {
@@ -226,6 +245,13 @@ export function createAiImageService(options: {
   maxActive?: number
   maxQueued?: number
   onRequestStarted?: AiOperationStartedObserver
+  /**
+   * 画布那份打开：停止、关窗、换号时，已经发出去的请求不掐断，照样收完、存进付钱的那个账号并打上
+   * 标签，钱扣了图不丢（#1394 第 6 条）。还没发出去的照旧取消，原来的总超时照旧算。
+   * AI 对话页那份不开，停止照旧掐断。
+   */
+  finishDispatchedAfterStop?: boolean
+  onFinishedAfterStop?(outcome: AiImageAfterStopOutcome): void
 }) {
   const baseUrl = new URL(options.baseUrl)
   if (baseUrl.protocol !== 'https:' || baseUrl.username || baseUrl.password) {
@@ -234,6 +260,9 @@ export function createAiImageService(options: {
   const fetchImpl = options.fetchImpl ?? fetch
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const active = new Map<string, ActiveImageRequest>()
+  // Requests whose queued work is still running for a caller. It outlives
+  // `active`, which a stop empties before the aborted work has wound down.
+  const ownedWork = new Set<ActiveImageRequest>()
   const queue = new BoundedOperationQueue({
     maxActive: options.maxActive ?? DEFAULT_MAX_ACTIVE,
     maxQueued: options.maxQueued ?? DEFAULT_MAX_QUEUED,
@@ -253,7 +282,17 @@ export function createAiImageService(options: {
     const requestId = requiredRequestId(input.requestId)
     const key = requestKey(senderId, requestId)
     if (active.has(key)) throw new Error('该生图请求正在处理中')
-    const operation = { senderId, requestId, expectedUserId: input.expectedUserId, dispatched: false } as ActiveImageRequest
+    const operation = {
+      senderId, requestId, expectedUserId: input.expectedUserId, dispatched: false,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+    } as ActiveImageRequest
+    const released = new Promise<never>((_resolve, reject) => { operation.release = reject })
+    let finishWork!: () => void
+    const workFinished = new Promise<void>((resolve) => { finishWork = resolve })
+    operation.ownedWorkDone = Promise.race([workFinished, released.catch(() => undefined)])
+    async function reportStage(stage: AiOperationProgressStage): Promise<void> {
+      if (!operation.detached) await progress?.onStage(stage)
+    }
     const handle = queue.enqueue(async (signal) => {
       const timeout = setTimeout(() => {
         operation.cancelReason = 'timeout'
@@ -280,8 +319,8 @@ export function createAiImageService(options: {
           }
           throw error
         }
-        await progress?.onStage('processing')
-        await progress?.onStage('downloading')
+        await reportStage('processing')
+        await reportStage('downloading')
         let bytes: Buffer
         try {
           bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES, '生图', {
@@ -320,7 +359,7 @@ export function createAiImageService(options: {
         // 再让总超时打断只会报成「服务端可能仍在生成」，而用户照着重试就又扣一次。
         clearTimeout(timeout)
         const results: GeneratedAiAsset[] = []
-        await progress?.onStage('saving')
+        await reportStage('saving')
         for (const entry of entries) {
           if (signal.aborted) throw signal.reason
           const metadata = {
@@ -346,13 +385,16 @@ export function createAiImageService(options: {
         return results
       } finally {
         clearTimeout(timeout)
+        finishWork()
       }
     })
     operation.handle = handle
-    const onSettled = observeAiOperation(options.onRequestStarted)
+    operation.onSettled = observeAiOperation(options.onRequestStarted)
     active.set(key, operation)
+    ownedWork.add(operation)
+    void operation.ownedWorkDone.then(() => ownedWork.delete(operation))
     try {
-      return await handle.promise
+      return await Promise.race([handle.promise, released])
     } catch (error) {
       if (operation.cancelReason) {
         if (operation.cancelReason === 'timeout') {
@@ -370,7 +412,10 @@ export function createAiImageService(options: {
       throw error
     } finally {
       if (active.get(key) === operation) active.delete(key)
-      onSettled()
+      // Dropped from the queue before it started: no work will ever finish.
+      if (handle.state() === 'settled') finishWork()
+      // A released request reports its usage once the server has answered.
+      if (!operation.detached) operation.onSettled()
     }
   }
 
@@ -451,12 +496,48 @@ export function createAiImageService(options: {
     }, progress)
   }
 
+  // The request is already out and paid for, so the stop only releases the
+  // caller. The work runs on under its own timeout and stores the picture for
+  // the account that paid (the credential was resolved before dispatch), and it
+  // never reports to the caller again: after an account switch nothing of it
+  // can reach the next account's canvas.
+  function detach(
+    operation: ActiveImageRequest,
+    reason: NonNullable<ActiveImageRequest['cancelReason']>,
+  ): AiImageCancelResult {
+    operation.detached = true
+    operation.cancelReason = reason
+    operation.release(new Error('已停止等待'))
+    void finishAfterStop(operation)
+    return { canceled: true, mayStillComplete: true }
+  }
+
+  async function finishAfterStop(operation: ActiveImageRequest): Promise<void> {
+    let outcome: AiImageAfterStopOutcome
+    try {
+      const assets = await operation.handle.promise
+      if (operation.userId !== undefined && assets.length > 0 && options.assets.addTag) {
+        try {
+          await options.assets.addTag(operation.userId, assets.map((asset) => asset.assetId), chargedAfterStopAssetTag, operation.projectId)
+        } catch {
+          // The picture is stored either way; only the label is missing.
+        }
+      }
+      outcome = { requestId: operation.requestId, stored: assets.length }
+    } catch (error) {
+      outcome = { requestId: operation.requestId, error: safeUpstreamMessage(error instanceof Error ? error.message : String(error)) }
+    }
+    try { options.onFinishedAfterStop?.(outcome) } catch { /* logging is best effort */ }
+    operation.onSettled()
+  }
+
   function cancelOperation(
     operation: ActiveImageRequest,
     reason: NonNullable<ActiveImageRequest['cancelReason']>,
     message: string,
   ): AiImageCancelResult {
-    if (operation.handle.state() === 'settled') return { canceled: false, mayStillComplete: false }
+    if (operation.handle.state() === 'settled' || operation.detached) return { canceled: false, mayStillComplete: false }
+    if (options.finishDispatchedAfterStop && operation.dispatched) return detach(operation, reason)
     operation.cancelReason = reason
     const result = operation.handle.cancel(new Error(message))
     if (!result.canceled) operation.cancelReason = undefined
@@ -501,7 +582,16 @@ export function createAiImageService(options: {
     return queue.shutdown(new Error('操作队列已关闭'))
   }
 
-  return { generate, edit, cancel, cancelSender, cancelUser, cancelAll, shutdown, whenIdle: () => queue.whenIdle() }
+  // A request finishing after a stop must not hold up an account switch: it
+  // stores for the account that paid whichever account is signed in by then.
+  async function whenOwnedWorkIdle(): Promise<void> {
+    while (ownedWork.size > 0) await Promise.all([...ownedWork].map((operation) => operation.ownedWorkDone))
+  }
+
+  return {
+    generate, edit, cancel, cancelSender, cancelUser, cancelAll, shutdown,
+    whenIdle: () => options.finishDispatchedAfterStop ? whenOwnedWorkIdle() : queue.whenIdle(),
+  }
 }
 
 export type AiImageService = ReturnType<typeof createAiImageService>

@@ -36,6 +36,7 @@ import {
   parseChangePasswordResponseData,
   parseCliKeySecret,
   parseCodexStartupTicket,
+  parseGroupModels,
   parseLoginResponseData,
   parseLoginSessions,
   parsePaymentForm,
@@ -2661,6 +2662,55 @@ describe('listKeys', () => {
   })
 })
 
+describe('listGroupModels', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.listGroupModels('GPT')).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  // POST /api/token/:id/key shares a per-IP 20-per-20-minutes budget with
+  // login and the session refresh; this read must never spend it.
+  it('reads one group with the session and never touches a key', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: ['claude-opus-4-7', ' gpt-6-astra ', 'claude-opus-4-7', '', 3] }))
+
+    await expect(client.listGroupModels(' Claude Max/订阅 ')).resolves.toEqual(['claude-opus-4-7', 'gpt-6-astra'])
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    const parsed = new URL(String(url))
+    expect(parsed.pathname).toBe('/api/user/models')
+    expect(parsed.searchParams.get('group')).toBe('Claude Max/订阅')
+    expect(init?.method).toBe('GET')
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer test-access-token-abc', 'New-Api-User': '42' })
+  })
+
+  it('rejects a malformed group without touching the network', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    await expect(client.listGroupModels('   ')).rejects.toThrow('分组格式错误')
+    await expect(client.listGroupModels('a\nb')).rejects.toThrow('分组格式错误')
+    await expect(client.listGroupModels('x'.repeat(129))).rejects.toThrow('分组格式错误')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('parseGroupModels', () => {
+  it('keeps unique non-empty model names', () => {
+    expect(parseGroupModels(['a', ' a ', 'b', '', null, 'x'.repeat(201)])).toEqual(['a', 'b'])
+  })
+
+  it('rejects anything but a list', () => {
+    expect(() => parseGroupModels({ data: [] })).toThrow('分组模型响应格式异常')
+    expect(() => parseGroupModels(null)).toThrow('分组模型响应格式异常')
+  })
+})
+
 describe('revokeKey', () => {
   it('requires login before it can be called', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
@@ -3944,6 +3994,7 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
     ['getUsage', '/api/log/self', (client: ReturnType<typeof createNewApiClient>) => client.getUsage({ page: 1, pageSize: 20 })],
     ['getTasks', '/api/task/self', (client: ReturnType<typeof createNewApiClient>) => client.getTasks({ page: 1, pageSize: 20 })],
     ['listKeys', '/api/token/', (client: ReturnType<typeof createNewApiClient>) => client.listKeys({ page: 1, pageSize: 100 })],
+    ['listGroupModels', '/api/user/models', (client: ReturnType<typeof createNewApiClient>) => client.listGroupModels('GPT')],
   ])('keeps the login when %s is still refused after a successful refresh', async (_name, refusedPath, read) => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
