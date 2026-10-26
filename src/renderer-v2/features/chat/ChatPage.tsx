@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, ChoiceMenu, Confirm, Dialog, Input, Logo, Menu, Pill, SearchInput, Segment, Textarea, useToast } from '../../ui'
+import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
@@ -241,6 +242,8 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const confirmTitle = confirmation?.kind === 'retry' ? '重新生成这条回复？' : confirmation?.kind === 'stop' ? '停止等待图片生成？' : confirmation?.kind === 'clear' ? '清空当前对话？' : confirmation?.kind === 'clear-all' ? '清空全部对话？' : confirmation?.kind === 'delete-conversation' ? `删除「${chat.state.conversations.find((item) => item.id === confirmation.id)?.title ?? '新对话'}」？` : '删除这条及之后的消息？'
   const running = chat.state.conversations.some(isGenerating) || Object.values(preparations).some((item) => item.phase === 'loading')
   const anyGenerating = chat.state.conversations.some(isGenerating)
+  // 回复是界面一段段接着收、收完写进聊天记录的：在回复的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
+  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation))
   const searchText = search.trim()
   return <section ref={surface} className="chat-page" hidden={!active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={scope} onKeyDownCapture={(event) => { if (!active) { event.preventDefault(); event.stopPropagation() } }} onScrollCapture={(event) => { if (active && event.target instanceof HTMLElement && event.target.classList.contains('chat-conversation-list')) navigationScroll.current = event.target.scrollTop }}>
     <aside className="chat-conversations" aria-label="聊天会话">

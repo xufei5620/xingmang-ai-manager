@@ -20,6 +20,7 @@ import {
   type HostNotifier,
 } from './host-notification-bridge'
 import { proxyBypassActive, proxySiteDirectActive } from './proxy-bypass-bridge'
+import { deliverToMainRenderer } from './renderer-delivery-bridge'
 import { trayAvailability } from './tray-availability-bridge'
 import { createLinuxAutostart } from '../linux-autostart'
 import {
@@ -53,6 +54,12 @@ export function installPlatformSystemApi(
     if (!notifications) return 'unsupported'
     if ('terminal' in request)
       return notifications.notifyTerminal(request.terminal, request.eventKey)
+    if ('activity' in request)
+      return notifications.notify(
+        request.activity,
+        request.eventKey,
+        request.detail,
+      )
     return notifications.notifyHost(
       request.event,
       request.eventKey,
@@ -148,14 +155,18 @@ export function installPlatformSystemApi(
               }
             },
             // 主进程只能认主窗口的页面：窗口被换成别处的地址时不发，同状态推送的口径。
+            // 界面缩在托盘里被关掉的，先存着，重新加载好了再发（renderer-delivery-bridge.ts）；
+            // 地址到发的那一刻再看。
             openPage: (target) => {
               const page: RendererNavigationTarget = target
-              if (
-                owner &&
-                !owner.isDestroyed() &&
-                isTrustedIpcSenderUrl(owner.getURL(), options.policy())
-              )
-                owner.send(ipcEventChannels.onNavigate, page)
+              deliverToMainRenderer('onNavigate', () => {
+                if (
+                  owner &&
+                  !owner.isDestroyed() &&
+                  isTrustedIpcSenderUrl(owner.getURL(), options.policy())
+                )
+                  owner.send(ipcEventChannels.onNavigate, page)
+              })
             },
             onError: (error) => options.onError?.(error),
           },

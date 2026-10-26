@@ -106,8 +106,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       return null
     }
   }
-  // 打开聊天、点「刷新模型」时每个分组都准备一遍：菜单要列出全部分组的模型。还没有对话密钥的分组这时签一把，
-  // 之后一直复用（yoyo 10-25 知道并同意）。一次最多同时准备三个。
+  // 打开聊天、点「刷新模型」时每个分组都准备一遍：菜单要列出全部分组的模型。星芒账号上准备只读模型、不签密钥，
+  // 对话密钥等在这个分组发第一句话时主进程才签（0.2.22 回归审查第 1 条）。一次最多同时准备三个。
   const prepareAllGroups = async (groups: readonly AiChatGroupSummary[], keepMissing = false): Promise<void> => {
     const pending = groups.map((group) => group.name)
     // 排着队的也先记成「正在准备」：菜单知道还没读完，后台刷新也不会把它再排一遍。
@@ -127,7 +127,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
         setGroups(result); setGroupsLoaded(true)
         // A background refresh never prepares a group again. Only a group the
         // account did not have before is prepared, once, so the menu can list
-        // its models; that is where its chat key gets minted.
+        // its models.
         if (!groupsInitialized.current) {
           groupsInitialized.current = true
           void prepareAllGroups(result)

@@ -152,6 +152,24 @@ describe('AiAssetMetadataStore', () => {
     await expect(store.getMany(7, [assetId])).resolves.toMatchObject({ [assetId]: { source: 'imported' } })
   })
 
+  it('appends a tag next to the user tags and leaves a duplicate or full list as it is', async () => {
+    const { root, store } = fixture()
+    await store.setSource(7, assetId, 'generated', '一只猫')
+    await expect(store.addTag(7, assetId, '已停止，但已扣费')).resolves.toMatchObject({ tags: ['已停止，但已扣费'], source: 'generated' })
+    await store.updatePreferences(7, assetId, { tags: ['已停止，但已扣费', '角色'] })
+    await expect(store.addTag(7, assetId, '已停止，但已扣费')).resolves.toMatchObject({ tags: ['已停止，但已扣费', '角色'] })
+    await expect(store.addTag(7, assetId, '主视觉')).resolves.toMatchObject({ tags: ['已停止，但已扣费', '角色', '主视觉'] })
+
+    const full = Array.from({ length: 12 }, (_, index) => `标签${index}`)
+    await store.updatePreferences(7, assetId, { tags: full })
+    await expect(store.addTag(7, assetId, '再加一个')).resolves.toMatchObject({ tags: full })
+    await expect(store.addTag(7, assetId, 'x'.repeat(33))).rejects.toThrow('标签格式错误')
+
+    const restarted = new AiAssetMetadataStore({ outputRoot: root })
+    await expect(restarted.getMany(7, [assetId])).resolves.toMatchObject({ [assetId]: { tags: full, prompt: '一只猫' } })
+    await expect(restarted.getMany(8, [assetId])).resolves.toEqual({})
+  })
+
   it('migrates version 1 metadata and rejects invalid or duplicate tags', async () => {
     const { root, store } = fixture()
     const accountRoot = path.join(root, 'user-7')
