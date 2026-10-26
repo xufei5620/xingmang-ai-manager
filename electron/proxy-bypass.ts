@@ -697,10 +697,11 @@ export async function probeDirectConnection(
   return parsesAsJsonObject(await readBoundedResponseText(response, probeMaxBytes, '连通检查'))
 }
 
-export type NetworkSettingsKind = 'proxy' | 'captive-portal'
+/** dns：检查页「查网址的服务（DNS）」那颗「打开网络设置」，改 DNS 的地方在系统的网络设置里。 */
+export type NetworkSettingsKind = 'proxy' | 'captive-portal' | 'dns'
 
 export function isNetworkSettingsKind(value: unknown): value is NetworkSettingsKind {
-  return value === 'proxy' || value === 'captive-portal'
+  return value === 'proxy' || value === 'captive-portal' || value === 'dns'
 }
 
 /**
@@ -711,11 +712,14 @@ export function isNetworkSettingsKind(value: unknown): value is NetworkSettingsK
  * 浏览器就被带到登录页。
  */
 export function networkSettingsTarget(platform: NodeJS.Platform, kind: NetworkSettingsKind): string | null {
+  // DNS 改在正在用的那个连接（WLAN、以太网）的属性里：Windows 先翻到「网络和 Internet」那一页，Mac 的网络设置
+  // 本来就是同一页，客户再按检查页那一行写的步骤点进去。
   if (platform === 'win32') {
+    if (kind === 'dns') return 'ms-settings:network-status'
     return kind === 'proxy' ? 'ms-settings:network-proxy' : 'http://www.msftconnecttest.com/redirect'
   }
   if (platform === 'darwin') {
-    return kind === 'proxy' ? 'x-apple.systempreferences:com.apple.preference.network' : 'http://captive.apple.com/'
+    return kind === 'captive-portal' ? 'http://captive.apple.com/' : 'x-apple.systempreferences:com.apple.preference.network'
   }
   return null
 }
