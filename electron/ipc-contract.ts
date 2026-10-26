@@ -247,6 +247,16 @@ export interface WindowCapabilities {
   claudeDesktopRepaired?: true
   // Linux 发行版名字（「Ubuntu 24.04.1 LTS」），给「复制给客服」那一行用。只有 Linux 有，读不到也缺省。
   systemLabel?: string
+  // 缩在托盘里界面被关掉省内存、这次是重新打开（renderer-release.ts），而且开机那几句提示这次运行里
+  // 已经摆出来过：界面据此不再说一遍开机提示、不再跑开机检查，回到关掉前那一页。缺省 = 照第一次打开来。
+  rendererRestored?: true
+}
+/**
+ * 界面报告手上有没有不能打断的事（装工具、聊天回复、出图出视频、拼片、同步密钥）。有的话缩在托盘里
+ * 再久也不关界面（renderer-release.ts）。
+ */
+export interface RendererActivity {
+  busy: boolean
 }
 export interface UnexpectedExitNotice {
   /** 最近那次退出后是否自动重开了；10 分钟内第二次就不再重开。 */
@@ -975,6 +985,8 @@ export interface XingmangInvokeContract {
   setWindowMode: IpcInvokeDefinition<'window:set-mode', [mode: AppWindowMode], void>
   setWindowTheme: IpcInvokeDefinition<'window:set-theme', [theme: AppTheme], void>
   getWindowCapabilities: IpcInvokeDefinition<'window:get-capabilities', [], WindowCapabilities>
+  /** 界面手上有没有不能打断的事；加载后第一次报告也告诉主进程界面准备好了。 */
+  reportWindowActivity: IpcInvokeDefinition<'window:report-activity', [activity: RendererActivity], void>
   /** 重开软件（显示方式要重开才生效）。true = 已经开始退出；用户在退出确认里点了返回则是 false。 */
   relaunchApp: IpcInvokeDefinition<'window:relaunch', [], boolean>
   /** Mac 上卸载星芒：收回写进工具里的提醒设置，再把星芒移到废纸篓并退出。 */
@@ -1486,6 +1498,7 @@ export const ipcInvokeChannels = {
   setWindowMode: 'window:set-mode',
   setWindowTheme: 'window:set-theme',
   getWindowCapabilities: 'window:get-capabilities',
+  reportWindowActivity: 'window:report-activity',
   relaunchApp: 'window:relaunch',
   uninstallApp: 'window:uninstall-app',
   takeExternalDeepLink: 'navigation:take-deep-link',

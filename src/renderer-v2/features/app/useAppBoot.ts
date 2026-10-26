@@ -29,6 +29,8 @@ export function useAppBoot({ native, app, noteStartupCheck, showRouteRestartHint
   const [systemLabel, setSystemLabel] = useState<string | undefined>(undefined)
   const [session, setSession] = useState<AccountSessionState>({ authenticated: false, account: null })
   const [update, setUpdate] = useState<UpdateSnapshot | null>(null)
+  // 缩到托盘关掉界面以后重新加载的这一次（electron/renderer-release.ts）：开机那几句、检查更新这次运行里已经做过。
+  const [restoredBoot, setRestoredBoot] = useState(false)
   // 会话变化事件一来就作废开机读到的那份会话。启动那次读取可能在事件之后才落地（账号恢复超时先放行
   // 时两者会赛跑），那时手上的会话已经比它新，不能再拿它盖回去。
   const sessionEvents = useLatestRequest()
@@ -49,6 +51,12 @@ export function useAppBoot({ native, app, noteStartupCheck, showRouteRestartHint
       // 退出登录后再开软件也找不回账号。没登录就先到欢迎页，登录或看使用步骤由用户点。
       // 工具配置文件原样保留，终端里照常能用。
       setBoot('ready')
+      if (result.capabilities.rendererRestored) {
+        setRestoredBoot(true)
+        // 换线路的提示是运行中来的，关着的那会儿也可能来了新的；它自己记着哪条说过（useStartupNotices）。
+        showRouteRestartHint(result.settings)
+        return
+      }
       const updated = updatedNotice(result.update.currentVersion, result.update.installedRelease)
       if (updated) noteStartupCheck(updated)
       const settingsSave = settingsSaveNotice(result.capabilities.settingsSaveIssue)
@@ -76,5 +84,5 @@ export function useAppBoot({ native, app, noteStartupCheck, showRouteRestartHint
   }, [app, bootAttempt, noteStartupCheck, showRouteRestartHint, sessionEvents, setGuide, setLastFailure])
   useEffect(() => native.onUpdateState(setUpdate), [native])
   const retryBoot = useCallback(() => setBootAttempt((value) => value + 1), [])
-  return { boot, bootError, retryBoot, settings, setSettings, platform, systemLabel, session, setSession, update, setUpdate, sessionEvents }
+  return { boot, bootError, retryBoot, settings, setSettings, platform, systemLabel, session, setSession, update, setUpdate, sessionEvents, restoredBoot }
 }

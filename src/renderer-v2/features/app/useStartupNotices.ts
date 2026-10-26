@@ -5,6 +5,21 @@ import { diagnosticsRevision, publishDiagnosticsCounts } from './environment-sta
 import { crashReportingNotice, displayRelaunchNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, toolRouteRestartNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './startup-notice'
 import type { AppApi, AppToast, Perform } from './runtime-context'
 
+const routeRestartHintKey = 'xingmang-v2-route-restart-hint'
+
+function readShownRouteRestartHint(): number | null {
+  try {
+    const value = Number(window.sessionStorage.getItem(routeRestartHintKey))
+    return Number.isSafeInteger(value) && value > 0 ? value : null
+  } catch {
+    return null
+  }
+}
+
+function rememberShownRouteRestartHint(id: number) {
+  try { window.sessionStorage.setItem(routeRestartHintKey, String(id)) } catch { /* 记不下最多重新加载后再说一次。 */ }
+}
+
 /** 角落那一摞启动提示（StartupNotices）：谁都能往里挂一条，用户随手能关。 */
 export function useStartupNotices(native: XingmangApi, mounted: RefObject<boolean>) {
   const [startupNotices, setStartupNotices] = useState<readonly StartupNotice[]>([])
@@ -17,12 +32,16 @@ export function useStartupNotices(native: XingmangApi, mounted: RefObject<boolea
     if (!notice.failure) return
     void native.reportRendererError({ message: `${notice.title}：${notice.body}`, context: startupCheckLogContext(notice.id), level: 'warn' }).catch(() => undefined)
   }, [native, mounted])
-  // 换线路的重开提示每条只弹一次：窗口重载、同一条提示又被读到时不再弹。
+  // 换线路的重开提示每条只弹一次：窗口重载、同一条提示又被读到时不再弹。缩到托盘关掉界面再重新加载
+  // 也算同一个窗口，记在 sessionStorage 里，重新加载以后还认得。
   const shownRouteRestartHint = useRef<number | null>(null)
   const showRouteRestartHint = useCallback((next: AppSettingsV2) => {
     const hint = next.toolRouteRestartHint
-    if (!hint || shownRouteRestartHint.current === hint.id) return
+    if (!hint) return
+    shownRouteRestartHint.current ??= readShownRouteRestartHint()
+    if (shownRouteRestartHint.current === hint.id) return
     shownRouteRestartHint.current = hint.id
+    rememberShownRouteRestartHint(hint.id)
     const notice = toolRouteRestartNotice(hint)
     if (notice) noteStartupCheck(notice)
   }, [noteStartupCheck])
@@ -43,13 +62,15 @@ interface StartupChecksOptions {
   perform: Perform
   toast: AppToast
   mounted: RefObject<boolean>
+  /** 缩到托盘关掉界面以后重新加载的这一次：开机环境检查、错误报告告知这次运行里已经做过，不再来。 */
+  restoredBoot?: boolean
 }
 
 /** 登录进来以后那几件只做一次的检查：开机环境检查、错误报告告知；外加角落里兼容显示、错误报告两张卡上的二选一。 */
-export function useStartupChecks({ native, app, boot, settings, setSettings, authenticated, noteStartupCheck, perform, toast, mounted }: StartupChecksOptions) {
+export function useStartupChecks({ native, app, boot, settings, setSettings, authenticated, noteStartupCheck, perform, toast, mounted, restoredBoot = false }: StartupChecksOptions) {
   const diagnosticsStarted = useRef(false)
   useEffect(() => {
-    if (boot !== 'ready' || !authenticated || !settings?.runDiagnosticsOnStartup || diagnosticsStarted.current) return
+    if (boot !== 'ready' || restoredBoot || !authenticated || !settings?.runDiagnosticsOnStartup || diagnosticsStarted.current) return
     diagnosticsStarted.current = true
     // 开机这次紧跟着首页扫描，让主进程直接用那轮的探测结果，不再重跑一遍子进程。
     const started = diagnosticsRevision()
@@ -59,7 +80,7 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
       const notice = startupDiagnosticsIssues(report.counts)
       if (notice) noteStartupCheck(notice)
     }).catch((cause) => { if (mounted.current) noteStartupCheck(startupCheckFailure('diagnostics', errorMessage(cause, '启动环境检查没有完成'))) })
-  }, [boot, native, noteStartupCheck, authenticated, settings?.runDiagnosticsOnStartup, mounted])
+  }, [boot, native, noteStartupCheck, authenticated, settings?.runDiagnosticsOnStartup, mounted, restoredBoot])
   // 兼容显示提示里的二选一：两颗都写进设置，主进程据此清掉崩溃记录。「一直用」现在
   // 已经是兼容方式，不用重开；「恢复」要重开才生效，接着给一颗「现在重开」。
   const chooseDisplayCompat = useCallback((choice: 'keep' | 'restore') => perform('保存显示方式', async () => {
@@ -71,12 +92,12 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
   // 「不想发送」同时把上报关掉，和设置页那个开关是同一个设置。
   const crashNoticeOffered = useRef(false)
   useEffect(() => {
-    if (boot !== 'ready' || crashNoticeOffered.current) return
+    if (boot !== 'ready' || restoredBoot || crashNoticeOffered.current) return
     const notice = crashReportingNotice(settings, authenticated)
     if (!notice) return
     crashNoticeOffered.current = true
     noteStartupCheck(notice)
-  }, [boot, noteStartupCheck, authenticated, settings])
+  }, [boot, noteStartupCheck, authenticated, settings, restoredBoot])
   const chooseCrashReporting = useCallback((choice: 'keep' | 'off') => perform('保存错误报告设置', async () => {
     setSettings(await app.savePreferences({ version: 2, crashReportingNoticeShown: true, ...(choice === 'off' ? { crashReporting: false } : {}) }))
     if (choice === 'off') toast.show('已关掉，出错时不再发送错误报告。想重新打开，到「设置」的「隐私数据」里。', 'ok')
