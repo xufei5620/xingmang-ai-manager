@@ -38,6 +38,8 @@ interface AccountBootstrapOptions {
   accountEpoch: LatestRequest
   setAuth: Dispatch<SetStateAction<AuthMode | null>>
   setWorkspaceEntered: Dispatch<SetStateAction<boolean>>
+  /** 缩到托盘关掉界面以后重新加载的这一次（useRendererRelease.ts）：恢复那一轮照跑，首页不再摆进度。 */
+  restoredBoot?: boolean
 }
 
 /**
@@ -45,7 +47,7 @@ interface AccountBootstrapOptions {
  * 写法一次只跑一轮；换了账号，在跑的那一轮结果作废。断网时没写成的，网回来自动补一次。
  */
 export function useAccountBootstrap(options: AccountBootstrapOptions) {
-  const { native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered } = options
+  const { native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered, restoredBoot = false } = options
   // 开机那轮工具开着、设置没补成的，隔一阵再要（第二十六批 E）；真补上了照样在角落说一句。
   const templateFillRetry = useMemo(() => createTemplateFillRetry({
     fill: () => native.fillToolTemplateDefaults(true),
@@ -184,7 +186,7 @@ export function useAccountBootstrap(options: AccountBootstrapOptions) {
   useEffect(() => {
     if (boot === 'ready' && !auth && session.authenticated && session.account) {
       const restoredScope = accountScope(session)
-      if (!suppressedRestores.current.delete(restoredScope)) void runAccountBootstrap(session.account.userId, 'restore')
+      if (!suppressedRestores.current.delete(restoredScope)) void runAccountBootstrap(session.account.userId, 'restore', false, undefined, siteId, restoredBoot)
     }
     if (!session.authenticated) {
       bootstrapRequest.invalidate()
@@ -192,7 +194,7 @@ export function useAccountBootstrap(options: AccountBootstrapOptions) {
       onlineResync.current = idleOnlineResync()
       setAccountBootstrap(null)
     }
-  }, [boot, runAccountBootstrap, session.account?.userId, session.authenticated, siteId, auth])
+  }, [boot, runAccountBootstrap, session.account?.userId, session.authenticated, siteId, auth, restoredBoot])
   /**
    * 断网时打开软件，Key 同步这一步必然失败，而引导段每次启动只跑一次，网络回来
    * 之后不会有人再去补。这里挂一次自动补跑：只在上一轮确实是被网络拦住时补，

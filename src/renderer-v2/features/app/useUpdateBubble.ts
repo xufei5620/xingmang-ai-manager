@@ -2,6 +2,7 @@ import { useState, type Dispatch, type SetStateAction } from 'react'
 import type { AppSettingsV2, UpdateSnapshot, XingmangApi } from '../../../../electron/ipc-contract'
 import { updateBubbleRepeatsUpdatesPage, updateDiskShortfallText, type SettingsGroupId } from '../../registry/business'
 import type { PageId } from '../../registry/pages'
+import { useWindowSessionString } from '../../window-session'
 import { maintenanceNoticeKey } from './MaintenanceNotice'
 import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureBubbleQuiet } from './update-retry'
 import type { Perform } from './runtime-context'
@@ -19,9 +20,10 @@ interface UpdateBubbleOptions {
 
 /** 右上角那个更新气泡（有新版本、下载中、没下完、空间不够）和角落的维护提示：什么时候出、关掉以后什么时候再出。 */
 export function useUpdateBubble({ native, update, setUpdate, settings, page, settingsGroup, perform, navigate }: UpdateBubbleOptions) {
-  const [dismissedUpdate, setDismissedUpdate] = useState('')
+  // 关掉的气泡和维护提示记在窗口的 sessionStorage 里：缩到托盘关掉界面再叫出来，不再冒出来。
+  const [dismissedUpdate, setDismissedUpdate] = useWindowSessionString('xingmang-v2-dismissed-update')
   const [updateRetrying, setUpdateRetrying] = useState(false)
-  const [dismissedMaintenance, setDismissedMaintenance] = useState<string | null>(null)
+  const [dismissedMaintenance, setDismissedMaintenance] = useWindowSessionString('xingmang-v2-dismissed-maintenance')
   // 空间不够是另一句话：之前关掉的「有新版本」不该连它一起盖住。
   const updateKey = update ? `${update.phase}:${update.availableVersion}:${update.error?.code ?? ''}${update.diskShortfall ? ':disk' : ''}` : ''
   // 维护提示来自更新目录上的状态文件，没登录也收得到。角落那条可以关，关掉的
