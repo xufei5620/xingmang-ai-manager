@@ -2371,6 +2371,8 @@ if (!hasSingleInstanceLock) {
       installNow: async () => {
         if (await confirmUpdateInstall?.() ?? true) updaterService.install()
       },
+      // 闲时装之前同退出时装一样现读一次撤回名单，最多等几秒由跳框器自己掐。
+      refreshServiceStatus: async () => { await serviceStatusMonitor?.refresh() },
       // 照开机自启时的后台装办：先把「试过了」写稳，安装器把新版本拉起来时照旧待在后台（isRelaunchAfterBackgroundInstall）。
       installWhileIdle: async (version) => {
         pendingUpdateRecord = { ...pendingUpdateRecord, attemptedVersion: version, backgroundInstall: { version, startedAt: Date.now() } }
