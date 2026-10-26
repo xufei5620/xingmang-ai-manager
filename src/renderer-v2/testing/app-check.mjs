@@ -4004,6 +4004,57 @@ test('the crash reporting notice waits until the user is signed in', async () =>
   } finally { await page.close() }
 })
 
+// 主路卡点 F11：第一次登录时引导、导览本身就占着一屏，错误报告那张卡再挤上来还盖住工具卡的按钮。
+// 引导、导览开着时它先等着，都关了再出；告知的内容和缺省开关不变。
+async function signInFromWelcome(page) {
+  await page.getByTestId('welcome-login').click()
+  await page.getByTestId('login-account').fill('fixture-user')
+  await page.getByTestId('login-password').fill('fixture-password')
+  await page.getByTestId('auth-agree').check()
+  await page.getByTestId('login-submit').click()
+  const guide = page.getByTestId('start-guide')
+  await guide.waitFor()
+  // 登录后那几件只做一次的事都跑过了，卡片要出早就该出了。
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys'))
+  return guide
+}
+
+test('the crash reporting notice waits for the onboarding guide to close (F11)', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    const guide = await signInFromWelcome(page)
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    await page.getByTestId('guide-pause').click()
+    await guide.waitFor({ state: 'detached' })
+    await page.getByTestId('startup-notice-crash-reporting').waitFor()
+    // 只是晚出，没替客户选：什么都没点之前不写设置。
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'saveSettings' && 'crashReportingNoticeShown' in entry.args[0])), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the crash reporting notice also waits for the interface tour that follows the guide (F11)', async () => {
+  const page = await open('crashNotice=1&guest=1')
+  try {
+    const guide = await signInFromWelcome(page)
+    await page.getByTestId('guide-route-chat').check()
+    for (let turn = 0; turn < 4 && await guide.getAttribute('data-guide-step') !== 'ready'; turn++) {
+      const step = await guide.getAttribute('data-guide-step')
+      await page.getByTestId('guide-next').click()
+      await page.waitForFunction((previous) => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') !== previous, step)
+    }
+    await page.getByTestId('guide-home').click()
+    await guide.waitFor({ state: 'detached' })
+    const tour = page.getByTestId('shell-guide-tip')
+    await tour.waitFor()
+    assert.equal(await page.getByTestId('startup-notice-crash-reporting').count(), 0)
+    for (const label of ['下一步', '下一步', '知道了']) await tour.getByRole('button', { name: label, exact: true }).click()
+    await tour.waitFor({ state: 'detached' })
+    await page.getByTestId('startup-notice-crash-reporting').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 显卡接连崩溃后这次自动改用了兼容方式显示：角落里说一句，并让用户二选一，
 // 不放关闭叉（关掉等于没选）。两个选择都写进设置，「恢复」接着给一颗「现在重开」。
 test('an automatic display fallback explains itself and keeps the fallback when chosen', async () => {
