@@ -151,6 +151,8 @@ if (query.has('officialEmail')) { config.providers.codex.officialAccountEmail = 
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
 // ?codexBroken：Codex 自己读不了 config.toml（主进程 configBroken），重置之后才好。
 if (query.has('codexBroken')) config.providers.codex.configBroken = true
+// ?hooksAutoRepaired=codex：打开软件时主进程替客户把指向旧位置的提醒设置改好了（cliHooksAutoRepaired）。
+for (const provider of Object.keys(config.providers) as ProviderId[]) if (query.get('hooksAutoRepaired') === provider) config.providers[provider].cliHooksAutoRepaired = true
 // ?codexAuthBroken：Codex 读不了 auth.json（主进程 codexAuthBroken），星芒也读不出 Key。
 if (query.has('codexAuthBroken')) { config.providers.codex.codexAuthBroken = true; config.providers.codex.hasApiKey = false }
 // ?claudeBroken：Claude Code 读不了 settings.json，星芒也读不出 Key，来源会被认成官方账号（已知44）。
