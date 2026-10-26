@@ -15,7 +15,8 @@
  *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开；问过的版本还要
  *   等「稍后再说」之后 10 分钟。每个版本只自动试一次，记在打开时装的同一条记录里（attempted），
  *   没装上就退回到退出时装。客户不在电脑前时下好的不问，直接等着闲时装；框弹出来以后人一直
- *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。
+ *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。装之前跟退出时装一样，先现读一次
+ *   服务状态文件（最多等几秒）：下载之后才被撤回的版本在这里收回，不装。
  *
  * 不含任何 Electron 依赖：框、窗口、空闲时长、装都由宿主接进来。
  */
@@ -32,6 +33,8 @@ export const IDLE_INSTALL_AFTER_PROMPT_MS = 10 * 60_000
 export const PROMPT_POLL_MS = 2_000
 /** 等着闲时装、框开着等回答时多久看一次。 */
 export const IDLE_POLL_MS = 30_000
+/** 闲时装之前现读服务状态文件最多等这么久，读不到就按上次读到的撤回名单算（同退出时装）。 */
+export const IDLE_INSTALL_STATUS_WAIT_MS = 3_000
 
 export interface InstallPrompt {
   title: string
@@ -150,6 +153,11 @@ export interface UpdateInstallPrompterOptions {
   ask(prompt: InstallPrompt, signal: AbortSignal): Promise<InstallPromptAnswer>
   /** 客户点了「现在安装」。 */
   installNow(version: string): Promise<void>
+  /**
+   * 现读一次服务状态文件。撤回名单平时 15 分钟才读一次，读到这一版被撤回时更新器自己把它收回
+   * （updater.ts 的 withdrawOffer），getState 就不再给这一版。
+   */
+  refreshServiceStatus(): Promise<unknown>
   /** 闲时装：记下「试过了」再装。 */
   installWhileIdle(version: string): Promise<void>
   log(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
@@ -317,13 +325,37 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     open.controller.abort()
   }
 
+  // 读得慢、读不到都不能把闲时装一直挂着：等满了就按上次读到的撤回名单装。
+  function refreshServiceStatus(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const cancel = setTimer(resolve, IDLE_INSTALL_STATUS_WAIT_MS)
+      void Promise.resolve()
+        .then(() => options.refreshServiceStatus())
+        .catch(() => undefined)
+        .then(() => {
+          cancel()
+          resolve()
+        })
+    })
+  }
+
   function considerIdleInstall(snapshot: UpdateSnapshot): void {
     const version = idleVersion(snapshot)
     if (!version) return
     idleTried = version
-    log('info', 'install.idle', `电脑闲着、窗口缩着，在后台装下好的 ${version}，装好照旧缩在菜单栏`)
-    void Promise.resolve()
-      .then(() => options.installWhileIdle(version))
+    void refreshServiceStatus()
+      .then(() => {
+        if (disposed) return
+        // 下载之后才被撤回的版本在这一步收回（同退出时装）。这一版没试过，下一版下好以后照样能闲时装。
+        if (installableVersion(read<UpdateSnapshot | null>(options.getState, null)) !== version) {
+          idleTried = null
+          log('info', 'install.idle.withdrawn', `${version} 刚被撤回或换了一版，这次不闲时装`)
+          schedule()
+          return
+        }
+        log('info', 'install.idle', `电脑闲着、窗口缩着，在后台装下好的 ${version}，装好照旧缩在菜单栏`)
+        return options.installWhileIdle(version)
+      })
       .catch((cause: unknown) => {
         log('warn', 'install.idle.failed', '闲时装没装起来，留到退出时再装', { cause: cause instanceof Error ? cause.message : String(cause) })
       })
