@@ -315,6 +315,29 @@ describe('guide install failure wording', () => {
       .toBe('运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
     expect(guideInstallExits(new Error(`未获得管理员权限，Node.js安装已停止。${standardAdvice}`)).map((action) => action.id)).toEqual(['support'])
   })
+
+  // 主进程那句只说原因、下一步留给错误目录；引导以前只放标题，「换个网络（比如手机热点）」客户看不到（主路卡点 F12）。
+  it('tells a network failure to try another network with the catalog wording and the guide button name', () => {
+    const intercepted = guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。'), 'Claude Code', false, true)
+    expect(intercepted.message).toBe('Claude Code 没装上（连接被网络拦截）。连接的路上有设备把证书换成了别的（运营商、公司或学校的网络常见）。稍等一两分钟再试；还不行就换个网络（比如手机热点），公司或学校的网络请找网络管理员。')
+    expect(intercepted.reason).toBe('连接被网络拦截')
+    expect(intercepted.detail).toContain('SELF_SIGNED_CERT_IN_CHAIN')
+    expect(guideInstallFailure(new Error('Codex CLI 安装失败：npm 官方源：解析不出下载源的地址（错误码 ENOTFOUND）。'), 'Codex').message)
+      .toBe('Codex 没装上（连不上下载源）。这台电脑现在连不到下载用的服务器，已安装的工具不受影响。检查网络或换个网络（比如手机热点）后，再点「再试一次」。')
+    expect(guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 CERT_HAS_EXPIRED）。'), 'Claude Code').message)
+      .toBe('Claude Code 没装上（证书日期对不上）。多半是这台电脑的系统时间不准——证书有没有过期是拿本机时钟比出来的。请把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换个网络。')
+    // 运行环境那一段没装上也是同一句下一步。
+    expect(guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ECONNRESET'), 'Claude Code').message)
+      .toBe('运行环境没装上（连不上下载源），Claude Code 还没开始装。这台电脑现在连不到下载用的服务器，已安装的工具不受影响。检查网络或换个网络（比如手机热点）后，再点「再试一次」。')
+  })
+
+  it('keeps the next step the main process wrote when the official registry check could not connect', () => {
+    const network = guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。换个网络（比如手机热点）后再试。'), 'Claude Code')
+    expect(network.message).toBe('Claude Code 没装上（连不上 npm 官方源）。换个网络（比如手机热点）后再试。点「再试一次」，还不行就点「需要帮助」。')
+    expect(network.reason).toBe('连不上 npm 官方源')
+    expect(guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。到「设置 › 网络加速」开启加速后再试。'), 'Claude Code').message)
+      .toBe('Claude Code 没装上（连不上 npm 官方源）。到「设置 › 网络加速」开启加速后再试。点「再试一次」，还不行就点「需要帮助」。')
+  })
 })
 
 describe('guide install failure exits', () => {
