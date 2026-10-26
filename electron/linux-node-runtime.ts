@@ -51,10 +51,10 @@ import { nodeVersionStatus } from './versions'
  * https://github.com/nodejs/release-keys 的公钥核过签名（gpgv --keyring pubring.kbx …）。
  * 用 .tar.gz 不用 .tar.xz：解压只用到系统必带的 gzip，不依赖 xz。
  */
-export const linuxNodeRuntimeVersion = 'v24.21.0'
+export const linuxNodeRuntimeVersion = 'v24.22.1'
 const linuxNodeRuntimeSha256: Readonly<Record<NodeRuntimeArchitecture, string>> = {
-  x64: '6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff',
-  arm64: '724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5',
+  x64: 'eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c',
+  arm64: '33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3',
 }
 
 export interface LinuxNodeRuntimeRelease {
