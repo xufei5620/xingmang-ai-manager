@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, startupNoticesShown, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -184,6 +184,32 @@ describe('crashReportingNotice', () => {
     expect(crashReportingNotice(null, true)).toBeNull()
     expect(crashReportingNotice({ crashReportingNoticeShown: true }, true)).toBeNull()
     expect(crashReportingNotice({ crashReporting: false }, true)).toBeNull()
+  })
+
+  it('waits for the onboarding guide and the interface tour to close', () => {
+    expect(crashReportingNotice({}, true)?.waitsForOnboarding).toBe(true)
+  })
+})
+
+describe('startupNoticesShown', () => {
+  const crash = crashReportingNotice({}, true)!
+  const vault = vaultRecoveredNotice()
+  const diagnostics = startupCheckFailure('diagnostics', 'fixture failure')
+
+  it('holds back only the notices that wait for onboarding while the guide or the tour is open', () => {
+    expect(startupNoticesShown([vault, crash, diagnostics], true).map((notice) => notice.id)).toEqual(['vault-recovered', 'diagnostics'])
+  })
+
+  it('shows every notice, in its original order, once onboarding is closed', () => {
+    const notices = [vault, crash, diagnostics]
+    expect(startupNoticesShown(notices, false)).toBe(notices)
+  })
+
+  it('leaves notices without the flag alone, so news the user must act on is never held back', () => {
+    for (const notice of [vault, diagnostics, displayRelaunchNotice(), settingsSaveNotice({ kind: 'disk-full' })!]) {
+      expect(notice.waitsForOnboarding).toBeUndefined()
+      expect(startupNoticesShown([notice], true)).toEqual([notice])
+    }
   })
 })
 
