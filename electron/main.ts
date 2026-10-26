@@ -184,6 +184,7 @@ import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } fr
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
+import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 
 guardProcessOutputStreams()
 
@@ -2135,6 +2136,12 @@ if (!hasSingleInstanceLock) {
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
     const shouldLogUpdateState = createUpdateStateLogFilter()
+    // 手机遥控开着就不让电脑自己睡着：人走开了电脑一睡，手机上发消息就没人理（YK-1）。
+    const codexRemoteKeepAwake = createCodexRemoteKeepAwake({
+      blocker: powerSaveBlocker,
+      log: (level, event, message, detail) => runtimeLog.log(level, 'codex-remote', event, message, detail),
+      onChange: () => applicationTray?.updateSnapshot(),
+    })
     // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
     const codexRemote = createCodexRemote({
       managerDataDirectory,
@@ -2145,7 +2152,10 @@ if (!hasSingleInstanceLock) {
       codexEnv: rootedOptions.codexExtensions.env,
       providerRoots: rootedOptions.system.providerRoots,
       windowsExecution: windowsCliExecution,
-      onStateChanged: (snapshot) => sendToMainWindow('onCodexRemoteStateChanged', snapshot),
+      onStateChanged: (snapshot) => {
+        codexRemoteKeepAwake.observe(snapshot)
+        sendToMainWindow('onCodexRemoteStateChanged', snapshot)
+      },
     })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration: userAcceleration,
@@ -2307,6 +2317,7 @@ if (!hasSingleInstanceLock) {
       unsubscribeInstallKeepAwakeQueue()
       unsubscribeInstallKeepAwakeUpdate()
       installKeepAwake.dispose()
+      codexRemoteKeepAwake.dispose()
     })
     quitCleanup.add('routes', () => {
       unsubscribeRelayRoute()
@@ -2906,6 +2917,7 @@ if (!hasSingleInstanceLock) {
           acceleration: trayAcceleration?.entry() ?? null,
           keepAwakeLabel: trayKeepAwakeLabel({
             tools: cliKeepAwake.tools().map((tool) => isProviderId(tool) ? cliCatalog[tool].name : tool),
+            remoteControl: codexRemoteKeepAwake.holding(),
             installing: installKeepAwake.reasons().includes('install'),
             downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
           }),
