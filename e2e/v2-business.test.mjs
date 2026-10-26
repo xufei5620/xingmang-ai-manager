@@ -1985,6 +1985,68 @@ test('a custom connection checks its name first and then goes to every tool pick
   }
 })
 
+// 同类对比第 1 条：提供方给的一整段配置直接粘贴，替他填好表单；带密钥的网络服务连请求头一起给到每个勾上的工具。
+test('a pasted provider config fills the custom connection and carries its headers to every tool', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    await page.getByTestId('mcp-add').first().click()
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    const paste = dialog.getByTestId('mcp-paste')
+    await paste.fill('随便写的一句话')
+    await dialog.getByTestId('mcp-paste-result').getByText('没认出这段配置', { exact: true }).waitFor()
+    await paste.fill(JSON.stringify({
+      mcpServers: {
+        docs: { type: 'http', url: 'https://docs.example.test/mcp', headers: { Authorization: 'Bearer sk-docs' } },
+        files: { command: 'npx', args: ['-y', 'files-server'], env: { ROOT: '<你的文件夹>' } },
+      },
+    }))
+    await dialog.getByText('认出来了：网络服务「docs」', { exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('mcp-name').inputValue(), 'docs')
+    assert.equal(await dialog.getByTestId('mcp-source').inputValue(), 'https://docs.example.test/mcp')
+    assert.equal(await dialog.getByTestId('mcp-headers').inputValue(), 'Authorization: Bearer sk-docs')
+    // 第二条照样能选，示例文字要他自己换，提示里点名是哪一项。
+    await dialog.getByTestId('mcp-paste-choice').selectOption('1')
+    await dialog.getByText('认出来了：本地程序「files」', { exact: true }).waitFor()
+    await dialog.getByText('下面几项已经替你填好。ROOT 看起来还是说明里的示例文字，换成你自己的再点「添加」。一次加一个，加好以后再粘贴同一段，选下一个。', { exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('mcp-source').inputValue(), 'npx')
+    await dialog.getByTestId('mcp-paste-choice').selectOption('0')
+    // 他自己改过的名字，再选一次也不动。
+    await dialog.getByTestId('mcp-name').fill('my-docs')
+    await dialog.getByTestId('mcp-paste-choice').selectOption('1')
+    await dialog.getByTestId('mcp-paste-choice').selectOption('0')
+    assert.equal(await dialog.getByTestId('mcp-name').inputValue(), 'my-docs')
+    await dialog.getByTestId('mcp-form-tools-codex').click()
+    await dialog.getByTestId('mcp-form-submit').click()
+    await page.getByText('已添加「my-docs」，给 Claude Code、Codex CLI 使用，下次打开工具时生效', { exact: true }).waitFor()
+    const headers = { Authorization: 'Bearer sk-docs' }
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args), [
+      { provider: 'claude', kind: 'mcp', action: 'install', id: 'my-docs', scope: 'user', mcp: { type: 'http', url: 'https://docs.example.test/mcp', headers } },
+    ])
+    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args), [
+      { name: 'my-docs', type: 'http', url: 'https://docs.example.test/mcp', headers },
+    ])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a custom connection leaves alone a same-named one another picked tool already has', async () => {
+  const page = await fixture('page=mcp&extensionOk&codexMcp=github')
+  try {
+    await page.getByTestId('mcp-add').first().click()
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    await dialog.getByTestId('mcp-paste').fill('claude mcp add --transport http github https://api.example.test/mcp')
+    await dialog.getByText('认出来了：网络服务「github」', { exact: true }).waitFor()
+    await dialog.getByTestId('mcp-form-tools-codex').click()
+    await dialog.getByTestId('mcp-form-submit').click()
+    await dialog.getByText('Codex CLI 里已经有叫「github」的连接了，为了不动原来那条，这次没有添加。换个名字，或者不勾 Codex CLI。', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('a tool that is not installed offers its own install in place of the list', async () => {
   const page = await fixture('page=skills&installedProviders=codex')
   try {

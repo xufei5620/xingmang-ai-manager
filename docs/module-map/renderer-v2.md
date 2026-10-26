@@ -35,6 +35,7 @@
 - `features/sessions/SessionsPage.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）。
 - `features/extensions/ExtensionsPage.tsx` — 扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
 - `features/extensions/extensions-common.tsx` — 扩展三页和「星芒精选」页共用的判断、解析和卡片：列表怎么分组、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的卡片和详情。
+- `features/extensions/mcp-paste.ts` — 「自定义连接」里粘贴框的识别：提供方给的整段配置（各家 JSON、Codex / Grok 的 TOML 片段、一行命令、地址、`claude mcp add …`）认成本地程序 / 网络服务，替他填表、点名还是示例文字的几项。只认不写，提交照旧走 `submitMcpInstall`。
 - `features/tools/provider-options.ts` — 记录页和扩展三页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
 - `pages-account.tsx` — 个人中心（`AccountPage`）：账号概览、充值订阅、用量账单、密钥管理（含「配置到工具」写 Key）、账号安全、邀请返利六个页签的装配；下线的 Gemini 不替它写 Key、不列它的额度。
 - `pages-featured.tsx` — 「星芒精选」页：把随包精选清单摆成卡片，一次装进几个工具；装法和扩展页底下的精选是同一条路（不另开通道，主进程校验照样过一遍）。

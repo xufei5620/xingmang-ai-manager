@@ -628,6 +628,10 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
       ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
         ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
         : []),
+      // codexMcp=名字：Codex 那边已经有这条连接，用来看「别的工具里已有同名的，不去换掉它」。
+      ...(query.has('codexMcp') && provider === 'codex' && page === 'mcp'
+        ? [{ ...scopedExtension('plugin', query.get('codexMcp') ?? '', 'Codex 自己的连接', 'local'), provider, kind: 'mcp' as const, scope: 'user' as const }]
+        : []),
       ...(empty
       ? []
       : [

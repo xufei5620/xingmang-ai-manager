@@ -62,6 +62,7 @@
 ## 扩展
 
 - `provider-extensions.ts` — 各 CLI 统一的 MCP / Skill / Plugin 抽象（`ProviderExtensionService`）：列出、安装、卸载、启停、查更新、MCP 健康检查，都是在主进程以 argv 数组调用各家 CLI 自己的子命令（MCP 的 command/args 来自用户输入，I1）；Claude 官方插件市场在没开过终端的电脑上不存在，这里替它注册（要 git，缺 git 时给能照做的提示）。Codex 专用部分在 `codex-extensions.ts` 和 `codex-plugin-catalog*.ts`
+- `mcp-http-headers.ts` — 外接工具网络服务请求头的合格规矩（名字是不以 - 开头的 HTTP token，值不许换行和 NUL，最多 64 条），IPC 解析、`provider-extensions.ts` 拼 `--header`、`codex-extensions.ts` 写 `http_headers` 和渲染层填表共用；零依赖、渲染层也能值导入（I6）
 
 ## 无限画布 + AI 工作区（全项目唯一运行第三方前端代码且有宿主桥的地方）
 
