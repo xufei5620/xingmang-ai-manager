@@ -103,6 +103,13 @@ const promoMessages = {
   daily: { title: '充值活动还在进行', body: '当前账号的充值活动还没结束，回到星芒首页看看。' },
 } as const satisfies Record<string, NotificationMessage>
 
+// 钱包到了 $0、又没有能扣的订阅（主进程 empty-balance-alert.ts 判断，编号前缀 balance-empty:），借「余额」
+// 这一类的偏好开关。Codex 这时只会在终端里转圈重连、像是网断了，这条是它唯一的提醒，所以把那个样子说出来。
+const emptyBalanceMessage = {
+  title: '当前账号余额是 $0',
+  body: 'AI 工具现在用不了，有的会一直转圈重连，像是网断了。点这里去充值，付完马上生效，回到工具里再发一次就行。',
+} as const satisfies NotificationMessage
+
 function promoNoticeKind(eventKey: string): keyof typeof promoMessages | null {
   if (eventKey.startsWith('promo:')) return 'arrival'
   if (eventKey.startsWith('promo-daily:')) return 'daily'
@@ -145,6 +152,7 @@ export function buildActivityNotificationMessage(
   if (kind === 'spend' && detail && 'cents' in detail) return buildSpendNotificationMessage(detail)
   const chat = kind === 'task' ? chatNoticeKind(eventKey) : null
   if (chat) return chatMessages[chat]
+  if (kind === 'balance' && eventKey.startsWith('balance-empty:')) return emptyBalanceMessage
   const promo = kind === 'announcement' ? promoNoticeKind(eventKey) : null
   return promo ? promoMessages[promo] : messages[kind]
 }
