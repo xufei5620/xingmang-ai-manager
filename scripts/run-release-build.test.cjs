@@ -32,15 +32,17 @@ test('the unsigned release runs exactly the same gate steps as the signed releas
   const unsigned = stepLabels({ unsignedReleaseMode: true })
 
   assert.equal(signed.length, unsigned.length)
-  assert.equal(signed.length, 14)
+  assert.equal(signed.length, 13)
 })
 
 test('the release gate covers the renderer that actually ships', () => {
-  // M-03: `npm test` is `vitest run electron src`, so the gate used to verify
-  // the main process and nothing of the interface a paying customer receives.
-  // The renderer-v2 browser regression and the canvas suites have their own
-  // entry points and were never reached at release time.
+  // M-03: the gate used to verify the main process and nothing of the
+  // interface a paying customer receives. `npm test` takes in the renderer v2
+  // and canvas unit suites (test:vitest's `src` argument, which
+  // ci-workflow-config.test.cjs pins), so the renderer v2 browser regression
+  // and the legacy suites are what the gate has to add on top of it.
   for (const mode of [false, true]) {
+    const gate = mode ? 'unsigned' : 'signed'
     const commands = buildReleaseSteps({
       npmCli: 'npm-cli.js',
       releaseOutputDirectory,
@@ -48,9 +50,14 @@ test('the release gate covers the renderer that actually ships', () => {
       unsignedReleaseMode: mode,
     }).map((step) => step.args.join(' '))
 
-    for (const suite of ['run test:v2', 'run test:canvas', 'run test:ui']) {
-      assert.ok(commands.some((command) => command.includes(suite)),
-        `the ${mode ? 'unsigned' : 'signed'} gate must run npm ${suite}`)
+    assert.ok(commands.includes('npm-cli.js test'), `the ${gate} gate must run npm test`)
+    for (const suite of ['test:v2:browser', 'test:ui']) {
+      assert.ok(commands.includes(`npm-cli.js run ${suite}`), `the ${gate} gate must run npm run ${suite}`)
+    }
+    // Each of these would run files npm test has just run a second time.
+    for (const repeat of ['test:v2', 'test:v2:vitest', 'test:canvas']) {
+      assert.equal(commands.includes(`npm-cli.js run ${repeat}`), false,
+        `the ${gate} gate must not run npm run ${repeat} after npm test`)
     }
   }
 })
