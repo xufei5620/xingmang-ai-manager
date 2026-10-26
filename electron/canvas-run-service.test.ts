@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
+import { parseCanvasStartRunInput } from './canvas-request-parser'
 import { createCanvasRunService } from './canvas-run-service'
 import type { CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord } from './canvas-run-contract'
 
@@ -232,5 +233,69 @@ describe('createCanvasRunService', () => {
       userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
     })).rejects.toThrow('最多允许 2 个远程生成节点')
     expect(image).not.toHaveBeenCalled()
+  })
+
+  it('refuses a run that reaches a setting the desktop cannot honour before any paid work', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('tests never reach the network'))
+    try {
+      // The same xc-shaped request the canvas kernel sends, after IPC cloning.
+      function kernelRequest(disabled: boolean) {
+        return parseCanvasStartRunInput(structuredClone({
+          graph: {
+            nodes: [
+              { id: 'prompt', kind: 'prompt', definitionVersion: 1, data: { prompt: '一只猫', model: '', imageCandidateCount: undefined } },
+              { id: 'image', kind: 'image-generate', definitionVersion: 1, disabled, data: {
+                prompt: '', model: 'gpt-image-2', group: '生图分组', imageCandidateCount: 4,
+              } },
+              { id: 'compare', kind: 'image-compare', definitionVersion: 1, disabled, data: { prompt: '', model: '' } },
+              { id: 'other', kind: 'text', definitionVersion: 1, data: { prompt: '独立分支', model: '' } },
+            ],
+            edges: [{ id: 'e-1', source: 'prompt', sourceHandle: 'out:text', target: 'image', targetHandle: 'in:text' }],
+          },
+          scope: { kind: 'all' },
+        }))
+      }
+      const store = memoryStore()
+      const saveRun = vi.spyOn(store, 'saveRun')
+      const text = vi.fn(async () => ({ outputText: 'text' }))
+      const image = vi.fn(async () => ({ assets: [] }))
+      const video = vi.fn(async () => ({ assets: [] }))
+      const service = createCanvasRunService({ store, executors: { text, image, video } })
+      const { graph } = kernelRequest(false)
+      const graphRevision = computeCanvasGraphRevision(graph)
+
+      await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'all' } }))
+        .rejects.toThrow('桌面版暂不支持，本次没有提交任何付费请求')
+      await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'to-node', nodeId: 'image' } }))
+        .rejects.toThrow('「一次出多张图」桌面版暂不支持，本次没有提交任何付费请求')
+      await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'selection', nodeIds: ['compare'] } }))
+        .rejects.toThrow('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
+      expect(text).not.toHaveBeenCalled()
+      expect(image).not.toHaveBeenCalled()
+      expect(video).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(saveRun).not.toHaveBeenCalled()
+
+      // Outside the scope the same nodes do not block anything.
+      const outside = await service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'to-node', nodeId: 'other' } })
+      await expect(outside.promise).resolves.toMatchObject({ status: 'succeeded' })
+      expect(text).toHaveBeenCalledOnce()
+
+      // Switched off, they are skipped and the rest of the workflow runs.
+      store.cache.clear()
+      const switchedOff = kernelRequest(true).graph
+      const handle = await service.start({
+        userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(switchedOff), graph: switchedOff, scope: { kind: 'all' },
+      })
+      const record = await handle.promise
+      expect(Object.fromEntries(record.nodes.map((entry) => [entry.nodeId, entry.state]))).toEqual({
+        prompt: 'succeeded', image: 'skipped', compare: 'skipped', other: 'succeeded',
+      })
+      expect(image).not.toHaveBeenCalled()
+      expect(video).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 })
