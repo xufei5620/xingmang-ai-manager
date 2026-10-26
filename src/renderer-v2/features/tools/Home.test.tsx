@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, homeWalletEmpty, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -1627,6 +1627,112 @@ describe('renderer-v2 home balance for subscription customers', () => {
     expect(markup).toContain('订阅 10月3日到期，到期后会从余额扣费。')
     expect(markup).toContain('去续费')
     expect(markup).not.toContain('home-low-balance')
+  })
+})
+
+// 主路卡点 F4：首页上面说余额是 $0，下面工具卡和大卡却还是深色的「打开」。
+describe('renderer-v2 home tool cards with an empty wallet', () => {
+  const empty = { quota: 0, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 0 } as HomeProps['balance']
+  const subscription = { name: '月卡', remainingUsd: 8, endsAt: '2026-11-03T00:00:00Z', expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
+  function toolRow(markup: string, tool: string): string {
+    const start = markup.indexOf(`data-testid="tool-row-${tool}"`)
+    const next = markup.indexOf('data-testid="tool-row-', start + 1)
+    return start < 0 ? '' : markup.slice(start, next < 0 ? undefined : next)
+  }
+  function heroOf(markup: string): string {
+    return markup.slice(markup.indexOf('data-testid="home-hero"'), markup.indexOf('data-testid="home-recent-card"'))
+  }
+  function buttonTag(markup: string, testId: string): string {
+    const index = markup.indexOf(`data-testid="${testId}"`)
+    return index < 0 ? '' : markup.slice(markup.lastIndexOf('<button', index), markup.indexOf('>', index) + 1)
+  }
+  function withConfig(provider: ProviderId, patch: Record<string, unknown>): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return { ...base, config: { ...base.config, providers: { ...base.config.providers, [provider]: { ...providerConfig, ...patch } } } } as unknown as ToolboxSnapshot
+  }
+
+  it('counts an empty wallet the same way as the $0 notice above the cards', () => {
+    expect(homeWalletEmpty(0, null, true)).toBe(true)
+    expect(homeWalletEmpty(-0.2, null, true)).toBe(true)
+    expect(homeWalletEmpty(0.01, null, true)).toBe(false)
+    // 余额还没读到、订阅还能用、账号不能在这里充值：都不算。
+    expect(homeWalletEmpty(null, null, true)).toBe(false)
+    expect(homeWalletEmpty(0, subscription, true)).toBe(false)
+    expect(homeWalletEmpty(0, null, false)).toBe(false)
+  })
+
+  it('turns every card on the current account into 余额为零 with 去充值 as its button', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const withDesktop = { ...base, platform: { ...base.platform, platform: 'windows', codexDesktop: { install: 'managed', launch: true, uninstall: true } } } as unknown as ToolboxSnapshot
+    const markup = render({}, undefined, { balance: empty, snapshot: withDesktop })
+    for (const tool of ['claude', 'codex', 'codexDesktop', 'grok']) {
+      const row = toolRow(markup, tool)
+      expect(row, tool).toContain('>余额为零<')
+      expect(row, tool).toContain('xm-tone-bad')
+      expect(row, tool).toMatch(new RegExp(`data-testid="tool-${tool}-recharge"[^>]*>(?:<[^>]+>)*去充值`))
+      expect(buttonTag(row, `tool-${tool}-recharge`), tool).toContain('xm-btn-primary')
+      // 「打开」挪进「…」第一项，卡底下只留一颗按钮，不挤掉角标。
+      expect(row, tool).not.toContain(`data-testid="tool-${tool}-primary"`)
+      expect(row, tool).not.toContain(`data-testid="tool-${tool}-source"`)
+    }
+    expect(markup).toContain('data-testid="home-low-balance"')
+  })
+
+  it('makes 去充值 the main button on the big card and keeps 打开 next to it', () => {
+    const hero = heroOf(render({}, undefined, { balance: empty }))
+    expect(hero).toContain('余额为零')
+    expect(hero.indexOf('data-testid="home-hero-recharge"')).toBeGreaterThan(-1)
+    expect(hero.indexOf('data-testid="home-hero-recharge"')).toBeLessThan(hero.indexOf('data-testid="home-hero-open"'))
+    expect(buttonTag(hero, 'home-hero-recharge')).toContain('xm-btn-primary')
+    expect(buttonTag(hero, 'home-hero-open')).toContain('xm-btn-secondary')
+    expect(buttonTag(hero, 'home-hero-open')).not.toContain('disabled')
+    expect(hero).toMatch(/data-testid="home-hero-open"[^>]*>(?:<[^>]+>)*打开 Claude Code/)
+    expect(hero).toContain('data-testid="home-hero-pick-folder"')
+  })
+
+  it('leaves the cards alone while there is money, a usable subscription, no in-app billing or no balance yet', () => {
+    const cases: Array<Partial<HomeProps>> = [
+      { balance: { ...empty!, quota: 5_000, displayAmount: 0.01 } },
+      { balance: empty, subscription },
+      { balance: empty, supportsBilling: false },
+      { balance: null },
+    ]
+    for (const overrides of cases) {
+      const markup = render({}, undefined, overrides)
+      const row = toolRow(markup, 'claude')
+      expect(row).not.toContain('余额为零')
+      expect(row).not.toContain('data-testid="tool-claude-recharge"')
+      expect(buttonTag(row, 'tool-claude-primary')).toContain('xm-btn-primary')
+      expect(buttonTag(heroOf(markup), 'home-hero-open')).toContain('xm-btn-primary')
+      expect(markup).not.toContain('data-testid="home-hero-recharge"')
+    }
+  })
+
+  it('does not touch tools that spend somebody else\'s money', () => {
+    const official = render({}, undefined, { balance: empty, snapshot: withConfig('claude', { hasApiKey: false, matchesRelay: false, actualBaseUrl: '', configurationOwnership: 'missing' }) })
+    expect(toolRow(official, 'claude')).toContain('官方账号')
+    expect(toolRow(official, 'claude')).not.toContain('余额为零')
+    expect(toolRow(official, 'claude')).toContain('data-testid="tool-claude-primary"')
+    expect(heroOf(official)).not.toContain('data-testid="home-hero-recharge"')
+    const manual = render({}, undefined, { balance: empty, snapshot: withConfig('grok', { configurationOwnership: 'manual' }) })
+    expect(toolRow(manual, 'grok')).not.toContain('余额为零')
+    expect(toolRow(manual, 'grok')).toContain('data-testid="tool-grok-primary"')
+    // 同一屏上连着当前账号的照样换。
+    expect(toolRow(manual, 'claude')).toContain('data-testid="tool-claude-recharge"')
+  })
+
+  it('keeps the problem a card already shows ahead of the empty wallet', () => {
+    const changed = render({}, undefined, { balance: empty, onRewriteKey: () => undefined, snapshot: withConfig('claude', { configurationOwnership: 'changed', configurationAccountMatched: false }) })
+    const row = toolRow(changed, 'claude')
+    expect(row).toContain('配置被改过')
+    expect(row).toContain('data-testid="tool-claude-rewrite-key"')
+    expect(row).not.toContain('余额为零')
+  })
+
+  it('shows 打开中 instead of 去充值 while the tool is being opened from the menu', () => {
+    const row = toolRow(render({ 'launch:claude': { label: '正在打开工具', log: [] } }, undefined, { balance: empty }), 'claude')
+    expect(row).not.toContain('data-testid="tool-claude-recharge"')
+    expect(row).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开中/)
   })
 })
 

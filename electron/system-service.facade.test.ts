@@ -182,10 +182,11 @@ describe('inspectCodexDesktopUpdate', () => {
     expect(detector).toHaveBeenCalledTimes(2)
   })
 
-  it('skips the check outside Windows and macOS', async () => {
+  it('skips the check outside Windows and macOS without reporting it as an error', async () => {
     const { service } = createFixture({ platform: 'linux' })
+    // 带了错误文字，system:scan 每次检测都会记一条「Codex 桌面端更新检测失败」警告。
     await expect(service.inspectCodexDesktopUpdate(true)).resolves.toMatchObject({
-      installed: false, updateCheck: 'skipped', updateError: 'Codex Desktop 版本检测仅支持 Windows',
+      installed: false, updateCheck: 'skipped', updateError: null,
     })
   })
 })

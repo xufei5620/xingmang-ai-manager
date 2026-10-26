@@ -65,6 +65,27 @@ describe('isolated platform-settings.json', () => {
       cliTurn: true,
     })
   })
+  it('leaves the anonymous usage switch on until the customer turns it off', async () => {
+    const file = target()
+    const store = new PlatformSettingsStore(file)
+    // Never touched: nothing is written, and the client reads that as on.
+    expect(store.read().privacy).toBeUndefined()
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ version: 1, themePreference: 'system', highContrast: false, privacy: {} }),
+      'utf8',
+    )
+    expect(store.read().privacy).toEqual({ anonymousUsage: true })
+    // An older file that kept the retired crash report switch next to it.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ version: 1, themePreference: 'system', highContrast: false, privacy: { anonymousUsage: false, crashReports: true } }),
+      'utf8',
+    )
+    expect(store.read().privacy).toEqual({ anonymousUsage: false })
+    await store.update({ highContrast: true })
+    expect(store.read().privacy).toEqual({ anonymousUsage: false })
+  })
   it('still rejects a switch whose value is not a boolean', () => {
     const file = target()
     fs.writeFileSync(

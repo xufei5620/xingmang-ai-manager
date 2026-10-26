@@ -362,4 +362,12 @@ describe('platform system preferences', () => {
     expect(h.app.setLoginItemSettings).not.toHaveBeenCalled()
     expect(h.service.testNotification()).toBe('unsupported')
   })
+  it('stores the anonymous usage switch only once it is turned, and keeps it off after that', async () => {
+    const h = setup()
+    expect(h.service.getState().preferences.privacy).toBeUndefined()
+    await h.service.setPrivacyPreference('anonymousUsage', false)
+    expect(h.service.getState().preferences.privacy).toEqual({ anonymousUsage: false })
+    await h.service.setNotificationPreference('balance', false)
+    expect(h.service.getState().preferences.privacy).toEqual({ anonymousUsage: false })
+  })
 })

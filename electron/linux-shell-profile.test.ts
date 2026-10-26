@@ -100,6 +100,14 @@ describe('buildLinuxShellProfileBlock', () => {
     expect(block.endsWith('# <<< xingmang-ai-manager terminal commands <<<\n')).toBe(true)
   })
 
+  // Gemini CLI 下线（2026-10-14）：客户打开 .bashrc 不该看到一个星芒已经不装的命令。
+  it('names only the commands the app still installs', () => {
+    for (const written of [buildLinuxShellProfileBlock(defaultLaunchers, '/home/ann'), buildLinuxFishProfile(defaultLaunchers, '/home/ann')]) {
+      expect(written).toContain('直接敲 claude / codex / grok。')
+      expect(written).not.toContain('gemini')
+    }
+  })
+
   it.runIf(fs.existsSync('/bin/sh'))('adds the folder once, even when two startup files are read', () => {
     const block = buildLinuxShellProfileBlock(defaultLaunchers, '/home/ann')
     const result = execFileSync('/bin/sh', ['-c', `${block}${block}printf '%s' "$PATH"`], {
@@ -416,6 +424,29 @@ describe.runIf(process.platform !== 'win32')('syncLinuxTerminalCommands', () => 
     expect(fs.readFileSync(path.join(home, '.profile'), 'utf8')).toBe('')
     expect(fs.existsSync(path.join(home, '.config', 'fish', 'conf.d', 'xingmang-ai-manager.fish'))).toBe(false)
     expect(fs.existsSync(launcherDirectory(home))).toBe(false)
+  })
+
+  it('still takes out the lines an earlier version wrote, when they listed gemini', async () => {
+    const home = homeDirectory()
+    const claude = installManaged(home, 'claude')
+    const bashrc = path.join(home, '.bashrc')
+    const fish = path.join(home, '.config', 'fish', 'conf.d', 'xingmang-ai-manager.fish')
+    const previous = 'claude / codex / gemini / grok'
+    fs.writeFileSync(bashrc, `alias ll="ls -l"\n\n${buildLinuxShellProfileBlock(launcherDirectory(home), home, previous)}`)
+    fs.mkdirSync(path.dirname(fish), { recursive: true })
+    fs.writeFileSync(fish, buildLinuxFishProfile(launcherDirectory(home), home, previous))
+    // 已经有那段了，装的时候不再补一段新写法的。
+    await expect(syncLinuxTerminalCommands({ reason: 'install', env: env(home), loginShell: '/bin/bash' }))
+      .resolves.toMatchObject({ outcome: 'added' })
+    expect(fs.readFileSync(bashrc, 'utf8').match(/>>> xingmang-ai-manager/g)).toHaveLength(1)
+    fs.rmSync(claude)
+
+    await expect(syncLinuxTerminalCommands({ reason: 'uninstall', env: env(home), loginShell: '/bin/bash' }))
+      .resolves.toEqual({ outcome: 'removed', launchers: [], skipped: [] })
+
+    expect(fs.readFileSync(bashrc, 'utf8')).toBe('alias ll="ls -l"\n')
+    expect(fs.readFileSync(path.join(home, '.profile'), 'utf8')).toBe('')
+    expect(fs.existsSync(fish)).toBe(false)
   })
 
   it('keeps a block the user edited and a launcher-folder file it did not write', async () => {
