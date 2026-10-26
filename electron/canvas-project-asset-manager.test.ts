@@ -97,6 +97,35 @@ describe('CanvasProjectAssetManager', () => {
     await expect(manager.assertWritable(7)).rejects.toThrow('画布项目尚未选择')
   })
 
+  it('tags a stored picture in the library it was stored in and keeps the tags already on it', async () => {
+    const globalOutput = temporaryRoot('xingmang-global-output-')
+    const workspace = temporaryRoot('xingmang-tag-workspace-')
+    const ownFolder = '11111111-1111-1111-1111-111111111111'
+    const sharedLibrary = '22222222-2222-2222-2222-222222222222'
+    const projects = {
+      list: vi.fn(async () => []),
+      getUsableWorkspaceDirectory: vi.fn(async (_userId: number, projectId: string) => projectId === ownFolder ? workspace : null),
+    }
+    const globalContext = context(globalOutput, 2)
+    const manager = new CanvasProjectAssetManager({ projects, global: globalContext, create: context })
+
+    const inWorkspace = await manager.storeBase64(7, png, { projectId: ownFolder, prompt: '一只猫' })
+    const projectContext = await manager.forProject(7, ownFolder)
+    await projectContext.media.updateMetadata(7, inWorkspace.assetId, { tags: ['角色'] })
+    await manager.addImageTag(7, [inWorkspace.assetId], '已停止，但已扣费', ownFolder)
+    await expect(projectContext.media.listOwnedPage(7)).resolves.toMatchObject({
+      items: [expect.objectContaining({ assetId: inWorkspace.assetId, tags: ['角色', '已停止，但已扣费'], source: 'generated', prompt: '一只猫' })],
+    })
+    await expect(globalContext.metadata.getMany(7, [inWorkspace.assetId])).resolves.toEqual({})
+
+    const inLibrary = await manager.storeBase64(7, png, { projectId: sharedLibrary })
+    await manager.addImageTag(7, [inLibrary.assetId], '已停止，但已扣费', sharedLibrary)
+    await expect(globalContext.metadata.getMany(7, [inLibrary.assetId])).resolves.toMatchObject({
+      [inLibrary.assetId]: { tags: ['已停止，但已扣费'] },
+    })
+    await expect(manager.addImageTag(7, [inLibrary.assetId], '已停止，但已扣费')).rejects.toThrow('项目尚未选择')
+  })
+
   it('keeps a saved generated asset usable when only source metadata persistence fails', async () => {
     const asset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png', fileName: 'generated.png' }
     const metadataError = new Error('metadata disk full')
