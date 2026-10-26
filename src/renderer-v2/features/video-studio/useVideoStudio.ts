@@ -129,7 +129,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     setPreparations(preparationsRef.current)
   }
 
-  // 同聊天页：每个分组都准备一遍（还没有对话密钥的分组这时签一把），模型表才列得全。一次最多三个。
+  // 同聊天页：每个分组都准备一遍（星芒账号上只读模型、不签密钥），模型表才列得全。一次最多三个。
   const refreshModels = async () => {
     const attempt = catalogAttempt.begin(), alive = owner.capture()
     const current = () => attempt() && alive()
