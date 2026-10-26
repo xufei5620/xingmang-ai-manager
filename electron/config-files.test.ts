@@ -47,6 +47,8 @@ import {
   inspectOfficialLogin,
   inspectProviderConfig,
   inspectRetiredGeminiIntegrations,
+  MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS,
+  PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS,
   inspectCodexWorkspacePermissionsText,
   inspectHomeFolderTrust,
   managedProviderLaunchBlockedMessage,
@@ -74,6 +76,7 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrls } from './relay-sites'
 import type { CliHookInvocation } from './cli-hooks'
 import { renameWithTransientRetrySync } from './safe-local-data'
+import { projectInstructionsDigest } from './project-instructions'
 import { isOpenAiModelId } from '../src/renderer-v2/features/tools/model-filter'
 
 const temporaryHomes: string[] = []
@@ -4459,6 +4462,123 @@ describe('bringing an older account config up to the current template', () => {
     expect(asRecord(parsed.models)?.session_summary).toBe('grok-4.6')
     expect(asRecord(parsed.models)?.image_description).toBe('grok')
     expect(asRecord(parsed.models)?.allowed_models).toEqual(['grok'])
+  })
+})
+
+describe('the global reply language Codex and Grok read', () => {
+  function writeFile(filePath: string, content: string) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, content, 'utf8')
+  }
+
+  function configDirectory(provider: ProviderId, roots: ReturnType<typeof providerRoots>): string {
+    return path.dirname(providerConfigPaths(provider, roots)[0])
+  }
+
+  it('places the Chinese reply instructions next to a fresh Codex and Grok config and nothing for Claude Code', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'grok', 'claude'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+    }
+
+    for (const provider of ['codex', 'grok'] as const) {
+      expect(fs.readFileSync(path.join(configDirectory(provider, roots), 'AGENTS.md'), 'utf8'))
+        .toBe(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS)
+    }
+    expect(fs.existsSync(path.join(configDirectory('claude', roots), 'AGENTS.md'))).toBe(false)
+    expect(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS).toContain('始终用简体中文回复')
+  })
+
+  it('leaves an AGENTS.md the customer already has untouched on both reset and merge', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'grok'] as const) {
+      const own = path.join(configDirectory(provider, roots), 'AGENTS.md')
+      writeFile(own, 'Always answer in English.\n')
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+      const saved = saveProviderConfig(provider, 'sk-other', testModels[provider], 'merge', roots, {}, providerBaseUrls)
+
+      expect(fs.readFileSync(own, 'utf8')).toBe('Always answer in English.\n')
+      expect(saved.files).not.toContain(own)
+      expect(fs.readdirSync(path.dirname(own)).filter((name) => name.startsWith('AGENTS.md.'))).toEqual([])
+    }
+  })
+
+  it('counts every global instruction file each tool reads, whatever its letter case', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    writeFile(path.join(configDirectory('codex', roots), 'AGENTS.override.md'), '用中文。\n')
+    writeFile(path.join(configDirectory('grok', roots), 'claude.md'), '用中文。\n')
+
+    for (const provider of ['codex', 'grok'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+      expect(fs.readdirSync(configDirectory(provider, roots)).filter((name) => name.toLowerCase() === 'agents.md')).toEqual([])
+    }
+  })
+
+  // Creating a file symlink needs Developer Mode or administrator rights on Windows.
+  it.skipIf(process.platform === 'win32')('leaves a linked AGENTS.md alone and still saves the config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const source = path.join(home, 'dotfiles', 'AGENTS.md')
+    writeFile(source, 'Keep answers short.\n')
+    const link = path.join(configDirectory('codex', roots), 'AGENTS.md')
+    fs.mkdirSync(path.dirname(link), { recursive: true })
+    fs.symlinkSync(source, link)
+
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(source, 'utf8')).toBe('Keep answers short.\n')
+    expect(inspectProviderConfig('codex', roots).hasApiKey).toBe(true)
+  })
+
+  it('places it once for an older Codex and Grok account config at startup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'grok'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+      const placed = path.join(configDirectory(provider, roots), 'AGENTS.md')
+      // A config written before this template revision has no global instructions next to it.
+      fs.rmSync(placed)
+
+      expect(relayTemplateDefaultsPending(provider, roots, providerBaseUrls)).toBe(true)
+      const result = fillRelayTemplateDefaults(provider, roots, providerBaseUrls)
+
+      expect(result?.files).toEqual([placed])
+      expect(result?.backups).toEqual([])
+      expect(fs.readFileSync(placed, 'utf8')).toBe(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS)
+      expect(relayTemplateDefaultsPending(provider, roots, providerBaseUrls)).toBe(false)
+      expect(fillRelayTemplateDefaults(provider, roots, providerBaseUrls)).toBeNull()
+    }
+  })
+
+  it('does not place it next to a config that does not point at the current account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    writeFile(codexConfigSnapshotPaths(roots).active, 'model = "gpt-5.5"\n')
+    writeFile(providerConfigPaths('grok', roots)[0], '[models]\ndefault = "mine"\n\n[model.mine]\nbase_url = "https://api.x.ai/v1"\n')
+
+    for (const provider of ['codex', 'grok'] as const) {
+      expect(fillRelayTemplateDefaults(provider, roots, providerBaseUrls)).toBeNull()
+      expect(fs.existsSync(path.join(configDirectory(provider, roots), 'AGENTS.md'))).toBe(false)
+    }
+  })
+
+  it('keeps the instructions after switching Codex and Grok back to the official account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'grok'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount(provider, roots, {}, providerBaseUrls)
+      expect(fs.readFileSync(path.join(configDirectory(provider, roots), 'AGENTS.md'), 'utf8'))
+        .toBe(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS)
+    }
+  })
+
+  it('lists the instructions it writes among the published versions', () => {
+    expect(PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS).toContain(projectInstructionsDigest(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS))
   })
 })
 

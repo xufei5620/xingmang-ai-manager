@@ -141,6 +141,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 | Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
 | Claude 的命令确认 | `permissions.defaultMode` 与 `skipDangerousModePermissionPrompt` | `default`（逐条问）；2.1.283 起接第三方中转又没写时进自动模式 | `bypassPermissions`（新客户模板写；已有设置的老客户只在没写时补，写过任何模式都不动） | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
+| Codex、Grok 的回复语言 | `~/.codex/AGENTS.md`、`~/.grok/AGENTS.md`（两家的全局说明，拼在项目说明前面交给模型） | 没有（跟着项目说明和对话语言走） | 一份写着「始终用简体中文回复」的 `AGENTS.md`（配置目录里已有任何一份全局说明就不放：Codex 的 `AGENTS.override.md` / `AGENTS.md`，Grok 认的 `AGENTS.md` / `AGENT.md` / `CLAUDE.md` / `CLAUDE.local.md`，大小写不论、链接也算；切回官方不收回） | 同上，两家又没有 `language` 这样的设置 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
